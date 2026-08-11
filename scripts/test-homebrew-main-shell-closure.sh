@@ -36,14 +36,10 @@ MATERIALIZED_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-materia
 STAGING_WORKFLOW="$REPO_ROOT/.github/workflows/staging-build.yml"
 PREPARE_MERGE_WORKFLOW="$REPO_ROOT/.github/workflows/prepare-merge.yml"
 FORCE_REBUILD_WORKFLOW="$REPO_ROOT/.github/workflows/force-rebuild.yml"
-SHELL_BUILD_TOML="$REPO_ROOT/packages/registry/shell/build.toml"
-SHELL_PACKAGE_TOML="$REPO_ROOT/packages/registry/shell/package.toml"
-SHELL_BUILDER="$REPO_ROOT/packages/registry/shell/build-shell.sh"
+SHELL_BUILDER_TEST="$REPO_ROOT/packages/registry/shell/test-build-shell.sh"
 HOMEBREW_BOOTSTRAP_PACKAGE_TOML="$REPO_ROOT/packages/registry/homebrew-bootstrap/package.toml"
 PACKAGE_TREE_SPEC="$REPO_ROOT/homebrew/main-shell-brew-package-tree.json"
 LAZY_ARCHIVE_RESOLVER="$REPO_ROOT/apps/browser-demos/lib/init/lazy-archives.ts"
-SHELL_TOOL_PREPARER="$REPO_ROOT/packages/registry/shell/prepare-build-tools.sh"
-SHELL_TOOL_PREPARER_TEST="$REPO_ROOT/packages/registry/shell/test-prepare-build-tools.sh"
 RUN_SH="$REPO_ROOT/run.sh"
 BROWSER_BOOTSTRAP_PREPARER="$REPO_ROOT/scripts/prepare-homebrew-browser-bootstrap.sh"
 LOCAL_SHELL_INSTALLER="$REPO_ROOT/scripts/install-local-shell-artifact.sh"
@@ -51,6 +47,7 @@ LOCAL_SHELL_OVERRIDE="$REPO_ROOT/scripts/activate-local-shell-build-override.sh"
 CI_BLOCKER_MATERIALIZER="$REPO_ROOT/scripts/materialize-ci-publication-blockers.sh"
 CI_STAGING_SHELL_VERIFIER="$REPO_ROOT/scripts/verify-ci-staging-shell-handoff.sh"
 CI_BROWSER_MIRROR_STATE="$REPO_ROOT/scripts/ci-homebrew-browser-mirror-state.sh"
+CANONICAL_FLAT_SHELL_INSPECTOR="$REPO_ROOT/scripts/inspect-canonical-flat-shell.ts"
 CI_WORKSPACE_PACKER="$REPO_ROOT/scripts/pack-ci-test-workspace.sh"
 CI_TEST_RUNNER="$REPO_ROOT/scripts/ci-run-test-suite.sh"
 BUILD_PROGRAMS="$REPO_ROOT/scripts/build-programs.sh"
@@ -219,25 +216,31 @@ expect_closed_browser_acceptance_contract_rejected() {
 
 check_ordered_staging_shell_contract() {
   local workflow="$1"
-  local test_gate prerequisites proof gate
+  local test_gate prerequisites gate node_acceptance
   test_gate="$(sed -n \
     '/^  test-gate:/,/^  homebrew-main-shell-prerequisites:/p' \
     "$workflow")"
   prerequisites="$(sed -n \
-    '/^  homebrew-main-shell-prerequisites:/,/^  homebrew-main-shell-proof:/p' \
-    "$workflow")"
-  proof="$(sed -n \
-    '/^  homebrew-main-shell-proof:/,/^  homebrew-main-shell-gate:/p' \
+    '/^  homebrew-main-shell-prerequisites:/,/^  homebrew-main-shell-gate:/p' \
     "$workflow")"
   gate="$(sed -n \
     '/^  homebrew-main-shell-gate:/,/^  # publish \/ generate-index/p' \
+    "$workflow")"
+  node_acceptance="$(sed -n \
+    '/- name: Run exact staged Node npm acceptance/,/- name: Upload browser test artifacts/p' \
     "$workflow")"
 
   grep -Fq 'ready_for_review' "$workflow" &&
     grep -Fq \
       'staged_matrix: ${{ steps.compute.outputs.staged_matrix }}' \
       "$workflow" &&
+    grep -Fq \
+      'stages_node_vfs: ${{ steps.compute.outputs.stages_node_vfs }}' \
+      "$workflow" &&
     grep -Fq 'echo "staged_matrix=$staged_matrix" >> "$GITHUB_OUTPUT"' \
+      "$workflow" &&
+    grep -Fq \
+      'any(.[]; .package == \"node-vfs\" and .arch == \"wasm32\")' \
       "$workflow" &&
     grep -Fq 'package-release-lifecycle.sh seal-publish' \
       <<<"$test_gate" &&
@@ -253,24 +256,22 @@ check_ordered_staging_shell_contract() {
       <<<"$prerequisites" &&
     grep -Fq '[ "$TARGET_TAG" = "$expected_tag" ]' \
       <<<"$prerequisites" &&
-    grep -Fq 'uses: ./.github/workflows/homebrew-main-shell-ci.yml' \
-      <<<"$proof" &&
-    grep -Fq 'always() &&' <<<"$proof" &&
-    grep -Fq 'caller_event_name: pull_request' <<<"$proof" &&
-    grep -Fq \
-      'pull_request_head_sha: ${{ github.event.pull_request.head.sha }}' \
-      <<<"$proof" &&
-    grep -Fq \
-      "staging_required: \${{ needs.change-scope.outputs.package_staging_required == 'true' }}" \
-      <<<"$proof" &&
-    grep -Fq 'needs.preflight.outputs.target_tag' <<<"$proof" &&
-    grep -Fq 'needs.preflight.outputs.staged_matrix' <<<"$proof" &&
+    ! grep -q '^  homebrew-main-shell-proof:' "$workflow" &&
+    ! grep -Fq 'uses: ./.github/workflows/homebrew-main-shell-ci.yml' \
+      "$workflow" &&
+    grep -Fq 'env.STAGES_NODE_VFS == '\''true'\''' \
+      <<<"$node_acceptance" &&
+    grep -Fq -- \
+      "--grep 'Kandelo Node demo installs cowsay with npm'" \
+      <<<"$node_acceptance" &&
     grep -Fq 'name: exact current lazy shell (Node + Chromium)' \
       <<<"$gate" &&
     grep -Fq 'if: |' <<<"$gate" &&
     grep -Fq 'always() &&' <<<"$gate" &&
     grep -Fq '[ "$PREREQUISITES_RESULT" = success ]' <<<"$gate" &&
-    grep -Fq '[ "$PROOF_RESULT" = success ]' <<<"$gate"
+    grep -Fq 'TEST_GATE_RESULT: ${{ needs.test-gate.result }}' <<<"$gate" &&
+    grep -Fq 'canonical package test gate ended as $TEST_GATE_RESULT' \
+      <<<"$gate"
 }
 
 expect_ordered_staging_shell_contract_rejected() {
@@ -404,7 +405,7 @@ do
 done
 
 check_ordered_staging_shell_contract "$STAGING_WORKFLOW" ||
-  fail "staging must seal one exact attempt before its reusable shell proof"
+  fail "staging must seal and test the package-owned canonical shell"
 sed '/ready_for_review/d' "$STAGING_WORKFLOW" \
   >"$TMP_ROOT/staging-shell-no-ready-rerun.yml"
 expect_ordered_staging_shell_contract_rejected \
@@ -417,22 +418,22 @@ sed 's/\[ "$TEST_GATE_RESULT" = success \]/[ "$TEST_GATE_RESULT" = skipped ]/' \
   "$STAGING_WORKFLOW" >"$TMP_ROOT/staging-shell-accepts-skipped-producer.yml"
 expect_ordered_staging_shell_contract_rejected \
   "$TMP_ROOT/staging-shell-accepts-skipped-producer.yml"
-sed '/uses: \.\/\.github\/workflows\/homebrew-main-shell-ci.yml/d' \
-  "$STAGING_WORKFLOW" >"$TMP_ROOT/staging-shell-no-reusable-call.yml"
+sed '/stages_node_vfs: \${{ steps.compute.outputs.stages_node_vfs }}/d' \
+  "$STAGING_WORKFLOW" >"$TMP_ROOT/staging-shell-no-node-vfs-output.yml"
 expect_ordered_staging_shell_contract_rejected \
-  "$TMP_ROOT/staging-shell-no-reusable-call.yml"
-sed '/pull_request_head_sha:/d' "$STAGING_WORKFLOW" \
-  >"$TMP_ROOT/staging-shell-no-explicit-head.yml"
+  "$TMP_ROOT/staging-shell-no-node-vfs-output.yml"
+sed '/- name: Run exact staged Node npm acceptance/d' "$STAGING_WORKFLOW" \
+  >"$TMP_ROOT/staging-shell-no-node-acceptance.yml"
 expect_ordered_staging_shell_contract_rejected \
-  "$TMP_ROOT/staging-shell-no-explicit-head.yml"
+  "$TMP_ROOT/staging-shell-no-node-acceptance.yml"
 sed '/staged_matrix:/d' "$STAGING_WORKFLOW" \
   >"$TMP_ROOT/staging-shell-no-exact-matrix.yml"
 expect_ordered_staging_shell_contract_rejected \
   "$TMP_ROOT/staging-shell-no-exact-matrix.yml"
-sed '/\[ "$PROOF_RESULT" = success \]/d' "$STAGING_WORKFLOW" \
-  >"$TMP_ROOT/staging-shell-aggregate-drops-proof.yml"
+sed '/canonical package test gate ended as \$TEST_GATE_RESULT/d' \
+  "$STAGING_WORKFLOW" >"$TMP_ROOT/staging-shell-aggregate-drops-test-gate.yml"
 expect_ordered_staging_shell_contract_rejected \
-  "$TMP_ROOT/staging-shell-aggregate-drops-proof.yml"
+  "$TMP_ROOT/staging-shell-aggregate-drops-test-gate.yml"
 
 check_required_staging_verifier_contract "$WORKFLOW" ||
   fail "main-shell CI must verify its exact immutable staging authority"
@@ -1138,6 +1139,139 @@ expect_failure "candidate shell receipt must be one regular file" \
   bash "$CI_BROWSER_MIRROR_STATE" validate producer \
     "$handoff_state" "$handoff_blockers" "$handoff_image" -
 
+flat_state_probe="$TMP_ROOT/canonical-flat-shell-state"
+mkdir -p "$flat_state_probe"
+flat_state_image="$flat_state_probe/shell.vfs.zst"
+lazy_state_image="$flat_state_probe/lazy-shell.vfs.zst"
+KANDELO_FLAT_STATE_IMAGE="$flat_state_image" \
+KANDELO_LAZY_STATE_IMAGE="$lazy_state_image" \
+  npx tsx -e '
+    import { createHash } from "node:crypto";
+    import { readFileSync, writeFileSync } from "node:fs";
+    import { ensureDirRecursive, writeVfsBinary } from "./host/src/vfs/image-helpers.ts";
+    import { MemoryFileSystem } from "./host/src/vfs/memory-fs.ts";
+    const maxByteLength = 512 * 1024 * 1024;
+    const selection = new Uint8Array(readFileSync("homebrew/main-shell-flat-selection.json"));
+    const shellConfig = new Uint8Array(readFileSync("homebrew/main-shell-default.json"));
+    const demoConfig = new Uint8Array(readFileSync("homebrew/main-shell-flat-demo.json"));
+    const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+    const build = async (lazy) => {
+      const fs = MemoryFileSystem.create(
+        new SharedArrayBuffer(4 * 1024 * 1024, { maxByteLength }),
+        maxByteLength,
+      );
+      for (const path of ["/bin", "/etc/kandelo", "/opt/kandelo/homebrew/bin", "/usr/bin"]) {
+        ensureDirRecursive(fs, path);
+      }
+      writeVfsBinary(fs, "/etc/kandelo/shell.json", shellConfig, 0o644);
+      writeVfsBinary(fs, "/etc/kandelo/demo.json", demoConfig, 0o644);
+      writeVfsBinary(fs, "/opt/kandelo/homebrew/bin/bash", new Uint8Array([0,97,115,109,1,0,0,0]), 0o755);
+      writeVfsBinary(fs, "/opt/kandelo/homebrew/bin/dash", new Uint8Array([0,97,115,109,1,0,0,0]), 0o755);
+      writeVfsBinary(fs, "/opt/kandelo/homebrew/bin/env", new Uint8Array([0,97,115,109,1,0,0,0]), 0o755);
+      writeVfsBinary(fs, "/opt/kandelo/homebrew/bin/brew", new TextEncoder().encode("#!/bin/sh\n"), 0o755);
+      fs.symlink("/opt/kandelo/homebrew/bin/brew", "/usr/bin/brew");
+      for (const path of ["/bin/bash", "/usr/bin/bash"]) fs.symlink("/opt/kandelo/homebrew/bin/bash", path);
+      for (const path of ["/bin/sh", "/usr/bin/sh"]) fs.symlink("/opt/kandelo/homebrew/bin/dash", path);
+      for (const path of ["/bin/env", "/usr/bin/env"]) fs.symlink("/opt/kandelo/homebrew/bin/env", path);
+      if (lazy) fs.registerLazyFile("/lazy", "https://invalid.example/lazy", 1, 0o644);
+      return fs.saveImage({metadata: {
+        version: 1,
+        kernelAbi: 42,
+        createdBy: "images/vfs/scripts/build-homebrew-flat-vfs-image.ts",
+        capacity: {maxByteLength},
+        baseImage: {sha256: "b".repeat(64), bytes: 1234, kernelAbi: 42},
+        homebrewFlat: {
+          selectionSha256: sha256(selection),
+          requestedVfsFilename: "shell.vfs.zst",
+          resourcePolicy: "kandelo-homebrew-vfs-main-shell-v1",
+        },
+        shellConfig: {
+          path: "/opt/kandelo/homebrew/bin/bash",
+          argv: ["bash", "-l", "-i"],
+          sha256: sha256(shellConfig),
+          bytes: shellConfig.byteLength,
+        },
+        demoConfig: {
+          path: "/etc/kandelo/demo.json",
+          sha256: sha256(demoConfig),
+          bytes: demoConfig.byteLength,
+        },
+      }});
+    };
+    (async () => {
+      writeFileSync(process.env.KANDELO_FLAT_STATE_IMAGE, await build(false));
+      writeFileSync(process.env.KANDELO_LAZY_STATE_IMAGE, await build(true));
+    })().catch((error) => {
+      console.error(error);
+      process.exitCode = 1;
+    });
+  '
+flat_state_expected="$flat_state_probe/expected.json"
+flat_state_blockers="$flat_state_probe/blockers.json"
+flat_state_index="$flat_state_probe/index.toml"
+flat_state="$flat_state_probe/state.json"
+flat_cache_key="97dd1a61cb7ab252ed0c6d53daaad912608621efdb393deae7edf4e66ff41907"
+jq -n --argjson abi "$abi" --arg cache "$flat_cache_key" '
+  {
+    abi_version: $abi,
+    entries: [{
+      package: "shell",
+      arch: "wasm32",
+      kind: "program",
+      version: "0.1.0",
+      revision: 23,
+      cache_key_sha: $cache
+    }]
+  }
+' > "$flat_state_expected"
+jq -n --argjson abi "$abi" '{abi_version: $abi, entries: []}' \
+  > "$flat_state_blockers"
+cat > "$flat_state_index" <<EOF
+abi_version = $abi
+generated_at = "2026-08-10T00:00:00Z"
+generator = "canonical flat shell state fixture"
+
+[[packages]]
+name = "shell"
+version = "0.1.0"
+revision = 23
+
+[packages.binary.wasm32]
+status = "success"
+archive_url = "shell-0.1.0-rev23-abi42-wasm32-97dd1a61.tar.zst"
+archive_sha256 = "$(printf 'a%.0s' {1..64})"
+cache_key_sha = "$flat_cache_key"
+built_at = "2026-08-10T00:00:00Z"
+built_by = "https://example.invalid/run/1"
+EOF
+bash "$CI_BROWSER_MIRROR_STATE" create \
+  "$flat_state_expected" "$flat_state_blockers" \
+  "$flat_state_index" \
+  https://github.com/Automattic/kandelo/releases/download/binaries-abi-v42/index.toml \
+  "$flat_state_image" "$flat_state"
+jq -e '
+  .schema == 3 and
+  .mode == "resolved" and
+  .mirror_required == false and
+  .transport == "flat-self-contained" and
+  .inspection.kind == "kandelo-canonical-flat-shell" and
+  .inspection.transport == {
+    kind: "flat-self-contained",
+    mirror_required: false
+  } and
+  .inspection.image.sha256 == .image.sha256 and
+  .inspection.image.bytes == .image.bytes
+' "$flat_state" >/dev/null ||
+  fail "resolved shell state did not preserve its flat inspection authority"
+bash "$CI_BROWSER_MIRROR_STATE" validate producer \
+  "$flat_state" "$flat_state_blockers" "$flat_state_image"
+expect_failure "self-contained" \
+  bash "$CI_BROWSER_MIRROR_STATE" create \
+    "$flat_state_expected" "$flat_state_blockers" \
+    "$flat_state_index" \
+    https://github.com/Automattic/kandelo/releases/download/binaries-abi-v42/index.toml \
+    "$lazy_state_image" "$flat_state_probe/lazy-state.json"
+
 override_probe="$TMP_ROOT/local-shell-override"
 override_generation="$override_probe/generation"
 override_candidate="$override_probe/candidate.vfs.zst"
@@ -1637,48 +1771,11 @@ do
     fail "$package_workflow must let the shell source recipe install mkrootfs"
 done
 
-# WHY: publisher preflight already enters the repository dev shell before it
-# runs this complete contract suite. Re-entering the wrapper would require the
-# Nix command itself to be a package build tool, even though only the flake's
-# declared build tools belong inside the purified shell. The suite's caller
-# owns that one shell-entry boundary.
-bash "$SHELL_TOOL_PREPARER_TEST" ||
-  fail "shell source-build tool preparation tests failed"
-[ "$(grep -Fc 'bash "$SCRIPT_DIR/prepare-build-tools.sh" "$SOURCE_ROOT"' "$SHELL_BUILDER")" -eq 1 ] ||
-  fail "shell recipe must prepare its locked build tools exactly once"
-preparer_line="$(grep -nF 'bash "$SCRIPT_DIR/prepare-build-tools.sh" "$SOURCE_ROOT"' \
-  "$SHELL_BUILDER" | cut -d: -f1)"
-composer_line="$(grep -nF 'bash "$SOURCE_ROOT/scripts/build-homebrew-main-shell-product.sh"' \
-  "$SHELL_BUILDER" | tail -1 | cut -d: -f1)"
-[ -n "$preparer_line" ] &&
-  [ -n "$composer_line" ] &&
-  [ "$preparer_line" -lt "$composer_line" ] ||
-  fail "shell recipe must prepare locked tools before starting the composer"
-grep -Fq '"packages/registry/shell/prepare-build-tools.sh"' \
-  "$SHELL_BUILD_TOML" ||
-  fail "shell cache identity must include its build-tool preparer"
-grep -A4 -F 'name = "npm"' "$SHELL_PACKAGE_TOML" |
-  grep -Fq 'version_constraint = ">=10.0"' ||
-  fail "shell package must declare the npm host tool its recipe executes"
-grep -A4 -F 'name = "python3"' "$SHELL_PACKAGE_TOML" |
-  grep -Fq 'version_constraint = ">=3.11"' ||
-  fail "shell package must declare Python with standard-library tomllib"
-grep -Fq 'git jq node npm python3 ruby sha256sum tar wc' \
-  "$REPO_ROOT/packages/registry/shell/build-tool-path.sh" ||
-  fail "shell Nix-source validation must include Python"
-grep -Fq '${PRODUCT_REVIEW_ARGS[@]+"${PRODUCT_REVIEW_ARGS[@]}"}' \
-  "$SHELL_BUILDER" ||
-  fail "publishable shell recipe must support Bash 3.2 with no review option"
-grep -Fq '# WHY: the package resolver may source-build shell' \
-  "$SHELL_TOOL_PREPARER" ||
-  fail "shell tool ownership boundary must retain its WHY comment"
-grep -Fq 'env -i \' "$SHELL_TOOL_PREPARER" ||
-  fail "shell tool installs must start from a scrubbed environment"
-grep -Fq 'npm_config_registry="https://registry.npmjs.org/"' \
-  "$SHELL_TOOL_PREPARER" ||
-  fail "shell tool installs must pin the public npm registry"
-grep -Fq 'npm ci' "$SHELL_BUILDER" &&
-  fail "shell wrapper must not mutate checkout-global dependency trees"
+# The current package recipe owns its own contract test. This historical
+# suite continues to cover the retired lazy-product workflow, artifact lock,
+# and mirror recovery without duplicating canonical package assertions.
+bash "$SHELL_BUILDER_TEST" ||
+  fail "canonical flat shell package wrapper tests failed"
 
 # The dev-shell wrapper intentionally reports Nix lookup and shell-hook details
 # on stdout. Playwright must own the JSON file directly so those diagnostics can
@@ -1708,53 +1805,6 @@ jq -e '
 grep -Fq "flake.nix" "$playwright_report" &&
   fail "dev-shell diagnostics leaked into the direct Playwright JSON report"
 
-grep -Fq '[[git_inputs]]' "$SHELL_BUILD_TOML" &&
-  fail "shell build.toml must not declare a raw tap beside its selection"
-shell_revision="$(sed -nE \
-  's/^revision[[:space:]]*=[[:space:]]*([1-9][0-9]*)$/\1/p' \
-  "$SHELL_BUILD_TOML")"
-[ -n "$shell_revision" ] &&
-  [ "$(grep -Ec '^revision[[:space:]]*=' "$SHELL_BUILD_TOML")" -eq 1 ] ||
-  fail "reduced lazy shell must declare one positive package revision"
-artifact_state="$(jq -er '.state' "$LAZY_ARTIFACT_LOCK")"
-case "$artifact_state" in
-  sealed) expected_publication_state=ready ;;
-  pending) expected_publication_state=pending ;;
-  *) fail "lazy shell artifact lock has an unsupported state" ;;
-esac
-grep -Eq \
-  "^publication_state[[:space:]]*=[[:space:]]*\"$expected_publication_state\"$" \
-  "$SHELL_BUILD_TOML" ||
-  fail "shell publication state must match its artifact lock"
-for shell_input in \
-  homebrew/main-shell-demo.json \
-  web-libs/kandelo-session/src/demo-config.ts
-do
-  grep -Fq "\"$shell_input\"" "$SHELL_BUILD_TOML" ||
-    fail "shell build cache inputs omit $shell_input"
-done
-for materialized_shell_input in \
-  homebrew/main-shell-selection-lock.json \
-  homebrew/main-shell-lazy-artifact-lock.json \
-  homebrew/main-shell-materialization-policy.json \
-  images/vfs/scripts/build-homebrew-materialized-vfs-image.ts \
-  host/src/homebrew-bottle-mirror-plan.ts \
-  host/src/homebrew-support-data-bottle.ts \
-  host/src/homebrew-runtime-layer-consumer.ts \
-  host/src/homebrew-vfs-composer.ts \
-  host/src/homebrew-vfs-materialization-policy.ts \
-  scripts/build-homebrew-main-shell-product.sh \
-  scripts/prepare-homebrew-main-shell-inputs.sh \
-  scripts/homebrew-main-shell-product-state.py \
-  scripts/homebrew-main-shell-selection-lock.py \
-  scripts/homebrew-prefix-campaign-executor.py \
-  scripts/extract-homebrew-support-data-bottle.ts \
-  scripts/verify-homebrew-support-data-extraction.ts \
-  scripts/verify-homebrew-main-shell-artifact-lock.sh
-do
-  grep -Fq "\"$materialized_shell_input\"" "$SHELL_BUILD_TOML" ||
-    fail "lazy shell build cache inputs omit $materialized_shell_input"
-done
 grep -Fq \
   'VFS_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts"' \
   "$BUILDER" || fail "canonical shell composition must select the eager image entrypoint"
@@ -1768,29 +1818,6 @@ grep -Fq 'homebrew-vfs-composer' "$EAGER_IMAGE_BUILDER" &&
 grep -Fq 'from "../../../host/src/homebrew-vfs-composer"' \
   "$MATERIALIZED_IMAGE_BUILDER" ||
   fail "materialized image entrypoint must own the candidate composer import"
-for generic_input in \
-  WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_DIR \
-  WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_COMMIT \
-  WASM_POSIX_DEP_HOMEBREW_BOOTSTRAP_DIR
-do
-  grep -Fq "$generic_input" "$SHELL_BUILDER" &&
-    fail "shell builder must not consume transitional resolver input $generic_input"
-done
-grep -Fq 'KANDELO_HOMEBREW_MAIN_SHELL_TAP_' "$SHELL_BUILDER" &&
-  fail "shell builder must not retain the workflow-only tap injection path"
-grep -Fq 'scripts/prepare-homebrew-main-shell-inputs.sh' "$SHELL_BUILDER" &&
-  grep -Fq 'scripts/build-homebrew-main-shell-product.sh' "$SHELL_BUILDER" ||
-  fail "canonical package wrapper must use the shared product path"
-grep -Fq 'build-shell-vfs-image.sh' "$SHELL_BUILDER" &&
-  fail "shell builder must not retain the legacy registry-composition fallback"
-for isolated_flag in \
-  '--work-dir "$WORK_DIR"' \
-  '--report "$REPORT"' \
-  '--bottle-cache "$BOTTLE_CACHE"'
-do
-  grep -Fq -- "$isolated_flag" "$SHELL_BUILDER" ||
-    fail "shell builder must pass isolated composer option $isolated_flag"
-done
 for product_flag in \
   '--package-tree-spec' \
   '--package-tree-archive "$BOOTSTRAP/homebrew-bootstrap.zip"' \
@@ -1832,17 +1859,10 @@ jq -e '
   }
 ' "$PACKAGE_TREE_SPEC" >/dev/null ||
   fail "Homebrew package-tree spec is not the exact reviewed contract"
-grep -Fq 'depends_on = []' \
-  "$SHELL_PACKAGE_TOML" ||
-  fail "shell package must not retain the transitional bootstrap package dependency"
-[ "$(grep -Fc '[[outputs]]' "$SHELL_PACKAGE_TOML")" -eq 1 ] ||
-  fail "shell package must publish only its VFS image"
 grep -Fq 'name = "homebrew-bootstrap"' "$HOMEBREW_BOOTSTRAP_PACKAGE_TOML" ||
   fail "standalone Homebrew source package is missing"
 grep -Fq 'wasm = "homebrew-bootstrap.zip"' "$HOMEBREW_BOOTSTRAP_PACKAGE_TOML" ||
   fail "standalone Homebrew source package omits its exact ZIP output"
-grep -Fq '"homebrew/main-shell-brew-package-tree.json"' "$SHELL_BUILD_TOML" ||
-  fail "shell build identity omits the package-tree recipe"
 grep -Fq '@binaries/programs/homebrew-bootstrap/' \
   "$LAZY_ARCHIVE_RESOLVER" &&
   fail "browser shell must not import bootstrap from the package registry"
@@ -2482,7 +2502,10 @@ browser_bootstrap_line="$(grep -nF 'prepare_browser_homebrew_bootstrap' \
   [ "$final_source_runtime_verify_line" -lt "$final_source_release_line" ] &&
   [ "$final_source_release_line" -lt "$final_source_verify_line" ] &&
   [ "$browser_build_line" -lt "$final_source_verify_line" ] ||
-  fail "browser prep must admit Homebrew early, then release and reverify runtime activation"
+  fail "browser prep must preserve the ordered historical bootstrap and source bridge"
+grep -Fq 'if [ "$REQUIRE_SEALED_HOMEBREW_SELECTION" -eq 1 ]; then' \
+  "$prepare_browser_function" ||
+  fail "ordinary browser preparation must gate the lazy bootstrap behind its explicit recovery option"
 grep -Fq 'need_shell_vfs_build_tools' "$RUN_SH" &&
   fail "run.sh must not duplicate prerequisites owned by the shell recipe"
 grep -Fq 'if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then' \
@@ -2566,7 +2589,7 @@ ci_mirror_line="$(grep -nF 'prepare_ci_homebrew_browser_mirror' \
   [ "$ci_source_authority_line" -lt "$ci_browser_run_line" ] &&
   [ "$ci_browser_run_line" -lt "$ci_product_build_line" ] &&
   [ "$ci_product_build_line" -lt "$ci_mirror_line" ] ||
-  fail "CI must authenticate source state before run.sh and recover the mirror after the product build"
+  fail "CI must authenticate source state before run.sh and admit its transport after the product build"
 
 [ "$(grep -Ec '^[[:space:]]+validate_ci_homebrew_browser_state$' \
   "$CI_TEST_RUNNER")" -eq 2 ] ||
@@ -2592,6 +2615,7 @@ mkdir -p "$ci_prepare_probe_root/apps/browser-demos/public"
   printf 'REPO_ROOT=%q\n' "$ci_prepare_probe_root"
   printf 'CI_HOMEBREW_BROWSER_STATE_VALIDATED=1\n'
   printf 'CI_HOMEBREW_BROWSER_STATE_MODE=unvalidated\n'
+  printf 'CI_HOMEBREW_BROWSER_TRANSPORT=""\n'
   printf 'CI_HOMEBREW_BROWSER_MIRROR_REQUIRED=""\n'
   printf 'CI_HOMEBREW_BROWSER_IMAGE=""\n'
   printf 'CI_HOMEBREW_BROWSER_REPORT_ROOT=""\n'
@@ -2617,6 +2641,36 @@ expect_failure "browser state changed before final authority" \
 [ -f "$ci_prepare_probe_log" ] ||
   fail "CI browser preparation did not run its final state validation"
 
+flat_prepare_probe_root="$TMP_ROOT/ci-browser-flat-transport"
+flat_prepare_probe="$flat_prepare_probe_root/probe.sh"
+mkdir -p "$flat_prepare_probe_root/apps/browser-demos/public"
+{
+  printf 'set -euo pipefail\n'
+  printf 'REPO_ROOT=%q\n' "$flat_prepare_probe_root"
+  printf 'CI_HOMEBREW_BROWSER_STATE_VALIDATED=1\n'
+  printf 'CI_HOMEBREW_BROWSER_STATE_MODE=unvalidated\n'
+  printf 'CI_HOMEBREW_BROWSER_TRANSPORT=""\n'
+  printf 'CI_HOMEBREW_BROWSER_MIRROR_REQUIRED=""\n'
+  printf 'CI_HOMEBREW_BROWSER_IMAGE=""\n'
+  printf 'CI_HOMEBREW_BROWSER_REPORT_ROOT=""\n'
+  printf 'CI_HOMEBREW_BROWSER_MIRROR=""\n'
+  printf 'validate_ci_homebrew_browser_state() {\n'
+  printf '  CI_HOMEBREW_BROWSER_STATE_MODE=resolved\n'
+  printf '  CI_HOMEBREW_BROWSER_TRANSPORT=flat-self-contained\n'
+  printf '  CI_HOMEBREW_BROWSER_MIRROR_REQUIRED=false\n'
+  printf '}\n'
+  cat "$ci_browser_prepare_function"
+  printf 'prepare_ci_homebrew_browser_mirror\n'
+} > "$flat_prepare_probe"
+bash "$flat_prepare_probe" ||
+  fail "validated self-contained flat transport still required mirror recovery"
+flat_probe_mirror="$flat_prepare_probe_root/apps/browser-demos/public/homebrew-main-shell-bottles"
+[ ! -e "$flat_probe_mirror" ] && [ ! -L "$flat_probe_mirror" ] ||
+  fail "self-contained flat transport created a closed browser mirror"
+mkdir "$flat_probe_mirror"
+expect_failure "closed Homebrew browser mirror already exists" \
+  bash "$flat_prepare_probe"
+
 ci_state_probe="$TMP_ROOT/ci-browser-state-authority.sh"
 {
   printf 'set -euo pipefail\n'
@@ -2625,6 +2679,7 @@ ci_state_probe="$TMP_ROOT/ci-browser-state-authority.sh"
   printf 'CI_HOMEBREW_BROWSER_MIRROR_REQUIRED=""\n'
   printf 'CI_HOMEBREW_BROWSER_SOURCE_AUTHORITY=""\n'
   printf 'CI_HOMEBREW_BROWSER_STATE_MODE=""\n'
+  printf 'CI_HOMEBREW_BROWSER_TRANSPORT=""\n'
   printf 'CI_HOMEBREW_BROWSER_STATE_VALIDATED=0\n'
   cat "$ci_browser_state_function"
   printf 'validate_ci_homebrew_browser_state\n'
@@ -2706,7 +2761,7 @@ bootstrap_probe="$bootstrap_probe_root/run.sh"
 } >"$bootstrap_probe"
 TEST_BOOTSTRAP_LOG="$bootstrap_probe_log" bash "$bootstrap_probe"
 grep -Fq -- '--browser-asset' "$bootstrap_probe_log" ||
-  fail "ordinary browser preparation skipped the Homebrew bootstrap"
+  fail "the explicit historical bootstrap preparer skipped its browser asset"
 : >"$bootstrap_probe_log"
 TEST_BOOTSTRAP_LOG="$bootstrap_probe_log" TEST_REQUIRE_SEALED=1 \
   bash "$bootstrap_probe"
@@ -2717,6 +2772,24 @@ TEST_BOOTSTRAP_LOG="$bootstrap_probe_log" \
   TEST_AUTHORITY=source-rootfs-mirror-state-v1 bash "$bootstrap_probe"
 [ ! -s "$bootstrap_probe_log" ] ||
   fail "authenticated source-rootfs preparation fetched a Homebrew bootstrap"
+
+prepare_dispatch_probe="$bootstrap_probe_root/prepare-dispatch.sh"
+{
+  printf 'set -euo pipefail\n'
+  printf 'SOURCE_ROOTFS_SHELL=0\n'
+  printf 'ALREADY_MATERIALIZED=1\n'
+  printf 'REQUIRE_SEALED_HOMEBREW_SELECTION="${TEST_REQUIRE_SEALED:-0}"\n'
+  printf 'step() { :; }\n'
+  printf 'prepare_browser_homebrew_bootstrap() { printf "bootstrap\\n"; }\n'
+  printf 'build_browser() { printf "build\\n"; }\n'
+  cat "$prepare_browser_function"
+  printf 'cmd_prepare_browser\n'
+} > "$prepare_dispatch_probe"
+[ "$(bash "$prepare_dispatch_probe")" = build ] ||
+  fail "ordinary flat browser preparation staged the retired lazy bootstrap"
+[ "$(TEST_REQUIRE_SEALED=1 bash "$prepare_dispatch_probe")" = \
+    $'bootstrap\nbuild' ] ||
+  fail "the explicit historical browser option no longer stages its bootstrap"
 
 [ -x "$BROWSER_BOOTSTRAP_PREPARER" ] ||
   fail "the shared browser bootstrap preparer must be executable"
@@ -2774,208 +2847,6 @@ done
     "$SHELL_VFS_URL_TEST" \
     "$TERMINAL_COMMAND_TEST"
 ) || fail "post-archive image contract unit tests failed"
-
-# Exercise the package wrapper twice at once while replacing only its composer
-# subprocess. Each invocation must receive an exclusive resolver-owned
-# workspace, publish only the declared VFS, discard its report/cache scratch,
-# and remove every ambient GitHub/Homebrew credential before composition.
-fake_bin="$TMP_ROOT/fake-composer-bin"
-fake_log="$TMP_ROOT/fake-composer.log"
-mkdir -p "$fake_bin"
-apply_fake_composer="$fake_bin/bash"
-cat >"$apply_fake_composer" <<'FAKE_COMPOSER'
-#!/bin/bash
-set -euo pipefail
-composer="${1:-}"
-shift
-if [[ "$composer" == */packages/registry/shell/prepare-build-tools.sh ]]; then
-  for token in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
-    HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN \
-    NPM_TOKEN NODE_AUTH_TOKEN NODE_OPTIONS NODE_PATH \
-    NPM_CONFIG_USERCONFIG NPM_CONFIG_GLOBALCONFIG NPM_CONFIG_REGISTRY \
-    npm_config_userconfig npm_config_globalconfig npm_config_registry; do
-    if [ "${!token+x}" = x ]; then
-      echo "credential leaked to build-tool preparer: $token" >&2
-      exit 82
-    fi
-  done
-  # Run the real snapshot preparer. npm itself is replaced below, so this
-  # exercises two concurrent Git-owned source snapshots without network I/O.
-  exec /bin/bash "$composer" "$@"
-fi
-for token in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
-  HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN \
-  NPM_TOKEN NODE_AUTH_TOKEN NODE_OPTIONS NODE_PATH \
-  NPM_CONFIG_USERCONFIG NPM_CONFIG_GLOBALCONFIG NPM_CONFIG_REGISTRY \
-  npm_config_userconfig npm_config_globalconfig npm_config_registry; do
-  if [ "${!token+x}" = x ]; then
-    echo "credential leaked to composer: $token" >&2
-    exit 80
-  fi
-done
-[ "${SOURCE_DATE_EPOCH:-}" = 0 ] || {
-  echo "canonical shell wrapper did not pin SOURCE_DATE_EPOCH=0" >&2
-  exit 79
-}
-if [[ "$composer" == */scripts/prepare-homebrew-main-shell-inputs.sh ]]; then
-  [ "${1:-}" = --output-directory ]
-  prepared="${2:-}"
-  [ -n "$prepared" ] && [ ! -e "$prepared" ]
-  mkdir -p "$prepared/selection/tap/Kandelo" "$prepared/bootstrap"
-  printf '{}\n' >"$prepared/selection/selection.json"
-  printf '{}\n' >"$prepared/selection/tap/Kandelo/metadata.json"
-  printf '{}\n' >"$prepared/selection-receipt.json"
-  printf 'Formula-owned Homebrew source\n' \
-    >"$prepared/bootstrap/homebrew-bootstrap.zip"
-  printf 'HOMEBREW_NO_ANALYTICS=1\n' \
-    >"$prepared/bootstrap/homebrew-brew.env"
-  printf '{}\n' >"$prepared/bootstrap/report.json"
-  exit 0
-fi
-
-[[ "$composer" == */scripts/build-homebrew-main-shell-product.sh ]]
-# The package must pass the shared product wrapper from its private source
-# snapshot. Accepting the checkout-global helper here would reintroduce the
-# concurrent mutation race that prepare-build-tools.sh prevents.
-source_root="${composer%/scripts/build-homebrew-main-shell-product.sh}"
-[ "$source_root" != "$composer" ]
-work="" report="" cache="" out="" prepared="" review=false
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --prepared-inputs) prepared="$2"; shift 2 ;;
-    --work-dir) work="$2"; shift 2 ;;
-    --report) report="$2"; shift 2 ;;
-    --bottle-cache) cache="$2"; shift 2 ;;
-    --out) out="$2"; shift 2 ;;
-    --review-pending-artifact) review=true; shift ;;
-    *) echo "unexpected fake-composer option: $1" >&2; exit 81 ;;
-  esac
-done
-[ -n "$work" ] && [ -n "$report" ] && [ -n "$cache" ] && [ -n "$out" ] &&
-  [ "$prepared" = "$WASM_POSIX_DEP_OUT_DIR/.homebrew-shell-build/prepared-inputs" ] &&
-  [ -f "$prepared/bootstrap/homebrew-bootstrap.zip" ] &&
-  [ "$review" = "${FAKE_EXPECT_REVIEW:-true}" ]
-[ ! -e "$work" ] && [ ! -L "$work" ]
-mkdir "$work"
-mkdir "$cache"
-printf '%s\n' "$WASM_POSIX_DEP_OUT_DIR" >"$out"
-printf '{}\n' >"$report"
-printf '%s|%s|%s|%s|%s|%s|%s\n' \
-  "$WASM_POSIX_DEP_OUT_DIR" "$work" "$report" "$cache" "$out" "$prepared" \
-  "$review" \
-  >>"$FAKE_COMPOSER_LOG"
-FAKE_COMPOSER
-cat >"$fake_bin/python3" <<'FAKE_PYTHON'
-#!/bin/bash
-set -euo pipefail
-if [[ "${1:-}" == */scripts/homebrew-main-shell-product-state.py ]]; then
-  printf '%s\n' "${FAKE_PRODUCT_STATE:-candidate}"
-  exit 0
-fi
-exec /usr/bin/env -u PATH PATH=/usr/bin:/bin python3 "$@"
-FAKE_PYTHON
-cat >"$fake_bin/npm" <<'FAKE_NPM'
-#!/bin/bash
-set -euo pipefail
-prefix="$(pwd -P)"
-[ -n "$prefix" ]
-if [[ "$prefix" == */tools/mkrootfs ]]; then
-  mkdir -p "$prefix/node_modules/fflate"
-else
-  mkdir -p "$prefix/node_modules/.bin"
-  : >"$prefix/node_modules/.bin/tsx"
-fi
-FAKE_NPM
-cat >"$fake_bin/tar" <<'FAKE_TAR'
-#!/bin/bash
-exec /usr/bin/tar "$@"
-FAKE_TAR
-chmod 0755 \
-  "$apply_fake_composer" \
-  "$fake_bin/npm" \
-  "$fake_bin/python3" \
-  "$fake_bin/tar"
-parallel_one="$TMP_ROOT/parallel-shell-one"
-parallel_two="$TMP_ROOT/parallel-shell-two"
-publishable="$TMP_ROOT/publishable-shell"
-mkdir "$parallel_one" "$parallel_two" "$publishable"
-run_fake_shell_build() {
-  local out_dir="$1"
-  local product_state="${2:-candidate}"
-  local expected_review="${3:-true}"
-  # This fixture intentionally replaces bash/npm to observe the wrapper. Run
-  # it through the recipe's supported external-resolver mode; the separate
-  # preparer test exercises and verifies the authoritative Nix-only path.
-  env -u KANDELO_DEV_SHELL_TOOL_PATH \
-    PATH="$fake_bin:$PATH" \
-    FAKE_COMPOSER_LOG="$fake_log" \
-    FAKE_PRODUCT_STATE="$product_state" \
-    FAKE_EXPECT_REVIEW="$expected_review" \
-    PACKAGE_TREE_SPEC="$PACKAGE_TREE_SPEC" \
-    GH_TOKEN=forbidden \
-    GITHUB_TOKEN=forbidden \
-    HOMEBREW_GITHUB_API_TOKEN=forbidden \
-    HOMEBREW_GITHUB_PACKAGES_TOKEN=forbidden \
-    HOMEBREW_DOCKER_REGISTRY_TOKEN=forbidden \
-    NPM_TOKEN=forbidden \
-    NODE_AUTH_TOKEN=forbidden \
-    NODE_OPTIONS=--trace-warnings \
-    NODE_PATH="$TMP_ROOT/forbidden-node-path" \
-    NPM_CONFIG_USERCONFIG="$TMP_ROOT/forbidden-user.npmrc" \
-    NPM_CONFIG_GLOBALCONFIG="$TMP_ROOT/forbidden-global.npmrc" \
-    NPM_CONFIG_REGISTRY=https://attacker.invalid/ \
-    npm_config_userconfig="$TMP_ROOT/forbidden-lower-user.npmrc" \
-    npm_config_globalconfig="$TMP_ROOT/forbidden-lower-global.npmrc" \
-    npm_config_registry=https://lower-attacker.invalid/ \
-    WASM_POSIX_DEP_OUT_DIR="$out_dir" \
-    WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
-    /bin/bash "$SHELL_BUILDER"
-}
-run_fake_shell_build "$parallel_one" &
-parallel_one_pid=$!
-run_fake_shell_build "$parallel_two" &
-parallel_two_pid=$!
-wait "$parallel_one_pid" || fail "first concurrent shell wrapper failed"
-wait "$parallel_two_pid" || fail "second concurrent shell wrapper failed"
-run_fake_shell_build "$publishable" publishable false ||
-  fail "publishable shell wrapper failed"
-
-[ "$(wc -l <"$fake_log" | tr -d '[:space:]')" -eq 3 ] ||
-  fail "candidate and publishable wrappers did not produce three records"
-for out_dir in "$parallel_one" "$parallel_two" "$publishable"; do
-  [ -f "$out_dir/shell.vfs.zst" ] || fail "shell wrapper omitted final VFS in $out_dir"
-  [ "$(find "$out_dir" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d '[:space:]')" -eq 1 ] ||
-    fail "shell wrapper leaked scratch outputs into $out_dir"
-  [ ! -e "$out_dir/.homebrew-shell-build" ] ||
-    fail "shell wrapper did not clean resolver-owned scratch in $out_dir"
-  grep -Fq "$out_dir|$out_dir/.homebrew-shell-build/work|" "$fake_log" ||
-    fail "composer did not receive the exclusive workspace below $out_dir"
-done
-[ "$(cut -d'|' -f2 "$fake_log" | sort -u | wc -l | tr -d '[:space:]')" -eq 3 ] ||
-  fail "shell wrappers shared one composer workspace"
-awk -F'|' \
-  -v one="$parallel_one" \
-  -v two="$parallel_two" '
-    ($1 == one || $1 == two) && $7 == "true" { seen[$1] = 1 }
-    END { exit !(seen[one] && seen[two]) }
-  ' "$fake_log" ||
-  fail "candidate package build did not request pending-artifact review"
-awk -F'|' -v out="$publishable" '
-    $1 == out && $7 == "false" { found = 1 }
-    END { exit !found }
-  ' "$fake_log" ||
-  fail "publishable package build bypassed the strict product path"
-grep -Fq "$REPO_ROOT/target/homebrew-main-shell" "$fake_log" &&
-  fail "composer reused the repository-global Homebrew target workspace"
-
-mkdir "$TMP_ROOT/pending-selection"
-expect_failure "shell package awaits its immutable bottle selection" \
-  env -u KANDELO_DEV_SHELL_TOOL_PATH \
-    PATH="$fake_bin:$PATH" \
-    FAKE_PRODUCT_STATE=awaiting-selection \
-    WASM_POSIX_DEP_OUT_DIR="$TMP_ROOT/pending-selection" \
-    WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
-  /bin/bash "$SHELL_BUILDER"
 
 tap="$TMP_ROOT/tap"
 mkdir -p "$tap/Kandelo"
@@ -3132,11 +3003,6 @@ expect_failure "reviewed artifact identity is still pending" \
     --lock "$pending_fixture_lock" --expected-source-date-epoch 0 \
     --artifact "$artifact_fixture"
 
-grep -Fq 'candidate) PRODUCT_REVIEW_ARGS=(--review-pending-artifact)' \
-  "$SHELL_BUILDER" &&
-  grep -Fq 'publishable) ;;' "$SHELL_BUILDER" &&
-  grep -Fq 'scripts/homebrew-main-shell-product-state.py' "$SHELL_BUILDER" ||
-  fail "shell package must separate candidate review from publishable bytes"
 for shipping_workflow in \
   "$REPO_ROOT/.github/workflows/browser-demos-pages.yml" \
   "$REPO_ROOT/.github/workflows/reusable-homebrew-main-shell-mirror-publish.yml"

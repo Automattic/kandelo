@@ -107,10 +107,6 @@ import dinitWasmUrl from "@binaries/programs/wasm32/dinit/dinit.wasm?url";
 import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
 
-const DEFAULT_SOFTWARE_MANIFEST_URLS = [
-  `https://github.com/brandonpayton/kandelo-software/releases/download/binaries-abi-v${ABI_VERSION}/gallery.json`,
-];
-
 const OPTIONAL_BINARY_URLS = {
   ...import.meta.glob(
     "../../../../../local-binaries/programs/wasm32/fbtest.wasm",
@@ -2411,7 +2407,7 @@ function softwareManifestUrls(): string[] {
       ? queryUrls
       : envUrls.length > 0
         ? envUrls
-        : DEFAULT_SOFTWARE_MANIFEST_URLS;
+        : [];
   return [...new Set(urls)];
 }
 

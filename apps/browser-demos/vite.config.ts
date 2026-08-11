@@ -632,9 +632,9 @@ const demoInputs = {
   "php-test": path.resolve(__dirname, "pages/php-test/index.html"),
   // The perl, python, ruby, erlang, texlive, and redis package entries
   // are not bundled into this static build while their slow builds
-  // live in kandelo-software. The root gallery fetches that
-  // repo's gallery.json and index.toml at runtime to expose
-  // available third-party VFS builds without adding page inputs.
+  // live in kandelo-software. A deployment may configure that source's
+  // gallery.json at build time to expose available third-party VFS builds
+  // without adding page inputs.
 };
 
 function selectedDemoInputs(

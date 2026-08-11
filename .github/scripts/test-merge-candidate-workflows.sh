@@ -7,6 +7,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 WORKFLOWS_DIR="$REPO_ROOT/.github/workflows"
 PREPARE="$REPO_ROOT/.github/workflows/prepare-merge.yml"
 ACTIVATE_WORKFLOW="$REPO_ROOT/.github/workflows/activate-merge-candidate.yml"
+PAGES_WORKFLOW="$REPO_ROOT/.github/workflows/browser-demos-pages.yml"
 REJECTED_RECOVERY_WORKFLOW="$REPO_ROOT/.github/workflows/recover-rejected-merge-candidate.yml"
 ACTIVATE_SCRIPT="$SCRIPT_DIR/activate-merge-candidate.sh"
 REJECTED_RECOVERY_SCRIPT="$SCRIPT_DIR/clone-rejected-merge-candidate.sh"
@@ -174,6 +175,83 @@ do
     fail "package matrices must not bypass publication policy with a raw registry scan"
   fi
 done
+
+staging_preflight_job="$(job_block "$STAGING_WORKFLOW" preflight)"
+staging_compute_step="$(step_run_block "$STAGING_WORKFLOW" "Compute matrix")"
+grep -Fq 'stages_node_vfs: ${{ steps.compute.outputs.stages_node_vfs }}' \
+  <<<"$staging_preflight_job" ||
+  fail "staging preflight must expose exact wasm32 node-vfs membership"
+grep -Fq 'any(.[]; .package == \"node-vfs\" and .arch == \"wasm32\")' \
+  <<<"$staging_compute_step" ||
+  fail "staging preflight must derive Node acceptance from the sealed matrix"
+if grep -q '^  homebrew-main-shell-proof:' "$STAGING_WORKFLOW"; then
+  fail "ordinary PR staging must not invoke the retired lazy-shell proof lane"
+fi
+staging_shell_gate="$(job_block "$STAGING_WORKFLOW" homebrew-main-shell-gate)"
+grep -Fq 'name: exact current lazy shell (Node + Chromium)' \
+  <<<"$staging_shell_gate" ||
+  fail "staging must retain the historical required-check display name"
+grep -Fq 'homebrew-main-shell-prerequisites' <<<"$staging_shell_gate" &&
+  grep -Fq 'TEST_GATE_RESULT' <<<"$staging_shell_gate" ||
+  fail "the historical shell aggregate must consume the generic package test gate"
+staged_node_acceptance="$(
+  step_run_block "$STAGING_WORKFLOW" \
+    "Run exact staged Node npm acceptance"
+)"
+grep -Fq "npx playwright test test/kandelo-node.spec.ts" \
+  <<<"$staged_node_acceptance" &&
+  grep -Fq 'activate-ci-test-workspace.sh' \
+    <<<"$staged_node_acceptance" &&
+  grep -Fq -- "--grep 'Kandelo Node demo installs cowsay with npm'" \
+    <<<"$staged_node_acceptance" &&
+  grep -Fq -- '--project=chromium' <<<"$staged_node_acceptance" ||
+  fail "staged node-vfs must run the exact slow npm/cowsay acceptance"
+grep -Fq 'stages_node_vfs: ${{ steps.compute.outputs.stages_node_vfs }}' \
+  <<<"$preflight_job" ||
+  fail "prepare preflight must expose exact wasm32 node-vfs membership"
+grep -Fq 'any(.[]; .package == \"node-vfs\" and .arch == \"wasm32\")' \
+  <<<"$preflight_step" ||
+  fail "prepare preflight must derive Node acceptance from its exact matrices"
+grep -Fq 'echo "stages_node_vfs=false" >> "$GITHUB_OUTPUT"' \
+  <<<"$preflight_step" ||
+  fail "non-staging prepare runs must close the Node acceptance output"
+prepare_test_suite=$(job_block "$PREPARE" test-suite)
+grep -Fq 'needs: [synthesize-merge, change-scope, preflight, test-gate-prepare]' \
+  <<<"$prepare_test_suite" ||
+  fail "prepare test suites must consume the exact package matrix"
+grep -Fq 'STAGES_NODE_VFS: ${{ needs.preflight.outputs.stages_node_vfs }}' \
+  <<<"$prepare_test_suite" ||
+  fail "prepare browser acceptance must receive exact node-vfs membership"
+candidate_node_acceptance="$(
+  step_run_block "$PREPARE" \
+    "Build and run exact candidate Node npm acceptance"
+)"
+for evidence in \
+  'activate-ci-test-workspace.sh' \
+  'npm run build' \
+  'verify-browser-shell-vfs-asset.sh' \
+  'KANDELO_NODE_VFS_STRICT' \
+  'KANDELO_NODE_VFS_SHA256' \
+  'KANDELO_PLAYWRIGHT_SERVE_DIST' \
+  'KANDELO_TEST_BASE_URL' \
+  'npx playwright test test/kandelo-node.spec.ts'
+do
+  grep -Fq "$evidence" <<<"$candidate_node_acceptance" ||
+    fail "candidate Node production acceptance lacks: $evidence"
+done
+pages_node_acceptance="$(
+  step_run_block "$PAGES_WORKFLOW" "Run exact Pages Node npm acceptance"
+)"
+grep -Fq 'KANDELO_NODE_VFS_SHA256' <<<"$pages_node_acceptance" ||
+  fail "Pages Node acceptance must verify the resolved Node image digest"
+NODE_ACCEPTANCE_SPEC="$REPO_ROOT/apps/browser-demos/test/kandelo-node.spec.ts"
+grep -Fq 'KANDELO_NODE_VFS_SHA256' "$NODE_ACCEPTANCE_SPEC" ||
+  fail "Node acceptance must bind the fetched VFS bytes"
+grep -Fq 'KANDELO_TEST_BASE_URL' "$NODE_ACCEPTANCE_SPEC" ||
+  fail "Node acceptance must navigate through the deployed base path"
+if grep -Fq 'test.skip(true, "Required binary not built' "$NODE_ACCEPTANCE_SPEC"; then
+  fail "Node acceptance must fail closed when production assets are missing"
+fi
 grep -Fq 'pr_commit_count: ${{ steps.synthesize.outputs.pr_commit_count }}' <<<"$synthesize_job" || \
   fail "synthesize-merge must export the full-history PR commit count"
 grep -Fq 'PR_COMMIT_COUNT=$(git rev-list --count "$BASE_SHA..$PR_HEAD_SHA")' <<<"$synthesize_step" || \
@@ -340,7 +418,15 @@ if [ "$actual_lock_callers" != "$expected_lock_callers" ]; then
   fail "state-lock workflow caller audit is stale"
 fi
 while IFS=: read -r workflow job; do
-  assert_effective_job_permission "$WORKFLOWS_DIR/$workflow" "$job" actions read
+  if [ "$workflow:$job" = "activate-merge-candidate.yml:activate" ]; then
+    # Canonical activation is the only state-lock caller that must dispatch a
+    # downstream workflow after moving an index.
+    assert_effective_job_permission \
+      "$WORKFLOWS_DIR/$workflow" "$job" actions write
+  else
+    assert_effective_job_permission \
+      "$WORKFLOWS_DIR/$workflow" "$job" actions read
+  fi
 done <<<"$actual_lock_callers"
 
 grep -Fq 'require-exact-head-approval.sh' "$PREPARE" || \
@@ -675,10 +761,99 @@ if grep -Fq 'has_candidates' <<<"$recovery_block"; then
 fi
 grep -Fq 'reconcile-merge-candidates.sh' "$ACTIVATE_WORKFLOW" || \
   fail "activation workflow does not discover ready unactivated candidates"
+reconcile_run="$(
+  step_run_block "$ACTIVATE_WORKFLOW" "Discover merged ready candidates"
+)"
+grep -Fq -- '--activated-receipts-file "$activated_receipts"' \
+  <<<"$reconcile_run" &&
+  grep -Fq 'echo "activated_receipts=$activated_receipts" >> "$GITHUB_OUTPUT"' \
+    <<<"$reconcile_run" ||
+  fail "reconciliation must persist authenticated activation receipts for deployment recovery"
 grep -Fq 'activate-merge-candidate.sh' "$ACTIVATE_WORKFLOW" || \
   fail "activation workflow does not invoke the activation transaction"
 grep -Fq 'failed=1' "$ACTIVATE_WORKFLOW" || \
   fail "reconciliation must continue after one candidate activation fails"
+assert_effective_job_permission \
+  "$ACTIVATE_WORKFLOW" activate actions write
+activation_step="$(
+  step_block "$ACTIVATE_WORKFLOW" "Activate exact merged candidates"
+)"
+activation_run="$(
+  step_run_block "$ACTIVATE_WORKFLOW" "Activate exact merged candidates"
+)"
+grep -Fq 'id: activate' <<<"$activation_step" || \
+  fail "candidate activation must expose whether canonical state moved"
+grep -Fq 'activated_any=false' <<<"$activation_run" &&
+  grep -Fq 'activated_any=true' <<<"$activation_run" &&
+  grep -Fq 'gh release download "$candidate_tag"' <<<"$activation_run" &&
+  grep -Fq '>> "$ACTIVATED_RECEIPTS"' <<<"$activation_run" &&
+  grep -Fq 'echo "activated_any=$activated_any" >>"$GITHUB_OUTPUT"' \
+    <<<"$activation_run" ||
+  fail "candidate activation must publish its exact success state"
+activation_output_line="$(
+  grep -nF 'echo "activated_any=$activated_any" >>"$GITHUB_OUTPUT"' \
+    <<<"$activation_run" | cut -d: -f1
+)"
+activation_exit_line="$(
+  grep -nF 'exit "$failed"' <<<"$activation_run" | cut -d: -f1
+)"
+[ -n "$activation_output_line" ] && [ -n "$activation_exit_line" ] &&
+  [ "$activation_output_line" -lt "$activation_exit_line" ] ||
+  fail "candidate activation must publish success before returning failures"
+pages_generation_step="$(
+  step_run_block "$ACTIVATE_WORKFLOW" "Resolve the exact Pages generation"
+)"
+for evidence in \
+  'release-index-state.sh snapshot' \
+  'canonical_index_sha256' \
+  'activated_at' \
+  'candidate_tag' \
+  'git rev-parse HEAD' \
+  'kandelo-deployment.json' \
+  'echo "dispatch=false"' \
+  'echo "dispatch=true"'
+do
+  grep -Fq "$evidence" <<<"$pages_generation_step" ||
+    fail "durable Pages generation resolution lacks: $evidence"
+done
+pages_dispatch_step="$(
+  step_block "$ACTIVATE_WORKFLOW" "Dispatch the exact Pages generation"
+)"
+grep -Fq "if: steps.pages_generation.outputs.dispatch == 'true'" \
+  <<<"$pages_dispatch_step" &&
+  grep -Fq -- '-f source_sha="${{ steps.pages_generation.outputs.source_sha }}"' \
+    <<<"$pages_dispatch_step" &&
+  grep -Fq -- '-f candidate_tag="${{ steps.pages_generation.outputs.candidate_tag }}"' \
+    <<<"$pages_dispatch_step" &&
+  grep -Fq -- '-f canonical_index_sha256="${{ steps.pages_generation.outputs.canonical_index_sha256 }}"' \
+    <<<"$pages_dispatch_step" ||
+  fail "activation must dispatch an exact durable Pages generation"
+for input in source_sha candidate_tag canonical_index_sha256; do
+  grep -Fq "      $input:" "$PAGES_WORKFLOW" ||
+    fail "Pages workflow lacks exact dispatch input: $input"
+done
+grep -Fq 'ref: ${{ inputs.source_sha || github.sha }}' "$PAGES_WORKFLOW" ||
+  fail "Pages checkout must bind the requested source SHA"
+pages_generation_verifier="$(
+  step_run_block "$PAGES_WORKFLOW" "Verify the requested package generation"
+)"
+for evidence in \
+  'release-index-state.sh snapshot' \
+  'ready.json' \
+  'activated.json' \
+  'canonical_index_sha256' \
+  'candidate_tag'
+do
+  grep -Fq "$evidence" <<<"$pages_generation_verifier" ||
+    fail "Pages generation verification lacks: $evidence"
+done
+pages_manifest_step="$(
+  step_run_block "$PAGES_WORKFLOW" "Record the deployed generation"
+)"
+grep -Fq 'kandelo-deployment.json' <<<"$pages_manifest_step" &&
+  grep -Fq 'source_sha' <<<"$pages_manifest_step" &&
+  grep -Fq 'canonical_index_sha256' <<<"$pages_manifest_step" ||
+  fail "Pages must publish durable generation evidence"
 if grep -Fq -- '--wait-seconds' "$ACTIVATE_WORKFLOW" || \
    grep -Fq -- '--wait-seconds' "$ACTIVATE_SCRIPT"
 then
@@ -689,12 +864,11 @@ grep -Fq '/releases?per_page=${PER_PAGE}&page=${page}' "$RECONCILE_SCRIPT" || \
   fail "scheduled reconciliation must use explicit bounded release pagination"
 grep -Fq 'release scan reached the ${MAX_PAGES}-page safety bound' "$RECONCILE_SCRIPT" || \
   fail "reconciliation must fail rather than silently truncate its scan"
-grep -Fq 'grep -Fxq ready.json "$asset_names"' "$RECONCILE_SCRIPT" || \
-  fail "reconciliation must require a sealed ready candidate"
-grep -Fq 'grep -Fxq activated.json "$asset_names"' "$RECONCILE_SCRIPT" || \
-  fail "reconciliation must skip candidates with activation receipts"
-grep -Fq 'grep -Fxq rejected.json "$asset_names"' "$RECONCILE_SCRIPT" || \
-  fail "reconciliation must skip candidates with terminal rejection receipts"
+# Exercise the real reconciler because marker names in source do not prove that
+# terminal bytes are downloaded, identity-bound, bounded, and validated before
+# the historical lifecycle exception is accepted.
+bash "$SCRIPT_DIR/test-reconcile-merge-candidates.sh" >/dev/null || \
+  fail "reconciliation terminal receipt behavior failed"
 grep -Fq '/releases/${release_id}/assets?per_page=${ASSET_PER_PAGE}&page=${page}' "$RECONCILE_SCRIPT" || \
   fail "candidate readiness discovery must paginate release assets"
 grep -Fq 'latest_gate_target "$head_sha"' "$RECONCILE_SCRIPT" || \

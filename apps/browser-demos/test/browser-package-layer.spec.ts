@@ -1289,6 +1289,8 @@ test("browser discards each private package-layer stage after repeated boot-pref
   test.setTimeout(180_000);
   if (!baseURL) throw new Error("Playwright baseURL is required");
   const fixture = await createFixture({ bootPrefetchTree: "data" });
+  const bootAttempts = 3;
+  const transientTransportAttempts = 3;
   let descriptorFetches = 0;
   let directArchiveFetches = 0;
   let mirrorArchiveFetches = 0;
@@ -1316,7 +1318,7 @@ test("browser discards each private package-layer stage after repeated boot-pref
   );
 
   try {
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
+    for (let attempt = 1; attempt <= bootAttempts; attempt += 1) {
       const failure = await page.evaluate(
         async ({ baseVfsUrl, descriptor }) => {
           try {
@@ -1334,9 +1336,13 @@ test("browser discards each private package-layer stage after repeated boot-pref
       )).toBe(initialDiscards + attempt);
     }
 
-    expect(descriptorFetches).toBe(3);
-    expect(directArchiveFetches).toBe(3);
-    expect(mirrorArchiveFetches).toBe(3);
+    expect(descriptorFetches).toBe(bootAttempts);
+    expect(directArchiveFetches).toBe(
+      bootAttempts * transientTransportAttempts,
+    );
+    expect(mirrorArchiveFetches).toBe(
+      bootAttempts * transientTransportAttempts,
+    );
     await expect(page.evaluate(async (path) => {
       try {
         await window.__readPackageLayerAcceptance(path);

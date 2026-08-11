@@ -535,8 +535,8 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | Python (legacy opt-in) | `python-vfs.vfs.zst` | `bash packages/registry/python-vfs/build-python-vfs.sh` | ABI-bound CPython interpreter, complete stdlib, license, aliases, and demo metadata |
 | Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
-| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the complete reviewed current-shell closure: embedded `libcxx`/Ncurses/Bash, with the other base Formula trees independently lazy. `/usr/bin/brew` names a separate lazy source and an atomic runtime-support layer derived from the selected dependency graph; dependencies absent from the base, such as Ruby and its selected `libyaml` dependency, remain lazy together. |
-| Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | embedded package-resolved Node executable + npm 10.9.2 dist + writable `/work`; shell Formula trees remain lazy |
+| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the complete eager bottle closure selected by `homebrew/main-shell-flat-selection.json`; Bash, Ruby, `brew`, Formula data, profile, shell config, and demo config are self-contained, with no deferred Homebrew state |
+| Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | exact self-contained shell image plus the package-resolved Node executable, npm 10.9.2 distribution, writable `/work`, and Node demo metadata |
 | WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
 | MariaDB test | `mariadb-test.vfs.zst` | `bash images/vfs/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
@@ -721,10 +721,11 @@ ephemeral flags, credentials in the URL, or non-root target paths.
 No Perl, Python, or Erlang layer URL is built into the browser. Concrete
 entries require immutable published descriptor/content identities derived from
 their finalized bottle sidecars; missing or mismatched identities fail boot
-instead of falling back to a standalone language VFS. The canonical main shell
-uses the same substrate directly: Bash and its required closure are embedded,
-the remaining reviewed Formulae are registered as bottle-backed deferred trees,
-and the image-owned default-shell contract selects the embedded Bash.
+instead of falling back to a standalone language VFS. Historical lazy shell
+images used the same substrate directly. The current canonical flat shell does
+not register bottle-backed deferred trees: it eagerly materializes its complete
+reviewed selection, and the image-owned default-shell contract selects that
+embedded Bash.
 
 That direct release proves only its configured acceptance image; it does not
 set generic package browser flags. The separate gallery path first boots a
@@ -738,6 +739,33 @@ A Homebrew gallery entry is visible only when its `index.toml` package record
 is wasm32 success, has an `archive_url`, and sets
 `browser_compatible = true`. Launch-time archive failures are surfaced in the
 UI instead of silently hiding the rest of the gallery.
+
+### Current ABI-42 shell publication (2026-08-11)
+
+The normal shell page resolves the package archive built from
+`homebrew/main-shell-flat-selection.json`. That image contains a
+self-contained `/opt/kandelo/homebrew`; `/usr/bin/brew`, Ruby, Bash, their
+Formula data, and every selected dependency are eager VFS entries. The browser
+does not fetch a bootstrap ZIP, bottle tree, or Homebrew runtime layer when the
+shell boots or when those commands execute.
+
+Shell revision 23 and `node-vfs` revision 15 share this exact base-image
+identity. Both are part of the canonical package release, and Pages resolves
+them with `./run.sh --fetch-only prepare-browser` from a fresh cache. The
+publisher inspects the shell against the checked-in selection and configs,
+builds the complete gallery, and compares the resolver bytes with exactly one
+hashed `shell.vfs-*.zst` asset and one hashed `node-vfs.vfs-*.zst` asset. It
+does not trust optional unhashed public copies.
+
+The shell Chromium proof loads the ordinary production page, verifies the
+served shell digest, runs `brew`, Ruby, and the selected Bash, and requires an
+empty lazy-download ledger. A second Chromium proof runs the exact
+`npm install --verbose cowsay` flow in the Node image and executes the
+installed binary. The post-activation Pages dispatch starts these checks only
+after it selects an authenticated activation receipt for the exact current
+canonical index. The dispatch carries the source SHA, candidate tag, and index
+digest. Pages independently verifies all three, and the Node proof hashes the
+served VFS response before running npm/cowsay.
 
 ### Building VFS images
 
@@ -756,81 +784,33 @@ orchestrates explicit resolver builds:
 
 The main shell target resolves the canonical `packages/registry/shell` package
 into `local-binaries`; it does not invoke the image recipe or fbDOOM build
-directly. That package is the strict bottle-backed product recipe: its tap
-commit, Formula closure, bottle identities, and lazy-artifact lock fail closed.
-`./run.sh --fetch-only build shell-vfs` therefore refuses source fallback.
+directly. The package recipe restores the exact platform base, verifies the
+flat selection and its resource policy, materializes every selected bottle,
+writes the shell and demo configs, and serializes one self-contained image.
+`./run.sh --fetch-only build shell-vfs` refuses source fallback.
 
-Pull-request and default-branch Homebrew shell CI select that canonical bottled
-product too. Pre-publication checks recover its exact mirror into a closed,
-same-run transport, so they can prove Node.js and Chromium behavior without
-claiming that an immutable public release already exists. The manual cutover
-lane additionally binds the exact live Kandelo, first-party tap, and
-independent canary revisions and exercises first- and third-party guest
-Homebrew operations.
+Shell-derived packages consume that resolved image as a declared dependency.
+Their builders preserve capacity and ABI, reject deferred input state, and
+record the exact shell digest and byte count in their own metadata. A revision
+bump on the shell therefore changes the cache key of `node-vfs`, `nginx-vfs`,
+`nginx-php-vfs`, `lamp`, and `wordpress` through the normal dependency graph.
 
-Closed pre-publication evidence is not the deployment authority. The Pages
-workflow below independently gates publication against the already-published
-immutable mirror and the exact public product. The first cutover intentionally
-proves the bounded shell contract—boot, independent lazy commands, deferred
-Homebrew activation, and a real in-guest `brew` command—without waiting for the
-complete tap/install/upgrade/remove/reboot lifecycle. Those broader operations
-remain follow-up validation.
+GitHub Pages is a package consumer, not a producer. Every `main` push still
+starts the single complete-tree workflow so a hand-maintained path list cannot
+leave the site on an older transitive package projection. A package-changing
+push may reach Pages before canonical activation; its fresh fetch-only cache
+then fails on the new unpublished identities. Activation dispatches the same
+workflow after the canonical index moves, allowing the admitted generation to
+build and deploy. The deployed tree records its source and index generation;
+scheduled activation compares that public record and retries a missed or
+failed dispatch without reopening the terminal candidate. No pull-request
+event can invoke the publisher.
 
-GitHub Pages is a public product consumer, not a package producer. Its sole
-publisher starts with a fresh resolver cache and runs
-`./run.sh --fetch-only --require-sealed-homebrew-selection prepare-browser`;
-any missing or stale canonical archive therefore stops deployment instead of
-falling back to a source build. That same preparation command anonymously
-reads and verifies the immutable closed Homebrew selection, extracts only the
-declared bootstrap files from its Formula bottle, and atomically places the ZIP
-at the browser's fixed same-origin URL. It never resolves the transitional
-`homebrew-bootstrap` registry package. Ordinary local `./run.sh browser` uses
-the same path. A generated bootstrap Formula exists only in the prepared
-selection, not in the raw tap, so a pending review must explicitly provide that
-prepared tree with `WASM_POSIX_HOMEBREW_PENDING_SELECTION_ROOT`. A deployed
-product and an ordinary invocation require the sealed public selection.
-
-Pages requires the resolved shell bytes to match the sealed lazy-artifact
-lock. A read-only inspector then verifies that those exact bytes still contain:
-
-- one deferred Homebrew bootstrap ZIP selected by `/usr/bin/brew`;
-- the complete deferred bottle-tree inventory;
-- the canonical embedded bottle-mirror plan and its content-derived immutable
-  release URL; and
-- the same first-party catalog named by the runtime-support contract.
-
-The inspector reads the small plan from the image; it does not eagerly download
-the mirror payloads. After Vite assembles the complete `/kandelo/` tree, the
-Pages workflow finds the single content-addressed shell asset that the browser
-actually imports and compares it with the resolver-selected image. It does not
-trust Vite's optional unhashed public-file copy, which can be absent or stale.
-The public-transport Chromium acceptance then downloads only the bottle groups
-it exercises, keeps untouched tools lazy, activates the deferred Homebrew
-runtime through `/usr/bin/brew`, and verifies every fetched digest and byte
-count against the embedded plan. Publication, documentation, size, freshness,
-and single-writer checks run only after that proof succeeds.
-
-Every push to `main` still starts the Pages workflow. The browser product is a
-transitive package projection whose ownership and shared inputs can grow; a
-hand-maintained path filter could otherwise leave Pages on an older admitted
-generation. The Homebrew main-shell gate likewise runs for every pull request
-and `main` push so its closed Node.js/Chromium proof cannot be skipped by
-allowlist drift.
-
-The earlier `homebrew/source-rootfs-shell-package` implementation remains in
-the tree temporarily as inactive migration and diagnostic plumbing. Direct
-`--source-rootfs-shell` use is still restricted to its original attested Pages
-environment, but the canonical Pages workflow no longer supplies that
-environment or calls the mode. It cannot satisfy the public product,
-artifact-lock, or immutable-mirror gates. Deleting that dormant bridge is a
-separate cleanup and does not block the bottled-shell cutover.
-
-The bridge and products derived from it declare an explicit `source-rootfs`
-shell-composition marker. They preserve conventional lazy files and archives,
-but do not claim Homebrew package-tree, bootstrap, or closed-mirror authority.
-Bottle-backed shell products instead retain all three Homebrew bindings. A
-derived image that is unmarked, mixes the two ownership models, or carries an
-incomplete Homebrew binding fails during its build.
+The dormant source-rootfs and closed-selection/lazy-mirror implementations
+remain diagnostic and historical recovery plumbing. The normal `run.sh`
+browser path, package staging, and Pages workflow do not invoke them. Support
+for reopening an old downloaded or persisted lazy image is explicitly future
+work rather than a compatibility shim in the current product.
 
 ### Adding a new VFS image
 

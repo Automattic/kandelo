@@ -158,6 +158,7 @@ jobs:
       library_matrix: ${{ steps.compute.outputs.library_matrix }}
       program_matrix: ${{ steps.compute.outputs.program_matrix }}
       staged_matrix: ${{ steps.compute.outputs.staged_matrix }}
+      stages_node_vfs: ${{ steps.compute.outputs.stages_node_vfs }}
       repair_index: ${{ steps.compute.outputs.repair_index }}
       abi: ${{ steps.compute.outputs.abi }}
       target_tag: ${{ steps.compute.outputs.target_tag }}
@@ -259,6 +260,7 @@ jobs:
               echo "library_matrix=[]" >> "$GITHUB_OUTPUT"
               echo "program_matrix=[]" >> "$GITHUB_OUTPUT"
               echo "staged_matrix=[]" >> "$GITHUB_OUTPUT"
+              echo "stages_node_vfs=false" >> "$GITHUB_OUTPUT"
               echo "repair_index=false" >> "$GITHUB_OUTPUT"
               echo "preflight: package staging not required; skipping package drift matrix"
               exit 0
@@ -465,10 +467,14 @@ jobs:
               echo "preflight: staging requires at least one exact target-owned row" >&2
               exit 1
             fi
+            stages_node_vfs=$(jq -r \
+              "any(.[]; .package == \"node-vfs\" and .arch == \"wasm32\")" \
+              <<<"$staged_matrix")
 
             echo "library_matrix=$library_matrix" >> "$GITHUB_OUTPUT"
             echo "program_matrix=$program_matrix" >> "$GITHUB_OUTPUT"
             echo "staged_matrix=$staged_matrix" >> "$GITHUB_OUTPUT"
+            echo "stages_node_vfs=$stages_node_vfs" >> "$GITHUB_OUTPUT"
             echo "repair_index=$repair_index_output" >> "$GITHUB_OUTPUT"
             echo "preflight: library=$library_count program=$program_count staged=$staged_count repair-index=$repair_index_output"
             echo "library_matrix:"; echo "$library_matrix" | jq .
@@ -919,6 +925,12 @@ jobs:
         run: |
           tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
 
+      - name: Install root npm dependencies for shell inspection
+        run: |
+          bash scripts/dev-shell.sh env \
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+            npm ci --no-audit --no-fund
+
       - name: Download matrix artifacts
         # Each matrix entry uploaded one artifact named "<pkg>-<arch>"
         # containing one .tar.zst. The pattern excludes the
@@ -1034,11 +1046,9 @@ jobs:
               2>/dev/null || true
           )"
           [ -n "$SHELL_IMAGE" ] || SHELL_IMAGE="-"
-          # WHY: package-index publication and immutable bottle-mirror
-          # publication are independent. Preserve exact package-identity
-          # validation here, while the state contract keeps generic browser
-          # staging on authenticated recovered bytes even when the unchanged
-          # shell is already canonical.
+          # WHY: resolved shell packages are self-contained flat products.
+          # The state contract binds package identity to a fresh inspection of
+          # the exact image and carries no separate browser-mirror authority.
           bash scripts/dev-shell.sh \
             bash scripts/ci-homebrew-browser-mirror-state.sh create \
             "$EXPECTED" \
@@ -1102,7 +1112,7 @@ jobs:
 
   test-suite:
     name: test-suite (${{ matrix.label }})
-    needs: [change-scope, test-gate-prepare]
+    needs: [change-scope, preflight, test-gate-prepare]
     if: |
       !cancelled() &&
       needs.test-gate-prepare.result == 'success'
@@ -1197,6 +1207,7 @@ jobs:
       SUITE: ${{ matrix.suite }}
       TEST_GROUP: ${{ matrix.group }}
       PREPARE_BROWSER_ASSETS: ${{ matrix.suite == 'browser' }}
+      STAGES_NODE_VFS: ${{ needs.preflight.outputs.stages_node_vfs }}
     steps:
       - name: Decide whether to run suite
         id: suite
@@ -1263,6 +1274,24 @@ jobs:
           bash scripts/dev-shell.sh env \
             PREPARE_BROWSER_ASSETS="$PREPARE_BROWSER_ASSETS" \
             bash scripts/ci-run-test-suite.sh "$SUITE" "$TEST_GROUP"
+
+      - name: Run exact staged Node npm acceptance
+        if: >-
+          steps.suite.outputs.skip != 'true' &&
+          matrix.suite == 'browser' &&
+          env.STAGES_NODE_VFS == 'true'
+        run: |
+          (
+            cd apps/browser-demos
+            # WHY: exports made by the preceding suite step do not cross the
+            # GitHub step boundary. Rebind the transported mirror to its exact
+            # cache/checker before this direct Vite consumer starts.
+            bash ../../scripts/dev-shell.sh \
+              bash ../../scripts/activate-ci-test-workspace.sh \
+                npx playwright test test/kandelo-node.spec.ts \
+                  --grep 'Kandelo Node demo installs cowsay with npm' \
+                  --project=chromium
+          )
 
       - name: Upload browser test artifacts
         if: failure() && steps.suite.outputs.skip != 'true' && matrix.suite == 'browser'
@@ -1362,7 +1391,7 @@ jobs:
             -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
   homebrew-main-shell-prerequisites:
-    name: order exact Homebrew shell after package staging
+    name: order canonical shell after package staging
     needs: [change-scope, preflight, test-gate]
     if: |
       always() &&
@@ -1433,35 +1462,15 @@ jobs:
             }
           fi
 
-  homebrew-main-shell-proof:
-    name: run exact current lazy shell (Node + Chromium)
-    needs:
-      - change-scope
-      - preflight
-      - test-gate
-      - homebrew-main-shell-prerequisites
-    if: |
-      always() &&
-      !cancelled() &&
-      needs.homebrew-main-shell-prerequisites.result == 'success'
-    uses: ./.github/workflows/homebrew-main-shell-ci.yml
-    with:
-      caller_event_name: pull_request
-      pull_request_number: ${{ format('{0}', github.event.pull_request.number) }}
-      pull_request_base_sha: ${{ github.event.pull_request.base.sha }}
-      pull_request_head_sha: ${{ github.event.pull_request.head.sha }}
-      staging_required: ${{ needs.change-scope.outputs.package_staging_required == 'true' }}
-      staging_tag: ${{ needs.change-scope.outputs.package_staging_required == 'true' && needs.preflight.outputs.target_tag || 'not-required' }}
-      staged_matrix: ${{ needs.change-scope.outputs.package_staging_required == 'true' && needs.preflight.outputs.staged_matrix || '[]' }}
-
   homebrew-main-shell-gate:
-    # Keep the historical required-check name on one aggregate. The reusable
-    # proof may skip when producer ordering failed; this wrapper makes that
-    # skip a visible failure.
+    # Keep the historical required-check display name so branch protection
+    # does not silently lose a gate. The canonical shell is package-owned now;
+    # the generic test gate includes the browser cell and conditionally runs
+    # the exact slow Node/npm acceptance when node-vfs is staged.
     name: exact current lazy shell (Node + Chromium)
     needs:
       - homebrew-main-shell-prerequisites
-      - homebrew-main-shell-proof
+      - test-gate
     if: |
       always() &&
       !cancelled() &&
@@ -1477,17 +1486,20 @@ jobs:
       - name: Require ordered exact-shell validation
         env:
           PREREQUISITES_RESULT: ${{ needs.homebrew-main-shell-prerequisites.result }}
-          PROOF_RESULT: ${{ needs.homebrew-main-shell-proof.result }}
+          TEST_GATE_RESULT: ${{ needs.test-gate.result }}
         run: |
           set -euo pipefail
           [ "$PREREQUISITES_RESULT" = success ] || {
-            echo "::error::exact-shell prerequisites ended as $PREREQUISITES_RESULT"
+            echo "::error::canonical package-shell prerequisites ended as $PREREQUISITES_RESULT"
             exit 1
           }
-          [ "$PROOF_RESULT" = success ] || {
-            echo "::error::exact-shell proof ended as $PROOF_RESULT"
-            exit 1
-          }
+          case "$TEST_GATE_RESULT" in
+            success | skipped) ;;
+            *)
+              echo "::error::canonical package test gate ended as $TEST_GATE_RESULT"
+              exit 1
+              ;;
+          esac
 
   # publish / generate-index — REMOVED.
   #

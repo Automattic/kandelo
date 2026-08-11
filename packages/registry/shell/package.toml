@@ -2,18 +2,16 @@ kind = "program"
 name = "shell"
 version = "0.1.0"
 kernel_abi = 7
-# The canonical shell embeds only the Formulae required at every boot. Every
-# other Formula tree, including Homebrew's own source tree and runtime support,
-# remains lazy. The exact inventory is derived from the reviewed Brewfile,
-# runtime-support contract, and immutable closed selection rather than copied
-# into this package manifest. It has no legacy rootfs/program dependencies.
+# The canonical shell is one self-contained VFS. Its admitted flat selection
+# fully materializes Homebrew and the selected Formula closure below
+# /opt/kandelo/homebrew; no deferred archive or later mirror authority is
+# required to boot or run the packaged commands.
 depends_on = []
 
 # Composite VFS image for the browser shell demo: a platform-only base plus the
-# exact reviewed base bottle closure and shell configuration. A demo variant
-# may materialize the independently declared Homebrew runtime-support layer,
-# but this base image never does. The image is wrapped (not double-compressed)
-# in the package-system archive at archive-stage time.
+# exact admitted public-bottle selection, default shell, and demo metadata.
+# The image is wrapped (not double-compressed) in the package-system archive at
+# archive-stage time.
 [source]
 url = "https://github.com/Automattic/kandelo"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
@@ -36,12 +34,6 @@ probe = { args = ["--version"], version_regex = "git version (\\d+\\.\\d+(?:\\.\
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 
 [[host_tools]]
-name = "jq"
-version_constraint = ">=1.6"
-probe = { args = ["--version"], version_regex = "jq-(\\d+\\.\\d+(?:\\.\\d+)?)" }
-install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
-
-[[host_tools]]
 name = "node"
 version_constraint = ">=20.0"
 probe = { args = ["--version"], version_regex = "v(\\d+\\.\\d+(?:\\.\\d+)?)" }
@@ -54,31 +46,7 @@ probe = { args = ["--version"], version_regex = "(\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 
 [[host_tools]]
-name = "python3"
-version_constraint = ">=3.11"
-probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
-install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
-
-[[host_tools]]
-name = "ruby"
-version_constraint = ">=3.0"
-probe = { args = ["--version"], version_regex = "ruby (\\d+\\.\\d+(?:\\.\\d+)?)" }
-install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
-
-[[host_tools]]
-name = "sha256sum"
-version_constraint = ">=8.0"
-probe = { args = ["--version"], version_regex = "coreutils\\) (\\d+\\.\\d+(?:\\.\\d+)?)" }
-install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
-
-[[host_tools]]
 name = "tar"
 version_constraint = ">=1.30"
 probe = { args = ["--version"], version_regex = "(?:bsdtar|tar).*?(\\d+\\.\\d+(?:\\.\\d+)?)" }
-install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
-
-[[host_tools]]
-name = "wc"
-version_constraint = ">=8.0"
-probe = { args = ["--version"], version_regex = "coreutils\\) (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }

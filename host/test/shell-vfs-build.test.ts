@@ -38,7 +38,12 @@ const O_WRONLY = 0x0001;
 const O_CREAT = 0x0040;
 const O_TRUNC = 0x0200;
 const DEMO_CONFIG_PATH = "/etc/kandelo/demo.json";
+const SHELL_CONFIG_PATH = "/etc/kandelo/shell.json";
 const SOURCE_DEMO_CONFIG = '{"version":1,"profiles":{"shell":{}}}\n';
+const DERIVED_DEMO_CONFIG = '{"version":1,"profiles":{"node":{}}}\n';
+const FLAT_SHELL_CONFIG =
+  '{"version":1,"path":"/opt/kandelo/homebrew/bin/bash",' +
+  '"argv":["bash","--login"]}\n';
 
 function writeFile(fs: MemoryFileSystem, path: string, text: string): void {
   const fd = fs.open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o644);
@@ -127,6 +132,52 @@ function sourceShellImageMetadata(
     },
     shellComposition: SOURCE_ROOTFS_SHELL_COMPOSITION,
   };
+}
+
+function flatShellImageMetadata(maxByteLength: number): VfsImageMetadata {
+  return {
+    version: 1,
+    kernelAbi: ABI_VERSION,
+    createdBy: "build-homebrew-flat-vfs-image",
+    capacity: { maxByteLength },
+    baseImage: {
+      sha256: "d".repeat(64),
+      bytes: 345_678,
+      kernelAbi: ABI_VERSION,
+    },
+    homebrewFlat: {
+      selectionSha256: "e".repeat(64),
+      requestedVfsFilename: "shell.vfs.zst",
+      resourcePolicy: "kandelo-homebrew-vfs-main-shell-v1",
+    },
+    shellConfig: {
+      path: "/opt/kandelo/homebrew/bin/bash",
+      argv: ["bash", "--login"],
+      sha256: sha256Hex(FLAT_SHELL_CONFIG),
+      bytes: new TextEncoder().encode(FLAT_SHELL_CONFIG).byteLength,
+    },
+    demoConfig: {
+      path: DEMO_CONFIG_PATH,
+      sha256: sha256Hex(SOURCE_DEMO_CONFIG),
+      bytes: new TextEncoder().encode(SOURCE_DEMO_CONFIG).byteLength,
+    },
+    sourceAttestation: { mustNotBeRelabeledAsDerived: true },
+  };
+}
+
+function prepareFlatShellFileSystem(
+  maxByteLength = SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+): MemoryFileSystem {
+  const fs = MemoryFileSystem.create(
+    new SharedArrayBuffer(16 * MiB, { maxByteLength }),
+    maxByteLength,
+  );
+  fs.setImageMetadata(flatShellImageMetadata(512 * MiB));
+  fs.mkdir("/etc", 0o755);
+  fs.mkdir("/etc/kandelo", 0o755);
+  writeFile(fs, SHELL_CONFIG_PATH, FLAT_SHELL_CONFIG);
+  writeFile(fs, DEMO_CONFIG_PATH, SOURCE_DEMO_CONFIG);
+  return fs;
 }
 
 function sha256Hex(value: string | Uint8Array): string {
@@ -290,6 +341,38 @@ describe("shell VFS base composition", () => {
       expect(source, builder).toContain("saveShellDerivedVfsImage(");
       expect(source, builder).not.toMatch(/\bsaveImage\(/);
     }
+
+    const packageRegistry = join(import.meta.dirname, "../../packages/registry");
+    const packageNames = [
+      "lamp",
+      "nginx-php-vfs",
+      "nginx-vfs",
+      "node-vfs",
+      "wordpress",
+    ] as const;
+    const shellDerivedRevisions = Object.fromEntries(packageNames.map((name) => {
+      const build = readFileSync(join(packageRegistry, name, "build.toml"), "utf8");
+      const revision = /^revision\s*=\s*([1-9][0-9]*)$/m.exec(build);
+      expect(revision, `${name} revision`).not.toBeNull();
+      expect(build, `${name} authored commit`).toMatch(
+        /^commit\s*=\s*"UNPUBLISHED"$/m,
+      );
+      for (const input of [
+        "images/vfs/scripts/shell-vfs-build.ts",
+        "web-libs/kandelo-session/src/demo-config.ts",
+        "web-libs/kandelo-session/src/shell-config.ts",
+      ]) {
+        expect(build, `${name} cache input`).toContain(`"${input}"`);
+      }
+      return [name, Number(revision![1])] as const;
+    }));
+    expect(shellDerivedRevisions).toEqual({
+      lamp: 12,
+      "nginx-php-vfs": 3,
+      "nginx-vfs": 3,
+      "node-vfs": 15,
+      wordpress: 13,
+    });
   });
 
   it("rebases a serialized source larger than the downstream capacity", async () => {
@@ -460,6 +543,98 @@ describe("shell VFS base composition", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("preserves flat shell lineage while rebinding the derived demo bytes", async () => {
+    const sourceFs = prepareFlatShellFileSystem(512 * MiB);
+    const sourceImage = await sourceFs.saveImage({
+      metadata: flatShellImageMetadata(512 * MiB),
+    });
+    const fs = await loadShellBaseFileSystemFromImage(
+      sourceImage,
+      SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+    );
+    writeFile(fs, DEMO_CONFIG_PATH, DERIVED_DEMO_CONFIG);
+    const directory = mkdtempSync(join(tmpdir(), "shell-derived-flat-"));
+    try {
+      const image = await saveShellDerivedVfsImage(
+        fs,
+        join(directory, "node.vfs.zst"),
+      );
+
+      expect(MemoryFileSystem.readImageMetadata(image)).toEqual({
+        version: 1,
+        kernelAbi: ABI_VERSION,
+        createdBy: "images/vfs/scripts/saveShellDerivedVfsImage",
+        capacity: {
+          maxByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+        },
+        baseImage: {
+          sha256: sha256Hex(sourceImage),
+          bytes: sourceImage.byteLength,
+          kernelAbi: ABI_VERSION,
+        },
+        homebrewFlat: flatShellImageMetadata(512 * MiB).homebrewFlat,
+        shellConfig: flatShellImageMetadata(512 * MiB).shellConfig,
+        demoConfig: {
+          path: DEMO_CONFIG_PATH,
+          sha256: sha256Hex(DERIVED_DEMO_CONFIG),
+          bytes: new TextEncoder().encode(DERIVED_DEMO_CONFIG).byteLength,
+        },
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["homebrewFlat", /omits valid flat Homebrew selection binding/],
+    ["shellConfig", /omits valid flat shell config binding/],
+    ["demoConfig", /omits valid flat demo config binding/],
+  ] as const)("rejects a flat shell missing its %s binding", (field, error) => {
+    const fs = prepareFlatShellFileSystem();
+    const metadata = flatShellImageMetadata(512 * MiB);
+    delete metadata[field];
+    fs.setImageMetadata(metadata);
+
+    expect(() => saveShellDerivedVfsImage(fs, "/tmp/not-written.vfs.zst"))
+      .toThrow(error);
+  });
+
+  it("rejects flat shell metadata whose shell-config digest no longer matches", () => {
+    const fs = prepareFlatShellFileSystem();
+    writeFile(
+      fs,
+      SHELL_CONFIG_PATH,
+      FLAT_SHELL_CONFIG.replace("--login", "-l"),
+    );
+
+    expect(() => saveShellDerivedVfsImage(fs, "/tmp/not-written.vfs.zst"))
+      .toThrow(/flat shell config binding does not match/);
+  });
+
+  it("rejects a malformed flat demo binding", () => {
+    const fs = prepareFlatShellFileSystem();
+    const metadata = flatShellImageMetadata(512 * MiB);
+    metadata.demoConfig = {
+      ...(metadata.demoConfig as Record<string, unknown>),
+      path: "/etc/kandelo/other.json",
+    };
+    fs.setImageMetadata(metadata);
+
+    expect(() => saveShellDerivedVfsImage(fs, "/tmp/not-written.vfs.zst"))
+      .toThrow(/invalid flat demo config binding/);
+  });
+
+  it("rejects flat shell lineage mixed with legacy lazy Homebrew claims", () => {
+    const fs = prepareFlatShellFileSystem();
+    fs.setImageMetadata({
+      ...flatShellImageMetadata(512 * MiB),
+      packageDeferredTrees: [],
+    });
+
+    expect(() => saveShellDerivedVfsImage(fs, "/tmp/not-written.vfs.zst"))
+      .toThrow(/mixes flat and legacy Homebrew composition bindings/);
   });
 
   it("rejects an unclassified or malformed source shell composition", () => {

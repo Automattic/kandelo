@@ -24,12 +24,13 @@ import {
   SHELL_LAZY_ARCHIVE_SPECS,
   type ShellLazyArchiveSpec,
 } from "../../images/vfs/scripts/shell-lazy-archives";
-import { loadMainShellDemoConfig } from "../../images/vfs/scripts/main-shell-demo-config";
 import { resolveVfsArtifact } from "../../images/vfs/scripts/shell-vfs-build";
 import {
+  parseKandeloDemoConfig,
   resolveDemoAssets,
   resolveDemoGuide,
   resolveDemoPresentation,
+  validateKandeloDemoConfig,
 } from "../../web-libs/kandelo-session/src/demo-config";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { extractZipEntry, parseZipCentralDirectory } from "../src/vfs/zip";
@@ -504,68 +505,26 @@ describe("declared shell lazy-archive inputs", () => {
       join(repoRoot, "packages/registry/shell/build-shell.sh"),
       "utf8",
     );
-    const composer = readFileSync(
-      join(repoRoot, "scripts/build-homebrew-main-shell-closure.sh"),
-      "utf8",
-    );
-    const brewfilePath = join(repoRoot, "homebrew/main-shell.Brewfile");
-    const migrationLockPath = join(
-      repoRoot,
-      "homebrew/main-shell-migration-lock.json",
-    );
     const selection = JSON.parse(
-      execFileSync(
-        "ruby",
-        [
-          join(repoRoot, "scripts/homebrew-brewfile-selection.rb"),
-          brewfilePath,
-        ],
-        { cwd: repoRoot, encoding: "utf8" },
-      ),
-    ) as { tap_name: string; packages: string[] };
-    const migrationLock = JSON.parse(
-      readFileSync(migrationLockPath, "utf8"),
-    ) as {
-      catalog: { tap_commit: string };
-      formula_closure: string[];
-      packages: Array<{
-        registry: { name: string; version: string };
-        formula: {
-          name: string;
-          version: string;
-          revision: number;
-          bottle_rebuild: number;
-        };
-      }>;
-      reviewed_substitutions: Array<{
-        kind: string;
-        registry: string;
-        formula: string;
-        reason: string;
-      }>;
-    };
-    const runtimeSupport = JSON.parse(
       readFileSync(
-        join(repoRoot, "homebrew/main-shell-homebrew-runtime-support.json"),
+        join(repoRoot, "homebrew/main-shell-flat-selection.json"),
         "utf8",
       ),
     ) as {
-      activation: { base_image_default: string; roots: string[] };
-      base_formula_order: string[];
-      formula_order: string[];
-      additional_formula_order: string[];
-      availability: {
-        reusable_public_abi42: string[];
-        requires_rebuild: string[];
-        missing_metadata: string[];
-        can_be_deferred: string[];
-      };
-      deferred_formulae: Array<{ package: string; current_state: string }>;
-      lifecycle_installs: Array<{
-        tap: string;
-        formula: string;
-        phase: string;
-        image_closure: boolean;
+      schema: number;
+      name: string;
+      arch: string;
+      kandeloAbi: number;
+      requestedVfsFilename: string;
+      resourcePolicy: string;
+      runtimeSupport: string;
+      bottles: Array<{
+        name: string;
+        fullName: string;
+        materialization: string;
+        sha256: string;
+        bytes: number;
+        url: string;
       }>;
     };
 
@@ -575,47 +534,50 @@ describe("declared shell lazy-archive inputs", () => {
     expect(packageToml).not.toContain("vim-browser-bundle@");
     expect(packageToml).not.toContain("nethack-browser-bundle@");
     for (const input of [
-      "scripts/build-homebrew-main-shell-closure.sh",
-      "scripts/check-homebrew-main-shell-brewfile.mjs",
-      "scripts/homebrew-brewfile-selection.rb",
-      "homebrew/main-shell.Brewfile",
+      "packages/registry/shell/build-shell.sh",
+      "packages/registry/shell/prepare-build-tools.sh",
+      "homebrew/main-shell-flat-selection.json",
       "homebrew/main-shell-default.json",
-      "homebrew/main-shell-demo.json",
-      "homebrew/main-shell-homebrew-runtime-support.json",
-      "homebrew/main-shell-migration-lock.json",
+      "homebrew/main-shell-flat-demo.json",
+      "images/vfs/scripts/build-homebrew-flat-vfs-image.ts",
       "images/vfs/scripts/build-homebrew-vfs-image.ts",
       "web-libs/kandelo-session/src/demo-config.ts",
     ]) {
       expect(buildToml).toContain(`"${input}"`);
     }
     expect(buildToml).not.toContain("[[git_inputs]]");
-    expect(buildScript).toContain("prepare-homebrew-main-shell-inputs.sh");
-    expect(composer).toContain(
-      'BOTTLE_MIRROR_REPOSITORY="kandelo-dev/homebrew-tap-core"',
+    expect(buildToml).not.toContain('"host/src"');
+    expect(buildToml).not.toContain(
+      '"web-libs/kandelo-session/src/kernel-host.ts"',
     );
 
-    const canonicalDemoBytes = readFileSync(
-      join(repoRoot, "homebrew/main-shell-demo.json"),
+    const canonicalDemoText = readFileSync(
+      join(repoRoot, "homebrew/main-shell-flat-demo.json"),
+      "utf8",
     );
-    const loadedDemo = loadMainShellDemoConfig(repoRoot);
-    expect(Buffer.from(loadedDemo.source)).toEqual(canonicalDemoBytes);
-    expect(resolveDemoGuide(loadedDemo.config, "shell")?.title).toBe(
+    const demoConfig = parseKandeloDemoConfig(canonicalDemoText);
+    expect(demoConfig).not.toBeNull();
+    validateKandeloDemoConfig(demoConfig!);
+    expect(resolveDemoGuide(demoConfig!, "shell")?.title).toBe(
       "Shell demo",
     );
-    expect(resolveDemoPresentation(loadedDemo.config, "doom")).toEqual(
+    expect(resolveDemoGuide(demoConfig!, "shell")?.summary).toContain(
+      "fully materialized",
+    );
+    expect(resolveDemoPresentation(demoConfig!, "doom")).toEqual(
       expect.objectContaining({
         runningPrimary: ["framebuffer", "terminal", "syslog"],
         autoCommand: "/usr/local/bin/fbdoom -iwad /doom1.wad",
       }),
     );
-    expect(resolveDemoAssets(loadedDemo.config, "doom")).toEqual([
+    expect(resolveDemoAssets(demoConfig!, "doom")).toEqual([
       expect.objectContaining({
         path: "/doom1.wad",
         sha256:
           "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771",
       }),
     ]);
-    expect(resolveDemoPresentation(loadedDemo.config, "modeset")).toEqual(
+    expect(resolveDemoPresentation(demoConfig!, "modeset")).toEqual(
       expect.objectContaining({
         runningPrimary: ["kms", "terminal", "syslog"],
         autoCommand: "/usr/local/bin/modeset",
@@ -625,17 +587,22 @@ describe("declared shell lazy-archive inputs", () => {
     const retiredBundleNames = new Set(
       SHELL_LAZY_ARCHIVE_SPECS.map(({ dependency }) => dependency),
     );
-    const migratedRoots = migrationLock.packages.filter(({ registry }) =>
-      retiredBundleNames.has(registry.name),
+    expect(selection).toEqual(
+      expect.objectContaining({
+        schema: 1,
+        name: "main-shell-abi42-wasm32",
+        arch: "wasm32",
+        kandeloAbi: 42,
+        requestedVfsFilename: "shell.vfs.zst",
+        resourcePolicy: "kandelo-homebrew-vfs-main-shell-v1",
+        runtimeSupport: "kandelo-homebrew-bootstrap-v1",
+      }),
     );
-    expect(migratedRoots).toEqual([]);
-    expect(selection.tap_name).toBe("kandelo-dev/tap-core");
-    expect(selection.packages).toEqual(
-      migrationLock.packages.map(({ formula }) => formula.name),
+    expect(selection.bottles.length).toBeGreaterThan(0);
+    expect(selection.bottles.map(({ name }) => name)).not.toEqual(
+      expect.arrayContaining([...retiredBundleNames]),
     );
-    expect(selection.packages.length).toBeGreaterThan(0);
-    expect(migrationLock.formula_closure.length).toBeGreaterThan(0);
-    expect(migrationLock.formula_closure).toEqual(
+    expect(selection.bottles.map(({ fullName }) => fullName)).toEqual(
       expect.arrayContaining([
         "kandelo-dev/tap-core/bash",
         "kandelo-dev/tap-core/fbdoom",
@@ -644,96 +611,34 @@ describe("declared shell lazy-archive inputs", () => {
         "kandelo-dev/tap-core/nethack",
       ]),
     );
-    expect(
-      migrationLock.reviewed_substitutions
-        .filter(
-          ({ kind, registry }) =>
-            kind === "formula_identity" &&
-            retiredBundleNames.has(
-              registry.slice(0, registry.lastIndexOf("@")),
-            ),
-        )
-        .map(({ kind, registry, formula }) => ({ kind, registry, formula })),
-    ).toEqual([]);
-    expect(runtimeSupport.activation).toEqual(
-      expect.objectContaining({
-        base_image_default: "deferred",
-        roots: ["/usr/bin/brew"],
-      }),
-    );
-    expect(runtimeSupport.base_formula_order).toEqual(
-      migrationLock.formula_closure,
-    );
-    expect(runtimeSupport.additional_formula_order).toEqual(
-      runtimeSupport.formula_order.filter(
-        (name) => !runtimeSupport.base_formula_order.includes(name),
-      ),
-    );
-    expect(runtimeSupport.additional_formula_order).toContain(
-      "kandelo-dev/tap-core/ruby",
-    );
-    const auditedFormulae = [
-      ...runtimeSupport.availability.reusable_public_abi42,
-      ...runtimeSupport.availability.requires_rebuild,
-      ...runtimeSupport.availability.missing_metadata,
-      ...runtimeSupport.availability.can_be_deferred,
-    ];
-    expect(new Set(auditedFormulae).size).toBe(auditedFormulae.length);
-    expect(runtimeSupport.availability.requires_rebuild).toEqual([]);
-    expect(runtimeSupport.availability.missing_metadata).toEqual([]);
-    expect(runtimeSupport.availability.can_be_deferred).toEqual([]);
-    expect(runtimeSupport.deferred_formulae).toEqual([]);
-    expect(runtimeSupport.lifecycle_installs).toEqual([
-      expect.objectContaining({
-        tap: "brandonpayton/kandelo-canary",
-        formula: "m4-canary",
-        phase: "guest-lifecycle",
-        image_closure: false,
-      }),
-    ]);
-    expect(
-      execFileSync(
-        process.execPath,
-        [
-          join(repoRoot, "scripts/check-homebrew-main-shell-brewfile.mjs"),
-          brewfilePath,
-          migrationLockPath,
-        ],
-        { cwd: repoRoot, encoding: "utf8" },
-      ),
-    ).toContain(
-      `${selection.packages.length} reviewed migration roots, ` +
-        `${migrationLock.formula_closure.length} base Formulae, ` +
-        `${runtimeSupport.formula_order.length} runtime Formulae, and ` +
-        `${auditedFormulae.length} audited Formulae; the runtime adds ` +
-        `${runtimeSupport.additional_formula_order.length} beyond the base`,
-    );
+    for (const bottle of selection.bottles) {
+      expect(bottle.materialization).toBe(
+        bottle.name === "homebrew-bootstrap"
+          ? "homebrew-runtime-support-v1"
+          : "keg",
+      );
+      expect(bottle.sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(bottle.bytes).toBeGreaterThan(0);
+      expect(bottle.url).toBe(
+        `https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/${bottle.name}/` +
+          `blobs/sha256:${bottle.sha256}`,
+      );
+    }
 
     // The package build consumes the authenticated public selection instead
-    // of an ambient tap checkout. The strict composer must reject fallback,
-    // verify every bottle's metadata, and bind the image to the reviewed lock.
-    expect(buildScript).toContain("prepare-homebrew-main-shell-inputs.sh");
-    expect(buildScript).toContain("build-homebrew-main-shell-product.sh");
+    // of an ambient tap checkout and materializes every selected bottle into
+    // the self-contained product through the shared flat-image builder.
+    expect(buildScript).toContain("prepare-build-tools.sh");
+    expect(buildScript).toContain("build-homebrew-flat-vfs-image.ts");
+    expect(buildScript).toContain("--selection");
+    expect(buildScript).toContain("main-shell-flat-selection.json");
+    expect(buildScript).toContain("--bottle-cache");
+    expect(buildScript).toContain("main-shell-flat-demo.json");
     expect(buildScript).not.toContain("WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE");
     expect(buildScript).toContain("unset GH_TOKEN GITHUB_TOKEN");
     expect(buildScript).not.toContain("build-vim-zip.sh");
     expect(buildScript).not.toContain("build-nethack-zip.sh");
     expect(buildScript).not.toContain("build-shell-vfs-image.sh");
-    expect(composer).toContain("--no-fallback");
-    expect(composer).toContain("$lock[0].formula_closure +");
-    expect(composer).toContain("$runtime_support[0].additional_formula_order");
-    expect(composer).toContain(
-      ".catalog.checkout_commit == $lock[0].catalog.tap_commit",
-    );
-    expect(composer).toContain(
-      '(.built_from.formula_sha256 | test("^[0-9a-f]{64}$"))',
-    );
-    expect(composer).toContain(
-      '([.packages[].source_status] | all(. == "success"))',
-    );
-    expect(composer).toContain(
-      '([.packages[].metadata_status] | all(. == "success"))',
-    );
   });
 
   it("keeps the standalone lazy-bundle recipes self-contained", () => {
