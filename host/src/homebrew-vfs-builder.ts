@@ -13,6 +13,7 @@ import type {
   HomebrewVfsPackagePlan,
   HomebrewVfsPlan,
 } from "./homebrew-vfs-planner";
+import { reviewedPrivilegedProgramPolicyForPlan } from "./homebrew-vfs-planner";
 import {
   applyHomebrewCanonicalOptLinks as applyMaterializedOptLinks,
   applyHomebrewCanonicalOptLink as applyMaterializedOptLink,
@@ -49,6 +50,12 @@ import {
   writeVfsFile,
 } from "./vfs/image-helpers";
 import { KANDELO_HOMEBREW_GUEST_LAYOUT } from "./homebrew-guest-layout";
+import {
+  publishPrivilegedProgramProduct,
+  readReviewedPrivilegedProgramPolicy,
+  type PrivilegedProgramSource,
+  type PublishedPrivilegedProgramProduct,
+} from "./vfs/privileged-projection";
 
 const DEFAULT_IMAGE_BYTES = 128 * 1024 * 1024;
 const S_IFMT = 0xf000;
@@ -243,6 +250,10 @@ export interface HomebrewVfsBuildReport {
   compatibility_links?: HomebrewVfsCompatibilityLinkReport[];
   link_conflicts?: HomebrewVfsLinkConflictReport[];
   runtime_state?: HomebrewVfsRuntimeStateReport[];
+  privileged_programs?: {
+    projections: PrivilegedProgramProjectionReport[];
+    evidence: PrivilegedProgramProjectionEvidenceReport[];
+  };
   materialization?: {
     policy: "kandelo-homebrew-vfs-materialization-policy";
     embedded_package_order: string[];
@@ -283,6 +294,28 @@ export interface HomebrewVfsBuildReport {
 export interface HomebrewVfsBuildResult {
   fs: MemoryFileSystem;
   report: HomebrewVfsBuildReport;
+  privilegedProduct?: PublishedPrivilegedProgramProduct;
+}
+
+export interface PrivilegedProgramProjectionReport {
+  schema: 1;
+  formula: string;
+  bottle_sha256: string;
+  source_path: string;
+  destination_path: string;
+  uid: 0;
+  gid: 0;
+  mode: number;
+  mount_point: string;
+  artifact_validation_sha256: string;
+}
+
+export interface PrivilegedProgramProjectionEvidenceReport {
+  source_path: string;
+  canonical_source_path: string;
+  destination_path: string;
+  independent_inode: true;
+  collides_with_writable_bottle: false;
 }
 
 export interface HomebrewFlatVfsBuildOptions {
@@ -950,6 +983,14 @@ export async function buildHomebrewVfs(
 
   ensureDirRecursive(fs, "/etc/kandelo");
   const materializationInputs: HomebrewBottleMaterializationPackage[] = [];
+  const privilegedSources: PrivilegedProgramSource[] = [];
+  const privilegedPolicy = reviewedPrivilegedProgramPolicyForPlan(plan);
+  const privilegedProjections = privilegedPolicy === undefined
+    ? undefined
+    : readReviewedPrivilegedProgramPolicy(privilegedPolicy);
+  const privilegedFormulae = new Set(
+    privilegedProjections?.map((projection) => projection.formula) ?? [],
+  );
 
   for (const pkg of plan.packages) {
     const bottleBytes = await options.loadBottleBytes(pkg);
@@ -959,6 +1000,32 @@ export async function buildHomebrewVfs(
       receiptSource: "staged",
     }));
     const staged = runMaterializer(() => stagePreparedHomebrewKeg(fs, prepared));
+    if (privilegedFormulae.has(pkg.fullName)) {
+      privilegedSources.push({
+        formula: pkg.fullName,
+        bottleSha256: pkg.sha256,
+        fs,
+        inventory: {
+          entries: prepared.entries.map((entry) => ({
+            sourcePath: entry.path,
+            type: entry.type,
+            size: entry.type === "file" ? entry.data.byteLength : 0,
+            ...(entry.type === "symlink" || entry.type === "hardlink"
+              ? { target: entry.linkName }
+              : {}),
+          })),
+        },
+        guestPathForSource(sourcePath) {
+          const path = mapMaterializedBottleEntry(input, sourcePath);
+          if (path === null) {
+            throw new HomebrewVfsBuildError(
+              `privileged source ${sourcePath} maps to the bottle payload root`,
+            );
+          }
+          return path;
+        },
+      });
+    }
     runMaterializer(() => releasePreparedHomebrewKegEntries(prepared));
     prepared = runMaterializer(() => prepareStagedHomebrewKegReceipts(fs, prepared));
     runMaterializer(() => relocatePreparedHomebrewKeg(fs, prepared));
@@ -1017,6 +1084,13 @@ export async function buildHomebrewVfs(
       runtimeStateDeclarations,
     )
     : { compatibilityLinks: undefined, runtimeState: [] };
+  const privilegedProduct = privilegedPolicy === undefined
+    ? undefined
+    : await publishPrivilegedProgramProduct({
+      policy: privilegedPolicy,
+      sources: privilegedSources,
+      writableBottleFileSystems: [fs],
+    });
 
   const report: HomebrewVfsBuildReport = {
     schema: 1,
@@ -1029,6 +1103,33 @@ export async function buildHomebrewVfs(
       link_conflicts: linkResolution.reports,
     }),
     ...(runtimeState.length === 0 ? {} : { runtime_state: runtimeState }),
+    ...(privilegedProduct === undefined
+      ? {}
+      : {
+          privileged_programs: {
+            projections: privilegedProduct.projections.map((projection) => ({
+              schema: projection.schema,
+              formula: projection.formula,
+              bottle_sha256: projection.bottleSha256,
+              source_path: projection.sourcePath,
+              destination_path: projection.destinationPath,
+              uid: projection.uid,
+              gid: projection.gid,
+              mode: projection.mode,
+              mount_point: projection.mountPoint,
+              artifact_validation_sha256:
+                projection.artifactValidationSha256,
+            })),
+            evidence: privilegedProduct.evidence.map((entry) => ({
+              source_path: entry.sourcePath,
+              canonical_source_path: entry.canonicalSourcePath,
+              destination_path: entry.destinationPath,
+              independent_inode: true,
+              collides_with_writable_bottle:
+                entry.collidesWithWritableBottle,
+            })),
+          },
+        }),
     ...(migrationLock === undefined ? {} : { migration_lock: migrationLock }),
     metadata: {
       tap_repository: plan.tapRepository,
@@ -1049,7 +1150,11 @@ export async function buildHomebrewVfs(
     options.createdBy ?? "host/src/homebrew-vfs-builder.ts",
   );
 
-  return { fs, report };
+  return {
+    fs,
+    report,
+    ...(privilegedProduct === undefined ? {} : { privilegedProduct }),
+  };
 }
 
 function applyHomebrewVfsConsumerStateWithResolution(
