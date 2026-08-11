@@ -8,6 +8,7 @@ PAGES_WORKFLOW="$WORKFLOWS_DIR/browser-demos-pages.yml"
 CANARY_WORKFLOW="$WORKFLOWS_DIR/abi-staging-pages-canary.yml"
 PAGES_PLAN="$REPO_ROOT/docs/superpowers/plans/2026-08-08-abi-staging-promotion-pages-and-retirement.md"
 BROWSER_SUPPORT="$REPO_ROOT/docs/browser-support.md"
+ATOMIC_GATE="$REPO_ROOT/scripts/test-abi-staging-pages-atomic.sh"
 CHECK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-pages-deployment-check.XXXXXX")"
 
 cleanup() {
@@ -26,6 +27,62 @@ fail() {
 
 [ -d "$WORKFLOWS_DIR" ] ||
   fail "workflow directory does not exist: $WORKFLOWS_DIR"
+[ -f "$ATOMIC_GATE" ] ||
+  fail "native atomic Pages gate does not exist: $ATOMIC_GATE"
+mkdir -p "$CHECK_ROOT/bin" "$CHECK_ROOT/browsers"
+atomic_trace="$CHECK_ROOT/atomic-trace"
+cat >"$CHECK_ROOT/bin/npx" <<'PROBE'
+#!/usr/bin/env bash
+set -euo pipefail
+
+fail() {
+  echo "atomic Chromium command probe: $*" >&2
+  exit 91
+}
+
+if [ "$#" -eq 4 ] && [ "$1" = tsx ] && [ "$2" = --test ] &&
+   [ "$3" = "--test-name-pattern=produces one exact seven-product assembled-site fixture for Chromium" ] &&
+   [ "$4" = scripts/abi-staging-pages-producer.test.ts ]; then
+  : "${KANDELO_ABI_STAGING_ASSEMBLED_SITE_OUTPUT:?missing producer output}"
+  mkdir -p "$KANDELO_ABI_STAGING_ASSEMBLED_SITE_OUTPUT/source-tree"
+  printf 'producer\t%s\n' "$KANDELO_ABI_STAGING_ASSEMBLED_SITE_OUTPUT" >>"$KANDELO_ATOMIC_TRACE"
+  exit 0
+fi
+
+if [ "$#" -eq 7 ] && [ "$1" = --prefix ] && [ "$2" = apps/browser-demos ] &&
+   [ "$3" = playwright ] && [ "$4" = test ] &&
+   [ "$5" = --config=apps/browser-demos/playwright.config.ts ] &&
+   [ "$6" = apps/browser-demos/test/abi-staging-pages-assembled-site.spec.ts ] &&
+   [ "$7" = --project=chromium ]; then
+  producer_output="$(awk -F '\t' '$1 == "producer" { print $2 }' "$KANDELO_ATOMIC_TRACE")"
+  [ -n "$producer_output" ] || fail "Playwright ran before the producer"
+  [ "${KANDELO_ABI_STAGING_ASSEMBLED_SITE_ROOT:-}" = "$producer_output/source-tree" ] ||
+    fail "Playwright did not receive the producer-returned source tree"
+  [ "${KANDELO_PLAYWRIGHT_SERVE_DIST:-}" = 1 ] || fail "Playwright did not serve production output"
+  [ -n "${PLAYWRIGHT_BROWSERS_PATH:-}" ] || fail "Playwright browser authority is missing"
+  printf 'playwright\t%s\n' "$KANDELO_ABI_STAGING_ASSEMBLED_SITE_ROOT" >>"$KANDELO_ATOMIC_TRACE"
+  exit 0
+fi
+
+fail "unexpected npx argv: $*"
+PROBE
+chmod +x "$CHECK_ROOT/bin/npx"
+if ! env \
+  PATH="$CHECK_ROOT/bin:$PATH" \
+  PLAYWRIGHT_BROWSERS_PATH="$CHECK_ROOT/browsers" \
+  KANDELO_ATOMIC_TRACE="$atomic_trace" \
+  KANDELO_ABI_STAGING_ATOMIC_CHROMIUM_ONLY=1 \
+  KANDELO_DEV_SHELL_TOOL_PATH="${KANDELO_DEV_SHELL_TOOL_PATH:-checker-probe}" \
+  bash "$ATOMIC_GATE"; then
+  fail "atomic gate must run the exact assembled-site Chromium proof"
+fi
+[ "$(wc -l <"$atomic_trace" | tr -d ' ')" = 2 ] &&
+  awk -F '\t' '
+    $1 == "producer" && $2 ~ /^\// { producer += 1 }
+    $1 == "playwright" && $2 ~ /^\// && $2 ~ /\/source-tree$/ { playwright += 1 }
+    END { exit !(producer == 1 && playwright == 1) }
+  ' "$atomic_trace" ||
+  fail "atomic gate must run the exact assembled-site Chromium proof"
 [ -f "$PAGES_WORKFLOW" ] ||
   fail "complete Pages publisher does not exist: $PAGES_WORKFLOW"
 grep -Fxq 'name: Deploy GitHub Pages' "$PAGES_WORKFLOW" ||

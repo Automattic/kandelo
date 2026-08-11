@@ -7,6 +7,8 @@ PAGES_WORKFLOW_REL=".github/workflows/browser-demos-pages.yml"
 PAGES_WORKFLOW="$REPO_ROOT/$PAGES_WORKFLOW_REL"
 CANARY_WORKFLOW_REL=".github/workflows/abi-staging-pages-canary.yml"
 CANARY_WORKFLOW="$REPO_ROOT/$CANARY_WORKFLOW_REL"
+ATOMIC_GATE_REL="scripts/test-abi-staging-pages-atomic.sh"
+ATOMIC_GATE="$REPO_ROOT/$ATOMIC_GATE_REL"
 PAGES_PLAN_REL="docs/superpowers/plans/2026-08-08-abi-staging-promotion-pages-and-retirement.md"
 PAGES_PLAN="$REPO_ROOT/$PAGES_PLAN_REL"
 SUITE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-pages-contract.XXXXXX")"
@@ -31,9 +33,52 @@ new_fixture() {
   mkdir -p "$fixture/.github"
   cp -R "$REPO_ROOT/.github/workflows" "$fixture/.github/workflows"
   mkdir -p "$fixture/docs/superpowers/plans"
+  mkdir -p "$fixture/scripts"
+  cp "$ATOMIC_GATE" "$fixture/$ATOMIC_GATE_REL"
   cp "$PAGES_PLAN" "$fixture/$PAGES_PLAN_REL"
   cp "$REPO_ROOT/docs/browser-support.md" "$fixture/docs/browser-support.md"
   printf '%s\n' "$fixture"
+}
+
+expect_atomic_gate_mutation_rejected() {
+  local label="$1"
+  local expected_error="$2"
+  local expression="$3"
+  local fixture
+  local target
+  local output
+
+  fixture="$(new_fixture)"
+  target="$fixture/$ATOMIC_GATE_REL"
+  perl -0pi -e "$expression" "$target"
+  cmp -s "$ATOMIC_GATE" "$target" &&
+    fail "fixture mutation did not change the atomic gate: $label"
+
+  if output="$(bash "$CHECKER" "$fixture" 2>&1)"; then
+    fail "checker accepted invalid atomic gate: $label"
+  fi
+  grep -Fq "$expected_error" <<<"$output" ||
+    fail "checker rejected atomic gate '$label' unexpectedly: $output"
+  echo "test-pages-deployment-contract: rejected atomic gate $label"
+}
+
+expect_atomic_chromium_gate_required() {
+  expect_atomic_gate_mutation_rejected \
+    "wrong assembled-site Chromium spec" \
+    "atomic gate must run the exact assembled-site Chromium proof" \
+    's#apps/browser-demos/test/abi-staging-pages-assembled-site\.spec\.ts#apps/browser-demos/test/not-the-assembled-site.spec.ts#'
+  expect_atomic_gate_mutation_rejected \
+    "dead assembled-site Chromium commands" \
+    "atomic gate must run the exact assembled-site Chromium proof" \
+    's#\nrun_assembled_chromium_gate\nif \[#\nif false; then\n  run_assembled_chromium_gate\nfi\nif [#'
+  expect_atomic_gate_mutation_rejected \
+    "wrong assembled-site producer selection" \
+    "atomic gate must run the exact assembled-site Chromium proof" \
+    "s#produces one exact seven-product assembled-site fixture for Chromium#not the exact assembled-site producer#"
+  expect_atomic_gate_mutation_rejected \
+    "listed but unexecuted assembled-site Chromium tests" \
+    "atomic gate must run the exact assembled-site Chromium proof" \
+    's#    --project=chromium#    --project=chromium --list#'
 }
 
 expect_mutation_rejected() {
@@ -268,6 +313,10 @@ expect_hardcoded_hold_inventory_rejected() {
 }
 
 case "${PAGES_CONTRACT_FOCUS:-all}" in
+  atomic-chromium)
+    expect_atomic_chromium_gate_required
+    exit 0
+    ;;
   ready-filter)
     expect_ready_filter_executes
     exit 0
@@ -304,6 +353,7 @@ expect_invalid_readiness_rejected_before_semantics fifo
 expect_invalid_readiness_rejected_before_semantics oversize
 
 bash "$CHECKER" "$REPO_ROOT"
+expect_atomic_chromium_gate_required
 bash "$REPO_ROOT/scripts/test-verify-browser-shell-vfs-asset.sh"
 
 fixture="$(new_fixture)"

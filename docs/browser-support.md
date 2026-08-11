@@ -375,10 +375,17 @@ consumer registry. This prevents a product from placing itself on Pages and
 prevents Pages or tests from becoming competing software dependency
 authorities.
 
-The checked-in miniature validates this model locally with a real serialized
-and restored VFS image. Hosted candidate publication, browser evidence for a
-real pull request, canonical promotion, and atomic production Pages deployment
-are not operational in this foundation.
+The atomic local snapshot gate also drives the one producer-returned, assembled
+seven-product tree through the production `/kandelo/` Vite base, service
+worker, cross-origin isolation headers, and `BrowserKernel` in Chromium. It
+holds the two eager VFS responses, proves no lazy request starts before their
+release, then proves each lazy product is fetched only by its representative
+profile. It hashes every VFS response and rejects external requests plus
+noncanonical identity, load, ABI, length, and digest mutations. The
+hidden deployment manifest is only the test's observation ledger; the sealed
+build map remains browser authority. This is bounded fixture evidence, not a
+claim about hosted candidate publication, a real pull request, canonical
+promotion, or production Pages deployment.
 
 Browser demos use pre-built **VFS images** — binary snapshots of a `MemoryFileSystem` containing all runtime files, directory structure, configs, and symlinks needed by a demo. At runtime, restoring a VFS image is a single buffer copy, replacing what would otherwise be hundreds or thousands of individual file creation operations.
 

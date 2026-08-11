@@ -14,6 +14,7 @@ repo_root="$(cd "$script_dir/.." && pwd)"
 test_root="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-pages-atomic.XXXXXX")"
 deployment_root="$test_root/deployment"
 source_root="$test_root/ready-producer/output/source-tree"
+assembled_output="$test_root/assembled-producer"
 legacy_activation="$repo_root/abi/staging/pages-activation.toml"
 observe_activation="$test_root/pages-observe.toml"
 active_activation="$test_root/pages-active.toml"
@@ -32,6 +33,18 @@ fail() {
   exit 1
 }
 
+if [ -z "${PLAYWRIGHT_BROWSERS_PATH:-}" ]; then
+  for browser_cache in \
+    "$HOME/Library/Caches/ms-playwright" \
+    "$HOME/.cache/ms-playwright"; do
+    if [ -d "$browser_cache" ]; then
+      PLAYWRIGHT_BROWSERS_PATH="$browser_cache"
+      break
+    fi
+  done
+fi
+: "${PLAYWRIGHT_BROWSERS_PATH:?install the repository Playwright Chromium browser}"
+
 mkdir -p "$deployment_root/sites/prior"
 printf 'prior complete site\n' >"$deployment_root/sites/prior/index.html"
 printf '{"kind":"prior-site","path":"sites/prior","schema":1}\n' \
@@ -44,7 +57,28 @@ printf 'schema = 1\nkind = "kandelo-pages-activation"\nmode = "observe"\n' \
 printf 'schema = 1\nkind = "kandelo-pages-activation"\nmode = "active"\n' \
   >"$active_activation"
 
-cd "$repo_root"
+run_assembled_chromium_gate() {
+  cd "$repo_root"
+  KANDELO_ABI_STAGING_ASSEMBLED_SITE_OUTPUT="$assembled_output" \
+    npx tsx --test \
+      --test-name-pattern='produces one exact seven-product assembled-site fixture for Chromium' \
+      scripts/abi-staging-pages-producer.test.ts
+  env \
+    PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH" \
+    KANDELO_PLAYWRIGHT_PORT="${KANDELO_PLAYWRIGHT_PORT:-5526}" \
+    KANDELO_ABI_STAGING_ASSEMBLED_SITE_ROOT="$assembled_output/source-tree" \
+    KANDELO_PLAYWRIGHT_SERVE_DIST=1 \
+    npx --prefix apps/browser-demos playwright test \
+      --config=apps/browser-demos/playwright.config.ts \
+      apps/browser-demos/test/abi-staging-pages-assembled-site.spec.ts \
+      --project=chromium
+}
+
+run_assembled_chromium_gate
+if [ "${KANDELO_ABI_STAGING_ATOMIC_CHROMIUM_ONLY:-0}" = 1 ]; then
+  exit 0
+fi
+
 npx tsx scripts/abi-staging-pages-producer-fixture.ts \
   produce "$test_root/ready-producer" ready
 npx tsx scripts/abi-staging-pages-producer-fixture.ts \
