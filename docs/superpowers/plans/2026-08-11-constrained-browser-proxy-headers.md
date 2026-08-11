@@ -4,7 +4,13 @@
 
 **Goal:** Make browser HTTP proxying work with the production WordPress Playground CORS proxy without npm-specific behavior, while failing truthfully whenever the proxy cannot preserve request semantics.
 
-**Architecture:** Add one immutable, value-aware proxy capability policy shared by the browser plain-HTTP and TLS backends. Apply it only when dispatching through a configured proxy, route omissions through existing host diagnostics, remove the `proxy.local` npm alias and packument rewrite, and configure Pages with the deployed proxy's exact contract. Node networking and direct browser fetches remain unchanged.
+**Architecture:** Preserve guest request headers as ordered occurrences, then
+apply one immutable, value-aware proxy capability policy shared by the browser
+plain-HTTP and TLS backends. Apply projection only when dispatching through a
+configured proxy, route omissions through existing host diagnostics, remove
+the `proxy.local` npm alias and packument rewrite, and configure Pages with the
+deployed proxy's unconditional relay contract. Node networking and direct
+browser fetches otherwise remain unchanged.
 
 **Tech Stack:** TypeScript, Vitest, Playwright, browser Web Workers, existing Kandelo HTTP/TLS bridge, Bash workflow tests.
 
@@ -17,6 +23,11 @@
 - Never branch on npm, Pacote, cowsay, registry hostnames, header prefixes, or
   response content.
 - Never send credentials through the configured public proxy.
+- Do not interpret whether guest fields are singleton or list-valued. Preserve
+  every allowed occurrence and its same-name order; let Fetch perform its own
+  standards-defined normalization.
+- Do not implement the WordPress proxy's
+  `X-Cors-Proxy-Allowed-Request-Headers` opt-in protocol in this change.
 - Do not project headers on a successful direct browser fetch.
 - Do not change the external lazy-VFS fetcher; it does not forward guest HTTP
   headers.
@@ -34,7 +45,8 @@ Create:
 - `host/src/networking/cors-proxy-request-policy.ts` — validates immutable
   capabilities and projects a guest request onto a proxy-representable fetch.
 - `host/test/cors-proxy-request-policy.test.ts` — focused value, security,
-  omission, and deduplication tests.
+  omission, header-occurrence preservation, and diagnostic-deduplication
+  tests.
 
 Modify:
 
@@ -100,12 +112,17 @@ export class CorsProxyRequestPolicy {
 
   project(input: {
     method: string;
-    headers: Headers;
+    headers: readonly (readonly [name: string, value: string])[];
     bodyPresent: boolean;
     targetUrl: string;
   }): CorsProxyRequestProjection;
 }
 ```
+
+The tuple list is an internal browser-host representation of parsed guest
+field occurrences. It retains repeated values and same-name order. Capability
+names are still a normalized set because they describe transport permission,
+not request data.
 
 `FetchBackendOptions` and `TlsNetworkBackendOptions` gain:
 
@@ -131,18 +148,20 @@ preserves the existing unprojected behavior for third-party embedders.
 
 - [ ] Write failing validation tests for uppercase method normalization,
   lowercase header normalization, frozen copied arrays, invalid HTTP tokens,
-  duplicate normalized values, capability-without-URL rejection, and caller
-  mutation after validation.
+  duplicate normalized capability values collapsing harmlessly,
+  capability-without-URL rejection, and caller mutation after validation.
 
 - [ ] Write failing projection tests for:
   - value-valid `Accept`, `Accept-Language`, `Content-Language`,
     `Content-Type`, and single-range `Range` safelisted headers;
   - configured headers such as `git-protocol`;
+  - repeated configured and safelisted occurrences retaining every value and
+    same-name order through `Headers.append()`;
   - value-invalid safelist candidates, including unsafe bytes and non-simple
     content types;
   - `Connection`-nominated headers and fixed hop-by-hop/transport headers;
-  - credential rejection for `authorization`, `cookie`, `cookie2`, and
-    `proxy-authorization`;
+  - rejection of `authorization`, `cookie`, `cookie2`,
+    `proxy-authorization`, and the unsupported proxy opt-in control header;
   - anonymous bodyless `GET` omission with sorted names;
   - body-bearing `GET`, `POST`, `PUT`, and unsupported `HEAD` rejection;
   - no fetch policy decision based on target hostname or header prefix; and
@@ -158,8 +177,9 @@ scripts/dev-shell.sh npm --prefix host test -- --run \
 
 - [ ] Implement strict capability validation. Copy, normalize, sort, and
   freeze methods and header names. Reject empty entries, invalid RFC HTTP-token
-  characters, duplicates after normalization, and inconsistent URL/capability
-  configuration.
+  characters, and inconsistent URL/capability configuration. Collapse
+  duplicate names after normalization; do not reject harmless duplicate
+  configuration entries.
 
 - [ ] Implement value-aware CORS safelist checks. Treat only these names as
   candidates: `accept`, `accept-language`, `content-language`, `content-type`,
@@ -169,6 +189,11 @@ scripts/dev-shell.sh npm --prefix host test -- --run \
   `connection`, `content-length`, `keep-alive`, `proxy-authenticate`, `te`,
   `trailer`, `transfer-encoding`, `upgrade`, plus every name nominated by the
   guest `Connection` value.
+
+- [ ] Preserve the remaining ordered tuples. Filter by normalized name but
+  never deduplicate, combine, reorder, or interpret their values beyond the
+  Fetch-mandated CORS safelist check. Build the projected `Headers` with
+  `append()`, not `set()`.
 
 - [ ] Reject credentials before considering the configured allowlist. For an
   eligible anonymous bodyless `GET`, omit the remaining unsupported names and
@@ -212,8 +237,10 @@ git commit -m "Host: Model constrained browser proxy requests"
 - Modify: `host/test/fetch-backend.test.ts`
 
 - [ ] Add failing tests that capture all `fetch()` calls and prove the plain
-  backend first attempts the original URL with the original guest headers,
-  then projects only its proxy fallback after direct fetch throws.
+  backend first attempts the original URL with every browser-representable
+  guest header occurrence, then projects only its proxy fallback after direct
+  fetch throws. Include repeated allowed values and prove no earlier value is
+  overwritten.
 
 - [ ] Add failing TLS-path tests proving decrypted HTTPS and non-TLS HTTP use
   the same projection, omission diagnostic, credential rejection, unsupported
@@ -236,8 +263,13 @@ scripts/dev-shell.sh npm --prefix host test -- --run \
 
 - [ ] Construct one validated policy per backend lifetime when both URL and
   capabilities are present. Invoke `project()` immediately before the proxied
-  fetch, and pass the projected headers without mutating the parsed guest
-  `Headers` object.
+  fetch, and pass the projected headers without mutating the parsed ordered
+  guest header list.
+
+- [ ] Replace each parser's lossy `Map<string, string>` representation with an
+  ordered field-occurrence list plus narrow lookup helpers for transport
+  fields such as `Host` and `Connection`. Use `Headers.append()` when creating
+  both direct and projected browser requests.
 
 - [ ] In `FetchNetworkBackend`, retain the direct request exactly as today.
   Only after its exception should the proxy policy run.
@@ -354,14 +386,17 @@ git commit -m "Browser: Carry explicit CORS proxy capabilities"
 
 ```text
 accept
-authorization
 content-type
 git-protocol
 wp_blog
 wp_install
-x-cors-proxy-allowed-request-headers
-x-cors-proxy-content-type
 ```
+
+  The production proxy's preflight response advertises three additional
+  names: `authorization`, `x-cors-proxy-allowed-request-headers`, and
+  `x-cors-proxy-content-type`. Do not put them in Kandelo's unconditional
+  relay capability. `Authorization` requires the first control header to opt
+  in, and this change deliberately does not implement that protocol.
 
 - [ ] Add a failing live-setup assertion that `npm_config_registry` is
   `https://registry.npmjs.org/`, `proxy.local` does not appear, and the same
@@ -421,7 +456,9 @@ git commit -m "Demo: Declare the production proxy boundary"
 - [ ] Extend the test-runner page's test-only `__runTest` options with an
   explicit `{ url, capabilities }` proxy override. In the Playwright spec,
   start an ephemeral Node HTTP server on a different loopback origin whose
-  `OPTIONS` response exactly advertises the production methods and headers.
+  `OPTIONS` response exactly advertises the production methods and full
+  preflight header list, including the conditional and control headers that
+  are absent from Kandelo's narrower unconditional-relay capability.
   The endpoint must record received method, target URL, and outer header names
   without accepting credentials.
 
@@ -434,8 +471,9 @@ git commit -m "Demo: Declare the production proxy boundary"
   - one generic omission diagnostic names `x-client-trace`; and
   - neither fixture nor assertion mentions npm or Pacote.
 
-- [ ] Add negative browser cases for credentials and a state-changing request.
-  Require a deterministic bridge failure and zero requests at the fixture.
+- [ ] Add negative browser cases for `Authorization` without proxy opt-in and
+  for a state-changing request. Require a deterministic bridge failure and
+  zero requests at the fixture.
 
 - [ ] Run the new browser contract and confirm it fails before the fixture and
   configuration are implemented:

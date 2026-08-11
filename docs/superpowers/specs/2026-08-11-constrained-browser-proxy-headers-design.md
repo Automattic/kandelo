@@ -24,6 +24,13 @@ Accept, Authorization, Content-Type, git-protocol, wp_blog, wp_install,
 x-cors-proxy-allowed-request-headers, x-cors-proxy-content-type
 ```
 
+That preflight list is not the same as the proxy's unconditional relay
+capability. The PHP relay drops `Authorization` unless the client also sends
+`X-Cors-Proxy-Allowed-Request-Headers` with an explicit opt-in. Kandelo's
+temporary profile does not implement that proxy-specific control protocol.
+It treats `Authorization` as unsupported and does not expose either
+`x-cors-proxy-*` control header as a guest relay capability.
+
 The browser therefore blocks the request during CORS preflight before the
 proxy or npm registry receives it. The visible error names
 `pacote-req-type`, but any unsupported request header can cause the same
@@ -70,16 +77,23 @@ The shared policy classifies each outgoing guest request before starting the
 outer fetch:
 
 1. Remove HTTP hop-by-hop headers as required by proxy translation.
-2. Reject credentials that would cross the public proxy, including
-   `Authorization`, `Cookie`, and proxy credentials, even when a header name
-   appears in the proxy's CORS allowlist.
-3. Determine which remaining headers are CORS-safelisted for their values or
-   explicitly accepted by the configured proxy.
+2. Preserve every remaining guest header occurrence, value, and same-name
+   order. Do not infer whether a field is singleton or list-valued, combine
+   values, or remove duplicate values.
+3. Determine which occurrences are CORS-safelisted for their values or have a
+   name the configured proxy relays unconditionally. Treat credentials and
+   proxy-specific control headers as unsupported by this temporary profile.
 4. For an anonymous, bodyless `GET`, omit unsupported headers and emit a
    deduplicated host diagnostic naming the omitted headers and target origin.
 5. For any other request, proceed only if its method and every required header
-   can be represented exactly. Otherwise fail before fetch with a specific
-   proxy-capability error.
+   can be represented by the configured transport. Otherwise fail before
+   fetch with a specific proxy-capability error.
+
+Filtering is per occurrence. Kandelo appends every retained occurrence to the
+browser `Headers` object and leaves standards-required normalization or
+combination to Fetch. The browser does not promise preservation of original
+field-name casing or physical HTTP/1 field lines; Kandelo must not add further
+loss by overwriting, deduplicating, reordering, or interpreting guest values.
 
 The WordPress proxy relays `GET` and `POST`, reserves `OPTIONS` for browser
 preflight, and does not relay `HEAD`. A direct `HEAD` may still succeed when
@@ -97,7 +111,7 @@ Add an immutable browser proxy capability value to the browser-kernel options
 and worker protocol. It contains:
 
 - the methods the proxy relays;
-- the request-header names accepted by preflight; and
+- the request-header names the proxy relays unconditionally; and
 - whether safe-request omission is enabled.
 
 Parsing lowercases and deduplicates header names, rejects invalid HTTP tokens,
@@ -171,9 +185,12 @@ Implementation begins with failing tests for the shared policy and both
 network backends. The focused cases prove:
 
 - an anonymous bodyless `GET` forwards CORS-safelisted and configured headers;
+- repeated allowed header occurrences retain every value and their original
+  same-name order up to Fetch's browser-defined normalization;
 - arbitrary unsupported metadata is omitted without naming Pacote;
 - diagnostics are exact and deduplicated;
-- credentials are rejected before fetch;
+- `Authorization` is rejected before fetch because Kandelo does not implement
+  the proxy's opt-in control protocol;
 - an unsupported header on a body-bearing or state-changing request fails
   before fetch;
 - unsupported proxy methods fail without method substitution;
