@@ -1,9 +1,64 @@
-import { describe, it, expect } from "vitest";
-import { synthesizePosixMode } from "../../src/platform/native-metadata";
+import { afterEach, describe, it, expect } from "vitest";
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  modeAfterRegularFileMutation,
+  NativeMetadataOverlay,
+  synthesizePosixMode,
+} from "../../src/platform/native-metadata";
 
 const S_IFDIR = 0o040000;
 const S_IFREG = 0o100000;
 const S_IFLNK = 0o120000;
+const roots: string[] = [];
+
+afterEach(() => {
+  while (roots.length > 0) {
+    rmSync(roots.pop()!, { recursive: true, force: true });
+  }
+});
+
+describe("modeAfterRegularFileMutation", () => {
+  it.each(["content", "ownership"] as const)(
+    "clears both set-ID bits after a regular-file %s mutation",
+    (kind) => {
+      expect(modeAfterRegularFileMutation(S_IFREG | 0o6755, kind)).toBe(
+        S_IFREG | 0o755,
+      );
+      expect(modeAfterRegularFileMutation(S_IFREG | 0o6600, kind)).toBe(
+        S_IFREG | 0o600,
+      );
+    },
+  );
+
+  it.each([
+    ["directory", S_IFDIR],
+    ["symlink", S_IFLNK],
+  ] as const)("leaves a %s unchanged", (_name, type) => {
+    expect(modeAfterRegularFileMutation(type | 0o6755, "ownership")).toBe(
+      type | 0o6755,
+    );
+  });
+});
+
+describe("NativeMetadataOverlay content transactions", () => {
+  it("prepares invalidation without exposing it before content changes", () => {
+    const root = mkdtempSync(join(tmpdir(), "kandelo-native-metadata-"));
+    roots.push(root);
+    const path = join(root, "file");
+    writeFileSync(path, "content");
+    const stat = statSync(path, { bigint: true });
+    const metadata = new NativeMetadataOverlay();
+    metadata.chmod(stat, 0o6755);
+
+    const commit = metadata.prepareNativeContentChange(stat);
+    expect(metadata.toStatResult(stat).mode & 0o7777).toBe(0o6755);
+
+    commit();
+    expect(metadata.toStatResult(stat).mode & 0o7777).toBe(0o755);
+  });
+});
 
 // Windows has no POSIX permission model: Node's `fs.statSync` reports every
 // entry as 0o666 (writable) or 0o444 (read-only), with no execute/search bit

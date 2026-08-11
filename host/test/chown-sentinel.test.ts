@@ -20,6 +20,7 @@ describe("chown ownership, authorization, and set-ID semantics", () => {
       });
 
       expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("SETID_MUTATION_MATRIX_PASS");
       expect(result.stdout).toContain("CHOWN_SENTINEL_PASS");
       expect(result.stderr).toBe("");
     },

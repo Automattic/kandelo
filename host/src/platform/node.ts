@@ -32,6 +32,7 @@ import { filesystemPathconf } from "../pathconf";
 import { nativeStatfs, translateOpenFlags } from "../vfs/host-fs";
 import { zeroCapacityStatfs } from "../statfs";
 import { ST_NOSUID } from "../vfs/types";
+import { OPEN_FLAGS } from "../generated/abi";
 import { NativeMetadataOverlay } from "./native-metadata";
 
 const UTIME_NOW = 0x3fffffff;
@@ -93,9 +94,11 @@ export class NodePlatformIO implements PlatformIO {
 
   open(path: string, flags: number, mode: number): number {
     const nativePath = this.rewritePath(path);
+    const truncate = (flags & OPEN_FLAGS.O_TRUNC) !== 0;
+    const nativeFlags = translateOpenFlags(flags);
     const { fd, created } = openNativeBackingFile(
       nativePath,
-      translateOpenFlags(flags),
+      truncate ? nativeFlags & ~fs.constants.O_TRUNC : nativeFlags,
       flags,
       mode,
     );
@@ -105,6 +108,19 @@ export class NodePlatformIO implements PlatformIO {
       }
       this.fdPositions.set(fd, 0);
       this.positionedWrites.register(fd, flags, nativePath);
+      if (!created && truncate) {
+        const truncateHandle = this.positionedWrites.forTruncate(
+          fd,
+          flags,
+          nativePath,
+        );
+        const before = fs.fstatSync(fd, { bigint: true });
+        const commit = before.size === 0n
+          ? null
+          : this.metadata.prepareNativeContentChange(before);
+        fs.ftruncateSync(truncateHandle, 0);
+        commit?.();
+      }
       return fd;
     } catch (error) {
       this.fdPositions.delete(fd);
@@ -438,10 +454,12 @@ export class NodePlatformIO implements PlatformIO {
   }
 
   ftruncate(handle: number, length: number): void {
+    const before = fs.fstatSync(handle, { bigint: true });
+    const commit = before.size === BigInt(length)
+      ? null
+      : this.metadata.prepareNativeContentChange(before);
     fs.ftruncateSync(handle, length);
-    this.metadata.noteNativeContentChange(
-      fs.fstatSync(handle, { bigint: true }),
-    );
+    commit?.();
   }
 
   fsync(handle: number): void {

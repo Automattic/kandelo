@@ -617,6 +617,162 @@ describe("MemoryFileSystem", () => {
     mfs.close(fd);
   });
 
+  it("routes complete set-ID invalidation semantics through VirtualPlatformIO", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const path = "/mutation-matrix";
+    const localFd = mfs.open(path, O_CREAT | O_RDWR | O_TRUNC, 0o6755);
+    mfs.close(localFd);
+    const vfs = new VirtualPlatformIO(
+      [{ mountPoint: "/", backend: mfs }],
+      new NodeTimeProvider(),
+    );
+    const fd = vfs.open(path, O_RDWR, 0);
+    const byte = new Uint8Array([0x78]);
+    const expectMode = (mode: number): void => {
+      expect(vfs.stat(path).mode & 0o7777).toBe(mode);
+      expect(vfs.fstat(fd).mode & 0o7777).toBe(mode);
+    };
+    const arm = (mode = 0o6755): void => {
+      vfs.chmod(path, mode);
+      expectMode(mode);
+    };
+
+    try {
+      arm();
+      expect(vfs.write(fd, byte, null, 1)).toBe(1);
+      expectMode(0o755);
+
+      arm();
+      expect(vfs.write(fd, byte, 0, 1)).toBe(1);
+      expectMode(0o755);
+
+      arm();
+      expect(vfs.append(fd, byte, 1, null).written).toBe(1);
+      expectMode(0o755);
+
+      arm();
+      const truncateFd = vfs.open(path, O_RDWR | O_TRUNC, 0);
+      vfs.close(truncateFd);
+      expectMode(0o755);
+
+      expect(vfs.write(fd, byte, 0, 1)).toBe(1);
+      arm();
+      vfs.ftruncate(fd, 0);
+      expectMode(0o755);
+
+      arm();
+      vfs.chown(path, 1001, 2001);
+      expectMode(0o755);
+
+      arm();
+      vfs.fchown(fd, 1002, 2002);
+      expectMode(0o755);
+
+      arm();
+      vfs.lchown(path, 1003, 2003);
+      expectMode(0o755);
+
+      arm(0o6600);
+      expect(vfs.write(fd, byte, 0, 1)).toBe(1);
+      expectMode(0o600);
+
+      arm(0o6600);
+      vfs.chown(path, 1004, 2004);
+      expectMode(0o600);
+
+      arm();
+      expect(vfs.write(fd, byte, null, 0)).toBe(0);
+      expect(vfs.write(fd, byte, 0, 0)).toBe(0);
+      expect(vfs.append(fd, byte, 0, null).written).toBe(0);
+      expectMode(0o6755);
+
+      const unchangedSize = vfs.fstat(fd).size;
+      vfs.ftruncate(fd, unchangedSize);
+      expectMode(0o6755);
+      if (unchangedSize !== 0) {
+        vfs.ftruncate(fd, 0);
+        arm();
+      }
+      const emptyTruncateFd = vfs.open(path, O_RDWR | O_TRUNC, 0);
+      vfs.close(emptyTruncateFd);
+      expectMode(0o6755);
+
+      const readOnlyFd = vfs.open(path, O_RDONLY, 0);
+      try {
+        expect(() => vfs.write(readOnlyFd, byte, null, 1)).toThrow();
+        expect(() => vfs.ftruncate(readOnlyFd, 0)).toThrow();
+      } finally {
+        vfs.close(readOnlyFd);
+      }
+      expectMode(0o6755);
+    } finally {
+      vfs.close(fd);
+    }
+
+    vfs.mkdir("/mutation-directory", 0o6770);
+    vfs.chown("/mutation-directory", 3001, 3002);
+    expect(vfs.stat("/mutation-directory").mode & 0o7777).toBe(0o6770);
+  });
+
+  it("routes positive and failed mutation attempts without changing armed mode", () => {
+    const mfs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+    const path = "/mutation-failures";
+    const localFd = mfs.open(path, O_CREAT | O_RDWR | O_TRUNC, 0o600);
+    mfs.close(localFd);
+    const vfs = new VirtualPlatformIO(
+      [{ mountPoint: "/", backend: mfs }],
+      new NodeTimeProvider(),
+    );
+    const fd = vfs.open(path, O_RDWR, 0);
+    const bytes = new Uint8Array([0x78, 0x79]);
+    const expectMode = (mode: number): void => {
+      expect(vfs.stat(path).mode & 0o7777).toBe(mode);
+      expect(vfs.fstat(fd).mode & 0o7777).toBe(mode);
+    };
+    const arm = (): void => {
+      vfs.chmod(path, 0o6755);
+      expectMode(0o6755);
+    };
+    const expectFailure = (operation: () => unknown): void => {
+      expect(operation).toThrow();
+      expectMode(0o6755);
+    };
+
+    try {
+      arm();
+      expect(vfs.write(fd, bytes, null, 1)).toBe(1);
+      expectMode(0o755);
+
+      arm();
+      expect(vfs.write(fd, bytes, 0, 1)).toBe(1);
+      expectMode(0o755);
+
+      arm();
+      const limit = vfs.fstat(fd).size + 1;
+      expect(vfs.append(fd, bytes, bytes.length, limit).written).toBe(1);
+      expectMode(0o755);
+
+      arm();
+      const readOnlyFd = vfs.open(path, O_RDONLY, 0);
+      try {
+        expectFailure(() => vfs.write(readOnlyFd, bytes, null, 1));
+        expectFailure(() => vfs.write(readOnlyFd, bytes, 0, 1));
+        expectFailure(() => vfs.append(readOnlyFd, bytes, 1, null));
+        expectFailure(() => vfs.ftruncate(readOnlyFd, 0));
+      } finally {
+        vfs.close(readOnlyFd);
+      }
+
+      expectFailure(() => vfs.open("/missing-truncate", O_RDWR | O_TRUNC, 0));
+      expectFailure(() => vfs.chown("/missing-chown", 1000, 2000));
+      expectFailure(() => vfs.fchown(999_999, 1000, 2000));
+      expectFailure(() => vfs.lchown("/missing-lchown", 1000, 2000));
+    } finally {
+      vfs.close(fd);
+    }
+  });
+
   it("opens more than the old 64-descriptor SharedFS table limit", () => {
     expect(MAX_FDS).toBe(
       Math.floor((BLOCK_SIZE - FD_TABLE_OFFSET) / FD_ENTRY_SIZE),
@@ -672,6 +828,88 @@ describe("MemoryFileSystem", () => {
 
     expect(error).toBeInstanceOf(SFSError);
     expect((error as SFSError).code).toBe(EMFILE);
+  });
+
+  it("routes O_TRUNC EMFILE without changing the selected file", () => {
+    const mfs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+    const vfs = new VirtualPlatformIO(
+      [{ mountPoint: "/", backend: mfs }],
+      new NodeTimeProvider(),
+    );
+    const path = "/routed-emfile-truncate";
+    const contents = new TextEncoder().encode("routed bytes remain");
+    const fd = vfs.open(path, O_CREAT | O_RDWR, 0o600);
+    expect(vfs.write(fd, contents, null, contents.byteLength)).toBe(
+      contents.byteLength,
+    );
+    vfs.chown(path, 2468, 1357);
+    vfs.chmod(path, 0o6755);
+
+    const fillers: number[] = [];
+    try {
+      for (let index = 1; index < MAX_FDS; index++) {
+        fillers.push(vfs.open(path, O_RDONLY, 0));
+      }
+
+      let failure: unknown;
+      try {
+        vfs.open(path, O_RDWR | O_TRUNC, 0);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(SFSError);
+      expect((failure as SFSError).code).toBe(EMFILE);
+
+      const pathStat = vfs.stat(path);
+      const fdStat = vfs.fstat(fd);
+      expect(pathStat).toMatchObject({
+        size: contents.byteLength,
+        uid: 2468,
+        gid: 1357,
+      });
+      expect(fdStat).toMatchObject({
+        size: contents.byteLength,
+        uid: 2468,
+        gid: 1357,
+      });
+      expect(pathStat.mode & 0o7777).toBe(0o6755);
+      expect(fdStat.mode & 0o7777).toBe(0o6755);
+      const observed = new Uint8Array(contents.byteLength);
+      expect(vfs.read(fd, observed, 0, observed.byteLength)).toBe(
+        contents.byteLength,
+      );
+      expect(observed).toEqual(contents);
+    } finally {
+      for (const filler of fillers) vfs.close(filler);
+      vfs.close(fd);
+    }
+  });
+
+  it("routes O_RDONLY | O_TRUNC without granting write access", () => {
+    const mfs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
+    const vfs = new VirtualPlatformIO(
+      [{ mountPoint: "/", backend: mfs }],
+      new NodeTimeProvider(),
+    );
+    const path = "/routed-read-only-truncate";
+    const seed = vfs.open(path, O_CREAT | O_RDWR, 0o600);
+    expect(vfs.write(seed, new TextEncoder().encode("truncate me"), null, 11))
+      .toBe(11);
+    vfs.close(seed);
+    vfs.chmod(path, 0o6755);
+
+    const fd = vfs.open(path, O_RDONLY | O_TRUNC, 0);
+    try {
+      expect(vfs.stat(path).size).toBe(0);
+      expect(vfs.fstat(fd).size).toBe(0);
+      expect(vfs.stat(path).mode & 0o7777).toBe(0o755);
+      expect(vfs.fstat(fd).mode & 0o7777).toBe(0o755);
+      expect(() =>
+        vfs.write(fd, new Uint8Array([0x78]), null, 1)
+      ).toThrow();
+    } finally {
+      vfs.close(fd);
+    }
   });
 
   it("creates and lists directories", () => {
