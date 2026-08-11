@@ -11,7 +11,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { basename, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 
@@ -22,6 +22,8 @@ type JsonObject = Record<string, any>;
 type PagesLoadV1 = "eager" | "lazy";
 type EvidenceHostV1 = "node" | "browser";
 const CANONICAL_PAGES_ORIGIN = "https://automattic.github.io/kandelo/";
+const SHA256 = /^[0-9a-f]{64}$/u;
+const STABLE_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/u;
 
 export function canonicalPagesInputReference(
   inputId: string,
@@ -557,6 +559,27 @@ export async function computePagesReadiness(
   input: PagesReadinessInputV1,
   dependencies: PagesReadinessDependencies,
 ): Promise<PagesReadinessResultV1> {
+  const pages = [...input.pages_registry.value.products]
+    .sort((left, right) => ordinal(left.id, right.id));
+  const pageIds = new Set(pages.map(({ id }) => id));
+  const galleryIds = new Set(input.site_metadata.products.map(({ id }) => id));
+  const missingGallery = pages.find(({ id }) => !galleryIds.has(id));
+  if (missingGallery !== undefined) {
+    return heldPagesResult(input, [
+      blocker("gallery-product-missing", `site metadata omits ${missingGallery.id}`),
+    ]);
+  }
+  const extraGallery = input.site_metadata.products.find(({ id }) => !pageIds.has(id));
+  if (extraGallery !== undefined) {
+    return heldPagesResult(input, [
+      blocker("gallery-product-extra", `site metadata adds ${extraGallery.id}`),
+    ]);
+  }
+  if (digest(input.site_metadata) !== input.authority.site_metadata_sha256) {
+    return heldPagesResult(input, [
+      blocker("site-metadata-stale", "site metadata differs from exact current main"),
+    ]);
+  }
   const privateRoot = mkdtempSync(join(tmpdir(), "kandelo-pages-products-"));
   try {
     const prepared = await preparePagesProducts(input, {
@@ -576,6 +599,11 @@ export async function preparePagesProducts(
   const blockers: PagesBlockerV1[] = [];
   const pages = [...input.pages_registry.value.products]
     .sort((left, right) => ordinal(left.id, right.id));
+  for (const { id } of pages) {
+    if (!STABLE_ID.test(id)) {
+      throw new Error(`Pages product id ${JSON.stringify(id)} is not a stable identifier`);
+    }
+  }
   const privateRoot = exactEmptyPrivateProductRoot(dependencies.private_product_root);
   const finish = (
     products: PagesReadyProductV1[] = [],
@@ -896,7 +924,10 @@ export async function preparePagesProducts(
       vfs_sha256: vfsSha,
     };
     ready.set(id, completed);
-    const privatePath = join(privateRoot, `${id}.vfs.zst`);
+    const privatePath = resolve(privateRoot, `${id}.vfs.zst`);
+    if (dirname(privatePath) !== privateRoot) {
+      throw new Error(`Pages product id ${JSON.stringify(id)} escapes the private product root`);
+    }
     writeFileSync(privatePath, built.vfs, { flag: "wx", mode: 0o600 });
     sealedProducts.set(id, {
       bytes: built.vfs.byteLength,
@@ -932,6 +963,30 @@ export async function preparePagesProducts(
     [...artifacts.values()].sort((left, right) => ordinal(left.id, right.id)),
     [...sealedProducts.values()].sort((left, right) => ordinal(left.id, right.id)),
   );
+}
+
+function heldPagesResult(
+  input: PagesReadinessInputV1,
+  blockers: PagesBlockerV1[],
+): PagesReadinessResultV1 {
+  return {
+    readiness: {
+      blockers,
+      kind: "kandelo-pages-readiness",
+      pages_registry: {
+        path: input.pages_registry.path,
+        products: [...input.pages_registry.value.products]
+          .sort((left, right) => ordinal(left.id, right.id)),
+        sha256: input.authority.pages_registry_sha256,
+      },
+      products: [],
+      ready: false,
+      schema: 1,
+      site_metadata_sha256: null,
+      source: input.source,
+      target_abi: input.target_abi,
+    },
+  };
 }
 
 export function finalizePagesReadiness(
@@ -985,6 +1040,21 @@ export function finalizePagesReadiness(
   if (state.products.length !== pages.length || state.artifacts.length !== pages.length) {
     throw new Error("sealed products must be the exact sorted Pages product set");
   }
+  const authenticatedArtifacts = state.artifacts.map((artifact, index) => {
+    const sealed = state.sealed_products[index]!;
+    const product = state.products[index]!;
+    if (
+      sealed.id !== product.id || sealed.load !== product.load ||
+      sealed.bytes !== product.vfs_bytes || sealed.sha256 !== product.vfs_sha256 ||
+      sealed.path !== productSitePath(product, input.target_abi.version)
+    ) {
+      throw new Error("sealed products must be the exact sorted Pages product set");
+    }
+    const body = readAuthenticatedPrivateProduct(sealed);
+    const exactArtifact = structuredClone(artifact);
+    exactArtifact.vfs = body;
+    return exactArtifact;
+  });
   if (
     siteMetadata?.schema !== 1 || siteMetadata.kind !== "kandelo-pages-site-metadata" ||
     !Array.isArray(siteMetadata.products)
@@ -1026,19 +1096,6 @@ export function finalizePagesReadiness(
     }
   }
 
-  const authenticatedArtifacts = state.artifacts.map((artifact, index) => {
-    const sealed = state.sealed_products[index]!;
-    const product = state.products[index]!;
-    if (
-      sealed.id !== product.id || sealed.load !== product.load ||
-      sealed.bytes !== product.vfs_bytes || sealed.sha256 !== product.vfs_sha256 ||
-      sealed.path !== productSitePath(product, input.target_abi.version)
-    ) {
-      throw new Error("sealed products must be the exact sorted Pages product set");
-    }
-    const body = readAuthenticatedPrivateProduct(sealed);
-    return { ...artifact, vfs: body };
-  });
   const readiness = base([], structuredClone(state.products), siteMetadataSha256);
   const productFiles = state.sealed_products.map(({ bytes, path, sha256: digestValue }) => ({
     bytes,
@@ -1082,7 +1139,12 @@ function exactEmptyPrivateProductRoot(value: string | undefined): string {
 }
 
 function readAuthenticatedPrivateProduct(sealed: PreparedPagesProductV1): Uint8Array {
-  const metadata = lstatSync(sealed.private_path);
+  let metadata;
+  try {
+    metadata = lstatSync(sealed.private_path);
+  } catch {
+    throw new Error(`sealed product ${sealed.id} differs from its authenticated identity`);
+  }
   if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size !== sealed.bytes) {
     throw new Error(`sealed product ${sealed.id} differs from its authenticated identity`);
   }
@@ -2078,13 +2140,27 @@ function validateReadinessShape(readiness: PagesReadinessRecordV1): void {
   if (containsCandidateNamespace(readiness)) {
     throw new Error("Pages readiness contains the candidate namespace");
   }
+  if (!("site_metadata_sha256" in readiness)) {
+    throw new Error("Pages readiness lacks an explicit site identity");
+  }
   if (readiness.ready) {
+    if (
+      typeof readiness.site_metadata_sha256 !== "string" ||
+      !SHA256.test(readiness.site_metadata_sha256)
+    ) {
+      throw new Error("ready Pages readiness requires a SHA-256 site identity");
+    }
     if (readiness.blockers.length !== 0) throw new Error("ready Pages record contains blockers");
     const expected = [...readiness.pages_registry.products].sort((a, b) => ordinal(a.id, b.id));
     const actual = readiness.products.map(({ id, load }) => ({ id, load }));
     if (!jsonEqual(actual, expected)) throw new Error("ready Pages record lacks the complete product set");
-  } else if (readiness.blockers.length === 0) {
-    throw new Error("held Pages readiness lacks a blocker");
+  } else {
+    if (readiness.site_metadata_sha256 !== null) {
+      throw new Error("held Pages readiness requires a null site identity");
+    }
+    if (readiness.blockers.length === 0) {
+      throw new Error("held Pages readiness lacks a blocker");
+    }
   }
 }
 
