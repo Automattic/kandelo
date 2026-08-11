@@ -1193,10 +1193,10 @@ lamp 12, wordpress 13, nginx-vfs 3, and nginx-php-vfs 3 in dependency order:
 ```bash
 validation_root="$(mktemp -d)"
 validation_head="$(git rev-parse HEAD)"
+validation_host="$(scripts/dev-shell.sh rustc -vV | awk '/^host:/ { print $2 }')"
 for package in shell node-vfs lamp wordpress nginx-vfs nginx-php-vfs; do
-  scripts/dev-shell.sh env \
-    WASM_POSIX_BINARY_CACHE_ROOT="$validation_root/cache" \
-    cargo xtask archive-stage \
+  scripts/dev-shell.sh cargo run --release -p xtask \
+    --target "$validation_host" --quiet -- archive-stage \
       --package "packages/registry/$package" \
       --arch wasm32 \
       --out "$validation_root/archives" \
@@ -1204,6 +1204,8 @@ for package in shell node-vfs lamp wordpress nginx-vfs nginx-php-vfs; do
       --build-host "local/full-closure@$validation_head" \
       --source-repository https://github.com/Automattic/kandelo \
       --source-commit "$validation_head" \
+      --cache-root "$validation_root/cache" \
+      --binaries-dir "$(pwd)/binaries" \
       --force-source-build
 done
 ```
