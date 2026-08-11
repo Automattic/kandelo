@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
 
 import { isShellVfsImageUrl } from "../lib/shell-vfs-image-url";
@@ -50,18 +49,10 @@ test("the canonical self-contained shell runs Homebrew without lazy downloads", 
   test.setTimeout(360_000);
 
   const productBase = new URL(process.env.KANDELO_TEST_BASE_URL ?? baseURL);
-  const shellResponses: Array<
-    Promise<{ ok: boolean; sha256: string; url: string }>
-  > = [];
+  const shellResponses: Array<{ ok: boolean; url: string }> = [];
   page.on("response", (response) => {
     if (!isShellVfsImageUrl(response.url())) return;
-    shellResponses.push(
-      response.body().then((bytes) => ({
-        ok: response.ok(),
-        sha256: createHash("sha256").update(bytes).digest("hex"),
-        url: response.url(),
-      })),
-    );
+    shellResponses.push({ ok: response.ok(), url: response.url() });
   });
 
   await page.goto(new URL("?demo=shell", productBase).href, {
@@ -80,14 +71,36 @@ test("the canonical self-contained shell runs Homebrew without lazy downloads", 
   await expect
     .poll(() => shellResponses.length, { timeout: 180_000 })
     .toBeGreaterThan(0);
-  const imageEvidence = await Promise.all(shellResponses);
   expect(
-    imageEvidence.every(({ ok }) => ok),
-    JSON.stringify(imageEvidence),
+    shellResponses.every(({ ok }) => ok),
+    JSON.stringify(shellResponses),
   ).toBe(true);
-  expect(new Set(imageEvidence.map(({ sha256 }) => sha256))).toEqual(
-    new Set([expectedImageSha256]),
+  const shellUrls = [...new Set(shellResponses.map(({ url }) => url))];
+  const imageDigests = await Promise.all(
+    shellUrls.map((url) =>
+      page.evaluate(async (imageUrl) => {
+        // WHY: Playwright's response.body() reads Chromium's bounded inspector
+        // cache. A production VFS image can be evicted from that cache even
+        // though the browser fetched and booted it successfully. Hash a normal
+        // same-origin browser fetch so large product images retain exact-byte
+        // validation without relying on the debugger's response retention.
+        const response = await fetch(imageUrl, { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error(
+            `could not fetch canonical shell image: ${response.status}`,
+          );
+        }
+        const digest = await crypto.subtle.digest(
+          "SHA-256",
+          await response.arrayBuffer(),
+        );
+        return Array.from(new Uint8Array(digest), (byte) =>
+          byte.toString(16).padStart(2, "0"),
+        ).join("");
+      }, url),
+    ),
   );
+  expect(new Set(imageDigests)).toEqual(new Set([expectedImageSha256]));
 
   const result = await runTerminalCommand(
     page,
