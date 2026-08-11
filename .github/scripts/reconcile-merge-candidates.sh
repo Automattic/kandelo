@@ -128,19 +128,27 @@ merge_distance() {
 list_candidate_assets() {
   local release_id="$1"
   local output="$2"
-  local page assets count reached_end=false
+  local page assets count duplicate reached_end=false
 
   : > "$output"
   for ((page = 1; page <= MAX_ASSET_PAGES; page++)); do
     assets=$(gh_retry gh api "/repos/${REPOSITORY}/releases/${release_id}/assets?per_page=${ASSET_PER_PAGE}&page=${page}")
-    if ! jq -e 'type == "array" and all(.[]; .name | type == "string")' \
+    if ! jq -e '
+        type == "array" and
+        all(.[];
+          type == "object" and
+          (.id | type == "number" and . > 0 and floor == .) and
+          (.name | type == "string" and length > 0 and
+            (test("[[:cntrl:]]") | not)) and
+          (.size | type == "number" and . >= 0 and floor == .))
+      ' \
         <<<"$assets" >/dev/null
     then
       echo "reconcile-merge-candidates: release $release_id asset page $page is malformed" >&2
       return 1
     fi
     count=$(jq 'length' <<<"$assets")
-    jq -r '.[].name' <<<"$assets" >> "$output"
+    jq -r '.[] | [.id, .name, .size] | @tsv' <<<"$assets" >> "$output"
     if [ "$count" -lt "$ASSET_PER_PAGE" ]; then
       reached_end=true
       break
@@ -150,14 +158,140 @@ list_candidate_assets() {
     echo "reconcile-merge-candidates: release $release_id asset scan reached the ${MAX_ASSET_PAGES}-page safety bound" >&2
     return 1
   fi
+  duplicate=$(cut -f1 "$output" | LC_ALL=C sort | uniq -d | sed -n '1p')
+  if [ -n "$duplicate" ]; then
+    echo "reconcile-merge-candidates: release $release_id contains duplicate asset ID $duplicate" >&2
+    return 1
+  fi
+  duplicate=$(cut -f2 "$output" | LC_ALL=C sort | uniq -d | sed -n '1p')
+  if [ -n "$duplicate" ]; then
+    echo "reconcile-merge-candidates: release $release_id contains duplicate asset name $duplicate" >&2
+    return 1
+  fi
+}
+
+download_terminal_asset() {
+  local asset_id="$1"
+  local output="$2"
+  local attempt=1 delay="$RETRY_DELAY_SECONDS"
+  local attempt_file="$output.attempt"
+
+  while true; do
+    : > "$attempt_file"
+    if gh api "/repos/${REPOSITORY}/releases/assets/${asset_id}" \
+        -H 'Accept: application/octet-stream' > "$attempt_file"
+    then
+      mv "$attempt_file" "$output"
+      return 0
+    fi
+    if [ "$attempt" -ge 4 ]; then
+      rm -f "$attempt_file"
+      return 1
+    fi
+    echo "reconcile-merge-candidates: GitHub command failed; retrying in ${delay}s: release asset $asset_id" >&2
+    sleep "$delay"
+    attempt=$((attempt + 1))
+    delay=$((delay * 2))
+  done
+}
+
+validate_terminal_marker() {
+  local tag="$1"
+  local pr="$2"
+  local release_id="$3"
+  local inventory="$4"
+  local marker_name="$5"
+  local row asset_id declared_size marker actual_size
+
+  row=$(awk -F '\t' -v name="$marker_name" '$2 == name { print; exit }' \
+    "$inventory")
+  IFS=$'\t' read -r asset_id _ declared_size <<< "$row"
+  if ! [[ "$asset_id" =~ ^[1-9][0-9]*$ ]] ||
+     ! [[ "$declared_size" =~ ^[0-9]+$ ]]
+  then
+    echo "reconcile-merge-candidates: release $tag has malformed terminal asset identity" >&2
+    return 1
+  fi
+  if [ "$declared_size" -gt 1048576 ]; then
+    echo "reconcile-merge-candidates: release $tag terminal marker is too large" >&2
+    return 1
+  fi
+
+  marker="$TMP_ROOT/terminal-$release_id-$marker_name"
+  if ! download_terminal_asset "$asset_id" "$marker"; then
+    echo "reconcile-merge-candidates: failed to download terminal marker for $tag" >&2
+    return 1
+  fi
+  actual_size=$(wc -c < "$marker" | tr -d '[:space:]')
+  if [ "$actual_size" != "$declared_size" ]; then
+    echo "reconcile-merge-candidates: release $tag terminal marker size differs from its asset inventory" >&2
+    return 1
+  fi
+
+  case "$marker_name" in
+    rejected.json)
+      if ! jq -e \
+          --arg repository "$REPOSITORY" \
+          --arg tag "$tag" \
+          --argjson pr "$pr" '
+          type == "object" and
+          .disposition_schema_version == 1 and
+          .disposition == "rejected" and
+          .repository == $repository and
+          .candidate_tag == $tag and
+          .pr_number == $pr and
+          (.rejection_reason | type == "string" and
+            test("^[a-z0-9-]+$")) and
+          (.merge_commit_sha == null or
+            (.merge_commit_sha | type == "string" and
+              test("^[0-9a-f]{40}$"))) and
+          (.rejected_at | type == "string" and length > 0) and
+          (.activation_run | type == "string" and length > 0)
+        ' "$marker" >/dev/null
+      then
+        echo "reconcile-merge-candidates: release $tag terminal rejection marker is malformed" >&2
+        return 1
+      fi
+      ;;
+    activated.json)
+      if ! jq -e \
+          --arg repository "$REPOSITORY" \
+          --arg tag "$tag" \
+          --argjson pr "$pr" '
+          type == "object" and
+          .schema_version == 1 and
+          .repository == $repository and
+          .candidate_tag == $tag and
+          .pr_number == $pr and
+          (.candidate_index_sha256 | type == "string" and
+            test("^[0-9a-f]{64}$")) and
+          (.ready_at | type == "string" and length > 0) and
+          (.merge_commit_sha | type == "string" and
+            test("^[0-9a-f]{40}$")) and
+          (.canonical_index_sha256 | type == "string" and
+            test("^[0-9a-f]{64}$")) and
+          (.activated_at | type == "string" and length > 0) and
+          (.activation_run | type == "string" and length > 0)
+        ' "$marker" >/dev/null
+      then
+        echo "reconcile-merge-candidates: release $tag terminal activation marker is malformed" >&2
+        return 1
+      fi
+      ;;
+    *)
+      echo "reconcile-merge-candidates: unsupported terminal marker $marker_name" >&2
+      return 1
+      ;;
+  esac
 }
 
 plan_candidate() {
   local tag="$1"
   local targeted="$2"
   local discovered_release_id="${3:-}"
-  local pr release_json release_id asset_names pr_json state merged_at head_sha target_url expected_url
-  local merge_sha base_ref distance release_file find_rc=0
+  local pr release_json release_id asset_inventory pr_json state merged_at head_sha target_url expected_url
+  local merge_sha base_ref distance release_file marker_name
+  local activated_count rejected_count find_rc=0
 
   if ! pr=$(candidate_pr "$tag"); then
     if [ "$targeted" = "true" ]; then
@@ -208,27 +342,54 @@ plan_candidate() {
        ($discovered_release_id == "" or
         .id == ($discovered_release_id | tonumber)) and
        (.draft | type == "boolean") and
-       (.immutable | type == "boolean") and
-       ((.draft == true and .immutable == false) or
-        (.draft == false and .immutable == true))' \
+       (.immutable | type == "boolean")' \
       <<<"$release_json" >/dev/null
   then
     echo "reconcile-merge-candidates: release $tag does not satisfy the candidate release contract" >&2
     return 1
   fi
   release_id=$(jq -r .id <<<"$release_json")
-  asset_names="$TMP_ROOT/assets-$release_id"
-  list_candidate_assets "$release_id" "$asset_names"
-  if ! grep -Fxq ready.json "$asset_names"; then
-    echo "reconcile-merge-candidates: skipping unready candidate $tag"
-    return 0
+  asset_inventory="$TMP_ROOT/assets-$release_id"
+  list_candidate_assets "$release_id" "$asset_inventory"
+
+  activated_count=$(awk -F '\t' '$2 == "activated.json" { count++ }
+    END { print count + 0 }' "$asset_inventory")
+  rejected_count=$(awk -F '\t' '$2 == "rejected.json" { count++ }
+    END { print count + 0 }' "$asset_inventory")
+  if [ "$activated_count" -gt 0 ] && [ "$rejected_count" -gt 0 ]; then
+    echo "reconcile-merge-candidates: release $tag contains both terminal markers" >&2
+    return 1
   fi
-  if grep -Fxq activated.json "$asset_names"; then
+  if [ "$activated_count" -gt 0 ] || [ "$rejected_count" -gt 0 ]; then
+    if [ "$activated_count" -gt 0 ]; then
+      marker_name=activated.json
+    else
+      marker_name=rejected.json
+    fi
+    validate_terminal_marker \
+      "$tag" "$pr" "$release_id" "$asset_inventory" "$marker_name"
+  fi
+  if [ "$activated_count" -gt 0 ]; then
     echo "reconcile-merge-candidates: skipping activated candidate $tag"
     return 0
   fi
-  if grep -Fxq rejected.json "$asset_names"; then
+  if [ "$rejected_count" -gt 0 ]; then
     echo "reconcile-merge-candidates: skipping terminally rejected candidate $tag"
+    return 0
+  fi
+
+  if ! jq -e '
+      (.draft == true and .immutable == false) or
+      (.draft == false and .immutable == true)
+    ' <<<"$release_json" >/dev/null
+  then
+    echo "reconcile-merge-candidates: release $tag does not satisfy the candidate release contract" >&2
+    return 1
+  fi
+  if ! awk -F '\t' '$2 == "ready.json" { found = 1 }
+      END { exit(found ? 0 : 1) }' "$asset_inventory"
+  then
+    echo "reconcile-merge-candidates: skipping unready candidate $tag"
     return 0
   fi
 

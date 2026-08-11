@@ -53,17 +53,65 @@ TAG_NONAUTHORITATIVE="merge-candidate-abi-v39-pr-6-run-60-attempt-1"
 TAG_READY_EARLIER="merge-candidate-abi-v39-pr-7-run-70-attempt-1"
 TAG_REJECTED="merge-candidate-abi-v39-pr-8-run-80-attempt-1"
 
-make_release() {
+make_release_state() {
   local tag="$1"
-  local assets_json="$2"
+  local asset_inputs_json="$2"
   local release_id="$3"
-  jq -n --arg tag "$tag" --argjson assets "$assets_json" --argjson release_id "$release_id" \
-    '{id: $release_id, tag_name: $tag, draft: true, prerelease: true,
-      immutable: false, assets: $assets}' \
+  local draft="$4"
+  local immutable="$5"
+  local assets_file="$TMP_ROOT/assets-$release_id.json"
+  local index count asset_id name content size
+
+  printf '[]\n' > "$assets_file"
+  count=$(jq 'length' <<<"$asset_inputs_json")
+  for ((index = 0; index < count; index++)); do
+    asset_id=$((release_id * 100 + index + 1))
+    name=$(jq -r --argjson index "$index" '.[$index].name' \
+      <<<"$asset_inputs_json")
+    content=$(jq -r --argjson index "$index" '.[$index].content // ""' \
+      <<<"$asset_inputs_json")
+    printf '%s' "$content" > "$DATA/asset-$asset_id.bin"
+    size=$(wc -c < "$DATA/asset-$asset_id.bin" | tr -d '[:space:]')
+    jq \
+      --argjson id "$asset_id" \
+      --arg name "$name" \
+      --argjson size "$size" \
+      '. + [{id: $id, name: $name, size: $size}]' \
+      "$assets_file" > "$assets_file.next"
+    mv "$assets_file.next" "$assets_file"
+  done
+
+  jq -n \
+    --arg tag "$tag" \
+    --slurpfile assets "$assets_file" \
+    --argjson release_id "$release_id" \
+    --argjson draft "$draft" \
+    --argjson immutable "$immutable" \
+    '{id: $release_id, tag_name: $tag, draft: $draft, prerelease: true,
+      immutable: $immutable, assets: $assets[0]}' \
     > "$DATA/release-$tag.json"
   cp "$DATA/release-$tag.json" "$DATA/release-id-$release_id.json"
-  printf '%s\n' "$assets_json" > "$DATA/assets-$release_id-page-1.json"
+  cp "$assets_file" "$DATA/assets-$release_id-page-1.json"
   printf '[]\n' > "$DATA/assets-$release_id-page-2.json"
+}
+
+make_release() {
+  make_release_state "$1" "$2" "$3" true false
+}
+
+make_terminal_release() {
+  local tag="$1"
+  local release_id="$2"
+  local marker_name="$3"
+  local marker_json="$4"
+  local assets_json
+  assets_json=$(jq -cn \
+    --arg marker_name "$marker_name" \
+    --arg marker_json "$marker_json" \
+    '[{name: "ready.json"}, {name: $marker_name, content: $marker_json}]')
+  # Historical activation first published the release and then uploaded its
+  # terminal marker, leaving a valid but mutable published lifecycle state.
+  make_release_state "$tag" "$assets_json" "$release_id" false false
 }
 
 make_pr() {
@@ -94,14 +142,34 @@ make_status() {
     > "$DATA/status-$head_sha.json"
 }
 
+ACTIVATED_JSON=$(jq -cn \
+  --arg repository example/repo \
+  --arg tag "$TAG_ACTIVATED" \
+  '{schema_version: 1, repository: $repository, pr_number: 3,
+    candidate_tag: $tag,
+    candidate_index_sha256: ("a" * 64),
+    ready_at: "2026-07-14T02:00:00Z",
+    merge_commit_sha: ("b" * 40),
+    canonical_index_sha256: ("c" * 64),
+    activated_at: "2026-07-14T03:00:00Z",
+    activation_run: "https://github.example/example/repo/actions/runs/30"}')
+REJECTED_JSON=$(jq -cn \
+  --arg repository example/repo \
+  --arg tag "$TAG_REJECTED" \
+  '{disposition_schema_version: 1, disposition: "rejected",
+    repository: $repository, pr_number: 8, candidate_tag: $tag,
+    rejection_reason: "squash-parent-mismatch", merge_commit_sha: null,
+    rejected_at: "2026-07-14T03:00:00Z",
+    activation_run: "https://github.example/example/repo/actions/runs/80"}')
+
 make_release "$TAG_READY" '[{"name":"candidate.json"},{"name":"ready.json"}]' 101
 make_release "$TAG_UNREADY" '[{"name":"candidate.json"}]' 102
-make_release "$TAG_ACTIVATED" '[{"name":"ready.json"},{"name":"activated.json"}]' 103
+make_terminal_release "$TAG_ACTIVATED" 103 activated.json "$ACTIVATED_JSON"
 make_release "$TAG_OPEN" '[{"name":"ready.json"}]' 104
 make_release "$TAG_ABANDONED" '[{"name":"ready.json"}]' 105
 make_release "$TAG_NONAUTHORITATIVE" '[{"name":"ready.json"}]' 106
 make_release "$TAG_READY_EARLIER" '[{"name":"ready.json"}]' 107
-make_release "$TAG_REJECTED" '[{"name":"ready.json"},{"name":"rejected.json"}]' 108
+make_terminal_release "$TAG_REJECTED" 108 rejected.json "$REJECTED_JSON"
 
 HEAD_1="1111111111111111111111111111111111111111"
 HEAD_2="2222222222222222222222222222222222222222"
@@ -169,7 +237,11 @@ case "$endpoint" in
   /repos/example/repo/releases/tags/*)
     exit 77
     ;;
-  /repos/example/repo/releases/*/assets\?per_page=2\&page=*)
+  /repos/example/repo/releases/assets/[0-9]*)
+    asset_id="${endpoint##*/}"
+    cat "$GH_STUB_DATA/asset-$asset_id.bin"
+    ;;
+  /repos/example/repo/releases/*/assets\?per_page=*\&page=*)
     release_id="${endpoint#/repos/example/repo/releases/}"
     release_id="${release_id%%/*}"
     page="${endpoint##*=}"
@@ -225,6 +297,62 @@ run_reconcile() {
   "$RECONCILE" --target-ref HEAD --target-branch main "$@")
 }
 
+replace_asset_content() {
+  local release_id="$1"
+  local asset_name="$2"
+  local content="$3"
+  local inventory="$DATA/assets-$release_id-page-1.json"
+  local asset_id size
+  asset_id=$(jq -r --arg name "$asset_name" \
+    '.[] | select(.name == $name) | .id' "$inventory")
+  [ -n "$asset_id" ] && [ "$asset_id" != null ]
+  printf '%s' "$content" > "$DATA/asset-$asset_id.bin"
+  size=$(wc -c < "$DATA/asset-$asset_id.bin" | tr -d '[:space:]')
+  jq --argjson id "$asset_id" --argjson size "$size" \
+    'map(if .id == $id then .size = $size else . end)' \
+    "$inventory" > "$inventory.next"
+  mv "$inventory.next" "$inventory"
+}
+
+append_asset() {
+  local release_id="$1"
+  local asset_id="$2"
+  local asset_name="$3"
+  local content="$4"
+  local inventory="$DATA/assets-$release_id-page-1.json"
+  local size
+  printf '%s' "$content" > "$DATA/asset-$asset_id.bin"
+  size=$(wc -c < "$DATA/asset-$asset_id.bin" | tr -d '[:space:]')
+  jq \
+    --argjson id "$asset_id" \
+    --arg name "$asset_name" \
+    --argjson size "$size" \
+    '. + [{id: $id, name: $name, size: $size}]' \
+    "$inventory" > "$inventory.next"
+  mv "$inventory.next" "$inventory"
+}
+
+expect_candidate_failure() {
+  local tag="$1"
+  local expected_error="$2"
+  local label="$3"
+  : > "$LOG"
+  if run_reconcile \
+      --plan-file "$PLAN" \
+      --candidate-tag "$tag" \
+      --max-pages 5 \
+      --per-page 2 \
+      --asset-per-page 100 \
+      >"$TMP_ROOT/$label.out" \
+      2>"$TMP_ROOT/$label.err"
+  then
+    echo "$label candidate was accepted" >&2
+    exit 1
+  fi
+  grep -q "$expected_error" "$TMP_ROOT/$label.err"
+  [ ! -s "$PLAN" ]
+}
+
 # The scheduled sweep follows bounded pagination, retries transient API
 # failures, ignores unready/activated/open/abandoned/non-authoritative
 # candidates, and prefers the newest merged package state.
@@ -249,6 +377,89 @@ if grep -Fq '/repos/example/repo/pulls/8' "$LOG"; then
   echo "terminally rejected candidate reached PR reconciliation" >&2
   exit 1
 fi
+if grep -Fq '/repos/example/repo/pulls/3' "$LOG"; then
+  echo "activated candidate reached PR reconciliation" >&2
+  exit 1
+fi
+grep -Fxq '/repos/example/repo/releases/assets/10302' "$LOG"
+grep -Fxq '/repos/example/repo/releases/assets/10802' "$LOG"
+
+# Valid terminal bytes, not marker names alone, are what permit a historical
+# published/mutable candidate to leave reconciliation without querying its PR.
+: > "$LOG"
+run_reconcile \
+  --plan-file "$PLAN" \
+  --candidate-tag "$TAG_REJECTED" \
+  --max-pages 5 \
+  --per-page 2 \
+  --asset-per-page 100 \
+  >"$TMP_ROOT/legacy-terminal.out"
+[ ! -s "$PLAN" ]
+grep -Fxq '/repos/example/repo/releases/assets/10802' "$LOG"
+if grep -Fq '/repos/example/repo/pulls/8' "$LOG"; then
+  echo "authenticated terminal candidate reached PR reconciliation" >&2
+  exit 1
+fi
+
+# A terminal state is fail-closed: conflicting markers, duplicate identities,
+# malformed or crossed receipts, oversized declarations, and byte-count drift
+# can never turn an invalid historical release into a skipped candidate.
+cp "$DATA/assets-108-page-1.json" "$TMP_ROOT/assets-108.good.json"
+ACTIVATED_FOR_REJECTED=$(jq -cn \
+  --arg repository example/repo \
+  --arg tag "$TAG_REJECTED" \
+  '{schema_version: 1, repository: $repository, pr_number: 8,
+    candidate_tag: $tag, candidate_index_sha256: ("d" * 64),
+    ready_at: "2026-07-14T02:00:00Z", merge_commit_sha: ("e" * 40),
+    canonical_index_sha256: ("f" * 64),
+    activated_at: "2026-07-14T03:00:00Z",
+    activation_run: "https://github.example/example/repo/actions/runs/80"}')
+append_asset 108 10899 activated.json "$ACTIVATED_FOR_REJECTED"
+expect_candidate_failure "$TAG_REJECTED" terminal both-terminal-markers
+cp "$TMP_ROOT/assets-108.good.json" "$DATA/assets-108-page-1.json"
+rm "$DATA/asset-10899.bin"
+
+append_asset 108 10899 rejected.json "$REJECTED_JSON"
+expect_candidate_failure "$TAG_REJECTED" duplicate duplicate-marker-name
+cp "$TMP_ROOT/assets-108.good.json" "$DATA/assets-108-page-1.json"
+rm "$DATA/asset-10899.bin"
+
+append_asset 108 10802 extra.json '{}'
+expect_candidate_failure "$TAG_REJECTED" duplicate duplicate-marker-id
+cp "$TMP_ROOT/assets-108.good.json" "$DATA/assets-108-page-1.json"
+rm "$DATA/asset-10802.bin"
+printf '%s' "$REJECTED_JSON" > "$DATA/asset-10802.bin"
+
+replace_asset_content 108 rejected.json '{not-json'
+expect_candidate_failure "$TAG_REJECTED" terminal malformed-terminal-marker
+replace_asset_content 108 rejected.json "$REJECTED_JSON"
+
+CROSSED_REJECTED_JSON=$(jq -c \
+  '.candidate_tag = "merge-candidate-abi-v39-pr-99-run-1-attempt-1"' \
+  <<<"$REJECTED_JSON")
+replace_asset_content 108 rejected.json "$CROSSED_REJECTED_JSON"
+expect_candidate_failure "$TAG_REJECTED" terminal crossed-terminal-marker
+replace_asset_content 108 rejected.json "$REJECTED_JSON"
+
+jq 'map(if .name == "rejected.json" then .size = 1048577 else . end)' \
+  "$DATA/assets-108-page-1.json" > "$DATA/assets-108-page-1.json.next"
+mv "$DATA/assets-108-page-1.json.next" "$DATA/assets-108-page-1.json"
+expect_candidate_failure "$TAG_REJECTED" large oversized-terminal-marker
+cp "$TMP_ROOT/assets-108.good.json" "$DATA/assets-108-page-1.json"
+
+jq 'map(if .name == "rejected.json" then .size += 1 else . end)' \
+  "$DATA/assets-108-page-1.json" > "$DATA/assets-108-page-1.json.next"
+mv "$DATA/assets-108-page-1.json.next" "$DATA/assets-108-page-1.json"
+expect_candidate_failure "$TAG_REJECTED" size terminal-marker-size-drift
+cp "$TMP_ROOT/assets-108.good.json" "$DATA/assets-108-page-1.json"
+
+cp "$DATA/releases-page-1.json" "$TMP_ROOT/releases-page-1.good.json"
+jq 'map(if .id == 101 then .draft = false | .immutable = false else . end)' \
+  "$DATA/releases-page-1.json" > "$DATA/releases-page-1.json.next"
+mv "$DATA/releases-page-1.json.next" "$DATA/releases-page-1.json"
+expect_candidate_failure "$TAG_READY" 'candidate release contract' \
+  published-mutable-nonterminal
+mv "$TMP_ROOT/releases-page-1.good.json" "$DATA/releases-page-1.json"
 
 # A scheduled run activates a bounded batch. Candidates beyond the cap remain
 # discoverable by later schedules after activated receipts remove prior work.

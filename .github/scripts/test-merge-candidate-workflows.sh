@@ -689,12 +689,11 @@ grep -Fq '/releases?per_page=${PER_PAGE}&page=${page}' "$RECONCILE_SCRIPT" || \
   fail "scheduled reconciliation must use explicit bounded release pagination"
 grep -Fq 'release scan reached the ${MAX_PAGES}-page safety bound' "$RECONCILE_SCRIPT" || \
   fail "reconciliation must fail rather than silently truncate its scan"
-grep -Fq 'grep -Fxq ready.json "$asset_names"' "$RECONCILE_SCRIPT" || \
-  fail "reconciliation must require a sealed ready candidate"
-grep -Fq 'grep -Fxq activated.json "$asset_names"' "$RECONCILE_SCRIPT" || \
-  fail "reconciliation must skip candidates with activation receipts"
-grep -Fq 'grep -Fxq rejected.json "$asset_names"' "$RECONCILE_SCRIPT" || \
-  fail "reconciliation must skip candidates with terminal rejection receipts"
+# Exercise the real reconciler because marker names in source do not prove that
+# terminal bytes are downloaded, identity-bound, bounded, and validated before
+# the historical lifecycle exception is accepted.
+bash "$SCRIPT_DIR/test-reconcile-merge-candidates.sh" >/dev/null || \
+  fail "reconciliation terminal receipt behavior failed"
 grep -Fq '/releases/${release_id}/assets?per_page=${ASSET_PER_PAGE}&page=${page}' "$RECONCILE_SCRIPT" || \
   fail "candidate readiness discovery must paginate release assets"
 grep -Fq 'latest_gate_target "$head_sha"' "$RECONCILE_SCRIPT" || \
