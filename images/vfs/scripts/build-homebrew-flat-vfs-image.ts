@@ -33,11 +33,16 @@ import {
   writeVfsBinary,
 } from "../../../host/src/vfs/image-helpers";
 import {
+  KANDELO_DEMO_CONFIG_PATH,
+  MAX_KANDELO_DEMO_CONFIG_BYTES,
+} from "../../../web-libs/kandelo-session/src/demo-config";
+import {
   KANDELO_SHELL_CONFIG_PATH,
   MAX_KANDELO_SHELL_CONFIG_BYTES,
 } from "../../../web-libs/kandelo-session/src/shell-config";
 import {
   assertShellExecutable,
+  parseDemoConfigBytes,
   parseShellConfigBytes,
   restoreVerifiedHomebrewBaseImage,
   serializeVerifiedHomebrewVfsImage,
@@ -65,6 +70,7 @@ export interface FlatHomebrewVfsCliOptions {
   baseImage: string;
   bottleCache: string;
   shellConfig: string;
+  demoConfig?: string;
   out: string;
   report: string;
 }
@@ -74,6 +80,7 @@ const CLI_FLAGS = new Map<string, keyof FlatHomebrewVfsCliOptions>([
   ["--base-image", "baseImage"],
   ["--bottle-cache", "bottleCache"],
   ["--shell-config", "shellConfig"],
+  ["--demo-config", "demoConfig"],
   ["--out", "out"],
   ["--report", "report"],
 ]);
@@ -97,7 +104,15 @@ export function parseFlatHomebrewVfsArgs(
     }
     parsed[key] = value;
   }
-  for (const [flag, key] of CLI_FLAGS) {
+  for (const flag of [
+    "--selection",
+    "--base-image",
+    "--bottle-cache",
+    "--shell-config",
+    "--out",
+    "--report",
+  ] as const) {
+    const key = CLI_FLAGS.get(flag)!;
     if (parsed[key] === undefined) {
       throw new Error(`required flat Homebrew VFS option is missing: ${flag}`);
     }
@@ -268,6 +283,11 @@ export interface FlatHomebrewVfsArtifactReport {
     sha256: string;
     bytes: number;
   };
+  demo_config?: {
+    path: string;
+    sha256: string;
+    bytes: number;
+  };
   bottle_cache: {
     entries: Array<{
       full_name: string;
@@ -334,6 +354,16 @@ export async function runFlatHomebrewVfsImageBuilder(
     ),
     options.shellConfig,
   );
+  const demo = options.demoConfig === undefined
+    ? undefined
+    : parseDemoConfigBytes(
+      readBoundedRegularFileNoFollow(
+        options.demoConfig,
+        `flat Homebrew demo config at ${options.demoConfig}`,
+        MAX_KANDELO_DEMO_CONFIG_BYTES,
+      ),
+      options.demoConfig,
+    );
   const cacheRoot = resolveFlatHomebrewBottleCacheRoot(options.bottleCache);
   const cleanupWarnings: string[] = [];
   const fetchBottle = dependencies.fetchBottleBytes ??
@@ -356,6 +386,7 @@ export async function runFlatHomebrewVfsImageBuilder(
   });
 
   installFlatHomebrewShellConfig(build.fs, shell);
+  installFlatHomebrewDemoConfig(build.fs, demo);
   assertNoPendingLazyBacking(build.fs, "composed flat Homebrew VFS");
   // Defense in depth: even if a future materializer introduces lazy state
   // after the explicit registry check, all-materialized serialization may not
@@ -391,6 +422,15 @@ export async function runFlatHomebrewVfsImageBuilder(
           sha256: shell.sha256,
           bytes: shell.bytes,
         },
+        ...(demo === undefined
+          ? {}
+          : {
+            demoConfig: {
+              path: KANDELO_DEMO_CONFIG_PATH,
+              sha256: demo.sha256,
+              bytes: demo.bytes,
+            },
+          }),
         homebrewFlat: {
           selectionSha256: plan.selectionSha256,
           requestedVfsFilename: plan.requestedVfsFilename,
@@ -409,6 +449,7 @@ export async function runFlatHomebrewVfsImageBuilder(
     restored,
     build.report,
     shell,
+    demo,
     policy.vfs.maxByteLength,
     serialized.bytes,
   );
@@ -433,6 +474,15 @@ export async function runFlatHomebrewVfsImageBuilder(
       sha256: shell.sha256,
       bytes: shell.bytes,
     },
+    ...(demo === undefined
+      ? {}
+      : {
+        demo_config: {
+          path: KANDELO_DEMO_CONFIG_PATH,
+          sha256: demo.sha256,
+          bytes: demo.bytes,
+        },
+      }),
     bottle_cache: {
       entries: plan.packages.map((descriptor) => ({
         full_name: descriptor.fullName,
@@ -532,10 +582,25 @@ function installFlatHomebrewShellConfig(
   assertShellExecutable(fs, shell.config.path);
 }
 
+function installFlatHomebrewDemoConfig(
+  fs: MemoryFileSystem,
+  demo: ReturnType<typeof parseDemoConfigBytes> | undefined,
+): void {
+  if (demo === undefined) return;
+  if (vfsPathExists(fs, KANDELO_DEMO_CONFIG_PATH)) {
+    throw new Error(
+      `refusing to overwrite existing demo config: ${KANDELO_DEMO_CONFIG_PATH}`,
+    );
+  }
+  ensureDirRecursive(fs, dirname(KANDELO_DEMO_CONFIG_PATH));
+  writeVfsBinary(fs, KANDELO_DEMO_CONFIG_PATH, demo.source, 0o644);
+}
+
 function assertRestoredFlatHomebrewVfs(
   fs: MemoryFileSystem,
   buildReport: HomebrewFlatVfsBuildReport,
   shell: ReturnType<typeof parseShellConfigBytes>,
+  demo: ReturnType<typeof parseDemoConfigBytes> | undefined,
   expectedMaxByteLength: number,
   imageBytes: Uint8Array,
 ): void {
@@ -592,6 +657,31 @@ function assertRestoredFlatHomebrewVfs(
       new TextDecoder("utf-8", { fatal: true }).decode(shell.source)
   ) {
     throw new Error("restored flat Homebrew shell config changed");
+  }
+  const metadataDemo = fs.getImageMetadata()?.demoConfig;
+  if (demo === undefined) {
+    if (metadataDemo !== undefined) {
+      throw new Error("restored flat Homebrew VFS has unexpected demo metadata");
+    }
+    return;
+  }
+  const expectedDemo = {
+    path: KANDELO_DEMO_CONFIG_PATH,
+    sha256: demo.sha256,
+    bytes: demo.bytes,
+  };
+  if (JSON.stringify(metadataDemo) !== JSON.stringify(expectedDemo)) {
+    throw new Error("restored flat Homebrew demo metadata changed");
+  }
+  if (
+    readVfsText(fs, KANDELO_DEMO_CONFIG_PATH) !==
+      new TextDecoder("utf-8", { fatal: true }).decode(demo.source)
+  ) {
+    throw new Error("restored flat Homebrew demo config changed");
+  }
+  const demoStat = fs.stat(KANDELO_DEMO_CONFIG_PATH);
+  if ((demoStat.mode & 0o7777) !== 0o644) {
+    throw new Error("restored flat Homebrew demo config mode changed");
   }
 }
 

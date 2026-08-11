@@ -118,7 +118,7 @@ describe("flat Homebrew VFS image filesystem boundary", () => {
     fsFaults.simulateUnsafeNumericIdentity = false;
   });
 
-  it("accepts exactly one value for each of the six CLI flags", () => {
+  it("requires six inputs and accepts one optional demo configuration", () => {
     expect(parseFlatHomebrewVfsArgs(validArgs())).toEqual({
       selection: "selection.json",
       baseImage: "base.vfs.zst",
@@ -127,10 +127,30 @@ describe("flat Homebrew VFS image filesystem boundary", () => {
       out: "kandelo-homebrew-experimental-abi42-wasm32.vfs.zst",
       report: "report.json",
     });
+    expect(parseFlatHomebrewVfsArgs([
+      ...validArgs(),
+      "--demo-config",
+      "demo.json",
+    ])).toEqual({
+      selection: "selection.json",
+      baseImage: "base.vfs.zst",
+      bottleCache: "bottles",
+      shellConfig: "shell.json",
+      demoConfig: "demo.json",
+      out: "kandelo-homebrew-experimental-abi42-wasm32.vfs.zst",
+      report: "report.json",
+    });
 
     for (const args of [
       [...validArgs(), "--metadata", "metadata.json"],
       [...validArgs(), "--selection", "other.json"],
+      [
+        ...validArgs(),
+        "--demo-config",
+        "demo.json",
+        "--demo-config",
+        "other.json",
+      ],
       validArgs().slice(0, -1),
       validArgs().filter((value) => value !== "shell.json"),
     ]) {
