@@ -64,12 +64,32 @@ function signatures(
       parameters: [pointer, i32],
       result: i32,
     },
-    kernel_exec_prepare: {
+    kernel_exec_commit: {
+      parameters: [i32, i32, i32],
+      result: i32,
+    },
+    kernel_exec_target_cancel: {
       parameters: [i32, i32],
       result: i32,
     },
-    kernel_exec_setup_for_thread: {
+    kernel_exec_target_prepare: {
+      parameters: [i32, i32, i32, pointer, pointer, i32],
+      result: i32,
+    },
+    kernel_exec_target_read: {
+      parameters: [i32, i32, i32, i32, pointer, pointer],
+      result: i32,
+    },
+    kernel_exec_target_size: {
       parameters: [i32, i32],
+      result: i64,
+    },
+    kernel_spawn_exec_commit: {
+      parameters: [i32, i32, i32],
+      result: i32,
+    },
+    kernel_spawn_exec_target_prepare: {
+      parameters: [i32, i32, pointer, pointer],
       result: i32,
     },
     kernel_fd_is_open: {

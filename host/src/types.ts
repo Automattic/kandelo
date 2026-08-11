@@ -100,6 +100,8 @@ export interface PlatformIO {
     whence: number,
   ): HostFileOffset;
   fstat(handle: number): StatResult;
+  /** Filesystem identity and set-ID policy bound to this exact open handle. */
+  fstatfs?(handle: number): StatfsResult;
   fpathconf(handle: number, name: number): PathconfValue;
 
   /**

@@ -92,6 +92,24 @@ describe("process memory creator destroy gate", () => {
     ]);
   });
 
+  it("keeps transferred exec-plan ownership in the destroy drain until release", async () => {
+    const gate = new ProcessMemoryCreatorGate();
+    const sweep = vi.fn();
+    const admission = gate.acquire("an exec replacement plan");
+
+    const destroy = gate.closeAndRunAfterDrain(sweep);
+    await Promise.resolve();
+    expect(sweep).not.toHaveBeenCalled();
+
+    admission.release();
+    admission.release();
+    await expect(destroy).resolves.toBeUndefined();
+    expect(sweep).toHaveBeenCalledOnce();
+    expect(() => gate.acquire("a late exec replacement plan")).toThrow(
+      "kernel worker is being destroyed; cannot start a late exec replacement plan",
+    );
+  });
+
   it("releases admission when a creator throws", async () => {
     const gate = new ProcessMemoryCreatorGate();
     const sweep = vi.fn();

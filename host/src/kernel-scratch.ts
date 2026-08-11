@@ -130,6 +130,8 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_drain_audio",
   "kernel_drain_wakeup_events",
   "kernel_enum_procs",
+  "kernel_exec_target_prepare",
+  "kernel_exec_target_read",
   "kernel_get_cwd",
   "kernel_get_dirfd_path",
   "kernel_get_fd_path",
@@ -206,6 +208,7 @@ const REQUIRED_POINTER_1 = intrinsicObjectFreeze([1] as const);
 const REQUIRED_POINTER_2 = intrinsicObjectFreeze([2] as const);
 const REQUIRED_POINTER_3 = intrinsicObjectFreeze([3] as const);
 const REQUIRED_POINTER_3_5 = intrinsicObjectFreeze([3, 5] as const);
+const REQUIRED_POINTER_4 = intrinsicObjectFreeze([4] as const);
 const REQUIRED_POINTER_5 = intrinsicObjectFreeze([5] as const);
 const REQUIRED_POINTER_11 = intrinsicObjectFreeze([11] as const);
 const NULLABLE_POINTER_1_3_5 = intrinsicObjectFreeze([1, 3, 5] as const);
@@ -249,9 +252,12 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_tcsetattr":
       return REQUIRED_POINTER_2;
     case "kernel_process_metadata_stage":
+    case "kernel_exec_target_prepare":
     case "kernel_setsockopt":
     case "kernel_socketpair":
       return REQUIRED_POINTER_3;
+    case "kernel_exec_target_read":
+      return REQUIRED_POINTER_4;
     case "kernel_getsockopt":
       return REQUIRED_POINTER_3_5;
     case "kernel_wait_child_poll":
@@ -296,6 +302,8 @@ function isKernelScratchExportName(
     case "kernel_drain_audio":
     case "kernel_drain_wakeup_events":
     case "kernel_enum_procs":
+    case "kernel_exec_target_prepare":
+    case "kernel_exec_target_read":
     case "kernel_get_cwd":
     case "kernel_get_dirfd_path":
     case "kernel_get_fd_path":

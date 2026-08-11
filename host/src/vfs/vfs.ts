@@ -27,6 +27,7 @@ interface HandleInfo {
   backend: FileSystemBackend;
   backendId: number;
   localHandle: number;
+  statfs?: StatfsResult;
 }
 
 const MAX_U64 = (1n << 64n) - 1n;
@@ -200,10 +201,22 @@ export class VirtualPlatformIO implements PlatformIO {
   }
 
   open(path: string, flags: number, mode: number): number {
-    const { backend, backendId, relativePath } = this.resolve(path);
+    const { backend, backendId, relativePath, setIdCapability } = this.resolve(path);
+    const backendStatfs = backend.statfs(relativePath);
+    const statfs = {
+      ...backendStatfs,
+      flags: setIdCapability.kind === "nosuid"
+        ? backendStatfs.flags | ST_NOSUID
+        : backendStatfs.flags & ~ST_NOSUID,
+    };
     const localHandle = backend.open(relativePath, flags, mode);
     const globalHandle = this.nextFileHandle++;
-    this.fileHandles.set(globalHandle, { backend, backendId, localHandle });
+    this.fileHandles.set(globalHandle, {
+      backend,
+      backendId,
+      localHandle,
+      statfs,
+    });
     return globalHandle;
   }
 
@@ -256,6 +269,14 @@ export class VirtualPlatformIO implements PlatformIO {
   fstat(handle: number): StatResult {
     const info = this.getFileHandle(handle);
     return this.qualifyStat(info.backend, info.backend.fstat(info.localHandle));
+  }
+
+  fstatfs(handle: number): StatfsResult {
+    const info = this.getFileHandle(handle);
+    if (info.statfs === undefined) {
+      throw new Error(`EBADF: file handle ${handle} has no mount route`);
+    }
+    return { ...info.statfs };
   }
 
   fpathconf(handle: number, name: number): PathconfValue {

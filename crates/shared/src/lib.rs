@@ -832,6 +832,7 @@ pub enum Errno {
     ENFILE = 23,
     EMFILE = 24,
     ENOTTY = 25,
+    ETXTBSY = 26,
     EFBIG = 27,
     ENOSPC = 28,
     ESPIPE = 29,
@@ -872,6 +873,9 @@ pub enum Errno {
 }
 
 impl Errno {
+    /// POSIX permits ENOTSUP and EOPNOTSUPP to share one numeric value.
+    pub const ENOTSUP: Self = Self::EOPNOTSUPP;
+
     /// Convert a raw u32 value to an Errno variant.
     pub fn from_u32(val: u32) -> Option<Errno> {
         match val {
@@ -898,6 +902,7 @@ impl Errno {
             23 => Some(Errno::ENFILE),
             24 => Some(Errno::EMFILE),
             25 => Some(Errno::ENOTTY),
+            26 => Some(Errno::ETXTBSY),
             27 => Some(Errno::EFBIG),
             28 => Some(Errno::ENOSPC),
             29 => Some(Errno::ESPIPE),
@@ -2972,8 +2977,11 @@ pub mod abi {
         "kernel_create_process",
         "kernel_create_process_with_stdio",
         "kernel_dequeue_signal",
-        "kernel_exec_prepare",
-        "kernel_exec_setup_for_thread",
+        "kernel_exec_commit",
+        "kernel_exec_target_cancel",
+        "kernel_exec_target_prepare",
+        "kernel_exec_target_read",
+        "kernel_exec_target_size",
         "kernel_fork_process",
         "kernel_get_cwd",
         "kernel_get_dirfd_path",
@@ -3019,6 +3027,8 @@ pub mod abi {
         "kernel_set_current_tid",
         "kernel_set_cwd",
         "kernel_shmid_ds_bytes",
+        "kernel_spawn_exec_commit",
+        "kernel_spawn_exec_target_prepare",
         "kernel_spawn_process",
         "kernel_spawn_reserved_process",
         "kernel_spawn_scratch_begin",

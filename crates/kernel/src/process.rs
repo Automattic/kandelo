@@ -8,6 +8,7 @@ use wasm_posix_shared::{
 };
 
 use crate::credentials::Credentials;
+use crate::exec_target::PreparedExecLedger;
 use crate::fd::FdTable;
 use crate::memory::MemoryManager;
 use crate::ofd::{FileType, OfdTable};
@@ -67,6 +68,11 @@ pub trait HostIO {
     fn host_statfs(&mut self, _path: &[u8]) -> Result<WasmStatfs, Errno> {
         Err(Errno::ENOSYS)
     }
+    /// Query filesystem policy through an already-open exact host object.
+    /// Pathname lookup is not an acceptable fallback for retained authority.
+    fn host_fstatfs(&mut self, _handle: i64) -> Result<WasmStatfs, Errno> {
+        Err(Errno::ENOSYS)
+    }
     fn host_pathconf(&mut self, _path: &[u8], _name: i32) -> Result<Option<i64>, Errno> {
         Err(Errno::ENOSYS)
     }
@@ -104,7 +110,6 @@ pub trait HostIO {
     fn host_fsync(&mut self, handle: i64) -> Result<(), Errno>;
     fn host_fchmod(&mut self, handle: i64, mode: u32) -> Result<(), Errno>;
     fn host_fchown(&mut self, handle: i64, uid: u32, gid: u32) -> Result<(), Errno>;
-    fn host_exec(&mut self, path: &[u8]) -> Result<(), Errno>;
     fn host_set_alarm(&mut self, seconds: u32) -> Result<(), Errno>;
     /// Arm/disarm a POSIX timer on the host.
     /// `timer_id` is the per-process timer slot index.
@@ -734,6 +739,12 @@ pub struct Process {
     /// Task 9 only preserves this marker across process-state transport.
     /// Target-aware exec commit is the sole future authority that may set it.
     pub(crate) secure_exec: bool,
+    /// Successful image replacements advance this generation exactly once.
+    /// Prepared exec targets bind to its current value and cannot survive a
+    /// competing commit for the same persistent PID.
+    pub(crate) exec_generation: u64,
+    /// Kernel-owned exact executable-object leases awaiting commit/cancel.
+    pub(crate) prepared_exec_targets: PreparedExecLedger,
     pub pgid: u32,
     pub sid: u32,
     /// True iff this process is the session leader of its session (i.e. the
@@ -801,13 +812,6 @@ pub struct Process {
     pub fork_exec_argv: Option<Vec<Vec<u8>>>,
     /// FD actions to apply before exec in fork child.
     pub fork_fd_actions: Vec<FdAction>,
-    /// Exact live task that completed the fallible exec-prepare phase.
-    ///
-    /// This is an ephemeral host/kernel handoff token. It is deliberately not
-    /// serialized across fork or legacy exec-state transfer: a replacement
-    /// image must be committed only by the same kernel-owned task that the
-    /// host explicitly prepared in the current process.
-    pub(crate) exec_prepared_tid: Option<u32>,
     /// Next ephemeral port to assign for bind(port=0).
     pub next_ephemeral_port: u16,
     /// Epoll instances owned by this process.
@@ -1059,6 +1063,8 @@ impl Process {
             ppid: 0,
             credentials: Credentials::root(),
             secure_exec: false,
+            exec_generation: 0,
+            prepared_exec_targets: PreparedExecLedger::new(),
             pgid: pid,
             sid: 0,
             is_session_leader: false,
@@ -1093,7 +1099,6 @@ impl Process {
             fork_exec_path: None,
             fork_exec_argv: None,
             fork_fd_actions: Vec::new(),
-            exec_prepared_tid: None,
             next_ephemeral_port: 49152,
             epolls: Vec::new(),
             posix_timers: Vec::new(),
@@ -1563,40 +1568,6 @@ impl Process {
             && matches!(self.state, ProcessState::Running | ProcessState::Stopped)
             && tid != 0
             && (tid == self.pid || self.get_thread(tid).is_some())
-    }
-
-    /// Begin the fallible exec phase for an exact kernel-owned caller.
-    pub(crate) fn begin_exec_prepare(&mut self, caller_tid: u32) -> Result<(), Errno> {
-        // A failed or superseded prepare must never authorize a later commit.
-        self.exec_prepared_tid = None;
-        if !self.is_live_explicit_tid(caller_tid) {
-            return Err(Errno::ESRCH);
-        }
-        Ok(())
-    }
-
-    /// Mark a successful exec prepare after all fallible file actions finish.
-    pub(crate) fn finish_exec_prepare(&mut self, caller_tid: u32) {
-        debug_assert!(self.is_live_explicit_tid(caller_tid));
-        self.exec_prepared_tid = Some(caller_tid);
-    }
-
-    /// Consume the one-shot exec authorization for the same exact caller.
-    pub(crate) fn consume_exec_prepare(&mut self, caller_tid: u32) -> Result<(), Errno> {
-        // Every setup attempt consumes the token, including an invalid or
-        // mismatched attempt, so stale authority cannot be retried later.
-        let prepared_tid = self.exec_prepared_tid.take();
-        if !self.is_live_explicit_tid(caller_tid) {
-            return Err(Errno::ESRCH);
-        }
-        if prepared_tid != Some(caller_tid) {
-            return Err(Errno::EINVAL);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn clear_exec_prepare(&mut self) {
-        self.exec_prepared_tid = None;
     }
 
     /// Effective blocked mask for the given TID.
@@ -2215,9 +2186,6 @@ pub(crate) mod test_host {
         fn host_fchown(&mut self, _h: i64, _u: u32, _g: u32) -> Result<(), Errno> {
             Ok(())
         }
-        fn host_exec(&mut self, _p: &[u8]) -> Result<(), Errno> {
-            Err(Errno::ENOSYS)
-        }
         fn host_set_alarm(&mut self, _s: u32) -> Result<(), Errno> {
             Ok(())
         }
@@ -2610,32 +2578,6 @@ mod tests {
 
         proc.state = ProcessState::Exited;
         assert_eq!(proc.pick_thread_for_shared_signal(15), None);
-    }
-
-    #[test]
-    fn exec_prepare_authorization_is_exact_and_one_shot() {
-        let mut proc = Process::new(41);
-        proc.add_thread(ThreadInfo::new(42, 0, 0, 0));
-
-        assert_eq!(proc.begin_exec_prepare(0), Err(Errno::ESRCH));
-        assert_eq!(proc.consume_exec_prepare(41), Err(Errno::EINVAL));
-        proc.begin_exec_prepare(42).unwrap();
-        proc.finish_exec_prepare(42);
-        assert_eq!(proc.consume_exec_prepare(41), Err(Errno::EINVAL));
-        assert_eq!(proc.consume_exec_prepare(42), Err(Errno::EINVAL));
-
-        proc.begin_exec_prepare(42).unwrap();
-        proc.finish_exec_prepare(42);
-        assert_eq!(proc.begin_exec_prepare(9_999), Err(Errno::ESRCH));
-        assert_eq!(proc.consume_exec_prepare(42), Err(Errno::EINVAL));
-
-        proc.begin_exec_prepare(42).unwrap();
-        proc.finish_exec_prepare(42);
-        assert_eq!(proc.consume_exec_prepare(42), Ok(()));
-        assert_eq!(proc.consume_exec_prepare(42), Err(Errno::EINVAL));
-
-        let mut synthetic_init = Process::new(1);
-        assert_eq!(synthetic_init.begin_exec_prepare(1), Err(Errno::ESRCH));
     }
 
     #[test]

@@ -1293,6 +1293,49 @@ wasm_require_exports() {
     fi
 }
 
+wasm_reject_exports() {
+    local path="${1:-}"
+    shift || true
+    local present=()
+    local name export_status decoder_failed=0
+    for name in "$@"; do
+        export_status=0
+        wasm_has_export "$path" "$name" || export_status=$?
+        case "$export_status" in
+            0) present+=("$name") ;;
+            1) ;;
+            *) decoder_failed=1 ;;
+        esac
+    done
+    if [ "$decoder_failed" -eq 1 ]; then
+        echo "ERROR: unable to inspect forbidden wasm exports: $path" >&2
+        return 1
+    fi
+    if [ ${#present[@]} -gt 0 ]; then
+        echo "ERROR: refusing wasm artifact with forbidden exports: $path" >&2
+        printf '       forbidden: %s\n' "${present[*]}" >&2
+        return 1
+    fi
+}
+
+wasm_require_target_aware_exec_authority() {
+    local path="${1:-}"
+    wasm_require_exports "$path" \
+        kernel_exec_target_prepare \
+        kernel_spawn_exec_target_prepare \
+        kernel_exec_target_size \
+        kernel_exec_target_read \
+        kernel_exec_target_cancel \
+        kernel_exec_commit \
+        kernel_spawn_exec_commit &&
+        wasm_reject_exports "$path" \
+            kernel_exec_prepare \
+            kernel_exec_setup \
+            kernel_exec_setup_for_thread \
+            kernel_execve \
+            kernel_execveat
+}
+
 wasm_has_complete_fork_instrumentation() {
     local path="${1:-}"
     local inventory inventory_status=0

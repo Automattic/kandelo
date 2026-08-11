@@ -79,8 +79,13 @@ kernel_remove_process(pid) → 0
 kernel_handle_channel(channel_offset, channel_capacity, pid, retry_token) → result
 kernel_blocking_retry_token(pid, tid, syscall_nr) → opaque_token | -errno
 kernel_blocking_retry_release(pid, tid, opaque_token) → 0 | -errno
-kernel_exec_prepare(pid, caller_tid) → 0 | -errno
-kernel_exec_setup_for_thread(pid, caller_tid) → 0 | -errno
+kernel_exec_target_prepare(pid, caller_tid, dirfd, path_ptr, path_len, flags) → opaque_target | -errno
+kernel_spawn_exec_target_prepare(parent_pid, child_pid, path_ptr, path_len) → opaque_target | -errno
+kernel_exec_target_size(owner_pid, opaque_target) → byte_length | -errno
+kernel_exec_target_read(owner_pid, opaque_target, offset_lo, offset_hi, dst_ptr, dst_capacity) → bytes_read | -errno
+kernel_exec_target_cancel(owner_pid, opaque_target) → 0 | -errno
+kernel_exec_commit(pid, caller_tid, opaque_target) → 0 | -errno
+kernel_spawn_exec_commit(parent_pid, child_pid, opaque_target) → 0 | -errno
 kernel_thread_exit(pid, tid) → 0 | -errno
 kernel_commit_process_exit(status) → committed_low_8_bits
 kernel_dequeue_signal(pid, tid, out_ptr, out_capacity) → 0 | signum | -errno
@@ -1209,37 +1214,57 @@ pipes, sockets, PTYs, terminal devices, and listener queues.
 
 ### exec()
 
-1. User calls `execve(path, argv, envp)` → kernel returns exec request to host
-2. Host resolves `path` to a Wasm binary (via filesystem or program map)
-3. The host compiles the replacement module, checks its ABI marker, and preallocates its fresh `WebAssembly.Memory` before the irreversible transition. It also validates a 4 MiB combined argv/environment representation (UTF-8 strings, NUL terminators, and caller-width pointer entries), plus the generated defensive caps of 4,096 entries in each vector. Independently, each string must fit the current 64 KiB process-metadata transfer; that is an implementation transport limit, not part of the public aggregate `ARG_MAX` definition. Oversized metadata returns `E2BIG` to the old image. After commit, argv and environment entries cross the fixed host scratch allocation one at a time into a token-bound Rust staging transaction. The live process metadata remains unchanged until one allocation-free commit swaps both complete vectors; a later entry-allocation failure cancels the transaction instead of exposing a prefix, and an empty vector deliberately replaces its prior vector with empty state. Supplying only argv or only environment is not a supported transaction, because validating that partial input would not prove the aggregate size of the preserved pair.
-4. The host calls `kernel_exec_prepare(pid, caller_tid)` while the old image is
-   still live. The kernel validates that the exact caller is a live task owned
-   by the process and applies deferred `posix_spawn` file actions; any failure
-   returns before the address-space transition. The host then publishes and
-   flushes writable tracked mappings while the old image is still live.
-   Tracked shared file mappings hold a lifetime-stable host handle independent
-   of the guest fd, so closing the original fd does not by itself prevent
-   writeback. A failed flush leaves the old mapping trackers and SysV
-   attachments in place.
-   At the commit boundary, `kernel_exec_setup_for_thread(pid, caller_tid)`
-   closes CLOEXEC fds and directory streams and resets image-specific state
-   **in place**, including the program break (POSIX/Linux behavior — the prior
-   program's brk does not carry over). Exact kernel objects
-   behind surviving descriptors are never fork-cloned or reconstructed: socket
-   queues, eventfd/epoll/timerfd/signalfd state, memfd contents, procfs
-   snapshots, terminal input, and OFD identity therefore survive without
-   refcount churn. At that same commit Rust detaches the old address space's
-   SysV segments; the host then forgets its non-authoritative byte mirrors and
-   the other old mapping trackers. The calling pthread's signal mask and
-   directed queue become the process state; sibling workers terminate.
-   `alarm()`/`ITIMER_REAL` survives, while `timer_create()` timers are deleted.
-   The conformance gaps in [posix-status.md](posix-status.md) still apply,
-   notably numeric-fd epoll tracking and main-thread-directed signal
-   attribution.
-5. Host terminates the old process and sibling-thread workers, then re-registers the PID with the preallocated memory
-6. Host parses the new binary's `__heap_base` export and calls `kernel_set_brk_base(pid, __heap_base)` so `brk(0)` returns a value above the new program's data + stack region
-7. Host spawns a new worker with the new program binary
-8. New program starts from `_start` with the given argv/envp. The process
+1. A process calls `execve()` or `execveat()`. The centralized kernel worker
+   reads the pathname arguments and derives a `diagnosticPath`. For
+   `AT_EMPTY_PATH` and relative `execveat()`, path getters may help produce that
+   display string. The host may pass it to `preparePath()` as a lazy VFS
+   materialization hint. Both uses are diagnostic-only: neither the string, a
+   path getter, nor a host program map authorizes the executable.
+2. While the old image is live, the same kernel-worker entry calls
+   `kernel_exec_target_prepare(pid, caller_tid, dirfd, path, flags)`. Rust
+   validates the exact caller and `execveat()` lookup rules, resolves the
+   executable from authoritative process/VFS state, checks execute capability,
+   and returns an owner-bound one-shot token retaining the exact open file
+   description (OFD), bytes, and security metadata.
+3. The host queries `kernel_exec_target_size` and copies the retained target
+   through bounded `kernel_exec_target_read` calls into only the explicitly
+   lent destination. A precommit failure calls `kernel_exec_target_cancel`
+   exactly once. For a shebang, the script token is canceled, `argv` is
+   rewritten once, and a separately prepared interpreter becomes the sole
+   final target; script set-ID state is never applied.
+4. The host validates the exact bytes' ABI marker and fork-artifact policy,
+   compiles those same bytes, validates the 4 MiB combined argv/environment
+   representation and generated vector caps, and completes replacement
+   `WebAssembly.Memory` allocation/layout preflight before the irreversible
+   transition. Each metadata string must also fit the current 64 KiB transfer.
+   Any failure here cancels the token and returns to the old image.
+5. Still before commit, the host publishes and flushes writable tracked
+   mappings. A failed flush leaves the old mapping trackers and SysV
+   attachments in place. Tracked shared mappings retain a lifetime-stable host
+   handle independent of the guest fd, so closing that fd does not prevent
+   writeback.
+6. The asynchronous host callback receives target-derived data but no token or
+   commit closure, and returns a bounded replacement-memory launch plan. The
+   shared launcher then invokes
+   `kernel_exec_commit(pid, caller_tid, opaque_target)` synchronously through
+   the same centralized entry and starts the returned postcommit action before
+   yielding. Rust consumes the token,
+   revalidates the final retained target's exact handle, byte length, bytes,
+   metadata, and execute capability, then atomically commits the in-place
+   process transition. Commit closes CLOEXEC fds and directory streams, resets
+   image-specific state including the program break, and preserves the exact
+   kernel objects behind surviving descriptors without pathname re-resolution.
+   The diagnostic-only path and caller-provided bytes are never commit
+   authority.
+7. After commit, the host retires the old process and sibling-thread workers,
+   detaches old SysV mappings, installs the preflighted replacement memory, and
+   starts the replacement Worker. Failure to construct or initialize that
+   Worker is fatal because the committed old image cannot return. The host
+   parses the replacement's `__heap_base` and registers it so `brk(0)` starts
+   above the new data and stack layout. `alarm()`/`ITIMER_REAL` survives, while
+   `timer_create()` timers are deleted. The remaining descriptor, signal, and
+   mapping gaps are tracked in [posix-status.md](posix-status.md).
+8. The new program starts from `_start` with the given argv/envp. The process
    worker holds one immutable UTF-8 snapshot for the complete launch. The CRT
    first queries every entry length with zero destination capacity, verifies
    the generated count, per-entry, and caller-width aggregate limits, and then
@@ -1252,7 +1277,12 @@ pipes, sockets, PTYs, terminal devices, and listener queues.
    This is guest-process memory, not kernel scratch, and it avoids reserving a
    4 MiB worst-case static buffer in every program.
 
-Step 6 is required: without it, `MemoryManager` falls back to a hardcoded 16MB `INITIAL_BRK`, which can land *inside* the stack region of programs whose data section pushes `__heap_base` above 16MB (mariadbd's `__heap_base ≈ 16.32MB`). Heap allocations there collide with shadow-stack frames during C++ static initialization, corrupting memory and hanging in `__wasm_call_ctors`.
+The `__heap_base` registration in step 7 is required: without it,
+`MemoryManager` falls back to a hardcoded 16MB `INITIAL_BRK`, which can land
+*inside* the stack region of programs whose data section pushes `__heap_base`
+above 16MB (mariadbd's `__heap_base ≈ 16.32MB`). Heap allocations there collide
+with shadow-stack frames during C++ static initialization, corrupting memory
+and hanging in `__wasm_call_ctors`.
 
 ### posix_spawn() (non-forking)
 
@@ -1658,7 +1688,28 @@ VFS images can also carry image-level metadata outside the guest file tree. The 
 
 ### Node host
 
-`NodeKernelHost` accepts `rootfsImage: "default" | ArrayBuffer | Uint8Array | undefined`. With `"default"` (the path used by the vitest suite), the worker reads `host/wasm/rootfs.vfs`, applies `DEFAULT_MOUNT_SPEC` via the private-session Node resolver, and constructs a `VirtualPlatformIO` for the kernel. The image supplies both `/etc/ssl/cert.pem` and `/etc/ssl/certs/ca-certificates.crt`; Node does not silently add them to caller-supplied images. Optional `sessionSeedTrees` require a rootfs image and absolute host source paths; each source must remain quiescent until `init()` resolves. Graceful destroy, initialization failure, and fatal worker paths attempt to remove the complete session tree; abrupt process termination cannot run that best-effort hook, so cleanup is not the ownership proof. New private inodes and publication-before-`ready` establish ownership. Explicit exec mappings are considered before VFS lookup: `execPrograms` names host paths whose generations must remain immutable, while `execProgramBytes` is copied during `init()` and retained by the worker so later caller mutation or replacement cannot change a launch. A virtual path cannot use both sources. Without a rootfs image, the worker falls back to raw `NodePlatformIO` (every host path reachable) — kept for legacy callers that haven't migrated.
+`NodeKernelHost` accepts
+`rootfsImage: "default" | ArrayBuffer | Uint8Array | undefined`. With
+`"default"` (the path used by the vitest suite), the worker reads
+`host/wasm/rootfs.vfs`, applies `DEFAULT_MOUNT_SPEC` via the private-session
+Node resolver, and constructs a `VirtualPlatformIO` for the kernel. The image
+supplies both `/etc/ssl/cert.pem` and
+`/etc/ssl/certs/ca-certificates.crt`; Node does not silently add them to
+caller-supplied images. Optional `sessionSeedTrees` require a rootfs image and
+absolute host source paths; each source must remain quiescent until `init()`
+resolves. Graceful destroy, initialization failure, and fatal worker paths
+attempt to remove the complete session tree; abrupt process termination
+cannot run that best-effort hook, so cleanup is not the ownership proof. New
+private inodes and publication-before-`ready` establish ownership.
+
+`execPrograms` and `execProgramBytes` are spawn-preflight inputs only. They
+cannot authorize `execve` or `execveat`, whose executable bytes and metadata
+come exclusively from the exact retained target prepared through the calling
+process's kernel VFS state. Tests that name an exec fixture stage it into an
+explicit test rootfs before boot. A virtual spawn-preflight path cannot use
+both mapping sources. Without a rootfs image, the worker falls back to raw
+`NodePlatformIO` (every host path reachable) — kept for legacy callers that
+have not migrated.
 
 ### Browser host
 

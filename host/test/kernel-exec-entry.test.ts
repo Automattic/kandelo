@@ -16,8 +16,11 @@ import { createKernelScratchTestInstance } from "./support/kernel-scratch-instan
 
 const KERNEL_EXPORT_NAMES = [
   "kernel_drain_wakeup_events",
-  "kernel_exec_prepare",
-  "kernel_exec_setup_for_thread",
+  "kernel_exec_commit",
+  "kernel_exec_target_cancel",
+  "kernel_exec_target_prepare",
+  "kernel_exec_target_read",
+  "kernel_exec_target_size",
   "kernel_fd_is_open",
   "kernel_find_listener_fd_by_accept_wake",
   "kernel_get_fd_accept_wake_idx",
@@ -49,6 +52,7 @@ interface ExecWorkerState {
 interface ExecEntryHarness {
   readonly worker: CentralizedKernelWorker;
   readonly gatedInstance: WebAssembly.Instance;
+  readonly kernelMemory: WebAssembly.Memory;
   readonly implementations: Record<string, unknown>;
 }
 
@@ -101,33 +105,95 @@ function makeHarness(
     gate,
     mainScratch,
   });
-  return { worker, gatedInstance, implementations };
+  return { worker, gatedInstance, kernelMemory, implementations };
 }
 
 describe("kernel exec entry authority", () => {
+  it("marshals prepare/read/size/cancel under entry and preserves a 64-bit offset", () => {
+    const preparedPath: number[] = [];
+    const readWords: Array<[number, number]> = [];
+    const cancel = vi.fn(() => 0);
+    const commit = vi.fn(() => 0);
+    const harness = makeHarness({
+      kernel_drain_wakeup_events: () => 0,
+      kernel_exec_commit: commit,
+      kernel_exec_target_cancel: cancel,
+      kernel_exec_target_prepare: (
+        pid: number,
+        callerTid: number,
+        dirfd: number,
+        pathPointer: number,
+        pathLength: number,
+        flags: number,
+      ) => {
+        expect([pid, callerTid, dirfd, flags]).toEqual([7, 9, -100, 0]);
+        preparedPath.push(
+          ...new Uint8Array(
+            harness.kernelMemory.buffer,
+            pathPointer,
+            pathLength,
+          ),
+        );
+        return 31;
+      },
+      kernel_exec_target_size: () => 3n,
+      kernel_exec_target_read: (
+        _ownerPid: number,
+        _target: number,
+        offsetLo: number,
+        offsetHi: number,
+        destination: number,
+        capacity: number,
+      ) => {
+        readWords.push([offsetLo, offsetHi]);
+        new Uint8Array(
+          harness.kernelMemory.buffer,
+          destination,
+          capacity,
+        ).set([4, 5, 6]);
+        return 3;
+      },
+      kernel_fd_is_open: () => 0,
+      kernel_find_listener_fd_by_accept_wake: () => -1,
+      kernel_get_fd_accept_wake_idx: () => -1,
+      kernel_vblank: () => 0,
+    });
+
+    expect(
+      harness.worker.execTargetPrepare(7, 9, -100, "/bin/exact", 0),
+    ).toBe(31);
+    expect(new TextDecoder().decode(Uint8Array.from(preparedPath))).toBe(
+      "/bin/exact",
+    );
+    expect(harness.worker.execTargetSize(7, 31)).toBe(3n);
+    const destination = new Uint8Array(3);
+    expect(
+      harness.worker.execTargetRead(7, 31, 0x1_0000_0001n, destination),
+    ).toBe(3);
+    expect(readWords).toEqual([[1, 1]]);
+    expect(destination).toEqual(Uint8Array.from([4, 5, 6]));
+    expect(harness.worker.kernelExecCommit(7, 9, 31, 3)).toBe(0);
+    expect(commit).toHaveBeenCalledExactlyOnceWith(7, 9, 31);
+    expect(harness.worker.execTargetCancel(7, 31)).toBe(0);
+    expect(cancel).toHaveBeenCalledExactlyOnceWith(7, 31);
+  });
+
   it("rejects synchronous exec results during a live export", async () => {
-    const prepare = vi.fn(() => 0);
-    const setup = vi.fn(() => 0);
+    const commit = vi.fn(() => 0);
     const drain = vi.fn(() => 0);
     const caught: unknown[] = [];
     let harness!: ExecEntryHarness;
     harness = makeHarness({
       kernel_drain_wakeup_events: drain,
-      kernel_exec_prepare: prepare,
-      kernel_exec_setup_for_thread: setup,
+      kernel_exec_commit: commit,
       kernel_fd_is_open: () => 0,
       kernel_find_listener_fd_by_accept_wake: () => -1,
       kernel_get_fd_accept_wake_idx: () => -1,
       kernel_vblank: () => {
-        for (const operation of [
-          () => harness.worker.kernelExecPrepare(7, 11),
-          () => harness.worker.kernelExecSetup(7, 11),
-        ]) {
-          try {
-            operation();
-          } catch (error) {
-            caught.push(error);
-          }
+        try {
+          harness.worker.kernelExecCommit(7, 11, 13);
+        } catch (error) {
+          caught.push(error);
         }
         return 0;
       },
@@ -136,20 +202,17 @@ describe("kernel exec entry authority", () => {
     (harness.gatedInstance.exports.kernel_vblank as () => number)();
     await Promise.resolve();
 
-    expect(caught).toHaveLength(2);
+    expect(caught).toHaveLength(1);
     for (const error of caught) {
       expect(error).toBeInstanceOf(KernelReentrantEntryError);
     }
-    expect(prepare).not.toHaveBeenCalled();
-    expect(setup).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
     expect(drain).not.toHaveBeenCalled();
 
     // Rejection does not queue an authority result or poison the generation.
-    expect(harness.worker.kernelExecPrepare(7, 11)).toBe(0);
-    expect(harness.worker.kernelExecSetup(7, 11)).toBe(0);
-    expect(prepare).toHaveBeenCalledOnce();
-    expect(setup).toHaveBeenCalledOnce();
-    expect(drain).toHaveBeenCalledTimes(2);
+    expect(harness.worker.kernelExecCommit(7, 11, 13)).toBe(0);
+    expect(commit).toHaveBeenCalledExactlyOnceWith(7, 11, 13);
+    expect(drain).toHaveBeenCalledOnce();
   });
 
   it("publishes a complete mirror plan before closing host listeners", () => {
@@ -181,8 +244,7 @@ describe("kernel exec entry authority", () => {
           observe("wake drain", state);
           return 0;
         },
-        kernel_exec_prepare: () => 0,
-        kernel_exec_setup_for_thread: () => {
+        kernel_exec_commit: () => {
           expect(state.currentHandlePid).toBe(7);
           committed = true;
           return 0;
@@ -226,7 +288,7 @@ describe("kernel exec entry authority", () => {
     ]);
     state.tcpVirtualListenerKeys = new Map([[8080, "virtual:7:4"]]);
 
-    expect(harness.worker.kernelExecSetup(7, 11)).toBe(0);
+    expect(harness.worker.kernelExecCommit(7, 11, 13)).toBe(0);
 
     expect(observations).toEqual([
       {
@@ -259,12 +321,11 @@ describe("kernel exec entry authority", () => {
     expect(state.tcpListenerRRIndex.has(8080)).toBe(false);
   });
 
-  it("keeps every host mirror intact when exec setup fails", () => {
+  it("keeps every host mirror intact when exec commit fails", () => {
     const fdIsOpen = vi.fn(() => 0);
     const harness = makeHarness({
       kernel_drain_wakeup_events: () => 0,
-      kernel_exec_prepare: () => 0,
-      kernel_exec_setup_for_thread: () => -5,
+      kernel_exec_commit: () => -5,
       kernel_fd_is_open: fdIsOpen,
       kernel_find_listener_fd_by_accept_wake: () => -1,
       kernel_get_fd_accept_wake_idx: () => -1,
@@ -274,7 +335,7 @@ describe("kernel exec entry authority", () => {
     const interests = [{ fd: 9, events: 1, data: 11n }];
     state.epollInterests = new Map([["7:6", interests]]);
 
-    expect(harness.worker.kernelExecSetup(7, 11)).toBe(-5);
+    expect(harness.worker.kernelExecCommit(7, 11, 13)).toBe(-5);
     expect(state.epollInterests.get("7:6")).toBe(interests);
     expect(fdIsOpen).not.toHaveBeenCalled();
   });
