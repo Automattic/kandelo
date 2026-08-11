@@ -117,9 +117,24 @@ expect_mutation_rejected \
   's/(  workflow_dispatch:\n)/  pull_request:\n$1/'
 
 expect_mutation_rejected \
+  "missing exact dispatch source" \
+  "workflow dispatch must bind the exact source, candidate, and canonical index" \
+  's/      source_sha:/      source_ref:/'
+
+expect_mutation_rejected \
+  "unchecked dispatch generation inputs" \
+  "must validate every exact generation input before checkout" \
+  's/REQUESTED_CANONICAL_INDEX_SHA256: \$\{\{ inputs\.canonical_index_sha256 \}\}/REQUESTED_CANONICAL_INDEX_SHA256: unchecked/'
+
+expect_mutation_rejected \
   "bypassed package projection check" \
   "must verify the generated package projection" \
   's/build-deps program-index-check/build-deps parse/'
+
+expect_mutation_rejected \
+  "bypassed canonical generation snapshot" \
+  "must authenticate the requested canonical package generation" \
+  's/scripts\/release-index-state\.sh snapshot/scripts\/release-index-state.sh read/'
 
 expect_mutation_rejected \
   "missing musl input for repository-owned support programs" \
@@ -312,9 +327,19 @@ expect_mutation_rejected \
   's/(      - name: Run exact Pages Node npm acceptance[\s\S]*?)^            "KANDELO_PLAYWRIGHT_SERVE_DIST=\$KANDELO_PLAYWRIGHT_SERVE_DIST" \\\n/$1/m'
 
 expect_mutation_rejected \
+  "Node preview drops exact VFS digest" \
+  "must install and execute cowsay from the canonical Node image" \
+  's/^          KANDELO_NODE_VFS_SHA256:.*\n//m'
+
+expect_mutation_rejected \
   "checkout of a different ref" \
-  "checkout must use the workflow event source SHA" \
+  "checkout must use one exact source selector" \
   's/(        uses: actions\/checkout@[^\n]+\n)/$1        with:\n          ref: main\n/'
+
+expect_mutation_rejected \
+  "unverified checked-out source" \
+  "must verify the exact requested source is the current default tip" \
+  's/actual_source_sha=\$\(git rev-parse HEAD\)/actual_source_sha=unchecked/'
 
 expect_mutation_rejected \
   "checkout with persisted write credentials" \
@@ -334,7 +359,7 @@ expect_mutation_rejected \
 expect_mutation_rejected \
   "unauthenticated newest-run check" \
   "must authenticate with the workflow token" \
-  's/GH_TOKEN: \$\{\{ github\.token \}\}/GH_TOKEN: ""/'
+  's/(      - name: Confirm this is the newest Pages run[\s\S]*?)GH_TOKEN: \$\{\{ github\.token \}\}/$1GH_TOKEN: ""/'
 
 expect_mutation_rejected \
   "bypassed newest-run checker" \
@@ -370,6 +395,11 @@ expect_mutation_rejected \
   "missing API assembly" \
   "complete Pages tree does not include the API docs" \
   's/^          cp -R host\/docs apps\/browser-demos\/dist\/api\n//m'
+
+expect_mutation_rejected \
+  "missing deployed generation evidence" \
+  "must publish its exact source and package generation evidence" \
+  's/apps\/browser-demos\/dist\/kandelo-deployment\.json/apps\/browser-demos\/dist\/missing-generation.json/'
 
 expect_mutation_rejected \
   "missing assembled-tree size gate" \

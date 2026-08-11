@@ -52,6 +52,7 @@ TAG_ABANDONED="merge-candidate-abi-v39-pr-5-run-50-attempt-1"
 TAG_NONAUTHORITATIVE="merge-candidate-abi-v39-pr-6-run-60-attempt-1"
 TAG_READY_EARLIER="merge-candidate-abi-v39-pr-7-run-70-attempt-1"
 TAG_REJECTED="merge-candidate-abi-v39-pr-8-run-80-attempt-1"
+TAG_ACTIVATED_DRAFT="merge-candidate-abi-v39-pr-9-run-90-attempt-1"
 
 make_release_state() {
   local tag="$1"
@@ -104,11 +105,14 @@ make_terminal_release() {
   local release_id="$2"
   local marker_name="$3"
   local marker_json="$4"
+  local ready_json="${5:-}"
   local assets_json
   assets_json=$(jq -cn \
     --arg marker_name "$marker_name" \
     --arg marker_json "$marker_json" \
-    '[{name: "ready.json"}, {name: $marker_name, content: $marker_json}]')
+    --arg ready_json "$ready_json" \
+    '[{name: "ready.json", content: $ready_json},
+      {name: $marker_name, content: $marker_json}]')
   # Historical activation first published the release and then uploaded its
   # terminal marker, leaving a valid but mutable published lifecycle state.
   make_release_state "$tag" "$assets_json" "$release_id" false false
@@ -142,17 +146,36 @@ make_status() {
     > "$DATA/status-$head_sha.json"
 }
 
-ACTIVATED_JSON=$(jq -cn \
+READY_ACTIVATED_JSON=$(jq -cn \
   --arg repository example/repo \
   --arg tag "$TAG_ACTIVATED" \
   '{schema_version: 1, repository: $repository, pr_number: 3,
     candidate_tag: $tag,
     candidate_index_sha256: ("a" * 64),
-    ready_at: "2026-07-14T02:00:00Z",
-    merge_commit_sha: ("b" * 40),
-    canonical_index_sha256: ("c" * 64),
-    activated_at: "2026-07-14T03:00:00Z",
-    activation_run: "https://github.example/example/repo/actions/runs/30"}')
+    ready_at: "2026-07-14T02:00:00Z"}')
+ACTIVATED_JSON=$(jq -c \
+  --arg merge_commit_sha "$MERGE_7" '
+    . + {
+      merge_commit_sha: $merge_commit_sha,
+      canonical_index_sha256: ("c" * 64),
+      activated_at: "2026-07-14T03:00:00Z",
+      activation_run: "https://github.example/example/repo/actions/runs/30"
+    }' <<<"$READY_ACTIVATED_JSON")
+READY_ACTIVATED_DRAFT_JSON=$(jq -cn \
+  --arg repository example/repo \
+  --arg tag "$TAG_ACTIVATED_DRAFT" \
+  '{schema_version: 1, repository: $repository, pr_number: 9,
+    candidate_tag: $tag,
+    candidate_index_sha256: ("d" * 64),
+    ready_at: "2026-07-14T02:00:00Z"}')
+ACTIVATED_DRAFT_JSON=$(jq -c \
+  --arg merge_commit_sha "$MERGE_7" '
+    . + {
+      merge_commit_sha: $merge_commit_sha,
+      canonical_index_sha256: ("e" * 64),
+      activated_at: "2026-07-14T04:00:00Z",
+      activation_run: "https://github.example/example/repo/actions/runs/90"
+    }' <<<"$READY_ACTIVATED_DRAFT_JSON")
 REJECTED_JSON=$(jq -cn \
   --arg repository example/repo \
   --arg tag "$TAG_REJECTED" \
@@ -164,12 +187,20 @@ REJECTED_JSON=$(jq -cn \
 
 make_release "$TAG_READY" '[{"name":"candidate.json"},{"name":"ready.json"}]' 101
 make_release "$TAG_UNREADY" '[{"name":"candidate.json"}]' 102
-make_terminal_release "$TAG_ACTIVATED" 103 activated.json "$ACTIVATED_JSON"
+make_terminal_release "$TAG_ACTIVATED" 103 activated.json "$ACTIVATED_JSON" \
+  "$READY_ACTIVATED_JSON"
 make_release "$TAG_OPEN" '[{"name":"ready.json"}]' 104
 make_release "$TAG_ABANDONED" '[{"name":"ready.json"}]' 105
 make_release "$TAG_NONAUTHORITATIVE" '[{"name":"ready.json"}]' 106
 make_release "$TAG_READY_EARLIER" '[{"name":"ready.json"}]' 107
 make_terminal_release "$TAG_REJECTED" 108 rejected.json "$REJECTED_JSON"
+ACTIVATED_DRAFT_ASSETS=$(jq -cn \
+  --arg ready "$READY_ACTIVATED_DRAFT_JSON" \
+  --arg activated "$ACTIVATED_DRAFT_JSON" \
+  '[{name: "ready.json", content: $ready},
+    {name: "activated.json", content: $activated}]')
+make_release_state "$TAG_ACTIVATED_DRAFT" "$ACTIVATED_DRAFT_ASSETS" \
+  109 true false
 
 HEAD_1="1111111111111111111111111111111111111111"
 HEAD_2="2222222222222222222222222222222222222222"
@@ -178,6 +209,7 @@ HEAD_4="4444444444444444444444444444444444444444"
 HEAD_5="5555555555555555555555555555555555555555"
 HEAD_6="6666666666666666666666666666666666666666"
 HEAD_7="7777777777777777777777777777777777777777"
+HEAD_9="9999999999999999999999999999999999999999"
 
 make_pr 1 closed 2026-07-14T02:00:00Z "$HEAD_1" "$MERGE_1"
 make_pr 2 open "" "$HEAD_2"
@@ -186,11 +218,13 @@ make_pr 4 open "" "$HEAD_4"
 make_pr 5 closed "" "$HEAD_5"
 make_pr 6 closed 2026-07-14T02:00:00Z "$HEAD_6" "$MERGE_6"
 make_pr 7 closed 2026-07-14T02:00:00Z "$HEAD_7" "$MERGE_7"
+make_pr 9 closed 2026-07-14T02:00:00Z "$HEAD_9" "$MERGE_7"
 
 BASE_URL="https://github.example/example/repo/releases/tag"
 make_status "$HEAD_1" "$BASE_URL/$TAG_READY"
 make_status "$HEAD_6" "$BASE_URL/some-other-candidate"
 make_status "$HEAD_7" "$BASE_URL/$TAG_READY_EARLIER"
+make_status "$HEAD_9" "$BASE_URL/$TAG_ACTIVATED_DRAFT"
 
 jq -s '.' \
   "$DATA/release-$TAG_READY.json" \
@@ -208,7 +242,8 @@ jq -s '.' \
   "$DATA/release-$TAG_READY_EARLIER.json" \
   "$DATA/release-$TAG_REJECTED.json" \
   > "$DATA/releases-page-4.json"
-printf '[]\n' > "$DATA/releases-page-5.json"
+jq -s '.' "$DATA/release-$TAG_ACTIVATED_DRAFT.json" \
+  > "$DATA/releases-page-5.json"
 
 cat > "$BIN/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -354,16 +389,27 @@ expect_candidate_failure() {
 }
 
 # The scheduled sweep follows bounded pagination, retries transient API
-# failures, ignores unready/activated/open/abandoned/non-authoritative
-# candidates, and prefers the newest merged package state.
+# failures, ignores unready/sealed-activated/open/abandoned/non-authoritative
+# candidates, recovers an activated draft, and preserves merge order.
 PLAN="$TMP_ROOT/plan.tsv"
+ACTIVATED_RECEIPTS="$TMP_ROOT/activated-receipts.jsonl"
 STATUS_STUB_FAIL_HEAD="$HEAD_7" GH_STUB_FAIL_COUNT=2 \
-  run_reconcile --plan-file "$PLAN" --max-pages 5 --per-page 2 --asset-per-page 2 >/dev/null
+  run_reconcile --plan-file "$PLAN" \
+    --activated-receipts-file "$ACTIVATED_RECEIPTS" \
+    --max-pages 5 --per-page 2 --asset-per-page 2 >/dev/null
 cat > "$TMP_ROOT/expected-plan.tsv" <<EOF
 2026-07-14T02:00:00Z	1	$TAG_READY
 2026-07-14T02:00:00Z	7	$TAG_READY_EARLIER
+2026-07-14T02:00:00Z	9	$TAG_ACTIVATED_DRAFT
 EOF
 cmp "$TMP_ROOT/expected-plan.tsv" "$PLAN"
+jq -s -e \
+  --arg sealed "$TAG_ACTIVATED" \
+  --arg draft "$TAG_ACTIVATED_DRAFT" '
+    length == 2 and
+    (map(.candidate_tag) | sort) == ([$sealed, $draft] | sort) and
+    all(.[]; .canonical_index_sha256 | test("^[0-9a-f]{64}$"))
+  ' "$ACTIVATED_RECEIPTS" >/dev/null
 [ "$(grep -Fc "status $HEAD_7" "$LOG")" -eq 3 ]
 grep -Fxq '/repos/example/repo/releases?per_page=2&page=4' "$LOG"
 grep -Fxq '/repos/example/repo/releases?per_page=2&page=5' "$LOG"
@@ -383,6 +429,16 @@ if grep -Fq '/repos/example/repo/pulls/3' "$LOG"; then
 fi
 grep -Fxq '/repos/example/repo/releases/assets/10302' "$LOG"
 grep -Fxq '/repos/example/repo/releases/assets/10802' "$LOG"
+grep -Fxq '/repos/example/repo/pulls/9' "$LOG"
+
+# An activation receipt must be an exact extension of this release's ready
+# marker. Matching only its tag and PR cannot authenticate crossed identity.
+READY_ACTIVATED_CROSSED=$(jq -c \
+  '.candidate_index_sha256 = ("f" * 64)' <<<"$READY_ACTIVATED_JSON")
+replace_asset_content 103 ready.json "$READY_ACTIVATED_CROSSED"
+expect_candidate_failure "$TAG_ACTIVATED" 'conflicts with ready marker' \
+  crossed-activated-ready
+replace_asset_content 103 ready.json "$READY_ACTIVATED_JSON"
 
 # Valid terminal bytes, not marker names alone, are what permit a historical
 # published/mutable candidate to leave reconciliation without querying its PR.
@@ -473,7 +529,7 @@ run_reconcile \
   2>"$TMP_ROOT/capped.err"
 printf '2026-07-14T02:00:00Z\t1\t%s\n' "$TAG_READY" > "$TMP_ROOT/capped-plan.tsv"
 cmp "$TMP_ROOT/capped-plan.tsv" "$PLAN"
-grep -q 'limiting this run to 1 of 2 candidates' "$TMP_ROOT/capped.err"
+grep -q 'limiting this run to 1 of 3 candidates' "$TMP_ROOT/capped.err"
 
 # A closed-event/manual PR target resolves the authoritative candidate from
 # the latest merge-gate status, then scans the authenticated release list.

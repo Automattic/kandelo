@@ -33,6 +33,10 @@ fi
 if grep -Eq '^[[:space:]]+(paths|paths-ignore):' <<<"$trigger_block"; then
   fail "the complete Pages publisher must not filter main pushes by path"
 fi
+for input in source_sha candidate_tag canonical_index_sha256; do
+  grep -Fxq "      $input:" <<<"$trigger_block" ||
+    fail "workflow dispatch must bind the exact source, candidate, and canonical index"
+done
 
 step_block() {
   local workflow="$1"
@@ -103,14 +107,35 @@ if grep -Eq '^[[:space:]]+continue-on-error:' "$PAGES_WORKFLOW"; then
   fail "Pages preparation and publication must remain failure-intolerant"
 fi
 
+requested_source_block="$(
+  step_block "$PAGES_WORKFLOW" "Validate the requested source generation"
+)"
+for evidence in \
+  'EVENT_NAME: ${{ github.event_name }}' \
+  'REQUESTED_SOURCE_SHA: ${{ inputs.source_sha }}' \
+  'REQUESTED_CANDIDATE_TAG: ${{ inputs.candidate_tag }}' \
+  'REQUESTED_CANONICAL_INDEX_SHA256: ${{ inputs.canonical_index_sha256 }}' \
+  '^[0-9a-f]{40}$' \
+  '^merge-candidate-abi-v[0-9]+-pr-[0-9]+-run-[0-9]+-attempt-[0-9]+$' \
+  '^[0-9a-f]{64}$'
+do
+  grep -Fq "$evidence" <<<"$requested_source_block" ||
+    fail "workflow dispatch must validate every exact generation input before checkout"
+done
+
 checkout_block="$(step_block "$PAGES_WORKFLOW" "Check out the source commit")"
 grep -Eq 'uses: actions/checkout@[0-9a-f]{40}' <<<"$checkout_block" ||
   fail "the complete publisher must check out one pinned source commit"
 grep -Fq 'persist-credentials: false' <<<"$checkout_block" ||
   fail "the product-building Pages checkout must not persist write credentials"
-if grep -Eq '^[[:space:]]+ref:' <<<"$checkout_block"; then
-  fail "the Pages checkout must use the workflow event source SHA"
-fi
+grep -Fq 'ref: ${{ inputs.source_sha || github.sha }}' <<<"$checkout_block" ||
+  fail "the Pages checkout must use the exact requested or event source SHA"
+checkout_ref_count="$(
+  awk '/^[[:space:]]+ref:/ { count += 1 } END { print count + 0 }' \
+    <<<"$checkout_block"
+)"
+[ "$checkout_ref_count" -eq 1 ] ||
+  fail "the Pages checkout must use one exact source selector"
 checkout_count="$(
   awk '/^[[:space:]]+uses: actions\/checkout@/ { count += 1 }
        END { print count + 0 }' "$PAGES_WORKFLOW"
@@ -118,7 +143,19 @@ checkout_count="$(
 [ "$checkout_count" -eq 1 ] ||
   fail "all Pages outputs must be built from one checkout"
 
+checked_source_block="$(
+  step_block "$PAGES_WORKFLOW" "Verify the checked-out source generation"
+)"
+grep -Fq 'actual_source_sha=$(git rev-parse HEAD)' \
+  <<<"$checked_source_block" &&
+  grep -Fq '[ "$actual_source_sha" = "$REQUESTED_SOURCE_SHA" ]' \
+    <<<"$checked_source_block" &&
+  grep -Fq 'refs/remotes/origin/$DEFAULT_BRANCH' \
+    <<<"$checked_source_block" ||
+  fail "Pages must verify the exact requested source is the current default tip"
+
 projection_line="$(step_line "Verify browser package projection is current")"
+package_generation_line="$(step_line "Verify the requested package generation")"
 musl_line="$(
   step_line "Fetch musl for repository-owned browser support programs"
 )"
@@ -129,16 +166,19 @@ browser_build_line="$(step_line "Build browser demos for GitHub Pages")"
 guide_build_line="$(step_line "Build user guide for the complete Pages tree")"
 api_build_line="$(step_line "Build API docs for the complete Pages tree")"
 assembly_line="$(step_line "Add documentation to the complete Pages tree")"
+manifest_line="$(step_line "Record the deployed generation")"
 flat_boot_line="$(step_line "Boot the canonical flat Pages shell in Chromium")"
 node_acceptance_line="$(step_line "Run exact Pages Node npm acceptance")"
 size_line="$(step_line "Enforce the GitHub Pages published-site size limit")"
 freshness_line="$(step_line "Confirm this is the newest Pages run")"
 deploy_line="$(step_line "Deploy to gh-pages")"
 
-[ -n "$musl_line" ] && [ -n "$projection_line" ] &&
+[ -n "$musl_line" ] && [ -n "$package_generation_line" ] &&
+  [ -n "$projection_line" ] &&
   [ -n "$isolation_line" ] &&
   [ -n "$prepare_browser_line" ] && [ -n "$package_products_line" ] &&
   [ "$musl_line" -lt "$prepare_browser_line" ] &&
+  [ "$package_generation_line" -lt "$projection_line" ] &&
   [ "$projection_line" -lt "$prepare_browser_line" ] &&
   [ "$projection_line" -lt "$isolation_line" ] &&
   [ "$isolation_line" -lt "$prepare_browser_line" ] &&
@@ -147,13 +187,15 @@ deploy_line="$(step_line "Deploy to gh-pages")"
   [ "$package_products_line" -lt "$browser_build_line" ] &&
   [ "$browser_build_line" -lt "$guide_build_line" ] &&
   [ -n "$guide_build_line" ] && [ -n "$api_build_line" ] &&
-  [ -n "$assembly_line" ] && [ -n "$flat_boot_line" ] &&
+  [ -n "$assembly_line" ] && [ -n "$manifest_line" ] &&
+  [ -n "$flat_boot_line" ] &&
   [ -n "$node_acceptance_line" ] &&
   [ -n "$size_line" ] &&
   [ -n "$freshness_line" ] && [ -n "$deploy_line" ] &&
   [ "$guide_build_line" -lt "$assembly_line" ] &&
   [ "$api_build_line" -lt "$assembly_line" ] &&
-  [ "$assembly_line" -lt "$flat_boot_line" ] &&
+  [ "$assembly_line" -lt "$manifest_line" ] &&
+  [ "$manifest_line" -lt "$flat_boot_line" ] &&
   [ "$flat_boot_line" -lt "$node_acceptance_line" ] &&
   [ "$node_acceptance_line" -lt "$size_line" ] &&
   [ "$size_line" -lt "$freshness_line" ] &&
@@ -169,6 +211,23 @@ grep -Fxq '        uses: ./.github/actions/fetch-submodules' \
   <<<"$musl_block" &&
   grep -Fxq '          submodules: libc/musl' <<<"$musl_block" ||
   fail "Pages must fetch musl for its repository-owned support programs"
+
+package_generation_block="$(
+  step_block "$PAGES_WORKFLOW" "Verify the requested package generation"
+)"
+for evidence in \
+  'id: package_generation' \
+  'scripts/release-index-state.sh snapshot' \
+  'REQUESTED_CANONICAL_INDEX_SHA256' \
+  'REQUESTED_CANDIDATE_TAG' \
+  'ready.json' \
+  'activated.json' \
+  'del(.merge_commit_sha, .canonical_index_sha256, .activated_at, .activation_run)' \
+  'git merge-base --is-ancestor "$merge_commit_sha" HEAD'
+do
+  grep -Fq "$evidence" <<<"$package_generation_block" ||
+    fail "Pages must authenticate the requested canonical package generation"
+done
 
 projection_block="$(
   step_block "$PAGES_WORKFLOW" "Verify browser package projection is current"
@@ -341,6 +400,11 @@ node_acceptance_block="$(
 grep -Fq 'VITE_BASE: /kandelo/' <<<"$node_acceptance_block" &&
   grep -Fq 'KANDELO_BROWSER_DEMO_INPUTS: main' \
     <<<"$node_acceptance_block" &&
+  grep -Fq 'KANDELO_NODE_VFS_STRICT: "1"' \
+    <<<"$node_acceptance_block" &&
+  grep -Fq \
+    'KANDELO_NODE_VFS_SHA256: ${{ steps.package_products.outputs.node_sha256 }}' \
+    <<<"$node_acceptance_block" &&
   grep -Fq 'KANDELO_PLAYWRIGHT_SERVE_DIST: "1"' \
   <<<"$node_acceptance_block" &&
   grep -Fq 'KANDELO_TEST_BASE_URL: http://127.0.0.1:5401/kandelo/' \
@@ -355,12 +419,27 @@ for binding in \
   '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
   '"VITE_BASE=$VITE_BASE" \' \
   '"KANDELO_BROWSER_DEMO_INPUTS=$KANDELO_BROWSER_DEMO_INPUTS" \' \
+  '"KANDELO_NODE_VFS_STRICT=$KANDELO_NODE_VFS_STRICT" \' \
+  '"KANDELO_NODE_VFS_SHA256=$KANDELO_NODE_VFS_SHA256" \' \
   '"KANDELO_PLAYWRIGHT_SERVE_DIST=$KANDELO_PLAYWRIGHT_SERVE_DIST" \' \
   '"KANDELO_TEST_BASE_URL=$KANDELO_TEST_BASE_URL" \'
 do
   grep -Fq "$binding" <<<"$node_acceptance_block" ||
     fail "the Node preview must carry its exact inputs through dev-shell"
 done
+
+manifest_block="$(
+  step_block "$PAGES_WORKFLOW" "Record the deployed generation"
+)"
+grep -Fq 'steps.package_generation.outputs.source_sha' \
+  <<<"$manifest_block" &&
+  grep -Fq 'steps.package_generation.outputs.candidate_tag' \
+    <<<"$manifest_block" &&
+  grep -Fq 'steps.package_generation.outputs.canonical_index_sha256' \
+    <<<"$manifest_block" &&
+  grep -Fq 'apps/browser-demos/dist/kandelo-deployment.json' \
+    <<<"$manifest_block" ||
+  fail "Pages must publish its exact source and package generation evidence"
 
 between_freshness_and_deploy="$(
   sed -n "${freshness_line},${deploy_line}p" "$PAGES_WORKFLOW" |

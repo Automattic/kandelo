@@ -728,7 +728,11 @@ CI state records that exact report as `flat-self-contained`; a resolved state
 cannot request the retired closed mirror. When the staged matrix contains
 `node-vfs/wasm32`, the browser cell also runs the exact slow
 `npm install --verbose cowsay` acceptance before the package release is
-sealed.
+sealed. Prepare merge derives the same condition from the union of its exact
+promotion and build matrices. Its browser cell rebuilds the ordinary
+Pages-shaped production output, verifies the emitted hashed Node VFS bytes,
+and runs the same npm/cowsay acceptance through the `/kandelo/` preview before
+the merge gate can pass.
 
 - **merge-gate** posts `merge-gate=success` on the PR's HEAD SHA
   once test-gate passes. No bot-PR amend step exists anymore — the
@@ -771,20 +775,26 @@ bottle-mirror publication transaction.
 Prepare merge writes those rows only to its isolated
 `merge-candidate-abi-v42-*` release. Post-merge activation verifies the merged
 tree and complete candidate transaction, then overlays the tested entries into
-`binaries-abi-v42`. The activation workflow initializes `activated_any=false`,
-sets it only after a candidate transaction succeeds, and publishes the output
-even when a later candidate fails. An empty scheduled or manual scan does not
-deploy anything. If at least one index moved, the
-post-activation Pages dispatch starts `browser-demos-pages.yml` from the
-current default branch.
+`binaries-abi-v42`. Reconciliation retains authenticated activation receipts,
+including receipts from already-terminal candidates. After candidate work, it
+snapshots the current canonical index and selects only a receipt naming those
+exact bytes. It compares that source/index generation with the public
+`kandelo-deployment.json`; a missing or stale deployment dispatches
+`browser-demos-pages.yml` with the exact current default-branch SHA, candidate
+tag, and canonical index sha256. A transient dispatch failure is therefore
+recoverable by the next scheduled scan even though the candidate itself is
+already terminal.
 
 That ordering is part of the release contract. The main-push Pages run may
 start before activation, but fetch-only resolution cannot obtain the new
 identities and therefore fails before deployment. The post-activation Pages
-dispatch retries only after the canonical package release exists. Pages then
+dispatch retries only after the canonical package release exists. Pages checks
+out the requested SHA, requires it to remain the default-branch tip, verifies
+the immutable candidate's `activated.json` as an exact extension of its
+`ready.json`, and re-snapshots the named canonical index digest. It then
 inspects the exact flat shell, verifies the hashed shell and Node VFS assets,
-and runs the Chromium shell and npm/cowsay acceptance before its single writer
-updates `gh-pages`.
+runs the Chromium shell and npm/cowsay acceptance, and records the deployed
+generation before its single writer updates `gh-pages`.
 
 ## Merge candidates and canonical activation
 
@@ -880,10 +890,15 @@ explicitly paginated and bounded; reaching its bound fails visibly rather than
 silently omitting old candidates, which remain available to a targeted manual
 run. Each run also caps its activation batch; later schedules drain successful
 batches from any remaining backlog. Reconciliation ignores candidates without
-`ready.json`, candidates with `activated.json` or `rejected.json`, open PRs, and
-PRs closed without merging. It selects only the candidate named by the latest
-successful `merge-gate` status on the merged PR head. Status and release scans
-are explicitly paginated and bounded. Candidate order comes from each merge
+`ready.json`, sealed candidates with `activated.json` or `rejected.json`, open
+PRs, and PRs closed without merging. An activation receipt must exactly extend
+that release's `ready.json`; the narrow historical published-mutable terminal
+state is accepted only after the same identity check. A draft carrying a valid
+activation receipt is the crash interval between receipt upload and release
+sealing, so reconciliation routes it back through activation's finalize-only
+path. It selects actionable candidates only when the latest successful
+`merge-gate` status on the merged PR head names that release. Status and
+release scans are explicitly paginated and bounded. Candidate order comes from each merge
 commit's position on the checked-out default branch's first-parent history;
 timestamps and PR numbers are not used as branch order. Discovery is advisory:
 activation rechecks the exact latest authority while holding its PR lock.
@@ -991,7 +1006,8 @@ after revalidating its complete identity and every immutable byte. Missing,
 extra, or changed assets fail closed. An existing `activated.json` is also
 validated as terminal evidence for the exact ready marker and merged commit;
 activation exits before replanning against later canonical package changes. A
-rerun never creates a second clone merely because the workflow attempt changed.
+draft with that receipt is sealed before activation exits. A rerun never
+creates a second clone merely because the workflow attempt changed.
 
 The repair workflow must already be present on the default branch. If a stale
 canonical ledger makes the package gate for the protocol repair itself fail,

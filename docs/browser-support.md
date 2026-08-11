@@ -762,8 +762,10 @@ served shell digest, runs `brew`, Ruby, and the selected Bash, and requires an
 empty lazy-download ledger. A second Chromium proof runs the exact
 `npm install --verbose cowsay` flow in the Node image and executes the
 installed binary. The post-activation Pages dispatch starts these checks only
-after candidate activation has moved at least one tested index entry into the
-canonical package release.
+after it selects an authenticated activation receipt for the exact current
+canonical index. The dispatch carries the source SHA, candidate tag, and index
+digest. Pages independently verifies all three, and the Node proof hashes the
+served VFS response before running npm/cowsay.
 
 ### Building VFS images
 
@@ -799,7 +801,10 @@ leave the site on an older transitive package projection. A package-changing
 push may reach Pages before canonical activation; its fresh fetch-only cache
 then fails on the new unpublished identities. Activation dispatches the same
 workflow after the canonical index moves, allowing the admitted generation to
-build and deploy. No pull-request event can invoke the publisher.
+build and deploy. The deployed tree records its source and index generation;
+scheduled activation compares that public record and retries a missed or
+failed dispatch without reopening the terminal candidate. No pull-request
+event can invoke the publisher.
 
 The dormant source-rootfs and closed-selection/lazy-mirror implementations
 remain diagnostic and historical recovery plumbing. The normal `run.sh`

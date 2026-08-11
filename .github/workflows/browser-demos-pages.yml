@@ -8,6 +8,19 @@ on:
     # supersede the deployed product; a maintained path allowlist could leave
     # Pages on an older admitted generation.
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact main commit to deploy
+        required: true
+        type: string
+      candidate_tag:
+        description: Activated merge candidate selecting this generation
+        required: true
+        type: string
+      canonical_index_sha256:
+        description: Exact canonical package index digest
+        required: true
+        type: string
 
 concurrency:
   group: kandelo-gh-pages
@@ -26,10 +39,43 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      - name: Validate the requested source generation
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_SOURCE_SHA: ${{ inputs.source_sha }}
+          REQUESTED_CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+          REQUESTED_CANONICAL_INDEX_SHA256: ${{ inputs.canonical_index_sha256 }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != workflow_dispatch ]; then
+            exit 0
+          fi
+          [[ "$REQUESTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$REQUESTED_CANDIDATE_TAG" =~ ^merge-candidate-abi-v[0-9]+-pr-[0-9]+-run-[0-9]+-attempt-[0-9]+$ ]]
+          [[ "$REQUESTED_CANONICAL_INDEX_SHA256" =~ ^[0-9a-f]{64}$ ]]
+
       - name: Check out the source commit
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Verify the checked-out source generation
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_SOURCE_SHA: ${{ inputs.source_sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          actual_source_sha=$(git rev-parse HEAD)
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            [ "$actual_source_sha" = "$REQUESTED_SOURCE_SHA" ]
+            git fetch --quiet --no-tags origin \
+              "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+            [ "$(git rev-parse "refs/remotes/origin/$DEFAULT_BRANCH")" = \
+              "$REQUESTED_SOURCE_SHA" ]
+          fi
 
       - name: Fetch musl for repository-owned browser support programs
         uses: ./.github/actions/fetch-submodules
@@ -64,6 +110,80 @@ jobs:
 
       - name: Set up Nix
         uses: ./.github/actions/setup-nix
+
+      - name: Verify the requested package generation
+        id: package_generation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+          REQUESTED_CANONICAL_INDEX_SHA256: ${{ inputs.canonical_index_sha256 }}
+        run: |
+          set -euo pipefail
+          abi=$(grep -oE 'ABI_VERSION: u32 = [0-9]+' \
+            crates/shared/src/lib.rs | awk '{print $4}')
+          canonical_tag="binaries-abi-v$abi"
+          generation_dir="$RUNNER_TEMP/requested-package-generation"
+          canonical_index="$generation_dir/index.toml"
+          canonical_head="$generation_dir/head"
+          mkdir -p "$generation_dir"
+          bash scripts/release-index-state.sh snapshot \
+            --target-tag "$canonical_tag" \
+            --expected-abi "$abi" \
+            --output "$canonical_index" \
+            --head-file "$canonical_head"
+          canonical_index_sha256=$(sha256sum "$canonical_index" | awk '{print $1}')
+          source_sha=$(git rev-parse HEAD)
+
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            [ "$canonical_index_sha256" = \
+              "$REQUESTED_CANONICAL_INDEX_SHA256" ]
+            [[ "$REQUESTED_CANDIDATE_TAG" =~ ^merge-candidate-abi-v${abi}-pr-[0-9]+-run-[0-9]+-attempt-[0-9]+$ ]]
+            release_json="$generation_dir/candidate-release.json"
+            gh api \
+              "/repos/${{ github.repository }}/releases/tags/$REQUESTED_CANDIDATE_TAG" \
+              > "$release_json"
+            jq -e \
+              --arg candidate_tag "$REQUESTED_CANDIDATE_TAG" '
+                .tag_name == $candidate_tag and
+                .draft == false and .immutable == true and
+                .prerelease == true
+              ' "$release_json" >/dev/null
+            receipt_dir="$generation_dir/candidate"
+            mkdir -p "$receipt_dir"
+            gh release download "$REQUESTED_CANDIDATE_TAG" \
+              --repo "${{ github.repository }}" \
+              --pattern ready.json \
+              --pattern activated.json \
+              --dir "$receipt_dir"
+            jq -e \
+              --arg repository "${{ github.repository }}" \
+              --arg candidate_tag "$REQUESTED_CANDIDATE_TAG" \
+              --arg canonical_index_sha256 "$canonical_index_sha256" '
+                .schema_version == 1 and
+                .repository == $repository and
+                .candidate_tag == $candidate_tag and
+                .canonical_index_sha256 == $canonical_index_sha256 and
+                (.merge_commit_sha | test("^[0-9a-f]{40}$")) and
+                (.activated_at | type == "string" and length > 0) and
+                (.activation_run | type == "string" and length > 0)
+              ' "$receipt_dir/activated.json" >/dev/null
+            jq -S \
+              'del(.merge_commit_sha, .canonical_index_sha256, .activated_at, .activation_run)' \
+              "$receipt_dir/activated.json" > "$generation_dir/activated-identity.json"
+            jq -S . "$receipt_dir/ready.json" \
+              > "$generation_dir/ready-identity.json"
+            cmp "$generation_dir/activated-identity.json" \
+              "$generation_dir/ready-identity.json"
+            merge_commit_sha=$(jq -r .merge_commit_sha \
+              "$receipt_dir/activated.json")
+            git merge-base --is-ancestor "$merge_commit_sha" HEAD
+          fi
+          {
+            echo "source_sha=$source_sha"
+            echo "candidate_tag=$REQUESTED_CANDIDATE_TAG"
+            echo "canonical_index_sha256=$canonical_index_sha256"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Verify browser package projection is current
         run: |
@@ -184,6 +304,26 @@ jobs:
           cp -R docs-site/.vitepress/dist apps/browser-demos/dist/guide
           cp -R host/docs apps/browser-demos/dist/api
 
+      - name: Record the deployed generation
+        env:
+          SOURCE_SHA: ${{ steps.package_generation.outputs.source_sha }}
+          CANDIDATE_TAG: ${{ steps.package_generation.outputs.candidate_tag }}
+          CANONICAL_INDEX_SHA256: ${{ steps.package_generation.outputs.canonical_index_sha256 }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg source_sha "$SOURCE_SHA" \
+            --arg candidate_tag "$CANDIDATE_TAG" \
+            --arg canonical_index_sha256 "$CANONICAL_INDEX_SHA256" '
+              {
+                schema_version: 1,
+                source_sha: $source_sha,
+                candidate_tag:
+                  (if $candidate_tag == "" then null else $candidate_tag end),
+                canonical_index_sha256: $canonical_index_sha256
+              }
+            ' > apps/browser-demos/dist/kandelo-deployment.json
+
       - name: Boot the canonical flat Pages shell in Chromium
         working-directory: apps/browser-demos
         env:
@@ -214,6 +354,8 @@ jobs:
           # The Node demo is selected by `?demo=node` inside the main page;
           # `node` is not a standalone Vite HTML input.
           KANDELO_BROWSER_DEMO_INPUTS: main
+          KANDELO_NODE_VFS_STRICT: "1"
+          KANDELO_NODE_VFS_SHA256: ${{ steps.package_products.outputs.node_sha256 }}
           KANDELO_PLAYWRIGHT_SERVE_DIST: "1"
           KANDELO_TEST_BASE_URL: http://127.0.0.1:5401/kandelo/
         run: |
@@ -222,6 +364,8 @@ jobs:
             "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
             "VITE_BASE=$VITE_BASE" \
             "KANDELO_BROWSER_DEMO_INPUTS=$KANDELO_BROWSER_DEMO_INPUTS" \
+            "KANDELO_NODE_VFS_STRICT=$KANDELO_NODE_VFS_STRICT" \
+            "KANDELO_NODE_VFS_SHA256=$KANDELO_NODE_VFS_SHA256" \
             "KANDELO_PLAYWRIGHT_SERVE_DIST=$KANDELO_PLAYWRIGHT_SERVE_DIST" \
             "KANDELO_TEST_BASE_URL=$KANDELO_TEST_BASE_URL" \
             npx playwright test test/kandelo-node.spec.ts \

@@ -813,6 +813,7 @@ jobs:
       library_matrix: ${{ steps.compute.outputs.library_matrix }}
       program_matrix: ${{ steps.compute.outputs.program_matrix }}
       promote_matrix: ${{ steps.compute.outputs.promote_matrix }}
+      stages_node_vfs: ${{ steps.compute.outputs.stages_node_vfs }}
       abi: ${{ steps.compute.outputs.abi }}
       target_tag: ${{ steps.compute.outputs.target_tag }}
       candidate_release_id: ${{ steps.compute.outputs.candidate_release_id }}
@@ -957,6 +958,7 @@ jobs:
               echo "library_matrix=[]" >> "$GITHUB_OUTPUT"
               echo "program_matrix=[]" >> "$GITHUB_OUTPUT"
               echo "promote_matrix=[]" >> "$GITHUB_OUTPUT"
+              echo "stages_node_vfs=false" >> "$GITHUB_OUTPUT"
               echo "preflight: package staging not required; skipping package drift matrix"
               exit 0
             fi
@@ -1108,9 +1110,19 @@ jobs:
                 --matrix "$program_matrix_file")
             rm -f "$program_matrix_file"
 
+            exact_matrix=$(jq -cn \
+              --argjson promote "$promote_matrix" \
+              --argjson library "$library_matrix" \
+              --argjson program "$program_matrix" \
+              "\$promote + \$library + \$program")
+            stages_node_vfs=$(jq -r \
+              "any(.[]; .package == \"node-vfs\" and .arch == \"wasm32\")" \
+              <<<"$exact_matrix")
+
             echo "library_matrix=$library_matrix" >> "$GITHUB_OUTPUT"
             echo "program_matrix=$program_matrix" >> "$GITHUB_OUTPUT"
             echo "promote_matrix=$promote_matrix" >> "$GITHUB_OUTPUT"
+            echo "stages_node_vfs=$stages_node_vfs" >> "$GITHUB_OUTPUT"
             echo "preflight: promote=$(echo "$promote_matrix" | jq length) library-build=$(echo "$library_matrix" | jq length) program-build=$(echo "$program_matrix" | jq length)"
             echo "promote_matrix:"; echo "$promote_matrix" | jq .
             echo "library_matrix:"; echo "$library_matrix" | jq .
@@ -2230,7 +2242,7 @@ jobs:
 
   test-suite:
     name: test-suite (${{ matrix.label }})
-    needs: [synthesize-merge, change-scope, test-gate-prepare]
+    needs: [synthesize-merge, change-scope, preflight, test-gate-prepare]
     if: |
       !cancelled() &&
       needs.test-gate-prepare.result == 'success'
@@ -2322,6 +2334,7 @@ jobs:
       TEST_GROUP: ${{ matrix.group }}
       PREPARE_BROWSER_ASSETS: ${{ matrix.suite == 'browser' }}
       VERIFY_BROWSER_PRODUCTION_BUILD: ${{ matrix.suite == 'browser' }}
+      STAGES_NODE_VFS: ${{ needs.preflight.outputs.stages_node_vfs }}
     steps:
       - name: Decide whether to run suite
         id: suite
@@ -2417,6 +2430,35 @@ jobs:
             PREPARE_BROWSER_ASSETS="$PREPARE_BROWSER_ASSETS" \
             VERIFY_BROWSER_PRODUCTION_BUILD="$VERIFY_BROWSER_PRODUCTION_BUILD" \
             bash scripts/ci-run-test-suite.sh "$SUITE" "$TEST_GROUP"
+
+      - name: Build and run exact candidate Node npm acceptance
+        if: >-
+          steps.suite.outputs.skip != 'true' &&
+          matrix.suite == 'browser' &&
+          env.STAGES_NODE_VFS == 'true'
+        run: |
+          set -euo pipefail
+          node_image=$(bash scripts/resolve-binary.sh programs/node-vfs.vfs.zst)
+          node_sha256=$(sha256sum "$node_image" | awk '{print $1}')
+          test ! -e apps/browser-demos/dist
+          (
+            cd apps/browser-demos
+            VITE_BASE=/kandelo/ \
+              VITE_CORS_PROXY_URL='https://wordpress-playground-cors-proxy.net/?' \
+              npm run build
+            bash ../../scripts/verify-browser-shell-vfs-asset.sh \
+              dist "$node_image" node-vfs.vfs
+            bash ../../scripts/dev-shell.sh env \
+              KANDELO_BROWSER_DEMO_INPUTS=main \
+              KANDELO_NODE_VFS_STRICT=1 \
+              KANDELO_NODE_VFS_SHA256="$node_sha256" \
+              KANDELO_PLAYWRIGHT_SERVE_DIST=1 \
+              KANDELO_TEST_BASE_URL=http://127.0.0.1:5401/kandelo/ \
+              VITE_BASE=/kandelo/ \
+              npx playwright test test/kandelo-node.spec.ts \
+                --grep 'Kandelo Node demo installs cowsay with npm' \
+                --project=chromium
+          )
 
       - name: Upload browser test artifacts
         if: failure() && steps.suite.outputs.skip != 'true' && matrix.suite == 'browser'
