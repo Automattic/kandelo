@@ -36,6 +36,9 @@ At design time:
 - The remote ref named `emdash/homebrew-pr-staging-1q1w6` still pointed at
   `origin/main`, while its active local worktree was at
   `a0bb933056789642c093836cd38a37e1a4d7b60c`, 55 commits ahead.
+- During implementation-plan review that active worktree advanced to
+  `81c48a9122a44326f4815d74125e0cdda884863d`, 66 commits ahead. The later
+  audit was read-only; the worktree remained dirty and user-owned.
 - That staging work defines canonical VFS product manifests, candidate and
   canonical Homebrew namespaces, admission records, exact product evidence,
   a Pages-owned product registry, and last-complete-site atomic deployment.
@@ -107,7 +110,8 @@ explain memory and first-use behavior. It is not selected.
 This is selected. The compiler is reachable from the default shell through
 lazy filesystem entries. The gallery preset uses the same image and exact
 payloads but makes the development workflow discoverable and may prefetch
-them with progress before presenting the example.
+them in the background, with progress, after presenting a usable terminal and
+the prepared example.
 
 ## Product Architecture
 
@@ -137,6 +141,14 @@ The resulting ownership boundaries are:
 No browser module may know individual compiler binary URLs, copy compiler
 files into the VFS, or merge a second SDK image during boot.
 
+Each authenticated Homebrew composition descriptor carries the Formula's
+direct same-tap, same-architecture dependency identities. The product builder
+seals those edges beside the package keg paths in
+`/etc/kandelo/homebrew-vfs.json`. The generic prefetch API therefore accepts
+only the `kandelo-sdk` root and derives the dependency-first closure from guest
+authority; neither the gallery nor either host keeps a second compiler
+dependency list.
+
 ## Package Boundaries
 
 ### `clang` formula
@@ -160,8 +172,10 @@ do not become runtime inputs.
 
 The `kandelo-sdk` formula installs:
 
-- stable `/usr/bin/wasm32posix-*` driver commands and conventional aliases;
-- the target sysroot under `/usr/wasm32posix/sysroot`;
+- stable `wasm32posix-*` driver commands and conventional aliases in its
+  Formula-owned `bin`, projected by the shell link manifest under `/usr/bin`;
+- the target sysroot under its Formula-owned `libexec/wasm32posix`, with the
+  shell providing the `/usr/wasm32posix` compatibility projection;
 - syscall glue sources and precompiled glue objects;
 - `config.site` and package-configuration support;
 - small examples and SDK documentation; and
@@ -252,19 +266,24 @@ asset-selection path.
 
 The coordinated delivery flow is:
 
-1. Add the `clang` and `kandelo-sdk` formula changes to the tap and bind their
-   candidate request to the exact Kandelo source and target ABI.
+1. Add the `clang` and `kandelo-sdk` Formula changes to the tap. In the exact
+   Kandelo request head, update `browser-main-shell` to select the lazy SDK root
+   and register the protected Node/browser toolchain suites.
 2. Build candidate bottles without publication credentials.
-3. Publish candidate layers to the candidate namespace and prove anonymous
-   readback.
-4. Run protected bottle verification and real product evidence.
-5. Promote successful bottles independently into the ABI-qualified canonical
-   GHCR namespace and publish admission records.
-6. Update Kandelo's `browser-main-shell` manifest and gallery metadata to
-   select the lazy SDK closure.
-7. Recompose the shell from admitted canonical inputs, rerun Node and browser
-   product evidence, and produce the exact Pages site inventory.
-8. Activate the new complete site atomically. If any required input or
+3. Publish candidate layers to the candidate namespace, prove anonymous
+   readback, and run the per-Formula structure/pour/Node checks.
+4. Compose the exact candidate `browser-main-shell` from those layers and run
+   real in-guest Node and Chromium product evidence.
+5. Use only successful, non-overridden product evidence that binds all three
+   exact layers to authorize `runtime_support = ["node", "browser"]` and
+   `browser_compatible = true`; then promote the unchanged bottles into the
+   ABI-qualified canonical GHCR namespace and publish admission records.
+6. Let Pages readiness authenticate every selected admission and canonical
+   composition descriptor, replace candidate references with their admitted
+   GHCR identities, recompose the shell, rerun Node and browser product
+   evidence, and produce the exact Pages site inventory. No legacy
+   closed-selection or bottle-mirror release participates in this path.
+7. Activate the new complete site atomically. If any required input or
    evidence is missing, retain the previous complete site.
 
 GitHub Pages therefore carries the browser application and compact shell VFS.
@@ -307,10 +326,18 @@ compiler distribution path.
   commands as Kandelo programs.
 - Prove that build-host table-generation tools are not included in the runtime
   closure.
+- Do not infer browser compatibility from a browser-labelled job alone. The
+  current staging `public-candidate-browser` job does not configure the inputs
+  used by its exact-candidate Playwright cases, so those cases skip. It may not
+  authorize a browser metadata claim.
+- Bind the public runtime fields and their exact product-evidence/definition
+  digests into the Formula metadata update and admission. An override may
+  accept a risk for promotion but may not manufacture runtime support.
 
 ### Node product evidence
 
-Boot the canonical `browser-main-shell` product and prove:
+Boot the exact candidate `browser-main-shell` before promotion, then repeat the
+proof against the canonical product before Pages activation:
 
 1. no SDK/compiler payload is read during shell startup;
 2. `cc` triggers the bound lazy inputs;
@@ -432,7 +459,8 @@ The implementation updates:
   memory expectations, and the C-development preset;
 - `docs/package-management.md` for the SDK/compiler formula ownership and lazy
   product selection;
-- `docs/binary-releases.md` if the canonical bottle/readback contract changes;
+- `docs/binary-releases.md` for canonical admission, composition-descriptor,
+  and bottle-readback contracts;
   and
 - `README.md` when the public C-development capability is activated.
 
