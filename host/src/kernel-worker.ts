@@ -782,7 +782,10 @@ function validateCompleteChannelInputSize(
     );
   }
   if (
-    syscallNr === ABI_SYSCALLS.Setgroups
+    (
+      syscallNr === ABI_SYSCALLS.Getgroups
+      || syscallNr === ABI_SYSCALLS.Setgroups
+    )
     && argIndex === 1
     && size > POSIX_NGROUPS_MAX * 4
   ) {
@@ -1035,8 +1038,6 @@ const SYS_PREADV = ABI_SYSCALLS.Preadv;
 const SYS_PWRITEV = ABI_SYSCALLS.Pwritev;
 const SYS_PREADV2 = ABI_SYSCALLS.Preadv2;
 const SYS_PWRITEV2 = ABI_SYSCALLS.Pwritev2;
-const SYS_GETGROUPS = ABI_SYSCALLS.Getgroups;
-
 /** fcntl commands that take a struct flock pointer */
 const SYS_FCNTL = ABI_SYSCALLS.Fcntl;
 
@@ -5920,6 +5921,36 @@ export class CentralizedKernelWorker {
             // WHY: a non-byte-count syscall may identify its complete output
             // through another generated record, but that producer field never
             // grants authority beyond this argument's owned capacity.
+            if (actualLength > planned.size) {
+              outputContractViolation = true;
+              break;
+            }
+            copySize = actualLength;
+          } else if (
+            desc.direction === "out"
+            && copyOutLength?.type === "return-value"
+          ) {
+            // A zero-capacity query may return a bounded logical count without
+            // producing bytes. Validate that producer count and its complete
+            // byte extent before the no-copy exit so the query cannot publish
+            // an impossible result.
+            if (
+              !Number.isSafeInteger(retVal)
+              || retVal < 0
+              || retVal > copyOutLength.maxValue
+            ) {
+              outputContractViolation = true;
+              break;
+            }
+            const actualLength = retVal * copyOutLength.multiplier;
+            if (
+              !Number.isSafeInteger(actualLength)
+              || actualLength < 0
+            ) {
+              outputContractViolation = true;
+              break;
+            }
+            if (planned.size === 0) continue;
             if (actualLength > planned.size) {
               outputContractViolation = true;
               break;
@@ -11138,15 +11169,6 @@ export class CentralizedKernelWorker {
     ) {
       if (logging) console.error(logEntry);
       this.#handleReadv(channel, syscallNr, origArgs, rawArgs, entry);
-      return;
-    }
-
-    // --- getgroups: the return value is an entry count, not a byte count ---
-    // A simple output descriptor cannot express that getgroups(0, list) must
-    // not touch list while every positive-size call exposes exactly one
-    // four-byte slot in Kandelo's current single-supplementary-group model.
-    if (syscallNr === SYS_GETGROUPS) {
-      this.handleGetgroups(channel, origArgs, rawArgs, entry);
       return;
     }
 
@@ -19301,128 +19323,6 @@ export class CentralizedKernelWorker {
       true,
     );
     this.finishNetworkIoctl(channel, entry);
-  }
-
-  /**
-   * Marshal getgroups without treating its entry-count return value as bytes.
-   *
-   * WHY: Kandelo currently exposes one supplementary gid. A positive-size
-   * request therefore lends Rust one exact four-byte destination; a size-zero
-   * count query lends no pointer at all. Passing the caller pointer directly
-   * or inferring capacity from total kernel memory would lose both facts.
-   */
-  private handleGetgroups(
-    channel: ChannelInfo,
-    origArgs: number[],
-    rawArgs: readonly bigint[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    const rawSize = rawArgs[0] ?? 0n;
-    if (rawSize < 0n || rawSize > 0x7fff_ffffn) {
-      this.completeChannelRawAndRelisten(channel, -1, EINVAL, entry);
-      return;
-    }
-    const size = Number(rawSize);
-    let processPointer = 0;
-    if (size > 0) {
-      try {
-        processPointer = this.checkedProcessRange(
-          channel,
-          rawArgs[1] ?? 0n,
-          4,
-          "getgroups output",
-        ).pointer;
-      } catch (error) {
-        this.#rejectScratchTransfer(channel, error, entry);
-        return;
-      }
-    }
-
-    let result: {
-      retVal: number;
-      errVal: number;
-      output: Uint8Array | null;
-    };
-    try {
-      result = this.#requireMainScratchRegion().withLease((lease) => {
-        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
-        for (let index = 0; index < CH_ARGS_COUNT; index++) {
-          kernelView.setBigInt64(CH_ARGS + index * CH_ARG_SIZE, 0n, true);
-        }
-        kernelView.setUint32(CH_SYSCALL, SYS_GETGROUPS, true);
-        kernelView.setBigInt64(CH_ARGS, BigInt(size), true);
-        if (size > 0) {
-          lease.fill(0, CH_DATA, 4);
-          lease.writeAddress(
-            CH_ARGS + CH_ARG_SIZE,
-            CH_DATA,
-            4,
-            "u64-le",
-          );
-          kernelView.setBigInt64(
-            CH_ARGS + 2 * CH_ARG_SIZE,
-            4n,
-            true,
-          );
-        }
-
-        this.#bindKernelTidForChannel(channel, entry);
-        this.currentHandlePid = channel.pid;
-        try {
-          this.#invokeEntryScratchExport(
-            entry,
-            lease,
-            "kernel_handle_channel",
-            [
-              lease.exportPointer(0, CH_TOTAL_SIZE),
-              CH_TOTAL_SIZE,
-              channel.pid,
-              0n,
-            ],
-          );
-        } finally {
-          this.currentHandlePid = 0;
-        }
-
-        let retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-        let errVal = kernelView.getUint32(CH_ERRNO, true);
-        let output: Uint8Array | null = null;
-        if (
-          !Number.isSafeInteger(retVal)
-          || (retVal >= 0 && size > 0 && (retVal > size || retVal > 1))
-        ) {
-          retVal = -1;
-          errVal = EIO;
-        } else if (retVal > 0 && size > 0) {
-          output = lease.copyOut(CH_DATA, retVal * 4);
-        }
-        return { retVal, errVal, output };
-      });
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-      if (error instanceof KernelScratchError) {
-        this.#rejectScratchTransfer(channel, error, entry);
-      } else {
-        this.completeChannelRawAndRelisten(channel, -1, EIO, entry);
-      }
-      return;
-    }
-
-    this.#dequeueSignalForDelivery(channel, entry);
-    if (this.#finishSignalTermination(channel, entry)) return;
-    this.completeChannel(
-      channel,
-      SYS_GETGROUPS,
-      origArgs,
-      undefined,
-      result.retVal,
-      result.errVal,
-      result.output
-        ? [{ ptr: processPointer, bytes: result.output }]
-        : undefined,
-      undefined,
-      entry,
-    );
   }
 
   /** Map scalar and vector variants to one contiguous kernel operation. */

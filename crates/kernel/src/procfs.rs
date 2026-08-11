@@ -331,6 +331,12 @@ pub fn generate_status(proc: &Process) -> Vec<u8> {
     use alloc::format;
 
     let name = process_name(proc);
+    let groups = proc
+        .supplementary_groups()
+        .iter()
+        .map(|gid| format!("{gid}"))
+        .collect::<Vec<_>>()
+        .join(" ");
 
     let state_str = match proc.state {
         crate::process::ProcessState::Running => "R (running)",
@@ -349,6 +355,7 @@ pub fn generate_status(proc: &Process) -> Vec<u8> {
          TracerPid:\t0\n\
          Uid:\t{}\t{}\t{}\t{}\n\
          Gid:\t{}\t{}\t{}\t{}\n\
+         Groups:\t{}\n\
          FDSize:\t{}\n\
          VmSize:\t0 kB\n\
          Threads:\t{}\n\
@@ -360,14 +367,15 @@ pub fn generate_status(proc: &Process) -> Vec<u8> {
         proc.pid,
         proc.pid,
         proc.ppid,
-        proc.uid,
-        proc.euid,
-        proc.euid,
-        proc.euid,
-        proc.gid,
-        proc.egid,
-        proc.egid,
-        proc.egid,
+        proc.real_uid(),
+        proc.effective_uid(),
+        proc.saved_uid(),
+        proc.effective_uid(),
+        proc.real_gid(),
+        proc.effective_gid(),
+        proc.saved_gid(),
+        proc.effective_gid(),
+        groups,
         count_open_fds(&proc.fd_table),
         1 + proc.threads.len(), // main thread + spawned threads
         proc.pending_for(proc.pid),
@@ -1094,6 +1102,7 @@ fn count_open_fds(fd_table: &crate::fd::FdTable) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credentials::Credentials;
     use crate::process::Process;
 
     fn dirent_len(name: &[u8]) -> usize {
@@ -1286,6 +1295,26 @@ mod tests {
         assert!(status_str.contains("Pid:\t1\n"));
         assert!(status_str.contains("Umask:\t0022\n"));
         assert!(status_str.contains("SigPnd:\t0000000001000002\n"));
+    }
+
+    #[test]
+    fn credentials_process_inspection_reports_saved_ids_and_ordered_groups() {
+        let mut proc = Process::new(41);
+        proc.install_credentials(Credentials {
+            ruid: 1000,
+            euid: 2000,
+            suid: 3000,
+            rgid: 4000,
+            egid: 5000,
+            sgid: 6000,
+            supplementary_groups: vec![7000, 8000, 7000],
+        });
+
+        let status = generate_status(&proc);
+        let status = core::str::from_utf8(&status).unwrap();
+        assert!(status.contains("Uid:\t1000\t2000\t3000\t2000\n"));
+        assert!(status.contains("Gid:\t4000\t5000\t6000\t5000\n"));
+        assert!(status.contains("Groups:\t7000 8000 7000\n"));
     }
 
     #[test]

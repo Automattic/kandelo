@@ -20,6 +20,7 @@ use core::sync::atomic::AtomicI32;
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::flags::O_ACCMODE;
 
+use crate::credentials::Credentials;
 use crate::lock::AdvisoryLockManager;
 use crate::ofd::FileType;
 #[cfg(test)]
@@ -134,10 +135,7 @@ pub struct RemoveProcessResult {
 /// front under an immutable `&parent` borrow so the rest of `spawn_child`
 /// can mutate `self.processes` freely.
 struct SpawnInheritFromParent {
-    uid: u32,
-    gid: u32,
-    euid: u32,
-    egid: u32,
+    credentials: Credentials,
     pgid: u32,
     sid: u32,
     umask: u32,
@@ -789,10 +787,8 @@ impl ProcessTable {
     fn limbo_process_from(proc: &Process) -> Process {
         let mut limbo = Process::new_allocated(AllocatedTaskId(proc.pid));
         limbo.ppid = proc.ppid;
-        limbo.uid = proc.uid;
-        limbo.gid = proc.gid;
-        limbo.euid = proc.euid;
-        limbo.egid = proc.egid;
+        limbo.install_credentials(proc.credentials().clone());
+        limbo.secure_exec = proc.secure_exec;
         limbo.pgid = proc.pgid;
         limbo.sid = proc.sid;
         limbo.is_session_leader = proc.is_session_leader;
@@ -1147,10 +1143,7 @@ impl ProcessTable {
                 }
             }
             SpawnInheritFromParent {
-                uid: parent.uid,
-                gid: parent.gid,
-                euid: parent.euid,
-                egid: parent.egid,
+                credentials: parent.credentials().clone(),
                 pgid: parent.pgid,
                 sid: parent.sid,
                 umask: parent.umask,
@@ -1171,10 +1164,7 @@ impl ProcessTable {
 
         // ── POSIX-required inheritance ─────────────────────────────────
         child.ppid = parent_pid;
-        child.uid = inherit.uid;
-        child.gid = inherit.gid;
-        child.euid = inherit.euid;
-        child.egid = inherit.egid;
+        child.install_credentials(inherit.credentials);
         child.pgid = inherit.pgid; // POSIX_SPAWN_SETPGROUP may override (Task 9).
         child.sid = inherit.sid; // POSIX_SPAWN_SETSID may override (Task 9).
         child.umask = inherit.umask;
@@ -1671,6 +1661,44 @@ mod wait_tests {
     use super::*;
 
     #[test]
+    fn spawn_inherits_credentials_as_one_complete_process_record() {
+        use crate::credentials::Credentials;
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let credentials = Credentials {
+            ruid: 1000,
+            euid: 2000,
+            suid: 3000,
+            rgid: 4000,
+            egid: 5000,
+            sgid: 6000,
+            supplementary_groups: vec![7000, 8000],
+        };
+        table
+            .get_mut(parent_pid)
+            .unwrap()
+            .install_credentials(credentials.clone());
+
+        let mut host = NoopHost;
+        let spawn_pid = table
+            .spawn_child_for_caller(
+                parent_pid,
+                parent_pid,
+                &[b"/bin/child".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .unwrap();
+
+        assert_eq!(table.get(spawn_pid).unwrap().credentials(), &credentials);
+    }
+
+    #[test]
     fn task_ids_are_shared_by_create_clone_fork_and_spawn() {
         use crate::process::test_host::NoopHost;
         use crate::spawn::SpawnAttrs;
@@ -2084,6 +2112,51 @@ pub fn current_pid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vfork_child_credential_mutation_isolated_from_parent_record() {
+        use wasm_posix_shared::fork_contract::Mode;
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let parent_credentials = Credentials {
+            ruid: 1000,
+            euid: 0,
+            suid: 3000,
+            rgid: 4000,
+            egid: 5000,
+            sgid: 6000,
+            supplementary_groups: vec![7000, 8000],
+        };
+        {
+            let parent = table.get_mut(parent_pid).unwrap();
+            parent.install_credentials(parent_credentials.clone());
+            parent.secure_exec = true;
+        }
+
+        let child_pid = table
+            .fork_process_for_caller_with_mode(parent_pid, parent_pid, Mode::Vfork)
+            .unwrap();
+        {
+            let child = table.get_mut(child_pid).unwrap();
+            assert_eq!(child.credentials(), &parent_credentials);
+            assert!(child.secure_exec);
+            child.setgroups(&[42, 43]).unwrap();
+            child.setresuid(9000, 9001, 9002).unwrap();
+            child.secure_exec = false;
+        }
+
+        let parent = table.get(parent_pid).unwrap();
+        assert_eq!(parent.credentials(), &parent_credentials);
+        assert!(parent.secure_exec);
+        let child = table.get(child_pid).unwrap();
+        assert_eq!(
+            (child.real_uid(), child.effective_uid(), child.saved_uid()),
+            (9000, 9001, 9002),
+        );
+        assert_eq!(child.supplementary_groups(), &[42, 43]);
+        assert!(!child.secure_exec);
+    }
 
     #[test]
     fn fork_pipe_replay_includes_fds_above_default_nofile_limit() {

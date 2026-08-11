@@ -7,6 +7,7 @@ use wasm_posix_shared::{
     WasmStatfs,
 };
 
+use crate::credentials::Credentials;
 use crate::fd::FdTable;
 use crate::memory::MemoryManager;
 use crate::ofd::{FileType, OfdTable};
@@ -727,10 +728,12 @@ pub struct ProcessIdentity {
 pub struct Process {
     identity: ProcessIdentity,
     pub ppid: u32,
-    pub uid: u32,
-    pub gid: u32,
-    pub euid: u32,
-    pub egid: u32,
+    credentials: Credentials,
+    /// Kernel-owned secure-startup fact for the current process image.
+    ///
+    /// Task 9 only preserves this marker across process-state transport.
+    /// Target-aware exec commit is the sole future authority that may set it.
+    pub(crate) secure_exec: bool,
     pub pgid: u32,
     pub sid: u32,
     /// True iff this process is the session leader of its session (i.e. the
@@ -1054,13 +1057,8 @@ impl Process {
                 threads: Vec::new(),
             },
             ppid: 0,
-            // Default to root (uid=0). The kernel is single-user; privilege
-            // drops happen explicitly via setuid/setgid and gate cross-user
-            // operations (kill, sched_*).
-            uid: 0,
-            gid: 0,
-            euid: 0,
-            egid: 0,
+            credentials: Credentials::root(),
+            secure_exec: false,
             pgid: pid,
             sid: 0,
             is_session_leader: false,
@@ -1117,6 +1115,97 @@ impl Process {
         self.identity.pid
     }
 
+    pub fn real_uid(&self) -> u32 {
+        self.credentials.ruid
+    }
+
+    pub fn effective_uid(&self) -> u32 {
+        self.credentials.euid
+    }
+
+    pub fn saved_uid(&self) -> u32 {
+        self.credentials.suid
+    }
+
+    pub fn real_gid(&self) -> u32 {
+        self.credentials.rgid
+    }
+
+    pub fn effective_gid(&self) -> u32 {
+        self.credentials.egid
+    }
+
+    pub fn saved_gid(&self) -> u32 {
+        self.credentials.sgid
+    }
+
+    pub fn supplementary_groups(&self) -> &[u32] {
+        &self.credentials.supplementary_groups
+    }
+
+    pub fn is_member_of_group(&self, gid: u32) -> bool {
+        self.credentials.is_member_of_group(gid)
+    }
+
+    pub fn setuid(&mut self, uid: u32) -> Result<(), Errno> {
+        self.credentials.setuid(uid)
+    }
+
+    pub fn seteuid(&mut self, uid: u32) -> Result<(), Errno> {
+        self.credentials.seteuid(uid)
+    }
+
+    pub fn setresuid(&mut self, ruid: u32, euid: u32, suid: u32) -> Result<(), Errno> {
+        self.credentials.setresuid(ruid, euid, suid)
+    }
+
+    pub fn setreuid(&mut self, ruid: u32, euid: u32) -> Result<(), Errno> {
+        self.credentials.setreuid(ruid, euid)
+    }
+
+    pub fn setgid(&mut self, gid: u32) -> Result<(), Errno> {
+        self.credentials.setgid(gid)
+    }
+
+    pub fn setegid(&mut self, gid: u32) -> Result<(), Errno> {
+        self.credentials.setegid(gid)
+    }
+
+    pub fn setresgid(&mut self, rgid: u32, egid: u32, sgid: u32) -> Result<(), Errno> {
+        self.credentials.setresgid(rgid, egid, sgid)
+    }
+
+    pub fn setregid(&mut self, rgid: u32, egid: u32) -> Result<(), Errno> {
+        self.credentials.setregid(rgid, egid)
+    }
+
+    pub fn setgroups(&mut self, groups: &[u32]) -> Result<(), Errno> {
+        self.credentials.setgroups(groups)
+    }
+
+    pub(crate) fn credentials(&self) -> &Credentials {
+        &self.credentials
+    }
+
+    pub(crate) fn install_credentials(&mut self, credentials: Credentials) {
+        self.credentials = credentials;
+    }
+
+    pub(crate) fn configure_ids(&mut self, uid: Option<u32>, gid: Option<u32>) {
+        let mut credentials = self.credentials.clone();
+        if let Some(uid) = uid {
+            credentials.ruid = uid;
+            credentials.euid = uid;
+            credentials.suid = uid;
+        }
+        if let Some(gid) = gid {
+            credentials.rgid = gid;
+            credentials.egid = gid;
+            credentials.sgid = gid;
+        }
+        self.credentials = credentials;
+    }
+
     /// Override a fixture identity without exposing a production mutation API.
     #[cfg(test)]
     pub(crate) fn set_pid_for_test(&mut self, pid: u32) {
@@ -1140,7 +1229,7 @@ impl Process {
             wait_status,
             si_code,
             si_status,
-            child_uid: self.uid,
+            child_uid: self.real_uid(),
             rusage: KernelRusage::default(),
         });
     }

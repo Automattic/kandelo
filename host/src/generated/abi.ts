@@ -1198,6 +1198,7 @@ export const CHANNEL_SCALAR_SLOT_CONTRACTS: Readonly<
   122: { 2: "process-size", },
   126: { 0: "process-address", 1: "process-size", 2: "process-size", },
   128: { 0: "process-address", 1: "process-size", },
+  135: { 0: "process-size", },
   136: { 0: "process-size", },
   200: { 0: "process-address", },
   203: { 0: "process-address", },
@@ -1512,7 +1513,8 @@ export type SyscallArgSizeSpec =
   | { type: "process-layout"; wasm32Size: number; wasm64Size: number };
 
 export type SyscallArgCopyOutLengthSpec =
-  { type: "u32-field"; argIndex: number; offset: number };
+  | { type: "u32-field"; argIndex: number; offset: number }
+  | { type: "return-value"; multiplier: number; maxValue: number };
 
 export const PROCESS_POINTER_WIDTH_ARG_INDEX = 5 as const;
 
@@ -1886,6 +1888,9 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
     { argIndex: 0, direction: "out", size: { type: "fixed", size: 4 }, required: true },
     { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 }, required: true },
     { argIndex: 2, direction: "out", size: { type: "fixed", size: 4 }, required: true },
+  ],
+  135: [
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 0, multiplier: 4 }, required: true, copyOutLength: { type: "return-value", multiplier: 4, maxValue: 32 } },
   ],
   136: [
     { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 0, multiplier: 4 }, required: true },

@@ -6,6 +6,9 @@ import {
   CH_ARG_SIZE,
   CH_STATUS,
   CH_SYSCALL,
+  CHANNEL_SCALAR_SLOT_CONTRACTS,
+  POSIX_NGROUPS_MAX,
+  SYSCALL_ARGS,
 } from "../src/generated/abi";
 import {
   createCentralizedKernelWorkerTestDouble,
@@ -104,6 +107,22 @@ function writeSyscall(
 }
 
 describe("handwritten host process-pointer width checks", () => {
+  it("uses process-size group counts and complete vector descriptors", () => {
+    for (const syscall of [ABI_SYSCALLS.Getgroups, ABI_SYSCALLS.Setgroups]) {
+      expect(CHANNEL_SCALAR_SLOT_CONTRACTS[syscall]?.[0]).toBe("process-size");
+      expect(SYSCALL_ARGS[syscall]?.[0]?.size).toEqual({
+        type: "arg",
+        argIndex: 0,
+        multiplier: 4,
+      });
+    }
+    expect(SYSCALL_ARGS[ABI_SYSCALLS.Getgroups]?.[0]?.copyOutLength).toEqual({
+      type: "return-value",
+      multiplier: 4,
+      maxValue: POSIX_NGROUPS_MAX,
+    });
+  });
+
   it("keeps a lossless wasm64 MAP_FIXED address above 4 GiB out of low memory", () => {
     const h = workerHarness(8);
     const lowAlias = 0x8000;

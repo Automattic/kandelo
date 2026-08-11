@@ -3376,7 +3376,10 @@ fn render_ts_module() -> String {
     out.push_str("  | { type: \"fixed\"; size: number }\n");
     out.push_str("  | { type: \"process-layout\"; wasm32Size: number; wasm64Size: number };\n\n");
     out.push_str("export type SyscallArgCopyOutLengthSpec =\n");
-    out.push_str("  { type: \"u32-field\"; argIndex: number; offset: number };\n\n");
+    out.push_str("  | { type: \"u32-field\"; argIndex: number; offset: number }\n");
+    out.push_str(
+        "  | { type: \"return-value\"; multiplier: number; maxValue: number };\n\n",
+    );
     out.push_str(&format!(
         "export const PROCESS_POINTER_WIDTH_ARG_INDEX = {} as const;\n\n",
         shared::host_abi::PROCESS_POINTER_WIDTH_ARG_INDEX
@@ -3540,6 +3543,14 @@ fn ts_syscall_arg_copy_out_length(
         SyscallArgCopyOutLength::U32Field { arg_index, offset } => {
             format!(
                 "{{ type: \"u32-field\", argIndex: {arg_index}, offset: {offset} }}"
+            )
+        }
+        SyscallArgCopyOutLength::ReturnValue {
+            multiplier,
+            max_value,
+        } => {
+            format!(
+                "{{ type: \"return-value\", multiplier: {multiplier}, maxValue: {max_value} }}"
             )
         }
     }
@@ -5586,6 +5597,14 @@ fn syscall_arg_copy_out_length_json(
             m.insert("type".into(), json!("u32-field"));
             m.insert("argIndex".into(), json!(arg_index));
             m.insert("offset".into(), json!(offset));
+        }
+        SyscallArgCopyOutLength::ReturnValue {
+            multiplier,
+            max_value,
+        } => {
+            m.insert("type".into(), json!("return-value"));
+            m.insert("multiplier".into(), json!(multiplier));
+            m.insert("maxValue".into(), json!(max_value));
         }
     }
     Value::Object(m.into_iter().collect())

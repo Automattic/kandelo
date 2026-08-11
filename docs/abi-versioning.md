@@ -575,6 +575,23 @@ eight-byte alignment bucket; the exact capacity comes from the host's
 pre-captured value under the single synchronous, non-reentrant lease. Adding a
 second per-descriptor capacity would itself be a future ABI design change.
 
+ABI 43 describes `getgroups` and `setgroups` through that generic pointer
+table. Their count is a caller-native process-size scalar and their vector is
+exactly `count * sizeof(gid_t)` bytes, bounded by `NGROUPS_MAX` before scratch
+allocation. `getgroups` adds a generated return-value copy-out rule: the host
+copies `return_value * sizeof(gid_t)` bytes, so a count-only query lends no
+destination and a larger caller buffer keeps its unused tail. The public
+`kernel_getgroups` export consequently takes only `(size, list)`; the former
+host-selected capacity argument and special one-group handler are removed.
+
+The same unpublished ABI 43 batch advances the exact fork and test-only exec
+state record to version 15. After the parent identity it stores real,
+effective, and saved UID; real, effective, and saved GID; an ordered bounded
+supplementary-group vector; and the kernel-owned `secure_exec` bit. Versions
+14 and 16, malformed counts, truncation, and trailing bytes are rejected
+instead of reconstructed through a compatibility fallback. The complete
+record is validated before the credential value or `secure_exec` is installed.
+
 `prctl` deliberately has no generic pointer descriptor. Only `PR_SET_NAME` and
 `PR_GET_NAME` interpret argument 1 as a required exact 16-byte scratch buffer;
 other options preserve its low 32-bit scalar value. Treating that slot as one

@@ -326,8 +326,8 @@ fn dev_fd_lstat(proc: &Process, path: &[u8], target_fd: i32) -> Result<WasmStat,
     Ok(crate::devfs::devfs_symlink_stat(
         path,
         target.len(),
-        proc.euid,
-        proc.egid,
+        proc.effective_uid(),
+        proc.effective_gid(),
     ))
 }
 
@@ -1912,7 +1912,7 @@ const AT_EACCESS: u32 = 0x200;
 fn has_access_for_ids(
     uid: u32,
     gid: u32,
-    supplementary_gid: u32,
+    supplementary_groups: &[u32],
     st: &WasmStat,
     amode: u32,
 ) -> bool {
@@ -1930,7 +1930,7 @@ fn has_access_for_ids(
 
     let available = if uid == st.st_uid {
         (st.st_mode >> 6) & 0o7
-    } else if gid == st.st_gid || supplementary_gid == st.st_gid {
+    } else if gid == st.st_gid || supplementary_groups.contains(&st.st_gid) {
         (st.st_mode >> 3) & 0o7
     } else {
         st.st_mode & 0o7
@@ -1940,7 +1940,13 @@ fn has_access_for_ids(
 }
 
 fn has_access(proc: &Process, st: &WasmStat, amode: u32) -> bool {
-    has_access_for_ids(proc.euid, proc.egid, proc.gid, st, amode)
+    has_access_for_ids(
+        proc.effective_uid(),
+        proc.effective_gid(),
+        proc.supplementary_groups(),
+        st,
+        amode,
+    )
 }
 
 fn check_access(proc: &Process, st: &WasmStat, amode: u32) -> Result<(), Errno> {
@@ -1954,11 +1960,11 @@ fn check_access(proc: &Process, st: &WasmStat, amode: u32) -> Result<(), Errno> 
 fn check_access_for_ids(
     uid: u32,
     gid: u32,
-    supplementary_gid: u32,
+    supplementary_groups: &[u32],
     st: &WasmStat,
     amode: u32,
 ) -> Result<(), Errno> {
-    if has_access_for_ids(uid, gid, supplementary_gid, st, amode) {
+    if has_access_for_ids(uid, gid, supplementary_groups, st, amode) {
         Ok(())
     } else {
         Err(Errno::EACCES)
@@ -2023,8 +2029,8 @@ fn dev_fd_path_stat(proc: &Process) -> WasmStat {
         st_ino: 0,
         st_mode: S_IFCHR | 0o666,
         st_nlink: 1,
-        st_uid: proc.euid,
-        st_gid: proc.egid,
+        st_uid: proc.effective_uid(),
+        st_gid: proc.effective_gid(),
         st_size: 0,
         st_atime_sec: 0,
         st_atime_nsec: 0,
@@ -2074,19 +2080,27 @@ fn namespace_lstat_raw(
             Err(error) => return Err(error),
         }
     }
-    if let Some(st) = crate::devfs::match_devfs_stat(path, proc.euid, proc.egid) {
+    if let Some(st) = crate::devfs::match_devfs_stat(
+        path,
+        proc.effective_uid(),
+        proc.effective_gid(),
+    ) {
         return Ok(st);
     }
     if let Some(dev) = match_virtual_device(path) {
-        return Ok(virtual_device_stat(dev, proc.euid, proc.egid));
+        return Ok(virtual_device_stat(
+            dev,
+            proc.effective_uid(),
+            proc.effective_gid(),
+        ));
     }
-    if let Some(st) = match_pty_stat(path, proc.euid, proc.egid) {
+    if let Some(st) = match_pty_stat(path) {
         return Ok(st);
     }
     if match_dev_fd(path).is_some() {
         return Ok(dev_fd_path_stat(proc));
     }
-    if let Some(st) = synthetic_file_stat(path, proc.euid, proc.egid) {
+    if let Some(st) = synthetic_file_stat(path, proc.effective_uid(), proc.effective_gid()) {
         return Ok(st);
     }
     // Like procfs, kernel devfs owns its namespace. `/dev/shm` is the one
@@ -2209,11 +2223,17 @@ fn resolve_namespace_path_from(
         return Err(Errno::ENOTDIR);
     }
     let (search_uid, search_gid) = if options.use_real_ids {
-        (proc.uid, proc.gid)
+        (proc.real_uid(), proc.real_gid())
     } else {
-        (proc.euid, proc.egid)
+        (proc.effective_uid(), proc.effective_gid())
     };
-    check_access_for_ids(search_uid, search_gid, proc.gid, &root_stat, X_OK)?;
+    check_access_for_ids(
+        search_uid,
+        search_gid,
+        proc.supplementary_groups(),
+        &root_stat,
+        X_OK,
+    )?;
 
     let mut resolved = alloc::vec![b'/'];
     let mut final_stat = Some(root_stat);
@@ -2230,7 +2250,13 @@ fn resolve_namespace_path_from(
                 if stat.st_mode & S_IFMT != S_IFDIR {
                     return Err(Errno::ENOTDIR);
                 }
-                check_access_for_ids(search_uid, search_gid, proc.gid, &stat, X_OK)?;
+                check_access_for_ids(
+                    search_uid,
+                    search_gid,
+                    proc.supplementary_groups(),
+                    &stat,
+                    X_OK,
+                )?;
             }
             final_stat = Some(stat);
             continue;
@@ -2329,7 +2355,13 @@ fn resolve_namespace_path_from(
             if stat.st_mode & S_IFMT != S_IFDIR {
                 return Err(Errno::ENOTDIR);
             }
-            check_access_for_ids(search_uid, search_gid, proc.gid, &stat, X_OK)?;
+            check_access_for_ids(
+                search_uid,
+                search_gid,
+                proc.supplementary_groups(),
+                &stat,
+                X_OK,
+            )?;
         }
         resolved = candidate;
         final_stat = Some(stat);
@@ -2426,12 +2458,12 @@ fn check_parent_writable(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> 
 fn check_sticky_child(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let parent = parent_path(path);
     let parent_st = namespace_lstat_raw(proc, host, &parent)?;
-    if parent_st.st_mode & S_ISVTX == 0 || proc.euid == 0 {
+    if parent_st.st_mode & S_ISVTX == 0 || proc.effective_uid() == 0 {
         return Ok(());
     }
 
     let child_st = namespace_lstat_raw(proc, host, path)?;
-    if proc.euid == parent_st.st_uid || proc.euid == child_st.st_uid {
+    if proc.effective_uid() == parent_st.st_uid || proc.effective_uid() == child_st.st_uid {
         Ok(())
     } else {
         Err(Errno::EPERM)
@@ -2486,7 +2518,7 @@ fn check_open_permissions(
 }
 
 fn check_owner_or_root(proc: &Process, st: &WasmStat) -> Result<(), Errno> {
-    if proc.euid == 0 || proc.euid == st.st_uid {
+    if proc.effective_uid() == 0 || proc.effective_uid() == st.st_uid {
         Ok(())
     } else {
         Err(Errno::EPERM)
@@ -2500,10 +2532,6 @@ fn check_exec_path(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> Result
         return Err(Errno::EACCES);
     }
     check_access(proc, &st, X_OK)
-}
-
-fn requested_id_allowed(current_real: u32, current_effective: u32, requested: u32) -> bool {
-    requested == 0xFFFFFFFF || requested == current_real || requested == current_effective
 }
 
 fn fifo_open_owner(proc: &Process) -> u64 {
@@ -2920,7 +2948,8 @@ pub fn sys_open(
 
     // /dev/ptmx — allocate a new PTY master
     if resolved == b"/dev/ptmx" {
-        let pty_idx = crate::pty::alloc_pty().ok_or(Errno::ENOSPC)?;
+        let pty_idx = crate::pty::alloc_pty(proc.effective_uid(), proc.effective_gid())
+            .ok_or(Errno::ENOSPC)?;
         let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
         pty.master_refs += 1;
         let status_flags = oflags & !CREATION_FLAGS;
@@ -2940,6 +2969,8 @@ pub fn sys_open(
         if pty.locked {
             return Err(Errno::EIO); // must call unlockpt first
         }
+        let stat = pty_pair_stat(pty_idx, pty.owner_uid(), pty.owner_gid());
+        check_access(proc, &stat, open_access_mask(oflags, &stat))?;
         pty.slave_refs += 1;
         let status_flags = oflags & !CREATION_FLAGS;
         let ofd_idx =
@@ -3024,7 +3055,7 @@ pub fn sys_open(
 
     let host_handle = host.host_open(&resolved, oflags, effective_mode)?;
     if created {
-        host.host_chown(&resolved, proc.euid, proc.egid)?;
+        host.host_chown(&resolved, proc.effective_uid(), proc.effective_gid())?;
     }
 
     // Cache lock identity from fstat on the live handle. Path-based stat is
@@ -6241,12 +6272,16 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
         // the endpoint and verifies this with fstat(2).
         Ok(virtual_device_stat(
             VirtualDevice::Dsp,
-            proc.euid,
-            proc.egid,
+            proc.effective_uid(),
+            proc.effective_gid(),
         ))
     } else if ofd.file_type == FileType::CharDevice {
         if let Some(dev) = VirtualDevice::from_host_handle(ofd.host_handle) {
-            return Ok(virtual_device_stat(dev, proc.euid, proc.egid));
+            return Ok(virtual_device_stat(
+                dev,
+                proc.effective_uid(),
+                proc.effective_gid(),
+            ));
         }
         // Standard streams (0=stdin, 1=stdout, 2=stderr) — handle in-kernel
         // so browser hosts without real file descriptors still work.
@@ -6256,8 +6291,8 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
                 st_ino: 0x54545900 + ofd.host_handle as u64, // "TTY\0" + stream index
                 st_mode: S_IFCHR | 0o620,
                 st_nlink: 1,
-                st_uid: proc.euid,
-                st_gid: proc.egid,
+                st_uid: proc.effective_uid(),
+                st_gid: proc.effective_gid(),
                 st_size: 0,
                 st_atime_sec: 0,
                 st_atime_nsec: 0,
@@ -6273,22 +6308,8 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
         host.host_fstat(ofd.host_handle)
     } else if matches!(ofd.file_type, FileType::PtyMaster | FileType::PtySlave) {
         let pty_idx = ofd.host_handle as usize;
-        Ok(WasmStat {
-            st_dev: 5,                           // synthetic devpts device
-            st_ino: 0x50545900 + pty_idx as u64, // "PTY\0" + index
-            st_mode: S_IFCHR | 0o620,
-            st_nlink: 1,
-            st_uid: proc.euid,
-            st_gid: proc.egid,
-            st_size: 0,
-            st_atime_sec: 0,
-            st_atime_nsec: 0,
-            st_mtime_sec: 0,
-            st_mtime_nsec: 0,
-            st_ctime_sec: 0,
-            st_ctime_nsec: 0,
-            _pad: 0,
-        })
+        let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
+        Ok(pty_pair_stat(pty_idx, pty.owner_uid(), pty.owner_gid()))
     } else if ofd.file_type == FileType::MemFd {
         let memfd_idx = (-(ofd.host_handle + 1)) as usize;
         let size = crate::descriptor_backing::with_memfds(|table| {
@@ -6302,8 +6323,8 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
             st_ino: 0x4D454D00 + memfd_idx as u64, // "MEM\0" + index
             st_mode: S_IFREG | 0o600,
             st_nlink: 1,
-            st_uid: proc.euid,
-            st_gid: proc.egid,
+            st_uid: proc.effective_uid(),
+            st_gid: proc.effective_gid(),
             st_size: size,
             st_atime_sec: 0,
             st_atime_nsec: 0,
@@ -6314,7 +6335,8 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
             _pad: 0,
         })
     } else if crate::descriptor_backing::is_synthetic_regular_handle(ofd.host_handle) {
-        synthetic_file_stat(&ofd.path, proc.euid, proc.egid).ok_or(Errno::EBADF)
+        synthetic_file_stat(&ofd.path, proc.effective_uid(), proc.effective_gid())
+            .ok_or(Errno::EBADF)
     } else if ofd.file_type == FileType::Regular
         && crate::procfs::is_procfs_buf_handle(ofd.host_handle)
     {
@@ -6346,13 +6368,18 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
         }
     } else if ofd.host_handle == crate::devfs::DEVFS_DIR_HANDLE {
         Ok(
-            crate::devfs::match_devfs_stat(&ofd.path, proc.euid, proc.egid).unwrap_or(WasmStat {
+            crate::devfs::match_devfs_stat(
+                &ofd.path,
+                proc.effective_uid(),
+                proc.effective_gid(),
+            )
+            .unwrap_or(WasmStat {
                 st_dev: 6,
                 st_ino: 0xDE0100,
                 st_mode: wasm_posix_shared::mode::S_IFDIR | 0o755,
                 st_nlink: 2,
-                st_uid: proc.euid,
-                st_gid: proc.egid,
+                st_uid: proc.effective_uid(),
+                st_gid: proc.effective_gid(),
                 st_size: 0,
                 st_atime_sec: 0,
                 st_atime_nsec: 0,
@@ -6755,29 +6782,35 @@ pub fn sys_flock(
 use crate::process::{DirStream, ProcessState};
 use wasm_posix_shared::WasmDirent;
 
-/// Check if a resolved path is a PTY or terminal device path.
-/// Returns a synthetic stat for /dev/ptmx, /dev/pts/N, /dev/tty.
-fn match_pty_stat(resolved: &[u8], uid: u32, gid: u32) -> Option<WasmStat> {
-    if resolved == b"/dev/ptmx" || resolved == b"/dev/tty" || resolved.starts_with(b"/dev/pts/") {
-        Some(WasmStat {
-            st_dev: 5,
-            st_ino: 0x50545900,
-            st_mode: S_IFCHR | 0o620,
-            st_nlink: 1,
-            st_uid: uid,
-            st_gid: gid,
-            st_size: 0,
-            st_atime_sec: 0,
-            st_atime_nsec: 0,
-            st_mtime_sec: 0,
-            st_mtime_nsec: 0,
-            st_ctime_sec: 0,
-            st_ctime_nsec: 0,
-            _pad: 0,
-        })
-    } else {
-        None
+fn pty_pair_stat(pty_idx: usize, uid: u32, gid: u32) -> WasmStat {
+    WasmStat {
+        st_dev: 5,
+        st_ino: 0x50545900 + pty_idx as u64,
+        st_mode: S_IFCHR | 0o620,
+        st_nlink: 1,
+        st_uid: uid,
+        st_gid: gid,
+        st_size: 0,
+        st_atime_sec: 0,
+        st_atime_nsec: 0,
+        st_mtime_sec: 0,
+        st_mtime_nsec: 0,
+        st_ctime_sec: 0,
+        st_ctime_nsec: 0,
+        _pad: 0,
     }
+}
+
+/// Return stable PTY-pair metadata. The non-pair clone and controlling-device
+/// nodes are root-owned device metadata rather than observer-owned aliases.
+fn match_pty_stat(resolved: &[u8]) -> Option<WasmStat> {
+    if resolved == b"/dev/ptmx" || resolved == b"/dev/tty" {
+        return Some(pty_pair_stat(0, 0, 0));
+    }
+    let suffix = resolved.strip_prefix(b"/dev/pts/")?;
+    let pty_idx = parse_ascii_usize(suffix)?;
+    let pty = crate::pty::get_pty(pty_idx)?;
+    Some(pty_pair_stat(pty_idx, pty.owner_uid(), pty.owner_gid()))
 }
 
 fn unix_socket_path_stat(
@@ -6905,9 +6938,13 @@ fn procfs_entry_stat(
 pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?.path;
     if let Some(dev) = match_virtual_device(&resolved) {
-        return Ok(virtual_device_stat(dev, proc.euid, proc.egid));
+        return Ok(virtual_device_stat(
+            dev,
+            proc.effective_uid(),
+            proc.effective_gid(),
+        ));
     }
-    if let Some(st) = match_pty_stat(&resolved, proc.euid, proc.egid) {
+    if let Some(st) = match_pty_stat(&resolved) {
         return Ok(st);
     }
     if let Some(target_fd) = match_dev_fd(&resolved) {
@@ -6917,11 +6954,15 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
         return procfs_entry_stat(proc, host, &entry, true);
     }
     if !is_host_backed_devfs_path(&resolved) {
-        if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
+        if let Some(st) = crate::devfs::match_devfs_stat(
+            &resolved,
+            proc.effective_uid(),
+            proc.effective_gid(),
+        ) {
             return Ok(st);
         }
     }
-    if let Some(st) = synthetic_file_stat(&resolved, proc.euid, proc.egid) {
+    if let Some(st) = synthetic_file_stat(&resolved, proc.effective_uid(), proc.effective_gid()) {
         return Ok(st);
     }
     if let Some(st) = fifo_path_stat(proc, host, &resolved, true)? {
@@ -6943,9 +6984,13 @@ pub fn sys_lstat(
 ) -> Result<WasmStat, Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?.path;
     if let Some(dev) = match_virtual_device(&resolved) {
-        return Ok(virtual_device_stat(dev, proc.euid, proc.egid));
+        return Ok(virtual_device_stat(
+            dev,
+            proc.effective_uid(),
+            proc.effective_gid(),
+        ));
     }
-    if let Some(st) = match_pty_stat(&resolved, proc.euid, proc.egid) {
+    if let Some(st) = match_pty_stat(&resolved) {
         return Ok(st);
     }
     if let Some(target_fd) = match_dev_fd(&resolved) {
@@ -6955,11 +7000,15 @@ pub fn sys_lstat(
         return procfs_entry_stat(proc, host, &entry, false);
     }
     if !is_host_backed_devfs_path(&resolved) {
-        if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
+        if let Some(st) = crate::devfs::match_devfs_stat(
+            &resolved,
+            proc.effective_uid(),
+            proc.effective_gid(),
+        ) {
             return Ok(st);
         }
     }
-    if let Some(st) = synthetic_file_stat(&resolved, proc.euid, proc.egid) {
+    if let Some(st) = synthetic_file_stat(&resolved, proc.effective_uid(), proc.effective_gid()) {
         return Ok(st);
     }
     if let Some(st) = fifo_path_stat(proc, host, &resolved, false)? {
@@ -6986,7 +7035,7 @@ pub fn sys_mkdir(
     let effective_mode = mode & !proc.umask;
     check_parent_writable(proc, host, &resolved)?;
     host.host_mkdir(&resolved, effective_mode)?;
-    host.host_chown(&resolved, proc.euid, proc.egid)
+    host.host_chown(&resolved, proc.effective_uid(), proc.effective_gid())
 }
 
 pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
@@ -7037,7 +7086,11 @@ fn make_fifo(
     let effective_mode = mode & !proc.umask;
     let flags = O_CREAT | O_EXCL | O_WRONLY;
     let handle = host.host_open(&resolved.path, flags, effective_mode)?;
-    if let Err(error) = host.host_chown(&resolved.path, proc.euid, proc.egid) {
+    if let Err(error) = host.host_chown(
+        &resolved.path,
+        proc.effective_uid(),
+        proc.effective_gid(),
+    ) {
         let _ = host.host_close(handle);
         let _ = host.host_unlink(&resolved.path);
         return Err(error);
@@ -7304,16 +7357,13 @@ fn prepare_chown_ids(
     uid: u32,
     gid: u32,
 ) -> Result<(u32, u32), Errno> {
-    if proc.euid != 0 {
+    if proc.effective_uid() != 0 {
         // _POSIX_CHOWN_RESTRICTED: an unprivileged caller must own the file,
         // cannot give it to another user, and can select only a group in its
-        // group set. Kandelo currently exposes one synthesized supplementary
-        // group through getgroups(): the real GID. Keep that documented
-        // credential model coherent by accepting either it or the effective
-        // GID here. The unchanged sentinels preserve their corresponding IDs.
-        if proc.euid != st.st_uid
+        // group set. The unchanged sentinels preserve their corresponding IDs.
+        if proc.effective_uid() != st.st_uid
             || (uid != CHOWN_ID_UNCHANGED && uid != st.st_uid)
-            || (gid != CHOWN_ID_UNCHANGED && gid != proc.egid && gid != proc.gid)
+            || (gid != CHOWN_ID_UNCHANGED && !proc.is_member_of_group(gid))
         {
             return Err(Errno::EPERM);
         }
@@ -7387,7 +7437,13 @@ pub fn sys_access(
         return Err(Errno::EACCES);
     }
     let st = resolved.stat.ok_or(Errno::ENOENT)?;
-    check_access_for_ids(proc.uid, proc.gid, proc.gid, &st, amode)
+    check_access_for_ids(
+        proc.real_uid(),
+        proc.real_gid(),
+        proc.supplementary_groups(),
+        &st,
+        amode,
+    )
 }
 
 /// Change the current working directory.
@@ -8103,22 +8159,22 @@ pub fn sys_getppid(proc: &Process) -> i32 {
 
 /// Get the real user ID.
 pub fn sys_getuid(proc: &Process) -> u32 {
-    proc.uid
+    proc.real_uid()
 }
 
 /// Get the effective user ID.
 pub fn sys_geteuid(proc: &Process) -> u32 {
-    proc.euid
+    proc.effective_uid()
 }
 
 /// Get the real group ID.
 pub fn sys_getgid(proc: &Process) -> u32 {
-    proc.gid
+    proc.real_gid()
 }
 
 /// Get the effective group ID.
 pub fn sys_getegid(proc: &Process) -> u32 {
-    proc.egid
+    proc.effective_gid()
 }
 
 /// getpgrp -- get process group ID.
@@ -8200,7 +8256,7 @@ pub fn sys_kill(proc: &mut Process, pid: i32, sig: u32) -> Result<(), Errno> {
     // synthesizing the recipient's identity. This process-local compatibility
     // path is self-delivery, so retain the same SI_USER metadata observable
     // through SA_SIGINFO as ordinary kill(getpid(), sig).
-    proc.raise_signal_with_metadata(sig, 0, 0, proc.pid, proc.uid);
+    proc.raise_signal_with_metadata(sig, 0, 0, proc.pid, proc.real_uid());
     Ok(())
 }
 
@@ -8824,7 +8880,10 @@ fn check_utimens_permissions(
 
     let both_now = times.is_some_and(|ts| ts[0].tv_nsec == UTIME_NOW && ts[1].tv_nsec == UTIME_NOW);
     if times.is_none() || both_now {
-        if proc.euid == 0 || proc.euid == st.st_uid || has_access(proc, st, W_OK) {
+        if proc.effective_uid() == 0
+            || proc.effective_uid() == st.st_uid
+            || has_access(proc, st, W_OK)
+        {
             return Ok(true);
         }
         return Err(Errno::EACCES);
@@ -10327,7 +10386,7 @@ fn udp_send_datagram(
     } else {
         src_addr
     };
-    let (src_pid, src_uid, src_gid) = (proc.pid, proc.uid, proc.gid);
+    let (src_pid, src_uid, src_gid) = (proc.pid, proc.real_uid(), proc.real_gid());
     if is_ipv4_multicast_addr(dst_addr) {
         use wasm_posix_shared::socket::{IPPROTO_IP, IP_MULTICAST_IF, IP_MULTICAST_LOOP};
 
@@ -10465,7 +10524,7 @@ fn unix_dgram_send_to_sock(
         return Err(Errno::EPIPE);
     }
 
-    let (src_pid, src_uid, src_gid) = (proc.pid, proc.uid, proc.gid);
+    let (src_pid, src_uid, src_gid) = (proc.pid, proc.real_uid(), proc.real_gid());
     let target = proc
         .sockets
         .get_mut(dst_sock_idx)
@@ -10693,7 +10752,7 @@ fn udp6_send_datagram(
     } else {
         src_addr
     };
-    let (src_pid, src_uid, src_gid) = (proc.pid, proc.uid, proc.gid);
+    let (src_pid, src_uid, src_gid) = (proc.pid, proc.real_uid(), proc.real_gid());
 
     let mut delivered = false;
     let sock_count = proc.sockets.len();
@@ -10842,8 +10901,8 @@ pub(crate) fn cross_process_loopback_udp_route(
     Some(CrossProcessLoopbackUdpRoute {
         sender_pid: proc.pid,
         sender_sock_idx,
-        sender_uid: proc.uid,
-        sender_gid: proc.gid,
+        sender_uid: proc.real_uid(),
+        sender_gid: proc.real_gid(),
         connected: sock.state == SocketState::Connected,
         dst_addr,
         dst_port,
@@ -12000,7 +12059,7 @@ pub fn sys_bind(
                     Err(Errno::EEXIST) => return Err(Errno::EADDRINUSE),
                     Err(e) => return Err(e),
                 };
-                host.host_chown(&resolved, proc.euid, proc.egid)?;
+                host.host_chown(&resolved, proc.effective_uid(), proc.effective_gid())?;
                 let _ = host.host_close(h);
             }
 
@@ -13651,7 +13710,8 @@ pub fn sys_openat(
 
     // /dev/ptmx — allocate a new PTY master
     if resolved == b"/dev/ptmx" {
-        let pty_idx = crate::pty::alloc_pty().ok_or(Errno::ENOSPC)?;
+        let pty_idx = crate::pty::alloc_pty(proc.effective_uid(), proc.effective_gid())
+            .ok_or(Errno::ENOSPC)?;
         let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
         pty.master_refs += 1;
         let status_flags = oflags & !CREATION_FLAGS;
@@ -13671,6 +13731,8 @@ pub fn sys_openat(
         if pty.locked {
             return Err(Errno::EIO);
         }
+        let stat = pty_pair_stat(pty_idx, pty.owner_uid(), pty.owner_gid());
+        check_access(proc, &stat, open_access_mask(oflags, &stat))?;
         pty.slave_refs += 1;
         let status_flags = oflags & !CREATION_FLAGS;
         let ofd_idx =
@@ -13759,7 +13821,7 @@ pub fn sys_openat(
 
     let host_handle = host.host_open(&resolved, oflags, effective_mode)?;
     if created {
-        host.host_chown(&resolved, proc.euid, proc.egid)?;
+        host.host_chown(&resolved, proc.effective_uid(), proc.effective_gid())?;
     }
 
     // Keep openat(2) on the same live-handle identity contract as open(2).
@@ -13833,7 +13895,11 @@ pub fn sys_fstatat(
     };
     let resolved = resolve_at_path(proc, host, dirfd, path, options)?.path;
     if let Some(dev) = match_virtual_device(&resolved) {
-        return Ok(virtual_device_stat(dev, proc.euid, proc.egid));
+        return Ok(virtual_device_stat(
+            dev,
+            proc.effective_uid(),
+            proc.effective_gid(),
+        ));
     }
     if let Some(target_fd) = match_dev_fd(&resolved) {
         if flags & AT_SYMLINK_NOFOLLOW != 0 {
@@ -13846,11 +13912,15 @@ pub fn sys_fstatat(
         return procfs_entry_stat(proc, host, &entry, follow);
     }
     if !is_host_backed_devfs_path(&resolved) {
-        if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
+        if let Some(st) = crate::devfs::match_devfs_stat(
+            &resolved,
+            proc.effective_uid(),
+            proc.effective_gid(),
+        ) {
             return Ok(st);
         }
     }
-    if let Some(st) = synthetic_file_stat(&resolved, proc.euid, proc.egid) {
+    if let Some(st) = synthetic_file_stat(&resolved, proc.effective_uid(), proc.effective_gid()) {
         return Ok(st);
     }
     if let Some(st) = fifo_path_stat(proc, host, &resolved, flags & AT_SYMLINK_NOFOLLOW == 0)? {
@@ -13930,7 +14000,7 @@ pub fn sys_mkdirat(
     let effective_mode = mode & !proc.umask;
     check_parent_writable(proc, host, &resolved)?;
     host.host_mkdir(&resolved, effective_mode)?;
-    host.host_chown(&resolved, proc.euid, proc.egid)
+    host.host_chown(&resolved, proc.effective_uid(), proc.effective_gid())
 }
 
 /// renameat -- rename relative to directory fds.
@@ -15927,7 +15997,7 @@ pub fn sys_setrlimit(proc: &mut Process, resource: u32, soft: u64, hard: u64) ->
         return Err(Errno::EINVAL);
     }
     let current_hard = proc.rlimits[resource as usize][1];
-    if proc.euid != 0 && hard > current_hard {
+    if proc.effective_uid() != 0 && hard > current_hard {
         return Err(Errno::EPERM);
     }
     proc.rlimits[resource as usize] = [soft, hard];
@@ -15980,11 +16050,11 @@ pub fn sys_faccessat(
     }
     let st = resolved.stat.ok_or(Errno::ENOENT)?;
     let (uid, gid) = if flags & AT_EACCESS != 0 {
-        (proc.euid, proc.egid)
+        (proc.effective_uid(), proc.effective_gid())
     } else {
-        (proc.uid, proc.gid)
+        (proc.real_uid(), proc.real_gid())
     };
-    check_access_for_ids(uid, gid, proc.gid, &st, amode)
+    check_access_for_ids(uid, gid, proc.supplementary_groups(), &st, amode)
 }
 
 /// fchmodat -- change file mode relative to directory fd.
@@ -16246,78 +16316,44 @@ pub fn sys_select(
     Err(Errno::EAGAIN)
 }
 
-/// setuid -- set real and effective user ID.
-///
-/// POSIX semantics (no saved-set-user-ID tracked):
-/// - If caller's euid is 0 (root), set both `uid` and `euid` to `uid`.
-/// - Else if the target `uid` equals the caller's real `uid`, set `euid` only.
-/// - Otherwise return EPERM.
+/// setuid -- update process-wide user credentials.
 pub fn sys_setuid(proc: &mut Process, uid: u32) -> Result<(), Errno> {
-    if proc.euid == 0 {
-        proc.uid = uid;
-        proc.euid = uid;
-        Ok(())
-    } else if uid == proc.uid {
-        proc.euid = uid;
-        Ok(())
-    } else {
-        Err(Errno::EPERM)
-    }
+    proc.setuid(uid)
 }
 
-/// setgid -- set real and effective group ID.
-///
-/// Mirrors setuid's privilege rules, gated on euid (the kernel doesn't track a
-/// separate "appropriate privileges" capability).
+/// setgid -- update process-wide group credentials.
 pub fn sys_setgid(proc: &mut Process, gid: u32) -> Result<(), Errno> {
-    if proc.euid == 0 {
-        proc.gid = gid;
-        proc.egid = gid;
-        Ok(())
-    } else if gid == proc.gid {
-        proc.egid = gid;
-        Ok(())
-    } else {
-        Err(Errno::EPERM)
-    }
+    proc.setgid(gid)
 }
 
-/// seteuid -- set effective user ID.
-///
-/// Root may set euid to any value. Others may only reset euid to their real uid.
+/// seteuid -- set effective user ID from the permitted real/saved set.
 pub fn sys_seteuid(proc: &mut Process, euid: u32) -> Result<(), Errno> {
-    if proc.euid == 0 || euid == proc.uid {
-        proc.euid = euid;
-        Ok(())
-    } else {
-        Err(Errno::EPERM)
-    }
+    proc.seteuid(euid)
 }
 
 /// setegid -- set effective group ID.
 pub fn sys_setegid(proc: &mut Process, egid: u32) -> Result<(), Errno> {
-    if proc.euid == 0 || egid == proc.gid {
-        proc.egid = egid;
-        Ok(())
-    } else {
-        Err(Errno::EPERM)
-    }
+    proc.setegid(egid)
 }
 
 /// POSIX permission test for `kill(pid, sig)`.
 ///
 /// Returns true if a process with (sender_uid, sender_euid) may signal a
-/// process with (target_uid, target_euid). Per POSIX: sender's real or
-/// effective uid must match target's real or saved-set-uid. Since we don't
-/// track saved-set-user-ID separately, the real uid stands in for it.
-pub fn can_signal(sender_uid: u32, sender_euid: u32, target_uid: u32, target_euid: u32) -> bool {
+/// process with (target_uid, target_saved_uid). Per POSIX: sender's real or
+/// effective UID must match the target's real or saved-set-user-ID.
+pub fn can_signal(
+    sender_uid: u32,
+    sender_euid: u32,
+    target_uid: u32,
+    target_saved_uid: u32,
+) -> bool {
     if sender_euid == 0 {
         return true;
     }
     sender_uid == target_uid
-        || sender_uid == target_euid
+        || sender_uid == target_saved_uid
         || sender_euid == target_uid
-        || sender_euid == target_euid
+        || sender_euid == target_saved_uid
 }
 
 /// POSIX permission test for `sched_getparam`/`sched_getscheduler` and their
@@ -16379,7 +16415,7 @@ pub fn sys_setpriority(proc: &mut Process, which: i32, who: u32, prio: i32) -> R
     }
     // Clamp to [-20, 19]
     let clamped = prio.max(-20).min(19);
-    if proc.euid != 0 && clamped < proc.nice {
+    if proc.effective_uid() != 0 && clamped < proc.nice {
         return Err(Errno::EPERM);
     }
     proc.nice = clamped;
@@ -16551,69 +16587,79 @@ pub fn sys_fstatfs(
     }
 }
 
-/// setresuid — set real, effective, and saved user IDs (simulated).
+/// setresuid — atomically set real, effective, and saved user IDs.
 pub fn sys_setresuid(proc: &mut Process, ruid: u32, euid: u32, suid: u32) -> Result<(), Errno> {
-    if proc.euid != 0
-        && (!requested_id_allowed(proc.uid, proc.euid, ruid)
-            || !requested_id_allowed(proc.uid, proc.euid, euid)
-            || !requested_id_allowed(proc.uid, proc.euid, suid))
-    {
-        return Err(Errno::EPERM);
-    }
-    if ruid != 0xFFFFFFFF {
-        proc.uid = ruid;
-    }
-    if euid != 0xFFFFFFFF {
-        proc.euid = euid;
-    }
-    Ok(())
+    proc.setresuid(ruid, euid, suid)
+}
+
+/// setreuid — atomically set real/effective UID and reseat the saved UID.
+pub fn sys_setreuid(proc: &mut Process, ruid: u32, euid: u32) -> Result<(), Errno> {
+    proc.setreuid(ruid, euid)
 }
 
 /// getresuid — get real, effective, and saved user IDs.
 pub fn sys_getresuid(proc: &Process) -> (u32, u32, u32) {
-    (proc.uid, proc.euid, proc.uid)
+    (proc.real_uid(), proc.effective_uid(), proc.saved_uid())
 }
 
-/// setresgid — set real, effective, and saved group IDs (simulated).
+/// setresgid — atomically set real, effective, and saved group IDs.
 pub fn sys_setresgid(proc: &mut Process, rgid: u32, egid: u32, sgid: u32) -> Result<(), Errno> {
-    if proc.euid != 0
-        && (!requested_id_allowed(proc.gid, proc.egid, rgid)
-            || !requested_id_allowed(proc.gid, proc.egid, egid)
-            || !requested_id_allowed(proc.gid, proc.egid, sgid))
-    {
-        return Err(Errno::EPERM);
-    }
-    if rgid != 0xFFFFFFFF {
-        proc.gid = rgid;
-    }
-    if egid != 0xFFFFFFFF {
-        proc.egid = egid;
-    }
-    Ok(())
+    proc.setresgid(rgid, egid, sgid)
+}
+
+/// setregid — atomically set real/effective GID and reseat the saved GID.
+pub fn sys_setregid(proc: &mut Process, rgid: u32, egid: u32) -> Result<(), Errno> {
+    proc.setregid(rgid, egid)
 }
 
 /// getresgid — get real, effective, and saved group IDs.
 pub fn sys_getresgid(proc: &Process) -> (u32, u32, u32) {
-    (proc.gid, proc.egid, proc.gid)
+    (proc.real_gid(), proc.effective_gid(), proc.saved_gid())
 }
 
 /// getgroups — get supplementary group IDs.
-/// Returns 1 group (the process's primary gid).
-pub fn sys_getgroups(proc: &Process, size: u32) -> Result<(u32, u32), Errno> {
-    if size == 0 {
-        // Return count only
-        return Ok((1, 0));
+pub fn sys_getgroups(proc: &Process, size: u32) -> Result<&[u32], Errno> {
+    if size as usize > crate::credentials::NGROUPS_MAX {
+        return Err(Errno::EINVAL);
     }
-    // Return count=1 and the group
-    Ok((1, proc.gid))
+    if size != 0 && (size as usize) < proc.supplementary_groups().len() {
+        return Err(Errno::EINVAL);
+    }
+    Ok(proc.supplementary_groups())
 }
 
-/// setgroups — set supplementary group IDs (no-op).
-pub fn sys_setgroups(proc: &mut Process, _size: u32) -> Result<(), Errno> {
-    if proc.euid != 0 {
-        return Err(Errno::EPERM);
+/// Copy a successful getgroups result into the adapter-provided destination.
+///
+/// A size-zero query is count-only and must not inspect or touch the pointer.
+#[cfg(any(test, target_arch = "wasm32", target_arch = "wasm64"))]
+pub(crate) fn copy_getgroups_to_destination(
+    size: u32,
+    list_ptr: *mut u32,
+    list_capacity_bytes: u32,
+    groups: &[u32],
+) -> Result<u32, Errno> {
+    let count = u32::try_from(groups.len()).map_err(|_| Errno::EOVERFLOW)?;
+    if size == 0 {
+        return Ok(count);
     }
-    Ok(())
+    let required_bytes = groups
+        .len()
+        .checked_mul(core::mem::size_of::<u32>())
+        .ok_or(Errno::EOVERFLOW)?;
+    if list_ptr.is_null() || required_bytes > list_capacity_bytes as usize {
+        return Err(Errno::EFAULT);
+    }
+    if required_bytes > 0 {
+        unsafe {
+            core::ptr::copy_nonoverlapping(groups.as_ptr(), list_ptr, groups.len());
+        }
+    }
+    Ok(count)
+}
+
+/// setgroups — atomically replace the ordered supplementary group list.
+pub fn sys_setgroups(proc: &mut Process, groups: &[u32]) -> Result<(), Errno> {
+    proc.setgroups(groups)
 }
 
 /// Send one message and its SCM_RIGHTS descriptors as a single owned
@@ -16930,12 +16976,32 @@ pub fn sys_memfd_create(proc: &mut Process, name: &[u8], flags: u32) -> Result<i
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credentials::Credentials;
     use crate::process::ProcessState;
     use wasm_posix_shared::mode::{S_IFDIR, S_IFLNK, S_IFMT, S_IFREG};
     use wasm_posix_shared::poll::{POLLHUP, POLLIN, POLLOUT};
 
     fn terminal_process(pid: u32) -> Process {
         Process::new_with_stdio(pid, crate::process::StdioConfig::terminal())
+    }
+
+    fn set_test_credentials(
+        proc: &mut Process,
+        ruid: u32,
+        euid: u32,
+        rgid: u32,
+        egid: u32,
+        supplementary_groups: &[u32],
+    ) {
+        proc.install_credentials(Credentials {
+            ruid,
+            euid,
+            suid: ruid,
+            rgid,
+            egid,
+            sgid: rgid,
+            supplementary_groups: supplementary_groups.to_vec(),
+        });
     }
 
     struct PtyFixture {
@@ -16951,7 +17017,7 @@ mod tests {
         fn new() -> Self {
             let pty_table = crate::pty::test_table_lock();
             let mut proc = Process::new(1);
-            let pty_idx = crate::pty::alloc_pty().expect("test PTY allocation");
+            let pty_idx = crate::pty::alloc_pty(0, 0).expect("test PTY allocation");
             let pty = crate::pty::get_pty(pty_idx).expect("allocated test PTY");
             pty.locked = false;
             pty.master_refs = 1;
@@ -18147,10 +18213,7 @@ mod tests {
 
     fn user_process(pid: u32) -> Process {
         let mut proc = Process::new(pid);
-        proc.uid = 1000;
-        proc.euid = 1000;
-        proc.gid = 1000;
-        proc.egid = 1000;
+        set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[]);
         proc
     }
 
@@ -18275,8 +18338,8 @@ mod tests {
         let err = sys_setresuid(&mut proc, 0, 0, 0xFFFFFFFF).unwrap_err();
 
         assert_eq!(err, Errno::EPERM);
-        assert_eq!(proc.uid, 1000);
-        assert_eq!(proc.euid, 1000);
+        assert_eq!(proc.real_uid(), 1000);
+        assert_eq!(proc.effective_uid(), 1000);
     }
 
     #[test]
@@ -18286,17 +18349,153 @@ mod tests {
         let err = sys_setresgid(&mut proc, 0, 0, 0xFFFFFFFF).unwrap_err();
 
         assert_eq!(err, Errno::EPERM);
-        assert_eq!(proc.gid, 1000);
-        assert_eq!(proc.egid, 1000);
+        assert_eq!(proc.real_gid(), 1000);
+        assert_eq!(proc.effective_gid(), 1000);
     }
 
     #[test]
     fn test_non_root_setgroups_denied() {
         let mut proc = user_process(19);
 
-        let err = sys_setgroups(&mut proc, 0).unwrap_err();
+        let err = sys_setgroups(&mut proc, &[]).unwrap_err();
 
         assert_eq!(err, Errno::EPERM);
+    }
+
+    #[test]
+    fn permission_getgroups_sizes_and_setgroups_is_root_only_and_atomic() {
+        let mut proc = Process::new(20);
+        let ordered = [41, 7, 41];
+        assert_eq!(sys_setgroups(&mut proc, &ordered), Ok(()));
+        assert_eq!(sys_getgroups(&proc, 0), Ok(ordered.as_slice()));
+        assert_eq!(
+            sys_getgroups(&proc, ordered.len() as u32),
+            Ok(ordered.as_slice()),
+        );
+        assert_eq!(
+            sys_getgroups(&proc, ordered.len() as u32 - 1),
+            Err(Errno::EINVAL),
+        );
+
+        assert_eq!(proc.seteuid(1000), Ok(()));
+        let before = proc.credentials().clone();
+        assert_eq!(sys_setgroups(&mut proc, &[99]), Err(Errno::EPERM));
+        assert_eq!(proc.credentials(), &before);
+    }
+
+    #[test]
+    fn wasm_adapter_count_query_with_groups_never_touches_a_destination() {
+        let groups = [41, 42];
+        let mut untouched = 0xA5A5_A5A5;
+
+        assert_eq!(
+            copy_getgroups_to_destination(0, &mut untouched, 0, &groups),
+            Ok(2),
+        );
+        assert_eq!(untouched, 0xA5A5_A5A5);
+        assert_eq!(
+            copy_getgroups_to_destination(0, core::ptr::null_mut(), 0, &groups),
+            Ok(2),
+        );
+    }
+
+    #[test]
+    fn permission_file_group_access_uses_supplementary_membership() {
+        let mut proc = Process::new(21);
+        set_test_credentials(&mut proc, 1000, 1000, 2000, 3000, &[7000]);
+        let file = WasmStat {
+            st_dev: 1,
+            st_ino: 1,
+            st_mode: S_IFREG | 0o060,
+            st_nlink: 1,
+            st_uid: 9999,
+            st_gid: 7000,
+            st_size: 0,
+            st_atime_sec: 0,
+            st_atime_nsec: 0,
+            st_mtime_sec: 0,
+            st_mtime_nsec: 0,
+            st_ctime_sec: 0,
+            st_ctime_nsec: 0,
+            _pad: 0,
+        };
+        assert!(has_access(&proc, &file, R_OK | W_OK));
+
+        set_test_credentials(&mut proc, 1000, 1000, 2000, 3000, &[]);
+        assert!(!has_access(&proc, &file, R_OK));
+    }
+
+    #[test]
+    fn pty_production_stat_and_fstat_keep_the_creators_owner() {
+        let _pty_table = crate::pty::test_table_lock();
+        let mut host = MockHostIO::new();
+        let mut creator = Process::new(23);
+        set_test_credentials(&mut creator, 1000, 1000, 2000, 2000, &[]);
+        let master_fd = sys_open(&mut creator, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+        let master_ofd = creator.fd_table.get(master_fd).unwrap().ofd_ref.0;
+        let pty_idx = creator.ofd_table.get(master_ofd).unwrap().host_handle as usize;
+        crate::pty::get_pty(pty_idx).unwrap().locked = false;
+        let slave_path = format!("/dev/pts/{pty_idx}").into_bytes();
+
+        let mut observer = Process::new(24);
+        set_test_credentials(&mut observer, 3000, 3000, 4000, 4000, &[2000]);
+        let path_stat = sys_stat(&mut observer, &mut host, &slave_path).unwrap();
+        assert_eq!((path_stat.st_uid, path_stat.st_gid), (1000, 2000));
+
+        let slave_fd = sys_open(&mut observer, &mut host, &slave_path, O_WRONLY, 0).unwrap();
+        let fd_stat = sys_fstat(&observer, &mut host, slave_fd).unwrap();
+        assert_eq!((fd_stat.st_uid, fd_stat.st_gid), (1000, 2000));
+        crate::pty::free_pty(pty_idx);
+    }
+
+    #[test]
+    fn pty_slave_open_enforces_owner_group_supplementary_and_root_access() {
+        let _pty_table = crate::pty::test_table_lock();
+        let mut host = MockHostIO::new();
+        let mut creator = Process::new(25);
+        set_test_credentials(&mut creator, 1000, 1000, 2000, 2000, &[]);
+        let master_fd = sys_open(&mut creator, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+        let master_ofd = creator.fd_table.get(master_fd).unwrap().ofd_ref.0;
+        let pty_idx = creator.ofd_table.get(master_ofd).unwrap().host_handle as usize;
+        crate::pty::get_pty(pty_idx).unwrap().locked = false;
+        let slave_path = format!("/dev/pts/{pty_idx}").into_bytes();
+
+        let mut observer = Process::new(26);
+        set_test_credentials(&mut observer, 3000, 3000, 4000, 4000, &[]);
+        assert_eq!(
+            sys_open(&mut observer, &mut host, &slave_path, O_WRONLY, 0),
+            Err(Errno::EACCES),
+        );
+
+        set_test_credentials(&mut observer, 3000, 3000, 4000, 4000, &[2000]);
+        assert!(sys_open(&mut observer, &mut host, &slave_path, O_WRONLY, 0).is_ok());
+        assert!(sys_open(&mut creator, &mut host, &slave_path, O_RDWR, 0).is_ok());
+
+        let mut root = Process::new(27);
+        assert!(sys_open(&mut root, &mut host, &slave_path, O_RDWR, 0).is_ok());
+        crate::pty::free_pty(pty_idx);
+    }
+
+    #[test]
+    fn permission_sticky_directory_uses_effective_uid_not_saved_uid() {
+        let mut proc = Process::new(22);
+        proc.install_credentials(Credentials {
+            ruid: 1000,
+            euid: 3000,
+            suid: 2000,
+            rgid: 1000,
+            egid: 1000,
+            sgid: 1000,
+            supplementary_groups: vec![],
+        });
+        let mut host = MockHostIO::new();
+        host.set_dir_with_owner(b"/tmp", 0, 0, 0o1777);
+        host.set_file_with_owner(b"/tmp/saved-owned", 2000, 0, 0o644, b"");
+
+        assert_eq!(
+            sys_unlink(&mut proc, &mut host, b"/tmp/saved-owned"),
+            Err(Errno::EPERM),
+        );
     }
 
     #[test]
@@ -18845,16 +19044,13 @@ mod tests {
         let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
         set_test_current_tid(0);
         let mut proc = Process::new(81_007);
-        proc.euid = 0;
-        proc.egid = 0;
         proc.umask = 0;
         let mut host = MockHostIO::new();
         let fifo = b"/tmp/fifo_futimens_permissions";
         create_test_fifo(&mut proc, &mut host, fifo, 0o666);
         let fd = sys_open(&mut proc, &mut host, fifo, O_RDWR, 0).unwrap();
 
-        proc.euid = 1000;
-        proc.egid = 1000;
+        set_test_credentials(&mut proc, 0, 1000, 0, 1000, &[]);
         host.clock_time = (1_500_000_010, 123_456_789);
         assert_eq!(
             sys_utimensat(&mut proc, &mut host, fd, b"", None, 0),
@@ -18913,8 +19109,7 @@ mod tests {
             ),
         );
 
-        proc.euid = 0;
-        proc.egid = 0;
+        set_test_credentials(&mut proc, 0, 0, 0, 0, &[]);
         sys_close(&mut proc, &mut host, fd).unwrap();
         sys_unlink(&mut proc, &mut host, fifo).unwrap();
     }
@@ -19013,8 +19208,6 @@ mod tests {
         let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
         set_test_current_tid(0);
         let mut proc = Process::new(81_030);
-        proc.euid = 0;
-        proc.egid = 0;
         let mut host = MockHostIO::new();
         let old = b"/tmp/fifo_metadata_old";
         let new = b"/tmp/fifo_metadata_new";
@@ -20159,8 +20352,8 @@ mod tests {
 
     /// VFS is the source of truth for file ownership. sys_stat must propagate
     /// uid/gid from the host VFS, not overwrite with the caller's effective
-    /// ids. proc.euid defaults to 0; with a host_stat returning (1000, 1000),
-    /// any override would clobber back to 0 (or to proc.euid) and fail.
+    /// IDs. The caller defaults to effective UID 0; with a host_stat returning
+    /// (1000, 1000), any caller-identity override would clobber the result.
     #[test]
     fn test_sys_stat_returns_host_uid_gid() {
         let mut proc = Process::new(1);
@@ -20210,8 +20403,8 @@ mod tests {
 
     /// sys_chown must propagate uid/gid into the host VFS so that a subsequent
     /// sys_stat returns the freshly written values. The asymmetric (uid != gid,
-    /// neither equal to proc.euid) pair catches any single-field clobber and
-    /// any "kernel overrides chown args with caller's euid" regression.
+    /// neither equal to the caller's effective UID) pair catches any
+    /// single-field clobber and any caller-identity override regression.
     #[test]
     fn test_sys_chown_round_trip_through_host() {
         let mut proc = Process::new(1);
@@ -20226,12 +20419,9 @@ mod tests {
     }
 
     #[test]
-    fn test_prepare_chown_ids_enforces_the_exposed_group_set() {
+    fn permission_prepare_chown_ids_enforces_the_authoritative_group_set() {
         let mut proc = Process::new(1);
-        proc.uid = 1000;
-        proc.euid = 1000;
-        proc.gid = 2000; // Kandelo's synthesized supplementary group.
-        proc.egid = 3000;
+        set_test_credentials(&mut proc, 1000, 1000, 2000, 3000, &[2000]);
         let st = WasmStat {
             st_dev: 0,
             st_ino: 1,
@@ -20267,7 +20457,7 @@ mod tests {
         );
 
         // An unprivileged owner cannot give a file away or name a group
-        // outside the effective-plus-synthesized group set. POSIX requires
+        // outside the effective-plus-supplementary group set. POSIX requires
         // the unchanged sentinel to preserve an existing foreign group;
         // explicitly naming that group is not authorized.
         assert_eq!(
@@ -20283,23 +20473,20 @@ mod tests {
             Err(Errno::EPERM),
         );
 
-        proc.euid = 1001;
+        set_test_credentials(&mut proc, 1000, 1001, 2000, 3000, &[2000]);
         assert_eq!(
             prepare_chown_ids(&proc, &st, CHOWN_ID_UNCHANGED, CHOWN_ID_UNCHANGED),
             Err(Errno::EPERM),
         );
 
-        proc.euid = 0;
+        set_test_credentials(&mut proc, 1000, 0, 2000, 3000, &[2000]);
         assert_eq!(prepare_chown_ids(&proc, &st, 5000, 6000), Ok((5000, 6000)),);
     }
 
     #[test]
     fn test_sys_chown_allows_owner_group_changes_but_rejects_foreign_ids() {
         let mut proc = Process::new(1);
-        proc.uid = 1000;
-        proc.euid = 1000;
-        proc.gid = 2000;
-        proc.egid = 1000;
+        set_test_credentials(&mut proc, 1000, 1000, 2000, 1000, &[2000]);
         let mut host = MockHostIO::new();
         host.set_file_with_owner(b"/owned", 1000, 4000, 0o755, b"hi");
 
@@ -20357,7 +20544,7 @@ mod tests {
     #[test]
     fn test_sys_chown_both_sentinels_require_owner_and_validate_path() {
         let mut proc = Process::new(1);
-        proc.euid = 1000;
+        set_test_credentials(&mut proc, 1000, 1000, 0, 0, &[]);
         let mut host = MockHostIO::new();
         host.set_file_with_owner(b"/owned", 1000, 2000, 0o644, b"hi");
 
@@ -20371,7 +20558,7 @@ mod tests {
         .unwrap();
         assert_eq!(host.chown_calls, vec![(b"/owned".to_vec(), 1000, 2000)],);
 
-        proc.euid = 2000;
+        set_test_credentials(&mut proc, 1000, 2000, 0, 0, &[]);
         assert_eq!(
             sys_chown(
                 &mut proc,
@@ -20441,7 +20628,7 @@ mod tests {
     #[test]
     fn test_sys_lchown_sentinels_use_link_owner_and_still_delegate() {
         let mut proc = Process::new(1);
-        proc.euid = 123;
+        set_test_credentials(&mut proc, 123, 123, 0, 0, &[]);
         let mut host = MockHostIO::new();
         host.set_symlink(b"/owned-link", b"/target");
         host.file_owners.insert(b"/owned-link".to_vec(), (123, 456));
@@ -20471,10 +20658,7 @@ mod tests {
     #[test]
     fn test_sys_lchown_authorizes_against_link_owner_and_caller_groups() {
         let mut proc = Process::new(1);
-        proc.uid = 1000;
-        proc.euid = 1000;
-        proc.gid = 2000;
-        proc.egid = 3000;
+        set_test_credentials(&mut proc, 1000, 1000, 2000, 3000, &[2000]);
         let mut host = MockHostIO::new();
         host.set_symlink(b"/link", b"/target");
         host.file_owners.insert(b"/link".to_vec(), (1000, 4000));
@@ -20515,7 +20699,7 @@ mod tests {
 
         sys_fchown(&mut proc, &mut host, fd, CHOWN_ID_UNCHANGED, 30).unwrap();
         sys_fchown(&mut proc, &mut host, fd, 40, CHOWN_ID_UNCHANGED).unwrap();
-        proc.euid = 40;
+        set_test_credentials(&mut proc, 40, 40, 0, 0, &[]);
         sys_fchown(
             &mut proc,
             &mut host,
@@ -20547,15 +20731,12 @@ mod tests {
     }
 
     #[test]
-    fn test_sys_fchown_uses_effective_and_synthesized_groups() {
+    fn test_sys_fchown_uses_effective_and_supplementary_groups() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         host.set_file_with_owner(b"/fd-group", 1000, 4000, 0o755, b"hi");
         let fd = sys_open(&mut proc, &mut host, b"/fd-group", O_RDONLY, 0).unwrap();
-        proc.uid = 1000;
-        proc.euid = 1000;
-        proc.gid = 2000;
-        proc.egid = 3000;
+        set_test_credentials(&mut proc, 1000, 1000, 2000, 3000, &[2000]);
 
         sys_fchown(&mut proc, &mut host, fd, CHOWN_ID_UNCHANGED, 3000).unwrap();
         sys_fchown(&mut proc, &mut host, fd, CHOWN_ID_UNCHANGED, 2000).unwrap();
@@ -20660,10 +20841,7 @@ mod tests {
         host.set_symlink(b"/dir/link", b"target");
         host.file_owners.insert(b"/dir/link".to_vec(), (1000, 4000));
         let dirfd = sys_open(&mut proc, &mut host, b"/dir", O_RDONLY | O_DIRECTORY, 0).unwrap();
-        proc.uid = 1000;
-        proc.euid = 1000;
-        proc.gid = 2000;
-        proc.egid = 3000;
+        set_test_credentials(&mut proc, 1000, 1000, 2000, 3000, &[2000]);
 
         sys_fchownat(
             &mut proc,
@@ -20917,10 +21095,7 @@ mod tests {
     #[test]
     fn access_uses_real_ids_for_component_search() {
         let mut proc = Process::new(1);
-        proc.uid = 1000;
-        proc.gid = 1000;
-        proc.euid = 0;
-        proc.egid = 0;
+        set_test_credentials(&mut proc, 1000, 0, 1000, 0, &[]);
         let mut host = MockHostIO::new();
         host.set_dir_with_owner(b"/secret", 0, 0, 0o700);
         host.set_file_with_owner(b"/secret/file", 0, 0, 0o644, b"");
@@ -20931,10 +21106,7 @@ mod tests {
         );
         assert!(sys_stat(&mut proc, &mut host, b"/secret/file").is_ok());
 
-        proc.uid = 0;
-        proc.gid = 0;
-        proc.euid = 1000;
-        proc.egid = 1000;
+        set_test_credentials(&mut proc, 0, 1000, 0, 1000, &[]);
         host.set_dir_with_owner(b"/root-only", 0, 0, 0o700);
         host.set_file_with_owner(b"/root-only/file", 0, 0, 0o644, b"");
 
@@ -20956,12 +21128,9 @@ mod tests {
     }
 
     #[test]
-    fn access_uses_effective_and_synthesized_supplementary_groups() {
+    fn access_uses_effective_and_authoritative_supplementary_groups() {
         let mut proc = Process::new(1);
-        proc.uid = 1000;
-        proc.euid = 1000;
-        proc.gid = 2000;
-        proc.egid = 3000;
+        set_test_credentials(&mut proc, 1000, 1000, 2000, 3000, &[2000]);
         let mut host = MockHostIO::new();
         host.set_dir_with_owner(b"/supp", 9999, 2000, 0o710);
         host.set_file_with_owner(b"/supp/file", 9999, 2000, 0o040, b"data");
@@ -21731,7 +21900,7 @@ mod tests {
     #[test]
     fn test_raise_preserves_self_sender_metadata() {
         let mut proc = Process::new(17);
-        proc.uid = 29;
+        set_test_credentials(&mut proc, 29, 29, 0, 0, &[]);
 
         sys_raise(&mut proc, 10).unwrap();
         let info = proc.consume_signal_for(17, 10).unwrap();
@@ -23243,7 +23412,7 @@ mod tests {
         ));
 
         let pty_table = crate::pty::test_table_lock();
-        let pty_index = crate::pty::alloc_pty().unwrap();
+        let pty_index = crate::pty::alloc_pty(0, 0).unwrap();
         for file_type in [FileType::PtyMaster, FileType::PtySlave] {
             assert_eq!(
                 validate_scm_rights_transfer_metadata(file_type, pty_index as i64),
@@ -31246,10 +31415,11 @@ mod tests {
     #[test]
     fn test_setuid_as_root_sets_both() {
         let mut proc = Process::new(1);
-        assert_eq!(proc.uid, 0);
+        assert_eq!(proc.real_uid(), 0);
         sys_setuid(&mut proc, 42).unwrap();
-        assert_eq!(proc.uid, 42);
-        assert_eq!(proc.euid, 42);
+        assert_eq!(proc.real_uid(), 42);
+        assert_eq!(proc.effective_uid(), 42);
+        assert_eq!(proc.saved_uid(), 42);
     }
 
     #[test]
@@ -31259,7 +31429,7 @@ mod tests {
                                            // Simulate regaining privilege partly: impossible without saved-set,
                                            // but setting euid back to real uid is always allowed.
         sys_seteuid(&mut proc, 7).unwrap();
-        assert_eq!(proc.euid, 7);
+        assert_eq!(proc.effective_uid(), 7);
     }
 
     #[test]
@@ -31267,16 +31437,17 @@ mod tests {
         let mut proc = Process::new(1);
         sys_setuid(&mut proc, 7).unwrap();
         assert_eq!(sys_setuid(&mut proc, 99), Err(Errno::EPERM));
-        assert_eq!(proc.uid, 7);
-        assert_eq!(proc.euid, 7);
+        assert_eq!(proc.real_uid(), 7);
+        assert_eq!(proc.effective_uid(), 7);
     }
 
     #[test]
     fn test_setgid_as_root_sets_both() {
         let mut proc = Process::new(1);
         sys_setgid(&mut proc, 42).unwrap();
-        assert_eq!(proc.gid, 42);
-        assert_eq!(proc.egid, 42);
+        assert_eq!(proc.real_gid(), 42);
+        assert_eq!(proc.effective_gid(), 42);
+        assert_eq!(proc.saved_gid(), 42);
     }
 
     #[test]
@@ -31290,8 +31461,8 @@ mod tests {
     fn test_seteuid_as_root_allows_any() {
         let mut proc = Process::new(1);
         sys_seteuid(&mut proc, 500).unwrap();
-        assert_eq!(proc.uid, 0); // real uid unchanged
-        assert_eq!(proc.euid, 500);
+        assert_eq!(proc.real_uid(), 0); // real uid unchanged
+        assert_eq!(proc.effective_uid(), 500);
     }
 
     #[test]
@@ -31299,7 +31470,7 @@ mod tests {
         let mut proc = Process::new(1);
         sys_setuid(&mut proc, 7).unwrap();
         sys_seteuid(&mut proc, 7).unwrap();
-        assert_eq!(proc.euid, 7);
+        assert_eq!(proc.effective_uid(), 7);
     }
 
     #[test]
@@ -31313,8 +31484,8 @@ mod tests {
     fn test_setegid_as_root_allows_any() {
         let mut proc = Process::new(1);
         sys_setegid(&mut proc, 500).unwrap();
-        assert_eq!(proc.gid, 0);
-        assert_eq!(proc.egid, 500);
+        assert_eq!(proc.real_gid(), 0);
+        assert_eq!(proc.effective_gid(), 500);
     }
 
     #[test]
@@ -31329,10 +31500,10 @@ mod tests {
     }
 
     #[test]
-    fn test_can_signal_matches_real_or_effective() {
+    fn signal_permission_matches_target_real_or_saved_uid() {
         // sender.euid matches target.ruid
         assert!(can_signal(99, 7, 7, 0));
-        // sender.ruid matches target.euid
+        // sender.ruid matches target.suid
         assert!(can_signal(7, 99, 0, 7));
     }
 

@@ -157,6 +157,64 @@ function kernelExportNamesFromSnapshot(source: string): Set<string> {
   }
   return uniqueNames;
 }
+
+function kernelExportSignatureFromSnapshot(
+  source: string,
+  exportName: string,
+): string {
+  const snapshot = JSON.parse(source) as {
+    kernel_exports?: Array<{ name?: unknown; signature?: unknown }>;
+  };
+  const matches = (snapshot.kernel_exports ?? []).filter(
+    (entry) => entry.name === exportName,
+  );
+  if (matches.length !== 1 || typeof matches[0].signature !== "string") {
+    throw new Error(`missing exact ABI signature for ${exportName}`);
+  }
+  return matches[0].signature;
+}
+
+function cFunctionArgumentCount(source: string, functionName: string): number {
+  const marker = `${functionName}(`;
+  const offsets: number[] = [];
+  let searchOffset = 0;
+  while (searchOffset < source.length) {
+    const candidateOffset = source.indexOf(marker, searchOffset);
+    if (candidateOffset < 0) break;
+    offsets.push(candidateOffset + functionName.length);
+    searchOffset = candidateOffset + marker.length;
+  }
+  if (offsets.length !== 1) {
+    throw new Error(
+      `${functionName} must have one exact C declaration or call, found ${offsets.length}`,
+    );
+  }
+
+  const open = offsets[0];
+  let depth = 0;
+  let argumentCount = 0;
+  let sawArgumentToken = false;
+  for (let offset = open; offset < source.length; offset++) {
+    const char = source[offset];
+    if (char === "(") {
+      depth++;
+      if (depth > 1) sawArgumentToken = true;
+      continue;
+    }
+    if (char === ")") {
+      depth--;
+      if (depth === 0) return sawArgumentToken ? argumentCount + 1 : 0;
+      sawArgumentToken = true;
+      continue;
+    }
+    if (depth === 1 && char === ",") {
+      argumentCount++;
+      continue;
+    }
+    if (depth === 1 && !/\s/.test(char)) sawArgumentToken = true;
+  }
+  throw new Error(`unterminated C argument list for ${functionName}`);
+}
 const abiKernelExportNames = kernelExportNamesFromSnapshot(abiSnapshotSource);
 const hostKernelWorkerSource = readFileSync(
   new URL("../src/kernel-worker.ts", import.meta.url),
@@ -1481,6 +1539,22 @@ const auditAllowances: AuditAllowance[] = [
 ];
 
 describe("kernel scratch static contract", () => {
+  it("keeps retained getgroups C sources on the exact ABI signature", () => {
+    expect(
+      kernelExportSignatureFromSnapshot(abiSnapshotSource, "kernel_getgroups"),
+    ).toBe("(i32,i32) -> (i32)");
+    expect(rustKernelExportParameters(kernelWasmApiSource, "kernel_getgroups"))
+      .toHaveLength(2);
+    expect(cFunctionArgumentCount(
+      legacySyscallImportsSource,
+      "kernel_getgroups",
+    )).toBe(2);
+    expect(cFunctionArgumentCount(
+      legacySyscallGlueSource,
+      "kernel_getgroups",
+    )).toBe(2);
+  });
+
   it("keeps host pointer roles aligned with Rust export parameters", () => {
     for (const exportName of KERNEL_SCRATCH_EXPORT_NAMES) {
       expect(() =>

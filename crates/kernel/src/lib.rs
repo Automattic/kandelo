@@ -9,6 +9,7 @@ pub mod audio;
 pub(crate) mod blocked_retry;
 pub(crate) mod channel_result;
 pub(crate) mod channel_scratch;
+pub mod credentials;
 pub(crate) mod descriptor_backing;
 pub mod devfs;
 pub mod dri;

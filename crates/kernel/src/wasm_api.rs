@@ -1262,7 +1262,7 @@ fn current_pid_eids() -> (u32, u32, u32) {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let pid = table.current_pid();
     match table.get(pid) {
-        Some(p) => (pid, p.euid, p.egid),
+        Some(p) => (pid, p.effective_uid(), p.effective_gid()),
         None => (pid, 0, 0),
     }
 }
@@ -1610,14 +1610,10 @@ pub extern "C" fn kernel_set_cwd(pid: u32, path_ptr: *const u8, path_len: u32) -
 pub extern "C" fn kernel_set_process_credentials(pid: u32, uid: u32, gid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     if let Some(proc) = table.get_mut(pid) {
-        if uid != u32::MAX {
-            proc.uid = uid;
-            proc.euid = uid;
-        }
-        if gid != u32::MAX {
-            proc.gid = gid;
-            proc.egid = gid;
-        }
+        proc.configure_ids(
+            (uid != u32::MAX).then_some(uid),
+            (gid != u32::MAX).then_some(gid),
+        );
         0
     } else {
         -(Errno::ESRCH as i32)
@@ -2291,7 +2287,7 @@ pub extern "C" fn kernel_generate_host_signal(pid: u32, signum: u32) -> i32 {
         return 0;
     }
 
-    let sender_uid = proc.uid;
+    let sender_uid = proc.real_uid();
     proc.raise_signal_with_metadata(signum, 0, 0, pid, sender_uid);
     if let Some(target_tid) = proc.pick_thread_for_shared_signal(signum) {
         let mut host = WasmHostIO;
@@ -2540,8 +2536,8 @@ pub extern "C" fn kernel_enum_procs(out_ptr: *mut u8, out_len: u32) -> i32 {
             &ProcessSnapshotHeader {
                 pid: proc.pid,
                 ppid: proc.ppid,
-                uid: proc.euid,
-                gid: proc.egid,
+                uid: proc.effective_uid(),
+                gid: proc.effective_gid(),
                 vsize,
                 state,
                 comm_len,
@@ -4271,12 +4267,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             channel_mut_ptr!(2, u32),
         ), // SYS_GETRESGID
         135 => {
-            let list_pointer = if a1 == 0 {
+            let size = process_size_u32!(0);
+            let list_pointer = if size == 0 {
                 core::ptr::null_mut()
             } else {
                 channel_mut_ptr!(1, u32)
             };
-            kernel_getgroups(a1 as u32, list_pointer, a3 as u32)
+            kernel_getgroups(size, list_pointer)
         } // SYS_GETGROUPS
         136 => kernel_setgroups(process_size_u32!(0), channel_const_ptr!(1, u32)), // SYS_SETGROUPS
 
@@ -4351,9 +4348,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         }
         113 => kernel_fpathconf(a1, a2, channel_mut_ptr!(2, i64)), // SYS_FPATHCONF
 
-        // setreuid/setregid — map to setresuid/setresgid with -1 for saved ID
-        215 => kernel_setresuid(a1 as u32, a2 as u32, 0xFFFFFFFF), // SYS_SETREUID
-        216 => kernel_setresgid(a1 as u32, a2 as u32, 0xFFFFFFFF), // SYS_SETREGID
+        215 => kernel_setreuid(a1 as u32, a2 as u32), // SYS_SETREUID
+        216 => kernel_setregid(a1 as u32, a2 as u32), // SYS_SETREGID
 
         // Timer
         225 => {
@@ -5322,11 +5318,11 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         // --- setfsuid/setfsgid: return previous fsuid/fsgid (we mirror euid/egid) ---
         370 => {
             let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-            proc.euid as i32
+            proc.effective_uid() as i32
         }
         371 => {
             let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-            proc.egid as i32
+            proc.effective_gid() as i32
         }
 
         // --- faccessat2/fchmodat2: delegate to existing implementations ---
@@ -5471,7 +5467,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                         let sender_pid = process_table.current_pid();
                         let sender_uid = process_table
                             .get(sender_pid)
-                            .map(|process| process.uid)
+                            .map(Process::real_uid)
                             .unwrap_or(0);
                         if queue_mqueue_signal_notification(
                             process_table,
@@ -6066,7 +6062,7 @@ pub extern "C" fn kernel_ipc_shmat_for_process(
             if pid != crate::process_table::SYNTHETIC_INIT_PID
                 && matches!(proc.state, ProcessState::Running | ProcessState::Stopped) =>
         {
-            (proc.euid, proc.egid)
+            (proc.effective_uid(), proc.effective_gid())
         }
         _ => return -(Errno::ESRCH as i32),
     };
@@ -6366,7 +6362,7 @@ pub extern "C" fn kernel_semctl_array_bytes(pid: u32, tid: u32, semid: i32, cmd:
         return -(error as i32);
     }
     let (uid, gid) = match table.get(pid) {
-        Some(process) => (process.euid, process.egid),
+        Some(process) => (process.effective_uid(), process.effective_gid()),
         None => return -(Errno::ESRCH as i32),
     };
     let ipc = unsafe { crate::ipc::global_ipc_table() };
@@ -7706,7 +7702,11 @@ fn kernel_kill_with_metadata(pid: i32, sig: u32, si_value_bits: u64, si_code: i3
     let caller_tid = table.current_tid();
     let (caller_pgid, sender_uid, sender_euid) = match table.get(caller_pid) {
         Some(caller) if caller.is_live_explicit_tid(caller_tid) => {
-            (caller.pgid, caller.uid, caller.euid)
+            (
+                caller.pgid,
+                caller.real_uid(),
+                caller.effective_uid(),
+            )
         }
         None => return -(Errno::ESRCH as i32),
         Some(_) => return -(Errno::ESRCH as i32),
@@ -7729,7 +7729,12 @@ fn kernel_kill_with_metadata(pid: i32, sig: u32, si_value_bits: u64, si_code: i3
         let target_pid = pid as u32;
         let result = match table.get(target_pid) {
             Some(target)
-                if !syscalls::can_signal(sender_uid, sender_euid, target.uid, target.euid) =>
+                if !syscalls::can_signal(
+                    sender_uid,
+                    sender_euid,
+                    target.real_uid(),
+                    target.saved_uid(),
+                ) =>
             {
                 -(Errno::EPERM as i32)
             }
@@ -7778,7 +7783,12 @@ fn kernel_kill_with_metadata(pid: i32, sig: u32, si_value_bits: u64, si_code: i3
             let Some(target) = table.get(target_pid) else {
                 continue;
             };
-            if !syscalls::can_signal(sender_uid, sender_euid, target.uid, target.euid) {
+            if !syscalls::can_signal(
+                sender_uid,
+                sender_euid,
+                target.real_uid(),
+                target.saved_uid(),
+            ) {
                 any_perm_denied = true;
                 continue;
             }
@@ -7829,7 +7839,12 @@ fn kernel_kill_with_metadata(pid: i32, sig: u32, si_value_bits: u64, si_code: i3
         let mut any_perm_denied = false;
         for &target_pid in &pids {
             if let Some(target) = table.get(target_pid) {
-                if !syscalls::can_signal(sender_uid, sender_euid, target.uid, target.euid) {
+                if !syscalls::can_signal(
+                    sender_uid,
+                    sender_euid,
+                    target.real_uid(),
+                    target.saved_uid(),
+                ) {
                     any_perm_denied = true;
                     continue;
                 }
@@ -7972,13 +7987,17 @@ fn kernel_sched_validate_pid(pid: i32) -> i32 {
         return 0; // pid 0 means current process
     }
     let (_gkl, caller) = unsafe { get_process() };
-    let sender_euid = caller.euid;
+    let sender_euid = caller.effective_uid();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     table.ensure_init();
     match table.get(pid as u32) {
         None => -(Errno::ESRCH as i32),
         Some(target) => {
-            if syscalls::can_query_sched(sender_euid, target.uid, target.euid) {
+            if syscalls::can_query_sched(
+                sender_euid,
+                target.real_uid(),
+                target.effective_uid(),
+            ) {
                 0
             } else {
                 -(Errno::EPERM as i32)
@@ -8170,7 +8189,7 @@ fn kernel_tkill_with_value(tid: u32, sig: u32, si_value_bits: u64, si_code: i32)
     }
 
     let sender_pid = proc.pid;
-    let sender_uid = proc.uid;
+    let sender_uid = proc.real_uid();
 
     // Main thread: use its directed queue rather than the process-shared set.
     if proc.is_main_thread(tid) {
@@ -8501,6 +8520,30 @@ pub extern "C" fn kernel_fstatfs(fd: i32, buf_ptr: *mut u8, process_pointer_widt
     result
 }
 
+/// setreuid/setregid channel implementations. These remain private because
+/// syscall dispatch, not a new Wasm export, is their ABI-43 entry point.
+fn kernel_setreuid(ruid: u32, euid: u32) -> i32 {
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let result = match syscalls::sys_setreuid(proc, ruid, euid) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    };
+    let mut host = WasmHostIO;
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    result
+}
+
+fn kernel_setregid(rgid: u32, egid: u32) -> i32 {
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let result = match syscalls::sys_setregid(proc, rgid, egid) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    };
+    let mut host = WasmHostIO;
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    result
+}
+
 /// setresuid — set real, effective, and saved user IDs.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_setresuid(ruid: u32, euid: u32, suid: u32) -> i32 {
@@ -8569,36 +8612,34 @@ pub extern "C" fn kernel_getresgid(
 
 /// getgroups — get supplementary group IDs.
 /// Returns count on success, negative errno on error.
-fn validate_getgroups_destination(
-    size: u32,
-    list_ptr: *mut u32,
-    list_capacity_bytes: u32,
-) -> Result<(), Errno> {
-    if size > 0 && (list_ptr.is_null() || list_capacity_bytes < core::mem::size_of::<u32>() as u32)
-    {
+fn validate_getgroups_destination(size: u32, list_ptr: *mut u32) -> Result<(), Errno> {
+    if size as usize > crate::credentials::NGROUPS_MAX {
+        return Err(Errno::EINVAL);
+    }
+    if size > 0 && list_ptr.is_null() {
         return Err(Errno::EFAULT);
     }
     Ok(())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_getgroups(size: u32, list_ptr: *mut u32, list_capacity_bytes: u32) -> i32 {
-    if let Err(error) = validate_getgroups_destination(size, list_ptr, list_capacity_bytes) {
+pub extern "C" fn kernel_getgroups(size: u32, list_ptr: *mut u32) -> i32 {
+    if let Err(error) = validate_getgroups_destination(size, list_ptr) {
         return -(error as i32);
     }
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_getgroups(proc, size) {
-        Ok((count, gid)) => {
-            if size > 0 {
-                // WHY: the host lends exactly the declared allocation
-                // capacity. Kernel linear-memory bounds alone do not prove
-                // that the following four bytes belong to that allocation.
-                unsafe {
-                    *list_ptr = gid;
-                }
-            }
-            count as i32
-        }
+        // WHY: the shared descriptor lends exactly size * sizeof(gid_t).
+        // Count-only queries never name or inspect a destination.
+        Ok(groups) => match syscalls::copy_getgroups_to_destination(
+            size,
+            list_ptr,
+            size * size_of::<u32>() as u32,
+            groups,
+        ) {
+            Ok(count) => count as i32,
+            Err(error) => -(error as i32),
+        },
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
@@ -8613,32 +8654,45 @@ mod getgroups_destination_tests {
     #[test]
     fn count_query_does_not_require_a_destination() {
         assert_eq!(
-            validate_getgroups_destination(0, core::ptr::null_mut(), 0),
+            validate_getgroups_destination(0, core::ptr::null_mut()),
             Ok(())
         );
     }
 
     #[test]
-    fn positive_request_requires_the_explicit_gid_capacity() {
+    fn positive_request_requires_a_destination_and_bounded_count() {
         let pointer = core::ptr::NonNull::<u32>::dangling().as_ptr();
         assert_eq!(
-            validate_getgroups_destination(1, core::ptr::null_mut(), 4),
+            validate_getgroups_destination(1, core::ptr::null_mut()),
             Err(Errno::EFAULT)
         );
         assert_eq!(
-            validate_getgroups_destination(1, pointer, 3),
-            Err(Errno::EFAULT)
+            validate_getgroups_destination(
+                crate::credentials::NGROUPS_MAX as u32 + 1,
+                pointer,
+            ),
+            Err(Errno::EINVAL)
         );
-        assert_eq!(validate_getgroups_destination(1, pointer, 4), Ok(()));
-        assert_eq!(validate_getgroups_destination(1, pointer, 5), Ok(()));
+        assert_eq!(validate_getgroups_destination(1, pointer), Ok(()));
     }
 }
 
-/// setgroups — set supplementary group IDs (no-op).
+/// setgroups — replace the complete ordered supplementary group list.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_setgroups(size: u32, _list_ptr: *const u32) -> i32 {
+pub extern "C" fn kernel_setgroups(size: u32, list_ptr: *const u32) -> i32 {
+    if size as usize > crate::credentials::NGROUPS_MAX {
+        return -(Errno::EINVAL as i32);
+    }
+    if size > 0 && list_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let result = match syscalls::sys_setgroups(proc, size) {
+    let groups = if size == 0 {
+        &[][..]
+    } else {
+        unsafe { core::slice::from_raw_parts(list_ptr, size as usize) }
+    };
+    let result = match syscalls::sys_setgroups(proc, groups) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
@@ -13506,7 +13560,7 @@ pub extern "C" fn kernel_pty_create(pid: u32) -> i32 {
     };
 
     // Allocate a new PTY pair
-    let pty_idx = match crate::pty::alloc_pty() {
+    let pty_idx = match crate::pty::alloc_pty(proc.effective_uid(), proc.effective_gid()) {
         Some(idx) => idx,
         None => return -(Errno::ENOSPC as i32),
     };
