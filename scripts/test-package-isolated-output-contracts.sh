@@ -17,6 +17,9 @@ if awk '/if \[ -n "\$\{WASM_POSIX_DEP_OUT_DIR:-\}" \]; then/,/else/' \
     "$tcl" | grep -F '$SCRIPT_DIR/bin/tclsh.wasm' >/dev/null; then
     fail "Tcl resolver mode still reads a checkout-local output"
 fi
+awk '/if \[ -n "\$\{WASM_POSIX_DEP_OUT_DIR:-\}" \]; then/,/else/' \
+    "$tcl" | grep -F 'WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto' \
+    >/dev/null || fail "Tcl sealed install lacks explicit fork policy"
 
 php="$REPO_ROOT/packages/registry/php/build-php.sh"
 awk '/if \[ -n "\$\{WASM_POSIX_DEP_OUT_DIR:-\}" \]; then/,/else/' \

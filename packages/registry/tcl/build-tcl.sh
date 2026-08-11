@@ -207,6 +207,7 @@ fi
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
+        WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
         install_local_binary tcl "$TCLSH" tclsh.wasm
     kandelo_package_project_requested_vfs_directory_output development-files \
         "$INSTALL_DIR"
