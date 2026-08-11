@@ -9,7 +9,9 @@ use wasm_posix_shared::fd_flags::{FD_CLOEXEC, FD_CLOFORK};
 use wasm_posix_shared::flags::*;
 use wasm_posix_shared::flock_op::*;
 use wasm_posix_shared::lock_type::*;
-use wasm_posix_shared::mode::{S_IFCHR, S_IFDIR, S_IFIFO, S_IFLNK, S_IFMT, S_IFREG};
+use wasm_posix_shared::mode::{
+    S_IFCHR, S_IFDIR, S_IFIFO, S_IFLNK, S_IFMT, S_IFREG, S_ISGID, S_ISUID,
+};
 use wasm_posix_shared::rlimit::{RLIMIT_FSIZE, RLIM_INFINITY};
 use wasm_posix_shared::seek::*;
 use wasm_posix_shared::Errno;
@@ -16416,7 +16418,7 @@ fn default_statfs() -> WasmStatfs {
         f_fsid: 0,
         f_namelen: 255,
         f_frsize: 4096,
-        f_flags: 0,
+        f_flags: wasm_posix_shared::statfs_flags::ST_NOSUID,
         _pad: 0,
     }
 }
@@ -16433,7 +16435,7 @@ fn procfs_statfs() -> WasmStatfs {
         f_fsid: 0,
         f_namelen: 255,
         f_frsize: 4096,
-        f_flags: 0,
+        f_flags: wasm_posix_shared::statfs_flags::ST_NOSUID,
         _pad: 0,
     }
 }
@@ -16450,8 +16452,33 @@ fn devfs_statfs() -> WasmStatfs {
         f_fsid: 5,
         f_namelen: 255,
         f_frsize: 4096,
-        f_flags: 0,
+        f_flags: wasm_posix_shared::statfs_flags::ST_NOSUID,
         _pad: 0,
+    }
+}
+
+/// Credential change computed from one already prepared executable target.
+///
+/// Task 6 deliberately stops at this value object. The target-aware exec
+/// transaction owns validation and credential commit in a later task.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SetIdTransitionProposal {
+    pub(crate) effective_uid: Option<u32>,
+    pub(crate) effective_gid: Option<u32>,
+}
+
+/// Propose set-ID credentials from retained target metadata without applying
+/// them to process state.
+pub(crate) fn propose_set_id_transition(
+    stat: &WasmStat,
+    statfs: &WasmStatfs,
+) -> SetIdTransitionProposal {
+    if (statfs.f_flags & wasm_posix_shared::statfs_flags::ST_NOSUID) != 0 {
+        return SetIdTransitionProposal::default();
+    }
+    SetIdTransitionProposal {
+        effective_uid: (stat.st_mode & S_ISUID != 0).then_some(stat.st_uid),
+        effective_gid: (stat.st_mode & S_ISGID != 0).then_some(stat.st_gid),
     }
 }
 
@@ -38390,6 +38417,36 @@ mod tests {
         assert_eq!(
             sys_statfs(&mut proc, &mut host, b"/missing").unwrap_err(),
             Errno::ENOENT,
+        );
+    }
+
+    #[test]
+    fn set_id_transition_nosuid_target_ignores_bits_without_mutating_credentials() {
+        let mut stat = test_stat_with_mode(S_IFREG | S_ISUID | S_ISGID | 0o755);
+        stat.st_uid = 100;
+        stat.st_gid = 200;
+        let statfs = default_statfs();
+
+        assert_eq!(
+            propose_set_id_transition(&stat, &statfs),
+            SetIdTransitionProposal::default(),
+        );
+    }
+
+    #[test]
+    fn set_id_transition_trusted_target_preserves_bits_as_a_proposal_only() {
+        let mut stat = test_stat_with_mode(S_IFREG | S_ISUID | S_ISGID | 0o755);
+        stat.st_uid = 100;
+        stat.st_gid = 200;
+        let mut statfs = default_statfs();
+        statfs.f_flags &= !wasm_posix_shared::statfs_flags::ST_NOSUID;
+
+        assert_eq!(
+            propose_set_id_transition(&stat, &statfs),
+            SetIdTransitionProposal {
+                effective_uid: Some(100),
+                effective_gid: Some(200),
+            },
         );
     }
 

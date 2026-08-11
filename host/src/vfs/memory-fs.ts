@@ -13,12 +13,25 @@ import {
 } from "../file-offset";
 import { filesystemPathconf } from "../pathconf";
 import { SFFS_SUPER_MAGIC } from "../statfs";
-import { DIRENT_TYPES, FILE_MODES, OPEN_FLAGS } from "../generated/abi";
-import type { FileSystemBackend, DirEntry } from "./types";
 import {
+  ACCESS_MODES,
+  DIRENT_TYPES,
+  FILE_MODES,
+  OPEN_FLAGS,
+} from "../generated/abi";
+import {
+  ST_NOSUID,
+  type FileSystemBackend,
+  type DirEntry,
+  type MountConfig,
+  type MountSetIdCapability,
+} from "./types";
+import {
+  EROFS,
   O_CREAT,
   O_EXCL,
   O_TRUNC,
+  SFSError,
   SharedFS,
   type ConditionalNamespaceIdentity,
   type NamespaceEntryIdentity,
@@ -44,6 +57,52 @@ import {
   assertUnicodeScalarText,
   compareUnicodeScalarText,
 } from "./canonical-text";
+
+const intrinsicApply = Reflect.apply;
+const intrinsicObjectCreate = Object.create;
+const intrinsicObjectDefineProperties = Object.defineProperties;
+const intrinsicObjectFreeze = Object.freeze;
+const intrinsicObjectGetOwnPropertyDescriptors =
+  Object.getOwnPropertyDescriptors;
+const intrinsicObjectSetPrototypeOf = Object.setPrototypeOf;
+const IntrinsicProxy = Proxy;
+const IntrinsicSharedArrayBuffer = SharedArrayBuffer;
+const IntrinsicUint8Array = Uint8Array;
+const intrinsicUint8ArraySet = Uint8Array.prototype.set;
+const intrinsicWeakSetAdd = WeakSet.prototype.add;
+const intrinsicWeakSetHas = WeakSet.prototype.has;
+const intrinsicSetHas = Set.prototype.has;
+const intrinsicMapGet = Map.prototype.get;
+const IntrinsicNumber = Number;
+const intrinsicNumberIsInteger = Number.isInteger;
+const IntrinsicTypeError = TypeError;
+const intrinsicSharedFsMount = SharedFS.mount;
+const intrinsicSharedFsSnapshotState = SharedFS.prototype.snapshotState;
+const memoryFileSystemInstances = new WeakSet<object>();
+const immutableProductBackends = new WeakSet<object>();
+
+function capturePrivatePrototype(prototype: object): object {
+  const captured = intrinsicObjectCreate(null) as object;
+  intrinsicObjectDefineProperties(
+    captured,
+    intrinsicObjectGetOwnPropertyDescriptors(prototype),
+  );
+  return intrinsicObjectFreeze(captured);
+}
+
+const immutableProductSharedFsPrototype = capturePrivatePrototype(
+  SharedFS.prototype,
+);
+
+const NOSUID_CAPABILITY: MountSetIdCapability = intrinsicObjectFreeze({
+  kind: "nosuid",
+});
+const TRUSTED_ROOT_PRODUCT_CAPABILITY: MountSetIdCapability =
+  intrinsicObjectFreeze({
+    kind: "trusted-root-product",
+    guestWritable: false,
+    stableExecutableIdentity: true,
+  });
 
 /** Serializable lazy file entry for transfer between instances. */
 export interface LazyFileEntry {
@@ -424,7 +483,12 @@ const VFS_IMAGE_FLAG_HAS_METADATA = 1 << 2;
 const VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES = 1 << 3;
 const VFS_IMAGE_HEADER_SIZE = 16; // magic(4) + version(4) + flags(4) + sabLen(4)
 const { S_IFMT, S_IFREG, S_IFDIR, S_IFLNK } = FILE_MODES;
+const { DT_UNKNOWN, DT_REG, DT_DIR, DT_LNK } = DIRENT_TYPES;
 const O_RDONLY = OPEN_FLAGS.O_RDONLY;
+const IMMUTABLE_PRODUCT_O_ACCMODE = OPEN_FLAGS.O_ACCMODE;
+const IMMUTABLE_PRODUCT_O_CREAT = OPEN_FLAGS.O_CREAT;
+const IMMUTABLE_PRODUCT_O_TRUNC = OPEN_FLAGS.O_TRUNC;
+const IMMUTABLE_PRODUCT_W_OK = ACCESS_MODES.W_OK;
 const O_WRONLY_CREAT_TRUNC =
   OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
 const COPY_CHUNK_BYTES = 1024 * 1024;
@@ -3058,6 +3122,10 @@ function conditionalFileReplacement(
   };
 }
 
+function memoryFileSystemInodeKey(ino: number, generation: number): string {
+  return `${ino}:${generation}`;
+}
+
 export class MemoryFileSystem implements FileSystemBackend {
   private fs: SharedFS;
   private imageMetadata: VfsImageMetadata | null;
@@ -3125,10 +3193,34 @@ export class MemoryFileSystem implements FileSystemBackend {
   private constructor(fs: SharedFS, metadata: VfsImageMetadata | null = null) {
     this.fs = fs;
     this.imageMetadata = metadata;
+    intrinsicApply(intrinsicWeakSetAdd, memoryFileSystemInstances, [this]);
   }
 
-  private static inodeKey(ino: number, generation: number): string {
-    return `${ino}:${generation}`;
+  /** Capture one self-contained product tree without retaining producer state. */
+  private snapshotForImmutableProduct(): MemoryFileSystem {
+    if (this.lazyFiles.size !== 0 || this.lazyArchiveInodes.size !== 0) {
+      throw new Error(
+        "immutable product source must be completely materialized",
+      );
+    }
+    const { bytes } = intrinsicApply(
+      intrinsicSharedFsSnapshotState,
+      this.fs,
+      [],
+    ) as ReturnType<SharedFS["snapshotState"]>;
+    const sab = new IntrinsicSharedArrayBuffer(bytes.byteLength);
+    intrinsicApply(
+      intrinsicUint8ArraySet,
+      new IntrinsicUint8Array(sab),
+      [bytes],
+    );
+    const fs = intrinsicApply(
+      intrinsicSharedFsMount,
+      SharedFS,
+      [sab, { restoreImage: true }],
+    ) as SharedFS;
+    intrinsicObjectSetPrototypeOf(fs, immutableProductSharedFsPrototype);
+    return new MemoryFileSystem(fs, cloneMetadata(this.imageMetadata));
   }
 
   private static canAdoptLegacyLazyStub(st: SfsStatResult): boolean {
@@ -3205,7 +3297,7 @@ export class MemoryFileSystem implements FileSystemBackend {
               entry.materialized ||
               entry.generation === undefined
             ) continue;
-            const key = MemoryFileSystem.inodeKey(
+            const key = memoryFileSystemInodeKey(
               entry.ino,
               entry.generation,
             );
@@ -3245,7 +3337,7 @@ export class MemoryFileSystem implements FileSystemBackend {
             entry.deleted || entry.materialized || entry.isSymlink ||
             entry.generation === undefined
           ) continue;
-          const key = MemoryFileSystem.inodeKey(entry.ino, entry.generation);
+          const key = memoryFileSystemInodeKey(entry.ino, entry.generation);
           const aliases = pendingByIdentity.get(key) ?? [];
           aliases.push(entry);
           pendingByIdentity.set(key, aliases);
@@ -3302,7 +3394,7 @@ export class MemoryFileSystem implements FileSystemBackend {
           entry.generation === undefined
         )
           continue;
-        const key = MemoryFileSystem.inodeKey(entry.ino, entry.generation);
+        const key = memoryFileSystemInodeKey(entry.ino, entry.generation);
         if (!pendingByIdentity.has(key)) pendingByIdentity.set(key, entry);
       }
 
@@ -3490,7 +3582,7 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   private lazyFileForStat(st: SfsStatResult) {
-    const key = MemoryFileSystem.inodeKey(st.ino, st.generation);
+    const key = memoryFileSystemInodeKey(st.ino, st.generation);
     const entry = this.lazyFiles.get(key);
     if (entry && entry.dataSequence !== st.dataSequence) {
       this.lazyFiles.delete(key);
@@ -3516,7 +3608,7 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   private lazyArchiveForStat(st: SfsStatResult) {
-    const key = MemoryFileSystem.inodeKey(st.ino, st.generation);
+    const key = memoryFileSystemInodeKey(st.ino, st.generation);
     const group = this.lazyArchiveInodes.get(key);
     if (!group) return undefined;
     const entries = this.lazyArchiveEntriesForRead(group).filter(
@@ -3551,7 +3643,7 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   private lazyBackingForStat(st: SfsStatResult): LazyBacking | null {
-    const key = MemoryFileSystem.inodeKey(st.ino, st.generation);
+    const key = memoryFileSystemInodeKey(st.ino, st.generation);
     // Preparation deliberately observes the registered identity even when a
     // peer advanced its data sequence. The identity-guarded commit will then
     // reconcile and preserve the peer's bytes, while callers still learn that
@@ -3884,7 +3976,7 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   /** A successful guest data mutation makes any deferred backing obsolete. */
   private invalidateLazyData(st: SfsStatResult): void {
-    const key = MemoryFileSystem.inodeKey(st.ino, st.generation);
+    const key = memoryFileSystemInodeKey(st.ino, st.generation);
     this.lazyFiles.delete(key);
 
     const group = this.lazyArchiveInodes.get(key);
@@ -3920,7 +4012,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     const newBase = newPath.length > 1 ? newPath.replace(/\/+$/, "") : newPath;
     const oldPrefix = `${oldBase}/`;
     const newPrefix = `${newBase}/`;
-    const sourceKey = MemoryFileSystem.inodeKey(source.ino, source.generation);
+    const sourceKey = memoryFileSystemInodeKey(source.ino, source.generation);
     const directory = (source.mode & S_IFMT) === S_IFDIR;
     const rewrite = (candidate: string): string =>
       candidate === oldBase
@@ -3941,7 +4033,7 @@ export class MemoryFileSystem implements FileSystemBackend {
         const entries = ordinaryDefinition.entries.map((entry) => {
           const entryKey = entry.generation === undefined
             ? null
-            : MemoryFileSystem.inodeKey(entry.ino, entry.generation);
+            : memoryFileSystemInodeKey(entry.ino, entry.generation);
           const vfsPath = directory || entryKey === sourceKey
             ? rewrite(entry.vfsPath)
             : entry.vfsPath;
@@ -3995,7 +4087,7 @@ export class MemoryFileSystem implements FileSystemBackend {
         const entryKey =
           entry.generation === undefined
             ? null
-            : MemoryFileSystem.inodeKey(entry.ino, entry.generation);
+            : memoryFileSystemInodeKey(entry.ino, entry.generation);
         rewritten.set(
           directory || entryKey === sourceKey ? rewrite(candidate) : candidate,
           entry,
@@ -4390,7 +4482,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     }
     const st = this.fs.createLazyStub(path, mode);
     this.invalidateLazyData(st);
-    this.lazyFiles.set(MemoryFileSystem.inodeKey(st.ino, st.generation), {
+    this.lazyFiles.set(memoryFileSystemInodeKey(st.ino, st.generation), {
       ino: st.ino,
       generation: st.generation,
       dataSequence: st.dataSequence,
@@ -4446,7 +4538,7 @@ export class MemoryFileSystem implements FileSystemBackend {
         ? e.path
         : validPaths.values().next().value!;
       this.lazyFiles.set(
-        MemoryFileSystem.inodeKey(identity.ino, identity.generation),
+        memoryFileSystemInodeKey(identity.ino, identity.generation),
         {
           ino: identity.ino,
           generation: identity.generation,
@@ -4727,7 +4819,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     for (const entry of group.entries.values()) {
       if (entry.isSymlink || entry.generation === undefined) continue;
       this.lazyArchiveInodes.set(
-        MemoryFileSystem.inodeKey(entry.ino, entry.generation),
+        memoryFileSystemInodeKey(entry.ino, entry.generation),
         group,
       );
     }
@@ -4881,7 +4973,7 @@ export class MemoryFileSystem implements FileSystemBackend {
         };
         group.entries.set(vfsPath, entry);
         this.lazyArchiveInodes.set(
-          MemoryFileSystem.inodeKey(st.ino, st.generation),
+          memoryFileSystemInodeKey(st.ino, st.generation),
           group,
         );
       }
@@ -5062,7 +5154,7 @@ export class MemoryFileSystem implements FileSystemBackend {
                 `Serialized lazy tree stub ${e.vfsPath} disagrees with its inventory`,
               );
             }
-            const identity = MemoryFileSystem.inodeKey(st.ino, st.generation);
+            const identity = memoryFileSystemInodeKey(st.ino, st.generation);
             const group = e.inodeGroup!;
             const priorIdentity = identityByGroup.get(group);
             const priorGroup = groupByIdentity.get(identity);
@@ -5209,7 +5301,7 @@ export class MemoryFileSystem implements FileSystemBackend {
             !entry.materialized &&
             entry.generation !== undefined
           ) {
-            const key = MemoryFileSystem.inodeKey(entry.ino, entry.generation);
+            const key = memoryFileSystemInodeKey(entry.ino, entry.generation);
             const planned = plannedInodes.get(key);
             if (planned !== undefined && planned !== group) {
               throw new Error(
@@ -5669,7 +5761,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     } catch {
       return false;
     }
-    const key = MemoryFileSystem.inodeKey(st.ino, st.generation);
+    const key = memoryFileSystemInodeKey(st.ino, st.generation);
     const entry = this.lazyFiles.get(key);
     if (entry) {
       const transport = this.lazyTransport;
@@ -6073,7 +6165,7 @@ export class MemoryFileSystem implements FileSystemBackend {
       signal,
     );
     const requestedKey = requested
-      ? MemoryFileSystem.inodeKey(requested.ino, requested.generation)
+      ? memoryFileSystemInodeKey(requested.ino, requested.generation)
       : null;
     for (let attempt = 0; attempt < 3; attempt++) {
       const pending = this.collectLazyArchiveReplacements(
@@ -6183,7 +6275,7 @@ export class MemoryFileSystem implements FileSystemBackend {
         );
       }
       if (archiveEntry.generation === undefined) continue;
-      const key = MemoryFileSystem.inodeKey(
+      const key = memoryFileSystemInodeKey(
         archiveEntry.ino,
         archiveEntry.generation,
       );
@@ -6233,7 +6325,7 @@ export class MemoryFileSystem implements FileSystemBackend {
         archiveEntry.materialized ||
         archiveEntry.generation === undefined
       ) continue;
-      const key = MemoryFileSystem.inodeKey(
+      const key = memoryFileSystemInodeKey(
         archiveEntry.ino,
         archiveEntry.generation,
       );
@@ -6274,7 +6366,7 @@ export class MemoryFileSystem implements FileSystemBackend {
       const entries = ordinaryDefinition.entries.map((entry) => {
         const key = entry.generation === undefined
           ? undefined
-          : MemoryFileSystem.inodeKey(entry.ino, entry.generation);
+          : memoryFileSystemInodeKey(entry.ino, entry.generation);
         if (key === undefined || !pending.has(key)) return entry;
         this.lazyArchiveInodes.delete(key);
         return { ...entry, materialized: true };
@@ -6381,7 +6473,7 @@ export class MemoryFileSystem implements FileSystemBackend {
             `Lazy atomic tree changed at ${inventoryEntry.vfsPath}`,
           );
         }
-        const key = MemoryFileSystem.inodeKey(entry.ino, entry.generation);
+        const key = memoryFileSystemInodeKey(entry.ino, entry.generation);
         if (this.lazyArchiveInodes.get(key) !== group) {
           throw new Error(
             `Lazy atomic tree lost deferred ownership of ${inventoryEntry.vfsPath}`,
@@ -6766,7 +6858,7 @@ export class MemoryFileSystem implements FileSystemBackend {
           entry.materialized ||
           entry.generation === undefined
         ) continue;
-        const key = MemoryFileSystem.inodeKey(entry.ino, entry.generation);
+        const key = memoryFileSystemInodeKey(entry.ino, entry.generation);
         if (!pending.has(key)) {
           throw new Error(
             `Lazy atomic activation group ${atomicGroup.id} has an incomplete publication`,
@@ -7366,7 +7458,7 @@ export class MemoryFileSystem implements FileSystemBackend {
       fsid: 0,
       namelen: stats.maxName,
       frsize: stats.blockSize,
-      flags: 0,
+      flags: ST_NOSUID,
     };
   }
 
@@ -7388,7 +7480,7 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   unlink(path: string): void {
     const removed = this.fs.unlink(path);
-    const key = MemoryFileSystem.inodeKey(removed.ino, removed.generation);
+    const key = memoryFileSystemInodeKey(removed.ino, removed.generation);
     if (
       removed.linkCount > 1 &&
       (this.lazyFiles.has(key) || this.lazyArchiveInodes.has(key))
@@ -7460,7 +7552,7 @@ export class MemoryFileSystem implements FileSystemBackend {
 
     let reconciledNamespace = false;
     if (replaced) {
-      const replacedKey = MemoryFileSystem.inodeKey(
+      const replacedKey = memoryFileSystemInodeKey(
         replaced.ino,
         replaced.generation,
       );
@@ -7527,7 +7619,7 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   link(existingPath: string, newPath: string): void {
     const sourceIdentity = this.fs.link(existingPath, newPath);
-    const key = MemoryFileSystem.inodeKey(
+    const key = memoryFileSystemInodeKey(
       sourceIdentity.ino,
       sourceIdentity.generation,
     );
@@ -7758,19 +7850,234 @@ export class MemoryFileSystem implements FileSystemBackend {
     if (!entry) return null;
     // Determine d_type from mode
     const mode = entry.stat.mode;
-    let dtype: number = DIRENT_TYPES.DT_UNKNOWN;
-    if ((mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFREG)
-      dtype = DIRENT_TYPES.DT_REG;
-    else if ((mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFDIR)
-      dtype = DIRENT_TYPES.DT_DIR;
-    else if ((mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFLNK)
-      dtype = DIRENT_TYPES.DT_LNK;
+    let dtype: number = DT_UNKNOWN;
+    if ((mode & S_IFMT) === S_IFREG) dtype = DT_REG;
+    else if ((mode & S_IFMT) === S_IFDIR) dtype = DT_DIR;
+    else if ((mode & S_IFMT) === S_IFLNK) dtype = DT_LNK;
     return { name: entry.name, type: dtype, ino: entry.stat.ino };
   }
 
   closedir(handle: number): void {
     this.fs.closedir(handle);
   }
+}
+
+const immutableProductMemoryFileSystemPrototype = capturePrivatePrototype(
+  MemoryFileSystem.prototype,
+);
+
+const IMMUTABLE_PRODUCT_MUTATORS = new Set<PropertyKey>([
+  "write",
+  "append",
+  "ftruncate",
+  "fchmod",
+  "fchown",
+  "mkdir",
+  "rmdir",
+  "unlink",
+  "rename",
+  "link",
+  "symlink",
+  "chmod",
+  "chown",
+  "lchown",
+  "utimensat",
+]);
+
+const IMMUTABLE_PRODUCT_READ_OPERATIONS = new Map<PropertyKey, unknown>([
+  ["preparePath", MemoryFileSystem.prototype.preparePath],
+  ["close", MemoryFileSystem.prototype.close],
+  ["read", MemoryFileSystem.prototype.read],
+  ["seek", MemoryFileSystem.prototype.seek],
+  ["fstat", MemoryFileSystem.prototype.fstat],
+  ["fpathconf", MemoryFileSystem.prototype.fpathconf],
+  ["fsync", MemoryFileSystem.prototype.fsync],
+  ["stat", MemoryFileSystem.prototype.stat],
+  ["lstat", MemoryFileSystem.prototype.lstat],
+  ["statfs", MemoryFileSystem.prototype.statfs],
+  ["pathconf", MemoryFileSystem.prototype.pathconf],
+  ["readlink", MemoryFileSystem.prototype.readlink],
+  ["opendir", MemoryFileSystem.prototype.opendir],
+  ["readdir", MemoryFileSystem.prototype.readdir],
+  ["closedir", MemoryFileSystem.prototype.closedir],
+]);
+
+interface ImmutableProductSnapshotSource {
+  snapshotForImmutableProduct(): MemoryFileSystem;
+}
+
+const intrinsicImmutableProductSnapshot = (
+  MemoryFileSystem.prototype as unknown as ImmutableProductSnapshotSource
+).snapshotForImmutableProduct;
+const intrinsicMemoryFileSystemOpen = MemoryFileSystem.prototype.open;
+const intrinsicMemoryFileSystemAccess = MemoryFileSystem.prototype.access;
+
+function immutableProductReadonlyFailure(): never {
+  throw new SFSError(EROFS, "EROFS: Read-only file system");
+}
+
+function normalizeImmutableProductInteger(
+  value: unknown,
+  label: string,
+): number {
+  const normalized = IntrinsicNumber(value);
+  if (!intrinsicNumberIsInteger(normalized)) {
+    throw new IntrinsicTypeError(`${label} must be an integer`);
+  }
+  return normalized;
+}
+
+/**
+ * Create the internal backend used for reviewed, immutable product binaries.
+ *
+ * This factory is deliberately not re-exported by the public VFS entry point.
+ * The wrapper preserves MemoryFS's open inode-generation lease while denying
+ * every guest-visible content, namespace, ownership, and mode mutation.
+ */
+export function createImmutableProductBackend(
+  source: MemoryFileSystem,
+): FileSystemBackend {
+  if (
+    !intrinsicApply(
+      intrinsicWeakSetHas,
+      memoryFileSystemInstances,
+      [source],
+    )
+  ) {
+    throw new Error(
+      "immutable product source must be a genuine MemoryFileSystem",
+    );
+  }
+  const snapshot = intrinsicApply(
+    intrinsicImmutableProductSnapshot,
+    source,
+    [],
+  ) as MemoryFileSystem;
+  if (
+    snapshot === source ||
+    !intrinsicApply(
+      intrinsicWeakSetHas,
+      memoryFileSystemInstances,
+      [snapshot],
+    )
+  ) {
+    throw new Error("immutable product source snapshot was not isolated");
+  }
+  intrinsicObjectSetPrototypeOf(
+    snapshot,
+    immutableProductMemoryFileSystemPrototype,
+  );
+
+  const facade = intrinsicObjectCreate(null) as FileSystemBackend;
+  const backend = new IntrinsicProxy(facade, {
+    get(_target, property) {
+      if (
+        intrinsicApply(
+          intrinsicSetHas,
+          IMMUTABLE_PRODUCT_MUTATORS,
+          [property],
+        )
+      ) {
+        return immutableProductReadonlyFailure;
+      }
+      if (property === "open") {
+        return (path: string, flags: number, mode: number): number => {
+          const normalizedFlags = normalizeImmutableProductInteger(
+            flags,
+            "immutable product open flags",
+          );
+          const accessMode = normalizedFlags & IMMUTABLE_PRODUCT_O_ACCMODE;
+          const mutates =
+            (normalizedFlags &
+              (IMMUTABLE_PRODUCT_O_CREAT | IMMUTABLE_PRODUCT_O_TRUNC)) !== 0;
+          if (accessMode !== O_RDONLY || mutates) {
+            return immutableProductReadonlyFailure();
+          }
+          return intrinsicApply(
+            intrinsicMemoryFileSystemOpen,
+            snapshot,
+            [path, normalizedFlags, mode],
+          ) as number;
+        };
+      }
+      if (property === "access") {
+        return (path: string, mode: number): void => {
+          const normalizedMode = normalizeImmutableProductInteger(
+            mode,
+            "immutable product access mode",
+          );
+          if ((normalizedMode & IMMUTABLE_PRODUCT_W_OK) !== 0) {
+            immutableProductReadonlyFailure();
+          }
+          intrinsicApply(
+            intrinsicMemoryFileSystemAccess,
+            snapshot,
+            [path, normalizedMode],
+          );
+        };
+      }
+      const operation = intrinsicApply(
+        intrinsicMapGet,
+        IMMUTABLE_PRODUCT_READ_OPERATIONS,
+        [property],
+      ) as unknown;
+      if (typeof operation === "function") {
+        return (...args: unknown[]): unknown =>
+          intrinsicApply(operation, snapshot, args);
+      }
+      // Do not leak MemoryFileSystem's producer-only helpers or private state
+      // through the narrower FileSystemBackend wrapper.
+      return undefined;
+    },
+    set: () => false,
+    defineProperty: () => false,
+    deleteProperty: () => false,
+  });
+  intrinsicApply(intrinsicWeakSetAdd, immutableProductBackends, [backend]);
+  return backend;
+}
+
+/** Resolve one mount's set-ID policy from private backend provenance. */
+export function resolveMountSetIdCapability(
+  config: Pick<MountConfig, "backend" | "readonly" | "setIdCapability">,
+): MountSetIdCapability {
+  const requested = config.setIdCapability;
+  if (requested === undefined) {
+    return NOSUID_CAPABILITY;
+  }
+  if (
+    typeof requested !== "object" || requested === null ||
+    Array.isArray(requested)
+  ) {
+    throw new Error("unknown set-ID mount capability");
+  }
+  if (requested.kind === "nosuid") return NOSUID_CAPABILITY;
+  if (requested.kind !== "trusted-root-product") {
+    throw new Error("unknown set-ID mount capability");
+  }
+  if (requested.guestWritable !== false) {
+    throw new Error("trusted root product mount must not be guest-writable");
+  }
+  if (config.readonly !== true) {
+    throw new Error("trusted root product mount must be read-only");
+  }
+  if (requested.stableExecutableIdentity !== true) {
+    throw new Error(
+      "trusted root product mount must require stable executable identity",
+    );
+  }
+  if (
+    !intrinsicApply(
+      intrinsicWeakSetHas,
+      immutableProductBackends,
+      [config.backend],
+    )
+  ) {
+    throw new Error(
+      "trusted root product mount requires an admitted immutable product backend with immutable handle generation identity",
+    );
+  }
+  return TRUSTED_ROOT_PRODUCT_CAPABILITY;
 }
 
 // fzstd is a regular sync static import (see top of file). Earlier we

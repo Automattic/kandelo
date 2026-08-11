@@ -24,7 +24,11 @@ import {
   SFSError,
 } from "../src/vfs/sharedfs-vendor";
 import { NodeTimeProvider } from "../src/vfs/time";
-import type { FileSystemBackend, MountConfig } from "../src/vfs/types";
+import {
+  ST_NOSUID,
+  type FileSystemBackend,
+  type MountConfig,
+} from "../src/vfs/types";
 import type { StatResult, StatfsResult } from "../src/types";
 
 // ---------------------------------------------------------------------------
@@ -175,6 +179,19 @@ function createMockBackend(
 // ---------------------------------------------------------------------------
 
 describe("VirtualPlatformIO mount resolution", () => {
+  it("reports omitted mount capabilities as ST_NOSUID", () => {
+    const root = createMockBackend();
+    const vfs = new VirtualPlatformIO(
+      [{ mountPoint: "/", backend: root }],
+      new NodeTimeProvider(),
+    );
+
+    expect(vfs.statfs("/bin/tool").flags & ST_NOSUID).toBe(ST_NOSUID);
+    expect(vfs.getMountSetIdCapability("/bin/tool")).toEqual({
+      kind: "nosuid",
+    });
+  });
+
   it("routes root-level paths to the / mount", () => {
     const root = createMockBackend();
     const vfs = new VirtualPlatformIO(

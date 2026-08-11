@@ -10176,6 +10176,12 @@
         "name": "SEEK_END",
         "value": 2
       }
+    ],
+    "statfs_flags": [
+      {
+        "name": "ST_NOSUID",
+        "value": 2
+      }
     ]
   },
   "wait_contract": {
