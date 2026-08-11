@@ -2148,6 +2148,28 @@ done
 for workflow in \
     "$REPO_ROOT/.github/workflows/staging-build.yml" \
     "$REPO_ROOT/.github/workflows/prepare-merge.yml"; do
+    test_gate_prepare_job="$TMP_DIR/$(basename "$workflow").test-gate-prepare"
+    awk '
+      /^  test-gate-prepare:$/ {
+        inside = 1
+        print
+        next
+      }
+      inside && /^  [a-zA-Z0-9_-]+:$/ { exit }
+      inside { print }
+    ' "$workflow" > "$test_gate_prepare_job"
+    npm_install_line="$(awk '
+      /npm ci --no-audit --no-fund/ { print NR; exit }
+    ' "$test_gate_prepare_job")"
+    mirror_state_line="$(awk '
+      /scripts\/ci-homebrew-browser-mirror-state\.sh/ { print NR; exit }
+    ' "$test_gate_prepare_job")"
+    if ! [[ "$npm_install_line" =~ ^[1-9][0-9]*$ ]] ||
+       ! [[ "$mirror_state_line" =~ ^[1-9][0-9]*$ ]] ||
+       [ "$npm_install_line" -ge "$mirror_state_line" ]; then
+        echo "$(basename "$workflow"): fresh test-gate shell inspection runs before installing declared root JavaScript dependencies" >&2
+        exit 1
+    fi
     grep -Fq -- '--blocked-output "$BLOCKED"' "$workflow" || {
         echo "$(basename "$workflow"): expected ledger omits the publication blocker report" >&2
         exit 1

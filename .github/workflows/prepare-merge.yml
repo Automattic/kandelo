@@ -2021,6 +2021,12 @@ jobs:
         run: |
           tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
 
+      - name: Install root npm dependencies for shell inspection
+        run: |
+          bash scripts/dev-shell.sh env \
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+            npm ci --no-audit --no-fund
+
       - name: Materialize binaries
         id: candidate_index
         env:
