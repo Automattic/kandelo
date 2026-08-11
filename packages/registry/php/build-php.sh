@@ -1371,6 +1371,7 @@ if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     for artifact in php.wasm php-fpm.wasm opcache.so curl.so phar.so \
         zend_test.so zip.so intl.so; do
         WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
+        WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
             install_local_binary php "$BIN_DIR/$artifact" "$artifact"
     done
     WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \

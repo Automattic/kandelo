@@ -425,6 +425,8 @@ grep -F 'WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto' \
     "$REPO_ROOT/packages/registry/nethack/build-nethack.sh" >/dev/null ||
     fail "NetHack build does not instrument its fork-capable artifact"
 
+bash "$REPO_ROOT/scripts/test-package-isolated-output-contracts.sh"
+
 # Ruby keeps source filenames in runtime assertions and publishes its generated
 # rbconfig.rb. Its recipe must therefore map caller work paths at compile time
 # while giving configure stable command names and sysroot-independent flags.

@@ -1,6 +1,7 @@
 script_path = "packages/registry/mariadb/build-mariadb.sh"
 inputs = [
   "packages/registry/mariadb/build-mariadb.sh",
+  "packages/registry/mariadb/mariadb-glue-object-contract.cmake",
   "packages/registry/mariadb/wasm32-posix-toolchain.cmake",
   "packages/registry/mariadb/wasm64-posix-toolchain.cmake",
   "packages/registry/mariadb/patches",

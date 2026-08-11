@@ -186,7 +186,7 @@ if [ -f "$TCLSH" ]; then
         cp "$TCLSH" "$SCRIPT_DIR/bin/tclsh.wasm"
     fi
     echo "==> tclsh.wasm built:"
-    ls -lh "$SCRIPT_DIR/bin/tclsh.wasm"
+    ls -lh "$TCLSH"
 fi
 
 # --- Verify ---

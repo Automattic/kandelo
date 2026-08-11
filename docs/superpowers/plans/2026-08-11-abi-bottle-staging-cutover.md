@@ -77,9 +77,11 @@ git -C "$TAP_ROOT" checkout -b abi-staging-bounded-request-discovery origin/main
 - Create: `scripts/test-package-isolated-output-contracts.sh`
 - Modify: `packages/registry/tcl/build-tcl.sh`
 - Modify: `packages/registry/mariadb/build-mariadb.sh`
+- Modify: `packages/registry/mariadb/build.toml`
 - Modify: `packages/registry/mariadb/wasm32-posix-toolchain.cmake`
 - Modify: `packages/registry/mariadb/wasm64-posix-toolchain.cmake`
 - Modify: `packages/registry/php/build-php.sh`
+- Regenerate: `packages/registry/program-packages.json`
 - Modify: `scripts/test-package-build-roots.sh`
 
 **Interfaces:**
@@ -279,10 +281,12 @@ git -C "$TAP_ROOT" checkout -b abi-staging-bounded-request-discovery origin/main
   git add \
     packages/registry/tcl/build-tcl.sh \
     packages/registry/mariadb/build-mariadb.sh \
+    packages/registry/mariadb/build.toml \
     packages/registry/mariadb/wasm32-posix-toolchain.cmake \
     packages/registry/mariadb/wasm64-posix-toolchain.cmake \
     packages/registry/mariadb/mariadb-glue-object-contract.cmake \
     packages/registry/php/build-php.sh \
+    packages/registry/program-packages.json \
     scripts/test-package-isolated-output-contracts.sh \
     scripts/test-package-build-roots.sh
   git commit -m "[Packages] Keep staged outputs in resolver roots"
