@@ -2244,13 +2244,24 @@ KANDELO_MIRROR_SHELL_IMAGE="$mirror_shell_image" npx tsx -e '
     new SharedArrayBuffer(4 * 1024 * 1024, { maxByteLength }),
     maxByteLength,
   );
-  for (const path of ["/etc/kandelo", "/opt/kandelo/homebrew/bin", "/usr/bin"]) {
+  for (const path of ["/bin", "/etc/kandelo", "/opt/kandelo/homebrew/bin", "/usr/bin"]) {
     ensureDirRecursive(fs, path);
   }
   writeVfsBinary(fs, "/etc/kandelo/shell.json", shellConfig, 0o644);
   writeVfsBinary(fs, "/etc/kandelo/demo.json", demoConfig, 0o644);
   writeVfsBinary(fs, "/opt/kandelo/homebrew/bin/bash", new Uint8Array([0,97,115,109,1,0,0,0]), 0o755);
+  writeVfsBinary(fs, "/opt/kandelo/homebrew/bin/dash", new Uint8Array([0,97,115,109,1,0,0,0]), 0o755);
+  writeVfsBinary(fs, "/opt/kandelo/homebrew/bin/env", new Uint8Array([0,97,115,109,1,0,0,0]), 0o755);
   writeVfsBinary(fs, "/opt/kandelo/homebrew/bin/brew", new TextEncoder().encode("#!/bin/sh\n"), 0o755);
+  for (const path of ["/bin/bash", "/usr/bin/bash"]) {
+    fs.symlink("/opt/kandelo/homebrew/bin/bash", path);
+  }
+  for (const path of ["/bin/sh", "/usr/bin/sh"]) {
+    fs.symlink("/opt/kandelo/homebrew/bin/dash", path);
+  }
+  for (const path of ["/bin/env", "/usr/bin/env"]) {
+    fs.symlink("/opt/kandelo/homebrew/bin/env", path);
+  }
   fs.symlink("/opt/kandelo/homebrew/bin/brew", "/usr/bin/brew");
   fs.saveImage({metadata: {
     version: 1,
