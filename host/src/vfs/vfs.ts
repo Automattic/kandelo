@@ -15,6 +15,7 @@ import {
   type TimeProvider,
 } from "./types";
 import { resolveMountSetIdCapability } from "./memory-fs";
+import { OPEN_FLAGS } from "../generated/abi";
 
 interface MountEntry {
   prefix: string;
@@ -51,6 +52,11 @@ function normalizeMountPoint(mp: string): string {
     return mp.slice(0, -1);
   }
   return mp;
+}
+
+function parentPath(path: string): string {
+  const slash = path.lastIndexOf("/");
+  return slash <= 0 ? "/" : path.slice(0, slash);
 }
 
 export class VirtualPlatformIO implements PlatformIO {
@@ -202,7 +208,13 @@ export class VirtualPlatformIO implements PlatformIO {
 
   open(path: string, flags: number, mode: number): number {
     const { backend, backendId, relativePath, setIdCapability } = this.resolve(path);
-    const backendStatfs = backend.statfs(relativePath);
+    // O_CREAT may name a missing final component. Its already-resolved backend
+    // and existing parent provide the filesystem metadata; the open below
+    // remains the sole authority for validating and creating the final path.
+    const statfsPath = (flags & OPEN_FLAGS.O_CREAT) !== 0
+      ? parentPath(relativePath)
+      : relativePath;
+    const backendStatfs = backend.statfs(statfsPath);
     const statfs = {
       ...backendStatfs,
       flags: setIdCapability.kind === "nosuid"
