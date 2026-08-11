@@ -152,7 +152,7 @@ preserves the existing unprojected behavior for third-party embedders.
   exist:
 
 ```bash
-scripts/dev-shell.sh npx --prefix host vitest run --root host \
+scripts/dev-shell.sh npm --prefix host test -- --run \
   test/cors-proxy-request-policy.test.ts
 ```
 
@@ -188,7 +188,7 @@ Browser CORS proxy omitted unsupported request headers for https://registry.exam
 - [ ] Re-run the focused test and require it to pass:
 
 ```bash
-scripts/dev-shell.sh npx --prefix host vitest run --root host \
+scripts/dev-shell.sh npm --prefix host test -- --run \
   test/cors-proxy-request-policy.test.ts
 ```
 
@@ -230,7 +230,7 @@ git commit -m "Host: Model constrained browser proxy requests"
 - [ ] Run the focused suite and record the expected failures:
 
 ```bash
-scripts/dev-shell.sh npx --prefix host vitest run --root host \
+scripts/dev-shell.sh npm --prefix host test -- --run \
   test/fetch-backend.test.ts
 ```
 
@@ -253,7 +253,7 @@ scripts/dev-shell.sh npx --prefix host vitest run --root host \
 - [ ] Re-run the focused backend and policy tests:
 
 ```bash
-scripts/dev-shell.sh npx --prefix host vitest run --root host \
+scripts/dev-shell.sh npm --prefix host test -- --run \
   test/cors-proxy-request-policy.test.ts \
   test/fetch-backend.test.ts \
   test/tls-network-backend-real-client.test.ts
@@ -299,7 +299,7 @@ git commit -m "Host: Enforce proxy capabilities on browser fetches"
 - [ ] Run the focused worker tests and verify the new assertions fail:
 
 ```bash
-scripts/dev-shell.sh npx --prefix host vitest run --root host \
+scripts/dev-shell.sh npm --prefix host test -- --run \
   test/browser-kernel.test.ts \
   test/host-diagnostic-routing.test.ts
 ```
@@ -318,7 +318,7 @@ scripts/dev-shell.sh npx --prefix host vitest run --root host \
 - [ ] Re-run the tests and require them to pass:
 
 ```bash
-scripts/dev-shell.sh npx --prefix host vitest run --root host \
+scripts/dev-shell.sh npm --prefix host test -- --run \
   test/browser-kernel.test.ts \
   test/host-diagnostic-routing.test.ts \
   test/fetch-backend.test.ts
@@ -370,7 +370,7 @@ x-cors-proxy-content-type
 - [ ] Run the focused tests and verify they fail against the sentinel config:
 
 ```bash
-scripts/dev-shell.sh npx --prefix host vitest run --root host \
+scripts/dev-shell.sh npm --prefix host test -- --run \
   test/browser-demo-cors-proxy.test.ts
 scripts/dev-shell.sh bash -c 'cd apps/browser-demos && \
   npx playwright test test/kandelo-merge-gate.spec.ts --project=chromium'
@@ -396,7 +396,7 @@ rg -n "proxy\.local|isNpmRegistry|Packument|tarball.*rewrite" \
 - [ ] Re-run focused tests and commit:
 
 ```bash
-scripts/dev-shell.sh npx --prefix host vitest run --root host \
+scripts/dev-shell.sh npm --prefix host test -- --run \
   test/browser-demo-cors-proxy.test.ts \
   test/fetch-backend.test.ts
 git add apps/browser-demos/lib/browser-cors-proxy.ts \
@@ -510,7 +510,7 @@ git commit -m "Browser: Prove constrained proxy requests end to end"
 
 ```bash
 scripts/dev-shell.sh npm --prefix host run typecheck
-scripts/dev-shell.sh npx --prefix host vitest run --root host \
+scripts/dev-shell.sh npm --prefix host test -- --run \
   test/cors-proxy-request-policy.test.ts \
   test/fetch-backend.test.ts \
   test/tls-network-backend-real-client.test.ts \

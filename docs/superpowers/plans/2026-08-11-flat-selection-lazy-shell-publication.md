@@ -204,7 +204,7 @@ expect(partition.deferredPackageOrder).toHaveLength(37);
 - [ ] Run and observe the missing-parser/partition failures:
 
 ```bash
-scripts/dev-shell.sh npx --prefix host vitest run --root host \
+scripts/dev-shell.sh npm --prefix host test -- --run \
   test/homebrew-vfs-materialization-policy.test.ts \
   test/homebrew-runtime-support.test.ts
 ```
@@ -220,7 +220,7 @@ scripts/dev-shell.sh npx --prefix host vitest run --root host \
 - [ ] Re-run focused tests and commit:
 
 ```bash
-scripts/dev-shell.sh npx --prefix host vitest run --root host \
+scripts/dev-shell.sh npm --prefix host test -- --run \
   test/homebrew-vfs-materialization-policy.test.ts \
   test/homebrew-runtime-support.test.ts \
   test/homebrew-bottle-selection.test.ts
@@ -269,7 +269,7 @@ git commit -m "Homebrew: Derive lazy shell partitions from selection"
 - [ ] Run focused tests and record the type/runtime failures:
 
 ```bash
-scripts/dev-shell.sh npx --prefix host vitest run --root host \
+scripts/dev-shell.sh npm --prefix host test -- --run \
   test/homebrew-vfs-builder.test.ts \
   test/homebrew-flat-vfs-builder.test.ts
 ```
@@ -289,7 +289,7 @@ scripts/dev-shell.sh npx --prefix host vitest run --root host \
 - [ ] Re-run focused tests and commit:
 
 ```bash
-scripts/dev-shell.sh npx --prefix host vitest run --root host \
+scripts/dev-shell.sh npm --prefix host test -- --run \
   test/homebrew-vfs-builder.test.ts \
   test/homebrew-flat-vfs-builder.test.ts \
   test/homebrew-bottle-mirror-browser.test.ts
@@ -346,7 +346,7 @@ git commit -m "Homebrew: Project flat selections into lazy trees"
 - [ ] Run the new focused tests and confirm they fail for the missing composer:
 
 ```bash
-scripts/dev-shell.sh npx --prefix host vitest run --root host \
+scripts/dev-shell.sh npm --prefix host test -- --run \
   test/homebrew-flat-lazy-vfs-composer.test.ts \
   test/homebrew-vfs-image-save.test.ts
 ```
@@ -387,7 +387,7 @@ scripts/dev-shell.sh npx --prefix host vitest run --root host \
 - [ ] Re-run focused tests and commit:
 
 ```bash
-scripts/dev-shell.sh npx --prefix host vitest run --root host \
+scripts/dev-shell.sh npm --prefix host test -- --run \
   test/homebrew-flat-lazy-vfs-composer.test.ts \
   test/homebrew-vfs-image-save.test.ts \
   test/homebrew-runtime-support-materializer.test.ts \
@@ -460,7 +460,7 @@ sha256 2eb3f05703b6a6f23feabda24f622bacd068115c7f74a0eac51bb4085e9eec5a
   old eager recipe/stale companion fail the new contract:
 
 ```bash
-scripts/dev-shell.sh npx --prefix host vitest run --root host \
+scripts/dev-shell.sh npm --prefix host test -- --run \
   test/homebrew-flat-lazy-vfs-cli.test.ts
 scripts/dev-shell.sh bash scripts/test-homebrew-bootstrap-source.sh
 scripts/dev-shell.sh npx --prefix host vitest run --root . \
@@ -507,7 +507,7 @@ fi
   and a nonempty deferred registry.
 
 ```bash
-scripts/dev-shell.sh npx --prefix host vitest run --root host \
+scripts/dev-shell.sh npm --prefix host test -- --run \
   test/homebrew-flat-lazy-vfs-cli.test.ts \
   test/homebrew-flat-lazy-vfs-composer.test.ts
 scripts/dev-shell.sh npx --prefix host vitest run --root . \
@@ -570,7 +570,7 @@ git commit -m "Packages: Restore the lightweight lazy shell product"
 - [ ] Run focused tests and observe the current eager/legacy branch rejection:
 
 ```bash
-scripts/dev-shell.sh npx --prefix host vitest run --root host \
+scripts/dev-shell.sh npm --prefix host test -- --run \
   test/shell-vfs-build.test.ts \
   test/dinit-image-helpers.test.ts
 ```
@@ -602,7 +602,7 @@ nginx-php-vfs   3 -> 4
 - [ ] Re-run focused and package-system tests:
 
 ```bash
-scripts/dev-shell.sh npx --prefix host vitest run --root host \
+scripts/dev-shell.sh npm --prefix host test -- --run \
   test/shell-vfs-build.test.ts \
   test/dinit-image-helpers.test.ts
 scripts/dev-shell.sh npx --prefix host vitest run --root . \
@@ -1030,7 +1030,7 @@ git commit -m "Pages: Consume and prove canonical lazy images"
   environment:
 
 ```bash
-scripts/dev-shell.sh npx --prefix host vitest run --root host \
+scripts/dev-shell.sh npm --prefix host test -- --run \
   test/homebrew-vfs-materialization-policy.test.ts \
   test/homebrew-runtime-support.test.ts \
   test/homebrew-flat-vfs-builder.test.ts \
