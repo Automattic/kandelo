@@ -211,7 +211,9 @@ jobs:
         working-directory: apps/browser-demos
         env:
           VITE_BASE: /kandelo/
-          KANDELO_BROWSER_DEMO_INPUTS: node
+          # The Node demo is selected by `?demo=node` inside the main page;
+          # `node` is not a standalone Vite HTML input.
+          KANDELO_BROWSER_DEMO_INPUTS: main
           KANDELO_PLAYWRIGHT_SERVE_DIST: "1"
           KANDELO_TEST_BASE_URL: http://127.0.0.1:5401/kandelo/
         run: |

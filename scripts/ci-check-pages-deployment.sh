@@ -338,8 +338,13 @@ done
 node_acceptance_block="$(
   step_block "$PAGES_WORKFLOW" "Run exact Pages Node npm acceptance"
 )"
-grep -Fq 'KANDELO_PLAYWRIGHT_SERVE_DIST: "1"' \
+grep -Fq 'VITE_BASE: /kandelo/' <<<"$node_acceptance_block" &&
+  grep -Fq 'KANDELO_BROWSER_DEMO_INPUTS: main' \
+    <<<"$node_acceptance_block" &&
+  grep -Fq 'KANDELO_PLAYWRIGHT_SERVE_DIST: "1"' \
   <<<"$node_acceptance_block" &&
+  grep -Fq 'KANDELO_TEST_BASE_URL: http://127.0.0.1:5401/kandelo/' \
+    <<<"$node_acceptance_block" &&
   grep -Fq 'npx playwright test test/kandelo-node.spec.ts' \
     <<<"$node_acceptance_block" &&
   grep -Fq -- "--grep 'Kandelo Node demo installs cowsay with npm'" \

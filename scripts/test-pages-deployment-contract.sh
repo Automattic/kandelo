@@ -302,6 +302,11 @@ expect_mutation_rejected \
   "s/--grep 'Kandelo Node demo installs cowsay with npm'/--grep 'Node'/"
 
 expect_mutation_rejected \
+  "Node preview selects a nonexistent page input" \
+  "must install and execute cowsay from the canonical Node image" \
+  's/(      - name: Run exact Pages Node npm acceptance[\s\S]*?)KANDELO_BROWSER_DEMO_INPUTS: main/$1KANDELO_BROWSER_DEMO_INPUTS: node/'
+
+expect_mutation_rejected \
   "Node preview drops production mode at the dev-shell boundary" \
   "Node preview must carry its exact inputs through dev-shell" \
   's/(      - name: Run exact Pages Node npm acceptance[\s\S]*?)^            "KANDELO_PLAYWRIGHT_SERVE_DIST=\$KANDELO_PLAYWRIGHT_SERVE_DIST" \\\n/$1/m'
