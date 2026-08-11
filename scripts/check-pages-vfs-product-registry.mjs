@@ -46,6 +46,7 @@ export function checkPagesVfsProductRegistry(options) {
   }));
   requireExactBrowserSourceKinds(sources);
   checkRootfsAliasProjection(selected, sources);
+  checkCanonicalPagesProjection(selected, sources);
 
   const imports = sources.flatMap(({ path, source }) =>
     extractStaticImports(source).map((specifier) => ({ path, specifier })),
@@ -121,7 +122,46 @@ export function checkPagesVfsProductRegistry(options) {
   });
 }
 
-function projectedArtifact(product, adapter) {
+function checkCanonicalPagesProjection(selected, sources) {
+  const viteSource = sourceNamed(sources, "vite.config.ts");
+  const canonicalPlugin = viteSource.indexOf("pagesVfsProducts,");
+  const kernelResolver = viteSource.indexOf("resolveKernelArtifactsAlias(binaryDevAccess)");
+  const binaryResolver = viteSource.indexOf(
+    "resolveBinariesAlias(binaryDevAccess, browserBinaryResolution)",
+  );
+  if (
+    !viteSource.includes("KANDELO_PAGES_PRODUCT_MAP") || canonicalPlugin < 0 ||
+    kernelResolver < canonicalPlugin || binaryResolver < canonicalPlugin
+  ) {
+    throw new Error("canonical Pages VFS resolver must precede every ordinary VFS resolver");
+  }
+
+  const liveSource = sourceNamed(sources, "live-setup.ts");
+  if (
+    !liveSource.includes('from "virtual:kandelo-pages-vfs-products"') ||
+    !liveSource.includes("createPagesVfsProductLoader(") ||
+    !liveSource.includes('activate("platform-rootfs")') ||
+    !liveSource.includes('activate("browser-main-shell")')
+  ) {
+    throw new Error("browser live setup lacks the canonical eager Pages product loader");
+  }
+  for (const id of selected.keys()) {
+    if (id === "platform-rootfs") continue;
+    if (!liveSource.includes(`productId: "${id}"`)) {
+      throw new Error(`browser live setup lacks canonical product mapping for ${id}`);
+    }
+  }
+
+  const optionalSource = sourceNamed(sources, "optional-demo-vfs.ts");
+  if (
+    !optionalSource.includes("canonicalProductUrl?: () => Promise<string>") ||
+    !optionalSource.includes("if (canonicalProductUrl !== undefined) return canonicalProductUrl()")
+  ) {
+    throw new Error("optional Pages VFS resolver can evaluate fallback in canonical mode");
+  }
+}
+
+export function projectedArtifact(product, adapter) {
   if (adapter.mirror_filename === undefined) {
     return { filename: product.output, rawFilename: product.output };
   }
@@ -156,9 +196,10 @@ function matchesProductSpecifier(specifier, entry) {
   );
 }
 
-function isVfsSpecifier(specifier) {
+export function isVfsSpecifier(specifier) {
   const clean = specifier.replace(/\?.*$/, "");
-  return clean === rootfsAlias || /(?:^|\/)[^/]+\.vfs(?:\.zst)?$/.test(clean);
+  return clean === rootfsAlias ||
+    /(?:^|\/)[^/]+\.vfs(?:\.zst)?(?:-[A-Za-z0-9_-]+)?(?:\.zst)?$/.test(clean);
 }
 
 function checkRootfsAliasProjection(selected, sources) {
@@ -276,7 +317,7 @@ export function readPagesRegistry(path) {
   };
 }
 
-function readGeneratedPagesRegistry(path) {
+export function readGeneratedPagesRegistry(path) {
   const bytes = readFileSync(path, "utf8");
   const value = JSON.parse(bytes);
   if (bytes !== canonicalJson(value)) {
@@ -303,34 +344,7 @@ function checkPagesGallery({ galleryPath, pagesProducts, presentationPath, liveS
       typeof liveSetupPath !== "string") {
     throw new Error("Pages gallery check lacks its reviewed presentation authorities");
   }
-  const bytes = readFileSync(galleryPath, "utf8");
-  const value = JSON.parse(bytes);
-  if (bytes !== canonicalJson(value)) throw new Error("Pages gallery registry is not canonical JSON");
-  exactObjectKeys(value, ["kind", "products", "schema"], "Pages gallery registry");
-  if (value.schema !== 1 || value.kind !== "kandelo-pages-vfs-product-gallery" ||
-      !Array.isArray(value.products)) {
-    throw new Error("Pages gallery registry has unsupported identity");
-  }
-  const products = value.products.map((entry, index) => {
-    exactObjectKeys(entry, ["gallery_entries", "id", "vfs_image"], `Pages gallery product ${index}`);
-    requireTomlString(entry.id, `Pages gallery product ${index}.id`);
-    requireTomlString(entry.vfs_image, `Pages gallery product ${index}.vfs_image`);
-    if (!Array.isArray(entry.gallery_entries) ||
-        entry.gallery_entries.some((id) => typeof id !== "string" || id.length === 0)) {
-      throw new Error(`Pages gallery product ${entry.id} has invalid gallery entries`);
-    }
-    requireUnique(entry.gallery_entries, `Pages gallery product ${entry.id}`);
-    if (JSON.stringify(entry.gallery_entries) !== JSON.stringify([...entry.gallery_entries].sort())) {
-      throw new Error(`Pages gallery product ${entry.id} entries are not sorted`);
-    }
-    return entry;
-  });
-  const pagesIds = pagesProducts.map(({ id }) => id).sort();
-  const galleryIds = products.map(({ id }) => id).sort();
-  if (JSON.stringify(galleryIds) !== JSON.stringify(pagesIds)) {
-    throw new Error("Pages gallery registry differs from the exact Pages product set");
-  }
-  requireUnique(galleryIds, "Pages gallery product IDs");
+  const products = readPagesGallery(galleryPath, pagesProducts).products;
 
   const presetSource = readFileSync(presentationPath, "utf8");
   const presetStart = presetSource.indexOf("export const PRESET_LIBRARY");
@@ -368,6 +382,38 @@ function checkPagesGallery({ galleryPath, pagesProducts, presentationPath, liveS
   }
 }
 
+export function readPagesGallery(galleryPath, pagesProducts) {
+  const bytes = readFileSync(galleryPath, "utf8");
+  const value = JSON.parse(bytes);
+  if (bytes !== canonicalJson(value)) throw new Error("Pages gallery registry is not canonical JSON");
+  exactObjectKeys(value, ["kind", "products", "schema"], "Pages gallery registry");
+  if (value.schema !== 1 || value.kind !== "kandelo-pages-vfs-product-gallery" ||
+      !Array.isArray(value.products)) {
+    throw new Error("Pages gallery registry has unsupported identity");
+  }
+  const products = value.products.map((entry, index) => {
+    exactObjectKeys(entry, ["gallery_entries", "id", "vfs_image"], `Pages gallery product ${index}`);
+    requireTomlString(entry.id, `Pages gallery product ${index}.id`);
+    requireTomlString(entry.vfs_image, `Pages gallery product ${index}.vfs_image`);
+    if (!Array.isArray(entry.gallery_entries) ||
+        entry.gallery_entries.some((id) => typeof id !== "string" || id.length === 0)) {
+      throw new Error(`Pages gallery product ${entry.id} has invalid gallery entries`);
+    }
+    requireUnique(entry.gallery_entries, `Pages gallery product ${entry.id}`);
+    if (JSON.stringify(entry.gallery_entries) !== JSON.stringify([...entry.gallery_entries].sort())) {
+      throw new Error(`Pages gallery product ${entry.id} entries are not sorted`);
+    }
+    return entry;
+  });
+  const pagesIds = pagesProducts.map(({ id }) => id).sort();
+  const galleryIds = products.map(({ id }) => id).sort();
+  if (JSON.stringify(galleryIds) !== JSON.stringify(pagesIds)) {
+    throw new Error("Pages gallery registry differs from the exact Pages product set");
+  }
+  requireUnique(galleryIds, "Pages gallery product IDs");
+  return { kind: value.kind, products, schema: value.schema };
+}
+
 function canonicalJson(value) {
   const normalize = (candidate) => {
     if (Array.isArray(candidate)) return candidate.map(normalize);
@@ -380,7 +426,7 @@ function canonicalJson(value) {
   return `${JSON.stringify(normalize(value))}\n`;
 }
 
-function readAdapterRegistry(path) {
+export function readAdapterRegistry(path) {
   const parsed = parseArrayTableToml(path, "adapters");
   exactObjectKeys(parsed.root, ["kind", "schema"], "legacy adapter registry");
   if (parsed.root.schema !== 1 || parsed.root.kind !== "kandelo-legacy-vfs-adapters") {

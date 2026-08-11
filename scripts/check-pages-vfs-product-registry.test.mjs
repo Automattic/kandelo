@@ -278,3 +278,43 @@ test("checks registered VFS build targets without owning non-VFS prerequisites",
     );
   });
 });
+
+test("keeps canonical resolution ahead of legacy fallback for every Pages product", () => {
+  withTempDir((directory) => {
+    const reordered = copyBrowserSources(directory, (source, contents) => {
+      if (!source.endsWith("vite.config.ts")) return contents;
+      return contents.replace(
+        "      pagesVfsProducts,\n      react(),",
+        "      react(),\n      resolveKernelArtifactsAlias(binaryDevAccess),\n      pagesVfsProducts,",
+      ).replace(
+        "      resolveKernelArtifactsAlias(binaryDevAccess),\n      resolveBinariesAlias",
+        "      resolveBinariesAlias",
+      );
+    });
+    assert.throws(
+      () => checkPagesVfsProductRegistry({ ...paths, browserSources: reordered }),
+      /canonical Pages VFS resolver.*precede/i,
+    );
+
+    const missingProduct = copyBrowserSources(directory, (source, contents) => {
+      if (!source.endsWith("live-setup.ts")) return contents;
+      return contents.replace('productId: "browser-node"', 'productId: "browser-rogue"');
+    });
+    assert.throws(
+      () => checkPagesVfsProductRegistry({ ...paths, browserSources: missingProduct }),
+      /canonical product mapping.*browser-node/i,
+    );
+
+    const fallback = copyBrowserSources(directory, (source, contents) => {
+      if (!source.endsWith("optional-demo-vfs.ts")) return contents;
+      return contents.replace(
+        "  if (canonicalProductUrl !== undefined) return canonicalProductUrl();",
+        "  if (false && canonicalProductUrl !== undefined) return canonicalProductUrl();",
+      );
+    });
+    assert.throws(
+      () => checkPagesVfsProductRegistry({ ...paths, browserSources: fallback }),
+      /evaluate fallback in canonical mode/i,
+    );
+  });
+});

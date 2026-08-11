@@ -1,6 +1,6 @@
 schema = 1
 kind = "kandelo-abi-staging-request-policy"
-version = 8
+version = 9
 issuer_repository = "Automattic/kandelo"
 issuer_workflow = ".github/workflows/abi-staging-request-feed.yml"
 automatic_same_repository = true
@@ -17,6 +17,7 @@ addressed_taps = ["kandelo-dev/homebrew-tap-core"]
 implementation_paths = [
   ".github/scripts/update-abi-staging-check.sh",
   ".github/workflows/abi-staging-merge-gate.yml",
+  ".github/workflows/abi-staging-pages-canary.yml",
   ".github/workflows/abi-staging-pr-check.yml",
   ".github/workflows/abi-staging-request-feed.yml",
   "Cargo.lock",
@@ -36,11 +37,15 @@ implementation_paths = [
   "apps/browser-demos/pages/abi-staging-product-evidence/main.ts",
   "apps/browser-demos/pages/abi-staging-product-evidence/pty-command.ts",
   "apps/browser-demos/pages/kandelo/kernel-host/candidate-evidence-vfs.ts",
+  "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts",
+  "apps/browser-demos/pages/kandelo/kernel-host/optional-demo-vfs.ts",
+  "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-loader.ts",
   "apps/browser-demos/playwright-closed-acceptance.ts",
   "apps/browser-demos/playwright-server-policy.ts",
   "apps/browser-demos/playwright.config.ts",
   "apps/browser-demos/test/abi-staging-product-evidence.spec.ts",
   "apps/browser-demos/test/support/terminal-command.ts",
+  "apps/browser-demos/vite.config.ts",
   "flake.lock",
   "flake.nix",
   "host/package-lock.json",
@@ -61,15 +66,21 @@ implementation_paths = [
   "images/vfs/scripts/repository-path-bundle.ts",
   "package-lock.json",
   "package.json",
+  "packages/registry/program-packages.json",
   "scripts/abi-staging-build-toolchain.sh",
   "scripts/abi-staging-collect-product-inputs.ts",
+  "scripts/abi-staging-pages-producer.ts",
+  "scripts/abi-staging-pages-readiness.ts",
+  "scripts/abi-staging-pages-site-builder.ts",
   "scripts/abi-staging-prepare-runtime.sh",
   "scripts/abi-staging-product-browser-evidence.ts",
   "scripts/abi-staging-product-input-sources.ts",
   "scripts/abi-staging-product-node-evidence.ts",
   "scripts/abi-staging-protected-browser-operation.ts",
   "scripts/check-dev-shell-tools.sh",
+  "scripts/check-pages-vfs-product-registry.mjs",
   "scripts/dev-shell.sh",
+  "scripts/run-vfs-product-builder.ts",
   "scripts/vfs-product-catalog.mjs",
   "tools/xtask/Cargo.toml",
   "tools/xtask/src/abi_staging/builder_contract.rs",

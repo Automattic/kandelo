@@ -64,7 +64,12 @@ export async function resolveOptionalDemoVfsUrl(
   image: OptionalDemoVfsImage,
   importers: OptionalDemoVfsImporters = OPTIONAL_DEMO_VFS_IMPORTERS,
   candidate?: ProtectedCandidateVfsSource,
+  canonicalProductUrl?: () => Promise<string>,
 ): Promise<string> {
+  // WHY: the admitted-product build map is the complete Pages authority.
+  // Keeping the legacy importer behind a callback ensures canonical mode can
+  // neither evaluate nor recover through a local/fetched mirror fallback.
+  if (canonicalProductUrl !== undefined) return canonicalProductUrl();
   return resolveCandidateOrDefaultOptionalVfsUrl(image, candidate, async () => {
     const source = OPTIONAL_DEMO_VFS_PATHS[image];
     for (const relPath of source.relPaths) {

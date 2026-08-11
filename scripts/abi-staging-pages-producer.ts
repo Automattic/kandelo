@@ -53,6 +53,11 @@ import {
 } from "./abi-staging-product-browser-evidence.ts";
 import { runVfsProductBuilderCli } from "./run-vfs-product-builder.ts";
 import { readPagesRegistry } from "./check-pages-vfs-product-registry.mjs";
+import {
+  buildFinalPagesSite,
+  type BuildFinalPagesSiteOptions,
+  type PagesSiteMetadataV1,
+} from "./abi-staging-pages-site-builder.ts";
 
 type JsonObject = Record<string, any>;
 
@@ -594,6 +599,8 @@ export interface PagesProducerTestDependenciesV1 {
     builder_report: JsonObject;
     vfs: Uint8Array;
   }>;
+  /** Test-only Phase-B process seam; the production CLI always uses the fixed builder. */
+  buildSite?(options: BuildFinalPagesSiteOptions): PagesSiteMetadataV1;
   collectCurrentInputs?(
     options: ResolvedProductInputCollectionOptions,
   ): JsonObject;
@@ -625,7 +632,12 @@ export async function producePagesArtifacts(
   const sourceRoot = exactDirectory(handoff.source_root, "exact current-main source root");
   const tapRoot = exactDirectory(handoff.tap_root, "exact current tap-main root");
   const runtimeRoot = exactDirectory(handoff.runtime_root, "exact runtime artifact root");
-  const siteSourceRoot = exactDirectory(handoff.site_source_root, "Pages site source root");
+  // The unpublished schema-1 handoff retains this field until the later
+  // legacy-removal task. Only injected fixture dependencies may consume it;
+  // the production CLI always builds Phase B from the exact source root.
+  const legacyTestSiteSourceRoot = testDependencies === undefined
+    ? undefined
+    : exactDirectory(handoff.site_source_root, "test-only Pages site source root");
   const runtimeBundleBytes = readBoundedFile(
     handoff.runtime_bundle,
     "exact runtime bundle",
@@ -671,13 +683,23 @@ export async function producePagesArtifacts(
   if (!jsonEqual(handoff.products.map(({ id }) => id), expectedProductIds)) {
     throw new Error("production handoff products differ from the exact Pages registry");
   }
-  const baseSiteMetadata = derivePagesSiteMetadata(
-    siteSourceRoot,
-    fixed.pages.value,
-    fixed.gallery,
-    fixed.presentationSource,
-    fixed.liveSetupSource,
-  );
+  const baseSiteMetadata = legacyTestSiteSourceRoot === undefined
+    ? {
+      api: { bytes: 1, path: "api/index.html", sha256: "0".repeat(64) },
+      browser: { bytes: 1, path: "index.html", sha256: "0".repeat(64) },
+      documentation: { bytes: 1, path: "guide/index.html", sha256: "0".repeat(64) },
+      files: [],
+      kind: "kandelo-pages-site-metadata" as const,
+      products: structuredClone(fixed.gallery.products),
+      schema: 1 as const,
+    }
+    : derivePagesSiteMetadata(
+      legacyTestSiteSourceRoot,
+      fixed.pages.value,
+      fixed.gallery,
+      fixed.presentationSource,
+      fixed.liveSetupSource,
+    );
   const output = absolutePath(outputRoot, "Pages producer output root");
   if (existsSync(output)) throw new Error("Pages producer output root already exists");
   mkdirSync(dirname(output), { recursive: true, mode: 0o700 });
@@ -905,7 +927,42 @@ export async function producePagesArtifacts(
       private_product_root: privateProductRoot,
     });
     await testDependencies?.afterPrepare?.(prepared);
-    const result = finalizePagesReadiness(readinessInput, prepared, siteMetadata);
+    let finalSiteMetadata = siteMetadata;
+    let finalSiteSourceRoot = legacyTestSiteSourceRoot;
+    if (prepared.blockers.length === 0) {
+      const productMapPath = writeCanonical(join(staging, "private-product-map.json"), {
+        kind: "kandelo-pages-private-product-map",
+        products: prepared.sealed_products,
+        schema: 1,
+      });
+      if (testDependencies?.buildSite !== undefined) {
+        finalSiteSourceRoot = join(staging, "source-tree");
+        finalSiteMetadata = testDependencies.buildSite({
+          additionalFiles: [...inputBodies.values()].map(({ body, identity }) => ({
+            ...identity,
+            body,
+          })),
+          outputRoot: finalSiteSourceRoot,
+          productMapPath,
+          sourceRoot,
+        });
+      } else if (testDependencies === undefined) {
+        finalSiteSourceRoot = join(staging, "source-tree");
+        finalSiteMetadata = buildFinalPagesSite({
+          additionalFiles: [...inputBodies.values()].map(({ body, identity }) => ({
+            ...identity,
+            body,
+          })),
+          outputRoot: finalSiteSourceRoot,
+          productMapPath,
+          sourceRoot,
+        });
+      }
+      rmSync(productMapPath, { force: true });
+    }
+    readinessInput.site_metadata = finalSiteMetadata;
+    readinessInput.authority.site_metadata_sha256 = sha256(canonicalJsonBytes(finalSiteMetadata));
+    const result = finalizePagesReadiness(readinessInput, prepared, finalSiteMetadata);
     bindAdmissionProjections(result as unknown as JsonObject, products, handoff.tap_source);
     writeCanonical(join(staging, "readiness.json"), result.readiness);
     if (!result.readiness.ready) {
@@ -922,7 +979,7 @@ export async function producePagesArtifacts(
       writeReadyArtifacts(staging, result.artifacts);
       assembleSourceTree(
         staging,
-        siteSourceRoot,
+        finalSiteSourceRoot!,
         result.site_manifest,
         result.artifacts,
         inputBodies,
@@ -1476,18 +1533,22 @@ function assembleSourceTree(
   inputBodies: Map<string, { body: Uint8Array; identity: PagesFileIdentityV1 }>,
 ): void {
   const destination = join(staging, "source-tree");
-  cpSync(siteSourceRoot, destination, {
-    dereference: false,
-    errorOnExist: true,
-    filter(path) {
-      if (lstatSync(path).isSymbolicLink()) {
-        throw new Error("Pages site source contains a symbolic link");
-      }
-      return true;
-    },
-    force: false,
-    recursive: true,
-  });
+  if (resolve(siteSourceRoot) !== resolve(destination)) {
+    cpSync(siteSourceRoot, destination, {
+      dereference: false,
+      errorOnExist: true,
+      filter(path) {
+        if (lstatSync(path).isSymbolicLink()) {
+          throw new Error("Pages site source contains a symbolic link");
+        }
+        return true;
+      },
+      force: false,
+      recursive: true,
+    });
+  } else {
+    exactDirectory(destination, "final built Pages site source root");
+  }
   for (const { body, identity } of inputBodies.values()) {
     writeSiteFile(destination, identity, body);
   }

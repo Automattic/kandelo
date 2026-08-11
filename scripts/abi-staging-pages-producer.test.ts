@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -11,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { createRepositoryPathBundle } from "../images/vfs/scripts/repository-path-bundle.ts";
 
@@ -850,6 +851,81 @@ test("rejects sealed product mutation before final-site readiness", async () => 
       /sealed product .* differs from its authenticated identity/iu,
     );
     assert.equal(existsSync(fixture.outputRoot), false);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("hands one private sealed map to Phase B after product evidence", async () => {
+  const root = mkdtempSync(join(tmpdir(), "kandelo-pages-producer-phase-b-"));
+  try {
+    const fixture = await createMiniaturePagesProducerFixture(root, "ready");
+    const handoff = JSON.parse(readFileSync(fixture.handoffPath, "utf8"));
+    let buildCalls = 0;
+    let evidenceCalls = 0;
+    let siteCalls = 0;
+    const buildProduct = fixture.dependencies.buildProduct!;
+    const runEvidence = fixture.dependencies.runEvidence!;
+    fixture.dependencies.buildProduct = async (request) => {
+      buildCalls += 1;
+      return buildProduct(request);
+    };
+    fixture.dependencies.runEvidence = async (request) => {
+      evidenceCalls += 1;
+      return runEvidence(request);
+    };
+    fixture.dependencies.buildSite = (options) => {
+      siteCalls += 1;
+      assert.equal(buildCalls, 2);
+      assert.equal(evidenceCalls, 4);
+      assert.equal(resolve(options.productMapPath), options.productMapPath);
+      const map = JSON.parse(readFileSync(options.productMapPath, "utf8"));
+      assert.deepEqual(Object.keys(map).sort(), ["kind", "products", "schema"]);
+      assert.deepEqual(map.products.map(({ id, load }: any) => ({ id, load })), [
+        { id: "base", load: "eager" },
+        { id: "mini", load: "lazy" },
+      ]);
+      assert.ok(map.products.every(({ private_path }: any) =>
+        resolve(private_path) === private_path && private_path.includes("sealed-products")));
+      cpSync(handoff.site_source_root, options.outputRoot, { recursive: true });
+      for (const file of options.additionalFiles ?? []) {
+        const path = join(options.outputRoot, file.path);
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, file.body);
+      }
+      for (const product of map.products) {
+        const path = join(options.outputRoot, product.path);
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, readFileSync(product.private_path));
+      }
+      return derivePagesSiteMetadata(options.outputRoot, {
+        kind: "kandelo-pages-vfs-products",
+        products: [{ id: "base", load: "eager" }, { id: "mini", load: "lazy" }],
+        schema: 1,
+      }, {
+        kind: "kandelo-pages-vfs-product-gallery",
+        products: [
+          { gallery_entries: [], id: "base", vfs_image: "base" },
+          { gallery_entries: ["shell"], id: "mini", vfs_image: "shell" },
+        ],
+        schema: 1,
+      }, `export const PRESET_LIBRARY = [\n    id: "shell",\n];\n`,
+      `const LIVE_DEMO_SPECS = {\n  shell: {\n    image: "shell",\n  },\n};\n`) as any;
+    };
+
+    await producePagesArtifacts(
+      fixture.handoffPath,
+      fixture.outputRoot,
+      fixture.oci,
+      fixture.dependencies,
+    );
+    assert.equal(siteCalls, 1);
+    assert.equal(existsSync(join(fixture.outputRoot, "private-product-map.json")), false);
+    const deployment = JSON.parse(readFileSync(
+      join(fixture.outputRoot, "source-tree/.well-known/kandelo/pages-deployment.json"),
+      "utf8",
+    ));
+    assert.equal(deployment.products.length, 2);
   } finally {
     rmSync(root, { force: true, recursive: true });
   }

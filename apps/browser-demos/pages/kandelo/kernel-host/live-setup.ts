@@ -113,12 +113,28 @@ import {
   resolveOptionalDemoVfsUrl,
   type OptionalDemoVfsImage,
 } from "./optional-demo-vfs";
+import {
+  createPagesVfsProductLoader,
+  type PagesVfsProductEntry,
+} from "./pages-vfs-product-loader";
 
 import kernelWasmUrl from "@kernel-wasm?url";
 import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
 import dinitWasmUrl from "@binaries/programs/wasm32/dinit/dinit.wasm?url";
 import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
+// @ts-expect-error Vite owns this virtual module in both canonical and normal mode.
+import canonicalPagesVfsProducts from "virtual:kandelo-pages-vfs-products";
+
+const CANONICAL_PAGES_VFS_PRODUCTS = canonicalPagesVfsProducts as
+  | readonly PagesVfsProductEntry[]
+  | null;
+const CANONICAL_PAGES_VFS_LOADER = CANONICAL_PAGES_VFS_PRODUCTS === null
+  ? undefined
+  : createPagesVfsProductLoader(
+    CANONICAL_PAGES_VFS_PRODUCTS,
+    (url, init) => fetch(url, init),
+  );
 
 const DEFAULT_SOFTWARE_MANIFEST_URLS = [
   `https://github.com/brandonpayton/kandelo-software/releases/download/binaries-abi-v${ABI_VERSION}/gallery.json`,
@@ -269,10 +285,24 @@ class BootSuperseded extends Error {
 type LiveVfsImage =
   "shell" | "node" | "nginx" | "nginx-php" | "wordpress" | "lamp";
 
+type PagesVfsProductId =
+  | "platform-rootfs"
+  | "browser-main-shell"
+  | "browser-node"
+  | "browser-nginx"
+  | "browser-nginx-php"
+  | "browser-wordpress"
+  | "browser-lamp";
+
 type LiveVfsSource =
-  | { kind: "url"; url: string }
-  | { kind: "optional-demo"; image: OptionalDemoVfsImage }
-  | { kind: "optional-binary"; label: string; relPaths: string[] };
+  | { kind: "url"; productId: PagesVfsProductId; url: string }
+  | { kind: "optional-demo"; image: OptionalDemoVfsImage; productId: PagesVfsProductId }
+  | {
+    kind: "optional-binary";
+    label: string;
+    productId: PagesVfsProductId;
+    relPaths: string[];
+  };
 
 type ShellProfile = "default" | "node";
 type InitEnvProfile = "service" | "wordpress";
@@ -304,11 +334,12 @@ interface LiveDemoSpec {
 }
 
 const VFS_SOURCES: Record<LiveVfsImage, LiveVfsSource> = {
-  shell: { kind: "url", url: shellVfsUrl },
-  node: { kind: "optional-demo", image: "node" },
+  shell: { kind: "url", productId: "browser-main-shell", url: shellVfsUrl },
+  node: { kind: "optional-demo", image: "node", productId: "browser-node" },
   nginx: {
     kind: "optional-binary",
     label: "nginx-vfs.vfs.zst",
+    productId: "browser-nginx",
     relPaths: [
       "../../../../../local-binaries/programs/wasm32/nginx-vfs.vfs.zst",
       "../../../../../binaries/programs/wasm32/nginx-vfs.vfs.zst",
@@ -317,13 +348,18 @@ const VFS_SOURCES: Record<LiveVfsImage, LiveVfsSource> = {
   "nginx-php": {
     kind: "optional-binary",
     label: "nginx-php-vfs.vfs.zst",
+    productId: "browser-nginx-php",
     relPaths: [
       "../../../../../local-binaries/programs/wasm32/nginx-php-vfs.vfs.zst",
       "../../../../../binaries/programs/wasm32/nginx-php-vfs.vfs.zst",
     ],
   },
-  wordpress: { kind: "optional-demo", image: "wordpress" },
-  lamp: { kind: "optional-demo", image: "lamp" },
+  wordpress: {
+    kind: "optional-demo",
+    image: "wordpress",
+    productId: "browser-wordpress",
+  },
+  lamp: { kind: "optional-demo", image: "lamp", productId: "browser-lamp" },
 };
 
 const DINIT_NGINX_ARGV = [
@@ -601,6 +637,12 @@ export interface CreateLiveHostOptions {
 export async function createLiveHost(
   opts: CreateLiveHostOptions = {},
 ): Promise<LiveKernelHost> {
+  if (CANONICAL_PAGES_VFS_LOADER !== undefined) {
+    await Promise.all([
+      CANONICAL_PAGES_VFS_LOADER.activate("platform-rootfs"),
+      CANONICAL_PAGES_VFS_LOADER.activate("browser-main-shell"),
+    ]);
+  }
   let currentKernel: BrowserKernel | null = null;
   let bootSeq = 0;
   let serviceWorkerReady: Promise<ServiceWorker> | null = null;
@@ -1980,6 +2022,9 @@ async function loadVfsImageBytes(profile: LiveProfile): Promise<ArrayBuffer> {
     }
     return profile.candidateVfsPlacement.bytes();
   }
+  if (profile.vfsSource !== undefined && CANONICAL_PAGES_VFS_LOADER !== undefined) {
+    return CANONICAL_PAGES_VFS_LOADER.bytes(profile.vfsSource.productId);
+  }
   if (!profile.software) {
     const vfsUrl = await resolveProfileVfsUrl(profile);
     return fetch(vfsUrl)
@@ -2455,7 +2500,7 @@ function vfsImageUrlResolverForPreset(
   if (source.kind !== "optional-demo") return undefined;
   return async () => {
     const url = new URL(
-      await resolveOptionalDemoVfsUrl(source.image),
+      await resolveLiveVfsSourceUrl(source),
       location.href,
     );
     url.hash = liveId;
@@ -2471,7 +2516,7 @@ async function liveDemoIdForVfsImageUrl(
     vfsUrl,
     (Object.keys(VFS_SOURCES) as LiveVfsImage[]).map((id) => ({
       id,
-      resolveVfsImageUrl: () => resolveLiveVfsSourceUrl(VFS_SOURCES[id]),
+      resolveVfsImageUrl: () => resolveTrustedLiveVfsSourceUrl(VFS_SOURCES[id]),
     })),
   );
   if (!image) return null;
@@ -2488,11 +2533,30 @@ async function liveDemoIdForVfsImageUrl(
 }
 
 async function resolveLiveVfsSourceUrl(source: LiveVfsSource): Promise<string> {
-  if (source.kind === "url") return source.url;
+  if (source.kind === "url") {
+    return CANONICAL_PAGES_VFS_LOADER?.activate(source.productId) ?? source.url;
+  }
   if (source.kind === "optional-demo") {
-    return resolveOptionalDemoVfsUrl(source.image);
+    return resolveOptionalDemoVfsUrl(
+      source.image,
+      undefined,
+      undefined,
+      CANONICAL_PAGES_VFS_LOADER === undefined
+        ? undefined
+        : () => CANONICAL_PAGES_VFS_LOADER.activate(source.productId),
+    );
+  }
+  if (CANONICAL_PAGES_VFS_LOADER !== undefined) {
+    return CANONICAL_PAGES_VFS_LOADER.activate(source.productId);
   }
   return optionalBinaryUrl(source.relPaths, source.label);
+}
+
+async function resolveTrustedLiveVfsSourceUrl(source: LiveVfsSource): Promise<string> {
+  if (CANONICAL_PAGES_VFS_LOADER !== undefined) {
+    return CANONICAL_PAGES_VFS_LOADER.path(source.productId);
+  }
+  return resolveLiveVfsSourceUrl(source);
 }
 
 async function refreshSoftwareGallery(

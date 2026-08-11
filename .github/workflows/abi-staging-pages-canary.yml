@@ -298,34 +298,6 @@ jobs:
           done < <(jq -r '.products[].id' "$registry")
           BASH
 
-      - name: Build the complete browser documentation and API site
-        run: |
-          set -euo pipefail
-          site_root="$RUNNER_TEMP/abi-staging-pages-site-source"
-          test ! -e "$site_root"
-          (
-            cd apps/browser-demos
-            VITE_BASE=/kandelo/ \
-              VITE_CORS_PROXY_URL='https://wordpress-playground-cors-proxy.net/?' \
-              npm run build
-          )
-          node --test docs-site/.vitepress/homebrew-doc-links.test.mjs
-          VITEPRESS_BASE=/kandelo/guide/ npm run docs:build
-          node --test docs-site/.vitepress/homebrew-doc-output.test.mjs
-          (
-            cd host
-            npx tsc --noEmit -p tsconfig.docs.json
-            npx typedoc
-          )
-          mkdir -m 0755 "$site_root"
-          cp -R apps/browser-demos/dist/. "$site_root/"
-          cp -R docs-site/.vitepress/dist "$site_root/guide"
-          cp -R host/docs "$site_root/api"
-          [ -f "$site_root/index.html" ]
-          [ -f "$site_root/guide/index.html" ]
-          [ -f "$site_root/api/index.html" ]
-          test -z "$(find "$site_root" -type l -print -quit)"
-
       - name: Write the bounded production handoff
         run: |
           set -euo pipefail
@@ -375,8 +347,7 @@ jobs:
               "$RUNNER_TEMP/abi-staging-pages-runtime/runtime-bundle.json" \
             --arg runtime_root \
               "$RUNNER_TEMP/abi-staging-pages-runtime/runtime" \
-            --arg site_source_root \
-              "$RUNNER_TEMP/abi-staging-pages-site-source" \
+            --arg site_source_root "$source_root" \
             --arg products_root "$products_root" \
             --arg program_index \
               "$source_root/packages/registry/program-packages.json" \

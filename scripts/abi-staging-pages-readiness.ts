@@ -17,6 +17,7 @@ import { pathToFileURL } from "node:url";
 
 import { restoreVerifiedVfsImage } from "../host/src/vfs/load-image.ts";
 import { validateProductEvidenceResult } from "./abi-staging-product-node-evidence.ts";
+import { isVfsSpecifier } from "./check-pages-vfs-product-registry.mjs";
 
 type JsonObject = Record<string, any>;
 type PagesLoadV1 = "eager" | "lazy";
@@ -1082,7 +1083,7 @@ export function finalizePagesReadiness(
   ];
   const canonicalProductPaths = new Set(state.sealed_products.map(({ path }) => path));
   const unexpectedVfs = declaredFiles.find(({ path }) =>
-    /(?:^|\/)[^/]+\.vfs(?:\.zst)?$/u.test(path) && !canonicalProductPaths.has(path)
+    isVfsSpecifier(path) && !canonicalProductPaths.has(path)
   );
   if (unexpectedVfs !== undefined) {
     throw new Error(`final Pages site contains VFS path outside the sealed product set: ${unexpectedVfs.path}`);
