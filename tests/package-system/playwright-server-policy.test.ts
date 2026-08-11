@@ -11,10 +11,16 @@ describe("Playwright server reuse policy", () => {
     })).toBe(true);
   });
 
-  it("starts an owned server for CI and exact Homebrew proofs", () => {
+  it("starts an owned server for CI and every exact artifact proof", () => {
     expect(shouldReuseExistingPlaywrightServer({ CI: "true" })).toBe(false);
     expect(shouldReuseExistingPlaywrightServer({
       KANDELO_HOMEBREW_MAIN_SHELL_STRICT: "1",
+    })).toBe(false);
+    expect(shouldReuseExistingPlaywrightServer({
+      KANDELO_CANONICAL_FLAT_SHELL_STRICT: "1",
+    })).toBe(false);
+    expect(shouldReuseExistingPlaywrightServer({
+      KANDELO_NODE_VFS_STRICT: "1",
     })).toBe(false);
   });
 });
