@@ -1035,7 +1035,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // vfsImage path (Task 4.4): apply DEFAULT_MOUNT_SPEC through the shared
   // browser-worker VFS-init boundary,
   // giving 8 mounts — / from the image, plus scratch memfs at /tmp, /var/tmp,
-  // /var/log, /var/run, /home/user, /root, /srv. Layer /dev/shm and /dev on
+  // /var/log, /var/run, /home/maker, /root, /srv. Layer /dev/shm and /dev on
   // top: those are browser-platform internals (POSIX semaphore SAB,
   // kernel devices) not part of the canonical spec.
   //
@@ -1046,7 +1046,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   const devfs = new DeviceFileSystem();
   // The kernel worker OWNS the VFS: rebuild it from the demo's image bytes and
   // apply DEFAULT_MOUNT_SPEC (/ from the image + scratch mounts for /tmp,
-  // /var/*, /home/user, /root, /srv). /etc is part of the image, baked in by
+  // /var/*, /home/maker, /root, /srv). /etc is part of the image, baked in by
   // the demo (see apps/browser-demos/lib/kernel-owned-boot.ts).
   const specMounts = await restoreBrowserKernelInitMounts(
     msg.vfsImage,

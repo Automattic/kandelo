@@ -25,9 +25,9 @@ import type {
 
 export const HOMEBREW_GUEST_LIFECYCLE_ENV = [
   "PATH=/opt/kandelo/homebrew/bin:/usr/bin:/bin",
-  "HOME=/home/user",
-  "USER=user",
-  "LOGNAME=user",
+  "HOME=/home/maker",
+  "USER=maker",
+  "LOGNAME=maker",
   "SHELL=/bin/bash",
   "TERM=dumb",
   "TMPDIR=/tmp",

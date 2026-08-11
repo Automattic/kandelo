@@ -430,11 +430,14 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
   describe.skipIf(!hasNpm)("npm package installation", () => {
     it("installs cowsay with npm and runs its package bin", async () => {
       const tempDir = mkdtempSync(join(tmpdir(), "sm-node-npm-"));
-      const workDir = join(tempDir, "work");
+      const homeDir = join(tempDir, "home-maker");
       const tmpMountDir = join(tempDir, "tmp");
-      mkdirSync(workDir, { recursive: true });
+      mkdirSync(homeDir, { recursive: true });
       mkdirSync(tmpMountDir, { recursive: true });
-      writeFileSync(join(workDir, "package.json"), JSON.stringify({ name: "demo", version: "0.0.1" }));
+      writeFileSync(
+        join(homeDir, "package.json"),
+        JSON.stringify({ name: "demo", version: "0.0.1" }),
+      );
       const { npmDir, helperDir } = prepareNpmRuntime(tempDir);
       const { registryDir, cowsayTarballFilename } = createCowsayPackages(tempDir);
       const nodeBytes = loadWasm(nodeWasm!);
@@ -444,8 +447,10 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
       let stderr = "";
       let ptyOutput = "";
       const env = [
-        "HOME=/work",
-        "PWD=/work",
+        "HOME=/home/maker",
+        "PWD=/home/maker",
+        "USER=maker",
+        "LOGNAME=maker",
         "TMPDIR=/tmp",
         "TERM=xterm-256color",
         "LANG=en_US.UTF-8",
@@ -467,10 +472,18 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
         rootfsImage: "default",
         extraMounts: [
           { mountPoint: "/tmp", hostPath: tmpMountDir, readonly: false },
-          { mountPoint: "/usr/local/lib/npm", hostPath: npmDir, readonly: true },
-          { mountPoint: "/usr/local/lib/kandelo", hostPath: helperDir, readonly: true },
+          {
+            mountPoint: "/usr/local/lib/npm",
+            hostPath: npmDir,
+            readonly: true,
+          },
+          {
+            mountPoint: "/usr/local/lib/kandelo",
+            hostPath: helperDir,
+            readonly: true,
+          },
           { mountPoint: "/registry", hostPath: registryDir, readonly: true },
-          { mountPoint: "/work", hostPath: workDir, readonly: false },
+          { mountPoint: "/home/maker", hostPath: homeDir, readonly: false },
         ],
         onStdout: (_pid, data) => {
           stdout += decoder.decode(data);
@@ -498,7 +511,14 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
               "--no-fund",
               "--no-audit",
             ],
-            { programModule: nodeModule, cwd: "/work", env, pty: true, ptyCols: 100, ptyRows: 30 },
+            {
+              programModule: nodeModule,
+              cwd: "/home/maker",
+              env,
+              pty: true,
+              ptyCols: 100,
+              ptyRows: 30,
+            },
           ),
         );
 
@@ -510,7 +530,9 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
           : "";
         expect(installExitCode, `stdout:\n${stdout}\nstderr:\n${stderr}\npty:\n${ptyOutput}\nlogs:\n${npmLogs}`).toBe(0);
         expect(ptyOutput).toMatch(/added \d+ packages? in /);
-        expect(existsSync(join(workDir, "node_modules/cowsay/package.json"))).toBe(true);
+        expect(
+          existsSync(join(homeDir, "node_modules/cowsay/package.json")),
+        ).toBe(true);
 
         stdout = "";
         stderr = "";
@@ -518,8 +540,8 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
           "run cowsay bin",
           host.spawn(
             nodeBytes,
-            ["node", "/work/node_modules/.bin/cowsay", "Kandelo"],
-            { programModule: nodeModule, cwd: "/work", env },
+            ["node", "/home/maker/node_modules/.bin/cowsay", "Kandelo"],
+            { programModule: nodeModule, cwd: "/home/maker", env },
           ),
         );
 

@@ -75,7 +75,7 @@ test("binds verified bootstrap bytes and bottle payloads to one exact image", as
     "/etc/homebrew",
     "/bin",
     "/home",
-    "/home/user",
+    "/home/maker",
     "/opt",
     "/opt/kandelo",
     "/opt/kandelo/homebrew",
@@ -83,7 +83,7 @@ test("binds verified bootstrap bytes and bottle payloads to one exact image", as
   ]) {
     fs.mkdir(path, 0o755);
   }
-  fs.chown("/home/user", 1000, 1000);
+  fs.chown("/home/maker", 1000, 1000);
   fs.chown("/opt/kandelo/homebrew", 1000, 1000);
   assert.deepEqual(
     ["/home", "/opt", "/opt/kandelo"].map((path) => {

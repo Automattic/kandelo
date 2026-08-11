@@ -30,7 +30,7 @@ let gitBytes: ArrayBuffer | null = null;
 let gitRemoteHttpBytes: ArrayBuffer | null = null;
 const DEMO_UID = 1000;
 const DEMO_GID = 1000;
-const DEMO_HOME = "/home/user";
+const DEMO_HOME = "/home/maker";
 
 /** Write a binary file to the virtual filesystem. */
 function writeFileToFs(
@@ -122,8 +122,8 @@ async function init() {
         "GIT_CONFIG_VALUE_3=main",
         `GIT_EXEC_PATH=${gitExecPath}`,
         `HOME=${DEMO_HOME}`,
-        "USER=user",
-        "LOGNAME=user",
+        "USER=maker",
+        "LOGNAME=maker",
         "TMPDIR=/tmp",
       ];
 

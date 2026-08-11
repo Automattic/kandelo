@@ -808,7 +808,7 @@ describe("LiveKernelHost: shell command queue", () => {
       programBytes: new ArrayBuffer(0),
       argv: ["bash", "-l", "-i"],
       env: ["PS1=kandelo$ "],
-      cwd: "/home/user",
+      cwd: "/home/maker",
     });
 
     const pty = await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
@@ -838,7 +838,7 @@ describe("LiveKernelHost: shell command queue", () => {
       programPath: "/opt/kandelo/homebrew/bin/dash",
       argv: ["dash", "-l", "-i"],
       env: ["PS1=kandelo$ "],
-      cwd: "/home/user",
+      cwd: "/home/maker",
       uid: 1000,
       gid: 1000,
     });
@@ -850,7 +850,7 @@ describe("LiveKernelHost: shell command queue", () => {
       ["dash", "-l", "-i"],
       expect.objectContaining({
         pty: true,
-        cwd: "/home/user",
+        cwd: "/home/maker",
         uid: 1000,
         gid: 1000,
         ptyCols: 100,
@@ -916,7 +916,7 @@ describe("LiveKernelHost: shell command queue", () => {
       programBytes: new ArrayBuffer(0),
       argv: ["bash", "-l", "-i"],
       env: ["PS1=kandelo$ "],
-      cwd: "/home/user",
+      cwd: "/home/maker",
     });
 
     let completed = false;
@@ -964,7 +964,7 @@ describe("LiveKernelHost: shell command queue", () => {
       programBytes: new ArrayBuffer(0),
       argv: ["bash", "-l", "-i"],
       env: ["PS1=kandelo$ "],
-      cwd: "/home/user",
+      cwd: "/home/maker",
     });
 
     let completed = false;
@@ -1020,7 +1020,7 @@ describe("LiveKernelHost: shell command queue", () => {
       programBytes: new ArrayBuffer(0),
       argv: ["bash", "-l", "-i"],
       env: ["PS1=kandelo$ "],
-      cwd: "/home/user",
+      cwd: "/home/maker",
     });
 
     const visibleAttach = host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
@@ -1089,7 +1089,7 @@ describe("LiveKernelHost: shell command queue", () => {
       programBytes: new ArrayBuffer(0),
       argv: ["bash", "-l", "-i"],
       env: ["PS1=kandelo$ "],
-      cwd: "/home/user",
+      cwd: "/home/maker",
     });
 
     const firstHandle = await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
@@ -1145,7 +1145,7 @@ describe("LiveKernelHost: shell command queue", () => {
       programBytes: new ArrayBuffer(0),
       argv: ["bash", "-l", "-i"],
       env: ["PS1=kandelo$ "],
-      cwd: "/home/user",
+      cwd: "/home/maker",
     });
 
     const firstHandle = await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });

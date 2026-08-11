@@ -263,9 +263,8 @@ const MYSQL_UID = 101;
 const MYSQL_GID = 101;
 const DEMO_UID = 1000;
 const DEMO_GID = 1000;
-const DEMO_USER = "user";
-const DEMO_HOME = "/home/user";
-const NODE_WORKDIR = "/work";
+const DEMO_USER = "maker";
+const DEMO_HOME = "/home/maker";
 const DINITCTL_PATH = "/sbin/dinitctl";
 const DINITCTL_SOCKET_PATH = "/tmp/dinitctl";
 const DINIT_STARTING_POLL_INTERVAL_MS = 2_000;
@@ -574,8 +573,8 @@ const SHELL_ENV: string[] = [
 ];
 
 const NODE_SHELL_ENV: string[] = [
-  `HOME=${NODE_WORKDIR}`,
-  `PWD=${NODE_WORKDIR}`,
+  `HOME=${DEMO_HOME}`,
+  `PWD=${DEMO_HOME}`,
   "TMPDIR=/tmp",
   "TERM=xterm-256color",
   "LANG=en_US.UTF-8",
@@ -583,7 +582,7 @@ const NODE_SHELL_ENV: string[] = [
   `USER=${DEMO_USER}`,
   `LOGNAME=${DEMO_USER}`,
   "PS1=spidermonkey-node$ ",
-  `HISTFILE=${NODE_WORKDIR}/.bash_history`,
+  `HISTFILE=${DEMO_HOME}/.bash_history`,
   "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
   "SSL_CERT_DIR=/etc/ssl/certs",
   "npm_config_cache=/tmp/.npm-cache",
@@ -611,7 +610,7 @@ const SERVICE_ENV: string[] = [
 
 const SHELL_PROFILES: Record<ShellProfile, { env: string[]; cwd: string }> = {
   default: { env: SHELL_ENV, cwd: DEMO_HOME },
-  node: { env: NODE_SHELL_ENV, cwd: NODE_WORKDIR },
+  node: { env: NODE_SHELL_ENV, cwd: DEMO_HOME },
 };
 
 const INIT_ENV_PROFILES: Record<InitEnvProfile, () => string[]> = {
@@ -1850,7 +1849,6 @@ function ensureDemoHomes(fs: MemoryFileSystem): void {
   ensureDirRecursive(fs, "/home");
   ensureOwnedDir(fs, DEMO_HOME, 0o755, DEMO_UID, DEMO_GID);
   ensureOwnedDir(fs, ROOT_HOME, 0o700, ROOT_UID, ROOT_GID);
-  ensureOwnedDir(fs, NODE_WORKDIR, 0o755, DEMO_UID, DEMO_GID);
 }
 
 function ensureOwnedDir(

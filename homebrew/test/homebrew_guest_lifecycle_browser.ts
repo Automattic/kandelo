@@ -316,7 +316,7 @@ export function createBrowserLifecycleMachine(options: {
           [scriptOptions.shellArgv0, "-c", scriptOptions.script],
           {
             env: [...HOMEBREW_GUEST_LIFECYCLE_ENV],
-            cwd: "/home/user",
+            cwd: "/home/maker",
             uid: 1000,
             gid: 1000,
             stdin: new Uint8Array(),

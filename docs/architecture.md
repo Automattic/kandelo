@@ -1717,7 +1717,7 @@ operations require a lifecycle-owned backing, not merely a reachable one.
 | `/var/tmp`  | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 | `/var/log`  | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 | `/var/run`  | scratch (ephemeral) | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
-| `/home/user`| scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
+| `/home/maker` | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 | `/root`     | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 | `/srv`      | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 
@@ -1750,7 +1750,7 @@ mounts it read-only at `/usr/bin` over the ordinary `nosuid` root image. Public
 boot descriptors, shared URLs, and `initFromImage` have no field that can
 request this mount or supply its authority.
 
-The browser host layers two additional, host-specific mounts on top: `/dev/shm` (the POSIX-semaphore SAB shared with main-thread surfaces) and `/dev` (`DeviceFileSystem` for `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`, `/dev/pts/N`). Sticky bits, the uid 1000 owner on `/home/user`, mode `0700` on `/root`, etc. are baked into the rootfs image at build time per the canonical `MANIFEST` and reflected honestly through the `MemoryFileSystem` inode metadata. Scratch mounts on Node start owned by uid/gid 0 because `HostFileSystem` synthesises them.
+The browser host layers two additional, host-specific mounts on top: `/dev/shm` (the POSIX-semaphore SAB shared with main-thread surfaces) and `/dev` (`DeviceFileSystem` for `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`, `/dev/pts/N`). Sticky bits, the uid 1000 owner on `/home/maker`, mode `0700` on `/root`, etc. are baked into the rootfs image at build time per the canonical `MANIFEST` and reflected honestly through the `MemoryFileSystem` inode metadata. Scratch mounts on Node start owned by uid/gid 0 because `HostFileSystem` synthesises them.
 
 ### rootfs image as the source of truth
 
@@ -1761,6 +1761,13 @@ program that calls `getpwnam`, `gethostbyname`, `getservbyname`, or OpenSSL's
 default configuration/trust lookup reads the same image bytes that `cat` would.
 The kernel synthesizes `/etc/mtab` because it reports live mount state; it does
 not synthesize static `/etc` policy or trust data.
+
+The Task 17 rootfs data defines the canonical interactive image account as
+`maker` at uid/gid 1000 with home `/home/maker`. Its password hash, wheel
+membership, sudoers policy, and login messages are ordinary rootfs files.
+Task 18 must publish reviewed `login` and `sudo-lite` product artifacts through
+the privileged-program publication path before that account is product-ready;
+the rootfs does not synthesize those executables or a preauthenticated shell.
 
 VFS images can also carry image-level metadata outside the guest file tree. The first declaration is `kernelAbi`, an exact `ABI_VERSION` requirement for images that carry ABI-bound Wasm programs. `MemoryFileSystem.readImageMetadata(image)` reads this declaration without materialising the filesystem, and `MemoryFileSystem.assertImageKernelAbi(image, abi)` validates it for callers that already know the running kernel ABI. Legacy/data-only images may omit the field.
 
