@@ -924,6 +924,12 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 | zlib | `packages/registry/zlib/build-zlib.sh` | custom configure | Dependency for PHP |
 | libxml2 | `packages/registry/libxml2/build-libxml2.sh` | CMake | Dependency for PHP |
 | OpenSSL | `packages/registry/openssl/build-openssl.sh` | custom Configure | Dependency for PHP |
+| pixman | `packages/registry/pixman/build-pixman.sh` | autoconf | 0.42.2 (last autotools release), all SIMD disabled |
+| utf8proc | `packages/registry/utf8proc/build-utf8proc.sh` | direct compile | Single TU, no upstream build system |
+| freetype | `packages/registry/freetype/build-freetype.sh` | autoconf | png/harfbuzz/brotli/bzip2 disabled |
+| fontconfig | `packages/registry/fontconfig/build-fontconfig.sh` | autoconf | libxml2 backend, gperf host tool, `ac_cv_*` RNG/statfs overrides |
+| tllist | `packages/registry/tllist/build-tllist.sh` | header-only | Staged, nothing compiles |
+| fcft | `packages/registry/fcft/build-fcft.sh` | meson bypass | Two TUs + three generated headers, no harfbuzz/SVG |
 
 CPython's source recipe takes its source, work directory, output directory,
 sysroot, zlib prefix, and guest prefix from the package-resolver contract. It

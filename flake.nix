@@ -109,6 +109,8 @@
             #            mkconfig, cpython itself, file's
             #            magic-build, etc.
             #   flex/bison — bash, m4, mariadb (yacc-style parsers)
+            #   gperf  — fontconfig's fcobjshash.h (the release tarball
+            #            ships only the .gperf input, not the output)
             #   xz/bzip2 — extracting .tar.xz/.tar.bz2 tarballs and linking
             #            xtask's source extraction helpers.
             #   patch  — applying *.patch files (mariadb, ruby)
@@ -121,6 +123,7 @@
             pkgs.ruby
             pkgs.flex
             pkgs.bison
+            pkgs.gperf
             pkgs.xz
             pkgs.bzip2
             pkgs.gnupatch

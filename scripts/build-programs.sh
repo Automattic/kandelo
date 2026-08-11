@@ -430,6 +430,30 @@ if ls "$REPO_ROOT"/programs/utf8proc_*.c >/dev/null 2>&1; then
     ln -sfn "$UTF8PROC_PREFIX/include/utf8proc.h" "$SYSROOT/include/utf8proc.h"
 fi
 
+# Resolve the rest of the font stack (fcft → fontconfig + freetype, plus
+# their libxml2/zlib link deps) when the fontstack smoke is present. fcft
+# and fontconfig headers keep their subdirs; freetype is include-path-only
+# via fcft, so only its archive is symlinked.
+if ls "$REPO_ROOT"/programs/fontstack_*.c >/dev/null 2>&1; then
+    echo "==> Resolving fcft + fontconfig + freetype for font-stack programs..."
+    HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+    for pkg in fcft fontconfig freetype libxml2 zlib; do
+        (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve "$pkg" >/dev/null)
+    done
+    FCFT_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path fcft)"
+    FONTCONFIG_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path fontconfig)"
+    FREETYPE_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path freetype)"
+    LIBXML2_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libxml2)"
+    ZLIB_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path zlib)"
+
+    ln -sfn "$FCFT_PREFIX/include/fcft" "$SYSROOT/include/fcft"
+    ln -sfn "$FCFT_PREFIX/lib/libfcft.a" "$SYSROOT/lib/libfcft.a"
+    ln -sfn "$FONTCONFIG_PREFIX/lib/libfontconfig.a" "$SYSROOT/lib/libfontconfig.a"
+    ln -sfn "$FREETYPE_PREFIX/lib/libfreetype.a" "$SYSROOT/lib/libfreetype.a"
+    ln -sfn "$LIBXML2_PREFIX/lib/libxml2.a" "$SYSROOT/lib/libxml2.a"
+    ln -sfn "$ZLIB_PREFIX/lib/libz.a" "$SYSROOT/lib/libz.a"
+fi
+
 # Resolve libevdev and symlink its archive + public header into the sysroot
 # when there are any libevdev_*.c programs to build. Same cached-resolve
 # contract as the libwayland/libxkbcommon blocks above. libevdev is the
@@ -556,6 +580,17 @@ for src in "$REPO_ROOT/programs/"*.c; do
             # NFC + case map + grapheme break against the utf8proc port (PR19).
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libutf8proc.a"
+            ;;
+        fontstack_smoke.c)
+            # monospace resolve + glyph rasterization through the whole
+            # freetype/fontconfig/fcft/pixman stack (PR19).
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libfcft.a" \
+                "$SYSROOT/lib/libfontconfig.a" \
+                "$SYSROOT/lib/libfreetype.a" \
+                "$SYSROOT/lib/libxml2.a" \
+                "$SYSROOT/lib/libpixman-1.a" \
+                "$SYSROOT/lib/libz.a"
             ;;
         libevdev_smoke.c)
             # evdev capability probe + event decode against the libevdev port.
