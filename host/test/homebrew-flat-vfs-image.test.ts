@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const fsFaults = vi.hoisted(() => ({
@@ -105,6 +106,7 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 import {
+  isFlatHomebrewVfsCliInvocation,
   parseFlatHomebrewVfsArgs,
   publishFlatHomebrewVfsOutputs,
   readFlatHomebrewBottleCacheEntry,
@@ -116,6 +118,29 @@ describe("flat Homebrew VFS image filesystem boundary", () => {
     fsFaults.failOwnedDirectoryCleanup = false;
     fsFaults.identities.clear();
     fsFaults.simulateUnsafeNumericIdentity = false;
+  });
+
+  it("recognizes a direct CLI invocation through a symlinked ancestor", () => {
+    const directory = mkdtempSync(join(tmpdir(), "flat-homebrew-cli-path-"));
+    try {
+      const realDirectory = join(directory, "real");
+      const aliasDirectory = join(directory, "alias");
+      mkdirSync(realDirectory);
+      writeFileSync(join(realDirectory, "entry.ts"), "export {};\n");
+      writeFileSync(join(realDirectory, "other.ts"), "export {};\n");
+      symlinkSync(realDirectory, aliasDirectory);
+
+      expect(isFlatHomebrewVfsCliInvocation(
+        join(aliasDirectory, "entry.ts"),
+        pathToFileURL(join(realDirectory, "entry.ts")).href,
+      )).toBe(true);
+      expect(isFlatHomebrewVfsCliInvocation(
+        join(aliasDirectory, "other.ts"),
+        pathToFileURL(join(realDirectory, "entry.ts")).href,
+      )).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("requires six inputs and accepts one optional demo configuration", () => {

@@ -36,14 +36,10 @@ MATERIALIZED_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-materia
 STAGING_WORKFLOW="$REPO_ROOT/.github/workflows/staging-build.yml"
 PREPARE_MERGE_WORKFLOW="$REPO_ROOT/.github/workflows/prepare-merge.yml"
 FORCE_REBUILD_WORKFLOW="$REPO_ROOT/.github/workflows/force-rebuild.yml"
-SHELL_BUILD_TOML="$REPO_ROOT/packages/registry/shell/build.toml"
-SHELL_PACKAGE_TOML="$REPO_ROOT/packages/registry/shell/package.toml"
-SHELL_BUILDER="$REPO_ROOT/packages/registry/shell/build-shell.sh"
+SHELL_BUILDER_TEST="$REPO_ROOT/packages/registry/shell/test-build-shell.sh"
 HOMEBREW_BOOTSTRAP_PACKAGE_TOML="$REPO_ROOT/packages/registry/homebrew-bootstrap/package.toml"
 PACKAGE_TREE_SPEC="$REPO_ROOT/homebrew/main-shell-brew-package-tree.json"
 LAZY_ARCHIVE_RESOLVER="$REPO_ROOT/apps/browser-demos/lib/init/lazy-archives.ts"
-SHELL_TOOL_PREPARER="$REPO_ROOT/packages/registry/shell/prepare-build-tools.sh"
-SHELL_TOOL_PREPARER_TEST="$REPO_ROOT/packages/registry/shell/test-prepare-build-tools.sh"
 RUN_SH="$REPO_ROOT/run.sh"
 BROWSER_BOOTSTRAP_PREPARER="$REPO_ROOT/scripts/prepare-homebrew-browser-bootstrap.sh"
 LOCAL_SHELL_INSTALLER="$REPO_ROOT/scripts/install-local-shell-artifact.sh"
@@ -1637,48 +1633,11 @@ do
     fail "$package_workflow must let the shell source recipe install mkrootfs"
 done
 
-# WHY: publisher preflight already enters the repository dev shell before it
-# runs this complete contract suite. Re-entering the wrapper would require the
-# Nix command itself to be a package build tool, even though only the flake's
-# declared build tools belong inside the purified shell. The suite's caller
-# owns that one shell-entry boundary.
-bash "$SHELL_TOOL_PREPARER_TEST" ||
-  fail "shell source-build tool preparation tests failed"
-[ "$(grep -Fc 'bash "$SCRIPT_DIR/prepare-build-tools.sh" "$SOURCE_ROOT"' "$SHELL_BUILDER")" -eq 1 ] ||
-  fail "shell recipe must prepare its locked build tools exactly once"
-preparer_line="$(grep -nF 'bash "$SCRIPT_DIR/prepare-build-tools.sh" "$SOURCE_ROOT"' \
-  "$SHELL_BUILDER" | cut -d: -f1)"
-composer_line="$(grep -nF 'bash "$SOURCE_ROOT/scripts/build-homebrew-main-shell-product.sh"' \
-  "$SHELL_BUILDER" | tail -1 | cut -d: -f1)"
-[ -n "$preparer_line" ] &&
-  [ -n "$composer_line" ] &&
-  [ "$preparer_line" -lt "$composer_line" ] ||
-  fail "shell recipe must prepare locked tools before starting the composer"
-grep -Fq '"packages/registry/shell/prepare-build-tools.sh"' \
-  "$SHELL_BUILD_TOML" ||
-  fail "shell cache identity must include its build-tool preparer"
-grep -A4 -F 'name = "npm"' "$SHELL_PACKAGE_TOML" |
-  grep -Fq 'version_constraint = ">=10.0"' ||
-  fail "shell package must declare the npm host tool its recipe executes"
-grep -A4 -F 'name = "python3"' "$SHELL_PACKAGE_TOML" |
-  grep -Fq 'version_constraint = ">=3.11"' ||
-  fail "shell package must declare Python with standard-library tomllib"
-grep -Fq 'git jq node npm python3 ruby sha256sum tar wc' \
-  "$REPO_ROOT/packages/registry/shell/build-tool-path.sh" ||
-  fail "shell Nix-source validation must include Python"
-grep -Fq '${PRODUCT_REVIEW_ARGS[@]+"${PRODUCT_REVIEW_ARGS[@]}"}' \
-  "$SHELL_BUILDER" ||
-  fail "publishable shell recipe must support Bash 3.2 with no review option"
-grep -Fq '# WHY: the package resolver may source-build shell' \
-  "$SHELL_TOOL_PREPARER" ||
-  fail "shell tool ownership boundary must retain its WHY comment"
-grep -Fq 'env -i \' "$SHELL_TOOL_PREPARER" ||
-  fail "shell tool installs must start from a scrubbed environment"
-grep -Fq 'npm_config_registry="https://registry.npmjs.org/"' \
-  "$SHELL_TOOL_PREPARER" ||
-  fail "shell tool installs must pin the public npm registry"
-grep -Fq 'npm ci' "$SHELL_BUILDER" &&
-  fail "shell wrapper must not mutate checkout-global dependency trees"
+# The current package recipe owns its own contract test. This historical
+# suite continues to cover the retired lazy-product workflow, artifact lock,
+# and mirror recovery without duplicating canonical package assertions.
+bash "$SHELL_BUILDER_TEST" ||
+  fail "canonical flat shell package wrapper tests failed"
 
 # The dev-shell wrapper intentionally reports Nix lookup and shell-hook details
 # on stdout. Playwright must own the JSON file directly so those diagnostics can
@@ -1708,53 +1667,6 @@ jq -e '
 grep -Fq "flake.nix" "$playwright_report" &&
   fail "dev-shell diagnostics leaked into the direct Playwright JSON report"
 
-grep -Fq '[[git_inputs]]' "$SHELL_BUILD_TOML" &&
-  fail "shell build.toml must not declare a raw tap beside its selection"
-shell_revision="$(sed -nE \
-  's/^revision[[:space:]]*=[[:space:]]*([1-9][0-9]*)$/\1/p' \
-  "$SHELL_BUILD_TOML")"
-[ -n "$shell_revision" ] &&
-  [ "$(grep -Ec '^revision[[:space:]]*=' "$SHELL_BUILD_TOML")" -eq 1 ] ||
-  fail "reduced lazy shell must declare one positive package revision"
-artifact_state="$(jq -er '.state' "$LAZY_ARTIFACT_LOCK")"
-case "$artifact_state" in
-  sealed) expected_publication_state=ready ;;
-  pending) expected_publication_state=pending ;;
-  *) fail "lazy shell artifact lock has an unsupported state" ;;
-esac
-grep -Eq \
-  "^publication_state[[:space:]]*=[[:space:]]*\"$expected_publication_state\"$" \
-  "$SHELL_BUILD_TOML" ||
-  fail "shell publication state must match its artifact lock"
-for shell_input in \
-  homebrew/main-shell-demo.json \
-  web-libs/kandelo-session/src/demo-config.ts
-do
-  grep -Fq "\"$shell_input\"" "$SHELL_BUILD_TOML" ||
-    fail "shell build cache inputs omit $shell_input"
-done
-for materialized_shell_input in \
-  homebrew/main-shell-selection-lock.json \
-  homebrew/main-shell-lazy-artifact-lock.json \
-  homebrew/main-shell-materialization-policy.json \
-  images/vfs/scripts/build-homebrew-materialized-vfs-image.ts \
-  host/src/homebrew-bottle-mirror-plan.ts \
-  host/src/homebrew-support-data-bottle.ts \
-  host/src/homebrew-runtime-layer-consumer.ts \
-  host/src/homebrew-vfs-composer.ts \
-  host/src/homebrew-vfs-materialization-policy.ts \
-  scripts/build-homebrew-main-shell-product.sh \
-  scripts/prepare-homebrew-main-shell-inputs.sh \
-  scripts/homebrew-main-shell-product-state.py \
-  scripts/homebrew-main-shell-selection-lock.py \
-  scripts/homebrew-prefix-campaign-executor.py \
-  scripts/extract-homebrew-support-data-bottle.ts \
-  scripts/verify-homebrew-support-data-extraction.ts \
-  scripts/verify-homebrew-main-shell-artifact-lock.sh
-do
-  grep -Fq "\"$materialized_shell_input\"" "$SHELL_BUILD_TOML" ||
-    fail "lazy shell build cache inputs omit $materialized_shell_input"
-done
 grep -Fq \
   'VFS_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts"' \
   "$BUILDER" || fail "canonical shell composition must select the eager image entrypoint"
@@ -1768,29 +1680,6 @@ grep -Fq 'homebrew-vfs-composer' "$EAGER_IMAGE_BUILDER" &&
 grep -Fq 'from "../../../host/src/homebrew-vfs-composer"' \
   "$MATERIALIZED_IMAGE_BUILDER" ||
   fail "materialized image entrypoint must own the candidate composer import"
-for generic_input in \
-  WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_DIR \
-  WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_COMMIT \
-  WASM_POSIX_DEP_HOMEBREW_BOOTSTRAP_DIR
-do
-  grep -Fq "$generic_input" "$SHELL_BUILDER" &&
-    fail "shell builder must not consume transitional resolver input $generic_input"
-done
-grep -Fq 'KANDELO_HOMEBREW_MAIN_SHELL_TAP_' "$SHELL_BUILDER" &&
-  fail "shell builder must not retain the workflow-only tap injection path"
-grep -Fq 'scripts/prepare-homebrew-main-shell-inputs.sh' "$SHELL_BUILDER" &&
-  grep -Fq 'scripts/build-homebrew-main-shell-product.sh' "$SHELL_BUILDER" ||
-  fail "canonical package wrapper must use the shared product path"
-grep -Fq 'build-shell-vfs-image.sh' "$SHELL_BUILDER" &&
-  fail "shell builder must not retain the legacy registry-composition fallback"
-for isolated_flag in \
-  '--work-dir "$WORK_DIR"' \
-  '--report "$REPORT"' \
-  '--bottle-cache "$BOTTLE_CACHE"'
-do
-  grep -Fq -- "$isolated_flag" "$SHELL_BUILDER" ||
-    fail "shell builder must pass isolated composer option $isolated_flag"
-done
 for product_flag in \
   '--package-tree-spec' \
   '--package-tree-archive "$BOOTSTRAP/homebrew-bootstrap.zip"' \
@@ -1832,17 +1721,10 @@ jq -e '
   }
 ' "$PACKAGE_TREE_SPEC" >/dev/null ||
   fail "Homebrew package-tree spec is not the exact reviewed contract"
-grep -Fq 'depends_on = []' \
-  "$SHELL_PACKAGE_TOML" ||
-  fail "shell package must not retain the transitional bootstrap package dependency"
-[ "$(grep -Fc '[[outputs]]' "$SHELL_PACKAGE_TOML")" -eq 1 ] ||
-  fail "shell package must publish only its VFS image"
 grep -Fq 'name = "homebrew-bootstrap"' "$HOMEBREW_BOOTSTRAP_PACKAGE_TOML" ||
   fail "standalone Homebrew source package is missing"
 grep -Fq 'wasm = "homebrew-bootstrap.zip"' "$HOMEBREW_BOOTSTRAP_PACKAGE_TOML" ||
   fail "standalone Homebrew source package omits its exact ZIP output"
-grep -Fq '"homebrew/main-shell-brew-package-tree.json"' "$SHELL_BUILD_TOML" ||
-  fail "shell build identity omits the package-tree recipe"
 grep -Fq '@binaries/programs/homebrew-bootstrap/' \
   "$LAZY_ARCHIVE_RESOLVER" &&
   fail "browser shell must not import bootstrap from the package registry"
@@ -2775,208 +2657,6 @@ done
     "$TERMINAL_COMMAND_TEST"
 ) || fail "post-archive image contract unit tests failed"
 
-# Exercise the package wrapper twice at once while replacing only its composer
-# subprocess. Each invocation must receive an exclusive resolver-owned
-# workspace, publish only the declared VFS, discard its report/cache scratch,
-# and remove every ambient GitHub/Homebrew credential before composition.
-fake_bin="$TMP_ROOT/fake-composer-bin"
-fake_log="$TMP_ROOT/fake-composer.log"
-mkdir -p "$fake_bin"
-apply_fake_composer="$fake_bin/bash"
-cat >"$apply_fake_composer" <<'FAKE_COMPOSER'
-#!/bin/bash
-set -euo pipefail
-composer="${1:-}"
-shift
-if [[ "$composer" == */packages/registry/shell/prepare-build-tools.sh ]]; then
-  for token in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
-    HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN \
-    NPM_TOKEN NODE_AUTH_TOKEN NODE_OPTIONS NODE_PATH \
-    NPM_CONFIG_USERCONFIG NPM_CONFIG_GLOBALCONFIG NPM_CONFIG_REGISTRY \
-    npm_config_userconfig npm_config_globalconfig npm_config_registry; do
-    if [ "${!token+x}" = x ]; then
-      echo "credential leaked to build-tool preparer: $token" >&2
-      exit 82
-    fi
-  done
-  # Run the real snapshot preparer. npm itself is replaced below, so this
-  # exercises two concurrent Git-owned source snapshots without network I/O.
-  exec /bin/bash "$composer" "$@"
-fi
-for token in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
-  HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN \
-  NPM_TOKEN NODE_AUTH_TOKEN NODE_OPTIONS NODE_PATH \
-  NPM_CONFIG_USERCONFIG NPM_CONFIG_GLOBALCONFIG NPM_CONFIG_REGISTRY \
-  npm_config_userconfig npm_config_globalconfig npm_config_registry; do
-  if [ "${!token+x}" = x ]; then
-    echo "credential leaked to composer: $token" >&2
-    exit 80
-  fi
-done
-[ "${SOURCE_DATE_EPOCH:-}" = 0 ] || {
-  echo "canonical shell wrapper did not pin SOURCE_DATE_EPOCH=0" >&2
-  exit 79
-}
-if [[ "$composer" == */scripts/prepare-homebrew-main-shell-inputs.sh ]]; then
-  [ "${1:-}" = --output-directory ]
-  prepared="${2:-}"
-  [ -n "$prepared" ] && [ ! -e "$prepared" ]
-  mkdir -p "$prepared/selection/tap/Kandelo" "$prepared/bootstrap"
-  printf '{}\n' >"$prepared/selection/selection.json"
-  printf '{}\n' >"$prepared/selection/tap/Kandelo/metadata.json"
-  printf '{}\n' >"$prepared/selection-receipt.json"
-  printf 'Formula-owned Homebrew source\n' \
-    >"$prepared/bootstrap/homebrew-bootstrap.zip"
-  printf 'HOMEBREW_NO_ANALYTICS=1\n' \
-    >"$prepared/bootstrap/homebrew-brew.env"
-  printf '{}\n' >"$prepared/bootstrap/report.json"
-  exit 0
-fi
-
-[[ "$composer" == */scripts/build-homebrew-main-shell-product.sh ]]
-# The package must pass the shared product wrapper from its private source
-# snapshot. Accepting the checkout-global helper here would reintroduce the
-# concurrent mutation race that prepare-build-tools.sh prevents.
-source_root="${composer%/scripts/build-homebrew-main-shell-product.sh}"
-[ "$source_root" != "$composer" ]
-work="" report="" cache="" out="" prepared="" review=false
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --prepared-inputs) prepared="$2"; shift 2 ;;
-    --work-dir) work="$2"; shift 2 ;;
-    --report) report="$2"; shift 2 ;;
-    --bottle-cache) cache="$2"; shift 2 ;;
-    --out) out="$2"; shift 2 ;;
-    --review-pending-artifact) review=true; shift ;;
-    *) echo "unexpected fake-composer option: $1" >&2; exit 81 ;;
-  esac
-done
-[ -n "$work" ] && [ -n "$report" ] && [ -n "$cache" ] && [ -n "$out" ] &&
-  [ "$prepared" = "$WASM_POSIX_DEP_OUT_DIR/.homebrew-shell-build/prepared-inputs" ] &&
-  [ -f "$prepared/bootstrap/homebrew-bootstrap.zip" ] &&
-  [ "$review" = "${FAKE_EXPECT_REVIEW:-true}" ]
-[ ! -e "$work" ] && [ ! -L "$work" ]
-mkdir "$work"
-mkdir "$cache"
-printf '%s\n' "$WASM_POSIX_DEP_OUT_DIR" >"$out"
-printf '{}\n' >"$report"
-printf '%s|%s|%s|%s|%s|%s|%s\n' \
-  "$WASM_POSIX_DEP_OUT_DIR" "$work" "$report" "$cache" "$out" "$prepared" \
-  "$review" \
-  >>"$FAKE_COMPOSER_LOG"
-FAKE_COMPOSER
-cat >"$fake_bin/python3" <<'FAKE_PYTHON'
-#!/bin/bash
-set -euo pipefail
-if [[ "${1:-}" == */scripts/homebrew-main-shell-product-state.py ]]; then
-  printf '%s\n' "${FAKE_PRODUCT_STATE:-candidate}"
-  exit 0
-fi
-exec /usr/bin/env -u PATH PATH=/usr/bin:/bin python3 "$@"
-FAKE_PYTHON
-cat >"$fake_bin/npm" <<'FAKE_NPM'
-#!/bin/bash
-set -euo pipefail
-prefix="$(pwd -P)"
-[ -n "$prefix" ]
-if [[ "$prefix" == */tools/mkrootfs ]]; then
-  mkdir -p "$prefix/node_modules/fflate"
-else
-  mkdir -p "$prefix/node_modules/.bin"
-  : >"$prefix/node_modules/.bin/tsx"
-fi
-FAKE_NPM
-cat >"$fake_bin/tar" <<'FAKE_TAR'
-#!/bin/bash
-exec /usr/bin/tar "$@"
-FAKE_TAR
-chmod 0755 \
-  "$apply_fake_composer" \
-  "$fake_bin/npm" \
-  "$fake_bin/python3" \
-  "$fake_bin/tar"
-parallel_one="$TMP_ROOT/parallel-shell-one"
-parallel_two="$TMP_ROOT/parallel-shell-two"
-publishable="$TMP_ROOT/publishable-shell"
-mkdir "$parallel_one" "$parallel_two" "$publishable"
-run_fake_shell_build() {
-  local out_dir="$1"
-  local product_state="${2:-candidate}"
-  local expected_review="${3:-true}"
-  # This fixture intentionally replaces bash/npm to observe the wrapper. Run
-  # it through the recipe's supported external-resolver mode; the separate
-  # preparer test exercises and verifies the authoritative Nix-only path.
-  env -u KANDELO_DEV_SHELL_TOOL_PATH \
-    PATH="$fake_bin:$PATH" \
-    FAKE_COMPOSER_LOG="$fake_log" \
-    FAKE_PRODUCT_STATE="$product_state" \
-    FAKE_EXPECT_REVIEW="$expected_review" \
-    PACKAGE_TREE_SPEC="$PACKAGE_TREE_SPEC" \
-    GH_TOKEN=forbidden \
-    GITHUB_TOKEN=forbidden \
-    HOMEBREW_GITHUB_API_TOKEN=forbidden \
-    HOMEBREW_GITHUB_PACKAGES_TOKEN=forbidden \
-    HOMEBREW_DOCKER_REGISTRY_TOKEN=forbidden \
-    NPM_TOKEN=forbidden \
-    NODE_AUTH_TOKEN=forbidden \
-    NODE_OPTIONS=--trace-warnings \
-    NODE_PATH="$TMP_ROOT/forbidden-node-path" \
-    NPM_CONFIG_USERCONFIG="$TMP_ROOT/forbidden-user.npmrc" \
-    NPM_CONFIG_GLOBALCONFIG="$TMP_ROOT/forbidden-global.npmrc" \
-    NPM_CONFIG_REGISTRY=https://attacker.invalid/ \
-    npm_config_userconfig="$TMP_ROOT/forbidden-lower-user.npmrc" \
-    npm_config_globalconfig="$TMP_ROOT/forbidden-lower-global.npmrc" \
-    npm_config_registry=https://lower-attacker.invalid/ \
-    WASM_POSIX_DEP_OUT_DIR="$out_dir" \
-    WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
-    /bin/bash "$SHELL_BUILDER"
-}
-run_fake_shell_build "$parallel_one" &
-parallel_one_pid=$!
-run_fake_shell_build "$parallel_two" &
-parallel_two_pid=$!
-wait "$parallel_one_pid" || fail "first concurrent shell wrapper failed"
-wait "$parallel_two_pid" || fail "second concurrent shell wrapper failed"
-run_fake_shell_build "$publishable" publishable false ||
-  fail "publishable shell wrapper failed"
-
-[ "$(wc -l <"$fake_log" | tr -d '[:space:]')" -eq 3 ] ||
-  fail "candidate and publishable wrappers did not produce three records"
-for out_dir in "$parallel_one" "$parallel_two" "$publishable"; do
-  [ -f "$out_dir/shell.vfs.zst" ] || fail "shell wrapper omitted final VFS in $out_dir"
-  [ "$(find "$out_dir" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d '[:space:]')" -eq 1 ] ||
-    fail "shell wrapper leaked scratch outputs into $out_dir"
-  [ ! -e "$out_dir/.homebrew-shell-build" ] ||
-    fail "shell wrapper did not clean resolver-owned scratch in $out_dir"
-  grep -Fq "$out_dir|$out_dir/.homebrew-shell-build/work|" "$fake_log" ||
-    fail "composer did not receive the exclusive workspace below $out_dir"
-done
-[ "$(cut -d'|' -f2 "$fake_log" | sort -u | wc -l | tr -d '[:space:]')" -eq 3 ] ||
-  fail "shell wrappers shared one composer workspace"
-awk -F'|' \
-  -v one="$parallel_one" \
-  -v two="$parallel_two" '
-    ($1 == one || $1 == two) && $7 == "true" { seen[$1] = 1 }
-    END { exit !(seen[one] && seen[two]) }
-  ' "$fake_log" ||
-  fail "candidate package build did not request pending-artifact review"
-awk -F'|' -v out="$publishable" '
-    $1 == out && $7 == "false" { found = 1 }
-    END { exit !found }
-  ' "$fake_log" ||
-  fail "publishable package build bypassed the strict product path"
-grep -Fq "$REPO_ROOT/target/homebrew-main-shell" "$fake_log" &&
-  fail "composer reused the repository-global Homebrew target workspace"
-
-mkdir "$TMP_ROOT/pending-selection"
-expect_failure "shell package awaits its immutable bottle selection" \
-  env -u KANDELO_DEV_SHELL_TOOL_PATH \
-    PATH="$fake_bin:$PATH" \
-    FAKE_PRODUCT_STATE=awaiting-selection \
-    WASM_POSIX_DEP_OUT_DIR="$TMP_ROOT/pending-selection" \
-    WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
-  /bin/bash "$SHELL_BUILDER"
-
 tap="$TMP_ROOT/tap"
 mkdir -p "$tap/Kandelo"
 git -C "$tap" init -q
@@ -3132,11 +2812,6 @@ expect_failure "reviewed artifact identity is still pending" \
     --lock "$pending_fixture_lock" --expected-source-date-epoch 0 \
     --artifact "$artifact_fixture"
 
-grep -Fq 'candidate) PRODUCT_REVIEW_ARGS=(--review-pending-artifact)' \
-  "$SHELL_BUILDER" &&
-  grep -Fq 'publishable) ;;' "$SHELL_BUILDER" &&
-  grep -Fq 'scripts/homebrew-main-shell-product-state.py' "$SHELL_BUILDER" ||
-  fail "shell package must separate candidate review from publishable bytes"
 for shipping_workflow in \
   "$REPO_ROOT/.github/workflows/browser-demos-pages.yml" \
   "$REPO_ROOT/.github/workflows/reusable-homebrew-main-shell-mirror-publish.yml"

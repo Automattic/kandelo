@@ -1220,11 +1220,24 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+export function isFlatHomebrewVfsCliInvocation(
+  invokedPath: string | undefined,
+  moduleUrl: string,
+): boolean {
+  if (invokedPath === undefined) return false;
+  try {
+    // WHY: macOS exposes temporary directories through both /var and
+    // /private/var. The package builder runs from that resolver-owned tree, so
+    // a lexical comparison silently turns a direct CLI invocation into a
+    // no-op. Compare the existing filesystem identities through real paths.
+    return realpathSync(invokedPath) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return false;
+  }
+}
+
 const invokedPath = process.argv[1];
-if (
-  invokedPath !== undefined &&
-  resolve(invokedPath) === resolve(fileURLToPath(import.meta.url))
-) {
+if (isFlatHomebrewVfsCliInvocation(invokedPath, import.meta.url)) {
   void runFlatHomebrewVfsImageBuilder(process.argv.slice(2)).then(
     ({ report, cleanupWarnings }) => {
       console.log(

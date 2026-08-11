@@ -541,7 +541,7 @@ grep -Fq -- '--sab-size 536870912' "$log"
 grep -Fq -- '--max-size 536870912' "$log"
 grep -Fq -- '--selection */homebrew/main-shell-flat-selection.json' "$log"
 grep -Fq -- '--shell-config */homebrew/main-shell-default.json' "$log"
-grep -Fq -- '--demo-config */homebrew/main-shell-demo.json' "$log"
+grep -Fq -- '--demo-config */homebrew/main-shell-flat-demo.json' "$log"
 grep -Fq -- '--out */shell.vfs.zst' "$log"
 ```
 
@@ -580,13 +580,13 @@ node "$SOURCE_ROOT/tools/mkrootfs/bin/mkrootfs.mjs" build \
 Then invoke the flat builder through the snapshot's locked `tsx`:
 
 ```bash
-node "$SOURCE_ROOT/node_modules/.bin/tsx" \
+"$SOURCE_ROOT/node_modules/.bin/tsx" \
   "$SOURCE_ROOT/images/vfs/scripts/build-homebrew-flat-vfs-image.ts" \
   --selection "$SOURCE_ROOT/homebrew/main-shell-flat-selection.json" \
   --base-image "$PLATFORM_BASE" \
   --bottle-cache "$BOTTLE_CACHE" \
   --shell-config "$SOURCE_ROOT/homebrew/main-shell-default.json" \
-  --demo-config "$SOURCE_ROOT/homebrew/main-shell-demo.json" \
+  --demo-config "$SOURCE_ROOT/homebrew/main-shell-flat-demo.json" \
   --out "$VFS" --report "$REPORT"
 ```
 
