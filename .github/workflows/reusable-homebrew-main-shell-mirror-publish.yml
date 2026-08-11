@@ -1081,6 +1081,11 @@ jobs:
         env:
           KANDELO_BROWSER_DEMO_INPUTS: main
           KANDELO_PLAYWRIGHT_SERVE_DIST: "1"
+          # WHY: Vite preview otherwise substitutes its local same-origin
+          # relay for the proxy embedded in the production service worker.
+          # The public proof must exercise the transport the deployed Pages
+          # product will actually use.
+          VITE_CORS_PROXY_URL: https://wordpress-playground-cors-proxy.net/?
           WASM_POSIX_BINARY_CACHE_ROOT: ${{ runner.temp }}/main-shell-public-chromium-proof-cache
           KANDELO_HOMEBREW_MAIN_SHELL_STRICT: "1"
           KANDELO_HOMEBREW_MAIN_SHELL_SHA256: ${{ steps.public.outputs.image-sha }}
@@ -1100,6 +1105,7 @@ jobs:
             bash ../../scripts/dev-shell.sh env \
               "KANDELO_BROWSER_DEMO_INPUTS=$KANDELO_BROWSER_DEMO_INPUTS" \
               "KANDELO_PLAYWRIGHT_SERVE_DIST=$KANDELO_PLAYWRIGHT_SERVE_DIST" \
+              "VITE_CORS_PROXY_URL=$VITE_CORS_PROXY_URL" \
               "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
               "KANDELO_HOMEBREW_MAIN_SHELL_STRICT=$KANDELO_HOMEBREW_MAIN_SHELL_STRICT" \
               "KANDELO_HOMEBREW_MAIN_SHELL_SHA256=$KANDELO_HOMEBREW_MAIN_SHELL_SHA256" \

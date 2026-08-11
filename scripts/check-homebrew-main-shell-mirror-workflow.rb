@@ -15,7 +15,7 @@ NODE_SCOPE_RUNNER = ARGV.length < 2 ?
 PUBLISH_JOB_DIGEST =
   "5f38b593eeffd4cacf3d728baa64695e88fe2f0723757628dbc936b6b679c54b"
 WORKFLOW_DIGEST =
-  "9dee4c5bb5a12cb06aa25f2c54fe884febf5762cb698772c0c6629283cf9af91"
+  "b058f9ddf928cd298548b41e38afb76ab5af4102be494da568076de7f5dd7435"
 NODE_SCOPE_RUNNER_DIGEST =
   "a351c57bba3b4ad05d58a346ccf2ffa22d6de194d1839c24a78d2b9bc07f1bf8"
 DOWNLOAD_ACTION =
@@ -33,6 +33,8 @@ LIFECYCLE_ASSETS = %w[
 PUBLIC_CHROMIUM_PLAYWRIGHT_ENV = {
   "KANDELO_BROWSER_DEMO_INPUTS" => "main",
   "KANDELO_PLAYWRIGHT_SERVE_DIST" => "1",
+  "VITE_CORS_PROXY_URL" =>
+    "https://wordpress-playground-cors-proxy.net/?",
   "WASM_POSIX_BINARY_CACHE_ROOT" =>
     "${{ runner.temp }}/main-shell-public-chromium-proof-cache",
   "KANDELO_HOMEBREW_MAIN_SHELL_STRICT" => "1",
