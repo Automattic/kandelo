@@ -51,6 +51,8 @@
 /etc/resolv.conf   f  0644  0  0
 /etc/nsswitch.conf f  0644  0  0
 /etc/os-release    f  0644  0  0
+/etc/profile.d     d  0755  0  0
+/etc/profile.d/kandelo-prompt.sh f  0644  0  0
 /etc/profile       f  0644  0  0
 /etc/motd          f  0644  0  0
 # The rootfs file is the authoritative services database. Rootfs-derived

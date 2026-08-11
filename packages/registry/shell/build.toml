@@ -82,7 +82,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 23
+revision    = 24
 # WHY: advancing the guest Homebrew source changes a shell input, so the old
 # sealed VFS identity is no longer valid. Publication remains blocked until a
 # reproducible image made from this exact input set is reviewed and sealed.

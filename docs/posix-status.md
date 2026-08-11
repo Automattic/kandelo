@@ -164,7 +164,7 @@ same final-OFD lifetime rules.
 | `syslog()` | Partial | `SYS_SYSLOG` (kernel-log control) returns 0. Kandelo does not currently provide a `/dev/log` datagram receiver; AF_UNIX datagram connect therefore exposes the missing endpoint instead of silently discarding messages. |
 | `capget()` / `capset()` | Stub | Returns EPERM. No capabilities model. |
 | `vhangup()` | Stub | Returns EPERM. |
-| `sethostname()` / `setdomainname()` | Stub | Returns EPERM. |
+| `sethostname()` / `setdomainname()` | Stub | Returns EPERM. Kandelo's default nodename is currently fixed rather than mutable per machine. |
 | `init_module()` / `delete_module()` | Stub | Returns EPERM. No kernel module support. |
 | `ioperm()` / `iopl()` | Stub | Returns EPERM. No I/O port access. |
 | `remap_file_pages()` | Stub | Returns ENOSYS. |
@@ -407,7 +407,7 @@ All virtual devices return synthetic `stat()` with `S_IFCHR | 0666`, determinist
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `uname()` | Full | Returns sysname="wasm-posix", nodename="localhost", release="1.0.0", version="kandelo", machine="wasm32". 5 x 65-byte null-terminated strings. |
+| `uname()` / `gethostname()` | Full | `uname()` returns sysname="wasm-posix", nodename="kandelo", release="1.0.0", version="kandelo", and machine="wasm32" in 65-byte null-terminated fields. musl's `gethostname()` derives the same fixed default nodename from `uname()`. |
 | `sysconf()` | Partial | Handles _SC_CHILD_MAX, _SC_CLK_TCK=100, _SC_PAGE_SIZE=65536, _SC_OPEN_MAX=1024, _SC_NPROCESSORS_ONLN=1, _SC_NPROCESSORS_CONF=1, _SC_MONOTONIC_CLOCK=1, _SC_THREAD_SAFE_FUNCTIONS=1, plus 100+ POSIX.1-2024 constants via musl overlay. Unknown names return EINVAL. |
 | `umask()` | Full | Set file creation mask, returns previous mask. Default 0o022. Applied in open() and mkdir(). Masked to 0o777. |
 | `getrlimit()` | Full | Returns (soft, hard) resource limits. Defaults: NOFILE=(1024,4096), STACK=(8MB,infinity), others infinity. |

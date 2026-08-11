@@ -13758,7 +13758,7 @@ pub fn sys_uname(buf: &mut [u8]) -> Result<(), Errno> {
     }
     let fields: [&[u8]; 6] = [
         b"wasm-posix", // sysname
-        b"localhost",  // nodename
+        b"kandelo",    // nodename
         b"1.0.0",      // release
         b"kandelo",    // version
         b"wasm32",     // machine
@@ -24790,7 +24790,8 @@ mod tests {
         assert_eq!(&buf[0..10], b"wasm-posix");
         assert_eq!(buf[10], 0); // null terminated
         // nodename at offset 65
-        assert_eq!(&buf[65..74], b"localhost");
+        assert_eq!(&buf[65..72], b"kandelo");
+        assert_eq!(buf[72], 0); // null terminated
         // machine at offset 260
         assert_eq!(&buf[260..266], b"wasm32");
     }

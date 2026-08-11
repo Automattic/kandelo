@@ -1,13 +1,14 @@
-import {
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { MemoryFileSystem } from "../../host/src/vfs/memory-fs";
+import { buildImage } from "../../tools/mkrootfs/src/builder";
+import type {
+  LiveKernelHost,
+  MachineStatus,
+} from "../../web-libs/kandelo-session/src/kernel-host";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..");
 const verifiedArchivePackages = [
@@ -40,6 +41,41 @@ function sourceField(manifest: string, field: "url" | "sha256"): string {
     new RegExp(`^${field}\\s*=\\s*"([^"]+)"$`, "m"),
     `source ${field}`,
   );
+}
+
+function readVfsText(fs: MemoryFileSystem, path: string): string {
+  const stat = fs.stat(path);
+  const bytes = new Uint8Array(stat.size);
+  const fd = fs.open(path, 0, 0);
+  try {
+    const read = fs.read(fd, bytes, null, bytes.byteLength);
+    return new TextDecoder().decode(bytes.subarray(0, read));
+  } finally {
+    fs.close(fd);
+  }
+}
+
+function waitForHostStatus(
+  host: LiveKernelHost,
+  expected: MachineStatus,
+): Promise<void> {
+  if (host.getStatus() === expected) return Promise.resolve();
+  return new Promise((resolveDone) => {
+    const unsubscribe = host.subscribeStatus((status) => {
+      if (status !== expected) return;
+      unsubscribe();
+      resolveDone();
+    });
+  });
+}
+
+function waitForGalleryRefresh(host: LiveKernelHost): Promise<void> {
+  return new Promise((resolveDone) => {
+    const unsubscribe = host.subscribeGallery(() => {
+      unsubscribe();
+      resolveDone();
+    });
+  });
 }
 
 describe("source-rootfs verified archive contract", () => {
@@ -136,10 +172,7 @@ describe("source-rootfs verified archive contract", () => {
 
   it("composes rootfs only from resolver-owned dependency, work, and output roots", () => {
     const wrapper = readFileSync(
-      resolve(
-        repoRoot,
-        "packages/registry/rootfs/build-rootfs-package.sh",
-      ),
+      resolve(repoRoot, "packages/registry/rootfs/build-rootfs-package.sh"),
       "utf8",
     );
     const builder = readFileSync(
@@ -161,7 +194,263 @@ describe("source-rootfs verified archive contract", () => {
     expect(builder).toContain("--stage-resolver-binaries");
     expect(builder).toContain("node_modules/tsx/dist/cli.mjs");
     expect(buildToml).toContain('"package-lock.json"');
-    expect(buildToml).toMatch(/^revision\s*=\s*9$/m);
+    expect(buildToml).toMatch(/^revision\s*=\s*10$/m);
     expect(buildToml).toMatch(/^commit\s*=\s*"UNPUBLISHED"$/m);
+  });
+
+  it("composes the image-owned hostname and default Bash prompt", async () => {
+    const image = await buildImage({
+      sourceTree: resolve(repoRoot, "images/rootfs"),
+      manifest: resolve(repoRoot, "MANIFEST"),
+      repoRoot,
+    });
+    const fs = MemoryFileSystem.fromImage(image);
+
+    expect(readVfsText(fs, "/etc/hostname")).toBe("kandelo\n");
+    expect(readVfsText(fs, "/etc/profile.d/kandelo-prompt.sh")).not.toBe("");
+    expect(fs.stat("/etc/profile.d").mode & 0o777).toBe(0o755);
+    expect(fs.stat("/etc/profile.d/kandelo-prompt.sh").mode & 0o777).toBe(
+      0o644,
+    );
+  });
+
+  it("declares prompt image metadata and advances dependent image identities", () => {
+    const manifest = readFileSync(resolve(repoRoot, "MANIFEST"), "utf8");
+    expect.soft(manifest).toMatch(/^\/etc\/profile\.d\s+d\s+0755\s+0\s+0$/m);
+    expect
+      .soft(manifest)
+      .toMatch(/^\/etc\/profile\.d\/kandelo-prompt\.sh\s+f\s+0644\s+0\s+0$/m);
+    expect
+      .soft(
+        readFileSync(
+          resolve(repoRoot, "packages/registry/shell/build.toml"),
+          "utf8",
+        ),
+      )
+      .toMatch(/^revision\s*=\s*24$/m);
+    expect
+      .soft(
+        readFileSync(
+          resolve(repoRoot, "homebrew/source-rootfs-shell-package/build.toml"),
+          "utf8",
+        ),
+      )
+      .toMatch(/^revision\s*=\s*4$/m);
+  });
+
+  it("advances the kernel cache identity for the uname hostname change", () => {
+    const kernelBuild = readFileSync(
+      resolve(repoRoot, "packages/registry/kernel/build.toml"),
+      "utf8",
+    );
+
+    expect(kernelBuild).toMatch(/^revision\s*=\s*2$/m);
+  });
+
+  const promptPath = resolve(
+    repoRoot,
+    "images/rootfs/etc/profile.d/kandelo-prompt.sh",
+  );
+  const printPrompt = 'PS1=sentinel; . "$1"; printf "%s" "$PS1"';
+  const styledRootPrompt =
+    "\\[\\e]133;A\\a\\]\\[\\e[36m\\]\\u@\\h \\[\\e[34m\\]\\w \\[\\e[31m\\]❯\\[\\e[0m\\] \\[\\e]133;B\\a\\]";
+  const styledUserPrompt =
+    "\\[\\e]133;A\\a\\]\\[\\e[36m\\]\\u@\\h \\[\\e[34m\\]\\w \\[\\e[32m\\]❯\\[\\e[0m\\] \\[\\e]133;B\\a\\]";
+  const runDash = (interactive: boolean): string =>
+    execFileSync(
+      "nix",
+      [
+        "shell",
+        "--inputs-from",
+        repoRoot,
+        "nixpkgs#dash",
+        "--command",
+        "dash",
+        ...(interactive ? ["-i"] : []),
+        "-c",
+        printPrompt,
+        "dash",
+        promptPath,
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, TERM: "xterm-256color" },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+  const runBash = (
+    interactive: boolean,
+    term: string,
+    forcedPrivilege: "actual" | "root" | "user" = "actual",
+  ): string =>
+    execFileSync(
+      "bash",
+      [
+        "--noprofile",
+        "--norc",
+        ...(interactive ? ["-i"] : []),
+        "-c",
+        `
+forced_privilege=$2
+expected_euid=$EUID
+intercepted_euid_checks=0
+if [[ $forced_privilege != actual ]]; then
+  function [ {
+    if [[ $# -eq 4 && $1 == "$expected_euid" && $2 == -eq && $3 == 0 && $4 == "]" ]]; then
+      intercepted_euid_checks=$((intercepted_euid_checks + 1))
+      [[ $forced_privilege == root ]]
+      return
+    fi
+    builtin [ "$@"
+  }
+  if [ "$((EUID + 1))" -eq 0 ]; then
+    printf "unrelated numeric comparison was forced\n" >&2
+    exit 96
+  fi
+fi
+PS1=sentinel
+. "$1"
+if [[ $forced_privilege != actual && $intercepted_euid_checks -ne 1 ]]; then
+  printf "expected exactly one EUID predicate, intercepted %s\n" "$intercepted_euid_checks" >&2
+  exit 97
+fi
+printf "%s" "$PS1"
+`,
+        "bash",
+        promptPath,
+        forcedPrivilege,
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, TERM: term },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+
+  it("leaves the image prompt unchanged outside interactive Bash", () => {
+    expect(runBash(false, "xterm-256color")).toBe("sentinel");
+    for (const interactive of [false, true]) {
+      expect(runDash(interactive)).toBe("sentinel");
+    }
+  });
+
+  it("uses the plain prompt for dumb interactive terminals", () => {
+    expect(runBash(true, "dumb")).toBe("\\u@\\h \\w \\$ ");
+  });
+
+  it("selects exact styled prompts for root and ordinary users", () => {
+    expect(runBash(true, "xterm-256color", "root")).toBe(styledRootPrompt);
+    expect(runBash(true, "xterm-256color", "user")).toBe(styledUserPrompt);
+
+    expect(runBash(true, "xterm-256color")).toBe(
+      process.geteuid?.() === 0 ? styledRootPrompt : styledUserPrompt,
+    );
+  });
+
+  it("keeps browser shell launch policy without overriding the image prompt", async () => {
+    const pageUrl = new URL("https://example.test/kandelo/");
+    const serviceWorker = {
+      controller: {},
+      register: vi.fn(async () => undefined),
+      ready: Promise.resolve({}),
+    };
+    const sessionValues = new Map<string, string>();
+    vi.stubGlobal("window", {
+      location: pageUrl,
+      crossOriginIsolated: true,
+      setTimeout: globalThis.setTimeout,
+      clearTimeout: globalThis.clearTimeout,
+    });
+    vi.stubGlobal("location", pageUrl);
+    vi.stubGlobal("navigator", { serviceWorker });
+    vi.stubGlobal("sessionStorage", {
+      getItem: (key: string) => sessionValues.get(key) ?? null,
+      setItem: (key: string, value: string) => sessionValues.set(key, value),
+      removeItem: (key: string) => sessionValues.delete(key),
+    });
+    const responseFor = (url: string): Response => {
+      if (url.endsWith("/gallery.json")) {
+        return new Response(JSON.stringify({ entries: [] }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.endsWith("/index.toml")) return new Response("");
+      return new Response("controlled boot failure", {
+        status: 503,
+        statusText: "Service Unavailable",
+      });
+    };
+    const pendingFetches: Array<{
+      url: string;
+      resolveResponse: (response: Response) => void;
+    }> = [];
+    let fetchesReleased = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL | Request) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (fetchesReleased) return Promise.resolve(responseFor(url));
+        return new Promise<Response>((resolveResponse) => {
+          pendingFetches.push({ url, resolveResponse });
+        });
+      }),
+    );
+    const releaseFetches = () => {
+      fetchesReleased = true;
+      for (const { url, resolveResponse } of pendingFetches.splice(0)) {
+        resolveResponse(responseFor(url));
+      }
+    };
+
+    let shellHost: LiveKernelHost | undefined;
+    let nodeHost: LiveKernelHost | undefined;
+    try {
+      const { createLiveHost } =
+        await import("../../apps/browser-demos/pages/kandelo/kernel-host/live-setup");
+      shellHost = await createLiveHost({ demo: "shell" });
+      nodeHost = await createLiveHost({ demo: "node" });
+      const shellGalleryRefresh = waitForGalleryRefresh(shellHost);
+      const nodeGalleryRefresh = waitForGalleryRefresh(nodeHost);
+      releaseFetches();
+      await Promise.all([
+        waitForHostStatus(shellHost, "error"),
+        waitForHostStatus(nodeHost, "error"),
+        shellGalleryRefresh,
+        nodeGalleryRefresh,
+      ]);
+      const shellEnv = shellHost.getBootDescriptor().boot.env;
+      const nodeEnv = nodeHost.getBootDescriptor().boot.env;
+
+      expect(shellEnv).toMatchObject({
+        HOME: "/home/user",
+        TERM: "xterm-256color",
+        LANG: "en_US.UTF-8",
+        PATH: "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
+        USER: "user",
+        LOGNAME: "user",
+      });
+      expect(nodeEnv).toMatchObject({
+        HOME: "/work",
+        PWD: "/work",
+        TERM: "xterm-256color",
+        LANG: "en_US.UTF-8",
+        PATH: "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
+        USER: "user",
+        LOGNAME: "user",
+      });
+      expect.soft(shellEnv).not.toHaveProperty("PS1");
+      expect.soft(nodeEnv).not.toHaveProperty("PS1");
+    } finally {
+      releaseFetches();
+      try {
+        await Promise.allSettled(
+          [shellHost, nodeHost]
+            .filter((host): host is LiveKernelHost => host !== undefined)
+            .map((host) => host.halt()),
+        );
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    }
   });
 });

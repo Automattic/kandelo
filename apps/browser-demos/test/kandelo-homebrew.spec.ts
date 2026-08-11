@@ -189,7 +189,7 @@ test("Homebrew file-formula VFS image boots in browser and runs file --version",
 
   await gotoOrSkip(page, `/?vfs=${encodeURIComponent(vfsUrl!)}`, false);
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
-  await waitForTerminalContent(page, /kandelo\$\s*$/, 240_000);
+  await waitForTerminalContent(page, /(?:^|\n)[^\n]*[$#]\s*$/, 240_000);
 
   await runTerminalCommand(
     page,
@@ -235,7 +235,7 @@ test("an image-owned Homebrew shell boots without legacy shell downloads", async
 
   await gotoOrSkip(page, `/?vfs=${encodeURIComponent(vfsUrl)}`, false);
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
-  await waitForTerminalContent(page, /kandelo\$\s*$/, 180_000);
+  await waitForTerminalContent(page, /(?:^|\n)[^\n]*[$#]\s*$/, 180_000);
   // This assertion must observe the image-selected interactive shell itself,
   // not the isolated Bash process used for ordinary behavioral commands.
   await runParentShellProbe(

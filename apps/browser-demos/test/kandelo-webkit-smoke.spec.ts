@@ -26,16 +26,17 @@ async function waitForReady(page: Page, timeout = 180_000) {
 async function waitForPrompt(page: Page, timeout = 120_000) {
   await expect
     .poll(() => terminalText(page), { timeout })
-    .toContain("kandelo$");
+    .toMatch(/user@kandelo ~ ❯\s*$/);
 }
 
 async function runTerminalLine(page: Page, command: string) {
   // WHY: this smoke intentionally tests raw WebKit input plus a persistent
   // parent-shell prompt; callers split success tokens so echo cannot match.
-  await page.locator(".kshell-host").first().click();
   const terminalInput = page.getByRole("textbox", { name: "Terminal input" }).first();
   if (await terminalInput.count()) {
     await terminalInput.focus();
+  } else {
+    await page.locator(".kshell-host").first().click();
   }
   await page.keyboard.insertText(command);
   await page.waitForTimeout(250);

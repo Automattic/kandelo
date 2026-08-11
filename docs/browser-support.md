@@ -518,6 +518,20 @@ readable `/etc/profile.d/*.sh` fragments there, so an image composer can add
 package-manager environment setup without teaching the browser about a
 particular package or prefix.
 
+The default rootfs supplies `/etc/profile.d/kandelo-prompt.sh` for interactive
+Bash login shells. Its one-line prompt uses Bash's real account (`\u`), kernel
+hostname (`\h`), and working directory (`\w`) as
+`user@kandelo ~/path ❯`. The identity, path, and privilege-aware glyph are
+colored on ordinary terminals; `TERM=dumb` receives an unstyled `$` or `#`
+form. The fragment does not run subprocesses while rendering and does not
+change Dash or noninteractive shells.
+
+The styled Bash prompt emits OSC 133 prompt-start (`A`) and command-start (`B`)
+markers around its visible text. The browser waits for the trailing `B`
+boundary when it sends guided commands, so a changing directory or account
+does not require a hardcoded visible `PS1`. Image-selected custom shells retain
+exact-prompt or conservative `$`/`#` readiness and keep their own presentation.
+
 `terminal.run` sends a command through the persistent PTY-backed shell.
 `terminal.write` sends raw text to that PTY, which is useful for entering input
 into an already-running REPL. `guide.companion.srcDoc` runs in a sandboxed
