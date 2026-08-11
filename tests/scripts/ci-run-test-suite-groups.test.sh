@@ -2170,6 +2170,15 @@ for workflow in \
         echo "$(basename "$workflow"): fresh test-gate shell inspection runs before installing declared root JavaScript dependencies" >&2
         exit 1
     fi
+    required_root_install='      - name: Install root npm dependencies for shell inspection
+        run: |
+          bash scripts/dev-shell.sh env \
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+            npm ci --no-audit --no-fund'
+    grep -Fq "$required_root_install" "$test_gate_prepare_job" || {
+        echo "$(basename "$workflow"): fresh test-gate shell inspection does not use the root dev-shell lockfile install without browser downloads" >&2
+        exit 1
+    }
     grep -Fq -- '--blocked-output "$BLOCKED"' "$workflow" || {
         echo "$(basename "$workflow"): expected ledger omits the publication blocker report" >&2
         exit 1
