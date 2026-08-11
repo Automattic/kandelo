@@ -99,30 +99,43 @@ done
 assert_matches package_archive_changed_files \
   "images/rootfs/etc/profile" \
   "images/rootfs/etc/profile"
-# The closed-selection inputs have moved from conventional package ownership
-# to the exact Homebrew product gate. Prove both halves of that route: the
-# build.toml matcher still sees each declared historical dependency, while the
-# final archive classifier removes only these reviewed product-owned paths.
-homebrew_declared_product_inputs=(
-  homebrew/main-shell-homebrew-runtime-support.json
-  homebrew/main-shell-lazy-artifact-lock.json
-  homebrew/main-shell-selection-lock.json
+# The canonical shell now owns its flat selection and builder through
+# build.toml. Every declared member must stage the package and must not be
+# subtracted as an independent Homebrew-only product input.
+canonical_flat_shell_inputs=(
+  homebrew/main-shell-flat-selection.json
+  homebrew/main-shell-default.json
+  homebrew/main-shell-flat-demo.json
   host/src/homebrew-runtime-support-materializer.ts
   host/src/homebrew-runtime-support.ts
   host/src/homebrew-vfs-builder.ts
+  images/vfs/scripts/build-homebrew-flat-vfs-image.ts
+)
+for canonical_flat_shell_input in "${canonical_flat_shell_inputs[@]}"; do
+  assert_matches package_declared_build_input_changed_files \
+    "$canonical_flat_shell_input" \
+    "$canonical_flat_shell_input"
+  assert_matches package_archive_changed_files \
+    "$canonical_flat_shell_input" \
+    "$canonical_flat_shell_input"
+  assert_not_matches homebrew_product_owned_package_input_changed_files \
+    "$canonical_flat_shell_input" \
+    "$canonical_flat_shell_input"
+done
+# The retired lazy campaign remains an independent Homebrew product. Its exact
+# legacy inputs still run that product gate without rebuilding the canonical
+# flat shell whose declared graph does not consume them.
+retired_homebrew_product_inputs=(
+  homebrew/main-shell-homebrew-runtime-support.json
+  homebrew/main-shell-lazy-artifact-lock.json
+  homebrew/main-shell-selection-lock.json
   scripts/check-homebrew-main-shell-brewfile.mjs
   scripts/homebrew-prefix-campaign-executor.py
 )
-homebrew_product_inputs=(
-  "${homebrew_declared_product_inputs[@]}"
-  images/vfs/scripts/build-homebrew-flat-vfs-image.ts
-)
-for homebrew_product_input in "${homebrew_declared_product_inputs[@]}"; do
-  assert_matches package_declared_build_input_changed_files \
+for homebrew_product_input in "${retired_homebrew_product_inputs[@]}"; do
+  assert_not_matches package_declared_build_input_changed_files \
     "$homebrew_product_input" \
     "$homebrew_product_input"
-done
-for homebrew_product_input in "${homebrew_product_inputs[@]}"; do
   assert_matches homebrew_product_owned_package_input_changed_files \
     "$homebrew_product_input" \
     "$homebrew_product_input"
@@ -137,12 +150,12 @@ assert_not_matches homebrew_product_owned_package_input_changed_files \
 # ownership route is not a Homebrew prefix wildcard or a whole-diff escape.
 assert_matches package_archive_changed_files \
   "packages/registry/shell/build-shell.sh" \
-  "${homebrew_product_inputs[@]}" \
+  "${retired_homebrew_product_inputs[@]}" \
   "packages/registry/shell/build-shell.sh"
-for homebrew_product_input in "${homebrew_product_inputs[@]}"; do
+for homebrew_product_input in "${retired_homebrew_product_inputs[@]}"; do
   assert_not_matches package_archive_changed_files \
     "$homebrew_product_input" \
-    "${homebrew_product_inputs[@]}" \
+    "${retired_homebrew_product_inputs[@]}" \
     "packages/registry/shell/build-shell.sh"
 done
 # This classifier is intentionally aggregated across the package registry.
@@ -187,8 +200,8 @@ grep -Fq \
 grep -Fq \
   'emit_bool package_staging_required "$package_archive_changed"' \
   "$ACTION_DIR/action.yml"
-# Product-owned transition inputs must keep the non-package test gate and the
-# exact Homebrew shell proof even though they skip conventional staging.
+# Retired product-owned inputs must keep the non-package test gate and exact
+# Homebrew proof even though they skip canonical package staging.
 grep -Fq \
   '[ "$homebrew_product_changed" = '\''true'\'' ]' \
   "$ACTION_DIR/action.yml"

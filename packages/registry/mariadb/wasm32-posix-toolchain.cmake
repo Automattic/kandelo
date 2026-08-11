@@ -113,6 +113,11 @@ string(REPLACE ";" " " WASM32_LINK_FLAGS_STR "${WASM32_LINK_FLAGS}")
 # --- Startup objects and runtime libraries ---
 # crt1.o provides _start; caller-prepared glue objects provide the syscall
 # channel + compiler builtins; libc.a/libc++.a provide standard libraries.
+# WHY: CMake reloads this toolchain in nested compiler probes. Carry the
+# resolver-owned glue authority into those probes so the strict contract below
+# validates the same prepared objects instead of failing on an absent cache key.
+list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES
+  WASM_POSIX_MARIADB_GLUE_OBJ_DIR)
 include("${CMAKE_CURRENT_LIST_DIR}/mariadb-glue-object-contract.cmake")
 kandelo_mariadb_glue_object_flags(MARIADB_GLUE_OBJECT_FLAGS)
 

@@ -50,8 +50,6 @@ COPIED = [
     "homebrew/main-shell.Brewfile",
     "homebrew/main-shell-default.json",
     "homebrew/main-shell-demo.json",
-    "packages/registry/shell/build.toml",
-    "packages/registry/shell/package.toml",
     "scripts/homebrew-brewfile-selection.rb",
     "docs/homebrew-publishing.md",
 ]
@@ -410,19 +408,6 @@ def write_json(path: pathlib.Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2) + "\n")
 
 
-def set_shell_revision(source: pathlib.Path, literal: str) -> None:
-    path = source / "packages/registry/shell/build.toml"
-    updated, count = re.subn(
-        r"^revision\s*=.*$",
-        f"revision = {literal}",
-        path.read_text(),
-        count=1,
-        flags=re.MULTILINE,
-    )
-    assert count == 1
-    path.write_text(updated)
-
-
 def add_future_libyaml_shape(source: pathlib.Path) -> None:
     support_path = source / "homebrew/main-shell-homebrew-runtime-support.json"
     support = json.loads(support_path.read_text())
@@ -557,9 +542,6 @@ with tempfile.TemporaryDirectory(prefix="kandelo-shell-finalizer-test.") as temp
     assert artifact_lock["inputs"]["shell_config_sha256"] == digest(
         source / "homebrew/main-shell-default.json"
     )
-    assert 'publication_state = "pending"' in (
-        source / "packages/registry/shell/build.toml"
-    ).read_text()
     assert_product_state(source, "awaiting-selection")
     rebuilt = {
         entry["formula"]["name"]: entry["formula"]["bottle_rebuild"]
@@ -612,25 +594,6 @@ with tempfile.TemporaryDirectory(prefix="kandelo-shell-finalizer-test.") as temp
     )
     assert_product_state(source, "awaiting-selection")
 
-    canonical_build = (
-        source / "packages/registry/shell/build.toml"
-    ).read_text()
-    for invalid_revision in ["0", "true", '"22"', "22.5"]:
-        set_shell_revision(source, invalid_revision)
-        assert_failure(
-            run(
-                "--source-root",
-                str(source),
-                "--tap-root",
-                str(tap),
-                success=False,
-            ),
-            "revision must be a positive integer",
-        )
-        (source / "packages/registry/shell/build.toml").write_text(
-            canonical_build
-        )
-
     (tap / "untracked").write_text("dirty\n")
     dirty = run(
         "--source-root", str(source), "--tap-root", str(tap), success=False
@@ -643,7 +606,6 @@ with tempfile.TemporaryDirectory(
     root = pathlib.Path(temporary)
     source = copy_source(root)
     add_future_libyaml_shape(source)
-    set_shell_revision(source, "23")
     tap = create_tap(
         root,
         source,
@@ -661,11 +623,6 @@ with tempfile.TemporaryDirectory(
     assert summary["audited_formulae"] == 26
     assert summary["runtime_extra"] == 2
     assert summary["total"] == 40
-    assert re.search(
-        r"^revision\s*=\s*23$",
-        (source / "packages/registry/shell/build.toml").read_text(),
-        re.MULTILINE,
-    )
     checker = run_checker(source, tap)
     assert (
         "38 base Formulae, 22 runtime Formulae, and 26 audited Formulae; "

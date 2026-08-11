@@ -76,7 +76,8 @@ describe("flat Homebrew runtime support", () => {
     expect(result.fs.readlink("/bin/bash")).toBe(prefixBash);
     expect(result.fs.stat("/bin/bash").mode & 0o777).toBe(0o755);
     expect(result.fs.isPathDeferred("/bin/bash")).toBe(false);
-    expect(result.fs.isPathDeferred("/usr/bin/bash")).toBe(true);
+    expect(result.fs.readlink("/usr/bin/bash")).toBe(prefixBash);
+    expect(result.fs.isPathDeferred("/usr/bin/bash")).toBe(false);
   });
 
   it("rejects a non-executable selected Bash behind its projected prefix symlink", async () => {

@@ -10,7 +10,10 @@ import {
   assertHomebrewCanonicalText,
   compareHomebrewCanonicalText,
 } from "./homebrew-lazy-layer-descriptor";
-import { resolveHomebrewVfsResourcePolicy } from "./homebrew-vfs-resource-policy";
+import {
+  resolveHomebrewVfsResourcePolicy,
+  type HomebrewVfsResourcePolicyId,
+} from "./homebrew-vfs-resource-policy";
 
 const SELECTION_KEYS = [
   "schema",
@@ -34,7 +37,7 @@ export interface HomebrewBottleSelection {
   kandeloAbi: number;
   bottles: HomebrewBottleDescriptor[];
   requestedVfsFilename: string;
-  resourcePolicy: "kandelo-homebrew-vfs-generous-v1";
+  resourcePolicy: HomebrewVfsResourcePolicyId;
   linkPolicy: "kandelo-homebrew-link-ownership-v1";
   runtimeSupport: "kandelo-homebrew-bootstrap-v1";
 }
@@ -89,17 +92,40 @@ export function projectHomebrewBottleSelection(
     "Homebrew bottle selection.requestedVfsFilename",
   );
   if (
-    !OUTPUT_FILENAME_RE.test(requestedVfsFilename) ||
-    !requestedVfsFilename.includes("experimental") ||
-    !requestedVfsFilename.includes("abi42")
+    !OUTPUT_FILENAME_RE.test(requestedVfsFilename)
   ) {
     fail(
-      "Homebrew bottle selection.requestedVfsFilename must be a safe .vfs.zst " +
-        "basename containing experimental and abi42",
+      "Homebrew bottle selection.requestedVfsFilename must be a safe .vfs.zst basename",
     );
   }
-  if (root.resourcePolicy !== "kandelo-homebrew-vfs-generous-v1") {
-    fail("Homebrew bottle selection.resourcePolicy is invalid");
+  if (
+    root.resourcePolicy !== "kandelo-homebrew-vfs-generous-v1" &&
+    root.resourcePolicy !== "kandelo-homebrew-vfs-main-shell-v1"
+  ) {
+    fail(
+      "Homebrew bottle selection fields do not form a supported tuple for " +
+        "requestedVfsFilename and resourcePolicy",
+    );
+  }
+  const resourcePolicy = root.resourcePolicy;
+  const experimentalProduct =
+    name.startsWith("experimental-") &&
+    arch === "wasm32" &&
+    kandeloAbi === 42 &&
+    requestedVfsFilename.includes("experimental") &&
+    requestedVfsFilename.includes("abi42") &&
+    resourcePolicy === "kandelo-homebrew-vfs-generous-v1";
+  const mainShellProduct =
+    name === "main-shell-abi42-wasm32" &&
+    arch === "wasm32" &&
+    kandeloAbi === 42 &&
+    requestedVfsFilename === "shell.vfs.zst" &&
+    resourcePolicy === "kandelo-homebrew-vfs-main-shell-v1";
+  if (!experimentalProduct && !mainShellProduct) {
+    fail(
+      "Homebrew bottle selection fields do not form a supported tuple for " +
+        "requestedVfsFilename and resourcePolicy",
+    );
   }
   if (root.linkPolicy !== "kandelo-homebrew-link-ownership-v1") {
     fail("Homebrew bottle selection.linkPolicy is invalid");
@@ -109,7 +135,7 @@ export function projectHomebrewBottleSelection(
   }
 
   validateBottleClosure(bottles, arch, kandeloAbi);
-  validateKnownResourceUse(bottles, root.resourcePolicy);
+  validateKnownResourceUse(bottles, resourcePolicy);
   return {
     schema: 1,
     name,
@@ -117,7 +143,7 @@ export function projectHomebrewBottleSelection(
     kandeloAbi,
     bottles,
     requestedVfsFilename,
-    resourcePolicy: root.resourcePolicy,
+    resourcePolicy,
     linkPolicy: root.linkPolicy,
     runtimeSupport: root.runtimeSupport,
   };
@@ -125,7 +151,7 @@ export function projectHomebrewBottleSelection(
 
 function validateKnownResourceUse(
   bottles: readonly HomebrewBottleDescriptor[],
-  resourcePolicy: "kandelo-homebrew-vfs-generous-v1",
+  resourcePolicy: HomebrewVfsResourcePolicyId,
 ): void {
   const policy = resolveHomebrewVfsResourcePolicy(resourcePolicy);
   let compressedBytes = 0;

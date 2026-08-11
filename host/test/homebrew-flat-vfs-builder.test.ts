@@ -111,6 +111,8 @@ describe("flat Homebrew VFS builder", () => {
     );
     expect(result.fs.stat(`${hello.keg}/bin/hello`).mode & 0o777).toBe(0o755);
     expect(result.fs.readlink(`${PREFIX}/bin/hello`)).toBe(`${hello.keg}/bin/hello`);
+    expect(result.fs.readlink("/bin/hello")).toBe(`${PREFIX}/bin/hello`);
+    expect(result.fs.readlink("/usr/bin/hello")).toBe(`${PREFIX}/bin/hello`);
     expect(result.fs.readlink(`${PREFIX}/opt/hello`)).toBe("../Cellar/hello/2.12.1");
 
     const metadata = JSON.parse(readVfsFile(result.fs, "/etc/kandelo/homebrew-vfs.json"));
@@ -169,6 +171,36 @@ describe("flat Homebrew VFS builder", () => {
       expect(hasObjectKey(metadata, forbidden), `${forbidden} must be absent`).toBe(false);
     }
     expect(result.report).toEqual(metadata);
+  });
+
+  it("projects selected commands and standard aliases into the public shell paths", async () => {
+    const bootstrap = bootstrapFixture();
+    const dash = simpleBottle("dash", "1.0", "dash", "bin/dash");
+    const coreutils = simpleBottle("coreutils", "1.0", "env", "bin/env");
+    const closure = [bootstrap, dash, coreutils];
+    const result = await buildHomebrewVfsSelection(
+      planHomebrewVfsSelection(selectionBytes(
+        closure.map(({ descriptor: item }) => item),
+      )),
+      {
+        loadBottleBytes(pkg) {
+          return closure.find(
+            ({ descriptor: item }) => item.fullName === pkg.fullName,
+          )!.bottle;
+        },
+      },
+    );
+
+    for (const command of ["dash", "env"]) {
+      expect(result.fs.readlink(`/bin/${command}`)).toBe(
+        `${PREFIX}/bin/${command}`,
+      );
+      expect(result.fs.readlink(`/usr/bin/${command}`)).toBe(
+        `${PREFIX}/bin/${command}`,
+      );
+    }
+    expect(result.fs.readlink("/bin/sh")).toBe(`${PREFIX}/bin/dash`);
+    expect(result.fs.readlink("/usr/bin/sh")).toBe(`${PREFIX}/bin/dash`);
   });
 
   it("uses the three declared functional link owners and rejects undeclared collisions", async () => {

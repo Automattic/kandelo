@@ -112,12 +112,19 @@ The browser demo, user guide, and generated host API documentation share one
 write that branch.
 
 The workflow checks out one source commit and builds all three trees in one
-job. Browser preparation uses a fresh package cache and fetch-only resolution;
-Pages cannot source-build a missing canonical archive. Before building the
-site, the workflow binds the selected shell to its sealed artifact lock,
-deferred `/usr/bin/brew` source archive, and content-derived immutable bottle
-mirror plan. Chromium then boots the assembled public-transport shell and
-activates the lazy Homebrew runtime before deployment.
+job. Main-push runs use the event SHA. Post-activation dispatches carry an
+exact default-branch SHA, merge-candidate tag, and canonical index sha256. The
+workflow verifies that source is still the default-branch tip, authenticates
+the candidate's immutable `ready.json`/`activated.json` pair, and snapshots the
+same canonical index bytes before it prepares the product.
+
+Browser preparation uses a fresh package cache and fetch-only resolution;
+Pages cannot source-build a missing canonical archive. The publisher inspects
+the eager self-contained shell, verifies the exact hashed shell and Node VFS
+assets emitted by Vite, and boots both production paths in Chromium. The Node
+proof hashes the served VFS response before it installs and runs cowsay. The
+assembled tree records its source, candidate, and canonical index generation
+in `kandelo-deployment.json`.
 
 The workflow publishes that complete tree as a fresh orphan commit. Replacing
 the branch is intentional: Vite gives browser assets content-addressed names,
@@ -137,14 +144,18 @@ problem rather than promising that branch size is static.
 
 Newer Pages runs cancel work for superseded commits. Because GitHub does not
 guarantee concurrency-group ordering, cancellation is not the publication
-authority. An unrelated `main` commit may not trigger the Pages workflow, so
-comparing the build commit with the tip of `main` would incorrectly discard a
-still-current site build. Instead, immediately before the sole deployment
-step, the workflow queries GitHub Actions and publishes only when its run
-number is the newest run triggered for this workflow on `main`. A delayed older
-run therefore cannot become the final writer. Missing, empty, malformed, or
-failed API responses stop publication rather than guessing that a run is
-current.
+authority. Immediately before the sole deployment step, the workflow queries
+GitHub Actions and publishes only when its run number is the newest run
+triggered for this workflow on `main`. A delayed older run therefore cannot
+become the final writer. Missing, empty, malformed, or failed API responses
+stop publication rather than guessing that a run is current.
+
+The scheduled activation sweep compares the current default-branch SHA and
+canonical index digest with the public deployment record. If a dispatch failed
+after activation had already made its candidate terminal, the next sweep finds
+the authenticated receipt selecting those index bytes and dispatches the exact
+generation again. Once the public record matches, the sweep does not rebuild
+Pages merely because it ran again.
 
 GitHub's current Pages limits are documented at
 <https://docs.github.com/en/pages/getting-started-with-github-pages/github-pages-limits>.

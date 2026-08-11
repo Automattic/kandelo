@@ -419,9 +419,24 @@ expect_mutation_rejected \
   's/(  workflow_dispatch:\n)/  pull_request:\n$1/'
 
 expect_mutation_rejected \
+  "missing exact dispatch source" \
+  "workflow dispatch must bind the exact source, candidate, and canonical index" \
+  's/      source_sha:/      source_ref:/'
+
+expect_mutation_rejected \
+  "unchecked dispatch generation inputs" \
+  "must validate every exact generation input before checkout" \
+  's/REQUESTED_CANONICAL_INDEX_SHA256: \$\{\{ inputs\.canonical_index_sha256 \}\}/REQUESTED_CANONICAL_INDEX_SHA256: unchecked/'
+
+expect_mutation_rejected \
   "bypassed package projection check" \
   "must verify the generated package projection" \
   's/build-deps program-index-check/build-deps parse/'
+
+expect_mutation_rejected \
+  "bypassed canonical generation snapshot" \
+  "must authenticate the requested canonical package generation" \
+  's/scripts\/release-index-state\.sh snapshot/scripts\/release-index-state.sh read/'
 
 expect_mutation_rejected \
   "missing musl input for repository-owned support programs" \
@@ -440,23 +455,33 @@ expect_mutation_rejected \
 
 expect_mutation_rejected \
   "source-fallback browser preparation" \
-  "canonical Pages product must not activate the source bridge" \
-  's#(            \./run\.sh --fetch-only \\\n)#$1              --allow-stale \\\n#'
+  "must consume canonical packages without fallback" \
+  's#\./run\.sh --fetch-only prepare-browser#./run.sh prepare-browser#'
+
+expect_mutation_rejected \
+  "retired lazy-shell preparation" \
+  "must consume canonical packages without fallback" \
+  's#\./run\.sh --fetch-only prepare-browser#./run.sh --fetch-only --require-sealed-homebrew-selection prepare-browser#'
 
 expect_mutation_rejected \
   "swallowed canonical preparation failure" \
-  "must be the final failure-propagating command" \
-  's#(--require-sealed-homebrew-selection prepare-browser)#$1 || true#'
+  "must consume canonical packages without fallback" \
+  's#(\./run\.sh --fetch-only prepare-browser)#$1 || true#'
 
 expect_mutation_rejected \
   "work after canonical preparation command" \
   "must be the final failure-propagating command" \
-  's#(--require-sealed-homebrew-selection prepare-browser\n)#$1          echo continued\n#'
+  's#(\./run\.sh --fetch-only prepare-browser\n)#$1          echo continued\n#'
 
 expect_mutation_rejected \
-  "missing sealed shell artifact check" \
-  "must bind the canonical shell, bootstrap, and embedded mirror plan" \
-  's/scripts\/verify-homebrew-main-shell-artifact-lock\.sh/scripts\/skipped-artifact-lock.sh/'
+  "missing canonical shell resolution" \
+  "must bind the resolver-selected canonical shell and Node images" \
+  's/programs\/shell\.vfs\.zst/programs\/missing-shell.vfs.zst/'
+
+expect_mutation_rejected \
+  "missing canonical Node resolution" \
+  "must bind the resolver-selected canonical shell and Node images" \
+  's/programs\/node-vfs\.vfs\.zst/programs\/missing-node.vfs.zst/'
 
 expect_mutation_rejected \
   "shell-only Pages build" \
@@ -464,39 +489,64 @@ expect_mutation_rejected \
   's/(      - name: Build browser demos for GitHub Pages\n        working-directory: apps\/browser-demos\n)/$1        env:\n          KANDELO_BROWSER_DEMO_INPUTS: main\n/'
 
 expect_mutation_rejected \
-  "missing public product inspector" \
-  "must bind the canonical shell, bootstrap, and embedded mirror plan" \
-  's/scripts\/inspect-homebrew-main-shell-public-product\.ts/scripts\/skipped-public-product.ts/'
+  "missing canonical flat-shell inspector" \
+  "must run the canonical flat-shell inspector and its rejection tests" \
+  's/scripts\/inspect-canonical-flat-shell\.ts/scripts\/skipped-canonical-flat-shell.ts/'
 
 expect_mutation_rejected \
-  "missing public product inspector rejection tests" \
-  "must run the public-product inspector rejection tests" \
-  's/scripts\/inspect-homebrew-main-shell-public-product\.test\.ts/scripts\/skipped-public-product.test.ts/'
+  "missing canonical flat-shell inspector rejection tests" \
+  "must run the canonical flat-shell inspector and its rejection tests" \
+  's/scripts\/inspect-canonical-flat-shell\.test\.ts/scripts\/skipped-canonical-flat-shell.test.ts/'
 
 expect_mutation_rejected \
-  "eager mirror recovery during inspection" \
-  "must not eagerly download the complete bottle mirror" \
+  "inspector bound to another selection" \
+  "must run the canonical flat-shell inspector and its rejection tests" \
+  's/homebrew\/main-shell-flat-selection\.json/homebrew\/other-selection.json/'
+
+expect_mutation_rejected \
+  "unbound canonical Node digest" \
+  "must record the exact canonical shell and Node digests" \
+  's/node_sha256=\$\(sha256sum/node_sha256=\$(printf/'
+
+expect_mutation_rejected \
+  "retired browser bootstrap input" \
+  "retired lazy-shell input: homebrew-bootstrap" \
+  's#(          test ! -e "\$report"\n)#$1          test -f apps/browser-demos/public/homebrew-bootstrap.zip\n#'
+
+expect_mutation_rejected \
+  "retired shell artifact lock" \
+  "retired lazy-shell input: main-shell-lazy-artifact-lock" \
+  's#(          test ! -e "\$report"\n)#$1          test -f homebrew/main-shell-lazy-artifact-lock.json\n#'
+
+expect_mutation_rejected \
+  "retired bottle mirror recovery" \
+  "retired lazy-shell input: recover-homebrew-bottle-mirror" \
   's#(          test ! -e "\$report"\n)#$1          npx tsx scripts/recover-homebrew-bottle-mirror.ts\n#'
 
 expect_mutation_rejected \
   "missing hashed shell asset verifier" \
-  "must verify its exact hashed shell asset" \
+  "must verify its exact hashed shell and Node assets" \
   's/scripts\/verify-browser-shell-vfs-asset\.sh/scripts\/skipped-browser-shell-vfs-asset.sh/'
 
 expect_mutation_rejected \
   "hashed shell verifier bound to another image" \
-  "must verify its exact hashed shell asset" \
-  's/dist "\$\{\{ steps\.shell_product\.outputs\.image \}\}"/dist "unbound.vfs.zst"/'
+  "must verify its exact hashed shell and Node assets" \
+  's/steps\.package_products\.outputs\.shell_image/steps.package_products.outputs.node_image/'
+
+expect_mutation_rejected \
+  "hashed Node verifier omits its exact stem" \
+  "must verify its exact hashed shell and Node assets" \
+  's/(steps\.package_products\.outputs\.node_image \}\}") node-vfs\.vfs/$1/'
 
 expect_mutation_rejected \
   "unhashed public shell comparison" \
-  "must not trust Vite's optional unhashed public shell copy" \
+  "must not trust optional unhashed public package images" \
   's/(          npm run build\n)/$1          cmp dist\/shell.vfs.zst expected.vfs.zst\n/'
 
 expect_mutation_rejected \
-  "unhashed source-tree shell comparison" \
-  "must not trust Vite's optional unhashed public shell copy" \
-  's/(          done\n)/$1          cmp "\$image" apps\/browser-demos\/public\/shell.vfs.zst\n/'
+  "unhashed public Node comparison" \
+  "must not trust optional unhashed public package images" \
+  's/(          npm run build\n)/$1          cmp dist\/node-vfs.vfs.zst expected.vfs.zst\n/'
 
 expect_mutation_rejected \
   "guide build without strict failure handling" \
@@ -534,34 +584,64 @@ expect_mutation_rejected \
   's#(          npm run docs:build\n)(          node --test docs-site/\.vitepress/homebrew-doc-output\.test\.mjs\n)#$2$1#'
 
 expect_mutation_rejected \
-  "closed bottle transport in Pages" \
-  "must prove the public bottled shell at the published base" \
-  's/KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE: public/KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE: closed/'
-
-expect_mutation_rejected \
-  "bottled preview broadens its demo inputs" \
-  "must prove the public bottled shell at the published base" \
+  "flat preview broadens its demo inputs" \
+  "must prove the canonical flat shell at the published base" \
   's/KANDELO_BROWSER_DEMO_INPUTS: main/KANDELO_BROWSER_DEMO_INPUTS: all/'
 
 expect_mutation_rejected \
-  "bottled preview without Pages base" \
-  "must prove the public bottled shell at the published base" \
-  's/(      - name: Boot the canonical bottled Pages shell in Chromium\n        working-directory: apps\/browser-demos\n        env:\n)          VITE_BASE: \/kandelo\/\n/$1/'
+  "flat preview without Pages base" \
+  "must prove the canonical flat shell at the published base" \
+  's/(      - name: Boot the canonical flat Pages shell in Chromium\n        working-directory: apps\/browser-demos\n        env:\n)          VITE_BASE: \/kandelo\/\n/$1/'
 
 expect_mutation_rejected \
-  "bottled preview loses package cache root" \
-  "must prove the public bottled shell at the published base" \
-  's/(      - name: Boot the canonical bottled Pages shell in Chromium[\s\S]*?)^            "WASM_POSIX_BINARY_CACHE_ROOT=\$WASM_POSIX_BINARY_CACHE_ROOT" \\\n/$1/m'
+  "flat preview loses strict image identity" \
+  "must prove the canonical flat shell at the published base" \
+  's/^          KANDELO_CANONICAL_FLAT_SHELL_SHA256:.*\n//m'
 
 expect_mutation_rejected \
-  "bottled preview uses the retired source test" \
-  "must prove the public bottled shell at the published base" \
-  's/test\/kandelo-homebrew-main-shell\.spec\.ts/test\/kandelo-source-rootfs-shell.spec.ts/'
+  "flat preview drops strict identity at the dev-shell boundary" \
+  "flat-shell preview must carry its exact inputs through dev-shell" \
+  's/(      - name: Boot the canonical flat Pages shell in Chromium[\s\S]*?)^            "KANDELO_CANONICAL_FLAT_SHELL_SHA256=\$KANDELO_CANONICAL_FLAT_SHELL_SHA256" \\\n/$1/m'
+
+expect_mutation_rejected \
+  "flat preview uses the retired lazy-shell test" \
+  "must prove the canonical flat shell at the published base" \
+  's/test\/kandelo-canonical-flat-shell\.spec\.ts/test\/kandelo-homebrew-main-shell.spec.ts/'
+
+expect_mutation_rejected \
+  "Pages omits exact npm acceptance" \
+  "must install and execute cowsay from the canonical Node image" \
+  's/test\/kandelo-node\.spec\.ts/test\/kandelo-merge-gate.spec.ts/'
+
+expect_mutation_rejected \
+  "Pages broadens npm acceptance" \
+  "must install and execute cowsay from the canonical Node image" \
+  "s/--grep 'Kandelo Node demo installs cowsay with npm'/--grep 'Node'/"
+
+expect_mutation_rejected \
+  "Node preview selects a nonexistent page input" \
+  "must install and execute cowsay from the canonical Node image" \
+  's/(      - name: Run exact Pages Node npm acceptance[\s\S]*?)KANDELO_BROWSER_DEMO_INPUTS: main/$1KANDELO_BROWSER_DEMO_INPUTS: node/'
+
+expect_mutation_rejected \
+  "Node preview drops production mode at the dev-shell boundary" \
+  "Node preview must carry its exact inputs through dev-shell" \
+  's/(      - name: Run exact Pages Node npm acceptance[\s\S]*?)^            "KANDELO_PLAYWRIGHT_SERVE_DIST=\$KANDELO_PLAYWRIGHT_SERVE_DIST" \\\n/$1/m'
+
+expect_mutation_rejected \
+  "Node preview drops exact VFS digest" \
+  "must install and execute cowsay from the canonical Node image" \
+  's/^          KANDELO_NODE_VFS_SHA256:.*\n//m'
 
 expect_mutation_rejected \
   "checkout of a different ref" \
-  "checkout must use the workflow event source SHA" \
+  "checkout must use one exact source selector" \
   's/(        uses: actions\/checkout@[^\n]+\n)/$1        with:\n          ref: main\n/'
+
+expect_mutation_rejected \
+  "unverified checked-out source" \
+  "must verify the exact requested source is the current default tip" \
+  's/actual_source_sha=\$\(git rev-parse HEAD\)/actual_source_sha=unchecked/'
 
 expect_mutation_rejected \
   "checkout with persisted write credentials" \
@@ -581,7 +661,7 @@ expect_mutation_rejected \
 expect_mutation_rejected \
   "unauthenticated newest-run check" \
   "must authenticate with the workflow token" \
-  's/GH_TOKEN: \$\{\{ github\.token \}\}/GH_TOKEN: ""/'
+  's/(      - name: Confirm this is the newest Pages run[\s\S]*?)GH_TOKEN: \$\{\{ github\.token \}\}/$1GH_TOKEN: ""/'
 
 expect_mutation_rejected \
   "bypassed newest-run checker" \
@@ -622,6 +702,11 @@ expect_mutation_rejected \
   "missing API assembly" \
   "complete Pages tree does not include the API docs" \
   's/^          cp -R host\/docs apps\/browser-demos\/dist\/api\n//m'
+
+expect_mutation_rejected \
+  "missing deployed generation evidence" \
+  "must publish its exact source and package generation evidence" \
+  's/apps\/browser-demos\/dist\/kandelo-deployment\.json/apps\/browser-demos\/dist\/missing-generation.json/'
 
 expect_mutation_rejected \
   "missing assembled-tree size gate" \

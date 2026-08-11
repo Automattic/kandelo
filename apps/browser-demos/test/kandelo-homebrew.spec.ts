@@ -145,6 +145,20 @@ test("strict Homebrew publisher smoke reads Vite shadow-root errors", async ({ p
 });
 
 test.describe("software gallery fixtures", () => {
+  test("does not request an unconfigured software gallery", async ({ page }) => {
+    const manifestRequests: string[] = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname.endsWith("/gallery.json")) {
+        manifestRequests.push(request.url());
+      }
+    });
+
+    await gotoOrSkip(page, "/");
+    await openNewMachineLauncher(page);
+
+    expect(manifestRequests).toEqual([]);
+  });
+
   test("hides wasm32 entries without browser-compatible metadata", async ({ page }) => {
     const manifestPath = homebrewGalleryFixturePath("nonbrowser");
     await gotoOrSkip(page, `/?softwareManifest=${encodeURIComponent(manifestPath)}`);

@@ -17,6 +17,9 @@ if awk '/if \[ -n "\$\{WASM_POSIX_DEP_OUT_DIR:-\}" \]; then/,/else/' \
     "$tcl" | grep -F '$SCRIPT_DIR/bin/tclsh.wasm' >/dev/null; then
     fail "Tcl resolver mode still reads a checkout-local output"
 fi
+awk '/if \[ -n "\$\{WASM_POSIX_DEP_OUT_DIR:-\}" \]; then/,/else/' \
+    "$tcl" | grep -F 'WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto' \
+    >/dev/null || fail "Tcl sealed install lacks explicit fork policy"
 
 php="$REPO_ROOT/packages/registry/php/build-php.sh"
 awk '/if \[ -n "\$\{WASM_POSIX_DEP_OUT_DIR:-\}" \]; then/,/else/' \
@@ -68,12 +71,32 @@ grep -F -- '-DWASM_POSIX_MARIADB_GLUE_OBJ_DIR="$GLUE_OBJ_DIR"' \
     "$REPO_ROOT/packages/registry/mariadb/build-mariadb.sh" >/dev/null ||
     fail "MariaDB build does not pass its resolver-owned glue directory"
 
+try_compile_source="$TEST_ROOT/mariadb-glue-try-compile"
+try_compile_sysroot="$TEST_ROOT/mariadb-glue-sysroot"
+mkdir -p "$try_compile_source" "$try_compile_sysroot/lib"
+: >"$try_compile_sysroot/lib/libc.a"
+cat >"$try_compile_source/CMakeLists.txt" <<'CMAKE'
+cmake_minimum_required(VERSION 3.13)
+project(mariadb_glue_try_compile C)
+CMAKE
+
 for arch in wasm32 wasm64; do
     toolchain="$REPO_ROOT/packages/registry/mariadb/$arch-posix-toolchain.cmake"
     grep -F 'mariadb-glue-object-contract.cmake' "$toolchain" >/dev/null ||
         fail "MariaDB $arch toolchain does not load the glue contract"
     if grep -F '_TOOLCHAIN_DIR2' "$toolchain" >/dev/null; then
         fail "MariaDB $arch toolchain still infers checkout-local glue objects"
+    fi
+    if ! WASM_POSIX_SYSROOT="$try_compile_sysroot" cmake \
+        -S "$try_compile_source" \
+        -B "$TEST_ROOT/$arch-try-compile" \
+        -DCMAKE_TOOLCHAIN_FILE="$toolchain" \
+        -DWASM_POSIX_SYSROOT="$try_compile_sysroot" \
+        -DWASM_POSIX_MARIADB_GLUE_OBJ_DIR="$glue" \
+        >"$TEST_ROOT/$arch-try-compile.out" \
+        2>"$TEST_ROOT/$arch-try-compile.err"; then
+        cat "$TEST_ROOT/$arch-try-compile.err" >&2
+        fail "MariaDB $arch compiler probe lost its prepared glue directory"
     fi
 done
 

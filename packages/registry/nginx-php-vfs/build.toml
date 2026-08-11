@@ -8,6 +8,7 @@ inputs = [
   "images/vfs/scripts/opcache-prewarm.ts",
   "images/vfs/scripts/shell-lazy-archives.ts",
   "images/vfs/scripts/shell-vfs-build.ts",
+  "images/vfs/scripts/shell-runtime-layout.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
   "images/vfs/lib/init/shell-binaries.ts",
   "images/rootfs/etc/services",
@@ -18,11 +19,12 @@ inputs = [
   "homebrew/kandelo-guest-layout.json",
   "web-libs/kandelo-session/src/demo-config.ts",
   "web-libs/kandelo-session/src/demo-guides.ts",
+  "web-libs/kandelo-session/src/shell-config.ts",
   "web-libs/kandelo-session/src/vfs-capacity.ts",
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 2
+revision = 3
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

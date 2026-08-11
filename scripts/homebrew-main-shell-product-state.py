@@ -9,7 +9,6 @@ import json
 import pathlib
 import re
 import sys
-import tomllib
 from typing import Any, NoReturn
 
 
@@ -101,18 +100,6 @@ def load_json(path: pathlib.Path, label: str) -> dict[str, Any]:
     return value
 
 
-def load_toml(path: pathlib.Path, label: str) -> dict[str, Any]:
-    try:
-        value = tomllib.loads(regular_text(path, label))
-    except ProductStateError:
-        raise
-    except tomllib.TOMLDecodeError as error:
-        fail(f"cannot read {label}: {error}")
-    if not isinstance(value, dict):
-        fail(f"{label} must be a TOML table")
-    return value
-
-
 def verify_selection_inputs(root: pathlib.Path, value: Any) -> None:
     if not isinstance(value, dict) or set(value) != set(SELECTION_INPUTS):
         fail("main-shell selection lock has unsupported inputs")
@@ -157,15 +144,6 @@ def classify(root: pathlib.Path) -> str:
         root / "homebrew/main-shell-lazy-artifact-lock.json",
         "main-shell artifact lock",
     )
-    build = load_toml(
-        root / "packages/registry/shell/build.toml",
-        "shell build contract",
-    )
-    package = load_toml(
-        root / "packages/registry/shell/package.toml",
-        "shell package contract",
-    )
-
     if (
         set(selection)
         != {"arch", "inputs", "kind", "release", "schema", "state"}
@@ -187,32 +165,20 @@ def classify(root: pathlib.Path) -> str:
         or artifact.get("source_date_epoch") != 0
     ):
         fail("main-shell artifact lock has an unsupported contract")
-    if (
-        build.get("commit") != "UNPUBLISHED"
-        or not isinstance(build.get("revision"), int)
-        or isinstance(build.get("revision"), bool)
-        or build["revision"] < 1
-        or build.get("git_inputs") is not None
-    ):
-        fail("shell build contract has unsupported publication inputs")
-    if package.get("depends_on") != []:
-        fail("shell package must not depend on transitional registry packages")
-
-    triple = (
+    pair = (
         selection.get("state"),
         artifact.get("state"),
-        build.get("publication_state"),
     )
     states = {
-        ("pending", "pending", "pending"): "awaiting-selection",
-        ("sealed", "pending", "pending"): "candidate",
-        ("sealed", "sealed", "ready"): "publishable",
+        ("pending", "pending"): "awaiting-selection",
+        ("sealed", "pending"): "candidate",
+        ("sealed", "sealed"): "publishable",
     }
-    state = states.get(triple)
+    state = states.get(pair)
     if state is None:
         fail(
-            "selection, artifact, and package publication states disagree: "
-            f"{triple!r}"
+            "selection and artifact publication states disagree: "
+            f"{pair!r}"
         )
     if state == "awaiting-selection" and selection.get("release") is not None:
         fail("pending selection lock must not name a release")

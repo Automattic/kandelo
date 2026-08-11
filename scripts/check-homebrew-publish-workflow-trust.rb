@@ -6886,6 +6886,26 @@ def check_publisher(workflow)
       ),
     "prepared CI workspace and Formula runtime do not share generation staging"
   )
+  workspace_activator = File.read(
+    File.join(REPO_ROOT, "scripts/activate-ci-test-workspace.sh")
+  )
+  [
+    'portable_cache="$repo_root/.ci-test-binary-cache"',
+    'prepared_xtask="$repo_root/target/$rust_host/release/xtask"',
+    'export WASM_POSIX_BINARY_CACHE_ROOT="$portable_cache"',
+    'export WASM_POSIX_XTASK_BIN="$prepared_xtask"',
+    'exec "$@"',
+  ].each do |fragment|
+    check(workspace_activator.include?(fragment),
+          "prepared CI workspace activation lacks #{fragment}")
+  end
+  suite_runner = File.read(File.join(REPO_ROOT, "scripts/ci-run-test-suite.sh"))
+  check(
+    suite_runner.include?(
+      'source "$REPO_ROOT/scripts/activate-ci-test-workspace.sh"'
+    ) && suite_runner.include?("activate_ci_test_workspace"),
+    "prepared CI suite runner bypasses shared workspace activation"
+  )
   check_architecture_aware_sysroot_step(
     named_step(build_steps, "Build Kandelo sysroot"), "publisher build"
   )
@@ -9227,7 +9247,7 @@ def check_exact_abi_route(workflows)
       "legacy" => %w[
         preflight package-staging-not-required lib-matrix-build matrix-build
         repair-staging-index test-gate-prepare test-suite test-gate
-        homebrew-main-shell-proof f2-status
+        f2-status
       ],
     },
     prepare_path => {
@@ -9480,6 +9500,12 @@ def check_exact_abi_route(workflows)
     check(workflow_jobs(staging).fetch(job_name)["permissions"] == {},
           "staging exact aggregate #{job_name} gained mutation authority")
   end
+  staging_jobs = workflow_jobs(staging)
+  check(!staging_jobs.key?("homebrew-main-shell-proof"),
+        "staging restored the redundant Homebrew shell proof job")
+  check(!workflow_string_values(staging).include?(
+    "./.github/workflows/homebrew-main-shell-ci.yml"
+  ), "staging restored the redundant Homebrew shell proof workflow")
 
   prepare_gate_steps = job_steps(
     workflow_jobs(prepare).fetch("gate"), "prepare-merge gate"
@@ -9700,6 +9726,12 @@ def self_test_exact_abi_route(workflows)
       workflow = all.fetch(".github/workflows/staging-build.yml")
       workflow.fetch("jobs").fetch("homebrew-main-shell-gate")
         .fetch("permissions")["statuses"] = "write"
+    },
+    "redundant Homebrew shell proof job" => lambda { |all|
+      workflow = all.fetch(".github/workflows/staging-build.yml")
+      workflow.fetch("jobs")["homebrew-main-shell-proof"] = {
+        "uses" => "./.github/workflows/homebrew-main-shell-ci.yml",
+      }
     },
     "exact route staging prepared-product validation" => lambda { |all|
       workflow = all.fetch(".github/workflows/staging-build.yml")

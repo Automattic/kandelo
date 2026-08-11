@@ -19,7 +19,7 @@ import {
 } from "../../images/vfs/scripts/build-homebrew-flat-vfs-image";
 import type { HomebrewBottleDependencyIdentity } from "../src/homebrew-bottle-descriptor";
 import { resolveHomebrewVfsResourcePolicy } from "../src/homebrew-vfs-resource-policy";
-import { writeVfsFile } from "../src/vfs/image-helpers";
+import { ensureDirRecursive, writeVfsFile } from "../src/vfs/image-helpers";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import {
   homebrewTestBootstrapFixture,
@@ -35,6 +35,9 @@ const OUTPUT_FILENAME =
   "kandelo-homebrew-experimental-abi42-wasm32.vfs.zst";
 const SHELL_CONFIG = fileURLToPath(
   new URL("../../homebrew/main-shell-default.json", import.meta.url),
+);
+const DEMO_CONFIG = fileURLToPath(
+  new URL("../../homebrew/main-shell-demo.json", import.meta.url),
 );
 
 const temporaryDirectories: string[] = [];
@@ -109,6 +112,7 @@ describe("flat Homebrew VFS CLI", () => {
         requestedVfsFilename: OUTPUT_FILENAME,
       },
     });
+    expect(restored.getImageMetadata()).not.toHaveProperty("demoConfig");
     expect(MemoryFileSystem.readImageCapacity(imageBytes).maxByteLength).toBe(
       resolveHomebrewVfsResourcePolicy(
         "kandelo-homebrew-vfs-generous-v1",
@@ -124,6 +128,30 @@ describe("flat Homebrew VFS CLI", () => {
     );
     expect(readVfsText(restored, "/etc/kandelo/shell.json")).toBe(
       readFileSync(SHELL_CONFIG, "utf8"),
+    );
+    expect(restored.stat("/tmp").mode & 0o7777).toBe(0o1777);
+    expect(restored.stat("/root").mode & 0o7777).toBe(0o700);
+    expect(restored.stat("/home/user")).toMatchObject({
+      uid: 1000,
+      gid: 1000,
+    });
+    expect(restored.stat("/home/.nethack")).toMatchObject({
+      uid: 1000,
+      gid: 1000,
+    });
+    expect(restored.stat("/home/.nethack").mode & 0o7777).toBe(0o777);
+    for (const path of [
+      "/home/.nethack/perm",
+      "/home/.nethack/record",
+    ]) {
+      expect(restored.stat(path)).toMatchObject({ uid: 1000, gid: 1000 });
+      expect(restored.stat(path).mode & 0o7777).toBe(0o666);
+    }
+    expect(readVfsText(restored, "/etc/profile")).toContain(
+      "for kandelo_profile in /etc/profile.d/*.sh; do",
+    );
+    expect(readVfsText(restored, "/etc/gitconfig")).toContain(
+      "defaultBranch = main",
     );
     expect(restored.stat("/opt/kandelo/homebrew/bin/bash").mode & 0o111)
       .not.toBe(0);
@@ -154,9 +182,91 @@ describe("flat Homebrew VFS CLI", () => {
         selection_sha256: sha(originalSelection),
       },
     });
+    expect(report).not.toHaveProperty("demo_config");
     expect(JSON.stringify(report)).not.toMatch(
       /campaign|handoff|provenance|promotion|signature|trust/i,
     );
+  }, 30_000);
+
+  it("installs and binds the exact optional browser demo configuration", async () => {
+    const fixture = await createFixture();
+    const cache = temporaryDirectory("flat-vfs-demo-cache-");
+    const output = outputPaths(temporaryDirectory("flat-vfs-demo-output-"));
+    const demoBytes = Uint8Array.from(readFileSync(DEMO_CONFIG));
+
+    const result = await runFlatHomebrewVfsImageBuilder(
+      cliArgs(fixture, cache, output, DEMO_CONFIG),
+      {
+        fetchBottleBytes: async (url) =>
+          Uint8Array.from(fixture.bottlesByUrl.get(url)!),
+      },
+    );
+
+    const restored = MemoryFileSystem.fromImagePreservingCapacity(
+      Uint8Array.from(readFileSync(output.image)),
+    );
+    const expectedBinding = {
+      path: "/etc/kandelo/demo.json",
+      sha256: sha(demoBytes),
+      bytes: demoBytes.byteLength,
+    };
+    expect(readVfsText(restored, "/etc/kandelo/demo.json")).toBe(
+      readFileSync(DEMO_CONFIG, "utf8"),
+    );
+    expect(restored.getImageMetadata()?.demoConfig).toEqual(expectedBinding);
+    expect(result.report.demo_config).toEqual(expectedBinding);
+    expect(JSON.parse(readFileSync(output.report, "utf8")).demo_config)
+      .toEqual(expectedBinding);
+  }, 30_000);
+
+  it("rejects malformed demo JSON before fetching bottles", async () => {
+    const fixture = await createFixture();
+    const cache = temporaryDirectory("flat-vfs-bad-demo-cache-");
+    const fetchBottleBytes = vi.fn(fixtureFetcher(fixture));
+    const malformed = join(temporaryDirectory("flat-vfs-bad-demo-"), "demo.json");
+    writeFileSync(malformed, "{not-json\n");
+    await expect(runFlatHomebrewVfsImageBuilder(
+      cliArgs(
+        fixture,
+        cache,
+        outputPaths(temporaryDirectory("flat-vfs-bad-demo-output-")),
+        malformed,
+      ),
+      { fetchBottleBytes },
+    )).rejects.toThrow(/demo config.*valid JSON/i);
+    expect(fetchBottleBytes).not.toHaveBeenCalled();
+  });
+
+  it("rejects a symlinked demo input before fetching bottles", async () => {
+    const fixture = await createFixture();
+    const cache = temporaryDirectory("flat-vfs-demo-link-cache-");
+    const fetchBottleBytes = vi.fn(fixtureFetcher(fixture));
+    const demoLink = join(temporaryDirectory("flat-vfs-demo-link-"), "demo.json");
+    symlinkSync(DEMO_CONFIG, demoLink);
+    await expect(runFlatHomebrewVfsImageBuilder(
+      cliArgs(
+        fixture,
+        cache,
+        outputPaths(temporaryDirectory("flat-vfs-demo-link-output-")),
+        demoLink,
+      ),
+      { fetchBottleBytes },
+    )).rejects.toThrow(/demo config.*regular non-symlink/i);
+    expect(fetchBottleBytes).not.toHaveBeenCalled();
+  });
+
+  it("refuses to replace a demo configuration already owned by the base", async () => {
+    const fixture = await createFixture({ existingDemoConfig: true });
+    const cache = temporaryDirectory("flat-vfs-existing-demo-cache-");
+    await expect(runFlatHomebrewVfsImageBuilder(
+      cliArgs(
+        fixture,
+        cache,
+        outputPaths(temporaryDirectory("flat-vfs-existing-demo-output-")),
+        DEMO_CONFIG,
+      ),
+      { fetchBottleBytes: fixtureFetcher(fixture) },
+    )).rejects.toThrow(/refusing to overwrite existing demo config/i);
   }, 30_000);
 
   it("rejects a base with pending lazy backing before any bottle fetch", async () => {
@@ -263,7 +373,9 @@ describe("flat Homebrew VFS CLI", () => {
   });
 });
 
-async function createFixture() {
+async function createFixture(
+  options: { existingDemoConfig?: boolean } = {},
+) {
   const directory = temporaryDirectory("flat-vfs-input-");
   const runtimeZip = homebrewTestRuntimeZip({
     "bin/bash": {
@@ -325,6 +437,10 @@ async function createFixture() {
 
   const baseFs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
   writeVfsFile(baseFs, "/base-marker", "eager base\n", 0o644);
+  if (options.existingDemoConfig) {
+    ensureDirRecursive(baseFs, "/etc/kandelo");
+    writeVfsFile(baseFs, "/etc/kandelo/demo.json", "{}\n", 0o644);
+  }
   const base = join(directory, "base.vfs");
   writeFileSync(base, await baseFs.saveImage({
     metadata: { version: 1, kernelAbi: 42, createdBy: "flat-cli-test" },
@@ -357,15 +473,27 @@ function cliArgs(
   fixture: Awaited<ReturnType<typeof createFixture>>,
   cache: string,
   output: ReturnType<typeof outputPaths>,
+  demoConfig?: string,
 ): string[] {
   return [
     "--selection", fixture.selection,
     "--base-image", fixture.base,
     "--bottle-cache", cache,
     "--shell-config", fixture.shellConfig,
+    ...(demoConfig === undefined ? [] : ["--demo-config", demoConfig]),
     "--out", output.image,
     "--report", output.report,
   ];
+}
+
+function fixtureFetcher(
+  fixture: Awaited<ReturnType<typeof createFixture>>,
+): (url: string) => Promise<Uint8Array> {
+  return async (url) => {
+    const bytes = fixture.bottlesByUrl.get(url);
+    if (bytes === undefined) throw new Error(`unexpected bottle URL: ${url}`);
+    return Uint8Array.from(bytes);
+  };
 }
 
 function temporaryDirectory(prefix: string): string {

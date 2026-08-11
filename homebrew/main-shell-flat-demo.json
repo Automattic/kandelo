@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "profiles": {
+    "shell": {
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["terminal", "syslog"],
+        "terminalAccess": "primary",
+        "internalsAccess": "drawer"
+      },
+      "guide": {
+        "title": "Shell demo",
+        "summary": "Bash and the selected Homebrew command trees are fully materialized in this image.",
+        "groups": [
+          {
+            "title": "Snippets",
+            "actions": [
+              {
+                "id": "hello",
+                "label": "Hello",
+                "description": "Print a short line with the embedded Bash.",
+                "kind": "terminal.run",
+                "payload": "printf '%s\\n' \"hello from Kandelo\""
+              },
+              {
+                "id": "m4",
+                "label": "M4",
+                "description": "Run M4 from the image-owned Homebrew closure.",
+                "kind": "terminal.run",
+                "payload": "printf 'define(NAME, Kandelo)Hello, NAME!\\n' | m4"
+              },
+              {
+                "id": "files",
+                "label": "Files",
+                "description": "Write and read a temporary file using Bash builtins.",
+                "kind": "terminal.run",
+                "payload": "printf '%s\\n' test > /tmp/f.txt && IFS= read -r line < /tmp/f.txt && printf '%s\\n' \"$line\""
+              }
+            ]
+          },
+          {
+            "title": "Raw input",
+            "actions": [
+              {
+                "id": "type-dash",
+                "label": "Type Dash",
+                "description": "Send a command for another image-owned Homebrew tool.",
+                "kind": "terminal.write",
+                "payload": "dash -c 'printf \"dash is ready\\\\n\"'\n"
+              }
+            ]
+          }
+        ],
+        "script": {
+          "title": "Batch script",
+          "language": "bash",
+          "initialText": "printf '%s\\n' \"Hello from a Kandelo guided script\"\nprintf 'cwd: '; pwd\nprintf '%s\\n' \"---\"\nprintf '%s\\n' \"written by the demo guide\" > /tmp/kandelo-guide.txt\nIFS= read -r line < /tmp/kandelo-guide.txt\nprintf '%s\\n' \"$line\""
+        },
+        "companion": {
+          "title": "Companion HTML",
+          "srcDoc": "<!doctype html>\n<html>\n<head>\n  <meta charset=\"utf-8\">\n  <style>\n    :root { color-scheme: dark; }\n    body { margin: 0; padding: 12px; background: #191512; color: #f3d6b3; font: 12px ui-sans-serif, system-ui, sans-serif; }\n    h1 { margin: 0 0 8px; font-size: 12px; color: #fff2df; }\n    p { margin: 0 0 10px; color: #b99d7d; line-height: 1.4; }\n    .row { display: flex; flex-wrap: wrap; gap: 6px; }\n    button { border: 1px solid rgba(255,169,86,.28); background: rgba(255,169,86,.12); color: #ffe0b9; border-radius: 6px; padding: 7px 9px; font: inherit; cursor: pointer; }\n    #status { min-height: 16px; margin-top: 10px; color: #d2b08b; font-family: ui-monospace, monospace; font-size: 11px; }\n  </style>\n</head>\n<body>\n  <h1>Shell companion</h1>\n  <p>This frame can request only image-declared actions.</p>\n  <div class=\"row\"><button type=\"button\" data-action=\"hello\">Hello</button><button type=\"button\" data-action=\"m4\">Lazy M4</button><button type=\"button\" data-action=\"files\">Files</button></div>\n  <div id=\"status\"></div>\n  <script>\n    const status = document.getElementById(\"status\");\n    document.addEventListener(\"click\", (event) => {\n      const button = event.target.closest(\"button[data-action]\");\n      if (!button) return;\n      const actionId = button.getAttribute(\"data-action\");\n      parent.postMessage({ type: \"kandelo.demoAction\", actionId }, \"*\");\n      status.textContent = \"sent \" + actionId;\n    });\n  </script>\n</body>\n</html>"
+        }
+      }
+    },
+    "doom": {
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["framebuffer", "terminal", "syslog"],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer",
+        "autoCommand": "/usr/local/bin/fbdoom -iwad /doom1.wad"
+      },
+      "assets": [
+        {
+          "path": "/doom1.wad",
+          "url": "https://cdn.jsdelivr.net/gh/gaborbata/vanilla-mocha-doom@15825a07a48806bcfb242a42afd5ee7cb3c9a3a4/wads/doom1.wad",
+          "sha256": "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771",
+          "mode": 420,
+          "devCorsProxy": true
+        }
+      ]
+    },
+    "modeset": {
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["kms", "terminal", "syslog"],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer",
+        "autoCommand": "/usr/local/bin/modeset"
+      }
+    }
+  }
+}
