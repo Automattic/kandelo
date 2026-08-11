@@ -25,7 +25,8 @@ cat >"$BIN_DIR/gh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 
-expected="api --method GET /repos/Automattic/kandelo/actions/workflows/browser-demos-pages.yml/runs -f branch=main -f per_page=100"
+workflow_file="${PAGES_WORKFLOW_FILE:-browser-demos-pages.yml}"
+expected="api --method GET /repos/Automattic/kandelo/actions/workflows/${workflow_file}/runs -f branch=main -f per_page=100"
 [ "$*" = "$expected" ] || {
   echo "fake gh: unexpected arguments: $*" >&2
   exit 64
@@ -49,6 +50,26 @@ run_checker() {
     GITHUB_RUN_ID=100 \
     GITHUB_RUN_NUMBER=7 \
     GITHUB_OUTPUT="$output_file" \
+    FAKE_GH_RESPONSE="$response" \
+    bash "$CHECKER"
+}
+
+run_canary_checker() {
+  local response="$1"
+  local output_file="$2"
+  : >"$output_file"
+  env \
+    PATH="$BIN_DIR:$PATH" \
+    GH_TOKEN=test-token \
+    GITHUB_REPOSITORY=Automattic/kandelo \
+    GITHUB_RUN_ID=100 \
+    GITHUB_RUN_NUMBER=7 \
+    GITHUB_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    GITHUB_REF=refs/heads/main \
+    GITHUB_EVENT_NAME=push \
+    GITHUB_WORKFLOW_REF=Automattic/kandelo/.github/workflows/abi-staging-pages-canary.yml@refs/heads/main \
+    GITHUB_OUTPUT="$output_file" \
+    PAGES_WORKFLOW_FILE=abi-staging-pages-canary.yml \
     FAKE_GH_RESPONSE="$response" \
     bash "$CHECKER"
 }
@@ -117,5 +138,98 @@ fi
 grep -Fq 'current run number does not match' \
   "$FIXTURE_ROOT/mismatched-current.log" ||
   fail "the mismatched-current-run failure was not explicit"
+
+canary_current_response='{"workflow_runs":[
+  {"id":100,"run_number":7,"head_branch":"main","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","event":"push","path":".github/workflows/abi-staging-pages-canary.yml"},
+  {"id":99,"run_number":6,"head_branch":"main","head_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","event":"push","path":".github/workflows/abi-staging-pages-canary.yml"}
+]}'
+run_canary_checker "$canary_current_response" \
+  "$FIXTURE_ROOT/canary-current.out" >/dev/null
+grep -Fxq 'upload=true' "$FIXTURE_ROOT/canary-current.out" ||
+  fail "the exact newest canary run was not authorized for inert upload"
+if grep -Fq 'publish=' "$FIXTURE_ROOT/canary-current.out"; then
+  fail "the canary freshness guard wrote production publication intent"
+fi
+
+canary_newer_response='{"workflow_runs":[
+  {"id":101,"run_number":8,"head_branch":"main","head_sha":"cccccccccccccccccccccccccccccccccccccccc","event":"push","path":".github/workflows/abi-staging-pages-canary.yml"},
+  {"id":100,"run_number":7,"head_branch":"main","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","event":"push","path":".github/workflows/abi-staging-pages-canary.yml"}
+]}'
+run_canary_checker "$canary_newer_response" \
+  "$FIXTURE_ROOT/canary-newer.out" >/dev/null
+grep -Fxq 'upload=false' "$FIXTURE_ROOT/canary-newer.out" ||
+  fail "a canary with a newer triggered successor was not skipped"
+
+expect_canary_rejected() {
+  local label="$1"
+  local expected_error="$2"
+  local response="$3"
+  shift 3
+  local output="$FIXTURE_ROOT/canary-rejected-${label}.out"
+  local log="$FIXTURE_ROOT/canary-rejected-${label}.log"
+  if env \
+      PATH="$BIN_DIR:$PATH" \
+      GH_TOKEN=test-token \
+      GITHUB_REPOSITORY=Automattic/kandelo \
+      GITHUB_RUN_ID=100 \
+      GITHUB_RUN_NUMBER=7 \
+      GITHUB_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+      GITHUB_REF=refs/heads/main \
+      GITHUB_EVENT_NAME=push \
+      GITHUB_WORKFLOW_REF=Automattic/kandelo/.github/workflows/abi-staging-pages-canary.yml@refs/heads/main \
+      GITHUB_OUTPUT="$output" \
+      PAGES_WORKFLOW_FILE=abi-staging-pages-canary.yml \
+      FAKE_GH_RESPONSE="$response" \
+      "$@" \
+      bash "$CHECKER" >"$log" 2>&1; then
+    fail "the canary freshness guard accepted $label"
+  fi
+  grep -Fq "$expected_error" "$log" ||
+    fail "the canary freshness guard rejected $label unexpectedly: $(cat "$log")"
+}
+
+expect_canary_rejected \
+  "foreign-repository" \
+  "canary requires protected repository Automattic/kandelo" \
+  "$canary_current_response" \
+  GITHUB_REPOSITORY=Elsewhere/kandelo
+
+expect_canary_rejected \
+  "non-main-ref" \
+  "canary requires one protected main push" \
+  "$canary_current_response" \
+  GITHUB_REF=refs/heads/release
+
+expect_canary_rejected \
+  "manual-event" \
+  "canary requires one protected main push" \
+  "$canary_current_response" \
+  GITHUB_EVENT_NAME=workflow_dispatch
+
+expect_canary_rejected \
+  "foreign-workflow-ref" \
+  "canary requires its protected workflow ref" \
+  "$canary_current_response" \
+  GITHUB_WORKFLOW_REF=Automattic/kandelo/.github/workflows/browser-demos-pages.yml@refs/heads/main
+
+expect_canary_rejected \
+  "foreign-current-sha" \
+  "current canary run differs from its exact event source" \
+  '{"workflow_runs":[{"id":100,"run_number":7,"head_branch":"main","head_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","event":"push","path":".github/workflows/abi-staging-pages-canary.yml"}]}'
+
+expect_canary_rejected \
+  "foreign-current-event" \
+  "workflow-runs API response is empty or malformed" \
+  '{"workflow_runs":[{"id":100,"run_number":7,"head_branch":"main","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","event":"workflow_dispatch","path":".github/workflows/abi-staging-pages-canary.yml"}]}'
+
+expect_canary_rejected \
+  "foreign-current-workflow" \
+  "workflow-runs API response is empty or malformed" \
+  '{"workflow_runs":[{"id":100,"run_number":7,"head_branch":"main","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","event":"push","path":".github/workflows/browser-demos-pages.yml"}]}'
+
+expect_canary_rejected \
+  "duplicate-current-run" \
+  "current workflow run 100 is missing or duplicated" \
+  '{"workflow_runs":[{"id":100,"run_number":7,"head_branch":"main","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","event":"push","path":".github/workflows/abi-staging-pages-canary.yml"},{"id":100,"run_number":7,"head_branch":"main","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","event":"push","path":".github/workflows/abi-staging-pages-canary.yml"}]}'
 
 echo "test-pages-run-freshness: ok"
