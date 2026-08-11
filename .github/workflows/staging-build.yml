@@ -1283,10 +1283,14 @@ jobs:
         run: |
           (
             cd apps/browser-demos
+            # WHY: exports made by the preceding suite step do not cross the
+            # GitHub step boundary. Rebind the transported mirror to its exact
+            # cache/checker before this direct Vite consumer starts.
             bash ../../scripts/dev-shell.sh \
-              npx playwright test test/kandelo-node.spec.ts \
-              --grep 'Kandelo Node demo installs cowsay with npm' \
-              --project=chromium
+              bash ../../scripts/activate-ci-test-workspace.sh \
+                npx playwright test test/kandelo-node.spec.ts \
+                  --grep 'Kandelo Node demo installs cowsay with npm' \
+                  --project=chromium
           )
 
       - name: Upload browser test artifacts

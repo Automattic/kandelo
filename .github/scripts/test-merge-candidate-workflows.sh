@@ -200,6 +200,8 @@ staged_node_acceptance="$(
 )"
 grep -Fq "npx playwright test test/kandelo-node.spec.ts" \
   <<<"$staged_node_acceptance" &&
+  grep -Fq 'activate-ci-test-workspace.sh' \
+    <<<"$staged_node_acceptance" &&
   grep -Fq -- "--grep 'Kandelo Node demo installs cowsay with npm'" \
     <<<"$staged_node_acceptance" &&
   grep -Fq -- '--project=chromium' <<<"$staged_node_acceptance" ||
@@ -225,6 +227,7 @@ candidate_node_acceptance="$(
     "Build and run exact candidate Node npm acceptance"
 )"
 for evidence in \
+  'activate-ci-test-workspace.sh' \
   'npm run build' \
   'verify-browser-shell-vfs-asset.sh' \
   'KANDELO_NODE_VFS_STRICT' \

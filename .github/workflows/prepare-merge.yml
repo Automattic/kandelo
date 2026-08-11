@@ -2443,18 +2443,27 @@ jobs:
           matrix.suite == 'browser' &&
           env.STAGES_NODE_VFS == 'true'
         run: |
+          # WHY: candidate resolution, the production build, and Playwright
+          # must share one activation of the transported cache/checker pair;
+          # shell exports from the preceding suite step no longer exist here.
+          bash scripts/dev-shell.sh \
+            bash scripts/activate-ci-test-workspace.sh \
+              bash <<'NODE_ACCEPTANCE'
           set -euo pipefail
-          node_image=$(bash scripts/resolve-binary.sh programs/node-vfs.vfs.zst)
-          node_sha256=$(sha256sum "$node_image" | awk '{print $1}')
+          node_image="$(
+            bash scripts/resolve-binary.sh programs/node-vfs.vfs.zst
+          )"
+          node_sha256="$(sha256sum "$node_image" | awk '{print $1}')"
           test ! -e apps/browser-demos/dist
           (
             cd apps/browser-demos
-            VITE_BASE=/kandelo/ \
+            env \
+              VITE_BASE=/kandelo/ \
               VITE_CORS_PROXY_URL='https://wordpress-playground-cors-proxy.net/?' \
               npm run build
             bash ../../scripts/verify-browser-shell-vfs-asset.sh \
               dist "$node_image" node-vfs.vfs
-            bash ../../scripts/dev-shell.sh env \
+            env \
               KANDELO_BROWSER_DEMO_INPUTS=main \
               KANDELO_NODE_VFS_STRICT=1 \
               KANDELO_NODE_VFS_SHA256="$node_sha256" \
@@ -2465,6 +2474,7 @@ jobs:
                 --grep 'Kandelo Node demo installs cowsay with npm' \
                 --project=chromium
           )
+          NODE_ACCEPTANCE
 
       - name: Upload browser test artifacts
         if: failure() && steps.suite.outputs.skip != 'true' && matrix.suite == 'browser'

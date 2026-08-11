@@ -131,6 +131,7 @@ mkdir -p \
     "$FIXTURE/crates/shared/src" \
     "$FIXTURE/bin"
 cp \
+    "$REPO_ROOT/scripts/activate-ci-test-workspace.sh" \
     "$REPO_ROOT/scripts/ci-homebrew-browser-mirror-state.sh" \
     "$REPO_ROOT/scripts/ci-run-test-suite.sh" \
     "$REPO_ROOT/scripts/ci-vitest-resource-isolated-cases.tsv" \
@@ -1155,6 +1156,53 @@ for workflow in \
         printf '%s\n' "$matrix_rows" >&2
         exit 1
     fi
+
+    case "$(basename "$workflow")" in
+        staging-build.yml)
+            node_acceptance_name="Run exact staged Node npm acceptance"
+            ;;
+        prepare-merge.yml)
+            node_acceptance_name="Build and run exact candidate Node npm acceptance"
+            ;;
+    esac
+    node_acceptance_block="$TMP_DIR/$(basename "$workflow").node-acceptance"
+    awk -v expected="      - name: $node_acceptance_name" '
+        $0 == expected {
+            inside = 1
+            print
+            next
+        }
+        inside && /^      - name: / { exit }
+        inside { print }
+    ' "$workflow" > "$node_acceptance_block"
+    dev_shell_line="$(awk '
+        /scripts\/dev-shell\.sh/ { print NR; exit }
+    ' "$node_acceptance_block")"
+    activation_line="$(awk '
+        /activate-ci-test-workspace\.sh/ { print NR; exit }
+    ' "$node_acceptance_block")"
+    consumer_line="$(awk '
+        /resolve-binary\.sh|npm run build|npx playwright test/ {
+            print NR
+            exit
+        }
+    ' "$node_acceptance_block")"
+    if ! [[ "$dev_shell_line" =~ ^[1-9][0-9]*$ ]] ||
+       ! [[ "$activation_line" =~ ^[1-9][0-9]*$ ]] ||
+       ! [[ "$consumer_line" =~ ^[1-9][0-9]*$ ]] ||
+       [ "$dev_shell_line" -ge "$activation_line" ] ||
+       [ "$activation_line" -ge "$consumer_line" ]; then
+        echo "$(basename "$workflow"): direct Node acceptance does not activate its transported cache identity inside the dev shell before consumption" >&2
+        exit 1
+    fi
+    if [ "$(basename "$workflow")" = prepare-merge.yml ]; then
+        dev_shell_count="$(grep -Fc 'scripts/dev-shell.sh' "$node_acceptance_block")"
+        if [ "$dev_shell_count" -ne 1 ] ||
+           ! grep -Fq "bash <<'NODE_ACCEPTANCE'" "$node_acceptance_block"; then
+            echo "prepare-merge.yml: candidate Node resolve, build, and acceptance do not share one activated dev-shell process" >&2
+            exit 1
+        fi
+    fi
 done
 
 grep -Fq \
@@ -1295,6 +1343,24 @@ chmod +x "$prepared_xtask"
 mkdir -p "$FIXTURE/.ci-test-binary-cache/programs"
 cache_capture="$TMP_DIR/portable-cache-root"
 xtask_capture="$TMP_DIR/portable-xtask"
+direct_cache_capture="$TMP_DIR/direct-portable-cache-root"
+direct_xtask_capture="$TMP_DIR/direct-portable-xtask"
+PATH="$FIXTURE/bin:$PATH" \
+    WASM_POSIX_BINARY_CACHE_ROOT="$TMP_DIR/wrong-direct-cache" \
+    WASM_POSIX_XTASK_BIN="$TMP_DIR/wrong-direct-xtask" \
+    bash "$FIXTURE/scripts/activate-ci-test-workspace.sh" \
+        bash -c '
+          printf "%s\n" "$WASM_POSIX_BINARY_CACHE_ROOT" > "$1"
+          printf "%s\n" "$WASM_POSIX_XTASK_BIN" > "$2"
+        ' bash "$direct_cache_capture" "$direct_xtask_capture"
+grep -Fxq "$FIXTURE/.ci-test-binary-cache" "$direct_cache_capture" || {
+    echo "direct prepared-workspace consumer did not select the transported program cache" >&2
+    exit 1
+}
+grep -Fxq "$prepared_xtask" "$direct_xtask_capture" || {
+    echo "direct prepared-workspace consumer did not select the transported package checker" >&2
+    exit 1
+}
 PATH="$FIXTURE/bin:$PATH" \
     TEST_CAPTURE="$TMP_DIR/portable-cache-suite.args" \
     CACHE_CAPTURE="$cache_capture" \
@@ -2024,6 +2090,7 @@ mkdir -p \
     "$pack_extract/host" \
     "$pack_extract/apps/browser-demos"
 cp \
+    "$FIXTURE/scripts/activate-ci-test-workspace.sh" \
     "$FIXTURE/scripts/ci-homebrew-browser-mirror-state.sh" \
     "$FIXTURE/scripts/ci-run-test-suite.sh" \
     "$FIXTURE/scripts/ci-check-browser-assets.sh" \
