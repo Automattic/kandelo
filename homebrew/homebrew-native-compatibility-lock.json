@@ -2302,7 +2302,7 @@
     "expat": {
       "internal": {
         "bottle_cellar": ":any",
-        "bottle_checksum": "4336c9fab1f5fe8564fa6e12948010011c9e3ad568b49d251f71043a89f01d85",
+        "bottle_checksum": "004e4183005330ce9ae561d556019bfd0a39a3b273cc591c46cbd52f694df400",
         "desc": "XML 1.0 parser",
         "executables": [
           "xmlwf"
@@ -2333,16 +2333,16 @@
         ],
         "license": "MIT",
         "name": "expat",
-        "ruby_source_checksum": "d971620d8da8cf4c84ec03a0d6039eeeb1b2ccf248ff860b06361d7de9ac8833",
-        "stable_checksum": "3ad89b8588e6644bd4e49981480d48b21289eebbcd4f0a1a4afb1c29f99b6ab4",
+        "ruby_source_checksum": "acafd4ff2b5b65e8c99abf9d42896e18797a09fc9673ba8f0a4d40cf0d26ed29",
+        "stable_checksum": "f6256df90c906773d344da084402b7d3e4f22ed41b1a59c989098a83d3ea0c85",
         "stable_url_args": [
-          "https://github.com/libexpat/libexpat/releases/download/R_2_8_2/expat-2.8.2.tar.xz"
+          "https://github.com/libexpat/libexpat/releases/download/R_2_8_3/expat-2.8.3.tar.xz"
         ],
-        "stable_version": "2.8.2"
+        "stable_version": "2.8.3"
       },
       "public": {
         "bottle_cellar": ":any",
-        "bottle_checksum": "4336c9fab1f5fe8564fa6e12948010011c9e3ad568b49d251f71043a89f01d85",
+        "bottle_checksum": "004e4183005330ce9ae561d556019bfd0a39a3b273cc591c46cbd52f694df400",
         "desc": "XML 1.0 parser",
         "executables": [
           "xmlwf"
@@ -2373,12 +2373,12 @@
         ],
         "license": "MIT",
         "name": "expat",
-        "ruby_source_checksum": "d971620d8da8cf4c84ec03a0d6039eeeb1b2ccf248ff860b06361d7de9ac8833",
-        "stable_checksum": "3ad89b8588e6644bd4e49981480d48b21289eebbcd4f0a1a4afb1c29f99b6ab4",
+        "ruby_source_checksum": "acafd4ff2b5b65e8c99abf9d42896e18797a09fc9673ba8f0a4d40cf0d26ed29",
+        "stable_checksum": "f6256df90c906773d344da084402b7d3e4f22ed41b1a59c989098a83d3ea0c85",
         "stable_url_args": [
-          "https://github.com/libexpat/libexpat/releases/download/R_2_8_2/expat-2.8.2.tar.xz"
+          "https://github.com/libexpat/libexpat/releases/download/R_2_8_3/expat-2.8.3.tar.xz"
         ],
-        "stable_version": "2.8.2"
+        "stable_version": "2.8.3"
       }
     },
     "flex": {
