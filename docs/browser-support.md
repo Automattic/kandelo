@@ -72,6 +72,14 @@ Service Worker ──MessagePort──> Kernel Worker       │
   `WebAssembly.Module.imports()` API cannot produce descriptors for them.
   Modules created by an external embedder without registered bytes retain the
   native reflection fallback.
+- **Signal-wait engine matrix**: the real BrowserKernel worker path runs the
+  wasm32 ppoll/pselect interruption matrix and wait4 unknown-option rejection
+  on Chromium, Firefox, and WebKit. Chromium and Firefox also run its wasm64
+  counterpart. The current Playwright WebKit engine rejects the Memory64
+  module at `WebAssembly.validate`, so WebKit's truthful boundary is wasm32
+  rather than a skipped or simulated wasm64 success. Browser injection waits
+  on guest-published atomic gates in the real process memory, so acceptance
+  does not depend on a fixed event-loop delay.
 - **Exec reads from filesystem**: Like a real OS, `exec()` reads binaries from the kernel-side `MemoryFileSystem`. Programs are baked into the VFS image at build time (or written by the page in the legacy path before spawning). Symlinks are used for multicall binaries (e.g., coreutils).
 - **dinit for service supervision**: Multi-process demos (nginx, redis,
   mariadb, nginx-php, wordpress, lamp, mariadb-test) bake `/sbin/dinit` and

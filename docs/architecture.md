@@ -867,10 +867,41 @@ until libc runs the handler and clears it. If the syscall would otherwise
 remain blocked, the host captures and releases its exact retry authority, then
 completes the channel with `EINTR` before it can park again. Public nonblocking
 `EAGAIN` outcomes remain `EAGAIN`. After the handler, libc resubmits only its
-reviewed zero-progress `SA_RESTART` allowlist, including `accept` and
-`accept4`; timeout-bearing operations suppress restart when a new submission
-would reset their deadline. The shared `CentralizedKernelWorker` state machine
-provides the same behavior in Node.js and browser hosts.
+reviewed zero-progress `SA_RESTART` allowlist, including `accept`, `accept4`,
+and `ppoll`. POSIX does not give `ppoll` the `pselect`
+restart-versus-`EINTR` exception, so it remains on that list; Kandelo
+deliberately selects `EINTR` for `pselect`, whose `SA_RESTART` outcome POSIX
+makes implementation-defined. Other timeout-bearing operations remain out
+when a new submission would reset their deadline. The shared
+`CentralizedKernelWorker` state machine provides the same behavior in Node.js
+and browser hosts.
+
+For a signal-mask-swapping `ppoll` or `pselect`, each TID owns a LIFO stack of
+wait contexts. Each context records both the caller's saved mask and the
+replacement mask. An active frame accepts repeated kernel attempts. Once a
+signal interrupts it, reuse additionally requires the current caught-handler
+depth to have fallen below the handler depth recorded by that frame. A wait
+entered by a catcher is therefore distinct from the interrupted outer wait
+even if the catcher explicitly restores the replacement mask and reuses
+identical syscall arguments. The signal record restores the mask current at
+delivery, so a restarted `ppoll` keeps its replacement mask continuously
+installed between attempts. Terminal success restores the top context in the
+normal syscall path; final `EINTR` uses the existing exact-task host-wait
+cancellation after the catcher returns. That cancellation also finalizes
+`sigsuspend` and `pause` after their catcher.
+
+The Wasm setjmp runtime records caught-handler depth in every jump environment.
+Both `longjmp` and `siglongjmp` first retire every abandoned handler and its
+paired wait context through the existing `rt_sigreturn` and exact-task
+cancellation operations. `siglongjmp` then applies the jump environment's
+saved mask when requested; an application using `longjmp` from a catcher must
+restore its signal mask as POSIX requires. An ordinary jump outside a catcher
+has no handler context to retire. A finite restarted `ppoll`
+keeps its absolute deadline in the libc call frame rather than host channel
+state. Nested calls and later same-argument calls therefore have independent
+deadlines, while catcher time is still charged to the interrupted call. The
+internal timestamp request defers caught-signal publication so a signal
+already pending at ppoll entry still interrupts ppoll itself.
 
 For a represented retry, the initial call uses token zero. Before returning
 `EAGAIN`, Rust pins any exact target required by that operation. The host
@@ -2375,8 +2406,21 @@ Signals are delivered at syscall boundaries. When a process has a pending signal
 
 1. `kernel_handle_channel` checks for pending signals after each syscall
 2. If a signal handler is registered (SA_SIGINFO), the kernel writes signal info to the channel's data buffer
-3. The glue reads the signal info and calls the handler on the process's stack (or alternate signal stack if SA_ONSTACK)
-4. After the handler returns, the glue calls `SYS_RT_SIGRETURN` to restore the signal mask
+3. The glue reads the signal info and calls the handler on the process's stack
+   (or alternate signal stack if SA_ONSTACK). For a ppoll/pselect replacement
+   mask, handler setup starts from that current replacement mask, then adds
+   sa_mask and the delivered signal.
+4. After the handler returns, the glue calls `SYS_RT_SIGRETURN` for
+   handler-frame state and applies the signal record's exact old mask with
+   `SYS_SIGPROCMASK`. For ppoll/pselect, the record contains the mask current
+   at delivery while Rust retains a per-TID LIFO wait context. A restarted
+   ppoll therefore preserves its replacement mask through resubmission;
+   terminal completion or exact post-handler cancellation restores the
+   pre-wait mask once. Nested ppoll, pselect, sigsuspend, and pause calls own
+   separate contexts. `sigsuspend` and `pause` use that same exact
+   post-handler cancellation to restore their pre-wait mask before returning
+   `EINTR`. `longjmp` and `siglongjmp` retire abandoned handler/wait contexts;
+   `siglongjmp` then applies the jump buffer's saved mask when requested.
 5. If the signal interrupted a blocking syscall, EINTR is returned
 
 The host distinguishes the kernel's internal `EAGAIN` retry sentinel from a
