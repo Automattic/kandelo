@@ -36,7 +36,7 @@ jobs:
        contains(github.event.pull_request.labels.*.name, 'ready-to-ship'))
     runs-on: ubuntu-latest
     permissions:
-      actions: read
+      actions: write
       contents: write
       pull-requests: write
       statuses: read
@@ -105,18 +105,21 @@ jobs:
         uses: ./.github/actions/setup-nix
 
       - name: Activate exact merged candidates
+        id: activate
         if: steps.reconcile.outputs.has_candidates == 'true'
         env:
           CANDIDATE_PLAN: ${{ steps.reconcile.outputs.plan }}
         run: |
           set -uo pipefail
           failed=0
+          activated_any=false
           while IFS=$'\t' read -r merged_at pr_number candidate_tag; do
             echo "Reconciling $candidate_tag for PR #$pr_number (merged $merged_at)"
             if bash scripts/dev-shell.sh bash .github/scripts/activate-merge-candidate.sh \
                 --candidate-tag "$candidate_tag" \
                 --pr-number "$pr_number"
             then
+              activated_any=true
               continue
             fi
 
@@ -139,4 +142,9 @@ jobs:
               echo "::warning::Could not check existing activation-failure comments for PR #$pr_number; skipping a potentially duplicate comment."
             fi
           done < "$CANDIDATE_PLAN"
+          echo "activated_any=$activated_any" >>"$GITHUB_OUTPUT"
           exit "$failed"
+
+      - name: Dispatch Pages after canonical activation
+        if: always() && steps.activate.outputs.activated_any == 'true'
+        run: gh workflow run browser-demos-pages.yml --ref "$GITHUB_DEFAULT_BRANCH"

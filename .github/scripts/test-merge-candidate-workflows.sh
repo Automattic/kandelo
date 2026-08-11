@@ -369,7 +369,15 @@ if [ "$actual_lock_callers" != "$expected_lock_callers" ]; then
   fail "state-lock workflow caller audit is stale"
 fi
 while IFS=: read -r workflow job; do
-  assert_effective_job_permission "$WORKFLOWS_DIR/$workflow" "$job" actions read
+  if [ "$workflow:$job" = "activate-merge-candidate.yml:activate" ]; then
+    # Canonical activation is the only state-lock caller that must dispatch a
+    # downstream workflow after moving an index.
+    assert_effective_job_permission \
+      "$WORKFLOWS_DIR/$workflow" "$job" actions write
+  else
+    assert_effective_job_permission \
+      "$WORKFLOWS_DIR/$workflow" "$job" actions read
+  fi
 done <<<"$actual_lock_callers"
 
 grep -Fq 'require-exact-head-approval.sh' "$PREPARE" || \
@@ -708,6 +716,45 @@ grep -Fq 'activate-merge-candidate.sh' "$ACTIVATE_WORKFLOW" || \
   fail "activation workflow does not invoke the activation transaction"
 grep -Fq 'failed=1' "$ACTIVATE_WORKFLOW" || \
   fail "reconciliation must continue after one candidate activation fails"
+assert_effective_job_permission \
+  "$ACTIVATE_WORKFLOW" activate actions write
+activation_step="$(
+  step_block "$ACTIVATE_WORKFLOW" "Activate exact merged candidates"
+)"
+activation_run="$(
+  step_run_block "$ACTIVATE_WORKFLOW" "Activate exact merged candidates"
+)"
+grep -Fq 'id: activate' <<<"$activation_step" || \
+  fail "candidate activation must expose whether canonical state moved"
+grep -Fq 'activated_any=false' <<<"$activation_run" &&
+  grep -Fq 'activated_any=true' <<<"$activation_run" &&
+  grep -Fq 'echo "activated_any=$activated_any" >>"$GITHUB_OUTPUT"' \
+    <<<"$activation_run" ||
+  fail "candidate activation must publish its exact success state"
+activation_output_line="$(
+  grep -nF 'echo "activated_any=$activated_any" >>"$GITHUB_OUTPUT"' \
+    <<<"$activation_run" | cut -d: -f1
+)"
+activation_exit_line="$(
+  grep -nF 'exit "$failed"' <<<"$activation_run" | cut -d: -f1
+)"
+[ -n "$activation_output_line" ] && [ -n "$activation_exit_line" ] &&
+  [ "$activation_output_line" -lt "$activation_exit_line" ] ||
+  fail "candidate activation must publish success before returning failures"
+pages_dispatch_step="$(
+  step_block "$ACTIVATE_WORKFLOW" "Dispatch Pages after canonical activation"
+)"
+grep -Fxq \
+  "        if: always() && steps.activate.outputs.activated_any == 'true'" \
+  <<<"$pages_dispatch_step" &&
+  grep -Fxq \
+    '        run: gh workflow run browser-demos-pages.yml --ref "$GITHUB_DEFAULT_BRANCH"' \
+    <<<"$pages_dispatch_step" ||
+  fail "activation must dispatch Pages only after canonical state moves"
+if grep -Fq 'steps.reconcile.outputs.has_candidates' <<<"$pages_dispatch_step";
+then
+  fail "an empty reconciliation plan must not independently dispatch Pages"
+fi
 if grep -Fq -- '--wait-seconds' "$ACTIVATE_WORKFLOW" || \
    grep -Fq -- '--wait-seconds' "$ACTIVATE_SCRIPT"
 then
