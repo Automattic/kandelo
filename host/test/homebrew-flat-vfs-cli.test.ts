@@ -129,6 +129,30 @@ describe("flat Homebrew VFS CLI", () => {
     expect(readVfsText(restored, "/etc/kandelo/shell.json")).toBe(
       readFileSync(SHELL_CONFIG, "utf8"),
     );
+    expect(restored.stat("/tmp").mode & 0o7777).toBe(0o1777);
+    expect(restored.stat("/root").mode & 0o7777).toBe(0o700);
+    expect(restored.stat("/home/user")).toMatchObject({
+      uid: 1000,
+      gid: 1000,
+    });
+    expect(restored.stat("/home/.nethack")).toMatchObject({
+      uid: 1000,
+      gid: 1000,
+    });
+    expect(restored.stat("/home/.nethack").mode & 0o7777).toBe(0o777);
+    for (const path of [
+      "/home/.nethack/perm",
+      "/home/.nethack/record",
+    ]) {
+      expect(restored.stat(path)).toMatchObject({ uid: 1000, gid: 1000 });
+      expect(restored.stat(path).mode & 0o7777).toBe(0o666);
+    }
+    expect(readVfsText(restored, "/etc/profile")).toContain(
+      "for kandelo_profile in /etc/profile.d/*.sh; do",
+    );
+    expect(readVfsText(restored, "/etc/gitconfig")).toContain(
+      "defaultBranch = main",
+    );
     expect(restored.stat("/opt/kandelo/homebrew/bin/bash").mode & 0o111)
       .not.toBe(0);
     expect(JSON.parse(readVfsText(

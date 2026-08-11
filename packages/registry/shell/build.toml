@@ -8,6 +8,7 @@ inputs = [
   "homebrew/main-shell-flat-demo.json",
   "images/vfs/scripts/build-homebrew-flat-vfs-image.ts",
   "images/vfs/scripts/build-homebrew-vfs-image.ts",
+  "images/vfs/scripts/shell-runtime-layout.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
   "MANIFEST",
   "images/rootfs",

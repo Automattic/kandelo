@@ -47,6 +47,7 @@ import {
   restoreVerifiedHomebrewBaseImage,
   serializeVerifiedHomebrewVfsImage,
 } from "./build-homebrew-vfs-image";
+import { populateShellRuntimeLayout } from "./shell-runtime-layout";
 import { sourceDateEpochMilliseconds } from "./vfs-image-helpers";
 
 const SHA256_RE = /^[0-9a-f]{64}$/;
@@ -385,6 +386,7 @@ export async function runFlatHomebrewVfsImageBuilder(
     },
   });
 
+  populateShellRuntimeLayout(build.fs);
   installFlatHomebrewShellConfig(build.fs, shell);
   installFlatHomebrewDemoConfig(build.fs, demo);
   assertNoPendingLazyBacking(build.fs, "composed flat Homebrew VFS");

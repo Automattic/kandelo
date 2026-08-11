@@ -7,6 +7,7 @@ inputs = [
   "images/vfs/scripts/derived-vfs-symlink.ts",
   "images/vfs/scripts/shell-lazy-archives.ts",
   "images/vfs/scripts/shell-vfs-build.ts",
+  "images/vfs/scripts/shell-runtime-layout.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
   "images/vfs/scripts/kandelo-demo-config.ts",
   "images/vfs/scripts/kandelo-demo-guides.ts",

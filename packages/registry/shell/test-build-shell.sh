@@ -42,6 +42,7 @@ for input in \
     homebrew/main-shell-default.json \
     homebrew/main-shell-flat-demo.json \
     images/vfs/scripts/build-homebrew-flat-vfs-image.ts \
+    images/vfs/scripts/shell-runtime-layout.ts \
     packages/registry/shell/prepare-build-tools.sh \
     crates/shared/src/lib.rs \
     host/src/constants.ts \
