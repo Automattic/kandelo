@@ -5,7 +5,7 @@ kernel_abi = 7
 depends_on = []
 
 [source]
-url = "https://ftpmirror.gnu.org/gnu/diffutils/diffutils-3.10.tar.xz"
+url = "https://ftpmirror.gnu.org/diffutils/diffutils-3.10.tar.xz"
 sha256 = "90e5e93cc724e4ebe12ede80df1634063c7a855692685919bfe60b556c9bd09e"
 
 [license]
