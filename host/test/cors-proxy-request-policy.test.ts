@@ -218,6 +218,91 @@ describe("CorsProxyRequestPolicy", () => {
     expect(result.headers.get("accept")).toBe("application/json, text/plain");
   });
 
+  it("keeps individually safelisted occurrences when their values total 1024 bytes", () => {
+    const acceptValues = Array.from(
+      { length: 7 },
+      (_, index) => String(index).repeat(128),
+    );
+    const contentLanguage = "e".repeat(128);
+    const result = policy({
+      methods: ["GET"],
+      allowedRequestHeaderNames: [],
+      allowAnonymousGetHeaderOmission: true,
+    }).project({
+      method: "GET",
+      headers: [
+        ...acceptValues.map((value) => ["Accept", value] as const),
+        ["Content-Language", contentLanguage],
+      ],
+      bodyPresent: false,
+      targetUrl: TARGET_URL,
+    });
+
+    expect(result.headers.get("accept")).toBe(acceptValues.join(", "));
+    expect(result.headers.get("content-language")).toBe(contentLanguage);
+    expect(result.omittedHeaders).toEqual([]);
+  });
+
+  it("omits every safelist-dependent name when cumulative value size exceeds 1024 bytes", () => {
+    const onDiagnostic = vi.fn();
+    const result = policy(
+      {
+        methods: ["GET"],
+        allowedRequestHeaderNames: [],
+        allowAnonymousGetHeaderOmission: true,
+      },
+      onDiagnostic,
+    ).project({
+      method: "GET",
+      headers: [
+        ...Array.from(
+          { length: 7 },
+          (_, index) => ["Accept", String(index).repeat(128)] as const,
+        ),
+        ["Content-Language", "e".repeat(128)],
+        ["Range", "bytes=0-0"],
+      ],
+      bodyPresent: false,
+      targetUrl: TARGET_URL,
+    });
+
+    expect([...result.headers.entries()]).toEqual([]);
+    expect(result.omittedHeaders).toEqual([
+      "accept",
+      "content-language",
+      "range",
+    ]);
+    expect(onDiagnostic).toHaveBeenCalledWith(
+      "Browser CORS proxy omitted unsupported request headers for https://registry.example: accept, content-language, range",
+    );
+  });
+
+  it("retains configured occurrences in order after cumulative safelist overflow", () => {
+    const acceptValues = Array.from(
+      { length: 7 },
+      (_, index) => String(index).repeat(128),
+    );
+    const result = policy({
+      methods: ["GET"],
+      allowedRequestHeaderNames: ["AcCePt"],
+      allowAnonymousGetHeaderOmission: true,
+    }).project({
+      method: "GET",
+      headers: [
+        ...acceptValues.map((value) => ["Accept", value] as const),
+        ["Content-Language", "e".repeat(128)],
+        ["Range", "bytes=0-0"],
+      ],
+      bodyPresent: false,
+      targetUrl: TARGET_URL,
+    });
+
+    expect(result.headers.get("accept")).toBe(acceptValues.join(", "));
+    expect(result.headers.has("content-language")).toBe(false);
+    expect(result.headers.has("range")).toBe(false);
+    expect(result.omittedHeaders).toEqual(["content-language", "range"]);
+  });
+
   it.each([
     ["Accept", "application/json\"unsafe"],
     ["Accept-Language", "en_US"],
@@ -297,6 +382,40 @@ describe("CorsProxyRequestPolicy", () => {
     "proxy-authorization",
     "x-cors-proxy-allowed-request-headers",
     "x-cors-proxy-content-type",
+  ])(
+    "strips Connection-nominated reserved header %s before classification",
+    (name) => {
+      const onDiagnostic = vi.fn();
+      const result = policy(
+        {
+          methods: ["GET"],
+          allowedRequestHeaderNames: [name],
+          allowAnonymousGetHeaderOmission: true,
+        },
+        onDiagnostic,
+      ).project({
+        method: "GET",
+        headers: [
+          ["Connection", name.toUpperCase()],
+          [name, "secret"],
+        ],
+        bodyPresent: false,
+        targetUrl: TARGET_URL,
+      });
+
+      expect([...result.headers.entries()]).toEqual([]);
+      expect(result.omittedHeaders).toEqual([]);
+      expect(onDiagnostic).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    "authorization",
+    "cookie",
+    "cookie2",
+    "proxy-authorization",
+    "x-cors-proxy-allowed-request-headers",
+    "x-cors-proxy-content-type",
   ])("rejects reserved credential or proxy-control header %s", (name) => {
     const requestPolicy = policy({
       methods: ["GET"],
@@ -343,18 +462,24 @@ describe("CorsProxyRequestPolicy", () => {
   });
 
   it.each([
-    ["GET", true, "x-client-trace"],
-    ["POST", false, "x-client-trace"],
+    { method: "GET", methods: ["GET"] },
+    { method: "POST", methods: ["POST"] },
+    { method: "PUT", methods: ["PUT"] },
   ])(
-    "rejects unsupported headers on method %s with bodyPresent=%s",
-    (method, bodyPresent, headerName) => {
-      const requestPolicy = policy();
+    "rejects unsupported headers on body-bearing $method when the method is supported",
+    ({ method, methods }) => {
+      const headerName = "x-client-trace";
+      const requestPolicy = policy({
+        methods,
+        allowedRequestHeaderNames: [],
+        allowAnonymousGetHeaderOmission: true,
+      });
 
       expect(() =>
         requestPolicy.project({
           method,
           headers: [[headerName, "opaque"]],
-          bodyPresent,
+          bodyPresent: true,
           targetUrl: TARGET_URL,
         }),
       ).toThrowError(

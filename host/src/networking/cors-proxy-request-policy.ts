@@ -51,6 +51,8 @@ const SIMPLE_CONTENT_TYPES = new Set([
   "text/plain",
 ]);
 
+const CORS_SAFELIST_VALUE_SIZE_LIMIT = 1024;
+
 export function validateCorsProxyRequestCapabilities(
   proxyUrl: string | undefined,
   value: CorsProxyRequestCapabilities | undefined,
@@ -101,6 +103,13 @@ export class CorsProxyRequestPolicy {
     const connectionHeaders = connectionNominatedHeaderNames(input.headers);
     const projectedHeaders = new Headers();
     const unsupportedNames: string[] = [];
+    const classifiedHeaders: Array<{
+      name: string;
+      value: string;
+      safelisted: boolean;
+      configured: boolean;
+    }> = [];
+    let safelistValueSize = 0;
     let hasReservedProxyHeader = false;
 
     for (const [name, value] of input.headers) {
@@ -118,15 +127,31 @@ export class CorsProxyRequestPolicy {
         continue;
       }
 
+      const safelisted = isCorsSafelistedRequestHeader(lowerName, value);
+      if (safelisted) safelistValueSize += headerValueByteLength(value);
+      classifiedHeaders.push({
+        name,
+        value,
+        safelisted,
+        configured: this.capabilities.allowedRequestHeaderNames.some(
+          (allowedName) =>
+            asciiCaseInsensitiveEqual(allowedName, name),
+        ),
+      });
+    }
+
+    // Fetch makes every individually safelisted name unsafe when their values
+    // exceed the aggregate limit. Explicit proxy capability remains separate.
+    const safelistWithinSizeLimit =
+      safelistValueSize <= CORS_SAFELIST_VALUE_SIZE_LIMIT;
+    for (const header of classifiedHeaders) {
       if (
-        isCorsSafelistedRequestHeader(lowerName, value) ||
-        this.capabilities.allowedRequestHeaderNames.some((allowedName) =>
-          asciiCaseInsensitiveEqual(allowedName, name),
-        )
+        header.configured ||
+        (header.safelisted && safelistWithinSizeLimit)
       ) {
-        projectedHeaders.append(name, value);
+        projectedHeaders.append(header.name, header.value);
       } else {
-        unsupportedNames.push(lowerName);
+        unsupportedNames.push(asciiLowercase(header.name));
       }
     }
 
@@ -223,7 +248,7 @@ function isCorsSafelistedRequestHeader(
   lowerName: string,
   value: string,
 ): boolean {
-  if (new TextEncoder().encode(value).byteLength > 128) return false;
+  if (headerValueByteLength(value) > 128) return false;
 
   switch (lowerName) {
     case "accept":
@@ -241,6 +266,10 @@ function isCorsSafelistedRequestHeader(
     default:
       return false;
   }
+}
+
+function headerValueByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
 }
 
 function containsCorsUnsafeRequestHeaderByte(value: string): boolean {
