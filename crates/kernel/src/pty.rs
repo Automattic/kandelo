@@ -7,6 +7,9 @@ use core::cell::UnsafeCell;
 /// Maximum number of concurrent PTY pairs.
 pub const MAX_PTYS: usize = 64;
 
+/// Initial permissions for a newly allocated devpts slave.
+pub const DEFAULT_SLAVE_MODE: u32 = 0o620;
+
 /// Default capacity for PTY data buffers (bytes).
 const PTY_BUF_CAPACITY: usize = 4096;
 
@@ -16,9 +19,12 @@ const PTY_BUF_CAPACITY: usize = 4096;
 ///   master write → line discipline → slave read  (input: keyboard → program)
 ///   slave write  → output processing → master read (output: program → screen)
 pub struct PtyPair {
-    /// Stable owner captured from the creator's effective credentials.
+    /// Persistent devpts metadata initialized from the creator's effective
+    /// credentials. In the absence of a separately configured tty group, the
+    /// creator's effective GID is the authoritative tty-group source.
     owner_uid: u32,
     owner_gid: u32,
+    mode: u32,
     /// Terminal state (termios attributes, winsize, foreground pgrp).
     pub terminal: TerminalState,
     /// Input buffer: data written by master, readable from slave (after line discipline).
@@ -38,6 +44,7 @@ impl PtyPair {
         PtyPair {
             owner_uid,
             owner_gid,
+            mode: DEFAULT_SLAVE_MODE,
             terminal: TerminalState::new(),
             input_buf: VecDeque::with_capacity(PTY_BUF_CAPACITY),
             output_buf: VecDeque::with_capacity(PTY_BUF_CAPACITY),
@@ -53,6 +60,19 @@ impl PtyPair {
 
     pub fn owner_gid(&self) -> u32 {
         self.owner_gid
+    }
+
+    pub fn mode(&self) -> u32 {
+        self.mode
+    }
+
+    pub fn set_mode(&mut self, mode: u32) {
+        self.mode = mode & 0o7777;
+    }
+
+    pub fn set_owner(&mut self, uid: u32, gid: u32) {
+        self.owner_uid = uid;
+        self.owner_gid = gid;
     }
 
     /// Process a byte through the line discipline (for master→slave input).
@@ -276,6 +296,7 @@ mod tests {
         let pty = get_pty(idx).unwrap();
         assert!(pty.locked);
         assert_eq!((pty.owner_uid(), pty.owner_gid()), (1000, 2000));
+        assert_eq!(pty.mode(), DEFAULT_SLAVE_MODE);
         assert_eq!(pty.master_refs, 0);
         assert_eq!(pty.slave_refs, 0);
 
@@ -285,6 +306,15 @@ mod tests {
         free_pty(idx);
         let idx3 = alloc_pty(5000, 6000).unwrap();
         assert_eq!(idx3, 0); // reuses freed slot
+        let replacement = get_pty(idx3).unwrap();
+        assert_eq!(
+            (
+                replacement.owner_uid(),
+                replacement.owner_gid(),
+                replacement.mode()
+            ),
+            (5000, 6000, DEFAULT_SLAVE_MODE),
+        );
 
         reset_table();
     }
