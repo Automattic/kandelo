@@ -15,7 +15,11 @@
   admissions for `kandelo-sdk`, `clang`, and the selected `libcxx`. Consume
   those admissions through generic Pages readiness, not transitional shell
   selection/artifact locks.
-- Use a new clean Kandelo worktree based on a stable staging revision containing `4f7b75b69` and the completed final admitted-product Pages site flow; never edit the active dirty `emdash/homebrew-pr-staging-1q1w6` worktree.
+- Use a new clean Kandelo worktree based on a stable staging revision containing
+  `d52b9bea2` (`[Pages] Preserve Phase B product authority`), including the
+  private canonical product map, final site builder, and browser product
+  loader; never edit the active dirty `emdash/homebrew-pr-staging-1q1w6`
+  worktree.
 - `browser-main-shell` remains the only shell product. Do not add `browser-c-development` or an eighth Pages VFS product.
 - The Pages registry remains exactly seven products: eager `platform-rootfs` and `browser-main-shell`, then lazy `browser-node`, `browser-nginx`, `browser-nginx-php`, `browser-wordpress`, and `browser-lamp`.
 - The ordinary shell must make zero `kandelo-sdk`, `clang`, or newly selected `libcxx` payload requests before first use.
@@ -29,6 +33,10 @@
 - The exact Kandelo request head used by reconciliation must contain the preset, protected browser suites, lazy shell selection, and Node suite. A locally modified or later source tree cannot stand for that evidence identity.
 - Pages carries the browser application and compact product VFS files. GHCR remains the only transport for compiler and SDK bottle payloads.
 - Public cutover is two-step: merge and observe a ready complete site first; change `pages-activation.toml` to `active` only after the successor canary for the exact main commit is ready and reviewed.
+- A hosted pre-admission canary may retain a bounded hold result for diagnosis,
+  but that result is not Pages readiness and cannot authorize activation. Rerun
+  after promotion and admission and require a fresh ready result for the exact
+  integrated Kandelo and tap identities.
 - If readiness is held at any point, retain the previously selected complete site.
 - Do not patch the legacy asset-selection logic as a fallback.
 - Run commands needing repository build dependencies through `scripts/dev-shell.sh`.
@@ -42,13 +50,15 @@
    compiler suites and the candidate-shell surface adapter.
 2. Dispatch reconciliation. The protected workflow composes
    `browser-main-shell` from the exact candidate Formula layers and publishes
-   Node/browser product evidence before Formula promotion.
+   Node/browser product evidence before Formula promotion. A hosted canary at
+   this point may be a bounded hold and must not be described as ready.
 3. Complete Formula-plan Task 5. Promotion projects the successful ordinary
    shell Node/browser evidence into the three Formula admissions without
    changing bottle bytes.
 4. Return here for failure/retry acceptance against canonical transports,
-   Pages readiness, observation, and activation. No candidate reference may
-   survive this boundary.
+   Pages readiness, and observation. Rerun the hosted canary and require a fresh
+   ready result before activation. No candidate reference may survive this
+   boundary.
 
 ---
 
@@ -59,7 +69,7 @@ of the two earlier plans are present:
 
 ~~~bash
 git status --short
-git merge-base --is-ancestor 4f7b75b69 HEAD
+git merge-base --is-ancestor d52b9bea2 HEAD
 rg -n 'kandelo-dev/tap-core/kandelo-sdk' images/vfs/products/browser-main-shell.toml
 rg -n 'prefetchHomebrewPackages' \
   host/src/node-kernel-host.ts host/src/browser-kernel-host.ts
@@ -94,11 +104,13 @@ prototype compiler is never a substitute.
 - Create `apps/browser-demos/pages/kandelo/kernel-host/preset-session.ts`: bounded generic workspace preparation and background package-prefetch startup.
 - Modify `web-libs/kandelo-session/src/kernel-host.ts`: allow gallery items to carry `cwd` and `env` presentation fields.
 - Modify `apps/browser-demos/pages/kandelo/presets.ts`: add the `c-dev` gallery entry.
+- Modify `apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-gallery.json`: register `c-dev` as presentation owned by `browser-main-shell`; do not add a product.
 - Modify `apps/browser-demos/pages/kandelo/gallery-descriptor.ts`: merge gallery-owned cwd and environment into the boot descriptor.
 - Modify `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`: map `c-dev` to the shell image, prepare its workspace, set status to running, then start prefetch without awaiting it.
 - Modify `web-libs/kandelo-session/src/demo-guides.ts`: add the C-development guide and fork-instrumentation limitation.
 - Modify `apps/browser-demos/pages/kandelo/kernel-host/candidate-evidence-vfs.ts`: map protected `toolchain-shell` and `c-development` profiles to the ordinary shell and `c-dev` live profiles.
 - Create `apps/browser-demos/pages/kandelo/c-development.test.ts`: preset, descriptor, workspace, and ordering tests.
+- Modify `scripts/check-pages-vfs-product-registry.test.mjs`: prove the reviewed `c-dev`-to-`browser-main-shell` mapping and exact seven-product boundary.
 
 ### Browser acceptance and protected evidence
 
@@ -113,6 +125,7 @@ prototype compiler is never a substitute.
 
 - Modify `scripts/abi-staging-pages-readiness.test.ts`: toolchain admission/evidence blockers and exact seven-product site inventory.
 - Modify `scripts/abi-staging-pages-producer.test.ts`: held versus ready production with the shell's three new lazy inputs.
+- Modify `scripts/abi-staging-pages-site-builder.test.ts`: final-site private-map handling, canonical seven-product paths, gallery ownership, and exclusion of compiler payloads.
 - Modify `abi/staging/pages-activation.toml` twice in separate reviewed commits: `legacy` to `observe`, then `observe` to `active` after the exact canary gate.
 - Modify `docs/browser-support.md` and `README.md`: default first-use behavior, C-development preset, progress/retry, memory/network expectations, and current limitations.
 
@@ -139,20 +152,24 @@ export interface HomebrewPackagePrefetchState {
 }
 
 // Structural member added to KernelLike; BrowserKernel supplies it.
-prefetchHomebrewPackages?(
-  roots: readonly string[],
-): Promise<HomebrewPackagePrefetchResult>;
+export interface KernelLike {
+  prefetchHomebrewPackages?(
+    roots: readonly string[],
+  ): Promise<HomebrewPackagePrefetchResult>;
+}
 
 // UI-facing methods added to KernelHost and LiveKernelHost.
-prefetchHomebrewPackages(
-  id: string,
-  label: string,
-  roots: readonly string[],
-): Promise<HomebrewPackagePrefetchResult>;
+export interface KernelHost {
+  prefetchHomebrewPackages(
+    id: string,
+    label: string,
+    roots: readonly string[],
+  ): Promise<HomebrewPackagePrefetchResult>;
 
-retryHomebrewPackagePrefetch(
-  id: string,
-): Promise<HomebrewPackagePrefetchResult>;
+  retryHomebrewPackagePrefetch(
+    id: string,
+  ): Promise<HomebrewPackagePrefetchResult>;
+}
 ~~~
 
 The lower-level `KernelLike.prefetchHomebrewPackages(roots)` method is the Node/browser worker API from the shell/Node plan. `LiveKernelHost` supplies only lifecycle state, request coalescing, and retry.
@@ -470,14 +487,16 @@ git commit -m "feat: expose retryable package prefetch state"
 - Modify: `web-libs/kandelo-session/src/kernel-host.ts`
 - Modify: `web-libs/kandelo-session/src/demo-guides.ts`
 - Modify: `apps/browser-demos/pages/kandelo/presets.ts`
+- Modify: `apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-gallery.json`
 - Modify: `apps/browser-demos/pages/kandelo/gallery-descriptor.ts`
 - Modify: `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`
 - Modify: `apps/browser-demos/pages/kandelo/kernel-host/candidate-evidence-vfs.ts`
+- Modify: `scripts/check-pages-vfs-product-registry.test.mjs`
 
 **Interfaces:**
 
 - Consumes: `C_DEVELOPMENT_SESSION` from Stable Interfaces and `LiveKernelHost.prefetchHomebrewPackages(id, label, roots)` from Task 1.
-- Produces: built-in live demo `c-dev`, protected profile mappings `toolchain-shell -> shell` and `c-development -> c-dev`, and generic `applyPresetSessionBoot(descriptor, session)`, `preparePresetWorkspace(kernel, session, identity)`, plus `startPresetPackagePrefetch(host, session)`.
+- Produces: built-in live demo `c-dev`, reviewed presentation mapping `c-dev -> browser-main-shell`, protected profile mappings `toolchain-shell -> shell` and `c-development -> c-dev`, and generic `applyPresetSessionBoot(descriptor, session)`, `preparePresetWorkspace(kernel, session, identity)`, plus `startPresetPackagePrefetch(host, session)`. It does not produce a new `PagesVfsProductEntry`.
 
 The generic helpers use these narrow interfaces so their ordering and failure
 behavior can be tested without constructing a BrowserKernel:
@@ -643,6 +662,22 @@ test("protected candidate boot retains identity while applying the preset sessio
 });
 ~~~
 
+Extend `scripts/check-pages-vfs-product-registry.test.mjs` with an explicit
+Phase B ownership assertion:
+
+~~~javascript
+const gallery = JSON.parse(readFileSync(galleryPath, "utf8"));
+assert.deepEqual(
+  gallery.products.find(({ id }) => id === "browser-main-shell")
+    ?.gallery_entries,
+  ["c-dev", "doom", "modeset", "shell"],
+);
+assert.equal(
+  readPagesRegistry(registryPath).products.some(({ id }) => id === "c-dev"),
+  false,
+);
+~~~
+
 Add a mocked ordering test for `preparePresetSession`:
 
 ~~~typescript
@@ -702,9 +737,12 @@ Run:
 ~~~bash
 scripts/dev-shell.sh npx vitest run \
   apps/browser-demos/pages/kandelo/c-development.test.ts
+scripts/dev-shell.sh node --test \
+  scripts/check-pages-vfs-product-registry.test.mjs
 ~~~
 
-Expected: FAIL because `c-development.ts`, `c-dev`, and the preset-session helpers do not exist.
+Expected: FAIL because `c-development.ts`, `c-dev`, the preset-session helpers,
+and the reviewed Phase B gallery mapping do not exist.
 
 - [ ] **Step 3: Add the one reviewed session constant and gallery metadata**
 
@@ -725,6 +763,18 @@ Create `C_DEVELOPMENT_SESSION` exactly as shown in Stable Interfaces. Add this p
   estimatedUrlBytes: 548,
 }
 ~~~
+
+In `pages-vfs-product-gallery.json`, change only the existing
+`browser-main-shell.gallery_entries` to this sorted list:
+
+~~~json
+["c-dev", "doom", "modeset", "shell"]
+~~~
+
+Do not add `c-dev` to `pages-vfs-products.toml`,
+`pages-vfs-products.generated.json`, the private product map, or the browser
+product loader. It is a second presentation of the one authenticated
+`browser-main-shell` product.
 
 Extend `Preset` and `GalleryItem` with:
 
@@ -793,6 +843,10 @@ Add `"c-dev"` to `LIVE_DEMO_IDS` and:
 },
 ~~~
 
+Keep `VFS_SOURCES.shell.productId === "browser-main-shell"` and the existing
+`CANONICAL_PAGES_VFS_LOADER` unchanged. The `c-dev` profile selects the same
+shell source; it does not introduce a source URL, product ID, or loader entry.
+
 Extend `LiveProfile` with `session?: PresetSession` and copy the spec's session through `profileFor`. After `host.attachKernel(kernel)` and `host.setDefaultShell(...)`, prepare the workspace. At the end of a successful boot, preserve this order:
 
 In `profileForCandidateEvidence`, pass the descriptor returned by `candidateEvidenceBootDescriptor` through `applyPresetSessionBoot` when `base.session` is present. This is required for the protected `c-development` surface: the immutable product supplies the candidate VFS and base boot identity, while the reviewed preset supplies only cwd and convenience environment. The `toolchain-shell` surface has no session overlay.
@@ -851,6 +905,9 @@ Run:
 scripts/dev-shell.sh npx vitest run \
   apps/browser-demos/pages/kandelo/c-development.test.ts \
   web-libs/kandelo-session/test/kandelo-session.test.ts
+scripts/dev-shell.sh node --test \
+  scripts/check-pages-vfs-product-registry.test.mjs
+scripts/dev-shell.sh node scripts/check-pages-vfs-product-registry.mjs
 scripts/dev-shell.sh bash -euo pipefail -c '
 cd host
 npm run typecheck
@@ -861,7 +918,10 @@ npx tsc --noEmit
 '
 ~~~
 
-Expected: preset and ordering tests pass, both TypeScript packages compile, and `c-dev` resolves to the same shell VFS URL as `shell` with only a different fragment/profile.
+Expected: preset and ordering tests pass, both TypeScript packages compile,
+the Phase B registry checker accepts all presentation mappings while retaining
+exactly seven products, and `c-dev` resolves to the same shell VFS URL as
+`shell` with only a different fragment/profile.
 
 - [ ] **Step 8: Commit the preset**
 
@@ -870,9 +930,11 @@ git add apps/browser-demos/pages/kandelo/c-development.ts \
   apps/browser-demos/pages/kandelo/c-development.test.ts \
   apps/browser-demos/pages/kandelo/kernel-host/preset-session.ts \
   apps/browser-demos/pages/kandelo/presets.ts \
+  apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-gallery.json \
   apps/browser-demos/pages/kandelo/gallery-descriptor.ts \
   apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts \
   apps/browser-demos/pages/kandelo/kernel-host/candidate-evidence-vfs.ts \
+  scripts/check-pages-vfs-product-registry.test.mjs \
   web-libs/kandelo-session/src/kernel-host.ts \
   web-libs/kandelo-session/src/demo-guides.ts
 git commit -m "feat: add C development shell preset"
@@ -1134,8 +1196,9 @@ evidence.
 **Interfaces:**
 
 - Consumes: the exact canonically recomposed shell, its authenticated resolved
-  inputs/composition descriptors, and the generic package-prefetch Retry
-  button.
+  inputs/composition descriptors, the final observe-mode source tree assembled
+  by `buildFinalPagesSite` from the private canonical product map, the existing
+  `PagesVfsProductLoader`, and the generic package-prefetch Retry button.
 - Produces: user-facing acceptance for terminal-before-prefetch, missing/truncated/digest failure, atomic unmaterialized trees, and same-descriptor retry.
 
 - [ ] **Step 1: Add exact transport helpers**
@@ -1208,8 +1271,11 @@ export function canonicalAssetForPackage(
 
 Build this plan in test setup from the canonical `browser-main-shell`
 resolved-input document and the composition descriptors authenticated by Pages
-readiness. Do not read the legacy bottle-mirror plan or accept an independently
-supplied URL list.
+readiness. Serve the final site tree produced through the Phase B private map,
+and let the existing product loader verify the eager, same-origin
+`browser-main-shell` bytes before boot. Do not read the legacy bottle-mirror
+plan, expose the private map to the browser, or accept an independently supplied
+URL list.
 
 - [ ] **Step 2: Write the terminal-availability and reuse test**
 
@@ -1292,8 +1358,9 @@ For each failure:
 - [ ] **Step 5: Run the browser acceptance**
 
 Run the canonical-product setup used by the final admitted Pages evidence
-harness, passing its authenticated resolved-input and composition-descriptor
-handoff, then:
+harness in observe mode. It must invoke `buildFinalPagesSite`, serve that exact
+successor tree, and pass its authenticated resolved-input and
+composition-descriptor handoff, then:
 
 ~~~bash
 scripts/dev-shell.sh bash -euo pipefail -c '
@@ -1302,7 +1369,11 @@ npx playwright test test/kandelo-c-development.spec.ts --project=chromium
 '
 ~~~
 
-Expected: all happy-path and failure cases pass. Diagnostics show the terminal running before prefetch, no ordinary-boot toolchain traffic, atomic failure, and retry against the same immutable asset.
+Expected: all happy-path and failure cases pass. Diagnostics show the canonical
+same-origin shell product was verified before boot; subsequent toolchain traffic
+uses only the immutable GHCR bottle blob identities; the terminal runs before
+prefetch; ordinary boot has no toolchain traffic; failure is atomic; and Retry
+uses the same immutable asset. The private product map is never served.
 
 - [ ] **Step 6: Commit browser acceptance**
 
@@ -1320,14 +1391,15 @@ git commit -m "test: cover lazy toolchain browser recovery"
 - Modify: `scripts/abi-staging-pages-readiness.test.ts`
 - Modify: `scripts/abi-staging-pages-producer.ts`
 - Modify: `scripts/abi-staging-pages-producer.test.ts`
+- Modify: `scripts/abi-staging-pages-site-builder.test.ts`
 - Modify: `abi/staging/pages-activation.toml`
 - Modify: `docs/browser-support.md`
 - Modify: `README.md`
 
 **Interfaces:**
 
-- Consumes: admitted shell inputs, successful `main-shell-toolchain-node`, `main-shell-toolchain-browser`, and `main-shell-c-development-browser` receipts.
-- Produces: observe-mode readiness for one complete seven-product site, test fixture `sevenProductToolchainFixture()`, and user-facing documentation.
+- Consumes: admitted shell inputs, successful `main-shell-toolchain-node`, `main-shell-toolchain-browser`, and `main-shell-c-development-browser` receipts, plus the Phase B private sealed-product map and final-site builder.
+- Produces: observe-mode readiness for one complete seven-product site, an exact final tree whose `browser-main-shell` presentation list includes `c-dev`, test fixture `sevenProductToolchainFixture()`, and user-facing documentation. The private map remains producer-only and the site contains no compiler payload.
 
 - [ ] **Step 1: Write failing readiness blocker tests**
 
@@ -1513,9 +1585,40 @@ assert.deepEqual(
     { id: "platform-rootfs", load: "eager" },
   ],
 );
+
+const gallery = JSON.parse(readFileSync(
+  "apps/browser-demos/pages/kandelo/kernel-host/" +
+    "pages-vfs-product-gallery.json",
+  "utf8",
+));
+assert.deepEqual(
+  gallery.products.find(({ id }) => id === "browser-main-shell")
+    ?.gallery_entries,
+  ["c-dev", "doom", "modeset", "shell"],
+);
+assert.equal(publicRegistry.products.some(({ id }) => id === "c-dev"), false);
 ~~~
 
-Require the `browser-main-shell` resolved-input document to retain all three immutable GHCR lazy references and the compact VFS to contain only lazy metadata for them. Require no eighth product, no compiler release archive, and no candidate reference anywhere in the canonical JSON.
+Require the `browser-main-shell` resolved-input document to retain all three
+immutable GHCR lazy references and the compact VFS to contain only authenticated
+lazy metadata for them. Require no eighth product, no compiler release archive,
+and no candidate reference anywhere in the canonical JSON.
+
+In `abi-staging-pages-site-builder.test.ts`, extend the existing exact-seven
+assembly test to require:
+
+- the seven VFS paths equal the seven canonical paths in the private product
+  map, and no VFS is emitted into the Vite asset directory;
+- final metadata maps `c-dev`, `doom`, `modeset`, and `shell`, in sorted order,
+  to `browser-main-shell`;
+- neither `private-product-map.json` nor any `private_path` is present in the
+  public inventory;
+- no standalone `homebrew-libcxx`, `homebrew-clang`,
+  `homebrew-kandelo-sdk`, or `compiler.vfs` payload path exists.
+
+Keep the existing `pages-vfs-product-loader.test.ts` exact-seven/eager-loading
+test unchanged unless the generic loader itself needs a correction. The new
+preset must not add an eighth loader entry.
 
 - [ ] **Step 3: Extend generic admission binding and producer hold/ready tests**
 
@@ -1528,13 +1631,21 @@ for every definition in the product's generated test registration. Keep this
 generic: do not add a `clang`, `libcxx`, `kandelo-sdk`, or
 `browser-main-shell` name branch.
 
-In the producer, a blocked readiness result may write only its bounded
-`readiness.json`; it must not create, partially replace, or select a successor
-site tree. A ready result binds the validated canonical inputs and evidence
-digests into one immutable successor before exposing it to observe/active
-selection.
+Preserve the Phase B producer contract: a blocked readiness result may write
+only its bounded `readiness.json`; it must not create, partially replace, or
+select a successor site tree. For a ready result, construct the private map only
+from `prepared.sealed_products`, invoke `buildFinalPagesSite` with that map, bind
+the validated canonical inputs and evidence digests into one immutable
+successor, then remove the map and sealed-product directory before exposing the
+successor to observe/active selection. Never reconstruct a product path from a
+gallery ID or copy a lazy Homebrew bottle as an additional site file.
 
-In `abi-staging-pages-producer.test.ts`, run one fixture with a missing `clang` admission and require only `readiness.json` with the prior site selection untouched. Run the complete fixture and require one immutable source tree whose deployment manifest binds:
+In `abi-staging-pages-producer.test.ts`, run one fixture with a missing `clang`
+admission and require only `readiness.json`, no private map or successor tree,
+and the prior site selection untouched. Run the complete fixture through the
+real final-site builder and require one immutable source tree; require the
+private map and sealed inputs to be gone afterward. Its deployment manifest
+binds:
 
 - exact Kandelo commit/tree;
 - exact tap commit/tree;
@@ -1543,6 +1654,12 @@ In `abi-staging-pages-producer.test.ts`, run one fixture with a missing `clang` 
 - all required Node and browser receipt digests;
 - all three toolchain admission record digests.
 
+Also require the final source-tree inventory to contain the seven canonical
+`products/<id>/sha256-.../<id>-<abi>.vfs.zst` paths, no VFS emitted by Vite,
+and no standalone compiler/SDK bottle payload. The gallery metadata must bind
+`c-dev` to `browser-main-shell`, while the public product and loader maps remain
+exactly seven entries.
+
 - [ ] **Step 4: Run focused readiness and atomic-publication tests**
 
 Run:
@@ -1550,13 +1667,22 @@ Run:
 ~~~bash
 scripts/dev-shell.sh npx tsx --test \
   scripts/abi-staging-pages-readiness.test.ts \
-  scripts/abi-staging-pages-producer.test.ts
+  scripts/abi-staging-pages-producer.test.ts \
+  scripts/abi-staging-pages-site-builder.test.ts \
+  apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-loader.test.ts
+scripts/dev-shell.sh node --test \
+  scripts/check-pages-vfs-product-registry.test.mjs
+scripts/dev-shell.sh node scripts/check-pages-vfs-product-registry.mjs
 scripts/dev-shell.sh bash scripts/test-abi-staging-pages-atomic.sh
 scripts/dev-shell.sh bash scripts/test-pages-deployment-contract.sh
 scripts/dev-shell.sh bash scripts/ci-check-pages-deployment.sh
 ~~~
 
-Expected: a missing input or receipt retains the previous complete site; a complete input set produces the exact seven-product site.
+Expected: a missing input or receipt retains the previous complete site; a
+complete input set flows through the private Phase B map into the exact
+seven-product site; the browser bundle emits no VFS; the canonical loader still
+has two eager and five lazy products; and the reviewed gallery maps `c-dev` to
+the existing shell product.
 
 - [ ] **Step 5: Document the user contract**
 
@@ -1656,6 +1782,7 @@ git add scripts/abi-staging-pages-readiness.test.ts \
   scripts/abi-staging-pages-readiness.ts \
   scripts/abi-staging-pages-producer.ts \
   scripts/abi-staging-pages-producer.test.ts \
+  scripts/abi-staging-pages-site-builder.test.ts \
   abi/staging/pages-activation.toml \
   docs/browser-support.md README.md
 git commit -m "pages: observe lazy C development rollout"
@@ -1694,6 +1821,14 @@ Download the inert canary artifact and require:
 - tap commit/tree equal current protected tap main;
 - target ABI and snapshot digest equal the source tree;
 - product list and deployment manifest contain the exact seven IDs and eager/lazy policies from Global Constraints;
+- the final tree contains exactly the seven authenticated canonical
+  `products/<id>/sha256-.../<id>-<abi>.vfs.zst` paths, and the browser bundle
+  itself contains no emitted VFS artifact;
+- the private product map, every `private_path`, and the sealed-product staging
+  directory are absent from the canary artifact;
+- the reviewed gallery authority maps `c-dev` under `browser-main-shell`, and
+  the public product map still has exactly seven entries with only
+  `platform-rootfs` and `browser-main-shell` eager;
 - `browser-main-shell` binds successful current Node and both browser toolchain receipts;
 - `kandelo-sdk`, `clang`, and `libcxx` references are canonical anonymous GHCR references with matching admission digests;
 - the Pages file inventory has no compiler/SDK bottle payload and remains below 1,000,000,000 bytes;
@@ -1747,6 +1882,8 @@ In a clean browser storage context on the public Pages URL:
 
 - confirm the deployment manifest matches the activated canary;
 - confirm the gallery exposes C development but the product registry still has seven products;
+- confirm no private product map URL is served and the browser bundle contains
+  no VFS payload;
 - confirm Bare shell boots without compiler traffic;
 - compile/execute C and C++ from Bare shell;
 - launch C development and compile the prepared example;
@@ -1765,7 +1902,14 @@ If deployment readiness is held or the deployment does not match the reviewed ma
 - Missing, truncated, and digest-mismatched payloads remain unmaterialized and leave the shell usable.
 - Repeat compilation causes no second materialization in the session.
 - Pages readiness holds on any missing admission or required receipt and retains the previous complete site.
-- The ready Pages tree contains the browser app plus compact product VFS files, not compiler/SDK bottles.
+- Phase B assembles the ready tree from its private sealed-product map, removes
+  that authority before publication, and exposes exactly seven canonical
+  product paths.
+- The ready Pages tree contains the browser app plus compact product VFS files,
+  not compiler/SDK bottles or a Vite-emitted VFS copy.
+- The reviewed product-gallery authority maps `c-dev` to
+  `browser-main-shell`; neither the public registry nor the generic loader gains
+  an eighth product.
 - Observe-mode canary precedes the separate activation-only commit.
 - Documentation states C/C++ scope, first-use network behavior, memory/cache expectations, and the fork-instrumentation limitation.
 - Every required AGENTS.md verification suite and manual browser check has passed before anyone claims the branch complete.

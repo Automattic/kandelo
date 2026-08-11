@@ -39,6 +39,18 @@ At design time:
 - During implementation-plan review that active worktree advanced to
   `81c48a9122a44326f4815d74125e0cdda884863d`, 66 commits ahead. The later
   audit was read-only; the worktree remained dirty and user-owned.
+- During final snapshot verification it advanced independently again to
+  `d52b9bea299ca3c6dc66fcf644c6de9fec033fca`, 68 commits ahead. Commits
+  `38882013c` and `d52b9bea2` add final-site assembly from admitted VFS
+  products, a canonical browser product loader, and an exact product-to-gallery
+  authority. This design was reconciled to those Phase B interfaces without
+  modifying the staging worktree.
+- At the final read-only check, that worktree also contained uncommitted work on
+  hosted hold retention and newest-run enforcement. Those edits remain
+  user-owned and are not a stable implementation base. The delivery sequence
+  nevertheless preserves the relevant invariant: a pre-admission hold is not a
+  ready result, and only a fresh post-admission ready canary may authorize
+  activation.
 - That staging work defines canonical VFS product manifests, candidate and
   canonical Homebrew namespaces, admission records, exact product evidence,
   a Pages-owned product registry, and last-complete-site atomic deployment.
@@ -127,6 +139,18 @@ The current staging contract requires canonical Pages product-image inputs to
 be embedded, while Homebrew bottle inputs explicitly support lazy-reference
 materialization.
 
+Phase B gives the final site builder a private, authenticated map of the seven
+canonical product VFS files. The Vite plugin replaces legacy VFS imports with
+canonical same-origin product paths, the builder copies exactly those seven
+files into the final Pages tree, and the browser product loader verifies byte
+count and SHA-256 before exposing their bytes. The private map and private
+filesystem paths are build inputs only and never become public site files.
+
+The reviewed Pages gallery registry maps `c-dev` to
+`browser-main-shell` alongside the other shell presentations. It does not add
+another entry to the seven-product registry or another VFS URL to the browser
+loader.
+
 The resulting ownership boundaries are:
 
 | Owner | Responsibility |
@@ -136,7 +160,7 @@ The resulting ownership boundaries are:
 | `browser-main-shell` product | Selection of the lazy SDK closure, boot contract, and exact final VFS metadata |
 | SDK wrappers | Compiler/linker flags, target paths, glue selection, and user-facing command behavior |
 | Browser gallery | Entry-point presentation, preset-triggered prefetch, progress, sample setup, and convenience environment |
-| Pages readiness | Canonical recomposition, Node/browser evidence, complete-site inventory, and atomic activation |
+| Pages readiness and site builder | Canonical recomposition, Node/browser evidence, private product-map validation, complete-site assembly/inventory, and atomic activation |
 
 No browser module may know individual compiler binary URLs, copy compiler
 files into the VFS, or merge a second SDK image during boot.
@@ -281,10 +305,16 @@ The coordinated delivery flow is:
 6. Let Pages readiness authenticate every selected admission and canonical
    composition descriptor, replace candidate references with their admitted
    GHCR identities, recompose the shell, rerun Node and browser product
-   evidence, and produce the exact Pages site inventory. No legacy
-   closed-selection or bottle-mirror release participates in this path.
+   evidence, and pass the exact seven sealed products through the private
+   product map to the final site builder. No legacy closed-selection or
+   bottle-mirror release participates in this path.
 7. Activate the new complete site atomically. If any required input or
    evidence is missing, retain the previous complete site.
+
+A hosted canary produced before step 5 may retain a bounded hold result for
+diagnosis, but it cannot stand in for step 6 readiness. After promotion and
+admission, rerun the canary against the exact integrated source and tap
+identities and require a new ready result before activation.
 
 GitHub Pages therefore carries the browser application and compact shell VFS.
 GHCR carries the compiler and SDK bottle payloads. PR prereleases may retain
@@ -370,6 +400,11 @@ Chromium evidence proves both entry points:
 - A held revision cannot replace the current-site selection.
 - A complete revision includes the exact shell VFS identity and every bound
   runtime-evidence receipt.
+- The final site builder consumes the authenticated private product map,
+  publishes exactly seven canonical product paths, and does not publish that
+  map or any private source path.
+- The Pages gallery maps C development to `browser-main-shell`; the canonical
+  browser loader has no eighth product entry.
 - The published Pages inventory remains below the repository's guarded size
   limit; lazy GHCR payload bytes are not copied into that inventory.
 

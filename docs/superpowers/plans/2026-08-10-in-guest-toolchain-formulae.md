@@ -11,7 +11,9 @@
 ## Global Constraints
 
 - Work in new clean worktrees created with the superpowers:using-git-worktrees skill; never modify the active dirty `emdash/homebrew-pr-staging-1q1w6` or `emdash/homebrew-tap-abi-staging-reconcile-1q1w6` worktrees.
-- The Kandelo base must contain `4f7b75b69` and the completed final admitted-product Pages site plan; the tap base must contain `b6a8bb8`.
+- The Kandelo base must contain `d52b9bea2` (commit
+  `[Pages] Preserve Phase B product authority`), including final site assembly
+  from the private canonical product map; the tap base must contain `b6a8bb8`.
 - Initial public language scope is C and C++ on wasm32 only.
 - LLVM, Clang, LLD, resource headers, and matching host table-generation tools are version 21.1.7.
 - Host CMake, Ninja, Python, and table-generation tools are build inputs only and must not appear in either runtime bottle.
@@ -33,7 +35,14 @@
 2. Before dispatching reconciliation, complete the shell plan through protected Node evidence and the Pages plan through protected browser evidence. The exact Kandelo request head must contain the `browser-main-shell` lazy selection plus `main-shell-toolchain-node` and `main-shell-toolchain-browser` definitions.
 3. Let staging select and verify `libcxx/wasm32`, build and verify `clang`, then `kandelo-sdk`, compose the candidate shell, and publish the exact Node/browser product-evidence record.
 4. Merge source changes in the staging-prescribed order. Promotion may then project `runtime_support = ["node", "browser"]` and `browser_compatible = true`, publish canonical layers, and issue immutable admissions.
-5. Finish canonical shell locks, Pages readiness, and public activation only after anonymous readback succeeds for all three admissions.
+5. Finish canonical shell locks, Pages readiness, exact-seven final-site
+   assembly through the private product map, and public activation only after
+   anonymous readback succeeds for all three admissions.
+
+If the hosted Pages canary runs while step 3 is still waiting on promotion, its
+bounded hold result is diagnostic only. Do not call it ready or use it for
+activation; rerun the canary after step 4 and require the exact post-admission
+ready result.
 
 ## File and Interface Map
 

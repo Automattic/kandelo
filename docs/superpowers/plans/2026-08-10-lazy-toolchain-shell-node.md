@@ -14,7 +14,9 @@
 - Execute Task 5's documentation and branch gate after Tasks 1–4. Canonical
   post-admission recomposition and final evidence belong to the Pages plan,
   which consumes the Formula admissions directly.
-- Use a new clean Kandelo worktree based on a revision containing `4f7b75b69` and the completed final admitted-product Pages site plan; never edit the active dirty staging worktree.
+- Use a new clean Kandelo worktree based on a revision containing `d52b9bea2`
+  (`[Pages] Preserve Phase B product authority`) and its final-site builder;
+  never edit the active dirty staging worktree.
 - `browser-main-shell` remains the sole shell product. Do not add `browser-c-development` or another Pages VFS product.
 - `kandelo-sdk` is lazy. Its bottle and every toolchain dependency bottle must remain unread during ordinary shell boot.
 - The prefetch API accepts full Formula names only. It derives dependencies and activation roots from the sealed guest composition.
@@ -53,7 +55,7 @@
 Run before Task 1:
 
 ~~~bash
-git merge-base --is-ancestor 4f7b75b69 HEAD
+git merge-base --is-ancestor d52b9bea2 HEAD
 rg -n "MAP_SHARED|flush.*mmap|munmap" host/src/kernel-worker.ts \
   programs/mmap_shared_test.c host/test
 rg -n "ABI.*export|parse.*abi" host/src/worker-main.ts \
@@ -105,12 +107,17 @@ export interface HomebrewPackagePrefetchResult {
   alreadyMaterializedPackages: string[];
 }
 
-prefetchHomebrewPackages(
-  roots: readonly string[],
-): Promise<HomebrewPackagePrefetchResult>;
+export interface HomebrewPackagePrefetchApi {
+  prefetchHomebrewPackages(
+    roots: readonly string[],
+  ): Promise<HomebrewPackagePrefetchResult>;
+}
 ~~~
 
-Formula names are full names such as `kandelo-dev/tap-core/kandelo-sdk`. Result package order is dependency-first and deterministic.
+`NodeKernelHost` and `BrowserKernel` implement the same structural API; this
+does not require callers to depend on a common concrete host class. Formula
+names are full names such as `kandelo-dev/tap-core/kandelo-sdk`. Result package
+order is dependency-first and deterministic.
 
 ## Task 1: Add the worker-owned package-closure prefetch API
 
