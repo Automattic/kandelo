@@ -1,0 +1,18 @@
+{
+  "name": "kandelo-web-scratch-consumer",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Minimal Vite app proving @kandelo/web installs and runs from a clean project (acceptance harness).",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@kandelo/web": "file:../.."
+  },
+  "devDependencies": {
+    "vite": "^8.0.0"
+  }
+}

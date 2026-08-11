@@ -744,6 +744,10 @@ case "$suite" in
             *) invalid_group ;;
         esac
         install_node_deps
+        (
+            cd web-libs/kandelo-web
+            npm ci --no-audit --no-fund
+        )
 
         # The ordinary shards exclude each whole declared file. Prove that the
         # manifest is a bijection with the file's live Vitest inventory before
