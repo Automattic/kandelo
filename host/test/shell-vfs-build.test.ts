@@ -341,6 +341,38 @@ describe("shell VFS base composition", () => {
       expect(source, builder).toContain("saveShellDerivedVfsImage(");
       expect(source, builder).not.toMatch(/\bsaveImage\(/);
     }
+
+    const packageRegistry = join(import.meta.dirname, "../../packages/registry");
+    const packageNames = [
+      "lamp",
+      "nginx-php-vfs",
+      "nginx-vfs",
+      "node-vfs",
+      "wordpress",
+    ] as const;
+    const shellDerivedRevisions = Object.fromEntries(packageNames.map((name) => {
+      const build = readFileSync(join(packageRegistry, name, "build.toml"), "utf8");
+      const revision = /^revision\s*=\s*([1-9][0-9]*)$/m.exec(build);
+      expect(revision, `${name} revision`).not.toBeNull();
+      expect(build, `${name} authored commit`).toMatch(
+        /^commit\s*=\s*"UNPUBLISHED"$/m,
+      );
+      for (const input of [
+        "images/vfs/scripts/shell-vfs-build.ts",
+        "web-libs/kandelo-session/src/demo-config.ts",
+        "web-libs/kandelo-session/src/shell-config.ts",
+      ]) {
+        expect(build, `${name} cache input`).toContain(`"${input}"`);
+      }
+      return [name, Number(revision![1])] as const;
+    }));
+    expect(shellDerivedRevisions).toEqual({
+      lamp: 12,
+      "nginx-php-vfs": 3,
+      "nginx-vfs": 3,
+      "node-vfs": 15,
+      wordpress: 13,
+    });
   });
 
   it("rebases a serialized source larger than the downstream capacity", async () => {
