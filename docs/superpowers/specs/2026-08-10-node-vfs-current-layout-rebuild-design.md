@@ -7,9 +7,9 @@ Approved direction, pending implementation.
 ## Why
 
 The published ABI-42 `node-vfs` revision 14 image was composed from the
-retired lazy Homebrew shell. Its deferred bottle trees describe files under
-`/home/linuxbrew/.linuxbrew`, while the current host relocates receipt-owned
-Homebrew files for `/opt/kandelo/homebrew`. When the old image first
+retired lazy Homebrew shell. Its deferred bottle trees use the retired guest
+Homebrew prefix, while the current host relocates receipt-owned Homebrew files
+for `/opt/kandelo/homebrew`. When the old image first
 materializes a changed bottle member, the bytes no longer match the size and
 digest registered in the image. The VFS rejects the tree before `npm` runs.
 
