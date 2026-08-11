@@ -2943,6 +2943,36 @@ fn try_open_fifo(
     .map(Some)
 }
 
+/// Publish one new PTY endpoint OFD as an fd, undoing both ownership layers
+/// if the descriptor table rejects publication.
+fn publish_pty_fd(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    file_type: FileType,
+    pty_idx: usize,
+    status_flags: u32,
+    fd_flags: u32,
+    path: Vec<u8>,
+) -> Result<i32, Errno> {
+    let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
+    match file_type {
+        FileType::PtyMaster => pty.master_refs += 1,
+        FileType::PtySlave => pty.slave_refs += 1,
+        _ => return Err(Errno::EINVAL),
+    }
+    let ofd_idx = proc
+        .ofd_table
+        .create(file_type, status_flags, pty_idx as i64, path);
+    match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
+        Ok(fd) => Ok(fd),
+        Err(error) => {
+            let cleanup = release_ofd_reference_impl(proc, None, host, ofd_idx);
+            debug_assert!(cleanup.is_ok(), "PTY publication rollback failed");
+            Err(error)
+        }
+    }
+}
+
 /// Open a file, returning the new file descriptor number.
 pub fn sys_open(
     proc: &mut Process,
@@ -3048,15 +3078,17 @@ pub fn sys_open(
     if resolved == b"/dev/ptmx" {
         let pty_idx = crate::pty::alloc_pty(proc.effective_uid(), proc.effective_gid())
             .ok_or(Errno::ENOSPC)?;
-        let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
-        pty.master_refs += 1;
         let status_flags = oflags & !CREATION_FLAGS;
-        let ofd_idx =
-            proc.ofd_table
-                .create(FileType::PtyMaster, status_flags, pty_idx as i64, resolved);
         let fd_flags = oflags_to_fd_flags(oflags);
-        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
-        return Ok(fd);
+        return publish_pty_fd(
+            proc,
+            host,
+            FileType::PtyMaster,
+            pty_idx,
+            status_flags,
+            fd_flags,
+            resolved,
+        );
     }
 
     // /dev/pts/N — open PTY slave
@@ -3067,40 +3099,53 @@ pub fn sys_open(
         if pty.locked {
             return Err(Errno::EIO); // must call unlockpt first
         }
-        let stat = pty_pair_stat(pty_idx, pty.owner_uid(), pty.owner_gid());
+        let stat = pty_pair_stat(pty_idx).ok_or(Errno::ENOENT)?;
         check_access(proc, &stat, open_access_mask(oflags, &stat))?;
-        pty.slave_refs += 1;
         let status_flags = oflags & !CREATION_FLAGS;
-        let ofd_idx =
-            proc.ofd_table
-                .create(FileType::PtySlave, status_flags, pty_idx as i64, resolved);
         let fd_flags = oflags_to_fd_flags(oflags);
-        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
-        return Ok(fd);
+        return publish_pty_fd(
+            proc,
+            host,
+            FileType::PtySlave,
+            pty_idx,
+            status_flags,
+            fd_flags,
+            resolved,
+        );
     }
 
     // /dev/tty — open controlling terminal (alias for current session's PTY or stdin)
     if resolved == b"/dev/tty" {
         // Check if any open fd refers to a PTY slave — use that
-        let pty_ofd = proc.fd_table.iter().find_map(|(_, entry)| {
-            proc.ofd_table
-                .get(entry.ofd_ref.0)
-                .is_some_and(|ofd| ofd.file_type == FileType::PtySlave)
-                .then_some(entry.ofd_ref)
+        let pty_idx = proc.fd_table.iter().find_map(|(_, entry)| {
+            let ofd = proc.ofd_table.get(entry.ofd_ref.0)?;
+            (ofd.file_type == FileType::PtySlave).then_some(ofd.host_handle as usize)
         });
-        if let Some(ofd_ref) = pty_ofd {
-            proc.ofd_table.inc_ref(ofd_ref.0);
+        if let Some(pty_idx) = pty_idx {
+            let status_flags = oflags & !CREATION_FLAGS;
             let fd_flags = oflags_to_fd_flags(oflags);
-            let fd = proc.fd_table.alloc(ofd_ref, fd_flags)?;
-            return Ok(fd);
+            return publish_pty_fd(
+                proc,
+                host,
+                FileType::PtySlave,
+                pty_idx,
+                status_flags,
+                fd_flags,
+                resolved,
+            );
         }
         // Fallback: dup stdin (fd 0) as the controlling terminal
         if let Ok(entry) = proc.fd_table.get(0) {
             let ofd_ref = entry.ofd_ref;
             proc.ofd_table.inc_ref(ofd_ref.0);
             let fd_flags = oflags_to_fd_flags(oflags);
-            let fd = proc.fd_table.alloc(ofd_ref, fd_flags)?;
-            return Ok(fd);
+            return match proc.fd_table.alloc(ofd_ref, fd_flags) {
+                Ok(fd) => Ok(fd),
+                Err(error) => {
+                    proc.ofd_table.dec_ref(ofd_ref.0);
+                    Err(error)
+                }
+            };
         }
         return Err(Errno::ENXIO);
     }
@@ -6416,10 +6461,13 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
         // Other char devices — delegate to host. VFS is the source of truth
         // for ownership; host_fstat already returns the real uid/gid.
         host.host_fstat(ofd.host_handle)
-    } else if matches!(ofd.file_type, FileType::PtyMaster | FileType::PtySlave) {
+    } else if ofd.file_type == FileType::PtySlave && ofd.path == b"/dev/tty" {
+        match_pty_stat(b"/dev/tty").ok_or(Errno::EIO)
+    } else if ofd.file_type == FileType::PtySlave {
         let pty_idx = ofd.host_handle as usize;
-        let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
-        Ok(pty_pair_stat(pty_idx, pty.owner_uid(), pty.owner_gid()))
+        pty_pair_stat(pty_idx).ok_or(Errno::EIO)
+    } else if ofd.file_type == FileType::PtyMaster {
+        match_pty_stat(b"/dev/ptmx").ok_or(Errno::EIO)
     } else if ofd.file_type == FileType::MemFd {
         let memfd_idx = (-(ofd.host_handle + 1)) as usize;
         let size = crate::descriptor_backing::with_memfds(|table| {
@@ -6892,14 +6940,42 @@ pub fn sys_flock(
 use crate::process::{DirStream, ProcessState};
 use wasm_posix_shared::WasmDirent;
 
-fn pty_pair_stat(pty_idx: usize, uid: u32, gid: u32) -> WasmStat {
-    WasmStat {
+fn pty_slave_index(resolved: &[u8]) -> Option<usize> {
+    resolved
+        .strip_prefix(b"/dev/pts/")
+        .and_then(parse_ascii_usize)
+}
+
+/// Build devpts slave metadata from the one record owned by the live pair.
+/// Both path and descriptor stat flow through this helper.
+fn pty_pair_stat(pty_idx: usize) -> Option<WasmStat> {
+    let pty = crate::pty::get_pty(pty_idx)?;
+    Some(WasmStat {
         st_dev: 5,
         st_ino: 0x50545900 + pty_idx as u64,
-        st_mode: S_IFCHR | 0o620,
+        st_mode: S_IFCHR | pty.mode(),
         st_nlink: 1,
-        st_uid: uid,
-        st_gid: gid,
+        st_uid: pty.owner_uid(),
+        st_gid: pty.owner_gid(),
+        st_size: 0,
+        st_atime_sec: 0,
+        st_atime_nsec: 0,
+        st_mtime_sec: 0,
+        st_mtime_nsec: 0,
+        st_ctime_sec: 0,
+        st_ctime_nsec: 0,
+        _pad: 0,
+    })
+}
+
+fn pty_alias_stat(ino: u64) -> WasmStat {
+    WasmStat {
+        st_dev: 5,
+        st_ino: ino,
+        st_mode: S_IFCHR | crate::pty::DEFAULT_SLAVE_MODE,
+        st_nlink: 1,
+        st_uid: 0,
+        st_gid: 0,
         st_size: 0,
         st_atime_sec: 0,
         st_atime_nsec: 0,
@@ -6911,16 +6987,16 @@ fn pty_pair_stat(pty_idx: usize, uid: u32, gid: u32) -> WasmStat {
     }
 }
 
-/// Return stable PTY-pair metadata. The non-pair clone and controlling-device
-/// nodes are root-owned device metadata rather than observer-owned aliases.
+/// Return persistent devpts metadata or stable metadata for the distinct
+/// clone and controlling-device nodes.
 fn match_pty_stat(resolved: &[u8]) -> Option<WasmStat> {
-    if resolved == b"/dev/ptmx" || resolved == b"/dev/tty" {
-        return Some(pty_pair_stat(0, 0, 0));
+    if resolved == b"/dev/ptmx" {
+        return Some(pty_alias_stat(0x50544d58)); // "PTMX"
     }
-    let suffix = resolved.strip_prefix(b"/dev/pts/")?;
-    let pty_idx = parse_ascii_usize(suffix)?;
-    let pty = crate::pty::get_pty(pty_idx)?;
-    Some(pty_pair_stat(pty_idx, pty.owner_uid(), pty.owner_gid()))
+    if resolved == b"/dev/tty" {
+        return Some(pty_alias_stat(0x54545900)); // "TTY\0"
+    }
+    pty_pair_stat(pty_slave_index(resolved)?)
 }
 
 fn unix_socket_path_stat(
@@ -7452,11 +7528,31 @@ pub fn sys_chmod(
     mode: u32,
 ) -> Result<(), Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?.path;
+    if chmod_pty_path(proc, host, &resolved, mode)?.is_some() {
+        return Ok(());
+    }
     ensure_host_mutable_namespace_path(&resolved)?;
     check_search_path(proc, host, &resolved)?;
     let st = host.host_stat(&resolved)?;
     check_owner_or_root(proc, &st)?;
     host.host_chmod(&resolved, mode)
+}
+
+fn chmod_pty_path(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    resolved: &[u8],
+    mode: u32,
+) -> Result<Option<()>, Errno> {
+    let Some(pty_idx) = pty_slave_index(resolved) else {
+        return Ok(None);
+    };
+    check_search_path(proc, host, resolved)?;
+    let st = pty_pair_stat(pty_idx).ok_or(Errno::ENOENT)?;
+    check_owner_or_root(proc, &st)?;
+    let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::ENOENT)?;
+    pty.set_mode(mode);
+    Ok(Some(()))
 }
 
 const CHOWN_ID_UNCHANGED: u32 = u32::MAX;
@@ -7492,6 +7588,24 @@ fn prepare_chown_ids(
     ))
 }
 
+fn chown_pty_path(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    resolved: &[u8],
+    uid: u32,
+    gid: u32,
+) -> Result<Option<()>, Errno> {
+    let Some(pty_idx) = pty_slave_index(resolved) else {
+        return Ok(None);
+    };
+    check_search_path(proc, host, resolved)?;
+    let st = pty_pair_stat(pty_idx).ok_or(Errno::ENOENT)?;
+    let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
+    let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::ENOENT)?;
+    pty.set_owner(uid, gid);
+    Ok(Some(()))
+}
+
 pub fn sys_chown(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -7500,6 +7614,9 @@ pub fn sys_chown(
     gid: u32,
 ) -> Result<(), Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?.path;
+    if chown_pty_path(proc, host, &resolved, uid, gid)?.is_some() {
+        return Ok(());
+    }
     ensure_host_mutable_namespace_path(&resolved)?;
     check_search_path(proc, host, &resolved)?;
     let st = host.host_stat(&resolved)?;
@@ -7515,6 +7632,9 @@ pub fn sys_lchown(
     gid: u32,
 ) -> Result<(), Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?;
+    if chown_pty_path(proc, host, &resolved.path, uid, gid)?.is_some() {
+        return Ok(());
+    }
     ensure_host_mutable_namespace_path(&resolved.path)?;
     check_search_path(proc, host, &resolved.path)?;
     let st = resolved.stat.ok_or(Errno::ENOENT)?;
@@ -13808,15 +13928,17 @@ pub fn sys_openat(
     if resolved == b"/dev/ptmx" {
         let pty_idx = crate::pty::alloc_pty(proc.effective_uid(), proc.effective_gid())
             .ok_or(Errno::ENOSPC)?;
-        let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
-        pty.master_refs += 1;
         let status_flags = oflags & !CREATION_FLAGS;
-        let ofd_idx =
-            proc.ofd_table
-                .create(FileType::PtyMaster, status_flags, pty_idx as i64, resolved);
         let fd_flags = oflags_to_fd_flags(oflags);
-        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
-        return Ok(fd);
+        return publish_pty_fd(
+            proc,
+            host,
+            FileType::PtyMaster,
+            pty_idx,
+            status_flags,
+            fd_flags,
+            resolved,
+        );
     }
 
     // /dev/pts/N — open PTY slave
@@ -13827,38 +13949,51 @@ pub fn sys_openat(
         if pty.locked {
             return Err(Errno::EIO);
         }
-        let stat = pty_pair_stat(pty_idx, pty.owner_uid(), pty.owner_gid());
+        let stat = pty_pair_stat(pty_idx).ok_or(Errno::ENOENT)?;
         check_access(proc, &stat, open_access_mask(oflags, &stat))?;
-        pty.slave_refs += 1;
         let status_flags = oflags & !CREATION_FLAGS;
-        let ofd_idx =
-            proc.ofd_table
-                .create(FileType::PtySlave, status_flags, pty_idx as i64, resolved);
         let fd_flags = oflags_to_fd_flags(oflags);
-        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
-        return Ok(fd);
+        return publish_pty_fd(
+            proc,
+            host,
+            FileType::PtySlave,
+            pty_idx,
+            status_flags,
+            fd_flags,
+            resolved,
+        );
     }
 
     // /dev/tty — open controlling terminal
     if resolved == b"/dev/tty" {
-        let pty_ofd = proc.fd_table.iter().find_map(|(_, entry)| {
-            proc.ofd_table
-                .get(entry.ofd_ref.0)
-                .is_some_and(|ofd| ofd.file_type == FileType::PtySlave)
-                .then_some(entry.ofd_ref)
+        let pty_idx = proc.fd_table.iter().find_map(|(_, entry)| {
+            let ofd = proc.ofd_table.get(entry.ofd_ref.0)?;
+            (ofd.file_type == FileType::PtySlave).then_some(ofd.host_handle as usize)
         });
-        if let Some(ofd_ref) = pty_ofd {
-            proc.ofd_table.inc_ref(ofd_ref.0);
+        if let Some(pty_idx) = pty_idx {
+            let status_flags = oflags & !CREATION_FLAGS;
             let fd_flags = oflags_to_fd_flags(oflags);
-            let fd = proc.fd_table.alloc(ofd_ref, fd_flags)?;
-            return Ok(fd);
+            return publish_pty_fd(
+                proc,
+                host,
+                FileType::PtySlave,
+                pty_idx,
+                status_flags,
+                fd_flags,
+                resolved,
+            );
         }
         if let Ok(entry) = proc.fd_table.get(0) {
             let ofd_ref = entry.ofd_ref;
             proc.ofd_table.inc_ref(ofd_ref.0);
             let fd_flags = oflags_to_fd_flags(oflags);
-            let fd = proc.fd_table.alloc(ofd_ref, fd_flags)?;
-            return Ok(fd);
+            return match proc.fd_table.alloc(ofd_ref, fd_flags) {
+                Ok(fd) => Ok(fd),
+                Err(error) => {
+                    proc.ofd_table.dec_ref(ofd_ref.0);
+                    Err(error)
+                }
+            };
         }
         return Err(Errno::ENXIO);
     }
@@ -13996,6 +14131,9 @@ pub fn sys_fstatat(
             proc.effective_uid(),
             proc.effective_gid(),
         ));
+    }
+    if let Some(st) = match_pty_stat(&resolved) {
+        return Ok(st);
     }
     if let Some(target_fd) = match_dev_fd(&resolved) {
         if flags & AT_SYMLINK_NOFOLLOW != 0 {
@@ -15978,7 +16116,18 @@ pub fn sys_fchmod(
             check_owner_or_root(proc, &st)?;
             host.host_fchmod(ofd.host_handle, mode)
         }
-        // CharDevice / Pipe / Socket / PtyMaster / PtySlave / etc.: Linux
+        FileType::PtySlave => {
+            if ofd.path == b"/dev/tty" {
+                return Ok(());
+            }
+            let pty_idx = usize::try_from(ofd.host_handle).map_err(|_| Errno::EIO)?;
+            let st = pty_pair_stat(pty_idx).ok_or(Errno::EIO)?;
+            check_owner_or_root(proc, &st)?;
+            let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
+            pty.set_mode(mode);
+            Ok(())
+        }
+        // CharDevice / Pipe / Socket / PtyMaster / etc.: Linux
         // allows fchmod on these (e.g. on /dev/stderr or a unix-domain
         // socket fd — daemons like dinit do this routinely and abort on
         // EINVAL). The mode change has no observable effect for kernel-
@@ -16031,6 +16180,17 @@ pub fn sys_fchown(
             let st = host.host_fstat(ofd.host_handle)?;
             let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
             host.host_fchown(ofd.host_handle, uid, gid)
+        }
+        FileType::PtySlave => {
+            if ofd.path == b"/dev/tty" {
+                return Ok(());
+            }
+            let pty_idx = usize::try_from(ofd.host_handle).map_err(|_| Errno::EIO)?;
+            let st = pty_pair_stat(pty_idx).ok_or(Errno::EIO)?;
+            let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
+            let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
+            pty.set_owner(uid, gid);
+            Ok(())
         }
         // Match sys_fchmod above — accept the call on kernel-owned fd types
         // whose ownership metadata is not independently mutable. Regular
@@ -16166,6 +16326,9 @@ pub fn sys_fchmodat(
     _flags: u32,
 ) -> Result<(), Errno> {
     let resolved = resolve_at_path(proc, host, dirfd, path, PathResolveOptions::FOLLOW)?.path;
+    if chmod_pty_path(proc, host, &resolved, mode)?.is_some() {
+        return Ok(());
+    }
     ensure_host_mutable_namespace_path(&resolved)?;
     check_search_path(proc, host, &resolved)?;
     let st = host.host_stat(&resolved)?;
@@ -16195,6 +16358,9 @@ pub fn sys_fchownat(
         PathResolveOptions::FOLLOW
     };
     let resolved = resolve_at_path(proc, host, dirfd, path, options)?;
+    if chown_pty_path(proc, host, &resolved.path, uid, gid)?.is_some() {
+        return Ok(());
+    }
     ensure_host_mutable_namespace_path(&resolved.path)?;
     check_search_path(proc, host, &resolved.path)?;
     let st = resolved.stat.ok_or(Errno::ENOENT)?;
@@ -17109,6 +17275,35 @@ mod tests {
             sgid: rgid,
             supplementary_groups: supplementary_groups.to_vec(),
         });
+    }
+
+    fn assert_same_stat(actual: &WasmStat, expected: &WasmStat) {
+        assert_eq!(actual.st_dev, expected.st_dev);
+        assert_eq!(actual.st_ino, expected.st_ino);
+        assert_eq!(actual.st_mode, expected.st_mode);
+        assert_eq!(actual.st_nlink, expected.st_nlink);
+        assert_eq!(actual.st_uid, expected.st_uid);
+        assert_eq!(actual.st_gid, expected.st_gid);
+        assert_eq!(actual.st_size, expected.st_size);
+        assert_eq!(actual.st_atime_sec, expected.st_atime_sec);
+        assert_eq!(actual.st_atime_nsec, expected.st_atime_nsec);
+        assert_eq!(actual.st_mtime_sec, expected.st_mtime_sec);
+        assert_eq!(actual.st_mtime_nsec, expected.st_mtime_nsec);
+        assert_eq!(actual.st_ctime_sec, expected.st_ctime_sec);
+        assert_eq!(actual.st_ctime_nsec, expected.st_ctime_nsec);
+    }
+
+    fn open_test_path(
+        proc: &mut Process,
+        host: &mut MockHostIO,
+        path: &[u8],
+        use_openat: bool,
+    ) -> Result<i32, Errno> {
+        if use_openat {
+            sys_openat(proc, host, AT_FDCWD, path, O_RDWR, 0)
+        } else {
+            sys_open(proc, host, path, O_RDWR, 0)
+        }
     }
 
     struct PtyFixture {
@@ -18637,6 +18832,530 @@ mod tests {
         let mut root = Process::new(27);
         assert!(sys_open(&mut root, &mut host, &slave_path, O_RDWR, 0).is_ok());
         crate::pty::free_pty(pty_idx);
+    }
+
+    #[test]
+    fn pty_master_metadata_does_not_alias_the_devpts_slave() {
+        let _pty_table = crate::pty::test_table_lock();
+        let mut host = MockHostIO::new();
+        let mut creator = Process::new(28);
+        set_test_credentials(&mut creator, 1000, 1000, 2000, 2000, &[]);
+        let master_fd = sys_open(&mut creator, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+        let master_ofd = creator.fd_table.get(master_fd).unwrap().ofd_ref.0;
+        let pty_idx = creator.ofd_table.get(master_ofd).unwrap().host_handle as usize;
+        crate::pty::get_pty(pty_idx).unwrap().locked = false;
+        let slave_path = format!("/dev/pts/{pty_idx}").into_bytes();
+
+        let master_path_stat = sys_stat(&mut creator, &mut host, b"/dev/ptmx").unwrap();
+        let master_fd_stat = sys_fstat(&creator, &mut host, master_fd).unwrap();
+        let slave_stat = sys_stat(&mut creator, &mut host, &slave_path).unwrap();
+
+        assert_same_stat(&master_fd_stat, &master_path_stat);
+        assert_eq!(
+            (master_fd_stat.st_uid, master_fd_stat.st_gid),
+            (0, 0),
+            "the master endpoint is /dev/ptmx, not its allocated slave",
+        );
+        assert_eq!(
+            (slave_stat.st_uid, slave_stat.st_gid),
+            (1000, 2000),
+        );
+        assert_ne!(
+            master_fd_stat.st_ino, slave_stat.st_ino,
+            "the clone node and allocated slave are distinct devices",
+        );
+
+        sys_fchmod(&mut creator, &mut host, master_fd, 0o777).unwrap();
+        sys_fchown(&mut creator, &mut host, master_fd, 77, 88).unwrap();
+        assert_same_stat(
+            &sys_stat(&mut creator, &mut host, &slave_path).unwrap(),
+            &slave_stat,
+        );
+        sys_close(&mut creator, &mut host, master_fd).unwrap();
+        assert!(crate::pty::get_pty(pty_idx).is_none());
+    }
+
+    #[test]
+    fn pty_slave_fstatat_and_statx_use_the_live_pair_record() {
+        let _pty_table = crate::pty::test_table_lock();
+        let mut host = MockHostIO::new();
+        let mut owner = Process::new(28_100);
+        set_test_credentials(&mut owner, 1000, 1000, 2000, 2000, &[]);
+        let master_fd = sys_open(&mut owner, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+        let master_ofd = owner.fd_table.get(master_fd).unwrap().ofd_ref.0;
+        let pty_idx = owner.ofd_table.get(master_ofd).unwrap().host_handle as usize;
+        crate::pty::get_pty(pty_idx).unwrap().locked = false;
+        let slave_path = format!("/dev/pts/{pty_idx}").into_bytes();
+        let slave_fd = sys_open(&mut owner, &mut host, &slave_path, O_RDWR, 0).unwrap();
+
+        sys_chmod(&mut owner, &mut host, &slave_path, 0o640).unwrap();
+        set_test_credentials(&mut owner, 0, 0, 0, 0, &[]);
+        sys_chown(&mut owner, &mut host, &slave_path, 1200, 2200).unwrap();
+        let expected = sys_stat(&mut owner, &mut host, &slave_path).unwrap();
+        assert_eq!(
+            (expected.st_mode & 0o7777, expected.st_uid, expected.st_gid),
+            (0o640, 1200, 2200),
+        );
+
+        let via_fstatat =
+            sys_fstatat(&mut owner, &mut host, AT_FDCWD, &slave_path, 0).unwrap();
+        assert_same_stat(&via_fstatat, &expected);
+        let via_statx =
+            sys_statx(&mut owner, &mut host, AT_FDCWD, &slave_path, 0, u32::MAX).unwrap();
+        assert_same_stat(&via_statx, &expected);
+
+        sys_close(&mut owner, &mut host, slave_fd).unwrap();
+        sys_close(&mut owner, &mut host, master_fd).unwrap();
+        assert!(crate::pty::get_pty(pty_idx).is_none());
+    }
+
+    #[test]
+    fn dev_tty_fd_keeps_control_alias_identity_and_cannot_mutate_slave() {
+        let _pty_table = crate::pty::test_table_lock();
+        let mut host = MockHostIO::new();
+        let mut owner = Process::new(28_200);
+        set_test_credentials(&mut owner, 1000, 1000, 2000, 2000, &[]);
+        let master_fd = sys_open(&mut owner, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+        let master_ofd = owner.fd_table.get(master_fd).unwrap().ofd_ref.0;
+        let pty_idx = owner.ofd_table.get(master_ofd).unwrap().host_handle as usize;
+        crate::pty::get_pty(pty_idx).unwrap().locked = false;
+        let slave_path = format!("/dev/pts/{pty_idx}").into_bytes();
+        let slave_fd = sys_open(&mut owner, &mut host, &slave_path, O_RDWR, 0).unwrap();
+        let slave_before = sys_stat(&mut owner, &mut host, &slave_path).unwrap();
+
+        set_test_credentials(&mut owner, 0, 0, 0, 0, &[]);
+        let tty_path = sys_stat(&mut owner, &mut host, b"/dev/tty").unwrap();
+        let tty_fd = sys_open(&mut owner, &mut host, b"/dev/tty", O_RDWR, 0).unwrap();
+        assert_ne!(
+            owner.fd_table.get(tty_fd).unwrap().ofd_ref,
+            owner.fd_table.get(slave_fd).unwrap().ofd_ref,
+            "/dev/tty must be a distinct open description, not a dup of the slave",
+        );
+        assert_same_stat(&sys_fstat(&owner, &mut host, tty_fd).unwrap(), &tty_path);
+        assert_ne!(tty_path.st_ino, slave_before.st_ino);
+
+        sys_fchmod(&mut owner, &mut host, tty_fd, 0o777).unwrap();
+        sys_fchown(&mut owner, &mut host, tty_fd, 77, 88).unwrap();
+        assert_same_stat(&sys_fstat(&owner, &mut host, tty_fd).unwrap(), &tty_path);
+        assert_same_stat(
+            &sys_stat(&mut owner, &mut host, &slave_path).unwrap(),
+            &slave_before,
+        );
+        assert_same_stat(
+            &sys_fstat(&owner, &mut host, slave_fd).unwrap(),
+            &slave_before,
+        );
+
+        sys_close(&mut owner, &mut host, tty_fd).unwrap();
+        sys_close(&mut owner, &mut host, slave_fd).unwrap();
+        sys_close(&mut owner, &mut host, master_fd).unwrap();
+        assert!(crate::pty::get_pty(pty_idx).is_none());
+    }
+
+    #[test]
+    fn pty_master_emfile_rolls_back_open_and_openat_lifetime() {
+        let _pty_table = crate::pty::test_table_lock();
+        for use_openat in [false, true] {
+            let mut host = MockHostIO::new();
+            let mut proc = Process::new(if use_openat { 28_301 } else { 28_300 });
+            proc.fd_table.set_max_fds(3);
+            let live_ofds_before = proc.ofd_table.iter().count();
+
+            assert_eq!(
+                open_test_path(&mut proc, &mut host, b"/dev/ptmx", use_openat),
+                Err(Errno::EMFILE),
+            );
+            assert_eq!(proc.ofd_table.iter().count(), live_ofds_before);
+            assert!(
+                crate::pty::get_pty(0).is_none(),
+                "failed master publication must destroy the unreferenced pair",
+            );
+
+            proc.fd_table.set_max_fds(4);
+            let master_fd =
+                open_test_path(&mut proc, &mut host, b"/dev/ptmx", use_openat).unwrap();
+            let master_ofd = proc.fd_table.get(master_fd).unwrap().ofd_ref.0;
+            assert_eq!(master_ofd, live_ofds_before);
+            assert_eq!(proc.ofd_table.get(master_ofd).unwrap().host_handle, 0);
+            sys_close(&mut proc, &mut host, master_fd).unwrap();
+            assert_eq!(proc.ofd_table.iter().count(), live_ofds_before);
+            assert!(crate::pty::get_pty(0).is_none());
+        }
+    }
+
+    #[test]
+    fn pty_slave_emfile_rolls_back_open_and_openat_lifetime() {
+        let _pty_table = crate::pty::test_table_lock();
+        for use_openat in [false, true] {
+            let mut host = MockHostIO::new();
+            let mut proc = Process::new(if use_openat { 28_401 } else { 28_400 });
+            let master_fd = sys_open(&mut proc, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+            let master_ofd = proc.fd_table.get(master_fd).unwrap().ofd_ref.0;
+            let pty_idx = proc.ofd_table.get(master_ofd).unwrap().host_handle as usize;
+            assert_eq!(pty_idx, 0);
+            crate::pty::get_pty(pty_idx).unwrap().locked = false;
+            let slave_path = format!("/dev/pts/{pty_idx}").into_bytes();
+            proc.fd_table.set_max_fds(4);
+            let live_ofds_before = proc.ofd_table.iter().count();
+
+            assert_eq!(
+                open_test_path(&mut proc, &mut host, &slave_path, use_openat),
+                Err(Errno::EMFILE),
+            );
+            assert_eq!(proc.ofd_table.iter().count(), live_ofds_before);
+            assert_eq!(crate::pty::get_pty(pty_idx).unwrap().slave_refs, 0);
+
+            proc.fd_table.set_max_fds(5);
+            let slave_fd =
+                open_test_path(&mut proc, &mut host, &slave_path, use_openat).unwrap();
+            let slave_ofd = proc.fd_table.get(slave_fd).unwrap().ofd_ref.0;
+            assert_eq!(slave_ofd, live_ofds_before);
+            sys_close(&mut proc, &mut host, slave_fd).unwrap();
+            assert_eq!(proc.ofd_table.iter().count(), live_ofds_before);
+            sys_close(&mut proc, &mut host, master_fd).unwrap();
+            assert!(crate::pty::get_pty(pty_idx).is_none());
+
+            let replacement = sys_open(&mut proc, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+            let replacement_ofd = proc.fd_table.get(replacement).unwrap().ofd_ref.0;
+            assert_eq!(proc.ofd_table.get(replacement_ofd).unwrap().host_handle, 0);
+            sys_close(&mut proc, &mut host, replacement).unwrap();
+        }
+    }
+
+    #[test]
+    fn dev_tty_emfile_rolls_back_open_and_openat_lifetime() {
+        let _pty_table = crate::pty::test_table_lock();
+        for use_openat in [false, true] {
+            let mut host = MockHostIO::new();
+            let mut proc = Process::new(if use_openat { 28_501 } else { 28_500 });
+            let master_fd = sys_open(&mut proc, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+            let master_ofd = proc.fd_table.get(master_fd).unwrap().ofd_ref.0;
+            let pty_idx = proc.ofd_table.get(master_ofd).unwrap().host_handle as usize;
+            assert_eq!(pty_idx, 0);
+            crate::pty::get_pty(pty_idx).unwrap().locked = false;
+            let slave_path = format!("/dev/pts/{pty_idx}").into_bytes();
+            let slave_fd = sys_open(&mut proc, &mut host, &slave_path, O_RDWR, 0).unwrap();
+            proc.fd_table.set_max_fds(5);
+            let live_ofds_before = proc.ofd_table.iter().count();
+
+            assert_eq!(
+                open_test_path(&mut proc, &mut host, b"/dev/tty", use_openat),
+                Err(Errno::EMFILE),
+            );
+            assert_eq!(proc.ofd_table.iter().count(), live_ofds_before);
+            assert_eq!(crate::pty::get_pty(pty_idx).unwrap().slave_refs, 1);
+
+            proc.fd_table.set_max_fds(6);
+            let tty_fd =
+                open_test_path(&mut proc, &mut host, b"/dev/tty", use_openat).unwrap();
+            let tty_ofd = proc.fd_table.get(tty_fd).unwrap().ofd_ref.0;
+            assert_eq!(tty_ofd, live_ofds_before);
+            sys_close(&mut proc, &mut host, tty_fd).unwrap();
+            assert_eq!(proc.ofd_table.iter().count(), live_ofds_before);
+            sys_close(&mut proc, &mut host, slave_fd).unwrap();
+            sys_close(&mut proc, &mut host, master_fd).unwrap();
+            assert!(crate::pty::get_pty(pty_idx).is_none());
+
+            proc.fd_table.set_max_fds(4);
+            let replacement = sys_open(&mut proc, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+            let replacement_ofd = proc.fd_table.get(replacement).unwrap().ofd_ref.0;
+            assert_eq!(proc.ofd_table.get(replacement_ofd).unwrap().host_handle, 0);
+            sys_close(&mut proc, &mut host, replacement).unwrap();
+        }
+    }
+
+    #[test]
+    fn dev_tty_stdin_fallback_emfile_rolls_back_ofd_reference() {
+        for use_openat in [false, true] {
+            let mut host = MockHostIO::new();
+            let mut proc = Process::new(if use_openat { 28_601 } else { 28_600 });
+            let stdin_ofd = proc.fd_table.get(0).unwrap().ofd_ref.0;
+            let refs_before = proc.ofd_table.get(stdin_ofd).unwrap().ref_count;
+            proc.fd_table.set_max_fds(3);
+
+            assert_eq!(
+                open_test_path(&mut proc, &mut host, b"/dev/tty", use_openat),
+                Err(Errno::EMFILE),
+            );
+            assert_eq!(
+                proc.ofd_table.get(stdin_ofd).unwrap().ref_count,
+                refs_before,
+            );
+
+            proc.fd_table.set_max_fds(4);
+            let tty_fd =
+                open_test_path(&mut proc, &mut host, b"/dev/tty", use_openat).unwrap();
+            assert_eq!(proc.fd_table.get(tty_fd).unwrap().ofd_ref.0, stdin_ofd);
+            assert_eq!(
+                proc.ofd_table.get(stdin_ofd).unwrap().ref_count,
+                refs_before + 1,
+            );
+            sys_close(&mut proc, &mut host, tty_fd).unwrap();
+            assert_eq!(
+                proc.ofd_table.get(stdin_ofd).unwrap().ref_count,
+                refs_before,
+            );
+        }
+    }
+
+    #[test]
+    fn pty_slave_metadata_mutations_are_persistent_authorized_and_atomic() {
+        let _pty_table = crate::pty::test_table_lock();
+        let mut host = MockHostIO::new();
+        let mut owner = Process::new(29);
+        set_test_credentials(&mut owner, 1000, 1000, 2000, 2000, &[3000, 4000]);
+        let master_fd = sys_open(&mut owner, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+        let master_ofd = owner.fd_table.get(master_fd).unwrap().ofd_ref.0;
+        let pty_idx = owner.ofd_table.get(master_ofd).unwrap().host_handle as usize;
+        crate::pty::get_pty(pty_idx).unwrap().locked = false;
+        let slave_path = format!("/dev/pts/{pty_idx}").into_bytes();
+        let slave_fd = sys_open(&mut owner, &mut host, &slave_path, O_RDWR, 0).unwrap();
+
+        let initial = sys_stat(&mut owner, &mut host, &slave_path).unwrap();
+        assert_eq!(
+            (initial.st_mode & 0o7777, initial.st_uid, initial.st_gid),
+            (0o620, 1000, 2000),
+        );
+        assert_same_stat(&sys_fstat(&owner, &mut host, slave_fd).unwrap(), &initial);
+
+        set_test_credentials(&mut owner, 9000, 9000, 9000, 9000, &[]);
+        assert_eq!(
+            sys_chmod(&mut owner, &mut host, &slave_path, 0o600),
+            Err(Errno::EPERM),
+        );
+        assert_eq!(
+            sys_fchmod(&mut owner, &mut host, slave_fd, 0o600),
+            Err(Errno::EPERM),
+        );
+        assert_eq!(
+            sys_chown(
+                &mut owner,
+                &mut host,
+                &slave_path,
+                CHOWN_ID_UNCHANGED,
+                9000,
+            ),
+            Err(Errno::EPERM),
+        );
+        assert_eq!(
+            sys_lchown(
+                &mut owner,
+                &mut host,
+                &slave_path,
+                CHOWN_ID_UNCHANGED,
+                9000,
+            ),
+            Err(Errno::EPERM),
+        );
+        assert_eq!(
+            sys_fchown(
+                &mut owner,
+                &mut host,
+                slave_fd,
+                CHOWN_ID_UNCHANGED,
+                9000,
+            ),
+            Err(Errno::EPERM),
+        );
+        assert_same_stat(
+            &sys_stat(&mut owner, &mut host, &slave_path).unwrap(),
+            &initial,
+        );
+        assert_same_stat(&sys_fstat(&owner, &mut host, slave_fd).unwrap(), &initial);
+
+        set_test_credentials(&mut owner, 1000, 1000, 2000, 2000, &[3000, 4000]);
+        sys_chmod(&mut owner, &mut host, &slave_path, 0o640).unwrap();
+        assert_eq!(
+            sys_stat(&mut owner, &mut host, &slave_path)
+                .unwrap()
+                .st_mode
+                & 0o7777,
+            0o640,
+        );
+        sys_fchmod(&mut owner, &mut host, slave_fd, 0o600).unwrap();
+        sys_chown(
+            &mut owner,
+            &mut host,
+            &slave_path,
+            CHOWN_ID_UNCHANGED,
+            3000,
+        )
+        .unwrap();
+        sys_lchown(
+            &mut owner,
+            &mut host,
+            &slave_path,
+            CHOWN_ID_UNCHANGED,
+            4000,
+        )
+        .unwrap();
+        sys_fchown(
+            &mut owner,
+            &mut host,
+            slave_fd,
+            CHOWN_ID_UNCHANGED,
+            2000,
+        )
+        .unwrap();
+        let owner_updated = sys_stat(&mut owner, &mut host, &slave_path).unwrap();
+        assert_eq!(
+            (
+                owner_updated.st_mode & 0o7777,
+                owner_updated.st_uid,
+                owner_updated.st_gid,
+            ),
+            (0o600, 1000, 2000),
+        );
+        assert_same_stat(
+            &sys_fstat(&owner, &mut host, slave_fd).unwrap(),
+            &owner_updated,
+        );
+
+        assert_eq!(
+            sys_fchown(
+                &mut owner,
+                &mut host,
+                slave_fd,
+                1001,
+                CHOWN_ID_UNCHANGED,
+            ),
+            Err(Errno::EPERM),
+        );
+        assert_same_stat(
+            &sys_fstat(&owner, &mut host, slave_fd).unwrap(),
+            &owner_updated,
+        );
+
+        set_test_credentials(&mut owner, 0, 0, 0, 0, &[]);
+        sys_chown(&mut owner, &mut host, &slave_path, 1100, 2100).unwrap();
+        sys_fchmod(&mut owner, &mut host, slave_fd, 0o660).unwrap();
+        sys_fchown(&mut owner, &mut host, slave_fd, 1200, 2200).unwrap();
+        sys_lchown(&mut owner, &mut host, &slave_path, 1300, 2300).unwrap();
+        let root_updated = sys_stat(&mut owner, &mut host, &slave_path).unwrap();
+        assert_eq!(
+            (
+                root_updated.st_mode & 0o7777,
+                root_updated.st_uid,
+                root_updated.st_gid,
+            ),
+            (0o660, 1300, 2300),
+        );
+        assert_same_stat(
+            &sys_fstat(&owner, &mut host, slave_fd).unwrap(),
+            &root_updated,
+        );
+
+        sys_close(&mut owner, &mut host, slave_fd).unwrap();
+        sys_close(&mut owner, &mut host, master_fd).unwrap();
+        assert!(crate::pty::get_pty(pty_idx).is_none());
+    }
+
+    #[test]
+    fn pty_slave_open_uses_live_mode_and_complete_group_membership() {
+        let _pty_table = crate::pty::test_table_lock();
+        let mut host = MockHostIO::new();
+        let mut creator = Process::new(30);
+        set_test_credentials(&mut creator, 1000, 1000, 2000, 2000, &[]);
+        let master_fd = sys_open(&mut creator, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+        let master_ofd = creator.fd_table.get(master_fd).unwrap().ofd_ref.0;
+        let pty_idx = creator.ofd_table.get(master_ofd).unwrap().host_handle as usize;
+        crate::pty::get_pty(pty_idx).unwrap().locked = false;
+        let slave_path = format!("/dev/pts/{pty_idx}").into_bytes();
+
+        let mut caller = Process::new(31);
+        set_test_credentials(&mut caller, 3000, 3000, 4000, 2000, &[]);
+        let effective_group_fd =
+            sys_open(&mut caller, &mut host, &slave_path, O_WRONLY, 0).unwrap();
+        sys_close(&mut caller, &mut host, effective_group_fd).unwrap();
+        assert_eq!(
+            sys_open(&mut caller, &mut host, &slave_path, O_RDONLY, 0),
+            Err(Errno::EACCES),
+        );
+
+        set_test_credentials(&mut caller, 3000, 3000, 4000, 4000, &[2000]);
+        let supplementary_fd =
+            sys_open(&mut caller, &mut host, &slave_path, O_WRONLY, 0).unwrap();
+        sys_close(&mut caller, &mut host, supplementary_fd).unwrap();
+
+        set_test_credentials(&mut caller, 3000, 3000, 4000, 4000, &[]);
+        let refs_before_denial = crate::pty::get_pty(pty_idx).unwrap().slave_refs;
+        assert_eq!(
+            sys_open(&mut caller, &mut host, &slave_path, O_WRONLY, 0),
+            Err(Errno::EACCES),
+        );
+        assert_eq!(
+            crate::pty::get_pty(pty_idx).unwrap().slave_refs,
+            refs_before_denial,
+            "a denied open must not publish a slave reference",
+        );
+
+        let mut root = Process::new(32);
+        let root_fd = sys_open(&mut root, &mut host, &slave_path, O_RDWR, 0).unwrap();
+        sys_close(&mut root, &mut host, root_fd).unwrap();
+
+        sys_chmod(&mut creator, &mut host, &slave_path, 0o640).unwrap();
+        set_test_credentials(&mut caller, 3000, 3000, 4000, 2000, &[]);
+        let group_read_fd =
+            sys_open(&mut caller, &mut host, &slave_path, O_RDONLY, 0).unwrap();
+        sys_close(&mut caller, &mut host, group_read_fd).unwrap();
+        assert_eq!(
+            sys_open(&mut caller, &mut host, &slave_path, O_WRONLY, 0),
+            Err(Errno::EACCES),
+        );
+        set_test_credentials(&mut caller, 3000, 3000, 4000, 4000, &[2000]);
+        let supplementary_read_fd =
+            sys_open(&mut caller, &mut host, &slave_path, O_RDONLY, 0).unwrap();
+        sys_close(&mut caller, &mut host, supplementary_read_fd).unwrap();
+
+        sys_close(&mut creator, &mut host, master_fd).unwrap();
+        assert!(crate::pty::get_pty(pty_idx).is_none());
+    }
+
+    #[test]
+    fn pty_slave_metadata_survives_reopen_and_is_destroyed_with_the_pair() {
+        let _pty_table = crate::pty::test_table_lock();
+        let mut host = MockHostIO::new();
+        let mut owner = Process::new(33);
+        set_test_credentials(&mut owner, 1000, 1000, 2000, 2000, &[]);
+        let master_fd = sys_open(&mut owner, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+        let master_ofd = owner.fd_table.get(master_fd).unwrap().ofd_ref.0;
+        let pty_idx = owner.ofd_table.get(master_ofd).unwrap().host_handle as usize;
+        crate::pty::get_pty(pty_idx).unwrap().locked = false;
+        let slave_path = format!("/dev/pts/{pty_idx}").into_bytes();
+        let slave_fd = sys_open(&mut owner, &mut host, &slave_path, O_RDWR, 0).unwrap();
+
+        sys_fchmod(&mut owner, &mut host, slave_fd, 0o600).unwrap();
+        sys_close(&mut owner, &mut host, slave_fd).unwrap();
+        let while_closed = sys_stat(&mut owner, &mut host, &slave_path).unwrap();
+        assert_eq!(while_closed.st_mode & 0o7777, 0o600);
+        let reopened = sys_open(&mut owner, &mut host, &slave_path, O_RDWR, 0).unwrap();
+        assert_same_stat(
+            &sys_fstat(&owner, &mut host, reopened).unwrap(),
+            &while_closed,
+        );
+        sys_close(&mut owner, &mut host, reopened).unwrap();
+        sys_close(&mut owner, &mut host, master_fd).unwrap();
+
+        assert!(crate::pty::get_pty(pty_idx).is_none());
+        assert_eq!(
+            sys_stat(&mut owner, &mut host, &slave_path).unwrap_err(),
+            Errno::ENOENT,
+        );
+
+        set_test_credentials(&mut owner, 3000, 3000, 4000, 4000, &[]);
+        let next_master = sys_open(&mut owner, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+        let next_ofd = owner.fd_table.get(next_master).unwrap().ofd_ref.0;
+        let reused_idx = owner.ofd_table.get(next_ofd).unwrap().host_handle as usize;
+        assert_eq!(reused_idx, pty_idx);
+        crate::pty::get_pty(reused_idx).unwrap().locked = false;
+        let fresh_path = format!("/dev/pts/{reused_idx}").into_bytes();
+        let fresh = sys_stat(&mut owner, &mut host, &fresh_path).unwrap();
+        assert_eq!(
+            (fresh.st_mode & 0o7777, fresh.st_uid, fresh.st_gid),
+            (0o620, 3000, 4000),
+        );
+        sys_close(&mut owner, &mut host, next_master).unwrap();
+        assert!(crate::pty::get_pty(reused_idx).is_none());
     }
 
     #[test]
