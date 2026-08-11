@@ -313,6 +313,11 @@ expect_mutation_rejected \
   's#run: bash scripts/check-pages-run-freshness\.sh#run: echo "publish=true" >> "$GITHUB_OUTPUT"#'
 
 expect_mutation_rejected \
+  "foreign production freshness workflow" \
+  "production newest-run guard must query only the production workflow" \
+  's/(env:\n)/$1  PAGES_WORKFLOW_FILE: unrelated-pages.yml\n/'
+
+expect_mutation_rejected \
   "unconditional deployment" \
   "deployment must be conditional" \
   "s/if: steps\\.publish_freshness\\.outputs\\.publish == 'true'/if: always()/"

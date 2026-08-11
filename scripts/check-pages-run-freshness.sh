@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-WORKFLOW_FILE="${PAGES_WORKFLOW_FILE:-browser-demos-pages.yml}"
+PRODUCTION_WORKFLOW_FILE="browser-demos-pages.yml"
+CANARY_WORKFLOW_FILE="abi-staging-pages-canary.yml"
+WORKFLOW_FILE="${PAGES_WORKFLOW_FILE:-$PRODUCTION_WORKFLOW_FILE}"
 REPOSITORY="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 RUN_ID="${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
 RUN_NUMBER="${GITHUB_RUN_NUMBER:?GITHUB_RUN_NUMBER is required}"
 OUTPUT_FILE="${GITHUB_OUTPUT:?GITHUB_OUTPUT is required}"
 : "${GH_TOKEN:?GH_TOKEN is required}"
-CANARY_WORKFLOW_FILE="abi-staging-pages-canary.yml"
 CANARY_WORKFLOW_PATH=".github/workflows/$CANARY_WORKFLOW_FILE"
 CANARY_WORKFLOW_REF="Automattic/kandelo/$CANARY_WORKFLOW_PATH@refs/heads/main"
 
@@ -25,22 +26,29 @@ fail() {
 [[ "$RUN_NUMBER" =~ ^[1-9][0-9]*$ ]] ||
   fail "invalid GITHUB_RUN_NUMBER: $RUN_NUMBER"
 
-output_name="publish"
-if [ "$WORKFLOW_FILE" = "$CANARY_WORKFLOW_FILE" ]; then
-  SOURCE_SHA="${GITHUB_SHA:?GITHUB_SHA is required for the Pages canary}"
-  SOURCE_REF="${GITHUB_REF:?GITHUB_REF is required for the Pages canary}"
-  EVENT_NAME="${GITHUB_EVENT_NAME:?GITHUB_EVENT_NAME is required for the Pages canary}"
-  WORKFLOW_REF="${GITHUB_WORKFLOW_REF:?GITHUB_WORKFLOW_REF is required for the Pages canary}"
-  [ "$REPOSITORY" = "Automattic/kandelo" ] ||
-    fail "canary requires protected repository Automattic/kandelo"
-  if [ "$SOURCE_REF" != "refs/heads/main" ] || [ "$EVENT_NAME" != "push" ] ||
-     ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-    fail "canary requires one protected main push"
-  fi
-  [ "$WORKFLOW_REF" = "$CANARY_WORKFLOW_REF" ] ||
-    fail "canary requires its protected workflow ref"
-  output_name="upload"
-fi
+case "$WORKFLOW_FILE" in
+  "$PRODUCTION_WORKFLOW_FILE")
+    output_name="publish"
+    ;;
+  "$CANARY_WORKFLOW_FILE")
+    SOURCE_SHA="${GITHUB_SHA:?GITHUB_SHA is required for the Pages canary}"
+    SOURCE_REF="${GITHUB_REF:?GITHUB_REF is required for the Pages canary}"
+    EVENT_NAME="${GITHUB_EVENT_NAME:?GITHUB_EVENT_NAME is required for the Pages canary}"
+    WORKFLOW_REF="${GITHUB_WORKFLOW_REF:?GITHUB_WORKFLOW_REF is required for the Pages canary}"
+    [ "$REPOSITORY" = "Automattic/kandelo" ] ||
+      fail "canary requires protected repository Automattic/kandelo"
+    if [ "$SOURCE_REF" != "refs/heads/main" ] || [ "$EVENT_NAME" != "push" ] ||
+       ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+      fail "canary requires one protected main push"
+    fi
+    [ "$WORKFLOW_REF" = "$CANARY_WORKFLOW_REF" ] ||
+      fail "canary requires its protected workflow ref"
+    output_name="upload"
+    ;;
+  *)
+    fail "unauthorized Pages workflow selector: $WORKFLOW_FILE"
+    ;;
+esac
 
 response_file="$(mktemp "${TMPDIR:-/tmp}/kandelo-pages-runs.XXXXXX")"
 cleanup() {

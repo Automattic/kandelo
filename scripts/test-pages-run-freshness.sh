@@ -139,6 +139,21 @@ grep -Fq 'current run number does not match' \
   "$FIXTURE_ROOT/mismatched-current.log" ||
   fail "the mismatched-current-run failure was not explicit"
 
+PAGES_WORKFLOW_FILE=browser-demos-pages.yml \
+  run_checker "$current_response" "$FIXTURE_ROOT/explicit-production.out" \
+  >/dev/null
+grep -Fxq 'publish=true' "$FIXTURE_ROOT/explicit-production.out" ||
+  fail "the exact production workflow selector was not authorized"
+
+if PAGES_WORKFLOW_FILE=unrelated-pages.yml \
+  run_checker "$current_response" "$FIXTURE_ROOT/foreign-selector.out" \
+  >"$FIXTURE_ROOT/foreign-selector.log" 2>&1; then
+  fail "a foreign workflow selector inherited production publication intent"
+fi
+grep -Fq 'unauthorized Pages workflow selector: unrelated-pages.yml' \
+  "$FIXTURE_ROOT/foreign-selector.log" ||
+  fail "the foreign workflow selector failure was not explicit"
+
 canary_current_response='{"workflow_runs":[
   {"id":100,"run_number":7,"head_branch":"main","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","event":"push","path":".github/workflows/abi-staging-pages-canary.yml"},
   {"id":99,"run_number":6,"head_branch":"main","head_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","event":"push","path":".github/workflows/abi-staging-pages-canary.yml"}

@@ -807,6 +807,9 @@ grep -Fq 'GH_TOKEN: ${{ github.token }}' <<<"$freshness_block" ||
   fail "the newest-run check must authenticate with the workflow token"
 grep -Fq 'run: bash scripts/check-pages-run-freshness.sh' <<<"$freshness_block" ||
   fail "deployment authority must come from the tested newest-run checker"
+if grep -Fq 'PAGES_WORKFLOW_FILE' "$PAGES_WORKFLOW"; then
+  fail "production newest-run guard must query only the production workflow"
+fi
 
 deploy_block="$(step_block "$PAGES_WORKFLOW" "Deploy to gh-pages")"
 grep -Fxq "        if: steps.publish_freshness.outputs.publish == 'true'" \
