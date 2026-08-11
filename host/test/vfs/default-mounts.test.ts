@@ -31,6 +31,8 @@ import {
   forgeLazyAtomicSeal,
   type LazyAtomicSealForgery,
 } from "../lazy-atomic-seal-fixture";
+import { resolveMountSetIdCapability } from "../../src/vfs/memory-fs";
+import { ST_NOSUID } from "../../src/vfs/types";
 
 const O_RDONLY = 0x0000;
 const O_WRONLY = 0x0001;
@@ -160,6 +162,8 @@ describe("resolveForNode", () => {
     for (const m of mounts) {
       expect(typeof m.mountPoint).toBe("string");
       expect(m.backend).toBeDefined();
+      expect(resolveMountSetIdCapability(m)).toEqual({ kind: "nosuid" });
+      expect(m.backend.statfs("/").flags & ST_NOSUID).toBe(ST_NOSUID);
     }
   });
 
@@ -662,6 +666,8 @@ describe("resolveForBrowser", () => {
     for (const m of mounts) {
       expect(m.backend).toBeInstanceOf(MemoryFileSystem);
       expect(m.backend).not.toBeInstanceOf(HostFileSystem);
+      expect(resolveMountSetIdCapability(m)).toEqual({ kind: "nosuid" });
+      expect(m.backend.statfs("/").flags & ST_NOSUID).toBe(ST_NOSUID);
     }
   });
 

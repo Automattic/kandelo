@@ -64,6 +64,7 @@ export const SEEK_END = 2;
 
 // Dirent
 const DIRENT_HEADER_SIZE = 8;
+const DIR_INDEX_MIN_SIZE = 64 * 1024;
 
 // Error codes
 export const EPERM = -1;
@@ -78,6 +79,7 @@ export const EINVAL = -22;
 export const EMFILE = -24;
 export const EFBIG = -27;
 export const ENOSPC = -28;
+export const EROFS = -30;
 export const ENAMETOOLONG = -36;
 export const ENOTEMPTY = -39;
 export const ELOOP = -40;
@@ -263,6 +265,7 @@ const ERROR_MESSAGES: Record<number, string> = {
   [EMFILE]: "Too many open files",
   [EFBIG]: "File too large",
   [ENOSPC]: "No space left on device",
+  [EROFS]: "Read-only file system",
   [ENAMETOOLONG]: "File name too long",
   [ENOTEMPTY]: "Directory not empty",
   [ELOOP]: "Too many symbolic links",
@@ -322,8 +325,6 @@ export class SharedFS {
    * entry locations so each repeated exact-name lookup does not rescan every
    * preceding variable-length record.
    */
-  private static readonly DIR_INDEX_MIN_SIZE = 64 * 1024;
-
   private constructor(public readonly buffer: SharedArrayBuffer) {
     this.view = new DataView(buffer);
     this.i32 = new Int32Array(buffer);
@@ -1599,7 +1600,7 @@ export class SharedFS {
     }
     if (cached) this.dirIndexes.delete(dirIno);
 
-    if (dirSize < SharedFS.DIR_INDEX_MIN_SIZE) return null;
+    if (dirSize < DIR_INDEX_MIN_SIZE) return null;
     return this.rebuildDirIndex(dirIno, generation, mutationSequence, dirSize);
   }
 

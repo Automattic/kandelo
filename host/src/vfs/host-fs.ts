@@ -37,7 +37,7 @@ import {
   OPEN_FLAGS,
   SEEK_WHENCE,
 } from "../generated/abi";
-import type { FileSystemBackend, DirEntry } from "./types";
+import { ST_NOSUID, type FileSystemBackend, type DirEntry } from "./types";
 import { DEFAULT_STATFS_BLOCK_SIZE, DEFAULT_STATFS_NAMELEN } from "../statfs";
 
 const UTIME_NOW = 0x3fffffff;
@@ -129,7 +129,7 @@ export function nativeStatfs(path: string): StatfsResult {
     fsid: 0,
     namelen: DEFAULT_STATFS_NAMELEN,
     frsize: bsize,
-    flags: 0,
+    flags: ST_NOSUID,
   };
 }
 

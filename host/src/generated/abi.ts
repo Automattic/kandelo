@@ -449,6 +449,10 @@ export const ACCESS_MODES = {
   X_OK: 1,
 } as const;
 
+export const STATFS_FLAGS = {
+  ST_NOSUID: 2,
+} as const;
+
 export const FILE_MODES = {
   S_IFMT: 61440,
   S_IFSOCK: 49152,

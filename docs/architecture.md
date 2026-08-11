@@ -1567,15 +1567,15 @@ The kernel's hardcoded `INITIAL_BRK` (16MB) is a fallback for binaries that don'
 
 ### Mount table model
 
-`VirtualPlatformIO` (`host/src/vfs/vfs.ts`) is the kernel's filesystem router on both hosts. It is configured with a list of `MountConfig { mountPoint, backend, readonly? }` entries and dispatches every path-based syscall to the backend whose mount prefix is the longest match. Cross-mount operations (`rename`, `link`) are rejected with `EXDEV`. A path that matches no mount returns `ENOENT`. `MountConfig.readonly` is currently advisory — write enforcement and full POSIX permission checks are deferred to a follow-up PR.
+`VirtualPlatformIO` (`host/src/vfs/vfs.ts`) is the kernel's filesystem router on both hosts. It is configured with a list of `MountConfig { mountPoint, backend, readonly?, setIdCapability? }` entries and dispatches every path-based syscall to the backend whose mount prefix is the longest match. Cross-mount operations (`rename`, `link`) are rejected with `EXDEV`. A path that matches no mount returns `ENOENT`. Omitted set-ID capability means `nosuid`. A `trusted-root-product` request is accepted only when the mount is explicitly read-only and its backend carries the module-private immutable-product brand; no public structural field or configuration value can mint that brand. Malformed or unbranded requests fail during mount construction. The internal factory snapshots a quiescent, fully materialized product tree into privately owned storage before branding its null-prototype read-only facade. The private snapshot uses captured, frozen copies of the complete `MemoryFileSystem` and SharedFS operation prototypes; operation helpers and thresholds are module-lexical rather than mutable class properties; and generated open, access, pathconf, file-mode, and directory-type tables are captured as numeric scalars before they can participate in the trusted path. Each caller-supplied open flag or access mode is normalized and validated once, and only that same primitive integer is used for the guard and delegated operation. Retaining the producer tree, reaching its TypeScript-private backing reflectively, replacing either producer-reachable prototype or class property, mutating a generated table, or supplying a stateful coercible flag therefore grants no post-admission authority over trusted bytes, metadata, or read results. `VirtualPlatformIO.statfs` then authoritatively sets `ST_NOSUID` for nosuid mounts or clears it for the admitted trusted mount, regardless of the backend's raw flags. `MountConfig.readonly` remains advisory for ordinary mounts, while the trusted product facade rejects every guest-visible mutation with `EROFS`.
 
 `FileSystemBackend` (`host/src/vfs/types.ts`) is the per-mount interface (open/read/write/stat/readdir/symlink/...). Two backends are in use today:
 
 Guest-visible VFS numbers come from `crates/shared` and are recorded under
 `vfs_metadata` in `abi/snapshot.json`. The generated
 `host/src/generated/abi.ts` bindings supply open and `*at` flags, descriptor
-and `fcntl` values, access modes, file modes, directory-entry types, and seek
-constants to shared Node/browser host adapters. This records Kandelo's existing
+and `fcntl` values, access modes, statfs flags, file modes, directory-entry
+types, and seek constants to shared Node/browser host adapters. This records Kandelo's existing
 guest ABI; it does not establish a general Linux-compatibility contract. The
 standalone OPFS worker and the vendored SharedFS implementation retain local
 copies at their explicit entry-point and vendor boundaries.
@@ -1623,6 +1623,13 @@ operations require a lifecycle-owned backing, not merely a reachable one.
 | `/home/user`| scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 | `/root`     | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 | `/srv`      | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
+
+Every mount in the default layout is `nosuid` on both hosts, including the
+advisory-read-only root image. A future reviewed product projection must use a
+separate privately branded immutable product backend and request
+`trusted-root-product` explicitly; ordinary image, scratch, host, OPFS,
+device, and user-provided backends cannot acquire that capability from public
+fields, prototypes, or configuration.
 
 The browser host layers two additional, host-specific mounts on top: `/dev/shm` (the POSIX-semaphore SAB shared with main-thread surfaces) and `/dev` (`DeviceFileSystem` for `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`, `/dev/pts/N`). Sticky bits, the uid 1000 owner on `/home/user`, mode `0700` on `/root`, etc. are baked into the rootfs image at build time per the canonical `MANIFEST` and reflected honestly through the `MemoryFileSystem` inode metadata. Scratch mounts on Node start owned by uid/gid 0 because `HostFileSystem` synthesises them.
 
