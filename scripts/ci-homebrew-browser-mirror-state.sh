@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+
 usage() {
     cat >&2 <<'EOF'
 usage:
@@ -40,6 +43,31 @@ current_source_commit() {
     printf '%s\n' "$commit"
 }
 
+canonical_flat_shell_report_json() {
+    local image="$1"
+    local report_root
+    local report
+    local status
+    report_root="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-flat-shell-state.XXXXXX")"
+    report="$report_root/report.json"
+    npx tsx "$SCRIPT_DIR/inspect-canonical-flat-shell.ts" \
+        --image "$image" \
+        --selection "$REPO_ROOT/homebrew/main-shell-flat-selection.json" \
+        --shell-config "$REPO_ROOT/homebrew/main-shell-default.json" \
+        --demo-config "$REPO_ROOT/homebrew/main-shell-flat-demo.json" \
+        --out "$report" || {
+        status=$?
+        rm -f -- "$report"
+        rmdir "$report_root" 2>/dev/null || true
+        return "$status"
+    }
+    jq -Sce . "$report"
+    status=$?
+    rm -f -- "$report"
+    rmdir "$report_root" 2>/dev/null || true
+    return "$status"
+}
+
 validate_state() {
     local phase="$1"
     local state="$2"
@@ -65,6 +93,8 @@ validate_state() {
     local actual_receipt_bytes
     local receipt_candidate
     local state_candidate
+    local expected_inspection
+    local actual_inspection
 
     case "$phase" in
         producer|consumer) ;;
@@ -120,11 +150,11 @@ validate_state() {
               type == "object" and
               (keys | sort) == ([
                 "abi_version", "arch", "cache_key_sha", "image",
-                "mirror_required", "mode", "package",
+                "inspection", "mirror_required", "mode", "package",
                 "publication_blockers_sha256", "revision", "schema",
-                "source_commit"
+                "source_commit", "transport"
               ] | sort) and
-              .schema == 2 and
+              .schema == 3 and
               .mode == "resolved" and
               (.abi_version | type == "number" and . >= 0 and floor == .) and
               .package == "shell" and
@@ -135,12 +165,28 @@ validate_state() {
               (.revision | type == "number" and . >= 0 and floor == .) and
               (.cache_key_sha |
                 type == "string" and test("^[0-9a-f]{64}$")) and
-              .mirror_required == true and
+              .transport == "flat-self-contained" and
+              .mirror_required == false and
               (.image | type == "object") and
               (.image | keys | sort) == ["bytes", "sha256"] and
               (.image.sha256 |
                 type == "string" and test("^[0-9a-f]{64}$")) and
-              (.image.bytes | type == "number" and . > 0 and floor == .)
+              (.image.bytes | type == "number" and . > 0 and floor == .) and
+              (.inspection | type == "object") and
+              .inspection.schema == 1 and
+              .inspection.kind == "kandelo-canonical-flat-shell" and
+              .inspection.transport == {
+                kind: "flat-self-contained",
+                mirror_required: false
+              } and
+              .inspection.image.sha256 == .image.sha256 and
+              .inspection.image.bytes == .image.bytes and
+              .inspection.image.kernel_abi == .abi_version and
+              .inspection.selection.arch == .arch and
+              .inspection.selection.requested_vfs_filename ==
+                "shell.vfs.zst" and
+              .inspection.selection.resource_policy ==
+                "kandelo-homebrew-vfs-main-shell-v1"
             ' "$state" >/dev/null || {
                 echo "ci-homebrew-browser-mirror-state: invalid resolved state contract: $state" >&2
                 exit 1
@@ -164,6 +210,29 @@ validate_state() {
                [ "$actual_bytes" != "$expected_bytes" ]; then
                 echo "ci-homebrew-browser-mirror-state: resolved shell bytes do not match state" >&2
                 exit 1
+            fi
+            expected_inspection="$(jq -Sce '.inspection' "$state")"
+            actual_inspection="$(canonical_flat_shell_report_json "$image")" || {
+                echo "ci-homebrew-browser-mirror-state: resolved shell failed canonical flat inspection" >&2
+                exit 1
+            }
+            if [ "$actual_inspection" != "$expected_inspection" ]; then
+                echo "ci-homebrew-browser-mirror-state: resolved shell inspection does not match state" >&2
+                exit 1
+            fi
+            if [ "$phase" = consumer ]; then
+                selected="$(
+                    bash "$SCRIPT_DIR/resolve-binary.sh" \
+                        programs/shell.vfs.zst
+                )" || {
+                    echo "ci-homebrew-browser-mirror-state: resolved shell is not resolver-selected" >&2
+                    exit 1
+                }
+                require_regular_file "resolver-selected resolved shell" "$selected"
+                if [ "$(realpath "$selected")" != "$(realpath "$image")" ]; then
+                    echo "ci-homebrew-browser-mirror-state: resolved shell is not the selected local generation" >&2
+                    exit 1
+                fi
             fi
             ;;
         publication-blocked-candidate)
@@ -502,14 +571,6 @@ case "$command" in
             version="$(jq -er '.version' <<<"$shell_entry")"
             revision="$(jq -er '.revision' <<<"$shell_entry")"
             cache_key_sha="$(jq -er '.cache_key_sha' <<<"$shell_entry")"
-            # WHY: the canonical package index and the immutable bottle-mirror
-            # release are independent publication authorities. A later PR can
-            # correctly resolve an unchanged canonical shell while that
-            # shell's content-addressed mirror is still unpublished. Generic
-            # browser staging is therefore always a closed-acceptance lane:
-            # recover the image-authenticated bottle bytes locally and leave
-            # anonymous public transport to the dedicated publication proof.
-            mirror_required=true
             host_target="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')"
             repo_root="$(git rev-parse --show-toplevel)"
             xtask="${WASM_POSIX_XTASK_BIN:-$repo_root/target/$host_target/release/xtask}"
@@ -538,8 +599,12 @@ case "$command" in
                     exit 1
                     ;;
             esac
-            image_sha="$(sha256_file "$image")"
-            image_bytes="$(wc -c < "$image" | tr -d '[:space:]')"
+            inspection="$(canonical_flat_shell_report_json "$image")" || {
+                echo "ci-homebrew-browser-mirror-state: resolved shell failed canonical flat inspection" >&2
+                exit 1
+            }
+            image_sha="$(jq -er '.image.sha256' <<<"$inspection")"
+            image_bytes="$(jq -er '.image.bytes' <<<"$inspection")"
             jq -n \
                 --argjson abi_version "$abi" \
                 --arg source_commit "$source_commit" \
@@ -548,9 +613,9 @@ case "$command" in
                 --arg cache_key_sha "$cache_key_sha" \
                 --arg image_sha "$image_sha" \
                 --argjson image_bytes "$image_bytes" \
-                --argjson mirror_required "$mirror_required" '
+                --argjson inspection "$inspection" '
                   {
-                    schema: 2,
+                    schema: 3,
                     mode: "resolved",
                     abi_version: $abi_version,
                     package: "shell",
@@ -563,7 +628,9 @@ case "$command" in
                       sha256: $image_sha,
                       bytes: $image_bytes
                     },
-                    mirror_required: $mirror_required
+                    inspection: $inspection,
+                    transport: "flat-self-contained",
+                    mirror_required: false
                   }
                 ' > "$staged_out"
         elif [ "$mode" = publication-blocked-candidate ]; then

@@ -83,6 +83,7 @@ CI_HOMEBREW_BROWSER_IMAGE=""
 CI_HOMEBREW_BROWSER_MIRROR_REQUIRED=""
 CI_HOMEBREW_BROWSER_SOURCE_AUTHORITY=""
 CI_HOMEBREW_BROWSER_STATE_MODE=""
+CI_HOMEBREW_BROWSER_TRANSPORT=""
 CI_HOMEBREW_BROWSER_STATE_VALIDATED=0
 
 cleanup_ci_homebrew_browser_mirror() {
@@ -105,11 +106,13 @@ validate_ci_homebrew_browser_state() {
     local publication_blockers="$REPO_ROOT/.ci-test-publication-blockers.json"
     local receipt="$REPO_ROOT/.ci-staging-shell-receipt.json"
     local state_mode
+    local transport
 
     CI_HOMEBREW_BROWSER_IMAGE=""
     CI_HOMEBREW_BROWSER_MIRROR_REQUIRED=""
     CI_HOMEBREW_BROWSER_SOURCE_AUTHORITY=""
     CI_HOMEBREW_BROWSER_STATE_MODE=""
+    CI_HOMEBREW_BROWSER_TRANSPORT=""
     CI_HOMEBREW_BROWSER_STATE_VALIDATED=0
 
     # WHY: closed-acceptance variables authorize private test transport.
@@ -148,10 +151,12 @@ validate_ci_homebrew_browser_state() {
     fi
     bash scripts/ci-homebrew-browser-mirror-state.sh "${state_args[@]}"
     mirror_required="$(jq -r '.mirror_required' "$state")"
+    transport="$(jq -r '.transport // ""' "$state")"
 
     CI_HOMEBREW_BROWSER_IMAGE="$image"
     CI_HOMEBREW_BROWSER_MIRROR_REQUIRED="$mirror_required"
     CI_HOMEBREW_BROWSER_STATE_MODE="$state_mode"
+    CI_HOMEBREW_BROWSER_TRANSPORT="$transport"
 
     # WHY: the authenticated source bridge deliberately has no Homebrew
     # selection and no bootstrap bottle. Grant only the following run.sh call
@@ -159,6 +164,15 @@ validate_ci_homebrew_browser_state() {
     # continue through the normal bootstrap preparer.
     if [ "$state_mode" = publication-blocked ]; then
         CI_HOMEBREW_BROWSER_SOURCE_AUTHORITY=source-rootfs-mirror-state-v1
+        CI_HOMEBREW_BROWSER_STATE_VALIDATED=1
+        return 0
+    fi
+    if [ "$state_mode" = resolved ]; then
+        [ "$transport" = flat-self-contained ] &&
+            [ "$mirror_required" = false ] || {
+            echo "ci-run-test-suite: resolved shell lacks self-contained flat transport" >&2
+            return 1
+        }
         CI_HOMEBREW_BROWSER_STATE_VALIDATED=1
         return 0
     fi
@@ -188,6 +202,13 @@ prepare_ci_homebrew_browser_mirror() {
     fi
     if [ "$CI_HOMEBREW_BROWSER_STATE_MODE" = publication-blocked ]; then
         export KANDELO_PLAYWRIGHT_EXPECT_SOURCE_ROOTFS_SHELL=1
+        return 0
+    fi
+    if [ "$CI_HOMEBREW_BROWSER_TRANSPORT" = flat-self-contained ]; then
+        [ "$CI_HOMEBREW_BROWSER_MIRROR_REQUIRED" = false ] || {
+            echo "ci-run-test-suite: flat shell unexpectedly requires a closed mirror" >&2
+            return 1
+        }
         return 0
     fi
     [ "$CI_HOMEBREW_BROWSER_MIRROR_REQUIRED" = "true" ] || {

@@ -174,6 +174,35 @@ do
     fail "package matrices must not bypass publication policy with a raw registry scan"
   fi
 done
+
+staging_preflight_job="$(job_block "$STAGING_WORKFLOW" preflight)"
+staging_compute_step="$(step_run_block "$STAGING_WORKFLOW" "Compute matrix")"
+grep -Fq 'stages_node_vfs: ${{ steps.compute.outputs.stages_node_vfs }}' \
+  <<<"$staging_preflight_job" ||
+  fail "staging preflight must expose exact wasm32 node-vfs membership"
+grep -Fq 'any(.[]; .package == \"node-vfs\" and .arch == \"wasm32\")' \
+  <<<"$staging_compute_step" ||
+  fail "staging preflight must derive Node acceptance from the sealed matrix"
+if grep -q '^  homebrew-main-shell-proof:' "$STAGING_WORKFLOW"; then
+  fail "ordinary PR staging must not invoke the retired lazy-shell proof lane"
+fi
+staging_shell_gate="$(job_block "$STAGING_WORKFLOW" homebrew-main-shell-gate)"
+grep -Fq 'name: exact current lazy shell (Node + Chromium)' \
+  <<<"$staging_shell_gate" ||
+  fail "staging must retain the historical required-check display name"
+grep -Fq 'homebrew-main-shell-prerequisites' <<<"$staging_shell_gate" &&
+  grep -Fq 'TEST_GATE_RESULT' <<<"$staging_shell_gate" ||
+  fail "the historical shell aggregate must consume the generic package test gate"
+staged_node_acceptance="$(
+  step_run_block "$STAGING_WORKFLOW" \
+    "Run exact staged Node npm acceptance"
+)"
+grep -Fq "npx playwright test test/kandelo-node.spec.ts" \
+  <<<"$staged_node_acceptance" &&
+  grep -Fq -- "--grep 'Kandelo Node demo installs cowsay with npm'" \
+    <<<"$staged_node_acceptance" &&
+  grep -Fq -- '--project=chromium' <<<"$staged_node_acceptance" ||
+  fail "staged node-vfs must run the exact slow npm/cowsay acceptance"
 grep -Fq 'pr_commit_count: ${{ steps.synthesize.outputs.pr_commit_count }}' <<<"$synthesize_job" || \
   fail "synthesize-merge must export the full-history PR commit count"
 grep -Fq 'PR_COMMIT_COUNT=$(git rev-list --count "$BASE_SHA..$PR_HEAD_SHA")' <<<"$synthesize_step" || \

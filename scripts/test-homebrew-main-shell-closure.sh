@@ -47,6 +47,7 @@ LOCAL_SHELL_OVERRIDE="$REPO_ROOT/scripts/activate-local-shell-build-override.sh"
 CI_BLOCKER_MATERIALIZER="$REPO_ROOT/scripts/materialize-ci-publication-blockers.sh"
 CI_STAGING_SHELL_VERIFIER="$REPO_ROOT/scripts/verify-ci-staging-shell-handoff.sh"
 CI_BROWSER_MIRROR_STATE="$REPO_ROOT/scripts/ci-homebrew-browser-mirror-state.sh"
+CANONICAL_FLAT_SHELL_INSPECTOR="$REPO_ROOT/scripts/inspect-canonical-flat-shell.ts"
 CI_WORKSPACE_PACKER="$REPO_ROOT/scripts/pack-ci-test-workspace.sh"
 CI_TEST_RUNNER="$REPO_ROOT/scripts/ci-run-test-suite.sh"
 BUILD_PROGRAMS="$REPO_ROOT/scripts/build-programs.sh"
@@ -215,25 +216,31 @@ expect_closed_browser_acceptance_contract_rejected() {
 
 check_ordered_staging_shell_contract() {
   local workflow="$1"
-  local test_gate prerequisites proof gate
+  local test_gate prerequisites gate node_acceptance
   test_gate="$(sed -n \
     '/^  test-gate:/,/^  homebrew-main-shell-prerequisites:/p' \
     "$workflow")"
   prerequisites="$(sed -n \
-    '/^  homebrew-main-shell-prerequisites:/,/^  homebrew-main-shell-proof:/p' \
-    "$workflow")"
-  proof="$(sed -n \
-    '/^  homebrew-main-shell-proof:/,/^  homebrew-main-shell-gate:/p' \
+    '/^  homebrew-main-shell-prerequisites:/,/^  homebrew-main-shell-gate:/p' \
     "$workflow")"
   gate="$(sed -n \
     '/^  homebrew-main-shell-gate:/,/^  # publish \/ generate-index/p' \
+    "$workflow")"
+  node_acceptance="$(sed -n \
+    '/- name: Run exact staged Node npm acceptance/,/- name: Upload browser test artifacts/p' \
     "$workflow")"
 
   grep -Fq 'ready_for_review' "$workflow" &&
     grep -Fq \
       'staged_matrix: ${{ steps.compute.outputs.staged_matrix }}' \
       "$workflow" &&
+    grep -Fq \
+      'stages_node_vfs: ${{ steps.compute.outputs.stages_node_vfs }}' \
+      "$workflow" &&
     grep -Fq 'echo "staged_matrix=$staged_matrix" >> "$GITHUB_OUTPUT"' \
+      "$workflow" &&
+    grep -Fq \
+      'any(.[]; .package == \"node-vfs\" and .arch == \"wasm32\")' \
       "$workflow" &&
     grep -Fq 'package-release-lifecycle.sh seal-publish' \
       <<<"$test_gate" &&
@@ -249,24 +256,22 @@ check_ordered_staging_shell_contract() {
       <<<"$prerequisites" &&
     grep -Fq '[ "$TARGET_TAG" = "$expected_tag" ]' \
       <<<"$prerequisites" &&
-    grep -Fq 'uses: ./.github/workflows/homebrew-main-shell-ci.yml' \
-      <<<"$proof" &&
-    grep -Fq 'always() &&' <<<"$proof" &&
-    grep -Fq 'caller_event_name: pull_request' <<<"$proof" &&
-    grep -Fq \
-      'pull_request_head_sha: ${{ github.event.pull_request.head.sha }}' \
-      <<<"$proof" &&
-    grep -Fq \
-      "staging_required: \${{ needs.change-scope.outputs.package_staging_required == 'true' }}" \
-      <<<"$proof" &&
-    grep -Fq 'needs.preflight.outputs.target_tag' <<<"$proof" &&
-    grep -Fq 'needs.preflight.outputs.staged_matrix' <<<"$proof" &&
+    ! grep -q '^  homebrew-main-shell-proof:' "$workflow" &&
+    ! grep -Fq 'uses: ./.github/workflows/homebrew-main-shell-ci.yml' \
+      "$workflow" &&
+    grep -Fq 'env.STAGES_NODE_VFS == '\''true'\''' \
+      <<<"$node_acceptance" &&
+    grep -Fq -- \
+      "--grep 'Kandelo Node demo installs cowsay with npm'" \
+      <<<"$node_acceptance" &&
     grep -Fq 'name: exact current lazy shell (Node + Chromium)' \
       <<<"$gate" &&
     grep -Fq 'if: |' <<<"$gate" &&
     grep -Fq 'always() &&' <<<"$gate" &&
     grep -Fq '[ "$PREREQUISITES_RESULT" = success ]' <<<"$gate" &&
-    grep -Fq '[ "$PROOF_RESULT" = success ]' <<<"$gate"
+    grep -Fq 'TEST_GATE_RESULT: ${{ needs.test-gate.result }}' <<<"$gate" &&
+    grep -Fq 'canonical package test gate ended as $TEST_GATE_RESULT' \
+      <<<"$gate"
 }
 
 expect_ordered_staging_shell_contract_rejected() {
@@ -400,7 +405,7 @@ do
 done
 
 check_ordered_staging_shell_contract "$STAGING_WORKFLOW" ||
-  fail "staging must seal one exact attempt before its reusable shell proof"
+  fail "staging must seal and test the package-owned canonical shell"
 sed '/ready_for_review/d' "$STAGING_WORKFLOW" \
   >"$TMP_ROOT/staging-shell-no-ready-rerun.yml"
 expect_ordered_staging_shell_contract_rejected \
@@ -413,22 +418,22 @@ sed 's/\[ "$TEST_GATE_RESULT" = success \]/[ "$TEST_GATE_RESULT" = skipped ]/' \
   "$STAGING_WORKFLOW" >"$TMP_ROOT/staging-shell-accepts-skipped-producer.yml"
 expect_ordered_staging_shell_contract_rejected \
   "$TMP_ROOT/staging-shell-accepts-skipped-producer.yml"
-sed '/uses: \.\/\.github\/workflows\/homebrew-main-shell-ci.yml/d' \
-  "$STAGING_WORKFLOW" >"$TMP_ROOT/staging-shell-no-reusable-call.yml"
+sed '/stages_node_vfs: \${{ steps.compute.outputs.stages_node_vfs }}/d' \
+  "$STAGING_WORKFLOW" >"$TMP_ROOT/staging-shell-no-node-vfs-output.yml"
 expect_ordered_staging_shell_contract_rejected \
-  "$TMP_ROOT/staging-shell-no-reusable-call.yml"
-sed '/pull_request_head_sha:/d' "$STAGING_WORKFLOW" \
-  >"$TMP_ROOT/staging-shell-no-explicit-head.yml"
+  "$TMP_ROOT/staging-shell-no-node-vfs-output.yml"
+sed '/- name: Run exact staged Node npm acceptance/d' "$STAGING_WORKFLOW" \
+  >"$TMP_ROOT/staging-shell-no-node-acceptance.yml"
 expect_ordered_staging_shell_contract_rejected \
-  "$TMP_ROOT/staging-shell-no-explicit-head.yml"
+  "$TMP_ROOT/staging-shell-no-node-acceptance.yml"
 sed '/staged_matrix:/d' "$STAGING_WORKFLOW" \
   >"$TMP_ROOT/staging-shell-no-exact-matrix.yml"
 expect_ordered_staging_shell_contract_rejected \
   "$TMP_ROOT/staging-shell-no-exact-matrix.yml"
-sed '/\[ "$PROOF_RESULT" = success \]/d' "$STAGING_WORKFLOW" \
-  >"$TMP_ROOT/staging-shell-aggregate-drops-proof.yml"
+sed '/canonical package test gate ended as \$TEST_GATE_RESULT/d' \
+  "$STAGING_WORKFLOW" >"$TMP_ROOT/staging-shell-aggregate-drops-test-gate.yml"
 expect_ordered_staging_shell_contract_rejected \
-  "$TMP_ROOT/staging-shell-aggregate-drops-proof.yml"
+  "$TMP_ROOT/staging-shell-aggregate-drops-test-gate.yml"
 
 check_required_staging_verifier_contract "$WORKFLOW" ||
   fail "main-shell CI must verify its exact immutable staging authority"
@@ -1133,6 +1138,134 @@ expect_failure "staging receipt does not match state" \
 expect_failure "candidate shell receipt must be one regular file" \
   bash "$CI_BROWSER_MIRROR_STATE" validate producer \
     "$handoff_state" "$handoff_blockers" "$handoff_image" -
+
+flat_state_probe="$TMP_ROOT/canonical-flat-shell-state"
+mkdir -p "$flat_state_probe"
+flat_state_image="$flat_state_probe/shell.vfs.zst"
+lazy_state_image="$flat_state_probe/lazy-shell.vfs.zst"
+KANDELO_FLAT_STATE_IMAGE="$flat_state_image" \
+KANDELO_LAZY_STATE_IMAGE="$lazy_state_image" \
+  npx tsx -e '
+    import { createHash } from "node:crypto";
+    import { readFileSync, writeFileSync } from "node:fs";
+    import { ensureDirRecursive, writeVfsBinary } from "./host/src/vfs/image-helpers.ts";
+    import { MemoryFileSystem } from "./host/src/vfs/memory-fs.ts";
+    const maxByteLength = 512 * 1024 * 1024;
+    const selection = new Uint8Array(readFileSync("homebrew/main-shell-flat-selection.json"));
+    const shellConfig = new Uint8Array(readFileSync("homebrew/main-shell-default.json"));
+    const demoConfig = new Uint8Array(readFileSync("homebrew/main-shell-flat-demo.json"));
+    const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+    const build = async (lazy) => {
+      const fs = MemoryFileSystem.create(
+        new SharedArrayBuffer(4 * 1024 * 1024, { maxByteLength }),
+        maxByteLength,
+      );
+      for (const path of ["/etc/kandelo", "/opt/kandelo/homebrew/bin", "/usr/bin"]) {
+        ensureDirRecursive(fs, path);
+      }
+      writeVfsBinary(fs, "/etc/kandelo/shell.json", shellConfig, 0o644);
+      writeVfsBinary(fs, "/etc/kandelo/demo.json", demoConfig, 0o644);
+      writeVfsBinary(fs, "/opt/kandelo/homebrew/bin/bash", new Uint8Array([0,97,115,109,1,0,0,0]), 0o755);
+      writeVfsBinary(fs, "/opt/kandelo/homebrew/bin/brew", new TextEncoder().encode("#!/bin/sh\n"), 0o755);
+      fs.symlink("/opt/kandelo/homebrew/bin/brew", "/usr/bin/brew");
+      if (lazy) fs.registerLazyFile("/lazy", "https://invalid.example/lazy", 1, 0o644);
+      return fs.saveImage({metadata: {
+        version: 1,
+        kernelAbi: 42,
+        createdBy: "images/vfs/scripts/build-homebrew-flat-vfs-image.ts",
+        capacity: {maxByteLength},
+        baseImage: {sha256: "b".repeat(64), bytes: 1234, kernelAbi: 42},
+        homebrewFlat: {
+          selectionSha256: sha256(selection),
+          requestedVfsFilename: "shell.vfs.zst",
+          resourcePolicy: "kandelo-homebrew-vfs-main-shell-v1",
+        },
+        shellConfig: {
+          path: "/opt/kandelo/homebrew/bin/bash",
+          argv: ["bash", "-l", "-i"],
+          sha256: sha256(shellConfig),
+          bytes: shellConfig.byteLength,
+        },
+        demoConfig: {
+          path: "/etc/kandelo/demo.json",
+          sha256: sha256(demoConfig),
+          bytes: demoConfig.byteLength,
+        },
+      }});
+    };
+    (async () => {
+      writeFileSync(process.env.KANDELO_FLAT_STATE_IMAGE, await build(false));
+      writeFileSync(process.env.KANDELO_LAZY_STATE_IMAGE, await build(true));
+    })().catch((error) => {
+      console.error(error);
+      process.exitCode = 1;
+    });
+  '
+flat_state_expected="$flat_state_probe/expected.json"
+flat_state_blockers="$flat_state_probe/blockers.json"
+flat_state_index="$flat_state_probe/index.toml"
+flat_state="$flat_state_probe/state.json"
+flat_cache_key="ad21e240849e93d26ee58ec0b1f6d62a0af160fd1296fc148e33d622c7273203"
+jq -n --argjson abi "$abi" --arg cache "$flat_cache_key" '
+  {
+    abi_version: $abi,
+    entries: [{
+      package: "shell",
+      arch: "wasm32",
+      kind: "program",
+      version: "0.1.0",
+      revision: 23,
+      cache_key_sha: $cache
+    }]
+  }
+' > "$flat_state_expected"
+jq -n --argjson abi "$abi" '{abi_version: $abi, entries: []}' \
+  > "$flat_state_blockers"
+cat > "$flat_state_index" <<EOF
+abi_version = $abi
+generated_at = "2026-08-10T00:00:00Z"
+generator = "canonical flat shell state fixture"
+
+[[packages]]
+name = "shell"
+version = "0.1.0"
+revision = 23
+
+[packages.binary.wasm32]
+status = "success"
+archive_url = "shell-0.1.0-rev23-abi42-wasm32-ad21e240.tar.zst"
+archive_sha256 = "$(printf 'a%.0s' {1..64})"
+cache_key_sha = "$flat_cache_key"
+built_at = "2026-08-10T00:00:00Z"
+built_by = "https://example.invalid/run/1"
+EOF
+bash "$CI_BROWSER_MIRROR_STATE" create \
+  "$flat_state_expected" "$flat_state_blockers" \
+  "$flat_state_index" \
+  https://github.com/Automattic/kandelo/releases/download/binaries-abi-v42/index.toml \
+  "$flat_state_image" "$flat_state"
+jq -e '
+  .schema == 3 and
+  .mode == "resolved" and
+  .mirror_required == false and
+  .transport == "flat-self-contained" and
+  .inspection.kind == "kandelo-canonical-flat-shell" and
+  .inspection.transport == {
+    kind: "flat-self-contained",
+    mirror_required: false
+  } and
+  .inspection.image.sha256 == .image.sha256 and
+  .inspection.image.bytes == .image.bytes
+' "$flat_state" >/dev/null ||
+  fail "resolved shell state did not preserve its flat inspection authority"
+bash "$CI_BROWSER_MIRROR_STATE" validate producer \
+  "$flat_state" "$flat_state_blockers" "$flat_state_image"
+expect_failure "self-contained" \
+  bash "$CI_BROWSER_MIRROR_STATE" create \
+    "$flat_state_expected" "$flat_state_blockers" \
+    "$flat_state_index" \
+    https://github.com/Automattic/kandelo/releases/download/binaries-abi-v42/index.toml \
+    "$lazy_state_image" "$flat_state_probe/lazy-state.json"
 
 override_probe="$TMP_ROOT/local-shell-override"
 override_generation="$override_probe/generation"
@@ -2364,7 +2497,10 @@ browser_bootstrap_line="$(grep -nF 'prepare_browser_homebrew_bootstrap' \
   [ "$final_source_runtime_verify_line" -lt "$final_source_release_line" ] &&
   [ "$final_source_release_line" -lt "$final_source_verify_line" ] &&
   [ "$browser_build_line" -lt "$final_source_verify_line" ] ||
-  fail "browser prep must admit Homebrew early, then release and reverify runtime activation"
+  fail "browser prep must preserve the ordered historical bootstrap and source bridge"
+grep -Fq 'if [ "$REQUIRE_SEALED_HOMEBREW_SELECTION" -eq 1 ]; then' \
+  "$prepare_browser_function" ||
+  fail "ordinary browser preparation must gate the lazy bootstrap behind its explicit recovery option"
 grep -Fq 'need_shell_vfs_build_tools' "$RUN_SH" &&
   fail "run.sh must not duplicate prerequisites owned by the shell recipe"
 grep -Fq 'if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then' \
@@ -2448,7 +2584,7 @@ ci_mirror_line="$(grep -nF 'prepare_ci_homebrew_browser_mirror' \
   [ "$ci_source_authority_line" -lt "$ci_browser_run_line" ] &&
   [ "$ci_browser_run_line" -lt "$ci_product_build_line" ] &&
   [ "$ci_product_build_line" -lt "$ci_mirror_line" ] ||
-  fail "CI must authenticate source state before run.sh and recover the mirror after the product build"
+  fail "CI must authenticate source state before run.sh and admit its transport after the product build"
 
 [ "$(grep -Ec '^[[:space:]]+validate_ci_homebrew_browser_state$' \
   "$CI_TEST_RUNNER")" -eq 2 ] ||
@@ -2474,6 +2610,7 @@ mkdir -p "$ci_prepare_probe_root/apps/browser-demos/public"
   printf 'REPO_ROOT=%q\n' "$ci_prepare_probe_root"
   printf 'CI_HOMEBREW_BROWSER_STATE_VALIDATED=1\n'
   printf 'CI_HOMEBREW_BROWSER_STATE_MODE=unvalidated\n'
+  printf 'CI_HOMEBREW_BROWSER_TRANSPORT=""\n'
   printf 'CI_HOMEBREW_BROWSER_MIRROR_REQUIRED=""\n'
   printf 'CI_HOMEBREW_BROWSER_IMAGE=""\n'
   printf 'CI_HOMEBREW_BROWSER_REPORT_ROOT=""\n'
@@ -2499,6 +2636,36 @@ expect_failure "browser state changed before final authority" \
 [ -f "$ci_prepare_probe_log" ] ||
   fail "CI browser preparation did not run its final state validation"
 
+flat_prepare_probe_root="$TMP_ROOT/ci-browser-flat-transport"
+flat_prepare_probe="$flat_prepare_probe_root/probe.sh"
+mkdir -p "$flat_prepare_probe_root/apps/browser-demos/public"
+{
+  printf 'set -euo pipefail\n'
+  printf 'REPO_ROOT=%q\n' "$flat_prepare_probe_root"
+  printf 'CI_HOMEBREW_BROWSER_STATE_VALIDATED=1\n'
+  printf 'CI_HOMEBREW_BROWSER_STATE_MODE=unvalidated\n'
+  printf 'CI_HOMEBREW_BROWSER_TRANSPORT=""\n'
+  printf 'CI_HOMEBREW_BROWSER_MIRROR_REQUIRED=""\n'
+  printf 'CI_HOMEBREW_BROWSER_IMAGE=""\n'
+  printf 'CI_HOMEBREW_BROWSER_REPORT_ROOT=""\n'
+  printf 'CI_HOMEBREW_BROWSER_MIRROR=""\n'
+  printf 'validate_ci_homebrew_browser_state() {\n'
+  printf '  CI_HOMEBREW_BROWSER_STATE_MODE=resolved\n'
+  printf '  CI_HOMEBREW_BROWSER_TRANSPORT=flat-self-contained\n'
+  printf '  CI_HOMEBREW_BROWSER_MIRROR_REQUIRED=false\n'
+  printf '}\n'
+  cat "$ci_browser_prepare_function"
+  printf 'prepare_ci_homebrew_browser_mirror\n'
+} > "$flat_prepare_probe"
+bash "$flat_prepare_probe" ||
+  fail "validated self-contained flat transport still required mirror recovery"
+flat_probe_mirror="$flat_prepare_probe_root/apps/browser-demos/public/homebrew-main-shell-bottles"
+[ ! -e "$flat_probe_mirror" ] && [ ! -L "$flat_probe_mirror" ] ||
+  fail "self-contained flat transport created a closed browser mirror"
+mkdir "$flat_probe_mirror"
+expect_failure "closed Homebrew browser mirror already exists" \
+  bash "$flat_prepare_probe"
+
 ci_state_probe="$TMP_ROOT/ci-browser-state-authority.sh"
 {
   printf 'set -euo pipefail\n'
@@ -2507,6 +2674,7 @@ ci_state_probe="$TMP_ROOT/ci-browser-state-authority.sh"
   printf 'CI_HOMEBREW_BROWSER_MIRROR_REQUIRED=""\n'
   printf 'CI_HOMEBREW_BROWSER_SOURCE_AUTHORITY=""\n'
   printf 'CI_HOMEBREW_BROWSER_STATE_MODE=""\n'
+  printf 'CI_HOMEBREW_BROWSER_TRANSPORT=""\n'
   printf 'CI_HOMEBREW_BROWSER_STATE_VALIDATED=0\n'
   cat "$ci_browser_state_function"
   printf 'validate_ci_homebrew_browser_state\n'
@@ -2588,7 +2756,7 @@ bootstrap_probe="$bootstrap_probe_root/run.sh"
 } >"$bootstrap_probe"
 TEST_BOOTSTRAP_LOG="$bootstrap_probe_log" bash "$bootstrap_probe"
 grep -Fq -- '--browser-asset' "$bootstrap_probe_log" ||
-  fail "ordinary browser preparation skipped the Homebrew bootstrap"
+  fail "the explicit historical bootstrap preparer skipped its browser asset"
 : >"$bootstrap_probe_log"
 TEST_BOOTSTRAP_LOG="$bootstrap_probe_log" TEST_REQUIRE_SEALED=1 \
   bash "$bootstrap_probe"
@@ -2599,6 +2767,24 @@ TEST_BOOTSTRAP_LOG="$bootstrap_probe_log" \
   TEST_AUTHORITY=source-rootfs-mirror-state-v1 bash "$bootstrap_probe"
 [ ! -s "$bootstrap_probe_log" ] ||
   fail "authenticated source-rootfs preparation fetched a Homebrew bootstrap"
+
+prepare_dispatch_probe="$bootstrap_probe_root/prepare-dispatch.sh"
+{
+  printf 'set -euo pipefail\n'
+  printf 'SOURCE_ROOTFS_SHELL=0\n'
+  printf 'ALREADY_MATERIALIZED=1\n'
+  printf 'REQUIRE_SEALED_HOMEBREW_SELECTION="${TEST_REQUIRE_SEALED:-0}"\n'
+  printf 'step() { :; }\n'
+  printf 'prepare_browser_homebrew_bootstrap() { printf "bootstrap\\n"; }\n'
+  printf 'build_browser() { printf "build\\n"; }\n'
+  cat "$prepare_browser_function"
+  printf 'cmd_prepare_browser\n'
+} > "$prepare_dispatch_probe"
+[ "$(bash "$prepare_dispatch_probe")" = build ] ||
+  fail "ordinary flat browser preparation staged the retired lazy bootstrap"
+[ "$(TEST_REQUIRE_SEALED=1 bash "$prepare_dispatch_probe")" = \
+    $'bootstrap\nbuild' ] ||
+  fail "the explicit historical browser option no longer stages its bootstrap"
 
 [ -x "$BROWSER_BOOTSTRAP_PREPARER" ] ||
   fail "the shared browser bootstrap preparer must be executable"
