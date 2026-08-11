@@ -539,10 +539,14 @@ fi
 # branch fail with "mariadbd.wasm not found".
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-    WASM_POSIX_INSTALL_LOCAL_MIRROR=0 WASM_POSIX_DEP_TARGET_ARCH="$WASM_ARCH" \
+    WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
+        WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
+        WASM_POSIX_DEP_TARGET_ARCH="$WASM_ARCH" \
         install_local_binary mariadb "$INSTALL_DIR/bin/mariadbd.wasm" mariadbd.wasm
     [ -f "$INSTALL_DIR/bin/mysqltest.wasm" ] && \
-        WASM_POSIX_INSTALL_LOCAL_MIRROR=0 WASM_POSIX_DEP_TARGET_ARCH="$WASM_ARCH" \
+        WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
+            WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
+            WASM_POSIX_DEP_TARGET_ARCH="$WASM_ARCH" \
             install_local_binary mariadb "$INSTALL_DIR/bin/mysqltest.wasm" mysqltest.wasm || true
 else
     WASM_POSIX_DEP_TARGET_ARCH="$WASM_ARCH" \
