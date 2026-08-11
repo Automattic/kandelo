@@ -2,7 +2,7 @@
 
 ## Status
 
-Revised design approved in conversation, pending review of this written spec.
+Approved in conversation on 2026-08-11.
 
 The long-term requirement is lossless guest HTTP forwarding. This design
 records a bounded compatibility profile for the currently deployed WordPress
