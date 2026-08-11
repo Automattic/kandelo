@@ -350,7 +350,9 @@ kandelo_package_stage_verified_source() {
     local source_url="$4"
     local source_sha256="$5"
     local work_dir="$6"
-    local download_dir tarball
+    local archive_magic download_dir entry invalid tarball zip_listing
+    local zip_listing_long zip_root zip_top zip_top_name
+    local -a zip_entries
 
     if [ -e "$dest" ] || [ -L "$dest" ]; then
         echo "ERROR: $label destination already exists: $dest" >&2
@@ -390,6 +392,100 @@ kandelo_package_stage_verified_source() {
         rm -rf "$download_dir"
         return 1
     fi
+
+    archive_magic="$(od -An -N4 -tx1 "$tarball" | tr -d '[:space:]')"
+    case "$archive_magic" in
+        504b0304|504b0506|504b0708)
+            zip_listing="$download_dir/entries.txt"
+            zip_listing_long="$download_dir/entries.long.txt"
+            zip_root="$download_dir/unpacked"
+            if ! unzip -Z1 "$tarball" >"$zip_listing" ||
+               ! unzip -Z -l "$tarball" >"$zip_listing_long"; then
+                rm -rf "$download_dir"
+                return 1
+            fi
+            # Reject links/devices before extraction so an archive entry cannot
+            # redirect a later write outside the private unpacking root.
+            if ! awk '
+                NR <= 2 { next }
+                /^[0-9]+ files?,/ { next }
+                {
+                    kind = substr($0, 1, 1)
+                    if (kind != "-" && kind != "d") exit 1
+                    seen = 1
+                }
+                END { if (!seen) exit 1 }
+            ' "$zip_listing_long"; then
+                rm -rf "$download_dir"
+                return 1
+            fi
+            zip_top_name=""
+            while IFS= read -r entry; do
+                case "$entry" in
+                    ""|/*|*\\*)
+                        rm -rf "$download_dir"
+                        return 1
+                        ;;
+                esac
+                entry="${entry%/}"
+                [ -n "$entry" ] || {
+                    rm -rf "$download_dir"
+                    return 1
+                }
+                case "/$entry/" in
+                    *'/../'*|*'/./'*|*'//'*)
+                        rm -rf "$download_dir"
+                        return 1
+                        ;;
+                esac
+                if [ -z "$zip_top_name" ]; then
+                    zip_top_name="${entry%%/*}"
+                elif [ "${entry%%/*}" != "$zip_top_name" ]; then
+                    rm -rf "$download_dir"
+                    return 1
+                fi
+            done <"$zip_listing"
+            [ -n "$zip_top_name" ] || {
+                rm -rf "$download_dir"
+                return 1
+            }
+            mkdir -p "$zip_root"
+            if ! unzip -oq "$tarball" -d "$zip_root"; then
+                rm -rf "$download_dir"
+                return 1
+            fi
+            mapfile -d '' -t zip_entries < <(
+                find "$zip_root" -mindepth 1 -maxdepth 1 -print0
+            )
+            if [ "${#zip_entries[@]}" -ne 1 ] ||
+               [ "$(basename "${zip_entries[0]}")" != "$zip_top_name" ] ||
+               [ ! -d "${zip_entries[0]}" ] || [ -L "${zip_entries[0]}" ]; then
+                rm -rf "$download_dir"
+                return 1
+            fi
+            zip_top="${zip_entries[0]}"
+            invalid="$(find "$zip_top" -type l -print -quit)"
+            [ -z "$invalid" ] || {
+                rm -rf "$download_dir"
+                return 1
+            }
+            invalid="$(
+                find "$zip_top" -mindepth 1 ! -type d ! -type f -print -quit
+            )"
+            [ -z "$invalid" ] || {
+                rm -rf "$download_dir"
+                return 1
+            }
+            mkdir -p "$dest"
+            if ! cp -a "$zip_top/." "$dest/"; then
+                rm -rf "$dest" "$download_dir"
+                return 1
+            fi
+            rm -rf "$download_dir"
+            return 0
+            ;;
+    esac
+
     mkdir -p "$dest"
     if ! tar xf "$tarball" -C "$dest" --strip-components=1; then
         rm -rf "$dest" "$download_dir"
