@@ -13,6 +13,7 @@ pub mod credentials;
 pub(crate) mod descriptor_backing;
 pub mod devfs;
 pub mod dri;
+pub(crate) mod exec_target;
 pub mod fd;
 pub mod fifo;
 pub mod fork;

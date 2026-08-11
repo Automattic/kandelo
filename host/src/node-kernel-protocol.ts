@@ -38,9 +38,15 @@ export interface InitMessage {
     dataBufferSize?: number;
     useSharedMemory?: boolean;
   };
-  /** Virtual path → immutable host filesystem generation for exec resolution. */
+  /**
+   * Virtual path → immutable host file for spawn-only preflight. Exec never
+   * consults this map and uses only a retained kernel VFS target.
+   */
   execPrograms?: Record<string, string>;
-  /** Virtual path → worker-owned exact program bytes for pre-VFS resolution. */
+  /**
+   * Virtual path → worker-owned bytes for spawn-only preflight through Task
+   * 12. Exec never consults this map.
+   */
   execProgramBytes?: Record<string, ArrayBuffer>;
   /**
    * Bytes of `host/wasm/rootfs.vfs`, read on the main thread and forwarded

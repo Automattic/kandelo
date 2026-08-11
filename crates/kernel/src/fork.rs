@@ -1623,7 +1623,6 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     child.fork_exec_path = fork_exec_path;
     child.fork_exec_argv = fork_exec_argv;
     child.fork_fd_actions = fork_fd_actions;
-    child.exec_prepared_tid = None;
     child.next_ephemeral_port = 49152;
     child.clear_threads(); // POSIX: child has one task, the process leader.
     child.epolls.clear();
@@ -2083,7 +2082,6 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     process.fork_exec_path = None;
     process.fork_exec_argv = None;
     process.fork_fd_actions.clear();
-    process.exec_prepared_tid = None;
     process.next_ephemeral_port = 49152;
     process.clear_threads(); // exec resets to the process leader only.
     process.epolls.clear();

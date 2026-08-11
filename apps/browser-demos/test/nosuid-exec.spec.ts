@@ -8,6 +8,7 @@ const memoryFsModulePath = resolve(repoRoot, "host/src/vfs/memory-fs.ts");
 const timeModulePath = resolve(repoRoot, "host/src/vfs/time.ts");
 const typesModulePath = resolve(repoRoot, "host/src/vfs/types.ts");
 const vfsModulePath = resolve(repoRoot, "host/src/vfs/vfs.ts");
+const abiModulePath = resolve(repoRoot, "host/src/generated/abi.ts");
 
 test("browser mount policy defaults mutable execution to nosuid", async ({
   page,
@@ -20,6 +21,7 @@ test("browser mount policy defaults mutable execution to nosuid", async ({
     asViteFsUrl(timeModulePath),
     asViteFsUrl(typesModulePath),
     asViteFsUrl(vfsModulePath),
+    asViteFsUrl(abiModulePath),
   ];
   for (const moduleUrl of modules) {
     const response = await fetch(moduleUrl);
@@ -38,6 +40,7 @@ test("browser mount policy defaults mutable execution to nosuid", async ({
     const time = await import(/* @vite-ignore */ modules[1]);
     const types = await import(/* @vite-ignore */ modules[2]);
     const vfsModule = await import(/* @vite-ignore */ modules[3]);
+    const abi = await import(/* @vite-ignore */ modules[4]);
     const mutable = memory.MemoryFileSystem.create(
       new SharedArrayBuffer(2 * 1024 * 1024),
     );
@@ -67,6 +70,36 @@ test("browser mount policy defaults mutable execution to nosuid", async ({
       }],
       new time.BrowserTimeProvider(),
     );
+    const aliased = new vfsModule.VirtualPlatformIO(
+      [
+        {
+          mountPoint: "/trusted",
+          backend: trustedBackend,
+          readonly: true,
+          setIdCapability: {
+            kind: "trusted-root-product",
+            guestWritable: false,
+            stableExecutableIdentity: true,
+          },
+        },
+        { mountPoint: "/raw", backend: trustedBackend, readonly: true },
+      ],
+      new time.BrowserTimeProvider(),
+    );
+    const trustedHandle = aliased.open(
+      "/trusted/bin/tool",
+      abi.OPEN_FLAGS.O_RDONLY,
+      0,
+    );
+    const rawHandle = aliased.open(
+      "/raw/bin/tool",
+      abi.OPEN_FLAGS.O_RDONLY,
+      0,
+    );
+    const trustedHandleFlags = aliased.fstatfs(trustedHandle).flags;
+    const rawHandleFlags = aliased.fstatfs(rawHandle).flags;
+    aliased.close(trustedHandle);
+    aliased.close(rawHandle);
 
     return {
       mutableFlags: ordinary.statfs("/bin/tool").flags,
@@ -74,6 +107,8 @@ test("browser mount policy defaults mutable execution to nosuid", async ({
       trustedFlags: trusted.statfs("/bin/tool").flags,
       trustedCapability: trusted.getMountSetIdCapability("/bin/tool"),
       trustedMode: trusted.stat("/bin/tool").mode,
+      trustedHandleFlags,
+      rawHandleFlags,
       stNosuid: types.ST_NOSUID,
     };
   }, {
@@ -89,4 +124,6 @@ test("browser mount policy defaults mutable execution to nosuid", async ({
     stableExecutableIdentity: true,
   });
   expect(result.trustedMode & 0o6000).toBe(0o6000);
+  expect(result.trustedHandleFlags & result.stNosuid).toBe(0);
+  expect(result.rawHandleFlags & result.stNosuid).toBe(result.stNosuid);
 });

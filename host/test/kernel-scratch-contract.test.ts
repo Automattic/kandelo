@@ -844,10 +844,19 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.inheritHostFdMirrors::kernel-export-direct-use::getAcceptWake?.(parentPid, parentTarget.fd)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.kernelExecPrepare::kernel-export-direct-use::prepare(pid, callerTid)",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.execTargetCancel::kernel-export-direct-use::cancel(ownerPid, target)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.kernelExecSetup::kernel-export-direct-use::threadAware(pid, callerTid)",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.execTargetSize::kernel-export-direct-use::size(ownerPid, target)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.kernelExecCommit::kernel-export-direct-use::cancel(pid, target)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.kernelExecCommit::kernel-export-direct-use::commit(pid, callerTid, target)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.kernelExecCommit::kernel-export-direct-use::size(pid, target)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.notifyParentOfChildStateTransition::kernel-export-direct-use::hasNoCldStop(parentPid)",
@@ -1415,6 +1424,11 @@ const auditAllowances: AuditAllowance[] = [
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( statfsPtr, WASM_STATFS_SIZE, "host_statfs destination", )',
     disposition: "rust-lent",
     why: "The host_statfs import binds its exact pointer formal to the generated fixed filesystem-stat capacity before backend work.",
+  },
+  {
+    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( statfsPtr, WASM_STATFS_SIZE, "host_fstatfs destination", )',
+    disposition: "rust-lent",
+    why: "The exact-handle host_fstatfs import binds its pointer formal to the generated fixed filesystem-stat capacity before retained-route policy lookup.",
   },
   {
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( valuePtr, 8, "host_pathconf destination", )',

@@ -405,6 +405,33 @@ describe("stopped process Worker launch gate", () => {
     expect(cancel).toHaveBeenCalledOnce();
   });
 
+  it("routes a running constructor failure through its exact launch owner", async () => {
+    const memory = createSharedMemory();
+    const failure = new Error("replacement Worker construction failed");
+    const start = vi.fn(() => {
+      throw failure;
+    });
+    const cancel = vi.fn();
+    const onStartError = vi.fn(() => true);
+    const { worker } = createWorkerHarness(memory, () => 0);
+
+    expect(
+      worker.startProcessWorkerWhenRunnable(
+        41,
+        memory,
+        start,
+        cancel,
+        onStartError,
+      ),
+    ).toBe("started");
+    await drainLifecycleGate();
+
+    expect(start).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(onStartError).toHaveBeenCalledOnce();
+    expect(onStartError).toHaveBeenCalledWith(failure);
+  });
+
   it("turns deferred constructor failure into process exit and full teardown", async () => {
     let processState = 1;
     const memory = createSharedMemory();

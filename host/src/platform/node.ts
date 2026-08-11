@@ -30,6 +30,8 @@ import {
 } from "../native-positioned-write";
 import { filesystemPathconf } from "../pathconf";
 import { nativeStatfs, translateOpenFlags } from "../vfs/host-fs";
+import { zeroCapacityStatfs } from "../statfs";
+import { ST_NOSUID } from "../vfs/types";
 import { NativeMetadataOverlay } from "./native-metadata";
 
 const UTIME_NOW = 0x3fffffff;
@@ -233,6 +235,14 @@ export class NodePlatformIO implements PlatformIO {
   // match. Same policy as HostFileSystem.
   fstat(handle: number): StatResult {
     return this.metadata.toStatResult(fs.fstatSync(handle, { bigint: true }));
+  }
+
+  fstatfs(handle: number): StatfsResult {
+    // Node exposes statfs(path) but no portable fstatfs(fd). This direct host
+    // backend is never admitted for set-ID execution, so validate the exact
+    // handle and publish its fixed nosuid route without consulting a path.
+    this.fstat(handle);
+    return { ...zeroCapacityStatfs(0), flags: ST_NOSUID };
   }
 
   fpathconf(handle: number, name: number): PathconfValue {

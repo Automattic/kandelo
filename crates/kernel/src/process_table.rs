@@ -789,6 +789,7 @@ impl ProcessTable {
         limbo.ppid = proc.ppid;
         limbo.install_credentials(proc.credentials().clone());
         limbo.secure_exec = proc.secure_exec;
+        limbo.exec_generation = proc.exec_generation;
         limbo.pgid = proc.pgid;
         limbo.sid = proc.sid;
         limbo.is_session_leader = proc.is_session_leader;
@@ -2112,6 +2113,89 @@ pub fn current_pid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exec_target_kernel_table_removal_fallback_closes_each_lease_once() {
+        use crate::exec_target::{PreparedExecOwner, PreparedExecTarget};
+        use crate::fd::OpenFileDescRef;
+        use crate::lock::FileId;
+        use wasm_posix_shared::{WasmStat, WasmStatfs};
+        use wasm_posix_shared::flags::O_RDONLY;
+        use wasm_posix_shared::mode::S_IFREG;
+        use wasm_posix_shared::statfs_flags::ST_NOSUID;
+
+        // Host teardown and forced vfork containment both converge on this
+        // table-removal fallback after their route-specific host fences. The
+        // vfork marker must not change exact OFD retirement here.
+        for (case, vfork_child) in [(0i64, false), (1, true)] {
+            let handle = 9_452_100 + case;
+            let mut table = ProcessTable::new();
+            let pid = table.create_process().unwrap();
+            let proc = table.get_mut(pid).unwrap();
+            proc.vfork_child = vfork_child;
+            let ofd_index = proc.ofd_table.create(
+                FileType::Regular,
+                O_RDONLY,
+                handle,
+                b"/bin/retained-removal-target".to_vec(),
+            );
+            let ofd_id = proc.ofd_table.get(ofd_index).unwrap().ofd_id;
+            let target = PreparedExecTarget::new(
+                PreparedExecOwner::Process {
+                    pid,
+                    caller_tid: pid,
+                    generation: 0,
+                },
+                OpenFileDescRef(ofd_index),
+                ofd_id,
+                Some(FileId::Host { dev: 7, ino: 11 }),
+                WasmStat {
+                    st_dev: 7,
+                    st_ino: 11,
+                    st_mode: S_IFREG | 0o755,
+                    st_nlink: 1,
+                    st_uid: 0,
+                    st_gid: 0,
+                    st_size: 0,
+                    st_atime_sec: 0,
+                    st_atime_nsec: 0,
+                    st_mtime_sec: 0,
+                    st_mtime_nsec: 0,
+                    st_ctime_sec: 0,
+                    st_ctime_nsec: 0,
+                    _pad: 0,
+                },
+                WasmStatfs {
+                    f_type: 1,
+                    f_bsize: 4096,
+                    f_blocks: 1,
+                    f_bfree: 0,
+                    f_bavail: 0,
+                    f_files: 1,
+                    f_ffree: 0,
+                    f_fsid: 19,
+                    f_namelen: 255,
+                    f_frsize: 4096,
+                    f_flags: ST_NOSUID,
+                    _pad: 0,
+                },
+                b"/bin/retained-removal-target".to_vec(),
+            )
+            .unwrap();
+            proc.prepared_exec_targets.insert(target).unwrap();
+
+            let removed = table.remove_process(pid).unwrap();
+            assert_eq!(
+                removed
+                    .host_closes
+                    .iter()
+                    .filter(|&&candidate| candidate == handle)
+                    .count(),
+                1,
+            );
+            assert_eq!(crate::ofd::host_handle_ref_count(handle), 0);
+        }
+    }
 
     #[test]
     fn vfork_child_credential_mutation_isolated_from_parent_record() {

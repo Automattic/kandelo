@@ -85,6 +85,7 @@ unsafe extern "C" {
     fn host_stat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32;
     fn host_lstat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32;
     fn host_statfs(path_ptr: *const u8, path_len: u32, statfs_ptr: *mut u8) -> i32;
+    fn host_fstatfs(handle: i64, statfs_ptr: *mut u8) -> i32;
     fn host_pathconf(path_ptr: *const u8, path_len: u32, name: i32, value_ptr: *mut i64) -> i32;
     fn host_fpathconf(handle: i64, name: i32, value_ptr: *mut i64) -> i32;
     fn host_mkdir(path_ptr: *const u8, path_len: u32, mode: u32) -> i32;
@@ -112,7 +113,6 @@ unsafe extern "C" {
     fn host_fsync(handle: i64) -> i32;
     fn host_fchmod(handle: i64, mode: u32) -> i32;
     fn host_fchown(handle: i64, uid: u32, gid: u32) -> i32;
-    fn host_exec(path_ptr: *const u8, path_len: u32) -> i32;
     fn host_set_alarm(seconds: u32) -> i32;
     fn host_set_posix_timer(
         timer_id: i32,
@@ -450,6 +450,27 @@ impl HostIO for WasmHostIO {
         Ok(statfs)
     }
 
+    fn host_fstatfs(&mut self, handle: i64) -> Result<WasmStatfs, Errno> {
+        let mut statfs = WasmStatfs {
+            f_type: 0,
+            f_bsize: 0,
+            f_blocks: 0,
+            f_bfree: 0,
+            f_bavail: 0,
+            f_files: 0,
+            f_ffree: 0,
+            f_fsid: 0,
+            f_namelen: 0,
+            f_frsize: 0,
+            f_flags: 0,
+            _pad: 0,
+        };
+        let statfs_ptr = &mut statfs as *mut WasmStatfs as *mut u8;
+        let result = unsafe { host_fstatfs(handle, statfs_ptr) };
+        i32_to_result(result)?;
+        Ok(statfs)
+    }
+
     fn host_pathconf(&mut self, path: &[u8], name: i32) -> Result<Option<i64>, Errno> {
         let mut value = -1i64;
         let result = unsafe {
@@ -647,18 +668,6 @@ impl HostIO for WasmHostIO {
     fn host_fchown(&mut self, handle: i64, uid: u32, gid: u32) -> Result<(), Errno> {
         let result = unsafe { host_fchown(handle, uid, gid) };
         i32_to_result(result)
-    }
-
-    fn host_exec(&mut self, path: &[u8]) -> Result<(), Errno> {
-        let ret = unsafe { host_exec(path.as_ptr(), path.len() as u32) };
-        if ret < 0 {
-            match Errno::from_u32((-ret) as u32) {
-                Some(e) => Err(e),
-                None => Err(Errno::EIO),
-            }
-        } else {
-            Ok(())
-        }
     }
 
     fn host_set_alarm(&mut self, seconds: u32) -> Result<(), Errno> {
@@ -2715,51 +2724,26 @@ pub extern "C" fn kernel_dequeue_signal(
     }
 }
 
-/// Thread-aware exec setup. When a pthread invokes exec, its signal mask and
-/// directed pending signals become the surviving process thread's state. The
-/// same exact kernel-owned task must first have completed
-/// [`kernel_exec_prepare`].
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_exec_setup_for_thread(pid: u32, caller_tid: u32) -> i32 {
-    kernel_exec_setup_inner(pid, caller_tid)
-}
-
-/// Validate the exec caller and apply any deferred posix_spawn file actions.
-///
-/// The host calls this before it starts the irreversible address-space
-/// transition. Keeping these fallible operations separate means a bad caller
-/// tid or failed file action cannot strand a process after its old image has
-/// already been discarded.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_exec_prepare(pid: u32, caller_tid: u32) -> i32 {
-    match prepare_exec_state(pid, caller_tid) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
-    }
-}
-
-fn prepare_exec_state(pid: u32, caller_tid: u32) -> Result<(), Errno> {
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let (proc, advisory_locks) = table.process_and_advisory_locks(pid).ok_or(Errno::ESRCH)?;
-
-    proc.begin_exec_prepare(caller_tid)?;
-
+fn apply_pending_exec_fd_actions(
+    proc: &mut Process,
+    advisory_locks: &mut crate::lock::AdvisoryLockManager,
+    host: &mut dyn HostIO,
+) -> Result<(), Errno> {
     // Apply pending fork fd actions (from posix_spawn) before exec.
     // These are dup2/close/open operations that rearrange descriptors (for
     // example, a pipe write end onto fd 1) and must precede CLOEXEC removal.
     let actions: alloc::vec::Vec<_> = proc.fork_fd_actions.drain(..).collect();
-    let mut host = WasmHostIO;
     for action in actions {
         use crate::process::FdAction;
         match action {
             FdAction::Dup2 { old_fd, new_fd } => {
-                syscalls::sys_dup2_with_locks(proc, advisory_locks, &mut host, old_fd, new_fd)?;
+                syscalls::sys_dup2_with_locks(proc, advisory_locks, host, old_fd, new_fd)?;
             }
             FdAction::Close { fd } => {
                 syscalls::sys_close_implicit_with_locks(
                     proc,
                     advisory_locks,
-                    &mut host,
+                    host,
                     fd,
                 )?;
             }
@@ -2770,36 +2754,221 @@ fn prepare_exec_state(pid: u32, caller_tid: u32) -> Result<(), Errno> {
                 mode,
             } => {
                 let opened_fd =
-                    syscalls::sys_open(proc, &mut host, path, flags as u32, mode as u32)?;
+                    syscalls::sys_open(proc, host, path, flags as u32, mode as u32)?;
                 if opened_fd != fd {
-                    syscalls::sys_dup2_with_locks(proc, advisory_locks, &mut host, opened_fd, fd)?;
+                    syscalls::sys_dup2_with_locks(proc, advisory_locks, host, opened_fd, fd)?;
                     let _ = syscalls::sys_close_implicit_with_locks(
                         proc,
                         advisory_locks,
-                        &mut host,
+                        host,
                         opened_fd,
                     );
                 }
             }
         }
     }
-    proc.finish_exec_prepare(caller_tid);
     Ok(())
 }
 
-fn kernel_exec_setup_inner(pid: u32, caller_tid: u32) -> i32 {
+fn checked_exec_path<'a>(path_ptr: usize, path_len: usize) -> Result<&'a [u8], Errno> {
+    if path_len > wasm_posix_shared::platform_limits::PATH_MAX_BYTES {
+        return Err(Errno::ENAMETOOLONG);
+    }
+    if path_len == 0 {
+        return Ok(&[]);
+    }
+    if path_ptr == 0 || path_ptr.checked_add(path_len).is_none() {
+        return Err(Errno::EFAULT);
+    }
+    Ok(unsafe { core::slice::from_raw_parts(path_ptr as *const u8, path_len) })
+}
+
+/// Prepare one exact pathname or `AT_EMPTY_PATH` executable object.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exec_target_prepare(
+    pid: u32,
+    caller_tid: u32,
+    dirfd: i32,
+    path_ptr: usize,
+    path_len: usize,
+    flags: u32,
+) -> i32 {
+    let path = match checked_exec_path(path_ptr, path_len) {
+        Ok(path) => path,
+        Err(error) => return -(error as i32),
+    };
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let (proc, advisory_locks) = match table.process_and_advisory_locks(pid) {
         Some(pair) => pair,
         None => return -(Errno::ESRCH as i32),
     };
-    if let Err(e) = proc.consume_exec_prepare(caller_tid) {
-        return -(e as i32);
+    if !proc.is_live_explicit_tid(caller_tid) {
+        return -(Errno::ESRCH as i32);
     }
     let mut host = WasmHostIO;
-    match syscalls::commit_exec_state_with_locks(proc, advisory_locks, &mut host, caller_tid) {
+    let owner = crate::exec_target::PreparedExecOwner::Process {
+        pid,
+        caller_tid,
+        generation: proc.exec_generation,
+    };
+    match crate::exec_target::prepare(
+        proc,
+        advisory_locks,
+        &mut host,
+        owner,
+        dirfd,
+        path,
+        flags,
+    ) {
+        Ok(token) => token as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Prepare the exact initial executable for a newly allocated spawn child.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_spawn_exec_target_prepare(
+    parent_pid: u32,
+    child_pid: u32,
+    path_ptr: usize,
+    path_len: usize,
+) -> i32 {
+    let path = match checked_exec_path(path_ptr, path_len) {
+        Ok(path) if !path.is_empty() => path,
+        Ok(_) => return -(Errno::ENOENT as i32),
+        Err(error) => return -(error as i32),
+    };
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let parent_exists = table.get(parent_pid).is_some();
+    let (child, advisory_locks) = match table.process_and_advisory_locks(child_pid) {
+        Some(pair) if parent_exists && pair.0.ppid == parent_pid => pair,
+        _ => return -(Errno::ESRCH as i32),
+    };
+    let mut host = WasmHostIO;
+    if let Err(error) = apply_pending_exec_fd_actions(child, advisory_locks, &mut host) {
+        return -(error as i32);
+    }
+    let owner = crate::exec_target::PreparedExecOwner::Spawn {
+        parent_pid,
+        child_pid,
+        launch: child.exec_generation,
+    };
+    match crate::exec_target::prepare(
+        child,
+        advisory_locks,
+        &mut host,
+        owner,
+        wasm_posix_shared::flags::AT_FDCWD,
+        path,
+        0,
+    ) {
+        Ok(token) => token as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exec_target_size(owner_pid: u32, target: u32) -> i64 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get(owner_pid) else {
+        return -(Errno::ESRCH as i64);
+    };
+    match crate::exec_target::size(proc, owner_pid, target) {
+        Ok(size) => size,
+        Err(error) => -(error as i64),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exec_target_read(
+    owner_pid: u32,
+    target: u32,
+    offset_lo: u32,
+    offset_hi: i32,
+    buffer_ptr: usize,
+    buffer_len: usize,
+) -> i32 {
+    if buffer_len > i32::MAX as usize {
+        return -(Errno::EOVERFLOW as i32);
+    }
+    if buffer_len != 0 && (buffer_ptr == 0 || buffer_ptr.checked_add(buffer_len).is_none()) {
+        return -(Errno::EFAULT as i32);
+    }
+    let buffer = if buffer_len == 0 {
+        &mut []
+    } else {
+        unsafe { core::slice::from_raw_parts_mut(buffer_ptr as *mut u8, buffer_len) }
+    };
+    let offset = ((offset_hi as i64) << 32) | i64::from(offset_lo);
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get_mut(owner_pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    let mut host = WasmHostIO;
+    match crate::exec_target::read(proc, &mut host, owner_pid, target, offset, buffer) {
+        Ok(read) => read as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exec_target_cancel(owner_pid: u32, target: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let (proc, advisory_locks) = match table.process_and_advisory_locks(owner_pid) {
+        Some(pair) => pair,
+        None => return -(Errno::ESRCH as i32),
+    };
+    let mut host = WasmHostIO;
+    match crate::exec_target::cancel(proc, advisory_locks, &mut host, owner_pid, target) {
         Ok(()) => 0,
-        Err(e) => -(e as i32),
+        Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exec_commit(pid: u32, caller_tid: u32, target: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let (proc, advisory_locks) = match table.process_and_advisory_locks(pid) {
+        Some(pair) => pair,
+        None => return -(Errno::ESRCH as i32),
+    };
+    let mut host = WasmHostIO;
+    match crate::exec_target::commit_process(
+        proc,
+        advisory_locks,
+        &mut host,
+        pid,
+        caller_tid,
+        target,
+    ) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_spawn_exec_commit(
+    parent_pid: u32,
+    child_pid: u32,
+    target: u32,
+) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let parent_exists = table.get(parent_pid).is_some();
+    let (child, advisory_locks) = match table.process_and_advisory_locks(child_pid) {
+        Some(pair) if parent_exists && pair.0.ppid == parent_pid => pair,
+        _ => return -(Errno::ESRCH as i32),
+    };
+    let mut host = WasmHostIO;
+    match crate::exec_target::commit_spawn(
+        child,
+        advisory_locks,
+        &mut host,
+        parent_pid,
+        child_pid,
+        target,
+    ) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
     }
 }
 
@@ -4286,18 +4455,10 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         ), // SYS_WAIT4
 
         // Fork/exec/clone
-        211 => {
-            // SYS_EXECVE: (path, ...)
-            let p = channel_const_ptr!(0, u8);
-            let len = channel_cstr_len!(p);
-            kernel_execve(p, len)
-        }
-        386 => {
-            // SYS_EXECVEAT: (dirfd, path, argv, envp, flags)
-            let p = channel_const_ptr!(1, u8);
-            let len = channel_cstr_len!(p);
-            kernel_execveat(a1 as i32, p, len, a5 as u32)
-        }
+        // Exec launch is a host-orchestrated exact-target transaction. Direct
+        // channel dispatch has neither a retained object token nor authority
+        // to replace a worker, so it must not revive pathname-only exec.
+        211 | 386 => -(Errno::ENOSYS as i32), // SYS_EXECVE / SYS_EXECVEAT
         // The centralized host must intercept fork and ask ProcessTable to
         // allocate the child identity. A direct dispatch cannot create a
         // worker without bypassing that authority, so fail truthfully.
@@ -11807,87 +11968,6 @@ pub extern "C" fn kernel_realpath(
     };
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
-}
-
-// ---------------------------------------------------------------------------
-// execve
-// ---------------------------------------------------------------------------
-
-/// Execute a new program. On success, traps (never returns) because the
-/// process image is being replaced asynchronously by the host. On failure,
-/// returns negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_execve(path_ptr: *const u8, path_len: u32) -> i32 {
-    let result = {
-        let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-        let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
-        let mut host = WasmHostIO;
-        match syscalls::sys_execve(proc, &mut host, path) {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-                Err(e)
-            }
-        }
-        // _gkl is dropped here, releasing the Global Kernel Lock
-    };
-
-    match result {
-        Ok(()) => {
-            // Exec succeeded — the host is asynchronously replacing this process
-            // image. Trap to stop the current wasm execution immediately.
-            // GKL must be released before trapping so subsequent centralized
-            // kernel calls during the host's exec transition do not deadlock.
-            unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
-            #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-            unsafe {
-                core::hint::unreachable_unchecked();
-            }
-            #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-            {
-                0
-            }
-        }
-        Err(e) => -(e as i32),
-    }
-}
-
-/// Execute a new program via file descriptor (fexecve / execveat).
-/// Same trap-on-success semantics as kernel_execve.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_execveat(
-    dirfd: i32,
-    path_ptr: *const u8,
-    path_len: u32,
-    flags: u32,
-) -> i32 {
-    let result = {
-        let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-        let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
-        let mut host = WasmHostIO;
-        match syscalls::sys_execveat(proc, &mut host, dirfd, path, flags) {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-                Err(e)
-            }
-        }
-    };
-
-    match result {
-        Ok(()) => {
-            unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
-            #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-            unsafe {
-                core::hint::unreachable_unchecked();
-            }
-            #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-            {
-                0
-            }
-        }
-        Err(e) => -(e as i32),
-    }
 }
 
 /// clone — spawn a new thread. Returns child TID in parent, negative errno on error.

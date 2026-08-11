@@ -69,6 +69,12 @@ import {
   type HostOwnedProcessReapResult,
 } from "./host-owned-process-reap";
 import {
+  launchPreparedExecTarget,
+  PreparedExecTargetError,
+  type ExecLaunchCallback,
+  type PreparedExecKernel,
+} from "./exec-target";
+import {
   buildRawHttpRequest,
   parseRawHttpResponse,
   type HttpRequest,
@@ -2292,13 +2298,7 @@ export interface CentralizedKernelCallbacks {
    * new binary, and attach its channels to the existing kernel Process.
    * Returns 0 on success, negative errno on error.
    */
-  onExec?: (
-    pid: number,
-    path: string,
-    argv: string[],
-    envp: string[],
-    callerTid: number,
-  ) => Promise<number>;
+  onExec?: ExecLaunchCallback;
 
   /**
    * Pre-flight resolution step for SYS_SPAWN. Returns the validated program
@@ -8162,76 +8162,218 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Validate the exec caller and apply deferred posix_spawn file actions.
-   * This is the fallible kernel preflight; no image-owned state is discarded.
+   * Prepare one exact executable target through Rust's process-relative path
+   * resolver. The path bytes exist only inside this entry-scoped lease.
    */
-  kernelExecPrepare(pid: number, callerTid: number): number {
+  execTargetPrepare(
+    pid: number,
+    callerTid: number,
+    dirfd: number,
+    path: string,
+    flags: number,
+  ): number {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
-    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
-      // Exec preflight returns an authoritative synchronous result. Queuing it
-      // would let the discarded caller continue before Rust validates it.
-      throw new KernelReentrantEntryError("kernel exec preparation");
-    }
-    let result = 0;
+    const encodedPath = new TextEncoder().encode(path);
+    if (encodedPath.byteLength > POSIX_PATH_MAX_BYTES) return -ENAMETOOLONG;
+    const region = this.#requireMainScratchRegion();
+    if (encodedPath.byteLength > region.capacity) return -ENAMETOOLONG;
+    let result = -EIO;
     let completed = false;
-    let missingExportError: Error | undefined;
     const deferred = this.#runOrDeferKernelEntry(
-      `kernel exec preparation pid=${pid}`,
+      `kernel exec target prepare pid=${pid}`,
       (entry) => {
-        const prepare = this.#kernelInstanceForEntry(entry).exports
-          .kernel_exec_prepare as
-          ((pid: number, callerTid: number) => number) | undefined;
-        if (!prepare) {
-          missingExportError = new Error(
-            "Kernel missing required kernel_exec_prepare export",
-          );
-          return undefined;
-        }
         const previousPid = this.currentHandlePid;
         this.currentHandlePid = pid;
         try {
-          result = prepare(pid, callerTid);
+          result = region.withLease((lease) => {
+            lease.copyFrom(encodedPath);
+            return this.#invokeEntryScratchExport(
+              entry,
+              lease,
+              "kernel_exec_target_prepare",
+              [
+                pid,
+                callerTid,
+                dirfd,
+                lease.exportPointer(0, encodedPath.byteLength),
+                encodedPath.byteLength,
+                flags,
+              ],
+            );
+          });
           completed = true;
         } finally {
           this.currentHandlePid = previousPid;
         }
-        // Deferred spawn actions can close descriptors and publish a Rust
-        // advisory-lock wake even when a later action makes prepare fail.
+        return undefined;
+      },
+    );
+    if (deferred || !completed) {
+      throw new KernelReentrantEntryError("kernel exec target prepare");
+    }
+    return result;
+  }
+
+  execTargetSize(ownerPid: number, target: number): bigint {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    let result = -EIO as number | bigint;
+    let completed = false;
+    let missingExportError: Error | undefined;
+    const deferred = this.#runOrDeferKernelEntry(
+      `kernel exec target size pid=${ownerPid} target=${target}`,
+      (entry) => {
+        const size = this.#kernelInstanceForEntry(entry).exports
+          .kernel_exec_target_size as
+          ((ownerPid: number, target: number) => bigint) | undefined;
+        if (!size) {
+          missingExportError = new Error(
+            "Kernel missing required kernel_exec_target_size export",
+          );
+          return undefined;
+        }
+        const previousPid = this.currentHandlePid;
+        this.currentHandlePid = ownerPid;
+        try {
+          result = size(ownerPid, target);
+          completed = true;
+        } finally {
+          this.currentHandlePid = previousPid;
+        }
+        return undefined;
+      },
+    );
+    if (missingExportError) throw missingExportError;
+    if (deferred || !completed || typeof result !== "bigint") {
+      throw new KernelReentrantEntryError("kernel exec target size");
+    }
+    return result;
+  }
+
+  execTargetRead(
+    ownerPid: number,
+    target: number,
+    offset: bigint,
+    destination: Uint8Array,
+  ): number {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const exactDestination = intrinsicUint8ArrayView(
+      destination,
+      "prepared exec target destination",
+    );
+    const region = this.#requireMainScratchRegion();
+    if (exactDestination.byteLength > region.capacity) return -EOVERFLOW;
+    if (offset < 0n || offset > 0x7fff_ffff_ffff_ffffn) return -EOVERFLOW;
+    let result = -EIO;
+    let completed = false;
+    const deferred = this.#runOrDeferKernelEntry(
+      `kernel exec target read pid=${ownerPid} target=${target}`,
+      (entry) => {
+        const previousPid = this.currentHandlePid;
+        this.currentHandlePid = ownerPid;
+        try {
+          result = region.withLease((lease) => {
+            const read = this.#invokeEntryScratchExport(
+              entry,
+              lease,
+              "kernel_exec_target_read",
+              [
+                ownerPid,
+                target,
+                Number(offset & 0xffff_ffffn),
+                Number((offset >> 32n) & 0xffff_ffffn),
+                lease.exportPointer(0, exactDestination.byteLength),
+                exactDestination.byteLength,
+              ],
+            );
+            if (read > 0) {
+              const byteLength = this.#checkedScratchProducerByteLength(
+                read,
+                exactDestination.byteLength,
+                "kernel_exec_target_read",
+              );
+              lease.copyTo(exactDestination, 0, 0, byteLength);
+            }
+            return read;
+          });
+          completed = true;
+        } finally {
+          this.currentHandlePid = previousPid;
+        }
+        return undefined;
+      },
+    );
+    if (deferred || !completed) {
+      throw new KernelReentrantEntryError("kernel exec target read");
+    }
+    return result;
+  }
+
+  execTargetCancel(ownerPid: number, target: number): number {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    let result = -EIO;
+    let completed = false;
+    let missingExportError: Error | undefined;
+    const deferred = this.#runOrDeferKernelEntry(
+      `kernel exec target cancel pid=${ownerPid} target=${target}`,
+      (entry) => {
+        const cancel = this.#kernelInstanceForEntry(entry).exports
+          .kernel_exec_target_cancel as
+          ((ownerPid: number, target: number) => number) | undefined;
+        if (!cancel) {
+          missingExportError = new Error(
+            "Kernel missing required kernel_exec_target_cancel export",
+          );
+          return undefined;
+        }
+        const previousPid = this.currentHandlePid;
+        this.currentHandlePid = ownerPid;
+        try {
+          result = cancel(ownerPid, target);
+          completed = true;
+        } finally {
+          this.currentHandlePid = previousPid;
+        }
         this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
         return undefined;
       },
     );
-    if (missingExportError !== undefined) throw missingExportError;
+    if (missingExportError) throw missingExportError;
     if (deferred || !completed) {
-      throw new KernelReentrantEntryError("kernel exec preparation");
+      throw new KernelReentrantEntryError("kernel exec target cancel");
     }
     return result;
   }
 
   /**
-   * Run kernel-side exec setup: close CLOEXEC fds, reset signal handlers.
+   * Atomically commit the exact prepared target selected by `target`.
    * Returns 0 on success, negative errno on failure.
-   * Called by onExec callbacks after confirming the target program exists.
+   * Called only by the shared prepared-target launcher after the asynchronous
+   * host callback returns a bounded preflight plan.
    */
-  kernelExecSetup(pid: number, callerTid: number): number {
+  kernelExecCommit(
+    pid: number,
+    callerTid: number,
+    target: number,
+    expectedSize?: number,
+  ): number {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     if (this.#kernelEntryGate.shouldDeferVoidIngress) {
       // A successful setup commits exec in Rust. Its result cannot be queued
       // behind the caller that needs to decide whether the old image survives.
-      throw new KernelReentrantEntryError("kernel exec setup");
+      throw new KernelReentrantEntryError("kernel exec commit");
     }
     let result = 0;
     let completed = false;
     let missingExportError: Error | undefined;
     const deferred = this.#runOrDeferKernelEntry(
-      `kernel exec setup pid=${pid}`,
+      `kernel exec commit pid=${pid} target=${target}`,
       (entry) => {
-        const threadAware = this.#kernelInstanceForEntry(entry).exports
-          .kernel_exec_setup_for_thread as
-          ((pid: number, callerTid: number) => number) | undefined;
-        if (!threadAware) {
+        const commit = this.#kernelInstanceForEntry(entry).exports
+          .kernel_exec_commit as
+          ((pid: number, callerTid: number, target: number) => number) | undefined;
+        if (!commit) {
           missingExportError = new Error(
-            "Kernel missing required kernel_exec_setup_for_thread export",
+            "Kernel missing required kernel_exec_commit export",
           );
           return undefined;
         }
@@ -8241,14 +8383,46 @@ export class CentralizedKernelWorker {
         try {
           const listenerWakeSnapshot =
             this.#snapshotExecTcpListenerWakeIdsWithinKernelEntry(pid, entry);
-          result = threadAware(pid, callerTid);
-          completed = true;
-          if (result === 0) {
-            prunePlan = this.#prepareExecFdMirrorPruneWithinKernelEntry(
-              pid,
-              listenerWakeSnapshot,
-              entry,
-            );
+          let leaseSizeMatches = true;
+          if (expectedSize !== undefined) {
+            const size = this.#kernelInstanceForEntry(entry).exports
+              .kernel_exec_target_size as
+              ((ownerPid: number, target: number) => bigint) | undefined;
+            if (!size) {
+              missingExportError = new Error(
+                "Kernel missing required kernel_exec_target_size export",
+              );
+              return undefined;
+            }
+            const currentSize = size(pid, target);
+            if (currentSize !== BigInt(expectedSize)) {
+              leaseSizeMatches = false;
+              const cancel = this.#kernelInstanceForEntry(entry).exports
+                .kernel_exec_target_cancel as
+                ((ownerPid: number, target: number) => number) | undefined;
+              if (!cancel) {
+                missingExportError = new Error(
+                  "Kernel missing required kernel_exec_target_cancel export",
+                );
+                return undefined;
+              }
+              const cancelled = cancel(pid, target);
+              result = currentSize < 0n
+                ? Number(currentSize)
+                : cancelled < 0 ? cancelled : -EIO;
+              completed = true;
+            }
+          }
+          if (leaseSizeMatches) {
+            result = commit(pid, callerTid, target);
+            completed = true;
+            if (result === 0) {
+              prunePlan = this.#prepareExecFdMirrorPruneWithinKernelEntry(
+                pid,
+                listenerWakeSnapshot,
+                entry,
+              );
+            }
           }
         } finally {
           this.currentHandlePid = previousPid;
@@ -8271,7 +8445,7 @@ export class CentralizedKernelWorker {
     );
     if (missingExportError !== undefined) throw missingExportError;
     if (deferred || !completed) {
-      throw new KernelReentrantEntryError("kernel exec setup");
+      throw new KernelReentrantEntryError("kernel exec commit");
     }
     return result;
   }
@@ -8757,7 +8931,7 @@ export class CentralizedKernelWorker {
     }
     this.invalidateSharedMmapFdCacheForPid(pid);
 
-    // kernelExecSetup is the irreversible Rust commit. It has already drained
+    // kernelExecCommit is the irreversible Rust commit. It has already drained
     // the authoritative attachment records and decremented nattch; repeating
     // detach here would release a different same-segment attachment.
     this.shmMappings.delete(pid);
@@ -9612,7 +9786,13 @@ export class CentralizedKernelWorker {
     // is authoritative for launch permission.
     this.stoppedPids.delete(pid);
     entry.deferProtocolTransactionStart(() => {
-      start();
+      try {
+        start();
+      } catch (error) {
+        cancel();
+        if (onStartError?.(error) === true) return undefined;
+        throw error;
+      }
       return undefined;
     });
     return "started";
@@ -11055,7 +11235,7 @@ export class CentralizedKernelWorker {
 
     // --- Intercept fork/exec/clone/exit before calling kernel ---
     // These syscalls need special async handling that can't go through
-    // direct kernel dispatch or the blocking host_exec import.
+    // direct kernel dispatch.
 
     if (syscallNr === SYS_FORK || syscallNr === SYS_VFORK) {
       if (logging) console.error(logEntry);
@@ -22401,6 +22581,56 @@ export class CentralizedKernelWorker {
     );
   }
 
+  async #launchPreparedExec(
+    pid: number,
+    callerTid: number,
+    dirfd: number,
+    authorityPath: string,
+    flags: number,
+    diagnosticPath: string,
+    argv: string[],
+    envp: string[],
+  ): Promise<number> {
+    const callback = this.callbacks.onExec;
+    if (!callback) return -ENOSYS;
+    try {
+      return await launchPreparedExecTarget({
+        kernel: this as PreparedExecKernel,
+        ownerPid: pid,
+        pid,
+        callerTid,
+        diagnosticPath,
+        argv,
+        envp,
+        expectedAbi: this.getKernelAbiVersion(),
+        materializePath: async (path) => {
+          await this.io.preparePath?.(path);
+        },
+        prepareInitialTarget: () =>
+          this.execTargetPrepare(
+            pid,
+            callerTid,
+            dirfd,
+            authorityPath,
+            flags,
+          ),
+        prepareInterpreterTarget: (interpreterPath) =>
+          this.execTargetPrepare(
+            pid,
+            callerTid,
+            AT_FDCWD,
+            interpreterPath,
+            0,
+          ),
+        commitTarget: (target, expectedSize) =>
+          this.kernelExecCommit(pid, callerTid, target, expectedSize),
+      }, callback);
+    } catch (error) {
+      if (error instanceof PreparedExecTargetError) return -error.errno;
+      throw error;
+    }
+  }
+
   /**
    * Handle SYS_EXECVE: read path, argv, and envp from process memory,
    * then call the onExec callback to load the new program.
@@ -22429,7 +22659,8 @@ export class CentralizedKernelWorker {
       );
       return;
     }
-    let path = pathResult.value;
+    const authorityPath = pathResult.value;
+    let path = authorityPath;
     const argvResult = this.readStringArrayFromProcess(
       processMem,
       origArgs[1],
@@ -22538,7 +22769,16 @@ export class CentralizedKernelWorker {
       let transaction: Promise<number>;
       try {
         transaction = this.#resolvePromise(
-          this.callbacks.onExec!(pid, path, argv, envp, callerTid),
+          this.#launchPreparedExec(
+            pid,
+            callerTid,
+            AT_FDCWD,
+            authorityPath,
+            0,
+            path,
+            argv,
+            envp,
+          ),
         );
       } catch (cause) {
         this.#runOrDeferChannelKernelEntry(
@@ -22791,12 +23031,15 @@ export class CentralizedKernelWorker {
       let transaction: Promise<number>;
       try {
         transaction = this.#resolvePromise(
-          this.callbacks.onExec!(
+          this.#launchPreparedExec(
             pid,
+            callerTid,
+            dirfd,
+            pathStr,
+            flags,
             execPath,
             argv,
             envp,
-            callerTid,
           ),
         );
       } catch (cause) {
