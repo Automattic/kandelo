@@ -1384,7 +1384,17 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   initReady = true;
 
   const pcmTransport = kernelWorker.claimPcmTransport(true);
-  post({ type: "ready", pcmTransport });
+  // Only when the host asked for it: report the VFS SAB so the main thread can
+  // build a synchronous host-side filesystem view (BrowserKernel.hostFs). It is
+  // the same SharedArrayBuffer the worker reads and writes, so changes are
+  // mutually visible without a round-trip. Reporting it unconditionally would
+  // make the main thread a co-owner of every VFS, which is what the
+  // kernel-owned VFS deliberately avoids.
+  post(
+    msg.reportFsSab
+      ? { type: "ready", pcmTransport, fsSab: memfs.sharedBuffer }
+      : { type: "ready", pcmTransport },
+  );
 }
 
 // ── Spawn ──
