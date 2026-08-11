@@ -44,13 +44,35 @@ for input in \
     images/vfs/scripts/build-homebrew-flat-vfs-image.ts \
     packages/registry/shell/prepare-build-tools.sh \
     crates/shared/src/lib.rs \
-    host/src \
+    host/src/constants.ts \
+    host/src/generated/abi.ts \
+    host/src/homebrew-bottle-descriptor.ts \
+    host/src/homebrew-bottle-relocation.ts \
+    host/src/homebrew-bottle-selection.ts \
+    host/src/homebrew-bottle-types.ts \
+    host/src/homebrew-guest-layout.ts \
+    host/src/homebrew-lazy-layer-descriptor.ts \
+    host/src/homebrew-lazy-layer.ts \
+    host/src/homebrew-runtime-layer-limits.ts \
+    host/src/homebrew-runtime-layer-policy.ts \
+    host/src/homebrew-runtime-support-materializer.ts \
+    host/src/homebrew-runtime-support.ts \
+    host/src/homebrew-vfs-builder.ts \
+    host/src/homebrew-vfs-fetch.ts \
+    host/src/homebrew-vfs-materializer.ts \
+    host/src/homebrew-vfs-planner.ts \
+    host/src/homebrew-vfs-resource-policy.ts \
+    host/src/pathconf.ts \
+    host/src/statfs.ts \
+    host/src/vfs \
     web-libs/kandelo-session/src/shell-config.ts \
     web-libs/kandelo-session/src/demo-config.ts
 do
     grep -Fq "\"$input\"" "$BUILD_TOML" ||
         fail "canonical shell cache identity omits $input"
 done
+grep -Fq '"host/src"' "$BUILD_TOML" &&
+    fail "canonical shell cache identity retains the overbroad host/src root"
 for retired in \
     main-shell-lazy-artifact-lock.json \
     main-shell-migration-lock.json \
