@@ -145,12 +145,67 @@ interface ExactSourceObservation {
   tree: string;
 }
 
+interface ExactTapObservation {
+  commit: string;
+  repository: string;
+  root: string;
+  tree: string;
+}
+
 export function createExactSourceReobserver(
   expected: ExactSourceObservation,
   verify: (value: ExactSourceObservation) => void = verifyExactProductSourceIdentity,
 ): () => void {
   verify(expected);
   return () => verify(expected);
+}
+
+export function createExactTapReobserver(
+  expected: ExactTapObservation,
+  verify: (value: ExactTapObservation) => void = verifyExactTapSourceIdentity,
+): () => void {
+  verify(expected);
+  return () => verify(expected);
+}
+
+function verifyExactTapSourceIdentity(expected: ExactTapObservation): void {
+  const root = exactDirectory(expected.root, "exact current tap-main root");
+  const topLevel = exactDirectory(
+    gitTapOutput(root, ["rev-parse", "--show-toplevel"]),
+    "exact current tap-main Git root",
+  );
+  if (topLevel !== root) throw new Error("exact tap root is not the Git checkout root");
+  const remote = gitTapOutput(root, ["remote", "get-url", "origin"]);
+  if (remote !== `https://github.com/${expected.repository}.git`) {
+    throw new Error("exact tap repository differs from the protected public tap");
+  }
+  const commit = gitTapOutput(root, ["rev-parse", "--verify", "HEAD"]);
+  const tree = gitTapOutput(root, ["rev-parse", "--verify", "HEAD^{tree}"]);
+  if (commit !== expected.commit || tree !== expected.tree) {
+    throw new Error("exact tap Git identity differs from the protected handoff");
+  }
+  const status = gitTapOutput(
+    root,
+    ["status", "--porcelain=v1", "--untracked-files=all"],
+    true,
+  );
+  if (status !== "") throw new Error("exact tap checkout is not clean");
+}
+
+function gitTapOutput(root: string, args: string[], permitEmpty = false): string {
+  const result = spawnSync("git", ["-C", root, ...args], {
+    encoding: "utf8",
+    env: process.env,
+    maxBuffer: MAX_DOCUMENT_BYTES,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error !== undefined) throw result.error;
+  if (result.status !== 0 || result.signal !== null) {
+    throw new Error(`cannot observe exact tap Git identity: ${String(result.stderr).trim()}`);
+  }
+  const value = String(result.stdout).trim();
+  if (!permitEmpty && value === "") throw new Error("exact tap Git identity is empty");
+  return value;
 }
 
 export function heldPagesReadinessRecord(options: {
@@ -598,6 +653,12 @@ export async function producePagesArtifacts(
   };
   const reobserveSource = testDependencies?.createSourceReobserver?.(sourceObservation) ??
     createExactSourceReobserver(sourceObservation);
+  const reobserveTap = createExactTapReobserver({
+    commit: handoff.tap_source.commit,
+    repository: handoff.tap_source.repository,
+    root: tapRoot,
+    tree: handoff.tap_source.tree,
+  });
 
   (testDependencies?.validateRegistries ?? validateProtectedRegistries)(sourceRoot);
 
@@ -810,6 +871,7 @@ export async function producePagesArtifacts(
         targetAbi: handoff.target_abi,
       });
       reobserveSource();
+      reobserveTap();
       writeAtomicHoldOnlyOutput(staging, output, heldReadiness);
       return;
     }
@@ -841,6 +903,7 @@ export async function producePagesArtifacts(
     writeCanonical(join(staging, "readiness.json"), result.readiness);
     if (!result.readiness.ready) {
       reobserveSource();
+      reobserveTap();
       writeAtomicHoldOnlyOutput(staging, output, result.readiness);
       return;
     }
@@ -859,6 +922,7 @@ export async function producePagesArtifacts(
       );
     }
     reobserveSource();
+    reobserveTap();
     renameSync(staging, output);
   } catch (error) {
     rmSync(staging, { force: true, recursive: true });

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -169,7 +170,25 @@ export async function createMiniaturePagesProducerFixture(
   const programIndex = join(root, "program-index.json");
   writeFileSync(programIndex, canonicalJsonBytes({ kind: "fixture-program-index", schema: 1 }));
   const handoffPath = join(root, "handoff.json");
-  mkdirSync(join(root, "tap-main"));
+  const tapRoot = join(root, "tap-main");
+  mkdirSync(tapRoot);
+  writeFileSync(join(tapRoot, "README.md"), "exact fixture tap\n");
+  execFileSync("git", ["init", "--quiet", "--initial-branch=main"], { cwd: tapRoot });
+  execFileSync("git", ["config", "user.name", "Kandelo fixture"], { cwd: tapRoot });
+  execFileSync("git", ["config", "user.email", "fixture@kandelo.invalid"], { cwd: tapRoot });
+  execFileSync("git", ["add", "README.md"], { cwd: tapRoot });
+  execFileSync("git", ["commit", "--quiet", "-m", "exact fixture tap"], { cwd: tapRoot });
+  execFileSync("git", [
+    "remote", "add", "origin", "https://github.com/kandelo-dev/homebrew-tap-core.git",
+  ], { cwd: tapRoot });
+  const tapCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: tapRoot,
+    encoding: "utf8",
+  }).trim();
+  const tapTree = execFileSync("git", ["rev-parse", "HEAD^{tree}"], {
+    cwd: tapRoot,
+    encoding: "utf8",
+  }).trim();
   writeFileSync(handoffPath, canonicalJsonBytes({
     kind: "kandelo-pages-production-handoff",
     products: ["base", "mini"].map((id) => ({
@@ -193,11 +212,11 @@ export async function createMiniaturePagesProducerFixture(
     site_source_root: siteRoot,
     source,
     source_root: sourceRoot,
-    tap_root: join(root, "tap-main"),
+    tap_root: tapRoot,
     tap_source: {
-      commit: "4".repeat(40),
+      commit: tapCommit,
       repository: "kandelo-dev/homebrew-tap-core",
-      tree: "5".repeat(40),
+      tree: tapTree,
     },
     target_abi: targetAbi,
   }));

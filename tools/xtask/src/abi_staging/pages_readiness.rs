@@ -199,6 +199,7 @@ fn validate_readiness(record: &PagesReadinessRecordV1) -> Result<(), String> {
         .iter()
         .map(|product| (product.id.as_str(), product.load))
         .collect::<BTreeMap<_, _>>();
+    let mut admission_projections = BTreeMap::new();
     let mut previous_product: Option<&str> = None;
     for product in &record.products {
         validate_ready_product(
@@ -206,6 +207,7 @@ fn validate_readiness(record: &PagesReadinessRecordV1) -> Result<(), String> {
             record.target_abi.version,
             &record.tap_source,
             record.ready,
+            &mut admission_projections,
         )?;
         if previous_product.is_some_and(|previous| previous >= product.id.as_str()) {
             return Err("Pages readiness products must be sorted and duplicate-free".to_string());
@@ -295,9 +297,15 @@ fn validate_site_manifest(manifest: &PagesSiteManifestV1) -> Result<(), String> 
         .iter()
         .map(|product| (product.id.as_str(), product.load))
         .collect::<BTreeMap<_, _>>();
+    let mut admission_projections = BTreeMap::new();
     let mut previous_product: Option<&str> = None;
     for product in &manifest.products {
-        validate_site_product(product, manifest.target_abi.version, &manifest.tap_source)?;
+        validate_site_product(
+            product,
+            manifest.target_abi.version,
+            &manifest.tap_source,
+            &mut admission_projections,
+        )?;
         if previous_product.is_some_and(|previous| previous >= product.id.as_str()) {
             return Err("Pages site products must be sorted and duplicate-free".to_string());
         }
@@ -359,6 +367,7 @@ fn validate_ready_product(
     target_abi: u64,
     tap_source: &ExactGitSourceV1,
     ready: bool,
+    admission_projections: &mut BTreeMap<(String, String), AdmissionProjectionObservationV1>,
 ) -> Result<(), String> {
     validate_product_fields(
         &product.id,
@@ -374,6 +383,7 @@ fn validate_ready_product(
         target_abi,
         tap_source,
         ready,
+        admission_projections,
     )
 }
 
@@ -381,6 +391,7 @@ fn validate_site_product(
     product: &PagesSiteProductV1,
     target_abi: u64,
     tap_source: &ExactGitSourceV1,
+    admission_projections: &mut BTreeMap<(String, String), AdmissionProjectionObservationV1>,
 ) -> Result<(), String> {
     validate_product_fields(
         &product.id,
@@ -396,6 +407,7 @@ fn validate_site_product(
         target_abi,
         tap_source,
         true,
+        admission_projections,
     )?;
     validate_relative_path(&product.path, "Pages product path")?;
     if !product
@@ -422,6 +434,7 @@ fn validate_product_fields(
     target_abi: u64,
     tap_source: &ExactGitSourceV1,
     ready: bool,
+    admission_projections: &mut BTreeMap<(String, String), AdmissionProjectionObservationV1>,
 ) -> Result<(), String> {
     validate_stable_id(id, "Pages product id")?;
     for digest in [
@@ -436,7 +449,7 @@ fn validate_product_fields(
     if vfs_bytes == 0 {
         return Err("Pages VFS bytes must be positive".to_string());
     }
-    let mut projections = BTreeMap::new();
+    let mut product_projections = BTreeMap::new();
     for admission in admissions {
         validate_sha256(&admission.record_sha256)?;
         validate_admission_reference(
@@ -452,16 +465,25 @@ fn validate_product_fields(
                     target_abi,
                     tap_source,
                 )?;
-                let identity = (
-                    projection.formula.as_str(),
-                    projection.architecture.as_str(),
-                );
-                if projections.insert(identity, ()).is_some() {
+                let identity = (projection.formula.clone(), projection.architecture.clone());
+                if product_projections.insert(identity.clone(), ()).is_some() {
                     return Err(
                         "Pages product admission projections contain a duplicate Formula/architecture"
                             .to_string(),
                     );
                 }
+                if admission_projections
+                    .get(&identity)
+                    .is_some_and(|prior| prior != projection)
+                {
+                    return Err(
+                        "Pages admission projections contain conflicting Formula/architecture observations"
+                            .to_string(),
+                    );
+                }
+                admission_projections
+                    .entry(identity)
+                    .or_insert_with(|| projection.clone());
             }
             (None, true) => {
                 return Err("ready Pages admission lacks a current tap projection".to_string());
@@ -784,6 +806,30 @@ mod tests {
                 validate_pages_readiness_bytes(&canonical_json_bytes(&record).unwrap()).is_err()
             );
         }
+    }
+
+    #[test]
+    fn rejects_cross_product_conflicting_readiness_projections() {
+        let mut record = ready_record();
+        record["products"][1]["admissions"][0]["projection"]["formula"] = json!("base");
+        let error =
+            validate_pages_readiness_bytes(&canonical_json_bytes(&record).unwrap()).unwrap_err();
+        assert!(
+            error.contains("conflicting Formula/architecture"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_cross_product_conflicting_site_projections() {
+        let mut manifest = site_manifest(&ready_record());
+        manifest["products"][1]["admissions"][0]["projection"]["formula"] = json!("base");
+        let error = validate_pages_site_manifest_bytes(&canonical_json_bytes(&manifest).unwrap())
+            .unwrap_err();
+        assert!(
+            error.contains("conflicting Formula/architecture"),
+            "{error}"
+        );
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -768,6 +769,65 @@ test("derives site and gallery identities from protected current outputs", () =>
       `const LIVE_DEMO_SPECS = {\n  shell: {\n    image: "shell",\n  },\n};\n`),
       /reviewed VFS image/i,
     );
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("rejects early holds when the protected tap repository or Git identity differs", async (t) => {
+  for (const mutation of ["repository", "commit", "tree"] as const) {
+    await t.test(mutation, async () => {
+      const root = mkdtempSync(join(tmpdir(), `kandelo-pages-tap-${mutation}-`));
+      try {
+        const fixture = await createMiniaturePagesProducerFixture(root, "missing-product");
+        const handoff = JSON.parse(readFileSync(fixture.handoffPath, "utf8"));
+        if (mutation === "repository") {
+          execFileSync("git", [
+            "remote", "set-url", "origin", "https://github.com/example/homebrew-tap-core.git",
+          ], { cwd: handoff.tap_root });
+        } else {
+          handoff.tap_source[mutation] = mutation === "commit"
+            ? "a".repeat(40)
+            : "b".repeat(40);
+          writeFileSync(fixture.handoffPath, canonicalJsonBytes(handoff));
+        }
+        await assert.rejects(
+          () => producePagesArtifacts(
+            fixture.handoffPath,
+            fixture.outputRoot,
+            fixture.oci,
+            fixture.dependencies,
+          ),
+          /tap.*(repository|Git identity)/i,
+        );
+        assert.equal(existsSync(fixture.outputRoot), false);
+      } finally {
+        rmSync(root, { force: true, recursive: true });
+      }
+    });
+  }
+});
+
+test("rejects an early hold after the observed tap checkout mutates", async () => {
+  const root = mkdtempSync(join(tmpdir(), "kandelo-pages-tap-postflight-"));
+  try {
+    const fixture = await createMiniaturePagesProducerFixture(root, "missing-product");
+    const handoff = JSON.parse(readFileSync(fixture.handoffPath, "utf8"));
+    const listImmutableReferences = fixture.oci.listImmutableReferences.bind(fixture.oci);
+    fixture.oci.listImmutableReferences = async (repository) => {
+      writeFileSync(join(handoff.tap_root, "post-observation-mutation"), "dirty\n");
+      return listImmutableReferences(repository);
+    };
+    await assert.rejects(
+      () => producePagesArtifacts(
+        fixture.handoffPath,
+        fixture.outputRoot,
+        fixture.oci,
+        fixture.dependencies,
+      ),
+      /tap.*clean/i,
+    );
+    assert.equal(existsSync(fixture.outputRoot), false);
   } finally {
     rmSync(root, { force: true, recursive: true });
   }
