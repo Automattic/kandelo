@@ -463,6 +463,17 @@
             "kind": "process-size"
           }
         ],
+        "musl_name": "getgroups",
+        "number": 135,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-size"
+          }
+        ],
         "musl_name": "setgroups",
         "number": 136,
         "result": "i32"
@@ -2255,7 +2266,7 @@
     {
       "kind": "func",
       "name": "kernel_getgroups",
-      "signature": "(i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -7454,6 +7465,23 @@
         "size": {
           "size": 4,
           "type": "fixed"
+        }
+      }
+    ],
+    "135": [
+      {
+        "argIndex": 1,
+        "copyOutLength": {
+          "maxValue": 32,
+          "multiplier": 4,
+          "type": "return-value"
+        },
+        "direction": "out",
+        "required": true,
+        "size": {
+          "argIndex": 0,
+          "multiplier": 4,
+          "type": "arg"
         }
       }
     ],

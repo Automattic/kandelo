@@ -167,6 +167,11 @@ _Static_assert(__NR_mremap == 126u,
 #endif
 _Static_assert(__NR_madvise == 128u,
 "musl __NR_madvise drifted from the Kandelo channel scalar contract");
+#ifndef __NR_getgroups
+#error "musl is missing __NR_getgroups required by the Kandelo channel scalar contract"
+#endif
+_Static_assert(__NR_getgroups == 135u,
+"musl __NR_getgroups drifted from the Kandelo channel scalar contract");
 #ifndef __NR_setgroups
 #error "musl is missing __NR_setgroups required by the Kandelo channel scalar contract"
 #endif

@@ -222,3 +222,44 @@ for (const program of programs) {
     expect(runtimeErrors).toEqual([]);
   });
 }
+
+for (const program of programs) {
+  test(`complete group lists use bounded scratch for ${program.arch}`, async ({
+    page,
+    baseURL,
+    browserName,
+  }) => {
+    test.skip(
+      browserName === "webkit" && program.arch === "wasm64",
+      "WebKit rejects the fixture because Memory64 is not enabled",
+    );
+    expect(baseURL).toBeTruthy();
+    await page.goto(new URL("/pages/test-runner/?minimal=1", baseURL).href);
+    await page.waitForFunction(() => (window as any).__testRunnerReady === true);
+
+    const programUrl = new URL(`/@fs/${program.path}`, baseURL).href;
+    const result = await page.evaluate(
+      async ({ programUrl }) => {
+        const response = await fetch(programUrl);
+        if (!response.ok) {
+          throw new Error(
+            `program fetch failed: ${response.status} ${response.url}`,
+          );
+        }
+        return (window as any).__runTest(
+          await response.arrayBuffer(),
+          ["kernel-scratch-browser-test", "groups"],
+          30_000,
+        );
+      },
+      { programUrl },
+    );
+
+    expect(result.exitCode, JSON.stringify(result)).toBe(0);
+    expect(result.stdout).toContain(
+      `KERNEL_SCRATCH_GROUPS_PASS pointer_bits=${program.arch === "wasm64" ? 64 : 32} groups=32`,
+    );
+    expect(result.stderr).toBe("");
+    expect(result.hostDiagnostics).toEqual([]);
+  });
+}

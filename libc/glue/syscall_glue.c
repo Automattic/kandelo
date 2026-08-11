@@ -1284,10 +1284,8 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     case SYS_GETGROUPS:
         if (a1 < 0)
             return -22; /* EINVAL */
-        return (long)kernel_getgroups(
-            (uint32_t)a1,
-            (uint32_t *)(uintptr_t)a2,
-            a1 > 0 ? (uint32_t)sizeof(uint32_t) : 0);
+        return (long)kernel_getgroups((uint32_t)a1,
+                                      (uint32_t *)(uintptr_t)a2);
 
     /* setgroups — (size, list_ptr) */
     case SYS_SETGROUPS:

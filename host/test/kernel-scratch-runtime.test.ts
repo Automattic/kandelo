@@ -161,6 +161,12 @@ describe("owned kernel scratch in the real Node runtime", () => {
             `KERNEL_SCRATCH_ZERO_IOV_PASS pointer_bits=${arch === "wasm64" ? 64 : 32}`,
           useDefaultRootfs: false,
         },
+        {
+          argv: ["kernel-scratch-browser-test", "groups"],
+          marker:
+            `KERNEL_SCRATCH_GROUPS_PASS pointer_bits=${arch === "wasm64" ? 64 : 32} groups=32`,
+          useDefaultRootfs: false,
+        },
       ];
 
       for (const fixture of cases) {

@@ -490,6 +490,12 @@ pub const SYSCALLS: &[ChannelScalarSyscall] = &[
         result: ChannelResultKind::I32,
     },
     ChannelScalarSyscall {
+        syscall_number: Syscall::Getgroups as u32,
+        musl_name: "getgroups",
+        arguments: PROCESS_SIZE_ARGUMENT_0,
+        result: ChannelResultKind::I32,
+    },
+    ChannelScalarSyscall {
         syscall_number: Syscall::Setgroups as u32,
         musl_name: "setgroups",
         arguments: PROCESS_SIZE_ARGUMENT_0,
@@ -861,6 +867,17 @@ mod tests {
             ChannelScalarKind::SplitI64LowU32
         );
         assert_eq!(result_kind(Syscall::Seek as u32), ChannelResultKind::I64);
+    }
+
+    #[test]
+    fn group_count_scalars_use_the_callers_process_size_width() {
+        for syscall in [Syscall::Getgroups, Syscall::Setgroups] {
+            let contract = SYSCALLS
+                .iter()
+                .find(|entry| entry.syscall_number == syscall as u32)
+                .expect("group syscall scalar contract");
+            assert_eq!(contract.arguments, PROCESS_SIZE_ARGUMENT_0);
+        }
     }
 
     #[test]

@@ -160,7 +160,7 @@ pub(crate) fn dequeue_signal_for(
 ) -> (u32, u64, i32, i32, i32) {
     if proc.state == ProcessState::Stopped && signum == wasm_posix_shared::signal::SIGKILL {
         proc.clear_signal_everywhere(signum);
-        return (signum, 0, 0, proc.pid as i32, proc.uid as i32);
+        return (signum, 0, 0, proc.pid as i32, proc.real_uid() as i32);
     }
     let info = proc.consume_signal_for(tid, signum).unwrap_or_default();
     let (word_1, word_2) = match info.timer_id {
