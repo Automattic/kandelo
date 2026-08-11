@@ -1105,6 +1105,21 @@ fn validate_candidate(record: &CandidateRecordV1) -> Result<(), String> {
     validate_artifact(&payload.bottle_layer, ArtifactClassV1::Candidate)?;
     validate_named_artifacts(&payload.normalized_components)?;
     validate_named_artifacts(&payload.direct_dependency_layers)?;
+    let component_ids: Vec<_> = payload
+        .normalized_components
+        .iter()
+        .map(|component| component.id.as_str())
+        .collect();
+    let legacy_components = ["bottle-contract", "bottle-metadata", "source-custody"];
+    let descriptor_components = [
+        "bottle-contract",
+        "bottle-metadata",
+        "source-custody",
+        "vfs-composition-descriptor",
+    ];
+    if component_ids != legacy_components && component_ids != descriptor_components {
+        return Err("candidate normalized component inventory changed".to_string());
+    }
     validate_sha256(&payload.source_custody_sha256)?;
     validate_candidate_producer(&payload.producer)?;
     if !payload.nonendorsed {
@@ -2675,6 +2690,75 @@ mod tests {
     }
 
     #[test]
+    fn candidate_schema_one_accepts_only_legacy_or_descriptor_component_inventory() {
+        let candidate = |components: &[(&str, &str)]| {
+            let bottle_layer = artifact(SHA_B, ArtifactClassV1::Candidate);
+            let mut candidate_common = common(
+                SubjectKindV1::Candidate,
+                ArtifactClassV1::Candidate,
+                Some(bottle_layer.clone()),
+            );
+            candidate_common.promotion_state = PromotionStateV1::Unknown;
+            AbiStagingRecordV1::Candidate(CandidateRecordV1 {
+                schema: 1,
+                common: candidate_common,
+                candidate: CandidatePayloadV1 {
+                    formula: CandidateFormulaV1 {
+                        tap: "kandelo-dev/homebrew-tap-core".to_string(),
+                        formula: "bash".to_string(),
+                        version: "1.0".to_string(),
+                        revision: 0,
+                        bottle_rebuild: 0,
+                        architecture: VfsArchitectureV1::Wasm32,
+                        target_abi: 7,
+                        bottle_contract_sha256: SHA_A.to_string(),
+                    },
+                    bottle_layer,
+                    normalized_components: components
+                        .iter()
+                        .map(|(id, sha256)| NamedArtifactIdentityV1 {
+                            id: (*id).to_string(),
+                            artifact: artifact(sha256, ArtifactClassV1::Candidate),
+                        })
+                        .collect(),
+                    direct_dependency_layers: Vec::new(),
+                    source_custody_sha256: SHA_C.to_string(),
+                    producer: producer(),
+                    nonendorsed: true,
+                },
+            })
+        };
+
+        let legacy = candidate(&[
+            ("bottle-contract", SHA_A),
+            ("bottle-metadata", SHA_B),
+            ("source-custody", SHA_C),
+        ]);
+        let current = candidate(&[
+            ("bottle-contract", SHA_A),
+            ("bottle-metadata", SHA_B),
+            ("source-custody", SHA_C),
+            ("vfs-composition-descriptor", SHA_D),
+        ]);
+        validate_record(&legacy).unwrap();
+        validate_record(&current).unwrap();
+
+        let missing = candidate(&[("bottle-contract", SHA_A), ("source-custody", SHA_C)]);
+        assert!(validate_record(&missing)
+            .unwrap_err()
+            .contains("component inventory"));
+        let extra = candidate(&[
+            ("bottle-contract", SHA_A),
+            ("bottle-metadata", SHA_B),
+            ("source-custody", SHA_C),
+            ("unexpected-component", SHA_D),
+        ]);
+        assert!(validate_record(&extra)
+            .unwrap_err()
+            .contains("component inventory"));
+    }
+
+    #[test]
     fn closed_staging_record_enum_validates_all_nine_common_record_kinds() {
         let candidate_layer = artifact(SHA_B, ArtifactClassV1::Candidate);
         let canonical = artifact(SHA_C, ArtifactClassV1::Canonical);
@@ -2699,7 +2783,20 @@ mod tests {
                     bottle_contract_sha256: SHA_A.to_string(),
                 },
                 bottle_layer: candidate_layer.clone(),
-                normalized_components: Vec::new(),
+                normalized_components: vec![
+                    NamedArtifactIdentityV1 {
+                        id: "bottle-contract".to_string(),
+                        artifact: artifact(SHA_A, ArtifactClassV1::Candidate),
+                    },
+                    NamedArtifactIdentityV1 {
+                        id: "bottle-metadata".to_string(),
+                        artifact: artifact(SHA_B, ArtifactClassV1::Candidate),
+                    },
+                    NamedArtifactIdentityV1 {
+                        id: "source-custody".to_string(),
+                        artifact: artifact(SHA_C, ArtifactClassV1::Candidate),
+                    },
+                ],
                 direct_dependency_layers: Vec::new(),
                 source_custody_sha256: SHA_C.to_string(),
                 producer: producer(),
