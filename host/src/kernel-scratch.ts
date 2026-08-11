@@ -119,10 +119,11 @@ const typedArrayByteLength = intrinsicObjectGetOwnPropertyDescriptor(
  * `kernel_spawn_process` parses the complete blob into owned Rust values
  * before it enters process-table or host work; and
  * `kernel_process_metadata_stage` copies one complete entry into a token-owned
- * Rust vector before returning. The transfer execute export names no raw
- * pointer, but its token authorizes Rust to borrow the allocation represented
- * by this exact lease. Adding a name requires the same lifetime review and a
- * pointer-position update below.
+ * Rust vector before returning; both executable-target prepare exports copy
+ * the path before returning. The transfer execute export names no raw pointer,
+ * but its token authorizes Rust to borrow the allocation represented by this
+ * exact lease. Adding a name requires the same lifetime review and a pointer-
+ * position update below.
  */
 /** @internal Exported only for the Rust/host semantic-role drift contract. */
 export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
@@ -158,6 +159,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_set_cwd",
   "kernel_setsockopt",
   "kernel_socketpair",
+  "kernel_spawn_exec_target_prepare",
   "kernel_spawn_process",
   "kernel_take_process_timer_cleanup",
   "kernel_tcgetattr",
@@ -248,6 +250,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_pipe_read":
     case "kernel_pipe_write":
     case "kernel_pick_tcp_listener_target":
+    case "kernel_spawn_exec_target_prepare":
     case "kernel_spawn_process":
     case "kernel_tcsetattr":
       return REQUIRED_POINTER_2;
@@ -330,6 +333,7 @@ function isKernelScratchExportName(
     case "kernel_set_cwd":
     case "kernel_setsockopt":
     case "kernel_socketpair":
+    case "kernel_spawn_exec_target_prepare":
     case "kernel_spawn_process":
     case "kernel_take_process_timer_cleanup":
     case "kernel_tcgetattr":

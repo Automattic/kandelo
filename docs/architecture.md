@@ -86,6 +86,7 @@ kernel_exec_target_read(owner_pid, opaque_target, offset_lo, offset_hi, dst_ptr,
 kernel_exec_target_cancel(owner_pid, opaque_target) → 0 | -errno
 kernel_exec_commit(pid, caller_tid, opaque_target) → 0 | -errno
 kernel_spawn_exec_commit(parent_pid, child_pid, opaque_target) → 0 | -errno
+kernel_publish_spawn_child(parent_pid, child_pid) → disposition | -errno
 kernel_thread_exit(pid, tid) → 0 | -errno
 kernel_commit_process_exit(status) → committed_low_8_bits
 kernel_dequeue_signal(pid, tid, out_ptr, out_capacity) → 0 | signum | -errno
@@ -1300,7 +1301,12 @@ caller now take.
    `docs/plans/2026-05-04-non-forking-posix-spawn-design.md` Section 1.
 2. Host (`handleSpawn` in `kernel-worker.ts`) reads the blob from
    caller memory, validates argv + envp against the same 4 MiB `ARG_MAX`
-   contract as `execve`, and copies it to bounded kernel-owned scratch.
+   contract as `execve`, and performs a side-effect-free candidate lookup and
+   compilation. Shared trusted code immediately snapshots the resolver bytes
+   and compiles the candidate module from that exact isolated snapshot; a
+   separately callback-supplied module is ignored. That preflight prevents
+   failed PATH probes from creating a child, but it is never executable
+   authority. The host then copies the blob to bounded kernel-owned scratch.
    Each argv/environment entry also has the separate 64 KiB
    process-metadata transport limit described for `execve`; this
    implementation ceiling is not `ARG_MAX`.
@@ -1336,9 +1342,9 @@ caller now take.
    `CHDIR`, and `FCHDIR` opcodes; musl's complete transported spawn-attribute
    byte; the shared argv and environment entry caps; 1,024 actions; and the
    complete ceiling. Transporting an attribute bit does not claim its
-   behavior is implemented: the kernel currently interprets only
-   `SETPGROUP`, `SETSIGDEF`, `SETSIGMASK`, and `SETSID`; `RESETIDS`,
-   `SETSCHEDPARAM`, `SETSCHEDULER`, and `USEVFORK` remain unimplemented. The
+   behavior is implemented: the kernel currently interprets `RESETIDS`,
+   `SETPGROUP`, `SETSIGDEF`, `SETSIGMASK`, and `SETSID`; `SETSCHEDPARAM`,
+   `SETSCHEDULER`, and `USEVFORK` remain unimplemented. The
    argv/environment count caps defend the admitted process representation and
    are not additional POSIX `ARG_MAX` promises. The action count remains a
    spawn-parser limit.
@@ -1349,23 +1355,53 @@ caller now take.
 4. `spawn_child_for_caller` allocates the child PID from the same global task-ID sequence
    used by top-level creation, fork, and clone, then consumes that opaque
    allocation token to build the child Process plus selective inheritance from the
-   parent (uid/gid/pgid/sid/cwd/umask/rlimits, the calling task's blocked
+   parent (the complete real/effective/saved uid/gid and supplementary-group
+   record, pgid/sid/cwd/umask/rlimits, the calling task's blocked
    signal mask, fd_table + ofd_table +
    sockets via the `bump_inherited_resource_refcounts` helper that
-   fork also uses), applies attrs in POSIX order (SETSID → SETPGROUP →
-   SETSIGMASK → SETSIGDEF), so `POSIX_SPAWN_SETSIGMASK` replaces the
-   inherited caller mask, then applies file actions in forward
-   order. Failure on any action rolls back via `remove_process`.
-5. The kernel returns the allocated pid via `pid_out_ptr` in caller
-   memory. The host's `onSpawn` callback (Node:
+   fork also uses), applies attrs in POSIX order (RESETIDS → SETSID →
+   SETPGROUP → SETSIGMASK → SETSIGDEF), so `POSIX_SPAWN_RESETIDS` changes only
+   effective IDs to the inherited real IDs and `POSIX_SPAWN_SETSIGMASK`
+   replaces the inherited caller mask, then applies file actions once in
+   forward order. Failure on any action rolls back via `remove_process`.
+5. In the resulting child CWD, descriptor, and credential state, the host asks
+   Rust to prepare an exact executable target. The host reads those retained
+   bytes and reuses only the module compiled from the isolated preflight
+   snapshot, and only when every byte is identical; otherwise it recompiles
+   the final bytes. The opaque child-bound token is
+   committed with `kernel_spawn_exec_commit`, which evaluates set-ID and
+   trusted-mount/nosuid policy and closes remaining `FD_CLOEXEC` descriptors.
+   Any prepare, read, policy, compile, or commit failure cancels the exact
+   target and removes the pending child and its host mirrors without replaying
+   file actions or mutating the parent.
+6. Only after exact commit does the host's `onSpawn` callback (Node:
    `host/src/node-kernel-worker-entry.ts::handlePosixSpawn`; Browser:
    `host/src/browser-kernel-worker-entry.ts::handlePosixSpawn`)
-   receives the authoritative parent pid, resolves the program bytes,
-   instantiates a fresh Worker for the child, and publishes a parented
-   `proc_event` spawn notification. The host registers the Worker's memory and
-   channels against the Process the kernel already inserted; registration does
-   not create or select the child identity. Its initialization metadata carries
-   the same parent pid.
+   receive the target-derived bytes and module and instantiate a fresh Worker
+   for the child. Until that callback succeeds, the kernel marks the child as
+   an unpublished spawn transaction: it remains signalable and retains real
+   exit status, but sibling `waitpid()` calls cannot select or reap it.
+   Completion calls the parent-bound `kernel_publish_spawn_child` exactly once
+   in the same serialized kernel entry that publishes the spawn result, then
+   wakes queued waiters. A child that died during asynchronous target work is
+   therefore returned successfully to `posix_spawn()` and becomes a waitable
+   zombie only after its PID is published. Ordinary failure removes the hidden
+   child and wakes parked waiters to observe `ECHILD`. Existing target commit
+   cannot provide this seam because it runs before Worker launch, while
+   `kernel_remove_process` is failure-only; neither can atomically change wait
+   visibility and return the final disposition after host launch.
+   If the parent exits before publication, Rust returns `ECHILD` while retaining
+   exact ownership of the hidden child so the same rollback seam removes it
+   once; an absent child instead returns `ESRCH` and is never removed again.
+   The detached completion enters the serialized kernel directly rather than
+   through the parent's mailbox registration, so parent Worker teardown cannot
+   drop that final removal. Parent memory is written only after the completion
+   separately proves that the exact channel registration is still active.
+   The host registers the Worker's memory and channels against the Process the
+   kernel already inserted; registration does not create or select the child
+   identity. The kernel returns the allocated pid via `pid_out_ptr` only after
+   this launch and publication succeed. A parented `proc_event` spawn
+   notification remains a separate observer effect.
 
 PATH search lives in libc (`posix_spawnp.c`); the kernel never sees
 PATH-relative names.

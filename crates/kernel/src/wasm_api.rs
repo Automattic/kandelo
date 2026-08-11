@@ -1858,6 +1858,21 @@ pub extern "C" fn kernel_spawn_reserved_process(
     spawn_parsed_for_caller(parent_pid, caller_tid, parsed)
 }
 
+/// Publish one fully launched `posix_spawn` child to its exact parent.
+///
+/// `-1` is the live-child sentinel, `0` identifies a normal zombie, a
+/// positive result is the terminating signal, and other negative values are
+/// negated errnos. Keeping publication in Rust makes wait selection/reaping
+/// atomic with the state transition instead of trusting a host shadow.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_publish_spawn_child(parent_pid: u32, child_pid: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.publish_spawn_child(parent_pid, child_pid) {
+        Ok(disposition) => disposition,
+        Err(error) => -(error as i32),
+    }
+}
+
 fn spawn_parsed_for_caller(
     parent_pid: u32,
     caller_tid: u32,
@@ -1964,7 +1979,8 @@ pub extern "C" fn kernel_get_process_exit_signal(pid: u32) -> i32 {
     }
 }
 
-/// Return the recorded parent pid for a process, or -ESRCH if absent.
+/// Return the host-visible parent pid for a process, or -ESRCH if absent or
+/// still hidden inside an unpublished spawn transaction.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_parent_pid(pid: u32) -> i32 {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
@@ -2724,52 +2740,6 @@ pub extern "C" fn kernel_dequeue_signal(
     }
 }
 
-fn apply_pending_exec_fd_actions(
-    proc: &mut Process,
-    advisory_locks: &mut crate::lock::AdvisoryLockManager,
-    host: &mut dyn HostIO,
-) -> Result<(), Errno> {
-    // Apply pending fork fd actions (from posix_spawn) before exec.
-    // These are dup2/close/open operations that rearrange descriptors (for
-    // example, a pipe write end onto fd 1) and must precede CLOEXEC removal.
-    let actions: alloc::vec::Vec<_> = proc.fork_fd_actions.drain(..).collect();
-    for action in actions {
-        use crate::process::FdAction;
-        match action {
-            FdAction::Dup2 { old_fd, new_fd } => {
-                syscalls::sys_dup2_with_locks(proc, advisory_locks, host, old_fd, new_fd)?;
-            }
-            FdAction::Close { fd } => {
-                syscalls::sys_close_implicit_with_locks(
-                    proc,
-                    advisory_locks,
-                    host,
-                    fd,
-                )?;
-            }
-            FdAction::Open {
-                fd,
-                ref path,
-                flags,
-                mode,
-            } => {
-                let opened_fd =
-                    syscalls::sys_open(proc, host, path, flags as u32, mode as u32)?;
-                if opened_fd != fd {
-                    syscalls::sys_dup2_with_locks(proc, advisory_locks, host, opened_fd, fd)?;
-                    let _ = syscalls::sys_close_implicit_with_locks(
-                        proc,
-                        advisory_locks,
-                        host,
-                        opened_fd,
-                    );
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 fn checked_exec_path<'a>(path_ptr: usize, path_len: usize) -> Result<&'a [u8], Errno> {
     if path_len > wasm_posix_shared::platform_limits::PATH_MAX_BYTES {
         return Err(Errno::ENAMETOOLONG);
@@ -2845,9 +2815,6 @@ pub extern "C" fn kernel_spawn_exec_target_prepare(
         _ => return -(Errno::ESRCH as i32),
     };
     let mut host = WasmHostIO;
-    if let Err(error) = apply_pending_exec_fd_actions(child, advisory_locks, &mut host) {
-        return -(error as i32);
-    }
     let owner = crate::exec_target::PreparedExecOwner::Spawn {
         parent_pid,
         child_pid,

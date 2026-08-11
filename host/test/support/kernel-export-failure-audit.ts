@@ -228,6 +228,7 @@ const SYNCHRONOUS_CALLBACK_CALLS = new Set([
   "#invokeSharedMmapHostOperation",
   "#runOrDeferChannelKernelEntry",
   "#runOrDeferKernelEntry",
+  "#runOrDeferPendingSpawnCompletionKernelEntry",
   "withLease",
 ]);
 

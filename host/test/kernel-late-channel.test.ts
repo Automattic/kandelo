@@ -10,6 +10,12 @@ import {
   CH_RETURN,
   CH_SYSCALL,
   CH_TOTAL_SIZE,
+  KERNEL_WAIT_RESULT_SI_CODE_OFFSET,
+  KERNEL_WAIT_RESULT_SI_STATUS_OFFSET,
+  KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET,
+  STRUCT_SIZE_KERNEL_WAIT_RESULT,
+  WAIT_CLD_KILLED,
+  WAIT_EVENT_EXITED,
 } from "../src/generated/abi";
 
 const ESRCH = 3;
@@ -100,5 +106,88 @@ describe("kernel_handle_channel", () => {
     );
     expect(view.getBigInt64(CH_RETURN, true)).toBe(-1n);
     expect(view.getUint32(CH_ERRNO, true)).toBe(ESRCH);
+  });
+
+  it("keeps a signaled spawn child hidden from wasm wait/reap until publication", async () => {
+    const instance = await instantiateKernelOnly(readFileSync(resolveBinary("kernel.wasm")));
+    const memory = instance.exports.memory as WebAssembly.Memory;
+    const allocScratch = instance.exports.kernel_alloc_scratch as (size: number) => number;
+    const createProcess = instance.exports.kernel_create_process as () => number;
+    const spawnProcess = instance.exports.kernel_spawn_process as (
+      parentPid: number,
+      callerTid: number,
+      blobPtr: number,
+      blobLen: number,
+    ) => number;
+    const markProcessSignaled = instance.exports.kernel_mark_process_signaled as (
+      pid: number,
+      signum: number,
+    ) => number;
+    const waitChildPoll = instance.exports.kernel_wait_child_poll as (
+      parentPid: number,
+      callerTid: number,
+      targetPid: number,
+      eventMask: number,
+      flags: number,
+      outPtr: number,
+      outCapacity: number,
+    ) => number;
+    const reapExitedChild = instance.exports.kernel_reap_exited_child as (
+      parentPid: number,
+      childPid: number,
+    ) => number;
+    const publishSpawnChild = instance.exports.kernel_publish_spawn_child as (
+      parentPid: number,
+      childPid: number,
+    ) => number;
+    const getExitSignal = instance.exports.kernel_get_process_exit_signal as (
+      pid: number,
+    ) => number;
+
+    const parentPid = createProcess();
+    const blob = new Uint8Array(40);
+    const blobPtr = allocScratch(blob.byteLength);
+    new Uint8Array(memory.buffer, blobPtr, blob.byteLength).set(blob);
+    const childPid = spawnProcess(parentPid, parentPid, blobPtr, blob.byteLength);
+    const waitResultPtr = allocScratch(STRUCT_SIZE_KERNEL_WAIT_RESULT);
+
+    expect(childPid).toBeGreaterThan(0);
+    expect(markProcessSignaled(childPid, 15)).toBe(0);
+    expect(
+      waitChildPoll(
+        parentPid,
+        parentPid,
+        -1,
+        WAIT_EVENT_EXITED,
+        0,
+        waitResultPtr,
+        STRUCT_SIZE_KERNEL_WAIT_RESULT,
+      ),
+    ).toBe(0);
+    expect(reapExitedChild(parentPid, childPid)).toBe(-10);
+
+    expect(publishSpawnChild(parentPid, childPid)).toBe(15);
+    expect(
+      waitChildPoll(
+        parentPid,
+        parentPid,
+        -1,
+        WAIT_EVENT_EXITED,
+        0,
+        waitResultPtr,
+        STRUCT_SIZE_KERNEL_WAIT_RESULT,
+      ),
+    ).toBe(childPid);
+    const waitResult = new DataView(
+      memory.buffer,
+      waitResultPtr,
+      STRUCT_SIZE_KERNEL_WAIT_RESULT,
+    );
+    expect(waitResult.getInt32(KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET, true)).toBe(15);
+    expect(waitResult.getInt32(KERNEL_WAIT_RESULT_SI_CODE_OFFSET, true)).toBe(
+      WAIT_CLD_KILLED,
+    );
+    expect(waitResult.getInt32(KERNEL_WAIT_RESULT_SI_STATUS_OFFSET, true)).toBe(15);
+    expect(getExitSignal(childPid)).toBe(-ESRCH);
   });
 });

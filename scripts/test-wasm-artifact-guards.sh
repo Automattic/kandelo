@@ -29,6 +29,7 @@ cat >"$work/target-aware-exec.wat" <<'WAT'
   (func (export "kernel_exec_target_read"))
   (func (export "kernel_exec_target_cancel"))
   (func (export "kernel_exec_commit"))
+  (func (export "kernel_publish_spawn_child"))
   (func (export "kernel_spawn_exec_commit")))
 WAT
 wat2wasm "$work/target-aware-exec.wat" -o "$work/target-aware-exec.wasm"
@@ -41,6 +42,7 @@ cat >"$work/hybrid-exec.wat" <<'WAT'
   (func (export "kernel_exec_target_read"))
   (func (export "kernel_exec_target_cancel"))
   (func (export "kernel_exec_commit"))
+  (func (export "kernel_publish_spawn_child"))
   (func (export "kernel_spawn_exec_commit"))
   (func (export "kernel_exec_prepare"))
   (func (export "kernel_exec_setup"))

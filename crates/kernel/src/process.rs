@@ -745,6 +745,10 @@ pub struct Process {
     pub(crate) exec_generation: u64,
     /// Kernel-owned exact executable-object leases awaiting commit/cancel.
     pub(crate) prepared_exec_targets: PreparedExecLedger,
+    /// A `posix_spawn` child is a real signal target while its host launch is
+    /// pending, but it is not yet part of the parent's waitable child set.
+    /// Only the parent-bound spawn publication transaction may clear this.
+    pub(crate) spawn_publication_pending: bool,
     pub pgid: u32,
     pub sid: u32,
     /// True iff this process is the session leader of its session (i.e. the
@@ -1065,6 +1069,7 @@ impl Process {
             secure_exec: false,
             exec_generation: 0,
             prepared_exec_targets: PreparedExecLedger::new(),
+            spawn_publication_pending: false,
             pgid: pid,
             sid: 0,
             is_session_leader: false,
@@ -1194,6 +1199,16 @@ impl Process {
 
     pub(crate) fn install_credentials(&mut self, credentials: Credentials) {
         self.credentials = credentials;
+    }
+
+    /// Apply POSIX_SPAWN_RESETIDS to the inherited child record.
+    ///
+    /// Saved IDs and supplementary groups remain exactly as inherited. This
+    /// mutation is intentionally private to the kernel's pending-child setup;
+    /// ordinary credential syscalls have their own permission transitions.
+    pub(crate) fn reset_effective_ids_to_real(&mut self) {
+        self.credentials.euid = self.credentials.ruid;
+        self.credentials.egid = self.credentials.rgid;
     }
 
     pub(crate) fn configure_ids(&mut self, uid: Option<u32>, gid: Option<u32>) {

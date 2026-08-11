@@ -603,6 +603,7 @@ describe("kernel task-ID authority", () => {
       "kernel_spawn_exec_target_prepare",
       "kernel_exec_commit",
       "kernel_spawn_exec_commit",
+      "kernel_publish_spawn_child",
       "kernel_fork_process",
       "kernel_spawn_process",
       "kernel_thread_exit",

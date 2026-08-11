@@ -322,6 +322,7 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_set_current_tid
     kernel_set_cwd
     kernel_shmid_ds_bytes
+    kernel_publish_spawn_child
     kernel_spawn_exec_commit
     kernel_spawn_exec_target_prepare
     kernel_spawn_process

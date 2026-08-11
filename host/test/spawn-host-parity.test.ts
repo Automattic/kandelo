@@ -56,7 +56,7 @@ function ordinaryForkHandlerSource(src: string): string {
 
 function execHandlerSource(src: string): string {
   const start = src.indexOf("async function handleExec(");
-  const end = src.indexOf("\n/**\n * Handle SYS_SPAWN", start);
+  const end = src.indexOf("\n/**\n * Pre-flight resolver", start);
   expect(start).toBeGreaterThanOrEqual(0);
   expect(end).toBeGreaterThan(start);
   return src.slice(start, end);
@@ -148,7 +148,29 @@ describe("spawn host parity", () => {
       readFileSync(sharedExecTarget, "utf8"),
       "the shared launcher must own the only target commit",
     )
-      .toContain("options.commitTarget(target, targetBytes.byteLength)");
+      .toContain("options.commitTarget(");
+  });
+
+  it("both spawn adapters receive only the shared exact committed target", () => {
+    const shared = readFileSync(sharedWorker, "utf8");
+    const prepare = shared.indexOf("this.spawnExecTargetPrepare(");
+    const commit = shared.indexOf("this.kernelSpawnExecCommit(");
+    const launch = shared.indexOf("startAfterCommit: () => callback(");
+    expect(prepare).toBeGreaterThanOrEqual(0);
+    expect(commit).toBeGreaterThan(prepare);
+    expect(launch).toBeGreaterThan(commit);
+    expect(shared).toMatch(
+      /programBytes:\s*request\.targetBytes,[\s\S]*programModule:\s*request\.targetModule/,
+    );
+
+    for (const entry of [nodeEntry, browserEntry]) {
+      const handler = posixSpawnHandlerSource(readFileSync(entry, "utf8"));
+      expect(handler, `${entry} must launch the supplied committed module`)
+        .toContain("const { programBytes, programModule, argv } = program;");
+      expect(handler, `${entry} must not repeat candidate resolution`).not.toMatch(
+        /resolveExecutableForLaunch|handlePosixSpawnResolve|execPrograms|readExecFromVfs/,
+      );
+    }
   });
 
   it("both hosts own the exact fork clone before their first async yield", () => {

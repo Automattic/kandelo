@@ -2978,23 +2978,6 @@ async function handleExec(
 }
 
 /**
- * Handle SYS_SPAWN (non-forking posix_spawn) on the browser host.
- *
- * The kernel has already constructed the child Process descriptor under
- * `childPid` with attrs and file actions applied. This callback receives the
- * preflight's compiled program, allocates a fresh Memory for the child, and
- * attaches it to the Process the kernel already created, and spawns a Worker.
- *
- * Distinct from handleExec (which replaces the calling worker) and
- * handleFork (which clones the parent's Memory): this always creates a
- * fresh Memory and runs the new program from `_start`.
- *
- * Mirrors handlePosixSpawn in host/src/node-kernel-worker-entry.ts —
- * per CLAUDE.md the two hosts must move in lockstep.
- *
- * Returns 0 on success, negative errno on failure.
- */
-/**
  * Pre-flight resolver — see node-kernel-worker-entry.ts:handlePosixSpawnResolve.
  * Browser-side equivalent: materialize the lazy file (async fetch via
  * the memfs lazy-loader, avoiding sync-XHR + SW deadlocks), reads its
@@ -3009,9 +2992,10 @@ async function handlePosixSpawnResolve(
 }
 
 /**
- * Launch a worker for a SYS_SPAWN child whose program has already been
- * resolved and compiled by `handlePosixSpawnResolve`. Mirrors the Node
- * entry's `handlePosixSpawn`.
+ * Launch a worker for a SYS_SPAWN child whose program is derived from the
+ * exact target already committed by the shared worker. Preflight is only a
+ * side-effect-free candidate; child-state divergence is resolved and compiled
+ * before this callback. Mirrors the Node entry's `handlePosixSpawn`.
  */
 async function handlePosixSpawn(
   parentPid: number,
