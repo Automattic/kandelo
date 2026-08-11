@@ -149,8 +149,43 @@ browser acceptance, and documentation files named in the tasks below.
 - Modify: `host/src/browser.ts`
 - Modify: `host/src/index.ts`
 
-- [ ] Delete the superseded value-aware tests and write failing tests for the
-  public interface above. Cover configuration copying and freezing while
+Implement this exact interface:
+
+```ts
+export type HttpHeaderOccurrence =
+  readonly [name: string, value: string];
+
+export interface BrowserCorsProxyConfig {
+  readonly url: string;
+  readonly allowedRequestHeaderNames: readonly string[];
+  readonly allowAnonymousGetHeaderOmission: boolean;
+}
+
+export class BrowserCorsProxyRequestError extends Error {}
+
+export function validateBrowserCorsProxyConfig(
+  value: BrowserCorsProxyConfig | undefined,
+): BrowserCorsProxyConfig | undefined;
+
+export class BrowserCorsProxy {
+  constructor(
+    config: BrowserCorsProxyConfig,
+    onDiagnostic?: (message: string) => void,
+  );
+
+  urlFor(targetUrl: string): string;
+
+  project(input: {
+    method: string;
+    headers: readonly HttpHeaderOccurrence[];
+    bodyPresent: boolean;
+    targetUrl: string;
+  }): Headers;
+}
+```
+
+- [ ] Delete the superseded value-aware tests and write failing tests for this
+  public interface. Cover configuration copying and freezing while
   retaining URL, spelling, order, and duplicate entries; reject an empty or
   non-HTTP(S) URL and invalid HTTP field-name tokens.
 
