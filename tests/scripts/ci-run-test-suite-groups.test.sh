@@ -129,6 +129,7 @@ mkdir -p \
     "$FIXTURE/apps/browser-demos" \
     "$FIXTURE/apps/browser-demos/public" \
     "$FIXTURE/crates/shared/src" \
+    "$FIXTURE/web-libs/kandelo-web" \
     "$FIXTURE/bin"
 cp \
     "$REPO_ROOT/scripts/activate-ci-test-workspace.sh" \
