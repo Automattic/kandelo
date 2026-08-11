@@ -15,7 +15,7 @@
  *   mariadb (daemon, port 3306)
  *   mysqltest (transient, one per __runMariadbTest call)
  */
-import { BrowserKernel } from "@host/browser-kernel-host";
+import { BrowserKernel } from "@kandelo/web";
 import kernelWasmUrl from "@kernel-wasm?url";
 import productCatalog from "../../../../images/vfs/products/generated/catalog.json";
 import {
