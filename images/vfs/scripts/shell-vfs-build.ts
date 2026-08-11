@@ -5,12 +5,11 @@
  * exposes a loader for service demos that layer nginx/php-fpm (+ MariaDB)
  * and application files on top of the already-built shell.vfs.zst image.
  *
- * The shell image uses `eagerBinaries: false`: the canonical rootfs provides
- * base utility lazy stubs, then shell.vfs.zst overlays demo lazy stubs and
- * lazy archives. Utility bytes are fetched on first exec.
- * Historical standalone service images used `true`: every tool binary was
- * baked into the image. Builtin Kandelo service demos now use shell.vfs.zst as
- * their base image and keep its lazy metadata intact.
+ * This module retains the conventional/lazy composer for diagnostic and
+ * historical image paths. It is not the canonical shell package builder;
+ * `build-homebrew-flat-vfs-image.ts` owns that eager, self-contained product.
+ * Builtin service images may still reuse the filesystem helpers below while
+ * preserving the transport mode of the already-resolved shell base.
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";

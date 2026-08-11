@@ -103,6 +103,11 @@ grep -Fq 'for tool in git node npm tar; do' "$BUILD_TOOL_PATH" ||
     fail "Nix host-tool validation differs from package declarations"
 grep -Fq 'lazy' "$PACKAGE_TOML" &&
     fail "canonical package description still promises lazy shell state"
+if grep -Eq '"[^"]+"[[:space:]]*:[[:space:]]*"file:' \
+    "$SCRIPT_DIR/../../../tools/mkrootfs/package.json"
+then
+    fail "mkrootfs must not hide local source dependencies from the shell cache identity"
+fi
 
 FAKE_BIN="$TMP_ROOT/fake-bin"
 FAKE_LOG="$TMP_ROOT/node.log"

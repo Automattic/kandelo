@@ -153,10 +153,22 @@ Each derived image verifies and records the exact base-shell digest and bytes.
 It therefore cannot silently combine a new Node, nginx, PHP, or WordPress
 payload with an older shell. Pull-request staging builds and tests this package
 closure through the generic resolver. Post-merge candidate activation moves
-the same tested entries into `binaries-abi-v42`; a successful activation then
-triggers the post-activation Pages dispatch. Pages uses a fresh cache and
-fetch-only resolution, so an absent canonical package release fails visibly
-instead of reconstructing the image or reviving the retired lazy mirror.
+the same tested entries into `binaries-abi-v42`. The durable activation sweep
+then compares the exact default-branch SHA and canonical index digest with the
+generation recorded by the public site. A missing or stale generation
+dispatches Pages with that SHA, the authenticated candidate tag, and the index
+digest. Pages uses a fresh cache and fetch-only resolution, so an absent or
+different canonical package release fails visibly instead of reconstructing
+the image or reviving the retired lazy mirror.
+
+The shell recipe also owns the complete source closure used by its image
+tools. `mkrootfs` has no local `file:` package dependency that can pull an
+undeclared repository subtree into `npm ci`; the specific host modules imported
+by the VFS tools are explicit recipe inputs. Recipe tests reject reintroducing
+such a hidden local dependency. Because the standalone `rootfs` package also
+declares the `mkrootfs` manifests, removing that dependency truthfully rekeys
+`rootfs` as well as the shell-derived publication closure; the same candidate
+must publish all seven changed rows.
 
 Compatibility for downloaded, historical, or persisted lazy VFS images is
 future work. The current product is rebuilt for the current runtime; see
