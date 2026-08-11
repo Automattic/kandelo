@@ -720,28 +720,15 @@ preflight → toolchain-cache → matrix-build → test-gate → merge-gate
   consumer from the already-materialized package tree, without fetching the
   index a second time.
 
-After `test-gate` seals a PR release, the exact Homebrew shell consumer
-uses a different, lazy composition contract. A PR release is expected to
-contain only the package rows selected by that attempt; it does not copy
-every unchanged canonical archive. The caller passes that exact selected
-matrix to the consumer. The consumer re-derives the complete expected
-ledger from the reviewed checkout, rejects duplicate, unknown, or
-identity-mismatched matrix rows, and partitions the ledger into two
-disjoint authorities:
-
-- selected rows must exist in the exact immutable PR release and are
-  fully downloaded and manifest-validated before use;
-- every unchanged row must be an exact current success in the canonical
-  ABI release.
-
-The typed composer binds both validation snapshots and release tags. It
-rejects fallback or failure state on successful rows, prunes packages
-and architectures outside the expected ledger, and writes one local
-index.
-Each archive URL still names its independently verified source release.
-This keeps archive retrieval lazy: the shell proof downloads only the
-packages it actually resolves, while a missing selected PR row fails
-instead of silently using an older canonical archive.
+After `test-gate` seals a PR release, browser validation consumes the same
+generic package workspace as the other suites. A resolved shell must pass a
+fresh inspection against its checked-in flat selection, shell configuration,
+demo configuration, ABI, capacity, and zero-deferred-state requirements. The
+CI state records that exact report as `flat-self-contained`; a resolved state
+cannot request the retired closed mirror. When the staged matrix contains
+`node-vfs/wasm32`, the browser cell also runs the exact slow
+`npm install --verbose cowsay` acceptance before the package release is
+sealed.
 
 - **merge-gate** posts `merge-gate=success` on the PR's HEAD SHA
   once test-gate passes. No bot-PR amend step exists anymore — the
@@ -769,6 +756,33 @@ coverage. libc-test is divided into functional+regression and math jobs, while
 Sortix is divided into include, basic, and remaining-runtime jobs. These are
 the same natural partitions used by staging-build and prepare-merge; their
 matrix result is still aggregated by the single `test-gate` job.
+
+## Current ABI-42 shell publication (2026-08-11)
+
+`homebrew/main-shell-flat-selection.json` is a package input for shell
+revision 23. Its archive contains a self-contained `/opt/kandelo/homebrew`,
+and every shell-derived VFS package records the exact base image digest and
+size. The shell and its five reverse dependents therefore move through one
+canonical package release rather than through an independent bottle-mirror
+publication transaction.
+
+Prepare merge writes those rows only to its isolated
+`merge-candidate-abi-v42-*` release. Post-merge activation verifies the merged
+tree and complete candidate transaction, then overlays the tested entries into
+`binaries-abi-v42`. The activation workflow initializes `activated_any=false`,
+sets it only after a candidate transaction succeeds, and publishes the output
+even when a later candidate fails. An empty scheduled or manual scan does not
+deploy anything. If at least one index moved, the
+post-activation Pages dispatch starts `browser-demos-pages.yml` from the
+current default branch.
+
+That ordering is part of the release contract. The main-push Pages run may
+start before activation, but fetch-only resolution cannot obtain the new
+identities and therefore fails before deployment. The post-activation Pages
+dispatch retries only after the canonical package release exists. Pages then
+inspects the exact flat shell, verifies the hashed shell and Node VFS assets,
+and runs the Chromium shell and npm/cowsay acceptance before its single writer
+updates `gh-pages`.
 
 ## Merge candidates and canonical activation
 

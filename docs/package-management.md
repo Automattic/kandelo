@@ -123,43 +123,41 @@ non-doc paths should also run the non-package test gate as a fail-safe,
 but should not trigger the package matrix unless they are package
 archive inputs.
 
-### Transition ownership during the Homebrew cutover
+### Current ABI-42 shell publication (2026-08-11)
 
-One temporary rule prevents the retiring package registry and its Homebrew
-replacement from both owning the same proof. The exact reviewed inputs that
-define or validate the closed Homebrew shell selection go through the exact
-Homebrew product gate. That gate fetches the closed bottle selection, composes
-the real shell, and boots it in Node and Chromium. The same change does not
-stage the old conventional shell archive or the VFS images derived from it.
+The package registry now owns the browser shell product. The checked-in
+`homebrew/main-shell-flat-selection.json` selects the exact admitted wasm32
+bottles, and shell revision 23 composes them eagerly over the platform base.
+The resulting archive contains a self-contained `/opt/kandelo/homebrew`, its
+image-owned Bash configuration, demo metadata, and `/usr/bin/brew` entrypoint.
+It contains no deferred Homebrew files, bottle trees, bootstrap archive, or
+runtime mirror authority.
 
-This is an exact reviewed path list, not a `homebrew/**` or
-`scripts/homebrew-*` exemption. A real registry recipe, build script, shared
-package input, or a mixed pull request still runs package staging normally.
-The scope detector also fails if one of these transition inputs ever escapes
-the exact Homebrew product gate.
+This is the normal canonical package release path, not a parallel Homebrew
+product lane. The shell recipe is `publication_state = "ready"`; its
+`commit = "UNPUBLISHED"` placeholder means the release builder must stamp the
+truthful producer commit. It does not mean the product is pending. Changes to
+the flat selection, shell configuration, base image, or composer are ordinary
+package inputs and rebuild the complete reverse-dependent closure:
 
-The route does not permit `program-packages.json` to become stale. That file
-describes which source inputs a resolver may accept; it does not say that an
-archive has been built or published. Regenerating it records the shell's new
-cache identity and the new identities of its five reverse dependents:
-`node-vfs`, `nginx-vfs`, `nginx-php-vfs`, `lamp`, and `wordpress`.
+- `shell` revision 23;
+- `node-vfs` revision 15;
+- `lamp` revision 12;
+- `wordpress` revision 13; and
+- `nginx-vfs` and `nginx-php-vfs` revision 3.
 
-The shell's `build.toml` keeps `commit = "UNPUBLISHED"` and
-`publication_state = "pending"`. Shared publication policy therefore blocks
-the shell and every package that depends on it from staging or publication.
-The exact product gate may build those identities from source for tests, but
-the generated index does not invent a missing archive or accept an old
-archive under a new cache key.
+Each derived image verifies and records the exact base-shell digest and bytes.
+It therefore cannot silently combine a new Node, nginx, PHP, or WordPress
+payload with an older shell. Pull-request staging builds and tests this package
+closure through the generic resolver. Post-merge candidate activation moves
+the same tested entries into `binaries-abi-v42`; a successful activation then
+triggers the post-activation Pages dispatch. Pages uses a fresh cache and
+fetch-only resolution, so an absent canonical package release fails visibly
+instead of reconstructing the image or reviving the retired lazy mirror.
 
-Homebrew publisher preflight checks only the five conventional packages it
-actually transports into Formula tests: `dash`, `coreutils`, `grep`, `sed`,
-and `rootfs`, including their complete dependency identities. A selected
-change fails that check; an unrelated pending VFS identity cannot block
-bottle publication.
-
-Remove this transition route when the conventional shell recipe is deleted.
-At that point the executor will no longer appear in a registry `build.toml`,
-so no exception will be necessary.
+Compatibility for downloaded, historical, or persisted lazy VFS images is
+future work. The current product is rebuilt for the current runtime; see
+[Future improvements](future-improvements.md#define-compatibility-for-restored-lazy-vfs-images).
 
 ## Schema: `package.toml` (recipe) + `build.toml` (project view)
 
@@ -677,6 +675,15 @@ Cellar/`opt`/runtime/system directory projections. Intermediate mutable-host
 hops are rejected even when their current final target re-enters the closure.
 Neither path set is caller-selected, and the rest of the native Homebrew
 prefix—including every other `etc` child—remains absent.
+
+#### Historical lazy shell recovery contract
+
+The lazy composition details below document the retired recovery lane and its
+integrity constraints. They are not the current ABI-42 shell publication path:
+the canonical shell is rebuilt eagerly from the admitted flat selection. Any
+return to persisted or downloaded lazy images is future work and must preserve
+the same artifact and provenance checks; see
+[Future improvements](future-improvements.md#define-compatibility-for-restored-lazy-vfs-images).
 
 Bottle-backed lazy VFS composition keeps the same archive as its transport
 unit. The descriptor exposes bounded metadata for `stat` and `readdir`, but the
