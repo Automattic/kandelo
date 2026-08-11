@@ -6,6 +6,7 @@ import {
   createReviewedPrivilegedProgramPolicy,
   parsePrivilegedProgramProjections,
   publishPrivilegedProgramProduct,
+  snapshotPublishedPrivilegedProgramBrowserMount,
   validatePrivilegedProgramProductCandidate,
   type PrivilegedProgramProjection,
   type PrivilegedProgramSource,
@@ -294,6 +295,29 @@ describe("privileged product publication", () => {
       writableBottleFileSystems: [source.writableBottleFs],
     });
     expect(repeated.imageBytes).toEqual(product.imageBytes);
+  });
+
+  it("snapshots browser mount authority only from the exact publication", async () => {
+    const source = sourceFixture();
+    const product = await publishPrivilegedProgramProduct({
+      policy: reviewedPolicy(),
+      sources: source.sources,
+      writableBottleFileSystems: [source.writableBottleFs],
+    });
+    const first = snapshotPublishedPrivilegedProgramBrowserMount(product);
+    const expected = first.imageBytes.slice();
+
+    expect(first.mountPoint).toBe("/usr/bin");
+    expect(MemoryFileSystem.fromImage(first.imageBytes).lstat("/login"))
+      .toMatchObject({ uid: 0, gid: 0, nlink: 1 });
+    first.imageBytes.fill(0);
+    product.imageBytes.fill(0);
+    expect(snapshotPublishedPrivilegedProgramBrowserMount(product).imageBytes)
+      .toEqual(expected);
+    expect(() => snapshotPublishedPrivilegedProgramBrowserMount({
+      ...product,
+      imageBytes: expected,
+    })).toThrow(/publication authority/i);
   });
 
   it("resolves an authenticated bottle hardlink but publishes a fresh inode", async () => {

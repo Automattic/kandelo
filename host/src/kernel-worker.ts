@@ -29839,6 +29839,44 @@ export class CentralizedKernelWorker {
     return count;
   }
 
+  /** Kernel-owned sticky secure-execution state for one exact image. */
+  processSecureExec(pid: number): boolean {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    if (this.#kernelInstance === null) {
+      throw new Error("kernel_process_secure_exec export is unavailable");
+    }
+    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
+      throw new KernelReentrantEntryError(
+        `secure-exec query pid=${pid}`,
+      );
+    }
+    let marker: boolean | undefined;
+    const deferred = this.#runOrDeferKernelEntry(
+      `secure-exec query pid=${pid}`,
+      (entry) => {
+        const query = this.#kernelInstanceForEntry(entry).exports
+          .kernel_process_secure_exec as ((pid: number) => number) | undefined;
+        if (typeof query !== "function") {
+          throw new Error("kernel_process_secure_exec export is unavailable");
+        }
+        const raw = query(pid);
+        if (raw !== 0 && raw !== 1) {
+          throw new Error(
+            `kernel_process_secure_exec rejected pid=${pid}: ${raw}`,
+          );
+        }
+        marker = raw === 1;
+        return undefined;
+      },
+    );
+    if (deferred || marker === undefined) {
+      throw new KernelReentrantEntryError(
+        `secure-exec query pid=${pid}`,
+      );
+    }
+    return marker;
+  }
+
   /**
    * Current size of the kernel's own Wasm linear memory in 64 KiB pages.
    *

@@ -33,13 +33,17 @@ import {
   readPreparedPlatformFile,
   VirtualPlatformIO,
 } from "./vfs/vfs";
-import { MemoryFileSystem } from "./vfs/memory-fs";
+import {
+  createImmutableProductBackend,
+  MemoryFileSystem,
+} from "./vfs/memory-fs";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
 import { createBrowserLazyFetcher } from "./vfs/browser-lazy-fetcher";
 import { resolveLazyUrl } from "./vfs/lazy-url";
 import { DeviceFileSystem } from "./vfs/device-fs";
 import { BrowserTimeProvider } from "./vfs/time";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
+import { restoreVerifiedVfsImage } from "./vfs/load-image";
 import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
 import { patchWasmForThread } from "./worker-main";
@@ -200,6 +204,8 @@ interface ProcessInfo extends ProcessGenerationOwnership {
   argv: string[];
   channelOffset: number;
   ptrWidth: 4 | 8;
+  /** Kernel-owned sticky secure-execution state for this exact image. */
+  secureExec: boolean;
   layout: ProcessMemoryLayout;
   threadAllocator: ThreadPageAllocator;
   /** Exact broker authority for this PID's current Wasm image. */
@@ -1043,9 +1049,27 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     // CORP alone cannot make an opaque response body readable to JavaScript.
     memfs.setLazyFetcher(createBrowserLazyFetcher(msg.config.corsProxyUrl));
   }
+  const privilegedProgramMount = msg.privilegedProgramMount?.kind ===
+      "published-privileged-program-product"
+    ? {
+        mountPoint: msg.privilegedProgramMount.mountPoint,
+        backend: createImmutableProductBackend(
+          await restoreVerifiedVfsImage(
+            msg.privilegedProgramMount.imageBytes,
+          ),
+        ),
+        readonly: true,
+        setIdCapability: {
+          kind: "trusted-root-product" as const,
+          guestWritable: false,
+          stableExecutableIdentity: true,
+        },
+      }
+    : undefined;
   const mounts: MountConfig[] = [
     { mountPoint: "/dev/shm", backend: shmfs },
     { mountPoint: "/dev", backend: devfs },
+    ...(privilegedProgramMount === undefined ? [] : [privilegedProgramMount]),
     ...specMounts,
   ];
   memfs.subscribeLazyDownloads((event) => {
@@ -1425,6 +1449,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     createdMemoryRegistered = true;
 
     kernelWorker.setCredentials(pid, { uid: msg.uid, gid: msg.gid });
+    const secureExec = kernelWorker.processSecureExec(pid);
     if (msg.cwd) {
       kernelWorker.setCwd(pid, msg.cwd);
     }
@@ -1470,6 +1495,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       programBytes,
       memory,
       channelOffset,
+      secureExec,
       externrefGenerationId: externrefGeneration.id,
       forkHostImports: forkHostImports.init,
       env: launchEnv,
@@ -1496,6 +1522,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       argv: msg.argv,
       channelOffset,
       ptrWidth,
+      secureExec,
       layout,
       threadAllocator,
       externrefGeneration,
@@ -2001,6 +2028,7 @@ async function handleVfork(
       programModule: parentInfo.programModule,
       memory: parentMemory,
       channelOffset: childChannelOffset,
+      secureExec: kernelWorker.processSecureExec(childPid),
       externrefGenerationId: externrefGrant.generation.id,
       forkHostImports: forkHostImports.init,
       isForkChild: true,
@@ -2047,6 +2075,7 @@ async function handleVfork(
       argv: parentInfo.argv,
       channelOffset: childChannelOffset,
       ptrWidth,
+      secureExec: childInitData.secureExec,
       layout: childLayout,
       threadAllocator: threadAllocatorForLayout(childLayout, ptrWidth, childPid),
       forkReplayContext,
@@ -2369,6 +2398,7 @@ async function handleOrdinaryFork(
       programModule: parentInfo.programModule,
       memory: childMemory,
       channelOffset: childChannelOffset,
+      secureExec: kernelWorker.processSecureExec(childPid),
       externrefGenerationId: externrefGrant.generation.id,
       forkHostImports: forkHostImports.init,
       isForkChild: true,
@@ -2401,6 +2431,7 @@ async function handleOrdinaryFork(
       argv: parentInfo.argv,
       channelOffset: childChannelOffset,
       ptrWidth,
+      secureExec: childInitData.secureExec,
       layout: childLayout,
       threadAllocator: threadAllocatorForLayout(childLayout, ptrWidth, childPid),
       forkReplayContext,
@@ -2595,6 +2626,7 @@ async function handleExec(
     }
     launchPlanState = "started";
     try {
+      const secureExec = kernelWorker.processSecureExec(pid);
       vmInterruptTimers.clear(pid, initiatingInfo);
 
       // Wake the exact old execution generation through the existing internal
@@ -2718,6 +2750,7 @@ async function handleExec(
         programModule,
         memory: newMemory,
         channelOffset: newChannelOffset,
+        secureExec,
         externrefGenerationId: replacementExternrefGeneration.id,
         forkHostImports: replacementForkHostImports.init,
         argv: launchArgv,
@@ -2785,6 +2818,7 @@ async function handleExec(
         argv: launchArgv,
         channelOffset: newChannelOffset,
         ptrWidth,
+        secureExec,
         layout: newLayout,
         threadAllocator: newThreadAllocator,
         externrefGeneration: replacementExternrefGeneration,
@@ -3003,6 +3037,7 @@ async function handlePosixSpawn(
   program: ResolvedSpawnProgram,
   envp: string[],
 ): Promise<number> {
+  const secureExec = kernelWorker.processSecureExec(childPid);
   await waitForProcessTeardowns();
 
   // Unrelated teardown waits yield to the event loop. Keep a successfully
@@ -3090,6 +3125,7 @@ async function handlePosixSpawn(
       programModule,
       memory: newMemory,
       channelOffset: newChannelOffset,
+      secureExec,
       externrefGenerationId: processExternrefGeneration.id,
       forkHostImports: processForkHostImports.init,
       argv,
@@ -3117,6 +3153,7 @@ async function handlePosixSpawn(
       argv,
       channelOffset: newChannelOffset,
       ptrWidth,
+      secureExec,
       layout: newLayout,
       threadAllocator,
       externrefGeneration: processExternrefGeneration,
@@ -3277,6 +3314,7 @@ async function handleClone(
     memory,
     processChannelOffset: processInfo.channelOffset,
     channelOffset: alloc.channelOffset,
+    secureExec: processInfo.secureExec,
     externrefGenerationId: processInfo.externrefGeneration.id,
     forkHostImports: forkHostImports.init,
     fnPtr,

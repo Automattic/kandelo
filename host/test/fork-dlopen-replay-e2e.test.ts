@@ -179,7 +179,7 @@ function buildMainProgram(source: string, name: string, forceExports: string[] =
     join(GLUE_DIR, "dlopen.c"),
     join(SYSROOT, "lib", "crt1.o"),
     join(SYSROOT, "lib", "libc.a"),
-    "-Wl,--entry=_start",
+    "-Wl,--no-entry",
     "-Wl,--export=_start",
     "-Wl,--export=__heap_base",
     "-Wl,--import-memory",

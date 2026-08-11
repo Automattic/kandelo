@@ -136,6 +136,7 @@ describe.skipIf(!existsSync(fbtestBinary))("framebuffer integration", () => {
       programBytes,
       memory,
       channelOffset,
+      secureExec: kernel.processSecureExec(pid),
       argv: ["fbtest"],
       env: [],
       ptrWidth,

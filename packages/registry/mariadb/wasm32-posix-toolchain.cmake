@@ -89,7 +89,7 @@ set(CMAKE_CXX_FLAGS_INIT "${WASM32_FLAGS_STR} -nostdinc++ -isystem ${WASM_POSIX_
 # --- Linker flags (mirror sdk/src/lib/flags.ts LINK_FLAGS) ---
 set(WASM32_LINK_FLAGS
   "-nostdlib"
-  "-Wl,--entry=_start"
+  "-Wl,--no-entry"
   "-Wl,--export=_start"
   "-Wl,--export=__heap_base"
   "-Wl,--import-memory"

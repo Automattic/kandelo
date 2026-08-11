@@ -146,7 +146,7 @@ LINK_PRE_LIBS=(
 # linker pass.
 LINK_POST_LIBS=(
     "$SYSROOT/lib/libc.a"
-    -Wl,--entry=_start
+    -Wl,--no-entry
     -Wl,--export=_start
     -Wl,--import-memory
     -Wl,--shared-memory
@@ -387,7 +387,7 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         "$GLUE_DIR/compiler_rt.c"
         "$SYSROOT64/lib/crt1.o"
         "$SYSROOT64/lib/libc.a"
-        -Wl,--entry=_start
+        -Wl,--no-entry
         -Wl,--export=_start
         -Wl,--import-memory
         -Wl,--shared-memory

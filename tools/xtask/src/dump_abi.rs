@@ -8111,6 +8111,7 @@ mod tests {
             "export const WAKE_PROCESS_CONTINUED = 32 as const;",
             "\"kernel_get_process_state\"",
             "\"kernel_has_sa_nocldstop\"",
+            "\"kernel_process_secure_exec\"",
             "\"kernel_wait_child_poll\"",
         ] {
             assert!(

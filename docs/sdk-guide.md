@@ -213,7 +213,8 @@ leave unresolved host imports in linked programs.
 
 ```
 -nostdlib                          # Don't use system libc
--Wl,--entry=_start                 # Entry point
+-Wl,--no-entry                    # Leave startup sequencing to musl
+-Wl,--export=_start               # Export the host-invoked process entry
 -Wl,--import-memory                # Memory provided by host
 -Wl,--shared-memory                # Enable SharedArrayBuffer
 -Wl,--max-memory=1073741824        # 1GB max memory
@@ -226,6 +227,11 @@ leave unresolved host imports in linked programs.
 -Wl,--export=__tls_base            # Required for TLS
 -Wl,--export=__wasm_init_tls       # TLS initialization
 ```
+
+Kandelo deliberately uses reactor link mode while retaining the exported
+`_start` function. This prevents `wasm-ld` from inserting a constructor call
+ahead of libc startup; musl runs constructors only after it has installed the
+process environment and secure-execution state.
 
 `--allow-undefined` is not permission for arbitrary Kandelo-private symbols to
 escape into a package. `install_local_binary` rejects unresolved imports in the

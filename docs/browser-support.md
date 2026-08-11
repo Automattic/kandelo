@@ -804,7 +804,11 @@ inventory. The owning bottle is materialized within the private composition
 transaction; unrelated bottles stay lazy. Chromium, Firefox, and WebKit use
 the same copy-and-admit path as Node and receive a separate immutable product
 backend, while the composed Homebrew filesystem remains the writable `nosuid`
-tree.
+tree. `BrowserKernel.initFromPublishedPrivilegedProgramProduct` accepts only
+that exact published object and overlays its privately retained, immutable
+`/usr/bin` projection in the VFS-owning worker. Ordinary image init and all
+public descriptor/URL inputs remain `nosuid` and cannot populate the private
+worker message.
 There is no per-file or byte-range retrieval inside the gzip/TAR. A failed
 fetch, digest,
 decode, inventory check, or allocation leaves every regular inode pending and

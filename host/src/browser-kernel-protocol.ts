@@ -34,8 +34,16 @@ export interface InitMessage {
    * apps/browser-demos/lib/kernel-owned-boot.ts::overlayEtcFromRootfs).
    */
   vfsImage: Uint8Array;
-  /** Exact image/scratch mount contract. Absent preserves the host default. */
-  rootfsMountSpec?: MountSpec[];
+  /**
+   * Private host-to-worker authority for an image admitted by the privileged
+   * product publisher. Public boot descriptors and ordinary image init cannot
+   * populate this field.
+   */
+  privilegedProgramMount?: {
+    kind: "published-privileged-program-product";
+    mountPoint: "/usr/bin";
+    imageBytes: Uint8Array;
+  };
   /** Base URL for relative lazy file/archive URLs stored in vfsImage. */
   lazyUrlBase?: string;
   /** Exhaustive exact-byte lazy transport for this image; no network fallback. */

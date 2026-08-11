@@ -12,6 +12,9 @@
 
 #include <stdlib.h>
 #include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
 #include "syscall.h"
 #include "atomic.h"
 #include "libc.h"
@@ -29,13 +32,35 @@ extern unsigned long __wasm_tp_storage[64];
 extern _Thread_local unsigned long __wasm_thread_pointer;
 int __init_tp(void *);
 
+extern int32_t kernel_get_secure_exec(void)
+	__attribute__((import_module("kernel"), import_name("kernel_get_secure_exec")));
+
+static _Noreturn void secure_startup_failure(void)
+{
+	__syscall(SYS_exit_group, 127);
+	for (;;) __asm__ ("" ::: "memory");
+}
+
+static void secure_standard_fds(void)
+{
+	for (int fd = 0; fd != 3; ++fd) {
+		if (__syscall(SYS_fcntl, fd, F_GETFD) != -EBADF) continue;
+		int opened = __syscall(SYS_openat, AT_FDCWD, "/dev/null", O_RDWR, 0);
+		if (opened < 0) secure_startup_failure();
+		if (opened != fd && __syscall(SYS_dup2, opened, fd) < 0)
+			secure_startup_failure();
+		if (opened != fd) __syscall(SYS_close, opened);
+	}
+}
+
 void __init_libc(char **envp, char *pn)
 {
 	size_t i;
+	libc.secure = kernel_get_secure_exec() != 0;
+	if (libc.secure) secure_standard_fds();
 	__environ = envp;
 
-	/* On Wasm, there is no auxv, TLS, or secure-execution mode.
-	 * Set up minimal libc state only. */
+	/* On Wasm, there is no auxv. Set up minimal libc state only. */
 	libc.page_size = 65536; /* Wasm page size */
 
 	/* Set minimal TLS metrics so pthread_create's __copy_tls can
@@ -59,9 +84,11 @@ void __init_libc(char **envp, char *pn)
 
 static void libc_start_init(void)
 {
-	/* For wasm command modules, wasm-ld synthesizes a call to
-	 * __wasm_call_ctors from _start when constructors are present. Running
-	 * the init array here as well invokes C++ static constructors twice. */
+	/* Kandelo links process modules in reactor mode while retaining the
+	 * exported _start entry. This leaves constructor ownership here, after
+	 * __init_libc has installed environment and secure-startup state. */
+	extern void __wasm_call_ctors(void);
+	__wasm_call_ctors();
 }
 
 weak_alias(libc_start_init, __libc_start_init);
