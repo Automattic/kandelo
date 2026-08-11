@@ -298,7 +298,7 @@ export interface LoadedShellConfig {
   bytes: number;
 }
 
-interface LoadedDemoConfig {
+export interface LoadedDemoConfig {
   config: KandeloDemoConfig;
   source: Uint8Array;
   sha256: string;
@@ -1976,6 +1976,21 @@ function readDemoConfig(path: string): LoadedDemoConfig {
     MAX_KANDELO_DEMO_CONFIG_BYTES,
     "Kandelo demo config",
   );
+  return parseDemoConfigBytes(bytes, path);
+}
+
+/** Parse already-bounded exact bytes so alternate CLIs can own safe disk I/O. */
+export function parseDemoConfigBytes(
+  input: Uint8Array,
+  path: string,
+): LoadedDemoConfig {
+  if (input.byteLength > MAX_KANDELO_DEMO_CONFIG_BYTES) {
+    throw new Error(
+      `Kandelo demo config exceeds ` +
+        `${MAX_KANDELO_DEMO_CONFIG_BYTES} bytes: ${path}`,
+    );
+  }
+  const bytes = Uint8Array.from(input);
   let source: string;
   try {
     source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);

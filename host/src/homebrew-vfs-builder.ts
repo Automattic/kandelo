@@ -32,7 +32,10 @@ import {
   type HomebrewBottleMaterializationPackage,
   type PreparedHomebrewKeg,
 } from "./homebrew-vfs-materializer";
-import { resolveHomebrewVfsResourcePolicy } from "./homebrew-vfs-resource-policy";
+import {
+  resolveHomebrewVfsResourcePolicy,
+  type HomebrewVfsResourcePolicyId,
+} from "./homebrew-vfs-resource-policy";
 import {
   finalizeHomebrewRuntimeSupport,
   HomebrewRuntimeSupportMaterializationError,
@@ -51,6 +54,7 @@ const DEFAULT_IMAGE_BYTES = 128 * 1024 * 1024;
 const S_IFMT = 0xf000;
 const S_IFREG = 0x8000;
 const S_IFDIR = 0x4000;
+const S_IFLNK = 0xa000;
 const MODE_BITS = 0o7777;
 const TEXT_ENCODER = new TextEncoder();
 const SHA256_RE = /^[0-9a-f]{64}$/;
@@ -331,7 +335,7 @@ export interface HomebrewFlatVfsBuildReport {
   kandelo_abi: number;
   selection_sha256: string;
   requested_vfs_filename: string;
-  resource_policy: "kandelo-homebrew-vfs-generous-v1";
+  resource_policy: HomebrewVfsResourcePolicyId;
   link_policy: "kandelo-homebrew-link-ownership-v1";
   runtime_support: "kandelo-homebrew-bootstrap-v1";
   environment: { PATH: string };
@@ -376,6 +380,79 @@ const FLAT_LINK_OWNERSHIP_V1 = Object.freeze({
       ]),
     }),
   }),
+});
+
+const FLAT_PUBLIC_COMMAND_POLICY_V1 = Object.freeze({
+  mirrorTargets: Object.freeze(["/usr/bin", "/bin"]),
+  reservedSystemCommands: Object.freeze({
+    "/usr/bin/tar": "kandelo-dev/tap-core/tar",
+    "/usr/bin/gzip": "kandelo-dev/tap-core/gzip",
+  }),
+  aliases: Object.freeze([
+    Object.freeze({
+      package: "kandelo-dev/tap-core/dash",
+      sourceKind: "link" as const,
+      source: "bin/dash",
+      targets: Object.freeze(["/usr/bin/sh", "/bin/sh"]),
+    }),
+    Object.freeze({
+      package: "kandelo-dev/tap-core/bzip2",
+      sourceKind: "link" as const,
+      source: "bin/bzip2",
+      targets: Object.freeze([
+        "/usr/bin/bunzip2",
+        "/bin/bunzip2",
+        "/usr/bin/bzcat",
+        "/bin/bzcat",
+      ]),
+    }),
+    Object.freeze({
+      package: "kandelo-dev/tap-core/gawk",
+      sourceKind: "link" as const,
+      source: "bin/gawk",
+      targets: Object.freeze(["/usr/bin/awk", "/bin/awk"]),
+    }),
+    Object.freeze({
+      package: "kandelo-dev/tap-core/grep",
+      sourceKind: "link" as const,
+      source: "bin/grep",
+      targets: Object.freeze([
+        "/usr/bin/egrep",
+        "/bin/egrep",
+        "/usr/bin/fgrep",
+        "/bin/fgrep",
+      ]),
+    }),
+    Object.freeze({
+      package: "kandelo-dev/tap-core/netcat",
+      sourceKind: "link" as const,
+      source: "bin/nc",
+      targets: Object.freeze(["/usr/bin/netcat", "/bin/netcat"]),
+    }),
+    Object.freeze({
+      package: "kandelo-dev/tap-core/git",
+      sourceKind: "keg" as const,
+      source: "libexec/git-core/git-remote-http",
+      targets: Object.freeze([
+        "/usr/bin/git-remote-http",
+        "/usr/bin/git-remote-https",
+        "/usr/bin/git-remote-ftp",
+        "/usr/bin/git-remote-ftps",
+      ]),
+    }),
+    Object.freeze({
+      package: "kandelo-dev/tap-core/fbdoom",
+      sourceKind: "link" as const,
+      source: "bin/fbdoom",
+      targets: Object.freeze(["/usr/local/bin/fbdoom"]),
+    }),
+    Object.freeze({
+      package: "kandelo-dev/tap-core/modeset",
+      sourceKind: "link" as const,
+      source: "bin/modeset",
+      targets: Object.freeze(["/usr/local/bin/modeset"]),
+    }),
+  ]),
 });
 
 interface HomebrewVfsLinkResolution {
@@ -582,6 +659,11 @@ export async function buildHomebrewVfsSelection(
     runtimeSupport,
     extractionCommands,
   ));
+  applyFlatPublicCommandLinks(
+    fs,
+    plan.packages,
+    linkResolution.selectedOwnerByTarget,
+  );
   const path = flatPath(plan.packages);
   if (path.length > 0) {
     ensureDirRecursive(fs, "/etc/profile.d");
@@ -1071,6 +1153,123 @@ function resolveFlatLinkOwnership(
     });
   }
   return { selectedOwnerByTarget, reports };
+}
+
+interface FlatPublicCommandLink {
+  sourcePath: string;
+  targetPath: string;
+}
+
+function applyFlatPublicCommandLinks(
+  fs: MemoryFileSystem,
+  packages: readonly HomebrewBottleDescriptor[],
+  selectedOwnerByTarget: ReadonlyMap<string, string>,
+): void {
+  const declarations = new Map<string, FlatPublicCommandLink>();
+  const packageByFullName = new Map(packages.map((pkg) => [pkg.fullName, pkg]));
+
+  const declare = (sourcePath: string, targetPath: string) => {
+    validateCompatibilityAbsolutePath(targetPath, "flat public command target");
+    const previous = declarations.get(targetPath);
+    if (previous !== undefined) {
+      throw new HomebrewVfsBuildError(
+        `flat Homebrew public command target ${targetPath} is assigned by ` +
+          `${previous.sourcePath} and ${sourcePath}`,
+      );
+    }
+    declarations.set(targetPath, { sourcePath, targetPath });
+  };
+
+  for (const pkg of packages) {
+    for (const link of pkg.links) {
+      if (!/^bin\/[^/]+$/.test(link.target)) continue;
+      if (selectedOwnerByTarget.get(link.target) !== pkg.fullName) continue;
+      const name = link.target.slice("bin/".length);
+      const sourcePath = joinGuestPath(pkg.prefix, link.target);
+      for (const targetDirectory of FLAT_PUBLIC_COMMAND_POLICY_V1.mirrorTargets) {
+        const targetPath = `${targetDirectory}/${name}`;
+        const requiredOwner = FLAT_PUBLIC_COMMAND_POLICY_V1.reservedSystemCommands[
+          targetPath as keyof typeof FLAT_PUBLIC_COMMAND_POLICY_V1.reservedSystemCommands
+        ];
+        if (requiredOwner !== undefined && requiredOwner !== pkg.fullName) continue;
+        declare(sourcePath, targetPath);
+      }
+    }
+  }
+
+  for (const alias of FLAT_PUBLIC_COMMAND_POLICY_V1.aliases) {
+    const pkg = packageByFullName.get(alias.package);
+    if (pkg === undefined) continue;
+    if (alias.sourceKind === "link") {
+      if (
+        !pkg.links.some((link) => link.target === alias.source) ||
+        selectedOwnerByTarget.get(alias.source) !== pkg.fullName
+      ) {
+        throw new HomebrewVfsBuildError(
+          `flat Homebrew public alias source ${alias.package}:${alias.source} ` +
+            "is not the selected bottle link",
+        );
+      }
+    }
+    const sourcePath = alias.sourceKind === "link"
+      ? joinGuestPath(pkg.prefix, alias.source)
+      : joinGuestPath(pkg.keg, alias.source);
+    for (const targetPath of alias.targets) declare(sourcePath, targetPath);
+  }
+
+  const actions: Array<FlatPublicCommandLink & { replace: boolean }> = [];
+  for (const declaration of declarations.values()) {
+    const source = tryStat(fs, declaration.sourcePath);
+    if (
+      source === null ||
+      kind(source) !== S_IFREG ||
+      (source.mode & 0o111) === 0 ||
+      fs.isPathDeferred(declaration.sourcePath)
+    ) {
+      throw new HomebrewVfsBuildError(
+        `flat Homebrew public command source ${declaration.sourcePath} ` +
+          "is not an eager executable regular file",
+      );
+    }
+    const target = tryLstat(fs, declaration.targetPath);
+    if (target === null) {
+      actions.push({ ...declaration, replace: false });
+      continue;
+    }
+    if (
+      kind(target) === S_IFLNK &&
+      fs.readlink(declaration.targetPath) === declaration.sourcePath
+    ) {
+      if (target.uid !== 0 || target.gid !== 0) {
+        throw new HomebrewVfsBuildError(
+          `flat Homebrew public command ${declaration.targetPath} must be root-owned`,
+        );
+      }
+      continue;
+    }
+    if (fs.isPathDeferred(declaration.targetPath)) {
+      actions.push({ ...declaration, replace: true });
+      continue;
+    }
+    const resolved = tryStat(fs, declaration.targetPath);
+    if (
+      resolved !== null &&
+      kind(resolved) === S_IFREG &&
+      (resolved.mode & 0o111) !== 0
+    ) {
+      continue;
+    }
+    throw new HomebrewVfsBuildError(
+      `flat Homebrew public command target ${declaration.targetPath} ` +
+        "conflicts with existing platform state",
+    );
+  }
+
+  for (const action of actions) {
+    if (action.replace) fs.unlink(action.targetPath);
+    ensureParentDir(fs, action.targetPath);
+    fs.symlinkWithOwner(action.sourcePath, action.targetPath, 0, 0);
+  }
 }
 
 function preflightFlatOptIdentities(packages: readonly HomebrewBottleDescriptor[]): void {

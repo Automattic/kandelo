@@ -14,25 +14,45 @@ Migration status, preserved scope, and the remaining execution order are
 tracked in the
 [Homebrew Migration Living Execution Plan](plans/2026-07-21-homebrew-migration-execution-plan.md).
 
+## Current ABI-42 shell publication (2026-08-11)
+
+Trusted CI still builds Kandelo Homebrew bottles, publishes them through the
+GHCR/Homebrew URL shape, and generates Formula `bottle do` blocks and Kandelo
+sidecars together. The current browser shell consumes those already-admitted
+bottles through `homebrew/main-shell-flat-selection.json`. Shell revision 23
+eagerly pours the complete selection over the platform base and writes one
+archive with a self-contained `/opt/kandelo/homebrew`, image-owned Bash and
+demo configs, and an eager `/usr/bin/brew` target.
+
+That shell is a normal registry package and moves through the
+canonical package release alongside `node-vfs`, `lamp`, `wordpress`,
+`nginx-vfs`, and `nginx-php-vfs`. Ordinary staging inspects the exact flat
+image and uses the generic package test gate. There is no separate shell-image
+or bottle-mirror
+publisher in this path, and the browser does not reconstruct Homebrew from
+Formula bottles at boot.
+
+Candidate activation first commits the tested package entries to
+`binaries-abi-v42`. It then records whether any candidate succeeded. The
+post-activation Pages dispatch runs only when that value is true; an empty
+scheduled reconciliation is quiet. Pages resolves the shell and Node images
+from a fresh fetch-only cache, reruns the flat-shell inspector, verifies both
+hashed Vite assets, executes `brew` and Ruby with no deferred-download rows,
+and runs the exact npm/cowsay Chromium acceptance before deploying.
+
+The closed-selection, bootstrap, artifact-lock, lifecycle-input, and
+lazy-mirror procedures later in this document are retained as historical
+recovery contracts. They are not the normal ABI-42 publisher and do not
+override this dated current-state section. Compatibility for already
+downloaded or persisted lazy images is tracked separately in
+[Future improvements](future-improvements.md#define-compatibility-for-restored-lazy-vfs-images).
+
 This is not a general user-facing Homebrew install guide yet. Do not document
-`brew tap` or guest `brew install` commands until guest Homebrew install has
-been validated through Kandelo. The supported implemented path today is:
-
-- trusted CI builds Kandelo Homebrew bottles;
-- bottle bytes publish to the GHCR/Homebrew bottle URL shape;
-- formula `bottle do` blocks and Kandelo sidecars are generated together;
-- host tooling pours verified bottles into precomposed VFS images;
-- Node and browser smoke tests decide which runtime claims are recorded;
-- an explicitly required, tap-selected dependency-bearing Brewfile gate can
-  boot one exact composed image in Node and Chromium before its selected
-  consumer publication passes; and
-- that required gate publishes the exact accepted image and evidence as a
-  public content-addressed release in the source tap after tap finalization.
-
-Homebrew formulae and bottle metadata remain Homebrew-native. Kandelo sidecar
-metadata is an additional contract for VFS builders, Node validation, browser
-automation, and publication audits; it is not a replacement for Formula Ruby or
-Homebrew's `bottle do` block.
+`brew tap` or guest `brew install` commands until that lifecycle is validated
+as a supported Kandelo user workflow. Homebrew Formulae and bottle metadata
+remain Homebrew-native. Kandelo sidecar metadata is an additional contract for
+VFS builders, Node validation, browser automation, and publication audits; it
+is not a replacement for Formula Ruby or Homebrew's `bottle do` block.
 
 ## Durable Kandelo Package Input
 
@@ -144,7 +164,7 @@ See
 [Binary releases: durable package generations](binary-releases.md#durable-package-generations-for-cross-workflow-publication)
 for dispatch, recovery, seal-last publication, and mutation handling.
 
-## Guest Homebrew Bootstrap Bottle
+## Historical Recovery: Guest Homebrew Bootstrap Bottle
 
 The patched Homebrew Ruby tree used by a guest is the support-data Formula
 `homebrew-bootstrap`. Its bottle contains two declared `libexec` members:
@@ -1227,7 +1247,7 @@ tap and the tap has adopted these Requirement declarations under a compatible
 pinned publisher, the full guest install lifecycle remains a rollout gate
 rather than a supported user-facing contract.
 
-#### Exact Chromium guest-lifecycle fixture
+#### Historical Recovery: Exact Chromium Guest-Lifecycle Fixture
 
 The Node.js and Chromium runners share one generated guest contract. Both tap
 exact first- and third-party revisions, prove each tap remains discoverable as
@@ -1303,13 +1323,11 @@ URL, digest, size, and asset-name set. The verified payloads are then handed to
 the worker as an exhaustive transport: an undeclared request fails instead of
 falling back to ambient network.
 
-Generic staging and prepare-merge browser suites always use that closed
-transport for the shell image they received. A shell package can already be
-current in Kandelo's canonical package index while its independently published
-content-addressed bottle-mirror release does not exist yet; canonical package
-identity therefore does not authorize ambient public mirror requests in those
-suites. The dedicated mirror-publication proof owns anonymous public transport
-validation after publication.
+This fixture is retained for historical recovery and lifecycle diagnostics.
+Generic staging and prepare-merge browser suites now consume the inspected
+self-contained shell from their package workspace and create no closed mirror.
+The dedicated historical mirror proof remains the only lane that may claim its
+anonymous bottle-payload transport.
 
 The product workflow's live lane is a manual, closed-transport cutover proof.
 It requires three exact lowercase 40-character inputs: Kandelo's live
@@ -1395,11 +1413,11 @@ admits it without claiming public-release authority. The script writes the
 fixed same-origin ZIP with an atomic rename, so Vite can see either the
 preceding verified asset or the new one, never a partial copy.
 
-`./run.sh prepare-browser`, Pages, and the public Chromium mirror proof all use
-this path. They deliberately skip the conventional `homebrew-bootstrap`
-registry package. The shell image's availability is therefore independent of
-that transitional package, and retiring it cannot make an otherwise valid
-Formula-backed browser product unavailable.
+Only explicit historical lazy-shell recovery and the public Chromium mirror
+proof use this bootstrap path. Ordinary `./run.sh prepare-browser`, package
+staging, and Pages consume the self-contained package image and do not stage a
+browser bootstrap asset. The shell image's availability is therefore
+independent of the transitional `homebrew-bootstrap` registry package.
 
 Only the publication job receives `contents: write`. Both of its write paths
 are guarded by the admitted publication mode. `create-mirror` calls
@@ -2480,7 +2498,7 @@ before a named shell pointer moves. A published closed selection is
 durable consumer input, but it is not by itself proof that the shell
 product passed those runtime gates.
 
-#### Binding the main shell to a closed selection
+#### Historical Recovery: Binding The Main Shell To A Closed Selection
 
 The fetched tap is a directory of released bytes, not a Git checkout. Before
 passing it to a consumer that normally requires a clean checkout, create the
@@ -4046,14 +4064,13 @@ production bundling failures without putting the gallery on the focused shell
 proof's critical path. This pre-merge shard compiles but never deploys; pull
 requests still cannot invoke the Pages publisher.
 
-The Pages publisher remains the full-gallery build gate, but its browser boot
-checks the shell route rather than booting every gallery entry. It consumes the
-canonical bottled product from a fresh package cache with source fallback
-disabled, binds the exact public shell, bootstrap, and mirror plan, and proves
-first-use `brew` materialization in Chromium before deployment. It deliberately
-does not invoke the internal source bridge or provide that bridge's exact event
-repository and SHA, `pages-exact-main-v1` isolation attestation, empty
-current-ABI file index, or unmaterialized resolver workspace.
+Before the flat package cutover, the full-gallery Pages gate bound the public
+shell, bootstrap, and mirror plan and proved first-use `brew` materialization.
+That historical path did not invoke the internal source bridge or provide the
+bridge's exact event repository and SHA, `pages-exact-main-v1` isolation
+attestation, empty current-ABI file index, or unmaterialized resolver
+workspace. The current Pages path uses neither bridge nor bootstrap/mirror
+authority.
 
 The lane stages and inspects only the distinct bridge recipe before beginning
 canonical installation. Before any mutation it verifies the exact GitHub
@@ -4095,23 +4112,18 @@ turns producer failures or unexpected skips into failures. Marking a
 draft pull request ready reruns the same ordered path without invoking
 close-time staging cleanup.
 
-Pages uses a fresh resolver cache and
-`./run.sh --fetch-only --require-sealed-homebrew-selection prepare-browser`.
-It verifies the selected shell against the sealed artifact lock, stages the
-bootstrap from the same sealed Formula selection, reads the embedded immutable
-mirror plan without eagerly downloading its payloads, and boots the assembled
-`/kandelo/` tree through the existing public-transport Chromium acceptance.
-Missing canonical archives, a missing public mirror, or any
-shell/bootstrap/plan identity drift stops deployment. The source-rootfs bridge
-cannot stand in for that product artifact and can be deleted in a later
-cleanup. The first cutover deliberately does not wait for the complete public
-lifecycle. Its Pages job is the publication gate: it must anonymously recover
-the canonical product, boot the exact assembled site in Chromium, keep `brew`
-deferred until first use, and run a real in-guest `brew` command.
-Tap/install/upgrade/remove/reboot and memory-soak coverage remain independent
-follow-up work.
+Pages now uses a fresh resolver cache and
+`./run.sh --fetch-only prepare-browser`. It resolves the canonical shell and
+Node package images, requires the flat-shell inspection report, verifies both
+hashed browser assets, and boots the assembled `/kandelo/` tree. Missing
+canonical archives or any image/config identity drift stops deployment. The
+source-rootfs bridge cannot stand in for those product artifacts. The shell
+proof keeps the lazy-download ledger empty while running `brew`, Ruby, and
+Bash; the Node proof installs and executes cowsay through npm. The broader
+tap/install/upgrade/remove/reboot lifecycle remains independent historical
+evidence rather than a Pages transport dependency.
 
-### Strict Main-Shell Bottle Closure
+### Historical Recovery: Strict Lazy Main-Shell Bottle Closure
 
 `homebrew/main-shell.Brewfile` is the reviewed direct-root contract for the
 complete current shell surface. Its 32 roots resolve to an exact 38-Formula

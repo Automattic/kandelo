@@ -1,7 +1,8 @@
 const MEBIBYTE = 1024 * 1024;
 
 export type HomebrewVfsResourcePolicyId =
-  "kandelo-homebrew-vfs-generous-v1";
+  | "kandelo-homebrew-vfs-generous-v1"
+  | "kandelo-homebrew-vfs-main-shell-v1";
 
 export interface HomebrewVfsResourcePolicy {
   id: HomebrewVfsResourcePolicyId;
@@ -57,11 +58,20 @@ const GENEROUS_V1: HomebrewVfsResourcePolicy = deepFreeze({
   },
 });
 
+const MAIN_SHELL_V1: HomebrewVfsResourcePolicy = deepFreeze({
+  ...GENEROUS_V1,
+  id: "kandelo-homebrew-vfs-main-shell-v1",
+  vfs: {
+    maxByteLength: 512 * MEBIBYTE,
+  },
+});
+
 /** Resolve a closed, code-owned Homebrew VFS resource policy. */
 export function resolveHomebrewVfsResourcePolicy(
   id: unknown,
 ): HomebrewVfsResourcePolicy {
   if (id === GENEROUS_V1.id) return GENEROUS_V1;
+  if (id === MAIN_SHELL_V1.id) return MAIN_SHELL_V1;
   throw new Error(`unknown Homebrew VFS resource policy: ${JSON.stringify(id)}`);
 }
 

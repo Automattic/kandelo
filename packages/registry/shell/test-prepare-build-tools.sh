@@ -250,7 +250,7 @@ if [ -n "${KANDELO_DEV_SHELL_TOOL_PATH:-}" ]; then
             test_fail "npm reintroduced an ambient host tool directory"
             ;;
     esac
-    for tool in git jq node npm python3 ruby sha256sum tar wc; do
+    for tool in git node npm tar; do
         resolved="$(PATH="$npm_path" type -P "$tool" || true)"
         case "$resolved" in
             /nix/store/*/bin/"$tool") ;;

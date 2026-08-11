@@ -15,7 +15,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import tomllib
 from typing import Any
 
 
@@ -32,7 +31,6 @@ MIGRATION_PATH = "homebrew/main-shell-migration-lock.json"
 SUPPORT_PATH = "homebrew/main-shell-homebrew-runtime-support.json"
 SELECTION_PATH = "homebrew/main-shell-selection-lock.json"
 ARTIFACT_PATH = "homebrew/main-shell-lazy-artifact-lock.json"
-BUILD_PATH = "packages/registry/shell/build.toml"
 DOC_PATH = "docs/homebrew-publishing.md"
 BREWFILE_PATH = "homebrew/main-shell.Brewfile"
 BOUND_INPUTS = {
@@ -84,12 +82,6 @@ def regular_bytes(root: pathlib.Path, relative: str) -> bytes:
 
 def sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
-
-
-def positive_revision(value: Any, label: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-        raise FinalizeError(f"{label} must be a positive integer")
-    return value
 
 
 def sha256_file(path: pathlib.Path) -> str:
@@ -342,52 +334,6 @@ def require_bottle(package: dict[str, Any]) -> None:
         raise FinalizeError(
             f"Formula {package['name']} lacks one admitted public wasm32 ABI-42 bottle"
         )
-
-
-def update_build_toml(value: bytes, sealed: bool) -> bytes:
-    try:
-        text = value.decode()
-    except UnicodeDecodeError as error:
-        raise FinalizeError(f"{BUILD_PATH} is not UTF-8") from error
-    try:
-        original_build = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as error:
-        raise FinalizeError(f"{BUILD_PATH} is not valid TOML") from error
-    original_revision = positive_revision(
-        original_build.get("revision"), f"{BUILD_PATH} revision"
-    )
-    if original_build.get("git_inputs") is not None:
-        # WHY: the package consumes the immutable closed selection that this
-        # finalizer seals. Keeping a second raw-tap input would let the package
-        # and the directly tested product compose different Formula trees.
-        raise FinalizeError(f"{BUILD_PATH} must not declare raw tap Git inputs")
-    expected_state = "ready" if sealed else "pending"
-    text, count = re.subn(
-        r'^publication_state = "(?:ready|pending)"$',
-        f'publication_state = "{expected_state}"',
-        text,
-        count=1,
-        flags=re.MULTILINE,
-    )
-    if count != 1:
-        raise FinalizeError(f"{BUILD_PATH} lacks one publication_state")
-    try:
-        build = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as error:
-        raise FinalizeError(f"{BUILD_PATH} became invalid TOML") from error
-    if (
-        build.get("commit") != "UNPUBLISHED"
-        # WHY: the reviewed source commit and sealed artifact lock bind the
-        # exact shell generation. The finalizer may change tap authority and
-        # publication state, but it must preserve whichever positive package
-        # revision that reviewed source declares instead of owning a second,
-        # stale copy of the current revision number.
-        or build.get("revision") != original_revision
-        or build.get("publication_state") != expected_state
-        or build.get("git_inputs") is not None
-    ):
-        raise FinalizeError(f"{BUILD_PATH} release identity is not exact")
-    return text.encode()
 
 
 def update_docs(value: bytes, old_tap: str, new_tap: str) -> bytes:
@@ -908,7 +854,6 @@ def prepare_stable_inputs(
             SUPPORT_PATH,
             SELECTION_PATH,
             ARTIFACT_PATH,
-            BUILD_PATH,
             DOC_PATH,
         ]
     }
@@ -1114,13 +1059,11 @@ def prepare_stable_inputs(
         raise FinalizeError("Homebrew shell/runtime Formula union repeats a Formula")
 
     sealed = artifact_file is not None
-    build_bytes = update_build_toml(old[BUILD_PATH], sealed)
     docs_bytes = update_docs(old[DOC_PATH], old_tap, final_tap)
     staged: dict[str, bytes] = {
         MIGRATION_PATH: migration_bytes,
         SUPPORT_PATH: support_bytes,
         SELECTION_PATH: selection_bytes,
-        BUILD_PATH: build_bytes,
         DOC_PATH: docs_bytes,
     }
 
@@ -1229,14 +1172,11 @@ def main() -> int:
             args.artifact,
         )
         if args.apply:
-            # WHY: pending publication state is written first when invalidating
-            # an old seal, while ready is written last when installing a new
-            # one. A host interruption can therefore leave an inconsistent
-            # checkout, but never a partially refreshed checkout that still
-            # advertises itself as publishable.
+            # WHY: the legacy lock pair remains fail-closed across an
+            # interruption. It no longer owns the canonical shell package's
+            # publication state.
             if summary["artifact_state"] == "pending":
                 order = [
-                    BUILD_PATH,
                     ARTIFACT_PATH,
                     MIGRATION_PATH,
                     SUPPORT_PATH,
@@ -1248,7 +1188,6 @@ def main() -> int:
                     SUPPORT_PATH,
                     DOC_PATH,
                     ARTIFACT_PATH,
-                    BUILD_PATH,
                 ]
             # Any intermediate mix of old/new inputs and lock fails closed.
             # Put the pending or sealed selection beside its refreshed

@@ -16,6 +16,24 @@ test("exact Homebrew browser proofs never reuse another worktree's server", () =
   );
   assert.equal(
     shouldReuseExistingPlaywrightServer({
+      KANDELO_CANONICAL_FLAT_SHELL_STRICT: "1",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldReuseExistingPlaywrightServer({
+      KANDELO_NODE_VFS_STRICT: "1",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldReuseExistingPlaywrightServer({
+      KANDELO_PLAYWRIGHT_SERVE_DIST: "1",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldReuseExistingPlaywrightServer({
       KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE: "1",
     }),
     false,
@@ -24,6 +42,7 @@ test("exact Homebrew browser proofs never reuse another worktree's server", () =
     shouldReuseExistingPlaywrightServer({
       KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE: "0",
       KANDELO_HOMEBREW_MAIN_SHELL_STRICT: "0",
+      KANDELO_PLAYWRIGHT_SERVE_DIST: "0",
     }),
     true,
   );
