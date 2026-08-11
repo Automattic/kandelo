@@ -1210,7 +1210,7 @@ flat_state_expected="$flat_state_probe/expected.json"
 flat_state_blockers="$flat_state_probe/blockers.json"
 flat_state_index="$flat_state_probe/index.toml"
 flat_state="$flat_state_probe/state.json"
-flat_cache_key="ad21e240849e93d26ee58ec0b1f6d62a0af160fd1296fc148e33d622c7273203"
+flat_cache_key="97dd1a61cb7ab252ed0c6d53daaad912608621efdb393deae7edf4e66ff41907"
 jq -n --argjson abi "$abi" --arg cache "$flat_cache_key" '
   {
     abi_version: $abi,
@@ -1238,7 +1238,7 @@ revision = 23
 
 [packages.binary.wasm32]
 status = "success"
-archive_url = "shell-0.1.0-rev23-abi42-wasm32-ad21e240.tar.zst"
+archive_url = "shell-0.1.0-rev23-abi42-wasm32-97dd1a61.tar.zst"
 archive_sha256 = "$(printf 'a%.0s' {1..64})"
 cache_key_sha = "$flat_cache_key"
 built_at = "2026-08-10T00:00:00Z"
