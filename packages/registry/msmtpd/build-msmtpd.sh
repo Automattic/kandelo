@@ -6,8 +6,8 @@ set -euo pipefail
 
 VERSION="1.8.32"
 TARBALL="msmtp-${VERSION}.tar.xz"
-URL="https://marlam.de/msmtp/releases/${TARBALL}"
-SHA256="20cd58b58dd007acf7b937fa1a1e21f3afb3e9ef5bbcfb8b4f5650deadc64db4"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://snapshot.debian.org/archive/debian/20251129T142942Z/pool/main/m/msmtp/msmtp_1.8.32.orig.tar.xz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-20cd58b58dd007acf7b937fa1a1e21f3afb3e9ef5bbcfb8b4f5650deadc64db4}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
@@ -31,13 +31,13 @@ if [ ! -f "$SCRIPT_DIR/$TARBALL" ]; then
     echo "==> Downloading msmtp $VERSION..."
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL \
         -o "$SCRIPT_DIR/$TARBALL" \
-        "$URL"
+        "$SOURCE_URL"
 fi
 
 actual_sha="$(shasum -a 256 "$SCRIPT_DIR/$TARBALL" | awk '{print $1}')"
-if [ "$actual_sha" != "$SHA256" ]; then
+if [ "$actual_sha" != "$SOURCE_SHA256" ]; then
     echo "ERROR: checksum mismatch for $TARBALL" >&2
-    echo "  expected: $SHA256" >&2
+    echo "  expected: $SOURCE_SHA256" >&2
     echo "  actual:   $actual_sha" >&2
     exit 1
 fi

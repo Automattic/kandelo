@@ -26,6 +26,15 @@ awk '/if \[ -n "\$\{WASM_POSIX_DEP_OUT_DIR:-\}" \]; then/,/else/' \
     "$php" | grep -F 'WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto' \
     >/dev/null || fail "PHP sealed install lacks explicit fork policy"
 
+msmtpd="$REPO_ROOT/packages/registry/msmtpd/build-msmtpd.sh"
+msmtpd_source='https://snapshot.debian.org/archive/debian/20251129T142942Z/pool/main/m/msmtp/msmtp_1.8.32.orig.tar.xz'
+grep -F 'SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-'"$msmtpd_source"'}"' \
+    "$msmtpd" >/dev/null ||
+    fail "msmtpd build does not accept its immutable manifest-owned source"
+grep -F 'url = "'"$msmtpd_source"'"' \
+    "$REPO_ROOT/packages/registry/msmtpd/package.toml" >/dev/null ||
+    fail "msmtpd manifest does not use its immutable source snapshot"
+
 glue="$TEST_ROOT/glue"
 mkdir -p "$glue"
 : >"$glue/channel_syscall.o"
@@ -70,6 +79,11 @@ done
 grep -F -- '-DWASM_POSIX_MARIADB_GLUE_OBJ_DIR="$GLUE_OBJ_DIR"' \
     "$REPO_ROOT/packages/registry/mariadb/build-mariadb.sh" >/dev/null ||
     fail "MariaDB build does not pass its resolver-owned glue directory"
+
+mariadb="$REPO_ROOT/packages/registry/mariadb/build-mariadb.sh"
+awk '/if \[ -n "\$\{WASM_POSIX_DEP_OUT_DIR:-\}" \]; then/,/else/' \
+    "$mariadb" | grep -F 'WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto' \
+    >/dev/null || fail "MariaDB sealed install lacks explicit fork policy"
 
 try_compile_source="$TEST_ROOT/mariadb-glue-try-compile"
 try_compile_sysroot="$TEST_ROOT/mariadb-glue-sysroot"
