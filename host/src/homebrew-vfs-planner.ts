@@ -8,6 +8,13 @@ import {
 import type { HomebrewBottleDescriptor } from "./homebrew-bottle-descriptor";
 import type { HomebrewBottleArch, HomebrewLinkEntry } from "./homebrew-bottle-types";
 import type { HomebrewVfsResourcePolicyId } from "./homebrew-vfs-resource-policy";
+import {
+  readReviewedPrivilegedProgramPolicy,
+  type ReviewedPrivilegedProgramPolicy,
+} from "./vfs/privileged-projection";
+
+const reviewedProductPoliciesByPlan =
+  new WeakMap<HomebrewVfsPlan, ReviewedPrivilegedProgramPolicy>();
 
 export type { HomebrewBottleArch, HomebrewLinkEntry } from "./homebrew-bottle-types";
 export type HomebrewRuntime = "node" | "browser";
@@ -298,7 +305,6 @@ export async function planHomebrewVfs(
       expectedAbi,
     }));
   }
-
   return {
     schema: 1,
     tapRepository: metadata.tap_repository,
@@ -382,7 +388,6 @@ export async function planFederatedHomebrewVfs(
       loadLinkManifest: (path) => options.loadLinkManifest(tap, path),
     }));
   }
-
   return {
     schema: 1,
     tapRepository: rootMetadata.tap_repository,
@@ -399,6 +404,52 @@ export async function planFederatedHomebrewVfs(
     ),
     packages: planned,
   };
+}
+
+/**
+ * Associate product-owned review authority with one in-memory plan. The
+ * association is deliberately absent from public host/browser barrels and is
+ * not serialized into the caller-visible plan record.
+ */
+export function attachReviewedPrivilegedProgramPolicy(
+  plan: HomebrewVfsPlan,
+  policy: ReviewedPrivilegedProgramPolicy,
+): HomebrewVfsPlan {
+  validateReviewedPrivilegedProgramPolicy(plan, policy);
+  reviewedProductPoliciesByPlan.set(plan, policy);
+  return plan;
+}
+
+/** Resolve an internal plan association while rechecking mutable plan input. */
+export function reviewedPrivilegedProgramPolicyForPlan(
+  plan: HomebrewVfsPlan,
+): ReviewedPrivilegedProgramPolicy | undefined {
+  const policy = reviewedProductPoliciesByPlan.get(plan);
+  if (policy !== undefined) validateReviewedPrivilegedProgramPolicy(plan, policy);
+  return policy;
+}
+
+function validateReviewedPrivilegedProgramPolicy(
+  plan: HomebrewVfsPlan,
+  policy: ReviewedPrivilegedProgramPolicy,
+): void {
+  const projections = readReviewedPrivilegedProgramPolicy(policy);
+  const packages = plan.packages;
+  const packagesByFormula = new Map(packages.map((pkg) => [pkg.fullName, pkg]));
+  for (const projection of projections) {
+    const pkg = packagesByFormula.get(projection.formula);
+    if (pkg === undefined) {
+      fail(
+        `privileged projection formula ${quote(projection.formula)} is not in the selected closure`,
+      );
+    }
+    if (pkg.sha256 !== projection.bottleSha256) {
+      fail(
+        `privileged projection bottle digest for ${quote(projection.formula)} ` +
+          "does not match the selected bottle",
+      );
+    }
+  }
 }
 
 function parseTapMetadata(value: unknown): HomebrewTapMetadata {

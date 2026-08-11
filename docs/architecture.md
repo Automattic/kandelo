@@ -1625,11 +1625,22 @@ operations require a lifecycle-owned backing, not merely a reachable one.
 | `/srv`      | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 
 Every mount in the default layout is `nosuid` on both hosts, including the
-advisory-read-only root image. A future reviewed product projection must use a
-separate privately branded immutable product backend and request
-`trusted-root-product` explicitly; ordinary image, scratch, host, OPFS,
-device, and user-provided backends cannot acquire that capability from public
-fields, prototypes, or configuration.
+advisory-read-only root image. Reviewed privileged-program policy can copy an
+authenticated regular bottle member into a fresh root-owned inode on a
+separate privately branded immutable product backend. Admission covers the
+complete three-program group, rejects links and writable aliases, and compares
+each `(dev, ino, generation)` identity with every inode in the writable bottle
+tree before publication. The candidate is created on a fresh private
+`SharedArrayBuffer`, and its one-shot construction proof is consumed before
+admission; no second wrapper over writable backing can enter the production
+path even though `structuredClone()` can create distinct wrappers for one
+shared data block. The record value `trusted-root-product` names that policy;
+it is not authority. Product review authority is a non-serializable opaque
+capability minted only at internal product/build boundaries. Mount authority
+still comes only from the private backend brand and resolved read-only mount
+capability. Ordinary image,
+scratch, host, OPFS, device, and user-provided backends cannot acquire that
+capability from public fields, prototypes, or configuration.
 
 The browser host layers two additional, host-specific mounts on top: `/dev/shm` (the POSIX-semaphore SAB shared with main-thread surfaces) and `/dev` (`DeviceFileSystem` for `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`, `/dev/pts/N`). Sticky bits, the uid 1000 owner on `/home/user`, mode `0700` on `/root`, etc. are baked into the rootfs image at build time per the canonical `MANIFEST` and reflected honestly through the `MemoryFileSystem` inode metadata. Scratch mounts on Node start owned by uid/gid 0 because `HostFileSystem` synthesises them.
 

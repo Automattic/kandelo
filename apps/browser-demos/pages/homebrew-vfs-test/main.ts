@@ -1,6 +1,9 @@
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { ABI_VERSION } from "@host/generated/abi";
-import { MemoryFileSystem } from "@host/vfs/memory-fs";
+import {
+  MemoryFileSystem,
+  resolveMountSetIdCapability,
+} from "@host/vfs/memory-fs";
 import {
   restoreVerifiedVfsImage,
   restoreVerifiedVfsImagePreservingCapacity,
@@ -12,7 +15,12 @@ import {
 } from "../../lib/kernel-owned-boot";
 import {
   composeBootDescriptorVfs,
+  composeBootDescriptorVfsWithReviewedProduct,
 } from "../../lib/init/homebrew-package-layers";
+import { createReviewedPrivilegedProgramPolicy } from
+  "@host/vfs/privileged-projection";
+import * as privilegedProjectionModule from
+  "@host/vfs/privileged-projection";
 import {
   homebrewClosedAcceptanceAssetRoot,
 } from "../../lib/homebrew-closed-acceptance";
@@ -108,16 +116,49 @@ interface LazyVfsAcceptanceResult {
 interface PackageLayerBootRequest {
   baseVfsUrl: string;
   descriptor: BootDescriptor;
+  reviewedProductProfile?: "package-layer-acceptance-v1";
   inspect?: {
     statPaths: string[];
     readdirPaths: string[];
   };
 }
 
+const PACKAGE_LAYER_ACCEPTANCE_PRODUCT_POLICY =
+  createReviewedPrivilegedProgramPolicy(
+    ["login", "sudo-lite", "sudo"].map((name) => ({
+      schema: 1,
+      formula: "kandelo-dev/tap-core/lazyfixture",
+      bottleSha256:
+        "3daab2c56480490730e08bd73ee06e6beb681fa45ada1179318514af9362c433",
+      sourcePath: "lazyfixture/1.0/bin/mount-probe",
+      destinationPath: `/usr/bin/${name}`,
+      uid: 0,
+      gid: 0,
+      mode: 0o4755,
+      mountPoint: "trusted-root-product",
+      artifactValidationSha256:
+        "bc22eba05a72927443ab9294a685b0bde701977c4e380d18c25f357f2d8aa584",
+    })),
+  );
+
 interface PackageLayerBootResult {
   layerIds: string[];
   stats: Array<{ path: string; mode: number; size: number }>;
   directories: Array<{ path: string; names: string[] }>;
+  privilegedProduct?: {
+    stats: Array<{
+      path: string;
+      mode: number;
+      uid: number;
+      gid: number;
+      nlink: number;
+    }>;
+    uniqueIdentityCount: number;
+    readonly: boolean;
+    trusted: boolean;
+    ordinaryBottleWritable: boolean;
+    ordinaryMountNosuid: boolean;
+  };
 }
 
 interface PackageLayerExecRequest {
@@ -188,6 +229,12 @@ declare global {
     ) => Promise<PackageLayerExecResult>;
     __destroyPackageLayerAcceptance: () => Promise<void>;
     __packageLayerDiscardedBufferCount: () => number;
+    __inspectSharedWrapperAuthorityBoundary: () => {
+      distinctWrapper: boolean;
+      mutationShared: boolean;
+      candidateAdmission: boolean;
+      testCandidateAdmission: boolean;
+    };
     __runRootfsExportAcceptance: (
       request: RootfsExportAcceptanceRequest,
     ) => Promise<RootfsExportAcceptanceResult>;
@@ -859,6 +906,28 @@ async function init(): Promise<void> {
   };
   window.__packageLayerDiscardedBufferCount = () =>
     packageLayerDiscardedBufferCount;
+  window.__inspectSharedWrapperAuthorityBoundary = () => {
+    const candidate = MemoryFileSystem.create(
+      new SharedArrayBuffer(4 * 1024 * 1024),
+    );
+    const distinctWrapper = structuredClone(candidate.sharedBuffer);
+    const writableAlias = MemoryFileSystem.fromExisting(distinctWrapper);
+    candidate.mkdir("/shared-wrapper-proof", 0o755);
+    return {
+      distinctWrapper: distinctWrapper !== candidate.sharedBuffer,
+      mutationShared:
+        (writableAlias.lstat("/shared-wrapper-proof").mode & 0o170000) ===
+          0o040000,
+      candidateAdmission: Reflect.has(
+        privilegedProjectionModule,
+        "admitPrivilegedProgramProductCandidate",
+      ),
+      testCandidateAdmission: Reflect.has(
+        privilegedProjectionModule,
+        "admitPrivilegedProgramProductCandidateForTest",
+      ),
+    };
+  };
 
   window.__bootPackageLayerAcceptance = async (request) => {
     await window.__destroyPackageLayerAcceptance();
@@ -872,7 +941,7 @@ async function init(): Promise<void> {
         ABI_VERSION,
         "package-layer base VFS image",
       );
-      const composed = await composeBootDescriptorVfs({
+      const compositionOptions = {
         descriptor: request.descriptor,
         baseImageBytes,
         kernelAbi: ABI_VERSION,
@@ -880,7 +949,19 @@ async function init(): Promise<void> {
           packageLayerDiscardedBufferCount += 1;
           trackTransientImageBuffer(buffer);
         },
-      });
+      };
+      if (
+        request.reviewedProductProfile !== undefined &&
+        request.reviewedProductProfile !== "package-layer-acceptance-v1"
+      ) {
+        throw new Error("unknown reviewed package-layer product profile");
+      }
+      const composed = request.reviewedProductProfile === undefined
+        ? await composeBootDescriptorVfs(compositionOptions)
+        : await composeBootDescriptorVfsWithReviewedProduct(
+          compositionOptions,
+          PACKAGE_LAYER_ACCEPTANCE_PRODUCT_POLICY,
+        );
       trackTransientImageBuffer(composed.fs.sharedBuffer);
       const stats = (request.inspect?.statPaths ?? []).map((path) => {
         const stat = composed.fs.stat(path);
@@ -900,6 +981,59 @@ async function init(): Promise<void> {
         }
         return { path, names: names.sort() };
       });
+      let privilegedProduct: PackageLayerBootResult["privilegedProduct"];
+      if (composed.privilegedProduct !== undefined) {
+        const destinations = composed.privilegedProduct.projections.map(
+          (projection) => projection.destinationPath,
+        );
+        let readonly = false;
+        try {
+          composed.privilegedProduct.mount.backend.unlink(destinations[0]!);
+        } catch (error) {
+          readonly = error instanceof Error && error.message.includes("EROFS");
+        }
+        const firstProjection = composed.privilegedProduct.projections[0]!;
+        const ordinaryBottlePath =
+          `/opt/kandelo/homebrew/Cellar/${firstProjection.sourcePath}`;
+        const ordinaryBottleMode = composed.fs.lstat(ordinaryBottlePath).mode &
+          0o7777;
+        let ordinaryBottleWritable = false;
+        try {
+          composed.fs.chmod(ordinaryBottlePath, ordinaryBottleMode ^ 0o200);
+          ordinaryBottleWritable =
+            (composed.fs.lstat(ordinaryBottlePath).mode & 0o7777) ===
+              (ordinaryBottleMode ^ 0o200);
+        } finally {
+          composed.fs.chmod(ordinaryBottlePath, ordinaryBottleMode);
+        }
+        privilegedProduct = {
+          stats: destinations.map((path) => {
+            const stat = composed.privilegedProduct!.mount.backend.lstat(path);
+            return {
+              path,
+              mode: stat.mode,
+              uid: stat.uid,
+              gid: stat.gid,
+              nlink: stat.nlink,
+            };
+          }),
+          uniqueIdentityCount: new Set(
+            composed.privilegedProduct.evidence.map((entry) =>
+              `${entry.destinationIdentity.dev}:` +
+              `${entry.destinationIdentity.ino}:` +
+              `${entry.destinationIdentity.generation}`
+            ),
+          ).size,
+          readonly,
+          trusted:
+            resolveMountSetIdCapability(composed.privilegedProduct.mount).kind ===
+              "trusted-root-product",
+          ordinaryBottleWritable,
+          ordinaryMountNosuid:
+            resolveMountSetIdCapability({ backend: composed.fs }).kind ===
+              "nosuid",
+        };
+      }
       const output = { stdout: "", stderr: "" };
       kernel = new BrowserKernel({
         kernelOwnedFs: true,
@@ -919,6 +1053,7 @@ async function init(): Promise<void> {
         layerIds: composed.layers.map((layer) => layer.id),
         stats,
         directories,
+        ...(privilegedProduct === undefined ? {} : { privilegedProduct }),
       };
     } catch (error) {
       if (kernel) await kernel.destroy().catch(() => {});

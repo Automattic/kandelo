@@ -1,8 +1,12 @@
 import {
   composeHomebrewRuntimeLayers,
+  composeHomebrewRuntimeLayersWithReviewedProduct,
   type ComposedHomebrewRuntimeLayers,
   type HomebrewRuntimeLayerReference,
 } from "../../../../host/src/homebrew-runtime-layer-consumer";
+import type {
+  ReviewedPrivilegedProgramPolicy,
+} from "../../../../host/src/vfs/privileged-projection";
 import {
   restoreVerifiedVfsImage,
   restoreVerifiedVfsImagePreservingCapacity,
@@ -71,9 +75,24 @@ export function homebrewRuntimeLayerReferences(
 export async function composeBootDescriptorVfs(
   options: ComposeBootDescriptorVfsOptions,
 ): Promise<ComposedBootDescriptorVfs> {
+  return composeBootDescriptorVfsInternal(options);
+}
+
+/** Product-owned adapter; absent from boot/request and public host surfaces. */
+export async function composeBootDescriptorVfsWithReviewedProduct(
+  options: ComposeBootDescriptorVfsOptions,
+  policy: ReviewedPrivilegedProgramPolicy,
+): Promise<ComposedBootDescriptorVfs> {
+  return composeBootDescriptorVfsInternal(options, policy);
+}
+
+async function composeBootDescriptorVfsInternal(
+  options: ComposeBootDescriptorVfsOptions,
+  policy?: ReviewedPrivilegedProgramPolicy,
+): Promise<ComposedBootDescriptorVfs> {
   validateBootDescriptor(options.descriptor);
   const references = homebrewRuntimeLayerReferences(options.descriptor);
-  if (references.length === 0) {
+  if (references.length === 0 && policy === undefined) {
     const fs = options.maxByteLength === undefined
       ? await restoreVerifiedVfsImagePreservingCapacity(options.baseImageBytes)
       : await restoreVerifiedVfsImage(options.baseImageBytes, {
@@ -82,7 +101,7 @@ export async function composeBootDescriptorVfs(
     return { fs, layers: [], references };
   }
 
-  const composed = await composeHomebrewRuntimeLayers({
+  const runtimeOptions = {
     baseImageBytes: options.baseImageBytes,
     ...(options.maxByteLength === undefined
       ? {}
@@ -99,6 +118,12 @@ export async function composeBootDescriptorVfs(
       : {
         onStagedFileSystemDiscarded: options.onStagedFileSystemDiscarded,
       }),
-  });
+  };
+  const composed = policy === undefined
+    ? await composeHomebrewRuntimeLayers(runtimeOptions)
+    : await composeHomebrewRuntimeLayersWithReviewedProduct(
+      runtimeOptions,
+      policy,
+    );
   return { ...composed, references };
 }

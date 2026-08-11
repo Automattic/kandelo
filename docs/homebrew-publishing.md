@@ -3604,6 +3604,25 @@ when its fallback fields are complete. Maintenance exposes only `rebuild` and
 Homebrew-derived VFS images are built from sidecars and verified bottle bytes,
 not from Formula Ruby.
 
+An image build may also consume one closed privileged-program projection
+policy. At this trusted build-operator boundary, the CLI parses the JSON policy
+into a non-serializable opaque capability and associates it privately with the
+in-memory plan. Public planner, builder, runtime, and browser option records
+cannot mint or transport that authority. The association binds every record to
+a Formula in the selected closure and its exact bottle digest. After the
+ordinary bottle tree is materialized,
+the builder resolves source hard links only through the complete authenticated
+archive inventory, hashes the resulting regular bytes, and copies them into
+fresh root-owned `04755` inodes in a separate product tree. The ordinary
+Homebrew prefix remains writable and `nosuid`; the product tree is published
+only as a read-only privately branded backend after the complete projection
+group passes alias, ownership, parent-directory, digest, and
+generation-qualified collision checks. `--privileged-projections` and
+`--privileged-product-out` emit that separate tree and its artifact identity.
+The emitted JSON and image are data, not reusable live mount authority. The
+flags do not grant process credentials or make the policy string mount
+authority.
+
 The guest Homebrew bootstrap image is a separate diagnostic and integration
 artifact. Build it from the pinned upstream Homebrew revision, Kandelo's
 reviewed platform patch, and ABI-current Kandelo package artifacts with:

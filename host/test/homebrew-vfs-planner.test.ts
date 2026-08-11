@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { ABI_VERSION } from "../src/generated/abi";
 import {
+  attachReviewedPrivilegedProgramPolicy,
   planFederatedHomebrewVfs,
   planHomebrewVfs,
+  reviewedPrivilegedProgramPolicyForPlan,
   type HomebrewLinkManifest,
   type HomebrewTapMetadata,
   type HomebrewVfsTapIdentity,
 } from "../src/homebrew-vfs-planner";
+import { createReviewedPrivilegedProgramPolicy } from
+  "../src/vfs/privileged-projection";
 
 const SHA_A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const SHA_B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -234,6 +238,49 @@ function federatedManifestMap(
 }
 
 describe("Homebrew VFS planner", () => {
+  it("binds the closed privileged projection group to selected bottle digests", async () => {
+    const privilegedProjections = [
+      ["login", "/usr/bin/login"],
+      ["sudo-lite", "/usr/bin/sudo-lite"],
+      ["sudo", "/usr/bin/sudo"],
+    ].map(([name, destinationPath]) => ({
+      schema: 1,
+      formula: "kandelo-dev/tap-core/hello",
+      bottleSha256: SHA_B,
+      sourcePath: `hello/2.12.1/bin/${name}`,
+      destinationPath,
+      uid: 0,
+      gid: 0,
+      mode: 0o4755,
+      mountPoint: "trusted-root-product",
+      artifactValidationSha256: SHA_D,
+    }));
+    const options = {
+      packages: ["hello"],
+      arch: "wasm32" as const,
+      runtime: "node" as const,
+      loadLinkManifest: () => linkManifest("hello", "2.12.1"),
+    };
+
+    const plan = await planHomebrewVfs(
+      metadata([packageEntry("hello", "2.12.1")]),
+      { ...options, privilegedProjections } as typeof options & {
+        privilegedProjections: unknown;
+      },
+    );
+    expect(reviewedPrivilegedProgramPolicyForPlan(plan)).toBeUndefined();
+    const policy = createReviewedPrivilegedProgramPolicy(privilegedProjections);
+    attachReviewedPrivilegedProgramPolicy(plan, policy);
+    expect(reviewedPrivilegedProgramPolicyForPlan(plan)).toBe(policy);
+
+    const drifted = structuredClone(privilegedProjections);
+    drifted[2]!.bottleSha256 = SHA_A;
+    expect(() => attachReviewedPrivilegedProgramPolicy(
+      plan,
+      createReviewedPrivilegedProgramPolicy(drifted),
+    )).toThrow(/privileged projection bottle digest/i);
+  });
+
   it("resolves requested packages with dependencies in pour order", async () => {
     const tapMetadata = metadata([
       packageEntry("hello", "2.12.1", [{ name: "zlib", version: "1.3.1" }]),
