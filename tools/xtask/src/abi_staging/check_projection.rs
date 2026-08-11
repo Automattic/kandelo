@@ -279,10 +279,30 @@ pub fn parse_required_check_activation(
     Ok(activation.mode)
 }
 
+pub fn required_check_activation_mode(path: &Path) -> Result<&'static str, String> {
+    let mode = parse_required_check_activation(
+        path,
+        &read_bounded_regular_file(path, MAX_ACTIVATION_BYTES)?,
+    )?;
+    Ok(match mode {
+        RequiredCheckActivationV1::Observe => "observe",
+        RequiredCheckActivationV1::Enforce => "enforce",
+    })
+}
+
 pub fn run_cli(action: &str, args: &[String]) -> Result<(), String> {
+    if action == "activation-mode" {
+        if args.len() != 2 || args[0] != "--activation" {
+            return Err(
+                "check-projection activation-mode requires --activation <path>".to_string(),
+            );
+        }
+        println!("{}", required_check_activation_mode(Path::new(&args[1]))?);
+        return Ok(());
+    }
     if action != "project" {
         return Err(format!(
-            "unknown check-projection action {action:?}; expected project"
+            "unknown check-projection action {action:?}; expected project or activation-mode"
         ));
     }
     if args.len() != 6 || args[0] != "--input" || args[2] != "--activation" || args[4] != "--out" {
@@ -1565,7 +1585,20 @@ mod tests {
                     "bottle_contract_sha256": digest('5'),
                 },
                 "bottle_layer": candidate_layer,
-                "normalized_components": [],
+                "normalized_components": [
+                    {
+                        "id": "bottle-contract",
+                        "artifact": artifact('5'),
+                    },
+                    {
+                        "id": "bottle-metadata",
+                        "artifact": artifact('8'),
+                    },
+                    {
+                        "id": "source-custody",
+                        "artifact": artifact('6'),
+                    },
+                ],
                 "direct_dependency_layers": [],
                 "source_custody_sha256": digest('6'),
                 "producer": {
@@ -2018,6 +2051,86 @@ mod tests {
             b"schema = 1\nkind = \"kandelo-abi-staging-required-check-activation\"\nmode = \"active\"\n",
         )
         .is_err());
+    }
+
+    #[test]
+    fn activation_mode_cli_is_closed_and_reports_the_exact_mode() {
+        let root = tempfile::tempdir().unwrap();
+        let activation_path = root.path().join("activation.toml");
+        for (mode, expected) in [("observe", "observe"), ("enforce", "enforce")] {
+            std::fs::write(
+                &activation_path,
+                format!(
+                    "schema = 1\nkind = \"kandelo-abi-staging-required-check-activation\"\nmode = \"{mode}\"\n"
+                ),
+            )
+            .unwrap();
+            assert_eq!(
+                required_check_activation_mode(&activation_path).unwrap(),
+                expected,
+            );
+            run_cli(
+                "activation-mode",
+                &[
+                    "--activation".to_string(),
+                    activation_path.display().to_string(),
+                ],
+            )
+            .unwrap();
+        }
+
+        std::fs::write(
+            &activation_path,
+            b"schema = 1\nkind = \"kandelo-abi-staging-required-check-activation\"\nmode = \"active\"\n",
+        )
+        .unwrap();
+        assert!(required_check_activation_mode(&activation_path).is_err());
+        std::fs::write(
+            &activation_path,
+            b"schema = 1\nkind = \"kandelo-abi-staging-required-check-activation\"\nmode = \"observe\"\nextra = true\n",
+        )
+        .unwrap();
+        assert!(required_check_activation_mode(&activation_path).is_err());
+        assert!(
+            run_cli(
+                "activation-mode",
+                &[
+                    "--source".to_string(),
+                    activation_path.display().to_string(),
+                ],
+            )
+            .is_err()
+        );
+        assert!(run_cli("unknown", &[]).is_err());
+        assert!(
+            run_cli(
+                "activation-mode",
+                &[
+                    "--activation".to_string(),
+                    activation_path.display().to_string(),
+                    "extra".to_string(),
+                ],
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn activation_mode_rejects_symlink_and_nonregular_inputs() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let activation_path = root.path().join("activation.toml");
+        std::fs::write(
+            &activation_path,
+            b"schema = 1\nkind = \"kandelo-abi-staging-required-check-activation\"\nmode = \"observe\"\n",
+        )
+        .unwrap();
+        let link_path = root.path().join("activation-link.toml");
+        symlink(&activation_path, &link_path).unwrap();
+        assert!(required_check_activation_mode(&link_path).is_err());
+        assert!(required_check_activation_mode(root.path()).is_err());
     }
 
     #[test]

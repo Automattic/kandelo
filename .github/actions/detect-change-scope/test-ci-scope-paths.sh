@@ -161,6 +161,16 @@ assert_not_matches package_archive_changed_files \
 assert_not_matches package_archive_changed_files \
   ".github/workflows/prepare-merge.yml" \
   ".github/workflows/prepare-merge.yml"
+for exact_abi_classifier in \
+  .github/scripts/classify-exact-abi-staging.sh \
+  .github/scripts/test-classify-exact-abi-staging.sh; do
+  assert_matches ci_control_changed_files \
+    "$exact_abi_classifier" \
+    "$exact_abi_classifier"
+  assert_not_matches package_archive_changed_files \
+    "$exact_abi_classifier" \
+    "$exact_abi_classifier"
+done
 
 assert_matches binary_materialization_changed_files \
   "tools/xtask/src/remote_fetch.rs" \

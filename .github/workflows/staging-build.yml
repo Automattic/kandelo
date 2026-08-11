@@ -78,10 +78,11 @@ jobs:
       binary_materialization_changed: ${{ steps.scope.outputs.binary_materialization_changed }}
       kernel_runtime_changed: ${{ steps.scope.outputs.kernel_runtime_changed }}
       test_gate_required: ${{ steps.route.outputs.test_gate_required }}
+      exact_abi_staging_applicable: ${{ steps.exact-abi.outputs.exact_abi_staging_applicable }}
       homebrew_publisher_only_changed: ${{ steps.scope.outputs.homebrew_publisher_only_changed }}
       docs_only: ${{ steps.scope.outputs.docs_only }}
-      package_staging_required: ${{ steps.scope.outputs.package_staging_required }}
-      package_staging_reason: ${{ steps.scope.outputs.package_staging_reason }}
+      package_staging_required: ${{ steps.route.outputs.package_staging_required }}
+      package_staging_reason: ${{ steps.route.outputs.package_staging_reason }}
       skip_staging_tests: ${{ steps.skip.outputs.skip_staging_tests }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -105,18 +106,42 @@ jobs:
         with:
           base-ref: origin/${{ github.event.pull_request.base.ref }}
 
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: abi-staging-authority
+          fetch-depth: 1
+
+      - name: Derive protected exact ABI staging route
+        id: exact-abi
+        run: |
+          bash abi-staging-authority/.github/scripts/classify-exact-abi-staging.sh \
+            --authority-root "$GITHUB_WORKSPACE/abi-staging-authority" \
+            --exact-head-root "$GITHUB_WORKSPACE" \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head "${{ github.event.pull_request.head.sha }}" \
+            --raw-package-staging-required \
+              "${{ steps.scope.outputs.package_staging_required }}" \
+            --github-output "$GITHUB_OUTPUT"
+
       - name: Route publisher-only validation
         id: route
         env:
           PACKAGE_STAGING_REQUIRED: ${{ steps.scope.outputs.package_staging_required }}
           RAW_TEST_GATE_REQUIRED: ${{ steps.scope.outputs.test_gate_required }}
           HOMEBREW_PUBLISHER_ONLY: ${{ steps.scope.outputs.homebrew_publisher_only_changed }}
+          RAW_PACKAGE_STAGING_REASON: ${{ steps.scope.outputs.package_staging_reason }}
+          EXACT_ABI_STAGING_APPLICABLE: ${{ steps.exact-abi.outputs.exact_abi_staging_applicable }}
+          LEGACY_PACKAGE_STAGING_REQUIRED: ${{ steps.exact-abi.outputs.legacy_package_staging_required }}
+          EXACT_ABI_STAGING_REASON: ${{ steps.exact-abi.outputs.exact_abi_staging_reason }}
         run: |
           set -euo pipefail
           for state in \
             "$PACKAGE_STAGING_REQUIRED" \
             "$RAW_TEST_GATE_REQUIRED" \
-            "$HOMEBREW_PUBLISHER_ONLY"
+            "$HOMEBREW_PUBLISHER_ONLY" \
+            "$EXACT_ABI_STAGING_APPLICABLE" \
+            "$LEGACY_PACKAGE_STAGING_REQUIRED"
           do
             case "$state" in
               true | false) ;;
@@ -126,15 +151,30 @@ jobs:
                 ;;
             esac
           done
-          if [ "$HOMEBREW_PUBLISHER_ONLY" = true ]; then
+          if [ "$EXACT_ABI_STAGING_APPLICABLE" = true ]; then
+            [ "$LEGACY_PACKAGE_STAGING_REQUIRED" = false ]
+            {
+              echo "package_staging_required=false"
+              echo "test_gate_required=true"
+              echo "package_staging_reason=$EXACT_ABI_STAGING_REASON"
+            } >> "$GITHUB_OUTPUT"
+          elif [ "$HOMEBREW_PUBLISHER_ONLY" = true ]; then
             # WHY: preflight already runs the complete bottle-publisher
             # contract. Building a kernel/rootfs workspace and running Vitest
             # cannot add evidence for a diff that the shared fail-closed
             # classifier proves is wholly outside shell consumption/runtime.
             [ "$PACKAGE_STAGING_REQUIRED" = false ]
-            echo "test_gate_required=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "package_staging_required=$LEGACY_PACKAGE_STAGING_REQUIRED"
+              echo "test_gate_required=false"
+              echo "package_staging_reason=$RAW_PACKAGE_STAGING_REASON"
+            } >> "$GITHUB_OUTPUT"
           else
-            echo "test_gate_required=$RAW_TEST_GATE_REQUIRED" >> "$GITHUB_OUTPUT"
+            {
+              echo "package_staging_required=$LEGACY_PACKAGE_STAGING_REQUIRED"
+              echo "test_gate_required=$RAW_TEST_GATE_REQUIRED"
+              echo "package_staging_reason=$RAW_PACKAGE_STAGING_REASON"
+            } >> "$GITHUB_OUTPUT"
           fi
 
   preflight:
@@ -144,6 +184,7 @@ jobs:
     needs: [change-scope]
     if: |
       github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.change-scope.outputs.exact_abi_staging_applicable != 'true' &&
       (
         needs.change-scope.outputs.package_staging_required == 'true' ||
         needs.change-scope.outputs.test_gate_required == 'true' ||
@@ -512,6 +553,7 @@ jobs:
     needs: [change-scope]
     if: |
       github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.change-scope.outputs.exact_abi_staging_applicable != 'true' &&
       needs.change-scope.outputs.package_staging_required == 'false' &&
       needs.change-scope.outputs.test_gate_required == 'false' &&
       needs.change-scope.outputs.homebrew_publisher_only_changed != 'true' &&
@@ -543,10 +585,13 @@ jobs:
        needs.change-scope.outputs.test_gate_required == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
 
       - name: Prepare package toolchain
         uses: ./.github/actions/package-toolchain
@@ -566,8 +611,8 @@ jobs:
   # library builds across the matrix: each library compiles exactly
   # once per arch, instead of once per dependent program.
   lib-matrix-build:
-    needs: [preflight, toolchain-cache]
-    if: ${{ needs.preflight.result == 'success' && needs.toolchain-cache.result == 'success' && needs.preflight.outputs.library_matrix != '[]' }}
+    needs: [change-scope, preflight, toolchain-cache]
+    if: ${{ needs.change-scope.outputs.exact_abi_staging_applicable != 'true' && needs.preflight.result == 'success' && needs.toolchain-cache.result == 'success' && needs.preflight.outputs.library_matrix != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -643,12 +688,12 @@ jobs:
   # materializes package.pr.toml overlays so the resolver finds each
   # library via file:// instead of source-building a fresh copy.
   matrix-build:
-    needs: [preflight, toolchain-cache, lib-matrix-build]
+    needs: [change-scope, preflight, toolchain-cache, lib-matrix-build]
     # !cancelled() so a partial library-wave failure (one lib failed,
     # others succeeded) doesn't cancel programs that depend only on
     # the green libs. Programs whose libs failed will fail loudly at
     # resolve time, which is the correct behavior.
-    if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.toolchain-cache.result == 'success' && needs.preflight.outputs.program_matrix != '[]' }}
+    if: ${{ !cancelled() && needs.change-scope.outputs.exact_abi_staging_applicable != 'true' && needs.preflight.result == 'success' && needs.toolchain-cache.result == 'success' && needs.preflight.outputs.program_matrix != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -722,8 +767,8 @@ jobs:
             || true
 
   repair-staging-index:
-    needs: [preflight]
-    if: ${{ needs.preflight.result == 'success' && needs.preflight.outputs.repair_index == 'true' }}
+    needs: [change-scope, preflight]
+    if: ${{ needs.change-scope.outputs.exact_abi_staging_applicable != 'true' && needs.preflight.result == 'success' && needs.preflight.outputs.repair_index == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -765,6 +810,7 @@ jobs:
     env:
       PACKAGE_PUBLISH_FLOW_CHANGED: ${{ needs.change-scope.outputs.package_publish_flow_changed }}
       BINARY_MATERIALIZATION_CHANGED: ${{ needs.change-scope.outputs.binary_materialization_changed }}
+      EXACT_ABI_STAGING_APPLICABLE: ${{ needs.change-scope.outputs.exact_abi_staging_applicable }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -803,7 +849,7 @@ jobs:
           bash scripts/dev-shell.sh bash tests/scripts/package-publish-flow.sh
 
       - name: Test binary materialization flow
-        if: env.BINARY_MATERIALIZATION_CHANGED == 'true'
+        if: env.BINARY_MATERIALIZATION_CHANGED == 'true' && env.EXACT_ABI_STAGING_APPLICABLE != 'true'
         run: |
           bash scripts/dev-shell.sh npx --prefix host vitest run --root . tests/package-system
 
@@ -832,6 +878,7 @@ jobs:
             label: fork-instrument
     env:
       KERNEL_CHANGED: ${{ needs.change-scope.outputs.kernel }}
+      EXACT_ABI_STAGING_APPLICABLE: ${{ needs.change-scope.outputs.exact_abi_staging_applicable }}
       SKIP_STAGING_TESTS: ${{ needs.change-scope.outputs.skip_staging_tests }}
       SUITE: ${{ matrix.suite }}
     steps:
@@ -839,12 +886,14 @@ jobs:
         id: suite
         run: |
           set -euo pipefail
-          if [ "$SKIP_STAGING_TESTS" = "true" ]; then
+          if [ "$SKIP_STAGING_TESTS" = "true" ] && \
+             [ "$EXACT_ABI_STAGING_APPLICABLE" != "true" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "skip-staging-tests label is present; $SUITE is deferred to prepare-merge."
             exit 0
           fi
-          if [ "$KERNEL_CHANGED" != "true" ]; then
+          if [ "$KERNEL_CHANGED" != "true" ] && \
+             [ "$EXACT_ABI_STAGING_APPLICABLE" != "true" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "$SUITE is kernel-only and this diff does not require kernel suites."
             exit 0
@@ -865,6 +914,214 @@ jobs:
         run: |
           bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE"
 
+  exact-abi-source-test-prepare:
+    needs: [change-scope, toolchain-cache]
+    if: |
+      !cancelled() &&
+      needs.change-scope.outputs.exact_abi_staging_applicable == 'true' &&
+      needs.toolchain-cache.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
+
+      - name: Download exact toolchain sysroots
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: toolchain-sysroots
+          path: ${{ runner.temp }}/toolchain
+
+      - name: Extract exact toolchain sysroots
+        run: |
+          tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
+
+      - name: Build exact kernel and source-test fixtures
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            cargo build --release -p kandelo -Z build-std=core,alloc
+            source scripts/install-local-binary.sh
+            WASM_POSIX_LOCAL_INSTALL_SESSION=exact-abi-source-test \
+              install_local_binary kernel \
+                target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
+                kandelo-kernel.wasm
+            cmp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
+              local-binaries/kernel.wasm
+            mkdir -p local-binaries/programs/wasm32 host/test/fixtures
+            wasm32posix-cc programs/audiotest.c \
+              -o local-binaries/programs/wasm32/audiotest.wasm
+            wasm32posix-cc programs/mousetest.c \
+              -o local-binaries/programs/wasm32/mousetest.wasm
+            wat2wasm --enable-threads \
+              host/test/fixtures/deep-wasm-recursion.wat \
+              -o host/test/fixtures/deep-wasm-recursion.wasm
+          '
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: abi-staging-authority
+          fetch-depth: 1
+
+      - name: Pack exact ABI source-test workspace
+        run: |
+          bash abi-staging-authority/scripts/pack-exact-abi-source-test-workspace.sh \
+            pack \
+            --source-root "$GITHUB_WORKSPACE" \
+            --archive "$RUNNER_TEMP/exact-abi-source-test-workspace.tar.zst"
+
+      - name: Upload exact ABI source-test workspace
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: exact-abi-source-test-workspace
+          path: ${{ runner.temp }}/exact-abi-source-test-workspace.tar.zst
+          retention-days: 1
+          if-no-files-found: error
+
+  exact-abi-source-test-suite:
+    name: exact ABI source test (${{ matrix.suite }} ${{ matrix.group }})
+    needs: [change-scope, toolchain-cache, exact-abi-source-test-prepare]
+    if: |
+      !cancelled() &&
+      needs.change-scope.outputs.exact_abi_staging_applicable == 'true' &&
+      needs.toolchain-cache.result == 'success' &&
+      needs.exact-abi-source-test-prepare.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: vitest
+            group: exact-abi-source
+            route: vitest exact-abi-source
+            submodules: ''
+          - suite: libc
+            group: functional-regression
+            route: libc functional-regression
+            submodules: tests/libc/libc-test
+          - suite: libc
+            group: math
+            route: libc math
+            submodules: tests/libc/libc-test
+          - suite: posix
+            group: all
+            route: posix all
+            submodules: ''
+          - suite: sortix
+            group: include
+            route: sortix include
+            submodules: tests/sortix/os-test
+          - suite: sortix
+            group: basic
+            route: sortix basic
+            submodules: tests/sortix/os-test
+          - suite: sortix
+            group: runtime
+            route: sortix runtime
+            submodules: tests/sortix/os-test
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Fetch exact suite submodule
+        if: matrix.submodules != ''
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: ${{ matrix.submodules }}
+
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
+
+      - name: Download exact toolchain sysroots
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: toolchain-sysroots
+          path: ${{ runner.temp }}/toolchain
+
+      - name: Extract exact toolchain sysroots
+        run: |
+          tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
+
+      - name: Download exact ABI source-test workspace
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: exact-abi-source-test-workspace
+          path: ${{ runner.temp }}/exact-abi-source-test-workspace
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: abi-staging-authority
+          fetch-depth: 1
+
+      - name: Extract and validate exact ABI source-test workspace
+        run: |
+          bash abi-staging-authority/scripts/pack-exact-abi-source-test-workspace.sh \
+            extract \
+            --source-root "$GITHUB_WORKSPACE" \
+            --archive \
+              "$RUNNER_TEMP/exact-abi-source-test-workspace/exact-abi-source-test-workspace.tar.zst"
+
+      - name: Run exact source/conformance cell
+        env:
+          SUITE: ${{ matrix.suite }}
+          TEST_GROUP: ${{ matrix.group }}
+        run: |
+          bash scripts/dev-shell.sh bash \
+            scripts/ci-run-test-suite.sh "$SUITE" "$TEST_GROUP"
+
+  exact-abi-test-gate:
+    needs:
+      - change-scope
+      - test-gate-validation
+      - test-suite-early
+      - exact-abi-source-test-prepare
+      - exact-abi-source-test-suite
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.change-scope.outputs.exact_abi_staging_applicable == 'true'
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 10
+    steps:
+      - name: Require complete exact ABI source evidence
+        env:
+          CHANGE_SCOPE_RESULT: ${{ needs.change-scope.result }}
+          VALIDATION_RESULT: ${{ needs.test-gate-validation.result }}
+          EARLY_RESULT: ${{ needs.test-suite-early.result }}
+          PREPARE_RESULT: ${{ needs.exact-abi-source-test-prepare.result }}
+          SUITE_RESULT: ${{ needs.exact-abi-source-test-suite.result }}
+          EXACT_ABI_STAGING_APPLICABLE: ${{ needs.change-scope.outputs.exact_abi_staging_applicable }}
+        run: |
+          set -euo pipefail
+          [ "$EXACT_ABI_STAGING_APPLICABLE" = true ]
+          for result in \
+            "$CHANGE_SCOPE_RESULT" \
+            "$VALIDATION_RESULT" \
+            "$EARLY_RESULT" \
+            "$PREPARE_RESULT" \
+            "$SUITE_RESULT"
+          do
+            [ "$result" = success ] || {
+              echo "::error::exact ABI source evidence ended as $result"
+              exit 1
+            }
+          done
+
   test-gate-prepare:
     # Materializes the union of (matrix-built archives + durable release
     # fallback), builds the fresh kernel/test fixtures once, and uploads
@@ -884,6 +1141,7 @@ jobs:
     needs: [change-scope, preflight, toolchain-cache, lib-matrix-build, matrix-build, repair-staging-index]
     if: |
       !cancelled() &&
+      needs.change-scope.outputs.exact_abi_staging_applicable != 'true' &&
       needs.toolchain-cache.result == 'success' &&
       needs.preflight.result == 'success' &&
       (needs.repair-staging-index.result == 'success' || needs.repair-staging-index.result == 'skipped') &&
@@ -1105,6 +1363,7 @@ jobs:
     needs: [change-scope, test-gate-prepare]
     if: |
       !cancelled() &&
+      needs.change-scope.outputs.exact_abi_staging_applicable != 'true' &&
       needs.test-gate-prepare.result == 'success'
     runs-on: ubuntu-latest
     # Browser validation may locally materialize publication-pending packages
@@ -1279,6 +1538,7 @@ jobs:
     if: |
       always() &&
       !cancelled() &&
+      needs.change-scope.outputs.exact_abi_staging_applicable != 'true' &&
       needs.test-gate-prepare.result != 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1363,7 +1623,7 @@ jobs:
 
   homebrew-main-shell-prerequisites:
     name: order exact Homebrew shell after package staging
-    needs: [change-scope, preflight, test-gate]
+    needs: [change-scope, preflight, test-gate, exact-abi-test-gate]
     if: |
       always() &&
       !cancelled() &&
@@ -1375,6 +1635,7 @@ jobs:
       )
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions: {}
     steps:
       - name: Require the expected producer result
         env:
@@ -1384,6 +1645,8 @@ jobs:
           TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
           TEST_GATE_REQUIRED: ${{ needs.change-scope.outputs.test_gate_required }}
           TEST_GATE_RESULT: ${{ needs.test-gate.result }}
+          EXACT_ABI_STAGING_APPLICABLE: ${{ needs.change-scope.outputs.exact_abi_staging_applicable }}
+          EXACT_ABI_GATE_RESULT: ${{ needs.exact-abi-test-gate.result }}
         run: |
           set -euo pipefail
           [ "$CHANGE_SCOPE_RESULT" = success ] || {
@@ -1399,6 +1662,24 @@ jobs:
                 ;;
             esac
           done
+
+          if [ "$EXACT_ABI_STAGING_APPLICABLE" = true ]; then
+            [ "$PACKAGE_STAGING_REQUIRED" = false ]
+            [ "$TEST_GATE_REQUIRED" = true ]
+            [ "$EXACT_ABI_GATE_RESULT" = success ] || {
+              echo "::error::exact ABI test gate ended as $EXACT_ABI_GATE_RESULT"
+              exit 1
+            }
+            [ "$PREFLIGHT_RESULT" = skipped ] && [ "$TEST_GATE_RESULT" = skipped ] || {
+              echo "::error::legacy staging ran on the exact ABI route"
+              exit 1
+            }
+            exit 0
+          fi
+          [ "$EXACT_ABI_GATE_RESULT" = skipped ] || {
+            echo "::error::unexpected exact ABI gate result: $EXACT_ABI_GATE_RESULT"
+            exit 1
+          }
 
           if [ "$PACKAGE_STAGING_REQUIRED" = true ]; then
             [ "$PREFLIGHT_RESULT" = success ] || {
@@ -1443,7 +1724,8 @@ jobs:
     if: |
       always() &&
       !cancelled() &&
-      needs.homebrew-main-shell-prerequisites.result == 'success'
+      needs.homebrew-main-shell-prerequisites.result == 'success' &&
+      needs.change-scope.outputs.exact_abi_staging_applicable != 'true'
     uses: ./.github/workflows/homebrew-main-shell-ci.yml
     with:
       caller_event_name: pull_request
@@ -1460,6 +1742,8 @@ jobs:
     # skip a visible failure.
     name: exact current lazy shell (Node + Chromium)
     needs:
+      - change-scope
+      - exact-abi-test-gate
       - homebrew-main-shell-prerequisites
       - homebrew-main-shell-proof
     if: |
@@ -1473,21 +1757,35 @@ jobs:
       )
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions: {}
     steps:
       - name: Require ordered exact-shell validation
         env:
           PREREQUISITES_RESULT: ${{ needs.homebrew-main-shell-prerequisites.result }}
           PROOF_RESULT: ${{ needs.homebrew-main-shell-proof.result }}
+          EXACT_ABI_STAGING_APPLICABLE: ${{ needs.change-scope.outputs.exact_abi_staging_applicable }}
+          EXACT_ABI_GATE_RESULT: ${{ needs.exact-abi-test-gate.result }}
         run: |
           set -euo pipefail
           [ "$PREREQUISITES_RESULT" = success ] || {
             echo "::error::exact-shell prerequisites ended as $PREREQUISITES_RESULT"
             exit 1
           }
-          [ "$PROOF_RESULT" = success ] || {
-            echo "::error::exact-shell proof ended as $PROOF_RESULT"
-            exit 1
-          }
+          if [ "$EXACT_ABI_STAGING_APPLICABLE" = true ]; then
+            [ "$EXACT_ABI_GATE_RESULT" = success ] || {
+              echo "::error::exact ABI test gate ended as $EXACT_ABI_GATE_RESULT"
+              exit 1
+            }
+            [ "$PROOF_RESULT" = skipped ] || {
+              echo "::error::legacy exact-shell proof ran on the exact ABI route"
+              exit 1
+            }
+          else
+            [ "$PROOF_RESULT" = success ] || {
+              echo "::error::exact-shell proof ended as $PROOF_RESULT"
+              exit 1
+            }
+          fi
 
   # publish / generate-index — REMOVED.
   #
@@ -1523,8 +1821,8 @@ jobs:
     # eliminates the common-case quick-push race). cancel-in-progress is
     # false here because aborting an in-flight comment edit is worse than
     # waiting one more comment-edit's worth of time.
-    needs: [preflight, lib-matrix-build, matrix-build]
-    if: always() && needs.preflight.result == 'success' && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]')
+    needs: [change-scope, preflight, lib-matrix-build, matrix-build]
+    if: always() && needs.change-scope.outputs.exact_abi_staging_applicable != 'true' && needs.preflight.result == 'success' && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:

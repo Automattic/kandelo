@@ -247,7 +247,13 @@ check_ordered_staging_shell_contract() {
     grep -Fq -- \
       '--target-commit '\''${{ github.event.pull_request.head.sha }}'\''' \
       <<<"$test_gate" &&
-    grep -Fq 'needs: [change-scope, preflight, test-gate]' \
+    grep -Fq \
+      'needs: [change-scope, preflight, test-gate, exact-abi-test-gate]' \
+      <<<"$prerequisites" &&
+    grep -Fq \
+      'if [ "$EXACT_ABI_STAGING_APPLICABLE" = true ]; then' \
+      <<<"$prerequisites" &&
+    grep -Fq '[ "$EXACT_ABI_GATE_RESULT" = success ]' \
       <<<"$prerequisites" &&
     grep -Fq '[ "$TEST_GATE_RESULT" = success ]' \
       <<<"$prerequisites" &&
@@ -259,6 +265,9 @@ check_ordered_staging_shell_contract() {
     grep -Fq 'uses: ./.github/workflows/homebrew-main-shell-ci.yml' \
       <<<"$proof" &&
     grep -Fq 'always() &&' <<<"$proof" &&
+    grep -Fq \
+      "needs.change-scope.outputs.exact_abi_staging_applicable != 'true'" \
+      <<<"$proof" &&
     grep -Fq 'caller_event_name: pull_request' <<<"$proof" &&
     grep -Fq \
       'pull_request_head_sha: ${{ github.event.pull_request.head.sha }}' \
@@ -270,9 +279,12 @@ check_ordered_staging_shell_contract() {
     grep -Fq 'needs.preflight.outputs.staged_matrix' <<<"$proof" &&
     grep -Fq 'name: exact current lazy shell (Node + Chromium)' \
       <<<"$gate" &&
+    grep -Fq -- '- exact-abi-test-gate' <<<"$gate" &&
     grep -Fq 'if: |' <<<"$gate" &&
     grep -Fq 'always() &&' <<<"$gate" &&
     grep -Fq '[ "$PREREQUISITES_RESULT" = success ]' <<<"$gate" &&
+    grep -Fq '[ "$EXACT_ABI_GATE_RESULT" = success ]' <<<"$gate" &&
+    grep -Fq '[ "$PROOF_RESULT" = skipped ]' <<<"$gate" &&
     grep -Fq '[ "$PROOF_RESULT" = success ]' <<<"$gate"
 }
 
@@ -436,6 +448,14 @@ sed '/\[ "$PROOF_RESULT" = success \]/d' "$STAGING_WORKFLOW" \
   >"$TMP_ROOT/staging-shell-aggregate-drops-proof.yml"
 expect_ordered_staging_shell_contract_rejected \
   "$TMP_ROOT/staging-shell-aggregate-drops-proof.yml"
+sed 's/, exact-abi-test-gate]$/]/' "$STAGING_WORKFLOW" \
+  >"$TMP_ROOT/staging-shell-drops-exact-gate.yml"
+expect_ordered_staging_shell_contract_rejected \
+  "$TMP_ROOT/staging-shell-drops-exact-gate.yml"
+sed '0,/\[ "$EXACT_ABI_GATE_RESULT" = success \]/s//[ "$EXACT_ABI_GATE_RESULT" = skipped ]/' \
+  "$STAGING_WORKFLOW" >"$TMP_ROOT/staging-shell-accepts-missing-exact-evidence.yml"
+expect_ordered_staging_shell_contract_rejected \
+  "$TMP_ROOT/staging-shell-accepts-missing-exact-evidence.yml"
 
 check_required_staging_verifier_contract "$WORKFLOW" ||
   fail "main-shell CI must verify its exact immutable staging authority"
