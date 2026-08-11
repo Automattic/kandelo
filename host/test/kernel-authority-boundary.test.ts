@@ -96,6 +96,7 @@ const hiddenPackageSymbols = [
   "reviewedPrivilegedProgramPolicyForPlan",
   "composeHomebrewRuntimeLayersWithReviewedProduct",
   "publishPrivilegedProgramProduct",
+  "snapshotPublishedPrivilegedProgramBrowserMount",
   "admitPrivilegedProgramProductCandidate",
   "admitPrivilegedProgramProductCandidateForTest",
   "validatePrivilegedProgramProductCandidate",

@@ -184,6 +184,9 @@ int32_t kernel_seekdir(int32_t dir_handle, uint32_t loc_lo, uint32_t loc_hi);
 /* Process info                                                        */
 /* ------------------------------------------------------------------ */
 
+KERNEL_IMPORT(kernel_get_secure_exec)
+int32_t kernel_get_secure_exec(void);
+
 KERNEL_IMPORT(kernel_getpid)
 int32_t kernel_getpid(void);
 

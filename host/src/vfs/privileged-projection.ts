@@ -40,6 +40,10 @@ const MAX_PRODUCT_BYTES = 128 * 1024 * 1024;
 const intrinsicHasOwnProperty = Object.prototype.hasOwnProperty;
 const reviewedPolicies = new WeakMap<object, PrivilegedProgramProjection[]>();
 const privatelyStagedCandidates = new WeakSet<MemoryFileSystem>();
+const publishedProductBrowserMounts = new WeakMap<
+  object,
+  PublishedPrivilegedProgramBrowserMount
+>();
 
 export interface PrivilegedProgramProjection {
   schema: 1;
@@ -90,6 +94,11 @@ export interface PublishedPrivilegedProgramProduct {
   evidence: PrivilegedProgramPublicationEvidence[];
   mount: MountConfig;
   /** Serialized independent tree for build-time artifact publication. */
+  imageBytes: Uint8Array;
+}
+
+export interface PublishedPrivilegedProgramBrowserMount {
+  mountPoint: "/usr/bin";
   imageBytes: Uint8Array;
 }
 
@@ -226,6 +235,27 @@ export function readReviewedPrivilegedProgramPolicy(
 }
 
 /**
+ * Snapshot the serialized tree of a product admitted by this publisher.
+ *
+ * BrowserKernel uses this private-module boundary before it sends trusted-root
+ * authority to its owning worker. A structurally similar object, or mutation
+ * of the public build artifact bytes after publication, cannot mint a trusted
+ * browser mount.
+ */
+export function snapshotPublishedPrivilegedProgramBrowserMount(
+  product: PublishedPrivilegedProgramProduct,
+): PublishedPrivilegedProgramBrowserMount {
+  const mount = publishedProductBrowserMounts.get(product);
+  if (mount === undefined) {
+    throw new Error("privileged program product lacks publication authority");
+  }
+  return {
+    mountPoint: mount.mountPoint,
+    imageBytes: mount.imageBytes.slice(),
+  };
+}
+
+/**
  * Copy all reviewed members into one unpublished tree, then admit the group.
  * A failed member leaves no returned backend and never mutates a bottle tree.
  */
@@ -314,6 +344,10 @@ async function publishAuthenticatedCandidate(
     backend,
     options.authenticated,
   );
+  const browserMountImageBytes = await serializeImmutableBrowserMount(
+    backend,
+    options.authenticated,
+  );
   // WHY: the projection record's mountPoint is a policy identity, not mount
   // authority. Only Task 6's private backend brand plus this resolved mount
   // capability can authorize the trusted product tree.
@@ -328,12 +362,17 @@ async function publishAuthenticatedCandidate(
     },
   };
   resolveMountSetIdCapability(mount);
-  return {
+  const product: PublishedPrivilegedProgramProduct = {
     projections: options.projections.map((projection) => ({ ...projection })),
     evidence,
     mount,
-    imageBytes,
+    imageBytes: imageBytes.slice(),
   };
+  publishedProductBrowserMounts.set(product, {
+    mountPoint: "/usr/bin",
+    imageBytes: browserMountImageBytes,
+  });
+  return product;
 }
 
 function validateAuthenticatedCandidate(
@@ -470,6 +509,34 @@ async function serializeImmutableProduct(
     );
     artifactFs.chown(projection.destinationPath, 0, 0);
     artifactFs.chmod(projection.destinationPath, 0o4755);
+  }
+  return artifactFs.saveImage({ normalizeTimestampsMs: 0 });
+}
+
+async function serializeImmutableBrowserMount(
+  backend: FileSystemBackend,
+  authenticatedSources: readonly AuthenticatedProgramSource[],
+): Promise<Uint8Array> {
+  const productBytes = authenticatedSources.reduce(
+    (sum, source) => sum + source.bytes.byteLength,
+    0,
+  );
+  const artifactFs = MemoryFileSystem.create(new SharedArrayBuffer(Math.max(
+    MIN_PRODUCT_CAPACITY,
+    productBytes + 2 * 1024 * 1024,
+  )));
+  artifactFs.chown("/", 0, 0);
+  artifactFs.chmod("/", 0o755);
+  for (const { projection } of authenticatedSources) {
+    const destination = projection.destinationPath.slice("/usr/bin".length);
+    writeVfsBinary(
+      artifactFs,
+      destination,
+      readRegularFile(backend, projection.destinationPath),
+      0o755,
+    );
+    artifactFs.chown(destination, 0, 0);
+    artifactFs.chmod(destination, 0o4755);
   }
   return artifactFs.saveImage({ normalizeTimestampsMs: 0 });
 }

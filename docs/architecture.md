@@ -1708,6 +1708,17 @@ capability. Ordinary image,
 scratch, host, OPFS, device, and user-provided backends cannot acquire that
 capability from public fields, prototypes, or configuration.
 
+The browser peer consumes a published product through
+`BrowserKernel.initFromPublishedPrivilegedProgramProduct`. The publisher keeps
+a private serialized `/usr/bin` projection behind the exact publication
+object; neither mutation of the public build artifact nor a structurally
+similar object can retrieve it. The browser main thread copies that private
+projection into its worker-only init message, where the VFS-owning worker
+verifies the image, snapshots it behind a new immutable-product backend, and
+mounts it read-only at `/usr/bin` over the ordinary `nosuid` root image. Public
+boot descriptors, shared URLs, and `initFromImage` have no field that can
+request this mount or supply its authority.
+
 The browser host layers two additional, host-specific mounts on top: `/dev/shm` (the POSIX-semaphore SAB shared with main-thread surfaces) and `/dev` (`DeviceFileSystem` for `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`, `/dev/pts/N`). Sticky bits, the uid 1000 owner on `/home/user`, mode `0700` on `/root`, etc. are baked into the rootfs image at build time per the canonical `MANIFEST` and reflected honestly through the `MemoryFileSystem` inode metadata. Scratch mounts on Node start owned by uid/gid 0 because `HostFileSystem` synthesises them.
 
 ### rootfs image as the source of truth

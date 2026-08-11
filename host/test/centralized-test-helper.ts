@@ -477,6 +477,119 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true, enableSyscallLog: !!process.env.KERNEL_SYSCALL_LOG },
     io,
     {
+      onResolveSpawn: async (path, argv) => {
+        const mappedProgram = options.execPrograms?.get(path);
+        if (!mappedProgram) return null;
+        const spawnProgramBytes = loadProgramWasm(mappedProgram);
+        try {
+          return {
+            programBytes: spawnProgramBytes,
+            programModule: await WebAssembly.compile(spawnProgramBytes),
+            argv,
+          };
+        } catch (error) {
+          if (error instanceof WebAssembly.CompileError) return { errno: 8 };
+          throw error;
+        }
+      },
+      onSpawn: async (_parentPid, childPid, program, envp) => {
+        if (!kernelWorker.shouldLaunchPendingChild(childPid)) return 0;
+        const childPtrWidth = detectPtrWidth(program.programBytes);
+        const {
+          memory: childMemory,
+          layout: childLayout,
+          threadAllocator: childThreadAllocator,
+        } = createFreshProcessMemory(
+          program.programBytes,
+          childPtrWidth,
+          () => kernelWorker.reserveHostRegion(
+            childPid,
+            PAGES_PER_THREAD * WASM_PAGE_SIZE,
+          ) / WASM_PAGE_SIZE,
+          options.maxPages,
+        );
+        if (!kernelWorker.shouldLaunchPendingChild(childPid)) return 0;
+
+        const childChannelOffset = childLayout.channelOffset;
+        kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
+          ptrWidth: childPtrWidth,
+          brkBase: childLayout.brkBase,
+          mmapBase: childLayout.mmapBase,
+          maxAddr: childLayout.maxAddr,
+        });
+
+        const childGeneration = externrefProcessOwner.startGeneration(childPid);
+        let childWorker: ReturnType<NodeWorkerAdapter["createWorker"]>;
+        const childForkHostImports = forkHostImportOwnerRuntime.createWorker({
+          pid: childPid,
+          generationId: childGeneration.id,
+          authorizeSender: () => {
+            if (
+              workers.get(childPid) !== childWorker
+              || externrefGenerations.get(childPid) !== childGeneration
+            ) {
+              throw new Error(
+                `stale centralized-test host-import sender for spawn pid=${childPid}`,
+              );
+            }
+          },
+        });
+        const childInitData: CentralizedWorkerInitMessage = {
+          type: "centralized_init",
+          pid: childPid,
+          programBytes: program.programBytes,
+          programModule: program.programModule,
+          memory: childMemory,
+          channelOffset: childChannelOffset,
+          secureExec: kernelWorker.processSecureExec(childPid),
+          argv: program.argv,
+          env: envp,
+          ptrWidth: childPtrWidth,
+          externrefGenerationId: childGeneration.id,
+          forkHostImports: childForkHostImports.init,
+        };
+
+        try {
+          childWorker = workerAdapter.createWorker(childInitData);
+        } catch (error) {
+          childForkHostImports.close();
+          externrefProcessOwner.releaseGeneration(childGeneration);
+          kernelWorker.deactivateProcess(childPid);
+          throw error;
+        }
+        workers.set(childPid, childWorker);
+        externrefGenerations.set(childPid, childGeneration);
+        processForkHostImports.set(childPid, childForkHostImports);
+        processProgramBytes.set(childPid, program.programBytes);
+        processLayouts.set(childPid, childLayout);
+        threadAllocators.set(childPid, childThreadAllocator);
+        processPtrWidths.set(childPid, childPtrWidth);
+
+        const finalizeSpawnWorkerError = (reason: unknown): void => {
+          if (workers.get(childPid) !== childWorker) return;
+          const message = reason instanceof Error ? reason.message : String(reason);
+          stderr += `[spawn child ${childPid}] ${message}\n`;
+          try { kernelWorker.notifyHostProcessCrashed(childPid, SIGSEGV); } catch { /* best-effort */ }
+          try { kernelWorker.deactivateProcess(childPid); } catch { /* best-effort */ }
+          workers.delete(childPid);
+          processProgramBytes.delete(childPid);
+          processLayouts.delete(childPid);
+          threadAllocators.delete(childPid);
+          processPtrWidths.delete(childPid);
+          releaseProcessReferenceOwner(childPid);
+          childWorker.terminate().catch(() => {});
+        };
+        childWorker.on("error", finalizeSpawnWorkerError);
+        childWorker.on("message", (msg: unknown) => {
+          const message = msg as WorkerToHostMessage;
+          if (message.type === "error" && message.pid === childPid) {
+            finalizeSpawnWorkerError(message.message);
+          } else if (message.type === "fork_host_import") {
+            childForkHostImports.dispatch(message.wake);
+          }
+        });
+        return 0;
+      },
       onFork: async ({
         parentPid,
         childPid,
@@ -562,6 +675,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           programBytes: parentProgram,
           memory: childMemory,
           channelOffset: childChannelOffset,
+          secureExec: kernelWorker.processSecureExec(childPid),
           isForkChild: true,
           forkMode: mode,
           forkBufAddr,
@@ -708,6 +822,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
             }
             launchPlanState = "started";
             try {
+              const secureExec = kernelWorker.processSecureExec(execPid);
               kernelWorker.prepareProcessForExec(execPid);
               const previousGeneration = externrefGenerations.get(execPid);
               if (!previousGeneration) {
@@ -778,6 +893,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
                 programModule: newProgramModule,
                 memory: newMemory,
                 channelOffset: newChannelOffset,
+                secureExec,
                 argv,
                 env: envp,
                 ptrWidth: newPtrWidth,
@@ -884,6 +1000,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           memory,
           processChannelOffset,
           channelOffset: alloc.channelOffset,
+          secureExec: kernelWorker.processSecureExec(clonePid),
           fnPtr,
           argPtr,
           stackPtr,
@@ -1043,6 +1160,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     programBytes,
     memory,
     channelOffset,
+    secureExec: kernelWorker.processSecureExec(pid),
     env: options.env,
     argv: options.argv ?? [options.programPath],
     ptrWidth,

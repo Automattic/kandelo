@@ -1629,6 +1629,21 @@ pub extern "C" fn kernel_set_process_credentials(pid: u32, uid: u32, gid: u32) -
     }
 }
 
+/// Return the sticky secure-execution marker for one committed process image.
+///
+/// The host queries this only after the kernel has committed the exact exec
+/// target (or after creating/copying an initial/fork process record).  The
+/// value is kernel-owned: launch paths must not reconstruct it from ids,
+/// paths, argv, environment, or host configuration.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_process_secure_exec(pid: u32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.get(pid) {
+        Some(proc) => i32::from(proc.secure_exec),
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
 /// Begin one Rust-owned argv/environment replacement.
 ///
 /// The returned positive token owns two initially empty staging vectors. The

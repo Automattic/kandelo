@@ -231,6 +231,8 @@ interface ProcessInfo extends ProcessGenerationOwnership {
   worker: ReturnType<NodeWorkerAdapter["createWorker"]>;
   channelOffset: number;
   ptrWidth: 4 | 8;
+  /** Kernel-owned sticky secure-execution state for this exact image. */
+  secureExec: boolean;
   layout: ProcessMemoryLayout;
   threadAllocator: ThreadPageAllocator;
   /** Exact broker authority for this PID's current Wasm image. */
@@ -1298,6 +1300,7 @@ async function handleSpawn(msg: SpawnMessage) {
     createdMemoryRegistered = true;
 
     kernelWorker.setCredentials(pid, { uid: msg.uid, gid: msg.gid });
+    const secureExec = kernelWorker.processSecureExec(pid);
     if (msg.cwd) {
       kernelWorker.setCwd(pid, msg.cwd);
     }
@@ -1354,6 +1357,7 @@ async function handleSpawn(msg: SpawnMessage) {
       programModule,
       memory,
       channelOffset,
+      secureExec,
       externrefGenerationId: externrefGeneration.id,
       forkHostImports: forkHostImports.init,
       env: msg.env,
@@ -1378,6 +1382,7 @@ async function handleSpawn(msg: SpawnMessage) {
       worker,
       channelOffset,
       ptrWidth,
+      secureExec,
       layout,
       threadAllocator,
       externrefGeneration,
@@ -1752,6 +1757,7 @@ async function handleVfork(
       programModule: parentInfo.programModule,
       memory: parentMemory,
       channelOffset: childChannelOffset,
+      secureExec: kernelWorker.processSecureExec(childPid),
       externrefGenerationId: externrefGrant.generation.id,
       forkHostImports: forkHostImports.init,
       isForkChild: true,
@@ -1787,6 +1793,7 @@ async function handleVfork(
       worker: childWorker,
       channelOffset: childChannelOffset,
       ptrWidth,
+      secureExec: childInitData.secureExec,
       layout: childLayout,
       threadAllocator: threadAllocatorForLayout(childLayout, ptrWidth, childPid),
       forkReplayContext,
@@ -2103,6 +2110,7 @@ async function handleOrdinaryFork(
       programModule: parentInfo.programModule,
       memory: childMemory,
       channelOffset: childChannelOffset,
+      secureExec: kernelWorker.processSecureExec(childPid),
       externrefGenerationId: externrefGrant.generation.id,
       forkHostImports: forkHostImports.init,
       isForkChild: true,
@@ -2131,6 +2139,7 @@ async function handleOrdinaryFork(
       worker,
       channelOffset: childChannelOffset,
       ptrWidth,
+      secureExec: childInitData.secureExec,
       layout: childLayout,
       threadAllocator: threadAllocatorForLayout(
         childLayout,
@@ -2312,6 +2321,7 @@ async function handleExec(
     }
     launchPlanState = "started";
     try {
+      const secureExec = kernelWorker.processSecureExec(pid);
       vmInterruptTimers.clear(pid, initiatingInfo);
 
       // Wake the exact old execution generation through the internal exec
@@ -2418,6 +2428,7 @@ async function handleExec(
         programModule,
         memory: newMemory,
         channelOffset: newChannelOffset,
+        secureExec,
         externrefGenerationId: replacementExternrefGeneration.id,
         forkHostImports: replacementForkHostImports.init,
         argv: launchArgv,
@@ -2469,6 +2480,7 @@ async function handleExec(
         worker: replacementWorker,
         channelOffset: newChannelOffset,
         ptrWidth: newPtrWidth,
+        secureExec,
         layout: newLayout,
         threadAllocator: newThreadAllocator,
         externrefGeneration: replacementExternrefGeneration,
@@ -2688,6 +2700,7 @@ async function handlePosixSpawn(
   program: ResolvedSpawnProgram,
   envp: string[],
 ): Promise<number> {
+  const secureExec = kernelWorker.processSecureExec(childPid);
   // Preserve a child that became a zombie before launch, but do not resurrect
   // it by registering a new execution generation.
   if (!kernelWorker.shouldLaunchPendingChild(childPid)) return 0;
@@ -2757,6 +2770,7 @@ async function handlePosixSpawn(
       programModule,
       memory,
       channelOffset,
+      secureExec,
       externrefGenerationId: processExternrefGeneration.id,
       forkHostImports: processForkHostImports.init,
       argv,
@@ -2780,6 +2794,7 @@ async function handlePosixSpawn(
       worker,
       channelOffset,
       ptrWidth,
+      secureExec,
       layout,
       threadAllocator,
       externrefGeneration: processExternrefGeneration,
@@ -2933,6 +2948,7 @@ async function handleClone(attachment: ThreadChannelAttachment): Promise<void> {
     memory,
     processChannelOffset: processInfo.channelOffset,
     channelOffset: alloc.channelOffset,
+    secureExec: processInfo.secureExec,
     externrefGenerationId: processInfo.externrefGeneration.id,
     forkHostImports: forkHostImports.init,
     fnPtr,

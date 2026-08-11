@@ -367,6 +367,10 @@ function signatures(
       parameters: [i32, i32, i32, pointer, i32],
       result: i32,
     },
+    kernel_process_secure_exec: {
+      parameters: [i32],
+      result: i32,
+    },
     kernel_pty_create: {
       parameters: [i32],
       result: i32,

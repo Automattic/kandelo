@@ -391,8 +391,9 @@ function buildKernelImports(
   memory: WebAssembly.Memory,
   channelOffset: number,
   ptrWidth: 4 | 8,
-  argv?: string[],
-  envVars?: string[],
+  argv: string[] | undefined,
+  envVars: string[] | undefined,
+  secureExec: boolean,
   onKernelExit?: (status: number) => void,
 ): KernelImports {
   const metadata = encodeStartupMetadata(argv ?? [], envVars ?? [], ptrWidth);
@@ -454,6 +455,9 @@ function buildKernelImports(
     kernel_environ_get: (index: number, bufPtr: number | bigint, bufMax: number): number => {
       return copyEntry(metadata.env, index, bufPtr, bufMax, "kernel_environ_get");
     },
+
+    // Sticky kernel-owned state captured for this exact process image.
+    kernel_get_secure_exec: (): number => secureExec ? 1 : 0,
 
     // Fork/exec state — not a fork child.
     kernel_is_fork_child: (): number => 0,
@@ -597,8 +601,16 @@ export function buildKernelImportsForTest(
   ptrWidth: 4 | 8,
   argv: string[] = [],
   env: string[] = [],
+  secureExec: boolean = false,
 ): Record<string, WebAssembly.ExportValue> {
-  return buildKernelImports(memory, channelOffset, ptrWidth, argv, env);
+  return buildKernelImports(
+    memory,
+    channelOffset,
+    ptrWidth,
+    argv,
+    env,
+    secureExec,
+  );
 }
 
 export interface DlopenSupport {
@@ -3265,6 +3277,7 @@ export async function centralizedWorkerMain(
       ptrWidth,
       initData.argv || [],
       initData.env || [],
+      initData.secureExec,
       (status) => {
         kernelExitStatus = status;
       },
@@ -5555,6 +5568,7 @@ export async function centralizedThreadWorkerMain(
       ptrWidth,
       undefined,
       undefined,
+      initData.secureExec,
       (status) => {
         kernelThreadExitStatus = status;
       },
