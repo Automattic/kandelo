@@ -6886,6 +6886,26 @@ def check_publisher(workflow)
       ),
     "prepared CI workspace and Formula runtime do not share generation staging"
   )
+  workspace_activator = File.read(
+    File.join(REPO_ROOT, "scripts/activate-ci-test-workspace.sh")
+  )
+  [
+    'portable_cache="$repo_root/.ci-test-binary-cache"',
+    'prepared_xtask="$repo_root/target/$rust_host/release/xtask"',
+    'export WASM_POSIX_BINARY_CACHE_ROOT="$portable_cache"',
+    'export WASM_POSIX_XTASK_BIN="$prepared_xtask"',
+    'exec "$@"',
+  ].each do |fragment|
+    check(workspace_activator.include?(fragment),
+          "prepared CI workspace activation lacks #{fragment}")
+  end
+  suite_runner = File.read(File.join(REPO_ROOT, "scripts/ci-run-test-suite.sh"))
+  check(
+    suite_runner.include?(
+      'source "$REPO_ROOT/scripts/activate-ci-test-workspace.sh"'
+    ) && suite_runner.include?("activate_ci_test_workspace"),
+    "prepared CI suite runner bypasses shared workspace activation"
+  )
   check_architecture_aware_sysroot_step(
     named_step(build_steps, "Build Kandelo sysroot"), "publisher build"
   )

@@ -136,10 +136,6 @@ const CANONICAL_PAGES_VFS_LOADER = CANONICAL_PAGES_VFS_PRODUCTS === null
     (url, init) => fetch(url, init),
   );
 
-const DEFAULT_SOFTWARE_MANIFEST_URLS = [
-  `https://github.com/brandonpayton/kandelo-software/releases/download/binaries-abi-v${ABI_VERSION}/gallery.json`,
-];
-
 const OPTIONAL_BINARY_URLS = {
   ...import.meta.glob(
     "../../../../../local-binaries/programs/wasm32/fbtest.wasm",
@@ -2629,7 +2625,7 @@ function softwareManifestUrls(): string[] {
       ? queryUrls
       : envUrls.length > 0
         ? envUrls
-        : DEFAULT_SOFTWARE_MANIFEST_URLS;
+        : [];
   return [...new Set(urls)];
 }
 

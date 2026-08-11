@@ -415,7 +415,10 @@ export function homebrewCanonicalOptLink(
 }
 
 export function mapHomebrewBottleEntryToGuestPath(
-  pkg: Pick<HomebrewBottleMaterializationPackage, "payloadRoot" | "prefix" | "cellar" | "keg" | "failureLabel">,
+  pkg: Pick<
+    HomebrewBottleMaterializationPackage,
+    "payloadRoot" | "prefix" | "cellar" | "keg" | "failureLabel"
+  >,
   entryPath: string,
 ): string | null {
   const payloadRoot = trimSlashes(pkg.payloadRoot);
@@ -432,7 +435,10 @@ export function mapHomebrewBottleEntryToGuestPath(
 }
 
 export function homebrewManifestSourcePath(
-  pkg: Pick<HomebrewBottleMaterializationPackage, "prefix" | "cellar" | "keg" | "failureLabel">,
+  pkg: Pick<
+    HomebrewBottleMaterializationPackage,
+    "prefix" | "cellar" | "keg" | "failureLabel"
+  >,
   source: string,
 ): string {
   const cellarRelative = cellarRelativePath(pkg);

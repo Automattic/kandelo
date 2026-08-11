@@ -27,8 +27,7 @@ expect_failure() {
 
 fixture="$TMP_ROOT/product"
 mkdir -p \
-  "$fixture/homebrew" \
-  "$fixture/packages/registry/shell"
+  "$fixture/homebrew"
 cp "$REPO_ROOT/homebrew/main-shell-selection-lock.json" \
   "$fixture/homebrew/main-shell-selection-lock.json"
 cp "$REPO_ROOT/homebrew/main-shell-lazy-artifact-lock.json" \
@@ -45,11 +44,6 @@ for input in \
 do
   cp "$REPO_ROOT/homebrew/$input" "$fixture/homebrew/$input"
 done
-cp "$REPO_ROOT/packages/registry/shell/build.toml" \
-  "$fixture/packages/registry/shell/build.toml"
-cp "$REPO_ROOT/packages/registry/shell/package.toml" \
-  "$fixture/packages/registry/shell/package.toml"
-
 [ "$(python3 "$STATE_TOOL" --root "$fixture")" = awaiting-selection ] ||
   fail "pending selection was not classified as awaiting-selection"
 
@@ -62,25 +56,6 @@ expect_failure \
   python3 "$STATE_TOOL" --root "$fixture"
 cp "$REPO_ROOT/homebrew/main-shell.Brewfile" \
   "$fixture/homebrew/main-shell.Brewfile"
-
-printf '%s\n' \
-  '[[git_inputs]]' \
-  'name = "raw_tap"' \
-  'repository = "https://example.invalid/raw.git"' \
-  'commit = "1111111111111111111111111111111111111111"' \
-  >>"$fixture/packages/registry/shell/build.toml"
-expect_failure "unsupported publication inputs" \
-  python3 "$STATE_TOOL" --root "$fixture"
-cp "$REPO_ROOT/packages/registry/shell/build.toml" \
-  "$fixture/packages/registry/shell/build.toml"
-
-sed 's/depends_on = \[\]/depends_on = ["legacy@1"]/' \
-  "$REPO_ROOT/packages/registry/shell/package.toml" \
-  >"$fixture/packages/registry/shell/package.toml"
-expect_failure "must not depend on transitional registry packages" \
-  python3 "$STATE_TOOL" --root "$fixture"
-cp "$REPO_ROOT/packages/registry/shell/package.toml" \
-  "$fixture/packages/registry/shell/package.toml"
 
 sed 's/"state": "pending"/"state": "pending", "state": "pending"/' \
   "$REPO_ROOT/homebrew/main-shell-selection-lock.json" \
@@ -116,21 +91,25 @@ jq '.state = "sealed" | .image = {
   >"$fixture/homebrew/artifact.next"
 mv "$fixture/homebrew/artifact.next" \
   "$fixture/homebrew/main-shell-lazy-artifact-lock.json"
-sed 's/publication_state = "pending"/publication_state = "ready"/' \
-  "$fixture/packages/registry/shell/build.toml" \
-  >"$fixture/packages/registry/shell/build.next"
-mv "$fixture/packages/registry/shell/build.next" \
-  "$fixture/packages/registry/shell/build.toml"
 [ "$(python3 "$STATE_TOOL" --root "$fixture")" = publishable ] ||
   fail "sealed selection and image were not publishable"
 
-sed 's/publication_state = "ready"/publication_state = "pending"/' \
-  "$fixture/packages/registry/shell/build.toml" \
-  >"$fixture/packages/registry/shell/build.next"
-mv "$fixture/packages/registry/shell/build.next" \
-  "$fixture/packages/registry/shell/build.toml"
+jq '.state = "pending" | .release = null' \
+  "$fixture/homebrew/main-shell-selection-lock.json" \
+  >"$fixture/homebrew/selection.next"
+mv "$fixture/homebrew/selection.next" \
+  "$fixture/homebrew/main-shell-selection-lock.json"
+selection_sha="$(sha256sum \
+  "$fixture/homebrew/main-shell-selection-lock.json")"
+selection_sha="${selection_sha%% *}"
+jq --arg sha "$selection_sha" \
+  '.inputs.selection_lock_sha256 = $sha' \
+  "$fixture/homebrew/main-shell-lazy-artifact-lock.json" \
+  >"$fixture/homebrew/artifact.next"
+mv "$fixture/homebrew/artifact.next" \
+  "$fixture/homebrew/main-shell-lazy-artifact-lock.json"
 expect_failure \
-  "selection, artifact, and package publication states disagree" \
+  "selection and artifact publication states disagree" \
   python3 "$STATE_TOOL" --root "$fixture"
 
 # A source tap is not a closed product selection. In particular, generated

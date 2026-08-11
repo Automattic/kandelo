@@ -3,7 +3,7 @@
  * and a writable workspace for the browser Node demos.
  *
  * Layout produced:
- *   Shell VFS base         — dash + shell utility symlinks/config/lazy archives
+ *   Shell VFS base         — fully materialized Homebrew shell and metadata
  *   /usr/bin/node          — exact resolved Node executable bytes
  *   /usr/local/lib/npm/...   — full npm dist (bin/npm-cli.js + lib + node_modules)
  *   /usr/bin/npm          — wrapper that runs npm through the node binary
@@ -131,7 +131,7 @@ export async function buildNodeVfsImage(
 function populateNodeBinary(fs: MemoryFileSystem, node: Uint8Array): void {
   // WHY: the dedicated Node demo always executes Node. Embedding its package-
   // resolved bytes avoids a second browser transport whose authority was not
-  // part of the image's closed lazy-bottle plan.
+  // part of the admitted flat shell lineage.
   writeVfsBinary(
     fs,
     NODE_BINARY_SPEC.vfsPath,

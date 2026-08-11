@@ -13,8 +13,13 @@ fail() {
 
 expect_rejected() {
   local label="$1"
-  if "$VERIFIER" "$TMP_ROOT/dist" "$TMP_ROOT/expected.vfs.zst" \
-      >/dev/null 2>&1; then
+  local expected="${2:-$TMP_ROOT/expected.vfs.zst}"
+  local stem="${3:-}"
+  local args=("$TMP_ROOT/dist" "$expected")
+  if [ -n "$stem" ]; then
+    args+=("$stem")
+  fi
+  if "$VERIFIER" "${args[@]}" >/dev/null 2>&1; then
     fail "accepted $label"
   fi
 }
@@ -39,5 +44,24 @@ rm "$second_asset"
 
 printf 'different shell\n' >"$asset"
 expect_rejected "a hashed asset with different bytes"
+printf 'expected shell\n' >"$asset"
+
+# The same verifier binds every package-owned VFS import by an exact, caller-
+# selected asset stem. A valid shell asset must not satisfy the Node check.
+printf 'expected Node VFS\n' >"$TMP_ROOT/expected-node.vfs.zst"
+node_asset="$TMP_ROOT/dist/assets/node-vfs.vfs-Node789.zst"
+cp "$TMP_ROOT/expected-node.vfs.zst" "$node_asset"
+node_actual="$(
+  "$VERIFIER" \
+    "$TMP_ROOT/dist" "$TMP_ROOT/expected-node.vfs.zst" node-vfs.vfs
+)"
+[ "$node_actual" = "$node_asset" ] || fail "reported the wrong Node VFS asset"
+printf 'different Node VFS\n' >"$node_asset"
+expect_rejected \
+  "a hashed Node asset with different bytes" \
+  "$TMP_ROOT/expected-node.vfs.zst" node-vfs.vfs
+expect_rejected \
+  "an unsafe asset stem" \
+  "$TMP_ROOT/expected-node.vfs.zst" '../node-vfs.vfs'
 
 echo "test-verify-browser-shell-vfs-asset: ok"

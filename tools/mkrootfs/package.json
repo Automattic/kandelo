@@ -10,7 +10,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "kandelo": "file:../../host",
     "fflate": "^0.8.2"
   },
   "devDependencies": {

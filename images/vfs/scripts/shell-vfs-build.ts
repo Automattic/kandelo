@@ -5,12 +5,11 @@
  * exposes a loader for service demos that layer nginx/php-fpm (+ MariaDB)
  * and application files on top of the already-built shell.vfs.zst image.
  *
- * The shell image uses `eagerBinaries: false`: the canonical rootfs provides
- * base utility lazy stubs, then shell.vfs.zst overlays demo lazy stubs and
- * lazy archives. Utility bytes are fetched on first exec.
- * Historical standalone service images used `true`: every tool binary was
- * baked into the image. Builtin Kandelo service demos now use shell.vfs.zst as
- * their base image and keep its lazy metadata intact.
+ * This module retains the conventional/lazy composer for diagnostic and
+ * historical image paths. It is not the canonical shell package builder;
+ * `build-homebrew-flat-vfs-image.ts` owns that eager, self-contained product.
+ * Builtin service images may still reuse the filesystem helpers below while
+ * preserving the transport mode of the already-resolved shell base.
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -40,9 +39,7 @@ import {
 import {
   saveImage,
   sourceDateEpochMilliseconds,
-  writeVfsFile,
   writeVfsBinary,
-  ensureDirRecursive,
   symlink,
 } from "./vfs-image-helpers";
 import type { SaveImageOptions } from "./vfs-image-helpers";
@@ -54,6 +51,11 @@ import {
 import {
   KANDELO_DEMO_CONFIG_PATH,
 } from "../../../web-libs/kandelo-session/src/demo-config";
+import {
+  KANDELO_SHELL_CONFIG_PATH,
+  parseKandeloShellConfig,
+} from "../../../web-libs/kandelo-session/src/shell-config";
+import { populateShellRuntimeLayout } from "./shell-runtime-layout";
 
 const SHELL_DERIVED_CREATED_BY =
   "images/vfs/scripts/saveShellDerivedVfsImage";
@@ -283,10 +285,15 @@ function shellDerivedImageMetadata(
   }
 
   const sourceComposition = inherited.shellComposition;
-  const homebrewClaims = [
+  const legacyHomebrewClaims = [
     inherited.packageDeferredTrees,
     inherited.homebrewBootstrap,
     inherited.homebrew,
+  ];
+  const flatHomebrewClaims = [
+    inherited.homebrewFlat,
+    inherited.shellConfig,
+    inherited.demoConfig,
   ];
   if (sourceComposition !== undefined) {
     if (
@@ -296,7 +303,10 @@ function shellDerivedImageMetadata(
         "shell-derived VFS has an invalid source shell composition binding",
       );
     }
-    if (homebrewClaims.some((claim) => claim !== undefined)) {
+    if (
+      legacyHomebrewClaims.some((claim) => claim !== undefined) ||
+      inherited.homebrewFlat !== undefined
+    ) {
       throw new Error(
         "shell-derived VFS mixes source and Homebrew composition bindings",
       );
@@ -321,7 +331,114 @@ function shellDerivedImageMetadata(
     };
   }
 
-  if (homebrewClaims.every((claim) => claim === undefined)) {
+  if (flatHomebrewClaims.some((claim) => claim !== undefined)) {
+    if (legacyHomebrewClaims.some((claim) => claim !== undefined)) {
+      throw new Error(
+        "shell-derived VFS mixes flat and legacy Homebrew composition bindings",
+      );
+    }
+    const homebrewFlat = requiredExactRecord(
+      inherited.homebrewFlat,
+      "flat Homebrew selection binding",
+      ["requestedVfsFilename", "resourcePolicy", "selectionSha256"],
+    );
+    if (
+      typeof homebrewFlat.selectionSha256 !== "string" ||
+      !/^[0-9a-f]{64}$/.test(homebrewFlat.selectionSha256) ||
+      homebrewFlat.requestedVfsFilename !== "shell.vfs.zst" ||
+      homebrewFlat.resourcePolicy !== "kandelo-homebrew-vfs-main-shell-v1"
+    ) {
+      throw new Error("shell-derived VFS has an invalid flat Homebrew selection binding");
+    }
+
+    const shellConfig = requiredExactRecord(
+      inherited.shellConfig,
+      "flat shell config binding",
+      ["argv", "bytes", "path", "sha256"],
+    );
+    const shellBytes = readRequiredVfsBytes(fs, KANDELO_SHELL_CONFIG_PATH);
+    if (
+      typeof shellConfig.sha256 !== "string" ||
+      !/^[0-9a-f]{64}$/.test(shellConfig.sha256) ||
+      typeof shellConfig.bytes !== "number" ||
+      !Number.isSafeInteger(shellConfig.bytes) ||
+      shellConfig.bytes <= 0 ||
+      shellConfig.bytes !== shellBytes.byteLength ||
+      shellConfig.sha256 !== sha256Hex(shellBytes)
+    ) {
+      throw new Error(
+        "shell-derived VFS flat shell config binding does not match its VFS bytes",
+      );
+    }
+    let parsedShellConfig;
+    try {
+      parsedShellConfig = parseKandeloShellConfig(
+        new TextDecoder("utf-8", { fatal: true }).decode(shellBytes),
+      );
+    } catch {
+      throw new Error("shell-derived VFS has an invalid flat shell config binding");
+    }
+    if (
+      parsedShellConfig === null ||
+      parsedShellConfig.path !== shellConfig.path ||
+      !Array.isArray(shellConfig.argv) ||
+      shellConfig.argv.some((arg) => typeof arg !== "string") ||
+      parsedShellConfig.argv.length !== shellConfig.argv.length ||
+      parsedShellConfig.argv.some((arg, index) => arg !== shellConfig.argv[index])
+    ) {
+      throw new Error("shell-derived VFS has an invalid flat shell config binding");
+    }
+
+    const inheritedDemoConfig = requiredExactRecord(
+      inherited.demoConfig,
+      "flat demo config binding",
+      ["bytes", "path", "sha256"],
+    );
+    if (
+      inheritedDemoConfig.path !== KANDELO_DEMO_CONFIG_PATH ||
+      typeof inheritedDemoConfig.sha256 !== "string" ||
+      !/^[0-9a-f]{64}$/.test(inheritedDemoConfig.sha256) ||
+      typeof inheritedDemoConfig.bytes !== "number" ||
+      !Number.isSafeInteger(inheritedDemoConfig.bytes) ||
+      inheritedDemoConfig.bytes <= 0
+    ) {
+      throw new Error("shell-derived VFS has an invalid flat demo config binding");
+    }
+    const demoConfig = readRequiredVfsBytes(fs, KANDELO_DEMO_CONFIG_PATH);
+
+    // WHY: the direct base is rebound to the exact shell artifact by the
+    // loader. Preserve only the flat product's content bindings; unrelated
+    // source attestations are not claims about this derived image.
+    return {
+      version: 1,
+      kernelAbi,
+      createdBy: SHELL_DERIVED_CREATED_BY,
+      capacity: { maxByteLength },
+      baseImage: {
+        sha256: baseSha256,
+        bytes: baseBytes,
+        kernelAbi,
+      },
+      homebrewFlat: {
+        selectionSha256: homebrewFlat.selectionSha256,
+        requestedVfsFilename: homebrewFlat.requestedVfsFilename,
+        resourcePolicy: homebrewFlat.resourcePolicy,
+      },
+      shellConfig: {
+        path: parsedShellConfig.path,
+        argv: [...parsedShellConfig.argv],
+        sha256: shellConfig.sha256,
+        bytes: shellConfig.bytes,
+      },
+      demoConfig: {
+        path: KANDELO_DEMO_CONFIG_PATH,
+        sha256: sha256Hex(demoConfig),
+        bytes: demoConfig.byteLength,
+      },
+    };
+  }
+
+  if (legacyHomebrewClaims.every((claim) => claim === undefined)) {
     throw new Error(
       "shell-derived VFS omits a supported shell composition binding",
     );
@@ -388,6 +505,21 @@ function requiredRecord(
     throw new Error(`shell-derived VFS omits valid ${label}`);
   }
   return value as Record<string, unknown>;
+}
+
+function requiredExactRecord(
+  value: unknown,
+  label: string,
+  expectedKeys: readonly string[],
+): Record<string, unknown> {
+  const record = requiredRecord(value, label);
+  if (
+    Object.keys(record).sort().join("\0") !==
+    [...expectedKeys].sort().join("\0")
+  ) {
+    throw new Error(`shell-derived VFS has an invalid ${label}`);
+  }
+  return record;
 }
 
 function readRequiredVfsBytes(
@@ -556,93 +688,11 @@ export function populateShellEnvironment(
 // ── System layout ───────────────────────────────────────────────
 
 function populateSystem(fs: MemoryFileSystem): void {
-  for (const dir of [
-    "/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin",
-    "/usr/share", "/usr/share/misc", "/usr/share/file",
-    "/etc", "/root", "/tmp", "/home", "/home/user", "/dev", "/usr/sbin",
-    // NetHack VAR_PLAYGROUND — writable saves, scores, bones.
-    "/home/.nethack",
-  ]) {
-    ensureDirRecursive(fs, dir);
-  }
-  fs.chmod("/tmp", 0o1777);
-  fs.chmod("/root", 0o700);
-  fs.chown("/home/user", 1000, 1000);
-  populateNetHackPlayground(fs);
-
-  const gitconfig = [
-    "[maintenance]",
-    "\tauto = false",
-    "[gc]",
-    "\tauto = 0",
-    "[core]",
-    "\tpager = cat",
-    "[user]",
-    "\tname = User",
-    "\temail = user@wasm.local",
-    "[init]",
-    "\tdefaultBranch = main",
-    "",
-  ].join("\n");
-  writeVfsFile(fs, "/etc/gitconfig", gitconfig);
-
-  // Shell profile — color aliases + NetHack defaults. NetHack's
-  // VAR_PLAYGROUND is pre-created above, so the profile only sets env.
-  const profile = [
-    "alias ls='ls --color=auto'",
-    "alias grep='grep --color=auto'",
-    "export USER=player",
-    "export NETHACKOPTIONS='windowtype:curses,color,lit_corridor,hilite_pet'",
-    "for kandelo_profile in /etc/profile.d/*.sh; do",
-    "  [ -r \"$kandelo_profile\" ] && . \"$kandelo_profile\"",
-    "done",
-    "unset kandelo_profile",
-    "",
-  ].join("\n");
-  writeVfsFile(fs, "/etc/profile", profile);
+  populateShellRuntimeLayout(fs);
 }
 
 function populateShellOverlay(fs: MemoryFileSystem): void {
-  for (const dir of [
-    "/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin",
-    "/usr/share", "/usr/share/file", "/etc", "/root", "/tmp", "/home",
-    "/home/user", "/dev", "/usr/sbin", "/home/.nethack",
-  ]) {
-    ensureDirRecursive(fs, dir);
-  }
-  fs.chmod("/tmp", 0o1777);
-  fs.chmod("/root", 0o700);
-  fs.chown("/home/user", 1000, 1000);
-  populateNetHackPlayground(fs);
-
-  const gitconfig = [
-    "[maintenance]",
-    "\tauto = false",
-    "[gc]",
-    "\tauto = 0",
-    "[core]",
-    "\tpager = cat",
-    "[user]",
-    "\tname = User",
-    "\temail = user@wasm.local",
-    "[init]",
-    "\tdefaultBranch = main",
-    "",
-  ].join("\n");
-  writeVfsFile(fs, "/etc/gitconfig", gitconfig);
-
-  const profile = [
-    "alias ls='ls --color=auto'",
-    "alias grep='grep --color=auto'",
-    "export USER=player",
-    "export NETHACKOPTIONS='windowtype:curses,color,lit_corridor,hilite_pet'",
-    "for kandelo_profile in /etc/profile.d/*.sh; do",
-    "  [ -r \"$kandelo_profile\" ] && . \"$kandelo_profile\"",
-    "done",
-    "unset kandelo_profile",
-    "",
-  ].join("\n");
-  writeVfsFile(fs, "/etc/profile", profile);
+  populateShellRuntimeLayout(fs);
 
   // A rootfs artifact may provide the lazy binary inodes without the
   // user-facing aliases the shell demo expects. Recreate the aliases
@@ -651,19 +701,6 @@ function populateShellOverlay(fs: MemoryFileSystem): void {
   populateGrepSedSymlinks(fs);
   populateBaseExtendedSymlinks(fs);
   populateDemoExtendedSymlinks(fs);
-}
-
-function populateNetHackPlayground(fs: MemoryFileSystem): void {
-  fs.chown("/home/.nethack", 1000, 1000);
-  fs.chmod("/home/.nethack", 0o777);
-
-  // NetHack expects VAR_PLAYGROUND to contain the lock marker and score
-  // database before read-only score-listing commands such as `nethack -s`.
-  for (const file of ["/home/.nethack/perm", "/home/.nethack/record"]) {
-    writeVfsFile(fs, file, "");
-    fs.chown(file, 1000, 1000);
-    fs.chmod(file, 0o666);
-  }
 }
 
 // ── Shell binaries ──────────────────────────────────────────────

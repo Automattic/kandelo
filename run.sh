@@ -23,8 +23,8 @@
 #                                  exact binaries/ tree was prepared earlier.
 #   --require-sealed-homebrew-selection
 #                                 Refuse a pending local Homebrew selection.
-#                                 Release workflows use this before serving
-#                                 the browser bootstrap asset.
+#                                 Historical lazy-shell recovery workflows use
+#                                 this before serving the bootstrap asset.
 #   --source-rootfs-shell         Internal GitHub Pages-only bridge. Requires
 #                                  the exact Pages job identity, provenance,
 #                                  empty file index, fresh cache, and clean
@@ -2957,10 +2957,12 @@ cmd_prepare_browser() {
         install_source_rootfs_shell_vfs
     fi
 
-    # Resolve the small lazy bootstrap first. A pending or unavailable
-    # Formula selection should fail before the much larger gallery fetch and
-    # build, not after spending those resources on a product we cannot serve.
-    prepare_browser_homebrew_bootstrap
+    # The canonical package-owned shell is a self-contained flat image. Only
+    # the explicit historical recovery mode stages the retired lazy bootstrap;
+    # ordinary browser preparation must not create an alternate transport.
+    if [ "$REQUIRE_SEALED_HOMEBREW_SELECTION" -eq 1 ]; then
+        prepare_browser_homebrew_bootstrap
+    fi
 
     # Fetch the per-package binaries for the browser UI and retained labs first.
     # The resolver-aware has_X

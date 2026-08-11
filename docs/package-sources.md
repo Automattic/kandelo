@@ -339,16 +339,21 @@ panel is shown.
 
 The arguments may also be `https://` URLs.
 
-The browser UI uses `kandelo-software` by default. For local testing
-of another package source, pass one or more manifest URLs with the
-`softwareManifest` query parameter:
+The browser UI does not invent a default manifest URL for an independently
+published package source. A deployment can opt into one or more sources only
+after their release contains an index and gallery for Kandelo's current ABI.
+For local testing, pass manifest URLs with the `softwareManifest` query
+parameter:
 
 ```text
 /?softwareManifest=https://example.com/releases/download/binaries-abi-v11/gallery.json
 ```
 
-For a local build, `VITE_KANDELO_SOFTWARE_MANIFEST_URLS` may contain a
-comma- or whitespace-separated manifest URL list.
+For a local or deployed build, `VITE_KANDELO_SOFTWARE_MANIFEST_URLS` may
+contain a comma- or whitespace-separated manifest URL list. An unconfigured
+build makes no third-party gallery request. A configured missing or malformed
+manifest remains a visible warning and contributes no entries; Kandelo does
+not fabricate availability for that source.
 
 Direct VFS image links do not need a gallery manifest. The Kandelo UI
 also accepts a `vfs` query parameter whose value is an `http` or `https`
