@@ -5,6 +5,34 @@ import {
 } from "./generated/abi";
 import type { PathconfValue, StatResult } from "./types";
 
+const {
+  ALLOC_SIZE_MIN,
+  ASYNC_IO,
+  CHOWN_RESTRICTED,
+  FALLOC,
+  FILESIZEBITS,
+  LINK_MAX,
+  MAX_CANON,
+  MAX_INPUT,
+  NAME_MAX,
+  NO_TRUNC,
+  PATH_MAX,
+  PIPE_BUF,
+  POSIX2_SYMLINKS,
+  PRIO_IO,
+  REC_INCR_XFER_SIZE,
+  REC_MAX_XFER_SIZE,
+  REC_MIN_XFER_SIZE,
+  REC_XFER_ALIGN,
+  SOCK_MAXBUF,
+  SYMLINK_MAX,
+  SYNC_IO,
+  TEXTDOMAIN_MAX,
+  TIMESTAMP_RESOLUTION,
+  VDISABLE,
+} = PATHCONF_NAMES;
+const { S_IFDIR, S_IFIFO, S_IFMT, S_IFREG } = FILE_MODES;
+
 export interface PathconfProfile {
   supportsSymlinks: boolean;
   timestampResolutionNs: number | null;
@@ -29,55 +57,52 @@ export function filesystemPathconf(
   profile: PathconfProfile,
 ): PathconfValue {
   switch (name) {
-    case PATHCONF_NAMES.LINK_MAX:
+    case LINK_MAX:
       return null; // no backend currently enforces an authoritative maximum
-    case PATHCONF_NAMES.NAME_MAX:
+    case NAME_MAX:
       return 255; // enforced in bytes by the common namespace resolver
-    case PATHCONF_NAMES.PATH_MAX:
+    case PATH_MAX:
       return POSIX_PATH_MAX_BYTES; // enforced by the common namespace resolver
-    case PATHCONF_NAMES.CHOWN_RESTRICTED:
+    case CHOWN_RESTRICTED:
       // The kernel enforces chown authorization before every backend call,
       // including backends without persistent ownership metadata.
       return 1;
-    case PATHCONF_NAMES.NO_TRUNC:
+    case NO_TRUNC:
       return 1; // the common resolver rejects overlong byte components
-    case PATHCONF_NAMES.ASYNC_IO:
+    case ASYNC_IO:
       // musl implements AIO with guest pthreads over pread/pwrite/fsync.
-      return (stat.mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFREG
+      return (stat.mode & S_IFMT) === S_IFREG
         ? 1
         : invalidAssociation(name);
-    case PATHCONF_NAMES.SYNC_IO:
-    case PATHCONF_NAMES.PRIO_IO:
-    case PATHCONF_NAMES.FILESIZEBITS:
-    case PATHCONF_NAMES.REC_INCR_XFER_SIZE:
-    case PATHCONF_NAMES.REC_MAX_XFER_SIZE:
-    case PATHCONF_NAMES.REC_MIN_XFER_SIZE:
-    case PATHCONF_NAMES.REC_XFER_ALIGN:
-    case PATHCONF_NAMES.ALLOC_SIZE_MIN:
-    case PATHCONF_NAMES.SYMLINK_MAX:
-    case PATHCONF_NAMES.FALLOC:
+    case SYNC_IO:
+    case PRIO_IO:
+    case FILESIZEBITS:
+    case REC_INCR_XFER_SIZE:
+    case REC_MAX_XFER_SIZE:
+    case REC_MIN_XFER_SIZE:
+    case REC_XFER_ALIGN:
+    case ALLOC_SIZE_MIN:
+    case SYMLINK_MAX:
+    case FALLOC:
       return null;
-    case PATHCONF_NAMES.POSIX2_SYMLINKS:
+    case POSIX2_SYMLINKS:
       return profile.supportsSymlinks ? 1 : null;
-    case PATHCONF_NAMES.TEXTDOMAIN_MAX:
+    case TEXTDOMAIN_MAX:
       return 255;
-    case PATHCONF_NAMES.TIMESTAMP_RESOLUTION:
+    case TIMESTAMP_RESOLUTION:
       return profile.timestampResolutionNs;
-    case PATHCONF_NAMES.PIPE_BUF: {
-      const fileType = stat.mode & FILE_MODES.S_IFMT;
+    case PIPE_BUF: {
+      const fileType = stat.mode & S_IFMT;
       // Named FIFO support and host atomicity are not uniform yet. Preserve
       // the valid association without fabricating a numeric guarantee. For a
       // directory the value applies to FIFOs created within that directory.
-      if (
-        fileType === FILE_MODES.S_IFIFO ||
-        fileType === FILE_MODES.S_IFDIR
-      ) return null;
+      if (fileType === S_IFIFO || fileType === S_IFDIR) return null;
       return invalidAssociation(name);
     }
-    case PATHCONF_NAMES.MAX_CANON:
-    case PATHCONF_NAMES.MAX_INPUT:
-    case PATHCONF_NAMES.VDISABLE:
-    case PATHCONF_NAMES.SOCK_MAXBUF:
+    case MAX_CANON:
+    case MAX_INPUT:
+    case VDISABLE:
+    case SOCK_MAXBUF:
       return invalidAssociation(name);
     default: {
       const error = new Error(`EINVAL: invalid pathconf name ${name}`) as Error & {

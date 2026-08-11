@@ -37,7 +37,10 @@ export type {
   CentralizedWorkerInitMessage,
 } from "./worker-protocol";
 export { VirtualPlatformIO } from "./vfs/vfs";
-export { MemoryFileSystem } from "./vfs/memory-fs";
+export {
+  MemoryFileSystem,
+  resolveMountSetIdCapability,
+} from "./vfs/memory-fs";
 export {
   loadVfsImage,
   restoreVerifiedVfsImage,
@@ -79,7 +82,14 @@ export { DeviceFileSystem } from "./vfs/device-fs";
 export { OpfsFileSystem } from "./vfs/opfs";
 export { BrowserTimeProvider } from "./vfs/time";
 export { OpfsChannel, OpfsChannelStatus, OpfsOpcode, OPFS_CHANNEL_SIZE } from "./vfs/opfs-channel";
-export type { FileSystemBackend, TimeProvider, MountConfig, DirEntry } from "./vfs/types";
+export { ST_NOSUID } from "./vfs/types";
+export type {
+  FileSystemBackend,
+  TimeProvider,
+  MountConfig,
+  MountSetIdCapability,
+  DirEntry,
+} from "./vfs/types";
 export {
   HomebrewVfsPlanError,
   planFederatedHomebrewVfs,

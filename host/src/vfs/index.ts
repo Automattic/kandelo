@@ -2,7 +2,10 @@ export { readPreparedPlatformFile, VirtualPlatformIO } from "./vfs";
 export type { HostFileOffset } from "../types";
 export type { PreparedPlatformFile } from "./vfs";
 export { HostFileSystem } from "./host-fs";
-export { MemoryFileSystem } from "./memory-fs";
+export {
+  MemoryFileSystem,
+  resolveMountSetIdCapability,
+} from "./memory-fs";
 export {
   assertVfsDeferredTreeCollectionUsage,
   VFS_DEFERRED_TREE_COLLECTION_LIMITS,
@@ -80,7 +83,14 @@ export { DeviceFileSystem } from "./device-fs";
 export { OpfsFileSystem } from "./opfs";
 export { OpfsChannel, OpfsChannelStatus, OpfsOpcode, OPFS_CHANNEL_SIZE } from "./opfs-channel";
 export { NodeTimeProvider, BrowserTimeProvider } from "./time";
-export type { FileSystemBackend, TimeProvider, MountConfig, DirEntry } from "./types";
+export { ST_NOSUID } from "./types";
+export type {
+  FileSystemBackend,
+  TimeProvider,
+  MountConfig,
+  MountSetIdCapability,
+  DirEntry,
+} from "./types";
 export { PATHCONF_NAMES } from "../generated/abi";
 export { filesystemPathconf } from "../pathconf";
 export type { PathconfProfile } from "../pathconf";

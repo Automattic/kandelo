@@ -7,12 +7,20 @@ import type {
   StatResult,
   StatfsResult,
 } from "../types";
-import type { FileSystemBackend, MountConfig, TimeProvider } from "./types";
+import {
+  ST_NOSUID,
+  type FileSystemBackend,
+  type MountConfig,
+  type MountSetIdCapability,
+  type TimeProvider,
+} from "./types";
+import { resolveMountSetIdCapability } from "./memory-fs";
 
 interface MountEntry {
   prefix: string;
   backend: FileSystemBackend;
   backendId: number;
+  setIdCapability: MountSetIdCapability;
 }
 
 interface HandleInfo {
@@ -75,6 +83,7 @@ export class VirtualPlatformIO implements PlatformIO {
           prefix: normalizeMountPoint(m.mountPoint),
           backend: m.backend,
           backendId,
+          setIdCapability: resolveMountSetIdCapability(m),
         };
       })
       .sort((a, b) => b.prefix.length - a.prefix.length);
@@ -84,9 +93,16 @@ export class VirtualPlatformIO implements PlatformIO {
     }
   }
 
+  /** Effective set-ID policy for the mount that owns an absolute guest path. */
+  getMountSetIdCapability(path: string): MountSetIdCapability {
+    const { setIdCapability } = this.resolve(path);
+    return setIdCapability;
+  }
+
   private resolve(path: string): {
     backend: FileSystemBackend;
     backendId: number;
+    setIdCapability: MountSetIdCapability;
     relativePath: string;
   } {
     for (const m of this.mounts) {
@@ -94,6 +110,7 @@ export class VirtualPlatformIO implements PlatformIO {
         return {
           backend: m.backend,
           backendId: m.backendId,
+          setIdCapability: m.setIdCapability,
           relativePath: path,
         };
       }
@@ -103,6 +120,7 @@ export class VirtualPlatformIO implements PlatformIO {
         return {
           backend: m.backend,
           backendId: m.backendId,
+          setIdCapability: m.setIdCapability,
           relativePath: rel,
         };
       }
@@ -278,8 +296,12 @@ export class VirtualPlatformIO implements PlatformIO {
   }
 
   statfs(path: string): StatfsResult {
-    const { backend, relativePath } = this.resolve(path);
-    return backend.statfs(relativePath);
+    const { backend, relativePath, setIdCapability } = this.resolve(path);
+    const statfs = backend.statfs(relativePath);
+    const flags = setIdCapability.kind === "nosuid"
+      ? statfs.flags | ST_NOSUID
+      : statfs.flags & ~ST_NOSUID;
+    return { ...statfs, flags };
   }
 
   pathconf(path: string, name: number): PathconfValue {
