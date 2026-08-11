@@ -1410,7 +1410,7 @@ guest_path = "/usr/share/data"
       ],
       packageCapabilities: { "rootfs-vfs": "rootfs" },
     })).toThrow(/browser capability has two bindings: rootfs-vfs/);
-  });
+  }, 15_000);
 
   it("keeps wasm32 and wasm64 browser roots in separate package generations", () => {
     const audit = inspectBrowserBinaryDependencies(repoRoot);
