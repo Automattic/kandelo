@@ -237,7 +237,7 @@ function connectionNominatedHeaderNames(
   for (const [name, value] of headers) {
     if (asciiLowercase(name) !== "connection") continue;
     for (const nominatedName of value.split(",")) {
-      const trimmedName = nominatedName.trim();
+      const trimmedName = trimHttpWhitespace(nominatedName);
       if (trimmedName !== "") names.add(asciiLowercase(trimmedName));
     }
   }
@@ -300,9 +300,9 @@ function containsCorsUnsafeRequestHeaderByte(value: string): boolean {
 
 function mimeTypeEssence(value: string): string {
   const semicolon = value.indexOf(";");
-  const essence = (semicolon === -1 ? value : value.slice(0, semicolon))
-    .trim()
-    .toLowerCase();
+  const essence = trimHttpWhitespace(
+    semicolon === -1 ? value : value.slice(0, semicolon),
+  ).toLowerCase();
   const slash = essence.indexOf("/");
   if (
     slash <= 0 ||
@@ -313,6 +313,10 @@ function mimeTypeEssence(value: string): string {
     return "";
   }
   return essence;
+}
+
+function trimHttpWhitespace(value: string): string {
+  return value.replace(/^[\t\n\r ]+|[\t\n\r ]+$/g, "");
 }
 
 function isSimpleRangeHeaderValue(value: string): boolean {

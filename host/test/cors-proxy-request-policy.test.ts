@@ -328,6 +328,38 @@ describe("CorsProxyRequestPolicy", () => {
     expect(result.omittedHeaders).toEqual([name.toLowerCase()]);
   });
 
+  it("does not treat Unicode whitespace as MIME HTTP whitespace", () => {
+    const result = policy({
+      methods: ["GET"],
+      allowedRequestHeaderNames: [],
+      allowAnonymousGetHeaderOmission: true,
+    }).project({
+      method: "GET",
+      headers: [["Content-Type", "\u00a0text/plain\u00a0"]],
+      bodyPresent: false,
+      targetUrl: TARGET_URL,
+    });
+
+    expect(result.headers.has("content-type")).toBe(false);
+    expect(result.omittedHeaders).toEqual(["content-type"]);
+  });
+
+  it("parses a simple Content-Type surrounded by HTTP whitespace", () => {
+    const result = policy({
+      methods: ["GET"],
+      allowedRequestHeaderNames: [],
+      allowAnonymousGetHeaderOmission: true,
+    }).project({
+      method: "GET",
+      headers: [["Content-Type", "\t text/plain \t"]],
+      bodyPresent: false,
+      targetUrl: TARGET_URL,
+    });
+
+    expect(result.headers.get("content-type")).toBe("text/plain");
+    expect(result.omittedHeaders).toEqual([]);
+  });
+
   it("strips fixed and Connection-nominated outer transport headers", () => {
     const requestPolicy = policy({
       methods: ["GET"],
@@ -373,6 +405,30 @@ describe("CorsProxyRequestPolicy", () => {
       ["x-end-to-end", "kept"],
     ]);
     expect(result.omittedHeaders).toEqual([]);
+  });
+
+  it("does not trim Unicode whitespace from a Connection option", () => {
+    const onDiagnostic = vi.fn();
+    const result = policy(
+      {
+        methods: ["GET"],
+        allowedRequestHeaderNames: ["x-end-to-end"],
+        allowAnonymousGetHeaderOmission: true,
+      },
+      onDiagnostic,
+    ).project({
+      method: "GET",
+      headers: [
+        ["Connection", "\u00a0x-end-to-end\u00a0"],
+        ["X-End-To-End", "kept"],
+      ],
+      bodyPresent: false,
+      targetUrl: TARGET_URL,
+    });
+
+    expect(result.headers.get("x-end-to-end")).toBe("kept");
+    expect(result.omittedHeaders).toEqual([]);
+    expect(onDiagnostic).not.toHaveBeenCalled();
   });
 
   it.each([
