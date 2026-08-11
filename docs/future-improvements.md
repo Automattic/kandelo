@@ -98,6 +98,27 @@ beyond EOF.
 ### PTY terminal integration with xterm.js
 The kernel has full PTY support (PR #181), and browser UI surfaces should use xterm.js-backed PTYs rather than plain `<div>` output with `appendStdinData`. Connecting PTY pairs to xterm.js gives proper terminal rendering (ANSI escapes, cursor, scrollback) and real terminal behavior (isatty=true, proper termios).
 
+## Package artifacts
+
+### Define compatibility for restored lazy VFS images
+
+Kandelo currently rebuilds and publishes canonical VFS images for the current
+runtime; it does not persist a machine image for restoration across releases.
+Old lazy Homebrew images can describe deferred files whose authenticated bytes
+depend on the producer's guest prefix and relocation inputs. If a later host
+uses different relocation defaults, allowing the image to boot and consulting
+those defaults on first access can produce bytes that no longer match the
+image's registered size and digest.
+
+Before downloaded, shared, historical, or persisted lazy images become a
+supported cross-release contract, image admission needs an explicit strategy:
+carry and authenticate every relocation input needed to reproduce the
+producer's deferred bytes, or reject an incompatible image before boot. The
+runtime must not silently reinterpret authenticated image content through
+mutable host defaults and fail only when a deferred file is first opened.
+
+**Files:** `host/src/vfs/`, `images/vfs/`, package image builders and metadata
+
 ## Performance
 
 ### Revisit an optional wasm32 kernel build for IPC-heavy workloads
