@@ -81,16 +81,16 @@ async function main(): Promise<void> {
       {
         env: [
           "PATH=/opt/kandelo/homebrew/bin:/usr/bin:/bin",
-          "HOME=/home/user",
-          "USER=user",
-          "LOGNAME=user",
+          "HOME=/home/maker",
+          "USER=maker",
+          "LOGNAME=maker",
           "SHELL=/bin/bash",
           "TERM=dumb",
-          "HOMEBREW_CACHE=/home/user/.cache/Homebrew",
-          "HOMEBREW_USER_CONFIG_HOME=/home/user/.config/homebrew",
+          "HOMEBREW_CACHE=/home/maker/.cache/Homebrew",
+          "HOMEBREW_USER_CONFIG_HOME=/home/maker/.config/homebrew",
           "HOMEBREW_TEMP=/tmp",
         ],
-        cwd: "/home/user",
+        cwd: "/home/maker",
         uid: 1000,
         gid: 1000,
         onStarted: (startedPid) => {

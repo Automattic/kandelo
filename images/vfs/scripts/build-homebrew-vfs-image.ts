@@ -259,7 +259,7 @@ const HOMEBREW_BOOTSTRAP_MUTABLE_PATHS = [
   `${HOMEBREW_BOOTSTRAP_PREFIX}/Library/Taps`,
   `${HOMEBREW_BOOTSTRAP_PREFIX}/var/homebrew/linked`,
   `${HOMEBREW_BOOTSTRAP_PREFIX}/var/homebrew/locks`,
-  "/home/user/.cache/Homebrew",
+  "/home/maker/.cache/Homebrew",
 ] as const;
 const MAX_HOMEBREW_BOOTSTRAP_ENV_BYTES = 1024;
 const MAX_SIDECAR_JSON_BYTES = 16_777_216;
@@ -1627,7 +1627,7 @@ export function prepareHomebrewBootstrapConsumerNamespace(
   // root; adopting the complete prefix here both avoids a false lazy-tree
   // collision and lets in-guest brew update Cellar, taps, links, and locks.
   chownVfsTree(fs, HOMEBREW_BOOTSTRAP_PREFIX, 1000, 1000);
-  chownVfsTree(fs, "/home/user/.cache", 1000, 1000);
+  chownVfsTree(fs, "/home/maker/.cache", 1000, 1000);
 }
 
 function chownVfsTree(

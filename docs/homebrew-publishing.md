@@ -586,7 +586,7 @@ diagnostic bootstrap still use the retired prefix recorded in the guest
 layout contract. Do not describe that transitional layout as the campaign
 endpoint.
 
-The target guest uses the existing `/home/user` account for writable
+The target guest uses the existing `/home/maker` account for writable
 cache and configuration state and exposes `/usr/bin/brew` as the stable
 command. After cutover, new images must not create a `linuxbrew` user,
 install below `/home/linuxbrew`, or add a compatibility symlink for the

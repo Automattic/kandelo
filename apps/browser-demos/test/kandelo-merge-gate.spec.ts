@@ -244,7 +244,7 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
       "else\n" +
       "  printf 'KANDELO_BASH_FAIL:%s\\n' \"$PWD\"\n" +
       "fi",
-    /KANDELO_BASH_OK:[0-9][^\r\n]*:\/home\/user/,
+    /KANDELO_BASH_OK:[0-9][^\r\n]*:\/home\/maker/,
   );
   await runGuideScript(
     page,
@@ -311,8 +311,8 @@ test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page 
   const nodeContractCommand = [
     "node -e \"console.log('KANDELO_NODE_OK:' + (6 * 7))\"",
     "[ \"$(id -u)\" = 1000 ]",
-    "[ \"$HOME\" = /work ]",
-    "[ \"$PWD\" = /work ]",
+    "[ \"$HOME\" = /home/maker ]",
+    "[ \"$PWD\" = /home/maker ]",
     "[ \"$npm_config_cache\" = /tmp/.npm-cache ]",
     "[ \"$npm_config_registry\" = http://proxy.local/ ]",
     "spidermonkey-node -e \"console.log('KANDELO_NODE_ALIAS_OK')\"",
@@ -355,7 +355,7 @@ test("Kandelo nginx demo serves its web preview", async ({ page }) => {
   await waitForTerminalContent(page, /kandelo\$ ?/, 120_000);
   await runTerminalCommand(
     page,
-    "set -eu; test \"$(id -u):$HOME:$(pwd)\" = '1000:/home/user:/home/user'; " +
+    "set -eu; test \"$(id -u):$HOME:$(pwd)\" = '1000:/home/maker:/home/maker'; " +
       "printf 'KANDELO_NGINX_TERMINAL_OK\\n'",
     "KANDELO_NGINX_TERMINAL_OK",
   );
@@ -388,7 +388,7 @@ test("Kandelo nginx + PHP demo serves dynamic PHP through the web preview", asyn
   await waitForTerminalContent(page, /kandelo\$ ?/, 120_000);
   await runTerminalCommand(
     page,
-    "set -eu; test \"$(id -u):$HOME:$(pwd)\" = '1000:/home/user:/home/user'; " +
+    "set -eu; test \"$(id -u):$HOME:$(pwd)\" = '1000:/home/maker:/home/maker'; " +
       "printf 'KANDELO_NGINX_PHP_TERMINAL_OK\\n'",
     "KANDELO_NGINX_PHP_TERMINAL_OK",
   );

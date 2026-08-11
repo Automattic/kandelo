@@ -232,7 +232,7 @@ const ETC_PASSWD = [
   "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin",
   "redis:x:100:100:redis:/var/lib/redis:/usr/sbin/nologin",
   "mysql:x:101:101:mysql:/var/lib/mysql:/usr/sbin/nologin",
-  "user:x:1000:1000:user:/home/user:/bin/sh",
+  "maker:x:1000:1000:maker:/home/maker:/bin/sh",
   "",
 ].join("\n");
 
@@ -244,7 +244,7 @@ const ETC_GROUP = [
   "www-data:x:33:",
   "redis:x:100:",
   "mysql:x:101:",
-  "user:x:1000:",
+  "maker:x:1000:",
   "",
 ].join("\n");
 

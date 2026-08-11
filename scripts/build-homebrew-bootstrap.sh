@@ -259,10 +259,10 @@ cat > "$BOOTSTRAP_MANIFEST" <<EOF
 /opt/kandelo/homebrew/var d 0755 1000 1000
 /opt/kandelo/homebrew/var/homebrew d 0755 1000 1000
 /opt/kandelo/homebrew/var/homebrew/locks d 0755 1000 1000
-/home/user/.cache d 0755 1000 1000
-/home/user/.cache/Homebrew d 0755 1000 1000
-/home/user/.config d 0755 1000 1000
-/home/user/.config/homebrew d 0755 1000 1000
+/home/maker/.cache d 0755 1000 1000
+/home/maker/.cache/Homebrew d 0755 1000 1000
+/home/maker/.config d 0755 1000 1000
+/home/maker/.config/homebrew d 0755 1000 1000
 
 /etc/homebrew d 0755 0 0
 /etc/homebrew/brew.env f 0644 0 0 src=target/homebrew-bootstrap/brew.env

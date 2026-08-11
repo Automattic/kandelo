@@ -92,7 +92,7 @@ describe("browser host mount layering", () => {
         "/",
         "/dev",
         "/dev/shm",
-        "/home/user",
+        "/home/maker",
         "/root",
         "/srv",
         "/tmp",
@@ -145,13 +145,19 @@ describe("browser host mount layering", () => {
     expect(() => rootfs.stat("/tmp/note")).toThrow();
   });
 
-  it("/home/user and /root resolve to distinct scratch backends", async () => {
+  it("keeps the maker profile writable and separate from /root", async () => {
     const { io } = await buildBrowserMounts(image);
-    const data = new TextEncoder().encode("h");
-    const fdH = io.open("/home/user/x", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
+    const data = new TextEncoder().encode("current profile");
+    const fdH = io.open("/home/maker/x", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
     io.write(fdH, data, null, data.length);
     io.close(fdH);
-    expect(() => io.stat("/home/user/x")).not.toThrow();
+    const readFd = io.open("/home/maker/x", O_RDONLY, 0);
+    const actual = new Uint8Array(32);
+    const length = io.read(readFd, actual, null, actual.length);
+    io.close(readFd);
+    expect(new TextDecoder().decode(actual.subarray(0, length))).toBe(
+      "current profile",
+    );
     expect(() => io.stat("/root/x")).toThrow();
   });
 });

@@ -528,7 +528,7 @@ test "$(/usr/bin/brew --repository 2>&1)" = /opt/kandelo/homebrew ||
   brew_smoke_fail 'brew --repository differs from the guest repository'
 test "$(/usr/bin/brew --cellar 2>&1)" = /opt/kandelo/homebrew/Cellar ||
   brew_smoke_fail 'brew --cellar differs from the guest Cellar'
-test "$(/usr/bin/brew --cache 2>&1)" = /home/user/.cache/Homebrew ||
+test "$(/usr/bin/brew --cache 2>&1)" = /home/maker/.cache/Homebrew ||
   brew_smoke_fail 'brew --cache differs from the guest cache'
 # WHY: \`brew ruby\` is a developer command and may query Homebrew's developer
 # package API. A temporary stock Bash command observes the same post-brew.env
@@ -709,7 +709,7 @@ function assertHomebrewBootstrapConsumerContract(
     );
   }
   assertTreeOwner(fs, "/opt/kandelo/homebrew", 1000, 1000);
-  assertTreeOwner(fs, "/home/user/.cache", 1000, 1000);
+  assertTreeOwner(fs, "/home/maker/.cache", 1000, 1000);
 
   const imageMetadata = asRecord(metadata, "main-shell image metadata");
   const expected = {
@@ -728,7 +728,7 @@ function assertHomebrewBootstrapConsumerContract(
         "/opt/kandelo/homebrew/Library/Taps",
         "/opt/kandelo/homebrew/var/homebrew/linked",
         "/opt/kandelo/homebrew/var/homebrew/locks",
-        "/home/user/.cache/Homebrew",
+        "/home/maker/.cache/Homebrew",
       ],
     },
   };
@@ -1180,11 +1180,11 @@ async function spawnWithTimeout(
     const exitPromise = host.spawn(toArrayBuffer(programBytes), argv, {
       env: [
         "PATH=/opt/kandelo/homebrew/bin:/usr/bin:/bin",
-        "HOME=/home/user",
-        "USER=user",
+        "HOME=/home/maker",
+        "USER=maker",
         "TMPDIR=/tmp",
       ],
-      cwd: "/home/user",
+      cwd: "/home/maker",
       uid: 1000,
       gid: 1000,
       stdin: new Uint8Array(),

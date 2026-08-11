@@ -943,7 +943,7 @@ jq -e \
             "/opt/kandelo/homebrew/Library/Taps",
             "/opt/kandelo/homebrew/var/homebrew/linked",
             "/opt/kandelo/homebrew/var/homebrew/locks",
-            "/home/user/.cache/Homebrew"
+            "/home/maker/.cache/Homebrew"
           ]
         }
       }

@@ -816,7 +816,7 @@
         "mode": 420,
         "uid": 0,
         "gid": 0,
-        "contents": "alias ls='ls --color=auto'\nalias grep='grep --color=auto'\nexport USER=player\nexport NETHACKOPTIONS='windowtype:curses,color,lit_corridor,hilite_pet'\n",
+        "contents": "alias ls='ls --color=auto'\nalias grep='grep --color=auto'\nexport USER=maker\nexport NETHACKOPTIONS='windowtype:curses,color,lit_corridor,hilite_pet'\n",
         "reason": "Preserve the current shell's interactive aliases and guest environment without replacing the platform-owned /etc/profile."
       },
       {
@@ -826,7 +826,7 @@
         "mode": 420,
         "uid": 0,
         "gid": 0,
-        "contents": "[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n[core]\n\tpager = cat\n[user]\n\tname = User\n\temail = user@wasm.local\n[init]\n\tdefaultBranch = main\n",
+        "contents": "[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n[core]\n\tpager = cat\n[user]\n\tname = Maker\n\temail = maker@wasm.local\n[init]\n\tdefaultBranch = main\n",
         "reason": "Preserve the shell image's deterministic Git identity, pager, maintenance, and default-branch behavior."
       },
       {

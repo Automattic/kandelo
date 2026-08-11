@@ -461,8 +461,8 @@ async function main() {
         ["gc.auto", "0"],
         ["maintenance.auto", "false"],
         ["core.pager", "cat"],
-        ["user.name", "User"],
-        ["user.email", "user@wasm.local"],
+        ["user.name", "Maker"],
+        ["user.email", "maker@wasm.local"],
         ["init.defaultBranch", "main"],
     ];
     const gitEnv: string[] = [
@@ -547,7 +547,7 @@ async function main() {
                     runnerFilesystem.guestCwd,
                     runnerFilesystem.isolated,
                     process.env.KERNEL_PATH ?? "/usr/local/bin:/usr/bin:/bin",
-                    uid !== undefined && uid !== 0 ? "/home/user" : "/root",
+                    uid !== undefined && uid !== 0 ? "/home/maker" : "/root",
                 ),
                 ...gitEnv,
             ],
