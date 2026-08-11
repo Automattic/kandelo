@@ -208,6 +208,31 @@ test("rejects a flat image with pending lazy file state", async () => {
   await assert.rejects(() => inspectFixture(fixture), /self-contained|lazy/i);
 });
 
+test("rejects a canonical shell without its public Bash entrypoints", async () => {
+  const fixture = await createFixture({
+    mutateFileSystem(fs) {
+      fs.unlink("/bin/bash");
+    },
+  });
+  await assert.rejects(
+    () => inspectFixture(fixture),
+    /public Bash entrypoint.*\/bin\/bash/i,
+  );
+});
+
+test("rejects a canonical shell with a crossed public command alias", async () => {
+  const fixture = await createFixture({
+    mutateFileSystem(fs) {
+      fs.unlink("/usr/bin/env");
+      fs.symlink("/opt/kandelo/homebrew/bin/dash", "/usr/bin/env");
+    },
+  });
+  await assert.rejects(
+    () => inspectFixture(fixture),
+    /public env entrypoint.*\/usr\/bin\/env/i,
+  );
+});
+
 test("rejects a valid but different canonical selection", async () => {
   const fixture = await createFixture();
   const crossed = canonicalSelectionBytes("crossed\n");
@@ -272,6 +297,7 @@ async function inspectFixture(
 async function createFixture(
   options: {
     mutateMetadata?: (metadata: VfsImageMetadata) => void;
+    mutateFileSystem?: (fs: MemoryFileSystem) => void;
     lazyFile?: boolean;
   } = {},
 ) {
@@ -283,6 +309,7 @@ async function createFixture(
     IMAGE_MAX_BYTES,
   );
   for (const path of [
+    "/bin",
     "/etc/kandelo",
     "/opt/kandelo/homebrew/bin",
     "/usr/bin",
@@ -297,6 +324,14 @@ async function createFixture(
     new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]),
     0o755,
   );
+  for (const command of ["dash", "env"]) {
+    writeVfsBinary(
+      fs,
+      `/opt/kandelo/homebrew/bin/${command}`,
+      new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]),
+      0o755,
+    );
+  }
   writeVfsBinary(
     fs,
     "/opt/kandelo/homebrew/bin/brew",
@@ -304,6 +339,16 @@ async function createFixture(
     0o755,
   );
   fs.symlink("/opt/kandelo/homebrew/bin/brew", "/usr/bin/brew");
+  for (const publicPath of ["/bin/bash", "/usr/bin/bash"]) {
+    fs.symlink("/opt/kandelo/homebrew/bin/bash", publicPath);
+  }
+  for (const publicPath of ["/bin/sh", "/usr/bin/sh"]) {
+    fs.symlink("/opt/kandelo/homebrew/bin/dash", publicPath);
+  }
+  for (const publicPath of ["/bin/env", "/usr/bin/env"]) {
+    fs.symlink("/opt/kandelo/homebrew/bin/env", publicPath);
+  }
+  options.mutateFileSystem?.(fs);
   if (options.lazyFile) {
     fs.registerLazyFile(
       "/opt/kandelo/homebrew/bin/lazy",

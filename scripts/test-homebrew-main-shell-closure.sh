@@ -1160,14 +1160,19 @@ KANDELO_LAZY_STATE_IMAGE="$lazy_state_image" \
         new SharedArrayBuffer(4 * 1024 * 1024, { maxByteLength }),
         maxByteLength,
       );
-      for (const path of ["/etc/kandelo", "/opt/kandelo/homebrew/bin", "/usr/bin"]) {
+      for (const path of ["/bin", "/etc/kandelo", "/opt/kandelo/homebrew/bin", "/usr/bin"]) {
         ensureDirRecursive(fs, path);
       }
       writeVfsBinary(fs, "/etc/kandelo/shell.json", shellConfig, 0o644);
       writeVfsBinary(fs, "/etc/kandelo/demo.json", demoConfig, 0o644);
       writeVfsBinary(fs, "/opt/kandelo/homebrew/bin/bash", new Uint8Array([0,97,115,109,1,0,0,0]), 0o755);
+      writeVfsBinary(fs, "/opt/kandelo/homebrew/bin/dash", new Uint8Array([0,97,115,109,1,0,0,0]), 0o755);
+      writeVfsBinary(fs, "/opt/kandelo/homebrew/bin/env", new Uint8Array([0,97,115,109,1,0,0,0]), 0o755);
       writeVfsBinary(fs, "/opt/kandelo/homebrew/bin/brew", new TextEncoder().encode("#!/bin/sh\n"), 0o755);
       fs.symlink("/opt/kandelo/homebrew/bin/brew", "/usr/bin/brew");
+      for (const path of ["/bin/bash", "/usr/bin/bash"]) fs.symlink("/opt/kandelo/homebrew/bin/bash", path);
+      for (const path of ["/bin/sh", "/usr/bin/sh"]) fs.symlink("/opt/kandelo/homebrew/bin/dash", path);
+      for (const path of ["/bin/env", "/usr/bin/env"]) fs.symlink("/opt/kandelo/homebrew/bin/env", path);
       if (lazy) fs.registerLazyFile("/lazy", "https://invalid.example/lazy", 1, 0o644);
       return fs.saveImage({metadata: {
         version: 1,

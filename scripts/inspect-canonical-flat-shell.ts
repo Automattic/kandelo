@@ -36,6 +36,8 @@ const EXPECTED_IMAGE_CREATED_BY =
   "images/vfs/scripts/build-homebrew-flat-vfs-image.ts";
 const BREW_STABLE_PATH = "/usr/bin/brew";
 const BREW_SELECTED_PATH = "/opt/kandelo/homebrew/bin/brew";
+const DASH_SELECTED_PATH = "/opt/kandelo/homebrew/bin/dash";
+const ENV_SELECTED_PATH = "/opt/kandelo/homebrew/bin/env";
 
 export interface CanonicalFlatShellReport {
   schema: 1;
@@ -206,6 +208,30 @@ export async function inspectCanonicalFlatShell(input: {
   expectGuestBytes(fs, KANDELO_SHELL_CONFIG_PATH, shellConfigBytes);
   expectGuestBytes(fs, KANDELO_DEMO_CONFIG_PATH, demoConfigBytes);
   expectEagerExecutable(fs, shellConfig.path, "selected interactive shell");
+  for (const path of ["/bin/bash", "/usr/bin/bash"]) {
+    expectEagerSelectedCommandLink(
+      fs,
+      path,
+      shellConfig.path,
+      "public Bash entrypoint",
+    );
+  }
+  for (const path of ["/bin/sh", "/usr/bin/sh"]) {
+    expectEagerSelectedCommandLink(
+      fs,
+      path,
+      DASH_SELECTED_PATH,
+      "public POSIX shell entrypoint",
+    );
+  }
+  for (const path of ["/bin/env", "/usr/bin/env"]) {
+    expectEagerSelectedCommandLink(
+      fs,
+      path,
+      ENV_SELECTED_PATH,
+      "public env entrypoint",
+    );
+  }
   const brewLink = fs.lstat(BREW_STABLE_PATH);
   if (
     (brewLink.mode & 0xf000) !== 0xa000 ||
@@ -350,6 +376,32 @@ function expectEagerExecutable(
       `canonical flat shell ${label} is not an eager executable: ${path}`,
     );
   }
+}
+
+function expectEagerSelectedCommandLink(
+  fs: MemoryFileSystem,
+  path: string,
+  selectedPath: string,
+  label: string,
+): void {
+  let link;
+  try {
+    link = fs.lstat(path);
+  } catch {
+    throw new Error(`canonical flat shell ${label} is missing: ${path}`);
+  }
+  if (
+    (link.mode & 0xf000) !== 0xa000 ||
+    link.uid !== 0 ||
+    link.gid !== 0 ||
+    fs.readlink(path) !== selectedPath ||
+    fs.isPathDeferred(path)
+  ) {
+    throw new Error(
+      `canonical flat shell ${label} does not select ${selectedPath}: ${path}`,
+    );
+  }
+  expectEagerExecutable(fs, selectedPath, `${label} source`);
 }
 
 function readGuestRegularFile(fs: MemoryFileSystem, path: string): Uint8Array {

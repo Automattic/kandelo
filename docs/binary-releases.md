@@ -760,11 +760,13 @@ matrix result is still aggregated by the single `test-gate` job.
 ## Current ABI-42 shell publication (2026-08-11)
 
 `homebrew/main-shell-flat-selection.json` is a package input for shell
-revision 23. Its archive contains a self-contained `/opt/kandelo/homebrew`,
-and every shell-derived VFS package records the exact base image digest and
-size. The shell and its five reverse dependents therefore move through one
-canonical package release rather than through an independent bottle-mirror
-publication transaction.
+revision 23. Its archive contains a self-contained `/opt/kandelo/homebrew`
+and root-owned `/bin` and `/usr/bin` links to the selected eager commands.
+Canonical inspection requires the conventional `bash`, `sh`, `env`, and
+`brew` entrypoints. Every shell-derived VFS package records the exact base
+image digest and size. The shell and its five reverse dependents therefore
+move through one canonical package release rather than through an independent
+bottle-mirror publication transaction.
 
 Prepare merge writes those rows only to its isolated
 `merge-candidate-abi-v42-*` release. Post-merge activation verifies the merged

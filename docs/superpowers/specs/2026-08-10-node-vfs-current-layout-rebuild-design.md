@@ -99,8 +99,13 @@ from declared inputs:
 
 The platform-only base contains Kandelo-owned eager files. The flat builder
 then fully materializes the selected bottles under `/opt/kandelo/homebrew`.
-The output contains no deferred trees, bootstrap archive, mirror plan, or
-mutable runtime download authority.
+It projects every selected `bin/*` command into the conventional `/bin` and
+`/usr/bin` namespaces and installs the explicit compatibility aliases from the
+shell product contract, including `sh`. Reserved extraction commands remain
+bound to their designated bottles. Publication inspection requires eager,
+root-owned `bash`, `sh`, `env`, and `brew` entrypoints. The output contains no
+deferred trees, bootstrap archive, mirror plan, or mutable runtime download
+authority.
 
 Extend the generic flat builder with an optional demo-configuration input.
 Validate it through the existing demo-config contract, write

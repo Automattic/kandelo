@@ -644,7 +644,8 @@ scripts/dev-shell.sh env \
 ```
 
 Inspect the staged member: ABI 42; 512 MiB maximum; exact canonical selection,
-shell, and demo bindings; `/usr/bin/brew` targeting
+shell, and demo bindings; eager root-owned `/bin` and `/usr/bin` links for
+`bash`, `sh`, and `env`; `/usr/bin/brew` targeting
 `/opt/kandelo/homebrew/bin/brew`; 41 package reports; no lazy files or trees.
 Extract the exact member for the later cross-host acceptance step:
 

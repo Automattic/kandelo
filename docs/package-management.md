@@ -129,9 +129,12 @@ The package registry now owns the browser shell product. The checked-in
 `homebrew/main-shell-flat-selection.json` selects the exact admitted wasm32
 bottles, and shell revision 23 composes them eagerly over the platform base.
 The resulting archive contains a self-contained `/opt/kandelo/homebrew`, its
-image-owned Bash configuration, demo metadata, and `/usr/bin/brew` entrypoint.
-It contains no deferred Homebrew files, bottle trees, bootstrap archive, or
-runtime mirror authority.
+image-owned Bash configuration, demo metadata, and standard public command
+paths under `/bin` and `/usr/bin`. Those root-owned links select the eagerly
+materialized commands from the admitted Homebrew closure; in particular,
+`bash`, `sh`, `env`, and `brew` are available at their conventional paths.
+The image contains no deferred Homebrew files, bottle trees, bootstrap
+archive, or runtime mirror authority.
 
 This is the normal canonical package release path, not a parallel Homebrew
 product lane. The shell recipe is `publication_state = "ready"`; its
