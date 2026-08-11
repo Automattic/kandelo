@@ -807,9 +807,12 @@ pub struct Process {
     /// state. It prevents the borrower from creating another address-space or
     /// pthread owner before successful exec replaces the borrowed image.
     pub vfork_child: bool,
-    /// Saved signal mask during sigsuspend host retry.
-    /// Set on first sigsuspend call, restored when a signal is delivered.
-    pub sigsuspend_saved_mask: Option<u64>,
+    /// Nested signal-mask-swapping waits owned by the process leader.
+    pub mask_waits: Vec<crate::signal::SignalMaskWaitContext>,
+    /// Caught-handler bookkeeping for the process leader. Pthreads keep the
+    /// same fields in their PerThreadSignalState.
+    pub caught_handler_depth: u32,
+    pub returned_handler_depths: Vec<u32>,
     /// Path to exec after fork (set by posix_spawn before forking).
     pub fork_exec_path: Option<Vec<u8>>,
     /// Argv for exec after fork.
@@ -1100,7 +1103,9 @@ impl Process {
             thread_name: [0u8; wasm_posix_shared::kernel_scratch_wire::PRCTL_NAME_BYTES as usize],
             fork_child: false,
             vfork_child: false,
-            sigsuspend_saved_mask: None,
+            mask_waits: Vec::new(),
+            caught_handler_depth: 0,
+            returned_handler_depths: Vec::new(),
             fork_exec_path: None,
             fork_exec_argv: None,
             fork_fd_actions: Vec::new(),
@@ -1969,33 +1974,238 @@ impl Process {
         removed
     }
 
-    /// Read the saved sigsuspend/ppoll/pselect mask for TID.
-    pub fn sigsuspend_saved_mask_for(&self, tid: u32) -> Option<u64> {
+    fn mask_waits_for(
+        &self,
+        tid: u32,
+    ) -> Option<&[crate::signal::SignalMaskWaitContext]> {
         if self.is_main_thread(tid) {
-            self.sigsuspend_saved_mask
+            Some(&self.mask_waits)
         } else {
             self.get_thread(tid)
-                .and_then(|t| t.signals.sigsuspend_saved_mask)
+                .map(|thread| thread.signals.mask_waits.as_slice())
         }
     }
 
-    /// Set the saved sigsuspend/ppoll/pselect mask for TID.
-    pub fn set_sigsuspend_saved_mask_for(&mut self, tid: u32, val: Option<u64>) {
+    fn mask_waits_for_mut(
+        &mut self,
+        tid: u32,
+    ) -> Option<&mut Vec<crate::signal::SignalMaskWaitContext>> {
         if self.is_main_thread(tid) {
-            self.sigsuspend_saved_mask = val;
-        } else if let Some(t) = self.get_thread_mut(tid) {
-            t.signals.sigsuspend_saved_mask = val;
-        }
-    }
-
-    /// Take (clear) the saved sigsuspend mask for TID, returning the old value.
-    pub fn take_sigsuspend_saved_mask_for(&mut self, tid: u32) -> Option<u64> {
-        if self.is_main_thread(tid) {
-            self.sigsuspend_saved_mask.take()
+            Some(&mut self.mask_waits)
         } else {
             self.get_thread_mut(tid)
-                .and_then(|t| t.signals.sigsuspend_saved_mask.take())
+                .map(|thread| &mut thread.signals.mask_waits)
         }
+    }
+
+    pub fn mask_wait_depth_for(&self, tid: u32) -> usize {
+        self.mask_waits_for(tid).map_or(0, |waits| waits.len())
+    }
+
+    pub fn caught_handler_depth_for(&self, tid: u32) -> u32 {
+        if self.is_main_thread(tid) {
+            self.caught_handler_depth
+        } else {
+            self.get_thread(tid)
+                .map_or(0, |thread| thread.signals.caught_handler_depth)
+        }
+    }
+
+    fn set_caught_handler_depth_for(&mut self, tid: u32, depth: u32) {
+        if self.is_main_thread(tid) {
+            self.caught_handler_depth = depth;
+        } else if let Some(thread) = self.get_thread_mut(tid) {
+            thread.signals.caught_handler_depth = depth;
+        }
+    }
+
+    fn returned_handler_depths_for_mut(&mut self, tid: u32) -> Option<&mut Vec<u32>> {
+        if self.is_main_thread(tid) {
+            Some(&mut self.returned_handler_depths)
+        } else {
+            self.get_thread_mut(tid)
+                .map(|thread| &mut thread.signals.returned_handler_depths)
+        }
+    }
+
+    /// Enter a mask-swapping wait, distinguishing a host retry or libc
+    /// restart from a new wait nested inside a caught handler.
+    pub fn enter_signal_mask_wait_for(
+        &mut self,
+        tid: u32,
+        kind: crate::signal::SignalMaskWaitKind,
+        new_mask: u64,
+    ) {
+        use crate::signal::SignalMaskWaitState;
+
+        let current_mask = self.blocked_for(tid);
+        let current_handler_depth = self.caught_handler_depth_for(tid);
+        let reuse = self
+            .mask_waits_for(tid)
+            .and_then(|waits| waits.last())
+            .is_some_and(|wait| {
+                wait.kind == kind
+                    && wait.replacement_mask == new_mask
+                    && current_mask == wait.replacement_mask
+                    && match wait.state {
+                        // Repeated kernel attempts remain part of the active
+                        // invocation, including a wait nested in a handler.
+                        SignalMaskWaitState::Active => true,
+                        // A libc restart can only occur after the handler
+                        // which interrupted this frame has returned. At that
+                        // point the current handler depth is lower. Equal or
+                        // greater depth is a genuinely nested invocation,
+                        // even when the handler restored the same mask.
+                        SignalMaskWaitState::Interrupted { handler_depth } => {
+                            current_handler_depth < handler_depth
+                        }
+                    }
+            });
+        if reuse {
+            if let Some(wait) = self
+                .mask_waits_for_mut(tid)
+                .and_then(|waits| waits.last_mut())
+            {
+                wait.state = SignalMaskWaitState::Active;
+            }
+            return;
+        }
+
+        let saved_mask = self.blocked_for(tid);
+        if let Some(waits) = self.mask_waits_for_mut(tid) {
+            waits.push(crate::signal::SignalMaskWaitContext {
+                saved_mask,
+                replacement_mask: new_mask,
+                kind,
+                state: SignalMaskWaitState::Active,
+            });
+            self.set_blocked_for(tid, new_mask);
+        }
+    }
+
+    /// Complete the active top wait in strict LIFO order.
+    pub fn finish_signal_mask_wait_for(
+        &mut self,
+        tid: u32,
+        kind: crate::signal::SignalMaskWaitKind,
+    ) -> bool {
+        use crate::signal::SignalMaskWaitState;
+
+        let saved = self.mask_waits_for_mut(tid).and_then(|waits| {
+            waits
+                .last()
+                .filter(|wait| wait.kind == kind && wait.state == SignalMaskWaitState::Active)?;
+            waits.pop().map(|wait| wait.saved_mask)
+        });
+        if let Some(saved) = saved {
+            self.set_blocked_for(tid, saved);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Record one normal or nonlocal rt_sigreturn boundary.
+    pub fn return_from_caught_handler_for(&mut self, tid: u32) -> bool {
+        let depth = self.caught_handler_depth_for(tid);
+        if depth == 0 {
+            return false;
+        }
+        self.set_caught_handler_depth_for(tid, depth - 1);
+        if let Some(returned) = self.returned_handler_depths_for_mut(tid) {
+            returned.push(depth);
+        }
+        true
+    }
+
+    /// A following sigprocmask is libc's normal-return restoration, not a
+    /// siglongjmp abandonment.
+    pub fn acknowledge_caught_handler_mask_restore_for(&mut self, tid: u32) {
+        if let Some(returned) = self.returned_handler_depths_for_mut(tid) {
+            returned.pop();
+        }
+    }
+
+    /// Retire one exact mask-wait context. A context paired with an
+    /// unacknowledged rt_sigreturn belongs to siglongjmp and is discarded
+    /// without exposing an intermediate mask; the jump buffer supplies the
+    /// final mask. Normal and host cancellations restore the saved mask.
+    pub fn cancel_signal_mask_wait_for(&mut self, tid: u32) -> bool {
+        use crate::signal::SignalMaskWaitState;
+
+        let current_depth = self.caught_handler_depth_for(tid);
+        let returned_depth = self
+            .returned_handler_depths_for_mut(tid)
+            .and_then(|returned| returned.last().copied());
+        if let Some(depth) = returned_depth {
+            if let Some(returned) = self.returned_handler_depths_for_mut(tid) {
+                returned.pop();
+            }
+            let abandoned = self.mask_waits_for_mut(tid).and_then(|waits| {
+                waits
+                    .last()
+                    .filter(|wait| {
+                        wait.state
+                            == SignalMaskWaitState::Interrupted {
+                                handler_depth: depth,
+                            }
+                    })?;
+                waits.pop()
+            });
+            return abandoned.is_some();
+        }
+
+        let saved = self.mask_waits_for_mut(tid).and_then(|waits| {
+            let top = waits.last()?;
+            let eligible = match top.state {
+                SignalMaskWaitState::Active => true,
+                SignalMaskWaitState::Interrupted { handler_depth } => {
+                    handler_depth == current_depth.saturating_add(1)
+                }
+            };
+            eligible.then(|| waits.pop().expect("checked top mask wait"))
+        });
+        if let Some(wait) = saved {
+            self.set_blocked_for(tid, wait.saved_mask);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Install the mask active while a caught handler runs and return the
+    /// mask that normal handler return must restore.
+    ///
+    /// ppoll, pselect, and sigsuspend leave their replacement mask current
+    /// while the handler runs.  Their saved pre-wait mask remains Rust-owned
+    /// until the wait reaches a terminal kernel attempt or exact host-owned
+    /// cancellation.  The delivery record therefore restores the current
+    /// replacement mask after the handler, preserving one logical restarted
+    /// wait without exposing the caller's pre-wait mask between attempts.
+    pub(crate) fn install_caught_handler_mask_for(
+        &mut self,
+        tid: u32,
+        action_mask: u64,
+        signum: u32,
+    ) -> u64 {
+        use crate::signal::SignalMaskWaitState;
+
+        let handler_base_mask = self.blocked_for(tid);
+        let handler_depth = self.caught_handler_depth_for(tid).saturating_add(1);
+        self.set_caught_handler_depth_for(tid, handler_depth);
+        if let Some(wait) = self
+            .mask_waits_for_mut(tid)
+            .and_then(|waits| waits.last_mut())
+        {
+            if wait.state == SignalMaskWaitState::Active {
+                wait.state = SignalMaskWaitState::Interrupted { handler_depth };
+            }
+        }
+        self.set_blocked_for(
+            tid,
+            handler_base_mask | action_mask | crate::signal::sig_bit(signum),
+        );
+        handler_base_mask
     }
 
     /// Collect every TID that has `sig` unblocked (main + worker threads).
@@ -2305,6 +2515,120 @@ mod tests {
             .alloc(crate::fd::OpenFileDescRef(ofd_index), 0)
             .unwrap();
         socket_index
+    }
+
+    #[test]
+    fn temporary_wait_mask_forms_handler_mask_and_cancel_restores_once() {
+        use crate::signal::{SignalMaskWaitKind, sig_bit};
+        use crate::syscalls::cancel_host_owned_wait_for_tid;
+        use wasm_posix_shared::signal::{SIGALRM, SIGTERM, SIGUSR1, SIGUSR2};
+
+        let mut proc = Process::new(740);
+        let worker_tid = 741;
+        proc.add_thread(ThreadInfo::new(worker_tid, 0, 0, 0));
+
+        let original = sig_bit(SIGUSR2);
+        let temporary = sig_bit(SIGTERM);
+        let action_mask = sig_bit(SIGUSR1);
+        let handler_mask = temporary | action_mask | sig_bit(SIGALRM);
+
+        for tid in [proc.pid, worker_tid] {
+            proc.set_blocked_for(tid, original);
+            proc.enter_signal_mask_wait_for(tid, SignalMaskWaitKind::Ppoll, temporary);
+
+            let restore_mask = proc.install_caught_handler_mask_for(tid, action_mask, SIGALRM);
+
+            assert_eq!(restore_mask, temporary);
+            assert_eq!(proc.blocked_for(tid), handler_mask);
+            assert_eq!(proc.mask_wait_depth_for(tid), 1);
+
+            // Normal handler return preserves the replacement mask while the
+            // interrupted wait decides whether it will be resubmitted.
+            assert!(proc.return_from_caught_handler_for(tid));
+            proc.set_blocked_for(tid, restore_mask);
+            proc.acknowledge_caught_handler_mask_restore_for(tid);
+            assert_eq!(proc.blocked_for(tid), temporary);
+
+            assert!(cancel_host_owned_wait_for_tid(&mut proc, tid));
+            assert_eq!(proc.blocked_for(tid), original);
+            assert_eq!(proc.mask_wait_depth_for(tid), 0);
+            assert!(!cancel_host_owned_wait_for_tid(&mut proc, tid));
+            assert_eq!(proc.blocked_for(tid), original);
+        }
+    }
+
+    #[test]
+    fn ordinary_handler_return_uses_the_current_mask() {
+        use crate::signal::sig_bit;
+        use wasm_posix_shared::signal::{SIGALRM, SIGUSR1, SIGUSR2};
+
+        let mut proc = Process::new(742);
+        let original = sig_bit(SIGUSR2);
+        let action_mask = sig_bit(SIGUSR1);
+
+        proc.set_blocked_for(proc.pid, original);
+        let restore_mask = proc.install_caught_handler_mask_for(proc.pid, action_mask, SIGALRM);
+
+        assert_eq!(restore_mask, original);
+        assert_eq!(
+            proc.blocked_for(proc.pid),
+            original | action_mask | sig_bit(SIGALRM),
+        );
+        assert_eq!(proc.mask_wait_depth_for(proc.pid), 0);
+        assert!(proc.return_from_caught_handler_for(proc.pid));
+        proc.acknowledge_caught_handler_mask_restore_for(proc.pid);
+    }
+
+    #[test]
+    fn nested_mask_waits_restore_lifo_and_nonlocal_unwind_discards_each_frame() {
+        use crate::signal::{SignalMaskWaitKind, sig_bit};
+        use wasm_posix_shared::signal::{SIGALRM, SIGTERM, SIGUSR1, SIGUSR2};
+
+        let mut proc = Process::new(743);
+        let tid = proc.pid;
+        let original = sig_bit(SIGUSR2);
+        let outer = sig_bit(SIGTERM);
+        let inner = sig_bit(SIGUSR1);
+
+        proc.set_blocked_for(tid, original);
+        proc.enter_signal_mask_wait_for(tid, SignalMaskWaitKind::Ppoll, outer);
+        let outer_handler = proc.install_caught_handler_mask_for(tid, 0, SIGALRM);
+        // A handler may deliberately restore the outer replacement mask. A
+        // same-kind, same-mask wait entered at this handler depth is still a
+        // nested invocation, not a restart of the interrupted outer wait.
+        proc.set_blocked_for(tid, outer_handler);
+        proc.enter_signal_mask_wait_for(tid, SignalMaskWaitKind::Ppoll, outer);
+        assert_eq!(proc.mask_wait_depth_for(tid), 2);
+        assert!(proc.finish_signal_mask_wait_for(tid, SignalMaskWaitKind::Ppoll));
+        assert_eq!(proc.blocked_for(tid), outer_handler);
+        assert_eq!(proc.mask_wait_depth_for(tid), 1);
+
+        proc.enter_signal_mask_wait_for(tid, SignalMaskWaitKind::Pselect, inner);
+        assert_eq!(proc.mask_wait_depth_for(tid), 2);
+        assert!(proc.finish_signal_mask_wait_for(tid, SignalMaskWaitKind::Pselect));
+        assert_eq!(proc.blocked_for(tid), outer_handler);
+        assert_eq!(proc.mask_wait_depth_for(tid), 1);
+
+        assert!(proc.return_from_caught_handler_for(tid));
+        proc.set_blocked_for(tid, outer_handler);
+        proc.acknowledge_caught_handler_mask_restore_for(tid);
+        proc.enter_signal_mask_wait_for(tid, SignalMaskWaitKind::Ppoll, outer);
+        assert_eq!(proc.mask_wait_depth_for(tid), 1);
+        assert!(proc.finish_signal_mask_wait_for(tid, SignalMaskWaitKind::Ppoll));
+        assert_eq!(proc.blocked_for(tid), original);
+
+        proc.enter_signal_mask_wait_for(tid, SignalMaskWaitKind::Ppoll, outer);
+        proc.install_caught_handler_mask_for(tid, 0, SIGALRM);
+        proc.enter_signal_mask_wait_for(tid, SignalMaskWaitKind::Sigsuspend, inner);
+        proc.install_caught_handler_mask_for(tid, 0, SIGUSR1);
+        assert_eq!(proc.mask_wait_depth_for(tid), 2);
+        assert!(proc.return_from_caught_handler_for(tid));
+        assert!(proc.cancel_signal_mask_wait_for(tid));
+        assert_eq!(proc.mask_wait_depth_for(tid), 1);
+        assert!(proc.return_from_caught_handler_for(tid));
+        assert!(proc.cancel_signal_mask_wait_for(tid));
+        assert_eq!(proc.mask_wait_depth_for(tid), 0);
+        assert!(!proc.cancel_signal_mask_wait_for(tid));
     }
 
     #[test]

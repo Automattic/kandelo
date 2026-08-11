@@ -578,6 +578,41 @@ describe("Rust-owned process wait lifecycle", () => {
     );
   });
 
+  it.each([
+    ["wasm32", 4],
+    ["wasm64", 8],
+  ] as const)(
+    "%s rejects Linux __WALL's numeric option before polling or queuing wait4",
+    (_name, pointerWidth) => {
+      const linuxWall = 0x40000000;
+      const waitChildPoll = vi.fn(() => 0);
+      const worker = createWorkerHarness(
+        { kernel_wait_child_poll: waitChildPoll },
+        pointerWidth,
+      );
+      const completeChannel = observeMarshalledCompletions(worker);
+      worker.waitingForChild = [];
+      const args = syscallArgs(-1, 0, linuxWall, 0);
+      const channel = registerMainChannel(
+        worker,
+        createChannel(7, createSharedMemory()),
+      );
+
+      dispatchLifecycleSyscall(worker, channel, ABI_SYSCALLS.Wait4, args);
+
+      expect(waitChildPoll).not.toHaveBeenCalled();
+      expect(worker.waitingForChild).toEqual([]);
+      expect(completeChannel).toHaveBeenCalledWith(
+        channel,
+        ABI_SYSCALLS.Wait4,
+        args,
+        undefined,
+        -1,
+        22,
+      );
+    },
+  );
+
   it("waitid passes STOPPED+WNOWAIT and writes exact CLD, uid, status, and rusage", () => {
     const kernelMemory = createSharedMemory();
     const processMemory = createSharedMemory();
