@@ -970,6 +970,12 @@ pub mod fd_flags {
     pub const FD_CLOFORK: u32 = 2;
 }
 
+/// Filesystem mount flags reported through statfs(2).
+pub mod statfs_flags {
+    /// Ignore set-user-ID and set-group-ID mode bits on execution.
+    pub const ST_NOSUID: u32 = 0x2;
+}
+
 /// fcntl command constants (F_*).
 pub mod fcntl_cmd {
     pub const F_DUPFD: u32 = 0;

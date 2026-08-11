@@ -11,7 +11,7 @@
  * in once the policy lands.
  */
 
-import type { MountConfig } from "./types";
+import type { MountConfig, MountSetIdCapability } from "./types";
 import { FILE_MODES, OPEN_FLAGS } from "../generated/abi";
 import { MemoryFileSystem } from "./memory-fs";
 import { restoreVerifiedVfsImage } from "./load-image";
@@ -29,6 +29,8 @@ export interface MountSpec {
   source: "image" | "scratch";
   /** Advisory until PR 5/5 enforces it on writes through `VirtualPlatformIO`. */
   readonly?: boolean;
+  /** Omitted mounts are nosuid; trusted requests still require backend proof. */
+  setIdCapability?: MountSetIdCapability;
   /** Directory mode for scratch mount roots. Mirrors MANIFEST for defaults. */
   mode?: number;
   /** Virtual owner for scratch mount roots. Defaults to root. */
@@ -259,6 +261,7 @@ async function resolveValidatedForBrowser(
         mountPoint: m.path,
         backend,
         readonly: m.readonly,
+        setIdCapability: m.setIdCapability,
       });
     } else {
       const bytes = options.scratchSabBytes?.[m.path] ?? BROWSER_SCRATCH_SAB_BYTES;
@@ -272,6 +275,7 @@ async function resolveValidatedForBrowser(
         mountPoint: m.path,
         backend,
         readonly: m.readonly,
+        setIdCapability: m.setIdCapability,
       });
     }
   }

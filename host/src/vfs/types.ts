@@ -5,6 +5,18 @@ import type {
   StatResult,
   StatfsResult,
 } from "../types";
+import { STATFS_FLAGS } from "../generated/abi";
+
+/** POSIX statfs(2) flag for filesystems that ignore set-ID mode bits. */
+export const ST_NOSUID = STATFS_FLAGS.ST_NOSUID;
+
+export type MountSetIdCapability =
+  | { kind: "nosuid" }
+  | {
+      kind: "trusted-root-product";
+      guestWritable: false;
+      stableExecutableIdentity: true;
+    };
 
 export interface DirEntry {
   name: string;
@@ -86,4 +98,5 @@ export interface MountConfig {
   mountPoint: string;
   backend: FileSystemBackend;
   readonly?: boolean;
+  setIdCapability?: MountSetIdCapability;
 }

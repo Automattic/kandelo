@@ -2247,6 +2247,11 @@ fn render_ts_module() -> String {
         out.push_str(&format!("  {}: {},\n", name, value));
     }
     out.push_str("} as const;\n\n");
+    out.push_str("export const STATFS_FLAGS = {\n");
+    for (name, value) in statfs_flags() {
+        out.push_str(&format!("  {}: {},\n", name, value));
+    }
+    out.push_str("} as const;\n\n");
     out.push_str("export const FILE_MODES = {\n");
     for (name, value) in file_modes() {
         out.push_str(&format!("  {}: {},\n", name, value));
@@ -4149,10 +4154,15 @@ fn vfs_metadata() -> Value {
         "fd_flags": named_values(fd_flags()),
         "fcntl_commands": named_values(fcntl_commands()),
         "access_modes": named_values(access_modes()),
+        "statfs_flags": named_values(statfs_flags()),
         "file_modes": named_values(file_modes()),
         "dirent_types": named_values(dirent_types()),
         "seek_whence": named_values(seek_whence()),
     })
+}
+
+fn statfs_flags() -> [(&'static str, u32); 1] {
+    [("ST_NOSUID", shared::statfs_flags::ST_NOSUID)]
 }
 
 fn channel_scalar_contract() -> Value {
@@ -6925,6 +6935,9 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
             "syscall_arg_descriptors" => {
                 classify_additive_object_by_key(key, old_value, new_value, &mut report)?
             }
+            "vfs_metadata" => {
+                classify_additive_object_by_key(key, old_value, new_value, &mut report)?
+            }
             _ if old_value != new_value => {
                 report
                     .breaking
@@ -7406,6 +7419,7 @@ mod tests {
         assert_eq!(metadata["fd_flags"].as_array().unwrap().len(), 2);
         assert_eq!(metadata["fcntl_commands"].as_array().unwrap().len(), 15);
         assert_eq!(metadata["access_modes"].as_array().unwrap().len(), 4);
+        assert_eq!(metadata["statfs_flags"].as_array().unwrap().len(), 1);
         assert_eq!(metadata["file_modes"].as_array().unwrap().len(), 24);
         assert_eq!(metadata["dirent_types"].as_array().unwrap().len(), 8);
         assert_eq!(metadata["seek_whence"].as_array().unwrap().len(), 3);
@@ -7419,6 +7433,7 @@ mod tests {
             ("fd_flags", "FD_CLOFORK", json!(2)),
             ("fcntl_commands", "F_DUPFD_CLOFORK", json!(1028)),
             ("access_modes", "X_OK", json!(1)),
+            ("statfs_flags", "ST_NOSUID", json!(2)),
             ("file_modes", "S_IFREG", json!(0o100000)),
             ("file_modes", "S_MODE_BITS", json!(0o7777)),
             ("dirent_types", "DT_SOCK", json!(12)),
@@ -7442,6 +7457,8 @@ mod tests {
             "export const FD_FLAGS = {",
             "export const FCNTL_COMMANDS = {",
             "export const ACCESS_MODES = {",
+            "export const STATFS_FLAGS = {",
+            "  ST_NOSUID: 2,",
             "export const FILE_MODES = {",
             "  S_MODE_BITS: 4095,",
             "export const DIRENT_TYPES = {",
@@ -8261,6 +8278,23 @@ mod tests {
         assert_eq!(
             report.additive,
             vec!["added top-level section \"vfs_metadata\""]
+        );
+    }
+
+    #[test]
+    fn adding_vfs_metadata_entry_is_compatible() {
+        let mut old = base_snapshot();
+        old["vfs_metadata"]
+            .as_object_mut()
+            .unwrap()
+            .remove("statfs_flags");
+        let new = base_snapshot();
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(
+            report.additive,
+            vec!["added vfs_metadata entry \"statfs_flags\""]
         );
     }
 

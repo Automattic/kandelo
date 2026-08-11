@@ -149,6 +149,8 @@ not require an `ABI_VERSION` bump:
 - Adding the initial `host_adapter` snapshot section or adding new
   optional host-adapter metadata while leaving required existing fields
   unchanged.
+- Adding a new named VFS metadata category, such as `statfs_flags`, while
+  leaving every existing VFS metadata category unchanged.
 
 These additions still require regenerating and committing
 `abi/snapshot.json`. They do not permit older kernels to run newer
