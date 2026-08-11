@@ -97,7 +97,6 @@ test("emits canonical hold-only readiness for expected product incompleteness", 
       products: [{ id: "mini", load: "eager" }],
       sha256: "5".repeat(64),
     },
-    siteMetadataSha256: "6".repeat(64),
     source,
     tapSource: {
       commit: "4".repeat(40),
@@ -107,6 +106,7 @@ test("emits canonical hold-only readiness for expected product incompleteness", 
     targetAbi,
   });
   assert.equal(readiness.ready, false);
+  assert.equal(readiness.site_metadata_sha256, null);
   assert.deepEqual(readiness.products, []);
   assert.equal(readiness.blockers[0]!.guard_code, "pages_product_incomplete");
   assert.equal(readiness.blockers[0]!.product_id, "mini");
@@ -833,6 +833,28 @@ test("rejects an early hold after the observed tap checkout mutates", async () =
   }
 });
 
+test("rejects sealed product mutation before final-site readiness", async () => {
+  const root = mkdtempSync(join(tmpdir(), "kandelo-pages-sealed-mutation-"));
+  try {
+    const fixture = await createMiniaturePagesProducerFixture(
+      root,
+      "sealed-product-mutation",
+    );
+    await assert.rejects(
+      () => producePagesArtifacts(
+        fixture.handoffPath,
+        fixture.outputRoot,
+        fixture.oci,
+        fixture.dependencies,
+      ),
+      /sealed product .* differs from its authenticated identity/iu,
+    );
+    assert.equal(existsSync(fixture.outputRoot), false);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
 test("runs production orchestration through ready and atomic hold-only outcomes", async (t) => {
   for (const scenario of [
     "ready",
@@ -847,6 +869,18 @@ test("runs production orchestration through ready and atomic hold-only outcomes"
       const root = mkdtempSync(join(tmpdir(), `kandelo-pages-producer-${scenario}-`));
       try {
         const fixture = await createMiniaturePagesProducerFixture(root, scenario);
+        let buildCalls = 0;
+        let evidenceCalls = 0;
+        const buildProduct = fixture.dependencies.buildProduct!;
+        const runEvidence = fixture.dependencies.runEvidence!;
+        fixture.dependencies.buildProduct = async (request) => {
+          buildCalls += 1;
+          return buildProduct(request);
+        };
+        fixture.dependencies.runEvidence = async (request) => {
+          evidenceCalls += 1;
+          return runEvidence(request);
+        };
         if (scenario === "postflight-failure") {
           await assert.rejects(
             () => producePagesArtifacts(
@@ -876,6 +910,7 @@ test("runs production orchestration through ready and atomic hold-only outcomes"
         ));
         if (scenario === "ready") {
           assert.equal(readiness.ready, true, JSON.stringify(readiness.blockers));
+          assert.equal(existsSync(join(fixture.outputRoot, "sealed-products")), false);
           assert.ok(existsSync(join(fixture.outputRoot, "site-manifest.json")));
           assert.ok(existsSync(join(fixture.outputRoot, "source-tree")));
           const resolved = JSON.parse(readFileSync(
@@ -899,12 +934,15 @@ test("runs production orchestration through ready and atomic hold-only outcomes"
             /\/products\/base\/sha256-[0-9a-f]{64}\/base-18\.vfs\.zst\?sha256=/u,
           );
           assert.equal(childResolved.inputs[0].effective_materialization, "embedded");
+          assert.equal(buildCalls, 2);
+          assert.equal(evidenceCalls, 4);
           assert.deepEqual(
             readiness.products.map(({ id }: { id: string }) => id),
             ["base", "mini"],
           );
         } else {
           assert.equal(readiness.ready, false);
+          assert.equal(readiness.site_metadata_sha256, null);
           assert.deepEqual(readdirSync(fixture.outputRoot), ["readiness.json"]);
           assert.ok(readiness.blockers.length >= 1);
         }

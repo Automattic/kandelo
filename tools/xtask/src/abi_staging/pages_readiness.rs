@@ -69,10 +69,20 @@ pub struct PagesReadinessRecordV1 {
     pub tap_source: ExactGitSourceV1,
     pub target_abi: TargetAbiV1,
     pub pages_registry: PagesRegistryIdentityV1,
-    pub site_metadata_sha256: String,
+    #[serde(deserialize_with = "deserialize_site_metadata_sha256")]
+    pub site_metadata_sha256: Option<String>,
     pub products: Vec<PagesReadyProductV1>,
     pub blockers: Vec<PagesReadinessBlockerV1>,
     pub ready: bool,
+}
+
+fn deserialize_site_metadata_sha256<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer)
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -188,7 +198,6 @@ fn validate_readiness(record: &PagesReadinessRecordV1) -> Result<(), String> {
         &record.target_abi.snapshot_sha256,
     )?;
     validate_registry(&record.pages_registry)?;
-    validate_sha256(&record.site_metadata_sha256)?;
     if record.products.len() > MAX_PRODUCTS || record.blockers.len() > MAX_PRODUCTS {
         return Err("Pages readiness record exceeds its bounded product set".to_string());
     }
@@ -246,6 +255,10 @@ fn validate_readiness(record: &PagesReadinessRecordV1) -> Result<(), String> {
     }
 
     if record.ready {
+        let site_metadata_sha256 = record.site_metadata_sha256.as_ref().ok_or_else(|| {
+            "ready Pages record requires a SHA-256 site identity".to_string()
+        })?;
+        validate_sha256(site_metadata_sha256)?;
         if !record.blockers.is_empty() {
             return Err("ready Pages record cannot contain blockers".to_string());
         }
@@ -265,8 +278,13 @@ fn validate_readiness(record: &PagesReadinessRecordV1) -> Result<(), String> {
                 "ready Pages record must contain the complete Pages product set".to_string(),
             );
         }
-    } else if record.blockers.is_empty() {
-        return Err("held readiness requires at least one real blocker".to_string());
+    } else {
+        if record.site_metadata_sha256.is_some() {
+            return Err("held readiness must have null site identity".to_string());
+        }
+        if record.blockers.is_empty() {
+            return Err("held readiness requires at least one real blocker".to_string());
+        }
     }
     Ok(())
 }
@@ -836,6 +854,7 @@ mod tests {
     fn held_readiness_carries_no_admission_projection() {
         let mut record = ready_record();
         record["ready"] = json!(false);
+        record["site_metadata_sha256"] = Value::Null;
         record["blockers"] = json!([{
             "detail": "base is incomplete",
             "guard_code": "pages_product_incomplete",
@@ -855,6 +874,7 @@ mod tests {
     fn requires_held_records_to_name_a_real_blocker() {
         let mut record = ready_record();
         record["ready"] = json!(false);
+        record["site_metadata_sha256"] = Value::Null;
         record["products"] = json!([]);
         record["blockers"] = json!([]);
         assert!(
@@ -874,6 +894,20 @@ mod tests {
                 .unwrap()
                 .ready
         );
+
+        record["site_metadata_sha256"] = json!(digest('7'));
+        assert!(validate_pages_readiness_bytes(&canonical_json_bytes(&record).unwrap())
+            .unwrap_err()
+            .contains("null site identity"));
+
+        let mut ready = ready_record();
+        ready["site_metadata_sha256"] = Value::Null;
+        assert!(validate_pages_readiness_bytes(&canonical_json_bytes(&ready).unwrap())
+            .unwrap_err()
+            .contains("requires a SHA-256 site identity"));
+
+        ready.as_object_mut().unwrap().remove("site_metadata_sha256");
+        assert!(validate_pages_readiness_bytes(&canonical_json_bytes(&ready).unwrap()).is_err());
     }
 
     #[test]

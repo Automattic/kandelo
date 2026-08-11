@@ -28,10 +28,13 @@ import {
   canonicalPagesInputReference,
   canonicalPagesInputSitePath,
   computePagesReadiness,
+  finalizePagesReadiness,
+  preparePagesProducts,
   type AdmissionEnvelopeV1,
   type CanonicalProductBuildRequestV1,
   type CanonicalOciReadbackV1,
   type PagesEvidenceRequestV1,
+  type PreparedPagesProductsV1,
   type PagesReadinessInputV1,
 } from "./abi-staging-pages-readiness.ts";
 import {
@@ -215,7 +218,6 @@ export function heldPagesReadinessRecord(options: {
     products: Array<{ id: string; load: "eager" | "lazy" }>;
     sha256: string;
   };
-  siteMetadataSha256: string;
   source: { repository: string; commit: string; tree: string };
   tapSource: { repository: string; commit: string; tree: string };
   targetAbi: { version: number; snapshot_sha256: string };
@@ -235,7 +237,7 @@ export function heldPagesReadinessRecord(options: {
     products: [],
     ready: false,
     schema: 1,
-    site_metadata_sha256: options.siteMetadataSha256,
+    site_metadata_sha256: null,
     source: options.source,
     tap_source: options.tapSource,
     target_abi: options.targetAbi,
@@ -587,6 +589,7 @@ export interface ProtectedPagesAuthoritiesV1 {
 
 /** Test-only seam for bounded local authorities; the production CLI never exposes it. */
 export interface PagesProducerTestDependenciesV1 {
+  afterPrepare?(prepared: PreparedPagesProductsV1): Promise<void> | void;
   buildProduct?(request: CanonicalProductBuildRequestV1): Promise<{
     builder_report: JsonObject;
     vfs: Uint8Array;
@@ -865,7 +868,6 @@ export async function producePagesArtifacts(
           products: fixed.pages.value.products,
           sha256: sha256(fixed.pages.bytes),
         },
-        siteMetadataSha256: readinessInput.authority.site_metadata_sha256,
         source: handoff.source,
         tapSource: handoff.tap_source,
         targetAbi: handoff.target_abi,
@@ -875,7 +877,9 @@ export async function producePagesArtifacts(
       writeAtomicHoldOnlyOutput(staging, output, heldReadiness);
       return;
     }
-    const result = await computePagesReadiness(readinessInput, {
+    const privateProductRoot = join(staging, "sealed-products");
+    mkdirSync(privateProductRoot, { mode: 0o700 });
+    const prepared = await preparePagesProducts(readinessInput, {
       buildProduct: (request) => testDependencies?.buildProduct?.(request) ??
         buildCanonicalProduct(
           request,
@@ -898,7 +902,10 @@ export async function producePagesArtifacts(
         ),
       validateAdmissionRecord: (bytes) => testDependencies?.validateAdmissionRecord?.(bytes) ??
         validateAdmissionRecord(bytes, sourceRoot, staging),
+      private_product_root: privateProductRoot,
     });
+    await testDependencies?.afterPrepare?.(prepared);
+    const result = finalizePagesReadiness(readinessInput, prepared, siteMetadata);
     bindAdmissionProjections(result as unknown as JsonObject, products, handoff.tap_source);
     writeCanonical(join(staging, "readiness.json"), result.readiness);
     if (!result.readiness.ready) {
@@ -921,6 +928,7 @@ export async function producePagesArtifacts(
         inputBodies,
       );
     }
+    rmSync(privateProductRoot, { force: true, recursive: true });
     reobserveSource();
     reobserveTap();
     renameSync(staging, output);

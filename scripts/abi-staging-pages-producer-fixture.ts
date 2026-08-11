@@ -28,7 +28,8 @@ export type MiniaturePagesProducerScenario =
   | "builder-failure"
   | "evidence-failure"
   | "evidence-timeout"
-  | "postflight-failure";
+  | "postflight-failure"
+  | "sealed-product-mutation";
 
 export interface MiniaturePagesProducerFixtureV1 {
   dependencies: PagesProducerTestDependenciesV1;
@@ -223,6 +224,11 @@ export async function createMiniaturePagesProducerFixture(
 
   const runtimeEvidence = evidenceRuntimeIdentity(runtimeBundleBytes);
   const dependencies: PagesProducerTestDependenciesV1 = {
+    afterPrepare(prepared) {
+      if (scenario === "sealed-product-mutation") {
+        writeFileSync(prepared.sealed_products[0]!.private_path, "mutated after preparation\n");
+      }
+    },
     async buildProduct(request) {
       if (scenario === "builder-failure") throw new Error("injected builder failure");
       for (const product of request.canonical_product_inputs) {

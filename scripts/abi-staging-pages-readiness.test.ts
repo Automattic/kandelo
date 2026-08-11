@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import { MemoryFileSystem } from "../host/src/vfs/memory-fs.ts";
@@ -7,6 +10,8 @@ import {
   canonicalJsonBytes,
   canonicalPagesInputReference,
   computePagesReadiness,
+  finalizePagesReadiness,
+  preparePagesProducts,
   recomposeCanonicalResolvedInputs,
   type CanonicalProductBuildRequestV1,
   type PagesEvidenceRequestV1,
@@ -24,6 +29,171 @@ const SOURCE = {
 const SNAPSHOT = "3".repeat(64);
 const POLICY = "4".repeat(64);
 const DEV_SHELL_LOCK = "5".repeat(64);
+
+test("prepares all seven products once before final-site readiness", async () => {
+  const root = mkdtempSync(join(tmpdir(), "kandelo-pages-prepared-seven-"));
+  try {
+    const input = sevenProductFixture();
+    const inner = successfulDependencies();
+    let builds = 0;
+    let evidenceRuns = 0;
+    const prepared = await preparePagesProducts(input, {
+      ...inner,
+      private_product_root: root,
+      async buildProduct(request) {
+        builds += 1;
+        return inner.buildProduct(request);
+      },
+      async runEvidence(request) {
+        evidenceRuns += 1;
+        return inner.runEvidence(request);
+      },
+    });
+
+    assert.deepEqual(
+      prepared.sealed_products.map(({ id }) => id),
+      [
+        "mini-base",
+        "mini-editor",
+        "mini-files",
+        "mini-network",
+        "mini-shell",
+        "mini-tools",
+        "mini-workspace",
+      ],
+    );
+    assert.equal(builds, 7);
+    assert.equal(evidenceRuns, 14);
+    assert.equal(finalizePagesReadiness(input, prepared, input.site_metadata).readiness.ready, true);
+    assert.equal(finalizePagesReadiness(input, prepared, input.site_metadata).readiness.ready, true);
+    assert.equal(builds, 7);
+    assert.equal(evidenceRuns, 14);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("finalization authenticates the private sealed product bytes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "kandelo-pages-prepared-tamper-"));
+  try {
+    const input = fixture();
+    const prepared = await preparePagesProducts(input, {
+      ...successfulDependencies(),
+      private_product_root: root,
+    });
+    writeFileSync(prepared.sealed_products[0]!.private_path, "mutated after preparation\n");
+
+    assert.throws(
+      () => finalizePagesReadiness(input, prepared, input.site_metadata),
+      /sealed product .* differs from its authenticated identity/iu,
+    );
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("finalization requires the exact sorted sealed product set", async (t) => {
+  for (const mutation of ["missing", "extra", "reordered", "duplicate"] as const) {
+    await t.test(mutation, async () => {
+      const root = mkdtempSync(join(tmpdir(), `kandelo-pages-prepared-${mutation}-`));
+      try {
+        const input = fixture();
+        const prepared = await preparePagesProducts(input, {
+          ...successfulDependencies(),
+          private_product_root: root,
+        });
+        if (mutation === "missing") {
+          prepared.sealed_products.pop();
+        } else if (mutation === "extra") {
+          prepared.sealed_products.push({
+            ...prepared.sealed_products[0]!,
+            id: "not-on-pages",
+          });
+        } else if (mutation === "reordered") {
+          prepared.sealed_products.reverse();
+        } else {
+          prepared.sealed_products[1] = { ...prepared.sealed_products[0]! };
+        }
+
+        assert.throws(
+          () => finalizePagesReadiness(input, prepared, input.site_metadata),
+          /sealed products must be the exact sorted Pages product set/iu,
+        );
+      } finally {
+        rmSync(root, { force: true, recursive: true });
+      }
+    });
+  }
+});
+
+test("finalization accepts only in-process preparation state", async () => {
+  const root = mkdtempSync(join(tmpdir(), "kandelo-pages-prepared-private-state-"));
+  try {
+    const input = fixture();
+    const prepared = await preparePagesProducts(input, {
+      ...successfulDependencies(),
+      private_product_root: root,
+    });
+    assert.throws(
+      () => finalizePagesReadiness(input, structuredClone(prepared), input.site_metadata),
+      /not prepared by this process/iu,
+    );
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("finalization rejects candidate strings and unsealed VFS paths", async (t) => {
+  for (const mutation of ["candidate", "unsealed-vfs"] as const) {
+    await t.test(mutation, async () => {
+      const root = mkdtempSync(join(tmpdir(), `kandelo-pages-final-site-${mutation}-`));
+      try {
+        const input = fixture();
+        const prepared = await preparePagesProducts(input, {
+          ...successfulDependencies(),
+          private_product_root: root,
+        });
+        const siteMetadata = structuredClone(input.site_metadata);
+        if (mutation === "candidate") {
+          siteMetadata.products[0]!.vfs_image = "products/-candidates/mini-base.vfs.zst";
+        } else {
+          siteMetadata.files = [
+            siteMetadata.api,
+            siteMetadata.browser,
+            siteMetadata.documentation,
+            artifact("legacy/mini-base.vfs.zst"),
+          ];
+        }
+        assert.throws(
+          () => finalizePagesReadiness(input, prepared, siteMetadata),
+          mutation === "candidate" ? /candidate namespace/iu : /outside the sealed product set/iu,
+        );
+      } finally {
+        rmSync(root, { force: true, recursive: true });
+      }
+    });
+  }
+});
+
+test("a preparation hold has no identity for a site that was never finalized", async () => {
+  const root = mkdtempSync(join(tmpdir(), "kandelo-pages-prepared-hold-"));
+  try {
+    const input = fixture();
+    input.products[0]!.admissions.pop();
+    const prepared = await preparePagesProducts(input, {
+      ...successfulDependencies(),
+      private_product_root: root,
+    });
+    const malformedSiteMetadata = { candidate: "https://example.invalid/-candidates/site" };
+    const result = finalizePagesReadiness(input, prepared, malformedSiteMetadata as any);
+
+    assert.equal(result.readiness.ready, false);
+    assert.equal(result.readiness.site_metadata_sha256, null);
+    assert.equal(result.site_manifest, undefined);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
 
 test("recomposes admitted layers without changing bytes or placement", () => {
   const input = fixture();
@@ -912,6 +1082,54 @@ function fixture(): PagesReadinessInputV1 {
   ]);
   input.products.push(base, shell);
   return structuredClone(input);
+}
+
+function sevenProductFixture(): PagesReadinessInputV1 {
+  const input = fixture();
+  for (const id of [
+    "mini-editor",
+    "mini-files",
+    "mini-network",
+    "mini-tools",
+    "mini-workspace",
+  ]) {
+    input.catalog.products.push(catalogProduct(id, []));
+    input.pages_registry.value.products.push({ id, load: "lazy" });
+    const registered = registration(id, "required");
+    input.test_registry.value.registrations.push(registered);
+    input.evidence_definitions.value.definitions.push(
+      ...registered.node.map((definitionId) => ({
+        definition_sha256: sha256(new TextEncoder().encode(definitionId)),
+        host: "node" as const,
+        id: definitionId,
+        implementation: [],
+        probe: {},
+        runner: "exec",
+        timeout_seconds: 30,
+      })),
+      ...registered.browser.map((definitionId) => ({
+        definition_sha256: sha256(new TextEncoder().encode(definitionId)),
+        host: "browser" as const,
+        id: definitionId,
+        implementation: [],
+        probe: {},
+        runner: "exec",
+        timeout_seconds: 30,
+      })),
+    );
+    input.site_metadata.products.push({
+      gallery_entries: [],
+      id,
+      vfs_image: id,
+    });
+    input.products.push(candidateProduct(input, id, []));
+  }
+  input.authority.catalog_sha256 = digest(input.catalog);
+  input.authority.evidence_definitions_sha256 = digest(input.evidence_definitions.value);
+  input.authority.pages_registry_sha256 = digest(input.pages_registry.value);
+  input.authority.site_metadata_sha256 = digest(input.site_metadata);
+  input.authority.test_registry_sha256 = digest(input.test_registry.value);
+  return input;
 }
 
 function candidateProduct(
