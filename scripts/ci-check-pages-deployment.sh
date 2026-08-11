@@ -8,6 +8,16 @@ PAGES_WORKFLOW="$WORKFLOWS_DIR/browser-demos-pages.yml"
 CANARY_WORKFLOW="$WORKFLOWS_DIR/abi-staging-pages-canary.yml"
 PAGES_PLAN="$REPO_ROOT/docs/superpowers/plans/2026-08-08-abi-staging-promotion-pages-and-retirement.md"
 BROWSER_SUPPORT="$REPO_ROOT/docs/browser-support.md"
+CHECK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-pages-deployment-check.XXXXXX")"
+
+cleanup() {
+  case "$CHECK_ROOT" in
+    "${TMPDIR:-/tmp}"/kandelo-pages-deployment-check.*)
+      rm -rf -- "$CHECK_ROOT"
+      ;;
+  esac
+}
+trap cleanup EXIT
 
 fail() {
   echo "ci-check-pages-deployment: $*" >&2
@@ -412,6 +422,9 @@ readiness_block="$(
   step_block "$CANARY_WORKFLOW" \
     "Validate Pages readiness and select ready or hold"
 )"
+if grep -Eq 'site-manifest\.json|source-tree' <<<"$readiness_block"; then
+  fail "canary hold must never inspect a site manifest or source tree"
+fi
 grep -Fq 'id: readiness' <<<"$readiness_block" &&
   grep -Fq 'abi-staging pages-readiness validate-readiness "$readiness"' \
     <<<"$readiness_block" &&
@@ -420,6 +433,28 @@ grep -Fq 'id: readiness' <<<"$readiness_block" &&
   grep -Fq 'echo "ready=$ready" >>"$GITHUB_OUTPUT"' \
     <<<"$readiness_block" ||
   fail "canary must validate readiness before selecting ready or hold"
+readiness_lstat_line="$(
+  grep -nF 'metadata = os.lstat(sys.argv[1])' <<<"$readiness_block" |
+    head -n 1 | cut -d: -f1 || true
+)"
+readiness_regular_line="$(
+  grep -nF 'if not stat.S_ISREG(metadata.st_mode):' <<<"$readiness_block" |
+    head -n 1 | cut -d: -f1 || true
+)"
+readiness_size_line="$(
+  grep -nF 'if metadata.st_size <= 0 or metadata.st_size > 16777216:' \
+    <<<"$readiness_block" | head -n 1 | cut -d: -f1 || true
+)"
+readiness_validator_line="$(
+  grep -nF 'abi-staging pages-readiness validate-readiness "$readiness"' \
+    <<<"$readiness_block" | head -n 1 | cut -d: -f1 || true
+)"
+[ -n "$readiness_lstat_line" ] && [ -n "$readiness_regular_line" ] &&
+  [ -n "$readiness_size_line" ] && [ -n "$readiness_validator_line" ] &&
+  [ "$readiness_lstat_line" -lt "$readiness_regular_line" ] &&
+  [ "$readiness_regular_line" -lt "$readiness_size_line" ] &&
+  [ "$readiness_size_line" -lt "$readiness_validator_line" ] ||
+  fail "canary must preflight one bounded regular readiness file before semantic validation"
 grep -Fq "registry=\"$exact_pages_registry\"" <<<"$readiness_block" &&
   grep -Fq '.ready == $ready' <<<"$readiness_block" &&
   grep -Fq '($registry[0].products | map(.id))' <<<"$readiness_block" &&
@@ -434,15 +469,36 @@ hold_validation_block="$(
   ' <<<"$readiness_block"
 )"
 grep -Fq "[ \"\$hold_inventory\" = '[\"readiness.json\"]' ]" \
-  <<<"$hold_validation_block" &&
-  grep -Fq '[ -f "$readiness" ] && [ ! -L "$readiness" ]' \
-    <<<"$hold_validation_block" &&
-  grep -Fq '((readiness_bytes > 0 && readiness_bytes <= 16777216))' \
-    <<<"$hold_validation_block" ||
+  <<<"$hold_validation_block" ||
   fail "canary hold must validate exactly one readiness file"
-if grep -Eq 'site-manifest\.json|source-tree' <<<"$hold_validation_block"; then
-  fail "canary hold must never inspect a site manifest or source tree"
-fi
+grep -Fq 'root.rglob("*")' <<<"$hold_validation_block" &&
+  grep -Fq 'path.relative_to(root).as_posix()' \
+    <<<"$hold_validation_block" ||
+  fail "canary hold must exhaustively inventory its actual output"
+hold_inventory_program="$(
+  awk '
+    /hold_inventory=.*python3 .*<<'"'"'PY'"'"'/ { program = 1; next }
+    program && $0 == "          PY" { exit }
+    program {
+      sub(/^          /, "")
+      print
+    }
+  ' <<<"$hold_validation_block"
+)"
+[ -n "$hold_inventory_program" ] ||
+  fail "canary hold must exhaustively inventory its actual output"
+hold_fixture="$CHECK_ROOT/hold-output"
+mkdir "$hold_fixture"
+printf '{}\n' >"$hold_fixture/readiness.json"
+hold_inventory="$(python3 -c "$hold_inventory_program" "$hold_fixture")" ||
+  fail "canary hold inventory traversal failed"
+[ "$hold_inventory" = '["readiness.json"]' ] ||
+  fail "canary hold must exhaustively inventory its actual output"
+printf '{}\n' >"$hold_fixture/unexpected.json"
+hold_inventory="$(python3 -c "$hold_inventory_program" "$hold_fixture")" ||
+  fail "canary hold inventory traversal failed"
+[ "$hold_inventory" = '["readiness.json","unexpected.json"]' ] ||
+  fail "canary hold must exhaustively inventory its actual output"
 grep -Fq 'readiness_sha=$(sha256sum "$readiness"' \
   <<<"$hold_validation_block" &&
   grep -Fq "blockers=\$(jq -cS '.blockers' \"\$readiness\")" \
@@ -458,8 +514,18 @@ validation_block="$(
 grep -Fq "registry=\"$exact_pages_registry\"" <<<"$validation_block" ||
   fail "canary must bind the exact protected Pages registry"
 grep -Fxq "        if: steps.readiness.outputs.ready == 'true'" \
-  <<<"$validation_block" &&
-  grep -Fq 'abi-staging pages-readiness validate-site "$site_manifest"' \
+  <<<"$validation_block" ||
+  fail "canary ready validation must require validated readiness"
+grep -Fq \
+    'tap_commit=$(git -C "$KANDELO_PAGES_TAP_ROOT" rev-parse HEAD)' \
+    <<<"$validation_block" &&
+  grep -Fq \
+    'tap_tree=$(git -C "$KANDELO_PAGES_TAP_ROOT" rev-parse '\''HEAD^{tree}'\'')' \
+    <<<"$validation_block" &&
+  grep -Fq -- '--argjson tap_source "$tap_source"' \
+    <<<"$validation_block" ||
+  fail "canary ready validation must bind the exact protected tap source"
+grep -Fq 'abi-staging pages-readiness validate-site "$site_manifest"' \
     <<<"$validation_block" &&
   grep -Fq '.ready == true' <<<"$validation_block" &&
   grep -Fq '.blockers == []' <<<"$validation_block" &&
@@ -467,6 +533,31 @@ grep -Fxq "        if: steps.readiness.outputs.ready == 'true'" \
   grep -Fq '(.node_receipts | length > 0)' <<<"$validation_block" &&
   grep -Fq '(.browser_receipts | length > 0)' <<<"$validation_block" ||
   fail "canary must require every product Node and browser receipt"
+ready_filter="$(awk '
+  /--slurpfile registry "\$registry"/ { filter = 1; next }
+  filter && /"\$readiness" >\/dev\/null$/ { exit }
+  filter {
+    sub(/^              /, "")
+    print
+  }
+' <<<"$validation_block")"
+[ -n "$ready_filter" ] ||
+  fail "canary ready validation filter is missing"
+ready_fixture="$CHECK_ROOT/ready-filter"
+mkdir "$ready_fixture"
+cat >"$ready_fixture/registry.json" <<'JSON'
+{"products":[{"id":"mini","load":"eager"}]}
+JSON
+cat >"$ready_fixture/readiness.json" <<'JSON'
+{"blockers":[],"products":[{"admissions":[{"projection":{"admission_record_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","tap_source":{"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repository":"kandelo-dev/homebrew-tap-core","tree":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},"record_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}],"browser_receipts":[{"receipt":"browser"}],"id":"mini","node_receipts":[{"receipt":"node"}]}],"ready":true}
+JSON
+ready_tap_source='{"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repository":"kandelo-dev/homebrew-tap-core","tree":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'
+if ! jq -e \
+    --argjson tap_source "$ready_tap_source" \
+    --slurpfile registry "$ready_fixture/registry.json" \
+    "$ready_filter" "$ready_fixture/readiness.json" >/dev/null; then
+  fail "canary ready validation filter must execute against a valid ready fixture"
+fi
 grep -Fq 'deployment_path = ".well-known/kandelo/pages-deployment.json"' \
   <<<"$validation_block" &&
   grep -Fq 'actual.sort(key=lambda entry: entry["path"])' \

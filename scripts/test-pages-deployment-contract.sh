@@ -104,6 +104,205 @@ expect_plan_mutation_rejected() {
   echo "test-pages-deployment-contract: rejected Pages plan $label"
 }
 
+workflow_step_block() {
+  local workflow="$1"
+  local step="$2"
+  awk -v step="$step" '
+    $0 == "      - name: " step { inside = 1 }
+    inside && $0 ~ /^      - name:/ &&
+      $0 != "      - name: " step { exit }
+    inside { print }
+  ' "$workflow"
+}
+
+workflow_step_script() {
+  local workflow="$1"
+  local step="$2"
+  workflow_step_block "$workflow" "$step" |
+    awk '
+      $0 == "        run: |" { script = 1; next }
+      script {
+        sub(/^          /, "")
+        print
+      }
+    '
+}
+
+expect_ready_filter_executes() {
+  local validation_block
+  local ready_filter
+  local fixture="$SUITE_ROOT/ready-filter"
+  local tap_source
+  local -a jq_args
+  local output
+
+  mkdir -p "$fixture"
+  validation_block="$(workflow_step_block \
+    "$CANARY_WORKFLOW" "Validate the complete canonical Pages tree")"
+  ready_filter="$(awk '
+    /--slurpfile registry "\$registry"/ { filter = 1; next }
+    filter && /"\$readiness" >\/dev\/null$/ { exit }
+    filter {
+      sub(/^              /, "")
+      print
+    }
+  ' <<<"$validation_block")"
+  [ -n "$ready_filter" ] ||
+    fail "could not extract the canary ready jq filter"
+  tap_source='{"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repository":"kandelo-dev/homebrew-tap-core","tree":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'
+  cat >"$fixture/registry.json" <<'JSON'
+{"products":[{"id":"mini","load":"eager"}]}
+JSON
+  cat >"$fixture/readiness.json" <<'JSON'
+{"blockers":[],"products":[{"admissions":[{"projection":{"admission_record_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","tap_source":{"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repository":"kandelo-dev/homebrew-tap-core","tree":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},"record_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}],"browser_receipts":[{"receipt":"browser"}],"id":"mini","node_receipts":[{"receipt":"node"}]}],"ready":true}
+JSON
+  jq_args=(--slurpfile registry "$fixture/registry.json")
+  if grep -Fq -- '--argjson tap_source "$tap_source"' \
+      <<<"$validation_block"; then
+    jq_args+=(--argjson tap_source "$tap_source")
+  fi
+  if ! output="$(jq -e "${jq_args[@]}" "$ready_filter" \
+      "$fixture/readiness.json" 2>&1)"; then
+    fail "the extracted canary ready jq filter rejected a valid ready fixture: $output"
+  fi
+}
+
+expect_invalid_readiness_rejected_before_semantics() {
+  local kind="$1"
+  local fixture
+  local fake_bin
+  local marker
+  local readiness
+  local step_script
+
+  fixture="$(mktemp -d "$SUITE_ROOT/preflight-${kind}.XXXXXX")"
+  fake_bin="$fixture/bin"
+  marker="$fixture/semantic-validator-reached"
+  readiness="$fixture/abi-staging-pages-output/readiness.json"
+  mkdir -p "$fake_bin" "$(dirname "$readiness")"
+  case "$kind" in
+    symlink)
+      printf '{}\n' >"$fixture/readiness-target.json"
+      ln -s "$fixture/readiness-target.json" "$readiness"
+      ;;
+    fifo)
+      mkfifo "$readiness"
+      ;;
+    oversize)
+      truncate -s 16777217 "$readiness"
+      ;;
+    *)
+      fail "unknown readiness preflight case: $kind"
+      ;;
+  esac
+  cat >"$fake_bin/git" <<'SH'
+#!/bin/bash
+set -euo pipefail
+case "$*" in
+  "rev-parse HEAD^{tree}")
+    printf '%040d\n' 1
+    ;;
+  *"rev-parse HEAD")
+    printf '%040d\n' 2
+    ;;
+  *"rev-parse HEAD^{tree}")
+    printf '%040d\n' 3
+    ;;
+  *)
+    echo "fake git: unexpected arguments: $*" >&2
+    exit 64
+    ;;
+esac
+SH
+  cat >"$fake_bin/bash" <<'SH'
+#!/bin/bash
+set -euo pipefail
+if [[ "$*" == *"rustc -vV"* ]]; then
+  echo fake-host
+  exit 0
+fi
+if [[ "$*" == *"pages-readiness validate-readiness"* ]]; then
+  : >"$READINESS_VALIDATOR_MARKER"
+  exit 97
+fi
+echo "fake bash: unexpected arguments: $*" >&2
+exit 64
+SH
+  chmod +x "$fake_bin/git" "$fake_bin/bash"
+  step_script="$(workflow_step_script \
+    "$CANARY_WORKFLOW" "Validate Pages readiness and select ready or hold")"
+  [ -n "$step_script" ] || fail "could not extract the readiness step"
+  set +e
+  env \
+      PATH="$fake_bin:$PATH" \
+      RUNNER_TEMP="$fixture" \
+      KANDELO_PAGES_TAP_ROOT="$fixture/tap" \
+      GITHUB_REPOSITORY=Automattic/kandelo \
+      GITHUB_SHA=4444444444444444444444444444444444444444 \
+      GITHUB_OUTPUT="$fixture/github-output" \
+      GITHUB_STEP_SUMMARY="$fixture/summary" \
+      READINESS_VALIDATOR_MARKER="$marker" \
+      /bin/bash -s <<<"$step_script" >"$fixture/run.log" 2>&1
+  local status=$?
+  set -e
+  if [ "$status" -eq 0 ]; then
+    fail "the canary readiness step accepted a $kind readiness path"
+  fi
+  if [ -e "$marker" ]; then
+    fail "the semantic readiness validator was reached before $kind preflight (size $(python3 -c 'import os,sys; print(os.lstat(sys.argv[1]).st_size)' "$readiness")): $(tr '\n' ' ' <"$fixture/run.log")"
+  fi
+}
+
+expect_prebranch_site_read_rejected() {
+  expect_canary_mutation_rejected \
+    "unconditional pre-branch site read" \
+    "canary hold must never inspect a site manifest or source tree" \
+    's/(          if \[ "\$ready" = false \]; then\n)/            jq -e . "\$pages_output\/site-manifest.json"\n$1/'
+}
+
+expect_hardcoded_hold_inventory_rejected() {
+  expect_canary_mutation_rejected \
+    "hard-coded hold inventory" \
+    "canary hold must exhaustively inventory its actual output" \
+    's/            hold_inventory=\$\(python3 - "\$pages_output" <<'\''PY'\''.*?            \)\n/            hold_inventory='\''["readiness.json"]'\''\n/s'
+}
+
+case "${PAGES_CONTRACT_FOCUS:-all}" in
+  ready-filter)
+    expect_ready_filter_executes
+    exit 0
+    ;;
+  readiness-preflight)
+    if [ -n "${PAGES_READINESS_PREFLIGHT_KIND:-}" ]; then
+      expect_invalid_readiness_rejected_before_semantics \
+        "$PAGES_READINESS_PREFLIGHT_KIND"
+    else
+      expect_invalid_readiness_rejected_before_semantics symlink
+      expect_invalid_readiness_rejected_before_semantics fifo
+      expect_invalid_readiness_rejected_before_semantics oversize
+    fi
+    exit 0
+    ;;
+  prebranch-site-read)
+    expect_prebranch_site_read_rejected
+    exit 0
+    ;;
+  hardcoded-hold-inventory)
+    expect_hardcoded_hold_inventory_rejected
+    exit 0
+    ;;
+  all)
+    ;;
+  *)
+    fail "unknown PAGES_CONTRACT_FOCUS: $PAGES_CONTRACT_FOCUS"
+    ;;
+esac
+
+expect_ready_filter_executes
+expect_invalid_readiness_rejected_before_semantics symlink
+expect_invalid_readiness_rejected_before_semantics fifo
+expect_invalid_readiness_rejected_before_semantics oversize
+
 bash "$CHECKER" "$REPO_ROOT"
 bash "$REPO_ROOT/scripts/test-verify-browser-shell-vfs-asset.sh"
 
@@ -483,6 +682,11 @@ expect_canary_mutation_rejected \
   's/\(\.browser_receipts \| length > 0\)/(true)/'
 
 expect_canary_mutation_rejected \
+  "unbound ready tap source" \
+  "canary ready validation must bind the exact protected tap source" \
+  's/(      - name: Validate the complete canonical Pages tree.*?)(^            --argjson tap_source "\$tap_source" \\\n)/$1/ms'
+
+expect_canary_mutation_rejected \
   "source-build fallback" \
   "canary input materialization must forbid source fallback" \
   's/--fetch-only/--allow-stale/'
@@ -560,7 +764,11 @@ expect_canary_mutation_rejected \
 expect_canary_mutation_rejected \
   "extra hold output" \
   "canary hold must validate exactly one readiness file" \
-  's/\["readiness\.json"\]/["readiness.json", "site-manifest.json"]/'
+  's/\["readiness\.json"\]/["readiness.json", "unexpected.json"]/'
+
+expect_prebranch_site_read_rejected
+
+expect_hardcoded_hold_inventory_rejected
 
 expect_canary_mutation_rejected \
   "wrong freshness workflow" \

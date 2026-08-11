@@ -422,6 +422,17 @@ jobs:
           set -euo pipefail
           pages_output="$RUNNER_TEMP/abi-staging-pages-output"
           readiness="$pages_output/readiness.json"
+          python3 - "$readiness" <<'PY'
+          import os
+          import stat
+          import sys
+
+          metadata = os.lstat(sys.argv[1])
+          if not stat.S_ISREG(metadata.st_mode):
+              raise SystemExit("Pages readiness is not a regular file")
+          if metadata.st_size <= 0 or metadata.st_size > 16777216:
+              raise SystemExit("Pages readiness exceeds its byte bound")
+          PY
           registry="apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.generated.json"
           source_tree=$(git rev-parse 'HEAD^{tree}')
           target_abi=$(sed -nE \
@@ -489,9 +500,6 @@ jobs:
           PY
             )
             [ "$hold_inventory" = '["readiness.json"]' ]
-            [ -f "$readiness" ] && [ ! -L "$readiness" ]
-            readiness_bytes=$(stat -c %s "$readiness")
-            ((readiness_bytes > 0 && readiness_bytes <= 16777216))
             readiness_sha=$(sha256sum "$readiness" | awk '{print $1}')
             blockers=$(jq -cS '.blockers' "$readiness")
             {
@@ -513,12 +521,19 @@ jobs:
           site_root="$pages_output/source-tree"
           registry="apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.generated.json"
           readiness_sha=$(sha256sum "$readiness" | awk '{print $1}')
+          tap_commit=$(git -C "$KANDELO_PAGES_TAP_ROOT" rev-parse HEAD)
+          tap_tree=$(git -C "$KANDELO_PAGES_TAP_ROOT" rev-parse 'HEAD^{tree}')
+          tap_source=$(jq -cn \
+            --arg commit "$tap_commit" \
+            --arg tree "$tap_tree" \
+            '{commit:$commit,repository:"kandelo-dev/homebrew-tap-core",tree:$tree}')
           host_target=$(bash scripts/dev-shell.sh \
             bash -c 'rustc -vV | awk "/^host/ {print \$2}"')
           bash scripts/dev-shell.sh cargo run -p xtask \
             --target "$host_target" --quiet -- \
             abi-staging pages-readiness validate-site "$site_manifest"
           jq -e \
+            --argjson tap_source "$tap_source" \
             --slurpfile registry "$registry" '
               .ready == true and
               .blockers == [] and
