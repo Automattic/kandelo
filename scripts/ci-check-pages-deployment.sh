@@ -6,6 +6,8 @@ REPO_ROOT="${1:-$DEFAULT_REPO_ROOT}"
 WORKFLOWS_DIR="$REPO_ROOT/.github/workflows"
 PAGES_WORKFLOW="$WORKFLOWS_DIR/browser-demos-pages.yml"
 CANARY_WORKFLOW="$WORKFLOWS_DIR/abi-staging-pages-canary.yml"
+PAGES_PLAN="$REPO_ROOT/docs/superpowers/plans/2026-08-08-abi-staging-promotion-pages-and-retirement.md"
+BROWSER_SUPPORT="$REPO_ROOT/docs/browser-support.md"
 
 fail() {
   echo "ci-check-pages-deployment: $*" >&2
@@ -192,10 +194,6 @@ inputs_line="$(
   workflow_step_line "$CANARY_WORKFLOW" \
     "Materialize exact current product inputs"
 )"
-site_line="$(
-  workflow_step_line "$CANARY_WORKFLOW" \
-    "Build the complete browser documentation and API site"
-)"
 handoff_line="$(
   workflow_step_line "$CANARY_WORKFLOW" "Write the bounded production handoff"
 )"
@@ -203,7 +201,11 @@ producer_line="$(
   workflow_step_line "$CANARY_WORKFLOW" \
     "Produce admitted canonical Pages products"
 )"
-validation_line="$(
+readiness_line="$(
+  workflow_step_line "$CANARY_WORKFLOW" \
+    "Validate Pages readiness and select ready or hold"
+)"
+site_validation_line="$(
   workflow_step_line "$CANARY_WORKFLOW" \
     "Validate the complete canonical Pages tree"
 )"
@@ -211,26 +213,33 @@ canary_freshness_line="$(
   workflow_step_line "$CANARY_WORKFLOW" \
     "Confirm this is the newest Pages canary run"
 )"
-canary_upload_line="$(
+canary_hold_upload_line="$(
+  workflow_step_line "$CANARY_WORKFLOW" \
+    "Upload the incomplete Pages hold"
+)"
+canary_ready_upload_line="$(
   workflow_step_line "$CANARY_WORKFLOW" \
     "Upload the complete inert Pages canary"
 )"
 [ -n "$authority_line" ] && [ -n "$isolation_line" ] &&
   [ -n "$runtime_line" ] &&
-  [ -n "$inputs_line" ] && [ -n "$site_line" ] &&
+  [ -n "$inputs_line" ] &&
   [ -n "$handoff_line" ] && [ -n "$producer_line" ] &&
-  [ -n "$validation_line" ] && [ -n "$canary_freshness_line" ] &&
-  [ -n "$canary_upload_line" ] &&
+  [ -n "$readiness_line" ] && [ -n "$site_validation_line" ] &&
+  [ -n "$canary_freshness_line" ] &&
+  [ -n "$canary_hold_upload_line" ] &&
+  [ -n "$canary_ready_upload_line" ] &&
   [ "$authority_line" -lt "$isolation_line" ] &&
   [ "$isolation_line" -lt "$runtime_line" ] &&
   [ "$runtime_line" -lt "$inputs_line" ] &&
-  [ "$inputs_line" -lt "$site_line" ] &&
-  [ "$site_line" -lt "$handoff_line" ] &&
+  [ "$inputs_line" -lt "$handoff_line" ] &&
   [ "$handoff_line" -lt "$producer_line" ] &&
-  [ "$producer_line" -lt "$validation_line" ] &&
-  [ "$validation_line" -lt "$canary_freshness_line" ] &&
-  [ "$canary_freshness_line" -lt "$canary_upload_line" ] ||
-  fail "canary must build, produce, validate, freshness-check, then upload one tree"
+  [ "$producer_line" -lt "$readiness_line" ] &&
+  [ "$readiness_line" -lt "$site_validation_line" ] &&
+  [ "$site_validation_line" -lt "$canary_freshness_line" ] &&
+  [ "$canary_freshness_line" -lt "$canary_hold_upload_line" ] &&
+  [ "$canary_hold_upload_line" -lt "$canary_ready_upload_line" ] ||
+  fail "canary must produce, select ready or hold, freshness-check, then retain one result"
 
 authority_block="$(
   step_block "$CANARY_WORKFLOW" "Verify exact protected current-main authorities"
@@ -349,25 +358,6 @@ if grep -Fq -- '--allow-stale' <<<"$inputs_block" ||
   fail "canary input materialization must forbid source fallback"
 fi
 
-site_block="$(
-  step_block "$CANARY_WORKFLOW" \
-    "Build the complete browser documentation and API site"
-)"
-grep -Fq 'npm run build' <<<"$site_block" &&
-  grep -Fq 'node --test docs-site/.vitepress/homebrew-doc-links.test.mjs' \
-    <<<"$site_block" &&
-  grep -Fq 'VITEPRESS_BASE=/kandelo/guide/ npm run docs:build' \
-    <<<"$site_block" &&
-  grep -Fq 'node --test docs-site/.vitepress/homebrew-doc-output.test.mjs' \
-    <<<"$site_block" &&
-  grep -Fq 'npx tsc --noEmit -p tsconfig.docs.json' <<<"$site_block" &&
-  grep -Fq 'npx typedoc' <<<"$site_block" &&
-  grep -Fq 'cp -R docs-site/.vitepress/dist "$site_root/guide"' \
-    <<<"$site_block" &&
-  grep -Fq 'cp -R host/docs "$site_root/api"' <<<"$site_block" &&
-  grep -Fq 'find "$site_root" -type l' <<<"$site_block" ||
-  fail "canary must assemble the complete browser, guide, and API source tree"
-
 handoff_block="$(
   step_block "$CANARY_WORKFLOW" "Write the bounded production handoff"
 )"
@@ -395,7 +385,7 @@ fi
 candidate_rejection_count="$(
   grep -Fc -- '-candidates/' "$CANARY_WORKFLOW" || true
 )"
-[ "$candidate_rejection_count" -eq 2 ] ||
+[ "$candidate_rejection_count" -eq 3 ] ||
   fail "canary output must not contain a candidate reference"
 
 producer_block="$(
@@ -418,13 +408,56 @@ producer_last="$(awk 'NF { line = $0 } END { print line }' <<<"$producer_block")
 [ "$producer_last" = '                --output-root "$pages_output"' ] ||
   fail "canary producer must be the final failure-propagating command"
 
+readiness_block="$(
+  step_block "$CANARY_WORKFLOW" \
+    "Validate Pages readiness and select ready or hold"
+)"
+grep -Fq 'id: readiness' <<<"$readiness_block" &&
+  grep -Fq 'abi-staging pages-readiness validate-readiness "$readiness"' \
+    <<<"$readiness_block" &&
+  grep -Fq 'if .ready == true then "true"' <<<"$readiness_block" &&
+  grep -Fq 'elif .ready == false then "false"' <<<"$readiness_block" &&
+  grep -Fq 'echo "ready=$ready" >>"$GITHUB_OUTPUT"' \
+    <<<"$readiness_block" ||
+  fail "canary must validate readiness before selecting ready or hold"
+grep -Fq "registry=\"$exact_pages_registry\"" <<<"$readiness_block" &&
+  grep -Fq '.ready == $ready' <<<"$readiness_block" &&
+  grep -Fq '($registry[0].products | map(.id))' <<<"$readiness_block" &&
+  grep -Fq '(tostring | contains("-candidates/") | not)' \
+    <<<"$readiness_block" ||
+  fail "canary readiness must bind the exact current source and registry"
+hold_validation_block="$(
+  awk '
+    /          if \[ "\$ready" = false \]; then/ { inside = 1 }
+    inside && /          fi/ { print; exit }
+    inside { print }
+  ' <<<"$readiness_block"
+)"
+grep -Fq "[ \"\$hold_inventory\" = '[\"readiness.json\"]' ]" \
+  <<<"$hold_validation_block" &&
+  grep -Fq '[ -f "$readiness" ] && [ ! -L "$readiness" ]' \
+    <<<"$hold_validation_block" &&
+  grep -Fq '((readiness_bytes > 0 && readiness_bytes <= 16777216))' \
+    <<<"$hold_validation_block" ||
+  fail "canary hold must validate exactly one readiness file"
+if grep -Eq 'site-manifest\.json|source-tree' <<<"$hold_validation_block"; then
+  fail "canary hold must never inspect a site manifest or source tree"
+fi
+grep -Fq 'readiness_sha=$(sha256sum "$readiness"' \
+  <<<"$hold_validation_block" &&
+  grep -Fq "blockers=\$(jq -cS '.blockers' \"\$readiness\")" \
+    <<<"$hold_validation_block" &&
+  grep -Fq '### Pages canary hold' <<<"$hold_validation_block" &&
+  grep -Fq '>>"$GITHUB_STEP_SUMMARY"' <<<"$hold_validation_block" ||
+  fail "canary hold must summarize its exact digest and blockers"
+
 validation_block="$(
   step_block "$CANARY_WORKFLOW" \
     "Validate the complete canonical Pages tree"
 )"
 grep -Fq "registry=\"$exact_pages_registry\"" <<<"$validation_block" ||
   fail "canary must bind the exact protected Pages registry"
-grep -Fq 'abi-staging pages-readiness validate-readiness "$readiness"' \
+grep -Fxq "        if: steps.readiness.outputs.ready == 'true'" \
   <<<"$validation_block" &&
   grep -Fq 'abi-staging pages-readiness validate-site "$site_manifest"' \
     <<<"$validation_block" &&
@@ -459,7 +492,7 @@ fi
 canary_freshness_block="$(
   step_block "$CANARY_WORKFLOW" "Confirm this is the newest Pages canary run"
 )"
-grep -Fq 'id: upload_freshness' <<<"$canary_freshness_block" &&
+grep -Fq 'id: retention_freshness' <<<"$canary_freshness_block" &&
   grep -Fq 'GH_TOKEN: ${{ github.token }}' <<<"$canary_freshness_block" ||
   fail "canary newest-run guard must retain read-only Actions authority"
 grep -Fq 'PAGES_WORKFLOW_FILE: abi-staging-pages-canary.yml' \
@@ -467,7 +500,7 @@ grep -Fq 'PAGES_WORKFLOW_FILE: abi-staging-pages-canary.yml' \
   fail "canary newest-run guard must query only the canary workflow"
 grep -Fq 'run: bash scripts/check-pages-run-freshness.sh' \
   <<<"$canary_freshness_block" ||
-  fail "canary upload authority must come from the tested newest-run checker"
+  fail "canary retention authority must come from the tested newest-run checker"
 
 if grep -Eq 'actions/deploy-pages@|peaceiris/actions-gh-pages@' \
     "$CANARY_WORKFLOW"; then
@@ -481,16 +514,41 @@ if grep -Eq '(^|[[:space:]])(npm publish|docker push|oras push|gh release create
   fail "canary must remain observe-only and publish no package state"
 fi
 
+canary_hold_artifact_count="$(
+  awk '/^[[:space:]]+uses: actions\/upload-artifact@/ { count += 1 }
+       END { print count + 0 }' "$CANARY_WORKFLOW"
+)"
+[ "$canary_hold_artifact_count" -eq 1 ] ||
+  fail "canary hold must use one ordinary bounded artifact"
+canary_hold_upload_block="$(
+  step_block "$CANARY_WORKFLOW" "Upload the incomplete Pages hold"
+)"
+grep -Fxq \
+  '        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1' \
+  <<<"$canary_hold_upload_block" &&
+  grep -Fxq \
+    "        if: steps.readiness.outputs.ready == 'false' && steps.retention_freshness.outputs.retain == 'true'" \
+    <<<"$canary_hold_upload_block" &&
+  grep -Fxq \
+    '          path: ${{ runner.temp }}/abi-staging-pages-output/readiness.json' \
+    <<<"$canary_hold_upload_block" &&
+  grep -Fxq '          retention-days: 7' <<<"$canary_hold_upload_block" &&
+  grep -Fxq '          if-no-files-found: error' \
+    <<<"$canary_hold_upload_block" &&
+  grep -Fq 'name: abi-staging-pages-hold-${{ github.run_id }}' \
+    <<<"$canary_hold_upload_block" ||
+  fail "canary hold must use one ordinary bounded artifact"
+if grep -Eq 'site-manifest\.json|source-tree|upload-pages-artifact@' \
+    <<<"$canary_hold_upload_block"; then
+  fail "canary hold must never inspect a site manifest or source tree"
+fi
+
 canary_pages_artifact_count="$(
   awk '/^[[:space:]]+uses: actions\/upload-pages-artifact@/ { count += 1 }
        END { print count + 0 }' "$CANARY_WORKFLOW"
 )"
 [ "$canary_pages_artifact_count" -eq 1 ] ||
   fail "canary must upload exactly one inert Pages artifact"
-if grep -Eq '^[[:space:]]+uses: actions/upload-artifact@' \
-    "$CANARY_WORKFLOW"; then
-  fail "canary must upload exactly one inert Pages artifact"
-fi
 canary_upload_block="$(
   step_block "$CANARY_WORKFLOW" "Upload the complete inert Pages canary"
 )"
@@ -498,9 +556,10 @@ grep -Fxq \
   '        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0' \
   <<<"$canary_upload_block" ||
   fail "canary must upload exactly one inert Pages artifact"
-grep -Fxq "        if: steps.upload_freshness.outputs.upload == 'true'" \
+grep -Fxq \
+  "        if: steps.readiness.outputs.ready == 'true' && steps.retention_freshness.outputs.retain == 'true'" \
   <<<"$canary_upload_block" ||
-  fail "canary upload authority must come from the tested newest-run checker"
+  fail "canary ready upload must require validated readiness and newest-run authority"
 grep -Fxq \
   '          path: ${{ runner.temp }}/abi-staging-pages-output/source-tree' \
   <<<"$canary_upload_block" ||
@@ -515,18 +574,57 @@ grep -Fq 'name: abi-staging-pages-canary-${{ github.run_id }}' \
   fail "canary artifact identity must be unique to the exact workflow run"
 
 between_canary_freshness_and_upload="$(
-  sed -n "${canary_freshness_line},${canary_upload_line}p" \
+  sed -n "${canary_freshness_line},${canary_ready_upload_line}p" \
     "$CANARY_WORKFLOW" |
     awk '/^      - name:/ { count += 1 } END { print count + 0 }'
 )"
-[ "$between_canary_freshness_and_upload" -eq 2 ] ||
-  fail "canary newest-run guard must be immediately before upload"
+[ "$between_canary_freshness_and_upload" -eq 3 ] ||
+  fail "canary newest-run guard must be immediately before its two result uploads"
 canary_if_count="$(
   awk '/^[[:space:]]+if:/ { count += 1 } END { print count + 0 }' \
     "$CANARY_WORKFLOW"
 )"
-[ "$canary_if_count" -eq 1 ] ||
+[ "$canary_if_count" -eq 3 ] ||
   fail "canary pre-upload work must remain success-gated"
+
+[ -f "$PAGES_PLAN" ] && [ -f "$BROWSER_SUPPORT" ] ||
+  fail "Pages sequencing documentation is missing"
+perl -0777 -e '
+  $text = <>;
+  $text =~ s/\s+/ /g;
+  exit(index(
+    $text,
+    "Before successor admissions exist, the canary produces a hosted hold for inactive Task 10 preparation.",
+  ) >= 0 ? 0 : 1);
+' "$PAGES_PLAN" &&
+  perl -0777 -e '
+    $text = <>;
+    $text =~ s/\s+/ /g;
+    exit(index(
+      $text,
+      "The expected pre-admission run is a hosted hold for inactive Task 10 preparation",
+    ) >= 0 ? 0 : 1);
+  ' "$BROWSER_SUPPORT" ||
+  fail "Pages sequencing must keep the first hosted hold separate from readiness"
+for document in "$PAGES_PLAN" "$BROWSER_SUPPORT"; do
+  perl -0777 -e '
+    $text = <>;
+    $text =~ s/\s+/ /g;
+    $position = 0;
+    for $phrase (
+      "hosted hold for inactive Task 10 preparation",
+      "successor promotion and admissions",
+      "rerun the canary",
+      "ready result",
+      "activation and deployment",
+    ) {
+      $position = index($text, $phrase, $position);
+      exit 1 if $position < 0;
+      $position += length($phrase);
+    }
+  ' "$document" ||
+    fail "Pages sequencing must keep the first hosted hold separate from readiness"
+done
 
 # Any workflow that names gh-pages can potentially become another writer.
 # Keep the scan intentionally conservative so a second action or shell-based

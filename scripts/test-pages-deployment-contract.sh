@@ -7,6 +7,8 @@ PAGES_WORKFLOW_REL=".github/workflows/browser-demos-pages.yml"
 PAGES_WORKFLOW="$REPO_ROOT/$PAGES_WORKFLOW_REL"
 CANARY_WORKFLOW_REL=".github/workflows/abi-staging-pages-canary.yml"
 CANARY_WORKFLOW="$REPO_ROOT/$CANARY_WORKFLOW_REL"
+PAGES_PLAN_REL="docs/superpowers/plans/2026-08-08-abi-staging-promotion-pages-and-retirement.md"
+PAGES_PLAN="$REPO_ROOT/$PAGES_PLAN_REL"
 SUITE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-pages-contract.XXXXXX")"
 
 cleanup() {
@@ -28,6 +30,9 @@ new_fixture() {
   fixture="$(mktemp -d "$SUITE_ROOT/case.XXXXXX")"
   mkdir -p "$fixture/.github"
   cp -R "$REPO_ROOT/.github/workflows" "$fixture/.github/workflows"
+  mkdir -p "$fixture/docs/superpowers/plans"
+  cp "$PAGES_PLAN" "$fixture/$PAGES_PLAN_REL"
+  cp "$REPO_ROOT/docs/browser-support.md" "$fixture/docs/browser-support.md"
   printf '%s\n' "$fixture"
 }
 
@@ -75,6 +80,28 @@ expect_canary_mutation_rejected() {
   grep -Fq "$expected_error" <<<"$output" ||
     fail "checker rejected canary '$label' for an unexpected reason: $output"
   echo "test-pages-deployment-contract: rejected canary $label"
+}
+
+expect_plan_mutation_rejected() {
+  local label="$1"
+  local expected_error="$2"
+  local expression="$3"
+  local fixture
+  local target
+  local output
+
+  fixture="$(new_fixture)"
+  target="$fixture/$PAGES_PLAN_REL"
+  perl -0pi -e "$expression" "$target"
+  cmp -s "$PAGES_PLAN" "$target" &&
+    fail "fixture mutation did not change the Pages plan: $label"
+
+  if output="$(bash "$CHECKER" "$fixture" 2>&1)"; then
+    fail "checker accepted invalid Pages plan: $label"
+  fi
+  grep -Fq "$expected_error" <<<"$output" ||
+    fail "checker rejected Pages plan '$label' unexpectedly: $output"
+  echo "test-pages-deployment-contract: rejected Pages plan $label"
 }
 
 bash "$CHECKER" "$REPO_ROOT"
@@ -521,13 +548,28 @@ expect_canary_mutation_rejected \
   's/(      - name: Validate the complete canonical Pages tree\n)/$1        if: always()\n/'
 
 expect_canary_mutation_rejected \
+  "skipped readiness validation" \
+  "canary must validate readiness before selecting ready or hold" \
+  's/abi-staging pages-readiness validate-readiness "\$readiness"/abi-staging pages-readiness show "\$readiness"/'
+
+expect_canary_mutation_rejected \
+  "hold reads a site manifest" \
+  "canary hold must never inspect a site manifest or source tree" \
+  's/(          if \[ "\$ready" = false \]; then\n)/$1            jq -e . "\$pages_output\/site-manifest.json"\n/'
+
+expect_canary_mutation_rejected \
+  "extra hold output" \
+  "canary hold must validate exactly one readiness file" \
+  's/\["readiness\.json"\]/["readiness.json", "site-manifest.json"]/'
+
+expect_canary_mutation_rejected \
   "wrong freshness workflow" \
   "canary newest-run guard must query only the canary workflow" \
   's/PAGES_WORKFLOW_FILE: abi-staging-pages-canary\.yml/PAGES_WORKFLOW_FILE: browser-demos-pages.yml/'
 
 expect_canary_mutation_rejected \
   "bypassed newest-run guard" \
-  "canary upload authority must come from the tested newest-run checker" \
+  "canary retention authority must come from the tested newest-run checker" \
   's#run: bash scripts/check-pages-run-freshness\.sh#run: echo "upload=true" >> "\$GITHUB_OUTPUT"#'
 
 expect_canary_mutation_rejected \
@@ -553,11 +595,21 @@ expect_canary_mutation_rejected \
 expect_canary_mutation_rejected \
   "short artifact retention" \
   "canary must retain its inert artifact for seven days" \
-  's/          retention-days: 7/          retention-days: 1/'
+  's/(      - name: Upload the complete inert Pages canary.*?          retention-days:) 7/$1 1/s'
+
+expect_canary_mutation_rejected \
+  "hold uploaded as a Pages artifact" \
+  "canary hold must use one ordinary bounded artifact" \
+  's#actions/upload-artifact\@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a#actions/upload-pages-artifact\@fc324d3547104276b827a68afc52ff2a11cc49c9#'
+
+expect_canary_mutation_rejected \
+  "hold without retention" \
+  "canary hold must use one ordinary bounded artifact" \
+  's/(      - name: Upload the incomplete Pages hold.*?          path: \$\{\{ runner\.temp \}\}\/abi-staging-pages-output\/readiness\.json\n)          retention-days: 7\n/$1/s'
 
 expect_canary_mutation_rejected \
   "work after newest-run guard" \
-  "canary newest-run guard must be immediately before upload" \
+  "canary newest-run guard must be immediately before its two result uploads" \
   's/(      - name: Upload the complete inert Pages canary)/      - name: Delay the inert upload\n        run: sleep 1\n\n$1/'
 
 expect_canary_mutation_rejected \
@@ -569,5 +621,10 @@ expect_canary_mutation_rejected \
   "branch mutation" \
   "canary must not mutate a publication branch" \
   's/(      - name: Upload the complete inert Pages canary)/      - name: Mutate publication branch\n        run: git push origin HEAD:gh-pages\n\n$1/'
+
+expect_plan_mutation_rejected \
+  "pre-admission hold described as a ready gate" \
+  "Pages sequencing must keep the first hosted hold separate from readiness" \
+  's/Before successor admissions exist, the canary produces a hosted hold\s+for\s+inactive Task 10 preparation/Before successor admissions exist, the canary produces a hosted ready result for Task 10 activation/'
 
 echo "test-pages-deployment-contract: ok"

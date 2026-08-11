@@ -160,8 +160,8 @@ canary_current_response='{"workflow_runs":[
 ]}'
 run_canary_checker "$canary_current_response" \
   "$FIXTURE_ROOT/canary-current.out" >/dev/null
-grep -Fxq 'upload=true' "$FIXTURE_ROOT/canary-current.out" ||
-  fail "the exact newest canary run was not authorized for inert upload"
+grep -Fxq 'retain=true' "$FIXTURE_ROOT/canary-current.out" ||
+  fail "the exact newest canary run was not authorized for inert retention"
 if grep -Fq 'publish=' "$FIXTURE_ROOT/canary-current.out"; then
   fail "the canary freshness guard wrote production publication intent"
 fi
@@ -172,7 +172,7 @@ canary_newer_response='{"workflow_runs":[
 ]}'
 run_canary_checker "$canary_newer_response" \
   "$FIXTURE_ROOT/canary-newer.out" >/dev/null
-grep -Fxq 'upload=false' "$FIXTURE_ROOT/canary-newer.out" ||
+grep -Fxq 'retain=false' "$FIXTURE_ROOT/canary-newer.out" ||
   fail "a canary with a newer triggered successor was not skipped"
 
 expect_canary_rejected() {

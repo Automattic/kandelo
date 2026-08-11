@@ -416,13 +416,12 @@ jobs:
                 --input "$handoff" \
                 --output-root "$pages_output"
 
-      - name: Validate the complete canonical Pages tree
+      - name: Validate Pages readiness and select ready or hold
+        id: readiness
         run: |
           set -euo pipefail
           pages_output="$RUNNER_TEMP/abi-staging-pages-output"
           readiness="$pages_output/readiness.json"
-          site_manifest="$pages_output/site-manifest.json"
-          site_root="$pages_output/source-tree"
           registry="apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.generated.json"
           source_tree=$(git rev-parse 'HEAD^{tree}')
           target_abi=$(sed -nE \
@@ -430,7 +429,6 @@ jobs:
             crates/shared/src/lib.rs)
           snapshot_sha=$(sha256sum abi/snapshot.json | awk '{print $1}')
           registry_sha=$(sha256sum "$registry" | awk '{print $1}')
-          readiness_sha=$(sha256sum "$readiness" | awk '{print $1}')
           tap_commit=$(git -C "$KANDELO_PAGES_TAP_ROOT" rev-parse HEAD)
           tap_tree=$(git -C "$KANDELO_PAGES_TAP_ROOT" rev-parse 'HEAD^{tree}')
           tap_source=$(jq -cn \
@@ -442,9 +440,12 @@ jobs:
           bash scripts/dev-shell.sh cargo run -p xtask \
             --target "$host_target" --quiet -- \
             abi-staging pages-readiness validate-readiness "$readiness"
-          bash scripts/dev-shell.sh cargo run -p xtask \
-            --target "$host_target" --quiet -- \
-            abi-staging pages-readiness validate-site "$site_manifest"
+          ready=$(jq -r '
+            if .ready == true then "true"
+            elif .ready == false then "false"
+            else error("readiness result is not Boolean")
+            end
+          ' "$readiness")
           jq -e \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg commit "$GITHUB_SHA" \
@@ -454,9 +455,9 @@ jobs:
             --arg registry_path "$registry" \
             --argjson tap_source "$tap_source" \
             --argjson abi "$target_abi" \
+            --argjson ready "$ready" \
             --slurpfile registry "$registry" '
-              .ready == true and
-              .blockers == [] and
+              .ready == $ready and
               .source == {
                 commit: $commit,
                 repository: $repository,
@@ -471,6 +472,56 @@ jobs:
               .pages_registry.sha256 == $registry_sha and
               (.pages_registry.products | map(.id)) ==
                 ($registry[0].products | map(.id)) and
+              (tostring | contains("-candidates/") | not)
+            ' "$readiness" >/dev/null
+          if [ "$ready" = false ]; then
+            hold_inventory=$(python3 - "$pages_output" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          root = Path(sys.argv[1])
+          entries = sorted(
+              path.relative_to(root).as_posix()
+              for path in root.rglob("*")
+          )
+          print(json.dumps(entries, separators=(",", ":")))
+          PY
+            )
+            [ "$hold_inventory" = '["readiness.json"]' ]
+            [ -f "$readiness" ] && [ ! -L "$readiness" ]
+            readiness_bytes=$(stat -c %s "$readiness")
+            ((readiness_bytes > 0 && readiness_bytes <= 16777216))
+            readiness_sha=$(sha256sum "$readiness" | awk '{print $1}')
+            blockers=$(jq -cS '.blockers' "$readiness")
+            {
+              echo "### Pages canary hold"
+              echo
+              echo "- readiness SHA-256: \`$readiness_sha\`"
+              echo "- blockers: \`$blockers\`"
+            } >>"$GITHUB_STEP_SUMMARY"
+          fi
+          echo "ready=$ready" >>"$GITHUB_OUTPUT"
+
+      - name: Validate the complete canonical Pages tree
+        if: steps.readiness.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          pages_output="$RUNNER_TEMP/abi-staging-pages-output"
+          readiness="$pages_output/readiness.json"
+          site_manifest="$pages_output/site-manifest.json"
+          site_root="$pages_output/source-tree"
+          registry="apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.generated.json"
+          readiness_sha=$(sha256sum "$readiness" | awk '{print $1}')
+          host_target=$(bash scripts/dev-shell.sh \
+            bash -c 'rustc -vV | awk "/^host/ {print \$2}"')
+          bash scripts/dev-shell.sh cargo run -p xtask \
+            --target "$host_target" --quiet -- \
+            abi-staging pages-readiness validate-site "$site_manifest"
+          jq -e \
+            --slurpfile registry "$registry" '
+              .ready == true and
+              .blockers == [] and
               (.products | map(.id)) ==
                 ($registry[0].products | map(.id)) and
               all(.products[];
@@ -542,14 +593,23 @@ jobs:
           node scripts/check-pages-publish-size.mjs "$site_root" 1000000000
 
       - name: Confirm this is the newest Pages canary run
-        id: upload_freshness
+        id: retention_freshness
         env:
           GH_TOKEN: ${{ github.token }}
           PAGES_WORKFLOW_FILE: abi-staging-pages-canary.yml
         run: bash scripts/check-pages-run-freshness.sh
 
+      - name: Upload the incomplete Pages hold
+        if: steps.readiness.outputs.ready == 'false' && steps.retention_freshness.outputs.retain == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: abi-staging-pages-hold-${{ github.run_id }}
+          path: ${{ runner.temp }}/abi-staging-pages-output/readiness.json
+          retention-days: 7
+          if-no-files-found: error
+
       - name: Upload the complete inert Pages canary
-        if: steps.upload_freshness.outputs.upload == 'true'
+        if: steps.readiness.outputs.ready == 'true' && steps.retention_freshness.outputs.retain == 'true'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           name: abi-staging-pages-canary-${{ github.run_id }}

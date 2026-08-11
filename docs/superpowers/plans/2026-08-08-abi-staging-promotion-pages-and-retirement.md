@@ -429,6 +429,13 @@ Pages artifact after all readiness, product evidence, site tests, size checks,
 and newest-run checks succeed. Failure before deploy leaves the prior GitHub
 Pages deployment untouched.
 
+Before successor admissions exist, the canary produces a hosted hold
+for inactive Task 10 preparation. That hold retains only its validated
+readiness record; it is not Pages readiness or deployment authority.
+After successor promotion and admissions, operators rerun the canary
+and require a ready result before any activation and deployment work
+begins.
+
 ### Hosted acceptance and retirement evidence
 
 `abi/staging/acceptance/successor-batch.toml` is the sole concrete hosted
@@ -1474,10 +1481,12 @@ entries nonremovable and performs no broad deletion.
 
 **Interfaces:**
 
-- Consumes: Task 8 readiness/site build, existing full Pages tree assembly,
-  exact current main, and GitHub Pages artifact actions.
-- Produces: an observe-only workflow that builds/uploads a complete inert Pages
-  artifact but does not deploy production.
+- Consumes: Task 8 readiness/site build, exact current main, GitHub
+  Pages artifact actions for ready results, and ordinary workflow
+  artifacts for holds.
+- Produces: an observe-only workflow that retains either one validated
+  hold or one complete inert Pages artifact but does not deploy
+  production.
 - Permission map is workflow `{}` and job `{ actions: read, contents: read }`.
 
 - [ ] **Step 1: Write failing canary structural tests**
@@ -1485,14 +1494,15 @@ entries nonremovable and performs no broad deletion.
   Require current protected main only, no PR deployment, no path filter, exact
   Pages registry, admissions before composition, canonical references, all
   product Node/browser evidence, docs/API/site metadata/size, newest-run check,
-  one Pages artifact, no deploy action, no contents write, and no gh-pages
-  branch mutation.
+  one result artifact per run, no deploy action, no contents write, and
+  no gh-pages branch mutation.
 
 - [ ] **Step 2: Write canary mutations**
 
   Reject candidate VFS reuse, missing product, partial registry, skipped
-  evidence, candidate reference, source fallback, swallowed failure, artifact
-  upload before final checks, second site tree, mutable latest record, or any
+  evidence, candidate reference, source fallback, swallowed failure,
+  artifact upload before final checks, a second artifact for either
+  result, a second site tree, a mutable latest record, or any
   `pages: write`/`id-token: write` in canary.
 
 - [ ] **Step 3: Run Pages checks and verify red**
@@ -1507,10 +1517,11 @@ entries nonremovable and performs no broad deletion.
 
 - [ ] **Step 4: Implement complete canary build**
 
-  Reuse existing docs/API/browser build steps only after Task 8 readiness. Use
-  the exact registered product set and write `PagesSiteManifestV1` into the
-  complete tree. Upload one Pages artifact with a full-SHA pinned action; do not
-  call a deployment action.
+  Validate readiness before selecting a result. A hold contains exactly
+  `readiness.json` and uses one full-SHA-pinned ordinary artifact
+  action. A ready result alone validates `PagesSiteManifestV1` and the
+  complete tree, then uses the pinned Pages artifact action. Neither
+  path calls a deployment action.
 
 - [ ] **Step 5: Run Pages checks and actionlint**
 
@@ -1548,55 +1559,43 @@ entries nonremovable and performs no broad deletion.
 
 **Interfaces:**
 
-- Consumes: successful hosted Task 9 artifact/readiness canary and externally
-  configured GitHub Actions Pages source.
+- Consumes: a validated hosted Task 9 hold for inactive preparation; a
+  later ready canary and externally configured GitHub Actions Pages
+  source remain activation prerequisites.
 - Produces: fully tested native two-job atomic deployment code using admitted
   canonical products, with last-complete site retention on failure, while the
   checked-in activation remains non-production for this execution.
 
-- [ ] **Step 1: Run hosted canary before production edits**
+- [ ] **Step 1: Run the hosted hold before inactive production edits**
 
-  Retain exact workflow run/artifact/readiness/site-manifest digests and inspect
-  every selected Pages product. Run a hold-only missing-product canary and
-  confirm no deploy job/action occurs. If canary is unavailable or incomplete,
-  stop before editing production workflow.
+  Record the exact workflow run, ordinary artifact, and readiness
+  digest. The expected pre-admission result is a hold containing only
+  `readiness.json`. Confirm no Pages artifact or deploy action occurs.
+  This hosted hold for inactive Task 10 preparation permits only the
+  inactive edits below; it is not a ready or deploy gate.
 
-- [ ] **Step 2: Verify/switch repository Pages source externally**
+- [ ] **Step 2: Write failing production workflow mutations**
 
-  A maintainer with repository administration authority configures Pages to use
-  GitHub Actions rather than the `gh-pages` branch. Record the settings/API
-  evidence. Workflow code does not grant itself this authority.
-
-- [ ] **Step 3: Write failing production workflow mutations**
-
-  Require `build-complete-site` and `deploy-complete-site` permission split,
-  native upload/deploy actions, no contents write/secrets/peaceiris action,
-  deploy depending on successful complete artifact, stable concurrency, newest
-  run, and no deploy on readiness/evidence/size failure. Reject partial site or
+  Require the future `build-complete-site` and `deploy-complete-site`
+  permission split, native upload/deploy actions, no contents write,
+  secrets, or peaceiris action, deploy depending on a successful
+  complete artifact, stable concurrency, newest run, and no deploy on
+  readiness, evidence, or size failure. Reject a partial site or
   candidate reference.
 
-- [ ] **Step 4: Modify production workflow in observe mode**
+- [ ] **Step 3: Prepare the production workflow without activation**
 
-  Change Pages activation to `observe`: build and validate the new admitted
-  tree alongside the still-active legacy deploy, but do not add a second
-  production writer. Compare exact expected complete site inventory and
-  preserve current deployment behavior during the comparison run.
+  Keep Pages activation non-production. Add and test the
+  admitted-product build and the inactive native deployment shape
+  without adding a second writer, changing the repository Pages source,
+  or granting deployment authority.
 
-- [ ] **Step 5: Run one hosted observe comparison**
+- [ ] **Step 4: Run local workflow and security tests**
 
-  Compare product/site manifests and user-visible browser evidence. Confirm the
-  new tree is complete and any intentional locator differences are canonical
-  recomposition, not missing content.
-
-- [ ] **Step 6: Prove the single-writer activation mutation without applying it**
-
-  Exercise a temporary fixture mutation that changes activation to `active`,
-  removes the legacy `peaceiris` writer, and makes the native deploy job the
-  sole production writer. Prove the build job uses contents read and the
-  deploy job uses only Pages and identity-token writes without executing
-  source. Do not apply that mutation to the checked-in production workflow.
-
-- [ ] **Step 7: Run local workflow/security tests**
+  Exercise the inactive workflow and a temporary activation fixture.
+  Prove the future build job uses contents read and the future deploy
+  job uses only Pages and identity-token writes without applying that
+  fixture.
 
   ```bash
   scripts/dev-shell.sh bash scripts/test-pages-deployment-contract.sh
@@ -1609,14 +1608,7 @@ entries nonremovable and performs no broad deletion.
   Expected: PASS for the activation fixture. The checked-in production
   workflow remains in its pre-deployment state.
 
-- [ ] **Step 8: Retain hosted canary evidence without production deployment**
-
-  Retain the canary site manifest, then run the protected hold-only
-  missing-product path. Confirm readiness records `pages_product_incomplete`
-  and the deploy job is absent. Do not run a production replacement; record
-  that proof as the remaining activation gate.
-
-- [ ] **Step 9: Commit inactive production readiness**
+- [ ] **Step 5: Commit inactive production readiness**
 
   ```bash
   git add .github/workflows/browser-demos-pages.yml \
@@ -1625,6 +1617,35 @@ entries nonremovable and performs no broad deletion.
     scripts/test-pages-deployment-contract.sh
   git commit -m "[Pages] Prepare atomic admitted product deployment"
   ```
+
+- [ ] **Step 6: Complete successor promotion and admissions later**
+
+  Run the separately authorized successor promotion and admissions.
+  The earlier hold does not satisfy this gate and cannot be relabeled as
+  ready.
+
+- [ ] **Step 7: Rerun the canary and require readiness**
+
+  After successor promotion and admissions, rerun the canary. Retain its
+  exact readiness and site-manifest digests, inspect all selected
+  products, and require a ready result. Any hold leaves activation
+  blocked.
+
+- [ ] **Step 8: Verify or switch the repository Pages source
+  externally**
+
+  Only after the ready result, a maintainer with repository
+  administration authority may configure Pages to use GitHub Actions
+  rather than the `gh-pages` branch. Record the settings or API
+  evidence. Workflow code does not grant itself this authority.
+
+- [ ] **Step 9: Activate and deploy in a separate reviewed change**
+
+  Activation and deployment occur only after Steps 6--8. Remove the
+  legacy writer in the same reviewed single-writer change, then confirm
+  a later hold leaves the last complete deployment untouched. Task 10
+  itself remains preparation-only and performs none of these production
+  mutations.
 
 ---
 

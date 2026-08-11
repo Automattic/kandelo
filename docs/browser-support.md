@@ -355,6 +355,18 @@ lazy URLs remain the image authority while their authenticated current bytes
 are supplied through a closed local transport.
 An incomplete product set emits only `readiness.json`; a complete set emits the
 canonical artifacts, site manifest, and inert source tree for the Pages job.
+The canary validates that record before selecting its artifact protocol.
+A hold has exactly that one file, reports its digest and blockers, and
+uses ordinary bounded artifact retention; it never invokes the Pages
+artifact action. Only a ready result validates and uploads the complete
+inert Pages source tree.
+
+Hosted rollout follows the same distinction. The expected
+pre-admission run is a hosted hold for inactive Task 10 preparation, not
+a readiness or deployment gate. Operators then complete successor
+promotion and admissions, rerun the canary, and require a ready result.
+Only after that evidence may activation and deployment proceed through
+their separately authorized path.
 
 Selection preserves both lazy boundaries. A consumer may lazily compose a
 whole VFS product, and a selected product may in turn retain lazy bottle or

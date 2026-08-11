@@ -43,7 +43,7 @@ case "$WORKFLOW_FILE" in
     fi
     [ "$WORKFLOW_REF" = "$CANARY_WORKFLOW_REF" ] ||
       fail "canary requires its protected workflow ref"
-    output_name="upload"
+    output_name="retain"
     ;;
   *)
     fail "unauthorized Pages workflow selector: $WORKFLOW_FILE"
