@@ -402,7 +402,7 @@ for workflow in "$STAGING_WORKFLOW" "$PREPARE"; do
   authority_fixture="$route_fixture/authority"
   exact_head_fixture="$route_fixture/exact-head"
   route_output="$route_fixture/github-output"
-  mkdir -p "$authority_fixture" "$exact_head_fixture"
+  mkdir -p "$authority_fixture/.github/scripts" "$exact_head_fixture"
   : >"$route_output"
   route_step="$(step_run_block \
     "$workflow" "Derive protected exact ABI staging route")"
@@ -424,7 +424,41 @@ for workflow in "$STAGING_WORKFLOW" "$PREPARE"; do
     "$route_output" ||
     fail "$(basename "$workflow") bootstrap reason is not explicit"
 
+  rmdir "$authority_fixture/.github/scripts"
+  : >"$route_output"
+  if AUTHORITY_ROOT="$authority_fixture" \
+    EXACT_HEAD_ROOT="$exact_head_fixture" \
+    BASE_SHA=0000000000000000000000000000000000000000 \
+    HEAD_SHA=1111111111111111111111111111111111111111 \
+    RAW_PACKAGE_STAGING_REQUIRED=true \
+    GITHUB_OUTPUT="$route_output" \
+    bash -c "$route_step"; then
+    fail "$(basename "$workflow") accepted a missing protected classifier ancestor"
+  fi
+  [ ! -s "$route_output" ] ||
+    fail "$(basename "$workflow") wrote outputs for a missing classifier ancestor"
+
   mkdir -p "$authority_fixture/.github/scripts"
+  failing_classifier="$authority_fixture/.github/scripts/classify-exact-abi-staging.sh"
+  cat >"$failing_classifier" <<'SH'
+#!/usr/bin/env bash
+exit 17
+SH
+  chmod +x "$failing_classifier"
+  : >"$route_output"
+  if AUTHORITY_ROOT="$authority_fixture" \
+    EXACT_HEAD_ROOT="$exact_head_fixture" \
+    BASE_SHA=0000000000000000000000000000000000000000 \
+    HEAD_SHA=1111111111111111111111111111111111111111 \
+    RAW_PACKAGE_STAGING_REQUIRED=true \
+    GITHUB_OUTPUT="$route_output" \
+    bash -c "$route_step"; then
+    fail "$(basename "$workflow") ignored a protected classifier failure"
+  fi
+  [ ! -s "$route_output" ] ||
+    fail "$(basename "$workflow") wrote outputs after classifier failure"
+  rm "$failing_classifier"
+
   fake_classifier="$route_fixture/candidate-classifier"
   cat >"$fake_classifier" <<'SH'
 #!/usr/bin/env bash

@@ -295,7 +295,7 @@ jobs:
             "$AUTHORITY_ROOT/.github" \
             "$AUTHORITY_ROOT/.github/scripts"
           do
-            if [ -L "$protected_dir" ] || { [ -e "$protected_dir" ] && [ ! -d "$protected_dir" ]; }; then
+            if [ -L "$protected_dir" ] || [ ! -d "$protected_dir" ]; then
               echo "::error::protected exact ABI classifier ancestor is not a real directory"
               exit 1
             fi
