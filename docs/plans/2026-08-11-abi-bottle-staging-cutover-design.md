@@ -83,6 +83,39 @@ can merge.
 - Do not change ABI 42 artifacts or claim that pull request 1247 was staged by
   the replacement system.
 
+## Relationship To The Original Roadmap
+
+This design inserts a time-critical activation tranche into
+`2026-08-08-abi-staging-promotion-pages-and-retirement.md`. It does not replace
+that plan or mark its remaining work complete.
+
+The tranche advances the candidate/product portion of original Task 12 and
+uses the hosted canary boundary shared with original Tasks 10 and 11. The
+separate final admitted-product Pages plan has completed its local Tasks 1–5,
+so its sealed site and Chromium gates are available to the hosted canary. That
+local completion is not a production deployment claim.
+
+After this cutover, the original roadmap still owns:
+
+- Task 6: the full historical-repair and epoch-retirement lane;
+- Task 7: active deletion tombstones and deletion execution, which remain
+  observe-only or disabled;
+- Task 10: the inactive production Pages switch and later separately reviewed
+  deployment;
+- Task 11: generic hosted acceptance orchestration and retained evidence;
+- the promotion, ABI-history, retry, and override portions of Task 12;
+- Tasks 13 and 14: evidence-based retirement assessment without premature
+  legacy deletion;
+- Task 15: final operational documentation and explicit limitations;
+- Task 16: whole-roadmap verification and hosted evidence audit; and
+- the deferred shared CandidateRecord fixture and sealed-file no-follow review
+  items already recorded in the ledgers.
+
+The original global prohibitions continue to apply during this tranche: no
+production Pages deployment, artifact deletion or purge, legacy-infrastructure
+removal, or Formula promotion. The cutover may generate candidate artifacts
+and verification evidence only under the authorities defined below.
+
 ## Authority And Artifact Flow
 
 ### Kandelo request authority
