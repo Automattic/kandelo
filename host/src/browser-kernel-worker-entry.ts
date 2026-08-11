@@ -1120,7 +1120,13 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // cannot slip past both the pending queue and the serialized live path.
   initReady = true;
 
-  post({ type: "ready" });
+  // Only when the host asked for it: report the VFS SAB so the main thread can
+  // build a synchronous host-side filesystem view (BrowserKernel.hostFs). It is
+  // the same SharedArrayBuffer the worker reads and writes, so changes are
+  // mutually visible without a round-trip. Reporting it unconditionally would
+  // make the main thread a co-owner of every VFS, which is what the
+  // kernel-owned VFS deliberately avoids.
+  post(msg.reportFsSab ? { type: "ready", fsSab: memfs.sharedBuffer } : { type: "ready" });
 }
 
 // ── Spawn ──

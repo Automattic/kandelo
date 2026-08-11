@@ -394,6 +394,30 @@ describe("BrowserKernel", () => {
     ])).toBe(0);
   });
 
+  it("defaults spawnFromVfs stdin to an immediate EOF unless a PTY is requested", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
+
+    // Without an explicit stdin the process must see EOF, not a stdin that
+    // never arrives — a program that reads fd 0 would otherwise block forever.
+    kernel.spawnFromVfs("/bin/true", ["/bin/true"]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(worker.lastMessage("spawn").stdin).toEqual(new Uint8Array());
+
+    // A PTY spawn keeps stdin open for interactive input.
+    kernel.spawnFromVfs("/bin/true", ["/bin/true"], { pty: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(worker.lastMessage("spawn").stdin).toBeUndefined();
+  });
+
   it("uses the worker pid when fork has reserved the preceding pid", async () => {
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({ kernelOwnedFs: true });
@@ -919,6 +943,87 @@ describe("BrowserKernel", () => {
       const [respA, respB] = await Promise.all([a, b]);
       expect(new TextDecoder().decode(respA.body)).toBe("A");
       expect(new TextDecoder().decode(respB.body)).toBe("B");
+    });
+  });
+
+  describe("hostFs", () => {
+    /** Boot a kernel and hand it a formatted VFS SAB in the `ready` message. */
+    async function bootWithFsSab(options: Record<string, unknown>) {
+      const { MemoryFileSystem } = await import("../src/vfs/memory-fs");
+      const BrowserKernel = await loadBrowserKernel();
+      const kernel = new BrowserKernel(options);
+      const bootPromise = kernel.boot({
+        kernelWasm: new ArrayBuffer(8),
+        vfsImage: new Uint8Array(0),
+        argv: ["/init"],
+      });
+      await new Promise((r) => setTimeout(r, 0));
+      const w = MockWorker.instances[0]!;
+      const fsSab = new SharedArrayBuffer(1024 * 1024);
+      MemoryFileSystem.create(fsSab);
+      w.simulateMessage({
+        type: "ready",
+        ...(w.lastMessage("init").reportFsSab ? { fsSab } : {}),
+      });
+      await new Promise((r) => setTimeout(r, 0));
+      const spawn = w.lastMessage("spawn");
+      w.simulateMessage({ type: "response", requestId: spawn.requestId, result: 100 });
+      await bootPromise;
+      return { kernel, worker: w, fsSab };
+    }
+
+    it("does not ask the worker for the VFS SAB by default", async () => {
+      const { kernel, worker } = await bootWithFsSab({});
+      // The main thread must not become a co-owner of the VFS unless asked:
+      // a co-owned SAB outlives Worker.terminate() on WebKit.
+      expect(worker.lastMessage("init").reportFsSab).toBeFalsy();
+      expect(() => kernel.hostFs).toThrow(/exposeHostFs/);
+    });
+
+    it("exposes a synchronous view over the worker's VFS SAB when enabled", async () => {
+      const { kernel, worker } = await bootWithFsSab({ exposeHostFs: true });
+      expect(worker.lastMessage("init").reportFsSab).toBe(true);
+
+      const payload = new TextEncoder().encode("hello");
+      const fd = kernel.hostFs.open("/x", 0o1101 /* O_WRONLY|O_CREAT|O_TRUNC */, 0o644);
+      kernel.hostFs.write(fd, payload, 0, payload.length);
+      kernel.hostFs.close(fd);
+
+      const rfd = kernel.hostFs.open("/x", 0, 0);
+      const buf = new Uint8Array(16);
+      const n = kernel.hostFs.read(rfd, buf, null, buf.length);
+      kernel.hostFs.close(rfd);
+      expect(new TextDecoder().decode(buf.subarray(0, n))).toBe("hello");
+    });
+
+    it("returns one stable view rather than a fresh one per access", async () => {
+      const { kernel } = await bootWithFsSab({ exposeHostFs: true });
+      expect(kernel.hostFs).toBe(kernel.hostFs);
+    });
+
+    it("throws before the kernel is booted", async () => {
+      const BrowserKernel = await loadBrowserKernel();
+      const kernel = new BrowserKernel({ exposeHostFs: true });
+      expect(() => kernel.hostFs).toThrow(/booted/);
+    });
+
+    it("releases the VFS SAB reference on destroy", async () => {
+      const { kernel, worker } = await bootWithFsSab({ exposeHostFs: true });
+      expect(kernel.hostFs).toBeDefined();
+
+      const destroyPromise = kernel.destroy();
+      await new Promise((r) => setTimeout(r, 0));
+      const destroyMsg = worker.lastMessage("destroy");
+      worker.simulateMessage({
+        type: "response",
+        requestId: destroyMsg.requestId,
+        result: { gracefulDetachComplete: true },
+      });
+      await destroyPromise;
+
+      // Same release contract as the framebuffer/PTY aliases destroy() clears:
+      // holding the SAB here would pin a whole VFS per booted image.
+      expect(() => kernel.hostFs).toThrow(/booted/);
     });
   });
 
