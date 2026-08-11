@@ -27,6 +27,20 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Clone the exact public tap main projection
+        run: |
+          set -euo pipefail
+          tap_root="$RUNNER_TEMP/abi-staging-pages-tap-main"
+          test ! -e "$tap_root"
+          GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false SSH_ASKPASS=/bin/false \
+            git -c credential.helper= -c core.askPass=/bin/false clone \
+              https://github.com/kandelo-dev/homebrew-tap-core.git "$tap_root"
+          [[ $(git -C "$tap_root" symbolic-ref --short HEAD) == main ]]
+          [[ $(git -C "$tap_root" rev-parse HEAD) == \
+            $(git -C "$tap_root" rev-parse refs/remotes/origin/main) ]]
+          [[ -z $(git -C "$tap_root" status --porcelain=v1 --untracked-files=all) ]]
+          echo "KANDELO_PAGES_TAP_ROOT=$tap_root" >>"$GITHUB_ENV"
+
       - name: Fetch musl for exact runtime and product builds
         uses: ./.github/actions/fetch-submodules
         with:
@@ -91,6 +105,14 @@ jobs:
             abi-staging request-policy check \
             --source abi/staging/request-policy.toml \
             --generated abi/staging/request-policy.generated.json
+          cargo run -p xtask --target "$host_target" --quiet -- \
+            abi-staging registries check \
+            --catalog images/vfs/products/generated/catalog.json \
+            --pages apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.toml \
+            --pages-generated \
+              apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.generated.json \
+            --tests tests/vfs-products.toml \
+            --tests-generated tests/vfs-products.generated.json
           node scripts/check-pages-vfs-product-registry.mjs
           BASH
 
@@ -320,11 +342,35 @@ jobs:
           test ! -e "$handoff"
           [[ "$source_commit" == "$GITHUB_SHA" ]]
           [[ -z $(git status --porcelain=v1 --untracked-files=all) ]]
+          tap_root=$(realpath "$KANDELO_PAGES_TAP_ROOT")
+          tap_commit=$(git -C "$tap_root" rev-parse HEAD)
+          tap_tree=$(git -C "$tap_root" rev-parse 'HEAD^{tree}')
+          [[ $(git -C "$tap_root" remote get-url origin) == \
+            https://github.com/kandelo-dev/homebrew-tap-core.git ]]
+          [[ -z $(git -C "$tap_root" status --porcelain=v1 --untracked-files=all) ]]
+          env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_RUNTIME_TOKEN \
+            -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+            -u ACTIONS_ID_TOKEN_REQUEST_URL \
+            bash scripts/dev-shell.sh bash -euo pipefail -s <<'BASH'
+          host_target=$(rustc -vV | awk '/^host/ {print $2}')
+          cargo run -p xtask --target "$host_target" --quiet -- \
+            abi-staging registries check \
+            --catalog images/vfs/products/generated/catalog.json \
+            --pages apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.toml \
+            --pages-generated \
+              apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.generated.json \
+            --tests tests/vfs-products.toml \
+            --tests-generated tests/vfs-products.generated.json
+          BASH
           jq -cnS \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg commit "$source_commit" \
             --arg tree "$source_tree" \
             --arg source_root "$source_root" \
+            --arg tap_root "$tap_root" \
+            --arg tap_repository "kandelo-dev/homebrew-tap-core" \
+            --arg tap_commit "$tap_commit" \
+            --arg tap_tree "$tap_tree" \
             --arg runtime_bundle \
               "$RUNNER_TEMP/abi-staging-pages-runtime/runtime-bundle.json" \
             --arg runtime_root \
@@ -368,6 +414,12 @@ jobs:
                   tree: $tree
                 },
                 source_root: $source_root,
+                tap_root: $tap_root,
+                tap_source: {
+                  commit: $tap_commit,
+                  repository: $tap_repository,
+                  tree: $tap_tree
+                },
                 target_abi: {snapshot_sha256: $snapshot, version: $abi}
               }
             ' >"$handoff"
@@ -407,6 +459,12 @@ jobs:
           snapshot_sha=$(sha256sum abi/snapshot.json | awk '{print $1}')
           registry_sha=$(sha256sum "$registry" | awk '{print $1}')
           readiness_sha=$(sha256sum "$readiness" | awk '{print $1}')
+          tap_commit=$(git -C "$KANDELO_PAGES_TAP_ROOT" rev-parse HEAD)
+          tap_tree=$(git -C "$KANDELO_PAGES_TAP_ROOT" rev-parse 'HEAD^{tree}')
+          tap_source=$(jq -cn \
+            --arg commit "$tap_commit" \
+            --arg tree "$tap_tree" \
+            '{commit:$commit,repository:"kandelo-dev/homebrew-tap-core",tree:$tree}')
           host_target=$(bash scripts/dev-shell.sh \
             bash -c 'rustc -vV | awk "/^host/ {print \$2}"')
           bash scripts/dev-shell.sh cargo run -p xtask \
@@ -422,6 +480,7 @@ jobs:
             --arg snapshot "$snapshot_sha" \
             --arg registry_sha "$registry_sha" \
             --arg registry_path "$registry" \
+            --argjson tap_source "$tap_source" \
             --argjson abi "$target_abi" \
             --slurpfile registry "$registry" '
               .ready == true and
@@ -431,6 +490,7 @@ jobs:
                 repository: $repository,
                 tree: $tree
               } and
+              .tap_source == $tap_source and
               .target_abi == {
                 snapshot_sha256: $snapshot,
                 version: $abi
@@ -443,13 +503,17 @@ jobs:
                 ($registry[0].products | map(.id)) and
               all(.products[];
                 (.node_receipts | length > 0) and
-                (.browser_receipts | length > 0)) and
+                (.browser_receipts | length > 0) and
+                all(.admissions[];
+                  .projection.admission_record_sha256 == .record_sha256 and
+                  .projection.tap_source == $tap_source)) and
               (tostring | contains("-candidates/") | not)
             ' "$readiness" >/dev/null
           jq -e --arg readiness_sha "$readiness_sha" \
             --slurpfile readiness "$readiness" '
               .readiness_record_sha256 == $readiness_sha and
               .source == $readiness[0].source and
+              .tap_source == $readiness[0].tap_source and
               .target_abi == $readiness[0].target_abi and
               .pages_registry == $readiness[0].pages_registry and
               (.products | map(.id)) ==

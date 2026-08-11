@@ -169,6 +169,7 @@ export async function createMiniaturePagesProducerFixture(
   const programIndex = join(root, "program-index.json");
   writeFileSync(programIndex, canonicalJsonBytes({ kind: "fixture-program-index", schema: 1 }));
   const handoffPath = join(root, "handoff.json");
+  mkdirSync(join(root, "tap-main"));
   writeFileSync(handoffPath, canonicalJsonBytes({
     kind: "kandelo-pages-production-handoff",
     products: ["base", "mini"].map((id) => ({
@@ -192,6 +193,12 @@ export async function createMiniaturePagesProducerFixture(
     site_source_root: siteRoot,
     source,
     source_root: sourceRoot,
+    tap_root: join(root, "tap-main"),
+    tap_source: {
+      commit: "4".repeat(40),
+      repository: "kandelo-dev/homebrew-tap-core",
+      tree: "5".repeat(40),
+    },
     target_abi: targetAbi,
   }));
 
@@ -263,6 +270,7 @@ export async function createMiniaturePagesProducerFixture(
       return evidenceReceipt(request, runtimeEvidence, outcome);
     },
     async validateAdmissionRecord() {},
+    validateRegistries() {},
   };
 
   const oci: ProductionOciAuthority = {

@@ -15,6 +15,7 @@ import test from "node:test";
 import { createRepositoryPathBundle } from "../images/vfs/scripts/repository-path-bundle.ts";
 
 import {
+  bindAdmissionProjections,
   canonicalJsonBytes,
   createLocalLazyFetcher,
   createExactSourceReobserver,
@@ -97,6 +98,11 @@ test("emits canonical hold-only readiness for expected product incompleteness", 
     },
     siteMetadataSha256: "6".repeat(64),
     source,
+    tapSource: {
+      commit: "4".repeat(40),
+      repository: "kandelo-dev/homebrew-tap-core",
+      tree: "5".repeat(40),
+    },
     targetAbi,
   });
   assert.equal(readiness.ready, false);
@@ -323,6 +329,11 @@ test("recaptures a commit-sensitive repository-path bundle from the same source 
 });
 
 test("accepts only a bounded automatically collectable production handoff", () => {
+  const tapSource = {
+    commit: "4".repeat(40),
+    repository: "kandelo-dev/homebrew-tap-core",
+    tree: "5".repeat(40),
+  };
   const handoff = {
     schema: 1,
     kind: "kandelo-pages-production-handoff",
@@ -346,10 +357,19 @@ test("accepts only a bounded automatically collectable production handoff", () =
     site_source_root: "/tmp/site-source",
     source,
     source_root: "/tmp/current-main",
+    tap_root: "/tmp/current-tap-main",
+    tap_source: tapSource,
     target_abi: targetAbi,
   };
 
   assert.deepEqual(validatePagesProductionHandoff(handoff), handoff);
+  assert.throws(
+    () => validatePagesProductionHandoff({
+      ...handoff,
+      tap_source: { ...tapSource, repository: "example/homebrew-tap-core" },
+    }),
+    /tap source/i,
+  );
   assert.throws(
     () => validatePagesProductionHandoff({
       ...handoff,
@@ -485,13 +505,31 @@ test("preserves the authenticated admission manifest locator independently of re
   ]);
   const record = {
     admission: {
-      formula_metadata_update: { formula: "dash", target_abi: 18 },
+      formula_metadata_update: { architecture: "wasm32", formula: "dash", target_abi: 18 },
       promoted_layer: { bytes: 12, sha256: "b".repeat(64) },
     },
     kind: "kandelo-abi-staging-admission",
     schema: 1,
   };
   let validated = 0;
+  let projected = 0;
+  const projection = {
+    admission_record_sha256: sha256(canonicalJsonBytes(record)),
+    architecture: "wasm32",
+    formula: "dash",
+    formula_metadata_update_sha256: sha256(canonicalJsonBytes(
+      record.admission.formula_metadata_update,
+    )),
+    kind: "kandelo-pages-admission-projection",
+    projection_sha256: "d".repeat(64),
+    schema: 1,
+    tap_source: {
+      commit: "4".repeat(40),
+      repository: "kandelo-dev/homebrew-tap-core",
+      tree: "5".repeat(40),
+    },
+    target_abi: 18,
+  };
   const admissions = await discoverAdmissions({
     inputs: [{
       bytes: 12,
@@ -508,11 +546,47 @@ test("preserves the authenticated admission manifest locator independently of re
     async fetchBlob() { throw new Error("unused"); },
     async fetchManifest() { throw new Error("unused"); },
     async fetchCanonicalOci() { throw new Error("unused"); },
-  }, async () => { validated++; });
+  }, async () => { validated++; }, async (recordBytes) => {
+    assert.equal(sha256(recordBytes), projection.admission_record_sha256);
+    projected++;
+    return projection;
+  });
   assert.equal(admissions[0]!.immutable_reference, reference);
   assert.equal(admissions[0]!.record_sha256, sha256(canonicalJsonBytes(record)));
   assert.notEqual(admissions[0]!.record_sha256, manifestSha256);
   assert.equal(validated, 1);
+  assert.equal(projected, 1);
+  assert.deepEqual((admissions[0] as any).projection, projection);
+});
+
+test("rejects a selected admission without a current-main projection", async () => {
+  const repository = "ghcr.io/kandelo-dev/homebrew-tap-core-abi-18/dash/admissions";
+  const reference = `${repository}@sha256:${"a".repeat(64)}`;
+  const record = {
+    admission: {
+      formula_metadata_update: { architecture: "wasm32", formula: "dash", target_abi: 18 },
+      promoted_layer: { bytes: 12, sha256: "b".repeat(64) },
+    },
+    kind: "kandelo-abi-staging-admission",
+    schema: 1,
+  };
+  await assert.rejects(
+    () => discoverAdmissions({
+      inputs: [{
+        bytes: 12,
+        id: "homebrew-dash",
+        kind: "homebrew-bottle",
+        sha256: "b".repeat(64),
+      }],
+    }, 18, {
+      async listImmutableReferences() { return [reference]; },
+      async readAdmissionRecord() { return record; },
+      async fetchBlob() { throw new Error("unused"); },
+      async fetchManifest() { throw new Error("unused"); },
+      async fetchCanonicalOci() { throw new Error("unused"); },
+    }, async () => undefined, async () => undefined as any),
+    /current.*projection/i,
+  );
 });
 
 test("selects a deterministic admission when equivalent immutable history coexists", async () => {
@@ -531,6 +605,7 @@ test("selects a deterministic admission when equivalent immutable history coexis
         bottle_layer_bytes: 12,
         bottle_layer_sha256: "b".repeat(64),
         canonical_manifest_digest: "c".repeat(64),
+        architecture: "wasm32",
         formula: "dash",
         target_abi: 18,
       },
@@ -557,7 +632,23 @@ test("selects a deterministic admission when equivalent immutable history coexis
     async fetchBlob() { throw new Error("unused"); },
     async fetchManifest() { throw new Error("unused"); },
     async fetchCanonicalOci() { throw new Error("unused"); },
-  }, async () => { validated++; });
+  }, async () => { validated++; }, async (recordBytes) => ({
+    admission_record_sha256: sha256(recordBytes),
+    architecture: "wasm32",
+    formula: "dash",
+    formula_metadata_update_sha256: sha256(canonicalJsonBytes(
+      (records[0] as any).admission.formula_metadata_update,
+    )),
+    kind: "kandelo-pages-admission-projection",
+    projection_sha256: "d".repeat(64),
+    schema: 1,
+    tap_source: {
+      commit: "4".repeat(40),
+      repository: "kandelo-dev/homebrew-tap-core",
+      tree: "5".repeat(40),
+    },
+    target_abi: 18,
+  }));
   const expected = records.map((record, index) => ({
     recordSha256: sha256(canonicalJsonBytes(record)),
     reference: references[index]!,
@@ -565,6 +656,75 @@ test("selects a deterministic admission when equivalent immutable history coexis
   assert.equal(admissions[0]!.record_sha256, expected.recordSha256);
   assert.equal(admissions[0]!.immutable_reference, expected.reference);
   assert.equal(validated, 2);
+});
+
+test("binds exact current projections into readiness and rejects cross-product conflicts", () => {
+  const tapSource = {
+    commit: "4".repeat(40),
+    repository: "kandelo-dev/homebrew-tap-core",
+    tree: "5".repeat(40),
+  };
+  const admission = {
+    immutable_reference: `ghcr.io/example/admission@sha256:${"a".repeat(64)}`,
+    record_sha256: "b".repeat(64),
+  };
+  const projection = {
+    admission_record_sha256: admission.record_sha256,
+    architecture: "wasm32",
+    formula: "dash",
+    formula_metadata_update_sha256: "c".repeat(64),
+    kind: "kandelo-pages-admission-projection",
+    projection_sha256: "d".repeat(64),
+    schema: 1,
+    tap_source: tapSource,
+    target_abi: 18,
+  };
+  const result: any = {
+    readiness: {
+      products: [{ admissions: [structuredClone(admission)], id: "shell" }],
+      ready: true,
+    },
+    site_manifest: {
+      products: [{ admissions: [structuredClone(admission)], id: "shell" }],
+      readiness_record_sha256: "e".repeat(64),
+    },
+  };
+  bindAdmissionProjections(result, [{
+    admissions: [{ ...admission, projection }],
+    id: "shell",
+  }] as any, tapSource);
+  assert.deepEqual(result.readiness.tap_source, tapSource);
+  assert.deepEqual(result.readiness.products[0].admissions[0].projection, projection);
+  assert.deepEqual(result.site_manifest.tap_source, tapSource);
+  assert.deepEqual(result.site_manifest.products[0].admissions,
+    result.readiness.products[0].admissions);
+  assert.equal(result.site_manifest.readiness_record_sha256,
+    sha256(canonicalJsonBytes(result.readiness)));
+
+  const conflictResult: any = {
+    readiness: {
+      products: ["one", "two"].map((id) => ({
+        admissions: [structuredClone(admission)], id,
+      })),
+      ready: true,
+    },
+    site_manifest: {
+      products: ["one", "two"].map((id) => ({
+        admissions: [structuredClone(admission)], id,
+      })),
+      readiness_record_sha256: "e".repeat(64),
+    },
+  };
+  assert.throws(() => bindAdmissionProjections(conflictResult, [{
+    admissions: [{ ...admission, projection }],
+    id: "one",
+  }, {
+    admissions: [{
+      ...admission,
+      projection: { ...projection, projection_sha256: "f".repeat(64) },
+    }],
+    id: "two",
+  }] as any, tapSource), /conflicting current projections/i);
 });
 
 test("derives site and gallery identities from protected current outputs", () => {

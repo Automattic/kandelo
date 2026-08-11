@@ -49,6 +49,7 @@ import {
   type BrowserEvidenceContextV1,
 } from "./abi-staging-product-browser-evidence.ts";
 import { runVfsProductBuilderCli } from "./run-vfs-product-builder.ts";
+import { readPagesRegistry } from "./check-pages-vfs-product-registry.mjs";
 
 type JsonObject = Record<string, any>;
 
@@ -73,6 +74,7 @@ const MAX_OCI_TAGS = 16_384;
 const MAX_SITE_BYTES = 1_000_000_000;
 const MAX_SITE_FILES = 65_536;
 const PROTECTED_REPOSITORY = "Automattic/kandelo";
+const PROTECTED_TAP_REPOSITORY = "kandelo-dev/homebrew-tap-core";
 const PROTECTED_WORKFLOWS = new Set([
   "Automattic/kandelo/.github/workflows/abi-staging-pages-canary.yml@refs/heads/main",
   "Automattic/kandelo/.github/workflows/browser-demos-pages.yml@refs/heads/main",
@@ -160,6 +162,7 @@ export function heldPagesReadinessRecord(options: {
   };
   siteMetadataSha256: string;
   source: { repository: string; commit: string; tree: string };
+  tapSource: { repository: string; commit: string; tree: string };
   targetAbi: { version: number; snapshot_sha256: string };
 }): JsonObject {
   if (options.blockers.length === 0) {
@@ -179,6 +182,7 @@ export function heldPagesReadinessRecord(options: {
     schema: 1,
     site_metadata_sha256: options.siteMetadataSha256,
     source: options.source,
+    tap_source: options.tapSource,
     target_abi: options.targetAbi,
   };
 }
@@ -224,6 +228,8 @@ export interface PagesProductionHandoffV1 {
   kind: "kandelo-pages-production-handoff";
   source_root: string;
   source: { repository: string; commit: string; tree: string };
+  tap_root: string;
+  tap_source: { repository: string; commit: string; tree: string };
   target_abi: { version: number; snapshot_sha256: string };
   runtime_bundle: string;
   runtime_root: string;
@@ -250,7 +256,7 @@ export function validatePagesProductionHandoff(
   const input = record(value, "Pages production handoff");
   exactKeys(input, [
     "kind", "products", "run", "runtime_bundle", "runtime_root", "schema",
-    "site_source_root", "source", "source_root", "target_abi",
+    "site_source_root", "source", "source_root", "tap_root", "tap_source", "target_abi",
   ], "Pages production handoff");
   if (input.schema !== 1 || input.kind !== "kandelo-pages-production-handoff") {
     throw new Error("Pages production handoff has unsupported identity");
@@ -261,6 +267,12 @@ export function validatePagesProductionHandoff(
     source.repository !== PROTECTED_REPOSITORY ||
     !/^[0-9a-f]{40}$/u.test(source.commit) || !/^[0-9a-f]{40}$/u.test(source.tree)
   ) throw new Error("Pages production source identity is invalid");
+  const tapSource = record(input.tap_source, "Pages production tap source");
+  exactKeys(tapSource, ["commit", "repository", "tree"], "Pages production tap source");
+  if (
+    tapSource.repository !== PROTECTED_TAP_REPOSITORY ||
+    !/^[0-9a-f]{40}$/u.test(tapSource.commit) || !/^[0-9a-f]{40}$/u.test(tapSource.tree)
+  ) throw new Error("Pages production tap source identity is invalid");
   const target = record(input.target_abi, "Pages production target ABI");
   exactKeys(target, ["snapshot_sha256", "version"], "Pages production target ABI");
   if (
@@ -277,6 +289,7 @@ export function validatePagesProductionHandoff(
   ) throw new Error("Pages production run is not a protected main run");
   const paths = [
     input.runtime_bundle, input.runtime_root, input.site_source_root, input.source_root,
+    input.tap_root,
   ];
   const products = array(input.products, "Pages production products");
   if (products.length === 0 || products.length > 4_096) {
@@ -308,6 +321,8 @@ export function validatePagesProductionHandoff(
     kind: "kandelo-pages-production-handoff",
     source_root: input.source_root,
     source: source as PagesProductionHandoffV1["source"],
+    tap_root: input.tap_root,
+    tap_source: tapSource as PagesProductionHandoffV1["tap_source"],
     target_abi: target as PagesProductionHandoffV1["target_abi"],
     runtime_bundle: input.runtime_bundle,
     runtime_root: input.runtime_root,
@@ -526,12 +541,16 @@ export interface PagesProducerTestDependenciesV1 {
   ): JsonObject;
   createSourceReobserver?(expected: ExactSourceObservation): () => void;
   loadProtectedAuthorities?(sourceRoot: string): ProtectedPagesAuthoritiesV1;
+  observeAdmissionProjection?(
+    recordBytes: Uint8Array,
+  ): Promise<JsonObject>;
   observeRuntime?(runtimeBundleBytes: Uint8Array, runtimeRoot: string): {
     devShellLockSha256: string;
     source: PagesProductionHandoffV1["source"];
     targetAbi: PagesProductionHandoffV1["target_abi"];
   };
   runEvidence?(request: PagesEvidenceRequestV1): Promise<JsonObject>;
+  validateRegistries?(sourceRoot: string): void;
   validateAdmissionRecord?(bytes: Uint8Array): Promise<void>;
 }
 
@@ -546,6 +565,7 @@ export async function producePagesArtifacts(
     readCanonicalFile(handoffPath, "Pages production handoff", MAX_DOCUMENT_BYTES),
   );
   const sourceRoot = exactDirectory(handoff.source_root, "exact current-main source root");
+  const tapRoot = exactDirectory(handoff.tap_root, "exact current tap-main root");
   const runtimeRoot = exactDirectory(handoff.runtime_root, "exact runtime artifact root");
   const siteSourceRoot = exactDirectory(handoff.site_source_root, "Pages site source root");
   const runtimeBundleBytes = readBoundedFile(
@@ -578,6 +598,8 @@ export async function producePagesArtifacts(
   };
   const reobserveSource = testDependencies?.createSourceReobserver?.(sourceObservation) ??
     createExactSourceReobserver(sourceObservation);
+
+  (testDependencies?.validateRegistries ?? validateProtectedRegistries)(sourceRoot);
 
   const fixed = testDependencies?.loadProtectedAuthorities?.(sourceRoot) ??
     loadProtectedAuthorities(sourceRoot);
@@ -719,6 +741,13 @@ export async function producePagesArtifacts(
           oci,
           (recordBytes) => testDependencies?.validateAdmissionRecord?.(recordBytes) ??
             validateAdmissionRecord(recordBytes, sourceRoot, staging),
+          (recordBytes) => testDependencies?.observeAdmissionProjection?.(recordBytes) ??
+            observeAdmissionProjection(
+              recordBytes,
+              tapRoot,
+              handoff.tap_source,
+              staging,
+            ),
         );
       } catch (error) {
         if (!(error instanceof PagesProductUnavailableError)) throw error;
@@ -777,6 +806,7 @@ export async function producePagesArtifacts(
         },
         siteMetadataSha256: readinessInput.authority.site_metadata_sha256,
         source: handoff.source,
+        tapSource: handoff.tap_source,
         targetAbi: handoff.target_abi,
       });
       reobserveSource();
@@ -807,6 +837,7 @@ export async function producePagesArtifacts(
       validateAdmissionRecord: (bytes) => testDependencies?.validateAdmissionRecord?.(bytes) ??
         validateAdmissionRecord(bytes, sourceRoot, staging),
     });
+    bindAdmissionProjections(result as unknown as JsonObject, products, handoff.tap_source);
     writeCanonical(join(staging, "readiness.json"), result.readiness);
     if (!result.readiness.ready) {
       reobserveSource();
@@ -843,6 +874,17 @@ function loadProtectedAuthorities(sourceRoot: string): ProtectedPagesAuthorities
     const bytes = readBoundedFile(path, label, MAX_DOCUMENT_BYTES);
     return { path: repositoryPath, source_bytes: bytes, bytes, value: canonicalDocument(bytes, label) };
   };
+  const pages = load(
+    "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.generated.json",
+    "Pages product registry",
+  );
+  const sourcePages = readPagesRegistry(join(
+    sourceRoot,
+    "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.toml",
+  ));
+  if (!jsonEqual(sourcePages, pages.value)) {
+    throw new Error("source and generated Pages registries differ");
+  }
   return {
     catalog: load("images/vfs/products/generated/catalog.json", "VFS product catalog"),
     definitions: load(
@@ -853,10 +895,7 @@ function loadProtectedAuthorities(sourceRoot: string): ProtectedPagesAuthorities
       "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-gallery.json",
       "Pages product gallery",
     ).value,
-    pages: load(
-      "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.generated.json",
-      "Pages product registry",
-    ),
+    pages,
     tests: load("tests/vfs-products.generated.json", "test product registry"),
     presentationSource: new TextDecoder("utf-8", { fatal: true }).decode(readBoundedFile(
       join(sourceRoot, "apps/browser-demos/pages/kandelo/presets.ts"),
@@ -930,6 +969,7 @@ export async function discoverAdmissions(
   abi: number,
   oci: ProductionOciAuthority,
   validateRecord?: (bytes: Uint8Array) => Promise<void>,
+  observeProjection?: (bytes: Uint8Array) => Promise<JsonObject>,
 ): Promise<AdmissionEnvelopeV1[]> {
   const formulas = array(candidateResolved.inputs, "candidate inputs")
     .filter((value) => record(value, "candidate input").kind === "homebrew-bottle")
@@ -979,9 +1019,104 @@ export async function discoverAdmissions(
       throw new Error(`${formula} has conflicting immutable admission records`);
     }
     matching.sort((left, right) => ordinal(left.record_sha256, right.record_sha256));
-    admissions.push(matching[0]!);
+    const selected = matching[0]!;
+    if (observeProjection === undefined) {
+      throw new Error(`${formula} selected admission lacks a current-main projection observer`);
+    }
+    const projection = validateAdmissionProjectionObservation(
+      await observeProjection(canonicalJsonBytes(selected.record)),
+      selected.record,
+      selected.record_sha256,
+    );
+    admissions.push({ ...selected, projection } as AdmissionEnvelopeV1);
   }
   return admissions.sort((left, right) => ordinal(left.record_sha256, right.record_sha256));
+}
+
+function validateAdmissionProjectionObservation(
+  value: unknown,
+  admissionRecord: JsonObject,
+  recordSha256: string,
+): JsonObject {
+  const projection = record(value, "current admission projection");
+  exactKeys(projection, [
+    "admission_record_sha256", "architecture", "formula",
+    "formula_metadata_update_sha256", "kind", "projection_sha256", "schema",
+    "tap_source", "target_abi",
+  ], "current admission projection");
+  const update = record(
+    admissionRecord.admission?.formula_metadata_update,
+    "admission Formula metadata update",
+  );
+  const source = record(projection.tap_source, "current admission projection tap source");
+  exactKeys(source, ["commit", "repository", "tree"],
+    "current admission projection tap source");
+  if (
+    projection.schema !== 1 || projection.kind !== "kandelo-pages-admission-projection" ||
+    projection.admission_record_sha256 !== recordSha256 ||
+    projection.formula_metadata_update_sha256 !== sha256(canonicalJsonBytes(update)) ||
+    projection.formula !== update.formula || projection.architecture !== update.architecture ||
+    projection.target_abi !== update.target_abi || !SHA256.test(projection.projection_sha256) ||
+    source.repository !== PROTECTED_TAP_REPOSITORY ||
+    !/^[0-9a-f]{40}$/u.test(source.commit) || !/^[0-9a-f]{40}$/u.test(source.tree)
+  ) throw new Error("current admission projection differs from its selected admission");
+  return projection;
+}
+
+export function bindAdmissionProjections(
+  result: JsonObject,
+  products: PagesReadinessInputV1["products"],
+  tapSource: PagesProductionHandoffV1["tap_source"],
+): void {
+  const readiness = record(result.readiness, "computed Pages readiness");
+  readiness.tap_source = structuredClone(tapSource);
+  if (readiness.ready !== true) return;
+  const selectedByProduct = new Map(products.map((product) => [product.id, product.admissions]));
+  const globallyObserved = new Map<string, JsonObject>();
+  for (const readyProduct of array(readiness.products, "ready Pages products")) {
+    const product = record(readyProduct, "ready Pages product");
+    const selected = selectedByProduct.get(product.id);
+    if (selected === undefined) throw new Error(`${String(product.id)} lacks selected admissions`);
+    const byRecord = new Map(selected.map((admission: any) => [
+      admission.record_sha256,
+      admission.projection,
+    ]));
+    const seen = new Set<string>();
+    product.admissions = array(product.admissions, `${String(product.id)} readiness admissions`)
+      .map((value) => {
+        const admission = record(value, `${String(product.id)} readiness admission`);
+        const projection = byRecord.get(admission.record_sha256);
+        if (projection === undefined) {
+          throw new Error(`${String(product.id)} admission lacks a current-main projection`);
+        }
+        const identity = `${String(projection.formula)}\0${String(projection.architecture)}`;
+        if (seen.has(identity)) {
+          throw new Error(`${String(product.id)} has duplicate Formula/architecture projections`);
+        }
+        seen.add(identity);
+        const prior = globallyObserved.get(identity);
+        if (prior !== undefined && !jsonEqual(prior, projection)) {
+          throw new Error(`selected admissions have conflicting current projections for ${identity}`);
+        }
+        globallyObserved.set(identity, projection);
+        return { ...admission, projection };
+      });
+  }
+  const siteManifest = record(result.site_manifest, "computed Pages site manifest");
+  siteManifest.tap_source = structuredClone(tapSource);
+  const readyById = new Map(
+    array(readiness.products, "ready Pages products").map((value) => {
+      const product = record(value, "ready Pages product");
+      return [product.id, product] as const;
+    }),
+  );
+  for (const value of array(siteManifest.products, "Pages site products")) {
+    const product = record(value, "Pages site product");
+    const ready = readyById.get(product.id);
+    if (ready === undefined) throw new Error(`${String(product.id)} site product lacks readiness`);
+    product.admissions = structuredClone(ready.admissions);
+  }
+  siteManifest.readiness_record_sha256 = sha256(canonicalJsonBytes(readiness));
 }
 
 function admissionProductIdentity(value: JsonObject): JsonObject {
@@ -1353,6 +1488,64 @@ async function validateAdmissionRecord(
   } finally {
     rmSync(temporary, { force: true, recursive: true });
   }
+}
+
+async function observeAdmissionProjection(
+  bytes: Uint8Array,
+  tapRoot: string,
+  expectedTapSource: PagesProductionHandoffV1["tap_source"],
+  staging: string,
+): Promise<JsonObject> {
+  const root = join(staging, "admission-projections");
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const temporary = mkdtempSync(join(root, ".projection-"));
+  try {
+    const recordPath = writeBytes(join(temporary, "record.json"), bytes);
+    const outputPath = join(temporary, "observation.json");
+    runCommand("python3", [
+      "-B", "-m", "scripts.abi_staging.cli", "validate-admission-projection",
+      "--tap-root", tapRoot,
+      "--record", recordPath,
+      "--out", outputPath,
+    ], tapRoot, 16 * 1024 * 1024);
+    const observation = readCanonicalFile(
+      outputPath,
+      "current admission projection",
+      MAX_DOCUMENT_BYTES,
+    );
+    if (!jsonEqual(observation.tap_source, expectedTapSource)) {
+      throw new Error("current admission projection names another tap-main source");
+    }
+    return observation;
+  } finally {
+    rmSync(temporary, { force: true, recursive: true });
+  }
+}
+
+function validateProtectedRegistries(sourceRoot: string): void {
+  const rustc = spawnSync("rustc", ["-vV"], {
+    cwd: sourceRoot,
+    encoding: "utf8",
+    env: process.env,
+    maxBuffer: MAX_DOCUMENT_BYTES,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (rustc.error !== undefined) throw rustc.error;
+  if (rustc.status !== 0 || rustc.signal !== null) {
+    throw new Error(`rustc -vV failed: ${String(rustc.stderr).slice(0, 4096)}`);
+  }
+  const hostTarget = String(rustc.stdout).match(/^host: (\S+)$/mu)?.[1];
+  if (hostTarget === undefined) throw new Error("rustc did not report its exact host target");
+  runCommand("cargo", [
+    "run", "-p", "xtask", "--target", hostTarget, "--quiet", "--",
+    "abi-staging", "registries", "check",
+    "--catalog", "images/vfs/products/generated/catalog.json",
+    "--pages", "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.toml",
+    "--pages-generated",
+    "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.generated.json",
+    "--tests", "tests/vfs-products.toml",
+    "--tests-generated", "tests/vfs-products.generated.json",
+  ], sourceRoot, 16 * 1024 * 1024);
 }
 
 function createAnonymousOciAuthority(): ProductionOciAuthority {

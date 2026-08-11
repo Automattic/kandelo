@@ -1,10 +1,12 @@
+use crate::abi_staging::builder_contract::TargetAbiV1;
 use crate::abi_staging::canonical_json::{
     canonical_json_bytes, validate_git_sha, validate_sha256, validate_stable_id,
 };
+use crate::abi_staging::consumer_registry::PagesLoadV1;
 use crate::abi_staging::guard_registry::GuardCodeV1;
 use crate::abi_staging::records::{
-    PagesEvidenceReceiptLinkV1, PagesFileIdentityV1, PagesReadinessRecordV1, PagesReadyProductV1,
-    PagesRegistryIdentityV1, PagesSiteManifestV1, PagesSiteProductV1,
+    ExactGitSourceV1, PagesBuildSetV1, PagesEvidenceReceiptLinkV1, PagesFileIdentityV1,
+    PagesReadinessBlockerV1, PagesRegistryIdentityV1,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,6 +20,93 @@ const ACTIVATION_KIND: &str = "kandelo-pages-activation";
 const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PRODUCTS: usize = 4_096;
 const MAX_FILES: usize = 65_536;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdmissionProjectionObservationV1 {
+    pub schema: u64,
+    pub kind: String,
+    pub admission_record_sha256: String,
+    pub formula: String,
+    pub architecture: String,
+    pub target_abi: u64,
+    pub formula_metadata_update_sha256: String,
+    pub projection_sha256: String,
+    pub tap_source: ExactGitSourceV1,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PagesProjectedRecordLinkV1 {
+    pub record_sha256: String,
+    pub immutable_reference: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection: Option<AdmissionProjectionObservationV1>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PagesReadyProductV1 {
+    pub id: String,
+    pub load: PagesLoadV1,
+    pub manifest_sha256: String,
+    pub admissions: Vec<PagesProjectedRecordLinkV1>,
+    pub resolved_inputs_sha256: String,
+    pub vfs_sha256: String,
+    pub vfs_bytes: u64,
+    pub builder_report_sha256: String,
+    pub runtime_evidence_sha256: String,
+    pub node_receipts: Vec<PagesEvidenceReceiptLinkV1>,
+    pub browser_receipts: Vec<PagesEvidenceReceiptLinkV1>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PagesReadinessRecordV1 {
+    pub schema: u64,
+    pub kind: String,
+    pub source: ExactGitSourceV1,
+    pub tap_source: ExactGitSourceV1,
+    pub target_abi: TargetAbiV1,
+    pub pages_registry: PagesRegistryIdentityV1,
+    pub site_metadata_sha256: String,
+    pub products: Vec<PagesReadyProductV1>,
+    pub blockers: Vec<PagesReadinessBlockerV1>,
+    pub ready: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PagesSiteProductV1 {
+    pub id: String,
+    pub load: PagesLoadV1,
+    pub manifest_sha256: String,
+    pub admissions: Vec<PagesProjectedRecordLinkV1>,
+    pub resolved_inputs_sha256: String,
+    pub vfs_sha256: String,
+    pub vfs_bytes: u64,
+    pub builder_report_sha256: String,
+    pub runtime_evidence_sha256: String,
+    pub node_receipts: Vec<PagesEvidenceReceiptLinkV1>,
+    pub browser_receipts: Vec<PagesEvidenceReceiptLinkV1>,
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PagesSiteManifestV1 {
+    pub schema: u64,
+    pub kind: String,
+    pub source: ExactGitSourceV1,
+    pub tap_source: ExactGitSourceV1,
+    pub target_abi: TargetAbiV1,
+    pub pages_registry: PagesRegistryIdentityV1,
+    pub site_metadata_sha256: String,
+    pub products: Vec<PagesSiteProductV1>,
+    pub builds: PagesBuildSetV1,
+    pub files: Vec<PagesFileIdentityV1>,
+    pub readiness_record_sha256: String,
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -93,6 +182,7 @@ fn validate_readiness(record: &PagesReadinessRecordV1) -> Result<(), String> {
         &record.source.commit,
         &record.source.tree,
     )?;
+    validate_tap_source(&record.tap_source)?;
     validate_target(
         record.target_abi.version,
         &record.target_abi.snapshot_sha256,
@@ -111,7 +201,12 @@ fn validate_readiness(record: &PagesReadinessRecordV1) -> Result<(), String> {
         .collect::<BTreeMap<_, _>>();
     let mut previous_product: Option<&str> = None;
     for product in &record.products {
-        validate_ready_product(product, record.target_abi.version)?;
+        validate_ready_product(
+            product,
+            record.target_abi.version,
+            &record.tap_source,
+            record.ready,
+        )?;
         if previous_product.is_some_and(|previous| previous >= product.id.as_str()) {
             return Err("Pages readiness products must be sorted and duplicate-free".to_string());
         }
@@ -183,6 +278,7 @@ fn validate_site_manifest(manifest: &PagesSiteManifestV1) -> Result<(), String> 
         &manifest.source.commit,
         &manifest.source.tree,
     )?;
+    validate_tap_source(&manifest.tap_source)?;
     validate_target(
         manifest.target_abi.version,
         &manifest.target_abi.snapshot_sha256,
@@ -201,7 +297,7 @@ fn validate_site_manifest(manifest: &PagesSiteManifestV1) -> Result<(), String> 
         .collect::<BTreeMap<_, _>>();
     let mut previous_product: Option<&str> = None;
     for product in &manifest.products {
-        validate_site_product(product, manifest.target_abi.version)?;
+        validate_site_product(product, manifest.target_abi.version, &manifest.tap_source)?;
         if previous_product.is_some_and(|previous| previous >= product.id.as_str()) {
             return Err("Pages site products must be sorted and duplicate-free".to_string());
         }
@@ -258,7 +354,12 @@ fn validate_registry(registry: &PagesRegistryIdentityV1) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_ready_product(product: &PagesReadyProductV1, target_abi: u64) -> Result<(), String> {
+fn validate_ready_product(
+    product: &PagesReadyProductV1,
+    target_abi: u64,
+    tap_source: &ExactGitSourceV1,
+    ready: bool,
+) -> Result<(), String> {
     validate_product_fields(
         &product.id,
         &product.manifest_sha256,
@@ -271,10 +372,16 @@ fn validate_ready_product(product: &PagesReadyProductV1, target_abi: u64) -> Res
         &product.node_receipts,
         &product.browser_receipts,
         target_abi,
+        tap_source,
+        ready,
     )
 }
 
-fn validate_site_product(product: &PagesSiteProductV1, target_abi: u64) -> Result<(), String> {
+fn validate_site_product(
+    product: &PagesSiteProductV1,
+    target_abi: u64,
+    tap_source: &ExactGitSourceV1,
+) -> Result<(), String> {
     validate_product_fields(
         &product.id,
         &product.manifest_sha256,
@@ -287,6 +394,8 @@ fn validate_site_product(product: &PagesSiteProductV1, target_abi: u64) -> Resul
         &product.node_receipts,
         &product.browser_receipts,
         target_abi,
+        tap_source,
+        true,
     )?;
     validate_relative_path(&product.path, "Pages product path")?;
     if !product
@@ -302,7 +411,7 @@ fn validate_site_product(product: &PagesSiteProductV1, target_abi: u64) -> Resul
 fn validate_product_fields(
     id: &str,
     manifest_sha256: &str,
-    admissions: &[crate::abi_staging::records::PagesRecordLinkV1],
+    admissions: &[PagesProjectedRecordLinkV1],
     resolved_inputs_sha256: &str,
     vfs_sha256: &str,
     vfs_bytes: u64,
@@ -311,6 +420,8 @@ fn validate_product_fields(
     node_receipts: &[PagesEvidenceReceiptLinkV1],
     browser_receipts: &[PagesEvidenceReceiptLinkV1],
     target_abi: u64,
+    tap_source: &ExactGitSourceV1,
+    ready: bool,
 ) -> Result<(), String> {
     validate_stable_id(id, "Pages product id")?;
     for digest in [
@@ -325,6 +436,7 @@ fn validate_product_fields(
     if vfs_bytes == 0 {
         return Err("Pages VFS bytes must be positive".to_string());
     }
+    let mut projections = BTreeMap::new();
     for admission in admissions {
         validate_sha256(&admission.record_sha256)?;
         validate_admission_reference(
@@ -332,9 +444,63 @@ fn validate_product_fields(
             &admission.record_sha256,
             target_abi,
         )?;
+        match (&admission.projection, ready) {
+            (Some(projection), true) => {
+                validate_admission_projection(
+                    projection,
+                    &admission.record_sha256,
+                    target_abi,
+                    tap_source,
+                )?;
+                let identity = (
+                    projection.formula.as_str(),
+                    projection.architecture.as_str(),
+                );
+                if projections.insert(identity, ()).is_some() {
+                    return Err(
+                        "Pages product admission projections contain a duplicate Formula/architecture"
+                            .to_string(),
+                    );
+                }
+            }
+            (None, true) => {
+                return Err("ready Pages admission lacks a current tap projection".to_string());
+            }
+            (Some(_), false) => {
+                return Err("held Pages readiness carries an admission projection".to_string());
+            }
+            (None, false) => {}
+        }
     }
     validate_receipts(node_receipts, "Node")?;
     validate_receipts(browser_receipts, "browser")
+}
+
+fn validate_admission_projection(
+    projection: &AdmissionProjectionObservationV1,
+    record_sha256: &str,
+    target_abi: u64,
+    tap_source: &ExactGitSourceV1,
+) -> Result<(), String> {
+    if projection.schema != 1 || projection.kind != "kandelo-pages-admission-projection" {
+        return Err("Pages admission projection has unsupported identity".to_string());
+    }
+    if projection.admission_record_sha256 != record_sha256 {
+        return Err("Pages admission projection differs from its admission record".to_string());
+    }
+    validate_stable_id(&projection.formula, "Pages admission projection Formula")?;
+    if !matches!(projection.architecture.as_str(), "wasm32" | "wasm64") {
+        return Err("Pages admission projection architecture is unsupported".to_string());
+    }
+    if projection.target_abi != target_abi {
+        return Err("Pages admission projection names another target ABI".to_string());
+    }
+    validate_sha256(&projection.formula_metadata_update_sha256)?;
+    validate_sha256(&projection.projection_sha256)?;
+    if &projection.tap_source != tap_source {
+        return Err("Pages admission projection names another tap source".to_string());
+    }
+    validate_tap_source(&projection.tap_source)
 }
 
 fn validate_receipts(receipts: &[PagesEvidenceReceiptLinkV1], host: &str) -> Result<(), String> {
@@ -404,6 +570,13 @@ fn validate_source(repository: &str, commit: &str, tree: &str) -> Result<(), Str
     validate_git_sha(tree)
 }
 
+fn validate_tap_source(source: &ExactGitSourceV1) -> Result<(), String> {
+    if source.repository != "kandelo-dev/homebrew-tap-core" {
+        return Err("Pages tap source must name the protected Homebrew tap".to_string());
+    }
+    validate_source(&source.repository, &source.commit, &source.tree)
+}
+
 fn validate_target(version: u64, snapshot_sha256: &str) -> Result<(), String> {
     if version == 0 || version > u64::from(u32::MAX) {
         return Err("Pages target ABI must be a positive unsigned 32-bit integer".to_string());
@@ -439,9 +612,7 @@ fn validate_admission_reference(
 ) -> Result<(), String> {
     let prefix = format!("ghcr.io/kandelo-dev/homebrew-tap-core-abi-{target_abi}/");
     if reference.len() > 4_096 || !reference.starts_with(&prefix) {
-        return Err(
-            "Pages admission reference must name one canonical ABI manifest".to_string(),
-        );
+        return Err("Pages admission reference must name one canonical ABI manifest".to_string());
     }
     let rest = &reference[prefix.len()..];
     let marker = "/admissions@sha256:";
@@ -572,8 +743,66 @@ mod tests {
             "ghcr.io/kandelo-dev/homebrew-tap-core-abi-{ABI}/base/admissions@sha256:{}?query=1",
             digest('f')
         ));
-        assert!(validate_pages_readiness_bytes(&canonical_json_bytes(&record).unwrap())
-            .unwrap_err().contains("SHA-256"));
+        assert!(
+            validate_pages_readiness_bytes(&canonical_json_bytes(&record).unwrap())
+                .unwrap_err()
+                .contains("SHA-256")
+        );
+    }
+
+    #[test]
+    fn rejects_admission_projection_drift_and_duplicates() {
+        for mutation in ["record", "abi", "digest", "source", "duplicate"] {
+            let mut record = ready_record();
+            match mutation {
+                "record" => {
+                    record["products"][0]["admissions"][0]["projection"]
+                        ["admission_record_sha256"] = json!(digest('0'));
+                }
+                "abi" => {
+                    record["products"][0]["admissions"][0]["projection"]["target_abi"] =
+                        json!(ABI + 1);
+                }
+                "digest" => {
+                    record["products"][0]["admissions"][0]["projection"]["projection_sha256"] =
+                        json!("not-a-digest");
+                }
+                "source" => {
+                    record["products"][0]["admissions"][0]["projection"]["tap_source"]["commit"] =
+                        json!("9".repeat(40));
+                }
+                "duplicate" => {
+                    let duplicate = record["products"][0]["admissions"][0].clone();
+                    record["products"][0]["admissions"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(duplicate);
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                validate_pages_readiness_bytes(&canonical_json_bytes(&record).unwrap()).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn held_readiness_carries_no_admission_projection() {
+        let mut record = ready_record();
+        record["ready"] = json!(false);
+        record["blockers"] = json!([{
+            "detail": "base is incomplete",
+            "guard_code": "pages_product_incomplete",
+            "kind": "missing-admission",
+            "product_id": "base",
+        }]);
+        assert!(validate_pages_readiness_bytes(&canonical_json_bytes(&record).unwrap()).is_err());
+        for product in record["products"].as_array_mut().unwrap() {
+            for admission in product["admissions"].as_array_mut().unwrap() {
+                admission.as_object_mut().unwrap().remove("projection");
+            }
+        }
+        validate_pages_readiness_bytes(&canonical_json_bytes(&record).unwrap()).unwrap();
     }
 
     #[test]
@@ -641,6 +870,7 @@ mod tests {
                 "repository": "Automattic/kandelo",
                 "tree": "2".repeat(40),
             },
+            "tap_source": tap_source(),
             "target_abi": {"snapshot_sha256": digest('3'), "version": ABI},
         })
     }
@@ -653,6 +883,17 @@ mod tests {
                     digest(marker)
                 ),
                 "record_sha256": digest(marker),
+                "projection": {
+                    "admission_record_sha256": digest(marker),
+                    "architecture": "wasm32",
+                    "formula": id,
+                    "formula_metadata_update_sha256": digest('2'),
+                    "kind": "kandelo-pages-admission-projection",
+                    "projection_sha256": digest('3'),
+                    "schema": 1,
+                    "tap_source": tap_source(),
+                    "target_abi": ABI,
+                },
             }],
             "browser_receipts": [{"id": format!("{id}-browser"), "sha256": digest('b')}],
             "builder_report_sha256": digest('8'),
@@ -719,7 +960,16 @@ mod tests {
             "schema": 1,
             "site_metadata_sha256": record["site_metadata_sha256"].clone(),
             "source": record["source"].clone(),
+            "tap_source": record["tap_source"].clone(),
             "target_abi": record["target_abi"].clone(),
+        })
+    }
+
+    fn tap_source() -> Value {
+        json!({
+            "commit": "4".repeat(40),
+            "repository": "kandelo-dev/homebrew-tap-core",
+            "tree": "5".repeat(40),
         })
     }
 

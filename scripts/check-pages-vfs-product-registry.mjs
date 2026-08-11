@@ -12,6 +12,10 @@ const rootfsAlias = "@rootfs-vfs";
 export function checkPagesVfsProductRegistry(options) {
   const catalog = loadVfsProductCatalog(options.catalogPath);
   const registry = readPagesRegistry(options.registryPath);
+  const generatedRegistry = readGeneratedPagesRegistry(options.generatedRegistryPath);
+  if (JSON.stringify(registry) !== JSON.stringify(generatedRegistry)) {
+    throw new Error("source and generated Pages registries differ");
+  }
   checkPagesGallery({
     galleryPath: options.galleryPath,
     pagesProducts: registry.products,
@@ -249,7 +253,7 @@ function readShellFunctionBodies(source) {
   return functions;
 }
 
-function readPagesRegistry(path) {
+export function readPagesRegistry(path) {
   const parsed = parseArrayTableToml(path, "products");
   exactObjectKeys(parsed.root, ["kind", "schema"], "Pages registry");
   if (parsed.root.schema !== 1 || parsed.root.kind !== "kandelo-pages-vfs-products") {
@@ -264,7 +268,34 @@ function readPagesRegistry(path) {
     return entry;
   });
   requireUnique(products.map(({ id }) => id), "Pages product IDs");
-  return { products };
+  products.sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+  return {
+    kind: "kandelo-pages-vfs-products",
+    products,
+    schema: 1,
+  };
+}
+
+function readGeneratedPagesRegistry(path) {
+  const bytes = readFileSync(path, "utf8");
+  const value = JSON.parse(bytes);
+  if (bytes !== canonicalJson(value)) {
+    throw new Error("generated Pages registry is not canonical JSON");
+  }
+  exactObjectKeys(value, ["kind", "products", "schema"], "generated Pages registry");
+  if (
+    value.schema !== 1 || value.kind !== "kandelo-pages-vfs-products" ||
+    !Array.isArray(value.products)
+  ) throw new Error("generated Pages registry has unsupported identity");
+  value.products.forEach((entry, index) => {
+    exactObjectKeys(entry, ["id", "load"], `generated Pages products[${index}]`);
+    requireTomlString(entry.id, `generated Pages products[${index}].id`);
+    if (entry.load !== "eager" && entry.load !== "lazy") {
+      throw new Error(`generated Pages products[${index}].load must be eager or lazy`);
+    }
+  });
+  requireUnique(value.products.map(({ id }) => id), "generated Pages product IDs");
+  return value;
 }
 
 function checkPagesGallery({ galleryPath, pagesProducts, presentationPath, liveSetupPath }) {
@@ -470,6 +501,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     registryPath: resolve(
       repoRoot,
       "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.toml",
+    ),
+    generatedRegistryPath: resolve(
+      repoRoot,
+      "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.generated.json",
     ),
     galleryPath: resolve(
       repoRoot,

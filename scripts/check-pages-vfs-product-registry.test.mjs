@@ -11,13 +11,20 @@ import { basename, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { checkPagesVfsProductRegistry } from "./check-pages-vfs-product-registry.mjs";
+import {
+  checkPagesVfsProductRegistry,
+  readPagesRegistry,
+} from "./check-pages-vfs-product-registry.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const catalogPath = join(repoRoot, "images/vfs/products/generated/catalog.json");
 const registryPath = join(
   repoRoot,
   "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.toml",
+);
+const generatedRegistryPath = join(
+  repoRoot,
+  "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.generated.json",
 );
 const galleryPath = join(
   repoRoot,
@@ -35,6 +42,7 @@ const browserSources = [
 const paths = {
   catalogPath,
   registryPath,
+  generatedRegistryPath,
   galleryPath,
   presentationPath,
   adapterPath,
@@ -91,6 +99,39 @@ function writeCatalog(directory, mutate) {
 
 test("the repository Pages sources exactly project the Pages-owned registry", () => {
   checkPagesVfsProductRegistry(paths);
+  assert.deepEqual(
+    readPagesRegistry(registryPath),
+    JSON.parse(readFileSync(generatedRegistryPath, "utf8")),
+  );
+});
+
+test("rejects source-only and generated-only Pages registry mutations", () => {
+  withTempDir((directory) => {
+    const sourceOnly = join(directory, "pages.toml");
+    writeFileSync(
+      sourceOnly,
+      readFileSync(registryPath, "utf8").replace(
+        'id = "browser-node"',
+        'id = "browser-node-source-only"',
+      ),
+    );
+    assert.throws(
+      () => checkPagesVfsProductRegistry({ ...paths, registryPath: sourceOnly }),
+      /source and generated Pages registries differ/i,
+    );
+
+    const generatedOnly = join(directory, "pages.generated.json");
+    const generated = JSON.parse(readFileSync(generatedRegistryPath, "utf8"));
+    generated.products[0].load = generated.products[0].load === "eager" ? "lazy" : "eager";
+    writeFileSync(generatedOnly, canonicalBytes(generated));
+    assert.throws(
+      () => checkPagesVfsProductRegistry({
+        ...paths,
+        generatedRegistryPath: generatedOnly,
+      }),
+      /source and generated Pages registries differ/i,
+    );
+  });
 });
 
 test("rejects gallery product, preset, and VFS-image mapping drift", () => {
