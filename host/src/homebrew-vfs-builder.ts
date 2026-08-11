@@ -32,7 +32,10 @@ import {
   type HomebrewBottleMaterializationPackage,
   type PreparedHomebrewKeg,
 } from "./homebrew-vfs-materializer";
-import { resolveHomebrewVfsResourcePolicy } from "./homebrew-vfs-resource-policy";
+import {
+  resolveHomebrewVfsResourcePolicy,
+  type HomebrewVfsResourcePolicyId,
+} from "./homebrew-vfs-resource-policy";
 import {
   finalizeHomebrewRuntimeSupport,
   HomebrewRuntimeSupportMaterializationError,
@@ -331,7 +334,7 @@ export interface HomebrewFlatVfsBuildReport {
   kandelo_abi: number;
   selection_sha256: string;
   requested_vfs_filename: string;
-  resource_policy: "kandelo-homebrew-vfs-generous-v1";
+  resource_policy: HomebrewVfsResourcePolicyId;
   link_policy: "kandelo-homebrew-link-ownership-v1";
   runtime_support: "kandelo-homebrew-bootstrap-v1";
   environment: { PATH: string };

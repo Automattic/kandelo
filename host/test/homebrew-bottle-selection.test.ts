@@ -167,6 +167,41 @@ describe("flat Homebrew bottle selection", () => {
     }
   });
 
+  it("admits only the experimental and canonical main-shell product tuples", () => {
+    const experimental = selectionFixture();
+    const mainShell = {
+      ...selectionFixture(),
+      name: "main-shell-abi42-wasm32",
+      requestedVfsFilename: "shell.vfs.zst",
+      resourcePolicy: "kandelo-homebrew-vfs-main-shell-v1",
+    };
+
+    expect(projectHomebrewBottleSelection(experimental)).toMatchObject({
+      name: "experimental-abi42-fixture",
+      requestedVfsFilename:
+        "kandelo-homebrew-experimental-abi42-wasm32.vfs.zst",
+      resourcePolicy: "kandelo-homebrew-vfs-generous-v1",
+    });
+    expect(projectHomebrewBottleSelection(mainShell)).toMatchObject({
+      name: "main-shell-abi42-wasm32",
+      requestedVfsFilename: "shell.vfs.zst",
+      resourcePolicy: "kandelo-homebrew-vfs-main-shell-v1",
+    });
+
+    for (const crossed of [
+      { ...experimental, resourcePolicy: "kandelo-homebrew-vfs-main-shell-v1" },
+      { ...mainShell, resourcePolicy: "kandelo-homebrew-vfs-generous-v1" },
+      { ...mainShell, name: "experimental-abi42-main-shell" },
+      {
+        ...experimental,
+        requestedVfsFilename: "shell.vfs.zst",
+      },
+    ]) {
+      expect(() => projectHomebrewBottleSelection(crossed))
+        .toThrow(/supported tuple/);
+    }
+  });
+
   it("preserves bottle order in stable canonical encoding and rejects noncanonical bytes", () => {
     const fixture = selectionFixture();
     const reversed = { ...fixture, bottles: [...fixture.bottles].reverse() };
@@ -195,29 +230,38 @@ describe("flat Homebrew bottle selection", () => {
     }
   });
 
-  it("resolves the provisional generic resource policy and rejects unknown IDs", () => {
-    expect(resolveHomebrewVfsResourcePolicy("kandelo-homebrew-vfs-generous-v1"))
-      .toEqual({
-        id: "kandelo-homebrew-vfs-generous-v1",
-        bottle: {
-          maxCompressedBytes: 256 * 1024 * 1024,
-          maxExpandedBytes: 256 * 1024 * 1024,
-          maxEntries: 100_000,
-          maxPathBytes: 4096,
-          maxLinkBytes: 65_536,
-        },
-        aggregate: {
-          maxCompressedBytes: 512 * 1024 * 1024,
-          maxExpandedBytes: 512 * 1024 * 1024,
-          maxEntries: 100_000,
-        },
-        supportZip: {
-          maxCompressedBytes: 256 * 1024 * 1024,
-          maxExpandedBytes: 256 * 1024 * 1024,
-          maxEntries: 65_535,
-        },
-        vfs: { maxByteLength: 768 * 1024 * 1024 },
-      });
+  it("preserves the generous policy and bounds the canonical main shell at 512 MiB", () => {
+    const generous = resolveHomebrewVfsResourcePolicy(
+      "kandelo-homebrew-vfs-generous-v1",
+    );
+    expect(generous).toEqual({
+      id: "kandelo-homebrew-vfs-generous-v1",
+      bottle: {
+        maxCompressedBytes: 256 * 1024 * 1024,
+        maxExpandedBytes: 256 * 1024 * 1024,
+        maxEntries: 100_000,
+        maxPathBytes: 4096,
+        maxLinkBytes: 65_536,
+      },
+      aggregate: {
+        maxCompressedBytes: 512 * 1024 * 1024,
+        maxExpandedBytes: 512 * 1024 * 1024,
+        maxEntries: 100_000,
+      },
+      supportZip: {
+        maxCompressedBytes: 256 * 1024 * 1024,
+        maxExpandedBytes: 256 * 1024 * 1024,
+        maxEntries: 65_535,
+      },
+      vfs: { maxByteLength: 768 * 1024 * 1024 },
+    });
+    expect(resolveHomebrewVfsResourcePolicy(
+      "kandelo-homebrew-vfs-main-shell-v1",
+    )).toEqual({
+      ...generous,
+      id: "kandelo-homebrew-vfs-main-shell-v1",
+      vfs: { maxByteLength: 512 * 1024 * 1024 },
+    });
     expect(() => resolveHomebrewVfsResourcePolicy("ruby-exception"))
       .toThrow(/unknown Homebrew VFS resource policy/);
   });
