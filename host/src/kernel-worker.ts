@@ -1649,6 +1649,8 @@ interface ChannelInfo {
   readinessDeadline?: number;
   /** Force the next readiness dispatch to perform a zero-time final check. */
   readinessFinalCheck?: boolean;
+  /** A temporary epoll_pwait sigmask swap is active for this parked wait. */
+  pollSigmaskSwapped?: boolean;
 }
 
 /**
@@ -15974,6 +15976,17 @@ export class CentralizedKernelWorker {
     channel.readinessDeadline = undefined;
     channel.readinessFinalCheck = undefined;
 
+    if (channel.pollSigmaskSwapped) {
+      channel.pollSigmaskSwapped = undefined;
+      // Guarded kernel-side: a no-op when a signal became deliverable under
+      // the temporary mask — kernel_dequeue_signal owns the restore then.
+      const restoreMask = this.#kernelInstanceIfAvailableForEntry()?.exports
+        .kernel_restore_poll_sigmask as
+        | ((pid: number, tid: number) => number)
+        | undefined;
+      restoreMask?.(channel.pid, this.guestTidForChannel(channel));
+    }
+
     const pollEntry = this.pendingPollRetries.get(channel);
     if (pollEntry) {
       if (pollEntry.timer !== null) this.#cancelRegisteredTimeout(pollEntry.timer);
@@ -19430,12 +19443,31 @@ export class CentralizedKernelWorker {
               EINVAL,
             );
           }
-          this.checkedProcessRange(
+          const maskPointer = this.checkedProcessRange(
             channel,
             rawMaskPointer,
             SIGNAL_MASK_BYTES,
             "epoll_pwait signal mask",
-          );
+          ).pointer;
+          // epoll_pwait's atomic mask swap. The host runs this wait as
+          // timeout=0 poll retries, so the kernel cannot scope the mask to
+          // one blocking syscall — swap it through the sigsuspend
+          // saved-mask slot (idempotent across retry re-entries) and keep
+          // it swapped while parked, so a signal arriving mid-wait (foot's
+          // SIGCHLD reaper) passes sendSignalToProcess's blocked check and
+          // wakes the retry. kernel_dequeue_signal restores the saved mask
+          // after delivering the signal that ended the wait;
+          // clearReadinessWait restores it on every other completion.
+          const swapMask = this.#kernelInstanceForEntry(entry).exports
+            .kernel_swap_poll_sigmask as
+            | ((pid: number, tid: number, mask: bigint) => number)
+            | undefined;
+          if (swapMask) {
+            const mask = new DataView(channel.memory.buffer)
+              .getBigUint64(maskPointer, true);
+            swapMask(channel.pid, this.guestTidForChannel(channel), mask);
+            channel.pollSigmaskSwapped = true;
+          }
         }
       }
       eventsPtr = this.checkedProcessRange(

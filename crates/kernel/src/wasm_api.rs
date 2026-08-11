@@ -2261,6 +2261,55 @@ pub extern "C" fn kernel_has_sa_nocldstop(pid: u32) -> i32 {
     }
 }
 
+/// Swap thread `tid` of `pid` onto a temporary blocked-signal mask for the
+/// duration of a host-converted epoll_pwait/ppoll wait (the host runs those
+/// waits as non-blocking poll retries, so the kernel never sees one blocking
+/// syscall it could scope the mask to). Uses the per-task LIFO mask-wait
+/// context: the signal-delivery machinery restores the saved mask after
+/// delivering the signal that ended the wait. Idempotent while a swap is
+/// active (a host retry re-enters the active top context).
+/// Returns 0 on success, -ESRCH if the process does not exist.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_swap_poll_sigmask(pid: u32, tid: u32, mask: u64) -> i32 {
+    use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.get_mut(pid) {
+        Some(proc) => {
+            let m = mask
+                & !(crate::signal::sig_bit(SIGKILL)
+                    | crate::signal::sig_bit(SIGSTOP));
+            proc.enter_signal_mask_wait_for(
+                tid,
+                crate::signal::SignalMaskWaitKind::EpollPwait,
+                m,
+            );
+            0
+        }
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Restore the mask kernel_swap_poll_sigmask saved, unless a signal became
+/// deliverable under the temporary mask — then the swap stays active so the
+/// dequeue path both delivers that signal and performs the restore itself.
+/// Returns 0 on success, -ESRCH if the process does not exist.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_restore_poll_sigmask(pid: u32, tid: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.get_mut(pid) {
+        Some(proc) => {
+            if proc.deliverable_for(tid) == 0 {
+                proc.finish_signal_mask_wait_for(
+                    tid,
+                    crate::signal::SignalMaskWaitKind::EpollPwait,
+                );
+            }
+            0
+        }
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
 /// Check if a signal is blocked for a process.
 /// Returns 1 if blocked by *every* thread of `pid` (i.e. no thread can
 /// currently receive it), 0 if at least one thread has it unblocked,
