@@ -82,13 +82,13 @@ The public configuration contract is:
 ```ts
 export interface CorsProxyRequestCapabilities {
   readonly methods: readonly string[];
-  readonly requestHeaders: readonly string[];
+  readonly allowedRequestHeaderNames: readonly string[];
   readonly allowAnonymousGetHeaderOmission: boolean;
 }
 
 export interface ValidatedCorsProxyRequestCapabilities {
   readonly methods: readonly string[];
-  readonly requestHeaders: readonly string[];
+  readonly allowedRequestHeaderNames: readonly string[];
   readonly allowAnonymousGetHeaderOmission: boolean;
 }
 
@@ -120,9 +120,11 @@ export class CorsProxyRequestPolicy {
 ```
 
 The tuple list is an internal browser-host representation of parsed guest
-field occurrences. It retains repeated values and same-name order. Capability
-names are still a normalized set because they describe transport permission,
-not request data.
+field occurrences. It retains field-name spelling, repeated values, and
+same-name order until Fetch applies browser-defined normalization. The
+capability arrays are copied for immutability but otherwise retain their input
+spelling, order, and duplicates. Header membership uses a case-insensitive
+comparison against that list; the list is not relayed with the request.
 
 `FetchBackendOptions` and `TlsNetworkBackendOptions` gain:
 
@@ -146,10 +148,11 @@ preserves the existing unprojected behavior for third-party embedders.
 - Modify: `host/src/browser.ts`
 - Modify: `host/src/index.ts`
 
-- [ ] Write failing validation tests for uppercase method normalization,
-  lowercase header normalization, frozen copied arrays, invalid HTTP tokens,
-  duplicate normalized capability values collapsing harmlessly,
-  capability-without-URL rejection, and caller mutation after validation.
+- [ ] Write failing validation tests for exact method and header spelling,
+  order, and duplicate preservation; frozen copied arrays; invalid HTTP
+  tokens; capability-without-URL rejection; case-insensitive header
+  membership; case-sensitive method membership; and caller mutation after
+  validation.
 
 - [ ] Write failing projection tests for:
   - value-valid `Accept`, `Accept-Language`, `Content-Language`,
@@ -175,11 +178,11 @@ scripts/dev-shell.sh npm --prefix host test -- --run \
   test/cors-proxy-request-policy.test.ts
 ```
 
-- [ ] Implement strict capability validation. Copy, normalize, sort, and
-  freeze methods and header names. Reject empty entries, invalid RFC HTTP-token
-  characters, and inconsistent URL/capability configuration. Collapse
-  duplicate names after normalization; do not reject harmless duplicate
-  configuration entries.
+- [ ] Implement strict capability validation. Copy and freeze methods and
+  header names without changing spelling, order, or duplicates. Reject empty
+  entries, invalid RFC HTTP-token characters, and inconsistent URL/capability
+  configuration. Compare header names directly against the copied list using
+  ASCII case-insensitive equality; compare HTTP methods exactly.
 
 - [ ] Implement value-aware CORS safelist checks. Treat only these names as
   candidates: `accept`, `accept-language`, `content-language`, `content-type`,
@@ -190,10 +193,10 @@ scripts/dev-shell.sh npm --prefix host test -- --run \
   `trailer`, `transfer-encoding`, `upgrade`, plus every name nominated by the
   guest `Connection` value.
 
-- [ ] Preserve the remaining ordered tuples. Filter by normalized name but
-  never deduplicate, combine, reorder, or interpret their values beyond the
-  Fetch-mandated CORS safelist check. Build the projected `Headers` with
-  `append()`, not `set()`.
+- [ ] Preserve the remaining ordered tuples. Filter occurrences with
+  case-insensitive name comparisons but never deduplicate, combine, reorder,
+  or interpret their values beyond the Fetch-mandated CORS safelist check.
+  Build the projected `Headers` with `append()`, not `set()`.
 
 - [ ] Reject credentials before considering the configured allowlist. For an
   eligible anonymous bodyless `GET`, omit the remaining unsupported names and
@@ -312,10 +315,10 @@ git commit -m "Host: Enforce proxy capabilities on browser fetches"
 - Modify: `host/test/browser-kernel.test.ts`
 
 - [ ] Add failing host tests that inspect the worker initialization message.
-  Prove capability arrays are copied and normalized, callers cannot change the
-  worker configuration by mutating their original object, a capability without
-  `corsProxyUrl` throws before worker startup, and URL-only configuration
-  remains accepted.
+  Prove capability arrays are copied without reordering or deduplication,
+  callers cannot change the worker configuration by mutating their original
+  object, a capability without `corsProxyUrl` throws before worker startup,
+  and URL-only configuration remains accepted.
 
 - [ ] Add a failing structural/runtime test showing a backend omission is sent
   through `reportHostDiagnostic()` as a warning with this stable source:

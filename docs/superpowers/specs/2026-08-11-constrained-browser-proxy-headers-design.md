@@ -114,9 +114,10 @@ and worker protocol. It contains:
 - the request-header names the proxy relays unconditionally; and
 - whether safe-request omission is enabled.
 
-Parsing lowercases and deduplicates header names, rejects invalid HTTP tokens,
-and rejects a capability without a proxy URL. The worker receives a copied,
-validated value so callers cannot mutate policy after boot.
+Validation preserves capability spelling, order, and duplicate entries while
+rejecting invalid HTTP tokens and a capability without a proxy URL. Header
+membership is compared case-insensitively against that copied list. The worker
+receives an immutable copy so callers cannot mutate policy after boot.
 
 The implementation uses a shared helper for the plain HTTP fetch backend and
 the decrypted HTTPS/TLS backend. Direct fetch attempts keep normal browser
