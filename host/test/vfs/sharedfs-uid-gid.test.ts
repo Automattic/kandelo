@@ -1,6 +1,21 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { MemoryFileSystem } from "../../src/vfs/memory-fs";
 import { ensureDirRecursive } from "../../src/vfs/image-helpers";
+import {
+  EEXIST,
+  EBADF,
+  EISDIR,
+  EMFILE,
+  ENOENT,
+  ENOTDIR,
+  MAX_FDS,
+  O_DIRECTORY,
+  O_EXCL,
+  O_RDONLY,
+  O_RDWR,
+  SFSError,
+  SharedFS,
+} from "../../src/vfs/sharedfs-vendor";
 
 // O_WRONLY | O_CREAT | O_TRUNC, matching sharedfs-vendor.ts constants.
 const O_WRONLY = 0x0001;
@@ -120,7 +135,7 @@ describe("SharedFS uid/gid", () => {
     expect(st.gid).toBe(600);
   });
 
-  it("chown-family operations clear set-ID bits only on executable regular files", () => {
+  it("chown-family operations clear set-ID bits on regular files", () => {
     const sab = new SharedArrayBuffer(1024 * 1024);
     const fs = MemoryFileSystem.create(sab);
     const create = (path: string, mode: number): number =>
@@ -167,7 +182,7 @@ describe("SharedFS uid/gid", () => {
     fd = create("/non-executable", 0o6600);
     fs.close(fd);
     fs.chown("/non-executable", 1000, 1000);
-    expect(fs.stat("/non-executable").mode & 0o7777).toBe(0o6600);
+    expect(fs.stat("/non-executable").mode & 0o7777).toBe(0o600);
 
     fs.mkdir("/directory", 0o6770);
     fs.chown("/directory", 1000, 1000);
@@ -178,6 +193,297 @@ describe("SharedFS uid/gid", () => {
     fs.lchown("/link", 2000, 2000);
     expect(fs.lstat("/link")).toMatchObject({ uid: 2000, gid: 2000 });
     expect(fs.stat("/path").mode & 0o7777).toBe(0o6755);
+  });
+
+  it("invalidates set-ID metadata after every qualifying file mutation", () => {
+    const sab = new SharedArrayBuffer(1024 * 1024);
+    const fs = MemoryFileSystem.create(sab);
+    const path = "/mutation-matrix";
+    const byte = new Uint8Array([0x78]);
+    const fd = fs.open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o6755);
+    const expectMode = (mode: number): void => {
+      expect(fs.stat(path).mode & 0o7777).toBe(mode);
+      expect(fs.fstat(fd).mode & 0o7777).toBe(mode);
+    };
+    const arm = (mode = 0o6755): void => {
+      fs.chmod(path, mode);
+      expectMode(mode);
+    };
+
+    try {
+      arm();
+      expect(fs.write(fd, byte, null, 1)).toBe(1);
+      expectMode(0o755);
+
+      arm();
+      expect(fs.write(fd, byte, 0, 1)).toBe(1);
+      expectMode(0o755);
+
+      arm();
+      expect(fs.append(fd, byte, 1, null).written).toBe(1);
+      expectMode(0o755);
+
+      arm();
+      const truncateFd = fs.open(path, O_WRONLY | O_TRUNC, 0);
+      fs.close(truncateFd);
+      expectMode(0o755);
+
+      expect(fs.write(fd, byte, 0, 1)).toBe(1);
+      arm();
+      fs.ftruncate(fd, 0);
+      expectMode(0o755);
+
+      arm();
+      fs.chown(path, 1001, 2001);
+      expectMode(0o755);
+
+      arm();
+      fs.fchown(fd, 1002, 2002);
+      expectMode(0o755);
+
+      arm();
+      fs.lchown(path, 1003, 2003);
+      expectMode(0o755);
+
+      arm(0o6600);
+      expect(fs.write(fd, byte, 0, 1)).toBe(1);
+      expectMode(0o600);
+
+      arm(0o6600);
+      fs.chown(path, 1004, 2004);
+      expectMode(0o600);
+
+      arm();
+      expect(fs.write(fd, byte, null, 0)).toBe(0);
+      expect(fs.write(fd, byte, 0, 0)).toBe(0);
+      expect(fs.append(fd, byte, 0, null).written).toBe(0);
+      expectMode(0o6755);
+
+      const unchangedSize = fs.fstat(fd).size;
+      fs.ftruncate(fd, unchangedSize);
+      expectMode(0o6755);
+      if (unchangedSize !== 0) {
+        fs.ftruncate(fd, 0);
+        arm();
+      }
+      const emptyTruncateFd = fs.open(path, O_WRONLY | O_TRUNC, 0);
+      fs.close(emptyTruncateFd);
+      expectMode(0o6755);
+
+      const readOnlyFd = fs.open(path, 0, 0);
+      try {
+        expect(() => fs.write(readOnlyFd, byte, null, 1)).toThrow();
+        expect(() => fs.ftruncate(readOnlyFd, 0)).toThrow();
+      } finally {
+        fs.close(readOnlyFd);
+      }
+      expectMode(0o6755);
+    } finally {
+      fs.close(fd);
+    }
+
+    fs.mkdir("/mutation-directory", 0o6770);
+    fs.chown("/mutation-directory", 3001, 3002);
+    expect(fs.stat("/mutation-directory").mode & 0o7777).toBe(0o6770);
+  });
+
+  it("keeps mode coherent after positive and failed mutation attempts", () => {
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
+    const path = "/mutation-failures";
+    const bytes = new Uint8Array([0x78, 0x79]);
+    const fd = fs.open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o600);
+    const expectMode = (mode: number): void => {
+      expect(fs.stat(path).mode & 0o7777).toBe(mode);
+      expect(fs.fstat(fd).mode & 0o7777).toBe(mode);
+    };
+    const arm = (): void => {
+      fs.chmod(path, 0o6755);
+      expectMode(0o6755);
+    };
+    const expectFailure = (operation: () => unknown): void => {
+      expect(operation).toThrow();
+      expectMode(0o6755);
+    };
+
+    try {
+      arm();
+      expect(fs.write(fd, bytes, null, 1)).toBe(1);
+      expectMode(0o755);
+
+      arm();
+      expect(fs.write(fd, bytes, 0, 1)).toBe(1);
+      expectMode(0o755);
+
+      arm();
+      const limit = fs.fstat(fd).size + 1;
+      expect(fs.append(fd, bytes, bytes.length, limit).written).toBe(1);
+      expectMode(0o755);
+
+      arm();
+      const readOnlyFd = fs.open(path, 0, 0);
+      try {
+        expectFailure(() => fs.write(readOnlyFd, bytes, null, 1));
+        expectFailure(() => fs.write(readOnlyFd, bytes, 0, 1));
+        expectFailure(() => fs.append(readOnlyFd, bytes, 1, null));
+        expectFailure(() => fs.ftruncate(readOnlyFd, 0));
+      } finally {
+        fs.close(readOnlyFd);
+      }
+
+      expectFailure(() => fs.open("/missing-truncate", O_WRONLY | O_TRUNC, 0));
+      expectFailure(() => fs.chown("/missing-chown", 1000, 2000));
+      expectFailure(() => fs.fchown(999_999, 1000, 2000));
+      expectFailure(() => fs.lchown("/missing-lchown", 1000, 2000));
+    } finally {
+      fs.close(fd);
+    }
+  });
+
+  it("leaves an armed file unchanged when O_TRUNC cannot reserve a descriptor", () => {
+    const fs = SharedFS.mkfs(new SharedArrayBuffer(4 * 1024 * 1024));
+    const path = "/emfile-truncate";
+    const contents = new TextEncoder().encode("retain exact bytes");
+    const fd = fs.open(path, O_CREAT | O_RDWR, 0o600);
+    expect(fs.write(fd, contents)).toBe(contents.byteLength);
+    fs.chown(path, 1234, 5678);
+    fs.chmod(path, 0o6755);
+
+    const fillers: number[] = [];
+    try {
+      for (let index = 1; index < MAX_FDS; index++) {
+        fillers.push(fs.open(path, O_RDONLY, 0));
+      }
+
+      let failure: unknown;
+      try {
+        fs.open(path, O_RDWR | O_TRUNC, 0);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(SFSError);
+      expect((failure as SFSError).code).toBe(EMFILE);
+
+      const pathStat = fs.stat(path);
+      const fdStat = fs.fstat(fd);
+      expect(pathStat).toMatchObject({
+        size: contents.byteLength,
+        uid: 1234,
+        gid: 5678,
+      });
+      expect(fdStat).toMatchObject({
+        size: contents.byteLength,
+        uid: 1234,
+        gid: 5678,
+      });
+      expect(pathStat.mode & 0o7777).toBe(0o6755);
+      expect(fdStat.mode & 0o7777).toBe(0o6755);
+      const observed = new Uint8Array(contents.byteLength);
+      expect(fs.readAt(fd, observed, 0)).toBe(contents.byteLength);
+      expect(observed).toEqual(contents);
+
+      const released = fillers.shift()!;
+      fs.close(released);
+      const reused = fs.open(path, O_RDONLY, 0);
+      expect(reused).toBe(released);
+      fs.close(reused);
+    } finally {
+      for (const filler of fillers) fs.close(filler);
+      fs.close(fd);
+    }
+  });
+
+  it("accepts O_RDONLY | O_TRUNC and keeps the descriptor read-only", () => {
+    const fs = SharedFS.mkfs(new SharedArrayBuffer(1024 * 1024));
+    const path = "/read-only-truncate";
+    const seed = fs.open(path, O_CREAT | O_RDWR, 0o600);
+    expect(fs.write(seed, new TextEncoder().encode("truncate me"))).toBe(11);
+    fs.close(seed);
+    fs.chmod(path, 0o6755);
+
+    const fd = fs.open(path, O_RDONLY | O_TRUNC, 0);
+    try {
+      expect(fs.stat(path).size).toBe(0);
+      expect(fs.fstat(fd).size).toBe(0);
+      expect(fs.stat(path).mode & 0o7777).toBe(0o755);
+      expect(fs.fstat(fd).mode & 0o7777).toBe(0o755);
+      expect(() => fs.write(fd, new Uint8Array([0x78]))).toThrow();
+    } finally {
+      fs.close(fd);
+    }
+  });
+
+  it("releases the lowest reservation once after every pre-publish failure", () => {
+    const fs = SharedFS.mkfs(new SharedArrayBuffer(4 * 1024 * 1024));
+    const file = fs.open("/reservation-file", O_CREAT | O_RDWR, 0o600);
+    fs.close(file);
+    fs.mkdir("/reservation-directory", 0o700);
+
+    const fillers: number[] = [];
+    try {
+      for (let index = 0; index < MAX_FDS - 1; index++) {
+        fillers.push(fs.open("/reservation-file", O_RDONLY, 0));
+      }
+      const expectedFd = MAX_FDS - 1;
+      const failures: Array<[() => unknown, number]> = [
+        [() => fs.open("/missing", O_RDONLY, 0), ENOENT],
+        [
+          () => fs.open("/reservation-file", O_CREAT | O_EXCL | O_RDWR, 0),
+          EEXIST,
+        ],
+        [() => fs.open("/reservation-file", O_DIRECTORY, 0), ENOTDIR],
+        [() => fs.open("/reservation-directory", O_RDWR, 0), EISDIR],
+      ];
+
+      for (const [operation, code] of failures) {
+        let failure: unknown;
+        try {
+          operation();
+        } catch (error) {
+          failure = error;
+        }
+        expect(failure).toBeInstanceOf(SFSError);
+        expect((failure as SFSError).code).toBe(code);
+
+        const probe = fs.open("/reservation-file", O_RDONLY, 0);
+        expect(probe).toBe(expectedFd);
+        fs.close(probe);
+      }
+    } finally {
+      for (const filler of fillers) fs.close(filler);
+    }
+  });
+
+  it("keeps a reentrant observer from seeing a reserved descriptor", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const fs = SharedFS.mkfs(sab);
+    const observer = SharedFS.mount(sab);
+    const internals = fs as unknown as {
+      inodeAddOpenRef(ino: number): boolean;
+    };
+    const addOpenRef = internals.inodeAddOpenRef.bind(fs);
+    let observedReservation = false;
+    vi.spyOn(internals, "inodeAddOpenRef").mockImplementation((ino) => {
+      let failure: unknown;
+      try {
+        observer.fstat(0);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(SFSError);
+      expect((failure as SFSError).code).toBe(EBADF);
+      observedReservation = true;
+      return addOpenRef(ino);
+    });
+
+    try {
+      const fd = fs.open("/private-reservation", O_CREAT | O_RDWR, 0o600);
+      expect(fd).toBe(0);
+      expect(observedReservation).toBe(true);
+      expect(observer.fstat(fd).mode & 0o7777).toBe(0o600);
+      fs.close(fd);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 
   it("preserves IDs selected with the unchanged sentinels", () => {
@@ -249,8 +555,30 @@ describe("SharedFS uid/gid", () => {
     const st = fs.stat("/data");
     expect(st.uid).toBe(4242);
     expect(st.gid).toBe(9999);
-    expect(st.mode & 0o777).toBe(0o600);
+    expect(st.mode & 0o7777).toBe(0o600);
     expect(st.size).toBe(5);
+  });
+
+  it("preserves reviewed set-ID metadata until a later guest mutation", () => {
+    const sab = new SharedArrayBuffer(1024 * 1024);
+    const fs = MemoryFileSystem.create(sab);
+    const bytes = new TextEncoder().encode("reviewed");
+    fs.createFileWithOwner("/published", 0o6755, 0, 0, bytes);
+    expect(fs.stat("/published")).toMatchObject({
+      uid: 0,
+      gid: 0,
+      size: bytes.byteLength,
+    });
+    expect(fs.stat("/published").mode & 0o7777).toBe(0o6755);
+
+    const fd = fs.open("/published", O_WRONLY, 0);
+    try {
+      expect(fs.write(fd, new Uint8Array([0x78]), null, 1)).toBe(1);
+      expect(fs.fstat(fd).mode & 0o7777).toBe(0o755);
+      expect(fs.stat("/published").mode & 0o7777).toBe(0o755);
+    } finally {
+      fs.close(fd);
+    }
   });
 
   it("mkdirWithOwner sets uid/gid at creation", () => {

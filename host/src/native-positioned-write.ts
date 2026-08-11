@@ -90,9 +90,11 @@ export interface NativeBackingOpenResult {
  * an atomic O_CREAT|O_EXCL attempt, then an existing-only attempt. ENOENT on
  * the second operation means the name raced away, so the transaction retries.
  *
- * O_TRUNC, O_APPEND, and O_NOFOLLOW stay present in both operations. Ordinary
- * O_CREAT still follows a dangling final symlink by continuing the transaction
- * at its target; caller-requested O_EXCL or O_NOFOLLOW never takes that path.
+ * Caller-selected native flags stay present in both operations. Ordinary
+ * O_CREAT follows a dangling final symlink by continuing the transaction at
+ * its target; caller-requested O_EXCL or O_NOFOLLOW never takes that path.
+ * Native backends deliberately omit O_TRUNC here, finish fallible route and
+ * metadata setup on the exact returned handle, then truncate that handle.
  */
 export function openNativeBackingFile(
   nativePath: string,
@@ -192,12 +194,99 @@ function nativeWriteError(
   return error;
 }
 
+function nativeErrorCode(error: unknown): string | null {
+  if (
+    typeof error === "object"
+    && error !== null
+    && "code" in error
+    && typeof error.code === "string"
+    && /^[A-Z][A-Z0-9_]*$/.test(error.code)
+  ) {
+    return error.code;
+  }
+  return null;
+}
+
+function nativeCompanionError(
+  error: unknown,
+  purpose: string,
+): Error & { code: string } {
+  const code = nativeErrorCode(error) ?? "EIO";
+  const wrapped = new Error(
+    `${code}: cannot establish exact native ${purpose} companion`,
+  ) as Error & { code: string };
+  wrapped.code = code;
+  return wrapped;
+}
+
+const NATIVE_COMPANION_FALLBACK_CODES = new Set([
+  "ENOENT",
+  "ENOTDIR",
+  "ENODEV",
+  "ENOSYS",
+  "EOPNOTSUPP",
+  "ENOTSUP",
+]);
+
+function nativeCompanionStrategyUnavailable(error: unknown): boolean {
+  const code = nativeErrorCode(error);
+  return code !== null && NATIVE_COMPANION_FALLBACK_CODES.has(code);
+}
+
 function sameNativeFile(primary: number, candidate: number): boolean {
   const primaryStat = fs.fstatSync(primary, { bigint: true });
   const candidateStat = fs.fstatSync(candidate, { bigint: true });
   return (
     primaryStat.dev === candidateStat.dev
     && primaryStat.ino === candidateStat.ino
+  );
+}
+
+function openExactNativeCompanion(
+  primary: number,
+  nativePath: string,
+  nativeFlags: number,
+  purpose: string,
+): number {
+  const candidates = process.platform === "linux"
+    ? [
+        { path: `/proc/self/fd/${primary}`, mayFallback: true },
+        { path: nativePath, mayFallback: false },
+      ]
+    : [{ path: nativePath, mayFallback: false }];
+
+  for (const candidate of candidates) {
+    let companion: number;
+    try {
+      companion = fs.openSync(candidate.path, nativeFlags);
+    } catch (error) {
+      if (candidate.mayFallback && nativeCompanionStrategyUnavailable(error)) {
+        continue;
+      }
+      throw nativeCompanionError(error, purpose);
+    }
+
+    try {
+      if (!sameNativeFile(primary, companion)) {
+        throw nativeWriteError(
+          "EIO",
+          `native ${purpose} companion does not name the opened file`,
+        );
+      }
+      return companion;
+    } catch (error) {
+      try {
+        fs.closeSync(companion);
+      } catch {
+        // Preserve the identity failure.
+      }
+      throw nativeCompanionError(error, purpose);
+    }
+  }
+
+  throw nativeWriteError(
+    "EOPNOTSUPP",
+    `no native ${purpose} companion strategy is available`,
   );
 }
 
@@ -211,11 +300,13 @@ function sameNativeFile(primary: number, candidate: number): boolean {
  *
  * Linux `/proc/self/fd` acquires the companion from the live inode. Other
  * hosts reopen the pathname immediately and accept it only after dev+ino
- * identity verification. If no exact companion can be established, open
- * fails honestly with EOPNOTSUPP instead of deferring a broken transition.
+ * identity verification. A missing live-fd strategy may fall back to the
+ * path; authoritative permission, filesystem, and resource errors retain
+ * their native errno instead of being mislabeled as unsupported.
  */
 export class NativePositionedWriteHandles {
   private readonly routes = new Map<number, NativeWriteRoutes>();
+  private readonly readOnlyTruncates = new Map<number, number>();
 
   register(primary: number, linuxFlags: number, nativePath: string): void {
     const access = nativeWriteAccess(linuxFlags);
@@ -227,50 +318,43 @@ export class NativePositionedWriteHandles {
     const primaryIsAppend = (linuxFlags & LINUX_O_APPEND) !== 0;
     const companionFlags = access
       | (primaryIsAppend ? 0 : fs.constants.O_APPEND);
-    const candidates = process.platform === "linux"
-      ? [`/proc/self/fd/${primary}`, nativePath]
-      : [nativePath];
-    let lastFailure: unknown;
-
-    for (const candidatePath of candidates) {
-      let companion: number;
-      try {
-        companion = fs.openSync(candidatePath, companionFlags);
-      } catch (error) {
-        lastFailure = error;
-        continue;
-      }
-
-      try {
-        if (!sameNativeFile(primary, companion)) {
-          throw nativeWriteError(
-            "EIO",
-            "native write companion does not name the opened file",
-          );
-        }
-      } catch (error) {
-        try {
-          fs.closeSync(companion);
-        } catch {
-          // Preserve the identity failure.
-        }
-        lastFailure = error;
-        continue;
-      }
-
-      this.routes.set(primary, {
-        companion,
-        append: primaryIsAppend ? primary : companion,
-        positioned: primaryIsAppend ? companion : primary,
-      });
-      return;
-    }
-
-    throw nativeWriteError(
-      "EOPNOTSUPP",
-      "cannot establish exact append and positioned routes for this file",
-      lastFailure,
+    const companion = openExactNativeCompanion(
+      primary,
+      nativePath,
+      companionFlags,
+      "write-route",
     );
+    this.routes.set(primary, {
+      companion,
+      append: primaryIsAppend ? primary : companion,
+      positioned: primaryIsAppend ? companion : primary,
+    });
+  }
+
+  /**
+   * Return an exact writable handle for deferred O_TRUNC.
+   *
+   * WHY: Linux accepts O_RDONLY | O_TRUNC, but the read-only descriptor cannot
+   * be passed to ftruncate after native O_TRUNC is deferred. Keep the primary
+   * descriptor read-only and retain a verified companion until close, so all
+   * fallible route setup precedes mutation and no pathname race can select a
+   * different inode for truncation.
+   */
+  forTruncate(primary: number, linuxFlags: number, nativePath: string): number {
+    if (nativeWriteAccess(linuxFlags) !== null) return primary;
+
+    const existing = this.readOnlyTruncates.get(primary);
+    if (existing !== undefined) return existing;
+    if (!fs.fstatSync(primary, { bigint: true }).isFile()) return primary;
+
+    const companion = openExactNativeCompanion(
+      primary,
+      nativePath,
+      fs.constants.O_WRONLY,
+      "read-only truncate",
+    );
+    this.readOnlyTruncates.set(primary, companion);
+    return companion;
   }
 
   forWrite(primary: number, positioned: boolean): number {
@@ -305,6 +389,8 @@ export class NativePositionedWriteHandles {
   close(primary: number): void {
     const route = this.routes.get(primary);
     this.routes.delete(primary);
+    const truncateCompanion = this.readOnlyTruncates.get(primary);
+    this.readOnlyTruncates.delete(primary);
 
     let closeError: unknown;
     if (route !== undefined) {
@@ -312,6 +398,13 @@ export class NativePositionedWriteHandles {
         fs.closeSync(route.companion);
       } catch (error) {
         closeError = error;
+      }
+    }
+    if (truncateCompanion !== undefined) {
+      try {
+        fs.closeSync(truncateCompanion);
+      } catch (error) {
+        closeError ??= error;
       }
     }
     try {
