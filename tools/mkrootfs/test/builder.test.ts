@@ -846,6 +846,79 @@ describe("image builder — validation", () => {
 });
 
 describe("image builder — round-trip", () => {
+  it("grows past the initial backing store without truncating source files", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-builder-growth-"));
+    try {
+      const source = new Uint8Array(2 * 1024 * 1024);
+      for (let i = 0; i < source.byteLength; i++) source[i] = i & 0xff;
+      writeFileSync(join(tmp, "large.bin"), source);
+      const manifest = join(tmp, "MANIFEST");
+      writeFileSync(
+        manifest,
+        "/ d 0755 0 0\n/large.bin f 0644 0 0 src=large.bin\n",
+      );
+
+      const image = await buildImage({
+        sourceTree: tmp,
+        manifest,
+        repoRoot: tmp,
+        sabSize: 1024 * 1024,
+        maxSizeBytes: 4 * 1024 * 1024,
+      });
+      const restored = MemoryFileSystem.fromImage(image);
+      const stat = restored.stat("/large.bin");
+      expect(stat.size).toBe(source.byteLength);
+
+      const actual = new Uint8Array(source.byteLength);
+      const fd = restored.open("/large.bin", 0, 0);
+      try {
+        let offset = 0;
+        while (offset < actual.byteLength) {
+          const count = restored.read(
+            fd,
+            actual.subarray(offset),
+            null,
+            actual.byteLength - offset,
+          );
+          expect(count).toBeGreaterThan(0);
+          offset += count;
+        }
+      } finally {
+        restored.close(fd);
+      }
+      expect(Buffer.from(actual).equals(Buffer.from(source))).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("fails instead of serializing a partial source file at the size limit", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-builder-enospc-"));
+    try {
+      const source = new Uint8Array(2 * 1024 * 1024);
+      writeFileSync(join(tmp, "large.bin"), source);
+      const manifest = join(tmp, "MANIFEST");
+      writeFileSync(
+        manifest,
+        "/ d 0755 0 0\n/large.bin f 0644 0 0 src=large.bin\n",
+      );
+
+      await expect(
+        buildImage({
+          sourceTree: tmp,
+          manifest,
+          repoRoot: tmp,
+          sabSize: 1024 * 1024,
+          maxSizeBytes: 1024 * 1024,
+        }),
+      ).rejects.toThrow(
+        /short write.*\/large\.bin.*expected 2097152 bytes.*wrote [0-9]+/,
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("save → load preserves a multi-pass image end-to-end", async () => {
     const fixture = join(fixtures, "basic");
     const image = await buildImage({

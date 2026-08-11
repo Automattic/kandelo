@@ -2541,7 +2541,7 @@
     "fontconfig": {
       "internal": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "c795ecd6a4a052cd20755ebb00b84c4745850b9d52f4aac01cd0b30acc97d74d",
+        "bottle_checksum": "56c35f5cc20e978189ba6693eef8ed1167de1d04ef9e5289e9a9dff8b5077049",
         "desc": "XML-based font configuration API for X Windows",
         "executables": [
           "fc-cache",
@@ -2616,8 +2616,8 @@
             "type": "run"
           }
         ],
-        "ruby_source_checksum": "6699afaab9f5d8fea422533f15675cc330bcc130a0dfc47889d5590a231750b6",
-        "stable_checksum": "a84d41b57cfb015783d7973b398c26d8763a64b803f97f31fa126fd2aa5eaaca",
+        "ruby_source_checksum": "46a34fe2525e2393a6f8e43ba02b55be18042678929100f56e735a453e676667",
+        "stable_checksum": "9ae01e1d53acdef56010c5451cd34aa41d325b2faccd8606448d8fa01b2496b3",
         "stable_dependencies": [
           "freetype",
           {
@@ -2634,7 +2634,7 @@
           }
         ],
         "stable_url_args": [
-          "https://gitlab.freedesktop.org/fontconfig/fontconfig/-/archive/2.18.2/fontconfig-2.18.2.tar.gz"
+          "https://gitlab.freedesktop.org/fontconfig/fontconfig/-/archive/2.18.3/fontconfig-2.18.3.tar.gz"
         ],
         "stable_uses_from_macos": [
           [
@@ -2651,11 +2651,11 @@
             "expat"
           ]
         ],
-        "stable_version": "2.18.2"
+        "stable_version": "2.18.3"
       },
       "public": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "c795ecd6a4a052cd20755ebb00b84c4745850b9d52f4aac01cd0b30acc97d74d",
+        "bottle_checksum": "56c35f5cc20e978189ba6693eef8ed1167de1d04ef9e5289e9a9dff8b5077049",
         "desc": "XML-based font configuration API for X Windows",
         "executables": [
           "fc-cache",
@@ -2730,8 +2730,8 @@
             "type": "run"
           }
         ],
-        "ruby_source_checksum": "6699afaab9f5d8fea422533f15675cc330bcc130a0dfc47889d5590a231750b6",
-        "stable_checksum": "a84d41b57cfb015783d7973b398c26d8763a64b803f97f31fa126fd2aa5eaaca",
+        "ruby_source_checksum": "46a34fe2525e2393a6f8e43ba02b55be18042678929100f56e735a453e676667",
+        "stable_checksum": "9ae01e1d53acdef56010c5451cd34aa41d325b2faccd8606448d8fa01b2496b3",
         "stable_dependencies": [
           "freetype",
           {
@@ -2748,7 +2748,7 @@
           }
         ],
         "stable_url_args": [
-          "https://gitlab.freedesktop.org/fontconfig/fontconfig/-/archive/2.18.2/fontconfig-2.18.2.tar.gz"
+          "https://gitlab.freedesktop.org/fontconfig/fontconfig/-/archive/2.18.3/fontconfig-2.18.3.tar.gz"
         ],
         "stable_uses_from_macos": [
           [
@@ -2765,7 +2765,7 @@
             "expat"
           ]
         ],
-        "stable_version": "2.18.2"
+        "stable_version": "2.18.3"
       }
     },
     "freeglut": {
@@ -6481,7 +6481,7 @@
     "libffi": {
       "internal": {
         "bottle_cellar": ":any",
-        "bottle_checksum": "d38ed5eba118dc170bede46cf32fe5aae43f3ce919daef0de0181af0cf0a000f",
+        "bottle_checksum": "250d5150db65018e524595cae9de93f8d72ebe8a078bfde968eae51bdc1787fc",
         "desc": "Portable Foreign Function Interface library",
         "head_dependencies": [
           {
@@ -6506,16 +6506,16 @@
         ],
         "license": "MIT",
         "name": "libffi",
-        "ruby_source_checksum": "778b9095a9afbfbf1e125018a3c4ba50e5d14c964c68e2bdadba6301d96f446e",
-        "stable_checksum": "d5e9a6638ddbd2513ddb54518eb67e4bbe6fa707bcc01c10f6212f0a088d819d",
+        "ruby_source_checksum": "95875e70caa6b4f888d631522f8694db62c3e1fddfbf216873749a2dc74032b3",
+        "stable_checksum": "7da3e2d9a171eb0a038f592ecad3ff2bb2550f3496d87b3b29ad0cf4430c0db4",
         "stable_url_args": [
-          "https://github.com/libffi/libffi/releases/download/v3.7.1/libffi-3.7.1.tar.gz"
+          "https://github.com/libffi/libffi/releases/download/v3.8.0/libffi-3.8.0.tar.gz"
         ],
-        "stable_version": "3.7.1"
+        "stable_version": "3.8.0"
       },
       "public": {
         "bottle_cellar": ":any",
-        "bottle_checksum": "d38ed5eba118dc170bede46cf32fe5aae43f3ce919daef0de0181af0cf0a000f",
+        "bottle_checksum": "250d5150db65018e524595cae9de93f8d72ebe8a078bfde968eae51bdc1787fc",
         "desc": "Portable Foreign Function Interface library",
         "head_dependencies": [
           {
@@ -6540,12 +6540,12 @@
         ],
         "license": "MIT",
         "name": "libffi",
-        "ruby_source_checksum": "778b9095a9afbfbf1e125018a3c4ba50e5d14c964c68e2bdadba6301d96f446e",
-        "stable_checksum": "d5e9a6638ddbd2513ddb54518eb67e4bbe6fa707bcc01c10f6212f0a088d819d",
+        "ruby_source_checksum": "95875e70caa6b4f888d631522f8694db62c3e1fddfbf216873749a2dc74032b3",
+        "stable_checksum": "7da3e2d9a171eb0a038f592ecad3ff2bb2550f3496d87b3b29ad0cf4430c0db4",
         "stable_url_args": [
-          "https://github.com/libffi/libffi/releases/download/v3.7.1/libffi-3.7.1.tar.gz"
+          "https://github.com/libffi/libffi/releases/download/v3.8.0/libffi-3.8.0.tar.gz"
         ],
-        "stable_version": "3.7.1"
+        "stable_version": "3.8.0"
       }
     },
     "libgit2": {
@@ -9694,7 +9694,7 @@
             "type": "configure_clang_system"
           }
         ],
-        "ruby_source_checksum": "061d38ecdbec47ca7c9508263ec06352ac9051e42b383cfac22a1d75fcc886c7",
+        "ruby_source_checksum": "73d8da768a0162597cbbca4069bba77650a0509bcf1ba7dcbc2e389e94ade037",
         "stable_checksum": "922f1817a0df7b1489272d18134ee0087a8b068828f87ac63b9861b1a9965888",
         "stable_dependencies": [
           "python@3.14",
@@ -9720,8 +9720,15 @@
         ],
         "stable_patches": [
           {
+            "resolves": [
+              {
+                "id": "https://github.com/llvm/llvm-project/pull/111397",
+                "type": "defect"
+              }
+            ],
             "sha256": "f6dafd762737eb79761ab7ef814a9fc802ec4bb8d20f46691f07178053b0eb36",
             "strip": "p1",
+            "type": "unofficial",
             "url": "https://github.com/llvm/llvm-project/compare/1381ad497b9a6d3da630cbef53cbfa9ddf117bb6...40a8c7c0ff3f688b690e4c74db734de67f0f89e9.diff"
           }
         ],
@@ -9977,7 +9984,7 @@
             "type": "configure_clang_system"
           }
         ],
-        "ruby_source_checksum": "061d38ecdbec47ca7c9508263ec06352ac9051e42b383cfac22a1d75fcc886c7",
+        "ruby_source_checksum": "73d8da768a0162597cbbca4069bba77650a0509bcf1ba7dcbc2e389e94ade037",
         "stable_checksum": "922f1817a0df7b1489272d18134ee0087a8b068828f87ac63b9861b1a9965888",
         "stable_dependencies": [
           "python@3.14",
@@ -10003,8 +10010,15 @@
         ],
         "stable_patches": [
           {
+            "resolves": [
+              {
+                "id": "https://github.com/llvm/llvm-project/pull/111397",
+                "type": "defect"
+              }
+            ],
             "sha256": "f6dafd762737eb79761ab7ef814a9fc802ec4bb8d20f46691f07178053b0eb36",
             "strip": "p1",
+            "type": "unofficial",
             "url": "https://github.com/llvm/llvm-project/compare/1381ad497b9a6d3da630cbef53cbfa9ddf117bb6...40a8c7c0ff3f688b690e4c74db734de67f0f89e9.diff"
           }
         ],
@@ -10373,17 +10387,15 @@
     "mesa": {
       "internal": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "7ac1e5d8cb9dbb02a736ed806898dded45203771c369c0d621f5510616024afe",
-        "bottle_rebuild": 1,
+        "bottle_checksum": "12f08e162e90bf2c897b184a55ff684f41a65a753f6e967c75a8bd71e278bdbc",
         "desc": "Graphics Library",
         "executables": [
           "aubinator",
           "aubinator_error_decode",
-          "brw_asm",
-          "brw_disasm",
           "computerator",
           "elk_asm",
           "elk_disasm",
+          "gentool",
           "glsl_compiler",
           "intel_dev_info",
           "intel_dump_gpu",
@@ -10399,6 +10411,7 @@
           "mesa-overlay-control.py",
           "mesa-screenshot-control.py",
           "nv_mme_dump",
+          "nv_mme_method_dumper",
           "nv_push_dump",
           "panfrost_texfeatures",
           "panfrostdump",
@@ -10534,8 +10547,8 @@
           ]
         },
         "name": "mesa",
-        "ruby_source_checksum": "161639df34a4d861c7277085b3826a056d4d73369c50ce2600d4122d60aeec69",
-        "stable_checksum": "072705caa9adf4740f1489194b13e278ad959166863b5271fe423a86353c9ab6",
+        "ruby_source_checksum": "a2d9afa6af5e9d519e0cc5e92b7432cc2a61dd2562c76452d1b025c0ff6e5b48",
+        "stable_checksum": "efd4bb08cdb7c365a812cd4e6c9202ab55b2f22cdcd13c7d6c4f9647b799a4ef",
         "stable_dependencies": [
           "libclc",
           "libpng",
@@ -10621,7 +10634,7 @@
           }
         ],
         "stable_url_args": [
-          "https://archive.mesa3d.org/mesa-26.1.4.tar.xz"
+          "https://archive.mesa3d.org/mesa-26.2.0.tar.xz"
         ],
         "stable_uses_from_macos": [
           [
@@ -10633,21 +10646,19 @@
             "expat"
           ]
         ],
-        "stable_version": "26.1.4"
+        "stable_version": "26.2.0"
       },
       "public": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "7ac1e5d8cb9dbb02a736ed806898dded45203771c369c0d621f5510616024afe",
-        "bottle_rebuild": 1,
+        "bottle_checksum": "12f08e162e90bf2c897b184a55ff684f41a65a753f6e967c75a8bd71e278bdbc",
         "desc": "Graphics Library",
         "executables": [
           "aubinator",
           "aubinator_error_decode",
-          "brw_asm",
-          "brw_disasm",
           "computerator",
           "elk_asm",
           "elk_disasm",
+          "gentool",
           "glsl_compiler",
           "intel_dev_info",
           "intel_dump_gpu",
@@ -10663,6 +10674,7 @@
           "mesa-overlay-control.py",
           "mesa-screenshot-control.py",
           "nv_mme_dump",
+          "nv_mme_method_dumper",
           "nv_push_dump",
           "panfrost_texfeatures",
           "panfrostdump",
@@ -10798,8 +10810,8 @@
           ]
         },
         "name": "mesa",
-        "ruby_source_checksum": "161639df34a4d861c7277085b3826a056d4d73369c50ce2600d4122d60aeec69",
-        "stable_checksum": "072705caa9adf4740f1489194b13e278ad959166863b5271fe423a86353c9ab6",
+        "ruby_source_checksum": "a2d9afa6af5e9d519e0cc5e92b7432cc2a61dd2562c76452d1b025c0ff6e5b48",
+        "stable_checksum": "efd4bb08cdb7c365a812cd4e6c9202ab55b2f22cdcd13c7d6c4f9647b799a4ef",
         "stable_dependencies": [
           "libclc",
           "libpng",
@@ -10885,7 +10897,7 @@
           }
         ],
         "stable_url_args": [
-          "https://archive.mesa3d.org/mesa-26.1.4.tar.xz"
+          "https://archive.mesa3d.org/mesa-26.2.0.tar.xz"
         ],
         "stable_uses_from_macos": [
           [
@@ -10897,7 +10909,7 @@
             "expat"
           ]
         ],
-        "stable_version": "26.1.4"
+        "stable_version": "26.2.0"
       }
     },
     "mesa-glu": {
@@ -11291,7 +11303,7 @@
     "openldap": {
       "internal": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "5a958deb06792794bc4ccbca62276d85998cdde566c517d55c127935927e0bf7",
+        "bottle_checksum": "f720a0f32095519560fe769c978a53d4f5b701bc6c9d06a1c013fc23c4087162",
         "desc": "Open source suite of directory software",
         "executables": [
           "ldapadd",
@@ -11336,8 +11348,8 @@
         ],
         "license": "OLDAP-2.8",
         "name": "openldap",
-        "ruby_source_checksum": "676dc8b0d62af86e23122102eb22d0856111f06a5809657b52a8c50f480355e8",
-        "stable_checksum": "d693b49517a42efb85a1a364a310aed16a53d428d1b46c0d31ef3fba78fcb656",
+        "ruby_source_checksum": "b6d1b10f09b64a633f8ec43b0b83fba08e2d8f9d34138759a9637fb35588e9f3",
+        "stable_checksum": "9e86f37da375aa948a1b478dd76fe87b02090e47c21facae19223588e3407922",
         "stable_dependencies": [
           "openssl@3",
           "util-linux"
@@ -11350,7 +11362,7 @@
           }
         ],
         "stable_url_args": [
-          "https://www.openldap.org/software/download/OpenLDAP/openldap-release/openldap-2.6.13.tgz"
+          "https://www.openldap.org/software/download/OpenLDAP/openldap-release/openldap-2.7.0.tgz"
         ],
         "stable_uses_from_macos": [
           [
@@ -11362,11 +11374,11 @@
             "cyrus-sasl"
           ]
         ],
-        "stable_version": "2.6.13"
+        "stable_version": "2.7.0"
       },
       "public": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "5a958deb06792794bc4ccbca62276d85998cdde566c517d55c127935927e0bf7",
+        "bottle_checksum": "f720a0f32095519560fe769c978a53d4f5b701bc6c9d06a1c013fc23c4087162",
         "desc": "Open source suite of directory software",
         "executables": [
           "ldapadd",
@@ -11411,8 +11423,8 @@
         ],
         "license": "OLDAP-2.8",
         "name": "openldap",
-        "ruby_source_checksum": "676dc8b0d62af86e23122102eb22d0856111f06a5809657b52a8c50f480355e8",
-        "stable_checksum": "d693b49517a42efb85a1a364a310aed16a53d428d1b46c0d31ef3fba78fcb656",
+        "ruby_source_checksum": "b6d1b10f09b64a633f8ec43b0b83fba08e2d8f9d34138759a9637fb35588e9f3",
+        "stable_checksum": "9e86f37da375aa948a1b478dd76fe87b02090e47c21facae19223588e3407922",
         "stable_dependencies": [
           "openssl@3",
           "util-linux"
@@ -11425,7 +11437,7 @@
           }
         ],
         "stable_url_args": [
-          "https://www.openldap.org/software/download/OpenLDAP/openldap-release/openldap-2.6.13.tgz"
+          "https://www.openldap.org/software/download/OpenLDAP/openldap-release/openldap-2.7.0.tgz"
         ],
         "stable_uses_from_macos": [
           [
@@ -11437,7 +11449,7 @@
             "cyrus-sasl"
           ]
         ],
-        "stable_version": "2.6.13"
+        "stable_version": "2.7.0"
       }
     },
     "openssl@3": {
@@ -12837,22 +12849,25 @@
         "no_autobump_args": {
           ":because": ":incompatible_version_format"
         },
-        "ruby_source_checksum": "6bafe386f0a06452975d6a2c83ad292af7d2921b62655483fd677a4435bfeab0",
+        "ruby_source_checksum": "e6f64858742653a7a79d3d6bb9a9c4d9659dbe73a6e81e9f4f4f92ccd1c4bfd3",
         "stable_checksum": "fe5383204467828cd495ee8d1d3c037a7eba1389c22bc6a041f627976f9061cc",
         "stable_patches": [
           {
             "sha256": "21f0a03106dbe697337cd25c70eb0edbaa2bdb6d595b45f83285cdd35bac84de",
             "strip": "p0",
+            "type": "cherry-pick",
             "url": "https://ftpmirror.gnu.org/gnu/readline/readline-8.3-patches/readline83-001"
           },
           {
             "sha256": "e27364396ba9f6debf7cbaaf1a669e2b2854241ae07f7eca74ca8a8ba0c97472",
             "strip": "p0",
+            "type": "cherry-pick",
             "url": "https://ftpmirror.gnu.org/gnu/readline/readline-8.3-patches/readline83-002"
           },
           {
             "sha256": "72dee13601ce38f6746eb15239999a7c56f8e1ff5eb1ec8153a1f213e4acdb29",
             "strip": "p0",
+            "type": "cherry-pick",
             "url": "https://ftpmirror.gnu.org/gnu/readline/readline-8.3-patches/readline83-003"
           }
         ],
@@ -12884,22 +12899,25 @@
         "no_autobump_args": {
           ":because": ":incompatible_version_format"
         },
-        "ruby_source_checksum": "6bafe386f0a06452975d6a2c83ad292af7d2921b62655483fd677a4435bfeab0",
+        "ruby_source_checksum": "e6f64858742653a7a79d3d6bb9a9c4d9659dbe73a6e81e9f4f4f92ccd1c4bfd3",
         "stable_checksum": "fe5383204467828cd495ee8d1d3c037a7eba1389c22bc6a041f627976f9061cc",
         "stable_patches": [
           {
             "sha256": "21f0a03106dbe697337cd25c70eb0edbaa2bdb6d595b45f83285cdd35bac84de",
             "strip": "p0",
+            "type": "cherry-pick",
             "url": "https://ftpmirror.gnu.org/gnu/readline/readline-8.3-patches/readline83-001"
           },
           {
             "sha256": "e27364396ba9f6debf7cbaaf1a669e2b2854241ae07f7eca74ca8a8ba0c97472",
             "strip": "p0",
+            "type": "cherry-pick",
             "url": "https://ftpmirror.gnu.org/gnu/readline/readline-8.3-patches/readline83-002"
           },
           {
             "sha256": "72dee13601ce38f6746eb15239999a7c56f8e1ff5eb1ec8153a1f213e4acdb29",
             "strip": "p0",
+            "type": "cherry-pick",
             "url": "https://ftpmirror.gnu.org/gnu/readline/readline-8.3-patches/readline83-003"
           }
         ],

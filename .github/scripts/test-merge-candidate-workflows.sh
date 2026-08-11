@@ -299,6 +299,7 @@ recover-rejected-merge-candidate.yml:recover
 reusable-homebrew-bottle-maintenance.yml:rebuild
 reusable-homebrew-bottle-maintenance.yml:rollback
 reusable-homebrew-bottle-publish.yml:finalize-tap
+reusable-homebrew-bottle-publish.yml:plan
 reusable-package-source-publish.yml:publish
 staging-build.yml:lib-matrix-build
 staging-build.yml:matrix-build

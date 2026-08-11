@@ -106,8 +106,13 @@ export async function buildImage(opts: BuildOptions): Promise<Uint8Array> {
     throw new Error("maxSizeBytes must be greater than or equal to sabSize");
   }
 
-  const sab = new SharedArrayBuffer(sabSize);
-  const mfs = MemoryFileSystem.create(sab, opts.maxSizeBytes);
+  const maxSizeBytes = opts.maxSizeBytes ?? sabSize * 4;
+  const SharedArrayBufferCtor = SharedArrayBuffer as new (
+    byteLength: number,
+    options?: { maxByteLength?: number },
+  ) => SharedArrayBuffer;
+  const sab = new SharedArrayBufferCtor(sabSize, { maxByteLength: maxSizeBytes });
+  const mfs = MemoryFileSystem.create(sab, maxSizeBytes);
 
   buildDirectories(mfs, entries);
   buildFiles(mfs, entries, opts);
@@ -169,7 +174,7 @@ function buildFiles(
       }
       throw e;
     }
-    mfs.createFileWithOwner(f.path, f.mode, f.uid, f.gid, content);
+    createFileExactWithOwner(mfs, f.path, f.mode, f.uid, f.gid, content);
   }
 }
 
@@ -260,7 +265,8 @@ function extractArchive(
     if (skipPaths.has(member.vfsPath)) continue;
     ensureParentDirs(mfs, member.vfsPath, a);
     const content = extractZipEntry(zipBytes, member.entry);
-    mfs.createFileWithOwner(
+    createFileExactWithOwner(
+      mfs,
       member.vfsPath,
       member.fileMode,
       a.uid,
@@ -275,6 +281,23 @@ function extractArchive(
     const targetBytes = extractZipEntry(zipBytes, member.entry);
     const target = decodeSymlinkTarget(targetBytes, member);
     mfs.symlinkWithOwner(target, member.vfsPath, a.uid, a.gid);
+  }
+}
+
+function createFileExactWithOwner(
+  mfs: MemoryFileSystem,
+  path: string,
+  mode: number,
+  uid: number,
+  gid: number,
+  content: Uint8Array,
+): void {
+  mfs.createFileWithOwner(path, mode, uid, gid, content);
+  const actualBytes = mfs.stat(path).size;
+  if (actualBytes !== content.byteLength) {
+    throw new Error(
+      `short write while building ${JSON.stringify(path)}: expected ${content.byteLength} bytes, wrote ${actualBytes}`,
+    );
   }
 }
 

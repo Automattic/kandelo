@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+rootfs_default_install=""
+if [ "$#" -ne 0 ]; then
+    if [ "$#" -ne 2 ] || [ "$1" != "--default-install" ]; then
+        echo "usage: scripts/build-rootfs.sh [--default-install <lazy|eager>]" >&2
+        exit 2
+    fi
+    case "$2" in
+        lazy|eager) rootfs_default_install="$2" ;;
+        *)
+            echo 'build-rootfs: --default-install must be either "lazy" or "eager"' >&2
+            exit 2
+            ;;
+    esac
+fi
+
 # Build the canonical rootfs.vfs image from the top-level MANIFEST +
 # images/rootfs/ source tree, using the mkrootfs CLI under tools/mkrootfs/.
 # Output defaults to host/wasm/rootfs.vfs (gitignored — built artifact).
@@ -87,6 +102,9 @@ generator_args=(
     --packages "$ROOTFS_PACKAGES"
     --out "$PKG_MANIFEST"
 )
+if [ -n "$rootfs_default_install" ]; then
+    generator_args+=(--default-install "$rootfs_default_install")
+fi
 if [ "${ROOTFS_STAGE_RESOLVER_BINARIES:-0}" = "1" ]; then
     [ -n "${ROOTFS_BINARIES_DIR:-}" ] || {
         echo "build-rootfs: ROOTFS_BINARIES_DIR is required for resolver staging" >&2

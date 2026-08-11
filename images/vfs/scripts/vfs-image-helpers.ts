@@ -120,6 +120,13 @@ export interface SaveImageOptions {
   headroom?: VfsImageHeadroom;
   /** Exact growth ceiling that the serialized artifact must encode. */
   expectedMaxByteLength?: number;
+  /** Refuse to retain any external lazy backing in the serialized image. */
+  materializeAll?: boolean;
+}
+
+export interface SerializedVfsImage {
+  bytes: Uint8Array;
+  rawBytes: number;
 }
 
 export interface VfsImageHeadroom {
@@ -387,6 +394,70 @@ function assertNoStaleWasmArtifacts(
   }
 }
 
+/** Validate and compress one image without publishing it to the host filesystem. */
+export async function serializeImage(
+  fs: MemoryFileSystem,
+  artifactLabel: string,
+  options: SaveImageOptions = {},
+): Promise<SerializedVfsImage> {
+  const kernelAbi = options.kernelAbi ?? ABI_VERSION;
+  if (
+    options.skipWasmArtifactCheck &&
+    (options.wasmArtifactPolicies?.length ?? 0) > 0
+  ) {
+    throw new Error(
+      "VFS Wasm artifact policies cannot be used when the whole-image " +
+        "Wasm artifact check is disabled",
+    );
+  }
+  const metadata = options.metadata ??
+    {
+      version: 1 as const,
+      kernelAbi,
+      createdBy: "images/vfs/scripts/saveImage",
+    };
+  const save = () => fs.saveImage({
+    materializeAll: options.materializeAll,
+    metadata,
+    normalizeTimestampsMs: options.normalizeTimestampsMs,
+  });
+  // Materialize first when requested so the resource and Wasm checks inspect
+  // the exact concrete namespace represented by the returned snapshot.
+  const materializedImage = options.materializeAll ? await save() : null;
+  if (options.headroom) {
+    assertVfsImageHeadroom(fs, options.headroom, artifactLabel);
+  }
+  if (!options.skipWasmArtifactCheck) {
+    assertNoStaleWasmArtifacts(
+      fs,
+      kernelAbi,
+      options.wasmArtifactPolicies ?? [],
+    );
+  }
+  const image = materializedImage ?? await save();
+  if (options.expectedMaxByteLength !== undefined) {
+    assertVfsImageCapacity(
+      image,
+      options.expectedMaxByteLength,
+      artifactLabel,
+    );
+  }
+  // Level 19 — slow build, smaller download. Decompression speed is
+  // unaffected by compression level, so this is a one-sided trade.
+  const compressed = zstdCompressSync(image, {
+    params: { [zlibConstants.ZSTD_c_compressionLevel]: 19 },
+  });
+
+  return {
+    bytes: new Uint8Array(
+      compressed.buffer,
+      compressed.byteOffset,
+      compressed.byteLength,
+    ),
+    rawBytes: image.byteLength,
+  };
+}
+
 export async function saveImage(
   fs: MemoryFileSystem,
   outFile: string,
@@ -399,53 +470,17 @@ export async function saveImage(
   }
 
   console.log("Saving VFS image...");
-  if (options.headroom) {
-    assertVfsImageHeadroom(fs, options.headroom, outFile);
-  }
-  const kernelAbi = options.kernelAbi ?? ABI_VERSION;
-  if (
-    options.skipWasmArtifactCheck &&
-    (options.wasmArtifactPolicies?.length ?? 0) > 0
-  ) {
-    throw new Error(
-      "VFS Wasm artifact policies cannot be used when the whole-image " +
-        "Wasm artifact check is disabled",
-    );
-  }
-  if (!options.skipWasmArtifactCheck) {
-    assertNoStaleWasmArtifacts(
-      fs,
-      kernelAbi,
-      options.wasmArtifactPolicies ?? [],
-    );
-  }
-  const metadata = options.metadata ??
-    {
-          version: 1 as const,
-          kernelAbi,
-          createdBy: "images/vfs/scripts/saveImage",
-        };
-  const image = await fs.saveImage({
-    metadata,
-    normalizeTimestampsMs: options.normalizeTimestampsMs,
-  });
-  if (options.expectedMaxByteLength !== undefined) {
-    assertVfsImageCapacity(image, options.expectedMaxByteLength, outFile);
-  }
-  // Level 19 — slow build, smaller download. Decompression speed is
-  // unaffected by compression level, so this is a one-sided trade.
-  const compressed = zstdCompressSync(image, {
-    params: { [zlibConstants.ZSTD_c_compressionLevel]: 19 },
-  });
+  const serialized = await serializeImage(fs, outFile, options);
 
   const outDir = outFile.substring(0, outFile.lastIndexOf("/"));
   mkdirSync(outDir, { recursive: true });
-  writeFileSync(outFile, compressed);
+  writeFileSync(outFile, serialized.bytes);
 
-  const rawMB = (image.byteLength / (1024 * 1024)).toFixed(1);
-  const compMB = (compressed.byteLength / (1024 * 1024)).toFixed(1);
-  const ratio = ((compressed.byteLength / image.byteLength) * 100).toFixed(1);
+  const rawMB = (serialized.rawBytes / (1024 * 1024)).toFixed(1);
+  const compMB = (serialized.bytes.byteLength / (1024 * 1024)).toFixed(1);
+  const ratio = ((serialized.bytes.byteLength / serialized.rawBytes) * 100)
+    .toFixed(1);
   console.log(`VFS image: ${rawMB} MB raw → ${compMB} MB zstd (${ratio}%)`);
   console.log(`Written to: ${outFile}`);
-  return new Uint8Array(compressed.buffer, compressed.byteOffset, compressed.byteLength);
+  return serialized.bytes;
 }

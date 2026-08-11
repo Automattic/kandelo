@@ -81,11 +81,25 @@ FORMULA_TEST_RUNTIME_DIRECTORIES = (
     Path("binaries"),
     Path("host/src"),
     Path("host/wasm"),
+    # The browser network backend imports the vendored TLS engine directly.
+    # Keep that implementation subtree in the runtime closure without
+    # exposing OpenSSL's Formula recipe or build scripts.
+    Path("packages/registry/openssl/src/tls"),
+)
+# The unchanged tap browser runner uses this path only as its working
+# directory and as the nonexistent anchor passed to createRequire(). Keep the
+# directory real but empty so Node/npm walk upward into the sealed root lock
+# instead of receiving browser-app source or a second package manifest.
+FORMULA_TEST_RUNTIME_EMPTY_DIRECTORIES = (
+    Path("apps/browser-demos"),
 )
 FORMULA_TEST_RUNTIME_NODE_MODULE_ROOTS = (
     "esbuild",
     "fflate",
     "fzstd",
+    # Browser Formula helpers import this automation library from the sealed
+    # runtime root; its locked dependency closure includes playwright-core.
+    "playwright",
     "tsx",
     "vite",
 )
@@ -104,6 +118,8 @@ FORMULA_TEST_RUNTIME_PROGRAM_INDEX_DESTINATION = Path(
     "host/wasm/program-packages.json"
 )
 FORMULA_TEST_RUNTIME_VITE_CLI = Path("node_modules/vite/bin/vite.js")
+FORMULA_TEST_RUNTIME_VITE_BIN = Path("node_modules/.bin/vite")
+FORMULA_TEST_RUNTIME_VITE_BIN_TARGET = "../vite/bin/vite.js"
 # Linux reserves one trailing NUL in sockaddr_un.sun_path, leaving 107 bytes
 # for a pathname. The protected build identity intentionally retains all 64
 # digest characters, so the control socket uses the shortest meaningful name.
@@ -3732,6 +3748,38 @@ def read_stable_projection_file(
     return b"".join(chunks), before
 
 
+def read_stable_projection_symlink(
+    path: Path,
+    relative: Path,
+    limits: dict[str, int],
+    label: str,
+    *,
+    expected_target: str,
+) -> tuple[str, os.stat_result]:
+    """Read one exact workflow-owned link without following its final node."""
+    canonical_real_directory(path.parent, label=f"{label} parent")
+    try:
+        before = path.lstat()
+        target = os.readlink(path)
+    except OSError as error:
+        fail(f"{label} is unavailable: {error}")
+    if not stat.S_ISLNK(before.st_mode) or before.st_nlink != 1:
+        fail(f"{label} has unsafe type or links")
+    safe_relative_symlink_text(
+        relative.as_posix(), target, limits["max_path_bytes"]
+    )
+    if target != expected_target:
+        fail(f"{label} has unexpected target")
+    try:
+        after = path.lstat()
+        target_after = os.readlink(path)
+    except OSError as error:
+        fail(f"{label} disappeared after it was read: {error}")
+    if file_identity(after) != file_identity(before) or target_after != target:
+        fail(f"{label} changed while it was read")
+    return target, before
+
+
 def npm_package_name_parts(value: Any, *, label: str) -> tuple[str, ...]:
     """Validate one npm package name and return its path components."""
     if type(value) is not str or not value or len(value.encode()) > 214:
@@ -4177,6 +4225,61 @@ def copy_projection_file(
     return data, before
 
 
+def copy_projection_symlink(
+    destination_root: Path,
+    relative: Path,
+    target: str,
+    *,
+    owner_uid: int,
+    owner_gid: int,
+) -> None:
+    """Create one authenticated relative link below the private selection."""
+    parent = ensure_projection_parent(
+        destination_root,
+        relative.parent,
+        owner_uid=owner_uid,
+        owner_gid=owner_gid,
+    )
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        directory_flags |= os.O_NOFOLLOW
+    parent_fd = os.open(parent, directory_flags)
+    try:
+        try:
+            os.stat(relative.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            fail(
+                "Formula test runtime projection repeats "
+                f"{relative.as_posix()}"
+            )
+        os.symlink(target, relative.name, dir_fd=parent_fd)
+        os.chown(
+            relative.name,
+            owner_uid,
+            owner_gid,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        created = os.stat(
+            relative.name, dir_fd=parent_fd, follow_symlinks=False
+        )
+        if (
+            not stat.S_ISLNK(created.st_mode)
+            or created.st_nlink != 1
+            or created.st_uid != owner_uid
+            or created.st_gid != owner_gid
+            or os.readlink(relative.name, dir_fd=parent_fd) != target
+        ):
+            fail(
+                "staged Formula test runtime link differs from its "
+                f"authenticated source: {relative.as_posix()}"
+            )
+    finally:
+        os.close(parent_fd)
+
+
 def stage_formula_test_runtime_tree(
     source: Path,
     platform: Path,
@@ -4318,6 +4421,13 @@ def stage_formula_test_runtime_tree(
         or vite_record[3] != hashlib.sha256(vite_data).hexdigest()
     ):
         fail("Formula test Vite CLI is outside its locked package snapshot")
+    vite_bin_target, vite_bin_before = read_stable_projection_symlink(
+        source / FORMULA_TEST_RUNTIME_VITE_BIN,
+        FORMULA_TEST_RUNTIME_VITE_BIN,
+        limits,
+        "Formula test Vite npm executable link",
+        expected_target=FORMULA_TEST_RUNTIME_VITE_BIN_TARGET,
+    )
 
     expected_records = dict(platform_before[1])
     for relative, source_snapshot in selected_directories.items():
@@ -4329,6 +4439,40 @@ def stage_formula_test_runtime_tree(
             for kind, identity, _, _ in source_snapshot[1].values()
             if kind == "f"
         )
+
+    for relative in FORMULA_TEST_RUNTIME_EMPTY_DIRECTORIES:
+        prefixes = [
+            Path(*relative.parts[:position])
+            for position in range(1, len(relative.parts) + 1)
+        ]
+        if any(prefix.as_posix() in expected_records for prefix in prefixes):
+            fail(
+                "Formula test empty compatibility directory collides with "
+                f"selected source: {relative.as_posix()}"
+            )
+        add_projection_parent_records(
+            expected_records, relative, source_root_identity
+        )
+        expected_records[relative.as_posix()] = (
+            "d",
+            source_root_identity,
+            None,
+            None,
+        )
+
+    add_projection_parent_records(
+        expected_records,
+        FORMULA_TEST_RUNTIME_VITE_BIN,
+        file_identity(vite_bin_before),
+    )
+    if FORMULA_TEST_RUNTIME_VITE_BIN.as_posix() in expected_records:
+        fail("Formula test runtime projection repeats its Vite npm link")
+    expected_records[FORMULA_TEST_RUNTIME_VITE_BIN.as_posix()] = (
+        "l",
+        file_identity(vite_bin_before),
+        vite_bin_target,
+        None,
+    )
 
     selected_files: dict[
         Path, tuple[Path, bytes, tuple[int, ...]]
@@ -4415,6 +4559,18 @@ def stage_formula_test_runtime_tree(
             destination_precreated=True,
             seal_root=False,
         )
+        for relative in FORMULA_TEST_RUNTIME_EMPTY_DIRECTORIES:
+            compatibility_directory = ensure_projection_parent(
+                selection,
+                relative,
+                owner_uid=owner_uid,
+                owner_gid=owner_gid,
+            )
+            if any(compatibility_directory.iterdir()):
+                fail(
+                    "Formula test empty compatibility directory is occupied: "
+                    f"{relative.as_posix()}"
+                )
         overlay_parents = {
             FORMULA_TEST_RUNTIME_PROGRAM_INDEX_DESTINATION.parent
         }
@@ -4440,6 +4596,14 @@ def stage_formula_test_runtime_tree(
                 # the final pass seals every directory before publication.
                 seal_root=relative not in overlay_parents,
             )
+
+        copy_projection_symlink(
+            selection,
+            FORMULA_TEST_RUNTIME_VITE_BIN,
+            vite_bin_target,
+            owner_uid=owner_uid,
+            owner_gid=owner_gid,
+        )
 
         for destination_relative, (
             source_path,
@@ -4502,6 +4666,20 @@ def stage_formula_test_runtime_tree(
             or file_identity(package_lock_after) != package_lock_identity
         ):
             fail("Formula test npm closure changed during staging")
+        vite_bin_target_after, vite_bin_after = (
+            read_stable_projection_symlink(
+                source / FORMULA_TEST_RUNTIME_VITE_BIN,
+                FORMULA_TEST_RUNTIME_VITE_BIN,
+                limits,
+                "Formula test Vite npm executable link",
+                expected_target=FORMULA_TEST_RUNTIME_VITE_BIN_TARGET,
+            )
+        )
+        if (
+            vite_bin_target_after != vite_bin_target
+            or file_identity(vite_bin_after) != file_identity(vite_bin_before)
+        ):
+            fail("Formula test Vite npm executable link changed during staging")
         for destination_relative, (
             source_path,
             expected_data,

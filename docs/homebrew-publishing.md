@@ -579,6 +579,53 @@ intentional: some bottles marked `:any_skip_relocation` still contain
 functional compiled paths, so Homebrew's relocation metadata cannot by itself
 prove that an old-prefix bottle is safe to reuse.
 
+Flat bottle-selection VFS images keep selected Formula commands under that
+canonical prefix. The guest lifecycle invokes the selected Git and Ruby at
+`/opt/kandelo/homebrew/bin/git` and `.../ruby`; it does not assume that the
+base image provides `/usr/bin/git` or `/usr/bin/ruby`. Bottle extraction is the
+narrow exception because Homebrew invokes `tar` with a system-only `PATH`, and
+GNU tar resolves `gzip` the same way for `.tar.gz` bottles. When the exact
+first-party `tar` and `gzip` Formulae are selected together and win their
+ordinary prefix links, the flat composer exposes root-owned, no-clobber
+`/usr/bin/tar` and `/usr/bin/gzip` links to those selected commands. It neither
+mirrors the whole prefix into `/usr/bin` nor grants those stable paths to a
+different Formula claiming the same link target. Serialization and shipping
+validation recheck the exact links and eager executables before running a real
+bottle pour.
+
+The experimental ABI-42 flat-VFS release is composition and selected-runtime
+startup validated. The builder validates and materializes the exact canonical
+selection. A fresh read-only runner downloads the same-run candidate by exact
+artifact ID and rehashes its VFS, selection, report, claimed kernel, and the
+exact base rootfs bound by the report. The base rootfs is staged only so Vite
+can resolve the browser acceptance module's ordinary `@rootfs-vfs` import; the
+focused cases still boot the composed Homebrew VFS, and alternate resolver
+paths are rejected. Node boots the exact candidate and runs `/usr/bin/brew
+--version` without lazy materialization or unexpected host diagnostics.
+Chromium boots the same image and kernel identities and starts selected Ruby
+both directly and through the selected shell.
+
+The release contains exactly three inert assets: the VFS, canonical selection,
+and build report. The claimed kernel and base rootfs remain proof-only and are
+not published. It does not claim that hosted CI completed stock `brew tap`,
+download, extraction, pour, uninstall, upgrade, or reboot coverage. The
+complete stock Homebrew lifecycle and its existing evidence format remain a
+separate diagnostic. On a standard 16 GiB hosted runner, that lifecycle drove
+Node resident memory to about 15.2 GiB and exhausted almost 3 GiB of swap while
+`brew tap` was still active; the service then cancelled the step. The unchanged
+lifecycle completed on a 48 GiB local host, which is useful diagnostic evidence
+but is not required to prove how the VFS was composed.
+
+The ABI-43 integration branch contains a genuine vfork implementation that
+shares the parent's existing memory through eligible fork-then-exec paths and
+configures upstream Ruby to use working `vfork`. Restore the complete lifecycle
+as a publication gate only after ABI-43 Ruby and every selected bottle are
+rebuilt, an exact ABI-43 VFS is composed, and the unchanged lifecycle measures
+credible RSS headroom on every host for which lifecycle support is claimed.
+Swap, lower guest memory limits, native-tool substitution, pre-tapping, and
+splitting one lifecycle across restarted kernels are not acceptable substitutes
+for that platform result.
+
 Trusted CI applies this patch to a temporary Homebrew worktree. A short-lived
 root-owned launcher under the selected Homebrew prefix loads that worktree
 while preserving the selected Kandelo prefix and Cellar. Native host tools use
@@ -833,12 +880,14 @@ root-owned Formula-test runtime at the same `HOMEBREW_KANDELO_ROOT` alias. A
 privileged, admitted copy of the recipe runner constructs that runtime from a
 closed allowlist: the platform projection; `host/src`; the built
 `host/wasm` kernel inputs; the three `examples/run-example*.ts` entry files;
-the exact `tsx`, `esbuild`, `fflate`, `fzstd`, and Vite installations; the
-portable `binaries/` and `.ci-test-binary-cache/` pair; and the reviewed
-release `xtask`. Root `Cargo.toml` and `package.json` provide the resolver's
-Kandelo-root identity. The npm portion is not a fixed list of today's
+the vendored `packages/registry/openssl/src/tls` implementation imported by
+the browser network backend; the exact `tsx`, `esbuild`, `fflate`, `fzstd`,
+Vite, and Playwright
+installations; the portable `binaries/` and `.ci-test-binary-cache/` pair; and
+the reviewed release `xtask`. Root `Cargo.toml` and `package.json` provide the
+resolver's Kandelo-root identity. The npm portion is not a fixed list of today's
 transitive package names. The privileged stager parses the committed
-package-lock v3 document, starts from those five runtime packages, and follows
+package-lock v3 document, starts from those six runtime packages, and follows
 each required dependency plus each installed optional dependency using Node's
 package-root lookup. Every selected package must be an ordinary canonical
 directory whose manifest name and version match a lock entry carrying SHA-512
@@ -854,9 +903,17 @@ the installed source bytes, rechecks their filesystem identities after
 copying, and seals only the resulting runtime closure. It does not copy
 `package-lock.json`; the lock is selection authority, not Formula-readable
 repository metadata. Vite is launched with the protected Node executable and
-the exact sealed `node_modules/vite/bin/vite.js` path, so browser Formula tests
-do not run `npx`, consult `PATH` for Vite, or fetch missing tooling from the
-network.
+the exact sealed Vite package and its authenticated `node_modules/.bin/vite`
+link. The unchanged tap runner starts `npx vite` from a real but empty
+`apps/browser-demos` compatibility directory. With no package manifest or
+application files there, npm's ancestor lookup selects only that sealed root
+link and package. Playwright likewise resolves from the root-lock-owned closure
+when the runner anchors `createRequire` at the absent browser-app manifest.
+Formula tests therefore receive neither browser-demo source nor an independent
+package tree. Before Formula execution, provisioning loads that root-owned
+Playwright against the fresh browser cache and requires it to resolve the exact
+Chromium executable installed through the browser-app lock. A Playwright
+browser-revision drift therefore fails before the isolated test begins.
 
 `host/wasm/program-packages.json` is generated from the exact source
 checkout for only `dash`, `coreutils`, `grep`, `sed`, and `rootfs`: the
@@ -870,12 +927,20 @@ with the committed repository projection. A change to one of these selected
 inputs therefore fails, while a change to an unrelated retiring VFS recipe
 does not reject or rebuild a Homebrew bottle.
 
+Because the browser TLS module retains its repository-relative import path,
+its parent `packages/registry` directory exists in the sealed runtime. An
+incomplete runtime with a bundled index and no explicitly configured registry
+remains an installed-policy consumer, so this implementation-only path does
+not become package policy. An explicit `WASM_POSIX_DEPS_REGISTRY` remains
+authoritative. The global repository index, OpenSSL Formula metadata, and
+OpenSSL build scripts are not copied.
+
 The repository-wide index remains a separate conventional-package contract.
 Normal source-checkout resolution still requires that complete projection to
 be current. The smaller Formula-test file is a least-authority runtime input,
 not permission to use a stale conventional row. Workspace members, the
-source/build registry, local binaries, unrelated package identities, Cargo
-output, source-build helpers, and the mutable checkout remain absent.
+source/build registry recipes and helpers, local binaries, unrelated package
+identities, Cargo output, and the mutable checkout remain absent.
 
 The stager snapshots and hashes every selected source before copying, checks
 the source identities again after copying, validates symlinks against the
@@ -2010,6 +2075,26 @@ use the same exact source contract. Rollback does not consume `tap_sha`; it
 refreshes and mutates the current protected branch under the tap-wide state
 lock.
 
+### Deferred Single-Bottle Tap Finalization
+
+The ordinary publisher may stop after public bottle verification so a
+separate reviewed tap change can record that exact bottle without running the
+legacy aggregate-catalog finalizer. Only the exact
+`publish-bottles.yml@refs/heads/main` caller on the target tap's protected
+`main` branch may set `defer-tap-finalization: true`. The request must remain a
+non-dry-run publication of exactly one Formula and one architecture, with
+ordinary VFS acceptance disabled. It cannot carry campaign or cross-run
+revalidation authority.
+
+Build, GHCR child upload, version-index publication, anonymous readback,
+Node.js and browser Formula validation, and force-pour verification remain on
+the normal path. The verifier uploads the validated package-scoped
+`homebrew-publish-handoff-<formula>-<arch>-attempt-<attempt>` artifact with a
+two-day retention. That handoff contains the exact bottle, bottle JSON,
+dependency record, upload receipt, and sidecar-composition input needed for a
+reviewed follow-up tap change. `finalize-tap` and `publish-vfs-release` are the
+only publication jobs skipped by this input.
+
 ### Prefix Campaign Publisher Mode
 
 The guest-prefix campaign is a narrow mode of the same reusable
@@ -2026,8 +2111,9 @@ protected `main` branch may select it. Each call must:
 - provide one content-addressed campaign tag plus the exact, canonical
   dependency-handoff request.
 
-Ordinary, maintenance, dry-run, and third-party workflow names cannot
-pass campaign authority or defer tap finalization.
+Ordinary, maintenance, dry-run, and third-party workflow names cannot pass
+campaign authority. Only the protected ordinary publisher may use the
+separate deferred single-bottle boundary described above.
 
 Most campaign calls use write mode. A Formula whose destination was
 anonymously proven absent follows that ordinary path. A newly reviewed
@@ -3038,10 +3124,13 @@ and all unrelated Formulae retain parallel throughput:
 
    The Formula-test runtime is intentionally not a complete Kandelo source
    checkout: it has no `tools/xtask` source, `scripts/dev-shell.sh`, Cargo
-   output, package registry, or local-binary tree. The host resolver therefore
-   consumes the already-generated, cache-keyed package projection without
-   running source-context regeneration. Source builds retain their separate
-   protected checker path and normal freshness contract before isolation.
+   output, package recipes, build scripts, or local-binary tree. It carries
+   only the vendored OpenSSL TLS implementation imported by the browser host
+   beneath that implementation's existing `packages/registry` source path.
+   The host resolver therefore consumes the already-generated, cache-keyed
+   package projection without running source-context regeneration. Source
+   builds retain their separate protected checker path and normal freshness
+   contract before isolation.
    Caller-selected checker paths, ambient repository-root overrides, and
    ambient Node module lookup are neither preserved nor trusted.
    The workflow also

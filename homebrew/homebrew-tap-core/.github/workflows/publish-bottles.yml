@@ -24,6 +24,9 @@ jobs:
       package-generation-wasm32: ${{ github.event.client_payload.package_generation_wasm32 }}
       package-generation-wasm64: ${{ github.event.client_payload.package_generation_wasm64 }}
       force: ${{ github.event.client_payload.force || false }}
+      # A deferred run still builds, uploads, and verifies one bottle, but
+      # leaves the final Formula/selection commit to a reviewed tap change.
+      defer-tap-finalization: ${{ github.event.client_payload.defer_tap_finalization || false }}
       # WHY: dependency-bearing acceptance is a production publication gate.
       # The dry-run caller intentionally keeps the reusable workflow's false
       # default because it cannot publish the bottles that acceptance consumes.
