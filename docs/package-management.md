@@ -1862,7 +1862,11 @@ and script contract.
 index. The browser gallery treats that file as presentation metadata
 and the release `index.toml` as the source of truth: a third-party VFS
 entry is shown only when all packages listed for that entry have
-successful wasm32 records in the ABI-matching index.
+successful wasm32 records in the ABI-matching index. Because an external
+source advances independently, Kandelo does not construct a presumed current
+ABI URL by default. Browser deployments opt into a concrete manifest with
+`VITE_KANDELO_SOFTWARE_MANIFEST_URLS`, and users may supply one with the
+`softwareManifest` query parameter.
 
 ## Source-kind manifests
 

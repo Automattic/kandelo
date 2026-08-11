@@ -100,6 +100,23 @@ The kernel has full PTY support (PR #181), and browser UI surfaces should use xt
 
 ## Package artifacts
 
+### Restore a default external software gallery
+
+The browser accepts explicitly configured package-source manifests, but the
+canonical Pages build does not currently name a default external gallery.
+Package sources publish independently from Kandelo, and constructing a URL for
+Kandelo's current ABI before that source has published the matching index and
+gallery creates a guaranteed failing request rather than a usable catalog.
+
+Restore a default only when a package source continuously publishes the
+current Kandelo ABI and the release boundary has an explicit coordination or
+availability contract. The browser should still validate the ABI-matching
+index and surface later fetch or schema failures truthfully; the default must
+not imply that an unpublished generation exists.
+
+**Files:** `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`,
+package-source publication workflows, `docs/package-sources.md`
+
 ### Define compatibility for restored lazy VFS images
 
 Kandelo currently rebuilds and publishes canonical VFS images for the current
