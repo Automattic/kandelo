@@ -2,6 +2,16 @@ export { TcpNetworkBackend } from "./tcp-backend";
 export { FetchNetworkBackend, EagainError } from "./fetch-backend";
 export type { FetchBackendOptions } from "./fetch-backend";
 export {
+  CorsProxyRequestPolicy,
+  CorsProxyRequestPolicyError,
+  validateCorsProxyRequestCapabilities,
+} from "./cors-proxy-request-policy";
+export type {
+  CorsProxyRequestCapabilities,
+  CorsProxyRequestProjection,
+  ValidatedCorsProxyRequestCapabilities,
+} from "./cors-proxy-request-policy";
+export {
   LocalVirtualNetwork,
   VirtualNetworkBackend,
   VIRTUAL_NETWORK_ERRNO,

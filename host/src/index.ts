@@ -28,7 +28,19 @@ export { PATHCONF_NAMES } from "./generated/abi";
 export { filesystemPathconf } from "./pathconf";
 export type { PathconfProfile } from "./pathconf";
 export { TcpNetworkBackend, FetchNetworkBackend } from "./networking";
-export type { FetchBackendOptions, HttpRequest, HttpResponse } from "./networking";
+export {
+  CorsProxyRequestPolicy,
+  CorsProxyRequestPolicyError,
+  validateCorsProxyRequestCapabilities,
+} from "./networking";
+export type {
+  CorsProxyRequestCapabilities,
+  CorsProxyRequestProjection,
+  FetchBackendOptions,
+  HttpRequest,
+  HttpResponse,
+  ValidatedCorsProxyRequestCapabilities,
+} from "./networking";
 export type { WorkerAdapter, WorkerHandle } from "./worker-adapter";
 export type {
   HostToWorkerMessage,

@@ -28,6 +28,16 @@ export { filesystemPathconf } from "./pathconf";
 export type { PathconfProfile } from "./pathconf";
 export type { WorkerAdapter, WorkerHandle } from "./worker-adapter";
 export type { HostDiagnostic } from "./host-diagnostic";
+export {
+  CorsProxyRequestPolicy,
+  CorsProxyRequestPolicyError,
+  validateCorsProxyRequestCapabilities,
+} from "./networking/cors-proxy-request-policy";
+export type {
+  CorsProxyRequestCapabilities,
+  CorsProxyRequestProjection,
+  ValidatedCorsProxyRequestCapabilities,
+} from "./networking/cors-proxy-request-policy";
 export type {
   HostToWorkerMessage, WorkerToHostMessage,
   WorkerReadyMessage, WorkerExitMessage, WorkerErrorMessage,
