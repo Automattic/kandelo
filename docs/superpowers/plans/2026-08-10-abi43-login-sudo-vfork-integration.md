@@ -1957,88 +1957,173 @@ git commit --author='Brandon Payton <brandon@happycode.net>' \
 
 **Files:**
 
+- Modify if red: `crates/kernel/src/process.rs`
+- Modify if red: `crates/kernel/src/signal.rs`
+- Modify if red: `crates/kernel/src/fork.rs`
+- Modify if red: `crates/kernel/src/wasm_api.rs`
 - Modify if red: `crates/kernel/src/syscalls.rs`
+- Modify if red: `libc/glue/channel_syscall.c`
+- Modify if red: `libc/musl-overlay/src/signal/wasm32posix/sigsetjmp.c`
 - Modify if red: `host/src/kernel-worker.ts`
+- Modify: `examples/select_signal_test.c`
 - Modify: `host/test/select-signal-guest.test.ts`
-- Modify: `host/test/select-signal-outcome.test.ts`
-- Modify: `host/test/readiness-wakeup.test.ts`
-- Modify: `host/test/readiness-deadline.test.ts`
 - Modify: `host/test/kernel-blocking-retry-snapshot.test.ts`
+- Modify: `host/test/process-wait-lifecycle.test.ts`
+- Create: `apps/browser-demos/test/select-signal-browser.spec.ts`
+- Modify: `packages/registry/program-packages.json` (generated source-projection
+  cache identities after the guest source changes)
+- Validate: `host/test/select-signal-outcome.test.ts`
+- Validate: `host/test/readiness-wakeup.test.ts`
+- Validate: `host/test/readiness-deadline.test.ts`
 
 **Interfaces:**
 
-- Consumes: current signal masks, blocking retry snapshots, and readiness
-  wakeups
-- Produces: exact evidence for null/non-null replacement masks and
-  `SA_RESTART`; no `__WALL` constant or behavior
+- Consumes: each TID's current and saved wait mask, caught-signal delivery
+  record, libc handler-return/retry state, and readiness wakeups
+- Produces: handler masks formed from the current temporary wait mask,
+  exactly-once pre-wait restoration, real wasm32/wasm64 interruption
+  evidence in Node and BrowserKernel peers, and truthful rejection of Linux
+  all-children wait options
+- Preserves: ABI 43 channel and signal-delivery layouts. This is a semantic
+  correction to existing batch behavior, not a new structure, protocol, or
+  ABI-version change.
 
 - [ ] **Step 1: Add the source branch's exact interruption cases**
 
-Cover pending signal before entry and signal arriving while blocked for both
-`ppoll` and `pselect`, each with null and non-null replacement masks, and with
-and without `SA_RESTART`. Assert the original mask is restored exactly once,
-the handler sees the temporary mask, readiness is not lost, and errno/result
-matches POSIX.
+Use a real C guest through `CentralizedKernelWorker`, not synthetic channel
+or signal-record flags. Run the 16 semantic combinations for both wasm32 and
+wasm64 (32 end-to-end cases total): `ppoll` and `pselect`, a signal pending
+before entry and one arriving while blocked, null and non-null replacement
+masks, and `SA_RESTART` clear and set.
+
+Give the original mask, replacement mask, `sa_mask`, and delivered signal
+different sentinel bits. The catcher itself must query `sigprocmask()` and
+prove that its actual mask is the current wait mask (the replacement mask when
+non-null, otherwise the original mask), unioned with `sa_mask` and the
+delivered signal; compare every supported signal membership rather than only
+the sentinel bits. After the catcher returns, prove the original mask is
+restored once, with neither temporary nor catcher-only bits retained. A
+lower-level per-TID test must cover the cancellation/retry handoff so that a
+consumed saved mask cannot be restored a second time, including a pthread TID.
+
+Use a host-observed guest gate to queue a signal before the wait entry, and a
+host timer to deliver one while the real wait is blocked. Keep a finite
+deadline and a pipe-readiness check in every case so an interruption cannot
+drop either a wakeup or ordinary readiness. Record the libc-visible result and
+`errno` before follow-up checks.
+
+Follow POSIX Issue 8 exactly: `sigaction()` forms a handler mask from the
+current mask union `sa_mask` and, absent `SA_NODEFER`/`SA_RESETHAND`, the
+delivered signal. `ppoll()` installs its non-null replacement mask before
+examining descriptors and restores it before return. With `SA_RESTART` clear,
+both waits report `EINTR` when no descriptor is ready. `pselect()` explicitly
+makes `SA_RESTART` restart versus `EINTR` implementation-defined; Kandelo
+chooses and tests `EINTR`. `ppoll()` has no such exception, so its
+`SA_RESTART` cases resume and observe the catcher-produced pipe readiness
+before their finite deadline. Preserve a restarted timeout no longer than the
+original interval.
+
+Add a second-signal restart-window case: hold the first catcher after it makes
+the pipe ready, queue a signal blocked by the ppoll replacement mask, and
+release the catcher. The second signal must not run until restarted ppoll has
+observed readiness and terminal restoration has made the original mask
+current. Prove both signal masks, no lost readiness, and exactly-once final
+restoration for wasm32 and wasm64.
+
+Also cover the other Rust-owned temporary-mask exits: `sigsuspend` and `pause`
+must retain their replacement/current-at-delivery mask through the catcher and
+restore their pre-wait mask once before final `EINTR`; masked pthread
+cancellation must perform the same exact cleanup before returning
+`ECANCELED`. A finite SA_RESTART `ppoll` whose catcher runs past the original
+deadline must time out at that original absolute deadline, not start a fresh
+interval. After a restarted ppoll completes with immediate readiness, repeat
+the exact same argument addresses and prove the independent call receives a
+fresh deadline rather than a stale remainder from the completed call.
+
+Exercise waits nested inside a caught handler, including ppoll, pselect,
+sigsuspend, and pause on the main task and ppoll on a pthread. Reuse the same
+ppoll descriptor, timeout, and mask arguments in an inner handler call and
+explicitly restore the outer replacement mask before that inner call; prove
+handler-depth identity, LIFO mask restoration, and an independent outer
+deadline. Then leave a nested handler nonlocally with real
+`sigsetjmp`/`siglongjmp` and `setjmp`/`longjmp`, issue a later
+same-argument mask-swapping wait, and prove that every abandoned wait context
+and deadline was retired. Prove `siglongjmp` honors both saved-mask modes,
+generic `longjmp` preserves an explicitly restored application mask, and an
+ordinary non-handler jump does not over-clean.
+Deadline identity must be per logical libc invocation rather than a numeric
+argument tuple or channel-global carry.
+
+Run the same guest through a direct BrowserKernel runner with an in-memory
+empty VFS. Chromium, Firefox, and WebKit must run wasm32; engines whose
+`WebAssembly.validate` accepts Memory64 must also run wasm64. Record WebKit's
+current Memory64 rejection as an engine boundary. The guest's numeric wait4
+unknown-option rejection must execute through that real browser worker path.
+Use a guest-published atomic gate in the real process memory for host signal
+injection so the acceptance gate is deterministic rather than delay-based.
+
+References: [sigaction](https://pubs.opengroup.org/onlinepubs/9799919799/functions/sigaction.html),
+[poll/ppoll](https://pubs.opengroup.org/onlinepubs/9799919799/functions/poll.html),
+and [select/pselect](https://pubs.opengroup.org/onlinepubs/9799919799/functions/select.html).
 
 - [ ] **Step 2: Run the exact focused set**
 
 ```bash
+scripts/dev-shell.sh bash scripts/build-musl.sh
+scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
+scripts/dev-shell.sh bash build.sh
+scripts/dev-shell.sh bash -lc \
+  'host_target=$(rustc -vV | sed -n "s/^host: //p"); \
+   cargo test -p kandelo --target "$host_target" --lib \
+     temporary_wait_mask_forms_handler_mask_and_cancel_restores_once && \
+   cargo test -p kandelo --target "$host_target" --lib \
+     ordinary_handler_return_uses_the_current_mask'
 scripts/dev-shell.sh bash -lc \
   'cd host && npx vitest run \
     test/select-signal-guest.test.ts \
     test/select-signal-outcome.test.ts \
     test/readiness-wakeup.test.ts \
     test/readiness-deadline.test.ts \
-    test/kernel-blocking-retry-snapshot.test.ts'
+    test/kernel-blocking-retry-snapshot.test.ts \
+    test/process-wait-lifecycle.test.ts'
+scripts/dev-shell.sh bash scripts/check-abi-version.sh
+KANDELO_PLAYWRIGHT_PORT=56116 scripts/dev-shell.sh bash -lc \
+  'cd apps/browser-demos && npx playwright test \
+   test/select-signal-browser.spec.ts \
+   --output=/tmp/task16-playwright'
 ```
 
-Expected outcome A: all new cases PASS, proving current HEAD already contains
-the behavior. Make no production change and keep only a focused test commit if
-the added cases improve coverage.
+Expected outcome A: the real guest cases pass without a production change.
 
-Expected outcome B: a case FAILS. Keep it red, correct only mask install,
-wakeup, restart, or restore logic in the layer identified by the trace, then
-rerun the full set. Do not copy the old advisory-lock mock change unless an
-independent advisory-lock test fails.
+Expected outcome B: retain the red evidence, trace mask ownership through
+`sys_ppoll`/`sys_pselect6`, `kernel_dequeue_signal`, handler setup,
+`rt_sigreturn`, retry/cancel/failure, and pthread callers, then change only
+the responsible install, wakeup, restart, or restoration layer. Do not copy
+an advisory-lock or other unrelated mock change.
 
 - [ ] **Step 3: Assert the Linux wait flag remains absent**
 
 ```bash
-! rg -n '__WALL|0x40000000' \
+! rg -n '__WALL' \
   crates/kernel crates/shared host/src libc/musl-overlay \
   --glob '!**/*test*'
 ```
 
-Expected: no production match. The sudo Formula patch in Task 18 removes its
-use while preserving `WUNTRACED` and `WNOHANG`.
+Expected: no production `__WALL` symbol/name. A raw `0x40000000` search is
+not a valid assertion because unrelated production constants may share that
+numeric value. Instead, add focused wait-family regression evidence that
+`wait4` rejects `0x40000000` with `EINVAL` before polling or registering a
+waiter. This proves the Linux all-children option cannot enable behavior by
+numeric value. The sudo Formula patch in Task 18 removes its use while
+preserving `WUNTRACED` and `WNOHANG`.
 
-- [ ] **Step 4: Commit the regression boundary**
+- [ ] **Step 4: Commit the focused boundary with source authorship**
 
-If production changed:
-
-```bash
-git add crates/kernel/src/syscalls.rs host/src/kernel-worker.ts \
-  host/test/select-signal-guest.test.ts \
-  host/test/select-signal-outcome.test.ts \
-  host/test/readiness-wakeup.test.ts \
-  host/test/readiness-deadline.test.ts \
-  host/test/kernel-blocking-retry-snapshot.test.ts
-git commit --author='Brandon Payton <brandon@happycode.net>' \
-  -m "Signals: Preserve poll masks across interruption"
-```
-
-If current production already passes:
-
-```bash
-git add host/test/select-signal-guest.test.ts \
-  host/test/select-signal-outcome.test.ts \
-  host/test/readiness-wakeup.test.ts \
-  host/test/readiness-deadline.test.ts \
-  host/test/kernel-blocking-retry-snapshot.test.ts
-git diff --cached --quiet || \
-  git commit --author='Brandon Payton <brandon@happycode.net>' \
-    -m "Tests: Preserve poll interruption semantics"
-```
+Keep conceptual changes separate: plan clarification, signal-mask ownership,
+ppoll restart classification, the real guest plus wait-option regressions, and
+any deterministic source-projection refresh caused by the guest source. Use
+purpose-prefixed subjects and Brandon Payton as author. Do not commit the local
+Task 16 report or unrelated submodule state.
 
 ### Task 17: Add first-party login and sudo-lite through the normal guest path
 
