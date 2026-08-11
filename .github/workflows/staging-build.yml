@@ -114,14 +114,51 @@ jobs:
 
       - name: Derive protected exact ABI staging route
         id: exact-abi
+        env:
+          AUTHORITY_ROOT: ${{ github.workspace }}/abi-staging-authority
+          EXACT_HEAD_ROOT: ${{ github.workspace }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RAW_PACKAGE_STAGING_REQUIRED: ${{ steps.scope.outputs.package_staging_required }}
         run: |
-          bash abi-staging-authority/.github/scripts/classify-exact-abi-staging.sh \
-            --authority-root "$GITHUB_WORKSPACE/abi-staging-authority" \
-            --exact-head-root "$GITHUB_WORKSPACE" \
-            --base "${{ github.event.pull_request.base.sha }}" \
-            --head "${{ github.event.pull_request.head.sha }}" \
+          set -euo pipefail
+          classifier="$AUTHORITY_ROOT/.github/scripts/classify-exact-abi-staging.sh"
+          for protected_dir in \
+            "$AUTHORITY_ROOT" \
+            "$AUTHORITY_ROOT/.github" \
+            "$AUTHORITY_ROOT/.github/scripts"
+          do
+            if [ -L "$protected_dir" ] || { [ -e "$protected_dir" ] && [ ! -d "$protected_dir" ]; }; then
+              echo "::error::protected exact ABI classifier ancestor is not a real directory"
+              exit 1
+            fi
+          done
+          if [ -L "$classifier" ] || { [ -e "$classifier" ] && [ ! -f "$classifier" ]; }; then
+            echo "::error::protected exact ABI classifier is not a regular file"
+            exit 1
+          fi
+          if [ ! -e "$classifier" ]; then
+            case "$RAW_PACKAGE_STAGING_REQUIRED" in
+              true | false) ;;
+              *)
+                echo "::error::invalid protected-classifier bootstrap state"
+                exit 1
+                ;;
+            esac
+            printf '%s\n' \
+              'exact_abi_staging_applicable=false' \
+              "legacy_package_staging_required=$RAW_PACKAGE_STAGING_REQUIRED" \
+              'exact_abi_staging_reason=protected-classifier-unavailable' \
+              >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          bash "$classifier" \
+            --authority-root "$AUTHORITY_ROOT" \
+            --exact-head-root "$EXACT_HEAD_ROOT" \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
             --raw-package-staging-required \
-              "${{ steps.scope.outputs.package_staging_required }}" \
+              "$RAW_PACKAGE_STAGING_REQUIRED" \
             --github-output "$GITHUB_OUTPUT"
 
       - name: Route publisher-only validation

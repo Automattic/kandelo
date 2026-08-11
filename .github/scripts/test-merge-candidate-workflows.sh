@@ -393,6 +393,76 @@ full_rerun_attempt=$(capture_candidate_attempt 2)
 
 count_fixture=$(mktemp -d)
 trap 'rm -rf "$count_fixture"' EXIT
+
+# The route is introduced one commit before it can exist in a protected base.
+# That bootstrap run must preserve the legacy result; candidate code may never
+# infer or enable the exact route when the protected classifier is absent.
+for workflow in "$STAGING_WORKFLOW" "$PREPARE"; do
+  route_fixture="$count_fixture/$(basename "$workflow").route"
+  authority_fixture="$route_fixture/authority"
+  exact_head_fixture="$route_fixture/exact-head"
+  route_output="$route_fixture/github-output"
+  mkdir -p "$authority_fixture" "$exact_head_fixture"
+  : >"$route_output"
+  route_step="$(step_run_block \
+    "$workflow" "Derive protected exact ABI staging route")"
+  if ! AUTHORITY_ROOT="$authority_fixture" \
+    EXACT_HEAD_ROOT="$exact_head_fixture" \
+    BASE_SHA=0000000000000000000000000000000000000000 \
+    HEAD_SHA=1111111111111111111111111111111111111111 \
+    RAW_PACKAGE_STAGING_REQUIRED=true \
+    GITHUB_OUTPUT="$route_output" \
+    bash -c "$route_step"; then
+    fail "$(basename "$workflow") cannot bootstrap before its protected classifier lands"
+  fi
+  grep -Fxq 'exact_abi_staging_applicable=false' "$route_output" ||
+    fail "$(basename "$workflow") bootstrap selected the exact route"
+  grep -Fxq 'legacy_package_staging_required=true' "$route_output" ||
+    fail "$(basename "$workflow") bootstrap dropped legacy staging"
+  grep -Fxq \
+    'exact_abi_staging_reason=protected-classifier-unavailable' \
+    "$route_output" ||
+    fail "$(basename "$workflow") bootstrap reason is not explicit"
+
+  mkdir -p "$authority_fixture/.github/scripts"
+  fake_classifier="$route_fixture/candidate-classifier"
+  cat >"$fake_classifier" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fake_classifier"
+  ln -s "$fake_classifier" \
+    "$authority_fixture/.github/scripts/classify-exact-abi-staging.sh"
+  : >"$route_output"
+  if AUTHORITY_ROOT="$authority_fixture" \
+    EXACT_HEAD_ROOT="$exact_head_fixture" \
+    BASE_SHA=0000000000000000000000000000000000000000 \
+    HEAD_SHA=1111111111111111111111111111111111111111 \
+    RAW_PACKAGE_STAGING_REQUIRED=true \
+    GITHUB_OUTPUT="$route_output" \
+    bash -c "$route_step"; then
+    fail "$(basename "$workflow") accepted a symlinked protected classifier"
+  fi
+  [ ! -s "$route_output" ] ||
+    fail "$(basename "$workflow") wrote outputs for a symlinked classifier"
+
+  rm "$authority_fixture/.github/scripts/classify-exact-abi-staging.sh"
+  rmdir "$authority_fixture/.github/scripts"
+  ancestor_target="$route_fixture/linked-scripts"
+  mkdir -p "$ancestor_target"
+  cp "$fake_classifier" "$ancestor_target/classify-exact-abi-staging.sh"
+  ln -s "$ancestor_target" "$authority_fixture/.github/scripts"
+  if AUTHORITY_ROOT="$authority_fixture" \
+    EXACT_HEAD_ROOT="$exact_head_fixture" \
+    BASE_SHA=0000000000000000000000000000000000000000 \
+    HEAD_SHA=1111111111111111111111111111111111111111 \
+    RAW_PACKAGE_STAGING_REQUIRED=true \
+    GITHUB_OUTPUT="$route_output" \
+    bash -c "$route_step"; then
+    fail "$(basename "$workflow") accepted a symlinked classifier ancestor"
+  fi
+done
+
 git init --quiet --initial-branch=main "$count_fixture"
 git -C "$count_fixture" config user.name fixture
 git -C "$count_fixture" config user.email fixture@example.com

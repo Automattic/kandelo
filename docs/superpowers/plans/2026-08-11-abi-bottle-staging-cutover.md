@@ -972,6 +972,13 @@ git -C "$TAP_ROOT" checkout -b abi-staging-bounded-request-discovery origin/main
   public `package_staging_reason` output is the protected route reason when
   the exact route is selected and remains the existing scope reason otherwise.
 
+- The one bootstrap PR that first introduces the classifier cannot find it in
+  its protected base. In that bounded case only, both workflows validate and
+  preserve the legacy staging boolean, emit exact applicability `false`, and
+  name `protected-classifier-unavailable` as the reason. A symlink or any
+  nonregular classifier is an error, and once the protected file exists no
+  classifier or activation failure may fall back to the legacy route.
+
 - [x] **Step 1: Write the RED classifier fixture**
 
   `test-classify-exact-abi-staging.sh` must create two temporary Git

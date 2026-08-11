@@ -9301,15 +9301,30 @@ def check_exact_abi_route(workflows)
     check(classifier["id"] == "exact-abi" &&
           !classifier.key?("if") && !classifier.key?("continue-on-error"),
           "#{path} exact ABI classifier execution changed")
+    check(classifier.fetch("env") == {
+      "AUTHORITY_ROOT" => "${{ github.workspace }}/abi-staging-authority",
+      "EXACT_HEAD_ROOT" => "${{ github.workspace }}",
+      "BASE_SHA" => spec.fetch("base"),
+      "HEAD_SHA" => spec.fetch("head"),
+      "RAW_PACKAGE_STAGING_REQUIRED" =>
+        "${{ steps.scope.outputs.package_staging_required }}",
+    }, "#{path} exact ABI classifier environment changed")
     classifier_run = classifier.fetch("run")
     [
-      "bash abi-staging-authority/.github/scripts/" \
-        "classify-exact-abi-staging.sh",
-      '--authority-root "$GITHUB_WORKSPACE/abi-staging-authority"',
-      '--exact-head-root "$GITHUB_WORKSPACE"',
-      "--base \"#{spec.fetch('base')}\"",
-      "--head \"#{spec.fetch('head')}\"",
-      '"${{ steps.scope.outputs.package_staging_required }}"',
+      'classifier="$AUTHORITY_ROOT/.github/scripts/' \
+        'classify-exact-abi-staging.sh"',
+      '[ -L "$classifier" ]',
+      '[ ! -f "$classifier" ]',
+      'if [ ! -e "$classifier" ]; then',
+      "'exact_abi_staging_applicable=false'",
+      '"legacy_package_staging_required=$RAW_PACKAGE_STAGING_REQUIRED"',
+      "'exact_abi_staging_reason=protected-classifier-unavailable'",
+      'bash "$classifier"',
+      '--authority-root "$AUTHORITY_ROOT"',
+      '--exact-head-root "$EXACT_HEAD_ROOT"',
+      '--base "$BASE_SHA"',
+      '--head "$HEAD_SHA"',
+      '"$RAW_PACKAGE_STAGING_REQUIRED"',
       '--github-output "$GITHUB_OUTPUT"',
     ].each do |fragment|
       check(classifier_run.include?(fragment),
@@ -9591,10 +9606,7 @@ def self_test_exact_abi_route(workflows)
       step = mutate_named_step(
         workflow, "change-scope", "Derive protected exact ABI staging route"
       )
-      step["run"] = step.fetch("run").sub(
-        "abi-staging-authority/.github/scripts/classify-exact-abi-staging.sh",
-        ".github/scripts/classify-exact-abi-staging.sh"
-      )
+      step.fetch("env")["AUTHORITY_ROOT"] = "${{ github.workspace }}"
     },
     "path-regex exact ABI classifier substitution" => lambda { |all|
       workflow = all.fetch(".github/workflows/prepare-merge.yml")
