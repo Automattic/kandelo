@@ -1,6 +1,6 @@
 // Builds a LiveKernelHost over a real BrowserKernel for the Kandelo page.
 
-import { BrowserKernel } from "@host/browser-kernel-host";
+import { BrowserKernel } from "@kandelo/web";
 import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
 import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
 import { bindImageOwnedRuntimeUrls } from "../../../lib/init/image-owned-runtime-urls";

@@ -4,7 +4,7 @@
  * Loads git.wasm and git-remote-http.wasm, writes them to the VFS,
  * and exposes window.__runGitClone(url) for Playwright to call.
  */
-import { BrowserKernel } from "@host/browser-kernel-host";
+import { BrowserKernel } from "@kandelo/web";
 import {
   createBuildFsWithEtc,
   finalizeKernelOwnedImage,
