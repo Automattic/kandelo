@@ -540,10 +540,13 @@ describe("blocking retry snapshot contract", () => {
     expect(flagWrite).toBeGreaterThan(wakeAuthority);
     expect(pendingWrite).toBeGreaterThan(flagWrite);
     expect(CHANNEL_SYSCALL_SOURCE).toContain(
-      "return __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 0);",
+      "return __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 0, 0u);",
     );
     expect(CHANNEL_SYSCALL_SOURCE).toContain(
-      "long r = __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 1);",
+      "long r = __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 1, 0u);",
+    );
+    expect(CHANNEL_SYSCALL_SOURCE).toContain(
+      "CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY",
     );
     expect(CHANNEL_SYSCALL_SOURCE).toContain(
       "request_flags |= CH_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED",
@@ -737,6 +740,7 @@ describe("blocking retry snapshot contract", () => {
       "mq_timedsend",
       "open",
       "openat",
+      "ppoll",
       "pread",
       "preadv",
       "preadv2",
@@ -763,7 +767,6 @@ describe("blocking retry snapshot contract", () => {
     // progress cannot be reconstructed by the host.
     for (const syscall of [
       "poll",
-      "ppoll",
       "select",
       "pselect6",
       "epoll_wait",
