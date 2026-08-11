@@ -9,7 +9,7 @@
  * Operates entirely over kernel pipe pairs (no real TCP).
  * All pipe operations are async (message round-trip to kernel worker).
  */
-import type { BrowserKernel } from "@host/browser-kernel-host";
+import type { BrowserKernel } from "@kandelo/web";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
