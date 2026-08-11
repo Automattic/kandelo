@@ -11868,11 +11868,10 @@
     "perl": {
       "internal": {
         "aliases": [
-          "perl@5.42"
+          "perl@5.44"
         ],
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "036d3e8899b33c3c4f7dd9b69057f5dd522184a72750b212376d8fd5fc7d120f",
-        "bottle_rebuild": 1,
+        "bottle_checksum": "d497cdf66dd8e426392d85902d59e2644d46195dd3dead1c17ac6f533fa12f41",
         "caveats": "By default non-brewed cpan modules are installed to the Cellar. If you wish\nfor your modules to persist across updates we recommend using `local::lib`.\n\nYou can set that up like this:\n  PERL_MM_OPT=\"INSTALL_BASE=$HOME/perl5\" cpan local::lib\nAnd add the following to your shell profile e.g. ~/.profile or ~/.zshrc\n  eval \"$(perl -I$HOME/perl5/lib/perl5 -Mlocal::lib=$HOME/perl5)\"\n\nBundled DB_File module was not installed. If needed, you can install it from CPAN.\n",
         "desc": "Highly capable, feature-rich programming language",
         "executables": [
@@ -11886,10 +11885,11 @@
           "json_pp",
           "libnetcfg",
           "perl",
-          "perl5.42.2",
+          "perl5.44.0",
           "perlbug",
           "perldoc",
           "perlivp",
+          "perlthanks",
           "piconv",
           "pl2pm",
           "pod2html",
@@ -11929,28 +11929,27 @@
           ]
         },
         "name": "perl",
-        "ruby_source_checksum": "5b6f1e8795d3b327cb9ab86801e506d921262147332416caa46944261f2fef35",
-        "stable_checksum": "0a585eeb9e363c0f80482ddb3571625250c2c86aeb408853e8ea50805cfb14bb",
+        "ruby_source_checksum": "19d8fe283a3699d99d4a81d521b2cf5317f5e8ad728319138518b2e803e70dcb",
+        "stable_checksum": "505cf43912e9480495c344c70260452e32aa2a73c546a026b3f100053b23ce91",
         "stable_dependencies": [
           "gdbm"
         ],
         "stable_url_args": [
-          "https://www.cpan.org/src/5.0/perl-5.42.2.tar.xz"
+          "https://www.cpan.org/src/5.0/perl-5.44.0.tar.xz"
         ],
         "stable_uses_from_macos": [
           [
             "libxcrypt"
           ]
         ],
-        "stable_version": "5.42.2"
+        "stable_version": "5.44.0"
       },
       "public": {
         "aliases": [
-          "perl@5.42"
+          "perl@5.44"
         ],
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "036d3e8899b33c3c4f7dd9b69057f5dd522184a72750b212376d8fd5fc7d120f",
-        "bottle_rebuild": 1,
+        "bottle_checksum": "d497cdf66dd8e426392d85902d59e2644d46195dd3dead1c17ac6f533fa12f41",
         "desc": "Highly capable, feature-rich programming language",
         "executables": [
           "corelist",
@@ -11963,10 +11962,11 @@
           "json_pp",
           "libnetcfg",
           "perl",
-          "perl5.42.2",
+          "perl5.44.0",
           "perlbug",
           "perldoc",
           "perlivp",
+          "perlthanks",
           "piconv",
           "pl2pm",
           "pod2html",
@@ -12006,20 +12006,20 @@
           ]
         },
         "name": "perl",
-        "ruby_source_checksum": "5b6f1e8795d3b327cb9ab86801e506d921262147332416caa46944261f2fef35",
-        "stable_checksum": "0a585eeb9e363c0f80482ddb3571625250c2c86aeb408853e8ea50805cfb14bb",
+        "ruby_source_checksum": "19d8fe283a3699d99d4a81d521b2cf5317f5e8ad728319138518b2e803e70dcb",
+        "stable_checksum": "505cf43912e9480495c344c70260452e32aa2a73c546a026b3f100053b23ce91",
         "stable_dependencies": [
           "gdbm"
         ],
         "stable_url_args": [
-          "https://www.cpan.org/src/5.0/perl-5.42.2.tar.xz"
+          "https://www.cpan.org/src/5.0/perl-5.44.0.tar.xz"
         ],
         "stable_uses_from_macos": [
           [
             "libxcrypt"
           ]
         ],
-        "stable_version": "5.42.2"
+        "stable_version": "5.44.0"
       }
     },
     "pixman": {
@@ -13829,8 +13829,7 @@
     "texinfo": {
       "internal": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "5f143c0103716ee72ddcee40d88784cf6d474ee6f0322ecfa7ad33880e35255a",
-        "bottle_rebuild": 1,
+        "bottle_checksum": "1efa090b410b8c515e4d373f33abcf90d0ccb05bbf353a34ce2351f1f324c5ae",
         "desc": "Official documentation format of the GNU project",
         "executables": [
           "info",
@@ -13866,7 +13865,8 @@
             "type": "run"
           }
         ],
-        "ruby_source_checksum": "b2e4dad7f8cfc67a5d674f5fe0910c409547fc35e72234ebf27b2398b9f177ae",
+        "revision": 1,
+        "ruby_source_checksum": "6db63e44352868fed56a055157170763baa72788128969743f4ad8414f0ebf69",
         "stable_checksum": "51f74eb0f51cfa9873b85264dfdd5d46e8957ec95b88f0fb762f63d9e164c72e",
         "stable_dependencies": [
           "libunistring"
@@ -13886,8 +13886,7 @@
       },
       "public": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "5f143c0103716ee72ddcee40d88784cf6d474ee6f0322ecfa7ad33880e35255a",
-        "bottle_rebuild": 1,
+        "bottle_checksum": "1efa090b410b8c515e4d373f33abcf90d0ccb05bbf353a34ce2351f1f324c5ae",
         "desc": "Official documentation format of the GNU project",
         "executables": [
           "info",
@@ -13923,7 +13922,8 @@
             "type": "run"
           }
         ],
-        "ruby_source_checksum": "b2e4dad7f8cfc67a5d674f5fe0910c409547fc35e72234ebf27b2398b9f177ae",
+        "revision": 1,
+        "ruby_source_checksum": "6db63e44352868fed56a055157170763baa72788128969743f4ad8414f0ebf69",
         "stable_checksum": "51f74eb0f51cfa9873b85264dfdd5d46e8957ec95b88f0fb762f63d9e164c72e",
         "stable_dependencies": [
           "libunistring"
