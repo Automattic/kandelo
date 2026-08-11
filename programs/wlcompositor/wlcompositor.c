@@ -201,6 +201,11 @@ struct surface {
     /* wp_presentation_feedback resources awaiting the next flip. */
     struct wl_resource *feedbacks[MAX_FRAME_CB];
     int n_feedbacks;
+    /* wl_subsurface role: glued to `parent` at (sub_x, sub_y), composited
+     * right above it, never tiled, never focused, never hit-tested. */
+    struct wl_resource *subsurface;
+    struct surface *parent;
+    int32_t sub_x, sub_y;
 };
 
 /* ---- wl_shm pool / buffer (custom, gbm-backed) ------------------------- */
@@ -310,6 +315,10 @@ struct compositor {
     /* Bound seat resources (across all clients; routed per-client). */
     struct wl_resource *keyboards[MAX_INPUT_RES];
     struct wl_resource *pointers[MAX_INPUT_RES];
+    /* Bound wl_output resources, for wl_surface.enter at map time — a
+     * DPI-aware client (foot) sizes its fonts only after entering an
+     * output. */
+    struct wl_resource *outputs[MAX_INPUT_RES];
 
     int client_count;
     int had_client;   /* so we only exit after a client has actually connected */
@@ -380,15 +389,23 @@ static void slot_remove(struct wl_resource **slots, struct wl_resource *r) {
 static void schedule_repaint(void);
 static void kbd_set_focus(struct surface *s);
 static void ptr_refresh_focus(void);
+static void send_surface_enter(struct surface *s);
 static int layer_in_band(const struct surface *s, int above);
+
+/* A v5 pointer client applies state on the frame event; end every burst. */
+static void ptr_send_frame(struct wl_resource *p) {
+    if (wl_resource_get_version(p) >= WL_POINTER_FRAME_SINCE_VERSION)
+        wl_pointer_send_frame(p);
+}
 static int theme_switch(const char *arg);
 static void kwlctl_emit(const char *fmt, ...);
 static void kwlctl_exec(char *args);
 
 /* A surface participates in compositing, input, and tiling only when it is
  * mapped AND on the active workspace. A layer surface is a shell component,
- * so it shows on every workspace. */
+ * so it shows on every workspace. A subsurface shows with its parent. */
 static int surface_visible(const struct surface *s) {
+    if (s->parent) return s->mapped && surface_visible(s->parent);
     if (s->layer_surface) return s->mapped;
     return s->mapped && s->workspace == g.active_ws;
 }
@@ -765,9 +782,18 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
         b->gl_dirty = 1;   /* GPU path re-uploads this buffer's texture */
     }
 
+    /* A subsurface maps with its buffer and rides its parent — no tiling,
+     * no focus, no z-order entry of its own. */
+    if (s->parent) {
+        s->mapped = 1;
+        schedule_repaint();
+        return;
+    }
+
     if (s->layer_surface) {
         if (!s->mapped) {
             s->mapped = 1;
+            send_surface_enter(s);
             /* Now that it is mapped its exclusive zone counts, so the windows
              * below re-tile around it. */
             layers_arrange();
@@ -784,6 +810,7 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
 
     if (!s->mapped) {
         s->mapped = 1;
+        send_surface_enter(s);
         if (!s->workspace) s->workspace = g.active_ws;   /* opens on the visible ws */
         /* Tiling dictates geometry for every window in retile(); only the
          * floating desktop places individually by app_id. */
@@ -830,11 +857,19 @@ static void surface_resource_destroy(struct wl_resource *r) {
     zorder_remove(s);
     /* A client may destroy the wl_surface before its layer_surface; drop the
      * back-reference so that resource's destroy handler doesn't touch freed
-     * memory. */
+     * memory. Same for a subsurface role, and for any children still glued
+     * to this surface as their parent. */
     int was_layer = s->layer_surface != NULL;
     if (was_layer) {
         wl_resource_set_user_data(s->layer_surface, NULL);
         layer_remove(s);
+    }
+    if (s->subsurface) wl_resource_set_user_data(s->subsurface, NULL);
+    for (int i = 0; i < g.n_all_surfaces; i++) {
+        struct surface *c = g.all_surfaces[i];
+        if (c->parent != s) continue;
+        c->parent = NULL;
+        c->mapped = 0;
     }
     if (g.kbd_focus == s) {
         g.kbd_focus = NULL;
@@ -1354,9 +1389,11 @@ static void toplevel_move(struct wl_client *c, struct wl_resource *r,
         uint32_t ser = wl_display_next_serial(g.display);
         for (int i = 0; i < MAX_INPUT_RES; i++)
             if (g.pointers[i] &&
-                wl_resource_get_client(g.pointers[i]) == g.ptr_focus->client)
+                wl_resource_get_client(g.pointers[i]) == g.ptr_focus->client) {
                 wl_pointer_send_leave(g.pointers[i], ser,
                                       g.ptr_focus->resource);
+                ptr_send_frame(g.pointers[i]);
+            }
         g.ptr_focus = NULL;
     }
 }
@@ -1779,9 +1816,11 @@ static void ptr_set_focus(struct surface *s) {
     if (g.ptr_focus) {
         for (int i = 0; i < MAX_INPUT_RES; i++)
             if (g.pointers[i] &&
-                wl_resource_get_client(g.pointers[i]) == g.ptr_focus->client)
+                wl_resource_get_client(g.pointers[i]) == g.ptr_focus->client) {
                 wl_pointer_send_leave(g.pointers[i], serial,
                                       g.ptr_focus->resource);
+                ptr_send_frame(g.pointers[i]);
+            }
     }
     g.ptr_focus = s;
     if (!s) return;
@@ -1789,8 +1828,10 @@ static void ptr_set_focus(struct surface *s) {
     wl_fixed_t ly = wl_fixed_from_double(g.cursor_y - s->y);
     for (int i = 0; i < MAX_INPUT_RES; i++)
         if (g.pointers[i] &&
-            wl_resource_get_client(g.pointers[i]) == s->client)
+            wl_resource_get_client(g.pointers[i]) == s->client) {
             wl_pointer_send_enter(g.pointers[i], serial, s->resource, lx, ly);
+            ptr_send_frame(g.pointers[i]);
+        }
 }
 
 static void ptr_refresh_focus(void) {
@@ -1840,11 +1881,13 @@ static void seat_get_pointer(struct wl_client *client,
                                    pointer_resource_destroy);
     slot_add(g.pointers, p);
     /* If this client's surface already holds pointer focus, enter it now. */
-    if (g.ptr_focus && g.ptr_focus->client == client && g.ptr_focus->mapped)
+    if (g.ptr_focus && g.ptr_focus->client == client && g.ptr_focus->mapped) {
         wl_pointer_send_enter(p, wl_display_next_serial(g.display),
                               g.ptr_focus->resource,
                               wl_fixed_from_double(g.cursor_x - g.ptr_focus->x),
                               wl_fixed_from_double(g.cursor_y - g.ptr_focus->y));
+        ptr_send_frame(p);
+    }
 }
 static void seat_get_keyboard(struct wl_client *client,
                               struct wl_resource *resource, uint32_t id) {
@@ -1855,6 +1898,8 @@ static void seat_get_keyboard(struct wl_client *client,
                                    keyboard_resource_destroy);
     slot_add(g.keyboards, k);
     send_keymap(k);
+    if (wl_resource_get_version(k) >= WL_KEYBOARD_REPEAT_INFO_SINCE_VERSION)
+        wl_keyboard_send_repeat_info(k, 25, 400);
     if (g.kbd_focus && g.kbd_focus->client == client && g.kbd_focus->mapped) {
         uint32_t serial = wl_display_next_serial(g.display);
         struct wl_array keys;
@@ -1884,11 +1929,13 @@ static const struct wl_seat_interface seat_impl = {
 static void seat_bind(struct wl_client *client, void *data, uint32_t version,
                       uint32_t id) {
     struct wl_resource *r =
-        wl_resource_create(client, &wl_seat_interface, version, id);
+        wl_resource_create(client, &wl_seat_interface, (int)version, id);
     if (!r) { wl_client_post_no_memory(client); return; }
     wl_resource_set_implementation(r, &seat_impl, NULL, NULL);
     wl_seat_send_capabilities(
         r, WL_SEAT_CAPABILITY_KEYBOARD | WL_SEAT_CAPABILITY_POINTER);
+    if (version >= WL_SEAT_NAME_SINCE_VERSION)
+        wl_seat_send_name(r, "seat0");
 }
 
 /* ====================================================================== */
@@ -1901,20 +1948,39 @@ static void output_release(struct wl_client *c, struct wl_resource *r) {
 static const struct wl_output_interface output_impl = {
     .release = output_release,
 };
+static void output_resource_destroy(struct wl_resource *r) {
+    slot_remove(g.outputs, r);
+}
 static void output_bind(struct wl_client *client, void *data, uint32_t version,
                         uint32_t id) {
     struct wl_resource *r =
         wl_resource_create(client, &wl_output_interface, version, id);
     if (!r) { wl_client_post_no_memory(client); return; }
-    wl_resource_set_implementation(r, &output_impl, NULL, NULL);
-    wl_output_send_geometry(r, 0, 0, (int32_t)g.width, (int32_t)g.height,
+    wl_resource_set_implementation(r, &output_impl, NULL,
+                                   output_resource_destroy);
+    slot_add(g.outputs, r);
+    /* Physical size 0x0 = unknown: this is a virtual connector, and a
+     * DPI-aware client (foot) derives its font size from mm — feeding it
+     * pixels as mm yields DPI 25.4 and a garbage font reload. */
+    wl_output_send_geometry(r, 0, 0, 0, 0,
                             WL_OUTPUT_SUBPIXEL_UNKNOWN, "Kandelo", "virtual-0",
                             WL_OUTPUT_TRANSFORM_NORMAL);
     wl_output_send_mode(r,
                         WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED,
                         (int32_t)g.width, (int32_t)g.height, 60000);
+    if (version >= WL_OUTPUT_SCALE_SINCE_VERSION)
+        wl_output_send_scale(r, 1);
     if (version >= WL_OUTPUT_DONE_SINCE_VERSION)
         wl_output_send_done(r);
+}
+
+/* Tell a newly mapped surface which output it is on. A DPI-aware client
+ * (foot) defers font sizing until the enter arrives. */
+static void send_surface_enter(struct surface *s) {
+    for (int i = 0; i < MAX_INPUT_RES; i++)
+        if (g.outputs[i] &&
+            wl_resource_get_client(g.outputs[i]) == s->client)
+            wl_surface_send_enter(s->resource, g.outputs[i]);
 }
 
 /* ====================================================================== */
@@ -1965,6 +2031,19 @@ static void blit_surface(struct surface *s, uint32_t *dst, uint32_t dst_stride_p
         memcpy(dst + (size_t)dy * dst_stride_px + (s->x + x0),
                src + (size_t)row * src_stride_px + x0,
                (size_t)(x1 - x0) * 4);
+    }
+}
+
+/* Subsurfaces ride their parent: recompute their output position from the
+ * parent's (tiling moves the parent under them) and blit right above it. */
+static void blit_subsurfaces(struct surface *s, uint32_t *dst,
+                             uint32_t dst_stride_px) {
+    for (int i = 0; i < g.n_all_surfaces; i++) {
+        struct surface *c = g.all_surfaces[i];
+        if (c->parent != s || !surface_visible(c) || !c->buffer) continue;
+        c->x = s->x + c->sub_x;
+        c->y = s->y + c->sub_y;
+        blit_surface(c, dst, dst_stride_px);
     }
 }
 
@@ -2087,6 +2166,137 @@ static void presentation_bind(struct wl_client *c, void *data, uint32_t ver,
     if (!r) { wl_client_post_no_memory(c); return; }
     wl_resource_set_implementation(r, &presentation_impl, NULL, NULL);
     wp_presentation_send_clock_id(r, CLOCK_MONOTONIC);
+}
+
+/* ====================================================================== */
+/* wl_subcompositor: parent-glued overlay subsurfaces                     */
+/* ====================================================================== */
+
+static void subsurface_destroy(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static void subsurface_set_position(struct wl_client *c, struct wl_resource *r,
+                                    int32_t x, int32_t y) {
+    struct surface *s = wl_resource_get_user_data(r);
+    if (!s) return;
+    s->sub_x = x;
+    s->sub_y = y;
+    schedule_repaint();
+}
+static void subsurface_place_above(struct wl_client *c, struct wl_resource *r,
+                                   struct wl_resource *sibling) {}
+static void subsurface_place_below(struct wl_client *c, struct wl_resource *r,
+                                   struct wl_resource *sibling) {}
+static void subsurface_set_sync(struct wl_client *c, struct wl_resource *r) {}
+static void subsurface_set_desync(struct wl_client *c, struct wl_resource *r) {}
+static const struct wl_subsurface_interface subsurface_impl = {
+    .destroy = subsurface_destroy,
+    .set_position = subsurface_set_position,
+    .place_above = subsurface_place_above,
+    .place_below = subsurface_place_below,
+    .set_sync = subsurface_set_sync,
+    .set_desync = subsurface_set_desync,
+};
+static void subsurface_resource_destroy(struct wl_resource *r) {
+    struct surface *s = wl_resource_get_user_data(r);
+    if (!s) return;
+    s->subsurface = NULL;
+    s->parent = NULL;
+    s->mapped = 0;
+    schedule_repaint();
+}
+
+static void subcompositor_destroy(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static void subcompositor_get_subsurface(struct wl_client *c,
+                                         struct wl_resource *r, uint32_t id,
+                                         struct wl_resource *surface,
+                                         struct wl_resource *parent) {
+    struct surface *s = wl_resource_get_user_data(surface);
+    struct surface *p = wl_resource_get_user_data(parent);
+    struct wl_resource *sub =
+        wl_resource_create(c, &wl_subsurface_interface, 1, id);
+    if (!sub) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(sub, &subsurface_impl, s,
+                                   subsurface_resource_destroy);
+    s->subsurface = sub;
+    s->parent = p;
+}
+static const struct wl_subcompositor_interface subcompositor_impl = {
+    .destroy = subcompositor_destroy,
+    .get_subsurface = subcompositor_get_subsurface,
+};
+static void subcompositor_bind(struct wl_client *c, void *data, uint32_t ver,
+                               uint32_t id) {
+    struct wl_resource *r =
+        wl_resource_create(c, &wl_subcompositor_interface, (int)ver, id);
+    if (!r) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(r, &subcompositor_impl, NULL, NULL);
+}
+
+/* ====================================================================== */
+/* wl_data_device_manager: inert v3 stub                                  */
+/* ====================================================================== */
+
+/* foot (and later GTK) refuse to start without a clipboard manager. This
+ * stub satisfies the bind and accepts selections without transferring
+ * them — real clipboard data paths are the O2 tier's work (plan §4 PR24). */
+static void data_source_offer(struct wl_client *c, struct wl_resource *r,
+                              const char *mime) {}
+static void data_source_destroy_req(struct wl_client *c,
+                                    struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static void data_source_set_actions(struct wl_client *c, struct wl_resource *r,
+                                    uint32_t actions) {}
+static const struct wl_data_source_interface data_source_impl = {
+    .offer = data_source_offer,
+    .destroy = data_source_destroy_req,
+    .set_actions = data_source_set_actions,
+};
+
+static void data_device_start_drag(struct wl_client *c, struct wl_resource *r,
+                                   struct wl_resource *source,
+                                   struct wl_resource *origin,
+                                   struct wl_resource *icon, uint32_t serial) {}
+static void data_device_set_selection(struct wl_client *c,
+                                      struct wl_resource *r,
+                                      struct wl_resource *source,
+                                      uint32_t serial) {}
+static void data_device_release(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static const struct wl_data_device_interface data_device_impl = {
+    .start_drag = data_device_start_drag,
+    .set_selection = data_device_set_selection,
+    .release = data_device_release,
+};
+
+static void data_dm_create_source(struct wl_client *c, struct wl_resource *r,
+                                  uint32_t id) {
+    struct wl_resource *src = wl_resource_create(
+        c, &wl_data_source_interface, wl_resource_get_version(r), id);
+    if (!src) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(src, &data_source_impl, NULL, NULL);
+}
+static void data_dm_get_device(struct wl_client *c, struct wl_resource *r,
+                               uint32_t id, struct wl_resource *seat) {
+    struct wl_resource *dev = wl_resource_create(
+        c, &wl_data_device_interface, wl_resource_get_version(r), id);
+    if (!dev) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(dev, &data_device_impl, NULL, NULL);
+}
+static const struct wl_data_device_manager_interface data_dm_impl = {
+    .create_data_source = data_dm_create_source,
+    .get_data_device = data_dm_get_device,
+};
+static void data_dm_bind(struct wl_client *c, void *data, uint32_t ver,
+                         uint32_t id) {
+    struct wl_resource *r =
+        wl_resource_create(c, &wl_data_device_manager_interface, (int)ver, id);
+    if (!r) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(r, &data_dm_impl, NULL, NULL);
 }
 
 /* ====================================================================== */
@@ -2335,6 +2545,18 @@ static int repaint_gl(void) {
             glc_draw_solid(th.border_active, s->x - 2, s->y - 2,
                            b->width + 4, b->height + 4);
         glc_draw_tex(texs[i], s->x, s->y, b->width, b->height);
+        for (int j = 0; j < g.n_all_surfaces; j++) {
+            struct surface *sub = g.all_surfaces[j];
+            if (sub->parent != s || !surface_visible(sub) || !sub->buffer)
+                continue;
+            struct shm_buffer *sb = wl_resource_get_user_data(sub->buffer);
+            if (!sb) continue;
+            unsigned t = shm_buffer_gl_texture(sb);
+            if (!t) return 0;
+            sub->x = s->x + sub->sub_x;
+            sub->y = s->y + sub->sub_y;
+            glc_draw_tex(t, sub->x, sub->y, sb->width, sb->height);
+        }
         top = s;
     }
     for (int i = 0; i < g.n_layers; i++)
@@ -2425,6 +2647,7 @@ static void repaint(void) {
             if (!surface_visible(s)) continue;
             if (g.kbd_focus == s) draw_focus_border(s, dst, stride_px);
             blit_surface(s, dst, stride_px);
+            blit_subsurfaces(s, dst, stride_px);
             top = s;
         }
         for (int i = 0; i < g.n_layers; i++)
@@ -2901,8 +3124,10 @@ static void pointer_moved(void) {
         wl_fixed_t ly = wl_fixed_from_double(g.cursor_y - g.ptr_focus->y);
         for (int i = 0; i < MAX_INPUT_RES; i++)
             if (g.pointers[i] &&
-                wl_resource_get_client(g.pointers[i]) == g.ptr_focus->client)
+                wl_resource_get_client(g.pointers[i]) == g.ptr_focus->client) {
                 wl_pointer_send_motion(g.pointers[i], t, lx, ly);
+                ptr_send_frame(g.pointers[i]);
+            }
     }
     /* No repaint on bare motion: with no software cursor the desktop is
      * pixel-identical until a client commits in response. */
@@ -2975,8 +3200,10 @@ static void handle_pointer_button(struct libinput_event_pointer *p) {
         uint32_t t = now_ms();
         for (int i = 0; i < MAX_INPUT_RES; i++)
             if (g.pointers[i] &&
-                wl_resource_get_client(g.pointers[i]) == g.ptr_focus->client)
+                wl_resource_get_client(g.pointers[i]) == g.ptr_focus->client) {
                 wl_pointer_send_button(g.pointers[i], serial, t, button, state);
+                ptr_send_frame(g.pointers[i]);
+            }
     }
 
     /* The implicit grab ends with the last release: only now may focus
@@ -3713,7 +3940,11 @@ int main(void) {
                           layer_shell_bind) ||
         !wl_global_create(g.display, &wp_presentation_interface, 1, NULL,
                           presentation_bind) ||
-        !wl_global_create(g.display, &wl_seat_interface, 1, NULL, seat_bind) ||
+        !wl_global_create(g.display, &wl_subcompositor_interface, 1, NULL,
+                          subcompositor_bind) ||
+        !wl_global_create(g.display, &wl_data_device_manager_interface, 3,
+                          NULL, data_dm_bind) ||
+        !wl_global_create(g.display, &wl_seat_interface, 5, NULL, seat_bind) ||
         !wl_global_create(g.display, &wl_output_interface, 2, NULL,
                           output_bind)) {
         fprintf(stderr, "wl_global_create failed\n");
