@@ -370,12 +370,24 @@ describe("SYS_SPAWN blob transport", () => {
       expect.any(Object),
       envp,
     );
+    // The large blob never occupies main scratch. The mandatory final-target
+    // transaction legitimately reuses its bounded prefix for the path/read;
+    // bytes beyond both exact transfers must remain untouched.
+    const preparedBytes = new Uint8Array(resolvedProgram().programBytes);
     expect(
       kernelBytes.slice(
         generalScratchOffset,
+        generalScratchOffset + preparedBytes.byteLength,
+      ),
+    ).toEqual(preparedBytes);
+    expect(
+      kernelBytes.slice(
+        generalScratchOffset + path.byteLength,
         generalScratchOffset + CH_TOTAL_SIZE,
       ),
-    ).toEqual(new Uint8Array(CH_TOTAL_SIZE).fill(0xa5));
+    ).toEqual(
+      new Uint8Array(CH_TOTAL_SIZE - path.byteLength).fill(0xa5),
+    );
 
     worker.handleSpawnAfterResolve(
       channel,
@@ -390,6 +402,42 @@ describe("SYS_SPAWN blob transport", () => {
     );
     expect(beginSpawnScratch).toHaveBeenCalledTimes(2);
     expect(kernelReservedSpawn).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores a resolver module that was not compiled from its candidate bytes", async () => {
+    const candidateBytes = moduleWithNamedExport("aaaa");
+    const mismatchedModule = new WebAssembly.Module(
+      moduleWithNamedExport("bbbb"),
+    );
+
+    const launched = await launchCandidateBindingSpawn({
+      candidateBytes,
+      candidateModule: mismatchedModule,
+      authoritativeBytes: candidateBytes,
+    });
+
+    expect(WebAssembly.Module.exports(launched.programModule)).toEqual([
+      { name: "aaaa", kind: "function" },
+    ]);
+    expect(launched.programModule).not.toBe(mismatchedModule);
+  });
+
+  it("binds the candidate module before resolver bytes mutate after preflight", async () => {
+    const candidateBytes = moduleWithNamedExport("aaaa");
+    const authoritativeBytes = moduleWithNamedExport("bbbb");
+    const resolverModule = new WebAssembly.Module(candidateBytes);
+
+    const launched = await launchCandidateBindingSpawn({
+      candidateBytes,
+      candidateModule: resolverModule,
+      authoritativeBytes,
+      afterPreflight: () => candidateBytes.set(authoritativeBytes),
+    });
+
+    expect(WebAssembly.Module.exports(launched.programModule)).toEqual([
+      { name: "bbbb", kind: "function" },
+    ]);
+    expect(launched.programModule).not.toBe(resolverModule);
   });
 
   it("keeps ordinary spawn blobs in the existing channel-sized scratch", () => {
@@ -1425,10 +1473,43 @@ function createWorker(
     Number.isSafeInteger(scratchPointer) && scratchPointer! > 0
       ? scratchPointer!
       : 1024;
+  const defaultTargetBytes = new Uint8Array([
+    0x00, 0x61, 0x73, 0x6d,
+    0x01, 0x00, 0x00, 0x00,
+  ]);
   const implementations: Record<string, unknown> = {
+    kernel_drain_wakeup_events: vi.fn(() => 0),
+    kernel_exec_target_cancel: vi.fn(() => 0),
+    kernel_exec_target_read: vi.fn((
+      _ownerPid: number,
+      _target: number,
+      offsetLo: number,
+      offsetHi: number,
+      destination: number | bigint,
+      capacity: number | bigint,
+    ) => {
+      const offset = Number(
+        (BigInt(offsetHi >>> 0) << 32n) | BigInt(offsetLo >>> 0),
+      );
+      const count = Math.min(
+        Number(capacity),
+        defaultTargetBytes.byteLength - offset,
+      );
+      new Uint8Array(
+        kernelMemory.buffer,
+        Number(destination),
+        count,
+      ).set(defaultTargetBytes.subarray(offset, offset + count));
+      return count;
+    }),
+    kernel_exec_target_size: vi.fn(() => BigInt(defaultTargetBytes.byteLength)),
     kernel_get_parent_pid: vi.fn(() => -1),
     kernel_get_process_exit_signal: vi.fn(() => -1),
     kernel_mark_process_signaled: vi.fn(() => 0),
+    kernel_remove_process: vi.fn(() => 0),
+    kernel_publish_spawn_child: vi.fn(() => -1),
+    kernel_spawn_exec_commit: vi.fn(() => 0),
+    kernel_spawn_exec_target_prepare: vi.fn(() => 1),
     ...(kernelExports ?? {}),
   };
   const gate = new KernelEntryGate();
@@ -1512,9 +1593,122 @@ async function drainSpawnGate(): Promise<void> {
   // The complete preflight path crosses resolution, a fresh result ingress,
   // and launch publication. Keep a fixed upper bound rather than using a
   // timer-based poll that could hide a permanently stuck gate.
-  for (let turn = 0; turn < 24; turn++) {
-    await Promise.resolve();
+  for (let turn = 0; turn < 12; turn++) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    for (let microtask = 0; microtask < 12; microtask++) {
+      await Promise.resolve();
+    }
   }
+}
+
+function moduleWithNamedExport(name: "aaaa" | "bbbb"): Uint8Array {
+  return Uint8Array.from([
+    0x00, 0x61, 0x73, 0x6d,
+    0x01, 0x00, 0x00, 0x00,
+    0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
+    0x03, 0x02, 0x01, 0x00,
+    0x07, 0x08, 0x01, 0x04,
+    ...new TextEncoder().encode(name),
+    0x00, 0x00,
+    0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b,
+  ]);
+}
+
+async function launchCandidateBindingSpawn(options: {
+  candidateBytes: Uint8Array;
+  candidateModule: WebAssembly.Module;
+  authoritativeBytes: Uint8Array;
+  afterPreflight?: () => void;
+}): Promise<{
+  programBytes: ArrayBuffer;
+  programModule: WebAssembly.Module;
+  argv: string[];
+}> {
+  const parentPid = 7;
+  const childPid = 42;
+  const path = new TextEncoder().encode("/bin/child");
+  const blob = buildSpawnBlob(["/bin/child"], []);
+  const processMemory = sharedMemoryFor(4096 + blob.byteLength);
+  const processBytes = new Uint8Array(processMemory.buffer);
+  const pathPtr = 256;
+  const blobPtr = 4096;
+  processBytes.set(path, pathPtr);
+  processBytes.set(blob, blobPtr);
+
+  const kernelMemory = new WebAssembly.Memory({ initial: 4, maximum: 4 });
+  let launched:
+    | {
+        programBytes: ArrayBuffer;
+        programModule: WebAssembly.Module;
+        argv: string[];
+      }
+    | undefined;
+  const onSpawn = vi.fn(async (
+    _parentPid: number,
+    _childPid: number,
+    program: {
+      programBytes: ArrayBuffer;
+      programModule: WebAssembly.Module;
+      argv: string[];
+    },
+  ) => {
+    launched = program;
+    return 0;
+  });
+  const worker = createWorker({
+    callbacks: {
+      onResolveSpawn: vi.fn(async () => ({
+        programBytes: options.candidateBytes.buffer as ArrayBuffer,
+        programModule: options.candidateModule,
+        argv: ["/bin/child"],
+      })),
+      onSpawn,
+    },
+    kernelMemory,
+    kernelExports: {
+      kernel_spawn_process: vi.fn(() => {
+        options.afterPreflight?.();
+        return childPid;
+      }),
+      kernel_exec_target_size: vi.fn(() =>
+        BigInt(options.authoritativeBytes.byteLength)
+      ),
+      kernel_exec_target_read: vi.fn((
+        _ownerPid: number,
+        _target: number,
+        offsetLo: number,
+        offsetHi: number,
+        destination: number,
+        capacity: number,
+      ) => {
+        const offset = Number(
+          (BigInt(offsetHi >>> 0) << 32n) | BigInt(offsetLo >>> 0),
+        );
+        const count = Math.min(
+          capacity,
+          options.authoritativeBytes.byteLength - offset,
+        );
+        new Uint8Array(kernelMemory.buffer, destination, count).set(
+          options.authoritativeBytes.subarray(offset, offset + count),
+        );
+        return count;
+      }),
+    },
+  });
+  const channel = createChannel(parentPid, processMemory);
+  worker.handleSpawn(channel, [
+    pathPtr,
+    path.byteLength,
+    blobPtr,
+    blob.byteLength,
+    0,
+    0,
+  ]);
+  await drainSpawnGate();
+
+  expect(onSpawn).toHaveBeenCalledOnce();
+  if (!launched) throw new Error("spawn candidate binding did not launch");
+  return launched;
 }
 
 function createChannel(pid: number, memory: WebAssembly.Memory): any {

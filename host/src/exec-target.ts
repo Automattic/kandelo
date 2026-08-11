@@ -183,7 +183,16 @@ export interface PreparedExecLaunchOptions {
   readonly materializePath: (diagnosticPath: string) => Promise<void>;
   readonly prepareInitialTarget: () => number;
   readonly prepareInterpreterTarget: (interpreterPath: string) => number;
-  readonly commitTarget: (target: number, expectedSize: number) => number;
+  readonly commitTarget: (
+    target: number,
+    expectedSize: number,
+    markTargetConsumed: () => void,
+  ) => number;
+  /** Side-effect-free candidate that may be reused only on exact byte identity. */
+  readonly preflightCandidate?: Readonly<{
+    targetBytes: ArrayBuffer;
+    targetModule: WebAssembly.Module;
+  }>;
 }
 
 function parseShebang(bytes: Uint8Array): {
@@ -220,6 +229,84 @@ function preparedTargetToken(result: number): number {
 
 function exactArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer as ArrayBuffer;
+}
+
+function exactlyMatchesPreflightCandidate(
+  bytes: Uint8Array,
+  candidate: ArrayBuffer,
+): boolean {
+  if (bytes.byteLength !== candidate.byteLength) return false;
+  const candidateBytes = new Uint8Array(candidate);
+  for (let index = 0; index < bytes.byteLength; index += 1) {
+    if (bytes[index] !== candidateBytes[index]) return false;
+  }
+  return true;
+}
+
+/**
+ * Snapshot and compile one side-effect-free spawn candidate before the child
+ * exists. The resolver's separately supplied module is intentionally absent:
+ * only a module compiled here from this isolated byte snapshot may be reused
+ * when the authoritative final target has exact byte identity.
+ */
+export async function compileSpawnCandidateSnapshot(
+  programBytes: ArrayBuffer,
+  expectedAbi: number,
+): Promise<Readonly<{
+  targetBytes: ArrayBuffer;
+  targetModule: WebAssembly.Module;
+}>> {
+  let snapshot: Uint8Array;
+  try {
+    const source = new Uint8Array(programBytes);
+    if (source.byteLength > MAX_REPORTABLE_TRANSFER_BYTES) {
+      throw new PreparedExecTargetError(
+        "spawn candidate exceeds the program-size limit",
+        EFBIG,
+      );
+    }
+    // Copy before the first await. A resolver retains no mutable authority
+    // over the candidate compared or launched by the shared worker.
+    snapshot = source.slice();
+  } catch (cause) {
+    if (cause instanceof PreparedExecTargetError) throw cause;
+    throw new PreparedExecTargetError(
+      "spawn candidate bytes are unavailable",
+      ENOEXEC,
+    );
+  }
+
+  const targetBytes = exactArrayBuffer(snapshot);
+  if (!isWasmModuleBytes(targetBytes)) {
+    throw new PreparedExecTargetError(
+      "spawn candidate is not a WebAssembly module",
+      ENOEXEC,
+    );
+  }
+  const targetAbi = extractAbiVersion(targetBytes);
+  if (
+    describeWasmArtifactPolicyFailures(targetBytes, { expectedAbi }).length > 0
+    || (targetAbi !== null && targetAbi !== expectedAbi)
+  ) {
+    throw new PreparedExecTargetError(
+      "spawn candidate violates the artifact ABI policy",
+      ENOEXEC,
+    );
+  }
+
+  let targetModule: WebAssembly.Module;
+  try {
+    targetModule = await WebAssembly.compile(targetBytes);
+  } catch (cause) {
+    if (cause instanceof WebAssembly.CompileError) {
+      throw new PreparedExecTargetError(
+        "spawn candidate failed WebAssembly compilation",
+        ENOEXEC,
+      );
+    }
+    throw cause;
+  }
+  return { targetBytes, targetModule };
 }
 
 export async function launchPreparedExecTarget(
@@ -304,17 +391,25 @@ export async function launchPreparedExecTarget(
       );
     }
 
-    let targetModule: WebAssembly.Module;
-    try {
-      targetModule = await WebAssembly.compile(targetBytes);
-    } catch (cause) {
-      if (cause instanceof WebAssembly.CompileError) {
-        throw new PreparedExecTargetError(
-          "prepared exec target failed WebAssembly compilation",
-          ENOEXEC,
-        );
+    let targetModule = options.preflightCandidate
+      && exactlyMatchesPreflightCandidate(
+        bytes,
+        options.preflightCandidate.targetBytes,
+      )
+      ? options.preflightCandidate.targetModule
+      : undefined;
+    if (targetModule === undefined) {
+      try {
+        targetModule = await WebAssembly.compile(targetBytes);
+      } catch (cause) {
+        if (cause instanceof WebAssembly.CompileError) {
+          throw new PreparedExecTargetError(
+            "prepared exec target failed WebAssembly compilation",
+            ENOEXEC,
+          );
+        }
+        throw cause;
       }
-      throw cause;
     }
 
     const request: PreparedExecLaunchRequest = {
@@ -335,10 +430,23 @@ export async function launchPreparedExecTarget(
     // The opaque token never entered the async callback. The shared launcher
     // alone owns this no-yield commit edge and invokes the postcommit action
     // immediately after Rust consumes the token.
-    targetLive = false;
     let commitResult: number;
     try {
-      commitResult = options.commitTarget(target, targetBytes.byteLength);
+      commitResult = options.commitTarget(
+        target,
+        targetBytes.byteLength,
+        () => {
+          // The production wrapper calls this immediately before the raw
+          // commit/cancel export. A throw before that edge leaves the token
+          // cancellable; a host-import throw after it has uncertain/consumed
+          // Rust ownership and must never retry the token.
+          targetLive = false;
+        },
+      );
+      // Every numeric kernel result has settled the exact token, including a
+      // rejected commit. Test doubles may omit the marker because they cannot
+      // throw from inside Rust after taking the target.
+      targetLive = false;
     } catch (cause) {
       decision.onCommitFailure();
       throw cause;

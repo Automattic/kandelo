@@ -2657,21 +2657,6 @@ async function handleExec(
 }
 
 /**
- * Handle SYS_SPAWN (non-forking posix_spawn).
- *
- * The kernel has already constructed the child Process descriptor in its
- * ProcessTable under `childPid` (with attrs and file actions applied).
- * This callback resolves the program bytes for `path`, allocates a fresh
- * Memory for the child, attaches it to the existing kernel Process, and
- * launches a Worker for it.
- *
- * Distinct from handleExec (which replaces the calling worker) and
- * handleFork (which clones the parent's Memory): handlePosixSpawn always
- * creates a fresh Memory and runs the new program from `_start`.
- *
- * Returns 0 on success, negative errno on failure (e.g. -ENOENT).
- */
-/**
  * Pre-flight resolver for SYS_SPAWN. Side-effect-free: looks up program
  * bytes for `path` through the spawn-only execPrograms/main-thread fallback,
  * follows shebangs, and compiles the final Wasm module. Exec never enters
@@ -2691,11 +2676,11 @@ async function handlePosixSpawnResolve(
 }
 
 /**
- * Launch a worker for a SYS_SPAWN child whose program has already been
- * resolved and compiled by `handlePosixSpawnResolve`. The kernel has built
- * the child Process descriptor + applied file actions by the time we get
- * here, so this just allocates a Memory, registers the process, and spawns
- * the worker.
+ * Launch a worker for a SYS_SPAWN child whose program is derived from the
+ * exact target already committed by the shared worker. The earlier resolver
+ * was only side-effect-free candidate preflight; a changed child CWD, fd
+ * table, or credential view selects and recompiles the final bytes before this
+ * callback. This phase only allocates Memory, registers, and launches.
  */
 async function handlePosixSpawn(
   parentPid: number,

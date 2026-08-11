@@ -671,6 +671,27 @@ reentrant host operations cannot replace bytes being consumed. The previous
 pointer-returning `kernel_spawn_scratch_reserve` interface and fixed
 worst-case compatibility fallback are not part of ABI 43.
 
+The same ABI 43 spawn transaction requires
+`kernel_publish_spawn_child(parent_pid, child_pid)`. Rust marks a newly
+reserved spawn child as unpublished, so wait selection cannot consume it while
+the host performs asynchronous exact-target read, validation, compilation,
+commit, and Worker launch. Publication verifies the exact parent/child pair,
+clears that state once, and returns `-1` for a live child, zero for ordinary
+exit, or the positive terminating signal. `-ESRCH` remains authoritative
+child absence and is not a live sentinel; `-ECHILD` means the exact hidden
+child remains owned but its bound parent is absent or has already exited, so
+rollback must remove it.
+The host publishes the successful spawn
+result in the same serialized entry before waking queued waiters; failure uses
+the existing exact removal path and also wakes them. That detached completion
+does not depend on the parent mailbox registration remaining live, while every
+parent-memory write still requires the exact active channel. No older export can own
+that atomic boundary: target commit necessarily precedes a fallible Worker
+launch, and process removal is the opposite, failure-only transition. This is
+an additive structural change to the still-unpublished ABI 43 export set, so
+the ABI snapshot and generated host manifest carry it without inventing ABI
+44 or permitting a fallback.
+
 ABI 43 requires `host_pread` and `host_pwrite` so positioned regular-file I/O
 keeps a signed 64-bit offset lossless and does not mutate a shared
 open-file-description cursor through seek emulation. It also requires the
@@ -931,10 +952,11 @@ five action opcodes; musl's complete transported attribute byte; the
 spawn-only action count cap; and the derived 8,417,320-byte whole-blob
 ceiling. Rust, TypeScript, and C therefore consume the same numeric wire
 contract. Transporting all eight attribute bits is distinct from implementing
-them: the kernel currently acts on `SETPGROUP`, `SETSIGDEF`, `SETSIGMASK`, and
-`SETSID`, while `RESETIDS`, `SETSCHEDPARAM`, `SETSCHEDULER`, and `USEVFORK`
-remain uninterpreted. The shared startup counts and spawn-only action/complete
-wire caps are defensive representation limits, not new POSIX promises.
+them: the kernel currently acts on `RESETIDS`, `SETPGROUP`, `SETSIGDEF`,
+`SETSIGMASK`, and `SETSID`, while `SETSCHEDPARAM`, `SETSCHEDULER`, and
+`USEVFORK` remain uninterpreted. The shared startup counts and spawn-only
+action/complete wire caps are defensive representation limits, not new POSIX
+promises.
 
 Channel scalar widths are likewise Rust-owned. The generator writes
 `host/src/generated/abi.ts` and

@@ -641,6 +641,9 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#captureBlockingRetryDisposition::kernel-export-direct-use::isFdNonblock(channel.pid, fd)",
   ),
   reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#completeSuccessfulSpawnWithinKernelEntry::kernel-export-direct-use::publishSpawnChild(parentPid, childPid)",
+  ),
+  reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#createTestAuthority::kernel-export-direct-use::forkProcess( parentPid, callerTid, PROCESS_FORK_MODE_FORK, )",
   ),
   reviewedScalarKernelExportCall(
@@ -857,6 +860,15 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.kernelExecCommit::kernel-export-direct-use::size(pid, target)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.kernelSpawnExecCommit::kernel-export-direct-use::cancel(childPid, target)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.kernelSpawnExecCommit::kernel-export-direct-use::commit(parentPid, childPid, target)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.kernelSpawnExecCommit::kernel-export-direct-use::size(childPid, target)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.notifyParentOfChildStateTransition::kernel-export-direct-use::hasNoCldStop(parentPid)",

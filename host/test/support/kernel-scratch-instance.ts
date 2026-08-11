@@ -92,6 +92,10 @@ function signatures(
       parameters: [i32, i32, pointer, pointer],
       result: i32,
     },
+    kernel_publish_spawn_child: {
+      parameters: [i32, i32],
+      result: i32,
+    },
     kernel_fd_is_open: {
       parameters: [i32, i32],
       result: i32,

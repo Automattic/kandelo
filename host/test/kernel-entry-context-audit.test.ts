@@ -595,6 +595,11 @@ describe("kernel entry-context static audit", () => {
           _label: string,
           _operation: (entry: KernelWorkerEntryContext) => void,
         ): void {}
+        #runOrDeferPendingSpawnCompletionKernelEntry(
+          _childPid: number,
+          _label: string,
+          _operation: (entry: KernelWorkerEntryContext) => void,
+        ): void {}
         #kernelInstanceForEntry(
           entry?: KernelWorkerEntryContext,
         ): WebAssembly.Instance {
@@ -706,6 +711,42 @@ describe("kernel entry-context static audit", () => {
       });
     `));
     expect(safe).toEqual([]);
+
+    const safeAfterParentRetirement = auditKernelEntryContext(source(`
+      entry.deferProtocolTransactionStart(() => {
+        void this.#continuePromise(
+          this.callbacks.launch(),
+          (_result) => {
+            this.#runOrDeferPendingSpawnCompletionKernelEntry(
+              42,
+              "finish detached spawn",
+              (innerEntry) => this.#finish(innerEntry),
+            );
+          },
+        );
+        return undefined;
+      });
+    `));
+    expect(safeAfterParentRetirement).toEqual([]);
+
+    const nonlexicalDetachedSpawnCompletion = auditKernelEntryContext(source(`
+      entry.deferProtocolTransactionStart(() => {
+        const finish = (innerEntry: KernelWorkerEntryContext) => {
+          this.#finish(innerEntry);
+        };
+        void this.#continuePromise(this.callbacks.launch(), (_result) => {
+          this.#runOrDeferPendingSpawnCompletionKernelEntry(
+            42,
+            "finish detached spawn",
+            finish,
+          );
+        });
+        return undefined;
+      });
+    `));
+    expect(nonlexicalDetachedSpawnCompletion).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "nonlexical-entry-operation" }),
+    ]));
   });
 
   it("keeps unknown HOFs synchronous and honors lexical shadowing", () => {

@@ -236,6 +236,60 @@ describe("opaque prepared exec target launch", () => {
     expect(cancel).toHaveBeenCalledTimes(2);
   });
 
+  it("cancels a target only when a thrown commit never consumed it", async () => {
+    const bytes = new Uint8Array(
+      readFileSync("../local-binaries/programs/wasm32/exec-child.wasm"),
+    );
+    const cancel = vi.fn(() => 0);
+    const kernel: PreparedExecKernel = {
+      execTargetSize: () => BigInt(bytes.byteLength),
+      execTargetRead: (_ownerPid, _target, offset, destination) => {
+        const start = Number(offset);
+        const count = Math.min(destination.byteLength, bytes.byteLength - start);
+        destination.set(bytes.subarray(start, start + count));
+        return count;
+      },
+      execTargetCancel: cancel,
+    };
+    const launch = (
+      target: number,
+      commitTarget: (
+        target: number,
+        expectedSize: number,
+        markTargetConsumed: () => void,
+      ) => number,
+    ) => launchPreparedExecTarget({
+      kernel,
+      ownerPid: 7,
+      pid: 7,
+      callerTid: 7,
+      diagnosticPath: "/bin/program",
+      argv: ["program"],
+      envp: [],
+      expectedAbi: ABI_VERSION,
+      materializePath: async () => {},
+      prepareInitialTarget: () => target,
+      prepareInterpreterTarget: () => {
+        throw new Error("not a script");
+      },
+      commitTarget,
+    }, async () => ({
+      onCommitFailure: vi.fn(),
+      startAfterCommit: vi.fn(async () => 0),
+    }));
+
+    await expect(launch(42, () => {
+      throw new Error("kernel entry was busy");
+    })).rejects.toThrow("kernel entry was busy");
+    expect(cancel).toHaveBeenCalledExactlyOnceWith(7, 42);
+
+    await expect(launch(43, (_target, _size, markTargetConsumed) => {
+      markTargetConsumed();
+      throw new Error("host import threw after Rust consumed the target");
+    })).rejects.toThrow("host import threw after Rust consumed the target");
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
   it("does not lend commit authority to a callback-queued microtask", async () => {
     const bytes = new Uint8Array(
       readFileSync("../local-binaries/programs/wasm32/exec-child.wasm"),
@@ -346,7 +400,11 @@ describe("opaque prepared exec target launch", () => {
       commitTarget,
     }, async () => ({ onCommitFailure, startAfterCommit }))).resolves.toBe(0);
 
-    expect(commitTarget).toHaveBeenCalledExactlyOnceWith(52, bytes.byteLength);
+    expect(commitTarget).toHaveBeenCalledExactlyOnceWith(
+      52,
+      bytes.byteLength,
+      expect.any(Function),
+    );
     expect(startAfterCommit).toHaveBeenCalledOnce();
     expect(onCommitFailure).not.toHaveBeenCalled();
     expect(cancel).not.toHaveBeenCalled();
@@ -391,7 +449,11 @@ describe("opaque prepared exec target launch", () => {
       commitTarget,
     }, async () => ({ onCommitFailure, startAfterCommit }))).resolves.toBe(-3);
 
-    expect(commitTarget).toHaveBeenCalledExactlyOnceWith(53, bytes.byteLength);
+    expect(commitTarget).toHaveBeenCalledExactlyOnceWith(
+      53,
+      bytes.byteLength,
+      expect.any(Function),
+    );
     expect(onCommitFailure).toHaveBeenCalledExactlyOnceWith(-3);
     expect(startAfterCommit).not.toHaveBeenCalled();
     expect(cancel).not.toHaveBeenCalled();
@@ -912,7 +974,7 @@ describe("exec host-state transition", () => {
     });
   });
 
-  it("keeps a created spawn child but suppresses stale parent completion", async () => {
+  it("removes a hidden spawn child when async completion loses its parent", async () => {
     const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
     const channel = createChannel(7, memory, 0);
     const pathPtr = 0x100;
@@ -925,6 +987,7 @@ describe("exec host-state transition", () => {
       finishSpawn = resolve;
     });
     const kernelSpawn = vi.fn(() => 100);
+    const publishSpawnChild = vi.fn(() => -10);
     const removeProcess = vi.fn();
     const onSpawn = vi.fn(() => spawned);
     const program = resolvedProgram();
@@ -938,6 +1001,7 @@ describe("exec host-state transition", () => {
       kernelInstance: {
         exports: {
           kernel_spawn_process: kernelSpawn,
+          kernel_publish_spawn_child: publishSpawnChild,
           kernel_remove_process: removeProcess,
         },
       },
@@ -949,7 +1013,10 @@ describe("exec host-state transition", () => {
       [pathPtr, path.length, blobPtr, 40, 0, 0],
     );
     worker.handleSyscall(channel);
-    await flushMicrotasks();
+    await flushMicrotasksUntil(
+      () => kernelSpawn.mock.calls.length === 1,
+      "spawn child was not created after candidate compilation",
+    );
     expect(worker.callbacks.onResolveSpawn).toHaveBeenCalledOnce();
     expect(
       kernelSpawn,
@@ -962,7 +1029,8 @@ describe("exec host-state transition", () => {
     await flushMicrotasks();
 
     expect(kernelSpawn).toHaveBeenCalled();
-    expect(removeProcess).not.toHaveBeenCalled();
+    expect(publishSpawnChild).not.toHaveBeenCalled();
+    expect(removeProcess).toHaveBeenCalledExactlyOnceWith(100);
     expect(readChannelStatus(channel)).toBe(CHANNEL_STATUS_PENDING);
   });
 
@@ -1030,7 +1098,10 @@ describe("exec host-state transition", () => {
       [pathPtr, path.length, blobPtr, 40, 0, 0],
     );
     worker.handleSyscall(channel);
-    await flushMicrotasks();
+    await flushMicrotasksUntil(
+      () => worker.callbacks.onSpawn.mock.calls.length === 1,
+      "spawn worker launch did not begin after candidate compilation",
+    );
     expect(worker.callbacks.onResolveSpawn).toHaveBeenCalledOnce();
     expect(
       worker.callbacks.onSpawn,
@@ -1814,6 +1885,46 @@ function createWorker(overrides: Record<string, unknown>): any {
   const kernelMemory = overrides.kernelMemory instanceof WebAssembly.Memory
     ? overrides.kernelMemory
     : new WebAssembly.Memory({ initial: 4, maximum: 8 });
+  const spawnTargetBytes = new Uint8Array(resolvedProgram().programBytes);
+  if (!("kernel_spawn_exec_target_prepare" in exports)) {
+    exports.kernel_spawn_exec_target_prepare = vi.fn(() => 31);
+  }
+  if (!("kernel_exec_target_size" in exports)) {
+    exports.kernel_exec_target_size = vi.fn(() =>
+      BigInt(spawnTargetBytes.byteLength)
+    );
+  }
+  if (!("kernel_exec_target_read" in exports)) {
+    exports.kernel_exec_target_read = vi.fn((
+      _ownerPid: number,
+      _target: number,
+      offsetLo: number,
+      offsetHi: number,
+      destination: number,
+      capacity: number,
+    ) => {
+      const offset = Number(
+        (BigInt(offsetHi >>> 0) << 32n) | BigInt(offsetLo >>> 0),
+      );
+      const count = Math.min(
+        capacity,
+        spawnTargetBytes.byteLength - offset,
+      );
+      new Uint8Array(kernelMemory.buffer, destination, count).set(
+        spawnTargetBytes.subarray(offset, offset + count),
+      );
+      return count;
+    });
+  }
+  if (!("kernel_exec_target_cancel" in exports)) {
+    exports.kernel_exec_target_cancel = vi.fn(() => 0);
+  }
+  if (!("kernel_spawn_exec_commit" in exports)) {
+    exports.kernel_spawn_exec_commit = vi.fn(() => 0);
+  }
+  if (!("kernel_publish_spawn_child" in exports)) {
+    exports.kernel_publish_spawn_child = vi.fn(() => -1);
+  }
   const requestedPointerWidth = (
     overrides.kernel as { getKernelPtrWidth?: () => unknown } | undefined
   )?.getKernelPtrWidth?.();

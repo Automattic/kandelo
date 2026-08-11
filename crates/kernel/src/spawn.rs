@@ -206,8 +206,8 @@ pub fn parse_reserved_spawn_blob(token: i64, length: usize) -> Result<ParsedBlob
 /// cannot be mistaken for implemented POSIX behavior.
 pub mod attr_flags {
     pub use wasm_posix_shared::spawn_contract::{
-        ATTR_SETPGROUP as SETPGROUP, ATTR_SETSID as SETSID, ATTR_SETSIGDEF as SETSIGDEF,
-        ATTR_SETSIGMASK as SETSIGMASK,
+        ATTR_RESETIDS as RESETIDS, ATTR_SETPGROUP as SETPGROUP, ATTR_SETSID as SETSID,
+        ATTR_SETSIGDEF as SETSIGDEF, ATTR_SETSIGMASK as SETSIGMASK,
     };
 }
 
@@ -215,8 +215,8 @@ pub mod attr_flags {
 /// blob by the host and handed to the kernel.
 ///
 /// Only the attribute kinds we currently support are interpreted. The
-/// transported RESETIDS, SETSCHEDPARAM, SETSCHEDULER, and USEVFORK bits remain
-/// visible in `flags`, but the process table does not implement their behavior.
+/// transported SETSCHEDPARAM, SETSCHEDULER, and USEVFORK bits remain visible in
+/// `flags`, but the process table does not implement their behavior.
 #[derive(Debug, Clone, Copy)]
 pub struct SpawnAttrs {
     pub flags: u32,

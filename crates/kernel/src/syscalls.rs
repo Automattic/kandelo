@@ -23308,7 +23308,7 @@ mod tests {
     }
 
     #[test]
-    fn spawn_cloexec_and_action_rollback_balance_all_shared_backings() {
+    fn pending_spawn_cloexec_and_action_rollback_balance_all_shared_backings() {
         use crate::process_table::ProcessTable;
         use crate::spawn::{FileAction, SpawnAttrs};
         use wasm_posix_shared::signal::SIGINT;
@@ -23364,8 +23364,8 @@ mod tests {
             )
             .unwrap();
         for (fd, file_type, idx, _) in tracked {
-            assert!(table.get(child).unwrap().fd_table.get(fd).is_err());
-            assert_eq!(descriptor_backing_ref_count(file_type, idx), Some(1));
+            assert!(table.get(child).unwrap().fd_table.get(fd).is_ok());
+            assert_eq!(descriptor_backing_ref_count(file_type, idx), Some(2));
         }
 
         let err = table
@@ -23383,7 +23383,7 @@ mod tests {
         for (_, file_type, idx, _) in tracked {
             assert_eq!(
                 descriptor_backing_ref_count(file_type, idx),
-                Some(1),
+                Some(2),
                 "failed spawn must roll back every inherited backing ref"
             );
         }
@@ -24236,6 +24236,107 @@ mod tests {
                 .count(),
             1,
         );
+    }
+
+    #[test]
+    fn spawn_resetids_precedes_credential_sensitive_directory_actions_once() {
+        use crate::credentials::Credentials;
+        use crate::process_table::ProcessTable;
+        use crate::spawn::{FileAction, SpawnAttrs};
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let parent_credentials = Credentials {
+            ruid: 1000,
+            euid: 2000,
+            suid: 3000,
+            rgid: 4000,
+            egid: 5000,
+            sgid: 6000,
+            supplementary_groups: vec![7000, 8000],
+        };
+        {
+            let parent = table.get_mut(parent_pid).unwrap();
+            parent.install_credentials(parent_credentials.clone());
+            parent.cwd = b"/real-owned".to_vec();
+        }
+
+        let mut host = MockHostIO::new();
+        host.set_dir_with_owner(b"/real-owned", 1000, 4000, 0o700);
+        host.set_dir_with_owner(b"/real-owned/final", 1000, 4000, 0o700);
+        host.set_dir_with_owner(b"/real-owned/intermediate", 1000, 4000, 0o700);
+        // Replaying the list from its final directory would try this path.
+        // Keeping it absent makes a second pass observably fail instead of
+        // silently appearing idempotent.
+        host.set_missing_path(b"/real-owned/final/final");
+
+        let actions = [
+            FileAction::Open {
+                fd: 10,
+                path: b"final".to_vec(),
+                oflag: (O_RDONLY | O_DIRECTORY) as i32,
+                mode: 0,
+            },
+            FileAction::Chdir {
+                path: b"intermediate".to_vec(),
+            },
+            FileAction::Fchdir { fd: 10 },
+        ];
+
+        assert_eq!(
+            table.spawn_child_for_caller(
+                parent_pid,
+                parent_pid,
+                &[b"child".as_slice()],
+                &[],
+                &actions,
+                &SpawnAttrs::empty(),
+                &mut host,
+            ),
+            Err(Errno::EACCES),
+            "the parent's effective IDs cannot search the real-ID-only directory",
+        );
+        assert_eq!(host.next_handle, 100, "a failed action must not reach host_open");
+
+        let child_pid = table
+            .spawn_child_for_caller(
+                parent_pid,
+                parent_pid,
+                &[b"child".as_slice()],
+                &[],
+                &actions,
+                &SpawnAttrs {
+                    flags: wasm_posix_shared::spawn_contract::ATTR_RESETIDS,
+                    pgrp: 0,
+                    sigdef: 0,
+                    sigmask: 0,
+                },
+                &mut host,
+            )
+            .unwrap();
+
+        let child = table.get(child_pid).unwrap();
+        assert_eq!(child.effective_uid(), 1000);
+        assert_eq!(child.effective_gid(), 4000);
+        assert_eq!(child.supplementary_groups(), &[7000, 8000]);
+        assert_eq!(child.cwd, b"/real-owned/final");
+        assert_eq!(
+            child
+                .ofd_table
+                .get(child.fd_table.get(10).unwrap().ofd_ref.0)
+                .unwrap()
+                .path,
+            b"/real-owned/final",
+        );
+        assert_eq!(
+            host.next_handle, 101,
+            "the credential-sensitive open/chdir/fchdir action list runs once",
+        );
+        assert_eq!(
+            table.get(parent_pid).unwrap().credentials(),
+            &parent_credentials,
+        );
+        assert_eq!(table.get(parent_pid).unwrap().cwd, b"/real-owned");
     }
 
     #[test]
@@ -43318,6 +43419,7 @@ mod tests {
         let parent_pid = 73;
         for (child_pid, make_stale) in [(74, false), (75, true)] {
             let mut proc = Process::new(child_pid);
+            let cloexec_fd = sys_eventfd2(&mut proc, 0, O_CLOEXEC).unwrap();
             let original_credentials = proc.credentials().clone();
             let mut locks = AdvisoryLockManager::new();
             let mut host = MockHostIO::new();
@@ -43370,6 +43472,7 @@ mod tests {
                     Err(Errno::EINVAL),
                 );
                 assert!(!proc.has_exec);
+                assert!(proc.fd_table.get(cloexec_fd).is_ok());
                 assert_eq!(proc.credentials(), &original_credentials);
                 assert_eq!(proc.exec_generation, 1);
             } else {
@@ -43383,6 +43486,7 @@ mod tests {
                 )
                 .unwrap();
                 assert!(proc.has_exec);
+                assert!(proc.fd_table.get(cloexec_fd).is_err());
                 assert_eq!(proc.exec_generation, 1);
             }
             assert_eq!(host.closed_handles, vec![100]);
@@ -43435,6 +43539,80 @@ mod tests {
                 1,
             );
         }
+    }
+
+    #[test]
+    fn spawn_exec_target_signal_exit_drains_lease_before_stale_commit() {
+        let parent_pid = 90;
+        let child_pid = 91;
+        let mut proc = Process::new(child_pid);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.stat_size = 5;
+        host.prepared_exec_bytes = Some(b"hello".to_vec());
+        host.set_file_with_owner(
+            b"/bin/spawn-signal",
+            0,
+            0,
+            S_IFREG | 0o755,
+            b"hello",
+        );
+        let launch = proc.exec_generation;
+        let token = crate::exec_target::prepare(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            crate::exec_target::PreparedExecOwner::Spawn {
+                parent_pid,
+                child_pid,
+                launch,
+            },
+            AT_FDCWD,
+            b"/bin/spawn-signal",
+            0,
+        )
+        .unwrap();
+        let mut bytes = [0u8; 5];
+        crate::exec_target::read(
+            &mut proc,
+            &mut host,
+            child_pid,
+            token,
+            0,
+            &mut bytes,
+        )
+        .unwrap();
+
+        sys_exit_by_signal_with_locks(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            wasm_posix_shared::signal::SIGTERM,
+        );
+
+        assert_eq!(proc.state, ProcessState::Exited);
+        assert_eq!(proc.exit_signal, wasm_posix_shared::signal::SIGTERM);
+        assert!(proc.prepared_exec_targets.is_empty());
+        assert_eq!(
+            host.closed_handles
+                .iter()
+                .filter(|&&handle| handle == 100)
+                .count(),
+            1,
+        );
+        let closed_after_exit = host.closed_handles.clone();
+        assert_eq!(
+            crate::exec_target::commit_spawn(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                parent_pid,
+                child_pid,
+                token,
+            ),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(host.closed_handles, closed_after_exit);
     }
 
     #[test]
