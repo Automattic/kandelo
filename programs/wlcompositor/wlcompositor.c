@@ -90,6 +90,7 @@
 #include "linux-dmabuf-v1-server-protocol.h"
 #include "xdg-decoration-v1-server-protocol.h"
 #include "wlr-layer-shell-v1-server-protocol.h"
+#include "presentation-time-server-protocol.h"
 
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-names.h>
@@ -197,6 +198,9 @@ struct surface {
     int placed;                         /* position assigned at first map */
     struct wl_resource *frame_cbs[MAX_FRAME_CB];
     int n_frame_cbs;
+    /* wp_presentation_feedback resources awaiting the next flip. */
+    struct wl_resource *feedbacks[MAX_FRAME_CB];
+    int n_feedbacks;
 };
 
 /* ---- wl_shm pool / buffer (custom, gbm-backed) ------------------------- */
@@ -843,6 +847,14 @@ static void surface_resource_destroy(struct wl_resource *r) {
     /* Clearing our references avoids a dangling send after destroy; the
      * callbacks themselves are owned by the client and freed with it. */
     s->n_frame_cbs = 0;
+    /* Pending presentation feedbacks would dangle on `s` through their
+     * destructor's user_data; discard them now, before the free. */
+    while (s->n_feedbacks > 0) {
+        struct wl_resource *fb = s->feedbacks[--s->n_feedbacks];
+        wl_resource_set_user_data(fb, NULL);
+        wp_presentation_feedback_send_discarded(fb);
+        wl_resource_destroy(fb);
+    }
     free(s);
     /* A closed window frees its slice back to the remaining tiles; a closed
      * layer surface additionally frees its exclusive strip. */
@@ -2006,6 +2018,78 @@ static void send_all_frame_callbacks(void) {
 }
 
 /* ====================================================================== */
+/* wp_presentation: flip-timestamp feedback                               */
+/* ====================================================================== */
+
+/* Feedback for a visible surface reports the flip that showed it; feedback
+ * for a hidden one (other workspace, unmapped) is discarded at the same
+ * flip. sec/nsec are CLOCK_MONOTONIC — the clock kernel_vblank stamps
+ * page-flip events with, matching the advertised clock_id. */
+static void send_presentation_feedback(struct surface *s, uint32_t sec,
+                                       uint32_t nsec, uint32_t seq) {
+    uint32_t refresh_ns =
+        g.mode.vrefresh ? 1000000000u / g.mode.vrefresh : 0;
+    int visible = surface_visible(s);
+    while (s->n_feedbacks > 0) {
+        struct wl_resource *fb = s->feedbacks[--s->n_feedbacks];
+        wl_resource_set_user_data(fb, NULL);
+        if (visible)
+            wp_presentation_feedback_send_presented(
+                fb, 0, sec, nsec, refresh_ns, 0, seq,
+                WP_PRESENTATION_FEEDBACK_KIND_VSYNC);
+        else
+            wp_presentation_feedback_send_discarded(fb);
+        wl_resource_destroy(fb);
+    }
+}
+static void send_all_presentation_feedback(uint32_t sec, uint32_t nsec,
+                                           uint32_t seq) {
+    for (int i = 0; i < g.n_surfaces; i++)
+        send_presentation_feedback(g.zorder[i], sec, nsec, seq);
+    for (int i = 0; i < g.n_layers; i++)
+        send_presentation_feedback(g.layers[i], sec, nsec, seq);
+}
+
+static void presentation_destroy(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static void feedback_resource_destroy(struct wl_resource *r) {
+    struct surface *s = wl_resource_get_user_data(r);
+    if (!s) return;
+    for (int i = 0; i < s->n_feedbacks; i++) {
+        if (s->feedbacks[i] != r) continue;
+        s->feedbacks[i] = s->feedbacks[--s->n_feedbacks];
+        break;
+    }
+}
+static void presentation_feedback(struct wl_client *c, struct wl_resource *r,
+                                  struct wl_resource *surface, uint32_t id) {
+    struct surface *s = wl_resource_get_user_data(surface);
+    struct wl_resource *fb =
+        wl_resource_create(c, &wp_presentation_feedback_interface, 1, id);
+    if (!fb) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(fb, NULL, s, feedback_resource_destroy);
+    if (s->n_feedbacks < MAX_FRAME_CB) {
+        s->feedbacks[s->n_feedbacks++] = fb;
+        return;
+    }
+    wp_presentation_feedback_send_discarded(fb);
+    wl_resource_destroy(fb);
+}
+static const struct wp_presentation_interface presentation_impl = {
+    .destroy = presentation_destroy,
+    .feedback = presentation_feedback,
+};
+static void presentation_bind(struct wl_client *c, void *data, uint32_t ver,
+                              uint32_t id) {
+    struct wl_resource *r =
+        wl_resource_create(c, &wp_presentation_interface, (int)ver, id);
+    if (!r) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(r, &presentation_impl, NULL, NULL);
+    wp_presentation_send_clock_id(r, CLOCK_MONOTONIC);
+}
+
+/* ====================================================================== */
 /* GPU compositing: GLES quads over imported client textures              */
 /* ====================================================================== */
 
@@ -2384,6 +2468,11 @@ static void repaint(void) {
         printf("FLIP fb=%u first=1\n", fb_id);
         fflush(stdout);
         send_all_frame_callbacks();
+        /* SetCrtc has no flip event, so stamp the first frame ourselves. */
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        send_all_presentation_feedback((uint32_t)ts.tv_sec,
+                                       (uint32_t)ts.tv_nsec, 0);
     } else {
         if (drmModePageFlip(g.card_fd, g.crtc_id, fb_id,
                             DRM_MODE_PAGE_FLIP_EVENT, NULL) < 0) {
@@ -2416,6 +2505,7 @@ static void on_flip(int fd, unsigned int seq, unsigned int sec,
         g.displayed_bo = g.pending_bo;
         g.pending_bo = NULL;
         send_all_frame_callbacks();
+        send_all_presentation_feedback(sec, usec * 1000u, seq);
     }
     if (g.repaint_needed && !g.pending_bo) {
         g.repaint_needed = 0;
@@ -2975,8 +3065,10 @@ static int setup_keymap(void) {
      * xkb offset), so an evdev KEY_* the compositor receives from libinput
      * lands on the matching xkb key here. Enough of a real keyboard for a
      * terminal: letters, digits, common punctuation, space, Return, Tab,
-     * Backspace, Escape, both Shifts and left Control. Two levels (base /
-     * Shift) via TWO_LEVEL; the bare action keys are ONE_LEVEL. */
+     * Backspace, Escape, both Shifts and left Control, plus F1-F12 and the
+     * nav cluster (Home/End/PgUp/PgDn/Insert/Delete) for full-screen
+     * terminal apps. Two levels (base / Shift) via TWO_LEVEL; the bare
+     * action keys are ONE_LEVEL. */
     static const char KEYMAP[] =
         "xkb_keymap {\n"
         "  xkb_keycodes \"kandelo\" {\n"
@@ -3001,6 +3093,11 @@ static int setup_keymap(void) {
         "    <LWIN> = 133;\n"   /* evdev KEY_LEFTMETA (125) + 8: the SUPER key */
         "    <LALT> = 64;\n"    /* evdev KEY_LEFTALT (56) + 8 */
         "    <UP> = 111;  <LEFT> = 113;  <RGHT> = 114;  <DOWN> = 116;\n"
+        "    <FK01> = 67;  <FK02> = 68;  <FK03> = 69;  <FK04> = 70;\n"
+        "    <FK05> = 71;  <FK06> = 72;  <FK07> = 73;  <FK08> = 74;\n"
+        "    <FK09> = 75;  <FK10> = 76;  <FK11> = 95;  <FK12> = 96;\n"
+        "    <HOME> = 110;  <PGUP> = 112;  <END> = 115;  <PGDN> = 117;\n"
+        "    <INS> = 118;  <DELE> = 119;\n"
         "  };\n"
         "  xkb_types \"kandelo\" {\n"
         "    virtual_modifiers NumLock;\n"
@@ -3047,6 +3144,15 @@ static int setup_keymap(void) {
         "    key <DOWN> { [ Down ] };\n"
         "    key <LEFT> { [ Left ] };\n"
         "    key <RGHT> { [ Right ] };\n"
+        "    key <FK01> { [ F1 ] };   key <FK02> { [ F2 ] };\n"
+        "    key <FK03> { [ F3 ] };   key <FK04> { [ F4 ] };\n"
+        "    key <FK05> { [ F5 ] };   key <FK06> { [ F6 ] };\n"
+        "    key <FK07> { [ F7 ] };   key <FK08> { [ F8 ] };\n"
+        "    key <FK09> { [ F9 ] };   key <FK10> { [ F10 ] };\n"
+        "    key <FK11> { [ F11 ] };  key <FK12> { [ F12 ] };\n"
+        "    key <HOME> { [ Home ] };   key <END>  { [ End ] };\n"
+        "    key <PGUP> { [ Prior ] };  key <PGDN> { [ Next ] };\n"
+        "    key <INS>  { [ Insert ] }; key <DELE> { [ Delete ] };\n"
         "    key <AE01> { type=\"TWO_LEVEL\", [ 1, exclam ] };\n"
         "    key <AE02> { type=\"TWO_LEVEL\", [ 2, at ] };\n"
         "    key <AE03> { type=\"TWO_LEVEL\", [ 3, numbersign ] };\n"
@@ -3605,6 +3711,8 @@ int main(void) {
                           NULL, decoration_mgr_bind) ||
         !wl_global_create(g.display, &zwlr_layer_shell_v1_interface, 4, NULL,
                           layer_shell_bind) ||
+        !wl_global_create(g.display, &wp_presentation_interface, 1, NULL,
+                          presentation_bind) ||
         !wl_global_create(g.display, &wl_seat_interface, 1, NULL, seat_bind) ||
         !wl_global_create(g.display, &wl_output_interface, 2, NULL,
                           output_bind)) {

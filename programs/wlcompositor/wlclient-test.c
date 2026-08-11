@@ -10,8 +10,9 @@
  *   3. allocate a renderD128 dumb-bo, paint it solid red, and hand its
  *      prime-fd to wl_shm as the pool — the shared-buffer path that lets
  *      the compositor read the client's pixels (plan §8.1 gbm_bo_import).
- *   4. attach + commit + request a frame callback; when the callback
- *      fires, the compositor has flipped our pixels onto card0.
+ *   4. attach + commit + request a frame callback and a wp_presentation
+ *      feedback; when they fire, the compositor has flipped our pixels
+ *      onto card0 and reported the flip's CLOCK_MONOTONIC timestamp.
  *   5. compile the wl_keyboard keymap fd (proving the compositor's
  *      libxkbcommon keymap path) and receive a host-injected key + a
  *      pointer button, forwarded by the compositor from libinput.
@@ -34,6 +35,9 @@
 #include <wayland-client-protocol.h>
 #include "xdg-shell-client-protocol.h"
 #include "xdg-decoration-v1-client-protocol.h"
+#include "presentation-time-client-protocol.h"
+
+#include <xkbcommon/xkbcommon.h>
 
 #include <gbm.h>
 
@@ -49,6 +53,7 @@ struct client {
     struct wl_seat *seat;
     struct wl_output *output;
     struct zxdg_decoration_manager_v1 *decor_mgr;
+    struct wp_presentation *presentation;
 
     struct wl_surface *surface;
     struct xdg_surface *xdg_surface;
@@ -56,12 +61,24 @@ struct client {
 
     int configured;     /* got + acked the initial xdg configure */
     int frame_done;     /* compositor flipped our buffer */
+    int presented;      /* wp_presentation_feedback resolved (either event) */
     int got_keymap;     /* wl_keyboard.keymap arrived + parsed */
     int got_key;        /* wl_keyboard.key arrived */
     uint32_t key_code, key_state;
     int got_button;     /* wl_pointer.button arrived */
     uint32_t btn_code, btn_state;
     int closed;         /* compositor sent xdg_toplevel.close (killactive) */
+};
+
+/* ---- wp_presentation --------------------------------------------------- */
+
+static void presentation_clock_id(void *data, struct wp_presentation *p,
+                                  uint32_t clk_id) {
+    printf("PRESENTATION_CLOCK id=%u\n", clk_id);
+    fflush(stdout);
+}
+static const struct wp_presentation_listener presentation_listener = {
+    .clock_id = presentation_clock_id,
 };
 
 /* ---- registry ---------------------------------------------------------- */
@@ -83,7 +100,42 @@ static void registry_global(void *data, struct wl_registry *reg, uint32_t name,
     else if (strcmp(iface, "zxdg_decoration_manager_v1") == 0)
         c->decor_mgr = wl_registry_bind(
             reg, name, &zxdg_decoration_manager_v1_interface, 1);
+    else if (strcmp(iface, "wp_presentation") == 0) {
+        c->presentation =
+            wl_registry_bind(reg, name, &wp_presentation_interface, 1);
+        /* clock_id arrives on the bind roundtrip — listen from the start. */
+        wp_presentation_add_listener(c->presentation, &presentation_listener,
+                                     c);
+    }
 }
+
+static void feedback_sync_output(void *data,
+                                 struct wp_presentation_feedback *fb,
+                                 struct wl_output *output) {}
+static void feedback_presented(void *data, struct wp_presentation_feedback *fb,
+                               uint32_t sec_hi, uint32_t sec_lo, uint32_t nsec,
+                               uint32_t refresh, uint32_t seq_hi,
+                               uint32_t seq_lo, uint32_t flags) {
+    struct client *c = data;
+    c->presented = 1;
+    printf("PRESENTED sec=%u nsec=%u refresh=%u seq=%u flags=0x%x\n",
+           sec_lo, nsec, refresh, seq_lo, flags);
+    fflush(stdout);
+    wp_presentation_feedback_destroy(fb);
+}
+static void feedback_discarded(void *data,
+                               struct wp_presentation_feedback *fb) {
+    struct client *c = data;
+    c->presented = 1;
+    printf("PRESENTATION_DISCARDED\n");
+    fflush(stdout);
+    wp_presentation_feedback_destroy(fb);
+}
+static const struct wp_presentation_feedback_listener feedback_listener = {
+    .sync_output = feedback_sync_output,
+    .presented = feedback_presented,
+    .discarded = feedback_discarded,
+};
 
 /* ---- xdg-decoration ---------------------------------------------------- */
 
@@ -151,12 +203,36 @@ static void kbd_keymap(void *data, struct wl_keyboard *k, uint32_t format,
     struct client *c = data;
     /* Read-only map of the keymap the compositor built via libxkbcommon.
      * The bytes are the file's contents (no cross-process sharing needed);
-     * we assert it is a real xkb keymap. */
+     * we compile it exactly as a real client would and probe keys a
+     * terminal needs beyond the letters (F1, Delete). */
     char *map = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
     if (map != MAP_FAILED) {
         if (format == WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1 &&
-            strncmp(map, "xkb_keymap", 10) == 0)
-            c->got_keymap = 1;
+            strncmp(map, "xkb_keymap", 10) == 0) {
+            struct xkb_context *ctx =
+                xkb_context_new(XKB_CONTEXT_NO_DEFAULT_INCLUDES);
+            /* The compositor's map is NUL-terminated (size = strlen + 1),
+             * which is what from_string expects. */
+            struct xkb_keymap *km = ctx
+                ? xkb_keymap_new_from_string(ctx, map,
+                                             XKB_KEYMAP_FORMAT_TEXT_V1,
+                                             XKB_KEYMAP_COMPILE_NO_FLAGS)
+                : NULL;
+            if (km) {
+                /* evdev KEY_F1 (59) + 8, KEY_DELETE (111) + 8. */
+                const xkb_keysym_t *syms;
+                int f1 = xkb_keymap_key_get_syms_by_level(km, 67, 0, 0,
+                                                          &syms) == 1 &&
+                         syms[0] == XKB_KEY_F1;
+                int del = xkb_keymap_key_get_syms_by_level(km, 119, 0, 0,
+                                                           &syms) == 1 &&
+                          syms[0] == XKB_KEY_Delete;
+                c->got_keymap = f1 && del;
+                printf("KEYMAP_SYMS f1=%d delete=%d\n", f1, del);
+                xkb_keymap_unref(km);
+            }
+            if (ctx) xkb_context_unref(ctx);
+        }
         munmap(map, size);
     }
     close(fd);
@@ -342,10 +418,16 @@ int main(void) {
     wl_surface_damage(c.surface, 0, 0, WIN_W, WIN_H);
     struct wl_callback *frame = wl_surface_frame(c.surface);
     wl_callback_add_listener(frame, &frame_listener, &c);
+    if (c.presentation) {
+        struct wp_presentation_feedback *fb =
+            wp_presentation_feedback(c.presentation, c.surface);
+        wp_presentation_feedback_add_listener(fb, &feedback_listener, &c);
+    }
     wl_surface_commit(c.surface);
 
-    /* The frame callback fires once the compositor has flipped our pixels. */
-    while (!c.frame_done)
+    /* The frame callback fires once the compositor has flipped our pixels;
+     * the presentation feedback resolves on the same flip. */
+    while (!c.frame_done || (c.presentation && !c.presented))
         if (wl_display_dispatch(display) < 0) { fprintf(stderr, "dispatch\n"); return 1; }
     printf("CLIENT_MAPPED\n");
     printf("CLIENT_READY\n");   /* signal to the test to inject input */
