@@ -285,9 +285,9 @@ VITE_CORS_PROXY_URL='https://your-proxy.example/?' npm run dev
 Proxy prefixes ending in a bare `?` receive raw target URLs; `?url=`-style
 prefixes receive percent-encoded targets.
 
-`BrowserKernel({ corsProxyUrl })` applies the same proxy to two independent
-browser transports: guest HTTP(S) requests and external lazy VFS files or
-archives. Same-origin lazy assets still use direct `fetch()`. This distinction
+`BrowserKernel({ corsProxy })` applies one complete immutable proxy profile to
+two independent browser transports: guest HTTP(S) requests and external lazy
+VFS files or archives. Same-origin lazy assets still use direct `fetch()`. This distinction
 matters in a cross-origin-isolated page: lazy materialization must read the
 response bytes, so an external response must grant CORS. A CORP header can
 satisfy a COEP embedding check, but it does not make an opaque no-CORS response
@@ -296,6 +296,15 @@ CORS even though an ordinary command-line client can read them. An explicit
 `closedLazyAssets` set remains exhaustive and takes precedence over the network
 proxy. The Node.js host is unaffected and continues to fetch its lazy URLs
 directly.
+
+The current profile allows `Accept`, `Content-Type`, `git-protocol`,
+`wp_blog`, and `wp_install`. Every actual proxy boundary projects by
+case-insensitive field name only and preserves browser-representable values and
+occurrences as far as Fetch permits. An anonymous bodyless GET may omit an
+unsupported field and emits a deduplicated diagnostic. Credentialed requests,
+body-bearing requests, and non-GET requests fail before dispatch if projection
+would be lossy. Direct Fetch attempts remain unprojected. The development
+same-origin relay enforces the same profile as production.
 
 ### Blob-URL iframes (service-worker boundary)
 
@@ -316,7 +325,7 @@ neutralizes this class of issue. It hooks `Blob`/`URL.createObjectURL` and the
 document, which the service worker *does* control). It is idempotent and a no-op
 unless a text/html blob URL is used as an iframe src. The service worker inlines
 it (via the `"__BLOB_IFRAME_INTERCEPTOR__"` build-time placeholder, mirroring
-`"__CORS_PROXY_URL__"`) into the `<head>` of every bridged HTML document, so it
+`"__CORS_PROXY_CONFIG__"`) into the `<head>` of every bridged HTML document, so it
 applies to all app demos, not just WordPress.
 
 ## VFS Images
@@ -749,7 +758,7 @@ tree retain sealed authenticated transports. Host boot prepares
 `/usr/bin/brew` by atomically fetching bootstrap, libyaml, and Ruby. The other
 35 bottle trees remain pending until their commands are first used.
 
-Shell revision 24 and `node-vfs` revision 16 share this exact base-image
+Shell revision 24 and `node-vfs` revision 17 share this exact base-image
 identity. The other shell-derived images are `nginx-vfs` revision 4,
 `nginx-php-vfs` revision 4, `lamp` revision 13, and `wordpress` revision 14.
 All preserve the shell's pending transports, bootstrap binding, atomic seals,
@@ -890,4 +899,8 @@ browser engine has not reclaimed. Garbage-collection observations and bounded,
 coalesced ordinary-allocation pressure are diagnostic/reclamation aids only.
 
 ### npm registry access in the browser
-The node demo's `npm install` uses `--registry=http://proxy.local/` so registry traffic can pass through the host fetch bridge instead of requiring the JavaScript runtime to own every TLS edge case. The kernel resolves `proxy.local` via `host_getaddrinfo` (it is deliberately absent from the synthetic `/etc/hosts`), and the host-side TLS backend re-routes those requests through the existing cors-proxy (dev) or service worker (prod) onto `https://registry.npmjs.org/`. Tarball URLs in JSON responses are rewritten to the same alias so subsequent fetches stay on the same path.
+
+The Node demo uses npm's canonical `https://registry.npmjs.org/` registry.
+Registry metadata and tarballs traverse the ordinary browser TLS and configured
+proxy boundary. Kandelo does not rewrite registry URLs, package metadata, or
+tarball locations and has no npm- or package-specific proxy routing.

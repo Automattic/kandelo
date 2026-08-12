@@ -4,6 +4,7 @@ import {
   type IncomingHttpHeaders,
   type Server,
 } from "node:http";
+import { readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 
@@ -11,6 +12,7 @@ import {
   type DevCorsProxyFetch,
   DEV_CORS_PROXY_MAX_REQUEST_BYTES,
   DEV_CORS_PROXY_MAX_RESPONSE_BYTES,
+  devCorsProxyRequestHeaders,
   handleDevCorsProxyRequest,
 } from "../../apps/browser-demos/vite/dev-cors-proxy";
 
@@ -105,6 +107,40 @@ async function readBody(request: NodeJS.ReadableStream): Promise<Buffer> {
 }
 
 describe("development CORS proxy", () => {
+  it("derives its request-header boundary from the application-owned profile", () => {
+    const source = readFileSync(
+      new URL("../../apps/browser-demos/vite/dev-cors-proxy.ts", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).toContain("DEFAULT_BROWSER_CORS_PROXY_CONFIG");
+    expect(source).not.toMatch(
+      /const ALLOWED_REQUEST_HEADERS = new Set\(\[[\s\S]*?\]\);/,
+    );
+  });
+
+  it("enforces the application-owned production request-header profile", () => {
+    const projected = devCorsProxyRequestHeaders({
+      accept: "application/json",
+      "content-type": "application/json",
+      "git-protocol": "version=2",
+      wp_blog: "https://blog.example/",
+      wp_install: "yes",
+      authorization: "Bearer secret",
+      "cache-control": "no-cache",
+      range: "bytes=0-9",
+      "x-arbitrary-metadata": "not transport authority",
+    });
+
+    expect(Object.fromEntries(projected.entries())).toEqual({
+      accept: "application/json",
+      "content-type": "application/json",
+      "git-protocol": "version=2",
+      wp_blog: "https://blog.example/",
+      wp_install: "yes",
+    });
+  });
+
   it("preserves Git smart-HTTP GET, HEAD, and POST", async () => {
     const observed: ObservedRequest[] = [];
     const upstream = createServer(async (request, response) => {

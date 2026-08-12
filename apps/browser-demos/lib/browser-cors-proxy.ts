@@ -20,11 +20,6 @@ if (defaultConfig === undefined) {
 
 export const DEFAULT_BROWSER_CORS_PROXY_CONFIG = defaultConfig;
 
-// The service-worker template consumes only a transport URL. Its value is
-// derived from the complete application-owned capability profile above.
-export const DEFAULT_BROWSER_CORS_PROXY_URL =
-  DEFAULT_BROWSER_CORS_PROXY_CONFIG.url;
-
 interface BrowserCorsProxyEnvironment {
   configuredUrl?: string;
   development: boolean;
@@ -52,10 +47,8 @@ export function resolveBrowserCorsProxyConfig(
     const baseUrl = environment.baseUrl.endsWith("/")
       ? environment.baseUrl
       : `${environment.baseUrl}/`;
-    url = new URL(
-      `${baseUrl}__kandelo_cors_proxy?url=`,
-      environment.pageUrl,
-    ).href;
+    url = new URL(`${baseUrl}__kandelo_cors_proxy?url=`, environment.pageUrl)
+      .href;
   }
   return validateBrowserCorsProxyConfig({
     ...DEFAULT_BROWSER_CORS_PROXY_CONFIG,

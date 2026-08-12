@@ -3,14 +3,14 @@ import type {
   IncomingMessage,
   ServerResponse,
 } from "node:http";
+import { DEFAULT_BROWSER_CORS_PROXY_CONFIG } from "../lib/browser-cors-proxy";
 
 export const DEV_CORS_PROXY_MAX_REQUEST_BYTES = 1024 * 1024;
 export const DEV_CORS_PROXY_MAX_RESPONSE_BYTES = 100 * 1024 * 1024;
 
 const ALLOWED_METHODS = new Set(["GET", "HEAD", "POST"]);
 const GITHUB_ORIGIN = "https://github.com";
-const GIT_UPLOAD_PACK_CONTENT_TYPE =
-  "application/x-git-upload-pack-request";
+const GIT_UPLOAD_PACK_CONTENT_TYPE = "application/x-git-upload-pack-request";
 
 export type DevCorsProxyFetch = (
   target: URL,
@@ -20,18 +20,9 @@ export type DevCorsProxyFetch = (
 // WHY: this local relay proves anonymous public Git and bottle transport.
 // Forwarding credentials needs a separately reviewed host/proxy protocol;
 // ambient browser Authorization must not become guest authority by accident.
-const ALLOWED_REQUEST_HEADERS = new Set([
-  "accept",
-  "cache-control",
-  "content-type",
-  "git-protocol",
-  "if-match",
-  "if-modified-since",
-  "if-none-match",
-  "if-unmodified-since",
-  "pragma",
-  "range",
-]);
+const ALLOWED_REQUEST_HEADERS = new Set(
+  DEFAULT_BROWSER_CORS_PROXY_CONFIG.allowedRequestHeaderNames,
+);
 
 // WHY: the browser receives this relay response from Kandelo's own origin.
 // Copying an arbitrary upstream header would therefore give an external host
@@ -48,9 +39,7 @@ const ALLOWED_RESPONSE_HEADERS = new Set([
 
 class EntityTooLargeError extends Error {}
 
-function headerValue(
-  value: string | string[] | undefined,
-): string | undefined {
+function headerValue(value: string | string[] | undefined): string | undefined {
   if (value === undefined) return undefined;
   return Array.isArray(value) ? value.join(", ") : value;
 }
@@ -153,8 +142,11 @@ function fail(response: ServerResponse, status: number, message: string): void {
 
 function isLoopbackHostname(hostname: string): boolean {
   const lower = hostname.toLowerCase().replace(/\.$/, "");
-  return lower === "localhost" || lower === "[::1]" ||
-    /^127(?:\.[0-9]{1,3}){3}$/.test(lower);
+  return (
+    lower === "localhost" ||
+    lower === "[::1]" ||
+    /^127(?:\.[0-9]{1,3}){3}$/.test(lower)
+  );
 }
 
 function effectivePort(url: URL): string {
@@ -171,9 +163,11 @@ export function devCorsProxyTargetIsRecursive(
 
   try {
     const incomingUrl = new URL(`http://${incomingHost}`);
-    return isLoopbackHostname(targetUrl.hostname) &&
+    return (
+      isLoopbackHostname(targetUrl.hostname) &&
       isLoopbackHostname(incomingUrl.hostname) &&
-      effectivePort(targetUrl) === effectivePort(incomingUrl);
+      effectivePort(targetUrl) === effectivePort(incomingUrl)
+    );
   } catch {
     return false;
   }
@@ -187,9 +181,11 @@ function isAllowedGitPost(
     ?.split(";", 1)[0]
     ?.trim()
     .toLowerCase();
-  return targetUrl.origin === GITHUB_ORIGIN &&
+  return (
+    targetUrl.origin === GITHUB_ORIGIN &&
     targetUrl.pathname.endsWith("/git-upload-pack") &&
-    contentType === GIT_UPLOAD_PACK_CONTENT_TYPE;
+    contentType === GIT_UPLOAD_PACK_CONTENT_TYPE
+  );
 }
 
 /** Route one request when it targets Vite's private development relay. */
@@ -282,19 +278,17 @@ export async function relayDevCorsProxyRequest(
     const upstream = await fetchImpl(targetUrl, {
       method,
       headers: devCorsProxyRequestHeaders(request.headers),
-      body: method === "POST" && requestBody.byteLength > 0
-        ? Uint8Array.from(requestBody).buffer
-        : undefined,
+      body:
+        method === "POST" && requestBody.byteLength > 0
+          ? Uint8Array.from(requestBody).buffer
+          : undefined,
       credentials: "omit",
       // WHY: the browser's outer fetch follows Location by default and would
       // bypass this relay on its next hop. Observe redirects here so the relay
       // can reject them instead of granting unreviewed network authority.
       redirect: method === "POST" ? "manual" : "follow",
     });
-    if (
-      method === "POST" &&
-      upstream.status >= 300 && upstream.status < 400
-    ) {
+    if (method === "POST" && upstream.status >= 300 && upstream.status < 400) {
       // Exact public tap URLs do not need a redirect. Refusing every POST
       // redirect is safer than exposing Location to the default-following
       // outer fetch, which would leave the same-origin relay entirely.

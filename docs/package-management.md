@@ -143,7 +143,7 @@ the flat selection, shell configuration, base image, or composer are ordinary
 package inputs and rebuild the complete reverse-dependent closure:
 
 - `shell` revision 24;
-- `node-vfs` revision 16;
+- `node-vfs` revision 17;
 - `lamp` revision 13;
 - `wordpress` revision 14; and
 - `nginx-vfs` and `nginx-php-vfs` revision 4.

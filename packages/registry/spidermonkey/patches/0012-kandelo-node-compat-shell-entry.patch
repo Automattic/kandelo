@@ -854,7 +854,7 @@
  #include "shell/OSObject.h"
  #include "shell/ShellModuleObjectWrapper.h"
  #include "shell/WasmTesting.h"
-@@ -236,6 +250,1070 @@
+@@ -236,6 +250,1214 @@
  using mozilla::TimeDuration;
  using mozilla::TimeStamp;
  using mozilla::Utf8Unit;
@@ -1381,6 +1381,9 @@
 +  Connect,
 +  Read,
 +  Write,
++  TlsConnect,
++  TlsRead,
++  TlsWrite,
 +};
 +
 +struct KandeloSocketWatch {
@@ -1390,14 +1393,23 @@
 +  PersistentRootedObject promise;
 +  std::vector<uint8_t> buffer;
 +  size_t offset = 0;
++  short events = 0;
++  SSL* tlsSsl = nullptr;
++  SSL_CTX* tlsCtx = nullptr;
++  int tlsHandle = -1;
++  bool closeFdOnCleanup = false;
 +  KandeloSocketWatch* next = nullptr;
 +
 +  KandeloSocketWatch(JSContext* cx, int fd, KandeloSocketWatchKind kind,
 +                     HandleObject promise)
-+      : fd(fd), kind(kind), cx(cx), promise(cx, promise) {}
++      : fd(fd), kind(kind), cx(cx), promise(cx, promise) {
++    events = kind == KandeloSocketWatchKind::Read ? POLLIN : POLLOUT;
++  }
 +};
 +
 +static KandeloSocketWatch* gKandeloSocketWatches = nullptr;
++static bool KandeloDispatchTlsWatch(KandeloSocketWatch* watch);
++static void KandeloCleanupTlsWatch(KandeloSocketWatch* watch);
 +
 +static int KandeloSetNonblocking(int fd) {
 +  int flags = fcntl(fd, F_GETFL, 0);
@@ -1461,7 +1473,7 @@
 +       watch = watch->next) {
 +    pollfd pfd = {};
 +    pfd.fd = watch->fd;
-+    pfd.events = watch->kind == KandeloSocketWatchKind::Read ? POLLIN : POLLOUT;
++    pfd.events = watch->events;
 +    pollfds.push_back(pfd);
 +  }
 +
@@ -1491,6 +1503,10 @@
 +                                       err ? err : ECONNREFUSED, nullptr);
 +      }
 +      done = true;
++    } else if (watch->kind == KandeloSocketWatchKind::TlsConnect ||
++               watch->kind == KandeloSocketWatchKind::TlsRead ||
++               watch->kind == KandeloSocketWatchKind::TlsWrite) {
++      done = KandeloDispatchTlsWatch(watch);
 +    } else if (watch->kind == KandeloSocketWatchKind::Read) {
 +      ssize_t n = read(watch->fd, watch->buffer.data(), watch->buffer.size());
 +      if (n >= 0) {
@@ -1519,6 +1535,7 @@
 +
 +    if (done) {
 +      KandeloSocketWatchUnlink(watch);
++      KandeloCleanupTlsWatch(watch);
 +      js_delete(watch);
 +      processed++;
 +    }
@@ -1652,6 +1669,8 @@
 +      if (watch->fd == fd) {
 +        *current = watch->next;
 +        KandeloResolvePromiseWithErrno(cx, watch->promise, 0, "socket closed");
++        watch->closeFdOnCleanup = false;
++        KandeloCleanupTlsWatch(watch);
 +        js_delete(watch);
 +      } else {
 +        current = &watch->next;
@@ -1695,6 +1714,19 @@
 +static void KandeloCloseTlsHandle(int handle) {
 +  KandeloTlsHandle* h = KandeloGetTlsHandle(handle);
 +  if (!h) return;
++  KandeloSocketWatch** current = &gKandeloSocketWatches;
++  while (*current) {
++    KandeloSocketWatch* watch = *current;
++    if (watch->tlsHandle == handle) {
++      *current = watch->next;
++      KandeloResolvePromiseWithErrno(watch->cx, watch->promise, 0,
++                                     "TLS socket closed");
++      KandeloCleanupTlsWatch(watch);
++      js_delete(watch);
++    } else {
++      current = &watch->next;
++    }
++  }
 +  if (h->ssl) {
 +    SSL_shutdown(h->ssl);
 +    SSL_free(h->ssl);
@@ -1702,6 +1734,108 @@
 +  if (h->ctx) SSL_CTX_free(h->ctx);
 +  if (h->fd >= 0) close(h->fd);
 +  *h = KandeloTlsHandle();
++}
++
++static void KandeloCleanupTlsWatch(KandeloSocketWatch* watch) {
++  if (watch->kind == KandeloSocketWatchKind::TlsConnect) {
++    if (watch->tlsSsl) SSL_free(watch->tlsSsl);
++    if (watch->tlsCtx) SSL_CTX_free(watch->tlsCtx);
++    if (watch->closeFdOnCleanup && watch->fd >= 0) close(watch->fd);
++    watch->tlsSsl = nullptr;
++    watch->tlsCtx = nullptr;
++    watch->closeFdOnCleanup = false;
++  }
++}
++
++static bool KandeloTlsWatchNeedsRetry(KandeloSocketWatch* watch, SSL* ssl,
++                                      int result) {
++  int error = SSL_get_error(ssl, result);
++  if (error == SSL_ERROR_WANT_READ) {
++    watch->events = POLLIN;
++    return true;
++  }
++  if (error == SSL_ERROR_WANT_WRITE) {
++    watch->events = POLLOUT;
++    return true;
++  }
++  return false;
++}
++
++static bool KandeloDispatchTlsWatch(KandeloSocketWatch* watch) {
++  SSL* ssl = watch->tlsSsl;
++  if (watch->kind != KandeloSocketWatchKind::TlsConnect) {
++    KandeloTlsHandle* h = KandeloGetTlsHandle(watch->tlsHandle);
++    if (!h) {
++      KandeloResolvePromiseWithErrno(watch->cx, watch->promise, 0,
++                                     "TLS socket closed");
++      return true;
++    }
++    ssl = h->ssl;
++  }
++
++  if (watch->kind == KandeloSocketWatchKind::TlsConnect) {
++    int result = SSL_connect(ssl);
++    if (result == 1) {
++      int handle =
++          KandeloAllocTlsHandle(watch->fd, watch->tlsSsl, watch->tlsCtx);
++      if (handle < 0) {
++        KandeloResolvePromiseWithErrno(watch->cx, watch->promise, 0,
++                                       "TLS handle table full");
++      } else {
++        watch->tlsSsl = nullptr;
++        watch->tlsCtx = nullptr;
++        watch->closeFdOnCleanup = false;
++        KandeloResolvePromiseWithInt(watch->cx, watch->promise, handle);
++      }
++      return true;
++    }
++    if (KandeloTlsWatchNeedsRetry(watch, ssl, result)) return false;
++    KandeloResolvePromiseWithErrno(watch->cx, watch->promise, 0,
++                                   "TLS handshake failed");
++    return true;
++  }
++
++  if (watch->kind == KandeloSocketWatchKind::TlsRead) {
++    int result = SSL_read(ssl, watch->buffer.data(), int(watch->buffer.size()));
++    if (result > 0) {
++      KandeloResolvePromiseWithBytes(watch->cx, watch->promise,
++                                     watch->buffer.data(), size_t(result));
++      return true;
++    }
++    int error = SSL_get_error(ssl, result);
++    if (error == SSL_ERROR_WANT_READ) {
++      watch->events = POLLIN;
++      return false;
++    }
++    if (error == SSL_ERROR_WANT_WRITE) {
++      watch->events = POLLOUT;
++      return false;
++    }
++    if (error == SSL_ERROR_ZERO_RETURN) {
++      KandeloResolvePromiseWithBytes(watch->cx, watch->promise,
++                                     watch->buffer.data(), 0);
++      return true;
++    }
++    KandeloResolvePromiseWithErrno(watch->cx, watch->promise, 0,
++                                   "TLS read failed");
++    return true;
++  }
++
++  while (watch->offset < watch->buffer.size()) {
++    int result = SSL_write(ssl, watch->buffer.data() + watch->offset,
++                           int(watch->buffer.size() - watch->offset));
++    if (result > 0) {
++      watch->offset += size_t(result);
++      continue;
++    }
++    if (KandeloTlsWatchNeedsRetry(watch, ssl, result)) return false;
++    KandeloResolvePromiseWithErrno(watch->cx, watch->promise, 0,
++                                   "TLS write failed");
++    return true;
++  }
++  KandeloResolvePromiseWithInt(watch->cx, watch->promise,
++                               int32_t(watch->offset));
++  return true;
 +}
 +
 +static SSL_CTX* KandeloMakeTlsContext(JSContext* cx, HandleValue optionsValue) {
@@ -1760,6 +1894,7 @@
 +  RootedValue options(cx, args.length() >= 3 ? args[2] : UndefinedValue());
 +  SSL_CTX* ctx = KandeloMakeTlsContext(cx, options);
 +  if (!ctx) {
++    close(fd);
 +    RootedObject promise(cx, KandeloRejectedPromise(cx, "TLS context failed"));
 +    if (!promise) return false;
 +    args.rval().setObject(*promise);
@@ -1768,6 +1903,7 @@
 +  SSL* ssl = SSL_new(ctx);
 +  if (!ssl) {
 +    SSL_CTX_free(ctx);
++    close(fd);
 +    RootedObject promise(cx, KandeloRejectedPromise(cx, "SSL_new failed"));
 +    if (!promise) return false;
 +    args.rval().setObject(*promise);
@@ -1776,27 +1912,32 @@
 +  SSL_set_fd(ssl, fd);
 +  SSL_set_tlsext_host_name(ssl, servername.get());
 +  SSL_set1_host(ssl, servername.get());
-+  if (SSL_connect(ssl) != 1) {
++  RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
++  if (!promise) {
 +    SSL_free(ssl);
 +    SSL_CTX_free(ctx);
-+    RootedObject promise(cx, KandeloRejectedPromise(cx, "TLS handshake failed"));
-+    if (!promise) return false;
-+    args.rval().setObject(*promise);
-+    return true;
++    close(fd);
++    return false;
 +  }
-+  int handle = KandeloAllocTlsHandle(fd, ssl, ctx);
-+  if (handle < 0) {
-+    SSL_free(ssl);
-+    SSL_CTX_free(ctx);
-+    RootedObject promise(cx, KandeloRejectedPromise(cx, "TLS handle table full"));
-+    if (!promise) return false;
-+    args.rval().setObject(*promise);
-+    return true;
-+  }
-+  RootedValue value(cx, Int32Value(handle));
-+  RootedObject promise(cx, KandeloResolvedPromise(cx, value));
-+  if (!promise) return false;
 +  args.rval().setObject(*promise);
++  auto* watch = js_new<KandeloSocketWatch>(
++      cx, fd, KandeloSocketWatchKind::TlsConnect, promise);
++  if (!watch) {
++    SSL_free(ssl);
++    SSL_CTX_free(ctx);
++    close(fd);
++    JS_ReportOutOfMemory(cx);
++    return false;
++  }
++  watch->tlsSsl = ssl;
++  watch->tlsCtx = ctx;
++  watch->closeFdOnCleanup = true;
++  if (KandeloDispatchTlsWatch(watch)) {
++    KandeloCleanupTlsWatch(watch);
++    js_delete(watch);
++  } else {
++    KandeloSocketWatchLink(watch);
++  }
 +  return true;
 +}
 +
@@ -1809,20 +1950,22 @@
 +  if (length <= 0) length = 16384;
 +  KandeloTlsHandle* h = KandeloGetTlsHandle(handle);
 +  if (!h) return false;
-+  std::vector<uint8_t> buffer(static_cast<size_t>(length));
-+  int n = SSL_read(h->ssl, buffer.data(), int(buffer.size()));
-+  if (n < 0) {
-+    RootedObject promise(cx, KandeloRejectedPromise(cx, "TLS read failed"));
-+    if (!promise) return false;
-+    args.rval().setObject(*promise);
-+    return true;
-+  }
-+  RootedObject bytes(cx, KandeloNewUint8ArrayCopy(cx, buffer.data(), size_t(n)));
-+  if (!bytes) return false;
-+  RootedValue value(cx, ObjectValue(*bytes));
-+  RootedObject promise(cx, KandeloResolvedPromise(cx, value));
++  RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
 +  if (!promise) return false;
 +  args.rval().setObject(*promise);
++  auto* watch = js_new<KandeloSocketWatch>(
++      cx, h->fd, KandeloSocketWatchKind::TlsRead, promise);
++  if (!watch) {
++    JS_ReportOutOfMemory(cx);
++    return false;
++  }
++  watch->tlsHandle = handle;
++  watch->buffer.resize(static_cast<size_t>(length));
++  if (KandeloDispatchTlsWatch(watch)) {
++    js_delete(watch);
++  } else {
++    KandeloSocketWatchLink(watch);
++  }
 +  return true;
 +}
 +
@@ -1834,21 +1977,22 @@
 +  if (!h) return false;
 +  std::vector<uint8_t> bytes;
 +  if (!KandeloValueToBytes(cx, args[1], &bytes)) return false;
-+  size_t written = 0;
-+  while (written < bytes.size()) {
-+    int n = SSL_write(h->ssl, bytes.data() + written, int(bytes.size() - written));
-+    if (n <= 0) {
-+      RootedObject promise(cx, KandeloRejectedPromise(cx, "TLS write failed"));
-+      if (!promise) return false;
-+      args.rval().setObject(*promise);
-+      return true;
-+    }
-+    written += size_t(n);
-+  }
-+  RootedValue value(cx, Int32Value(int32_t(written)));
-+  RootedObject promise(cx, KandeloResolvedPromise(cx, value));
++  RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
 +  if (!promise) return false;
 +  args.rval().setObject(*promise);
++  auto* watch = js_new<KandeloSocketWatch>(
++      cx, h->fd, KandeloSocketWatchKind::TlsWrite, promise);
++  if (!watch) {
++    JS_ReportOutOfMemory(cx);
++    return false;
++  }
++  watch->tlsHandle = handle;
++  watch->buffer = std::move(bytes);
++  if (KandeloDispatchTlsWatch(watch)) {
++    js_delete(watch);
++  } else {
++    KandeloSocketWatchLink(watch);
++  }
 +  return true;
 +}
 +

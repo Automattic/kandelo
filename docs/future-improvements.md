@@ -95,6 +95,18 @@ beyond EOF.
 
 ## Browser
 
+### Replace the constrained public CORS proxy with an owned relay
+
+The current public proxy has a narrow five-name request-header profile. A
+Kandelo-owned authenticated relay should add explicit origin policy, private
+network controls, rate limiting, abuse prevention, response limits, and
+operational ownership. Once that capability exists, remove anonymous GET
+omission mode and evaluate Node/browser transport parity without presenting the
+current browser boundary as complete POSIX socket or HTTP fidelity.
+
+**Files:** `host/src/networking/`, `apps/browser-demos/public/service-worker.js`,
+deployment infrastructure and browser acceptance
+
 ### PTY terminal integration with xterm.js
 The kernel has full PTY support (PR #181), and browser UI surfaces should use xterm.js-backed PTYs rather than plain `<div>` output with `appendStdinData`. Connecting PTY pairs to xterm.js gives proper terminal rendering (ANSI escapes, cursor, scrollback) and real terminal behavior (isatty=true, proper termios).
 

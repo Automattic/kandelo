@@ -477,21 +477,48 @@ if (typeof window !== "undefined") {
     return tag + html;
   }
 
-  // --- CORS proxy URL (injected at build time, main proxy in dev) ---
-  var CORS_PROXY_URL = "__CORS_PROXY_URL__";
-  // In dev mode the placeholder is not replaced — use the main proxy so dev
-  // and production exercise the same CORS proxy backend.
-  if (CORS_PROXY_URL.indexOf("__") === 0) {
-    CORS_PROXY_URL = "https://wordpress-playground-cors-proxy.net/?";
+  // --- Complete CORS proxy profile (injected at build time) ---
+  var CORS_PROXY_CONFIG = "__CORS_PROXY_CONFIG__";
+  var corsProxyWarningKeys = new Set();
+
+  function normalizedCorsProxyConfig() {
+    if (!CORS_PROXY_CONFIG || typeof CORS_PROXY_CONFIG !== "object") return null;
+    if (
+      typeof CORS_PROXY_CONFIG.url !== "string" ||
+      !Array.isArray(CORS_PROXY_CONFIG.allowedRequestHeaderNames) ||
+      typeof CORS_PROXY_CONFIG.allowAnonymousGetHeaderOmission !== "boolean"
+    ) {
+      return null;
+    }
+    return CORS_PROXY_CONFIG;
   }
 
   function normalizedCorsProxyUrl() {
-    return CORS_PROXY_URL ? new URL(CORS_PROXY_URL, self.location.href).href : "";
+    var config = normalizedCorsProxyConfig();
+    return config ? new URL(config.url, self.location.href).href : "";
   }
 
   function isCorsProxyFetchUrl(targetUrl) {
     var proxyUrl = normalizedCorsProxyUrl();
     return proxyUrl && targetUrl.startsWith(proxyUrl);
+  }
+
+  function corsProxyTargetUrl(fetchUrl) {
+    var proxyUrl = normalizedCorsProxyUrl();
+    if (!proxyUrl || !fetchUrl.startsWith(proxyUrl)) return null;
+    var suffix = fetchUrl.slice(proxyUrl.length);
+    if (!suffix) return null;
+    try {
+      var targetUrl = proxyUrl.endsWith("?")
+        ? suffix
+        : decodeURIComponent(suffix);
+      var target = new URL(targetUrl);
+      return target.protocol === "http:" || target.protocol === "https:"
+        ? target.href
+        : null;
+    } catch (_error) {
+      return null;
+    }
   }
 
   function corsProxyFetchUrl(targetUrl) {
@@ -502,6 +529,94 @@ if (typeof window !== "undefined") {
     return proxyUrl + (
       proxyUrl.endsWith("?") ? targetUrl : encodeURIComponent(targetUrl)
     );
+  }
+
+  function proxyAllowedHeaderNames(config) {
+    var allowed = new Set();
+    config.allowedRequestHeaderNames.forEach(function (name) {
+      allowed.add(String(name).toLowerCase());
+    });
+    return allowed;
+  }
+
+  function isBrowserManagedRequestHeader(name) {
+    return name === "accept-language" || name === "sec-ch-ua" ||
+      name === "sec-ch-ua-mobile" || name === "sec-ch-ua-platform" ||
+      name === "user-agent";
+  }
+
+  function proxyProjectionFailure(request, targetUrl, unsupportedNames) {
+    var targetOrigin = new URL(targetUrl).origin;
+    return new Response(
+      "Browser CORS proxy " + normalizedCorsProxyUrl() + " cannot relay " +
+        request.method + " request to " + targetOrigin +
+        " with unsupported request headers: " + unsupportedNames.join(", "),
+      {
+        status: 502,
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      },
+    );
+  }
+
+  function projectCorsProxyRequest(request, outgoingUrl, targetUrl) {
+    var config = normalizedCorsProxyConfig();
+    if (!config) return Promise.resolve(request);
+    var allowed = proxyAllowedHeaderNames(config);
+    var headers = new Headers();
+    var unsupported = [];
+    var credential = false;
+    request.headers.forEach(function (value, name) {
+      var lower = name.toLowerCase();
+      if (allowed.has(lower)) {
+        headers.append(name, value);
+      } else if (isBrowserManagedRequestHeader(lower)) {
+        // Fetch adds these fields independently of the Headers supplied by
+        // callers. Do not copy them into the proxy request or classify them as
+        // application-owned unsupported occurrences; Fetch will manage the
+        // outer request's own values.
+      } else {
+        unsupported.push(lower);
+        if (
+          lower === "authorization" || lower === "cookie" ||
+          lower === "cookie2" || lower === "proxy-authorization"
+        ) {
+          credential = true;
+        }
+      }
+    });
+    var diagnosticNames = Array.from(new Set(unsupported)).sort();
+    if (diagnosticNames.length > 0) {
+      var canOmit = config.allowAnonymousGetHeaderOmission &&
+        request.method === "GET" && !credential;
+      if (!canOmit) {
+        return Promise.resolve(
+          proxyProjectionFailure(request, targetUrl, diagnosticNames),
+        );
+      }
+      var targetOrigin = new URL(targetUrl).origin;
+      var warningKey = targetOrigin + "\n" + diagnosticNames.join("\n");
+      if (!corsProxyWarningKeys.has(warningKey)) {
+        corsProxyWarningKeys.add(warningKey);
+        console.warn(
+          "Browser CORS proxy omitted unsupported request headers for " +
+            targetOrigin + ": " + diagnosticNames.join(", "),
+        );
+      }
+    }
+    var init = {
+      method: request.method,
+      headers: headers,
+      credentials: "omit",
+      mode: "cors",
+      redirect: request.redirect,
+    };
+    if (request.method === "GET" || request.method === "HEAD") {
+      return Promise.resolve(new Request(outgoingUrl, init));
+    }
+    return request.arrayBuffer().then(function (body) {
+      if (body.byteLength > 0) init.body = body;
+      return new Request(outgoingUrl, init);
+    });
   }
 
   /**
@@ -690,16 +805,23 @@ if (typeof window !== "undefined") {
     // The page and worker runtime may already be deliberately fetching the
     // configured CORS proxy. Do not wrap that request in the same proxy again.
     if (isCorsProxyFetchUrl(targetUrl)) {
-      return fetch(request).then(function (response) {
+      var proxiedTargetUrl = corsProxyTargetUrl(targetUrl) || targetUrl;
+      return projectCorsProxyRequest(request, targetUrl, proxiedTargetUrl).then(function (projected) {
+        if (projected instanceof Response) return projected;
+        return fetch(projected);
+      }).then(function (response) {
         var headers = corsSafeResponseHeaders(response);
         return responseWithHeaders(response, headers);
       });
     }
 
     // If we have a CORS proxy, route through it
-    if (CORS_PROXY_URL) {
+    if (normalizedCorsProxyConfig()) {
       var proxyUrl = corsProxyFetchUrl(targetUrl);
-      return fetch(proxyUrl, { credentials: "omit", mode: "cors" }).then(function (response) {
+      return projectCorsProxyRequest(request, proxyUrl, targetUrl).then(function (projected) {
+        if (projected instanceof Response) return projected;
+        return fetch(projected);
+      }).then(function (response) {
         var headers = corsSafeResponseHeaders(response);
         return responseWithHeaders(response, headers);
       });

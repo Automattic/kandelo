@@ -15,9 +15,7 @@ import {
   tryResolveBinary,
   tryResolveBinaries,
 } from "../../host/src/binary-resolver";
-import {
-  browserBinariesImports,
-} from "./browser-binary-imports.mjs";
+import { browserBinariesImports } from "./browser-binary-imports.mjs";
 import {
   browserKernelModuleSpecifier,
   browserRepositoryAliases,
@@ -36,12 +34,8 @@ import {
   homebrewClosedAcceptanceAssetRoot,
   homebrewClosedAcceptanceInputNames,
 } from "./lib/homebrew-closed-acceptance";
-import {
-  DEFAULT_BROWSER_CORS_PROXY_URL,
-} from "./lib/browser-cors-proxy";
-import {
-  handleDevCorsProxyRequest,
-} from "./vite/dev-cors-proxy";
+import { DEFAULT_BROWSER_CORS_PROXY_CONFIG } from "./lib/browser-cors-proxy";
+import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
@@ -96,9 +90,9 @@ function candidateEntryExists(relPath: string): boolean {
       return true;
     } catch (error) {
       if (
-        error instanceof Error
-        && "code" in error
-        && error.code === "ENOENT"
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "ENOENT"
       ) {
         return false;
       }
@@ -137,8 +131,20 @@ function configuredCorsProxyUrl(): string | undefined {
   return process.env.VITE_CORS_PROXY_URL?.trim() || undefined;
 }
 
-function buildCorsProxyUrl(): string {
-  return configuredCorsProxyUrl() || DEFAULT_BROWSER_CORS_PROXY_URL;
+function browserCorsProxyConfig(url: string) {
+  return {
+    ...DEFAULT_BROWSER_CORS_PROXY_CONFIG,
+    allowedRequestHeaderNames: [
+      ...DEFAULT_BROWSER_CORS_PROXY_CONFIG.allowedRequestHeaderNames,
+    ],
+    url,
+  };
+}
+
+function buildCorsProxyConfig() {
+  return browserCorsProxyConfig(
+    configuredCorsProxyUrl() || DEFAULT_BROWSER_CORS_PROXY_CONFIG.url,
+  );
 }
 
 function serviceWorkerPathForBase(base: string): string {
@@ -155,11 +161,14 @@ function devCorsProxyFetchUrlForBase(base: string): string {
   return `${devCorsProxyPathForBase(base)}?url=`;
 }
 
-function injectCorsProxyUrlPlaceholder(
+function injectCorsProxyConfigPlaceholder(
   content: string,
-  corsProxyUrl: string,
+  corsProxyConfig: ReturnType<typeof browserCorsProxyConfig>,
 ): string {
-  return content.replace('"__CORS_PROXY_URL__"', JSON.stringify(corsProxyUrl));
+  return content.replace(
+    '"__CORS_PROXY_CONFIG__"',
+    JSON.stringify(corsProxyConfig),
+  );
 }
 
 const blobIframeInterceptorPath = path.resolve(
@@ -181,7 +190,10 @@ function injectBlobIframeInterceptorPlaceholder(content: string): string {
     return content;
   }
   const interceptor = fs.readFileSync(blobIframeInterceptorPath, "utf-8");
-  return content.replace('"__BLOB_IFRAME_INTERCEPTOR__"', JSON.stringify(interceptor));
+  return content.replace(
+    '"__BLOB_IFRAME_INTERCEPTOR__"',
+    JSON.stringify(interceptor),
+  );
 }
 
 /**
@@ -324,10 +336,10 @@ function relativeBinaryMirrorImport(
     if (!pathIsWithin(mirrorRoot, candidate)) continue;
     const relPath = normalizePath(path.relative(mirrorRoot, candidate));
     if (
-      relPath === ""
-      || relPath === ".."
-      || relPath.startsWith("../")
-      || path.isAbsolute(relPath)
+      relPath === "" ||
+      relPath === ".." ||
+      relPath.startsWith("../") ||
+      path.isAbsolute(relPath)
     ) {
       return null;
     }
@@ -349,9 +361,8 @@ function resolveBinariesAlias(
       let request: BinaryMirrorImport | null = null;
       if (source.startsWith(PREFIX)) {
         const queryIndex = source.indexOf("?");
-        const pathPart = queryIndex === -1
-          ? source
-          : source.slice(0, queryIndex);
+        const pathPart =
+          queryIndex === -1 ? source : source.slice(0, queryIndex);
         request = {
           relPath: applyDefaultProgramArch(pathPart.slice(PREFIX.length)),
           query: queryIndex === -1 ? "" : source.slice(queryIndex),
@@ -375,11 +386,7 @@ function resolveBinariesAlias(
 
       const resolved = resolution.resolve(request.relPath);
       if (resolved) return resolved + request.query;
-      const local = path.resolve(
-        repoRoot,
-        "local-binaries",
-        request.relPath,
-      );
+      const local = path.resolve(repoRoot, "local-binaries", request.relPath);
       const fetched = path.resolve(repoRoot, "binaries", request.relPath);
       this.error(
         `Browser binary ${request.relPath} not found, or every candidate is stale. ` +
@@ -521,22 +528,22 @@ function forceFreshDevWorkerResponses(): Plugin {
 }
 
 /**
- * Vite plugin: inject the service worker CORS proxy URL. Local dev/preview
+ * Vite plugin: inject the service worker CORS proxy profile. Local dev/preview
  * uses the Vite same-origin proxy by default so the service worker can read
  * the response from whichever port Vite selected. Production builds use the
  * configured external proxy unless VITE_CORS_PROXY_URL overrides it.
  */
-function injectCorsProxyUrl(): Plugin {
-  let servedCorsProxyUrl = "";
-  let outputCorsProxyUrl = "";
+function injectCorsProxyConfig(): Plugin {
+  let servedCorsProxyConfig = buildCorsProxyConfig();
+  let outputCorsProxyConfig = buildCorsProxyConfig();
   let base = "/";
   const sourceSwPath = path.resolve(__dirname, "public", "service-worker.js");
 
   function serviceWorkerSource(): string {
     return injectBlobIframeInterceptorPlaceholder(
-      injectCorsProxyUrlPlaceholder(
+      injectCorsProxyConfigPlaceholder(
         fs.readFileSync(sourceSwPath, "utf-8"),
-        servedCorsProxyUrl,
+        servedCorsProxyConfig,
       ),
     );
   }
@@ -563,12 +570,13 @@ function injectCorsProxyUrl(): Plugin {
   }
 
   return {
-    name: "inject-cors-proxy-url",
+    name: "inject-cors-proxy-config",
     configResolved(config) {
       base = config.base;
-      servedCorsProxyUrl =
-        configuredCorsProxyUrl() || devCorsProxyFetchUrlForBase(base);
-      outputCorsProxyUrl = buildCorsProxyUrl();
+      servedCorsProxyConfig = browserCorsProxyConfig(
+        configuredCorsProxyUrl() || devCorsProxyFetchUrlForBase(base),
+      );
+      outputCorsProxyConfig = buildCorsProxyConfig();
     },
     configureServer(server) {
       attachMiddleware(server.middlewares);
@@ -581,7 +589,10 @@ function injectCorsProxyUrl(): Plugin {
       const swPath = path.resolve(__dirname, "dist", "service-worker.js");
       if (fs.existsSync(swPath)) {
         let content = fs.readFileSync(swPath, "utf-8");
-        content = injectCorsProxyUrlPlaceholder(content, outputCorsProxyUrl);
+        content = injectCorsProxyConfigPlaceholder(
+          content,
+          outputCorsProxyConfig,
+        );
         content = injectBlobIframeInterceptorPlaceholder(content);
         fs.writeFileSync(swPath, content);
       }
@@ -597,7 +608,7 @@ function devCorsProxyMiddleware(): Plugin {
   ): void {
     const proxyPath = devCorsProxyPathForBase(base);
     middlewares.use(async (req, res, next) => {
-      if (!await handleDevCorsProxyRequest(req, res, proxyPath)) next();
+      if (!(await handleDevCorsProxyRequest(req, res, proxyPath))) next();
     });
   }
 
@@ -650,8 +661,7 @@ function selectedDemoInputs(
       acceptanceInputs.map((name) => [name, demoInputs[name]]),
     );
   }
-  const requested = process.env.KANDELO_BROWSER_DEMO_INPUTS
-    ?.split(",")
+  const requested = process.env.KANDELO_BROWSER_DEMO_INPUTS?.split(",")
     .map((name) => name.trim())
     .filter(Boolean);
   if (!requested || requested.length === 0) return defaultDemoInputs;
@@ -690,7 +700,7 @@ export default defineConfig(({ mode }) => {
       injectGitRevision(),
       injectCoiServiceWorker(),
       forceFreshDevWorkerResponses(),
-      injectCorsProxyUrl(),
+      injectCorsProxyConfig(),
       devCorsProxyMiddleware(),
     ],
     server: {
@@ -698,12 +708,11 @@ export default defineConfig(({ mode }) => {
       port: preferredLocalPort,
       headers: crossOriginIsolationHeaders,
       hmr: disableBrowserTestHmr ? false : undefined,
-      watch: disableBrowserTestHmr ? {
-        ignored: [
-          "**/test-runs/**",
-          "**/host/dist/**",
-        ],
-      } : undefined,
+      watch: disableBrowserTestHmr
+        ? {
+            ignored: ["**/test-runs/**", "**/host/dist/**"],
+          }
+        : undefined,
       fs: {
         // Multi-member package resolution returns canonical generation paths so
         // a live mirror swap cannot change the bytes after validation. Resolver
