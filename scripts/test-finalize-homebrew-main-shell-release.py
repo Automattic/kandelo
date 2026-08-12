@@ -51,6 +51,8 @@ COPIED = [
     "homebrew/main-shell-default.json",
     "homebrew/main-shell-demo.json",
     "scripts/homebrew-brewfile-selection.rb",
+    "packages/registry/homebrew-bootstrap/package.toml",
+    "packages/registry/shell/package.toml",
     "docs/homebrew-publishing.md",
 ]
 TAP_NAME = "kandelo-dev/tap-core"
@@ -436,6 +438,9 @@ def run_checker(
         [
             str(tap / "Kandelo/metadata.json"),
             str(source / "homebrew/main-shell-homebrew-runtime-support.json"),
+            str(source / "homebrew/homebrew-bootstrap-source-lock.json"),
+            str(source / "packages/registry/shell/package.toml"),
+            str(source / "packages/registry/homebrew-bootstrap/package.toml"),
         ]
     )
     result = subprocess.run(
@@ -575,6 +580,57 @@ with tempfile.TemporaryDirectory(prefix="kandelo-shell-finalizer-test.") as temp
         "the runtime adds 1 beyond the base, yielding 39 total Formulae"
         in checker.stdout
     )
+    bootstrap_lock_path = (
+        source / "homebrew/homebrew-bootstrap-source-lock.json"
+    )
+    bootstrap_lock = json.loads(bootstrap_lock_path.read_text())
+    bootstrap_lock["package"]["version"] = "6.0.12-wrong"
+    write_json(bootstrap_lock_path, bootstrap_lock)
+    assert_failure(
+        run_checker(source, tap, success=False),
+        "the bootstrap registry package must match its exact source lock",
+    )
+    shutil.copyfile(
+        REPO / "homebrew/homebrew-bootstrap-source-lock.json",
+        bootstrap_lock_path,
+    )
+    shell_package_path = source / "packages/registry/shell/package.toml"
+    shell_package = shell_package_path.read_text()
+    shell_package_path.write_text(
+        shell_package.replace(
+            'depends_on = ["homebrew-bootstrap@6.0.12-153-gcf5bc21"]',
+            'depends_on = ["homebrew-bootstrap@6.0.12-wrong"]',
+        )
+    )
+    assert_failure(
+        run_checker(source, tap, success=False),
+        "the canonical shell package must depend only on its exact "
+        "bootstrap package",
+    )
+    shell_package_path.write_text(
+        shell_package.replace(
+            'depends_on = ["homebrew-bootstrap@6.0.12-153-gcf5bc21"]',
+            "depends_on = []",
+        )
+    )
+    assert_failure(
+        run_checker(source, tap, success=False),
+        "the canonical shell package must depend only on its exact "
+        "bootstrap package",
+    )
+    shell_package_path.write_text(
+        shell_package.replace(
+            'depends_on = ["homebrew-bootstrap@6.0.12-153-gcf5bc21"]',
+            'depends_on = ["homebrew-bootstrap@6.0.12-153-gcf5bc21", '
+            '"node@24.0.0"]',
+        )
+    )
+    assert_failure(
+        run_checker(source, tap, success=False),
+        "the canonical shell package must depend only on its exact "
+        "bootstrap package",
+    )
+    shell_package_path.write_text(shell_package)
 
     artifact = root / "shell.vfs.zst"
     artifact.write_bytes(b"reviewed deterministic shell bytes\n")

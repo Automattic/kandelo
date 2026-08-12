@@ -50,18 +50,34 @@ const runtimeSupportPath = resolve(
   process.argv[5] ??
     `${repoRoot}/homebrew/main-shell-homebrew-runtime-support.json`,
 );
+const bootstrapLockPath = resolve(
+  process.argv[6] ?? `${repoRoot}/homebrew/homebrew-bootstrap-source-lock.json`,
+);
+const shellPackagePath = resolve(
+  process.argv[7] ?? `${repoRoot}/packages/registry/shell/package.toml`,
+);
+const bootstrapPackagePath = resolve(
+  process.argv[8] ??
+    `${repoRoot}/packages/registry/homebrew-bootstrap/package.toml`,
+);
 const lock = readMigrationLock(lockPath);
 const runtimeSupport = readRuntimeSupport(runtimeSupportPath, lock);
-const shellDependencies = readDependencies(
-  `${repoRoot}/packages/registry/shell/package.toml`,
+const shellDependencies = readDependencies(shellPackagePath);
+const bootstrapPackage = readPackageIdentity(bootstrapPackagePath);
+const bootstrapLockPackage = readBootstrapPackageLock(bootstrapLockPath);
+assertExactSequence(
+  [bootstrapPackage],
+  [bootstrapLockPackage],
+  "the bootstrap registry package must match its exact source lock",
+  ({ name, version }) => `${name}@${version}`,
 );
-// Formulae and Homebrew's source tree come from the same immutable closed
-// selection. A registry dependency here would let the canonical package use
-// different bytes than the direct product proof.
+// Formula bottles come from the immutable closed selection. The bootstrap
+// archive is different: it is the canonical package input that produces the
+// exact source ZIP embedded by the lightweight lazy shell.
 assertExactSequence(
   shellDependencies,
-  [],
-  "the canonical shell package must not depend on transitional registry packages",
+  [bootstrapLockPackage],
+  "the canonical shell package must depend only on its exact bootstrap package",
   ({ name, version }) => `${name}@${version}`,
 );
 const lockedRegistryPackages = lock.packages.map(({ registry }) => registry);
@@ -731,10 +747,7 @@ function readRuntimeSupport(path, lock) {
     ...lock.formula_closure,
     ...additionalFormulaOrder,
   ];
-  assertUnique(
-    compositionFormulaOrder,
-    "Homebrew shell/runtime Formula union",
-  );
+  assertUnique(compositionFormulaOrder, "Homebrew shell/runtime Formula union");
 
   if (!Array.isArray(value.deferred_formulae)) {
     throw new Error(
@@ -930,10 +943,7 @@ function readRuntimeSupportAvailability(
     ...missingMetadata,
     ...canBeDeferred,
   ];
-  assertUnique(
-    partition,
-    "Homebrew runtime-support availability partition",
-  );
+  assertUnique(partition, "Homebrew runtime-support availability partition");
   const outsideComposition = partition.filter(
     (identity) => !compositionFormulaOrder.includes(identity),
   );
@@ -1203,6 +1213,43 @@ function readDependencies(path) {
     }
     return { name, version };
   });
+}
+
+function readPackageIdentity(path) {
+  const source = readFileSync(path, "utf8").split(/^\s*\[/m, 1)[0];
+  const readScalar = (field) => {
+    const matches = Array.from(
+      source.matchAll(new RegExp(`^${field}\\s*=\\s*"([^"]+)"\\s*$`, "gm")),
+      (match) => match[1],
+    );
+    if (matches.length !== 1 || matches[0].length === 0) {
+      throw new Error(`cannot find one exact package ${field} in ${path}`);
+    }
+    return matches[0];
+  };
+  return readIdentity(
+    { name: readScalar("name"), version: readScalar("version") },
+    `package identity in ${path}`,
+  );
+}
+
+function readBootstrapPackageLock(path) {
+  const value = JSON.parse(readFileSync(path, "utf8"));
+  if (
+    !isRecord(value) ||
+    value.schema !== 1 ||
+    value.kind !== "kandelo-homebrew-bootstrap-source-lock" ||
+    !isRecord(value.package) ||
+    Object.keys(value.package).sort().join("\0") !== "arch\0name\0version" ||
+    value.package.arch !== "wasm32"
+  ) {
+    throw new Error(`invalid Homebrew bootstrap source lock: ${path}`);
+  }
+  const identity = readIdentity(value.package, `package identity in ${path}`);
+  if (identity.name !== "homebrew-bootstrap") {
+    throw new Error(`invalid Homebrew bootstrap package name in ${path}`);
+  }
+  return identity;
 }
 
 function readBrewfilePackages(path) {

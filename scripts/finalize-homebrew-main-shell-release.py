@@ -31,6 +31,9 @@ MIGRATION_PATH = "homebrew/main-shell-migration-lock.json"
 SUPPORT_PATH = "homebrew/main-shell-homebrew-runtime-support.json"
 SELECTION_PATH = "homebrew/main-shell-selection-lock.json"
 ARTIFACT_PATH = "homebrew/main-shell-lazy-artifact-lock.json"
+BOOTSTRAP_SOURCE_LOCK_PATH = "homebrew/homebrew-bootstrap-source-lock.json"
+SHELL_PACKAGE_PATH = "packages/registry/shell/package.toml"
+BOOTSTRAP_PACKAGE_PATH = "packages/registry/homebrew-bootstrap/package.toml"
 DOC_PATH = "docs/homebrew-publishing.md"
 BREWFILE_PATH = "homebrew/main-shell.Brewfile"
 BOUND_INPUTS = {
@@ -376,6 +379,9 @@ def validate_with_canonical_checker(
                     os.fspath(migration),
                     os.fspath(metadata_path),
                     os.fspath(support),
+                    os.fspath(source_root / BOOTSTRAP_SOURCE_LOCK_PATH),
+                    os.fspath(source_root / SHELL_PACKAGE_PATH),
+                    os.fspath(source_root / BOOTSTRAP_PACKAGE_PATH),
                 ],
                 check=True,
                 stdout=subprocess.PIPE,
