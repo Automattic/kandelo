@@ -802,6 +802,21 @@ expect_canary_mutation_rejected \
   's/pages-vfs-products\.generated\.json/pages-vfs-products-missing.json/g'
 
 expect_canary_mutation_rejected \
+  "target validation after first use" \
+  "canary readiness does not filter then immediately validate noisy dev-shell target output" \
+  's/(          \[\[ "\$host_target" =~ \^\[A-Za-z0-9_.-\]\+\$ \]\]\n)(          bash scripts\/dev-shell\.sh cargo run -p xtask \\\n+            --target "\$host_target" --quiet -- \\\n+)/$2$1/'
+
+expect_canary_mutation_rejected \
+  "missing target validation" \
+  "canary readiness does not filter then immediately validate noisy dev-shell target output" \
+  's/^          \[\[ "\$host_target" =~ \^\[A-Za-z0-9_.-\]\+\$ \]\]\n//m'
+
+expect_canary_mutation_rejected \
+  "target filtering restored inside dev-shell" \
+  "canary readiness does not filter then immediately validate noisy dev-shell target output" \
+  's#host_target=\$\(bash scripts/dev-shell\.sh rustc -vV \|\n            awk '\''/\^host: / \{ print \$2 \}'\''\)#host_target=\$(bash scripts/dev-shell.sh bash -c "rustc -vV | sed -n '\''s/^host: //p'\''")#'
+
+expect_canary_mutation_rejected \
   "partial Pages registry" \
   "canary must bind the complete protected Pages registry" \
   's/\.products \| map\(\.id\)/.products[:1] | map(.id)/'
