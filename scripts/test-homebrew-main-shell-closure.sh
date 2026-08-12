@@ -262,7 +262,7 @@ check_ordered_staging_shell_contract() {
     grep -Fq 'env.STAGES_NODE_VFS == '\''true'\''' \
       <<<"$node_acceptance" &&
     grep -Fq -- \
-      "--grep 'Kandelo Node demo installs cowsay with npm'" \
+      "--grep '@node-npm-acceptance'" \
       <<<"$node_acceptance" &&
     grep -Fq 'name: exact current lazy shell (Node + Chromium)' \
       <<<"$gate" &&

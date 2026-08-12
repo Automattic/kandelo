@@ -1203,6 +1203,20 @@ for workflow in \
             exit 1
         fi
     fi
+    for contract in \
+        "scripts/recover-homebrew-bottle-mirror.ts" \
+        "programs/homebrew-bootstrap/homebrew-bootstrap.zip" \
+        "KANDELO_NODE_LOCAL_BOOT_ASSET_ROOT" \
+        "KANDELO_NODE_LOCAL_PROXY_PORT" \
+        "http://127.0.0.1:\${node_proxy_port}/?" \
+        "KANDELO_PLAYWRIGHT_SERVE_DIST=1" \
+        "--grep '@node-npm-acceptance'"
+    do
+        grep -Fq -- "$contract" "$node_acceptance_block" || {
+            echo "$(basename "$workflow"): exact Node acceptance lacks $contract" >&2
+            exit 1
+        }
+    done
 done
 
 grep -Fq \

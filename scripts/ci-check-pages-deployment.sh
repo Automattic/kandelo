@@ -411,7 +411,7 @@ grep -Fq 'VITE_BASE: /kandelo/' <<<"$node_acceptance_block" &&
     <<<"$node_acceptance_block" &&
   grep -Fq 'npx playwright test test/kandelo-node.spec.ts' \
     <<<"$node_acceptance_block" &&
-  grep -Fq -- "--grep 'Kandelo Node demo installs cowsay with npm'" \
+  grep -Fq -- "--grep '@node-npm-acceptance'" \
     <<<"$node_acceptance_block" &&
   grep -Fq -- '--project=chromium' <<<"$node_acceptance_block" ||
   fail "the Pages preview must install and execute cowsay from the canonical Node image"
@@ -426,6 +426,14 @@ for binding in \
 do
   grep -Fq "$binding" <<<"$node_acceptance_block" ||
     fail "the Node preview must carry its exact inputs through dev-shell"
+done
+for forbidden in \
+  KANDELO_NODE_LOCAL_BOOT_ASSET_ROOT \
+  KANDELO_NODE_LOCAL_PROXY_PORT \
+  recover-homebrew-bottle-mirror.ts
+do
+  ! grep -Fq "$forbidden" <<<"$node_acceptance_block" ||
+    fail "the Pages Node acceptance must use the public production transport"
 done
 
 manifest_block="$(

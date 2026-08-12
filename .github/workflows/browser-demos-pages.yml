@@ -369,7 +369,7 @@ jobs:
             "KANDELO_PLAYWRIGHT_SERVE_DIST=$KANDELO_PLAYWRIGHT_SERVE_DIST" \
             "KANDELO_TEST_BASE_URL=$KANDELO_TEST_BASE_URL" \
             npx playwright test test/kandelo-node.spec.ts \
-            --grep 'Kandelo Node demo installs cowsay with npm' \
+            --grep '@node-npm-acceptance' \
             --project=chromium
 
       - name: Enforce the GitHub Pages published-site size limit

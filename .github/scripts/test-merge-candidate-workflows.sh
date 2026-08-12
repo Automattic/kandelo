@@ -202,7 +202,15 @@ grep -Fq "npx playwright test test/kandelo-node.spec.ts" \
   <<<"$staged_node_acceptance" &&
   grep -Fq 'activate-ci-test-workspace.sh' \
     <<<"$staged_node_acceptance" &&
-  grep -Fq -- "--grep 'Kandelo Node demo installs cowsay with npm'" \
+  grep -Fq 'recover-homebrew-bottle-mirror.ts' \
+    <<<"$staged_node_acceptance" &&
+  grep -Fq 'programs/homebrew-bootstrap/homebrew-bootstrap.zip' \
+    <<<"$staged_node_acceptance" &&
+  grep -Fq 'KANDELO_NODE_LOCAL_BOOT_ASSET_ROOT' \
+    <<<"$staged_node_acceptance" &&
+  grep -Fq 'KANDELO_NODE_LOCAL_PROXY_PORT' \
+    <<<"$staged_node_acceptance" &&
+  grep -Fq -- "--grep '@node-npm-acceptance'" \
     <<<"$staged_node_acceptance" &&
   grep -Fq -- '--project=chromium' <<<"$staged_node_acceptance" ||
   fail "staged node-vfs must run the exact slow npm/cowsay acceptance"
@@ -228,10 +236,14 @@ candidate_node_acceptance="$(
 )"
 for evidence in \
   'activate-ci-test-workspace.sh' \
+  'recover-homebrew-bottle-mirror.ts' \
+  'programs/homebrew-bootstrap/homebrew-bootstrap.zip' \
   'npm run build' \
   'verify-browser-shell-vfs-asset.sh' \
   'KANDELO_NODE_VFS_STRICT' \
   'KANDELO_NODE_VFS_SHA256' \
+  'KANDELO_NODE_LOCAL_BOOT_ASSET_ROOT' \
+  'KANDELO_NODE_LOCAL_PROXY_PORT' \
   'KANDELO_PLAYWRIGHT_SERVE_DIST' \
   'KANDELO_TEST_BASE_URL' \
   'npx playwright test test/kandelo-node.spec.ts'
@@ -239,16 +251,25 @@ do
   grep -Fq "$evidence" <<<"$candidate_node_acceptance" ||
     fail "candidate Node production acceptance lacks: $evidence"
 done
+grep -Fq -- "--grep '@node-npm-acceptance'" \
+  <<<"$candidate_node_acceptance" ||
+  fail "candidate Node production acceptance lacks the stable selector"
 pages_node_acceptance="$(
   step_run_block "$PAGES_WORKFLOW" "Run exact Pages Node npm acceptance"
 )"
 grep -Fq 'KANDELO_NODE_VFS_SHA256' <<<"$pages_node_acceptance" ||
   fail "Pages Node acceptance must verify the resolved Node image digest"
+grep -Fq -- "--grep '@node-npm-acceptance'" <<<"$pages_node_acceptance" ||
+  fail "Pages Node acceptance must use the stable selector"
 NODE_ACCEPTANCE_SPEC="$REPO_ROOT/apps/browser-demos/test/kandelo-node.spec.ts"
 grep -Fq 'KANDELO_NODE_VFS_SHA256' "$NODE_ACCEPTANCE_SPEC" ||
   fail "Node acceptance must bind the fetched VFS bytes"
 grep -Fq 'KANDELO_TEST_BASE_URL' "$NODE_ACCEPTANCE_SPEC" ||
   fail "Node acceptance must navigate through the deployed base path"
+grep -Fq '@node-npm-acceptance' "$NODE_ACCEPTANCE_SPEC" ||
+  fail "Node acceptance must expose its stable workflow selector"
+grep -Fq 'if (localBootAssetRoot) {' "$NODE_ACCEPTANCE_SPEC" ||
+  fail "Node acceptance must scope controlled-proxy assertions to its fixture"
 if grep -Fq 'test.skip(true, "Required binary not built' "$NODE_ACCEPTANCE_SPEC"; then
   fail "Node acceptance must fail closed when production assets are missing"
 fi

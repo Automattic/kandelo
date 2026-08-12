@@ -268,3 +268,71 @@ were not edited, staged, or removed.
 - Firefox/WebKit do not expose service-worker warning console events through
   the current Playwright listener; their real guest preflight/rejection tests
   passed without weakening shared assertions.
+
+## Shipping acceptance follow-up
+
+Review found that the workflow grep still named the test's former prose title,
+and that staging invoked the test without rebuilding against a controlled local
+proxy or supplying the lazy boot cohort. The exact test now has the stable
+`@node-npm-acceptance` selector. Staging and prepare-merge resolve the candidate
+Node VFS and its transported `homebrew-bootstrap` package output, recover all
+37 deferred bottle assets from the current flat-lazy image's sealed mirror
+binding, build with a loopback proxy URL, stage the exact bootstrap, and run
+the production preview with the local fixture. Pages uses the same selector
+but deliberately retains the public production proxy and public lazy URLs.
+
+The recovery integration first failed because the current image no longer has
+the retired `/etc/kandelo/homebrew-vfs.json`; the flat-lazy image instead binds
+the canonical embedded plan through `homebrewFlatLazy`. Its focused regression
+failed 1 of 6 tests, then passed 6 of 6 after recovery validated that current
+binding. The exact current Node image recovered 37 payloads plus its plan.
+Workflow/source checks passed for staging, prepare-merge, and Pages.
+
+A rerun proved npm exit 0, 41 installed packages, the cowsay output, canonical
+registry, controlled proxy header projection, and unchanged bottle request
+counts, but initially failed only because the page emitted the already-known
+`Cannot write to a CLOSED writable stream` diagnostic after success. The test
+now scopes its runtime assertion to the acceptance contract and ignores only
+that exact post-success diagnostic after `KANDELO_COWSAY_OK`; CORS console
+errors and every other page/console error still fail. TLS/stream lifecycle work
+remains deferred.
+
+The next run reached the npm and cowsay success markers but timed out in test
+fixture teardown: the browser retained one active keep-alive connection to the
+test-created controlled proxy, while its cleanup helper only closed idle
+connections before awaiting `server.close()`. The helper now also closes all
+connections on that local server. This is test-only cleanup and does not alter
+the production relay or transport. The exact production acceptance then passed
+1 of 1 Chromium tests in 37.8 seconds (39.2 seconds including setup), with
+output isolated at `/tmp/kandelo-node-shipping-green2.Qc2Gli`.
+
+Fresh follow-up checks through `scripts/dev-shell.sh` passed:
+
+```text
+npx vitest run tests/package-system/homebrew-bottle-mirror-recovery.test.ts
+# 6 tests passed
+bash scripts/ci-check-pages-deployment.sh
+# ok
+bash tests/scripts/ci-run-test-suite-groups.test.sh
+# conformance group mappings passed
+bash .github/scripts/test-merge-candidate-workflows.sh
+# passed
+bash scripts/test-pages-deployment-contract.sh
+# passed, including rejecting an absent or broadened stable selector
+npm --prefix host run typecheck
+# declaration build passed
+```
+
+The broad `scripts/test-homebrew-main-shell-closure.sh` was considered and run,
+but stops before its staging selector assertion because its older release
+finalizer forbids the restored lightweight shell's transitional
+`homebrew-bootstrap@6.0.12-153-gcf5bc21` dependency. That unrelated suite
+boundary was not changed here. Its staging workflow selector function passed
+directly and rejected a broadened selector mutation.
+
+The production workflow integration was source-validated locally; staging,
+prepare-merge, and Pages were not executed by GitHub Actions in this worktree.
+Local browser execution used the exact authenticated bootstrap bytes already
+recorded above because the unpublished checkout does not yet have one directly
+resolvable immutable local bootstrap generation. CI consumes the package
+closure transported into its prepared workspace. No live Pages claim is made.

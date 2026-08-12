@@ -314,7 +314,7 @@ expect_mutation_rejected \
 expect_mutation_rejected \
   "Pages broadens npm acceptance" \
   "must install and execute cowsay from the canonical Node image" \
-  "s/--grep 'Kandelo Node demo installs cowsay with npm'/--grep 'Node'/"
+  "s/--grep '\@node-npm-acceptance'/--grep 'Node'/"
 
 expect_mutation_rejected \
   "Node preview selects a nonexistent page input" \

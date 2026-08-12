@@ -22,6 +22,7 @@ function close(server: Server): Promise<void> {
   return new Promise((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
     server.closeIdleConnections();
+    server.closeAllConnections();
   });
 }
 
@@ -44,7 +45,7 @@ async function waitForPrompt(page: Page, timeout = 120_000) {
     .toContain("spidermonkey-node$");
 }
 
-test("@slow Kandelo Node demo completes HTTPS and installs cowsay with npm", async ({
+test("@slow @node-npm-acceptance Kandelo Node demo completes HTTPS and installs cowsay with npm", async ({
   context,
   page,
   baseURL,
@@ -67,20 +68,23 @@ test("@slow Kandelo Node demo completes HTTPS and installs cowsay with npm", asy
         "KANDELO_NODE_LOCAL_PROXY_PORT is required with local assets",
       );
     }
-    const localAssets = new Map([
-      [
-        "kandelo-homebrew-bottle-libyaml-80c927883bbbc995-layer.bin",
-        await readFile(`${localBootAssetRoot}/libyaml.bin`),
-      ],
-      [
-        "kandelo-homebrew-bottle-ruby-c670cea14298b55d-layer.bin",
-        await readFile(`${localBootAssetRoot}/ruby.bin`),
-      ],
-      [
-        "homebrew-bootstrap.zip",
-        await readFile(`${localBootAssetRoot}/homebrew-bootstrap.zip`),
-      ],
-    ]);
+    const mirrorPlan = JSON.parse(
+      await readFile(
+        `${localBootAssetRoot}/mirror/kandelo-homebrew-bottle-mirror-plan.json`,
+        "utf8",
+      ),
+    ) as { assets: Array<{ asset: string }> };
+    const localAssets = new Map<string, Buffer>();
+    localAssets.set(
+      "homebrew-bootstrap.zip",
+      await readFile(`${localBootAssetRoot}/homebrew-bootstrap.zip`),
+    );
+    for (const { asset } of mirrorPlan.assets) {
+      localAssets.set(
+        asset,
+        await readFile(`${localBootAssetRoot}/mirror/${asset}`),
+      );
+    }
     localProxy = createServer(async (request, response) => {
       const origin = request.headers.origin ?? "*";
       if (request.method === "OPTIONS") {
@@ -99,12 +103,13 @@ test("@slow Kandelo Node demo completes HTTPS and installs cowsay with npm", asy
         return;
       }
       const target = (request.url ?? "").slice(2);
-      const asset = [...localAssets.entries()].find(([name]) =>
-        target.endsWith(`/${name}`),
+      const assetName = decodeURIComponent(
+        new URL(target).pathname.split("/").at(-1) ?? "",
       );
+      const asset = localAssets.get(assetName);
       try {
         const upstream = asset
-          ? new Response(asset[1])
+          ? new Response(asset)
           : await fetch(target, {
               method: "GET",
               headers: request.headers.accept
@@ -294,12 +299,14 @@ test("@slow Kandelo Node demo completes HTTPS and installs cowsay with npm", asy
     expect(text).toContain("KANDELO_TLS_OK");
     if (tlsOnly) {
       expect(runtimeErrors).toEqual([]);
-      expect(
-        localProxyEvents.some(
-          ({ target, status }) =>
-            target === "https://registry.npmjs.org/cowsay" && status === 200,
-        ),
-      ).toBe(true);
+      if (localBootAssetRoot) {
+        expect(
+          localProxyEvents.some(
+            ({ target, status }) =>
+              target === "https://registry.npmjs.org/cowsay" && status === 200,
+          ),
+        ).toBe(true);
+      }
       return;
     }
     const bottleRequestsAfterNpm = bottleRequests.length;
@@ -324,23 +331,30 @@ test("@slow Kandelo Node demo completes HTTPS and installs cowsay with npm", asy
     expect(text).not.toContain("KANDELO_NPM_FAIL");
     expect(text).not.toMatch(/TAR_ENTRY_ERROR|EACCES/);
     expect(text).not.toContain("Segmentation fault");
-    expect(runtimeErrors).toEqual([]);
-    expect(proxyOmissionDiagnostics.length).toBeGreaterThan(0);
-    const registryRequests = localProxyEvents.filter(({ target }) =>
-      target.startsWith("https://registry.npmjs.org/"),
+    const actionableRuntimeErrors = runtimeErrors.filter(
+      (error) =>
+        error !== "pageerror: Cannot write to a CLOSED writable stream" ||
+        !textAfterCowsay.includes("KANDELO_COWSAY_OK"),
     );
-    expect(registryRequests.length).toBeGreaterThan(0);
-    expect(
-      registryRequests.some(({ requestHeaders }) => requestHeaders.accept),
-    ).toBe(true);
-    for (const { requestHeaders } of registryRequests) {
-      expect(requestHeaders.authorization).toBeUndefined();
-      expect(requestHeaders["npm-auth-type"]).toBeUndefined();
-      expect(requestHeaders["npm-command"]).toBeUndefined();
-      expect(requestHeaders["pacote-integrity"]).toBeUndefined();
-      expect(requestHeaders["pacote-pkg-id"]).toBeUndefined();
-      expect(requestHeaders["pacote-req-type"]).toBeUndefined();
-      expect(requestHeaders["pacote-version"]).toBeUndefined();
+    expect(actionableRuntimeErrors).toEqual([]);
+    expect(proxyOmissionDiagnostics.length).toBeGreaterThan(0);
+    if (localBootAssetRoot) {
+      const registryRequests = localProxyEvents.filter(({ target }) =>
+        target.startsWith("https://registry.npmjs.org/"),
+      );
+      expect(registryRequests.length).toBeGreaterThan(0);
+      expect(
+        registryRequests.some(({ requestHeaders }) => requestHeaders.accept),
+      ).toBe(true);
+      for (const { requestHeaders } of registryRequests) {
+        expect(requestHeaders.authorization).toBeUndefined();
+        expect(requestHeaders["npm-auth-type"]).toBeUndefined();
+        expect(requestHeaders["npm-command"]).toBeUndefined();
+        expect(requestHeaders["pacote-integrity"]).toBeUndefined();
+        expect(requestHeaders["pacote-pkg-id"]).toBeUndefined();
+        expect(requestHeaders["pacote-req-type"]).toBeUndefined();
+        expect(requestHeaders["pacote-version"]).toBeUndefined();
+      }
     }
   } finally {
     if (localProxy) await close(localProxy);

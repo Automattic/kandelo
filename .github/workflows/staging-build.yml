@@ -1281,17 +1281,47 @@ jobs:
           matrix.suite == 'browser' &&
           env.STAGES_NODE_VFS == 'true'
         run: |
+          # WHY: exports made by the preceding suite step do not cross the
+          # GitHub step boundary. Keep resolution, closed fixture recovery,
+          # the production build, and Playwright inside one activated shell.
+          bash scripts/dev-shell.sh \
+            bash scripts/activate-ci-test-workspace.sh \
+              bash <<'NODE_ACCEPTANCE'
+          set -euo pipefail
+          node_image="$(bash scripts/resolve-binary.sh programs/node-vfs.vfs.zst)"
+          node_sha256="$(sha256sum "$node_image" | awk '{print $1}')"
+          fixture_parent="$(mktemp -d "$RUNNER_TEMP/kandelo-node-acceptance.XXXXXX")"
+          trap 'rm -rf -- "$fixture_parent"' EXIT
+          fixture="$fixture_parent/fixture"
+          mkdir "$fixture"
+          bootstrap="$(bash scripts/resolve-binary.sh \
+            programs/homebrew-bootstrap/homebrew-bootstrap.zip)"
+          cp "$bootstrap" "$fixture/homebrew-bootstrap.zip"
+          npx tsx scripts/recover-homebrew-bottle-mirror.ts \
+            --image "$node_image" --out "$fixture/mirror" \
+            --report "$fixture_parent/mirror-recovery.json"
+          node_proxy_port=63339
+          test ! -e apps/browser-demos/dist
           (
             cd apps/browser-demos
-            # WHY: exports made by the preceding suite step do not cross the
-            # GitHub step boundary. Rebind the transported mirror to its exact
-            # cache/checker before this direct Vite consumer starts.
-            bash ../../scripts/dev-shell.sh \
-              bash ../../scripts/activate-ci-test-workspace.sh \
-                npx playwright test test/kandelo-node.spec.ts \
-                  --grep 'Kandelo Node demo installs cowsay with npm' \
-                  --project=chromium
+            env VITE_BASE=/kandelo/ \
+              VITE_CORS_PROXY_URL="http://127.0.0.1:${node_proxy_port}/?" \
+              npm run build
+            cp "$fixture/homebrew-bootstrap.zip" dist/homebrew-bootstrap.zip
+            bash ../../scripts/verify-browser-shell-vfs-asset.sh \
+              dist "$node_image" node-vfs.vfs
+            env KANDELO_BROWSER_DEMO_INPUTS=main \
+              KANDELO_NODE_VFS_STRICT=1 \
+              KANDELO_NODE_VFS_SHA256="$node_sha256" \
+              KANDELO_NODE_LOCAL_BOOT_ASSET_ROOT="$fixture" \
+              KANDELO_NODE_LOCAL_PROXY_PORT="$node_proxy_port" \
+              KANDELO_PLAYWRIGHT_SERVE_DIST=1 \
+              KANDELO_TEST_BASE_URL=http://127.0.0.1:5401/kandelo/ \
+              VITE_BASE=/kandelo/ \
+              npx playwright test test/kandelo-node.spec.ts \
+                --grep '@node-npm-acceptance' --project=chromium
           )
+          NODE_ACCEPTANCE
 
       - name: Upload browser test artifacts
         if: failure() && steps.suite.outputs.skip != 'true' && matrix.suite == 'browser'
