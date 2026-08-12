@@ -275,6 +275,12 @@ git commit -m "Host: Project headers at the browser proxy boundary"
 
 ## Task 2: Preserve Ordered Fields and Integrate Both Browser Backends
 
+**Sequencing gate:** Execute Tasks 2 and 3 as one implementation/review unit.
+Removing `corsProxyUrl` from the backend option before migrating the browser
+worker would make the worker's existing property silently ineffective. The
+Task 2 backend commit may exist as an internal checkpoint, but Task 2 is not
+complete or reviewable until Task 3 has migrated the worker and every caller.
+
 **Files:**
 
 - Modify: `host/src/networking/fetch-backend.ts`
@@ -364,6 +370,11 @@ git commit -m "Host: Enforce proxy headers at browser dispatch"
 ---
 
 ## Task 3: Carry One Immutable Configuration Through Worker and Callers
+
+**Combined gate with Task 2:** This task closes the load-bearing option
+migration begun by Task 2. Generate one review package from the Task 2 base
+through the Task 3 head and require both briefs to pass the same review before
+marking either task complete.
 
 **Files:**
 
