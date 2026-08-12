@@ -24,6 +24,7 @@ import {
   ensureDirRecursive,
   writeVfsBinary,
 } from "../../../host/src/vfs/image-helpers";
+import { saveShellDerivedBuildGuestSnapshot } from "./shell-vfs-build";
 
 export const WORDPRESS_DEFAULT_SITE_TITLE = "WordPress on Kandelo";
 export const WORDPRESS_DEFAULT_ADMIN_USER = "admin";
@@ -212,7 +213,7 @@ async function withKernelSession(
   fn: (session: KernelSession) => Promise<void>,
   hostOptions: PreinstallKernelHostOptions = {},
 ): Promise<void> {
-  const imageBytes = await fs.saveImage();
+  const imageBytes = await saveShellDerivedBuildGuestSnapshot(fs);
   const hostDumpDir = mkdtempSync(join(tmpdir(), "wp-preinstall-dump-"));
   const hostDataDir = hostOptions.mountDataDir
     ? hostOptions.hostDataDir ?? mkdtempSync(join(tmpdir(), "wp-preinstall-data-"))

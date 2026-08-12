@@ -123,18 +123,17 @@ non-doc paths should also run the non-package test gate as a fail-safe,
 but should not trigger the package matrix unless they are package
 archive inputs.
 
-### Current ABI-42 shell publication (2026-08-11)
+### Current ABI-42 shell publication (2026-08-12)
 
 The package registry now owns the browser shell product. The checked-in
 `homebrew/main-shell-flat-selection.json` selects the exact admitted wasm32
-bottles, and shell revision 23 composes them eagerly over the platform base.
-The resulting archive contains a self-contained `/opt/kandelo/homebrew`, its
-image-owned Bash configuration, demo metadata, and standard public command
-paths under `/bin` and `/usr/bin`. Those root-owned links select the eagerly
-materialized commands from the admitted Homebrew closure; in particular,
-`bash`, `sh`, `env`, and `brew` are available at their conventional paths.
-The image contains no deferred Homebrew files, bottle trees, bootstrap
-archive, or runtime mirror authority.
+bottles, and shell revision 24 composes their sealed flat-lazy form over the
+platform base. The image embeds Bash, ncurses, and libc++; records 37 deferred
+bottle trees plus the package-owned bootstrap tree; and binds those trees to
+the authenticated mirror plan stored in the image. Before host boot it has 38
+pending groups. The normal `/usr/bin/brew` boot preparation atomically fetches
+only bootstrap, libyaml, and Ruby, leaving the 35 ordinary bottle trees pending
+for first use. Repeating boot preparation performs no additional fetch.
 
 This is the normal canonical package release path, not a parallel Homebrew
 product lane. The shell recipe is `publication_state = "ready"`; its
@@ -143,11 +142,11 @@ truthful producer commit. It does not mean the product is pending. Changes to
 the flat selection, shell configuration, base image, or composer are ordinary
 package inputs and rebuild the complete reverse-dependent closure:
 
-- `shell` revision 23;
-- `node-vfs` revision 15;
-- `lamp` revision 12;
-- `wordpress` revision 13; and
-- `nginx-vfs` and `nginx-php-vfs` revision 3.
+- `shell` revision 24;
+- `node-vfs` revision 16;
+- `lamp` revision 13;
+- `wordpress` revision 14; and
+- `nginx-vfs` and `nginx-php-vfs` revision 4.
 
 Each derived image verifies and records the exact base-shell digest and bytes.
 It therefore cannot silently combine a new Node, nginx, PHP, or WordPress
@@ -159,7 +158,7 @@ generation recorded by the public site. A missing or stale generation
 dispatches Pages with that SHA, the authenticated candidate tag, and the index
 digest. Pages uses a fresh cache and fetch-only resolution, so an absent or
 different canonical package release fails visibly instead of reconstructing
-the image or reviving the retired lazy mirror.
+the image or accepting a different lazy mirror.
 
 The shell recipe also owns the complete source closure used by its image
 tools. `mkrootfs` has no local `file:` package dependency that can pull an
