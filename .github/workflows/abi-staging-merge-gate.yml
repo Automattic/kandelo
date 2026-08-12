@@ -312,11 +312,10 @@ jobs:
           env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_RUNTIME_TOKEN \
             git -C "$exact_head" fetch --no-tags origin "$PROTECTED_SHA"
 
-          host_target_file=$(mktemp "$RUNNER_TEMP/abi-staging-host-target.XXXXXX")
-          (cd "$authority" && bash scripts/dev-shell.sh \
-            bash scripts/write-dev-shell-host-target.sh --out "$host_target_file")
-          host_target=$(<"$host_target_file")
-          rm -f "$host_target_file"
+          host_target=$(cd "$authority" &&
+            bash scripts/dev-shell.sh rustc -vV |
+              awk '/^host: / { print $2 }')
+          [[ "$host_target" =~ ^[A-Za-z0-9_.-]+$ ]]
           (
             cd "$authority"
             bash scripts/dev-shell.sh cargo build -p xtask --target "$host_target"
@@ -662,11 +661,10 @@ jobs:
             exit $?
           fi
 
-          host_target_file=$(mktemp "$RUNNER_TEMP/abi-staging-host-target.XXXXXX")
-          (cd "$authority" && bash scripts/dev-shell.sh \
-            bash scripts/write-dev-shell-host-target.sh --out "$host_target_file")
-          host_target=$(<"$host_target_file")
-          rm -f "$host_target_file"
+          host_target=$(cd "$authority" &&
+            bash scripts/dev-shell.sh rustc -vV |
+              awk '/^host: / { print $2 }')
+          [[ "$host_target" =~ ^[A-Za-z0-9_.-]+$ ]]
           authority_xtask="$authority/target/$host_target/debug/xtask"
           if [[ ! -x $authority_xtask ]]; then
             (

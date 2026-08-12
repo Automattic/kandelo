@@ -47,6 +47,27 @@ def named_step(job, name)
   matches.fetch(0)
 end
 
+def check_filtered_host_target(source, role, expected_count = 1)
+  lines = source.lines.map(&:strip)
+  validation = '[[ "$host_target" =~ ^[A-Za-z0-9_.-]+$ ]]'
+  assignments = lines.count { |line| line.start_with?("host_target=$(") }
+  sequences = lines.each_index.count do |index|
+    first = lines.fetch(index)
+    if first.start_with?("host_target=$(cd ") && first.end_with?("&&")
+      lines[index + 1] == "bash scripts/dev-shell.sh rustc -vV |" &&
+        lines[index + 2] == "awk '/^host: / { print $2 }')" &&
+        lines[index + 3] == validation
+    else
+      first == "host_target=$(bash scripts/dev-shell.sh rustc -vV |" &&
+        lines[index + 1] == "awk '/^host: / { print $2 }')" &&
+        lines[index + 2] == validation
+    end
+  end
+  check(assignments == expected_count && sequences == expected_count,
+        "#{role} does not filter then immediately validate each noisy dev-shell target " \
+          "(assignments=#{assignments}, ordered=#{sequences}, expected=#{expected_count})")
+end
+
 def check_actions(workflow)
   workflow.fetch("jobs").each_value do |job|
     job.fetch("steps").each do |step|
@@ -127,6 +148,7 @@ def check_workflow(workflow)
         collect_source.include?("status --porcelain=v1 --untracked-files=all") &&
         collect_source.include?("HEAD^{tree}"),
         "collector does not derive and project protected current identity")
+  check_filtered_host_target(collect_source, "collector")
   check(!collect_source.match?(%r{(?:bash|source|\.)\s+[^\n]*exact-head}),
         "collector executes candidate-head code")
   check(!collect.fetch("env", {}).key?("GH_TOKEN"),
@@ -153,6 +175,7 @@ def check_workflow(workflow)
         publish_source.include?("required-check-activation.toml") &&
         publish_source.include?("artifact-ids") == false,
         "publisher does not reproject and use the narrow update adapter")
+  check_filtered_host_target(publish_source, "publisher")
   check(!publish_source.match?(%r{(?:bash|source|\.)\s+[^\n]*exact-head}),
         "publisher executes candidate-head code")
   locate = named_step(publish, "Locate exact projection artifact")
@@ -182,6 +205,9 @@ def check_merge_gate(workflow)
   capture = jobs.fetch("capture-current-subject")
   structure = jobs.fetch("abi-staging-exact-head-structure")
   validate = jobs.fetch("validate-current-evidence")
+  check_filtered_host_target(
+    run_source(validate), "merge-gate evidence validator", 2
+  )
   check(capture.fetch("permissions") == {"contents" => "read"},
         "subject capture must remain read-only")
   check(structure.fetch("permissions") == {"contents" => "read"},
@@ -412,6 +438,36 @@ begin
         item["name"] == "Checkout inert exact PR head"
       end
       step.fetch("with")["persist-credentials"] = true
+    },
+    "collector target validation after use" => lambda { |copy|
+      step = copy.dig("jobs", "collect-project", "steps").find do |item|
+        item["run"]&.include?("host_target=$(cd authority &&")
+      end
+      validation = '[[ "$host_target" =~ ^[A-Za-z0-9_.-]+$ ]]'
+      assignment =
+        'authority_xtask="$GITHUB_WORKSPACE/authority/target/$host_target/debug/xtask"'
+      step["run"] = step.fetch("run")
+        .sub("#{validation}\n", "")
+        .sub(assignment, "#{assignment}\n#{validation}")
+    },
+    "collector target filtering inside dev shell" => lambda { |copy|
+      step = copy.dig("jobs", "collect-project", "steps").find do |item|
+        item["run"]&.include?("host_target=$(cd authority &&")
+      end
+      step["run"] = step.fetch("run").sub(
+        "bash scripts/dev-shell.sh rustc -vV |\n" \
+          "    awk '/^host: / { print $2 }')",
+        "bash scripts/dev-shell.sh bash -c \\\n" \
+          "    \"rustc -vV | awk '/^host: / { print \\\$2 }'\")"
+      )
+    },
+    "missing publisher target validation" => lambda { |copy|
+      step = copy.dig("jobs", "publish-check", "steps").find do |item|
+        item["run"]&.include?("host_target=$(cd authority &&")
+      end
+      step["run"] = step.fetch("run").sub(
+        "[[ \"$host_target\" =~ ^[A-Za-z0-9_.-]+$ ]]\n", ""
+      )
     }
   }
   mutations.each { |label, mutation| rejected_mutation(workflow, label, &mutation) }
@@ -487,6 +543,16 @@ begin
         item["name"] == "Validate current request and locate protected Check provenance"
       end
       step["continue-on-error"] = true
+    },
+    "merge target validation after use" => lambda { |copy|
+      step = copy.dig("jobs", "validate-current-evidence", "steps").find do |item|
+        item["run"]&.include?("host_target=$(cd \"$authority\" &&")
+      end
+      validation = '[[ "$host_target" =~ ^[A-Za-z0-9_.-]+$ ]]'
+      assignment = 'authority_xtask="$authority/target/$host_target/debug/xtask"'
+      step["run"] = step.fetch("run")
+        .sub("#{validation}\n", "")
+        .sub(assignment, "#{assignment}\n#{validation}")
     }
   }
   merge_mutations.each do |label, mutation|

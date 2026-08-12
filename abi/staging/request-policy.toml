@@ -83,7 +83,6 @@ implementation_paths = [
   "scripts/dev-shell.sh",
   "scripts/run-vfs-product-builder.ts",
   "scripts/vfs-product-catalog.mjs",
-  "scripts/write-dev-shell-host-target.sh",
   "tools/xtask/Cargo.toml",
   "tools/xtask/src/abi_staging/builder_contract.rs",
   "tools/xtask/src/abi_staging/canonical_json.rs",

@@ -446,11 +446,9 @@ jobs:
             --arg commit "$tap_commit" \
             --arg tree "$tap_tree" \
             '{commit:$commit,repository:"kandelo-dev/homebrew-tap-core",tree:$tree}')
-          host_target_file=$(mktemp "$RUNNER_TEMP/abi-staging-host-target.XXXXXX")
-          bash scripts/dev-shell.sh \
-            bash scripts/write-dev-shell-host-target.sh --out "$host_target_file"
-          host_target=$(<"$host_target_file")
-          rm -f "$host_target_file"
+          host_target=$(bash scripts/dev-shell.sh rustc -vV |
+            awk '/^host: / { print $2 }')
+          [[ "$host_target" =~ ^[A-Za-z0-9_.-]+$ ]]
           bash scripts/dev-shell.sh cargo run -p xtask \
             --target "$host_target" --quiet -- \
             abi-staging pages-readiness validate-readiness "$readiness"
@@ -530,11 +528,9 @@ jobs:
             --arg commit "$tap_commit" \
             --arg tree "$tap_tree" \
             '{commit:$commit,repository:"kandelo-dev/homebrew-tap-core",tree:$tree}')
-          host_target_file=$(mktemp "$RUNNER_TEMP/abi-staging-host-target.XXXXXX")
-          bash scripts/dev-shell.sh \
-            bash scripts/write-dev-shell-host-target.sh --out "$host_target_file"
-          host_target=$(<"$host_target_file")
-          rm -f "$host_target_file"
+          host_target=$(bash scripts/dev-shell.sh rustc -vV |
+            awk '/^host: / { print $2 }')
+          [[ "$host_target" =~ ^[A-Za-z0-9_.-]+$ ]]
           bash scripts/dev-shell.sh cargo run -p xtask \
             --target "$host_target" --quiet -- \
             abi-staging pages-readiness validate-site "$site_manifest"
