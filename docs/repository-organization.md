@@ -118,6 +118,12 @@ workflow verifies that source is still the default-branch tip, authenticates
 the candidate's immutable `ready.json`/`activated.json` pair, and snapshots the
 same canonical index bytes before it prepares the product.
 
+The pull-request browser workflow runs the guide's source checks, VitePress
+build, and generated-output checks for documentation and root JavaScript
+dependency changes. The Pages workflow repeats those checks from its selected
+source commit, so deployment does not rely on guide artifacts from another
+job.
+
 Browser preparation uses a fresh package cache and fetch-only resolution;
 Pages cannot source-build a missing canonical archive. The publisher inspects
 the eager self-contained shell, verifies the exact hashed shell and Node VFS
