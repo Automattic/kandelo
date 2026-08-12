@@ -932,6 +932,42 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 | fcft | `packages/registry/fcft/build-fcft.sh` | meson bypass | Two TUs + three generated headers, no harfbuzz/SVG |
 | foot | `packages/registry/foot/build-foot.sh` | meson bypass | First stock upstream Wayland client; two patches: gbm prime-fd shm pools, serial font loading |
 | libffi | `packages/registry/libffi/build-libffi.sh` | in-tree | Full port, no upstream source: gen-dispatch.sh generates the ffi_call call_indirect switch + the static closure trampoline pool (wasm32 cannot JIT) |
+| glib | `packages/registry/glib/build-glib.sh` | meson bypass | 2.84.4: glib/gmodule/gobject/gio-minus-gdbus, hand-curated config.h + glibconfig.h, two patches (no dbus built-ins, wasm callback signatures) |
+
+## Callback casts that change arity trap on wasm
+
+Wasm checks the exact type of every `call_indirect`. A C idiom that
+casts a function pointer to a type with a different argument count (or
+a different return type) compiles fine, works on every native ABI, and
+traps at runtime on wasm with `null function or function signature
+mismatch`.
+
+glib is built on this idiom. The port carries
+`packages/registry/glib/src/wasm-callback-signatures.patch`, which
+routes every arity-changing cast through a typed thunk:
+
+- `g_list_free_full` / `g_slist_free_full` / `g_queue_free_full` call
+  the `GDestroyNotify` (1 argument) through `GFunc` (2 arguments).
+- `g_list_sort` / `g_slist_sort` / `g_array_sort` / `g_tree_new` store
+  a `GCompareFunc` (2 arguments) and invoke it as `GCompareDataFunc`
+  (3 arguments).
+- The `G_DEFINE_TYPE` / `G_DEFINE_INTERFACE` /
+  `G_DEFINE_DYNAMIC_TYPE_EXTENDED` macros in `gtype.h` /
+  `gtypemodule.h` register 1-argument `class_init` / `instance_init` /
+  `iface_init` functions through 2-argument `GTypeInfo` slots. The
+  patched macros generate matching `*_intern_*` wrappers, so code that
+  uses the macros (all of gio, GTK later) is fixed at compile time.
+- `G_IMPLEMENT_INTERFACE` routes the conventional 1-argument interface
+  init through `g_wasm_iface_init_thunk`, carried in
+  `GInterfaceInfo.interface_data`.
+
+When porting a GObject-based library, watch for the same pattern in
+the library's own code: any `(SomeFunc)` cast where the target has a
+different argument count needs a thunk. The failure mode is a trap at
+first use, not a build error, and `-Wl,--allow-undefined` (part of the
+SDK link flags) additionally turns *missing* symbols into null table
+entries with the same trap — check `wasm32posix-nm` for undefined
+symbols when a port traps before `main`.
 
 CPython's source recipe takes its source, work directory, output directory,
 sysroot, zlib prefix, and guest prefix from the package-resolver contract. It

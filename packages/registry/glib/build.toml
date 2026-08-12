@@ -1,0 +1,21 @@
+script_path = "packages/registry/glib/build-glib.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "7709111db"
+revision    = 1
+
+# The hand-curated config.h + glibconfig.h are part of the cache key:
+# editing them (e.g. flipping a HAVE_* to track a sysroot change) must
+# invalidate cached archives so consumers rebuild against the corrected
+# feature set. The fetched `glib-src/` tree is gitignored; the resolver
+# hashes these tracked inputs on a clean checkout.
+inputs = [
+  "packages/registry/glib/build-glib.sh",
+  "packages/registry/glib/src/config.h",
+  "packages/registry/glib/src/glibconfig.h",
+  "packages/registry/glib/src/gportalstubs.c",
+  "packages/registry/glib/src/giomodule-no-dbus-builtins.patch",
+  "packages/registry/glib/src/wasm-callback-signatures.patch",
+]
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

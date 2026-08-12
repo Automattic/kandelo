@@ -398,6 +398,27 @@ if ls "$REPO_ROOT"/programs/libffi_*.c >/dev/null 2>&1; then
     ln -sfn "$LIBFFI_PREFIX/include/ffi.h"    "$SYSROOT/include/ffi.h"
 fi
 
+# Resolve glib (+ its deps libffi + zlib) and symlink its archives +
+# header tree into the sysroot when there are any glib_*.c programs to
+# build (the PR21 smoke links gio/gobject/gmodule/glib). Same
+# cached-resolve contract. The include tree keeps its glib-2.0/ prefix;
+# the program case entry passes -I$SYSROOT/include/glib-2.0.
+if ls "$REPO_ROOT"/programs/glib_*.c >/dev/null 2>&1; then
+    echo "==> Resolving glib (and deps) for glib programs..."
+    HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve glib >/dev/null)
+    GLIB_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path glib)"
+    LIBFFI_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libffi)"
+    ZLIB_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path zlib)"
+
+    for a in libglib-2.0.a libgmodule-2.0.a libgobject-2.0.a libgio-2.0.a; do
+        ln -sfn "$GLIB_PREFIX/lib/$a" "$SYSROOT/lib/$a"
+    done
+    ln -sfn "$LIBFFI_PREFIX/lib/libffi.a" "$SYSROOT/lib/libffi.a"
+    ln -sfn "$ZLIB_PREFIX/lib/libz.a"     "$SYSROOT/lib/libz.a"
+    ln -sfn "$GLIB_PREFIX/include/glib-2.0" "$SYSROOT/include/glib-2.0"
+fi
+
 # Resolve libxkbcommon and symlink its archive + public headers into the
 # sysroot when there are any xkb_*.c programs to build. Same cached-resolve
 # contract as the libwayland block above. See
@@ -585,6 +606,20 @@ for src in "$REPO_ROOT/programs/"*.c; do
             # pool against the full libffi port.
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libffi.a"
+            ;;
+        glib_smoke_test.c)
+            # PR21: mainloop + gobject signals (libffi generic
+            # marshaller) + gspawn against the glib port. Link order:
+            # gio pulls gobject/gmodule/glib, gobject pulls libffi,
+            # gio pulls libz.
+            build_program "$src" "$OUT_DIR_32" \
+                "-I$SYSROOT/include/glib-2.0" \
+                "$SYSROOT/lib/libgio-2.0.a" \
+                "$SYSROOT/lib/libgobject-2.0.a" \
+                "$SYSROOT/lib/libgmodule-2.0.a" \
+                "$SYSROOT/lib/libglib-2.0.a" \
+                "$SYSROOT/lib/libffi.a" \
+                "$SYSROOT/lib/libz.a"
             ;;
         xkb_smoke.c)
             # Keymap compile + state translation against the libxkbcommon port.
