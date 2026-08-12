@@ -33,6 +33,7 @@ SELECTION_PATH = "homebrew/main-shell-selection-lock.json"
 ARTIFACT_PATH = "homebrew/main-shell-lazy-artifact-lock.json"
 DOC_PATH = "docs/homebrew-publishing.md"
 BREWFILE_PATH = "homebrew/main-shell.Brewfile"
+PRODUCT_CATALOG_PATH = "images/vfs/products/generated/catalog.json"
 BOUND_INPUTS = {
     "bootstrap_tree_spec_sha256": "homebrew/main-shell-brew-package-tree.json",
     "brewfile_sha256": BREWFILE_PATH,
@@ -376,6 +377,10 @@ def validate_with_canonical_checker(
                     os.fspath(migration),
                     os.fspath(metadata_path),
                     os.fspath(support),
+                    os.fspath(source_root / PRODUCT_CATALOG_PATH),
+                    os.fspath(
+                        source_root / "homebrew/main-shell-materialization-policy.json"
+                    ),
                 ],
                 check=True,
                 stdout=subprocess.PIPE,
