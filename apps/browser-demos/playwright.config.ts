@@ -94,10 +94,10 @@ for (const key of browserEnvironmentKeys) {
 export default defineConfig({
   testDir: join(__dirname, "test"),
   testMatch: "*.spec.ts",
-  // The assembled-site proof reads a producer-returned sealed tree during
-  // module initialization. Ordinary browser suites have no such tree; the
-  // dedicated atomic Pages gate supplies it and must remain its sole caller.
-  testIgnore: playwrightTestIgnoreForEnvironment(process.env),
+  // The assembled-site and exact-product proofs read protected handoffs during
+  // module initialization. Ordinary browser suites have no such inputs; their
+  // dedicated gates supply them and must remain their sole callers.
+  testIgnore: playwrightTestIgnoreForEnvironment(process.env, process.argv),
   timeout: 120_000,
   workers: process.env.CI ? 1 : undefined,
   use: {
