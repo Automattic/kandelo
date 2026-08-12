@@ -5,6 +5,8 @@ const FULL_FORMULA_RE =
 const GIT_SHA_RE = /^[0-9a-f]{40}$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const RUNTIME_ID = "homebrew-runtime-support";
+export const HOMEBREW_FLAT_RUNTIME_SUPPORT_POLICY_KIND =
+  "kandelo-homebrew-flat-runtime-support-policy" as const;
 // WHY: a distinct keg-only Formula identity lets the independent canary live
 // beside the core `m4` Formula. The canary payload still installs `bin/m4`.
 const LIFECYCLE_CANARY_FORMULA = "m4-canary" as const;
@@ -32,6 +34,81 @@ export interface HomebrewRuntimeSupportContract {
     revision: string;
     formula: typeof LIFECYCLE_CANARY_FORMULA;
   };
+}
+
+/**
+ * The flat-selection-relative runtime policy deliberately contains only the
+ * role roots and activation transaction. Bottle identity is owned solely by
+ * the active flat selection, so no campaign, tap, catalog, or lock evidence
+ * can enter this policy.
+ */
+export interface HomebrewFlatRuntimeSupportPolicy {
+  readonly schema: 1;
+  readonly kind: typeof HOMEBREW_FLAT_RUNTIME_SUPPORT_POLICY_KIND;
+  readonly id: typeof RUNTIME_ID;
+  readonly bootstrapPackage: string;
+  readonly runtimeRoots: readonly string[];
+  readonly activation: Readonly<{
+    mode: "boot-prefetch";
+    capability: "homebrew:runtime";
+    root: "/usr/bin/brew";
+    atomicGroup: typeof RUNTIME_ID;
+  }>;
+}
+
+/** Parse the closed, selection-relative policy used for lazy shell roles. */
+export function parseHomebrewRuntimeSupportPolicy(
+  value: unknown,
+): HomebrewFlatRuntimeSupportPolicy {
+  const root = exactPolicyRecord(value, [
+    "schema",
+    "kind",
+    "id",
+    "bootstrap_package",
+    "runtime_roots",
+    "activation",
+  ], "Homebrew flat runtime-support policy");
+  if (
+    root.schema !== 1 ||
+    root.kind !== HOMEBREW_FLAT_RUNTIME_SUPPORT_POLICY_KIND ||
+    root.id !== RUNTIME_ID
+  ) {
+    throw new Error("Homebrew flat runtime-support policy has an unsupported identity");
+  }
+  const bootstrapPackage = formula(
+    root.bootstrap_package,
+    "Homebrew flat runtime-support bootstrap_package",
+  );
+  const runtimeRoots = formulaArray(
+    root.runtime_roots,
+    "Homebrew flat runtime-support runtime_roots",
+  );
+  const activation = exactPolicyRecord(
+    root.activation,
+    ["mode", "capability", "root", "atomic_group"],
+    "Homebrew flat runtime-support activation",
+  );
+  if (
+    activation.mode !== "boot-prefetch" ||
+    activation.capability !== "homebrew:runtime" ||
+    activation.root !== "/usr/bin/brew" ||
+    activation.atomic_group !== RUNTIME_ID
+  ) {
+    throw new Error("Homebrew flat runtime-support activation is unsupported");
+  }
+  return deepFreeze({
+    schema: 1,
+    kind: HOMEBREW_FLAT_RUNTIME_SUPPORT_POLICY_KIND,
+    id: RUNTIME_ID,
+    bootstrapPackage,
+    runtimeRoots: [...runtimeRoots],
+    activation: {
+      mode: "boot-prefetch",
+      capability: "homebrew:runtime",
+      root: "/usr/bin/brew",
+      atomicGroup: RUNTIME_ID,
+    },
+  });
 }
 
 /**
@@ -298,6 +375,25 @@ function record(value: unknown, label: string): Record<string, any> {
   return value as Record<string, any>;
 }
 
+function exactPolicyRecord(
+  value: unknown,
+  keys: readonly string[],
+  label: string,
+): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  if (
+    actual.length !== expected.length ||
+    actual.some((key, index) => key !== expected[index])
+  ) {
+    throw new Error(`${label} has unexpected or missing fields`);
+  }
+  return value as Record<string, unknown>;
+}
+
 function formulaArray(value: unknown, label: string): string[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw new Error(`${label} must be a nonempty array`);
@@ -337,4 +433,14 @@ function unique(values: readonly string[], label: string): void {
   if (new Set(values).size !== values.length) {
     throw new Error(`${label} contains duplicates`);
   }
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value !== "object" || value === null || Object.isFrozen(value)) {
+    return value;
+  }
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    deepFreeze(child);
+  }
+  return Object.freeze(value);
 }

@@ -4,6 +4,8 @@ import type {
   HomebrewVfsPackagePlan,
   HomebrewVfsPlan,
 } from "./homebrew-vfs-planner";
+import type { HomebrewBottleSelection } from "./homebrew-bottle-selection";
+import type { HomebrewFlatRuntimeSupportPolicy } from "./homebrew-runtime-support";
 
 export const HOMEBREW_VFS_MATERIALIZATION_POLICY_KIND =
   "kandelo-homebrew-vfs-materialization-policy" as const;
@@ -31,6 +33,108 @@ export interface HomebrewVfsMaterializationSelection {
   embeddedRoots: string[];
   embeddedPackages: HomebrewVfsPackagePlan[];
   deferredPackages: HomebrewVfsPackagePlan[];
+}
+
+/**
+ * Selection-derived ownership for the lazy shell. The current flat selection
+ * remains the sole bottle authority; this shape only records roles derived
+ * from its descriptor dependency edges and the two reviewed policy roots.
+ */
+export interface FlatLazyCompositionPartition {
+  readonly embeddedPackageOrder: readonly string[];
+  readonly bootstrapPackage: string;
+  readonly runtimeCohortPackageOrder: readonly string[];
+  readonly ordinaryDeferredPackageOrder: readonly string[];
+  readonly deferredPackageOrder: readonly string[];
+}
+
+/**
+ * Derive lazy shell roles from one already-validated, dependency-first flat
+ * selection. Runtime additions are precisely the runtime-root closure less
+ * the closure of all ordinary keg roots and the embedded boot closure.
+ */
+export function deriveFlatLazyCompositionPartition(
+  selection: HomebrewBottleSelection,
+  materializationPolicyValue: unknown,
+  runtimePolicy: HomebrewFlatRuntimeSupportPolicy,
+): FlatLazyCompositionPartition {
+  const materializationPolicy = parseHomebrewVfsMaterializationPolicy(
+    materializationPolicyValue,
+  );
+  const packages = flatSelectionPackages(selection);
+  const embedded = flatDependencyClosure(
+    packages,
+    materializationPolicy.embedded_roots,
+    "Homebrew flat embedded root",
+  );
+  const embeddedPackageOrder = flatSelectionOrder(selection, embedded);
+  if (!arraysEqual(embeddedPackageOrder, materializationPolicy.embedded_package_order)) {
+    throw new Error(
+      "Homebrew VFS materialization embedded closure differs from the reviewed policy: " +
+        `actual=${JSON.stringify(embeddedPackageOrder)} ` +
+        `expected=${JSON.stringify(materializationPolicy.embedded_package_order)}`,
+    );
+  }
+
+  const bootstrap = packages.get(runtimePolicy.bootstrapPackage);
+  if (bootstrap === undefined) {
+    throw new Error(
+      `Homebrew flat runtime-support bootstrap ${runtimePolicy.bootstrapPackage} ` +
+        "is absent from the selection",
+    );
+  }
+  if (bootstrap.materialization !== "homebrew-runtime-support-v1") {
+    throw new Error(
+      "Homebrew flat runtime-support bootstrap must be a bootstrap descriptor",
+    );
+  }
+
+  const runtimeClosure = flatDependencyClosure(
+    packages,
+    runtimePolicy.runtimeRoots,
+    "Homebrew flat runtime-support runtime root",
+  );
+  const ordinaryRoots = selection.bottles
+    .filter((bottle) =>
+      bottle.materialization === "keg" && !runtimeClosure.has(bottle.fullName)
+    )
+    .map((bottle) => bottle.fullName);
+  const baseClosure = flatDependencyClosure(
+    packages,
+    [...ordinaryRoots, ...materializationPolicy.embedded_roots],
+    "Homebrew flat ordinary root",
+  );
+  const runtimeAdditions = new Set(
+    [...runtimeClosure].filter((fullName) => !baseClosure.has(fullName)),
+  );
+  const ordinaryDeferred = new Set(
+    [...baseClosure].filter((fullName) => !embedded.has(fullName)),
+  );
+  const runtimeCohortPackageOrder = flatSelectionOrder(selection, runtimeAdditions);
+  const ordinaryDeferredPackageOrder = flatSelectionOrder(selection, ordinaryDeferred);
+  const deferredPackageOrder = selection.bottles
+    .map((bottle) => bottle.fullName)
+    .filter((fullName) =>
+      ordinaryDeferred.has(fullName) || runtimeAdditions.has(fullName)
+    );
+  if (deferredPackageOrder.length === 0) {
+    throw new Error("Homebrew flat lazy partition leaves no deferred packages");
+  }
+
+  assertExactFlatRoles(
+    selection,
+    embedded,
+    runtimePolicy.bootstrapPackage,
+    ordinaryDeferred,
+    runtimeAdditions,
+  );
+  return deepFreeze({
+    embeddedPackageOrder: [...embeddedPackageOrder],
+    bootstrapPackage: runtimePolicy.bootstrapPackage,
+    runtimeCohortPackageOrder: [...runtimeCohortPackageOrder],
+    ordinaryDeferredPackageOrder: [...ordinaryDeferredPackageOrder],
+    deferredPackageOrder: [...deferredPackageOrder],
+  });
 }
 
 export function parseHomebrewVfsMaterializationPolicy(
@@ -328,4 +432,94 @@ function exactRecord(
 
 function arraysEqual<T>(left: readonly T[], right: readonly T[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function flatSelectionPackages(selection: HomebrewBottleSelection) {
+  const packages = new Map(selection.bottles.map((bottle) => [bottle.fullName, bottle]));
+  if (packages.size !== selection.bottles.length) {
+    throw new Error("Homebrew flat selection duplicates a package identity");
+  }
+  return packages;
+}
+
+function flatDependencyClosure(
+  packages: ReturnType<typeof flatSelectionPackages>,
+  roots: readonly string[],
+  rootLabel: string,
+): Set<string> {
+  const closure = new Set<string>();
+  const visiting = new Set<string>();
+  const visit = (fullName: string, label: string): void => {
+    if (closure.has(fullName)) return;
+    if (visiting.has(fullName)) {
+      throw new Error(`Homebrew flat selection has a dependency cycle at ${fullName}`);
+    }
+    const descriptor = packages.get(fullName);
+    if (descriptor === undefined) {
+      throw new Error(`${label} ${fullName} is absent from the selection`);
+    }
+    visiting.add(fullName);
+    for (const dependency of descriptor.dependencies) {
+      visit(
+        dependency.fullName,
+        `Homebrew flat selection dependency of ${descriptor.fullName}`,
+      );
+    }
+    visiting.delete(fullName);
+    closure.add(fullName);
+  };
+  for (const root of roots) visit(root, rootLabel);
+  return closure;
+}
+
+function flatSelectionOrder(
+  selection: HomebrewBottleSelection,
+  packageNames: ReadonlySet<string>,
+): string[] {
+  return selection.bottles
+    .map((bottle) => bottle.fullName)
+    .filter((fullName) => packageNames.has(fullName));
+}
+
+function assertExactFlatRoles(
+  selection: HomebrewBottleSelection,
+  embedded: ReadonlySet<string>,
+  bootstrap: string,
+  ordinaryDeferred: ReadonlySet<string>,
+  runtimeAdditions: ReadonlySet<string>,
+): void {
+  const roles = [embedded, new Set([bootstrap]), ordinaryDeferred, runtimeAdditions];
+  const membership = new Map<string, number>();
+  for (const role of roles) {
+    for (const fullName of role) {
+      membership.set(fullName, (membership.get(fullName) ?? 0) + 1);
+    }
+  }
+  const overlaps = [...membership]
+    .filter(([, count]) => count !== 1)
+    .map(([fullName]) => fullName);
+  if (overlaps.length > 0) {
+    throw new Error(
+      `Homebrew flat lazy partition roles overlap: ${JSON.stringify(overlaps)}`,
+    );
+  }
+  const selected = selection.bottles.map((bottle) => bottle.fullName);
+  const missing = selected.filter((fullName) => !membership.has(fullName));
+  const unexpected = [...membership.keys()].filter((fullName) => !selected.includes(fullName));
+  if (missing.length > 0 || unexpected.length > 0) {
+    throw new Error(
+      "Homebrew flat lazy partition does not cover the selection exactly: " +
+        `missing=${JSON.stringify(missing)} unexpected=${JSON.stringify(unexpected)}`,
+    );
+  }
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value !== "object" || value === null || Object.isFrozen(value)) {
+    return value;
+  }
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    deepFreeze(child);
+  }
+  return Object.freeze(value);
 }
