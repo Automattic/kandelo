@@ -111,6 +111,10 @@ export type {
   HomebrewVfsPlanOptions,
   HomebrewVfsTapIdentity,
 } from "./homebrew-vfs-planner";
+export type {
+  BuildHomebrewFlatOriginalBottleCollectionOptions,
+  HomebrewFlatOriginalBottleCollectionBuildResult,
+} from "./homebrew-lazy-layer";
 export {
   HOMEBREW_RUNTIME_LAYER_POLICY_KIND,
   parseHomebrewRuntimeLayerPolicy,

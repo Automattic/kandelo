@@ -3459,12 +3459,19 @@ describe("Homebrew VFS builder", () => {
       ...fixture.plan,
       packages: fixture.plan.packages.filter((pkg) => pkg.name !== "hello"),
     };
+    const loadedPackages: HomebrewVfsPlan["packages"] = [];
     const collection = await buildHomebrewOriginalBottleCollection(selectedPlan, {
       fs: MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024)),
       baseFs: fixture.baseFs,
-      loadBottleBytes: (pkg) =>
-        pkg.name === "runtime-dep" ? fixture.dependencyBytes : fixture.runtimeBytes,
+      loadBottleBytes: (pkg) => {
+        loadedPackages.push(pkg);
+        return pkg.name === "runtime-dep" ? fixture.dependencyBytes : fixture.runtimeBytes;
+      },
     });
+    expect(loadedPackages).toEqual(selectedPlan.packages);
+    expect(loadedPackages.every((pkg) =>
+      typeof pkg.tapCommit === "string" && typeof pkg.linkManifest === "object"
+    )).toBe(true);
     expect(Object.keys(collection).sort()).toEqual([
       "deferredTrees",
       "packages",

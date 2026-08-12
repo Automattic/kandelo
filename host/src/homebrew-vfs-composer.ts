@@ -12,8 +12,10 @@ import {
   buildHomebrewOriginalBottleCollection,
   type HomebrewDeferredTreeDescriptor,
   type HomebrewDeferredTreeDraftDescriptor,
+  type HomebrewFlatOriginalBottleCollectionBuildResult,
   type HomebrewLazyLayerEntry,
   type HomebrewLazyLayerPayload,
+  type HomebrewOriginalBottleCollectionBuildResult,
 } from "./homebrew-lazy-layer";
 import {
   assertHomebrewVfsDeferredPackageCollection,
@@ -174,7 +176,7 @@ export async function buildHomebrewMaterializedVfs(
     migrationLock: options.migrationLock,
     createdBy: options.createdBy ?? "host/src/homebrew-vfs-composer.ts",
   });
-  const bindings = bindCollection(plan, collection.deferredTrees, collection.payloads);
+  const bindings = bindCollection(plan.packages, collection);
   const deferredSet = new Set(selection.deferredPackages.map((pkg) => pkg.fullName));
   const deferredBindings = bindings.filter((binding) => deferredSet.has(binding.package));
   assertHomebrewVfsDeferredPackageCollection(
@@ -258,11 +260,7 @@ export async function buildHomebrewMaterializedVfs(
     runtimeSupportCollectionConflicts =
       supportCollection.report.link_conflicts ?? [];
     runtimeSupportPackageReports = supportCollection.report.packages;
-    const boundSupport = bindCollection(
-      deltaPlan,
-      supportCollection.deferredTrees,
-      supportCollection.payloads,
-    );
+    const boundSupport = bindCollection(deltaPlan.packages, supportCollection);
     const supportByPackage = new Map(
       boundSupport.map((binding) => [binding.package, binding]),
     );
@@ -634,14 +632,19 @@ interface BoundCollectionTree {
 }
 
 function bindCollection(
-  plan: HomebrewVfsPlan,
-  trees: readonly HomebrewDeferredTreeDraftDescriptor[],
-  payloads: readonly HomebrewLazyLayerPayload[],
+  plannedPackages: readonly Pick<HomebrewVfsPackagePlan, "fullName">[],
+  collection: Pick<
+    | HomebrewOriginalBottleCollectionBuildResult
+    | HomebrewFlatOriginalBottleCollectionBuildResult,
+    "deferredTrees" | "payloads"
+  >,
 ): BoundCollectionTree[] {
-  if (trees.length !== plan.packages.length || payloads.length !== trees.length) {
+  const trees = collection.deferredTrees;
+  const payloads = collection.payloads;
+  if (trees.length !== plannedPackages.length || payloads.length !== trees.length) {
     throw new Error("Homebrew original-bottle collection is not one tree per package");
   }
-  const packageNames = new Set(plan.packages.map((pkg) => pkg.fullName));
+  const packageNames = new Set(plannedPackages.map((pkg) => pkg.fullName));
   const payloadById = new Map(payloads.map((payload) => [payload.id, payload]));
   if (payloadById.size !== payloads.length) {
     throw new Error("Homebrew original-bottle collection duplicates a payload id");

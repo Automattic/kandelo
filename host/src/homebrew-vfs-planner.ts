@@ -5,7 +5,10 @@ import {
   homebrewBottleSelectionSha256,
   parseCanonicalHomebrewBottleSelection,
 } from "./homebrew-bottle-selection";
-import type { HomebrewBottleDescriptor } from "./homebrew-bottle-descriptor";
+import type {
+  HomebrewBottleDependencyIdentity,
+  HomebrewBottleDescriptor,
+} from "./homebrew-bottle-descriptor";
 import type { HomebrewBottleArch, HomebrewLinkEntry } from "./homebrew-bottle-types";
 import type { HomebrewVfsResourcePolicyId } from "./homebrew-vfs-resource-policy";
 
@@ -164,6 +167,36 @@ export interface HomebrewVfsPackagePlan {
   runtimeSupport: HomebrewRuntime[];
   browserCompatible: boolean;
   builtFrom?: HomebrewBottleBuildSource;
+}
+
+/**
+ * Bottle facts required to project one authenticated eager pour into an
+ * original-bottle deferred tree. This deliberately excludes tap, campaign,
+ * catalog, cache-key, lock, and publisher provenance.
+ */
+export interface HomebrewOriginalBottlePackagePlan {
+  name: string;
+  fullName: string;
+  version: string;
+  formulaRevision: number;
+  bottleRebuild: number;
+  arch: HomebrewBottleArch;
+  kandeloAbi: number;
+  dependencies: readonly (HomebrewDependency | HomebrewBottleDependencyIdentity)[];
+  source: {
+    url: string;
+    sha256: string;
+    bytes: number;
+  };
+  relocation: {
+    prefix: string;
+    cellar: string;
+    keg: string;
+    payloadRoot: string;
+    receipts: readonly string[];
+  };
+  links: readonly HomebrewLinkEntry[];
+  pathPrepend: readonly string[];
 }
 
 export interface HomebrewBottleBuildSource {

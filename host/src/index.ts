@@ -127,6 +127,13 @@ export type {
   HomebrewVfsTapIdentity,
 } from "./homebrew-vfs-planner";
 export {
+  buildHomebrewFlatOriginalBottleCollection,
+} from "./homebrew-lazy-layer";
+export type {
+  BuildHomebrewFlatOriginalBottleCollectionOptions,
+  HomebrewFlatOriginalBottleCollectionBuildResult,
+} from "./homebrew-lazy-layer";
+export {
   HOMEBREW_VFS_FORMULA_LAYER_KIND,
   HOMEBREW_VFS_FORMULA_MANIFEST_RELATIVE_PATH,
   HOMEBREW_VFS_FORMULA_PAYLOAD_RELATIVE_PATH,
