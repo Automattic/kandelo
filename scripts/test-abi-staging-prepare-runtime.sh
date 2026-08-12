@@ -5,6 +5,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 PREPARER="$REPO_ROOT/scripts/abi-staging-prepare-runtime.sh"
 TMP_ROOT="$(mktemp -d)"
+TMP_ROOT="$(cd "$TMP_ROOT" && pwd -P)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
 fail() {
@@ -34,6 +35,8 @@ SOURCE_COMMIT="$(git -C "$SOURCE" rev-parse HEAD)"
 SOURCE_TREE="$(git -C "$SOURCE" rev-parse HEAD^{tree})"
 SNAPSHOT_SHA256="$(sha256sum "$SOURCE/abi/snapshot.json" | awk '{print $1}')"
 POLICY_SHA256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+CACHE_ROOT="$TMP_ROOT/exact-package-cache"
+mkdir -m 0700 "$CACHE_ROOT"
 
 FAKE_BUILDER="$TMP_ROOT/fake-runtime-builder"
 cat >"$FAKE_BUILDER" <<'EOF'
@@ -68,6 +71,8 @@ mode = stat.S_IMODE(os.lstat(temporary).st_mode)
 Path(sys.argv[1]).write_text(f"{temporary}\n{mode:o}\n")
 PY
 fi
+printf '%s\n' "${WASM_POSIX_BINARY_CACHE_ROOT:-}" \
+  >"${WASM_POSIX_BINARY_CACHE_ROOT:?}/runtime-cache-root.observed"
 mkdir -p \
   "$artifact_root/host/dist" \
   "$artifact_root/browser/dist/abi-staging" \
@@ -135,8 +140,9 @@ printf 'clang stddef fixture\n' \
 EOF
 chmod 0755 "$FAKE_TOOLCHAIN_BUILDER"
 
-run_preparer() {
-  local out="$1"
+run_preparer_with_cache() {
+  local cache_root="$1"
+  local out="$2"
   env \
     KANDELO_ABI_STAGING_TESTING=1 \
     KANDELO_ABI_STAGING_RUNTIME_BUILDER="$FAKE_BUILDER" \
@@ -149,13 +155,60 @@ run_preparer() {
       --target-abi 8 \
       --snapshot-sha256 "$SNAPSHOT_SHA256" \
       --build-policy-sha256 "$POLICY_SHA256" \
+      --binary-cache-root "$cache_root" \
       --out "$out"
+}
+
+run_preparer() {
+  run_preparer_with_cache "$CACHE_ROOT" "$1"
 }
 
 OUT="$TMP_ROOT/out"
 FAKE_TOOLCHAIN_STARTED_MARKER="$TMP_ROOT/toolchain.started" run_preparer "$OUT"
 [ "$(cat "$TMP_ROOT/toolchain.started")" = started ] ||
   fail "runtime preparation did not invoke its isolated toolchain builder"
+observed_cache_root="$(cat "$CACHE_ROOT/runtime-cache-root.observed")"
+[ "$(realpath "$observed_cache_root")" = "$(realpath "$CACHE_ROOT")" ] ||
+  fail "runtime preparation dropped or substituted the exact package cache root"
+
+CACHE_SYMLINK_TARGET="$TMP_ROOT/cache-symlink-target"
+CACHE_SYMLINK="$TMP_ROOT/cache-symlink"
+mkdir -m 0700 "$CACHE_SYMLINK_TARGET"
+ln -s "$CACHE_SYMLINK_TARGET" "$CACHE_SYMLINK"
+if FAKE_TOOLCHAIN_STARTED_MARKER="$TMP_ROOT/cache-symlink.started" \
+    run_preparer_with_cache "$CACHE_SYMLINK" "$TMP_ROOT/cache-symlink-out" \
+      >"$TMP_ROOT/cache-symlink.out" 2>&1; then
+  fail "runtime preparation accepted a symlinked package cache root"
+fi
+[ ! -e "$TMP_ROOT/cache-symlink.started" ] ||
+  fail "runtime preparation executed before rejecting a symlinked package cache root"
+grep -F 'binary cache root must be a real directory' \
+  "$TMP_ROOT/cache-symlink.out" >/dev/null ||
+  fail "symlinked package-cache rejection was not explicit"
+
+if FAKE_TOOLCHAIN_STARTED_MARKER="$TMP_ROOT/cache-relative.started" \
+    run_preparer_with_cache "relative-package-cache" "$TMP_ROOT/cache-relative-out" \
+      >"$TMP_ROOT/cache-relative.out" 2>&1; then
+  fail "runtime preparation accepted a relative package cache root"
+fi
+[ ! -e "$TMP_ROOT/cache-relative.started" ] ||
+  fail "runtime preparation executed before rejecting a relative package cache root"
+grep -F 'binary cache root must be absolute' \
+  "$TMP_ROOT/cache-relative.out" >/dev/null ||
+  fail "relative package-cache rejection was not explicit"
+
+mkdir -m 0700 "$SOURCE/cache-inside-source"
+if FAKE_TOOLCHAIN_STARTED_MARKER="$TMP_ROOT/cache-inside.started" \
+    run_preparer_with_cache "$SOURCE/cache-inside-source" \
+      "$TMP_ROOT/cache-inside-out" >"$TMP_ROOT/cache-inside.out" 2>&1; then
+  fail "runtime preparation accepted a package cache inside the exact source"
+fi
+[ ! -e "$TMP_ROOT/cache-inside.started" ] ||
+  fail "runtime preparation executed before rejecting an in-source package cache"
+grep -F 'binary cache root must be outside the exact source tree' \
+  "$TMP_ROOT/cache-inside.out" >/dev/null ||
+  fail "in-source package-cache rejection was not explicit"
+rmdir "$SOURCE/cache-inside-source"
 [ -s "$OUT/runtime-bundle.json" ] || fail "runtime bundle was not emitted"
 [ -s "$OUT/runtime/kernel.wasm" ] || fail "kernel artifact was not emitted"
 [ "$(jq -r '.source.commit' "$OUT/runtime-bundle.json")" = "$SOURCE_COMMIT" ] ||
@@ -261,6 +314,7 @@ if env \
       --target-abi 8 \
       --snapshot-sha256 "$SNAPSHOT_SHA256" \
       --build-policy-sha256 "$POLICY_SHA256" \
+      --binary-cache-root "$CACHE_ROOT" \
       --out "$TMP_ROOT/credentialed" >"$TMP_ROOT/credentialed.out" 2>&1; then
   fail "runtime preparation accepted a write credential"
 fi
@@ -279,6 +333,7 @@ if env \
       --target-abi 8 \
       --snapshot-sha256 "$SNAPSHOT_SHA256" \
       --build-policy-sha256 "$POLICY_SHA256" \
+      --binary-cache-root "$CACHE_ROOT" \
       --out "$TMP_ROOT/runtime-token" >"$TMP_ROOT/runtime-token.out" 2>&1; then
   fail "runtime preparation accepted the Actions runtime credential"
 fi
@@ -296,6 +351,7 @@ if env \
       --target-abi 8 \
       --snapshot-sha256 "$SNAPSHOT_SHA256" \
       --build-policy-sha256 "$POLICY_SHA256" \
+      --binary-cache-root "$CACHE_ROOT" \
       --out "$TMP_ROOT/wrong-head" >"$TMP_ROOT/wrong-head.out" 2>&1; then
   fail "runtime preparation accepted a synthetic or different head"
 fi
