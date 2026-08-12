@@ -611,19 +611,77 @@ describe("declared shell lazy-archive inputs", () => {
         "kandelo-dev/tap-core/nethack",
       ]),
     );
-    for (const bottle of selection.bottles) {
-      expect(bottle.materialization).toBe(
-        bottle.name === "homebrew-bootstrap"
-          ? "homebrew-runtime-support-v1"
-          : "keg",
-      );
-      expect(bottle.sha256).toMatch(/^[0-9a-f]{64}$/);
-      expect(bottle.bytes).toBeGreaterThan(0);
-      expect(bottle.url).toBe(
-        `https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/${bottle.name}/` +
-          `blobs/sha256:${bottle.sha256}`,
-      );
-    }
+    expect(
+      migrationLock.reviewed_substitutions
+        .filter(
+          ({ kind, registry }) =>
+            kind === "formula_identity" &&
+            retiredBundleNames.has(
+              registry.slice(0, registry.lastIndexOf("@")),
+            ),
+        )
+        .map(({ kind, registry, formula }) => ({ kind, registry, formula })),
+    ).toEqual([]);
+    expect(runtimeSupport.activation).toEqual(
+      expect.objectContaining({
+        base_image_default: "deferred",
+        roots: ["/usr/bin/brew"],
+      }),
+    );
+    expect(runtimeSupport.base_formula_order).toEqual(
+      migrationLock.formula_closure,
+    );
+    expect(runtimeSupport.additional_formula_order).toEqual(
+      runtimeSupport.formula_order.filter(
+        (name) => !runtimeSupport.base_formula_order.includes(name),
+      ),
+    );
+    expect(runtimeSupport.base_formula_order).toContain(
+      "kandelo-dev/tap-core/ruby",
+    );
+    const auditedFormulae = [
+      ...runtimeSupport.availability.local_test_formulae,
+      ...runtimeSupport.availability.requires_rebuild,
+      ...runtimeSupport.availability.missing_metadata,
+      ...runtimeSupport.availability.can_be_deferred,
+    ];
+    expect(new Set(auditedFormulae).size).toBe(auditedFormulae.length);
+    expect(runtimeSupport.availability.provenance).toEqual(
+      expect.objectContaining({
+        provenance_kind: "local-test",
+        promotable: false,
+        published: false,
+      }),
+    );
+    expect(runtimeSupport.availability.requires_rebuild).toEqual([]);
+    expect(runtimeSupport.availability.missing_metadata).toEqual([]);
+    expect(runtimeSupport.availability.can_be_deferred).toEqual([]);
+    expect(runtimeSupport.deferred_formulae).toEqual([]);
+    expect(runtimeSupport.lifecycle_installs).toEqual([
+      expect.objectContaining({
+        tap: "brandonpayton/kandelo-canary",
+        formula: "m4-canary",
+        phase: "guest-lifecycle",
+        image_closure: false,
+      }),
+    ]);
+    expect(
+      execFileSync(
+        process.execPath,
+        [
+          join(repoRoot, "scripts/check-homebrew-main-shell-brewfile.mjs"),
+          brewfilePath,
+          migrationLockPath,
+        ],
+        { cwd: repoRoot, encoding: "utf8" },
+      ),
+    ).toContain(
+      `${selection.packages.length} reviewed migration roots, ` +
+        `${migrationLock.formula_closure.length} base Formulae, ` +
+        `${runtimeSupport.formula_order.length} runtime Formulae, and ` +
+        `${auditedFormulae.length} audited Formulae; the runtime adds ` +
+        `${runtimeSupport.additional_formula_order.length} beyond the base`,
+    );
 
     // The package build consumes the authenticated public selection instead
     // of an ambient tap checkout and materializes every selected bottle into

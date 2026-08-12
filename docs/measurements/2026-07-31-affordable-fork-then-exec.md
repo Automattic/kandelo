@@ -588,6 +588,49 @@ unacceptable latency or CPU cost on Node and browsers.
 
 ### Current lifecycle measurements
 
+### Task 21 revalidation — 2026-08-12
+
+At final-head candidate `3f4ea731bca81c42bf3c7f6ae52a0ac837a7d56b`
+(tree `215c366f5075a3a9253c86223b8399a4619a313a`), the ordinary-memory
+suite passed 63 checks in five files. The RSS fixture explicitly stages its
+child executable at the VFS path used by `posix_spawn`; the host executable
+map remains a prepared-target preflight only and is not a substitute for that
+guest filesystem entry.
+
+Two churn observations, each with four warm-up children and six waves of
+eight 8 MiB children, completed with no guest stderr or host diagnostics:
+
+| Observation | Late slope | Late growth |
+|---|---:|---:|
+| A | -2.061 MiB/child | -69.313 MiB |
+| B | -1.335 MiB/child | -40.750 MiB |
+
+The fixture is evidence that exact-fenced retired memories became
+collectible under its bounded ordinary allocation pressure. It is not a
+promise about the timing of physical memory reclamation.
+
+The component harness was also rerun twice on Apple Silicon macOS with Node
+v24.15.0 from the repository dev shell. It used a 256 MiB shared memory with
+16 MiB touched:
+
+| Case | Run A | Run B |
+|---|---:|---:|
+| Worker-only peak RSS growth | 13.469 MiB | 13.328 MiB |
+| Module-Worker peak RSS growth | 14.594 MiB | 13.547 MiB |
+| Shared-memory Worker growth | 10.984 MiB | 11.109 MiB |
+| Full-clone RSS growth | 496.374 MiB | 496.345 MiB |
+| Sparse-clone RSS growth | 262.844 MiB | 262.656 MiB |
+| Full-clone elapsed | 33.442 ms | 32.838 ms |
+| Sparse-clone elapsed | 76.602 ms | 79.343 ms |
+
+Worker and module churn remain small beside a complete address-space clone.
+Sparse clone reduces component RSS in this artificial sparse workload, but it
+still scans the complete parent and was 2.29–2.42 times slower than the full
+clone. It remains unselected: component results alone are not real product or
+cross-host application RSS evidence. The current admission thresholds and
+bounded fallback remain allocation-accounting safeguards, not a claim that an
+engine physically reclaimed bytes at a particular instant.
+
 The Node process-lifecycle suite ran three rounds:
 
 ```sh

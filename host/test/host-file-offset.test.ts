@@ -98,6 +98,19 @@ describe("HostFileOffset VFS contract", () => {
         seeks.push(offset);
         return offset;
       },
+      statfs: () => ({
+        type: 0,
+        bsize: 4096,
+        blocks: 1,
+        bfree: 0,
+        bavail: 0,
+        files: 1,
+        ffree: 0,
+        fsid: 0,
+        namelen: 255,
+        frsize: 4096,
+        flags: 0,
+      }),
     } as unknown as FileSystemBackend;
     const io = new VirtualPlatformIO(
       [{ mountPoint: "/", backend }],

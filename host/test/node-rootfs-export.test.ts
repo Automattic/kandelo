@@ -250,34 +250,20 @@ describe("NodeKernelHost rootfs export contract", () => {
   );
 
   it.skipIf(!haveKernel || !haveSpawnSmoke || !haveWasiHello)(
-    "uses worker-owned exact bytes before a same-path lazy VFS entry",
+    "uses worker-owned VFS bytes without resolving an ambient executable",
     async () => {
       const kernel = new Uint8Array(readFileSync(kernelPath!));
       const spawnSmoke = new Uint8Array(readFileSync(spawnSmokePath));
       const programSource = new Uint8Array(readFileSync(wasiHelloPath));
-      const fs = MemoryFileSystem.create(
-        new SharedArrayBuffer(8 * 1024 * 1024),
-      );
-      fs.mkdir("/bin", 0o755);
-      fs.registerLazyFile(
+      const rootfs = await createExecutableRootfs(
         "/bin/exact-tool",
-        "https://packages.example.test/must-not-fetch.wasm",
-        programSource.byteLength,
-        0o755,
+        programSource,
       );
-      const rootfs = await fs.saveImage();
       let stdout = "";
       let lazyDownloads = 0;
       let ambientResolveRequests = 0;
       const host = new NodeKernelHost({
         rootfsImage: rootfs,
-        rootfsLazyAssets: [{
-          url: "https://packages.example.test/must-not-fetch.wasm",
-          sha256: "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
-          size: 1,
-          bytes: new Uint8Array([0]),
-        }],
-        execProgramBytes: { "/bin/exact-tool": programSource },
         onLazyDownload: () => {
           lazyDownloads += 1;
         },

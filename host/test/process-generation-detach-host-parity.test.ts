@@ -102,7 +102,7 @@ describe("process generation detach host parity", () => {
         expect(source).toContain(`"${operation}"`);
       }
       expect(
-        source.match(/processMemoryCreators\s*\.run\(/g),
+        source.match(/processMemoryCreators\s*\.run(?:UntilCommitted)?\(/g),
       ).toHaveLength(5);
     });
 

@@ -53,6 +53,7 @@ inputs = [
   "host/src/vfs/memory-fs.ts",
   "host/src/vfs/package-deferred-tree-contract.ts",
   "host/src/vfs/package-deferred-tree.ts",
+  "host/src/vfs/privileged-projection.ts",
   "host/src/vfs/sharedfs-vendor.ts",
   "host/src/vfs/tar.ts",
   "host/src/vfs/types.ts",
