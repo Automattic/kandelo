@@ -45,7 +45,7 @@ current_source_commit() {
 
 canonical_lazy_shell_report_json() {
     local image="$1"
-    local bootstrap="$2"
+    local selection_path="${KANDELO_CANONICAL_FLAT_SELECTION:-$REPO_ROOT/homebrew/main-shell-flat-selection.json}"
     local report_root
     local report
     local status
@@ -53,16 +53,9 @@ canonical_lazy_shell_report_json() {
     report="$report_root/report.json"
     npx tsx "$SCRIPT_DIR/inspect-homebrew-main-shell-public-product.ts" \
         --image "$image" \
-        --homebrew-bootstrap-archive "$bootstrap" \
-        --homebrew-bootstrap-spec \
-            "$REPO_ROOT/homebrew/main-shell-brew-package-tree.json" \
-        --selection "$REPO_ROOT/homebrew/main-shell-flat-selection.json" \
-        --materialization-policy \
-            "$REPO_ROOT/homebrew/main-shell-materialization-policy.json" \
-        --runtime-support-policy \
-            "$REPO_ROOT/homebrew/main-shell-runtime-support-policy.json" \
-        --mirror-plan \
-            "$REPO_ROOT/homebrew/main-shell-flat-lazy-mirror-plan.json" \
+        --selection "$selection_path" \
+        --shell-config "$REPO_ROOT/homebrew/main-shell-default.json" \
+        --demo-config "$REPO_ROOT/homebrew/main-shell-flat-demo.json" \
         --out "$report" || {
         status=$?
         rm -f -- "$report"

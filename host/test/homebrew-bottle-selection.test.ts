@@ -190,6 +190,18 @@ describe("flat Homebrew bottle selection", () => {
     }
   });
 
+  it("admits the ABI-versioned main-shell selection form", () => {
+    const fixture = selectionFixture();
+    fixture.name = "main-shell-abi43-wasm32";
+    fixture.kandeloAbi = 43;
+    fixture.requestedVfsFilename = "shell.vfs.zst";
+    fixture.resourcePolicy = "kandelo-homebrew-vfs-main-shell-v1";
+    for (const bottle of fixture.bottles) bottle.kandeloAbi = 43;
+
+    expect(() => projectHomebrewBottleSelection(fixture, { expectedAbi: 43 }))
+      .not.toThrow();
+  });
+
   it("preserves bottle order in stable canonical encoding and rejects noncanonical bytes", () => {
     const fixture = selectionFixture();
     const reversed = { ...fixture, bottles: [...fixture.bottles].reverse() };

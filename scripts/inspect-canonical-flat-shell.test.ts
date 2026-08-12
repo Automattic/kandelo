@@ -21,13 +21,13 @@ import {
   type VfsImageMetadata,
 } from "../host/src/vfs/memory-fs";
 import { homebrewTestBootstrapFixture } from "../host/test/fixtures/homebrew-flat-vfs";
+import { ABI_VERSION } from "../host/src/generated/abi.ts";
 import {
   inspectCanonicalFlatShell,
   inspectCanonicalFlatShellFiles,
 } from "./inspect-canonical-flat-shell";
 
 const MiB = 1024 * 1024;
-const ABI_VERSION = 42;
 const IMAGE_MAX_BYTES = 512 * MiB;
 const SHELL_CONFIG_TEXT = `${JSON.stringify(
   {
@@ -90,7 +90,7 @@ test("accepts one exact self-contained canonical flat shell", async () => {
     selection: {
       sha256: sha256(fixture.selectionBytes),
       bytes: fixture.selectionBytes.byteLength,
-      name: "main-shell-abi42-wasm32",
+      name: `main-shell-abi${ABI_VERSION}-wasm32`,
       arch: "wasm32",
       kandelo_abi: ABI_VERSION,
       requested_vfs_filename: "shell.vfs.zst",
@@ -396,7 +396,7 @@ function canonicalSelectionBytes(environmentText: string): Uint8Array {
   });
   return encodeHomebrewBottleSelection({
     schema: 1,
-    name: "main-shell-abi42-wasm32",
+    name: `main-shell-abi${ABI_VERSION}-wasm32`,
     arch: "wasm32",
     kandeloAbi: ABI_VERSION,
     bottles: [bootstrap.descriptor],
