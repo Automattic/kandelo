@@ -705,11 +705,17 @@
   flex: 1;
   display: flex;
   align-items: stretch;
-  justify-content: center;
   gap: 4px;
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
+}
+
+.kdock::before,
+.kdock::after {
+  content: "";
+  flex: 0 0 0;
+  margin: auto;
 }
 
 .kdock::-webkit-scrollbar {
@@ -937,6 +943,7 @@
   padding: 14px;
   background: var(--k-surface);
   color: var(--k-text);
+  overflow-y: auto;
 }
 
 .ktheme-section {
@@ -2509,6 +2516,76 @@
   image-rendering: pixelated;
   background: var(--k-fb-bg);
   flex: 0 0 auto;
+  touch-action: none;
+  user-select: none;
+}
+
+.ktouch-controls {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font-family: var(--k-font-mono);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.ktouch-btn {
+  pointer-events: auto;
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklch, var(--k-fb-text) 32%, transparent);
+  background: color-mix(in oklch, var(--k-fb-text) 10%, transparent);
+  color: color-mix(in oklch, var(--k-fb-text) 82%, transparent);
+  font-size: 14px;
+}
+
+.ktouch-btn:active {
+  border-color: color-mix(in oklch, var(--k-accent) 70%, transparent);
+  background: color-mix(in oklch, var(--k-accent) 30%, transparent);
+}
+
+.ktouch-menu {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  width: 64px;
+  height: 34px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+.ktouch-dpad {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  display: grid;
+  grid-template-areas:
+    ". up ."
+    "left down right";
+  grid-template-columns: repeat(3, 48px);
+  grid-template-rows: repeat(2, 48px);
+  gap: 4px;
+}
+
+.ktouch-up { grid-area: up; }
+.ktouch-left { grid-area: left; }
+.ktouch-right { grid-area: right; }
+.ktouch-down { grid-area: down; }
+
+.ktouch-fire {
+  position: absolute;
+  right: 16px;
+  bottom: 20px;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  font-size: 11px;
+  letter-spacing: 0.08em;
 }
 
 .kmodeset-stage {
@@ -2527,6 +2604,8 @@
   image-rendering: pixelated;
   background: var(--k-fb-bg);
   flex: 0 0 auto;
+  touch-action: none;
+  user-select: none;
 }
 
 .kmodeset-waiting {
@@ -3171,6 +3250,7 @@
     width: auto;
   }
 }
+
 .kgal-table-shell {
   flex: 1;
   min-height: 0;
@@ -3217,6 +3297,41 @@
 }
 .kgal-table tbody tr:last-child td {
   border-bottom: 0;
+}
+
+/* Small screens: scroll the whole launch pane as one page — title, subtitle,
+   filter, and list together — instead of pinning half the pane to a header.
+   The table keeps its own horizontal scroll so narrow viewports never scroll
+   the pane sideways. */
+@media (max-width: 760px), (max-height: 520px) {
+  .kdock-pane {
+    overflow-y: auto;
+  }
+  .kdock-pane-body {
+    flex: none;
+    display: block;
+    overflow: visible;
+  }
+  .kdock-pane-header {
+    padding: 14px 16px 10px;
+  }
+  .kdock-pane-title-row h2 {
+    font-size: 20px;
+  }
+  .kgallery {
+    overflow: visible;
+  }
+  .kgal-table-shell {
+    flex: none;
+    overflow: visible;
+    overflow-x: auto;
+  }
+  .kgal-table {
+    min-width: 520px;
+  }
+  .kgal-table th {
+    position: static;
+  }
 }
 .kgal-row {
   cursor: pointer;

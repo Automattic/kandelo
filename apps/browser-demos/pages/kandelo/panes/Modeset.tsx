@@ -90,16 +90,18 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
     };
   }, [host, status, crtcId]);
 
-  // Forward mouse motion + buttons into the kernel's `/dev/input/mice`.
-  // The wasm side has no absolute-cursor input — it integrates int8
-  // deltas from PS/2 packets — so we mirror the wasm cursor estimate
-  // here (centered at the FB midpoint, matching modeset.c's initial
-  // `cursor_x/y = CANVAS_W/H / 2`) and snap it to the OS pointer on
-  // mouseenter with a synthetic teleport delta. Browser Y grows down,
-  // PS/2 dy is positive-up, so flip once in `sendDelta`. Large jumps
-  // get chunked into legal i8 packets — without that, a fast drag
-  // wraps `(int8_t)pkt[1]` and `drain_mouse()` interprets it as the
-  // opposite direction.
+  // Forward pointer motion + buttons into the kernel's `/dev/input/mice`.
+  // Pointer events cover mouse, touch, and pen with one listener set; a
+  // touch acts as a left-button mouse. The wasm side has no
+  // absolute-cursor input — it integrates int8 deltas from PS/2 packets
+  // — so we mirror the wasm cursor estimate here (centered at the FB
+  // midpoint, matching modeset.c's initial `cursor_x/y = CANVAS_W/H / 2`)
+  // and snap it to the OS pointer on pointerenter (or a touch press)
+  // with a synthetic teleport delta. Browser Y grows down, PS/2 dy is
+  // positive-up, so flip once in `sendDelta`. Large jumps get chunked
+  // into legal i8 packets — without that, a fast drag wraps
+  // `(int8_t)pkt[1]` and `drain_mouse()` interprets it as the opposite
+  // direction.
   React.useEffect(() => {
     if (status !== "running") return;
     const canvas = canvasRef.current;
@@ -110,6 +112,7 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
     let wasmCursorX = MODESET_FB_W / 2;
     let wasmCursorY = MODESET_FB_H / 2;
     let buttons = 0;
+    let activeTouchId: number | null = null;
     const buttonBit = (button: number) =>
       button === 0 ? 1 : button === 2 ? 2 : button === 1 ? 4 : 0;
     const sink: MouseEventSink = {
@@ -117,11 +120,16 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
         handleRef.current?.sendMouseEvent(dx, dy, bts);
       },
     };
+    // Pointer capture keeps a drag streaming past the canvas edge, so
+    // clamp to the FB bounds — drain_mouse() clamps the same way, and
+    // an unclamped mirror would desync from the guest cursor there.
     const toCanvasCoords = (clientX: number, clientY: number) => {
       const rect = canvas.getBoundingClientRect();
+      const x = rect.width > 0 ? ((clientX - rect.left) * canvas.width) / rect.width : 0;
+      const y = rect.height > 0 ? ((clientY - rect.top) * canvas.height) / rect.height : 0;
       return {
-        x: rect.width > 0 ? ((clientX - rect.left) * canvas.width) / rect.width : 0,
-        y: rect.height > 0 ? ((clientY - rect.top) * canvas.height) / rect.height : 0,
+        x: Math.min(canvas.width - 1, Math.max(0, x)),
+        y: Math.min(canvas.height - 1, Math.max(0, y)),
       };
     };
     const sendDelta = (dx: number, dy: number) => {
@@ -139,49 +147,83 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
       prevCanvasX = canvasX;
       prevCanvasY = canvasY;
     };
-    const onMouseEnter = (e: MouseEvent) => {
+    const onPointerEnter = (e: PointerEvent) => {
+      if (e.pointerType === "touch") return;
       const c = toCanvasCoords(e.clientX, e.clientY);
       handlePointerAt(c.x, c.y);
     };
-    const onMouseLeave = () => {
+    const onPointerLeave = (e: PointerEvent) => {
+      if (e.pointerType === "touch") return;
       prevCanvasX = null;
       prevCanvasY = null;
     };
-    const onMouseMove = (e: MouseEvent) => {
+    const onPointerMove = (e: PointerEvent) => {
+      if (e.pointerType === "touch" && e.pointerId !== activeTouchId) return;
       const c = toCanvasCoords(e.clientX, e.clientY);
       handlePointerAt(c.x, c.y);
     };
-    const onMouseDown = (e: MouseEvent) => {
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.pointerType === "touch") {
+        // Track a single finger; a second finger would teleport the
+        // cursor back and forth between touch points.
+        if (activeTouchId !== null) return;
+        activeTouchId = e.pointerId;
+      }
       const bit = buttonBit(e.button);
       if (bit === 0) return;
       e.preventDefault();
+      canvas.setPointerCapture(e.pointerId);
+      if (e.pointerType === "touch") {
+        // A finger moves and presses in one event; move the cursor to
+        // the touch point first so the click lands under the finger,
+        // not at the cursor's previous position.
+        const c = toCanvasCoords(e.clientX, e.clientY);
+        handlePointerAt(c.x, c.y);
+      }
       buttons |= bit;
       handleRef.current?.sendMouseEvent(0, 0, buttons);
     };
-    const onMouseUp = (e: MouseEvent) => {
+    const onPointerUp = (e: PointerEvent) => {
+      if (e.pointerType === "touch") {
+        if (e.pointerId !== activeTouchId) return;
+        activeTouchId = null;
+        prevCanvasX = null;
+        prevCanvasY = null;
+      }
       const bit = buttonBit(e.button);
       if (bit === 0) return;
       e.preventDefault();
       buttons &= ~bit;
       handleRef.current?.sendMouseEvent(0, 0, buttons);
     };
+    const onPointerCancel = (e: PointerEvent) => {
+      if (e.pointerType === "touch" && e.pointerId !== activeTouchId) return;
+      activeTouchId = null;
+      prevCanvasX = null;
+      prevCanvasY = null;
+      if (buttons === 0) return;
+      buttons = 0;
+      handleRef.current?.sendMouseEvent(0, 0, 0);
+    };
     const onContextMenu = (e: Event) => e.preventDefault();
-    canvas.addEventListener("mouseenter", onMouseEnter);
-    canvas.addEventListener("mouseleave", onMouseLeave);
-    canvas.addEventListener("mousemove", onMouseMove);
-    canvas.addEventListener("mousedown", onMouseDown);
+    canvas.addEventListener("pointerenter", onPointerEnter);
+    canvas.addEventListener("pointerleave", onPointerLeave);
+    canvas.addEventListener("pointermove", onPointerMove);
+    canvas.addEventListener("pointerdown", onPointerDown);
+    // Pointer capture routes up/cancel to the canvas even when the
+    // pointer is released outside it, replacing the document-level
+    // mouseup listener this pane used before.
+    canvas.addEventListener("pointerup", onPointerUp);
+    canvas.addEventListener("pointercancel", onPointerCancel);
     canvas.addEventListener("contextmenu", onContextMenu);
-    // mouseup on the document so a release outside the canvas still
-    // clears button state — matches fbDOOM's pointer-lock controls.
-    const doc = canvas.ownerDocument;
-    doc.addEventListener("mouseup", onMouseUp);
     return () => {
-      canvas.removeEventListener("mouseenter", onMouseEnter);
-      canvas.removeEventListener("mouseleave", onMouseLeave);
-      canvas.removeEventListener("mousemove", onMouseMove);
-      canvas.removeEventListener("mousedown", onMouseDown);
+      canvas.removeEventListener("pointerenter", onPointerEnter);
+      canvas.removeEventListener("pointerleave", onPointerLeave);
+      canvas.removeEventListener("pointermove", onPointerMove);
+      canvas.removeEventListener("pointerdown", onPointerDown);
+      canvas.removeEventListener("pointerup", onPointerUp);
+      canvas.removeEventListener("pointercancel", onPointerCancel);
       canvas.removeEventListener("contextmenu", onContextMenu);
-      doc.removeEventListener("mouseup", onMouseUp);
     };
   }, [status]);
 

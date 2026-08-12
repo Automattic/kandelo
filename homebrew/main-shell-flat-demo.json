@@ -68,7 +68,8 @@
         "runningPrimary": ["framebuffer", "terminal", "syslog"],
         "terminalAccess": "drawer",
         "internalsAccess": "drawer",
-        "autoCommand": "/usr/local/bin/fbdoom -iwad /doom1.wad"
+        "autoCommand": "/usr/local/bin/fbdoom -iwad /doom1.wad",
+        "touchControls": true
       },
       "assets": [
         {

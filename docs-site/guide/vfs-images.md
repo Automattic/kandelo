@@ -152,7 +152,7 @@ Images consumed by the Kandelo UI can include:
 /etc/kandelo/demo.json
 ```
 
-This file lets the image declare presentation preferences, guide actions, companion HTML, assets, and automatic commands. Build scripts in this repo write it with:
+This file lets the image declare presentation preferences, guide actions, companion HTML, assets, automatic commands, and whether the demo wants an on-screen touch control overlay on coarse-pointer devices (`presentation.touchControls`). Build scripts in this repo write it with:
 
 ```ts
 writeKandeloDemoConfig(fs, {
