@@ -15,7 +15,7 @@ jq -e --arg tap "$EXPECTED_TAP" --arg formula "$FORMULA" \
   --slurpfile resolved "$RESOLVED_TAPS" '
   . as $plan |
   keys == ["build", "build_and_test", "formula", "full_name", "native_requirements", "runtime_and_test", "schema", "tap", "target_taps"] and
-  .schema == 4 and
+  .schema == 5 and
   .tap == $tap and
   .formula == $formula and
   .full_name == ($tap + "/" + $formula) and
@@ -28,13 +28,15 @@ jq -e --arg tap "$EXPECTED_TAP" --arg formula "$FORMULA" \
   (.runtime_and_test == (.runtime_and_test | sort | unique)) and
   (.target_taps == (
     [$resolved[0].primary, $resolved[0].dependencies[]] |
-    map({tap_name, tap_repository, tap_commit}) | sort_by(.tap_name)
+    map({tap_name, tap_repository, tap_commit,
+         checkout_commit: (.checkout_commit // .tap_commit)}) | sort_by(.tap_name)
   )) and
   (.target_taps | all(.[];
-    keys == ["tap_commit", "tap_name", "tap_repository"] and
+    keys == ["checkout_commit", "tap_commit", "tap_name", "tap_repository"] and
     (.tap_name | type == "string" and test("^[a-z0-9._-]+/[a-z0-9._-]+$")) and
     (.tap_repository | type == "string" and test("^[a-z0-9._-]+/homebrew-[a-z0-9._-]+$")) and
-    (.tap_commit | type == "string" and test("^[0-9a-f]{40}$"))
+    (.tap_commit | type == "string" and test("^[0-9a-f]{40}$")) and
+    (.checkout_commit | type == "string" and test("^[0-9a-f]{40}$"))
   )) and
   (.target_taps | map(.tap_name) | index($tap) != null) and
   ((.build - .build_and_test) | length) == 0 and

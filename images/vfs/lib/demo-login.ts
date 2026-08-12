@@ -71,15 +71,24 @@ export function configureDemoLogin(
  * entry. Privileged-product publication separately proves the executable
  * bytes and trusted mount provenance before the browser grants session policy.
  */
-export function hasConfiguredDemoLogin(fs: MemoryFileSystem): boolean {
+export function hasConfiguredDemoLogin(
+  fs: MemoryFileSystem,
+  privilegedProgramFs: Pick<MemoryFileSystem, "stat"> = fs,
+): boolean {
   try {
-    const login = fs.stat(DEMO_LOGIN_PROGRAM_PATH);
+    const login = privilegedProgramFs.stat(DEMO_LOGIN_PROGRAM_PATH);
+    // A separately published product is an immutable, eagerly serialized
+    // tree. Only the ordinary MemoryFS path can carry a deferred entry.
+    const loginIsEager =
+      privilegedProgramFs === fs
+        ? fs.getLazyEntry(DEMO_LOGIN_PROGRAM_PATH) === null
+        : true;
     const loginIsStaged =
       (login.mode & 0o170000) === 0o100000 &&
       (login.mode & 0o7777) === 0o4755 &&
       login.uid === 0 &&
       login.gid === 0 &&
-      fs.getLazyEntry(DEMO_LOGIN_PROGRAM_PATH) === null;
+      loginIsEager;
     const shadowMetadata = fs.stat("/etc/shadow");
     const passwdMetadata = fs.stat("/etc/passwd");
     const groupMetadata = fs.stat("/etc/group");

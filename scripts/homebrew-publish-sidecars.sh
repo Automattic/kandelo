@@ -107,6 +107,22 @@ require tap-root "$TAP_ROOT"
 require release-tag "$RELEASE_TAG"
 require status "$STATUS"
 
+# A local evidence payload is deliberately recognizable before any worktree,
+# copy, index, or publication state is created. It may be consumed only by the
+# review-pending composition harness, never by this remote publisher.
+if [ -n "$SIDECAR_ROOT" ] &&
+   [ -f "$SIDECAR_ROOT/local-test-provenance.json" ]; then
+  echo "homebrew-publish-sidecars.sh: local-test provenance is not publishable" >&2
+  exit 1
+fi
+for handoff in "${PUBLICATION_HANDOFFS[@]}"; do
+  if [ -f "$handoff/composition/local-test-provenance.json" ] ||
+     [ -f "$handoff/local-test-provenance.json" ]; then
+    echo "homebrew-publish-sidecars.sh: local-test provenance is not publishable" >&2
+    exit 1
+  fi
+done
+
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-tap-identity.sh"
 TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"

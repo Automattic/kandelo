@@ -20,77 +20,35 @@ const source = JSON.parse(
 );
 
 describe("Homebrew shell runtime-support contract", () => {
-  it("parses only the frozen selection-relative lazy-runtime policy", () => {
-    const policy = parseHomebrewRuntimeSupportPolicy({
-      schema: 1,
-      kind: "kandelo-homebrew-flat-runtime-support-policy",
-      id: "homebrew-runtime-support",
-      bootstrap_package: "kandelo-dev/tap-core/homebrew-bootstrap",
-      runtime_roots: ["kandelo-dev/tap-core/ruby"],
-      activation: {
-        mode: "boot-prefetch",
-        capability: "homebrew:runtime",
-        root: "/usr/bin/brew",
-        atomic_group: "homebrew-runtime-support",
-      },
-    });
-
-    expect(policy).toEqual({
-      schema: 1,
-      kind: "kandelo-homebrew-flat-runtime-support-policy",
-      id: "homebrew-runtime-support",
-      bootstrapPackage: "kandelo-dev/tap-core/homebrew-bootstrap",
-      runtimeRoots: ["kandelo-dev/tap-core/ruby"],
-      activation: {
-        mode: "boot-prefetch",
-        capability: "homebrew:runtime",
-        root: "/usr/bin/brew",
-        atomicGroup: "homebrew-runtime-support",
-      },
-    });
-    expect(Object.isFrozen(policy)).toBe(true);
-    expect(Object.isFrozen(policy.runtimeRoots)).toBe(true);
-    expect(Object.isFrozen(policy.activation)).toBe(true);
-  });
-
-  it("rejects open-ended, duplicate, noncanonical, and campaign policy fields", () => {
-    const policy = {
-      schema: 1,
-      kind: "kandelo-homebrew-flat-runtime-support-policy",
-      id: "homebrew-runtime-support",
-      bootstrap_package: "kandelo-dev/tap-core/homebrew-bootstrap",
-      runtime_roots: ["kandelo-dev/tap-core/ruby"],
-      activation: {
-        mode: "boot-prefetch",
-        capability: "homebrew:runtime",
-        root: "/usr/bin/brew",
-        atomic_group: "homebrew-runtime-support",
-      },
-    };
-    for (const changed of [
-      { ...policy, catalog: {} },
-      { ...policy, runtime_roots: [policy.runtime_roots[0], policy.runtime_roots[0]] },
-      { ...policy, runtime_roots: ["ruby"] },
-      { ...policy, activation: { ...policy.activation, mode: "first-use-atomic" } },
-      { ...policy, activation: { ...policy.activation, tap: "kandelo-dev/tap-core" } },
-    ]) {
-      expect(() => parseHomebrewRuntimeSupportPolicy(changed)).toThrow();
-    }
-  });
-
-  it("binds the declared runtime delta and admits file/libmagic through the base", () => {
+  it("binds the complete ABI 43 runtime closure to the base", () => {
     const contract = parseHomebrewRuntimeSupportContract(source);
     expect(contract.activation).toEqual({
       capability: "homebrew:runtime",
       root: "/usr/bin/brew",
       atomicGroup: "homebrew-runtime-support",
+      requiredKernelAbi: 43,
+    });
+    expect(contract.availability).toEqual({
+      provenance: {
+        schema: 1,
+        provenance_kind: "local-test",
+        promotable: false,
+        published: false,
+      },
+      auditedCatalog: {
+        checkoutCommit: "af70e3ba06367dbafb8a95fabbacc3e1352b58b2",
+        kandeloAbi: 43,
+        releaseTag: "bottles-abi-v43",
+        requiredArch: "wasm32",
+      },
     });
     expect(contract.additionalFormulaOrder).toEqual(
       contract.formulaOrder.filter(
         (name) => !contract.baseFormulaOrder.includes(name),
       ),
     );
-    expect(contract.additionalFormulaOrder).toContain(
+    expect(contract.additionalFormulaOrder).toEqual([]);
+    expect(contract.baseFormulaOrder).toContain(
       "kandelo-dev/tap-core/ruby",
     );
     expect(contract.deferredRelocationFormulae).toEqual([]);
@@ -161,8 +119,8 @@ function plan(packageOrder: readonly string[]): HomebrewVfsPlan {
     tapCommit: "1".repeat(40),
     kandeloRepository: "Automattic/kandelo",
     kandeloCommit: "2".repeat(40),
-    kandeloAbi: 42,
-    releaseTag: "bottles-abi-v42",
+    kandeloAbi: 43,
+    releaseTag: "bottles-abi-v43",
     requestedPackages: ["runtime"],
     packages: packageOrder.map((fullName) => packagePlan(fullName)),
   };

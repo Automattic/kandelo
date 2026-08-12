@@ -244,6 +244,27 @@ test("accepts the exact reviewed root and Formula identities", () => {
   assert.doesNotThrow(() => assertMainShellImageContract(fixture()));
 });
 
+test("binds the ABI 43 login product inputs", () => {
+  assert.equal(
+    lock.catalog.tap_commit,
+    "af70e3ba06367dbafb8a95fabbacc3e1352b58b2",
+  );
+  assert.deepEqual(
+    lock.packages
+      .map((entry: any) => entry.formula.name)
+      .filter((name: string) =>
+        ["login", "sudo-lite", "sudo", "ruby"].includes(name),
+      ),
+    ["login", "sudo-lite", "sudo", "ruby"],
+  );
+  assert.equal(runtimeSupport.activation.requiredKernelAbi, 43);
+  assert.equal(runtimeSupport.availability.auditedCatalog.kandeloAbi, 43);
+  assert.equal(
+    runtimeSupport.availability.auditedCatalog.releaseTag,
+    "bottles-abi-v43",
+  );
+});
+
 test("bounds operational Homebrew downloads to the reviewed support closure", () => {
   assert.doesNotThrow(() =>
     assertMainShellOperationalRuntimeFetches(runtimeSupport, []),

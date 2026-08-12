@@ -129,9 +129,10 @@ RUBY
   sha="$(sha256_file "$bottle")"
   jq -nS --arg arch "$arch" --arg sha "$sha" \
     --argjson rebuild "$rebuild" \
+    --arg formula_key "$(printf '%s' "$tap_name" | tr '[:upper:]' '[:lower:]')/hello" \
     --arg formula_path "Library/Taps/$(printf '%s' "$tap_owner" | tr '[:upper:]' '[:lower:]')/homebrew-$(printf '%s' "$tap_short_name" | tr '[:upper:]' '[:lower:]')/Formula/hello.rb" \
     --arg root_url "$root_url" '{
-    hello: {
+    ($formula_key): {
       formula: {
         name: "hello",
         path: $formula_path,

@@ -2,11 +2,21 @@
   "schema": 1,
   "kind": "kandelo-homebrew-vfs-materialization-policy",
   "embedded_roots": [
-    "kandelo-dev/tap-core/bash"
+    "kandelo-dev/tap-core/bash",
+    "kandelo-dev/tap-core/login",
+    "kandelo-dev/tap-core/sudo-lite",
+    "kandelo-dev/tap-core/sudo",
+    "kandelo-dev/tap-core/ruby"
   ],
   "embedded_package_order": [
     "kandelo-dev/tap-core/libcxx",
     "kandelo-dev/tap-core/ncurses",
-    "kandelo-dev/tap-core/bash"
+    "kandelo-dev/tap-core/bash",
+    "kandelo-dev/tap-core/zlib",
+    "kandelo-dev/tap-core/login",
+    "kandelo-dev/tap-core/sudo-lite",
+    "kandelo-dev/tap-core/sudo",
+    "kandelo-dev/tap-core/libyaml",
+    "kandelo-dev/tap-core/ruby"
   ]
 }

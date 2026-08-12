@@ -21,6 +21,7 @@ export interface InitializeDemoLoginKernelOptions {
   kernelWasm?: ArrayBuffer;
   vfsImage: Uint8Array | "default";
   closedLazyAssets?: readonly ClosedLazyAsset[];
+  lazyUrlBase?: string;
   privilegedProduct?: PublishedPrivilegedProgramProduct;
 }
 
@@ -34,10 +35,12 @@ export async function initializeDemoLoginKernel(
 ): Promise<boolean> {
   const { privilegedProduct } = options;
   const loginSessionsEnabled = privilegedProduct !== undefined &&
-    hasConfiguredDemoLogin(options.fs) &&
+    // The ordinary image owns accounts and policy. The independently
+    // published trusted product owns the final namespace's login executable.
+    hasConfiguredDemoLogin(options.fs, privilegedProduct.mount.backend) &&
     await publishedPrivilegedProgramMatchesFile(
       privilegedProduct,
-      options.fs,
+      privilegedProduct.mount.backend,
       DEMO_LOGIN_PROGRAM_PATH,
     );
   const common = {
@@ -46,6 +49,9 @@ export async function initializeDemoLoginKernel(
     ...(options.closedLazyAssets === undefined
       ? {}
       : { closedLazyAssets: options.closedLazyAssets }),
+    ...(options.lazyUrlBase === undefined
+      ? {}
+      : { lazyUrlBase: options.lazyUrlBase }),
   };
   if (loginSessionsEnabled) {
     await options.kernel.initFromPublishedPrivilegedProgramProduct({
