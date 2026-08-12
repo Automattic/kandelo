@@ -63,10 +63,9 @@ describe("process generation detach host parity", () => {
         expect(surface).toContain("detachExactProcessGeneration({");
       }
       const destroy = destroyFunction(source);
-      expect(destroy).toContain(
-        "processMemoryCreators.closeAndRunAfterDrain(",
+      expect(destroy).toMatch(
+        /processMemoryCreators\.closeAndRunAfterDrain\(\s*performDestroy\s*,?\s*\)/,
       );
-      expect(destroy).toContain("performDestroy,");
       expect(destroy).toContain("processGenerationDetaches.retryPending()");
       expect(destroy).toContain("processMemoryAllocator.clear()");
       expect(destroy).not.toContain("processes.clear()");
@@ -101,9 +100,7 @@ describe("process generation detach host parity", () => {
       ]) {
         expect(source).toContain(`"${operation}"`);
       }
-      expect(
-        source.match(/processMemoryCreators\s*\.run\(/g),
-      ).toHaveLength(5);
+      expect(source.match(/processMemoryCreators\s*\.run\(/g)).toHaveLength(5);
     });
 
     it(`${host} keeps exact kernel detach calls inside the shared wrapper`, () => {
