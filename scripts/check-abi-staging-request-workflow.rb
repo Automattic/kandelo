@@ -191,6 +191,15 @@ def check_workflow(workflow)
         derive_download.dig("with", "name") ==
           "abi-staging-structural-${{ github.run_id }}",
         "derivation downloads an unreviewed artifact inventory")
+  musl_source = derive_source
+  check(musl_source.include?("authority/scripts/fetch-exact-musl-gitlink.sh") &&
+        musl_source.include?('--source-root "$exact_head_data"') &&
+        musl_source.include?('--commit "$head"') &&
+        !musl_source.include?("git submodule"),
+        "derivation does not materialize the exact musl gitlink through protected code")
+  check(musl_source.index("fetch-exact-musl-gitlink.sh") <
+        musl_source.index("request derive"),
+        "derivation materializes musl after request derivation")
   classify_upload = named_step(classify, "Transfer bounded structural evidence")
   check(classify_upload.fetch("uses").start_with?(UPLOAD) &&
         classify_upload.dig("with", "name") ==
@@ -268,6 +277,24 @@ begin
     "missing inert revalidation" => lambda { |copy|
       step = copy.dig("jobs", "derive-request", "steps").find { |item| item["run"]&.include?("structural-report validate") }
       step["run"] = step.fetch("run").gsub("structural-report validate", "echo trust-report")
+    },
+    "missing exact musl materialization" => lambda { |copy|
+      step = copy.dig("jobs", "derive-request", "steps").find do |item|
+        item["run"]&.include?("fetch-exact-musl-gitlink.sh")
+      end
+      step["run"] = step.fetch("run").gsub(
+        /^\s*bash authority\/scripts\/fetch-exact-musl-gitlink\.sh.*?^\s*--commit "\$head"\n/m,
+        ""
+      )
+    },
+    "candidate-controlled musl materialization" => lambda { |copy|
+      step = copy.dig("jobs", "derive-request", "steps").find do |item|
+        item["run"]&.include?("fetch-exact-musl-gitlink.sh")
+      end
+      step["run"] = step.fetch("run").gsub(
+        /bash authority\/scripts\/fetch-exact-musl-gitlink\.sh \\\n+\s+--source-root "\$exact_head_data" \\\n+\s+--commit "\$head"/,
+        'git -C "$exact_head_data" submodule update --init libc/musl'
+      )
     },
     "line-delimited path classification" => lambda { |copy|
       step = copy.dig("jobs", "derive-request", "steps").find do |item|

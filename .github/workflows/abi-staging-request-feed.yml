@@ -355,6 +355,9 @@ jobs:
               "https://github.com/${head_repository}.git"
             env -u GH_TOKEN -u GITHUB_TOKEN git -C "$exact_head_data" fetch --no-tags origin "$head" "$PROTECTED_SHA"
             env -u GH_TOKEN -u GITHUB_TOKEN git -C "$exact_head_data" checkout -q --detach "$head"
+            bash authority/scripts/fetch-exact-musl-gitlink.sh \
+              --source-root "$exact_head_data" \
+              --commit "$head"
 
             report="$evidence/reports/$pr-structural-report.json"
             "$authority_xtask" abi-staging structural-report validate \

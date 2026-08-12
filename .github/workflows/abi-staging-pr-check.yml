@@ -166,6 +166,15 @@ jobs:
           persist-credentials: false
           path: exact-head
 
+      - name: Materialize exact musl gitlink as inert data
+        env:
+          EXPECTED_HEAD: ${{ matrix.subject.head }}
+        run: |
+          set -euo pipefail
+          bash authority/scripts/fetch-exact-musl-gitlink.sh \
+            --source-root "$GITHUB_WORKSPACE/exact-head" \
+            --commit "$EXPECTED_HEAD"
+
       - name: Set up declared protected build tools
         uses: ./authority/.github/actions/setup-nix
 
