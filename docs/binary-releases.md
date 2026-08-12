@@ -722,10 +722,10 @@ preflight → toolchain-cache → matrix-build → test-gate → merge-gate
 
 After `test-gate` seals a PR release, browser validation consumes the same
 generic package workspace as the other suites. A resolved shell must pass a
-fresh inspection against its checked-in flat selection, shell configuration,
-demo configuration, ABI, capacity, and zero-deferred-state requirements. The
-CI state records that exact report as `flat-self-contained`; a resolved state
-cannot request the retired closed mirror. When the staged matrix contains
+fresh inspection against its checked-in flat selection, materialization and
+runtime policies, bootstrap package output, and 37-asset mirror plan. The
+inspection requires three embedded bottles, the bootstrap plus two-bottle boot
+cohort, and 35 ordinary deferred bottles. When the staged matrix contains
 `node-vfs/wasm32`, the browser cell also runs the exact slow
 `npm install --verbose cowsay` acceptance before the package release is
 sealed. Prepare merge derives the same condition from the union of its exact
@@ -793,16 +793,17 @@ tag, and canonical index sha256. A transient dispatch failure is therefore
 recoverable by the next scheduled scan even though the candidate itself is
 already terminal.
 
-That ordering is part of the release contract. The main-push Pages run may
-start before activation, but fetch-only resolution cannot obtain the new
-identities and therefore fails before deployment. The post-activation Pages
-dispatch retries only after the canonical package release exists. Pages checks
+That ordering is part of the release contract. Pages has no `main`-push
+trigger; only the post-activation dispatch can start a deployment, so a merge
+cannot race ahead of mirror publication or package activation. Pages checks
 out the requested SHA, requires it to remain the default-branch tip, verifies
 the immutable candidate's `activated.json` as an exact extension of its
 `ready.json`, and re-snapshots the named canonical index digest. It then
-inspects the exact flat shell, verifies the hashed shell and Node VFS assets,
-runs the Chromium shell and npm/cowsay acceptance, and records the deployed
-generation before its single writer updates `gh-pages`.
+resolves the exact shell, Node VFS, and bootstrap outputs in one fresh cache,
+anonymously verifies the checked-in public mirror, inspects the lazy shell
+partition, and verifies the emitted VFS assets and bootstrap ZIP. The Chromium
+lazy-shell and npm/cowsay acceptances run before the single writer updates
+`gh-pages`.
 
 ## Merge candidates and canonical activation
 

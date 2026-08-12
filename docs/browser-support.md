@@ -806,16 +806,14 @@ metadata. A revision bump on the shell therefore changes the cache key of
 `node-vfs`, `nginx-vfs`, `nginx-php-vfs`, `lamp`, and `wordpress` through the
 normal dependency graph.
 
-GitHub Pages is a package consumer, not a producer. Every `main` push still
-starts the single complete-tree workflow so a hand-maintained path list cannot
-leave the site on an older transitive package projection. A package-changing
-push may reach Pages before canonical activation; its fresh fetch-only cache
-then fails on the new unpublished identities. Activation dispatches the same
-workflow after the canonical index moves, allowing the admitted generation to
-build and deploy. The deployed tree records its source and index generation;
-scheduled activation compares that public record and retries a missed or
-failed dispatch without reopening the terminal candidate. No pull-request
-event can invoke the publisher.
+GitHub Pages is a package consumer, not a producer. It has no `main`-push or
+pull-request trigger. Activation dispatches the single complete-tree workflow
+only after the canonical index moves and the public bottle mirror is readable.
+The deployment resolves `shell`, `node-vfs`, and `homebrew-bootstrap` in one
+fresh fetch-only cache, atomically stages the exact bootstrap ZIP, and verifies
+the public 37-asset mirror before building. The deployed tree records its source
+and index generation; scheduled activation compares that public record and
+retries a missed or failed dispatch without reopening the terminal candidate.
 
 The dormant source-rootfs and eager closed-selection implementations remain
 diagnostic and historical recovery plumbing. The normal `run.sh`

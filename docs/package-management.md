@@ -774,6 +774,11 @@ exact output bytes. The separate tap-native support-data Formula and
 `Kandelo/recipes/homebrew-bootstrap/source-lock.json` retain their own bottle
 and historical lifecycle-input authority; those coordinates must not be
 substituted for the package dependency selected by the current shell build.
+Ordinary browser preparation resolves that same canonical package and
+atomically stages its exact `homebrew-bootstrap.zip` output at the stable
+same-origin browser URL. A stale regular destination is replaced atomically;
+missing, symlinked, or non-regular package input fails without publishing
+partial bytes.
 
 See [docs/homebrew-publishing.md](homebrew-publishing.md) for the Homebrew
 formula, sidecar, GHCR, VFS, and runtime validation contract.

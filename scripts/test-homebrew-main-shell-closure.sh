@@ -2502,10 +2502,10 @@ browser_bootstrap_line="$(grep -nF 'prepare_browser_homebrew_bootstrap' \
   [ "$final_source_runtime_verify_line" -lt "$final_source_release_line" ] &&
   [ "$final_source_release_line" -lt "$final_source_verify_line" ] &&
   [ "$browser_build_line" -lt "$final_source_verify_line" ] ||
-  fail "browser prep must preserve the ordered historical bootstrap and source bridge"
-grep -Fq 'if [ "$REQUIRE_SEALED_HOMEBREW_SELECTION" -eq 1 ]; then' \
+  fail "browser prep must preserve canonical bootstrap and source-bridge ordering"
+! grep -Fq 'REQUIRE_SEALED_HOMEBREW_SELECTION' \
   "$prepare_browser_function" ||
-  fail "ordinary browser preparation must gate the lazy bootstrap behind its explicit recovery option"
+  fail "ordinary browser preparation must not gate the canonical bootstrap behind recovery mode"
 grep -Fq 'need_shell_vfs_build_tools' "$RUN_SH" &&
   fail "run.sh must not duplicate prerequisites owned by the shell recipe"
 grep -Fq 'if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then' \
@@ -2532,22 +2532,36 @@ grep -Fq 'pkg_has_output shell shell.vfs.zst' "$RUN_SH" ||
 has_shell_vfs_function="$TMP_ROOT/has-shell-vfs-function.sh"
 sed -n '/^has_shell_vfs()/,/^}/p' "$RUN_SH" >"$has_shell_vfs_function"
 ! grep -Fq 'homebrew-bootstrap' "$has_shell_vfs_function" ||
-  fail "shell image availability must not depend on the retired bootstrap package"
+  fail "shell image availability must remain owned by the shell package output"
 ! grep -Fq 'homebrew-bootstrap' "$shell_build_function" ||
-  fail "shell image resolution must not require the retired bootstrap package"
+  fail "run.sh shell resolution must leave transitive bootstrap resolution to the package graph"
 grep -Fq 'homebrew-bootstrap' "$browser_fetch_function" &&
-  fail "browser package fetching must skip the retired bootstrap package"
+  fail "browser package fetching must not special-case the canonical bootstrap"
 grep -Fq \
-  'BROWSER_FETCH_SKIP_PKGS=(spidermonkey node homebrew-bootstrap)' \
+  'BROWSER_FETCH_SKIP_PKGS=(spidermonkey node)' \
   "$RUN_SH" ||
-  fail "browser package selection must exclude the retired bootstrap package"
-grep -Fq 'scripts/prepare-homebrew-browser-bootstrap.sh' \
+  fail "browser package selection must include the canonical bootstrap package"
+for bootstrap_contract in \
+  'pkg_xtask_bin' \
+  'build-deps --arch wasm32' \
+  '--binaries-dir "$REPO_ROOT/local-binaries"' \
+  'resolve_args+=(resolve homebrew-bootstrap)' \
+  'pkg_output_rel homebrew-bootstrap homebrew-bootstrap.zip wasm32' \
+  'scripts/resolve-binary.sh' \
+  'scripts/stage-homebrew-bootstrap-browser-asset.sh' \
+  'apps/browser-demos/public/homebrew-bootstrap.zip'
+do
+  grep -Fq -- "$bootstrap_contract" "$browser_bootstrap_function" ||
+    fail "canonical browser bootstrap preparation lacks: $bootstrap_contract"
+done
+grep -Fq 'if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then' \
   "$browser_bootstrap_function" &&
-  grep -Fq \
-    'apps/browser-demos/public/homebrew-bootstrap.zip' \
-    "$browser_bootstrap_function" &&
-  grep -Fq -- '--require-sealed' "$browser_bootstrap_function" ||
-  fail "browser preparation must stage the selected Formula bottle asset"
+  grep -Fq 'resolve_args+=("${FETCH_ONLY_ARGS[@]}")' \
+    "$browser_bootstrap_function" ||
+  fail "canonical browser bootstrap preparation must forward fetch-only mode"
+! grep -Fq 'scripts/prepare-homebrew-browser-bootstrap.sh' \
+  "$browser_bootstrap_function" ||
+  fail "ordinary browser preparation must not use the historical Formula preparer"
 
 for source_authority_contract in \
   'source-rootfs-mirror-state-v1' \
@@ -2737,59 +2751,105 @@ expect_failure "requires isolated CI preparation" \
 
 bootstrap_probe_root="$TMP_ROOT/browser-bootstrap-product-path"
 bootstrap_probe_log="$bootstrap_probe_root/calls.log"
-mkdir -p "$bootstrap_probe_root/node_modules/.bin" \
-  "$bootstrap_probe_root/apps/browser-demos/public" \
-  "$bootstrap_probe_root/scripts"
-: >"$bootstrap_probe_root/node_modules/.bin/tsx"
-chmod 0755 "$bootstrap_probe_root/node_modules/.bin/tsx"
-cat >"$bootstrap_probe_root/scripts/prepare-homebrew-browser-bootstrap.sh" <<'EOF'
+bootstrap_probe_archive="$bootstrap_probe_root/resolved/homebrew-bootstrap.zip"
+bootstrap_probe_asset="$bootstrap_probe_root/apps/browser-demos/public/homebrew-bootstrap.zip"
+mkdir -p "$bootstrap_probe_root/apps/browser-demos/public" \
+  "$bootstrap_probe_root/resolved" "$bootstrap_probe_root/scripts"
+printf 'canonical bootstrap bytes\n' >"$bootstrap_probe_archive"
+cat >"$bootstrap_probe_root/fake-xtask" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >>"$TEST_BOOTSTRAP_LOG"
+printf 'xtask %s\n' "$*" >>"$TEST_BOOTSTRAP_LOG"
 EOF
-chmod 0755 \
-  "$bootstrap_probe_root/scripts/prepare-homebrew-browser-bootstrap.sh"
+cat >"$bootstrap_probe_root/scripts/resolve-binary.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+[ "\$#" -eq 1 ]
+printf 'resolve %s\n' "\$1" >>"\$TEST_BOOTSTRAP_LOG"
+[ "\$1" = programs/homebrew-bootstrap/homebrew-bootstrap.zip ]
+printf '%s\n' '$bootstrap_probe_archive'
+EOF
+cat >"$bootstrap_probe_root/scripts/stage-homebrew-bootstrap-browser-asset.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$#" -eq 2 ]
+printf 'stage %s %s\n' "$1" "$2" >>"$TEST_BOOTSTRAP_LOG"
+cp -- "$1" "$2"
+cmp "$1" "$2"
+EOF
+chmod 0755 "$bootstrap_probe_root/fake-xtask" \
+  "$bootstrap_probe_root/scripts/resolve-binary.sh" \
+  "$bootstrap_probe_root/scripts/stage-homebrew-bootstrap-browser-asset.sh"
 bootstrap_probe="$bootstrap_probe_root/run.sh"
 {
   printf 'set -euo pipefail\n'
   printf 'REPO_ROOT=%q\n' "$bootstrap_probe_root"
   printf 'CI_BROWSER_SOURCE_AUTHORITY="${TEST_AUTHORITY:-}"\n'
-  printf 'REQUIRE_SEALED_HOMEBREW_SELECTION="${TEST_REQUIRE_SEALED:-0}"\n'
+  printf 'FETCH_ONLY_ARGS=()\n'
+  printf '[ "${TEST_FETCH_ONLY:-1}" = 0 ] || FETCH_ONLY_ARGS=(--fetch-only)\n'
   printf 'step() { :; }\n'
+  printf 'pkg_xtask_bin() { printf "%%s\\n" "$REPO_ROOT/fake-xtask"; }\n'
+  printf 'pkg_output_rel() {\n'
+  printf '  [ "$1" = homebrew-bootstrap ]\n'
+  printf '  [ "$2" = homebrew-bootstrap.zip ]\n'
+  printf '  [ "$3" = wasm32 ]\n'
+  printf '  printf "output %%s %%s %%s\\n" "$1" "$2" "$3" >>"$TEST_BOOTSTRAP_LOG"\n'
+  printf '  printf "%%s\\n" homebrew-bootstrap/homebrew-bootstrap.zip\n'
+  printf '}\n'
   cat "$browser_bootstrap_function"
   printf 'prepare_browser_homebrew_bootstrap\n'
 } >"$bootstrap_probe"
 TEST_BOOTSTRAP_LOG="$bootstrap_probe_log" bash "$bootstrap_probe"
-grep -Fq -- '--browser-asset' "$bootstrap_probe_log" ||
-  fail "the explicit historical bootstrap preparer skipped its browser asset"
+grep -Fxq \
+  "xtask build-deps --arch wasm32 --binaries-dir $bootstrap_probe_root/local-binaries --fetch-only resolve homebrew-bootstrap" \
+  "$bootstrap_probe_log" ||
+  fail "canonical bootstrap preparation did not forward fetch-only resolution"
+grep -Fxq 'output homebrew-bootstrap homebrew-bootstrap.zip wasm32' \
+  "$bootstrap_probe_log" ||
+  fail "canonical bootstrap preparation did not select its declared output"
+grep -Fxq \
+  'resolve programs/homebrew-bootstrap/homebrew-bootstrap.zip' \
+  "$bootstrap_probe_log" ||
+  fail "canonical bootstrap preparation did not resolve the declared output"
+grep -Fxq "stage $bootstrap_probe_archive $bootstrap_probe_asset" \
+  "$bootstrap_probe_log" ||
+  fail "canonical bootstrap preparation did not stage the resolver bytes"
+cmp "$bootstrap_probe_archive" "$bootstrap_probe_asset" ||
+  fail "canonical bootstrap preparation changed the resolver-selected bytes"
+
 : >"$bootstrap_probe_log"
-TEST_BOOTSTRAP_LOG="$bootstrap_probe_log" TEST_REQUIRE_SEALED=1 \
+rm "$bootstrap_probe_asset"
+TEST_BOOTSTRAP_LOG="$bootstrap_probe_log" TEST_FETCH_ONLY=0 \
   bash "$bootstrap_probe"
-grep -Fq -- '--require-sealed' "$bootstrap_probe_log" ||
-  fail "publishable browser preparation did not require a sealed bootstrap"
+grep -Fxq \
+  "xtask build-deps --arch wasm32 --binaries-dir $bootstrap_probe_root/local-binaries resolve homebrew-bootstrap" \
+  "$bootstrap_probe_log" ||
+  fail "ordinary bootstrap preparation changed canonical resolver arguments"
+
 : >"$bootstrap_probe_log"
+rm "$bootstrap_probe_asset"
 TEST_BOOTSTRAP_LOG="$bootstrap_probe_log" \
   TEST_AUTHORITY=source-rootfs-mirror-state-v1 bash "$bootstrap_probe"
-[ ! -s "$bootstrap_probe_log" ] ||
+[ ! -s "$bootstrap_probe_log" ] && [ ! -e "$bootstrap_probe_asset" ] ||
   fail "authenticated source-rootfs preparation fetched a Homebrew bootstrap"
 
 prepare_dispatch_probe="$bootstrap_probe_root/prepare-dispatch.sh"
 {
   printf 'set -euo pipefail\n'
   printf 'SOURCE_ROOTFS_SHELL=0\n'
-  printf 'ALREADY_MATERIALIZED=1\n'
-  printf 'REQUIRE_SEALED_HOMEBREW_SELECTION="${TEST_REQUIRE_SEALED:-0}"\n'
+  printf 'ALREADY_MATERIALIZED="${TEST_ALREADY_MATERIALIZED:-0}"\n'
   printf 'step() { :; }\n'
   printf 'prepare_browser_homebrew_bootstrap() { printf "bootstrap\\n"; }\n'
+  printf 'fetch_browser_binaries() { printf "fetch\\n"; }\n'
   printf 'build_browser() { printf "build\\n"; }\n'
   cat "$prepare_browser_function"
   printf 'cmd_prepare_browser\n'
 } > "$prepare_dispatch_probe"
-[ "$(bash "$prepare_dispatch_probe")" = build ] ||
-  fail "ordinary flat browser preparation staged the retired lazy bootstrap"
-[ "$(TEST_REQUIRE_SEALED=1 bash "$prepare_dispatch_probe")" = \
+[ "$(bash "$prepare_dispatch_probe")" = $'bootstrap\nfetch\nbuild' ] ||
+  fail "ordinary browser preparation did not stage bootstrap before fetch and build"
+[ "$(TEST_ALREADY_MATERIALIZED=1 bash "$prepare_dispatch_probe")" = \
     $'bootstrap\nbuild' ] ||
-  fail "the explicit historical browser option no longer stages its bootstrap"
+  fail "materialized browser preparation did not stage bootstrap before build"
 
 [ -x "$BROWSER_BOOTSTRAP_PREPARER" ] ||
   fail "the shared browser bootstrap preparer must be executable"

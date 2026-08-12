@@ -52,9 +52,12 @@ Candidate activation first commits the tested package entries to
 `binaries-abi-v42`. It then records whether any candidate succeeded. The
 post-activation Pages dispatch runs only when that value is true; an empty
 scheduled reconciliation is quiet. Pages resolves the shell and Node images
-from a fresh fetch-only cache, reruns the flat-shell inspector, verifies both
-hashed Vite assets, executes `brew` and Ruby with no deferred-download rows,
-and runs the exact npm/cowsay Chromium acceptance before deploying.
+plus `homebrew-bootstrap` from one fresh fetch-only cache. It anonymously
+verifies the checked-in public mirror, reruns the lazy public-product inspector,
+and verifies both hashed Vite images and the exact emitted bootstrap ZIP. Its
+Chromium proof observes the bootstrap, libyaml, and Ruby boot cohort while the
+other 35 bottle trees remain deferred, then runs the exact npm/cowsay
+acceptance before deploying.
 
 The closed-selection and lazy-mirror integrity procedures later in this
 document remain relevant to the current package and its transport. The sealed
@@ -1450,12 +1453,12 @@ admits it without claiming public-release authority. The script writes the
 fixed same-origin ZIP with an atomic rename, so Vite can see either the
 preceding verified asset or the new one, never a partial copy.
 
-Only explicit historical lifecycle recovery and the public Chromium mirror
-proof use this support-data-bottle path. Ordinary
-`./run.sh prepare-browser`, package staging, and Pages consume the published
-package image and do not stage a separate browser bootstrap asset. The browser
-does not resolve `homebrew-bootstrap` at runtime, but the current shell source
-build does resolve that package before producing the image.
+Only explicit historical lifecycle recovery uses this support-data-bottle
+preparer. Ordinary `./run.sh prepare-browser`, package staging, and Pages
+resolve the canonical `homebrew-bootstrap` registry package and atomically
+stage its exact ZIP at `apps/browser-demos/public/homebrew-bootstrap.zip`.
+The shell source build consumes the same package output, so the browser asset
+and image metadata share one package authority.
 
 Only the publication job receives `contents: write`. Both of its write paths
 are guarded by the admitted publication mode. `create-mirror` calls
@@ -4134,11 +4137,11 @@ runner loss can prevent cleanup, but cannot let later deployment steps consume
 that partial runner. Ordinary `prepare-browser` remains the independent
 bottle-backed path.
 
-Pages intentionally continues to run for every `main` push without a path
-filter. The canonical browser package projection and shared inputs can grow;
-filtering by a maintained list would allow a new input to change without
-superseding the deployed product. The Homebrew main-shell workflow also runs
-for every `main` push. For pull requests, staging calls it after the
+Pages intentionally runs only from the exact post-activation dispatch. This
+keeps the consumer behind mirror publication and package activation instead of
+turning an ordinary `main` push into an early deployment attempt. The Homebrew
+main-shell workflow still runs for every `main` push. For pull requests,
+staging calls it after the
 producer gate. The call passes the exact pull-request identity, whether
 package staging was required, and that run's exact release tag. Required
 staging validates the public immutable prerelease, its inventory seal,

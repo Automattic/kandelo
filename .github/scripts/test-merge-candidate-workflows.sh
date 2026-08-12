@@ -868,8 +868,10 @@ for input in source_sha candidate_tag canonical_index_sha256; do
   grep -Fq "      $input:" "$PAGES_WORKFLOW" ||
     fail "Pages workflow lacks exact dispatch input: $input"
 done
-grep -Fq 'ref: ${{ inputs.source_sha || github.sha }}' "$PAGES_WORKFLOW" ||
+grep -Fq 'ref: ${{ inputs.source_sha }}' "$PAGES_WORKFLOW" ||
   fail "Pages checkout must bind the requested source SHA"
+! grep -Fq 'inputs.source_sha || github.sha' "$PAGES_WORKFLOW" ||
+  fail "dispatch-only Pages checkout must not fall back to the event SHA"
 pages_generation_verifier="$(
   step_run_block "$PAGES_WORKFLOW" "Verify the requested package generation"
 )"

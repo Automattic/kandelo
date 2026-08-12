@@ -97,23 +97,13 @@ expect_mutation_rejected \
   's/(      - name: Build browser demos for GitHub Pages\n)/$1        if: always()\n/'
 
 expect_mutation_rejected \
-  "partial main-push path allowlist" \
-  "must not filter main pushes by path" \
-  's/(    branches: \[main\]\n)/$1    paths:\n      - "packages\/registry\/**"\n/'
-
-expect_mutation_rejected \
-  "main-push path exclusion" \
-  "must not filter main pushes by path" \
-  's/(    branches: \[main\]\n)/$1    paths-ignore:\n      - "scripts\/**"\n/'
-
-expect_mutation_rejected \
-  "non-main Pages push branch" \
-  "must run for every main push" \
-  's/branches: \[main\]/branches: [release]/'
+  "main-push Pages deployment" \
+  "must run only after activation dispatch" \
+  's/(  workflow_dispatch:\n)/  push:\n    branches: [main]\n$1/'
 
 expect_mutation_rejected \
   "pull-request Pages deployment" \
-  "must not deploy pull-request revisions" \
+  "must run only after activation dispatch" \
   's/(  workflow_dispatch:\n)/  pull_request:\n$1/'
 
 expect_mutation_rejected \
@@ -173,12 +163,12 @@ expect_mutation_rejected \
 
 expect_mutation_rejected \
   "missing canonical shell resolution" \
-  "must bind the resolver-selected canonical shell and Node images" \
+  "must bind the resolver-selected canonical shell, Node, and bootstrap products" \
   's/programs\/shell\.vfs\.zst/programs\/missing-shell.vfs.zst/'
 
 expect_mutation_rejected \
   "missing canonical Node resolution" \
-  "must bind the resolver-selected canonical shell and Node images" \
+  "must bind the resolver-selected canonical shell, Node, and bootstrap products" \
   's/programs\/node-vfs\.vfs\.zst/programs\/missing-node.vfs.zst/'
 
 expect_mutation_rejected \
@@ -187,29 +177,39 @@ expect_mutation_rejected \
   's/(      - name: Build browser demos for GitHub Pages\n        working-directory: apps\/browser-demos\n)/$1        env:\n          KANDELO_BROWSER_DEMO_INPUTS: main\n/'
 
 expect_mutation_rejected \
-  "missing canonical flat-shell inspector" \
-  "must run the canonical flat-shell inspector and its rejection tests" \
-  's/scripts\/inspect-canonical-flat-shell\.ts/scripts\/skipped-canonical-flat-shell.ts/'
+  "missing canonical bootstrap resolution" \
+  "must bind the resolver-selected canonical shell, Node, and bootstrap products" \
+  's/programs\/homebrew-bootstrap\/homebrew-bootstrap\.zip/programs\/missing-bootstrap.zip/'
 
 expect_mutation_rejected \
-  "missing canonical flat-shell inspector rejection tests" \
-  "must run the canonical flat-shell inspector and its rejection tests" \
-  's/scripts\/inspect-canonical-flat-shell\.test\.ts/scripts\/skipped-canonical-flat-shell.test.ts/'
+  "missing lazy public-product inspector" \
+  "must run the lazy public-product inspector and its rejection tests" \
+  's/scripts\/inspect-homebrew-main-shell-public-product\.ts/scripts\/skipped-public-product.ts/'
+
+expect_mutation_rejected \
+  "missing lazy public-product inspector rejection tests" \
+  "must run the lazy public-product inspector and its rejection tests" \
+  's/scripts\/inspect-homebrew-main-shell-public-product\.test\.ts/scripts\/skipped-public-product.test.ts/'
 
 expect_mutation_rejected \
   "inspector bound to another selection" \
-  "must run the canonical flat-shell inspector and its rejection tests" \
+  "must run the lazy public-product inspector and its rejection tests" \
   's/homebrew\/main-shell-flat-selection\.json/homebrew\/other-selection.json/'
 
 expect_mutation_rejected \
   "unbound canonical Node digest" \
-  "must record the exact canonical shell and Node digests" \
+  "must record the exact canonical shell, Node, bootstrap, and mirror identities" \
   's/node_sha256=\$\(sha256sum/node_sha256=\$(printf/'
 
 expect_mutation_rejected \
-  "retired browser bootstrap input" \
-  "retired lazy-shell input: homebrew-bootstrap" \
-  's#(          test ! -e "\$report"\n)#$1          test -f apps/browser-demos/public/homebrew-bootstrap.zip\n#'
+  "missing anonymous public mirror verification" \
+  "must anonymously verify the checked-in public mirror before building" \
+  's/scripts\/verify-public-homebrew-bottle-mirror\.mjs/scripts\/skip-public-homebrew-bottle-mirror.mjs/'
+
+expect_mutation_rejected \
+  "credentialed public mirror verification" \
+  "must anonymously verify the checked-in public mirror before building" \
+  's/env -u GH_TOKEN -u GITHUB_TOKEN node/node/'
 
 expect_mutation_rejected \
   "retired shell artifact lock" \
@@ -223,17 +223,17 @@ expect_mutation_rejected \
 
 expect_mutation_rejected \
   "missing hashed shell asset verifier" \
-  "must verify its exact hashed shell and Node assets" \
+  "must verify its exact shell, Node, and bootstrap assets" \
   's/scripts\/verify-browser-shell-vfs-asset\.sh/scripts\/skipped-browser-shell-vfs-asset.sh/'
 
 expect_mutation_rejected \
   "hashed shell verifier bound to another image" \
-  "must verify its exact hashed shell and Node assets" \
+  "must verify its exact shell, Node, and bootstrap assets" \
   's/steps\.package_products\.outputs\.shell_image/steps.package_products.outputs.node_image/'
 
 expect_mutation_rejected \
   "hashed Node verifier omits its exact stem" \
-  "must verify its exact hashed shell and Node assets" \
+  "must verify its exact shell, Node, and bootstrap assets" \
   's/(steps\.package_products\.outputs\.node_image \}\}") node-vfs\.vfs/$1/'
 
 expect_mutation_rejected \
@@ -282,29 +282,29 @@ expect_mutation_rejected \
   's#(          npm run docs:build\n)(          node --test docs-site/\.vitepress/homebrew-doc-output\.test\.mjs\n)#$2$1#'
 
 expect_mutation_rejected \
-  "flat preview broadens its demo inputs" \
-  "must prove the canonical flat shell at the published base" \
+  "lazy preview broadens its demo inputs" \
+  "must prove the canonical lazy shell at the published base" \
   's/KANDELO_BROWSER_DEMO_INPUTS: main/KANDELO_BROWSER_DEMO_INPUTS: all/'
 
 expect_mutation_rejected \
-  "flat preview without Pages base" \
-  "must prove the canonical flat shell at the published base" \
-  's/(      - name: Boot the canonical flat Pages shell in Chromium\n        working-directory: apps\/browser-demos\n        env:\n)          VITE_BASE: \/kandelo\/\n/$1/'
+  "lazy preview without Pages base" \
+  "must prove the canonical lazy shell at the published base" \
+  's/(      - name: Boot the canonical lazy Pages shell in Chromium\n        working-directory: apps\/browser-demos\n        env:\n)          VITE_BASE: \/kandelo\/\n/$1/'
 
 expect_mutation_rejected \
-  "flat preview loses strict image identity" \
-  "must prove the canonical flat shell at the published base" \
-  's/^          KANDELO_CANONICAL_FLAT_SHELL_SHA256:.*\n//m'
+  "lazy preview loses strict image identity" \
+  "must prove the canonical lazy shell at the published base" \
+  's/^          KANDELO_HOMEBREW_MAIN_SHELL_SHA256:.*\n//m'
 
 expect_mutation_rejected \
-  "flat preview drops strict identity at the dev-shell boundary" \
-  "flat-shell preview must carry its exact inputs through dev-shell" \
-  's/(      - name: Boot the canonical flat Pages shell in Chromium[\s\S]*?)^            "KANDELO_CANONICAL_FLAT_SHELL_SHA256=\$KANDELO_CANONICAL_FLAT_SHELL_SHA256" \\\n/$1/m'
+  "lazy preview drops strict identity at the dev-shell boundary" \
+  "lazy-shell preview must carry its exact inputs through dev-shell" \
+  's/(      - name: Boot the canonical lazy Pages shell in Chromium[\s\S]*?)^            "KANDELO_HOMEBREW_MAIN_SHELL_SHA256=\$KANDELO_HOMEBREW_MAIN_SHELL_SHA256" \\\n/$1/m'
 
 expect_mutation_rejected \
-  "flat preview uses the retired lazy-shell test" \
-  "must prove the canonical flat shell at the published base" \
-  's/test\/kandelo-canonical-flat-shell\.spec\.ts/test\/kandelo-homebrew-main-shell.spec.ts/'
+  "lazy preview uses the eager flat-shell test" \
+  "must prove the canonical lazy shell at the published base" \
+  's/test\/kandelo-homebrew-main-shell\.spec\.ts/test\/kandelo-canonical-flat-shell.spec.ts/'
 
 expect_mutation_rejected \
   "Pages omits exact npm acceptance" \

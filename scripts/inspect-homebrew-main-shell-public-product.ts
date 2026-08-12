@@ -5,7 +5,12 @@ import { lstatSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { parseHomebrewRuntimeSupportContract } from "../host/src/homebrew-runtime-support";
+import { parseHomebrewRuntimeSupportPolicy } from "../host/src/homebrew-runtime-support";
+import { parseCanonicalHomebrewBottleSelection } from "../host/src/homebrew-bottle-selection";
+import {
+  deriveFlatLazyCompositionPartition,
+  parseHomebrewVfsMaterializationPolicy,
+} from "../host/src/homebrew-vfs-materialization-policy";
 import { HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH } from "../host/src/homebrew-bottle-mirror-plan";
 import { MemoryFileSystem } from "../host/src/vfs/memory-fs";
 import {
@@ -32,6 +37,14 @@ export interface HomebrewMainShellPublicProduct {
     bytes: number;
     activation_root: "/usr/bin/brew";
   };
+  partition: {
+    embedded_bottles: 3;
+    bootstrap_trees: 1;
+    runtime_cohort_bottles: 2;
+    ordinary_deferred_bottles: 35;
+    deferred_bottles: 37;
+    initial_pending_trees: 38;
+  };
   bottle_mirror: {
     repository: string;
     collection_sha256: string;
@@ -47,15 +60,40 @@ export async function inspectHomebrewMainShellPublicProduct(input: {
   imageBytes: Uint8Array;
   homebrewBootstrapArchiveBytes: Uint8Array;
   homebrewBootstrapSpec: unknown;
-  homebrewRuntimeSupport: unknown;
+  selectionBytes: Uint8Array;
+  materializationPolicyBytes: Uint8Array;
+  runtimeSupportPolicyBytes: Uint8Array;
+  checkedMirrorPlanBytes: Uint8Array;
 }): Promise<HomebrewMainShellPublicProduct> {
   const imageBytes = nonemptyBytes(input.imageBytes, "main-shell VFS image");
   const bootstrapBytes = nonemptyBytes(
     input.homebrewBootstrapArchiveBytes,
     "Homebrew bootstrap archive",
   );
-  const runtimeSupport = parseHomebrewRuntimeSupportContract(
-    input.homebrewRuntimeSupport,
+  const selectionBytes = nonemptyBytes(input.selectionBytes, "flat selection");
+  const materializationPolicyBytes = nonemptyBytes(
+    input.materializationPolicyBytes,
+    "materialization policy",
+  );
+  const runtimeSupportPolicyBytes = nonemptyBytes(
+    input.runtimeSupportPolicyBytes,
+    "runtime-support policy",
+  );
+  const checkedMirrorPlanBytes = nonemptyBytes(
+    input.checkedMirrorPlanBytes,
+    "checked mirror plan",
+  );
+  const selection = parseCanonicalHomebrewBottleSelection(selectionBytes);
+  const materializationPolicy = parseHomebrewVfsMaterializationPolicy(
+    parseJsonBytes(materializationPolicyBytes, "materialization policy"),
+  );
+  const runtimeSupport = parseHomebrewRuntimeSupportPolicy(
+    parseJsonBytes(runtimeSupportPolicyBytes, "runtime-support policy"),
+  );
+  const partition = deriveFlatLazyCompositionPartition(
+    selection,
+    materializationPolicy,
+    runtimeSupport,
   );
   const bootstrap = derivePackageDeferredZipTree(
     input.homebrewBootstrapSpec,
@@ -116,33 +154,65 @@ export async function inspectHomebrewMainShellPublicProduct(input: {
     );
   }
 
+  const metadata = fs.getImageMetadata();
+  const flatBinding = record(
+    metadata?.homebrewFlatLazy,
+    "flat lazy shell metadata binding",
+  );
+  const selectedPartition = record(
+    flatBinding.partition,
+    "flat lazy shell metadata partition",
+  );
+  if (
+    !equalStrings(
+      selectedPartition.embeddedPackageOrder,
+      partition.embeddedPackageOrder,
+    ) ||
+    !equalStrings(
+      selectedPartition.deferredPackageOrder,
+      partition.deferredPackageOrder,
+    ) ||
+    selectedPartition.bootstrapPackage !== partition.bootstrapPackage ||
+    !equalStrings(
+      selectedPartition.runtimeCohortPackageOrder,
+      partition.runtimeCohortPackageOrder,
+    ) ||
+    partition.embeddedPackageOrder.length !== 3 ||
+    partition.runtimeCohortPackageOrder.length !== 2 ||
+    partition.ordinaryDeferredPackageOrder.length !== 35 ||
+    partition.deferredPackageOrder.length !== 37 ||
+    allPendingTrees.length !== 38 ||
+    bottleTrees.length !== 37
+  ) {
+    throw new Error(
+      "flat lazy shell partition differs from the selected 3/1/2/35 product",
+    );
+  }
+
   const planBytes = readVfsFile(fs, HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH);
   const plan = decodeHomebrewBottleMirrorPlan(
     planBytes,
     HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH,
   );
-  if (plan.repository !== runtimeSupport.catalog.tapRepository) {
+  if (!equalBytes(planBytes, checkedMirrorPlanBytes)) {
     throw new Error(
-      "bottle mirror repository differs from the runtime-support catalog",
+      "embedded bottle mirror plan differs from the checked plan",
     );
   }
-  assertPendingTreeHomebrewBottleMirrorBinding(bottleTrees, plan);
-  const mirroredPackages = new Set(plan.assets.map((asset) => asset.package));
-  const supportedPackages = new Set([
-    ...runtimeSupport.baseFormulaOrder,
-    ...runtimeSupport.additionalFormulaOrder,
-  ]);
-  const unexpectedPackages = plan.assets
-    .map((asset) => asset.package)
-    .filter((packageName) => !supportedPackages.has(packageName));
-  const missingPackages = runtimeSupport.additionalFormulaOrder.filter(
-    (packageName) => !mirroredPackages.has(packageName),
+  const checkedPlan = decodeHomebrewBottleMirrorPlan(
+    checkedMirrorPlanBytes,
+    "checked mirror plan",
   );
-  if (unexpectedPackages.length !== 0 || missingPackages.length !== 0) {
+  assertPendingTreeHomebrewBottleMirrorBinding(bottleTrees, plan);
+  if (
+    checkedPlan.assets.length !== 37 ||
+    !sameStrings(
+      checkedPlan.assets.map((asset) => asset.package),
+      partition.deferredPackageOrder,
+    )
+  ) {
     throw new Error(
-      "bottle mirror package inventory differs from the runtime-support " +
-        `closure: unexpected=${JSON.stringify(unexpectedPackages)} ` +
-        `missing=${JSON.stringify(missingPackages)}`,
+      "checked bottle mirror inventory differs from the selected deferred partition",
     );
   }
 
@@ -157,6 +227,14 @@ export async function inspectHomebrewMainShellPublicProduct(input: {
       sha256: sha256(bootstrapBytes),
       bytes: bootstrapBytes.byteLength,
       activation_root: activationRoot,
+    },
+    partition: {
+      embedded_bottles: 3,
+      bootstrap_trees: 1,
+      runtime_cohort_bottles: 2,
+      ordinary_deferred_bottles: 35,
+      deferred_bottles: 37,
+      initial_pending_trees: 38,
     },
     bottle_mirror: {
       repository: plan.repository,
@@ -216,8 +294,7 @@ function readRegularFile(path: string, label: string): Uint8Array {
   return new Uint8Array(readFileSync(path));
 }
 
-function parseJsonFile(path: string, label: string): unknown {
-  const bytes = readRegularFile(path, label);
+function parseJsonBytes(bytes: Uint8Array, label: string): unknown {
   try {
     return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   } catch (error) {
@@ -225,11 +302,46 @@ function parseJsonFile(path: string, label: string): unknown {
   }
 }
 
+function record(value: unknown, label: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function equalStrings(value: unknown, expected: readonly string[]): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length === expected.length &&
+    value.every((entry, index) => entry === expected[index])
+  );
+}
+
+function sameStrings(
+  value: readonly string[],
+  expected: readonly string[],
+): boolean {
+  if (value.length !== expected.length) return false;
+  const sortedValue = [...value].sort();
+  const sortedExpected = [...expected].sort();
+  return sortedValue.every((entry, index) => entry === sortedExpected[index]);
+}
+
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return (
+    left.byteLength === right.byteLength &&
+    left.every((value, index) => value === right[index])
+  );
+}
+
 function parseArgs(args: string[]): {
   image: string;
   homebrewBootstrapArchive: string;
   homebrewBootstrapSpec: string;
-  homebrewRuntimeSupport: string;
+  selection: string;
+  materializationPolicy: string;
+  runtimeSupportPolicy: string;
+  mirrorPlan: string;
   output: string;
 } {
   const values = new Map<string, string>();
@@ -243,7 +355,10 @@ function parseArgs(args: string[]): {
         "--image",
         "--homebrew-bootstrap-archive",
         "--homebrew-bootstrap-spec",
-        "--homebrew-runtime-support",
+        "--selection",
+        "--materialization-policy",
+        "--runtime-support-policy",
+        "--mirror-plan",
         "--out",
       ].includes(key) ||
       values.has(key)
@@ -252,14 +367,17 @@ function parseArgs(args: string[]): {
     }
     values.set(key, value);
   }
-  if (values.size !== 5) usage();
+  if (values.size !== 8) usage();
   return {
     image: resolve(values.get("--image")!),
     homebrewBootstrapArchive: resolve(
       values.get("--homebrew-bootstrap-archive")!,
     ),
     homebrewBootstrapSpec: resolve(values.get("--homebrew-bootstrap-spec")!),
-    homebrewRuntimeSupport: resolve(values.get("--homebrew-runtime-support")!),
+    selection: resolve(values.get("--selection")!),
+    materializationPolicy: resolve(values.get("--materialization-policy")!),
+    runtimeSupportPolicy: resolve(values.get("--runtime-support-policy")!),
+    mirrorPlan: resolve(values.get("--mirror-plan")!),
     output: resolve(values.get("--out")!),
   };
 }
@@ -270,7 +388,10 @@ function usage(): never {
       "--image <shell.vfs.zst> " +
       "--homebrew-bootstrap-archive <homebrew-bootstrap.zip> " +
       "--homebrew-bootstrap-spec <main-shell-brew-package-tree.json> " +
-      "--homebrew-runtime-support <runtime-support.json> --out <new-report.json>",
+      "--selection <main-shell-flat-selection.json> " +
+      "--materialization-policy <materialization-policy.json> " +
+      "--runtime-support-policy <runtime-support-policy.json> " +
+      "--mirror-plan <mirror-plan.json> --out <new-report.json>",
   );
 }
 
@@ -285,13 +406,25 @@ if (
       options.homebrewBootstrapArchive,
       "Homebrew bootstrap archive",
     ),
-    homebrewBootstrapSpec: parseJsonFile(
-      options.homebrewBootstrapSpec,
+    homebrewBootstrapSpec: parseJsonBytes(
+      readRegularFile(
+        options.homebrewBootstrapSpec,
+        "Homebrew bootstrap package-tree spec",
+      ),
       "Homebrew bootstrap package-tree spec",
     ),
-    homebrewRuntimeSupport: parseJsonFile(
-      options.homebrewRuntimeSupport,
-      "Homebrew runtime-support contract",
+    selectionBytes: readRegularFile(options.selection, "flat selection"),
+    materializationPolicyBytes: readRegularFile(
+      options.materializationPolicy,
+      "materialization policy",
+    ),
+    runtimeSupportPolicyBytes: readRegularFile(
+      options.runtimeSupportPolicy,
+      "runtime-support policy",
+    ),
+    checkedMirrorPlanBytes: readRegularFile(
+      options.mirrorPlan,
+      "checked mirror plan",
     ),
   });
   // WHY: Pages consumes this file as deployment authority. Refuse to replace
