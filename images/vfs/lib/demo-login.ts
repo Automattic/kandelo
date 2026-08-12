@@ -2,6 +2,7 @@ import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 
 export const DEMO_LOGIN_USERNAME = "maker";
 export const DEMO_LOGIN_HOME = "/home/maker";
+export const DEMO_LOGIN_SHELL = "/bin/sh";
 export const DEMO_LOGIN_PASSWORD = "kandelo";
 export const DEMO_LOGIN_PASSWORD_HASH =
   "$6$kandelo$DKNPruix37YeUx9j4kJIGJ2NvXdqzxDr5b1D3xJZzbwFsNYuep8j3AtxB7OaTD6HWnz/adonyTamRx4XQwJ06/";
@@ -34,7 +35,7 @@ export function configureDemoLogin(
   options: DemoLoginOptions = {},
 ): void {
   const home = options.home ?? DEMO_LOGIN_HOME;
-  const shell = options.shell ?? "/bin/bash";
+  const shell = options.shell ?? DEMO_LOGIN_SHELL;
   const passwd = updateRequiredRecord(
     readVfsText(fs, "/etc/passwd"),
     DEMO_LOGIN_USERNAME,
@@ -65,9 +66,10 @@ export function configureDemoLogin(
 }
 
 /**
- * True when the canonical account/policy files and a root-owned set-ID login
- * entry are staged. Task 7's privileged-product publication remains the
- * authority that proves the executable bytes and trusted mount provenance.
+ * True when the final staged filesystem contains one exact canonical account,
+ * password, wheel policy, credential message, and root-owned set-ID login
+ * entry. Privileged-product publication separately proves the executable
+ * bytes and trusted mount provenance before the browser grants session policy.
  */
 export function hasConfiguredDemoLogin(fs: MemoryFileSystem): boolean {
   try {
@@ -79,57 +81,73 @@ export function hasConfiguredDemoLogin(fs: MemoryFileSystem): boolean {
       login.gid === 0 &&
       fs.getLazyEntry(DEMO_LOGIN_PROGRAM_PATH) === null;
     const shadowMetadata = fs.stat("/etc/shadow");
+    const passwdMetadata = fs.stat("/etc/passwd");
+    const groupMetadata = fs.stat("/etc/group");
     const sudoersMetadata = fs.stat(DEMO_SUDOERS_PATH);
+    const autologinMotdMetadata = fs.stat(DEMO_AUTOLOGIN_MOTD_PATH);
     const passwd = readVfsText(fs, "/etc/passwd");
     const shadow = readVfsText(fs, "/etc/shadow");
     const group = readVfsText(fs, "/etc/group");
     const sudoers = readVfsText(fs, DEMO_SUDOERS_PATH);
-    const accountIsCanonical = passwd.split("\n").some((line) => {
-      const fields = line.split(":");
-      const shell = fields[6] ?? "";
-      return (
-        fields[0] === DEMO_LOGIN_USERNAME &&
-        fields[2] === "1000" &&
-        fields[3] === "1000" &&
-        shell.length > 0 &&
-        !shell.endsWith("/nologin")
-      );
-    });
-    const accountCanAuthenticate = shadow.split("\n").some((line) => {
-      const fields = line.split(":");
-      const hash = fields[1] ?? "";
-      return (
-        fields[0] === DEMO_LOGIN_USERNAME &&
-        hash.length > 0 &&
-        hash !== "x" &&
-        hash[0] !== "!" &&
-        hash[0] !== "*"
-      );
-    });
-    const wheelAllowsMaker = group.split("\n").some((line) => {
-      const fields = line.split(":");
-      return (
-        fields[0] === "wheel" &&
-        fields[2] === "10" &&
-        (fields[3] ?? "").split(",").includes(DEMO_LOGIN_USERNAME)
-      );
-    });
+    const autologinMotd = readVfsText(fs, DEMO_AUTOLOGIN_MOTD_PATH);
+    const accountRecords = recordsNamed(passwd, DEMO_LOGIN_USERNAME);
+    const shadowRecords = recordsNamed(shadow, DEMO_LOGIN_USERNAME);
+    const wheelRecords = recordsNamed(group, "wheel");
+    const account = accountRecords[0] ?? [];
+    const password = shadowRecords[0] ?? [];
+    const wheel = wheelRecords[0] ?? [];
+    const accountIsCanonical =
+      accountRecords.length === 1 &&
+      account.length === 7 &&
+      account[1] === "x" &&
+      account[2] === "1000" &&
+      account[3] === "1000" &&
+      account[4] === DEMO_LOGIN_USERNAME &&
+      account[5] === DEMO_LOGIN_HOME &&
+      account[6] === DEMO_LOGIN_SHELL;
+    const accountHasCanonicalPassword =
+      shadowRecords.length === 1 && password[1] === DEMO_LOGIN_PASSWORD_HASH;
+    const wheelAllowsMaker =
+      wheelRecords.length === 1 &&
+      wheel.length === 4 &&
+      wheel[1] === "x" &&
+      wheel[2] === "10" &&
+      wheel[3] === DEMO_LOGIN_USERNAME;
     return (
       loginIsStaged &&
+      passwdMetadata.uid === 0 &&
+      passwdMetadata.gid === 0 &&
+      (passwdMetadata.mode & 0o7777) === 0o644 &&
       shadowMetadata.uid === 0 &&
       shadowMetadata.gid === 0 &&
       (shadowMetadata.mode & 0o7777) === 0o640 &&
+      groupMetadata.uid === 0 &&
+      groupMetadata.gid === 0 &&
+      (groupMetadata.mode & 0o7777) === 0o644 &&
       sudoersMetadata.uid === 0 &&
       sudoersMetadata.gid === 0 &&
       (sudoersMetadata.mode & 0o7777) === 0o440 &&
+      (autologinMotdMetadata.mode & 0o170000) === 0o100000 &&
+      autologinMotdMetadata.uid === 0 &&
+      autologinMotdMetadata.gid === 0 &&
+      (autologinMotdMetadata.mode & 0o7777) === 0o644 &&
       accountIsCanonical &&
-      accountCanAuthenticate &&
+      accountHasCanonicalPassword &&
       wheelAllowsMaker &&
-      sudoers === DEMO_SUDOERS
+      sudoers === DEMO_SUDOERS &&
+      autologinMotd === DEMO_AUTOLOGIN_MOTD
     );
   } catch {
     return false;
   }
+}
+
+function recordsNamed(content: string, name: string): string[][] {
+  return content
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => line.split(":"))
+    .filter((fields) => fields[0] === name);
 }
 
 function updateRequiredRecord(

@@ -357,6 +357,7 @@ export class BrowserKernel {
   async initFromPublishedPrivilegedProgramProduct(options: {
     kernelWasm?: ArrayBuffer;
     vfsImage: Uint8Array | "default";
+    closedLazyAssets?: readonly ClosedLazyAsset[];
     privilegedProduct: PublishedPrivilegedProgramProduct;
   }): Promise<void> {
     const privilegedProgramMount =
@@ -376,6 +377,7 @@ export class BrowserKernel {
       kernelWasmBytes: wasmBytes,
       vfsImage,
       lazyUrlBase: import.meta.env.BASE_URL,
+      closedLazyAssets: options.closedLazyAssets,
       takeVfsImageOwnership: false,
       privilegedProgramMount,
     });

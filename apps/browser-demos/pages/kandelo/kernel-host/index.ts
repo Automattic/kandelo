@@ -3,5 +3,11 @@
 
 export * from "../../../../../web-libs/kandelo-session/src/kernel-host";
 export {
-  KernelHostProvider, useKernelHost, useStatus, useDmesg, useSnapshot, useWebPreview,
+  KernelHostProvider,
+  useDmesg,
+  useKernelHost,
+  useRemovePty,
+  useSnapshot,
+  useStatus,
+  useWebPreview,
 } from "./react";

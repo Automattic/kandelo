@@ -719,6 +719,34 @@ readable `/etc/profile.d/*.sh` fragments there, so an image composer can add
 package-manager environment setup without teaching the browser about a
 particular package or prefix.
 
+Under the current browser trust boundary, a supervised demo login requires the
+final fully staged image to contain exactly one canonical `maker` passwd,
+shadow, and wheel record, the exact sudoers policy and autologin message, and
+an exact local `/usr/bin/login` byte match for a separately
+publisher-admitted privileged product. The loader makes this decision after
+configured assets and lazy inputs have been staged, then boots through
+`BrowserKernel.initFromPublishedPrivilegedProgramProduct`. A raw image,
+descriptor, or demo configuration cannot mint that private capability.
+Conversely, image origin is not a gate: an otherwise third-party image with
+the exact final state remains eligible when paired with a separately admitted
+product. This documents current repository behavior only; the broader trust
+model for deliberately user-selected images remains unresolved.
+
+For an eligible image/product pair, each newly allocated logical terminal
+starts root-authorized `login -p -f maker` once.
+When that login shell exits, the same terminal starts ordinary `login -p` with
+a bounded restart delay. Closing and reopening the terminal UI only detaches
+and reattaches its renderer; it neither repeats autologin nor replaces the
+guest process. The explicit close control in the terminal tab removes the
+logical terminal; that action, kernel detach, reboot, and host destruction
+stop the active process and cancel pending restarts.
+
+Images that do not satisfy the complete final predicate, or that have no
+separately admitted product, retain their declared default shell. The browser
+does not infer readiness from an arbitrary unlocked password or implement
+authentication in React; both preauthentication and password verification
+remain in the guest `login` program and VFS state.
+
 `terminal.run` sends a command through the persistent PTY-backed shell.
 `terminal.write` sends raw text to that PTY, which is useful for entering input
 into an already-running REPL. `guide.companion.srcDoc` runs in a sandboxed

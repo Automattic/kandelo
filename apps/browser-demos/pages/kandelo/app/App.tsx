@@ -18,6 +18,7 @@ import type {
   MachineAudioState,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { lazyDownloadAssetLabel } from "../../../../../web-libs/kandelo-session/src/lazy-download";
+import { TerminalDockControls } from "./TerminalDockControls";
 
 type InternalsTab = "syslog" | "procs" | "vfs" | "lazy-load" | "config" | "syscalls";
 type ThemeFamily = "ubuntu" | "wordpress" | "kandelo";
@@ -224,6 +225,18 @@ export const App: React.FC = () => {
     setActiveTerminalId(terminal.id);
   }, []);
 
+  const onRemoveTerminalId = React.useCallback((id: string) => {
+    const removedIndex = terminals.findIndex((terminal) => terminal.id === id);
+    if (removedIndex < 0 || terminals.length <= 1) return;
+    const next = terminals.filter((terminal) => terminal.id !== id);
+    setTerminals(next);
+    setActiveTerminalId((active) =>
+      active === id
+        ? next[Math.min(removedIndex, next.length - 1)]!.id
+        : active
+    );
+  }, [terminals]);
+
   const isEmpty = surface.status === "idle";
   const dockActiveView: DockViewId | null = !isEmpty && surface.activeView !== "internals"
     ? surface.activeView
@@ -238,6 +251,7 @@ export const App: React.FC = () => {
             activeTerminalId={activeTerminalId}
             onActiveTerminalId={setActiveTerminalId}
             onAddTerminal={onAddTerminal}
+            onRemoveTerminalId={onRemoveTerminalId}
           />
         )
         : null
@@ -392,39 +406,6 @@ const AudioStatusToast: React.FC<{
     </aside>
   );
 };
-
-const TerminalDockControls: React.FC<{
-  terminals: ShellTerminal[];
-  activeTerminalId: string;
-  onActiveTerminalId: (id: string) => void;
-  onAddTerminal: () => void;
-}> = ({ terminals, activeTerminalId, onActiveTerminalId, onAddTerminal }) => (
-  <div className="kdock-view-tabs" role="tablist" aria-label="Terminals">
-    {terminals.map((terminal) => (
-      <button
-        key={terminal.id}
-        type="button"
-        className="kdock-view-tab"
-        role="tab"
-        aria-selected={terminal.id === activeTerminalId}
-        onClick={() => onActiveTerminalId(terminal.id)}
-      >
-        {terminal.label}
-      </button>
-    ))}
-    <button
-      type="button"
-      className="kdock-view-iconbtn"
-      title="New terminal"
-      aria-label="New terminal"
-      onClick={onAddTerminal}
-    >
-      <svg width="13" height="13" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <path d="M6 2v8M2 6h8" />
-      </svg>
-    </button>
-  </div>
-);
 
 const InternalsPopup: React.FC<{
   activeTab: string;
