@@ -228,6 +228,7 @@ jobs:
       actions: read
       checks: read
       contents: read
+      statuses: write
     env:
       PR_HEAD_REF: ${{ needs.capture-current-subject.outputs.exact-ref }}
       PR_HEAD_SHA: ${{ needs.capture-current-subject.outputs.exact-head }}
@@ -741,4 +742,15 @@ jobs:
             staging_problem "pull-request head or merge-preparation label changed"
             exit $?
           fi
+          if [[ $mode != enforce ]]; then
+            echo "::notice::observe mode never publishes merge-gate authority"
+            exit 0
+          fi
+          gh api -X POST \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/$GITHUB_REPOSITORY/statuses/$PR_HEAD_SHA" \
+            -f state=success \
+            -f context=merge-gate \
+            -f description='Exact staged bottles and product evidence succeeded.' \
+            -f target_url="$details_url"
           echo "Current exact-head Kandelo PR Check succeeded: $expected_external_id"
