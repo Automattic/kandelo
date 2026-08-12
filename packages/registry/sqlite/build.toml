@@ -1,4 +1,13 @@
 script_path = "packages/registry/sqlite/build-sqlite.sh"
+inputs = [
+  "packages/registry/sqlite/build-sqlite.sh",
+  "packages/registry/sqlite/build-testfixture.sh",
+  "packages/registry/sqlite/build-vfs-product-inputs.sh",
+  "packages/registry/sqlite/patches",
+  "packages/registry/sqlite/wasm_stubs.c",
+  "scripts/package-build-roots.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
 revision    = 4

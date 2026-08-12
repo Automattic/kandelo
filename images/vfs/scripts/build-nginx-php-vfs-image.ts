@@ -8,17 +8,22 @@
  * Usage: npx tsx images/vfs/scripts/build-nginx-php-vfs-image.ts
  */
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   ensureDirRecursive,
   writeVfsFile,
   writeVfsBinary,
 } from "../../../host/src/vfs/image-helpers";
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
-import { addDinitInit } from "./dinit-image-helpers";
+import {
+  addDinitInit,
+  type DinitBinaryInputs,
+} from "./dinit-image-helpers";
 import { prewarmOpcache } from "./opcache-prewarm";
 import {
   loadShellBaseFileSystem,
+  loadShellBaseFileSystemFromImage,
   saveShellDerivedVfsImage,
 } from "./shell-vfs-build";
 import {
@@ -215,13 +220,29 @@ sort($extensions);
 </html>
 `;
 
-async function main() {
-  const NGINX_WASM = resolveBinary("programs/nginx.wasm");
-  const PHP_FPM_WASM = resolveBinary("programs/php/php-fpm.wasm");
-  const OPCACHE_SO = resolveBinary("programs/php/opcache.so");
+export interface NginxPhpVfsImageBuildInputs {
+  shellImage?: Uint8Array;
+  nginx: Uint8Array;
+  phpFpm: Uint8Array;
+  opcache: Uint8Array;
+  dinit?: DinitBinaryInputs;
+  buildPrograms?: {
+    php: Uint8Array;
+    kernel: Uint8Array;
+  };
+  outputPath: string;
+}
 
+export async function buildNginxPhpVfsImage(
+  inputs: NginxPhpVfsImageBuildInputs,
+): Promise<void> {
   console.log("Loading shell base image...");
-  const fs = await loadShellBaseFileSystem(NGINX_PHP_IMAGE_MAX_BYTES);
+  const fs = inputs.shellImage === undefined
+    ? await loadShellBaseFileSystem(NGINX_PHP_IMAGE_MAX_BYTES)
+    : await loadShellBaseFileSystemFromImage(
+        inputs.shellImage,
+        NGINX_PHP_IMAGE_MAX_BYTES,
+      );
   fs.chmod("/tmp", 0o777);
   ensureDirRecursive(fs, "/usr/sbin");
   ensureDirRecursive(fs, "/run");
@@ -232,12 +253,12 @@ async function main() {
   ensureDirRecursive(fs, "/tmp/nginx_fastcgi_temp");
 
   // Binaries
-  writeVfsBinary(fs, "/usr/sbin/nginx", new Uint8Array(readFileSync(NGINX_WASM)));
-  writeVfsBinary(fs, "/usr/sbin/php-fpm", new Uint8Array(readFileSync(PHP_FPM_WASM)));
+  writeVfsBinary(fs, "/usr/sbin/nginx", inputs.nginx);
+  writeVfsBinary(fs, "/usr/sbin/php-fpm", inputs.phpFpm);
   ensureDirRecursive(fs, "/usr/lib/php/extensions");
   writeVfsBinary(
     fs, "/usr/lib/php/extensions/opcache.so",
-    new Uint8Array(readFileSync(OPCACHE_SO)),
+    inputs.opcache,
   );
 
   // Config + content
@@ -262,6 +283,7 @@ async function main() {
   await prewarmOpcache(fs, {
     sourceRoots: ["/var/www"],
     label: "nginx-php",
+    programs: inputs.buildPrograms,
   });
 
   // dinit + service tree. nginx depends on php-fpm so the FastCGI port
@@ -282,7 +304,7 @@ async function main() {
       logfile: "/var/log/nginx.log",
       restart: false,
     },
-  ]);
+  ], { binaries: inputs.dinit });
   writeKandeloDemoConfig(fs, {
     version: 1,
     profiles: {
@@ -293,10 +315,28 @@ async function main() {
     },
   });
 
-  await saveShellDerivedVfsImage(fs, OUT_FILE);
+  await saveShellDerivedVfsImage(fs, inputs.outputPath);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+async function main(): Promise<void> {
+  await buildNginxPhpVfsImage({
+    nginx: new Uint8Array(readFileSync(resolveBinary("programs/nginx.wasm"))),
+    phpFpm: new Uint8Array(
+      readFileSync(resolveBinary("programs/php/php-fpm.wasm")),
+    ),
+    opcache: new Uint8Array(
+      readFileSync(resolveBinary("programs/php/opcache.so")),
+    ),
+    outputPath: OUT_FILE,
+  });
+}
+
+const invokedPath = process.argv[1]
+  ? pathToFileURL(resolve(process.argv[1])).href
+  : "";
+if (import.meta.url === invokedPath) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

@@ -4,7 +4,8 @@
  * Mirrors browser-kernel-protocol.ts but adapted for Node.js:
  * - No SharedArrayBuffer VFS (Node uses real filesystem via NodePlatformIO)
  * - No worker entry URLs (Node uses NodeWorkerAdapter)
- * - No pipe/inject/bridge operations (TCP bridging is automatic via NodePlatformIO)
+ * - Pipe/inject operations match the browser peer for protected in-kernel
+ *   protocol clients; ambient outbound TCP still uses NodePlatformIO.
  *
  * The `http_request` message is a host-driven HTTP request injected
  * straight into an in-kernel server's accept queue, bypassing real TCP.
@@ -13,7 +14,11 @@
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { HostDiagnosticMessage } from "./host-diagnostic";
 import type { LazyDownloadEvent } from "./vfs/memory-fs";
-import type { ClosedLazyAsset } from "./vfs/closed-lazy-assets";
+import type {
+  ClosedLazyAsset,
+  ClosedLazyAssetSource,
+} from "./vfs/closed-lazy-assets";
+import type { MountSpec } from "./vfs/default-mounts";
 
 export type { HttpRequest, HttpResponse };
 export type { HostDiagnostic } from "./host-diagnostic";
@@ -46,10 +51,14 @@ export interface InitMessage {
    * (custom-io / legacy path).
    */
   rootfsImage?: ArrayBuffer;
+  /** Exact image/scratch mount contract. Absent preserves the host default. */
+  rootfsMountSpec?: MountSpec[];
   /** Base used to resolve relative lazy URLs embedded in rootfsImage. */
   rootfsLazyUrlBase?: string;
   /** Exhaustive exact-byte lazy transport for this rootfs; no network fallback. */
   rootfsLazyAssets?: ClosedLazyAsset[];
+  /** Exhaustive verified sources fetched only on first use of their exact URL. */
+  rootfsLazyAssetSources?: ClosedLazyAssetSource[];
   extraMounts?: Array<{
     mountPoint: string;
     hostPath: string;
@@ -114,6 +123,65 @@ export interface PtyResizeMessage {
   pid: number;
   rows: number;
   cols: number;
+}
+
+export interface InjectConnectionMessage {
+  type: "inject_connection";
+  requestId: number;
+  pid: number;
+  fd: number;
+  peerAddr: [number, number, number, number];
+  peerPort: number;
+}
+
+export interface PipeReadMessage {
+  type: "pipe_read";
+  requestId: number;
+  pid: number;
+  pipeIdx: number;
+}
+
+export interface PipeWriteMessage {
+  type: "pipe_write";
+  requestId: number;
+  pid: number;
+  pipeIdx: number;
+  data: Uint8Array;
+}
+
+export interface PipeCloseReadMessage {
+  type: "pipe_close_read";
+  pid: number;
+  pipeIdx: number;
+}
+
+export interface PipeCloseWriteMessage {
+  type: "pipe_close_write";
+  pid: number;
+  pipeIdx: number;
+}
+
+export interface PipeIsWriteOpenMessage {
+  type: "pipe_is_write_open";
+  requestId: number;
+  pid: number;
+  pipeIdx: number;
+}
+
+export interface WakeBlockedReadersMessage {
+  type: "wake_blocked_readers";
+  pipeIdx: number;
+}
+
+export interface WakeBlockedWritersMessage {
+  type: "wake_blocked_writers";
+  pipeIdx: number;
+}
+
+export interface PickListenerTargetMessage {
+  type: "pick_listener_target";
+  requestId: number;
+  port: number;
 }
 
 export interface TerminateProcessMessage {
@@ -205,6 +273,8 @@ export interface HttpRequestMessage {
   request: HttpRequest;
   /** Optional timeout in ms (default 60_000). */
   timeoutMs?: number;
+  /** Optional raw response byte ceiling. */
+  maxResponseBytes?: number;
 }
 
 /** Register an `OffscreenCanvas` as the scanout target for a KMS CRTC.
@@ -233,6 +303,15 @@ export type MainToKernelMessage =
   | SetStdinDataMessage
   | PtyWriteMessage
   | PtyResizeMessage
+  | InjectConnectionMessage
+  | PipeReadMessage
+  | PipeWriteMessage
+  | PipeCloseReadMessage
+  | PipeCloseWriteMessage
+  | PipeIsWriteOpenMessage
+  | WakeBlockedReadersMessage
+  | WakeBlockedWritersMessage
+  | PickListenerTargetMessage
   | TerminateProcessMessage
   | DestroyMessage
   | ExportRootfsImageMessage

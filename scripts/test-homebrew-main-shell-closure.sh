@@ -8,9 +8,12 @@ PRODUCT_INPUT_PREPARER="$REPO_ROOT/scripts/prepare-homebrew-main-shell-inputs.sh
 PRODUCT_STATE_TOOL="$REPO_ROOT/scripts/homebrew-main-shell-product-state.py"
 PRODUCT_STATE_TEST="$REPO_ROOT/scripts/test-homebrew-main-shell-product-state.sh"
 CHECKER="$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs"
+PRODUCT_CATALOG_TOOL="$REPO_ROOT/scripts/vfs-product-catalog.mjs"
+PRODUCT_CATALOG="$REPO_ROOT/images/vfs/products/generated/catalog.json"
 BREWFILE="$REPO_ROOT/homebrew/main-shell.Brewfile"
 SOURCE_LOCK="$REPO_ROOT/homebrew/main-shell-migration-lock.json"
 RUNTIME_SUPPORT="$REPO_ROOT/homebrew/main-shell-homebrew-runtime-support.json"
+MATERIALIZATION_POLICY="$REPO_ROOT/homebrew/main-shell-materialization-policy.json"
 SELECTION_LOCK="$REPO_ROOT/homebrew/main-shell-selection-lock.json"
 SELECTION_LOCK_TOOL="$REPO_ROOT/scripts/homebrew-main-shell-selection-lock.py"
 SELECTION_CONTROLLER="$REPO_ROOT/scripts/homebrew-closed-selection-controller.py"
@@ -648,6 +651,7 @@ for browser_graph_binding in \
   '--html-entry index.html' \
   '--html-entry pages/homebrew-vfs-test/index.html' \
   '--local-capability kernel-wasm' \
+  '--local-capability pages-vfs-products' \
   '--package-capability rootfs-vfs=rootfs'
 do
   grep -Fq -- "$browser_graph_binding" <<<"$browser_support_block" ||
@@ -1733,9 +1737,11 @@ grep -Fq -- '--exclude-package shell \' "$WORKFLOW" ||
   fail "browser package derivation must reserve shell for the exact bottle archive"
 grep -Fq -- '--local-capability kernel-wasm \' \
   <<<"$browser_fetch_block" &&
+  grep -Fq -- '--local-capability pages-vfs-products \' \
+    <<<"$browser_fetch_block" &&
   grep -Fq -- '--package-capability rootfs-vfs=rootfs \' \
     <<<"$browser_fetch_block" ||
-  fail "browser package derivation must bind both virtual artifact capabilities"
+  fail "browser package derivation must bind every virtual artifact capability"
 grep -Fq -- '--include-package rootfs' <<<"$browser_fetch_block" &&
   fail "browser package derivation must not hand-maintain the rootfs alias"
 grep -Fq 'mapfile -t browser_input_packages < "$browser_package_file"' "$WORKFLOW" ||
@@ -3109,6 +3115,64 @@ baseline_output="$(node "$CHECKER")"
 grep -Fq "$EXPECTED_SHAPE_SUMMARY" \
   <<<"$baseline_output" ||
   fail "main-shell checker does not report its derived Formula counts"
+
+projection_brewfile="$TMP_ROOT/product-projection-extra.Brewfile"
+cp "$BREWFILE" "$projection_brewfile"
+printf '%s\n' 'brew "kandelo-dev/tap-core/rogue"' >>"$projection_brewfile"
+expect_failure \
+  "browser-main-shell Homebrew root projection differs: rogue" \
+  node "$PRODUCT_CATALOG_TOOL" check-main-shell \
+    "$PRODUCT_CATALOG" "$projection_brewfile" "$RUNTIME_SUPPORT" \
+    "$MATERIALIZATION_POLICY"
+
+projection_runtime="$TMP_ROOT/product-projection-extra-runtime.json"
+jq '.formula_roots += [{
+  "package":"kandelo-dev/tap-core/rogue",
+  "reason":"Test-only product projection mutation."
+}]' "$RUNTIME_SUPPORT" >"$projection_runtime"
+expect_failure \
+  "browser-main-shell Homebrew root projection differs: rogue" \
+  node "$PRODUCT_CATALOG_TOOL" check-main-shell \
+    "$PRODUCT_CATALOG" "$BREWFILE" "$projection_runtime" \
+    "$MATERIALIZATION_POLICY"
+
+projection_policy="$TMP_ROOT/product-projection-no-embedded-root.json"
+jq '.embedded_roots = []' "$MATERIALIZATION_POLICY" >"$projection_policy"
+expect_failure \
+  "browser-main-shell Homebrew root projection differs: bash" \
+  node "$PRODUCT_CATALOG_TOOL" check-main-shell \
+    "$PRODUCT_CATALOG" "$BREWFILE" "$RUNTIME_SUPPORT" "$projection_policy"
+
+projection_catalog="$TMP_ROOT/product-projection-lazy-bash-catalog.json"
+node --input-type=module - "$PRODUCT_CATALOG" "$projection_catalog" <<'NODE'
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
+
+const normalize = (value) => {
+  if (Array.isArray(value)) return value.map(normalize);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value).sort().map((key) => [key, normalize(value[key])]),
+    );
+  }
+  return value;
+};
+const canonical = (value) => `${JSON.stringify(normalize(value))}\n`;
+const catalog = JSON.parse(readFileSync(process.argv[2], "utf8"));
+const shell = catalog.products.find(
+  ({ manifest }) => manifest.id === "browser-main-shell",
+);
+shell.manifest.software.homebrew[0].materialization = "lazy";
+shell.sha256 = createHash("sha256")
+  .update(canonical(shell.manifest))
+  .digest("hex");
+writeFileSync(process.argv[3], canonical(catalog));
+NODE
+expect_failure \
+  "browser-main-shell Homebrew root projection differs: bash" \
+  node "$PRODUCT_CATALOG_TOOL" check-main-shell \
+    "$projection_catalog" "$BREWFILE" "$RUNTIME_SUPPORT" \
+    "$MATERIALIZATION_POLICY"
 
 metadata="$TMP_ROOT/main-shell-metadata.json"
 jq --slurpfile support "$RUNTIME_SUPPORT" '

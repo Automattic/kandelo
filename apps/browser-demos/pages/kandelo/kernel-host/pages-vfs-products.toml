@@ -1,0 +1,30 @@
+schema = 1
+kind = "kandelo-pages-vfs-products"
+
+[[products]]
+id = "platform-rootfs"
+load = "eager"
+
+[[products]]
+id = "browser-main-shell"
+load = "eager"
+
+[[products]]
+id = "browser-node"
+load = "lazy"
+
+[[products]]
+id = "browser-nginx"
+load = "lazy"
+
+[[products]]
+id = "browser-nginx-php"
+load = "lazy"
+
+[[products]]
+id = "browser-wordpress"
+load = "lazy"
+
+[[products]]
+id = "browser-lamp"
+load = "lazy"

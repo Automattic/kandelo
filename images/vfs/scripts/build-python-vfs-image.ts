@@ -9,14 +9,17 @@ import {
   readFileSync,
   readdirSync,
 } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import type { MemoryFileSystem as MemoryFileSystemType } from "../../../host/src/vfs/memory-fs";
 import {
   ensureDir,
   ensureDirRecursive,
+  exactVfsImageMetadata,
   saveImage,
   symlink,
+  type ExactVfsImageAbi,
   writeVfsBinary,
 } from "./vfs-image-helpers";
 import {
@@ -41,10 +44,6 @@ const LEGACY_PYTHON_WASM = join(
   "bin",
   "python.wasm",
 );
-const RUNTIME_ROOT = process.env.KANDELO_PYTHON_RUNTIME_ROOT ?? LEGACY_RUNTIME_ROOT;
-const PYTHON_WASM = process.env.KANDELO_PYTHON_WASM ?? LEGACY_PYTHON_WASM;
-const OUT_FILE = process.env.KANDELO_PYTHON_VFS_OUT ??
-  join(REPO_ROOT, "apps", "browser-demos", "public", "python.vfs.zst");
 const PYTHON_STDLIB = "python3.13";
 // Keep enough allocator headroom for downstream images to layer additional
 // Homebrew executables onto the complete interpreter and standard library.
@@ -85,10 +84,25 @@ function copyTreeSorted(
   return files;
 }
 
-async function main(): Promise<void> {
-  const stdlibRoot = join(RUNTIME_ROOT, "lib", PYTHON_STDLIB);
-  const license = join(RUNTIME_ROOT, "share", "licenses", "cpython", "LICENSE");
-  for (const required of [PYTHON_WASM, join(stdlibRoot, "os.py"), license]) {
+export interface PythonVfsImageBuildInputs {
+  python: Uint8Array;
+  runtimeRoot: string;
+  outputPath: string;
+  targetAbi?: ExactVfsImageAbi;
+}
+
+export async function buildPythonVfsImage(
+  inputs: PythonVfsImageBuildInputs,
+): Promise<void> {
+  const stdlibRoot = join(inputs.runtimeRoot, "lib", PYTHON_STDLIB);
+  const license = join(
+    inputs.runtimeRoot,
+    "share",
+    "licenses",
+    "cpython",
+    "LICENSE",
+  );
+  for (const required of [join(stdlibRoot, "os.py"), license]) {
     if (!existsSync(required)) throw new Error(`required CPython VFS input missing: ${required}`);
   }
 
@@ -100,7 +114,7 @@ async function main(): Promise<void> {
   ensureDirRecursive(fs, `/usr/lib/${PYTHON_STDLIB}`);
   ensureDirRecursive(fs, "/usr/share/licenses/cpython");
 
-  writeVfsBinary(fs, "/usr/bin/python3", new Uint8Array(readFileSync(PYTHON_WASM)), 0o755);
+  writeVfsBinary(fs, "/usr/bin/python3", inputs.python, 0o755);
   symlink(fs, "/usr/bin/python3", "/usr/bin/python");
   symlink(fs, "/usr/bin/python3", "/usr/bin/cpython");
   const runtimeFiles = copyTreeSorted(fs, stdlibRoot, `/usr/lib/${PYTHON_STDLIB}`);
@@ -118,13 +132,43 @@ async function main(): Promise<void> {
     },
   });
 
-  await saveImage(fs, OUT_FILE, {
+  await saveImage(fs, inputs.outputPath, {
     normalizeTimestampsMs: REPRODUCIBLE_TIMESTAMP_MS,
+    ...(inputs.targetAbi === undefined
+      ? {}
+      : {
+          kernelAbi: inputs.targetAbi.version,
+          metadata: exactVfsImageMetadata(
+            inputs.targetAbi,
+            "images/vfs/scripts/build-python-vfs-image.ts",
+          ),
+        }),
   });
   console.log(`CPython VFS contents: interpreter + ${runtimeFiles} standard-library files`);
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+async function main(): Promise<void> {
+  const runtimeRoot = process.env.KANDELO_PYTHON_RUNTIME_ROOT ??
+    LEGACY_RUNTIME_ROOT;
+  const pythonPath = process.env.KANDELO_PYTHON_WASM ?? LEGACY_PYTHON_WASM;
+  const outputPath = process.env.KANDELO_PYTHON_VFS_OUT ??
+    join(REPO_ROOT, "apps", "browser-demos", "public", "python.vfs.zst");
+  if (!existsSync(pythonPath)) {
+    throw new Error(`required CPython VFS input missing: ${pythonPath}`);
+  }
+  await buildPythonVfsImage({
+    python: new Uint8Array(readFileSync(pythonPath)),
+    runtimeRoot,
+    outputPath,
+  });
+}
+
+const invokedPath = process.argv[1]
+  ? pathToFileURL(resolve(process.argv[1])).href
+  : "";
+if (import.meta.url === invokedPath) {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

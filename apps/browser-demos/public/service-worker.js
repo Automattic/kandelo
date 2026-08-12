@@ -511,6 +511,21 @@ if (typeof window !== "undefined") {
     return url.origin !== self.location.origin;
   }
 
+  function isCanonicalPagesVfsRequest(request, url) {
+    if (
+      request.method !== "GET" || request.mode === "navigate" ||
+      isCrossOrigin(url) || url.search || url.hash
+    ) return false;
+    var scriptPath = new URL(self.location.href).pathname;
+    var basePath = scriptPath.slice(0, scriptPath.lastIndexOf("/") + 1);
+    if (!url.pathname.startsWith(basePath)) return false;
+    var relative = url.pathname.slice(basePath.length);
+    var match = relative.match(
+      /^products\/([a-z0-9][a-z0-9._-]{0,127})\/sha256-([0-9a-f]{64})\/([a-z0-9][a-z0-9._-]{0,127})-([1-9][0-9]*)\.vfs\.zst$/,
+    );
+    return match !== null && match[1] === match[3];
+  }
+
   function appRootPath() {
     return appPrefix.endsWith("/") ? appPrefix.slice(0, -1) : appPrefix;
   }
@@ -789,6 +804,15 @@ if (typeof window !== "undefined") {
     // Cross-origin requests — route through CORS proxy if available
     if (isCrossOrigin(url)) {
       event.respondWith(fetchCrossOrigin(event.request));
+      return;
+    }
+
+    // A native same-origin Response retains its authenticated Content-Length
+    // and streaming body. Reconstructing it below strips that forbidden
+    // response header in browsers. Exact canonical Pages VFS paths need no
+    // additional CORP/COEP headers because they are same-origin resources.
+    if (isCanonicalPagesVfsRequest(event.request, url)) {
+      event.respondWith(fetch(event.request));
       return;
     }
 

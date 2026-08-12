@@ -13,13 +13,28 @@ set -euo pipefail
 #
 # Output: packages/registry/perl/bin/perl.wasm
 
-PERL_VERSION="${PERL_VERSION:-5.40.3}"
+PERL_VERSION="${WASM_POSIX_DEP_VERSION:-${PERL_VERSION:-5.40.3}}"
 PERL_CROSS_VERSION="${PERL_CROSS_VERSION:-1.6.4}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/perl-src"
-BIN_DIR="$SCRIPT_DIR/bin"
-SYSROOT="$REPO_ROOT/sysroot"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR/perl-work" wasm32
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
+
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.cpan.org/src/5.0/perl-${PERL_VERSION}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-4c155b4e6160682b38919b55ac319081b898db11857cf18a7d9ffed2648ccaff}"
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/source"
+    BIN_DIR="$KANDELO_PACKAGE_WORK_DIR/bin"
+else
+    SRC_DIR="$SCRIPT_DIR/perl-src"
+    BIN_DIR="$SCRIPT_DIR/bin"
+fi
+SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
+CONFIGURE_LOG="$KANDELO_PACKAGE_WORK_DIR/configure.log"
+BUILD_LOG="$KANDELO_PACKAGE_WORK_DIR/build.log"
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -46,31 +61,35 @@ if [ -z "${LLVM_BIN:-}" ]; then
     fi
 fi
 if [ -d "$LLVM_BIN" ]; then
-    # Create temp dir with readelf/objdump symlinks for perl-cross
-    TOOL_DIR="$SCRIPT_DIR/.host-tools"
+    # Create work-root-local readelf/objdump shims for perl-cross.
+    TOOL_DIR="$KANDELO_PACKAGE_WORK_DIR/host-tools"
     mkdir -p "$TOOL_DIR"
     ln -sf "$LLVM_BIN/llvm-readelf" "$TOOL_DIR/readelf"
     ln -sf "$LLVM_BIN/llvm-objdump" "$TOOL_DIR/objdump"
     export PATH="$TOOL_DIR:$PATH"
 fi
 
-# --- Download Perl source + perl-cross overlay ---
+# --- Stage verified Perl source + exact perl-cross overlay ---
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading Perl $PERL_VERSION..."
-    TARBALL="perl-${PERL_VERSION}.tar.gz"
-    URL="https://www.cpan.org/src/5.0/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
-    mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
+    echo "==> Staging verified Perl $PERL_VERSION source..."
+    kandelo_package_stage_verified_source perl "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+        "$KANDELO_PACKAGE_WORK_DIR"
 
-    echo "==> Downloading perl-cross $PERL_CROSS_VERSION..."
-    CROSS_TARBALL="perl-cross-${PERL_CROSS_VERSION}.tar.gz"
-    CROSS_URL="https://github.com/arsv/perl-cross/releases/download/${PERL_CROSS_VERSION}/${CROSS_TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$CROSS_URL" -o "/tmp/$CROSS_TARBALL"
-    # Overlay perl-cross on top of perl source tree
-    tar xzf "/tmp/$CROSS_TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$CROSS_TARBALL"
+    echo "==> Staging perl-cross $PERL_CROSS_VERSION overlay..."
+    if [ -n "${WASM_POSIX_BUILD_GIT_PERL_CROSS_DIR:-}" ]; then
+        tar --exclude=.git -cf - -C "$WASM_POSIX_BUILD_GIT_PERL_CROSS_DIR" . |
+            tar xf - -C "$SRC_DIR"
+    else
+        CROSS_TARBALL="$KANDELO_PACKAGE_WORK_DIR/perl-cross-${PERL_CROSS_VERSION}.tar.gz"
+        CROSS_URL="https://github.com/arsv/perl-cross/releases/download/${PERL_CROSS_VERSION}/perl-cross-${PERL_CROSS_VERSION}.tar.gz"
+        curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
+            -fsSL "$CROSS_URL" -o "$CROSS_TARBALL"
+        printf '%s  %s\n' \
+            b6202173b0a8a43fb312867d85a8cd33527f3f234b1b6e591cdaa9895c9920c7 \
+            "$CROSS_TARBALL" | shasum -a 256 -c -
+        tar xzf "$CROSS_TARBALL" -C "$SRC_DIR" --strip-components=1
+    fi
 
     echo "==> Source prepared with perl-cross overlay"
 
@@ -217,6 +236,13 @@ PYEOF2
         -e "s/whichprog readelf READELF readelf || die \"Cannot find readelf\"/whichprog readelf READELF readelf || true/" \
         -e "s/whichprog objdump OBJDUMP objdump || die \"Cannot find objdump\"/whichprog objdump OBJDUMP objdump || true/" \
         "$SRC_DIR/cnf/configure_tool.sh"
+fi
+
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    # Capture the exact patched source before configure/build adds generated
+    # files or symlinks. The product builder applies its own reviewed filter.
+    kandelo_package_project_requested_vfs_source_role standard-library \
+        "$SRC_DIR"
 fi
 
 cd "$SRC_DIR"
@@ -463,7 +489,7 @@ if [ ! -f config.sh ]; then
         -Dd_crypt=undef \
         -Dd_times=undef \
         -Dd_system=undef \
-        2>&1 | tee "$SCRIPT_DIR/configure.log" | tail -50
+        2>&1 | tee "$CONFIGURE_LOG" | tail -50
 
     echo "==> Configure complete."
 
@@ -505,7 +531,7 @@ fi
 
 # --- Build ---
 echo "==> Building Perl (this takes a while)..."
-make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" perl 2>&1 | tee "$SCRIPT_DIR/build.log" | tail -80
+make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" perl 2>&1 | tee "$BUILD_LOG" | tail -80
 
 echo "==> Collecting binary..."
 mkdir -p "$BIN_DIR"
@@ -517,7 +543,7 @@ if [ -f "$SRC_DIR/perl" ]; then
 else
     echo "ERROR: perl binary not found after build" >&2
     echo "==> Last 100 lines of build.log:"
-    tail -100 "$SCRIPT_DIR/build.log"
+    tail -100 "$BUILD_LOG"
     exit 1
 fi
 
@@ -528,4 +554,9 @@ echo "Binary: $BIN_DIR/perl.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary perl "$SCRIPT_DIR/bin/perl.wasm"
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
+        install_local_binary perl "$BIN_DIR/perl.wasm"
+else
+    install_local_binary perl "$SCRIPT_DIR/bin/perl.wasm"
+fi

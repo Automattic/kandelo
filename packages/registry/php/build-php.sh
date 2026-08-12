@@ -17,24 +17,34 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR/php-work" wasm32
 PHP_VERSION="${WASM_POSIX_DEP_VERSION:-${PHP_VERSION:-8.3.15}}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.php.net/distributions/php-${PHP_VERSION}.tar.gz}"
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-67073c3c9c56c86461e0715d9e1806af5ddffe8e6e2eb9781f7923bbb5bd67fa}"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-php.XXXXXX")"
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
+    WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+    OWNS_WORK_DIR=0
+else
+    WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-php.XXXXXX")"
+    OWNS_WORK_DIR=1
+fi
 cleanup() {
     status=$?
     trap - EXIT
     if [ "${WASM_POSIX_KEEP_BUILD_DIR:-0}" = "1" ]; then
         echo "==> Preserving PHP build directory: $WORK_DIR" >&2
-    else
+    elif [ "$OWNS_WORK_DIR" = "1" ]; then
         rm -rf "$WORK_DIR"
     fi
     exit "$status"
 }
 trap cleanup EXIT
 SRC_DIR="$WORK_DIR/source"
-BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:+$WORK_DIR/bin}"
+BIN_DIR="${BIN_DIR:-$SCRIPT_DIR/bin}"
 CONFIG_CACHE="$WORK_DIR/config.cache"
 GUEST_PREFIX="/usr"
 
@@ -171,13 +181,10 @@ REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$LIBCURL_PREFIX" /usr/src/kandel
 REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$ICU_PREFIX" /usr/src/kandelo-deps/icu)"
 REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$LIBCXX_PREFIX" /usr/src/kandelo-deps/libcxx)"
 
-echo "==> Downloading PHP $PHP_VERSION..."
-TARBALL="$WORK_DIR/php.tar.gz"
-curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-echo "==> Verifying source sha256..."
-echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-mkdir -p "$SRC_DIR"
-tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+echo "==> Staging verified PHP $PHP_VERSION source..."
+kandelo_package_stage_verified_source php "$SRC_DIR" \
+    "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+    "$WORK_DIR"
 
 rm -rf "$BIN_DIR"
 mkdir -p "$BIN_DIR"
@@ -776,6 +783,12 @@ p.write_text(s)
 PY
 fi
 
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    # Capture the exact patched PHPT source before configure and make add
+    # generated files, symlinks, and other build-only state.
+    kandelo_package_project_requested_vfs_source_role test-suite "$SRC_DIR"
+fi
+
 echo "==> Configuring PHP for Wasm (CLI + FPM, single tree)..."
 # Keep autoconf's cache inside the disposable build directory. Package builds
 # must not race on or leave generated state in the registry recipe directory.
@@ -1351,10 +1364,20 @@ chmod 0755 "$BIN_DIR/php.wasm" "$BIN_DIR/php-fpm.wasm"
 
 ls -la "$BIN_DIR/php.wasm" "$BIN_DIR/php-fpm.wasm"
 
-# Install into local-binaries/ so the resolver picks the freshly-built
-# binaries over the fetched release.
-if [ -z "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-    source "$REPO_ROOT/scripts/install-local-binary.sh"
+# Publish through the resolver-owned output without mutating the checkout.
+# Direct developer builds preserve the existing local-binaries mirror.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    for artifact in php.wasm php-fpm.wasm opcache.so curl.so phar.so \
+        zend_test.so zip.so intl.so; do
+        WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
+        WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
+            install_local_binary php "$BIN_DIR/$artifact" "$artifact"
+    done
+    WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
+        install_local_runtime_file php "$BIN_DIR/icu.dat" icu.dat
+    kandelo_package_project_requested_vfs_output icu-data "$BIN_DIR/icu.dat"
+else
     install_local_binary php "$BIN_DIR/php.wasm" php.wasm
     install_local_binary php "$BIN_DIR/php-fpm.wasm" php-fpm.wasm
     install_local_binary php "$BIN_DIR/opcache.so"

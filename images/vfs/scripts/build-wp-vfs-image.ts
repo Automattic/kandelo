@@ -12,7 +12,8 @@
  * Produces: apps/browser-demos/public/wordpress.vfs
  */
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import {
@@ -20,7 +21,11 @@ import {
   writeVfsBinary,
   ensureDirRecursive,
 } from "./vfs-image-helpers";
-import { addDinitInit, type DinitService } from "./dinit-image-helpers";
+import {
+  addDinitInit,
+  type DinitBinaryInputs,
+  type DinitService,
+} from "./dinit-image-helpers";
 import { prewarmOpcache } from "./opcache-prewarm";
 import {
   webPresentation,
@@ -33,6 +38,7 @@ import {
 } from "./smtp-capture-helpers";
 import {
   loadShellBaseFileSystem,
+  loadShellBaseFileSystemFromImage,
   saveShellDerivedVfsImage,
 } from "./shell-vfs-build";
 import {
@@ -53,12 +59,6 @@ import {
 
 const REPO_ROOT = findRepoRoot();
 const BROWSER_DIR = join(REPO_ROOT, "apps", "browser-demos");
-const WP_DIR = resolveWordPressCoreSource(REPO_ROOT);
-const SQLITE_DIR = resolveWordPressSqlitePluginSource();
-const NGINX_PATH = resolveBinary("programs/nginx.wasm");
-const PHP_FPM_PATH = resolveBinary("programs/php/php-fpm.wasm");
-const OPCACHE_SO_PATH = resolveBinary("programs/php/opcache.so");
-const MSMTPD_PATH = resolveBinary("programs/msmtpd.wasm");
 const OUT_FILE = join(BROWSER_DIR, "public", "wordpress.vfs.zst");
 const PHP_FPM_WORKERS = 1;
 const PHP_FPM_UID = 65534;
@@ -173,7 +173,10 @@ ${extraLocations}
   writeVfsFile(fs, "/etc/nginx/nginx.conf", nginxConf);
 }
 
-function populatePhpFpmConfig(fs: MemoryFileSystem): void {
+function populatePhpFpmConfig(
+  fs: MemoryFileSystem,
+  opcache: Uint8Array,
+): void {
   ensureDirRecursive(fs, "/etc/php-fpm.d");
   ensureDirRecursive(fs, "/var/log");
   ensureDirRecursive(fs, "/tmp/nginx_fastcgi_temp");
@@ -209,7 +212,7 @@ request_slowlog_trace_depth = 0
   writeVfsBinary(
     fs,
     "/usr/lib/php/extensions/opcache.so",
-    new Uint8Array(readFileSync(OPCACHE_SO_PATH)),
+    opcache,
   );
   const phpIni = `zend_extension=/usr/lib/php/extensions/opcache.so
 
@@ -328,20 +331,43 @@ function buildServices(): DinitService[] {
 
 // --- Main ---
 
-async function main() {
+export interface WordPressVfsImageBuildInputs {
+  shellImage?: Uint8Array;
+  wordpressDirectory: string;
+  sqliteDirectory: string;
+  nginx: Uint8Array;
+  phpFpm: Uint8Array;
+  opcache: Uint8Array;
+  msmtpd: Uint8Array;
+  dinit?: DinitBinaryInputs;
+  buildPrograms?: {
+    kernel: Uint8Array;
+    php: Uint8Array;
+  };
+  outputPath: string;
+}
+
+export async function buildWordPressVfsImage(
+  inputs: WordPressVfsImageBuildInputs,
+): Promise<void> {
   console.log("Loading shell base image...");
-  const fs = await loadShellBaseFileSystem(WORDPRESS_IMAGE_MAX_BYTES);
+  const fs = inputs.shellImage === undefined
+    ? await loadShellBaseFileSystem(WORDPRESS_IMAGE_MAX_BYTES)
+    : await loadShellBaseFileSystemFromImage(
+        inputs.shellImage,
+        WORDPRESS_IMAGE_MAX_BYTES,
+      );
 
   console.log("Populating WordPress service configs...");
   populateNginxConfig(fs);
-  populatePhpFpmConfig(fs);
+  populatePhpFpmConfig(fs, inputs.opcache);
   populateSmtpCaptureConfig(fs);
 
   console.log("Writing nginx + php-fpm + msmtpd binaries...");
   ensureDirRecursive(fs, "/usr/sbin");
-  writeVfsBinary(fs, "/usr/sbin/nginx", new Uint8Array(readFileSync(NGINX_PATH)));
-  writeVfsBinary(fs, "/usr/sbin/php-fpm", new Uint8Array(readFileSync(PHP_FPM_PATH)));
-  writeVfsBinary(fs, "/usr/sbin/msmtpd", new Uint8Array(readFileSync(MSMTPD_PATH)));
+  writeVfsBinary(fs, "/usr/sbin/nginx", inputs.nginx);
+  writeVfsBinary(fs, "/usr/sbin/php-fpm", inputs.phpFpm);
+  writeVfsBinary(fs, "/usr/sbin/msmtpd", inputs.msmtpd);
 
   // Template + default wp-config. The browser host overwrites wp-config.php
   // with the current page prefix/protocol before dinit starts.
@@ -364,28 +390,31 @@ async function main() {
 
   // WordPress core files
   console.log("Writing WordPress core files...");
-  let wpCount = copyWordPressCoreSource(fs, WP_DIR);
+  let wpCount = copyWordPressCoreSource(fs, inputs.wordpressDirectory);
   console.log(`  WordPress core: ${wpCount} files`);
 
   // SQLite plugin files
   console.log("Writing SQLite plugin files...");
-  const sqliteCount = materializeWordPressSqlitePlugin(fs, SQLITE_DIR);
+  const sqliteCount = materializeWordPressSqlitePlugin(
+    fs,
+    inputs.sqliteDirectory,
+  );
   console.log(`  SQLite plugin: ${sqliteCount} files`);
   wpCount += sqliteCount;
 
   // Drop-in db.php → routes WP_DB_HOST to the SQLite plugin instead of
   // MySQL. setup.sh copies sqlite-database-integration/db.copy into
   // wp-content/db.php; do the same here for the source-extracted path.
-  const dbCopy = readFileSync(join(SQLITE_DIR, "db.copy"));
+  const dbCopy = readFileSync(join(inputs.sqliteDirectory, "db.copy"));
   writeVfsBinary(fs, "/var/www/html/wp-content/db.php", new Uint8Array(dbCopy), 0o644);
   wpCount += 1;
 
   // dinit + service tree. nginx → php-fpm → wp-config-init/smtp-capture
   // dependencies ensure wp-config.php is finalized and SMTP is listening
   // before any FastCGI request.
-  addDinitInit(fs, buildServices());
+  addDinitInit(fs, buildServices(), { binaries: inputs.dinit });
 
-  await preinstallWordPressSqlite(fs);
+  await preinstallWordPressSqlite(fs, inputs.buildPrograms);
 
   // Prewarm opcache: compile the FPM router and every .php under the
   // document root into the file cache at /var/cache/opcache so the first
@@ -394,6 +423,7 @@ async function main() {
   await prewarmOpcache(fs, {
     sourceRoots: ["/var/www"],
     label: "wp",
+    programs: inputs.buildPrograms,
     excludePaths: [
       "/var/www/html/wp-config.php",
       "/var/www/html/wp-includes/SimplePie/autoloader.php",
@@ -408,11 +438,32 @@ async function main() {
   });
 
   // Save image
-  await saveShellDerivedVfsImage(fs, OUT_FILE);
+  await saveShellDerivedVfsImage(fs, inputs.outputPath);
   console.log(`${wpCount} WordPress files total`);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+async function main(): Promise<void> {
+  await buildWordPressVfsImage({
+    wordpressDirectory: resolveWordPressCoreSource(REPO_ROOT),
+    sqliteDirectory: resolveWordPressSqlitePluginSource(),
+    nginx: new Uint8Array(readFileSync(resolveBinary("programs/nginx.wasm"))),
+    phpFpm: new Uint8Array(
+      readFileSync(resolveBinary("programs/php/php-fpm.wasm")),
+    ),
+    opcache: new Uint8Array(
+      readFileSync(resolveBinary("programs/php/opcache.so")),
+    ),
+    msmtpd: new Uint8Array(readFileSync(resolveBinary("programs/msmtpd.wasm"))),
+    outputPath: OUT_FILE,
+  });
+}
+
+const invokedPath = process.argv[1]
+  ? pathToFileURL(resolve(process.argv[1])).href
+  : "";
+if (import.meta.url === invokedPath) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

@@ -1,0 +1,71 @@
+schema = 1
+id = "browser-mariadb-wasm32"
+architecture = "wasm32"
+output = "mariadb.vfs.zst"
+builder = "images/vfs/scripts/build-mariadb-vfs-image.sh"
+
+[[composition.repository]]
+id = "services-database"
+paths = ["images/rootfs/etc/services"]
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "mariadb"
+outputs = ["mariadbd"]
+source_roles = ["system-tables"]
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "dash"
+outputs = ["dash"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "coreutils"
+outputs = ["coreutils"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "dinit"
+outputs = ["dinit", "dinitctl"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[mounts]]
+path = "/"
+source = "built-image"
+readonly = false
+
+[[mounts]]
+path = "/tmp"
+source = "scratch"
+mode = "1777"
+uid = 0
+gid = 0
+ephemeral = true
+
+[boot]
+argv = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "aria-mariadb"]
+cwd = "/root"
+uid = 0
+gid = 0
+
+[boot.env]
+HOME = "/root"
+LOGNAME = "root"
+PATH = "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
+TMPDIR = "/tmp"
+USER = "root"
+
+[evidence.node]
+test = "mariadb-wasm32-node-startup"
+
+[evidence.browser]
+test = "mariadb-wasm32-browser-startup"

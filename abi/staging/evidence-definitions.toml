@@ -1,0 +1,356 @@
+schema = 1
+kind = "kandelo-vfs-evidence-definitions"
+version = 1
+
+[[definitions]]
+id = "rootfs-node-startup"
+host = "node"
+runner = "exec"
+timeout_seconds = 120
+
+[definitions.probe]
+argv = ["/bin/sh", "-c", "printf 'rootfs-ready\\n'"]
+lazy_inputs = ["package-dash-output-dash"]
+stdout_exact = "rootfs-ready\n"
+
+[[definitions]]
+id = "rootfs-browser-startup"
+host = "browser"
+runner = "exec"
+timeout_seconds = 120
+
+[definitions.probe]
+argv = ["/bin/sh", "-c", "printf 'rootfs-ready\\n'"]
+lazy_inputs = ["package-dash-output-dash"]
+stdout_exact = "rootfs-ready\n"
+
+[[definitions]]
+id = "main-shell-startup"
+host = "node"
+runner = "exec"
+timeout_seconds = 120
+
+[definitions.probe]
+argv = ["/bin/bash", "-lc", "printf 'kandelo-main-shell-ready\\n'"]
+stdout_exact = "kandelo-main-shell-ready\n"
+
+[[definitions]]
+id = "main-shell-basic-e2e"
+host = "browser"
+runner = "interactive-terminal"
+timeout_seconds = 180
+
+[definitions.probe]
+input = ["printf 'kandelo-main-shell-ready\\n'"]
+output_contains = ["kandelo-main-shell-ready"]
+
+[[definitions]]
+id = "main-shell-fbdoom-e2e"
+host = "browser"
+runner = "repository-suite"
+timeout_seconds = 600
+
+[definitions.probe]
+suite = "main-shell-fbdoom-browser"
+lazy_inputs = ["homebrew-fbdoom"]
+
+[[definitions]]
+id = "main-shell-modeset-e2e"
+host = "browser"
+runner = "repository-suite"
+timeout_seconds = 600
+
+[definitions.probe]
+suite = "main-shell-modeset-browser"
+lazy_inputs = ["homebrew-modeset"]
+
+[[definitions]]
+id = "node-vfs-node-startup"
+host = "node"
+runner = "exec"
+timeout_seconds = 180
+
+[definitions.probe]
+argv = ["/usr/bin/node", "-e", "console.log(6 * 9)"]
+stdout_exact = "54\n"
+
+[[definitions]]
+id = "node-vfs-browser-startup"
+host = "browser"
+runner = "exec"
+timeout_seconds = 180
+
+[definitions.probe]
+argv = ["/usr/bin/node", "-e", "console.log(6 * 9)"]
+stdout_exact = "54\n"
+
+[[definitions]]
+id = "nginx-vfs-node-startup"
+host = "node"
+runner = "http"
+timeout_seconds = 180
+
+[definitions.probe]
+path = "/"
+status = 200
+body_contains = "Welcome to nginx"
+
+[[definitions]]
+id = "nginx-vfs-browser-startup"
+host = "browser"
+runner = "http"
+timeout_seconds = 180
+
+[definitions.probe]
+path = "/"
+status = 200
+body_contains = "Welcome to nginx"
+
+[[definitions]]
+id = "nginx-php-vfs-node-startup"
+host = "node"
+runner = "http"
+timeout_seconds = 240
+
+[definitions.probe]
+path = "/index.php"
+status = 200
+body_contains = "PHP"
+
+[[definitions]]
+id = "nginx-php-vfs-browser-startup"
+host = "browser"
+runner = "http"
+timeout_seconds = 240
+
+[definitions.probe]
+path = "/index.php"
+status = 200
+body_contains = "PHP"
+
+[[definitions]]
+id = "wordpress-sqlite-node-startup"
+host = "node"
+runner = "http"
+timeout_seconds = 300
+
+[definitions.probe]
+path = "/wp-login.php"
+status = 200
+body_contains = "Log In"
+
+[[definitions]]
+id = "wordpress-sqlite-browser-e2e"
+host = "browser"
+runner = "repository-suite"
+timeout_seconds = 600
+
+[definitions.probe]
+suite = "wordpress-sqlite-browser"
+
+[[definitions]]
+id = "wordpress-mariadb-node-startup"
+host = "node"
+runner = "http"
+timeout_seconds = 360
+
+[definitions.probe]
+path = "/wp-login.php"
+status = 200
+body_contains = "Log In"
+
+[[definitions]]
+id = "wordpress-mariadb-browser-e2e"
+host = "browser"
+runner = "repository-suite"
+timeout_seconds = 600
+
+[definitions.probe]
+suite = "wordpress-mariadb-browser"
+
+[[definitions]]
+id = "mariadb-wasm32-node-startup"
+host = "node"
+runner = "sql"
+timeout_seconds = 300
+
+[definitions.probe]
+statements = ["SELECT 1"]
+results_exact = ["1"]
+
+[[definitions]]
+id = "mariadb-wasm32-browser-startup"
+host = "browser"
+runner = "sql"
+timeout_seconds = 300
+
+[definitions.probe]
+statements = ["SELECT 1"]
+results_exact = ["1"]
+
+[[definitions]]
+id = "mariadb-wasm64-node-startup"
+host = "node"
+runner = "sql"
+timeout_seconds = 300
+
+[definitions.probe]
+statements = ["SELECT 1"]
+results_exact = ["1"]
+
+[[definitions]]
+id = "mariadb-wasm64-browser-startup"
+host = "browser"
+runner = "sql"
+timeout_seconds = 300
+
+[definitions.probe]
+statements = ["SELECT 1"]
+results_exact = ["1"]
+
+[[definitions]]
+id = "python-vfs-node-smoke"
+host = "node"
+runner = "exec"
+timeout_seconds = 180
+
+[definitions.probe]
+argv = ["/usr/bin/python3", "-c", "import json; print(json.dumps({'ready': True}, sort_keys=True))"]
+stdout_exact = "{\"ready\": true}\n"
+
+[[definitions]]
+id = "python-vfs-browser-smoke"
+host = "browser"
+runner = "exec"
+timeout_seconds = 180
+
+[definitions.probe]
+argv = ["/usr/bin/python3", "-c", "import json; print(json.dumps({'ready': True}, sort_keys=True))"]
+stdout_exact = "{\"ready\": true}\n"
+
+[[definitions]]
+id = "perl-vfs-node-smoke"
+host = "node"
+runner = "exec"
+timeout_seconds = 180
+
+[definitions.probe]
+argv = ["/usr/bin/perl", "-MFile::Spec", "-e", "print qq(perl-ready\\n)"]
+lazy_inputs = ["package-perl-output-perl"]
+stdout_exact = "perl-ready\n"
+
+[[definitions]]
+id = "perl-vfs-browser-smoke"
+host = "browser"
+runner = "exec"
+timeout_seconds = 180
+
+[definitions.probe]
+argv = ["/usr/bin/perl", "-MFile::Spec", "-e", "print qq(perl-ready\\n)"]
+lazy_inputs = ["package-perl-output-perl"]
+stdout_exact = "perl-ready\n"
+
+[[definitions]]
+id = "redis-vfs-node-startup"
+host = "node"
+runner = "service-protocol"
+timeout_seconds = 180
+
+[definitions.probe]
+protocol = "redis"
+request = "PING"
+response_exact = "PONG"
+
+[[definitions]]
+id = "redis-vfs-browser-startup"
+host = "browser"
+runner = "service-protocol"
+timeout_seconds = 180
+
+[definitions.probe]
+protocol = "redis"
+request = "PING"
+response_exact = "PONG"
+
+[[definitions]]
+id = "erlang-vfs-node-smoke"
+host = "node"
+runner = "exec"
+timeout_seconds = 240
+
+[definitions.probe]
+argv = ["/usr/bin/erl", "-noshell", "-eval", "io:format(\"erlang-ready~n\"), halt()."]
+stdout_exact = "erlang-ready\n"
+
+[[definitions]]
+id = "erlang-vfs-browser-smoke"
+host = "browser"
+runner = "exec"
+timeout_seconds = 240
+
+[definitions.probe]
+argv = ["/usr/bin/erl", "-noshell", "-eval", "io:format(\"erlang-ready~n\"), halt()."]
+stdout_exact = "erlang-ready\n"
+
+[[definitions]]
+id = "kandelo-sdk-node-compile"
+host = "node"
+runner = "compile"
+timeout_seconds = 300
+
+[definitions.probe]
+fixture = "tiny-sdk-program"
+
+[[definitions]]
+id = "mariadb-suite-node"
+host = "node"
+runner = "repository-suite"
+timeout_seconds = 3600
+
+[definitions.probe]
+suite = "mariadb-product-node"
+
+[[definitions]]
+id = "mariadb-suite-browser"
+host = "browser"
+runner = "repository-suite"
+timeout_seconds = 3600
+
+[definitions.probe]
+suite = "mariadb-product-browser"
+
+[[definitions]]
+id = "php-suite-node"
+host = "node"
+runner = "repository-suite"
+timeout_seconds = 3600
+
+[definitions.probe]
+suite = "php-product-node"
+
+[[definitions]]
+id = "php-suite-browser"
+host = "browser"
+runner = "repository-suite"
+timeout_seconds = 3600
+
+[definitions.probe]
+suite = "php-product-browser"
+
+[[definitions]]
+id = "sqlite-suite-node"
+host = "node"
+runner = "repository-suite"
+timeout_seconds = 3600
+
+[definitions.probe]
+suite = "sqlite-product-node"
+
+[[definitions]]
+id = "sqlite-suite-browser"
+host = "browser"
+runner = "repository-suite"
+timeout_seconds = 3600
+
+[definitions.probe]
+suite = "sqlite-product-browser"

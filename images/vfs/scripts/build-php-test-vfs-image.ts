@@ -23,8 +23,8 @@ import {
 } from "node:fs";
 import { createHash, type Hash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { delimiter, dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   ensureDirRecursive,
@@ -33,40 +33,15 @@ import {
 import { findRepoRoot, tryResolveBinary } from "../../../host/src/binary-resolver";
 import { preparePhpTestFixtures } from "./php-test-fixtures";
 import { ensureSourceExtract } from "./source-extract-helper";
-import { saveImage, walkAndWrite } from "./vfs-image-helpers";
+import {
+  exactVfsImageMetadata,
+  saveImage,
+  type ExactVfsImageAbi,
+  walkAndWrite,
+} from "./vfs-image-helpers";
 import { resolvePackageRuntimeFile } from "../../../scripts/package-runtime-file";
 
-const REPO_ROOT = findRepoRoot();
-const PHP_FIXTURE_ROOT = join(REPO_ROOT, "tests/php-fixtures");
-const LOCAL_PHP_SRC = join(REPO_ROOT, "packages/registry/php/php-src");
-const ICU_RUNTIME = resolvePackageRuntimeFile(REPO_ROOT, "php", "icu.dat");
-const PHP_WASM = process.env.PHP_WASM
-  ?? ICU_RUNTIME?.closureHostPaths.get("php/php.wasm")
-  ?? join(LOCAL_PHP_SRC, "sapi/cli/php");
-const OPCACHE_SO = process.env.PHP_OPCACHE_SO
-  ?? ICU_RUNTIME?.closureHostPaths.get("php/opcache.so");
-const PHP_EXTENSION_DIRS = [
-  dirname(PHP_WASM),
-  ...((process.env.PHP_EXTENSION_DIR ?? "")
-    .split(delimiter)
-    .map((path) => path.trim())
-    .filter(Boolean)),
-];
-const INTL_SO = ICU_RUNTIME?.closureHostPaths.get("php/intl.so")
-  ?? [...PHP_EXTENSION_DIRS]
-    .reverse()
-    .map((dir) => join(dir, "intl.so"))
-    .find((path) => existsSync(path));
-const PHP_FPM_WASM = process.env.PHP_FPM_WASM
-  ?? ICU_RUNTIME?.closureHostPaths.get("php/php-fpm.wasm");
-const ROOTFS_VFS = process.env.ROOTFS_VFS
-  ?? tryResolveBinary("rootfs.vfs")
-  ?? tryResolveBinary("programs/rootfs.vfs")
-  ?? join(REPO_ROOT, "host/wasm/rootfs.vfs");
-const OUT_FILE = process.env.PHP_TEST_VFS_OUT
-  ?? join(REPO_ROOT, "apps/browser-demos/public/php-test.vfs.zst");
-const FS_MAX_BYTES = Number(process.env.PHP_TEST_VFS_MAX_BYTES ?? 2 * 1024 * 1024 * 1024);
-const META_FILE = `${OUT_FILE}.meta.json`;
+const DEFAULT_FS_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 
 function hashInputPath(
   hash: Hash,
@@ -101,9 +76,27 @@ function hashInputPath(
   visit(path);
 }
 
-function phpTestVfsFingerprint(sourceRoot: string): string {
+interface PhpTestFingerprintInputs {
+  sourceRoot: string;
+  fixtureRoot: string;
+  rootfsPath: string;
+  phpPath: string;
+  phpFpmPath?: string;
+  extensionDirectories: readonly string[];
+  opcachePath?: string;
+  intlPath?: string;
+  icuPath?: string;
+  runtimeContract?: {
+    artifact: string;
+    guestPath: string;
+    mode: number;
+  };
+  maximumBytes: number;
+}
+
+function phpTestVfsFingerprint(inputs: PhpTestFingerprintInputs): string {
   const hash = createHash("sha256");
-  hash.update(`php-test-vfs-v2\0max=${FS_MAX_BYTES}\0`);
+  hash.update(`php-test-vfs-v2\0max=${inputs.maximumBytes}\0`);
   hashInputPath(hash, "builder", fileURLToPath(import.meta.url));
   hashInputPath(
     hash,
@@ -115,28 +108,24 @@ function phpTestVfsFingerprint(sourceRoot: string): string {
     "helpers",
     join(dirname(fileURLToPath(import.meta.url)), "vfs-image-helpers.ts"),
   );
-  hashInputPath(hash, "source", sourceRoot);
-  hashInputPath(hash, "fixtures", PHP_FIXTURE_ROOT);
-  hashInputPath(hash, "rootfs", ROOTFS_VFS);
-  hashInputPath(hash, "php", PHP_WASM);
-  hashInputPath(hash, "php-fpm", PHP_FPM_WASM);
-  for (const [index, extensionDir] of PHP_EXTENSION_DIRS.entries()) {
+  hashInputPath(hash, "source", inputs.sourceRoot);
+  hashInputPath(hash, "fixtures", inputs.fixtureRoot);
+  hashInputPath(hash, "rootfs", inputs.rootfsPath);
+  hashInputPath(hash, "php", inputs.phpPath);
+  hashInputPath(hash, "php-fpm", inputs.phpFpmPath);
+  for (const [index, extensionDir] of inputs.extensionDirectories.entries()) {
     hashInputPath(hash, `extensions-${index}`, extensionDir);
   }
-  hashInputPath(hash, "opcache", OPCACHE_SO);
-  hashInputPath(hash, "intl", INTL_SO);
-  hashInputPath(hash, "intl-icu-data", ICU_RUNTIME?.hostPath);
-  if (ICU_RUNTIME) {
+  hashInputPath(hash, "opcache", inputs.opcachePath);
+  hashInputPath(hash, "intl", inputs.intlPath);
+  hashInputPath(hash, "intl-icu-data", inputs.icuPath);
+  if (inputs.runtimeContract !== undefined) {
+    const runtime = inputs.runtimeContract;
     hash.update(
-      `runtime-contract\0${ICU_RUNTIME.artifact}\0${ICU_RUNTIME.guestPath}\0${ICU_RUNTIME.mode}\0`,
+      `runtime-contract\0${runtime.artifact}\0${runtime.guestPath}\0${runtime.mode}\0`,
     );
   }
   return hash.digest("hex");
-}
-
-function resolvePhpSource(): string {
-  return process.env.PHP_SOURCE_DIR
-    ?? ensureSourceExtract("php", REPO_ROOT, existsSync(LOCAL_PHP_SRC) ? LOCAL_PHP_SRC : undefined);
 }
 
 function collectPhptDirs(root: string): string[] {
@@ -289,33 +278,42 @@ function isGeneratedPhptArtifact(sourceRoot: string, relPath: string): boolean {
   return false;
 }
 
-async function main() {
-  if (!existsSync(PHP_WASM)) {
-    throw new Error(`PHP wasm not found at ${PHP_WASM}. Run: bash packages/registry/php/build-php.sh`);
+export interface PhpTestVfsInputs {
+  baseImage: Uint8Array;
+  php: Uint8Array;
+  phpFpm?: Uint8Array;
+  extensions: Readonly<Record<string, Uint8Array>>;
+  icuData?: Uint8Array;
+  sourceDirectory: string;
+  fixtureDirectory: string;
+  outputPath: string;
+  targetAbi?: ExactVfsImageAbi;
+  maximumBytes?: number;
+}
+
+export async function buildPhpTestVfsImage(
+  inputs: PhpTestVfsInputs,
+): Promise<void> {
+  if (!existsSync(inputs.sourceDirectory)) {
+    throw new Error(`PHP test source input is missing: ${inputs.sourceDirectory}`);
   }
-  if (!ROOTFS_VFS || !existsSync(ROOTFS_VFS)) {
-    throw new Error(
-      `rootfs.vfs not found at ${ROOTFS_VFS}. Build the rootfs package or set ROOTFS_VFS`,
-    );
+  if (!existsSync(inputs.fixtureDirectory)) {
+    throw new Error(`PHP fixture input is missing: ${inputs.fixtureDirectory}`);
   }
-  if (INTL_SO && !ICU_RUNTIME) {
-    throw new Error(
-      "PHP intl.so is present but the declared php:icu.dat runtime file is not materialized",
-    );
+  if (inputs.php.byteLength === 0) throw new Error("PHP executable input is empty");
+  for (const [name, bytes] of Object.entries(inputs.extensions)) {
+    if (!/^[A-Za-z0-9_+-]+\.so$/.test(name) || bytes.byteLength === 0) {
+      throw new Error(`PHP extension input is invalid: ${name}`);
+    }
   }
-  const phpSourceInput = resolvePhpSource();
-  if (!existsSync(phpSourceInput)) {
-    throw new Error(`php-src not found at ${phpSourceInput}`);
+  if ((inputs.extensions["intl.so"] !== undefined) !== (inputs.icuData !== undefined)) {
+    throw new Error("PHP intl.so and icu.dat must be supplied together");
   }
-  const fingerprint = phpTestVfsFingerprint(phpSourceInput);
-  if (process.argv.includes("--print-fingerprint")) {
-    process.stdout.write(`${fingerprint}\n`);
-    return;
-  }
+  const maximumBytes = inputs.maximumBytes ?? DEFAULT_FS_MAX_BYTES;
   const stagingRoot = mkdtempSync(join(tmpdir(), "kandelo-php-vfs-source-"));
   const phpSrc = join(stagingRoot, "php-src");
   try {
-    cpSync(phpSourceInput, phpSrc, {
+    cpSync(inputs.sourceDirectory, phpSrc, {
       recursive: true,
       dereference: false,
       filter: (path) => {
@@ -323,77 +321,52 @@ async function main() {
         return base !== ".git" && base !== ".deps" && base !== ".libs";
       },
     });
-    preparePhpTestFixtures(phpSrc, PHP_FIXTURE_ROOT);
+    preparePhpTestFixtures(phpSrc, inputs.fixtureDirectory);
 
     console.log("==> Building PHP PHPT test VFS image");
-    console.log(`  php-src input: ${phpSourceInput}`);
-
     let fs = MemoryFileSystem.fromImage(
-      new Uint8Array(readFileSync(ROOTFS_VFS)),
-      { maxByteLength: FS_MAX_BYTES },
+      inputs.baseImage,
+      { maxByteLength: maximumBytes },
     );
-    // WHY: a rebase copies imported lazy metadata, so authenticate atomic seals
-    // before this test-image builder can grant them a larger filesystem.
     await fs.verifyImportedLazyAtomicGroupSeals();
+    if (inputs.targetAbi !== undefined) {
+      const metadata = fs.getImageMetadata();
+      if (
+        metadata?.kernelAbi !== inputs.targetAbi.version ||
+        metadata.abiSnapshotSha256 !== inputs.targetAbi.snapshotSha256
+      ) {
+        throw new Error("PHP test base product ABI differs from its target");
+      }
+    }
     const baseStats = fs.statfs("/");
     const baseMaxBytes = baseStats.blocks * baseStats.bsize;
-    if (baseMaxBytes < FS_MAX_BYTES) {
-      console.log(
-        `  Rebasing rootfs capacity from ${Math.round(baseMaxBytes / 1024 / 1024)} MiB ` +
-          `to ${Math.round(FS_MAX_BYTES / 1024 / 1024)} MiB...`,
-      );
-      fs = fs.rebaseToNewFileSystem(FS_MAX_BYTES);
+    if (baseMaxBytes < maximumBytes) {
+      fs = fs.rebaseToNewFileSystem(maximumBytes);
     }
     ensureDirRecursive(fs, "/usr/local/bin");
     ensureDirRecursive(fs, "/usr/local/sbin");
     ensureDirRecursive(fs, "/usr/lib/php/extensions");
     ensureDirRecursive(fs, "/php-src");
 
-    writeVfsBinary(fs, "/usr/local/bin/php", new Uint8Array(readFileSync(PHP_WASM)));
-    if (PHP_FPM_WASM && existsSync(PHP_FPM_WASM)) {
+    writeVfsBinary(fs, "/usr/local/bin/php", inputs.php);
+    if (inputs.phpFpm !== undefined) {
+      writeVfsBinary(fs, "/usr/local/sbin/php-fpm", inputs.phpFpm);
+    }
+    for (const [name, bytes] of Object.entries(inputs.extensions).sort()) {
       writeVfsBinary(
         fs,
-        "/usr/local/sbin/php-fpm",
-        new Uint8Array(readFileSync(PHP_FPM_WASM)),
-      );
-    }
-    for (const extensionDir of PHP_EXTENSION_DIRS) {
-      if (!existsSync(extensionDir)) continue;
-      for (const entry of readdirSync(extensionDir)) {
-        if (!entry.endsWith(".so")) continue;
-        const src = join(extensionDir, entry);
-        writeVfsBinary(
-          fs,
-          `/usr/lib/php/extensions/${entry}`,
-          new Uint8Array(readFileSync(src)),
-        );
-      }
-    }
-    if (OPCACHE_SO && existsSync(OPCACHE_SO)) {
-      // PHP_OPCACHE_SO is the explicit harness override for the OPcache side
-      // module. Honor it even when PHP_EXTENSION_DIR also contains an
-      // opcache.so; otherwise browser PHPT runs can silently package a stale
-      // or non-side-module opcache under the canonical extension path while the
-      // runner advertises OPcache as available.
-      writeVfsBinary(
-        fs,
-        "/usr/lib/php/extensions/opcache.so",
-        new Uint8Array(readFileSync(OPCACHE_SO)),
-      );
-    }
-    if (INTL_SO && ICU_RUNTIME) {
-      writeVfsBinary(
-        fs,
-        "/usr/lib/php/extensions/intl.so",
-        new Uint8Array(readFileSync(INTL_SO)),
+        `/usr/lib/php/extensions/${name}`,
+        bytes,
         0o755,
       );
-      ensureDirRecursive(fs, dirname(ICU_RUNTIME.guestPath));
+    }
+    if (inputs.icuData !== undefined) {
+      ensureDirRecursive(fs, "/usr/lib/php");
       writeVfsBinary(
         fs,
-        ICU_RUNTIME.guestPath,
-        new Uint8Array(readFileSync(ICU_RUNTIME.hostPath)),
-        ICU_RUNTIME.mode,
+        "/usr/lib/php/icu.dat",
+        inputs.icuData,
+        0o644,
       );
     }
 
@@ -419,25 +392,114 @@ async function main() {
     }
     console.log(`    ${fileCount} files`);
 
-    await saveImage(fs, OUT_FILE);
-    writeFileSync(
-      META_FILE,
-      `${JSON.stringify(
-        {
-          version: 1,
-          fingerprint,
-          generatedAt: new Date().toISOString(),
-        },
-        null,
-        2,
-      )}\n`,
-    );
+    await saveImage(fs, inputs.outputPath, inputs.targetAbi === undefined
+      ? {}
+      : {
+          kernelAbi: inputs.targetAbi.version,
+          metadata: exactVfsImageMetadata(
+            inputs.targetAbi,
+            "images/vfs/scripts/build-php-test-vfs-image.ts",
+          ),
+        });
   } finally {
     rmSync(stagingRoot, { recursive: true, force: true });
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+async function main(): Promise<void> {
+  const repositoryRoot = findRepoRoot();
+  const fixtureRoot = join(repositoryRoot, "tests/php-fixtures");
+  const localSource = join(repositoryRoot, "packages/registry/php/php-src");
+  const runtime = resolvePackageRuntimeFile(repositoryRoot, "php", "icu.dat");
+  const phpPath = process.env.PHP_WASM ?? runtime?.closureHostPaths.get("php/php.wasm")
+    ?? join(localSource, "sapi/cli/php");
+  const extensionDirectories = [
+    dirname(phpPath),
+    ...((process.env.PHP_EXTENSION_DIR ?? "").split(delimiter)
+      .map((path) => path.trim()).filter(Boolean)),
+  ];
+  const phpFpmPath = process.env.PHP_FPM_WASM ??
+    runtime?.closureHostPaths.get("php/php-fpm.wasm");
+  const opcachePath = process.env.PHP_OPCACHE_SO ??
+    runtime?.closureHostPaths.get("php/opcache.so");
+  const intlPath = runtime?.closureHostPaths.get("php/intl.so") ??
+    [...extensionDirectories].reverse().map((dir) => join(dir, "intl.so"))
+      .find((path) => existsSync(path));
+  const rootfsPath = process.env.ROOTFS_VFS ?? tryResolveBinary("rootfs.vfs") ??
+    tryResolveBinary("programs/rootfs.vfs") ?? join(repositoryRoot, "host/wasm/rootfs.vfs");
+  const sourceRoot = process.env.PHP_SOURCE_DIR ?? ensureSourceExtract(
+    "php",
+    repositoryRoot,
+    existsSync(localSource) ? localSource : undefined,
+  );
+  const outputPath = process.env.PHP_TEST_VFS_OUT ??
+    join(repositoryRoot, "apps/browser-demos/public/php-test.vfs.zst");
+  const maximumBytes = Number(process.env.PHP_TEST_VFS_MAX_BYTES ?? DEFAULT_FS_MAX_BYTES);
+  const fingerprint = phpTestVfsFingerprint({
+    sourceRoot,
+    fixtureRoot,
+    rootfsPath,
+    phpPath,
+    ...(phpFpmPath === undefined ? {} : { phpFpmPath }),
+    extensionDirectories,
+    ...(opcachePath === undefined ? {} : { opcachePath }),
+    ...(intlPath === undefined ? {} : { intlPath }),
+    ...(runtime === undefined ? {} : { icuPath: runtime.hostPath }),
+    ...(runtime === undefined
+      ? {}
+      : {
+          runtimeContract: {
+            artifact: runtime.artifact,
+            guestPath: runtime.guestPath,
+            mode: runtime.mode,
+          },
+        }),
+    maximumBytes,
+  });
+  if (process.argv.includes("--print-fingerprint")) {
+    process.stdout.write(`${fingerprint}\n`);
+    return;
+  }
+  const extensions: Record<string, Uint8Array> = {};
+  for (const directory of extensionDirectories) {
+    if (!existsSync(directory)) continue;
+    for (const entry of readdirSync(directory).sort()) {
+      if (entry.endsWith(".so")) {
+        extensions[entry] = new Uint8Array(readFileSync(join(directory, entry)));
+      }
+    }
+  }
+  if (opcachePath !== undefined) {
+    extensions["opcache.so"] = new Uint8Array(readFileSync(opcachePath));
+  }
+  if (intlPath !== undefined) {
+    if (runtime === undefined) {
+      throw new Error("PHP intl.so is present without its declared icu.dat runtime file");
+    }
+    extensions["intl.so"] = new Uint8Array(readFileSync(intlPath));
+  }
+  await buildPhpTestVfsImage({
+    baseImage: new Uint8Array(readFileSync(rootfsPath)),
+    php: new Uint8Array(readFileSync(phpPath)),
+    ...(phpFpmPath === undefined ? {} : { phpFpm: new Uint8Array(readFileSync(phpFpmPath)) }),
+    extensions,
+    ...(runtime === undefined ? {} : { icuData: new Uint8Array(readFileSync(runtime.hostPath)) }),
+    sourceDirectory: sourceRoot,
+    fixtureDirectory: fixtureRoot,
+    outputPath,
+    maximumBytes,
+  });
+  writeFileSync(`${outputPath}.meta.json`, `${JSON.stringify({
+    version: 1,
+    fingerprint,
+    generatedAt: new Date().toISOString(),
+  }, null, 2)}\n`);
+}
+
+const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : "";
+if (import.meta.url === invokedPath) {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

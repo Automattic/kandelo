@@ -81,6 +81,20 @@ assert_local_clone_transport_detaches_git_objects() {
   "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core" ] || fail "protected repository-rooted bottle namespace changed"
 [ "$(homebrew_bottle_root_url Acme/homebrew-tools Acme/tools)" = \
   "https://ghcr.io/v2/acme/homebrew-tools" ] || fail "third-party bottle root was not derived from its repository"
+[ "$(homebrew_candidate_bottle_root_url kandelo-dev/homebrew-tap-core 9 curl)" = \
+  "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-9-candidates/curl" ] ||
+  fail "candidate bottle root was not derived from its repository, ABI, and Formula"
+[ "$(homebrew_candidate_bottle_root_url Acme/homebrew-tools 17 mini-tool)" = \
+  "https://ghcr.io/v2/acme/homebrew-tools-abi-17-candidates/mini-tool" ] ||
+  fail "third-party candidate bottle root was not normalized"
+if homebrew_candidate_bottle_root_url \
+  kandelo-dev/homebrew-tap-core 0 curl >/dev/null 2>&1; then
+  fail "candidate bottle root accepted ABI zero"
+fi
+if homebrew_candidate_bottle_root_url \
+  kandelo-dev/homebrew-tap-core 9 '../curl' >/dev/null 2>&1; then
+  fail "candidate bottle root accepted an unsafe Formula path"
+fi
 
 expect_identity_rejection "an implicit third-party tap name" Acme/homebrew-tools
 expect_identity_rejection "a nonconventional third-party repository" Acme/tools Acme/tools

@@ -13,10 +13,11 @@ EXPECTED_SHA256=""
 EXPECTED_ROOT_URL=""
 EXPECTED_CELLAR=""
 RELEASE_TAG=""
+STAGING_CANDIDATE_ABI=""
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-merge-bottle-json.sh --tap-root <dir> --tap-repository <owner/repo> [--tap-name <owner/name>] --formula <name> --arch <wasm32|wasm64> --release-tag <bottles-abi-vN> --bottle-json <path> --expected-sha256 <sha256> --expected-root-url <url> --expected-cellar <any|any_skip_relocation|canonical-cellar>
+usage: scripts/homebrew-merge-bottle-json.sh --tap-root <dir> --tap-repository <owner/repo> [--tap-name <owner/name>] --formula <name> --arch <wasm32|wasm64> --release-tag <bottles-abi-vN> --bottle-json <path> --expected-sha256 <sha256> --expected-root-url <url> --expected-cellar <any|any_skip_relocation|canonical-cellar> [--staging-candidate-abi <N>]
 EOF
 }
 
@@ -32,6 +33,7 @@ while [ "$#" -gt 0 ]; do
     --expected-sha256) EXPECTED_SHA256="${2:-}"; shift 2 ;;
     --expected-root-url) EXPECTED_ROOT_URL="${2:-}"; shift 2 ;;
     --expected-cellar) EXPECTED_CELLAR="${2:-}"; shift 2 ;;
+    --staging-candidate-abi) STAGING_CANDIDATE_ABI="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "homebrew-merge-bottle-json.sh: unknown flag $1" >&2; usage; exit 2 ;;
   esac
@@ -51,7 +53,16 @@ KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-tap-identity.sh"
 TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
-EXPECTED_TAP_ROOT="$(homebrew_bottle_root_url "$TAP_REPOSITORY" "$TAP_NAME")"
+if [ -n "$STAGING_CANDIDATE_ABI" ]; then
+  [[ "$STAGING_CANDIDATE_ABI" =~ ^[1-9][0-9]*$ ]] || {
+    echo "homebrew-merge-bottle-json.sh: invalid staging candidate ABI" >&2
+    exit 2
+  }
+  EXPECTED_TAP_ROOT="$(homebrew_candidate_bottle_root_url \
+    "$TAP_REPOSITORY" "$STAGING_CANDIDATE_ABI" "$FORMULA")"
+else
+  EXPECTED_TAP_ROOT="$(homebrew_bottle_root_url "$TAP_REPOSITORY" "$TAP_NAME")"
+fi
 if [ "$EXPECTED_ROOT_URL" != "$EXPECTED_TAP_ROOT" ]; then
   echo "homebrew-merge-bottle-json.sh: expected bottle root does not match the tap repository package root" >&2
   exit 2
@@ -59,9 +70,6 @@ fi
 case "$EXPECTED_CELLAR" in
   any) EXPECTED_CELLAR_DSL=":any" ;;
   any_skip_relocation) EXPECTED_CELLAR_DSL=":any_skip_relocation" ;;
-  /opt/kandelo/homebrew/Cellar)
-    EXPECTED_CELLAR_DSL="\"/opt/kandelo/homebrew/Cellar\""
-    ;;
   /opt/kandelo/homebrew/Cellar)
     EXPECTED_CELLAR_DSL="\"/opt/kandelo/homebrew/Cellar\""
     ;;
@@ -77,6 +85,11 @@ case "$ARCH" in
 esac
 if ! [[ "$RELEASE_TAG" =~ ^bottles-abi-v[0-9]+$ ]]; then
   echo "homebrew-merge-bottle-json.sh: invalid release tag" >&2
+  exit 2
+fi
+if [ -n "$STAGING_CANDIDATE_ABI" ] && \
+   [ "$RELEASE_TAG" != "bottles-abi-v$STAGING_CANDIDATE_ABI" ]; then
+  echo "homebrew-merge-bottle-json.sh: release tag differs from staging candidate ABI" >&2
   exit 2
 fi
 if ! [[ "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
@@ -153,7 +166,10 @@ ruby "$COMPOSER" \
   "$EXPECTED_SHA256" \
   "$SIBLING_POLICY" \
   "$COMPOSED_FORMULA"
-chmod --reference="$FORMULA_PATH" "$COMPOSED_FORMULA"
+ruby -e '
+  source, destination = ARGV
+  File.chmod(File.stat(source).mode & 0o7777, destination)
+' "$FORMULA_PATH" "$COMPOSED_FORMULA"
 mv "$COMPOSED_FORMULA" "$FORMULA_PATH"
 
 grep -F "root_url \"$EXPECTED_ROOT_URL\"" "$FORMULA_PATH" >/dev/null || {

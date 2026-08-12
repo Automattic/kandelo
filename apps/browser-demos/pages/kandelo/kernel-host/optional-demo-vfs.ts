@@ -3,6 +3,11 @@ export type OptionalDemoVfsImage = "node" | "wordpress" | "lamp";
 export type OptionalDemoVfsImporter = () => Promise<string>;
 export type OptionalDemoVfsImporters = Record<string, OptionalDemoVfsImporter>;
 
+import {
+  resolveCandidateOrDefaultOptionalVfsUrl,
+  type ProtectedCandidateVfsSource,
+} from "./candidate-evidence-vfs";
+
 export const OPTIONAL_DEMO_VFS_PATHS: Record<
   OptionalDemoVfsImage,
   { label: string; relPaths: readonly string[] }
@@ -58,11 +63,19 @@ const OPTIONAL_DEMO_VFS_IMPORTERS = {
 export async function resolveOptionalDemoVfsUrl(
   image: OptionalDemoVfsImage,
   importers: OptionalDemoVfsImporters = OPTIONAL_DEMO_VFS_IMPORTERS,
+  candidate?: ProtectedCandidateVfsSource,
+  canonicalProductUrl?: () => Promise<string>,
 ): Promise<string> {
-  const source = OPTIONAL_DEMO_VFS_PATHS[image];
-  for (const relPath of source.relPaths) {
-    const importer = importers[relPath];
-    if (importer) return importer();
-  }
-  throw new Error(`${source.label} is not built. Run: ./run.sh fetch`);
+  // WHY: the admitted-product build map is the complete Pages authority.
+  // Keeping the legacy importer behind a callback ensures canonical mode can
+  // neither evaluate nor recover through a local/fetched mirror fallback.
+  if (canonicalProductUrl !== undefined) return canonicalProductUrl();
+  return resolveCandidateOrDefaultOptionalVfsUrl(image, candidate, async () => {
+    const source = OPTIONAL_DEMO_VFS_PATHS[image];
+    for (const relPath of source.relPaths) {
+      const importer = importers[relPath];
+      if (importer) return importer();
+    }
+    throw new Error(`${source.label} is not built. Run: ./run.sh fetch`);
+  });
 }

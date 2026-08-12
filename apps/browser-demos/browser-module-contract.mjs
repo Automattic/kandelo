@@ -21,8 +21,11 @@ export function browserRepositoryAliases(repoRoot) {
  */
 export const browserKernelModuleSpecifier = "@kernel-wasm";
 export const browserRootfsModuleSpecifier = "@rootfs-vfs";
+export const browserPagesVfsProductsModuleSpecifier =
+  "virtual:kandelo-pages-vfs-products";
 
 export const browserVirtualModuleCapabilities = Object.freeze({
   [browserKernelModuleSpecifier]: "kernel-wasm",
+  [browserPagesVfsProductsModuleSpecifier]: "pages-vfs-products",
   [browserRootfsModuleSpecifier]: "rootfs-vfs",
 });

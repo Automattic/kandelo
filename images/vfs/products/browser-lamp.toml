@@ -1,0 +1,97 @@
+schema = 1
+id = "browser-lamp"
+architecture = "wasm32"
+output = "lamp.vfs.zst"
+builder = "images/vfs/scripts/build-lamp-vfs-image.sh"
+
+[[composition.product]]
+id = "browser-main-shell"
+materialization = "embedded"
+
+[[software.package]]
+name = "mariadb"
+outputs = ["mariadbd"]
+source_roles = ["system-tables"]
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "nginx"
+outputs = ["nginx"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "php"
+outputs = ["php-fpm", "opcache"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "php"
+outputs = ["php"]
+source_roles = []
+role = "build"
+
+[[software.package]]
+name = "dinit"
+outputs = ["dinit", "dinitctl"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "msmtpd"
+outputs = ["msmtpd"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "kernel"
+outputs = ["kernel"]
+source_roles = []
+role = "build"
+
+[[software.archive]]
+id = "wordpress-core"
+url = "https://wordpress.org/wordpress-7.0.tar.gz"
+sha256 = "530c8fdeb16fb0affdb53eb727b6a04bb8d166621c20029e389cabb01a0fa921"
+role = "runtime"
+materialization = "embedded"
+
+[[mounts]]
+path = "/"
+source = "built-image"
+readonly = false
+
+[[mounts]]
+path = "/tmp"
+source = "scratch"
+mode = "1777"
+uid = 0
+gid = 0
+ephemeral = true
+
+[boot]
+argv = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"]
+cwd = "/root"
+uid = 0
+gid = 0
+
+[boot.env]
+HOME = "/root"
+LOGNAME = "root"
+PATH = "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
+TMPDIR = "/tmp"
+USER = "root"
+WP_APP_PATH = "/app"
+WP_PROTO = "http"
+
+[evidence.node]
+test = "wordpress-mariadb-node-startup"
+
+[evidence.browser]
+test = "wordpress-mariadb-browser-e2e"

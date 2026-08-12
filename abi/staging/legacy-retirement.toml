@@ -1,0 +1,411 @@
+schema = 1
+kind = "kandelo-abi-staging-legacy-retirement"
+
+# These entries are an inventory, not a deletion queue. The conditions are
+# deliberately repeated per entry so no consumer can infer removability from
+# a global switch or from another legacy component's state.
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = ".github/scripts/clone-rejected-merge-candidate.sh"
+current_consumers = ["package-staging-workflows"]
+replacement_component = "Canonical VFS product selection and exact resolved-input planning"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = ".github/workflows/browser-demos-pages.yml"
+current_consumers = ["github-pages", "run.sh"]
+replacement_component = "Atomic Pages readiness and deployment workflow driven by the Pages-owned product registry"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = ".github/workflows/homebrew-experimental-vfs-publish.yml"
+current_consumers = ["experimental-homebrew-vfs-release"]
+replacement_component = "Candidate VFS composition, product evidence, and protected canonical promotion"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = ".github/workflows/homebrew-main-shell-ci.yml"
+current_consumers = ["homebrew-main-shell-checks", "pull-request-ci"]
+replacement_component = "Required product evidence and Kandelo PR Check"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = ".github/workflows/homebrew-native-publisher-compatibility.yml"
+current_consumers = ["homebrew-native-compatibility-checks"]
+replacement_component = "Registered bottle verification and exact candidate receipts"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = ".github/workflows/reusable-homebrew-bottle-maintenance.yml"
+current_consumers = ["homebrew-maintenance-callers"]
+replacement_component = "Protected historical ABI maintenance pipeline"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = ".github/workflows/reusable-homebrew-bottle-publish.yml"
+current_consumers = ["homebrew-bottle-publish-callers"]
+replacement_component = "Uncredentialed exact candidate build plus protected publication"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = ".github/workflows/reusable-homebrew-closed-selection-publish.yml"
+current_consumers = ["closed-selection-publish-callers"]
+replacement_component = "Protected tap planning and admission records"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = ".github/workflows/reusable-homebrew-main-shell-mirror-publish.yml"
+current_consumers = ["main-shell-mirror-publish-callers"]
+replacement_component = "Canonical product-layer promotion and product evidence"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "homebrew/main-shell-brew-package-tree.json"
+current_consumers = ["main-shell-image-builder", "main-shell-release-inspection"]
+replacement_component = "Resolved product input document and immutable bottle records"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "homebrew/main-shell-homebrew-runtime-support.json"
+current_consumers = ["main-shell-image-builder", "main-shell-projection-check"]
+replacement_component = "browser-main-shell product software declarations and tap plan"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "homebrew/main-shell-lazy-artifact-lock.json"
+current_consumers = ["main-shell-image-builder", "main-shell-release-publisher"]
+replacement_component = "Resolved lazy-reference inputs and content-addressed product records"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "homebrew/main-shell-materialization-policy.json"
+current_consumers = ["main-shell-image-builder", "main-shell-projection-check"]
+replacement_component = "Product manifest declared materialization plus effective resolved inputs"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "homebrew/main-shell-migration-lock.json"
+current_consumers = ["main-shell-image-builder", "main-shell-release-publisher"]
+replacement_component = "Protected ABI history, promotion, and retirement records"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "homebrew/main-shell-selection-lock.json"
+current_consumers = ["main-shell-image-builder", "main-shell-release-publisher"]
+replacement_component = "Exact request, tap plan, and admitted candidate records"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "homebrew/main-shell.Brewfile"
+current_consumers = ["main-shell-image-builder", "main-shell-projection-check"]
+replacement_component = "browser-main-shell canonical product manifest"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "homebrew/source-rootfs-shell-package"
+current_consumers = ["source-rootfs-compatibility-lane"]
+replacement_component = "platform-rootfs and browser-main-shell product adapters"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "images/vfs/scripts/build-shell-vfs-image.sh"
+current_consumers = ["legacy-shell-build-target", "run.sh"]
+replacement_component = "browser-main-shell transitional product builder adapter"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "images/vfs/scripts/build-shell-vfs-image.ts"
+current_consumers = ["legacy-shell-build-target"]
+replacement_component = "Generic VFS compositor plus browser-main-shell product adapter"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "images/vfs/scripts/build-source-rootfs-shell-image.ts"
+current_consumers = ["source-rootfs-compatibility-lane"]
+replacement_component = "Canonical rootfs and shell product composition"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "packages/registry/erlang-vfs"
+current_consumers = ["browser-erlang-vfs-build", "package-generation"]
+replacement_component = "browser-erlang product manifest and direct build adapter"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "packages/registry/kandelo-sdk"
+current_consumers = ["developer-sdk-vfs-build", "package-generation"]
+replacement_component = "developer-kandelo-sdk product manifest and direct build adapter"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "packages/registry/lamp"
+current_consumers = ["browser-lamp-vfs-build", "package-generation"]
+replacement_component = "browser-lamp product manifest and direct build adapter"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "packages/registry/mariadb-test"
+current_consumers = ["mariadb-test-vfs-build", "package-generation"]
+replacement_component = "test-mariadb product manifest and direct build adapter"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "packages/registry/mariadb-vfs"
+current_consumers = ["browser-mariadb-vfs-build", "package-generation"]
+replacement_component = "browser-mariadb architecture products and direct build adapter"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "packages/registry/nginx-php-vfs"
+current_consumers = ["browser-nginx-php-vfs-build", "package-generation"]
+replacement_component = "browser-nginx-php product manifest and direct build adapter"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "packages/registry/nginx-vfs"
+current_consumers = ["browser-nginx-vfs-build", "package-generation"]
+replacement_component = "browser-nginx product manifest and direct build adapter"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "packages/registry/node-vfs"
+current_consumers = ["browser-node-vfs-build", "package-generation"]
+replacement_component = "browser-node product manifest and direct build adapter"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "packages/registry/perl-vfs"
+current_consumers = ["browser-perl-vfs-build", "package-generation"]
+replacement_component = "browser-perl product manifest and direct build adapter"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "packages/registry/python-vfs"
+current_consumers = ["browser-python-vfs-build", "package-generation"]
+replacement_component = "browser-python product manifest and direct build adapter"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "packages/registry/redis-vfs"
+current_consumers = ["browser-redis-vfs-build", "package-generation"]
+replacement_component = "browser-redis product manifest and direct build adapter"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "packages/registry/rootfs"
+current_consumers = ["package-generation", "platform-rootfs-build", "run.sh"]
+replacement_component = "platform-rootfs product manifest and direct build adapter"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "packages/registry/shell"
+current_consumers = ["browser-main-shell-build", "package-generation", "run.sh"]
+replacement_component = "browser-main-shell product manifest and direct build adapter"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "packages/registry/wordpress"
+current_consumers = ["browser-wordpress-vfs-build", "package-generation"]
+replacement_component = "browser-wordpress product manifest and direct build adapter"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "run.sh"
+current_consumers = ["browser-demo-developer-entrypoint"]
+replacement_component = "Pages-owned product registry and product-derived browser prerequisites"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "scripts/build-homebrew-main-shell-closure.sh"
+current_consumers = ["main-shell-image-builder"]
+replacement_component = "Tap plan derived from selected canonical product manifests"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "scripts/check-homebrew-main-shell-brewfile.mjs"
+current_consumers = ["main-shell-projection-check"]
+replacement_component = "Direct canonical product-manifest consumption after legacy projection retirement"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "scripts/deploy-gh-pages.sh"
+current_consumers = ["browser-demos-pages-workflow"]
+replacement_component = "Atomic Pages deployment adapter with readiness verification"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "scripts/homebrew-plan-matrix.sh"
+current_consumers = ["legacy-homebrew-publish-workflows"]
+replacement_component = "Product-derived tap subject planning"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "scripts/homebrew-rootfs-publication-selection.sh"
+current_consumers = ["legacy-homebrew-publish-workflows"]
+replacement_component = "Selected VFS products and derived Formula roots"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "kandelo-dev/homebrew-tap-core"
+path = ".github/workflows/dry-run-bottles.yml"
+current_consumers = ["tap-dry-run-dispatch"]
+replacement_component = "Observe-only then active exact-request reconciler"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "kandelo-dev/homebrew-tap-core"
+path = ".github/workflows/maintain-bottles.yml"
+current_consumers = ["tap-maintenance-dispatch"]
+replacement_component = "Protected historical ABI maintenance pipeline"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "kandelo-dev/homebrew-tap-core"
+path = ".github/workflows/publish-bottles.yml"
+current_consumers = ["tap-bottle-publish-dispatch"]
+replacement_component = "Candidate publication, verification, and admission workflows"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "kandelo-dev/homebrew-tap-core"
+path = ".github/workflows/publish-main-shell-mirror.yml"
+current_consumers = ["tap-main-shell-mirror-dispatch"]
+replacement_component = "Candidate and canonical VFS product publication"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "kandelo-dev/homebrew-tap-core"
+path = ".github/workflows/selection-checks.yml"
+current_consumers = ["tap-pull-request-checks"]
+replacement_component = "Protected request reconciliation and exact tap-plan validation"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false

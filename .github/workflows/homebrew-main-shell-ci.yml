@@ -774,6 +774,7 @@ jobs:
             --html-entry index.html \
             --html-entry pages/homebrew-vfs-test/index.html \
             --local-capability kernel-wasm \
+            --local-capability pages-vfs-products \
             --package-capability rootfs-vfs=rootfs \
             --exclude-package shell \
             > "$browser_package_file"

@@ -19,4 +19,8 @@ export default defineConfig({
   clean: true,
   target: "es2022",
   splitting: false,
+  // Exact ABI-staging runtime artifacts execute outside this checkout. Keep
+  // production host dependencies inside the inventory-bound bundles so Node
+  // cannot resolve an ambient node_modules tree.
+  noExternal: ["fflate", "fzstd"],
 });

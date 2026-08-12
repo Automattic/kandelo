@@ -474,6 +474,51 @@ assert_not_matches package_publish_flow_changed_files \
   "tools/xtask/src/remote_fetch.rs" \
   "tools/xtask/src/remote_fetch.rs"
 
+# The protected request feed is publication and CI control machinery. Changes
+# must exercise those focused gates without rebuilding unrelated package
+# archives.
+abi_staging_request_control_paths=(
+  .github/workflows/abi-staging-request-feed.yml
+  .github/scripts/publish-abi-staging-request.sh
+  .github/scripts/test-publish-abi-staging-request.sh
+  scripts/check-abi-staging-request-workflow.rb
+  scripts/test-abi-staging-request-feed.sh
+)
+for abi_staging_request_control_path in "${abi_staging_request_control_paths[@]}"; do
+  assert_matches package_publish_flow_changed_files \
+    "$abi_staging_request_control_path" \
+    "$abi_staging_request_control_path"
+  assert_matches ci_control_changed_files \
+    "$abi_staging_request_control_path" \
+    "$abi_staging_request_control_path"
+  assert_not_matches package_archive_changed_files \
+    "$abi_staging_request_control_path" \
+    "$abi_staging_request_control_path"
+done
+
+# Exact-head Check publication and merge enforcement are protected CI control
+# surfaces. They must rerun publication/control validation without pretending
+# that their source files are portable package archives.
+abi_staging_check_control_paths=(
+  .github/workflows/abi-staging-merge-gate.yml
+  .github/workflows/abi-staging-pr-check.yml
+  .github/scripts/update-abi-staging-check.sh
+  .github/scripts/test-update-abi-staging-check.sh
+  abi/staging/required-check-activation.toml
+  scripts/check-abi-staging-pr-check-workflow.rb
+)
+for abi_staging_check_control_path in "${abi_staging_check_control_paths[@]}"; do
+  assert_matches package_publish_flow_changed_files \
+    "$abi_staging_check_control_path" \
+    "$abi_staging_check_control_path"
+  assert_matches ci_control_changed_files \
+    "$abi_staging_check_control_path" \
+    "$abi_staging_check_control_path"
+  assert_not_matches package_archive_changed_files \
+    "$abi_staging_check_control_path" \
+    "$abi_staging_check_control_path"
+done
+
 assert_matches kernel_runtime_changed_files \
   "host/src/process.ts" \
   "host/src/process.ts"
@@ -486,6 +531,60 @@ assert_matches kernel_runtime_changed_files \
 assert_not_matches kernel_runtime_changed_files \
   "tools/xtask/src/remote_fetch.rs" \
   "tools/xtask/src/remote_fetch.rs"
+
+# Canonical VFS authority is consumed by ABI, package, and browser validation.
+# Product manifests can change image bytes, while consumer registries and the
+# typed staging implementation require the non-package runtime gate. None of
+# these paths opt into the existing credentialed Homebrew product exception.
+abi_staging_foundation_paths=(
+  images/vfs/products/browser-main-shell.toml
+  apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.toml
+  tests/vfs-products.toml
+  abi/staging/guard-codes.toml
+  tools/xtask/src/abi_staging/selection.rs
+  scripts/test-abi-staging-product-authority.sh
+)
+for abi_staging_foundation_path in "${abi_staging_foundation_paths[@]}"; do
+  assert_matches kernel_runtime_changed_files \
+    "$abi_staging_foundation_path" \
+    "$abi_staging_foundation_path"
+  assert_not_matches homebrew_product_owned_package_input_changed_files \
+    "$abi_staging_foundation_path" \
+    "$abi_staging_foundation_path"
+done
+pages_production_paths=(
+  apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-gallery.json
+  scripts/abi-staging-pages-producer-fixture.ts
+  scripts/abi-staging-pages-producer.ts
+  scripts/abi-staging-product-browser-evidence.ts
+  scripts/abi-staging-product-node-evidence.ts
+  scripts/abi-staging-product-input-sources.ts
+)
+for pages_production_path in "${pages_production_paths[@]}"; do
+  assert_matches kernel_runtime_changed_files \
+    "$pages_production_path" \
+    "$pages_production_path"
+  assert_not_matches homebrew_product_owned_package_input_changed_files \
+    "$pages_production_path" \
+    "$pages_production_path"
+done
+assert_matches package_archive_changed_files \
+  "images/vfs/products/browser-main-shell.toml" \
+  "images/vfs/products/browser-main-shell.toml"
+for non_archive_authority_path in \
+  apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.toml \
+  tests/vfs-products.toml \
+  abi/staging/guard-codes.toml \
+  tools/xtask/src/abi_staging/selection.rs \
+  scripts/test-abi-staging-product-authority.sh
+do
+  assert_not_matches package_archive_changed_files \
+    "$non_archive_authority_path" \
+    "$non_archive_authority_path"
+done
+assert_not_matches package_archive_changed_files \
+  "docs/superpowers/plans/2026-08-08-abi-staging-product-authority-foundation.md" \
+  "docs/superpowers/plans/2026-08-08-abi-staging-product-authority-foundation.md"
 
 assert_matches ci_control_changed_files \
   ".github/actions/detect-change-scope/action.yml" \

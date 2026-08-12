@@ -1,0 +1,76 @@
+schema = 1
+id = "developer-kandelo-sdk"
+architecture = "wasm32"
+output = "kandelo-sdk.vfs.zst"
+builder = "images/vfs/scripts/build-kandelo-sdk-vfs-image.sh"
+
+[[composition.repository]]
+id = "sdk-wrappers"
+paths = ["sdk/config.site", "sdk/kandelo/bin"]
+role = "runtime"
+materialization = "embedded"
+
+[[composition.repository]]
+id = "sdk-glue"
+paths = ["libc/glue"]
+role = "runtime"
+materialization = "embedded"
+
+[[composition.repository]]
+id = "sdk-licenses"
+paths = [
+  "COPYING.runtime",
+  "LICENSE",
+  "libc/musl/COPYRIGHT",
+  "sdk/kandelo/licenses",
+]
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "libcxx"
+outputs = ["libcxx"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.toolchain]]
+id = "wasm32-sysroot"
+provider = "repository-dev-shell"
+component = "wasm32-sysroot"
+role = "runtime"
+materialization = "embedded"
+
+[[software.toolchain]]
+id = "clang-resource-headers"
+provider = "repository-dev-shell"
+component = "clang-resource-headers"
+role = "runtime"
+materialization = "embedded"
+
+[[mounts]]
+path = "/"
+source = "built-image"
+readonly = false
+
+[[mounts]]
+path = "/tmp"
+source = "scratch"
+mode = "1777"
+uid = 0
+gid = 0
+ephemeral = true
+
+[boot]
+argv = ["/bin/sh"]
+cwd = "/home"
+uid = 1000
+gid = 1000
+
+[boot.env]
+HOME = "/home"
+PATH = "/usr/local/bin:/usr/bin:/bin"
+TMPDIR = "/tmp"
+
+[evidence.node]
+test = "kandelo-sdk-node-compile"

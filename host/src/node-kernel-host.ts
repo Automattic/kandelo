@@ -30,7 +30,9 @@ import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/memory-fs";
 import {
   snapshotClosedLazyAssets,
+  snapshotClosedLazyAssetSources,
   type ClosedLazyAsset,
+  type ClosedLazyAssetSource,
 } from "./vfs/closed-lazy-assets";
 import {
   DEFAULT_MAX_PAGES,
@@ -38,6 +40,7 @@ import {
   WASM_PAGE_SIZE,
 } from "./constants";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
+import type { MountSpec } from "./vfs/default-mounts";
 
 export type { HttpRequest, HttpResponse };
 
@@ -117,6 +120,8 @@ export interface NodeKernelHostOptions {
    *     to a VFS-only world yet.
    */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
+  /** Exact image/scratch mount contract. Requires `rootfsImage`. */
+  rootfsMountSpec?: readonly MountSpec[];
   /**
    * Resolve relative lazy URLs embedded in rootfsImage before transport.
    * This is the Node peer of BrowserKernel's lazyUrlBase contract.
@@ -128,6 +133,8 @@ export interface NodeKernelHostOptions {
    * URLs fail instead of falling through to ambient network fetch.
    */
   rootfsLazyAssets?: readonly ClosedLazyAsset[];
+  /** Closed source metadata fetched and verified only on first VFS use. */
+  rootfsLazyAssetSources?: readonly ClosedLazyAssetSource[];
   extraMounts?: Array<{
     mountPoint: string;
     hostPath: string;
@@ -186,8 +193,20 @@ export class NodeKernelHost {
     if (this.options.rootfsLazyAssets !== undefined && rootfsImage === null) {
       throw new Error("rootfsLazyAssets requires rootfsImage");
     }
+    if (this.options.rootfsLazyAssetSources !== undefined && rootfsImage === null) {
+      throw new Error("rootfsLazyAssetSources requires rootfsImage");
+    }
+    if (
+      this.options.rootfsLazyAssets !== undefined &&
+      this.options.rootfsLazyAssetSources !== undefined
+    ) {
+      throw new Error("rootfs lazy bytes and on-demand sources are mutually exclusive");
+    }
     if (this.options.rootfsLazyUrlBase !== undefined && rootfsImage === null) {
       throw new Error("rootfsLazyUrlBase requires rootfsImage");
+    }
+    if (this.options.rootfsMountSpec !== undefined && rootfsImage === null) {
+      throw new Error("rootfsMountSpec requires rootfsImage");
     }
     if (this.options.rootfsLazyUrlBase === "") {
       throw new Error("rootfsLazyUrlBase must not be empty");
@@ -195,6 +214,9 @@ export class NodeKernelHost {
     const rootfsLazyAssets = this.options.rootfsLazyAssets === undefined
       ? undefined
       : snapshotClosedLazyAssets(this.options.rootfsLazyAssets);
+    const rootfsLazyAssetSources = this.options.rootfsLazyAssetSources === undefined
+      ? undefined
+      : snapshotClosedLazyAssetSources(this.options.rootfsLazyAssetSources);
 
     this.worker = spawnKernelWorkerThread();
     this.workerStarted = true;
@@ -277,8 +299,12 @@ export class NodeKernelHost {
           },
           execPrograms: this.options.execPrograms,
           rootfsImage: rootfsImage ?? undefined,
+          rootfsMountSpec: this.options.rootfsMountSpec === undefined
+            ? undefined
+            : this.options.rootfsMountSpec.map((mount) => ({ ...mount })),
           rootfsLazyUrlBase: this.options.rootfsLazyUrlBase,
           rootfsLazyAssets,
+          rootfsLazyAssetSources,
           extraMounts: this.options.extraMounts,
           enableTcpNetwork: this.options.enableTcpNetwork,
         };
@@ -405,6 +431,89 @@ export class NodeKernelHost {
     this.sendToWorker({ type: "pty_resize", pid, rows, cols });
   }
 
+  /** Pick a currently live in-kernel listener for a protected protocol client. */
+  async pickListenerTarget(
+    port: number,
+  ): Promise<{ pid: number; fd: number } | null> {
+    const requestId = this._nextRequestId++;
+    return this.request(requestId, {
+      type: "pick_listener_target",
+      requestId,
+      port,
+    }) as Promise<{ pid: number; fd: number } | null>;
+  }
+
+  /** Inject a host-owned connection into an in-kernel listener. */
+  async injectConnection(
+    pid: number,
+    listenerFd: number,
+    peerAddr: [number, number, number, number] = [127, 0, 0, 1],
+    peerPort = 0,
+  ): Promise<number> {
+    const requestId = this._nextRequestId++;
+    return this.request(requestId, {
+      type: "inject_connection",
+      requestId,
+      pid,
+      fd: listenerFd,
+      peerAddr,
+      peerPort,
+    }) as Promise<number>;
+  }
+
+  /** Write exact bytes to a host-owned kernel pipe. */
+  async pipeWrite(
+    pid: number,
+    pipeIdx: number,
+    data: Uint8Array,
+  ): Promise<number> {
+    const requestId = this._nextRequestId++;
+    return this.request(requestId, {
+      type: "pipe_write",
+      requestId,
+      pid,
+      pipeIdx,
+      data,
+    }) as Promise<number>;
+  }
+
+  /** Read one bounded chunk from a host-owned kernel pipe. */
+  async pipeRead(pid: number, pipeIdx: number): Promise<Uint8Array | null> {
+    const requestId = this._nextRequestId++;
+    return this.request(requestId, {
+      type: "pipe_read",
+      requestId,
+      pid,
+      pipeIdx,
+    }) as Promise<Uint8Array | null>;
+  }
+
+  pipeCloseWrite(pid: number, pipeIdx: number): void {
+    this.sendToWorker({ type: "pipe_close_write", pid, pipeIdx });
+  }
+
+  pipeCloseRead(pid: number, pipeIdx: number): void {
+    this.sendToWorker({ type: "pipe_close_read", pid, pipeIdx });
+  }
+
+  async pipeIsWriteOpen(pid: number, pipeIdx: number): Promise<boolean> {
+    const requestId = this._nextRequestId++;
+    return this.request(requestId, {
+      type: "pipe_is_write_open",
+      requestId,
+      pid,
+      pipeIdx,
+    }) as Promise<boolean>;
+  }
+
+  wakeBlockedReaders(pipeIdx: number): void {
+    this.sendToWorker({ type: "wake_blocked_readers", pipeIdx });
+  }
+
+  wakeBlockedWriters(pipeIdx: number): void {
+    this.sendToWorker({ type: "wake_blocked_writers", pipeIdx });
+  }
+
   /**
    * Hand an `OffscreenCanvas` to the kernel worker as the scanout
    * target for KMS CRTC `crtcId`. Mirrors `BrowserKernel.kmsAttachCanvas`.
@@ -442,7 +551,7 @@ export class NodeKernelHost {
   async fetchInKernel(
     port: number,
     request: HttpRequest,
-    options?: { timeoutMs?: number },
+    options?: { timeoutMs?: number; maxResponseBytes?: number },
   ): Promise<HttpResponse> {
     const requestId = this._nextRequestId++;
     return this.request(requestId, {
@@ -451,6 +560,7 @@ export class NodeKernelHost {
       port,
       request,
       timeoutMs: options?.timeoutMs,
+      maxResponseBytes: options?.maxResponseBytes,
     }) as Promise<HttpResponse>;
   }
 

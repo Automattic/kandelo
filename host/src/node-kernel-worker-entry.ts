@@ -43,7 +43,11 @@ import {
   readPreparedPlatformFile,
 } from "./vfs";
 import type { MountConfig } from "./vfs/types";
-import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
+import type { MountSpec } from "./vfs/default-mounts";
+import {
+  createClosedLazyAssetFetcherFromOwnedAssets,
+  createClosedLazyAssetSourceFetcher,
+} from "./vfs/closed-lazy-assets";
 import { resolveLazyUrl } from "./vfs/lazy-url";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { findRepoRoot } from "./binary-resolver";
@@ -73,6 +77,7 @@ import {
 } from "./worker-quiescence";
 import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
 import { reapHostOwnedExitedProcess } from "./host-owned-process-reap";
+import { uninitializedKernelPipeResult } from "./kernel-pipe-transport";
 import {
   acquireForkMemoryClone,
   computeProcessMemoryLayout,
@@ -751,6 +756,7 @@ async function resolveExecutableForLaunch(
  */
 async function buildVirtualPlatformIO(
   rootfsImage: ArrayBuffer,
+  rootfsMountSpec?: MountSpec[],
   extraMounts?: Array<{
     mountPoint: string;
     hostPath: string;
@@ -760,13 +766,14 @@ async function buildVirtualPlatformIO(
   }>,
   rootfsLazyUrlBase?: InitMessage["rootfsLazyUrlBase"],
   rootfsLazyAssets?: InitMessage["rootfsLazyAssets"],
+  rootfsLazyAssetSources?: InitMessage["rootfsLazyAssetSources"],
 ): Promise<VirtualPlatformIO> {
   const bootSessionDir = mkdtempSync(join(tmpdir(), "wasm-posix-session-"));
   sessionDir = bootSessionDir;
   let specMounts: MountConfig[];
   try {
     specMounts = await resolveForNode(
-      DEFAULT_MOUNT_SPEC,
+      rootfsMountSpec ?? DEFAULT_MOUNT_SPEC,
       new Uint8Array(rootfsImage),
       bootSessionDir,
     );
@@ -807,8 +814,11 @@ async function buildVirtualPlatformIO(
     rootfsMemfs.subscribeLazyDownloads((event) => {
       post({ type: "lazy_download", event });
     });
-    rootfsMemfs.setLazyFetcher(rootfsLazyAssets === undefined
-      ? async (url) => {
+    const lazyFetcher = rootfsLazyAssets !== undefined
+      ? createClosedLazyAssetFetcherFromOwnedAssets(rootfsLazyAssets)
+      : rootfsLazyAssetSources !== undefined
+      ? createClosedLazyAssetSourceFetcher(rootfsLazyAssetSources)
+      : async (url: string) => {
         if (/^https?:\/\//.test(url)) return globalThis.fetch(url);
         const path = url.startsWith("file://")
           ? fileURLToPath(url)
@@ -819,8 +829,8 @@ async function buildVirtualPlatformIO(
           status: 200,
           headers: { "content-length": String(bytes.byteLength) },
         });
-      }
-      : createClosedLazyAssetFetcherFromOwnedAssets(rootfsLazyAssets));
+      };
+    rootfsMemfs.setLazyFetcher(lazyFetcher);
   }
   return new VirtualPlatformIO(mounts, new NodeTimeProvider());
 }
@@ -860,9 +870,11 @@ async function handleInit(msg: InitMessage) {
   const io: PlatformIO = msg.rootfsImage
     ? await buildVirtualPlatformIO(
       msg.rootfsImage,
+      msg.rootfsMountSpec,
       msg.extraMounts,
       msg.rootfsLazyUrlBase,
       msg.rootfsLazyAssets,
+      msg.rootfsLazyAssetSources,
     )
     : new NodePlatformIO();
   vfsExecIO = msg.rootfsImage ? io : null;
@@ -933,10 +945,18 @@ async function handleInit(msg: InitMessage) {
 
   kernelWorker.setOutputCallbacks({
     onStdout: (data: Uint8Array) => {
-      post({ type: "stdout", pid: 0, data: new Uint8Array(data) });
+      post({
+        type: "stdout",
+        pid: (kernelWorker as any).currentHandlePid || 0,
+        data: new Uint8Array(data),
+      });
     },
     onStderr: (data: Uint8Array) => {
-      post({ type: "stderr", pid: 0, data: new Uint8Array(data) });
+      post({
+        type: "stderr",
+        pid: (kernelWorker as any).currentHandlePid || 0,
+        data: new Uint8Array(data),
+      });
     },
   });
 
@@ -2282,6 +2302,49 @@ function handlePtyResize(pid: number, rows: number, cols: number) {
   kernelWorker.ptySetWinsize(ptyIdx, rows, cols);
 }
 
+// --- Generic host-owned kernel pipes ---
+
+function handlePipeRead(
+  msg: Extract<MainToKernelMessage, { type: "pipe_read" }>,
+) {
+  if (!initReady) {
+    respond(msg.requestId, uninitializedKernelPipeResult("read"));
+    return;
+  }
+  respond(msg.requestId, kernelWorker.readHostPipe(msg.pid, msg.pipeIdx));
+}
+
+function handlePipeWrite(
+  msg: Extract<MainToKernelMessage, { type: "pipe_write" }>,
+) {
+  if (!initReady) {
+    respond(msg.requestId, uninitializedKernelPipeResult("write"));
+    return;
+  }
+  respond(
+    msg.requestId,
+    kernelWorker.writeHostPipe(msg.pid, msg.pipeIdx, msg.data),
+  );
+}
+
+function handleInjectConnection(
+  msg: Extract<MainToKernelMessage, { type: "inject_connection" }>,
+) {
+  if (!initReady) {
+    respond(msg.requestId, uninitializedKernelPipeResult("inject"));
+    return;
+  }
+  respond(
+    msg.requestId,
+    kernelWorker.injectHostConnection(
+      msg.pid,
+      msg.fd,
+      msg.peerAddr,
+      msg.peerPort,
+    ),
+  );
+}
+
 // --- External HTTP request bridge ---
 
 async function handleHttpRequest(msg: HttpRequestMessage) {
@@ -2289,7 +2352,10 @@ async function handleHttpRequest(msg: HttpRequestMessage) {
     const response = await kernelWorker.sendHttpRequest(
       msg.port,
       msg.request,
-      { timeoutMs: msg.timeoutMs },
+      {
+        timeoutMs: msg.timeoutMs,
+        maxResponseBytes: msg.maxResponseBytes,
+      },
     );
     respond(msg.requestId, response);
   } catch (e) {
@@ -2395,6 +2461,43 @@ port.on("message", (msg: MainToKernelMessage) => {
       break;
     case "pty_resize":
       handlePtyResize(msg.pid, msg.rows, msg.cols);
+      break;
+    case "pick_listener_target":
+      respond(
+        msg.requestId,
+        initReady
+          ? kernelWorker.pickListenerTarget(msg.port)
+          : uninitializedKernelPipeResult("pick-listener"),
+      );
+      break;
+    case "inject_connection":
+      handleInjectConnection(msg);
+      break;
+    case "pipe_read":
+      handlePipeRead(msg);
+      break;
+    case "pipe_write":
+      handlePipeWrite(msg);
+      break;
+    case "pipe_close_read":
+      if (initReady) kernelWorker.closeHostPipeRead(msg.pid, msg.pipeIdx);
+      break;
+    case "pipe_close_write":
+      if (initReady) kernelWorker.closeHostPipeWrite(msg.pid, msg.pipeIdx);
+      break;
+    case "pipe_is_write_open":
+      respond(
+        msg.requestId,
+        initReady
+          ? kernelWorker.isHostPipeWriteOpen(msg.pid, msg.pipeIdx)
+          : uninitializedKernelPipeResult("is-write-open"),
+      );
+      break;
+    case "wake_blocked_readers":
+      if (initReady) kernelWorker.wakeHostPipeReaders(msg.pipeIdx);
+      break;
+    case "wake_blocked_writers":
+      if (initReady) kernelWorker.wakeHostPipeWriters(msg.pipeIdx);
       break;
     case "terminate_process":
       void handleTerminate(msg);

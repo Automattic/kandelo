@@ -7384,7 +7384,7 @@
     "libpsl": {
       "internal": {
         "bottle_cellar": ":any",
-        "bottle_checksum": "f1450e6e5c4d7d0afbc078cdcee3015885c4542bd8a6c8221bf2434f4cdf7dcb",
+        "bottle_checksum": "a7e76b26729382fed49aa584dcf7f2df252fb331aa8b9c897679bdd20713c416",
         "desc": "C library for the Public Suffix List",
         "executables": [
           "psl",
@@ -7400,8 +7400,8 @@
         "homepage": "https://rockdaboot.github.io/libpsl",
         "license": "MIT",
         "name": "libpsl",
-        "ruby_source_checksum": "bf4f965d6367f4220aa22b81b6390d68f8ccb46b0b669987a123d6b5280402e9",
-        "stable_checksum": "8fbb03054556498ba9c4cc48fcaa36a4483748c6504a65bdb9ba348f555b0e56",
+        "ruby_source_checksum": "72ff9f4c7f5b56242a0f4e043b6e966742d706616a0111894b7e26e540759ce8",
+        "stable_checksum": "f2ea0e59bffb36597a872f6ef89893ffa4c30196c87eff7aeb2c47e4e8c98133",
         "stable_dependencies": [
           "libidn2",
           "libunistring",
@@ -7410,13 +7410,13 @@
           }
         ],
         "stable_url_args": [
-          "https://github.com/rockdaboot/libpsl/releases/download/0.23.1/libpsl-0.23.1.tar.gz"
+          "https://github.com/rockdaboot/libpsl/releases/download/0.23.2/libpsl-0.23.2.tar.gz"
         ],
-        "stable_version": "0.23.1"
+        "stable_version": "0.23.2"
       },
       "public": {
         "bottle_cellar": ":any",
-        "bottle_checksum": "f1450e6e5c4d7d0afbc078cdcee3015885c4542bd8a6c8221bf2434f4cdf7dcb",
+        "bottle_checksum": "a7e76b26729382fed49aa584dcf7f2df252fb331aa8b9c897679bdd20713c416",
         "desc": "C library for the Public Suffix List",
         "executables": [
           "psl",
@@ -7432,8 +7432,8 @@
         "homepage": "https://rockdaboot.github.io/libpsl",
         "license": "MIT",
         "name": "libpsl",
-        "ruby_source_checksum": "bf4f965d6367f4220aa22b81b6390d68f8ccb46b0b669987a123d6b5280402e9",
-        "stable_checksum": "8fbb03054556498ba9c4cc48fcaa36a4483748c6504a65bdb9ba348f555b0e56",
+        "ruby_source_checksum": "72ff9f4c7f5b56242a0f4e043b6e966742d706616a0111894b7e26e540759ce8",
+        "stable_checksum": "f2ea0e59bffb36597a872f6ef89893ffa4c30196c87eff7aeb2c47e4e8c98133",
         "stable_dependencies": [
           "libidn2",
           "libunistring",
@@ -7442,9 +7442,9 @@
           }
         ],
         "stable_url_args": [
-          "https://github.com/rockdaboot/libpsl/releases/download/0.23.1/libpsl-0.23.1.tar.gz"
+          "https://github.com/rockdaboot/libpsl/releases/download/0.23.2/libpsl-0.23.2.tar.gz"
         ],
-        "stable_version": "0.23.1"
+        "stable_version": "0.23.2"
       }
     },
     "libsm": {

@@ -4573,6 +4573,9 @@ def check_publisher(workflow)
   bottle_verifier = File.read(
     File.join(REPO_ROOT, "scripts/homebrew-verify-poured-bottle.sh")
   )
+  candidate_formula_stager = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-stage-candidate-formulae.sh")
+  )
   check(
     bottle_verifier.scan("homebrew_local_tap_clone_url").length == 2 &&
       bottle_verifier.include?(
@@ -5349,14 +5352,14 @@ def check_publisher(workflow)
   clean_clone_index = bottle_verifier.index(
     'git -C "$TAPPED_TAP_ROOT" rev-parse HEAD'
   )
+  stage_formula_args_index = bottle_verifier.index(
+    "stage_formula_args=("
+  )
+  stage_dependency_args_index = bottle_verifier.index(
+    'stage_formula_args+=(--dependency-formula "$dependency")'
+  )
   materialize_formula_index = bottle_verifier.index(
-    'cp -- "$TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE"'
-  )
-  selected_formula_index = bottle_verifier.index(
-    'mapfile -t selected_tap_changes'
-  )
-  selected_formula_compare_index = bottle_verifier.index(
-    'cmp -s "$TAPPED_TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE"'
+    'bash "$KANDELO_ROOT/scripts/homebrew-stage-candidate-formulae.sh"'
   )
   verifier_primary_unset_index = bottle_verifier.index(
     'unset HOMEBREW_KANDELO_PRIMARY_TAP_ROOT'
@@ -5391,10 +5394,13 @@ def check_publisher(workflow)
         '[ ! -L "$TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" ]'
       ) &&
       bottle_verifier.include?(
-        "case \"${#source_tap_changes[@]}\" in\n  0) ;;\n  1)"
+        'declare -A ALLOWED_STAGED_FORMULAE=(["$FORMULA"]=1)'
       ) &&
       bottle_verifier.include?(
-        '"${source_tap_changes[0]}" = " M $RECONSTRUCTED_FORMULA_RELATIVE"'
+        '[[ "$change" =~ ^\ M\ Formula/([a-z0-9][a-z0-9._-]*)\.rb$ ]]'
+      ) &&
+      bottle_verifier.include?(
+        '[ -n "${ALLOWED_STAGED_FORMULAE[${BASH_REMATCH[1]}]:-}" ]'
       ) &&
       bottle_verifier.include?('[ "$TAPPED_TAP_ROOT" != "$TAP_ROOT" ]') &&
       bottle_verifier.include?(
@@ -5404,32 +5410,74 @@ def check_publisher(workflow)
         '[ ! -L "$TAPPED_TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" ]'
       ) &&
       bottle_verifier.include?(
-        "case \"${#selected_tap_changes[@]}\" in\n  0) ;;\n  1)"
+        'stage_formula_args+=(--dependency-formula "$dependency")'
       ) &&
       bottle_verifier.include?(
-        '"${selected_tap_changes[0]}" = " M $RECONSTRUCTED_FORMULA_RELATIVE"'
-      ) &&
-      bottle_verifier.include?(
-        'cmp -s "$TAPPED_TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE"'
+        'bash "$KANDELO_ROOT/scripts/homebrew-stage-candidate-formulae.sh"'
       ) &&
       !bottle_verifier.include?(' -ef "$TAP_ROOT/Formula/$FORMULA.rb"') &&
       reconstructed_source_index && tap_clone_index && clean_clone_index &&
-      materialize_formula_index && selected_formula_index &&
-      selected_formula_compare_index && verifier_primary_unset_index &&
+      stage_formula_args_index && stage_dependency_args_index &&
+      materialize_formula_index && verifier_primary_unset_index &&
       verifier_launcher_prepare_index && verifier_primary_authority_index &&
       primary_test_prune_index &&
       verifier_primary_unset_index < verifier_launcher_prepare_index &&
       reconstructed_source_index < tap_clone_index &&
       tap_clone_index < clean_clone_index &&
-      clean_clone_index < materialize_formula_index &&
-      materialize_formula_index < selected_formula_index &&
-      selected_formula_index < selected_formula_compare_index &&
-      selected_formula_compare_index < verifier_primary_authority_index &&
+      clean_clone_index < stage_formula_args_index &&
+      stage_formula_args_index < stage_dependency_args_index &&
+      stage_dependency_args_index < materialize_formula_index &&
+      materialize_formula_index < verifier_primary_authority_index &&
       verifier_primary_authority_index < primary_test_prune_index &&
       verifier_isolate_after_prune_index && verifier_deps_after_prune_index &&
       primary_test_prune_index < verifier_isolate_after_prune_index &&
       primary_test_prune_index < verifier_deps_after_prune_index,
-    "bottle verifier does not materialize only the reconstructed Formula into the planned Homebrew tap clone"
+    "bottle verifier does not materialize only the declared reconstructed Formula closure into the planned Homebrew tap clone"
+  )
+  stager_source_changes_index = candidate_formula_stager.index(
+    "mapfile -t source_changes"
+  )
+  stager_copy_index = candidate_formula_stager.index(
+    'cp -- "$SOURCE_TAP/$relative" "$TARGET_TAP/$relative"'
+  )
+  stager_target_changes_index = candidate_formula_stager.index(
+    "mapfile -t target_changes"
+  )
+  stager_compare_index = candidate_formula_stager.index(
+    'cmp -s "$SOURCE_TAP/Formula/$formula.rb"'
+  )
+  check(
+    candidate_formula_stager.include?(
+      '[[ "$dependency" =~ ^[a-z0-9][a-z0-9._-]*$ ]]'
+    ) &&
+      candidate_formula_stager.include?('[ "$dependency" != "$TARGET_FORMULA" ]') &&
+      candidate_formula_stager.include?('[[ "$dependency" > "$previous" ]]') &&
+      candidate_formula_stager.include?(
+        '[ -z "$(git -C "$TARGET_TAP" status --short --untracked-files=all)" ]'
+      ) &&
+      candidate_formula_stager.include?('[ "$TARGET_HEAD" = "$SOURCE_HEAD" ]') &&
+      candidate_formula_stager.include?(
+        'declare -A ALLOWED_FORMULAE=(["$TARGET_FORMULA"]=1)'
+      ) &&
+      candidate_formula_stager.include?(
+        '[[ "$change" =~ ^\ M\ Formula/([a-z0-9][a-z0-9._-]*)\.rb$ ]]'
+      ) &&
+      candidate_formula_stager.include?(
+        '[ -n "${ALLOWED_FORMULAE[${BASH_REMATCH[1]}]:-}" ]'
+      ) &&
+      candidate_formula_stager.include?(
+        '[ -f "$SOURCE_TAP/$relative" ] && [ ! -L "$SOURCE_TAP/$relative" ]'
+      ) &&
+      candidate_formula_stager.include?(
+        '[ -f "$TARGET_TAP/$relative" ] && [ ! -L "$TARGET_TAP/$relative" ]'
+      ) &&
+      candidate_formula_stager.scan('cp --').length == 1 &&
+      stager_source_changes_index && stager_copy_index &&
+      stager_target_changes_index && stager_compare_index &&
+      stager_source_changes_index < stager_copy_index &&
+      stager_copy_index < stager_target_changes_index &&
+      stager_target_changes_index < stager_compare_index,
+    "candidate Formula stager does not enforce one exact declared source closure"
   )
   [
     "diff --git a/Library/Homebrew/build.rb b/Library/Homebrew/build.rb",

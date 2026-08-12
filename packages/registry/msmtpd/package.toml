@@ -8,7 +8,9 @@ depends_on = []
 # sessions and pipes each message to a command; the WordPress VFS uses that
 # hook to store raw .eml files under /var/mail/smtp-capture.
 [source]
-url = "https://marlam.de/msmtp/releases/msmtp-1.8.32.tar.xz"
+# The upstream origin is intermittently unreachable from hosted builders.
+# Debian's timestamped snapshot preserves the byte-identical release archive.
+url = "https://snapshot.debian.org/archive/debian/20251129T142942Z/pool/main/m/msmtp/msmtp_1.8.32.orig.tar.xz"
 sha256 = "20cd58b58dd007acf7b937fa1a1e21f3afb3e9ef5bbcfb8b4f5650deadc64db4"
 
 [license]

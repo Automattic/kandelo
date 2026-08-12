@@ -1,0 +1,731 @@
+name: Kandelo ABI staging protected merge evidence
+
+on:
+  pull_request_target:
+    types: [labeled]
+
+permissions: {}
+
+concurrency:
+  group: abi-staging-protected-merge-evidence-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  capture-current-subject:
+    if: ${{ github.event.label.name == 'ready-to-ship' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      exact-head: ${{ steps.capture.outputs.exact-head }}
+      exact-ref: ${{ steps.capture.outputs.exact-ref }}
+      protected-sha: ${{ steps.capture.outputs.protected-sha }}
+      pull-request: ${{ steps.capture.outputs.pull-request }}
+    steps:
+      - name: Resolve current protected subject
+        id: capture
+        env:
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          [[ ${{ github.event.repository.default_branch }} == main ]]
+          protected_sha=$(gh api \
+            "/repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          pr="$RUNNER_TEMP/current-pr.json"
+          gh api "/repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" >"$pr"
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg head "$EVENT_HEAD" \
+            --argjson number "$PR_NUMBER" '
+              .state == "open" and
+              .number == $number and
+              .base.repo.full_name == $repository and
+              .base.ref == "main" and
+              .head.repo.full_name == $repository and
+              .head.sha == $head and
+              ([.labels[].name] | index("ready-to-ship") != null)
+            ' "$pr" >/dev/null
+          exact_ref=$(jq -r '.head.ref' "$pr")
+          [[ $protected_sha =~ ^[0-9a-f]{40}$ ]]
+          [[ $exact_ref =~ ^[A-Za-z0-9._/-]{1,255}$ ]]
+          {
+            printf 'protected-sha=%s\n' "$protected_sha"
+            printf 'exact-head=%s\n' "$EVENT_HEAD"
+            printf 'exact-ref=%s\n' "$exact_ref"
+            printf 'pull-request=%s\n' "$PR_NUMBER"
+          } >>"$GITHUB_OUTPUT"
+
+  abi-staging-exact-head-structure:
+    needs: [capture-current-subject]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      PROTECTED_SHA: ${{ needs.capture-current-subject.outputs.protected-sha }}
+      PR_HEAD_SHA: ${{ needs.capture-current-subject.outputs.exact-head }}
+    steps:
+      - name: Checkout captured protected ABI authority
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.capture-current-subject.outputs.protected-sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: abi-staging-authority
+
+      - name: Checkout exact PR head for structural ABI check
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.capture-current-subject.outputs.exact-head }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: abi-staging-exact-head
+
+      - name: Set up declared exact-head build tools
+        uses: ./abi-staging-authority/.github/actions/setup-nix
+
+      - name: Run uncredentialed exact-head structural ABI check
+        run: |
+          set -euo pipefail
+          authority="$GITHUB_WORKSPACE/abi-staging-authority"
+          head_root="$GITHUB_WORKSPACE/abi-staging-exact-head"
+          evidence="$RUNNER_TEMP/abi-staging-merge-structure"
+          mkdir -p "$evidence"
+          actual_head=$(git -C "$head_root" rev-parse HEAD)
+          actual_tree=$(git -C "$head_root" rev-parse 'HEAD^{tree}')
+          [[ $actual_head == "$PR_HEAD_SHA" ]]
+          env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_RUNTIME_TOKEN \
+            -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL \
+            git -C "$head_root" fetch --no-tags origin "$PROTECTED_SHA"
+
+          write_failure() {
+            local code=$1
+            jq -cnS \
+              --arg code "$code" \
+              --arg commit "$actual_head" \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg tree "$actual_tree" '
+                {
+                  code: $code,
+                  kind: "kandelo-structural-abi-failure",
+                  schema: 1,
+                  source: {commit: $commit, repository: $repository, tree: $tree}
+                }
+              ' >"$evidence/structural-failure.json"
+          }
+
+          previous_abi=$(sed -nE \
+            's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
+            "$authority/crates/shared/src/lib.rs")
+          if [[ ! $previous_abi =~ ^[1-9][0-9]*$ ]] ||
+             [[ ! -f $head_root/crates/shared/src/lib.rs ]] ||
+             [[ -L $head_root/crates/shared/src/lib.rs ]] ||
+             [[ ! -f $head_root/abi/snapshot.json ]] ||
+             [[ -L $head_root/abi/snapshot.json ]] ||
+             [[ ! -f $head_root/scripts/check-abi-version.sh ]] ||
+             [[ -L $head_root/scripts/check-abi-version.sh ]]
+          then
+            write_failure malformed_exact_head
+            exit 0
+          fi
+          target_abi=$(sed -nE \
+            's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
+            "$head_root/crates/shared/src/lib.rs")
+          snapshot_bytes=$(wc -c <"$head_root/abi/snapshot.json" | tr -d ' ')
+          check_bytes=$(wc -c <"$head_root/scripts/check-abi-version.sh" | tr -d ' ')
+          if [[ ! $target_abi =~ ^[1-9][0-9]*$ ]] ||
+             ((snapshot_bytes < 1 || snapshot_bytes > 4194304)) ||
+             ((check_bytes < 1 || check_bytes > 4194304))
+          then
+            write_failure malformed_exact_head
+            exit 0
+          fi
+          snapshot_sha=$(shasum -a 256 "$head_root/abi/snapshot.json" | awk '{print $1}')
+          check_sha=$(shasum -a 256 "$head_root/scripts/check-abi-version.sh" | awk '{print $1}')
+
+          set +e
+          (
+            cd "$head_root"
+            candidate_home="$RUNNER_TEMP/abi-staging-merge-candidate-home"
+            mkdir -p "$candidate_home/tmp"
+            chmod 700 "$candidate_home" "$candidate_home/tmp"
+            nix_bin=$(command -v nix)
+            bash_bin=$(command -v bash)
+            env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_RUNTIME_TOKEN \
+              -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL \
+              env -i \
+                HOME="$candidate_home" \
+                TMPDIR="$candidate_home/tmp" \
+                CI=true \
+                LOGNAME=kandelo \
+                USER=kandelo \
+                KANDELO_NIX_BIN="$nix_bin" \
+                PATH=/usr/bin:/bin \
+                "$bash_bin" scripts/dev-shell.sh \
+                  env ABI_CHECK_BASE_REF="$PROTECTED_SHA" \
+                  bash scripts/check-abi-version.sh
+          ) 2>&1 | head -c 1048576 >"$evidence/check.log"
+          check_status=${PIPESTATUS[0]}
+          set -e
+          if ((check_status == 0)); then
+            if ((target_abi == previous_abi)); then
+              outcome=compatible
+            elif ((target_abi == previous_abi + 1)); then
+              outcome=bumped-with-snapshot
+            else
+              outcome=invalid
+            fi
+          elif grep -Fq \
+            'backward-incompatible way but ABI_VERSION was not bumped' \
+            "$evidence/check.log"
+          then
+            outcome=changed-without-bump
+          else
+            outcome=invalid
+          fi
+          jq -cnS \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg commit "$actual_head" \
+            --arg tree "$actual_tree" \
+            --arg snapshot "$snapshot_sha" \
+            --arg check "$check_sha" \
+            --arg outcome "$outcome" \
+            --argjson previous "$previous_abi" \
+            --argjson target "$target_abi" '
+              {
+                check_command_sha256: $check,
+                kind: "kandelo-structural-abi-report",
+                observed_previous_abi: $previous,
+                outcome: $outcome,
+                schema: 1,
+                snapshot_file_sha256: $snapshot,
+                snapshot_sha256: $snapshot,
+                source: {commit: $commit, repository: $repository, tree: $tree},
+                target_abi: $target
+              }
+            ' >"$evidence/structural-report.json"
+
+      - name: Transfer exact-head structural ABI evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: abi-staging-exact-head-structure-${{ github.run_id }}-${{ needs.capture-current-subject.outputs.pull-request }}-${{ needs.capture-current-subject.outputs.exact-head }}
+          path: |
+            ${{ runner.temp }}/abi-staging-merge-structure/structural-report.json
+            ${{ runner.temp }}/abi-staging-merge-structure/structural-failure.json
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          overwrite: false
+
+  validate-current-evidence:
+    needs: [capture-current-subject, abi-staging-exact-head-structure]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+    env:
+      PR_HEAD_REF: ${{ needs.capture-current-subject.outputs.exact-ref }}
+      PR_HEAD_SHA: ${{ needs.capture-current-subject.outputs.exact-head }}
+      PR_NUMBER: ${{ needs.capture-current-subject.outputs.pull-request }}
+      PROTECTED_SHA: ${{ needs.capture-current-subject.outputs.protected-sha }}
+    steps:
+      - name: Checkout captured protected ABI gate authority
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.capture-current-subject.outputs.protected-sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: abi-staging-authority
+
+      - name: Checkout inert exact PR head for ABI gate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.capture-current-subject.outputs.exact-head }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: abi-staging-exact-head
+
+      - name: Set up declared protected build tools
+        uses: ./abi-staging-authority/.github/actions/setup-nix
+
+      - name: Download exact-head structural ABI evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: abi-staging-exact-head-structure-${{ github.run_id }}-${{ needs.capture-current-subject.outputs.pull-request }}-${{ needs.capture-current-subject.outputs.exact-head }}
+          path: ${{ runner.temp }}/abi-staging-merge-structure
+          merge-multiple: true
+
+      - name: Validate current request and locate protected Check provenance
+        id: provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          authority="$GITHUB_WORKSPACE/abi-staging-authority"
+          exact_head="$GITHUB_WORKSPACE/abi-staging-exact-head"
+          evidence="$RUNNER_TEMP/abi-staging-merge-structure"
+          derived="$RUNNER_TEMP/abi-staging-merge-gate"
+          state="$derived/state.json"
+          mkdir -p "$derived"
+
+          mode=$(python3 - \
+            "$authority/abi/staging/required-check-activation.toml" <<'PY'
+          import pathlib, sys, tomllib
+
+          path = pathlib.Path(sys.argv[1])
+          raw = path.read_bytes()
+          if not raw or len(raw) > 65536:
+              raise SystemExit("required Check activation has an invalid byte length")
+          document = tomllib.loads(raw.decode("utf-8"))
+          if set(document) != {"schema", "kind", "mode"}:
+              raise SystemExit("required Check activation has an invalid closed shape")
+          if document["schema"] != 1 or document["kind"] != \
+                  "kandelo-abi-staging-required-check-activation":
+              raise SystemExit("required Check activation has unsupported identity")
+          if document["mode"] not in {"observe", "enforce"}:
+              raise SystemExit("required Check activation has unsupported mode")
+          print(document["mode"])
+          PY
+          )
+          [[ $mode == "observe" || $mode == "enforce" ]]
+
+          write_state() {
+            local status=$1 message=$2
+            jq -cnS \
+              --arg message "$message" \
+              --arg mode "$mode" \
+              --arg status "$status" \
+              '{message: $message, mode: $mode, status: $status}' >"$state"
+            printf 'download=false\n' >>"$GITHUB_OUTPUT"
+          }
+
+          actual_head=$(git -C "$exact_head" rev-parse HEAD)
+          actual_tree=$(git -C "$exact_head" rev-parse 'HEAD^{tree}')
+          protected_tree=$(git -C "$authority" rev-parse 'HEAD^{tree}')
+          [[ $actual_head == "$PR_HEAD_SHA" ]]
+          [[ $(git -C "$authority" rev-parse HEAD) == "$PROTECTED_SHA" ]]
+          env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_RUNTIME_TOKEN \
+            git -C "$exact_head" fetch --no-tags origin "$PROTECTED_SHA"
+
+          host_target=$(cd "$authority" && bash scripts/dev-shell.sh \
+            bash -c 'rustc -vV | awk "/^host/ {print \$2}"')
+          (
+            cd "$authority"
+            bash scripts/dev-shell.sh cargo build -p xtask --target "$host_target"
+          )
+          authority_xtask="$authority/target/$host_target/debug/xtask"
+          (
+            cd "$authority"
+            "$authority_xtask" abi-staging request-policy check \
+              --source abi/staging/request-policy.toml \
+              --generated abi/staging/request-policy.generated.json
+            "$authority_xtask" abi-staging guard-codes check \
+              --source abi/staging/guard-codes.toml \
+              --generated abi/staging/guard-codes.generated.json
+          )
+          previous_abi=$(sed -nE \
+            's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
+            "$authority/crates/shared/src/lib.rs")
+          [[ $previous_abi =~ ^[1-9][0-9]*$ ]]
+
+          changed_paths="$derived/changed-paths.bin"
+          git -C "$exact_head" diff --name-only -z \
+            "$PROTECTED_SHA" "$PR_HEAD_SHA" >"$changed_paths"
+          "$authority_xtask" abi-staging request classify \
+            --changed-paths "$changed_paths" \
+            --out "$derived/change-classes.json"
+          if [[ $(jq 'length' "$derived/change-classes.json") -eq 0 ]]; then
+            write_state not-applicable \
+              "exact PR head is not applicable to generic ABI staging"
+            exit 0
+          fi
+
+          entry_count=$(find "$evidence" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')
+          if [[ $entry_count != 1 ]] ||
+             [[ ! -f $evidence/structural-report.json ]] ||
+             [[ -L $evidence/structural-report.json ]] ||
+             [[ -e $evidence/structural-failure.json ]]
+          then
+            write_state blocked \
+              "exact-head structural ABI evidence is unavailable or invalid"
+            exit 0
+          fi
+          report_bytes=$(wc -c <"$evidence/structural-report.json")
+          if ((report_bytes < 1 || report_bytes > 4194304)); then
+            write_state blocked "exact-head structural ABI report is oversized"
+            exit 0
+          fi
+
+          jq -cnS \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg head "$PR_HEAD_SHA" \
+            --arg tree "$actual_tree" \
+            --arg ref_hint "$PR_HEAD_REF" \
+            --argjson number "$PR_NUMBER" '
+              {
+                base_commit: null,
+                base_tree: null,
+                exact_head: $head,
+                exact_head_repository: $repository,
+                exact_tree: $tree,
+                number: $number,
+                ref_hint: $ref_hint,
+                repository: $repository
+              }
+            ' >"$derived/pull-request.json"
+
+          policy_sha=$(shasum -a 256 \
+            "$authority/abi/staging/request-policy.generated.json" | awk '{print $1}')
+          guard_sha=$(shasum -a 256 \
+            "$authority/abi/staging/guard-codes.generated.json" | awk '{print $1}')
+          guard_version=$(jq -r '.version' \
+            "$authority/abi/staging/guard-codes.generated.json")
+          python3 - "$authority" "$PROTECTED_SHA" "$protected_tree" \
+            "$policy_sha" "$guard_version" "$guard_sha" \
+            "$derived/protected-context.json" <<'PY'
+          import json, pathlib, sys, tomllib
+
+          root, commit, tree, policy_sha, guard_version, guard_sha, output = sys.argv[1:]
+          policy = tomllib.loads(
+              (pathlib.Path(root) / "abi/staging/request-policy.toml").read_text()
+          )
+          context = {
+              "guard_registry_sha256": guard_sha,
+              "guard_registry_version": int(guard_version),
+              "issuer_workflow_ref": (
+                  f"{policy['issuer_repository']}/{policy['issuer_workflow']}@{commit}"
+              ),
+              "policy": policy,
+              "policy_sha256": policy_sha,
+              "protected_commit": commit,
+              "protected_repository": policy["issuer_repository"],
+              "protected_tree": tree,
+          }
+          pathlib.Path(output).write_text(
+              json.dumps(context, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+              + "\n"
+          )
+          PY
+
+          if ! "$authority_xtask" abi-staging structural-report validate \
+               --exact-head-root "$exact_head" \
+               --previous-abi "$previous_abi" \
+               --pull-request "$derived/pull-request.json" \
+               --report "$evidence/structural-report.json" ||
+             ! "$authority_xtask" abi-staging request derive \
+               --exact-head-root "$exact_head" \
+               --previous-abi "$previous_abi" \
+               --pull-request "$derived/pull-request.json" \
+               --protected-context "$derived/protected-context.json" \
+               --structural-report "$evidence/structural-report.json" \
+               --change-classes "$derived/change-classes.json" \
+               --out "$derived/request.json"
+          then
+            write_state blocked \
+              "exact-head structure cannot derive the current protected request"
+            exit 0
+          fi
+
+          request_digest=$(shasum -a 256 "$derived/request.json" | awk '{print $1}')
+          EXPECTED_EXTERNAL_ID="abi-staging:$PR_NUMBER:$PR_HEAD_SHA:$request_digest"
+          check_pages="$derived/check-runs.json"
+          if ! gh api --paginate --slurp \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/$GITHUB_REPOSITORY/commits/$PR_HEAD_SHA/check-runs?check_name=Kandelo%20PR%20Check&per_page=100&filter=all" \
+            >"$check_pages"
+          then
+            write_state blocked "exact-head Check inventory could not be read"
+            exit 0
+          fi
+          if ! jq -e '
+            type == "array" and length <= 64 and all(.[];
+              type == "object" and
+              (.check_runs | type == "array" and length <= 100)
+            ) and
+            ([.[].check_runs[]] | length <= 4096) and
+            all(.[].check_runs[];
+              (.id | type == "number" and . >= 1 and floor == .) and
+              (.name | type == "string") and
+              (.head_sha | type == "string") and
+              ((.external_id == null) or (.external_id | type == "string")) and
+              ((.details_url == null) or (.details_url | type == "string")) and
+              (.status | type == "string") and
+              ((.conclusion == null) or (.conclusion | type == "string")) and
+              (.app | type == "object") and
+              (.app.id | type == "number" and . >= 1 and floor == .) and
+              (.app.slug | type == "string")
+            )
+          ' "$check_pages" >/dev/null
+          then
+            write_state blocked "exact-head Check inventory is malformed or oversized"
+            exit 0
+          fi
+
+          matches="$derived/matching-checks.json"
+          jq -c \
+            --arg name 'Kandelo PR Check' \
+            --arg head "$PR_HEAD_SHA" \
+            --arg external "$EXPECTED_EXTERNAL_ID" '
+              [.[].check_runs[] |
+                select(
+                  .name == $name and
+                  .head_sha == $head and
+                  .external_id == $external
+                )
+              ]
+            ' "$check_pages" >"$matches"
+          if ! jq -e '
+            length == 1 and
+            .[0].status == "completed" and
+            .[0].conclusion == "success" and
+            .[0].app.slug == "github-actions"
+          ' "$matches" >/dev/null
+          then
+            write_state blocked \
+              "current exact-head Check is missing, duplicate, incomplete, or unsuccessful"
+            exit 0
+          fi
+
+          details_url=$(jq -r '.[0].details_url' "$matches")
+          details_prefix="https://github.com/$GITHUB_REPOSITORY/actions/runs/"
+          if [[ $details_url != "$details_prefix"* ]]; then
+            write_state blocked "exact-head Check has untrusted publisher details"
+            exit 0
+          fi
+          run_id=${details_url#"$details_prefix"}
+          if [[ ! $run_id =~ ^[1-9][0-9]*$ ]] ||
+             [[ $details_url != "$details_prefix$run_id" ]]
+          then
+            write_state blocked "exact-head Check publisher run URL is malformed"
+            exit 0
+          fi
+          check_id=$(jq -r '.[0].id' "$matches")
+
+          run="$derived/protected-run.json"
+          gh api -H 'Accept: application/vnd.github+json' \
+            "/repos/$GITHUB_REPOSITORY/actions/runs/$run_id" >"$run"
+          if ! jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg protected "$PROTECTED_SHA" \
+            --arg details "$details_url" '
+              .id >= 1 and
+              .name == "Kandelo ABI staging PR Check" and
+              .path == ".github/workflows/abi-staging-pr-check.yml@main" and
+              (.event | IN("pull_request_target", "schedule", "workflow_dispatch")) and
+              .head_branch == "main" and
+              .head_sha == $protected and
+              .head_repository.full_name == $repository and
+              .repository.full_name == $repository and
+              .status == "completed" and
+              (.conclusion | IN("success", "failure")) and
+              .html_url == $details
+            ' "$run" >/dev/null
+          then
+            write_state blocked "exact-head Check is not tied to a protected workflow run"
+            exit 0
+          fi
+
+          artifact_name="abi-staging-pr-check-$run_id-$PR_NUMBER-$PR_HEAD_SHA"
+          artifact_pages="$derived/protected-artifacts.json"
+          gh api --paginate --slurp \
+            "/repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts?name=$artifact_name&per_page=100" \
+            >"$artifact_pages"
+          if ! jq -e \
+            --arg name "$artifact_name" \
+            --arg protected "$PROTECTED_SHA" \
+            --argjson run_id "$run_id" '
+            type == "array" and length <= 64 and
+            all(.[];
+              type == "object" and
+              (.total_count | type == "number" and . >= 0 and floor == .) and
+              (.artifacts | type == "array" and length <= 100)
+            ) and
+            ([.[] | .artifacts[]] | length == 1) and
+            all(.[] | .artifacts[];
+              .name == $name and .expired == false and
+              (.id | type == "number" and . >= 1 and floor == .) and
+              (.size_in_bytes | type == "number" and . >= 1 and . <= 83886080) and
+              (.digest | type == "string" and test("^sha256:[0-9a-f]{64}$")) and
+              .workflow_run.id == $run_id and
+              .workflow_run.head_branch == "main" and
+              .workflow_run.head_sha == $protected
+            )
+          ' "$artifact_pages" >/dev/null
+          then
+            write_state blocked "protected Check projection artifact is unavailable"
+            exit 0
+          fi
+          artifact_row=$(jq -c '[.[].artifacts[]][0]' "$artifact_pages")
+          artifact_id=$(jq -r '.id' <<<"$artifact_row")
+          artifact_digest=$(jq -r '.digest' <<<"$artifact_row")
+          jq -cnS \
+            --arg artifact_digest "$artifact_digest" \
+            --arg details_url "$details_url" \
+            --arg expected_external_id "$EXPECTED_EXTERNAL_ID" \
+            --arg message "protected Check projection is ready for revalidation" \
+            --arg mode "$mode" \
+            --arg status provenance \
+            --argjson check_id "$check_id" \
+            --argjson run_id "$run_id" '
+              {
+                artifact_digest: $artifact_digest,
+                check_id: $check_id,
+                details_url: $details_url,
+                expected_external_id: $expected_external_id,
+                message: $message,
+                mode: $mode,
+                run_id: $run_id,
+                status: $status
+              }
+            ' >"$state"
+          {
+            printf 'artifact-id=%s\n' "$artifact_id"
+            printf 'download=true\n'
+            printf 'run-id=%s\n' "$run_id"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Download protected Check projection
+        if: ${{ steps.provenance.outputs.download == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.provenance.outputs.artifact-id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.provenance.outputs.run-id }}
+          path: ${{ runner.temp }}/abi-staging-protected-projection
+          merge-multiple: true
+
+      - name: Reproject and validate protected Check provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          authority="$GITHUB_WORKSPACE/abi-staging-authority"
+          derived="$RUNNER_TEMP/abi-staging-merge-gate"
+          state="$derived/state.json"
+          [[ -f $state && ! -L $state ]]
+          mode=$(jq -r '.mode' "$state")
+          status=$(jq -r '.status' "$state")
+          message=$(jq -r '.message' "$state")
+
+          staging_problem() {
+            local problem=$1
+            if [[ $mode == observe ]]; then
+              echo "::notice::ABI staging observe mode: $problem"
+              return 0
+            fi
+            if [[ $mode == enforce ]]; then
+              echo "::error::ABI staging enforce mode: $problem" >&2
+              return 1
+            fi
+            echo "::error::unsupported ABI staging activation mode: $mode" >&2
+            return 1
+          }
+
+          if [[ $status == not-applicable ]]; then
+            echo "::notice::$message"
+            exit 0
+          fi
+          if [[ $status == blocked ]]; then
+            staging_problem "$message"
+            exit $?
+          fi
+          if [[ $status != provenance ]]; then
+            staging_problem "protected merge-evidence state is invalid"
+            exit $?
+          fi
+
+          projection_root="$RUNNER_TEMP/abi-staging-protected-projection"
+          input="$projection_root/projection-input.json"
+          supplied="$projection_root/projection.json"
+          if [[ ! -f $input || -L $input || ! -f $supplied || -L $supplied ]]; then
+            staging_problem "protected Check projection files are unavailable"
+            exit $?
+          fi
+          entry_count=$(find "$projection_root" -mindepth 1 -maxdepth 1 \
+            | wc -l | tr -d ' ')
+          input_bytes=$(wc -c <"$input")
+          supplied_bytes=$(wc -c <"$supplied")
+          if [[ $entry_count != 2 ]] ||
+             ((input_bytes < 1 || input_bytes > 67108864)) ||
+             ((supplied_bytes < 1 || supplied_bytes > 16777216))
+          then
+            staging_problem "protected Check projection is malformed or oversized"
+            exit $?
+          fi
+
+          host_target=$(cd "$authority" && bash scripts/dev-shell.sh \
+            bash -c 'rustc -vV | awk "/^host/ {print \$2}"')
+          authority_xtask="$authority/target/$host_target/debug/xtask"
+          if [[ ! -x $authority_xtask ]]; then
+            (
+              cd "$authority"
+              bash scripts/dev-shell.sh cargo build -p xtask --target "$host_target"
+            )
+          fi
+          if ! "$authority_xtask" abi-staging check-projection project \
+               --input "$input" \
+               --activation "$authority/abi/staging/required-check-activation.toml" \
+               --out "$derived/reprojected.json" ||
+             ! cmp -s "$supplied" "$derived/reprojected.json"
+          then
+            staging_problem "protected Check projection failed current revalidation"
+            exit $?
+          fi
+          expected_external_id=$(jq -r '.expected_external_id' "$state")
+          if ! jq -e \
+            --arg head "$PR_HEAD_SHA" \
+            --arg external "$expected_external_id" '
+              .name == "Kandelo PR Check" and
+              .head_sha == $head and
+              .external_id == $external and
+              .published_conclusion == "success" and
+              .computed_conclusion == "success"
+            ' "$derived/reprojected.json" >/dev/null
+          then
+            staging_problem "protected Check projection is not exact current success"
+            exit $?
+          fi
+
+          check_id=$(jq -r '.check_id' "$state")
+          details_url=$(jq -r '.details_url' "$state")
+          current_check="$derived/current-check.json"
+          gh api -H 'Accept: application/vnd.github+json' \
+            "/repos/$GITHUB_REPOSITORY/check-runs/$check_id" >"$current_check"
+          if ! jq -e \
+            --arg head "$PR_HEAD_SHA" \
+            --arg external "$expected_external_id" \
+            --arg details "$details_url" '
+              .name == "Kandelo PR Check" and
+              .head_sha == $head and
+              .external_id == $external and
+              .details_url == $details and
+              .status == "completed" and
+              .conclusion == "success" and
+              .app.slug == "github-actions"
+            ' "$current_check" >/dev/null
+          then
+            staging_problem "exact-head Check changed during protected validation"
+            exit $?
+          fi
+
+          current_pr="$derived/current-pr.json"
+          gh api "/repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" >"$current_pr"
+          if ! jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg head "$PR_HEAD_SHA" '
+              .state == "open" and
+              .head.sha == $head and
+              .head.repo.full_name == $repository and
+              ([.labels[].name] | index("ready-to-ship") != null)
+            ' "$current_pr" >/dev/null
+          then
+            staging_problem "pull-request head or merge-preparation label changed"
+            exit $?
+          fi
+          echo "Current exact-head Kandelo PR Check succeeded: $expected_external_id"

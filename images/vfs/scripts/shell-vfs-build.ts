@@ -254,6 +254,19 @@ function shellDerivedImageMetadata(
   kernelAbi: number,
   maxByteLength: number,
 ): VfsImageMetadata {
+  const abiSnapshotSha256 = inherited.abiSnapshotSha256;
+  if (
+    abiSnapshotSha256 !== undefined &&
+    (
+      typeof abiSnapshotSha256 !== "string" ||
+      !/^[0-9a-f]{64}$/.test(abiSnapshotSha256)
+    )
+  ) {
+    throw new Error("shell-derived VFS has an invalid ABI snapshot binding");
+  }
+  const inheritedAbiSnapshot = abiSnapshotSha256 === undefined
+    ? {}
+    : { abiSnapshotSha256 };
   const baseImage = requiredRecord(
     inherited.baseImage,
     "direct shell base binding",
@@ -306,6 +319,7 @@ function shellDerivedImageMetadata(
     return {
       version: 1,
       kernelAbi,
+      ...inheritedAbiSnapshot,
       createdBy: SHELL_DERIVED_CREATED_BY,
       capacity: { maxByteLength },
       baseImage: {
@@ -448,6 +462,7 @@ function shellDerivedImageMetadata(
   return {
     version: 1,
     kernelAbi,
+    ...inheritedAbiSnapshot,
     createdBy: SHELL_DERIVED_CREATED_BY,
     capacity: { maxByteLength },
     baseImage: {

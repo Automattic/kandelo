@@ -5,6 +5,7 @@ import {
   assertPackageDeferredZipTreeState,
   derivePackageDeferredZipTree,
   materializePackageDeferredZipTree,
+  parsePackageDeferredZipTreeDescriptor,
   parsePackageDeferredZipTreeSpec,
   registerPackageDeferredZipTree,
   type PackageDeferredZipTreeSpec,
@@ -92,6 +93,65 @@ describe("package deferred ZIP trees", () => {
       }),
     ]);
     expect(decoder.decode(first.descriptorBytes).endsWith("\n")).toBe(true);
+  });
+
+  it("restores a lazy tree from authenticated descriptor bytes without archive bytes", () => {
+    const archive = packageArchive();
+    const produced = derivePackageDeferredZipTree(SPEC, archive);
+    const immutableReference =
+      `https://artifacts.example.test/homebrew-bootstrap.zip?sha256=${produced.content.sha256}`;
+    const restored = parsePackageDeferredZipTreeDescriptor(
+      structuredClone(produced.descriptor),
+      {
+        archive: {
+          bytes: archive.byteLength,
+          reference: immutableReference,
+          sha256: produced.content.sha256,
+        },
+        id: SPEC.id,
+        package: SPEC.package,
+      },
+    );
+
+    expect(restored.descriptor).toEqual(produced.descriptor);
+    expect(restored.descriptorSha256).toBe(produced.descriptorSha256);
+    expect(restored.content).toEqual({
+      ...produced.content,
+      transports: [immutableReference],
+    });
+    expect(restored.entries).toEqual(produced.entries);
+
+    const fs = packageFs();
+    registerPackageDeferredZipTree(fs, restored);
+    expect(fs.isPathDeferred(`${SPEC.mount_prefix}/bin/brew`)).toBe(true);
+  });
+
+  it("rejects package descriptors that drift from their exact archive input", () => {
+    const archive = packageArchive();
+    const produced = derivePackageDeferredZipTree(SPEC, archive);
+    const expected = {
+      archive: {
+        bytes: archive.byteLength,
+        reference:
+          `https://artifacts.example.test/homebrew-bootstrap.zip?sha256=${produced.content.sha256}`,
+        sha256: produced.content.sha256,
+      },
+      id: SPEC.id,
+      package: SPEC.package,
+    };
+    const tampered = structuredClone(produced.descriptor);
+    tampered.inventory[1]!.vfs_path = "/outside/brew";
+
+    expect(() => parsePackageDeferredZipTreeDescriptor(tampered, expected)).toThrow(
+      /inventory|mount|descriptor/i,
+    );
+    expect(() => parsePackageDeferredZipTreeDescriptor(
+      produced.descriptor,
+      {
+        ...expected,
+        archive: { ...expected.archive, sha256: "f".repeat(64) },
+      },
+    )).toThrow(/archive identity/i);
   });
 
   it("preserves producer-assigned atomic membership through registration", async () => {

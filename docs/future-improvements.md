@@ -4,6 +4,82 @@ Technical debt, deferred enhancements, and explicitly documented conformance
 gaps. Listing an item here does not imply that the current behavior is fully
 supported.
 
+## ABI staging product retirement
+
+### Retire obsolete VFS-wrapper package entries after acceptance
+
+Canonical VFS product manifests will replace package-registry entries whose
+primary purpose is to wrap a rootfs, shell, browser service image, language
+runtime image, SDK image, or VFS test image. Keep those wrappers and the
+main-shell Brewfile operational during rollout, but inventory them in the ABI
+staging retirement ledger and remove them after every consumer uses canonical
+product authority and the required transition, source-custody, repair,
+failure-recovery, and Pages evidence is retained.
+
+This retirement does not apply to ordinary software recipes. Formula and
+package recipes for Bash, PHP, zlib, and other software continue to own their
+portable source, license, dependency, output, and build facts unless a separate
+package-system design replaces that contract.
+
+## ABI modeling and package provenance
+
+### Model semantic ABI transitions in Rust-owned machine-readable data
+
+The checked-in structural ABI snapshot detects covered layout, number,
+marshalling, export, and generated-protocol changes, but it cannot prove that
+an existing syscall retained the same argument meaning, errno space, blocking
+and restart behavior, memory effects, fd/OFD effects, process and signal
+effects, or inheritance rules. Tests reduce this risk but are not semantic
+classification authority, and developers must not classify a change as
+"implementation-only ABI" by declaration.
+
+As more host/kernel behavior moves from TypeScript into Rust, define a
+canonical Rust semantic ABI model whose typed primitives describe observable
+state transitions. Generate structural metadata and TypeScript protocol views
+from that model, restrict ABI-owned mutations to modeled primitives, normalize
+and compare old/new transition models automatically, and prove or exhaustively
+model-check that implementations refine the declared model. Ordinary
+differential and conformance tests should remain supporting evidence. Moving
+code into Rust makes ownership and typed modeling easier; Rust by itself does
+not provide the proof.
+
+**Related design:**
+`docs/superpowers/specs/2026-08-08-abi-bottle-staging-design.md`
+
+### Preserve all external build sources in deduplicated content-addressed custody
+
+The ABI bottle-staging MVP preserves the exact Kandelo and tap Git trees plus
+required submodules with actual builds. Extend that custody contract to every
+upstream source role consumed by a bottle: primary archives, resources,
+patches, generated inputs, vendored dependency archives, native build inputs,
+and any authenticated metadata needed to reproduce acquisition. Store each
+unique byte object once by digest, keep a canonical role/identity manifest per
+build, and retain objects while referenced by candidate, verification,
+admission, canonical bottle, or historical-repair records.
+
+This is source preservation associated with the actual build, not a detached
+request-time repository mirror. It should allow later reconstruction even when
+an upstream URL disappears without duplicating shared sources across Formulae
+or attempts.
+
+**Related design:**
+`docs/superpowers/specs/2026-08-08-abi-bottle-staging-design.md`
+
+### Ship ABI-matched POSIX and Kandelo manual pages
+
+Provide user-space manual pages for the POSIX interfaces Kandelo implements,
+the explicit boundaries it does not yet implement, and Kandelo-specific tools
+and runtime configuration. Generate or select the pages through the same
+ABI-qualified product inputs used to build VFS images so documentation cannot
+silently describe a different kernel contract. Package the pages as normal
+Homebrew/VFS software with content-addressed provenance rather than embedding a
+browser-only help copy.
+
+This is separate from the ABI-staging MVP. The initial work should inventory
+upstream POSIX/man-page licensing and source roles, decide which pages are
+generated versus imported, and add a basic `man` smoke test in Node and the
+browser product that ships them.
+
 ## Kernel
 
 ### Per-process ordinary OFD metadata still breaks POSIX fork sharing

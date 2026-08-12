@@ -1,0 +1,51 @@
+schema = 1
+id = "browser-erlang"
+architecture = "wasm32"
+output = "erlang.vfs.zst"
+builder = "images/vfs/scripts/build-erlang-vfs-image.sh"
+
+[[software.package]]
+name = "erlang"
+outputs = ["erlang", "erlang-otp"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[mounts]]
+path = "/"
+source = "built-image"
+readonly = false
+
+[[mounts]]
+path = "/tmp"
+source = "scratch"
+mode = "1777"
+uid = 0
+gid = 0
+ephemeral = true
+
+[boot]
+argv = [
+  "/usr/local/lib/erlang/erts-16.1.2/bin/beam.smp",
+  "--",
+  "-root", "/usr/local/lib/erlang",
+  "-bindir", "/usr/local/lib/erlang/erts-16.1.2/bin",
+  "-boot", "/usr/local/lib/erlang/releases/28/start_clean",
+  "-noshell",
+]
+cwd = "/home"
+uid = 1000
+gid = 1000
+
+[boot.env]
+BINDIR = "/usr/local/lib/erlang/erts-16.1.2/bin"
+HOME = "/home"
+PATH = "/usr/local/lib/erlang/erts-16.1.2/bin:/usr/local/bin:/usr/bin:/bin"
+ROOTDIR = "/usr/local/lib/erlang"
+TMPDIR = "/tmp"
+
+[evidence.node]
+test = "erlang-vfs-node-smoke"
+
+[evidence.browser]
+test = "erlang-vfs-browser-smoke"

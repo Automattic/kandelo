@@ -486,6 +486,49 @@ describe("mkrootfs build — happy paths", () => {
     }
   });
 
+  it("binds a staged image to the exact ABI snapshot digest", () => {
+    const fixture = join(here, "fixtures", "basic");
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-build-"));
+    const out = join(tmp, "image.vfs");
+    const snapshotSha256 = "a".repeat(64);
+    try {
+      const r = run(
+        "build",
+        join(fixture, "MANIFEST"),
+        join(fixture, "rootfs"),
+        "-o", out,
+        "--repo-root", fixture,
+        "--kernel-abi", "11",
+        "--abi-snapshot-sha256", snapshotSha256,
+      );
+      expect(r.status).toBe(0);
+      const metadata = MemoryFileSystem.readImageMetadata(
+        new Uint8Array(readFileSync(out)),
+      );
+      expect(metadata).toEqual({
+        version: 1,
+        kernelAbi: 11,
+        abiSnapshotSha256: snapshotSha256,
+        createdBy: "mkrootfs build",
+      });
+
+      const missingAbi = run(
+        "build",
+        join(fixture, "MANIFEST"),
+        join(fixture, "rootfs"),
+        "-o", join(tmp, "missing-abi.vfs"),
+        "--repo-root", fixture,
+        "--abi-snapshot-sha256", snapshotSha256,
+      );
+      expect(missingAbi.status).toBe(2);
+      expect(missingAbi.stderr).toContain(
+        "--abi-snapshot-sha256 requires --kernel-abi",
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("prints subcommand usage on `build --help` and exits 0 without writing", () => {
     const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-build-"));
     const out = join(tmp, "should-not-exist.vfs");

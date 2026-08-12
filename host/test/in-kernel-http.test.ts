@@ -151,4 +151,13 @@ describe("buildRawHttpRequest / parseRawHttpResponse", () => {
     const resp = parseRawHttpResponse(raw);
     expect(resp.headers["Set-Cookie"]).toBe("a=1\nb=2");
   });
+
+  it("rejects an unframed or malformed HTTP response", () => {
+    expect(() => parseRawHttpResponse(
+      new TextEncoder().encode("expected body without HTTP framing"),
+    )).toThrow(/header terminator/);
+    expect(() => parseRawHttpResponse(
+      new TextEncoder().encode("not-http 200 maybe\r\nContent-Length: 0\r\n\r\n"),
+    )).toThrow(/status line/);
+  });
 });

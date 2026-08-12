@@ -11,6 +11,7 @@ import {
   type MountSpec,
 } from "../../src/vfs/default-mounts";
 import { resolveForNode } from "../../src/vfs/default-mounts-node";
+import { restoreBrowserKernelInitMounts } from "../../src/browser-kernel-vfs-init";
 import {
   addSealedLazyAtomicTestTree,
   forgeLazyAtomicSeal,
@@ -312,6 +313,23 @@ describe("resolveForBrowser", () => {
       expect(m.backend).toBeInstanceOf(MemoryFileSystem);
       expect(m.backend).not.toBeInstanceOf(HostFileSystem);
     }
+  });
+
+  it("restores the exact caller mount spec without adding default overlays", async () => {
+    const productSpec: MountSpec[] = [
+      { path: "/", source: "image", readonly: false },
+      {
+        path: "/tmp",
+        source: "scratch",
+        mode: 0o1777,
+        uid: 0,
+        gid: 0,
+        ephemeral: true,
+      },
+    ];
+    const mounts = await restoreBrowserKernelInitMounts(image, productSpec);
+    expect(mounts.map((mount) => mount.mountPoint)).toEqual(["/", "/tmp"]);
+    expect(mounts[0]!.readonly).toBe(false);
   });
 
   it("/ mount is image-backed and reads /etc/passwd from the image", async () => {

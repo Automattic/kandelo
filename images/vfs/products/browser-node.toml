@@ -1,0 +1,57 @@
+schema = 1
+id = "browser-node"
+architecture = "wasm32"
+output = "node-vfs.vfs.zst"
+builder = "images/vfs/scripts/build-node-vfs-image.sh"
+
+[[composition.product]]
+id = "browser-main-shell"
+materialization = "embedded"
+
+[[software.package]]
+name = "node"
+outputs = ["node"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.archive]]
+id = "npm-runtime"
+url = "https://registry.npmjs.org/npm/-/npm-10.9.2.tgz"
+sha256 = "5cd1e5ab971ea6333f910bc2d50700167c5ef4e66da279b2a3efc874c6b116e4"
+role = "runtime"
+materialization = "embedded"
+
+[[mounts]]
+path = "/"
+source = "built-image"
+readonly = false
+
+[[mounts]]
+path = "/tmp"
+source = "scratch"
+mode = "1777"
+uid = 0
+gid = 0
+ephemeral = true
+
+[boot]
+argv = ["bash", "-l", "-i"]
+cwd = "/work"
+uid = 1000
+gid = 1000
+
+[boot.env]
+HOME = "/work"
+LOGNAME = "user"
+PATH = "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
+TMPDIR = "/tmp"
+USER = "user"
+npm_config_cache = "/tmp/.npm-cache"
+npm_config_registry = "http://proxy.local/"
+
+[evidence.node]
+test = "node-vfs-node-startup"
+
+[evidence.browser]
+test = "node-vfs-browser-startup"

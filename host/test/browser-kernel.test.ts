@@ -305,15 +305,20 @@ describe("BrowserKernel", () => {
     await expect(exit).resolves.toBe(0);
   });
 
-  it("rejects an invalid closed binding before spawning a worker", async () => {
+  it("keeps an explicitly empty lazy transport closed in the worker", async () => {
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({ kernelOwnedFs: true });
-    await expect(kernel.initFromImage({
+    const initPromise = kernel.initFromImage({
       kernelWasm: new ArrayBuffer(8),
       vfsImage: new Uint8Array(0),
       closedLazyAssets: [],
-    })).rejects.toThrow("at least one binding");
-    expect(MockWorker.instances).toHaveLength(0);
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    expect(worker.lastMessage("init").closedLazyAssets).toEqual([]);
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
   });
 
   it("boot() spawns a worker, sends init, and resolves on `ready`", async () => {
@@ -483,6 +488,28 @@ describe("BrowserKernel", () => {
       message: "[process-worker] RuntimeError: unreachable",
     });
     expect(onStderr).not.toHaveBeenCalled();
+  });
+
+  it("attributes browser stdout and stderr to the emitting process", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const onProcessStdout = vi.fn();
+    const onProcessStderr = vi.fn();
+    const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
+      onProcessStdout,
+      onProcessStderr,
+    });
+    const handle = (
+      kernel as unknown as { handleWorkerMessage(message: unknown): void }
+    ).handleWorkerMessage.bind(kernel);
+    const stdout = new Uint8Array([1, 2]);
+    const stderr = new Uint8Array([3, 4]);
+
+    handle({ type: "stdout", pid: 41, data: stdout });
+    handle({ type: "stderr", pid: 314, data: stderr });
+
+    expect(onProcessStdout).toHaveBeenCalledWith(41, stdout);
+    expect(onProcessStderr).toHaveBeenCalledWith(314, stderr);
   });
 
   it("reports a worker-level error as a host diagnostic, not guest stderr", async () => {
@@ -1017,6 +1044,45 @@ describe("BrowserKernel", () => {
     expect(diagnostics).toEqual([
       expect.stringContaining("incomplete graceful generation detach"),
     ]);
+  });
+
+  it("fails closed when PTY output floods the pre-listener race window", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const testable = kernel as unknown as {
+      handleWorkerMessage(message: unknown): void;
+      pendingPtyOutput: Map<number, unknown>;
+      pendingPtyOutputBytes: number;
+      pendingPtyOutputChunks: number;
+    };
+
+    const chunk = new Uint8Array(4_096);
+    for (let index = 0; index < 17; index += 1) {
+      testable.handleWorkerMessage({
+        type: "pty_output",
+        pid: 41,
+        data: chunk,
+      });
+    }
+
+    expect(testable.pendingPtyOutput.size).toBe(0);
+    expect(testable.pendingPtyOutputBytes).toBe(0);
+    expect(testable.pendingPtyOutputChunks).toBe(0);
+    expect(() => kernel.onPtyOutput(41, vi.fn())).toThrow(
+      "PTY output exceeded the 65536-byte pre-listener limit",
+    );
+
+    // Once the boundary fails, further candidate messages must not allocate.
+    for (let index = 0; index < 100; index += 1) {
+      testable.handleWorkerMessage({
+        type: "pty_output",
+        pid: 41,
+        data: chunk,
+      });
+    }
+    expect(testable.pendingPtyOutput.size).toBe(0);
+    expect(testable.pendingPtyOutputBytes).toBe(0);
+    expect(testable.pendingPtyOutputChunks).toBe(0);
   });
 
   it("bounds graceful destroy wait before terminating the worker realm", async () => {
