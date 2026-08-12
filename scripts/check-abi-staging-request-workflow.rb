@@ -215,6 +215,7 @@ def check_workflow(workflow)
         publish_source.include?("request validate-feed-plan") &&
         publish_source.include?("request-feed-activation.toml") &&
         publish_source.include?("$mode == observe") &&
+        publish_source.include?("$mode == active") &&
         publish_source.include?("publish-abi-staging-request.sh") &&
         publish_source.include?("GH_TOKEN=\"$GITHUB_TOKEN\"") &&
         publish_source.include?("Public nonendorsed candidate request") &&
