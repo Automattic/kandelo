@@ -33,10 +33,12 @@ import {
   HOMEBREW_RUNTIME_LAYER_LIMITS,
   isHomebrewRuntimeLayerId,
 } from "./homebrew-runtime-layer-limits";
+import { KANDELO_HOMEBREW_GUEST_LAYOUT } from "./homebrew-guest-layout";
 import { normalizeHomebrewBottleDestinationPrefix } from "./homebrew-bottle-relocation";
 export { HOMEBREW_RUNTIME_LAYER_LIMITS } from "./homebrew-runtime-layer-limits";
 
 const COMPOSITION_PATH = "/etc/kandelo/homebrew-vfs.json";
+const HOMEBREW_PREFIX = KANDELO_HOMEBREW_GUEST_LAYOUT.prefix;
 const ACCEPTANCE_ASSET = "kandelo-homebrew.vfs.zst";
 const ACCEPTANCE_DESCRIPTOR_ASSET = "kandelo-homebrew-vfs.json";
 const ACCEPTANCE_REPORT_ASSET = "kandelo-homebrew-vfs-report.json";
@@ -430,6 +432,7 @@ export function parseHomebrewOriginalBottleTreeDescriptor(
     "",
     [],
     5,
+    HOMEBREW_PREFIX,
     "external-only",
   );
   if (
@@ -444,8 +447,8 @@ export function parseHomebrewOriginalBottleTreeDescriptor(
   ) {
     throw new Error("Homebrew original-bottle tree differs from its exact bottle input");
   }
-  validateCompleteDirectBottleDirectories(tree.inventory.entries);
-  validateStandaloneDirectBottleBinding(tree, expected.formula);
+  validateCompleteDirectBottleDirectories(tree.inventory.entries, HOMEBREW_PREFIX);
+  validateStandaloneDirectBottleBinding(tree, expected.formula, HOMEBREW_PREFIX);
   return {
     schema: 1,
     kind: "kandelo-homebrew-original-bottle-tree",
@@ -1050,6 +1053,72 @@ function validateLayerDestinationPrefix(
     throw new Error("Homebrew runtime layer package destinations are inconsistent");
   }
   return prefixes.values().next().value!;
+}
+
+function validateStandaloneDirectBottleBinding(
+  tree: HomebrewDeferredTreeDescriptor,
+  formula: string,
+  destinationPrefix: string,
+): void {
+  const expectedKegPrefix = `${destinationPrefix}/Cellar/${formula}/`;
+  if (
+    tree.activation.roots.length !== 1 ||
+    !tree.activation.roots[0]!.startsWith(expectedKegPrefix) ||
+    tree.activation.roots[0]!.slice(expectedKegPrefix.length).includes("/")
+  ) {
+    throw new Error(
+      `Homebrew original-bottle ${formula} activation does not name its exact keg`,
+    );
+  }
+  const kegPath = tree.activation.roots[0]!.slice(1);
+  const version = tree.activation.roots[0]!.slice(expectedKegPrefix.length);
+  const optPath = `${destinationPrefix}/opt/${formula}`.slice(1);
+  const entries = tree.inventory.entries;
+  const keg = entries.find((entry) => entry.path === kegPath);
+  const opt = entries.find((entry) => entry.path === optPath);
+  if (
+    keg?.type !== "directory" ||
+    keg.ownership !== "layer" ||
+    opt?.type !== "symlink" ||
+    opt.ownership !== "layer" ||
+    opt.target !== `../Cellar/${formula}/${version}`
+  ) {
+    throw new Error(
+      `Homebrew original-bottle ${formula} does not own its keg and opt link`,
+    );
+  }
+  for (const entry of entries) {
+    if (entry.type === "directory") {
+      const expectedOwnership =
+        entry.path === kegPath || entry.path.startsWith(`${kegPath}/`)
+          ? "layer"
+          : "mergeable-directory";
+      if (entry.ownership !== expectedOwnership) {
+        throw new Error(
+          `Homebrew original-bottle ${formula} directory /${entry.path} ` +
+            `must have ${expectedOwnership} ownership`,
+        );
+      }
+    }
+    if (
+      (entry.materialization === "archive" ||
+        entry.materialization === "archive-homebrew-relocate") &&
+      entry.path !== kegPath &&
+      !entry.path.startsWith(`${kegPath}/`)
+    ) {
+      throw new Error(
+        `Homebrew original-bottle ${formula} maps an archive member outside its keg`,
+      );
+    }
+    if (entry.materialization === "archive" && entry.type === "symlink") {
+      validateArchiveSymlinkTarget(
+        entry.path,
+        entry.target!,
+        kegPath,
+        tree.package!,
+      );
+    }
+  }
 }
 
 function validateDirectBottleBindings(
@@ -1897,6 +1966,7 @@ function validateDeferredTrees(
   }>,
   descriptorSchema: 4 | 5 | 6,
   destinationPrefix: string,
+  transportPolicy: "bundle-release" | "external-only" = "bundle-release",
 ): HomebrewDeferredTreeDescriptor[] {
   const values = requireArray(
     value,
