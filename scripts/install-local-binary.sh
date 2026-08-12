@@ -349,6 +349,8 @@ _wasm_posix_output_metadata() {
     (
         cd "$repo_root"
         env -u CC -u CXX -u AR -u RANLIB -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
+            AR="${LLVM_BIN:?install-local-binary: LLVM_BIN is required}/llvm-ar" \
+            RANLIB="${LLVM_BIN:?install-local-binary: LLVM_BIN is required}/llvm-ranlib" \
             cargo run -p xtask --target "$host_target" --quiet -- \
                 build-deps output-metadata "$package" "$artifact"
     )
@@ -501,6 +503,8 @@ install_local_binary() {
         if ! (
             cd "$repo_root"
             env -u CC -u CXX -u AR -u RANLIB -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
+                AR="${LLVM_BIN:?install-local-binary: LLVM_BIN is required}/llvm-ar" \
+                RANLIB="${LLVM_BIN:?install-local-binary: LLVM_BIN is required}/llvm-ranlib" \
                 WASM_POSIX_LOCAL_INSTALL_SOURCE="$source_abs" \
                 WASM_POSIX_LOCAL_INSTALL_SESSION="$WASM_POSIX_LOCAL_INSTALL_SESSION" \
                 cargo run -p xtask --target "$host_target" --quiet -- \
@@ -587,6 +591,8 @@ install_local_runtime_file() {
     (
         cd "$repo_root"
         env -u CC -u CXX -u AR -u RANLIB -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
+            AR="${LLVM_BIN:?install-local-binary: LLVM_BIN is required}/llvm-ar" \
+            RANLIB="${LLVM_BIN:?install-local-binary: LLVM_BIN is required}/llvm-ranlib" \
             WASM_POSIX_LOCAL_INSTALL_SOURCE="$source_abs" \
             WASM_POSIX_LOCAL_INSTALL_SESSION="$WASM_POSIX_LOCAL_INSTALL_SESSION" \
             cargo run -p xtask --target "$host_target" --quiet -- \
