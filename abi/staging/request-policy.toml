@@ -81,6 +81,7 @@ implementation_paths = [
   "scripts/check-dev-shell-tools.sh",
   "scripts/check-pages-vfs-product-registry.mjs",
   "scripts/dev-shell.sh",
+  "scripts/fetch-exact-musl-gitlink.sh",
   "scripts/run-vfs-product-builder.ts",
   "scripts/vfs-product-catalog.mjs",
   "tools/xtask/Cargo.toml",

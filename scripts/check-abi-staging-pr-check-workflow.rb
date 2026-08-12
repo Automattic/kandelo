@@ -158,6 +158,21 @@ def check_workflow(workflow)
         candidate_checkout.dig("with", "ref") == "${{ matrix.subject.head }}" &&
         candidate_checkout.dig("with", "path") == "exact-head",
         "collector does not check out the exact PR head as inert data")
+  musl_step = named_step(collect, "Materialize exact musl gitlink as inert data")
+  musl_source = musl_step.fetch("run")
+  check(musl_source.include?("authority/scripts/fetch-exact-musl-gitlink.sh") &&
+        musl_source.include?('--source-root "$GITHUB_WORKSPACE/exact-head"') &&
+        musl_source.include?('--commit "$EXPECTED_HEAD"') &&
+        !musl_source.include?("git submodule") &&
+        !musl_step.fetch("env", {}).key?("GH_TOKEN"),
+        "collector does not materialize the exact musl gitlink through protected code")
+  checkout_index = collect.fetch("steps").index(candidate_checkout)
+  musl_index = collect.fetch("steps").index(musl_step)
+  collect_index = collect.fetch("steps").index do |step|
+    step["run"]&.include?("request requirements")
+  end
+  check(checkout_index < musl_index && musl_index < collect_index,
+        "collector musl materialization is not ordered before requirements")
   upload = named_step(collect, "Transfer bounded inert projection")
   check(upload.fetch("uses").start_with?(UPLOAD) &&
         upload.dig("with", "name").to_s.include?("matrix.subject.head") &&
@@ -438,6 +453,17 @@ begin
         item["name"] == "Checkout inert exact PR head"
       end
       step.fetch("with")["persist-credentials"] = true
+    },
+    "missing exact musl materialization" => lambda { |copy|
+      copy.dig("jobs", "collect-project", "steps").reject! do |step|
+        step["name"] == "Materialize exact musl gitlink as inert data"
+      end
+    },
+    "candidate-controlled musl materialization" => lambda { |copy|
+      step = copy.dig("jobs", "collect-project", "steps").find do |item|
+        item["name"] == "Materialize exact musl gitlink as inert data"
+      end
+      step["run"] = "git -C exact-head submodule update --init libc/musl"
     },
     "collector target validation after use" => lambda { |copy|
       step = copy.dig("jobs", "collect-project", "steps").find do |item|
