@@ -29,15 +29,14 @@ export type { PathconfProfile } from "./pathconf";
 export type { WorkerAdapter, WorkerHandle } from "./worker-adapter";
 export type { HostDiagnostic } from "./host-diagnostic";
 export {
-  CorsProxyRequestPolicy,
-  CorsProxyRequestPolicyError,
-  validateCorsProxyRequestCapabilities,
-} from "./networking/cors-proxy-request-policy";
+  BrowserCorsProxy,
+  BrowserCorsProxyRequestError,
+  validateBrowserCorsProxyConfig,
+} from "./networking/browser-cors-proxy";
 export type {
-  CorsProxyRequestCapabilities,
-  CorsProxyRequestProjection,
-  ValidatedCorsProxyRequestCapabilities,
-} from "./networking/cors-proxy-request-policy";
+  BrowserCorsProxyConfig,
+  HttpHeaderOccurrence,
+} from "./networking/browser-cors-proxy";
 export type {
   HostToWorkerMessage, WorkerToHostMessage,
   WorkerReadyMessage, WorkerExitMessage, WorkerErrorMessage,

@@ -29,17 +29,16 @@ export { filesystemPathconf } from "./pathconf";
 export type { PathconfProfile } from "./pathconf";
 export { TcpNetworkBackend, FetchNetworkBackend } from "./networking";
 export {
-  CorsProxyRequestPolicy,
-  CorsProxyRequestPolicyError,
-  validateCorsProxyRequestCapabilities,
+  BrowserCorsProxy,
+  BrowserCorsProxyRequestError,
+  validateBrowserCorsProxyConfig,
 } from "./networking";
 export type {
-  CorsProxyRequestCapabilities,
-  CorsProxyRequestProjection,
+  BrowserCorsProxyConfig,
   FetchBackendOptions,
+  HttpHeaderOccurrence,
   HttpRequest,
   HttpResponse,
-  ValidatedCorsProxyRequestCapabilities,
 } from "./networking";
 export type { WorkerAdapter, WorkerHandle } from "./worker-adapter";
 export type {
