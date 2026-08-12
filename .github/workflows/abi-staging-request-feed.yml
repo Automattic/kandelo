@@ -321,8 +321,10 @@ jobs:
           ' "$evidence/subjects.json" >/dev/null
           cp "$evidence/subjects.json" "$derived/subjects.json"
 
-          host_target=$(cd authority && bash scripts/dev-shell.sh \
-            bash -c 'rustc -vV | awk "/^host/ {print \$2}"')
+          host_target=$(cd authority &&
+            bash scripts/dev-shell.sh rustc -vV |
+              awk '/^host: / { print $2 }')
+          [[ "$host_target" =~ ^[A-Za-z0-9_.-]+$ ]]
           (cd authority && bash scripts/dev-shell.sh \
             cargo build -p xtask --target "$host_target")
           authority_xtask="$GITHUB_WORKSPACE/authority/target/$host_target/debug/xtask"
@@ -451,8 +453,10 @@ jobs:
           PROTECTED_SHA: ${{ needs.classify-exact-head.outputs.protected-sha }}
         run: |
           set -euo pipefail
-          host_target=$(cd authority && bash scripts/dev-shell.sh \
-            bash -c 'rustc -vV | awk "/^host/ {print \$2}"')
+          host_target=$(cd authority &&
+            bash scripts/dev-shell.sh rustc -vV |
+              awk '/^host: / { print $2 }')
+          [[ "$host_target" =~ ^[A-Za-z0-9_.-]+$ ]]
           (cd authority && bash scripts/dev-shell.sh \
             cargo build -p xtask --target "$host_target")
           authority_xtask="$GITHUB_WORKSPACE/authority/target/$host_target/debug/xtask"

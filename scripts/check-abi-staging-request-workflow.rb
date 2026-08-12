@@ -46,6 +46,27 @@ def named_step(job, name)
   matches.fetch(0)
 end
 
+def check_filtered_host_target(source, role, expected_count = 1)
+  lines = source.lines.map(&:strip)
+  validation = '[[ "$host_target" =~ ^[A-Za-z0-9_.-]+$ ]]'
+  assignments = lines.count { |line| line.start_with?("host_target=$(") }
+  sequences = lines.each_index.count do |index|
+    first = lines.fetch(index)
+    if first.start_with?("host_target=$(cd ") && first.end_with?("&&")
+      lines[index + 1] == "bash scripts/dev-shell.sh rustc -vV |" &&
+        lines[index + 2] == "awk '/^host: / { print $2 }')" &&
+        lines[index + 3] == validation
+    else
+      first == "host_target=$(bash scripts/dev-shell.sh rustc -vV |" &&
+        lines[index + 1] == "awk '/^host: / { print $2 }')" &&
+        lines[index + 2] == validation
+    end
+  end
+  check(assignments == expected_count && sequences == expected_count,
+        "#{role} does not filter then immediately validate each noisy dev-shell target " \
+          "(assignments=#{assignments}, ordered=#{sequences}, expected=#{expected_count})")
+end
+
 def check_actions(workflow)
   workflow.fetch("jobs").each_value do |job|
     job.fetch("steps").each do |step|
@@ -162,6 +183,7 @@ def check_workflow(workflow)
         !derive_source.include?('find "$evidence/reports"') &&
         derive_source.include?("authority_xtask"),
         "protected derivation does not revalidate inert exact-head data")
+  check_filtered_host_target(derive_source, "protected derivation")
   check(!derive_source.match?(%r{(?:bash|source|\.)\s+[^\n]*exact-head-data}),
         "protected derivation executes a file from the exact head")
   derive_download = named_step(derive, "Download structural evidence")
@@ -189,6 +211,7 @@ def check_workflow(workflow)
         publish_source.include?("Public nonendorsed candidate request") &&
         publish_source.include?("set -euo pipefail"),
         "publisher does not strictly revalidate and honor observe mode")
+  check_filtered_host_target(publish_source, "publisher")
   check(!publish_source.match?(%r{(?:bash|source|\.)\s+[^\n]*exact-head}),
         "publisher executes candidate-head code")
   publish_download = named_step(publish, "Download derived requests")
@@ -269,6 +292,17 @@ begin
     },
     "swallowed failure" => lambda { |copy|
       copy.dig("jobs", "publish-request", "steps").last["continue-on-error"] = true
+    },
+    "derivation target validation after use" => lambda { |copy|
+      step = copy.dig("jobs", "derive-request", "steps").find do |item|
+        item["run"]&.include?("host_target=$(cd authority &&")
+      end
+      validation = '[[ "$host_target" =~ ^[A-Za-z0-9_.-]+$ ]]'
+      assignment =
+        'authority_xtask="$GITHUB_WORKSPACE/authority/target/$host_target/debug/xtask"'
+      step["run"] = step.fetch("run")
+        .sub("#{validation}\n", "")
+        .sub(assignment, "#{assignment}\n#{validation}")
     }
   }
   mutations.each { |label, mutation| rejected_mutation(workflow, label, &mutation) }
