@@ -513,7 +513,11 @@ binary with its own `/etc/kandelo/wlcompositor.conf`, an app registry under
   registry offers real software from the shell image alongside the demo
   clients: Vim, NetHack and Nano run unmodified inside a `wlterm` (their
   binaries lazy-fetch from the image's archives on first launch), plus a Bash
-  terminal.
+  terminal. The Foot entry is different in kind: stock upstream foot 1.17.2
+  as its own Wayland client on the ported font stack —
+  freetype/fontconfig/fcft rasterizing the staged Inconsolata through
+  `/etc/fonts/fonts.conf` — not a `wlterm` wrapper (see
+  [architecture.md](architecture.md#stock-upstream-clients-foot--the-font-stack)).
 - **The menu.** `Ctrl+Alt+Space` opens the Omarchy menu — the same launcher
   at its root level (Apps, Theme). `Enter` descends; the Theme submenu lists
   the installed themes and `Enter` switches live. `Esc` in a submenu goes

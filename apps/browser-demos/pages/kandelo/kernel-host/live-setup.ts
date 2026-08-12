@@ -113,6 +113,7 @@ import {
   OMARCHY_APPS,
   OMARCHY_APPS_DIR,
   OMARCHY_CONF_PATH,
+  OMARCHY_FONTS_CONF,
   OMARCHY_THEME_DIR,
   OMARCHY_THEMES,
   OMARCHY_WLCOMPOSITOR_CONF,
@@ -157,6 +158,7 @@ import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
 import dinitWasmUrl from "@binaries/programs/wasm32/dinit/dinit.wasm?url";
 import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
+import inconsolataFontUrl from "../../../../../examples/libs/wpkdraw/third_party/Inconsolata-Regular.ttf";
 // @ts-expect-error Vite owns this virtual module in both canonical and normal mode.
 import canonicalPagesVfsProducts from "virtual:kandelo-pages-vfs-products";
 
@@ -256,6 +258,12 @@ const OPTIONAL_BINARY_URLS = {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../../../binaries/programs/wasm32/knotify.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/foot.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/foot.wasm", {
     query: "?url", import: "default",
   }),
 } as Record<string, () => Promise<string>>;
@@ -697,6 +705,7 @@ request_slowlog_trace_depth = 0
 const SHELL_ENV: string[] = [
   `HOME=${DEMO_HOME}`,
   "TMPDIR=/tmp",
+  "XDG_RUNTIME_DIR=/tmp",
   "TERM=xterm-256color",
   "LANG=en_US.UTF-8",
   "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
@@ -2281,6 +2290,12 @@ async function bootProfile(
               "../../../../../binaries/programs/wasm32/knotify.wasm",
             ], "knotify.wasm")
             : null;
+          const footUrl = omarchy
+            ? await optionalBinaryUrl([
+              "../../../../../local-binaries/programs/wasm32/foot.wasm",
+              "../../../../../binaries/programs/wasm32/foot.wasm",
+            ], "foot.wasm")
+            : null;
           tick(omarchy ? "staging omarchy binaries..." : "staging hyprland binaries...");
           const [compBytes, termBytes, clockBytes, paintBytes] = await Promise.all([
             fetch(compositorUrl).then(failOn("wlcompositor.wasm")).then((r) => r.arrayBuffer()),
@@ -2318,19 +2333,32 @@ async function bootProfile(
           // the files they and the compositor read — one config, one app
           // registry, one theme directory.
           if (omarchy) {
-            const [barBytes, launcherBytes, notifyBytes] = await Promise.all([
-              fetch(kbarUrl!).then(failOn("kbar.wasm")).then((r) => r.arrayBuffer()),
-              fetch(klauncherUrl!).then(failOn("klauncher.wasm"))
-                .then((r) => r.arrayBuffer()),
-              fetch(knotifyUrl!).then(failOn("knotify.wasm"))
-                .then((r) => r.arrayBuffer()),
-            ]);
+            const [barBytes, launcherBytes, notifyBytes, footBytes, fontBytes] =
+              await Promise.all([
+                fetch(kbarUrl!).then(failOn("kbar.wasm")).then((r) => r.arrayBuffer()),
+                fetch(klauncherUrl!).then(failOn("klauncher.wasm"))
+                  .then((r) => r.arrayBuffer()),
+                fetch(knotifyUrl!).then(failOn("knotify.wasm"))
+                  .then((r) => r.arrayBuffer()),
+                fetch(footUrl!).then(failOn("foot.wasm")).then((r) => r.arrayBuffer()),
+                fetch(inconsolataFontUrl).then(failOn("Inconsolata-Regular.ttf"))
+                  .then((r) => r.arrayBuffer()),
+              ]);
             writeVfsBinary(kernelForHyprland.fs, "/usr/local/bin/kbar",
               new Uint8Array(barBytes), 0o755);
             writeVfsBinary(kernelForHyprland.fs, "/usr/local/bin/klauncher",
               new Uint8Array(launcherBytes), 0o755);
             writeVfsBinary(kernelForHyprland.fs, "/usr/local/bin/knotify",
               new Uint8Array(notifyBytes), 0o755);
+            writeVfsBinary(kernelForHyprland.fs, "/usr/local/bin/foot",
+              new Uint8Array(footBytes), 0o755);
+            ensureDirRecursive(kernelForHyprland.fs, "/usr/share/fonts");
+            writeVfsBinary(kernelForHyprland.fs,
+              "/usr/share/fonts/Inconsolata-Regular.ttf",
+              new Uint8Array(fontBytes), 0o644);
+            ensureDirRecursive(kernelForHyprland.fs, "/etc/fonts");
+            writeVfsFile(kernelForHyprland.fs, "/etc/fonts/fonts.conf",
+              OMARCHY_FONTS_CONF, 0o644);
             omarchyBarBytes = barBytes;
 
             ensureDirRecursive(kernelForHyprland.fs, OMARCHY_APPS_DIR);

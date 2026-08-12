@@ -534,6 +534,7 @@ has_unzip()         { pkg_has_output unzip unzip.wasm || [ -f "$REPO_ROOT/packag
 has_nano()          { pkg_has_output nano nano.wasm || [ -f "$REPO_ROOT/packages/registry/nano/bin/nano.wasm" ]; }
 has_nethack()       { pkg_has_output nethack nethack.wasm || [ -f "$REPO_ROOT/packages/registry/nethack/bin/nethack.wasm" ]; }
 has_fbdoom()        { pkg_has_output fbdoom fbdoom.wasm || [ -f "$REPO_ROOT/packages/registry/fbdoom/fbdoom.wasm" ]; }
+has_foot()          { pkg_has_output foot foot.wasm; }
 has_vim()           { pkg_has_output vim vim.wasm || [ -f "$REPO_ROOT/packages/registry/vim/bin/vim.wasm" ]; }
 has_git()           { pkg_has_output git git.wasm || [ -f "$REPO_ROOT/packages/registry/git/bin/git.wasm" ]; }
 has_perl()          { pkg_has_output perl perl.wasm || [ -f "$REPO_ROOT/packages/registry/perl/bin/perl.wasm" ]; }
@@ -2273,6 +2274,21 @@ build_fbdoom() {
     info "fbDOOM built"
 }
 
+build_foot() {
+    if has_foot; then
+        info "foot"
+        return
+    fi
+    need_kernel
+    need_sdk
+    step "Resolving foot.wasm"
+    local host_target
+    host_target="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$host_target" --quiet -- \
+        build-deps --arch wasm32 --binaries-dir "$REPO_ROOT/binaries" resolve foot)
+    info "foot resolved"
+}
+
 build_vim() {
     if has_vim; then
         info "Vim"
@@ -2415,6 +2431,7 @@ build_target() {
         nethack)    build_nethack ;;
         nethack-zip) build_nethack_zip ;;
         fbdoom)     build_fbdoom ;;
+        foot)       build_foot ;;
         ncurses)    build_ncurses ;;
         zlib)       build_zlib ;;
         openssl)    build_openssl ;;
@@ -2451,7 +2468,7 @@ BROWSER_FETCH_SKIP_PKGS=(spidermonkey node)
 # sysroot/sysroot64 are NOT listed: they're toolchain prerequisites for source
 # builds, and any `build_X` whose prebuilt is missing calls `need_sysroot`
 # lazily.
-BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node node-vfs wp-vfs lamp-vfs)
+BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom foot git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node node-vfs wp-vfs lamp-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do

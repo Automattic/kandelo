@@ -2533,6 +2533,52 @@ Gated by `host/test/wlcompositor-{layer-shell,theme}-smoke.test.ts` and, in the
 browser, by `apps/browser-demos/test/kandelo-omarchy.spec.ts` (`/?demo=omarchy`).
 See [browser-support.md](browser-support.md#omarchy-desktop-demo).
 
+### Stock upstream clients (`foot` + the font stack)
+
+Every client above is Kandelo-authored on `libkwl`. `foot` 1.17.2
+(`packages/registry/foot/`) is the first **unmodified upstream** Wayland
+client: stock `wl_display_connect()` (via `XDG_RUNTIME_DIR`), stock
+xdg-shell/SSD negotiation, and a real font pipeline. Two declared patches are
+the entire delta, both kernel-model boundaries rather than feature edits:
+`0001` allocates its `wl_shm` pools as `gbm` prime-fd dumb-bos instead of
+memfds (a memfd `MAP_SHARED` mapping only writes back on msync/munmap on this
+kernel, so the compositor would composite stale bytes), and `0002` serializes
+its font loading (concurrent `FcFontMatch` garbles pattern doubles under the
+kernel's thread model — any future threaded font consumer hits the same wall).
+foot forks its shell (`slave.c`), so its wasm is mandatorily
+fork-instrumented; it runs with `--term=vt100` because no foot terminfo is
+staged in any VFS image.
+
+What it took, on each side of the protocol:
+
+- **Compositor surface for stock clients.** `wl_subcompositor` (subsurfaces
+  composited glued to their parent — foot's URL/search overlays), an inert
+  `wl_data_device_manager` v3 stub (foot binds it unconditionally for
+  clipboard), `wl_seat` at v5 (`repeat_info` + pointer `frame` events),
+  `wl_surface.enter` at map, and `wl_output` `scale`+`done` with a physical
+  size of 0×0 — sending pixels as millimetres made foot derive a 25.4 DPI and
+  garble its font reload. `wp_presentation` (above) is its frame clock.
+- **The font stack.** Four library packages feed it: `freetype` 2.13.3
+  (rasterizer), `fontconfig` 2.15.0 (font discovery — reads
+  `/etc/fonts/fonts.conf`, scans the staged font dirs), `fcft` 3.1.9 (the
+  glyph-cache layer foot draws with) and `tllist` 1.1.0, over `pixman` 0.42.2
+  and `utf8proc` 2.9.0. Gates: `host/test/fontstack-smoke.test.ts` and the
+  per-package `host/test/{pixman,utf8proc}-smoke.test.ts`.
+- **Kernel: signals interrupt host-converted epoll waits.** foot's SIGCHLD
+  reaper parks in `epoll_pwait` with the signal unblocked only inside the
+  wait; the host-converted wait now swaps the process signal mask via the
+  additive kernel exports `kernel_swap_poll_sigmask` /
+  `kernel_restore_poll_sigmask` and returns EINTR when the per-attempt
+  dequeue delivered a signal (`handleEpollPwait` in
+  `host/src/kernel-worker.ts`).
+
+Gated end-to-end by `host/test/foot-smoke.test.ts` (foot on wlcompositor:
+connect, fontconfig+fcft startup, first composited frame through the gbm pool
+path, keys typed into its forked `dash`, clean exit). In the browser, foot is
+a launcher entry of `/?demo=omarchy` — staged at `/usr/local/bin/foot` with
+`fonts.conf` + Inconsolata under `/usr/share/fonts`, gated by
+`apps/browser-demos/test/kandelo-omarchy.spec.ts`.
+
 ## Signal Subsystem
 
 Signals are delivered at syscall boundaries. When a process has a pending signal:

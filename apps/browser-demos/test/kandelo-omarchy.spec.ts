@@ -142,9 +142,9 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
     .toMatch(/LAYER ns=launcher layer=3 /);
   await expect
     .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/KLAUNCHER_READY n=7/);
+    .toMatch(/KLAUNCHER_READY n=8/);
 
-  // "te" narrows the seven entries (Bash, Clock, Nano, NetHack, Paint,
+  // "te" narrows the eight entries (Bash, Clock, Foot, Nano, NetHack, Paint,
   // Terminal, Vim) to Terminal alone — "t" alone still matches Paint.
   await openSurface(page, "Demo");
   await page.locator("body").click({ position: { x: 5, y: 5 } });
@@ -187,6 +187,22 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
     .poll(() => syslogStream(page), { timeout: 120_000 })
     .toMatch(/TILE n=5 i=4 /);
   expect(await syslogText(page), "vim binary does not match the kernel ABI")
+    .not.toMatch(/ABI version mismatch/);
+
+  // Gate 5c: an unmodified upstream client through the same path. "fo"
+  // narrows to Foot; its entry runs stock foot 1.17.2 — wl_display_connect
+  // via XDG_RUNTIME_DIR, fontconfig resolving "monospace" through the staged
+  // fonts.conf, fcft rasterizing the staged Inconsolata — and the sixth tile
+  // only appears once foot maps its first frame through all of it.
+  await pressCtrl(page, "Space");
+  await pressKeys(page, ["KeyF", "KeyO", "Enter"]);
+  await expect
+    .poll(() => syslogStream(page), { timeout: 60_000 })
+    .toMatch(/KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/foot /);
+  await expect
+    .poll(() => syslogStream(page), { timeout: 120_000 })
+    .toMatch(/TILE n=6 i=5 /);
+  expect(await syslogText(page), "foot binary does not match the kernel ABI")
     .not.toMatch(/ABI version mismatch/);
 
   // Gate 6: CTRL+SHIFT+Space cycles the theme. One palette file repaints the

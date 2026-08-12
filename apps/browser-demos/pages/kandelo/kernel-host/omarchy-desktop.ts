@@ -100,7 +100,27 @@ export const OMARCHY_APPS: Record<string, string> = {
   "nethack.conf": "name = NetHack\nexec = /usr/local/bin/wlterm /usr/bin/nethack\n",
   "nano.conf": "name = Nano\nexec = /usr/local/bin/wlterm /usr/bin/nano\n",
   "bash.conf": "name = Bash\nexec = /usr/local/bin/wlterm /usr/bin/bash -i\n",
+  "foot.conf":
+    "name = Foot\nexec = /usr/local/bin/foot --term=vt100 --override=main.workers=0 /usr/bin/bash -i\n",
 };
+
+/**
+ * The fontconfig configuration foot reads at startup. The demo stages one
+ * font (Inconsolata) under /usr/share/fonts and aliases the generic
+ * "monospace" family to it, so foot's default font pattern resolves without
+ * a per-user configuration.
+ */
+export const OMARCHY_FONTS_CONF = `<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <dir>/usr/share/fonts</dir>
+  <cachedir>/tmp/fontconfig</cachedir>
+  <alias>
+    <family>monospace</family>
+    <prefer><family>Inconsolata</family></prefer>
+  </alias>
+</fontconfig>
+`;
 
 /**
  * One radial glow of a wallpaper: center and radius as fractions of the
