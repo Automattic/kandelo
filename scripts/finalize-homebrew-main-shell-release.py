@@ -36,6 +36,7 @@ SHELL_PACKAGE_PATH = "packages/registry/shell/package.toml"
 BOOTSTRAP_PACKAGE_PATH = "packages/registry/homebrew-bootstrap/package.toml"
 DOC_PATH = "docs/homebrew-publishing.md"
 BREWFILE_PATH = "homebrew/main-shell.Brewfile"
+PRODUCT_CATALOG_PATH = "images/vfs/products/generated/catalog.json"
 BOUND_INPUTS = {
     "bootstrap_tree_spec_sha256": "homebrew/main-shell-brew-package-tree.json",
     "brewfile_sha256": BREWFILE_PATH,
@@ -379,16 +380,9 @@ def validate_with_canonical_checker(
                     os.fspath(migration),
                     os.fspath(metadata_path),
                     os.fspath(support),
-                    os.fspath(source_root / BOOTSTRAP_SOURCE_LOCK_PATH),
-                    os.fspath(source_root / SHELL_PACKAGE_PATH),
-                    os.fspath(source_root / BOOTSTRAP_PACKAGE_PATH),
+                    os.fspath(source_root / PRODUCT_CATALOG_PATH),
                     os.fspath(
-                        source_root
-                        / "images/vfs/products/generated/catalog.json"
-                    ),
-                    os.fspath(
-                        source_root
-                        / "homebrew/main-shell-materialization-policy.json"
+                        source_root / "homebrew/main-shell-materialization-policy.json"
                     ),
                 ],
                 check=True,
