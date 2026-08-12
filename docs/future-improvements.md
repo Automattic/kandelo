@@ -192,6 +192,12 @@ API is exposed to less-controlled callers:
   boundary; and
 - reuse the eager materialization entry validator for embedded evidence so a
   hardlink must retain its target inode identity, not merely equal bytes.
+- reject distinct `SharedArrayBuffer` wrappers that share one backing store
+  when the composer requires isolated base, scratch, and output filesystems;
+  and
+- give the runtime boot helper a report-independent exact metadata validator
+  before it activates a restored flat-lazy image with unexpected lineage
+  fields.
 
 **Files:** `host/src/homebrew-flat-lazy-vfs-composer.ts`,
 `host/src/homebrew-vfs-composer.ts`,
