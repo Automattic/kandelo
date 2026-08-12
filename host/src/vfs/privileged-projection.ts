@@ -44,6 +44,10 @@ const publishedProductBrowserMounts = new WeakMap<
   object,
   PublishedPrivilegedProgramBrowserMount
 >();
+const publishedProductProjections = new WeakMap<
+  object,
+  PrivilegedProgramProjection[]
+>();
 
 export interface PrivilegedProgramProjection {
   schema: 1;
@@ -256,6 +260,33 @@ export function snapshotPublishedPrivilegedProgramBrowserMount(
 }
 
 /**
+ * Compare a writable image file with the exact projection admitted for a
+ * privately branded product. This conveys no mount capability and is absent
+ * from public barrels; browser product loaders use it to reject stale staged
+ * destinations before granting a terminal policy.
+ */
+export async function publishedPrivilegedProgramMatchesFile(
+  product: PublishedPrivilegedProgramProduct,
+  fs: MemoryFileSystem,
+  destinationPath: string,
+): Promise<boolean> {
+  const projections = publishedProductProjections.get(product);
+  if (projections === undefined) {
+    throw new Error("privileged program product lacks publication authority");
+  }
+  const matching = projections.filter(
+    (projection) => projection.destinationPath === destinationPath,
+  );
+  if (matching.length !== 1) return false;
+  try {
+    return await sha256Hex(readRegularFile(fs, destinationPath)) ===
+      matching[0]!.artifactValidationSha256;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Copy all reviewed members into one unpublished tree, then admit the group.
  * A failed member leaves no returned backend and never mutates a bottle tree.
  */
@@ -372,6 +403,10 @@ async function publishAuthenticatedCandidate(
     mountPoint: "/usr/bin",
     imageBytes: browserMountImageBytes,
   });
+  publishedProductProjections.set(
+    product,
+    options.projections.map((projection) => ({ ...projection })),
+  );
   return product;
 }
 

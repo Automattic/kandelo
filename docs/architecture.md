@@ -1762,12 +1762,36 @@ default configuration/trust lookup reads the same image bytes that `cat` would.
 The kernel synthesizes `/etc/mtab` because it reports live mount state; it does
 not synthesize static `/etc` policy or trust data.
 
-The Task 17 rootfs data defines the canonical interactive image account as
+The rootfs data defines the canonical interactive image account as
 `maker` at uid/gid 1000 with home `/home/maker`. Its password hash, wheel
 membership, sudoers policy, and login messages are ordinary rootfs files.
-Task 18 must publish reviewed `login` and `sudo-lite` product artifacts through
-the privileged-program publication path before that account is product-ready;
-the rootfs does not synthesize those executables or a preauthenticated shell.
+Reviewed `login`, `sudo-lite`, and `sudo` artifacts are published through the
+privileged-program path before that account is product-ready; the rootfs does
+not synthesize those executables or a preauthenticated shell.
+
+The reusable browser session layer owns one lifecycle record per logical PTY.
+Under the current browser trust boundary, the live loader selects that policy
+only after all configured assets have been staged and both of these checks
+succeed: the final writable image has the one exact canonical `maker` account,
+password, wheel, sudoers, and autologin records; and a separately
+publisher-admitted product supplies the same exact `login` bytes through
+`BrowserKernel.initFromPublishedPrivilegedProgramProduct`. Image origin is not
+part of this decision, so an otherwise third-party image remains eligible when
+its final state is canonical and it is paired with that separate product.
+Image/config/descriptor data alone cannot construct the private product
+capability. This describes the repository's present safety boundary; the
+larger trust model for deliberately user-selected images remains an open
+architecture question rather than a policy settled by terminal sessions.
+
+For an eligible image/product pair, the first process is root-authorized
+`login -p -f maker`; every later process is ordinary `login -p`. UI handles
+only attach listeners to that record, while the terminal tab's explicit close
+action, kernel detach, reboot, and destruction invalidate its process
+generation, terminate the active process, and cancel pending restart. Short
+processes back off from 250 milliseconds to a five-second cap, a process that
+survives two seconds resets the delay, and a replacement launch failure remains
+visible in the terminal without automatic retry. Password authentication stays
+in the guest program and final VFS credentials rather than React.
 
 VFS images can also carry image-level metadata outside the guest file tree. The first declaration is `kernelAbi`, an exact `ABI_VERSION` requirement for images that carry ABI-bound Wasm programs. `MemoryFileSystem.readImageMetadata(image)` reads this declaration without materialising the filesystem, and `MemoryFileSystem.assertImageKernelAbi(image, abi)` validates it for callers that already know the running kernel ABI. Legacy/data-only images may omit the field.
 

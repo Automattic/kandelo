@@ -110,6 +110,10 @@ const ShellTerminalHost: React.FC<{
     if (status !== "running") return;
     if (!containerRef.current) return;
 
+    // React StrictMode mounts this effect twice. Clear renderer nodes that
+    // xterm leaves behind without removing the host-owned logical PTY.
+    containerRef.current.replaceChildren();
+
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 13,

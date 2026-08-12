@@ -32,6 +32,12 @@ export function useKernelHost(): KernelHost {
   return host;
 }
 
+/** Explicitly remove a logical terminal in response to a user UI action. */
+export function useRemovePty(): (path: string) => void {
+  const host = useKernelHost();
+  return React.useCallback((path: string) => host.removePty(path), [host]);
+}
+
 export function useStatus(): MachineStatus {
   const host = useKernelHost();
   const [s, setS] = React.useState<MachineStatus>(() => host.getStatus());
