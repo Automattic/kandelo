@@ -269,7 +269,7 @@ jobs:
         uses: ./.github/actions/detect-change-scope
         with:
           base-ref: ${{ needs.synthesize-merge.outputs.base_sha }}
-          fetch-base: 'false'
+          fetch-base: "false"
 
   gate:
     needs: [synthesize-merge, change-scope]
@@ -278,10 +278,10 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
-      actions: read          # gh run list/watch for staging-build
-      checks: read           # gh pr checks reads check runs
-      contents: read         # gh pr view/checks repository metadata
-      pull-requests: write     # drop label / comment on failure
+      actions: read # gh run list/watch for staging-build
+      checks: read # gh pr checks reads check runs
+      contents: read # gh pr view/checks repository metadata
+      pull-requests: write # drop label / comment on failure
       statuses: read
     outputs:
       staging_run_id: ${{ steps.staging.outputs.run_id }}
@@ -807,8 +807,8 @@ jobs:
       needs.change-scope.outputs.test_gate_required == 'true'
     runs-on: ubuntu-latest
     permissions:
-      actions: read            # download synthesized merge artifact
-      contents: write          # candidate release init + canonical read
+      actions: read # download synthesized merge artifact
+      contents: write # candidate release init + canonical read
     outputs:
       library_matrix: ${{ steps.compute.outputs.library_matrix }}
       program_matrix: ${{ steps.compute.outputs.program_matrix }}
@@ -1185,8 +1185,8 @@ jobs:
     if: needs.preflight.outputs.promote_matrix != '[]'
     runs-on: ubuntu-latest
     permissions:
-      actions: read      # verify a previous state-lock owner is terminal
-      contents: write    # gh release download/upload + state-lock git push
+      actions: read # verify a previous state-lock owner is terminal
+      contents: write # gh release download/upload + state-lock git push
     strategy:
       fail-fast: false
       max-parallel: 10
@@ -1278,8 +1278,8 @@ jobs:
     if: ${{ needs.preflight.result == 'success' && needs.toolchain-cache.result == 'success' && needs.preflight.outputs.library_matrix != '[]' }}
     runs-on: ubuntu-latest
     permissions:
-      actions: read      # download toolchain artifact
-      contents: write    # state-lock git push + gh release create/upload
+      actions: read # download toolchain artifact
+      contents: write # state-lock git push + gh release create/upload
     env:
       WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
     strategy:
@@ -1380,7 +1380,14 @@ jobs:
 
   # Program wave — kind=program packages, gated on the library wave.
   matrix-build:
-    needs: [synthesize-merge, preflight, toolchain-cache, promote-staging, lib-matrix-build]
+    needs:
+      [
+        synthesize-merge,
+        preflight,
+        toolchain-cache,
+        promote-staging,
+        lib-matrix-build,
+      ]
     if: |
       !cancelled() &&
       needs.preflight.result == 'success' &&
@@ -1390,8 +1397,8 @@ jobs:
       needs.preflight.outputs.program_matrix != '[]'
     runs-on: ubuntu-latest
     permissions:
-      actions: read      # download toolchain + library artifacts
-      contents: write    # state-lock git push + gh release create/upload
+      actions: read # download toolchain + library artifacts
+      contents: write # state-lock git push + gh release create/upload
     env:
       WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
     strategy:
@@ -1670,7 +1677,15 @@ jobs:
           bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE"
 
   candidate-snapshot:
-    needs: [synthesize-merge, change-scope, preflight, promote-staging, lib-matrix-build, matrix-build]
+    needs:
+      [
+        synthesize-merge,
+        change-scope,
+        preflight,
+        promote-staging,
+        lib-matrix-build,
+        matrix-build,
+      ]
     if: |
       !cancelled() &&
       needs.change-scope.outputs.package_staging_required == 'true' &&
@@ -1822,7 +1837,18 @@ jobs:
           retention-days: 1
 
   test-gate-prepare:
-    needs: [synthesize-merge, change-scope, preflight, toolchain-cache, promote-staging, lib-matrix-build, matrix-build, candidate-snapshot, staging-shell-snapshot]
+    needs:
+      [
+        synthesize-merge,
+        change-scope,
+        preflight,
+        toolchain-cache,
+        promote-staging,
+        lib-matrix-build,
+        matrix-build,
+        candidate-snapshot,
+        staging-shell-snapshot,
+      ]
     if: |
       !cancelled() &&
       needs.toolchain-cache.result == 'success' &&
@@ -1843,7 +1869,7 @@ jobs:
       PACKAGE_STAGING_REQUIRED: ${{ needs.change-scope.outputs.package_staging_required }}
       STAGING_SHELL_AVAILABLE: ${{ needs.staging-shell-snapshot.outputs.available || 'false' }}
       STAGING_SHELL_RUN_ID: ${{ needs.staging-shell-snapshot.outputs.run_id }}
-      USE_STAGING_SHELL_HANDOFF: 'false'
+      USE_STAGING_SHELL_HANDOFF: "false"
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -2097,6 +2123,13 @@ jobs:
             export WASM_POSIX_BINARY_INDEX_URL="file://$CANONICAL_INDEX"
           fi
           echo "WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" >> "$GITHUB_ENV"
+          # WHY: bulk staging deliberately skips the tap-owned bootstrap, but
+          # the canonical flat-lazy shell inspection consumes that exact
+          # package output. Resolve it explicitly through the selected index.
+          WASM_POSIX_FETCH_SKIP_PKGS= \
+            bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh \
+              --fetch-only \
+              --package homebrew-bootstrap
           use_staging_shell_handoff=false
           if jq -e 'any(.entries[]; .package == "shell")' \
               "$BLOCKED" >/dev/null && \
@@ -2151,6 +2184,12 @@ jobs:
             )"
             [ -n "$SHELL_IMAGE" ] || SHELL_IMAGE="-"
           fi
+          HOMEBREW_BOOTSTRAP="$(
+            bash scripts/resolve-binary.sh \
+              programs/homebrew-bootstrap/homebrew-bootstrap.zip \
+              2>/dev/null || true
+          )"
+          [ -n "$HOMEBREW_BOOTSTRAP" ] || HOMEBREW_BOOTSTRAP="-"
           # WHY: package-index publication and immutable bottle-mirror
           # publication are independent. Preserve exact package-identity
           # validation here, while the state contract keeps generic browser
@@ -2163,6 +2202,7 @@ jobs:
             "$CANONICAL_INDEX"
             "https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${ABI}/index.toml"
             "$SHELL_IMAGE"
+            "$HOMEBREW_BOOTSTRAP"
             "$RUNNER_TEMP/homebrew-browser-mirror-state.json"
           )
           if [ -n "$state_receipt" ]; then
@@ -2267,28 +2307,28 @@ jobs:
             label: vitest (1/2)
             group: 1/2
             kernel_only: false
-            submodules: ''
+            submodules: ""
             needs_toolchain: true
             needs_workspace: true
           - suite: vitest
             label: vitest (2/2)
             group: 2/2
             kernel_only: false
-            submodules: ''
+            submodules: ""
             needs_toolchain: true
             needs_workspace: true
           - suite: vitest
             label: vitest (resource-isolated)
             group: resource-isolated
             kernel_only: false
-            submodules: ''
+            submodules: ""
             needs_toolchain: true
             needs_workspace: true
           - suite: browser
             label: browser
             group: all
             kernel_only: false
-            submodules: ''
+            submodules: ""
             needs_toolchain: true
             needs_workspace: true
           - suite: libc
@@ -2309,7 +2349,7 @@ jobs:
             label: posix
             group: all
             kernel_only: true
-            submodules: ''
+            submodules: ""
             needs_toolchain: true
             needs_workspace: true
           - suite: sortix
@@ -2501,7 +2541,8 @@ jobs:
           retention-days: 7
 
   test-gate:
-    needs: [test-gate-validation, test-suite-early, test-gate-prepare, test-suite]
+    needs:
+      [test-gate-validation, test-suite-early, test-gate-prepare, test-suite]
     if: |
       always() &&
       !cancelled() &&
@@ -2557,7 +2598,6 @@ jobs:
   #     visible state. There are no [binary] URLs in package.toml
   #     to amend; the bot-PR mechanism is gone.
 
-
   # ---------------------------------------------------------------------
   # merge-gate-post-noop — package staging was not required.
   #
@@ -2575,9 +2615,9 @@ jobs:
       needs.change-scope.outputs.test_gate_required == 'false'
     runs-on: ubuntu-latest
     permissions:
-      contents: read           # verify the prepared base
-      pull-requests: write     # remove label + comment
-      statuses: write          # post merge-gate=success
+      contents: read # verify the prepared base
+      pull-requests: write # remove label + comment
+      statuses: write # post merge-gate=success
     env:
       GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -2656,9 +2696,9 @@ jobs:
       needs.change-scope.outputs.test_gate_required == 'true'
     runs-on: ubuntu-latest
     permissions:
-      contents: read           # verify the prepared base
-      pull-requests: write     # remove label + comment
-      statuses: write          # post merge-gate=success
+      contents: read # verify the prepared base
+      pull-requests: write # remove label + comment
+      statuses: write # post merge-gate=success
     env:
       GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -2736,10 +2776,10 @@ jobs:
       needs.test-gate.result == 'success'
     runs-on: ubuntu-latest
     permissions:
-      actions: read           # verify a previous state-lock owner is terminal
-      contents: write          # seal the candidate release
-      pull-requests: write     # remove label + comment
-      statuses: write          # post merge-gate=success
+      actions: read # verify a previous state-lock owner is terminal
+      contents: write # seal the candidate release
+      pull-requests: write # remove label + comment
+      statuses: write # post merge-gate=success
     env:
       GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ github.event.pull_request.number }}

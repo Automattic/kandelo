@@ -78,9 +78,17 @@ assert_job_needs() {
   # Capture the complete block before matching. Piping job_block into an
   # early-exiting grep can SIGPIPE awk under pipefail on larger jobs.
   block=$(job_block "$workflow" "$job")
-  needs=$(grep -m1 '^    needs:' <<<"$block")
-  printf '%s\n' "$needs" | tr '[],' '   ' | grep -qw "$dependency" || \
-    fail "$job must depend on $dependency; got $needs"
+  needs=$(awk '
+    /^    needs:/ {
+      inside = 1
+      print
+      next
+    }
+    inside && /^    [a-zA-Z0-9_-]+:/ { exit }
+    inside { print }
+  ' <<<"$block")
+  grep -Eq "(^|[^[:alnum:]_-])${dependency}([^[:alnum:]_-]|$)" <<<"$needs" ||
+    fail "$job must depend on $dependency; got $(tr '\n' ' ' <<<"$needs")"
 }
 
 assert_effective_job_permission() {
@@ -992,6 +1000,16 @@ for workflow in "$STAGING_WORKFLOW" "$PREPARE"; do
     fail "$(basename "$workflow") test-gate does not share preflight exclusions"
   grep -Fq -- '--expected-ledger "$EXPECTED"' <<<"$materialize_step" ||
     fail "$(basename "$workflow") test-gate can still raw-walk packages outside its publication ledger"
+  bootstrap_fetch_line=$(grep -nF -- '--package homebrew-bootstrap' \
+    <<<"$materialize_step" | cut -d: -f1)
+  mirror_state_line=$(grep -nF \
+    'scripts/ci-homebrew-browser-mirror-state.sh' \
+    <<<"$materialize_step" | cut -d: -f1)
+  if ! [[ "$bootstrap_fetch_line" =~ ^[1-9][0-9]*$ ]] ||
+     ! [[ "$mirror_state_line" =~ ^[1-9][0-9]*$ ]] ||
+     [ "$bootstrap_fetch_line" -ge "$mirror_state_line" ]; then
+    fail "$(basename "$workflow") does not fetch the canonical Homebrew bootstrap before lazy-shell inspection"
+  fi
 done
 [ "$(grep -Fc -- '--exclude "$PACKAGE_STAGING_EXCLUSIONS"' "$PREPARE")" -eq 2 ] || \
   fail "prepare preflight and test-gate must share one publication exclusion contract"

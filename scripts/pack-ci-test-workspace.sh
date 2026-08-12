@@ -449,6 +449,12 @@ if [ -n "$homebrew_browser_mirror_state" ]; then
         exit 1
     }
     state_receipt=""
+    staged_bootstrap="$stage/binaries/programs/wasm32/homebrew-bootstrap/homebrew-bootstrap.zip"
+    bootstrap_archive="$(realpath "$staged_bootstrap" 2>/dev/null || true)"
+    case "$bootstrap_archive" in
+        "$stage"/*) ;;
+        *) bootstrap_archive="-" ;;
+    esac
     case "$mirror_state_mode" in
         resolved)
             staged_shell="$stage/binaries/programs/wasm32/shell.vfs.zst"
@@ -503,6 +509,7 @@ if [ -n "$homebrew_browser_mirror_state" ]; then
         "$staged_homebrew_browser_mirror_state"
         "$staged_publication_blockers"
         "$shell_image"
+        "$bootstrap_archive"
     )
     if [ -n "$state_receipt" ]; then
         state_args+=("$state_receipt")

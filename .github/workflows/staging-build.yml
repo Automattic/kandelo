@@ -56,7 +56,6 @@ jobs:
   # design and docs/binary-releases.md for the consumer-side flow.
   # ---------------------------------------------------------------------
 
-
   change-scope:
     # Fork-PR support is deferred (design doc §9.1). Keep the same
     # same-repo security boundary as the package build jobs.
@@ -152,8 +151,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: read           # gh release view (target tag probe)
-      statuses: write          # post pending merge-gate status with helpful description
+      contents: read # gh release view (target tag probe)
+      statuses: write # post pending merge-gate status with helpful description
     outputs:
       library_matrix: ${{ steps.compute.outputs.library_matrix }}
       program_matrix: ${{ steps.compute.outputs.program_matrix }}
@@ -577,8 +576,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
-      actions: read      # download toolchain artifact
-      contents: write    # state-lock git push + gh release create/upload
+      actions: read # download toolchain artifact
+      contents: write # state-lock git push + gh release create/upload
     env:
       WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.baseline_tag }}/index.toml
     strategy:
@@ -658,8 +657,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
-      actions: read      # download toolchain + library artifacts
-      contents: write    # state-lock git push + gh release create/upload
+      actions: read # download toolchain + library artifacts
+      contents: write # state-lock git push + gh release create/upload
     env:
       WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.baseline_tag }}/index.toml
     strategy:
@@ -733,8 +732,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      actions: read      # verify a previous state-lock owner is terminal
-      contents: write    # state-lock git push + gh release create/upload
+      actions: read # verify a previous state-lock owner is terminal
+      contents: write # state-lock git push + gh release create/upload
     env:
       GH_TOKEN: ${{ github.token }}
       GITHUB_REPOSITORY: ${{ github.repository }}
@@ -887,7 +886,15 @@ jobs:
     # legitimately hit every selected package in the draft because earlier
     # jobs in the same attempt uploaded them, while still needing to validate
     # the gate itself, especially after workflow/test-gate fixes.
-    needs: [change-scope, preflight, toolchain-cache, lib-matrix-build, matrix-build, repair-staging-index]
+    needs:
+      [
+        change-scope,
+        preflight,
+        toolchain-cache,
+        lib-matrix-build,
+        matrix-build,
+        repair-staging-index,
+      ]
     if: |
       !cancelled() &&
       needs.toolchain-cache.result == 'success' &&
@@ -939,7 +946,7 @@ jobs:
         uses: ./.github/actions/download-run-artifacts
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          pattern: '*-wasm*'
+          pattern: "*-wasm*"
           path: ${{ runner.temp }}/staged-archives
 
       - name: Materialize binaries
@@ -1034,6 +1041,13 @@ jobs:
             export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${ABI}/index.toml"
           fi
           echo "WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" >> "$GITHUB_ENV"
+          # WHY: bulk staging deliberately skips the tap-owned bootstrap, but
+          # the canonical flat-lazy shell inspection consumes that exact
+          # package output. Resolve it explicitly through the selected index.
+          WASM_POSIX_FETCH_SKIP_PKGS= \
+            bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh \
+              --fetch-only \
+              --package homebrew-bootstrap
           bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh \
             --fetch-only \
             --expected-ledger "$EXPECTED"
@@ -1046,9 +1060,15 @@ jobs:
               2>/dev/null || true
           )"
           [ -n "$SHELL_IMAGE" ] || SHELL_IMAGE="-"
-          # WHY: resolved shell packages are self-contained flat products.
-          # The state contract binds package identity to a fresh inspection of
-          # the exact image and carries no separate browser-mirror authority.
+          HOMEBREW_BOOTSTRAP="$(
+            bash scripts/resolve-binary.sh \
+              programs/homebrew-bootstrap/homebrew-bootstrap.zip \
+              2>/dev/null || true
+          )"
+          [ -n "$HOMEBREW_BOOTSTRAP" ] || HOMEBREW_BOOTSTRAP="-"
+          # WHY: the canonical shell is a flat-lazy product. Bind the exact
+          # image and bootstrap bytes to its checked 37-asset mirror before a
+          # browser test workspace can recover those deferred transports.
           bash scripts/dev-shell.sh \
             bash scripts/ci-homebrew-browser-mirror-state.sh create \
             "$EXPECTED" \
@@ -1056,6 +1076,7 @@ jobs:
             "$CANONICAL_INDEX" \
             "https://github.com/${GITHUB_REPOSITORY}/releases/download/${PACKAGE_BASELINE_TAG}/index.toml" \
             "$SHELL_IMAGE" \
+            "$HOMEBREW_BOOTSTRAP" \
             "$RUNNER_TEMP/homebrew-browser-mirror-state.json"
 
       - name: Skip staging test suites
@@ -1134,28 +1155,28 @@ jobs:
             label: vitest (1/2)
             group: 1/2
             kernel_only: false
-            submodules: ''
+            submodules: ""
             needs_toolchain: true
             needs_workspace: true
           - suite: vitest
             label: vitest (2/2)
             group: 2/2
             kernel_only: false
-            submodules: ''
+            submodules: ""
             needs_toolchain: true
             needs_workspace: true
           - suite: vitest
             label: vitest (resource-isolated)
             group: resource-isolated
             kernel_only: false
-            submodules: ''
+            submodules: ""
             needs_toolchain: true
             needs_workspace: true
           - suite: browser
             label: browser
             group: all
             kernel_only: false
-            submodules: ''
+            submodules: ""
             needs_toolchain: true
             needs_workspace: true
           - suite: libc
@@ -1176,7 +1197,7 @@ jobs:
             label: posix
             group: all
             kernel_only: true
-            submodules: ''
+            submodules: ""
             needs_toolchain: true
             needs_workspace: true
           - suite: sortix
@@ -1334,7 +1355,15 @@ jobs:
           retention-days: 7
 
   test-gate:
-    needs: [change-scope, preflight, test-gate-validation, test-suite-early, test-gate-prepare, test-suite]
+    needs:
+      [
+        change-scope,
+        preflight,
+        test-gate-validation,
+        test-suite-early,
+        test-gate-prepare,
+        test-suite,
+      ]
     if: |
       always() &&
       !cancelled() &&
@@ -1573,7 +1602,7 @@ jobs:
       group: phase-b-1-publish-${{ needs.preflight.outputs.target_tag }}
       cancel-in-progress: false
     permissions:
-      pull-requests: write   # post/edit PR comment
+      pull-requests: write # post/edit PR comment
     env:
       GH_TOKEN: ${{ github.token }}
     steps:

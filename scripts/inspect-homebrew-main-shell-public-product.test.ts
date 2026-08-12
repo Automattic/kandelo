@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import { zipSync, type Zippable } from "fflate";
 
@@ -32,6 +43,8 @@ import {
 
 const MiB = 1024 * 1024;
 const encoder = new TextEncoder();
+const execFileAsync = promisify(execFile);
+const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 const selectionBytes = bytes("../homebrew/main-shell-flat-selection.json");
 const materializationPolicyBytes = bytes(
   "../homebrew/main-shell-materialization-policy.json",
@@ -90,6 +103,7 @@ test("binds the exact 3/1/2/35 lazy shell and checked mirror plan", async () => 
     image: {
       sha256: sha256(fixture.imageBytes),
       bytes: fixture.imageBytes.byteLength,
+      kernel_abi: 42,
     },
     homebrew_bootstrap: {
       sha256: sha256(fixture.bootstrapArchive),
@@ -114,6 +128,102 @@ test("binds the exact 3/1/2/35 lazy shell and checked mirror plan", async () => 
       asset_count: 37,
     },
   });
+});
+
+test("CI mirror state admits the exact flat-lazy shell and requires its mirror", async () => {
+  const fixture = await productFixture();
+  const root = mkdtempSync(join(tmpdir(), "kandelo-flat-lazy-ci-state-"));
+  try {
+    const image = join(root, "shell.vfs.zst");
+    const bootstrap = join(root, "homebrew-bootstrap.zip");
+    const expected = join(root, "expected.json");
+    const blockers = join(root, "blockers.json");
+    const index = join(root, "index.toml");
+    const state = join(root, "state.json");
+    const xtask = join(root, "xtask");
+    const cacheKey = "c".repeat(64);
+    writeFileSync(image, fixture.imageBytes);
+    writeFileSync(bootstrap, fixture.bootstrapArchive);
+    writeFileSync(
+      expected,
+      `${JSON.stringify({
+        abi_version: 42,
+        entries: [
+          {
+            package: "shell",
+            arch: "wasm32",
+            kind: "program",
+            version: "0.1.0",
+            revision: 24,
+            cache_key_sha: cacheKey,
+          },
+        ],
+      })}\n`,
+    );
+    writeFileSync(
+      blockers,
+      `${JSON.stringify({ abi_version: 42, entries: [] })}\n`,
+    );
+    writeFileSync(index, "abi_version = 42\n");
+    writeFileSync(
+      xtask,
+      "#!/usr/bin/env bash\n" +
+        "set -euo pipefail\n" +
+        '[ "$1:$2:$3" = index-candidate:current-entry:--canonical-index ]\n' +
+        "printf 'false\\n'\n",
+    );
+    chmodSync(xtask, 0o755);
+
+    const command = join(
+      repoRoot,
+      "scripts/ci-homebrew-browser-mirror-state.sh",
+    );
+    const environment = {
+      ...process.env,
+      WASM_POSIX_XTASK_BIN: xtask,
+    };
+    await execFileAsync(
+      "bash",
+      [
+        command,
+        "create",
+        expected,
+        blockers,
+        index,
+        "https://example.invalid/index.toml",
+        image,
+        bootstrap,
+        state,
+      ],
+      { cwd: repoRoot, env: environment },
+    );
+
+    const value = JSON.parse(readFileSync(state, "utf8"));
+    assert.equal(value.schema, 3);
+    assert.equal(value.mode, "resolved");
+    assert.equal(value.transport, "flat-lazy");
+    assert.equal(value.mirror_required, true);
+    assert.equal(
+      value.inspection.kind,
+      HOMEBREW_MAIN_SHELL_PUBLIC_PRODUCT_KIND,
+    );
+    assert.deepEqual(value.inspection.partition, {
+      embedded_bottles: 3,
+      bootstrap_trees: 1,
+      runtime_cohort_bottles: 2,
+      ordinary_deferred_bottles: 35,
+      deferred_bottles: 37,
+      initial_pending_trees: 38,
+    });
+
+    await execFileAsync(
+      "bash",
+      [command, "validate", "producer", state, blockers, image, bootstrap],
+      { cwd: repoRoot, env: environment },
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("rejects bootstrap bytes that are not the deferred tree in the image", async () => {
@@ -172,6 +282,23 @@ test("rejects flat lazy metadata with the wrong ordinary deferred count", async 
   );
 });
 
+test("rejects a flat-lazy shell for a different kernel ABI", async () => {
+  const fixture = await productFixture({ kernelAbi: 41 });
+  await assert.rejects(
+    () =>
+      inspectHomebrewMainShellPublicProduct({
+        imageBytes: fixture.imageBytes,
+        homebrewBootstrapArchiveBytes: fixture.bootstrapArchive,
+        homebrewBootstrapSpec: bootstrapSpec,
+        selectionBytes,
+        materializationPolicyBytes,
+        runtimeSupportPolicyBytes,
+        checkedMirrorPlanBytes,
+      }),
+    /declares kernel ABI 41, expected 42/,
+  );
+});
+
 test("rejects an unclassified deferred package tree", async () => {
   const fixture = await productFixture({ includeUnknownTree: true });
   await assert.rejects(
@@ -192,6 +319,7 @@ test("rejects an unclassified deferred package tree", async () => {
 async function productFixture(options?: {
   embeddedPlan?: typeof checkedMirrorPlan;
   includeUnknownTree?: boolean;
+  kernelAbi?: number;
   omitOrdinaryBinding?: boolean;
 }): Promise<{ imageBytes: Uint8Array; bootstrapArchive: Uint8Array }> {
   const embeddedPlan = options?.embeddedPlan ?? checkedMirrorPlan;
@@ -297,7 +425,7 @@ async function productFixture(options?: {
   );
   fs.setImageMetadata({
     version: 1,
-    kernelAbi: 42,
+    kernelAbi: options?.kernelAbi ?? 42,
     homebrewFlatLazy: {
       schema: 1,
       kind: "kandelo-homebrew-flat-selection-lazy-v1",

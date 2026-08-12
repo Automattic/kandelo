@@ -47,7 +47,7 @@ LOCAL_SHELL_OVERRIDE="$REPO_ROOT/scripts/activate-local-shell-build-override.sh"
 CI_BLOCKER_MATERIALIZER="$REPO_ROOT/scripts/materialize-ci-publication-blockers.sh"
 CI_STAGING_SHELL_VERIFIER="$REPO_ROOT/scripts/verify-ci-staging-shell-handoff.sh"
 CI_BROWSER_MIRROR_STATE="$REPO_ROOT/scripts/ci-homebrew-browser-mirror-state.sh"
-CANONICAL_FLAT_SHELL_INSPECTOR="$REPO_ROOT/scripts/inspect-canonical-flat-shell.ts"
+PUBLIC_PRODUCT_INSPECTOR_TEST="$REPO_ROOT/scripts/inspect-homebrew-main-shell-public-product.test.ts"
 CI_WORKSPACE_PACKER="$REPO_ROOT/scripts/pack-ci-test-workspace.sh"
 CI_TEST_RUNNER="$REPO_ROOT/scripts/ci-run-test-suite.sh"
 BUILD_PROGRAMS="$REPO_ROOT/scripts/build-programs.sh"
@@ -1120,7 +1120,7 @@ printf 'abi_version = %s\n' "$abi" > "$handoff_index"
 bash "$CI_BROWSER_MIRROR_STATE" create \
   "$handoff_expected" "$handoff_blockers" \
   "$handoff_index" https://invalid.example/index.toml \
-  "$handoff_image" "$handoff_state" "$handoff_receipt"
+  "$handoff_image" - "$handoff_state" "$handoff_receipt"
 [ "$(jq -r '.mode' "$handoff_state")" = \
     publication-blocked-candidate ] &&
   [ "$(jq -r '.schema' "$handoff_state")" = 3 ] &&
@@ -1128,149 +1128,19 @@ bash "$CI_BROWSER_MIRROR_STATE" create \
   fail "candidate shell state did not preserve its distinct authority"
 bash "$CI_BROWSER_MIRROR_STATE" validate producer \
   "$handoff_state" "$handoff_blockers" \
-  "$handoff_image" "$handoff_receipt"
+  "$handoff_image" - "$handoff_receipt"
 tampered_receipt="$handoff_probe/tampered-receipt.json"
 jq '.run_id += 1' "$handoff_receipt" > "$tampered_receipt"
 expect_failure "staging receipt does not match state" \
   bash "$CI_BROWSER_MIRROR_STATE" validate producer \
     "$handoff_state" "$handoff_blockers" \
-    "$handoff_image" "$tampered_receipt"
+    "$handoff_image" - "$tampered_receipt"
 expect_failure "candidate shell receipt must be one regular file" \
   bash "$CI_BROWSER_MIRROR_STATE" validate producer \
-    "$handoff_state" "$handoff_blockers" "$handoff_image" -
+    "$handoff_state" "$handoff_blockers" "$handoff_image" - -
 
-flat_state_probe="$TMP_ROOT/canonical-flat-shell-state"
-mkdir -p "$flat_state_probe"
-flat_state_image="$flat_state_probe/shell.vfs.zst"
-lazy_state_image="$flat_state_probe/lazy-shell.vfs.zst"
-KANDELO_FLAT_STATE_IMAGE="$flat_state_image" \
-KANDELO_LAZY_STATE_IMAGE="$lazy_state_image" \
-  npx tsx -e '
-    import { createHash } from "node:crypto";
-    import { readFileSync, writeFileSync } from "node:fs";
-    import { ensureDirRecursive, writeVfsBinary } from "./host/src/vfs/image-helpers.ts";
-    import { MemoryFileSystem } from "./host/src/vfs/memory-fs.ts";
-    const maxByteLength = 512 * 1024 * 1024;
-    const selection = new Uint8Array(readFileSync("homebrew/main-shell-flat-selection.json"));
-    const shellConfig = new Uint8Array(readFileSync("homebrew/main-shell-default.json"));
-    const demoConfig = new Uint8Array(readFileSync("homebrew/main-shell-flat-demo.json"));
-    const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
-    const build = async (lazy) => {
-      const fs = MemoryFileSystem.create(
-        new SharedArrayBuffer(4 * 1024 * 1024, { maxByteLength }),
-        maxByteLength,
-      );
-      for (const path of ["/bin", "/etc/kandelo", "/opt/kandelo/homebrew/bin", "/usr/bin"]) {
-        ensureDirRecursive(fs, path);
-      }
-      writeVfsBinary(fs, "/etc/kandelo/shell.json", shellConfig, 0o644);
-      writeVfsBinary(fs, "/etc/kandelo/demo.json", demoConfig, 0o644);
-      writeVfsBinary(fs, "/opt/kandelo/homebrew/bin/bash", new Uint8Array([0,97,115,109,1,0,0,0]), 0o755);
-      writeVfsBinary(fs, "/opt/kandelo/homebrew/bin/dash", new Uint8Array([0,97,115,109,1,0,0,0]), 0o755);
-      writeVfsBinary(fs, "/opt/kandelo/homebrew/bin/env", new Uint8Array([0,97,115,109,1,0,0,0]), 0o755);
-      writeVfsBinary(fs, "/opt/kandelo/homebrew/bin/brew", new TextEncoder().encode("#!/bin/sh\n"), 0o755);
-      fs.symlink("/opt/kandelo/homebrew/bin/brew", "/usr/bin/brew");
-      for (const path of ["/bin/bash", "/usr/bin/bash"]) fs.symlink("/opt/kandelo/homebrew/bin/bash", path);
-      for (const path of ["/bin/sh", "/usr/bin/sh"]) fs.symlink("/opt/kandelo/homebrew/bin/dash", path);
-      for (const path of ["/bin/env", "/usr/bin/env"]) fs.symlink("/opt/kandelo/homebrew/bin/env", path);
-      if (lazy) fs.registerLazyFile("/lazy", "https://invalid.example/lazy", 1, 0o644);
-      return fs.saveImage({metadata: {
-        version: 1,
-        kernelAbi: 42,
-        createdBy: "images/vfs/scripts/build-homebrew-flat-vfs-image.ts",
-        capacity: {maxByteLength},
-        baseImage: {sha256: "b".repeat(64), bytes: 1234, kernelAbi: 42},
-        homebrewFlat: {
-          selectionSha256: sha256(selection),
-          requestedVfsFilename: "shell.vfs.zst",
-          resourcePolicy: "kandelo-homebrew-vfs-main-shell-v1",
-        },
-        shellConfig: {
-          path: "/opt/kandelo/homebrew/bin/bash",
-          argv: ["bash", "-l", "-i"],
-          sha256: sha256(shellConfig),
-          bytes: shellConfig.byteLength,
-        },
-        demoConfig: {
-          path: "/etc/kandelo/demo.json",
-          sha256: sha256(demoConfig),
-          bytes: demoConfig.byteLength,
-        },
-      }});
-    };
-    (async () => {
-      writeFileSync(process.env.KANDELO_FLAT_STATE_IMAGE, await build(false));
-      writeFileSync(process.env.KANDELO_LAZY_STATE_IMAGE, await build(true));
-    })().catch((error) => {
-      console.error(error);
-      process.exitCode = 1;
-    });
-  '
-flat_state_expected="$flat_state_probe/expected.json"
-flat_state_blockers="$flat_state_probe/blockers.json"
-flat_state_index="$flat_state_probe/index.toml"
-flat_state="$flat_state_probe/state.json"
-flat_cache_key="97dd1a61cb7ab252ed0c6d53daaad912608621efdb393deae7edf4e66ff41907"
-jq -n --argjson abi "$abi" --arg cache "$flat_cache_key" '
-  {
-    abi_version: $abi,
-    entries: [{
-      package: "shell",
-      arch: "wasm32",
-      kind: "program",
-      version: "0.1.0",
-      revision: 23,
-      cache_key_sha: $cache
-    }]
-  }
-' > "$flat_state_expected"
-jq -n --argjson abi "$abi" '{abi_version: $abi, entries: []}' \
-  > "$flat_state_blockers"
-cat > "$flat_state_index" <<EOF
-abi_version = $abi
-generated_at = "2026-08-10T00:00:00Z"
-generator = "canonical flat shell state fixture"
-
-[[packages]]
-name = "shell"
-version = "0.1.0"
-revision = 23
-
-[packages.binary.wasm32]
-status = "success"
-archive_url = "shell-0.1.0-rev23-abi42-wasm32-97dd1a61.tar.zst"
-archive_sha256 = "$(printf 'a%.0s' {1..64})"
-cache_key_sha = "$flat_cache_key"
-built_at = "2026-08-10T00:00:00Z"
-built_by = "https://example.invalid/run/1"
-EOF
-bash "$CI_BROWSER_MIRROR_STATE" create \
-  "$flat_state_expected" "$flat_state_blockers" \
-  "$flat_state_index" \
-  https://github.com/Automattic/kandelo/releases/download/binaries-abi-v42/index.toml \
-  "$flat_state_image" "$flat_state"
-jq -e '
-  .schema == 3 and
-  .mode == "resolved" and
-  .mirror_required == false and
-  .transport == "flat-self-contained" and
-  .inspection.kind == "kandelo-canonical-flat-shell" and
-  .inspection.transport == {
-    kind: "flat-self-contained",
-    mirror_required: false
-  } and
-  .inspection.image.sha256 == .image.sha256 and
-  .inspection.image.bytes == .image.bytes
-' "$flat_state" >/dev/null ||
-  fail "resolved shell state did not preserve its flat inspection authority"
-bash "$CI_BROWSER_MIRROR_STATE" validate producer \
-  "$flat_state" "$flat_state_blockers" "$flat_state_image"
-expect_failure "self-contained" \
-  bash "$CI_BROWSER_MIRROR_STATE" create \
-    "$flat_state_expected" "$flat_state_blockers" \
-    "$flat_state_index" \
-    https://github.com/Automattic/kandelo/releases/download/binaries-abi-v42/index.toml \
-    "$lazy_state_image" "$flat_state_probe/lazy-state.json"
+node --import tsx --test "$PUBLIC_PRODUCT_INSPECTOR_TEST" ||
+  fail "flat-lazy CI mirror-state integration failed"
 
 override_probe="$TMP_ROOT/local-shell-override"
 override_generation="$override_probe/generation"
@@ -2654,36 +2524,6 @@ expect_failure "browser state changed before final authority" \
   env TEST_REVALIDATE_FAIL=1 bash "$ci_prepare_probe"
 [ -f "$ci_prepare_probe_log" ] ||
   fail "CI browser preparation did not run its final state validation"
-
-flat_prepare_probe_root="$TMP_ROOT/ci-browser-flat-transport"
-flat_prepare_probe="$flat_prepare_probe_root/probe.sh"
-mkdir -p "$flat_prepare_probe_root/apps/browser-demos/public"
-{
-  printf 'set -euo pipefail\n'
-  printf 'REPO_ROOT=%q\n' "$flat_prepare_probe_root"
-  printf 'CI_HOMEBREW_BROWSER_STATE_VALIDATED=1\n'
-  printf 'CI_HOMEBREW_BROWSER_STATE_MODE=unvalidated\n'
-  printf 'CI_HOMEBREW_BROWSER_TRANSPORT=""\n'
-  printf 'CI_HOMEBREW_BROWSER_MIRROR_REQUIRED=""\n'
-  printf 'CI_HOMEBREW_BROWSER_IMAGE=""\n'
-  printf 'CI_HOMEBREW_BROWSER_REPORT_ROOT=""\n'
-  printf 'CI_HOMEBREW_BROWSER_MIRROR=""\n'
-  printf 'validate_ci_homebrew_browser_state() {\n'
-  printf '  CI_HOMEBREW_BROWSER_STATE_MODE=resolved\n'
-  printf '  CI_HOMEBREW_BROWSER_TRANSPORT=flat-self-contained\n'
-  printf '  CI_HOMEBREW_BROWSER_MIRROR_REQUIRED=false\n'
-  printf '}\n'
-  cat "$ci_browser_prepare_function"
-  printf 'prepare_ci_homebrew_browser_mirror\n'
-} > "$flat_prepare_probe"
-bash "$flat_prepare_probe" ||
-  fail "validated self-contained flat transport still required mirror recovery"
-flat_probe_mirror="$flat_prepare_probe_root/apps/browser-demos/public/homebrew-main-shell-bottles"
-[ ! -e "$flat_probe_mirror" ] && [ ! -L "$flat_probe_mirror" ] ||
-  fail "self-contained flat transport created a closed browser mirror"
-mkdir "$flat_probe_mirror"
-expect_failure "closed Homebrew browser mirror already exists" \
-  bash "$flat_prepare_probe"
 
 ci_state_probe="$TMP_ROOT/ci-browser-state-authority.sh"
 {

@@ -12,6 +12,7 @@ import {
   parseHomebrewVfsMaterializationPolicy,
 } from "../host/src/homebrew-vfs-materialization-policy";
 import { HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH } from "../host/src/homebrew-bottle-mirror-plan";
+import { ABI_VERSION } from "../host/src/generated/abi";
 import { MemoryFileSystem } from "../host/src/vfs/memory-fs";
 import {
   assertPackageDeferredZipTreeState,
@@ -31,6 +32,7 @@ export interface HomebrewMainShellPublicProduct {
   image: {
     sha256: string;
     bytes: number;
+    kernel_abi: number;
   };
   homebrew_bootstrap: {
     sha256: string;
@@ -83,7 +85,9 @@ export async function inspectHomebrewMainShellPublicProduct(input: {
     input.checkedMirrorPlanBytes,
     "checked mirror plan",
   );
-  const selection = parseCanonicalHomebrewBottleSelection(selectionBytes);
+  const selection = parseCanonicalHomebrewBottleSelection(selectionBytes, {
+    expectedAbi: ABI_VERSION,
+  });
   const materializationPolicy = parseHomebrewVfsMaterializationPolicy(
     parseJsonBytes(materializationPolicyBytes, "materialization policy"),
   );
@@ -155,8 +159,14 @@ export async function inspectHomebrewMainShellPublicProduct(input: {
   }
 
   const metadata = fs.getImageMetadata();
+  if (metadata === null || metadata.kernelAbi !== ABI_VERSION) {
+    throw new Error(
+      `main-shell image declares kernel ABI ${metadata?.kernelAbi ?? "none"}, ` +
+        `expected ${ABI_VERSION}`,
+    );
+  }
   const flatBinding = record(
-    metadata?.homebrewFlatLazy,
+    metadata.homebrewFlatLazy,
     "flat lazy shell metadata binding",
   );
   const selectedPartition = record(
@@ -222,6 +232,7 @@ export async function inspectHomebrewMainShellPublicProduct(input: {
     image: {
       sha256: sha256(imageBytes),
       bytes: imageBytes.byteLength,
+      kernel_abi: metadata.kernelAbi,
     },
     homebrew_bootstrap: {
       sha256: sha256(bootstrapBytes),
