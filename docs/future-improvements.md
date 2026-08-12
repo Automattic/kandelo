@@ -107,6 +107,18 @@ current browser boundary as complete POSIX socket or HTTP fidelity.
 **Files:** `host/src/networking/`, `apps/browser-demos/public/service-worker.js`,
 deployment infrastructure and browser acceptance
 
+### Reject credentialed Fetch modes at the constrained proxy boundary
+
+The constrained proxy rejects explicit credential headers, but a
+service-worker `Request` can also carry a credential mode independently of its
+visible header list. Before the proxy path is used for authenticated browser
+traffic, reject `credentials: "include"` and other credential-bearing modes
+instead of rebuilding them as anonymous requests. Add a real service-worker
+test that proves rejection happens before dispatch.
+
+**Files:** `apps/browser-demos/public/service-worker.js`,
+`apps/browser-demos/test/browser-cors-proxy.spec.ts`
+
 ### PTY terminal integration with xterm.js
 The kernel has full PTY support (PR #181), and browser UI surfaces should use xterm.js-backed PTYs rather than plain `<div>` output with `appendStdinData`. Connecting PTY pairs to xterm.js gives proper terminal rendering (ANSI escapes, cursor, scrollback) and real terminal behavior (isatty=true, proper termios).
 
@@ -189,6 +201,35 @@ PR #383 (`fix(kernel): share AF_INET accept queue across fork — nginx multi-wo
 **Files:** `apps/browser-demos/lib/*-client.ts`, anything calling `BrowserKernel.injectConnection`. Convention: store `this.pid = 0` (or import `GLOBAL_PIPE_PID = 0`) for all pipe ops on injected pipes.
 
 ## Host runtime
+
+### Complete SpiderMonkey nonblocking TLS cancellation and write ordering
+
+The native Node compatibility layer now retries OpenSSL `WANT_READ` and
+`WANT_WRITE` through the existing readiness dispatcher, which is sufficient
+for ordinary HTTPS and npm traffic. Two lifecycle edges remain to harden:
+
+- serialize concurrent writes per TLS handle so a later write cannot enter
+  OpenSSL while an earlier write is waiting to retry; and
+- retain a cancellation handle for a handshake that has not produced a socket
+  object yet, so destroying the JavaScript socket can unlink its readiness
+  watch and release the file descriptor, `SSL`, and context exactly once.
+
+Add focused cases for two writes where the first returns `WANT_WRITE`, and for
+socket destruction while a handshake remains pending.
+
+**Files:** `packages/registry/node-compat/bootstrap.js`,
+`packages/registry/spidermonkey/patches/0012-kandelo-node-compat-shell-entry.patch`
+
+### Resolve main-script relative imports in SpiderMonkey Node compatibility
+
+The installed cowsay package works through its public module API, but directly
+executing its CLI currently fails to resolve `./index` relative to the package
+entry script. Fix the main-script module base so normal installed bin shims can
+run without an API-level invocation, then restore browser acceptance to execute
+`./node_modules/.bin/cowsay Kandelo` through the ordinary shell path.
+
+**Files:** `packages/registry/node-compat/bootstrap.js`,
+`apps/browser-demos/test/kandelo-node.spec.ts`
 
 ### Harden flat lazy shell composition trust boundaries
 
