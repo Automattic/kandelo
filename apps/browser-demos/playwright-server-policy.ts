@@ -1,11 +1,20 @@
 export interface PlaywrightServerEnvironment {
   CI?: string;
+  KANDELO_ABI_STAGING_ASSEMBLED_SITE_ROOT?: string;
   KANDELO_CANONICAL_FLAT_SHELL_STRICT?: string;
   KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE?: string;
   KANDELO_HOMEBREW_MAIN_SHELL_STRICT?: string;
   KANDELO_NODE_VFS_STRICT?: string;
   KANDELO_PLAYWRIGHT_SERVE_DIST?: string;
   KANDELO_SOURCE_ROOTFS_SHELL_STRICT?: string;
+}
+
+export function playwrightTestIgnoreForEnvironment(
+  env: PlaywrightServerEnvironment,
+): RegExp[] {
+  return env.KANDELO_ABI_STAGING_ASSEMBLED_SITE_ROOT === undefined
+    ? [/abi-staging-pages-assembled-site\.spec\.ts$/]
+    : [];
 }
 
 /**

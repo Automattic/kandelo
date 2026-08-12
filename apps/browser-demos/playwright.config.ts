@@ -2,7 +2,10 @@ import { defineConfig } from "@playwright/test";
 import { lstatSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { shouldReuseExistingPlaywrightServer } from "./playwright-server-policy";
+import {
+  playwrightTestIgnoreForEnvironment,
+  shouldReuseExistingPlaywrightServer,
+} from "./playwright-server-policy";
 import { HOMEBREW_CLOSED_ACCEPTANCE_VITE_MODE } from "./lib/homebrew-closed-acceptance";
 import { playwrightWebServerEnvironment } from "./playwright-closed-acceptance";
 
@@ -91,6 +94,10 @@ for (const key of browserEnvironmentKeys) {
 export default defineConfig({
   testDir: join(__dirname, "test"),
   testMatch: "*.spec.ts",
+  // The assembled-site proof reads a producer-returned sealed tree during
+  // module initialization. Ordinary browser suites have no such tree; the
+  // dedicated atomic Pages gate supplies it and must remain its sole caller.
+  testIgnore: playwrightTestIgnoreForEnvironment(process.env),
   timeout: 120_000,
   workers: process.env.CI ? 1 : undefined,
   use: {
