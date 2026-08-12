@@ -335,6 +335,12 @@ def check_merge_gate(workflow)
           "${{ needs.capture-current-subject.outputs.exact-head }}" &&
         gate_exact.dig("with", "path") == "abi-staging-exact-head",
         "gate does not inspect the exact PR head as inert data")
+  gate_exact_index = validate.fetch("steps").index(gate_exact)
+  gate_musl = named_step(
+    validate, "Materialize exact musl repository input as inert data"
+  )
+  gate_musl_index = validate.fetch("steps").index(gate_musl)
+  gate_musl_source = gate_musl.fetch("run")
   download_structure = named_step(
     validate, "Download exact-head structural ABI evidence"
   )
@@ -346,6 +352,20 @@ def check_merge_gate(workflow)
   provenance = named_step(
     validate, "Validate current request and locate protected Check provenance"
   )
+  provenance_index = validate.fetch("steps").index(provenance)
+  check(gate_exact_index < gate_musl_index &&
+        gate_musl_index < provenance_index &&
+        gate_musl_source.include?(
+          "git -C abi-staging-exact-head ls-tree HEAD -- libc/musl"
+        ) &&
+        gate_musl_source.include?("abi-staging-authority/.gitmodules") &&
+        gate_musl_source.include?("^160000[[:space:]]commit") &&
+        gate_musl_source.include?("env -u GH_TOKEN -u GITHUB_TOKEN") &&
+        gate_musl_source.match?(/fetch\s+--no-tags\s+--depth=1/) &&
+        gate_musl_source.include?("status --porcelain=v1 --untracked-files=all") &&
+        !gate_musl_source.include?("abi-staging-exact-head/.gitmodules") &&
+        !gate_musl_source.match?(/git\s+(?:-C\s+[^\n]+\s+)?submodule\s+update/),
+        "gate does not materialize exact musl data from protected transport")
   check(!provenance.key?("if") && provenance["continue-on-error"] != true,
         "current evidence validation must be unconditional and non-swallowing")
   provenance_source = provenance.fetch("run")
@@ -588,6 +608,30 @@ begin
       copy.dig("jobs", "validate-current-evidence", "steps") << {
         "name" => "Candidate execution", "run" => "bash abi-staging-exact-head/build.sh"
       }
+    },
+    "merge gate missing exact musl materialization" => lambda { |copy|
+      copy.dig("jobs", "validate-current-evidence", "steps").reject! do |step|
+        step["name"] == "Materialize exact musl repository input as inert data"
+      end
+    },
+    "merge gate candidate-controlled musl transport" => lambda { |copy|
+      step = copy.dig("jobs", "validate-current-evidence", "steps").find do |item|
+        item["name"] == "Materialize exact musl repository input as inert data"
+      end
+      step["run"] = step.fetch("run").gsub(
+        "abi-staging-authority/.gitmodules",
+        "abi-staging-exact-head/.gitmodules"
+      )
+    },
+    "merge gate musl materialization after derivation" => lambda { |copy|
+      steps = copy.dig("jobs", "validate-current-evidence", "steps")
+      materialization = steps.delete_at(steps.index do |step|
+        step["name"] == "Materialize exact musl repository input as inert data"
+      end)
+      provenance_index = steps.index do |step|
+        step["name"] == "Validate current request and locate protected Check provenance"
+      end
+      steps.insert(provenance_index + 1, materialization)
     },
     "conditional final validation" => lambda { |copy|
       step = copy.dig("jobs", "validate-current-evidence", "steps").find do |item|

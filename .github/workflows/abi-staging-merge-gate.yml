@@ -250,6 +250,29 @@ jobs:
           persist-credentials: false
           path: abi-staging-exact-head
 
+      - name: Materialize exact musl repository input as inert data
+        run: |
+          set -euo pipefail
+          # WHY: transport authority comes only from the protected checkout
+          musl_row=$(git -C abi-staging-exact-head ls-tree HEAD -- libc/musl)
+          [[ $musl_row =~ ^160000[[:space:]]commit[[:space:]][0-9a-f]{40}[[:space:]]libc/musl$ ]]
+          musl_sha=$(awk '{ print $3 }' <<<"$musl_row")
+          [[ $musl_sha =~ ^[0-9a-f]{40}$ ]]
+
+          musl_url=$(git config -f abi-staging-authority/.gitmodules --get submodule.musl.url)
+          [[ $musl_url == https://github.com/ifduyue/musl.git ]]
+          [[ -d abi-staging-exact-head/libc/musl && ! -L abi-staging-exact-head/libc/musl ]]
+          [[ -z $(find abi-staging-exact-head/libc/musl -mindepth 1 -maxdepth 1 -print -quit) ]]
+
+          git -C abi-staging-exact-head/libc/musl init --quiet
+          git -C abi-staging-exact-head/libc/musl remote add origin "$musl_url"
+          env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_RUNTIME_TOKEN \
+            git -C abi-staging-exact-head/libc/musl \
+              fetch --no-tags --depth=1 origin "$musl_sha"
+          git -C abi-staging-exact-head/libc/musl checkout --quiet --detach "$musl_sha"
+          [[ $(git -C abi-staging-exact-head/libc/musl rev-parse HEAD) == "$musl_sha" ]]
+          [[ -z $(git -C abi-staging-exact-head status --porcelain=v1 --untracked-files=all) ]]
+
       - name: Set up declared protected build tools
         uses: ./abi-staging-authority/.github/actions/setup-nix
 
