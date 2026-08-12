@@ -54,15 +54,19 @@ if [ ! -d "$SRC_DIR" ]; then
     mkdir -p "$SRC_DIR"
     tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "$TARBALL"
-    # Keep gdbus/portal built-in type registrations out of gio init so a
-    # static link stays free of the gdbus object graph (PR22 defines
-    # GIO_DBUS_BUILTIN_MODULES when the dbus stack lands).
+    # Keep the dbus-backed built-in module registrations (notification
+    # backends, portal monitors) out of gio init — their TUs are not
+    # compiled. GIO_DBUS_BUILTIN_MODULES gates them back in if a port
+    # ever needs one.
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/giomodule-no-dbus-builtins.patch"
     # Route arity-changing callback casts (GDestroyNotify-as-GFunc,
     # GCompareFunc-as-GCompareDataFunc, GClosureNotify casts) through
     # typed thunks. Native ABIs tolerate the extra arguments; wasm's
     # typed call_indirect traps on them.
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-callback-signatures.patch"
+    # GCredentials backend selection keys off platform macros;
+    # wasm32-posix-kernel follows the Linux ucred contract.
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-credentials.patch"
 fi
 
 # Fresh build + install each run — stale objects would shadow config
@@ -253,13 +257,16 @@ for tu in "${GOBJECT_TUS[@]}"; do
         "-I$SRC_DIR/gobject" "-I$LIBFFI_PREFIX/include")")
 done
 
-echo "==> Compiling gio (minus gdbus)..."
-# Upstream gio_sources minus: gdbus_sources, gdbus_daemon_sources,
-# application_sources, portal_sources (all gdbus-backed; PR22), the
+echo "==> Compiling gio..."
+# Upstream gio_sources + gdbus_sources (the PR22 client core) minus:
+# gdbus_daemon_sources, application_sources, portal_sources, the
 # three dbus-backed monitors from the base list, the two dbus-backed
 # notification backends from the unix list, and the netlink monitors
-# (no HAVE_NETLINK). gportalstubs.c replaces the four portal entry
-# points referenced behind glib_should_use_portal().
+# (no HAVE_NETLINK). GIO_DBUS_BUILTIN_MODULES stays undefined: the
+# guarded g_type_ensure registrations point at exactly those excluded
+# TUs; define it only when a port needs a dbus-backed built-in module
+# and its sources join this list. gportalstubs.c replaces the four
+# portal entry points referenced behind glib_should_use_portal().
 GIO_TUS=(
     gio/gappinfo.c gio/gasynchelper.c gio/gasyncinitable.c
     gio/gasyncresult.c gio/gbufferedinputstream.c
@@ -324,6 +331,17 @@ GIO_TUS=(
     gio/gunixoutputstream.c
     gio/gcontenttype-fdo.c gio/gdesktopappinfo.c
     gio/gportalsupport.c gio/gsandbox.c
+    gio/gdbusutils.c gio/gdbusaddress.c gio/gdbusauthobserver.c
+    gio/gdbusauth.c gio/gdbusauthmechanism.c
+    gio/gdbusauthmechanismanon.c gio/gdbusauthmechanismexternal.c
+    gio/gdbusauthmechanismsha1.c gio/gdbuserror.c gio/gdbusconnection.c
+    gio/gdbusmessage.c gio/gdbusnameowning.c gio/gdbusnamewatching.c
+    gio/gdbusproxy.c gio/gdbusprivate.c gio/gdbusintrospection.c
+    gio/gdbusmethodinvocation.c gio/gdbusserver.c gio/gdbusinterface.c
+    gio/gdbusinterfaceskeleton.c gio/gdbusobject.c
+    gio/gdbusobjectskeleton.c gio/gdbusobjectproxy.c
+    gio/gdbusobjectmanager.c gio/gdbusobjectmanagerclient.c
+    gio/gdbusobjectmanagerserver.c gio/gtestdbus.c
     gio/gioenumtypes.c
 )
 GIO_CFLAGS=(

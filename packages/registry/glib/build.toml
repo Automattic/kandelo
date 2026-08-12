@@ -1,7 +1,7 @@
 script_path = "packages/registry/glib/build-glib.sh"
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "7709111db"
-revision    = 1
+revision    = 2
 
 # The hand-curated config.h + glibconfig.h are part of the cache key:
 # editing them (e.g. flipping a HAVE_* to track a sysroot change) must
@@ -15,6 +15,7 @@ inputs = [
   "packages/registry/glib/src/gportalstubs.c",
   "packages/registry/glib/src/giomodule-no-dbus-builtins.patch",
   "packages/registry/glib/src/wasm-callback-signatures.patch",
+  "packages/registry/glib/src/wasm-credentials.patch",
 ]
 
 [binary]

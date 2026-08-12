@@ -22,6 +22,14 @@ wasm32posix-configure [--enable-static] [other flags]
 make
 ```
 
+The SDK links with `-Wl,--allow-undefined`, so every `AC_CHECK_FUNCS`
+link test "succeeds" — including for functions the sysroot does not
+provide. Cross-check detected functions against
+`nm sysroot/lib/libc.a` and force the absent ones off with
+`ac_cv_func_<name>=no`, or the build breaks on guarded includes
+(dbus's `getpeerucred` pulls Solaris `ucred.h`) or traps at runtime on
+a null table entry.
+
 **CMake projects** (MariaDB, PCRE2):
 ```bash
 cmake -B build -DCMAKE_TOOLCHAIN_FILE=wasm32-posix-toolchain.cmake [flags]
@@ -932,7 +940,9 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 | fcft | `packages/registry/fcft/build-fcft.sh` | meson bypass | Two TUs + three generated headers, no harfbuzz/SVG |
 | foot | `packages/registry/foot/build-foot.sh` | meson bypass | First stock upstream Wayland client; two patches: gbm prime-fd shm pools, serial font loading |
 | libffi | `packages/registry/libffi/build-libffi.sh` | in-tree | Full port, no upstream source: gen-dispatch.sh generates the ffi_call call_indirect switch + the static closure trampoline pool (wasm32 cannot JIT) |
-| glib | `packages/registry/glib/build-glib.sh` | meson bypass | 2.84.4: glib/gmodule/gobject/gio-minus-gdbus, hand-curated config.h + glibconfig.h, two patches (no dbus built-ins, wasm callback signatures) |
+| glib | `packages/registry/glib/build-glib.sh` | meson bypass | 2.84.4: glib/gmodule/gobject/gio incl. the gdbus client core, hand-curated config.h + glibconfig.h, three patches (no dbus built-ins, wasm callback signatures, wasm credentials backend) |
+| expat | `packages/registry/expat/build-expat.sh` | autoconf | dbus config-parser dependency; entropy from kernel getrandom() |
+| dbus | `packages/registry/dbus/build-dbus.sh` | autoconf | 1.14.10 (last autotools series): dbus-daemon/dbus-send/dbus-monitor, session bus only, EXTERNAL auth over SO_PEERCRED, `ac_cv_func_*` overrides for --allow-undefined false positives |
 
 ## Callback casts that change arity trap on wasm
 

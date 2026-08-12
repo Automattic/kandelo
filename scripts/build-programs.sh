@@ -607,6 +607,18 @@ for src in "$REPO_ROOT/programs/"*.c; do
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libffi.a"
             ;;
+        glib_gdbus_smoke.c)
+            # PR22: gdbus client core against the dbus-daemon port —
+            # name owning, object export, method call round trips.
+            build_program "$src" "$OUT_DIR_32" \
+                "-I$SYSROOT/include/glib-2.0" \
+                "$SYSROOT/lib/libgio-2.0.a" \
+                "$SYSROOT/lib/libgobject-2.0.a" \
+                "$SYSROOT/lib/libgmodule-2.0.a" \
+                "$SYSROOT/lib/libglib-2.0.a" \
+                "$SYSROOT/lib/libffi.a" \
+                "$SYSROOT/lib/libz.a"
+            ;;
         glib_smoke_test.c)
             # PR21: mainloop + gobject signals (libffi generic
             # marshaller) + gspawn against the glib port. Link order:
