@@ -43,6 +43,7 @@ import {
   DEFAULT_MAX_WORKERS,
   WASM_PAGE_SIZE,
 } from "./constants";
+import type { MountSpec } from "./vfs/default-mounts";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
 import { FILE_MODES } from "./generated/abi";
 import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
@@ -148,6 +149,8 @@ export interface NodeKernelHostOptions {
    *     to a VFS-only world yet.
    */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
+  /** Exact image/scratch mount contract. Requires `rootfsImage`. */
+  rootfsMountSpec?: readonly MountSpec[];
   /** Publisher-admitted peer of BrowserKernel's trusted `/usr/bin` product. */
   privilegedProduct?: PublishedPrivilegedProgramProduct;
   /**
@@ -283,6 +286,9 @@ export class NodeKernelHost {
     const rootfsLazyAssets = this.options.rootfsLazyAssets === undefined
       ? undefined
       : snapshotClosedLazyAssets(this.options.rootfsLazyAssets);
+    const rootfsLazyAssetSources = this.options.rootfsLazyAssetSources === undefined
+      ? undefined
+      : snapshotClosedLazyAssetSources(this.options.rootfsLazyAssetSources);
     const sessionSeedTrees = this.options.sessionSeedTrees?.map(
       (seed) => ({
         sourcePath: seed.sourcePath,
@@ -419,6 +425,9 @@ export class NodeKernelHost {
           execPrograms: this.options.execPrograms,
           execProgramBytes,
           rootfsImage: rootfsImage ?? undefined,
+          rootfsMountSpec: this.options.rootfsMountSpec === undefined
+            ? undefined
+            : this.options.rootfsMountSpec.map((mount) => ({ ...mount })),
           ...(privilegedProgramMount === undefined
             ? {}
             : {
