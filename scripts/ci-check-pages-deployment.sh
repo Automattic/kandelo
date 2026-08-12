@@ -118,6 +118,18 @@ step_block() {
   ' "$workflow"
 }
 
+check_filtered_host_target() {
+  local block="$1"
+  local role="$2"
+  local sequence
+  local assignment_count
+
+  sequence=$'          host_target=$(bash scripts/dev-shell.sh rustc -vV |\n            awk \'/^host: / { print $2 }\')\n          [[ "$host_target" =~ ^[A-Za-z0-9_.-]+$ ]]'
+  assignment_count="$(grep -Fc 'host_target=$(' <<<"$block" || true)"
+  [ "$assignment_count" -eq 1 ] && [[ "$block" == *"$sequence"* ]] ||
+    fail "$role does not filter then immediately validate noisy dev-shell target output"
+}
+
 step_line() {
   local step="$1"
   grep -nF -- "- name: $step" "$PAGES_WORKFLOW" 2>/dev/null |
@@ -483,6 +495,7 @@ readiness_block="$(
   step_block "$CANARY_WORKFLOW" \
     "Validate Pages readiness and select ready or hold"
 )"
+check_filtered_host_target "$readiness_block" "canary readiness"
 if grep -Eq 'site-manifest\.json|source-tree' <<<"$readiness_block"; then
   fail "canary hold must never inspect a site manifest or source tree"
 fi
@@ -572,6 +585,7 @@ validation_block="$(
   step_block "$CANARY_WORKFLOW" \
     "Validate the complete canonical Pages tree"
 )"
+check_filtered_host_target "$validation_block" "canary site validation"
 grep -Fq "registry=\"$exact_pages_registry\"" <<<"$validation_block" ||
   fail "canary must bind the exact protected Pages registry"
 grep -Fxq "        if: steps.readiness.outputs.ready == 'true'" \

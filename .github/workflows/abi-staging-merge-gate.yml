@@ -250,6 +250,15 @@ jobs:
           persist-credentials: false
           path: abi-staging-exact-head
 
+      - name: Materialize exact musl gitlink as inert data
+        env:
+          EXPECTED_HEAD: ${{ needs.capture-current-subject.outputs.exact-head }}
+        run: |
+          set -euo pipefail
+          bash abi-staging-authority/scripts/fetch-exact-musl-gitlink.sh \
+            --source-root "$GITHUB_WORKSPACE/abi-staging-exact-head" \
+            --commit "$EXPECTED_HEAD"
+
       - name: Set up declared protected build tools
         uses: ./abi-staging-authority/.github/actions/setup-nix
 
@@ -312,8 +321,10 @@ jobs:
           env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_RUNTIME_TOKEN \
             git -C "$exact_head" fetch --no-tags origin "$PROTECTED_SHA"
 
-          host_target=$(cd "$authority" && bash scripts/dev-shell.sh \
-            bash -c 'rustc -vV | awk "/^host/ {print \$2}"')
+          host_target=$(cd "$authority" &&
+            bash scripts/dev-shell.sh rustc -vV |
+              awk '/^host: / { print $2 }')
+          [[ "$host_target" =~ ^[A-Za-z0-9_.-]+$ ]]
           (
             cd "$authority"
             bash scripts/dev-shell.sh cargo build -p xtask --target "$host_target"
@@ -659,8 +670,10 @@ jobs:
             exit $?
           fi
 
-          host_target=$(cd "$authority" && bash scripts/dev-shell.sh \
-            bash -c 'rustc -vV | awk "/^host/ {print \$2}"')
+          host_target=$(cd "$authority" &&
+            bash scripts/dev-shell.sh rustc -vV |
+              awk '/^host: / { print $2 }')
+          [[ "$host_target" =~ ^[A-Za-z0-9_.-]+$ ]]
           authority_xtask="$authority/target/$host_target/debug/xtask"
           if [[ ! -x $authority_xtask ]]; then
             (
