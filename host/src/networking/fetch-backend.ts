@@ -3,7 +3,12 @@ import {
   parseNumericIpv4Hostname,
   validateSyntheticDnsHostname,
 } from "./hostname";
-import { corsProxyFetchUrl } from "./cors-proxy-url";
+import {
+  BrowserCorsProxy,
+  type BrowserCorsProxyConfig,
+  type HttpHeaderOccurrence,
+  validateBrowserCorsProxyConfig,
+} from "./browser-cors-proxy";
 
 /** Error with errno property for EAGAIN propagation to the kernel host imports. */
 export class EagainError extends Error {
@@ -29,7 +34,8 @@ interface ConnectionState {
 }
 
 export interface FetchBackendOptions {
-  corsProxyUrl?: string;
+  corsProxy?: BrowserCorsProxyConfig;
+  onCorsProxyDiagnostic?: (message: string) => void;
   hostAliases?: Record<string, string>;
 }
 
@@ -37,9 +43,14 @@ export class FetchNetworkBackend implements NetworkIO {
   private connections = new Map<number, ConnectionState>();
   private hostnameMap = new Map<string, string>(); // ip string → hostname
   private options: FetchBackendOptions;
+  private corsProxy: BrowserCorsProxy | undefined;
 
   constructor(options?: FetchBackendOptions) {
     this.options = options ?? {};
+    const corsProxyConfig = validateBrowserCorsProxyConfig(options?.corsProxy);
+    this.corsProxy = corsProxyConfig === undefined
+      ? undefined
+      : new BrowserCorsProxy(corsProxyConfig, options?.onCorsProxyDiagnostic);
   }
 
   connect(handle: number, addr: Uint8Array, port: number): void {
@@ -92,7 +103,7 @@ export class FetchNetworkBackend implements NetworkIO {
     // Don't block with Atomics.wait — that deadlocks in web workers where the
     // event loop must yield for fetch() promises to resolve.
     const { method, path, headers, body } = parseHttpRequest(conn.sendBuf, headerEnd);
-    const hostHeader = headers.get("host");
+    const hostHeader = lastHeaderValue(headers, "host");
     const scheme = conn.port === 443 ? "https" : "http";
     const portSuffix = (conn.port === 80 || conn.port === 443) ? "" : `:${conn.port}`;
     // Use Host header as-is (it already includes :port when non-default),
@@ -101,14 +112,8 @@ export class FetchNetworkBackend implements NetworkIO {
     const host = rewriteHostAlias(requestedHost, this.options.hostAliases);
     const url = `${scheme}://${host}${path}`;
 
-    // Convert headers map to Headers object (skip Host and Connection)
-    const fetchHeaders = new Headers();
-    for (const [key, value] of headers) {
-      const lower = key.toLowerCase();
-      if (lower !== "host" && lower !== "connection") {
-        fetchHeaders.set(key, value);
-      }
-    }
+    const browserHeaders = browserRepresentableHeaders(headers);
+    const fetchHeaders = headersFromOccurrences(browserHeaders);
 
     // Copy body into a standard ArrayBuffer-backed Uint8Array for fetch compatibility
     // (the input buffer may be backed by SharedArrayBuffer which isn't accepted as BodyInit)
@@ -129,13 +134,17 @@ export class FetchNetworkBackend implements NetworkIO {
             body: fetchBody,
           });
         } catch (e) {
-          // Try CORS proxy if configured
-          if (this.options.corsProxyUrl) {
+          if (this.corsProxy) {
             response = await fetch(
-              corsProxyFetchUrl(this.options.corsProxyUrl, url),
+              this.corsProxy.urlFor(url),
               {
                 method,
-                headers: fetchHeaders,
+                headers: this.corsProxy.project({
+                  method,
+                  headers: browserHeaders,
+                  bodyPresent: fetchBody !== undefined,
+                  targetUrl: url,
+                }),
                 body: fetchBody,
               },
             );
@@ -281,22 +290,53 @@ function parseContentLength(headers: string): number {
 function parseHttpRequest(buf: Uint8Array, headerEnd: number): {
   method: string;
   path: string;
-  headers: Map<string, string>;
+  headers: HttpHeaderOccurrence[];
   body: Uint8Array | null;
 } {
   const headerStr = new TextDecoder().decode(buf.subarray(0, headerEnd));
   const lines = headerStr.split("\r\n");
   const [method, path] = lines[0].split(" ");
-  const headers = new Map<string, string>();
+  const headers: HttpHeaderOccurrence[] = [];
   for (let i = 1; i < lines.length; i++) {
     const colon = lines[i].indexOf(":");
     if (colon > 0) {
-      headers.set(lines[i].substring(0, colon).trim().toLowerCase(), lines[i].substring(colon + 1).trim());
+      headers.push([
+        lines[i].substring(0, colon).trim(),
+        lines[i].substring(colon + 1).trim(),
+      ]);
     }
   }
   const bodyStart = headerEnd + 4;
   const body = bodyStart < buf.length ? buf.subarray(bodyStart) : null;
   return { method, path, headers, body };
+}
+
+function lastHeaderValue(
+  headers: readonly HttpHeaderOccurrence[],
+  name: string,
+): string | undefined {
+  let result: string | undefined;
+  for (const [headerName, value] of headers) {
+    if (headerName.toLowerCase() === name) result = value;
+  }
+  return result;
+}
+
+function browserRepresentableHeaders(
+  headers: readonly HttpHeaderOccurrence[],
+): HttpHeaderOccurrence[] {
+  return headers.filter(([name]) => {
+    const lower = name.toLowerCase();
+    return lower !== "host" && lower !== "connection";
+  });
+}
+
+function headersFromOccurrences(
+  occurrences: readonly HttpHeaderOccurrence[],
+): Headers {
+  const headers = new Headers();
+  for (const [name, value] of occurrences) headers.append(name, value);
+  return headers;
 }
 
 /** Headers that must not be forwarded — fetch() already decoded them. */
