@@ -931,6 +931,7 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 | tllist | `packages/registry/tllist/build-tllist.sh` | header-only | Staged, nothing compiles |
 | fcft | `packages/registry/fcft/build-fcft.sh` | meson bypass | Two TUs + three generated headers, no harfbuzz/SVG |
 | foot | `packages/registry/foot/build-foot.sh` | meson bypass | First stock upstream Wayland client; two patches: gbm prime-fd shm pools, serial font loading |
+| libffi | `packages/registry/libffi/build-libffi.sh` | in-tree | Full port, no upstream source: gen-dispatch.sh generates the ffi_call call_indirect switch + the static closure trampoline pool (wasm32 cannot JIT) |
 
 CPython's source recipe takes its source, work directory, output directory,
 sysroot, zlib prefix, and guest prefix from the package-resolver contract. It

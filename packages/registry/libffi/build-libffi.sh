@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 #
-# Build libffi (libffi.a) — a Wayland-scoped SHIM of the libffi API,
-# NOT a full libffi port — for wasm32-posix-kernel.
+# Build libffi (libffi.a) — the full libffi port for wasm32-posix-kernel
+# (PR20): real type classification in ffi_call plus ffi_closure over a
+# static trampoline pool. There is no source tarball to fetch: the port
+# is `src/ffi_core.c` + `include/ffi.h` plus the two combinatorial TUs
+# `gen-dispatch.sh` emits (the ffi_call signature switch and the closure
+# trampoline pool). See include/ffi.h for the design and
+# docs/plans/2026-07-14-build-hyprland-class-compositor-plan.md §4.
 #
-# The bundled `src/ffi_shim.c` + `include/ffi.h` are the entire
-# substitute; there is no source tarball to fetch. libwayland's only
-# use of libffi is `wl_closure_invoke`, and on wasm32 every Wayland
-# argument is a single 32-bit word, so the shim dispatches by arity
-# through a `call_indirect` trampoline instead of porting libffi's
-# per-arch assembly. See
-# docs/plans/2026-07-08-dri-wayland-compositor-plan.md §4 and
-# include/ffi.h for the full rationale. Full libffi (doubles, structs,
-# closures) is deferred to the glib/gobject tail.
+# The three objects stay separate in the archive on purpose: a consumer
+# that never creates closures (libwayland) links ffi_core.o +
+# ffi_dispatch.o and does not pay for the trampoline pool.
 #
 # `package.toml`'s sentinel `[source]` block exists to satisfy the
 # resolver schema, not to be downloaded.
@@ -26,8 +25,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC="$SCRIPT_DIR/src/ffi_shim.c"
-HDR="$SCRIPT_DIR/include/ffi.h"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/libffi-install}"
 
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -42,18 +39,29 @@ fi
 rm -rf "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/include"
 
-OBJ="$(mktemp -d)/ffi_shim.o"
-trap 'rm -rf "$(dirname "$OBJ")"' EXIT
+BUILD_DIR="$(mktemp -d)"
+trap 'rm -rf "$BUILD_DIR"' EXIT
 
-echo "==> Compiling libffi Wayland shim..."
-wasm32posix-cc -c -O2 -fPIC \
-    -I"$SCRIPT_DIR/include" \
-    "$SRC" -o "$OBJ"
+echo "==> Generating dispatch + closure pool..."
+bash "$SCRIPT_DIR/gen-dispatch.sh" "$BUILD_DIR"
+
+echo "==> Compiling libffi..."
+for tu in ffi_core ffi_dispatch ffi_closure_pool; do
+    src="$SCRIPT_DIR/src/$tu.c"
+    [ -f "$src" ] || src="$BUILD_DIR/$tu.c"
+    wasm32posix-cc -c -O2 -fPIC \
+        -I"$SCRIPT_DIR/include" \
+        -I"$SCRIPT_DIR/src" \
+        "$src" -o "$BUILD_DIR/$tu.o"
+done
 
 echo "==> Archiving libffi.a..."
-wasm32posix-ar rcs "$INSTALL_DIR/lib/libffi.a" "$OBJ"
+wasm32posix-ar rcs "$INSTALL_DIR/lib/libffi.a" \
+    "$BUILD_DIR/ffi_core.o" \
+    "$BUILD_DIR/ffi_dispatch.o" \
+    "$BUILD_DIR/ffi_closure_pool.o"
 
-cp "$HDR" "$INSTALL_DIR/include/ffi.h"
+cp "$SCRIPT_DIR/include/ffi.h" "$INSTALL_DIR/include/ffi.h"
 
-echo "==> libffi (Wayland shim) installed at $INSTALL_DIR"
+echo "==> libffi installed at $INSTALL_DIR"
 echo "    lib/libffi.a ($(wc -c < "$INSTALL_DIR/lib/libffi.a") bytes)"

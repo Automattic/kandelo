@@ -384,6 +384,20 @@ if ls "$REPO_ROOT"/programs/wl_*.c >/dev/null 2>&1; then
     done
 fi
 
+# Resolve libffi and symlink its archive + header into the sysroot when
+# there are any libffi_*.c programs to build (the PR20 full-port matrix
+# includes <ffi.h> directly; the libwayland block above only stages the
+# archive). Same cached-resolve contract.
+if ls "$REPO_ROOT"/programs/libffi_*.c >/dev/null 2>&1; then
+    echo "==> Resolving libffi for FFI programs..."
+    HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libffi >/dev/null)
+    LIBFFI_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libffi)"
+
+    ln -sfn "$LIBFFI_PREFIX/lib/libffi.a"     "$SYSROOT/lib/libffi.a"
+    ln -sfn "$LIBFFI_PREFIX/include/ffi.h"    "$SYSROOT/include/ffi.h"
+fi
+
 # Resolve libxkbcommon and symlink its archive + public headers into the
 # sysroot when there are any xkb_*.c programs to build. Same cached-resolve
 # contract as the libwayland block above. See
@@ -564,6 +578,12 @@ for src in "$REPO_ROOT/programs/"*.c; do
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libwayland-server.a" \
                 "$SYSROOT/lib/libwayland-client.a" \
+                "$SYSROOT/lib/libffi.a"
+            ;;
+        libffi_full_test.c)
+            # PR20 matrix: ffi_call classification + closure trampoline
+            # pool against the full libffi port.
+            build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libffi.a"
             ;;
         xkb_smoke.c)

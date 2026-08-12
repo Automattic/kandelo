@@ -1,7 +1,18 @@
 script_path = "packages/registry/libffi/build-libffi.sh"
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "1dc10fcc1761475964c0108628a800c3c5e468e5"
-revision    = 1
+revision    = 2
+
+# The whole port is in-tree (no upstream tarball): the core, the shared
+# internal header and the generator that emits the combinatorial TUs.
+# Editing any of them must invalidate cached archives.
+inputs = [
+  "packages/registry/libffi/build-libffi.sh",
+  "packages/registry/libffi/gen-dispatch.sh",
+  "packages/registry/libffi/src/ffi_core.c",
+  "packages/registry/libffi/src/ffi_internal.h",
+  "packages/registry/libffi/include/ffi.h",
+]
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

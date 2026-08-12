@@ -2579,6 +2579,30 @@ a launcher entry of `/?demo=omarchy` — staged at `/usr/local/bin/foot` with
 `fonts.conf` + Inconsolata under `/usr/share/fonts`, gated by
 `apps/browser-demos/test/kandelo-omarchy.spec.ts`.
 
+### Full libffi (generated dispatch + static closure trampolines)
+
+The glib/gobject tier needs real `ffi_call` (doubles, i64, by-value structs)
+and `ffi_closure` — which on native targets JIT-writes trampolines. wasm32
+cannot generate code at runtime, so `packages/registry/libffi/` is a
+from-scratch port built on two facts of clang's wasm32 C ABI lowering: a
+struct whose only member (recursively) is one scalar travels as that scalar,
+and every other by-value struct is a pointer at the wasm level (`byval`
+argument copies, hidden leading `sret` return pointer) — so every signature
+collapses to word classes {i32, i64, f32, f64}. `gen-dispatch.sh` enumerates
+signature families into two generated TUs: a `switch` of `call_indirect`
+shapes for `ffi_call` (every arity ≤ 8 with at most two non-i32 args, plus
+all-i32 up to the Wayland ceiling of 22, times five return classes) and a
+static trampoline pool for closures (N real C functions per signature class,
+baked into the function table; `ffi_prep_closure_loc` binds a free slot and
+pool exhaustion aborts naming the class). A signature outside the generated
+families aborts printing its key — coverage is a one-line bound change in the
+generator. `ffi_cif` deliberately gained no fields across the rewrite:
+libwayland embeds it by value, so its cached archive stays ABI-compatible.
+Gated by `host/test/libffi-full-unit.test.ts` (native + wasm-under-kernel
+matrix over arities × types × call/closure via `programs/libffi_full_test.c`)
+and `host/test/libffi-shim-unit.test.ts` (the PR1 Wayland arity gate, kept
+green through the rewrite).
+
 ## Signal Subsystem
 
 Signals are delivered at syscall boundaries. When a process has a pending signal:
