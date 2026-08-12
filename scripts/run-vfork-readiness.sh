@@ -87,7 +87,7 @@ fi
 cargo test -p fork-instrument --target "$host_target"
 
 if $integration; then
-  cargo test -p wasm-posix-kernel --target "$host_target" \
+  cargo test -p kandelo --target "$host_target" \
     credentials -- --nocapture
 fi
 

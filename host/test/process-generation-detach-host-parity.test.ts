@@ -100,7 +100,9 @@ describe("process generation detach host parity", () => {
       ]) {
         expect(source).toContain(`"${operation}"`);
       }
-      expect(source.match(/processMemoryCreators\s*\.run\(/g)).toHaveLength(5);
+      expect(
+        source.match(/processMemoryCreators\s*\.run(?:UntilCommitted)?\(/g),
+      ).toHaveLength(5);
     });
 
     it(`${host} keeps exact kernel detach calls inside the shared wrapper`, () => {
