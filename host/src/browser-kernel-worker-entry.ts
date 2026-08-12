@@ -33,6 +33,7 @@ import { MemoryFileSystem } from "./vfs/memory-fs";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
 import { createBrowserLazyFetcher } from "./vfs/browser-lazy-fetcher";
 import { resolveLazyUrl } from "./vfs/lazy-url";
+import { prepareHomebrewFlatLazyBoot } from "./homebrew-flat-lazy-boot";
 import { DeviceFileSystem } from "./vfs/device-fs";
 import { BrowserTimeProvider } from "./vfs/time";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
@@ -927,6 +928,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   memfs.subscribeLazyDownloads((event) => {
     post({ type: "lazy_download", event });
   });
+  await prepareHomebrewFlatLazyBoot(memfs);
   io = new VirtualPlatformIO(mounts, new BrowserTimeProvider());
 
   // Create TLS-MITM network backend. Programs do real TLS handshakes via

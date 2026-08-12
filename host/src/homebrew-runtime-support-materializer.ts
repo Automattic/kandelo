@@ -76,6 +76,8 @@ export interface SelectedHomebrewExtractionCommand {
   readonly selectedPath: string;
 }
 
+export type HomebrewExtractionCommandAvailability = "eager" | "deferred";
+
 interface HomebrewRuntimeSupportPreparedKeg {
   readonly input: {
     readonly name: string;
@@ -179,15 +181,14 @@ export function finalizeHomebrewRuntimeSupport(
     const verifiedExtractionCommands = preflightStableExtractionCommands(
       fs,
       extractionCommands,
+      "eager",
     );
     for (const path of MUTABLE_DIRECTORIES) ensureDirRecursive(fs, path, 0o755);
     ensureDirRecursive(fs, dirname(ENV_PATH), 0o755);
     fs.createFileWithOwner(ENV_PATH, 0o644, 0, 0, prepared.environmentBytes);
     ensureDirRecursive(fs, dirname(ENTRYPOINT), 0o755);
     fs.symlinkWithOwner(`${PREFIX}/bin/brew`, ENTRYPOINT, 0, 0);
-    for (const command of verifiedExtractionCommands) {
-      fs.symlinkWithOwner(command.selectedPath, command.stablePath, 0, 0);
-    }
+    writeStableExtractionCommandAliases(fs, verifiedExtractionCommands);
     if (stableBashAction === "replace-source-rootfs-alias") {
       // WHY: stock Homebrew's bootstrap bin/brew declares /bin/bash, while the
       // source-rootfs alias resolves to a deferred program. Only replace that
@@ -234,6 +235,52 @@ export function selectHomebrewExtractionCommands(
     }
   }
   return STABLE_EXTRACTION_COMMANDS;
+}
+
+/** Install the reviewed system bridge without resolving deferred bottle bytes. */
+export function installSelectedHomebrewExtractionCommandAliases(
+  fs: MemoryFileSystem,
+  commands: readonly SelectedHomebrewExtractionCommand[],
+  availability: HomebrewExtractionCommandAvailability,
+): void {
+  try {
+    const verified = preflightStableExtractionCommands(fs, commands, availability);
+    writeStableExtractionCommandAliases(fs, verified);
+    assertSelectedHomebrewExtractionCommandAliases(fs, verified, availability);
+  } catch (error) {
+    if (error instanceof HomebrewRuntimeSupportMaterializationError) throw error;
+    fail(errorMessage(error));
+  }
+}
+
+/** Recheck the exact selected tar/gzip bridge on a live or restored image. */
+export function assertSelectedHomebrewExtractionCommandAliases(
+  fs: MemoryFileSystem,
+  commands: readonly SelectedHomebrewExtractionCommand[],
+  availability: HomebrewExtractionCommandAvailability,
+): void {
+  const canonicalCommands = canonicalExtractionCommandPolicy(commands);
+  for (const command of canonicalCommands) {
+    const link = fs.lstat(command.stablePath);
+    const deferred = fs.isPathDeferred(command.stablePath);
+    if (
+      (link.mode & S_IFMT) !== S_IFLNK ||
+      link.uid !== 0 ||
+      link.gid !== 0 ||
+      fs.readlink(command.stablePath) !== command.selectedPath ||
+      deferred !== (availability === "deferred")
+    ) {
+      fail(
+        `installed system ${command.name} is not the root-owned selected ` +
+          `Homebrew ${availability} link`,
+      );
+    }
+    assertEagerExecutable(
+      fs,
+      command.stablePath,
+      `installed system ${command.name}`,
+    );
+  }
 }
 
 function assertBootstrapIdentity(
@@ -454,11 +501,15 @@ function preflightStableBashInterpreter(
 function preflightStableExtractionCommands(
   fs: MemoryFileSystem,
   commands: readonly SelectedHomebrewExtractionCommand[],
+  availability: HomebrewExtractionCommandAvailability,
 ): SelectedHomebrewExtractionCommand[] {
   const canonicalCommands = canonicalExtractionCommandPolicy(commands);
   for (const command of canonicalCommands) {
-    if (fs.isPathDeferred(command.selectedPath)) {
-      fail(`selected Homebrew ${command.name} remains deferred`);
+    const deferred = fs.isPathDeferred(command.selectedPath);
+    if (deferred !== (availability === "deferred")) {
+      fail(
+        `selected Homebrew ${command.name} is not ${availability}`,
+      );
     }
     assertEagerExecutable(
       fs,
@@ -474,6 +525,15 @@ function preflightStableExtractionCommands(
     }
   }
   return [...canonicalCommands];
+}
+
+function writeStableExtractionCommandAliases(
+  fs: MemoryFileSystem,
+  commands: readonly SelectedHomebrewExtractionCommand[],
+): void {
+  for (const command of commands) {
+    fs.symlinkWithOwner(command.selectedPath, command.stablePath, 0, 0);
+  }
 }
 
 function canonicalExtractionCommandPolicy(
@@ -553,26 +613,7 @@ function assertFinalRuntimeSupport(
   ) {
     fail("installed Homebrew entrypoint is not the root-owned executable bootstrap link");
   }
-  for (const command of extractionCommands) {
-    const link = fs.lstat(command.stablePath);
-    if (
-      (link.mode & S_IFMT) !== S_IFLNK ||
-      link.uid !== 0 ||
-      link.gid !== 0 ||
-      fs.readlink(command.stablePath) !== command.selectedPath ||
-      fs.isPathDeferred(command.stablePath)
-    ) {
-      fail(
-        `installed system ${command.name} is not the root-owned selected ` +
-          "Homebrew link",
-      );
-    }
-    assertEagerExecutable(
-      fs,
-      command.stablePath,
-      `installed system ${command.name}`,
-    );
-  }
+  assertSelectedHomebrewExtractionCommandAliases(fs, extractionCommands, "eager");
   assertRecursiveOwnership(fs, PREFIX, USER_ID, GROUP_ID);
   assertRecursiveOwnership(fs, "/home/user/.cache", USER_ID, GROUP_ID);
 }

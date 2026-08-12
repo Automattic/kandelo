@@ -6,6 +6,7 @@ import {
   type HomebrewVfsCatalogCheckout,
   type HomebrewVfsCompatibilityPolicy,
   type HomebrewVfsBuildReport,
+  type HomebrewFlatVfsBuildResult,
   type HomebrewFlatVfsBuildReport,
   type HomebrewVfsMigrationLockBinding,
   type HomebrewVfsSelectionSource,
@@ -190,6 +191,8 @@ export interface HomebrewOriginalBottleCollectionBuildResult {
 export interface BuildHomebrewFlatOriginalBottleCollectionOptions {
   /** Exact lower namespace copied into the private eager ownership proof. */
   baseFs: MemoryFileSystem;
+  /** Fresh caller-owned namespace mutated by the complete eager proof. */
+  scratchFs?: MemoryFileSystem;
   /** Selection-authenticated keg descriptors to project as bottle trees. */
   packages: readonly HomebrewBottleDescriptor[];
   loadBottleBytes: (
@@ -207,6 +210,17 @@ export interface HomebrewFlatOriginalBottleCollectionBuildResult {
   payloads: HomebrewLazyLayerPayload[];
   deferredTrees: HomebrewDeferredTreeDraftDescriptor[];
   report: HomebrewFlatVfsBuildReport;
+}
+
+export interface ProjectHomebrewFlatOriginalBottleCollectionOptions {
+  /** Concrete lower namespace used solely for collision/ownership projection. */
+  baseFs: MemoryFileSystem;
+  /** Exact eager proof already produced from the complete flat plan. */
+  eagerProof: HomebrewFlatVfsBuildResult;
+  /** Selection-authenticated keg descriptors to project as bottle trees. */
+  packages: readonly HomebrewBottleDescriptor[];
+  /** Exact authenticated bottle bytes retained by the proof caller. */
+  loadBottleBytes: (pkg: HomebrewBottleDescriptor) => Uint8Array | undefined;
 }
 
 async function authenticateHomebrewCompositionBase(
@@ -293,6 +307,11 @@ export async function buildHomebrewFlatOriginalBottleCollection(
   options: BuildHomebrewFlatOriginalBottleCollectionOptions,
 ): Promise<HomebrewFlatOriginalBottleCollectionBuildResult> {
   rejectFlatCollectionProvenance(options);
+  if (options.scratchFs === options.baseFs) {
+    throw new Error(
+      "Homebrew flat original bottles require separate base and scratch filesystems",
+    );
+  }
   if (!Array.isArray(options.packages) || options.packages.length === 0) {
     throw new Error("Homebrew flat original-bottle collection has no selected keg descriptors");
   }
@@ -311,7 +330,9 @@ export async function buildHomebrewFlatOriginalBottleCollection(
 
   const bottleBytes = new Map<string, Uint8Array>();
   const build = await buildHomebrewVfsSelection(planSnapshot, {
-    baseFs: options.baseFs,
+    ...(options.scratchFs === undefined
+      ? { baseFs: options.baseFs }
+      : { baseFs: options.baseFs, targetFs: options.scratchFs }),
     async loadBottleBytes(descriptor) {
       const authoritative = authoritativeDescriptors.get(descriptor.fullName);
       if (
@@ -339,6 +360,35 @@ export async function buildHomebrewFlatOriginalBottleCollection(
     },
   });
 
+  return projectHomebrewFlatOriginalBottleCollectionFromEagerProof(
+    planSnapshot,
+    {
+      baseFs: options.baseFs,
+      eagerProof: build,
+      packages: requestedDescriptorSnapshot,
+      loadBottleBytes: (descriptor) => bottleBytes.get(descriptor.fullName),
+    },
+  );
+}
+
+/**
+ * Project exact bottle trees from a caller-owned complete eager proof.
+ * This internal composition seam avoids a second pour while retaining the
+ * same plan-authority and payload authentication used by the public builder.
+ */
+export async function projectHomebrewFlatOriginalBottleCollectionFromEagerProof(
+  plan: HomebrewFlatVfsPlan,
+  options: ProjectHomebrewFlatOriginalBottleCollectionOptions,
+): Promise<HomebrewFlatOriginalBottleCollectionBuildResult> {
+  const planSnapshot = immutableSnapshot(plan);
+  const requestedDescriptorSnapshot = immutableSnapshot(options.packages);
+  const authoritativeDescriptors = new Map(
+    planSnapshot.packages.map((descriptor) => [descriptor.fullName, descriptor]),
+  );
+  await authenticateHomebrewCompositionBase(options.baseFs);
+  assertFlatCollectionBaseOwnership(options.baseFs);
+  assertFlatEagerProof(planSnapshot, options.eagerProof);
+
   const selected = snapshotSelectedFlatDescriptors(
     requestedDescriptorSnapshot,
     authoritativeDescriptors,
@@ -346,21 +396,25 @@ export async function buildHomebrewFlatOriginalBottleCollection(
   const projectionPackages = selected.map(flatOriginalBottlePackage);
   const bottles = await prepareOriginalBottles(
     projectionPackages,
-    (pkg) => bottleBytes.get(pkg.fullName),
+    (pkg) => options.loadBottleBytes(
+      authoritativeDescriptors.get(pkg.fullName)!,
+    ),
   );
-  const allEntries = collectLayerEntries(build.fs, options.baseFs);
+  const allEntries = collectLayerEntries(options.eagerProof.fs, options.baseFs);
   const selectedEntries = selectFlatOriginalBottleEntries(
     allEntries,
     projectionPackages,
-    build.report,
+    options.eagerProof.report,
   );
   const appliedLinks = new Map(
-    build.report.packages.map((pkg) => [pkg.full_name, new Set(pkg.links)]),
+    options.eagerProof.report.packages.map(
+      (pkg) => [pkg.full_name, new Set(pkg.links)],
+    ),
   );
   const trees = createOriginalBottleTrees(
     bottles,
     selectedEntries,
-    build.fs,
+    options.eagerProof.fs,
     new Map(),
     appliedLinks,
   );
@@ -381,10 +435,10 @@ export async function buildHomebrewFlatOriginalBottleCollection(
   }
   assertPreparedOriginalBottleUsage(bottles, orderedTrees);
   return {
-    fs: build.fs,
+    fs: options.eagerProof.fs,
     payloads: orderedTrees.map((tree) => tree.payload),
     deferredTrees: orderedTrees.map((tree) => tree.descriptor),
-    report: build.report,
+    report: options.eagerProof.report,
   };
 }
 
@@ -806,6 +860,39 @@ function rejectFlatCollectionProvenance(
         `Homebrew flat original-bottle collection rejects retired ${field} provenance`,
       );
     }
+  }
+}
+
+function assertFlatEagerProof(
+  plan: HomebrewFlatVfsPlan,
+  proof: HomebrewFlatVfsBuildResult,
+): void {
+  const report = proof.report;
+  if (
+    report.schema !== 1 ||
+    report.name !== plan.name ||
+    report.arch !== plan.arch ||
+    report.kandelo_abi !== plan.kandeloAbi ||
+    report.selection_sha256 !== plan.selectionSha256 ||
+    report.requested_vfs_filename !== plan.requestedVfsFilename ||
+    report.resource_policy !== plan.resourcePolicy ||
+    report.link_policy !== plan.linkPolicy ||
+    report.runtime_support !== plan.runtimeSupport ||
+    report.packages.length !== plan.packages.length ||
+    report.packages.some((pkg, index) => {
+      const descriptor = plan.packages[index]!;
+      return pkg.full_name !== descriptor.fullName ||
+        pkg.version !== descriptor.version ||
+        pkg.revision !== descriptor.revision ||
+        pkg.bottle_rebuild !== descriptor.bottleRebuild ||
+        pkg.sha256 !== descriptor.sha256 ||
+        pkg.bytes !== descriptor.bytes ||
+        pkg.keg !== descriptor.keg;
+    })
+  ) {
+    throw new Error(
+      "Homebrew flat original-bottle eager proof differs from the authenticated plan",
+    );
   }
 }
 

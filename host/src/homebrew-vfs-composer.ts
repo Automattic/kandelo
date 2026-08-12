@@ -78,6 +78,29 @@ export interface HomebrewBottleMirrorPlanAsset {
   bytes: Uint8Array;
 }
 
+/** Closed immutable mirror product for an exact deferred bottle collection. */
+export interface HomebrewBottleMirrorBundle {
+  plan: HomebrewBottleMirrorPlan;
+  payloads: HomebrewBottleMirrorPayload[];
+  planAsset: HomebrewBottleMirrorPlanAsset;
+}
+
+/** Exact tree/payload ownership projected from one complete eager pour. */
+export interface BoundHomebrewOriginalBottleTree {
+  package: string;
+  tree: HomebrewDeferredTreeDraftDescriptor;
+  payload: HomebrewLazyLayerPayload;
+}
+
+export interface InstallBoundHomebrewOriginalBottleTreesOptions {
+  fs: MemoryFileSystem;
+  id: string;
+  bindings: readonly BoundHomebrewOriginalBottleTree[];
+  embeddedPackageOrder?: readonly string[];
+  mirrorPlan: HomebrewBottleMirrorPlan;
+  atomicActivationGroup?: string;
+}
+
 export interface BuildHomebrewMaterializedVfsOptions {
   /** Exclusive output filesystem containing the platform-only lower image. */
   fs: MemoryFileSystem;
@@ -176,7 +199,7 @@ export async function buildHomebrewMaterializedVfs(
     migrationLock: options.migrationLock,
     createdBy: options.createdBy ?? "host/src/homebrew-vfs-composer.ts",
   });
-  const bindings = bindCollection(plan.packages, collection);
+  const bindings = bindHomebrewOriginalBottleCollection(plan.packages, collection);
   const deferredSet = new Set(selection.deferredPackages.map((pkg) => pkg.fullName));
   const deferredBindings = bindings.filter((binding) => deferredSet.has(binding.package));
   assertHomebrewVfsDeferredPackageCollection(
@@ -193,38 +216,19 @@ export async function buildHomebrewMaterializedVfs(
     options.mirrorRepository,
     deferredBindings,
   );
+  createHomebrewPrefixAncestors(options.fs, plan);
+  await installBoundHomebrewOriginalBottleTrees({
+    fs: options.fs,
+    id: "main-shell",
+    bindings,
+    embeddedPackageOrder: selection.embeddedPackages.map((pkg) => pkg.fullName),
+    mirrorPlan: provisionalMirrorPlan,
+  });
   const provisionalMirrorByPackage = new Map(
     provisionalMirrorPlan.assets.map((asset) => [asset.package, asset]),
   );
-  const embeddedSet = new Set(selection.embeddedPackages.map((pkg) => pkg.fullName));
-  const closedTrees = bindings.map((binding) => closeCollectionTree(
-    binding,
-    embeddedSet.has(binding.package),
-    provisionalMirrorByPackage.get(binding.package),
-  ));
-  createHomebrewPrefixAncestors(options.fs, plan);
-  const registered = registerHomebrewDeferredTreeCollection({
-    fs: options.fs,
-    id: "main-shell",
-    schema: 5,
-    trees: closedTrees,
-  });
-  const registeredByPackage = bindRegisteredTrees(registered, bindings);
 
-  for (const pkg of selection.embeddedPackages) {
-    const binding = bindings.find((candidate) => candidate.package === pkg.fullName)!;
-    const registeredTree = registeredByPackage.get(pkg.fullName)!;
-    assertRegisteredBinding(binding, registeredTree);
-    const changed = await options.fs.materializeRegisteredDeferredTree(
-      registeredTree.materialization,
-      binding.payload.bytes,
-    );
-    if (!changed) {
-      throw new Error(`Homebrew embedded tree ${binding.tree.id} was already materialized`);
-    }
-  }
-
-  let runtimeSupportBindings: BoundCollectionTree[] = [];
+  let runtimeSupportBindings: BoundHomebrewOriginalBottleTree[] = [];
   let runtimeSupportPlan: HomebrewVfsPlan | undefined;
   let runtimeSupportPackageReports:
     HomebrewVfsBuildReport["packages"] = [];
@@ -260,7 +264,10 @@ export async function buildHomebrewMaterializedVfs(
     runtimeSupportCollectionConflicts =
       supportCollection.report.link_conflicts ?? [];
     runtimeSupportPackageReports = supportCollection.report.packages;
-    const boundSupport = bindCollection(deltaPlan.packages, supportCollection);
+    const boundSupport = bindHomebrewOriginalBottleCollection(
+      deltaPlan.packages,
+      supportCollection,
+    );
     const supportByPackage = new Map(
       boundSupport.map((binding) => [binding.package, binding]),
     );
@@ -295,20 +302,13 @@ export async function buildHomebrewMaterializedVfs(
     ...deferredBindings,
     ...runtimeSupportBindings,
   ];
-  const mirrorPlan = createHomebrewBottleMirrorPlan(
+  const mirrorBundle = createHomebrewBottleMirrorBundle(
     options.mirrorRepository,
     allDeferredBindings,
   );
-  const mirrorPayloads = createHomebrewBottleMirrorPayloads(
-    allDeferredBindings,
-  );
-  const mirrorPlanBytes = encodeHomebrewBottleMirrorPlan(mirrorPlan);
-  const mirrorPlanAsset: HomebrewBottleMirrorPlanAsset = {
-    asset: MIRROR_PLAN_ASSET,
-    sha256: digest(mirrorPlanBytes),
-    bytes: mirrorPlanBytes,
-  };
-  assertHomebrewBottleMirrorBundle(mirrorPlan, mirrorPayloads, mirrorPlanAsset);
+  const mirrorPlan = mirrorBundle.plan;
+  const mirrorPayloads = mirrorBundle.payloads;
+  const mirrorPlanAsset = mirrorBundle.planAsset;
   const mirrorByPackage = new Map(
     mirrorPlan.assets.map((asset) => [asset.package, asset]),
   );
@@ -322,20 +322,12 @@ export async function buildHomebrewMaterializedVfs(
     options.fs.rewriteLazyArchiveUrls(
       (url) => finalUrlByProvisional.get(url) ?? url,
     );
-    const supportTrees = runtimeSupportBindings.map((binding) =>
-      closeCollectionTree(
-        binding,
-        false,
-        mirrorByPackage.get(binding.package),
-      )
-    );
-    registerHomebrewDeferredTreeCollection({
+    await installBoundHomebrewOriginalBottleTrees({
       fs: options.fs,
       id: runtimeSupport.contract.id,
-      schema: 5,
-      trees: supportTrees,
-      atomicActivationGroup:
-        runtimeSupport.contract.activation.atomicGroup,
+      bindings: runtimeSupportBindings,
+      mirrorPlan,
+      atomicActivationGroup: runtimeSupport.contract.activation.atomicGroup,
     });
   }
   writeHomebrewBottleMirrorPlan(options.fs, mirrorPlanAsset);
@@ -625,20 +617,14 @@ export function assertHomebrewVfsMaterialization(
   }
 }
 
-interface BoundCollectionTree {
-  package: string;
-  tree: HomebrewDeferredTreeDraftDescriptor;
-  payload: HomebrewLazyLayerPayload;
-}
-
-function bindCollection(
+export function bindHomebrewOriginalBottleCollection(
   plannedPackages: readonly Pick<HomebrewVfsPackagePlan, "fullName">[],
   collection: Pick<
     | HomebrewOriginalBottleCollectionBuildResult
     | HomebrewFlatOriginalBottleCollectionBuildResult,
     "deferredTrees" | "payloads"
   >,
-): BoundCollectionTree[] {
+): BoundHomebrewOriginalBottleTree[] {
   const trees = collection.deferredTrees;
   const payloads = collection.payloads;
   if (trees.length !== plannedPackages.length || payloads.length !== trees.length) {
@@ -650,7 +636,7 @@ function bindCollection(
     throw new Error("Homebrew original-bottle collection duplicates a payload id");
   }
   const packages = new Set<string>();
-  const bindings = trees.map((tree): BoundCollectionTree => {
+  const bindings = trees.map((tree): BoundHomebrewOriginalBottleTree => {
     const packageName = tree.package;
     if (
       packageName === undefined ||
@@ -686,9 +672,88 @@ function bindCollection(
   return bindings;
 }
 
+/** Create and authenticate the exact immutable release bundle for bindings. */
+export function createHomebrewBottleMirrorBundle(
+  repository: string,
+  bindings: readonly BoundHomebrewOriginalBottleTree[],
+): HomebrewBottleMirrorBundle {
+  if (bindings.length === 0) {
+    throw new Error("Homebrew bottle mirror cannot be empty");
+  }
+  const plan = createHomebrewBottleMirrorPlan(repository, bindings);
+  const payloads = createHomebrewBottleMirrorPayloads(bindings);
+  const planBytes = encodeHomebrewBottleMirrorPlan(plan);
+  const planAsset: HomebrewBottleMirrorPlanAsset = {
+    asset: MIRROR_PLAN_ASSET,
+    sha256: digest(planBytes),
+    bytes: planBytes,
+  };
+  assertHomebrewBottleMirrorBundle(plan, payloads, planAsset);
+  return { plan, payloads, planAsset };
+}
+
+/**
+ * Close, register, and optionally materialize one exact bound tree subset.
+ * Deferred state, atomic membership, and opaque materialization authority all
+ * remain owned by the existing registration machinery.
+ */
+export async function installBoundHomebrewOriginalBottleTrees(
+  options: InstallBoundHomebrewOriginalBottleTreesOptions,
+): Promise<Map<string, RegisteredHomebrewDeferredTree>> {
+  if (options.bindings.length === 0) {
+    throw new Error(`Homebrew deferred-tree collection ${options.id} is empty`);
+  }
+  const embeddedPackageOrder = options.embeddedPackageOrder ?? [];
+  const embeddedSet = new Set(embeddedPackageOrder);
+  if (
+    embeddedSet.size !== embeddedPackageOrder.length ||
+    embeddedPackageOrder.some((pkg) =>
+      !options.bindings.some((binding) => binding.package === pkg)
+    ) ||
+    options.atomicActivationGroup !== undefined && embeddedSet.size !== 0
+  ) {
+    throw new Error(
+      `Homebrew deferred-tree collection ${options.id} has invalid embedded ownership`,
+    );
+  }
+  const mirrorByPackage = new Map(
+    options.mirrorPlan.assets.map((asset) => [asset.package, asset]),
+  );
+  const trees = options.bindings.map((binding) => closeCollectionTree(
+    binding,
+    embeddedSet.has(binding.package),
+    mirrorByPackage.get(binding.package),
+  ));
+  const registered = registerHomebrewDeferredTreeCollection({
+    fs: options.fs,
+    id: options.id,
+    schema: 5,
+    trees,
+    ...(options.atomicActivationGroup === undefined
+      ? {}
+      : { atomicActivationGroup: options.atomicActivationGroup }),
+  });
+  const registeredByPackage = bindRegisteredTrees(registered, options.bindings);
+  for (const packageName of embeddedPackageOrder) {
+    const binding = options.bindings.find(
+      (candidate) => candidate.package === packageName,
+    )!;
+    const registeredTree = registeredByPackage.get(packageName)!;
+    assertRegisteredBinding(binding, registeredTree);
+    const changed = await options.fs.materializeRegisteredDeferredTree(
+      registeredTree.materialization,
+      binding.payload.bytes,
+    );
+    if (!changed) {
+      throw new Error(`Homebrew embedded tree ${binding.tree.id} was already materialized`);
+    }
+  }
+  return registeredByPackage;
+}
+
 function createHomebrewBottleMirrorPlan(
   repository: string,
-  bindings: readonly BoundCollectionTree[],
+  bindings: readonly BoundHomebrewOriginalBottleTree[],
 ): HomebrewBottleMirrorPlan {
   repository = canonicalGitHubRepository(repository);
   const identities = bindings.map((binding) => ({
@@ -717,7 +782,7 @@ function createHomebrewBottleMirrorPlan(
 }
 
 function createHomebrewBottleMirrorPayloads(
-  bindings: readonly BoundCollectionTree[],
+  bindings: readonly BoundHomebrewOriginalBottleTree[],
 ): HomebrewBottleMirrorPayload[] {
   return [...bindings]
     .sort((left, right) => compareText(left.tree.id, right.tree.id))
@@ -772,9 +837,9 @@ function canonicalGitHubRepository(repository: string): string {
  * setup without weakening deferred-tree collision checks: create only missing
  * ancestors, and reject every existing non-directory.
  */
-function createHomebrewPrefixAncestors(
+export function createHomebrewPrefixAncestors(
   fs: MemoryFileSystem,
-  plan: HomebrewVfsPlan,
+  plan: { packages: readonly Pick<HomebrewVfsPackagePlan, "prefix">[] },
 ): void {
   const prefixes = new Set(plan.packages.map((pkg) => pkg.prefix));
   for (const prefix of prefixes) {
@@ -805,7 +870,7 @@ function createHomebrewPrefixAncestors(
 }
 
 function closeCollectionTree(
-  binding: BoundCollectionTree,
+  binding: BoundHomebrewOriginalBottleTree,
   embedded: boolean,
   mirror: HomebrewBottleMirrorAsset | undefined,
 ): HomebrewDeferredTreeDescriptor {
@@ -842,7 +907,7 @@ function closeCollectionTree(
 
 function bindRegisteredTrees(
   registered: readonly RegisteredHomebrewDeferredTree[],
-  bindings: readonly BoundCollectionTree[],
+  bindings: readonly BoundHomebrewOriginalBottleTree[],
 ): Map<string, RegisteredHomebrewDeferredTree> {
   if (registered.length !== bindings.length) {
     throw new Error("Homebrew registered tree count differs from its collection");
@@ -863,7 +928,7 @@ function bindRegisteredTrees(
 }
 
 function assertRegisteredBinding(
-  binding: BoundCollectionTree,
+  binding: BoundHomebrewOriginalBottleTree,
   registered: RegisteredHomebrewDeferredTree,
 ): void {
   if (
@@ -878,11 +943,11 @@ function assertRegisteredBinding(
 
 function createMaterializationEvidence(
   selection: HomebrewVfsMaterializationSelection,
-  bindings: readonly BoundCollectionTree[],
+  bindings: readonly BoundHomebrewOriginalBottleTree[],
   collectionFs: MemoryFileSystem,
   mirrorPlanAsset: HomebrewBottleMirrorPlanAsset,
   mirrorPlan: HomebrewBottleMirrorPlan,
-  deferredBindings: readonly BoundCollectionTree[],
+  deferredBindings: readonly BoundHomebrewOriginalBottleTree[],
   runtimeSupport?: HomebrewRuntimeSupportContract,
 ): HomebrewVfsMaterializationEvidence {
   const mirrorByPackage = new Map(
@@ -956,7 +1021,7 @@ function createMaterializationEvidence(
   };
 }
 
-function writeHomebrewBottleMirrorPlan(
+export function writeHomebrewBottleMirrorPlan(
   fs: MemoryFileSystem,
   asset: HomebrewBottleMirrorPlanAsset,
 ): void {

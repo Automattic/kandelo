@@ -928,6 +928,33 @@ describe("flat Homebrew original-bottle collection", () => {
     }
   });
 
+  it("uses an explicit caller-owned scratch filesystem for the eager proof", async () => {
+    const fixture = collectionFixture();
+    const baseFs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+    const maxByteLength = 768 * 1024 * 1024;
+    baseFs.mkdir("/platform", 0o755);
+    baseFs.createFileWithOwner(
+      "/platform/base-marker",
+      0o644,
+      0,
+      0,
+      new TextEncoder().encode("base\n"),
+    );
+    const scratchFs = baseFs.rebaseToNewFileSystem(maxByteLength);
+
+    const result = await buildHomebrewFlatOriginalBottleCollection(fixture.plan, {
+      baseFs,
+      scratchFs,
+      packages: [fixture.alpha, fixture.beta.descriptor],
+      loadBottleBytes: (pkg) => fixture.bottleByPackage.get(pkg.fullName)!,
+    });
+
+    expect(result.fs).toBe(scratchFs);
+    expect(scratchFs.stat("/platform/base-marker").size).toBe(5);
+    expect(scratchFs.stat(`${fixture.alpha.keg}/bin/alpha`).size).toBeGreaterThan(0);
+    expect(() => baseFs.lstat(PREFIX)).toThrow();
+  });
+
   it("does not let the bottle loader forge selected descriptor identity", async () => {
     const fixture = collectionFixture();
     const selected = structuredClone(fixture.alpha);

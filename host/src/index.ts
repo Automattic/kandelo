@@ -134,6 +134,21 @@ export type {
   HomebrewFlatOriginalBottleCollectionBuildResult,
 } from "./homebrew-lazy-layer";
 export {
+  assertHomebrewFlatLazyVfs,
+  composeHomebrewFlatLazyVfs,
+} from "./homebrew-flat-lazy-vfs-composer";
+export type {
+  ComposeHomebrewFlatLazyVfsOptions,
+  HomebrewFlatLazyBaseImageBinding,
+  HomebrewFlatLazyDemoConfigInput,
+  HomebrewFlatLazyEmbeddedEntryEvidence,
+  HomebrewFlatLazyImageBinding,
+  HomebrewFlatLazyShellConfigInput,
+  HomebrewFlatLazyTreeEvidence,
+  HomebrewFlatLazyVfsCompositionResult,
+  HomebrewFlatLazyVfsReport,
+} from "./homebrew-flat-lazy-vfs-composer";
+export {
   HOMEBREW_VFS_FORMULA_LAYER_KIND,
   HOMEBREW_VFS_FORMULA_MANIFEST_RELATIVE_PATH,
   HOMEBREW_VFS_FORMULA_PAYLOAD_RELATIVE_PATH,

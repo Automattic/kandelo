@@ -45,6 +45,7 @@ import {
 import type { MountConfig } from "./vfs/types";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
 import { resolveLazyUrl } from "./vfs/lazy-url";
+import { prepareHomebrewFlatLazyBoot } from "./homebrew-flat-lazy-boot";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { findRepoRoot } from "./binary-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
@@ -821,6 +822,7 @@ async function buildVirtualPlatformIO(
         });
       }
       : createClosedLazyAssetFetcherFromOwnedAssets(rootfsLazyAssets));
+    await prepareHomebrewFlatLazyBoot(rootfsMemfs);
   }
   return new VirtualPlatformIO(mounts, new NodeTimeProvider());
 }

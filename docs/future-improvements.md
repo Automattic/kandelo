@@ -178,6 +178,25 @@ PR #383 (`fix(kernel): share AF_INET accept queue across fork — nginx multi-wo
 
 ## Host runtime
 
+### Harden flat lazy shell composition trust boundaries
+
+The flat-selection lazy shell composer currently relies on its trusted build
+caller for three boundaries that should be made self-authenticating before the
+API is exposed to less-controlled callers:
+
+- accept the exact serialized base-image bytes, restore them privately, and
+  derive the recorded digest and size instead of accepting a separate identity
+  claim;
+- snapshot or revalidate the base and output filesystems after asynchronous
+  bottle loading so a callback cannot inject unrelated state across the await
+  boundary; and
+- reuse the eager materialization entry validator for embedded evidence so a
+  hardlink must retain its target inode identity, not merely equal bytes.
+
+**Files:** `host/src/homebrew-flat-lazy-vfs-composer.ts`,
+`host/src/homebrew-vfs-composer.ts`,
+`host/test/homebrew-flat-lazy-vfs-composer.test.ts`
+
 ### Runtime tuning for the default pthread limit
 Kernel worker creation currently accepts `defaultThreadSlots`, and processes
 that declare `__wasm_posix_thread_slots = -1` use that boot-time default.

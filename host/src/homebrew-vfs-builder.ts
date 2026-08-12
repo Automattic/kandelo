@@ -291,6 +291,8 @@ export interface HomebrewFlatVfsBuildOptions {
   ) => Uint8Array | Promise<Uint8Array>;
   /** Optional source state is copied into a private filesystem before mutation. */
   baseFs?: MemoryFileSystem;
+  /** Optional fresh caller-owned filesystem mutated as the private proof. */
+  targetFs?: MemoryFileSystem;
 }
 
 export interface HomebrewFlatVfsLinkOwnerReport {
@@ -488,8 +490,37 @@ export async function buildHomebrewVfsSelection(
   planValue: HomebrewFlatVfsPlan,
   options: HomebrewFlatVfsBuildOptions,
 ): Promise<HomebrewFlatVfsBuildResult> {
+  if (
+    options.baseFs !== undefined &&
+    options.targetFs !== undefined &&
+    (
+      options.baseFs === options.targetFs ||
+      options.baseFs.sharedBuffer === options.targetFs.sharedBuffer
+    )
+  ) {
+    throw new HomebrewVfsBuildError(
+      "flat Homebrew selection requires separate base and target filesystems",
+    );
+  }
   const plan = snapshotFlatPlan(planValue);
   const policy = resolveHomebrewVfsResourcePolicy(plan.resourcePolicy);
+  if (options.baseFs !== undefined && options.targetFs !== undefined) {
+    assertHomebrewFlatVfsBaseClone(
+      options.baseFs,
+      options.targetFs,
+      "flat Homebrew explicit target",
+    );
+  }
+  if (options.targetFs !== undefined) {
+    const capacity = options.targetFs.statfs("/");
+    const targetCapacity = capacity.blocks * capacity.bsize;
+    if (targetCapacity !== policy.vfs.maxByteLength) {
+      throw new HomebrewVfsBuildError(
+        `flat Homebrew target filesystem capacity ${targetCapacity} differs from ` +
+          `policy capacity ${policy.vfs.maxByteLength}`,
+      );
+    }
+  }
   const plannedCompressedBytes = plan.packages.reduce(
     (total, descriptor) => addFlatResource(total, descriptor.bytes, "compressed bytes"),
     0,
@@ -609,7 +640,10 @@ export async function buildHomebrewVfsSelection(
     policy.supportZip,
   ));
 
-  const linkResolution = resolveFlatLinkOwnership(plan.packages, plan.linkPolicy);
+  const linkResolution = resolveHomebrewFlatLinkOwnership(
+    plan.packages,
+    plan.linkPolicy,
+  );
   const extractionCommands = runRuntimeSupport(() =>
     selectHomebrewExtractionCommands(
       plan.packages,
@@ -617,9 +651,18 @@ export async function buildHomebrewVfsSelection(
     )
   );
   preflightFlatOptIdentities(plan.packages);
-  const fs = options.baseFs === undefined
-    ? createFlatFs(policy.vfs.maxByteLength)
-    : options.baseFs.rebaseToNewFileSystem(policy.vfs.maxByteLength);
+  const fs = options.targetFs ?? (
+    options.baseFs === undefined
+      ? createFlatFs(policy.vfs.maxByteLength)
+      : options.baseFs.rebaseToNewFileSystem(policy.vfs.maxByteLength)
+  );
+  const targetCapacity = fs.statfs("/").blocks * fs.statfs("/").bsize;
+  if (targetCapacity !== policy.vfs.maxByteLength) {
+    throw new HomebrewVfsBuildError(
+      `flat Homebrew target filesystem capacity ${targetCapacity} differs from ` +
+        `policy capacity ${policy.vfs.maxByteLength}`,
+    );
+  }
   runMaterializer(() => preflightHomebrewStagingDirectories(
     fs,
     prepared,
@@ -729,6 +772,155 @@ export async function buildHomebrewVfsSelection(
     0o644,
   );
   return { fs, report };
+}
+
+/**
+ * Prove that an explicit caller-owned output starts as one logical clone of
+ * the lower filesystem. This keeps collision analysis truthful while allowing
+ * the caller to retain exact target object and SharedArrayBuffer identity.
+ */
+export function assertHomebrewFlatVfsBaseClone(
+  baseFs: MemoryFileSystem,
+  cloneFs: MemoryFileSystem,
+  label: string,
+): void {
+  if (
+    baseFs === cloneFs ||
+    baseFs.sharedBuffer === cloneFs.sharedBuffer
+  ) {
+    throw new HomebrewVfsBuildError(`${label} must use a separate filesystem`);
+  }
+  if (
+    baseFs.exportLazyEntries().length !== 0 ||
+    cloneFs.exportLazyEntries().length !== 0 ||
+    baseFs.exportLazyArchiveEntries().length !== 0 ||
+    cloneFs.exportLazyArchiveEntries().length !== 0
+  ) {
+    throw new HomebrewVfsBuildError(
+      `${label} cannot prove an explicit clone while deferred state is pending`,
+    );
+  }
+  if (
+    canonicalJson(baseFs.getImageMetadata()) !==
+      canonicalJson(cloneFs.getImageMetadata())
+  ) {
+    throw new HomebrewVfsBuildError(`${label} metadata differs from its base`);
+  }
+  const baseEntries = snapshotFlatBaseEntries(baseFs);
+  const cloneEntries = snapshotFlatBaseEntries(cloneFs);
+  if (canonicalJson(baseEntries) !== canonicalJson(cloneEntries)) {
+    throw new HomebrewVfsBuildError(`${label} namespace differs from its base`);
+  }
+}
+
+function snapshotFlatBaseEntries(fs: MemoryFileSystem): Array<{
+  path: string;
+  type: "directory" | "file" | "hardlink" | "symlink";
+  mode: number;
+  uid: number;
+  gid: number;
+  size?: number;
+  sha256?: string;
+  target?: string;
+}> {
+  const entries: ReturnType<typeof snapshotFlatBaseEntries> = [];
+  const hardLinks = new Map<string, string>();
+  const visit = (path: string): void => {
+    const stat = fs.lstat(path);
+    const common = {
+      path,
+      mode: stat.mode & MODE_BITS,
+      uid: stat.uid,
+      gid: stat.gid,
+    };
+    if (kind(stat) === S_IFDIR) {
+      entries.push({ ...common, type: "directory" });
+      const names: string[] = [];
+      const handle = fs.opendir(path);
+      try {
+        for (;;) {
+          const entry = fs.readdir(handle);
+          if (entry === null) break;
+          if (entry.name !== "." && entry.name !== "..") names.push(entry.name);
+        }
+      } finally {
+        fs.closedir(handle);
+      }
+      for (const name of names.sort()) {
+        visit(path === "/" ? `/${name}` : `${path}/${name}`);
+      }
+      return;
+    }
+    if (kind(stat) === S_IFLNK) {
+      entries.push({
+        ...common,
+        type: "symlink",
+        size: stat.size,
+        target: fs.readlink(path),
+      });
+      return;
+    }
+    if (kind(stat) !== S_IFREG) {
+      throw new HomebrewVfsBuildError(
+        `flat Homebrew base clone contains unsupported entry ${path}`,
+      );
+    }
+    const identity = `${stat.dev}:${stat.ino}`;
+    const hardlinkTarget = stat.nlink > 1 ? hardLinks.get(identity) : undefined;
+    if (hardlinkTarget !== undefined) {
+      entries.push({
+        ...common,
+        type: "hardlink",
+        size: stat.size,
+        target: hardlinkTarget,
+      });
+      return;
+    }
+    if (stat.nlink > 1) hardLinks.set(identity, path);
+    entries.push({
+      ...common,
+      type: "file",
+      size: stat.size,
+      sha256: sha256(readFlatBaseFile(fs, path, stat.size)),
+    });
+  };
+  visit("/");
+  return entries;
+}
+
+function readFlatBaseFile(
+  fs: MemoryFileSystem,
+  path: string,
+  size: number,
+): Uint8Array {
+  const bytes = new Uint8Array(size);
+  const fd = fs.open(path, 0, 0);
+  try {
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const count = fs.read(fd, bytes.subarray(offset), null, bytes.byteLength - offset);
+      if (count <= 0) {
+        throw new HomebrewVfsBuildError(`short read from flat Homebrew base ${path}`);
+      }
+      offset += count;
+    }
+  } finally {
+    fs.close(fd);
+  }
+  return bytes;
+}
+
+function canonicalJson(value: unknown): string {
+  const sort = (child: unknown): unknown => {
+    if (Array.isArray(child)) return child.map(sort);
+    if (child === null || typeof child !== "object") return child;
+    return Object.fromEntries(
+      Object.entries(child as Record<string, unknown>)
+        .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+        .map(([key, nested]) => [key, sort(nested)]),
+    );
+  };
+  return JSON.stringify(sort(value));
 }
 
 export async function buildHomebrewVfs(
@@ -1107,7 +1299,7 @@ function snapshotFlatPlan(value: HomebrewFlatVfsPlan): HomebrewFlatVfsPlan {
   };
 }
 
-function resolveFlatLinkOwnership(
+export function resolveHomebrewFlatLinkOwnership(
   packages: readonly HomebrewBottleDescriptor[],
   policyId: HomebrewFlatVfsPlan["linkPolicy"],
 ): {
