@@ -5,7 +5,7 @@ import { parseHomebrewRuntimeSupportContract } from "../../../host/src/homebrew-
 import { parseHomebrewVfsMaterializationPolicy } from "../../../host/src/homebrew-vfs-materialization-policy";
 import { corsProxyTargetUrl } from "../../../host/src/networking/cors-proxy-url";
 import { assertMainShellOperationalRuntimeFetches } from "../../../scripts/homebrew-main-shell-image-contract";
-import { DEFAULT_BROWSER_CORS_PROXY_URL } from "../lib/browser-cors-proxy";
+import { DEFAULT_BROWSER_CORS_PROXY_CONFIG } from "../lib/browser-cors-proxy";
 import {
   isShellVfsImageUrl,
   isVfsImageUrl,
@@ -103,6 +103,66 @@ interface ArtifactTransportRequest {
   proxied: boolean;
 }
 
+test("browser proxy callers pass the complete application profile", () => {
+  expect(DEFAULT_BROWSER_CORS_PROXY_CONFIG).toEqual({
+    url: "https://wordpress-playground-cors-proxy.net/?",
+    allowedRequestHeaderNames: [
+      "accept",
+      "content-type",
+      "git-protocol",
+      "wp_blog",
+      "wp_install",
+    ],
+    allowAnonymousGetHeaderOmission: true,
+  });
+
+  const callerSources = {
+    liveSetup: readFileSync(new URL(
+      "../pages/kandelo/kernel-host/live-setup.ts",
+      import.meta.url,
+    ), "utf8"),
+    testRunner: readFileSync(new URL(
+      "../pages/test-runner/main.ts",
+      import.meta.url,
+    ), "utf8"),
+    homebrewVfsTest: readFileSync(new URL(
+      "../pages/homebrew-vfs-test/main.ts",
+      import.meta.url,
+    ), "utf8"),
+    homebrewAdapter: readFileSync(new URL(
+      "../../../homebrew/test/homebrew_guest_lifecycle_browser.ts",
+      import.meta.url,
+    ), "utf8"),
+  };
+  for (const source of Object.values(callerSources)) {
+    expect(source).not.toContain("corsProxyUrl");
+  }
+  expect(callerSources.liveSetup).toContain(
+    "const BROWSER_CORS_PROXY = resolveBrowserCorsProxyConfig({",
+  );
+  expect(callerSources.liveSetup).toMatch(
+    /new BrowserKernel\(\{[\s\S]{0,320}corsProxy: BROWSER_CORS_PROXY,/,
+  );
+  expect(callerSources.testRunner).toContain(
+    "const corsProxy = resolveBrowserCorsProxyConfig({",
+  );
+  expect(callerSources.testRunner).toMatch(
+    /new BrowserKernel\(\{[\s\S]{0,160}corsProxy,/,
+  );
+  expect(callerSources.homebrewVfsTest).toContain(
+    "const corsProxy = resolveBrowserCorsProxyConfig({",
+  );
+  expect(callerSources.homebrewVfsTest).toMatch(
+    /runHomebrewGuestLifecycleInBrowser\(\{[\s\S]{0,160}corsProxy,/,
+  );
+  expect(callerSources.homebrewVfsTest).toMatch(
+    /new BrowserKernel\(\{[\s\S]{0,160}corsProxyExternalLazyUrls \? \{ corsProxy \}/,
+  );
+  expect(callerSources.homebrewAdapter).toMatch(
+    /new BrowserKernel\(\{[\s\S]{0,200}corsProxy: options\.corsProxy,/,
+  );
+});
+
 const BASE_EXPECTED_PACKAGES = [
   "kandelo-dev/tap-core/dash",
   "kandelo-dev/tap-core/bzip2",
@@ -134,7 +194,7 @@ function browserProxyTargetUrl(
 ): string | undefined {
   const configuredProxyUrl =
     process.env.VITE_CORS_PROXY_URL?.trim() ||
-    DEFAULT_BROWSER_CORS_PROXY_URL;
+    DEFAULT_BROWSER_CORS_PROXY_CONFIG.url;
   const configuredTarget = corsProxyTargetUrl(
     configuredProxyUrl,
     requestUrl,

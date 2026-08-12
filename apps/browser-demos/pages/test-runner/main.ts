@@ -8,6 +8,9 @@
 import { BrowserKernel } from "@host/browser-kernel-host";
 import type { HostDiagnostic } from "@host/host-diagnostic";
 import {
+  resolveBrowserCorsProxyConfig,
+} from "../../lib/browser-cors-proxy";
+import {
   createBuildFsWithEtc,
   finalizeKernelOwnedImage,
   settleWebKitReclaim,
@@ -56,10 +59,12 @@ let grepBytes: ArrayBuffer | null = null;
 let sedBytes: ArrayBuffer | null = null;
 let genCatBytes: ArrayBuffer | null = null;
 
-const corsProxyUrl = new URL(
-  `${import.meta.env.BASE_URL}__kandelo_cors_proxy?url=`,
-  window.location.href,
-).href;
+const corsProxy = resolveBrowserCorsProxyConfig({
+  configuredUrl: `${import.meta.env.BASE_URL}__kandelo_cors_proxy?url=`,
+  development: import.meta.env.DEV,
+  baseUrl: import.meta.env.BASE_URL,
+  pageUrl: window.location.href,
+});
 
 const COREUTILS_NAMES = [
   "arch", "b2sum", "base32", "base64", "basename", "basenc", "cat",
@@ -198,7 +203,7 @@ async function init() {
 
     const kernel = new BrowserKernel({
       kernelOwnedFs: true,
-      corsProxyUrl,
+      corsProxy,
       onStdout: (data: Uint8Array) => {
         const text = new TextDecoder().decode(data);
         stdout += text;

@@ -41,12 +41,17 @@ import {
   validateHomebrewFlatVfsShippingProofRequest,
   type HomebrewFlatVfsShippingProofRequest,
 } from "./flat-vfs-shipping-request";
+import {
+  resolveBrowserCorsProxyConfig,
+} from "../../lib/browser-cors-proxy";
 
 const MAX_OUTPUT_BYTES = 1024 * 1024;
-const corsProxyUrl = new URL(
-  `${import.meta.env.BASE_URL}__kandelo_cors_proxy?url=`,
-  window.location.href,
-).href;
+const corsProxy = resolveBrowserCorsProxyConfig({
+  configuredUrl: `${import.meta.env.BASE_URL}__kandelo_cors_proxy?url=`,
+  development: import.meta.env.DEV,
+  baseUrl: import.meta.env.BASE_URL,
+  pageUrl: window.location.href,
+});
 const closedLifecycleAssetRoot = homebrewClosedAcceptanceAssetRoot(
   import.meta.env.MODE,
   import.meta.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT as
@@ -350,7 +355,7 @@ async function init(): Promise<void> {
     runHomebrewGuestLifecycleInBrowser({
       fixture,
       kernelWasm: kernelBytes,
-      corsProxyUrl,
+      corsProxy,
       ...(closedLifecycleAssetRoot === undefined
         ? {}
         : { closedAssetRootUrl: closedLifecycleAssetRoot }),
@@ -381,7 +386,7 @@ async function init(): Promise<void> {
       tapRevision: validated.tapRevision,
       deadlineMs: Date.now() + validated.timeoutMs,
       kernelWasm: kernelBytes,
-      corsProxyUrl,
+      corsProxy,
       afterMachineDestroy: settleWebKitReclaim,
     });
   };
@@ -430,7 +435,7 @@ async function init(): Promise<void> {
       machine: createBrowserLifecycleMachine({
         runtime,
         kernelWasm: kernelBytes,
-        corsProxyUrl,
+        corsProxy,
         afterDestroy: settleWebKitReclaim,
       }),
     });
@@ -534,7 +539,7 @@ async function init(): Promise<void> {
     let stderr = "";
     const kernel = new BrowserKernel({
       kernelOwnedFs: true,
-      ...(request.corsProxyExternalLazyUrls ? { corsProxyUrl } : {}),
+      ...(request.corsProxyExternalLazyUrls ? { corsProxy } : {}),
       onStdout: (bytes) => { stdout = appendOutput(stdout, bytes, "stdout"); },
       onStderr: (bytes) => { stderr = appendOutput(stderr, bytes, "stderr"); },
     });

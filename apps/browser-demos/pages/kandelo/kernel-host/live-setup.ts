@@ -36,7 +36,7 @@ import {
   homebrewClosedAcceptanceAssetRoot,
 } from "../../../lib/homebrew-closed-acceptance";
 import {
-  resolveBrowserCorsProxyUrl,
+  resolveBrowserCorsProxyConfig,
 } from "../../../lib/browser-cors-proxy";
 import {
   finalizeKernelOwnedImage,
@@ -483,7 +483,7 @@ const APP_PATH = import.meta.env.BASE_URL + "app";
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const DEV_CORS_PROXY_PATH = import.meta.env.BASE_URL + "__kandelo_cors_proxy";
-const BROWSER_CORS_PROXY_URL = resolveBrowserCorsProxyUrl({
+const BROWSER_CORS_PROXY = resolveBrowserCorsProxyConfig({
   configuredUrl: import.meta.env.VITE_CORS_PROXY_URL,
   development: import.meta.env.DEV,
   baseUrl: import.meta.env.BASE_URL,
@@ -535,7 +535,7 @@ const NODE_SHELL_ENV: string[] = [
   "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
   "SSL_CERT_DIR=/etc/ssl/certs",
   "npm_config_cache=/tmp/.npm-cache",
-  "npm_config_registry=http://proxy.local/",
+  "npm_config_registry=https://registry.npmjs.org/",
   "npm_config_fund=false",
   "npm_config_audit=false",
   "npm_config_progress=false",
@@ -1404,7 +1404,7 @@ async function bootProfile(
       // WHY: the service worker, guest sockets, and lazy VFS are separate
       // transports. The live shell must explicitly give its kernel the same
       // deployment proxy or release-hosted lazy bottles bypass it under COEP.
-      corsProxyUrl: BROWSER_CORS_PROXY_URL,
+      corsProxy: BROWSER_CORS_PROXY,
       maxWorkers: profile.init?.maxWorkers ?? 4,
       maxMemoryPages:
         profile.init?.maxMemoryPages ?? profile.maxMemoryPages,

@@ -13,12 +13,56 @@ import type {
   SerializedLazyArchiveEntry,
 } from "./vfs/memory-fs";
 import type {
+  HostDiagnostic,
   HostDiagnosticMessage,
 } from "./host-diagnostic";
 import type { ClosedLazyAsset } from "./vfs/closed-lazy-assets";
+import {
+  type BrowserCorsProxyConfig,
+  validateBrowserCorsProxyConfig,
+} from "./networking/browser-cors-proxy";
 
 export type { HttpRequest, HttpResponse };
 export type { HostDiagnostic } from "./host-diagnostic";
+
+export function initializeBrowserCorsProxyForWorker<TLazyFetcher, TTlsBackend>(
+  value: BrowserCorsProxyConfig | undefined,
+  consumers: {
+    useLazyFetcher: boolean;
+    createLazyFetcher: (config: BrowserCorsProxyConfig) => TLazyFetcher;
+    createTlsBackend: (options: {
+      corsProxy?: BrowserCorsProxyConfig;
+      onCorsProxyDiagnostic: (message: string) => void;
+    }) => TTlsBackend;
+    reportHostDiagnostic: (
+      diagnostic: HostDiagnostic,
+      level: "warn",
+    ) => void;
+  },
+): {
+  corsProxy: BrowserCorsProxyConfig | undefined;
+  lazyFetcher: TLazyFetcher | undefined;
+  tlsBackend: TTlsBackend;
+} {
+  const corsProxy = validateBrowserCorsProxyConfig(value);
+  const lazyFetcher = corsProxy !== undefined && consumers.useLazyFetcher
+    ? consumers.createLazyFetcher(corsProxy)
+    : undefined;
+  const tlsBackend = consumers.createTlsBackend({
+    corsProxy,
+    onCorsProxyDiagnostic: (message) => {
+      consumers.reportHostDiagnostic(
+        {
+          pid: 0,
+          source: "browser CORS proxy",
+          message,
+        },
+        "warn",
+      );
+    },
+  });
+  return { corsProxy, lazyFetcher, tlsBackend };
+}
 
 // ── Main Thread → Kernel Worker ──
 
@@ -60,7 +104,7 @@ export interface InitMessage {
     dnsAliases?: Record<string, string>;
     /** Routes guest HTTP(S) and external lazy VFS downloads through a browser
      *  proxy when the page is not controlled by Kandelo's service worker. */
-    corsProxyUrl?: string;
+    corsProxy?: BrowserCorsProxyConfig;
   };
 }
 

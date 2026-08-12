@@ -316,12 +316,70 @@ describe("BrowserKernel", () => {
     expect(MockWorker.instances).toHaveLength(0);
   });
 
-  it("boot() spawns a worker, sends init, and resolves on `ready`", async () => {
+  it("snapshots the complete CORS proxy configuration before worker startup", async () => {
     const BrowserKernel = await loadBrowserKernel();
+    const allowedRequestHeaderNames = [
+      "Accept",
+      "content-type",
+      "Accept",
+    ];
+    const corsProxy = {
+      url: "https://proxy.example/?url=",
+      allowedRequestHeaderNames,
+      allowAnonymousGetHeaderOmission: true,
+    };
     const kernel = new BrowserKernel({
       kernelOwnedFs: true,
-      corsProxyUrl: "https://proxy.example/?url=",
+      corsProxy,
     });
+    corsProxy.url = "https://mutated.example/?url=";
+    allowedRequestHeaderNames.splice(
+      0,
+      allowedRequestHeaderNames.length,
+      "x-mutated",
+    );
+
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(MockWorker.instances).toHaveLength(1);
+    const w = MockWorker.instances[0]!;
+    const init = w.lastMessage("init");
+    expect(init.config.corsProxy).toEqual({
+      url: "https://proxy.example/?url=",
+      allowedRequestHeaderNames: ["Accept", "content-type", "Accept"],
+      allowAnonymousGetHeaderOmission: true,
+    });
+    expect(Object.isFrozen(init.config.corsProxy)).toBe(true);
+    expect(
+      Object.isFrozen(init.config.corsProxy.allowedRequestHeaderNames),
+    ).toBe(true);
+
+    w.simulateMessage({ type: "ready" });
+    await initPromise;
+  });
+
+  it("rejects a malformed CORS proxy configuration before starting a worker", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+
+    expect(() => new BrowserKernel({
+      kernelOwnedFs: true,
+      corsProxy: {
+        url: "file:///tmp/not-a-proxy",
+        allowedRequestHeaderNames: ["accept"],
+        allowAnonymousGetHeaderOmission: true,
+      },
+    })).toThrow("browser CORS proxy URL must be an HTTP(S) URL");
+
+    expect(MockWorker.instances).toHaveLength(0);
+  });
+
+  it("boot() spawns a worker, sends init, and resolves on `ready`", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
 
     const bootPromise = kernel.boot({
       kernelWasm: new ArrayBuffer(8),
@@ -330,33 +388,33 @@ describe("BrowserKernel", () => {
     });
 
     // Worker should be created and the init message posted.
-    await new Promise((r) => setTimeout(r, 0)); // let the constructor microtask flush
+    await new Promise((r) => setTimeout(r, 0));
     expect(MockWorker.instances).toHaveLength(1);
     const w = MockWorker.instances[0]!;
     const init = w.lastMessage("init");
     expect(init).toBeDefined();
-    expect(init.argv).toBeUndefined(); // argv goes in the spawn message
+    expect(init.argv).toBeUndefined();
     expect(init.kernelWasmBytes).toBeInstanceOf(ArrayBuffer);
-    expect(init.config.corsProxyUrl).toBe("https://proxy.example/?url=");
 
     // Simulate the worker becoming ready, then reply to the spawn request.
     w.simulateMessage({ type: "ready" });
     await new Promise((r) => setTimeout(r, 0));
 
-    // BrowserKernel followed up with a spawn request.
     const spawn = w.lastMessage("spawn");
     expect(spawn).toBeDefined();
     expect(spawn.argv).toEqual(["/init"]);
     expect(typeof spawn.requestId).toBe("number");
 
-    // Worker replies with the assigned pid.
-    w.simulateMessage({ type: "response", requestId: spawn.requestId, result: 100 });
+    w.simulateMessage({
+      type: "response",
+      requestId: spawn.requestId,
+      result: 100,
+    });
     const { pid, exit } = await bootPromise;
     expect(pid).toBe(100);
 
-    // Exit promise — fires only when the worker reports exit.
     let exitResolved: number | null = null;
-    exit.then((c) => { exitResolved = c; });
+    exit.then((code) => { exitResolved = code; });
     expect(exitResolved).toBeNull();
     w.simulateMessage({ type: "exit", pid: 100, status: 7 });
     expect(await exit).toBe(7);
