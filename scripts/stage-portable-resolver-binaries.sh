@@ -150,6 +150,16 @@ while IFS= read -r -d '' mirror; do
       fi
       if [ ! -e "$staged_cache/programs/$generation" ]; then
         cp -a -- "$source_generation" "$staged_cache/programs/$generation"
+        provenance="$source_program_cache/.$generation.kandelo-provenance.toml"
+        if [ -e "$provenance" ] || [ -L "$provenance" ]; then
+          if [ ! -f "$provenance" ] || [ -L "$provenance" ]; then
+            echo "stage-portable-resolver-binaries: cache provenance is not a regular non-symlink file: $provenance" >&2
+            exit 1
+          fi
+          cp -p -- \
+            "$provenance" \
+            "$staged_cache/programs/.$generation.kandelo-provenance.toml"
+        fi
       fi
       ln -s \
         "$(relative_cache_link "$mirror_relative" "$cache_relative")" \

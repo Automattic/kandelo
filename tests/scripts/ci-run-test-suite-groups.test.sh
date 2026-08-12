@@ -1511,6 +1511,8 @@ mkdir -p \
     "$FIXTURE/binaries/programs/wasm32/homebrew-bootstrap"
 printf 'Homebrew bootstrap\n' \
     > "$source_cache/programs/$generation/homebrew-bootstrap/homebrew-bootstrap.zip"
+fixture_provenance="$source_cache/programs/.$generation.kandelo-provenance.toml"
+printf 'fixture immutable Git provenance\n' > "$fixture_provenance"
 ln -s \
     "$source_cache/programs/$generation/homebrew-bootstrap/homebrew-bootstrap.zip" \
     "$FIXTURE/binaries/programs/wasm32/homebrew-bootstrap/homebrew-bootstrap.zip"
@@ -1995,6 +1997,9 @@ cmp \
 cmp \
     "$pack_extract/binaries/programs/wasm32/fixture/runtime.dat" \
     "$pack_extract/.ci-test-binary-cache/programs/$generation/share/runtime.dat"
+cmp \
+    "$fixture_provenance" \
+    "$pack_extract/.ci-test-binary-cache/programs/.$generation.kandelo-provenance.toml"
 one_member_mirror="$pack_extract/binaries/programs/wasm32/one-member.wasm"
 [ -L "$one_member_mirror" ] || {
     echo "pack-ci-test-workspace.sh: flattened a fetched one-member package" >&2
