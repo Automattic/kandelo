@@ -35,8 +35,9 @@ grep -Eq '^revision[[:space:]]*=[[:space:]]*23$' "$BUILD_TOML" ||
     fail "canonical shell revision must be 23"
 grep -Eq '^commit[[:space:]]*=[[:space:]]*"UNPUBLISHED"$' "$BUILD_TOML" ||
     fail "canonical shell must await publication under its authored commit"
-grep -Eq '^publication_state[[:space:]]*=[[:space:]]*"ready"$' \
-    "$BUILD_TOML" || fail "canonical flat shell must be publication-ready"
+grep -Eq '^publication_state[[:space:]]*=[[:space:]]*"pending"$' \
+    "$BUILD_TOML" ||
+    fail "canonical flat shell must remain pending until ABI-specific CI publication"
 for input in \
     homebrew/main-shell-flat-selection.json \
     homebrew/main-shell-default.json \
@@ -46,11 +47,13 @@ for input in \
     packages/registry/shell/prepare-build-tools.sh \
     crates/shared/src/lib.rs \
     host/src/constants.ts \
+    host/src/file-offset.ts \
     host/src/generated/abi.ts \
     host/src/homebrew-bottle-descriptor.ts \
     host/src/homebrew-bottle-relocation.ts \
     host/src/homebrew-bottle-selection.ts \
     host/src/homebrew-bottle-types.ts \
+    host/src/homebrew-deferred-tree-adapter.ts \
     host/src/homebrew-guest-layout.ts \
     host/src/homebrew-lazy-layer-descriptor.ts \
     host/src/homebrew-lazy-layer.ts \
@@ -65,7 +68,20 @@ for input in \
     host/src/homebrew-vfs-resource-policy.ts \
     host/src/pathconf.ts \
     host/src/statfs.ts \
-    host/src/vfs \
+    host/src/types.ts \
+    host/src/vfs/canonical-text.ts \
+    host/src/vfs/closed-lazy-assets.ts \
+    host/src/vfs/deferred-tree-limits.ts \
+    host/src/vfs/hardlink-graph.ts \
+    host/src/vfs/image-helpers.ts \
+    host/src/vfs/materialization-plan.ts \
+    host/src/vfs/memory-fs.ts \
+    host/src/vfs/package-deferred-tree-contract.ts \
+    host/src/vfs/package-deferred-tree.ts \
+    host/src/vfs/sharedfs-vendor.ts \
+    host/src/vfs/tar.ts \
+    host/src/vfs/types.ts \
+    host/src/vfs/zip.ts \
     web-libs/kandelo-session/src/shell-config.ts \
     web-libs/kandelo-session/src/demo-config.ts
 do
@@ -342,8 +358,10 @@ grep -Fq -- '--sab-size 536870912' "$FAKE_LOG" ||
     fail "platform base omitted the 512 MiB initial capacity"
 grep -Fq -- '--max-size 536870912' "$FAKE_LOG" ||
     fail "platform base omitted the 512 MiB maximum capacity"
-grep -Fq -- '--kernel-abi 42' "$FAKE_LOG" ||
-    fail "platform base omitted ABI 42"
+abi="$(grep -oE 'ABI_VERSION: u32 = [0-9]+' \
+    "$SCRIPT_DIR/../../../crates/shared/src/lib.rs" | awk '{print $4}')"
+grep -Fq -- "--kernel-abi $abi" "$FAKE_LOG" ||
+    fail "platform base omitted the current ABI"
 
 for out_dir in "$parallel_one" "$parallel_two"; do
     source_root="$out_dir/.homebrew-shell-build/source"

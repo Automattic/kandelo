@@ -45,6 +45,7 @@ current_source_commit() {
 
 canonical_flat_shell_report_json() {
     local image="$1"
+    local selection_path="${KANDELO_CANONICAL_FLAT_SELECTION:-$REPO_ROOT/homebrew/main-shell-flat-selection.json}"
     local report_root
     local report
     local status
@@ -52,7 +53,7 @@ canonical_flat_shell_report_json() {
     report="$report_root/report.json"
     npx tsx "$SCRIPT_DIR/inspect-canonical-flat-shell.ts" \
         --image "$image" \
-        --selection "$REPO_ROOT/homebrew/main-shell-flat-selection.json" \
+        --selection "$selection_path" \
         --shell-config "$REPO_ROOT/homebrew/main-shell-default.json" \
         --demo-config "$REPO_ROOT/homebrew/main-shell-flat-demo.json" \
         --out "$report" || {

@@ -1148,18 +1148,49 @@ flat_state_probe="$TMP_ROOT/canonical-flat-shell-state"
 mkdir -p "$flat_state_probe"
 flat_state_image="$flat_state_probe/shell.vfs.zst"
 lazy_state_image="$flat_state_probe/lazy-shell.vfs.zst"
+flat_state_selection="$flat_state_probe/selection.json"
+node --input-type=module - \
+  "$REPO_ROOT/homebrew/main-shell-flat-selection.json" \
+  "$flat_state_selection" "$abi" <<'NODE'
+import { readFileSync, writeFileSync } from "node:fs";
+
+const normalize = (value) => {
+  if (Array.isArray(value)) return value.map(normalize);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value).sort().map((key) => [key, normalize(value[key])]),
+    );
+  }
+  return value;
+};
+const selection = JSON.parse(readFileSync(process.argv[2], "utf8"));
+const abi = Number(process.argv[4]);
+if (!Number.isInteger(abi) || abi < 0) {
+  throw new Error("flat-state selection fixture requires a nonnegative integer ABI");
+}
+selection.kandeloAbi = abi;
+selection.name = `main-shell-abi${abi}-wasm32`;
+for (const bottle of selection.bottles) bottle.kandeloAbi = abi;
+writeFileSync(process.argv[3], `${JSON.stringify(normalize(selection))}\n`);
+NODE
 KANDELO_FLAT_STATE_IMAGE="$flat_state_image" \
 KANDELO_LAZY_STATE_IMAGE="$lazy_state_image" \
+KANDELO_FLAT_STATE_ABI="$abi" \
+KANDELO_FLAT_STATE_SELECTION="$flat_state_selection" \
   npx tsx -e '
     import { createHash } from "node:crypto";
     import { readFileSync, writeFileSync } from "node:fs";
     import { ensureDirRecursive, writeVfsBinary } from "./host/src/vfs/image-helpers.ts";
     import { MemoryFileSystem } from "./host/src/vfs/memory-fs.ts";
     const maxByteLength = 512 * 1024 * 1024;
-    const selection = new Uint8Array(readFileSync("homebrew/main-shell-flat-selection.json"));
+    const selection = new Uint8Array(readFileSync(process.env.KANDELO_FLAT_STATE_SELECTION));
     const shellConfig = new Uint8Array(readFileSync("homebrew/main-shell-default.json"));
     const demoConfig = new Uint8Array(readFileSync("homebrew/main-shell-flat-demo.json"));
     const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+    const kernelAbi = Number(process.env.KANDELO_FLAT_STATE_ABI);
+    if (!Number.isInteger(kernelAbi) || kernelAbi < 0) {
+      throw new Error("flat-state fixture requires a nonnegative integer ABI");
+    }
     const build = async (lazy) => {
       const fs = MemoryFileSystem.create(
         new SharedArrayBuffer(4 * 1024 * 1024, { maxByteLength }),
@@ -1181,10 +1212,10 @@ KANDELO_LAZY_STATE_IMAGE="$lazy_state_image" \
       if (lazy) fs.registerLazyFile("/lazy", "https://invalid.example/lazy", 1, 0o644);
       return fs.saveImage({metadata: {
         version: 1,
-        kernelAbi: 42,
+        kernelAbi,
         createdBy: "images/vfs/scripts/build-homebrew-flat-vfs-image.ts",
         capacity: {maxByteLength},
-        baseImage: {sha256: "b".repeat(64), bytes: 1234, kernelAbi: 42},
+        baseImage: {sha256: "b".repeat(64), bytes: 1234, kernelAbi},
         homebrewFlat: {
           selectionSha256: sha256(selection),
           requestedVfsFilename: "shell.vfs.zst",
@@ -1243,16 +1274,17 @@ revision = 23
 
 [packages.binary.wasm32]
 status = "success"
-archive_url = "shell-0.1.0-rev23-abi42-wasm32-97dd1a61.tar.zst"
+archive_url = "shell-0.1.0-rev23-abi${abi}-wasm32-97dd1a61.tar.zst"
 archive_sha256 = "$(printf 'a%.0s' {1..64})"
 cache_key_sha = "$flat_cache_key"
 built_at = "2026-08-10T00:00:00Z"
 built_by = "https://example.invalid/run/1"
 EOF
-bash "$CI_BROWSER_MIRROR_STATE" create \
+KANDELO_CANONICAL_FLAT_SELECTION="$flat_state_selection" \
+  bash "$CI_BROWSER_MIRROR_STATE" create \
   "$flat_state_expected" "$flat_state_blockers" \
   "$flat_state_index" \
-  https://github.com/Automattic/kandelo/releases/download/binaries-abi-v42/index.toml \
+  https://github.com/Automattic/kandelo/releases/download/binaries-abi-v${abi}/index.toml \
   "$flat_state_image" "$flat_state"
 jq -e '
   .schema == 3 and
@@ -1268,13 +1300,15 @@ jq -e '
   .inspection.image.bytes == .image.bytes
 ' "$flat_state" >/dev/null ||
   fail "resolved shell state did not preserve its flat inspection authority"
-bash "$CI_BROWSER_MIRROR_STATE" validate producer \
+KANDELO_CANONICAL_FLAT_SELECTION="$flat_state_selection" \
+  bash "$CI_BROWSER_MIRROR_STATE" validate producer \
   "$flat_state" "$flat_state_blockers" "$flat_state_image"
 expect_failure "self-contained" \
+  env KANDELO_CANONICAL_FLAT_SELECTION="$flat_state_selection" \
   bash "$CI_BROWSER_MIRROR_STATE" create \
     "$flat_state_expected" "$flat_state_blockers" \
     "$flat_state_index" \
-    https://github.com/Automattic/kandelo/releases/download/binaries-abi-v42/index.toml \
+    https://github.com/Automattic/kandelo/releases/download/binaries-abi-v${abi}/index.toml \
     "$lazy_state_image" "$flat_state_probe/lazy-state.json"
 
 override_probe="$TMP_ROOT/local-shell-override"
