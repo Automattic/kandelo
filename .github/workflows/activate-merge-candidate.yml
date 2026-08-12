@@ -60,6 +60,10 @@ jobs:
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
+          # WHY: this only resumes canonical transactions that were already
+          # created by activation after its public-mirror gate. Running the
+          # 48 MiB anonymous readback on every quiet scheduled sweep would not
+          # protect a new transaction; new candidates pass the gate below.
           args=(
             --max-pages 50
             --per-page 100

@@ -761,16 +761,24 @@ Sortix is divided into include, basic, and remaining-runtime jobs. These are
 the same natural partitions used by staging-build and prepare-merge; their
 matrix result is still aggregated by the single `test-gate` job.
 
-## Current ABI-42 shell publication (2026-08-11)
+## Current ABI-42 shell publication (2026-08-12)
 
 `homebrew/main-shell-flat-selection.json` is a package input for shell
-revision 23. Its archive contains a self-contained `/opt/kandelo/homebrew`
-and root-owned `/bin` and `/usr/bin` links to the selected eager commands.
-Canonical inspection requires the conventional `bash`, `sh`, `env`, and
-`brew` entrypoints. Every shell-derived VFS package records the exact base
-image digest and size. The shell and its five reverse dependents therefore
-move through one canonical package release rather than through an independent
-bottle-mirror publication transaction.
+revision 24. Its archive embeds the selected Bash closure and package-owned
+Homebrew bootstrap over the platform base while retaining 37 authenticated
+bottle trees as deferred flat-lazy groups. Every shell-derived VFS package
+records the exact base image digest and size. The shell and its five reverse
+dependents therefore move through one canonical package release.
+
+The deferred bottle mirror is a separate immutable byte transport, not a
+second shell-image product. Its checked-in exact plan is rollout authority but
+is not a package recipe input. The protected tap caller source-builds current
+`main`'s direct `homebrew-bootstrap` dependency and `shell` through the normal
+resolver, recovers the plan, and requires a byte-for-byte match before the
+existing immutable publisher and anonymous readback run. Candidate activation
+then anonymously verifies the public plan and all 37 size/digest identities
+immediately before any canonical release mutation. Mirror absence or
+corruption leaves the candidate retryable for a later reconciliation.
 
 Prepare merge writes those rows only to its isolated
 `merge-candidate-abi-v42-*` release. Post-merge activation verifies the merged

@@ -160,6 +160,43 @@ mutable host defaults and fail only when a deferred file is first opened.
 
 **Files:** `host/src/vfs/`, `images/vfs/`, package image builders and metadata
 
+### Cross-bind each shell candidate to its public bottle mirror
+
+The short-term ABI-42 rollout has two independent checks: the protected tap
+publisher source-builds the current-main shell and requires its recovered
+37-asset plan to match the checked-in plan, while Kandelo candidate activation
+anonymously verifies the public release for that checked-in plan. The candidate
+receipt does not yet prove that the exact candidate shell archive embeds that
+same plan.
+
+Add an authenticated candidate-to-mirror binding before this becomes a general
+publication contract. Candidate preparation should extract or attest the
+shell's exact plan identity, carry it through the sealed candidate and
+activation receipt, and require the public mirror readback receipt to name the
+same plan and collection. This must preserve the package resolver's tested-byte
+authority and must not make a validation-only plan file a package cache-key
+input.
+
+**Files:** merge-candidate metadata and activation scripts, shell VFS evidence,
+public bottle-mirror receipts
+
+### Automate protected bottle-mirror publication across repositories
+
+The current rollout requires an operator to run the protected
+`kandelo-dev/homebrew-tap-core` caller with exact Kandelo and tap commits before
+allowing candidate activation to retry. Kandelo's repository-scoped
+`GITHUB_TOKEN` cannot dispatch that other repository, and this change does not
+introduce a broader personal token or hidden cross-repository credential.
+
+Automate the handoff with a least-privilege installation identity, such as a
+GitHub App, only after the request and receipt schemas bind the exact Kandelo
+main commit, tap main commit, checked-in plan identity, workflow run, and
+idempotent publication result. Failed dispatch or publication must remain
+observable and retryable without advancing canonical package state.
+
+**Files:** protected tap caller, Kandelo post-main publication orchestration,
+mirror publication and readback receipts
+
 ## Performance
 
 ### Revisit an optional wasm32 kernel build for IPC-heavy workloads

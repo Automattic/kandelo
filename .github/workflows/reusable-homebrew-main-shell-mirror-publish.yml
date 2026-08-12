@@ -168,8 +168,10 @@ jobs:
                 "$TAP_MIRROR_AUTHORITY_REF" "$TAP_CALLER_AUTHORITY_REF"
               ;;
           esac
-          jq -e '.state == "sealed" and .image.sha256 != null and .image.bytes > 0' \
-            kandelo/homebrew/main-shell-lazy-artifact-lock.json >/dev/null
+          if [ "$PUBLICATION_MODE" = publish-lifecycle ]; then
+            jq -e '.state == "sealed" and .image.sha256 != null and .image.bytes > 0' \
+              kandelo/homebrew/main-shell-lazy-artifact-lock.json >/dev/null
+          fi
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
@@ -200,6 +202,7 @@ jobs:
           bash scripts/dev-shell.sh true
 
       - name: Validate structured shell release locks
+        if: inputs.publication-mode == 'publish-lifecycle'
         working-directory: kandelo
         shell: bash
         env:
@@ -220,42 +223,131 @@ jobs:
         env:
           WASM_POSIX_BINARY_CACHE_ROOT: ${{ runner.temp }}/main-shell-mirror-package-cache
           TAP_CATALOG_REF: ${{ inputs.tap-catalog-ref }}
+          PUBLICATION_MODE: ${{ inputs.publication-mode }}
         run: |
           set -euo pipefail
           test ! -e "$WASM_POSIX_BINARY_CACHE_ROOT"
-          # WHY: the shell image remains a transitional Kandelo package while
-          # its lazy Homebrew tree is Formula-owned. Fetch only that image here;
-          # resolving the old homebrew-bootstrap package would make the later
-          # lifecycle release registry-owned again.
-          bash scripts/dev-shell.sh env \
-            "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
-            bash scripts/fetch-binaries.sh --fetch-only \
-              --package shell
-          image="$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)"
-          bootstrap_root="$RUNNER_TEMP/homebrew-bootstrap-bottle"
-          test ! -e "$bootstrap_root"
-          # WHY: use the same anonymous sealed-selection admission path as the
-          # deployed browser. The source tap does not contain generated support
-          # Formulae, so even this publisher must not substitute its checkout.
-          bash scripts/dev-shell.sh bash \
-            scripts/prepare-homebrew-browser-bootstrap.sh \
-              --require-sealed \
-              --output-directory "$bootstrap_root"
-          bootstrap="$bootstrap_root/homebrew-bootstrap.zip"
-          bootstrap_env="$bootstrap_root/homebrew-brew.env"
+          case "$PUBLICATION_MODE" in
+            create-mirror)
+              source_binaries="$RUNNER_TEMP/main-shell-source-binaries"
+              test ! -e "$source_binaries"
+              mkdir "$source_binaries"
+              # WHY: the mirror must be derived from reviewed current-main
+              # source before the new package generation is activated. Build
+              # the direct bootstrap companion first into the same isolated
+              # resolver cache, then force the shell recipe itself through the
+              # ordinary package resolver. Keep all scalar queries inside one
+              # dev shell: its status output must never become part of a path.
+              bash scripts/dev-shell.sh bash -s -- \
+                "$source_binaries" \
+                "$WASM_POSIX_BINARY_CACHE_ROOT" \
+                "$GITHUB_OUTPUT" <<'SOURCE_BUILD'
+          set -euo pipefail
+          source_binaries="$1"
+          cache_root="$2"
+          github_output="$3"
+          host_target="$(rustc -vV | awk '/^host:/ {print $2}')"
+          [ -n "$host_target" ]
+
+          WASM_POSIX_BINARY_CACHE_ROOT="$cache_root" \
+            cargo run --release -p xtask --target "$host_target" --quiet -- \
+              build-deps --arch wasm32 --binaries-dir "$source_binaries" \
+                --force-source-build resolve homebrew-bootstrap
+          WASM_POSIX_BINARY_CACHE_ROOT="$cache_root" \
+            cargo run --release -p xtask --target "$host_target" --quiet -- \
+              build-deps --arch wasm32 --binaries-dir "$source_binaries" \
+                --force-source-build resolve shell
+
+          bootstrap_archive_rel="$(cargo run --release -p xtask \
+            --target "$host_target" --quiet -- \
+              build-deps --arch wasm32 output-path homebrew-bootstrap \
+                homebrew-bootstrap.zip)"
+          bootstrap_env_rel="$(cargo run --release -p xtask \
+            --target "$host_target" --quiet -- \
+              build-deps --arch wasm32 output-path homebrew-bootstrap \
+                homebrew-brew.env)"
+          image_rel="$(cargo run --release -p xtask --target "$host_target" \
+            --quiet -- build-deps --arch wasm32 output-path \
+              shell shell.vfs.zst)"
+
+          cache_root="$(realpath "$cache_root")"
+          programs_root="$(realpath "$source_binaries/programs/wasm32")"
+          test -d "$cache_root"
+          test -d "$programs_root"
+          resolve_product() {
+            local relative="$1"
+            local mirror_path
+            local link_target
+            local resolved
+            [ -n "$relative" ]
+            [ "${relative#/}" = "$relative" ]
+            case "$relative" in
+              *$'\n'*|../*|*/../*|*/..) return 1 ;;
+            esac
+            mirror_path="$programs_root/$relative"
+            case "$mirror_path" in
+              "$programs_root"/*) ;;
+              *) return 1 ;;
+            esac
+            test -L "$mirror_path"
+            link_target="$(readlink "$mirror_path")"
+            case "$link_target" in
+              /*) ;;
+              *) return 1 ;;
+            esac
+            resolved="$(realpath "$mirror_path")"
+            case "$resolved" in
+              "$cache_root"/*) ;;
+              *) return 1 ;;
+            esac
+            test -f "$resolved"
+            test ! -L "$resolved"
+            printf '%s\n' "$resolved"
+          }
+          bootstrap="$(resolve_product "$bootstrap_archive_rel")"
+          bootstrap_env="$(resolve_product "$bootstrap_env_rel")"
+          image="$(resolve_product "$image_rel")"
           for path in "$image" "$bootstrap" "$bootstrap_env"; do
             test -f "$path"
             test ! -L "$path"
           done
-          bash scripts/verify-homebrew-main-shell-artifact-lock.sh \
-            --lock homebrew/main-shell-lazy-artifact-lock.json \
-            --expected-source-date-epoch 0 \
-            --artifact "$image"
           {
             echo "image=$image"
             echo "bootstrap=$bootstrap"
             echo "bootstrap-env=$bootstrap_env"
-          } >>"$GITHUB_OUTPUT"
+          } >>"$github_output"
+          SOURCE_BUILD
+              ;;
+            publish-lifecycle)
+              # Historical lifecycle recovery keeps its sealed public product
+              # path. It is independent of the current mirror creation lane.
+              bash scripts/dev-shell.sh env \
+                "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
+                bash scripts/fetch-binaries.sh --fetch-only --package shell
+              image="$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)"
+              bootstrap_root="$RUNNER_TEMP/homebrew-bootstrap-bottle"
+              test ! -e "$bootstrap_root"
+              bash scripts/dev-shell.sh bash \
+                scripts/prepare-homebrew-browser-bootstrap.sh \
+                  --require-sealed \
+                  --output-directory "$bootstrap_root"
+              bootstrap="$bootstrap_root/homebrew-bootstrap.zip"
+              bootstrap_env="$bootstrap_root/homebrew-brew.env"
+              bash scripts/verify-homebrew-main-shell-artifact-lock.sh \
+                --lock homebrew/main-shell-lazy-artifact-lock.json \
+                --expected-source-date-epoch 0 \
+                --artifact "$image"
+              for path in "$image" "$bootstrap" "$bootstrap_env"; do
+                test -f "$path"
+                test ! -L "$path"
+              done
+              {
+                echo "image=$image"
+                echo "bootstrap=$bootstrap"
+                echo "bootstrap-env=$bootstrap_env"
+              } >>"$GITHUB_OUTPUT"
+              ;;
+          esac
 
       - name: Recover exact public-source bottle payloads
         id: mirror
@@ -265,6 +357,7 @@ jobs:
           IMAGE: ${{ steps.shell.outputs.image }}
           TAP_CATALOG_REF: ${{ inputs.tap-catalog-ref }}
           TAP_MIRROR_AUTHORITY_REF: ${{ steps.authority.outputs.mirror-authority-ref }}
+          PUBLICATION_MODE: ${{ inputs.publication-mode }}
         run: |
           set -euo pipefail
           mirror="$RUNNER_TEMP/main-shell-mirror"
@@ -282,8 +375,21 @@ jobs:
                 --image "$IMAGE" \
                 --out "$mirror" \
                 --report "$report"
-          [ "$(jq -er '.catalog.checkout_commit' "$report")" = \
-            "$TAP_CATALOG_REF" ]
+          case "$PUBLICATION_MODE" in
+            create-mirror)
+              cmp "$mirror/kandelo-homebrew-bottle-mirror-plan.json" \
+                homebrew/main-shell-flat-lazy-mirror-plan.json
+              jq -e '
+                .source == "flat-lazy-image-binding" and
+                .repository == "kandelo-dev/homebrew-tap-core" and
+                (.assets | length) == 37
+              ' "$report" >/dev/null
+              ;;
+            publish-lifecycle)
+              [ "$(jq -er '.catalog.checkout_commit' "$report")" = \
+                "$TAP_CATALOG_REF" ]
+              ;;
+          esac
           bash scripts/dev-shell.sh npx tsx \
             scripts/create-homebrew-bottle-mirror-publish-manifest.ts \
               --bundle "$mirror" \

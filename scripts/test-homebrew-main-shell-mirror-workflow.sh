@@ -114,6 +114,25 @@ expect_rejected "$TMP_ROOT/no-structured-lock-check.yml"
 sed '/scripts\/prepare-homebrew-browser-bootstrap.sh/d' \
   "$WORKFLOW" >"$TMP_ROOT/no-bottle-bootstrap-extractor.yml"
 expect_rejected "$TMP_ROOT/no-bottle-bootstrap-extractor.yml"
+sed '/--force-source-build resolve homebrew-bootstrap/d' \
+  "$WORKFLOW" >"$TMP_ROOT/no-source-bootstrap.yml"
+expect_rejected "$TMP_ROOT/no-source-bootstrap.yml"
+sed '/--force-source-build resolve shell/d' \
+  "$WORKFLOW" >"$TMP_ROOT/no-source-shell.yml"
+expect_rejected "$TMP_ROOT/no-source-shell.yml"
+sed \
+  's/bootstrap_archive_rel="$(cargo run/bootstrap_archive_rel="$(bash scripts\/dev-shell.sh cargo run/' \
+  "$WORKFLOW" >"$TMP_ROOT/dev-shell-output-in-package-path.yml"
+expect_rejected "$TMP_ROOT/dev-shell-output-in-package-path.yml"
+sed '/test -L "$mirror_path"/d' \
+  "$WORKFLOW" >"$TMP_ROOT/regular-file-resolver-product.yml"
+expect_rejected "$TMP_ROOT/regular-file-resolver-product.yml"
+sed 's/"$cache_root"\/\*) ;;/"$programs_root"\/*) ;;/' \
+  "$WORKFLOW" >"$TMP_ROOT/resolved-link-confined-to-mirror.yml"
+expect_rejected "$TMP_ROOT/resolved-link-confined-to-mirror.yml"
+sed '/main-shell-flat-lazy-mirror-plan.json/d' \
+  "$WORKFLOW" >"$TMP_ROOT/no-exact-flat-lazy-plan.yml"
+expect_rejected "$TMP_ROOT/no-exact-flat-lazy-plan.yml"
 sed \
   's#\$PWD/apps/browser-demos/public/homebrew-bootstrap.zip#programs/homebrew-bootstrap/homebrew-bootstrap.zip#' \
   "$WORKFLOW" >"$TMP_ROOT/registry-bootstrap-browser-proof.yml"

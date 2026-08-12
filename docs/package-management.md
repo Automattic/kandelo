@@ -148,6 +148,30 @@ package inputs and rebuild the complete reverse-dependent closure:
 - `wordpress` revision 14; and
 - `nginx-vfs` and `nginx-php-vfs` revision 4.
 
+The deferred bottle bytes have a separate transport publication, not a
+separate shell-image authority. The checked-in
+`homebrew/main-shell-flat-lazy-mirror-plan.json` is the exact rollout
+authority for its 37 assets. It is deliberately not a shell recipe input: a
+validation-only plan must not rotate package cache identities when the
+produced image bytes have not changed.
+
+After the relevant source is on `Automattic/kandelo` `main`, the protected tap
+caller invokes the reusable `create-mirror` publisher with exact Kandelo and
+tap commits. Its unprivileged preparation job source-builds the canonical
+`homebrew-bootstrap` dependency and `shell` through the normal package
+resolver in one isolated cache, recovers the plan embedded by that shell, and
+requires a byte-for-byte match with the checked-in plan. The existing
+write-capable job then publishes the immutable release and anonymously
+re-reads every asset.
+
+Candidate activation independently and anonymously verifies the published
+plan plus every declared byte count and SHA-256 immediately before it creates
+or changes the canonical package release. Absence or corruption exits without
+a rejection receipt or canonical mutation, so manual and scheduled candidate
+reconciliation can retry after mirror publication. A quiet scheduled sweep
+does not download the complete 48 MiB mirror; only a candidate that has
+reached the activation boundary performs that check.
+
 Each derived image verifies and records the exact base-shell digest and bytes.
 It therefore cannot silently combine a new Node, nginx, PHP, or WordPress
 payload with an older shell. Pull-request staging builds and tests this package
@@ -690,14 +714,13 @@ hops are rejected even when their current final target re-enters the closure.
 Neither path set is caller-selected, and the rest of the native Homebrew
 prefix—including every other `etc` child—remains absent.
 
-#### Historical lazy shell recovery contract
+#### Flat-lazy shell composition and recovery contract
 
-The lazy composition details below document the retired recovery lane and its
-integrity constraints. They are not the current ABI-42 shell publication path:
-the canonical shell is rebuilt eagerly from the admitted flat selection. Any
-return to persisted or downloaded lazy images is future work and must preserve
-the same artifact and provenance checks; see
-[Future improvements](future-improvements.md#define-compatibility-for-restored-lazy-vfs-images).
+The lazy composition details below are the current ABI-42 shell integrity
+contract. The canonical package build reconstructs the flat-lazy image from
+the admitted selection; the protected mirror publisher independently repeats
+that source build and recovers the exact deferred payload plan before
+publication.
 
 Bottle-backed lazy VFS composition keeps the same archive as its transport
 unit. The descriptor exposes bounded metadata for `stat` and `readdir`, but the
@@ -744,14 +767,13 @@ every declared tree has an exact admitted ABI/digest/size identity, all
 support bytes come from that declaration, and the independent-tap Formula is
 installed live rather than smuggled into the image.
 
-`Kandelo/recipes/homebrew-bootstrap/source-lock.json` in the tap is the
-Formula's reviewed source/output identity. It binds the prepared source inputs
-and normalized source TAR, deterministic ZIP serializer, and each output's
-exact path, SHA-256, and byte count. A rebuild therefore cannot silently change
-guest Homebrew source or environment bytes across macOS and Linux. The older
-`homebrew/homebrew-bootstrap-source-lock.json` and registry package remain only
-for the transitional source-rootfs compatibility lane; the bottled product
-shell does not consult either one.
+The current shell resolves the `homebrew-bootstrap` registry package as its
+one direct dependency. `homebrew/homebrew-bootstrap-source-lock.json` binds
+that package's prepared source, deterministic ZIP, environment policy, and
+exact output bytes. The separate tap-native support-data Formula and
+`Kandelo/recipes/homebrew-bootstrap/source-lock.json` retain their own bottle
+and historical lifecycle-input authority; those coordinates must not be
+substituted for the package dependency selected by the current shell build.
 
 See [docs/homebrew-publishing.md](homebrew-publishing.md) for the Homebrew
 formula, sidecar, GHCR, VFS, and runtime validation contract.

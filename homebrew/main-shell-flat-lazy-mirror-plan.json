@@ -1,0 +1,307 @@
+{
+  "schema": 1,
+  "kind": "kandelo-homebrew-bottle-mirror-plan",
+  "repository": "kandelo-dev/homebrew-tap-core",
+  "collection_sha256": "d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b",
+  "tag": "homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b",
+  "release_root": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b",
+  "manifest_asset": "kandelo-homebrew-bottle-mirror-plan.json",
+  "assets": [
+    {
+      "id": "bottle-bc-562e0ad3bc2955e7",
+      "package": "kandelo-dev/tap-core/bc",
+      "asset": "kandelo-homebrew-bottle-bc-562e0ad3bc2955e7-layer.bin",
+      "sha256": "b2657996570d89554214182ba1c78c23fb1129a939839fc5481b4e33b8d3f968",
+      "bytes": 60608,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-bc-562e0ad3bc2955e7-layer.bin"
+    },
+    {
+      "id": "bottle-bzip2-ac04a832fd0ca85b",
+      "package": "kandelo-dev/tap-core/bzip2",
+      "asset": "kandelo-homebrew-bottle-bzip2-ac04a832fd0ca85b-layer.bin",
+      "sha256": "a2440f810e52b250951c323b43f6d55b40c3e68b28408929df53bdfe83044c85",
+      "bytes": 87257,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-bzip2-ac04a832fd0ca85b-layer.bin"
+    },
+    {
+      "id": "bottle-coreutils-a17a29fc1bc521b9",
+      "package": "kandelo-dev/tap-core/coreutils",
+      "asset": "kandelo-homebrew-bottle-coreutils-a17a29fc1bc521b9-layer.bin",
+      "sha256": "492b9d4a14bce5c4ef5cc55fafd3d24b8874c661b85480f1c5d61713357fdcc2",
+      "bytes": 1781809,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-coreutils-a17a29fc1bc521b9-layer.bin"
+    },
+    {
+      "id": "bottle-curl-e69cb2f943864c31",
+      "package": "kandelo-dev/tap-core/curl",
+      "asset": "kandelo-homebrew-bottle-curl-e69cb2f943864c31-layer.bin",
+      "sha256": "f0dca680303d3ad87e4899e031d24bb538b99273d126ea37e43981d6a405ee1b",
+      "bytes": 1318604,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-curl-e69cb2f943864c31-layer.bin"
+    },
+    {
+      "id": "bottle-dash-d4d560434824682b",
+      "package": "kandelo-dev/tap-core/dash",
+      "asset": "kandelo-homebrew-bottle-dash-d4d560434824682b-layer.bin",
+      "sha256": "93ae2b1153a5f7073eb7d2ca4a86feca138e6e5130f2a7b5e15d7bb2b35c92b8",
+      "bytes": 165887,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-dash-d4d560434824682b-layer.bin"
+    },
+    {
+      "id": "bottle-diffutils-d43a03200cebddfa",
+      "package": "kandelo-dev/tap-core/diffutils",
+      "asset": "kandelo-homebrew-bottle-diffutils-d43a03200cebddfa-layer.bin",
+      "sha256": "3577d0d843f6e432989bace433313f7714a66190d8dd0e0e812b045135f3ae04",
+      "bytes": 534600,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-diffutils-d43a03200cebddfa-layer.bin"
+    },
+    {
+      "id": "bottle-ed-e6c585ff110a4692",
+      "package": "kandelo-dev/tap-core/ed",
+      "asset": "kandelo-homebrew-bottle-ed-e6c585ff110a4692-layer.bin",
+      "sha256": "3a7d19c8b266e35d67caf4e61946d4f3f042de72ffd5aa8cef70f824b7e11a73",
+      "bytes": 104388,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-ed-e6c585ff110a4692-layer.bin"
+    },
+    {
+      "id": "bottle-fbdoom-6b1f99707f51b198",
+      "package": "kandelo-dev/tap-core/fbdoom",
+      "asset": "kandelo-homebrew-bottle-fbdoom-6b1f99707f51b198-layer.bin",
+      "sha256": "acde2bc27bfa90048e7960e8755604066de3ef33087f246b01318cde20e9b5ba",
+      "bytes": 186887,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-fbdoom-6b1f99707f51b198-layer.bin"
+    },
+    {
+      "id": "bottle-file-formula-fb098ab500908672",
+      "package": "kandelo-dev/tap-core/file-formula",
+      "asset": "kandelo-homebrew-bottle-file-formula-fb098ab500908672-layer.bin",
+      "sha256": "a41bb07211b8d9e4f0f970391534b282de0d114bb6dd015b086f93c036eabeeb",
+      "bytes": 334901,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-file-formula-fb098ab500908672-layer.bin"
+    },
+    {
+      "id": "bottle-findutils-9811113ec7f07627",
+      "package": "kandelo-dev/tap-core/findutils",
+      "asset": "kandelo-homebrew-bottle-findutils-9811113ec7f07627-layer.bin",
+      "sha256": "970b4858f75e8952018ebce350e1c2035d646f21c9346eb770ad434ca444b22a",
+      "bytes": 770572,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-findutils-9811113ec7f07627-layer.bin"
+    },
+    {
+      "id": "bottle-gawk-73d9c34a645d5e3a",
+      "package": "kandelo-dev/tap-core/gawk",
+      "asset": "kandelo-homebrew-bottle-gawk-73d9c34a645d5e3a-layer.bin",
+      "sha256": "842c9d2eb0dba098af0e3ab288c03c9a7b148a1bb0d2c71911cb89adc0312bea",
+      "bytes": 650278,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-gawk-73d9c34a645d5e3a-layer.bin"
+    },
+    {
+      "id": "bottle-git-e9a9058395caa381",
+      "package": "kandelo-dev/tap-core/git",
+      "asset": "kandelo-homebrew-bottle-git-e9a9058395caa381-layer.bin",
+      "sha256": "27b72cdc76c9271e8a95230c845717241d75c61b11335615299fd572446d1be5",
+      "bytes": 7427405,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-git-e9a9058395caa381-layer.bin"
+    },
+    {
+      "id": "bottle-grep-c2d51cd778361a03",
+      "package": "kandelo-dev/tap-core/grep",
+      "asset": "kandelo-homebrew-bottle-grep-c2d51cd778361a03-layer.bin",
+      "sha256": "c6a7f5c110cefd41832d07f417fdf643bd967746d6aed9e3c54fc00b816a9e07",
+      "bytes": 343679,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-grep-c2d51cd778361a03-layer.bin"
+    },
+    {
+      "id": "bottle-gzip-94910c13dc2a1560",
+      "package": "kandelo-dev/tap-core/gzip",
+      "asset": "kandelo-homebrew-bottle-gzip-94910c13dc2a1560-layer.bin",
+      "sha256": "b86faa7314d9086a95c4495992c4640cdc6ea50985097fa25694b0b7a230fbb8",
+      "bytes": 154661,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-gzip-94910c13dc2a1560-layer.bin"
+    },
+    {
+      "id": "bottle-less-998df8dacd4b965b",
+      "package": "kandelo-dev/tap-core/less",
+      "asset": "kandelo-homebrew-bottle-less-998df8dacd4b965b-layer.bin",
+      "sha256": "a2987e33443d593d1e8acf596d5facd2a270fb7928cf6687a36525c20d293ad8",
+      "bytes": 322882,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-less-998df8dacd4b965b-layer.bin"
+    },
+    {
+      "id": "bottle-libcurl-de0019eff3779888",
+      "package": "kandelo-dev/tap-core/libcurl",
+      "asset": "kandelo-homebrew-bottle-libcurl-de0019eff3779888-layer.bin",
+      "sha256": "4dfb1d19a164cd33ead2f3f9991525965bce6be40054d5fa8c06502906f30a59",
+      "bytes": 850734,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-libcurl-de0019eff3779888-layer.bin"
+    },
+    {
+      "id": "bottle-libmagic-2b70fe53cf6dd3d1",
+      "package": "kandelo-dev/tap-core/libmagic",
+      "asset": "kandelo-homebrew-bottle-libmagic-2b70fe53cf6dd3d1-layer.bin",
+      "sha256": "37e2f4a2f9d80e751297c1c1e49a4900674ddf0f6dc3b6b84ae3720104820b63",
+      "bytes": 1111748,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-libmagic-2b70fe53cf6dd3d1-layer.bin"
+    },
+    {
+      "id": "bottle-libyaml-80c927883bbbc995",
+      "package": "kandelo-dev/tap-core/libyaml",
+      "asset": "kandelo-homebrew-bottle-libyaml-80c927883bbbc995-layer.bin",
+      "sha256": "a6100d3ed67a08ac04dce2366e430f62486a96570dc436dbc38c2a8a40f8b6ec",
+      "bytes": 62230,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-libyaml-80c927883bbbc995-layer.bin"
+    },
+    {
+      "id": "bottle-lsof-71c47af53ea22cd3",
+      "package": "kandelo-dev/tap-core/lsof",
+      "asset": "kandelo-homebrew-bottle-lsof-71c47af53ea22cd3-layer.bin",
+      "sha256": "f08d6195469a2c34fa59dfcf452235d3e2c6aad508f8906189b6e65ae93b9857",
+      "bytes": 20531,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-lsof-71c47af53ea22cd3-layer.bin"
+    },
+    {
+      "id": "bottle-m4-cef2567b53d134c6",
+      "package": "kandelo-dev/tap-core/m4",
+      "asset": "kandelo-homebrew-bottle-m4-cef2567b53d134c6-layer.bin",
+      "sha256": "26d0358b99a8fac315257bf054718dbf5902322433a65440ae0ac0f287f56a84",
+      "bytes": 467539,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-m4-cef2567b53d134c6-layer.bin"
+    },
+    {
+      "id": "bottle-make-d4420de02cc7cd43",
+      "package": "kandelo-dev/tap-core/make",
+      "asset": "kandelo-homebrew-bottle-make-d4420de02cc7cd43-layer.bin",
+      "sha256": "7656f307e4ae8af169e7ae9f85607cadca4304e88abb4054a60550b37eb30288",
+      "bytes": 487590,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-make-d4420de02cc7cd43-layer.bin"
+    },
+    {
+      "id": "bottle-modeset-0b515a172084ab58",
+      "package": "kandelo-dev/tap-core/modeset",
+      "asset": "kandelo-homebrew-bottle-modeset-0b515a172084ab58-layer.bin",
+      "sha256": "16bdc897ade4aebe335235dd140b3c65033967170c8a50e48e8c1a061645ce72",
+      "bytes": 27502,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-modeset-0b515a172084ab58-layer.bin"
+    },
+    {
+      "id": "bottle-nano-75811ec5a942ceb1",
+      "package": "kandelo-dev/tap-core/nano",
+      "asset": "kandelo-homebrew-bottle-nano-75811ec5a942ceb1-layer.bin",
+      "sha256": "0a5c0ce39a015fba3163af74d7161b6e839e9954c5aeef98983a08c31ef82823",
+      "bytes": 543995,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-nano-75811ec5a942ceb1-layer.bin"
+    },
+    {
+      "id": "bottle-netcat-9c908ce6c5dfeb0f",
+      "package": "kandelo-dev/tap-core/netcat",
+      "asset": "kandelo-homebrew-bottle-netcat-9c908ce6c5dfeb0f-layer.bin",
+      "sha256": "04ccaf7dd07bd11084f854cfcc326ac874f4572bbcf0be9992d1fd3a85d51855",
+      "bytes": 56194,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-netcat-9c908ce6c5dfeb0f-layer.bin"
+    },
+    {
+      "id": "bottle-nethack-416341381cb23538",
+      "package": "kandelo-dev/tap-core/nethack",
+      "asset": "kandelo-homebrew-bottle-nethack-416341381cb23538-layer.bin",
+      "sha256": "c13bfbeebf44016f7eec36b618544eb64fc7f11175a9e4bbf0f021ac0e0b730d",
+      "bytes": 2119867,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-nethack-416341381cb23538-layer.bin"
+    },
+    {
+      "id": "bottle-openssl-2fb204c03f114f68",
+      "package": "kandelo-dev/tap-core/openssl",
+      "asset": "kandelo-homebrew-bottle-openssl-2fb204c03f114f68-layer.bin",
+      "sha256": "a5d806737125136348d6db61af18a396423cace3a092e9d574913d226062e025",
+      "bytes": 3028087,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-openssl-2fb204c03f114f68-layer.bin"
+    },
+    {
+      "id": "bottle-posix-utils-lite-89db7024f1232a25",
+      "package": "kandelo-dev/tap-core/posix-utils-lite",
+      "asset": "kandelo-homebrew-bottle-posix-utils-lite-89db7024f1232a25-layer.bin",
+      "sha256": "dc2dc2e5a8fe268cf71ada257cc09ae77496c46c5d23af70921f878fb3e2d555",
+      "bytes": 60408,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-posix-utils-lite-89db7024f1232a25-layer.bin"
+    },
+    {
+      "id": "bottle-ruby-c670cea14298b55d",
+      "package": "kandelo-dev/tap-core/ruby",
+      "asset": "kandelo-homebrew-bottle-ruby-c670cea14298b55d-layer.bin",
+      "sha256": "251cf59d8442ad4412638322e7ee4d22c7518ed0e4b0f888dac482431845b1b7",
+      "bytes": 7156219,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-ruby-c670cea14298b55d-layer.bin"
+    },
+    {
+      "id": "bottle-sed-b4df7d960874f9cd",
+      "package": "kandelo-dev/tap-core/sed",
+      "asset": "kandelo-homebrew-bottle-sed-b4df7d960874f9cd-layer.bin",
+      "sha256": "49217f1c99b44bb6ec11e0ca5416a1b6330106bfbdde32df40ee8bd2f61db41e",
+      "bytes": 189318,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-sed-b4df7d960874f9cd-layer.bin"
+    },
+    {
+      "id": "bottle-tar-a413d7d6b36ca83c",
+      "package": "kandelo-dev/tap-core/tar",
+      "asset": "kandelo-homebrew-bottle-tar-a413d7d6b36ca83c-layer.bin",
+      "sha256": "26c6b7d2f299b2367907b490f98d43db3b7c31f0bb3c01bb55a6b320ea1bb56f",
+      "bytes": 1089785,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-tar-a413d7d6b36ca83c-layer.bin"
+    },
+    {
+      "id": "bottle-unzip-ec0aaecafd1b3a5f",
+      "package": "kandelo-dev/tap-core/unzip",
+      "asset": "kandelo-homebrew-bottle-unzip-ec0aaecafd1b3a5f-layer.bin",
+      "sha256": "21afe8917ea46b2df019fabc9c3c98265f3e56d442bcc1017d681721e9d82fa1",
+      "bytes": 491202,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-unzip-ec0aaecafd1b3a5f-layer.bin"
+    },
+    {
+      "id": "bottle-vim-8f5ad1c845619e25",
+      "package": "kandelo-dev/tap-core/vim",
+      "asset": "kandelo-homebrew-bottle-vim-8f5ad1c845619e25-layer.bin",
+      "sha256": "2ee5ae082ee1c510ed6b68669371f13ce0f0c1289f50508ab45d6414021a071d",
+      "bytes": 11347489,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-vim-8f5ad1c845619e25-layer.bin"
+    },
+    {
+      "id": "bottle-wget-b5be02183216425d",
+      "package": "kandelo-dev/tap-core/wget",
+      "asset": "kandelo-homebrew-bottle-wget-b5be02183216425d-layer.bin",
+      "sha256": "1d8f4db36b729250708cd7d5a360b01e46cd92f47b7dec5d26ac7937aa1f006c",
+      "bytes": 2579565,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-wget-b5be02183216425d-layer.bin"
+    },
+    {
+      "id": "bottle-xz-7ba0bde6f409d8f6",
+      "package": "kandelo-dev/tap-core/xz",
+      "asset": "kandelo-homebrew-bottle-xz-7ba0bde6f409d8f6-layer.bin",
+      "sha256": "3cf43262295b6ee72fc3d3787dc9022b4232d3fdd92fc2433c96889fe1f0fea2",
+      "bytes": 632700,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-xz-7ba0bde6f409d8f6-layer.bin"
+    },
+    {
+      "id": "bottle-zip-b32c30392378b972",
+      "package": "kandelo-dev/tap-core/zip",
+      "asset": "kandelo-homebrew-bottle-zip-b32c30392378b972-layer.bin",
+      "sha256": "0e686bd357075419b7599dc6324a6be7848a3d3fa1dffdf11847e8344737c442",
+      "bytes": 354389,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-zip-b32c30392378b972-layer.bin"
+    },
+    {
+      "id": "bottle-zlib-64fbe357384227a1",
+      "package": "kandelo-dev/tap-core/zlib",
+      "asset": "kandelo-homebrew-bottle-zlib-64fbe357384227a1-layer.bin",
+      "sha256": "56156bebb6c58add889785458ed2a9ee78a8932bb3ed750b4f53ec3dbb13a792",
+      "bytes": 107543,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-zlib-64fbe357384227a1-layer.bin"
+    },
+    {
+      "id": "bottle-zstd-fb68d16968cf30b4",
+      "package": "kandelo-dev/tap-core/zstd",
+      "asset": "kandelo-homebrew-bottle-zstd-fb68d16968cf30b4-layer.bin",
+      "sha256": "a7364e9a2c7a11d95f8718d52a158394b01f8339728d0fbba9fe9decd774d77e",
+      "bytes": 1087339,
+      "url": "https://github.com/kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-d5aa52c246ccb9a93751ef2c57c93e18a798cc1637ddd57f921fea957a61f48b/kandelo-homebrew-bottle-zstd-fb68d16968cf30b4-layer.bin"
+    }
+  ]
+}

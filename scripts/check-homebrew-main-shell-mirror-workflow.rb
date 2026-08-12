@@ -15,7 +15,7 @@ NODE_SCOPE_RUNNER = ARGV.length < 2 ?
 PUBLISH_JOB_DIGEST =
   "5f38b593eeffd4cacf3d728baa64695e88fe2f0723757628dbc936b6b679c54b"
 WORKFLOW_DIGEST =
-  "9dee4c5bb5a12cb06aa25f2c54fe884febf5762cb698772c0c6629283cf9af91"
+  "d8aaa7ff78ce755552c2004ee5e758702da2f44ffb8c3732c9ad4a56132d80d6"
 NODE_SCOPE_RUNNER_DIGEST =
   "a351c57bba3b4ad05d58a346ccf2ffa22d6de194d1839c24a78d2b9bc07f1bf8"
 DOWNLOAD_ACTION =
@@ -232,33 +232,59 @@ shell_step = jobs.fetch("prepare").fetch("steps").find do |step|
 end
 check(shell_step, "shell generation resolver step is missing")
 shell_run = shell_step.fetch("run")
-normalized_shell_run = shell_run.gsub(/\\\s+/, " ").gsub(/\s+/, " ")
-selected_roots = normalized_shell_run.scan(
-  /--package(?:=|\s+)([a-z0-9][a-z0-9._+-]*)/,
-).flatten.uniq
-check(selected_roots.include?("shell"),
-      "shell generation does not fetch the shell root")
-check(selected_roots == ["shell"] &&
+create_mirror_run = shell_run[
+  /create-mirror\)\n(.*?)^\s*publish-lifecycle\)/m,
+  1,
+]
+check(create_mirror_run &&
+      create_mirror_run.scan("bash scripts/dev-shell.sh").length == 1 &&
+      create_mirror_run.include?("bash scripts/dev-shell.sh bash -s --") &&
+      !create_mirror_run.include?("$(bash scripts/dev-shell.sh"),
+      "create-mirror paths may not capture dev-shell wrapper output")
+check(create_mirror_run.scan(
+        "build-deps --arch wasm32 output-path"
+      ).length == 3,
+      "create-mirror output-path queries must select wasm32 explicitly")
+check(create_mirror_run.include?(
+        'cache_root="$(realpath "$cache_root")"'
+      ) && create_mirror_run.include?(
+        'mirror_path="$programs_root/$relative"'
+      ) && create_mirror_run.include?(
+        'test -L "$mirror_path"'
+      ) && create_mirror_run.include?(
+        'resolved="$(realpath "$mirror_path")"'
+      ) && create_mirror_run.include?(
+        '"$cache_root"/*) ;;'
+      ),
+      "create-mirror must admit resolver links into the isolated cache")
+check(shell_run.include?(
+        '--force-source-build resolve homebrew-bootstrap'
+      ) && shell_run.include?(
+        '--force-source-build resolve shell'
+      ) && create_mirror_run.scan(
+        "build-deps --arch wasm32 output-path"
+      ).length == 3 &&
       shell_run.include?(
+        'programs_root="$(realpath "$source_binaries/programs/wasm32")"'
+      ) && shell_run.include?(
+        'bootstrap="$(resolve_product "$bootstrap_archive_rel")"'
+      ) && shell_run.include?(
+        'bootstrap_env="$(resolve_product "$bootstrap_env_rel")"'
+      ) && shell_run.include?(
+        'image="$(resolve_product "$image_rel")"'
+      ) && create_mirror_run.include?(
+        '} >>"$github_output"'
+      ),
+      "create-mirror must source-build shell and its direct bootstrap package")
+check(shell_run.include?(
         "scripts/prepare-homebrew-browser-bootstrap.sh"
       ) &&
       shell_run.include?('--require-sealed \\') &&
       shell_run.include?('--output-directory "$bootstrap_root"') &&
       !shell_run.include?(
         "scripts/extract-homebrew-support-data-bottle.ts"
-      ) &&
-      !shell_run.include?("programs/homebrew-bootstrap/"),
-      "bootstrap must use the shared sealed-selection preparation path")
-direct_product_roots = normalized_shell_run.scan(
-  %r{resolve-binary\.sh programs/([a-z0-9][a-z0-9._+-]*)/},
-).flatten.uniq
-missing_product_roots = direct_product_roots - selected_roots
-# WHY: resolving a published root materializes that root's product, not every
-# separately published dependency product. A workflow that directly consumes
-# another product must select its package root instead of relying on closure
-# metadata that intentionally preserves lazy dependencies.
-check(missing_product_roots.empty?,
-      "direct artifact roots were not fetched: #{missing_product_roots.join(", ")}")
+      ),
+      "publish-lifecycle must retain the sealed historical bootstrap path")
 
 prepare_handoff_uploads = prepare_job.fetch("steps").select do |step|
   step["uses"] == UPLOAD_ACTION
@@ -334,6 +360,16 @@ check(
 check(prepare_source.include?(
   ".github/scripts/check-homebrew-main-shell-release-locks.py"
 ), "structured shell release-lock validation is missing")
+lock_step = named_step(prepare_job, "Validate structured shell release locks")
+check(lock_step["if"] == "inputs.publication-mode == 'publish-lifecycle'",
+      "retired shell locks must not gate current mirror creation")
+check(prepare_source.include?(
+  'cmp "$mirror/kandelo-homebrew-bottle-mirror-plan.json"'
+) && prepare_source.include?(
+  "homebrew/main-shell-flat-lazy-mirror-plan.json"
+) && prepare_source.include?(
+  '.source == "flat-lazy-image-binding"'
+), "create-mirror does not bind recovery to the checked-in flat-lazy plan")
 check(prepare_source.include?(
   '--target-commitish "$TAP_MIRROR_AUTHORITY_REF"'
 ), "mirror manifest does not retain its original tap authority")

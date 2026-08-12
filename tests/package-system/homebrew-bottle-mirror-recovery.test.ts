@@ -308,4 +308,33 @@ describe("Homebrew bottle mirror recovery", () => {
       manifest.assets.map((asset: { name: string }) => asset.name).sort(),
     ).toEqual(bundleNames);
   });
+
+  it("publishes the current flat-lazy recovery report without a retired catalog", async () => {
+    const value = await fixture({ assetCount: 37, flatLazy: true });
+    const payloadByDigest = new Map(
+      value.payloads.map((payload) => [sha256(payload), payload]),
+    );
+    await recoverHomebrewBottleMirror({
+      imagePath: value.imagePath,
+      outputDirectory: value.outputDirectory,
+      reportPath: value.reportPath,
+      fetchImpl: async (input) => {
+        const digest = input.toString().split("sha256:").at(-1)!;
+        return new Response(payloadByDigest.get(digest));
+      },
+    });
+
+    const publishManifestPath = join(value.root, "flat-lazy-publish.json");
+    await createHomebrewBottleMirrorPublishManifest({
+      bundleDirectory: value.outputDirectory,
+      recoveryReportPath: value.reportPath,
+      targetCommitish: "f".repeat(40),
+      outputPath: publishManifestPath,
+    });
+
+    const manifest = JSON.parse(readFileSync(publishManifestPath, "utf8"));
+    expect(manifest.repository).toBe(value.plan.repository);
+    expect(manifest.tag).toBe(value.plan.tag);
+    expect(manifest.assets).toHaveLength(38);
+  });
 });

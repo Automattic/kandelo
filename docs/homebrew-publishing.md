@@ -14,23 +14,39 @@ Migration status, preserved scope, and the remaining execution order are
 tracked in the
 [Homebrew Migration Living Execution Plan](plans/2026-07-21-homebrew-migration-execution-plan.md).
 
-## Current ABI-42 shell publication (2026-08-11)
+## Current ABI-42 shell publication (2026-08-12)
 
 Trusted CI still builds Kandelo Homebrew bottles, publishes them through the
 GHCR/Homebrew URL shape, and generates Formula `bottle do` blocks and Kandelo
 sidecars together. The current browser shell consumes those already-admitted
-bottles through `homebrew/main-shell-flat-selection.json`. Shell revision 23
-eagerly pours the complete selection over the platform base and writes one
-archive with a self-contained `/opt/kandelo/homebrew`, image-owned Bash and
-demo configs, and an eager `/usr/bin/brew` target.
+bottles through `homebrew/main-shell-flat-selection.json`. Shell revision 24
+composes their flat-lazy form over the platform base. It embeds the selected
+Bash closure and package-owned Homebrew bootstrap while retaining 37 bottle
+trees behind the authenticated mirror plan in the image.
 
 That shell is a normal registry package and moves through the
 canonical package release alongside `node-vfs`, `lamp`, `wordpress`,
-`nginx-vfs`, and `nginx-php-vfs`. Ordinary staging inspects the exact flat
-image and uses the generic package test gate. There is no separate shell-image
-or bottle-mirror
-publisher in this path, and the browser does not reconstruct Homebrew from
-Formula bottles at boot.
+`nginx-vfs`, and `nginx-php-vfs`. Ordinary staging builds and tests that exact
+package closure through the generic package gate. The lazy payload release is
+a separate transport for bytes already authenticated by the package image; it
+is not a second shell-image product.
+
+The checked-in `homebrew/main-shell-flat-lazy-mirror-plan.json` fixes the exact
+37-asset rollout. Once the source is on `Automattic/kandelo` `main`, the
+protected tap caller's `create-mirror` path source-builds the canonical direct
+`homebrew-bootstrap` dependency and `shell` with the ordinary resolver in an
+isolated cache. It recovers the embedded plan, requires a byte-for-byte match,
+and passes the resulting manifest to the existing immutable-release publisher
+and anonymous readback. The checked-in plan is rollout authority, not a shell
+package input, so this validation does not rotate unchanged package identities.
+
+Before a new candidate can create or mutate the canonical package release,
+activation anonymously verifies the public plan and all 37 assets by exact
+size and SHA-256. A missing or corrupt mirror is retryable: activation writes
+neither a rejection receipt nor canonical state, and later manual or scheduled
+reconciliation tries the same candidate again. The verifier is at that
+candidate boundary rather than the quiet 30-minute sweep, avoiding a redundant
+48 MiB download when there is nothing new to activate.
 
 Candidate activation first commits the tested package entries to
 `binaries-abi-v42`. It then records whether any candidate succeeded. The
@@ -40,11 +56,11 @@ from a fresh fetch-only cache, reruns the flat-shell inspector, verifies both
 hashed Vite assets, executes `brew` and Ruby with no deferred-download rows,
 and runs the exact npm/cowsay Chromium acceptance before deploying.
 
-The closed-selection, bootstrap, artifact-lock, lifecycle-input, and
-lazy-mirror procedures later in this document are retained as historical
-recovery contracts. They are not the normal ABI-42 publisher and do not
-override this dated current-state section. Compatibility for already
-downloaded or persisted lazy images is tracked separately in
+The closed-selection and lazy-mirror integrity procedures later in this
+document remain relevant to the current package and its transport. The sealed
+artifact-lock and lifecycle-input publication procedures describe the older
+recovery lane and do not override the current ownership and order above.
+Compatibility for already downloaded or persisted lazy images is tracked in
 [Future improvements](future-improvements.md#define-compatibility-for-restored-lazy-vfs-images).
 
 This is not a general user-facing Homebrew install guide yet. Do not document
@@ -164,7 +180,19 @@ See
 [Binary releases: durable package generations](binary-releases.md#durable-package-generations-for-cross-workflow-publication)
 for dispatch, recovery, seal-last publication, and mutation handling.
 
-## Historical Recovery: Guest Homebrew Bootstrap Bottle
+## Guest Homebrew Bootstrap Products
+
+The current shell source build resolves the Kandelo `homebrew-bootstrap`
+registry package as its canonical direct dependency. That package emits the
+exact `homebrew-bootstrap.zip` and `homebrew-brew.env` consumed by shell
+revision 24, and `homebrew/homebrew-bootstrap-source-lock.json` binds their
+source and bytes. The protected mirror publisher force-source-builds this
+dependency before it force-source-builds the shell.
+
+The tap-native support-data Formula described below is a distinct product used
+by the historical lifecycle-input and public browser-proof lane. Its bottle
+does not replace the current shell's registry dependency, even when both
+products describe the same upstream Homebrew tree and guest policy.
 
 The patched Homebrew Ruby tree used by a guest is the support-data Formula
 `homebrew-bootstrap`. Its bottle contains two declared `libexec` members:
@@ -174,17 +202,19 @@ architecture and system-environment policy. The tap-native recipe lock at
 `Kandelo/recipes/homebrew-bootstrap/source-lock.json` binds both outputs by
 path, SHA-256, and byte count.
 
-The product shell fetches that public bottle anonymously. The shared typed
+The historical lifecycle publisher fetches that public bottle anonymously.
+The shared typed
 extractor binds the exact tap checkout, aggregate catalog and Formula sidecar,
 recipe lock, link manifest, bottle digest and size, keg identity, immutable
 build receipt, and both output members. The shell composer reruns the same
 typed verifier against the detached files before embedding its canonical
 report. It does not consult the Kandelo package registry for these bytes.
 
-Browser builds preserve that ownership. Their publication workflows
-extract `homebrew-bootstrap.zip` from the verified support-data bottle
-and stage it at the same-origin `homebrew-bootstrap.zip` URL used by the
-lazy VFS descriptor. The browser source must not import that archive
+Historical lifecycle browser builds preserve that ownership. Their
+publication workflows extract `homebrew-bootstrap.zip` from the verified
+support-data bottle and stage it at the same-origin
+`homebrew-bootstrap.zip` URL used by the lazy VFS descriptor. The browser
+source must not import that archive
 through the `@binaries` package projection. The public lifecycle-input
 release is another fixed transport for those same verified bottle bytes;
 it does not transfer ownership back to Kandelo's transitional package
@@ -198,13 +228,17 @@ the bottle. Likewise, the current tap Formula hash includes its finalized
 block. Consumers record and validate each coordinate through its own authority
 instead of requiring false equality.
 
-The older `homebrew-bootstrap` program package and
-`homebrew/homebrew-bootstrap-source-lock.json` remain only for the transitional
-source-rootfs compatibility lane. They are not product-shell inputs.
-That lock binds the ZIP emitted by Git 2.51.2's `git archive`. Do not copy
-the support-data Formula's `kandelo-deterministic-zip-v1` digest into it:
-the two serializers truthfully produce different bytes from the same
-patched Git tree. Delete the older lock with the compatibility lane.
+The current `homebrew-bootstrap` program package and
+`homebrew/homebrew-bootstrap-source-lock.json` are product-shell inputs.
+That lock records Git 2.51.2's intermediate `git archive` digest separately
+from the final `kandelo-deterministic-zip-v1` output. The package unpacks the
+intermediate archive and normalizes it with the shared deterministic ZIP
+builder; its current final archive is 5,251,369 bytes with SHA-256
+`26ac98e328573244d3e7c0c149f30114ef5d9c8882200f5a22e56f97d2541482`.
+The tap-native Formula owns its own source and output lock. Even if both locks
+currently select equal final member bytes, keep their distinct provenance
+coordinates and verify equality rather than substituting one authority for the
+other.
 
 ## Native Homebrew API Admission
 
@@ -1367,18 +1401,21 @@ shell revision, immutable selection lock, catalog locks, runtime-support
 cohort, and sealed artifact lock to agree with `TF` before preparing any
 bytes.
 
-Both modes resolve the public shell generation into a fresh cache, verify
-the main-shell artifact lock, and anonymously recover the exact bottle set
-declared by the embedded mirror plan. The mirror is derived from that plan, so
-the publication code has no Formula-specific or Ruby-specific digest. Its
-one-day, same-run handoff has an exact manifest and bounded inventory. In
-`create-mirror` mode it is the only handoff and supplies the new TA0 release.
-In `publish-lifecycle` mode it is verification evidence for the already-public
-TA0 release, and a separate bounded handoff owns only the fixed lifecycle
-inputs: the exact shell image, bootstrap tree specification, bootstrap ZIP,
-and bootstrap environment. No personal access token (PAT), GitHub App token,
-cross-repository workflow artifact, run ID, or caller-selected artifact
-repository participates in either handoff.
+Both modes resolve the public shell generation into a fresh cache and
+anonymously recover the exact bottle set declared by the embedded mirror plan.
+`create-mirror` force-source-builds the current registry shell and its direct
+bootstrap dependency, then binds the recovered plan to the checked-in
+37-asset authority. Only `publish-lifecycle` verifies the sealed main-shell
+artifact lock retained by that historical lane. The mirror is derived from
+the embedded plan, so the publication code has no Formula-specific or
+Ruby-specific digest. Its one-day, same-run handoff has an exact manifest and
+bounded inventory. In `create-mirror` mode it is the only handoff and supplies
+the new TA0 release. In `publish-lifecycle` mode it is verification evidence
+for the already-public TA0 release, and a separate bounded handoff owns only
+the fixed lifecycle inputs: the exact shell image, bootstrap tree
+specification, bootstrap ZIP, and bootstrap environment. No personal access
+token (PAT), GitHub App token, cross-repository workflow artifact, run ID, or
+caller-selected artifact repository participates in either handoff.
 
 The fixed lifecycle inputs use a separate content-addressed immutable
 release in the first-party tap. The shell image is a member of its
@@ -1413,11 +1450,12 @@ admits it without claiming public-release authority. The script writes the
 fixed same-origin ZIP with an atomic rename, so Vite can see either the
 preceding verified asset or the new one, never a partial copy.
 
-Only explicit historical lazy-shell recovery and the public Chromium mirror
-proof use this bootstrap path. Ordinary `./run.sh prepare-browser`, package
-staging, and Pages consume the self-contained package image and do not stage a
-browser bootstrap asset. The shell image's availability is therefore
-independent of the transitional `homebrew-bootstrap` registry package.
+Only explicit historical lifecycle recovery and the public Chromium mirror
+proof use this support-data-bottle path. Ordinary
+`./run.sh prepare-browser`, package staging, and Pages consume the published
+package image and do not stage a separate browser bootstrap asset. The browser
+does not resolve `homebrew-bootstrap` at runtime, but the current shell source
+build does resolve that package before producing the image.
 
 Only the publication job receives `contents: write`. Both of its write paths
 are guarded by the admitted publication mode. `create-mirror` calls
@@ -3616,15 +3654,14 @@ The script writes `target/homebrew-bootstrap/homebrew-bootstrap.vfs`. It derives
 the ABI from `crates/shared`, resolves the Node kernel, canonical rootfs package
 set, and Homebrew bootstrap programs through `xtask build-deps`, and calls
 `scripts/prepare-homebrew-bootstrap-source.sh` to prepare Homebrew. The current
-`homebrew-bootstrap` registry package uses that same preparer and records
-the source ZIP and `homebrew-brew.env` as one transitional package
-generation. It remains available only to the source-rootfs compatibility
-lane. The product shell instead extracts both members from the public
-support-data bottle, embeds the small environment policy, and registers
-the source ZIP as a lazy tree behind `/usr/bin/brew`. That tree is mounted
-at `/opt/kandelo/homebrew`. The stable entry point keeps this ownership
-change invisible to guest commands. The separate diagnostic bootstrap
-image above remains an eager integration artifact. Source preparation
+`homebrew-bootstrap` registry package uses that same preparer and records the
+source ZIP and `homebrew-brew.env` as the shell's direct package dependency.
+The product shell embeds the small environment policy and registers the source
+ZIP as a lazy tree behind `/usr/bin/brew`. That tree is mounted at
+`/opt/kandelo/homebrew`. The historical lifecycle lane instead extracts both
+members from the public support-data bottle. The stable entry point keeps the
+transport difference invisible to guest commands. The separate diagnostic
+bootstrap image above remains an eager integration artifact. Source preparation
 verifies the reviewed patch SHA-256, refuses an upstream revision where
 the patch does not apply, limits the patch to its declared Homebrew files,
 and archives the patched Git tree with a fixed timestamp and UTC timezone.

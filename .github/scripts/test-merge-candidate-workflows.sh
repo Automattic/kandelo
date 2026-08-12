@@ -112,6 +112,21 @@ fi
 if grep -Eq -- '--target-tag[[:space:]]+"?binaries-abi-v' "$PREPARE"; then
   fail "Prepare merge still has a pre-merge canonical index writer"
 fi
+
+! grep -Fq 'verify-public-homebrew-bottle-mirror.mjs' \
+  "$ACTIVATE_WORKFLOW" ||
+  fail "scheduled workflow must not duplicate the 48 MiB candidate mirror gate"
+grep -Fq '.github/scripts/activate-merge-candidate.sh' \
+  "$ACTIVATE_WORKFLOW" ||
+  fail "workflow must route new canonical transactions through activation"
+script_mirror_gate_line="$(grep -nF \
+  'verify-public-homebrew-bottle-mirror.mjs' "$ACTIVATE_SCRIPT" | \
+  tail -1 | cut -d: -f1)"
+script_canonical_mutation_line="$(grep -nF \
+  'ensure_release "$CANONICAL_TAG"' "$ACTIVATE_SCRIPT" | \
+  tail -1 | cut -d: -f1)"
+[ "$script_mirror_gate_line" -lt "$script_canonical_mutation_line" ] ||
+  fail "direct activation must verify the public mirror before canonical mutation"
 grep -Fq "contains(github.event.pull_request.labels.*.name, 'preserve-head-commit') && 'merge'" \
   "$PREPARE" || fail "Prepare merge does not select merge-commit verification for preserve-head-commit"
 grep -Fq 'batched-changes and preserve-head-commit are mutually exclusive' "$PREPARE" || \
