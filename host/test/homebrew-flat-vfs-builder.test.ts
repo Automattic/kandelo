@@ -928,6 +928,41 @@ describe("flat Homebrew original-bottle collection", () => {
     }
   });
 
+  it("does not let the bottle loader forge selected descriptor identity", async () => {
+    const fixture = collectionFixture();
+    const selected = structuredClone(fixture.alpha);
+    const forgedUrl =
+      "https://github.com/kandelo-dev/bottles/releases/download/forged/alpha.tar.gz";
+    const result = await buildHomebrewFlatOriginalBottleCollection(fixture.plan, {
+      baseFs: MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024)),
+      packages: [selected],
+      async loadBottleBytes(pkg) {
+        const bytes = fixture.bottleByPackage.get(pkg.fullName)!;
+        await Promise.resolve();
+        if (pkg.fullName === selected.fullName) {
+          pkg.revision = 7;
+          pkg.bottleRebuild = 7;
+          pkg.url = forgedUrl;
+          selected.revision = 7;
+          selected.bottleRebuild = 7;
+          selected.url = forgedUrl;
+        }
+        return bytes;
+      },
+    });
+
+    const alphaTree = result.deferredTrees.find(
+      (tree) => tree.package === fixture.alpha.fullName,
+    )!;
+    expect(alphaTree.transports).not.toContainEqual({
+      kind: "external-https",
+      url: forgedUrl,
+    });
+    expect(result.report.packages.find(
+      (pkg) => pkg.full_name === fixture.alpha.fullName,
+    )).toMatchObject({ revision: 0, bottle_rebuild: 0 });
+  });
+
   it("matches the full eager report's ownership, relocated bytes, and bottle inventories", async () => {
     const fixture = collectionFixture();
     const loadBottleBytes = (pkg: HomebrewBottleDescriptor) =>

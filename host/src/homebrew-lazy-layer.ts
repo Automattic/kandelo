@@ -296,30 +296,51 @@ export async function buildHomebrewFlatOriginalBottleCollection(
   if (!Array.isArray(options.packages) || options.packages.length === 0) {
     throw new Error("Homebrew flat original-bottle collection has no selected keg descriptors");
   }
+  // WHY: neither the async base authentication nor the bottle loader may
+  // rewrite the selection facts that authorize this projection. The eager
+  // builder authenticates this exact private plan snapshot before loading any
+  // bytes; requested descriptors are independently captured at the same
+  // synchronous boundary.
+  const planSnapshot = immutableSnapshot(plan);
+  const requestedDescriptorSnapshot = immutableSnapshot(options.packages);
+  const authoritativeDescriptors = new Map(
+    planSnapshot.packages.map((descriptor) => [descriptor.fullName, descriptor]),
+  );
   await authenticateHomebrewCompositionBase(options.baseFs);
   assertFlatCollectionBaseOwnership(options.baseFs);
 
   const bottleBytes = new Map<string, Uint8Array>();
-  const authoritativeDescriptors = new Map<string, HomebrewBottleDescriptor>();
-  const build = await buildHomebrewVfsSelection(plan, {
+  const build = await buildHomebrewVfsSelection(planSnapshot, {
     baseFs: options.baseFs,
     async loadBottleBytes(descriptor) {
-      const loaded = await options.loadBottleBytes(descriptor);
+      const authoritative = authoritativeDescriptors.get(descriptor.fullName);
+      if (
+        authoritative === undefined ||
+        !bytesEqual(
+          encodeHomebrewBottleDescriptor(descriptor),
+          encodeHomebrewBottleDescriptor(authoritative),
+        )
+      ) {
+        throw new Error(
+          `Homebrew flat original-bottle loader descriptor ${descriptor.fullName} ` +
+            "does not match the authenticated plan snapshot",
+        );
+      }
+      const loaded = await options.loadBottleBytes(structuredClone(authoritative));
       if (!(loaded instanceof Uint8Array)) {
         throw new Error(
           `Homebrew flat original-bottle collection is missing bottle bytes for ` +
-            descriptor.fullName,
+            authoritative.fullName,
         );
       }
       const exact = new Uint8Array(loaded);
-      bottleBytes.set(descriptor.fullName, exact);
-      authoritativeDescriptors.set(descriptor.fullName, descriptor);
+      bottleBytes.set(authoritative.fullName, exact);
       return exact;
     },
   });
 
   const selected = snapshotSelectedFlatDescriptors(
-    options.packages,
+    requestedDescriptorSnapshot,
     authoritativeDescriptors,
   );
   const projectionPackages = selected.map(flatOriginalBottlePackage);
@@ -792,9 +813,10 @@ function snapshotSelectedFlatDescriptors(
   packages: readonly HomebrewBottleDescriptor[],
   authoritative: ReadonlyMap<string, HomebrewBottleDescriptor>,
 ): HomebrewBottleDescriptor[] {
-  const selected = structuredClone(packages) as HomebrewBottleDescriptor[];
+  const requested = structuredClone(packages) as HomebrewBottleDescriptor[];
+  const selected: HomebrewBottleDescriptor[] = [];
   const names = new Set<string>();
-  for (const descriptor of selected) {
+  for (const descriptor of requested) {
     const expected = authoritative.get(descriptor.fullName);
     if (
       expected === undefined ||
@@ -819,8 +841,21 @@ function snapshotSelectedFlatDescriptors(
       );
     }
     names.add(descriptor.fullName);
+    // Project only the descriptor captured from the authenticated flat plan.
+    // The request proves membership and ordering; it never supplies identity.
+    selected.push(expected);
   }
   return selected;
+}
+
+function immutableSnapshot<T>(value: T): T {
+  return deepFreezeSnapshot(structuredClone(value) as T);
+}
+
+function deepFreezeSnapshot<T>(value: T): T {
+  if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) deepFreezeSnapshot(child);
+  return Object.freeze(value);
 }
 
 function selectFlatOriginalBottleEntries(
