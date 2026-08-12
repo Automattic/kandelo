@@ -158,6 +158,30 @@ def check_workflow(workflow)
         candidate_checkout.dig("with", "ref") == "${{ matrix.subject.head }}" &&
         candidate_checkout.dig("with", "path") == "exact-head",
         "collector does not check out the exact PR head as inert data")
+  candidate_checkout_index = collect.fetch("steps").index(candidate_checkout)
+  musl_materialization = named_step(
+    collect, "Materialize exact musl repository input as inert data"
+  )
+  musl_materialization_index = collect.fetch("steps").index(musl_materialization)
+  collection_index = collect.fetch("steps").index(
+    named_step(collect, "Collect and project bounded public facts")
+  )
+  musl_source = musl_materialization.fetch("run")
+  check(candidate_checkout_index < musl_materialization_index &&
+        musl_materialization_index < collection_index &&
+        musl_source.include?("git -C exact-head ls-tree HEAD -- libc/musl") &&
+        musl_source.include?("authority/.gitmodules") &&
+        musl_source.include?("^160000[[:space:]]commit") &&
+        musl_source.include?("env -u GH_TOKEN -u GITHUB_TOKEN git") &&
+        musl_source.match?(/fetch\s+--no-tags\s+--depth=1/) &&
+        musl_source.include?("status --porcelain=v1 --untracked-files=all") &&
+        !musl_source.include?("exact-head/.gitmodules") &&
+        !musl_source.match?(/git\s+(?:-C\s+exact-head\s+)?submodule\s+update/),
+        "collector does not materialize the exact musl gitlink from protected transport")
+  check(collect_source.lines.count { |line|
+          line.strip == '--out "$output/projection.json"'
+        } == 1,
+        "collector must pass the projection output exactly once")
   upload = named_step(collect, "Transfer bounded inert projection")
   check(upload.fetch("uses").start_with?(UPLOAD) &&
         upload.dig("with", "name").to_s.include?("matrix.subject.head") &&
@@ -438,6 +462,39 @@ begin
         item["name"] == "Checkout inert exact PR head"
       end
       step.fetch("with")["persist-credentials"] = true
+    },
+    "missing exact musl materialization" => lambda { |copy|
+      copy.dig("jobs", "collect-project", "steps").reject! do |step|
+        step["name"] == "Materialize exact musl repository input as inert data"
+      end
+    },
+    "candidate-controlled musl transport" => lambda { |copy|
+      step = copy.dig("jobs", "collect-project", "steps").find do |item|
+        item["name"] == "Materialize exact musl repository input as inert data"
+      end
+      step["run"] = step.fetch("run").gsub(
+        "authority/.gitmodules", "exact-head/.gitmodules"
+      )
+    },
+    "musl materialization after requirement derivation" => lambda { |copy|
+      steps = copy.dig("jobs", "collect-project", "steps")
+      materialization = steps.delete_at(steps.index do |step|
+        step["name"] == "Materialize exact musl repository input as inert data"
+      end)
+      collect_index = steps.index do |step|
+        step["name"] == "Collect and project bounded public facts"
+      end
+      steps.insert(collect_index + 1, materialization)
+    },
+    "duplicate projection output command" => lambda { |copy|
+      step = copy.dig("jobs", "collect-project", "steps").find do |item|
+        item["name"] == "Collect and project bounded public facts"
+      end
+      step["run"] = step.fetch("run").sub(
+        '  --out "$output/projection.json"',
+        "  --out \"$output/projection.json\"\n" \
+          '  --out "$output/projection.json"'
+      )
     },
     "collector target validation after use" => lambda { |copy|
       step = copy.dig("jobs", "collect-project", "steps").find do |item|

@@ -183,6 +183,22 @@ def check_workflow(workflow)
         !derive_source.include?('find "$evidence/reports"') &&
         derive_source.include?("authority_xtask"),
         "protected derivation does not revalidate inert exact-head data")
+  musl_materialization = [
+    'musl_row=$(git -C "$exact_head_data" ls-tree HEAD -- libc/musl)',
+    'musl_url=$(git config -f authority/.gitmodules --get submodule.musl.url)',
+    '[[ $musl_url == https://github.com/ifduyue/musl.git ]]',
+    'git -C "$exact_head_data/libc/musl" init --quiet',
+    'env -u GH_TOKEN -u GITHUB_TOKEN git -C "$exact_head_data/libc/musl"',
+    'fetch --no-tags --depth=1 origin "$musl_sha"',
+    'git -C "$exact_head_data/libc/musl" checkout --quiet --detach "$musl_sha"',
+    'git -C "$exact_head_data" status --porcelain=v1 --untracked-files=all'
+  ]
+  check(musl_materialization.all? { |fragment| derive_source.include?(fragment) } &&
+        !derive_source.include?("$exact_head_data/.gitmodules") &&
+        !derive_source.match?(/git\s+(?:-C\s+[^\n]+\s+)?submodule\s+update/) &&
+        derive_source.index(musl_materialization.fetch(0)) <
+          derive_source.index('"$authority_xtask" abi-staging request derive'),
+        "protected derivation does not materialize exact musl data before requirements")
   check_filtered_host_target(derive_source, "protected derivation")
   check(!derive_source.match?(%r{(?:bash|source|\.)\s+[^\n]*exact-head-data}),
         "protected derivation executes a file from the exact head")
@@ -268,6 +284,23 @@ begin
     "missing inert revalidation" => lambda { |copy|
       step = copy.dig("jobs", "derive-request", "steps").find { |item| item["run"]&.include?("structural-report validate") }
       step["run"] = step.fetch("run").gsub("structural-report validate", "echo trust-report")
+    },
+    "missing exact musl materialization" => lambda { |copy|
+      step = copy.dig("jobs", "derive-request", "steps").find do |item|
+        item["run"]&.include?("request derive")
+      end
+      step["run"] = step.fetch("run").gsub(
+        'musl_row=$(git -C "$exact_head_data" ls-tree HEAD -- libc/musl)',
+        'musl_row=""'
+      )
+    },
+    "candidate-controlled musl transport" => lambda { |copy|
+      step = copy.dig("jobs", "derive-request", "steps").find do |item|
+        item["run"]&.include?("request derive")
+      end
+      step["run"] = step.fetch("run").gsub(
+        "authority/.gitmodules", '$exact_head_data/.gitmodules'
+      )
     },
     "line-delimited path classification" => lambda { |copy|
       step = copy.dig("jobs", "derive-request", "steps").find do |item|
