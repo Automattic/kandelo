@@ -489,6 +489,42 @@ if ls "$REPO_ROOT"/programs/fontstack_*.c >/dev/null 2>&1; then
     ln -sfn "$ZLIB_PREFIX/lib/libz.a" "$SYSROOT/lib/libz.a"
 fi
 
+# Resolve the PR23 render stack (pango → cairo + harfbuzz + fribidi on
+# the glib and font-stack prefixes) when the pango smoke is present.
+# Same cached-resolve contract. Header trees keep their upstream
+# prefixes; the case entry passes the -I flags. See
+# docs/plans/2026-07-14-build-hyprland-class-compositor-plan.md §4.
+if ls "$REPO_ROOT"/programs/pango_*.c >/dev/null 2>&1; then
+    echo "==> Resolving pango (and deps) for pango programs..."
+    HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve pango >/dev/null)
+    PANGO_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path pango)"
+    CAIRO_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path cairo)"
+    HARFBUZZ_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path harfbuzz)"
+    FRIBIDI_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path fribidi)"
+    LIBPNG_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libpng)"
+    PIXMAN_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path pixman)"
+    FONTCONFIG_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path fontconfig)"
+    FREETYPE_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path freetype)"
+    LIBXML2_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libxml2)"
+    ZLIB_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path zlib)"
+
+    for a in libpango-1.0.a libpangoft2-1.0.a libpangocairo-1.0.a; do
+        ln -sfn "$PANGO_PREFIX/lib/$a" "$SYSROOT/lib/$a"
+    done
+    ln -sfn "$CAIRO_PREFIX/lib/libcairo.a"           "$SYSROOT/lib/libcairo.a"
+    ln -sfn "$HARFBUZZ_PREFIX/lib/libharfbuzz.a"     "$SYSROOT/lib/libharfbuzz.a"
+    ln -sfn "$FRIBIDI_PREFIX/lib/libfribidi.a"       "$SYSROOT/lib/libfribidi.a"
+    ln -sfn "$LIBPNG_PREFIX/lib/libpng.a"            "$SYSROOT/lib/libpng.a"
+    ln -sfn "$PIXMAN_PREFIX/lib/libpixman-1.a"       "$SYSROOT/lib/libpixman-1.a"
+    ln -sfn "$FONTCONFIG_PREFIX/lib/libfontconfig.a" "$SYSROOT/lib/libfontconfig.a"
+    ln -sfn "$FREETYPE_PREFIX/lib/libfreetype.a"     "$SYSROOT/lib/libfreetype.a"
+    ln -sfn "$LIBXML2_PREFIX/lib/libxml2.a"          "$SYSROOT/lib/libxml2.a"
+    ln -sfn "$ZLIB_PREFIX/lib/libz.a"                "$SYSROOT/lib/libz.a"
+    ln -sfn "$PANGO_PREFIX/include/pango-1.0"        "$SYSROOT/include/pango-1.0"
+    ln -sfn "$CAIRO_PREFIX/include/cairo"            "$SYSROOT/include/cairo"
+fi
+
 # Resolve libevdev and symlink its archive + public header into the sysroot
 # when there are any libevdev_*.c programs to build. Same cached-resolve
 # contract as the libwayland/libxkbcommon blocks above. libevdev is the
@@ -647,6 +683,36 @@ for src in "$REPO_ROOT/programs/"*.c; do
             # NFC + case map + grapheme break against the utf8proc port (PR19).
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libutf8proc.a"
+            ;;
+        pango_cairo_smoke.c)
+            # PR23: pango layout + harfbuzz shaping + cairo image
+            # surface render through the whole PR19 font stack. Link
+            # order: pangocairo pulls pangoft2/pango/cairo, pango
+            # pulls harfbuzz/fribidi/gobject/glib, cairo pulls
+            # pixman/fontconfig/freetype/png, harfbuzz (C++) pulls
+            # libc++.
+            build_program "$src" "$OUT_DIR_32" \
+                "-I$SYSROOT/include/pango-1.0" \
+                "-I$SYSROOT/include/glib-2.0" \
+                "-I$SYSROOT/include/cairo" \
+                "$SYSROOT/lib/libpangocairo-1.0.a" \
+                "$SYSROOT/lib/libpangoft2-1.0.a" \
+                "$SYSROOT/lib/libpango-1.0.a" \
+                "$SYSROOT/lib/libcairo.a" \
+                "$SYSROOT/lib/libharfbuzz.a" \
+                "$SYSROOT/lib/libfribidi.a" \
+                "$SYSROOT/lib/libgobject-2.0.a" \
+                "$SYSROOT/lib/libgmodule-2.0.a" \
+                "$SYSROOT/lib/libglib-2.0.a" \
+                "$SYSROOT/lib/libffi.a" \
+                "$SYSROOT/lib/libpixman-1.a" \
+                "$SYSROOT/lib/libfontconfig.a" \
+                "$SYSROOT/lib/libfreetype.a" \
+                "$SYSROOT/lib/libxml2.a" \
+                "$SYSROOT/lib/libpng.a" \
+                "$SYSROOT/lib/libz.a" \
+                "$SYSROOT/lib/libc++.a" \
+                "$SYSROOT/lib/libc++abi.a"
             ;;
         fontstack_smoke.c)
             # monospace resolve + glyph rasterization through the whole

@@ -386,21 +386,34 @@ cp "$SRC_DIR/gmodule/gmodule-visibility.h" "$SRC_DIR/gmodule/gmoduleconf.h" \
    "$INC/gmodule/"
 cp "$SRC_DIR/gio/"*.h "$INC/gio/"
 
+# --- host tools ----------------------------------------------------------
+# glib-mkenums is a host-side python script; dependent autotools ports
+# (pango) locate it through the glib-2.0.pc glib_mkenums variable.
+echo "==> Installing glib-mkenums..."
+mkdir -p "$INSTALL_DIR/bin"
+sed 's|@PYTHON@|/usr/bin/env python3|' \
+    "$SRC_DIR/gobject/glib-mkenums.in" > "$INSTALL_DIR/bin/glib-mkenums"
+chmod +x "$INSTALL_DIR/bin/glib-mkenums"
+
 # --- pkg-config ----------------------------------------------------------
 echo "==> Writing pkg-config files..."
 PC_DIR="$INSTALL_DIR/lib/pkgconfig"
 mkdir -p "$PC_DIR"
-for lib in glib gmodule gobject gio; do
+for lib in glib gmodule gobject gio gthread; do
     case "$lib" in
         glib)    libs="-lglib-2.0" ;;
         gmodule) libs="-lgmodule-2.0 -lglib-2.0" ;;
         gobject) libs="-lgobject-2.0 -lglib-2.0 -lffi" ;;
         gio)     libs="-lgio-2.0 -lgobject-2.0 -lgmodule-2.0 -lglib-2.0 -lffi -lz" ;;
+        # Threading lives in libglib since 2.32; upstream still ships
+        # a gthread-2.0.pc for consumers that probe it (pango 1.42).
+        gthread) libs="-lglib-2.0" ;;
     esac
     cat > "$PC_DIR/$lib-2.0.pc" <<EOF
 prefix=$INSTALL_DIR
 libdir=\${prefix}/lib
 includedir=\${prefix}/include
+glib_mkenums=\${prefix}/bin/glib-mkenums
 
 Name: $lib
 Description: $lib for wasm32-posix-kernel (static)

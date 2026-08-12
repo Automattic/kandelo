@@ -943,6 +943,10 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 | glib | `packages/registry/glib/build-glib.sh` | meson bypass | 2.84.4: glib/gmodule/gobject/gio incl. the gdbus client core, hand-curated config.h + glibconfig.h, three patches (no dbus built-ins, wasm callback signatures, wasm credentials backend) |
 | expat | `packages/registry/expat/build-expat.sh` | autoconf | dbus config-parser dependency; entropy from kernel getrandom() |
 | dbus | `packages/registry/dbus/build-dbus.sh` | autoconf | 1.14.10 (last autotools series): dbus-daemon/dbus-send/dbus-monitor, session bus only, EXTERNAL auth over SO_PEERCRED, `ac_cv_func_*` overrides for --allow-undefined false positives |
+| harfbuzz | `packages/registry/harfbuzz/build-harfbuzz.sh` | meson bypass | Single-TU amalgam (src/harfbuzz.cc) with the freetype + glib backends; hand-installed headers and .pc; C++, links libc++ |
+| fribidi | `packages/registry/fribidi/build-fribidi.sh` | autoconf | pango's bidi dependency, plain cross-compile |
+| cairo | `packages/registry/cairo/build-cairo.sh` | autoconf | 1.16.0 (last autotools release): image surfaces + ft/fc fonts + png only; the png probe needs `png_REQUIRES` + PKG_CONFIG_PATH |
+| pango | `packages/registry/pango/build-pango.sh` | autoconf | 1.42.4 (last autotools release): pango/pangoft2/pangocairo; deps probed via PKG_CONFIG_PATH over the resolved prefixes; needs glib's gthread-2.0.pc shim + glib-mkenums |
 
 ## Callback casts that change arity trap on wasm
 
