@@ -24,7 +24,10 @@ import {
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  assertLocalTestHomebrewTapBundle,
   buildHomebrewVfs,
+  installLocalTestHomebrewTapBundle,
+  type LocalTestHomebrewTapBundleBinding,
   type HomebrewVfsBuildOptions,
   type HomebrewVfsBuildResult,
   type HomebrewVfsCompatibilityPolicy,
@@ -127,6 +130,9 @@ interface CliOptions {
   homebrewRuntimeSupport?: string;
   privilegedProjections?: string;
   privilegedProductOut?: string;
+  localTestTapBundle?: string;
+  localTestTapSourceCommit?: string;
+  localTestTapPreparedCommit?: string;
   materializePackageTree: boolean;
 }
 
@@ -545,6 +551,7 @@ export async function runHomebrewVfsImageBuilder(
       "privileged projection policy did not produce an independent product tree",
     );
   }
+  let localTestTapBundle: LocalTestHomebrewTapBundleBinding | undefined;
   let packageTree:
     | {
         derived: DerivedPackageDeferredZipTree;
@@ -611,6 +618,26 @@ export async function runHomebrewVfsImageBuilder(
       packageTree.derived,
       packageTree.state,
     );
+  }
+  // Bootstrap adoption intentionally makes the ordinary Homebrew prefix
+  // writable by maker. Install the exact evidence bundle only afterward so
+  // its dedicated root-owned/read-only subtree is not weakened by that step.
+  if (options.localTestTapBundle !== undefined) {
+    localTestTapBundle = installLocalTestHomebrewTapBundle(
+      fs,
+      readBoundedRegularFile(
+        options.localTestTapBundle,
+        32 * 1024 * 1024,
+        "local-test Homebrew tap bundle",
+      ),
+      {
+        sourceCommit: options.localTestTapSourceCommit!,
+        preparedCommit: options.localTestTapPreparedCommit!,
+      },
+    );
+  }
+  if (localTestTapBundle !== undefined) {
+    assertLocalTestHomebrewTapBundle(fs, localTestTapBundle);
   }
   materializedBuild?.assert(fs);
   if (shellConfig) {
@@ -930,6 +957,9 @@ export async function runHomebrewVfsImageBuilder(
             bytes: result.privilegedProduct.imageBytes.byteLength,
           },
         }),
+    ...(localTestTapBundle === undefined
+      ? {}
+      : { local_test_tap: localTestTapBundle }),
     // Report a reproducible artifact identity, not a runner/worktree path.
     image: basename(options.out),
   };
@@ -1146,6 +1176,24 @@ function parseArgs(args: string[]): CliOptions {
         }
         options.privilegedProductOut = requireValue(args, ++i, arg);
         break;
+      case "--local-test-tap-bundle":
+        if (options.localTestTapBundle !== undefined) {
+          usage("--local-test-tap-bundle may be provided only once");
+        }
+        options.localTestTapBundle = requireValue(args, ++i, arg);
+        break;
+      case "--local-test-tap-source-commit":
+        if (options.localTestTapSourceCommit !== undefined) {
+          usage("--local-test-tap-source-commit may be provided only once");
+        }
+        options.localTestTapSourceCommit = requireValue(args, ++i, arg);
+        break;
+      case "--local-test-tap-prepared-commit":
+        if (options.localTestTapPreparedCommit !== undefined) {
+          usage("--local-test-tap-prepared-commit may be provided only once");
+        }
+        options.localTestTapPreparedCommit = requireValue(args, ++i, arg);
+        break;
       case "--materialize-package-tree":
         if (options.materializePackageTree) {
           usage("--materialize-package-tree may be provided only once");
@@ -1209,6 +1257,33 @@ function parseArgs(args: string[]): CliOptions {
   ) {
     usage(
       "--privileged-projections and --privileged-product-out must be provided together",
+    );
+  }
+  const localTestTapOptionCount = [
+    options.localTestTapBundle,
+    options.localTestTapSourceCommit,
+    options.localTestTapPreparedCommit,
+  ].filter((value) => value !== undefined).length;
+  if (localTestTapOptionCount !== 0 && localTestTapOptionCount !== 3) {
+    usage(
+      "--local-test-tap-bundle and its source/prepared commits must be provided together",
+    );
+  }
+  if (
+    options.localTestTapBundle !== undefined &&
+    (
+      !existsSync(options.localTestTapBundle) ||
+      options.privilegedProjections === undefined ||
+      options.packageTreeSpec === undefined ||
+      options.homebrewBootstrapEnv === undefined ||
+      options.catalogCommit === undefined ||
+      options.localTestTapSourceCommit !== options.catalogCommit ||
+      !GIT_SHA_RE.test(options.localTestTapPreparedCommit!) ||
+      options.localTestTapPreparedCommit === options.localTestTapSourceCommit
+    )
+  ) {
+    usage(
+      "local-test tap staging requires the exact catalog source, a distinct prepared commit, bootstrap, and privileged product",
     );
   }
   if (
@@ -2275,6 +2350,9 @@ function usage(message?: string, code = 2): never {
   [--shell-config <shell.json>] [--demo-config <demo.json>] \\
   [--privileged-projections <projections.json> \\
    --privileged-product-out <product.vfs>] \\
+  [--local-test-tap-bundle <homebrew-tap-core.bundle> \\
+   --local-test-tap-source-commit <full-sha> \\
+   --local-test-tap-prepared-commit <full-sha>] \\
   [--catalog-commit <full-sha>] \\
   [--migration-lock <lock.json>] \\
   [--materialization-policy <policy.json> \\

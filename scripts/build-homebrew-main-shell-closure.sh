@@ -384,14 +384,29 @@ else
     exit 2
   fi
   ACTUAL_TAP_SHA="$(git -C "$TAP_ROOT" rev-parse HEAD)"
-  if [ "$ACTUAL_TAP_SHA" != "$EXPECTED_TAP_SHA" ]; then
-    echo "build-homebrew-main-shell-closure: tap HEAD $ACTUAL_TAP_SHA does not match expected $EXPECTED_TAP_SHA" >&2
-    exit 1
-  fi
   TAP_STATUS="$(git -C "$TAP_ROOT" status --porcelain=v1 --untracked-files=all)"
   if [ -n "$TAP_STATUS" ]; then
     echo "build-homebrew-main-shell-closure: exact tap checkout is dirty" >&2
     printf '%s\n' "$TAP_STATUS" >&2
+    exit 1
+  fi
+  if [ "$REVIEW_PENDING_ARTIFACT" = true ]; then
+    if [ "${KANDELO_HOMEBREW_TAP_SOURCE_COMMIT:-}" != "$EXPECTED_TAP_SHA" ] ||
+       [ ! -f "$TAP_ROOT/local-test-provenance.json" ] ||
+       [ -L "$TAP_ROOT/local-test-provenance.json" ] ||
+       ! jq -e '
+         . == {
+           schema: 1,
+           provenance_kind: "local-test",
+           promotable: false,
+           published: false
+         }
+       ' "$TAP_ROOT/local-test-provenance.json" >/dev/null; then
+      echo "build-homebrew-main-shell-closure: review-pending tap requires the locked source commit and exact local-test provenance" >&2
+      exit 1
+    fi
+  elif [ "$ACTUAL_TAP_SHA" != "$EXPECTED_TAP_SHA" ]; then
+    echo "build-homebrew-main-shell-closure: tap HEAD $ACTUAL_TAP_SHA does not match expected $EXPECTED_TAP_SHA" >&2
     exit 1
   fi
 fi
@@ -445,7 +460,21 @@ DEMO_CONFIG_SHA="$(sha256sum "$DEMO_CONFIG")"
 DEMO_CONFIG_SHA="${DEMO_CONFIG_SHA%% *}"
 DEMO_CONFIG_BYTES="$(wc -c <"$DEMO_CONFIG" | tr -d '[:space:]')"
 
-if [ -n "$CLOSED_SELECTION_REPORT" ]; then
+if [ "$REVIEW_PENDING_ARTIFACT" = true ]; then
+  jq -e '
+    .availability.provenance == {
+      schema: 1,
+      provenance_kind: "local-test",
+      promotable: false,
+      published: false
+    }
+  ' "$RUNTIME_SUPPORT" >/dev/null || {
+    echo "build-homebrew-main-shell-closure: review-pending composition requires exact local-test provenance" >&2
+    exit 1
+  }
+  node "$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs" \
+    "$BREWFILE" "$MIGRATION_LOCK" "" "$RUNTIME_SUPPORT"
+elif [ -n "$CLOSED_SELECTION_REPORT" ]; then
   # WHY: the canonical checker binds the product-owned Brewfile and lock
   # contracts, but its metadata mode deliberately requires the complete live
   # tap byte-for-byte. A closed selection is a smaller, independently sealed
@@ -521,6 +550,11 @@ node "$REPO_ROOT/tools/mkrootfs/bin/mkrootfs.mjs" build \
   -o "$PLATFORM_BASE"
 
 MATERIALIZATION_ARGS=()
+PRIVILEGED_PRODUCT_ARGS=()
+LOCAL_TEST_TAP_ARGS=()
+LOCAL_TEST_TAP_BUNDLE_SHA=""
+LOCAL_TEST_TAP_BUNDLE_BYTES=0
+LOCAL_TEST_TAP_PREPARED_COMMIT=""
 PACKAGE_TREE_ARGS=()
 PACKAGE_TREE_JSON=null
 PACKAGE_TREE_ARCHIVE_SHA=""
@@ -589,6 +623,94 @@ if [ "$LAZY_SHELL" = true ]; then
   MATERIALIZATION_JSON="$(jq -c . "$MATERIALIZATION_POLICY")"
 fi
 
+if [ "$REVIEW_PENDING_ARTIFACT" = true ]; then
+  PRIVILEGED_PROJECTIONS="$WORK_DIR/privileged-projections.json"
+  PRIVILEGED_PRODUCT_OUT="${OUT%.zst}.privileged.vfs"
+  printf '[]\n' >"$PRIVILEGED_PROJECTIONS"
+  for formula in login sudo-lite sudo; do
+    bottle_sha="$(jq -er --arg formula "$formula" '
+      [.packages[] | select(.name == $formula)] as $matches |
+      if ($matches | length) != 1 then error("missing local product package")
+      else [$matches[0].bottles[] |
+        select(.arch == "wasm32" and .status == "success" and
+          .kandelo_abi == 43)] as $bottles |
+        if ($bottles | length) != 1 then error("missing local product bottle")
+        else $bottles[0].sha256 end
+      end
+    ' "$TAP_ROOT/Kandelo/metadata.json")"
+    bottle="$BOTTLE_CACHE/$bottle_sha.tar.gz"
+    if [ ! -f "$bottle" ] || [ -L "$bottle" ] ||
+       [ "$(sha256sum "$bottle" | awk '{print $1}')" != "$bottle_sha" ]; then
+      echo "build-homebrew-main-shell-closure: exact local $formula bottle is absent from the cache" >&2
+      exit 1
+    fi
+    source_path="$(jq -er --arg formula "kandelo-dev/tap-core/$formula" '
+      [.product.privileged_programs[] | select(.formula == $formula)] as $matches |
+      if ($matches | length) == 1 then $matches[0].source_path
+      else error("missing privileged program template") end
+    ' "$MIGRATION_LOCK")"
+    artifact_sha="$(tar -xOf "$bottle" "$source_path" | sha256sum | awk '{print $1}')"
+    next="$WORK_DIR/privileged-projections.next.json"
+    jq \
+      --arg formula "kandelo-dev/tap-core/$formula" \
+      --arg bottle_sha "$bottle_sha" \
+      --arg artifact_sha "$artifact_sha" '
+      .product.privileged_programs[] |
+      select(.formula == $formula) |
+      {
+        schema,
+        formula,
+        bottleSha256: $bottle_sha,
+        sourcePath: .source_path,
+        destinationPath: .destination_path,
+        uid,
+        gid,
+        mode,
+        mountPoint: .mount_point,
+        artifactValidationSha256: $artifact_sha
+      }
+    ' "$MIGRATION_LOCK" | jq -s \
+      --slurpfile prior "$PRIVILEGED_PROJECTIONS" \
+      '$prior[0] + .' >"$next"
+    mv "$next" "$PRIVILEGED_PROJECTIONS"
+  done
+  PRIVILEGED_PRODUCT_ARGS=(
+    --privileged-projections "$PRIVILEGED_PROJECTIONS"
+    --privileged-product-out "$PRIVILEGED_PRODUCT_OUT"
+  )
+
+  LOCAL_TEST_TAP_BUNDLE="$WORK_DIR/homebrew-tap-core.bundle"
+  LOCAL_TEST_TAP_VERIFICATION="$WORK_DIR/local-test-tap-verification"
+  git -C "$TAP_ROOT" bundle create "$LOCAL_TEST_TAP_BUNDLE" HEAD
+  git bundle verify "$LOCAL_TEST_TAP_BUNDLE" >/dev/null
+  [ "$(git bundle list-heads "$LOCAL_TEST_TAP_BUNDLE")" = \
+    "$ACTUAL_TAP_SHA HEAD" ] || {
+    echo "build-homebrew-main-shell-closure: local tap bundle omits the exact prepared HEAD" >&2
+    exit 1
+  }
+  git clone --no-hardlinks "$LOCAL_TEST_TAP_BUNDLE" \
+    "$LOCAL_TEST_TAP_VERIFICATION" >/dev/null
+  [ "$(git -C "$LOCAL_TEST_TAP_VERIFICATION" rev-parse HEAD)" = \
+    "$ACTUAL_TAP_SHA" ] &&
+    git -C "$LOCAL_TEST_TAP_VERIFICATION" cat-file -e \
+      "$EXPECTED_TAP_SHA^{commit}" &&
+    git -C "$LOCAL_TEST_TAP_VERIFICATION" merge-base --is-ancestor \
+      "$EXPECTED_TAP_SHA" "$ACTUAL_TAP_SHA" &&
+    [ -z "$(git -C "$LOCAL_TEST_TAP_VERIFICATION" status \
+      --porcelain=v1 --untracked-files=all)" ] || {
+    echo "build-homebrew-main-shell-closure: staged local tap bundle is not the exact prepared catalog" >&2
+    exit 1
+  }
+  LOCAL_TEST_TAP_ARGS=(
+    --local-test-tap-bundle "$LOCAL_TEST_TAP_BUNDLE"
+    --local-test-tap-source-commit "$EXPECTED_TAP_SHA"
+    --local-test-tap-prepared-commit "$ACTUAL_TAP_SHA"
+  )
+  LOCAL_TEST_TAP_BUNDLE_SHA="$(sha256sum "$LOCAL_TEST_TAP_BUNDLE" | awk '{print $1}')"
+  LOCAL_TEST_TAP_BUNDLE_BYTES="$(wc -c <"$LOCAL_TEST_TAP_BUNDLE" | tr -d '[:space:]')"
+  LOCAL_TEST_TAP_PREPARED_COMMIT="$ACTUAL_TAP_SHA"
+fi
+
 "$REPO_ROOT/node_modules/.bin/tsx" \
   "$VFS_IMAGE_BUILDER" \
   --metadata "$TAP_ROOT/Kandelo/metadata.json" \
@@ -604,6 +726,8 @@ fi
   --migration-lock "$MIGRATION_LOCK" \
   "${MATERIALIZATION_ARGS[@]}" \
   "${PACKAGE_TREE_ARGS[@]}" \
+  "${PRIVILEGED_PRODUCT_ARGS[@]}" \
+  "${LOCAL_TEST_TAP_ARGS[@]}" \
   --write-profile \
   --shell-config "$SHELL_CONFIG" \
   --demo-config "$DEMO_CONFIG" \
@@ -646,6 +770,37 @@ if [ -n "$CLOSED_SELECTION_REPORT" ]; then
     }' "$REPORT" >"$REPORT_WITH_SELECTION"
   mv "$REPORT_WITH_SELECTION" "$REPORT"
 fi
+if [ "$REVIEW_PENDING_ARTIFACT" = true ]; then
+  if [ ! -f "$PRIVILEGED_PRODUCT_OUT" ] ||
+     [ -L "$PRIVILEGED_PRODUCT_OUT" ]; then
+    echo "build-homebrew-main-shell-closure: review-pending composition did not produce the privileged product" >&2
+    exit 1
+  fi
+  LOCAL_REPORT="$WORK_DIR/main-shell-report-with-local-provenance.json"
+  PRIVILEGED_SHA="$(sha256sum "$PRIVILEGED_PRODUCT_OUT")"
+  PRIVILEGED_SHA="${PRIVILEGED_SHA%% *}"
+  PRIVILEGED_BYTES="$(wc -c <"$PRIVILEGED_PRODUCT_OUT" | tr -d '[:space:]')"
+  jq \
+    --slurpfile provenance "$TAP_ROOT/local-test-provenance.json" \
+    --arg source_tap_commit "$EXPECTED_TAP_SHA" \
+    --arg prepared_tap_commit "$ACTUAL_TAP_SHA" \
+    --arg privileged_sha256 "$PRIVILEGED_SHA" \
+    --argjson privileged_bytes "$PRIVILEGED_BYTES" '
+    . + {
+      local_test: {
+        provenance: $provenance[0],
+        source_tap_commit: $source_tap_commit,
+        prepared_tap_commit: $prepared_tap_commit,
+        staged_tap: .local_test_tap
+      },
+      privileged_product: (.privileged_product + {
+        sha256: $privileged_sha256,
+        bytes: $privileged_bytes
+      })
+    } | del(.local_test_tap)
+  ' "$REPORT" >"$LOCAL_REPORT"
+  mv "$LOCAL_REPORT" "$REPORT"
+fi
 if [ "$LAZY_SHELL" = true ] && [ "$MATERIALIZE_PACKAGE_TREE" = false ]; then
   if [ "$REVIEW_PENDING_ARTIFACT" = true ]; then
     # WHY: the reviewed catalog changes before its deterministic image digest
@@ -679,8 +834,12 @@ jq -e \
   --argjson homebrew_bootstrap_env_bytes "$HOMEBREW_BOOTSTRAP_ENV_BYTES" \
   --argjson materialize_package_tree "$MATERIALIZE_PACKAGE_TREE" \
   --argjson lazy_shell "$LAZY_SHELL" \
+  --argjson review_pending "$REVIEW_PENDING_ARTIFACT" \
   --argjson abi "$ABI_VERSION" \
   --arg catalog "$EXPECTED_TAP_SHA" \
+  --arg local_tap_sha "$LOCAL_TEST_TAP_BUNDLE_SHA" \
+  --argjson local_tap_bytes "$LOCAL_TEST_TAP_BUNDLE_BYTES" \
+  --arg local_tap_prepared "$LOCAL_TEST_TAP_PREPARED_COMMIT" \
   --arg lock_sha "$LOCK_SHA" \
   --arg closed_selection_lock_sha "$CLOSED_SELECTION_LOCK_SHA" \
   --argjson closed_selection_lock_bytes "$CLOSED_SELECTION_LOCK_BYTES" \
@@ -725,6 +884,25 @@ jq -e \
   (.catalog.tap_name == $tap[0].tap_name) and
   (.catalog.checkout_commit == $catalog) and
   (.catalog.checkout_commit == $lock[0].catalog.tap_commit) and
+  (if $review_pending then
+    (.local_test.provenance == {
+      schema: 1,
+      provenance_kind: "local-test",
+      promotable: false,
+      published: false
+    }) and
+    (.local_test.source_tap_commit == $catalog) and
+    (.local_test.prepared_tap_commit == $local_tap_prepared) and
+    (.local_test.staged_tap == {
+      path: "/opt/kandelo/homebrew/var/kandelo/local-test/homebrew-tap-core.bundle",
+      sha256: $local_tap_sha,
+      bytes: $local_tap_bytes,
+      source_commit: $catalog,
+      prepared_commit: $local_tap_prepared
+    })
+  else
+    (.local_test == null)
+  end) and
   (.migration_lock.sha256 == $lock_sha) and
   (.migration_lock.bytes == $lock_bytes) and
   (if $uses_closed_selection then

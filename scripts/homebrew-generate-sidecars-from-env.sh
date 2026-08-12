@@ -54,6 +54,15 @@ for name in \
   require_env "$name"
 done
 
+PROVENANCE_KIND="${KANDELO_HOMEBREW_PROVENANCE_KIND:-published}"
+case "$PROVENANCE_KIND" in
+  published|local-test) ;;
+  *)
+    echo "homebrew-generate-sidecars-from-env.sh: provenance kind must be published or local-test" >&2
+    exit 2
+    ;;
+esac
+
 case "$KANDELO_HOMEBREW_ARCH" in
   wasm32|wasm64) ;;
   *) echo "homebrew-generate-sidecars-from-env.sh: invalid arch $KANDELO_HOMEBREW_ARCH" >&2; exit 2 ;;
@@ -191,7 +200,14 @@ python3 "$KANDELO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
   --dependency-provenance "$KANDELO_HOMEBREW_DEPENDENCY_PROVENANCE"
 BREW_VERSION="Homebrew source commit $HOMEBREW_BREW_COMMIT"
 GENERATED_AT="$(date -u +%FT%TZ)"
-RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-local/kandelo}/actions/runs/${GITHUB_RUN_ID:-local}"
+if [ "$PROVENANCE_KIND" = local-test ]; then
+  RUN_URL=local-test
+else
+  for name in GITHUB_SERVER_URL GITHUB_REPOSITORY GITHUB_RUN_ID GITHUB_JOB RUNNER_OS; do
+    require_env "$name"
+  done
+  RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+fi
 INPUT_JSON="$KANDELO_HOMEBREW_SIDECAR_ROOT/sidecars-input.json"
 
 mkdir -p "$KANDELO_HOMEBREW_SIDECAR_ROOT"
@@ -201,6 +217,7 @@ if [ -d "$FORMULA_SOURCE_ROOT/Kandelo" ]; then
 fi
 export ABI_VERSION CACHE_KEY_SHA SDK_FINGERPRINT SYSROOT_FINGERPRINT FORMULA_SHA256 BREW_VERSION
 export TAP_COMMIT TAP_CHECKOUT_COMMIT KANDELO_COMMIT GENERATED_AT RUN_URL
+export PROVENANCE_KIND
 export TAP_NAME KANDELO_ROOT FORMULA_SOURCE_ROOT
 export FORMULA_PATH
 
@@ -211,6 +228,7 @@ import pathlib
 import re
 import subprocess
 import sys
+from urllib.parse import unquote, urlsplit
 
 out_path = pathlib.Path(sys.argv[1])
 formula = os.environ["KANDELO_HOMEBREW_FORMULA"]
@@ -251,9 +269,44 @@ if not isinstance(bottle_entry, dict) or set(bottle_entry) != {"formula", "bottl
     raise SystemExit("canonical bottle JSON entry has unexpected fields")
 bottle_formula = bottle_entry["formula"]
 bottle = bottle_entry["bottle"]
-if not isinstance(bottle_formula, dict) or set(bottle_formula) != {"name", "path", "pkg_version"}:
+# The runtime-evidence validator authenticates these same bytes immediately
+# before this projection. Keep the exact raw/minimal key sets here as well:
+# this shell-owned consumer must not silently discard new builder metadata.
+# test-homebrew-tap-native-sidecars.sh cross-checks both accepted shapes.
+minimal_formula_keys = {"name", "path", "pkg_version"}
+raw_formula_keys = {
+    "desc",
+    "homepage",
+    "license",
+    "name",
+    "path",
+    "pkg_version",
+    "tap_git_path",
+    "tap_git_remote",
+    "tap_git_revision",
+}
+raw_bottle_keys = {"cellar", "date", "rebuild", "root_url", "tags"}
+raw_tag_keys = {
+    "all_files",
+    "filename",
+    "installed_size",
+    "local_filename",
+    "path_exec_files",
+    "sbom",
+    "sha256",
+    "tab",
+}
+if not isinstance(bottle_formula, dict):
     raise SystemExit("canonical bottle Formula metadata has unexpected fields")
-if not isinstance(bottle, dict) or set(bottle) != {"root_url", "cellar", "rebuild", "tags"}:
+raw_builder_json = set(bottle_formula) == raw_formula_keys
+if set(bottle_formula) != (raw_formula_keys if raw_builder_json else minimal_formula_keys):
+    raise SystemExit("canonical bottle Formula metadata has unexpected fields")
+expected_bottle_keys = (
+    raw_bottle_keys
+    if raw_builder_json
+    else {"root_url", "cellar", "rebuild", "tags"}
+)
+if not isinstance(bottle, dict) or set(bottle) != expected_bottle_keys:
     raise SystemExit("canonical bottle metadata has unexpected fields")
 tag_name = f"{arch}_kandelo"
 if not isinstance(bottle.get("tags"), dict) or set(bottle["tags"]) != {tag_name}:
@@ -261,7 +314,8 @@ if not isinstance(bottle.get("tags"), dict) or set(bottle["tags"]) != {tag_name}
 tag = bottle["tags"].get(tag_name)
 if tag is None:
     raise SystemExit(f"bottle JSON lacks tag {tag_name}; tags={list(bottle['tags'])}")
-if not isinstance(tag, dict) or set(tag) != {"sha256"}:
+expected_tag_keys = raw_tag_keys if raw_builder_json else {"sha256"}
+if not isinstance(tag, dict) or set(tag) != expected_tag_keys:
     raise SystemExit(f"canonical bottle tag {tag_name} has unexpected fields")
 root_url = bottle.get("root_url")
 if (
@@ -280,9 +334,9 @@ if isinstance(rebuild, bool) or not isinstance(rebuild, int) or rebuild < 0:
     raise SystemExit("canonical bottle JSON has an invalid rebuild")
 
 expected_full_name = f"{os.environ['TAP_NAME']}/{formula}"
-if formula_key != formula:
+if formula_key != expected_full_name:
     raise SystemExit(
-        f"canonical bottle formula key {formula_key!r} does not match {formula!r}"
+        f"canonical bottle formula key {formula_key!r} does not match {expected_full_name!r}"
     )
 if bottle_formula.get("name") != formula:
     raise SystemExit(
@@ -294,6 +348,86 @@ if bottle_formula.get("path") != formula_path:
     raise SystemExit(
         f"bottle formula path {bottle_formula.get('path')!r} does not match {formula_path!r}"
     )
+if raw_builder_json:
+    if bottle_formula["tap_git_path"] != f"Formula/{formula}.rb":
+        raise SystemExit("canonical Formula tap Git path does not match")
+    if bottle_formula["tap_git_revision"] != os.environ["TAP_CHECKOUT_COMMIT"]:
+        raise SystemExit("canonical Formula tap Git revision does not match")
+    for field in ("desc", "homepage", "license", "tap_git_remote"):
+        value = bottle_formula[field]
+        if (
+            not isinstance(value, str)
+            or not value
+            or "\0" in value
+            or len(value.encode("utf-8")) > 4096
+        ):
+            raise SystemExit(f"canonical Formula {field} is invalid")
+    if not re.fullmatch(r"https?://[^\s]+", bottle_formula["homepage"]):
+        raise SystemExit("canonical Formula homepage is invalid")
+    remote = bottle_formula["tap_git_remote"]
+    repository = os.environ["KANDELO_HOMEBREW_TAP_REPOSITORY"].lower()
+    if remote not in {
+        f"https://github.com/{repository}",
+        f"https://github.com/{repository}.git",
+    }:
+        parsed = urlsplit(remote)
+        if (
+            parsed.scheme != "file"
+            or parsed.netloc
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise SystemExit("canonical Formula tap Git remote does not match the exact tap")
+        remote_path = pathlib.Path(unquote(parsed.path))
+        try:
+            resolved_remote = remote_path.resolve(strict=True)
+        except OSError:
+            raise SystemExit("canonical Formula tap Git remote does not resolve")
+        if (
+            not remote_path.is_absolute()
+            or remote_path.is_symlink()
+            or resolved_remote != remote_path
+        ):
+            raise SystemExit("canonical Formula tap Git remote is not one exact real path")
+        try:
+            remote_head = subprocess.run(
+                ["git", "-C", str(remote_path), "rev-parse", "HEAD"],
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+            )
+            remote_status = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(remote_path),
+                    "status",
+                    "--short",
+                    "--untracked-files=all",
+                ],
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise SystemExit(
+                f"cannot authenticate canonical Formula tap Git remote: {error}"
+            )
+        if (
+            remote_head.returncode != 0
+            or remote_head.stdout.decode("ascii", errors="replace").strip()
+            != bottle_formula["tap_git_revision"]
+            or remote_status.returncode != 0
+            or remote_status.stdout
+            or remote_status.stderr
+        ):
+            raise SystemExit(
+                "canonical Formula tap Git remote does not identify the clean exact checkout"
+            )
 if tag.get("sha256") != os.environ["CACHE_KEY_SHA"]:
     raise SystemExit("bottle JSON sha256 does not match the produced bottle archive")
 expected_bottle_url = (
@@ -322,6 +456,42 @@ if not isinstance(version, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+,-
 revision_match = re.fullmatch(r".+_([1-9][0-9]*)", version)
 formula_revision = int(revision_match.group(1)) if revision_match else 0
 payload_root = f"{formula}/{version}"
+if raw_builder_json:
+    if not isinstance(bottle["date"], str) or not re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z",
+        bottle["date"],
+    ):
+        raise SystemExit("canonical bottle date is invalid")
+    rebuild_suffix = f".{rebuild}" if rebuild else ""
+    expected_filename = f"{formula}-{version}.{tag_name}.bottle{rebuild_suffix}.tar.gz"
+    expected_local_filename = (
+        f"{formula}--{version}.{tag_name}.bottle{rebuild_suffix}.tar.gz"
+    )
+    if (
+        tag["filename"] != expected_filename
+        or tag["local_filename"] != expected_local_filename
+    ):
+        raise SystemExit("canonical bottle filenames do not match")
+    if (
+        isinstance(tag["installed_size"], bool)
+        or not isinstance(tag["installed_size"], int)
+        or tag["installed_size"] <= 0
+    ):
+        raise SystemExit("canonical bottle installed size must be positive")
+    for field in ("all_files", "path_exec_files"):
+        values = tag[field]
+        if not isinstance(values, list) or len(values) > 65536:
+            raise SystemExit(f"canonical bottle {field} must be a bounded array")
+        for value in values:
+            if (
+                not isinstance(value, str)
+                or not value
+                or "\0" in value
+                or len(value.encode("utf-8")) > 4096
+            ):
+                raise SystemExit(f"canonical bottle {field} contains an invalid path")
+    if not isinstance(tag["tab"], dict) or not isinstance(tag["sbom"], dict):
+        raise SystemExit("canonical bottle tab and SBOM must be objects")
 
 def run_json_command(command, label, maximum_bytes, timeout=None):
     try:
@@ -793,8 +963,8 @@ manifest = {
                     "env": link_env,
                     "build": {
                         "github_run": os.environ["RUN_URL"],
-                        "job": os.environ.get("GITHUB_JOB", "local"),
-                        "runner_os": os.environ.get("RUNNER_OS", "local"),
+                        "job": os.environ.get("GITHUB_JOB", os.environ["PROVENANCE_KIND"]),
+                        "runner_os": os.environ.get("RUNNER_OS", os.environ["PROVENANCE_KIND"]),
                         "brew_version": os.environ["BREW_VERSION"],
                         "dev_shell": "scripts/dev-shell.sh",
                         "sdk_fingerprint": os.environ["SDK_FINGERPRINT"],
@@ -845,6 +1015,17 @@ manifest = {
 }
 out_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
+
+if [ "$PROVENANCE_KIND" = local-test ]; then
+  cat >"$KANDELO_HOMEBREW_SIDECAR_ROOT/local-test-provenance.json" <<'EOF'
+{
+  "schema": 1,
+  "provenance_kind": "local-test",
+  "promotable": false,
+  "published": false
+}
+EOF
+fi
 
 mkdir -p "$KANDELO_HOMEBREW_SIDECAR_ROOT/Formula"
 cp "$MERGED_FORMULA_PATH" \

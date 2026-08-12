@@ -3,7 +3,7 @@
   "tap_repository": "kandelo-dev/homebrew-tap-core",
   "tap_name": "kandelo-dev/tap-core",
   "catalog": {
-    "tap_commit": "6ad0e3dbc60e5572c4288c86919238f71c1bc110"
+    "tap_commit": "af70e3ba06367dbafb8a95fabbacc3e1352b58b2"
   },
   "consumer": {
     "profile": "main-shell",
@@ -393,6 +393,54 @@
         "revision": 0,
         "bottle_rebuild": 1
       }
+    },
+    {
+      "registry": {
+        "name": "login",
+        "version": "0.1.0"
+      },
+      "formula": {
+        "name": "login",
+        "version": "0.1.0",
+        "revision": 0,
+        "bottle_rebuild": 0
+      }
+    },
+    {
+      "registry": {
+        "name": "sudo-lite",
+        "version": "0.1.0"
+      },
+      "formula": {
+        "name": "sudo-lite",
+        "version": "0.1.0",
+        "revision": 0,
+        "bottle_rebuild": 0
+      }
+    },
+    {
+      "registry": {
+        "name": "sudo",
+        "version": "1.9.17p2"
+      },
+      "formula": {
+        "name": "sudo",
+        "version": "1.9.17p2",
+        "revision": 0,
+        "bottle_rebuild": 0
+      }
+    },
+    {
+      "registry": {
+        "name": "ruby",
+        "version": "4.0.5"
+      },
+      "formula": {
+        "name": "ruby",
+        "version": "4.0.5",
+        "revision": 3,
+        "bottle_rebuild": 0
+      }
     }
   ],
   "formula_closure": [
@@ -433,7 +481,12 @@
     "kandelo-dev/tap-core/zip",
     "kandelo-dev/tap-core/lsof",
     "kandelo-dev/tap-core/nano",
-    "kandelo-dev/tap-core/nethack"
+    "kandelo-dev/tap-core/nethack",
+    "kandelo-dev/tap-core/login",
+    "kandelo-dev/tap-core/sudo-lite",
+    "kandelo-dev/tap-core/sudo",
+    "kandelo-dev/tap-core/libyaml",
+    "kandelo-dev/tap-core/ruby"
   ],
   "reviewed_substitutions": [
     {
@@ -866,5 +919,72 @@
         "reason": "Preserve the current shell's standard filesystem layout even when no package installs an sbin command."
       }
     ]
+  },
+  "product": {
+    "ordinary_prefix_mount": {
+      "nosuid": true
+    },
+    "registry_bridge": false,
+    "privileged_programs": [
+      {
+        "schema": 1,
+        "formula": "kandelo-dev/tap-core/login",
+        "source_path": "login/0.1.0/bin/login",
+        "destination_path": "/usr/bin/login",
+        "uid": 0,
+        "gid": 0,
+        "mode": 2541,
+        "mount_point": "trusted-root-product"
+      },
+      {
+        "schema": 1,
+        "formula": "kandelo-dev/tap-core/sudo-lite",
+        "source_path": "sudo-lite/0.1.0/bin/sudo-lite",
+        "destination_path": "/usr/bin/sudo-lite",
+        "uid": 0,
+        "gid": 0,
+        "mode": 2541,
+        "mount_point": "trusted-root-product"
+      },
+      {
+        "schema": 1,
+        "formula": "kandelo-dev/tap-core/sudo",
+        "source_path": "sudo/1.9.17p2/bin/sudo",
+        "destination_path": "/usr/bin/sudo",
+        "uid": 0,
+        "gid": 0,
+        "mode": 2541,
+        "mount_point": "trusted-root-product"
+      }
+    ],
+    "ruby": {
+      "source_policy": "pristine-upstream",
+      "forbid_source_patches": true,
+      "forbid_ac_cv_func_vfork_no": true,
+      "required_config_defines": [
+        "HAVE_VFORK",
+        "HAVE_WORKING_VFORK",
+        "HAVE_WORKING_FORK"
+      ],
+      "required_stock_executables": [
+        "bundle",
+        "bundler",
+        "erb",
+        "gem",
+        "irb",
+        "minitest",
+        "rake",
+        "rdoc",
+        "ri",
+        "ruby",
+        "syntax_suggest",
+        "test-unit",
+        "typeprof"
+      ],
+      "instrumented_executable": "ruby"
+    },
+    "sudo": {
+      "deferred_upstream_sudo_allowed": true
+    }
   }
 }

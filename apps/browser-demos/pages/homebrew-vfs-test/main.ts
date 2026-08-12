@@ -17,29 +17,34 @@ import {
   composeBootDescriptorVfs,
   composeBootDescriptorVfsWithReviewedProduct,
 } from "../../lib/init/homebrew-package-layers";
-import { createReviewedPrivilegedProgramPolicy } from
-  "@host/vfs/privileged-projection";
-import * as privilegedProjectionModule from
-  "@host/vfs/privileged-projection";
+import { createReviewedPrivilegedProgramPolicy } from "@host/vfs/privileged-projection";
 import {
-  homebrewClosedAcceptanceAssetRoot,
-} from "../../lib/homebrew-closed-acceptance";
-import type {
-  BootDescriptor,
-} from "../../../../web-libs/kandelo-session/src/kernel-host";
+  assertLocalTestHomebrewTapBundle,
+  projectLocalTestHomebrewTapBundleBinding,
+} from "@host/homebrew-vfs-builder";
+import * as privilegedProjectionModule from "@host/vfs/privileged-projection";
+import { homebrewClosedAcceptanceAssetRoot } from "../../lib/homebrew-closed-acceptance";
+import type { BootDescriptor } from "../../../../web-libs/kandelo-session/src/kernel-host";
 import {
   createBrowserLifecycleMachine,
   runHomebrewFlatVfsShippingProofInBrowser,
+  runHomebrewGuestCoreShippingProofInBrowser,
   runHomebrewGuestLifecycleInBrowser,
   type HomebrewGuestLifecycleBrowserFixture,
   type HomebrewGuestLifecycleBrowserResult,
 } from "../../../../homebrew/test/homebrew_guest_lifecycle_browser";
-import type {
-  HomebrewFlatVfsShippingProofResult,
-} from "../../../../homebrew/test/homebrew_flat_vfs_shipping_proof";
+import type { HomebrewFlatVfsShippingProofResult } from "../../../../homebrew/test/homebrew_flat_vfs_shipping_proof";
 import {
-  runHomebrewSystemCommandSpawnProof,
-} from "../../../../homebrew/test/homebrew_system_command_spawn_proof";
+  createClosedFixtureSourceUrl,
+  loadHomebrewGuestLifecycleBrowserFixture,
+  projectHomebrewGuestLifecycleBrowserFixture,
+} from "../../../../homebrew/test/homebrew_guest_lifecycle_browser_fixture";
+import { deriveHomebrewGuestLifecycleRuntimeInputs } from "../../../../homebrew/test/homebrew_guest_lifecycle_runtime_inputs";
+import { LiveKernelHost } from "../../../../web-libs/kandelo-session/src/kernel-host";
+import { DEMO_TERMINAL_SESSION_POLICY } from "../kandelo/kernel-host/demo-terminal-sessions";
+import { initializeDemoLoginKernel } from "../kandelo/kernel-host/demo-login-loader";
+import { publishPrivilegedProgramProduct } from "@host/vfs/privileged-projection";
+import { runHomebrewSystemCommandSpawnProof } from "../../../../homebrew/test/homebrew_system_command_spawn_proof";
 import kernelWasmUrl from "@kernel-wasm?url";
 import {
   validateHomebrewVfsAcceptanceRequest,
@@ -60,6 +65,18 @@ const closedLifecycleAssetRoot = homebrewClosedAcceptanceAssetRoot(
   import.meta.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT as
     string | undefined,
 );
+let loginProductPhaseAcknowledgement: (() => void) | undefined;
+
+async function announceLoginProductPhase(phase: string): Promise<void> {
+  if (loginProductPhaseAcknowledgement !== undefined) {
+    throw new Error("login product phase acknowledgement is already pending");
+  }
+  window.__homebrewLoginProductPhase = phase;
+  await new Promise<void>((resolve) => {
+    loginProductPhaseAcknowledgement = resolve;
+  });
+  loginProductPhaseAcknowledgement = undefined;
+}
 
 interface HomebrewVfsAcceptanceResult {
   exitCode: number;
@@ -67,6 +84,298 @@ interface HomebrewVfsAcceptanceResult {
   stderr: string;
   imageSha256: string;
   kernelSha256: string;
+}
+
+async function runHomebrewLoginProductLifecycle(
+  fixtureValue: unknown,
+  kernelBytes: ArrayBuffer,
+): Promise<{ markers: string[] }> {
+  const fixture = projectHomebrewGuestLifecycleBrowserFixture(fixtureValue);
+  const loaded = await loadHomebrewGuestLifecycleBrowserFixture(fixture, {
+    sourceUrl: (canonicalUrl) =>
+      createClosedFixtureSourceUrl(closedLifecycleAssetRoot, canonicalUrl),
+  });
+  const runtime = await deriveHomebrewGuestLifecycleRuntimeInputs({
+    imageBytes: loaded.imageBytes.slice(),
+    bootstrapSpecBytes: loaded.bootstrapSpecBytes,
+    bootstrapArchiveBytes: loaded.bootstrapArchiveBytes,
+    bootstrapArchiveSha256: fixture.bootstrap.archive.sha256,
+    bootstrapEnvironmentBytes: loaded.bootstrapEnvironmentBytes,
+    coreRevision: fixture.revisions.coreRevision,
+    transportMode: fixture.transportMode,
+    expectedEmbeddedBottlePlanBytes: loaded.bottleMirrorPlanBytes,
+    lazyUrlBase: "https://closed.kandelo.invalid/homebrew-login-product/",
+    closedBottleAssets: loaded.closedBottleAssets!,
+  });
+  if (loaded.compositionReportBytes === undefined) {
+    throw new Error("login product fixture omits its composition report");
+  }
+  let compositionReport: unknown;
+  try {
+    compositionReport = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(
+        loaded.compositionReportBytes,
+      ),
+    );
+  } catch (error) {
+    throw new Error("login product composition report is not UTF-8 JSON", {
+      cause: error,
+    });
+  }
+  const fs = MemoryFileSystem.fromImage(loaded.imageBytes.slice());
+  await fs.verifyImportedLazyAtomicGroupSeals();
+  const localTest = (
+    compositionReport as {
+      local_test?: {
+        source_tap_commit?: unknown;
+        prepared_tap_commit?: unknown;
+        staged_tap?: unknown;
+      };
+    }
+  ).local_test;
+  const stagedTap = projectLocalTestHomebrewTapBundleBinding(
+    localTest?.staged_tap,
+  );
+  if (
+    localTest?.source_tap_commit !== fixture.revisions.coreRevision ||
+    localTest.prepared_tap_commit !== stagedTap.prepared_commit ||
+    stagedTap.source_commit !== fixture.revisions.coreRevision
+  ) {
+    throw new Error(
+      "login product staged tap differs from its source/prepared report binding",
+    );
+  }
+  assertLocalTestHomebrewTapBundle(fs, stagedTap);
+  const projectionsValue = (
+    compositionReport as {
+      privileged_programs?: { projections?: Array<Record<string, unknown>> };
+    }
+  ).privileged_programs?.projections;
+  if (!Array.isArray(projectionsValue)) {
+    throw new Error("login product composition report omits projections");
+  }
+  const projections = projectionsValue.map((entry) => ({
+    schema: entry.schema,
+    formula: entry.formula,
+    bottleSha256: entry.bottle_sha256,
+    sourcePath: entry.source_path,
+    destinationPath: entry.destination_path,
+    uid: entry.uid,
+    gid: entry.gid,
+    mode: entry.mode,
+    mountPoint: entry.mount_point,
+    artifactValidationSha256: entry.artifact_validation_sha256,
+  }));
+  if (
+    !projections.some((entry) => entry.destinationPath === "/usr/bin/login")
+  ) {
+    throw new Error("login product composition omits /usr/bin/login");
+  }
+  const privilegedProduct = await publishPrivilegedProgramProduct({
+    policy: createReviewedPrivilegedProgramPolicy(projections),
+    sources: projections.map((projection) => {
+      const sourcePath = String(projection.sourcePath);
+      const guestPath = `/opt/kandelo/homebrew/Cellar/${sourcePath}`;
+      return {
+        formula: String(projection.formula),
+        bottleSha256: String(projection.bottleSha256),
+        fs,
+        inventory: {
+          entries: [
+            {
+              sourcePath,
+              type: "file" as const,
+              size: fs.stat(guestPath).size,
+            },
+          ],
+        },
+        guestPathForSource: (path: string) =>
+          `/opt/kandelo/homebrew/Cellar/${path}`,
+      };
+    }),
+    writableBottleFileSystems: [fs],
+  });
+  if (loaded.privilegedProductBytes === undefined) {
+    throw new Error("login product fixture omits its serialized product");
+  }
+  const serializedIdentity = (
+    compositionReport as {
+      privileged_product?: {
+        image?: unknown;
+        sha256?: unknown;
+        bytes?: unknown;
+      };
+    }
+  ).privileged_product;
+  const generatedSha256 = await sha256(privilegedProduct.imageBytes);
+  const loadedSha256 = await sha256(loaded.privilegedProductBytes);
+  if (
+    serializedIdentity?.image !== "main-shell.vfs.privileged.vfs" ||
+    serializedIdentity.sha256 !== loadedSha256 ||
+    serializedIdentity.bytes !== loaded.privilegedProductBytes.byteLength ||
+    generatedSha256 !== loadedSha256 ||
+    privilegedProduct.imageBytes.byteLength !==
+      loaded.privilegedProductBytes.byteLength
+  ) {
+    throw new Error(
+      "published privileged product differs from the exact serialized artifact",
+    );
+  }
+
+  const diagnostics: string[] = [];
+  const kernel = new BrowserKernel({
+    maxWorkers: 8,
+    env: ["TERM=xterm-kandelo", "PATH=/opt/kandelo/homebrew/bin:/usr/bin:/bin"],
+    corsProxyUrl,
+    onHostDiagnostic: (diagnostic) => diagnostics.push(diagnostic.message),
+  });
+  const markers: string[] = [];
+  try {
+    await announceLoginProductPhase("before-boot");
+    const enabled = await initializeDemoLoginKernel({
+      kernel,
+      fs,
+      kernelWasm: kernelBytes,
+      vfsImage: runtime.imageBytes,
+      closedLazyAssets: runtime.lazyAssets,
+      lazyUrlBase: runtime.lazyUrlBase,
+      privilegedProduct,
+    });
+    if (!enabled) throw new Error("reviewed login product was not admitted");
+    const host = new LiveKernelHost({ kernel, status: "running" });
+    host.setTerminalSessionPolicy(DEMO_TERMINAL_SESSION_POLICY);
+    const pty = await host.attachPty("/dev/pts/0", { cols: 100, rows: 30 });
+    let output = "";
+    const off = pty.onData((bytes) => {
+      output += new TextDecoder().decode(bytes);
+    });
+    const waitFrom = async (
+      needle: string,
+      start: number,
+      label: string,
+    ): Promise<void> => {
+      const deadline = performance.now() + fixture.timeoutMs;
+      while (!output.slice(start).includes(needle)) {
+        if (performance.now() >= deadline) {
+          throw new Error(
+            `timed out waiting for ${label}; output=${JSON.stringify(output.slice(-4096))}`,
+          );
+        }
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+      }
+    };
+    const command = async (text: string, marker: string): Promise<void> => {
+      const start = output.length;
+      pty.write(`(${text}) && printf '${marker}\\n'\n`);
+      await waitFrom(marker, start, marker);
+      markers.push(marker);
+    };
+    await waitFrom(
+      "Every new terminal logs in automatically.",
+      0,
+      "automatic maker login",
+    );
+    markers.push("automatic-maker-login-ok");
+    await command("id | grep 'uid=1000'", "maker-id-ok");
+
+    let interactionStart = output.length;
+    pty.write("/usr/bin/sudo -S -k id\n");
+    await waitFrom(
+      "Password:",
+      interactionStart,
+      "failed sudo password prompt",
+    );
+    interactionStart = output.length;
+    pty.write("definitely-wrong\n");
+    await waitFrom(
+      "Sorry, try again",
+      interactionStart,
+      "failed sudo password rejection",
+    );
+    markers.push("failed-sudo-password-ok");
+    interactionStart = output.length;
+    pty.write("kandelo\n");
+    await waitFrom("uid=0", interactionStart, "sudo root identity");
+    markers.push("sudo-id-ok");
+    await command(
+      "printf 'kandelo\\n' | /usr/bin/sudo -S -l >/dev/null",
+      "sudo-list-ok",
+    );
+    await command(
+      "cp /usr/bin/sudo-lite /tmp/sudo-lite && chmod 4755 /tmp/sudo-lite && ! /tmp/sudo-lite id >/dev/null 2>&1",
+      "nosuid-copy-rejected",
+    );
+
+    await announceLoginProductPhase("before-ruby");
+    for (let repetition = 1; repetition <= 3; repetition += 1) {
+      const live = `ruby-child-${repetition}-live`;
+      const reaped = `ruby-child-${repetition}-reaped`;
+      const repetitionStart = output.length;
+      pty.write(
+        `ruby --disable-gems -e 'require "rbconfig"; p=Process.spawn(RbConfig.ruby,"--disable-gems","-e","sleep 2"); puts "${live}"; STDOUT.flush; Process.wait(p); puts "${reaped}"'\n`,
+      );
+      await waitFrom(live, repetitionStart, live);
+      if (repetition === 1) await announceLoginProductPhase("peak");
+      await waitFrom(reaped, repetitionStart, reaped);
+      if (repetition === 1) {
+        await announceLoginProductPhase("after-child-reaping");
+      }
+      markers.push(reaped);
+    }
+    await announceLoginProductPhase("after-three-repetitions");
+    await command(
+      "irb --version >/dev/null && erb --version >/dev/null && gem --version >/dev/null && bundle --version >/dev/null && rake --version >/dev/null",
+      "ruby-stock-tools-ok",
+    );
+
+    interactionStart = output.length;
+    pty.write("exit\n");
+    await waitFrom("login: ", interactionStart, "ordinary login prompt");
+    interactionStart = output.length;
+    pty.write("maker\n");
+    await waitFrom("Password: ", interactionStart, "ordinary password prompt");
+    interactionStart = output.length;
+    pty.write("definitely-wrong\n");
+    await waitFrom(
+      "Login incorrect",
+      interactionStart,
+      "ordinary failed password",
+    );
+    await waitFrom("login: ", interactionStart, "ordinary retry login prompt");
+    interactionStart = output.length;
+    pty.write("maker\n");
+    await waitFrom(
+      "Password: ",
+      interactionStart,
+      "ordinary second password prompt",
+    );
+    interactionStart = output.length;
+    pty.write("kandelo\n");
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+    pty.write("id; printf 'ordinary-login-ok\\n'\n");
+    await waitFrom(
+      "ordinary-login-ok",
+      interactionStart,
+      "ordinary maker identity",
+    );
+    markers.push("ordinary-login-ok");
+    await command(
+      `export HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_FROM_API=1 HOMEBREW_AUTOMATICALLY_SET_NO_INSTALL_FROM_API=1 HOMEBREW_REQUIRE_TAP_TRUST=1 GIT_TERMINAL_PROMPT=0; /usr/bin/brew tap kandelo-dev/tap-core file:///opt/kandelo/homebrew/var/kandelo/local-test/homebrew-tap-core.bundle && tap=$(/usr/bin/brew --repository kandelo-dev/tap-core) && test "$(/opt/kandelo/homebrew/bin/git -C "$tap" rev-parse HEAD)" = ${stagedTap.prepared_commit} && /opt/kandelo/homebrew/bin/git -C "$tap" cat-file -e ${stagedTap.source_commit}^\\{commit\\} && /opt/kandelo/homebrew/bin/git -C "$tap" merge-base --is-ancestor ${stagedTap.source_commit} ${stagedTap.prepared_commit} && /usr/bin/brew uninstall --ignore-dependencies kandelo-dev/tap-core/bzip2 && /usr/bin/brew trust --formula kandelo-dev/tap-core/bzip2 && /usr/bin/brew install --no-ask --force-bottle kandelo-dev/tap-core/bzip2 && prefix=$(/usr/bin/brew --prefix kandelo-dev/tap-core/bzip2) && printf 'login-product-bzip2\\n' > /tmp/login-product-bzip2 && "$prefix/bin/bzip2" -f /tmp/login-product-bzip2 && "$prefix/bin/bzip2" -d -f /tmp/login-product-bzip2.bz2 && grep -Fx login-product-bzip2 /tmp/login-product-bzip2 >/dev/null`,
+      "brew-tap-install-execute-ok",
+    );
+    off();
+    pty.close();
+    host.detachKernel();
+    if (diagnostics.length !== 0) {
+      throw new Error(
+        `login product diagnostics: ${JSON.stringify(diagnostics)}`,
+      );
+    }
+  } finally {
+    await kernel.destroy().catch(() => {});
+  }
+
+  return { markers };
 }
 
 interface HomebrewSystemCommandProofRequest {
@@ -242,6 +551,14 @@ declare global {
     __runHomebrewGuestLifecycleAcceptance: (
       fixture: HomebrewGuestLifecycleBrowserFixture,
     ) => Promise<HomebrewGuestLifecycleBrowserResult>;
+    __runHomebrewGuestCoreShippingProof: (
+      fixture: HomebrewGuestLifecycleBrowserFixture,
+    ) => Promise<{ coreRevision: string; completedUrls: string[] }>;
+    __homebrewLoginProductPhase: string;
+    __ackHomebrewLoginProductPhase: () => void;
+    __runHomebrewLoginProductLifecycle: (
+      fixture: HomebrewGuestLifecycleBrowserFixture,
+    ) => Promise<{ markers: string[] }>;
     __runHomebrewSystemCommandProof: (
       request: HomebrewSystemCommandProofRequest,
     ) => Promise<HomebrewSystemCommandProofResult>;
@@ -283,7 +600,11 @@ async function extractExecutable(
   }
 }
 
-function appendOutput(current: string, bytes: Uint8Array, label: string): string {
+function appendOutput(
+  current: string,
+  bytes: Uint8Array,
+  label: string,
+): string {
   const next = current + new TextDecoder().decode(bytes);
   if (new TextEncoder().encode(next).byteLength > MAX_OUTPUT_BYTES) {
     throw new Error(`${label} exceeded ${MAX_OUTPUT_BYTES} bytes`);
@@ -292,7 +613,8 @@ function appendOutput(current: string, bytes: Uint8Array, label: string): string
 }
 
 async function sha256(bytes: ArrayBuffer | Uint8Array): Promise<string> {
-  const source: BufferSource = bytes instanceof Uint8Array
+  const source: BufferSource =
+    bytes instanceof Uint8Array
     ? new Uint8Array(
         bytes.buffer as ArrayBuffer,
         bytes.byteOffset,
@@ -300,12 +622,15 @@ async function sha256(bytes: ArrayBuffer | Uint8Array): Promise<string> {
       )
     : bytes;
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", source));
-  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
 }
 
 async function fetchBytes(url: string, label: string): Promise<ArrayBuffer> {
   const response = await fetch(url);
-  if (!response.ok) throw new Error(`${label} fetch failed with HTTP ${response.status}`);
+  if (!response.ok)
+    throw new Error(`${label} fetch failed with HTTP ${response.status}`);
   return response.arrayBuffer();
 }
 
@@ -403,6 +728,25 @@ async function init(): Promise<void> {
         : { closedAssetRootUrl: closedLifecycleAssetRoot }),
       afterMachineDestroy: settleWebKitReclaim,
     });
+  window.__runHomebrewGuestCoreShippingProof = (fixture) =>
+    runHomebrewGuestCoreShippingProofInBrowser({
+      fixture,
+      kernelWasm: kernelBytes,
+      corsProxyUrl,
+      ...(closedLifecycleAssetRoot === undefined
+        ? {}
+        : { closedAssetRootUrl: closedLifecycleAssetRoot }),
+      afterMachineDestroy: settleWebKitReclaim,
+    });
+  window.__homebrewLoginProductPhase = "idle";
+  window.__ackHomebrewLoginProductPhase = () => {
+    if (loginProductPhaseAcknowledgement === undefined) {
+      throw new Error("no login product phase acknowledgement is pending");
+    }
+    loginProductPhaseAcknowledgement();
+  };
+  window.__runHomebrewLoginProductLifecycle = (fixture) =>
+    runHomebrewLoginProductLifecycle(fixture, kernelBytes);
 
   window.__runHomebrewFlatVfsShippingProof = async (request) => {
     const validated = validateHomebrewFlatVfsShippingProofRequest(request, {
@@ -444,16 +788,15 @@ async function init(): Promise<void> {
       throw new Error("Homebrew SystemCommand proof limits are invalid");
     }
     const vfsUrl = sameOriginTestUrl(request.vfsUrl, "VFS image");
-    const lazyUrlBase = sameOriginTestUrl(
-      request.lazyUrlBase,
-      "lazy URL base",
-    );
+    const lazyUrlBase = sameOriginTestUrl(request.lazyUrlBase, "lazy URL base");
     const bootstrapArchiveUrl = sameOriginTestUrl(
       request.bootstrapArchiveUrl,
       "bootstrap archive",
     );
     if (!lazyUrlBase.pathname.endsWith("/")) {
-      throw new Error("Homebrew SystemCommand lazy URL base is not a directory");
+      throw new Error(
+        "Homebrew SystemCommand lazy URL base is not a directory",
+      );
     }
     const imageBytes = new Uint8Array(
       await fetchBytes(vfsUrl.href, "Homebrew SystemCommand VFS image"),
@@ -511,8 +854,12 @@ async function init(): Promise<void> {
     let stderr = "";
     const kernel = new BrowserKernel({
       kernelOwnedFs: true,
-      onStdout: (bytes) => { stdout = appendOutput(stdout, bytes, "stdout"); },
-      onStderr: (bytes) => { stderr = appendOutput(stderr, bytes, "stderr"); },
+      onStdout: (bytes) => {
+        stdout = appendOutput(stdout, bytes, "stdout");
+      },
+      onStderr: (bytes) => {
+        stderr = appendOutput(stderr, bytes, "stderr");
+      },
     });
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -554,7 +901,12 @@ async function init(): Promise<void> {
         kernel.spawn(executable.buffer, request.argv, spawnOptions),
         new Promise<never>((_resolve, reject) => {
           timer = setTimeout(
-            () => reject(new Error(`browser acceptance timed out after ${request.timeoutMs}ms`)),
+            () =>
+              reject(
+                new Error(
+                  `browser acceptance timed out after ${request.timeoutMs}ms`,
+                ),
+              ),
             request.timeoutMs,
           );
         }),
@@ -582,8 +934,12 @@ async function init(): Promise<void> {
     const kernel = new BrowserKernel({
       kernelOwnedFs: true,
       ...(request.corsProxyExternalLazyUrls ? { corsProxyUrl } : {}),
-      onStdout: (bytes) => { stdout = appendOutput(stdout, bytes, "stdout"); },
-      onStderr: (bytes) => { stderr = appendOutput(stderr, bytes, "stderr"); },
+      onStdout: (bytes) => {
+        stdout = appendOutput(stdout, bytes, "stdout");
+      },
+      onStderr: (bytes) => {
+        stderr = appendOutput(stderr, bytes, "stderr");
+      },
     });
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -602,7 +958,8 @@ async function init(): Promise<void> {
       if (read === null && request.retryReadAfterFailure) {
         read = await kernel.readFileFromVfs(request.readPath);
       }
-      if (read === null) throw new Error(`missing VFS file ${request.readPath}`);
+      if (read === null)
+        throw new Error(`missing VFS file ${request.readPath}`);
 
       let exitCode: number | undefined;
       if (request.executable) {
@@ -618,9 +975,12 @@ async function init(): Promise<void> {
           spawned.exit,
           new Promise<never>((_resolve, reject) => {
             timer = setTimeout(
-              () => reject(new Error(
+              () =>
+                reject(
+                  new Error(
                 `lazy VFS acceptance timed out after ${request.timeoutMs}ms`,
-              )),
+                  ),
+                ),
               request.timeoutMs,
             );
           }),
@@ -688,20 +1048,15 @@ async function init(): Promise<void> {
         resolveLivePid = resolve;
         rejectLivePid = reject;
       });
-      const liveExit = firstKernel.spawn(
-        liveProcessBytes,
-        ["block-forever"],
-        {
+      const liveExit = firstKernel
+        .spawn(liveProcessBytes, ["block-forever"], {
           onStarted: resolveLivePid,
-        },
-      ).catch((error) => {
+        })
+        .catch((error) => {
         rejectLivePid(error);
         throw error;
       });
-      const pid = await withTimeout(
-        livePid,
-        "live process start",
-      );
+      const pid = await withTimeout(livePid, "live process start");
       liveProcessExportError = await withTimeout(
         rejectionMessage(
           firstKernel.exportRootfsImage(),
@@ -716,10 +1071,7 @@ async function init(): Promise<void> {
       );
 
       teardownProcessExitCode = await withTimeout(
-        firstKernel.spawn(
-          teardownProcessBytes,
-          ["thread-exit-group"],
-        ),
+        firstKernel.spawn(teardownProcessBytes, ["thread-exit-group"]),
         "threaded process exit",
       );
       // WHY: thread-exit-group exits from its child thread. The public exit
@@ -740,10 +1092,7 @@ async function init(): Promise<void> {
         resolveLazyStart = resolve;
       });
       const unsubscribeLazy = firstKernel.subscribeLazyDownloads((event) => {
-        if (
-          event.url === request.lazyReadUrl &&
-          event.status === "started"
-        ) {
+        if (event.url === request.lazyReadUrl && event.status === "started") {
           resolveLazyStart();
         }
       });
@@ -826,9 +1175,8 @@ async function init(): Promise<void> {
       );
     }
     const firstExportBuffer = firstExport.buffer;
-    let parsed: MemoryFileSystem | null = await restoreVerifiedVfsImage(
-      firstExport,
-    );
+    let parsed: MemoryFileSystem | null =
+      await restoreVerifiedVfsImage(firstExport);
     const lazyEntries = parsed.exportLazyEntries().map((entry) => ({
       path: entry.path,
       url: entry.url,
@@ -838,9 +1186,7 @@ async function init(): Promise<void> {
       readVfsFile(parsed, request.lazyReadPath),
     );
     if (exportedLazyRead !== request.lazyReadText) {
-      throw new Error(
-        `exported rootfs changed ${request.lazyReadPath}`,
-      );
+      throw new Error(`exported rootfs changed ${request.lazyReadPath}`);
     }
     const lateWritePresentInExport = vfsPathExists(
       parsed,
@@ -945,7 +1291,7 @@ async function init(): Promise<void> {
         descriptor: request.descriptor,
         baseImageBytes,
         kernelAbi: ABI_VERSION,
-        onStagedFileSystemDiscarded: (buffer) => {
+        onStagedFileSystemDiscarded: (buffer: SharedArrayBuffer) => {
           packageLayerDiscardedBufferCount += 1;
           trackTransientImageBuffer(buffer);
         },
@@ -956,7 +1302,8 @@ async function init(): Promise<void> {
       ) {
         throw new Error("unknown reviewed package-layer product profile");
       }
-      const composed = request.reviewedProductProfile === undefined
+      const composed =
+        request.reviewedProductProfile === undefined
         ? await composeBootDescriptorVfs(compositionOptions)
         : await composeBootDescriptorVfsWithReviewedProduct(
           compositionOptions,
@@ -993,10 +1340,9 @@ async function init(): Promise<void> {
           readonly = error instanceof Error && error.message.includes("EROFS");
         }
         const firstProjection = composed.privilegedProduct.projections[0]!;
-        const ordinaryBottlePath =
-          `/opt/kandelo/homebrew/Cellar/${firstProjection.sourcePath}`;
-        const ordinaryBottleMode = composed.fs.lstat(ordinaryBottlePath).mode &
-          0o7777;
+        const ordinaryBottlePath = `/opt/kandelo/homebrew/Cellar/${firstProjection.sourcePath}`;
+        const ordinaryBottleMode =
+          composed.fs.lstat(ordinaryBottlePath).mode & 0o7777;
         let ordinaryBottleWritable = false;
         try {
           composed.fs.chmod(ordinaryBottlePath, ordinaryBottleMode ^ 0o200);
@@ -1018,16 +1364,17 @@ async function init(): Promise<void> {
             };
           }),
           uniqueIdentityCount: new Set(
-            composed.privilegedProduct.evidence.map((entry) =>
+            composed.privilegedProduct.evidence.map(
+              (entry) =>
               `${entry.destinationIdentity.dev}:` +
               `${entry.destinationIdentity.ino}:` +
-              `${entry.destinationIdentity.generation}`
+                `${entry.destinationIdentity.generation}`,
             ),
           ).size,
           readonly,
           trusted:
-            resolveMountSetIdCapability(composed.privilegedProduct.mount).kind ===
-              "trusted-root-product",
+            resolveMountSetIdCapability(composed.privilegedProduct.mount)
+              .kind === "trusted-root-product",
           ordinaryBottleWritable,
           ordinaryMountNosuid:
             resolveMountSetIdCapability({ backend: composed.fs }).kind ===
@@ -1064,15 +1411,18 @@ async function init(): Promise<void> {
 
   window.__readPackageLayerAcceptance = async (path) => {
     const machine = packageLayerMachine;
-    if (!machine) throw new Error("package-layer acceptance machine is not booted");
+    if (!machine)
+      throw new Error("package-layer acceptance machine is not booted");
     const bytes = await machine.kernel.readFileFromVfs(path);
-    if (bytes === null) throw new Error(`missing package-layer VFS file ${path}`);
+    if (bytes === null)
+      throw new Error(`missing package-layer VFS file ${path}`);
     return new TextDecoder().decode(bytes);
   };
 
   window.__execPackageLayerAcceptance = async (request) => {
     const machine = packageLayerMachine;
-    if (!machine) throw new Error("package-layer acceptance machine is not booted");
+    if (!machine)
+      throw new Error("package-layer acceptance machine is not booted");
     if (!Array.isArray(request.argv) || request.argv.length === 0) {
       throw new Error("argv must contain at least one entry");
     }
@@ -1092,9 +1442,12 @@ async function init(): Promise<void> {
         spawned.exit,
         new Promise<never>((_resolve, reject) => {
           timer = setTimeout(
-            () => reject(new Error(
+            () =>
+              reject(
+                new Error(
               `package-layer exec timed out after ${request.timeoutMs}ms`,
-            )),
+                ),
+              ),
             request.timeoutMs,
           );
         }),
@@ -1114,6 +1467,7 @@ async function init(): Promise<void> {
 }
 
 init().catch((error) => {
-  document.getElementById("status")!.textContent = `Error: ${error instanceof Error ? error.message : String(error)}`;
+  document.getElementById("status")!.textContent =
+    `Error: ${error instanceof Error ? error.message : String(error)}`;
   console.error("Homebrew VFS test runner failed:", error);
 });

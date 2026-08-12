@@ -260,14 +260,14 @@ export function snapshotPublishedPrivilegedProgramBrowserMount(
 }
 
 /**
- * Compare a writable image file with the exact projection admitted for a
- * privately branded product. This conveys no mount capability and is absent
- * from public barrels; browser product loaders use it to reject stale staged
- * destinations before granting a terminal policy.
+ * Compare a file in the final composed namespace with the exact projection
+ * admitted for a privately branded product. This conveys no mount capability
+ * and is absent from public barrels; product loaders use it before granting a
+ * terminal policy.
  */
 export async function publishedPrivilegedProgramMatchesFile(
   product: PublishedPrivilegedProgramProduct,
-  fs: MemoryFileSystem,
+  fs: FileSystemBackend,
   destinationPath: string,
 ): Promise<boolean> {
   const projections = publishedProductProjections.get(product);

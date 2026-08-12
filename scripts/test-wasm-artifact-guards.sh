@@ -188,6 +188,82 @@ chmod +x "$work/bin/structural-identity-tool"
 # deliberately unusable WABT binary proves neither helper silently falls back
 # to full-module text decoding for a large ABI 43 artifact.
 structural_path="$work/bin/structural-identity-tool"
+cat >"$work/structural-side.wat" <<'WAT'
+(module
+  (@custom "dylink.0" (before type) "")
+  (import "env" "memory" (memory 1))
+  (func (export "side_value") (result i32)
+    i32.const 17))
+WAT
+wat2wasm --enable-annotations "$work/structural-side.wat" \
+    -o "$work/structural-side.wasm"
+
+# ABI 43 C++ side modules contain proposal encodings that the installed WABT
+# can partially print before returning nonzero. Loader role and import policy
+# must use the wasmparser-backed identity as one exact result, never trust
+# partial WABT stdout, and never fall back after an installed decoder fails.
+side_identity=$'0\t1\t0\tmissing\t-\t0\t0\t0\t1\t1\t1\t0'
+role_status=0
+role="$(
+    WASM_POSIX_FORK_INSTRUMENT="$structural_path" \
+        MOCK_IDENTITY_RECORD="$side_identity" \
+        PATH="$work/no-objdump-bin:$PATH" \
+        wasm_artifact_role "$work/structural-side.wasm"
+)" || role_status=$?
+[ "$role_status" -eq 0 ] && [ "$role" = side-module ] || {
+    echo "ERROR: structural loader identity did not classify a modern side module" >&2
+    exit 1
+}
+arch_status=0
+arch="$(
+    WASM_POSIX_FORK_INSTRUMENT="$structural_path" \
+        MOCK_IDENTITY_RECORD="$side_identity" \
+        PATH="$work/no-objdump-bin:$PATH" \
+        wasm_validate_side_module_imports "$work/structural-side.wasm"
+)" || arch_status=$?
+[ "$arch_status" -eq 0 ] && [ "$arch" = wasm32 ] || {
+    echo "ERROR: structural loader identity did not validate modern side imports" >&2
+    exit 1
+}
+
+role_status=0
+WASM_POSIX_FORK_INSTRUMENT="$structural_path" \
+    MOCK_IDENTITY_RECORD=malformed \
+    wasm_artifact_role "$work/structural-side.wasm" >/dev/null 2>&1 || \
+    role_status=$?
+[ "$role_status" -gt 1 ] || {
+    echo "ERROR: side role fell back after structural decoder failure" >&2
+    exit 1
+}
+arch_status=0
+WASM_POSIX_FORK_INSTRUMENT="$structural_path" \
+    MOCK_IDENTITY_RECORD=malformed \
+    wasm_validate_side_module_imports "$work/structural-side.wasm" \
+        >/dev/null 2>&1 || arch_status=$?
+[ "$arch_status" -gt 1 ] || {
+    echo "ERROR: side import policy fell back after structural decoder failure" >&2
+    exit 1
+}
+
+role_status=0
+WASM_POSIX_FORK_INSTRUMENT="$missing_structural_tool" \
+    PATH="$work/no-objdump-bin:$PATH" \
+    wasm_artifact_role "$work/structural-side.wasm" >/dev/null 2>&1 || \
+    role_status=$?
+[ "$role_status" -gt 1 ] || {
+    echo "ERROR: side role accepted when both structural and WABT decoders failed" >&2
+    exit 1
+}
+arch_status=0
+WASM_POSIX_FORK_INSTRUMENT="$missing_structural_tool" \
+    PATH="$work/no-objdump-bin:$PATH" \
+    wasm_validate_side_module_imports "$work/structural-side.wasm" \
+        >/dev/null 2>&1 || arch_status=$?
+[ "$arch_status" -gt 1 ] || {
+    echo "ERROR: side import policy accepted when both decoders failed" >&2
+    exit 1
+}
+
 actual="$(
     WASM_POSIX_FORK_INSTRUMENT="$structural_path" \
         PATH="$work/no-objdump-bin:$PATH" wasm_extract_abi_version "$work/abi.wasm"

@@ -1317,7 +1317,7 @@ RUBY
     --arch wasm32 \
     --release-tag bottles-abi-v18 \
     --bottle-json "$canonical_bottle_json" \
-    --expected-sha256 "$(jq -er '.hello.bottle.tags.wasm32_kandelo.sha256' "$canonical_bottle_json")" \
+    --expected-sha256 "$(jq -er '.["acme/tools/hello"].bottle.tags.wasm32_kandelo.sha256' "$canonical_bottle_json")" \
     --expected-root-url https://ghcr.io/v2/acme/homebrew-tools \
     --expected-cellar any_skip_relocation >/dev/null
   grep -F 'root_url "https://ghcr.io/v2/acme/homebrew-tools"' \
@@ -1491,20 +1491,20 @@ assert_build_handoff_is_minimal_and_validated() {
       fail "validated handoff env lost dependency provenance"
   )
   jq -e --arg sha256 "$(jq -r '.bottle.sha256' "$handoff/manifest.json")" '
-    keys == ["hello"] and
-    (.hello | keys == ["bottle", "formula"]) and
-    (.hello.formula | keys == ["name", "path", "pkg_version"]) and
-    .hello.formula == {
+    keys == ["kandelo-dev/tap-core/hello"] and
+    (.["kandelo-dev/tap-core/hello"] | keys == ["bottle", "formula"]) and
+    (.["kandelo-dev/tap-core/hello"].formula | keys == ["name", "path", "pkg_version"]) and
+    .["kandelo-dev/tap-core/hello"].formula == {
       name: "hello",
       path: "Library/Taps/kandelo-dev/homebrew-tap-core/Formula/hello.rb",
       pkg_version: "2.12.1"
     } and
-    (.hello.bottle | keys == ["cellar", "rebuild", "root_url", "tags"]) and
-    .hello.bottle.root_url == "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core" and
-    .hello.bottle.cellar == "any_skip_relocation" and
-    .hello.bottle.rebuild == 0 and
-    (.hello.bottle.tags | keys == ["wasm32_kandelo"]) and
-    .hello.bottle.tags.wasm32_kandelo == {
+    (.["kandelo-dev/tap-core/hello"].bottle | keys == ["cellar", "rebuild", "root_url", "tags"]) and
+    .["kandelo-dev/tap-core/hello"].bottle.root_url == "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core" and
+    .["kandelo-dev/tap-core/hello"].bottle.cellar == "any_skip_relocation" and
+    .["kandelo-dev/tap-core/hello"].bottle.rebuild == 0 and
+    (.["kandelo-dev/tap-core/hello"].bottle.tags | keys == ["wasm32_kandelo"]) and
+    .["kandelo-dev/tap-core/hello"].bottle.tags.wasm32_kandelo == {
       sha256: $sha256
     }
   ' "$canonical_json" >/dev/null ||
@@ -4647,7 +4647,7 @@ EOF
   bottle_sha="$(sha256sum "$bottle" | awk '{print $1}')"
   bottle_bytes="$(wc -c <"$bottle" | tr -d '[:space:]')"
   jq -nS --arg sha256 "$bottle_sha" '{
-    hello: {
+    "kandelo-dev/tap-core/hello": {
       formula: {name: "hello", path: "Formula/hello.rb", pkg_version: "1.0"},
       bottle: {
         root_url: "https://example.invalid",

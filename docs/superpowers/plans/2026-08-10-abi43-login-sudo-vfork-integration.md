@@ -73,6 +73,33 @@ Python release tooling.
 
 ---
 
+## Execution Amendment — 2026-08-12: CI-owned Homebrew bottle staging
+
+Brandon directed that the costly ABI 43 Homebrew bottle build and its product
+evidence move out of this worktree. This amendment supersedes only the
+local-staging portions of the original Task 20 plan; it does not turn unrun
+work into evidence and does not change the publication or promotion boundary.
+
+Task 20 in this worktree now owns the checked-in product declarations,
+selection and authority locks, privileged projection policy, provenance
+rejection rules, CI invocation contract, and focused Node/browser fixture
+contracts. `run-login-stack-local.sh` remains an implementation interface that
+the staging lane may consume, but this worktree must not use it to build the
+43-Formula closure or treat a local report as Task 20 completion evidence.
+
+The staging worktree `emdash/homebrew-pr-staging-1q1w6` and GitHub CI own the
+actual ABI 43 Formula builds, sidecars, composed image, Node/browser lifecycle,
+and RSS evidence. Their CI report is the sole success evidence for those
+operations. Task 20 produces a frozen handoff containing the exact Kandelo and
+tap heads, ABI, Formula closure, and required lifecycle assertions; it does not
+stage, merge, publish, promote, or relabel artifacts.
+
+Accordingly, this amendment supersedes the original local-bottle statements in
+the file/interface map, Task 18's local-harness direction, Task 20 Steps 6–10
+and 12, Task 23's local product run and manual demonstration, and Task 24's
+local-test rerun. Later tasks consume the GitHub CI evidence from the staging
+owner instead. The original text remains below as a historical record.
+
 ## File and Interface Map
 
 ### New focused files
@@ -94,8 +121,9 @@ Python release tooling.
   maps the demo product to the reusable session policy.
 - `scripts/run-vfork-readiness.sh` makes the mechanism and integration vfork
   gates repeatable and records exact commands and browser engines.
-- `scripts/run-login-stack-local.sh` builds local-test bottles, composes a
-  disposable product, runs Node/browser evidence, and emits one bound report.
+- `scripts/run-login-stack-local.sh` defines the CI staging invocation and
+  report contract. The staging worktree, not this worktree, runs its
+  43-Formula bottle build and product evidence path.
 - `docs/measurements/2026-08-10-vfork-readiness.md` records exact-head vfork
   mechanism and integration results without turning unrun checks into claims.
 
@@ -2493,7 +2521,7 @@ git commit --author='Brandon Payton <brandon@happycode.net>' \
   -m "Browser: Supervise real login sessions per terminal"
 ```
 
-### Task 20: Compose the Homebrew product and local-test evidence harness
+### Task 20: Compose the CI-ready Homebrew product and staging handoff
 
 **Files:**
 
@@ -2520,8 +2548,16 @@ git commit --author='Brandon Payton <brandon@happycode.net>' \
 - Consumes: exact clean tap checkout, local Formulae, generic materialization,
   privileged projections, login session policy, and existing Homebrew bottle,
   sidecar, composition, Node smoke, and closed-mirror tools
-- Produces: `run-login-stack-local.sh --tap-root --work-root
-  [--browser-demo]`; immutable local image/mirror; bound `local-test` evidence
+- Produces: checked-in product and authority contracts plus a frozen CI staging
+  handoff. `run-login-stack-local.sh --tap-root --work-root [--browser-demo]`
+  is the staging invocation interface; this worktree does not build the
+  43-Formula closure or claim its execution evidence.
+
+> **Superseded execution steps:** Per the 2026-08-12 amendment above, original
+> Steps 6–10 and 12 below are staging-owned. They are retained only as the
+> historical interface specification. The staging worktree and GitHub CI run
+> them and provide the success evidence; Task 20 here stops at reviewed source
+> contracts and a frozen handoff.
 
 - [ ] **Step 1: Add product contract tests**
 
@@ -3234,7 +3270,7 @@ git commit --author='Brandon Payton <brandon@happycode.net>' \
 Do not hand-edit a bottle stanza, sidecar, candidate record, selection lock,
 or published metadata in this commit.
 
-- [ ] **Step 4: Repeat the complete local-test proof on pristine Ruby**
+- [ ] **Step 4: Bind pristine Ruby to the CI staging request**
 
 If Step 3 changed the tap commit, update Kandelo's migration lock and commit
 that exact selection independently:
@@ -3245,13 +3281,13 @@ git commit --author='Brandon Payton <brandon@happycode.net>' \
   -m "Homebrew: Select the pristine Ruby tap revision"
 ```
 
-Then rerun `scripts/run-login-stack-local.sh` from Task 20. Require the pinned
-extracted source tree to match upstream before configure and require
-`HAVE_VFORK`, `HAVE_WORKING_VFORK`, and `HAVE_WORKING_FORK` afterward. As uid
-1000, Ruby's eligible fork-then-exec route must invoke vfork mode and construct
-no child process Memory. The root/privileged route must use ordinary fork,
-construct a distinct copied child Memory, and obey retirement admission. Keep
-all outputs `local-test` and non-promotable.
+Bind the new tap commit to the GitHub CI staging request. CI must prove that the
+pinned extracted source tree matches upstream before configure, that
+`HAVE_VFORK`, `HAVE_WORKING_VFORK`, and `HAVE_WORKING_FORK` hold afterward,
+and that uid 1000 takes vfork without child process Memory while the
+root/privileged route takes ordinary fork with distinct copied child Memory.
+This worktree does not rerun the 43-Formula local harness or produce
+`local-test` outputs for this check.
 
 - [ ] **Step 5: Request exact-head candidates through reviewed workflows**
 
@@ -3261,18 +3297,15 @@ evidence, and authorization identity. Review the resulting candidate metadata
 and verify that every bottle was built by GitHub's isolated Formula builder.
 Do not upload, relabel, or promote any local-test byte.
 
-- [ ] **Step 6: Run the exact hosted Homebrew lifecycle and RSS proof**
+- [ ] **Step 6: Consume the exact GitHub CI lifecycle and RSS proof**
 
-Against candidate bottles, perform real in-guest tap/install/execute for Ruby
-and the complete closure, repeat at least three times, and record Node and
-Chromium process-tree baseline/peak/post-reap RSS, renderer survival, parent
-suspension, and fork mode. Run Firefox and WebKit functional coverage wherever
-the platform path applies. Rerun ABI, libc, POSIX, Sortix, host, browser,
-fork-instrument, and performance suites on the exact candidate head. Compare
-the hosted result with Step 4's local proof, verify anonymous readback, and
-promote only these fresh pristine-Ruby bytes. This is the required rebuild and
-repeat of the exact lifecycle after #1166 removal; no earlier patched or local
-artifact may satisfy it.
+Review the GitHub CI report for real in-guest tap/install/execute for Ruby and
+the complete closure, repeated at least three times, with Node and Chromium
+process-tree baseline/peak/post-reap RSS, renderer survival, parent suspension,
+and fork mode. The staging owner also supplies Firefox/WebKit functional
+coverage and all required exact-head validation. Compare the CI result with
+the checked-in product contracts and verify anonymous readback. No earlier
+patched or local artifact may satisfy this evidence.
 
 - [ ] **Step 7: Verify linear history and contributor attribution**
 
@@ -3361,8 +3394,8 @@ or companion tap PR without Brandon's explicit approval.
   truthful `EAGAIN`, and retains bounded documented retirement fallback.
 - [ ] Sparse cloning and Worker/module churn conclusions use real RSS and are
   not promoted from component measurements alone.
-- [ ] Local Homebrew lifecycle and interactive browser demo finish entirely
-  from exact `local-test` inputs without remote mutation.
+- [ ] GitHub CI reports the Homebrew lifecycle and interactive browser product
+  from exact reviewed heads. No private `local-test` run substitutes for it.
 - [ ] Whole Rust, ABI, host, browser, libc, POSIX, Sortix, fork-instrument,
   Homebrew, performance, RSS, and manual validation evidence is recorded.
 - [ ] Active hosted staging builds final candidates from exact reviewed heads.

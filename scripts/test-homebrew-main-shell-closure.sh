@@ -363,7 +363,8 @@ SOURCE_ROOT_COUNT="$(jq -er '.packages | length' "$SOURCE_LOCK")"
 SOURCE_CLOSURE_COUNT="$(jq -er '.formula_closure | length' "$SOURCE_LOCK")"
 RUNTIME_FORMULA_COUNT="$(jq -er '.formula_order | length' "$RUNTIME_SUPPORT")"
 AUDITED_FORMULA_COUNT="$(jq -er '
-  [.availability.reusable_public_abi42,
+  [(.availability.reusable_public_abi42 //
+      .availability.local_test_formulae),
    .availability.requires_rebuild,
    .availability.missing_metadata,
    .availability.can_be_deferred] | add | length
@@ -2946,8 +2947,21 @@ jq '
     bytes: 1
   }
 ' "$LAZY_ARTIFACT_LOCK" >"$sealed_fixture_lock"
+
+# Review-pending composition accepts only a clean prepared tap that carries
+# the exact non-promotable marker while retaining the source catalog commit as
+# separate authority. Build that second clean commit explicitly so this test
+# reaches the artifact-state gate instead of failing earlier at provenance.
+printf '%s\n' \
+  '{"schema":1,"provenance_kind":"local-test","promotable":false,"published":false}' \
+  >"$tap/local-test-provenance.json"
+git -C "$tap" add local-test-provenance.json
+git -C "$tap" commit -qm "Homebrew: Mark local review fixture"
+review_tap_worktree="$TMP_ROOT/review-tap-worktree"
+git -C "$tap" worktree add --detach "$review_tap_worktree" HEAD >/dev/null
 expect_failure "--review-pending-artifact requires a pending artifact lock" \
-  "$BUILDER" --lazy-shell --tap-root "$tap_worktree" \
+  env KANDELO_HOMEBREW_TAP_SOURCE_COMMIT="$tap_sha" \
+  "$BUILDER" --lazy-shell --tap-root "$review_tap_worktree" \
   --work-dir "$TMP_ROOT/work-review-sealed-lazy-lock" \
   --migration-lock "$lock" \
   --lazy-artifact-lock "$sealed_fixture_lock" \
@@ -3174,20 +3188,45 @@ expect_failure \
     "$MATERIALIZATION_POLICY"
 
 metadata="$TMP_ROOT/main-shell-metadata.json"
-jq --slurpfile support "$RUNTIME_SUPPORT" '
+public_runtime_support="$TMP_ROOT/public-abi42-runtime-support.json"
+jq '
+  .activation.bootstrap_package.required_kernel_abi = 42 |
+  .availability = {
+    audited_catalog: {
+      checkout_commit: .availability.audited_catalog.checkout_commit,
+      metadata_sha256: ("0" * 64),
+      metadata_tap_commit: ("1" * 40),
+      kandelo_commit: ("2" * 40),
+      runtime_bottle_provenance_sha256: ("0" * 64),
+      kandelo_abi: 42,
+      release_tag: "bottles-abi-v42",
+      required_arch: "wasm32"
+    },
+    reusable_public_abi42: .availability.local_test_formulae,
+    requires_rebuild: .availability.requires_rebuild,
+    missing_metadata: .availability.missing_metadata,
+    can_be_deferred: .availability.can_be_deferred
+  }
+' "$RUNTIME_SUPPORT" >"$public_runtime_support"
+jq --slurpfile support "$public_runtime_support" '
   def dependencies:
     if . == "bash" then ["ncurses"]
     elif . == "ncurses" then ["libcxx"]
     elif . == "m4" then ["dash"]
-    elif . == "file-formula" then ["libmagic"]
+    elif . == "libmagic" then ["bzip2", "xz", "zlib"]
+    elif . == "file-formula" then ["bzip2", "libmagic", "xz", "zlib"]
     elif . == "diffutils" then ["coreutils", "ed"]
     elif . == "tar" then ["dash", "gzip"]
     elif . == "curl" then ["libcurl", "openssl", "zlib"]
     elif . == "git" then
       ["coreutils", "dash", "diffutils", "grep", "less", "libcurl", "openssl", "sed", "vim", "zlib"]
     elif . == "libcurl" then ["openssl", "zlib"]
-    elif . == "less" or . == "vim" then ["ncurses"]
-    elif . == "ruby" then ["zlib"]
+    elif . == "less" or . == "vim" then ["dash", "ncurses"]
+    elif . == "make" then ["dash"]
+    elif . == "wget" then ["openssl", "zlib"]
+    elif . == "zip" then ["unzip"]
+    elif . == "nano" or . == "nethack" then ["ncurses"]
+    elif . == "ruby" then ["libyaml", "zlib"]
     else []
     end;
   . as $lock |
@@ -3235,7 +3274,7 @@ jq --slurpfile support "$RUNTIME_SUPPORT" '
         arch: "wasm32",
         bottle_tag: "wasm32_kandelo",
         status: "success",
-        kandelo_abi: 42,
+        kandelo_abi: $audit.kandelo_abi,
         bytes: 1,
         sha256: ("a" * 64),
         cache_key_sha: ("a" * 64),
@@ -3267,7 +3306,7 @@ jq --slurpfile support "$RUNTIME_SUPPORT" '
 
 baseline_provenance_sha="$(node "$CHECKER" \
   --print-runtime-bottle-provenance-sha256 \
-  "$metadata" "$RUNTIME_SUPPORT")"
+  "$metadata" "$public_runtime_support")"
 
 checker_with_metadata() {
   local lock_path="$1"
@@ -3282,7 +3321,7 @@ checker_with_metadata() {
       .availability.audited_catalog.runtime_bottle_provenance_sha256 =
         $provenance_sha
     ' \
-    "$RUNTIME_SUPPORT" >"$support_path"
+    "$public_runtime_support" >"$support_path"
   node "$CHECKER" "$BREWFILE" "$lock_path" "$metadata_path" "$support_path"
 }
 
@@ -3312,7 +3351,7 @@ jq --arg metadata_sha "$provenance_drift_metadata_sha" \
     .availability.audited_catalog.metadata_sha256 = $metadata_sha |
     .availability.audited_catalog.runtime_bottle_provenance_sha256 =
       $provenance_sha
-  ' "$RUNTIME_SUPPORT" >"$provenance_drift_support"
+  ' "$public_runtime_support" >"$provenance_drift_support"
 expect_failure "runtime-support bottle provenance digest differs from the reviewed cohort" \
   node "$CHECKER" "$BREWFILE" "$SOURCE_LOCK" \
     "$provenance_drift" "$provenance_drift_support"
@@ -3327,7 +3366,7 @@ jq --arg metadata_sha "$aggregate_drift_metadata_sha" \
     .availability.audited_catalog.metadata_sha256 = $metadata_sha |
     .availability.audited_catalog.runtime_bottle_provenance_sha256 =
       $provenance_sha
-  ' "$RUNTIME_SUPPORT" >"$aggregate_drift_support"
+  ' "$public_runtime_support" >"$aggregate_drift_support"
 expect_failure "tap metadata differs from the exact audited ABI-42 catalog" \
   node "$CHECKER" "$BREWFILE" "$SOURCE_LOCK" \
     "$aggregate_drift" "$aggregate_drift_support"
@@ -3336,7 +3375,7 @@ unknown_provenance_support="$TMP_ROOT/runtime-unknown-provenance-support.json"
 jq '
   .availability.reusable_public_abi42[0] =
     "kandelo-dev/tap-core/unknown"
-' "$RUNTIME_SUPPORT" >"$unknown_provenance_support"
+' "$public_runtime_support" >"$unknown_provenance_support"
 expect_failure "Formula unknown has no admitted package metadata" \
   node "$CHECKER" --print-runtime-bottle-provenance-sha256 \
     "$metadata" "$unknown_provenance_support"
@@ -3345,7 +3384,7 @@ duplicate_provenance_support="$TMP_ROOT/runtime-duplicate-provenance-support.jso
 jq '
   .availability.reusable_public_abi42 +=
     [.availability.reusable_public_abi42[0]]
-' "$RUNTIME_SUPPORT" >"$duplicate_provenance_support"
+' "$public_runtime_support" >"$duplicate_provenance_support"
 expect_failure "runtime-support provenance cohort contains duplicate" \
   node "$CHECKER" --print-runtime-bottle-provenance-sha256 \
     "$metadata" "$duplicate_provenance_support"
@@ -3357,7 +3396,7 @@ jq '
 ' "$metadata" >"$duplicate_runtime_bottle"
 expect_failure "Formula gawk has 2 wasm32 bottle identities, expected one" \
   node "$CHECKER" --print-runtime-bottle-provenance-sha256 \
-    "$duplicate_runtime_bottle" "$RUNTIME_SUPPORT"
+    "$duplicate_runtime_bottle" "$public_runtime_support"
 
 jq 'del(.formula_closure)' "$SOURCE_LOCK" >"$lock"
 expect_failure "packages/formula_closure/substitutions must be arrays" \
@@ -3418,7 +3457,7 @@ jq '
     "dependencies":[]
   }]
 ' "$metadata" >"$TMP_ROOT/wrong-closure.json"
-expect_failure "tap metadata dependency closure does not match reviewed formula_closure" \
+expect_failure "tap metadata dependency-first order does not match reviewed formula_closure" \
   checker_with_metadata "$SOURCE_LOCK" "$TMP_ROOT/wrong-closure.json"
 
 jq '(.packages[] | select(.name == "libcxx") | .dependencies) =

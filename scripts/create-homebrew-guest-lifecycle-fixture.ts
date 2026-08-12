@@ -29,6 +29,8 @@ export interface CreateHomebrewGuestLifecycleFixtureOptions {
   bootstrapArchive: string;
   bootstrapEnvironment: string;
   bottleMirror: string;
+  compositionReport?: string;
+  privilegedProduct?: string;
   fixedAssetUrlRoot: string;
   coreRevision: string;
   canaryRevision: string;
@@ -134,6 +136,29 @@ export function createHomebrewGuestLifecycleFixture(
   });
   const planUrl = `${plan.release_root}/${plan.manifest_asset}`;
   const planAsset = exactBytesAsset(planBytes, planUrl);
+  const loginProduct = options.compositionReport === undefined ||
+      options.privilegedProduct === undefined
+    ? undefined
+    : {
+        compositionReport: exactLocalAsset(
+          options.compositionReport,
+          fixedAssetUrl(fixedAssetUrlRoot, options.compositionReport),
+          "login product composition report",
+        ),
+        privilegedProduct: exactLocalAsset(
+          options.privilegedProduct,
+          fixedAssetUrl(fixedAssetUrlRoot, options.privilegedProduct),
+          "serialized privileged product",
+        ),
+      };
+  if (
+    (options.compositionReport === undefined) !==
+      (options.privilegedProduct === undefined)
+  ) {
+    throw new Error(
+      "login product composition report and serialized product are one exact pair",
+    );
+  }
 
   const fixture: HomebrewGuestLifecycleBrowserFixture = {
     schema: 1,
@@ -149,6 +174,7 @@ export function createHomebrewGuestLifecycleFixture(
       plan: planAsset,
       ...((options.transportMode ?? "closed") === "closed" ? { payloads } : {}),
     },
+    ...(loginProduct === undefined ? {} : { loginProduct }),
     revisions: {
       coreRevision: options.coreRevision,
       canaryRevision: options.canaryRevision,
@@ -169,6 +195,8 @@ function parseOptions(
     "--homebrew-bootstrap-archive",
     "--homebrew-bootstrap-env",
     "--bottle-mirror",
+    "--composition-report",
+    "--privileged-product",
     "--fixed-asset-url-root",
     "--core-revision",
     "--canary-revision",
@@ -190,7 +218,18 @@ function parseOptions(
     }
     values.set(option, value);
   }
-  if (values.size !== allowed.size - 1 && values.size !== allowed.size) {
+  const required = [...allowed].filter((option) =>
+    option !== "--transport-mode" &&
+      option !== "--composition-report" &&
+      option !== "--privileged-product"
+  );
+  if (
+    !required.every((option) => values.has(option)) ||
+    values.size !== required.length +
+      Number(values.has("--transport-mode")) +
+      Number(values.has("--composition-report")) +
+      Number(values.has("--privileged-product"))
+  ) {
     usage();
   }
 
@@ -234,6 +273,12 @@ function parseOptions(
       values.get("--homebrew-bootstrap-env")!,
     ),
     bottleMirror: resolve(values.get("--bottle-mirror")!),
+    ...(values.has("--composition-report")
+      ? { compositionReport: resolve(values.get("--composition-report")!) }
+      : {}),
+    ...(values.has("--privileged-product")
+      ? { privilegedProduct: resolve(values.get("--privileged-product")!) }
+      : {}),
     fixedAssetUrlRoot,
     coreRevision,
     canaryRevision,
@@ -362,6 +407,8 @@ function usage(): never {
       "--homebrew-bootstrap-archive <homebrew-bootstrap.zip> " +
       "--homebrew-bootstrap-env <homebrew-brew.env> " +
       "--bottle-mirror <directory> --fixed-asset-url-root <https-url/> " +
+      "[--composition-report <report.json> " +
+      "--privileged-product <product.vfs>] " +
       "--core-revision <sha> --canary-revision <sha> " +
       "--timeout-ms <milliseconds> --out <new-fixture.json>",
   );

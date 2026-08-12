@@ -12,10 +12,12 @@ BOTTLE_ROOT_URL=""
 STAGING_CANDIDATE_ABI=""
 BUILD_USER="${KANDELO_HOMEBREW_BUILD_USER:-}"
 SHARED_TEMP="${KANDELO_HOMEBREW_SHARED_TEMP:-}"
+LOCAL_BUILD_EVIDENCE="${KANDELO_HOMEBREW_LOCAL_BUILD_EVIDENCE:-}"
+RETIRE_SOURCE_INSTALL=false
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-bottle-build.sh --tap-root <tap-root> [--tap-repository <owner/repo>] [--tap-name <owner/name>] --formula <name> --arch <wasm32|wasm64> --out <dir> --bottle-root-url <url> [--staging-candidate-abi <positive-integer>]
+usage: scripts/homebrew-bottle-build.sh --tap-root <tap-root> [--tap-repository <owner/repo>] [--tap-name <owner/name>] --formula <name> --arch <wasm32|wasm64> --out <dir> --bottle-root-url <url> [--retire-source-install]
 
 This script is intended to run inside scripts/dev-shell.sh. It invokes the
 absolute Homebrew executable named by HOMEBREW_BREW_FILE, avoiding host PATH
@@ -38,7 +40,14 @@ while [ "$#" -gt 0 ]; do
     --arch) ARCH="${2:-}"; shift 2 ;;
     --out) OUT_DIR="${2:-}"; shift 2 ;;
     --bottle-root-url) BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
-    --staging-candidate-abi) STAGING_CANDIDATE_ABI="${2:-}"; shift 2 ;;
+    --retire-source-install)
+      [ "$RETIRE_SOURCE_INSTALL" = false ] || {
+        echo "homebrew-bottle-build.sh: duplicate --retire-source-install" >&2
+        exit 2
+      }
+      RETIRE_SOURCE_INSTALL=true
+      shift
+      ;;
     -h|--help) usage; exit 0 ;;
     *) echo "homebrew-bottle-build.sh: unknown flag $1" >&2; usage; exit 2 ;;
   esac
@@ -72,6 +81,32 @@ case "$ARCH" in
   wasm32|wasm64) ;;
   *) echo "homebrew-bottle-build.sh: invalid arch: $ARCH" >&2; exit 2 ;;
 esac
+
+if [ -n "$LOCAL_BUILD_EVIDENCE" ]; then
+  if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    echo "homebrew-bottle-build.sh: local build evidence is forbidden in CI" >&2
+    exit 2
+  fi
+  case "$LOCAL_BUILD_EVIDENCE" in
+    /*) ;;
+    *) echo "homebrew-bottle-build.sh: local build evidence path must be absolute" >&2; exit 2 ;;
+  esac
+  if [ -e "$LOCAL_BUILD_EVIDENCE" ] || [ -L "$LOCAL_BUILD_EVIDENCE" ]; then
+    echo "homebrew-bottle-build.sh: local build evidence output already exists" >&2
+    exit 2
+  fi
+fi
+
+if [ "$RETIRE_SOURCE_INSTALL" = true ]; then
+  [ -n "$BUILD_USER" ] || {
+    echo "homebrew-bottle-build.sh: source target retirement requires isolated Formula execution" >&2
+    exit 2
+  }
+  [ "${GITHUB_ACTIONS:-}" != true ] || {
+    echo "homebrew-bottle-build.sh: source target retirement is local batch behavior" >&2
+    exit 2
+  }
+fi
 
 if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -z "$BUILD_USER" ]; then
   # WHY: every CI Formula must run as the isolated build identity. Reject the
@@ -145,6 +180,10 @@ PUBLISHER_ISOLATION_PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0002-support-isol
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-native-install-contract.sh"
 homebrew_patched_launcher_select_host_git
+if [ -n "$BUILD_USER" ]; then
+  homebrew_patched_launcher_restore_invoker_bootstrap_roots \
+    "$BUILD_USER" "$HOMEBREW_GUEST_PREFIX"
+fi
 mkdir -p "$OUT_DIR/bottles"
 if [ -n "$BUILD_USER" ]; then
   if [ ! -d "$SHARED_TEMP" ] || [ -L "$SHARED_TEMP" ]; then
@@ -237,6 +276,12 @@ export HOMEBREW_NO_AUTO_UPDATE="${HOMEBREW_NO_AUTO_UPDATE:-1}"
 export HOMEBREW_NO_INSTALL_CLEANUP="${HOMEBREW_NO_INSTALL_CLEANUP:-1}"
 export HOMEBREW_NO_ANALYTICS="${HOMEBREW_NO_ANALYTICS:-1}"
 export HOMEBREW_DEVELOPER="${HOMEBREW_DEVELOPER:-1}"
+if [ -n "$LOCAL_BUILD_EVIDENCE" ]; then
+  # WHY: the local product harness must retain the real configure transcript
+  # and generated config.h from the same Homebrew build as the bottle. CI and
+  # publishable builds keep their existing ephemeral cleanup behavior.
+  export HOMEBREW_KEEP_TMP=1
+fi
 export KANDELO_HOMEBREW_ARCH="$ARCH"
 export KANDELO_HOMEBREW_KANDELO_ROOT="$KANDELO_ROOT"
 export HOMEBREW_KANDELO_ARCH="$ARCH"
@@ -722,6 +767,43 @@ validate_dependency_list \
   "$BUILD_TEST_DEPENDENCY_LIST" "build/test dependency list"
 validate_dependency_list "$DEPENDENCY_POUR_LIST" "dependency pour list"
 
+LOCAL_DEPENDENCY_CACHE="${KANDELO_HOMEBREW_LOCAL_DEPENDENCY_CACHE:-}"
+if [ -n "$LOCAL_DEPENDENCY_CACHE" ]; then
+  if [ "${GITHUB_ACTIONS:-}" = true ] || [ ! -d "$LOCAL_DEPENDENCY_CACHE" ] ||
+     [ -L "$LOCAL_DEPENDENCY_CACHE" ]; then
+    echo "homebrew-bottle-build.sh: local dependency cache is restricted to a real non-CI directory" >&2
+    exit 2
+  fi
+  LOCAL_DEPENDENCY_CACHE="$(cd "$LOCAL_DEPENDENCY_CACHE" && pwd -P)"
+  LOCAL_DEPENDENCIES_JSON="$CONTROL_DIR/local-dependencies.json"
+  ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+    "$TAP_ROOT" "$TAP_NAME" "$FORMULA" "$ARCH" >"$LOCAL_DEPENDENCIES_JSON"
+  while IFS= read -r dependency; do
+    [ -n "$dependency" ] || continue
+    dependency_sha="$(jq -er --arg dependency "$dependency" \
+      '.[$dependency].sha256' "$LOCAL_DEPENDENCIES_JSON")"
+    source_archive="$LOCAL_DEPENDENCY_CACHE/$dependency_sha.tar.gz"
+    if [ ! -f "$source_archive" ] || [ -L "$source_archive" ] ||
+       [ "$(sha256sum "$source_archive" | awk '{print $1}')" != "$dependency_sha" ]; then
+      echo "homebrew-bottle-build.sh: local dependency cache lacks exact $dependency bottle $dependency_sha" >&2
+      exit 1
+    fi
+    cache_archive="$(HOMEBREW_KANDELO_BOTTLE_TAG="$BOTTLE_TAG" \
+      KANDELO_HOMEBREW_BOTTLE_TAG="$BOTTLE_TAG" \
+      "$BREW_BIN" --cache --bottle-tag="$BOTTLE_TAG" --formula "$dependency")"
+    case "$cache_archive" in
+      "$HOMEBREW_CACHE"/*) ;;
+      *)
+        echo "homebrew-bottle-build.sh: Homebrew dependency cache path escapes its private cache" >&2
+        exit 1
+        ;;
+    esac
+    mkdir -p "$(dirname "$cache_archive")"
+    cp "$source_archive" "$cache_archive"
+    chmod 0444 "$cache_archive"
+  done <"$DEPENDENCY_POUR_LIST"
+fi
+
 while IFS= read -r dependency; do
   [ -n "$dependency" ] || continue
   if [ "$dependency" = "$FORMULA" ] || \
@@ -840,7 +922,8 @@ brew_install_build_bottle() {
   fi
 )
 
-TARGET_PREFIX="$("$BREW_BIN" --prefix "$FORMULA_REF")"
+TARGET_PREFIX="$(homebrew_patched_launcher_resolve_installed_formula_keg \
+  "$BREW_BIN" "$FORMULA_REF" "$FORMULA")"
 dependency_provenance_args=(
   capture
   --brew-bin "$BREW_BIN" \
@@ -866,9 +949,167 @@ fi
 python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" \
   "${dependency_provenance_args[@]}"
 
+retain_local_ruby_build_evidence() {
+  [ -n "$LOCAL_BUILD_EVIDENCE" ] || return 0
+  [ "$FORMULA" = "ruby" ] || {
+    echo "homebrew-bottle-build.sh: local build evidence is supported only for ruby" >&2
+    return 2
+  }
+
+  local config_h="" config_log="" process_c="" instrumented_ruby=""
+  local runtime_archive="" runtime_archive_sha256=""
+  local candidate candidate_sha256 search_dir installed_ruby_sha256
+  while IFS= read -r candidate; do
+    if grep -Eq '^#define HAVE_VFORK 1$' "$candidate" &&
+       grep -Eq '^#define HAVE_WORKING_VFORK 1$' "$candidate" &&
+       grep -Eq '^#define HAVE_WORKING_FORK 1$' "$candidate"; then
+      config_h="$candidate"
+      break
+    fi
+  done < <(find -P "$NATIVE_BASE" "$WORK_DIR" -type f -name config.h -print | LC_ALL=C sort)
+  [ -n "$config_h" ] || {
+    echo "homebrew-bottle-build.sh: retained Ruby target config.h is unavailable" >&2
+    return 1
+  }
+
+  search_dir="$(dirname "$config_h")"
+  while [ "$search_dir" != "/" ] && [ "$search_dir" != "$NATIVE_BASE" ]; do
+    if [ -f "$search_dir/config.log" ]; then
+      config_log="$search_dir/config.log"
+      break
+    fi
+    search_dir="$(dirname "$search_dir")"
+  done
+  if [ -z "$config_log" ]; then
+    while IFS= read -r candidate; do
+      if grep -F 'wasm32-unknown-none' "$candidate" >/dev/null; then
+        config_log="$candidate"
+        break
+      fi
+    done < <(find -P "$NATIVE_BASE" "$WORK_DIR" -type f -name config.log -print | LC_ALL=C sort)
+  fi
+  [ -n "$config_log" ] && [ -f "$config_log" ] || {
+    echo "homebrew-bottle-build.sh: retained Ruby configure transcript is unavailable" >&2
+    return 1
+  }
+
+  while IFS= read -r candidate; do
+    if [ "$(sha256sum "$candidate" | awk '{print $1}')" = \
+      "39286bbe88bc5e8627f91ac780aa00403052cb1f700c2f25b5407b7af807e608" ]; then
+      process_c="$candidate"
+      break
+    fi
+  done < <(find -P "$NATIVE_BASE" "$WORK_DIR" -type f -name process.c -print | LC_ALL=C sort)
+  [ -n "$process_c" ] || {
+    echo "homebrew-bottle-build.sh: pristine Ruby process.c build input is unavailable" >&2
+    return 1
+  }
+
+  [ -f "$TARGET_PREFIX/bin/ruby" ] || {
+    echo "homebrew-bottle-build.sh: installed Ruby executable is unavailable" >&2
+    return 1
+  }
+  installed_ruby_sha256="$(sha256sum "$TARGET_PREFIX/bin/ruby" | awk '{print $1}')"
+  while IFS= read -r candidate; do
+    if [ "$(sha256sum "$candidate" | awk '{print $1}')" = "$installed_ruby_sha256" ]; then
+      instrumented_ruby="$candidate"
+      break
+    fi
+  done < <(find -P "$NATIVE_BASE" "$WORK_DIR" -type f -name ruby.wasm -print | LC_ALL=C sort)
+  [ -n "$instrumented_ruby" ] || {
+    echo "homebrew-bottle-build.sh: installed Ruby differs from the transformed recipe output" >&2
+    return 1
+  }
+
+  while IFS= read -r candidate; do
+    candidate_sha256="$(sha256sum "$candidate" | awk '{print $1}')"
+    if [ -z "$runtime_archive" ]; then
+      runtime_archive="$candidate"
+      runtime_archive_sha256="$candidate_sha256"
+    elif [ "$candidate_sha256" != "$runtime_archive_sha256" ]; then
+      echo "homebrew-bottle-build.sh: Ruby build retained multiple runtime archive identities" >&2
+      return 1
+    fi
+  done < <(find -P "$NATIVE_BASE" "$WORK_DIR" -type f -name ruby-runtime.zip -print | LC_ALL=C sort -u)
+  [ -n "$runtime_archive" ] || {
+    echo "homebrew-bottle-build.sh: Ruby runtime archive is unavailable" >&2
+    return 1
+  }
+
+  mkdir -m 0700 "$LOCAL_BUILD_EVIDENCE"
+  cp -p "$config_h" "$LOCAL_BUILD_EVIDENCE/config.h"
+  cp -p "$config_log" "$LOCAL_BUILD_EVIDENCE/config.log"
+  cp -p "$process_c" "$LOCAL_BUILD_EVIDENCE/process.c"
+  cp -p "$instrumented_ruby" "$LOCAL_BUILD_EVIDENCE/instrumented-ruby.wasm"
+  cp -p "$runtime_archive" "$LOCAL_BUILD_EVIDENCE/ruby-runtime.zip"
+  cp -p "$INSTALL_LOG" "$LOCAL_BUILD_EVIDENCE/homebrew-install.log"
+  {
+    printf 'schema=1\n'
+    printf 'provenance_kind=local-test\n'
+    printf 'promotable=false\n'
+    printf 'published=false\n'
+    printf 'process_c_sha256=39286bbe88bc5e8627f91ac780aa00403052cb1f700c2f25b5407b7af807e608\n'
+    printf 'instrumented_ruby_sha256=%s\n' "$installed_ruby_sha256"
+    printf 'runtime_archive_sha256=%s\n' "$runtime_archive_sha256"
+  } >"$LOCAL_BUILD_EVIDENCE/identity.env"
+  chmod 0600 "$LOCAL_BUILD_EVIDENCE"/*
+}
+
+retain_local_ruby_build_evidence
+
+RETIRE_BOTTLE_SHA256=""
+RETIRE_BOTTLE_JSON_SHA256=""
+if [ "$RETIRE_SOURCE_INSTALL" = true ]; then
+  mapfile -t retire_bottle_jsons < <(
+    find "$WORK_DIR" -maxdepth 1 -type f -name '*.bottle.json' -print | sort
+  )
+  mapfile -t retire_bottle_archives < <(
+    find "$WORK_DIR" -maxdepth 1 -type f -name '*.bottle*.tar.gz' -print | sort
+  )
+  [ "${#retire_bottle_jsons[@]}" -eq 1 ] &&
+    [ "${#retire_bottle_archives[@]}" -eq 1 ] || {
+    echo "homebrew-bottle-build.sh: local batch retirement requires one exact bottle JSON and archive" >&2
+    exit 1
+  }
+  RETIRE_BOTTLE_JSON="${retire_bottle_jsons[0]}"
+  RETIRE_BOTTLE_ARCHIVE="${retire_bottle_archives[0]}"
+  RETIRE_PKG_VERSION="${TARGET_PREFIX##*/}"
+  RETIRE_RECEIPT="$TARGET_PREFIX/INSTALL_RECEIPT.json"
+  [ "$TARGET_PREFIX" = \
+      "$HOMEBREW_PATCHED_PREFIX/Cellar/$FORMULA/$RETIRE_PKG_VERSION" ] &&
+    [[ "$RETIRE_PKG_VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._+,-]{0,255}$ ]] || {
+    echo "homebrew-bottle-build.sh: source-built target prefix is not canonical" >&2
+    exit 1
+  }
+  jq -e --arg tap "$TAP_NAME" --arg tap_commit "$TAP_CHECKOUT_COMMIT" '
+    .built_as_bottle == true and
+    .poured_from_bottle == false and
+    .source.tap == $tap and
+    .source.tap_git_head == $tap_commit
+  ' "$RETIRE_RECEIPT" >/dev/null || {
+    echo "homebrew-bottle-build.sh: local batch retirement requires the exact source-built target receipt" >&2
+    exit 1
+  }
+  RETIRE_BOTTLE_SHA256="$(homebrew_sha256_stream <"$RETIRE_BOTTLE_ARCHIVE")"
+  RETIRE_BOTTLE_JSON_SHA256="$(homebrew_sha256_stream <"$RETIRE_BOTTLE_JSON")"
+  homebrew_patched_launcher_retire_source_target \
+    "$BREW_BIN" "$FORMULA_REF" "$FORMULA" "$RETIRE_PKG_VERSION" \
+    "$RETIRE_BOTTLE_ARCHIVE" "$RETIRE_BOTTLE_JSON" "$RETIRE_RECEIPT"
+fi
+
 if [ -n "$BUILD_USER" ]; then
   homebrew_patched_launcher_teardown "$BUILD_USER"
   homebrew_patched_launcher_verify_isolation
+fi
+
+if [ "$RETIRE_SOURCE_INSTALL" = true ]; then
+  [ "$(homebrew_sha256_stream <"$RETIRE_BOTTLE_ARCHIVE")" = \
+      "$RETIRE_BOTTLE_SHA256" ] &&
+    [ "$(homebrew_sha256_stream <"$RETIRE_BOTTLE_JSON")" = \
+      "$RETIRE_BOTTLE_JSON_SHA256" ] || {
+    echo "homebrew-bottle-build.sh: protected retirement changed canonical bottle artifacts" >&2
+    exit 1
+  }
 fi
 
 mapfile -t bottle_jsons < <(find "$WORK_DIR" -maxdepth 1 -type f -name '*.bottle.json' -print | sort)

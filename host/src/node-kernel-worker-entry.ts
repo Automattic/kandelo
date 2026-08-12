@@ -50,6 +50,8 @@ import {
   createClosedLazyAssetSourceFetcher,
 } from "./vfs/closed-lazy-assets";
 import { resolveLazyUrl } from "./vfs/lazy-url";
+import { createImmutableProductBackend } from "./vfs/memory-fs";
+import { restoreVerifiedVfsImage } from "./vfs/load-image";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { findRepoRoot } from "./binary-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
@@ -922,7 +924,7 @@ async function buildVirtualPlatformIO(
   sessionSeedTrees?: InitMessage["sessionSeedTrees"],
   rootfsLazyUrlBase?: InitMessage["rootfsLazyUrlBase"],
   rootfsLazyAssets?: InitMessage["rootfsLazyAssets"],
-  rootfsLazyAssetSources?: InitMessage["rootfsLazyAssetSources"],
+  privilegedProgramMount?: InitMessage["privilegedProgramMount"],
 ): Promise<VirtualPlatformIO> {
   const bootSessionDir = mkdtempSync(join(tmpdir(), "wasm-posix-session-"));
   sessionDir = bootSessionDir;
@@ -933,7 +935,12 @@ async function buildVirtualPlatformIO(
       new Uint8Array(rootfsImage),
       bootSessionDir,
       sessionSeedTrees,
-      (extraMounts ?? []).map((mount) => mount.mountPoint),
+      [
+        ...(extraMounts ?? []).map((mount) => mount.mountPoint),
+        ...(privilegedProgramMount === undefined
+          ? []
+          : [privilegedProgramMount.mountPoint]),
+      ],
     );
   } catch (error) {
     // WHY: imported-seal rejection occurs before scratch setup, but the Node
@@ -953,10 +960,26 @@ async function buildVirtualPlatformIO(
     }),
     readonly: m.readonly,
   }));
+  const privilegedMount: MountConfig | undefined =
+    privilegedProgramMount?.kind === "published-privileged-program-product"
+      ? {
+          mountPoint: "/usr/bin",
+          backend: createImmutableProductBackend(
+            await restoreVerifiedVfsImage(privilegedProgramMount.imageBytes),
+          ),
+          readonly: true,
+          setIdCapability: {
+            kind: "trusted-root-product",
+            guestWritable: false,
+            stableExecutableIdentity: true,
+          },
+        }
+      : undefined;
   const mounts = [
     { mountPoint: "/dev/shm", backend: shmfs },
     { mountPoint: "/dev", backend: new DeviceFileSystem() },
     ...specMounts,
+    ...(privilegedMount === undefined ? [] : [privilegedMount]),
     ...extras,
   ];
   const rootMount = mounts.find((m) => m.mountPoint === "/");
@@ -1041,7 +1064,7 @@ async function handleInit(msg: InitMessage) {
       msg.sessionSeedTrees,
       msg.rootfsLazyUrlBase,
       msg.rootfsLazyAssets,
-      msg.rootfsLazyAssetSources,
+      msg.privilegedProgramMount,
     )
     : new NodePlatformIO();
   vfsExecIO = msg.rootfsImage ? io : null;

@@ -24,6 +24,21 @@ export interface HomebrewRuntimeSupportContract {
     capability: "homebrew:runtime";
     root: "/usr/bin/brew";
     atomicGroup: typeof RUNTIME_ID;
+    requiredKernelAbi: number;
+  };
+  availability: {
+    provenance: {
+      schema: 1;
+      provenance_kind: "local-test";
+      promotable: false;
+      published: false;
+    };
+    auditedCatalog: {
+      checkoutCommit: string;
+      kandeloAbi: number;
+      releaseTag: string;
+      requiredArch: "wasm32";
+    };
   };
   deferredRelocationFormulae: string[];
   lifecycleInstall: {
@@ -79,6 +94,7 @@ export function parseHomebrewRuntimeSupportContract(
   const additionalFormulaOrder = formulaArray(
     root.additional_formula_order,
     "Homebrew runtime-support additional Formula order",
+    true,
   );
   if (
     JSON.stringify(additionalFormulaOrder) !==
@@ -114,7 +130,12 @@ export function parseHomebrewRuntimeSupportContract(
     activation.mode !== "first-use-atomic" ||
     JSON.stringify(activation.roots) !== JSON.stringify(["/usr/bin/brew"]) ||
     activation.capability !== "homebrew:runtime" ||
-    activation.base_image_default !== "deferred"
+    activation.base_image_default !== "deferred" ||
+    !record(
+      activation.bootstrap_package,
+      "Homebrew runtime-support bootstrap package",
+    ) ||
+    activation.bootstrap_package.required_kernel_abi !== 43
   ) {
     throw new Error(
       "Homebrew runtime support must be one deferred atomic /usr/bin/brew activation",
@@ -161,25 +182,40 @@ export function parseHomebrewRuntimeSupportContract(
     root.availability,
     "Homebrew runtime-support availability",
   );
+  const provenance = record(
+    availability.provenance,
+    "Homebrew runtime-support provenance",
+  );
+  if (
+    Object.keys(provenance).sort().join("\0") !==
+      "promotable\0provenance_kind\0published\0schema" ||
+    provenance.schema !== 1 ||
+    provenance.provenance_kind !== "local-test" ||
+    provenance.promotable !== false ||
+    provenance.published !== false
+  ) {
+    throw new Error(
+      "Homebrew runtime support must carry exact local-test provenance",
+    );
+  }
   const audited = record(
     availability.audited_catalog,
     "Homebrew runtime-support audited catalog",
   );
   if (
     audited.checkout_commit !== tapCommit ||
-    audited.kandelo_abi !== 42 ||
+    audited.kandelo_abi !== 43 ||
     audited.required_arch !== "wasm32" ||
-    audited.release_tag !== "bottles-abi-v42" ||
-    !GIT_SHA_RE.test(String(audited.kandelo_commit)) ||
-    !GIT_SHA_RE.test(String(audited.metadata_tap_commit)) ||
-    !SHA256_RE.test(String(audited.metadata_sha256)) ||
+    audited.release_tag !== "bottles-abi-v43" ||
+    JSON.stringify(availability.local_test_formulae) !==
+      JSON.stringify(baseFormulaOrder) ||
     JSON.stringify(availability.requires_rebuild) !== "[]" ||
     JSON.stringify(availability.missing_metadata) !== "[]" ||
     JSON.stringify(availability.can_be_deferred) !==
       JSON.stringify(deferredRelocationFormulae)
   ) {
     throw new Error(
-      "Homebrew runtime-support availability is not a complete admitted ABI-42 closure",
+      "Homebrew runtime-support availability is not a complete local ABI-43 closure",
     );
   }
 
@@ -224,6 +260,21 @@ export function parseHomebrewRuntimeSupportContract(
       capability: "homebrew:runtime",
       root: "/usr/bin/brew",
       atomicGroup: RUNTIME_ID,
+      requiredKernelAbi: 43,
+    },
+    availability: {
+      provenance: {
+        schema: 1,
+        provenance_kind: "local-test",
+        promotable: false,
+        published: false,
+      },
+      auditedCatalog: {
+        checkoutCommit: tapCommit,
+        kandeloAbi: 43,
+        releaseTag: "bottles-abi-v43",
+        requiredArch: "wasm32",
+      },
     },
     deferredRelocationFormulae,
     lifecycleInstall: {
@@ -252,7 +303,7 @@ export function assertHomebrewRuntimeSupportPlan(
     basePlan.kandeloCommit !== supportPlan.kandeloCommit ||
     JSON.stringify(baseOrder) !== JSON.stringify(contract.baseFormulaOrder) ||
     JSON.stringify(supportOrder) !== JSON.stringify(contract.formulaOrder) ||
-    supportPlan.kandeloAbi !== 42 ||
+    supportPlan.kandeloAbi !== 43 ||
     supportPlan.packages.some(
       (pkg) =>
         pkg.arch !== "wasm32" ||
@@ -298,9 +349,15 @@ function record(value: unknown, label: string): Record<string, any> {
   return value as Record<string, any>;
 }
 
-function formulaArray(value: unknown, label: string): string[] {
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new Error(`${label} must be a nonempty array`);
+function formulaArray(
+  value: unknown,
+  label: string,
+  allowEmpty = false,
+): string[] {
+  if (!Array.isArray(value) || (!allowEmpty && value.length === 0)) {
+    throw new Error(
+      `${label} must be ${allowEmpty ? "an" : "a nonempty"} array`,
+    );
   }
   const result = value.map((entry, index) =>
     formula(entry, `${label} ${index}`),

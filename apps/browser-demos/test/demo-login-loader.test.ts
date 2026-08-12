@@ -162,11 +162,33 @@ describe("production demo login loader", () => {
     },
   );
 
+  it("admits the final composed namespace when login exists only in the product", async () => {
+    const loginBytes = new Uint8Array([0, 97, 115, 109, 1]);
+    const fs = canonicalFs(loginBytes);
+    fs.unlink("/usr/bin/login");
+    const { publish } = await productFixture(loginBytes);
+    const privilegedProduct = await publish();
+    const kernel = fakeKernel();
+
+    await expect(
+      initializeDemoLoginKernel({
+        kernel,
+        fs,
+        kernelWasm: new ArrayBuffer(0),
+        vfsImage: await fs.saveImage(),
+        privilegedProduct,
+      }),
+    ).resolves.toBe(true);
+    expect(
+      kernel.initFromPublishedPrivilegedProgramProduct,
+    ).toHaveBeenCalledOnce();
+    expect(kernel.initFromImage).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["/etc/passwd", "maker:x:1000:1000:maker:/home/user:/bin/sh\n", 0o644],
     ["/etc/shadow", "maker:$6$wrong$hash:0:0:99999:7:::\n", 0o640],
     ["/etc/motd.autologin", "image-selected credentials\n", 0o644],
-    ["/usr/bin/login", "image-selected program bytes", 0o4755],
   ] as const)("rejects a configured-asset overwrite of %s", async (
     path,
     text,

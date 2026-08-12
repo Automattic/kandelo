@@ -114,7 +114,7 @@ cp "$formula" "$tap/Formula/sqlite.rb"
 cp "$tap/Formula/sqlite.rb" "$TMPDIR/planned.rb"
 selected_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 jq -n --arg sha "$selected_sha" '{
-  sqlite: {
+  "kandelo-dev/tap-core/sqlite": {
     formula: {
       name: "sqlite",
       path: "Library/Taps/kandelo-dev/homebrew-tap-core/Formula/sqlite.rb",
