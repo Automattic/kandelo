@@ -1,0 +1,45 @@
+# Per-package manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "program"
+
+name = "foot"
+version = "1.17.2"
+kernel_abi = 17
+depends_on = [
+  "fcft@3.1.9",
+  "fontconfig@2.15.0",
+  "freetype@2.13.3",
+  "pixman@0.42.2",
+  "tllist@1.1.0",
+  "utf8proc@2.9.0",
+  "libwayland@1.24.0",
+  "libxkbcommon@1.7.0",
+  "libffi@0.1.0",
+  "libxml2@2.13.8",
+  "zlib@1.3.1",
+  "wayland-protocols@1.45",
+]
+
+[[host_tools]]
+# Generates the client glue for the eleven protocol XMLs foot compiles
+# against (runtime degrades per-global when the compositor lacks one).
+name = "wayland-scanner"
+version_constraint = ">=1.20"
+probe = { args = ["--version"], version_regex = "wayland-scanner (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.wayland-scanner); or apt install wayland-utils" }
+
+[source]
+url = "https://codeberg.org/dnkl/foot/releases/download/1.17.2/foot-1.17.2.tar.gz"
+sha256 = "de901e5fba00aded452df989a968906309f14221ed606c78c1caff3026c7f541"
+
+[license]
+spdx = "MIT"
+url = "https://codeberg.org/dnkl/foot/src/tag/1.17.2/LICENSE"
+
+[build]
+script_path = "packages/registry/foot/build-foot.sh"
+
+[[outputs]]
+name = "foot"
+wasm = "foot.wasm"
