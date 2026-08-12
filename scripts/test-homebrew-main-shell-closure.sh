@@ -2625,6 +2625,7 @@ bootstrap_probe="$bootstrap_probe_root/run.sh"
   printf 'set -euo pipefail\n'
   printf 'REPO_ROOT=%q\n' "$bootstrap_probe_root"
   printf 'CI_BROWSER_SOURCE_AUTHORITY="${TEST_AUTHORITY:-}"\n'
+  printf 'ALREADY_MATERIALIZED="${TEST_ALREADY_MATERIALIZED:-0}"\n'
   printf 'FETCH_ONLY_ARGS=()\n'
   printf '[ "${TEST_FETCH_ONLY:-1}" = 0 ] || FETCH_ONLY_ARGS=(--fetch-only)\n'
   printf 'step() { :; }\n'
@@ -2656,6 +2657,24 @@ grep -Fxq "stage $bootstrap_probe_archive $bootstrap_probe_asset" \
   fail "canonical bootstrap preparation did not stage the resolver bytes"
 cmp "$bootstrap_probe_archive" "$bootstrap_probe_asset" ||
   fail "canonical bootstrap preparation changed the resolver-selected bytes"
+
+# A prepared CI workspace already carries bootstrap bytes that were validated
+# together with the lazy shell before packing. Re-resolving those bytes would
+# incorrectly require the pre-activation canonical index or the producer's
+# adjacent cache-provenance marker after relocation.
+: >"$bootstrap_probe_log"
+rm "$bootstrap_probe_asset"
+TEST_BOOTSTRAP_LOG="$bootstrap_probe_log" TEST_ALREADY_MATERIALIZED=1 \
+  bash "$bootstrap_probe"
+cat >"$bootstrap_probe_root/materialized-expected.log" <<EOF
+output homebrew-bootstrap homebrew-bootstrap.zip wasm32
+resolve programs/homebrew-bootstrap/homebrew-bootstrap.zip
+stage $bootstrap_probe_archive $bootstrap_probe_asset
+EOF
+cmp "$bootstrap_probe_root/materialized-expected.log" "$bootstrap_probe_log" ||
+  fail "materialized bootstrap preparation re-entered package resolution"
+cmp "$bootstrap_probe_archive" "$bootstrap_probe_asset" ||
+  fail "materialized bootstrap preparation changed transported bytes"
 
 : >"$bootstrap_probe_log"
 rm "$bootstrap_probe_asset"

@@ -2406,6 +2406,23 @@ prepare_browser_homebrew_bootstrap() {
         return 0
     fi
     step "Resolving the canonical Homebrew browser bootstrap"
+    local output_rel
+    output_rel="$(pkg_output_rel homebrew-bootstrap homebrew-bootstrap.zip wasm32)" ||
+        return 1
+    local resolved
+    if [ "$ALREADY_MATERIALIZED" -eq 1 ]; then
+        # WHY: prepared CI workspaces carry these exact bootstrap bytes after
+        # validating them together with the lazy shell. Re-entering package
+        # resolution here would require producer-local cache provenance or a
+        # canonical index entry that intentionally does not exist pre-merge.
+        resolved="$(
+            bash "$REPO_ROOT/scripts/resolve-binary.sh" "programs/$output_rel"
+        )" || return 1
+        bash "$REPO_ROOT/scripts/stage-homebrew-bootstrap-browser-asset.sh" \
+            "$resolved" \
+            "$REPO_ROOT/apps/browser-demos/public/homebrew-bootstrap.zip"
+        return
+    fi
     local xtask
     xtask="$(pkg_xtask_bin)" || return 1
     local resolve_args=(
@@ -2418,10 +2435,6 @@ prepare_browser_homebrew_bootstrap() {
     resolve_args+=(resolve homebrew-bootstrap)
     mkdir -p "$REPO_ROOT/local-binaries"
     (cd "$REPO_ROOT" && "$xtask" "${resolve_args[@]}" >/dev/null)
-    local output_rel
-    output_rel="$(pkg_output_rel homebrew-bootstrap homebrew-bootstrap.zip wasm32)" ||
-        return 1
-    local resolved
     resolved="$(bash "$REPO_ROOT/scripts/resolve-binary.sh" "programs/$output_rel")" ||
         return 1
     bash "$REPO_ROOT/scripts/stage-homebrew-bootstrap-browser-asset.sh" \
