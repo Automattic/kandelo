@@ -86,6 +86,7 @@ describe("homebrew-bootstrap package contract", () => {
       "scripts/package-build-roots.sh",
       "scripts/prepare-homebrew-bootstrap-source.sh",
       "scripts/verify-homebrew-bootstrap-source-lock.mjs",
+      "images/vfs/scripts/create-deterministic-zip.sh",
       "homebrew/homebrew-bootstrap-source-lock.json",
       "homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch",
       "homebrew/patches/README.md",
@@ -133,7 +134,9 @@ describe("homebrew-bootstrap package contract", () => {
       ["patched tree", (lock) => { lock.prepared.patched_tree_git_oid = "not-an-oid"; }],
       ["portable Ruby", (lock) => { lock.prepared.portable_ruby_version = "../ruby"; }],
       ["Git version", (lock) => { lock.prepared.git_version = "latest"; }],
-      ["output byte count", (lock) => { lock.output.bytes = 0; }],
+      ["Git archive", (lock) => { lock.prepared.git_archive_sha256 = "not-a-digest"; }],
+      ["archive format", (lock) => { lock.prepared.archive_format = "zip"; }],
+      ["output byte count", (lock) => { lock.outputs.archive.bytes = 0; }],
     ];
 
     for (const [label, mutate] of mutations) {
@@ -152,17 +155,21 @@ describe("homebrew-bootstrap package contract", () => {
   it("verifies checkout runtime identity, prepared provenance, output bytes, and caller inputs", () => {
     const root = temporaryRoot();
     const archive = Buffer.from("deterministic bootstrap fixture\n");
+    const environment = Buffer.from("deterministic environment fixture\n");
     const upstreamLicense = Buffer.from("BSD-2-Clause fixture\n");
     const patchLicenseEvidence = Buffer.from("GPL-2.0-or-later fixture\n");
     const lock = JSON.parse(readFileSync(lockPath, "utf8"));
-    lock.output.sha256 = sha256(archive);
-    lock.output.bytes = archive.byteLength;
+    lock.outputs.archive.sha256 = sha256(archive);
+    lock.outputs.archive.bytes = archive.byteLength;
+    lock.outputs.environment.sha256 = sha256(environment);
+    lock.outputs.environment.bytes = environment.byteLength;
     lock.license.upstream.sha256 = sha256(upstreamLicense);
     lock.license.upstream.bytes = upstreamLicense.byteLength;
     lock.license.kandelo_patch.evidence_sha256 = sha256(patchLicenseEvidence);
 
     const candidateLockPath = join(root, "lock.json");
     const archivePath = join(root, "homebrew-bootstrap.zip");
+    const environmentPath = join(root, "homebrew-brew.env");
     const provenancePath = join(root, "homebrew-source.json");
     const licenseEvidencePath = join(root, "patch-license.md");
     const checkout = join(root, "source");
@@ -176,6 +183,7 @@ describe("homebrew-bootstrap package contract", () => {
     writeFileSync(join(checkout, lock.license.upstream.path), upstreamLicense);
     writeFileSync(licenseEvidencePath, patchLicenseEvidence);
     writeFileSync(archivePath, archive);
+    writeFileSync(environmentPath, environment);
     writeJson(provenancePath, {
       schema: 1,
       homebrew_repository: lock.source.repository,
@@ -183,7 +191,7 @@ describe("homebrew-bootstrap package contract", () => {
       homebrew_patch_sha256: lock.patch.sha256,
       homebrew_patched_tree_git_oid: lock.prepared.patched_tree_git_oid,
       homebrew_patched_tree_sha256: lock.prepared.patched_tree_sha256,
-      homebrew_archive_sha256: lock.output.sha256,
+      homebrew_archive_sha256: lock.prepared.git_archive_sha256,
       homebrew_bottle_arch: lock.package.arch,
       homebrew_bottle_tag: `${lock.package.arch}_kandelo`,
     });
@@ -202,6 +210,7 @@ describe("homebrew-bootstrap package contract", () => {
       ["source-checkout", checkout],
       ["provenance", provenancePath],
       ["archive", archivePath],
+      ["environment", environmentPath],
     ]);
     expect(() => verifyHomebrewBootstrapSourceLock(validated, options)).not.toThrow();
 

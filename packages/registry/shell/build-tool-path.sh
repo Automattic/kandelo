@@ -51,7 +51,7 @@ kandelo_shell_activate_build_tool_path() {
     # WHY: package.toml validates versions, while this check validates source.
     # Both are required: a compatible runner binary is still undeclared build
     # state when the canonical recipe is running through Nix.
-    for tool in git node npm tar; do
+    for tool in git node npm tar wc; do
         resolved="$(type -P "$tool" || true)"
         case "$resolved" in
             "$nix_store"/*/bin/"$tool") ;;

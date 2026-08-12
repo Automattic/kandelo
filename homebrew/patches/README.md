@@ -1,7 +1,7 @@
 # Homebrew patch licensing
 
 Homebrew's source tree is distributed under the
-[BSD 2-Clause License](https://github.com/Homebrew/brew/blob/d6c1be418446eec7de09fc72441ba4462282a142/LICENSE.txt).
+[BSD 2-Clause License](https://github.com/Homebrew/brew/blob/cf5bc21c6b127e168ef7cfa982ba7db62874690e/LICENSE.txt).
 
 `0001-add-kandelo-wasm-bottle-tags.patch` was authored in the Kandelo
 repository by Brandon Payton across commits `1ab41fe2a`, `6efb411f1`, and

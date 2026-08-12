@@ -51,7 +51,7 @@ export function loadHomebrewBootstrapSourceLock(path) {
   const lock = JSON.parse(readFileSync(path, "utf8"));
   exactKeys(
     lock,
-    ["schema", "kind", "package", "source", "patch", "license", "prepared", "output"],
+    ["schema", "kind", "package", "source", "patch", "license", "prepared", "outputs"],
     "lock",
   );
   if (lock.schema !== 1) fail(`unsupported schema ${lock.schema}`);
@@ -127,6 +127,8 @@ export function loadHomebrewBootstrapSourceLock(path) {
       "patched_tree_sha256",
       "portable_ruby_version",
       "git_version",
+      "git_archive_sha256",
+      "archive_format",
     ],
     "prepared",
   );
@@ -138,17 +140,28 @@ export function loadHomebrewBootstrapSourceLock(path) {
     "prepared.portable_ruby_version",
   );
   stringField(lock.prepared.git_version, TOOL_VERSION, "prepared.git_version");
-
-  exactKeys(
-    lock.output,
-    ["path", "sha256", "bytes"],
-    "output",
+  stringField(
+    lock.prepared.git_archive_sha256,
+    SHA256,
+    "prepared.git_archive_sha256",
   );
-  if (lock.output.path !== "homebrew-bootstrap.zip") {
-    fail("output.path must be homebrew-bootstrap.zip");
+  if (lock.prepared.archive_format !== "kandelo-deterministic-zip-v1") {
+    fail("prepared.archive_format is unsupported");
   }
-  stringField(lock.output.sha256, SHA256, "output.sha256");
-  positiveSafeInteger(lock.output.bytes, "output.bytes");
+
+  exactKeys(lock.outputs, ["archive", "environment"], "outputs");
+  for (const [name, expectedPath] of [
+    ["archive", "homebrew-bootstrap.zip"],
+    ["environment", "homebrew-brew.env"],
+  ]) {
+    const output = lock.outputs[name];
+    exactKeys(output, ["path", "sha256", "bytes"], `outputs.${name}`);
+    if (output.path !== expectedPath) {
+      fail(`outputs.${name}.path must be ${expectedPath}`);
+    }
+    stringField(output.sha256, SHA256, `outputs.${name}.sha256`);
+    positiveSafeInteger(output.bytes, `outputs.${name}.bytes`);
+  }
 
   return lock;
 }
@@ -224,7 +237,7 @@ function verifyProvenance(lock, provenancePath) {
     homebrew_patch_sha256: lock.patch.sha256,
     homebrew_patched_tree_git_oid: lock.prepared.patched_tree_git_oid,
     homebrew_patched_tree_sha256: lock.prepared.patched_tree_sha256,
-    homebrew_archive_sha256: lock.output.sha256,
+    homebrew_archive_sha256: lock.prepared.git_archive_sha256,
     homebrew_bottle_arch: lock.package.arch,
     homebrew_bottle_tag: `${lock.package.arch}_kandelo`,
   };
@@ -237,12 +250,31 @@ function verifyProvenance(lock, provenancePath) {
 
 function verifyArchive(lock, archivePath) {
   const stat = regularFile(archivePath, "output archive");
-  if (stat.size !== lock.output.bytes) {
-    fail(`output archive has ${stat.size} bytes, expected ${lock.output.bytes}`);
+  if (stat.size !== lock.outputs.archive.bytes) {
+    fail(`output archive has ${stat.size} bytes, expected ${lock.outputs.archive.bytes}`);
   }
   const sha256 = createHash("sha256").update(readFileSync(archivePath)).digest("hex");
-  if (sha256 !== lock.output.sha256) {
-    fail(`output archive SHA-256 ${sha256} does not match ${lock.output.sha256}`);
+  if (sha256 !== lock.outputs.archive.sha256) {
+    fail(`output archive SHA-256 ${sha256} does not match ${lock.outputs.archive.sha256}`);
+  }
+}
+
+function verifyEnvironment(lock, environmentPath) {
+  const stat = regularFile(environmentPath, "environment policy");
+  if (stat.size !== lock.outputs.environment.bytes) {
+    fail(
+      `environment policy has ${stat.size} bytes, ` +
+        `expected ${lock.outputs.environment.bytes}`,
+    );
+  }
+  const sha256 = createHash("sha256")
+    .update(readFileSync(environmentPath))
+    .digest("hex");
+  if (sha256 !== lock.outputs.environment.sha256) {
+    fail(
+      `environment policy SHA-256 ${sha256} does not match ` +
+        lock.outputs.environment.sha256,
+    );
   }
 }
 
@@ -268,6 +300,9 @@ export function verifyHomebrewBootstrapSourceLock(lock, options = new Map()) {
   if (options.has("archive")) {
     verifyArchive(lock, options.get("archive"));
   }
+  if (options.has("environment")) {
+    verifyEnvironment(lock, options.get("environment"));
+  }
 }
 
 const FIELDS = new Map([
@@ -278,6 +313,8 @@ const FIELDS = new Map([
   ["source.revision", (lock) => lock.source.revision],
   ["patch.path", (lock) => lock.patch.path],
   ["patch.sha256", (lock) => lock.patch.sha256],
+  ["outputs.archive.path", (lock) => lock.outputs.archive.path],
+  ["outputs.environment.path", (lock) => lock.outputs.environment.path],
   [
     "license.kandelo_patch.evidence_path",
     (lock) => lock.license.kandelo_patch.evidence_path,
@@ -307,6 +344,7 @@ function main(argv) {
     "source-checkout",
     "provenance",
     "archive",
+    "environment",
   ]);
   const options = new Map();
   for (let index = 0; index < argv.length; index += 2) {

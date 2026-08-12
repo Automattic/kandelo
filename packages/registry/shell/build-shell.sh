@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Canonical package-system build for today's browser shell. This recipe builds
-# a platform-only base, then materializes the exact admitted flat Homebrew
-# selection into one self-contained VFS image.
+# a platform-only base, embeds the selected Bash closure, and retains the
+# remaining admitted Homebrew trees behind a sealed lazy mirror plan.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -13,6 +13,7 @@ source "$SCRIPT_DIR/build-tool-path.sh"
 kandelo_shell_activate_build_tool_path
 
 OUT_DIR="${WASM_POSIX_DEP_OUT_DIR:-}"
+BOOTSTRAP="${WASM_POSIX_DEP_HOMEBREW_BOOTSTRAP_DIR:-}"
 
 if [ -z "$OUT_DIR" ]; then
     echo "ERROR: shell is a resolver-owned package build; WASM_POSIX_DEP_OUT_DIR is required" >&2
@@ -22,6 +23,23 @@ if [ "${WASM_POSIX_DEP_TARGET_ARCH:-}" != "wasm32" ]; then
     echo "ERROR: shell Homebrew closure currently supports only wasm32" >&2
     exit 2
 fi
+if [ -z "$BOOTSTRAP" ] || [ ! -d "$BOOTSTRAP" ] || [ -L "$BOOTSTRAP" ]; then
+    echo "ERROR: shell requires WASM_POSIX_DEP_HOMEBREW_BOOTSTRAP_DIR" >&2
+    exit 2
+fi
+shopt -s nullglob dotglob
+bootstrap_outputs=("$BOOTSTRAP"/*)
+shopt -u nullglob dotglob
+if [ "${#bootstrap_outputs[@]}" -ne 2 ]; then
+    echo "ERROR: selected homebrew-bootstrap dependency must contain exactly two outputs" >&2
+    exit 2
+fi
+for output in homebrew-bootstrap.zip homebrew-brew.env; do
+    if [ ! -f "$BOOTSTRAP/$output" ] || [ -L "$BOOTSTRAP/$output" ]; then
+        echo "ERROR: selected homebrew-bootstrap output must be a regular non-symlink file: $output" >&2
+        exit 2
+    fi
+done
 
 # Public npm inputs, bottles, and the public tap are package inputs, never
 # credentialed ambient state. NODE_OPTIONS and NODE_PATH are also excluded:
@@ -46,6 +64,7 @@ VFS="$BUILD_DIR/shell.vfs.zst"
 PLATFORM_BASE="$BUILD_DIR/platform-base.vfs.zst"
 REPORT="$BUILD_DIR/main-shell-report.json"
 BOTTLE_CACHE="$BUILD_DIR/bottle-cache"
+MIRROR_OUT="$BUILD_DIR/mirror"
 if [ -e "$BUILD_DIR" ] || [ -L "$BUILD_DIR" ]; then
     echo "ERROR: resolver-owned shell workspace already exists: $BUILD_DIR" >&2
     exit 1
@@ -97,14 +116,30 @@ node "$SOURCE_ROOT/tools/mkrootfs/bin/mkrootfs.mjs" build \
 
 mkdir -m 700 "$BOTTLE_CACHE"
 "$SOURCE_ROOT/node_modules/.bin/tsx" \
-    "$SOURCE_ROOT/images/vfs/scripts/build-homebrew-flat-vfs-image.ts" \
+    "$SOURCE_ROOT/images/vfs/scripts/build-homebrew-flat-lazy-vfs-image.ts" \
     --selection "$SOURCE_ROOT/homebrew/main-shell-flat-selection.json" \
+    --materialization-policy \
+        "$SOURCE_ROOT/homebrew/main-shell-materialization-policy.json" \
+    --runtime-support-policy \
+        "$SOURCE_ROOT/homebrew/main-shell-runtime-support-policy.json" \
     --base-image "$PLATFORM_BASE" \
+    --bootstrap-zip "$BOOTSTRAP/homebrew-bootstrap.zip" \
+    --bootstrap-env "$BOOTSTRAP/homebrew-brew.env" \
     --bottle-cache "$BOTTLE_CACHE" \
+    --mirror-repository "kandelo-dev/homebrew-tap-core" \
+    --mirror-out "$MIRROR_OUT" \
     --shell-config "$SOURCE_ROOT/homebrew/main-shell-default.json" \
     --demo-config "$SOURCE_ROOT/homebrew/main-shell-flat-demo.json" \
     --out "$VFS" --report "$REPORT"
 
 [ -f "$VFS" ] || { echo "ERROR: $VFS not produced by builder" >&2; exit 1; }
 [ -f "$REPORT" ] || { echo "ERROR: $REPORT not produced by builder" >&2; exit 1; }
+if [ ! -d "$MIRROR_OUT" ] || [ -L "$MIRROR_OUT" ]; then
+    echo "ERROR: sealed lazy mirror handoff not produced by builder" >&2
+    exit 1
+fi
+if [ "$(wc -c < "$VFS")" -ge 10485760 ]; then
+    echo "ERROR: canonical lazy shell must be smaller than 10 MiB" >&2
+    exit 1
+fi
 cp "$VFS" "$OUT_DIR/shell.vfs.zst"
