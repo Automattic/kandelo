@@ -97,16 +97,16 @@ export class BrowserCorsProxy {
     let hasAnonymousOmissionExcludedName = false;
 
     for (const [name, value] of input.headers) {
+      const lowerName = asciiLowercase(name);
+      if (ANONYMOUS_OMISSION_EXCLUDED_NAMES.has(lowerName)) {
+        hasAnonymousOmissionExcludedName = true;
+      }
       if (this.isAllowed(name)) {
         headers.append(name, value);
         continue;
       }
 
-      const lowerName = asciiLowercase(name);
       unsupportedNames.push(lowerName);
-      if (ANONYMOUS_OMISSION_EXCLUDED_NAMES.has(lowerName)) {
-        hasAnonymousOmissionExcludedName = true;
-      }
     }
 
     if (unsupportedNames.length === 0) return headers;

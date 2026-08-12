@@ -221,6 +221,24 @@ describe("BrowserCorsProxy", () => {
     },
   );
 
+  it("does not anonymously omit another unsupported header when an allowed credential header is present", () => {
+    expect(() => proxy({
+      url: PROXY_URL,
+      allowedRequestHeaderNames: ["authorization"],
+      allowAnonymousGetHeaderOmission: true,
+    }).project({
+      method: "GET",
+      headers: [
+        ["Authorization", "Bearer opaque"],
+        ["X-Unsupported", "value"],
+      ],
+      bodyPresent: false,
+      targetUrl: TARGET_URL,
+    })).toThrow(new BrowserCorsProxyRequestError(
+      `Browser CORS proxy ${PROXY_URL} cannot relay GET request to ${TARGET_ORIGIN} with unsupported request headers: x-unsupported`,
+    ));
+  });
+
   it.each([
     ["GET", true],
     ["POST", false],
