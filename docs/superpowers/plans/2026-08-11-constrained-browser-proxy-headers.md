@@ -382,6 +382,7 @@ marking either task complete.
 - Modify: `host/src/browser-kernel-protocol.ts`
 - Modify: `host/src/browser-kernel-worker-entry.ts`
 - Modify: `host/src/vfs/browser-lazy-fetcher.ts`
+- Modify: `packages/registry/program-packages.json`
 - Modify: `homebrew/test/homebrew_guest_lifecycle_browser.ts`
 - Modify: `apps/browser-demos/lib/browser-cors-proxy.ts`
 - Modify: `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`
@@ -460,6 +461,13 @@ scripts/dev-shell.sh bash -c 'cd apps/browser-demos && \
   headers, add policy parsing, or alter digest, size, caching, abort, and CORS
   behavior.
 
+- [ ] Because `host/src/vfs` is a declared build input of shell and derived
+  VFS packages, first prove `program-index-context-check` rejects the stale
+  committed projection, then regenerate
+  `packages/registry/program-packages.json` with the canonical xtask command.
+  Accept the resulting contextual cache-key propagation; do not narrow
+  declared package inputs merely to avoid truthful invalidation.
+
 - [ ] Update the shared Homebrew browser lifecycle adapter to accept and pass
   the same complete configuration to `BrowserKernel`. Its direct fixture and
   source downloads remain headerless, so URL wrapping uses `corsProxy.url`
@@ -487,6 +495,9 @@ scripts/dev-shell.sh npm --prefix host test -- --run \
   test/fetch-backend.test.ts
 scripts/dev-shell.sh npm --prefix host run typecheck
 scripts/dev-shell.sh npm --prefix apps/browser-demos run build
+scripts/dev-shell.sh bash -c 'host_target=$(rustc -vV | awk '\''/^host:/ { print $2 }'\''); \
+  target/$host_target/release/xtask build-deps \
+  program-index-context-check --source-repo-root "$PWD"'
 scripts/dev-shell.sh bash -c 'cd apps/browser-demos && \
   npx playwright test test/kandelo-merge-gate.spec.ts \
   --project=chromium'
@@ -495,6 +506,7 @@ if rg -n "corsProxyUrl" \
   host/src/browser-kernel-protocol.ts \
   host/src/browser-kernel-worker-entry.ts \
   host/src/vfs/browser-lazy-fetcher.ts \
+  packages/registry/program-packages.json \
   homebrew/test/homebrew_guest_lifecycle_browser.ts \
   apps/browser-demos/lib apps/browser-demos/pages; then
   exit 1
@@ -509,6 +521,7 @@ git add host/src/browser-kernel-host.ts \
   host/src/browser-kernel-protocol.ts \
   host/src/browser-kernel-worker-entry.ts \
   host/src/vfs/browser-lazy-fetcher.ts \
+  packages/registry/program-packages.json \
   homebrew/test/homebrew_guest_lifecycle_browser.ts \
   apps/browser-demos/lib/browser-cors-proxy.ts \
   apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts \
