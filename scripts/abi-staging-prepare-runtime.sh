@@ -132,17 +132,40 @@ RUNTIME_ROOT="$OUT/runtime"
 mkdir "$RUNTIME_ROOT"
 CANDIDATE_ENV_ROOT="$OUT/.candidate-environment"
 CANDIDATE_HOME="$CANDIDATE_ENV_ROOT/home"
-CANDIDATE_TMP="$CANDIDATE_ENV_ROOT/tmp"
-mkdir -p "$CANDIDATE_HOME" "$CANDIDATE_TMP"
-chmod 0700 "$CANDIDATE_ENV_ROOT" "$CANDIDATE_HOME" "$CANDIDATE_TMP"
+CANDIDATE_TMP=""
 
 cleanup_candidate_environment() {
   if [ -n "${CANDIDATE_ENV_ROOT:-}" ] && \
      [ "$CANDIDATE_ENV_ROOT" = "$OUT/.candidate-environment" ]; then
     rm -rf -- "$CANDIDATE_ENV_ROOT"
   fi
+  case "${CANDIDATE_TMP:-}" in
+    /tmp/kandelo-abi-runtime.*|/private/tmp/kandelo-abi-runtime.*)
+      rm -rf -- "$CANDIDATE_TMP"
+      ;;
+  esac
 }
 trap cleanup_candidate_environment EXIT
+
+# WHY: Nix and tsx append Unix-domain socket components to TMPDIR. Linux caps
+# that complete path at 108 bytes, so an artifact-root-relative directory can
+# fail before any candidate build runs. Keep only transient IPC state in one
+# private, bounded path; HOME and every durable artifact remain under OUT.
+CANDIDATE_TMP="$(mktemp -d /tmp/kandelo-abi-runtime.XXXXXX)"
+CANDIDATE_TMP="$(cd "$CANDIDATE_TMP" && pwd -P)"
+case "$CANDIDATE_TMP" in
+  /tmp/kandelo-abi-runtime.*|/private/tmp/kandelo-abi-runtime.*) ;;
+  *)
+    echo "abi-staging-prepare-runtime.sh: temporary directory is outside the bounded private namespace" >&2
+    exit 1
+    ;;
+esac
+if [ "${#CANDIDATE_TMP}" -gt 63 ]; then
+  echo "abi-staging-prepare-runtime.sh: temporary directory is too long for runtime IPC" >&2
+  exit 1
+fi
+mkdir -p "$CANDIDATE_HOME"
+chmod 0700 "$CANDIDATE_ENV_ROOT" "$CANDIDATE_HOME" "$CANDIDATE_TMP"
 
 TESTING="${KANDELO_ABI_STAGING_TESTING:-0}"
 TEST_BUILDER="${KANDELO_ABI_STAGING_RUNTIME_BUILDER:-}"
