@@ -492,7 +492,7 @@ describe("declared shell lazy-archive inputs", () => {
     }
   });
 
-  it("maps the retired lazy bundles to exact bottle-owned shell inputs", () => {
+  it("maps the lazy shell to exact bottle-owned inputs", () => {
     const packageToml = readFileSync(
       join(repoRoot, "packages/registry/shell/package.toml"),
       "utf8",
@@ -528,9 +528,11 @@ describe("declared shell lazy-archive inputs", () => {
       }>;
     };
 
-    // The canonical shell no longer resolves any registry package. Bottle
-    // selection owns both its Formula closure and lazy Homebrew source tree.
-    expect(packageToml.match(/^depends_on\s*=\s*(.+)$/m)?.[1]).toBe("[]");
+    // Bottle selection owns the Formula closure. The one registry dependency
+    // supplies the exact bootstrap bytes selected by that bottle plan.
+    expect(packageToml.match(/^depends_on\s*=\s*(.+)$/m)?.[1]).toBe(
+      '["homebrew-bootstrap@6.0.12-153-gcf5bc21"]',
+    );
     expect(packageToml).not.toContain("vim-browser-bundle@");
     expect(packageToml).not.toContain("nethack-browser-bundle@");
     for (const input of [
@@ -626,13 +628,17 @@ describe("declared shell lazy-archive inputs", () => {
     }
 
     // The package build consumes the authenticated public selection instead
-    // of an ambient tap checkout and materializes every selected bottle into
-    // the self-contained product through the shared flat-image builder.
+    // of an ambient tap checkout, embeds the selected Bash closure, and keeps
+    // the remaining bottle trees behind the sealed lazy mirror plan.
     expect(buildScript).toContain("prepare-build-tools.sh");
-    expect(buildScript).toContain("build-homebrew-flat-vfs-image.ts");
+    expect(buildScript).toContain("build-homebrew-flat-lazy-vfs-image.ts");
     expect(buildScript).toContain("--selection");
     expect(buildScript).toContain("main-shell-flat-selection.json");
+    expect(buildScript).toContain("--materialization-policy");
+    expect(buildScript).toContain("--runtime-support-policy");
+    expect(buildScript).toContain("--bootstrap-zip");
     expect(buildScript).toContain("--bottle-cache");
+    expect(buildScript).toContain("--mirror-out");
     expect(buildScript).toContain("main-shell-flat-demo.json");
     expect(buildScript).not.toContain("WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE");
     expect(buildScript).toContain("unset GH_TOKEN GITHUB_TOKEN");

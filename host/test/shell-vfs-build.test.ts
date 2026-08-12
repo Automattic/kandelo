@@ -500,7 +500,7 @@ describe("shell VFS base composition", () => {
       lamp: 13,
       "nginx-php-vfs": 4,
       "nginx-vfs": 4,
-      "node-vfs": 16,
+      "node-vfs": 17,
       wordpress: 14,
     });
   });
