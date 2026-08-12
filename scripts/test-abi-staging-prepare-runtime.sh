@@ -57,6 +57,16 @@ done
 [ -z "${SUPER_SECRET:-}" ] || exit 91
 if [ -n "${FAKE_RUNTIME_HOME_MARKER:-}" ]; then
   printf '%s\n' "$HOME" >"$FAKE_RUNTIME_HOME_MARKER"
+  python3 - "${FAKE_RUNTIME_HOME_MARKER}.tmp" <<'PY'
+from pathlib import Path
+import os
+import stat
+import sys
+
+temporary = Path(os.environ["TMPDIR"])
+mode = stat.S_IMODE(os.lstat(temporary).st_mode)
+Path(sys.argv[1]).write_text(f"{temporary}\n{mode:o}\n")
+PY
 fi
 mkdir -p \
   "$artifact_root/host/dist" \
@@ -203,6 +213,21 @@ case "$(cat "$TMP_ROOT/candidate-home")" in
   "$PRIVATE_ENV_OUT_REAL"/.candidate-environment/home) ;;
   *) fail "candidate runtime did not receive its private HOME" ;;
 esac
+candidate_tmp=$(sed -n '1p' "$TMP_ROOT/candidate-home.tmp")
+[ "$(sed -n '2p' "$TMP_ROOT/candidate-home.tmp")" = 700 ] ||
+  fail "candidate runtime temporary directory was not private"
+case "$candidate_tmp" in
+  /tmp/kandelo-abi-runtime.*|/private/tmp/kandelo-abi-runtime.*) ;;
+  *) fail "candidate runtime did not receive a bounded short temporary path" ;;
+esac
+# Linux limits Unix-domain socket paths to 108 bytes. Nix and tsx append this
+# representative suffix before opening the IPC listener used by the runtime
+# builder, so retain one byte for the terminating NUL.
+tsx_socket_suffix='/nix-shell.XXXXXX/tsx-1001/12345.pipe'
+[ "$(( ${#candidate_tmp} + ${#tsx_socket_suffix} ))" -lt 108 ] ||
+  fail "candidate runtime temporary path cannot host the tsx IPC socket"
+[ ! -e "$candidate_tmp" ] ||
+  fail "candidate runtime temporary directory survived preparation"
 
 printf 'ambient\n' >"$SOURCE/ambient-untracked-input"
 if FAKE_RUNTIME_STARTED_MARKER="$TMP_ROOT/untracked.started" \
@@ -277,12 +302,17 @@ fi
 grep -F 'exact source' "$TMP_ROOT/wrong-head.out" >/dev/null ||
   fail "wrong-head rejection was not explicit"
 
-if FAKE_RUNTIME_SYMLINK=1 run_preparer "$TMP_ROOT/symlink" \
+if FAKE_RUNTIME_SYMLINK=1 \
+    FAKE_RUNTIME_HOME_MARKER="$TMP_ROOT/symlink-home" \
+    run_preparer "$TMP_ROOT/symlink" \
     >"$TMP_ROOT/symlink.out" 2>&1; then
   fail "runtime preparation accepted a symlinked artifact"
 fi
 grep -F 'symbolic link' "$TMP_ROOT/symlink.out" >/dev/null ||
   fail "symlink rejection was not explicit"
+symlink_tmp=$(sed -n '1p' "$TMP_ROOT/symlink-home.tmp")
+[ ! -e "$symlink_tmp" ] ||
+  fail "candidate runtime temporary directory survived failed preparation"
 
 if FAKE_RUNTIME_EMPTY_DIRECTORY=1 run_preparer "$TMP_ROOT/empty-directory" \
     >"$TMP_ROOT/empty-directory.out" 2>&1; then

@@ -193,8 +193,11 @@ jobs:
           env -u GH_TOKEN -u GITHUB_TOKEN git -C exact-head diff --name-only -z \
             "$PROTECTED_SHA" "$EXPECTED_HEAD" >"$output/changed-paths.bin"
 
-          host_target=$(cd authority && bash scripts/dev-shell.sh \
-            bash -c 'rustc -vV | awk "/^host/ {print \$2}"')
+          host_target_file=$(mktemp "$RUNNER_TEMP/abi-staging-host-target.XXXXXX")
+          (cd authority && bash scripts/dev-shell.sh \
+            bash scripts/write-dev-shell-host-target.sh --out "$host_target_file")
+          host_target=$(<"$host_target_file")
+          rm -f "$host_target_file"
           (cd authority && bash scripts/dev-shell.sh \
             cargo build -p xtask --target "$host_target")
           authority_xtask="$GITHUB_WORKSPACE/authority/target/$host_target/debug/xtask"
@@ -375,8 +378,11 @@ jobs:
           ((input_bytes >= 1 && input_bytes <= 67108864))
           ((projection_bytes >= 1 && projection_bytes <= 16777216))
 
-          host_target=$(cd authority && bash scripts/dev-shell.sh \
-            bash -c 'rustc -vV | awk "/^host/ {print \$2}"')
+          host_target_file=$(mktemp "$RUNNER_TEMP/abi-staging-host-target.XXXXXX")
+          (cd authority && bash scripts/dev-shell.sh \
+            bash scripts/write-dev-shell-host-target.sh --out "$host_target_file")
+          host_target=$(<"$host_target_file")
+          rm -f "$host_target_file"
           (cd authority && bash scripts/dev-shell.sh \
             cargo build -p xtask --target "$host_target")
           authority_xtask="$GITHUB_WORKSPACE/authority/target/$host_target/debug/xtask"

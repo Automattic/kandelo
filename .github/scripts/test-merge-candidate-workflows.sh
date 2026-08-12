@@ -7,6 +7,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 WORKFLOWS_DIR="$REPO_ROOT/.github/workflows"
 PREPARE="$REPO_ROOT/.github/workflows/prepare-merge.yml"
 ABI_STAGING_MERGE_GATE="$REPO_ROOT/.github/workflows/abi-staging-merge-gate.yml"
+ABI_STAGING_PR_CHECK="$REPO_ROOT/.github/workflows/abi-staging-pr-check.yml"
+ABI_STAGING_REQUEST_FEED="$REPO_ROOT/.github/workflows/abi-staging-request-feed.yml"
+ABI_STAGING_PAGES_CANARY="$REPO_ROOT/.github/workflows/abi-staging-pages-canary.yml"
 ACTIVATE_WORKFLOW="$REPO_ROOT/.github/workflows/activate-merge-candidate.yml"
 PAGES_WORKFLOW="$REPO_ROOT/.github/workflows/browser-demos-pages.yml"
 REJECTED_RECOVERY_WORKFLOW="$REPO_ROOT/.github/workflows/recover-rejected-merge-candidate.yml"
@@ -34,6 +37,25 @@ fail() {
   echo "merge-candidate workflow contract: $*" >&2
   exit 1
 }
+
+for protected_workflow in \
+  "$ABI_STAGING_PR_CHECK" \
+  "$ABI_STAGING_REQUEST_FEED" \
+  "$ABI_STAGING_MERGE_GATE" \
+  "$ABI_STAGING_PAGES_CANARY"
+do
+  writer_count="$(grep -Fc \
+    'bash scripts/write-dev-shell-host-target.sh' \
+    "$protected_workflow" || true)"
+  [ "$writer_count" -eq 2 ] ||
+    fail "$(basename "$protected_workflow") must write both host targets through the protected file boundary"
+  if perl -0ne '
+      exit(/host_target=\$\(.{0,200}scripts\/dev-shell\.sh.{0,200}rustc -vV/s ? 0 : 1)
+    ' "$protected_workflow"
+  then
+    fail "$(basename "$protected_workflow") captures noisy dev-shell stdout as machine data"
+  fi
+done
 
 job_block() {
   local workflow="$1"
