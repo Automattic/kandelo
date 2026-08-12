@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import {
   constants,
   copyFileSync,
@@ -25,6 +26,9 @@ function usage() {
     "  --stage-resolver-binaries <path>",
     "                     copy exact direct-dependency outputs into this new",
     "                     artifact tree, then resolve outputs only from it",
+    "  --resolved-output-map <path>",
+    "                     consume exact embedded paths or lazy references",
+    "                     without consulting an artifact tree",
     "  --default-install <lazy|eager>",
     "                     override the configured default for outputs without",
     "                     an explicit package or output install mode",
@@ -38,6 +42,7 @@ function parseArgs(argv) {
   let packages = "images/rootfs/PACKAGES.toml";
   let binariesDir;
   let stageResolverBinaries;
+  let resolvedOutputMap;
   let defaultInstall;
   let out;
   for (let i = 0; i < argv.length; i++) {
@@ -65,6 +70,13 @@ function parseArgs(argv) {
       }
       continue;
     }
+    if (arg === "--resolved-output-map") {
+      resolvedOutputMap = argv[++i];
+      if (!resolvedOutputMap) {
+        throw new Error("--resolved-output-map requires a value");
+      }
+      continue;
+    }
     if (arg === "--default-install") {
       defaultInstall = argv[++i];
       if (!defaultInstall) {
@@ -80,12 +92,19 @@ function parseArgs(argv) {
     throw new Error(`unknown argument: ${arg}`);
   }
   if (!out) throw new Error("--out is required");
-  if (binariesDir && stageResolverBinaries) {
+  if ([binariesDir, stageResolverBinaries, resolvedOutputMap].filter(Boolean).length > 1) {
     throw new Error(
-      "--binaries-dir and --stage-resolver-binaries are mutually exclusive",
+      "--binaries-dir, --stage-resolver-binaries, and --resolved-output-map are mutually exclusive",
     );
   }
-  return { packages, binariesDir, stageResolverBinaries, defaultInstall, out };
+  return {
+    packages,
+    binariesDir,
+    stageResolverBinaries,
+    resolvedOutputMap,
+    defaultInstall,
+    out,
+  };
 }
 
 function stripComment(line) {
@@ -398,7 +417,163 @@ function manifestToken(value, context) {
   return value;
 }
 
-function generateManifest(config, binariesDir, defaultInstall) {
+function outputSelector(output, context) {
+  const explicit = output.output;
+  if (explicit !== undefined) return stableId(explicit, `${context}: output`);
+  const binary = requireBinaryPath(output, context);
+  const name = binary.split("/").at(-1);
+  const dot = name.lastIndexOf(".");
+  return stableId(dot > 0 ? name.slice(0, dot) : name, `${context}: derived output`);
+}
+
+function resolvedPackageInputId(packageName, selector) {
+  const parts = [packageName, "output", selector];
+  const stem = ["package", ...parts].join("-");
+  if (Buffer.byteLength(stem) <= 128) return stem;
+  const identity = canonicalJson({ kind: "package-output", parts });
+  const suffix = createHash("sha256").update(identity).digest("hex").slice(0, 16);
+  const prefix = stem.slice(0, 128 - suffix.length - 1).replace(/[-._]+$/, "");
+  return `${prefix}-${suffix}`;
+}
+
+function readResolvedOutputMap(path) {
+  const absolute = resolve(path);
+  if (!isAbsolute(path) || absolute !== path) {
+    throw new Error("resolved output map must be a normalized absolute path");
+  }
+  const metadata = lstatSync(absolute);
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new Error("resolved output map must be a regular nonsymlink file");
+  }
+  if (metadata.size > 4 * 1024 * 1024) {
+    throw new Error("resolved output map exceeds 4 MiB");
+  }
+  const text = readFileSync(absolute, "utf8");
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`resolved output map is invalid JSON: ${error.message}`);
+  }
+  if (canonicalJson(parsed) !== text) {
+    throw new Error("resolved output map is not canonical JSON");
+  }
+  exactKeys(parsed, ["kind", "outputs", "schema"], "resolved output map");
+  if (
+    parsed.schema !== 1 ||
+    parsed.kind !== "kandelo-rootfs-resolved-package-outputs" ||
+    !Array.isArray(parsed.outputs) ||
+    parsed.outputs.length > 4096
+  ) {
+    throw new Error("resolved output map protocol is unsupported");
+  }
+  const result = new Map();
+  let previous = "";
+  for (const [index, raw] of parsed.outputs.entries()) {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error(`resolved package output ${index} must be an object`);
+    }
+    const materialization = raw.materialization;
+    const expectedKeys = materialization === "embedded"
+      ? ["bytes", "id", "materialization", "path", "sha256"]
+      : materialization === "lazy-reference"
+      ? ["bytes", "id", "materialization", "reference", "sha256"]
+      : [];
+    if (expectedKeys.length === 0) {
+      throw new Error(`resolved package output ${index} has unsupported materialization`);
+    }
+    exactKeys(raw, expectedKeys, `resolved package output ${index}`);
+    const id = stableId(raw.id, `resolved package output ${index} id`);
+    if (id <= previous || result.has(id)) {
+      throw new Error("resolved package outputs must be sorted by unique ID");
+    }
+    previous = id;
+    const sha256 = lowercaseSha256(raw.sha256, `resolved package output ${id}`);
+    if (!Number.isSafeInteger(raw.bytes) || raw.bytes <= 0) {
+      throw new Error(`resolved package output ${id} bytes must be a positive safe integer`);
+    }
+    if (materialization === "lazy-reference") {
+      if (
+        typeof raw.reference !== "string" ||
+        !raw.reference.startsWith("https://") ||
+        /\s/.test(raw.reference) ||
+        (!raw.reference.includes(`sha256:${sha256}`) &&
+          !raw.reference.includes(`sha256=${sha256}`))
+      ) {
+        throw new Error(`resolved package output ${id} lazy reference is not immutable HTTPS`);
+      }
+    } else {
+      if (
+        typeof raw.path !== "string" ||
+        !isAbsolute(raw.path) ||
+        resolve(raw.path) !== raw.path ||
+        /\s/.test(raw.path)
+      ) {
+        throw new Error(`resolved package output ${id} embedded path is not usable`);
+      }
+      const inputMetadata = lstatSync(raw.path);
+      if (!inputMetadata.isFile() || inputMetadata.isSymbolicLink()) {
+        throw new Error(`resolved package output ${id} is not a regular nonsymlink file`);
+      }
+      const contents = readFileSync(raw.path);
+      if (
+        contents.byteLength !== raw.bytes ||
+        createHash("sha256").update(contents).digest("hex") !== sha256
+      ) {
+        throw new Error(`resolved package output ${id} bytes do not match identity`);
+      }
+    }
+    result.set(id, Object.freeze({ ...raw }));
+  }
+  return result;
+}
+
+function exactKeys(value, expected, context) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${context} must be an object`);
+  }
+  const actual = Object.keys(value).sort();
+  const sortedExpected = [...expected].sort();
+  if (
+    actual.length !== sortedExpected.length ||
+    actual.some((key, index) => key !== sortedExpected[index])
+  ) {
+    throw new Error(`${context} has unknown or missing fields`);
+  }
+}
+
+function stableId(value, context) {
+  if (
+    typeof value !== "string" ||
+    !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(value)
+  ) {
+    throw new Error(`${context} is not a stable identifier`);
+  }
+  return value;
+}
+
+function lowercaseSha256(value, context) {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) {
+    throw new Error(`${context} SHA-256 is invalid`);
+  }
+  return value;
+}
+
+function canonicalJson(value) {
+  return `${JSON.stringify(sortJson(value))}\n`;
+}
+
+function sortJson(value) {
+  if (Array.isArray(value)) return value.map(sortJson);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([key, child]) => [key, sortJson(child)]),
+  );
+}
+
+function generateManifest(config, binariesDir, defaultInstall, resolvedOutputs) {
   const lines = [
     "# Generated by scripts/generate-rootfs-package-manifest.mjs; do not edit.",
     "",
@@ -421,9 +596,32 @@ function generateManifest(config, binariesDir, defaultInstall) {
       const mode = modeString(output.mode);
       const uid = output.uid ?? 0;
       const gid = output.gid ?? 0;
-      const resolvedBinary = resolveBinary(binaryRel, binariesDir);
+      const context = `package ${packageName} output ${binaryRel}`;
+      const inputId = resolvedOutputs
+        ? resolvedPackageInputId(
+            stableId(packageName, "package name"),
+            outputSelector(output, context),
+          )
+        : undefined;
+      const resolved = inputId === undefined ? undefined : resolvedOutputs.get(inputId);
+      if (inputId !== undefined && !resolved) {
+        throw new Error(`rootfs package output ${inputId} is not resolved`);
+      }
+      if (resolved) resolvedOutputs.delete(inputId);
+      const resolvedBinary = resolved ? undefined : resolveBinary(binaryRel, binariesDir);
 
-      if (install === "lazy") {
+      if (resolved?.materialization === "lazy-reference") {
+        if (install !== "lazy") {
+          throw new Error(`rootfs package output ${inputId} must be embedded`);
+        }
+        lines.push(
+          `${path} f ${mode} ${uid} ${gid} lazy_url=${manifestToken(resolved.reference, "lazy_url")} lazy_size=${resolved.bytes}`,
+        );
+      } else if (resolved?.materialization === "embedded") {
+        lines.push(
+          `${path} f ${mode} ${uid} ${gid} src=${manifestToken(resolved.path, "src")}`,
+        );
+      } else if (install === "lazy") {
         const lazyUrl =
           output.lazy_url ?? `${config.lazy_url_prefix ?? ""}${encodeBinaryUrlPath(binaryRel)}`;
         const size = statSync(resolvedBinary).size;
@@ -446,6 +644,12 @@ function generateManifest(config, binariesDir, defaultInstall) {
     lines.push("");
   }
 
+  if (resolvedOutputs?.size) {
+    throw new Error(
+      `unconsumed resolved package output(s): ${[...resolvedOutputs.keys()].join(", ")}`,
+    );
+  }
+
   return { manifest: lines.join("\n"), installed };
 }
 
@@ -462,10 +666,14 @@ try {
   const binariesDir = args.stageResolverBinaries
     ? stageResolverOutputs(config, args.stageResolverBinaries)
     : args.binariesDir;
+  const resolvedOutputs = args.resolvedOutputMap
+    ? readResolvedOutputMap(args.resolvedOutputMap)
+    : undefined;
   const { manifest, installed } = generateManifest(
     config,
     binariesDir,
     args.defaultInstall,
+    resolvedOutputs,
   );
 
   mkdirSync(dirname(outPath), { recursive: true });

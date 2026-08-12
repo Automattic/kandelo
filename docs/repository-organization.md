@@ -14,9 +14,17 @@ Kandelo is organized as a kernel-first monorepo. The kernel and host runtimes ar
 | `packages/sets/` | Named product or CI package sets | Package implementation details |
 | `tests/` | External conformance suites, package-system tooling tests, and shared host/kernel test artifact manifests | Package-owned integration tests |
 | `images/` | Rootfs sources and VFS/archive build scripts | Package source builds |
+| `images/vfs/products/` | Canonical VFS product manifests and generated catalog | Pages/test placement and software recipe facts |
+| `apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.toml` | Pages-owned VFS product selection | VFS product definitions |
+| `tests/vfs-products.toml` | Test-owned VFS product selection and applicability | VFS product definitions |
+| `abi/staging/` | ABI staging request/guard policy, activation, and transition ledgers | Hosted artifact storage or mutable current state |
 | `tools/` | Repo automation such as `xtask` and `mkrootfs` | Product runtime code |
 | `sdk/` | Cross-compilation wrapper CLI and SDK support code | Runtime host implementation |
 | `libc/` | musl submodule, musl overlay, syscall glue | General package registry |
+
+Hosted ABI staging is not operational in this foundation. The paths above
+define local product, policy, and validation authority only until protected
+workflows and hosted evidence prove the corresponding remote capabilities.
 
 ## Host Runtime Layout
 
@@ -76,7 +84,24 @@ The layout is designed so later CI path filters can make conservative, explainab
 | `apps/browser-demos/**`, `web-libs/**` | Browser app build/tests and relevant package browser specs |
 | `images/**`, `tools/mkrootfs/**` | Rootfs/VFS image checks and consumers of those images |
 
-These are intended categories, not a CI implementation. The current PR only keeps the paths clean enough for a future CI-filter PR to use them.
+The canonical VFS catalog and both consumer registries support checked-in
+validation and a deterministic local transition miniature. The protected
+request workflow is owned by
+`.github/workflows/abi-staging-request-feed.yml`; its source policy and
+activation are owned by `abi/staging/request-policy.toml` and
+`abi/staging/request-feed-activation.toml`. Activation remains `observe`, so
+the workflow derives inert exact-head request data but cannot publish a
+Release asset. The companion tap workflow is also observe-only and read-only.
+
+Neither workflow revision is deployed on protected `main`, so hosted ABI
+staging is not operational. Candidate execution and publication, GitHub Check
+updates, promotion, protected ABI-history mutation, and production Pages
+deployment belong to later staging layers and require hosted evidence.
+
+The change-scope classifier implements these categories conservatively. VFS
+authority and staging-contract paths reach the non-package runtime gate;
+product manifests also retain their existing VFS/package-image route. They do
+not opt into an existing credentialed Homebrew publisher by special case.
 
 ## GitHub Pages Publication
 

@@ -1,0 +1,55 @@
+schema = 1
+id = "browser-nginx"
+architecture = "wasm32"
+output = "nginx.vfs.zst"
+builder = "images/vfs/scripts/build-nginx-vfs-image.sh"
+
+[[composition.product]]
+id = "browser-main-shell"
+materialization = "embedded"
+
+[[software.package]]
+name = "nginx"
+outputs = ["nginx"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "dinit"
+outputs = ["dinit", "dinitctl"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[mounts]]
+path = "/"
+source = "built-image"
+readonly = false
+
+[[mounts]]
+path = "/tmp"
+source = "scratch"
+mode = "1777"
+uid = 0
+gid = 0
+ephemeral = true
+
+[boot]
+argv = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"]
+cwd = "/root"
+uid = 0
+gid = 0
+
+[boot.env]
+HOME = "/root"
+LOGNAME = "root"
+PATH = "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
+TMPDIR = "/tmp"
+USER = "root"
+
+[evidence.node]
+test = "nginx-vfs-node-startup"
+
+[evidence.browser]
+test = "nginx-vfs-browser-startup"

@@ -4,23 +4,18 @@
  * The kernel worker hosts the CentralizedKernelWorker and all process
  * lifecycle. The main thread is a thin UI proxy that sends messages here.
  */
-import type {
-  HttpRequest,
-  HttpResponse,
-} from "./networking/in-kernel-http";
+import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type {
   LazyDownloadEvent,
   SerializedLazyArchiveEntry,
 } from "./vfs/memory-fs";
-import type {
-  HostDiagnostic,
-  HostDiagnosticMessage,
-} from "./host-diagnostic";
+import type { HostDiagnostic, HostDiagnosticMessage } from "./host-diagnostic";
 import type { ClosedLazyAsset } from "./vfs/closed-lazy-assets";
 import {
   type BrowserCorsProxyConfig,
   validateBrowserCorsProxyConfig,
 } from "./networking/browser-cors-proxy";
+import type { MountSpec } from "./vfs/default-mounts";
 
 export type { HttpRequest, HttpResponse };
 export type { HostDiagnostic } from "./host-diagnostic";
@@ -34,10 +29,7 @@ export function initializeBrowserCorsProxyForWorker<TLazyFetcher, TTlsBackend>(
       corsProxy?: BrowserCorsProxyConfig;
       onCorsProxyDiagnostic: (message: string) => void;
     }) => TTlsBackend;
-    reportHostDiagnostic: (
-      diagnostic: HostDiagnostic,
-      level: "warn",
-    ) => void;
+    reportHostDiagnostic: (diagnostic: HostDiagnostic, level: "warn") => void;
   },
 ): {
   corsProxy: BrowserCorsProxyConfig | undefined;
@@ -45,9 +37,10 @@ export function initializeBrowserCorsProxyForWorker<TLazyFetcher, TTlsBackend>(
   tlsBackend: TTlsBackend;
 } {
   const corsProxy = validateBrowserCorsProxyConfig(value);
-  const lazyFetcher = corsProxy !== undefined && consumers.useLazyFetcher
-    ? consumers.createLazyFetcher(corsProxy)
-    : undefined;
+  const lazyFetcher =
+    corsProxy !== undefined && consumers.useLazyFetcher
+      ? consumers.createLazyFetcher(corsProxy)
+      : undefined;
   const tlsBackend = consumers.createTlsBackend({
     corsProxy,
     onCorsProxyDiagnostic: (message) => {
@@ -77,6 +70,8 @@ export interface InitMessage {
    * apps/browser-demos/lib/kernel-owned-boot.ts::overlayEtcFromRootfs).
    */
   vfsImage: Uint8Array;
+  /** Exact image/scratch mount contract. Absent preserves the host default. */
+  rootfsMountSpec?: MountSpec[];
   /** Base URL for relative lazy file/archive URLs stored in vfsImage. */
   lazyUrlBase?: string;
   /** Exhaustive exact-byte lazy transport for this image; no network fallback. */
@@ -371,6 +366,7 @@ export interface HttpRequestMessage {
   port: number;
   request: HttpRequest;
   timeoutMs?: number;
+  maxResponseBytes?: number;
 }
 
 /** Register an `OffscreenCanvas` as the scanout target for a KMS CRTC.

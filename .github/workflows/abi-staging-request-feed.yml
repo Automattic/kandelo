@@ -1,0 +1,496 @@
+name: ABI staging exact-head request feed
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+    paths:
+      - ".github/scripts/publish-abi-staging-request.sh"
+      - ".github/workflows/abi-staging-request-feed.yml"
+      - "abi/staging/guard-codes.toml"
+      - "abi/staging/request-policy.toml"
+      - "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.toml"
+      - "images/vfs/products/**"
+      - "tests/vfs-products.toml"
+      - "tools/xtask/src/abi_staging/**"
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      pull-request-number:
+        description: "One PR to repair; empty scans all open same-repository PRs"
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: abi-staging-request-feed-${{ github.event.pull_request.number || inputs.pull-request-number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  classify-exact-head:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    outputs:
+      protected-sha: ${{ steps.resolve.outputs.protected-sha }}
+      subjects-sha256: ${{ steps.resolve.outputs.subjects-sha256 }}
+    steps:
+      - name: Resolve protected main and same-repository exact heads
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          MANUAL_PR: ${{ inputs.pull-request-number }}
+        run: |
+          set -euo pipefail
+          repository="$GITHUB_REPOSITORY"
+          [[ $DEFAULT_BRANCH == main ]]
+          protected_sha=$(gh api "/repos/${repository}/git/ref/heads/main" --jq '.object.sha')
+          [[ $protected_sha =~ ^[0-9a-f]{40}$ ]]
+
+          case "$EVENT_NAME" in
+            pull_request_target)
+              # The protected workflow accepts automatic same-repository-only
+              # heads. Fork execution is disabled by policy.
+              jq -cS --arg repository "$repository" '
+                [.pull_request |
+                  select(.head.repo.full_name == $repository) |
+                  {
+                    number: .number,
+                    repository: .base.repo.full_name,
+                    head_repository: .head.repo.full_name,
+                    head: .head.sha,
+                    ref_hint: .head.ref
+                  }
+                ]
+              ' "$GITHUB_EVENT_PATH" >"$RUNNER_TEMP/subjects.json"
+              jq -e --arg exact_head "$EVENT_HEAD" '
+                length == 0 or
+                (length == 1 and .[0].head == $exact_head)
+              ' "$RUNNER_TEMP/subjects.json" >/dev/null
+              ;;
+            workflow_dispatch)
+              if [[ -n $MANUAL_PR ]]; then
+                [[ $MANUAL_PR =~ ^[1-9][0-9]*$ ]]
+                gh api "/repos/${repository}/pulls/${MANUAL_PR}" |
+                  jq -cS --arg repository "$repository" '
+                    [. |
+                      select(.state == "open") |
+                      select(.head.repo.full_name == $repository) |
+                      {
+                        number: .number,
+                        repository: .base.repo.full_name,
+                        head_repository: .head.repo.full_name,
+                        head: .head.sha,
+                        ref_hint: .head.ref
+                      }
+                    ]
+                  ' >"$RUNNER_TEMP/subjects.json"
+              else
+                gh api --paginate --slurp "/repos/${repository}/pulls?state=open&per_page=100" |
+                  jq -cS --arg repository "$repository" '
+                    [.[][] |
+                      select(.head.repo.full_name == $repository) |
+                      {
+                        number: .number,
+                        repository: .base.repo.full_name,
+                        head_repository: .head.repo.full_name,
+                        head: .head.sha,
+                        ref_hint: .head.ref
+                      }
+                    ] | sort_by(.number)
+                  ' >"$RUNNER_TEMP/subjects.json"
+              fi
+              ;;
+            push|schedule)
+              gh api --paginate --slurp "/repos/${repository}/pulls?state=open&per_page=100" |
+                jq -cS --arg repository "$repository" '
+                  [.[][] |
+                    select(.head.repo.full_name == $repository) |
+                    {
+                      number: .number,
+                      repository: .base.repo.full_name,
+                      head_repository: .head.repo.full_name,
+                      head: .head.sha,
+                      ref_hint: .head.ref
+                    }
+                  ] | sort_by(.number)
+                ' >"$RUNNER_TEMP/subjects.json"
+              ;;
+            *) exit 2 ;;
+          esac
+          jq -e --arg repository "$repository" '
+            type == "array" and length <= 256 and
+            all(.[];
+              (.number | type == "number" and . >= 1 and floor == .) and
+              .repository == $repository and
+              .head_repository == $repository and
+              (.head | test("^[0-9a-f]{40}$"))
+            )
+          ' "$RUNNER_TEMP/subjects.json" >/dev/null
+          subjects_sha256=$(shasum -a 256 "$RUNNER_TEMP/subjects.json" | awk '{print $1}')
+          printf 'protected-sha=%s\n' "$protected_sha" >>"$GITHUB_OUTPUT"
+          printf 'subjects-sha256=%s\n' "$subjects_sha256" >>"$GITHUB_OUTPUT"
+
+      - name: Checkout captured protected authority
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ steps.resolve.outputs.protected-sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: authority
+
+      - name: Set up declared build tools
+        uses: ./authority/.github/actions/setup-nix
+
+      - name: Classify each uncredentialed exact head
+        env:
+          PROTECTED_SHA: ${{ steps.resolve.outputs.protected-sha }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/abi-staging-structural"
+          mkdir -p "$evidence/reports"
+          cp "$RUNNER_TEMP/subjects.json" "$evidence/subjects.json"
+          previous_abi=$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
+            authority/crates/shared/src/lib.rs)
+          [[ $previous_abi =~ ^[0-9]+$ ]]
+
+          while IFS= read -r subject; do
+            pr=$(jq -r '.number' <<<"$subject")
+            head_repository=$(jq -r '.head_repository' <<<"$subject")
+            head=$(jq -r '.head' <<<"$subject")
+            head_root="$RUNNER_TEMP/exact-head-exec/$pr"
+            mkdir -p "$head_root"
+            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$head_root" init -q
+            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$head_root" remote add origin \
+              "https://github.com/${head_repository}.git"
+            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$head_root" fetch --no-tags --depth=1 origin "$head"
+            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$head_root" checkout -q --detach FETCH_HEAD
+            actual_head=$(git -C "$head_root" rev-parse HEAD)
+            actual_tree=$(git -C "$head_root" rev-parse 'HEAD^{tree}')
+            [[ $actual_head == "$head" ]]
+            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$head_root" fetch --no-tags origin "$PROTECTED_SHA"
+
+            target_abi=$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
+              "$head_root/crates/shared/src/lib.rs")
+            [[ $target_abi =~ ^[0-9]+$ ]]
+            snapshot_sha=$(shasum -a 256 "$head_root/abi/snapshot.json" | awk '{print $1}')
+            check_sha=$(shasum -a 256 "$head_root/scripts/check-abi-version.sh" | awk '{print $1}')
+            check_log="$evidence/reports/$pr-check.log"
+            set +e
+            (
+              cd "$head_root"
+              candidate_home="$evidence/candidate-homes/$pr"
+              mkdir -p "$candidate_home/tmp"
+              chmod 700 "$candidate_home" "$candidate_home/tmp"
+              nix_bin=$(command -v nix)
+              bash_bin=$(command -v bash)
+              env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_RUNTIME_TOKEN \
+                -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL \
+                env -i \
+                  HOME="$candidate_home" \
+                  TMPDIR="$candidate_home/tmp" \
+                  CI=true \
+                  LOGNAME=kandelo \
+                  USER=kandelo \
+                  KANDELO_NIX_BIN="$nix_bin" \
+                  PATH=/usr/bin:/bin \
+                  "$bash_bin" scripts/dev-shell.sh \
+                    env ABI_CHECK_BASE_REF="$PROTECTED_SHA" \
+                    bash scripts/check-abi-version.sh
+            ) 2>&1 | head -c 1048576 >"$check_log"
+            check_status=${PIPESTATUS[0]}
+            set -e
+            if ((check_status == 0)); then
+              if [[ $target_abi -eq $previous_abi ]]; then
+                outcome=compatible
+              elif [[ $target_abi -eq $((previous_abi + 1)) ]]; then
+                outcome=bumped-with-snapshot
+              else
+                outcome=invalid
+              fi
+            elif grep -Fq 'backward-incompatible way but ABI_VERSION was not bumped' "$check_log"; then
+              outcome=changed-without-bump
+            else
+              outcome=invalid
+            fi
+
+            jq -cnS \
+              --arg repository "$head_repository" \
+              --arg commit "$actual_head" \
+              --arg tree "$actual_tree" \
+              --arg snapshot "$snapshot_sha" \
+              --arg check "$check_sha" \
+              --arg outcome "$outcome" \
+              --argjson previous "$previous_abi" \
+              --argjson target "$target_abi" '
+                {
+                  check_command_sha256: $check,
+                  kind: "kandelo-structural-abi-report",
+                  observed_previous_abi: $previous,
+                  outcome: $outcome,
+                  schema: 1,
+                  snapshot_file_sha256: $snapshot,
+                  snapshot_sha256: $snapshot,
+                  source: {commit: $commit, repository: $repository, tree: $tree},
+                  target_abi: $target
+                }
+              ' >"$evidence/reports/$pr-structural-report.json"
+            jq -cnS \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg head_repository "$head_repository" \
+              --arg head "$actual_head" \
+              --arg tree "$actual_tree" \
+              --arg ref_hint "$(jq -r '.ref_hint' <<<"$subject")" \
+              --argjson number "$pr" '
+                {
+                  base_commit: null,
+                  base_tree: null,
+                  exact_head: $head,
+                  exact_head_repository: $head_repository,
+                  exact_tree: $tree,
+                  number: $number,
+                  ref_hint: $ref_hint,
+                  repository: $repository
+                }
+              ' >"$evidence/reports/$pr-pull-request.json"
+          done < <(jq -c '.[]' "$RUNNER_TEMP/subjects.json")
+
+      - name: Transfer bounded structural evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: abi-staging-structural-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/abi-staging-structural/subjects.json
+            ${{ runner.temp }}/abi-staging-structural/reports/*-pull-request.json
+            ${{ runner.temp }}/abi-staging-structural/reports/*-structural-report.json
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          overwrite: true
+
+  derive-request:
+    needs: [classify-exact-head]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout captured protected authority
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.classify-exact-head.outputs.protected-sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: authority
+
+      - name: Set up declared build tools
+        uses: ./authority/.github/actions/setup-nix
+
+      - name: Download structural evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: abi-staging-structural-${{ github.run_id }}
+          path: ${{ runner.temp }}/abi-staging-structural
+
+      - name: Revalidate inert inputs and derive canonical requests
+        env:
+          PROTECTED_SHA: ${{ needs.classify-exact-head.outputs.protected-sha }}
+          SUBJECTS_SHA256: ${{ needs.classify-exact-head.outputs.subjects-sha256 }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/abi-staging-structural"
+          derived="$RUNNER_TEMP/abi-staging-derived"
+          mkdir -p "$derived/requests"
+          actual_subjects_sha256=$(shasum -a 256 "$evidence/subjects.json" | awk '{print $1}')
+          [[ $actual_subjects_sha256 == "$SUBJECTS_SHA256" ]]
+          jq -e --arg repository "$GITHUB_REPOSITORY" '
+            type == "array" and length <= 256 and
+            all(.[];
+              (.number | type == "number" and . >= 1 and floor == .) and
+              .repository == $repository and
+              .head_repository == $repository and
+              (.head | test("^[0-9a-f]{40}$"))
+            )
+          ' "$evidence/subjects.json" >/dev/null
+          cp "$evidence/subjects.json" "$derived/subjects.json"
+
+          host_target=$(cd authority &&
+            bash scripts/dev-shell.sh rustc -vV |
+              awk '/^host: / { print $2 }')
+          [[ "$host_target" =~ ^[A-Za-z0-9_.-]+$ ]]
+          (cd authority && bash scripts/dev-shell.sh \
+            cargo build -p xtask --target "$host_target")
+          authority_xtask="$GITHUB_WORKSPACE/authority/target/$host_target/debug/xtask"
+          (
+            cd authority
+            "$authority_xtask" abi-staging request-policy check \
+              --source abi/staging/request-policy.toml \
+              --generated abi/staging/request-policy.generated.json
+          )
+          policy_sha=$(shasum -a 256 authority/abi/staging/request-policy.generated.json | awk '{print $1}')
+          guard_sha=$(shasum -a 256 authority/abi/staging/guard-codes.generated.json | awk '{print $1}')
+          guard_version=$(jq -r '.version' authority/abi/staging/guard-codes.generated.json)
+          protected_tree=$(git -C authority rev-parse 'HEAD^{tree}')
+          previous_abi=$(sed -nE \
+            's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
+            authority/crates/shared/src/lib.rs)
+          [[ $previous_abi =~ ^[1-9][0-9]*$ ]]
+
+          while IFS= read -r subject; do
+            pr=$(jq -r '.number' <<<"$subject")
+            pull_request_file="$evidence/reports/$pr-pull-request.json"
+            head=$(jq -r '.exact_head' "$pull_request_file")
+            head_repository=$(jq -r '.exact_head_repository' "$pull_request_file")
+            exact_head_data="$RUNNER_TEMP/exact-head-data/$pr"
+            mkdir -p "$exact_head_data"
+            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$exact_head_data" init -q
+            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$exact_head_data" remote add origin \
+              "https://github.com/${head_repository}.git"
+            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$exact_head_data" fetch --no-tags origin "$head" "$PROTECTED_SHA"
+            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$exact_head_data" checkout -q --detach "$head"
+
+            report="$evidence/reports/$pr-structural-report.json"
+            "$authority_xtask" abi-staging structural-report validate \
+              --exact-head-root "$exact_head_data" \
+              --previous-abi "$previous_abi" \
+              --pull-request "$pull_request_file" \
+              --report "$report"
+
+            changed_paths="$derived/requests/$pr-changed-paths.bin"
+            git -C "$exact_head_data" diff --name-only -z \
+              "$PROTECTED_SHA" "$head" >"$changed_paths"
+            "$authority_xtask" abi-staging request classify \
+              --changed-paths "$changed_paths" \
+              --out "$derived/requests/$pr-change-classes.json"
+            if [[ $(jq 'length' "$derived/requests/$pr-change-classes.json") == 0 ]]; then
+              echo "PR #$pr is not applicable to ABI staging"
+              continue
+            fi
+
+            python3 - "$GITHUB_WORKSPACE/authority" "$PROTECTED_SHA" "$protected_tree" \
+              "$policy_sha" "$guard_version" "$guard_sha" \
+              "$derived/requests/$pr-protected-context.json" <<'PY'
+          import json, pathlib, sys, tomllib
+          root, commit, tree, policy_sha, guard_version, guard_sha, output = sys.argv[1:]
+          policy = tomllib.loads((pathlib.Path(root) / "abi/staging/request-policy.toml").read_text())
+          context = {
+              "guard_registry_sha256": guard_sha,
+              "guard_registry_version": int(guard_version),
+              "issuer_workflow_ref": (
+                  f"{policy['issuer_repository']}/{policy['issuer_workflow']}@{commit}"
+              ),
+              "policy": policy,
+              "policy_sha256": policy_sha,
+              "protected_commit": commit,
+              "protected_repository": policy["issuer_repository"],
+              "protected_tree": tree,
+          }
+          pathlib.Path(output).write_text(
+              json.dumps(context, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n"
+          )
+          PY
+
+            "$authority_xtask" abi-staging request derive \
+              --exact-head-root "$exact_head_data" \
+              --previous-abi "$previous_abi" \
+              --pull-request "$pull_request_file" \
+              --protected-context "$derived/requests/$pr-protected-context.json" \
+              --structural-report "$report" \
+              --change-classes "$derived/requests/$pr-change-classes.json" \
+              --out "$derived/requests/$pr-request.json"
+            "$authority_xtask" abi-staging request plan-feed-write \
+              --policy authority/abi/staging/request-policy.toml \
+              --protected-target "$PROTECTED_SHA" \
+              --request "$derived/requests/$pr-request.json" \
+              --out "$derived/requests/$pr-plan.json"
+          done < <(jq -c '.[]' "$evidence/subjects.json")
+
+      - name: Transfer canonical derived requests
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: abi-staging-derived-${{ github.run_id }}
+          path: ${{ runner.temp }}/abi-staging-derived
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          overwrite: true
+
+  publish-request:
+    needs: [classify-exact-head, derive-request]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Checkout captured protected authority
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.classify-exact-head.outputs.protected-sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: authority
+
+      - name: Set up declared build tools
+        uses: ./authority/.github/actions/setup-nix
+
+      - name: Download derived requests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: abi-staging-derived-${{ github.run_id }}
+          path: ${{ runner.temp }}/abi-staging-derived
+
+      - name: Revalidate and honor protected activation
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PROTECTED_SHA: ${{ needs.classify-exact-head.outputs.protected-sha }}
+        run: |
+          set -euo pipefail
+          host_target=$(cd authority &&
+            bash scripts/dev-shell.sh rustc -vV |
+              awk '/^host: / { print $2 }')
+          [[ "$host_target" =~ ^[A-Za-z0-9_.-]+$ ]]
+          (cd authority && bash scripts/dev-shell.sh \
+            cargo build -p xtask --target "$host_target")
+          authority_xtask="$GITHUB_WORKSPACE/authority/target/$host_target/debug/xtask"
+          (
+            cd authority
+            "$authority_xtask" abi-staging request-policy check \
+              --source abi/staging/request-policy.toml \
+              --generated abi/staging/request-policy.generated.json
+          )
+          mode=$(cd authority && "$authority_xtask" abi-staging request-policy activation-mode \
+            --source abi/staging/request-feed-activation.toml)
+          echo "mode=$mode"
+
+          for request in "$RUNNER_TEMP"/abi-staging-derived/requests/*-request.json; do
+            [[ -e $request ]] || continue
+            prefix=${request%-request.json}
+            plan="$prefix-plan.json"
+            "$authority_xtask" abi-staging request validate-feed-plan \
+              --policy authority/abi/staging/request-policy.toml \
+              --request "$request" \
+              --plan "$plan"
+            url=$(jq -r '.public_download_url' "$plan")
+            digest=$(jq -r '.asset_sha256' "$plan")
+            if [[ $mode == observe ]]; then
+              echo "Public nonendorsed candidate request (observe only): $url sha256:$digest"
+            elif [[ $mode == active ]]; then
+              GH_TOKEN="$GITHUB_TOKEN" GITHUB_OUTPUT="$GITHUB_OUTPUT" \
+                bash authority/.github/scripts/publish-abi-staging-request.sh \
+                  --repository "$GITHUB_REPOSITORY" \
+                  --protected-target "$PROTECTED_SHA" \
+                  --plan "$plan" \
+                  --request "$request"
+            else
+              echo "invalid request-feed activation: $mode" >&2
+              exit 1
+            fi
+          done

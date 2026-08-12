@@ -36,6 +36,10 @@ import {
 } from "./lib/homebrew-closed-acceptance";
 import { DEFAULT_BROWSER_CORS_PROXY_CONFIG } from "./lib/browser-cors-proxy";
 import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
+import {
+  createCanonicalPagesVfsProductsPlugin,
+  loadCanonicalPagesProductMap,
+} from "../../scripts/abi-staging-pages-site-builder.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
@@ -74,6 +78,30 @@ const binaryMirrorRoots = [
   path.resolve(repoRoot, "local-binaries"),
   path.resolve(repoRoot, "binaries"),
 ];
+
+function canonicalPagesVfsProducts(base: string): Plugin {
+  const configuredMap = process.env.KANDELO_PAGES_PRODUCT_MAP;
+  if (configuredMap === undefined) {
+    return createCanonicalPagesVfsProductsPlugin({
+      base,
+      map: null,
+      mirrorRoots: binaryMirrorRoots,
+    });
+  }
+  if (!path.isAbsolute(configuredMap)) {
+    throw new Error(
+      "KANDELO_PAGES_PRODUCT_MAP must be an absolute private map path",
+    );
+  }
+  return createCanonicalPagesVfsProductsPlugin({
+    base,
+    map: loadCanonicalPagesProductMap({
+      mapPath: configuredMap,
+      sourceRoot: repoRoot,
+    }),
+    mirrorRoots: binaryMirrorRoots,
+  });
+}
 
 function applyDefaultProgramArch(relPath: string): string {
   if (!relPath.startsWith("programs/")) return relPath;
@@ -536,6 +564,7 @@ function forceFreshDevWorkerResponses(): Plugin {
 function injectCorsProxyConfig(): Plugin {
   let servedCorsProxyConfig = buildCorsProxyConfig();
   let outputCorsProxyConfig = buildCorsProxyConfig();
+  let outputRoot = path.resolve(__dirname, "dist");
   let base = "/";
   const sourceSwPath = path.resolve(__dirname, "public", "service-worker.js");
 
@@ -573,6 +602,7 @@ function injectCorsProxyConfig(): Plugin {
     name: "inject-cors-proxy-config",
     configResolved(config) {
       base = config.base;
+      outputRoot = path.resolve(config.root, config.build.outDir);
       servedCorsProxyConfig = browserCorsProxyConfig(
         configuredCorsProxyUrl() || devCorsProxyFetchUrlForBase(base),
       );
@@ -585,8 +615,8 @@ function injectCorsProxyConfig(): Plugin {
       attachMiddleware(server.middlewares);
     },
     writeBundle() {
-      // service-worker.js is in public/ and gets copied as-is to dist/
-      const swPath = path.resolve(__dirname, "dist", "service-worker.js");
+      // service-worker.js is in public/ and Vite copies it to the resolved outDir.
+      const swPath = path.resolve(outputRoot, "service-worker.js");
       if (fs.existsSync(swPath)) {
         let content = fs.readFileSync(swPath, "utf-8");
         content = injectCorsProxyConfigPlaceholder(
@@ -687,12 +717,16 @@ export default defineConfig(({ mode }) => {
     process.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT,
   );
 
+  const base = process.env.VITE_BASE || "/";
+  const pagesVfsProducts = canonicalPagesVfsProducts(base);
+
   return {
-    base: process.env.VITE_BASE || "/",
+    base,
     resolve: {
       alias: browserRepositoryAliases(repoRoot),
     },
     plugins: [
+      pagesVfsProducts,
       react(),
       resolveKernelArtifactsAlias(binaryDevAccess),
       resolveBinariesAlias(binaryDevAccess, browserBinaryResolution),
@@ -740,6 +774,7 @@ export default defineConfig(({ mode }) => {
     worker: {
       format: "es",
       plugins: () => [
+        canonicalPagesVfsProducts(base),
         resolveKernelArtifactsAlias(binaryDevAccess),
         resolveBinariesAlias(binaryDevAccess, browserBinaryResolution),
         dropWorkerEntryExports(),

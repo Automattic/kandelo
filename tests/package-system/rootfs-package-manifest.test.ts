@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
@@ -84,6 +85,89 @@ afterEach(() => {
 });
 
 describe("generate-rootfs-package-manifest artifact provenance", () => {
+  it("uses an exact resolved-output map without materializing lazy bytes", () => {
+    const scratch = makeScratch();
+    const embedded = writeArtifact(scratch, "inputs/eager.dat", "eager-bytes");
+    const packages = join(scratch, "PACKAGES.toml");
+    writeFileSync(
+      packages,
+      [
+        'default_install = "lazy"',
+        "[[packages]]",
+        'name = "fixture"',
+        "[[packages.outputs]]",
+        'binary = "programs/wasm32/lazy.wasm"',
+        'path = "/usr/bin/lazy"',
+        "[[packages.outputs]]",
+        'binary = "programs/wasm32/eager.dat"',
+        'path = "/usr/share/eager.dat"',
+        'install = "eager"',
+        'mode = "0644"',
+        "",
+      ].join("\n"),
+    );
+    const lazySha256 = sha256("lazy-bytes-are-not-present");
+    const embeddedSha256 = sha256("eager-bytes");
+    const resolved = join(scratch, "resolved.json");
+    writeFileSync(
+      resolved,
+      canonicalJson({
+        kind: "kandelo-rootfs-resolved-package-outputs",
+        outputs: [
+          {
+            bytes: 11,
+            id: "package-fixture-output-eager",
+            materialization: "embedded",
+            path: embedded,
+            sha256: embeddedSha256,
+          },
+          {
+            bytes: 26,
+            id: "package-fixture-output-lazy",
+            materialization: "lazy-reference",
+            reference: `https://artifacts.example.test/lazy.wasm?sha256=${lazySha256}`,
+            sha256: lazySha256,
+          },
+        ],
+        schema: 1,
+      }),
+    );
+    const out = join(scratch, "resolved.MANIFEST");
+
+    const result = runGenerator([
+      "--packages", packages,
+      "--resolved-output-map", resolved,
+      "--out", out,
+    ]);
+
+    expect(result.status, result.stderr).toBe(0);
+    const manifest = readFileSync(out, "utf8");
+    expect(manifest).toContain(
+      `lazy_url=https://artifacts.example.test/lazy.wasm?sha256=${lazySha256} lazy_size=26`,
+    );
+    expect(manifest).toContain(
+      `/usr/share/eager.dat f 0644 0 0 src=${embedded}`,
+    );
+    expect(manifest).not.toContain("programs/wasm32/lazy.wasm");
+
+    const parsed = JSON.parse(readFileSync(resolved, "utf8"));
+    parsed.outputs.push({
+      bytes: 1,
+      id: "package-undeclared-output-extra",
+      materialization: "lazy-reference",
+      reference: `https://artifacts.example.test/extra?sha256=${"f".repeat(64)}`,
+      sha256: "f".repeat(64),
+    });
+    writeFileSync(resolved, canonicalJson(parsed));
+    const extra = runGenerator([
+      "--packages", packages,
+      "--resolved-output-map", resolved,
+      "--out", join(scratch, "extra.MANIFEST"),
+    ]);
+    expect(extra.status).toBe(1);
+    expect(extra.stderr).toContain("unconsumed resolved package output");
+  });
+
   it("stages exact resolver dependency outputs into a fresh private tree", () => {
     const scratch = makeScratch();
     const dependencyRoot = join(scratch, "fixture-dependency");
@@ -856,3 +940,21 @@ describe("generate-rootfs-package-manifest artifact provenance", () => {
     expect(result.stderr).toContain("not a regular file");
   });
 });
+
+function sha256(value: string | Uint8Array): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function canonicalJson(value: unknown): string {
+  return `${JSON.stringify(sortJson(value))}\n`;
+}
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJson);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => [key, sortJson(child)]),
+  );
+}

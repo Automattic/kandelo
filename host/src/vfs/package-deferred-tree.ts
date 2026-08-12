@@ -70,6 +70,19 @@ export interface RegisteredPackageDeferredZipTree extends
   materialization: DeferredTreeMaterializationHandle;
 }
 
+export interface PackageDeferredZipTreeDescriptorExpectation {
+  id: string;
+  package: {
+    name: string;
+    output: string;
+  };
+  archive: {
+    sha256: string;
+    bytes: number;
+    reference: string;
+  };
+}
+
 /**
  * Derive the complete typed-tree contract from one exact package output.
  * The returned descriptor is the only recipe used by lazy registration and
@@ -163,6 +176,271 @@ export function derivePackageDeferredZipTree(
     descriptorBytes,
     descriptorSha256: createHash("sha256").update(descriptorBytes).digest("hex"),
     content,
+    entries,
+  };
+}
+
+/**
+ * Restore the trusted lazy-tree recipe without opening the package archive.
+ *
+ * The descriptor remains producer evidence. The caller-provided archive
+ * identity is authoritative for both the content digest and the immutable
+ * transport selected by the current product build.
+ */
+export function parsePackageDeferredZipTreeDescriptor(
+  value: unknown,
+  expected: PackageDeferredZipTreeDescriptorExpectation,
+): DerivedPackageDeferredZipTree {
+  const descriptor = exactDescriptorRecord(value, [
+    "schema",
+    "kind",
+    "id",
+    "content_role",
+    "package",
+    "archive",
+    "mount_prefix",
+    "owner",
+    "activation",
+    "inventory",
+  ], "package deferred ZIP tree descriptor");
+  const packageValue = exactDescriptorRecord(
+    descriptor.package,
+    ["name", "output"],
+    "package deferred ZIP tree descriptor package",
+  );
+  const archive = exactDescriptorRecord(
+    descriptor.archive,
+    [
+      "url",
+      "mode_policy",
+      "decoder",
+      "media_type",
+      "sha256",
+      "bytes",
+      "expanded_bytes",
+      "source_entry_count",
+    ],
+    "package deferred ZIP tree descriptor archive",
+  );
+  const activationValue = exactDescriptorRecord(
+    descriptor.activation,
+    [
+      "mode",
+      "capabilities",
+      "roots",
+      ...(hasOwn(descriptor.activation, "atomicGroup") ? ["atomicGroup"] : []),
+    ],
+    "package deferred ZIP tree descriptor activation",
+  );
+  const atomicGroupValue = activationValue.atomicGroup === undefined
+    ? undefined
+    : exactDescriptorRecord(
+      activationValue.atomicGroup,
+      ["id", "member"],
+      "package deferred ZIP tree descriptor atomic group",
+    );
+  if (
+    atomicGroupValue !== undefined &&
+    atomicGroupValue.member !== descriptor.id
+  ) {
+    throw new Error("package deferred ZIP tree descriptor atomic member changed");
+  }
+  const spec = parsePackageDeferredZipTreeSpec({
+    schema: descriptor.schema,
+    kind: descriptor.kind,
+    id: descriptor.id,
+    content_role: descriptor.content_role,
+    package: packageValue,
+    archive: {
+      url: archive.url,
+      mode_policy: archive.mode_policy,
+    },
+    mount_prefix: descriptor.mount_prefix,
+    owner: descriptor.owner,
+    activation: {
+      mode: activationValue.mode,
+      capabilities: activationValue.capabilities,
+      roots: activationValue.roots,
+      ...(atomicGroupValue === undefined
+        ? {}
+        : { atomic_group: atomicGroupValue.id }),
+    },
+  });
+  if (
+    spec.id !== expected.id ||
+    spec.package.name !== expected.package.name ||
+    spec.package.output !== expected.package.output
+  ) {
+    throw new Error("package deferred ZIP tree descriptor identity changed");
+  }
+  if (
+    archive.decoder !== "zip-v1" ||
+    archive.media_type !== "application/zip" ||
+    archive.mode_policy !== "portable-posix-v1" ||
+    archive.sha256 !== expected.archive.sha256 ||
+    archive.bytes !== expected.archive.bytes ||
+    !isSha256(archive.sha256) ||
+    !boundedInteger(
+      archive.bytes,
+      1,
+      VFS_DEFERRED_TREE_LIMITS.maxArchiveBytes,
+    ) ||
+    !boundedInteger(
+      archive.expanded_bytes,
+      0,
+      VFS_DEFERRED_TREE_LIMITS.maxExpandedBytes,
+    ) ||
+    !boundedInteger(
+      archive.source_entry_count,
+      1,
+      VFS_DEFERRED_TREE_LIMITS.maxEntries,
+    )
+  ) {
+    throw new Error("package deferred ZIP tree descriptor archive identity changed");
+  }
+  if (
+    typeof expected.archive.reference !== "string" ||
+    !expected.archive.reference.startsWith("https://") ||
+    expected.archive.reference.length > VFS_DEFERRED_TREE_LIMITS.maxStringBytes ||
+    !expected.archive.reference.includes(`sha256=${expected.archive.sha256}`) &&
+      !expected.archive.reference.includes(`sha256:${expected.archive.sha256}`)
+  ) {
+    throw new Error("package deferred ZIP tree archive reference is not immutable HTTPS");
+  }
+  if (
+    !Array.isArray(descriptor.inventory) ||
+    descriptor.inventory.length !== archive.source_entry_count
+  ) {
+    throw new Error("package deferred ZIP tree descriptor inventory count changed");
+  }
+  const seenVfsPaths = new Set<string>();
+  const seenSourcePaths = new Set<string>();
+  let expandedBytes = 0;
+  const entries = descriptor.inventory.map((raw, index): LazyTreeRegistrationEntry => {
+    const initial = descriptorRecord(raw, `package deferred ZIP tree inventory ${index}`);
+    const type = initial.type;
+    const fields = type === "directory"
+      ? ["vfs_path", "source_path", "type", "mode", "size"]
+      : type === "file"
+      ? ["vfs_path", "source_path", "type", "mode", "size", "inode_group"]
+      : type === "symlink"
+      ? ["vfs_path", "source_path", "type", "mode", "size", "target"]
+      : [];
+    if (fields.length === 0) {
+      throw new Error(`package deferred ZIP tree inventory ${index} type is invalid`);
+    }
+    const item = exactDescriptorRecord(
+      raw,
+      fields,
+      `package deferred ZIP tree inventory ${index}`,
+    );
+    const vfsPath = canonicalDescriptorAbsolutePath(
+      item.vfs_path,
+      `package deferred ZIP tree inventory ${index} VFS path`,
+    );
+    const sourcePath = canonicalDescriptorRelativePath(
+      item.source_path,
+      `package deferred ZIP tree inventory ${index} source path`,
+    );
+    if (
+      spec.mount_prefix !== "/" &&
+      vfsPath !== spec.mount_prefix &&
+      !vfsPath.startsWith(`${spec.mount_prefix}/`)
+    ) {
+      throw new Error(`package deferred ZIP tree inventory ${vfsPath} escapes its mount`);
+    }
+    if (seenVfsPaths.has(vfsPath) || seenSourcePaths.has(sourcePath)) {
+      throw new Error("package deferred ZIP tree descriptor inventory repeats a path");
+    }
+    seenVfsPaths.add(vfsPath);
+    seenSourcePaths.add(sourcePath);
+    const size = descriptorInteger(
+      item.size,
+      0,
+      VFS_DEFERRED_TREE_LIMITS.maxExpandedBytes,
+      `package deferred ZIP tree inventory ${vfsPath} size`,
+    );
+    const mode = descriptorInteger(
+      item.mode,
+      0,
+      0o7777,
+      `package deferred ZIP tree inventory ${vfsPath} mode`,
+    );
+    expandedBytes += size;
+    if (
+      !Number.isSafeInteger(expandedBytes) ||
+      expandedBytes > VFS_DEFERRED_TREE_LIMITS.maxExpandedBytes
+    ) {
+      throw new Error("package deferred ZIP tree descriptor expansion exceeds its limit");
+    }
+    if (type === "directory") {
+      if (size !== 0 || mode !== 0o755) {
+        throw new Error(`package deferred ZIP tree directory ${vfsPath} changed`);
+      }
+      return { vfsPath, sourcePath, type, mode, size };
+    }
+    if (type === "symlink") {
+      if (
+        mode !== 0o777 ||
+        typeof item.target !== "string" ||
+        item.target.length === 0 ||
+        item.target.includes("\0") ||
+        utf8Length(item.target) !== size ||
+        size > VFS_DEFERRED_TREE_LIMITS.maxSymlinkTargetBytes
+      ) {
+        throw new Error(`package deferred ZIP tree symlink ${vfsPath} changed`);
+      }
+      return {
+        vfsPath,
+        sourcePath,
+        type,
+        mode,
+        size,
+        target: item.target,
+      };
+    }
+    if (
+      (mode !== 0o644 && mode !== 0o755) ||
+      item.inode_group !== `zip:${sourcePath}`
+    ) {
+      throw new Error(`package deferred ZIP tree file ${vfsPath} changed`);
+    }
+    return {
+      vfsPath,
+      sourcePath,
+      type,
+      mode,
+      size,
+      inodeGroup: item.inode_group,
+    };
+  });
+  if (expandedBytes !== archive.expanded_bytes) {
+    throw new Error("package deferred ZIP tree descriptor expansion changed");
+  }
+  assertCompleteDirectoryInventory(spec.mount_prefix, entries);
+  for (const root of spec.activation.roots) {
+    if (!entries.some((entry) =>
+      entry.vfsPath === root || entry.vfsPath.startsWith(`${root}/`)
+    )) {
+      throw new Error(`package deferred ZIP tree activation root ${root} is absent`);
+    }
+  }
+  const checkedDescriptor = descriptor as unknown as PackageDeferredZipTreeDescriptor;
+  const descriptorBytes = canonicalJsonBytes(checkedDescriptor);
+  return {
+    descriptor: checkedDescriptor,
+    descriptorBytes,
+    descriptorSha256: createHash("sha256").update(descriptorBytes).digest("hex"),
+    content: {
+      decoder: "zip-v1",
+      mediaType: "application/zip",
+      sha256: expected.archive.sha256,
+      bytes: expected.archive.bytes,
+      expandedBytes: archive.expanded_bytes,
+      sourceEntryCount: archive.source_entry_count,
+      transports: [expected.archive.reference],
+      modePolicy: "portable-posix-v1",
+    },
     entries,
   };
 }
@@ -500,4 +778,86 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
 
 function utf8Length(value: string): number {
   return textEncoder.encode(value).byteLength;
+}
+
+function descriptorRecord(value: unknown, label: string): Record<string, any> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  return value as Record<string, any>;
+}
+
+function exactDescriptorRecord(
+  value: unknown,
+  fields: readonly string[],
+  label: string,
+): Record<string, any> {
+  const record = descriptorRecord(value, label);
+  const actual = Object.keys(record).sort(compareUnicodeScalars);
+  const expected = [...fields].sort(compareUnicodeScalars);
+  if (
+    actual.length !== expected.length ||
+    actual.some((field, index) => field !== expected[index])
+  ) {
+    throw new Error(`${label} has unsupported fields`);
+  }
+  return record;
+}
+
+function hasOwn(value: unknown, field: string): boolean {
+  return typeof value === "object" && value !== null &&
+    Object.prototype.hasOwnProperty.call(value, field);
+}
+
+function boundedInteger(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+): value is number {
+  return Number.isSafeInteger(value) &&
+    (value as number) >= minimum &&
+    (value as number) <= maximum;
+}
+
+function descriptorInteger(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+  label: string,
+): number {
+  if (!boundedInteger(value, minimum, maximum)) {
+    throw new Error(`${label} is invalid`);
+  }
+  return value;
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+}
+
+function canonicalDescriptorAbsolutePath(value: unknown, label: string): string {
+  if (
+    typeof value !== "string" ||
+    value === "/" ||
+    !value.startsWith("/") ||
+    value.endsWith("/") ||
+    value.includes("\\") ||
+    value.includes("\0") ||
+    utf8Length(value) > VFS_DEFERRED_TREE_LIMITS.maxPathBytes ||
+    value.slice(1).split("/").some((component) =>
+      component === "" || component === "." || component === ".."
+    )
+  ) {
+    throw new Error(`${label} is invalid`);
+  }
+  return value;
+}
+
+function canonicalDescriptorRelativePath(value: unknown, label: string): string {
+  if (typeof value !== "string") throw new Error(`${label} is invalid`);
+  try {
+    return canonicalRelativePath(value);
+  } catch {
+    throw new Error(`${label} is invalid`);
+  }
 }

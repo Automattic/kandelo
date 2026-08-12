@@ -98,6 +98,23 @@ def normalized_identity(value: str, label: str) -> str:
     return f"{owner}/{name}"
 
 
+def selected_bottle_root_url(
+    repository: str, staging_candidate_abi: int | None
+) -> str:
+    normalized = normalized_identity(repository, "tap repository")
+    base = f"https://ghcr.io/v2/{normalized}"
+    if staging_candidate_abi is None:
+        return base
+    if (
+        isinstance(staging_candidate_abi, bool)
+        or not isinstance(staging_candidate_abi, int)
+        or staging_candidate_abi <= 0
+        or staging_candidate_abi > 2**32 - 1
+    ):
+        fail("staging candidate ABI must be a positive bounded integer")
+    return f"{base}-abi-{staging_candidate_abi}-candidates"
+
+
 def normalized_tap_repository(args: argparse.Namespace) -> str:
     return normalized_identity(args.tap_repository, "tap repository")
 
@@ -131,7 +148,14 @@ def validate_arguments(args: argparse.Namespace) -> None:
     )
     tap_repository = normalized_tap_repository(args)
     normalized_tap_name(args)
-    expected_root = f"https://ghcr.io/v2/{tap_repository}"
+    if (
+        args.staging_candidate_abi is not None
+        and args.staging_candidate_abi != args.abi
+    ):
+        fail("staging candidate ABI differs from runtime ABI")
+    expected_root = selected_bottle_root_url(
+        tap_repository, args.staging_candidate_abi
+    )
     if args.bottle_root_url != expected_root:
         fail(f"bottle root URL does not match {expected_root}")
     require_string(args.bottle_sha256, "bottle sha256", SHA256)
@@ -181,6 +205,10 @@ def validate_dependency_provenance(args: argparse.Namespace) -> dict[str, Any]:
                 "--prefix-campaign-layout-sha256",
                 args.prefix_campaign_layout_sha256,
             ]
+        )
+    if args.staging_candidate_abi is not None:
+        command.extend(
+            ["--staging-candidate-abi", str(args.staging_candidate_abi)]
         )
     result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode != 0:
@@ -296,7 +324,10 @@ def canonical_bottle(args: argparse.Namespace) -> tuple[str, str, int, str]:
     tag = exact_keys(tags[tag_name], {"sha256"}, f"canonical {tag_name} bottle")
     if tag["sha256"] != args.bottle_sha256:
         fail("canonical bottle digest does not match the selected bytes")
-    if bottle["root_url"] != args.bottle_root_url:
+    expected_metadata_root = args.bottle_root_url
+    if args.staging_candidate_abi is not None:
+        expected_metadata_root = f"{expected_metadata_root}/{args.formula}"
+    if bottle["root_url"] != expected_metadata_root:
         fail("canonical bottle root URL does not match")
     rebuild_suffix = f".{rebuild}" if rebuild else ""
     filename = f"{args.formula}--{version}.{tag_name}.bottle{rebuild_suffix}.tar.gz"
@@ -1016,6 +1047,7 @@ def add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--bottle-sha256", required=True)
     parser.add_argument("--bottle-bytes", type=int, required=True)
     parser.add_argument("--dependency-provenance", required=True)
+    parser.add_argument("--staging-candidate-abi", type=int)
 
 
 def parser() -> argparse.ArgumentParser:

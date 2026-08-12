@@ -330,6 +330,72 @@ applies to all app demos, not just WordPress.
 
 ## VFS Images
 
+### Consumer-owned product selection
+
+VFS product definitions live under `images/vfs/products/` and describe what
+an image is. They do not decide where that image appears.
+Pages placement is owned only by the Pages VFS product registry.
+The Pages registry is
+`apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.toml`; test
+selection is independently owned by `tests/vfs-products.toml`. Their generated
+JSON files are canonical checked projections.
+
+Pages presentation membership is a separate reviewed authority at
+`apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-gallery.json`.
+It maps every selected Pages product to the preset IDs that present that image.
+The Pages registry check requires exact product-ID parity, requires every
+declared preset to exist in `presets.ts`, and verifies the preset's VFS-image
+mapping in `live-setup.ts`. The production Pages composer derives site metadata
+from those exact current-main authorities and the built site tree, and binds
+each normalized `vfs_image` mapping into the site identity; workflows do not
+supply self-authorizing gallery or file inventories.
+
+Protected main workflows invoke `scripts/abi-staging-pages-producer.ts produce`
+with a bounded handoff naming the exact clean checkout, runtime bundle/root,
+built site root, run identity, and current package/archive/program-index roots.
+The producer discovers immutable candidate and admission records anonymously,
+recaptures non-Homebrew inputs, and executes the normal VFS builders plus both
+host evidence supervisors. Every selected product must carry its exact
+current-main recapture. Embedded recaptures remain path-only builder inputs;
+only lazy recaptures receive Pages input URLs. Embedded product dependencies
+use the distinct ABI-, product-, digest-, and byte-bound Pages product URL.
+During pre-deployment evidence, canonical Pages, Homebrew, and prior-product
+lazy URLs remain the image authority while their authenticated current bytes
+are supplied through a closed local transport.
+An incomplete product set emits only `readiness.json`; a complete set emits the
+canonical artifacts, site manifest, and inert source tree for the Pages job.
+The canary validates that record before selecting its artifact protocol.
+A hold has exactly that one file, reports its digest and blockers, and
+uses ordinary bounded artifact retention; it never invokes the Pages
+artifact action. Only a ready result validates and uploads the complete
+inert Pages source tree.
+
+Hosted rollout follows the same distinction. The expected
+pre-admission run is a hosted hold for inactive Task 10 preparation, not
+a readiness or deployment gate. Operators then complete successor
+promotion and admissions, rerun the canary, and require a ready result.
+Only after that evidence may activation and deployment proceed through
+their separately authorized path.
+
+Selection preserves both lazy boundaries. A consumer may lazily compose a
+whole VFS product, and a selected product may in turn retain lazy bottle or
+package layers. Product-derived Formula roots are not copied into either
+consumer registry. This prevents a product from placing itself on Pages and
+prevents Pages or tests from becoming competing software dependency
+authorities.
+
+The atomic local snapshot gate also drives the one producer-returned, assembled
+seven-product tree through the production `/kandelo/` Vite base, service
+worker, cross-origin isolation headers, and `BrowserKernel` in Chromium. It
+holds the two eager VFS responses, proves no lazy request starts before their
+release, then proves each lazy product is fetched only by its representative
+profile. It hashes every VFS response and rejects external requests plus
+noncanonical identity, load, ABI, length, and digest mutations. The
+hidden deployment manifest is only the test's observation ledger; the sealed
+build map remains browser authority. This is bounded fixture evidence, not a
+claim about hosted candidate publication, a real pull request, canonical
+promotion, or production Pages deployment.
+
 Browser demos use pre-built **VFS images** — binary snapshots of a `MemoryFileSystem` containing all runtime files, directory structure, configs, and symlinks needed by a demo. At runtime, restoring a VFS image is a single buffer copy, replacing what would otherwise be hundreds or thousands of individual file creation operations.
 
 ### How it works

@@ -214,6 +214,44 @@ kandelo_package_stage_verified_source fixture-xz "$xz_dest" "" \
 grep -Fx "xz-selected source" "$xz_dest/archive.txt" >/dev/null ||
     fail "verified xz source archive was not extracted"
 
+# SQLite's reviewed amalgamation source is a ZIP archive. The shared source
+# staging contract must preserve the same verified-directory shape for it as
+# for the tar-based package sources.
+zip_parent="$TMP_ROOT/zip-parent"
+mkdir -p "$zip_parent/sqlite-amalgamation-fixture"
+printf 'zip-selected source\n' \
+    >"$zip_parent/sqlite-amalgamation-fixture/archive.txt"
+zip_archive="$TMP_ROOT/source.zip"
+(
+    cd "$zip_parent"
+    zip -qr "$zip_archive" sqlite-amalgamation-fixture
+)
+zip_sha="$(shasum -a 256 "$zip_archive" | awk '{print $1}')"
+zip_dest="$TMP_ROOT/zip-dest"
+kandelo_package_stage_verified_source fixture-zip "$zip_dest" "" \
+    "file://$zip_archive" "$zip_sha" "$work_root"
+grep -Fx "zip-selected source" "$zip_dest/archive.txt" >/dev/null ||
+    fail "verified ZIP source archive was not extracted"
+
+multi_zip_parent="$TMP_ROOT/multi-zip-parent"
+mkdir -p "$multi_zip_parent/first-root" "$multi_zip_parent/second-root"
+printf 'first\n' >"$multi_zip_parent/first-root/payload.txt"
+printf 'second\n' >"$multi_zip_parent/second-root/payload.txt"
+multi_zip_archive="$TMP_ROOT/multi-root-source.zip"
+(
+    cd "$multi_zip_parent"
+    zip -qr "$multi_zip_archive" first-root second-root
+)
+multi_zip_sha="$(shasum -a 256 "$multi_zip_archive" | awk '{print $1}')"
+multi_zip_dest="$TMP_ROOT/multi-zip-dest"
+if kandelo_package_stage_verified_source fixture-multi-zip \
+    "$multi_zip_dest" "" "file://$multi_zip_archive" "$multi_zip_sha" \
+    "$work_root"; then
+    fail "ZIP source archive with multiple roots was accepted"
+fi
+[ ! -e "$multi_zip_dest" ] ||
+    fail "rejected multi-root ZIP left a staged source tree"
+
 # A staged archive can live below an unrelated Git checkout during direct and
 # package-staging builds. Patch paths must remain relative to that source root,
 # including files introduced by a patch, rather than inheriting the parent
@@ -386,6 +424,8 @@ done
 grep -F 'WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto' \
     "$REPO_ROOT/packages/registry/nethack/build-nethack.sh" >/dev/null ||
     fail "NetHack build does not instrument its fork-capable artifact"
+
+bash "$REPO_ROOT/scripts/test-package-isolated-output-contracts.sh"
 
 # Ruby keeps source filenames in runtime assertions and publishes its generated
 # rbconfig.rb. Its recipe must therefore map caller work paths at compile time

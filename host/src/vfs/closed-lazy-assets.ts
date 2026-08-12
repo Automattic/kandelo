@@ -177,7 +177,12 @@ export async function loadClosedLazyAssetSources(
   }
 }
 
-/** Validate and snapshot a bounded, canonical HTTPS URL-to-byte binding. */
+/**
+ * Validate and snapshot a bounded canonical lazy-reference-to-byte binding.
+ * Ordinary deferred assets use HTTPS URLs. Pre-publication ABI candidates may
+ * retain their exact immutable OCI reference; the closed fetcher treats that
+ * reference only as an opaque map key and never delegates it to the network.
+ */
 export function snapshotClosedLazyAssets(
   assets: readonly ClosedLazyAsset[],
 ): ClosedLazyAsset[] {
@@ -188,9 +193,7 @@ function validateClosedLazyAssets(
   assets: readonly ClosedLazyAsset[],
   copy: boolean,
 ): ClosedLazyAsset[] {
-  if (!Array.isArray(assets) || assets.length === 0) {
-    throw new Error("closed lazy assets must contain at least one binding");
-  }
+  if (!Array.isArray(assets)) throw new Error("closed lazy assets must be an array");
   if (assets.length > MAX_CLOSED_LAZY_ASSETS) {
     throw new Error(
       `closed lazy assets exceed ${MAX_CLOSED_LAZY_ASSETS} bindings`,
@@ -272,6 +275,171 @@ export function createClosedLazyAssetFetcherFromOwnedAssets(
   assets: readonly ClosedLazyAsset[],
 ): (url: string) => Promise<Response> {
   return createFetcherFromSnapshot(validateClosedLazyAssets(assets, false));
+}
+
+/**
+ * Construct an exhaustive on-demand source fetcher. Source metadata is
+ * snapshotted up front, but no source body is requested until the exact VFS
+ * URL is first materialized. An explicitly empty set remains closed and never
+ * falls through to ambient network access.
+ */
+export function createClosedLazyAssetSourceFetcher(
+  sources: readonly ClosedLazyAssetSource[],
+  options: { fetchImpl?: FetchLike } = {},
+): (url: string, init?: { signal?: AbortSignal }) => Promise<Response> {
+  const snapshot = sources.length === 0
+    ? []
+    : validateClosedLazyAssetSources(sources);
+  const sourceByUrl = new Map(snapshot.map((source) => [source.url, source]));
+  const fetchImpl = createAnonymousGhcrFetch(options.fetchImpl ?? fetch);
+  return async (
+    url: string,
+    init?: { signal?: AbortSignal },
+  ): Promise<Response> => {
+    const source = sourceByUrl.get(url);
+    if (source === undefined) {
+      throw new Error(`closed lazy asset sources do not bind URL ${url}`);
+    }
+    const [loaded] = await loadClosedLazyAssetSources([source], {
+      fetchImpl,
+      ...(init?.signal === undefined ? {} : { signal: init.signal }),
+    });
+    if (loaded === undefined) {
+      throw new Error(`closed lazy asset source ${url} produced no verified bytes`);
+    }
+    const responseBytes = copyBytes(loaded.bytes);
+    return new Response(responseBytes.buffer, {
+      status: 200,
+      headers: { "content-length": String(responseBytes.byteLength) },
+    });
+  };
+}
+
+const GHCR_BLOB_URL =
+  /^https:\/\/ghcr\.io\/v2\/([a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*)\/blobs\/(sha256:[0-9a-f]{64})$/;
+const MAX_ANONYMOUS_TOKEN_BYTES = 1024 * 1024;
+
+/** Resolve only the anonymous Bearer challenge needed to read a public GHCR blob. */
+function createAnonymousGhcrFetch(fetchImpl: FetchLike): FetchLike {
+  return async (input, init) => {
+    const url = String(input);
+    const blob = GHCR_BLOB_URL.exec(url);
+    const response = await fetchImpl(input, init);
+    if (blob === null || response.status !== 401) return response;
+
+    const challenge = response.headers.get("www-authenticate");
+    await cancelResponseBody(response, new Error("GHCR requested an anonymous pull token"));
+    if (challenge === null || !challenge.startsWith("Bearer ")) {
+      throw new Error("GHCR anonymous pull challenge is missing or unsupported");
+    }
+    const parameters = new Map<string, string>();
+    const encoded = challenge.slice("Bearer ".length);
+    const pattern = /(?:^|,)([a-z]+)="([^"]*)"/gu;
+    let consumed = "";
+    for (const match of encoded.matchAll(pattern)) {
+      const [whole, name, value] = match;
+      if (name === undefined || value === undefined || parameters.has(name)) {
+        throw new Error("GHCR anonymous pull challenge is malformed");
+      }
+      parameters.set(name, value);
+      consumed += whole;
+    }
+    if (consumed !== encoded) {
+      throw new Error("GHCR anonymous pull challenge is malformed");
+    }
+    const repository = blob[1]!;
+    const expectedScope = `repository:${repository}:pull`;
+    const realmValue = parameters.get("realm");
+    if (
+      realmValue === undefined || parameters.get("service") !== "ghcr.io" ||
+      parameters.get("scope") !== expectedScope || parameters.size !== 3
+    ) {
+      throw new Error("GHCR anonymous pull challenge differs from the exact repository");
+    }
+    const realm = new URL(realmValue);
+    if (
+      realm.protocol !== "https:" || realm.hostname !== "ghcr.io" ||
+      realm.port !== "" || realm.username !== "" || realm.password !== "" ||
+      realm.hash !== "" || realm.search !== "" || realm.href !== realmValue
+    ) {
+      throw new Error("GHCR anonymous pull challenge has a hostile token realm");
+    }
+    realm.searchParams.set("service", "ghcr.io");
+    realm.searchParams.set("scope", expectedScope);
+    const tokenResponse = await fetchImpl(realm.href, {
+      cache: "no-store",
+      credentials: "omit",
+      headers: { accept: "application/json" },
+      referrerPolicy: "no-referrer",
+      redirect: "error",
+      ...(init?.signal === undefined ? {} : { signal: init.signal }),
+    });
+    if (!tokenResponse.ok || tokenResponse.redirected) {
+      await cancelResponseBody(
+        tokenResponse,
+        new Error("GHCR anonymous pull token exchange failed"),
+      );
+      throw new Error("GHCR anonymous pull token exchange failed");
+    }
+    const tokenBytes = await readBoundedResponseBytes(
+      tokenResponse,
+      MAX_ANONYMOUS_TOKEN_BYTES,
+      "GHCR anonymous pull token",
+    );
+    let token: unknown;
+    try {
+      const payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(tokenBytes));
+      token = payload && typeof payload === "object"
+        ? ((payload as Record<string, unknown>).token ??
+          (payload as Record<string, unknown>).access_token)
+        : undefined;
+    } catch (error) {
+      throw new Error("GHCR anonymous pull token response is malformed", { cause: error });
+    }
+    if (
+      typeof token !== "string" || token.length === 0 || token.length > 64 * 1024 ||
+      /\s/u.test(token)
+    ) {
+      throw new Error("GHCR anonymous pull token response is malformed");
+    }
+    return fetchImpl(input, {
+      ...init,
+      headers: { authorization: `Bearer ${token}` },
+    });
+  };
+}
+
+async function readBoundedResponseBytes(
+  response: Response,
+  maximum: number,
+  label: string,
+): Promise<Uint8Array> {
+  if (response.body === null) throw new Error(`${label} response has no body`);
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maximum) {
+        const error = new Error(`${label} response exceeds its byte bound`);
+        await reader.cancel(error).catch(() => {});
+        throw error;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const output = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return output;
 }
 
 function createFetcherFromSnapshot(
@@ -360,7 +528,21 @@ export function validateClosedLazyAssetSources(
   return validated;
 }
 
+/** Snapshot a closed on-demand source transport, including the empty set. */
+export function snapshotClosedLazyAssetSources(
+  sources: readonly ClosedLazyAssetSource[],
+): ClosedLazyAssetSource[] {
+  if (!Array.isArray(sources)) {
+    throw new Error("closed lazy asset sources must be an array");
+  }
+  return sources.length === 0 ? [] : validateClosedLazyAssetSources(sources);
+}
+
+const IMMUTABLE_OCI_REFERENCE =
+  /^(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)(?::[1-9][0-9]{0,4})?\/(?:[a-z0-9]+(?:[._-][a-z0-9]+)*\/)*[a-z0-9]+(?:[._-][a-z0-9]+)*@sha256:[0-9a-f]{64}$/;
+
 function validateCanonicalClosedUrl(url: string, label: string): void {
+  if (IMMUTABLE_OCI_REFERENCE.test(url)) return;
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -373,7 +555,8 @@ function validateCanonicalClosedUrl(url: string, label: string): void {
     parsed.href !== url
   ) {
     throw new Error(
-      `${label} must use one canonical HTTPS URL without userinfo or a fragment`,
+      `${label} must use one canonical HTTPS URL or immutable OCI reference ` +
+        "without userinfo or a fragment",
     );
   }
 }

@@ -119,6 +119,50 @@ describe("dinit-derived image system databases", () => {
 });
 
 describe("dinit-derived image binary ownership", () => {
+  it("installs the exact declared services database for a standalone image", () => {
+    const fs = createFs();
+    addDinitInit(fs, [], {
+      binaries: {
+        dinit: encoder.encode("exact dinit"),
+        dinitctl: encoder.encode("exact dinitctl"),
+      },
+      services: encoder.encode("exact standalone services\n"),
+    });
+
+    expect(readGuestFile(fs, "/etc/services")).toBe(
+      "exact standalone services\n",
+    );
+  });
+
+  it("installs exact staged Dinit bytes and preserves the base services database", () => {
+    const fs = createFs();
+    ensureDirRecursive(fs, "/etc");
+    writeVfsFile(fs, "/etc/services", "exact base services\n");
+
+    addDinitInit(fs, [], {
+      binaries: {
+        dinit: encoder.encode("exact dinit"),
+        dinitctl: encoder.encode("exact dinitctl"),
+      },
+    });
+
+    expect(readGuestFile(fs, "/sbin/dinit")).toBe("exact dinit");
+    expect(readGuestFile(fs, "/sbin/dinitctl")).toBe("exact dinitctl");
+    expect(readGuestFile(fs, "/etc/services")).toBe("exact base services\n");
+  });
+
+  it("rejects an exact staged service image whose base omits /etc/services", () => {
+    const fs = createFs();
+    expect(() => addDinitInit(fs, [], {
+      binaries: {
+        dinit: encoder.encode("exact dinit"),
+        dinitctl: encoder.encode("exact dinitctl"),
+      },
+    })).toThrow(
+      "exact service-image composition requires /etc/services from its base product",
+    );
+  });
+
   it("inherits the complete resident Dinit set from the canonical shell", () => {
     const fs = createFs();
     ensureDirRecursive(fs, "/sbin");

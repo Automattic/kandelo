@@ -75,6 +75,193 @@ kandelo_package_require_disjoint_paths() {
     esac
 }
 
+kandelo_package_require_stable_projection_id() {
+    local label="$1"
+    local value="$2"
+    if ! printf '%s\n' "$value" | grep -Eq '^[a-z0-9][a-z0-9._-]{0,127}$'; then
+        echo "ERROR: $label must be a stable identifier: $value" >&2
+        return 2
+    fi
+}
+
+kandelo_package_vfs_projection_requested() {
+    local label="$1"
+    local selected="$2"
+    local requested="$3"
+    local previous=""
+    local item
+    kandelo_package_require_stable_projection_id "$label" "$requested" || return
+    [ -n "$selected" ] || return 1
+    kandelo_package_require_stable_projection_id \
+        "VFS product package" "${KANDELO_VFS_PRODUCT_PACKAGE:-}" || return
+    kandelo_package_require_stable_projection_id \
+        "resolver package" "${WASM_POSIX_DEP_NAME:-}" || return
+    if [ "$KANDELO_VFS_PRODUCT_PACKAGE" != "$WASM_POSIX_DEP_NAME" ]; then
+        return 1
+    fi
+    if [ "${#selected}" -gt 8192 ] || \
+       ! printf '%s\n' "$selected" | grep -Eq \
+           '^[a-z0-9][a-z0-9._-]{0,127}(,[a-z0-9][a-z0-9._-]{0,127})*$'; then
+        echo "ERROR: $label selection is not a canonical comma-separated identifier list" >&2
+        return 2
+    fi
+    while IFS= read -r item; do
+        if [ -n "$previous" ] && [[ "$item" < "$previous" || "$item" == "$previous" ]]; then
+            echo "ERROR: $label selection is not a canonical comma-separated identifier list" >&2
+            return 2
+        fi
+        [ "$item" = "$requested" ] && return 0
+        previous="$item"
+    done < <(printf '%s\n' "$selected" | tr ',' '\n')
+    return 1
+}
+
+kandelo_package_vfs_output_requested() {
+    kandelo_package_vfs_projection_requested \
+        "VFS product output" "${KANDELO_VFS_PRODUCT_OUTPUTS:-}" "$1"
+}
+
+kandelo_package_vfs_source_role_requested() {
+    kandelo_package_vfs_projection_requested \
+        "VFS product source role" "${KANDELO_VFS_PRODUCT_SOURCE_ROLES:-}" "$1"
+}
+
+kandelo_package_projection_root() {
+    local relative="$1"
+    local output_root projection_root
+    output_root="$(kandelo_package_require_existing_real_dir \
+        KANDELO_PACKAGE_OUT_DIR "${KANDELO_PACKAGE_OUT_DIR:-}")" || return
+    projection_root="$output_root/$relative"
+    if [ -L "$projection_root" ] || \
+       { [ -e "$projection_root" ] && [ ! -d "$projection_root" ]; }; then
+        echo "ERROR: package projection root must be a real directory: $projection_root" >&2
+        return 2
+    fi
+    mkdir -p "$projection_root"
+    kandelo_package_require_existing_real_dir \
+        "package projection root" "$projection_root"
+}
+
+# Transitional package adapters publish only physical bytes. VFS product
+# manifests remain the sole authority that selects package names, logical
+# outputs, source roles, materialization, and product membership.
+kandelo_package_project_vfs_output() {
+    local selector="$1"
+    local source="$2"
+    local projection_root target
+    kandelo_package_require_stable_projection_id \
+        "VFS product output selector" "$selector" || return
+    if [ ! -f "$source" ] || [ -L "$source" ] || [ ! -s "$source" ]; then
+        echo "ERROR: VFS product output source must be one regular non-symlink file: $source" >&2
+        return 2
+    fi
+    projection_root="$(kandelo_package_projection_root \
+        .kandelo-vfs-product-outputs)" || return
+    target="$projection_root/$selector"
+    if [ -e "$target" ] || [ -L "$target" ]; then
+        echo "ERROR: VFS product output already exists: $target" >&2
+        return 2
+    fi
+    cp "$source" "$target"
+}
+
+kandelo_package_project_vfs_source_role() {
+    local role="$1"
+    local source="$2"
+    local projection_root target invalid
+    kandelo_package_require_stable_projection_id \
+        "VFS product source role" "$role" || return
+    source="$(kandelo_package_require_existing_real_dir \
+        "VFS product source role source" "$source")" || return
+    if [ -z "$(find "$source" -mindepth 1 -print -quit)" ]; then
+        echo "ERROR: VFS product source role source is empty: $source" >&2
+        return 2
+    fi
+    invalid="$(find "$source" -type l -print -quit)"
+    if [ -n "$invalid" ]; then
+        echo "ERROR: VFS product source role contains a symlink: $invalid" >&2
+        return 2
+    fi
+    invalid="$(find "$source" -mindepth 1 ! -type d ! -type f -print -quit)"
+    if [ -n "$invalid" ]; then
+        echo "ERROR: VFS product source role contains a special entry: $invalid" >&2
+        return 2
+    fi
+    projection_root="$(kandelo_package_projection_root \
+        .kandelo-vfs-source-roles)" || return
+    target="$projection_root/$role"
+    if [ -e "$target" ] || [ -L "$target" ]; then
+        echo "ERROR: VFS product source role already exists: $target" >&2
+        return 2
+    fi
+    mkdir "$target"
+    cp -a "$source/." "$target/"
+}
+
+kandelo_package_project_requested_vfs_output() {
+    local selector="$1"
+    local source="$2"
+    local status
+    status=0
+    kandelo_package_vfs_output_requested "$selector" || status=$?
+    case "$status" in
+        0) kandelo_package_project_vfs_output "$selector" "$source" ;;
+        1) return 0 ;;
+        *) return "$status" ;;
+    esac
+}
+
+kandelo_package_project_requested_vfs_directory_output() {
+    local selector="$1"
+    local source="$2"
+    local status projection_root target invalid
+    status=0
+    kandelo_package_vfs_output_requested "$selector" || status=$?
+    case "$status" in
+        0) ;;
+        1) return 0 ;;
+        *) return "$status" ;;
+    esac
+    source="$(kandelo_package_require_existing_real_dir \
+        "VFS product directory output source" "$source")" || return
+    if [ -z "$(find "$source" -mindepth 1 -print -quit)" ]; then
+        echo "ERROR: VFS product directory output source is empty: $source" >&2
+        return 2
+    fi
+    invalid="$(find "$source" -type l -print -quit)"
+    if [ -n "$invalid" ]; then
+        echo "ERROR: VFS product directory output contains a symlink: $invalid" >&2
+        return 2
+    fi
+    invalid="$(find "$source" -mindepth 1 ! -type d ! -type f -print -quit)"
+    if [ -n "$invalid" ]; then
+        echo "ERROR: VFS product directory output contains a special entry: $invalid" >&2
+        return 2
+    fi
+    projection_root="$(kandelo_package_projection_root \
+        .kandelo-vfs-product-outputs)" || return
+    target="$projection_root/$selector"
+    if [ -e "$target" ] || [ -L "$target" ]; then
+        echo "ERROR: VFS product output already exists: $target" >&2
+        return 2
+    fi
+    mkdir "$target"
+    cp -a "$source/." "$target/"
+}
+
+kandelo_package_project_requested_vfs_source_role() {
+    local role="$1"
+    local source="$2"
+    local status
+    status=0
+    kandelo_package_vfs_source_role_requested "$role" || status=$?
+    case "$status" in
+        0) kandelo_package_project_vfs_source_role "$role" "$source" ;;
+        1) return 0 ;;
+        *) return "$status" ;;
+    esac
+}
+
 kandelo_package_require_source_disjoint_from_build_roots() {
     local source_root="$1"
     if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
@@ -163,7 +350,9 @@ kandelo_package_stage_verified_source() {
     local source_url="$4"
     local source_sha256="$5"
     local work_dir="$6"
-    local download_dir tarball
+    local archive_magic download_dir entry invalid tarball zip_listing
+    local zip_listing_long zip_root zip_top zip_top_name
+    local -a zip_entries
 
     if [ -e "$dest" ] || [ -L "$dest" ]; then
         echo "ERROR: $label destination already exists: $dest" >&2
@@ -203,6 +392,100 @@ kandelo_package_stage_verified_source() {
         rm -rf "$download_dir"
         return 1
     fi
+
+    archive_magic="$(od -An -N4 -tx1 "$tarball" | tr -d '[:space:]')"
+    case "$archive_magic" in
+        504b0304|504b0506|504b0708)
+            zip_listing="$download_dir/entries.txt"
+            zip_listing_long="$download_dir/entries.long.txt"
+            zip_root="$download_dir/unpacked"
+            if ! unzip -Z1 "$tarball" >"$zip_listing" ||
+               ! unzip -Z -l "$tarball" >"$zip_listing_long"; then
+                rm -rf "$download_dir"
+                return 1
+            fi
+            # Reject links/devices before extraction so an archive entry cannot
+            # redirect a later write outside the private unpacking root.
+            if ! awk '
+                NR <= 2 { next }
+                /^[0-9]+ files?,/ { next }
+                {
+                    kind = substr($0, 1, 1)
+                    if (kind != "-" && kind != "d") exit 1
+                    seen = 1
+                }
+                END { if (!seen) exit 1 }
+            ' "$zip_listing_long"; then
+                rm -rf "$download_dir"
+                return 1
+            fi
+            zip_top_name=""
+            while IFS= read -r entry; do
+                case "$entry" in
+                    ""|/*|*\\*)
+                        rm -rf "$download_dir"
+                        return 1
+                        ;;
+                esac
+                entry="${entry%/}"
+                [ -n "$entry" ] || {
+                    rm -rf "$download_dir"
+                    return 1
+                }
+                case "/$entry/" in
+                    *'/../'*|*'/./'*|*'//'*)
+                        rm -rf "$download_dir"
+                        return 1
+                        ;;
+                esac
+                if [ -z "$zip_top_name" ]; then
+                    zip_top_name="${entry%%/*}"
+                elif [ "${entry%%/*}" != "$zip_top_name" ]; then
+                    rm -rf "$download_dir"
+                    return 1
+                fi
+            done <"$zip_listing"
+            [ -n "$zip_top_name" ] || {
+                rm -rf "$download_dir"
+                return 1
+            }
+            mkdir -p "$zip_root"
+            if ! unzip -oq "$tarball" -d "$zip_root"; then
+                rm -rf "$download_dir"
+                return 1
+            fi
+            mapfile -d '' -t zip_entries < <(
+                find "$zip_root" -mindepth 1 -maxdepth 1 -print0
+            )
+            if [ "${#zip_entries[@]}" -ne 1 ] ||
+               [ "$(basename "${zip_entries[0]}")" != "$zip_top_name" ] ||
+               [ ! -d "${zip_entries[0]}" ] || [ -L "${zip_entries[0]}" ]; then
+                rm -rf "$download_dir"
+                return 1
+            fi
+            zip_top="${zip_entries[0]}"
+            invalid="$(find "$zip_top" -type l -print -quit)"
+            [ -z "$invalid" ] || {
+                rm -rf "$download_dir"
+                return 1
+            }
+            invalid="$(
+                find "$zip_top" -mindepth 1 ! -type d ! -type f -print -quit
+            )"
+            [ -z "$invalid" ] || {
+                rm -rf "$download_dir"
+                return 1
+            }
+            mkdir -p "$dest"
+            if ! cp -a "$zip_top/." "$dest/"; then
+                rm -rf "$dest" "$download_dir"
+                return 1
+            fi
+            rm -rf "$download_dir"
+            return 0
+            ;;
+    esac
+
     mkdir -p "$dest"
     if ! tar xf "$tarball" -C "$dest" --strip-components=1; then
         rm -rf "$dest" "$download_dir"

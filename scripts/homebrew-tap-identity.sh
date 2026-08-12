@@ -46,6 +46,42 @@ homebrew_bottle_root_url() {
   printf 'https://ghcr.io/v2/%s\n' "$normalized_repository"
 }
 
+homebrew_candidate_bottle_root_url() {
+  if [ "$#" -ne 3 ]; then
+    echo "homebrew_candidate_bottle_root_url: expected REPOSITORY TARGET_ABI FORMULA" >&2
+    return 2
+  fi
+  local repository="$1" target_abi="$2" formula="$3"
+  local normalized_repository owner repository_name tap_name
+
+  if ! [[ "$target_abi" =~ ^[1-9][0-9]*$ ]]; then
+    echo "homebrew-tap-identity.sh: target ABI must be a positive integer" >&2
+    return 2
+  fi
+  if ! [[ "$formula" =~ ^[a-z0-9][a-z0-9._-]*$ ]] ||
+     [ "${#formula}" -gt 128 ]; then
+    echo "homebrew-tap-identity.sh: invalid candidate Formula name: $formula" >&2
+    return 2
+  fi
+  if ! [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+    echo "homebrew-tap-identity.sh: invalid tap repository: $repository" >&2
+    return 2
+  fi
+  normalized_repository="$(printf '%s' "$repository" | tr '[:upper:]' '[:lower:]')"
+  owner="${normalized_repository%%/*}"
+  repository_name="${normalized_repository#*/}"
+  case "$repository_name" in
+    homebrew-?*) tap_name="$owner/${repository_name#homebrew-}" ;;
+    *)
+      echo "homebrew-tap-identity.sh: tap repositories must use owner/homebrew-name" >&2
+      return 2
+      ;;
+  esac
+  homebrew_resolve_tap_name "$repository" "$tap_name" >/dev/null || return
+  printf 'https://ghcr.io/v2/%s-abi-%s-candidates/%s\n' \
+    "$normalized_repository" "$target_abi" "$formula"
+}
+
 homebrew_local_tap_clone_url() {
   if [ "$#" -ne 1 ]; then
     echo "homebrew_local_tap_clone_url: expected CHECKOUT" >&2

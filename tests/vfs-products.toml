@@ -1,0 +1,175 @@
+schema = 1
+kind = "kandelo-test-vfs-products"
+
+[[registrations]]
+product = "platform-rootfs"
+node = ["rootfs-node-startup"]
+browser = ["rootfs-browser-startup"]
+
+[registrations.applicability]
+abi = "required"
+kernel = "required"
+host = "required"
+
+[[registrations]]
+product = "browser-main-shell"
+node = ["main-shell-startup"]
+browser = [
+  "main-shell-basic-e2e",
+  "main-shell-fbdoom-e2e",
+  "main-shell-modeset-e2e",
+]
+
+[registrations.applicability]
+abi = "required"
+kernel = "required"
+host = "required"
+
+[[registrations]]
+product = "browser-node"
+node = ["node-vfs-node-startup"]
+browser = ["node-vfs-browser-startup"]
+
+[registrations.applicability]
+abi = "required"
+kernel = "required"
+host = "required"
+
+[[registrations]]
+product = "browser-nginx"
+node = ["nginx-vfs-node-startup"]
+browser = ["nginx-vfs-browser-startup"]
+
+[registrations.applicability]
+abi = "required"
+kernel = "required"
+host = "required"
+
+[[registrations]]
+product = "browser-nginx-php"
+node = ["nginx-php-vfs-node-startup"]
+browser = ["nginx-php-vfs-browser-startup"]
+
+[registrations.applicability]
+abi = "required"
+kernel = "required"
+host = "required"
+
+[[registrations]]
+product = "browser-wordpress"
+node = ["wordpress-sqlite-node-startup"]
+browser = ["wordpress-sqlite-browser-e2e"]
+
+[registrations.applicability]
+abi = "required"
+kernel = "required"
+host = "required"
+
+[[registrations]]
+product = "browser-lamp"
+node = ["wordpress-mariadb-node-startup"]
+browser = ["wordpress-mariadb-browser-e2e"]
+
+[registrations.applicability]
+abi = "required"
+kernel = "required"
+host = "required"
+
+[[registrations]]
+product = "browser-mariadb-wasm32"
+node = ["mariadb-wasm32-node-startup"]
+browser = ["mariadb-wasm32-browser-startup"]
+
+[registrations.applicability]
+abi = "informational"
+kernel = "informational"
+host = "informational"
+
+[[registrations]]
+product = "browser-mariadb-wasm64"
+node = ["mariadb-wasm64-node-startup"]
+browser = ["mariadb-wasm64-browser-startup"]
+
+[registrations.applicability]
+abi = "informational"
+kernel = "informational"
+host = "informational"
+
+[[registrations]]
+product = "browser-python"
+node = ["python-vfs-node-smoke"]
+browser = ["python-vfs-browser-smoke"]
+
+[registrations.applicability]
+abi = "informational"
+kernel = "informational"
+host = "informational"
+
+[[registrations]]
+product = "browser-perl"
+node = ["perl-vfs-node-smoke"]
+browser = ["perl-vfs-browser-smoke"]
+
+[registrations.applicability]
+abi = "informational"
+kernel = "informational"
+host = "informational"
+
+[[registrations]]
+product = "browser-redis"
+node = ["redis-vfs-node-startup"]
+browser = ["redis-vfs-browser-startup"]
+
+[registrations.applicability]
+abi = "informational"
+kernel = "informational"
+host = "informational"
+
+[[registrations]]
+product = "browser-erlang"
+node = ["erlang-vfs-node-smoke"]
+browser = ["erlang-vfs-browser-smoke"]
+
+[registrations.applicability]
+abi = "informational"
+kernel = "informational"
+host = "informational"
+
+[[registrations]]
+product = "developer-kandelo-sdk"
+node = ["kandelo-sdk-node-compile"]
+
+[registrations.applicability]
+abi = "required"
+kernel = "informational"
+host = "informational"
+
+[[registrations]]
+product = "test-mariadb"
+node = ["mariadb-suite-node"]
+browser = ["mariadb-suite-browser"]
+
+[registrations.applicability]
+abi = "required"
+kernel = "required"
+host = "required"
+
+[[registrations]]
+product = "test-php"
+node = ["php-suite-node"]
+browser = ["php-suite-browser"]
+
+[registrations.applicability]
+abi = "required"
+kernel = "required"
+host = "required"
+
+[[registrations]]
+product = "test-sqlite"
+node = ["sqlite-suite-node"]
+browser = ["sqlite-suite-browser"]
+
+[registrations.applicability]
+abi = "required"
+kernel = "required"
+host = "required"

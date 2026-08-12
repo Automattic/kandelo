@@ -22,7 +22,6 @@ import type {
   SpawnProgramResolution,
   ThreadChannelAttachment,
 } from "./kernel-worker";
-import type { KernelPointer } from "./kernel";
 import { BrowserWorkerAdapter } from "./worker-adapter-browser";
 import { DeferredWorkerHandle } from "./deferred-worker-handle";
 import {
@@ -61,6 +60,7 @@ import {
 } from "./worker-quiescence";
 import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
 import { reapHostOwnedExitedProcess } from "./host-owned-process-reap";
+import { uninitializedKernelPipeResult } from "./kernel-pipe-transport";
 import type {
   CentralizedWorkerInitMessage,
   CentralizedThreadInitMessage,
@@ -904,9 +904,12 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // apply DEFAULT_MOUNT_SPEC (/ from the image + scratch mounts for /tmp,
   // /var/*, /home/user, /root, /srv). /etc is part of the image, baked in by
   // the demo (see apps/browser-demos/lib/kernel-owned-boot.ts).
-  const specMounts = await restoreBrowserKernelInitMounts(msg.vfsImage);
+  const specMounts = await restoreBrowserKernelInitMounts(
+    msg.vfsImage,
+    msg.rootfsMountSpec,
+  );
   const rootMount = specMounts.find((m) => m.mountPoint === "/");
-  if (!rootMount) throw new Error("DEFAULT_MOUNT_SPEC missing / mount");
+  if (!rootMount) throw new Error("rootfs mount spec missing / mount");
   memfs = rootMount.backend as MemoryFileSystem;
   if (msg.lazyUrlBase) {
     memfs.rewriteLazyFileUrls((url) => resolveLazyUrl(msg.lazyUrlBase!, url));
@@ -2688,121 +2691,86 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
 // ── Pipe operations ──
 
 function handlePipeRead(msg: Extract<MainToKernelMessage, { type: "pipe_read" }>) {
-  if (!kernelInstance) { respond(msg.requestId, null); return; }
-  const pipeRead = kernelInstance.exports.kernel_pipe_read as (
-    pid: number, pipeIdx: number, bufPtr: KernelPointer, bufLen: number,
-  ) => number;
-  const scratchOffset = (kernelWorker as any).tcpScratchOffset || (kernelWorker as any).scratchOffset;
-  const chunks: Uint8Array[] = [];
-  for (;;) {
-    const n = pipeRead(msg.pid, msg.pipeIdx, kernelWorker.toKernelPtr(scratchOffset), PAGE_SIZE);
-    if (n <= 0) break;
-    const mem = new Uint8Array(kernelMemory!.buffer);
-    chunks.push(mem.slice(scratchOffset, scratchOffset + n));
+  if (!initReady) {
+    respond(msg.requestId, uninitializedKernelPipeResult("read"));
+    return;
   }
-  if (chunks.length === 0) { respond(msg.requestId, null); return; }
-  const total = chunks.reduce((s, c) => s + c.length, 0);
-  const result = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.length;
-  }
-  respond(msg.requestId, result);
+  respond(msg.requestId, kernelWorker.readHostPipe(msg.pid, msg.pipeIdx));
 }
 
 function handlePipeWrite(msg: Extract<MainToKernelMessage, { type: "pipe_write" }>) {
-  if (!kernelInstance) { respond(msg.requestId, -1); return; }
-  const pipeWrite = kernelInstance.exports.kernel_pipe_write as (
-    pid: number, pipeIdx: number, bufPtr: KernelPointer, bufLen: number,
-  ) => number;
-  const scratchOffset = (kernelWorker as any).tcpScratchOffset || (kernelWorker as any).scratchOffset;
-  let written = 0;
-  const data = msg.data;
-  while (written < data.length) {
-    const chunk = Math.min(data.length - written, PAGE_SIZE);
-    let mem = new Uint8Array(kernelMemory!.buffer);
-    mem.set(data.subarray(written, written + chunk), scratchOffset);
-    const n = pipeWrite(msg.pid, msg.pipeIdx, kernelWorker.toKernelPtr(scratchOffset), chunk);
-    if (n <= 0) break;
-    written += n;
+  if (!initReady) {
+    respond(msg.requestId, uninitializedKernelPipeResult("write"));
+    return;
   }
-  // Wake readers + pollers watching this pipe + broad wake.
-  kernelWorker.notifyPipeReadable(msg.pipeIdx);
-  respond(msg.requestId, written);
+  respond(
+    msg.requestId,
+    kernelWorker.writeHostPipe(msg.pid, msg.pipeIdx, msg.data),
+  );
 }
 
 function handlePipeCloseRead(msg: Extract<MainToKernelMessage, { type: "pipe_close_read" }>) {
-  if (!kernelInstance) return;
-  const fn = kernelInstance.exports.kernel_pipe_close_read as (pid: number, pipeIdx: number) => number;
-  fn(msg.pid, msg.pipeIdx);
+  if (!initReady) return;
+  kernelWorker.closeHostPipeRead(msg.pid, msg.pipeIdx);
 }
 
 function handlePipeCloseWrite(msg: Extract<MainToKernelMessage, { type: "pipe_close_write" }>) {
-  if (!kernelInstance) return;
-  const fn = kernelInstance.exports.kernel_pipe_close_write as (pid: number, pipeIdx: number) => number;
-  fn(msg.pid, msg.pipeIdx);
+  if (!initReady) return;
+  kernelWorker.closeHostPipeWrite(msg.pid, msg.pipeIdx);
 }
 
 function handlePipeIsWriteOpen(msg: Extract<MainToKernelMessage, { type: "pipe_is_write_open" }>) {
-  if (!kernelInstance) { respond(msg.requestId, false); return; }
-  const fn = kernelInstance.exports.kernel_pipe_is_write_open as (pid: number, pipeIdx: number) => number;
-  respond(msg.requestId, fn(msg.pid, msg.pipeIdx) === 1);
+  if (!initReady) {
+    respond(msg.requestId, uninitializedKernelPipeResult("is-write-open"));
+    return;
+  }
+  respond(
+    msg.requestId,
+    kernelWorker.isHostPipeWriteOpen(msg.pid, msg.pipeIdx),
+  );
 }
 
 function handleInjectConnection(msg: Extract<MainToKernelMessage, { type: "inject_connection" }>) {
-  if (!kernelInstance) { respond(msg.requestId, -1); return; }
-  const injectConnection = kernelInstance.exports.kernel_inject_connection as (
-    pid: number, fd: number, a: number, b: number, c: number, d: number, port: number,
-  ) => number;
-  const recvPipeIdx = injectConnection(
-    msg.pid, msg.fd,
-    msg.peerAddr[0], msg.peerAddr[1], msg.peerAddr[2], msg.peerAddr[3],
-    msg.peerPort,
-  );
-  if (recvPipeIdx >= 0) {
-    (kernelWorker as any).scheduleWakeBlockedRetries();
+  if (!initReady) {
+    respond(msg.requestId, uninitializedKernelPipeResult("inject"));
+    return;
   }
-  respond(msg.requestId, recvPipeIdx);
+  respond(
+    msg.requestId,
+    kernelWorker.injectHostConnection(
+      msg.pid,
+      msg.fd,
+      msg.peerAddr,
+      msg.peerPort,
+    ),
+  );
 }
 
 function handleWakeBlockedReaders(msg: Extract<MainToKernelMessage, { type: "wake_blocked_readers" }>) {
-  const kw = kernelWorker as any;
-  const readers = kw.pendingPipeReaders?.get(msg.pipeIdx);
-  if (readers && readers.length > 0) {
-    kw.pendingPipeReaders.delete(msg.pipeIdx);
-    for (const reader of readers) {
-      if (kw.processes.has(reader.pid)) {
-        kw.retrySyscall(reader.channel);
-      }
-    }
-  }
-  kw.scheduleWakeBlockedRetries();
+  if (!initReady) return;
+  kernelWorker.wakeHostPipeReaders(msg.pipeIdx);
 }
 
 function handleWakeBlockedWriters(msg: Extract<MainToKernelMessage, { type: "wake_blocked_writers" }>) {
-  const kw = kernelWorker as any;
-  const writers = kw.pendingPipeWriters?.get(msg.pipeIdx);
-  if (writers && writers.length > 0) {
-    kw.pendingPipeWriters.delete(msg.pipeIdx);
-    for (const writer of writers) {
-      if (kw.processes.has(writer.pid)) {
-        kw.retrySyscall(writer.channel);
-      }
-    }
-  }
-  kw.scheduleWakeBlockedRetries();
+  if (!initReady) return;
+  kernelWorker.wakeHostPipeWriters(msg.pipeIdx);
 }
 
 function handleIsStdinConsumed(msg: Extract<MainToKernelMessage, { type: "is_stdin_consumed" }>) {
+  if (!initReady) {
+    respond(msg.requestId, false);
+    return;
+  }
   const kw = kernelWorker as any;
   respond(msg.requestId, kw.stdinFinite.has(msg.pid) && !kw.stdinBuffers.has(msg.pid));
 }
 
 function handlePickListenerTarget(msg: Extract<MainToKernelMessage, { type: "pick_listener_target" }>) {
-  const kw = kernelWorker as any;
-  const result = kw.pickListenerTarget(msg.port);
-  respond(msg.requestId, result);
+  if (!initReady) {
+    respond(msg.requestId, uninitializedKernelPipeResult("pick-listener"));
+    return;
+  }
+  respond(msg.requestId, kernelWorker.pickListenerTarget(msg.port));
 }
 
 async function performDestroy() {
@@ -3067,6 +3035,7 @@ async function handleHttpRequestMessage(msg: {
   port: number;
   request: any;
   timeoutMs?: number;
+  maxResponseBytes?: number;
 }) {
   if (!kernelInstance) {
     respondError(msg.requestId, "Kernel not initialized");
@@ -3076,7 +3045,10 @@ async function handleHttpRequestMessage(msg: {
     const response = await kernelWorker.sendHttpRequest(
       msg.port,
       msg.request,
-      { timeoutMs: msg.timeoutMs },
+      {
+        timeoutMs: msg.timeoutMs,
+        maxResponseBytes: msg.maxResponseBytes,
+      },
     );
     respond(msg.requestId, response);
   } catch (e) {

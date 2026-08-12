@@ -20,12 +20,14 @@ DEPENDENCY_PROVENANCE=""
 SELECTION_RECEIPT=""
 SYSROOT_BUILD_ROOT=""
 OUT=""
+STAGING_CANDIDATE_ABI=""
+STAGED_DEPENDENCY_FORMULAE=()
 BUILD_USER="${KANDELO_HOMEBREW_BUILD_USER:-}"
 SHARED_TEMP="${KANDELO_HOMEBREW_SHARED_TEMP:-}"
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-verify-poured-bottle.sh --tap-root <dir> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> [--tap-checkout-commit <sha>] --formula <name> --arch <wasm32|wasm64> --abi <number> --bottle <archive> --bottle-json <json> --bottle-url <url> --bottle-sha256 <sha> --bottle-bytes <count> --bottle-root-url <url> --dependency-provenance <json> --selection-receipt <json> --sysroot-build-root <dir> --out <runtime-evidence.json>
+usage: scripts/homebrew-verify-poured-bottle.sh --tap-root <dir> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> [--tap-checkout-commit <sha>] --formula <name> --arch <wasm32|wasm64> --abi <number> --bottle <archive> --bottle-json <json> --bottle-url <url> --bottle-sha256 <sha> --bottle-bytes <count> --bottle-root-url <url> --dependency-provenance <json> --selection-receipt <json> --sysroot-build-root <dir> [--staging-candidate-abi <N>] [--staged-dependency-formula <name> ...] --out <runtime-evidence.json>
 
 The tap must already contain the reconstructed target bottle block. In CI all
 Homebrew and Formula execution runs as the dedicated isolated workflow user.
@@ -55,6 +57,8 @@ while [ "$#" -gt 0 ]; do
     --dependency-provenance) DEPENDENCY_PROVENANCE="${2:-}"; shift 2 ;;
     --selection-receipt) SELECTION_RECEIPT="${2:-}"; shift 2 ;;
     --sysroot-build-root) SYSROOT_BUILD_ROOT="${2:-}"; shift 2 ;;
+    --staging-candidate-abi) STAGING_CANDIDATE_ABI="${2:-}"; shift 2 ;;
+    --staged-dependency-formula) STAGED_DEPENDENCY_FORMULAE+=("${2:-}"); shift 2 ;;
     --out) OUT="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "homebrew-verify-poured-bottle.sh: unknown flag $1" >&2; usage; exit 2 ;;
@@ -110,6 +114,16 @@ case "$ARCH" in wasm32|wasm64) ;; *) echo "homebrew-verify-poured-bottle.sh: inv
 [[ "$ABI" =~ ^[1-9][0-9]*$ ]] || {
   echo "homebrew-verify-poured-bottle.sh: invalid ABI" >&2; exit 2;
 }
+if [ -n "$STAGING_CANDIDATE_ABI" ]; then
+  [[ "$STAGING_CANDIDATE_ABI" =~ ^[1-9][0-9]*$ ]] && \
+    [ "$STAGING_CANDIDATE_ABI" = "$ABI" ] || {
+    echo "homebrew-verify-poured-bottle.sh: staging candidate ABI differs from target ABI" >&2
+    exit 2
+  }
+elif [ "${#STAGED_DEPENDENCY_FORMULAE[@]}" -ne 0 ]; then
+  echo "homebrew-verify-poured-bottle.sh: staged dependencies require candidate namespace authority" >&2
+  exit 2
+fi
 [[ "$BOTTLE_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
   echo "homebrew-verify-poured-bottle.sh: invalid bottle sha256" >&2; exit 2;
 }
@@ -136,10 +150,14 @@ for file in "$BOTTLE" "$BOTTLE_JSON" "$DEPENDENCY_PROVENANCE" "$SELECTION_RECEIP
     exit 2
   }
 done
+FORMULA_BOTTLE_ROOT_URL="$BOTTLE_ROOT_URL"
+if [ -n "$STAGING_CANDIDATE_ABI" ]; then
+  FORMULA_BOTTLE_ROOT_URL="$BOTTLE_ROOT_URL/$FORMULA"
+fi
 if ! jq -e \
   --arg formula "$FORMULA" \
   --arg bottle_tag "$BOTTLE_TAG" \
-  --arg bottle_root_url "$BOTTLE_ROOT_URL" \
+  --arg bottle_root_url "$FORMULA_BOTTLE_ROOT_URL" \
   --arg sha256 "$BOTTLE_SHA256" '
     type == "object" and keys == [$formula] and
     (.[$formula].formula | type == "object") and
@@ -177,22 +195,28 @@ RECONSTRUCTED_FORMULA_RELATIVE="Formula/$FORMULA.rb"
   echo "homebrew-verify-poured-bottle.sh: reconstructed Formula must be a regular file" >&2
   exit 2
 }
+declare -A ALLOWED_STAGED_FORMULAE=(["$FORMULA"]=1)
+previous_staged=""
+for dependency in "${STAGED_DEPENDENCY_FORMULAE[@]}"; do
+  [[ "$dependency" =~ ^[a-z0-9][a-z0-9._-]*$ ]] && \
+    [ "$dependency" != "$FORMULA" ] && \
+    [[ "$dependency" > "$previous_staged" ]] || {
+    echo "homebrew-verify-poured-bottle.sh: staged dependency Formulae must be sorted, unique, and exclude the target" >&2
+    exit 2
+  }
+  ALLOWED_STAGED_FORMULAE["$dependency"]=1
+  previous_staged="$dependency"
+done
 mapfile -t source_tap_changes < <(
   git -C "$TAP_ROOT" status --short --untracked-files=all
 )
-case "${#source_tap_changes[@]}" in
-  0) ;;
-  1)
-    [ "${source_tap_changes[0]}" = " M $RECONSTRUCTED_FORMULA_RELATIVE" ] || {
-      echo "homebrew-verify-poured-bottle.sh: reconstructed tap must be clean or change only $RECONSTRUCTED_FORMULA_RELATIVE" >&2
-      exit 2
-    }
-    ;;
-  *)
-    echo "homebrew-verify-poured-bottle.sh: reconstructed tap must be clean or change only $RECONSTRUCTED_FORMULA_RELATIVE" >&2
+for change in "${source_tap_changes[@]}"; do
+  [[ "$change" =~ ^\ M\ Formula/([a-z0-9][a-z0-9._-]*)\.rb$ ]] && \
+    [ -n "${ALLOWED_STAGED_FORMULAE[${BASH_REMATCH[1]}]:-}" ] || {
+    echo "homebrew-verify-poured-bottle.sh: reconstructed tap changed an undeclared Formula: $change" >&2
     exit 2
-    ;;
-esac
+  }
+done
 actual_sha="$(sha256sum "$BOTTLE" | awk '{print $1}')"
 actual_bytes="$(wc -c <"$BOTTLE" | tr -d '[:space:]')"
 [ "$actual_sha" = "$BOTTLE_SHA256" ] && [ "$actual_bytes" = "$BOTTLE_BYTES" ] || {
@@ -488,27 +512,17 @@ TAPPED_TAP_ROOT="$(cd "$TAPPED_TAP_ROOT" && pwd -P)"
   echo "homebrew-verify-poured-bottle.sh: Homebrew did not clone the planned tap commit cleanly" >&2
   exit 1
 }
-cp -- "$TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" \
-  "$TAPPED_TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE"
-mapfile -t selected_tap_changes < <(
-  git -C "$TAPPED_TAP_ROOT" status --short --untracked-files=all
+stage_formula_args=(
+  --source-tap "$TAP_ROOT"
+  --target-tap "$TAPPED_TAP_ROOT"
+  --target-formula "$FORMULA"
 )
-case "${#selected_tap_changes[@]}" in
-  0) ;;
-  1)
-    [ "${selected_tap_changes[0]}" = " M $RECONSTRUCTED_FORMULA_RELATIVE" ] || {
-      echo "homebrew-verify-poured-bottle.sh: Homebrew did not select the exact reconstructed Formula" >&2
-      exit 1
-    }
-    ;;
-  *)
-    echo "homebrew-verify-poured-bottle.sh: Homebrew did not select the exact reconstructed Formula" >&2
-    exit 1
-    ;;
-esac
-cmp -s "$TAPPED_TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" \
-  "$TAP_ROOT/$RECONSTRUCTED_FORMULA_RELATIVE" || {
-  echo "homebrew-verify-poured-bottle.sh: Homebrew did not select the exact reconstructed Formula" >&2
+for dependency in "${STAGED_DEPENDENCY_FORMULAE[@]}"; do
+  stage_formula_args+=(--dependency-formula "$dependency")
+done
+bash "$KANDELO_ROOT/scripts/homebrew-stage-candidate-formulae.sh" \
+  "${stage_formula_args[@]}" || {
+  echo "homebrew-verify-poured-bottle.sh: Homebrew did not select the exact reconstructed Formula closure" >&2
   exit 1
 }
 export HOMEBREW_KANDELO_PRIMARY_TAP_ROOT="$TAPPED_TAP_ROOT"
@@ -699,6 +713,9 @@ if [ -n "$HOMEBREW_GUEST_LAYOUT_SHA256" ]; then
     --prefix-campaign-layout-sha256 "$HOMEBREW_GUEST_LAYOUT_SHA256"
   )
 fi
+if [ -n "$STAGING_CANDIDATE_ABI" ]; then
+  dependency_cache_args+=(--staging-candidate-abi "$STAGING_CANDIDATE_ABI")
+fi
 HOMEBREW_KANDELO_BOTTLE_TAG="$BOTTLE_TAG" \
 KANDELO_HOMEBREW_BOTTLE_TAG="$BOTTLE_TAG" \
   python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" \
@@ -827,8 +844,19 @@ if [ -n "$HOMEBREW_GUEST_LAYOUT_SHA256" ]; then
     --prefix-campaign-layout-sha256 "$HOMEBREW_GUEST_LAYOUT_SHA256"
   )
 fi
+if [ -n "$STAGING_CANDIDATE_ABI" ]; then
+  dependency_provenance_args+=(
+    --staging-candidate-abi "$STAGING_CANDIDATE_ABI"
+  )
+fi
 python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" \
   "${dependency_provenance_args[@]}"
+if [ -n "$STAGING_CANDIDATE_ABI" ]; then
+  python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" \
+    validate-staging \
+    --expected "$DEPENDENCY_PROVENANCE" \
+    --actual "$VERIFIED_DEPENDENCIES"
+fi
 
 if [ -n "$BUILD_USER" ]; then
   homebrew_patched_launcher_teardown "$BUILD_USER"
@@ -852,31 +880,37 @@ case "$FORMULA_TEST_CONTRACT" in
     ;;
 esac
 
-python3 "$KANDELO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" capture \
-  --formula "$FORMULA" \
-  --arch "$ARCH" \
-  --abi "$ABI" \
-  --tap-repository "$TAP_REPOSITORY" \
-  --tap-name "$TAP_NAME" \
-  --tap-commit "$TAP_COMMIT" \
-  --tap-checkout-commit "$TAP_CHECKOUT_COMMIT" \
-  --prefix-campaign-layout-sha256 "$HOMEBREW_GUEST_LAYOUT_SHA256" \
-  --tap-root "$TAP_ROOT" \
-  --dependency-tap-root "$PROVENANCE_TAP_ROOT" \
-  --bottle-root-url "$BOTTLE_ROOT_URL" \
-  --bottle-json "$BOTTLE_JSON" \
-  --bottle-url "$BOTTLE_URL" \
-  --bottle-sha256 "$BOTTLE_SHA256" \
-  --bottle-bytes "$BOTTLE_BYTES" \
-  --dependency-provenance "$VERIFIED_DEPENDENCIES" \
-  --selection-receipt "$SELECTION_RECEIPT" \
-  --target-prefix "$TARGET_PREFIX" \
-  --target-receipt "$TARGET_RECEIPT" \
-  --formula-info "$FORMULA_INFO" \
-  --install-log "$INSTALL_LOG" \
-  --node-receipt "$HOMEBREW_KANDELO_NODE_RECEIPT_PATH" \
-  --installed-bottle "$INSTALLED_BOTTLE" \
-  --cache-root "$HOMEBREW_CACHE" \
+runtime_evidence_args=(
+  --formula "$FORMULA"
+  --arch "$ARCH"
+  --abi "$ABI"
+  --tap-repository "$TAP_REPOSITORY"
+  --tap-name "$TAP_NAME"
+  --tap-commit "$TAP_COMMIT"
+  --tap-checkout-commit "$TAP_CHECKOUT_COMMIT"
+  --prefix-campaign-layout-sha256 "$HOMEBREW_GUEST_LAYOUT_SHA256"
+  --tap-root "$TAP_ROOT"
+  --dependency-tap-root "$PROVENANCE_TAP_ROOT"
+  --bottle-root-url "$BOTTLE_ROOT_URL"
+  --bottle-json "$BOTTLE_JSON"
+  --bottle-url "$BOTTLE_URL"
+  --bottle-sha256 "$BOTTLE_SHA256"
+  --bottle-bytes "$BOTTLE_BYTES"
+  --dependency-provenance "$VERIFIED_DEPENDENCIES"
+  --selection-receipt "$SELECTION_RECEIPT"
+  --target-prefix "$TARGET_PREFIX"
+  --target-receipt "$TARGET_RECEIPT"
+  --formula-info "$FORMULA_INFO"
+  --install-log "$INSTALL_LOG"
+  --node-receipt "$HOMEBREW_KANDELO_NODE_RECEIPT_PATH"
+  --installed-bottle "$INSTALLED_BOTTLE"
+  --cache-root "$HOMEBREW_CACHE"
   --out "$OUT"
+)
+if [ -n "$STAGING_CANDIDATE_ABI" ]; then
+  runtime_evidence_args+=(--staging-candidate-abi "$STAGING_CANDIDATE_ABI")
+fi
+python3 "$KANDELO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" capture \
+  "${runtime_evidence_args[@]}"
 
 echo "homebrew-verify-poured-bottle.sh: verified $FORMULA $ARCH from $BOTTLE_SHA256"

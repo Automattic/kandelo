@@ -1,0 +1,163 @@
+{
+  "schema": 1,
+  "kind": "kandelo-homebrew-product-compatibility",
+  "mirror_link_manifest_bin": {
+    "targets": [
+      "/usr/bin",
+      "/bin"
+    ]
+  },
+  "link_conflict_owners": [
+    {
+      "target": "bin/ed",
+      "package": "kandelo-dev/tap-core/ed",
+      "reason": "Use the dedicated ed Formula instead of the compatibility copy bundled by posix-utils-lite."
+    },
+    {
+      "target": "bin/ex",
+      "package": "kandelo-dev/tap-core/vim",
+      "reason": "Use Vim's dedicated ex command instead of the compatibility copy bundled by posix-utils-lite."
+    },
+    {
+      "target": "bin/more",
+      "package": "kandelo-dev/tap-core/less",
+      "reason": "Use less's dedicated more command instead of the compatibility copy bundled by posix-utils-lite."
+    }
+  ],
+  "aliases": [
+    {
+      "package": "kandelo-dev/tap-core/dash",
+      "source_kind": "link",
+      "source": "bin/dash",
+      "targets": [
+        "/usr/bin/sh",
+        "/bin/sh"
+      ]
+    },
+    {
+      "package": "kandelo-dev/tap-core/bzip2",
+      "source_kind": "link",
+      "source": "bin/bzip2",
+      "targets": [
+        "/usr/bin/bunzip2",
+        "/bin/bunzip2",
+        "/usr/bin/bzcat",
+        "/bin/bzcat"
+      ]
+    },
+    {
+      "package": "kandelo-dev/tap-core/gawk",
+      "source_kind": "link",
+      "source": "bin/gawk",
+      "targets": [
+        "/usr/bin/awk",
+        "/bin/awk"
+      ]
+    },
+    {
+      "package": "kandelo-dev/tap-core/grep",
+      "source_kind": "link",
+      "source": "bin/grep",
+      "targets": [
+        "/usr/bin/egrep",
+        "/bin/egrep",
+        "/usr/bin/fgrep",
+        "/bin/fgrep"
+      ]
+    },
+    {
+      "package": "kandelo-dev/tap-core/netcat",
+      "source_kind": "link",
+      "source": "bin/nc",
+      "targets": [
+        "/usr/bin/netcat",
+        "/bin/netcat"
+      ]
+    },
+    {
+      "package": "kandelo-dev/tap-core/git",
+      "source_kind": "keg",
+      "source": "libexec/git-core/git-remote-http",
+      "targets": [
+        "/usr/bin/git-remote-http",
+        "/usr/bin/git-remote-https",
+        "/usr/bin/git-remote-ftp",
+        "/usr/bin/git-remote-ftps"
+      ]
+    },
+    {
+      "package": "kandelo-dev/tap-core/fbdoom",
+      "source_kind": "link",
+      "source": "bin/fbdoom",
+      "targets": [
+        "/usr/local/bin/fbdoom"
+      ]
+    },
+    {
+      "package": "kandelo-dev/tap-core/modeset",
+      "source_kind": "link",
+      "source": "bin/modeset",
+      "targets": [
+        "/usr/local/bin/modeset"
+      ]
+    }
+  ],
+  "runtime_state": [
+    {
+      "requires_package": "kandelo-dev/tap-core/bash",
+      "path": "/etc/profile.d/kandelo-shell.sh",
+      "kind": "text_file",
+      "mode": 420,
+      "uid": 0,
+      "gid": 0,
+      "contents": "alias ls='ls --color=auto'\nalias grep='grep --color=auto'\nexport USER=player\nexport NETHACKOPTIONS='windowtype:curses,color,lit_corridor,hilite_pet'\n",
+      "reason": "Preserve the current shell's interactive aliases and guest environment without replacing the platform-owned /etc/profile."
+    },
+    {
+      "requires_package": "kandelo-dev/tap-core/git",
+      "path": "/etc/gitconfig",
+      "kind": "text_file",
+      "mode": 420,
+      "uid": 0,
+      "gid": 0,
+      "contents": "[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n[core]\n\tpager = cat\n[user]\n\tname = User\n\temail = user@wasm.local\n[init]\n\tdefaultBranch = main\n",
+      "reason": "Preserve the shell image's deterministic Git identity, pager, maintenance, and default-branch behavior."
+    },
+    {
+      "requires_package": "kandelo-dev/tap-core/nethack",
+      "path": "/home/.nethack",
+      "kind": "directory",
+      "mode": 511,
+      "uid": 1000,
+      "gid": 1000,
+      "reason": "NetHack requires a writable VAR_PLAYGROUND owned by the interactive guest user."
+    },
+    {
+      "requires_package": "kandelo-dev/tap-core/nethack",
+      "path": "/home/.nethack/perm",
+      "kind": "empty_file",
+      "mode": 438,
+      "uid": 1000,
+      "gid": 1000,
+      "reason": "NetHack expects its lock marker before read-only score and demo commands run."
+    },
+    {
+      "requires_package": "kandelo-dev/tap-core/nethack",
+      "path": "/home/.nethack/record",
+      "kind": "empty_file",
+      "mode": 438,
+      "uid": 1000,
+      "gid": 1000,
+      "reason": "NetHack expects a writable score database in VAR_PLAYGROUND."
+    },
+    {
+      "requires_package": "kandelo-dev/tap-core/bash",
+      "path": "/usr/sbin",
+      "kind": "directory",
+      "mode": 493,
+      "uid": 0,
+      "gid": 0,
+      "reason": "Preserve the current shell's standard filesystem layout even when no package installs an sbin command."
+    }
+  ]
+}

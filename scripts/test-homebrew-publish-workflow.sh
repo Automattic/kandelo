@@ -254,6 +254,7 @@ make_formula_runner_fixture() {
   FORMULA_RUNNER_FIXTURE_ROOT="$(cd "$FORMULA_RUNNER_FIXTURE_ROOT" && pwd -P)"
   cp "$REPO_ROOT/scripts/homebrew-bottle-build.sh" \
     "$REPO_ROOT/scripts/homebrew-verify-poured-bottle.sh" \
+    "$REPO_ROOT/scripts/homebrew-stage-candidate-formulae.sh" \
     "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" \
     "$REPO_ROOT/scripts/homebrew_cache_archive.py" \
     "$REPO_ROOT/scripts/homebrew-formula-support-inputs.sh" \
@@ -7971,5 +7972,11 @@ assert_formula_composition_is_static_and_lossless
 assert_formula_source_closure_is_bound
 assert_playwright_json_capture_excludes_dev_shell_stdout
 assert_publisher_trust_contract
+bash "$REPO_ROOT/scripts/test-homebrew-stage-candidate-formulae.sh"
+bash "$REPO_ROOT/scripts/test-homebrew-staging-candidate-compose.sh"
+PYTHONDONTWRITEBYTECODE=1 \
+  python3 "$REPO_ROOT/scripts/test-homebrew-staging-candidate-roots.py"
+PYTHONDONTWRITEBYTECODE=1 \
+  python3 "$REPO_ROOT/scripts/test-homebrew-staging-dependency-provenance.py"
 
 echo "test-homebrew-publish-workflow.sh: ok"

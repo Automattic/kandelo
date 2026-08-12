@@ -39,6 +39,7 @@ sys.modules[FINALIZER_SPEC.name] = FINALIZER_MODULE
 FINALIZER_SPEC.loader.exec_module(FINALIZER_MODULE)
 COPIED = [
     "crates/shared/src/lib.rs",
+    "images/vfs/products/generated/catalog.json",
     "homebrew/kandelo-guest-layout.json",
     "homebrew/main-shell-migration-lock.json",
     "homebrew/main-shell-homebrew-runtime-support.json",
@@ -441,6 +442,8 @@ def run_checker(
             str(source / "homebrew/homebrew-bootstrap-source-lock.json"),
             str(source / "packages/registry/shell/package.toml"),
             str(source / "packages/registry/homebrew-bootstrap/package.toml"),
+            str(source / "images/vfs/products/generated/catalog.json"),
+            str(source / "homebrew/main-shell-materialization-policy.json"),
         ]
     )
     result = subprocess.run(

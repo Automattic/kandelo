@@ -9,16 +9,21 @@
  * Usage: npx tsx images/vfs/scripts/build-nginx-vfs-image.ts
  */
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   ensureDirRecursive,
   writeVfsFile,
   writeVfsBinary,
 } from "../../../host/src/vfs/image-helpers";
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
-import { addDinitInit } from "./dinit-image-helpers";
+import {
+  addDinitInit,
+  type DinitBinaryInputs,
+} from "./dinit-image-helpers";
 import {
   loadShellBaseFileSystem,
+  loadShellBaseFileSystemFromImage,
   saveShellDerivedVfsImage,
 } from "./shell-vfs-build";
 import {
@@ -107,11 +112,23 @@ const INDEX_HTML = `<!DOCTYPE html>
 </html>
 `;
 
-async function main() {
-  const NGINX_WASM = resolveBinary("programs/nginx.wasm");
+export interface NginxVfsImageBuildInputs {
+  shellImage?: Uint8Array;
+  nginx: Uint8Array;
+  dinit?: DinitBinaryInputs;
+  outputPath: string;
+}
 
+export async function buildNginxVfsImage(
+  inputs: NginxVfsImageBuildInputs,
+): Promise<void> {
   console.log("Loading shell base image...");
-  const fs = await loadShellBaseFileSystem(NGINX_IMAGE_MAX_BYTES);
+  const fs = inputs.shellImage === undefined
+    ? await loadShellBaseFileSystem(NGINX_IMAGE_MAX_BYTES)
+    : await loadShellBaseFileSystemFromImage(
+        inputs.shellImage,
+        NGINX_IMAGE_MAX_BYTES,
+      );
   fs.chmod("/tmp", 0o777);
   ensureDirRecursive(fs, "/usr/sbin");
   ensureDirRecursive(fs, "/run");
@@ -120,7 +137,7 @@ async function main() {
   ensureDirRecursive(fs, "/etc/nginx");
 
   // nginx binary + config + content
-  writeVfsBinary(fs, "/usr/sbin/nginx", new Uint8Array(readFileSync(NGINX_WASM)));
+  writeVfsBinary(fs, "/usr/sbin/nginx", inputs.nginx);
   writeVfsFile(fs, "/etc/nginx/nginx.conf", NGINX_CONF);
   writeVfsFile(fs, "/var/www/html/index.html", INDEX_HTML);
   fs.chown("/var/www", DEMO_UID, DEMO_GID);
@@ -139,7 +156,7 @@ async function main() {
       restart: true,
       restartDelay: 2,
     },
-  ]);
+  ], { binaries: inputs.dinit });
   writeKandeloDemoConfig(fs, {
     version: 1,
     profiles: {
@@ -150,10 +167,22 @@ async function main() {
     },
   });
 
-  await saveShellDerivedVfsImage(fs, OUT_FILE);
+  await saveShellDerivedVfsImage(fs, inputs.outputPath);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+async function main(): Promise<void> {
+  await buildNginxVfsImage({
+    nginx: new Uint8Array(readFileSync(resolveBinary("programs/nginx.wasm"))),
+    outputPath: OUT_FILE,
+  });
+}
+
+const invokedPath = process.argv[1]
+  ? pathToFileURL(resolve(process.argv[1])).href
+  : "";
+if (import.meta.url === invokedPath) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

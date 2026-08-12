@@ -139,6 +139,32 @@ export interface VfsWasmArtifactPolicy {
   forkInstrumentation: "disabled";
 }
 
+export interface ExactVfsImageAbi {
+  version: number;
+  snapshotSha256: string;
+}
+
+/** Bind a standalone product image to one exact structural ABI snapshot. */
+export function exactVfsImageMetadata(
+  abi: ExactVfsImageAbi,
+  createdBy: string,
+): VfsImageMetadata {
+  if (
+    !Number.isSafeInteger(abi.version) ||
+    abi.version < 0 ||
+    !/^[0-9a-f]{64}$/.test(abi.snapshotSha256) ||
+    createdBy.length === 0
+  ) {
+    throw new Error("standalone VFS image has an invalid exact ABI binding");
+  }
+  return {
+    version: 1,
+    kernelAbi: abi.version,
+    abiSnapshotSha256: abi.snapshotSha256,
+    createdBy,
+  };
+}
+
 const MAX_SOURCE_DATE_EPOCH_SECONDS = Math.floor(
   Number.MAX_SAFE_INTEGER / 1000,
 );

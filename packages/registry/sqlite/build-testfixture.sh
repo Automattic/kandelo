@@ -14,12 +14,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SYSROOT="$REPO_ROOT/sysroot"
-TCL_INSTALL="$SCRIPT_DIR/../tcl/tcl-install"
-SQLITE_SRC="$SCRIPT_DIR/sqlite-src"
-SQLITE_FULL="$SCRIPT_DIR/sqlite-full-src"
-ZLIB_INSTALL="$SCRIPT_DIR/../zlib/zlib-install"
-BUILD_DIR="$SCRIPT_DIR/testfixture-build"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+STAGING_PRODUCT="${KANDELO_ABI_STAGING_PRODUCT:-0}"
+SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
+TCL_INSTALL="${KANDELO_SQLITE_TCL_DEVELOPMENT_FILES:-$SCRIPT_DIR/../tcl/tcl-install}"
+SQLITE_SRC="${KANDELO_SQLITE_DEVELOPMENT_FILES:-$SCRIPT_DIR/sqlite-src}"
+SQLITE_FULL="${KANDELO_SQLITE_FULL_SOURCE:-$SCRIPT_DIR/sqlite-full-src}"
+ZLIB_INSTALL="${KANDELO_SQLITE_ZLIB_ROOT:-$SCRIPT_DIR/../zlib/zlib-install}"
+BUILD_DIR="${KANDELO_SQLITE_TESTFIXTURE_WORK_DIR:-$SCRIPT_DIR/testfixture-build}"
+OUTPUT="${KANDELO_SQLITE_TESTFIXTURE_OUT:-$SCRIPT_DIR/bin/testfixture.wasm}"
 SQLITE_VERSION="${SQLITE_VERSION:-3.49.1}"
 SQLITE_MAX_COMPOUND_SELECT="${SQLITE_MAX_COMPOUND_SELECT:-50}"
 SQLITE_MAX_EXPR_DEPTH="${SQLITE_MAX_EXPR_DEPTH:-100}"
@@ -49,6 +53,10 @@ if [ ! -f "$SQLITE_SRC/sqlite3.c" ]; then
 fi
 
 if [ ! -d "$SQLITE_FULL/src" ]; then
+    if [ "$STAGING_PRODUCT" = 1 ]; then
+        echo "ERROR: staging testfixture exact full source is unavailable: $SQLITE_FULL" >&2
+        exit 1
+    fi
     SQLITE_PACKED="$(sqlite_packed_version)"
     SQLITE_FULL_SOURCE_URL="${SQLITE_FULL_SOURCE_URL:-https://www.sqlite.org/2025/sqlite-src-${SQLITE_PACKED}.zip}"
     echo "==> Downloading full SQLite source for upstream tests..."
@@ -77,10 +85,13 @@ if [ -d "$PATCH_DIR" ]; then
         if [ "$patch_name" = "0007-testfixture-recover-command-lifetime.patch" ]; then
             continue
         fi
-        if (cd "$SQLITE_FULL" && git apply -p0 --check "$patch_file") >/dev/null 2>&1; then
+        if kandelo_package_git_apply_patch "$SQLITE_FULL" "$patch_file" check \
+            >/dev/null 2>&1; then
             echo "  Applying $patch_name..."
-            (cd "$SQLITE_FULL" && git apply -p0 "$patch_file")
-        elif (cd "$SQLITE_FULL" && git apply -p0 --reverse --check "$patch_file") >/dev/null 2>&1; then
+            kandelo_package_git_apply_patch "$SQLITE_FULL" "$patch_file"
+        elif (cd "$SQLITE_FULL" && \
+            GIT_CEILING_DIRECTORIES="$(dirname "$SQLITE_FULL")" \
+            git apply --reverse --check "$patch_file") >/dev/null 2>&1; then
             echo "  $patch_name already applied"
         else
             echo "ERROR: $patch_name does not apply cleanly" >&2
@@ -94,14 +105,13 @@ fi
 # patch out of build-sqlite.sh so it cannot affect the package's declared
 # library, header, or pkg-config outputs.
 RECOVER_LIFETIME_PATCH="$PATCH_DIR/0007-testfixture-recover-command-lifetime.patch"
-SQLITE_FULL_REL="${SQLITE_FULL#"$REPO_ROOT/"}"
 echo "==> Applying testfixture recover-command lifetime patch..."
-if git -C "$REPO_ROOT" apply --directory="$SQLITE_FULL_REL" \
-    --check "$RECOVER_LIFETIME_PATCH" >/dev/null 2>&1; then
-    git -C "$REPO_ROOT" apply --directory="$SQLITE_FULL_REL" \
-        "$RECOVER_LIFETIME_PATCH"
-elif git -C "$REPO_ROOT" apply --directory="$SQLITE_FULL_REL" \
-    --reverse --check "$RECOVER_LIFETIME_PATCH" >/dev/null 2>&1 \
+if kandelo_package_git_apply_patch "$SQLITE_FULL" \
+    "$RECOVER_LIFETIME_PATCH" check >/dev/null 2>&1; then
+    kandelo_package_git_apply_patch "$SQLITE_FULL" "$RECOVER_LIFETIME_PATCH"
+elif (cd "$SQLITE_FULL" && \
+    GIT_CEILING_DIRECTORIES="$(dirname "$SQLITE_FULL")" \
+    git apply --reverse --check "$RECOVER_LIFETIME_PATCH") >/dev/null 2>&1 \
     && grep -q 'static void testRecoverDelete' "$SQLITE_FULL/ext/recover/test_recover.c" \
     && [ -f "$SQLITE_FULL/ext/recover/recoverlifetime.test" ]; then
     echo "    $(basename "$RECOVER_LIFETIME_PATCH") already applied"
@@ -341,11 +351,11 @@ echo "==> Applying fork instrumentation..."
 mv testfixture.instr testfixture
 
 # --- Install ---
-mkdir -p "$SCRIPT_DIR/bin"
-cp testfixture "$SCRIPT_DIR/bin/testfixture.wasm"
+mkdir -p "$(dirname "$OUTPUT")"
+cp testfixture "$OUTPUT"
 
 echo "==> testfixture built successfully!"
-ls -lh "$SCRIPT_DIR/bin/testfixture.wasm"
+ls -lh "$OUTPUT"
 echo ""
 echo "Run a test with:"
 echo "  TCL_LIBRARY=\$TCL_INSTALL/lib/tcl8.6 KERNEL_CWD=\$SQLITE_FULL \\"

@@ -134,6 +134,28 @@ export interface RegisteredHomebrewDeferredTree {
   materialization: DeferredTreeMaterializationHandle;
 }
 
+export interface HomebrewOriginalBottleTreeExpectation {
+  architecture: "wasm32" | "wasm64";
+  tap: string;
+  formula: string;
+  package: string;
+  bottle: {
+    sha256: string;
+    bytes: number;
+  };
+  allowedRoots: ReadonlySet<string>;
+}
+
+export interface HomebrewOriginalBottleTreeDescriptorV1 {
+  schema: 1;
+  kind: "kandelo-homebrew-original-bottle-tree";
+  architecture: "wasm32" | "wasm64";
+  tap: string;
+  formula: string;
+  required_by: string[];
+  tree: HomebrewDeferredTreeDescriptor;
+}
+
 /**
  * Restore one immutable shell image into a private filesystem, then fetch,
  * verify, preflight, and register independently selected Homebrew runtime
@@ -222,6 +244,89 @@ export function registerHomebrewDeferredTreeCollection(
       options.atomicActivationGroup,
     ),
   }));
+}
+
+/**
+ * Validate one product-prepared original-bottle inventory without opening its
+ * archive. The exact digest and byte count come from the resolved bottle
+ * input; this descriptor supplies only bounded filesystem composition truth
+ * and a byte-identical HTTPS transport.
+ */
+export function parseHomebrewOriginalBottleTreeDescriptor(
+  value: unknown,
+  expected: HomebrewOriginalBottleTreeExpectation,
+): HomebrewOriginalBottleTreeDescriptorV1 {
+  const root = exactRecord(value, [
+    "schema",
+    "kind",
+    "architecture",
+    "tap",
+    "formula",
+    "required_by",
+    "tree",
+  ], "Homebrew original-bottle tree descriptor");
+  if (
+    root.schema !== 1 ||
+    root.kind !== "kandelo-homebrew-original-bottle-tree" ||
+    requireArch(root.architecture, "Homebrew original-bottle architecture") !==
+      expected.architecture ||
+    requireRepository(root.tap, "Homebrew original-bottle tap") !== expected.tap ||
+    requirePackageName(root.formula, "Homebrew original-bottle Formula") !== expected.formula ||
+    !SHA256_RE.test(expected.bottle.sha256) ||
+    !Number.isSafeInteger(expected.bottle.bytes) ||
+    expected.bottle.bytes <= 0 ||
+    expected.bottle.bytes > HOMEBREW_RUNTIME_LAYER_LIMITS.maxArchiveBytes
+  ) {
+    throw new Error("Homebrew original-bottle tree descriptor identity changed");
+  }
+  const requiredBy = requireArray(
+    root.required_by,
+    "Homebrew original-bottle required roots",
+    1,
+    256,
+  ).map((value, index) =>
+    requirePackageName(
+      value,
+      `Homebrew original-bottle required root ${index}`,
+    )
+  );
+  if (
+    new Set(requiredBy).size !== requiredBy.length ||
+    !arraysEqual(requiredBy, [...requiredBy].sort(compareHomebrewCanonicalText)) ||
+    !requiredBy.some((root) => expected.allowedRoots.has(root))
+  ) {
+    throw new Error("Homebrew original-bottle dependency roots are not product-declared");
+  }
+  const [tree] = validateDeferredTrees(
+    [root.tree],
+    "",
+    [],
+    5,
+    "external-only",
+  );
+  if (
+    tree === undefined ||
+    tree.package === undefined ||
+    tree.package !== expected.package ||
+    tree.content.sha256 !== expected.bottle.sha256 ||
+    tree.content.bytes !== expected.bottle.bytes ||
+    tree.transports.length !== 1 ||
+    tree.transports[0]?.kind !== "external-https" ||
+    !tree.transports[0].url.includes(expected.bottle.sha256)
+  ) {
+    throw new Error("Homebrew original-bottle tree differs from its exact bottle input");
+  }
+  validateCompleteDirectBottleDirectories(tree.inventory.entries);
+  validateStandaloneDirectBottleBinding(tree, expected.formula);
+  return {
+    schema: 1,
+    kind: "kandelo-homebrew-original-bottle-tree",
+    architecture: expected.architecture,
+    tap: expected.tap,
+    formula: expected.formula,
+    required_by: requiredBy,
+    tree,
+  };
 }
 
 async function registerHomebrewRuntimeLayersOnStagedFileSystem(
@@ -797,6 +902,71 @@ function validateCompleteDirectBottleDirectories(
           `Homebrew runtime layer original-bottle inventory omits directory /${ancestorPath}`,
         );
       }
+    }
+  }
+}
+
+function validateStandaloneDirectBottleBinding(
+  tree: HomebrewDeferredTreeDescriptor,
+  formula: string,
+): void {
+  const expectedKegPrefix = `${HOMEBREW_PREFIX}/Cellar/${formula}/`;
+  if (
+    tree.activation.roots.length !== 1 ||
+    !tree.activation.roots[0]!.startsWith(expectedKegPrefix) ||
+    tree.activation.roots[0]!.slice(expectedKegPrefix.length).includes("/")
+  ) {
+    throw new Error(
+      `Homebrew original-bottle ${formula} activation does not name its exact keg`,
+    );
+  }
+  const kegPath = tree.activation.roots[0]!.slice(1);
+  const version = tree.activation.roots[0]!.slice(expectedKegPrefix.length);
+  const optPath = `${HOMEBREW_PREFIX}/opt/${formula}`.slice(1);
+  const entries = tree.inventory.entries;
+  const keg = entries.find((entry) => entry.path === kegPath);
+  const opt = entries.find((entry) => entry.path === optPath);
+  if (
+    keg?.type !== "directory" ||
+    keg.ownership !== "layer" ||
+    opt?.type !== "symlink" ||
+    opt.ownership !== "layer" ||
+    opt.target !== `../Cellar/${formula}/${version}`
+  ) {
+    throw new Error(
+      `Homebrew original-bottle ${formula} does not own its keg and opt link`,
+    );
+  }
+  for (const entry of entries) {
+    if (entry.type === "directory") {
+      const expectedOwnership =
+        entry.path === kegPath || entry.path.startsWith(`${kegPath}/`)
+          ? "layer"
+          : "mergeable-directory";
+      if (entry.ownership !== expectedOwnership) {
+        throw new Error(
+          `Homebrew original-bottle ${formula} directory /${entry.path} ` +
+            `must have ${expectedOwnership} ownership`,
+        );
+      }
+    }
+    if (
+      (entry.materialization === "archive" ||
+        entry.materialization === "archive-homebrew-relocate") &&
+      entry.path !== kegPath &&
+      !entry.path.startsWith(`${kegPath}/`)
+    ) {
+      throw new Error(
+        `Homebrew original-bottle ${formula} maps an archive member outside its keg`,
+      );
+    }
+    if (entry.materialization === "archive" && entry.type === "symlink") {
+      validateArchiveSymlinkTarget(
+        entry.path,
+        entry.target!,
+        kegPath,
+        tree.package!,
+      );
     }
   }
 }
@@ -1654,6 +1824,7 @@ function validateDeferredTrees(
     bytes: number;
   }>,
   descriptorSchema: 4 | 5,
+  transportPolicy: "bundle-release" | "external-only" = "bundle-release",
 ): HomebrewDeferredTreeDescriptor[] {
   const values = requireArray(
     value,
@@ -1775,10 +1946,13 @@ function validateDeferredTrees(
     );
     const bundled = bundledTrees[index];
     if (
-      bundled === undefined ||
-      bundled.id !== id ||
-      bundled.sha256 !== digest ||
-      bundled.bytes !== content.bytes
+      transportPolicy === "bundle-release" &&
+      (
+        bundled === undefined ||
+        bundled.id !== id ||
+        bundled.sha256 !== digest ||
+        bundled.bytes !== content.bytes
+      )
     ) {
       throw new Error(`Homebrew runtime layer deferred tree ${id} differs from its bundle`);
     }
@@ -1790,6 +1964,11 @@ function validateDeferredTrees(
       const kind = requireString(transportRecord.kind, `${transportLabel} kind`, 64);
       let url: string;
       if (kind === "bundle-release") {
+        if (transportPolicy !== "bundle-release" || bundled === undefined) {
+          throw new Error(
+            `Homebrew runtime layer deferred tree ${id} cannot use a bundle release transport`,
+          );
+        }
         const transport = exactRecord(
           transportValue,
           ["kind", "asset", "url"],
@@ -1818,9 +1997,13 @@ function validateDeferredTrees(
       }
       urls.add(url);
     }
-    if (releaseTransportCount !== 1) {
+    if (
+      transportPolicy === "bundle-release"
+        ? releaseTransportCount !== 1
+        : releaseTransportCount !== 0
+    ) {
       throw new Error(
-        `Homebrew runtime layer deferred tree ${id} must have one bundle release transport`,
+        `Homebrew runtime layer deferred tree ${id} has incompatible release transports`,
       );
     }
 
@@ -1880,7 +2063,10 @@ function validateDeferredTrees(
   ) {
     throw new Error("Homebrew runtime layer deferred trees are not in canonical order");
   }
-  if (trees.length !== bundledTrees.length) {
+  if (
+    transportPolicy === "bundle-release" &&
+    trees.length !== bundledTrees.length
+  ) {
     throw new Error("Homebrew runtime layer deferred trees differ from its bundle");
   }
   return trees;

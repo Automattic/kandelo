@@ -1,0 +1,152 @@
+schema = 1
+id = "platform-rootfs"
+architecture = "wasm32"
+output = "rootfs.vfs"
+builder = "packages/registry/rootfs/build-rootfs-package.sh"
+
+[[composition.repository]]
+id = "rootfs-source"
+paths = ["MANIFEST", "images/rootfs"]
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "dash"
+outputs = ["dash"]
+source_roles = []
+role = "runtime"
+materialization = "lazy"
+
+[[software.package]]
+name = "bash"
+outputs = ["bash"]
+source_roles = []
+role = "runtime"
+materialization = "lazy"
+
+[[software.package]]
+name = "ncurses"
+outputs = ["clear", "reset", "tset", "tput", "tabs", "tic", "infocmp", "toe", "captoinfo", "infotocap"]
+source_roles = []
+role = "runtime"
+materialization = "lazy"
+
+[[software.package]]
+name = "coreutils"
+outputs = ["coreutils"]
+source_roles = []
+role = "runtime"
+materialization = "lazy"
+
+[[software.package]]
+name = "gawk"
+outputs = ["gawk"]
+source_roles = []
+role = "runtime"
+materialization = "lazy"
+
+[[software.package]]
+name = "grep"
+outputs = ["grep"]
+source_roles = []
+role = "runtime"
+materialization = "lazy"
+
+[[software.package]]
+name = "sed"
+outputs = ["sed"]
+source_roles = []
+role = "runtime"
+materialization = "lazy"
+
+[[software.package]]
+name = "bc"
+outputs = ["bc"]
+source_roles = []
+role = "runtime"
+materialization = "lazy"
+
+[[software.package]]
+name = "file"
+outputs = ["file"]
+source_roles = []
+role = "runtime"
+materialization = "lazy"
+
+[[software.package]]
+name = "file"
+outputs = ["file-magic"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "m4"
+outputs = ["m4"]
+source_roles = []
+role = "runtime"
+materialization = "lazy"
+
+[[software.package]]
+name = "make"
+outputs = ["make"]
+source_roles = []
+role = "runtime"
+materialization = "lazy"
+
+[[software.package]]
+name = "findutils"
+outputs = ["find", "xargs"]
+source_roles = []
+role = "runtime"
+materialization = "lazy"
+
+[[software.package]]
+name = "diffutils"
+outputs = ["diff", "cmp", "diff3", "sdiff"]
+source_roles = []
+role = "runtime"
+materialization = "lazy"
+
+[[software.package]]
+name = "posix-utils-lite"
+outputs = [
+  "ar", "asa", "cal", "cflow", "compress", "ctags", "cxref", "ed", "ex",
+  "fuser", "gencat", "getconf", "gettext", "iconv", "ipcrm", "ipcs", "lex",
+  "locale", "logger", "man", "more", "msgfmt", "ngettext", "nm", "patch",
+  "pax", "pgrep", "ps", "renice", "strings", "strip", "uncompress",
+  "uudecode", "uuencode", "what", "xgettext", "yacc",
+]
+source_roles = []
+role = "runtime"
+materialization = "lazy"
+
+[[mounts]]
+path = "/"
+source = "built-image"
+readonly = false
+
+[[mounts]]
+path = "/tmp"
+source = "scratch"
+mode = "1777"
+uid = 0
+gid = 0
+ephemeral = true
+
+[boot]
+argv = ["/bin/sh"]
+cwd = "/root"
+uid = 0
+gid = 0
+
+[boot.env]
+HOME = "/root"
+PATH = "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
+TMPDIR = "/tmp"
+
+[evidence.node]
+test = "rootfs-node-startup"
+
+[evidence.browser]
+test = "rootfs-browser-startup"

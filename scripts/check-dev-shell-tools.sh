@@ -12,6 +12,19 @@ if [ -z "${IN_NIX_SHELL:-}" ]; then
     exit 1
 fi
 
+case "${KANDELO_NIX_BIN:-}" in
+    /*)
+        [ -x "$KANDELO_NIX_BIN" ] || {
+            echo "ERROR: KANDELO_NIX_BIN is not executable: $KANDELO_NIX_BIN" >&2
+            exit 1
+        }
+        ;;
+    *)
+        echo "ERROR: dev shell did not retain the exact Nix executable" >&2
+        exit 1
+        ;;
+esac
+
 nix_store="${NIX_STORE:-/nix/store}"
 for tool in cmake make; do
     resolved="$(command -v "$tool" || true)"

@@ -7,7 +7,8 @@
  * Usage: npx tsx images/vfs/scripts/build-redis-vfs-image.ts
  */
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   ensureDir,
@@ -15,14 +16,27 @@ import {
   writeVfsBinary,
 } from "../../../host/src/vfs/image-helpers";
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
-import { saveImage } from "./vfs-image-helpers";
-import { addDinitInit } from "./dinit-image-helpers";
+import {
+  exactVfsImageMetadata,
+  saveImage,
+  type ExactVfsImageAbi,
+} from "./vfs-image-helpers";
+import {
+  addDinitInit,
+  type DinitBinaryInputs,
+} from "./dinit-image-helpers";
 
-const OUT_FILE = join(findRepoRoot(), "apps", "browser-demos", "public", "redis.vfs.zst");
+export interface RedisVfsImageBuildInputs {
+  redis: Uint8Array;
+  dinit?: DinitBinaryInputs;
+  services?: Uint8Array;
+  outputPath: string;
+  targetAbi?: ExactVfsImageAbi;
+}
 
-async function main() {
-  const REDIS_WASM = resolveBinary("programs/redis/redis-server.wasm");
-
+export async function buildRedisVfsImage(
+  inputs: RedisVfsImageBuildInputs,
+): Promise<void> {
   const sab = new SharedArrayBuffer(32 * 1024 * 1024, { maxByteLength: 128 * 1024 * 1024 });
   const fs = MemoryFileSystem.create(sab, 128 * 1024 * 1024);
 
@@ -33,7 +47,7 @@ async function main() {
   fs.chmod("/data", 0o777);
   ensureDirRecursive(fs, "/usr/local/bin");
 
-  writeVfsBinary(fs, "/usr/local/bin/redis-server", new Uint8Array(readFileSync(REDIS_WASM)));
+  writeVfsBinary(fs, "/usr/local/bin/redis-server", inputs.redis);
 
   // dinit + service tree.
   // Persistence disabled (--save "" --appendonly no) since the in-kernel
@@ -49,12 +63,41 @@ async function main() {
       restart: true,
       restartDelay: 2,
     },
-  ]);
+  ], { binaries: inputs.dinit, services: inputs.services });
 
-  await saveImage(fs, OUT_FILE);
+  await saveImage(fs, inputs.outputPath, inputs.targetAbi === undefined
+    ? {}
+    : {
+        kernelAbi: inputs.targetAbi.version,
+        metadata: exactVfsImageMetadata(
+          inputs.targetAbi,
+          "images/vfs/scripts/build-redis-vfs-image.ts",
+        ),
+      });
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+async function main(): Promise<void> {
+  const repositoryRoot = findRepoRoot();
+  await buildRedisVfsImage({
+    redis: new Uint8Array(
+      readFileSync(resolveBinary("programs/redis/redis-server.wasm")),
+    ),
+    outputPath: join(
+      repositoryRoot,
+      "apps",
+      "browser-demos",
+      "public",
+      "redis.vfs.zst",
+    ),
+  });
+}
+
+const invokedPath = process.argv[1]
+  ? pathToFileURL(resolve(process.argv[1])).href
+  : "";
+if (import.meta.url === invokedPath) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

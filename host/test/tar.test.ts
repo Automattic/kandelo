@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { gzipSync } from "fflate";
 import {
+  parseTarBytes,
   parseTarGzip,
   type TarEntry,
 } from "../src/vfs/tar";
@@ -124,6 +125,20 @@ describe("bounded TAR gzip parser", () => {
     const corrupt = new Uint8Array(archive);
     corrupt[corrupt.byteLength - 8] ^= 1;
     expect(() => parseTarGzip(corrupt)).toThrow(/gzip CRC32 mismatch/);
+  });
+
+  it("accepts a GNU TAR root directory marker in raw TAR bytes", () => {
+    const archive = tarBytes([
+      { path: "./", type: "directory", mode: 0o755 },
+      { path: "./bin/tool", data: "payload", mode: 0o755 },
+    ]);
+
+    expect(parseTarBytes(archive).map((entry) => entry.path)).toEqual([
+      "bin/tool",
+    ]);
+    expect(() => parseTarBytes(tarBytes([
+      { path: "./", data: "not a directory" },
+    ]))).toThrow(/root marker is not a directory/);
   });
 });
 

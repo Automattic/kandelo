@@ -104,9 +104,19 @@ interface DumpRecord {
 interface PreinstallKernelHostOptions extends NodeKernelHostOptions {
   mountDataDir?: boolean;
   hostDataDir?: string;
+  programs?: WordPressPreinstallPrograms;
 }
 
-export async function preinstallWordPressSqlite(fs: MemoryFileSystem): Promise<void> {
+export interface WordPressPreinstallPrograms {
+  kernel: Uint8Array;
+  php: Uint8Array;
+  mariadb?: Uint8Array;
+}
+
+export async function preinstallWordPressSqlite(
+  fs: MemoryFileSystem,
+  programs?: WordPressPreinstallPrograms,
+): Promise<void> {
   console.log("[wp-preinstall:sqlite] installing WordPress into SQLite database...");
   await withKernelSession(fs, async (session) => {
     await session.runPhp("install", wordpressInstallScript(), {
@@ -124,14 +134,19 @@ export async function preinstallWordPressSqlite(fs: MemoryFileSystem): Promise<v
     const written = ingestDump(dump, fs);
     assertVfsPath(fs, "/var/www/html/wp-content/database/wordpress.db");
     console.log(`[wp-preinstall:sqlite] wrote ${written} database entries`);
-  });
+  }, { programs });
 }
 
-export async function preinstallWordPressMariaDb(fs: MemoryFileSystem): Promise<void> {
+export async function preinstallWordPressMariaDb(
+  fs: MemoryFileSystem,
+  programs?: WordPressPreinstallPrograms,
+): Promise<void> {
   console.log("[wp-preinstall:mariadb] initializing MariaDB /data and installing WordPress...");
   const hostDataDir = mkdtempSync(join(tmpdir(), "wp-preinstall-data-"));
   try {
-    const mariadbBytes = loadProgram("programs/mariadb/mariadbd.wasm");
+    const mariadbBytes = programs?.mariadb === undefined
+      ? loadProgram("programs/mariadb/mariadbd.wasm")
+      : exactProgramBuffer(programs.mariadb, "WordPress MariaDB");
     prepareHostMariaDbDataDir(hostDataDir);
     await withKernelSession(fs, async (session) => {
       await bootstrapMariaDbSystemTables(session, fs, mariadbBytes);
@@ -140,6 +155,7 @@ export async function preinstallWordPressMariaDb(fs: MemoryFileSystem): Promise<
       dataBufferSize: 256 * 1024,
       mountDataDir: true,
       hostDataDir,
+      programs,
     });
     makeHostMariaDbDataWritable(hostDataDir);
 
@@ -202,6 +218,7 @@ export async function preinstallWordPressMariaDb(fs: MemoryFileSystem): Promise<
       dataBufferSize: 256 * 1024,
       mountDataDir: true,
       hostDataDir,
+      programs,
     });
   } finally {
     rmSync(hostDataDir, { recursive: true, force: true });
@@ -223,6 +240,7 @@ async function withKernelSession(
   const {
     mountDataDir: _mountDataDir,
     hostDataDir: _hostDataDir,
+    programs,
     ...nodeHostOptions
   } = hostOptions;
   let activeStdoutSink: ((data: Uint8Array) => void) | null = null;
@@ -246,8 +264,12 @@ async function withKernelSession(
   });
 
   try {
-    await host.init();
-    const phpBytes = loadProgram("programs/php/php.wasm");
+    await host.init(programs === undefined
+      ? undefined
+      : exactProgramBuffer(programs.kernel, "WordPress kernel"));
+    const phpBytes = programs === undefined
+      ? loadProgram("programs/php/php.wasm")
+      : exactProgramBuffer(programs.php, "WordPress PHP");
     const session: KernelSession = {
       host,
       hostDataDir,
@@ -318,6 +340,16 @@ async function withKernelSession(
 function loadProgram(binaryId: string): ArrayBuffer {
   const bytes = readFileSync(resolveBinary(binaryId));
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+function exactProgramBuffer(bytes: Uint8Array, label: string): ArrayBuffer {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0) {
+    throw new Error(`${label} input is empty`);
+  }
+  return bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  ) as ArrayBuffer;
 }
 
 function mariadbServerArgs(): string[] {

@@ -1,0 +1,57 @@
+schema = 1
+id = "browser-redis"
+architecture = "wasm32"
+output = "redis.vfs.zst"
+builder = "images/vfs/scripts/build-redis-vfs-image.sh"
+
+[[composition.repository]]
+id = "services-database"
+paths = ["images/rootfs/etc/services"]
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "redis"
+outputs = ["redis-server"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "dinit"
+outputs = ["dinit", "dinitctl"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[mounts]]
+path = "/"
+source = "built-image"
+readonly = false
+
+[[mounts]]
+path = "/tmp"
+source = "scratch"
+mode = "1777"
+uid = 0
+gid = 0
+ephemeral = true
+
+[boot]
+argv = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "redis"]
+cwd = "/root"
+uid = 0
+gid = 0
+
+[boot.env]
+HOME = "/root"
+LOGNAME = "root"
+PATH = "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
+TMPDIR = "/tmp"
+USER = "root"
+
+[evidence.node]
+test = "redis-vfs-node-startup"
+
+[evidence.browser]
+test = "redis-vfs-browser-startup"

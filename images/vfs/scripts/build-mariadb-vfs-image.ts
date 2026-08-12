@@ -15,7 +15,8 @@
  *   bash build-mariadb-vfs-image.sh --wasm64  → public/mariadb-64.vfs.zst (wasm64)
  */
 import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   ensureDir,
@@ -25,42 +26,27 @@ import {
   symlink,
 } from "../../../host/src/vfs/image-helpers";
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
-import { saveImage } from "./vfs-image-helpers";
-import { addDinitInit, type DinitService } from "./dinit-image-helpers";
+import {
+  exactVfsImageMetadata,
+  saveImage,
+  type ExactVfsImageAbi,
+} from "./vfs-image-helpers";
+import {
+  addDinitInit,
+  type DinitBinaryInputs,
+  type DinitService,
+} from "./dinit-image-helpers";
 import { prepareMariadbWritableDirectories } from "./mariadb-image-helpers";
 import { ensureSourceExtract } from "./source-extract-helper";
-
-const REPO_ROOT = findRepoRoot();
-const useWasm64 = process.argv.includes("--wasm64");
 
 // mariadbd binary comes from the resolver-managed package cache (wasm32
 // or wasm64 archive in the binary release). The system_tables SQL files
 // are in the upstream MariaDB source tarball under scripts/, so we extract
 // it on demand for fetch-only checkouts. Local source-build users keep
 // using packages/registry/mariadb/mariadb-install/ as before.
-const MARIADB_LEGACY_INSTALL = useWasm64
-  ? join(REPO_ROOT, "packages/registry/mariadb/mariadb-install-64")
-  : join(REPO_ROOT, "packages/registry/mariadb/mariadb-install");
-
-const MARIADB_PATH = useWasm64
-  ? resolveBinary("programs/wasm64/mariadb/mariadbd.wasm")
-  : resolveBinary("programs/mariadb/mariadbd.wasm");
-const MARIADB_SOURCE = ensureSourceExtract("mariadb", REPO_ROOT);
-const SYSTEM_TABLES_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables.sql"))
-  ? join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables.sql")
-  : join(MARIADB_SOURCE, "scripts/mysql_system_tables.sql");
-const SYSTEM_DATA_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables_data.sql"))
-  ? join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables_data.sql")
-  : join(MARIADB_SOURCE, "scripts/mysql_system_tables_data.sql");
-const DASH_PATH = resolveBinary("programs/dash.wasm");
 // Coreutils is baked into the VFS so users get an immediate `ls`/`cat`
 // in the shell demo without waiting for a lazy-load fetch. Not strictly
 // required by the bootstrap wrapper (which is just `exec mariadbd < sql`).
-const COREUTILS_PATH = resolveBinary("programs/coreutils.wasm");
-
-const OUT_FILE = useWasm64
-  ? join(REPO_ROOT, "apps/browser-demos/public/mariadb-64.vfs.zst")
-  : join(REPO_ROOT, "apps/browser-demos/public/mariadb.vfs.zst");
 
 const COREUTILS_SYMLINK_NAMES = [
   "ls", "cat", "cp", "mv", "rm", "echo", "mkdir", "rmdir", "touch", "pwd",
@@ -143,19 +129,22 @@ function buildEngineServices(engine: "Aria" | "InnoDB"): DinitService[] {
   ];
 }
 
-async function main() {
-  if (!existsSync(MARIADB_PATH)) {
-    console.error(`mariadbd.wasm not found at ${MARIADB_PATH}. ` +
-      `fetch-binaries should provide it via the mariadb package.`);
-    process.exit(1);
-  }
-  if (!existsSync(SYSTEM_TABLES_PATH) || !existsSync(SYSTEM_DATA_PATH)) {
-    console.error(`MariaDB bootstrap SQL files missing.`);
-    console.error(`  Looked at:\n    ${SYSTEM_TABLES_PATH}\n    ${SYSTEM_DATA_PATH}`);
-    process.exit(1);
-  }
+export interface MariadbVfsImageBuildInputs {
+  architecture: "wasm32" | "wasm64";
+  mariadbd: Uint8Array;
+  systemTablesDirectory: string;
+  dash: Uint8Array;
+  coreutils: Uint8Array;
+  dinit?: DinitBinaryInputs;
+  services?: Uint8Array;
+  outputPath: string;
+  targetAbi?: ExactVfsImageAbi;
+}
 
-  console.log(`==> Building MariaDB VFS image (${useWasm64 ? "wasm64" : "wasm32"})`);
+export async function buildMariadbVfsImage(
+  inputs: MariadbVfsImageBuildInputs,
+): Promise<void> {
+  console.log(`==> Building MariaDB VFS image (${inputs.architecture})`);
 
   const sab = new SharedArrayBuffer(64 * 1024 * 1024, { maxByteLength: 256 * 1024 * 1024 });
   const fs = MemoryFileSystem.create(sab, 256 * 1024 * 1024);
@@ -171,25 +160,29 @@ async function main() {
 
   // Bake dash and coreutils so the service wrappers and shell utilities are
   // available without ambient browser assets.
-  if (existsSync(DASH_PATH)) {
-    writeVfsBinary(fs, "/bin/dash", new Uint8Array(readFileSync(DASH_PATH)));
-    symlink(fs, "/bin/dash", "/bin/sh");
-    symlink(fs, "/bin/dash", "/usr/bin/dash");
-    symlink(fs, "/bin/dash", "/usr/bin/sh");
-  }
-  writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
+  writeVfsBinary(fs, "/bin/dash", inputs.dash);
+  symlink(fs, "/bin/dash", "/bin/sh");
+  symlink(fs, "/bin/dash", "/usr/bin/dash");
+  symlink(fs, "/bin/dash", "/usr/bin/sh");
+  writeVfsBinary(fs, "/bin/coreutils", inputs.coreutils);
   for (const name of COREUTILS_SYMLINK_NAMES) {
     symlink(fs, "/bin/coreutils", `/bin/${name}`);
     symlink(fs, "/bin/coreutils", `/usr/bin/${name}`);
   }
 
   console.log("  Writing mariadbd binary...");
-  writeVfsBinary(fs, "/usr/sbin/mariadbd", new Uint8Array(readFileSync(MARIADB_PATH)));
+  writeVfsBinary(fs, "/usr/sbin/mariadbd", inputs.mariadbd);
 
   console.log("  Writing bootstrap SQL...");
   ensureDirRecursive(fs, "/etc/mariadb");
-  const systemTables = readFileSync(SYSTEM_TABLES_PATH, "utf-8");
-  const systemData = readFileSync(SYSTEM_DATA_PATH, "utf-8");
+  const systemTables = readFileSync(
+    join(inputs.systemTablesDirectory, "mysql_system_tables.sql"),
+    "utf-8",
+  );
+  const systemData = readFileSync(
+    join(inputs.systemTablesDirectory, "mysql_system_tables_data.sql"),
+    "utf-8",
+  );
   const bootstrapSql = `use mysql;\n${systemTables}\n${systemData}\nCREATE DATABASE IF NOT EXISTS test;\n`;
   writeVfsFile(fs, "/etc/mariadb/bootstrap.sql", bootstrapSql);
 
@@ -217,13 +210,70 @@ async function main() {
   addDinitInit(
     fs,
     [...buildEngineServices("Aria"), ...buildEngineServices("InnoDB")],
-    { boot: false },
+    { boot: false, binaries: inputs.dinit, services: inputs.services },
   );
 
-  await saveImage(fs, OUT_FILE);
+  await saveImage(fs, inputs.outputPath, inputs.targetAbi === undefined
+    ? {}
+    : {
+        kernelAbi: inputs.targetAbi.version,
+        metadata: exactVfsImageMetadata(
+          inputs.targetAbi,
+          "images/vfs/scripts/build-mariadb-vfs-image.ts",
+        ),
+      });
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+function resolveLegacySystemTablesDirectory(
+  repositoryRoot: string,
+  useWasm64: boolean,
+): string {
+  const installed = join(
+    repositoryRoot,
+    "packages/registry/mariadb",
+    useWasm64 ? "mariadb-install-64" : "mariadb-install",
+    "share/mysql",
+  );
+  if (
+    existsSync(join(installed, "mysql_system_tables.sql")) &&
+    existsSync(join(installed, "mysql_system_tables_data.sql"))
+  ) {
+    return installed;
+  }
+  return join(ensureSourceExtract("mariadb", repositoryRoot), "scripts");
+}
+
+async function main(): Promise<void> {
+  const repositoryRoot = findRepoRoot();
+  const useWasm64 = process.argv.includes("--wasm64");
+  const architecture = useWasm64 ? "wasm64" : "wasm32";
+  const mariadbPath = resolveBinary(useWasm64
+    ? "programs/wasm64/mariadb/mariadbd.wasm"
+    : "programs/mariadb/mariadbd.wasm");
+  await buildMariadbVfsImage({
+    architecture,
+    mariadbd: new Uint8Array(readFileSync(mariadbPath)),
+    systemTablesDirectory: resolveLegacySystemTablesDirectory(
+      repositoryRoot,
+      useWasm64,
+    ),
+    dash: new Uint8Array(readFileSync(resolveBinary("programs/dash.wasm"))),
+    coreutils: new Uint8Array(
+      readFileSync(resolveBinary("programs/coreutils.wasm")),
+    ),
+    outputPath: join(
+      repositoryRoot,
+      `apps/browser-demos/public/${useWasm64 ? "mariadb-64" : "mariadb"}.vfs.zst`,
+    ),
+  });
+}
+
+const invokedPath = process.argv[1]
+  ? pathToFileURL(resolve(process.argv[1])).href
+  : "";
+if (import.meta.url === invokedPath) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

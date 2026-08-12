@@ -23,6 +23,7 @@
 
 import { negErrno, WasmPosixKernel, type KernelPointer } from "./kernel";
 import {
+  BoundedHttpResponseChunks,
   buildRawHttpRequest,
   parseRawHttpResponse,
   type HttpRequest,
@@ -103,6 +104,29 @@ function concatChunksLocal(chunks: Uint8Array[]): Uint8Array {
     off += c.length;
   }
   return out;
+}
+
+/**
+ * Validate the exact signed-i32 transfer result before a host uses it as a
+ * memory bound or advances a retained input. Negative values remain the
+ * kernel ABI's errno sentinel; a non-negative byte count may never exceed the
+ * buffer length supplied to the kernel.
+ */
+function checkedKernelPipeTransferCount(
+  operation: "kernel_pipe_read" | "kernel_pipe_write",
+  returned: number,
+  requested: number,
+): number {
+  if (
+    !Number.isInteger(returned) || returned < -0x8000_0000 ||
+    returned > requested
+  ) {
+    throw new Error(
+      `${operation} returned an invalid byte count ${String(returned)} ` +
+        `for a ${requested}-byte buffer`,
+    );
+  }
+  return returned;
 }
 
 /** @internal Exact process-generation guard for async worker-entry continuations. */
@@ -6930,7 +6954,11 @@ export class CentralizedKernelWorker {
     for (const conn of conns) {
       // Drain all available data from the send pipe (not just one chunk)
       for (;;) {
-        const readN = pipeRead(0, conn.sendPipeIdx, this.toKernelPtr(conn.scratchOffset), 65536);
+        const readN = checkedKernelPipeTransferCount(
+          "kernel_pipe_read",
+          pipeRead(0, conn.sendPipeIdx, this.toKernelPtr(conn.scratchOffset), 65536),
+          65536,
+        );
         if (readN <= 0) break;
         const outData = Buffer.from(mem.slice(conn.scratchOffset, conn.scratchOffset + readN));
         if (!conn.clientSocket.destroyed) {
@@ -14852,6 +14880,121 @@ export class CentralizedKernelWorker {
     return candidates[idx]!;
   }
 
+  /**
+   * Inject one host-owned connection into an in-kernel listener.
+   *
+   * This is the shared Node/browser boundary used by protected protocol
+   * clients. The returned receive pipe and its adjacent send pipe live in the
+   * kernel's global pipe table, so callers use pid 0 for subsequent pipe
+   * operations.
+   */
+  injectHostConnection(
+    pid: number,
+    listenerFd: number,
+    peerAddr: [number, number, number, number],
+    peerPort: number,
+  ): number {
+    if (!this.kernelInstance) return -1;
+    const injectConnection = this.kernelInstance.exports.kernel_inject_connection as (
+      pid: number,
+      fd: number,
+      a: number,
+      b: number,
+      c: number,
+      d: number,
+      port: number,
+    ) => number;
+    const recvPipeIdx = injectConnection(
+      pid,
+      listenerFd,
+      peerAddr[0],
+      peerAddr[1],
+      peerAddr[2],
+      peerAddr[3],
+      peerPort,
+    );
+    if (recvPipeIdx >= 0) this.scheduleWakeBlockedRetries();
+    return recvPipeIdx;
+  }
+
+  /** Drain at most one 64 KiB chunk from a host-owned kernel pipe. */
+  readHostPipe(pid: number, pipeIdx: number): Uint8Array | null {
+    if (!this.kernelInstance) return null;
+    const pipeRead = this.kernelInstance.exports.kernel_pipe_read as (
+      pid: number,
+      pipeIdx: number,
+      bufPtr: KernelPointer,
+      bufLen: number,
+    ) => number;
+    const maxBytes = 65_536;
+    const n = checkedKernelPipeTransferCount(
+      "kernel_pipe_read",
+      pipeRead(
+        pid,
+        pipeIdx,
+        this.toKernelPtr(this.tcpScratchOffset),
+        maxBytes,
+      ),
+      maxBytes,
+    );
+    if (n <= 0) return null;
+    const result = this.getKernelMem().slice(
+      this.tcpScratchOffset,
+      this.tcpScratchOffset + n,
+    );
+    this.notifyPipeWritable(pipeIdx);
+    return result;
+  }
+
+  /** Write exact bytes to a host-owned kernel pipe and wake guest readers. */
+  writeHostPipe(pid: number, pipeIdx: number, data: Uint8Array): number {
+    if (!this.kernelInstance) return -1;
+    const pipeWrite = this.kernelInstance.exports.kernel_pipe_write as (
+      pid: number,
+      pipeIdx: number,
+      bufPtr: KernelPointer,
+      bufLen: number,
+    ) => number;
+    const written = this.writePipeChunked(pipeWrite, pid, pipeIdx, data);
+    if (written > 0) this.notifyPipeReadable(pipeIdx);
+    return written;
+  }
+
+  closeHostPipeRead(pid: number, pipeIdx: number): void {
+    if (!this.kernelInstance) return;
+    const closeRead = this.kernelInstance.exports.kernel_pipe_close_read as (
+      pid: number,
+      pipeIdx: number,
+    ) => number;
+    closeRead(pid, pipeIdx);
+  }
+
+  closeHostPipeWrite(pid: number, pipeIdx: number): void {
+    if (!this.kernelInstance) return;
+    const closeWrite = this.kernelInstance.exports.kernel_pipe_close_write as (
+      pid: number,
+      pipeIdx: number,
+    ) => number;
+    closeWrite(pid, pipeIdx);
+  }
+
+  isHostPipeWriteOpen(pid: number, pipeIdx: number): boolean {
+    if (!this.kernelInstance) return false;
+    const isWriteOpen = this.kernelInstance.exports.kernel_pipe_is_write_open as (
+      pid: number,
+      pipeIdx: number,
+    ) => number;
+    return isWriteOpen(pid, pipeIdx) === 1;
+  }
+
+  wakeHostPipeReaders(pipeIdx: number): void {
+    this.notifyPipeReadable(pipeIdx);
+  }
+
+  wakeHostPipeWriters(pipeIdx: number): void {
+    this.notifyPipeWritable(pipeIdx);
+  }
+
   // ---------------------------------------------------------------------------
   // External HTTP request bridge (host → in-kernel server, no real TCP)
   // ---------------------------------------------------------------------------
@@ -14871,6 +15014,10 @@ export class CentralizedKernelWorker {
     opts: SendHttpRequestOptions = {},
   ): Promise<HttpResponse> {
     const timeoutMs = opts.timeoutMs ?? 60_000;
+    const maxResponseBytes = opts.maxResponseBytes ?? Number.MAX_SAFE_INTEGER;
+    if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1) {
+      throw new Error("in-kernel HTTP response bound must be a positive safe integer");
+    }
     const label = opts.debugLabel ?? `${request.method} ${request.url}`;
 
     const target = this.pickListenerTarget(port);
@@ -14945,6 +15092,8 @@ export class CentralizedKernelWorker {
       pipeCloseRead,
       pipeCloseWrite,
       timeoutMs,
+      maxResponseBytes,
+      request.method,
       label,
     );
     const retryBudget = opts.emptyResponseRetries ?? 1;
@@ -14997,7 +15146,11 @@ export class CentralizedKernelWorker {
       // Re-acquire view each iteration — memory.grow can detach the buffer.
       const mem = this.getKernelMem();
       mem.set(data.subarray(written, written + chunk), scratchOffset);
-      const n = pipeWrite(pid, pipeIdx, this.toKernelPtr(scratchOffset), chunk);
+      const n = checkedKernelPipeTransferCount(
+        "kernel_pipe_write",
+        pipeWrite(pid, pipeIdx, this.toKernelPtr(scratchOffset), chunk),
+        chunk,
+      );
       if (n <= 0) break;
       written += n;
     }
@@ -15018,10 +15171,12 @@ export class CentralizedKernelWorker {
     pipeCloseRead: (pid: number, pipeIdx: number) => number,
     pipeCloseWrite: (pid: number, pipeIdx: number) => number,
     timeoutMs: number,
+    maxResponseBytes: number,
+    requestMethod: string,
     label: string,
   ): Promise<HttpResponse> {
-    return new Promise<HttpResponse>((resolve) => {
-      const chunks: Uint8Array[] = [];
+    return new Promise<HttpResponse>((resolve, reject) => {
+      const chunks = new BoundedHttpResponseChunks(maxResponseBytes);
       const start = Date.now();
       let sawWriteOpen = false;
       const scratchOffset = this.tcpScratchOffset;
@@ -15035,6 +15190,14 @@ export class CentralizedKernelWorker {
         resolve(response);
       };
 
+      const fail = (error: unknown) => {
+        pipeCloseRead(pid, sendPipeIdx);
+        pipeCloseWrite(pid, recvPipeIdx);
+        this.notifyPipeReadable(recvPipeIdx);
+        this.scheduleWakeBlockedRetries();
+        reject(error instanceof Error ? error : new Error(String(error)));
+      };
+
       const tick = () => {
         if (Date.now() - start > timeoutMs) {
           finish({ status: 504, headers: {}, body: new Uint8Array(0) });
@@ -15044,11 +15207,20 @@ export class CentralizedKernelWorker {
         // Drain whatever is currently in the pipe.
         let gotData = false;
         for (;;) {
-          const n = pipeRead(pid, sendPipeIdx, this.toKernelPtr(scratchOffset), PAGE);
-          if (n <= 0) break;
-          gotData = true;
-          const mem = this.getKernelMem();
-          chunks.push(mem.slice(scratchOffset, scratchOffset + n));
+          try {
+            const n = checkedKernelPipeTransferCount(
+              "kernel_pipe_read",
+              pipeRead(pid, sendPipeIdx, this.toKernelPtr(scratchOffset), PAGE),
+              PAGE,
+            );
+            if (n <= 0) break;
+            gotData = true;
+            const mem = this.getKernelMem();
+            chunks.push(mem.slice(scratchOffset, scratchOffset + n));
+          } catch (error) {
+            fail(error);
+            return;
+          }
         }
 
         if (gotData) {
@@ -15061,8 +15233,8 @@ export class CentralizedKernelWorker {
 
         if (sawWriteOpen && !writeOpen && !gotData) {
           // Server closed its end and we drained all bytes.
-          const raw = concatChunksLocal(chunks);
-          finish(parseRawHttpResponse(raw));
+          const raw = chunks.concat();
+          finish(parseRawHttpResponse(raw, requestMethod));
           return;
         }
 
@@ -15166,7 +15338,16 @@ export class CentralizedKernelWorker {
         const chunk = inboundQueue[0]!;
         const toWrite = Math.min(chunk.length, 65536);
         mem.set(chunk.subarray(0, toWrite), scratchOffset);
-        const written = pipeWrite(GLOBAL_PIPE_PID, recvPipeIdx, this.toKernelPtr(scratchOffset), toWrite);
+        const written = checkedKernelPipeTransferCount(
+          "kernel_pipe_write",
+          pipeWrite(
+            GLOBAL_PIPE_PID,
+            recvPipeIdx,
+            this.toKernelPtr(scratchOffset),
+            toWrite,
+          ),
+          toWrite,
+        );
         if (written <= 0) break; // Pipe full, retry next pump
         wroteAny = true;
         if (written >= chunk.length) {
@@ -15191,7 +15372,16 @@ export class CentralizedKernelWorker {
       // Responses larger than 65KB (e.g. 662KB site-editor.php) need
       // multiple reads to fully transfer.
       for (;;) {
-        const readN = pipeRead(GLOBAL_PIPE_PID, sendPipeIdx, this.toKernelPtr(scratchOffset), 65536);
+        const readN = checkedKernelPipeTransferCount(
+          "kernel_pipe_read",
+          pipeRead(
+            GLOBAL_PIPE_PID,
+            sendPipeIdx,
+            this.toKernelPtr(scratchOffset),
+            65536,
+          ),
+          65536,
+        );
         if (readN <= 0) break;
         totalRead += readN;
         const outData = Buffer.from(mem.slice(scratchOffset, scratchOffset + readN));
@@ -15432,7 +15622,16 @@ export class CentralizedKernelWorker {
     const drainOutbound = () => {
       const mem = this.getKernelMem();
       for (;;) {
-        const n = pipeRead(GLOBAL_PIPE_PID, sendPipeIdx, this.toKernelPtr(scratchOffset), 65536);
+        const n = checkedKernelPipeTransferCount(
+          "kernel_pipe_read",
+          pipeRead(
+            GLOBAL_PIPE_PID,
+            sendPipeIdx,
+            this.toKernelPtr(scratchOffset),
+            65536,
+          ),
+          65536,
+        );
         if (n <= 0) break;
         try {
           peer.send(mem.slice(scratchOffset, scratchOffset + n), 0);

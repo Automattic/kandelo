@@ -26,6 +26,23 @@ const verifiedArchivePackages = [
   ["diffutils", "DIFFUTILS_VERSION", "auto"],
 ] as const;
 
+const gnuMirrorPackages = [
+  "bash",
+  "bc",
+  "coreutils",
+  "diffutils",
+  "findutils",
+  "gawk",
+  "grep",
+  "gzip",
+  "m4",
+  "make",
+  "nano",
+  "sed",
+  "tar",
+  "wget",
+] as const;
+
 function manifestField(source: string, pattern: RegExp, label: string): string {
   const value = pattern.exec(source)?.[1];
   if (value === undefined) throw new Error(`missing ${label}`);
@@ -113,6 +130,32 @@ describe("source-rootfs verified archive contract", () => {
       expect(rootfsManifest).toContain(`"${packageName}@${version}"`);
     });
   }
+
+  it("uses GNU's canonical mirror-selector path", () => {
+    for (const packageName of gnuMirrorPackages) {
+      const manifest = readFileSync(
+        resolve(repoRoot, `packages/registry/${packageName}/package.toml`),
+        "utf8",
+      );
+      const buildScript = readFileSync(
+        resolve(
+          repoRoot,
+          `packages/registry/${packageName}/build-${packageName}.sh`,
+        ),
+        "utf8",
+      );
+      const sourceUrl = sourceField(manifest, "url");
+
+      expect(sourceUrl, packageName).toMatch(
+        new RegExp(
+          `^https://ftpmirror\\.gnu\\.org/${packageName.replaceAll("-", "\\-")}/`,
+        ),
+      );
+      expect(buildScript, packageName).not.toContain(
+        "https://ftpmirror.gnu.org/gnu/",
+      );
+    }
+  });
 
   it("generates bc's host table without an ambient ed", () => {
     const scratch = mkdtempSync(resolve(tmpdir(), "kandelo-bc-libmath-"));

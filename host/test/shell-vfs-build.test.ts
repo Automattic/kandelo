@@ -453,8 +453,8 @@ describe("shell VFS base composition", () => {
     const builders = readdirSync(scriptsDir)
       .filter((name) => name.startsWith("build-") && name.endsWith("-vfs-image.ts"))
       .filter((name) =>
-        readFileSync(join(scriptsDir, name), "utf8").includes(
-          "loadShellBaseFileSystem(",
+        /loadShellBaseFileSystem(?:FromImage)?\(/.test(
+          readFileSync(join(scriptsDir, name), "utf8"),
         )
       )
       .sort();

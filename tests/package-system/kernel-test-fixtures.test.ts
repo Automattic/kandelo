@@ -84,8 +84,15 @@ function sourceFilesUnder(path: string): string[] {
   });
 }
 
-function discoveredConsumers(fixture: FixtureEntry): string[] {
-  const candidates = [
+let cachedConsumerSources: ReadonlyArray<{
+  path: string;
+  source: string;
+}> | undefined;
+
+function consumerSources(): ReadonlyArray<{ path: string; source: string }> {
+  if (cachedConsumerSources) return cachedConsumerSources;
+  const currentTest = relative(repoRoot, fileURLToPath(import.meta.url));
+  cachedConsumerSources = [
     "apps",
     "benchmarks",
     "examples",
@@ -94,14 +101,23 @@ function discoveredConsumers(fixture: FixtureEntry): string[] {
     "packages",
     "scripts",
     "tests",
-  ].flatMap(sourceFilesUnder);
-  candidates.push("run.sh");
-  return candidates
-    .filter((candidate) => {
-      if (candidate === relative(repoRoot, fileURLToPath(import.meta.url))) return false;
-      const source = readFileSync(join(repoRoot, candidate), "utf8");
+  ]
+    .flatMap(sourceFilesUnder)
+    .concat("run.sh")
+    .filter((path) => path !== currentTest)
+    .map((path) => ({
+      path,
+      source: readFileSync(join(repoRoot, path), "utf8"),
+    }));
+  return cachedConsumerSources;
+}
+
+function discoveredConsumers(fixture: FixtureEntry): string[] {
+  return consumerSources()
+    .filter(({ source }) => {
       return source.includes(fixture.resolver_path) || source.includes(fixture.binary);
     })
+    .map(({ path }) => path)
     .sort();
 }
 

@@ -38,8 +38,11 @@ import {
   type ClosedLazyAsset,
 } from "./vfs/closed-lazy-assets";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
+import type { MountSpec } from "./vfs/default-mounts";
 
 const DESTROY_REQUEST_TIMEOUT_MS = 2_000;
+const MAX_PENDING_PTY_OUTPUT_BYTES = 64 * 1024;
+const MAX_PENDING_PTY_OUTPUT_CHUNKS = 4_096;
 
 export interface BrowserKernelOptions {
   /** Maximum concurrent workers (default: 4) */
@@ -69,6 +72,10 @@ export interface BrowserKernelOptions {
   onStdout?: (data: Uint8Array) => void;
   /** Called when a process writes to stderr */
   onStderr?: (data: Uint8Array) => void;
+  /** PID-attributed stdout for protected runners and process-aware consumers. */
+  onProcessStdout?: (pid: number, data: Uint8Array) => void;
+  /** PID-attributed stderr for protected runners and process-aware consumers. */
+  onProcessStderr?: (pid: number, data: Uint8Array) => void;
   /** Called for host-runtime diagnostics that are not guest stderr. */
   onHostDiagnostic?: (diagnostic: HostDiagnostic) => void;
   /** Called when a process requests a TCP listener (for service worker bridging) */
@@ -128,6 +135,8 @@ export interface BrowserKernelBootOptions {
    * When set, an unbound URL fails instead of using ambient browser fetch.
    */
   closedLazyAssets?: readonly ClosedLazyAsset[];
+  /** Exact image/scratch mount contract for this boot. */
+  rootfsMountSpec?: readonly MountSpec[];
   /** Argv for the first (and currently only "init") process. argv[0] should
    *  be a path inside the VFS image. */
   argv: string[];
@@ -166,6 +175,8 @@ export interface BrowserKernelOwnedImageInitOptions {
   vfsImage: ArrayBuffer;
   lazyUrlBase?: string;
   closedLazyAssets?: readonly ClosedLazyAsset[];
+  /** Exact image/scratch mount contract for this boot. */
+  rootfsMountSpec?: readonly MountSpec[];
 }
 
 async function fetchDefaultBrowserKernelArtifact(
@@ -224,6 +235,9 @@ export class BrowserKernel {
    * happens when `boot()` is awaited (process is running) before
    * PtyTerminal calls onPtyOutput. Drained when a callback registers. */
   private pendingPtyOutput = new Map<number, Uint8Array[]>();
+  private pendingPtyOutputBytes = 0;
+  private pendingPtyOutputChunks = 0;
+  private pendingPtyOutputFailure: Error | undefined;
   private lazyDownloadListeners = new Set<(event: LazyDownloadEvent) => void>();
 
   constructor(options: BrowserKernelOptions = {}) {
@@ -294,6 +308,7 @@ export class BrowserKernel {
     vfsImage: Uint8Array | "default";
     lazyUrlBase?: string;
     closedLazyAssets?: readonly ClosedLazyAsset[];
+    rootfsMountSpec?: readonly MountSpec[];
   }): Promise<void> {
     const [wasmBytes, vfsImage] = await Promise.all([
       options.kernelWasm
@@ -310,6 +325,7 @@ export class BrowserKernel {
       vfsImage,
       lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
       closedLazyAssets: options.closedLazyAssets,
+      rootfsMountSpec: options.rootfsMountSpec,
       takeVfsImageOwnership: false,
     });
   }
@@ -337,6 +353,7 @@ export class BrowserKernel {
       vfsImage: new Uint8Array(options.vfsImage),
       lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
       closedLazyAssets: options.closedLazyAssets,
+      rootfsMountSpec: options.rootfsMountSpec,
       takeVfsImageOwnership: true,
     });
   }
@@ -350,6 +367,7 @@ export class BrowserKernel {
     vfsImage: Uint8Array;
     lazyUrlBase?: string;
     closedLazyAssets?: readonly ClosedLazyAsset[];
+    rootfsMountSpec?: readonly MountSpec[];
     takeVfsImageOwnership: boolean;
   }): Promise<void> {
     if (
@@ -442,6 +460,9 @@ export class BrowserKernel {
           vfsImage: opts.vfsImage,
           lazyUrlBase: opts.lazyUrlBase,
           closedLazyAssets,
+          rootfsMountSpec: opts.rootfsMountSpec === undefined
+            ? undefined
+            : opts.rootfsMountSpec.map((mount) => ({ ...mount })),
           shmSab: this.shmSab,
           workerEntryUrl,
           config: {
@@ -876,7 +897,7 @@ export class BrowserKernel {
   async fetchInKernel(
     port: number,
     request: HttpRequest,
-    options?: { timeoutMs?: number },
+    options?: { timeoutMs?: number; maxResponseBytes?: number },
   ): Promise<HttpResponse> {
     const requestId = this.nextRequestId++;
     return this.request(requestId, {
@@ -885,6 +906,7 @@ export class BrowserKernel {
       port,
       request,
       timeoutMs: options?.timeoutMs,
+      maxResponseBytes: options?.maxResponseBytes,
     }) as Promise<HttpResponse>;
   }
 
@@ -999,10 +1021,18 @@ export class BrowserKernel {
    * output that arrived before this call (e.g., when boot() returns the
    * process is already running). */
   onPtyOutput(pid: number, callback: (data: Uint8Array) => void): void {
+    if (this.pendingPtyOutputFailure) {
+      throw this.pendingPtyOutputFailure;
+    }
     this.ptyOutputCallbacks.set(pid, callback);
     const pending = this.pendingPtyOutput.get(pid);
     if (pending) {
       this.pendingPtyOutput.delete(pid);
+      this.pendingPtyOutputChunks -= pending.length;
+      this.pendingPtyOutputBytes -= pending.reduce(
+        (total, chunk) => total + chunk.byteLength,
+        0,
+      );
       for (const chunk of pending) callback(chunk);
     }
   }
@@ -1010,7 +1040,15 @@ export class BrowserKernel {
   /** Remove any registered or buffered PTY output for a process. */
   clearPtyOutput(pid: number): void {
     this.ptyOutputCallbacks.delete(pid);
-    this.pendingPtyOutput.delete(pid);
+    const pending = this.pendingPtyOutput.get(pid);
+    if (pending) {
+      this.pendingPtyOutput.delete(pid);
+      this.pendingPtyOutputChunks -= pending.length;
+      this.pendingPtyOutputBytes -= pending.reduce(
+        (total, chunk) => total + chunk.byteLength,
+        0,
+      );
+    }
   }
 
   /** Terminate a specific process. */
@@ -1162,6 +1200,9 @@ export class BrowserKernel {
     this.fbGenerationByPid.clear();
     this.framebuffers.clear();
     this.pendingPtyOutput.clear();
+    this.pendingPtyOutputBytes = 0;
+    this.pendingPtyOutputChunks = 0;
+    this.pendingPtyOutputFailure = undefined;
     if (gracefulDetachFailure || realmTerminationFailure) {
       const diagnostic: HostDiagnostic = {
         pid: 0,
@@ -1308,9 +1349,11 @@ export class BrowserKernel {
         break;
       case "stdout":
         this.options.onStdout?.(msg.data);
+        this.options.onProcessStdout?.(msg.pid, msg.data);
         break;
       case "stderr":
         this.options.onStderr?.(msg.data);
+        this.options.onProcessStderr?.(msg.pid, msg.data);
         break;
       case "host_diagnostic": {
         this.options.onHostDiagnostic?.({
@@ -1325,16 +1368,50 @@ export class BrowserKernel {
         const cb = this.ptyOutputCallbacks.get(msg.pid);
         if (cb) {
           cb(msg.data);
-        } else {
+        } else if (!this.pendingPtyOutputFailure) {
           // Buffer until onPtyOutput registers a callback (race window
           // between worker starting the process and main thread wiring
           // the handler in boot()).
+          if (
+            !Number.isSafeInteger(msg.pid) ||
+            msg.pid < 0 ||
+            !(msg.data instanceof Uint8Array)
+          ) {
+            this.pendingPtyOutput.clear();
+            this.pendingPtyOutputBytes = 0;
+            this.pendingPtyOutputChunks = 0;
+            this.pendingPtyOutputFailure = new Error(
+              "kernel worker emitted malformed pre-listener PTY output",
+            );
+            break;
+          }
+          if (msg.data.byteLength === 0) break;
+          if (
+            this.pendingPtyOutputBytes + msg.data.byteLength >
+              MAX_PENDING_PTY_OUTPUT_BYTES ||
+            this.pendingPtyOutputChunks + 1 > MAX_PENDING_PTY_OUTPUT_CHUNKS
+          ) {
+            const limit =
+              this.pendingPtyOutputBytes + msg.data.byteLength >
+              MAX_PENDING_PTY_OUTPUT_BYTES
+                ? `${MAX_PENDING_PTY_OUTPUT_BYTES}-byte`
+                : `${MAX_PENDING_PTY_OUTPUT_CHUNKS}-chunk`;
+            this.pendingPtyOutput.clear();
+            this.pendingPtyOutputBytes = 0;
+            this.pendingPtyOutputChunks = 0;
+            this.pendingPtyOutputFailure = new Error(
+              `PTY output exceeded the ${limit} pre-listener limit`,
+            );
+            break;
+          }
           let buf = this.pendingPtyOutput.get(msg.pid);
           if (!buf) {
             buf = [];
             this.pendingPtyOutput.set(msg.pid, buf);
           }
           buf.push(msg.data);
+          this.pendingPtyOutputBytes += msg.data.byteLength;
+          this.pendingPtyOutputChunks += 1;
         }
         break;
       }

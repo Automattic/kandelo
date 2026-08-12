@@ -1,0 +1,6 @@
+schema = 1
+kind = "kandelo-pages-vfs-products"
+
+[[products]]
+id = "fixture-shell"
+load = "eager"

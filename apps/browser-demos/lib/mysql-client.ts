@@ -9,7 +9,7 @@
  * Operates entirely over kernel pipe pairs (no real TCP).
  * All pipe operations are async (message round-trip to kernel worker).
  */
-import type { BrowserKernel } from "@host/browser-kernel-host";
+import type { KernelPipeTransport } from "../../../host/src/kernel-pipe-transport";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -39,7 +39,7 @@ export interface MySqlResult {
  * MySQL wire protocol client that communicates via kernel pipes.
  */
 export class MySqlBrowserClient {
-  private kernel: BrowserKernel;
+  private kernel: KernelPipeTransport;
   private pid: number;
   private recvPipeIdx: number; // write to this to send data to server
   private sendPipeIdx: number; // read from this to get data from server
@@ -47,7 +47,7 @@ export class MySqlBrowserClient {
   private readBuffer = new Uint8Array(0);
 
   private constructor(
-    kernel: BrowserKernel,
+    kernel: KernelPipeTransport,
     pid: number,
     recvPipeIdx: number,
     sendPipeIdx: number,
@@ -62,7 +62,7 @@ export class MySqlBrowserClient {
    * Connect to MariaDB on the given port. Performs the initial handshake.
    */
   static async connect(
-    kernel: BrowserKernel,
+    kernel: KernelPipeTransport,
     port: number,
   ): Promise<MySqlBrowserClient> {
     const target = await kernel.pickListenerTarget(port);

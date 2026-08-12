@@ -1,4 +1,9 @@
 script_path = "packages/registry/tcl/build-tcl.sh"
+inputs = [
+  "packages/registry/tcl/build-tcl.sh",
+  "packages/registry/tcl/config.site-wasm32-posix",
+  "scripts/package-build-roots.sh",
+]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
 revision    = 2

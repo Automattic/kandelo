@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createServer } from "node:http";
 import {
   existsSync,
   mkdtempSync,
@@ -27,7 +28,10 @@ const environmentProgram = join(
   "examples/environment_lifecycle_test.wasm",
 );
 const mountProbe = join(repoRoot, "examples/mount_probe_test.wasm");
-const kernel = join(repoRoot, "local-binaries/kernel.wasm");
+const kernel = [
+  join(repoRoot, "local-binaries/kernel.wasm"),
+  join(repoRoot, "target/wasm32-unknown-unknown/release/kandelo_kernel.wasm"),
+].find(existsSync) ?? join(repoRoot, "local-binaries/kernel.wasm");
 const available = [environmentProgram, mountProbe, kernel].every(existsSync);
 const TAR_BLOCK = 512;
 
@@ -46,7 +50,7 @@ function integrity(bytes: Uint8Array): { sha256: string; bytes: number } {
 }
 
 describe.skipIf(!available)("Node lazy archive runtime paths", () => {
-  it("uses a closed HTTPS binding for a whole tree and fails closed for an unbound tree", async () => {
+  it("fetches a closed source only on first tree use and fails closed for an unbound tree", async () => {
     const probeBytes = new Uint8Array(readFileSync(mountProbe));
     const boundFile = new TextEncoder().encode("bound lazy tree\n");
     const unboundFile = new TextEncoder().encode("unbound lazy tree\n");
@@ -62,6 +66,27 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
     }]);
     const boundArchive = gzipSync(boundTar);
     const unboundArchive = gzipSync(unboundTar);
+    let sourceRequests = 0;
+    const server = createServer((request, response) => {
+      sourceRequests += 1;
+      if (request.url !== "/v1/bound.tar.gz") {
+        response.writeHead(404).end();
+        return;
+      }
+      response.writeHead(200, {
+        "content-length": String(boundArchive.byteLength),
+      });
+      response.end(boundArchive);
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("lazy source fixture lacks a TCP address");
+    }
+    const sourceUrl = `http://127.0.0.1:${address.port}/v1/bound.tar.gz`;
     const boundUrl =
       "https://github.com/example/project/releases/download/v1/bound.tar.gz";
     const boundRelativeUrl = "bound.tar.gz";
@@ -106,11 +131,11 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
     const host = new NodeKernelHost({
       rootfsImage: await fs.saveImage(),
       rootfsLazyUrlBase: boundUrlBase,
-      rootfsLazyAssets: [{
+      rootfsLazyAssetSources: [{
         url: boundUrl,
+        sourceUrl,
         sha256: integrity(boundArchive).sha256,
         size: boundArchive.byteLength,
-        bytes: boundArchive,
       }],
       onStdout: (_pid, bytes) => {
         stdout += new TextDecoder().decode(bytes);
@@ -119,13 +144,15 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
     });
 
     try {
-      await host.init();
+      await host.init(arrayBuffer(new Uint8Array(readFileSync(kernel))));
+      expect(sourceRequests).toBe(0);
       expect(await host.spawn(arrayBuffer(probeBytes), [
         "mount_probe_test",
         "rootfs",
         "/etc/closed-bound",
       ])).toBe(0);
       expect(stdout).toContain(`ROOTFS size=${boundFile.byteLength}`);
+      expect(sourceRequests).toBe(1);
       const boundEvents = events.filter((event) => event.url === boundUrl);
       expect(boundEvents.map((event) => [event.kind, event.status])).toEqual([
         ["tree", "started"],
@@ -152,6 +179,7 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
       expect(unboundEvents.at(-1)?.error).toContain("do not bind URL");
     } finally {
       await host.destroy().catch(() => {});
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 
@@ -224,7 +252,7 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
     });
 
     try {
-      await host.init();
+      await host.init(arrayBuffer(new Uint8Array(readFileSync(kernel))));
       expect(await host.spawn(arrayBuffer(execBytes), [
         "/bin/environment-lifecycle",
       ], {

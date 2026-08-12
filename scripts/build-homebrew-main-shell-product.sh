@@ -3,6 +3,13 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+if [ "$#" -ne 0 ] && [ "${1:-}" = "--vfs-product-manifest" ]; then
+  exec node "$REPO_ROOT/node_modules/tsx/dist/cli.mjs" \
+    "$REPO_ROOT/images/vfs/scripts/staged-product-inputs.ts" \
+    browser-main-shell "$@"
+fi
+
 PREPARED_INPUTS=""
 WORK_DIR=""
 OUT=""

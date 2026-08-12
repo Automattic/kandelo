@@ -9,12 +9,13 @@ FORMULA=""
 ARCH=""
 OUT_DIR=""
 BOTTLE_ROOT_URL=""
+STAGING_CANDIDATE_ABI=""
 BUILD_USER="${KANDELO_HOMEBREW_BUILD_USER:-}"
 SHARED_TEMP="${KANDELO_HOMEBREW_SHARED_TEMP:-}"
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-bottle-build.sh --tap-root <tap-root> [--tap-repository <owner/repo>] [--tap-name <owner/name>] --formula <name> --arch <wasm32|wasm64> --out <dir> --bottle-root-url <url>
+usage: scripts/homebrew-bottle-build.sh --tap-root <tap-root> [--tap-repository <owner/repo>] [--tap-name <owner/name>] --formula <name> --arch <wasm32|wasm64> --out <dir> --bottle-root-url <url> [--staging-candidate-abi <positive-integer>]
 
 This script is intended to run inside scripts/dev-shell.sh. It invokes the
 absolute Homebrew executable named by HOMEBREW_BREW_FILE, avoiding host PATH
@@ -37,6 +38,7 @@ while [ "$#" -gt 0 ]; do
     --arch) ARCH="${2:-}"; shift 2 ;;
     --out) OUT_DIR="${2:-}"; shift 2 ;;
     --bottle-root-url) BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
+    --staging-candidate-abi) STAGING_CANDIDATE_ABI="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "homebrew-bottle-build.sh: unknown flag $1" >&2; usage; exit 2 ;;
   esac
@@ -125,9 +127,14 @@ KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-guest-layout.sh"
 TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
-EXPECTED_BOTTLE_ROOT_URL="$(homebrew_bottle_root_url "$TAP_REPOSITORY" "$TAP_NAME")"
+if [ -n "$STAGING_CANDIDATE_ABI" ]; then
+  EXPECTED_BOTTLE_ROOT_URL="$(homebrew_candidate_bottle_root_url \
+    "$TAP_REPOSITORY" "$STAGING_CANDIDATE_ABI" "$FORMULA")"
+else
+  EXPECTED_BOTTLE_ROOT_URL="$(homebrew_bottle_root_url "$TAP_REPOSITORY" "$TAP_NAME")"
+fi
 if [ "$BOTTLE_ROOT_URL" != "$EXPECTED_BOTTLE_ROOT_URL" ]; then
-  echo "homebrew-bottle-build.sh: bottle root URL does not match the tap repository package root" >&2
+  echo "homebrew-bottle-build.sh: bottle root URL does not match its exact publication authority" >&2
   exit 2
 fi
 homebrew_select_guest_layout \

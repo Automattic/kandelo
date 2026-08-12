@@ -16,6 +16,12 @@ import rootfsVfsUrl from "@rootfs-vfs?url";
 import workerEntryUrl from "@host/worker-entry-browser.ts?worker&url";
 import ncWasmUrl from "@binaries/programs/wasm32/nc.wasm?url";
 import curlWasmUrl from "@binaries/programs/wasm32/curl.wasm?url";
+import {
+  createPagesVfsProductLoader,
+  type PagesVfsProductEntry,
+} from "../kandelo/kernel-host/pages-vfs-product-loader";
+// @ts-expect-error Vite owns this virtual module in both canonical and normal mode.
+import canonicalPagesVfsProducts from "virtual:kandelo-pages-vfs-products";
 
 installBrowserSetImmediatePolyfill();
 
@@ -23,6 +29,15 @@ const MAX_PAGES = 16384;
 const CH_TOTAL_SIZE = 72 + 65536;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const CANONICAL_PAGES_VFS_PRODUCTS = canonicalPagesVfsProducts as
+  | readonly PagesVfsProductEntry[]
+  | null;
+const CANONICAL_PAGES_VFS_LOADER = CANONICAL_PAGES_VFS_PRODUCTS === null
+  ? undefined
+  : createPagesVfsProductLoader(
+    CANONICAL_PAGES_VFS_PRODUCTS,
+    (url, init) => fetch(url, init),
+  );
 
 type MachineId = "alpha" | "beta" | "gamma";
 type StepId = "udp" | "tcp" | "curl";
@@ -82,9 +97,12 @@ async function loadArrayBuffer(url: string): Promise<ArrayBuffer> {
 
 async function loadArtifacts(): Promise<ArtifactSet> {
   if (!artifactsPromise) {
+    const rootfs = CANONICAL_PAGES_VFS_LOADER === undefined
+      ? loadArrayBuffer(rootfsVfsUrl)
+      : CANONICAL_PAGES_VFS_LOADER.bytes("platform-rootfs");
     artifactsPromise = Promise.all([
       loadArrayBuffer(kernelWasmUrl),
-      loadArrayBuffer(rootfsVfsUrl),
+      rootfs,
       loadArrayBuffer(ncWasmUrl),
       loadArrayBuffer(curlWasmUrl),
     ]).then(([kernel, rootfs, nc, curl]) => ({

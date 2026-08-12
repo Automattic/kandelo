@@ -4,9 +4,10 @@
  *
  *   mariadb-bootstrap (scripted, oneshot) → mariadb (process)
  *
- * Once port 3306 is listening the page runs setup SQL and exposes
- * window.__runMariadbTest() for Playwright. Each test invocation
- * spawns mysqltest via kernel.spawn() (transient binary, no service).
+ * Once port 3306 is listening, protected evidence and the browser page run
+ * setup SQL followed by selected mysql-test cases. mysqltest is an explicit
+ * product input installed in the VFS and remains a transient process rather
+ * than a service.
  *
  * Produces: $MARIADB_TEST_VFS_OUT (default:
  * apps/browser-demos/public/mariadb-test.vfs.zst).
@@ -16,7 +17,8 @@
  *   npx tsx images/vfs/scripts/build-mariadb-test-vfs-image.ts --all    # ALL tests
  */
 import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   ensureDir,
@@ -25,37 +27,26 @@ import {
   writeVfsBinary,
   symlink,
 } from "../../../host/src/vfs/image-helpers";
-import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
-import { saveImage } from "./vfs-image-helpers";
-import { addDinitInit, type DinitService } from "./dinit-image-helpers";
+import {
+  resolveBinary,
+  findRepoRoot,
+  tryResolveBinary,
+} from "../../../host/src/binary-resolver";
+import {
+  exactVfsImageMetadata,
+  saveImage,
+  type ExactVfsImageAbi,
+} from "./vfs-image-helpers";
+import {
+  addDinitInit,
+  type DinitBinaryInputs,
+  type DinitService,
+} from "./dinit-image-helpers";
 import { prepareMariadbWritableDirectories } from "./mariadb-image-helpers";
 import { copyMariaDbTestSources } from "./mariadb-test-source-copy";
 import { ensureSourceExtract } from "./source-extract-helper";
 
 const REPO_ROOT = findRepoRoot();
-// Local source-build keeps everything under mariadb-install/; for
-// fetch-only checkouts we extract MariaDB source on demand. Both the
-// mysql-test fixture tree and the bootstrap SQL files live in source.
-const MARIADB_LEGACY_INSTALL = join(REPO_ROOT, "packages/registry/mariadb/mariadb-install");
-const MARIADB_SOURCE = ensureSourceExtract("mariadb", REPO_ROOT);
-const MARIADB_PATH = resolveBinary("programs/mariadb/mariadbd.wasm");
-const MYSQL_TEST_DIR = existsSync(join(MARIADB_LEGACY_INSTALL, "mysql-test"))
-  ? join(MARIADB_LEGACY_INSTALL, "mysql-test")
-  : join(MARIADB_SOURCE, "mysql-test");
-const SYSTEM_TABLES_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables.sql"))
-  ? join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables.sql")
-  : join(MARIADB_SOURCE, "scripts/mysql_system_tables.sql");
-const SYSTEM_DATA_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables_data.sql"))
-  ? join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables_data.sql")
-  : join(MARIADB_SOURCE, "scripts/mysql_system_tables_data.sql");
-const DASH_PATH = resolveBinary("programs/dash.wasm");
-const COREUTILS_PATH = resolveBinary("programs/coreutils.wasm");
-
-const OUT_FILE = process.env.MARIADB_TEST_VFS_OUT
-  ?? join(REPO_ROOT, "apps/browser-demos/public/mariadb-test.vfs.zst");
-
-const includeAll = process.argv.includes("--all");
-
 const COREUTILS_SYMLINK_NAMES = [
   "ls", "cat", "cp", "mv", "rm", "echo", "mkdir", "rmdir", "touch", "pwd",
   "head", "tail", "wc", "sort", "uniq", "cut", "tr", "date", "basename",
@@ -199,20 +190,45 @@ function buildServices(): DinitService[] {
   ];
 }
 
-async function main() {
-  if (!existsSync(MARIADB_PATH)) {
-    console.error("mariadbd.wasm not found. Run scripts/fetch-binaries.sh or bash packages/registry/mariadb/build-mariadb.sh");
-    process.exit(1);
+export interface MariadbTestVfsInputs {
+  mariadbd: Uint8Array;
+  mysqltest: Uint8Array;
+  dash: Uint8Array;
+  coreutils: Uint8Array;
+  dinit: DinitBinaryInputs;
+  services: Uint8Array;
+  systemTablesDirectory: string;
+  testSuiteDirectory: string;
+  includeAll: boolean;
+  outputPath: string;
+  targetAbi?: ExactVfsImageAbi;
+}
+
+export async function buildMariadbTestVfsImage(
+  inputs: MariadbTestVfsInputs,
+): Promise<void> {
+  const systemTablesPath = join(
+    inputs.systemTablesDirectory,
+    "mysql_system_tables.sql",
+  );
+  const systemDataPath = join(
+    inputs.systemTablesDirectory,
+    "mysql_system_tables_data.sql",
+  );
+  if (!existsSync(join(inputs.testSuiteDirectory, "main"))) {
+    throw new Error("MariaDB staged test-suite input omits main/");
   }
-  if (!existsSync(join(MYSQL_TEST_DIR, "main"))) {
-    console.error(`MariaDB mysql-test directory missing.`);
-    console.error(`  Looked at: ${MYSQL_TEST_DIR}`);
-    process.exit(1);
+  if (!existsSync(systemTablesPath) || !existsSync(systemDataPath)) {
+    throw new Error("MariaDB staged system-tables input is incomplete");
   }
-  if (!existsSync(SYSTEM_TABLES_PATH) || !existsSync(SYSTEM_DATA_PATH)) {
-    console.error(`MariaDB bootstrap SQL files missing.`);
-    console.error(`  Looked at:\n    ${SYSTEM_TABLES_PATH}\n    ${SYSTEM_DATA_PATH}`);
-    process.exit(1);
+  for (const [label, bytes] of [
+    ["mariadbd", inputs.mariadbd],
+    ["mysqltest", inputs.mysqltest],
+    ["dash", inputs.dash],
+    ["coreutils", inputs.coreutils],
+    ["services", inputs.services],
+  ] as const) {
+    if (bytes.byteLength === 0) throw new Error(`MariaDB staged ${label} is empty`);
   }
 
   console.log("==> Building MariaDB test-runner VFS image");
@@ -230,25 +246,26 @@ async function main() {
   prepareMariadbWritableDirectories(fs);
 
   // dash + coreutils for the bootstrap wrapper script (sh, sleep, kill).
-  if (existsSync(DASH_PATH)) {
-    writeVfsBinary(fs, "/bin/dash", new Uint8Array(readFileSync(DASH_PATH)));
-    symlink(fs, "/bin/dash", "/bin/sh");
-    symlink(fs, "/bin/dash", "/usr/bin/dash");
-    symlink(fs, "/bin/dash", "/usr/bin/sh");
-  }
-  writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
+  writeVfsBinary(fs, "/bin/dash", inputs.dash);
+  symlink(fs, "/bin/dash", "/bin/sh");
+  symlink(fs, "/bin/dash", "/usr/bin/dash");
+  symlink(fs, "/bin/dash", "/usr/bin/sh");
+  writeVfsBinary(fs, "/bin/coreutils", inputs.coreutils);
   for (const name of COREUTILS_SYMLINK_NAMES) {
     symlink(fs, "/bin/coreutils", `/bin/${name}`);
     symlink(fs, "/bin/coreutils", `/usr/bin/${name}`);
   }
 
   console.log("  Writing mariadbd binary...");
-  writeVfsBinary(fs, "/usr/sbin/mariadbd", new Uint8Array(readFileSync(MARIADB_PATH)));
+  writeVfsBinary(fs, "/usr/sbin/mariadbd", inputs.mariadbd);
+  console.log("  Writing mysqltest binary...");
+  writeVfsBinary(fs, "/usr/bin/mysqltest", inputs.mysqltest);
+  symlink(fs, "/usr/bin/mysqltest", "/bin/mysqltest");
 
   console.log("  Writing bootstrap SQL...");
   ensureDirRecursive(fs, "/etc/mariadb");
-  const systemTables = readFileSync(SYSTEM_TABLES_PATH, "utf-8");
-  const systemData = readFileSync(SYSTEM_DATA_PATH, "utf-8");
+  const systemTables = readFileSync(systemTablesPath, "utf-8");
+  const systemData = readFileSync(systemDataPath, "utf-8");
   const bootstrapSql = `use mysql;\n${systemTables}\n${systemData}\nCREATE DATABASE IF NOT EXISTS test;\n`;
   writeVfsFile(fs, "/etc/mariadb/bootstrap.sql", bootstrapSql);
 
@@ -270,12 +287,12 @@ exit 0
 `);
 
   console.log(
-    includeAll
+    inputs.includeAll
       ? "  Writing ALL .test files and required fixtures..."
       : "  Writing curated .test files and required fixtures...",
   );
-  const testCount = copyMariaDbTestSources(fs, MYSQL_TEST_DIR, {
-    includeAll,
+  const testCount = copyMariaDbTestSources(fs, inputs.testSuiteDirectory, {
+    includeAll: inputs.includeAll,
     curatedTests: CURATED_TESTS,
   });
   console.log(`    ${testCount} test files`);
@@ -284,16 +301,60 @@ exit 0
   writeVfsFile(fs, "/mysql-test/main/__setup.test", SETUP_SQL);
   writeVfsFile(fs, "/mysql-test/main/__reset.test", RESET_SQL);
 
-  // dinit service tree (no auto-boot — page passes target service as argv).
-  // We use the default boot:true here because the page only ever wants
-  // the mariadb tree up; no engine selection like the mariadb demo.
-  addDinitInit(fs, buildServices());
+  // dinit service tree. The canonical product boot contract selects the
+  // mariadb leaf so container mode keeps the database tree running.
+  addDinitInit(fs, buildServices(), {
+    binaries: inputs.dinit,
+    services: inputs.services,
+  });
 
-  await saveImage(fs, OUT_FILE);
-  console.log(`==> Wrote ${OUT_FILE} (${testCount} test files)`);
+  await saveImage(fs, inputs.outputPath, inputs.targetAbi === undefined
+    ? {}
+    : {
+        kernelAbi: inputs.targetAbi.version,
+        metadata: exactVfsImageMetadata(
+          inputs.targetAbi,
+          "images/vfs/scripts/build-mariadb-test-vfs-image.ts",
+        ),
+      });
+  console.log(`==> Wrote ${inputs.outputPath} (${testCount} test files)`);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+async function main(): Promise<void> {
+  const legacyInstall = join(REPO_ROOT, "packages/registry/mariadb/mariadb-install");
+  const source = ensureSourceExtract("mariadb", REPO_ROOT);
+  const systemTablesDirectory = existsSync(
+    join(legacyInstall, "share/mysql/mysql_system_tables.sql"),
+  ) ? join(legacyInstall, "share/mysql") : join(source, "scripts");
+  const testSuiteDirectory = existsSync(join(legacyInstall, "mysql-test"))
+    ? join(legacyInstall, "mysql-test")
+    : join(source, "mysql-test");
+  const dinitPath = tryResolveBinary("programs/dinit/dinit.wasm") ??
+    join(REPO_ROOT, "packages/registry/dinit/bin/dinit.wasm");
+  const dinitctlPath = tryResolveBinary("programs/dinit/dinitctl.wasm") ??
+    join(REPO_ROOT, "packages/registry/dinit/bin/dinitctl.wasm");
+  await buildMariadbTestVfsImage({
+    mariadbd: new Uint8Array(readFileSync(resolveBinary("programs/mariadb/mariadbd.wasm"))),
+    mysqltest: new Uint8Array(readFileSync(resolveBinary("programs/mariadb/mysqltest.wasm"))),
+    dash: new Uint8Array(readFileSync(resolveBinary("programs/dash.wasm"))),
+    coreutils: new Uint8Array(readFileSync(resolveBinary("programs/coreutils.wasm"))),
+    dinit: {
+      dinit: new Uint8Array(readFileSync(dinitPath)),
+      dinitctl: new Uint8Array(readFileSync(dinitctlPath)),
+    },
+    services: new Uint8Array(readFileSync(join(REPO_ROOT, "images/rootfs/etc/services"))),
+    systemTablesDirectory,
+    testSuiteDirectory,
+    includeAll: process.argv.includes("--all"),
+    outputPath: process.env.MARIADB_TEST_VFS_OUT ??
+      join(REPO_ROOT, "apps/browser-demos/public/mariadb-test.vfs.zst"),
+  });
+}
+
+const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : "";
+if (import.meta.url === invokedPath) {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}
