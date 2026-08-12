@@ -1,6 +1,8 @@
 export interface PlaywrightServerEnvironment {
   CI?: string;
   KANDELO_ABI_STAGING_ASSEMBLED_SITE_ROOT?: string;
+  KANDELO_ABI_STAGING_BROWSER_OBSERVATION?: string;
+  KANDELO_ABI_STAGING_BROWSER_SESSION?: string;
   KANDELO_CANONICAL_FLAT_SHELL_STRICT?: string;
   KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE?: string;
   KANDELO_HOMEBREW_MAIN_SHELL_STRICT?: string;
@@ -11,10 +13,29 @@ export interface PlaywrightServerEnvironment {
 
 export function playwrightTestIgnoreForEnvironment(
   env: PlaywrightServerEnvironment,
+  argv: readonly string[] = [],
 ): RegExp[] {
-  return env.KANDELO_ABI_STAGING_ASSEMBLED_SITE_ROOT === undefined
-    ? [/abi-staging-pages-assembled-site\.spec\.ts$/]
-    : [];
+  const ignored: RegExp[] = [];
+  if (env.KANDELO_ABI_STAGING_ASSEMBLED_SITE_ROOT === undefined) {
+    ignored.push(/abi-staging-pages-assembled-site\.spec\.ts$/);
+  }
+  // Ordinary browser runs have no protected evidence handoff. Keep an
+  // explicitly named evidence spec visible so its missing-input check fails
+  // loudly instead of turning a broken direct gate into a silent skip.
+  if (
+    !argv.some((argument) =>
+      /(?:^|[/\\])abi-staging-product-evidence\.spec\.ts(?::\d+)?$/.test(
+        argument,
+      )
+    ) &&
+    (
+      env.KANDELO_ABI_STAGING_BROWSER_SESSION === undefined ||
+      env.KANDELO_ABI_STAGING_BROWSER_OBSERVATION === undefined
+    )
+  ) {
+    ignored.push(/abi-staging-product-evidence\.spec\.ts$/);
+  }
+  return ignored;
 }
 
 /**

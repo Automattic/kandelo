@@ -756,7 +756,10 @@ function assertBoundedZstdFrames(image: Uint8Array, maximum: number): void {
         throw new Error("zstd VFS image contains an invalid block header");
       }
       frameBound += type === 2 ? ZSTD_MAX_BLOCK_BYTES : blockBytes;
-      if (!Number.isSafeInteger(frameBound) || frameBound > maximum) {
+      if (
+        !Number.isSafeInteger(frameBound) ||
+        (contentBytes === undefined && frameBound > maximum)
+      ) {
         throw new Error("zstd VFS image exceeds its decompressed byte bound");
       }
       const encodedBytes = type === 1 ? 1 : blockBytes;
@@ -771,7 +774,14 @@ function assertBoundedZstdFrames(image: Uint8Array, maximum: number): void {
     if (contentBytes !== undefined && contentBytes > BigInt(frameBound)) {
       throw new Error("zstd VFS image frame content exceeds its block bound");
     }
-    addBound(frameBound);
+    // A compressed block may expand to at most 128 KiB, so frameBound is the
+    // only safe pre-decompression bound when the frame omits its content
+    // size. When zstd carries the exact size, use that stronger declaration:
+    // summing the per-block maximum can otherwise reject a valid frame whose
+    // declared output remains below the caller-owned lifecycle ceiling.
+    addBound(
+      contentBytes === undefined ? frameBound : Number(contentBytes),
+    );
   }
   if (frames === 0) {
     throw new Error("zstd VFS image contains no data frame");
