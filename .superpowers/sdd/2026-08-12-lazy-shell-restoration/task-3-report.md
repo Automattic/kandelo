@@ -14,11 +14,13 @@ one generic omission diagnostic per target-origin/name set for eligible
 anonymous bodyless GETs, and returns 502 without dispatch for lossy ineligible
 requests. Direct requests and the Node.js host remain unchanged.
 
-The generic browser proxy contract is green in Chromium, Firefox, and WebKit.
-The exact production Node image boots with its exact local authenticated lazy
-cohort, reports the canonical npm registry, installs cowsay with npm exit 0,
-and executes the installed cowsay package. This report does not claim live
-publication.
+The generic browser proxy contract is green in Chromium. Firefox and WebKit
+pass the guest preflight and rejection coverage, but each fails only the
+service-worker console-warning observation that Playwright does not surface on
+those runners. The exact production Node image boots with its exact local
+authenticated lazy cohort, reports the canonical npm registry, installs cowsay
+with npm exit 0, and executes the installed cowsay package. This report does
+not claim live publication.
 
 ## RED and GREEN
 
@@ -182,9 +184,11 @@ The local proxy recorded all registry metadata and tarball requests at HTTP
 Authorization, npm-auth-type, npm-command, pacote-integrity, pacote-pkg-id,
 pacote-req-type, and pacote-version were absent at the actual relay boundary.
 The product emitted generic omission diagnostics naming the observed set; the
-product code contains no Pacote special case. There was no browser CORS error,
-no runtime error, and bottle-request counts were unchanged from post-boot to
-post-npm and again after cowsay execution.
+product code contains no Pacote special case. There was no browser CORS error.
+The acceptance observed the known post-success `Cannot write to a CLOSED
+writable stream` runtime diagnostic described below, and no other runtime
+error; bottle-request counts were unchanged from post-boot to post-npm and
+again after cowsay execution.
 
 The normal installed CLI script currently exposes a separate pre-existing
 SpiderMonkey main-script relative-require boundary (`Cannot find module
