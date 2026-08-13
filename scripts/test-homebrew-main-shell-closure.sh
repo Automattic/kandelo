@@ -450,8 +450,15 @@ sed 's/, exact-abi-test-gate]$/]/' "$STAGING_WORKFLOW" \
   >"$TMP_ROOT/staging-shell-drops-exact-gate.yml"
 expect_ordered_staging_shell_contract_rejected \
   "$TMP_ROOT/staging-shell-drops-exact-gate.yml"
-sed '0,/\[ "$EXACT_ABI_GATE_RESULT" = success \]/s//[ "$EXACT_ABI_GATE_RESULT" = skipped ]/' \
-  "$STAGING_WORKFLOW" >"$TMP_ROOT/staging-shell-accepts-missing-exact-evidence.yml"
+awk '
+  !changed && index($0, "[ \"$EXACT_ABI_GATE_RESULT\" = success ]") {
+    sub(/= success ]/, "= skipped ]")
+    changed = 1
+  }
+  { print }
+  END { if (!changed) exit 1 }
+' "$STAGING_WORKFLOW" \
+  >"$TMP_ROOT/staging-shell-accepts-missing-exact-evidence.yml"
 expect_ordered_staging_shell_contract_rejected \
   "$TMP_ROOT/staging-shell-accepts-missing-exact-evidence.yml"
 
