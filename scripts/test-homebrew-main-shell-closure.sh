@@ -50,7 +50,7 @@ LOCAL_SHELL_OVERRIDE="$REPO_ROOT/scripts/activate-local-shell-build-override.sh"
 CI_BLOCKER_MATERIALIZER="$REPO_ROOT/scripts/materialize-ci-publication-blockers.sh"
 CI_STAGING_SHELL_VERIFIER="$REPO_ROOT/scripts/verify-ci-staging-shell-handoff.sh"
 CI_BROWSER_MIRROR_STATE="$REPO_ROOT/scripts/ci-homebrew-browser-mirror-state.sh"
-CANONICAL_FLAT_SHELL_INSPECTOR="$REPO_ROOT/scripts/inspect-canonical-flat-shell.ts"
+PUBLIC_PRODUCT_INSPECTOR_TEST="$REPO_ROOT/scripts/inspect-homebrew-main-shell-public-product.test.ts"
 CI_WORKSPACE_PACKER="$REPO_ROOT/scripts/pack-ci-test-workspace.sh"
 CI_TEST_RUNNER="$REPO_ROOT/scripts/ci-run-test-suite.sh"
 BUILD_PROGRAMS="$REPO_ROOT/scripts/build-programs.sh"
@@ -271,7 +271,7 @@ check_ordered_staging_shell_contract() {
     grep -Fq 'env.STAGES_NODE_VFS == '\''true'\''' \
       <<<"$node_acceptance" &&
     grep -Fq -- \
-      "--grep 'Kandelo Node demo installs cowsay with npm'" \
+      "--grep '@node-npm-acceptance'" \
       <<<"$node_acceptance" &&
     grep -Fq 'name: exact current lazy shell (Node + Chromium)' \
       <<<"$gate" &&
@@ -1148,7 +1148,7 @@ printf 'abi_version = %s\n' "$abi" > "$handoff_index"
 bash "$CI_BROWSER_MIRROR_STATE" create \
   "$handoff_expected" "$handoff_blockers" \
   "$handoff_index" https://invalid.example/index.toml \
-  "$handoff_image" "$handoff_state" "$handoff_receipt"
+  "$handoff_image" - "$handoff_state" "$handoff_receipt"
 [ "$(jq -r '.mode' "$handoff_state")" = \
     publication-blocked-candidate ] &&
   [ "$(jq -r '.schema' "$handoff_state")" = 3 ] &&
@@ -1156,149 +1156,19 @@ bash "$CI_BROWSER_MIRROR_STATE" create \
   fail "candidate shell state did not preserve its distinct authority"
 bash "$CI_BROWSER_MIRROR_STATE" validate producer \
   "$handoff_state" "$handoff_blockers" \
-  "$handoff_image" "$handoff_receipt"
+  "$handoff_image" - "$handoff_receipt"
 tampered_receipt="$handoff_probe/tampered-receipt.json"
 jq '.run_id += 1' "$handoff_receipt" > "$tampered_receipt"
 expect_failure "staging receipt does not match state" \
   bash "$CI_BROWSER_MIRROR_STATE" validate producer \
     "$handoff_state" "$handoff_blockers" \
-    "$handoff_image" "$tampered_receipt"
+    "$handoff_image" - "$tampered_receipt"
 expect_failure "candidate shell receipt must be one regular file" \
   bash "$CI_BROWSER_MIRROR_STATE" validate producer \
-    "$handoff_state" "$handoff_blockers" "$handoff_image" -
+    "$handoff_state" "$handoff_blockers" "$handoff_image" - -
 
-flat_state_probe="$TMP_ROOT/canonical-flat-shell-state"
-mkdir -p "$flat_state_probe"
-flat_state_image="$flat_state_probe/shell.vfs.zst"
-lazy_state_image="$flat_state_probe/lazy-shell.vfs.zst"
-KANDELO_FLAT_STATE_IMAGE="$flat_state_image" \
-KANDELO_LAZY_STATE_IMAGE="$lazy_state_image" \
-  npx tsx -e '
-    import { createHash } from "node:crypto";
-    import { readFileSync, writeFileSync } from "node:fs";
-    import { ensureDirRecursive, writeVfsBinary } from "./host/src/vfs/image-helpers.ts";
-    import { MemoryFileSystem } from "./host/src/vfs/memory-fs.ts";
-    const maxByteLength = 512 * 1024 * 1024;
-    const selection = new Uint8Array(readFileSync("homebrew/main-shell-flat-selection.json"));
-    const shellConfig = new Uint8Array(readFileSync("homebrew/main-shell-default.json"));
-    const demoConfig = new Uint8Array(readFileSync("homebrew/main-shell-flat-demo.json"));
-    const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
-    const build = async (lazy) => {
-      const fs = MemoryFileSystem.create(
-        new SharedArrayBuffer(4 * 1024 * 1024, { maxByteLength }),
-        maxByteLength,
-      );
-      for (const path of ["/bin", "/etc/kandelo", "/opt/kandelo/homebrew/bin", "/usr/bin"]) {
-        ensureDirRecursive(fs, path);
-      }
-      writeVfsBinary(fs, "/etc/kandelo/shell.json", shellConfig, 0o644);
-      writeVfsBinary(fs, "/etc/kandelo/demo.json", demoConfig, 0o644);
-      writeVfsBinary(fs, "/opt/kandelo/homebrew/bin/bash", new Uint8Array([0,97,115,109,1,0,0,0]), 0o755);
-      writeVfsBinary(fs, "/opt/kandelo/homebrew/bin/dash", new Uint8Array([0,97,115,109,1,0,0,0]), 0o755);
-      writeVfsBinary(fs, "/opt/kandelo/homebrew/bin/env", new Uint8Array([0,97,115,109,1,0,0,0]), 0o755);
-      writeVfsBinary(fs, "/opt/kandelo/homebrew/bin/brew", new TextEncoder().encode("#!/bin/sh\n"), 0o755);
-      fs.symlink("/opt/kandelo/homebrew/bin/brew", "/usr/bin/brew");
-      for (const path of ["/bin/bash", "/usr/bin/bash"]) fs.symlink("/opt/kandelo/homebrew/bin/bash", path);
-      for (const path of ["/bin/sh", "/usr/bin/sh"]) fs.symlink("/opt/kandelo/homebrew/bin/dash", path);
-      for (const path of ["/bin/env", "/usr/bin/env"]) fs.symlink("/opt/kandelo/homebrew/bin/env", path);
-      if (lazy) fs.registerLazyFile("/lazy", "https://invalid.example/lazy", 1, 0o644);
-      return fs.saveImage({metadata: {
-        version: 1,
-        kernelAbi: 42,
-        createdBy: "images/vfs/scripts/build-homebrew-flat-vfs-image.ts",
-        capacity: {maxByteLength},
-        baseImage: {sha256: "b".repeat(64), bytes: 1234, kernelAbi: 42},
-        homebrewFlat: {
-          selectionSha256: sha256(selection),
-          requestedVfsFilename: "shell.vfs.zst",
-          resourcePolicy: "kandelo-homebrew-vfs-main-shell-v1",
-        },
-        shellConfig: {
-          path: "/opt/kandelo/homebrew/bin/bash",
-          argv: ["bash", "-l", "-i"],
-          sha256: sha256(shellConfig),
-          bytes: shellConfig.byteLength,
-        },
-        demoConfig: {
-          path: "/etc/kandelo/demo.json",
-          sha256: sha256(demoConfig),
-          bytes: demoConfig.byteLength,
-        },
-      }});
-    };
-    (async () => {
-      writeFileSync(process.env.KANDELO_FLAT_STATE_IMAGE, await build(false));
-      writeFileSync(process.env.KANDELO_LAZY_STATE_IMAGE, await build(true));
-    })().catch((error) => {
-      console.error(error);
-      process.exitCode = 1;
-    });
-  '
-flat_state_expected="$flat_state_probe/expected.json"
-flat_state_blockers="$flat_state_probe/blockers.json"
-flat_state_index="$flat_state_probe/index.toml"
-flat_state="$flat_state_probe/state.json"
-flat_cache_key="97dd1a61cb7ab252ed0c6d53daaad912608621efdb393deae7edf4e66ff41907"
-jq -n --argjson abi "$abi" --arg cache "$flat_cache_key" '
-  {
-    abi_version: $abi,
-    entries: [{
-      package: "shell",
-      arch: "wasm32",
-      kind: "program",
-      version: "0.1.0",
-      revision: 23,
-      cache_key_sha: $cache
-    }]
-  }
-' > "$flat_state_expected"
-jq -n --argjson abi "$abi" '{abi_version: $abi, entries: []}' \
-  > "$flat_state_blockers"
-cat > "$flat_state_index" <<EOF
-abi_version = $abi
-generated_at = "2026-08-10T00:00:00Z"
-generator = "canonical flat shell state fixture"
-
-[[packages]]
-name = "shell"
-version = "0.1.0"
-revision = 23
-
-[packages.binary.wasm32]
-status = "success"
-archive_url = "shell-0.1.0-rev23-abi42-wasm32-97dd1a61.tar.zst"
-archive_sha256 = "$(printf 'a%.0s' {1..64})"
-cache_key_sha = "$flat_cache_key"
-built_at = "2026-08-10T00:00:00Z"
-built_by = "https://example.invalid/run/1"
-EOF
-bash "$CI_BROWSER_MIRROR_STATE" create \
-  "$flat_state_expected" "$flat_state_blockers" \
-  "$flat_state_index" \
-  https://github.com/Automattic/kandelo/releases/download/binaries-abi-v42/index.toml \
-  "$flat_state_image" "$flat_state"
-jq -e '
-  .schema == 3 and
-  .mode == "resolved" and
-  .mirror_required == false and
-  .transport == "flat-self-contained" and
-  .inspection.kind == "kandelo-canonical-flat-shell" and
-  .inspection.transport == {
-    kind: "flat-self-contained",
-    mirror_required: false
-  } and
-  .inspection.image.sha256 == .image.sha256 and
-  .inspection.image.bytes == .image.bytes
-' "$flat_state" >/dev/null ||
-  fail "resolved shell state did not preserve its flat inspection authority"
-bash "$CI_BROWSER_MIRROR_STATE" validate producer \
-  "$flat_state" "$flat_state_blockers" "$flat_state_image"
-expect_failure "self-contained" \
-  bash "$CI_BROWSER_MIRROR_STATE" create \
-    "$flat_state_expected" "$flat_state_blockers" \
-    "$flat_state_index" \
-    https://github.com/Automattic/kandelo/releases/download/binaries-abi-v42/index.toml \
-    "$lazy_state_image" "$flat_state_probe/lazy-state.json"
+node --import tsx --test "$PUBLIC_PRODUCT_INSPECTOR_TEST" ||
+  fail "flat-lazy CI mirror-state integration failed"
 
 override_probe="$TMP_ROOT/local-shell-override"
 override_generation="$override_probe/generation"
@@ -2532,10 +2402,10 @@ browser_bootstrap_line="$(grep -nF 'prepare_browser_homebrew_bootstrap' \
   [ "$final_source_runtime_verify_line" -lt "$final_source_release_line" ] &&
   [ "$final_source_release_line" -lt "$final_source_verify_line" ] &&
   [ "$browser_build_line" -lt "$final_source_verify_line" ] ||
-  fail "browser prep must preserve the ordered historical bootstrap and source bridge"
-grep -Fq 'if [ "$REQUIRE_SEALED_HOMEBREW_SELECTION" -eq 1 ]; then' \
+  fail "browser prep must preserve canonical bootstrap and source-bridge ordering"
+! grep -Fq 'REQUIRE_SEALED_HOMEBREW_SELECTION' \
   "$prepare_browser_function" ||
-  fail "ordinary browser preparation must gate the lazy bootstrap behind its explicit recovery option"
+  fail "ordinary browser preparation must not gate the canonical bootstrap behind recovery mode"
 grep -Fq 'need_shell_vfs_build_tools' "$RUN_SH" &&
   fail "run.sh must not duplicate prerequisites owned by the shell recipe"
 grep -Fq 'if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then' \
@@ -2562,22 +2432,36 @@ grep -Fq 'pkg_has_output shell shell.vfs.zst' "$RUN_SH" ||
 has_shell_vfs_function="$TMP_ROOT/has-shell-vfs-function.sh"
 sed -n '/^has_shell_vfs()/,/^}/p' "$RUN_SH" >"$has_shell_vfs_function"
 ! grep -Fq 'homebrew-bootstrap' "$has_shell_vfs_function" ||
-  fail "shell image availability must not depend on the retired bootstrap package"
+  fail "shell image availability must remain owned by the shell package output"
 ! grep -Fq 'homebrew-bootstrap' "$shell_build_function" ||
-  fail "shell image resolution must not require the retired bootstrap package"
+  fail "run.sh shell resolution must leave transitive bootstrap resolution to the package graph"
 grep -Fq 'homebrew-bootstrap' "$browser_fetch_function" &&
-  fail "browser package fetching must skip the retired bootstrap package"
+  fail "browser package fetching must not special-case the canonical bootstrap"
 grep -Fq \
-  'BROWSER_FETCH_SKIP_PKGS=(spidermonkey node homebrew-bootstrap)' \
+  'BROWSER_FETCH_SKIP_PKGS=(spidermonkey node)' \
   "$RUN_SH" ||
-  fail "browser package selection must exclude the retired bootstrap package"
-grep -Fq 'scripts/prepare-homebrew-browser-bootstrap.sh' \
+  fail "browser package selection must include the canonical bootstrap package"
+for bootstrap_contract in \
+  'pkg_xtask_bin' \
+  'build-deps --arch wasm32' \
+  '--binaries-dir "$REPO_ROOT/local-binaries"' \
+  'resolve_args+=(resolve homebrew-bootstrap)' \
+  'pkg_output_rel homebrew-bootstrap homebrew-bootstrap.zip wasm32' \
+  'scripts/resolve-binary.sh' \
+  'scripts/stage-homebrew-bootstrap-browser-asset.sh' \
+  'apps/browser-demos/public/homebrew-bootstrap.zip'
+do
+  grep -Fq -- "$bootstrap_contract" "$browser_bootstrap_function" ||
+    fail "canonical browser bootstrap preparation lacks: $bootstrap_contract"
+done
+grep -Fq 'if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then' \
   "$browser_bootstrap_function" &&
-  grep -Fq \
-    'apps/browser-demos/public/homebrew-bootstrap.zip' \
-    "$browser_bootstrap_function" &&
-  grep -Fq -- '--require-sealed' "$browser_bootstrap_function" ||
-  fail "browser preparation must stage the selected Formula bottle asset"
+  grep -Fq 'resolve_args+=("${FETCH_ONLY_ARGS[@]}")' \
+    "$browser_bootstrap_function" ||
+  fail "canonical browser bootstrap preparation must forward fetch-only mode"
+! grep -Fq 'scripts/prepare-homebrew-browser-bootstrap.sh' \
+  "$browser_bootstrap_function" ||
+  fail "ordinary browser preparation must not use the historical Formula preparer"
 
 for source_authority_contract in \
   'source-rootfs-mirror-state-v1' \
@@ -2671,36 +2555,6 @@ expect_failure "browser state changed before final authority" \
 [ -f "$ci_prepare_probe_log" ] ||
   fail "CI browser preparation did not run its final state validation"
 
-flat_prepare_probe_root="$TMP_ROOT/ci-browser-flat-transport"
-flat_prepare_probe="$flat_prepare_probe_root/probe.sh"
-mkdir -p "$flat_prepare_probe_root/apps/browser-demos/public"
-{
-  printf 'set -euo pipefail\n'
-  printf 'REPO_ROOT=%q\n' "$flat_prepare_probe_root"
-  printf 'CI_HOMEBREW_BROWSER_STATE_VALIDATED=1\n'
-  printf 'CI_HOMEBREW_BROWSER_STATE_MODE=unvalidated\n'
-  printf 'CI_HOMEBREW_BROWSER_TRANSPORT=""\n'
-  printf 'CI_HOMEBREW_BROWSER_MIRROR_REQUIRED=""\n'
-  printf 'CI_HOMEBREW_BROWSER_IMAGE=""\n'
-  printf 'CI_HOMEBREW_BROWSER_REPORT_ROOT=""\n'
-  printf 'CI_HOMEBREW_BROWSER_MIRROR=""\n'
-  printf 'validate_ci_homebrew_browser_state() {\n'
-  printf '  CI_HOMEBREW_BROWSER_STATE_MODE=resolved\n'
-  printf '  CI_HOMEBREW_BROWSER_TRANSPORT=flat-self-contained\n'
-  printf '  CI_HOMEBREW_BROWSER_MIRROR_REQUIRED=false\n'
-  printf '}\n'
-  cat "$ci_browser_prepare_function"
-  printf 'prepare_ci_homebrew_browser_mirror\n'
-} > "$flat_prepare_probe"
-bash "$flat_prepare_probe" ||
-  fail "validated self-contained flat transport still required mirror recovery"
-flat_probe_mirror="$flat_prepare_probe_root/apps/browser-demos/public/homebrew-main-shell-bottles"
-[ ! -e "$flat_probe_mirror" ] && [ ! -L "$flat_probe_mirror" ] ||
-  fail "self-contained flat transport created a closed browser mirror"
-mkdir "$flat_probe_mirror"
-expect_failure "closed Homebrew browser mirror already exists" \
-  bash "$flat_prepare_probe"
-
 ci_state_probe="$TMP_ROOT/ci-browser-state-authority.sh"
 {
   printf 'set -euo pipefail\n'
@@ -2767,59 +2621,105 @@ expect_failure "requires isolated CI preparation" \
 
 bootstrap_probe_root="$TMP_ROOT/browser-bootstrap-product-path"
 bootstrap_probe_log="$bootstrap_probe_root/calls.log"
-mkdir -p "$bootstrap_probe_root/node_modules/.bin" \
-  "$bootstrap_probe_root/apps/browser-demos/public" \
-  "$bootstrap_probe_root/scripts"
-: >"$bootstrap_probe_root/node_modules/.bin/tsx"
-chmod 0755 "$bootstrap_probe_root/node_modules/.bin/tsx"
-cat >"$bootstrap_probe_root/scripts/prepare-homebrew-browser-bootstrap.sh" <<'EOF'
+bootstrap_probe_archive="$bootstrap_probe_root/resolved/homebrew-bootstrap.zip"
+bootstrap_probe_asset="$bootstrap_probe_root/apps/browser-demos/public/homebrew-bootstrap.zip"
+mkdir -p "$bootstrap_probe_root/apps/browser-demos/public" \
+  "$bootstrap_probe_root/resolved" "$bootstrap_probe_root/scripts"
+printf 'canonical bootstrap bytes\n' >"$bootstrap_probe_archive"
+cat >"$bootstrap_probe_root/fake-xtask" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >>"$TEST_BOOTSTRAP_LOG"
+printf 'xtask %s\n' "$*" >>"$TEST_BOOTSTRAP_LOG"
 EOF
-chmod 0755 \
-  "$bootstrap_probe_root/scripts/prepare-homebrew-browser-bootstrap.sh"
+cat >"$bootstrap_probe_root/scripts/resolve-binary.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+[ "\$#" -eq 1 ]
+printf 'resolve %s\n' "\$1" >>"\$TEST_BOOTSTRAP_LOG"
+[ "\$1" = programs/homebrew-bootstrap/homebrew-bootstrap.zip ]
+printf '%s\n' '$bootstrap_probe_archive'
+EOF
+cat >"$bootstrap_probe_root/scripts/stage-homebrew-bootstrap-browser-asset.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$#" -eq 2 ]
+printf 'stage %s %s\n' "$1" "$2" >>"$TEST_BOOTSTRAP_LOG"
+cp -- "$1" "$2"
+cmp "$1" "$2"
+EOF
+chmod 0755 "$bootstrap_probe_root/fake-xtask" \
+  "$bootstrap_probe_root/scripts/resolve-binary.sh" \
+  "$bootstrap_probe_root/scripts/stage-homebrew-bootstrap-browser-asset.sh"
 bootstrap_probe="$bootstrap_probe_root/run.sh"
 {
   printf 'set -euo pipefail\n'
   printf 'REPO_ROOT=%q\n' "$bootstrap_probe_root"
   printf 'CI_BROWSER_SOURCE_AUTHORITY="${TEST_AUTHORITY:-}"\n'
-  printf 'REQUIRE_SEALED_HOMEBREW_SELECTION="${TEST_REQUIRE_SEALED:-0}"\n'
+  printf 'FETCH_ONLY_ARGS=()\n'
+  printf '[ "${TEST_FETCH_ONLY:-1}" = 0 ] || FETCH_ONLY_ARGS=(--fetch-only)\n'
   printf 'step() { :; }\n'
+  printf 'pkg_xtask_bin() { printf "%%s\\n" "$REPO_ROOT/fake-xtask"; }\n'
+  printf 'pkg_output_rel() {\n'
+  printf '  [ "$1" = homebrew-bootstrap ]\n'
+  printf '  [ "$2" = homebrew-bootstrap.zip ]\n'
+  printf '  [ "$3" = wasm32 ]\n'
+  printf '  printf "output %%s %%s %%s\\n" "$1" "$2" "$3" >>"$TEST_BOOTSTRAP_LOG"\n'
+  printf '  printf "%%s\\n" homebrew-bootstrap/homebrew-bootstrap.zip\n'
+  printf '}\n'
   cat "$browser_bootstrap_function"
   printf 'prepare_browser_homebrew_bootstrap\n'
 } >"$bootstrap_probe"
 TEST_BOOTSTRAP_LOG="$bootstrap_probe_log" bash "$bootstrap_probe"
-grep -Fq -- '--browser-asset' "$bootstrap_probe_log" ||
-  fail "the explicit historical bootstrap preparer skipped its browser asset"
+grep -Fxq \
+  "xtask build-deps --arch wasm32 --binaries-dir $bootstrap_probe_root/local-binaries --fetch-only resolve homebrew-bootstrap" \
+  "$bootstrap_probe_log" ||
+  fail "canonical bootstrap preparation did not forward fetch-only resolution"
+grep -Fxq 'output homebrew-bootstrap homebrew-bootstrap.zip wasm32' \
+  "$bootstrap_probe_log" ||
+  fail "canonical bootstrap preparation did not select its declared output"
+grep -Fxq \
+  'resolve programs/homebrew-bootstrap/homebrew-bootstrap.zip' \
+  "$bootstrap_probe_log" ||
+  fail "canonical bootstrap preparation did not resolve the declared output"
+grep -Fxq "stage $bootstrap_probe_archive $bootstrap_probe_asset" \
+  "$bootstrap_probe_log" ||
+  fail "canonical bootstrap preparation did not stage the resolver bytes"
+cmp "$bootstrap_probe_archive" "$bootstrap_probe_asset" ||
+  fail "canonical bootstrap preparation changed the resolver-selected bytes"
+
 : >"$bootstrap_probe_log"
-TEST_BOOTSTRAP_LOG="$bootstrap_probe_log" TEST_REQUIRE_SEALED=1 \
+rm "$bootstrap_probe_asset"
+TEST_BOOTSTRAP_LOG="$bootstrap_probe_log" TEST_FETCH_ONLY=0 \
   bash "$bootstrap_probe"
-grep -Fq -- '--require-sealed' "$bootstrap_probe_log" ||
-  fail "publishable browser preparation did not require a sealed bootstrap"
+grep -Fxq \
+  "xtask build-deps --arch wasm32 --binaries-dir $bootstrap_probe_root/local-binaries resolve homebrew-bootstrap" \
+  "$bootstrap_probe_log" ||
+  fail "ordinary bootstrap preparation changed canonical resolver arguments"
+
 : >"$bootstrap_probe_log"
+rm "$bootstrap_probe_asset"
 TEST_BOOTSTRAP_LOG="$bootstrap_probe_log" \
   TEST_AUTHORITY=source-rootfs-mirror-state-v1 bash "$bootstrap_probe"
-[ ! -s "$bootstrap_probe_log" ] ||
+[ ! -s "$bootstrap_probe_log" ] && [ ! -e "$bootstrap_probe_asset" ] ||
   fail "authenticated source-rootfs preparation fetched a Homebrew bootstrap"
 
 prepare_dispatch_probe="$bootstrap_probe_root/prepare-dispatch.sh"
 {
   printf 'set -euo pipefail\n'
   printf 'SOURCE_ROOTFS_SHELL=0\n'
-  printf 'ALREADY_MATERIALIZED=1\n'
-  printf 'REQUIRE_SEALED_HOMEBREW_SELECTION="${TEST_REQUIRE_SEALED:-0}"\n'
+  printf 'ALREADY_MATERIALIZED="${TEST_ALREADY_MATERIALIZED:-0}"\n'
   printf 'step() { :; }\n'
   printf 'prepare_browser_homebrew_bootstrap() { printf "bootstrap\\n"; }\n'
+  printf 'fetch_browser_binaries() { printf "fetch\\n"; }\n'
   printf 'build_browser() { printf "build\\n"; }\n'
   cat "$prepare_browser_function"
   printf 'cmd_prepare_browser\n'
 } > "$prepare_dispatch_probe"
-[ "$(bash "$prepare_dispatch_probe")" = build ] ||
-  fail "ordinary flat browser preparation staged the retired lazy bootstrap"
-[ "$(TEST_REQUIRE_SEALED=1 bash "$prepare_dispatch_probe")" = \
+[ "$(bash "$prepare_dispatch_probe")" = $'bootstrap\nfetch\nbuild' ] ||
+  fail "ordinary browser preparation did not stage bootstrap before fetch and build"
+[ "$(TEST_ALREADY_MATERIALIZED=1 bash "$prepare_dispatch_probe")" = \
     $'bootstrap\nbuild' ] ||
-  fail "the explicit historical browser option no longer stages its bootstrap"
+  fail "materialized browser preparation did not stage bootstrap before build"
 
 [ -x "$BROWSER_BOOTSTRAP_PREPARER" ] ||
   fail "the shared browser bootstrap preparer must be executable"

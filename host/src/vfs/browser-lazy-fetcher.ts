@@ -1,4 +1,7 @@
 import { corsProxyFetchUrl } from "../networking/cors-proxy-url";
+import type {
+  BrowserCorsProxyConfig,
+} from "../networking/browser-cors-proxy";
 
 type FetchLike = (
   input: string | URL,
@@ -19,7 +22,7 @@ type LazyFetch = (
  * not make an opaque no-CORS response body readable to JavaScript.
  */
 export function createBrowserLazyFetcher(
-  corsProxyUrl: string,
+  corsProxy: BrowserCorsProxyConfig,
   options: {
     fetchImpl?: FetchLike;
     runtimeUrl?: string;
@@ -27,7 +30,7 @@ export function createBrowserLazyFetcher(
 ): LazyFetch {
   const fetchImpl = options.fetchImpl ??
     ((input, init) => globalThis.fetch(input, init));
-  const configuredProxyUrl = corsProxyUrl.trim();
+  const configuredProxyUrl = corsProxy.url.trim();
   if (configuredProxyUrl.length === 0) {
     throw new Error("browser lazy CORS proxy URL must not be empty");
   }

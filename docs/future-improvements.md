@@ -171,6 +171,30 @@ beyond EOF.
 
 ## Browser
 
+### Replace the constrained public CORS proxy with an owned relay
+
+The current public proxy has a narrow five-name request-header profile. A
+Kandelo-owned authenticated relay should add explicit origin policy, private
+network controls, rate limiting, abuse prevention, response limits, and
+operational ownership. Once that capability exists, remove anonymous GET
+omission mode and evaluate Node/browser transport parity without presenting the
+current browser boundary as complete POSIX socket or HTTP fidelity.
+
+**Files:** `host/src/networking/`, `apps/browser-demos/public/service-worker.js`,
+deployment infrastructure and browser acceptance
+
+### Reject credentialed Fetch modes at the constrained proxy boundary
+
+The constrained proxy rejects explicit credential headers, but a
+service-worker `Request` can also carry a credential mode independently of its
+visible header list. Before the proxy path is used for authenticated browser
+traffic, reject `credentials: "include"` and other credential-bearing modes
+instead of rebuilding them as anonymous requests. Add a real service-worker
+test that proves rejection happens before dispatch.
+
+**Files:** `apps/browser-demos/public/service-worker.js`,
+`apps/browser-demos/test/browser-cors-proxy.spec.ts`
+
 ### PTY terminal integration with xterm.js
 The kernel has full PTY support (PR #181), and browser UI surfaces should use xterm.js-backed PTYs rather than plain `<div>` output with `appendStdinData`. Connecting PTY pairs to xterm.js gives proper terminal rendering (ANSI escapes, cursor, scrollback) and real terminal behavior (isatty=true, proper termios).
 
@@ -211,6 +235,43 @@ runtime must not silently reinterpret authenticated image content through
 mutable host defaults and fail only when a deferred file is first opened.
 
 **Files:** `host/src/vfs/`, `images/vfs/`, package image builders and metadata
+
+### Cross-bind each shell candidate to its public bottle mirror
+
+The short-term ABI-42 rollout has two independent checks: the protected tap
+publisher source-builds the current-main shell and requires its recovered
+37-asset plan to match the checked-in plan, while Kandelo candidate activation
+anonymously verifies the public release for that checked-in plan. The candidate
+receipt does not yet prove that the exact candidate shell archive embeds that
+same plan.
+
+Add an authenticated candidate-to-mirror binding before this becomes a general
+publication contract. Candidate preparation should extract or attest the
+shell's exact plan identity, carry it through the sealed candidate and
+activation receipt, and require the public mirror readback receipt to name the
+same plan and collection. This must preserve the package resolver's tested-byte
+authority and must not make a validation-only plan file a package cache-key
+input.
+
+**Files:** merge-candidate metadata and activation scripts, shell VFS evidence,
+public bottle-mirror receipts
+
+### Automate protected bottle-mirror publication across repositories
+
+The current rollout requires an operator to run the protected
+`kandelo-dev/homebrew-tap-core` caller with exact Kandelo and tap commits before
+allowing candidate activation to retry. Kandelo's repository-scoped
+`GITHUB_TOKEN` cannot dispatch that other repository, and this change does not
+introduce a broader personal token or hidden cross-repository credential.
+
+Automate the handoff with a least-privilege installation identity, such as a
+GitHub App, only after the request and receipt schemas bind the exact Kandelo
+main commit, tap main commit, checked-in plan identity, workflow run, and
+idempotent publication result. Failed dispatch or publication must remain
+observable and retryable without advancing canonical package state.
+
+**Files:** protected tap caller, Kandelo post-main publication orchestration,
+mirror publication and readback receipts
 
 ## Performance
 
@@ -253,6 +314,60 @@ PR #383 (`fix(kernel): share AF_INET accept queue across fork — nginx multi-wo
 **Files:** `apps/browser-demos/lib/*-client.ts`, anything calling `BrowserKernel.injectConnection`. Convention: store `this.pid = 0` (or import `GLOBAL_PIPE_PID = 0`) for all pipe ops on injected pipes.
 
 ## Host runtime
+
+### Complete SpiderMonkey nonblocking TLS cancellation and write ordering
+
+The native Node compatibility layer now retries OpenSSL `WANT_READ` and
+`WANT_WRITE` through the existing readiness dispatcher, which is sufficient
+for ordinary HTTPS and npm traffic. Two lifecycle edges remain to harden:
+
+- serialize concurrent writes per TLS handle so a later write cannot enter
+  OpenSSL while an earlier write is waiting to retry; and
+- retain a cancellation handle for a handshake that has not produced a socket
+  object yet, so destroying the JavaScript socket can unlink its readiness
+  watch and release the file descriptor, `SSL`, and context exactly once.
+
+Add focused cases for two writes where the first returns `WANT_WRITE`, and for
+socket destruction while a handshake remains pending.
+
+**Files:** `packages/registry/node-compat/bootstrap.js`,
+`packages/registry/spidermonkey/patches/0012-kandelo-node-compat-shell-entry.patch`
+
+### Resolve main-script relative imports in SpiderMonkey Node compatibility
+
+The installed cowsay package works through its public module API, but directly
+executing its CLI currently fails to resolve `./index` relative to the package
+entry script. Fix the main-script module base so normal installed bin shims can
+run without an API-level invocation, then restore browser acceptance to execute
+`./node_modules/.bin/cowsay Kandelo` through the ordinary shell path.
+
+**Files:** `packages/registry/node-compat/bootstrap.js`,
+`apps/browser-demos/test/kandelo-node.spec.ts`
+
+### Harden flat lazy shell composition trust boundaries
+
+The flat-selection lazy shell composer currently relies on its trusted build
+caller for three boundaries that should be made self-authenticating before the
+API is exposed to less-controlled callers:
+
+- accept the exact serialized base-image bytes, restore them privately, and
+  derive the recorded digest and size instead of accepting a separate identity
+  claim;
+- snapshot or revalidate the base and output filesystems after asynchronous
+  bottle loading so a callback cannot inject unrelated state across the await
+  boundary; and
+- reuse the eager materialization entry validator for embedded evidence so a
+  hardlink must retain its target inode identity, not merely equal bytes.
+- reject distinct `SharedArrayBuffer` wrappers that share one backing store
+  when the composer requires isolated base, scratch, and output filesystems;
+  and
+- give the runtime boot helper a report-independent exact metadata validator
+  before it activates a restored flat-lazy image with unexpected lineage
+  fields.
+
+**Files:** `host/src/homebrew-flat-lazy-vfs-composer.ts`,
+`host/src/homebrew-vfs-composer.ts`,
+`host/test/homebrew-flat-lazy-vfs-composer.test.ts`
 
 ### Runtime tuning for the default pthread limit
 Kernel worker creation currently accepts `defaultThreadSlots`, and processes

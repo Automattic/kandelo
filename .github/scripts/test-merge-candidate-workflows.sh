@@ -79,15 +79,17 @@ assert_job_needs() {
   # Capture the complete block before matching. Piping job_block into an
   # early-exiting grep can SIGPIPE awk under pipefail on larger jobs.
   block=$(job_block "$workflow" "$job")
-  needs=$(grep -m1 '^    needs:' <<<"$block")
-  if printf '%s\n' "$needs" | tr '[],' '   ' | grep -qw "$dependency"; then
-    return
-  fi
-  if [ "$needs" = "    needs:" ] &&
-     grep -Fxq "      - $dependency" <<<"$block"; then
-    return
-  fi
-  fail "$job must depend on $dependency; got $needs"
+  needs=$(awk '
+    /^    needs:/ {
+      inside = 1
+      print
+      next
+    }
+    inside && /^    [a-zA-Z0-9_-]+:/ { exit }
+    inside { print }
+  ' <<<"$block")
+  grep -Eq "(^|[^[:alnum:]_-])${dependency}([^[:alnum:]_-]|$)" <<<"$needs" ||
+    fail "$job must depend on $dependency; got $(tr '\n' ' ' <<<"$needs")"
 }
 
 assert_effective_job_permission() {
@@ -119,6 +121,21 @@ fi
 if grep -Eq -- '--target-tag[[:space:]]+"?binaries-abi-v' "$PREPARE"; then
   fail "Prepare merge still has a pre-merge canonical index writer"
 fi
+
+! grep -Fq 'verify-public-homebrew-bottle-mirror.mjs' \
+  "$ACTIVATE_WORKFLOW" ||
+  fail "scheduled workflow must not duplicate the 48 MiB candidate mirror gate"
+grep -Fq '.github/scripts/activate-merge-candidate.sh' \
+  "$ACTIVATE_WORKFLOW" ||
+  fail "workflow must route new canonical transactions through activation"
+script_mirror_gate_line="$(grep -nF \
+  'verify-public-homebrew-bottle-mirror.mjs' "$ACTIVATE_SCRIPT" | \
+  tail -1 | cut -d: -f1)"
+script_canonical_mutation_line="$(grep -nF \
+  'ensure_release "$CANONICAL_TAG"' "$ACTIVATE_SCRIPT" | \
+  tail -1 | cut -d: -f1)"
+[ "$script_mirror_gate_line" -lt "$script_canonical_mutation_line" ] ||
+  fail "direct activation must verify the public mirror before canonical mutation"
 grep -Fq "contains(github.event.pull_request.labels.*.name, 'preserve-head-commit') && 'merge'" \
   "$PREPARE" || fail "Prepare merge does not select merge-commit verification for preserve-head-commit"
 grep -Fq 'batched-changes and preserve-head-commit are mutually exclusive' "$PREPARE" || \
@@ -381,7 +398,15 @@ grep -Fq "npx playwright test test/kandelo-node.spec.ts" \
   <<<"$staged_node_acceptance" &&
   grep -Fq 'activate-ci-test-workspace.sh' \
     <<<"$staged_node_acceptance" &&
-  grep -Fq -- "--grep 'Kandelo Node demo installs cowsay with npm'" \
+  grep -Fq 'recover-homebrew-bottle-mirror.ts' \
+    <<<"$staged_node_acceptance" &&
+  grep -Fq 'programs/homebrew-bootstrap/homebrew-bootstrap.zip' \
+    <<<"$staged_node_acceptance" &&
+  grep -Fq 'KANDELO_NODE_LOCAL_BOOT_ASSET_ROOT' \
+    <<<"$staged_node_acceptance" &&
+  grep -Fq 'KANDELO_NODE_LOCAL_PROXY_PORT' \
+    <<<"$staged_node_acceptance" &&
+  grep -Fq -- "--grep '@node-npm-acceptance'" \
     <<<"$staged_node_acceptance" &&
   grep -Fq -- '--project=chromium' <<<"$staged_node_acceptance" ||
   fail "staged node-vfs must run the exact slow npm/cowsay acceptance"
@@ -407,10 +432,14 @@ candidate_node_acceptance="$(
 )"
 for evidence in \
   'activate-ci-test-workspace.sh' \
+  'recover-homebrew-bottle-mirror.ts' \
+  'programs/homebrew-bootstrap/homebrew-bootstrap.zip' \
   'npm run build' \
   'verify-browser-shell-vfs-asset.sh' \
   'KANDELO_NODE_VFS_STRICT' \
   'KANDELO_NODE_VFS_SHA256' \
+  'KANDELO_NODE_LOCAL_BOOT_ASSET_ROOT' \
+  'KANDELO_NODE_LOCAL_PROXY_PORT' \
   'KANDELO_PLAYWRIGHT_SERVE_DIST' \
   'KANDELO_TEST_BASE_URL' \
   'npx playwright test test/kandelo-node.spec.ts'
@@ -418,16 +447,25 @@ do
   grep -Fq "$evidence" <<<"$candidate_node_acceptance" ||
     fail "candidate Node production acceptance lacks: $evidence"
 done
+grep -Fq -- "--grep '@node-npm-acceptance'" \
+  <<<"$candidate_node_acceptance" ||
+  fail "candidate Node production acceptance lacks the stable selector"
 pages_node_acceptance="$(
   step_run_block "$PAGES_WORKFLOW" "Run exact Pages Node npm acceptance"
 )"
 grep -Fq 'KANDELO_NODE_VFS_SHA256' <<<"$pages_node_acceptance" ||
   fail "Pages Node acceptance must verify the resolved Node image digest"
+grep -Fq -- "--grep '@node-npm-acceptance'" <<<"$pages_node_acceptance" ||
+  fail "Pages Node acceptance must use the stable selector"
 NODE_ACCEPTANCE_SPEC="$REPO_ROOT/apps/browser-demos/test/kandelo-node.spec.ts"
 grep -Fq 'KANDELO_NODE_VFS_SHA256' "$NODE_ACCEPTANCE_SPEC" ||
   fail "Node acceptance must bind the fetched VFS bytes"
 grep -Fq 'KANDELO_TEST_BASE_URL' "$NODE_ACCEPTANCE_SPEC" ||
   fail "Node acceptance must navigate through the deployed base path"
+grep -Fq '@node-npm-acceptance' "$NODE_ACCEPTANCE_SPEC" ||
+  fail "Node acceptance must expose its stable workflow selector"
+grep -Fq 'if (localBootAssetRoot) {' "$NODE_ACCEPTANCE_SPEC" ||
+  fail "Node acceptance must scope controlled-proxy assertions to its fixture"
 if grep -Fq 'test.skip(true, "Required binary not built' "$NODE_ACCEPTANCE_SPEC"; then
   fail "Node acceptance must fail closed when production assets are missing"
 fi
@@ -1115,8 +1153,10 @@ for input in source_sha candidate_tag canonical_index_sha256; do
   grep -Fq "      $input:" "$PAGES_WORKFLOW" ||
     fail "Pages workflow lacks exact dispatch input: $input"
 done
-grep -Fq 'ref: ${{ inputs.source_sha || github.sha }}' "$PAGES_WORKFLOW" ||
+grep -Fq 'ref: ${{ inputs.source_sha }}' "$PAGES_WORKFLOW" ||
   fail "Pages checkout must bind the requested source SHA"
+! grep -Fq 'inputs.source_sha || github.sha' "$PAGES_WORKFLOW" ||
+  fail "dispatch-only Pages checkout must not fall back to the event SHA"
 pages_generation_verifier="$(
   step_run_block "$PAGES_WORKFLOW" "Verify the requested package generation"
 )"
@@ -1237,6 +1277,16 @@ for workflow in "$STAGING_WORKFLOW" "$PREPARE"; do
     fail "$(basename "$workflow") test-gate does not share preflight exclusions"
   grep -Fq -- '--expected-ledger "$EXPECTED"' <<<"$materialize_step" ||
     fail "$(basename "$workflow") test-gate can still raw-walk packages outside its publication ledger"
+  bootstrap_fetch_line=$(grep -nF -- '--package homebrew-bootstrap' \
+    <<<"$materialize_step" | cut -d: -f1)
+  mirror_state_line=$(grep -nF \
+    'scripts/ci-homebrew-browser-mirror-state.sh' \
+    <<<"$materialize_step" | cut -d: -f1)
+  if ! [[ "$bootstrap_fetch_line" =~ ^[1-9][0-9]*$ ]] ||
+     ! [[ "$mirror_state_line" =~ ^[1-9][0-9]*$ ]] ||
+     [ "$bootstrap_fetch_line" -ge "$mirror_state_line" ]; then
+    fail "$(basename "$workflow") does not fetch the canonical Homebrew bootstrap before lazy-shell inspection"
+  fi
 done
 [ "$(grep -Fc -- '--exclude "$PACKAGE_STAGING_EXCLUSIONS"' "$PREPARE")" -eq 2 ] || \
   fail "prepare preflight and test-gate must share one publication exclusion contract"

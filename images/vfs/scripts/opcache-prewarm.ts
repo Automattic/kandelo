@@ -97,6 +97,14 @@ export async function prewarmOpcache(
     return 0;
   }
 
+  if (fs.getImageMetadata()?.homebrewFlatLazy !== undefined) {
+    // WHY: NodeKernelHost completes the sealed Homebrew runtime cohort during
+    // init. A derived-image build must preserve those trees as pending rather
+    // than turn optional opcache warming into a network/materialization step.
+    console.log("[opcache-prewarm] skipped for flat-lazy shell image");
+    return 0;
+  }
+
   const { label } = options;
 
   try {

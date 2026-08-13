@@ -101,17 +101,12 @@ export async function createHomebrewBottleMirrorPublishManifest(options: {
   writeFileSync(outputPath, `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx" });
 }
 
-interface RecoveryReport {
+interface RecoveryReportBase {
   schema: 1;
   kind: typeof RECOVERY_KIND;
   repository: string;
   tag: string;
   collection_sha256: string;
-  catalog: {
-    tap_repository: string;
-    tap_name: string;
-    checkout_commit: string;
-  };
   plan: { asset: string; sha256: string; bytes: number };
   assets: Array<{
     id: string;
@@ -124,6 +119,17 @@ interface RecoveryReport {
   }>;
 }
 
+type RecoveryReport = RecoveryReportBase & (
+  | {
+      catalog: {
+        tap_repository: string;
+        tap_name: string;
+        checkout_commit: string;
+      };
+    }
+  | { source: "flat-lazy-image-binding" }
+);
+
 function parseRecoveryReport(text: string): RecoveryReport {
   let value: unknown;
   try {
@@ -132,20 +138,10 @@ function parseRecoveryReport(text: string): RecoveryReport {
     throw new Error("bottle mirror recovery report is not valid JSON", { cause: error });
   }
   if (
-    !isRecord(value) || !hasExactKeys(value, [
-      "schema", "kind", "repository", "tag", "collection_sha256",
-      "catalog", "plan", "assets",
-    ]) ||
+    !isRecord(value) ||
     value.schema !== 1 || value.kind !== RECOVERY_KIND ||
     typeof value.repository !== "string" || typeof value.tag !== "string" ||
     typeof value.collection_sha256 !== "string" ||
-    !isRecord(value.catalog) || !hasExactKeys(value.catalog, [
-      "tap_repository", "tap_name", "checkout_commit",
-    ]) ||
-    typeof value.catalog.tap_repository !== "string" ||
-    typeof value.catalog.tap_name !== "string" ||
-    typeof value.catalog.checkout_commit !== "string" ||
-    !/^[0-9a-f]{40}$/.test(value.catalog.checkout_commit) ||
     !isRecord(value.plan) || !hasExactKeys(value.plan, [
       "asset", "sha256", "bytes",
     ]) ||
@@ -153,6 +149,31 @@ function parseRecoveryReport(text: string): RecoveryReport {
     typeof value.plan.sha256 !== "string" ||
     !Number.isSafeInteger(value.plan.bytes) ||
     !Array.isArray(value.assets)
+  ) {
+    throw new Error("bottle mirror recovery report has invalid fields");
+  }
+  const hasLegacyCatalog = Object.hasOwn(value, "catalog");
+  if (hasLegacyCatalog) {
+    if (
+      !hasExactKeys(value, [
+        "schema", "kind", "repository", "tag", "collection_sha256",
+        "catalog", "plan", "assets",
+      ]) ||
+      !isRecord(value.catalog) || !hasExactKeys(value.catalog, [
+        "tap_repository", "tap_name", "checkout_commit",
+      ]) ||
+      typeof value.catalog.tap_repository !== "string" ||
+      typeof value.catalog.tap_name !== "string" ||
+      typeof value.catalog.checkout_commit !== "string" ||
+      !/^[0-9a-f]{40}$/.test(value.catalog.checkout_commit)
+    ) {
+      throw new Error("bottle mirror recovery report has invalid fields");
+    }
+  } else if (
+    !hasExactKeys(value, [
+      "schema", "kind", "repository", "tag", "collection_sha256",
+      "source", "plan", "assets",
+    ]) || value.source !== "flat-lazy-image-binding"
   ) {
     throw new Error("bottle mirror recovery report has invalid fields");
   }
@@ -180,7 +201,8 @@ function assertReportMatchesPlan(
   if (
     report.repository !== plan.repository || report.tag !== plan.tag ||
     report.collection_sha256 !== plan.collection_sha256 ||
-    report.catalog.tap_repository !== plan.repository ||
+    ("catalog" in report &&
+      report.catalog.tap_repository !== plan.repository) ||
     report.plan.asset !== HOMEBREW_BOTTLE_MIRROR_PLAN_ASSET ||
     report.plan.sha256 !== sha256(planBytes) ||
     report.plan.bytes !== planBytes.byteLength ||

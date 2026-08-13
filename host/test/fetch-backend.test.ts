@@ -5,6 +5,28 @@ import { TlsNetworkBackend, type TlsMitmConnection } from "../src/networking/tls
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const MSG_PEEK = 0x0002;
+const NativeHeaders = globalThis.Headers;
+
+class RecordingHeaders extends NativeHeaders {
+  readonly appendCalls: Array<[string, string]> = [];
+
+  override append(name: string, value: string): void {
+    this.appendCalls.push([name, value]);
+    super.append(name, value);
+  }
+}
+
+function installRecordingHeaders(): void {
+  vi.stubGlobal("Headers", RecordingHeaders);
+}
+
+function expectAppendCalls(
+  headers: Headers,
+  expected: Array<[string, string]>,
+): void {
+  expect(headers).toBeInstanceOf(RecordingHeaders);
+  expect((headers as RecordingHeaders).appendCalls).toEqual(expected);
+}
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -15,12 +37,13 @@ function sendGet(
   backend: Pick<TlsNetworkBackend, "send">,
   handle: number,
   path: string,
+  host = "example.com",
 ) {
   backend.send(
     handle,
     encoder.encode(
       `GET ${path} HTTP/1.1\r\n` +
-      "Host: proxy.local\r\n" +
+      `Host: ${host}\r\n` +
       "Connection: keep-alive\r\n" +
       "\r\n",
     ),
@@ -242,6 +265,70 @@ describe("FetchNetworkBackend", () => {
       );
     });
   });
+
+  it("keeps repeated guest fields for direct Fetch and uses the last Host occurrence", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("ok"));
+    installRecordingHeaders();
+    vi.stubGlobal("fetch", fetchMock);
+    const backend = new FetchNetworkBackend();
+    const addr = backend.getaddrinfo("example.com");
+    backend.connect(1, addr, 80);
+
+    backend.send(1, encoder.encode(
+      "GET /ordered HTTP/1.1\r\n" +
+      "hOsT: first.example\r\n" +
+      "Host: example.com\r\n" +
+      "X-Repeat: first\r\n" +
+      "x-repeat: second\r\n\r\n",
+    ), 0);
+    await recvWhenReady(backend, 1);
+
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://example.com/ordered");
+    expectAppendCalls(options.headers as Headers, [
+      ["X-Repeat", "first"],
+      ["x-repeat", "second"],
+    ]);
+  });
+
+  it("projects only the fallback Fetch after a direct Fetch failure", async () => {
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError("CORS blocked"))
+      .mockResolvedValueOnce(new Response("proxied"));
+    installRecordingHeaders();
+    vi.stubGlobal("fetch", fetchMock);
+    const backend = new FetchNetworkBackend({
+      corsProxy: {
+        url: "https://proxy.example/?",
+        allowedRequestHeaderNames: ["X-Repeat"],
+        allowAnonymousGetHeaderOmission: true,
+      },
+    });
+    const addr = backend.getaddrinfo("example.com");
+    backend.connect(1, addr, 80);
+
+    backend.send(1, encoder.encode(
+      "GET /fallback HTTP/1.1\r\n" +
+      "Host: example.com\r\n" +
+      "X-Repeat: first\r\n" +
+      "x-repeat: second\r\n" +
+      "X-Blocked: direct-only\r\n\r\n",
+    ), 0);
+    await recvWhenReady(backend, 1);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toBe("http://example.com/fallback");
+    expectAppendCalls((fetchMock.mock.calls[0][1] as RequestInit).headers as Headers, [
+      ["X-Repeat", "first"],
+      ["x-repeat", "second"],
+      ["X-Blocked", "direct-only"],
+    ]);
+    expect(fetchMock.mock.calls[1][0]).toBe("https://proxy.example/?http://example.com/fallback");
+    expectAppendCalls((fetchMock.mock.calls[1][1] as RequestInit).headers as Headers, [
+      ["X-Repeat", "first"],
+      ["x-repeat", "second"],
+    ]);
+  });
 });
 
 describe("TlsNetworkBackend HTTP proxy path", () => {
@@ -294,7 +381,7 @@ describe("TlsNetworkBackend HTTP proxy path", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const backend = new TlsNetworkBackend();
-    const addr = backend.getaddrinfo("proxy.local");
+    const addr = backend.getaddrinfo("example.com");
     backend.connect(1, addr, 80);
 
     sendGet(backend, 1, "/first");
@@ -321,7 +408,7 @@ describe("TlsNetworkBackend HTTP proxy path", () => {
     })));
 
     const backend = new TlsNetworkBackend();
-    const addr = backend.getaddrinfo("proxy.local");
+    const addr = backend.getaddrinfo("example.com");
     backend.connect(1, addr, 80);
 
     sendGet(backend, 1, "/encoded");
@@ -334,11 +421,17 @@ describe("TlsNetworkBackend HTTP proxy path", () => {
   });
 
   it("routes HTTP fetches through the configured CORS proxy", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response("proxied"));
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response("proxied")),
+    );
     vi.stubGlobal("fetch", fetchMock);
     const proxyPrefix = "https://kandelo.test/proxy?url=";
     const backend = new TlsNetworkBackend({
-      corsProxyUrl: proxyPrefix,
+      corsProxy: {
+        url: proxyPrefix,
+        allowedRequestHeaderNames: [],
+        allowAnonymousGetHeaderOmission: true,
+      },
       dnsAliases: {},
     });
     const addr = backend.getaddrinfo("example.com");
@@ -357,10 +450,31 @@ describe("TlsNetworkBackend HTTP proxy path", () => {
     );
   });
 
+  it("appends repeated guest fields in order for direct plain HTTP Fetch", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("direct"));
+    installRecordingHeaders();
+    vi.stubGlobal("fetch", fetchMock);
+    const backend = new TlsNetworkBackend();
+    backend.connect(1, backend.getaddrinfo("example.com"), 80);
+
+    backend.send(1, encoder.encode(
+      "GET /direct HTTP/1.1\r\n" +
+      "Host: example.com\r\n" +
+      "X-Repeat: first\r\n" +
+      "x-repeat: second\r\n\r\n",
+    ), 0);
+    await recvWhenReady(backend, 1);
+
+    expectAppendCalls((fetchMock.mock.calls[0][1] as RequestInit).headers as Headers, [
+      ["X-Repeat", "first"],
+      ["x-repeat", "second"],
+    ]);
+  });
+
   it("honors MSG_PEEK without consuming HTTP response bytes", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("peek-body")));
     const backend = new TlsNetworkBackend();
-    const addr = backend.getaddrinfo("proxy.local");
+    const addr = backend.getaddrinfo("example.com");
     backend.connect(1, addr, 80);
 
     sendGet(backend, 1, "/peek");
@@ -377,6 +491,103 @@ describe("TlsNetworkBackend HTTP proxy path", () => {
     }, 1)).subarray(0, 8));
     const consumed = decoder.decode(backend.recv(1, 8, 0));
     expect(peeked).toBe(consumed);
+  });
+
+  it("uses configured proxy projection for plain HTTP and deduplicates omission diagnostics", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response("proxied")),
+    );
+    const onCorsProxyDiagnostic = vi.fn();
+    installRecordingHeaders();
+    vi.stubGlobal("fetch", fetchMock);
+    const backend = new TlsNetworkBackend({
+      corsProxy: {
+        url: "https://proxy.example/?",
+        allowedRequestHeaderNames: ["X-Allowed"],
+        allowAnonymousGetHeaderOmission: true,
+      },
+      onCorsProxyDiagnostic,
+    });
+
+    for (const handle of [1, 2]) {
+      const addr = backend.getaddrinfo("example.com");
+      backend.connect(handle, addr, 80);
+      backend.send(handle, encoder.encode(
+        "GET /proxy HTTP/1.1\r\n" +
+        "Host: example.com\r\n" +
+        "X-Allowed: one\r\n" +
+        "x-allowed: two\r\n" +
+        "X-Omit: ignored\r\n\r\n",
+      ), 0);
+      await recvWhenReady(backend, handle);
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toBe("https://proxy.example/?http://example.com/proxy");
+    for (const call of fetchMock.mock.calls) {
+      expectAppendCalls((call[1] as RequestInit).headers as Headers, [
+        ["X-Allowed", "one"],
+        ["x-allowed", "two"],
+      ]);
+    }
+    expect(onCorsProxyDiagnostic).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not rewrite npm-looking JSON from an explicitly configured alias", async () => {
+    const packument = '{"dist":{"tarball":"https://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz"}}';
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(packument, {
+      headers: { "content-type": "application/json" },
+    })));
+    const backend = new TlsNetworkBackend({
+      dnsAliases: { registry: "https://registry.npmjs.org" },
+    });
+    backend.connect(1, backend.getaddrinfo("registry"), 80);
+    sendGet(backend, 1, "/pkg", "registry");
+
+    expect(decoder.decode(await recvWhenReady(backend, 1))).toContain(packument);
+  });
+
+  it("routes an explicit alias without relying on an npm sentinel hostname", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("alias"));
+    vi.stubGlobal("fetch", fetchMock);
+    const backend = new TlsNetworkBackend({
+      dnsAliases: { registry: "https://registry.npmjs.org" },
+    });
+    backend.connect(1, backend.getaddrinfo("registry"), 80);
+    sendGet(backend, 1, "/pkg", "registry");
+    await recvWhenReady(backend, 1);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("https://registry.npmjs.org/pkg");
+  });
+
+  it("does not give an unconfigured proxy.local host an implicit registry alias", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("generic"));
+    vi.stubGlobal("fetch", fetchMock);
+    const backend = new TlsNetworkBackend({ dnsAliases: {} });
+    backend.connect(1, backend.getaddrinfo("proxy.local"), 80);
+    sendGet(backend, 1, "/generic", "proxy.local");
+    await recvWhenReady(backend, 1);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("http://proxy.local/generic");
+  });
+
+  it("reports proxy rejection to plain HTTP guests without attempting Fetch", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("must not run"));
+    vi.stubGlobal("fetch", fetchMock);
+    const backend = new TlsNetworkBackend({
+      corsProxy: {
+        url: "https://proxy.example/?",
+        allowedRequestHeaderNames: [],
+        allowAnonymousGetHeaderOmission: false,
+      },
+    });
+    backend.connect(1, backend.getaddrinfo("example.com"), 80);
+    backend.send(1, encoder.encode(
+      "POST /reject HTTP/1.1\r\nHost: example.com\r\nX-Blocked: value\r\nContent-Length: 0\r\n\r\n",
+    ), 0);
+
+    await expect(recvWhenReady(backend, 1)).rejects.toThrow("cannot relay POST request");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
@@ -422,7 +633,11 @@ describe("TlsNetworkBackend TLS MITM path", () => {
     const proxyPrefix = "https://kandelo.test/proxy?";
     let tls!: LoopbackMitmTls;
     const backend = new TlsNetworkBackend({
-      corsProxyUrl: proxyPrefix,
+      corsProxy: {
+        url: proxyPrefix,
+        allowedRequestHeaderNames: [],
+        allowAnonymousGetHeaderOmission: true,
+      },
       createTlsConnection: () => (tls = new LoopbackMitmTls()),
     });
     await backend.init();
@@ -438,5 +653,61 @@ describe("TlsNetworkBackend TLS MITM path", () => {
       `${proxyPrefix}https://example.com/secure`,
       expect.any(Object),
     );
+  });
+
+  it("appends repeated decrypted fields in order for direct HTTPS Fetch", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("direct TLS"));
+    installRecordingHeaders();
+    vi.stubGlobal("fetch", fetchMock);
+    let tls!: LoopbackMitmTls;
+    const backend = new TlsNetworkBackend({
+      createTlsConnection: () => (tls = new LoopbackMitmTls()),
+    });
+    await backend.init();
+
+    backend.connect(3, backend.getaddrinfo("example.com"), 443);
+    await tls.serverEnd.upstream.writable.getWriter().write(encoder.encode(
+      "GET /direct HTTP/1.1\r\n" +
+      "Host: example.com\r\n" +
+      "X-Repeat: first\r\n" +
+      "x-repeat: second\r\n\r\n",
+    ));
+    await waitForReadable(backend, 3);
+
+    expectAppendCalls((fetchMock.mock.calls[0][1] as RequestInit).headers as Headers, [
+      ["X-Repeat", "first"],
+      ["x-repeat", "second"],
+    ]);
+  });
+
+  it("projects decrypted HTTPS immediately before proxy dispatch", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("proxied TLS"));
+    installRecordingHeaders();
+    vi.stubGlobal("fetch", fetchMock);
+    let tls!: LoopbackMitmTls;
+    const backend = new TlsNetworkBackend({
+      corsProxy: {
+        url: "https://proxy.example/?",
+        allowedRequestHeaderNames: ["X-Allowed"],
+        allowAnonymousGetHeaderOmission: false,
+      },
+      createTlsConnection: () => (tls = new LoopbackMitmTls()),
+    });
+    await backend.init();
+
+    backend.connect(3, backend.getaddrinfo("example.com"), 443);
+    await tls.serverEnd.upstream.writable.getWriter().write(encoder.encode(
+      "GET /secure HTTP/1.1\r\n" +
+      "Host: example.com\r\n" +
+      "X-Allowed: first\r\n" +
+      "x-allowed: second\r\n\r\n",
+    ));
+    await waitForReadable(backend, 3);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("https://proxy.example/?https://example.com/secure");
+    expectAppendCalls((fetchMock.mock.calls[0][1] as RequestInit).headers as Headers, [
+      ["X-Allowed", "first"],
+      ["x-allowed", "second"],
+    ]);
   });
 });

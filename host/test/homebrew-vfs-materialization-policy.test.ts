@@ -3,11 +3,14 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   assertHomebrewVfsDeferredPackageCollection,
+  deriveFlatLazyCompositionPartition,
   parseHomebrewVfsMaterializationPolicy,
   projectEmbeddedHomebrewVfsPlan,
   selectHomebrewVfsMaterialization,
   type HomebrewVfsMaterializationPolicy,
 } from "../src/homebrew-vfs-materialization-policy";
+import { projectHomebrewBottleSelection } from "../src/homebrew-bottle-selection";
+import { parseHomebrewRuntimeSupportPolicy } from "../src/homebrew-runtime-support";
 import type {
   HomebrewDependency,
   HomebrewFederatedVfsPlan,
@@ -24,10 +27,31 @@ const MIGRATION_LOCK_PATH = resolve(
   import.meta.dirname,
   "../../homebrew/main-shell-migration-lock.json",
 );
+const FLAT_SELECTION_PATH = resolve(
+  import.meta.dirname,
+  "../../homebrew/main-shell-flat-selection.json",
+);
+const RUNTIME_SUPPORT_POLICY_PATH = resolve(
+  import.meta.dirname,
+  "../../homebrew/main-shell-runtime-support-policy.json",
+);
 
 function checkedInPolicy(): HomebrewVfsMaterializationPolicy {
   return parseHomebrewVfsMaterializationPolicy(
     JSON.parse(readFileSync(POLICY_PATH, "utf8")),
+  );
+}
+
+function checkedInFlatSelection() {
+  return projectHomebrewBottleSelection(
+    JSON.parse(readFileSync(FLAT_SELECTION_PATH, "utf8")),
+    { expectedAbi: 42 },
+  );
+}
+
+function checkedInRuntimeSupportPolicy() {
+  return parseHomebrewRuntimeSupportPolicy(
+    JSON.parse(readFileSync(RUNTIME_SUPPORT_POLICY_PATH, "utf8")),
   );
 }
 
@@ -70,6 +94,121 @@ function shellPlan(): HomebrewVfsPlan {
 }
 
 describe("Homebrew VFS materialization policy", () => {
+  it("derives every lazy role from the active flat selection dependency closure", () => {
+    const selection = checkedInFlatSelection();
+    const partition = deriveFlatLazyCompositionPartition(
+      selection,
+      checkedInPolicy(),
+      checkedInRuntimeSupportPolicy(),
+    );
+
+    expect(partition.embeddedPackageOrder).toEqual([
+      "kandelo-dev/tap-core/libcxx",
+      "kandelo-dev/tap-core/ncurses",
+      "kandelo-dev/tap-core/bash",
+    ]);
+    expect(partition.bootstrapPackage).toBe(
+      "kandelo-dev/tap-core/homebrew-bootstrap",
+    );
+    expect(partition.runtimeCohortPackageOrder).toEqual([
+      "kandelo-dev/tap-core/libyaml",
+      "kandelo-dev/tap-core/ruby",
+    ]);
+    expect(partition.ordinaryDeferredPackageOrder).toHaveLength(35);
+    expect(partition.deferredPackageOrder).toHaveLength(37);
+
+    const roleMembership = [
+      ...partition.embeddedPackageOrder,
+      partition.bootstrapPackage,
+      ...partition.ordinaryDeferredPackageOrder,
+      ...partition.runtimeCohortPackageOrder,
+    ];
+    expect(roleMembership).toHaveLength(41);
+    expect(new Set(roleMembership).size).toBe(41);
+    expect(new Set(roleMembership)).toEqual(
+      new Set(selection.bottles.map((bottle) => bottle.fullName)),
+    );
+    expect(partition.runtimeCohortPackageOrder).not.toContain(
+      "kandelo-dev/tap-core/zlib",
+    );
+    expect(Object.isFrozen(partition)).toBe(true);
+    expect(Object.isFrozen(partition.embeddedPackageOrder)).toBe(true);
+  });
+
+  it("fails closed when the flat selection no longer supports the policy roles", () => {
+    const selection = checkedInFlatSelection();
+    const materialization = checkedInPolicy();
+    const runtime = checkedInRuntimeSupportPolicy();
+
+    const reordered = structuredClone(materialization);
+    reordered.embedded_package_order.reverse();
+    expect(() => deriveFlatLazyCompositionPartition(selection, reordered, runtime))
+      .toThrow(/embedded closure differs from the reviewed policy/);
+
+    const missingEdge = structuredClone(selection);
+    missingEdge.bottles.find((bottle) => bottle.fullName === `${TAP_NAME}/bash`)!
+      .dependencies = [];
+    expect(() => deriveFlatLazyCompositionPartition(missingEdge, materialization, runtime))
+      .toThrow(/embedded closure differs from the reviewed policy/);
+
+    const duplicateRole = structuredClone(runtime);
+    (duplicateRole as { bootstrapPackage: string }).bootstrapPackage = `${TAP_NAME}/bash`;
+    const duplicateRoleSelection = structuredClone(selection);
+    duplicateRoleSelection.bottles.find(
+      (bottle) => bottle.fullName === `${TAP_NAME}/bash`,
+    )!.materialization = "homebrew-runtime-support-v1";
+    expect(() => deriveFlatLazyCompositionPartition(
+      duplicateRoleSelection,
+      materialization,
+      duplicateRole,
+    ))
+      .toThrow(/roles overlap/);
+
+    const noDeferredSelection = structuredClone(selection);
+    noDeferredSelection.bottles = noDeferredSelection.bottles.filter((bottle) =>
+      [
+        "homebrew-bootstrap",
+        "libcxx",
+        "ncurses",
+        "bash",
+        "ruby",
+      ].includes(bottle.name)
+    );
+    noDeferredSelection.bottles.find(
+      (bottle) => bottle.fullName === `${TAP_NAME}/ruby`,
+    )!.dependencies = [];
+    expect(() => deriveFlatLazyCompositionPartition(
+      noDeferredSelection,
+      {
+        ...materialization,
+        embedded_roots: [`${TAP_NAME}/bash`, `${TAP_NAME}/ruby`],
+        embedded_package_order: [
+          `${TAP_NAME}/libcxx`,
+          `${TAP_NAME}/ncurses`,
+          `${TAP_NAME}/bash`,
+          `${TAP_NAME}/ruby`,
+        ],
+      },
+      runtime,
+    )).toThrow(/leaves no deferred packages/);
+
+    const absentBootstrap = structuredClone(runtime);
+    (absentBootstrap as { bootstrapPackage: string }).bootstrapPackage =
+      `${TAP_NAME}/missing-bootstrap`;
+    expect(() => deriveFlatLazyCompositionPartition(
+      selection,
+      materialization,
+      absentBootstrap,
+    )).toThrow(/bootstrap .* is absent from the selection/);
+
+    const staleRuntimeRoot = structuredClone(runtime);
+    (staleRuntimeRoot as { runtimeRoots: string[] }).runtimeRoots = [
+      `${TAP_NAME}/missing-runtime`,
+    ];
+    expect(() => deriveFlatLazyCompositionPartition(selection, materialization, staleRuntimeRoot))
+      .toThrow(/runtime root .* is absent from the selection/);
+  });
+
   it("pins Bash and its exact dependency-first closure in the main shell", () => {
     expect(checkedInPolicy()).toEqual({
       schema: 1,

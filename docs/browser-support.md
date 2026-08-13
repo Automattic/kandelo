@@ -285,9 +285,9 @@ VITE_CORS_PROXY_URL='https://your-proxy.example/?' npm run dev
 Proxy prefixes ending in a bare `?` receive raw target URLs; `?url=`-style
 prefixes receive percent-encoded targets.
 
-`BrowserKernel({ corsProxyUrl })` applies the same proxy to two independent
-browser transports: guest HTTP(S) requests and external lazy VFS files or
-archives. Same-origin lazy assets still use direct `fetch()`. This distinction
+`BrowserKernel({ corsProxy })` applies one complete immutable proxy profile to
+two independent browser transports: guest HTTP(S) requests and external lazy
+VFS files or archives. Same-origin lazy assets still use direct `fetch()`. This distinction
 matters in a cross-origin-isolated page: lazy materialization must read the
 response bytes, so an external response must grant CORS. A CORP header can
 satisfy a COEP embedding check, but it does not make an opaque no-CORS response
@@ -296,6 +296,15 @@ CORS even though an ordinary command-line client can read them. An explicit
 `closedLazyAssets` set remains exhaustive and takes precedence over the network
 proxy. The Node.js host is unaffected and continues to fetch its lazy URLs
 directly.
+
+The current profile allows `Accept`, `Content-Type`, `git-protocol`,
+`wp_blog`, and `wp_install`. Every actual proxy boundary projects by
+case-insensitive field name only and preserves browser-representable values and
+occurrences as far as Fetch permits. An anonymous bodyless GET may omit an
+unsupported field and emits a deduplicated diagnostic. Credentialed requests,
+body-bearing requests, and non-GET requests fail before dispatch if projection
+would be lossy. Direct Fetch attempts remain unprojected. The development
+same-origin relay enforces the same profile as production.
 
 ### Blob-URL iframes (service-worker boundary)
 
@@ -316,7 +325,7 @@ neutralizes this class of issue. It hooks `Blob`/`URL.createObjectURL` and the
 document, which the service worker *does* control). It is idempotent and a no-op
 unless a text/html blob URL is used as an iframe src. The service worker inlines
 it (via the `"__BLOB_IFRAME_INTERCEPTOR__"` build-time placeholder, mirroring
-`"__CORS_PROXY_URL__"`) into the `<head>` of every bridged HTML document, so it
+`"__CORS_PROXY_CONFIG__"`) into the `<head>` of every bridged HTML document, so it
 applies to all app demos, not just WordPress.
 
 ## VFS Images
@@ -601,8 +610,8 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | Python (legacy opt-in) | `python-vfs.vfs.zst` | `bash packages/registry/python-vfs/build-python-vfs.sh` | ABI-bound CPython interpreter, complete stdlib, license, aliases, and demo metadata |
 | Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
-| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the complete eager bottle closure selected by `homebrew/main-shell-flat-selection.json`; Bash, Ruby, `brew`, Formula data, profile, shell config, and demo config are self-contained, with no deferred Homebrew state |
-| Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | exact self-contained shell image plus the package-resolved Node executable, npm 10.9.2 distribution, writable `/work`, and Node demo metadata |
+| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the sealed flat-lazy bottle closure selected by `homebrew/main-shell-flat-selection.json`; Bash is embedded, the bootstrap/libyaml/Ruby cohort is prepared at boot, and 35 ordinary bottle trees remain first-use |
+| Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | exact lazy shell image plus the package-resolved Node executable, npm 10.9.2 distribution, writable `/work`, and Node demo metadata |
 | WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
 | MariaDB test | `mariadb-test.vfs.zst` | `bash images/vfs/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
@@ -806,26 +815,26 @@ is wasm32 success, has an `archive_url`, and sets
 `browser_compatible = true`. Launch-time archive failures are surfaced in the
 UI instead of silently hiding the rest of the gallery.
 
-### Current ABI-42 shell publication (2026-08-11)
+### Current ABI-42 shell publication (2026-08-13)
 
 The normal shell page resolves the package archive built from
-`homebrew/main-shell-flat-selection.json`. That image contains a
-self-contained `/opt/kandelo/homebrew`; `/usr/bin/brew`, Ruby, Bash, their
-Formula data, and every selected dependency are eager VFS entries. The browser
-does not fetch a bootstrap ZIP, bottle tree, or Homebrew runtime layer when the
-shell boots or when those commands execute.
+`homebrew/main-shell-flat-selection.json`. The image embeds Bash and its two
+base libraries, while 37 admitted bottle trees and the package-owned bootstrap
+tree retain sealed authenticated transports. Host boot prepares
+`/usr/bin/brew` by atomically fetching bootstrap, libyaml, and Ruby. The other
+35 bottle trees remain pending until their commands are first used.
 
-Shell revision 23 and `node-vfs` revision 15 share this exact base-image
-identity. Both are part of the canonical package release, and Pages resolves
-them with `./run.sh --fetch-only prepare-browser` from a fresh cache. The
-publisher inspects the shell against the checked-in selection and configs,
-builds the complete gallery, and compares the resolver bytes with exactly one
-hashed `shell.vfs-*.zst` asset and one hashed `node-vfs.vfs-*.zst` asset. It
-does not trust optional unhashed public copies.
+Shell revision 25 and `node-vfs` revision 18 share this exact base-image
+identity. The other shell-derived images are `nginx-vfs` revision 5,
+`nginx-php-vfs` revision 5, `lamp` revision 14, and `wordpress` revision 15.
+All preserve the shell's pending transports, bootstrap binding, atomic seals,
+capacity, and mirror identity. They are part of the canonical package release,
+and Pages resolves them with `./run.sh --fetch-only prepare-browser` from a
+fresh cache.
 
 The shell Chromium proof loads the ordinary production page, verifies the
-served shell digest, runs `brew`, Ruby, and the selected Bash, and requires an
-empty lazy-download ledger. A second Chromium proof runs the exact
+served shell digest, runs `brew`, Ruby, and the selected Bash, and verifies the
+boot cohort is fetched once. A second Chromium proof runs the exact
 `npm install --verbose cowsay` flow in the Node image and executes the
 installed binary. The post-activation Pages dispatch starts these checks only
 after it selects an authenticated activation receipt for the exact current
@@ -851,32 +860,32 @@ orchestrates explicit resolver builds:
 The main shell target resolves the canonical `packages/registry/shell` package
 into `local-binaries`; it does not invoke the image recipe or fbDOOM build
 directly. The package recipe restores the exact platform base, verifies the
-flat selection and its resource policy, materializes every selected bottle,
-writes the shell and demo configs, and serializes one self-contained image.
+flat selection and its resource policy, embeds the boot-critical base, records
+the sealed lazy bottle trees and mirror plan, writes the shell and demo configs,
+and serializes one image without fetching deferred bottle trees.
 `./run.sh --fetch-only build shell-vfs` refuses source fallback.
 
 Shell-derived packages consume that resolved image as a declared dependency.
-Their builders preserve capacity and ABI, reject deferred input state, and
-record the exact shell digest and byte count in their own metadata. A revision
-bump on the shell therefore changes the cache key of `node-vfs`, `nginx-vfs`,
-`nginx-php-vfs`, `lamp`, and `wordpress` through the normal dependency graph.
+Their builders preserve capacity, ABI, lazy transports and seals, bootstrap and
+mirror bindings, and record the exact shell digest and byte count in their own
+metadata. A revision bump on the shell therefore changes the cache key of
+`node-vfs`, `nginx-vfs`, `nginx-php-vfs`, `lamp`, and `wordpress` through the
+normal dependency graph.
 
-GitHub Pages is a package consumer, not a producer. Every `main` push still
-starts the single complete-tree workflow so a hand-maintained path list cannot
-leave the site on an older transitive package projection. A package-changing
-push may reach Pages before canonical activation; its fresh fetch-only cache
-then fails on the new unpublished identities. Activation dispatches the same
-workflow after the canonical index moves, allowing the admitted generation to
-build and deploy. The deployed tree records its source and index generation;
-scheduled activation compares that public record and retries a missed or
-failed dispatch without reopening the terminal candidate. No pull-request
-event can invoke the publisher.
+GitHub Pages is a package consumer, not a producer. It has no `main`-push or
+pull-request trigger. Activation dispatches the single complete-tree workflow
+only after the canonical index moves and the public bottle mirror is readable.
+The deployment resolves `shell`, `node-vfs`, and `homebrew-bootstrap` in one
+fresh fetch-only cache, atomically stages the exact bootstrap ZIP, and verifies
+the public 37-asset mirror before building. The deployed tree records its source
+and index generation; scheduled activation compares that public record and
+retries a missed or failed dispatch without reopening the terminal candidate.
 
-The dormant source-rootfs and closed-selection/lazy-mirror implementations
-remain diagnostic and historical recovery plumbing. The normal `run.sh`
-browser path, package staging, and Pages workflow do not invoke them. Support
-for reopening an old downloaded or persisted lazy image is explicitly future
-work rather than a compatibility shim in the current product.
+The dormant source-rootfs and eager closed-selection implementations remain
+diagnostic and historical recovery plumbing. The normal `run.sh`
+browser path, package staging, and Pages workflow do not invoke them. Persisted
+canonical flat-lazy images retain their authenticated pending transports when
+reopened; retired lazy formats do not gain compatibility shims.
 
 ### Adding a new VFS image
 
@@ -954,4 +963,8 @@ browser engine has not reclaimed. Garbage-collection observations and bounded,
 coalesced ordinary-allocation pressure are diagnostic/reclamation aids only.
 
 ### npm registry access in the browser
-The node demo's `npm install` uses `--registry=http://proxy.local/` so registry traffic can pass through the host fetch bridge instead of requiring the JavaScript runtime to own every TLS edge case. The kernel resolves `proxy.local` via `host_getaddrinfo` (it is deliberately absent from the synthetic `/etc/hosts`), and the host-side TLS backend re-routes those requests through the existing cors-proxy (dev) or service worker (prod) onto `https://registry.npmjs.org/`. Tarball URLs in JSON responses are rewritten to the same alias so subsequent fetches stay on the same path.
+
+The Node demo uses npm's canonical `https://registry.npmjs.org/` registry.
+Registry metadata and tarballs traverse the ordinary browser TLS and configured
+proxy boundary. Kandelo does not rewrite registry URLs, package metadata, or
+tarball locations and has no npm- or package-specific proxy routing.

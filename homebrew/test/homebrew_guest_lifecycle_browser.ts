@@ -1,4 +1,7 @@
 import { BrowserKernel } from "../../host/src/browser-kernel-host";
+import type {
+  BrowserCorsProxyConfig,
+} from "../../host/src/networking/browser-cors-proxy";
 import { ABI_VERSION } from "../../host/src/generated/abi";
 import {
   MemoryFileSystem,
@@ -64,7 +67,7 @@ type FetchLike = (
 export async function runHomebrewGuestLifecycleInBrowser(options: {
   fixture: unknown;
   kernelWasm: ArrayBuffer;
-  corsProxyUrl: string;
+  corsProxy: BrowserCorsProxyConfig;
   /** Same-origin directory containing the exact closed-transport fixtures. */
   closedAssetRootUrl?: string;
   fetchImpl?: FetchLike;
@@ -92,7 +95,7 @@ export async function runHomebrewGuestLifecycleInBrowser(options: {
                 canonicalUrl,
               )
             : createCorsProxySourceUrl(
-                options.corsProxyUrl,
+                options.corsProxy,
                 canonicalUrl,
               ),
         signal: deadlineController.signal,
@@ -140,7 +143,7 @@ export async function runHomebrewGuestLifecycleInBrowser(options: {
       machine: createBrowserLifecycleMachine({
         runtime: proofRuntime,
         kernelWasm: options.kernelWasm,
-        corsProxyUrl: options.corsProxyUrl,
+        corsProxy: options.corsProxy,
         afterDestroy: options.afterMachineDestroy,
       }),
     });
@@ -154,7 +157,7 @@ export async function runHomebrewGuestLifecycleInBrowser(options: {
         createBrowserLifecycleMachine({
           runtime: machineRuntime,
           kernelWasm: options.kernelWasm,
-          corsProxyUrl: options.corsProxyUrl,
+          corsProxy: options.corsProxy,
           afterDestroy: options.afterMachineDestroy,
         }),
     });
@@ -176,10 +179,10 @@ export async function runHomebrewGuestLifecycleInBrowser(options: {
 }
 
 export function createCorsProxySourceUrl(
-  corsProxyUrl: string,
+  corsProxy: BrowserCorsProxyConfig,
   canonicalUrl: string,
 ): string {
-  const proxy = new URL(corsProxyUrl, globalThis.location?.href);
+  const proxy = new URL(corsProxy.url, globalThis.location?.href);
   if (
     (
       proxy.protocol !== "http:" &&
@@ -198,7 +201,7 @@ export function createCorsProxySourceUrl(
 export function createBrowserLifecycleMachine(options: {
   runtime: HomebrewGuestLifecycleMachineRuntimeInputs;
   kernelWasm: ArrayBuffer;
-  corsProxyUrl: string;
+  corsProxy: BrowserCorsProxyConfig;
   afterDestroy?: () => Promise<void>;
 }): HomebrewGuestLifecycleMachine {
   const lazyDownloads: LazyDownloadEvent[] = [];
@@ -234,7 +237,7 @@ export function createBrowserLifecycleMachine(options: {
   const kernel = new BrowserKernel({
     ...HOMEBREW_GUEST_LIFECYCLE_HOST_LIMITS,
     kernelOwnedFs: true,
-    corsProxyUrl: options.corsProxyUrl,
+    corsProxy: options.corsProxy,
     onStdout: (bytes) => capture(bytes, "stdout"),
     onStderr: (bytes) => capture(bytes, "stderr"),
     onHostDiagnostic: (diagnostic) => {
@@ -447,7 +450,7 @@ export function runHomebrewFlatVfsShippingProofInBrowser(options: {
   tapRevision: string;
   deadlineMs: number;
   kernelWasm: ArrayBuffer;
-  corsProxyUrl: string;
+  corsProxy: BrowserCorsProxyConfig;
   afterMachineDestroy?: () => Promise<void>;
 }): Promise<HomebrewFlatVfsShippingProofResult> {
   return runHomebrewFlatVfsShippingProof({
@@ -458,7 +461,7 @@ export function runHomebrewFlatVfsShippingProofInBrowser(options: {
       createBrowserLifecycleMachine({
         runtime,
         kernelWasm: options.kernelWasm,
-        corsProxyUrl: options.corsProxyUrl,
+        corsProxy: options.corsProxy,
         ...(options.afterMachineDestroy === undefined
           ? {}
           : { afterDestroy: options.afterMachineDestroy }),

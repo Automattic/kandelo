@@ -20,6 +20,10 @@ import type {
   VfsFileSnapshot,
 } from "./browser-kernel-protocol";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
+import {
+  type BrowserCorsProxyConfig,
+  validateBrowserCorsProxyConfig,
+} from "./networking/browser-cors-proxy";
 
 export type { HttpRequest, HttpResponse };
 import workerEntryUrl from "./worker-entry-browser.ts?worker&url";
@@ -110,7 +114,7 @@ export interface BrowserKernelOptions {
   /** Browser pages that are not controlled by Kandelo's service worker can
    *  use this to route guest HTTP(S) and external lazy VFS downloads through
    *  a CORS-capable proxy. Same-origin lazy assets remain direct. */
-  corsProxyUrl?: string;
+  corsProxy?: BrowserCorsProxyConfig;
 }
 
 /** Options for {@link BrowserKernel.boot}. */
@@ -238,6 +242,7 @@ export class BrowserKernel {
 
   constructor(options: BrowserKernelOptions = {}) {
     this.maxPages = options.maxMemoryPages ?? DEFAULT_MAX_PAGES;
+    const corsProxy = validateBrowserCorsProxyConfig(options.corsProxy);
     this.options = {
       maxWorkers: DEFAULT_MAX_WORKERS,
       env: [
@@ -251,6 +256,7 @@ export class BrowserKernel {
         "SSL_CERT_DIR=/etc/ssl/certs",
       ],
       ...options,
+      corsProxy,
     };
 
     // The kernel worker owns the VFS. The main thread allocates only the
@@ -470,7 +476,7 @@ export class BrowserKernel {
             enableSyscallLog: this.options.enableSyscallLog,
             syscallLogPtrWidth: this.options.syscallLogPtrWidth,
             dnsAliases: this.options.dnsAliases,
-            corsProxyUrl: this.options.corsProxyUrl,
+            corsProxy: this.options.corsProxy,
           },
         };
         const transfer: Transferable[] = [transferBuf];

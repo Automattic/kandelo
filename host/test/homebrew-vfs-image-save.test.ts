@@ -8,6 +8,8 @@ import {
   assertHomebrewBootstrapConsumerState,
   installHomebrewBootstrapConsumerState,
   prepareHomebrewBootstrapConsumerNamespace,
+} from "../src/homebrew-bootstrap-consumer";
+import {
   readHomebrewBootstrapEnvironment,
   restoreVerifiedHomebrewBaseImage,
   saveVerifiedHomebrewVfsImage,

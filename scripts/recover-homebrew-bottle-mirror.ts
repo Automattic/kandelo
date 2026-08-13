@@ -10,7 +10,14 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   assertHomebrewBottleMirrorBundle,
@@ -23,6 +30,7 @@ import {
 import {
   HOMEBREW_BOTTLE_MIRROR_PLAN_ASSET,
   HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH,
+  type HomebrewBottleMirrorPlan,
 } from "../host/src/homebrew-bottle-mirror-plan";
 import { fetchHomebrewBottleBytes } from "../host/src/homebrew-vfs-fetch";
 import { MemoryFileSystem } from "../host/src/vfs/memory-fs";
@@ -48,28 +56,41 @@ export async function recoverHomebrewBottleMirror(options: {
     reportWithinOutput === "" ||
     (!reportWithinOutput.startsWith("..") && !isAbsolute(reportWithinOutput))
   ) {
-    throw new Error("bottle mirror recovery report must be outside the output directory");
+    throw new Error(
+      "bottle mirror recovery report must be outside the output directory",
+    );
   }
 
   const fs = await restoreVerifiedVfsImage(
     new Uint8Array(readFileSync(imagePath)),
   );
-  const embeddedPlanBytes = readVfsFile(fs, HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH);
-  const guestManifest = parseGuestManifest(
-    readVfsFile(fs, "/etc/kandelo/homebrew-vfs.json"),
+  const embeddedPlanBytes = readVfsFile(
+    fs,
+    HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH,
   );
+  const plan = await parseHomebrewBottleMirrorPlan(embeddedPlanBytes);
+  const guestManifestBytes = tryReadVfsFile(
+    fs,
+    "/etc/kandelo/homebrew-vfs.json",
+  );
+  const source =
+    guestManifestBytes === null
+      ? flatLazyRecoverySource(fs.getImageMetadata(), plan, embeddedPlanBytes)
+      : {
+          kind: "guest-manifest" as const,
+          ...parseGuestManifest(guestManifestBytes),
+        };
   // Reuse the browser parser with a fetch adapter backed by anonymous GHCR
   // source URLs. This binds the recovery path to the exact same canonical
   // plan and byte checks used by closed Chromium acceptance.
   const packageByFullName = new Map(
-    guestManifest.packages.map((pkg) => [pkg.full_name, pkg]),
+    source.packages.map((pkg) => [pkg.full_name, pkg]),
   );
-  if (packageByFullName.size !== guestManifest.packages.length) {
+  if (packageByFullName.size !== source.packages.length) {
     throw new Error("guest Homebrew manifest duplicates a package name");
   }
   const sourceByLocalAsset = new Map<string, GuestPackage>();
-  const plan = await parseHomebrewBottleMirrorPlan(embeddedPlanBytes);
-  if (guestManifest.catalog.tap_repository !== plan.repository) {
+  if (source.catalog && source.catalog.tap_repository !== plan.repository) {
     throw new Error(
       "guest Homebrew catalog repository differs from the bottle mirror repository",
     );
@@ -81,7 +102,9 @@ export async function recoverHomebrewBottleMirror(options: {
     }
     assertAnonymousGhcrSource(pkg);
     if (pkg.sha256 !== asset.sha256 || pkg.bytes !== asset.bytes) {
-      throw new Error(`guest bottle identity differs from mirror plan for ${asset.package}`);
+      throw new Error(
+        `guest bottle identity differs from mirror plan for ${asset.package}`,
+      );
     }
     if (sourceByLocalAsset.has(asset.asset)) {
       throw new Error(`embedded bottle mirror duplicates ${asset.asset}`);
@@ -107,11 +130,15 @@ export async function recoverHomebrewBottleMirror(options: {
         throw new Error(`recovery fetch requested unknown asset ${assetName}`);
       }
       if (init?.credentials !== "omit" || init.redirect !== "error") {
-        throw new Error("recovery fetch lost its anonymous closed-bundle contract");
+        throw new Error(
+          "recovery fetch lost its anonymous closed-bundle contract",
+        );
       }
       const bytes = await fetchHomebrewBottleBytes(pkg.url, {
         expectedBytes: pkg.bytes,
-        ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+        ...(options.fetchImpl === undefined
+          ? {}
+          : { fetchImpl: options.fetchImpl }),
       });
       return new Response(copyArrayBuffer(bytes), {
         status: 200,
@@ -119,30 +146,33 @@ export async function recoverHomebrewBottleMirror(options: {
       });
     },
   });
-  const payloadByUrl = new Map(loaded.assets.map((asset) => [asset.url, asset]));
-  const payloads: HomebrewBottleMirrorPayload[] = loaded.plan.assets.map((asset) => {
-    const closed = payloadByUrl.get(asset.url)!;
-    return {
-      id: asset.id,
-      package: asset.package,
-      asset: asset.asset,
-      sha256: asset.sha256,
-      bytes: closed.bytes,
-    };
-  });
+  const payloadByUrl = new Map(
+    loaded.assets.map((asset) => [asset.url, asset]),
+  );
+  const payloads: HomebrewBottleMirrorPayload[] = loaded.plan.assets.map(
+    (asset) => {
+      const closed = payloadByUrl.get(asset.url)!;
+      return {
+        id: asset.id,
+        package: asset.package,
+        asset: asset.asset,
+        sha256: asset.sha256,
+        bytes: closed.bytes,
+      };
+    },
+  );
   assertHomebrewBottleMirrorBundle(loaded.plan, payloads, {
     asset: HOMEBREW_BOTTLE_MIRROR_PLAN_ASSET,
     sha256: sha256(embeddedPlanBytes),
     bytes: embeddedPlanBytes,
   });
 
-  const report = {
+  const reportBase = {
     schema: 1,
     kind: "kandelo-homebrew-bottle-mirror-recovery",
     repository: loaded.plan.repository,
     tag: loaded.plan.tag,
     collection_sha256: loaded.plan.collection_sha256,
-    catalog: guestManifest.catalog,
     plan: {
       asset: HOMEBREW_BOTTLE_MIRROR_PLAN_ASSET,
       sha256: sha256(embeddedPlanBytes),
@@ -153,21 +183,37 @@ export async function recoverHomebrewBottleMirror(options: {
       source_url: packageByFullName.get(asset.package)!.url,
     })),
   };
+  const report =
+    source.kind === "guest-manifest"
+      ? { ...reportBase, catalog: source.catalog }
+      : { ...reportBase, source: "flat-lazy-image-binding" };
   mkdirSync(dirname(outputDirectory), { recursive: true });
   mkdirSync(dirname(reportPath), { recursive: true });
-  const staging = mkdtempSync(join(dirname(outputDirectory), ".kandelo-bottle-mirror-"));
-  const reportStaging = mkdtempSync(join(dirname(reportPath), ".kandelo-mirror-report-"));
+  const staging = mkdtempSync(
+    join(dirname(outputDirectory), ".kandelo-bottle-mirror-"),
+  );
+  const reportStaging = mkdtempSync(
+    join(dirname(reportPath), ".kandelo-mirror-report-"),
+  );
   const stagedReport = join(reportStaging, basename(reportPath));
   let outputMoved = false;
   let reportMoved = false;
   try {
-    writeFileSync(join(staging, HOMEBREW_BOTTLE_MIRROR_PLAN_ASSET), embeddedPlanBytes, {
+    writeFileSync(
+      join(staging, HOMEBREW_BOTTLE_MIRROR_PLAN_ASSET),
+      embeddedPlanBytes,
+      {
+        flag: "wx",
+      },
+    );
+    for (const payload of payloads) {
+      writeFileSync(join(staging, payload.asset), payload.bytes, {
+        flag: "wx",
+      });
+    }
+    writeFileSync(stagedReport, `${JSON.stringify(report, null, 2)}\n`, {
       flag: "wx",
     });
-    for (const payload of payloads) {
-      writeFileSync(join(staging, payload.asset), payload.bytes, { flag: "wx" });
-    }
-    writeFileSync(stagedReport, `${JSON.stringify(report, null, 2)}\n`, { flag: "wx" });
     renameSync(staging, outputDirectory);
     outputMoved = true;
     renameSync(stagedReport, reportPath);
@@ -202,6 +248,80 @@ interface GuestCatalog {
   checkout_commit: string;
 }
 
+function flatLazyRecoverySource(
+  metadata: unknown,
+  plan: HomebrewBottleMirrorPlan,
+  planBytes: Uint8Array,
+): {
+  kind: "flat-lazy-image-binding";
+  catalog?: undefined;
+  packages: GuestPackage[];
+} {
+  if (!isRecord(metadata) || !isRecord(metadata.homebrewFlatLazy)) {
+    throw new Error(
+      "image has neither a guest Homebrew manifest nor a flat-lazy binding",
+    );
+  }
+  const binding = metadata.homebrewFlatLazy;
+  const mirror = binding.mirror;
+  const partition = binding.partition;
+  if (
+    binding.schema !== 1 ||
+    binding.kind !== "kandelo-homebrew-flat-selection-lazy-v1" ||
+    !isRecord(mirror) ||
+    !isRecord(partition) ||
+    mirror.repository !== plan.repository ||
+    mirror.tag !== plan.tag ||
+    mirror.collectionSha256 !== plan.collection_sha256 ||
+    mirror.planSha256 !== sha256(planBytes) ||
+    mirror.planBytes !== planBytes.byteLength ||
+    mirror.assetCount !== plan.assets.length ||
+    !Array.isArray(partition.deferredPackageOrder) ||
+    !Array.isArray(partition.runtimeCohortPackageOrder) ||
+    partition.deferredPackageOrder.length !== plan.assets.length ||
+    JSON.stringify([...partition.deferredPackageOrder].sort()) !==
+      JSON.stringify(plan.assets.map((asset) => asset.package).sort()) ||
+    partition.runtimeCohortPackageOrder.some(
+      (name) =>
+        typeof name !== "string" ||
+        !partition.deferredPackageOrder.includes(name),
+    )
+  ) {
+    throw new Error("flat-lazy image binding differs from its mirror plan");
+  }
+  return {
+    kind: "flat-lazy-image-binding",
+    packages: plan.assets.map((asset) => ({
+      full_name: asset.package,
+      source_status: "success",
+      url: anonymousGhcrSourceUrl(plan.repository, asset.package, asset.sha256),
+      sha256: asset.sha256,
+      bytes: asset.bytes,
+    })),
+  };
+}
+
+function anonymousGhcrSourceUrl(
+  repository: string,
+  packageName: string,
+  digest: string,
+): string {
+  const repositoryParts = repository.split("/");
+  const packageParts = packageName.split("/");
+  if (
+    repositoryParts.length !== 2 ||
+    packageParts.length !== 3 ||
+    packageParts[0] !== repositoryParts[0] ||
+    repositoryParts[1] !== `homebrew-${packageParts[1]}` ||
+    !/^[a-z0-9][a-z0-9_.-]*$/.test(packageParts[2]!)
+  ) {
+    throw new Error(
+      `flat-lazy package ${packageName} does not belong to ${repository}`,
+    );
+  }
+  return `https://ghcr.io/v2/${repository}/${packageParts[2]}/blobs/sha256:${digest}`;
+}
+
 function parseGuestManifest(bytes: Uint8Array): {
   catalog: GuestCatalog;
   packages: GuestPackage[];
@@ -210,13 +330,18 @@ function parseGuestManifest(bytes: Uint8Array): {
   try {
     value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   } catch (error) {
-    throw new Error("guest Homebrew manifest is not valid UTF-8 JSON", { cause: error });
+    throw new Error("guest Homebrew manifest is not valid UTF-8 JSON", {
+      cause: error,
+    });
   }
   if (
-    !isRecord(value) || !Array.isArray(value.packages) ||
+    !isRecord(value) ||
+    !Array.isArray(value.packages) ||
     !isRecord(value.catalog)
   ) {
-    throw new Error("guest Homebrew manifest does not declare catalog and packages");
+    throw new Error(
+      "guest Homebrew manifest does not declare catalog and packages",
+    );
   }
   const catalog = value.catalog;
   if (
@@ -234,12 +359,18 @@ function parseGuestManifest(bytes: Uint8Array): {
   }
   const packages = value.packages.map((entry, index): GuestPackage => {
     if (
-      !isRecord(entry) || typeof entry.full_name !== "string" ||
-      entry.source_status !== "success" || typeof entry.url !== "string" ||
-      typeof entry.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(entry.sha256) ||
-      !Number.isSafeInteger(entry.bytes) || (entry.bytes as number) <= 0
+      !isRecord(entry) ||
+      typeof entry.full_name !== "string" ||
+      entry.source_status !== "success" ||
+      typeof entry.url !== "string" ||
+      typeof entry.sha256 !== "string" ||
+      !/^[0-9a-f]{64}$/.test(entry.sha256) ||
+      !Number.isSafeInteger(entry.bytes) ||
+      (entry.bytes as number) <= 0
     ) {
-      throw new Error(`guest Homebrew package ${index} has invalid source identity`);
+      throw new Error(
+        `guest Homebrew package ${index} has invalid source identity`,
+      );
     }
     return entry as unknown as GuestPackage;
   });
@@ -251,26 +382,40 @@ function assertAnonymousGhcrSource(pkg: GuestPackage): void {
   try {
     url = new URL(pkg.url);
   } catch (error) {
-    throw new Error(`guest bottle URL is invalid for ${pkg.full_name}`, { cause: error });
+    throw new Error(`guest bottle URL is invalid for ${pkg.full_name}`, {
+      cause: error,
+    });
   }
   if (
-    url.protocol !== "https:" || url.hostname !== "ghcr.io" ||
-    url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "" ||
+    url.protocol !== "https:" ||
+    url.hostname !== "ghcr.io" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.search !== "" ||
+    url.hash !== "" ||
     !url.pathname.endsWith(`/blobs/sha256:${pkg.sha256}`)
   ) {
-    throw new Error(`guest bottle URL is not one exact anonymous GHCR blob for ${pkg.full_name}`);
+    throw new Error(
+      `guest bottle URL is not one exact anonymous GHCR blob for ${pkg.full_name}`,
+    );
   }
 }
 
 function readVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {
   const stat = fs.stat(path);
-  if ((stat.mode & 0xf000) !== 0x8000) throw new Error(`${path} is not a regular file`);
+  if ((stat.mode & 0xf000) !== 0x8000)
+    throw new Error(`${path} is not a regular file`);
   const bytes = new Uint8Array(stat.size);
   const fd = fs.open(path, 0, 0);
   try {
     let offset = 0;
     while (offset < bytes.byteLength) {
-      const read = fs.read(fd, bytes.subarray(offset), null, bytes.byteLength - offset);
+      const read = fs.read(
+        fd,
+        bytes.subarray(offset),
+        null,
+        bytes.byteLength - offset,
+      );
       if (read <= 0) throw new Error(`short read from ${path}`);
       offset += read;
     }
@@ -278,6 +423,21 @@ function readVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {
     fs.close(fd);
   }
   return bytes;
+}
+
+function tryReadVfsFile(fs: MemoryFileSystem, path: string): Uint8Array | null {
+  try {
+    return readVfsFile(fs, path);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      (error as Error & { code: number }).code === -2
+    ) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 function assertRegularFile(path: string, label: string): void {
@@ -316,14 +476,21 @@ function hasExactKeys(
   expected: readonly string[],
 ): boolean {
   const keys = Object.keys(value);
-  return keys.length === expected.length &&
-    expected.every((key) => Object.hasOwn(value, key));
+  return (
+    keys.length === expected.length &&
+    expected.every((key) => Object.hasOwn(value, key))
+  );
 }
 
 function parseArgs(args: string[]) {
   if (
-    args.length !== 6 || args[0] !== "--image" || !args[1] ||
-    args[2] !== "--out" || !args[3] || args[4] !== "--report" || !args[5]
+    args.length !== 6 ||
+    args[0] !== "--image" ||
+    !args[1] ||
+    args[2] !== "--out" ||
+    !args[3] ||
+    args[4] !== "--report" ||
+    !args[5]
   ) {
     throw new Error(
       "usage: npx tsx scripts/recover-homebrew-bottle-mirror.ts " +
@@ -337,6 +504,9 @@ function parseArgs(args: string[]) {
   };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
   await recoverHomebrewBottleMirror(parseArgs(process.argv.slice(2)));
 }

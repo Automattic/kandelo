@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   assertHomebrewRuntimeSupportPlan,
+  parseHomebrewRuntimeSupportPolicy,
   parseHomebrewRuntimeSupportContract,
   projectHomebrewRuntimeSupportDelta,
 } from "../src/homebrew-runtime-support";
@@ -19,6 +20,64 @@ const source = JSON.parse(
 );
 
 describe("Homebrew shell runtime-support contract", () => {
+  it("parses only the frozen selection-relative lazy-runtime policy", () => {
+    const policy = parseHomebrewRuntimeSupportPolicy({
+      schema: 1,
+      kind: "kandelo-homebrew-flat-runtime-support-policy",
+      id: "homebrew-runtime-support",
+      bootstrap_package: "kandelo-dev/tap-core/homebrew-bootstrap",
+      runtime_roots: ["kandelo-dev/tap-core/ruby"],
+      activation: {
+        mode: "boot-prefetch",
+        capability: "homebrew:runtime",
+        root: "/usr/bin/brew",
+        atomic_group: "homebrew-runtime-support",
+      },
+    });
+
+    expect(policy).toEqual({
+      schema: 1,
+      kind: "kandelo-homebrew-flat-runtime-support-policy",
+      id: "homebrew-runtime-support",
+      bootstrapPackage: "kandelo-dev/tap-core/homebrew-bootstrap",
+      runtimeRoots: ["kandelo-dev/tap-core/ruby"],
+      activation: {
+        mode: "boot-prefetch",
+        capability: "homebrew:runtime",
+        root: "/usr/bin/brew",
+        atomicGroup: "homebrew-runtime-support",
+      },
+    });
+    expect(Object.isFrozen(policy)).toBe(true);
+    expect(Object.isFrozen(policy.runtimeRoots)).toBe(true);
+    expect(Object.isFrozen(policy.activation)).toBe(true);
+  });
+
+  it("rejects open-ended, duplicate, noncanonical, and campaign policy fields", () => {
+    const policy = {
+      schema: 1,
+      kind: "kandelo-homebrew-flat-runtime-support-policy",
+      id: "homebrew-runtime-support",
+      bootstrap_package: "kandelo-dev/tap-core/homebrew-bootstrap",
+      runtime_roots: ["kandelo-dev/tap-core/ruby"],
+      activation: {
+        mode: "boot-prefetch",
+        capability: "homebrew:runtime",
+        root: "/usr/bin/brew",
+        atomic_group: "homebrew-runtime-support",
+      },
+    };
+    for (const changed of [
+      { ...policy, catalog: {} },
+      { ...policy, runtime_roots: [policy.runtime_roots[0], policy.runtime_roots[0]] },
+      { ...policy, runtime_roots: ["ruby"] },
+      { ...policy, activation: { ...policy.activation, mode: "first-use-atomic" } },
+      { ...policy, activation: { ...policy.activation, tap: "kandelo-dev/tap-core" } },
+    ]) {
+      expect(() => parseHomebrewRuntimeSupportPolicy(changed)).toThrow();
+    }
+  });
+
   it("binds the declared runtime delta and admits file/libmagic through the base", () => {
     const contract = parseHomebrewRuntimeSupportContract(source);
     expect(contract.activation).toEqual({

@@ -32,6 +32,7 @@ import { MemoryFileSystem } from "./vfs/memory-fs";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
 import { createBrowserLazyFetcher } from "./vfs/browser-lazy-fetcher";
 import { resolveLazyUrl } from "./vfs/lazy-url";
+import { prepareHomebrewFlatLazyBoot } from "./homebrew-flat-lazy-boot";
 import { DeviceFileSystem } from "./vfs/device-fs";
 import { BrowserTimeProvider } from "./vfs/time";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
@@ -88,6 +89,9 @@ import type {
   HostDiagnostic,
   MainToKernelMessage,
   KernelToMainMessage,
+} from "./browser-kernel-protocol";
+import {
+  initializeBrowserCorsProxyForWorker,
 } from "./browser-kernel-protocol";
 import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
 
@@ -848,6 +852,20 @@ async function createFreshProcessMemory(
 async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   initReady = false;
   initFailure = null;
+  // WHY: structured cloning strips the host-side freeze. Revalidate into one
+  // worker-owned immutable copy before either browser network path sees it.
+  const {
+    lazyFetcher: corsProxyLazyFetcher,
+    tlsBackend,
+  } = initializeBrowserCorsProxyForWorker(msg.config.corsProxy, {
+    useLazyFetcher: msg.closedLazyAssets === undefined,
+    createLazyFetcher: (config) => createBrowserLazyFetcher(config),
+    createTlsBackend: (options) => new TlsNetworkBackend({
+      dnsAliases: msg.config.dnsAliases,
+      ...options,
+    }),
+    reportHostDiagnostic,
+  });
   maxPages = msg.config.maxMemoryPages;
   defaultThreadSlots = msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
   defaultEnv = msg.config.env;
@@ -899,11 +917,11 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   }
   if (msg.closedLazyAssets !== undefined) {
     memfs.setLazyFetcher(createClosedLazyAssetFetcherFromOwnedAssets(msg.closedLazyAssets));
-  } else if (msg.config.corsProxyUrl?.trim()) {
+  } else if (corsProxyLazyFetcher !== undefined) {
     // WHY: guest networking and lazy VFS downloads are separate fetch paths.
     // Lazy VFS must read and verify release-asset bytes, which requires CORS.
     // CORP alone cannot make an opaque response body readable to JavaScript.
-    memfs.setLazyFetcher(createBrowserLazyFetcher(msg.config.corsProxyUrl));
+    memfs.setLazyFetcher(corsProxyLazyFetcher);
   }
   const mounts: MountConfig[] = [
     { mountPoint: "/dev/shm", backend: shmfs },
@@ -913,6 +931,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   memfs.subscribeLazyDownloads((event) => {
     post({ type: "lazy_download", event });
   });
+  await prepareHomebrewFlatLazyBoot(memfs);
   io = new VirtualPlatformIO(mounts, new BrowserTimeProvider());
 
   // Create TLS-MITM network backend. Programs do real TLS handshakes via
@@ -920,10 +939,6 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // real fetch() requests, and re-encrypts the responses.
   // The service worker handles CORS proxying transparently in both dev and
   // production, keeping the browser networking path identical across modes.
-  const tlsBackend = new TlsNetworkBackend({
-    dnsAliases: msg.config.dnsAliases,
-    corsProxyUrl: msg.config.corsProxyUrl,
-  });
   await tlsBackend.init();
   io.network = tlsBackend;
 

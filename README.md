@@ -247,6 +247,14 @@ percent-encoded target URL. If you change the proxy while a service worker is
 already active, reload the page; clearing site data may be needed if the browser
 keeps an older service worker around.
 
+The application owns one complete proxy profile. The current profile relays
+only `Accept`, `Content-Type`, `git-protocol`, `wp_blog`, and `wp_install`, by
+case-insensitive field name, at every configured proxy dispatch. Unsupported
+fields may be omitted with a diagnostic only for anonymous bodyless GETs;
+lossy credentialed, body-bearing, or non-GET requests fail before dispatch.
+This is a browser transport boundary, not full HTTP-header fidelity. Direct
+browser requests and Node.js-host networking are not filtered by this profile.
+
 Browser Kandelo supports local loopback and virtual machine-to-machine UDP/TCP. External raw TCP/UDP sockets are still constrained by the browser sandbox and require fetch, service-worker, proxy, or future WebRTC-backed transports behind the POSIX socket layer.
 
 The browser UI uses pre-built **VFS images** - binary filesystem snapshots that load instantly at runtime. See [docs/browser-support.md](docs/browser-support.md#vfs-images) for details.

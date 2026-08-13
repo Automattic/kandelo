@@ -590,6 +590,7 @@ validate_ci_homebrew_browser_state() {
     local authority
     local mirror_required
     local image
+    local bootstrap
     local publication_blockers="$REPO_ROOT/.ci-test-publication-blockers.json"
     local receipt="$REPO_ROOT/.ci-staging-shell-receipt.json"
     local state_mode
@@ -628,11 +629,19 @@ validate_ci_homebrew_browser_state() {
         return 1
     fi
     image="$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)"
+    bootstrap="$(
+        bash scripts/resolve-binary.sh \
+            programs/homebrew-bootstrap/homebrew-bootstrap.zip \
+            2>/dev/null || true
+    )"
+    [ -n "$bootstrap" ] || bootstrap="-"
     state_mode="$(jq -er '.mode' "$state")" || {
         echo "ci-homebrew-browser-mirror-state: invalid state: $state" >&2
         return 1
     }
-    state_args=(validate consumer "$state" "$publication_blockers" "$image")
+    state_args=(
+        validate consumer "$state" "$publication_blockers" "$image" "$bootstrap"
+    )
     if [ "$state_mode" = publication-blocked-candidate ]; then
         state_args+=("$receipt")
     fi
@@ -655,9 +664,9 @@ validate_ci_homebrew_browser_state() {
         return 0
     fi
     if [ "$state_mode" = resolved ]; then
-        [ "$transport" = flat-self-contained ] &&
-            [ "$mirror_required" = false ] || {
-            echo "ci-run-test-suite: resolved shell lacks self-contained flat transport" >&2
+        [ "$transport" = flat-lazy ] &&
+            [ "$mirror_required" = true ] || {
+            echo "ci-run-test-suite: resolved shell lacks flat-lazy mirror transport" >&2
             return 1
         }
         CI_HOMEBREW_BROWSER_STATE_VALIDATED=1
@@ -689,13 +698,6 @@ prepare_ci_homebrew_browser_mirror() {
     fi
     if [ "$CI_HOMEBREW_BROWSER_STATE_MODE" = publication-blocked ]; then
         export KANDELO_PLAYWRIGHT_EXPECT_SOURCE_ROOTFS_SHELL=1
-        return 0
-    fi
-    if [ "$CI_HOMEBREW_BROWSER_TRANSPORT" = flat-self-contained ]; then
-        [ "$CI_HOMEBREW_BROWSER_MIRROR_REQUIRED" = false ] || {
-            echo "ci-run-test-suite: flat shell unexpectedly requires a closed mirror" >&2
-            return 1
-        }
         return 0
     fi
     [ "$CI_HOMEBREW_BROWSER_MIRROR_REQUIRED" = "true" ] || {

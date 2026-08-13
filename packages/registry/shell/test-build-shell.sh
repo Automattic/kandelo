@@ -31,39 +31,49 @@ expect_failure() {
     }
 }
 
-grep -Eq '^revision[[:space:]]*=[[:space:]]*23$' "$BUILD_TOML" ||
-    fail "canonical shell revision must be 23"
+grep -Eq '^revision[[:space:]]*=[[:space:]]*25$' "$BUILD_TOML" ||
+    fail "canonical shell revision must be 25"
 grep -Eq '^commit[[:space:]]*=[[:space:]]*"UNPUBLISHED"$' "$BUILD_TOML" ||
     fail "canonical shell must await publication under its authored commit"
 grep -Eq '^publication_state[[:space:]]*=[[:space:]]*"ready"$' \
     "$BUILD_TOML" || fail "canonical flat shell must be publication-ready"
 for input in \
     homebrew/main-shell-flat-selection.json \
+    homebrew/main-shell-materialization-policy.json \
+    homebrew/main-shell-runtime-support-policy.json \
     homebrew/main-shell-default.json \
     homebrew/main-shell-flat-demo.json \
-    images/vfs/scripts/build-homebrew-flat-vfs-image.ts \
+    images/vfs/scripts/build-homebrew-flat-lazy-vfs-image.ts \
     images/vfs/scripts/shell-runtime-layout.ts \
     packages/registry/shell/prepare-build-tools.sh \
     crates/shared/src/lib.rs \
     host/src/constants.ts \
     host/src/generated/abi.ts \
     host/src/homebrew-bottle-descriptor.ts \
+    host/src/homebrew-bottle-mirror-plan.ts \
     host/src/homebrew-bottle-relocation.ts \
     host/src/homebrew-bottle-selection.ts \
     host/src/homebrew-bottle-types.ts \
+    host/src/homebrew-bootstrap-consumer.ts \
+    host/src/homebrew-flat-lazy-vfs-composer.ts \
     host/src/homebrew-guest-layout.ts \
     host/src/homebrew-lazy-layer-descriptor.ts \
     host/src/homebrew-lazy-layer.ts \
     host/src/homebrew-runtime-layer-limits.ts \
+    host/src/homebrew-runtime-layer-consumer.ts \
     host/src/homebrew-runtime-layer-policy.ts \
     host/src/homebrew-runtime-support-materializer.ts \
     host/src/homebrew-runtime-support.ts \
+    host/src/homebrew-support-data-bottle.ts \
     host/src/homebrew-vfs-builder.ts \
+    host/src/homebrew-vfs-composer.ts \
     host/src/homebrew-vfs-fetch.ts \
     host/src/homebrew-vfs-materializer.ts \
+    host/src/homebrew-vfs-materialization-policy.ts \
     host/src/homebrew-vfs-planner.ts \
     host/src/homebrew-vfs-resource-policy.ts \
     host/src/pathconf.ts \
+    host/src/shell-runtime-layout.ts \
     host/src/statfs.ts \
     host/src/vfs \
     web-libs/kandelo-session/src/shell-config.ts \
@@ -85,24 +95,22 @@ do
     grep -Fq "$retired" "$BUILD_TOML" &&
         fail "canonical shell cache identity retains retired input $retired"
 done
-grep -Fq 'depends_on = []' "$PACKAGE_TOML" ||
-    fail "canonical shell must have no package dependency authority"
+grep -Fq 'depends_on = ["homebrew-bootstrap@6.0.12-153-gcf5bc21"]' \
+    "$PACKAGE_TOML" || fail "canonical shell omits its selected bootstrap"
 [ "$(grep -Fc '[[outputs]]' "$PACKAGE_TOML")" -eq 1 ] ||
     fail "canonical shell must publish exactly one output"
 grep -Fq 'wasm = "shell.vfs.zst"' "$PACKAGE_TOML" ||
     fail "canonical shell output must be shell.vfs.zst"
-for tool in git node npm tar; do
+for tool in git node npm tar wc; do
     grep -A4 -F "name = \"$tool\"" "$PACKAGE_TOML" >/dev/null ||
         fail "canonical shell omits declared host tool $tool"
 done
-for retired_tool in jq python3 ruby sha256sum wc; do
+for retired_tool in jq python3 ruby sha256sum; do
     grep -Fq "name = \"$retired_tool\"" "$PACKAGE_TOML" &&
         fail "canonical shell retains unused host tool $retired_tool"
 done
-grep -Fq 'for tool in git node npm tar; do' "$BUILD_TOOL_PATH" ||
+grep -Fq 'for tool in git node npm tar wc; do' "$BUILD_TOOL_PATH" ||
     fail "Nix host-tool validation differs from package declarations"
-grep -Fq 'lazy' "$PACKAGE_TOML" &&
-    fail "canonical package description still promises lazy shell state"
 if grep -Eq '"[^"]+"[[:space:]]*:[[:space:]]*"file:' \
     "$SCRIPT_DIR/../../../tools/mkrootfs/package.json"
 then
@@ -195,20 +203,27 @@ case "$entrypoint" in
         shift || true
         arguments="$*"
         [[ "$builder" == \
-            */images/vfs/scripts/build-homebrew-flat-vfs-image.ts ]] || {
+            */images/vfs/scripts/build-homebrew-flat-lazy-vfs-image.ts ]] || {
             echo "unexpected tsx entrypoint: $builder" >&2
             exit 87
         }
         out=""
         report=""
         cache=""
+        mirror=""
         while [ "$#" -gt 0 ]; do
             case "$1" in
-                --selection|--base-image|--shell-config|--demo-config)
+                --selection|--materialization-policy|--runtime-support-policy|\
+                --base-image|--bootstrap-zip|--bootstrap-env|\
+                --mirror-repository|--shell-config|--demo-config)
                     shift 2
                     ;;
                 --bottle-cache)
                     cache="${2:-}"
+                    shift 2
+                    ;;
+                --mirror-out)
+                    mirror="${2:-}"
                     shift 2
                     ;;
                 --out)
@@ -225,24 +240,31 @@ case "$entrypoint" in
                     ;;
             esac
         done
-        [ -n "$out" ] && [ -n "$report" ] && [ -n "$cache" ] || {
-            echo "fake flat builder omitted an isolated output" >&2
+        [ -n "$out" ] && [ -n "$report" ] && [ -n "$cache" ] && \
+            [ -n "$mirror" ] || {
+            echo "fake lazy builder omitted an isolated output" >&2
             exit 89
         }
         [ -d "$cache" ] && [ ! -L "$cache" ] || {
-            echo "flat builder did not receive an owned bottle cache" >&2
+            echo "lazy builder did not receive an owned bottle cache" >&2
             exit 93
         }
-        printf 'flat|%s|%s|%s|%s\n' \
+        printf 'lazy|%s|%s|%s|%s\n' \
             "$WASM_POSIX_DEP_OUT_DIR" "$entrypoint" "$builder" \
             "$arguments" >>"$FAKE_LOG"
-        if [ "${FAKE_FLAT_FAILURE:-0}" = 1 ]; then
+        if [ "${FAKE_LAZY_FAILURE:-0}" = 1 ]; then
             printf '{}\n' >"$report"
-            echo "simulated flat shell build failure" >&2
+            echo "simulated lazy shell build failure" >&2
             exit 91
         fi
-        printf 'shell VFS for %s\n' "$WASM_POSIX_DEP_OUT_DIR" >"$out"
+        if [ "${FAKE_OVERSIZE:-0}" = 1 ]; then
+            dd if=/dev/zero of="$out" bs=10485760 count=1 2>/dev/null
+        else
+            printf 'shell VFS for %s\n' "$WASM_POSIX_DEP_OUT_DIR" >"$out"
+        fi
         printf '{}\n' >"$report"
+        mkdir -m 0700 "$mirror"
+        printf '{}\n' >"$mirror/homebrew-bottles.json"
         ;;
     *)
         echo "unexpected node entrypoint: $entrypoint" >&2
@@ -275,15 +297,22 @@ FAKE_TAR
 chmod 0755 "$FAKE_BIN/bash" "$FAKE_BIN/node" "$FAKE_BIN/npm" \
     "$FAKE_BIN/tar"
 
+BOOTSTRAP_DIR="$TMP_ROOT/homebrew-bootstrap"
+mkdir "$BOOTSTRAP_DIR"
+printf 'bootstrap\n' >"$BOOTSTRAP_DIR/homebrew-bootstrap.zip"
+printf 'environment\n' >"$BOOTSTRAP_DIR/homebrew-brew.env"
+
 run_fake_shell_build() {
     local out_dir="$1"
-    local fail_flat="${2:-0}"
+    local fail_lazy="${2:-0}"
+    local oversize="${3:-0}"
     local invocation_log="$TMP_ROOT/$(basename "$out_dir").node.log"
     : >"$invocation_log"
     env -u KANDELO_DEV_SHELL_TOOL_PATH \
         PATH="$FAKE_BIN:$PATH" \
         FAKE_LOG="$invocation_log" \
-        FAKE_FLAT_FAILURE="$fail_flat" \
+        FAKE_LAZY_FAILURE="$fail_lazy" \
+        FAKE_OVERSIZE="$oversize" \
         GH_TOKEN=forbidden \
         GITHUB_TOKEN=forbidden \
         HOMEBREW_GITHUB_API_TOKEN=forbidden \
@@ -300,6 +329,7 @@ run_fake_shell_build() {
         npm_config_globalconfig="$TMP_ROOT/forbidden-lower-global.npmrc" \
         npm_config_registry=https://lower-attacker.invalid/ \
         WASM_POSIX_DEP_OUT_DIR="$out_dir" \
+        WASM_POSIX_DEP_HOMEBREW_BOOTSTRAP_DIR="$BOOTSTRAP_DIR" \
         WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
         /bin/bash "$SHELL_BUILDER"
 }
@@ -334,8 +364,8 @@ done
 
 [ "$(grep -c '^mkrootfs|' "$FAKE_LOG")" -eq 2 ] ||
     fail "shell wrapper did not build two independent platform bases"
-[ "$(grep -c '^flat|' "$FAKE_LOG")" -eq 2 ] ||
-    fail "shell wrapper did not run two independent flat composers"
+[ "$(grep -c '^lazy|' "$FAKE_LOG")" -eq 2 ] ||
+    fail "shell wrapper did not run two independent lazy composers"
 [ "$(cut -d'|' -f2 "$FAKE_LOG" | sort -u | wc -l | tr -d '[:space:]')" \
     -eq 2 ] || fail "concurrent shell wrappers shared resolver output state"
 grep -Fq -- '--sab-size 536870912' "$FAKE_LOG" ||
@@ -351,6 +381,18 @@ for out_dir in "$parallel_one" "$parallel_two"; do
         "--selection $source_root/homebrew/main-shell-flat-selection.json" \
         "$FAKE_LOG" || fail "shell wrapper omitted canonical selection"
     grep -Fq -- \
+        "--materialization-policy $source_root/homebrew/main-shell-materialization-policy.json" \
+        "$FAKE_LOG" || fail "shell wrapper omitted materialization policy"
+    grep -Fq -- \
+        "--runtime-support-policy $source_root/homebrew/main-shell-runtime-support-policy.json" \
+        "$FAKE_LOG" || fail "shell wrapper omitted runtime-support policy"
+    grep -Fq -- \
+        "--bootstrap-zip $BOOTSTRAP_DIR/homebrew-bootstrap.zip --bootstrap-env $BOOTSTRAP_DIR/homebrew-brew.env" \
+        "$FAKE_LOG" || fail "shell wrapper omitted selected bootstrap outputs"
+    grep -Fq -- \
+        "--mirror-repository kandelo-dev/homebrew-tap-core --mirror-out $out_dir/.homebrew-shell-build/mirror" \
+        "$FAKE_LOG" || fail "shell wrapper omitted sealed mirror handoff"
+    grep -Fq -- \
         "--shell-config $source_root/homebrew/main-shell-default.json" \
         "$FAKE_LOG" || fail "shell wrapper omitted canonical shell config"
     grep -Fq -- \
@@ -359,7 +401,7 @@ for out_dir in "$parallel_one" "$parallel_two"; do
     grep -Fq -- \
         "--out $out_dir/.homebrew-shell-build/shell.vfs.zst --report $out_dir/.homebrew-shell-build/main-shell-report.json" \
         "$FAKE_LOG" ||
-        fail "shell wrapper omitted private flat outputs"
+        fail "shell wrapper omitted private lazy outputs"
 done
 
 if grep -q '^retired|' "$FAKE_LOG"; then
@@ -372,7 +414,7 @@ grep -Fq 'build-homebrew-main-shell-product.sh' "$SHELL_BUILDER" &&
 
 failed_out="$TMP_ROOT/failed"
 mkdir "$failed_out"
-expect_failure "simulated flat shell build failure" \
+expect_failure "simulated lazy shell build failure" \
     run_fake_shell_build "$failed_out" 1
 [ ! -e "$failed_out/.homebrew-shell-build" ] ||
     fail "failed shell build leaked its private workspace"
@@ -383,6 +425,20 @@ expect_failure "WASM_POSIX_DEP_OUT_DIR is required" \
     env -u WASM_POSIX_DEP_OUT_DIR -u KANDELO_DEV_SHELL_TOOL_PATH \
         PATH="$FAKE_BIN:$PATH" WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
         /bin/bash "$SHELL_BUILDER"
+missing_bootstrap="$TMP_ROOT/missing-bootstrap"
+mkdir "$missing_bootstrap"
+expect_failure "requires WASM_POSIX_DEP_HOMEBREW_BOOTSTRAP_DIR" \
+    env -u WASM_POSIX_DEP_HOMEBREW_BOOTSTRAP_DIR \
+        -u KANDELO_DEV_SHELL_TOOL_PATH PATH="$FAKE_BIN:$PATH" \
+        WASM_POSIX_DEP_OUT_DIR="$missing_bootstrap" \
+        WASM_POSIX_DEP_TARGET_ARCH=wasm32 /bin/bash "$SHELL_BUILDER"
+
+oversized_out="$TMP_ROOT/oversized"
+mkdir "$oversized_out"
+expect_failure "canonical lazy shell must be smaller than 10 MiB" \
+    run_fake_shell_build "$oversized_out" 0 1
+[ -z "$(find "$oversized_out" -mindepth 1 -maxdepth 1 -print -quit)" ] ||
+    fail "oversized shell build published a partial output"
 wrong_arch="$TMP_ROOT/wrong-arch"
 mkdir "$wrong_arch"
 expect_failure "supports only wasm32" \

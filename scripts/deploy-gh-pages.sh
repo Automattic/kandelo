@@ -34,8 +34,16 @@ if ! grep -q "service-worker.js" dist/index.html; then
   echo "ERROR: COI script tag not found in dist/index.html"
   exit 1
 fi
-if [ -n "$CORS_PROXY" ] && ! grep -Fq "var CORS_PROXY_URL = \"${CORS_PROXY}\";" dist/service-worker.js; then
+if ! grep -Fq "\"url\":\"${CORS_PROXY}\"" dist/service-worker.js; then
   echo "ERROR: CORS proxy URL was not injected into dist/service-worker.js"
+  exit 1
+fi
+if ! grep -Fq '"allowedRequestHeaderNames":["accept","content-type","git-protocol","wp_blog","wp_install"]' dist/service-worker.js; then
+  echo "ERROR: CORS proxy request-header profile was not injected"
+  exit 1
+fi
+if grep -Fq '__CORS_PROXY_CONFIG__' dist/service-worker.js; then
+  echo "ERROR: CORS proxy configuration placeholder remains in service worker"
   exit 1
 fi
 echo "Verification passed."

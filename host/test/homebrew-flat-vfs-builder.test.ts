@@ -8,6 +8,9 @@ import type {
   HomebrewBottleDescriptor,
 } from "../src/homebrew-bottle-descriptor";
 import { encodeHomebrewBottleSelection } from "../src/homebrew-bottle-selection";
+import {
+  buildHomebrewFlatOriginalBottleCollection,
+} from "../src/homebrew-lazy-layer";
 import { buildHomebrewVfsSelection } from "../src/homebrew-vfs-builder";
 import { planHomebrewVfsSelection } from "../src/homebrew-vfs-planner";
 import { resolveHomebrewVfsResourcePolicy } from "../src/homebrew-vfs-resource-policy";
@@ -837,6 +840,290 @@ describe("flat Homebrew VFS builder", () => {
         },
       },
     )).rejects.toThrow(/not contained in exact keg/);
+  });
+});
+
+describe("flat Homebrew original-bottle collection", () => {
+  function collectionFixture() {
+    const bootstrap = bootstrapFixture();
+    const alphaBottle = bottleTar([
+      bottleEntry("alpha", "1.0", ".brew/alpha.rb", "class Alpha < Formula\nend\n"),
+      bottleEntry("alpha", "1.0", "INSTALL_RECEIPT.json", receipt([], ["bin/alpha"])),
+      bottleEntry(
+        "alpha",
+        "1.0",
+        "bin/alpha",
+        "#!/bin/sh\necho @@HOMEBREW_PREFIX@@\n",
+        0o755,
+      ),
+    ]);
+    const alpha = descriptor({
+      name: "alpha",
+      version: "1.0",
+      bottle: alphaBottle,
+      links: [{
+        type: "symlink",
+        source: "Cellar/alpha/1.0/bin/alpha",
+        target: "bin/alpha",
+      }],
+      pathPrepend: ["bin"],
+    });
+    const beta = simpleBottle("beta", "2.0", "beta", "bin/beta");
+    const bottles = [bootstrap, { descriptor: alpha, bottle: alphaBottle }, beta];
+    const plan = planHomebrewVfsSelection(
+      selectionBytes(bottles.map((item) => item.descriptor)),
+    );
+    const bottleByPackage = new Map(
+      bottles.map((item) => [item.descriptor.fullName, item.bottle]),
+    );
+    return { alpha, alphaBottle, beta, bottles, bottleByPackage, plan };
+  }
+
+  it("projects caller-selected keg descriptors after one complete private eager pour", async () => {
+    const fixture = collectionFixture();
+    const selectedPackages = [fixture.alpha, fixture.beta.descriptor];
+    const loaded: HomebrewBottleDescriptor[] = [];
+    const baseFs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+    const result = await buildHomebrewFlatOriginalBottleCollection(fixture.plan, {
+      baseFs,
+      packages: selectedPackages,
+      loadBottleBytes(pkg) {
+        loaded.push(pkg);
+        expect(pkg).not.toHaveProperty("tapRepository");
+        expect(pkg).not.toHaveProperty("cacheKeySha");
+        expect(pkg).not.toHaveProperty("linkManifest");
+        return fixture.bottleByPackage.get(pkg.fullName)!;
+      },
+    });
+
+    expect(loaded.map((pkg) => pkg.fullName)).toEqual(
+      fixture.plan.packages.map((pkg) => pkg.fullName),
+    );
+    expect(result.deferredTrees.map((tree) => tree.package)).toEqual(
+      selectedPackages.map((pkg) => pkg.fullName),
+    );
+    expect(result.payloads.map((payload) => payload.id)).toEqual(
+      result.deferredTrees.map((tree) => tree.id),
+    );
+    expect(result.report.packages.map((pkg) => pkg.full_name)).toEqual(
+      fixture.plan.packages.map((pkg) => pkg.fullName),
+    );
+    expect(result.report.selection_sha256).toBe(fixture.plan.selectionSha256);
+    expect(() => baseFs.lstat(PREFIX)).toThrow();
+
+    const treePaths = result.deferredTrees.flatMap(
+      (tree) => tree.inventory.entries.map((entry) => `/${entry.path}`),
+    );
+    expect(treePaths).toContain(`${fixture.alpha.keg}/bin/alpha`);
+    expect(treePaths).toContain(`${PREFIX}/bin/alpha`);
+    expect(treePaths).toContain(`${PREFIX}/opt/alpha`);
+    for (const forbidden of [
+      `${PREFIX}/bin/brew`,
+      `${PREFIX}/var/homebrew/linked`,
+      `${PREFIX}/var/homebrew/locks`,
+      "/etc/homebrew/brew.env",
+      "/usr/bin/brew",
+    ]) {
+      expect(treePaths, forbidden).not.toContain(forbidden);
+    }
+  });
+
+  it("uses an explicit caller-owned scratch filesystem for the eager proof", async () => {
+    const fixture = collectionFixture();
+    const baseFs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+    const maxByteLength = 768 * 1024 * 1024;
+    baseFs.mkdir("/platform", 0o755);
+    baseFs.createFileWithOwner(
+      "/platform/base-marker",
+      0o644,
+      0,
+      0,
+      new TextEncoder().encode("base\n"),
+    );
+    const scratchFs = baseFs.rebaseToNewFileSystem(maxByteLength);
+
+    const result = await buildHomebrewFlatOriginalBottleCollection(fixture.plan, {
+      baseFs,
+      scratchFs,
+      packages: [fixture.alpha, fixture.beta.descriptor],
+      loadBottleBytes: (pkg) => fixture.bottleByPackage.get(pkg.fullName)!,
+    });
+
+    expect(result.fs).toBe(scratchFs);
+    expect(scratchFs.stat("/platform/base-marker").size).toBe(5);
+    expect(scratchFs.stat(`${fixture.alpha.keg}/bin/alpha`).size).toBeGreaterThan(0);
+    expect(() => baseFs.lstat(PREFIX)).toThrow();
+  });
+
+  it("does not let the bottle loader forge selected descriptor identity", async () => {
+    const fixture = collectionFixture();
+    const selected = structuredClone(fixture.alpha);
+    const forgedUrl =
+      "https://github.com/kandelo-dev/bottles/releases/download/forged/alpha.tar.gz";
+    const result = await buildHomebrewFlatOriginalBottleCollection(fixture.plan, {
+      baseFs: MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024)),
+      packages: [selected],
+      async loadBottleBytes(pkg) {
+        const bytes = fixture.bottleByPackage.get(pkg.fullName)!;
+        await Promise.resolve();
+        if (pkg.fullName === selected.fullName) {
+          pkg.revision = 7;
+          pkg.bottleRebuild = 7;
+          pkg.url = forgedUrl;
+          selected.revision = 7;
+          selected.bottleRebuild = 7;
+          selected.url = forgedUrl;
+        }
+        return bytes;
+      },
+    });
+
+    const alphaTree = result.deferredTrees.find(
+      (tree) => tree.package === fixture.alpha.fullName,
+    )!;
+    expect(alphaTree.transports).not.toContainEqual({
+      kind: "external-https",
+      url: forgedUrl,
+    });
+    expect(result.report.packages.find(
+      (pkg) => pkg.full_name === fixture.alpha.fullName,
+    )).toMatchObject({ revision: 0, bottle_rebuild: 0 });
+  });
+
+  it("matches the full eager report's ownership, relocated bytes, and bottle inventories", async () => {
+    const fixture = collectionFixture();
+    const loadBottleBytes = (pkg: HomebrewBottleDescriptor) =>
+      fixture.bottleByPackage.get(pkg.fullName)!;
+    const eager = await buildHomebrewVfsSelection(fixture.plan, { loadBottleBytes });
+    const collection = await buildHomebrewFlatOriginalBottleCollection(fixture.plan, {
+      baseFs: MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024)),
+      packages: [fixture.alpha, fixture.beta.descriptor],
+      loadBottleBytes,
+    });
+
+    expect(collection.report).toEqual(eager.report);
+    expect(collection.report.link_owners).toEqual(eager.report.link_owners);
+    expect(readVfsFile(collection.fs, `${fixture.alpha.keg}/bin/alpha`)).toBe(
+      "#!/bin/sh\necho /opt/kandelo/homebrew\n",
+    );
+    for (const tree of collection.deferredTrees) {
+      const descriptor = fixture.plan.packages.find(
+        (pkg) => pkg.fullName === tree.package,
+      )!;
+      const payload = collection.payloads.find((item) => item.id === tree.id)!;
+      const packageReport = collection.report.packages.find(
+        (pkg) => pkg.full_name === tree.package,
+      )!;
+      expect(tree.content).toMatchObject({
+        sha256: descriptor.sha256,
+        bytes: descriptor.bytes,
+      });
+      expect(sha256(payload.bytes)).toBe(tree.content.sha256);
+      expect(tree.inventory.source!.entries.map((entry) => entry.path)).toEqual(
+        [...tree.inventory.source!.entries.map((entry) => entry.path)].sort(),
+      );
+      expect(tree.inventory.entries.filter((entry) =>
+        entry.materialization === "descriptor" && entry.type === "symlink"
+      ).map((entry) => entry.path)).toEqual(expect.arrayContaining([
+        `${descriptor.prefix.slice(1)}/${packageReport.opt_link.path}`,
+        ...packageReport.links.map((path) => `${descriptor.prefix.slice(1)}/${path}`),
+      ]));
+      const relocated = tree.inventory.entries.find(
+        (entry) => entry.path === `${descriptor.keg.slice(1)}/bin/${descriptor.name}`,
+      );
+      if (descriptor.fullName === fixture.alpha.fullName) {
+        expect(relocated).toMatchObject({
+          materialization: "archive-homebrew-relocate",
+          source_path: "alpha/1.0/bin/alpha",
+        });
+      }
+    }
+  });
+
+  it("rejects a keg descriptor that is not authenticated by the flat selection", async () => {
+    const fixture = collectionFixture();
+    const foreign = simpleBottle("foreign", "1.0", "foreign", "bin/foreign");
+    await expect(buildHomebrewFlatOriginalBottleCollection(fixture.plan, {
+      baseFs: MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024)),
+      packages: [foreign.descriptor],
+      loadBottleBytes: (pkg) => fixture.bottleByPackage.get(pkg.fullName)!,
+    })).rejects.toThrow(/descriptor.*not.*selection/i);
+  });
+
+  it("rejects missing, wrong-sized, and digest-mismatched bottle bytes", async () => {
+    const fixture = collectionFixture();
+    const options = {
+      baseFs: MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024)),
+      packages: [fixture.alpha],
+    };
+    await expect(buildHomebrewFlatOriginalBottleCollection(fixture.plan, {
+      ...options,
+      loadBottleBytes: () => undefined as unknown as Uint8Array,
+    })).rejects.toThrow(/non-Uint8Array|missing.*bottle/i);
+    await expect(buildHomebrewFlatOriginalBottleCollection(fixture.plan, {
+      ...options,
+      loadBottleBytes: (pkg) => pkg.fullName === fixture.alpha.fullName
+        ? fixture.alphaBottle.subarray(1)
+        : fixture.bottleByPackage.get(pkg.fullName)!,
+    })).rejects.toThrow(/bottle byte count.*metadata bytes/i);
+    const corrupt = fixture.alphaBottle.slice();
+    corrupt[10] ^= 0xff;
+    await expect(buildHomebrewFlatOriginalBottleCollection(fixture.plan, {
+      ...options,
+      loadBottleBytes: (pkg) => pkg.fullName === fixture.alpha.fullName
+        ? corrupt
+        : fixture.bottleByPackage.get(pkg.fullName)!,
+    })).rejects.toThrow(/bottle sha256.*metadata sha256/i);
+  });
+
+  it("rejects complete-selection link ownership collisions before projecting trees", async () => {
+    const bootstrap = bootstrapFixture();
+    const alpha = simpleBottle("alpha", "1.0", "tool", "bin/shared");
+    const beta = simpleBottle("beta", "1.0", "tool", "bin/shared");
+    const bottles = [bootstrap, alpha, beta];
+    const plan = planHomebrewVfsSelection(
+      selectionBytes(bottles.map((item) => item.descriptor)),
+    );
+    await expect(buildHomebrewFlatOriginalBottleCollection(plan, {
+      baseFs: MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024)),
+      packages: [alpha.descriptor],
+      loadBottleBytes: (pkg) => bottles.find(
+        (item) => item.descriptor.fullName === pkg.fullName,
+      )!.bottle,
+    })).rejects.toThrow(/undeclared claimants.*alpha.*beta/i);
+  });
+
+  it("rejects eager Homebrew-prefix state that no selected descriptor owns", async () => {
+    const fixture = collectionFixture();
+    const baseFs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+    ensureDirRecursive(baseFs, PREFIX);
+    writeVfsFile(baseFs, `${PREFIX}/unassigned-eager-path`, "not selected\n", 0o644);
+    await expect(buildHomebrewFlatOriginalBottleCollection(fixture.plan, {
+      baseFs,
+      packages: [fixture.alpha],
+      loadBottleBytes: (pkg) => fixture.bottleByPackage.get(pkg.fullName)!,
+    })).rejects.toThrow(/unassigned eager.*unassigned-eager-path/i);
+  });
+
+  it("rejects zero trees and retired rich-plan provenance options", async () => {
+    const fixture = collectionFixture();
+    const baseFs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+    const loadBottleBytes = (pkg: HomebrewBottleDescriptor) =>
+      fixture.bottleByPackage.get(pkg.fullName)!;
+    await expect(buildHomebrewFlatOriginalBottleCollection(fixture.plan, {
+      baseFs,
+      packages: [],
+      loadBottleBytes,
+    })).rejects.toThrow(/no selected keg descriptors|zero.*tree/i);
+
+    for (const forbidden of ["selectionSource", "catalogCheckout", "migrationLock"] as const) {
+      await expect(buildHomebrewFlatOriginalBottleCollection(fixture.plan, {
+        baseFs,
+        packages: [fixture.alpha],
+        loadBottleBytes,
+        [forbidden]: {},
+      } as never)).rejects.toThrow(new RegExp(forbidden, "i"));
+    }
   });
 });
 

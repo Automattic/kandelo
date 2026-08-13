@@ -2380,10 +2380,7 @@ BROWSER_EXTERNAL_GALLERY_PKGS=(cpython python-vfs perl perl-vfs ruby erlang erla
 # the SpiderMonkey JS shell package directly. `spidermonkey-node` carries the
 # browser UI's Node-compatible runtime; `build_node` installs that same
 # runtime at `programs/node.wasm` for the Kandelo Node preset.
-# WHY: Homebrew bootstrap bytes come from the selected Formula bottle through
-# prepare-homebrew-browser-bootstrap.sh. Fetching the transitional package too
-# would make browser readiness depend on the registry we are retiring.
-BROWSER_FETCH_SKIP_PKGS=(spidermonkey node homebrew-bootstrap)
+BROWSER_FETCH_SKIP_PKGS=(spidermonkey node)
 
 # All targets needed for the Kandelo browser UI and retained browser labs.
 # Each entry's `has_X` short-circuits when its release binary is in
@@ -2408,19 +2405,28 @@ prepare_browser_homebrew_bootstrap() {
         step "Using authenticated CI source-rootfs shell without Homebrew"
         return 0
     fi
-    if [ ! -x "$REPO_ROOT/node_modules/.bin/tsx" ]; then
-        step "Installing locked browser-product preparation tools"
-        (cd "$REPO_ROOT" && npm ci --no-audit --no-fund)
-    fi
-    local prepare_args=(
-        --browser-asset \
-        "$REPO_ROOT/apps/browser-demos/public/homebrew-bootstrap.zip"
+    step "Resolving the canonical Homebrew browser bootstrap"
+    local xtask
+    xtask="$(pkg_xtask_bin)" || return 1
+    local resolve_args=(
+        build-deps --arch wasm32
+        --binaries-dir "$REPO_ROOT/local-binaries"
     )
-    if [ "$REQUIRE_SEALED_HOMEBREW_SELECTION" -eq 1 ]; then
-        prepare_args+=(--require-sealed)
+    if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then
+        resolve_args+=("${FETCH_ONLY_ARGS[@]}")
     fi
-    bash "$REPO_ROOT/scripts/prepare-homebrew-browser-bootstrap.sh" \
-        "${prepare_args[@]}"
+    resolve_args+=(resolve homebrew-bootstrap)
+    mkdir -p "$REPO_ROOT/local-binaries"
+    (cd "$REPO_ROOT" && "$xtask" "${resolve_args[@]}" >/dev/null)
+    local output_rel
+    output_rel="$(pkg_output_rel homebrew-bootstrap homebrew-bootstrap.zip wasm32)" ||
+        return 1
+    local resolved
+    resolved="$(bash "$REPO_ROOT/scripts/resolve-binary.sh" "programs/$output_rel")" ||
+        return 1
+    bash "$REPO_ROOT/scripts/stage-homebrew-bootstrap-browser-asset.sh" \
+        "$resolved" \
+        "$REPO_ROOT/apps/browser-demos/public/homebrew-bootstrap.zip"
 }
 
 fetch_browser_binaries() {
@@ -2957,12 +2963,7 @@ cmd_prepare_browser() {
         install_source_rootfs_shell_vfs
     fi
 
-    # The canonical package-owned shell is a self-contained flat image. Only
-    # the explicit historical recovery mode stages the retired lazy bootstrap;
-    # ordinary browser preparation must not create an alternate transport.
-    if [ "$REQUIRE_SEALED_HOMEBREW_SELECTION" -eq 1 ]; then
-        prepare_browser_homebrew_bootstrap
-    fi
+    prepare_browser_homebrew_bootstrap
 
     # Fetch the per-package binaries for the browser UI and retained labs first.
     # The resolver-aware has_X

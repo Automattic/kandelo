@@ -28,7 +28,18 @@ export { PATHCONF_NAMES } from "./generated/abi";
 export { filesystemPathconf } from "./pathconf";
 export type { PathconfProfile } from "./pathconf";
 export { TcpNetworkBackend, FetchNetworkBackend } from "./networking";
-export type { FetchBackendOptions, HttpRequest, HttpResponse } from "./networking";
+export {
+  BrowserCorsProxy,
+  BrowserCorsProxyRequestError,
+  validateBrowserCorsProxyConfig,
+} from "./networking";
+export type {
+  BrowserCorsProxyConfig,
+  FetchBackendOptions,
+  HttpHeaderOccurrence,
+  HttpRequest,
+  HttpResponse,
+} from "./networking";
 export type { WorkerAdapter, WorkerHandle } from "./worker-adapter";
 export type {
   HostToWorkerMessage,
@@ -115,6 +126,28 @@ export type {
   HomebrewVfsPlanOptions,
   HomebrewVfsTapIdentity,
 } from "./homebrew-vfs-planner";
+export {
+  buildHomebrewFlatOriginalBottleCollection,
+} from "./homebrew-lazy-layer";
+export type {
+  BuildHomebrewFlatOriginalBottleCollectionOptions,
+  HomebrewFlatOriginalBottleCollectionBuildResult,
+} from "./homebrew-lazy-layer";
+export {
+  assertHomebrewFlatLazyVfs,
+  composeHomebrewFlatLazyVfs,
+} from "./homebrew-flat-lazy-vfs-composer";
+export type {
+  ComposeHomebrewFlatLazyVfsOptions,
+  HomebrewFlatLazyBaseImageBinding,
+  HomebrewFlatLazyDemoConfigInput,
+  HomebrewFlatLazyEmbeddedEntryEvidence,
+  HomebrewFlatLazyImageBinding,
+  HomebrewFlatLazyShellConfigInput,
+  HomebrewFlatLazyTreeEvidence,
+  HomebrewFlatLazyVfsCompositionResult,
+  HomebrewFlatLazyVfsReport,
+} from "./homebrew-flat-lazy-vfs-composer";
 export {
   HOMEBREW_VFS_FORMULA_LAYER_KIND,
   HOMEBREW_VFS_FORMULA_MANIFEST_RELATIVE_PATH,

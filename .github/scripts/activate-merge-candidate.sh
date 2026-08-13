@@ -575,6 +575,16 @@ if [ -n "$EXPECTED_DEFAULT_REF" ]; then
   fi
 fi
 
+# WHY: direct/manual callers can bypass the workflow's recovery gate. Repeat
+# the dependency-free anonymous check here before creating a canonical release
+# or copying any candidate archive. A missing mirror is a transient rollout
+# state: exit without a rejection receipt so scheduled reconciliation retries.
+mirror_receipt="$TMP_ROOT/homebrew-bottle-mirror-verification.json"
+env -u GH_TOKEN -u GITHUB_TOKEN \
+  node "$REPO_ROOT/scripts/verify-public-homebrew-bottle-mirror.mjs" \
+    --plan "$REPO_ROOT/homebrew/main-shell-flat-lazy-mirror-plan.json" \
+    --out "$mirror_receipt"
+
 ensure_release "$CANONICAL_TAG" "$merge_commit_sha" "$CANONICAL_BASE_STATE"
 current_dir="$TMP_ROOT/current"
 mkdir -p "$current_dir"

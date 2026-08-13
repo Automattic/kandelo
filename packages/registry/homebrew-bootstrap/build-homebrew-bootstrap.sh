@@ -8,6 +8,7 @@ SOURCE_CHECKOUT="${WASM_POSIX_BUILD_GIT_HOMEBREW_BREW_DIR:-}"
 SOURCE_COMMIT="${WASM_POSIX_BUILD_GIT_HOMEBREW_BREW_COMMIT:-}"
 LOCK="$REPO_ROOT/homebrew/homebrew-bootstrap-source-lock.json"
 VERIFY="$REPO_ROOT/scripts/verify-homebrew-bootstrap-source-lock.mjs"
+ZIPPER="$REPO_ROOT/images/vfs/scripts/create-deterministic-zip.sh"
 
 if [ -z "$OUT_DIR" ]; then
   echo "ERROR: homebrew-bootstrap is a resolver-owned build; WASM_POSIX_DEP_OUT_DIR is required" >&2
@@ -25,6 +26,16 @@ if [ ! -f "$VERIFY" ] || [ -L "$VERIFY" ]; then
   echo "ERROR: homebrew-bootstrap source-lock verifier must be a regular non-symlink file" >&2
   exit 2
 fi
+if [ ! -f "$ZIPPER" ] || [ -L "$ZIPPER" ]; then
+  echo "ERROR: homebrew-bootstrap deterministic ZIP builder must be a regular non-symlink file" >&2
+  exit 2
+fi
+for tool in unzip zip; do
+  command -v "$tool" >/dev/null 2>&1 || {
+    echo "ERROR: homebrew-bootstrap requires declared native tool $tool" >&2
+    exit 2
+  }
+done
 
 # shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
@@ -108,6 +119,8 @@ export TZ=UTC
 export LC_ALL=C
 export LANG=C
 
+GIT_ARCHIVE="$BUILD_DIR/homebrew-bootstrap.git-archive.zip"
+STAGE_DIR="$BUILD_DIR/patched-source"
 ARCHIVE="$BUILD_DIR/homebrew-bootstrap.zip"
 ENV_FILE="$BUILD_DIR/brew.env"
 PROVENANCE="$BUILD_DIR/homebrew-source.json"
@@ -119,9 +132,13 @@ PROVENANCE="$BUILD_DIR/homebrew-source.json"
   --expected-patch-sha256 "$PATCH_SHA256" \
   --arch wasm32 \
   --git-dir "$BUILD_DIR/homebrew-brew.git" \
-  --archive "$ARCHIVE" \
+  --archive "$GIT_ARCHIVE" \
   --env "$ENV_FILE" \
   --provenance "$PROVENANCE"
+
+mkdir -m 0700 "$STAGE_DIR"
+unzip -q "$GIT_ARCHIVE" -d "$STAGE_DIR"
+"$ZIPPER" "$STAGE_DIR" "$ARCHIVE"
 
 OUTPUT="$KANDELO_PACKAGE_OUT_DIR/homebrew-bootstrap.zip"
 ENV_OUTPUT="$KANDELO_PACKAGE_OUT_DIR/homebrew-brew.env"
@@ -145,6 +162,7 @@ node "$VERIFY" \
   --license-evidence "$LICENSE_EVIDENCE" \
   --source-checkout "$SOURCE_CHECKOUT" \
   --provenance "$PROVENANCE" \
-  --archive "$OUTPUT"
+  --archive "$OUTPUT" \
+  --environment "$ENV_OUTPUT"
 
 echo "==> Built provenance-locked Homebrew bootstrap: $OUTPUT + $ENV_OUTPUT"

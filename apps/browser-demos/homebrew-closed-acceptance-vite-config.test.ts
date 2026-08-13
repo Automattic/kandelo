@@ -12,17 +12,14 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { build, loadConfigFromFile, type Plugin } from "vite";
 
-import {
-  HOMEBREW_CLOSED_ACCEPTANCE_VITE_MODE,
-} from "./lib/homebrew-closed-acceptance";
+import { HOMEBREW_CLOSED_ACCEPTANCE_VITE_MODE } from "./lib/homebrew-closed-acceptance";
 
 const root = "/homebrew-main-shell-bottles";
 const appRoot = dirname(fileURLToPath(import.meta.url));
 const configFile = join(appRoot, "vite.config.ts");
 
 test("Vite builds the private page only beside the real closed product inputs", async () => {
-  const savedRoot =
-    process.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT;
+  const savedRoot = process.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT;
   const savedInputs = process.env.KANDELO_BROWSER_DEMO_INPUTS;
   try {
     delete process.env.KANDELO_BROWSER_DEMO_INPUTS;
@@ -91,7 +88,9 @@ test("Vite rewrites the service worker in the resolved custom output directory",
     );
     assert.ok(loaded);
     const plugins = (loaded.config.plugins ?? []).flat(Infinity) as Plugin[];
-    const corsPlugin = plugins.find(({ name }) => name === "inject-cors-proxy-url");
+    const corsPlugin = plugins.find(
+      ({ name }) => name === "inject-cors-proxy-config",
+    );
     assert.ok(corsPlugin);
 
     const project = join(root, "project");
@@ -100,7 +99,7 @@ test("Vite rewrites the service worker in the resolved custom output directory",
     writeFileSync(join(project, "entry.ts"), "export const fixture = true;\n");
     writeFileSync(
       join(project, "public/service-worker.js"),
-      'const cors = "__CORS_PROXY_URL__"; const interceptor = "__BLOB_IFRAME_INTERCEPTOR__";\n',
+      'const cors = "__CORS_PROXY_CONFIG__"; const interceptor = "__BLOB_IFRAME_INTERCEPTOR__";\n',
     );
 
     await build({
@@ -113,8 +112,12 @@ test("Vite rewrites the service worker in the resolved custom output directory",
       plugins: [corsPlugin],
       root: project,
     });
-    const serviceWorker = readFileSync(join(output, "service-worker.js"), "utf8");
-    assert.equal(serviceWorker.includes("__CORS_PROXY_URL__"), false);
+    const serviceWorker = readFileSync(
+      join(output, "service-worker.js"),
+      "utf8",
+    );
+    assert.equal(serviceWorker.includes("__CORS_PROXY_CONFIG__"), false);
+    assert.match(serviceWorker, /allowedRequestHeaderNames/);
     assert.equal(serviceWorker.includes("__BLOB_IFRAME_INTERCEPTOR__"), false);
   } finally {
     rmSync(root, { force: true, recursive: true });

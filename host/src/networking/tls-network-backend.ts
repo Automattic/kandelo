@@ -19,7 +19,12 @@ import {
   parseNumericIpv4Hostname,
   validateSyntheticDnsHostname,
 } from "./hostname";
-import { corsProxyFetchUrl } from "./cors-proxy-url";
+import {
+  BrowserCorsProxy,
+  type BrowserCorsProxyConfig,
+  type HttpHeaderOccurrence,
+  validateBrowserCorsProxyConfig,
+} from "./browser-cors-proxy";
 import { TLS_1_2_Connection } from "../../../packages/registry/openssl/src/tls/1_2/connection";
 import {
   generateCertificate,
@@ -99,22 +104,53 @@ function parseContentLength(headers: string): number {
 function parseHttpRequest(buf: Uint8Array, headerEnd: number): {
   method: string;
   path: string;
-  headers: Map<string, string>;
+  headers: HttpHeaderOccurrence[];
   body: Uint8Array | null;
 } {
   const headerStr = new TextDecoder().decode(buf.subarray(0, headerEnd));
   const lines = headerStr.split("\r\n");
   const [method, path] = lines[0].split(" ");
-  const headers = new Map<string, string>();
+  const headers: HttpHeaderOccurrence[] = [];
   for (let i = 1; i < lines.length; i++) {
     const colon = lines[i].indexOf(":");
     if (colon > 0) {
-      headers.set(lines[i].substring(0, colon).trim().toLowerCase(), lines[i].substring(colon + 1).trim());
+      headers.push([
+        lines[i].substring(0, colon).trim(),
+        lines[i].substring(colon + 1).trim(),
+      ]);
     }
   }
   const bodyStart = headerEnd + 4;
   const body = bodyStart < buf.length ? buf.subarray(bodyStart) : null;
   return { method, path, headers, body };
+}
+
+function lastHeaderValue(
+  headers: readonly HttpHeaderOccurrence[],
+  name: string,
+): string | undefined {
+  let result: string | undefined;
+  for (const [headerName, value] of headers) {
+    if (headerName.toLowerCase() === name) result = value;
+  }
+  return result;
+}
+
+function browserRepresentableHeaders(
+  headers: readonly HttpHeaderOccurrence[],
+): HttpHeaderOccurrence[] {
+  return headers.filter(([name]) => {
+    const lower = name.toLowerCase();
+    return lower !== "host" && lower !== "connection";
+  });
+}
+
+function headersFromOccurrences(
+  occurrences: readonly HttpHeaderOccurrence[],
+): Headers {
+  const headers = new Headers();
+  for (const [name, value] of occurrences) headers.append(name, value);
+  return headers;
 }
 
 const HOP_BY_HOP_HEADERS = new Set([
@@ -166,14 +202,9 @@ export interface TlsMitmConnection {
 }
 
 export interface TlsNetworkBackendOptions {
-  /** CORS proxy URL prefix.
-   *  Browser demos normally leave this unset and rely on the service worker.
-   *  Prefixes ending in bare `?` receive the raw target URL, matching the
-   *  main proxy; `?url=`-style prefixes receive a percent-encoded target. */
-  corsProxyUrl?: string;
-  /** Map of in-VFS hostnames → upstream URL, routed through host fetch +
-   *  CORS proxy (e.g. proxy.local → registry.npmjs.org). Defaults to that
-   *  single npm-registry alias for back-compat. */
+  corsProxy?: BrowserCorsProxyConfig;
+  onCorsProxyDiagnostic?: (message: string) => void;
+  /** Map of in-VFS hostnames → upstream URL. */
   dnsAliases?: Record<string, string>;
   /** Factory for the MITM TLS engine. Defaults to a real TLS 1.2 server
    *  connection; tests override it to drive the loop deterministically. */
@@ -183,7 +214,7 @@ export interface TlsNetworkBackendOptions {
 export class TlsNetworkBackend implements NetworkIO {
   private connections = new Map<number, ConnectionState>();
   private hostnameMap = new Map<string, string>(); // ip string → hostname
-  private corsProxyUrl: string;
+  private corsProxy: BrowserCorsProxy | undefined;
   private dnsAliases: Record<string, string>;
   private createTlsConnection: () => TlsMitmConnection;
 
@@ -194,8 +225,11 @@ export class TlsNetworkBackend implements NetworkIO {
   private initialized = false;
 
   constructor(options?: TlsNetworkBackendOptions) {
-    this.corsProxyUrl = options?.corsProxyUrl?.trim() ?? "";
-    this.dnsAliases = options?.dnsAliases ?? { "proxy.local": "https://registry.npmjs.org" };
+    const corsProxyConfig = validateBrowserCorsProxyConfig(options?.corsProxy);
+    this.corsProxy = corsProxyConfig === undefined
+      ? undefined
+      : new BrowserCorsProxy(corsProxyConfig, options?.onCorsProxyDiagnostic);
+    this.dnsAliases = options?.dnsAliases ?? {};
     this.createTlsConnection = options?.createTlsConnection ?? (() => new TLS_1_2_Connection());
   }
 
@@ -467,27 +501,24 @@ export class TlsNetworkBackend implements NetworkIO {
     const totalRequestLen = headerEnd + 4 + Math.max(contentLength, 0);
     conn.plaintextBuf = conn.plaintextBuf.subarray(totalRequestLen);
 
-    const host = headers.get("host") || conn.hostname;
-    // Wasm process can't reach cross-origin URLs directly from the browser;
-    // when corsProxyUrl is configured, every fetch goes through it.
+    const host = lastHeaderValue(headers, "host") || conn.hostname;
     const upstreamUrl = `https://${host}${path}`;
-    const url = this.corsProxyUrl
-      ? corsProxyFetchUrl(this.corsProxyUrl, upstreamUrl)
-      : upstreamUrl;
-
-    const fetchHeaders = new Headers();
-    for (const [key, value] of headers) {
-      const lower = key.toLowerCase();
-      if (lower !== "host" && lower !== "connection") {
-        fetchHeaders.set(key, value);
-      }
-    }
+    const browserHeaders = browserRepresentableHeaders(headers);
 
     const fetchBody: Uint8Array<ArrayBuffer> | undefined =
       body && body.length > 0 ? new Uint8Array(body) as Uint8Array<ArrayBuffer> : undefined;
+    const url = this.corsProxy ? this.corsProxy.urlFor(upstreamUrl) : upstreamUrl;
 
     (async () => {
       try {
+        const fetchHeaders = this.corsProxy
+          ? this.corsProxy.project({
+            method,
+            headers: browserHeaders,
+            bodyPresent: fetchBody !== undefined,
+            targetUrl: upstreamUrl,
+          })
+          : headersFromOccurrences(browserHeaders);
         const response = await fetch(url, {
           method,
           headers: fetchHeaders,
@@ -546,55 +577,39 @@ export class TlsNetworkBackend implements NetworkIO {
 
     // Complete request — parse and issue fetch
     const { method, path, headers, body } = parseHttpRequest(conn.sendBuf, headerEnd);
-    const hostHeader = headers.get("host");
+    const hostHeader = lastHeaderValue(headers, "host");
     const scheme = conn.port === 443 ? "https" : "http";
     const portSuffix = (conn.port === 80 || conn.port === 443) ? "" : `:${conn.port}`;
     // Use Host header as-is (it already includes :port when non-default),
     // otherwise fall back to conn.hostname + port suffix.
     const host = hostHeader ? hostHeader : `${conn.hostname}${portSuffix}`;
-    // Sentinel hostnames in dnsAliases route to an upstream URL through host
-    // fetch + CORS proxy, bypassing the in-process TLS engine.
     const aliasUpstream = this.dnsAliases[conn.hostname];
     const upstreamUrl = aliasUpstream !== undefined
       ? `${aliasUpstream}${path}`
       : `${scheme}://${host}${path}`;
-    const url = this.corsProxyUrl
-      ? corsProxyFetchUrl(this.corsProxyUrl, upstreamUrl)
-      : upstreamUrl;
-    const isNpmRegistry = aliasUpstream === "https://registry.npmjs.org";
-
-    const fetchHeaders = new Headers();
-    for (const [key, value] of headers) {
-      const lower = key.toLowerCase();
-      if (lower !== "host" && lower !== "connection") {
-        fetchHeaders.set(key, value);
-      }
-    }
+    const browserHeaders = browserRepresentableHeaders(headers);
 
     const fetchBody: Uint8Array<ArrayBuffer> | undefined =
       body && body.length > 0 ? new Uint8Array(body) as Uint8Array<ArrayBuffer> : undefined;
+    const url = this.corsProxy ? this.corsProxy.urlFor(upstreamUrl) : upstreamUrl;
 
     const doFetch = async () => {
       try {
+        const fetchHeaders = this.corsProxy
+          ? this.corsProxy.project({
+            method,
+            headers: browserHeaders,
+            bodyPresent: fetchBody !== undefined,
+            targetUrl: upstreamUrl,
+          })
+          : headersFromOccurrences(browserHeaders);
         const response = await fetch(url, {
           method,
           headers: fetchHeaders,
           body: fetchBody,
         });
 
-        let bodyBuf = await response.arrayBuffer();
-        // Packument JSON's tarball URLs point back at registry.npmjs.org;
-        // rewrite them to the alias so follow-up fetches stay on the proxy.
-        if (isNpmRegistry && (response.headers.get("content-type") || "").includes("json")) {
-          const text = new TextDecoder().decode(bodyBuf);
-          const rewritten = text.replace(
-            /"tarball"\s*:\s*"https:\/\/registry\.npmjs\.org/g,
-            `"tarball":"http://${conn.hostname}`,
-          );
-          if (rewritten !== text) {
-            bodyBuf = new TextEncoder().encode(rewritten).buffer as ArrayBuffer;
-          }
-        }
+        const bodyBuf = await response.arrayBuffer();
 
         conn.responseBuf = formatHttpResponse(
           response.status,
@@ -609,9 +624,8 @@ export class TlsNetworkBackend implements NetworkIO {
       }
     };
 
-    // Reset connection state before dispatching. npm keeps the proxy.local
-    // registry connection alive across packument and tarball requests; recv()
-    // must wait for the new fetch instead of observing the previous response.
+    // Reset connection state before dispatching so recv() waits for the new
+    // fetch instead of observing the previous response.
     conn.fetchDone = false;
     conn.responseBuf = null;
     conn.responseOffset = 0;

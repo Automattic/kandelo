@@ -49,6 +49,7 @@ import {
   createClosedLazyAssetSourceFetcher,
 } from "./vfs/closed-lazy-assets";
 import { resolveLazyUrl } from "./vfs/lazy-url";
+import { prepareHomebrewFlatLazyBoot } from "./homebrew-flat-lazy-boot";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { findRepoRoot } from "./binary-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
@@ -56,8 +57,18 @@ import { DeferredWorkerHandle } from "./deferred-worker-handle";
 import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
-import { detectPtrWidth, extractAbiVersion, extractHeapBase, isWasmModuleBytes } from "./constants";
-import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
+import {
+  detectPtrWidth,
+  extractAbiVersion,
+  extractHeapBase,
+  isWasmModuleBytes,
+} from "./constants";
+import {
+  CH_TOTAL_SIZE,
+  DEFAULT_MAX_PAGES,
+  PAGES_PER_THREAD,
+  WASM_PAGE_SIZE,
+} from "./constants";
 import {
   classifiedSignalOrFallback,
   classifiedTrapExitStatus,
@@ -131,14 +142,12 @@ const reclamationMeasurementPressure = (() => {
   if (process.env.KANDELO_RECLAIM_MEASUREMENT !== "1") {
     throw new Error(
       "KANDELO_RECLAIM_PRESSURE_BYTES is restricted to the reclamation " +
-      "measurement harness",
+        "measurement harness",
     );
   }
   const bytes = Number(configured);
   if (!Number.isSafeInteger(bytes) || bytes < 0) {
-    throw new Error(
-      `invalid KANDELO_RECLAIM_PRESSURE_BYTES: ${configured}`,
-    );
+    throw new Error(`invalid KANDELO_RECLAIM_PRESSURE_BYTES: ${configured}`);
   }
   return bytes;
 })();
@@ -149,9 +158,7 @@ const reclamationMeasurementPressure = (() => {
 // user-facing memory ownership or collection guarantee. See
 // docs/measurements/2026-07-28-process-memory-retirement-rss.md.
 const processMemoryRetirementPressureHook =
-  createProcessMemoryRetirementPressureHook(
-    reclamationMeasurementPressure,
-  );
+  createProcessMemoryRetirementPressureHook(reclamationMeasurementPressure);
 let execPrograms: Record<string, string> = {};
 let vfsExecIO: PlatformIO | null = null;
 let rootfsMemfs: MemoryFileSystem | null = null;
@@ -193,8 +200,8 @@ interface ProcessInfo extends ProcessGenerationOwnership {
 }
 const processes = new Map<number, ProcessInfo>();
 const processTeardowns = new Map<ProcessInfo["worker"], Promise<void>>();
-const vmInterruptTimers = new VmInterruptTimerManager<ProcessInfo>(
-  (pid) => processes.get(pid),
+const vmInterruptTimers = new VmInterruptTimerManager<ProcessInfo>((pid) =>
+  processes.get(pid),
 );
 const reportedExits = new Set<number>();
 const rootfsSnapshotGate = new RootfsSnapshotGate();
@@ -249,23 +256,24 @@ function installProcessWorkerListeners(
   errorLabel = "worker error",
 ): void {
   worker.on("error", (error: Error) =>
-    finalizeUnexpectedWorkerError(pid, worker, errorLabel, error));
+    finalizeUnexpectedWorkerError(pid, worker, errorLabel, error),
+  );
   worker.on("message", (raw: unknown) => {
     const process = processes.get(pid);
     if (!process || process.worker !== worker) return;
     const message = raw as WorkerToHostMessage;
     if (
-      message.type === "memory_quiescent"
-      && message.pid === pid
-      && message.tid === undefined
+      message.type === "memory_quiescent" &&
+      message.pid === pid &&
+      message.tid === undefined
     ) {
       process.workerQuiescence.settle();
       return;
     }
     if (
-      message.type === "exec_retired"
-      && message.pid === pid
-      && message.tid === undefined
+      message.type === "exec_retired" &&
+      message.pid === pid &&
+      message.tid === undefined
     ) {
       process.execRetirement.settle();
       return;
@@ -274,10 +282,7 @@ function installProcessWorkerListeners(
       finalizeProcessWorkerError(pid, worker, message.message);
     } else if (message.type === "exit" && message.pid === pid) {
       void finalizeProcessWorker(pid, worker, message.status ?? 0);
-    } else if (
-      message.type === "vm_interrupt_timer"
-      && message.pid === pid
-    ) {
+    } else if (message.type === "vm_interrupt_timer" && message.pid === pid) {
       handleVmInterruptTimer(message, pid, process);
     }
   });
@@ -325,7 +330,8 @@ async function terminateThreadWorkers(
         : waitForWorkerQuiescence(
             thread.workerQuiescence,
             PROCESS_WORKER_QUIESCENCE_WAIT_MS,
-          )),
+          ),
+    ),
   );
   for (const thread of threads) {
     intentionallyTerminated.add(thread.worker as object);
@@ -343,12 +349,16 @@ function reportProcessExit(pid: number, status: number): void {
   post({ type: "exit", pid, status });
 }
 
-function handleVmInterruptTimer(msg: {
-  pid: number;
-  timedOutPtr: number;
-  vmInterruptPtr: number;
-  seconds: number;
-}, pid: number, process: ProcessInfo): void {
+function handleVmInterruptTimer(
+  msg: {
+    pid: number;
+    timedOutPtr: number;
+    vmInterruptPtr: number;
+    seconds: number;
+  },
+  pid: number,
+  process: ProcessInfo,
+): void {
   if (msg.pid !== pid) return;
   vmInterruptTimers.handleRequest(pid, process, msg);
 }
@@ -393,10 +403,7 @@ async function detachExactProcessGeneration(options: {
     },
     settle: () => {
       if (operation === "none") return;
-      return kernelWorker.settleRetiredChannelListeners(
-        pid,
-        generation.memory,
-      );
+      return kernelWorker.settleRetiredChannelListeners(pid, generation.memory);
     },
     retire,
   });
@@ -430,9 +437,8 @@ function reportRetainedProcessGeneration(
   >,
   status?: number,
 ): void {
-  const reason = result.error instanceof Error
-    ? result.error.message
-    : String(result.error);
+  const reason =
+    result.error instanceof Error ? result.error.message : String(result.error);
   try {
     reportHostDiagnostic({
       pid,
@@ -450,7 +456,10 @@ function reportRetainedProcessGeneration(
 
 // Exec resolution: request ID → resolver
 let execResolveId = 0;
-const pendingExecResolves = new Map<number, (bytes: ArrayBuffer | null) => void>();
+const pendingExecResolves = new Map<
+  number,
+  (bytes: ArrayBuffer | null) => void
+>();
 
 // --- Helpers ---
 
@@ -495,7 +504,11 @@ async function finalizeProcessWorker(
   // destroy because the kernel never marked the child as a zombie.
   // Idempotent via `hostReaped`: when the kernel already processed
   // a clean SYS_EXIT_GROUP for this pid, this is a no-op.
-  try { kernelWorker.notifyHostProcessCrashed(pid, crashSignum); } catch { /* best-effort */ }
+  try {
+    kernelWorker.notifyHostProcessCrashed(pid, crashSignum);
+  } catch {
+    /* best-effort */
+  }
 
   // WHY: ordinary exits and crashes must share one teardown funnel. Keeping a
   // second cleanup sequence here previously let their Worker/channel ordering
@@ -546,7 +559,8 @@ function finalizeUnexpectedWorkerError(
 ): void {
   if (intentionallyTerminated.has(worker as object)) return;
   if (processes.get(pid)?.worker !== worker) return;
-  const message = err instanceof Error ? (err.message ?? String(err)) : String(err);
+  const message =
+    err instanceof Error ? (err.message ?? String(err)) : String(err);
   const { exitStatus, signum } = unexpectedWorkerCrashDisposition(err);
   reportHostDiagnostic({
     pid,
@@ -604,7 +618,8 @@ function threadAllocatorForLayout(
     ptrWidth,
     reservedSlots: layout.threadSlotCount,
     reserveSlotStartPage: () =>
-      kernelWorker.reserveHostRegion(pid, PAGES_PER_THREAD * WASM_PAGE_SIZE) / WASM_PAGE_SIZE,
+      kernelWorker.reserveHostRegion(pid, PAGES_PER_THREAD * WASM_PAGE_SIZE) /
+      WASM_PAGE_SIZE,
   });
 }
 
@@ -699,12 +714,17 @@ async function resolveExec(path: string): Promise<ArrayBuffer | null> {
 
 const MAX_SHEBANG_DEPTH = 4;
 
-function parseShebang(bytes: ArrayBuffer): { interpreter: string; arg?: string } | null {
+function parseShebang(
+  bytes: ArrayBuffer,
+): { interpreter: string; arg?: string } | null {
   const view = new Uint8Array(bytes);
   if (view.length < 2 || view[0] !== 0x23 || view[1] !== 0x21) return null;
   let end = 2;
   while (end < view.length && view[end] !== 0x0a && end < 4096) end++;
-  const line = new TextDecoder().decode(view.subarray(2, end)).replace(/\r$/, "").trim();
+  const line = new TextDecoder()
+    .decode(view.subarray(2, end))
+    .replace(/\r$/, "")
+    .trim();
   if (!line) return null;
   const match = line.match(/^(\S+)(?:\s+(.*))?$/);
   if (!match) return null;
@@ -731,7 +751,10 @@ async function resolveExecutableForLaunch(
       throw error;
     }
     const declaredAbi = extractAbiVersion(bytes);
-    if (declaredAbi !== null && declaredAbi !== kernelWorker.getKernelAbiVersion()) {
+    if (
+      declaredAbi !== null &&
+      declaredAbi !== kernelWorker.getKernelAbiVersion()
+    ) {
       return { errno: ENOEXEC };
     }
     return { programBytes: bytes, programModule, argv };
@@ -802,35 +825,43 @@ async function buildVirtualPlatformIO(
     ...extras,
   ];
   const rootMount = mounts.find((m) => m.mountPoint === "/");
-  rootfsMemfs = rootMount?.backend instanceof MemoryFileSystem
-    ? rootMount.backend
-    : null;
+  rootfsMemfs =
+    rootMount?.backend instanceof MemoryFileSystem ? rootMount.backend : null;
   if (rootfsMemfs) {
-    ensureMountParentDirectories(rootfsMemfs, extras.map((m) => m.mountPoint));
+    ensureMountParentDirectories(
+      rootfsMemfs,
+      extras.map((m) => m.mountPoint),
+    );
     if (rootfsLazyUrlBase !== undefined) {
-      rootfsMemfs.rewriteLazyFileUrls((url) => resolveLazyUrl(rootfsLazyUrlBase, url));
-      rootfsMemfs.rewriteLazyArchiveUrls((url) => resolveLazyUrl(rootfsLazyUrlBase, url));
+      rootfsMemfs.rewriteLazyFileUrls((url) =>
+        resolveLazyUrl(rootfsLazyUrlBase, url),
+      );
+      rootfsMemfs.rewriteLazyArchiveUrls((url) =>
+        resolveLazyUrl(rootfsLazyUrlBase, url),
+      );
     }
     rootfsMemfs.subscribeLazyDownloads((event) => {
       post({ type: "lazy_download", event });
     });
-    const lazyFetcher = rootfsLazyAssets !== undefined
-      ? createClosedLazyAssetFetcherFromOwnedAssets(rootfsLazyAssets)
-      : rootfsLazyAssetSources !== undefined
-      ? createClosedLazyAssetSourceFetcher(rootfsLazyAssetSources)
-      : async (url: string) => {
-        if (/^https?:\/\//.test(url)) return globalThis.fetch(url);
-        const path = url.startsWith("file://")
-          ? fileURLToPath(url)
-          : join(findRepoRoot(), url.replace(/^\/+/, ""));
-        if (!existsSync(path)) return new Response(null, { status: 404 });
-        const bytes = new Uint8Array(readFileSync(path));
-        return new Response(bytes, {
-          status: 200,
-          headers: { "content-length": String(bytes.byteLength) },
-        });
-      };
+    const lazyFetcher =
+      rootfsLazyAssets !== undefined
+        ? createClosedLazyAssetFetcherFromOwnedAssets(rootfsLazyAssets)
+        : rootfsLazyAssetSources !== undefined
+          ? createClosedLazyAssetSourceFetcher(rootfsLazyAssetSources)
+          : async (url: string) => {
+              if (/^https?:\/\//.test(url)) return globalThis.fetch(url);
+              const path = url.startsWith("file://")
+                ? fileURLToPath(url)
+                : join(findRepoRoot(), url.replace(/^\/+/, ""));
+              if (!existsSync(path)) return new Response(null, { status: 404 });
+              const bytes = new Uint8Array(readFileSync(path));
+              return new Response(bytes, {
+                status: 200,
+                headers: { "content-length": String(bytes.byteLength) },
+              });
+            };
     rootfsMemfs.setLazyFetcher(lazyFetcher);
+    await prepareHomebrewFlatLazyBoot(rootfsMemfs);
   }
   return new VirtualPlatformIO(mounts, new NodeTimeProvider());
 }
@@ -851,7 +882,8 @@ function cleanupSessionDir(): void {
 async function handleInit(msg: InitMessage) {
   initReady = false;
   maxPages = msg.config.maxPages ?? DEFAULT_MAX_PAGES;
-  defaultThreadSlots = msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
+  defaultThreadSlots =
+    msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
   processMemoryAllocator = new ProcessMemoryAllocator({
     maxMemories: Math.max(
       1,
@@ -869,13 +901,13 @@ async function handleInit(msg: InitMessage) {
 
   const io: PlatformIO = msg.rootfsImage
     ? await buildVirtualPlatformIO(
-      msg.rootfsImage,
-      msg.rootfsMountSpec,
-      msg.extraMounts,
-      msg.rootfsLazyUrlBase,
-      msg.rootfsLazyAssets,
-      msg.rootfsLazyAssetSources,
-    )
+        msg.rootfsImage,
+        msg.rootfsMountSpec,
+        msg.extraMounts,
+        msg.rootfsLazyUrlBase,
+        msg.rootfsLazyAssets,
+        msg.rootfsLazyAssetSources,
+      )
     : new NodePlatformIO();
   vfsExecIO = msg.rootfsImage ? io : null;
   if (msg.enableTcpNetwork) {
@@ -919,10 +951,10 @@ async function handleInit(msg: InitMessage) {
           // can no longer return; only emit exec when a replacement exists.
           const installedWorker = processes.get(pid)?.worker;
           if (
-            result === 0
-            && installedWorker
-            && installedWorker !== previousWorker
-            && kernelWorker.isProcessExecutionActive(pid)
+            result === 0 &&
+            installedWorker &&
+            installedWorker !== previousWorker &&
+            kernelWorker.isProcessExecutionActive(pid)
           ) {
             post({ type: "proc_event", kind: "exec", pid });
           }
@@ -930,15 +962,15 @@ async function handleInit(msg: InitMessage) {
         }),
       onResolveSpawn: handlePosixSpawnResolve,
       onSpawn: (parentPid, childPid, program, envp) =>
-        processMemoryCreators.run(
-          "a posix_spawn process Worker",
-          () => handlePosixSpawn(parentPid, childPid, program, envp),
+        processMemoryCreators.run("a posix_spawn process Worker", () =>
+          handlePosixSpawn(parentPid, childPid, program, envp),
         ),
-      onClone: (attachment) => processMemoryCreators.run(
-        "a pthread Worker",
-        () => handleClone(attachment),
-      ),
-      onThreadExit: (pid, _tid, channelOffset) => handleThreadExit(pid, channelOffset),
+      onClone: (attachment) =>
+        processMemoryCreators.run("a pthread Worker", () =>
+          handleClone(attachment),
+        ),
+      onThreadExit: (pid, _tid, channelOffset) =>
+        handleThreadExit(pid, channelOffset),
       onExit: handleExit,
     },
   );
@@ -987,15 +1019,18 @@ async function handleSpawn(msg: SpawnMessage) {
       );
       return;
     }
-    const programBytes = msg.programBytes ??
-      await readExecFromVfs(msg.programPath!);
+    const programBytes =
+      msg.programBytes ?? (await readExecFromVfs(msg.programPath!));
     const programModule = hasProgramBytes ? msg.programModule : undefined;
     if (programBytes === null) {
       respondError(msg.requestId, `ENOENT: ${msg.programPath}`);
       return;
     }
     if (!isWasmModuleBytes(programBytes)) {
-      respondError(msg.requestId, "ENOEXEC: program is not a WebAssembly module");
+      respondError(
+        msg.requestId,
+        "ENOEXEC: program is not a WebAssembly module",
+      );
       return;
     }
 
@@ -1004,12 +1039,8 @@ async function handleSpawn(msg: SpawnMessage) {
     );
     createdPid = pid;
     const ptrWidth = detectPtrWidth(programBytes);
-    const {
-      memory,
-      memoryLease,
-      layout,
-      threadAllocator,
-    } = await createFreshProcessMemory(pid, programBytes, ptrWidth);
+    const { memory, memoryLease, layout, threadAllocator } =
+      await createFreshProcessMemory(pid, programBytes, ptrWidth);
     createdMemoryLease = memoryLease;
     const channelOffset = layout.channelOffset;
 
@@ -1047,7 +1078,10 @@ async function handleSpawn(msg: SpawnMessage) {
       });
     } else {
       if (msg.stdin) {
-        const stdinData = msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin);
+        const stdinData =
+          msg.stdin instanceof Uint8Array
+            ? msg.stdin
+            : new Uint8Array(msg.stdin);
         kernelWorker.setStdinData(pid, stdinData);
       }
     }
@@ -1180,11 +1214,9 @@ async function handleFork(
       return [];
     }
 
-    new Uint8Array(
-      childMemory.buffer,
-      childChannelOffset,
-      CH_TOTAL_SIZE,
-    ).fill(0);
+    new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(
+      0,
+    );
     kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
       ptrWidth,
       maxAddr: childLayout.maxAddr,
@@ -1196,14 +1228,14 @@ async function handleFork(
     const activeForkBufAddr = continuation.forkBufAddr;
     const forkReplayContext: ForkReplayContext | undefined =
       continuation.kind === "thread"
-      ? {
-          fnPtr: continuation.fnPtr,
-          argPtr: continuation.argPtr,
-          forkBufAddr: activeForkBufAddr,
-        }
-      : parentInfo.forkReplayContext
-        ? { ...parentInfo.forkReplayContext, forkBufAddr: activeForkBufAddr }
-        : undefined;
+        ? {
+            fnPtr: continuation.fnPtr,
+            argPtr: continuation.argPtr,
+            forkBufAddr: activeForkBufAddr,
+          }
+        : parentInfo.forkReplayContext
+          ? { ...parentInfo.forkReplayContext, forkBufAddr: activeForkBufAddr }
+          : undefined;
     const forkBufAddr = activeForkBufAddr;
 
     const childInitData: CentralizedWorkerInitMessage = {
@@ -1221,8 +1253,8 @@ async function handleFork(
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
     };
 
-    childWorker = new DeferredWorkerHandle(
-      () => workerAdapter.createWorker(childInitData),
+    childWorker = new DeferredWorkerHandle(() =>
+      workerAdapter.createWorker(childInitData),
     );
     const worker = childWorker;
     childGeneration = {
@@ -1236,7 +1268,11 @@ async function handleFork(
       channelOffset: childChannelOffset,
       ptrWidth,
       layout: childLayout,
-      threadAllocator: threadAllocatorForLayout(childLayout, ptrWidth, childPid),
+      threadAllocator: threadAllocatorForLayout(
+        childLayout,
+        ptrWidth,
+        childPid,
+      ),
       forkReplayContext,
     };
     processes.set(childPid, childGeneration);
@@ -1249,10 +1285,14 @@ async function handleFork(
         workerStartAttempted = true;
         worker.start();
       },
-      () => { void worker.terminate(); },
+      () => {
+        void worker.terminate();
+      },
     );
     if (startDisposition === "stale") {
-      throw new Error(`Fork child ${childPid} changed generation before Worker launch`);
+      throw new Error(
+        `Fork child ${childPid} changed generation before Worker launch`,
+      );
     }
     if (startDisposition === "dead") {
       await worker.terminate();
@@ -1287,11 +1327,7 @@ async function handleFork(
       },
     });
     if (detachResult.status !== "released") {
-      reportRetainedProcessGeneration(
-        childPid,
-        "fork rollback",
-        detachResult,
-      );
+      reportRetainedProcessGeneration(childPid, "fork rollback", detachResult);
     }
     throw error;
   }
@@ -1323,11 +1359,7 @@ async function handleExec(
   if (metadataResult < 0) return metadataResult;
   let prepared: Awaited<ReturnType<typeof createFreshProcessMemory>>;
   try {
-    prepared = await createFreshProcessMemory(
-      pid,
-      programBytes,
-      newPtrWidth,
-    );
+    prepared = await createFreshProcessMemory(pid, programBytes, newPtrWidth);
   } catch (error) {
     if (error instanceof ProcessMemoryRetirementBacklogError) return -11;
     if (error instanceof ProcessMemoryCapacityError) return -12;
@@ -1342,9 +1374,11 @@ async function handleExec(
   // Resolution/compilation yielded to the event loop. Another exec may have
   // replaced the host execution generation for this persistent PID; a stale
   // continuation must not commit exec state against it.
-  if (processes.get(pid) !== initiatingInfo
-      || kernelWorker.isExecHandoffActive(pid)
-      || !kernelWorker.isProcessExecutionActive(pid)) {
+  if (
+    processes.get(pid) !== initiatingInfo ||
+    kernelWorker.isExecHandoffActive(pid) ||
+    !kernelWorker.isProcessExecutionActive(pid)
+  ) {
     prepared.memoryLease.release();
     return -3; // ESRCH
   }
@@ -1358,7 +1392,8 @@ async function handleExec(
     prepared.memoryLease.release();
     return addressSpaceResult;
   }
-  let replacementWorker: ReturnType<NodeWorkerAdapter["createWorker"]> | undefined;
+  let replacementWorker:
+    ReturnType<NodeWorkerAdapter["createWorker"]> | undefined;
   try {
     const setupResult = kernelWorker.kernelExecSetup(pid, callerTid);
     if (setupResult < 0) {
@@ -1379,11 +1414,10 @@ async function handleExec(
     for (const thread of threadWorkers.get(pid) ?? []) {
       intentionallyTerminated.add(thread.worker as object);
     }
-    const retiredOffsets =
-      kernelWorker.wakeProcessWorkersForExecRetirement(
-        pid,
-        initiatingInfo.memory,
-      );
+    const retiredOffsets = kernelWorker.wakeProcessWorkersForExecRetirement(
+      pid,
+      initiatingInfo.memory,
+    );
     const mainRetirementStarted = retiredOffsets.has(
       initiatingInfo.channelOffset,
     );
@@ -1420,8 +1454,7 @@ async function handleExec(
         initiatingInfo.channelOffset,
       );
     }
-    const handoffExitSignal =
-      kernelWorker.finalizeExecHandoffTermination(pid);
+    const handoffExitSignal = kernelWorker.finalizeExecHandoffTermination(pid);
     if (handoffExitSignal > 0) {
       prepared.memoryLease.release();
       preparedLeaseConsumed = true;
@@ -1454,8 +1487,8 @@ async function handleExec(
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
     };
 
-    replacementWorker = new DeferredWorkerHandle(
-      () => workerAdapter.createWorker(initData),
+    replacementWorker = new DeferredWorkerHandle(() =>
+      workerAdapter.createWorker(initData),
     );
     kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
       preserveProcessState: true,
@@ -1496,19 +1529,21 @@ async function handleExec(
     else initiatingInfo.memoryLease.releaseAfterForcedTermination();
     initiatingLeaseConsumed = true;
 
-    installProcessWorkerListeners(
-      replacementWorker,
-      pid,
-      "exec worker error",
-    );
+    installProcessWorkerListeners(replacementWorker, pid, "exec worker error");
     const startDisposition = kernelWorker.startProcessWorkerWhenRunnable(
       pid,
       newMemory,
-      () => { (replacementWorker as DeferredWorkerHandle).start(); },
-      () => { void replacementWorker?.terminate(); },
+      () => {
+        (replacementWorker as DeferredWorkerHandle).start();
+      },
+      () => {
+        void replacementWorker?.terminate();
+      },
     );
     if (startDisposition === "stale") {
-      throw new Error(`Exec pid ${pid} changed generation before Worker launch`);
+      throw new Error(
+        `Exec pid ${pid} changed generation before Worker launch`,
+      );
     }
     if (startDisposition === "dead") {
       await replacementWorker.terminate();
@@ -1586,7 +1621,11 @@ async function handleExec(
     } catch {
       // A closed host port must not prevent kernel-side reap.
     }
-    try { kernelWorker.notifyHostProcessCrashed(pid, SIGSEGV); } catch { /* best-effort */ }
+    try {
+      kernelWorker.notifyHostProcessCrashed(pid, SIGSEGV);
+    } catch {
+      /* best-effort */
+    }
     handleExit(pid, signalExitStatus(SIGSEGV));
     return 0;
   }
@@ -1648,11 +1687,7 @@ async function handlePosixSpawn(
   const ptrWidth = detectPtrWidth(programBytes);
   let fresh: Awaited<ReturnType<typeof createFreshProcessMemory>>;
   try {
-    fresh = await createFreshProcessMemory(
-      childPid,
-      programBytes,
-      ptrWidth,
-    );
+    fresh = await createFreshProcessMemory(childPid, programBytes, ptrWidth);
   } catch (error) {
     if (error instanceof ProcessMemoryRetirementBacklogError) {
       return -11; // EAGAIN
@@ -1696,8 +1731,8 @@ async function handlePosixSpawn(
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
     };
 
-    newWorker = new DeferredWorkerHandle(
-      () => workerAdapter.createWorker(initData),
+    newWorker = new DeferredWorkerHandle(() =>
+      workerAdapter.createWorker(initData),
     );
     const worker = newWorker;
     childGeneration = {
@@ -1715,11 +1750,7 @@ async function handlePosixSpawn(
     };
     processes.set(childPid, childGeneration);
 
-    installProcessWorkerListeners(
-      worker,
-      childPid,
-      "spawn worker error",
-    );
+    installProcessWorkerListeners(worker, childPid, "spawn worker error");
     const startDisposition = kernelWorker.startProcessWorkerWhenRunnable(
       childPid,
       memory,
@@ -1727,10 +1758,14 @@ async function handlePosixSpawn(
         workerStartAttempted = true;
         worker.start();
       },
-      () => { void worker.terminate(); },
+      () => {
+        void worker.terminate();
+      },
     );
     if (startDisposition === "stale") {
-      throw new Error(`Spawn child ${childPid} changed generation before Worker launch`);
+      throw new Error(
+        `Spawn child ${childPid} changed generation before Worker launch`,
+      );
     }
     if (startDisposition === "dead") {
       await worker.terminate();
@@ -1774,9 +1809,7 @@ async function handlePosixSpawn(
   return 0;
 }
 
-async function handleClone(
-  attachment: ThreadChannelAttachment,
-): Promise<void> {
+async function handleClone(attachment: ThreadChannelAttachment): Promise<void> {
   const { pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory } =
     attachment;
   const processInfo = processes.get(pid);
@@ -1794,13 +1827,16 @@ async function handleClone(
   // Compilation yields. A sibling pthread may have committed exec while this
   // clone continuation was suspended; never attach the old program/Memory to
   // the replacement exec image for the same process identity.
-  if (!isCurrentProcessGeneration(
-    processes,
-    pid,
-    processInfo,
-    memory,
-    kernelWorker.isExecHandoffActive(pid),
-  ) || !kernelWorker.isProcessExecutionActive(pid)) {
+  if (
+    !isCurrentProcessGeneration(
+      processes,
+      pid,
+      processInfo,
+      memory,
+      kernelWorker.isExecHandoffActive(pid),
+    ) ||
+    !kernelWorker.isProcessExecutionActive(pid)
+  ) {
     throw new Error(`Process ${pid} changed generation during clone`);
   }
   if (cacheCompiledModule) threadModuleCache.set(pid, threadModule);
@@ -1847,8 +1883,8 @@ async function handleClone(
     kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
   };
 
-  const threadWorker = new DeferredWorkerHandle(
-    () => workerAdapter.createWorker(threadInitData),
+  const threadWorker = new DeferredWorkerHandle(() =>
+    workerAdapter.createWorker(threadInitData),
   );
   if (!threadWorkers.has(pid)) threadWorkers.set(pid, []);
   const threadEntry: ThreadWorkerInfo = {
@@ -1888,17 +1924,16 @@ async function handleClone(
   };
   const terminateThreadEntry = (): Promise<void> => {
     if (!threadEntry.termination) {
-      threadEntry.termination = terminateTrackedWorker(threadWorker).then(
-        reclaimThread,
-      );
+      threadEntry.termination =
+        terminateTrackedWorker(threadWorker).then(reclaimThread);
     }
     return threadEntry.termination;
   };
   threadExits.register(pid, alloc.channelOffset, terminateThreadEntry);
 
   const isCurrentThreadGeneration = () =>
-    !intentionallyTerminated.has(threadWorker as object)
-    && belongsToCurrentProcessImage();
+    !intentionallyTerminated.has(threadWorker as object) &&
+    belongsToCurrentProcessImage();
   const failThread = (reason: string, awaitQuiescence = false) => {
     if (!isCurrentThreadGeneration()) {
       void terminateThreadEntry();
@@ -1907,16 +1942,21 @@ async function handleClone(
     const disposition = threadWorkerFailureDisposition(reason);
     reportHostDiagnostic({
       pid,
-      status: disposition.kind === "guest-fatal-trap"
-        ? disposition.exitStatus
-        : undefined,
+      status:
+        disposition.kind === "guest-fatal-trap"
+          ? disposition.exitStatus
+          : undefined,
       source: "thread worker failure",
       message: `[kernel-worker] pid=${pid} tid=${tid}: ${reason}`,
     });
     kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset);
     if (!awaitQuiescence) void terminateThreadEntry();
     if (disposition.kind === "guest-fatal-trap") {
-      try { kernelWorker.notifyHostProcessCrashed(pid, disposition.signum); } catch { /* best-effort */ }
+      try {
+        kernelWorker.notifyHostProcessCrashed(pid, disposition.signum);
+      } catch {
+        /* best-effort */
+      }
       void finishProcessExit(pid, disposition.exitStatus);
     }
   };
@@ -1942,7 +1982,9 @@ async function handleClone(
       }
     }
   });
-  threadWorker.on("error", (err: Error) => failThread(`worker error: ${err.message ?? err}`));
+  threadWorker.on("error", (err: Error) =>
+    failThread(`worker error: ${err.message ?? err}`),
+  );
 
   let startDisposition: ReturnType<
     CentralizedKernelWorker["startProcessWorkerWhenRunnable"]
@@ -1951,8 +1993,12 @@ async function handleClone(
     startDisposition = kernelWorker.startProcessWorkerWhenRunnable(
       pid,
       memory,
-      () => { threadWorker.start(); },
-      () => { void threadWorker.terminate(); },
+      () => {
+        threadWorker.start();
+      },
+      () => {
+        void threadWorker.terminate();
+      },
       () => {
         kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset);
         const failedClone = kernelWorker.failDeferredCloneLaunch(pid, tid, 12);
@@ -1967,9 +2013,10 @@ async function handleClone(
   }
   if (startDisposition === "stale") {
     void terminateThreadEntry();
-    throw new Error(`Process ${pid} changed generation before thread Worker launch`);
+    throw new Error(
+      `Process ${pid} changed generation before thread Worker launch`,
+    );
   }
-
 }
 
 function handleThreadExit(pid: number, channelOffset: number): boolean {
@@ -2169,8 +2216,12 @@ async function performDestroy() {
   // matching the browser host (which does the same and is likewise a no-op cost
   // on Chrome/V8). Phases mirror browser-kernel-worker-entry.ts performDestroy.
   let woken = new Set<number>();
-  try { woken = kernelWorker.killAllBlockedForTeardown(); } catch (e) {
-    console.error(`[node-kernel-worker] killAllBlockedForTeardown failed: ${e}`);
+  try {
+    woken = kernelWorker.killAllBlockedForTeardown();
+  } catch (e) {
+    console.error(
+      `[node-kernel-worker] killAllBlockedForTeardown failed: ${e}`,
+    );
   }
   // Drain only for the pids we woke — a process we did not wake (e.g. one
   // already exited via a sibling thread) never posts {exit} and is
@@ -2184,7 +2235,9 @@ async function performDestroy() {
     await new Promise((r) => setTimeout(r, DESTROY_KILL_DRAIN_POLL_MS));
   }
   if (stillDraining()) {
-    console.warn(`[node-kernel-worker] destroy drain timed out with woken process(es) still live; force-terminating`);
+    console.warn(
+      `[node-kernel-worker] destroy drain timed out with woken process(es) still live; force-terminating`,
+    );
   }
 
   const retireCurrentGenerations = async (): Promise<void> => {
@@ -2231,7 +2284,9 @@ async function performDestroy() {
     if (result.status !== "released") {
       console.warn(
         "[node-kernel-worker] destroy retained an exact process generation: " +
-        (result.error instanceof Error ? result.error.message : String(result.error)),
+          (result.error instanceof Error
+            ? result.error.message
+            : String(result.error)),
       );
     }
   }
@@ -2262,15 +2317,15 @@ async function performDestroy() {
       gracefulDetachComplete = false;
       console.warn(
         "[node-kernel-worker] process memory allocator retained an unsafe " +
-        `lease during destroy: ${error}`,
+          `lease during destroy: ${error}`,
       );
     }
   }
   if (!gracefulDetachComplete) {
     console.warn(
       "[node-kernel-worker] destroy retained exact process-generation " +
-      "ownership; terminating this kernel Worker realm is the final release " +
-      "fallback",
+        "ownership; terminating this kernel Worker realm is the final release " +
+        "fallback",
     );
   }
   cleanupSessionDir();
@@ -2282,9 +2337,8 @@ async function handleDestroy(msg: { requestId: number }) {
   // closes admission synchronously, drains every creator that entered first,
   // and runs this terminal sweep only once. The outer worker-realm termination
   // remains the bounded fallback if an admitted creator does not finish.
-  const result = await processMemoryCreators.closeAndRunAfterDrain(
-    performDestroy,
-  );
+  const result =
+    await processMemoryCreators.closeAndRunAfterDrain(performDestroy);
   respond(msg.requestId, result);
 }
 
@@ -2349,14 +2403,10 @@ function handleInjectConnection(
 
 async function handleHttpRequest(msg: HttpRequestMessage) {
   try {
-    const response = await kernelWorker.sendHttpRequest(
-      msg.port,
-      msg.request,
-      {
-        timeoutMs: msg.timeoutMs,
-        maxResponseBytes: msg.maxResponseBytes,
-      },
-    );
+    const response = await kernelWorker.sendHttpRequest(msg.port, msg.request, {
+      timeoutMs: msg.timeoutMs,
+      maxResponseBytes: msg.maxResponseBytes,
+    });
     respond(msg.requestId, response);
   } catch (e) {
     respondError(msg.requestId, String(e));
@@ -2549,7 +2599,11 @@ port.on("message", (msg: MainToKernelMessage) => {
       // Snapshot the kernel's process table for the Inspector → Procs tab.
       // Mirrors the Browser-side handler in browser-kernel-worker-entry.ts.
       try {
-        post({ type: "response", requestId: msg.requestId, result: kernelWorker.enumProcs() });
+        post({
+          type: "response",
+          requestId: msg.requestId,
+          result: kernelWorker.enumProcs(),
+        });
       } catch (err) {
         post({
           type: "response",
@@ -2562,7 +2616,11 @@ port.on("message", (msg: MainToKernelMessage) => {
     }
     case "read_proc_maps": {
       try {
-        post({ type: "response", requestId: msg.requestId, result: kernelWorker.readProcMaps(msg.pid) });
+        post({
+          type: "response",
+          requestId: msg.requestId,
+          result: kernelWorker.readProcMaps(msg.pid),
+        });
       } catch (err) {
         post({
           type: "response",
@@ -2580,7 +2638,11 @@ port.on("message", (msg: MainToKernelMessage) => {
     }
     case "drain_syscall_trace": {
       try {
-        post({ type: "response", requestId: msg.requestId, result: kernelWorker.drainSyscallTrace() });
+        post({
+          type: "response",
+          requestId: msg.requestId,
+          result: kernelWorker.drainSyscallTrace(),
+        });
       } catch (err) {
         post({
           type: "response",

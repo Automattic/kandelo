@@ -28,12 +28,12 @@ import {
   writeVfsFile,
 } from "../../host/src/vfs/image-helpers";
 import { recoverHomebrewBottleMirror } from "../../scripts/recover-homebrew-bottle-mirror";
-import { createHomebrewBottleMirrorPublishManifest } from
-  "../../scripts/create-homebrew-bottle-mirror-publish-manifest";
+import { createHomebrewBottleMirrorPublishManifest } from "../../scripts/create-homebrew-bottle-mirror-publish-manifest";
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0))
+    rmSync(root, { recursive: true, force: true });
 });
 
 function sha256(bytes: Uint8Array): string {
@@ -41,9 +41,10 @@ function sha256(bytes: Uint8Array): string {
 }
 
 function mirrorPlan(payloads: readonly Uint8Array[]): HomebrewBottleMirrorPlan {
-  const repository = "example/project";
+  const repository = "example/homebrew-tap";
   const identities = payloads.map((payload, index) => {
-    const suffix = payloads.length === 1 ? "test" : `test-${String(index).padStart(3, "0")}`;
+    const suffix =
+      payloads.length === 1 ? "test" : `test-${String(index).padStart(3, "0")}`;
     const id = `bottle-${suffix}`;
     return {
       id,
@@ -73,10 +74,13 @@ function mirrorPlan(payloads: readonly Uint8Array[]): HomebrewBottleMirrorPlan {
   };
 }
 
-async function fixture(options: {
-  wrongGuestBytes?: boolean;
-  assetCount?: number;
-} = {}) {
+async function fixture(
+  options: {
+    wrongGuestBytes?: boolean;
+    assetCount?: number;
+    flatLazy?: boolean;
+  } = {},
+) {
   const root = mkdtempSync(join(tmpdir(), "kandelo-mirror-recovery-"));
   roots.push(root);
   const payloads = Array.from(
@@ -93,22 +97,53 @@ async function fixture(options: {
     encodeHomebrewBottleMirrorPlan(plan),
     0o644,
   );
-  writeVfsFile(fs, "/etc/kandelo/homebrew-vfs.json", JSON.stringify({
-    schema: 1,
-    catalog: {
-      tap_repository: plan.repository,
-      tap_name: "example/tap",
-      checkout_commit: "a".repeat(40),
-    },
-    packages: plan.assets.map((asset, index) => ({
-      full_name: asset.package,
-      source_status: "success",
-      url: `https://ghcr.io/v2/example/project/${asset.id}/blobs/sha256:${asset.sha256}`,
-      sha256: asset.sha256,
-      bytes: payloads[index]!.byteLength +
-        (options.wrongGuestBytes && index === 0 ? 1 : 0),
-    })),
-  }));
+  if (options.flatLazy) {
+    const planBytes = encodeHomebrewBottleMirrorPlan(plan);
+    fs.setImageMetadata({
+      version: 1,
+      kernelAbi: 42,
+      homebrewFlatLazy: {
+        schema: 1,
+        kind: "kandelo-homebrew-flat-selection-lazy-v1",
+        mirror: {
+          repository: plan.repository,
+          tag: plan.tag,
+          collectionSha256: plan.collection_sha256,
+          planSha256: sha256(planBytes),
+          planBytes: planBytes.byteLength,
+          assetCount: plan.assets.length,
+        },
+        partition: {
+          deferredPackageOrder: plan.assets.map((asset) => asset.package),
+          runtimeCohortPackageOrder: plan.assets
+            .slice(0, 1)
+            .map((asset) => asset.package),
+        },
+      },
+    });
+  } else {
+    writeVfsFile(
+      fs,
+      "/etc/kandelo/homebrew-vfs.json",
+      JSON.stringify({
+        schema: 1,
+        catalog: {
+          tap_repository: plan.repository,
+          tap_name: "example/tap",
+          checkout_commit: "a".repeat(40),
+        },
+        packages: plan.assets.map((asset, index) => ({
+          full_name: asset.package,
+          source_status: "success",
+          url: `https://ghcr.io/v2/example/project/${asset.id}/blobs/sha256:${asset.sha256}`,
+          sha256: asset.sha256,
+          bytes:
+            payloads[index]!.byteLength +
+            (options.wrongGuestBytes && index === 0 ? 1 : 0),
+        })),
+      }),
+    );
+  }
   const imagePath = join(root, "shell.vfs");
   writeFileSync(imagePath, await fs.saveImage());
   return {
@@ -123,6 +158,29 @@ async function fixture(options: {
 }
 
 describe("Homebrew bottle mirror recovery", () => {
+  it("recovers a current flat-lazy derived image from its sealed mirror binding", async () => {
+    const value = await fixture({ flatLazy: true });
+    const fetchImpl = vi.fn(async () => new Response(value.payload));
+
+    await recoverHomebrewBottleMirror({
+      imagePath: value.imagePath,
+      outputDirectory: value.outputDirectory,
+      reportPath: value.reportPath,
+      fetchImpl,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `https://ghcr.io/v2/example/homebrew-tap/test/blobs/sha256:${value.plan.assets[0]!.sha256}`,
+    );
+    expect(readdirSync(value.outputDirectory).sort()).toEqual(
+      [HOMEBREW_BOTTLE_MIRROR_PLAN_ASSET, value.plan.assets[0]!.asset].sort(),
+    );
+    expect(JSON.parse(readFileSync(value.reportPath, "utf8"))).toMatchObject({
+      source: "flat-lazy-image-binding",
+      assets: [{ package: value.plan.assets[0]!.package }],
+    });
+  });
+
   it("recovers and verifies the complete bundle from anonymous source URLs", async () => {
     const value = await fixture();
     const fetchImpl = vi.fn(async () => new Response(value.payload));
@@ -134,13 +192,14 @@ describe("Homebrew bottle mirror recovery", () => {
     });
 
     expect(fetchImpl).toHaveBeenCalledOnce();
-    expect(readdirSync(value.outputDirectory).sort()).toEqual([
-      HOMEBREW_BOTTLE_MIRROR_PLAN_ASSET,
-      value.plan.assets[0]!.asset,
-    ].sort());
-    expect(new Uint8Array(readFileSync(
-      join(value.outputDirectory, value.plan.assets[0]!.asset),
-    ))).toEqual(value.payload);
+    expect(readdirSync(value.outputDirectory).sort()).toEqual(
+      [HOMEBREW_BOTTLE_MIRROR_PLAN_ASSET, value.plan.assets[0]!.asset].sort(),
+    );
+    expect(
+      new Uint8Array(
+        readFileSync(join(value.outputDirectory, value.plan.assets[0]!.asset)),
+      ),
+    ).toEqual(value.payload);
     expect(JSON.parse(readFileSync(value.reportPath, "utf8"))).toMatchObject({
       repository: value.plan.repository,
       tag: value.plan.tag,
@@ -155,12 +214,14 @@ describe("Homebrew bottle mirror recovery", () => {
   it("rejects a guest/source identity mismatch before fetching or publishing files", async () => {
     const value = await fixture({ wrongGuestBytes: true });
     const fetchImpl = vi.fn(async () => new Response(value.payload));
-    await expect(recoverHomebrewBottleMirror({
-      imagePath: value.imagePath,
-      outputDirectory: value.outputDirectory,
-      reportPath: value.reportPath,
-      fetchImpl,
-    })).rejects.toThrow("guest bottle identity differs");
+    await expect(
+      recoverHomebrewBottleMirror({
+        imagePath: value.imagePath,
+        outputDirectory: value.outputDirectory,
+        reportPath: value.reportPath,
+        fetchImpl,
+      }),
+    ).rejects.toThrow("guest bottle identity differs");
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(existsSync(value.outputDirectory)).toBe(false);
     expect(existsSync(value.reportPath)).toBe(false);
@@ -199,12 +260,14 @@ describe("Homebrew bottle mirror recovery", () => {
       mkdirSync(value.reportPath);
       return new Response(value.payload);
     });
-    await expect(recoverHomebrewBottleMirror({
-      imagePath: value.imagePath,
-      outputDirectory: value.outputDirectory,
-      reportPath: value.reportPath,
-      fetchImpl,
-    })).rejects.toThrow();
+    await expect(
+      recoverHomebrewBottleMirror({
+        imagePath: value.imagePath,
+        outputDirectory: value.outputDirectory,
+        reportPath: value.reportPath,
+        fetchImpl,
+      }),
+    ).rejects.toThrow();
     expect(existsSync(value.outputDirectory)).toBe(false);
     expect(lstatSync(value.reportPath).isDirectory()).toBe(true);
   });
@@ -241,7 +304,37 @@ describe("Homebrew bottle mirror recovery", () => {
     });
     expect(manifest.assets).toHaveLength(36);
     expect([...manifest.preferred_asset_names].sort()).toEqual(bundleNames);
-    expect(manifest.assets.map((asset: { name: string }) => asset.name).sort())
-      .toEqual(bundleNames);
+    expect(
+      manifest.assets.map((asset: { name: string }) => asset.name).sort(),
+    ).toEqual(bundleNames);
+  });
+
+  it("publishes the current flat-lazy recovery report without a retired catalog", async () => {
+    const value = await fixture({ assetCount: 37, flatLazy: true });
+    const payloadByDigest = new Map(
+      value.payloads.map((payload) => [sha256(payload), payload]),
+    );
+    await recoverHomebrewBottleMirror({
+      imagePath: value.imagePath,
+      outputDirectory: value.outputDirectory,
+      reportPath: value.reportPath,
+      fetchImpl: async (input) => {
+        const digest = input.toString().split("sha256:").at(-1)!;
+        return new Response(payloadByDigest.get(digest));
+      },
+    });
+
+    const publishManifestPath = join(value.root, "flat-lazy-publish.json");
+    await createHomebrewBottleMirrorPublishManifest({
+      bundleDirectory: value.outputDirectory,
+      recoveryReportPath: value.reportPath,
+      targetCommitish: "f".repeat(40),
+      outputPath: publishManifestPath,
+    });
+
+    const manifest = JSON.parse(readFileSync(publishManifestPath, "utf8"));
+    expect(manifest.repository).toBe(value.plan.repository);
+    expect(manifest.tag).toBe(value.plan.tag);
+    expect(manifest.assets).toHaveLength(38);
   });
 });

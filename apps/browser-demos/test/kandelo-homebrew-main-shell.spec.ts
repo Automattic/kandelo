@@ -2,10 +2,13 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import { parseHomebrewRuntimeSupportContract } from "../../../host/src/homebrew-runtime-support";
+import { parseHomebrewRuntimeSupportPolicy } from "../../../host/src/homebrew-runtime-support";
 import { parseHomebrewVfsMaterializationPolicy } from "../../../host/src/homebrew-vfs-materialization-policy";
+import { deriveFlatLazyCompositionPartition } from "../../../host/src/homebrew-vfs-materialization-policy";
+import { parseCanonicalHomebrewBottleSelection } from "../../../host/src/homebrew-bottle-selection";
 import { corsProxyTargetUrl } from "../../../host/src/networking/cors-proxy-url";
 import { assertMainShellOperationalRuntimeFetches } from "../../../scripts/homebrew-main-shell-image-contract";
-import { DEFAULT_BROWSER_CORS_PROXY_URL } from "../lib/browser-cors-proxy";
+import { DEFAULT_BROWSER_CORS_PROXY_CONFIG } from "../lib/browser-cors-proxy";
 import {
   isShellVfsImageUrl,
   isVfsImageUrl,
@@ -26,8 +29,7 @@ const expectedBootstrapSha256 =
   process.env.KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256;
 const expectedBootstrapBytes =
   process.env.KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES;
-const closedMirrorRoot =
-  process.env.KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT;
+const closedMirrorRoot = process.env.KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT;
 const transportMode = process.env.KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE;
 const mirrorPlanUrl = process.env.KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL;
 const runtimeSupport = parseHomebrewRuntimeSupportContract(
@@ -51,6 +53,32 @@ const materializationPolicy = parseHomebrewVfsMaterializationPolicy(
       "utf8",
     ),
   ),
+);
+const flatSelection = parseCanonicalHomebrewBottleSelection(
+  new Uint8Array(
+    readFileSync(
+      new URL(
+        "../../../homebrew/main-shell-flat-selection.json",
+        import.meta.url,
+      ),
+    ),
+  ),
+);
+const flatRuntimePolicy = parseHomebrewRuntimeSupportPolicy(
+  JSON.parse(
+    readFileSync(
+      new URL(
+        "../../../homebrew/main-shell-runtime-support-policy.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ),
+);
+const flatPartition = deriveFlatLazyCompositionPartition(
+  flatSelection,
+  materializationPolicy,
+  flatRuntimePolicy,
 );
 
 interface MirrorAsset {
@@ -103,21 +131,81 @@ interface ArtifactTransportRequest {
   proxied: boolean;
 }
 
+test("browser proxy callers pass the complete application profile", () => {
+  expect(DEFAULT_BROWSER_CORS_PROXY_CONFIG).toEqual({
+    url: "https://wordpress-playground-cors-proxy.net/?",
+    allowedRequestHeaderNames: [
+      "accept",
+      "content-type",
+      "git-protocol",
+      "wp_blog",
+      "wp_install",
+    ],
+    allowAnonymousGetHeaderOmission: true,
+  });
+
+  const callerSources = {
+    liveSetup: readFileSync(
+      new URL("../pages/kandelo/kernel-host/live-setup.ts", import.meta.url),
+      "utf8",
+    ),
+    testRunner: readFileSync(
+      new URL("../pages/test-runner/main.ts", import.meta.url),
+      "utf8",
+    ),
+    homebrewVfsTest: readFileSync(
+      new URL("../pages/homebrew-vfs-test/main.ts", import.meta.url),
+      "utf8",
+    ),
+    homebrewAdapter: readFileSync(
+      new URL(
+        "../../../homebrew/test/homebrew_guest_lifecycle_browser.ts",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  };
+  for (const source of Object.values(callerSources)) {
+    expect(source).not.toContain("corsProxyUrl");
+  }
+  expect(callerSources.liveSetup).toContain(
+    "const BROWSER_CORS_PROXY = resolveBrowserCorsProxyConfig({",
+  );
+  const liveKernelConstructor = callerSources.liveSetup.match(
+    /kernel = new BrowserKernel\(\{([\s\S]*?)\n    \}\);/,
+  );
+  expect(liveKernelConstructor, "live BrowserKernel constructor").not.toBeNull();
+  expect(liveKernelConstructor![1]).toContain(
+    "corsProxy: BROWSER_CORS_PROXY,",
+  );
+  expect(callerSources.testRunner).toContain(
+    "const corsProxy = resolveBrowserCorsProxyConfig({",
+  );
+  expect(callerSources.testRunner).toMatch(
+    /new BrowserKernel\(\{[\s\S]{0,160}corsProxy,/,
+  );
+  expect(callerSources.homebrewVfsTest).toContain(
+    "const corsProxy = resolveBrowserCorsProxyConfig({",
+  );
+  expect(callerSources.homebrewVfsTest).toMatch(
+    /runHomebrewGuestLifecycleInBrowser\(\{[\s\S]{0,160}corsProxy,/,
+  );
+  expect(callerSources.homebrewVfsTest).toMatch(
+    /new BrowserKernel\(\{[\s\S]{0,160}corsProxyExternalLazyUrls \? \{ corsProxy \}/,
+  );
+  expect(callerSources.homebrewAdapter).toMatch(
+    /new BrowserKernel\(\{[\s\S]{0,200}corsProxy: options\.corsProxy,/,
+  );
+});
+
 const BASE_EXPECTED_PACKAGES = [
   "kandelo-dev/tap-core/dash",
   "kandelo-dev/tap-core/bzip2",
   "kandelo-dev/tap-core/m4",
 ] as const;
-const RUNTIME_SUPPORT_EXPECTED_PACKAGES = runtimeSupport.additionalFormulaOrder;
-const EXPECTED_MIRROR_PACKAGES = [
-  ...runtimeSupport.baseFormulaOrder,
-  ...runtimeSupport.additionalFormulaOrder,
-]
-  .filter(
-    (packageName) =>
-      !materializationPolicy.embedded_package_order.includes(packageName),
-  )
-  .sort();
+const RUNTIME_SUPPORT_EXPECTED_PACKAGES =
+  flatPartition.runtimeCohortPackageOrder;
+const EXPECTED_MIRROR_PACKAGES = [...flatPartition.deferredPackageOrder].sort();
 
 function isHomebrewBootstrapUrl(url: string): boolean {
   const path = url.split(/[?#]/, 1)[0] ?? url;
@@ -134,7 +222,7 @@ function browserProxyTargetUrl(
 ): string | undefined {
   const configuredProxyUrl =
     process.env.VITE_CORS_PROXY_URL?.trim() ||
-    DEFAULT_BROWSER_CORS_PROXY_URL;
+    DEFAULT_BROWSER_CORS_PROXY_CONFIG.url;
   const configuredTarget = corsProxyTargetUrl(
     configuredProxyUrl,
     requestUrl,
@@ -415,9 +503,7 @@ async function bootExactShellPage(page: Page): Promise<ExactShellPage> {
     });
 
     const nativeFetch = window.fetch.bind(window);
-    const shellVfsImagePathPattern = new RegExp(
-      shellVfsImagePathPatternSource,
-    );
+    const shellVfsImagePathPattern = new RegExp(shellVfsImagePathPatternSource);
     window.fetch = async (...args) => {
       const response = await nativeFetch(...args);
       // WHY: this observer runs inside the page and cannot close over the
@@ -459,9 +545,9 @@ async function bootExactShellPage(page: Page): Promise<ExactShellPage> {
       return;
     }
     if (
-      ((/\.(?:wasm|zip)(?:\?|$)/.test(targetUrl) &&
+      (/\.(?:wasm|zip)(?:\?|$)/.test(targetUrl) &&
         !/kernel[^/]*\.wasm(?:\?|$)/.test(targetUrl)) ||
-        (isVfsImageUrl(targetUrl) && !isShellVfsImageUrl(targetUrl)))
+      (isVfsImageUrl(targetUrl) && !isShellVfsImageUrl(targetUrl))
     ) {
       legacyArtifactDownloads.push(targetUrl);
     }
@@ -557,9 +643,10 @@ async function bootExactShellPage(page: Page): Promise<ExactShellPage> {
       throw new Error(`mirror plan fetch failed: HTTP ${response.status}`);
     return response.json() as Promise<{ assets: MirrorAsset[] }>;
   }, config.mirrorPlanUrl);
-  expect(mirrorPlan.assets.length).toBeGreaterThan(0);
-  expect(mirrorPlan.assets.map(({ package: packageName }) => packageName).sort())
-    .toEqual(EXPECTED_MIRROR_PACKAGES);
+  expect(mirrorPlan.assets).toHaveLength(37);
+  expect(
+    mirrorPlan.assets.map(({ package: packageName }) => packageName).sort(),
+  ).toEqual(EXPECTED_MIRROR_PACKAGES);
   if (config.transportMode === "closed") {
     expect(closedPayloadResponses).toHaveLength(mirrorPlan.assets.length);
     expect(closedPayloadResponses.every(({ status }) => status === 200)).toBe(
@@ -579,29 +666,6 @@ async function bootExactShellPage(page: Page): Promise<ExactShellPage> {
     bootstrapPayloadResponses,
     artifactTransportRequests,
   };
-}
-
-async function assertBootstrapStillDeferred(
-  shell: ExactShellPage,
-  rows: readonly LazyDownloadRow[],
-): Promise<void> {
-  expect(rows.filter(isHomebrewBootstrapRow)).toEqual([]);
-  const responses = await Promise.all(shell.bootstrapPayloadResponses);
-  if (shell.config.transportMode === "closed") {
-    // WHY: closed acceptance verifies and snapshots the Vite-owned package
-    // bytes during setup, but that preload must not materialize the guest tree.
-    expect(shell.bootstrapPayloadRequests).toHaveLength(1);
-    expect(responses).toEqual([
-      expect.objectContaining({
-        status: 200,
-        sha256: shell.config.bootstrapSha256,
-        bytes: Number(shell.config.bootstrapBytes),
-      }),
-    ]);
-  } else {
-    expect(shell.bootstrapPayloadRequests).toEqual([]);
-    expect(responses).toEqual([]);
-  }
 }
 
 async function assertBootstrapMaterialized(
@@ -660,20 +724,18 @@ function assertPublicLazyTransport(
 ): void {
   if (shell.config.transportMode !== "public") return;
   for (const row of rows) {
-    expect(row.source, `lazy row ${row.asset} has no source URL`).not.toBeNull();
+    expect(
+      row.source,
+      `lazy row ${row.asset} has no source URL`,
+    ).not.toBeNull();
     // WHY: Vite emits the same-origin bootstrap as a root-relative asset,
     // while the request observer sees an absolute URL. Canonicalize only that
     // unambiguous form; bare-relative worker URLs need their worker base.
-    const sourceUrl = browserResolvedLazySourceUrl(
-      row.source!,
-      shell.pageUrl,
-    );
+    const sourceUrl = browserResolvedLazySourceUrl(row.source!, shell.pageUrl);
     const matches = shell.artifactTransportRequests.filter(
       ({ targetUrl }) => targetUrl === sourceUrl,
     );
-    if (
-      expectedBrowserLazyTransport(sourceUrl, shell.pageUrl) === "direct"
-    ) {
+    if (expectedBrowserLazyTransport(sourceUrl, shell.pageUrl) === "direct") {
       expect(
         matches.some(({ proxied }) => !proxied),
         `same-origin lazy source was not fetched: ${String(row.source)}`,
@@ -713,9 +775,20 @@ test("a fresh exact shell activates brew support atomically after independent ba
     'printf \'HOMEBREW_MAIN_SHELL_PATH:%s:%s\\n\' "$0" "${PATH%%:*}"',
     "HOMEBREW_MAIN_SHELL_PATH:bash:/opt/kandelo/homebrew/bin",
   );
-  let lazyRows = await readLazyDownloadRows(page);
-  expect(lazyRows).toEqual([]);
-  await assertBootstrapStillDeferred(shell, lazyRows);
+  let runtimeActivationResult = await waitForHomebrewBootstrapRow(page);
+  let lazyRows = runtimeActivationResult.rows;
+  expect(packageNamesForRows(lazyRows, shell.mirrorPlan)).toEqual(
+    [...RUNTIME_SUPPORT_EXPECTED_PACKAGES].sort(),
+  );
+  expect(lazyRows).toHaveLength(3);
+  assertBottleLedger(lazyRows, shell.mirrorPlan);
+  await assertBootstrapMaterialized(shell, runtimeActivationResult.bootstrap);
+  expect(
+    shell.mirrorPlan.assets.filter(
+      ({ package: packageName }) =>
+        !RUNTIME_SUPPORT_EXPECTED_PACKAGES.includes(packageName),
+    ),
+  ).toHaveLength(35);
 
   const dashPriorSources = new Set(lazyRows.map(({ source }) => source));
   await runTerminalCommand(
@@ -799,53 +872,6 @@ test("a fresh exact shell activates brew support atomically after independent ba
     lazyRows.filter(({ source }) => !repeatPriorSources.has(source)),
   ).toEqual([]);
 
-  const runtimeActivationPriorSources = new Set(
-    lazyRows.map(({ source }) => source),
-  );
-  // WHY: admitted lazy base commands intentionally have public paths before
-  // materialization. Probing one here could activate its bottle tree and
-  // contaminate the exact atomic cohort checked below, so this phase resolves
-  // only the runtime-support activation root and does not execute Homebrew.
-  await runTerminalCommand(
-    page,
-    `
-set -eu
-IFS= read -r brew_shebang < /usr/bin/brew
-test "$brew_shebang" = '#!/bin/bash -pu'
-printf 'HOMEBREW_ATOMIC_RUNTIME_ACTIVATED\n'
-`.trim(),
-    "HOMEBREW_ATOMIC_RUNTIME_ACTIVATED",
-    300_000,
-  );
-  lazyRows = await waitForLazyPackageRows(
-    page,
-    runtimeActivationPriorSources,
-    RUNTIME_SUPPORT_EXPECTED_PACKAGES,
-    shell.mirrorPlan,
-    180_000,
-  );
-  expect(
-    packageNamesForRows(
-      lazyRows.filter(
-        ({ source }) => !runtimeActivationPriorSources.has(source),
-      ),
-      shell.mirrorPlan,
-    ),
-  ).toEqual([...RUNTIME_SUPPORT_EXPECTED_PACKAGES].sort());
-  const runtimeActivationResult = await waitForHomebrewBootstrapRow(page);
-  lazyRows = runtimeActivationResult.rows;
-  const runtimeActivationRows = lazyRows.filter(
-    ({ source }) => !runtimeActivationPriorSources.has(source),
-  );
-  expect(
-    packageNamesForRows(runtimeActivationRows, shell.mirrorPlan),
-  ).toEqual([...RUNTIME_SUPPORT_EXPECTED_PACKAGES].sort());
-  assertBottleLedger(runtimeActivationRows, shell.mirrorPlan);
-  await assertBootstrapMaterialized(
-    shell,
-    runtimeActivationResult.bootstrap,
-  );
-
   const brewOperationPriorRows = snapshotLazyRows(lazyRows);
   const brewOperationPriorSources = new Set(
     lazyRows.map(({ source }) => source),
@@ -880,9 +906,7 @@ printf 'HOMEBREW_OPERATIONAL_RUNTIME_OK\n'
   );
   assertPriorLazyRowsUnchanged(brewOperationPriorRows, lazyRows);
   const operationalRuntimePackages = packageNamesForRows(
-    lazyRows.filter(
-      ({ source }) => !brewOperationPriorSources.has(source),
-    ),
+    lazyRows.filter(({ source }) => !brewOperationPriorSources.has(source)),
     shell.mirrorPlan,
   );
   assertMainShellOperationalRuntimeFetches(
@@ -904,11 +928,13 @@ printf 'HOMEBREW_OPERATIONAL_RUNTIME_OK\n'
   expect(
     lazyRows.filter(({ source }) => !repeatBrewPriorSources.has(source)),
   ).toEqual([]);
-  const expectedFetchedPackages = [...new Set([
-    ...BASE_EXPECTED_PACKAGES,
-    ...RUNTIME_SUPPORT_EXPECTED_PACKAGES,
-    ...operationalRuntimePackages,
-  ])].sort();
+  const expectedFetchedPackages = [
+    ...new Set([
+      ...BASE_EXPECTED_PACKAGES,
+      ...RUNTIME_SUPPORT_EXPECTED_PACKAGES,
+      ...operationalRuntimePackages,
+    ]),
+  ].sort();
   expect(packageNamesForRows(lazyRows, shell.mirrorPlan)).toEqual(
     expectedFetchedPackages,
   );

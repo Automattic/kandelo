@@ -113,6 +113,7 @@ async function requestThroughBackend(
   handle: number,
   maxVersion: "TLSv1.2" | "TLSv1.3",
   session?: Buffer,
+  requestHeaders = "",
 ): Promise<{
   response: string;
   clientHelloSessionIdLength: number;
@@ -141,9 +142,10 @@ async function requestThroughBackend(
     client.setEncoding("utf8");
     client.on("secureConnect", () => {
       client.write(
-        "GET /proof HTTP/1.1\r\n" +
+          "GET /proof HTTP/1.1\r\n" +
           "Host: example.test\r\n" +
           "Connection: close\r\n" +
+          requestHeaders +
           "\r\n",
       );
     });
@@ -250,4 +252,22 @@ it("refuses resumption and gives OpenSSL a complete fresh handshake", async () =
   );
   expect(response).toContain("hello after resumption refusal");
   expect(clientHelloSessionIdLength).toBeGreaterThan(0);
+});
+
+it("preserves repeated decrypted request fields through the real TLS client path", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(new Response("ordered fields"));
+  vi.stubGlobal("fetch", fetchMock);
+  const backend = new TlsNetworkBackend();
+  await backend.init();
+
+  await requestThroughBackend(
+    backend,
+    3,
+    "TLSv1.2",
+    undefined,
+    "X-Repeat: first\r\nx-repeat: second\r\n",
+  );
+
+  expect(((fetchMock.mock.calls[0][1] as RequestInit).headers as Headers).get("x-repeat"))
+    .toBe("first, second");
 });

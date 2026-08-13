@@ -722,10 +722,10 @@ preflight → toolchain-cache → matrix-build → test-gate → merge-gate
 
 After `test-gate` seals a PR release, browser validation consumes the same
 generic package workspace as the other suites. A resolved shell must pass a
-fresh inspection against its checked-in flat selection, shell configuration,
-demo configuration, ABI, capacity, and zero-deferred-state requirements. The
-CI state records that exact report as `flat-self-contained`; a resolved state
-cannot request the retired closed mirror. When the staged matrix contains
+fresh inspection against its checked-in flat selection, materialization and
+runtime policies, bootstrap package output, and 37-asset mirror plan. The
+inspection requires three embedded bottles, the bootstrap plus two-bottle boot
+cohort, and 35 ordinary deferred bottles. When the staged matrix contains
 `node-vfs/wasm32`, the browser cell also runs the exact slow
 `npm install --verbose cowsay` acceptance before the package release is
 sealed. Prepare merge derives the same condition from the union of its exact
@@ -761,16 +761,24 @@ Sortix is divided into include, basic, and remaining-runtime jobs. These are
 the same natural partitions used by staging-build and prepare-merge; their
 matrix result is still aggregated by the single `test-gate` job.
 
-## Current ABI-42 shell publication (2026-08-11)
+## Current ABI-42 shell publication (2026-08-13)
 
 `homebrew/main-shell-flat-selection.json` is a package input for shell
-revision 23. Its archive contains a self-contained `/opt/kandelo/homebrew`
-and root-owned `/bin` and `/usr/bin` links to the selected eager commands.
-Canonical inspection requires the conventional `bash`, `sh`, `env`, and
-`brew` entrypoints. Every shell-derived VFS package records the exact base
-image digest and size. The shell and its five reverse dependents therefore
-move through one canonical package release rather than through an independent
-bottle-mirror publication transaction.
+revision 25. Its archive embeds the selected Bash closure and package-owned
+Homebrew bootstrap over the platform base while retaining 37 authenticated
+bottle trees as deferred flat-lazy groups. Every shell-derived VFS package
+records the exact base image digest and size. The shell and its five reverse
+dependents therefore move through one canonical package release.
+
+The deferred bottle mirror is a separate immutable byte transport, not a
+second shell-image product. Its checked-in exact plan is rollout authority but
+is not a package recipe input. The protected tap caller source-builds current
+`main`'s direct `homebrew-bootstrap` dependency and `shell` through the normal
+resolver, recovers the plan, and requires a byte-for-byte match before the
+existing immutable publisher and anonymous readback run. Candidate activation
+then anonymously verifies the public plan and all 37 size/digest identities
+immediately before any canonical release mutation. Mirror absence or
+corruption leaves the candidate retryable for a later reconciliation.
 
 Prepare merge writes those rows only to its isolated
 `merge-candidate-abi-v42-*` release. Post-merge activation verifies the merged
@@ -785,16 +793,17 @@ tag, and canonical index sha256. A transient dispatch failure is therefore
 recoverable by the next scheduled scan even though the candidate itself is
 already terminal.
 
-That ordering is part of the release contract. The main-push Pages run may
-start before activation, but fetch-only resolution cannot obtain the new
-identities and therefore fails before deployment. The post-activation Pages
-dispatch retries only after the canonical package release exists. Pages checks
+That ordering is part of the release contract. Pages has no `main`-push
+trigger; only the post-activation dispatch can start a deployment, so a merge
+cannot race ahead of mirror publication or package activation. Pages checks
 out the requested SHA, requires it to remain the default-branch tip, verifies
 the immutable candidate's `activated.json` as an exact extension of its
 `ready.json`, and re-snapshots the named canonical index digest. It then
-inspects the exact flat shell, verifies the hashed shell and Node VFS assets,
-runs the Chromium shell and npm/cowsay acceptance, and records the deployed
-generation before its single writer updates `gh-pages`.
+resolves the exact shell, Node VFS, and bootstrap outputs in one fresh cache,
+anonymously verifies the checked-in public mirror, inspects the lazy shell
+partition, and verifies the emitted VFS assets and bootstrap ZIP. The Chromium
+lazy-shell and npm/cowsay acceptances run before the single writer updates
+`gh-pages`.
 
 ## Merge candidates and canonical activation
 

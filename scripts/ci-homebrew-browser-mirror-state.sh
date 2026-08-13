@@ -7,8 +7,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 usage() {
     cat >&2 <<'EOF'
 usage:
-  ci-homebrew-browser-mirror-state.sh create <expected-ledger.json> <publication-blockers.json> <canonical-index.toml> <canonical-index-url> <shell.vfs.zst|-> <out.json> [staging-receipt.json]
-  ci-homebrew-browser-mirror-state.sh validate <producer|consumer> <state.json> <publication-blockers.json> <shell.vfs.zst|-> [staging-receipt.json]
+  ci-homebrew-browser-mirror-state.sh create <expected-ledger.json> <publication-blockers.json> <canonical-index.toml> <canonical-index-url> <shell.vfs.zst|-> <homebrew-bootstrap.zip|-> <out.json> [staging-receipt.json]
+  ci-homebrew-browser-mirror-state.sh validate <producer|consumer> <state.json> <publication-blockers.json> <shell.vfs.zst|-> <homebrew-bootstrap.zip|-> [staging-receipt.json]
 EOF
     exit 2
 }
@@ -43,18 +43,26 @@ current_source_commit() {
     printf '%s\n' "$commit"
 }
 
-canonical_flat_shell_report_json() {
+canonical_lazy_shell_report_json() {
     local image="$1"
+    local bootstrap="$2"
     local report_root
     local report
     local status
-    report_root="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-flat-shell-state.XXXXXX")"
+    report_root="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-flat-lazy-shell-state.XXXXXX")"
     report="$report_root/report.json"
-    npx tsx "$SCRIPT_DIR/inspect-canonical-flat-shell.ts" \
+    npx tsx "$SCRIPT_DIR/inspect-homebrew-main-shell-public-product.ts" \
         --image "$image" \
+        --homebrew-bootstrap-archive "$bootstrap" \
+        --homebrew-bootstrap-spec \
+            "$REPO_ROOT/homebrew/main-shell-brew-package-tree.json" \
         --selection "$REPO_ROOT/homebrew/main-shell-flat-selection.json" \
-        --shell-config "$REPO_ROOT/homebrew/main-shell-default.json" \
-        --demo-config "$REPO_ROOT/homebrew/main-shell-flat-demo.json" \
+        --materialization-policy \
+            "$REPO_ROOT/homebrew/main-shell-materialization-policy.json" \
+        --runtime-support-policy \
+            "$REPO_ROOT/homebrew/main-shell-runtime-support-policy.json" \
+        --mirror-plan \
+            "$REPO_ROOT/homebrew/main-shell-flat-lazy-mirror-plan.json" \
         --out "$report" || {
         status=$?
         rm -f -- "$report"
@@ -73,7 +81,8 @@ validate_state() {
     local state="$2"
     local blockers="$3"
     local image="$4"
-    local receipt="${5:-}"
+    local bootstrap="$5"
+    local receipt="${6:-}"
     local abi
     local expected_commit
     local actual_commit
@@ -165,8 +174,8 @@ validate_state() {
               (.revision | type == "number" and . >= 0 and floor == .) and
               (.cache_key_sha |
                 type == "string" and test("^[0-9a-f]{64}$")) and
-              .transport == "flat-self-contained" and
-              .mirror_required == false and
+              .transport == "flat-lazy" and
+              .mirror_required == true and
               (.image | type == "object") and
               (.image | keys | sort) == ["bytes", "sha256"] and
               (.image.sha256 |
@@ -174,19 +183,22 @@ validate_state() {
               (.image.bytes | type == "number" and . > 0 and floor == .) and
               (.inspection | type == "object") and
               .inspection.schema == 1 and
-              .inspection.kind == "kandelo-canonical-flat-shell" and
-              .inspection.transport == {
-                kind: "flat-self-contained",
-                mirror_required: false
-              } and
+              .inspection.kind ==
+                "kandelo-homebrew-main-shell-public-product" and
               .inspection.image.sha256 == .image.sha256 and
               .inspection.image.bytes == .image.bytes and
               .inspection.image.kernel_abi == .abi_version and
-              .inspection.selection.arch == .arch and
-              .inspection.selection.requested_vfs_filename ==
-                "shell.vfs.zst" and
-              .inspection.selection.resource_policy ==
-                "kandelo-homebrew-vfs-main-shell-v1"
+              .inspection.homebrew_bootstrap.activation_root ==
+                "/usr/bin/brew" and
+              .inspection.partition == {
+                embedded_bottles: 3,
+                bootstrap_trees: 1,
+                runtime_cohort_bottles: 2,
+                ordinary_deferred_bottles: 35,
+                deferred_bottles: 37,
+                initial_pending_trees: 38
+              } and
+              .inspection.bottle_mirror.asset_count == 37
             ' "$state" >/dev/null || {
                 echo "ci-homebrew-browser-mirror-state: invalid resolved state contract: $state" >&2
                 exit 1
@@ -202,6 +214,8 @@ validate_state() {
                 exit 1
             }
             require_regular_file "resolved shell image" "$image"
+            require_regular_file \
+                "resolved Homebrew bootstrap archive" "$bootstrap"
             expected_sha="$(jq -er '.image.sha256' "$state")"
             expected_bytes="$(jq -er '.image.bytes' "$state")"
             actual_sha="$(sha256_file "$image")"
@@ -212,8 +226,10 @@ validate_state() {
                 exit 1
             fi
             expected_inspection="$(jq -Sce '.inspection' "$state")"
-            actual_inspection="$(canonical_flat_shell_report_json "$image")" || {
-                echo "ci-homebrew-browser-mirror-state: resolved shell failed canonical flat inspection" >&2
+            actual_inspection="$(
+                canonical_lazy_shell_report_json "$image" "$bootstrap"
+            )" || {
+                echo "ci-homebrew-browser-mirror-state: resolved shell failed canonical flat-lazy inspection" >&2
                 exit 1
             }
             if [ "$actual_inspection" != "$expected_inspection" ]; then
@@ -452,14 +468,15 @@ validate_state() {
 command="${1:-}"
 case "$command" in
     create)
-        { [ "$#" -eq 7 ] || [ "$#" -eq 8 ]; } || usage
+        { [ "$#" -eq 8 ] || [ "$#" -eq 9 ]; } || usage
         expected="$2"
         blockers="$3"
         canonical_index="$4"
         canonical_index_url="$5"
         image="$6"
-        out="$7"
-        receipt="${8:-}"
+        bootstrap="$7"
+        out="$8"
+        receipt="${9:-}"
         require_regular_file "expected package ledger" "$expected"
         require_regular_file "publication blocker report" "$blockers"
         require_regular_file "canonical package index" "$canonical_index"
@@ -546,6 +563,8 @@ case "$command" in
         trap cleanup_staged_out EXIT
         if [ "$mode" = resolved ]; then
             require_regular_file "resolved shell image" "$image"
+            require_regular_file \
+                "resolved Homebrew bootstrap archive" "$bootstrap"
             shell_entry="$(
                 jq -ce '
                   [.entries[] |
@@ -599,8 +618,10 @@ case "$command" in
                     exit 1
                     ;;
             esac
-            inspection="$(canonical_flat_shell_report_json "$image")" || {
-                echo "ci-homebrew-browser-mirror-state: resolved shell failed canonical flat inspection" >&2
+            inspection="$(
+                canonical_lazy_shell_report_json "$image" "$bootstrap"
+            )" || {
+                echo "ci-homebrew-browser-mirror-state: resolved shell failed canonical flat-lazy inspection" >&2
                 exit 1
             }
             image_sha="$(jq -er '.image.sha256' <<<"$inspection")"
@@ -629,8 +650,8 @@ case "$command" in
                       bytes: $image_bytes
                     },
                     inspection: $inspection,
-                    transport: "flat-self-contained",
-                    mirror_required: false
+                    transport: "flat-lazy",
+                    mirror_required: true
                   }
                 ' > "$staged_out"
         elif [ "$mode" = publication-blocked-candidate ]; then
@@ -722,13 +743,14 @@ case "$command" in
                   }
                 ' > "$staged_out"
         fi
-        validate_state producer "$staged_out" "$blockers" "$image" "$receipt"
+        validate_state producer "$staged_out" "$blockers" \
+            "$image" "$bootstrap" "$receipt"
         mv "$staged_out" "$out"
         trap - EXIT
         ;;
     validate)
-        { [ "$#" -eq 5 ] || [ "$#" -eq 6 ]; } || usage
-        validate_state "$2" "$3" "$4" "$5" "${6:-}"
+        { [ "$#" -eq 6 ] || [ "$#" -eq 7 ]; } || usage
+        validate_state "$2" "$3" "$4" "$5" "$6" "${7:-}"
         ;;
     *)
         usage

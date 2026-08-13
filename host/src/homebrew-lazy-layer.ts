@@ -2,17 +2,29 @@ import { createHash } from "node:crypto";
 import { zipSync, type Zippable } from "fflate";
 import {
   buildHomebrewVfs,
-  homebrewCanonicalOptLink,
-  homebrewManifestSourcePath,
-  mapHomebrewBottleEntryToGuestPath,
+  buildHomebrewVfsSelection,
   type HomebrewVfsCatalogCheckout,
   type HomebrewVfsCompatibilityPolicy,
   type HomebrewVfsBuildReport,
+  type HomebrewFlatVfsBuildResult,
+  type HomebrewFlatVfsBuildReport,
   type HomebrewVfsMigrationLockBinding,
   type HomebrewVfsSelectionSource,
 } from "./homebrew-vfs-builder";
+import {
+  homebrewCanonicalOptLink,
+  homebrewManifestSourcePath,
+  mapHomebrewBottleEntryToGuestPath,
+  type HomebrewBottleMaterializationPackage,
+} from "./homebrew-vfs-materializer";
+import {
+  encodeHomebrewBottleDescriptor,
+  type HomebrewBottleDescriptor,
+} from "./homebrew-bottle-descriptor";
 import type {
   HomebrewFederatedVfsPlan,
+  HomebrewFlatVfsPlan,
+  HomebrewOriginalBottlePackagePlan,
   HomebrewVfsPackagePlan,
   HomebrewVfsPlan,
   HomebrewVfsTapIdentity,
@@ -176,6 +188,41 @@ export interface HomebrewOriginalBottleCollectionBuildResult {
   report: HomebrewVfsBuildReport;
 }
 
+export interface BuildHomebrewFlatOriginalBottleCollectionOptions {
+  /** Exact lower namespace copied into the private eager ownership proof. */
+  baseFs: MemoryFileSystem;
+  /** Fresh caller-owned namespace mutated by the complete eager proof. */
+  scratchFs?: MemoryFileSystem;
+  /** Selection-authenticated keg descriptors to project as bottle trees. */
+  packages: readonly HomebrewBottleDescriptor[];
+  loadBottleBytes: (
+    pkg: HomebrewBottleDescriptor,
+  ) => Uint8Array | Promise<Uint8Array>;
+  /** Retired rich-plan provenance is intentionally inexpressible here. */
+  selectionSource?: never;
+  catalogCheckout?: never;
+  migrationLock?: never;
+}
+
+export interface HomebrewFlatOriginalBottleCollectionBuildResult {
+  /** Complete private eager pour used as ownership and relocation evidence. */
+  fs: MemoryFileSystem;
+  payloads: HomebrewLazyLayerPayload[];
+  deferredTrees: HomebrewDeferredTreeDraftDescriptor[];
+  report: HomebrewFlatVfsBuildReport;
+}
+
+export interface ProjectHomebrewFlatOriginalBottleCollectionOptions {
+  /** Concrete lower namespace used solely for collision/ownership projection. */
+  baseFs: MemoryFileSystem;
+  /** Exact eager proof already produced from the complete flat plan. */
+  eagerProof: HomebrewFlatVfsBuildResult;
+  /** Selection-authenticated keg descriptors to project as bottle trees. */
+  packages: readonly HomebrewBottleDescriptor[];
+  /** Exact authenticated bottle bytes retained by the proof caller. */
+  loadBottleBytes: (pkg: HomebrewBottleDescriptor) => Uint8Array | undefined;
+}
+
 async function authenticateHomebrewCompositionBase(
   fs: MemoryFileSystem,
 ): Promise<void> {
@@ -200,69 +247,15 @@ export async function buildHomebrewOriginalBottleCollection(
   commonArch(plan);
   const tapLock = planTapLock(plan);
   validatePackageTapOwnership(plan.packages, tapLock);
-  if (plan.packages.length === 0) {
-    throw new Error("Homebrew original bottle collection has no selected packages");
-  }
-  if (plan.packages.length > HOMEBREW_RUNTIME_LAYER_LIMITS.maxPackages) {
-    throw new Error("Homebrew original bottle collection exceeds the package-count cap");
-  }
-  let declaredArchiveBytes = 0;
-  for (const pkg of plan.packages) {
-    if (!Number.isSafeInteger(pkg.bytes) || pkg.bytes <= 0) {
-      throw new Error(`Homebrew original bottle ${pkg.fullName} has an invalid declared size`);
+  const originalPackages = plan.packages.map(legacyOriginalBottlePackage);
+  const richPackageByName = new Map(plan.packages.map((pkg) => [pkg.fullName, pkg]));
+  const bottles = await prepareOriginalBottles(originalPackages, async (pkg) => {
+    const rich = richPackageByName.get(pkg.fullName);
+    if (rich === undefined) {
+      throw new Error(`Homebrew original bottle did not plan ${pkg.fullName}`);
     }
-    if (pkg.bytes > HOMEBREW_RUNTIME_LAYER_LIMITS.maxArchiveBytes) {
-      throw new Error(
-        `Homebrew original bottle ${pkg.fullName} exceeds the per-bottle archive cap`,
-      );
-    }
-    declaredArchiveBytes += pkg.bytes;
-  }
-  assertVfsDeferredTreeCollectionUsage({
-    groups: plan.packages.length,
-    archiveBytes: declaredArchiveBytes,
-    expandedBytes: 0,
-    payloadBytes: 0,
-    entries: 0,
-  }, "Homebrew original bottle collection");
-
-  const bottles: PreparedOriginalBottle[] = [];
-  let aggregateArchiveBytes = 0;
-  let aggregateExpandedBytes = 0;
-  let aggregateSourceEntries = 0;
-  for (const pkg of plan.packages) {
-    const bytes = await options.loadBottleBytes(pkg);
-    assertBottleIdentity(pkg, bytes);
-    const parsed = parseTarGzip(bytes, {
-      label: `Homebrew deferred bottle ${pkg.fullName}`,
-      limits: {
-        maxCompressedBytes: HOMEBREW_RUNTIME_LAYER_LIMITS.maxArchiveBytes,
-        maxUncompressedBytes: HOMEBREW_RUNTIME_LAYER_LIMITS.maxUncompressedBytes,
-        maxEntries: HOMEBREW_RUNTIME_LAYER_LIMITS.maxEntries,
-      },
-    });
-    const sourceEntries = createSourceInventory(parsed);
-    const relocation = prepareOriginalBottleRelocation(pkg, parsed);
-    aggregateArchiveBytes += bytes.byteLength;
-    aggregateExpandedBytes += gzipExpandedBytes(bytes);
-    aggregateSourceEntries += sourceEntries.length;
-    assertVfsDeferredTreeCollectionUsage({
-      groups: bottles.length + 1,
-      archiveBytes: aggregateArchiveBytes,
-      expandedBytes: aggregateExpandedBytes,
-      payloadBytes: 0,
-      entries: aggregateSourceEntries,
-    }, "Homebrew original bottle collection");
-    // The expanded TAR is released after each iteration; only compact source
-    // truth and the exact compressed object survive to collection closure.
-    bottles.push({
-      pkg,
-      bytes,
-      sourceEntries,
-      relocationSourcePaths: relocation.sourcePaths,
-      relocatedBytesByCanonicalSource: relocation.bytesByCanonicalSource,
-    });
-  }
+    return options.loadBottleBytes(rich);
+  });
 
   const bottleBytes = new Map(
     bottles.map((bottle) => [bottle.pkg.fullName, bottle.bytes]),
@@ -292,26 +285,160 @@ export async function buildHomebrewOriginalBottleCollection(
     options.treeIdOverrides ?? new Map(),
     new Map(build.report.packages.map((pkg) => [pkg.full_name, new Set(pkg.links)])),
   );
-  const aggregateGuestEntries = trees.reduce(
-    (total, tree) => total + tree.descriptor.inventory.entries.length,
-    0,
-  );
-  const aggregatePayloadBytes = trees.reduce(
-    (total, tree) => total + tree.descriptor.inventory.payload_bytes,
-    0,
-  );
-  assertVfsDeferredTreeCollectionUsage({
-    groups: trees.length,
-    archiveBytes: aggregateArchiveBytes,
-    expandedBytes: aggregateExpandedBytes,
-    payloadBytes: aggregatePayloadBytes,
-    entries: aggregateSourceEntries + aggregateGuestEntries,
-  }, "Homebrew original bottle collection");
+  assertPreparedOriginalBottleUsage(bottles, trees);
   return {
     payloads: trees.map((tree) => tree.payload),
     deferredTrees: trees.map((tree) => tree.descriptor),
     packages: plan.packages.map(packageRecord),
     report: build.report,
+  };
+}
+
+/**
+ * Project selected keg descriptors from one complete flat-selection pour.
+ *
+ * The full plan is authenticated and poured before the caller's tree subset
+ * is considered, so link ownership, collision, relocation, and runtime-
+ * support behavior all come from the canonical flat builder. The private pour
+ * is returned as evidence; the caller-owned lower filesystem is unchanged.
+ */
+export async function buildHomebrewFlatOriginalBottleCollection(
+  plan: HomebrewFlatVfsPlan,
+  options: BuildHomebrewFlatOriginalBottleCollectionOptions,
+): Promise<HomebrewFlatOriginalBottleCollectionBuildResult> {
+  rejectFlatCollectionProvenance(options);
+  if (options.scratchFs === options.baseFs) {
+    throw new Error(
+      "Homebrew flat original bottles require separate base and scratch filesystems",
+    );
+  }
+  if (!Array.isArray(options.packages) || options.packages.length === 0) {
+    throw new Error("Homebrew flat original-bottle collection has no selected keg descriptors");
+  }
+  // WHY: neither the async base authentication nor the bottle loader may
+  // rewrite the selection facts that authorize this projection. The eager
+  // builder authenticates this exact private plan snapshot before loading any
+  // bytes; requested descriptors are independently captured at the same
+  // synchronous boundary.
+  const planSnapshot = immutableSnapshot(plan);
+  const requestedDescriptorSnapshot = immutableSnapshot(options.packages);
+  const authoritativeDescriptors = new Map(
+    planSnapshot.packages.map((descriptor) => [descriptor.fullName, descriptor]),
+  );
+  await authenticateHomebrewCompositionBase(options.baseFs);
+  assertFlatCollectionBaseOwnership(options.baseFs);
+
+  const bottleBytes = new Map<string, Uint8Array>();
+  const build = await buildHomebrewVfsSelection(planSnapshot, {
+    ...(options.scratchFs === undefined
+      ? { baseFs: options.baseFs }
+      : { baseFs: options.baseFs, targetFs: options.scratchFs }),
+    async loadBottleBytes(descriptor) {
+      const authoritative = authoritativeDescriptors.get(descriptor.fullName);
+      if (
+        authoritative === undefined ||
+        !bytesEqual(
+          encodeHomebrewBottleDescriptor(descriptor),
+          encodeHomebrewBottleDescriptor(authoritative),
+        )
+      ) {
+        throw new Error(
+          `Homebrew flat original-bottle loader descriptor ${descriptor.fullName} ` +
+            "does not match the authenticated plan snapshot",
+        );
+      }
+      const loaded = await options.loadBottleBytes(structuredClone(authoritative));
+      if (!(loaded instanceof Uint8Array)) {
+        throw new Error(
+          `Homebrew flat original-bottle collection is missing bottle bytes for ` +
+            authoritative.fullName,
+        );
+      }
+      const exact = new Uint8Array(loaded);
+      bottleBytes.set(authoritative.fullName, exact);
+      return exact;
+    },
+  });
+
+  return projectHomebrewFlatOriginalBottleCollectionFromEagerProof(
+    planSnapshot,
+    {
+      baseFs: options.baseFs,
+      eagerProof: build,
+      packages: requestedDescriptorSnapshot,
+      loadBottleBytes: (descriptor) => bottleBytes.get(descriptor.fullName),
+    },
+  );
+}
+
+/**
+ * Project exact bottle trees from a caller-owned complete eager proof.
+ * This internal composition seam avoids a second pour while retaining the
+ * same plan-authority and payload authentication used by the public builder.
+ */
+export async function projectHomebrewFlatOriginalBottleCollectionFromEagerProof(
+  plan: HomebrewFlatVfsPlan,
+  options: ProjectHomebrewFlatOriginalBottleCollectionOptions,
+): Promise<HomebrewFlatOriginalBottleCollectionBuildResult> {
+  const planSnapshot = immutableSnapshot(plan);
+  const requestedDescriptorSnapshot = immutableSnapshot(options.packages);
+  const authoritativeDescriptors = new Map(
+    planSnapshot.packages.map((descriptor) => [descriptor.fullName, descriptor]),
+  );
+  await authenticateHomebrewCompositionBase(options.baseFs);
+  assertFlatCollectionBaseOwnership(options.baseFs);
+  assertFlatEagerProof(planSnapshot, options.eagerProof);
+
+  const selected = snapshotSelectedFlatDescriptors(
+    requestedDescriptorSnapshot,
+    authoritativeDescriptors,
+  );
+  const projectionPackages = selected.map(flatOriginalBottlePackage);
+  const bottles = await prepareOriginalBottles(
+    projectionPackages,
+    (pkg) => options.loadBottleBytes(
+      authoritativeDescriptors.get(pkg.fullName)!,
+    ),
+  );
+  const allEntries = collectLayerEntries(options.eagerProof.fs, options.baseFs);
+  const selectedEntries = selectFlatOriginalBottleEntries(
+    allEntries,
+    projectionPackages,
+    options.eagerProof.report,
+  );
+  const appliedLinks = new Map(
+    options.eagerProof.report.packages.map(
+      (pkg) => [pkg.full_name, new Set(pkg.links)],
+    ),
+  );
+  const trees = createOriginalBottleTrees(
+    bottles,
+    selectedEntries,
+    options.eagerProof.fs,
+    new Map(),
+    appliedLinks,
+  );
+  const treeByPackage = new Map(
+    trees.map((tree) => [tree.descriptor.package!, tree]),
+  );
+  const orderedTrees = selected.map((descriptor) => {
+    const tree = treeByPackage.get(descriptor.fullName);
+    if (tree === undefined) {
+      throw new Error(
+        `Homebrew flat original-bottle collection omits ${descriptor.fullName}`,
+      );
+    }
+    return tree;
+  });
+  if (treeByPackage.size !== orderedTrees.length) {
+    throw new Error("Homebrew flat original-bottle collection has unexpected tree ownership");
+  }
+  assertPreparedOriginalBottleUsage(bottles, orderedTrees);
+  return {
+    fs: options.eagerProof.fs,
+    payloads: orderedTrees.map((tree) => tree.payload),
+    deferredTrees: orderedTrees.map((tree) => tree.descriptor),
+    report: options.eagerProof.report,
   };
 }
 
@@ -524,11 +651,347 @@ function createDeferredTreeDescriptor(
 }
 
 interface PreparedOriginalBottle {
-  pkg: HomebrewVfsPackagePlan;
+  pkg: HomebrewOriginalBottlePackagePlan;
+  materialization: HomebrewBottleMaterializationPackage;
   bytes: Uint8Array;
   sourceEntries: HomebrewDeferredTreeSourceEntry[];
   relocationSourcePaths: Set<string>;
   relocatedBytesByCanonicalSource: Map<string, Uint8Array>;
+}
+
+function legacyOriginalBottlePackage(
+  pkg: HomebrewVfsPackagePlan,
+): HomebrewOriginalBottlePackagePlan {
+  return {
+    name: pkg.name,
+    fullName: pkg.fullName,
+    version: pkg.version,
+    formulaRevision: pkg.formulaRevision,
+    bottleRebuild: pkg.bottleRebuild,
+    arch: pkg.arch,
+    kandeloAbi: pkg.kandeloAbi,
+    dependencies: pkg.dependencies,
+    source: { url: pkg.url, sha256: pkg.sha256, bytes: pkg.bytes },
+    relocation: {
+      prefix: pkg.prefix,
+      cellar: pkg.cellar,
+      keg: pkg.keg,
+      payloadRoot: pkg.payloadRoot,
+      receipts: pkg.linkManifest.receipts,
+    },
+    links: pkg.linkManifest.links,
+    pathPrepend: pkg.linkManifest.env.PATH_prepend ?? [],
+  };
+}
+
+function flatOriginalBottlePackage(
+  descriptor: HomebrewBottleDescriptor,
+): HomebrewOriginalBottlePackagePlan {
+  return {
+    name: descriptor.name,
+    fullName: descriptor.fullName,
+    version: descriptor.version,
+    formulaRevision: descriptor.revision,
+    bottleRebuild: descriptor.bottleRebuild,
+    arch: descriptor.arch,
+    kandeloAbi: descriptor.kandeloAbi,
+    dependencies: descriptor.dependencies,
+    source: {
+      url: descriptor.url,
+      sha256: descriptor.sha256,
+      bytes: descriptor.bytes,
+    },
+    relocation: {
+      prefix: descriptor.prefix,
+      cellar: descriptor.cellar,
+      keg: descriptor.keg,
+      payloadRoot: descriptor.payloadRoot,
+      receipts: descriptor.receipts,
+    },
+    links: descriptor.links,
+    pathPrepend: descriptor.pathPrepend,
+  };
+}
+
+function originalBottleMaterializationPackage(
+  pkg: HomebrewOriginalBottlePackagePlan,
+): HomebrewBottleMaterializationPackage {
+  return {
+    name: pkg.name,
+    fullName: pkg.fullName,
+    version: pkg.version,
+    arch: pkg.arch,
+    prefix: pkg.relocation.prefix,
+    cellar: pkg.relocation.cellar,
+    keg: pkg.relocation.keg,
+    payloadRoot: pkg.relocation.payloadRoot,
+    receipts: pkg.relocation.receipts,
+    links: pkg.links,
+    pathPrepend: pkg.pathPrepend,
+    sha256: pkg.source.sha256,
+    bytes: pkg.source.bytes,
+    failureLabel: `Homebrew deferred bottle ${pkg.fullName}`,
+  };
+}
+
+async function prepareOriginalBottles(
+  packages: readonly HomebrewOriginalBottlePackagePlan[],
+  loadBottleBytes: (
+    pkg: HomebrewOriginalBottlePackagePlan,
+  ) => Uint8Array | undefined | Promise<Uint8Array | undefined>,
+): Promise<PreparedOriginalBottle[]> {
+  if (packages.length === 0) {
+    throw new Error("Homebrew original bottle collection has no selected packages");
+  }
+  if (packages.length > HOMEBREW_RUNTIME_LAYER_LIMITS.maxPackages) {
+    throw new Error("Homebrew original bottle collection exceeds the package-count cap");
+  }
+  let declaredArchiveBytes = 0;
+  for (const pkg of packages) {
+    const bytes = pkg.source.bytes;
+    if (!Number.isSafeInteger(bytes) || bytes <= 0) {
+      throw new Error(`Homebrew original bottle ${pkg.fullName} has an invalid declared size`);
+    }
+    if (bytes > HOMEBREW_RUNTIME_LAYER_LIMITS.maxArchiveBytes) {
+      throw new Error(
+        `Homebrew original bottle ${pkg.fullName} exceeds the per-bottle archive cap`,
+      );
+    }
+    declaredArchiveBytes += bytes;
+  }
+  assertVfsDeferredTreeCollectionUsage({
+    groups: packages.length,
+    archiveBytes: declaredArchiveBytes,
+    expandedBytes: 0,
+    payloadBytes: 0,
+    entries: 0,
+  }, "Homebrew original bottle collection");
+
+  const bottles: PreparedOriginalBottle[] = [];
+  let aggregateArchiveBytes = 0;
+  let aggregateExpandedBytes = 0;
+  let aggregateSourceEntries = 0;
+  for (const pkg of packages) {
+    const bytes = await loadBottleBytes(pkg);
+    if (!(bytes instanceof Uint8Array)) {
+      throw new Error(
+        `Homebrew original bottle collection is missing bottle bytes for ${pkg.fullName}`,
+      );
+    }
+    assertBottleIdentity(pkg, bytes);
+    const parsed = parseTarGzip(bytes, {
+      label: `Homebrew deferred bottle ${pkg.fullName}`,
+      limits: {
+        maxCompressedBytes: HOMEBREW_RUNTIME_LAYER_LIMITS.maxArchiveBytes,
+        maxUncompressedBytes: HOMEBREW_RUNTIME_LAYER_LIMITS.maxUncompressedBytes,
+        maxEntries: HOMEBREW_RUNTIME_LAYER_LIMITS.maxEntries,
+      },
+    });
+    const materialization = originalBottleMaterializationPackage(pkg);
+    const sourceEntries = createSourceInventory(parsed);
+    const relocation = prepareOriginalBottleRelocation(
+      pkg,
+      materialization,
+      parsed,
+    );
+    aggregateArchiveBytes += bytes.byteLength;
+    aggregateExpandedBytes += gzipExpandedBytes(bytes);
+    aggregateSourceEntries += sourceEntries.length;
+    assertVfsDeferredTreeCollectionUsage({
+      groups: bottles.length + 1,
+      archiveBytes: aggregateArchiveBytes,
+      expandedBytes: aggregateExpandedBytes,
+      payloadBytes: 0,
+      entries: aggregateSourceEntries,
+    }, "Homebrew original bottle collection");
+    bottles.push({
+      pkg,
+      materialization,
+      bytes,
+      sourceEntries,
+      relocationSourcePaths: relocation.sourcePaths,
+      relocatedBytesByCanonicalSource: relocation.bytesByCanonicalSource,
+    });
+  }
+  return bottles;
+}
+
+function assertPreparedOriginalBottleUsage(
+  bottles: readonly PreparedOriginalBottle[],
+  trees: readonly OriginalBottleTree[],
+): void {
+  const aggregateArchiveBytes = bottles.reduce(
+    (total, bottle) => total + bottle.bytes.byteLength,
+    0,
+  );
+  const aggregateExpandedBytes = bottles.reduce(
+    (total, bottle) => total + gzipExpandedBytes(bottle.bytes),
+    0,
+  );
+  const aggregateSourceEntries = bottles.reduce(
+    (total, bottle) => total + bottle.sourceEntries.length,
+    0,
+  );
+  const aggregateGuestEntries = trees.reduce(
+    (total, tree) => total + tree.descriptor.inventory.entries.length,
+    0,
+  );
+  const aggregatePayloadBytes = trees.reduce(
+    (total, tree) => total + tree.descriptor.inventory.payload_bytes,
+    0,
+  );
+  assertVfsDeferredTreeCollectionUsage({
+    groups: trees.length,
+    archiveBytes: aggregateArchiveBytes,
+    expandedBytes: aggregateExpandedBytes,
+    payloadBytes: aggregatePayloadBytes,
+    entries: aggregateSourceEntries + aggregateGuestEntries,
+  }, "Homebrew original bottle collection");
+}
+
+function rejectFlatCollectionProvenance(
+  options: BuildHomebrewFlatOriginalBottleCollectionOptions,
+): void {
+  const value = options as BuildHomebrewFlatOriginalBottleCollectionOptions &
+    Record<string, unknown>;
+  for (const field of ["selectionSource", "catalogCheckout", "migrationLock"]) {
+    if (Object.prototype.hasOwnProperty.call(value, field)) {
+      throw new Error(
+        `Homebrew flat original-bottle collection rejects retired ${field} provenance`,
+      );
+    }
+  }
+}
+
+function assertFlatEagerProof(
+  plan: HomebrewFlatVfsPlan,
+  proof: HomebrewFlatVfsBuildResult,
+): void {
+  const report = proof.report;
+  if (
+    report.schema !== 1 ||
+    report.name !== plan.name ||
+    report.arch !== plan.arch ||
+    report.kandelo_abi !== plan.kandeloAbi ||
+    report.selection_sha256 !== plan.selectionSha256 ||
+    report.requested_vfs_filename !== plan.requestedVfsFilename ||
+    report.resource_policy !== plan.resourcePolicy ||
+    report.link_policy !== plan.linkPolicy ||
+    report.runtime_support !== plan.runtimeSupport ||
+    report.packages.length !== plan.packages.length ||
+    report.packages.some((pkg, index) => {
+      const descriptor = plan.packages[index]!;
+      return pkg.full_name !== descriptor.fullName ||
+        pkg.version !== descriptor.version ||
+        pkg.revision !== descriptor.revision ||
+        pkg.bottle_rebuild !== descriptor.bottleRebuild ||
+        pkg.sha256 !== descriptor.sha256 ||
+        pkg.bytes !== descriptor.bytes ||
+        pkg.keg !== descriptor.keg;
+    })
+  ) {
+    throw new Error(
+      "Homebrew flat original-bottle eager proof differs from the authenticated plan",
+    );
+  }
+}
+
+function snapshotSelectedFlatDescriptors(
+  packages: readonly HomebrewBottleDescriptor[],
+  authoritative: ReadonlyMap<string, HomebrewBottleDescriptor>,
+): HomebrewBottleDescriptor[] {
+  const requested = structuredClone(packages) as HomebrewBottleDescriptor[];
+  const selected: HomebrewBottleDescriptor[] = [];
+  const names = new Set<string>();
+  for (const descriptor of requested) {
+    const expected = authoritative.get(descriptor.fullName);
+    if (
+      expected === undefined ||
+      !bytesEqual(
+        encodeHomebrewBottleDescriptor(descriptor),
+        encodeHomebrewBottleDescriptor(expected),
+      )
+    ) {
+      throw new Error(
+        `Homebrew flat original-bottle descriptor ${descriptor.fullName} is not in ` +
+          "the authenticated selection",
+      );
+    }
+    if (descriptor.materialization !== "keg") {
+      throw new Error(
+        `Homebrew flat original-bottle descriptor ${descriptor.fullName} is not a keg`,
+      );
+    }
+    if (names.has(descriptor.fullName)) {
+      throw new Error(
+        `Homebrew flat original-bottle descriptor ${descriptor.fullName} is duplicated`,
+      );
+    }
+    names.add(descriptor.fullName);
+    // Project only the descriptor captured from the authenticated flat plan.
+    // The request proves membership and ordering; it never supplies identity.
+    selected.push(expected);
+  }
+  return selected;
+}
+
+function immutableSnapshot<T>(value: T): T {
+  return deepFreezeSnapshot(structuredClone(value) as T);
+}
+
+function deepFreezeSnapshot<T>(value: T): T {
+  if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) deepFreezeSnapshot(child);
+  return Object.freeze(value);
+}
+
+function selectFlatOriginalBottleEntries(
+  entries: readonly HomebrewLazyLayerEntry[],
+  packages: readonly HomebrewOriginalBottlePackagePlan[],
+  report: HomebrewFlatVfsBuildReport,
+): HomebrewLazyLayerEntry[] {
+  const reportByPackage = new Map(
+    report.packages.map((pkg) => [pkg.full_name, pkg]),
+  );
+  const roots = new Set<string>();
+  for (const pkg of packages) {
+    const packageReport = reportByPackage.get(pkg.fullName);
+    if (packageReport === undefined) {
+      throw new Error(
+        `Homebrew flat eager report omits selected package ${pkg.fullName}`,
+      );
+    }
+    roots.add(withoutLeadingSlash(pkg.relocation.keg));
+    roots.add(withoutLeadingSlash(
+      `${pkg.relocation.prefix}/${packageReport.opt_link.path}`,
+    ));
+    for (const link of packageReport.links) {
+      roots.add(withoutLeadingSlash(`${pkg.relocation.prefix}/${link}`));
+    }
+  }
+  return entries.filter((entry) => {
+    for (const root of roots) {
+      if (
+        entry.path === root ||
+        entry.path.startsWith(`${root}/`) ||
+        root.startsWith(`${entry.path}/`)
+      ) return true;
+    }
+    return false;
+  });
+}
+
+function assertFlatCollectionBaseOwnership(baseFs: MemoryFileSystem): void {
+  if (!pathExists(baseFs, HOME_BREW_PREFIX)) return;
+  const entries: HomebrewLazyLayerEntry[] = [];
+  collectPath(baseFs, HOME_BREW_PREFIX, entries, new Map());
+  const unassigned = entries.find((entry) => entry.type !== "directory");
+  if (unassigned !== undefined) {
+    throw new Error(
+      `Homebrew flat original-bottle collection found unassigned eager path ` +
+        `/${unassigned.path}`,
+    );
+  }
 }
 
 interface OriginalBottleTree {
@@ -591,7 +1054,10 @@ function createOriginalBottleTrees(
         );
       }
       packageSources.set(source.path, source);
-      const guest = mapHomebrewBottleEntryToGuestPath(bottle.pkg, source.path);
+      const guest = mapHomebrewBottleEntryToGuestPath(
+        bottle.materialization,
+        source.path,
+      );
       if (guest === null) continue;
       const path = withoutLeadingSlash(guest);
       packageGuests.set(source.path, path);
@@ -644,8 +1110,10 @@ function createOriginalBottleTrees(
       if (guest === undefined) continue;
       regularSourceByInode.set(fs.stat(`/${guest}`).ino, source.path);
     }
-    for (const [index, link] of bottle.pkg.linkManifest.links.entries()) {
-      const path = withoutLeadingSlash(`${bottle.pkg.prefix}/${link.target}`);
+    for (const [index, link] of bottle.pkg.links.entries()) {
+      const path = withoutLeadingSlash(
+        `${bottle.pkg.relocation.prefix}/${link.target}`,
+      );
       if (!appliedLinks.get(bottle.pkg.fullName)?.has(link.target)) {
         continue;
       }
@@ -655,7 +1123,10 @@ function createOriginalBottleTrees(
       const final = finalByPath.get(path);
       if (final === undefined) throw new Error(`Homebrew applied link is absent at /${path}`);
       if (link.type === "file") {
-        const sourceGuest = homebrewManifestSourcePath(bottle.pkg, link.source);
+        const sourceGuest = homebrewManifestSourcePath(
+          bottle.materialization,
+          link.source,
+        );
         const sourcePath = regularSourceByInode.get(fs.stat(sourceGuest).ino);
         if (sourcePath === undefined) {
           throw new Error(
@@ -689,8 +1160,10 @@ function createOriginalBottleTrees(
         });
       }
     }
-    const opt = homebrewCanonicalOptLink(bottle.pkg);
-    const optPath = withoutLeadingSlash(`${bottle.pkg.prefix}/${opt.path}`);
+    const opt = homebrewCanonicalOptLink(bottle.materialization);
+    const optPath = withoutLeadingSlash(
+      `${bottle.pkg.relocation.prefix}/${opt.path}`,
+    );
     if (assignments.has(optPath)) {
       throw new Error(`Homebrew original bottle opt ownership overlaps at /${optPath}`);
     }
@@ -763,7 +1236,7 @@ function createOriginalBottleTrees(
     const transports: HomebrewDeferredTreeDraftDescriptor["transports"] = [
       { kind: "bundle-release", asset },
     ];
-    const external = browserReadableExternalBottleUrl(bottle.pkg.url);
+    const external = browserReadableExternalBottleUrl(bottle.pkg.source.url);
     if (external !== undefined) transports.push({ kind: "external-https", url: external });
     return {
       payload: { id, asset, bytes: bottle.bytes },
@@ -773,13 +1246,13 @@ function createOriginalBottleTrees(
         activation: {
           mode: "first-use",
           capabilities: [`homebrew-bottle:${id}`],
-          roots: [bottle.pkg.keg],
+          roots: [bottle.pkg.relocation.keg],
         },
         content: {
           media_type: "application/vnd.oci.image.layer.v1.tar+gzip",
           decoder: "homebrew-bottle-tar-gzip-v1",
-          sha256: bottle.pkg.sha256,
-          bytes: bottle.pkg.bytes,
+          sha256: bottle.pkg.source.sha256,
+          bytes: bottle.pkg.source.bytes,
         },
         transports,
         inventory: {
@@ -820,7 +1293,7 @@ function createDirectGuestEntry(
   treeId: string,
 ): HomebrewLazyLayerEntry {
   const final = finalByPath.get(path)!;
-  const keg = withoutLeadingSlash(assignment.bottle.pkg.keg);
+  const keg = withoutLeadingSlash(assignment.bottle.pkg.relocation.keg);
   const ownership: HomebrewLazyLayerEntry["ownership"] = final.type === "directory" &&
       path !== keg && !path.startsWith(`${keg}/`)
     ? "mergeable-directory"
@@ -957,13 +1430,14 @@ function createDirectGuestEntry(
 }
 
 function prepareOriginalBottleRelocation(
-  pkg: HomebrewVfsPackagePlan,
+  pkg: HomebrewOriginalBottlePackagePlan,
+  materialization: HomebrewBottleMaterializationPackage,
   entries: readonly TarEntry[],
 ): {
   sourcePaths: Set<string>;
   bytesByCanonicalSource: Map<string, Uint8Array>;
 } {
-  const installReceipts = pkg.linkManifest.receipts.filter(
+  const installReceipts = pkg.relocation.receipts.filter(
     (receipt) => receipt === "INSTALL_RECEIPT.json" ||
       receipt.endsWith("/INSTALL_RECEIPT.json"),
   );
@@ -979,10 +1453,13 @@ function prepareOriginalBottleRelocation(
   const sourceByPath = new Map(entries.map((entry) => [entry.path, entry]));
   const sourceByGuestPath = new Map<string, TarEntry>();
   for (const entry of entries) {
-    const guestPath = mapHomebrewBottleEntryToGuestPath(pkg, entry.path);
+    const guestPath = mapHomebrewBottleEntryToGuestPath(materialization, entry.path);
     if (guestPath !== null) sourceByGuestPath.set(guestPath, entry);
   }
-  const receiptGuestPath = homebrewManifestSourcePath(pkg, installReceipts[0]!);
+  const receiptGuestPath = homebrewManifestSourcePath(
+    materialization,
+    installReceipts[0]!,
+  );
   const receiptSource = sourceByGuestPath.get(receiptGuestPath);
   if (receiptSource === undefined) {
     throw new Error(
@@ -1001,7 +1478,7 @@ function prepareOriginalBottleRelocation(
   const sourcePaths = new Set<string>();
   const bytesByCanonicalSource = new Map<string, Uint8Array>();
   for (const relativePath of receipt.changedFiles) {
-    const guestPath = `${pkg.keg}/${relativePath}`;
+    const guestPath = `${pkg.relocation.keg}/${relativePath}`;
     const source = sourceByGuestPath.get(guestPath);
     if (source === undefined ||
       (source.type !== "file" && source.type !== "hardlink")) {
@@ -1031,7 +1508,7 @@ function prepareOriginalBottleRelocation(
 function resolveTarRegularSource(
   start: TarEntry,
   entries: ReadonlyMap<string, TarEntry>,
-  pkg: HomebrewVfsPackagePlan,
+  pkg: HomebrewOriginalBottlePackagePlan,
 ): Extract<TarEntry, { type: "file" }> {
   const seen = new Set<string>();
   let current = start;
@@ -1113,7 +1590,7 @@ function resolveSourceHardlinks(
   return resolved;
 }
 
-function originalBottleTreeId(pkg: HomebrewVfsPackagePlan): string {
+function originalBottleTreeId(pkg: HomebrewOriginalBottlePackagePlan): string {
   const slug = pkg.name.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "package";
   const prefix = "bottle-";
   const suffix = `-${digest(new TextEncoder().encode(pkg.fullName)).slice(0, 16)}`;
@@ -1169,8 +1646,15 @@ function browserReadableExternalBottleUrl(value: string): string | undefined {
   }
 }
 
-function assertBottleIdentity(pkg: HomebrewVfsPackagePlan, bytes: Uint8Array): void {
-  if (bytes.byteLength !== pkg.bytes || digest(bytes) !== pkg.sha256) {
+function assertBottleIdentity(
+  pkg: HomebrewOriginalBottlePackagePlan,
+  bytes: Uint8Array,
+): void {
+  if (
+    !(bytes instanceof Uint8Array) ||
+    bytes.byteLength !== pkg.source.bytes ||
+    digest(bytes) !== pkg.source.sha256
+  ) {
     throw new Error(`Homebrew deferred bottle ${pkg.fullName} differs from package metadata`);
   }
 }

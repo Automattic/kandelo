@@ -28,6 +28,15 @@ export { filesystemPathconf } from "./pathconf";
 export type { PathconfProfile } from "./pathconf";
 export type { WorkerAdapter, WorkerHandle } from "./worker-adapter";
 export type { HostDiagnostic } from "./host-diagnostic";
+export {
+  BrowserCorsProxy,
+  BrowserCorsProxyRequestError,
+  validateBrowserCorsProxyConfig,
+} from "./networking/browser-cors-proxy";
+export type {
+  BrowserCorsProxyConfig,
+  HttpHeaderOccurrence,
+} from "./networking/browser-cors-proxy";
 export type {
   HostToWorkerMessage, WorkerToHostMessage,
   WorkerReadyMessage, WorkerExitMessage, WorkerErrorMessage,
@@ -102,6 +111,21 @@ export type {
   HomebrewVfsPlanOptions,
   HomebrewVfsTapIdentity,
 } from "./homebrew-vfs-planner";
+export type {
+  BuildHomebrewFlatOriginalBottleCollectionOptions,
+  HomebrewFlatOriginalBottleCollectionBuildResult,
+} from "./homebrew-lazy-layer";
+export type {
+  ComposeHomebrewFlatLazyVfsOptions,
+  HomebrewFlatLazyBaseImageBinding,
+  HomebrewFlatLazyDemoConfigInput,
+  HomebrewFlatLazyEmbeddedEntryEvidence,
+  HomebrewFlatLazyImageBinding,
+  HomebrewFlatLazyShellConfigInput,
+  HomebrewFlatLazyTreeEvidence,
+  HomebrewFlatLazyVfsCompositionResult,
+  HomebrewFlatLazyVfsReport,
+} from "./homebrew-flat-lazy-vfs-composer";
 export {
   HOMEBREW_RUNTIME_LAYER_POLICY_KIND,
   parseHomebrewRuntimeLayerPolicy,

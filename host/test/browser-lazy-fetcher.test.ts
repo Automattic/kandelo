@@ -7,12 +7,17 @@ import {
 import { createBrowserLazyFetcher } from "../src/vfs/browser-lazy-fetcher";
 
 const RUNTIME_URL = "https://demo.kandelo.test/assets/kernel-worker.js";
+const PROXY_CONFIG = {
+  url: "https://demo.kandelo.test/__proxy?url=",
+  allowedRequestHeaderNames: ["accept", "content-type", "accept"],
+  allowAnonymousGetHeaderOmission: true,
+} as const;
 
 describe("browser lazy VFS fetch transport", () => {
   it("keeps same-origin lazy assets on the direct browser path", async () => {
     const fetchImpl = vi.fn(async () => new Response("same-origin"));
     const fetcher = createBrowserLazyFetcher(
-      "https://demo.kandelo.test/__proxy?url=",
+      PROXY_CONFIG,
       { fetchImpl, runtimeUrl: RUNTIME_URL },
     );
 
@@ -27,8 +32,7 @@ describe("browser lazy VFS fetch transport", () => {
     const controller = new AbortController();
     const target =
       "https://github.com/example/project/releases/download/v1/runtime.zip";
-    const proxy = "https://demo.kandelo.test/__proxy?url=";
-    const fetcher = createBrowserLazyFetcher(proxy, {
+    const fetcher = createBrowserLazyFetcher(PROXY_CONFIG, {
       fetchImpl,
       runtimeUrl: RUNTIME_URL,
     });
@@ -36,7 +40,7 @@ describe("browser lazy VFS fetch transport", () => {
     await fetcher(target, { signal: controller.signal });
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      `${proxy}${encodeURIComponent(target)}`,
+      `${PROXY_CONFIG.url}${encodeURIComponent(target)}`,
       {
         signal: controller.signal,
         credentials: "omit",
@@ -50,7 +54,10 @@ describe("browser lazy VFS fetch transport", () => {
     const proxy = "https://proxy.kandelo.test/?";
     const target =
       "https://github.com/example/project/releases/download/v1/runtime.zip";
-    const fetcher = createBrowserLazyFetcher(proxy, {
+    const fetcher = createBrowserLazyFetcher({
+      ...PROXY_CONFIG,
+      url: proxy,
+    }, {
       fetchImpl,
       runtimeUrl: RUNTIME_URL,
     });
@@ -66,8 +73,11 @@ describe("browser lazy VFS fetch transport", () => {
 
   it("rejects an empty proxy before any lazy fetch starts", () => {
     expect(() =>
-      createBrowserLazyFetcher("  ", { runtimeUrl: RUNTIME_URL })
-    ).toThrow("must not be empty");
+      createBrowserLazyFetcher({
+        ...PROXY_CONFIG,
+        url: "  ",
+      }, { runtimeUrl: RUNTIME_URL })
+    ).toThrow("browser lazy CORS proxy URL must not be empty");
   });
 
   it("recovers encoded and bare-query proxy targets for diagnostics", () => {

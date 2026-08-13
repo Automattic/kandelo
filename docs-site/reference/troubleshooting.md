@@ -59,3 +59,10 @@ For the Kandelo UI, cross-origin fetches use the configured CORS proxy. In local
 cd apps/browser-demos
 VITE_CORS_PROXY_URL='https://your-proxy.example/?' npm run dev
 ```
+
+That proxy must preflight the application's current request-header profile:
+`Accept`, `Content-Type`, `git-protocol`, `wp_blog`, and `wp_install`. Kandelo
+may omit another field only from an anonymous bodyless GET and reports the
+omission. Credentialed, body-bearing, and non-GET requests fail before proxy
+dispatch when they contain unsupported fields. These failures describe a
+browser transport limit; changing an npm package or registry URL is not a fix.

@@ -21,6 +21,7 @@ inputs = [
   "host/src/homebrew-guest-layout.ts",
   "homebrew/kandelo-guest-layout.json",
   "host/src/pathconf.ts",
+  "host/src/shell-runtime-layout.ts",
   "host/src/statfs.ts",
   "host/src/types.ts",
   "host/src/vfs",
@@ -31,7 +32,7 @@ inputs = [
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 3
+revision = 5
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

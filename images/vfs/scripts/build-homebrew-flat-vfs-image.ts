@@ -526,16 +526,18 @@ export async function runFlatHomebrewVfsImageBuilder(
   return { report, cleanupWarnings };
 }
 
-interface LoadedFlatHomebrewBottle {
+export interface LoadedFlatHomebrewBottle {
   bytes: Uint8Array;
   cleanupWarnings: readonly string[];
 }
 
-async function loadFlatHomebrewBottle(
+export async function loadFlatHomebrewBottle(
   cacheRoot: string,
   descriptor: HomebrewBottleDescriptor,
-  fetchBottle: FlatHomebrewBottleFetcher,
-  publishBottle: typeof publishFlatHomebrewBottleCacheEntry,
+  fetchBottle: FlatHomebrewBottleFetcher = (url, fetchOptions) =>
+    fetchHomebrewBottleBytes(url, fetchOptions),
+  publishBottle: typeof publishFlatHomebrewBottleCacheEntry =
+    publishFlatHomebrewBottleCacheEntry,
 ): Promise<LoadedFlatHomebrewBottle> {
   const identity = {
     fullName: descriptor.fullName,
@@ -787,7 +789,7 @@ function readVfsText(fs: MemoryFileSystem, path: string): string {
   }
 }
 
-function resolveFlatHomebrewBottleCacheRoot(cacheRoot: string): string {
+export function resolveFlatHomebrewBottleCacheRoot(cacheRoot: string): string {
   let resolved: string;
   try {
     resolved = realpathSync(cacheRoot);

@@ -314,7 +314,7 @@ test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page 
     "[ \"$HOME\" = /work ]",
     "[ \"$PWD\" = /work ]",
     "[ \"$npm_config_cache\" = /tmp/.npm-cache ]",
-    "[ \"$npm_config_registry\" = http://proxy.local/ ]",
+    "[ \"$npm_config_registry\" = https://registry.npmjs.org/ ]",
     "spidermonkey-node -e \"console.log('KANDELO_NODE_ALIAS_OK')\"",
     "printf 'KANDELO_NODE_CONTRACT_OK\\n'",
   ].join(" && ");

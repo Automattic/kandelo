@@ -94,14 +94,11 @@ trigger_block="$(
     inside { print }
   ' "$PAGES_WORKFLOW"
 )"
-grep -Fxq '  push:' <<<"$trigger_block" &&
-  grep -Fxq '    branches: [main]' <<<"$trigger_block" ||
-  fail "the complete Pages publisher must run for every main push"
-if grep -Eq '^  (pull_request|pull_request_target):' <<<"$trigger_block"; then
-  fail "the Pages publisher must not deploy pull-request revisions"
-fi
-if grep -Eq '^[[:space:]]+(paths|paths-ignore):' <<<"$trigger_block"; then
-  fail "the complete Pages publisher must not filter main pushes by path"
+grep -Fxq '  workflow_dispatch:' <<<"$trigger_block" ||
+  fail "the complete Pages publisher must run only after activation dispatch"
+if grep -Eq '^  (push|pull_request|pull_request_target|schedule):' \
+  <<<"$trigger_block"; then
+  fail "the Pages publisher must run only after activation dispatch"
 fi
 for input in source_sha candidate_tag canonical_index_sha256; do
   grep -Fxq "      $input:" <<<"$trigger_block" ||
@@ -859,8 +856,8 @@ grep -Eq 'uses: actions/checkout@[0-9a-f]{40}' <<<"$checkout_block" ||
   fail "the complete publisher must check out one pinned source commit"
 grep -Fq 'persist-credentials: false' <<<"$checkout_block" ||
   fail "the product-building Pages checkout must not persist write credentials"
-grep -Fq 'ref: ${{ inputs.source_sha || github.sha }}' <<<"$checkout_block" ||
-  fail "the Pages checkout must use the exact requested or event source SHA"
+grep -Fq 'ref: ${{ inputs.source_sha }}' <<<"$checkout_block" ||
+  fail "the Pages checkout must use the exact activated source SHA"
 checkout_ref_count="$(
   awk '/^[[:space:]]+ref:/ { count += 1 } END { print count + 0 }' \
     <<<"$checkout_block"
@@ -893,12 +890,13 @@ musl_line="$(
 isolation_line="$(step_line "Isolate canonical package resolution")"
 prepare_browser_line="$(step_line "Prepare browser demo assets")"
 package_products_line="$(step_line "Bind canonical package images")"
+mirror_line="$(step_line "Verify the public Homebrew bottle mirror")"
 browser_build_line="$(step_line "Build browser demos for GitHub Pages")"
 guide_build_line="$(step_line "Build user guide for the complete Pages tree")"
 api_build_line="$(step_line "Build API docs for the complete Pages tree")"
 assembly_line="$(step_line "Add documentation to the complete Pages tree")"
 manifest_line="$(step_line "Record the deployed generation")"
-flat_boot_line="$(step_line "Boot the canonical flat Pages shell in Chromium")"
+flat_boot_line="$(step_line "Boot the canonical lazy Pages shell in Chromium")"
 node_acceptance_line="$(step_line "Run exact Pages Node npm acceptance")"
 size_line="$(step_line "Enforce the GitHub Pages published-site size limit")"
 freshness_line="$(step_line "Confirm this is the newest Pages run")"
@@ -914,8 +912,10 @@ deploy_line="$(step_line "Deploy to gh-pages")"
   [ "$projection_line" -lt "$isolation_line" ] &&
   [ "$isolation_line" -lt "$prepare_browser_line" ] &&
   [ "$prepare_browser_line" -lt "$package_products_line" ] &&
+  [ -n "$mirror_line" ] &&
+  [ "$package_products_line" -lt "$mirror_line" ] &&
   [ -n "$browser_build_line" ] &&
-  [ "$package_products_line" -lt "$browser_build_line" ] &&
+  [ "$mirror_line" -lt "$browser_build_line" ] &&
   [ "$browser_build_line" -lt "$guide_build_line" ] &&
   [ -n "$guide_build_line" ] && [ -n "$api_build_line" ] &&
   [ -n "$assembly_line" ] && [ -n "$manifest_line" ] &&
@@ -1010,40 +1010,65 @@ grep -Fq 'id: package_products' <<<"$package_products_block" &&
   grep -Fq \
     'shell_image=$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)' \
     <<<"$package_products_block" &&
-  grep -Fq \
+grep -Fq \
     'node_image=$(bash scripts/resolve-binary.sh programs/node-vfs.vfs.zst)' \
+    <<<"$package_products_block" &&
+  grep -Fq \
+    'bootstrap=$(bash scripts/resolve-binary.sh programs/homebrew-bootstrap/homebrew-bootstrap.zip)' \
+    <<<"$package_products_block" &&
+  grep -Fq 'cmp "$bootstrap" apps/browser-demos/public/homebrew-bootstrap.zip' \
     <<<"$package_products_block" ||
-  fail "Pages must bind the resolver-selected canonical shell and Node images"
-grep -Fq 'scripts/inspect-canonical-flat-shell.test.ts' \
+  fail "Pages must bind the resolver-selected canonical shell, Node, and bootstrap products"
+grep -Fq 'scripts/inspect-homebrew-main-shell-public-product.test.ts' \
   <<<"$package_products_block" &&
-  grep -Fq 'scripts/inspect-canonical-flat-shell.ts' \
+  grep -Fq 'scripts/inspect-homebrew-main-shell-public-product.ts' \
     <<<"$package_products_block" &&
   grep -Fq -- '--selection homebrew/main-shell-flat-selection.json' \
     <<<"$package_products_block" &&
-  grep -Fq -- '--shell-config homebrew/main-shell-default.json' \
+  grep -Fq -- 'homebrew/main-shell-materialization-policy.json' \
     <<<"$package_products_block" &&
-  grep -Fq -- '--demo-config homebrew/main-shell-flat-demo.json' \
+  grep -Fq -- 'homebrew/main-shell-runtime-support-policy.json' \
+    <<<"$package_products_block" &&
+  grep -Fq -- 'homebrew/main-shell-flat-lazy-mirror-plan.json' \
+    <<<"$package_products_block" &&
+  grep -Fq -- '--homebrew-bootstrap-archive "$bootstrap"' \
     <<<"$package_products_block" ||
-  fail "Pages must run the canonical flat-shell inspector and its rejection tests"
+  fail "Pages must run the lazy public-product inspector and its rejection tests"
 grep -Fq 'echo "shell_sha256=$(jq -er' \
   <<<"$package_products_block" &&
   grep -Fq \
     'echo "node_sha256=$(sha256sum "$node_image"' \
+    <<<"$package_products_block" &&
+  grep -Fq 'echo "bootstrap_sha256=$(jq -er' \
+    <<<"$package_products_block" &&
+  grep -Fq 'echo "bootstrap_bytes=$(jq -er' \
+    <<<"$package_products_block" &&
+  grep -Fq 'echo "mirror_plan_url=$(jq -er' \
     <<<"$package_products_block" ||
-  fail "Pages must record the exact canonical shell and Node digests"
+  fail "Pages must record the exact canonical shell, Node, bootstrap, and mirror identities"
 for retired_input in \
-  homebrew-bootstrap \
   main-shell-lazy-artifact-lock \
   verify-homebrew-main-shell-artifact-lock \
-  inspect-homebrew-main-shell-public-product \
+  inspect-canonical-flat-shell \
   recover-homebrew-bottle-mirror \
-  mirror_plan_url \
-  KANDELO_HOMEBREW_MAIN_SHELL_
+  flat-self-contained
 do
   if grep -Fq "$retired_input" "$PAGES_WORKFLOW"; then
     fail "Pages retains retired lazy-shell input: $retired_input"
   fi
 done
+
+mirror_block="$(
+  step_block "$PAGES_WORKFLOW" "Verify the public Homebrew bottle mirror"
+)"
+grep -Fq 'env -u GH_TOKEN -u GITHUB_TOKEN node \' <<<"$mirror_block" &&
+  grep -Fq 'scripts/verify-public-homebrew-bottle-mirror.mjs \' \
+    <<<"$mirror_block" &&
+  grep -Fq -- 'homebrew/main-shell-flat-lazy-mirror-plan.json' \
+    <<<"$mirror_block" &&
+  grep -Fq -- '--out "$RUNNER_TEMP/pages-homebrew-mirror-receipt.json"' \
+    <<<"$mirror_block" ||
+  fail "Pages must anonymously verify the checked-in public mirror before building"
 
 # WHY: Pages is the full-gallery publication gate. Its focused browser proofs
 # may select one entry, but applying either selector to the production build
@@ -1062,8 +1087,13 @@ grep -Fxq '          npm run build' <<<"$browser_build_block" &&
     <<<"$browser_build_block" &&
   grep -Fxq \
     '            dist "${{ steps.package_products.outputs.node_image }}" node-vfs.vfs' \
+    <<<"$browser_build_block" &&
+  grep -Fq \
+    'cmp "${{ steps.package_products.outputs.bootstrap }}" \' \
+    <<<"$browser_build_block" &&
+  grep -Fq 'dist/homebrew-bootstrap.zip' \
     <<<"$browser_build_block" ||
-  fail "the Pages build must verify its exact hashed shell and Node assets"
+  fail "the Pages build must verify its exact shell, Node, and bootstrap assets"
 if grep -Fq 'dist/shell.vfs.zst' "$PAGES_WORKFLOW" ||
    grep -Fq 'apps/browser-demos/public/shell.vfs.zst' "$PAGES_WORKFLOW" ||
    grep -Fq 'dist/node-vfs.vfs.zst' "$PAGES_WORKFLOW" ||
@@ -1094,35 +1124,50 @@ expected_guide_build_commands=$'          set -euo pipefail\n          node --te
   fail "the Pages guide must run strict source checks, build, then output checks"
 
 flat_boot_block="$(
-  step_block "$PAGES_WORKFLOW" "Boot the canonical flat Pages shell in Chromium"
+  step_block "$PAGES_WORKFLOW" "Boot the canonical lazy Pages shell in Chromium"
 )"
 grep -Fq 'VITE_BASE: /kandelo/' <<<"$flat_boot_block" &&
   grep -Fq 'KANDELO_BROWSER_DEMO_INPUTS: main' \
     <<<"$flat_boot_block" &&
-  grep -Fq 'KANDELO_CANONICAL_FLAT_SHELL_STRICT: "1"' \
+  grep -Fq 'KANDELO_HOMEBREW_MAIN_SHELL_STRICT: "1"' \
     <<<"$flat_boot_block" &&
   grep -Fq \
-    'KANDELO_CANONICAL_FLAT_SHELL_SHA256: ${{ steps.package_products.outputs.shell_sha256 }}' \
+    'KANDELO_HOMEBREW_MAIN_SHELL_SHA256: ${{ steps.package_products.outputs.shell_sha256 }}' \
+    <<<"$flat_boot_block" &&
+  grep -Fq \
+    'KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256: ${{ steps.package_products.outputs.bootstrap_sha256 }}' \
+    <<<"$flat_boot_block" &&
+  grep -Fq \
+    'KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES: ${{ steps.package_products.outputs.bootstrap_bytes }}' \
+    <<<"$flat_boot_block" &&
+  grep -Fq 'KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE: public' \
+    <<<"$flat_boot_block" &&
+  grep -Fq \
+    'KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL: ${{ steps.package_products.outputs.mirror_plan_url }}' \
     <<<"$flat_boot_block" &&
   grep -Fq 'KANDELO_PLAYWRIGHT_SERVE_DIST: "1"' <<<"$flat_boot_block" &&
   grep -Fq 'KANDELO_TEST_BASE_URL: http://127.0.0.1:5401/kandelo/' \
     <<<"$flat_boot_block" &&
   grep -Fq 'bash ../../scripts/dev-shell.sh env \' <<<"$flat_boot_block" &&
-  grep -Fq 'test/kandelo-canonical-flat-shell.spec.ts' \
+  grep -Fq 'test/kandelo-homebrew-main-shell.spec.ts' \
     <<<"$flat_boot_block" &&
   grep -Fq -- '--project=chromium' <<<"$flat_boot_block" ||
-  fail "the Pages preview must prove the canonical flat shell at the published base"
+  fail "the Pages preview must prove the canonical lazy shell at the published base"
 for binding in \
   '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
   '"VITE_BASE=$VITE_BASE" \' \
   '"KANDELO_BROWSER_DEMO_INPUTS=$KANDELO_BROWSER_DEMO_INPUTS" \' \
-  '"KANDELO_CANONICAL_FLAT_SHELL_STRICT=$KANDELO_CANONICAL_FLAT_SHELL_STRICT" \' \
-  '"KANDELO_CANONICAL_FLAT_SHELL_SHA256=$KANDELO_CANONICAL_FLAT_SHELL_SHA256" \' \
+  '"KANDELO_HOMEBREW_MAIN_SHELL_STRICT=$KANDELO_HOMEBREW_MAIN_SHELL_STRICT" \' \
+  '"KANDELO_HOMEBREW_MAIN_SHELL_SHA256=$KANDELO_HOMEBREW_MAIN_SHELL_SHA256" \' \
+  '"KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256=$KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256" \' \
+  '"KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES=$KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES" \' \
+  '"KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE=$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" \' \
+  '"KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL=$KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL" \' \
   '"KANDELO_PLAYWRIGHT_SERVE_DIST=$KANDELO_PLAYWRIGHT_SERVE_DIST" \' \
   '"KANDELO_TEST_BASE_URL=$KANDELO_TEST_BASE_URL" \'
 do
   grep -Fq "$binding" <<<"$flat_boot_block" ||
-    fail "the flat-shell preview must carry its exact inputs through dev-shell"
+    fail "the lazy-shell preview must carry its exact inputs through dev-shell"
 done
 
 node_acceptance_block="$(
@@ -1142,7 +1187,7 @@ grep -Fq 'VITE_BASE: /kandelo/' <<<"$node_acceptance_block" &&
     <<<"$node_acceptance_block" &&
   grep -Fq 'npx playwright test test/kandelo-node.spec.ts' \
     <<<"$node_acceptance_block" &&
-  grep -Fq -- "--grep 'Kandelo Node demo installs cowsay with npm'" \
+  grep -Fq -- "--grep '@node-npm-acceptance'" \
     <<<"$node_acceptance_block" &&
   grep -Fq -- '--project=chromium' <<<"$node_acceptance_block" ||
   fail "the Pages preview must install and execute cowsay from the canonical Node image"
@@ -1157,6 +1202,14 @@ for binding in \
 do
   grep -Fq "$binding" <<<"$node_acceptance_block" ||
     fail "the Node preview must carry its exact inputs through dev-shell"
+done
+for forbidden in \
+  KANDELO_NODE_LOCAL_BOOT_ASSET_ROOT \
+  KANDELO_NODE_LOCAL_PROXY_PORT \
+  recover-homebrew-bottle-mirror.ts
+do
+  ! grep -Fq "$forbidden" <<<"$node_acceptance_block" ||
+    fail "the Pages Node acceptance must use the public production transport"
 done
 
 manifest_block="$(

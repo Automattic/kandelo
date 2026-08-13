@@ -167,6 +167,23 @@ export async function loadShellBaseFileSystem(
 }
 
 /**
+ * Serialize a transient guest used only by derived-image build steps.
+ *
+ * Node's normal boot adapter materializes the flat-lazy Homebrew runtime
+ * cohort before reporting readiness. PHP/MariaDB build guests do not consume
+ * Homebrew, so suppress that one boot trigger in their private snapshot while
+ * retaining every pending tree and leaving the product filesystem unchanged.
+ */
+export function saveShellDerivedBuildGuestSnapshot(
+  fs: MemoryFileSystem,
+): Promise<Uint8Array> {
+  const metadata = fs.getImageMetadata();
+  if (metadata?.homebrewFlatLazy === undefined) return fs.saveImage();
+  const { homebrewFlatLazy: _bootTrigger, ...buildGuestMetadata } = metadata;
+  return fs.saveImage({ metadata: buildGuestMetadata });
+}
+
+/**
  * Save a product layered on the canonical shell only when it retains enough
  * independent block and inode capacity for normal runtime writes.
  */
@@ -285,6 +302,7 @@ function shellDerivedImageMetadata(
   }
 
   const sourceComposition = inherited.shellComposition;
+  const flatLazyComposition = inherited.homebrewFlatLazy;
   const legacyHomebrewClaims = [
     inherited.packageDeferredTrees,
     inherited.homebrewBootstrap,
@@ -295,6 +313,78 @@ function shellDerivedImageMetadata(
     inherited.shellConfig,
     inherited.demoConfig,
   ];
+  if (flatLazyComposition !== undefined) {
+    if (
+      sourceComposition !== undefined ||
+      inherited.homebrewFlat !== undefined ||
+      inherited.homebrew !== undefined
+    ) {
+      throw new Error(
+        "shell-derived VFS mixes flat-lazy and retired shell composition bindings",
+      );
+    }
+    const homebrewFlatLazy = validatedFlatLazyBinding(
+      flatLazyComposition,
+      kernelAbi,
+    );
+    if (
+      !Array.isArray(inherited.packageDeferredTrees) ||
+      inherited.packageDeferredTrees.length === 0 ||
+      fs.exportLazyArchiveEntries().length === 0
+    ) {
+      throw new Error(
+        "shell-derived VFS flat-lazy lineage has no pending package trees",
+      );
+    }
+    const packageDeferredTrees = inherited.packageDeferredTrees.map(
+      (tree, index) => ({
+        ...requiredRecord(tree, `flat-lazy package tree ${index}`),
+      }),
+    );
+    const homebrewBootstrap = validatedFlatLazyBootstrap(
+      inherited.homebrewBootstrap,
+    );
+    const shellConfig = validatedFlatShellConfig(fs, inherited.shellConfig);
+    const inheritedDemoConfig = requiredExactRecord(
+      inherited.demoConfig,
+      "flat-lazy demo config binding",
+      ["bytes", "path", "sha256"],
+    );
+    if (
+      inheritedDemoConfig.path !== KANDELO_DEMO_CONFIG_PATH ||
+      !isSha256(inheritedDemoConfig.sha256) ||
+      !isPositiveSafeInteger(inheritedDemoConfig.bytes)
+    ) {
+      throw new Error(
+        "shell-derived VFS has an invalid flat-lazy demo config binding",
+      );
+    }
+    const demoConfig = readRequiredVfsBytes(fs, KANDELO_DEMO_CONFIG_PATH);
+
+    // WHY: the lazy shell's authenticated transport and partition bindings
+    // remain the authority for every derived product. Reconstruct only the
+    // validated composition fields while rebinding the product-owned demo.
+    return {
+      version: 1,
+      kernelAbi,
+      createdBy: SHELL_DERIVED_CREATED_BY,
+      capacity: { maxByteLength },
+      baseImage: {
+        sha256: baseSha256,
+        bytes: baseBytes,
+        kernelAbi,
+      },
+      packageDeferredTrees,
+      homebrewBootstrap,
+      homebrewFlatLazy,
+      shellConfig,
+      demoConfig: {
+        path: KANDELO_DEMO_CONFIG_PATH,
+        sha256: sha256Hex(demoConfig),
+        bytes: demoConfig.byteLength,
+      },
+    };
+  }
   if (sourceComposition !== undefined) {
     if (
       !isExactSourceRootfsShellComposition(sourceComposition)
@@ -483,6 +573,244 @@ function shellDerivedImageMetadata(
       },
     },
   };
+}
+
+function validatedFlatLazyBinding(
+  value: unknown,
+  kernelAbi: number,
+): Record<string, unknown> {
+  const binding = requiredExactRecord(
+    value,
+    "flat-lazy Homebrew binding",
+    [
+      "kind",
+      "materializationPolicySha256",
+      "mirror",
+      "partition",
+      "runtimeSupportPolicySha256",
+      "schema",
+      "selection",
+    ],
+  );
+  const selection = requiredExactRecord(
+    binding.selection,
+    "flat-lazy selection binding",
+    [
+      "arch",
+      "kandeloAbi",
+      "linkPolicy",
+      "name",
+      "requestedVfsFilename",
+      "resourcePolicy",
+      "runtimeSupport",
+      "sha256",
+    ],
+  );
+  const mirror = requiredExactRecord(
+    binding.mirror,
+    "flat-lazy mirror binding",
+    [
+      "assetCount",
+      "collectionSha256",
+      "planBytes",
+      "planSha256",
+      "repository",
+      "tag",
+    ],
+  );
+  const partition = requiredExactRecord(
+    binding.partition,
+    "flat-lazy partition binding",
+    [
+      "bootstrapPackage",
+      "deferredPackageOrder",
+      "embeddedPackageOrder",
+      "runtimeCohortPackageOrder",
+    ],
+  );
+  const embedded = requiredUniqueStrings(
+    partition.embeddedPackageOrder,
+    "flat-lazy embedded partition",
+    3,
+  );
+  const deferred = requiredUniqueStrings(
+    partition.deferredPackageOrder,
+    "flat-lazy deferred partition",
+    37,
+  );
+  const runtime = requiredUniqueStrings(
+    partition.runtimeCohortPackageOrder,
+    "flat-lazy runtime cohort",
+    2,
+  );
+  if (
+    binding.schema !== 1 ||
+    binding.kind !== "kandelo-homebrew-flat-selection-lazy-v1" ||
+    selection.name !== "main-shell-abi42-wasm32" ||
+    selection.arch !== "wasm32" ||
+    selection.kandeloAbi !== kernelAbi ||
+    selection.requestedVfsFilename !== "shell.vfs.zst" ||
+    selection.resourcePolicy !== "kandelo-homebrew-vfs-main-shell-v1" ||
+    selection.linkPolicy !== "kandelo-homebrew-link-ownership-v1" ||
+    selection.runtimeSupport !== "kandelo-homebrew-bootstrap-v1" ||
+    !isSha256(selection.sha256) ||
+    !isSha256(binding.materializationPolicySha256) ||
+    !isSha256(binding.runtimeSupportPolicySha256) ||
+    typeof mirror.repository !== "string" ||
+    mirror.repository.length === 0 ||
+    typeof mirror.tag !== "string" ||
+    mirror.tag !==
+      `homebrew-shell-bottles-sha256-${String(mirror.collectionSha256)}` ||
+    !isSha256(mirror.collectionSha256) ||
+    !isSha256(mirror.planSha256) ||
+    !isPositiveSafeInteger(mirror.planBytes) ||
+    mirror.assetCount !== 37 ||
+    partition.bootstrapPackage !==
+      "kandelo-dev/tap-core/homebrew-bootstrap" ||
+    runtime.some((packageName) => !deferred.includes(packageName))
+  ) {
+    throw new Error("shell-derived VFS has an invalid flat-lazy Homebrew binding");
+  }
+  return {
+    schema: 1,
+    kind: binding.kind,
+    selection: {
+      sha256: selection.sha256,
+      name: selection.name,
+      arch: selection.arch,
+      kandeloAbi: selection.kandeloAbi,
+      requestedVfsFilename: selection.requestedVfsFilename,
+      resourcePolicy: selection.resourcePolicy,
+      linkPolicy: selection.linkPolicy,
+      runtimeSupport: selection.runtimeSupport,
+    },
+    materializationPolicySha256: binding.materializationPolicySha256,
+    runtimeSupportPolicySha256: binding.runtimeSupportPolicySha256,
+    mirror: {
+      repository: mirror.repository,
+      tag: mirror.tag,
+      collectionSha256: mirror.collectionSha256,
+      planSha256: mirror.planSha256,
+      planBytes: mirror.planBytes,
+      assetCount: mirror.assetCount,
+    },
+    partition: {
+      embeddedPackageOrder: embedded,
+      deferredPackageOrder: deferred,
+      bootstrapPackage: partition.bootstrapPackage,
+      runtimeCohortPackageOrder: runtime,
+    },
+  };
+}
+
+function validatedFlatLazyBootstrap(value: unknown): Record<string, unknown> {
+  const bootstrap = requiredExactRecord(
+    value,
+    "flat-lazy Homebrew bootstrap binding",
+    ["entrypoint", "environment", "ownership"],
+  );
+  const environment = requiredExactRecord(
+    bootstrap.environment,
+    "flat-lazy Homebrew bootstrap environment",
+    ["bytes", "path", "sha256"],
+  );
+  const entrypoint = requiredExactRecord(
+    bootstrap.entrypoint,
+    "flat-lazy Homebrew bootstrap entrypoint",
+    ["path", "target"],
+  );
+  const ownership = requiredExactRecord(
+    bootstrap.ownership,
+    "flat-lazy Homebrew bootstrap ownership",
+    ["gid", "mutable_paths", "prefix", "uid"],
+  );
+  const mutablePaths = requiredUniqueStrings(
+    ownership.mutable_paths,
+    "flat-lazy Homebrew mutable paths",
+  );
+  if (
+    environment.path !== "/etc/homebrew/brew.env" ||
+    !isSha256(environment.sha256) ||
+    !isPositiveSafeInteger(environment.bytes) ||
+    entrypoint.path !== "/usr/bin/brew" ||
+    entrypoint.target !== "/opt/kandelo/homebrew/bin/brew" ||
+    ownership.prefix !== "/opt/kandelo/homebrew" ||
+    ownership.uid !== 1000 ||
+    ownership.gid !== 1000 ||
+    mutablePaths.some((path) => !path.startsWith("/"))
+  ) {
+    throw new Error(
+      "shell-derived VFS has an invalid flat-lazy Homebrew bootstrap binding",
+    );
+  }
+  return {
+    environment: { ...environment },
+    entrypoint: { ...entrypoint },
+    ownership: { ...ownership, mutable_paths: mutablePaths },
+  };
+}
+
+function validatedFlatShellConfig(
+  fs: MemoryFileSystem,
+  value: unknown,
+): Record<string, unknown> {
+  const shellConfig = requiredExactRecord(
+    value,
+    "flat-lazy shell config binding",
+    ["argv", "bytes", "path", "sha256"],
+  );
+  const shellBytes = readRequiredVfsBytes(fs, KANDELO_SHELL_CONFIG_PATH);
+  let parsedShellConfig;
+  try {
+    parsedShellConfig = parseKandeloShellConfig(
+      new TextDecoder("utf-8", { fatal: true }).decode(shellBytes),
+    );
+  } catch {
+    throw new Error("shell-derived VFS has an invalid flat-lazy shell config binding");
+  }
+  if (
+    parsedShellConfig === null ||
+    parsedShellConfig.path !== shellConfig.path ||
+    !Array.isArray(shellConfig.argv) ||
+    shellConfig.argv.some((arg) => typeof arg !== "string") ||
+    parsedShellConfig.argv.length !== shellConfig.argv.length ||
+    parsedShellConfig.argv.some((arg, index) => arg !== shellConfig.argv[index]) ||
+    shellConfig.bytes !== shellBytes.byteLength ||
+    shellConfig.sha256 !== sha256Hex(shellBytes)
+  ) {
+    throw new Error("shell-derived VFS has an invalid flat-lazy shell config binding");
+  }
+  return {
+    path: parsedShellConfig.path,
+    argv: [...parsedShellConfig.argv],
+    sha256: shellConfig.sha256,
+    bytes: shellConfig.bytes,
+  };
+}
+
+function requiredUniqueStrings(
+  value: unknown,
+  label: string,
+  expectedLength?: number,
+): string[] {
+  if (
+    !Array.isArray(value) ||
+    (expectedLength !== undefined && value.length !== expectedLength) ||
+    value.length === 0 ||
+    value.some((item) => typeof item !== "string" || item.length === 0) ||
+    new Set(value).size !== value.length
+  ) {
+    throw new Error(`shell-derived VFS has an invalid ${label}`);
+  }
+  return [...value] as string[];
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
 function isExactSourceRootfsShellComposition(value: unknown): boolean {
