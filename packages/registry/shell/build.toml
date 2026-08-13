@@ -58,7 +58,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 24
+revision    = 25
 # WHY: this recipe is bound to the admitted ABI-42 flat selection and emits the
 # sealed lazy product directly. It no longer depends on the retired lazy shell
 # campaign or its unpublished derived artifact lock.

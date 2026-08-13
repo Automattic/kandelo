@@ -19,6 +19,7 @@ import {
   type HomebrewBootstrapConsumerState,
 } from "./homebrew-bootstrap-consumer";
 import {
+  applyHomebrewFlatPublicCommandLinks,
   assertHomebrewFlatVfsBaseClone,
   buildHomebrewVfsSelection,
   resolveHomebrewFlatLinkOwnership,
@@ -420,15 +421,24 @@ export async function composeHomebrewFlatLazyVfs(
     [...runtimeTreeIds, bootstrapTree.descriptor.id],
   );
   assertPackageDeferredZipTreeState(options.outputFs, bootstrapTree, "deferred");
+  const linkOwnership = resolveHomebrewFlatLinkOwnership(
+    plan.packages,
+    plan.linkPolicy,
+  );
   const extractionCommands = selectHomebrewExtractionCommands(
     plan.packages,
-    resolveHomebrewFlatLinkOwnership(plan.packages, plan.linkPolicy)
-      .selectedOwnerByTarget,
+    linkOwnership.selectedOwnerByTarget,
   );
   installSelectedHomebrewExtractionCommandAliases(
     options.outputFs,
     extractionCommands,
     "deferred",
+  );
+  applyHomebrewFlatPublicCommandLinks(
+    options.outputFs,
+    plan.packages,
+    linkOwnership.selectedOwnerByTarget,
+    true, // The sealed source inodes are intentionally still deferred.
   );
   installSelectedShellAliases(options.outputFs, bindingByPackage, partition);
   installFlatProfile(options.outputFs, eagerProof.report.environment.PATH);

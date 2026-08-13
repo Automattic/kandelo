@@ -31,8 +31,8 @@ expect_failure() {
     }
 }
 
-grep -Eq '^revision[[:space:]]*=[[:space:]]*24$' "$BUILD_TOML" ||
-    fail "canonical shell revision must be 24"
+grep -Eq '^revision[[:space:]]*=[[:space:]]*25$' "$BUILD_TOML" ||
+    fail "canonical shell revision must be 25"
 grep -Eq '^commit[[:space:]]*=[[:space:]]*"UNPUBLISHED"$' "$BUILD_TOML" ||
     fail "canonical shell must await publication under its authored commit"
 grep -Eq '^publication_state[[:space:]]*=[[:space:]]*"ready"$' \

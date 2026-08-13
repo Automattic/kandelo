@@ -171,8 +171,12 @@ test("browser proxy callers pass the complete application profile", () => {
   expect(callerSources.liveSetup).toContain(
     "const BROWSER_CORS_PROXY = resolveBrowserCorsProxyConfig({",
   );
-  expect(callerSources.liveSetup).toMatch(
-    /new BrowserKernel\(\{[\s\S]{0,320}corsProxy: BROWSER_CORS_PROXY,/,
+  const liveKernelConstructor = callerSources.liveSetup.match(
+    /kernel = new BrowserKernel\(\{([\s\S]*?)\n    \}\);/,
+  );
+  expect(liveKernelConstructor, "live BrowserKernel constructor").not.toBeNull();
+  expect(liveKernelConstructor![1]).toContain(
+    "corsProxy: BROWSER_CORS_PROXY,",
   );
   expect(callerSources.testRunner).toContain(
     "const corsProxy = resolveBrowserCorsProxyConfig({",

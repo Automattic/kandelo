@@ -123,17 +123,19 @@ non-doc paths should also run the non-package test gate as a fail-safe,
 but should not trigger the package matrix unless they are package
 archive inputs.
 
-### Current ABI-42 shell publication (2026-08-12)
+### Current ABI-42 shell publication (2026-08-13)
 
 The package registry now owns the browser shell product. The checked-in
 `homebrew/main-shell-flat-selection.json` selects the exact admitted wasm32
-bottles, and shell revision 24 composes their sealed flat-lazy form over the
+bottles, and shell revision 25 composes their sealed flat-lazy form over the
 platform base. The image embeds Bash, ncurses, and libc++; records 37 deferred
 bottle trees plus the package-owned bootstrap tree; and binds those trees to
 the authenticated mirror plan stored in the image. Before host boot it has 38
 pending groups. The normal `/usr/bin/brew` boot preparation atomically fetches
 only bootstrap, libyaml, and Ruby, leaving the 35 ordinary bottle trees pending
-for first use. Repeating boot preparation performs no additional fetch.
+for first use. Public command links, including `fbdoom` and `modeset`, resolve
+to those deferred bottle paths without materializing them during image
+construction. Repeating boot preparation performs no additional fetch.
 
 This is the normal canonical package release path, not a parallel Homebrew
 product lane. The shell recipe is `publication_state = "ready"`; its
@@ -142,11 +144,11 @@ truthful producer commit. It does not mean the product is pending. Changes to
 the flat selection, shell configuration, base image, or composer are ordinary
 package inputs and rebuild the complete reverse-dependent closure:
 
-- `shell` revision 24;
-- `node-vfs` revision 17;
-- `lamp` revision 13;
-- `wordpress` revision 14; and
-- `nginx-vfs` and `nginx-php-vfs` revision 4.
+- `shell` revision 25;
+- `node-vfs` revision 18;
+- `lamp` revision 14;
+- `wordpress` revision 15; and
+- `nginx-vfs` and `nginx-php-vfs` revision 5.
 
 The deferred bottle bytes have a separate transport publication, not a
 separate shell-image authority. The checked-in

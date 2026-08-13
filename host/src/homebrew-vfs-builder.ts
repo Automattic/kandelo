@@ -702,7 +702,7 @@ export async function buildHomebrewVfsSelection(
     runtimeSupport,
     extractionCommands,
   ));
-  applyFlatPublicCommandLinks(
+  applyHomebrewFlatPublicCommandLinks(
     fs,
     plan.packages,
     linkResolution.selectedOwnerByTarget,
@@ -1352,10 +1352,11 @@ interface FlatPublicCommandLink {
   targetPath: string;
 }
 
-function applyFlatPublicCommandLinks(
+export function applyHomebrewFlatPublicCommandLinks(
   fs: MemoryFileSystem,
   packages: readonly HomebrewBottleDescriptor[],
   selectedOwnerByTarget: ReadonlyMap<string, string>,
+  allowDeferredSources = false,
 ): void {
   const declarations = new Map<string, FlatPublicCommandLink>();
   const packageByFullName = new Map(packages.map((pkg) => [pkg.fullName, pkg]));
@@ -1416,11 +1417,11 @@ function applyFlatPublicCommandLinks(
       source === null ||
       kind(source) !== S_IFREG ||
       (source.mode & 0o111) === 0 ||
-      fs.isPathDeferred(declaration.sourcePath)
+      (!allowDeferredSources && fs.isPathDeferred(declaration.sourcePath))
     ) {
       throw new HomebrewVfsBuildError(
         `flat Homebrew public command source ${declaration.sourcePath} ` +
-          "is not an eager executable regular file",
+          `is not ${allowDeferredSources ? "an" : "an eager"} executable regular file`,
       );
     }
     const target = tryLstat(fs, declaration.targetPath);

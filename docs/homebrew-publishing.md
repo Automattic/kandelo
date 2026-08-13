@@ -14,15 +14,17 @@ Migration status, preserved scope, and the remaining execution order are
 tracked in the
 [Homebrew Migration Living Execution Plan](plans/2026-07-21-homebrew-migration-execution-plan.md).
 
-## Current ABI-42 shell publication (2026-08-12)
+## Current ABI-42 shell publication (2026-08-13)
 
 Trusted CI still builds Kandelo Homebrew bottles, publishes them through the
 GHCR/Homebrew URL shape, and generates Formula `bottle do` blocks and Kandelo
 sidecars together. The current browser shell consumes those already-admitted
-bottles through `homebrew/main-shell-flat-selection.json`. Shell revision 24
+bottles through `homebrew/main-shell-flat-selection.json`. Shell revision 25
 composes their flat-lazy form over the platform base. It embeds the selected
 Bash closure and package-owned Homebrew bootstrap while retaining 37 bottle
-trees behind the authenticated mirror plan in the image.
+trees behind the authenticated mirror plan in the image. Stable public command
+links point into those deferred trees, so invoking a command fetches its bottle
+without making the shell image eager.
 
 That shell is a normal registry package and moves through the
 canonical package release alongside `node-vfs`, `lamp`, `wordpress`,
@@ -188,7 +190,7 @@ for dispatch, recovery, seal-last publication, and mutation handling.
 The current shell source build resolves the Kandelo `homebrew-bootstrap`
 registry package as its canonical direct dependency. That package emits the
 exact `homebrew-bootstrap.zip` and `homebrew-brew.env` consumed by shell
-revision 24, and `homebrew/homebrew-bootstrap-source-lock.json` binds their
+revision 25, and `homebrew/homebrew-bootstrap-source-lock.json` binds their
 source and bytes. The protected mirror publisher force-source-builds this
 dependency before it force-source-builds the shell.
 

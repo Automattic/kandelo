@@ -761,10 +761,10 @@ Sortix is divided into include, basic, and remaining-runtime jobs. These are
 the same natural partitions used by staging-build and prepare-merge; their
 matrix result is still aggregated by the single `test-gate` job.
 
-## Current ABI-42 shell publication (2026-08-12)
+## Current ABI-42 shell publication (2026-08-13)
 
 `homebrew/main-shell-flat-selection.json` is a package input for shell
-revision 24. Its archive embeds the selected Bash closure and package-owned
+revision 25. Its archive embeds the selected Bash closure and package-owned
 Homebrew bootstrap over the platform base while retaining 37 authenticated
 bottle trees as deferred flat-lazy groups. Every shell-derived VFS package
 records the exact base image digest and size. The shell and its five reverse

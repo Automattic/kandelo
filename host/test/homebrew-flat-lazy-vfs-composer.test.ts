@@ -123,6 +123,11 @@ describe("flat-selection lazy Homebrew composer", () => {
       expect(result.fs.readlink(stablePath)).toBe(`${PREFIX}/bin/${command}`);
       expect(result.fs.isPathDeferred(stablePath), stablePath).toBe(true);
     }
+    for (const command of ["fbdoom", "modeset"]) {
+      const stablePath = `/usr/local/bin/${command}`;
+      expect(result.fs.readlink(stablePath)).toBe(`${PREFIX}/bin/${command}`);
+      expect(result.fs.isPathDeferred(stablePath), stablePath).toBe(true);
+    }
     expect(() => result.fs.lstat(`${PREFIX}/Cellar/homebrew-bootstrap`))
       .toThrow();
   });
@@ -679,7 +684,9 @@ function compositionFixture(
   const zlib = earlyZlib ?? add("zlib");
   add("tar", [zlib]);
   add("gzip", [zlib]);
-  for (let index = 1; index <= 32; index += 1) {
+  add("fbdoom");
+  add("modeset");
+  for (let index = 1; index <= 30; index += 1) {
     add(`ordinary-${String(index).padStart(2, "0")}`);
   }
   const libyaml = add("libyaml", [zlib]);

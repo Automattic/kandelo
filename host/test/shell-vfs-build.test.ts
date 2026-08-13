@@ -497,11 +497,11 @@ describe("shell VFS base composition", () => {
       return [name, Number(revision![1])] as const;
     }));
     expect(shellDerivedRevisions).toEqual({
-      lamp: 13,
-      "nginx-php-vfs": 4,
-      "nginx-vfs": 4,
-      "node-vfs": 17,
-      wordpress: 14,
+      lamp: 14,
+      "nginx-php-vfs": 5,
+      "nginx-vfs": 5,
+      "node-vfs": 18,
+      wordpress: 15,
     });
   });
 

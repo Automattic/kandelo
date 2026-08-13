@@ -815,7 +815,7 @@ is wasm32 success, has an `archive_url`, and sets
 `browser_compatible = true`. Launch-time archive failures are surfaced in the
 UI instead of silently hiding the rest of the gallery.
 
-### Current ABI-42 shell publication (2026-08-12)
+### Current ABI-42 shell publication (2026-08-13)
 
 The normal shell page resolves the package archive built from
 `homebrew/main-shell-flat-selection.json`. The image embeds Bash and its two
@@ -824,9 +824,9 @@ tree retain sealed authenticated transports. Host boot prepares
 `/usr/bin/brew` by atomically fetching bootstrap, libyaml, and Ruby. The other
 35 bottle trees remain pending until their commands are first used.
 
-Shell revision 24 and `node-vfs` revision 17 share this exact base-image
-identity. The other shell-derived images are `nginx-vfs` revision 4,
-`nginx-php-vfs` revision 4, `lamp` revision 13, and `wordpress` revision 14.
+Shell revision 25 and `node-vfs` revision 18 share this exact base-image
+identity. The other shell-derived images are `nginx-vfs` revision 5,
+`nginx-php-vfs` revision 5, `lamp` revision 14, and `wordpress` revision 15.
 All preserve the shell's pending transports, bootstrap binding, atomic seals,
 capacity, and mirror identity. They are part of the canonical package release,
 and Pages resolves them with `./run.sh --fetch-only prepare-browser` from a
