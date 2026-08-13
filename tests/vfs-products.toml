@@ -16,6 +16,8 @@ product = "browser-main-shell"
 node = ["main-shell-startup", "main-shell-toolchain-node"]
 browser = [
   "main-shell-basic-e2e",
+  "main-shell-toolchain-browser",
+  "main-shell-c-development-browser",
   "main-shell-fbdoom-e2e",
   "main-shell-modeset-e2e",
 ]

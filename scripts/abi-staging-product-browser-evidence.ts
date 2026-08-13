@@ -57,6 +57,8 @@ const MAX_BROWSER_SERVER_CONCURRENCY = 8;
 
 export type BrowserEvidenceSurface =
   | "shell"
+  | "toolchain-shell"
+  | "c-development"
   | "doom"
   | "modeset"
   | "node"
@@ -1608,6 +1610,8 @@ async function browserRunWithTimeout<T>(
 const DEFINITION_SURFACES: Readonly<Record<string, BrowserEvidenceSurface>> = {
   "erlang-vfs-browser-smoke": "generic-exec",
   "main-shell-basic-e2e": "shell",
+  "main-shell-toolchain-browser": "toolchain-shell",
+  "main-shell-c-development-browser": "c-development",
   "main-shell-fbdoom-e2e": "doom",
   "main-shell-modeset-e2e": "modeset",
   "mariadb-suite-browser": "mariadb-suite",
@@ -1635,6 +1639,8 @@ const OPTIONAL_IMAGE_BY_PRODUCT = {
 const PROTECTED_BROWSER_REPOSITORY_SUITES: Readonly<
   Partial<Record<BrowserEvidenceSurface, string>>
 > = {
+  "toolchain-shell": "main-shell-toolchain-browser",
+  "c-development": "main-shell-c-development-browser",
   doom: "main-shell-fbdoom-browser",
   modeset: "main-shell-modeset-browser",
   "wordpress-sqlite": "wordpress-sqlite-browser",

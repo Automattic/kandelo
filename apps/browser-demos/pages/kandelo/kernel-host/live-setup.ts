@@ -711,6 +711,24 @@ export async function createLiveHost(
       await startBoot(h, profileForDescriptor(desc, "none"), desc);
     },
   });
+  if (protectedProfile !== undefined) {
+    Object.defineProperty(window, "__KANDELO_ABI_STAGING_LIVE_LEDGER__", {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: () => ({
+        lazyDownloads: host.lazyDownloadSummaries().map(({ status }) => ({ status })),
+        packagePrefetches: host.homebrewPackagePrefetches().map((state) => ({
+          id: state.id,
+          status: state.status,
+          roots: state.roots,
+          ...(state.result === undefined
+            ? {}
+            : { packages: state.result.packages.slice() }),
+        })),
+      }),
+    });
+  }
 
   const requireServiceWorker = (
     tick?: (msg: string) => void,

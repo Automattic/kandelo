@@ -7,7 +7,10 @@ import {
   type Request,
 } from "@playwright/test";
 
-import { runParentShellProbe } from "./support/terminal-command";
+import {
+  runParentShellProbe,
+  runTerminalCommand,
+} from "./support/terminal-command";
 import {
   executeProtectedBrowserOperation,
   type ProtectedBrowserOperationAdapter,
@@ -433,6 +436,118 @@ async function executeSupplementaryUi(
     expect(observedUrl.pathname.endsWith(path)).toBe(true);
     return `http-${String(definition.probe.status)}:${path}:${body}\n`;
   }
+  if (surface === "toolchain-shell") {
+    await waitForTerminal(page);
+    expect(await readProtectedLiveLedger(page)).toEqual({
+      lazyDownloads: [],
+      packagePrefetches: [],
+    });
+    const work = "/tmp/kandelo-browser-toolchain";
+    const compile = [
+      "set -eu",
+      "export HOME=/tmp MAKEFLAGS=-j1",
+      `printf '%s\\n' '#include <stdio.h>' ` +
+        `'int main(void) { puts("BROWSER_C_IN_GUEST_OK"); return 0; }' ` +
+        `> ${work}.c`,
+      `printf '%s\\n' '#include <iostream>' ` +
+        `'int main() { std::cout << "BROWSER_CXX_IN_GUEST_OK\\n"; return 0; }' ` +
+        `> ${work}.cpp`,
+      `cc ${work}.c -o ${work}-c.wasm`,
+      `c++ ${work}.cpp -o ${work}-cxx.wasm`,
+      `${work}-c.wasm`,
+      `${work}-cxx.wasm`,
+    ].join("\n");
+    const compiled = await runTerminalCommand(
+      page,
+      compile,
+      "BROWSER_CXX_IN_GUEST_OK",
+      300_000,
+    );
+    expect(compiled.output).toContain("BROWSER_C_IN_GUEST_OK");
+    expect(compiled.output).toContain("BROWSER_CXX_IN_GUEST_OK");
+    const ledger = await readProtectedLiveLedger(page);
+    expect(ledger.lazyDownloads).toHaveLength(3);
+    expect(ledger.lazyDownloads.every(({ status }) => status === "complete"))
+      .toBe(true);
+
+    const reused = await runTerminalCommand(
+      page,
+      `${work}-c.wasm\n${work}-cxx.wasm\ncc --version`,
+      "BROWSER_CXX_IN_GUEST_OK",
+      300_000,
+    );
+    expect(reused.output).toContain("BROWSER_C_IN_GUEST_OK");
+    return "BROWSER_C_IN_GUEST_OK\nBROWSER_CXX_IN_GUEST_OK\ntoolchain-reused\n";
+  }
+  if (surface === "c-development") {
+    await waitForTerminal(page);
+    const packageStatus = page.locator(".kdownload-toast-title").filter({
+      hasText: /(?:Preparing C\/C\+\+ toolchain|C\/C\+\+ toolchain ready)/,
+    });
+    await expect(packageStatus).toBeVisible({ timeout: 180_000 });
+    await expect.poll(
+      () => page.locator(".kdownload-toast").count(),
+      { timeout: 180_000 },
+    ).toBeGreaterThan(1);
+    await expect(page.getByText("C/C++ toolchain ready")).toBeVisible({
+      timeout: 300_000,
+    });
+
+    const workspace = await runTerminalCommand(
+      page,
+      "pwd\nprintf 'CC=%s\\nCXX=%s\\nMAKEFLAGS=%s\\n' \"$CC\" \"$CXX\" \"$MAKEFLAGS\"\ncat hello.c",
+      "Hello from Kandelo C!",
+    );
+    expect(workspace.output).toContain("/home/user/c");
+    expect(workspace.output).toContain("CC=cc\nCXX=c++\nMAKEFLAGS=-j1");
+    expect(workspace.output).toContain([
+      "#include <stdio.h>",
+      "",
+      "int main(void) {",
+      "  puts(\"Hello from Kandelo C!\");",
+      "  return 0;",
+      "}",
+    ].join("\n"));
+
+    await runTerminalCommand(
+      page,
+      "cc hello.c -o hello.wasm && ./hello.wasm",
+      "Hello from Kandelo C!",
+      300_000,
+    );
+    const cxx = [
+      "printf '%s\\n' '#include <iostream>'",
+      "'int main() { std::cout << \"BROWSER_C_DEV_CXX_OK\\n\"; return 0; }'",
+      "> hello.cpp",
+      "&& c++ hello.cpp -o hello-cxx.wasm",
+      "&& ./hello-cxx.wasm",
+    ].join(" ");
+    await runTerminalCommand(page, cxx, "BROWSER_C_DEV_CXX_OK", 300_000);
+    await runTerminalCommand(
+      page,
+      "./hello.wasm && ./hello-cxx.wasm && cc --version",
+      "BROWSER_C_DEV_CXX_OK",
+      300_000,
+    );
+    expect(await readProtectedLiveLedger(page)).toMatchObject({
+      lazyDownloads: [
+        { status: "complete" },
+        { status: "complete" },
+        { status: "complete" },
+      ],
+      packagePrefetches: [{
+        id: "c-development-toolchain",
+        status: "ready",
+        roots: ["kandelo-dev/tap-core/kandelo-sdk"],
+        packages: [
+          "kandelo-dev/tap-core/libcxx",
+          "kandelo-dev/tap-core/clang",
+          "kandelo-dev/tap-core/kandelo-sdk",
+        ],
+      }],
+    });
+    return "c-development-ready\nHello from Kandelo C!\nBROWSER_C_DEV_CXX_OK\ntoolchain-reused\n";
+  }
   if (surface === "wordpress-sqlite" || surface === "wordpress-mariadb") {
     const title = surface === "wordpress-sqlite"
       ? "WordPress SQLite"
@@ -472,6 +587,8 @@ function assertProtectedRepositorySuite(
   surface: string,
 ): void {
   const expected: Readonly<Record<string, string>> = {
+    "toolchain-shell": "main-shell-toolchain-browser",
+    "c-development": "main-shell-c-development-browser",
     doom: "main-shell-fbdoom-browser",
     modeset: "main-shell-modeset-browser",
     "wordpress-sqlite": "wordpress-sqlite-browser",
@@ -487,6 +604,24 @@ function assertProtectedRepositorySuite(
   ) {
     throw new Error("protected browser repository-suite adapter differs from its definition");
   }
+}
+
+async function readProtectedLiveLedger(page: Page): Promise<{
+  lazyDownloads: Array<{ status: string }>;
+  packagePrefetches: Array<{
+    id: string;
+    status: string;
+    roots: string[];
+    packages?: string[];
+  }>;
+}> {
+  return page.evaluate(() => {
+    const read = window.__KANDELO_ABI_STAGING_LIVE_LEDGER__;
+    if (read === undefined) {
+      throw new Error("protected live Kandelo ledger is unavailable");
+    }
+    return read();
+  });
 }
 
 async function prepareGenericAdapter(page: Page, harnessUrl: string): Promise<void> {

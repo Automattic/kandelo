@@ -934,8 +934,10 @@ fn validate_probe(definition: &EvidenceDefinitionV1) -> Result<(), String> {
                 .map_err(|parse| error(format!("{parse}")))?;
             validate_lazy_inputs(&probe.lazy_inputs).map_err(error)?;
             const SUITES: &[&str] = &[
+                "main-shell-c-development-browser",
                 "main-shell-fbdoom-browser",
                 "main-shell-modeset-browser",
+                "main-shell-toolchain-browser",
                 "main-shell-toolchain-node",
                 "mariadb-product-browser",
                 "mariadb-product-node",
