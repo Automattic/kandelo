@@ -1195,6 +1195,43 @@ function validateAdmission(
   formula: string,
   targetAbi: TargetAbiV1,
 ): void {
+  validateAdmissionIdentity(envelope, input, formula, targetAbi);
+  const canonical = envelope.record.admission.canonical;
+  const descriptor = envelope.canonical_vfs_composition_descriptor;
+  if (
+    input.descriptor === undefined || descriptor === undefined ||
+    !(descriptor.body instanceof Uint8Array) ||
+    !Number.isSafeInteger(descriptor.bytes) || descriptor.bytes <= 0 ||
+    descriptor.bytes !== descriptor.body.byteLength ||
+    descriptor.sha256 !== sha256(descriptor.body)
+  ) {
+    throw new ReadinessError(
+      "admission-invalid",
+      `Formula ${formula} lacks the exact canonical VFS composition descriptor`,
+    );
+  }
+  requireCanonicalReference(
+    descriptor.immutable_reference,
+    descriptor.sha256,
+    `Formula ${formula} canonical VFS composition descriptor`,
+  );
+  if (
+    canonicalRepository(descriptor.immutable_reference) !==
+      canonicalRepository(canonical.immutable_reference)
+  ) {
+    throw new ReadinessError(
+      "admission-invalid",
+      `Formula ${formula} canonical VFS descriptor uses another repository`,
+    );
+  }
+}
+
+function validateAdmissionIdentity(
+  envelope: AdmissionEnvelopeV1,
+  input: ResolvedVfsInputV1,
+  formula: string,
+  targetAbi: TargetAbiV1,
+): void {
   const record = envelope.record;
   if (
     record.schema !== 1 || record.kind !== "kandelo-abi-staging-admission" ||
@@ -1238,33 +1275,6 @@ function validateAdmission(
     );
   }
   requireCanonicalReference(canonical.immutable_reference, canonical.sha256, `Formula ${formula}`);
-  const descriptor = envelope.canonical_vfs_composition_descriptor;
-  if (
-    input.descriptor === undefined || descriptor === undefined ||
-    !(descriptor.body instanceof Uint8Array) ||
-    !Number.isSafeInteger(descriptor.bytes) || descriptor.bytes <= 0 ||
-    descriptor.bytes !== descriptor.body.byteLength ||
-    descriptor.sha256 !== sha256(descriptor.body)
-  ) {
-    throw new ReadinessError(
-      "admission-invalid",
-      `Formula ${formula} lacks the exact canonical VFS composition descriptor`,
-    );
-  }
-  requireCanonicalReference(
-    descriptor.immutable_reference,
-    descriptor.sha256,
-    `Formula ${formula} canonical VFS composition descriptor`,
-  );
-  if (
-    canonicalRepository(descriptor.immutable_reference) !==
-      canonicalRepository(canonical.immutable_reference)
-  ) {
-    throw new ReadinessError(
-      "admission-invalid",
-      `Formula ${formula} canonical VFS descriptor uses another repository`,
-    );
-  }
   const expectedAdmissionPrefix =
     `ghcr.io/kandelo-dev/homebrew-tap-core-abi-${targetAbi.version}/${formula}/admissions@sha256:`;
   if (
@@ -1300,6 +1310,9 @@ async function authenticateAdmissions(
       throw new ReadinessError("missing-admission", `Formula ${formula} lacks one exact admission`);
     }
     const envelope = matches[0]!;
+    // Reject candidate, mutable, credentialed, wrong-ABI, and mismatched-layer
+    // identities before allowing the record to select a network readback.
+    validateAdmissionIdentity(envelope, input, formula, targetAbi);
     try {
       await dependencies.validateAdmissionRecord(canonicalJsonBytes(envelope.record));
       const canonical = envelope.record?.admission?.canonical;

@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -72,6 +79,187 @@ test("prepares all seven products once before final-site readiness", async () =>
   } finally {
     rmSync(root, { force: true, recursive: true });
   }
+});
+
+test("holds the toolchain shell on every missing Formula admission", async (t) => {
+  for (const formula of ["libcxx", "clang", "kandelo-sdk"] as const) {
+    await t.test(formula, async () => {
+      const input = sevenProductToolchainFixture();
+      const shell = input.products.find(({ id }) => id === "mini-shell")!;
+      const index = shell.admissions.findIndex((envelope) =>
+        envelope.record.admission.formula_metadata_update.formula === formula
+      );
+      assert.notEqual(index, -1);
+      shell.admissions.splice(index, 1);
+      await assertBlocked(input, "missing-admission", "mini-shell");
+    });
+  }
+});
+
+test("holds the toolchain shell on every required compiler receipt", async (t) => {
+  for (const definitionId of [
+    "main-shell-toolchain-node",
+    "main-shell-toolchain-browser",
+    "main-shell-c-development-browser",
+  ] as const) {
+    await t.test(definitionId, async () => {
+      const host = definitionId.endsWith("-node") ? "node" : "browser";
+      await assertBlocked(
+        sevenProductToolchainFixture(),
+        `${host}-evidence-failure`,
+        "mini-shell",
+        successfulDependencies({ failedDefinition: definitionId }),
+      );
+    });
+  }
+});
+
+test("holds toolchain admission identity drift before final site assembly", async (t) => {
+  for (const [name, mutate, kind] of [
+    [
+      "candidate namespace",
+      (input: PagesReadinessInputV1) => {
+        const admission = toolchainAdmission(input, "clang");
+        const reference = admission.record.admission.canonical.immutable_reference
+          .replace("/homebrew-tap-core-abi-", "/homebrew-tap-core-abi-")
+          .replace("/clang@", "-candidates/clang@");
+        admission.record.admission.canonical.immutable_reference = reference;
+        admission.record.common.artifact.immutable_reference = reference;
+        admission.record_sha256 = digest(admission.record);
+      },
+      "candidate-reference",
+    ],
+    [
+      "mutable tag",
+      (input: PagesReadinessInputV1) => {
+        const admission = toolchainAdmission(input, "clang");
+        const reference = admission.record.admission.canonical.immutable_reference
+          .replace("/clang@", "/clang:latest@");
+        admission.record.admission.canonical.immutable_reference = reference;
+        admission.record.common.artifact.immutable_reference = reference;
+        admission.record_sha256 = digest(admission.record);
+      },
+      "candidate-reference",
+    ],
+    [
+      "credentialed locator",
+      (input: PagesReadinessInputV1) => {
+        const admission = toolchainAdmission(input, "clang");
+        const reference = "https://token@" +
+          admission.record.admission.canonical.immutable_reference;
+        admission.record.admission.canonical.immutable_reference = reference;
+        admission.record.common.artifact.immutable_reference = reference;
+        admission.record_sha256 = digest(admission.record);
+      },
+      "candidate-reference",
+    ],
+    [
+      "promoted digest",
+      (input: PagesReadinessInputV1) => {
+        const admission = toolchainAdmission(input, "clang");
+        admission.record.admission.promoted_layer.sha256 = "f".repeat(64);
+        admission.record_sha256 = digest(admission.record);
+      },
+      "layer-mismatch",
+    ],
+    [
+      "promoted byte count",
+      (input: PagesReadinessInputV1) => {
+        const admission = toolchainAdmission(input, "clang");
+        admission.record.admission.promoted_layer.bytes += 1;
+        admission.record_sha256 = digest(admission.record);
+      },
+      "layer-mismatch",
+    ],
+  ] as const) {
+    await t.test(name, async () => {
+      const input = sevenProductToolchainFixture();
+      mutate(input);
+      await assertBlocked(input, kind, "mini-shell");
+    });
+  }
+});
+
+test("keeps C development inside the exact seven-product Pages inventory", async () => {
+  const input = sevenProductToolchainFixture();
+  const result = await computePagesReadiness(input, successfulDependencies());
+  assert.equal(result.readiness.ready, true);
+  assert.equal(result.site_manifest?.products.length, 7);
+  assert.ok(result.site_manifest?.files.every(({ path }) =>
+    !/clang|kandelo-sdk|libcxx|compiler\.vfs/iu.test(path)
+  ));
+
+  const publicRegistry = JSON.parse(readFileSync(
+    "apps/browser-demos/pages/kandelo/kernel-host/" +
+      "pages-vfs-products.generated.json",
+    "utf8",
+  ));
+  assert.deepEqual(publicRegistry.products, [
+    { id: "browser-lamp", load: "lazy" },
+    { id: "browser-main-shell", load: "eager" },
+    { id: "browser-nginx", load: "lazy" },
+    { id: "browser-nginx-php", load: "lazy" },
+    { id: "browser-node", load: "lazy" },
+    { id: "browser-wordpress", load: "lazy" },
+    { id: "platform-rootfs", load: "eager" },
+  ]);
+  const gallery = JSON.parse(readFileSync(
+    "apps/browser-demos/pages/kandelo/kernel-host/" +
+      "pages-vfs-product-gallery.json",
+    "utf8",
+  ));
+  assert.deepEqual(
+    gallery.products.find(({ id }: { id: string }) =>
+      id === "browser-main-shell"
+    )?.gallery_entries,
+    ["c-dev", "doom", "modeset", "shell"],
+  );
+  assert.equal(
+    publicRegistry.products.some(({ id }: { id: string }) => id === "c-dev"),
+    false,
+  );
+
+  const shell = result.artifacts?.find(({ id }) => id === "mini-shell");
+  assert.deepEqual(
+    shell?.resolved_inputs.inputs
+      .filter(({ id }) => [
+        "homebrew-clang",
+        "homebrew-kandelo-sdk",
+        "homebrew-libcxx",
+      ].includes(id))
+      .map(({ id, effective_materialization, reference }) => ({
+        effective_materialization,
+        id,
+        reference,
+      })),
+    [
+      "homebrew-libcxx",
+      "homebrew-clang",
+      "homebrew-kandelo-sdk",
+    ].map((id) => ({
+      effective_materialization: "lazy-reference",
+      id,
+      reference: shell?.resolved_inputs.inputs.find((input) => input.id === id)
+        ?.reference,
+    })),
+  );
+  for (const formula of ["libcxx", "clang", "kandelo-sdk"]) {
+    const selected = shell?.resolved_inputs.inputs.find(
+      ({ id }) => id === `homebrew-${formula}`,
+    );
+    assert.match(
+      String(selected?.reference),
+      new RegExp(
+        `^ghcr\\.io/kandelo-dev/homebrew-tap-core-abi-${TARGET_ABI}/` +
+          `${formula}@sha256:[0-9a-f]{64}$`,
+        "u",
+      ),
+    );
+  }
+  assert.doesNotMatch(
+    new TextDecoder().decode(canonicalJsonBytes(result)),
+    /-candidates\/|compiler\.vfs/iu,
+  );
 });
 
 test("finalization authenticates the private sealed product bytes", async () => {
@@ -1318,6 +1506,70 @@ function sevenProductFixture(): PagesReadinessInputV1 {
   return input;
 }
 
+const TOOLCHAIN_DEFINITIONS = [
+  ["main-shell-toolchain-node", "node"],
+  ["main-shell-toolchain-browser", "browser"],
+  ["main-shell-c-development-browser", "browser"],
+] as const;
+
+function sevenProductToolchainFixture(): PagesReadinessInputV1 {
+  const input = sevenProductFixture();
+  const shellIndex = input.products.findIndex(({ id }) => id === "mini-shell");
+  if (shellIndex < 0) throw new Error("seven-product fixture lacks mini-shell");
+  const prior = input.products[shellIndex]!;
+  input.products[shellIndex] = candidateProduct(input, "mini-shell", [
+    ...prior.candidate_resolved_inputs.inputs,
+    bottleInput("libcxx", "lazy-reference"),
+    bottleInput("clang", "lazy-reference"),
+    bottleInput("kandelo-sdk", "lazy-reference"),
+  ]);
+
+  const registration = input.test_registry.value.registrations.find(
+    ({ product }) => product === "mini-shell",
+  );
+  if (registration === undefined) {
+    throw new Error("seven-product fixture lacks mini-shell tests");
+  }
+  registration.node.push("main-shell-toolchain-node");
+  registration.browser.push(
+    "main-shell-toolchain-browser",
+    "main-shell-c-development-browser",
+  );
+  for (const [id, host] of TOOLCHAIN_DEFINITIONS) {
+    input.evidence_definitions.value.definitions.push({
+      definition_sha256: sha256(new TextEncoder().encode(id)),
+      host,
+      id,
+      implementation: [],
+      probe: {
+        suite: id,
+        lazy_inputs: [
+          "homebrew-clang",
+          "homebrew-kandelo-sdk",
+          "homebrew-libcxx",
+        ],
+      },
+      runner: "repository-suite",
+      timeout_seconds: 600,
+    });
+  }
+  input.authority.evidence_definitions_sha256 =
+    digest(input.evidence_definitions.value);
+  input.authority.test_registry_sha256 = digest(input.test_registry.value);
+  return input;
+}
+
+function toolchainAdmission(input: PagesReadinessInputV1, formula: string) {
+  const shell = input.products.find(({ id }) => id === "mini-shell");
+  const admission = shell?.admissions.find((envelope) =>
+    envelope.record.admission.formula_metadata_update.formula === formula
+  );
+  if (admission === undefined) {
+    throw new Error(`toolchain fixture lacks ${formula} admission`);
+  }
+  return admission;
+}
+
 function hostileProductIdFixture(): PagesReadinessInputV1 {
   const input = fixture();
   const hostileId = "../escape";
@@ -1389,14 +1641,19 @@ function candidateProduct(
   };
 }
 
-function successfulDependencies(options: {
+interface SuccessfulDependencyOptions {
   builderFailure?: string;
   evidence?: ["node" | "browser", "failure" | "timeout"];
+  failedDefinition?: string;
   finalCandidateReference?: boolean;
   informationalFailure?: boolean;
   wrongDefinitionDigest?: boolean;
   canonicalOciMutation?: "layer" | "metadata";
-} = {}): PagesReadinessDependencies {
+}
+
+function successfulDependencies(
+  options: SuccessfulDependencyOptions = {},
+): PagesReadinessDependencies {
   return {
     async validateAdmissionRecord(recordBytes: Uint8Array) {
       const record = JSON.parse(new TextDecoder().decode(recordBytes));
@@ -1429,14 +1686,19 @@ function successfulDependencies(options: {
         `${request.product.id}:${digest(request.resolved_inputs)}\n`,
       );
       writeFile(fs, "/usr/bin/ready", payload);
-      const lazy = request.resolved_inputs.inputs.find(
+      const lazyInputs = request.resolved_inputs.inputs.filter(
         (value) => value.effective_materialization === "lazy-reference",
       );
-      if (lazy !== undefined) {
+      for (const [index, lazy] of lazyInputs.entries()) {
         const reference = options.finalCandidateReference
           ? candidateReference("tool", lazy.sha256)
           : lazy.reference;
-        fs.registerLazyFile("/usr/bin/lazy-tool", reference!, lazy.bytes, 0o755);
+        fs.registerLazyFile(
+          index === 0 ? "/usr/bin/lazy-tool" : `/usr/bin/lazy-tool-${index}`,
+          reference!,
+          lazy.bytes,
+          0o755,
+        );
       }
       const vfs = await fs.saveImage({
         metadata: {
@@ -1453,8 +1715,10 @@ function successfulDependencies(options: {
     },
     async runEvidence(request: PagesEvidenceRequestV1) {
       const configured = options.evidence;
-      const outcome = configured?.[0] === request.host &&
-          request.product.id === "mini-base"
+      const outcome = options.failedDefinition === request.definition_id &&
+          request.product.id === "mini-shell"
+        ? "failure"
+        : configured?.[0] === request.host && request.product.id === "mini-base"
         ? configured[1]
         : "success";
       if (options.informationalFailure && request.product.id === "mini-background") {

@@ -1297,6 +1297,21 @@ test("runs production orchestration through ready and atomic hold-only outcomes"
           assert.equal(readiness.site_metadata_sha256, null);
           assert.deepEqual(readdirSync(fixture.outputRoot), ["readiness.json"]);
           assert.ok(readiness.blockers.length >= 1);
+          if (scenario === "missing-admission") {
+            assert.ok(readiness.blockers.some(
+              ({ detail, kind, product_id }: any) =>
+                kind === "missing-admission" && product_id === "base" &&
+                /clang/u.test(detail),
+            ));
+            assert.equal(
+              existsSync(join(fixture.outputRoot, "private-product-map.json")),
+              false,
+            );
+            assert.equal(
+              existsSync(join(fixture.outputRoot, "source-tree")),
+              false,
+            );
+          }
         }
         assert.deepEqual(
           readdirSync(root).filter((name) => name.includes(".staging-")),
@@ -1355,6 +1370,15 @@ test(
         ).length,
         assembledPagesProducts.length,
       );
+      assert.equal(
+        deployment.files.some(({ path }: any) =>
+          /private-product-map|private_path|sealed-products|homebrew-(?:libcxx|clang|kandelo-sdk)|compiler\.vfs/iu
+            .test(path)
+        ),
+        false,
+      );
+      assert.equal(existsSync(join(outputRoot, "private-product-map.json")), false);
+      assert.equal(existsSync(join(outputRoot, "sealed-products")), false);
       assertAssembledKernelBinding(
         deployment,
         (fixture as any).assembledKernelBinding,

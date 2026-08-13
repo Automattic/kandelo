@@ -392,12 +392,26 @@ test("assembles browser, documentation, API, and exactly seven canonical VFS fil
     assert.equal(vfs.length, 7);
     assert.equal(metadata.files.length, inventory(outputRoot).length);
     assert.deepEqual(metadata.products, gallery.products);
+    assert.deepEqual(
+      metadata.products.find(({ id }) => id === "browser-main-shell")
+        ?.gallery_entries,
+      ["c-dev", "doom", "modeset", "shell"],
+    );
+    assert.equal(metadata.products.length, 7);
     assert.equal(metadata.browser.path, "index.html");
     assert.equal(metadata.documentation.path, "guide/index.html");
     assert.equal(metadata.api.path, "api/index.html");
     assert.deepEqual(
       inventory(join(outputRoot, "assets")).filter((path) => /\.vfs(?:\.zst)?$/u.test(path)),
       [],
+    );
+    const publicInventory = inventory(outputRoot);
+    assert.equal(
+      publicInventory.some((path) =>
+        /private-product-map|private_path|homebrew-(?:libcxx|clang|kandelo-sdk)|compiler\.vfs/iu
+          .test(path)
+      ),
+      false,
     );
   });
 });

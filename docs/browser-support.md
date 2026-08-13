@@ -610,8 +610,8 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | Python (legacy opt-in) | `python-vfs.vfs.zst` | `bash packages/registry/python-vfs/build-python-vfs.sh` | ABI-bound CPython interpreter, complete stdlib, license, aliases, and demo metadata |
 | Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
-| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the sealed flat-lazy bottle closure selected by `homebrew/main-shell-flat-selection.json`; Bash is embedded, the bootstrap/libyaml/Ruby cohort is prepared at boot, and 35 ordinary bottle trees remain first-use |
-| Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | exact lazy shell image plus the package-resolved Node executable, npm 10.9.2 distribution, writable `/work`, and Node demo metadata |
+| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the sealed flat-lazy bottle closure selected by `homebrew/main-shell-flat-selection.json`; Bash is embedded, the bootstrap/libyaml/Ruby cohort is prepared at boot, 35 ordinary bottle trees remain first-use, and the admitted C/C++ SDK closure remains authenticated lazy state |
+| Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | exact lazy shell image plus the package-resolved Node executable, npm 10.9.2 distribution, writable `/work`, Node demo metadata, and the same authenticated lazy C/C++ SDK closure |
 | WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
 | MariaDB test | `mariadb-test.vfs.zst` | `bash images/vfs/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
@@ -797,10 +797,11 @@ No Perl, Python, or Erlang layer URL is built into the browser. Concrete
 entries require immutable published descriptor/content identities derived from
 their finalized bottle sidecars; missing or mismatched identities fail boot
 instead of falling back to a standalone language VFS. Historical lazy shell
-images used the same substrate directly. The current canonical flat shell does
-not register bottle-backed deferred trees: it eagerly materializes its complete
-reviewed selection, and the image-owned default-shell contract selects that
-embedded Bash.
+images used the same substrate directly. The current canonical shell eagerly
+materializes its reviewed runtime selection and registers only the separately
+admitted C/C++ SDK closure as bottle-backed deferred trees. The image-owned
+default-shell contract still selects the embedded Bash, so ordinary shell boot
+does not fetch compiler payloads.
 
 That direct release proves only its configured acceptance image; it does not
 set generic package browser flags. The separate gallery path first boots a
@@ -815,6 +816,36 @@ is wasm32 success, has an `archive_url`, and sets
 `browser_compatible = true`. Launch-time archive failures are surfaced in the
 UI instead of silently hiding the rest of the gallery.
 
+### In-guest C and C++ development
+
+The ordinary shell exposes `cc`, `c++`, and the `wasm32posix-*` commands. Its
+compact VFS contains authenticated lazy references for the ABI-qualified
+`kandelo-sdk` Formula and the `clang` and `libcxx` trees derived from that
+Formula's sealed same-tap dependency closure. It contains no compiler payload
+or browser-specific compiler URL. Ordinary boot, shell commands, `stat`, and
+directory listing do not fetch those trees. First compiler use downloads the
+admitted immutable GHCR assets, verifies their exact sizes and digests, and
+publishes the complete closure atomically.
+
+The **C development** gallery entry is presentation over this same shell, not
+an eighth VFS product. It prepares `/home/user/c/hello.c`, selects
+`/home/user/c` as the working directory, and starts prefetching the same sealed
+closure after the terminal is running. The terminal remains available during
+the download. The package-progress UI reports byte progress and failures;
+**Retry** uses the same immutable descriptor. A missing, truncated, or
+digest-mismatched response leaves the affected trees unmaterialized and the
+shell usable, with no fallback compiler.
+
+Successfully materialized bytes are reused for later compilations in the same
+session. This release has no cross-session offline compiler cache, so a new
+browser session downloads them again. Compilation can require substantial
+memory in addition to the restored shell and kernel; users should leave browser
+memory headroom for compile-heavy workloads.
+
+The initial in-guest scope is C and C++ targeting wasm32. Programs that reach
+`fork()`, `vfork()`, `_Fork()`, or other generated fork-family paths remain
+limited until Kandelo ships an in-guest `wasm-fork-instrument`.
+
 ### Current ABI-42 shell publication (2026-08-13)
 
 The normal shell page resolves the package archive built from
@@ -822,7 +853,9 @@ The normal shell page resolves the package archive built from
 base libraries, while 37 admitted bottle trees and the package-owned bootstrap
 tree retain sealed authenticated transports. Host boot prepares
 `/usr/bin/brew` by atomically fetching bootstrap, libyaml, and Ruby. The other
-35 bottle trees remain pending until their commands are first used.
+35 ordinary bottle trees remain pending until their commands are first used.
+The admitted `kandelo-sdk` development closure is separate lazy state and is
+not fetched by shell boot or ordinary shell commands.
 
 Shell revision 25 and `node-vfs` revision 18 share this exact base-image
 identity. The other shell-derived images are `nginx-vfs` revision 5,
@@ -833,14 +866,17 @@ and Pages resolves them with `./run.sh --fetch-only prepare-browser` from a
 fresh cache.
 
 The shell Chromium proof loads the ordinary production page, verifies the
-served shell digest, runs `brew`, Ruby, and the selected Bash, and verifies the
-boot cohort is fetched once. A second Chromium proof runs the exact
-`npm install --verbose cowsay` flow in the Node image and executes the
-installed binary. The post-activation Pages dispatch starts these checks only
-after it selects an authenticated activation receipt for the exact current
-canonical index. The dispatch carries the source SHA, candidate tag, and index
-digest. Pages independently verifies all three, and the Node proof hashes the
-served VFS response before running npm/cowsay.
+served shell digest, runs `brew`, Ruby, and the selected Bash, verifies the boot
+cohort is fetched once, and requires no toolchain payload request before first
+use. Protected Node and Chromium proofs then compile and execute C and C++
+through the exact lazy closure; the C-development Chromium proof also covers
+its prepared workspace and background prefetch. A separate Chromium proof runs the exact
+`npm install --verbose cowsay` flow in the Node image and executes the installed
+binary. The post-activation Pages dispatch starts these checks only after it
+selects an authenticated activation receipt for the exact current canonical
+index. The dispatch carries the source SHA, candidate tag, and index digest.
+Pages independently verifies all three, and the Node proof hashes the served
+VFS response before running npm/cowsay.
 
 ### Building VFS images
 
