@@ -300,11 +300,28 @@ create_or_discover_release() {
 }
 
 verify_authenticated_asset() {
-  local asset_id
+  local asset_id release_draft
+  release_draft=$(jq -r '.draft' "$RELEASE_JSON") || return 1
+  # WHY: GitHub exposes a draft asset through a same-repository untagged URL
+  # until publication. Its authenticated asset ID and bytes are authoritative
+  # here; the final reconciliation below still requires the planned tag URL.
   jq -e --arg name "$ASSET_NAME" --arg url "$PUBLIC_URL" \
+    --arg repository "$REPOSITORY" --argjson release_draft "$release_draft" \
     --arg digest "sha256:${ASSET_SHA256}" --argjson bytes "$ASSET_BYTES" '
+    ($repository | split("/")) as $repository_parts |
+    (.[0].browser_download_url | split("/")) as $url_parts |
     length == 1 and .[0].name == $name and
-    .[0].browser_download_url == $url and .[0].state == "uploaded" and
+    (.[0].browser_download_url == $url or
+      ($release_draft == true and
+       ($repository_parts | length) == 2 and ($url_parts | length) == 9 and
+       $url_parts[0] == "https:" and $url_parts[1] == "" and
+       $url_parts[2] == "github.com" and
+       $url_parts[3] == $repository_parts[0] and
+       $url_parts[4] == $repository_parts[1] and
+       $url_parts[5] == "releases" and $url_parts[6] == "download" and
+       ($url_parts[7] | test("^untagged-[0-9a-f]{20}$")) and
+       $url_parts[8] == $name)) and
+    .[0].state == "uploaded" and
     .[0].size == $bytes and .[0].digest == $digest
   ' "$ASSETS_JSON" >/dev/null || {
     echo "publish-abi-staging-request: request asset metadata differs from its plan" >&2
