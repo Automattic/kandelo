@@ -220,6 +220,11 @@ def copy_source(root: pathlib.Path) -> pathlib.Path:
     embedded = next(group for group in homebrew if group["materialization"] == "embedded")
     lazy = next(group for group in homebrew if group["materialization"] == "lazy")
     embedded["formulae"] = ["bash"]
+    lazy["formulae"] = [
+        formula
+        for formula in lazy["formulae"]
+        if formula not in {"login", "sudo-lite", "sudo"}
+    ]
     if "ruby" not in lazy["formulae"]:
         lazy["formulae"].append("ruby")
     shell["sha256"] = hashlib.sha256(

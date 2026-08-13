@@ -35,7 +35,7 @@ materialization = "embedded"
 
 [[software.homebrew]]
 tap = "kandelo-dev/homebrew-tap-core"
-formulae = ["bash", "login", "sudo-lite", "sudo", "ruby"]
+formulae = ["bash"]
 materialization = "embedded"
 
 [[software.homebrew]]
@@ -45,7 +45,8 @@ formulae = [
   "file-formula", "m4", "make", "findutils", "diffutils",
   "posix-utils-lite", "fbdoom", "modeset", "less", "tar", "curl",
   "netcat", "wget", "git", "gzip", "bzip2", "xz", "zstd", "zip",
-  "unzip", "lsof", "nano", "vim", "nethack",
+  "unzip", "lsof", "nano", "vim", "nethack", "login", "sudo-lite",
+  "sudo", "ruby",
 ]
 materialization = "lazy"
 
