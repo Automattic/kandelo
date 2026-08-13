@@ -57,7 +57,7 @@ export interface HomebrewGuestLifecycleBrowserResult {
 export async function runHomebrewGuestCoreShippingProofInBrowser(options: {
   fixture: unknown;
   kernelWasm: ArrayBuffer;
-  corsProxyUrl: string;
+  corsProxy: BrowserCorsProxyConfig;
   closedAssetRootUrl?: string;
   fetchImpl?: FetchLike;
   afterMachineDestroy?: () => Promise<void>;
@@ -67,7 +67,7 @@ export async function runHomebrewGuestCoreShippingProofInBrowser(options: {
     fetchImpl: options.fetchImpl,
     sourceUrl: (canonicalUrl) => fixture.transportMode === "closed"
       ? createClosedFixtureSourceUrl(options.closedAssetRootUrl, canonicalUrl)
-      : createCorsProxySourceUrl(options.corsProxyUrl, canonicalUrl),
+      : createCorsProxySourceUrl(options.corsProxy, canonicalUrl),
   });
   const runtime = await deriveHomebrewGuestLifecycleRuntimeInputs({
     imageBytes: loaded.imageBytes,
@@ -92,7 +92,7 @@ export async function runHomebrewGuestCoreShippingProofInBrowser(options: {
     createMachine: (machineRuntime) => createBrowserLifecycleMachine({
       runtime: machineRuntime,
       kernelWasm: options.kernelWasm,
-      corsProxyUrl: options.corsProxyUrl,
+      corsProxy: options.corsProxy,
       afterDestroy: options.afterMachineDestroy,
     }),
   });
@@ -365,7 +365,7 @@ export function createBrowserLifecycleMachine(options: {
           [scriptOptions.shellArgv0, "-c", scriptOptions.script],
           {
             env: [...HOMEBREW_GUEST_LIFECYCLE_ENV],
-            cwd: "/home/maker",
+            cwd: "/home/user",
             uid: 1000,
             gid: 1000,
             stdin: new Uint8Array(),

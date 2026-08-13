@@ -260,6 +260,7 @@ async function runProgram(
     argv: options.argv,
     env: environment,
     ptrWidth,
+    secureExec: kernelWorker.processSecureExec(pid),
   };
   const mainWorker = workerAdapter.createWorker(initData);
   workers.set(pid, mainWorker);

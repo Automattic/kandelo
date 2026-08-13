@@ -96,6 +96,29 @@ if homebrew_candidate_bottle_root_url \
   fail "candidate bottle root accepted an unsafe Formula path"
 fi
 
+homebrew_formula_bottle_root_matches_build_authority \
+  kandelo-dev/homebrew-tap-core kandelo-dev/tap-core lsof 43 \
+  https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-43-candidates/lsof \
+  https://ghcr.io/v2/kandelo-dev/homebrew-tap-core ||
+  fail "candidate build rejected the tap's legacy canonical Formula root"
+homebrew_formula_bottle_root_matches_build_authority \
+  kandelo-dev/homebrew-tap-core kandelo-dev/tap-core lsof 43 \
+  https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-43-candidates/lsof \
+  https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-42/lsof ||
+  fail "candidate build rejected the preceding ABI's canonical Formula root"
+if homebrew_formula_bottle_root_matches_build_authority \
+  kandelo-dev/homebrew-tap-core kandelo-dev/tap-core lsof 43 \
+  https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-43-candidates/lsof \
+  https://ghcr.io/v2/attacker/homebrew-foreign; then
+  fail "candidate build accepted a foreign Formula bottle root"
+fi
+if homebrew_formula_bottle_root_matches_build_authority \
+  kandelo-dev/homebrew-tap-core kandelo-dev/tap-core lsof 43 \
+  https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-43-candidates/lsof \
+  https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-42/other; then
+  fail "candidate build accepted another Formula's preceding ABI root"
+fi
+
 # The exact staging adapter supplies this option to the normal bottle builder.
 # Exercise the real parser and candidate namespace instead of merely checking
 # the helper, so a later option-table merge cannot strand every hosted build.

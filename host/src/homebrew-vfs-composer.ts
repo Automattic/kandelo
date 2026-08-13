@@ -227,20 +227,6 @@ export async function buildHomebrewMaterializedVfs(
   const provisionalMirrorByPackage = new Map(
     provisionalMirrorPlan.assets.map((asset) => [asset.package, asset]),
   );
-  const embeddedSet = new Set(selection.embeddedPackages.map((pkg) => pkg.fullName));
-  const closedTrees = bindings.map((binding) => closeCollectionTree(
-    binding,
-    embeddedSet.has(binding.package),
-    provisionalMirrorByPackage.get(binding.package),
-  ));
-  createHomebrewPrefixAncestors(options.fs, plan);
-  const registered = registerHomebrewDeferredTreeCollection({
-    fs: options.fs,
-    id: "main-shell",
-    schema: 6,
-    trees: closedTrees,
-  });
-  const registeredByPackage = bindRegisteredTrees(registered, bindings);
 
   let runtimeSupportBindings: BoundHomebrewOriginalBottleTree[] = [];
   let runtimeSupportPlan: HomebrewVfsPlan | undefined;
@@ -339,10 +325,9 @@ export async function buildHomebrewMaterializedVfs(
     await installBoundHomebrewOriginalBottleTrees({
       fs: options.fs,
       id: runtimeSupport.contract.id,
-      schema: 6,
-      trees: supportTrees,
-      atomicActivationGroup:
-        runtimeSupport.contract.activation.atomicGroup,
+      bindings: runtimeSupportBindings,
+      mirrorPlan,
+      atomicActivationGroup: runtimeSupport.contract.activation.atomicGroup,
     });
   }
   writeHomebrewBottleMirrorPlan(options.fs, mirrorPlanAsset);

@@ -1432,10 +1432,28 @@ for workflow in \
         printf '%s\n' "$early_rows" >&2
         exit 1
     fi
-    grep -Fq 'KERNEL_ONLY: ${{ matrix.kernel_only }}' "$workflow" || {
-        echo "$(basename "$workflow"): early Cargo suites lack kernel scope" >&2
-        exit 1
-    }
+    if [ "$(basename "$workflow")" = prepare-merge.yml ]; then
+        dev_shell_count="$(grep -Fc 'scripts/dev-shell.sh' "$node_acceptance_block")"
+        if [ "$dev_shell_count" -ne 1 ] ||
+           ! grep -Fq "bash <<'NODE_ACCEPTANCE'" "$node_acceptance_block"; then
+            echo "prepare-merge.yml: candidate Node resolve, build, and acceptance do not share one activated dev-shell process" >&2
+            exit 1
+        fi
+    fi
+    for contract in \
+        "scripts/recover-homebrew-bottle-mirror.ts" \
+        "programs/homebrew-bootstrap/homebrew-bootstrap.zip" \
+        "KANDELO_NODE_LOCAL_BOOT_ASSET_ROOT" \
+        "KANDELO_NODE_LOCAL_PROXY_PORT" \
+        "http://127.0.0.1:\${node_proxy_port}/?" \
+        "KANDELO_PLAYWRIGHT_SERVE_DIST=1" \
+        "--grep '@node-npm-acceptance'"
+    do
+        grep -Fq -- "$contract" "$node_acceptance_block" || {
+            echo "$(basename "$workflow"): exact Node acceptance lacks $contract" >&2
+            exit 1
+        }
+    done
 done
 
 grep -Fq \
@@ -2561,7 +2579,39 @@ done
 mirror_expected="$TMP_DIR/homebrew-browser-mirror-expected.json"
 mirror_blockers="$TMP_DIR/homebrew-browser-mirror-blockers.json"
 mirror_canonical="$TMP_DIR/homebrew-browser-mirror-canonical.toml"
-mirror_canonical_url="https://github.com/Automattic/kandelo/releases/download/binaries-abi-v42/index.toml"
+mirror_abi="$(sed -nE \
+    's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
+    "$REPO_ROOT/crates/shared/src/lib.rs")"
+[[ "$mirror_abi" =~ ^[0-9]+$ ]] || {
+    echo "cannot derive the active ABI for the browser mirror fixture" >&2
+    exit 1
+}
+mirror_selection="$TMP_DIR/homebrew-browser-mirror-selection.json"
+node --input-type=module - \
+    "$REPO_ROOT/homebrew/main-shell-flat-selection.json" \
+    "$mirror_selection" "$mirror_abi" <<'NODE'
+import { readFileSync, writeFileSync } from "node:fs";
+
+const normalize = (value) => {
+  if (Array.isArray(value)) return value.map(normalize);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value).sort().map((key) => [key, normalize(value[key])]),
+    );
+  }
+  return value;
+};
+const selection = JSON.parse(readFileSync(process.argv[2], "utf8"));
+const abi = Number(process.argv[4]);
+if (!Number.isInteger(abi) || abi < 0) {
+  throw new Error("browser mirror selection fixture requires a nonnegative integer ABI");
+}
+selection.kandeloAbi = abi;
+selection.name = `main-shell-abi${abi}-wasm32`;
+for (const bottle of selection.bottles) bottle.kandeloAbi = abi;
+writeFileSync(process.argv[3], `${JSON.stringify(normalize(selection))}\n`);
+NODE
+mirror_canonical_url="https://github.com/Automattic/kandelo/releases/download/binaries-abi-v${mirror_abi}/index.toml"
 mirror_state="$TMP_DIR/generated-homebrew-browser-mirror-state.json"
 mirror_shell_image="$TMP_DIR/canonical-flat-lazy-shell.vfs.zst"
 mirror_homebrew_bootstrap="$TMP_DIR/homebrew-bootstrap.zip"
@@ -2580,11 +2630,11 @@ mirror_host_target="$(rustc -vV | awk '/^host/ {print $2}')"
 cargo build --release -p xtask --target "$mirror_host_target"
 mirror_xtask="$REPO_ROOT/target/$mirror_host_target/release/xtask"
 printf '%s\n' \
-    '{"abi_version":42,"entries":[]}' \
+    "{\"abi_version\":${mirror_abi},\"entries\":[]}" \
     > "$mirror_blockers"
-jq -n --arg cache_key "$mirror_cache_key" '
+jq -n --arg cache_key "$mirror_cache_key" --argjson abi "$mirror_abi" '
   {
-    abi_version: 42,
+    abi_version: $abi,
     entries: [{
       package: "shell",
       kind: "program",
@@ -2597,7 +2647,7 @@ jq -n --arg cache_key "$mirror_cache_key" '
   }
 ' > "$mirror_expected"
 cat > "$mirror_canonical" <<EOF
-abi_version = 42
+abi_version = $mirror_abi
 generated_at = "1970-01-01T00:00:00Z"
 generator = "fixture"
 
@@ -2608,7 +2658,7 @@ revision = 22
 
 [packages.binary.wasm32]
 status = "success"
-archive_url = "shell-0.1.0-rev22-abi42-wasm32-bbbbbbbb.tar.zst"
+archive_url = "shell-0.1.0-rev22-abi${mirror_abi}-wasm32-bbbbbbbb.tar.zst"
 archive_sha256 = "$mirror_archive_sha"
 cache_key_sha = "$mirror_cache_key"
 EOF
@@ -2674,9 +2724,10 @@ grep -Fq "resolved shell bytes do not match state" \
 
 blocked_expected="$TMP_DIR/homebrew-browser-blocked-expected.json"
 blocked_report="$TMP_DIR/homebrew-browser-blocked-report.json"
-jq -n '{abi_version: 42, entries: []}' > "$blocked_expected"
+jq -n --argjson abi "$mirror_abi" \
+    '{abi_version: $abi, entries: []}' > "$blocked_expected"
 printf '%s\n' \
-    '{"abi_version":42,"entries":[{"package":"shell","blocker_chain":["shell"]}]}' \
+    "{\"abi_version\":${mirror_abi},\"entries\":[{\"package\":\"shell\",\"blocker_chain\":[\"shell\"]}]}" \
     > "$blocked_report"
 bash "$REPO_ROOT/scripts/ci-homebrew-browser-mirror-state.sh" create \
     "$blocked_expected" \
@@ -2723,6 +2774,7 @@ if bash "$REPO_ROOT/scripts/ci-homebrew-browser-mirror-state.sh" validate \
 fi
 grep -Fq "producer must not pre-authorize" \
     "$TMP_DIR/blocked-preauthorization.out"
+unset KANDELO_CANONICAL_FLAT_SELECTION
 
 canonical_state_stub="$TMP_DIR/canonical-index-state-stub.sh"
 canonical_parser_stub="$TMP_DIR/canonical-index-parser-stub.sh"

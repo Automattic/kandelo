@@ -7,6 +7,7 @@
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
 import type { HostDiagnostic } from "@host/host-diagnostic";
+import type { BrowserCorsProxyConfig } from "@host/networking/browser-cors-proxy";
 import pcmAudioWorkletUrl from "@host/audio/pcm-audio-worklet.js?url";
 import {
   pcmControlWords,
@@ -21,6 +22,7 @@ import {
   finalizeKernelOwnedImage,
   settleWebKitReclaim,
 } from "../../lib/kernel-owned-boot";
+import { resolveBrowserCorsProxyConfig } from "../../lib/browser-cors-proxy";
 import kernelWasmUrl from "@kernel-wasm?url";
 import type { ExecBinarySupport } from "./exec-binaries";
 
@@ -87,6 +89,7 @@ declare global {
         cwd?: string;
         env?: string[];
         ptyInput?: PtyInput;
+        corsProxy?: BrowserCorsProxyConfig;
       },
     ) => Promise<{
       exitCode: number;
@@ -373,6 +376,7 @@ async function init() {
       cwd?: string;
       env?: string[];
       ptyInput?: PtyInput;
+      corsProxy?: BrowserCorsProxyConfig;
     },
   ) => {
     let stdout = "";

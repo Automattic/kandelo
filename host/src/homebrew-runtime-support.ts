@@ -426,6 +426,25 @@ function record(value: unknown, label: string): Record<string, any> {
   return value as Record<string, any>;
 }
 
+function exactPolicyRecord(
+  value: unknown,
+  keys: readonly string[],
+  label: string,
+): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  if (
+    actual.length !== expected.length ||
+    actual.some((key, index) => key !== expected[index])
+  ) {
+    throw new Error(`${label} has unexpected or missing fields`);
+  }
+  return value as Record<string, unknown>;
+}
+
 function formulaArray(
   value: unknown,
   label: string,

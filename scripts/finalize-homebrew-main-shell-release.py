@@ -380,9 +380,16 @@ def validate_with_canonical_checker(
                     os.fspath(migration),
                     os.fspath(metadata_path),
                     os.fspath(support),
-                    os.fspath(source_root / PRODUCT_CATALOG_PATH),
+                    os.fspath(source_root / BOOTSTRAP_SOURCE_LOCK_PATH),
+                    os.fspath(source_root / SHELL_PACKAGE_PATH),
+                    os.fspath(source_root / BOOTSTRAP_PACKAGE_PATH),
                     os.fspath(
-                        source_root / "homebrew/main-shell-materialization-policy.json"
+                        source_root
+                        / "images/vfs/products/generated/catalog.json"
+                    ),
+                    os.fspath(
+                        source_root
+                        / "homebrew/main-shell-materialization-policy.json"
                     ),
                 ],
                 check=True,

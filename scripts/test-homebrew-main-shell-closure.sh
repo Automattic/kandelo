@@ -1166,7 +1166,7 @@ expect_failure "staging receipt does not match state" \
     "$handoff_image" - "$tampered_receipt"
 expect_failure "candidate shell receipt must be one regular file" \
   bash "$CI_BROWSER_MIRROR_STATE" validate producer \
-    "$handoff_state" "$handoff_blockers" "$handoff_image" - -
+    "$handoff_state" "$handoff_blockers" "$handoff_image" -
 
 flat_state_probe="$TMP_ROOT/canonical-flat-shell-state"
 mkdir -p "$flat_state_probe"

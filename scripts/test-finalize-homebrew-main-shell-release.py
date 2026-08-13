@@ -612,6 +612,9 @@ def run_checker(
         [
             str(tap / "Kandelo/metadata.json"),
             str(source / "homebrew/main-shell-homebrew-runtime-support.json"),
+            str(source / "homebrew/homebrew-bootstrap-source-lock.json"),
+            str(source / "packages/registry/shell/package.toml"),
+            str(source / "packages/registry/homebrew-bootstrap/package.toml"),
             str(source / "images/vfs/products/generated/catalog.json"),
             str(source / "homebrew/main-shell-materialization-policy.json"),
         ]
