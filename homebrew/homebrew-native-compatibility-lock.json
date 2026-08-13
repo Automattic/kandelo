@@ -409,7 +409,7 @@
     "binaryen": {
       "internal": {
         "bottle_cellar": ":any",
-        "bottle_checksum": "e20c66a9b1a826a00155e8e051f9970ca54e3a0e72e6107dc110e2515cd82881",
+        "bottle_checksum": "a38a54e6d7321a7af8fa4109ff59874add0efc9e0d0fcc9124eefb2f828299c2",
         "desc": "Compiler infrastructure and toolchain library for WebAssembly",
         "executables": [
           "wasm-as",
@@ -440,21 +440,21 @@
         "homepage": "https://webassembly.org/",
         "license": "Apache-2.0",
         "name": "binaryen",
-        "ruby_source_checksum": "3908eea932b797d0ee37a3cffcf09bc2e54e482597ef3d046837abb4df93499c",
-        "stable_checksum": "3274719775038062b62d2bf2b37dcde69f3f79804aeb7420b78926722c0d0065",
+        "ruby_source_checksum": "f8fe8e3d1acd828e5ea9fb77a764c0e96921f514c90e76b5139643e1bfebf705",
+        "stable_checksum": "ede5e20f2f5148641bad31ceaef3c1fd4de4fb63b2d7b5081c605ba475483f6b",
         "stable_dependencies": [
           {
             "cmake": ":build"
           }
         ],
         "stable_url_args": [
-          "https://github.com/WebAssembly/binaryen/archive/refs/tags/version_131.tar.gz"
+          "https://github.com/WebAssembly/binaryen/archive/refs/tags/version_132.tar.gz"
         ],
-        "stable_version": "131"
+        "stable_version": "132"
       },
       "public": {
         "bottle_cellar": ":any",
-        "bottle_checksum": "e20c66a9b1a826a00155e8e051f9970ca54e3a0e72e6107dc110e2515cd82881",
+        "bottle_checksum": "a38a54e6d7321a7af8fa4109ff59874add0efc9e0d0fcc9124eefb2f828299c2",
         "desc": "Compiler infrastructure and toolchain library for WebAssembly",
         "executables": [
           "wasm-as",
@@ -485,17 +485,17 @@
         "homepage": "https://webassembly.org/",
         "license": "Apache-2.0",
         "name": "binaryen",
-        "ruby_source_checksum": "3908eea932b797d0ee37a3cffcf09bc2e54e482597ef3d046837abb4df93499c",
-        "stable_checksum": "3274719775038062b62d2bf2b37dcde69f3f79804aeb7420b78926722c0d0065",
+        "ruby_source_checksum": "f8fe8e3d1acd828e5ea9fb77a764c0e96921f514c90e76b5139643e1bfebf705",
+        "stable_checksum": "ede5e20f2f5148641bad31ceaef3c1fd4de4fb63b2d7b5081c605ba475483f6b",
         "stable_dependencies": [
           {
             "cmake": ":build"
           }
         ],
         "stable_url_args": [
-          "https://github.com/WebAssembly/binaryen/archive/refs/tags/version_131.tar.gz"
+          "https://github.com/WebAssembly/binaryen/archive/refs/tags/version_132.tar.gz"
         ],
-        "stable_version": "131"
+        "stable_version": "132"
       }
     },
     "binutils": {
@@ -3255,7 +3255,7 @@
     "gdk-pixbuf": {
       "internal": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "8b0ad8c3516f436a81c69e7c4e1157a44bf4f6d8e8037b12a80c61553868a3d1",
+        "bottle_checksum": "13498f2cb02bb122c7befb4e3eaa4a79aca7d736f1c5cb68c85088fc70f37f24",
         "desc": "Toolkit for image loading and pixel buffer manipulation",
         "executables": [
           "gdk-pixbuf-csource",
@@ -3299,8 +3299,8 @@
             "type": "gdk_pixbuf_query_loaders"
           }
         ],
-        "ruby_source_checksum": "e071ff42de2c1bf25718aa0e422ab8e90851130d9777a38c430941bdfafb7823",
-        "stable_checksum": "172f80e3626ec31520a970400f1a3694e04718f6c2cd2885f75250fb5a6995a4",
+        "ruby_source_checksum": "bca60e828f454b2d95813a786fb5d6583204954d95e0617414ac5e4d778efc26",
+        "stable_checksum": "919f529512961a12e81cd4b4b466a48c3933469e7f9a310c6513cd4fb252ba3c",
         "stable_dependencies": [
           "glib",
           "jpeg-turbo",
@@ -3330,13 +3330,13 @@
           }
         ],
         "stable_url_args": [
-          "https://download.gnome.org/sources/gdk-pixbuf/2.44/gdk-pixbuf-2.44.7.tar.xz"
+          "https://download.gnome.org/sources/gdk-pixbuf/2.44/gdk-pixbuf-2.44.8.tar.xz"
         ],
-        "stable_version": "2.44.7"
+        "stable_version": "2.44.8"
       },
       "public": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "8b0ad8c3516f436a81c69e7c4e1157a44bf4f6d8e8037b12a80c61553868a3d1",
+        "bottle_checksum": "13498f2cb02bb122c7befb4e3eaa4a79aca7d736f1c5cb68c85088fc70f37f24",
         "desc": "Toolkit for image loading and pixel buffer manipulation",
         "executables": [
           "gdk-pixbuf-csource",
@@ -3380,8 +3380,8 @@
             "type": "gdk_pixbuf_query_loaders"
           }
         ],
-        "ruby_source_checksum": "e071ff42de2c1bf25718aa0e422ab8e90851130d9777a38c430941bdfafb7823",
-        "stable_checksum": "172f80e3626ec31520a970400f1a3694e04718f6c2cd2885f75250fb5a6995a4",
+        "ruby_source_checksum": "bca60e828f454b2d95813a786fb5d6583204954d95e0617414ac5e4d778efc26",
+        "stable_checksum": "919f529512961a12e81cd4b4b466a48c3933469e7f9a310c6513cd4fb252ba3c",
         "stable_dependencies": [
           "glib",
           "jpeg-turbo",
@@ -3411,9 +3411,9 @@
           }
         ],
         "stable_url_args": [
-          "https://download.gnome.org/sources/gdk-pixbuf/2.44/gdk-pixbuf-2.44.7.tar.xz"
+          "https://download.gnome.org/sources/gdk-pixbuf/2.44/gdk-pixbuf-2.44.8.tar.xz"
         ],
-        "stable_version": "2.44.7"
+        "stable_version": "2.44.8"
       }
     },
     "giflib": {
