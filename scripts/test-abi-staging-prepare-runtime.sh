@@ -5,6 +5,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 PREPARER="$REPO_ROOT/scripts/abi-staging-prepare-runtime.sh"
 TMP_ROOT="$(mktemp -d)"
+TMP_ROOT="$(cd "$TMP_ROOT" && pwd -P)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
 fail() {
@@ -34,6 +35,8 @@ SOURCE_COMMIT="$(git -C "$SOURCE" rev-parse HEAD)"
 SOURCE_TREE="$(git -C "$SOURCE" rev-parse HEAD^{tree})"
 SNAPSHOT_SHA256="$(sha256sum "$SOURCE/abi/snapshot.json" | awk '{print $1}')"
 POLICY_SHA256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+CACHE_ROOT="$TMP_ROOT/exact-package-cache"
+mkdir -m 0700 "$CACHE_ROOT"
 
 FAKE_BUILDER="$TMP_ROOT/fake-runtime-builder"
 cat >"$FAKE_BUILDER" <<'EOF'
@@ -57,7 +60,19 @@ done
 [ -z "${SUPER_SECRET:-}" ] || exit 91
 if [ -n "${FAKE_RUNTIME_HOME_MARKER:-}" ]; then
   printf '%s\n' "$HOME" >"$FAKE_RUNTIME_HOME_MARKER"
+  python3 - "${FAKE_RUNTIME_HOME_MARKER}.tmp" <<'PY'
+from pathlib import Path
+import os
+import stat
+import sys
+
+temporary = Path(os.environ["TMPDIR"])
+mode = stat.S_IMODE(os.lstat(temporary).st_mode)
+Path(sys.argv[1]).write_text(f"{temporary}\n{mode:o}\n")
+PY
 fi
+printf '%s\n' "${WASM_POSIX_BINARY_CACHE_ROOT:-}" \
+  >"${WASM_POSIX_BINARY_CACHE_ROOT:?}/runtime-cache-root.observed"
 mkdir -p \
   "$artifact_root/host/dist" \
   "$artifact_root/browser/dist/abi-staging" \
@@ -125,8 +140,9 @@ printf 'clang stddef fixture\n' \
 EOF
 chmod 0755 "$FAKE_TOOLCHAIN_BUILDER"
 
-run_preparer() {
-  local out="$1"
+run_preparer_with_cache() {
+  local cache_root="$1"
+  local out="$2"
   env \
     KANDELO_ABI_STAGING_TESTING=1 \
     KANDELO_ABI_STAGING_RUNTIME_BUILDER="$FAKE_BUILDER" \
@@ -139,13 +155,60 @@ run_preparer() {
       --target-abi 8 \
       --snapshot-sha256 "$SNAPSHOT_SHA256" \
       --build-policy-sha256 "$POLICY_SHA256" \
+      --binary-cache-root "$cache_root" \
       --out "$out"
+}
+
+run_preparer() {
+  run_preparer_with_cache "$CACHE_ROOT" "$1"
 }
 
 OUT="$TMP_ROOT/out"
 FAKE_TOOLCHAIN_STARTED_MARKER="$TMP_ROOT/toolchain.started" run_preparer "$OUT"
 [ "$(cat "$TMP_ROOT/toolchain.started")" = started ] ||
   fail "runtime preparation did not invoke its isolated toolchain builder"
+observed_cache_root="$(cat "$CACHE_ROOT/runtime-cache-root.observed")"
+[ "$(realpath "$observed_cache_root")" = "$(realpath "$CACHE_ROOT")" ] ||
+  fail "runtime preparation dropped or substituted the exact package cache root"
+
+CACHE_SYMLINK_TARGET="$TMP_ROOT/cache-symlink-target"
+CACHE_SYMLINK="$TMP_ROOT/cache-symlink"
+mkdir -m 0700 "$CACHE_SYMLINK_TARGET"
+ln -s "$CACHE_SYMLINK_TARGET" "$CACHE_SYMLINK"
+if FAKE_TOOLCHAIN_STARTED_MARKER="$TMP_ROOT/cache-symlink.started" \
+    run_preparer_with_cache "$CACHE_SYMLINK" "$TMP_ROOT/cache-symlink-out" \
+      >"$TMP_ROOT/cache-symlink.out" 2>&1; then
+  fail "runtime preparation accepted a symlinked package cache root"
+fi
+[ ! -e "$TMP_ROOT/cache-symlink.started" ] ||
+  fail "runtime preparation executed before rejecting a symlinked package cache root"
+grep -F 'binary cache root must be a real directory' \
+  "$TMP_ROOT/cache-symlink.out" >/dev/null ||
+  fail "symlinked package-cache rejection was not explicit"
+
+if FAKE_TOOLCHAIN_STARTED_MARKER="$TMP_ROOT/cache-relative.started" \
+    run_preparer_with_cache "relative-package-cache" "$TMP_ROOT/cache-relative-out" \
+      >"$TMP_ROOT/cache-relative.out" 2>&1; then
+  fail "runtime preparation accepted a relative package cache root"
+fi
+[ ! -e "$TMP_ROOT/cache-relative.started" ] ||
+  fail "runtime preparation executed before rejecting a relative package cache root"
+grep -F 'binary cache root must be absolute' \
+  "$TMP_ROOT/cache-relative.out" >/dev/null ||
+  fail "relative package-cache rejection was not explicit"
+
+mkdir -m 0700 "$SOURCE/cache-inside-source"
+if FAKE_TOOLCHAIN_STARTED_MARKER="$TMP_ROOT/cache-inside.started" \
+    run_preparer_with_cache "$SOURCE/cache-inside-source" \
+      "$TMP_ROOT/cache-inside-out" >"$TMP_ROOT/cache-inside.out" 2>&1; then
+  fail "runtime preparation accepted a package cache inside the exact source"
+fi
+[ ! -e "$TMP_ROOT/cache-inside.started" ] ||
+  fail "runtime preparation executed before rejecting an in-source package cache"
+grep -F 'binary cache root must be outside the exact source tree' \
+  "$TMP_ROOT/cache-inside.out" >/dev/null ||
+  fail "in-source package-cache rejection was not explicit"
+rmdir "$SOURCE/cache-inside-source"
 [ -s "$OUT/runtime-bundle.json" ] || fail "runtime bundle was not emitted"
 [ -s "$OUT/runtime/kernel.wasm" ] || fail "kernel artifact was not emitted"
 [ "$(jq -r '.source.commit' "$OUT/runtime-bundle.json")" = "$SOURCE_COMMIT" ] ||
@@ -203,6 +266,21 @@ case "$(cat "$TMP_ROOT/candidate-home")" in
   "$PRIVATE_ENV_OUT_REAL"/.candidate-environment/home) ;;
   *) fail "candidate runtime did not receive its private HOME" ;;
 esac
+candidate_tmp=$(sed -n '1p' "$TMP_ROOT/candidate-home.tmp")
+[ "$(sed -n '2p' "$TMP_ROOT/candidate-home.tmp")" = 700 ] ||
+  fail "candidate runtime temporary directory was not private"
+case "$candidate_tmp" in
+  /tmp/kandelo-abi-runtime.*|/private/tmp/kandelo-abi-runtime.*) ;;
+  *) fail "candidate runtime did not receive a bounded short temporary path" ;;
+esac
+# Linux limits Unix-domain socket paths to 108 bytes. Nix and tsx append this
+# representative suffix before opening the IPC listener used by the runtime
+# builder, so retain one byte for the terminating NUL.
+tsx_socket_suffix='/nix-shell.XXXXXX/tsx-1001/12345.pipe'
+[ "$(( ${#candidate_tmp} + ${#tsx_socket_suffix} ))" -lt 108 ] ||
+  fail "candidate runtime temporary path cannot host the tsx IPC socket"
+[ ! -e "$candidate_tmp" ] ||
+  fail "candidate runtime temporary directory survived preparation"
 
 printf 'ambient\n' >"$SOURCE/ambient-untracked-input"
 if FAKE_RUNTIME_STARTED_MARKER="$TMP_ROOT/untracked.started" \
@@ -236,6 +314,7 @@ if env \
       --target-abi 8 \
       --snapshot-sha256 "$SNAPSHOT_SHA256" \
       --build-policy-sha256 "$POLICY_SHA256" \
+      --binary-cache-root "$CACHE_ROOT" \
       --out "$TMP_ROOT/credentialed" >"$TMP_ROOT/credentialed.out" 2>&1; then
   fail "runtime preparation accepted a write credential"
 fi
@@ -254,6 +333,7 @@ if env \
       --target-abi 8 \
       --snapshot-sha256 "$SNAPSHOT_SHA256" \
       --build-policy-sha256 "$POLICY_SHA256" \
+      --binary-cache-root "$CACHE_ROOT" \
       --out "$TMP_ROOT/runtime-token" >"$TMP_ROOT/runtime-token.out" 2>&1; then
   fail "runtime preparation accepted the Actions runtime credential"
 fi
@@ -271,18 +351,24 @@ if env \
       --target-abi 8 \
       --snapshot-sha256 "$SNAPSHOT_SHA256" \
       --build-policy-sha256 "$POLICY_SHA256" \
+      --binary-cache-root "$CACHE_ROOT" \
       --out "$TMP_ROOT/wrong-head" >"$TMP_ROOT/wrong-head.out" 2>&1; then
   fail "runtime preparation accepted a synthetic or different head"
 fi
 grep -F 'exact source' "$TMP_ROOT/wrong-head.out" >/dev/null ||
   fail "wrong-head rejection was not explicit"
 
-if FAKE_RUNTIME_SYMLINK=1 run_preparer "$TMP_ROOT/symlink" \
+if FAKE_RUNTIME_SYMLINK=1 \
+    FAKE_RUNTIME_HOME_MARKER="$TMP_ROOT/symlink-home" \
+    run_preparer "$TMP_ROOT/symlink" \
     >"$TMP_ROOT/symlink.out" 2>&1; then
   fail "runtime preparation accepted a symlinked artifact"
 fi
 grep -F 'symbolic link' "$TMP_ROOT/symlink.out" >/dev/null ||
   fail "symlink rejection was not explicit"
+symlink_tmp=$(sed -n '1p' "$TMP_ROOT/symlink-home.tmp")
+[ ! -e "$symlink_tmp" ] ||
+  fail "candidate runtime temporary directory survived failed preparation"
 
 if FAKE_RUNTIME_EMPTY_DIRECTORY=1 run_preparer "$TMP_ROOT/empty-directory" \
     >"$TMP_ROOT/empty-directory.out" 2>&1; then

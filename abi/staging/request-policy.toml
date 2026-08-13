@@ -1,6 +1,6 @@
 schema = 1
 kind = "kandelo-abi-staging-request-policy"
-version = 10
+version = 16
 issuer_repository = "Automattic/kandelo"
 issuer_workflow = ".github/workflows/abi-staging-request-feed.yml"
 automatic_same_repository = true
@@ -12,9 +12,11 @@ max_evidence_bindings = 512
 
 addressed_taps = ["kandelo-dev/homebrew-tap-core"]
 
-# This is the approved MVP implementation identity. Publication remains
-# observe-only until protected hosted canaries have supplied activation evidence.
+# This is the protected request derivation, publication, and validation
+# implementation identity. Active publication remains non-endorsing; candidate
+# execution, verification, admission, and promotion have separate authorities.
 implementation_paths = [
+  ".github/scripts/publish-abi-staging-request.sh",
   ".github/scripts/update-abi-staging-check.sh",
   ".github/workflows/abi-staging-merge-gate.yml",
   ".github/workflows/abi-staging-pages-canary.yml",
@@ -81,6 +83,7 @@ implementation_paths = [
   "scripts/check-dev-shell-tools.sh",
   "scripts/check-pages-vfs-product-registry.mjs",
   "scripts/dev-shell.sh",
+  "scripts/fetch-exact-musl-gitlink.sh",
   "scripts/run-vfs-product-builder.ts",
   "scripts/vfs-product-catalog.mjs",
   "tools/xtask/Cargo.toml",
@@ -95,6 +98,7 @@ implementation_paths = [
   "tools/xtask/src/abi_staging/product_manifest.rs",
   "tools/xtask/src/abi_staging/records.rs",
   "tools/xtask/src/abi_staging/request_derivation.rs",
+  "tools/xtask/src/abi_staging/request_feed.rs",
   "tools/xtask/src/abi_staging/request_policy.rs",
   "tools/xtask/src/abi_staging/selection.rs",
 ]

@@ -38,17 +38,25 @@ done
   echo "publish-abi-staging-request: GITHUB_OUTPUT is required" >&2
   exit 2
 }
-command -v gh >/dev/null || {
-  echo "publish-abi-staging-request: gh is required" >&2
-  exit 2
-}
-command -v jq >/dev/null || {
-  echo "publish-abi-staging-request: jq is required" >&2
-  exit 2
-}
+for command in gh jq curl shasum; do
+  command -v "$command" >/dev/null || {
+    echo "publish-abi-staging-request: $command is required" >&2
+    exit 2
+  }
+done
 
 TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "$TMP_ROOT"' EXIT
+mkdir -p "$TMP_ROOT/public-home"
+RETRY_DELAY=${ABI_STAGING_REQUEST_RETRY_DELAY_SECONDS:-1}
+[[ $RETRY_DELAY =~ ^[0-9]+$ && $RETRY_DELAY -le 10 ]] || {
+  echo "publish-abi-staging-request: retry delay is invalid" >&2
+  exit 2
+}
+
+pause_before_retry() {
+  ((RETRY_DELAY == 0)) || sleep "$RETRY_DELAY"
+}
 
 jq -e -cS . "$PLAN" >"$TMP_ROOT/plan.canonical" || {
   echo "publish-abi-staging-request: plan is invalid JSON" >&2
@@ -89,12 +97,12 @@ PR_NUMBER=$(jq -r '.pull_request_number' "$PLAN")
   echo "publish-abi-staging-request: plan repository mismatch" >&2
   exit 1
 }
-[[ $TAG == "abi-staging-pr-${PR_NUMBER}" ]] || {
-  echo "publish-abi-staging-request: plan tag mismatch" >&2
-  exit 1
-}
 [[ $ASSET_SHA256 =~ ^[0-9a-f]{64}$ ]] || {
   echo "publish-abi-staging-request: invalid plan digest" >&2
+  exit 1
+}
+[[ $TAG == "abi-staging-pr-${PR_NUMBER}-sha256-${ASSET_SHA256}" ]] || {
+  echo "publish-abi-staging-request: plan tag mismatch" >&2
   exit 1
 }
 [[ $PLAN_ACTION != reject-name-collision ]] || {
@@ -122,6 +130,7 @@ REQUEST_PR=$(jq -er '.pull_request.number' "$REQUEST")
 REQUEST_HEAD=$(jq -er '.build_source.commit' "$REQUEST")
 AUTHORIZATION_HEAD=$(jq -er '.issuance.authorization.head' "$REQUEST")
 AUTHORIZATION_MODE=$(jq -er '.issuance.authorization.mode' "$REQUEST")
+ISSUER_WORKFLOW_REF=$(jq -er '.issuance.issuer_workflow_ref' "$REQUEST")
 [[ $REQUEST_REPOSITORY == "$REPOSITORY" && $REQUEST_PR == "$PR_NUMBER" ]] || {
   echo "publish-abi-staging-request: request pull-request identity mismatch" >&2
   exit 1
@@ -134,6 +143,11 @@ AUTHORIZATION_MODE=$(jq -er '.issuance.authorization.mode' "$REQUEST")
   echo "publish-abi-staging-request: request is not exact-head same-repository authorized" >&2
   exit 1
 }
+EXPECTED_ISSUER_WORKFLOW_REF="${REPOSITORY}/.github/workflows/abi-staging-request-feed.yml@${PROTECTED_TARGET}"
+[[ $ISSUER_WORKFLOW_REF == "$EXPECTED_ISSUER_WORKFLOW_REF" ]] || {
+  echo "publish-abi-staging-request: request issuer workflow does not bind protected main" >&2
+  exit 1
+}
 EXPECTED_NAME="candidate-request-${REQUEST_HEAD}-sha256-${ACTUAL_SHA256}.json"
 EXPECTED_URL="https://github.com/${REPOSITORY}/releases/download/${TAG}/${EXPECTED_NAME}"
 [[ $ASSET_NAME == "$EXPECTED_NAME" && $PUBLIC_URL == "$EXPECTED_URL" ]] || {
@@ -141,100 +155,295 @@ EXPECTED_URL="https://github.com/${REPOSITORY}/releases/download/${TAG}/${EXPECT
   exit 1
 }
 
+TITLE="ABI staging request for PR #${PR_NUMBER}"
+BODY="Public, nonendorsed exact-head request. Promotion requires separate protected verification and admission."
 RELEASE_JSON="$TMP_ROOT/release.json"
-if gh api "/repos/${REPOSITORY}/releases/tags/${TAG}" >"$RELEASE_JSON" 2>"$TMP_ROOT/release-get.err"; then
-  ACTION=append-asset
-else
-  gh api --method POST "/repos/${REPOSITORY}/releases" \
-    -f "tag_name=${TAG}" \
-    -f "target_commitish=${PROTECTED_TARGET}" \
-    -f "name=ABI staging requests for PR #${PR_NUMBER}" \
-    -f "body=Public candidate requests are nonendorsed inputs. Identity, verification, and admission remain separate." \
-    -F prerelease=true \
-    -F draft=false >"$RELEASE_JSON"
-  ACTION=create-prerelease
-fi
+ASSETS_JSON="$TMP_ROOT/assets.json"
 
-jq -e \
-  --arg tag "$TAG" \
-  --arg target "$PROTECTED_TARGET" '
-    (.id | type == "number" and . >= 1 and floor == .) and
-    .tag_name == $tag and
-    .target_commitish == $target and
-    .prerelease == true and
-    .draft == false
-  ' "$RELEASE_JSON" >/dev/null || {
-  echo "publish-abi-staging-request: existing Release identity or flags are invalid" >&2
-  exit 1
+validate_direct_tag() {
+  jq -e --arg tag "$TAG" --arg target "$PROTECTED_TARGET" '
+    .ref == ("refs/tags/" + $tag) and
+    .object.type == "commit" and .object.sha == $target
+  ' "$TMP_ROOT/tag.json" >/dev/null || {
+    echo "publish-abi-staging-request: request tag is not a direct protected-commit reference" >&2
+    return 1
+  }
 }
-RELEASE_ID=$(jq -r '.id' "$RELEASE_JSON")
 
-list_assets() {
-  local output=$1
+require_protected_main() {
+  gh api "/repos/${REPOSITORY}/git/ref/heads/main" >"$TMP_ROOT/main.json" || return 1
+  jq -e --arg target "$PROTECTED_TARGET" '
+    .ref == "refs/heads/main" and
+    .object.type == "commit" and .object.sha == $target
+  ' "$TMP_ROOT/main.json" >/dev/null || {
+    echo "publish-abi-staging-request: protected main moved during request publication" >&2
+    return 1
+  }
+}
+
+ensure_direct_tag() {
+  local attempt
+  for attempt in 1 2 3; do
+    if gh api "/repos/${REPOSITORY}/git/ref/tags/${TAG}" >"$TMP_ROOT/tag.json" 2>/dev/null; then
+      validate_direct_tag || return 1
+      return
+    fi
+    pause_before_retry
+    require_protected_main || return 1
+    gh api --method POST "/repos/${REPOSITORY}/git/refs" \
+      -f "ref=refs/tags/${TAG}" -f "sha=${PROTECTED_TARGET}" \
+      >"$TMP_ROOT/tag-create.json" 2>/dev/null || true
+    if gh api "/repos/${REPOSITORY}/git/ref/tags/${TAG}" >"$TMP_ROOT/tag.json" 2>/dev/null; then
+      validate_direct_tag || return 1
+      return
+    fi
+  done
+  echo "publish-abi-staging-request: exact request tag creation remained uncertain" >&2
+  return 1
+}
+
+validate_release_identity() {
+  jq -e --arg tag "$TAG" --arg target "$PROTECTED_TARGET" \
+    --arg title "$TITLE" --arg body "$BODY" '
+    type == "object" and
+    (.id | type == "number" and . >= 1 and floor == .) and
+    .tag_name == $tag and .target_commitish == $target and
+    .name == $title and .body == $body and .prerelease == true and
+    (.draft | type == "boolean") and (.immutable | type == "boolean") and
+    ((.draft == true and .immutable == false) or
+     (.draft == false and .immutable == true))
+  ' "$RELEASE_JSON" >/dev/null || {
+    echo "publish-abi-staging-request: request Release identity or immutable state is invalid" >&2
+    return 1
+  }
+}
+
+refresh_assets() {
+  local release_id pages="$TMP_ROOT/asset-pages.json"
+  release_id=$(jq -er '.id' "$RELEASE_JSON") || return 1
   gh api --paginate --slurp \
-    "/repos/${REPOSITORY}/releases/${RELEASE_ID}/assets?per_page=100" >"$output"
+    "/repos/${REPOSITORY}/releases/${release_id}/assets?per_page=100" >"$pages" || return 1
   jq -e '
     type == "array" and all(.[]; type == "array") and
-    ([.[][]] | length <= 4096) and
+    ([.[][]] | length <= 1) and
     all(.[][];
-      (keys | sort) as $keys |
-      ($keys | index("id")) != null and
-      ($keys | index("name")) != null and
-      ($keys | index("browser_download_url")) != null and
       (.id | type == "number" and . >= 1 and floor == .) and
       (.name | type == "string" and length >= 1 and length <= 512) and
-      (.browser_download_url | type == "string" and startswith("https://"))
-    )
-  ' "$output" >/dev/null || {
-    echo "publish-abi-staging-request: Release asset inventory is invalid or too large" >&2
-    exit 1
+      (.browser_download_url | type == "string" and startswith("https://")) and
+      (.state | type == "string") and
+      (.size | type == "number" and . >= 0 and floor == .) and
+      ((.digest == null) or (.digest | type == "string")))
+  ' "$pages" >/dev/null || {
+    echo "publish-abi-staging-request: Release asset inventory is invalid" >&2
+    return 1
   }
+  jq '[.[][]]' "$pages" >"$ASSETS_JSON" || return 1
 }
 
-ASSET_PAGES="$TMP_ROOT/assets.json"
-list_assets "$ASSET_PAGES"
-MATCH_COUNT=$(jq --arg name "$ASSET_NAME" '[.[][] | select(.name == $name)] | length' "$ASSET_PAGES")
-if [[ $MATCH_COUNT == 0 ]]; then
-  cp "$REQUEST" "$TMP_ROOT/$ASSET_NAME"
-  gh release upload "$TAG" "$TMP_ROOT/$ASSET_NAME" --repo "$REPOSITORY"
-  [[ $ACTION == create-prerelease ]] || ACTION=append-asset
-  list_assets "$ASSET_PAGES"
-  MATCH_COUNT=$(jq --arg name "$ASSET_NAME" '[.[][] | select(.name == $name)] | length' "$ASSET_PAGES")
-elif [[ $MATCH_COUNT == 1 ]]; then
-  EXISTING_ASSET_ID=$(jq -r --arg name "$ASSET_NAME" '.[][] | select(.name == $name) | .id' "$ASSET_PAGES")
+refresh_release() {
+  local release_id=$1
+  gh api "/repos/${REPOSITORY}/releases/${release_id}" >"$RELEASE_JSON" || return 1
+  validate_release_identity || return 1
+  refresh_assets || return 1
+}
+
+discover_release() {
+  local pages="$TMP_ROOT/release-pages.json" matches="$TMP_ROOT/release-matches.json" release_id
+  gh api --paginate --slurp "/repos/${REPOSITORY}/releases?per_page=100" >"$pages" || return 1
+  jq -e 'type == "array" and all(.[]; type == "array") and ([.[][]] | length <= 4096)' \
+    "$pages" >/dev/null || {
+    echo "publish-abi-staging-request: Release discovery inventory is invalid or too large" >&2
+    return 1
+  }
+  jq --arg tag "$TAG" '[.[][] | select(.tag_name == $tag)]' "$pages" >"$matches" || return 1
+  case $(jq -r 'length' "$matches") in
+    0) return 44 ;;
+    1)
+      release_id=$(jq -er '.[0].id' "$matches") || return 1
+      refresh_release "$release_id" || return 1
+      ;;
+    *)
+      echo "publish-abi-staging-request: request tag resolves to multiple Releases" >&2
+      return 1
+      ;;
+  esac
+}
+
+CREATED=false
+create_or_discover_release() {
+  local attempt rc release_id
+  for attempt in 1 2 3; do
+    rc=0
+    discover_release || rc=$?
+    if [[ $rc == 0 ]]; then
+      return
+    elif [[ $rc != 44 ]]; then
+      return 1
+    fi
+    require_protected_main || return 1
+    if gh api --method POST "/repos/${REPOSITORY}/releases" \
+      -f "tag_name=${TAG}" -f "target_commitish=${PROTECTED_TARGET}" \
+      -f "name=${TITLE}" -f "body=${BODY}" -f make_latest=false \
+      -F prerelease=true -F draft=true >"$TMP_ROOT/release-create.json"
+    then
+      release_id=$(jq -er '.id | select(type == "number" and . >= 1)' \
+        "$TMP_ROOT/release-create.json" 2>/dev/null || true)
+      if [[ -n $release_id ]] && refresh_release "$release_id"; then
+        CREATED=true
+        return
+      fi
+    fi
+    pause_before_retry
+  done
+  echo "publish-abi-staging-request: draft request Release creation remained uncertain" >&2
+  return 1
+}
+
+verify_authenticated_asset() {
+  local asset_id release_draft
+  release_draft=$(jq -r '.draft' "$RELEASE_JSON") || return 1
+  # WHY: GitHub exposes a draft asset through a same-repository untagged URL
+  # until publication. Its authenticated asset ID and bytes are authoritative
+  # here; the final reconciliation below still requires the planned tag URL.
+  jq -e --arg name "$ASSET_NAME" --arg url "$PUBLIC_URL" \
+    --arg repository "$REPOSITORY" --argjson release_draft "$release_draft" \
+    --arg digest "sha256:${ASSET_SHA256}" --argjson bytes "$ASSET_BYTES" '
+    ($repository | split("/")) as $repository_parts |
+    (.[0].browser_download_url | split("/")) as $url_parts |
+    length == 1 and .[0].name == $name and
+    (.[0].browser_download_url == $url or
+      ($release_draft == true and
+       ($repository_parts | length) == 2 and ($url_parts | length) == 9 and
+       $url_parts[0] == "https:" and $url_parts[1] == "" and
+       $url_parts[2] == "github.com" and
+       $url_parts[3] == $repository_parts[0] and
+       $url_parts[4] == $repository_parts[1] and
+       $url_parts[5] == "releases" and $url_parts[6] == "download" and
+       ($url_parts[7] | test("^untagged-[0-9a-f]{20}$")) and
+       $url_parts[8] == $name)) and
+    .[0].state == "uploaded" and
+    .[0].size == $bytes and .[0].digest == $digest
+  ' "$ASSETS_JSON" >/dev/null || {
+    echo "publish-abi-staging-request: request asset metadata differs from its plan" >&2
+    return 1
+  }
+  asset_id=$(jq -er '.[0].id' "$ASSETS_JSON") || return 1
   gh api -H 'Accept: application/octet-stream' \
-    "/repos/${REPOSITORY}/releases/assets/${EXISTING_ASSET_ID}" >"$TMP_ROOT/existing-request.json"
-  cmp -s "$REQUEST" "$TMP_ROOT/existing-request.json" || {
-    echo "publish-abi-staging-request: immutable asset-name collision" >&2
+    "/repos/${REPOSITORY}/releases/assets/${asset_id}" >"$TMP_ROOT/authenticated-request.json" ||
+    return 1
+  cmp -s "$REQUEST" "$TMP_ROOT/authenticated-request.json" || {
+    echo "publish-abi-staging-request: authenticated request readback differs" >&2
+    return 1
+  }
+}
+
+ensure_asset() {
+  local attempt release_id
+  release_id=$(jq -er '.id' "$RELEASE_JSON") || return 1
+  for attempt in 1 2 3; do
+    if ! refresh_release "$release_id"; then
+      pause_before_retry
+      continue
+    fi
+    case $(jq -r 'length' "$ASSETS_JSON") in
+      1)
+        if verify_authenticated_asset; then
+          return
+        fi
+        pause_before_retry
+        continue
+        ;;
+      0) ;;
+      *) return 1 ;;
+    esac
+    [[ $(jq -r '.draft' "$RELEASE_JSON") == true ]] || {
+      echo "publish-abi-staging-request: immutable public request Release is missing its asset" >&2
+      return 1
+    }
+    cp "$REQUEST" "$TMP_ROOT/$ASSET_NAME"
+    require_protected_main || return 1
+    gh release upload "$TAG" "$TMP_ROOT/$ASSET_NAME" --repo "$REPOSITORY" || true
+    pause_before_retry
+  done
+  echo "publish-abi-staging-request: request asset upload remained uncertain" >&2
+  return 1
+}
+
+seal_release() {
+  local attempt release_id
+  release_id=$(jq -er '.id' "$RELEASE_JSON") || return 1
+  for attempt in 1 2 3; do
+    if ! refresh_release "$release_id" || ! verify_authenticated_asset; then
+      pause_before_retry
+      continue
+    fi
+    if [[ $(jq -r '.draft' "$RELEASE_JSON") == false ]]; then
+      return
+    fi
+    require_protected_main || return 1
+    gh api --method PATCH "/repos/${REPOSITORY}/releases/${release_id}" \
+      -f "name=${TITLE}" -f "body=${BODY}" -f make_latest=false \
+      -F prerelease=true -F draft=false >"$TMP_ROOT/release-publish.json" || true
+    pause_before_retry
+  done
+  echo "publish-abi-staging-request: request Release publication remained uncertain" >&2
+  return 1
+}
+
+verify_anonymous_asset() {
+  local attempt
+  local -a public_env=(env -i PATH="$PATH" HOME="$TMP_ROOT/public-home")
+  [[ -z ${SSL_CERT_FILE:-} ]] || public_env+=(SSL_CERT_FILE="$SSL_CERT_FILE")
+  [[ -z ${NIX_SSL_CERT_FILE:-} ]] || public_env+=(NIX_SSL_CERT_FILE="$NIX_SSL_CERT_FILE")
+  for attempt in 1 2 3 4; do
+    if "${public_env[@]}" curl --disable --fail --location --silent --show-error \
+        --connect-timeout 10 --max-time 60 "$PUBLIC_URL" \
+        --output "$TMP_ROOT/anonymous-request.json" &&
+      cmp -s "$REQUEST" "$TMP_ROOT/anonymous-request.json"
+    then
+      return
+    fi
+    pause_before_retry
+  done
+  echo "publish-abi-staging-request: anonymous immutable request readback failed" >&2
+  return 1
+}
+
+ensure_direct_tag || exit 1
+create_or_discover_release || exit 1
+INITIAL_DRAFT=$(jq -r '.draft' "$RELEASE_JSON")
+[[ $INITIAL_DRAFT == true || $INITIAL_DRAFT == false ]] || exit 1
+ensure_asset || exit 1
+seal_release || exit 1
+RELEASE_ID=$(jq -er '.id' "$RELEASE_JSON") || exit 1
+for attempt in 1 2 3; do
+  if refresh_release "$RELEASE_ID" && verify_authenticated_asset; then
+    break
+  fi
+  ((attempt < 3)) || {
+    echo "publish-abi-staging-request: final authenticated reconciliation failed" >&2
     exit 1
   }
-  ACTION=asset-already-identical
+  pause_before_retry
+done
+[[ $(jq -r '.draft' "$RELEASE_JSON") == false &&
+   $(jq -r '.immutable' "$RELEASE_JSON") == true ]] || {
+  echo "publish-abi-staging-request: published request Release is not immutable" >&2
+  exit 1
+}
+verify_anonymous_asset || exit 1
+
+ASSET_ID=$(jq -er '.[0].id' "$ASSETS_JSON") || exit 1
+if [[ $CREATED == true ]]; then
+  ACTION=create-prerelease
+elif [[ $INITIAL_DRAFT == true ]]; then
+  ACTION=append-asset
 else
-  echo "publish-abi-staging-request: duplicate exact-name Release assets" >&2
-  exit 1
+  ACTION=asset-already-identical
 fi
-
-[[ $MATCH_COUNT == 1 ]] || {
-  echo "publish-abi-staging-request: upload did not create exactly one named asset" >&2
-  exit 1
-}
-ASSET_ID=$(jq -r --arg name "$ASSET_NAME" '.[][] | select(.name == $name) | .id' "$ASSET_PAGES")
-ASSET_URL=$(jq -r --arg name "$ASSET_NAME" '.[][] | select(.name == $name) | .browser_download_url' "$ASSET_PAGES")
-[[ $ASSET_URL == "$PUBLIC_URL" ]] || {
-  echo "publish-abi-staging-request: published asset URL mismatch" >&2
-  exit 1
-}
-
-# Descriptive prose is deliberately updated last and is never read as
-# authority. If this call is interrupted, a retry rediscovers and verifies the
-# already-appended immutable asset before repairing the prose.
-gh api --method PATCH "/repos/${REPOSITORY}/releases/${RELEASE_ID}" \
-  -f "body=Public, nonendorsed exact-head request feed for PR #${PR_NUMBER}. Request assets are append-only; promotion requires separate protected verification and admission." \
-  >/dev/null
-
 {
   printf 'release_id=%s\n' "$RELEASE_ID"
   printf 'asset_id=%s\n' "$ASSET_ID"
-  printf 'asset_url=%s\n' "$ASSET_URL"
+  printf 'asset_url=%s\n' "$PUBLIC_URL"
   printf 'action=%s\n' "$ACTION"
 } >>"$GITHUB_OUTPUT"

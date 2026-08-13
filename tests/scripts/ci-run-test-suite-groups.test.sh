@@ -122,6 +122,8 @@ FIXTURE="$TMP_DIR/repo"
 mkdir -p \
     "$FIXTURE/scripts" \
     "$FIXTURE/host" \
+    "$FIXTURE/host/src" \
+    "$FIXTURE/host/test" \
     "$FIXTURE/host/wasm" \
     "$FIXTURE/local-binaries" \
     "$FIXTURE/examples" \
@@ -129,6 +131,7 @@ mkdir -p \
     "$FIXTURE/apps/browser-demos" \
     "$FIXTURE/apps/browser-demos/public" \
     "$FIXTURE/crates/shared/src" \
+    "$FIXTURE/packages/registry/zip/test" \
     "$FIXTURE/bin"
 cp \
     "$REPO_ROOT/scripts/activate-ci-test-workspace.sh" \
@@ -142,6 +145,25 @@ cp \
     "$REPO_ROOT/scripts/validate-publication-blocker-report.sh" \
     "$REPO_ROOT/scripts/verify-ci-staging-shell-handoff.sh" \
     "$FIXTURE/scripts/"
+printf 'export const safeFixture = true;\n' \
+    > "$FIXTURE/host/src/safe-fixture.ts"
+printf 'import { safeFixture } from "../src/safe-fixture";\ntest("source", () => safeFixture);\n' \
+    > "$FIXTURE/host/test/source-only.test.ts"
+printf 'export const resolveBinary = () => "prepared";\n' \
+    > "$FIXTURE/host/src/binary-resolver.ts"
+printf 'import { resolveBinary } from "../src/binary-resolver";\ntest("prepared", () => resolveBinary());\n' \
+    > "$FIXTURE/host/test/prepared-product.test.ts"
+printf 'test("host zip", () => {});\n' \
+    > "$FIXTURE/host/test/zip.test.ts"
+printf 'import { resolveBinary } from "../../../../host/src/binary-resolver";\ntest("prepared zip", () => resolveBinary());\n' \
+    > "$FIXTURE/packages/registry/zip/test/zip.test.ts"
+printf '%s\t%s\n' \
+    'host/test/prepared-product.test.ts' prepared-product \
+    'host/test/source-only.test.ts' source-only \
+    'host/test/zip.test.ts' source-only \
+    'packages/registry/ruby/test/posix-spawn.test.ts' source-only \
+    'packages/registry/zip/test/zip.test.ts' prepared-product \
+    > "$FIXTURE/scripts/ci-vitest-evidence-classes.tsv"
 printf '%s\n' 'pub const ABI_VERSION: u32 = 42;' \
     > "$FIXTURE/crates/shared/src/lib.rs"
 mkdir -p "$FIXTURE/packages/registry/ruby/test"
@@ -317,6 +339,47 @@ EOF
 
 cat > "$FIXTURE/bin/npx" <<'EOF'
 #!/usr/bin/env bash
+select_vitest_files() {
+    local -a filters=()
+    local -a excludes=()
+    local arg file filter excluded
+    for arg in "$@"; do
+        case "$arg" in
+            vitest|list|run|--filesOnly) ;;
+            --exclude=*) excludes+=("${arg#--exclude=}") ;;
+            --*) ;;
+            *) filters+=("$arg") ;;
+        esac
+    done
+    while IFS= read -r file || [ -n "$file" ]; do
+        [ -n "$file" ] || continue
+        if [ "${#filters[@]}" -gt 0 ]; then
+            selected=false
+            for filter in "${filters[@]}"; do
+                if [[ "$file" == *"$filter"* ]]; then
+                    selected=true
+                    break
+                fi
+            done
+            [ "$selected" = true ] || continue
+        fi
+        excluded=false
+        for filter in "${excludes[@]}"; do
+            if [ "$file" = "$filter" ]; then
+                excluded=true
+                break
+            fi
+        done
+        [ "$excluded" = false ] && printf '%s\n' "$file"
+    done <<< "${VITEST_FILES_ONLY_INVENTORY:-}"
+}
+
+if [ "${1:-}" = "vitest" ] && [ "${2:-}" = "list" ] &&
+   printf '%s\n' "$@" | grep -Fxq -- --filesOnly; then
+    [ -n "${VITEST_FILES_ONLY_INVENTORY:-}" ] || exit 2
+    select_vitest_files "$@"
+    exit 0
+fi
 if [ "${1:-}" = "vitest" ] && [ "${2:-}" = "list" ]; then
     [ -n "${VITEST_LIST_INVENTORY:-}" ] || exit 2
     output=""
@@ -331,6 +394,10 @@ if [ "${1:-}" = "vitest" ] && [ "${2:-}" = "list" ]; then
 fi
 if [ "${1:-}" = "vitest" ] && [ -n "${VITEST_CAPTURE:-}" ]; then
     printf '%s\n' "$*" >> "$VITEST_CAPTURE"
+    if [ -n "${VITEST_SELECTED_CAPTURE:-}" ] &&
+       ! printf '%s\n' "$@" | grep -q '^--testNamePattern='; then
+        select_vitest_files "$@" > "$VITEST_SELECTED_CAPTURE"
+    fi
     exit 0
 fi
 if [ "${1:-}" = "tsx" ]; then
@@ -738,6 +805,98 @@ run_vitest_group all \
 run_vitest_group 1/2 "vitest run --shard=1/2 $resource_exclude" 1
 run_vitest_group 2/2 "vitest run --shard=2/2 $resource_exclude" 0
 run_vitest_group resource-isolated "$resource_invocations" 0
+
+exact_vitest_inventory=$'../packages/registry/ruby/test/posix-spawn.test.ts\n../packages/registry/zip/test/zip.test.ts\ntest/prepared-product.test.ts\ntest/source-only.test.ts\ntest/zip.test.ts'
+exact_vitest_capture="$TMP_DIR/vitest-exact-abi-source.args"
+exact_vitest_selected="$TMP_DIR/vitest-exact-abi-source.selected"
+: > "$exact_vitest_capture"
+PATH="$FIXTURE/bin:$PATH" \
+    VITEST_CAPTURE="$exact_vitest_capture" \
+    VITEST_SELECTED_CAPTURE="$exact_vitest_selected" \
+    VITEST_FILES_ONLY_INVENTORY="$exact_vitest_inventory" \
+    VITEST_LIST_INVENTORY="$resource_inventory" \
+    bash "$FIXTURE/scripts/ci-run-test-suite.sh" \
+        vitest exact-abi-source
+[ "$(cat "$exact_vitest_selected")" = \
+    $'test/source-only.test.ts\ntest/zip.test.ts' ] || {
+    echo "vitest/exact-abi-source expanded into prepared-product evidence" >&2
+    cat "$exact_vitest_selected" >&2
+    exit 1
+}
+[ "$(cat "$exact_vitest_capture")" = \
+    'vitest run --exclude=test/prepared-product.test.ts --exclude=../packages/registry/zip/test/zip.test.ts --exclude=../packages/registry/ruby/test/posix-spawn.test.ts'$'\n'"$resource_invocations" ] || {
+    echo "vitest/exact-abi-source did not select only source evidence" >&2
+    cat "$exact_vitest_capture" >&2
+    exit 1
+}
+if grep -Fq prepared-product "$exact_vitest_selected"; then
+    echo "vitest/exact-abi-source selected prepared-product evidence" >&2
+    exit 1
+fi
+
+exact_manifest="$FIXTURE/scripts/ci-vitest-evidence-classes.tsv"
+exact_manifest_valid="$TMP_DIR/vitest-exact-manifest-valid.tsv"
+source_only_valid="$TMP_DIR/vitest-exact-source-only-valid.ts"
+cp "$exact_manifest" "$exact_manifest_valid"
+cp "$FIXTURE/host/test/source-only.test.ts" "$source_only_valid"
+
+run_invalid_exact_manifest() {
+    local label="$1"
+    local expected="$2"
+    local inventory="${3:-$exact_vitest_inventory}"
+    local output="$TMP_DIR/vitest-exact-invalid-$label.out"
+    if PATH="$FIXTURE/bin:$PATH" \
+        VITEST_CAPTURE="$TMP_DIR/vitest-exact-invalid-$label.args" \
+        VITEST_FILES_ONLY_INVENTORY="$inventory" \
+        VITEST_LIST_INVENTORY="$resource_inventory" \
+        bash "$FIXTURE/scripts/ci-run-test-suite.sh" \
+            vitest exact-abi-source > "$output" 2>&1; then
+        echo "exact-abi-source manifest accepted $label" >&2
+        exit 1
+    fi
+    grep -Fq "$expected" "$output" || {
+        echo "exact-abi-source manifest reported the wrong $label error" >&2
+        cat "$output" >&2
+        exit 1
+    }
+}
+
+# The exact route may run only an exhaustive, immutable two-class inventory.
+# Mutation coverage keeps new files, duplicate rows, class typos, and resolver
+# dependencies from silently entering the source-only evidence lane.
+printf '%s\t%s\n' \
+    'host/test/source-only.test.ts' source-only \
+    >> "$exact_manifest"
+run_invalid_exact_manifest duplicate \
+    "Vitest evidence classes must be sorted and duplicate-free"
+
+cp "$exact_manifest_valid" "$exact_manifest"
+sed 's/source-only$/unknown/' "$exact_manifest_valid" > "$exact_manifest"
+run_invalid_exact_manifest unknown-class \
+    "unknown Vitest evidence class"
+
+cp "$exact_manifest_valid" "$exact_manifest"
+run_invalid_exact_manifest missing-file \
+    "do not exactly cover the live file inventory" \
+    $'test/prepared-product.test.ts\ntest/source-only.test.ts\ntest/unclassified.test.ts'
+
+cp "$exact_manifest_valid" "$exact_manifest"
+printf '%s\n' \
+    'import { resolveBinary } from "../src/binary-resolver";' \
+    'test("source", () => resolveBinary());' \
+    > "$FIXTURE/host/test/source-only.test.ts"
+run_invalid_exact_manifest binary-resolver \
+    "source-only import closure reaches binary-resolver"
+
+cp "$source_only_valid" "$FIXTURE/host/test/source-only.test.ts"
+printf '%s\n' \
+    'import "./prepared-product.test";' \
+    >> "$FIXTURE/host/test/source-only.test.ts"
+run_invalid_exact_manifest prepared-test \
+    "source-only import closure reaches prepared-product test"
+
+cp "$exact_manifest_valid" "$exact_manifest"
+cp "$source_only_valid" "$FIXTURE/host/test/source-only.test.ts"
 
 run_invalid_resource_manifest() {
     local label="$1"
@@ -2360,18 +2519,52 @@ done
 mirror_expected="$TMP_DIR/homebrew-browser-mirror-expected.json"
 mirror_blockers="$TMP_DIR/homebrew-browser-mirror-blockers.json"
 mirror_canonical="$TMP_DIR/homebrew-browser-mirror-canonical.toml"
-mirror_canonical_url="https://github.com/Automattic/kandelo/releases/download/binaries-abi-v42/index.toml"
+mirror_abi="$(sed -nE \
+    's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
+    "$REPO_ROOT/crates/shared/src/lib.rs")"
+[[ "$mirror_abi" =~ ^[0-9]+$ ]] || {
+    echo "cannot derive the active ABI for the browser mirror fixture" >&2
+    exit 1
+}
+mirror_selection="$TMP_DIR/homebrew-browser-mirror-selection.json"
+node --input-type=module - \
+    "$REPO_ROOT/homebrew/main-shell-flat-selection.json" \
+    "$mirror_selection" "$mirror_abi" <<'NODE'
+import { readFileSync, writeFileSync } from "node:fs";
+
+const normalize = (value) => {
+  if (Array.isArray(value)) return value.map(normalize);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value).sort().map((key) => [key, normalize(value[key])]),
+    );
+  }
+  return value;
+};
+const selection = JSON.parse(readFileSync(process.argv[2], "utf8"));
+const abi = Number(process.argv[4]);
+if (!Number.isInteger(abi) || abi < 0) {
+  throw new Error("browser mirror selection fixture requires a nonnegative integer ABI");
+}
+selection.kandeloAbi = abi;
+selection.name = `main-shell-abi${abi}-wasm32`;
+for (const bottle of selection.bottles) bottle.kandeloAbi = abi;
+writeFileSync(process.argv[3], `${JSON.stringify(normalize(selection))}\n`);
+NODE
+mirror_canonical_url="https://github.com/Automattic/kandelo/releases/download/binaries-abi-v${mirror_abi}/index.toml"
 mirror_state="$TMP_DIR/generated-homebrew-browser-mirror-state.json"
 mirror_shell_image="$TMP_DIR/canonical-flat-shell.vfs.zst"
 mirror_cache_key="$(printf 'b%.0s' {1..64})"
 mirror_archive_sha="$(printf 'a%.0s' {1..64})"
-KANDELO_MIRROR_SHELL_IMAGE="$mirror_shell_image" npx tsx -e '
+KANDELO_MIRROR_SHELL_IMAGE="$mirror_shell_image" \
+KANDELO_MIRROR_SELECTION="$mirror_selection" \
+KANDELO_MIRROR_ABI="$mirror_abi" npx tsx -e '
   import { createHash } from "node:crypto";
   import { readFileSync, writeFileSync } from "node:fs";
   import { ensureDirRecursive, writeVfsBinary } from "./host/src/vfs/image-helpers.ts";
   import { MemoryFileSystem } from "./host/src/vfs/memory-fs.ts";
   const maxByteLength = 512 * 1024 * 1024;
-  const selection = new Uint8Array(readFileSync("homebrew/main-shell-flat-selection.json"));
+  const selection = new Uint8Array(readFileSync(process.env.KANDELO_MIRROR_SELECTION));
   const shellConfig = new Uint8Array(readFileSync("homebrew/main-shell-default.json"));
   const demoConfig = new Uint8Array(readFileSync("homebrew/main-shell-flat-demo.json"));
   const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -2398,12 +2591,16 @@ KANDELO_MIRROR_SHELL_IMAGE="$mirror_shell_image" npx tsx -e '
     fs.symlink("/opt/kandelo/homebrew/bin/env", path);
   }
   fs.symlink("/opt/kandelo/homebrew/bin/brew", "/usr/bin/brew");
+  const kernelAbi = Number(process.env.KANDELO_MIRROR_ABI);
+  if (!Number.isInteger(kernelAbi) || kernelAbi < 0) {
+    throw new Error("browser mirror image fixture requires a nonnegative integer ABI");
+  }
   fs.saveImage({metadata: {
     version: 1,
-    kernelAbi: 42,
+    kernelAbi,
     createdBy: "images/vfs/scripts/build-homebrew-flat-vfs-image.ts",
     capacity: {maxByteLength},
-    baseImage: {sha256: "b".repeat(64), bytes: 1234, kernelAbi: 42},
+    baseImage: {sha256: "b".repeat(64), bytes: 1234, kernelAbi},
     homebrewFlat: {
       selectionSha256: sha256(selection),
       requestedVfsFilename: "shell.vfs.zst",
@@ -2434,11 +2631,11 @@ KANDELO_MIRROR_SHELL_IMAGE="$mirror_shell_image" npx tsx -e '
 mirror_host_target="$(rustc -vV | awk '/^host/ {print $2}')"
 cargo build --release -p xtask --target "$mirror_host_target"
 printf '%s\n' \
-    '{"abi_version":42,"entries":[]}' \
+    "{\"abi_version\":${mirror_abi},\"entries\":[]}" \
     > "$mirror_blockers"
-jq -n --arg cache_key "$mirror_cache_key" '
+jq -n --arg cache_key "$mirror_cache_key" --argjson abi "$mirror_abi" '
   {
-    abi_version: 42,
+    abi_version: $abi,
     entries: [{
       package: "shell",
       kind: "program",
@@ -2451,7 +2648,7 @@ jq -n --arg cache_key "$mirror_cache_key" '
   }
 ' > "$mirror_expected"
 cat > "$mirror_canonical" <<EOF
-abi_version = 42
+abi_version = $mirror_abi
 generated_at = "1970-01-01T00:00:00Z"
 generator = "fixture"
 
@@ -2462,10 +2659,11 @@ revision = 22
 
 [packages.binary.wasm32]
 status = "success"
-archive_url = "shell-0.1.0-rev22-abi42-wasm32-bbbbbbbb.tar.zst"
+archive_url = "shell-0.1.0-rev22-abi${mirror_abi}-wasm32-bbbbbbbb.tar.zst"
 archive_sha256 = "$mirror_archive_sha"
 cache_key_sha = "$mirror_cache_key"
 EOF
+export KANDELO_CANONICAL_FLAT_SELECTION="$mirror_selection"
 bash "$REPO_ROOT/scripts/ci-homebrew-browser-mirror-state.sh" create \
     "$mirror_expected" \
     "$mirror_blockers" \
@@ -2520,9 +2718,10 @@ grep -Fq "resolved shell bytes do not match state" \
 
 blocked_expected="$TMP_DIR/homebrew-browser-blocked-expected.json"
 blocked_report="$TMP_DIR/homebrew-browser-blocked-report.json"
-jq -n '{abi_version: 42, entries: []}' > "$blocked_expected"
+jq -n --argjson abi "$mirror_abi" \
+    '{abi_version: $abi, entries: []}' > "$blocked_expected"
 printf '%s\n' \
-    '{"abi_version":42,"entries":[{"package":"shell","blocker_chain":["shell"]}]}' \
+    "{\"abi_version\":${mirror_abi},\"entries\":[{\"package\":\"shell\",\"blocker_chain\":[\"shell\"]}]}" \
     > "$blocked_report"
 bash "$REPO_ROOT/scripts/ci-homebrew-browser-mirror-state.sh" create \
     "$blocked_expected" \
@@ -2568,6 +2767,7 @@ if bash "$REPO_ROOT/scripts/ci-homebrew-browser-mirror-state.sh" validate \
 fi
 grep -Fq "producer must not pre-authorize" \
     "$TMP_DIR/blocked-preauthorization.out"
+unset KANDELO_CANONICAL_FLAT_SELECTION
 
 canonical_state_stub="$TMP_DIR/canonical-index-state-stub.sh"
 canonical_parser_stub="$TMP_DIR/canonical-index-parser-stub.sh"

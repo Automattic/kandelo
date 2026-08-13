@@ -17,8 +17,8 @@ cargo run -p xtask --target "$host_target" --quiet -- \
 activation=$(cargo run -p xtask --target "$host_target" --quiet -- \
   abi-staging request-policy activation-mode \
   --source abi/staging/request-feed-activation.toml)
-[[ $activation == observe ]] || {
-  echo "request feed activation must remain observe during local rollout" >&2
+[[ $activation == active ]] || {
+  echo "request feed activation must be active after the hosted observe canary" >&2
   exit 1
 }
 

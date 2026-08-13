@@ -313,9 +313,10 @@ canary_ready_upload_line="$(
   [ -n "$canary_hold_upload_line" ] &&
   [ -n "$canary_ready_upload_line" ] &&
   [ "$authority_line" -lt "$isolation_line" ] &&
-  [ "$isolation_line" -lt "$runtime_line" ] &&
-  [ "$runtime_line" -lt "$inputs_line" ] &&
+  [ "$isolation_line" -lt "$inputs_line" ] &&
+  [ "$inputs_line" -lt "$runtime_line" ] &&
   [ "$inputs_line" -lt "$handoff_line" ] &&
+  [ "$runtime_line" -lt "$handoff_line" ] &&
   [ "$handoff_line" -lt "$producer_line" ] &&
   [ "$producer_line" -lt "$readiness_line" ] &&
   [ "$readiness_line" -lt "$site_validation_line" ] &&
@@ -386,7 +387,11 @@ grep -Fq 'env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_RUNTIME_TOKEN \' \
   grep -Fq -- '--source-tree "$source_tree"' <<<"$runtime_block" &&
   grep -Fq -- '--target-abi "$target_abi"' <<<"$runtime_block" &&
   grep -Fq -- '--snapshot-sha256 "$snapshot_sha"' <<<"$runtime_block" &&
-  grep -Fq -- '--build-policy-sha256 "$policy_sha"' <<<"$runtime_block" ||
+  grep -Fq -- '--build-policy-sha256 "$policy_sha"' <<<"$runtime_block" &&
+  grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
+    <<<"$runtime_block" &&
+  grep -Fq -- '--binary-cache-root "$WASM_POSIX_BINARY_CACHE_ROOT"' \
+    <<<"$runtime_block" ||
   fail "canary runtime must be an uncredentialed exact-current-source artifact"
 
 inputs_block="$(

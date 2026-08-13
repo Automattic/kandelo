@@ -68,6 +68,8 @@ pub struct ExistingRequestReleaseV1 {
     pub tag: String,
     pub target_commitish: String,
     pub prerelease: bool,
+    pub draft: bool,
+    pub immutable: bool,
     pub assets: Vec<RequestAssetV1>,
 }
 
@@ -140,6 +142,26 @@ pub fn select_current_request(
                 continue;
             }
         };
+        let request_digest = match canonical_sha256(&request) {
+            Ok(digest) => digest,
+            Err(error) => {
+                errors.push(format!("asset {:?}: {error}", asset.name));
+                continue;
+            }
+        };
+        let expected_url = request_asset_url(
+            &request.pull_request.repository,
+            request.pull_request.number,
+            &request.build_source.commit,
+            &request_digest,
+        );
+        if asset.browser_download_url != expected_url {
+            errors.push(format!(
+                "asset {:?}: URL differs from its exact content-addressed request Release",
+                asset.name
+            ));
+            continue;
+        }
         if request_is_current(
             &request,
             exact_head,
@@ -149,10 +171,7 @@ pub fn select_current_request(
             guard_registry_version,
             guard_registry_sha256,
         ) {
-            match canonical_sha256(&request) {
-                Ok(digest) => current.push((asset, request, digest)),
-                Err(error) => errors.push(format!("asset {:?}: {error}", asset.name)),
-            }
+            current.push((asset, request, request_digest));
         }
     }
     if !errors.is_empty() {
@@ -209,27 +228,21 @@ pub fn plan_request_feed_write(
     }
     let asset_sha256 = canonical_sha256(&request)?;
     let asset_name = candidate_request_asset_name(&request.build_source.commit, &asset_sha256)?;
-    let tag = format!(
-        "{}{}",
-        policy.request_release_tag_prefix, request.pull_request.number
-    );
-    let public_download_url = format!(
-        "https://github.com/{}/releases/download/{tag}/{asset_name}",
-        policy.issuer_repository
+    let tag = request_release_tag(request.pull_request.number, &asset_sha256);
+    let public_download_url = request_asset_url(
+        &policy.issuer_repository,
+        request.pull_request.number,
+        &request.build_source.commit,
+        &asset_sha256,
     );
 
     let action = match existing_release {
         None => RequestFeedActionV1::CreatePrerelease,
         Some(release) => {
             validate_existing_release(release, &tag, protected_target)?;
-            let named = release
-                .assets
-                .iter()
-                .filter(|asset| asset.name == asset_name)
-                .collect::<Vec<_>>();
-            match named.as_slice() {
-                [] => RequestFeedActionV1::AppendAsset,
-                [asset] if asset.canonical_bytes == request_bytes => {
+            match release.assets.as_slice() {
+                [] if release.draft => RequestFeedActionV1::AppendAsset,
+                [asset] if asset.name == asset_name && asset.canonical_bytes == request_bytes => {
                     RequestFeedActionV1::AssetAlreadyIdentical
                 }
                 _ => RequestFeedActionV1::RejectNameCollision,
@@ -368,6 +381,16 @@ fn validate_public_asset_url(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn request_release_tag(pull_request: u64, digest: &str) -> String {
+    format!("abi-staging-pr-{pull_request}-sha256-{digest}")
+}
+
+pub fn request_asset_url(repository: &str, pull_request: u64, head: &str, digest: &str) -> String {
+    let name = format!("candidate-request-{head}-sha256-{digest}.json");
+    let tag = request_release_tag(pull_request, digest);
+    format!("https://github.com/{repository}/releases/download/{tag}/{name}")
+}
+
 fn validate_existing_release(
     release: &ExistingRequestReleaseV1,
     expected_tag: &str,
@@ -380,13 +403,16 @@ fn validate_existing_release(
     if release.target_commitish != protected_target {
         return Err("existing request Release target must not move".to_string());
     }
-    if !release.prerelease {
-        return Err("existing request Release must remain a prerelease".to_string());
+    if !release.prerelease
+        || !((release.draft && !release.immutable) || (!release.draft && release.immutable))
+    {
+        return Err(
+            "existing request Release must be a mutable draft or immutable public prerelease"
+                .to_string(),
+        );
     }
-    if release.assets.len() > MAX_RELEASE_ASSETS {
-        return Err(format!(
-            "existing request Release exceeds {MAX_RELEASE_ASSETS} assets"
-        ));
+    if release.assets.len() > 1 {
+        return Err("content-addressed request Release contains more than one asset".to_string());
     }
     for asset in &release.assets {
         if asset.name.is_empty() || asset.name.len() > 512 || asset.name.contains(['/', '\0']) {
@@ -480,7 +506,7 @@ mod tests {
         let name = candidate_request_asset_name(&request.build_source.commit, &digest).unwrap();
         RequestAssetV1 {
             browser_download_url: format!(
-                "https://github.com/Automattic/kandelo/releases/download/abi-staging-pr-19/{name}"
+                "https://github.com/Automattic/kandelo/releases/download/abi-staging-pr-19-sha256-{digest}/{name}"
             ),
             name,
             canonical_bytes,
@@ -531,6 +557,20 @@ mod tests {
         let selection = select(&[asset(&current), malformed]);
         assert!(matches!(
             selection,
+            CurrentRequestSelectionV1::Invalid { .. }
+        ));
+    }
+
+    #[test]
+    fn selection_rejects_a_request_outside_its_content_addressed_release() {
+        let current = request();
+        let mut wrong_release = asset(&current);
+        wrong_release.browser_download_url = format!(
+            "https://github.com/Automattic/kandelo/releases/download/abi-staging-pr-19/{}",
+            wrong_release.name
+        );
+        assert!(matches!(
+            select(&[wrong_release]),
             CurrentRequestSelectionV1::Invalid { .. }
         ));
     }
@@ -606,11 +646,20 @@ mod tests {
         let bytes = canonical_json_bytes(&request).unwrap();
         let absent = plan_request_feed_write(&policy(), &"3".repeat(40), &bytes, None).unwrap();
         assert_eq!(absent.action, RequestFeedActionV1::CreatePrerelease);
+        assert_eq!(
+            absent.tag,
+            format!(
+                "abi-staging-pr-19-sha256-{}",
+                canonical_sha256(&request).unwrap()
+            )
+        );
 
         let release = ExistingRequestReleaseV1 {
             tag: absent.tag.clone(),
             target_commitish: "3".repeat(40),
             prerelease: true,
+            draft: true,
+            immutable: false,
             assets: vec![],
         };
         assert_eq!(
@@ -622,6 +671,7 @@ mod tests {
 
         let mut identical = release.clone();
         identical.assets.push(asset(&request));
+        identical.assets[0].browser_download_url = absent.public_download_url.clone();
         assert_eq!(
             plan_request_feed_write(&policy(), &"3".repeat(40), &bytes, Some(&identical))
                 .unwrap()
@@ -647,5 +697,18 @@ mod tests {
             &canonical_json_bytes(&changed).unwrap(),
         )
         .is_err());
+    }
+
+    #[test]
+    fn existing_release_schema_binds_draft_and_immutable_state() {
+        let release = serde_json::json!({
+            "assets": [],
+            "draft": true,
+            "immutable": false,
+            "prerelease": true,
+            "tag": format!("abi-staging-pr-19-sha256-{}", "a".repeat(64)),
+            "target_commitish": "3".repeat(40),
+        });
+        assert!(serde_json::from_value::<ExistingRequestReleaseV1>(release).is_ok());
     }
 }

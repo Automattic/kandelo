@@ -250,7 +250,13 @@ check_ordered_staging_shell_contract() {
     grep -Fq -- \
       '--target-commit '\''${{ github.event.pull_request.head.sha }}'\''' \
       <<<"$test_gate" &&
-    grep -Fq 'needs: [change-scope, preflight, test-gate]' \
+    grep -Fq \
+      'needs: [change-scope, preflight, test-gate, exact-abi-test-gate]' \
+      <<<"$prerequisites" &&
+    grep -Fq \
+      'if [ "$EXACT_ABI_STAGING_APPLICABLE" = true ]; then' \
+      <<<"$prerequisites" &&
+    grep -Fq '[ "$EXACT_ABI_GATE_RESULT" = success ]' \
       <<<"$prerequisites" &&
     grep -Fq '[ "$TEST_GATE_RESULT" = success ]' \
       <<<"$prerequisites" &&
@@ -269,10 +275,13 @@ check_ordered_staging_shell_contract() {
       <<<"$node_acceptance" &&
     grep -Fq 'name: exact current lazy shell (Node + Chromium)' \
       <<<"$gate" &&
+    grep -Fq -- '- exact-abi-test-gate' <<<"$gate" &&
     grep -Fq 'if: |' <<<"$gate" &&
     grep -Fq 'always() &&' <<<"$gate" &&
     grep -Fq '[ "$PREREQUISITES_RESULT" = success ]' <<<"$gate" &&
+    grep -Fq '[ "$EXACT_ABI_GATE_RESULT" = success ]' <<<"$gate" &&
     grep -Fq 'TEST_GATE_RESULT: ${{ needs.test-gate.result }}' <<<"$gate" &&
+    grep -Fq '[ "$TEST_GATE_RESULT" = skipped ]' <<<"$gate" &&
     grep -Fq 'canonical package test gate ended as $TEST_GATE_RESULT' \
       <<<"$gate"
 }
@@ -438,6 +447,21 @@ sed '/canonical package test gate ended as \$TEST_GATE_RESULT/d' \
   "$STAGING_WORKFLOW" >"$TMP_ROOT/staging-shell-aggregate-drops-test-gate.yml"
 expect_ordered_staging_shell_contract_rejected \
   "$TMP_ROOT/staging-shell-aggregate-drops-test-gate.yml"
+sed 's/, exact-abi-test-gate]$/]/' "$STAGING_WORKFLOW" \
+  >"$TMP_ROOT/staging-shell-drops-exact-gate.yml"
+expect_ordered_staging_shell_contract_rejected \
+  "$TMP_ROOT/staging-shell-drops-exact-gate.yml"
+awk '
+  !changed && index($0, "[ \"$EXACT_ABI_GATE_RESULT\" = success ]") {
+    sub(/= success ]/, "= skipped ]")
+    changed = 1
+  }
+  { print }
+  END { if (!changed) exit 1 }
+' "$STAGING_WORKFLOW" \
+  >"$TMP_ROOT/staging-shell-accepts-missing-exact-evidence.yml"
+expect_ordered_staging_shell_contract_rejected \
+  "$TMP_ROOT/staging-shell-accepts-missing-exact-evidence.yml"
 
 check_required_staging_verifier_contract "$WORKFLOW" ||
   fail "main-shell CI must verify its exact immutable staging authority"
