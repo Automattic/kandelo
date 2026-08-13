@@ -1,5 +1,6 @@
 import { GlContextRegistry } from "./registry.js";
 import { decodeAndDispatch } from "./bridge.js";
+import { enableGlesBridgeExtensions } from "./capabilities.js";
 
 export interface ForwardWorkerLike {
   addEventListener(type: "message", listener: (e: MessageEvent) => void): void;
@@ -33,15 +34,7 @@ export function setupMainForward(
           preserveDrawingBuffer: true,
         }) as WebGL2RenderingContext | null;
         if (gl) {
-          // Pavel's fluid sim renders the velocity/dye/pressure passes
-          // into RGBA16F framebuffers and samples them with LINEAR
-          // filtering during advection. Both require explicit extension
-          // enablement on WebGL2 — the spec defines the storage formats
-          // but defers renderability and filterability of float textures
-          // to optional extensions.
-          gl.getExtension("EXT_color_buffer_float");
-          gl.getExtension("OES_texture_float_linear");
-          gl.getExtension("EXT_float_blend");
+          enableGlesBridgeExtensions(gl);
         }
         b.gl = gl;
         return;
