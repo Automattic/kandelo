@@ -13,7 +13,7 @@ host = "required"
 
 [[registrations]]
 product = "browser-main-shell"
-node = ["main-shell-startup"]
+node = ["main-shell-startup", "main-shell-toolchain-node"]
 browser = [
   "main-shell-basic-e2e",
   "main-shell-fbdoom-e2e",

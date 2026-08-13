@@ -936,6 +936,7 @@ fn validate_probe(definition: &EvidenceDefinitionV1) -> Result<(), String> {
             const SUITES: &[&str] = &[
                 "main-shell-fbdoom-browser",
                 "main-shell-modeset-browser",
+                "main-shell-toolchain-node",
                 "mariadb-product-browser",
                 "mariadb-product-node",
                 "php-product-browser",

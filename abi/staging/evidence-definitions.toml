@@ -35,6 +35,20 @@ argv = ["/bin/bash", "-lc", "printf 'kandelo-main-shell-ready\\n'"]
 stdout_exact = "kandelo-main-shell-ready\n"
 
 [[definitions]]
+id = "main-shell-toolchain-node"
+host = "node"
+runner = "repository-suite"
+timeout_seconds = 900
+
+[definitions.probe]
+suite = "main-shell-toolchain-node"
+lazy_inputs = [
+  "homebrew-clang",
+  "homebrew-kandelo-sdk",
+  "homebrew-libcxx",
+]
+
+[[definitions]]
 id = "main-shell-basic-e2e"
 host = "browser"
 runner = "interactive-terminal"

@@ -97,6 +97,9 @@ const SAFE_AMBIENT_ENVIRONMENT = [
 ] as const;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
+const SUPPLEMENTARY_NODE_EVIDENCE: Readonly<Record<string, readonly string[]>> = {
+  "browser-main-shell": ["main-shell-toolchain-node"],
+};
 
 function compareOrdinal(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -328,6 +331,7 @@ export type NodeEvidenceOperation =
   });
 
 export type NodeRepositorySuite =
+  | "main-shell-toolchain-node"
   | "mariadb-product-node"
   | "php-product-node"
   | "sqlite-product-node";
@@ -908,7 +912,8 @@ function validateProtectedProductSelection(
   }
   const evidence = isRecord(manifest.evidence) ? manifest.evidence : {};
   const node = isRecord(evidence.node) ? evidence.node : undefined;
-  if (node?.test !== context.definition.id) {
+  const supplementary = SUPPLEMENTARY_NODE_EVIDENCE[context.product.id] ?? [];
+  if (node?.test !== context.definition.id && !supplementary.includes(context.definition.id)) {
     throw new Error("Node evidence definition differs from the protected product registration");
   }
 }
@@ -3678,6 +3683,40 @@ const PROTECTED_NODE_SUITES: Readonly<Record<
   NodeRepositorySuite,
   ProtectedNodeSuiteDefinition
 >> = {
+  "main-shell-toolchain-node": {
+    steps: [
+      {
+        id: "compile-and-run-c",
+        argv: [
+          "/bin/bash",
+          "-lc",
+          "set -eu; work=/tmp/kandelo-c-evidence; "
+            + "rm -rf \"$work\"; mkdir -p \"$work\"; "
+            + "printf '#include <stdio.h>\\nint main(void){"
+            + "puts(\"kandelo-c-ok\");return 0;}\\n' > \"$work/main.c\"; "
+            + "cc \"$work/main.c\" -o \"$work/main.wasm\"; "
+            + "\"$work/main.wasm\"",
+        ],
+        env: { HOME: "/tmp", MAKEFLAGS: "-j1" },
+        stdout: { kind: "exact", value: "kandelo-c-ok\n" },
+      },
+      {
+        id: "compile-and-run-cxx",
+        argv: [
+          "/bin/bash",
+          "-lc",
+          "set -eu; work=/tmp/kandelo-cxx-evidence; "
+            + "rm -rf \"$work\"; mkdir -p \"$work\"; "
+            + "printf '#include <iostream>\\nint main(){"
+            + "std::cout<<\"kandelo-cxx-ok\\\\n\";}\\n' > \"$work/main.cpp\"; "
+            + "c++ \"$work/main.cpp\" -o \"$work/main.wasm\"; "
+            + "\"$work/main.wasm\"",
+        ],
+        env: { HOME: "/tmp", MAKEFLAGS: "-j1" },
+        stdout: { kind: "exact", value: "kandelo-cxx-ok\n" },
+      },
+    ],
+  },
   "mariadb-product-node": {
     service: { argv: "product-boot", port: 3306 },
     steps: [
@@ -5036,7 +5075,7 @@ function isNodeRepositorySuite(
   value: unknown,
 ): value is Extract<NodeEvidenceOperation, { kind: "repository-suite" }>["suite"] {
   return value === "mariadb-product-node" || value === "php-product-node" ||
-    value === "sqlite-product-node";
+    value === "sqlite-product-node" || value === "main-shell-toolchain-node";
 }
 
 function isOutcome(value: unknown): value is ProductEvidenceResultV1["outcome"] {
