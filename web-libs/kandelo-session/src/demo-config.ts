@@ -12,6 +12,7 @@ export interface DemoPresentationConfig {
   terminalAccess: DemoPresentation["terminalAccess"];
   internalsAccess: DemoPresentation["internalsAccess"];
   autoCommand?: string;
+  touchControls?: boolean;
 }
 
 export interface DemoAssetConfig {
@@ -230,6 +231,7 @@ function normalizePresentationConfig(config: unknown): DemoPresentation {
     terminalAccess: accessMode(config.terminalAccess, "terminalAccess"),
     internalsAccess: accessMode(config.internalsAccess, "internalsAccess"),
     ...(typeof config.autoCommand === "string" ? { autoCommand: config.autoCommand } : {}),
+    ...(typeof config.touchControls === "boolean" ? { touchControls: config.touchControls } : {}),
   };
 }
 
