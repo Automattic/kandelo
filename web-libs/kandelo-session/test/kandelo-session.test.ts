@@ -1789,6 +1789,7 @@ describe("Kandelo demo config", () => {
             terminalAccess: "drawer",
             internalsAccess: "drawer",
             autoCommand: "/usr/local/bin/fbdoom -iwad /doom1.wad",
+            touchControls: true,
           },
         },
       },
@@ -1799,6 +1800,7 @@ describe("Kandelo demo config", () => {
     expect(presentation.runningPrimary).toEqual(["framebuffer", "terminal", "syslog"]);
     expect(presentation.terminalAccess).toBe("drawer");
     expect(presentation.autoCommand).toContain("fbdoom");
+    expect(presentation.touchControls).toBe(true);
   });
 
   it("throws when profile metadata is incomplete", () => {

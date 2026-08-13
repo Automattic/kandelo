@@ -84,6 +84,7 @@ export function builtinDemoPresentation(profileId: string): DemoPresentation | n
       return {
         ...genericDemoPresentation("framebuffer"),
         autoCommand: DOOM_COMMAND,
+        touchControls: true,
       };
     case "modeset":
       return genericDemoPresentation("kms");

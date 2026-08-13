@@ -5,6 +5,8 @@
  * browser-only device bridge used by fbDOOM:
  *
  *   - Pointer Lock mouse deltas -> `/dev/input/mice` PS/2 packets.
+ *     Touch devices have no Pointer Lock; capture requests from touch input
+ *     are ignored so a tap never strands the user in locked mode.
  *
  * The legacy PCM scheduler types remain exported below for source
  * compatibility. Machine-level AudioWorklet playback supersedes that
@@ -570,8 +572,13 @@ export function attachPointerLockMouse(
   const requestCapture = () => {
     if (closed || !getEnabled()) return;
     canvas.focus();
+    // A tap must never lock the pointer: touch devices have no Esc key,
+    // so locked mode would have no way back out.
+    if (lastPointerType === "touch") return;
     if (!captured()) {
-      canvas.requestPointerLock();
+      // Touch-only platforms reject the request; swallow the rejection.
+      const request = canvas.requestPointerLock() as unknown;
+      if (request instanceof Promise) request.catch(() => {});
     }
   };
 
@@ -636,6 +643,12 @@ export function attachPointerLockMouse(
     e.preventDefault();
   };
 
+  let lastPointerType = "";
+
+  const onPointerDown = (e: PointerEvent) => {
+    lastPointerType = e.pointerType;
+  };
+
   const onPointerLockChange = () => {
     if (!captured()) {
       releaseButtons();
@@ -653,6 +666,7 @@ export function attachPointerLockMouse(
   canvas.addEventListener("mousemove", onMouseMove);
   canvas.addEventListener("mousedown", onMouseDown);
   canvas.addEventListener("contextmenu", onContextMenu);
+  canvas.addEventListener("pointerdown", onPointerDown);
   doc.addEventListener("mouseup", onMouseUp);
   doc.addEventListener("pointerlockchange", onPointerLockChange);
   win?.addEventListener("blur", onWindowBlur);
@@ -671,6 +685,7 @@ export function attachPointerLockMouse(
       canvas.removeEventListener("mousemove", onMouseMove);
       canvas.removeEventListener("mousedown", onMouseDown);
       canvas.removeEventListener("contextmenu", onContextMenu);
+      canvas.removeEventListener("pointerdown", onPointerDown);
       doc.removeEventListener("mouseup", onMouseUp);
       doc.removeEventListener("pointerlockchange", onPointerLockChange);
       win?.removeEventListener("blur", onWindowBlur);
