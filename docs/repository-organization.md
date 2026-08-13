@@ -89,14 +89,15 @@ validation and a deterministic local transition miniature. The protected
 request workflow is owned by
 `.github/workflows/abi-staging-request-feed.yml`; its source policy and
 activation are owned by `abi/staging/request-policy.toml` and
-`abi/staging/request-feed-activation.toml`. Activation remains `observe`, so
-the workflow derives inert exact-head request data but cannot publish a
-Release asset. The companion tap workflow is also observe-only and read-only.
+`abi/staging/request-feed-activation.toml`. Active mode publishes an exact,
+append-only, non-endorsing request Release asset for protected tap-side
+reconciliation. The companion tap workflow remains observe-only and
+read-only.
 
-Neither workflow revision is deployed on protected `main`, so hosted ABI
-staging is not operational. Candidate execution and publication, GitHub Check
-updates, promotion, protected ABI-history mutation, and production Pages
-deployment belong to later staging layers and require hosted evidence.
+Candidate execution and publication, enforced GitHub Check updates,
+promotion, protected ABI-history mutation, and production Pages deployment
+remain separately guarded staging layers. In particular, active request
+publication does not authorize candidate package writes or promotion.
 
 The change-scope classifier implements these categories conservatively. VFS
 authority and staging-contract paths reach the non-package runtime gate;
