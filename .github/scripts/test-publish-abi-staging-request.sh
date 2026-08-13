@@ -53,9 +53,15 @@ release_json() {
 }
 
 asset_pages() {
+  local url=$EXPECT_URL
+  if [[ $FAKE_RELEASE_MODE == draft-untagged && ! -f $FAKE_STATE/published ]]; then
+    url="https://github.com/Automattic/kandelo/releases/download/untagged-0123456789abcdef0123/${EXPECT_NAME}"
+  elif [[ $FAKE_RELEASE_MODE == draft-hostile && ! -f $FAKE_STATE/published ]]; then
+    url=$EXPECT_DRAFT_URL
+  fi
   if [[ -f $FAKE_STATE/uploaded || $FAKE_RELEASE_MODE == draft-identical ||
         $FAKE_RELEASE_MODE == public-identical || $FAKE_RELEASE_MODE == collision ]]; then
-    jq -cn --arg name "$EXPECT_NAME" --arg url "$EXPECT_URL" \
+    jq -cn --arg name "$EXPECT_NAME" --arg url "$url" \
       --arg digest "sha256:$EXPECT_DIGEST" --argjson bytes "$EXPECT_BYTES" \
       '[[{id:81,name:$name,browser_download_url:$url,state:"uploaded",size:$bytes,digest:$digest}]]'
   elif [[ $FAKE_RELEASE_MODE == multiple ]]; then
@@ -216,6 +222,7 @@ publish_line=$(grep -n -- '--method PATCH /repos/Automattic/kandelo/releases/71'
   fail "publisher did not recapture protected main before every mutation"
 
 run_case draft-empty draft-empty success
+run_case draft-untagged draft-untagged success
 run_case draft-identical draft-identical success
 run_case public-identical public-identical success
 ! grep -Eq -- 'release upload|--method (POST|PATCH) /repos/.*/releases' \
@@ -229,6 +236,19 @@ run_case wrong-tag-target wrong-tag-target failure
 run_case wrong-main wrong-main failure
 ! grep -Eq -- '--method (POST|PATCH)|release upload' "$TMP_ROOT/wrong-main/calls.log" ||
   fail "wrong protected main reached a GitHub mutation"
+
+for hostile_url in \
+  "https://evil.invalid/Automattic/kandelo/releases/download/untagged-0123456789abcdef0123/${ASSET_NAME}" \
+  "https://github.com/other/kandelo/releases/download/untagged-0123456789abcdef0123/${ASSET_NAME}" \
+  "https://github.com/Automattic/kandelo/releases/download/untagged-nothex/${ASSET_NAME}" \
+  "https://github.com/Automattic/kandelo/releases/download/untagged-0123456789abcdef0123/other.json"
+do
+  state="$TMP_ROOT/hostile-$(printf '%s' "$hostile_url" | shasum -a 256 | cut -c1-8)"
+  mkdir -p "$state"
+  write_plan append-asset "$state/plan.json"
+  EXPECT_DRAFT_URL=$hostile_url invoke "$state" draft-hostile &&
+    fail "hostile draft asset URL unexpectedly succeeded: $hostile_url"
+done
 
 state="$TMP_ROOT/upload-failure"
 mkdir -p "$state"
