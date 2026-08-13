@@ -124,37 +124,6 @@ jobs:
           mkdir -m 0700 "$package_cache"
           echo "WASM_POSIX_BINARY_CACHE_ROOT=$package_cache" >>"$GITHUB_ENV"
 
-      - name: Prepare exact uncredentialed runtime
-        run: |
-          set -euo pipefail
-          source_root=$(pwd -P)
-          source_commit=$(git rev-parse HEAD)
-          source_tree=$(git rev-parse 'HEAD^{tree}')
-          target_abi=$(sed -nE \
-            's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
-            crates/shared/src/lib.rs)
-          snapshot_sha=$(sha256sum abi/snapshot.json | awk '{print $1}')
-          policy_sha=$(sha256sum \
-            abi/staging/request-policy.generated.json | awk '{print $1}')
-          runtime_out="$RUNNER_TEMP/abi-staging-pages-runtime"
-          test ! -e "$runtime_out"
-          env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_RUNTIME_TOKEN \
-            -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
-            -u ACTIONS_ID_TOKEN_REQUEST_URL \
-            -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY \
-            -u GOOGLE_APPLICATION_CREDENTIALS -u NPM_TOKEN \
-            -u NODE_AUTH_TOKEN -u SSH_AUTH_SOCK \
-            bash scripts/dev-shell.sh \
-              bash scripts/abi-staging-prepare-runtime.sh \
-                --source-root "$source_root" \
-                --source-repository "$GITHUB_REPOSITORY" \
-                --source-commit "$source_commit" \
-                --source-tree "$source_tree" \
-                --target-abi "$target_abi" \
-                --snapshot-sha256 "$snapshot_sha" \
-                --build-policy-sha256 "$policy_sha" \
-                --out "$runtime_out"
-
       - name: Materialize exact current product inputs
         run: |
           set -euo pipefail
@@ -297,6 +266,42 @@ jobs:
               ' "$catalog" >"$product_root/archive-files.json"
           done < <(jq -r '.products[].id' "$registry")
           BASH
+
+      # WHY: Vite resolves the canonical shell and support programs while it
+      # builds the runtime. Materialize and seal those inputs first, then carry
+      # the same isolated cache through both dev-shell boundaries.
+      - name: Prepare exact uncredentialed runtime
+        run: |
+          set -euo pipefail
+          source_root=$(pwd -P)
+          source_commit=$(git rev-parse HEAD)
+          source_tree=$(git rev-parse 'HEAD^{tree}')
+          target_abi=$(sed -nE \
+            's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
+            crates/shared/src/lib.rs)
+          snapshot_sha=$(sha256sum abi/snapshot.json | awk '{print $1}')
+          policy_sha=$(sha256sum \
+            abi/staging/request-policy.generated.json | awk '{print $1}')
+          runtime_out="$RUNNER_TEMP/abi-staging-pages-runtime"
+          test ! -e "$runtime_out"
+          env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_RUNTIME_TOKEN \
+            -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+            -u ACTIONS_ID_TOKEN_REQUEST_URL \
+            -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY \
+            -u GOOGLE_APPLICATION_CREDENTIALS -u NPM_TOKEN \
+            -u NODE_AUTH_TOKEN -u SSH_AUTH_SOCK \
+            bash scripts/dev-shell.sh env \
+              "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
+              bash scripts/abi-staging-prepare-runtime.sh \
+                --source-root "$source_root" \
+                --source-repository "$GITHUB_REPOSITORY" \
+                --source-commit "$source_commit" \
+                --source-tree "$source_tree" \
+                --target-abi "$target_abi" \
+                --snapshot-sha256 "$snapshot_sha" \
+                --build-policy-sha256 "$policy_sha" \
+                --binary-cache-root "$WASM_POSIX_BINARY_CACHE_ROOT" \
+                --out "$runtime_out"
 
       - name: Write the bounded production handoff
         run: |
