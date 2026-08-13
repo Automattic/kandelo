@@ -28,7 +28,7 @@ describe("flat-selection lazy Homebrew VFS CLI", () => {
     expect(packageToml).toContain(
       'depends_on = ["homebrew-bootstrap@6.0.12-153-gcf5bc21"]',
     );
-    expect(buildToml).toMatch(/^revision\s*=\s*24$/m);
+    expect(buildToml).toMatch(/^revision\s*=\s*25$/m);
     for (const input of [
       "homebrew/main-shell-materialization-policy.json",
       "homebrew/main-shell-runtime-support-policy.json",
