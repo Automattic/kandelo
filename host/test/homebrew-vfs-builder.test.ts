@@ -5687,6 +5687,35 @@ describe("Homebrew VFS builder", () => {
     ]);
   });
 
+  it("creates explicitly reviewed aliases to bottle-keg directories", async () => {
+    const bytes = bottleTar(standardEntries([{
+      path: "hello/2.12.1/libexec/sdk",
+      type: "directory",
+      mode: 0o755,
+    }]));
+    const compatibilityPolicy: HomebrewVfsCompatibilityPolicy = {
+      mirror_link_manifest_bin: { targets: [] },
+      link_conflict_owners: [],
+      aliases: [{
+        package: "kandelo-dev/tap-core/hello",
+        source_kind: "keg",
+        source: "libexec/sdk",
+        targets: ["/usr/sdk"],
+      }],
+    };
+    const result = await buildFixture(bytes, { compatibilityPolicy });
+
+    expect(result.fs.readlink("/usr/sdk")).toBe(`${CELLAR}/hello/2.12.1/libexec/sdk`);
+    expect(result.fs.stat("/usr/sdk").mode & 0xf000).toBe(0x4000);
+    expect(result.report.compatibility_links).toEqual([
+      expect.objectContaining({
+        path: "/usr/sdk",
+        source: "libexec/sdk",
+        ownership: "bottle-keg",
+      }),
+    ]);
+  });
+
   it("rejects misdeclared, missing, and non-executable bottle-keg alias sources", async () => {
     const bytes = bottleTar(standardEntries([{
       path: "hello/2.12.1/libexec/not-executable",

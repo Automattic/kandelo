@@ -1827,10 +1827,17 @@ function createCompatibilityLink(
   }
   targetedPaths.add(targetPath);
   const sourceStat = tryStat(fs, owned.sourcePath);
-  if (sourceStat === null || kind(sourceStat) !== S_IFREG || (sourceStat.mode & 0o111) === 0) {
+  const sourceKind = sourceStat === null ? null : kind(sourceStat);
+  const isExecutableFile =
+    sourceStat !== null && sourceKind === S_IFREG &&
+    (sourceStat.mode & 0o111) !== 0;
+  const isKegDirectory =
+    owned.ownership === "bottle-keg" && sourceKind === S_IFDIR;
+  if (!isExecutableFile && !isKegDirectory) {
     fail(
       owned.pkg,
-      `compatibility source ${owned.source} is not an executable regular bottle file`,
+      `compatibility source ${owned.source} is not an executable regular bottle file ` +
+        "or bottle-keg directory",
     );
   }
   if (tryLstat(fs, targetPath) !== null) {

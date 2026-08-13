@@ -161,6 +161,12 @@ describe("ABI staging product builders", () => {
     expect(fs.readlink("/usr/bin/brew")).toBe(
       "/opt/kandelo/homebrew/bin/brew",
     );
+    expect(fs.readlink("/usr/lib/llvm")).toBe(
+      "/opt/kandelo/homebrew/Cellar/clang/1.0/libexec/llvm",
+    );
+    expect(fs.readlink("/usr/wasm32posix")).toBe(
+      "/opt/kandelo/homebrew/Cellar/kandelo-sdk/1.0/libexec/wasm32posix",
+    );
     expect(fs.isPathDeferred("/opt/kandelo/homebrew/bin/brew")).toBe(true);
     expect(readVfsFile(fs, "/etc/homebrew/brew.env")).toContain(
       "HOMEBREW_KANDELO_BOTTLE_TAG=wasm32_kandelo",
@@ -1076,6 +1082,10 @@ async function browserMainShellFixture(
       formulaMaterialization.set(formula, group.materialization);
     }
   }
+  if (formulaMaterialization.has("kandelo-sdk")) {
+    formulaMaterialization.set("clang", "lazy");
+    formulaMaterialization.set("libcxx", "lazy");
+  }
   for (const formula of [...formulaMaterialization.keys()].sort()) {
     const materialization = formulaMaterialization.get(formula)!;
     const bottle = formula === "bash"
@@ -1097,6 +1107,19 @@ async function browserMainShellFixture(
       archiveBytes: bottle.archiveBytes,
       expandedBytes: bottle.expandedBytes,
       reference,
+      dependencies: formula === "kandelo-sdk"
+        ? [
+            "kandelo-dev/tap-core/clang",
+            "kandelo-dev/tap-core/libcxx",
+          ]
+        : formula === "clang"
+        ? ["kandelo-dev/tap-core/libcxx"]
+        : [],
+      requiredBy: [
+        formula === "clang" || formula === "libcxx"
+          ? "kandelo-sdk"
+          : formula,
+      ],
     });
     const descriptorText = canonicalJson(descriptor);
     const descriptorSha = sha256(descriptorText);
@@ -1977,6 +2000,7 @@ function originalBottleDescriptor(options: {
   expandedBytes: number;
   reference: string;
   dependencies?: string[];
+  requiredBy?: string[];
 }): any {
   const formula = options.formula;
   const command = formula === "file-formula"
@@ -2042,6 +2066,21 @@ function originalBottleDescriptor(options: {
       ),
     );
   }
+  const sdkDirectoryAliases: Record<string, string> = {
+    clang: "llvm",
+    "kandelo-sdk": "wasm32posix",
+  };
+  const sdkDirectory = sdkDirectoryAliases[formula];
+  if (sdkDirectory !== undefined) {
+    entries.push(
+      bottleDirectory(`${keg}/libexec`, `${formula}-libexec`, "layer"),
+      bottleDirectory(
+        `${keg}/libexec/${sdkDirectory}`,
+        `${formula}-${sdkDirectory}`,
+        "layer",
+      ),
+    );
+  }
   entries.sort((left, right) =>
     left.path < right.path ? -1 : left.path > right.path ? 1 : 0
   );
@@ -2051,7 +2090,7 @@ function originalBottleDescriptor(options: {
     architecture: "wasm32",
     tap: "kandelo-dev/homebrew-tap-core",
     formula,
-    required_by: [formula],
+    required_by: options.requiredBy ?? [formula],
     dependencies: options.dependencies ?? [],
     tree: {
       id: formula,

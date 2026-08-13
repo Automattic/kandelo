@@ -2276,12 +2276,17 @@ function applyMainShellCompatibility(
   );
   const links: Array<{ path: string; target: string; package: string }> = [];
   const destinations = new Set<string>();
-  const install = (source: string, target: string, pkg: string): void => {
+  const install = (
+    source: string,
+    target: string,
+    pkg: string,
+    allowDirectory = false,
+  ): void => {
     if (destinations.has(target)) {
       throw new Error(`main-shell compatibility assigns ${target} more than once`);
     }
     destinations.add(target);
-    installHomebrewCompatibilityLink(fs, source, target);
+    installHomebrewCompatibilityLink(fs, source, target, allowDirectory);
     links.push({ package: pkg, path: target, target: source });
   };
 
@@ -2308,7 +2313,14 @@ function applyMainShellCompatibility(
     const source = alias.source_kind === "link"
       ? `${HOMEBREW_PREFIX}/${alias.source}`
       : `${bottle.descriptor.tree.activation.roots[0]}/${alias.source}`;
-    for (const target of alias.targets) install(source, target, alias.package);
+    for (const target of alias.targets) {
+      install(
+        source,
+        target,
+        alias.package,
+        alias.source_kind === "keg",
+      );
+    }
   }
 
   for (const conflict of policy.link_conflict_owners) {
@@ -2367,13 +2379,16 @@ function installHomebrewCompatibilityLink(
   fs: MemoryFileSystem,
   source: string,
   target: string,
+  allowDirectory: boolean,
 ): void {
   const sourceStat = fs.stat(source);
-  if (
-    (sourceStat.mode & 0xf000) !== 0x8000 ||
-    (sourceStat.mode & 0o111) === 0
-  ) {
-    throw new Error(`main-shell compatibility source is not executable: ${source}`);
+  const sourceKind = sourceStat.mode & 0xf000;
+  const isExecutableFile =
+    sourceKind === 0x8000 && (sourceStat.mode & 0o111) !== 0;
+  if (!isExecutableFile && !(allowDirectory && sourceKind === 0x4000)) {
+    throw new Error(
+      `main-shell compatibility source is not an executable file or keg directory: ${source}`,
+    );
   }
   const existing = tryVfsLstat(fs, target);
   if (existing !== null) {
