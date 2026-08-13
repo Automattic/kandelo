@@ -2,7 +2,12 @@
 // switches machine views and opens exploratory panes for gallery and overlays.
 
 import * as React from "react";
-import { useDemoGuide, useKernelHost, useLazyDownloads } from "../kernel-host/react";
+import {
+  useDemoGuide,
+  useHomebrewPackagePrefetches,
+  useKernelHost,
+  useLazyDownloads,
+} from "../kernel-host/react";
 import { Dock, DockPane, type DockLayoutState, type DockPaneId, type DockViewId } from "./Dock";
 import { MachineView, useMachineSurfaceController } from "../views/MachineView";
 import { descriptorFromGalleryItem } from "../gallery-descriptor";
@@ -14,6 +19,7 @@ import { navigateToGalleryItemUrl } from "../url-state";
 import type {
   BootDescriptor,
   GalleryItem,
+  HomebrewPackagePrefetchState,
   LazyDownloadEvent,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { lazyDownloadAssetLabel } from "../../../../../web-libs/kandelo-session/src/lazy-download";
@@ -57,6 +63,7 @@ export const App: React.FC = () => {
   const host = useKernelHost();
   const demoGuide = useDemoGuide();
   const lazyDownloads = useLazyDownloads();
+  const packagePrefetches = useHomebrewPackagePrefetches();
   const surface = useMachineSurfaceController();
 
   const [dockPane, setDockPane] = React.useState<DockPaneId | null>(null);
@@ -290,7 +297,17 @@ export const App: React.FC = () => {
         </>
       )}
 
-      <LazyDownloadToasts downloads={lazyDownloads} />
+      <div className="kdownload-toast-stack">
+        <PackagePrefetchToasts
+          states={packagePrefetches}
+          onRetry={(id) => {
+            void host.retryHomebrewPackagePrefetch(id).catch(() => {
+              // The host ledger owns and renders the stable error.
+            });
+          }}
+        />
+        <LazyDownloadToasts downloads={lazyDownloads} />
+      </div>
 
       <Dock
         activePane={dockPane}
@@ -480,6 +497,49 @@ const LazyDownloadToasts: React.FC<{
           <span className="kdownload-toast-detail">+{visibleDownloads.length - 3} active</span>
         </div>
       )}
+    </aside>
+  );
+};
+
+export const PackagePrefetchToasts: React.FC<{
+  states: HomebrewPackagePrefetchState[];
+  onRetry: (id: string) => void;
+}> = ({ states, onRetry }) => {
+  if (states.length === 0) return null;
+
+  return (
+    <aside className="kpackage-prefetch-toasts" aria-label="Package preparation status">
+      {states.map((state) => {
+        const message = state.status === "running"
+          ? `Preparing ${state.label}`
+          : state.status === "ready"
+            ? `${state.label} ready`
+            : `${state.label}: ${state.error ?? "package prefetch failed"}`;
+        return (
+          <div
+            key={state.id}
+            className={`kdownload-toast kdownload-toast-${state.status}`}
+            role={state.status === "error" ? "alert" : undefined}
+            aria-live={state.status === "error" ? undefined : "polite"}
+          >
+            <div className="kdownload-toast-top">
+              <span className="kdownload-toast-title">{message}</span>
+              <span className="kdownload-toast-progress-label">
+                {state.status === "running" ? "..." : state.status === "ready" ? "OK" : "ERR"}
+              </span>
+            </div>
+            {state.status === "error" && (
+              <button
+                type="button"
+                className="kdownload-toast-retry"
+                onClick={() => onRetry(state.id)}
+              >
+                Retry
+              </button>
+            )}
+          </div>
+        );
+      })}
     </aside>
   );
 };

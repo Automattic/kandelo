@@ -118,6 +118,23 @@ export interface LazyDownloadSummary extends LazyDownloadEvent {
   eventCount: number;
 }
 
+export interface HomebrewPackagePrefetchResult {
+  roots: string[];
+  packages: string[];
+  materializedPackages: string[];
+  alreadyMaterializedPackages: string[];
+}
+
+export interface HomebrewPackagePrefetchState {
+  id: string;
+  label: string;
+  roots: string[];
+  status: "running" | "ready" | "error";
+  attempt: number;
+  error?: string;
+  result?: HomebrewPackagePrefetchResult;
+}
+
 export interface KernelLike {
   /** Synchronous VFS the kernel-worker sees. */
   readonly fs: FileSystemLike;
@@ -182,6 +199,9 @@ export interface KernelLike {
    * when it materializes content on first exec/open.
    */
   subscribeLazyDownloads?(cb: (event: LazyDownloadEvent) => void): () => void;
+  prefetchHomebrewPackages?(
+    roots: readonly string[],
+  ): Promise<HomebrewPackagePrefetchResult>;
   spawn(
     programBytes: ArrayBuffer,
     argv: string[],
@@ -568,6 +588,16 @@ export interface KernelHost {
   /** One authoritative latest record per asset for this kernel lifecycle. */
   lazyDownloadSummaries(): LazyDownloadSummary[];
 
+  // Homebrew package-closure preparation lifecycle
+  prefetchHomebrewPackages(
+    id: string,
+    label: string,
+    roots: readonly string[],
+  ): Promise<HomebrewPackagePrefetchResult>;
+  retryHomebrewPackagePrefetch(id: string): Promise<HomebrewPackagePrefetchResult>;
+  subscribeHomebrewPackagePrefetches(cb: () => void): () => void;
+  homebrewPackagePrefetches(): HomebrewPackagePrefetchState[];
+
   // Process lifecycle — fires on spawn/exec/exit. Inspector tabs use this
   // to refetch enumProcs / readMemMap instead of polling on a timer.
   subscribeProcessEvents(cb: (event: ProcessEvent) => void): () => void;
@@ -807,6 +837,66 @@ const NOT_IMPLEMENTED = (m: string) =>
     `(see docs/plans/2026-05-14-kandelo-ui-followups.md).`
   );
 
+const HOMEBREW_PACKAGE_PREFETCH_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/u;
+const HOMEBREW_FORMULA_IDENTITY =
+  /^[a-z0-9][a-z0-9._-]{0,63}\/[a-z0-9][a-z0-9._-]{0,63}\/[a-z0-9][a-z0-9+._-]{0,127}$/u;
+const PACKAGE_PREFETCH_ERROR_MAX_BYTES = 512;
+
+function boundedPackagePrefetchError(error: unknown): string {
+  let message = error instanceof Error ? error.message : String(error ?? "");
+  message = message.replace(/[\u0000-\u001f\u007f]/gu, " ");
+  message = message.replace(/https?:\/\/[^\s]+/giu, (raw) => {
+    try {
+      const url = new URL(raw);
+      url.username = "";
+      url.password = "";
+      url.search = "";
+      url.hash = "";
+      return url.href;
+    } catch {
+      return "[redacted URL]";
+    }
+  });
+  message = message.trim();
+  if (message.length === 0) message = "package prefetch failed";
+
+  const encoded = new TextEncoder().encode(message);
+  if (encoded.byteLength <= PACKAGE_PREFETCH_ERROR_MAX_BYTES) return message;
+  let end = PACKAGE_PREFETCH_ERROR_MAX_BYTES;
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  while (end > 0) {
+    try {
+      return decoder.decode(encoded.subarray(0, end)).trimEnd();
+    } catch {
+      end -= 1;
+    }
+  }
+  return "package prefetch failed";
+}
+
+function copyHomebrewPackagePrefetchResult(
+  result: HomebrewPackagePrefetchResult,
+): HomebrewPackagePrefetchResult {
+  return {
+    roots: result.roots.slice(),
+    packages: result.packages.slice(),
+    materializedPackages: result.materializedPackages.slice(),
+    alreadyMaterializedPackages: result.alreadyMaterializedPackages.slice(),
+  };
+}
+
+function copyHomebrewPackagePrefetchState(
+  state: HomebrewPackagePrefetchState,
+): HomebrewPackagePrefetchState {
+  return {
+    ...state,
+    roots: state.roots.slice(),
+    result: state.result === undefined
+      ? undefined
+      : copyHomebrewPackagePrefetchResult(state.result),
+  };
+}
+
 export class LiveKernelHost implements KernelHost {
   private _status: MachineStatus;
   private statusListeners = new ListenerSet<MachineStatus>();
@@ -819,6 +909,12 @@ export class LiveKernelHost implements KernelHost {
   private lazyDownloadListeners = new ListenerSet<LazyDownloadEvent>();
   private lazyDownloadSummaryListeners = new ListenerSet<void>();
   private lazyDownloadCapacity = 512;
+  private homebrewPackagePrefetchById =
+    new Map<string, HomebrewPackagePrefetchState>();
+  private homebrewPackagePrefetchInFlight =
+    new Map<string, Promise<HomebrewPackagePrefetchResult>>();
+  private homebrewPackagePrefetchListeners = new ListenerSet<void>();
+  private homebrewPackagePrefetchGeneration = 0;
   private processListeners = new ListenerSet<ProcessEvent>();
   private webPreviewListeners = new ListenerSet<WebPreviewState | null>();
   private presentationListeners = new ListenerSet<DemoPresentation>();
@@ -880,6 +976,7 @@ export class LiveKernelHost implements KernelHost {
   attachKernel(kernel: KernelLike): void {
     this.cancelLazyDownloads("kernel replaced");
     this.clearLazyDownloadState();
+    this.clearHomebrewPackagePrefetchState();
     this.offFramebufferAvailability?.();
     this.offFramebufferAvailability = null;
     this.offLazyDownloads?.();
@@ -908,6 +1005,7 @@ export class LiveKernelHost implements KernelHost {
   detachKernel(): void {
     this.cancelLazyDownloads("kernel detached");
     this.clearLazyDownloadState();
+    this.clearHomebrewPackagePrefetchState();
     this.offFramebufferAvailability?.();
     this.offFramebufferAvailability = null;
     this.offLazyDownloads?.();
@@ -1054,6 +1152,70 @@ export class LiveKernelHost implements KernelHost {
     }
   }
 
+  private clearHomebrewPackagePrefetchState(): void {
+    this.homebrewPackagePrefetchGeneration += 1;
+    const hadState = this.homebrewPackagePrefetchById.size > 0
+      || this.homebrewPackagePrefetchInFlight.size > 0;
+    this.homebrewPackagePrefetchById.clear();
+    this.homebrewPackagePrefetchInFlight.clear();
+    if (hadState) this.homebrewPackagePrefetchListeners.emit(undefined);
+  }
+
+  private runHomebrewPackagePrefetch(
+    prior: HomebrewPackagePrefetchState,
+  ): Promise<HomebrewPackagePrefetchResult> {
+    const generation = this.homebrewPackagePrefetchGeneration;
+    const kernel = this.kernel;
+    const kernelPrefetch = kernel?.prefetchHomebrewPackages;
+    const running: HomebrewPackagePrefetchState = {
+      id: prior.id,
+      label: prior.label,
+      roots: Object.freeze(prior.roots.slice()) as string[],
+      status: "running",
+      attempt: prior.attempt + 1,
+    };
+    this.homebrewPackagePrefetchById.set(running.id, running);
+    this.homebrewPackagePrefetchListeners.emit(undefined);
+
+    let operation: Promise<HomebrewPackagePrefetchResult>;
+    try {
+      operation = kernelPrefetch === undefined
+        ? Promise.reject(new Error("current kernel cannot prefetch Homebrew packages"))
+        : Promise.resolve(kernelPrefetch.call(kernel, running.roots));
+    } catch (error) {
+      operation = Promise.reject(error);
+    }
+    const settled = operation.then(
+      (result) => {
+        if (this.homebrewPackagePrefetchGeneration !== generation) return result;
+        this.homebrewPackagePrefetchById.set(running.id, {
+          ...running,
+          status: "ready",
+          result: copyHomebrewPackagePrefetchResult(result),
+        });
+        return result;
+      },
+      (error) => {
+        if (this.homebrewPackagePrefetchGeneration !== generation) throw error;
+        this.homebrewPackagePrefetchById.set(running.id, {
+          ...running,
+          status: "error",
+          error: boundedPackagePrefetchError(error),
+        });
+        throw error;
+      },
+    ).finally(() => {
+      if (
+        this.homebrewPackagePrefetchGeneration !== generation
+        || this.homebrewPackagePrefetchInFlight.get(running.id) !== settled
+      ) return;
+      this.homebrewPackagePrefetchInFlight.delete(running.id);
+      this.homebrewPackagePrefetchListeners.emit(undefined);
+    });
+    this.homebrewPackagePrefetchInFlight.set(running.id, settled);
+    return settled;
+  }
+
   /** Push a dmesg line into the ring and fan out to subscribers. */
   pushDmesg(line: DmesgLine): void {
     this.dmesgRing.push(line);
@@ -1167,6 +1329,7 @@ export class LiveKernelHost implements KernelHost {
   async halt(): Promise<void> {
     this.setStatus("halted");
     this.cancelLazyDownloads("kernel halted");
+    this.clearHomebrewPackagePrefetchState();
     this.offFramebufferAvailability?.();
     this.offFramebufferAvailability = null;
     this.offLazyDownloads?.();
@@ -1177,6 +1340,7 @@ export class LiveKernelHost implements KernelHost {
   }
 
   async reboot(): Promise<void> {
+    this.clearHomebrewPackagePrefetchState();
     await this.applyBootDescriptor(this.getBootDescriptor());
   }
 
@@ -1206,6 +1370,79 @@ export class LiveKernelHost implements KernelHost {
     return Array.from(
       this.lazyDownloadSummariesById.values(),
       (summary) => ({ ...summary }),
+    );
+  }
+
+  async prefetchHomebrewPackages(
+    id: string,
+    label: string,
+    roots: readonly string[],
+  ): Promise<HomebrewPackagePrefetchResult> {
+    if (!HOMEBREW_PACKAGE_PREFETCH_ID.test(id)) {
+      throw new Error("Homebrew package-prefetch id is invalid");
+    }
+    if (
+      label.trim().length === 0
+      || new TextEncoder().encode(label).byteLength > 128
+    ) {
+      throw new Error("Homebrew package-prefetch label is invalid");
+    }
+    if (roots.length < 1 || roots.length > 32) {
+      throw new Error("Homebrew package-prefetch roots must contain 1 to 32 Formula identities");
+    }
+    const copiedRoots = roots.slice();
+    for (const root of copiedRoots) {
+      if (!HOMEBREW_FORMULA_IDENTITY.test(root)) {
+        throw new Error(`invalid full Homebrew Formula identity: ${JSON.stringify(root)}`);
+      }
+    }
+
+    const prior = this.homebrewPackagePrefetchById.get(id);
+    if (prior !== undefined) {
+      const identical = prior.label === label
+        && prior.roots.length === copiedRoots.length
+        && prior.roots.every((root, index) => root === copiedRoots[index]);
+      if (!identical) {
+        throw new Error(`Homebrew package-prefetch id ${JSON.stringify(id)} already uses a different label or roots`);
+      }
+      const inFlight = this.homebrewPackagePrefetchInFlight.get(id);
+      if (inFlight !== undefined) return inFlight;
+      if (prior.status === "ready" && prior.result !== undefined) {
+        return copyHomebrewPackagePrefetchResult(prior.result);
+      }
+      throw new Error(`Homebrew package-prefetch ${JSON.stringify(id)} failed; use retry`);
+    }
+
+    return this.runHomebrewPackagePrefetch({
+      id,
+      label,
+      roots: Object.freeze(copiedRoots) as string[],
+      status: "running",
+      attempt: 0,
+    });
+  }
+
+  async retryHomebrewPackagePrefetch(
+    id: string,
+  ): Promise<HomebrewPackagePrefetchResult> {
+    const prior = this.homebrewPackagePrefetchById.get(id);
+    if (prior === undefined) {
+      throw new Error(`unknown Homebrew package-prefetch id ${JSON.stringify(id)}`);
+    }
+    if (prior.status !== "error") {
+      throw new Error(`Homebrew package-prefetch ${JSON.stringify(id)} is not in an error state`);
+    }
+    return this.runHomebrewPackagePrefetch(prior);
+  }
+
+  subscribeHomebrewPackagePrefetches(cb: () => void): () => void {
+    return this.homebrewPackagePrefetchListeners.add(cb);
+  }
+
+  homebrewPackagePrefetches(): HomebrewPackagePrefetchState[] {
+    return Array.from(
+      this.homebrewPackagePrefetchById.values(),
+      copyHomebrewPackagePrefetchState,
     );
   }
 
