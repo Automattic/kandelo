@@ -111,6 +111,7 @@ import type {
   HttpRequestMessage,
 } from "./node-kernel-protocol";
 import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
+import { ExecutableModuleCache } from "./executable-module-cache";
 
 if (!parentPort) {
   throw new Error("node-kernel-worker-entry must run in a worker_thread");
@@ -199,6 +200,7 @@ const vmInterruptTimers = new VmInterruptTimerManager<ProcessInfo>(
 const reportedExits = new Set<number>();
 const rootfsSnapshotGate = new RootfsSnapshotGate();
 const processMemoryCreators = new ProcessMemoryCreatorGate();
+const executableModuleCache = new ExecutableModuleCache();
 
 // Workers terminated by the kernel-worker entry itself (handleExit /
 // handleExec / handleTerminate). The crash safety-net listener checks
@@ -725,7 +727,7 @@ async function resolveExecutableForLaunch(
     if (!isWasmModuleBytes(bytes)) return { errno: ENOEXEC };
     let programModule: WebAssembly.Module;
     try {
-      programModule = await WebAssembly.compile(bytes);
+      programModule = await executableModuleCache.getOrCompile(bytes);
     } catch (error) {
       if (error instanceof WebAssembly.CompileError) return { errno: ENOEXEC };
       throw error;
@@ -744,6 +746,20 @@ async function resolveExecutableForLaunch(
     ...argv.slice(1),
   ];
   return resolveExecutableForLaunch(shebang.interpreter, scriptArgv, depth + 1);
+}
+
+async function compileInitialExecutableModule(
+  bytes: ArrayBuffer,
+): Promise<WebAssembly.Module | undefined> {
+  try {
+    return await executableModuleCache.getOrCompile(bytes);
+  } catch (error) {
+    // Preserve the initial-spawn failure contract: malformed Wasm reaches the
+    // process Worker, which reports the existing loader-trap diagnostic. Exec
+    // and posix_spawn reject that same CompileError during their preflight.
+    if (error instanceof WebAssembly.CompileError) return undefined;
+    throw error;
+  }
 }
 
 // --- Init ---
@@ -850,6 +866,7 @@ function cleanupSessionDir(): void {
 
 async function handleInit(msg: InitMessage) {
   initReady = false;
+  executableModuleCache.clear();
   maxPages = msg.config.maxPages ?? DEFAULT_MAX_PAGES;
   defaultThreadSlots = msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
   processMemoryAllocator = new ProcessMemoryAllocator({
@@ -989,7 +1006,6 @@ async function handleSpawn(msg: SpawnMessage) {
     }
     const programBytes = msg.programBytes ??
       await readExecFromVfs(msg.programPath!);
-    const programModule = hasProgramBytes ? msg.programModule : undefined;
     if (programBytes === null) {
       respondError(msg.requestId, `ENOENT: ${msg.programPath}`);
       return;
@@ -998,6 +1014,12 @@ async function handleSpawn(msg: SpawnMessage) {
       respondError(msg.requestId, "ENOEXEC: program is not a WebAssembly module");
       return;
     }
+    // Compile inside the kernel Worker so the resulting module crosses only
+    // the existing kernel-to-process boundary. This avoids the problematic
+    // main-to-kernel-to-process module clone while also seeding later execs of
+    // the same executable bytes.
+    const programModule = msg.programModule ??
+      await compileInitialExecutableModule(programBytes);
 
     const pid = kernelWorker.createProcess(
       msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
@@ -2253,6 +2275,7 @@ async function performDestroy() {
   processTeardowns.clear();
   reportedExits.clear();
   threadModuleCache.clear();
+  executableModuleCache.clear();
   threadWorkers.clear();
   ptyByPid.clear();
   if (gracefulDetachComplete) {

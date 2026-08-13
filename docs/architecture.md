@@ -517,7 +517,22 @@ remaining POSIX gap is tracked in [posix-status.md](posix-status.md) and
 
 1. User calls `execve(path, argv, envp)` → kernel returns exec request to host
 2. Host resolves `path` to a Wasm binary (via filesystem or program map)
-3. The host compiles the replacement module, checks its ABI marker, and preallocates its fresh `WebAssembly.Memory` before the irreversible transition. It also validates a 4 MiB combined argv/environment representation (UTF-8 strings, NUL terminators, and caller-width pointer entries, with each string limited to one 64 KiB scratch transfer); oversized metadata returns `E2BIG` to the old image. After commit, argv and environment entries cross into the kernel one at a time, so the fixed host scratch allocation is never overrun and an empty environment explicitly clears the prior one.
+3. The host compiles the replacement module, checks its ABI marker, and
+   preallocates its fresh `WebAssembly.Memory` before the irreversible
+   transition. Node and browser kernel workers share the same bounded compiled
+   executable cache. The key is the complete prepared-file snapshot's byte
+   length and SHA-256, not its path, inode timestamps, or size alone. Binary
+   aliases therefore reuse one `WebAssembly.Module`, while a write or
+   replacement with different bytes cannot execute the cached module. The
+   cache retains no source `ArrayBuffer`; each process Worker still receives
+   the current bytes. It keeps at most eight modules with 64 MiB of aggregate
+   source weight, and compiles a larger module without caching it. The host
+   also validates a 4 MiB combined argv/environment representation (UTF-8
+   strings, NUL terminators, and caller-width pointer entries, with each
+   string limited to one 64 KiB scratch transfer); oversized metadata returns
+   `E2BIG` to the old image. After commit, argv and environment entries cross
+   into the kernel one at a time, so the fixed host scratch allocation is
+   never overrun and an empty environment explicitly clears the prior one.
 4. The host calls `kernel_exec_prepare(pid, caller_tid)` while the old image is
    still live. The kernel validates that the exact caller is a live task owned
    by the process and applies deferred `posix_spawn` file actions; any failure
