@@ -568,6 +568,7 @@ describe("declared shell lazy-archive inputs", () => {
       expect.objectContaining({
         runningPrimary: ["framebuffer", "terminal", "syslog"],
         autoCommand: "/usr/local/bin/fbdoom -iwad /doom1.wad",
+        touchControls: true,
       }),
     );
     expect(resolveDemoAssets(demoConfig!, "doom")).toEqual([

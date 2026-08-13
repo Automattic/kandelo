@@ -511,6 +511,11 @@ function assertDemoConfig(
     "/usr/local/bin/fbdoom -iwad /doom1.wad",
     "Doom demo command",
   );
+  expectEqual(
+    doomPresentation?.touchControls,
+    true,
+    "Doom demo touch controls",
+  );
   const doomAssets = resolveDemoAssets(config, "doom");
   expectEqual(doomAssets.length, 1, "Doom demo asset count");
   const doomAsset = doomAssets[0]!;

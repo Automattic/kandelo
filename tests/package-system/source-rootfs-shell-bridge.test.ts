@@ -514,6 +514,7 @@ describe("source-rootfs shell bridge", () => {
     expect(resolveDemoPresentation(demo!, "doom")?.autoCommand).toBe(
       "/usr/local/bin/fbdoom -iwad /doom1.wad",
     );
+    expect(resolveDemoPresentation(demo!, "doom")?.touchControls).toBe(true);
     expect(resolveDemoPresentation(demo!, "doom")?.runningPrimary).toEqual([
       "framebuffer",
       "terminal",

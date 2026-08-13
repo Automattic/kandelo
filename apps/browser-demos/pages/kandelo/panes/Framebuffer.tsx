@@ -15,7 +15,7 @@
 // or press Ctrl+Shift+Esc to move focus back to the UI.
 
 import * as React from "react";
-import { useKernelHost, useStatus } from "../kernel-host/react";
+import { useKernelHost, usePresentation, useStatus } from "../kernel-host/react";
 import {
   attachLinuxMediumRawKeyboard,
   attachPointerLockMouse,
@@ -26,6 +26,15 @@ import type {
   FramebufferHandle,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { useFittedCanvasStyle } from "./canvasFit";
+import {
+  createTouchKeySender,
+  KEY_ENTER,
+  KEY_SPACE,
+  TOUCH_TAP_SLOP_PX,
+  TouchControls,
+  useCoarsePointer,
+  type TouchKeySender,
+} from "./TouchControls";
 
 export interface FramebufferProps {
   dragProps?: import("./PaneHead").PaneHeadDragProps;
@@ -39,11 +48,21 @@ export interface FramebufferProps {
 export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onDockControlsChange }) => {
   const host = useKernelHost();
   const status = useStatus();
+  const presentation = usePresentation();
+  const coarsePointer = useCoarsePointer();
   const stageRef = React.useRef<HTMLDivElement>(null);
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const handleRef = React.useRef<FramebufferHandle | null>(null);
   const mouseRef = React.useRef<PointerLockMouseHandle | null>(null);
   const audioRef = React.useRef<AudioOutputHandle | null>(null);
+  const touchSenderRef = React.useRef<TouchKeySender | null>(null);
+  if (touchSenderRef.current === null) {
+    touchSenderRef.current = createTouchKeySender({
+      sendInput: (bytes) => handleRef.current?.sendInput(bytes),
+    });
+  }
+  const touchSender = touchSenderRef.current;
+  const touchTapRef = React.useRef<{ pointerId: number; x: number; y: number } | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [boundPid, setBoundPid] = React.useState<number | null>(null);
   const [focused, setFocused] = React.useState(false);
@@ -157,6 +176,32 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
 
   const showCanvas = status === "running" && !error;
   const showHint = showCanvas && boundPid === null;
+  const showTouchControls =
+    presentation.touchControls === true && coarsePointer && showCanvas && boundPid !== null;
+
+  // A tap on the framebuffer itself sends Enter and Space: the DOOM menu reads
+  // Enter (select) and ignores Space, the game reads Space (use) and ignores
+  // Enter, so one gesture covers both without overlay buttons.
+  const onCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.pointerType !== "touch" || !showTouchControls) return;
+    touchTapRef.current = { pointerId: e.pointerId, x: e.clientX, y: e.clientY };
+  };
+  const onCanvasPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const start = touchTapRef.current;
+    if (!start || e.pointerId !== start.pointerId) return;
+    touchTapRef.current = null;
+    if (!showTouchControls) return;
+    const moved =
+      Math.abs(e.clientX - start.x) > TOUCH_TAP_SLOP_PX ||
+      Math.abs(e.clientY - start.y) > TOUCH_TAP_SLOP_PX;
+    if (!moved) {
+      touchSender.tap(KEY_ENTER);
+      touchSender.tap(KEY_SPACE);
+    }
+  };
+  const onCanvasPointerCancel = () => {
+    touchTapRef.current = null;
+  };
   const captureLabel = mouseCaptured
     ? "mouse locked · Esc to release"
     : focused
@@ -184,6 +229,9 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
         className="kframebuffer-canvas"
         tabIndex={0}
         onClick={onCanvasClick}
+        onPointerDown={onCanvasPointerDown}
+        onPointerUp={onCanvasPointerUp}
+        onPointerCancel={onCanvasPointerCancel}
         style={{
           ...canvasStyle,
           display: showCanvas ? "block" : "none",
@@ -194,6 +242,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
           outlineOffset: "-2px",
         }}
       />
+      {showTouchControls && <TouchControls sender={touchSender} />}
       {showHint && !focused && (
         <div style={{
           position: "absolute",
