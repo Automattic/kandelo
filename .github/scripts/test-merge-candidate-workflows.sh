@@ -148,10 +148,27 @@ for workflow in "$STAGING_WORKFLOW" "$PREPARE"; do
   change_scope_job="$(job_block "$workflow" change-scope)"
   grep -Fq 'path: abi-staging-authority' <<<"$change_scope_job" ||
     fail "$workflow_name change scope lacks the protected authority checkout"
+  grep -Fq -- '- name: Set up protected exact ABI build tools' \
+    <<<"$change_scope_job" ||
+    fail "$workflow_name change scope lacks protected Nix setup"
+  grep -Fq 'uses: ./abi-staging-authority/.github/actions/setup-nix' \
+    <<<"$change_scope_job" ||
+    fail "$workflow_name change scope does not use protected Nix setup"
   grep -Fq 'classify-exact-abi-staging.sh' <<<"$change_scope_job" ||
     fail "$workflow_name does not derive the protected exact ABI route"
   grep -Fq 'exact_abi_staging_applicable:' <<<"$change_scope_job" ||
     fail "$workflow_name does not export the exact ABI route"
+
+  authority_line="$(grep -nF 'path: abi-staging-authority' \
+    <<<"$change_scope_job" | cut -d: -f1)"
+  setup_line="$(grep -nF -- '- name: Set up protected exact ABI build tools' \
+    <<<"$change_scope_job" | cut -d: -f1)"
+  classifier_line="$(grep -nF -- '- name: Derive protected exact ABI staging route' \
+    <<<"$change_scope_job" | cut -d: -f1)"
+  if [ "$authority_line" -ge "$setup_line" ] || \
+     [ "$setup_line" -ge "$classifier_line" ]; then
+    fail "$workflow_name does not bootstrap the protected classifier in order"
+  fi
 
   for exact_job in exact-abi-source-test-prepare \
     exact-abi-source-test-suite; do

@@ -56,6 +56,9 @@ CHECKOUT_ACTION = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
 # read-only PR workflow follows the repository-wide v7 pin independently.
 NATIVE_COMPATIBILITY_CHECKOUT_ACTION =
   "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
+PROTECTED_EXACT_ABI_NIX_STEP = "Set up protected exact ABI build tools"
+PROTECTED_EXACT_ABI_NIX_ACTION =
+  "./abi-staging-authority/.github/actions/setup-nix"
 NIX_ACTION = "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25"
 MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d"
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
@@ -9315,6 +9318,16 @@ def check_exact_abi_route(workflows)
       "path" => "abi-staging-authority",
       "fetch-depth" => 1,
     }, "#{path} exact ABI authority checkout changed")
+    protected_nix_steps = steps.select do |step|
+      step["name"] == PROTECTED_EXACT_ABI_NIX_STEP
+    end
+    check(protected_nix_steps.length == 1,
+          "#{path} must have one protected exact ABI Nix setup")
+    protected_nix = protected_nix_steps.first
+    check(protected_nix == {
+      "name" => PROTECTED_EXACT_ABI_NIX_STEP,
+      "uses" => PROTECTED_EXACT_ABI_NIX_ACTION,
+    }, "#{path} protected exact ABI Nix setup changed")
     classifier = named_step(
       steps, "Derive protected exact ABI staging route"
     )
@@ -9350,8 +9363,9 @@ def check_exact_abi_route(workflows)
       check(classifier_run.include?(fragment),
             "#{path} exact ABI classifier lacks #{fragment}")
     end
-    check(steps.index(authority) < steps.index(classifier),
-          "#{path} runs the exact ABI classifier before protected checkout")
+    check(steps.index(authority) < steps.index(protected_nix) &&
+          steps.index(protected_nix) < steps.index(classifier),
+          "#{path} does not bootstrap the protected classifier in order")
 
     outputs = change_scope.fetch("outputs")
     check(outputs["exact_abi_staging_applicable"] ==
@@ -9617,6 +9631,7 @@ end
 def self_test_exact_abi_route(workflows)
   check(defined?(check_exact_abi_route),
         "protected exact ABI route checker is absent")
+  check_exact_abi_route(workflows)
 
   {
     "candidate-owned exact ABI authority" => lambda { |all|
@@ -9633,6 +9648,30 @@ def self_test_exact_abi_route(workflows)
         workflow, "change-scope", "Derive protected exact ABI staging route"
       )
       step.fetch("env")["AUTHORITY_ROOT"] = "${{ github.workspace }}"
+    },
+    "missing protected exact ABI Nix setup" => lambda { |all|
+      workflow = all.fetch(".github/workflows/staging-build.yml")
+      workflow.fetch("jobs").fetch("change-scope").fetch("steps")
+        .reject! { |step| step["name"] == PROTECTED_EXACT_ABI_NIX_STEP }
+    },
+    "candidate-owned exact ABI Nix setup" => lambda { |all|
+      workflow = all.fetch(".github/workflows/prepare-merge.yml")
+      step = mutate_named_step(
+        workflow, "change-scope", PROTECTED_EXACT_ABI_NIX_STEP
+      )
+      step["uses"] = "./.github/actions/setup-nix"
+    },
+    "late protected exact ABI Nix setup" => lambda { |all|
+      workflow = all.fetch(".github/workflows/prepare-merge.yml")
+      steps = workflow.fetch("jobs").fetch("change-scope").fetch("steps")
+      setup_index = steps.index do |step|
+        step["name"] == PROTECTED_EXACT_ABI_NIX_STEP
+      end
+      setup = steps.delete_at(setup_index)
+      classifier_index = steps.index do |step|
+        step["name"] == "Derive protected exact ABI staging route"
+      end
+      steps.insert(classifier_index + 1, setup)
     },
     "path-regex exact ABI classifier substitution" => lambda { |all|
       workflow = all.fetch(".github/workflows/prepare-merge.yml")
