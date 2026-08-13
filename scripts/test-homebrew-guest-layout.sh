@@ -239,7 +239,10 @@ for retired_prefix in "${retired_prefixes[@]}"; do
           "$retired_prefix" "$native_compatibility_lock_validated" ||
           fail "native compatibility lock cannot exempt $retired_prefix"
         ;;
+      host/test/homebrew-bottle-relocation.test.ts\|*"$retired_prefix"*) ;;
       host/test/homebrew-guest-layout.test.ts\|*"retired_prefixes: [\"$retired_prefix\"]"*) ;;
+      host/test/homebrew-vfs-builder.test.ts\|*"$retired_prefix"*) ;;
+      host/test/homebrew-vfs-builder.test.ts\|*"authenticated Linuxbrew destination"*) ;;
       scripts/test-homebrew-inspect-bottle.sh\|*"$retired_prefix"*) ;;
       scripts/test-homebrew-prefix-campaign.py\|*"RETIRED_PREFIX = \"$retired_prefix\""*) ;;
       scripts/test-homebrew-prefix-campaign-executor.py\|*"[\"$retired_prefix\"]"*) ;;
@@ -250,6 +253,8 @@ for retired_prefix in "${retired_prefixes[@]}"; do
       scripts/test-homebrew-tap-recipe-runner.py\|*"destination = Path(\"$retired_prefix/etc/clang\")") ;;
       scripts/homebrew-guest-layout.sh\|*"index(\"$retired_prefix\")"*) ;;
       scripts/homebrew-formula-runtime-closure.rb\|*"\"retired_prefixes\" => [\"$retired_prefix\"]"*) ;;
+      scripts/test-homebrew-vfs-release.sh\|*"$retired_prefix"*) ;;
+      scripts/test-homebrew-vfs-release.sh\|*"historical Linuxbrew prefix"*) ;;
       scripts/homebrew-dependency-provenance.py\|*"$retired_prefix"*) ;;
       scripts/homebrew-inspect-bottle.py\|*"$retired_prefix"*) ;;
       tools/xtask/src/homebrew_guest_layout.rs\|*"const RETIRED_PREFIX: &str = \"$retired_prefix\""*) ;;

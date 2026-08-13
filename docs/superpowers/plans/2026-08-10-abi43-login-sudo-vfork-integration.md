@@ -561,9 +561,10 @@ partial if it uses containment.
 
 - [ ] **Step 1: Add failing prefix-authority cases**
 
-Test `/home/linuxbrew/.linuxbrew` and `/opt/kandelo/homebrew`, plus a mismatch
-between receipt destination and an ambient runtime default. The mismatch must
-fail before publication; it must not silently relocate to the default.
+Test the retired prefix declared by the guest-layout contract and
+`/opt/kandelo/homebrew`, plus a mismatch between receipt destination and an
+ambient runtime default. The mismatch must fail before publication; it must
+not silently relocate to the default.
 
 - [ ] **Step 2: Run the focused tests to prove current behavior is wrong**
 
