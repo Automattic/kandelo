@@ -393,11 +393,13 @@ if ARGV.last == "--host-dependencies-json"
   )
   target_taps = [resolved.fetch("primary"), *resolved.fetch("dependencies")]
     .map do |entry|
-      entry.slice("tap_name", "tap_repository", "tap_commit")
+      entry.slice("tap_name", "tap_repository", "tap_commit").merge(
+        "checkout_commit" => entry.fetch("checkout_commit", entry.fetch("tap_commit")),
+      )
     end
     .sort_by { |entry| entry.fetch("tap_name") }
   puts JSON.generate({
-    "schema" => 4,
+    "schema" => 5,
     "tap" => tap,
     "formula" => formula,
     "full_name" => "#{tap}/#{formula}",

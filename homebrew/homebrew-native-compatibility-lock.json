@@ -1028,8 +1028,7 @@
     },
     "ca-certificates": {
       "internal": {
-        "bottle_checksum": "0f62fd67d5a0cc3109ce51568cd7e1603049fb627a0626a0ad5a15d357a2c834",
-        "bottle_rebuild": 2,
+        "bottle_checksum": "797af9bcf375fb49a98db40c3d5674276db1eb1b5e605ec98359619ed50948ba",
         "bottle_tag": ":all",
         "caveats": "CA certificates have been bootstrapped from both the Mozilla CA store and the system CA store at\none of the following locations, depending on your distro:\n\n  /etc/ssl/certs/ca-certificates.crt                 # Debian/Ubuntu, Alpine Linux, Arch Linux\n  /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem  # RHEL/CentOS/Fedora, Amazon Linux\n  /etc/ssl/ca-bundle.pem                             # SUSE/openSUSE\n\n",
         "desc": "Mozilla CA certificate store",
@@ -1049,16 +1048,15 @@
             "type": "run"
           }
         ],
-        "ruby_source_checksum": "37b918f3e75c74d798bfddd77c6f62be7d1927569f0502bc30c5a43e5f1b8e46",
-        "stable_checksum": "3ff344e30b9b1ed2971044eabb438a08f2e2245ddb5f8ab1a3ad8b63ab4eaf91",
+        "ruby_source_checksum": "2583ef5a3ffed891fcddc431e958e857c94676104a37e36e2188fd74bbfa27de",
+        "stable_checksum": "f66dff1bdf8f96060b8177976f8b7d9254bc89bc4db933d769f7384d28480bc9",
         "stable_url_args": [
-          "https://curl.se/ca/cacert-2026-07-16.pem"
+          "https://curl.se/ca/cacert-2026-08-13.pem"
         ],
-        "stable_version": "2026-07-16"
+        "stable_version": "2026-08-13"
       },
       "public": {
-        "bottle_checksum": "0f62fd67d5a0cc3109ce51568cd7e1603049fb627a0626a0ad5a15d357a2c834",
-        "bottle_rebuild": 2,
+        "bottle_checksum": "797af9bcf375fb49a98db40c3d5674276db1eb1b5e605ec98359619ed50948ba",
         "bottle_tag": ":all",
         "desc": "Mozilla CA certificate store",
         "homepage": "https://curl.se/docs/caextract.html",
@@ -1077,12 +1075,12 @@
             "type": "run"
           }
         ],
-        "ruby_source_checksum": "37b918f3e75c74d798bfddd77c6f62be7d1927569f0502bc30c5a43e5f1b8e46",
-        "stable_checksum": "3ff344e30b9b1ed2971044eabb438a08f2e2245ddb5f8ab1a3ad8b63ab4eaf91",
+        "ruby_source_checksum": "2583ef5a3ffed891fcddc431e958e857c94676104a37e36e2188fd74bbfa27de",
+        "stable_checksum": "f66dff1bdf8f96060b8177976f8b7d9254bc89bc4db933d769f7384d28480bc9",
         "stable_url_args": [
-          "https://curl.se/ca/cacert-2026-07-16.pem"
+          "https://curl.se/ca/cacert-2026-08-13.pem"
         ],
-        "stable_version": "2026-07-16"
+        "stable_version": "2026-08-13"
       }
     },
     "cairo": {
@@ -5156,7 +5154,7 @@
     "harfbuzz": {
       "internal": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "ddec7f52274aa95bd5ca762c97024de8d4bd10e7a4233511914dfd2696b6182a",
+        "bottle_checksum": "6c6352facf6fd17166f2c97e3953b23e71c48141b993bb53fae7e7baffcacbba",
         "desc": "OpenType text shaping engine",
         "executables": [
           "hb-info",
@@ -5205,8 +5203,8 @@
         "homepage": "https://github.com/harfbuzz/harfbuzz",
         "license": "MIT",
         "name": "harfbuzz",
-        "ruby_source_checksum": "188aea0a97665d3a2a39ed72b37b249252f25ae92f84e4c9d4054f004b27f936",
-        "stable_checksum": "16070d77cfc4ba1f1e7327e83bf9b3f55898081cabdb94e56a33e04fc8874eae",
+        "ruby_source_checksum": "aed3e81a53aee699d54c2d6d38d6380632bfd6f28961a379ed38b17bb5b99235",
+        "stable_checksum": "9dae9538aae2ffdf70cec31f2c27bf68e2aaeeae3112688467697d5faf6194f7",
         "stable_dependencies": [
           "cairo",
           "freetype",
@@ -5238,13 +5236,13 @@
           }
         ],
         "stable_url_args": [
-          "https://github.com/harfbuzz/harfbuzz/releases/download/14.3.0/harfbuzz-14.3.0.tar.xz"
+          "https://github.com/harfbuzz/harfbuzz/releases/download/14.3.1/harfbuzz-14.3.1.tar.xz"
         ],
-        "stable_version": "14.3.0"
+        "stable_version": "14.3.1"
       },
       "public": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "ddec7f52274aa95bd5ca762c97024de8d4bd10e7a4233511914dfd2696b6182a",
+        "bottle_checksum": "6c6352facf6fd17166f2c97e3953b23e71c48141b993bb53fae7e7baffcacbba",
         "desc": "OpenType text shaping engine",
         "executables": [
           "hb-info",
@@ -5293,8 +5291,8 @@
         "homepage": "https://github.com/harfbuzz/harfbuzz",
         "license": "MIT",
         "name": "harfbuzz",
-        "ruby_source_checksum": "188aea0a97665d3a2a39ed72b37b249252f25ae92f84e4c9d4054f004b27f936",
-        "stable_checksum": "16070d77cfc4ba1f1e7327e83bf9b3f55898081cabdb94e56a33e04fc8874eae",
+        "ruby_source_checksum": "aed3e81a53aee699d54c2d6d38d6380632bfd6f28961a379ed38b17bb5b99235",
+        "stable_checksum": "9dae9538aae2ffdf70cec31f2c27bf68e2aaeeae3112688467697d5faf6194f7",
         "stable_dependencies": [
           "cairo",
           "freetype",
@@ -5326,9 +5324,9 @@
           }
         ],
         "stable_url_args": [
-          "https://github.com/harfbuzz/harfbuzz/releases/download/14.3.0/harfbuzz-14.3.0.tar.xz"
+          "https://github.com/harfbuzz/harfbuzz/releases/download/14.3.1/harfbuzz-14.3.1.tar.xz"
         ],
-        "stable_version": "14.3.0"
+        "stable_version": "14.3.1"
       }
     },
     "hicolor-icon-theme": {
