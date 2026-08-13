@@ -35,17 +35,18 @@ describe('Kandelo-native cc driver', () => {
     tempDirs.push(root);
 
     const llvm = join(root, 'llvm');
+    const llvmBin = join(llvm, 'bin');
     const sysroot = join(root, 'sysroot');
     const glue = join(root, 'glue');
     const glueObjects = join(root, 'glue-objects');
     const capture = join(root, 'linker-args.txt');
     const source = join(root, 'main.c');
-    mkdirSync(llvm);
+    mkdirSync(llvmBin, { recursive: true });
     mkdirSync(join(sysroot, 'lib'), { recursive: true });
     mkdirSync(glue);
     mkdirSync(glueObjects);
 
-    writeExecutable(join(llvm, 'clang'), `#!/usr/bin/env bash
+    writeExecutable(join(llvmBin, 'clang'), `#!/usr/bin/env bash
 set -e
 if [[ \${1:-} == -### ]]; then
   case "\${WASM_POSIX_TEST_TRACE_MODE:-link}" in
@@ -67,7 +68,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 `);
-    writeExecutable(join(llvm, 'wasm-ld'), `#!/usr/bin/env bash
+    writeExecutable(join(llvmBin, 'wasm-ld'), `#!/usr/bin/env bash
 set -e
 if [[ \${1:-} == --version ]]; then printf '%s\n' 'LLD 21.1.7'; exit 0; fi
 printf '%s\n' "$@" > "$WASM_POSIX_TEST_CAPTURE"
@@ -382,7 +383,7 @@ done
       ...process.env,
       WASM_POSIX_GLUE_DIR: toolchain.glueDir,
       WASM_POSIX_GLUE_OBJ_DIR: glueObjects,
-      WASM_POSIX_LLVM_DIR: toolchain.llvmDir,
+      WASM_POSIX_LLVM_DIR: dirname(toolchain.llvmDir),
       WASM_POSIX_SYSROOT: toolchain.sysroot,
     };
     const invoke = (args: string[]): void => {
@@ -427,7 +428,7 @@ done
       ...process.env,
       WASM_POSIX_GLUE_DIR: toolchain.glueDir,
       WASM_POSIX_GLUE_OBJ_DIR: join(root, 'unused-glue-objects'),
-      WASM_POSIX_LLVM_DIR: toolchain.llvmDir,
+      WASM_POSIX_LLVM_DIR: dirname(toolchain.llvmDir),
       WASM_POSIX_SYSROOT: toolchain.sysroot,
     };
 

@@ -11,26 +11,6 @@ die() {
   exit 1
 }
 
-find_tool() {
-  local name="$1"
-  if [[ -n "${WASM_POSIX_LLVM_DIR:-}" && -x "${WASM_POSIX_LLVM_DIR}/${name}" ]]; then
-    printf '%s\n' "${WASM_POSIX_LLVM_DIR}/${name}"
-    return 0
-  fi
-  local dir
-  for dir in /usr/lib/llvm/bin /usr/local/bin /usr/bin /bin; do
-    if [[ -x "${dir}/${name}" ]]; then
-      printf '%s\n' "${dir}/${name}"
-      return 0
-    fi
-  done
-  if command -v "$name" >/dev/null 2>&1; then
-    command -v "$name"
-    return 0
-  fi
-  return 1
-}
-
 is_gnu_response_whitespace() {
   case "$1" in
     ' '|$'\t'|$'\r'|$'\n') return 0 ;;
@@ -213,21 +193,22 @@ expanded_response_args=()
 expand_response_arguments "${original_args[@]}"
 set -- "${expanded_response_args[@]}"
 
+LLVM_DIR="${WASM_POSIX_LLVM_DIR:-/opt/kandelo/homebrew/opt/clang/libexec/llvm}"
+SDK_DIR="/opt/kandelo/homebrew/opt/kandelo-sdk/libexec/wasm32posix"
+SYSROOT="${WASM_POSIX_SYSROOT:-$SDK_DIR/sysroot}"
+GLUE_DIR="${WASM_POSIX_GLUE_DIR:-$SDK_DIR/glue}"
+GLUE_OBJ_DIR="${WASM_POSIX_GLUE_OBJ_DIR:-$SDK_DIR/glue-objects}"
+RESOURCE_DIR="${WASM_POSIX_CLANG_RESOURCE_DIR:-$LLVM_DIR/lib/clang/21}"
+LIBCXX_DIR="${WASM_POSIX_LIBCXX_DIR:-/opt/kandelo/homebrew/opt/libcxx}"
+TOOL_DIR="$LLVM_DIR/bin"
 if [[ "$SDK_CXX" -eq 1 ]]; then
-  CLANG="$(find_tool clang++ || true)"
-  [[ -n "$CLANG" ]] || die "clang++ not found; set WASM_POSIX_LLVM_DIR"
+  CLANG="$TOOL_DIR/clang++"
 else
-  CLANG="$(find_tool clang || true)"
-  [[ -n "$CLANG" ]] || die "clang not found; set WASM_POSIX_LLVM_DIR"
+  CLANG="$TOOL_DIR/clang"
 fi
+WASM_LD="$TOOL_DIR/wasm-ld"
 
-TOOL_DIR="$(dirname "$CLANG")"
-SYSROOT="${WASM_POSIX_SYSROOT:-/usr/wasm32posix/sysroot}"
-GLUE_DIR="${WASM_POSIX_GLUE_DIR:-/usr/wasm32posix/glue}"
-GLUE_OBJ_DIR="${WASM_POSIX_GLUE_OBJ_DIR:-/usr/wasm32posix/glue-objects}"
-RESOURCE_DIR="${WASM_POSIX_CLANG_RESOURCE_DIR:-/usr/lib/llvm/lib/clang/21}"
-WASM_LD="${TOOL_DIR}/wasm-ld"
-
+[[ -x "$CLANG" ]] || die "missing $CLANG; set WASM_POSIX_LLVM_DIR to a complete LLVM toolchain root"
 [[ -f "${SYSROOT}/lib/libc.a" ]] || die "missing ${SYSROOT}/lib/libc.a"
 [[ -f "${GLUE_DIR}/channel_syscall.c" ]] || die "missing ${GLUE_DIR}/channel_syscall.c"
 [[ -x "$WASM_LD" ]] || die "matching wasm-ld not found beside $CLANG; set WASM_POSIX_LLVM_DIR to a complete LLVM toolchain"
@@ -307,6 +288,10 @@ compile_flags=(
   "-B${TOOL_DIR}"
   "--sysroot=${SYSROOT}"
 )
+
+if [[ "$SDK_CXX" -eq 1 ]]; then
+  compile_flags+=(-nostdinc++ -isystem "$LIBCXX_DIR/include/c++/v1")
+fi
 
 if [[ -d "$RESOURCE_DIR" ]]; then
   compile_flags+=(-resource-dir "$RESOURCE_DIR")
@@ -667,9 +652,9 @@ fi
 
 stdlib_inputs=()
 if [[ "$SDK_CXX" -eq 1 ]]; then
-  [[ -f "${SYSROOT}/lib/libc++.a" ]] || die "missing ${SYSROOT}/lib/libc++.a"
-  [[ -f "${SYSROOT}/lib/libc++abi.a" ]] || die "missing ${SYSROOT}/lib/libc++abi.a"
-  stdlib_inputs+=("${SYSROOT}/lib/libc++.a" "${SYSROOT}/lib/libc++abi.a")
+  [[ -f "${LIBCXX_DIR}/lib/libc++.a" ]] || die "missing ${LIBCXX_DIR}/lib/libc++.a"
+  [[ -f "${LIBCXX_DIR}/lib/libc++abi.a" ]] || die "missing ${LIBCXX_DIR}/lib/libc++abi.a"
+  stdlib_inputs+=("${LIBCXX_DIR}/lib/libc++.a" "${LIBCXX_DIR}/lib/libc++abi.a")
 fi
 
 lld_major="$("$WASM_LD" --version | sed -nE 's/.*LLD ([0-9]+).*/\1/p' | head -1)"
