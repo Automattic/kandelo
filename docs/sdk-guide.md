@@ -68,6 +68,44 @@ The SDK locates `libc/glue/` and `sysroot/` in this order:
 
 The cwd-walk-up step matters when the SDK is `npm link`-ed: the global `wasm32posix-cc` symlink points at whichever worktree last ran `npm link`, but libc/glue/sysroot must come from the worktree the user is actively building in (otherwise programs link against a different `ABI_VERSION` than the kernel they will run on). If you keep multiple worktrees, you do not need to re-`npm link` when switching between them — the SDK resolves libc/glue/sysroot from your shell's cwd.
 
+## Compiling inside Kandelo
+
+The browser main shell exposes the packaged wasm32 SDK through ordinary
+commands. For example:
+
+```bash
+cat > hello.c <<'EOF'
+#include <stdio.h>
+int main(void) {
+  puts("hello from Kandelo");
+  return 0;
+}
+EOF
+cc hello.c -o hello.wasm
+./hello.wasm
+```
+
+Use `c++` for C++ sources. The SDK compatibility paths are `/usr/lib/llvm`
+for the compiler toolchain and `/usr/wasm32posix` for the sysroot, syscall
+glue, and wrapper-owned inputs. Applications and users should invoke `cc` or
+`c++`; the wrappers remain authoritative for resource-directory, sysroot,
+libc++, linker, and syscall-glue flags.
+
+The shell image contains authenticated lazy references rather than compiler
+payload bytes. The first compiler use downloads the sealed `kandelo-sdk`
+Homebrew closure from GHCR and verifies every declared size and SHA-256 before
+atomically materializing it. Later compiler invocations in the same session
+reuse those bytes. This release has no cross-session toolchain cache, so a new
+browser session downloads the closure again. An incomplete, truncated, or
+digest-mismatched download leaves the affected tree unmaterialized and can be
+retried from the same immutable descriptor; there is no fallback compiler.
+
+The initial in-guest scope is C and C++ for wasm32. Linked programs that reach
+`fork()`, `vfork()`, `_Fork()`, or another fork-family path are unsupported in
+the browser shell until Kandelo ships an in-guest `wasm-fork-instrument`.
+Host-side builds can still use the post-link instrumentation flow documented
+under [Fork instrumentation](#fork-instrumentation-wasm-fork-instrument).
+
 ## Compiling Programs
 
 ### Simple C program

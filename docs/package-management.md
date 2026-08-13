@@ -224,6 +224,21 @@ extra, mismatched, or incompletely captured inputs fail closed. A declared
 lazy product or package layer may stay lazy; resolving an input does not imply
 embedding it.
 
+Current Homebrew composition descriptors authenticate each selected Formula's
+sorted direct same-tap dependency identities. A product therefore declares
+only its root intent: `browser-main-shell` names the lazy
+`kandelo-dev/tap-core/kandelo-sdk` root, while composition derives and orders
+its `clang` and `libcxx` dependencies. Product callers must not duplicate that
+closure in a manifest, UI preset, or transport table.
+
+Candidate evidence uses the exact request-bound candidate GHCR layers.
+Canonical Pages readiness independently authenticates Formula admissions and
+the canonical descriptor, substitutes canonical GHCR references, and
+recomposes the product. The retired closed-selection release and main-shell
+bottle mirror are validation-only historical paths; they are not inputs to
+either phase and may not publish the compiler closure. Pages stores only the
+application and product VFS files, never the Homebrew compiler payloads.
+
 This is currently a checked-in authority and local validation foundation. It
 does not yet issue remote requests, run Homebrew builds, publish candidates,
 verify hosted artifacts, or promote canonical bottles.

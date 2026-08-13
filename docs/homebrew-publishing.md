@@ -97,6 +97,30 @@ metadata patch, admission record, and Pages admission projection. Formulae
 outside the closed promotion policy cannot add a runtime claim, and older
 admissions without this field remain readable as historical records.
 
+### Lazy C/C++ toolchain composition
+
+The canonical `browser-main-shell` product names one lazy development root:
+`kandelo-dev/tap-core/kandelo-sdk`. Callers do not select `clang` or `libcxx`
+separately. The authenticated VFS composition descriptor records every
+selected Formula's sorted direct same-tap dependency identities, so the guest
+derives the `kandelo-sdk` closure (`clang` and `libcxx`) without a second root
+list, a hard-coded URL, or a caller-supplied install order.
+
+Toolchain delivery has two staging phases:
+
+1. Candidate product evidence composes the exact request's candidate GHCR
+   bottle layers and proves C and C++ compilation inside that candidate shell.
+2. Generic Pages readiness authenticates each Formula admission and the
+   canonical composition descriptor, replaces every candidate transport with
+   its admitted canonical GHCR reference, and recomposes the same product.
+
+The legacy closed-selection release and legacy main-shell bottle mirror are
+historical retirement paths. Neither may carry the compiler closure or supply
+candidate evidence, canonical recomposition, or Pages publication. Pages
+publishes the application and compact VFS product; the compiler, libc++, and
+SDK bottle payloads remain on GHCR and materialize only on first use or an
+explicit package prefetch.
+
 This is not a general user-facing Homebrew install guide yet. Do not document
 `brew tap` or guest `brew install` commands until that lifecycle is validated
 as a supported Kandelo user workflow. Homebrew Formulae and bottle metadata

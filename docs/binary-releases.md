@@ -77,6 +77,18 @@ artifacts appears in the main repository's `binaries-abi-v<N>` `index.toml`
 ledger. See [docs/homebrew-publishing.md](homebrew-publishing.md) for formula
 authoring, the immutable VFS descriptor contract, and operations.
 
+The current VFS composition descriptor carries authenticated, sorted direct
+same-tap dependency identities. Consumers name only a Formula root; for the
+main shell's development toolchain that root is
+`kandelo-dev/tap-core/kandelo-sdk`, and the descriptor derives `clang` and
+`libcxx`. Candidate product evidence uses the exact request's candidate GHCR
+layers. After Formula promotion, generic Pages readiness authenticates the
+admissions and canonical descriptor, substitutes canonical GHCR references,
+and recomposes the same product. The legacy closed-selection release and
+main-shell bottle mirror do not participate in either phase and cannot carry
+this closure. Pages releases contain compact VFS/application assets only;
+compiler bottle bytes stay in GHCR.
+
 The guest-prefix campaign uses two additional immutable release kinds.
 One content-addressed campaign release seals the complete campaign
 authority. Each Formula result then publishes as a
