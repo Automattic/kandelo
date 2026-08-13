@@ -614,6 +614,18 @@ jobs:
           PY
           node scripts/check-pages-publish-size.mjs "$site_root" 1000000000
 
+      - name: Verify canonical C development in Chromium
+        if: steps.readiness.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          pages_output="$RUNNER_TEMP/abi-staging-pages-output"
+          KANDELO_ABI_STAGING_ASSEMBLED_SITE_ROOT="$pages_output/source-tree" \
+            KANDELO_C_DEVELOPMENT_CANONICAL_ACCEPTANCE=1 \
+            bash scripts/dev-shell.sh bash -euo pipefail -c '
+              cd apps/browser-demos
+              npx playwright test test/kandelo-c-development.spec.ts --project=chromium
+            '
+
       - name: Confirm this is the newest Pages canary run
         id: retention_freshness
         env:

@@ -457,6 +457,34 @@ test("propagates one isolated binary cache root through the Phase B dev shell", 
   });
 });
 
+test("runs canonical C-development recovery against the ready producer tree", () => {
+  const workflow = readFileSync(
+    join(repoRoot, ".github/workflows/abi-staging-pages-canary.yml"),
+    "utf8",
+  );
+  const validation = workflow.indexOf(
+    "- name: Validate the complete canonical Pages tree",
+  );
+  const acceptance = workflow.indexOf(
+    "- name: Verify canonical C development in Chromium",
+  );
+  const freshness = workflow.indexOf(
+    "- name: Confirm this is the newest Pages canary run",
+  );
+  assert.ok(validation >= 0 && acceptance > validation && freshness > acceptance);
+  const step = workflow.slice(acceptance, freshness);
+  assert.match(step, /if: steps\.readiness\.outputs\.ready == 'true'/u);
+  assert.match(
+    step,
+    /KANDELO_ABI_STAGING_ASSEMBLED_SITE_ROOT="\$pages_output\/source-tree"/u,
+  );
+  assert.match(step, /KANDELO_C_DEVELOPMENT_CANONICAL_ACCEPTANCE=1/u);
+  assert.match(
+    step,
+    /npx playwright test test\/kandelo-c-development\.spec\.ts --project=chromium/u,
+  );
+});
+
 test("rejects VFS emitted by Vite and symlinks from every build", () => {
   withTempDir((root) => {
     const fixture = productMap(root);
