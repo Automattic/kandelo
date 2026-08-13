@@ -68,6 +68,35 @@ recovery lane and do not override the current ownership and order above.
 Compatibility for already downloaded or persisted lazy images is tracked in
 [Future improvements](future-improvements.md#define-compatibility-for-restored-lazy-vfs-images).
 
+### Runtime-support claims require product evidence
+
+Per-Formula candidate verification and product runtime evidence answer
+different questions. Candidate verification proves that one bottle has the
+expected structure and passes its Formula-specific checks. It does not prove
+that a complete user-facing VFS product can resolve, mount, and execute that
+bottle with its exact dependency closure on either host. In particular, a
+browser candidate receipt must not set `browser_compatible = true` by itself.
+
+For policy-covered Formulae, promotion consumes the immutable published
+product-evidence locator from the same protected staging run. The planner
+anonymously reads back both the aggregate evidence record and its candidate
+product, binds the exact runtime bundle, resolved inputs, builder report, and
+every Node/browser receipt, and rederives the aggregate before trusting it.
+Accepted overrides, skipped tests, failed outcomes, unrelated products, and a
+resolved Formula layer that differs from the candidate bottle are rejected.
+The VFS composition descriptor also carries the complete sorted direct
+same-tap dependency identities so that evidence cannot silently omit a
+dependency edge.
+
+Only a successful protected product claim can project
+`runtime_support = ["node", "browser"]` and
+`browser_compatible = true` into the generated Formula sidecar and top-level
+metadata. The same claim, including the product-evidence record digest and
+Node/browser definition digests, is carried through the promotion decision,
+metadata patch, admission record, and Pages admission projection. Formulae
+outside the closed promotion policy cannot add a runtime claim, and older
+admissions without this field remain readable as historical records.
+
 This is not a general user-facing Homebrew install guide yet. Do not document
 `brew tap` or guest `brew install` commands until that lifecycle is validated
 as a supported Kandelo user workflow. Homebrew Formulae and bottle metadata
