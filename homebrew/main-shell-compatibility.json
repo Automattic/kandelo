@@ -86,6 +86,22 @@
       ]
     },
     {
+      "package": "kandelo-dev/tap-core/clang",
+      "source_kind": "keg",
+      "source": "libexec/llvm",
+      "targets": [
+        "/usr/lib/llvm"
+      ]
+    },
+    {
+      "package": "kandelo-dev/tap-core/kandelo-sdk",
+      "source_kind": "keg",
+      "source": "libexec/wasm32posix",
+      "targets": [
+        "/usr/wasm32posix"
+      ]
+    },
+    {
       "package": "kandelo-dev/tap-core/fbdoom",
       "source_kind": "link",
       "source": "bin/fbdoom",

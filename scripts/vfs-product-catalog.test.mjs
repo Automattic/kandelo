@@ -32,6 +32,10 @@ const projectionPaths = {
     repoRoot,
     "homebrew/main-shell-materialization-policy.json",
   ),
+  compatibilityPath: join(
+    repoRoot,
+    "homebrew/main-shell-compatibility.json",
+  ),
 };
 
 function normalize(value) {
@@ -72,6 +76,44 @@ function readCatalog() {
   return JSON.parse(readFileSync(catalogPath, "utf8"));
 }
 
+function checkMainShellToolchainSelection({
+  catalogPath: selectedCatalogPath,
+  compatibilityPath,
+}) {
+  const catalog = loadVfsProductCatalog(selectedCatalogPath);
+  const selected = catalog.homebrewRoots("browser-main-shell")
+    .filter(({ formula }) =>
+      ["libcxx", "clang", "kandelo-sdk"].includes(formula));
+  assert.deepEqual(selected, [{
+    tap: "kandelo-dev/homebrew-tap-core",
+    formula: "kandelo-sdk",
+    materialization: "lazy",
+  }]);
+  assert.doesNotMatch(
+    JSON.stringify(catalog.productById("browser-main-shell").software.homebrew),
+    /https?:|sha256:/,
+  );
+
+  const compatibility = JSON.parse(readFileSync(compatibilityPath, "utf8"));
+  const toolchainAliases = compatibility.aliases.filter(({ targets }) =>
+    targets.some((target) =>
+      target === "/usr/lib/llvm" || target === "/usr/wasm32posix"));
+  assert.deepEqual(toolchainAliases, [
+    {
+      package: "kandelo-dev/tap-core/clang",
+      source_kind: "keg",
+      source: "libexec/llvm",
+      targets: ["/usr/lib/llvm"],
+    },
+    {
+      package: "kandelo-dev/tap-core/kandelo-sdk",
+      source_kind: "keg",
+      source: "libexec/wasm32posix",
+      targets: ["/usr/wasm32posix"],
+    },
+  ]);
+}
+
 test("loads the checked catalog and exposes exact Homebrew roots", () => {
   const catalog = loadVfsProductCatalog(catalogPath);
 
@@ -94,6 +136,54 @@ test("loads the checked catalog and exposes exact Homebrew roots", () => {
     ],
   );
   assert.throws(() => catalog.productById("missing-product"), /missing-product/);
+});
+
+test("main shell selects only the lazy SDK root for the toolchain", () => {
+  checkMainShellToolchainSelection(projectionPaths);
+
+  withTempDir((directory) => {
+    for (const mutation of ["direct-clang", "duplicate-sdk", "candidate-url"]) {
+      const changed = readCatalog();
+      const shell = changed.products.find(
+        ({ manifest }) => manifest.id === "browser-main-shell",
+      );
+      const lazy = shell.manifest.software.homebrew.find(
+        ({ materialization }) => materialization === "lazy",
+      );
+      if (mutation === "direct-clang") lazy.formulae.push("clang");
+      if (mutation === "duplicate-sdk") lazy.formulae.push("kandelo-sdk");
+      if (mutation === "candidate-url") lazy.url = "https://candidate.invalid/sdk";
+      shell.sha256 = manifestDigest(shell.manifest);
+      const changedPath = writeCanonical(
+        join(directory, `${mutation}.json`),
+        changed,
+      );
+      assert.throws(() => checkMainShellToolchainSelection({
+        ...projectionPaths,
+        catalogPath: changedPath,
+      }));
+    }
+
+    for (const [name, packageName] of [
+      ["clang", "kandelo-dev/tap-core/not-clang"],
+      ["sdk", "kandelo-dev/tap-core/not-sdk"],
+    ]) {
+      const compatibility = JSON.parse(
+        readFileSync(projectionPaths.compatibilityPath, "utf8"),
+      );
+      const target = name === "clang" ? "/usr/lib/llvm" : "/usr/wasm32posix";
+      compatibility.aliases.find(({ targets }) => targets.includes(target)).package =
+        packageName;
+      const changedPath = writeCanonical(
+        join(directory, `${name}-alias.json`),
+        compatibility,
+      );
+      assert.throws(() => checkMainShellToolchainSelection({
+        ...projectionPaths,
+        compatibilityPath: changedPath,
+      }));
+    }
+  });
 });
 
 test("rejects unknown fields, duplicate IDs, and a tampered manifest digest", () => {
