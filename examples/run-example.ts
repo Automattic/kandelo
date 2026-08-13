@@ -358,11 +358,11 @@ function tryLoadGuestCandidate(candidate: string, kernelCwd: string): ArrayBuffe
 
 function resolveProgram(
     path: string,
-    builtinPrograms: Record<string, string | null>,
+    getBuiltinPrograms: () => Record<string, string | null>,
 ): ArrayBuffer | null {
-    const mapped = builtinPrograms[path];
-    if (mapped) {
-        return loadBytes(mapped);
+    if (Object.prototype.hasOwnProperty.call(builtinProgramSources, path)) {
+        const mapped = getBuiltinPrograms()[path];
+        if (mapped) return loadBytes(mapped);
     }
     const kernelCwd = resolve(process.env.KERNEL_CWD || process.cwd());
     const candidates = [
@@ -400,15 +400,16 @@ async function main() {
     }
     const uid = parseKernelCredential("KERNEL_UID");
     const gid = parseKernelCredential("KERNEL_GID");
-    const builtinPrograms = resolveBuiltinPrograms();
+    let builtinPrograms: Record<string, string | null> | undefined;
+    const getBuiltinPrograms = (): Record<string, string | null> =>
+        builtinPrograms ??= resolveBuiltinPrograms();
 
     let programPath: string;
     if (name.endsWith(".wasm")) {
         programPath = resolve(name);
-    } else if (builtinPrograms[name]) {
-        programPath = builtinPrograms[name]!;
     } else {
-        programPath = resolve(`examples/${name}.wasm`);
+        const builtinProgram = getBuiltinPrograms()[name];
+        programPath = builtinProgram ?? resolve(`examples/${name}.wasm`);
     }
 
     // Git system config via environment (Node.js VFS is the host filesystem,
@@ -462,7 +463,7 @@ async function main() {
             maxWorkers: 4,
             onStdout: (_pid, data) => writeGuestOutput(process.stdout, data),
             onStderr: (_pid, data) => writeGuestOutput(process.stderr, data),
-            onResolveExec: (path) => resolveProgram(path, builtinPrograms),
+            onResolveExec: (path) => resolveProgram(path, getBuiltinPrograms),
         });
 
         await host.init();
