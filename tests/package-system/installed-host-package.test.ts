@@ -51,6 +51,11 @@ describe("installed host package binary policy", () => {
       join(isolatedRepo, "packages"),
       "dir",
     );
+    symlinkSync(
+      join(repoRoot, "web-libs"),
+      join(isolatedRepo, "web-libs"),
+      "dir",
+    );
     // WHY: tsup cleans its output directory before rebuilding. Vitest runs
     // files concurrently, so building in the checkout could temporarily
     // remove the worker entry used by an unrelated live Kandelo machine.
