@@ -87,6 +87,7 @@ import {
   builtinDemoPresentation,
 } from "../../../../../web-libs/kandelo-session/src/demo-guides";
 import { PRESET_LIBRARY } from "../presets";
+import { C_DEVELOPMENT_SESSION } from "../c-development";
 import {
   descriptorWithVfsImageUrl,
   demoIdFromVfsImageUrl,
@@ -117,6 +118,12 @@ import {
   createPagesVfsProductLoader,
   type PagesVfsProductEntry,
 } from "./pages-vfs-product-loader";
+import {
+  applyPresetSessionBoot,
+  preparePresetWorkspace,
+  startPresetPackagePrefetch,
+  type PresetSession,
+} from "./preset-session";
 
 import kernelWasmUrl from "@kernel-wasm?url";
 import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
@@ -305,6 +312,7 @@ type InitEnvProfile = "service" | "wordpress";
 
 interface LiveDemoSpec {
   image: LiveVfsImage;
+  session?: PresetSession;
   shell?: ShellProfile;
   autoCommand?: string;
   memoryPages?: number;
@@ -368,6 +376,7 @@ const DINIT_NGINX_ARGV = [
 
 const LIVE_DEMO_IDS = [
   "shell",
+  "c-dev",
   "node",
   "nginx",
   "nginx-php",
@@ -389,6 +398,10 @@ async function settleAfterBootResourcesReleased(): Promise<void> {
 const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
   shell: {
     image: "shell",
+  },
+  "c-dev": {
+    image: "shell",
+    session: C_DEVELOPMENT_SESSION,
   },
   node: {
     image: "node",
@@ -500,6 +513,7 @@ interface LiveProfile {
   software?: SoftwareProfile;
   descriptor: BootDescriptor;
   shell: ShellProfile;
+  session?: PresetSession;
   maxVfsByteLength: number;
   maxMemoryPages?: number;
   autoCommand?: string;
@@ -921,7 +935,13 @@ function profileForCandidateEvidence(
 ): LiveProfile {
   const liveDemoId = candidateEvidenceLiveDemoId(evidence.vfs.profile);
   const base = profileFor(liveDemoId, "none");
-  const descriptor = candidateEvidenceBootDescriptor(base.descriptor, evidence);
+  const candidateDescriptor = candidateEvidenceBootDescriptor(
+    base.descriptor,
+    evidence,
+  );
+  const descriptor = base.session === undefined
+    ? candidateDescriptor
+    : applyPresetSessionBoot(candidateDescriptor, base.session);
   return {
     ...base,
     vfsUrl: evidence.vfs.url,
@@ -993,6 +1013,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
     vfsSource,
     descriptor: desc,
     shell: spec.shell ?? "default",
+    session: spec.session,
     maxVfsByteLength:
       spec.maxVfsByteLength ??
       (spec.image === "shell"
@@ -1645,6 +1666,11 @@ async function bootProfile(
       uid: shellIdentity.uid,
       gid: shellIdentity.gid,
     });
+    if (profile.session !== undefined) {
+      tick("preparing preset workspace...");
+      await preparePresetWorkspace(kernel, profile.session, shellIdentity);
+      assertCurrent();
+    }
 
     if (profile.init?.web) {
       tick("initializing HTTP bridge...");
@@ -1784,6 +1810,14 @@ async function bootProfile(
 
     tick("ready");
     host.setStatus("running");
+    const packagePrefetch = profile.session === undefined
+      ? undefined
+      : startPresetPackagePrefetch(host, profile.session);
+    if (packagePrefetch !== undefined) {
+      void packagePrefetch.catch(() => {
+        // The generation-guarded host ledger owns the visible error and retry.
+      });
+    }
     return kernel;
   } catch (err) {
     stopDinitStartingPoller();
@@ -2452,8 +2486,11 @@ function descriptorFor(id: string): BootDescriptor {
         : software
           ? ["bash", "-l", "-i"]
           : item.bootCommand,
-      cwd: bootIdentity.cwd,
-      env: envRecord(bootIdentity.env),
+      cwd: item.cwd ?? bootIdentity.cwd,
+      env: {
+        ...envRecord(bootIdentity.env),
+        ...item.env,
+      },
       uid: bootIdentity.uid,
       gid: bootIdentity.gid,
     },
@@ -2469,6 +2506,8 @@ function liveGalleryItems(): GalleryItem[] {
     base: p.base,
     packages: p.packages,
     bootCommand: p.bootCommand,
+    cwd: p.cwd,
+    env: p.env === undefined ? undefined : { ...p.env },
     vfsImageUrl: vfsImageUrlForPreset(p.id),
     resolveVfsImageUrl: vfsImageUrlResolverForPreset(p.id),
     accent: p.accent,

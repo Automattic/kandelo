@@ -1,4 +1,5 @@
 import { ABI_VERSION } from "../../../../host/src/generated/abi";
+import { C_DEVELOPMENT_SESSION } from "./c-development";
 
 export interface Preset {
   id: string;
@@ -9,6 +10,8 @@ export interface Preset {
   accent: string;
   glyph: string;
   bootCommand: string[];
+  cwd?: string;
+  env?: Readonly<Record<string, string>>;
   estimatedUrlBytes: number;
 }
 
@@ -34,6 +37,19 @@ export const PRESET_LIBRARY: Preset[] = [
     glyph: "sh",
     bootCommand: ["bash", "-l", "-i"],
     estimatedUrlBytes: 312,
+  },
+  {
+    id: "c-dev",
+    title: "C development",
+    summary: "Compile and run C or C++ in the shell; the admitted toolchain downloads in the background.",
+    base: SHELL_BASE,
+    packages: ["kandelo-sdk@local", "make@local", "bash@local"],
+    accent: "#6f42c1",
+    glyph: "C",
+    bootCommand: ["bash", "-l", "-i"],
+    cwd: C_DEVELOPMENT_SESSION.cwd,
+    env: C_DEVELOPMENT_SESSION.env,
+    estimatedUrlBytes: 548,
   },
   {
     id: "node",

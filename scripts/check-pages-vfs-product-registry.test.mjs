@@ -119,6 +119,16 @@ test("the repository Pages sources exactly project the Pages-owned registry", ()
     readPagesRegistry(registryPath),
     JSON.parse(readFileSync(generatedRegistryPath, "utf8")),
   );
+  const gallery = JSON.parse(readFileSync(galleryPath, "utf8"));
+  assert.deepEqual(
+    gallery.products.find(({ id }) => id === "browser-main-shell")
+      ?.gallery_entries,
+    ["c-dev", "doom", "modeset", "shell"],
+  );
+  assert.equal(
+    readPagesRegistry(registryPath).products.some(({ id }) => id === "c-dev"),
+    false,
+  );
 });
 
 test("rejects source-only and generated-only Pages registry mutations", () => {

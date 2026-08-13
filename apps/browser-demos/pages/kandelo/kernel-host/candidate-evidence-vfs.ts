@@ -137,6 +137,7 @@ export class ProtectedBrowserEvidenceOutput {
 
 export type CandidateEvidenceLiveDemoId =
   | "shell"
+  | "c-dev"
   | "node"
   | "nginx"
   | "nginx-php"
@@ -149,6 +150,8 @@ const LIVE_DEMO_BY_EVIDENCE_PROFILE: Readonly<
   Record<string, CandidateEvidenceLiveDemoId>
 > = {
   shell: "shell",
+  "toolchain-shell": "shell",
+  "c-development": "c-dev",
   doom: "doom",
   modeset: "modeset",
   node: "node",

@@ -541,6 +541,8 @@ export interface GalleryItem {
   base: string;
   packages: string[];
   bootCommand: string[];
+  cwd?: string;
+  env?: Readonly<Record<string, string>>;
   /** Direct .vfs or .vfs.zst image URL used for bootable deep links. */
   vfsImageUrl?: string;
   /**
@@ -1038,7 +1040,12 @@ export class LiveKernelHost implements KernelHost {
 
   /** Replace gallery presets and notify views that cache galleryQuery results. */
   setGalleryItems(items: GalleryItem[]): void {
-    this.galleryItems = items.map((item) => ({ ...item, packages: item.packages.slice(), bootCommand: item.bootCommand.slice() }));
+    this.galleryItems = items.map((item) => ({
+      ...item,
+      packages: item.packages.slice(),
+      bootCommand: item.bootCommand.slice(),
+      env: item.env === undefined ? undefined : { ...item.env },
+    }));
     this.galleryListeners.emit(undefined);
   }
 
@@ -2109,7 +2116,12 @@ export class LiveKernelHost implements KernelHost {
 
   async galleryQuery(q: GalleryQuery): Promise<GalleryItem[]> {
     if (q.tab !== "presets") return [];
-    const items = this.galleryItems.map((item) => ({ ...item, packages: item.packages.slice(), bootCommand: item.bootCommand.slice() }));
+    const items = this.galleryItems.map((item) => ({
+      ...item,
+      packages: item.packages.slice(),
+      bootCommand: item.bootCommand.slice(),
+      env: item.env === undefined ? undefined : { ...item.env },
+    }));
     const needle = q.q?.toLowerCase().trim();
     if (!needle) return items;
     return items.filter((i) =>
