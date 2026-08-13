@@ -108,6 +108,10 @@ export interface PlatformIO {
   utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void;
 
   // Directory iteration
+  /**
+   * Open a directory and return an opaque handle. A handle must not be reused
+   * while its previous directory iterator is still live.
+   */
   opendir(path: string): number;
   /**
    * Return and consume the next entry. If this throws, the iterator must stay
