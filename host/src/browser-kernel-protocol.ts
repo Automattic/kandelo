@@ -16,6 +16,7 @@ import {
   validateBrowserCorsProxyConfig,
 } from "./networking/browser-cors-proxy";
 import type { MountSpec } from "./vfs/default-mounts";
+import type { HomebrewPackagePrefetchResult } from "./types";
 
 export type { HttpRequest, HttpResponse };
 export type { HostDiagnostic } from "./host-diagnostic";
@@ -404,6 +405,12 @@ export interface FbReleaseGenerationAckMessage {
   requestId: number;
 }
 
+export interface PrefetchHomebrewPackagesRequest {
+  type: "prefetch_homebrew_packages";
+  requestId: number;
+  packages: string[];
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
@@ -441,7 +448,8 @@ export type MainToKernelMessage =
   | HttpRequestMessage
   | KmsAttachCanvasMessage
   | KmsAttachStatsMessage
-  | FbReleaseGenerationAckMessage;
+  | FbReleaseGenerationAckMessage
+  | PrefetchHomebrewPackagesRequest;
 
 // ── Kernel Worker → Main Thread ──
 
@@ -603,6 +611,18 @@ export interface LazyDownloadMessage {
   event: LazyDownloadEvent;
 }
 
+export interface PrefetchHomebrewPackagesResponse {
+  type: "homebrew_packages_prefetched";
+  requestId: number;
+  result: HomebrewPackagePrefetchResult;
+}
+
+export interface PrefetchHomebrewPackagesFailure {
+  type: "homebrew_packages_prefetch_failed";
+  requestId: number;
+  error: string;
+}
+
 export type KernelToMainMessage =
   | ReadyMessage
   | InitErrorMessage
@@ -621,4 +641,6 @@ export type KernelToMainMessage =
   | FbForgetGenerationMessage
   | ProcEventMessage
   | HttpBridgePendingMessage
-  | LazyDownloadMessage;
+  | LazyDownloadMessage
+  | PrefetchHomebrewPackagesResponse
+  | PrefetchHomebrewPackagesFailure;

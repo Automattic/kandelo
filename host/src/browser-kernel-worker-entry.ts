@@ -33,6 +33,10 @@ import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-a
 import { createBrowserLazyFetcher } from "./vfs/browser-lazy-fetcher";
 import { resolveLazyUrl } from "./vfs/lazy-url";
 import { prepareHomebrewFlatLazyBoot } from "./homebrew-flat-lazy-boot";
+import {
+  boundedHomebrewPackagePrefetchError,
+  prefetchHomebrewPackageClosures,
+} from "./homebrew-package-prefetch";
 import { DeviceFileSystem } from "./vfs/device-fs";
 import { BrowserTimeProvider } from "./vfs/time";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
@@ -2905,6 +2909,36 @@ async function handleDestroy(
   respond(msg.requestId, result);
 }
 
+async function handleHomebrewPackagePrefetch(
+  msg: Extract<MainToKernelMessage, { type: "prefetch_homebrew_packages" }>,
+): Promise<void> {
+  if (!initReady) {
+    post({
+      type: "homebrew_packages_prefetch_failed",
+      requestId: msg.requestId,
+      error: "Homebrew package prefetch requires an initialized VFS kernel",
+    });
+    return;
+  }
+  try {
+    const result = await prefetchHomebrewPackageClosures(
+      memfs,
+      msg.packages,
+    );
+    post({
+      type: "homebrew_packages_prefetched",
+      requestId: msg.requestId,
+      result,
+    });
+  } catch (error) {
+    post({
+      type: "homebrew_packages_prefetch_failed",
+      requestId: msg.requestId,
+      error: boundedHomebrewPackagePrefetchError(error),
+    });
+  }
+}
+
 // ── PTY ──
 
 function handlePtyWrite(msg: Extract<MainToKernelMessage, { type: "pty_write" }>) {
@@ -3139,6 +3173,7 @@ sw.onmessage = (e: MessageEvent) => {
     case "pick_listener_target": handlePickListenerTarget(msg); break;
     case "http_request": handleHttpRequestMessage(msg); break;
     case "destroy": void handleDestroy(msg); break;
+    case "prefetch_homebrew_packages": void handleHomebrewPackagePrefetch(msg); break;
     case "register_lazy_files": void handleLazyRegistration(msg); break;
     case "register_lazy_archives": void handleLazyRegistration(msg); break;
     case "get_fork_count": {

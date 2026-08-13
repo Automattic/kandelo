@@ -28,7 +28,7 @@ export async function prefetchHomebrewPackageClosures(
     throw new Error("Homebrew package prefetch requires a MemoryFileSystem");
   }
   const packages = readHomebrewPrefetchComposition(fs);
-  const normalizedRoots = validatePrefetchRoots(roots);
+  const normalizedRoots = validateHomebrewPackagePrefetchRoots(roots);
   const closure = dependencyFirstClosure(packages, normalizedRoots);
   const materializedPackages: string[] = [];
   const alreadyMaterializedPackages: string[] = [];
@@ -129,7 +129,9 @@ function readHomebrewPrefetchComposition(
   return result;
 }
 
-function validatePrefetchRoots(roots: readonly string[]): string[] {
+export function validateHomebrewPackagePrefetchRoots(
+  roots: readonly string[],
+): string[] {
   if (!Array.isArray(roots) || roots.length === 0 || roots.length > MAX_ROOTS) {
     throw new Error("Homebrew package prefetch roots are outside their count bound");
   }
@@ -146,6 +148,26 @@ function validatePrefetchRoots(roots: readonly string[]): string[] {
       seen.add(root);
       result.push(root);
     }
+  }
+  return result;
+}
+
+/**
+ * Reduce worker failures to one bounded diagnostic string before crossing the
+ * trust boundary. URLs can contain credentials and transport paths are not a
+ * stable part of the public host API, so redact them rather than echoing them.
+ */
+export function boundedHomebrewPackagePrefetchError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const redacted = raw
+    .replace(/\b(?:https?|file):\/\/\S+/gu, "[redacted location]")
+    .replace(/\b(?:authorization|password|token)\s*[:=]\s*\S+/giu, "$1=[redacted]");
+  const encoder = new TextEncoder();
+  if (encoder.encode(redacted).byteLength <= 512) return redacted;
+  let result = "";
+  for (const codePoint of redacted) {
+    if (encoder.encode(result + codePoint).byteLength > 512) break;
+    result += codePoint;
   }
   return result;
 }

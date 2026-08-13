@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  boundedHomebrewPackagePrefetchError,
   prefetchHomebrewPackageClosures,
+  validateHomebrewPackagePrefetchRoots,
 } from "../src/homebrew-package-prefetch";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 
@@ -48,6 +50,21 @@ function fixture() {
 }
 
 describe("Homebrew package prefetch", () => {
+  it("validates roots before transport and bounds sanitized failures", () => {
+    expect(validateHomebrewPackagePrefetchRoots([
+      "kandelo-dev/tap-core/kandelo-sdk",
+      "kandelo-dev/tap-core/kandelo-sdk",
+    ])).toEqual(["kandelo-dev/tap-core/kandelo-sdk"]);
+    expect(() => validateHomebrewPackagePrefetchRoots(["clang"]))
+      .toThrow(/full name is invalid/);
+
+    const diagnostic = boundedHomebrewPackagePrefetchError(
+      new Error(`download https://user:secret@example.test/bottle failed: ${"x".repeat(700)}`),
+    );
+    expect(diagnostic).not.toContain("secret");
+    expect(new TextEncoder().encode(diagnostic).byteLength).toBeLessThanOrEqual(512);
+  });
+
   it("prefetches a sealed dependency closure in dependency order", async () => {
     const { fs, prepared } = fixture();
     const result = await prefetchHomebrewPackageClosures(

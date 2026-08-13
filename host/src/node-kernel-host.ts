@@ -41,6 +41,8 @@ import {
 } from "./constants";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
 import type { MountSpec } from "./vfs/default-mounts";
+import type { HomebrewPackagePrefetchResult } from "./types";
+import { validateHomebrewPackagePrefetchRoots } from "./homebrew-package-prefetch";
 
 export type { HttpRequest, HttpResponse };
 
@@ -175,6 +177,10 @@ export class NodeKernelHost {
   private workerStarted = false;
   private initialized = false;
   private pendingRequests = new Map<number, { resolve: (val: any) => void; reject: (err: Error) => void }>();
+  private pendingHomebrewPrefetchRequests = new Map<number, {
+    resolve: (result: HomebrewPackagePrefetchResult) => void;
+    reject: (err: Error) => void;
+  }>();
   private exitResolvers = new Map<number, (status: number) => void>();
   private unclaimedExitStatuses = new Map<number, { status: number; sequence: number }>();
   private exitSequence = 0;
@@ -230,6 +236,7 @@ export class NodeKernelHost {
         reject(error);
       }
       this.pendingRequests.clear();
+      this.rejectPendingHomebrewPrefetchRequests(error);
       const diagnostic: HostDiagnostic = {
         pid: 0,
         source: "kernel worker",
@@ -746,6 +753,30 @@ export class NodeKernelHost {
     return result;
   }
 
+  /** Materialize one or more authenticated Homebrew package closures. */
+  async prefetchHomebrewPackages(
+    roots: readonly string[],
+  ): Promise<HomebrewPackagePrefetchResult> {
+    if (!this.initialized) {
+      throw new Error("Homebrew package prefetch requires an initialized kernel");
+    }
+    const packages = validateHomebrewPackagePrefetchRoots(roots);
+    const requestId = this._nextRequestId++;
+    return new Promise((resolve, reject) => {
+      this.pendingHomebrewPrefetchRequests.set(requestId, { resolve, reject });
+      try {
+        this.sendToWorker({
+          type: "prefetch_homebrew_packages",
+          requestId,
+          packages,
+        });
+      } catch (error) {
+        this.pendingHomebrewPrefetchRequests.delete(requestId);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  }
+
   /** Destroy the kernel and release all resources */
   async destroy(): Promise<void> {
     if (!this.workerStarted) return;
@@ -774,6 +805,9 @@ export class NodeKernelHost {
     this.exitResolvers.clear();
     this.unclaimedExitStatuses.clear();
     this.pendingRequests.clear();
+    this.rejectPendingHomebrewPrefetchRequests(
+      new Error("kernel host was destroyed during Homebrew package prefetch"),
+    );
     this.lazyDownloadListeners.clear();
     if (gracefulDetachFailure || realmTerminationFailure) {
       const diagnostic: HostDiagnostic = {
@@ -831,6 +865,22 @@ export class NodeKernelHost {
           } else {
             pending.resolve(msg.result);
           }
+        }
+        break;
+      }
+      case "homebrew_packages_prefetched": {
+        const pending = this.pendingHomebrewPrefetchRequests.get(msg.requestId);
+        if (pending) {
+          this.pendingHomebrewPrefetchRequests.delete(msg.requestId);
+          pending.resolve(msg.result);
+        }
+        break;
+      }
+      case "homebrew_packages_prefetch_failed": {
+        const pending = this.pendingHomebrewPrefetchRequests.get(msg.requestId);
+        if (pending) {
+          this.pendingHomebrewPrefetchRequests.delete(msg.requestId);
+          pending.reject(new Error(msg.error));
         }
         break;
       }
@@ -914,6 +964,13 @@ export class NodeKernelHost {
         // One observer must not starve the remaining listeners.
       }
     }
+  }
+
+  private rejectPendingHomebrewPrefetchRequests(error: Error): void {
+    for (const { reject } of this.pendingHomebrewPrefetchRequests.values()) {
+      reject(error);
+    }
+    this.pendingHomebrewPrefetchRequests.clear();
   }
 
   private async handleResolveExec(msg: ResolveExecRequestMessage): Promise<void> {
