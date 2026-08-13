@@ -146,8 +146,8 @@ esac
 target_root="$private/target"
 (
   cd "$authority_root"
-  CARGO_TARGET_DIR="$target_root" scripts/dev-shell.sh cargo build \
-    -p xtask --target "$host_target"
+  scripts/dev-shell.sh env CARGO_TARGET_DIR="$target_root" \
+    cargo build -p xtask --target "$host_target"
 )
 xtask="$target_root/$host_target/debug/xtask"
 [ -f "$xtask" ] && [ ! -L "$xtask" ] && [ -x "$xtask" ] ||

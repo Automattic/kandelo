@@ -121,9 +121,18 @@ chmod 0755 "$AUTHORITY/scripts/test-xtask-fixture"
 cat >"$AUTHORITY/scripts/dev-shell.sh" <<'DEV_SHELL'
 #!/usr/bin/env bash
 set -euo pipefail
+# Model the real dev shell's --ignore-environment boundary. Build-control
+# values survive only when the protected caller passes them to the command
+# inside the shell.
+unset CARGO_TARGET_DIR
 if [ "$#" -eq 2 ] && [ "$1" = rustc ] && [ "$2" = -vV ]; then
   printf 'host: fixture-host\n'
   exit 0
+fi
+if [ "$#" -ge 2 ] && [ "$1" = env ] && \
+  [[ "$2" == CARGO_TARGET_DIR=* ]]; then
+  export CARGO_TARGET_DIR="${2#CARGO_TARGET_DIR=}"
+  shift 2
 fi
 if [ "$#" -ge 4 ] && [ "$1 $2 $3" = "cargo build -p" ] && [ "$4" = xtask ]; then
   target_root="${CARGO_TARGET_DIR:-target}"
