@@ -5,6 +5,7 @@ use crate::abi_staging::consumer_registry::ApplicabilityV1;
 use crate::abi_staging::guard_registry::GuardCodeV1;
 use crate::abi_staging::product_manifest::VfsArchitectureV1;
 use crate::abi_staging::product_manifest::{atomic_write_regular, read_bounded_regular_file};
+use crate::abi_staging::request_feed::request_asset_url;
 use crate::abi_staging::records::{
     AbiStagingRecordV1, AbiStagingRequestV1, PromotionStateV1, RecordCommonV1, RetryNextActionV1,
     SubjectKindV1, TerminalOutcomeV1, WorkStateV1, request_is_current, validate_record,
@@ -593,6 +594,7 @@ fn validate_input(input: &CurrentCheckProjectionInputV1) -> Result<(), String> {
         validate_request_reference(
             &request_source.immutable_reference,
             &input.context.repository,
+            input.context.pull_request_number,
             &input.context.exact_head,
             &request_source.digest,
         )?;
@@ -1150,14 +1152,13 @@ fn validate_record_link(link: &RecordLinkV1) -> Result<(), String> {
 fn validate_request_reference(
     reference: &str,
     repository: &str,
+    pull_request: u64,
     head: &str,
     digest: &str,
 ) -> Result<(), String> {
-    let filename = format!("candidate-request-{head}-sha256-{digest}.json");
-    let prefix = format!("https://github.com/{repository}/releases/download/");
+    let expected = request_asset_url(repository, pull_request, head, digest);
     if reference.len() > MAX_REFERENCE_BYTES
-        || !reference.starts_with(&prefix)
-        || !reference.ends_with(&filename)
+        || reference != expected
         || reference.contains('?')
         || reference.contains('#')
         || reference
@@ -1743,7 +1744,7 @@ mod tests {
             request: Some(CurrentRequestProjectionV1 {
                 digest: request_digest.clone(),
                 immutable_reference: format!(
-                    "https://github.com/Automattic/kandelo/releases/download/abi-staging-pr-19/candidate-request-{HEAD}-sha256-{request_digest}.json"
+                    "https://github.com/Automattic/kandelo/releases/download/abi-staging-pr-19-sha256-{request_digest}/candidate-request-{HEAD}-sha256-{request_digest}.json"
                 ),
                 request,
             }),
