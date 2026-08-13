@@ -9182,6 +9182,351 @@ def check_maintenance(workflow)
   end
 end
 
+def workflow_string_values(node, values = [])
+  case node
+  when Hash
+    node.each_value { |value| workflow_string_values(value, values) }
+  when Array
+    node.each { |value| workflow_string_values(value, values) }
+  when String
+    values << node
+  end
+  values
+end
+
+def check_exact_abi_route(workflows)
+  staging_path = ".github/workflows/staging-build.yml"
+  prepare_path = ".github/workflows/prepare-merge.yml"
+  staging = workflows.fetch(staging_path)
+  prepare = workflows.fetch(prepare_path)
+  exact_matrix = [
+    {
+      "suite" => "vitest", "group" => "exact-abi-source",
+      "route" => "vitest exact-abi-source", "submodules" => "",
+    },
+    {
+      "suite" => "libc", "group" => "functional-regression",
+      "route" => "libc functional-regression",
+      "submodules" => "tests/libc/libc-test",
+    },
+    {
+      "suite" => "libc", "group" => "math",
+      "route" => "libc math", "submodules" => "tests/libc/libc-test",
+    },
+    {
+      "suite" => "posix", "group" => "all",
+      "route" => "posix all", "submodules" => "",
+    },
+    {
+      "suite" => "sortix", "group" => "include",
+      "route" => "sortix include", "submodules" => "tests/sortix/os-test",
+    },
+    {
+      "suite" => "sortix", "group" => "basic",
+      "route" => "sortix basic", "submodules" => "tests/sortix/os-test",
+    },
+    {
+      "suite" => "sortix", "group" => "runtime",
+      "route" => "sortix runtime", "submodules" => "tests/sortix/os-test",
+    },
+  ].freeze
+  specs = {
+    staging_path => {
+      "workflow" => staging,
+      "base" => "${{ github.event.pull_request.base.sha }}",
+      "head" => "${{ github.event.pull_request.head.sha }}",
+      "prepare_needs" => %w[change-scope toolchain-cache],
+      "suite_needs" => %w[
+        change-scope toolchain-cache exact-abi-source-test-prepare
+      ],
+      "gate" => "exact-abi-test-gate",
+      "gate_needs" => %w[
+        change-scope test-gate-validation test-suite-early
+        exact-abi-source-test-prepare exact-abi-source-test-suite
+      ],
+      "legacy" => %w[
+        preflight package-staging-not-required lib-matrix-build matrix-build
+        repair-staging-index test-gate-prepare test-suite test-gate
+        f2-status
+      ],
+    },
+    prepare_path => {
+      "workflow" => prepare,
+      "base" => "${{ needs.synthesize-merge.outputs.base_sha }}",
+      "head" => "${{ needs.synthesize-merge.outputs.head_sha }}",
+      "prepare_needs" => %w[
+        synthesize-merge change-scope gate toolchain-cache
+      ],
+      "suite_needs" => %w[
+        synthesize-merge change-scope gate toolchain-cache
+        exact-abi-source-test-prepare
+      ],
+      "gate" => "exact-abi-prepare-gate",
+      "gate_needs" => %w[
+        synthesize-merge change-scope gate test-gate-validation
+        test-suite-early exact-abi-source-test-prepare
+        exact-abi-source-test-suite
+      ],
+      "legacy" => %w[
+        staging-shell-snapshot preflight promote-staging lib-matrix-build
+        matrix-build candidate-snapshot test-gate-prepare test-suite test-gate
+        merge-gate-post-noop merge-gate-post-runtime-only merge-gate-post
+      ],
+    },
+  }.freeze
+
+  specs.each do |path, spec|
+    workflow = spec.fetch("workflow")
+    jobs = workflow_jobs(workflow)
+    change_scope = jobs.fetch("change-scope")
+    check(change_scope["permissions"] == { "contents" => "read" },
+          "#{path} exact route classifier gained authority")
+    steps = job_steps(change_scope, "#{path} change-scope")
+    if path == prepare_path
+      source_checkouts = steps.select do |step|
+        step["uses"] == NATIVE_COMPATIBILITY_CHECKOUT_ACTION &&
+          step.fetch("with", {})["ref"] == spec.fetch("base") &&
+          !step.fetch("with", {}).key?("path")
+      end
+      check(source_checkouts.length == 1,
+            "#{path} must have one synthesized-merge source checkout")
+      source_checkout = source_checkouts.first
+      check(source_checkout.fetch("with")["fetch-depth"] == 0 &&
+            source_checkout.fetch("with")["persist-credentials"] == false,
+            "#{path} exact comparison checkout lacks complete uncredentialed history")
+      synthesized_checkout = named_step(
+        steps, "Checkout synthesized PR merge"
+      ).fetch("run")
+      check(synthesized_checkout.include?(
+        'git_fetch_retry --quiet origin "$PR_HEAD_SHA"'
+      ) && !synthesized_checkout.match?(
+        /git_fetch_retry[^\n]*--depth(?:=|[[:space:]])/
+      ), "#{path} exact head fetch can leave the merge base shallow")
+    end
+    authority_checkouts = steps.select do |step|
+      step["uses"] == NATIVE_COMPATIBILITY_CHECKOUT_ACTION &&
+        step.fetch("with", {})["path"] == "abi-staging-authority"
+    end
+    check(authority_checkouts.length == 1,
+          "#{path} must have one protected exact ABI authority checkout")
+    authority = authority_checkouts.first
+    check(authority.fetch("with") == {
+      "ref" => spec.fetch("base"),
+      "path" => "abi-staging-authority",
+      "fetch-depth" => 1,
+    }, "#{path} exact ABI authority checkout changed")
+    classifier = named_step(
+      steps, "Derive protected exact ABI staging route"
+    )
+    check(classifier["id"] == "exact-abi" &&
+          !classifier.key?("if") && !classifier.key?("continue-on-error"),
+          "#{path} exact ABI classifier execution changed")
+    check(classifier.fetch("env") == {
+      "AUTHORITY_ROOT" => "${{ github.workspace }}/abi-staging-authority",
+      "EXACT_HEAD_ROOT" => "${{ github.workspace }}",
+      "BASE_SHA" => spec.fetch("base"),
+      "HEAD_SHA" => spec.fetch("head"),
+      "RAW_PACKAGE_STAGING_REQUIRED" =>
+        "${{ steps.scope.outputs.package_staging_required }}",
+    }, "#{path} exact ABI classifier environment changed")
+    classifier_run = classifier.fetch("run")
+    [
+      'classifier="$AUTHORITY_ROOT/.github/scripts/' \
+        'classify-exact-abi-staging.sh"',
+      '[ -L "$classifier" ]',
+      '[ ! -f "$classifier" ]',
+      'if [ ! -e "$classifier" ]; then',
+      "'exact_abi_staging_applicable=false'",
+      '"legacy_package_staging_required=$RAW_PACKAGE_STAGING_REQUIRED"',
+      "'exact_abi_staging_reason=protected-classifier-unavailable'",
+      'bash "$classifier"',
+      '--authority-root "$AUTHORITY_ROOT"',
+      '--exact-head-root "$EXACT_HEAD_ROOT"',
+      '--base "$BASE_SHA"',
+      '--head "$HEAD_SHA"',
+      '"$RAW_PACKAGE_STAGING_REQUIRED"',
+      '--github-output "$GITHUB_OUTPUT"',
+    ].each do |fragment|
+      check(classifier_run.include?(fragment),
+            "#{path} exact ABI classifier lacks #{fragment}")
+    end
+    check(steps.index(authority) < steps.index(classifier),
+          "#{path} runs the exact ABI classifier before protected checkout")
+
+    outputs = change_scope.fetch("outputs")
+    check(outputs["exact_abi_staging_applicable"] ==
+          "${{ steps.exact-abi.outputs.exact_abi_staging_applicable }}",
+          "#{path} does not export the protected exact ABI decision")
+    check(outputs["package_archive_changed"] ==
+          "${{ steps.scope.outputs.package_archive_changed }}",
+          "#{path} rewrites the raw package archive diagnostic")
+    check(outputs["package_staging_required"] ==
+          "${{ steps.route.outputs.package_staging_required }}" &&
+          outputs["test_gate_required"] ==
+            "${{ steps.route.outputs.test_gate_required }}" &&
+          outputs["package_staging_reason"] ==
+            "${{ steps.route.outputs.package_staging_reason }}",
+          "#{path} does not export the protected route outputs")
+    route = steps.find { |step| step["id"] == "route" }
+    check(route.is_a?(Hash), "#{path} lacks the exact ABI route output step")
+    route_run = route.fetch("run")
+    [
+      'if [ "$EXACT_ABI_STAGING_APPLICABLE" = true ]; then',
+      '[ "$LEGACY_PACKAGE_STAGING_REQUIRED" = false ]',
+      'echo "package_staging_required=false"',
+      'echo "test_gate_required=true"',
+      'echo "package_staging_reason=$EXACT_ABI_STAGING_REASON"',
+    ].each do |fragment|
+      check(route_run.include?(fragment),
+            "#{path} exact ABI output routing lacks #{fragment}")
+    end
+
+    early = jobs.fetch("test-suite-early")
+    check(early.fetch("env")["EXACT_ABI_STAGING_APPLICABLE"] ==
+          "${{ needs.change-scope.outputs.exact_abi_staging_applicable }}",
+          "#{path} early suites do not consume the protected exact route")
+    early_decision = named_step(
+      job_steps(early, "#{path} test-suite-early"),
+      "Decide whether to run suite"
+    ).fetch("run")
+    check(early_decision.include?(
+      '[ "$EXACT_ABI_STAGING_APPLICABLE" != "true" ]'
+    ), "#{path} can skip early kernel suites on the exact route")
+
+    validation = jobs.fetch("test-gate-validation")
+    check(validation.fetch("env")["EXACT_ABI_STAGING_APPLICABLE"] ==
+          "${{ needs.change-scope.outputs.exact_abi_staging_applicable }}",
+          "#{path} prepared validation lacks the protected exact route")
+    materialization = named_step(
+      job_steps(validation, "#{path} test-gate-validation"),
+      "Test binary materialization flow"
+    )
+    check(materialization["if"] ==
+          "env.BINARY_MATERIALIZATION_CHANGED == 'true' && " \
+          "env.EXACT_ABI_STAGING_APPLICABLE != 'true'",
+          "#{path} prepared-product validation can run on the exact route")
+
+    toolchain = jobs.fetch("toolchain-cache")
+    check(toolchain["permissions"] == { "contents" => "read" },
+          "#{path} exact toolchain prerequisite gained mutation authority")
+    toolchain_checkout = job_steps(
+      toolchain, "#{path} toolchain-cache"
+    ).find { |step| step["uses"] == NATIVE_COMPATIBILITY_CHECKOUT_ACTION }
+    check(toolchain_checkout.is_a?(Hash) &&
+          toolchain_checkout.fetch("with", {})["persist-credentials"] == false,
+          "#{path} exact toolchain prerequisite persists checkout credentials")
+
+    prepare_job = jobs.fetch("exact-abi-source-test-prepare")
+    suite_job = jobs.fetch("exact-abi-source-test-suite")
+    {
+      "exact-abi-source-test-prepare" => [
+        prepare_job, spec.fetch("prepare_needs")
+      ],
+      "exact-abi-source-test-suite" => [
+        suite_job, spec.fetch("suite_needs")
+      ],
+    }.each do |job_name, (job, expected_needs)|
+      check(Array(job["needs"]).sort == expected_needs.sort,
+            "#{path} #{job_name} dependency set changed")
+      check(job["permissions"] == {
+        "actions" => "read", "contents" => "read",
+      }, "#{path} #{job_name} gained mutation authority")
+      check(job.fetch("if").include?(
+        "needs.change-scope.outputs.exact_abi_staging_applicable == 'true'"
+      ), "#{path} #{job_name} is not exact-route-only")
+      source = workflow_string_values(job).join("\n")
+      {
+        /\bgh\s+release\b/ => "GitHub Release mutation",
+        /\boras\s+push\b/ => "OCI mutation",
+        /homebrew-ghcr-upload/ => "GHCR mutation",
+        /(?<!local-)binaries\// => "legacy binaries materialization",
+        /packages\/registry\/program-packages\.json/ => "package index",
+        /\.vfs(?:\.zst)?\b/ => "product VFS",
+      }.each do |pattern, label|
+        check(!source.match?(pattern),
+              "#{path} #{job_name} contains #{label}")
+      end
+    end
+    prepare_steps = job_steps(
+      prepare_job, "#{path} exact-abi-source-test-prepare"
+    )
+    pack = named_step(prepare_steps, "Pack exact ABI source-test workspace")
+    check(pack.fetch("run").include?(
+      "bash abi-staging-authority/scripts/" \
+        "pack-exact-abi-source-test-workspace.sh"
+    ), "#{path} exact workspace is not packed by protected source")
+    suite_steps = job_steps(suite_job, "#{path} exact-abi-source-test-suite")
+    extract = named_step(
+      suite_steps, "Extract and validate exact ABI source-test workspace"
+    )
+    check(extract.fetch("run").include?(
+      "bash abi-staging-authority/scripts/" \
+        "pack-exact-abi-source-test-workspace.sh"
+    ), "#{path} exact workspace is not validated by protected source")
+    run_suite = named_step(
+      suite_steps, "Run exact source/conformance cell"
+    ).fetch("run")
+    check(run_suite.include?(
+      'scripts/ci-run-test-suite.sh "$SUITE" "$TEST_GROUP"'
+    ), "#{path} exact matrix bypasses the protected suite runner")
+    actual_matrix = suite_job.fetch("strategy").fetch("matrix").fetch("include")
+    check(actual_matrix == exact_matrix,
+          "#{path} exact source/conformance matrix changed")
+
+    gate_name = spec.fetch("gate")
+    gate = jobs.fetch(gate_name)
+    check(Array(gate["needs"]).sort == spec.fetch("gate_needs").sort,
+          "#{path} #{gate_name} dependency set changed")
+    check(gate.fetch("if").include?(
+      "needs.change-scope.outputs.exact_abi_staging_applicable == 'true'"
+    ), "#{path} #{gate_name} is not exact-route-only")
+    check(gate["permissions"] == {},
+          "#{path} #{gate_name} gained mutation authority")
+
+    spec.fetch("legacy").each do |job_name|
+      job = jobs.fetch(job_name)
+      check(Array(job["needs"]).include?("change-scope"),
+            "#{path} #{job_name} cannot consume protected routing")
+      check(job.fetch("if").include?(
+        "needs.change-scope.outputs.exact_abi_staging_applicable != 'true'"
+      ), "#{path} #{job_name} can run on the exact ABI route")
+    end
+  end
+
+  %w[
+    homebrew-main-shell-prerequisites
+    homebrew-main-shell-gate
+  ].each do |job_name|
+    check(workflow_jobs(staging).fetch(job_name)["permissions"] == {},
+          "staging exact aggregate #{job_name} gained mutation authority")
+  end
+  staging_jobs = workflow_jobs(staging)
+  check(!staging_jobs.key?("homebrew-main-shell-proof"),
+        "staging restored the redundant Homebrew shell proof job")
+  check(!workflow_string_values(staging).include?(
+    "./.github/workflows/homebrew-main-shell-ci.yml"
+  ), "staging restored the redundant Homebrew shell proof workflow")
+
+  prepare_gate_steps = job_steps(
+    workflow_jobs(prepare).fetch("gate"), "prepare-merge gate"
+  )
+  [
+    "Checkout workflow helpers",
+    "Inspect staging-build on PR HEAD",
+  ].each do |step_name|
+    step = named_step(prepare_gate_steps, step_name)
+    check(step.fetch("if").include?(
+      "needs.change-scope.outputs.exact_abi_staging_applicable != 'true'"
+    ), "prepare-merge #{step_name} can read legacy staging on exact ABI")
+  end
+
+  all_source = [staging, prepare].flat_map do |workflow|
+    workflow_string_values(workflow)
+  end.join("\n")
+  check(!all_source.match?(%r{ghcr\.io/Automattic/}i),
+        "PR workflows may not publish an Automattic GHCR package")
+end
+
 def expect_rejection(label)
   rejected = false
   begin
@@ -9266,6 +9611,154 @@ def self_test_privileged_recipe_host_runtime(workflows)
         ],
       }
     check_privileged_recipe_host_runtime(mutated)
+  end
+end
+
+def self_test_exact_abi_route(workflows)
+  check(defined?(check_exact_abi_route),
+        "protected exact ABI route checker is absent")
+
+  {
+    "candidate-owned exact ABI authority" => lambda { |all|
+      workflow = all.fetch(".github/workflows/staging-build.yml")
+      step = workflow.fetch("jobs").fetch("change-scope").fetch("steps")
+        .find do |candidate|
+          candidate.fetch("with", {})["path"] == "abi-staging-authority"
+        end
+      step.fetch("with")["ref"] = "${{ github.event.pull_request.head.sha }}"
+    },
+    "candidate-owned exact ABI classifier" => lambda { |all|
+      workflow = all.fetch(".github/workflows/staging-build.yml")
+      step = mutate_named_step(
+        workflow, "change-scope", "Derive protected exact ABI staging route"
+      )
+      step.fetch("env")["AUTHORITY_ROOT"] = "${{ github.workspace }}"
+    },
+    "path-regex exact ABI classifier substitution" => lambda { |all|
+      workflow = all.fetch(".github/workflows/prepare-merge.yml")
+      step = mutate_named_step(
+        workflow, "change-scope", "Derive protected exact ABI staging route"
+      )
+      step["run"] = "git diff --name-only | grep -E '^(abi|crates)/'"
+    },
+    "shallow exact ABI comparison base" => lambda { |all|
+      workflow = all.fetch(".github/workflows/prepare-merge.yml")
+      checkout = workflow.fetch("jobs").fetch("change-scope")
+        .fetch("steps").find do |step|
+          step["uses"] == NATIVE_COMPATIBILITY_CHECKOUT_ACTION &&
+            step.fetch("with", {})["ref"] ==
+              "${{ needs.synthesize-merge.outputs.base_sha }}" &&
+            !step.fetch("with", {}).key?("path")
+        end
+      checkout.fetch("with")["fetch-depth"] = 1
+    },
+    "shallow exact ABI comparison head" => lambda { |all|
+      workflow = all.fetch(".github/workflows/prepare-merge.yml")
+      step = mutate_named_step(
+        workflow, "change-scope", "Checkout synthesized PR merge"
+      )
+      step["run"] = step.fetch("run").sub(
+        'git_fetch_retry --quiet origin "$PR_HEAD_SHA"',
+        'git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"'
+      )
+    },
+    "exact route legacy preflight fallback" => lambda { |all|
+      workflow = all.fetch(".github/workflows/staging-build.yml")
+      job = workflow.fetch("jobs").fetch("preflight")
+      job["if"] = job.fetch("if").sub(
+        "needs.change-scope.outputs.exact_abi_staging_applicable != 'true' &&\n",
+        ""
+      )
+    },
+    "exact route merge-candidate fallback" => lambda { |all|
+      workflow = all.fetch(".github/workflows/prepare-merge.yml")
+      job = workflow.fetch("jobs").fetch("candidate-snapshot")
+      job["if"] = job.fetch("if").sub(
+        "needs.change-scope.outputs.exact_abi_staging_applicable != 'true' &&\n",
+        ""
+      )
+    },
+    "exact route Release mutation" => lambda { |all|
+      workflow = all.fetch(".github/workflows/staging-build.yml")
+      job = workflow.fetch("jobs").fetch("exact-abi-source-test-prepare")
+      job.fetch("steps") << { "run" => "gh release create unsafe" }
+    },
+    "exact route legacy binaries materialization" => lambda { |all|
+      workflow = all.fetch(".github/workflows/prepare-merge.yml")
+      job = workflow.fetch("jobs").fetch("exact-abi-source-test-suite")
+      job.fetch("steps") << { "run" => "cp -R legacy binaries/" }
+    },
+    "exact route source-validation bypass" => lambda { |all|
+      workflow = all.fetch(".github/workflows/staging-build.yml")
+      job = workflow.fetch("jobs").fetch("exact-abi-test-gate")
+      job["needs"].delete("test-gate-validation")
+    },
+    "exact route conformance omission" => lambda { |all|
+      workflow = all.fetch(".github/workflows/prepare-merge.yml")
+      matrix = workflow.fetch("jobs")
+        .fetch("exact-abi-source-test-suite")
+        .fetch("strategy").fetch("matrix").fetch("include")
+      matrix.reject! { |cell| cell["route"] == "sortix runtime" }
+    },
+    "exact route write-capable gate" => lambda { |all|
+      workflow = all.fetch(".github/workflows/prepare-merge.yml")
+      workflow.fetch("jobs").fetch("exact-abi-prepare-gate")
+        .fetch("permissions")["contents"] = "write"
+    },
+    "exact route inherited toolchain permission" => lambda { |all|
+      workflow = all.fetch(".github/workflows/staging-build.yml")
+      workflow.fetch("jobs").fetch("toolchain-cache").delete("permissions")
+    },
+    "exact route persistent toolchain credential" => lambda { |all|
+      workflow = all.fetch(".github/workflows/prepare-merge.yml")
+      checkout = workflow.fetch("jobs").fetch("toolchain-cache")
+        .fetch("steps").find do |step|
+          step["uses"] == NATIVE_COMPATIBILITY_CHECKOUT_ACTION
+        end
+      checkout.fetch("with")["persist-credentials"] = true
+    },
+    "exact route inherited aggregate permission" => lambda { |all|
+      workflow = all.fetch(".github/workflows/staging-build.yml")
+      workflow.fetch("jobs").fetch("homebrew-main-shell-prerequisites")
+        .delete("permissions")
+    },
+    "exact route write-capable aggregate" => lambda { |all|
+      workflow = all.fetch(".github/workflows/staging-build.yml")
+      workflow.fetch("jobs").fetch("homebrew-main-shell-gate")
+        .fetch("permissions")["statuses"] = "write"
+    },
+    "redundant Homebrew shell proof job" => lambda { |all|
+      workflow = all.fetch(".github/workflows/staging-build.yml")
+      workflow.fetch("jobs")["homebrew-main-shell-proof"] = {
+        "uses" => "./.github/workflows/homebrew-main-shell-ci.yml",
+      }
+    },
+    "exact route staging prepared-product validation" => lambda { |all|
+      workflow = all.fetch(".github/workflows/staging-build.yml")
+      step = workflow.fetch("jobs").fetch("test-gate-validation")
+        .fetch("steps").find do |candidate|
+          candidate["name"] == "Test binary materialization flow"
+        end
+      step["if"] = "env.BINARY_MATERIALIZATION_CHANGED == 'true'"
+    },
+    "exact route merge prepared-product validation" => lambda { |all|
+      workflow = all.fetch(".github/workflows/prepare-merge.yml")
+      workflow.fetch("jobs").fetch("test-gate-validation")
+        .fetch("env").delete("EXACT_ABI_STAGING_APPLICABLE")
+    },
+    "Automattic GHCR package destination" => lambda { |all|
+      workflow = all.fetch(".github/workflows/staging-build.yml")
+      job = workflow.fetch("jobs").fetch("exact-abi-source-test-prepare")
+      job.fetch("steps") << {
+        "run" => "oras push ghcr.io/Automattic/kandelo/unsafe:latest",
+      }
+    },
+  }.each do |label, mutation|
+    expect_rejection(label) do
+      mutated = deep_copy(workflows)
+      mutation.call(mutated)
+      check_exact_abi_route(mutated)
+    end
   end
 end
 
@@ -10734,11 +11227,13 @@ begin
   first_publication = load_workflow(FIRST_PUBLICATION_PATH)
   prefix_first_child = load_workflow(PREFIX_FIRST_CHILD_PATH)
   self_test_privileged_recipe_host_runtime(all_workflows)
+  self_test_exact_abi_route(all_workflows)
   self_test(
     publisher, native_compatibility, maintenance, first_publication,
     prefix_first_child
   )
   check_privileged_recipe_host_runtime(all_workflows)
+  check_exact_abi_route(all_workflows)
   check_publisher(publisher)
   check_native_compatibility_workflow(native_compatibility)
   check_closed_selection_workflow(closed_selection)

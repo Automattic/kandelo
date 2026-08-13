@@ -80,8 +80,14 @@ assert_job_needs() {
   # early-exiting grep can SIGPIPE awk under pipefail on larger jobs.
   block=$(job_block "$workflow" "$job")
   needs=$(grep -m1 '^    needs:' <<<"$block")
-  printf '%s\n' "$needs" | tr '[],' '   ' | grep -qw "$dependency" || \
-    fail "$job must depend on $dependency; got $needs"
+  if printf '%s\n' "$needs" | tr '[],' '   ' | grep -qw "$dependency"; then
+    return
+  fi
+  if [ "$needs" = "    needs:" ] &&
+     grep -Fxq "      - $dependency" <<<"$block"; then
+    return
+  fi
+  fail "$job must depend on $dependency; got $needs"
 }
 
 assert_effective_job_permission() {
@@ -131,6 +137,96 @@ assert_job_needs "$PREPARE" promote-staging preflight
 assert_job_needs "$PREPARE" lib-matrix-build preflight
 assert_job_needs "$PREPARE" matrix-build preflight
 assert_job_needs "$PREPARE" merge-gate-post test-gate
+
+# ABI-only PRs must stop rebuilding the legacy package registry once the
+# protected activation selects the exact route. These assertions intentionally
+# inspect both workflows: PR-head evidence and synthesized-merge evidence must
+# use the same source-only workspace and neither may fall back to a candidate
+# release when exact evidence is absent.
+for workflow in "$STAGING_WORKFLOW" "$PREPARE"; do
+  workflow_name="$(basename "$workflow")"
+  change_scope_job="$(job_block "$workflow" change-scope)"
+  grep -Fq 'path: abi-staging-authority' <<<"$change_scope_job" ||
+    fail "$workflow_name change scope lacks the protected authority checkout"
+  grep -Fq 'classify-exact-abi-staging.sh' <<<"$change_scope_job" ||
+    fail "$workflow_name does not derive the protected exact ABI route"
+  grep -Fq 'exact_abi_staging_applicable:' <<<"$change_scope_job" ||
+    fail "$workflow_name does not export the exact ABI route"
+
+  for exact_job in exact-abi-source-test-prepare \
+    exact-abi-source-test-suite; do
+    block="$(job_block "$workflow" "$exact_job")"
+    [ -n "$block" ] || fail "$workflow_name lacks $exact_job"
+    grep -Fq "needs.change-scope.outputs.exact_abi_staging_applicable == 'true'" \
+      <<<"$block" || fail "$workflow_name $exact_job is not exact-route-only"
+    if grep -Eq 'Materialize binaries|(^|[^-])binaries/|candidate|staging release' <<<"$block"; then
+      fail "$workflow_name $exact_job can consume legacy candidate/package material"
+    fi
+  done
+
+  exact_suite="$(job_block "$workflow" exact-abi-source-test-suite)"
+  for exact_cell in \
+    'vitest exact-abi-source' \
+    'libc functional-regression' \
+    'libc math' \
+    'posix all' \
+    'sortix include' \
+    'sortix basic' \
+    'sortix runtime'; do
+    grep -Fq "$exact_cell" <<<"$exact_suite" ||
+      fail "$workflow_name exact suite omits $exact_cell"
+  done
+
+  for legacy_job in preflight package-staging-not-required \
+    staging-shell-snapshot promote-staging lib-matrix-build matrix-build \
+    repair-staging-index candidate-snapshot test-gate-prepare test-suite \
+    test-gate homebrew-main-shell-proof f2-status merge-gate-post-noop \
+    merge-gate-post-runtime-only merge-gate-post; do
+    block="$(job_block "$workflow" "$legacy_job")"
+    [ -z "$block" ] && continue
+    grep -Fq "needs.change-scope.outputs.exact_abi_staging_applicable != 'true'" \
+      <<<"$block" || fail "$workflow_name $legacy_job can run on the exact route"
+  done
+done
+
+staging_exact_gate="$(job_block "$STAGING_WORKFLOW" exact-abi-test-gate)"
+[ -n "$staging_exact_gate" ] || fail "staging-build lacks exact-abi-test-gate"
+prepare_exact_gate="$(job_block "$PREPARE" exact-abi-prepare-gate)"
+[ -n "$prepare_exact_gate" ] || fail "prepare-merge lacks exact-abi-prepare-gate"
+grep -Fq '    permissions: {}' <<<"$staging_exact_gate" ||
+  fail "staging-build exact ABI gate may inherit mutation authority"
+grep -Fq '    permissions: {}' <<<"$prepare_exact_gate" ||
+  fail "prepare-merge exact ABI gate may inherit mutation authority"
+assert_job_needs "$STAGING_WORKFLOW" exact-abi-test-gate test-gate-validation
+assert_job_needs "$STAGING_WORKFLOW" exact-abi-test-gate test-suite-early
+assert_job_needs "$PREPARE" exact-abi-prepare-gate gate
+assert_job_needs "$PREPARE" exact-abi-prepare-gate test-gate-validation
+assert_job_needs "$PREPARE" exact-abi-prepare-gate test-suite-early
+
+package_noop_job="$(job_block "$STAGING_WORKFLOW" package-staging-not-required)"
+grep -Fq "needs.change-scope.outputs.exact_abi_staging_applicable != 'true'" \
+  <<<"$package_noop_job" || fail "exact ABI staging can post the legacy no-op status"
+shell_proof_job="$(job_block "$STAGING_WORKFLOW" homebrew-main-shell-proof)"
+[ -z "$shell_proof_job" ] ||
+  fail "staging-build resurrected the retired legacy shell proof"
+if grep -Fq 'uses: ./.github/workflows/homebrew-main-shell-ci.yml' \
+  "$STAGING_WORKFLOW"; then
+  fail "staging-build can invoke the retired legacy shell workflow"
+fi
+assert_job_needs "$STAGING_WORKFLOW" homebrew-main-shell-gate exact-abi-test-gate
+
+for staging_lookup_step in \
+  'Checkout workflow helpers' \
+  'Inspect staging-build on PR HEAD'; do
+  grep -Fq "needs.change-scope.outputs.exact_abi_staging_applicable != 'true'" \
+    <<<"$(step_block "$PREPARE" "$staging_lookup_step")" ||
+    fail "prepare-merge $staging_lookup_step can read legacy staging on the exact route"
+done
+
+if grep -Fq 'ghcr.io/Automattic/' "$STAGING_WORKFLOW" ||
+   grep -Fq 'ghcr.io/Automattic/' "$PREPARE"; then
+  fail "exact ABI workflows may not publish into an Automattic GHCR namespace"
+fi
 
 [[ -f $ABI_STAGING_MERGE_GATE ]] ||
   fail "protected exact-head ABI staging merge-evidence workflow is absent"
@@ -379,6 +475,110 @@ full_rerun_attempt=$(capture_candidate_attempt 2)
 
 count_fixture=$(mktemp -d)
 trap 'rm -rf "$count_fixture"' EXIT
+
+# The route is introduced one commit before it can exist in a protected base.
+# That bootstrap run must preserve the legacy result; candidate code may never
+# infer or enable the exact route when the protected classifier is absent.
+for workflow in "$STAGING_WORKFLOW" "$PREPARE"; do
+  route_fixture="$count_fixture/$(basename "$workflow").route"
+  authority_fixture="$route_fixture/authority"
+  exact_head_fixture="$route_fixture/exact-head"
+  route_output="$route_fixture/github-output"
+  mkdir -p "$authority_fixture/.github/scripts" "$exact_head_fixture"
+  : >"$route_output"
+  route_step="$(step_run_block \
+    "$workflow" "Derive protected exact ABI staging route")"
+  if ! AUTHORITY_ROOT="$authority_fixture" \
+    EXACT_HEAD_ROOT="$exact_head_fixture" \
+    BASE_SHA=0000000000000000000000000000000000000000 \
+    HEAD_SHA=1111111111111111111111111111111111111111 \
+    RAW_PACKAGE_STAGING_REQUIRED=true \
+    GITHUB_OUTPUT="$route_output" \
+    bash -c "$route_step"; then
+    fail "$(basename "$workflow") cannot bootstrap before its protected classifier lands"
+  fi
+  grep -Fxq 'exact_abi_staging_applicable=false' "$route_output" ||
+    fail "$(basename "$workflow") bootstrap selected the exact route"
+  grep -Fxq 'legacy_package_staging_required=true' "$route_output" ||
+    fail "$(basename "$workflow") bootstrap dropped legacy staging"
+  grep -Fxq \
+    'exact_abi_staging_reason=protected-classifier-unavailable' \
+    "$route_output" ||
+    fail "$(basename "$workflow") bootstrap reason is not explicit"
+
+  rmdir "$authority_fixture/.github/scripts"
+  : >"$route_output"
+  if AUTHORITY_ROOT="$authority_fixture" \
+    EXACT_HEAD_ROOT="$exact_head_fixture" \
+    BASE_SHA=0000000000000000000000000000000000000000 \
+    HEAD_SHA=1111111111111111111111111111111111111111 \
+    RAW_PACKAGE_STAGING_REQUIRED=true \
+    GITHUB_OUTPUT="$route_output" \
+    bash -c "$route_step"; then
+    fail "$(basename "$workflow") accepted a missing protected classifier ancestor"
+  fi
+  [ ! -s "$route_output" ] ||
+    fail "$(basename "$workflow") wrote outputs for a missing classifier ancestor"
+
+  mkdir -p "$authority_fixture/.github/scripts"
+  failing_classifier="$authority_fixture/.github/scripts/classify-exact-abi-staging.sh"
+  cat >"$failing_classifier" <<'SH'
+#!/usr/bin/env bash
+exit 17
+SH
+  chmod +x "$failing_classifier"
+  : >"$route_output"
+  if AUTHORITY_ROOT="$authority_fixture" \
+    EXACT_HEAD_ROOT="$exact_head_fixture" \
+    BASE_SHA=0000000000000000000000000000000000000000 \
+    HEAD_SHA=1111111111111111111111111111111111111111 \
+    RAW_PACKAGE_STAGING_REQUIRED=true \
+    GITHUB_OUTPUT="$route_output" \
+    bash -c "$route_step"; then
+    fail "$(basename "$workflow") ignored a protected classifier failure"
+  fi
+  [ ! -s "$route_output" ] ||
+    fail "$(basename "$workflow") wrote outputs after classifier failure"
+  rm "$failing_classifier"
+
+  fake_classifier="$route_fixture/candidate-classifier"
+  cat >"$fake_classifier" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fake_classifier"
+  ln -s "$fake_classifier" \
+    "$authority_fixture/.github/scripts/classify-exact-abi-staging.sh"
+  : >"$route_output"
+  if AUTHORITY_ROOT="$authority_fixture" \
+    EXACT_HEAD_ROOT="$exact_head_fixture" \
+    BASE_SHA=0000000000000000000000000000000000000000 \
+    HEAD_SHA=1111111111111111111111111111111111111111 \
+    RAW_PACKAGE_STAGING_REQUIRED=true \
+    GITHUB_OUTPUT="$route_output" \
+    bash -c "$route_step"; then
+    fail "$(basename "$workflow") accepted a symlinked protected classifier"
+  fi
+  [ ! -s "$route_output" ] ||
+    fail "$(basename "$workflow") wrote outputs for a symlinked classifier"
+
+  rm "$authority_fixture/.github/scripts/classify-exact-abi-staging.sh"
+  rmdir "$authority_fixture/.github/scripts"
+  ancestor_target="$route_fixture/linked-scripts"
+  mkdir -p "$ancestor_target"
+  cp "$fake_classifier" "$ancestor_target/classify-exact-abi-staging.sh"
+  ln -s "$ancestor_target" "$authority_fixture/.github/scripts"
+  if AUTHORITY_ROOT="$authority_fixture" \
+    EXACT_HEAD_ROOT="$exact_head_fixture" \
+    BASE_SHA=0000000000000000000000000000000000000000 \
+    HEAD_SHA=1111111111111111111111111111111111111111 \
+    RAW_PACKAGE_STAGING_REQUIRED=true \
+    GITHUB_OUTPUT="$route_output" \
+    bash -c "$route_step"; then
+    fail "$(basename "$workflow") accepted a symlinked classifier ancestor"
+  fi
+done
+
 git init --quiet --initial-branch=main "$count_fixture"
 git -C "$count_fixture" config user.name fixture
 git -C "$count_fixture" config user.email fixture@example.com
