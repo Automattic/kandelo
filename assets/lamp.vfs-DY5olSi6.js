@@ -1,0 +1,1 @@
+var a="/kandelo/assets/lamp.vfs-DYPVA_ev.zst";export{a as default};

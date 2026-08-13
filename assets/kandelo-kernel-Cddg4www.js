@@ -1,0 +1,1 @@
+var s="/kandelo/assets/rootfs-BbcPuTLt.vfs",a="/kandelo/assets/kandelo-kernel-CxcWONSd.wasm";export{s as n,a as t};

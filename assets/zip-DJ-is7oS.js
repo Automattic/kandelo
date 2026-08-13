@@ -1,0 +1,79 @@
+import { n as e, r as t } from "./browser-D__Im-ft.js";
+const r = 67324752, n = new TextDecoder("utf-8", {
+	fatal: !0,
+	ignoreBOM: !0
+}), o = new TextEncoder();
+function i(e) {
+	const t = new DataView(e.buffer, e.byteOffset, e.byteLength), r = function(e) {
+		const t = new DataView(e.buffer, e.byteOffset, e.byteLength), r = Math.max(0, e.length - 65557);
+		for (let n = e.length - 22; n >= r; n--) if (101010256 === t.getUint32(n, !0)) return n;
+		throw new Error("Zip EOCD record not found");
+	}(e), i = t.getUint16(r + 10, !0), a = [];
+	let f = t.getUint32(r + 16, !0);
+	for (let c = 0; c < i; c++) {
+		if (33639248 !== t.getUint32(f, !0)) throw new Error(`Invalid central directory entry signature at offset ${f}`);
+		const r = t.getUint16(f + 4, !0), i = t.getUint16(f + 10, !0), c = t.getUint32(f + 20, !0), d = t.getUint32(f + 24, !0), m = t.getUint16(f + 28, !0), h = t.getUint16(f + 30, !0), b = t.getUint16(f + 32, !0), l = t.getUint32(f + 38, !0), w = t.getUint32(f + 42, !0), u = new Uint8Array(e.subarray(f + 46, f + 46 + m));
+		let g;
+		try {
+			g = n.decode(u);
+		} catch {
+			throw new Error(`Invalid UTF-8 in ZIP member name at central directory offset ${f}`);
+		}
+		if (!s(u, o.encode(g))) throw new Error(`ZIP member name at central directory offset ${f} cannot be preserved byte-for-byte`);
+		const y = r >> 8;
+		let p;
+		p = 3 === y ? l >> 16 & 65535 : g.startsWith("bin/") || g.startsWith("sbin/") || g.includes("/bin/") || g.includes("/sbin/") ? 493 : 420;
+		const U = g.endsWith("/"), $ = 3 === y && 40960 == (61440 & p);
+		a.push({
+			fileName: g,
+			fileNameBytes: u,
+			compressedSize: c,
+			uncompressedSize: d,
+			compressionMethod: i,
+			localHeaderOffset: w,
+			mode: p,
+			isDirectory: U,
+			isSymlink: $,
+			externalAttrs: l,
+			creatorOS: y
+		}), f += 46 + m + h + b;
+	}
+	return a;
+}
+function s(e, t) {
+	if (e.byteLength !== t.byteLength) return !1;
+	for (let r = 0; r < e.byteLength; r++) if (e[r] !== t[r]) return !1;
+	return !0;
+}
+function a(e, n) {
+	const o = new DataView(e.buffer, e.byteOffset, e.byteLength), i = n.localHeaderOffset;
+	if (o.getUint32(i, !0) !== r) throw new Error(`Invalid local file header signature at offset ${i}`);
+	const s = i + 30 + o.getUint16(i + 26, !0) + o.getUint16(i + 28, !0), a = e.subarray(s, s + n.compressedSize);
+	if (0 === n.compressionMethod) return new Uint8Array(a);
+	if (8 === n.compressionMethod) return t(a);
+	throw new Error(`Unsupported compression method: ${n.compressionMethod}`);
+}
+function f(t, n, o) {
+	if (!Number.isSafeInteger(o) || o < 0) throw new Error("Invalid bounded ZIP member size");
+	if (n.uncompressedSize !== o) throw new Error(`ZIP member ${n.fileName} declares ${n.uncompressedSize} bytes, expected ${o}`);
+	const i = function(e, t) {
+		const n = new DataView(e.buffer, e.byteOffset, e.byteLength), o = t.localHeaderOffset;
+		if (o < 0 || o > e.byteLength - 30 || n.getUint32(o, !0) !== r) throw new Error(`Invalid local file header signature at offset ${o}`);
+		const i = n.getUint16(o + 8, !0), a = n.getUint16(o + 26, !0), f = n.getUint16(o + 28, !0), c = o + 30, d = c + a + f, m = d + t.compressedSize;
+		if (i !== t.compressionMethod || d < c || m < d || m > e.byteLength || !s(e.subarray(c, c + a), t.fileNameBytes)) throw new Error(`ZIP member ${t.fileName} has inconsistent local metadata`);
+		return e.subarray(d, m);
+	}(t, n);
+	if (0 === n.compressionMethod) {
+		if (i.byteLength !== o) throw new Error(`Stored ZIP member ${n.fileName} has an invalid size`);
+		return new Uint8Array(i);
+	}
+	if (8 !== n.compressionMethod) throw new Error(`Unsupported compression method: ${n.compressionMethod}`);
+	const a = new Uint8Array(o);
+	let f = 0;
+	if (new e((e) => {
+		if (e.byteLength > o - f) throw new Error(`ZIP member ${n.fileName} expands beyond ${o} bytes`);
+		a.set(e, f), f += e.byteLength;
+	}).push(i, !0), f !== o) throw new Error(`ZIP member ${n.fileName} expanded ${f} bytes, expected ${o}`);
+	return a;
+}
+export { a as extractZipEntry, f as extractZipEntryBounded, i as parseZipCentralDirectory };
