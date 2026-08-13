@@ -89,10 +89,15 @@ validation and a deterministic local transition miniature. The protected
 request workflow is owned by
 `.github/workflows/abi-staging-request-feed.yml`; its source policy and
 activation are owned by `abi/staging/request-policy.toml` and
-`abi/staging/request-feed-activation.toml`. Active mode publishes an exact,
-append-only, non-endorsing request Release asset for protected tap-side
-reconciliation. The companion tap workflow remains observe-only and
-read-only.
+`abi/staging/request-feed-activation.toml`. Active mode publishes each exact,
+non-endorsing request in its own content-addressed prerelease for protected
+tap-side reconciliation. The publisher uploads only while the prerelease is a
+draft, then makes it public and requires GitHub immutable-release protection
+plus an anonymous byte-for-byte readback before reporting success. Historical
+requests remain separate immutable records; a later head or policy creates a
+new prerelease instead of appending to an existing public release. The
+companion tap workflow remains read-only until its separately reviewed
+activation changes.
 
 Candidate execution and publication, enforced GitHub Check updates,
 promotion, protected ABI-history mutation, and production Pages deployment

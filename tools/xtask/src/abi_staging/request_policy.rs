@@ -292,15 +292,10 @@ fn validate_policy(policy: &RequestPolicyV1) -> Result<(), String> {
     if !policy.automatic_same_repository {
         return Err("request policy must require automatic same-repository issuance".to_string());
     }
-    if policy.request_release_tag_prefix.is_empty()
-        || policy.request_release_tag_prefix.len() > 128
-        || !policy.request_release_tag_prefix.bytes().all(|byte| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || matches!(byte, b'.' | b'_' | b'-')
-        })
-    {
-        return Err("request release tag prefix is not a bounded stable prefix".to_string());
+    if policy.request_release_tag_prefix != "abi-staging-pr-" {
+        return Err(
+            "request release tag prefix must use the canonical ABI staging namespace".to_string(),
+        );
     }
     if policy.request_asset_max_bytes == 0
         || policy.request_asset_max_bytes > MAX_REQUEST_ASSET_BYTES
