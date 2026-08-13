@@ -112,6 +112,11 @@ jobs:
           path: abi-staging-authority
           fetch-depth: 1
 
+      # WHY: the protected classifier enters its own dev shell, so its build
+      # tools must come from the same protected checkout rather than PR code.
+      - name: Set up protected exact ABI build tools
+        uses: ./abi-staging-authority/.github/actions/setup-nix
+
       - name: Derive protected exact ABI staging route
         id: exact-abi
         env:
