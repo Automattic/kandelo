@@ -1431,15 +1431,31 @@ for workflow in \
         /^            kernel_only: / {
             kernel_only = $0
             sub(/^            kernel_only: /, "", kernel_only)
-            print suite ":" kernel_only
+        }
+        /^            submodules: / {
+            submodules = $0
+            sub(/^            submodules: /, "", submodules)
+            gsub(/^\047|\047$/, "", submodules)
+            print suite ":" kernel_only ":" submodules
         }
     ')
-    expected_early_rows=$'cargo-workspace:true\ncargo-xtask:false'
+    expected_early_rows=$'cargo-workspace:true:\ncargo-xtask:false:libc/musl'
     if [ "$early_rows" != "$expected_early_rows" ]; then
         echo "$(basename "$workflow"): unexpected early Cargo suite matrix:" >&2
         printf '%s\n' "$early_rows" >&2
         exit 1
     fi
+    early_block="$TMP_DIR/$(basename "$workflow").early-cargo"
+    sed -n '/^  test-suite-early:/,/^  exact-abi-source-test-prepare:/p' \
+        "$workflow" > "$early_block"
+    grep -Fq '      - name: Fetch early suite submodule' "$early_block" || {
+        echo "$(basename "$workflow"): early Cargo suites do not fetch declared submodules" >&2
+        exit 1
+    }
+    grep -Fq '          submodules: ${{ matrix.submodules }}' "$early_block" || {
+        echo "$(basename "$workflow"): early Cargo submodule fetch ignores the matrix" >&2
+        exit 1
+    }
 
     case "$(basename "$workflow")" in
         staging-build.yml)
