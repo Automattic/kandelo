@@ -10,11 +10,12 @@ SOURCE_TREE=""
 TARGET_ABI=""
 SNAPSHOT_SHA256=""
 BUILD_POLICY_SHA256=""
+BINARY_CACHE_ROOT=""
 OUT=""
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/abi-staging-prepare-runtime.sh --source-root <dir> --source-repository <owner/repo> --source-commit <sha> --source-tree <sha> --target-abi <N> --snapshot-sha256 <sha256> --build-policy-sha256 <sha256> --out <dir>
+usage: scripts/abi-staging-prepare-runtime.sh --source-root <dir> --source-repository <owner/repo> --source-commit <sha> --source-tree <sha> --target-abi <N> --snapshot-sha256 <sha256> --build-policy-sha256 <sha256> --binary-cache-root <dir> --out <dir>
 EOF
 }
 
@@ -27,6 +28,7 @@ while [ "$#" -gt 0 ]; do
     --target-abi) TARGET_ABI="${2:-}"; shift 2 ;;
     --snapshot-sha256) SNAPSHOT_SHA256="${2:-}"; shift 2 ;;
     --build-policy-sha256) BUILD_POLICY_SHA256="${2:-}"; shift 2 ;;
+    --binary-cache-root) BINARY_CACHE_ROOT="${2:-}"; shift 2 ;;
     --out) OUT="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *)
@@ -38,7 +40,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 for required in SOURCE_ROOT SOURCE_REPOSITORY SOURCE_COMMIT SOURCE_TREE \
-  TARGET_ABI SNAPSHOT_SHA256 BUILD_POLICY_SHA256 OUT; do
+  TARGET_ABI SNAPSHOT_SHA256 BUILD_POLICY_SHA256 BINARY_CACHE_ROOT OUT; do
   if [ -z "${!required}" ]; then
     echo "abi-staging-prepare-runtime.sh: --${required,,} is required" >&2
     exit 2
@@ -83,6 +85,33 @@ if [ ! -d "$SOURCE_ROOT" ] || [ -L "$SOURCE_ROOT" ]; then
   exit 2
 fi
 SOURCE_ROOT="$(cd "$SOURCE_ROOT" && pwd -P)"
+BINARY_CACHE_ROOT="$(python3 - "$BINARY_CACHE_ROOT" <<'PY'
+from pathlib import Path
+import stat
+import sys
+path = Path(sys.argv[1])
+if not path.is_absolute():
+    raise SystemExit("binary cache root must be absolute")
+current = Path(path.anchor)
+for component in path.parts[1:]:
+    current /= component
+    try:
+        mode = current.lstat().st_mode
+    except FileNotFoundError:
+        raise SystemExit("binary cache root must be a real directory")
+    if stat.S_ISLNK(mode):
+        raise SystemExit("binary cache root must be a real directory")
+if not stat.S_ISDIR(path.lstat().st_mode):
+    raise SystemExit("binary cache root must be a real directory")
+print(path.resolve(strict=True))
+PY
+)"
+case "$BINARY_CACHE_ROOT" in
+  "$SOURCE_ROOT"|"$SOURCE_ROOT"/*)
+    echo "abi-staging-prepare-runtime.sh: binary cache root must be outside the exact source tree" >&2
+    exit 2
+    ;;
+esac
 ACTUAL_COMMIT="$(git -C "$SOURCE_ROOT" rev-parse --verify HEAD)"
 ACTUAL_TREE="$(git -C "$SOURCE_ROOT" rev-parse --verify HEAD^{tree})"
 if [ "$ACTUAL_COMMIT" != "$SOURCE_COMMIT" ] || [ "$ACTUAL_TREE" != "$SOURCE_TREE" ]; then
@@ -196,6 +225,7 @@ run_without_credentials() {
     "TMPDIR=$CANDIDATE_TMP"
     "PATH=$candidate_path"
     "KANDELO_DEV_SHELL_TOOL_PATH=$KANDELO_DEV_SHELL_TOOL_PATH"
+    "WASM_POSIX_BINARY_CACHE_ROOT=$BINARY_CACHE_ROOT"
   )
   local safe_name
   for safe_name in \
@@ -242,6 +272,7 @@ run_in_exact_source_dev_shell() {
         --keep TERM \
         --keep TZ \
         --keep USER \
+        --keep WASM_POSIX_BINARY_CACHE_ROOT \
         --accept-flake-config \
         --command "$@"
   )

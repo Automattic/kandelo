@@ -76,11 +76,17 @@ const DOWNLOAD_PROGRESS_INTERVAL: Duration = Duration::from_secs(5);
 const DOWNLOAD_PROGRESS_BYTES: u64 = 8 * 1024 * 1024;
 const HTTP_ARCHIVE_DOWNLOAD_DEADLINE: Duration = Duration::from_secs(60 * 60);
 
-/// HTTP archive fetch retry budget. GitHub Release asset downloads can
-/// intermittently return 5xx from the CDN; retrying the bounded fetch is
-/// cheaper than failing an otherwise-green matrix job.
+/// Small-document HTTP retry budget. Archive downloads have a longer,
+/// separately bounded policy below because one materialization can read many
+/// immutable GitHub Release assets and CDN failures can outlast this window.
 const HTTP_FETCH_ATTEMPTS: usize = 3;
 const HTTP_FETCH_BACKOFF: Duration = Duration::from_secs(5);
+
+/// HTTP archive retry policy. Eight attempts with capped exponential backoff
+/// wait at most 155 seconds, within the existing one-hour archive deadline.
+const HTTP_ARCHIVE_FETCH_ATTEMPTS: usize = 8;
+const HTTP_ARCHIVE_FETCH_INITIAL_BACKOFF: Duration = Duration::from_secs(5);
+const HTTP_ARCHIVE_FETCH_MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// Reasons a remote fetch can fail. Caller logs and falls through to
 /// source build — none of these is fatal to the resolver.
@@ -578,7 +584,7 @@ fn copy_file_url_to_temp(rest: &str, dest: &mut File) -> Result<(), FetchError> 
 }
 
 fn fetch_http_archive_to_file(url: &str, file: &mut File, label: &str) -> Result<(), FetchError> {
-    let attempts = HTTP_FETCH_ATTEMPTS.max(1);
+    let attempts = HTTP_ARCHIVE_FETCH_ATTEMPTS.max(1);
     let agent = build_http_agent();
     let started = Instant::now();
     let deadline = started
@@ -637,8 +643,16 @@ fn fetch_http_archive_to_file(url: &str, file: &mut File, label: &str) -> Result
                 if !last_error.as_ref().unwrap().retryable || attempt == attempts {
                     break;
                 }
-                warn_retry(label, url, last_error.as_ref().unwrap(), attempt, attempts);
-                sleep_for_retry(deadline);
+                let backoff = archive_retry_backoff(attempt);
+                warn_retry(
+                    label,
+                    url,
+                    last_error.as_ref().unwrap(),
+                    attempt,
+                    attempts,
+                    backoff,
+                );
+                sleep_for_retry(deadline, backoff);
                 continue;
             }
         };
@@ -660,8 +674,16 @@ fn fetch_http_archive_to_file(url: &str, file: &mut File, label: &str) -> Result
                 if !last_error.as_ref().unwrap().retryable || attempt == attempts {
                     break;
                 }
-                warn_retry(label, url, last_error.as_ref().unwrap(), attempt, attempts);
-                sleep_for_retry(deadline);
+                let backoff = archive_retry_backoff(attempt);
+                warn_retry(
+                    label,
+                    url,
+                    last_error.as_ref().unwrap(),
+                    attempt,
+                    attempts,
+                    backoff,
+                );
+                sleep_for_retry(deadline, backoff);
             }
         }
     }
@@ -1009,22 +1031,33 @@ fn warn_retry(
     err: &HttpArchiveAttemptError,
     attempt: usize,
     attempts: usize,
+    backoff: Duration,
 ) {
     eprintln!(
         "remote_fetch: WARN archive download for {label} from {url}: {} (attempt {attempt}/{attempts}); retrying in {}s",
         err.message,
-        HTTP_FETCH_BACKOFF.as_secs()
+        backoff.as_secs()
     );
 }
 
-fn sleep_for_retry(deadline: Instant) {
-    if HTTP_FETCH_BACKOFF.is_zero() {
+fn archive_retry_backoff(attempt: usize) -> Duration {
+    let exponent = u32::try_from(attempt.saturating_sub(1).min(31)).unwrap_or(31);
+    HTTP_ARCHIVE_FETCH_INITIAL_BACKOFF
+        .saturating_mul(1u32 << exponent)
+        .min(HTTP_ARCHIVE_FETCH_MAX_BACKOFF)
+}
+
+fn sleep_for_retry(deadline: Instant, backoff: Duration) {
+    // Unit tests exercise the real retry loop and response handling without
+    // spending production backoff time between local loopback responses.
+    let backoff = if cfg!(test) { Duration::ZERO } else { backoff };
+    if backoff.is_zero() {
         return;
     }
     let remaining = deadline
         .checked_duration_since(Instant::now())
         .unwrap_or(Duration::ZERO);
-    let sleep_for = HTTP_FETCH_BACKOFF.min(remaining);
+    let sleep_for = backoff.min(remaining);
     if !sleep_for.is_zero() {
         std::thread::sleep(sleep_for);
     }
@@ -1538,6 +1571,37 @@ commit = "2222222222222222222222222222222222222222"
         let dir = tempdir("archive-http-stream");
         let archive = fetch_archive_to_temp_file(&url, &sha, &dir, "streamed-http").unwrap();
         assert_eq!(fs::read(archive.path()).unwrap(), expected);
+    }
+
+    #[test]
+    fn fetch_archive_recovers_after_four_transient_release_cdn_failures() {
+        let payload = b"release archive bytes".repeat(4096);
+        let expected = payload.clone();
+        let served = payload.clone();
+        let sha = sha256_hex(&payload);
+        let url = serve_http_handler(5, move |idx, _| {
+            if idx < 4 {
+                return TestHttpResponse::new(503)
+                    .header("Content-Length", "19")
+                    .body(b"service unavailable".to_vec());
+            }
+            TestHttpResponse::new(200)
+                .header("Content-Length", served.len().to_string())
+                .body(served.clone())
+        });
+
+        let dir = tempdir("archive-http-release-cdn-retry");
+        let archive = fetch_archive_to_temp_file(&url, &sha, &dir, "release-cdn").unwrap();
+        assert_eq!(fs::read(archive.path()).unwrap(), expected);
+    }
+
+    #[test]
+    fn archive_retry_backoff_expands_then_stays_bounded() {
+        let seconds = (1..HTTP_ARCHIVE_FETCH_ATTEMPTS)
+            .map(|attempt| archive_retry_backoff(attempt).as_secs())
+            .collect::<Vec<_>>();
+        assert_eq!(seconds, vec![5, 10, 20, 30, 30, 30, 30]);
+        assert_eq!(seconds.iter().sum::<u64>(), 155);
     }
 
     #[test]

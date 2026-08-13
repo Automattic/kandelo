@@ -693,10 +693,27 @@ fn build_candidate_formulae(
             candidate: CandidatePayloadV1 {
                 formula: candidate_formula(fixture, formula),
                 bottle_layer: candidate_artifact.clone(),
-                normalized_components: vec![NamedArtifactIdentityV1 {
-                    id: "source-capsule".to_string(),
-                    artifact: artifact_from_local(&source),
-                }],
+                normalized_components: vec![
+                    NamedArtifactIdentityV1 {
+                        id: "bottle-contract".to_string(),
+                        artifact: ArtifactIdentityV1 {
+                            sha256: fixture.transition.policy_sha256.clone(),
+                            bytes: fixture.transition.policy_sha256.len() as u64,
+                            immutable_reference: Some(format!(
+                                "fixture:bottle-contract@sha256:{}",
+                                fixture.transition.policy_sha256
+                            )),
+                        },
+                    },
+                    NamedArtifactIdentityV1 {
+                        id: "bottle-metadata".to_string(),
+                        artifact: candidate_artifact.clone(),
+                    },
+                    NamedArtifactIdentityV1 {
+                        id: "source-custody".to_string(),
+                        artifact: artifact_from_local(&source),
+                    },
+                ],
                 direct_dependency_layers: direct_dependencies,
                 source_custody_sha256: source.sha256.clone(),
                 producer: producer.clone(),

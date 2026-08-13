@@ -939,6 +939,7 @@ git -C "$TAP_ROOT" checkout -b abi-staging-bounded-request-discovery origin/main
 ### Task 7: Derive the Protected ABI CI Route
 
 **Files:**
+- Modify: `docs/superpowers/plans/2026-08-11-abi-bottle-staging-cutover.md`
 - Create: `.github/scripts/classify-exact-abi-staging.sh`
 - Create: `.github/scripts/test-classify-exact-abi-staging.sh`
 - Modify: `.github/actions/detect-change-scope/ci-scope-paths.sh`
@@ -953,7 +954,10 @@ git -C "$TAP_ROOT" checkout -b abi-staging-bounded-request-discovery origin/main
 - Modify: `scripts/ci-run-test-suite.sh`
 - Modify: `tests/scripts/ci-run-test-suite-groups.test.sh`
 - Modify: `scripts/test-homebrew-main-shell-closure.sh`
+- Modify: `abi/staging/request-policy.toml`
+- Modify: `abi/staging/request-policy.generated.json`
 - Modify: `tools/xtask/src/abi_staging/check_projection.rs`
+- Modify: `tools/xtask/src/abi_staging/mini_lifecycle.rs`
 - Modify: `tools/xtask/src/abi_staging/mod.rs`
 
 **Interfaces:**
@@ -968,7 +972,14 @@ git -C "$TAP_ROOT" checkout -b abi-staging-bounded-request-discovery origin/main
   public `package_staging_reason` output is the protected route reason when
   the exact route is selected and remains the existing scope reason otherwise.
 
-- [ ] **Step 1: Write the RED classifier fixture**
+- The one bootstrap PR that first introduces the classifier cannot find it in
+  its protected base. In that bounded case only, both workflows validate and
+  preserve the legacy staging boolean, emit exact applicability `false`, and
+  name `protected-classifier-unavailable` as the reason. A symlink or any
+  nonregular classifier is an error, and once the protected file exists no
+  classifier or activation failure may fall back to the legacy route.
+
+- [x] **Step 1: Write the RED classifier fixture**
 
   `test-classify-exact-abi-staging.sh` must create two temporary Git
   repositories: an immutable authority checkout and an exact-head checkout.
@@ -995,7 +1006,7 @@ git -C "$TAP_ROOT" checkout -b abi-staging-bounded-request-discovery origin/main
     authority, symlink activation, invalid boolean, or classifier failure =>
     command fails without outputs.
 
-- [ ] **Step 2: Run the classifier RED**
+- [x] **Step 2: Run the classifier RED**
 
   ```bash
   scripts/dev-shell.sh bash .github/scripts/test-classify-exact-abi-staging.sh
@@ -1003,7 +1014,7 @@ git -C "$TAP_ROOT" checkout -b abi-staging-bounded-request-discovery origin/main
 
   Expected: FAIL because the classifier script is absent.
 
-- [ ] **Step 3: Add a typed required-Check activation query**
+- [x] **Step 3: Add a typed required-Check activation query**
 
   Extend `xtask abi-staging check-projection` with:
 
@@ -1024,7 +1035,7 @@ git -C "$TAP_ROOT" checkout -b abi-staging-bounded-request-discovery origin/main
     abi_staging::check_projection
   ```
 
-- [ ] **Step 4: Implement the protected classifier**
+- [x] **Step 4: Implement the protected classifier**
 
   Parse only the named flags above. Validate both roots are absolute Git
   worktrees, `authority/HEAD` is clean, base/head are full lowercase SHAs, and
@@ -1067,7 +1078,7 @@ git -C "$TAP_ROOT" checkout -b abi-staging-bounded-request-discovery origin/main
 
   Write outputs atomically only after every validation succeeds.
 
-- [ ] **Step 5: Add the route to both change-scope jobs**
+- [x] **Step 5: Add the route to both change-scope jobs**
 
   In each workflow, keep the exact PR/synthetic checkout, add a second
   `actions/checkout` of the captured base SHA into `abi-staging-authority`, and
@@ -1099,7 +1110,7 @@ git -C "$TAP_ROOT" checkout -b abi-staging-bounded-request-discovery origin/main
 
   Export `exact_abi_staging_applicable` from both jobs.
 
-- [ ] **Step 6: Add workflow RED mutations before changing job routing**
+- [x] **Step 6: Add workflow RED mutations before changing job routing**
 
   Tests must reject:
 
@@ -1118,7 +1129,7 @@ git -C "$TAP_ROOT" checkout -b abi-staging-bounded-request-discovery origin/main
   Add both new classifier scripts to `ci_control_changed_files` and assert they
   set `test_gate_required` without setting `package_archive_changed`.
 
-- [ ] **Step 7: Split staging-build's exact ABI path from legacy preparation**
+- [x] **Step 7: Split staging-build's exact ABI path from legacy preparation**
 
   Keep `test-gate-validation`, `test-suite-early`, and `toolchain-cache`
   enabled for exact ABI staging. An exact ABI route forces both early Cargo
@@ -1204,7 +1215,7 @@ git -C "$TAP_ROOT" checkout -b abi-staging-bounded-request-discovery origin/main
   exact route and the wrapper requires `exact-abi-test-gate=success`; the
   protected `Kandelo PR Check` remains the product proof.
 
-- [ ] **Step 8: Split prepare-merge's exact ABI path from legacy candidates**
+- [x] **Step 8: Split prepare-merge's exact ABI path from legacy candidates**
 
   Keep synthesis, approval, current-base checks, required-check inspection,
   source validation, `toolchain-cache`, the forced early Cargo suites, and the
@@ -1229,7 +1240,7 @@ git -C "$TAP_ROOT" checkout -b abi-staging-bounded-request-discovery origin/main
   protected `abi-staging-merge-gate.yml` from Task 6 owns the exact
   `merge-gate` status.
 
-- [ ] **Step 9: Run all routing and workflow gates**
+- [x] **Step 9: Run all routing and workflow gates**
 
   ```bash
   scripts/dev-shell.sh bash .github/scripts/test-classify-exact-abi-staging.sh
@@ -1243,10 +1254,22 @@ git -C "$TAP_ROOT" checkout -b abi-staging-bounded-request-discovery origin/main
     .github/workflows/staging-build.yml \
     .github/workflows/prepare-merge.yml \
     .github/workflows/abi-staging-merge-gate.yml
+  host_target=$(scripts/dev-shell.sh rustc -vV | awk '/^host/ {print $2}')
+  scripts/dev-shell.sh cargo test -p xtask --target "$host_target" \
+    abi_staging::check_projection
+  scripts/dev-shell.sh cargo run -p xtask --target "$host_target" --quiet -- \
+    abi-staging evidence-definitions check \
+    --source abi/staging/evidence-definitions.toml \
+    --generated abi/staging/evidence-definitions.generated.json
+  scripts/dev-shell.sh cargo run -p xtask --target "$host_target" --quiet -- \
+    abi-staging request-policy check \
+    --source abi/staging/request-policy.toml \
+    --generated abi/staging/request-policy.generated.json
+  scripts/dev-shell.sh bash scripts/test-abi-staging-mini-lifecycle.sh
   git diff --check
   ```
 
-- [ ] **Step 10: Commit the legacy cutover**
+- [x] **Step 10: Commit the legacy cutover**
 
   This routing change cannot self-host while protected main still lacks the
   classifier and exact source-test lane. Its own PR therefore takes the final
@@ -1255,6 +1278,7 @@ git -C "$TAP_ROOT" checkout -b abi-staging-bounded-request-discovery origin/main
 
   ```bash
   git add \
+    docs/superpowers/plans/2026-08-11-abi-bottle-staging-cutover.md \
     .github/scripts/classify-exact-abi-staging.sh \
     .github/scripts/test-classify-exact-abi-staging.sh \
     .github/actions/detect-change-scope/ci-scope-paths.sh \
@@ -1269,7 +1293,10 @@ git -C "$TAP_ROOT" checkout -b abi-staging-bounded-request-discovery origin/main
     scripts/ci-run-test-suite.sh \
     tests/scripts/ci-run-test-suite-groups.test.sh \
     scripts/test-homebrew-main-shell-closure.sh \
+    abi/staging/request-policy.toml \
+    abi/staging/request-policy.generated.json \
     tools/xtask/src/abi_staging/check_projection.rs \
+    tools/xtask/src/abi_staging/mini_lifecycle.rs \
     tools/xtask/src/abi_staging/mod.rs
   git commit -m "[ABI] Route staged ABIs through candidate bottles"
   ```

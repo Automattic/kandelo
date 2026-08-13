@@ -5,6 +5,7 @@ use crate::abi_staging::consumer_registry::ApplicabilityV1;
 use crate::abi_staging::guard_registry::GuardCodeV1;
 use crate::abi_staging::product_manifest::VfsArchitectureV1;
 use crate::abi_staging::product_manifest::{atomic_write_regular, read_bounded_regular_file};
+use crate::abi_staging::request_feed::request_asset_url;
 use crate::abi_staging::records::{
     AbiStagingRecordV1, AbiStagingRequestV1, PromotionStateV1, RecordCommonV1, RetryNextActionV1,
     SubjectKindV1, TerminalOutcomeV1, WorkStateV1, request_is_current, validate_record,
@@ -279,10 +280,30 @@ pub fn parse_required_check_activation(
     Ok(activation.mode)
 }
 
+pub fn required_check_activation_mode(path: &Path) -> Result<&'static str, String> {
+    let mode = parse_required_check_activation(
+        path,
+        &read_bounded_regular_file(path, MAX_ACTIVATION_BYTES)?,
+    )?;
+    Ok(match mode {
+        RequiredCheckActivationV1::Observe => "observe",
+        RequiredCheckActivationV1::Enforce => "enforce",
+    })
+}
+
 pub fn run_cli(action: &str, args: &[String]) -> Result<(), String> {
+    if action == "activation-mode" {
+        if args.len() != 2 || args[0] != "--activation" {
+            return Err(
+                "check-projection activation-mode requires --activation <path>".to_string(),
+            );
+        }
+        println!("{}", required_check_activation_mode(Path::new(&args[1]))?);
+        return Ok(());
+    }
     if action != "project" {
         return Err(format!(
-            "unknown check-projection action {action:?}; expected project"
+            "unknown check-projection action {action:?}; expected project or activation-mode"
         ));
     }
     if args.len() != 6 || args[0] != "--input" || args[2] != "--activation" || args[4] != "--out" {
@@ -573,6 +594,7 @@ fn validate_input(input: &CurrentCheckProjectionInputV1) -> Result<(), String> {
         validate_request_reference(
             &request_source.immutable_reference,
             &input.context.repository,
+            input.context.pull_request_number,
             &input.context.exact_head,
             &request_source.digest,
         )?;
@@ -1130,14 +1152,13 @@ fn validate_record_link(link: &RecordLinkV1) -> Result<(), String> {
 fn validate_request_reference(
     reference: &str,
     repository: &str,
+    pull_request: u64,
     head: &str,
     digest: &str,
 ) -> Result<(), String> {
-    let filename = format!("candidate-request-{head}-sha256-{digest}.json");
-    let prefix = format!("https://github.com/{repository}/releases/download/");
+    let expected = request_asset_url(repository, pull_request, head, digest);
     if reference.len() > MAX_REFERENCE_BYTES
-        || !reference.starts_with(&prefix)
-        || !reference.ends_with(&filename)
+        || reference != expected
         || reference.contains('?')
         || reference.contains('#')
         || reference
@@ -1565,7 +1586,20 @@ mod tests {
                     "bottle_contract_sha256": digest('5'),
                 },
                 "bottle_layer": candidate_layer,
-                "normalized_components": [],
+                "normalized_components": [
+                    {
+                        "id": "bottle-contract",
+                        "artifact": artifact('5'),
+                    },
+                    {
+                        "id": "bottle-metadata",
+                        "artifact": artifact('8'),
+                    },
+                    {
+                        "id": "source-custody",
+                        "artifact": artifact('6'),
+                    },
+                ],
                 "direct_dependency_layers": [],
                 "source_custody_sha256": digest('6'),
                 "producer": {
@@ -1710,7 +1744,7 @@ mod tests {
             request: Some(CurrentRequestProjectionV1 {
                 digest: request_digest.clone(),
                 immutable_reference: format!(
-                    "https://github.com/Automattic/kandelo/releases/download/abi-staging-pr-19/candidate-request-{HEAD}-sha256-{request_digest}.json"
+                    "https://github.com/Automattic/kandelo/releases/download/abi-staging-pr-19-sha256-{request_digest}/candidate-request-{HEAD}-sha256-{request_digest}.json"
                 ),
                 request,
             }),
@@ -2018,6 +2052,86 @@ mod tests {
             b"schema = 1\nkind = \"kandelo-abi-staging-required-check-activation\"\nmode = \"active\"\n",
         )
         .is_err());
+    }
+
+    #[test]
+    fn activation_mode_cli_is_closed_and_reports_the_exact_mode() {
+        let root = tempfile::tempdir().unwrap();
+        let activation_path = root.path().join("activation.toml");
+        for (mode, expected) in [("observe", "observe"), ("enforce", "enforce")] {
+            std::fs::write(
+                &activation_path,
+                format!(
+                    "schema = 1\nkind = \"kandelo-abi-staging-required-check-activation\"\nmode = \"{mode}\"\n"
+                ),
+            )
+            .unwrap();
+            assert_eq!(
+                required_check_activation_mode(&activation_path).unwrap(),
+                expected,
+            );
+            run_cli(
+                "activation-mode",
+                &[
+                    "--activation".to_string(),
+                    activation_path.display().to_string(),
+                ],
+            )
+            .unwrap();
+        }
+
+        std::fs::write(
+            &activation_path,
+            b"schema = 1\nkind = \"kandelo-abi-staging-required-check-activation\"\nmode = \"active\"\n",
+        )
+        .unwrap();
+        assert!(required_check_activation_mode(&activation_path).is_err());
+        std::fs::write(
+            &activation_path,
+            b"schema = 1\nkind = \"kandelo-abi-staging-required-check-activation\"\nmode = \"observe\"\nextra = true\n",
+        )
+        .unwrap();
+        assert!(required_check_activation_mode(&activation_path).is_err());
+        assert!(
+            run_cli(
+                "activation-mode",
+                &[
+                    "--source".to_string(),
+                    activation_path.display().to_string(),
+                ],
+            )
+            .is_err()
+        );
+        assert!(run_cli("unknown", &[]).is_err());
+        assert!(
+            run_cli(
+                "activation-mode",
+                &[
+                    "--activation".to_string(),
+                    activation_path.display().to_string(),
+                    "extra".to_string(),
+                ],
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn activation_mode_rejects_symlink_and_nonregular_inputs() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let activation_path = root.path().join("activation.toml");
+        std::fs::write(
+            &activation_path,
+            b"schema = 1\nkind = \"kandelo-abi-staging-required-check-activation\"\nmode = \"observe\"\n",
+        )
+        .unwrap();
+        let link_path = root.path().join("activation-link.toml");
+        symlink(&activation_path, &link_path).unwrap();
+        assert!(required_check_activation_mode(&link_path).is_err());
+        assert!(required_check_activation_mode(root.path()).is_err());
     }
 
     #[test]

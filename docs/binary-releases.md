@@ -1378,6 +1378,12 @@ For each declared arch in the package's `arches = [...]` (default
    - Direct form: uses the inline `url` + `sha256`.
 3. Fetches the archive into the content-addressed cache at
    `~/.cache/kandelo/...`.
+   Retryable archive transport failures use eight attempts with capped
+   exponential backoff, for at most 155 seconds of waiting within the existing
+   one-hour per-archive deadline. This longer archive-only window accommodates
+   transient GitHub Release content-delivery-network failures when one
+   materialization reads many immutable assets. Non-retryable protocol errors
+   and the validation failures below still fail immediately.
 4. Verifies `archive_sha256` against the file bytes.
 5. Verifies the embedded `manifest.toml`'s `[compatibility]` block:
    - `target_arch` must match the requested arch.

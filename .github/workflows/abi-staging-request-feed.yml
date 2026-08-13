@@ -176,6 +176,9 @@ jobs:
             actual_tree=$(git -C "$head_root" rev-parse 'HEAD^{tree}')
             [[ $actual_head == "$head" ]]
             env -u GH_TOKEN -u GITHUB_TOKEN git -C "$head_root" fetch --no-tags origin "$PROTECTED_SHA"
+            bash authority/scripts/fetch-exact-musl-gitlink.sh \
+              --source-root "$head_root" \
+              --commit "$head"
 
             target_abi=$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
               "$head_root/crates/shared/src/lib.rs")
@@ -185,25 +188,34 @@ jobs:
             check_log="$evidence/reports/$pr-check.log"
             set +e
             (
+              set -euo pipefail
               cd "$head_root"
               candidate_home="$evidence/candidate-homes/$pr"
               mkdir -p "$candidate_home/tmp"
               chmod 700 "$candidate_home" "$candidate_home/tmp"
               nix_bin=$(command -v nix)
               bash_bin=$(command -v bash)
-              env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_RUNTIME_TOKEN \
-                -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL \
-                env -i \
-                  HOME="$candidate_home" \
-                  TMPDIR="$candidate_home/tmp" \
-                  CI=true \
-                  LOGNAME=kandelo \
-                  USER=kandelo \
-                  KANDELO_NIX_BIN="$nix_bin" \
-                  PATH=/usr/bin:/bin \
-                  "$bash_bin" scripts/dev-shell.sh \
-                    env ABI_CHECK_BASE_REF="$PROTECTED_SHA" \
-                    bash scripts/check-abi-version.sh
+              candidate_env=(
+                env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_RUNTIME_TOKEN
+                -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL
+                env -i
+                HOME="$candidate_home"
+                TMPDIR="$candidate_home/tmp"
+                CI=true
+                LOGNAME=kandelo
+                USER=kandelo
+                KANDELO_NIX_BIN="$nix_bin"
+                PATH=/usr/bin:/bin
+              )
+              # The ABI snapshot build resolves both SDK architectures. A clean
+              # exact head has neither sysroot, so prepare both before checking.
+              "${candidate_env[@]}" "$bash_bin" scripts/dev-shell.sh \
+                bash scripts/build-musl.sh 2>&1 | tail -c 131072
+              "${candidate_env[@]}" "$bash_bin" scripts/dev-shell.sh \
+                bash scripts/build-musl.sh --arch wasm64posix 2>&1 | tail -c 131072
+              "${candidate_env[@]}" "$bash_bin" scripts/dev-shell.sh \
+                env ABI_CHECK_BASE_REF="$PROTECTED_SHA" \
+                bash scripts/check-abi-version.sh
             ) 2>&1 | head -c 1048576 >"$check_log"
             check_status=${PIPESTATUS[0]}
             set -e

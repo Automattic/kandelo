@@ -155,12 +155,36 @@ def check_workflow(workflow)
         classify_source.include?("env -u GH_TOKEN -u GITHUB_TOKEN") &&
         classify_source.include?("env -i") &&
         classify_source.include?('HOME="$candidate_home"') &&
+        classify_source.include?("authority/scripts/fetch-exact-musl-gitlink.sh") &&
+        classify_source.include?('--source-root "$head_root"') &&
+        classify_source.include?('--commit "$head"') &&
+        classify_source.include?("bash scripts/build-musl.sh") &&
+        classify_source.include?("bash scripts/build-musl.sh --arch wasm64posix") &&
+        classify_source.scan("tail -c 131072").length == 2 &&
         classify_source.include?('env ABI_CHECK_BASE_REF="$PROTECTED_SHA"') &&
         classify_source.include?("head -c 1048576") &&
         classify_source.include?("scripts/check-abi-version.sh") &&
         classify_source.include?("structural-report.json") &&
         classify_source.include?("HEAD^{tree}"),
         "classification does not bind and check each uncredentialed exact head")
+  wasm32_build = classify_source.index("bash scripts/build-musl.sh")
+  wasm64_build = classify_source.index("bash scripts/build-musl.sh --arch wasm64posix")
+  candidate_prefix = '"${candidate_env[@]}" "$bash_bin" scripts/dev-shell.sh'
+  fail_closed_sequence = <<~'SH'.strip
+    check_log="$evidence/reports/$pr-check.log"
+      set +e
+      (
+        set -euo pipefail
+        cd "$head_root"
+  SH
+  check(classify_source.include?(fail_closed_sequence) &&
+        classify_source.scan('"$bash_bin" scripts/dev-shell.sh').length == 3 &&
+        classify_source.scan(candidate_prefix).length == 3 &&
+        !classify_source.include?("git submodule") &&
+        classify_source.index("fetch-exact-musl-gitlink.sh") < wasm32_build &&
+        wasm32_build < wasm64_build &&
+        wasm64_build < classify_source.index("bash scripts/check-abi-version.sh"),
+        "classification does not prepare the exact sysroot in one fail-closed stripped environment")
   check(!classify_source.match?(/gh\s+(?:release|api\s+--method)/),
         "classification may not write through GitHub")
   check(!classify.fetch("env", {}).key?("GH_TOKEN"),
@@ -215,6 +239,7 @@ def check_workflow(workflow)
         publish_source.include?("request validate-feed-plan") &&
         publish_source.include?("request-feed-activation.toml") &&
         publish_source.include?("$mode == observe") &&
+        publish_source.include?("$mode == active") &&
         publish_source.include?("publish-abi-staging-request.sh") &&
         publish_source.include?("GH_TOKEN=\"$GITHUB_TOKEN\"") &&
         publish_source.include?("Public nonendorsed candidate request") &&
@@ -277,6 +302,61 @@ begin
     "missing inert revalidation" => lambda { |copy|
       step = copy.dig("jobs", "derive-request", "steps").find { |item| item["run"]&.include?("structural-report validate") }
       step["run"] = step.fetch("run").gsub("structural-report validate", "echo trust-report")
+    },
+    "missing classification musl materialization" => lambda { |copy|
+      step = copy.dig("jobs", "classify-exact-head", "steps").find do |item|
+        item["run"]&.include?("fetch-exact-musl-gitlink.sh")
+      end
+      step["run"] = step.fetch("run").gsub(
+        /^\s*bash authority\/scripts\/fetch-exact-musl-gitlink\.sh.*?^\s*--commit "\$head"\n/m,
+        ""
+      )
+    },
+    "missing classification sysroot build" => lambda { |copy|
+      step = copy.dig("jobs", "classify-exact-head", "steps").find do |item|
+        item["run"]&.include?("bash scripts/build-musl.sh")
+      end
+      step["run"] = step.fetch("run").gsub(
+        "bash scripts/build-musl.sh 2>&1",
+        "true # ABI sysroot build removed"
+      )
+    },
+    "missing classification wasm64 sysroot build" => lambda { |copy|
+      step = copy.dig("jobs", "classify-exact-head", "steps").find do |item|
+        item["run"]&.include?("bash scripts/build-musl.sh --arch wasm64posix")
+      end
+      step["run"] = step.fetch("run").gsub(
+        "bash scripts/build-musl.sh --arch wasm64posix",
+        "true # wasm64 ABI sysroot build removed"
+      )
+    },
+    "classification sysroot failure can continue" => lambda { |copy|
+      step = copy.dig("jobs", "classify-exact-head", "steps").find do |item|
+        item["run"]&.include?("candidate_env=(")
+      end
+      step["run"] = step.fetch("run").sub(
+        "  set +e\n  (\n    set -euo pipefail\n",
+        "  set +e\n  (\n"
+      )
+    },
+    "classification wasm32 build escapes stripped environment" => lambda { |copy|
+      step = copy.dig("jobs", "classify-exact-head", "steps").find do |item|
+        item["run"]&.include?("candidate_env=(")
+      end
+      step["run"] = step.fetch("run").sub(
+        '"${candidate_env[@]}" "$bash_bin" scripts/dev-shell.sh',
+        'env "$bash_bin" scripts/dev-shell.sh'
+      )
+    },
+    "classification ABI check escapes stripped environment" => lambda { |copy|
+      step = copy.dig("jobs", "classify-exact-head", "steps").find do |item|
+        item["run"]&.include?("candidate_env=(")
+      end
+      prefix = '"${candidate_env[@]}" "$bash_bin" scripts/dev-shell.sh'
+      source = step.fetch("run")
+      position = source.rindex(prefix)
+      step["run"] = source.dup
+      step["run"][position, prefix.length] = 'env "$bash_bin" scripts/dev-shell.sh'
     },
     "missing exact musl materialization" => lambda { |copy|
       step = copy.dig("jobs", "derive-request", "steps").find do |item|

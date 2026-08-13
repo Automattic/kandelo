@@ -720,14 +720,29 @@ expect_mutation_rejected \
 
 [ -f "$CANARY_WORKFLOW" ] ||
   fail "native Pages canary is absent: $CANARY_WORKFLOW_REL"
+canary_inputs_line="$(
+  grep -nF '      - name: Materialize exact current product inputs' \
+    "$CANARY_WORKFLOW" | cut -d: -f1
+)"
+canary_runtime_line="$(
+  grep -nF '      - name: Prepare exact uncredentialed runtime' \
+    "$CANARY_WORKFLOW" | cut -d: -f1
+)"
+[ -n "$canary_inputs_line" ] && [ -n "$canary_runtime_line" ] &&
+  [ "$canary_inputs_line" -lt "$canary_runtime_line" ] ||
+  fail "canary must materialize exact current inputs before runtime preparation"
 grep -Fq 'PLAYWRIGHT_BROWSERS_PATH="$playwright_browsers" npx playwright install' \
   "$CANARY_WORKFLOW" &&
   grep -Fq '"PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH" \' \
     "$CANARY_WORKFLOW" ||
   fail "canary must install and run Chromium from one explicit browser root"
 grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
-  "$CANARY_WORKFLOW" ||
+    "$CANARY_WORKFLOW" ||
   fail "canary must retain the isolated package cache inside dev-shell"
+workflow_step_block "$CANARY_WORKFLOW" \
+    "Prepare exact uncredentialed runtime" |
+  grep -Fq -- '--binary-cache-root "$WASM_POSIX_BINARY_CACHE_ROOT"' ||
+  fail "canary runtime must receive the exact isolated package cache root"
 grep -Fq '          package-manager-cache: false' "$CANARY_WORKFLOW" ||
   fail "canary dependency setup must not write durable caches"
 
@@ -785,6 +800,21 @@ expect_canary_mutation_rejected \
   "source-ref fallback" \
   "canary checkout must use the event source SHA" \
   's/(          persist-credentials: false\n)/$1          ref: main\n/'
+
+expect_canary_mutation_rejected \
+  "runtime before sealed product inputs" \
+  "canary must produce, select ready or hold, freshness-check, then retain one result" \
+  's#(      - name: Materialize exact current product inputs[\s\S]*?)(      - name: Prepare exact uncredentialed runtime[\s\S]*?)(      - name: Write the bounded production handoff)#$2$1$3#'
+
+expect_canary_mutation_rejected \
+  "runtime package cache argument omitted" \
+  "canary runtime must be an uncredentialed exact-current-source artifact" \
+  's/^                --binary-cache-root "\$WASM_POSIX_BINARY_CACHE_ROOT" \\\n//m'
+
+expect_canary_mutation_rejected \
+  "runtime package cache environment omitted" \
+  "canary runtime must be an uncredentialed exact-current-source artifact" \
+  's/(      - name: Prepare exact uncredentialed runtime[\s\S]*?)^              "WASM_POSIX_BINARY_CACHE_ROOT=\$WASM_POSIX_BINARY_CACHE_ROOT" \\\n/$1/m'
 
 expect_canary_mutation_rejected \
   "candidate VFS reuse" \

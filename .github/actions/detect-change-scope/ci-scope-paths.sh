@@ -121,6 +121,7 @@ kernel_runtime_changed_files() {
 ci_control_changed_files() {
   grep -E \
     -e '^\.github/scripts/verify-package-generation-ancestry\.sh$' \
+    -e '^\.github/scripts/(classify-exact-abi-staging|test-classify-exact-abi-staging)\.sh$' \
     -e '^\.github/workflows/(abi-staging-merge-gate|abi-staging-pr-check|abi-staging-request-feed|staging-build|prepare-merge|activate-merge-candidate|recover-rejected-merge-candidate|staging-cleanup|force-rebuild|reusable-package-source-publish|promote-package-generation|preserve-pr-package-generation)\.yml$' \
     -e '^\.github/actions/exact-main-package-rebuild/' \
     -e '^\.github/scripts/(publish-abi-staging-request|test-publish-abi-staging-request|test-update-abi-staging-check|update-abi-staging-check)\.sh$' \
