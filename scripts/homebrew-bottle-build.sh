@@ -17,7 +17,7 @@ RETIRE_SOURCE_INSTALL=false
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-bottle-build.sh --tap-root <tap-root> [--tap-repository <owner/repo>] [--tap-name <owner/name>] --formula <name> --arch <wasm32|wasm64> --out <dir> --bottle-root-url <url> [--retire-source-install]
+usage: scripts/homebrew-bottle-build.sh --tap-root <tap-root> [--tap-repository <owner/repo>] [--tap-name <owner/name>] --formula <name> --arch <wasm32|wasm64> --out <dir> --bottle-root-url <url> [--staging-candidate-abi <positive-integer>] [--retire-source-install]
 
 This script is intended to run inside scripts/dev-shell.sh. It invokes the
 absolute Homebrew executable named by HOMEBREW_BREW_FILE, avoiding host PATH
@@ -40,6 +40,7 @@ while [ "$#" -gt 0 ]; do
     --arch) ARCH="${2:-}"; shift 2 ;;
     --out) OUT_DIR="${2:-}"; shift 2 ;;
     --bottle-root-url) BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
+    --staging-candidate-abi) STAGING_CANDIDATE_ABI="${2:-}"; shift 2 ;;
     --retire-source-install)
       [ "$RETIRE_SOURCE_INSTALL" = false ] || {
         echo "homebrew-bottle-build.sh: duplicate --retire-source-install" >&2
@@ -81,6 +82,11 @@ case "$ARCH" in
   wasm32|wasm64) ;;
   *) echo "homebrew-bottle-build.sh: invalid arch: $ARCH" >&2; exit 2 ;;
 esac
+if [ -n "$STAGING_CANDIDATE_ABI" ] &&
+   ! [[ "$STAGING_CANDIDATE_ABI" =~ ^[1-9][0-9]*$ ]]; then
+  echo "homebrew-bottle-build.sh: invalid staging candidate ABI: $STAGING_CANDIDATE_ABI" >&2
+  exit 2
+fi
 
 if [ -n "$LOCAL_BUILD_EVIDENCE" ]; then
   if [ "${GITHUB_ACTIONS:-}" = "true" ]; then

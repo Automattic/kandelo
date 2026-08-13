@@ -96,6 +96,33 @@ if homebrew_candidate_bottle_root_url \
   fail "candidate bottle root accepted an unsafe Formula path"
 fi
 
+# The exact staging adapter supplies this option to the normal bottle builder.
+# Exercise the real parser and candidate namespace instead of merely checking
+# the helper, so a later option-table merge cannot strand every hosted build.
+candidate_tap="$TMPDIR/candidate-tap"
+candidate_out="$TMPDIR/candidate-out"
+candidate_err="$TMPDIR/candidate.err"
+mkdir -p "$candidate_tap/Formula"
+printf 'class Hello < Formula; end\n' >"$candidate_tap/Formula/hello.rb"
+if HOMEBREW_BREW_FILE="$TMPDIR/missing-brew" \
+  bash "$REPO_ROOT/scripts/homebrew-bottle-build.sh" \
+    --tap-root "$candidate_tap" \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --formula hello \
+    --arch wasm32 \
+    --out "$candidate_out" \
+    --bottle-root-url \
+      https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-43-candidates/hello \
+    --staging-candidate-abi 43 \
+    > /dev/null 2>"$candidate_err"; then
+  fail "candidate parser fixture unexpectedly completed without Homebrew"
+fi
+grep -Fq 'HOMEBREW_BREW_FILE does not name an executable brew' \
+  "$candidate_err" || {
+  cat "$candidate_err" >&2
+  fail "normal bottle builder did not accept its exact staging candidate ABI"
+}
+
 expect_identity_rejection "an implicit third-party tap name" Acme/homebrew-tools
 expect_identity_rejection "a nonconventional third-party repository" Acme/tools Acme/tools
 expect_identity_rejection "a mismatched third-party tap name" Acme/homebrew-tools Acme/other
