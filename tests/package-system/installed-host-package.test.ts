@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -25,13 +26,27 @@ afterAll(() => {
 
 describe("installed host package binary policy", () => {
   it("binds installed scalar and multi-member bytes to packaged projection identity", () => {
-    execFileSync("npm", ["--prefix", "host", "run", "build"], {
-      cwd: repoRoot,
-      stdio: "pipe",
-    });
-
     const root = mkdtempSync(join(tmpdir(), "kandelo-packed-host-"));
     fixtureRoots.push(root);
+    const builtHostDist = join(root, "built-host-dist");
+    const sharedWorkerEntry = join(repoRoot, "host", "dist", "worker-entry.js");
+    const sharedWorkerEntryExisted = existsSync(sharedWorkerEntry);
+    // The Vitest suite runs process-worker tests in parallel. Building into
+    // host/dist would let tsup's clean step temporarily remove their worker
+    // entry, so package the same checked source from an isolated output.
+    execFileSync(
+      join(repoRoot, "host", "node_modules", ".bin", "tsup"),
+      ["--out-dir", builtHostDist],
+      {
+        cwd: join(repoRoot, "host"),
+        stdio: "pipe",
+      },
+    );
+
+    if (sharedWorkerEntryExisted) {
+      expect(existsSync(sharedWorkerEntry)).toBe(true);
+    }
+
     const staging = join(root, "staging");
     const wasmRoot = join(staging, "wasm");
     const multiName = "packed-runtime";
@@ -156,7 +171,7 @@ version = "1.0.0"
     mkdirSync(join(wasmRoot, dirname(imageRel)), { recursive: true });
     mkdirSync(join(wasmRoot, dirname(runtimeRel)), { recursive: true });
     mkdirSync(join(wasmRoot, dirname(scalarRel)), { recursive: true });
-    cpSync(join(repoRoot, "host", "dist"), join(staging, "dist"), {
+    cpSync(builtHostDist, join(staging, "dist"), {
       recursive: true,
     });
     cpSync(join(repoRoot, "host", "package.json"), join(staging, "package.json"));
