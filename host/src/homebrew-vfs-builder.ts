@@ -1100,6 +1100,26 @@ export function writeHomebrewVfsComposition(
     );
   }
   const packageByName = new Map(plan.packages.map((pkg) => [pkg.fullName, pkg]));
+  const dependencyNamesByPackage = new Map<string, string[]>();
+  for (const pkg of plan.packages) {
+    const dependencyNames = pkg.dependencies.map((dependency) => {
+      if (typeof dependency.full_name !== "string") {
+        throw new HomebrewVfsBuildError(
+          `Homebrew VFS composition dependency for ${pkg.fullName} has no exact full name`,
+        );
+      }
+      return dependency.full_name;
+    });
+    if (
+      new Set(dependencyNames).size !== dependencyNames.length ||
+      JSON.stringify(dependencyNames) !== JSON.stringify([...dependencyNames].sort())
+    ) {
+      throw new HomebrewVfsBuildError(
+        `Homebrew VFS composition dependencies for ${pkg.fullName} are not canonical`,
+      );
+    }
+    dependencyNamesByPackage.set(pkg.fullName, dependencyNames);
+  }
   writeVfsFile(
     fs,
     compositionPath,
@@ -1124,27 +1144,37 @@ export function writeHomebrewVfsComposition(
         migration_lock: report.migration_lock,
       }),
       metadata: report.metadata,
-      packages: report.packages.map((pkg) => ({
-        name: pkg.name,
-        full_name: pkg.full_name,
-        tap_repository: pkg.tap_repository,
-        tap_name: pkg.tap_name,
-        tap_commit: pkg.tap_commit,
-        version: pkg.version,
-        arch: pkg.arch,
-        source_status: pkg.source_status,
-        metadata_status: pkg.metadata_status,
-        url: pkg.url,
-        sha256: pkg.sha256,
-        bytes: pkg.bytes,
-        cache_key_sha: pkg.cache_key_sha,
-        link_manifest: pkg.link_manifest,
-        prefix: pkg.prefix,
-        keg: pkg.keg,
-        opt_link: pkg.opt_link,
-        ...(pkg.built_from === undefined ? {} : { built_from: pkg.built_from }),
-        env: packageByName.get(pkg.full_name)!.linkManifest.env,
-      })),
+      packages: report.packages.map((pkg) => {
+        const planned = packageByName.get(pkg.full_name);
+        const dependencies = dependencyNamesByPackage.get(pkg.full_name);
+        if (planned === undefined || dependencies === undefined) {
+          throw new HomebrewVfsBuildError(
+            `Homebrew VFS composition has no plan for ${pkg.full_name}`,
+          );
+        }
+        return {
+          name: pkg.name,
+          full_name: pkg.full_name,
+          tap_repository: pkg.tap_repository,
+          tap_name: pkg.tap_name,
+          tap_commit: pkg.tap_commit,
+          version: pkg.version,
+          arch: pkg.arch,
+          source_status: pkg.source_status,
+          metadata_status: pkg.metadata_status,
+          url: pkg.url,
+          sha256: pkg.sha256,
+          bytes: pkg.bytes,
+          cache_key_sha: pkg.cache_key_sha,
+          link_manifest: pkg.link_manifest,
+          prefix: pkg.prefix,
+          keg: pkg.keg,
+          dependencies,
+          opt_link: pkg.opt_link,
+          ...(pkg.built_from === undefined ? {} : { built_from: pkg.built_from }),
+          env: planned.linkManifest.env,
+        };
+      }),
     }, null, 2) + "\n",
     0o644,
   );

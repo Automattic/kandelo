@@ -228,6 +228,11 @@ export {
   buildHomebrewVfsSelection,
   writeHomebrewVfsComposition,
 } from "./homebrew-vfs-builder";
+export { prefetchHomebrewPackageClosures } from "./homebrew-package-prefetch";
+export type {
+  HomebrewPackagePrefetchApi,
+  HomebrewPackagePrefetchResult,
+} from "./types";
 export type {
   HomebrewFlatVfsBuildOptions,
   HomebrewFlatVfsBuildReport,

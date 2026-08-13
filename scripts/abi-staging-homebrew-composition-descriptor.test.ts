@@ -32,6 +32,7 @@ test("derives one exact lazy VFS composition descriptor from bottle bytes", asyn
   assert.equal(descriptor.kind, "kandelo-homebrew-original-bottle-tree");
   assert.equal(descriptor.formula, "hello");
   assert.deepEqual(descriptor.required_by, ["hello"]);
+  assert.deepEqual(descriptor.dependencies, ["kandelo-dev/tap-core/ncurses"]);
   assert.deepEqual(descriptor.tree.transports, [
     { kind: "external-https", url: candidateUrl },
   ]);
@@ -71,7 +72,32 @@ test("reissues only the admitted transport without rebuilding bottle contents", 
   assert.equal(canonical.tree.content.sha256, candidate.tree.content.sha256);
   assert.equal(canonical.tree.content.bytes, candidate.tree.content.bytes);
   assert.deepEqual(canonical.tree.inventory, candidate.tree.inventory);
+  assert.deepEqual(canonical.dependencies, candidate.dependencies);
   assert.equal(JSON.stringify(canonical).includes("-candidates/"), false);
+});
+
+test("rejects noncanonical or cross-tap direct dependency identities", async () => {
+  const bottle = bottleTar([
+    { path: `hello/${PKG_VERSION}/bin/hello`, data: "#!/bin/sh\necho hello\n", mode: 0o755 },
+    { path: `hello/${PKG_VERSION}/.brew/hello.rb`, data: "class Hello < Formula\nend\n" },
+    { path: `hello/${PKG_VERSION}/INSTALL_RECEIPT.json`, data: "{}\n" },
+  ]);
+  const sha256 = digest(bottle);
+  const candidateUrl = `https://ghcr.io/v2/${CANDIDATE_REPOSITORY.slice("ghcr.io/".length)}/blobs/sha256:${sha256}`;
+  for (const dependencies of [
+    ["other/tap/ncurses"],
+    ["kandelo-dev/tap-core/ncurses", "kandelo-dev/tap-core/ncurses"],
+    ["ncurses"],
+  ]) {
+    const input = compositionInput(bottle, candidateUrl);
+    input.dependencies = dependencies;
+    await assert.rejects(
+      buildHomebrewCompositionDescriptor(input, bottle, {
+        memoryBytes: 16 * 1024 * 1024,
+      }),
+      /dependenc(?:y|ies).*(invalid|canonical)/i,
+    );
+  }
 });
 
 function compositionInput(bottle: Uint8Array, bottleUrl: string): any {
@@ -107,6 +133,7 @@ function compositionInput(bottle: Uint8Array, bottleUrl: string): any {
       transport_url: bottleUrl,
     },
     required_by: ["hello"],
+    dependencies: ["kandelo-dev/tap-core/ncurses"],
     link_manifest: {
       schema: 1,
       package: "hello",

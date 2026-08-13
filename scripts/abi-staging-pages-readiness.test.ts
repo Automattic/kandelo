@@ -1914,7 +1914,7 @@ function canonicalBottleOci(formula: string) {
       descriptor(
         compositionDescriptor,
         "vfs-composition-descriptor",
-        "application/vnd.kandelo.homebrew.vfs-composition-descriptor.v1+json",
+        "application/vnd.kandelo.homebrew.vfs-composition-descriptor.v2+json",
         "vfs-composition-descriptor.json",
       ),
     ],
@@ -1945,7 +1945,8 @@ function compositionDescriptorBytes(
     formula,
     kind: "kandelo-homebrew-original-bottle-tree",
     required_by: [formula],
-    schema: 1,
+    dependencies: [],
+    schema: 2,
     tap: "kandelo-dev/homebrew-tap-core",
     tree: {
       activation: {

@@ -4860,6 +4860,68 @@ describe("Homebrew VFS builder", () => {
     ).toThrow();
   });
 
+  it("serializes exact dependency identities and rejects unresolved dependency names", async () => {
+    const bytes = bottleTar(standardEntries());
+    let sourcePlan: HomebrewVfsPlan | undefined;
+    const result = await buildFixture(bytes, {
+      mutatePlan(value) {
+        sourcePlan = structuredClone(value);
+      },
+    });
+    const root = sourcePlan!.packages[0]!;
+    const dependency = {
+      ...structuredClone(root),
+      name: "dependency",
+      fullName: "kandelo-dev/tap-core/dependency",
+      dependencies: [],
+    };
+    const plan: HomebrewVfsPlan = {
+      ...sourcePlan!,
+      packages: [{
+        ...root,
+        dependencies: [{
+          name: dependency.name,
+          full_name: dependency.fullName,
+          version: dependency.version,
+        }],
+      }, dependency],
+    };
+    const report = {
+      ...result.report,
+      packages: [
+        result.report.packages[0]!,
+        {
+          ...result.report.packages[0]!,
+          name: dependency.name,
+          full_name: dependency.fullName,
+        },
+      ],
+    };
+    const destination = MemoryFileSystem.create(
+      new SharedArrayBuffer(8 * 1024 * 1024),
+    );
+
+    writeHomebrewVfsComposition(destination, plan, report);
+    const composition = JSON.parse(
+      readVfsFile(destination, "/etc/kandelo/homebrew-vfs.json"),
+    );
+    expect(composition.packages.map((pkg: { dependencies: string[] }) =>
+      pkg.dependencies
+    )).toEqual([
+      [dependency.fullName],
+      [],
+    ]);
+
+    const invalid = MemoryFileSystem.create(
+      new SharedArrayBuffer(8 * 1024 * 1024),
+    );
+    plan.packages[0]!.dependencies = [{ name: dependency.name }];
+    expect(() => writeHomebrewVfsComposition(invalid, plan, report)).toThrow(
+      /dependency.*full name/i,
+    );
+    expect(() => invalid.lstat("/etc/kandelo/homebrew-vfs.json")).toThrow();
+  });
+
   it("composes a real GNU PAX bottle while preserving its sanitized receipt bytes", async () => {
     const receipt = utf8(JSON.stringify({
       source: {

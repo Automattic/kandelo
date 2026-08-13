@@ -11,7 +11,7 @@ import type {
 } from "../host/src/homebrew-vfs-planner";
 import {
   parseHomebrewOriginalBottleTreeDescriptor,
-  type HomebrewOriginalBottleTreeDescriptorV1,
+  type HomebrewOriginalBottleTreeDescriptorV2,
 } from "../host/src/homebrew-runtime-layer-consumer";
 import { MemoryFileSystem } from "../host/src/vfs/memory-fs";
 
@@ -48,6 +48,7 @@ export interface HomebrewCompositionInputV1 {
     transport_url: string;
   };
   required_by: string[];
+  dependencies: string[];
   link_manifest: HomebrewLinkManifest;
 }
 
@@ -71,7 +72,7 @@ export async function buildHomebrewCompositionDescriptor(
   value: unknown,
   bottleBytes: Uint8Array,
   options: BuildCompositionOptionsV1 = {},
-): Promise<HomebrewOriginalBottleTreeDescriptorV1> {
+): Promise<HomebrewOriginalBottleTreeDescriptorV2> {
   const input = validateCompositionInput(value);
   if (
     !(bottleBytes instanceof Uint8Array) ||
@@ -117,6 +118,9 @@ export async function buildHomebrewCompositionDescriptor(
       `Kandelo/staging/composition/${formula.name}-${formula.version}-` +
       `rebuild${formula.rebuild}-${formula.architecture}.json`,
     linkManifest: structuredClone(link),
+    // The producer builds one independent bottle inventory. Authenticated
+    // dependency edges belong to the outer descriptor and are composed only
+    // after the complete product input set is known.
     dependencies: [],
     runtimeSupport: ["node", "browser"],
     browserCompatible: true,
@@ -159,12 +163,13 @@ export async function buildHomebrewCompositionDescriptor(
   tree.transports = [{ kind: "external-https", url: input.bottle.transport_url }];
   return parseHomebrewOriginalBottleTreeDescriptor(
     {
-      schema: 1,
+      schema: 2,
       kind: "kandelo-homebrew-original-bottle-tree",
       architecture: formula.architecture,
       tap: input.tap_source.repository,
       formula: formula.name,
       required_by: [...input.required_by],
+      dependencies: [...input.dependencies],
       tree,
     },
     {
@@ -174,6 +179,7 @@ export async function buildHomebrewCompositionDescriptor(
       package: formula.full_name,
       bottle: { sha256: input.bottle.sha256, bytes: input.bottle.bytes },
       allowedRoots: new Set(input.required_by),
+      schema: 2,
     },
   );
 }
@@ -185,7 +191,7 @@ export async function buildHomebrewCompositionDescriptor(
 export function reissueHomebrewCompositionDescriptor(
   value: unknown,
   options: ReissueCompositionOptionsV1,
-): HomebrewOriginalBottleTreeDescriptorV1 {
+): HomebrewOriginalBottleTreeDescriptorV2 {
   if (!SHA256.test(options.bottleSha256) || !positive(options.bottleBytes)) {
     throw new Error("Homebrew composition reissue bottle identity is invalid");
   }
@@ -201,13 +207,14 @@ export function reissueHomebrewCompositionDescriptor(
   );
   const candidate = exactRecord(value, [
     "architecture",
+    "dependencies",
     "formula",
     "kind",
     "required_by",
     "schema",
     "tap",
     "tree",
-  ], "Homebrew composition descriptor") as unknown as HomebrewOriginalBottleTreeDescriptorV1;
+  ], "Homebrew composition descriptor") as unknown as HomebrewOriginalBottleTreeDescriptorV2;
   if (
     candidateTransport.owner !== canonicalTransport.owner ||
     candidateTransport.repository !== canonicalTransport.repository ||
@@ -227,6 +234,7 @@ export function reissueHomebrewCompositionDescriptor(
     package: packageName,
     bottle: { sha256: options.bottleSha256, bytes: options.bottleBytes },
     allowedRoots: new Set(roots),
+    schema: 2,
   });
   if (
     parsed.tree.transports.length !== 1 ||
@@ -247,6 +255,7 @@ export function reissueHomebrewCompositionDescriptor(
     package: packageName,
     bottle: { sha256: options.bottleSha256, bytes: options.bottleBytes },
     allowedRoots: new Set(roots),
+    schema: 2,
   });
 }
 
@@ -257,6 +266,7 @@ export function canonicalCompositionDescriptorBytes(value: unknown): Uint8Array 
 function validateCompositionInput(value: unknown): HomebrewCompositionInputV1 {
   const root = exactRecord(value, [
     "bottle",
+    "dependencies",
     "formula",
     "kind",
     "link_manifest",
@@ -335,6 +345,29 @@ function validateCompositionInput(value: unknown): HomebrewCompositionInputV1 {
   ) {
     throw new Error("Homebrew composition required roots are not canonical");
   }
+  if (!Array.isArray(root.dependencies)) {
+    throw new Error("Homebrew composition dependencies are invalid");
+  }
+  const dependencyPrefix = `${tapName(tapSource.repository)}/`;
+  const dependencies = root.dependencies.map((item, index) => {
+    if (
+      typeof item !== "string" || item.length > 384 ||
+      !item.startsWith(dependencyPrefix)
+    ) {
+      throw new Error(`Homebrew composition dependency ${index} is invalid`);
+    }
+    stableId(
+      item.slice(dependencyPrefix.length),
+      `Homebrew composition dependency ${index}`,
+    );
+    return item;
+  });
+  if (
+    dependencies.length > 128 ||
+    JSON.stringify(dependencies) !== JSON.stringify([...new Set(dependencies)].sort())
+  ) {
+    throw new Error("Homebrew composition dependencies are not canonical");
+  }
   const link = structuredClone(root.link_manifest) as HomebrewLinkManifest;
   if (
     link?.schema !== 1 || link.package !== name || link.version !== expectedPkgVersion ||
@@ -368,6 +401,7 @@ function validateCompositionInput(value: unknown): HomebrewCompositionInputV1 {
       transport_url: bottle.transport_url as string,
     },
     required_by: requiredBy,
+    dependencies,
     link_manifest: link,
   };
 }

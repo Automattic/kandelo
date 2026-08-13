@@ -169,6 +169,16 @@ describe("ABI staging product builders", () => {
       "/opt/kandelo/homebrew/bin/bash",
     );
     expect(readVfsFile(fs, "/etc/kandelo/demo.json")).toContain("doom");
+    const composition = JSON.parse(
+      readVfsFile(fs, "/etc/kandelo/homebrew-vfs.json"),
+    );
+    expect(composition.packages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        full_name: "kandelo-dev/tap-core/bash",
+        keg: "/opt/kandelo/homebrew/Cellar/bash/1.0",
+        dependencies: [],
+      }),
+    ]));
     expect(
       fs.exportLazyArchiveEntries().every((entry) =>
         entry.content?.transports.every((url) =>
@@ -228,6 +238,98 @@ describe("ABI staging product builders", () => {
     expect(existsSync(fixture.outputPath)).toBe(false);
     expect(existsSync(fixture.reportPath)).toBe(false);
   }, 30_000);
+
+  it("writes authenticated dependencies and rejects an open or cyclic package graph", async () => {
+    const valid = await browserMainShellFixture();
+    rewriteHomebrewDescriptor(valid, "bash", (descriptor) => {
+      descriptor.dependencies = ["kandelo-dev/tap-core/ncurses"];
+    });
+    const validResult = runBuilder(
+      "scripts/build-homebrew-main-shell-product.sh",
+      valid,
+    );
+    expect(validResult.status, `${validResult.stdout}\n${validResult.stderr}`).toBe(0);
+    const validFs = MemoryFileSystem.fromImage(
+      new Uint8Array(readFileSync(valid.outputPath)),
+    );
+    const composition = JSON.parse(
+      readVfsFile(validFs, "/etc/kandelo/homebrew-vfs.json"),
+    );
+    expect(composition.packages.find(
+      (pkg: { formula: string }) => pkg.formula === "bash",
+    )?.dependencies).toEqual(["kandelo-dev/tap-core/ncurses"]);
+
+    const absent = await browserMainShellFixture();
+    rewriteHomebrewDescriptor(absent, "bash", (descriptor) => {
+      descriptor.dependencies = ["kandelo-dev/tap-core/not-selected"];
+    });
+    const absentResult = runBuilder(
+      "scripts/build-homebrew-main-shell-product.sh",
+      absent,
+    );
+    expect(absentResult.status).not.toBe(0);
+    expect(absentResult.stderr).toMatch(/dependency.*absent/i);
+    expect(existsSync(absent.outputPath)).toBe(false);
+
+    const cycle = await browserMainShellFixture();
+    rewriteHomebrewDescriptor(cycle, "bash", (descriptor) => {
+      descriptor.dependencies = ["kandelo-dev/tap-core/ncurses"];
+    });
+    rewriteHomebrewDescriptor(cycle, "ncurses", (descriptor) => {
+      descriptor.dependencies = ["kandelo-dev/tap-core/bash"];
+    });
+    const cycleResult = runBuilder(
+      "scripts/build-homebrew-main-shell-product.sh",
+      cycle,
+    );
+    expect(cycleResult.status).not.toBe(0);
+    expect(cycleResult.stderr).toMatch(/dependency cycle/i);
+    expect(existsSync(cycle.outputPath)).toBe(false);
+
+    for (const [label, mutate, pattern] of [
+      [
+        "cross-tap",
+        (descriptor: Record<string, any>) => {
+          descriptor.dependencies = ["other/tap/ncurses"];
+        },
+        /same tap/i,
+      ],
+      [
+        "non-full",
+        (descriptor: Record<string, any>) => {
+          descriptor.dependencies = ["ncurses"];
+        },
+        /direct dependencies.*invalid/i,
+      ],
+      [
+        "duplicate",
+        (descriptor: Record<string, any>) => {
+          descriptor.dependencies = [
+            "kandelo-dev/tap-core/ncurses",
+            "kandelo-dev/tap-core/ncurses",
+          ];
+        },
+        /duplicates|canonical/i,
+      ],
+      [
+        "cross-architecture",
+        (descriptor: Record<string, any>) => {
+          descriptor.architecture = "wasm64";
+        },
+        /identity changed/i,
+      ],
+    ] as const) {
+      const invalid = await browserMainShellFixture();
+      rewriteHomebrewDescriptor(invalid, "ncurses", mutate);
+      const invalidResult = runBuilder(
+        "scripts/build-homebrew-main-shell-product.sh",
+        invalid,
+      );
+      expect(invalidResult.status, label).not.toBe(0);
+      expect(invalidResult.stderr, label).toMatch(pattern);
+      expect(existsSync(invalid.outputPath), label).toBe(false);
+    }
+  }, 60_000);
 
   it("rejects a bottle descriptor from a candidate namespace for another ABI", async () => {
     const fixture = await browserMainShellFixture();
@@ -1874,6 +1976,7 @@ function originalBottleDescriptor(options: {
   archiveBytes: number;
   expandedBytes: number;
   reference: string;
+  dependencies?: string[];
 }): any {
   const formula = options.formula;
   const command = formula === "file-formula"
@@ -1943,12 +2046,13 @@ function originalBottleDescriptor(options: {
     left.path < right.path ? -1 : left.path > right.path ? 1 : 0
   );
   return {
-    schema: 1,
+    schema: 2,
     kind: "kandelo-homebrew-original-bottle-tree",
     architecture: "wasm32",
     tap: "kandelo-dev/homebrew-tap-core",
     formula,
     required_by: [formula],
+    dependencies: options.dependencies ?? [],
     tree: {
       id: formula,
       package: `kandelo-dev/tap-core/${formula}`,
@@ -1988,6 +2092,31 @@ function originalBottleDescriptor(options: {
       },
     },
   };
+}
+
+function rewriteHomebrewDescriptor(
+  fixture: BuilderFixture,
+  formula: string,
+  mutate: (descriptor: Record<string, any>) => void,
+): void {
+  const inputs = JSON.parse(readFileSync(fixture.inputsPath, "utf8"));
+  const input = inputs.inputs.find(
+    (candidate: { id: string }) => candidate.id === `homebrew-${formula}`,
+  );
+  if (input?.descriptor?.path === undefined) {
+    throw new Error(`fixture omits homebrew-${formula} descriptor`);
+  }
+  const descriptorPath = join(fixture.directory, input.descriptor.path);
+  const descriptor = JSON.parse(readFileSync(descriptorPath, "utf8"));
+  mutate(descriptor);
+  const text = canonicalJson(descriptor);
+  writeFileSync(descriptorPath, text);
+  const digest = sha256(text);
+  input.descriptor.bytes = Buffer.byteLength(text);
+  input.descriptor.sha256 = digest;
+  input.descriptor.reference =
+    `${String(input.descriptor.reference).split("?")[0]}?sha256=${digest}`;
+  writeFileSync(fixture.inputsPath, canonicalJson(inputs));
 }
 
 function bottleDirectory(

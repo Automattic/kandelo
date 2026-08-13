@@ -13,6 +13,19 @@ export interface KernelConfig {
   syscallLogPtrWidth?: 4 | 8;
 }
 
+export interface HomebrewPackagePrefetchResult {
+  roots: string[];
+  packages: string[];
+  materializedPackages: string[];
+  alreadyMaterializedPackages: string[];
+}
+
+export interface HomebrewPackagePrefetchApi {
+  prefetchHomebrewPackages(
+    roots: readonly string[],
+  ): Promise<HomebrewPackagePrefetchResult>;
+}
+
 export interface StatResult {
   /** Exact filesystem identity values. Native backends should prefer bigint. */
   dev: number | bigint;

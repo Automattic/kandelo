@@ -135,6 +135,8 @@ export interface RegisteredHomebrewDeferredTree {
 }
 
 export interface HomebrewOriginalBottleTreeExpectation {
+  /** Historical consumers must opt in to schema 1 explicitly. */
+  schema: 1 | 2;
   architecture: "wasm32" | "wasm64";
   tap: string;
   formula: string;
@@ -155,6 +157,21 @@ export interface HomebrewOriginalBottleTreeDescriptorV1 {
   required_by: string[];
   tree: HomebrewDeferredTreeDescriptor;
 }
+
+export interface HomebrewOriginalBottleTreeDescriptorV2 {
+  schema: 2;
+  kind: "kandelo-homebrew-original-bottle-tree";
+  architecture: "wasm32" | "wasm64";
+  tap: string;
+  formula: string;
+  required_by: string[];
+  dependencies: string[];
+  tree: HomebrewDeferredTreeDescriptor;
+}
+
+export type HomebrewOriginalBottleTreeDescriptor =
+  | HomebrewOriginalBottleTreeDescriptorV1
+  | HomebrewOriginalBottleTreeDescriptorV2;
 
 /**
  * Restore one immutable shell image into a private filesystem, then fetch,
@@ -254,9 +271,17 @@ export function registerHomebrewDeferredTreeCollection(
  */
 export function parseHomebrewOriginalBottleTreeDescriptor(
   value: unknown,
+  expected: HomebrewOriginalBottleTreeExpectation & { schema: 1 },
+): HomebrewOriginalBottleTreeDescriptorV1;
+export function parseHomebrewOriginalBottleTreeDescriptor(
+  value: unknown,
+  expected: HomebrewOriginalBottleTreeExpectation & { schema: 2 },
+): HomebrewOriginalBottleTreeDescriptorV2;
+export function parseHomebrewOriginalBottleTreeDescriptor(
+  value: unknown,
   expected: HomebrewOriginalBottleTreeExpectation,
-): HomebrewOriginalBottleTreeDescriptorV1 {
-  const root = exactRecord(value, [
+): HomebrewOriginalBottleTreeDescriptor {
+  const fields = [
     "schema",
     "kind",
     "architecture",
@@ -264,9 +289,15 @@ export function parseHomebrewOriginalBottleTreeDescriptor(
     "formula",
     "required_by",
     "tree",
-  ], "Homebrew original-bottle tree descriptor");
+  ];
+  if (expected.schema === 2) fields.push("dependencies");
+  const root = exactRecord(
+    value,
+    fields,
+    "Homebrew original-bottle tree descriptor",
+  );
   if (
-    root.schema !== 1 ||
+    root.schema !== expected.schema ||
     root.kind !== "kandelo-homebrew-original-bottle-tree" ||
     requireArch(root.architecture, "Homebrew original-bottle architecture") !==
       expected.architecture ||
@@ -297,6 +328,30 @@ export function parseHomebrewOriginalBottleTreeDescriptor(
   ) {
     throw new Error("Homebrew original-bottle dependency roots are not product-declared");
   }
+  const dependencies = expected.schema === 2
+    ? requireFullPackageArray(
+      root.dependencies,
+      "Homebrew original-bottle direct dependencies",
+      0,
+      128,
+    )
+    : [];
+  if (expected.schema === 2) {
+    const [owner, repository] = expected.tap.split("/");
+    if (owner === undefined || repository === undefined) {
+      throw new Error("Homebrew original-bottle tap cannot derive a dependency prefix");
+    }
+    const dependencyPrefix = `${owner}/${repository.replace(/^homebrew-/u, "")}/`;
+    if (
+      !arraysEqual(
+        dependencies,
+        [...dependencies].sort(compareHomebrewCanonicalText),
+      ) ||
+      dependencies.some((dependency) => !dependency.startsWith(dependencyPrefix))
+    ) {
+      throw new Error("Homebrew original-bottle dependencies are not canonical same tap identities");
+    }
+  }
   const [tree] = validateDeferredTrees(
     [root.tree],
     "",
@@ -318,15 +373,17 @@ export function parseHomebrewOriginalBottleTreeDescriptor(
   }
   validateCompleteDirectBottleDirectories(tree.inventory.entries);
   validateStandaloneDirectBottleBinding(tree, expected.formula);
-  return {
-    schema: 1,
-    kind: "kandelo-homebrew-original-bottle-tree",
+  const common = {
+    kind: "kandelo-homebrew-original-bottle-tree" as const,
     architecture: expected.architecture,
     tap: expected.tap,
     formula: expected.formula,
     required_by: requiredBy,
     tree,
   };
+  return expected.schema === 1
+    ? { ...common, schema: 1 }
+    : { ...common, schema: 2, dependencies };
 }
 
 async function registerHomebrewRuntimeLayersOnStagedFileSystem(
