@@ -3869,6 +3869,11 @@ case "${1:-}" in
       echo "fake brew: target Formula did not receive the canonical primary tap root" >&2
       exit 56
     fi
+    if [ "${FAKE_REQUIRE_PRIMARY_TAP_READ_ONLY:-}" = 1 ] &&
+       [ -w "$FAKE_TAP_ROOT" ]; then
+      echo "fake brew: candidate Formula received a writable primary tap root" >&2
+      exit 63
+    fi
     [ ! -e "$FAKE_TAP_ROOT/Kandelo/formula_support/test" ] || exit 54
     case "$*" in
       'deps --topological --full-name --formula kandelo-dev/tap-core/hello')
@@ -4110,6 +4115,7 @@ EOF
     FAKE_EXPECTED_BOTTLE_ROOT_URL=https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-43-candidates/hello \
     FAKE_EXPECTED_DEPENDENCY_BOTTLE_ROOT_URL=https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-43-candidates \
     FAKE_EXPECTED_STAGING_CANDIDATE_ABI=43 \
+    FAKE_REQUIRE_PRIMARY_TAP_READ_ONLY=1 \
     FAKE_BREW_PREFIX="$brew_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \
     FAKE_TAP_ROOT="$tapped_main" \
@@ -4131,6 +4137,8 @@ EOF
     fail "test dependency fixture did not complete: $(cat "$runner_err"); " \
       "last Brew commands: $(tail -n 12 "$realm_log" | tr '\n' ';')"
   fi
+  [ -w "$tapped_main" ] ||
+    fail "candidate tap checkout permissions were not restored after cleanup"
   [ "$(wc -l <"$tier2_preflight_log" | tr -d '[:space:]')" = 2 ] ||
     fail "bottle build did not run Tier-2 preflight before and after tap materialization"
   jq -e '

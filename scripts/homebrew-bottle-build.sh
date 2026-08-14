@@ -220,9 +220,14 @@ if [ -n "$BUILD_USER" ]; then
 fi
 CONTROL_DIR="$(mktemp -d "$OUT_DIR/.control.XXXXXX")"
 chmod 0700 "$CONTROL_DIR"
+CANDIDATE_TAP_SEALED=0
 
 cleanup() {
-  local original_status="${1:-0}" launcher_status=0
+  local original_status="${1:-0}" launcher_status=0 tap_restore_status=0
+  if [ "$CANDIDATE_TAP_SEALED" = 1 ]; then
+    chmod -R u+w -- "$TAPPED_TAP_ROOT" || tap_restore_status="$?"
+    CANDIDATE_TAP_SEALED=0
+  fi
   if homebrew_patched_launcher_cleanup; then
     :
   else
@@ -237,6 +242,7 @@ cleanup() {
     rm -rf "$NATIVE_BASE" "$WORK_DIR"
   fi
   [ "$original_status" -eq 0 ] || return "$original_status"
+  [ "$tap_restore_status" -eq 0 ] || return "$tap_restore_status"
   return "$launcher_status"
 }
 
@@ -675,6 +681,20 @@ homebrew_native_contract_stage_marker tier2-attestation-staging starting
 homebrew_patched_launcher_stage_tier2_attestation \
   "$TIER2_EXECUTION_ATTESTATION"
 homebrew_native_contract_stage_marker tier2-attestation-staging completed
+
+if [ -z "$BUILD_USER" ]; then
+  # Candidate jobs are deliberately uncredentialed and do not provision the
+  # production-only secondary Formula identity. Seal the exact tapped checkout
+  # before any Homebrew Formula evaluation so the publisher patch observes the
+  # same read-only source contract; cleanup restores owner write permission
+  # only after every Brew command has finished.
+  chmod -R a-w -- "$TAPPED_TAP_ROOT"
+  CANDIDATE_TAP_SEALED=1
+  [ ! -w "$TAPPED_TAP_ROOT" ] || {
+    echo "homebrew-bottle-build.sh: candidate primary tap checkout remains writable" >&2
+    exit 2
+  }
+fi
 
 if [ -n "$BUILD_USER" ]; then
   # Formula helpers deliberately remove stale compiled host output before
