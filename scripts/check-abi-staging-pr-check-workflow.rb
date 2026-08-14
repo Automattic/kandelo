@@ -228,7 +228,8 @@ def check_merge_gate(workflow)
   check(structure.fetch("permissions") == {"contents" => "read"},
         "exact-head structure must remain read-only")
   check(validate.fetch("permissions") == {
-          "actions" => "read", "checks" => "read", "contents" => "read"
+          "actions" => "read", "checks" => "read", "contents" => "read",
+          "statuses" => "write"
         }, "protected evidence validation permissions changed")
   check(Array(structure.fetch("needs")) == ["capture-current-subject"],
         "structural job dependency changed")
@@ -396,9 +397,36 @@ def check_merge_gate(workflow)
         final_source.include?("cmp -s") &&
         final_source.include?("published_conclusion == \"success\"") &&
         final_source.include?("computed_conclusion == \"success\"") &&
+        final_source.include?("if [[ $mode != enforce ]]") &&
+        final_source.include?(
+          "::notice::observe mode never publishes merge-gate authority"
+        ) &&
+        final_source.include?(
+          '"/repos/$GITHUB_REPOSITORY/statuses/$PR_HEAD_SHA"'
+        ) &&
+        final_source.include?("-f state=success") &&
+        final_source.include?("-f context=merge-gate") &&
+        final_source.include?(
+          "-f description='Exact staged bottles and product evidence succeeded.'"
+        ) &&
+        final_source.include?('-f target_url="$details_url"') &&
         final_source.include?("staging_problem") &&
         !final_source.include?("SYNTHETIC_MERGE_SHA"),
-        "final gate does not reproject exact protected success")
+        "final gate does not reproject and publish exact protected success")
+  check_revalidation = final_source.index(
+    '"/repos/$GITHUB_REPOSITORY/check-runs/$check_id"'
+  )
+  pull_revalidation = final_source.index(
+    '"/repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER"'
+  )
+  enforce_guard = final_source.index("if [[ $mode != enforce ]]")
+  status_write = final_source.index(
+    '"/repos/$GITHUB_REPOSITORY/statuses/$PR_HEAD_SHA"'
+  )
+  check(check_revalidation && pull_revalidation && enforce_guard && status_write &&
+        check_revalidation < pull_revalidation &&
+        pull_revalidation < enforce_guard && enforce_guard < status_write,
+        "merge-gate authority is not published after exact current revalidation")
 
   validate.fetch("steps").each do |step|
     if step.fetch("uses", "").start_with?("./")
@@ -527,8 +555,11 @@ begin
     "PR-controlled trigger" => lambda { |copy|
       copy["on"] = {"pull_request" => {"types" => ["labeled"]}}
     },
-    "write-capable gate" => lambda { |copy|
-      copy.dig("jobs", "validate-current-evidence", "permissions")["checks"] = "write"
+    "missing status authority" => lambda { |copy|
+      copy.dig("jobs", "validate-current-evidence", "permissions").delete("statuses")
+    },
+    "branch-write authority" => lambda { |copy|
+      copy.dig("jobs", "validate-current-evidence", "permissions")["contents"] = "write"
     },
     "synthetic structural head" => lambda { |copy|
       step = copy.dig("jobs", "abi-staging-exact-head-structure", "steps").find do |item|
@@ -607,6 +638,43 @@ begin
         item["name"] == "Reproject and validate protected Check provenance"
       end
       step["if"] = "${{ success() }}"
+    },
+    "status write before revalidation" => lambda { |copy|
+      step = copy.dig("jobs", "validate-current-evidence", "steps").find do |item|
+        item["name"] == "Reproject and validate protected Check provenance"
+      end
+      source = step.fetch("run")
+      block_start = source.index("if [[ $mode != enforce ]]")
+      block_end = source.index('-f target_url="$details_url"', block_start)
+      raise "status publication block is absent" unless block_start && block_end
+      block_end = source.index("\n", block_end) || source.length
+      block = source[block_start...block_end]
+      step["run"] = block + "\n" + source.sub(block, "")
+    },
+    "status write in observe mode" => lambda { |copy|
+      step = copy.dig("jobs", "validate-current-evidence", "steps").find do |item|
+        item["name"] == "Reproject and validate protected Check provenance"
+      end
+      step["run"] = step.fetch("run").sub(
+        "if [[ $mode != enforce ]]", "if [[ $mode == enforce ]]"
+      )
+    },
+    "wrong status context" => lambda { |copy|
+      step = copy.dig("jobs", "validate-current-evidence", "steps").find do |item|
+        item["name"] == "Reproject and validate protected Check provenance"
+      end
+      step["run"] = step.fetch("run").sub(
+        "-f context=merge-gate", "-f context=other-gate"
+      )
+    },
+    "status on protected SHA" => lambda { |copy|
+      step = copy.dig("jobs", "validate-current-evidence", "steps").find do |item|
+        item["name"] == "Reproject and validate protected Check provenance"
+      end
+      step["run"] = step.fetch("run").sub(
+        '"/repos/$GITHUB_REPOSITORY/statuses/$PR_HEAD_SHA"',
+        '"/repos/$GITHUB_REPOSITORY/statuses/$PROTECTED_SHA"'
+      )
     },
     "swallowed provenance validation" => lambda { |copy|
       step = copy.dig("jobs", "validate-current-evidence", "steps").find do |item|

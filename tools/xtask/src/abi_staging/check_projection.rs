@@ -2135,6 +2135,17 @@ mod tests {
     }
 
     #[test]
+    fn checked_in_required_check_activation_enforces_current_evidence() {
+        let activation_path =
+            crate::repo_root().join("abi/staging/required-check-activation.toml");
+        let bytes = read_bounded_regular_file(&activation_path, MAX_ACTIVATION_BYTES).unwrap();
+        assert_eq!(
+            parse_required_check_activation(&activation_path, &bytes).unwrap(),
+            RequiredCheckActivationV1::Enforce,
+        );
+    }
+
+    #[test]
     fn public_records_must_use_the_exact_candidate_namespace() {
         let mut fixture = input();
         let request_digest = fixture.request.as_ref().unwrap().digest.clone();

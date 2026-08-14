@@ -285,6 +285,12 @@ assert_job_needs "$ABI_STAGING_MERGE_GATE" \
   validate-current-evidence abi-staging-exact-head-structure
 grep -Fq 'contents: read' <<<"$protected_structure_job" ||
   fail "candidate structural ABI job must remain read-only"
+protected_final_job=$(job_block \
+  "$ABI_STAGING_MERGE_GATE" validate-current-evidence)
+grep -Fq 'statuses: write' <<<"$protected_final_job" ||
+  fail "protected ABI gate must own only exact commit-status publication"
+grep -Fq 'contents: read' <<<"$protected_final_job" ||
+  fail "protected ABI gate must not own branch-write authority"
 grep -Fq 'env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_RUNTIME_TOKEN' \
   <<<"$protected_structure_step" ||
   fail "candidate structural ABI code must not receive workflow credentials"
@@ -306,6 +312,18 @@ for exact_gate_contract in \
 do
   grep -Fq -- "$exact_gate_contract" <<<"$protected_provenance_step" ||
     fail "protected ABI gate lacks exact provenance contract: $exact_gate_contract"
+done
+for exact_status_contract in \
+  'if [[ $mode != enforce ]]' \
+  'observe mode never publishes merge-gate authority' \
+  '"/repos/$GITHUB_REPOSITORY/statuses/$PR_HEAD_SHA"' \
+  '-f state=success' \
+  '-f context=merge-gate' \
+  "-f description='Exact staged bottles and product evidence succeeded.'" \
+  '-f target_url="$details_url"'
+do
+  grep -Fq -- "$exact_status_contract" <<<"$protected_final_step" ||
+    fail "protected ABI gate lacks exact status contract: $exact_status_contract"
 done
 for exact_projection_contract in \
   'check-projection project' \
