@@ -355,6 +355,7 @@ ALLOWED_WASM_IMPORTS=(
     kernel.kernel_get_fork_exec_argc
     kernel.kernel_get_fork_exec_argv
     kernel.kernel_get_fork_exec_path
+    kernel.kernel_get_secure_exec
     kernel.kernel_is_fork_child
     kernel.kernel_push_argv
 )
