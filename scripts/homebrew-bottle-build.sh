@@ -394,28 +394,25 @@ ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
 if ! jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" \
   --arg arch "$ARCH" '
     def sha256: type == "string" and test("^[0-9a-f]{64}$");
-    (.schema == 2 or .schema == 3) and
+    (.schema == 4 or .schema == 3) and
     .tap == $tap and .formula == $formula and .arch == $arch and
     .full_name == ($tap + "/" + $formula) and
     (.formula_sha256 | sha256) and
     (.support_sha256 == null or (.support_sha256 | sha256)) and
     (.support_runtime_sha256 == null or (.support_runtime_sha256 | sha256)) and
     ((.support_sha256 == null) == (.support_runtime_sha256 == null)) and
-    if .schema == 2 then
+    if .schema == 4 then
       keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tier2_bridge"] and
       (.tier2_bridge == null or .support_sha256 != null) and
       if .tier2_bridge == null then true else
-      (.tier2_bridge | keys == ["build_toml_sha256", "package", "package_toml_sha256", "script", "script_env_keys", "script_sha256", "source_mode", "source_sha256", "source_url", "version"]) and
+      (.tier2_bridge | keys == ["package", "script", "script_env_keys", "script_sha256", "source_sha256", "source_url", "version"]) and
       (.tier2_bridge.package | type == "string" and test("^[a-z0-9][a-z0-9._-]{0,254}$")) and
       (.tier2_bridge.script | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")) and
-      ([.tier2_bridge.package_toml_sha256, .tier2_bridge.build_toml_sha256,
-        .tier2_bridge.script_sha256, .tier2_bridge.source_sha256] |
+      ([.tier2_bridge.script_sha256, .tier2_bridge.source_sha256] |
         all(.[]; sha256)) and
       (.tier2_bridge.script_env_keys | type == "array" and
         . == (sort | unique) and length <= 64 and
         (map(length) | add // 0) <= 4096) and
-      (.tier2_bridge.source_mode == "exact" or
-        .tier2_bridge.source_mode == "in-repository-source") and
       (.tier2_bridge.source_url | type == "string" and startswith("https://")) and
       (.tier2_bridge.version | type == "string" and length > 0)
       end

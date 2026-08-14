@@ -3977,7 +3977,7 @@ homebrew_patched_launcher_tier2_schema() {
     return 2
   fi
   case "${lines[0]}" in
-    *'"schema":2,'*) printf '2\n' ;;
+    *'"schema":4,'*) printf '4\n' ;;
     *'"schema":3,'*) printf '3\n' ;;
     *)
       echo "homebrew-patched-launcher: protected Tier-2 attestation has an unsupported schema" >&2

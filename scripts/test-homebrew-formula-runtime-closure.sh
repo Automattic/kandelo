@@ -902,7 +902,7 @@ printf 'alpha\n' >"$TAP_ROOT/Kandelo/formula_support/a-runtime.txt"
 bridge_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core bridge --tier2-bridge-json)"
 jq -e '
   keys == ["formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tier2_bridge"] and
-  .schema == 2 and
+  .schema == 4 and
   .tap == "kandelo-dev/tap-core" and
   .formula == "bridge" and
   .full_name == "kandelo-dev/tap-core/bridge" and

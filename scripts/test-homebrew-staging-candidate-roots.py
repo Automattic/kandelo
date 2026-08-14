@@ -59,7 +59,7 @@ class CandidateRootTests(unittest.TestCase):
             "https://ghcr.io/v2/example/homebrew-tools-abi-8-candidates"
         )
         document = {
-            "mini-tool": {
+            "example/tools/mini-tool": {
                 "bottle": {
                     "cellar": "any",
                     "rebuild": 0,
@@ -68,7 +68,10 @@ class CandidateRootTests(unittest.TestCase):
                 },
                 "formula": {
                     "name": "mini-tool",
-                    "path": "Formula/mini-tool.rb",
+                    "path": (
+                        "Library/Taps/example/homebrew-tools/"
+                        "Formula/mini-tool.rb"
+                    ),
                     "pkg_version": "1.0",
                 },
             }
@@ -83,11 +86,19 @@ class CandidateRootTests(unittest.TestCase):
                 bottle_sha256=digest,
                 formula="mini-tool",
                 staging_candidate_abi=8,
+                tap_name="example/tools",
+                tap_repository="example/homebrew-tools",
             )
-            version, tag, rebuild, filename = runtime.canonical_bottle(args)
+            version, tag, rebuild, filename, metadata = runtime.canonical_bottle(args)
         self.assertEqual(
-            (version, tag, rebuild, filename),
-            ("1.0", "wasm32_kandelo", 0, "mini-tool--1.0.wasm32_kandelo.bottle.tar.gz"),
+            (version, tag, rebuild, filename, metadata),
+            (
+                "1.0",
+                "wasm32_kandelo",
+                0,
+                "mini-tool--1.0.wasm32_kandelo.bottle.tar.gz",
+                None,
+            ),
         )
 
 

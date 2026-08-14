@@ -434,7 +434,7 @@ homebrew_patched_launcher_stage_dependency_plan() {
 homebrew_patched_launcher_stage_tier2_attestation() {
   jq -e '
     keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tier2_bridge"] and
-    .schema == 2 and
+    .schema == 4 and
     (.formula_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
     (.support_sha256 == null or
       (.support_sha256 | type == "string" and test("^[0-9a-f]{64}$"))) and
@@ -443,7 +443,7 @@ homebrew_patched_launcher_stage_tier2_attestation() {
     ((.support_sha256 == null) == (.support_runtime_sha256 == null)) and
     (.tier2_bridge == null or .support_sha256 != null) and
     if .tier2_bridge == null then true else
-      (.tier2_bridge | keys == ["build_toml_sha256", "package", "package_toml_sha256", "script", "script_env_keys", "script_sha256", "source_mode", "source_sha256", "source_url", "version"])
+      (.tier2_bridge | keys == ["package", "script", "script_env_keys", "script_sha256", "source_sha256", "source_url", "version"])
     end
   ' "$1" >/dev/null || return 2
   if [ -n "${FAKE_POST_BUILD_TAP_RECIPE_PKG_VERSION:-}" ]; then
@@ -4111,13 +4111,12 @@ EOF
     fail "bottle build did not run Tier-2 preflight before and after tap materialization"
   jq -e '
     keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tier2_bridge"] and
-    .schema == 2 and .arch == "wasm32" and
+    .schema == 4 and .arch == "wasm32" and
     .tap == "kandelo-dev/tap-core" and .formula == "hello" and
-    (.tier2_bridge | keys == ["build_toml_sha256", "package", "package_toml_sha256", "script", "script_env_keys", "script_sha256", "source_mode", "source_sha256", "source_url", "version"]) and
+    (.tier2_bridge | keys == ["package", "script", "script_env_keys", "script_sha256", "source_sha256", "source_url", "version"]) and
     .tier2_bridge.package == "cpython" and
     .tier2_bridge.script == "build-cpython.sh" and
     .tier2_bridge.script_env_keys == [] and
-    .tier2_bridge.source_mode == "exact" and
     .tier2_bridge.version == "1.0"
   ' "$tier2_attestation_capture" >/dev/null ||
     fail "bottle build did not stage the exact active Tier-2 attestation"
