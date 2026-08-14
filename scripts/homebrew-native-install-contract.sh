@@ -234,7 +234,13 @@ homebrew_native_contract_install_root() {
     return
   fi
   run_native_brew_logged install --as-dependency --formula \
-    "homebrew/core/$1"
+    "homebrew/core/$1" || return
+  # Native tools are executed from their sealed Cellar/opt roots. Remove only
+  # their global prefix links after installation so reviewed roots with an
+  # overlapping command (Binaryen and WABT both ship wasm2c) can coexist.
+  # `brew unlink` preserves the opt link that the publisher projects into the
+  # target Formula environment.
+  run_native_brew_logged unlink "homebrew/core/$1"
 }
 
 homebrew_native_contract_install() {
