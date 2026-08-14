@@ -1232,14 +1232,17 @@ if [ -n "$STAGING_CANDIDATE_ABI" ] &&
     exit 1
   fi
   NORMALIZED_BOTTLE_FILENAME="${FORMULA}--${PKG_VERSION}.${BOTTLE_TAG}.bottle.${EXPECTED_BOTTLE_REBUILD}.tar.gz"
+  NORMALIZED_BOTTLE_URL_FILENAME="${FORMULA}-${PKG_VERSION}.${BOTTLE_TAG}.bottle.${EXPECTED_BOTTLE_REBUILD}.tar.gz"
   NORMALIZED_BOTTLE_JSON="$(mktemp "$WORK_DIR/.candidate-bottle-json.XXXXXX")"
   jq \
     --arg key "$FORMULA_KEY" \
     --arg tag "$BOTTLE_TAG" \
     --argjson rebuild "$EXPECTED_BOTTLE_REBUILD" \
-    --arg filename "$NORMALIZED_BOTTLE_FILENAME" '
+    --arg local_filename "$NORMALIZED_BOTTLE_FILENAME" \
+    --arg filename "$NORMALIZED_BOTTLE_URL_FILENAME" '
       .[$key].bottle.rebuild = $rebuild |
-      .[$key].bottle.tags[$tag].local_filename = $filename
+      .[$key].bottle.tags[$tag].local_filename = $local_filename |
+      .[$key].bottle.tags[$tag].filename = $filename
     ' "$BOTTLE_SOURCE_JSON" >"$NORMALIZED_BOTTLE_JSON"
   mv -- "$NORMALIZED_BOTTLE_JSON" "$BOTTLE_SOURCE_JSON"
   mv -- "${raw_candidate_archives[0]}" \

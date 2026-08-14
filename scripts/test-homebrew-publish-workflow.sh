@@ -4055,6 +4055,7 @@ for directory, names, files in os.walk(root):
       "rebuild": $raw_bottle_rebuild,
       "tags": {
         "wasm32_kandelo": {
+          "filename": "hello-1.0.wasm32_kandelo.bottle${raw_bottle_suffix}.tar.gz",
           "local_filename": "hello--1.0.wasm32_kandelo.bottle${raw_bottle_suffix}.tar.gz"
         }
       }
@@ -4178,6 +4179,14 @@ EOF
     fail "candidate tap checkout permissions were not restored after cleanup"
   [ "$(wc -l <"$tier2_preflight_log" | tr -d '[:space:]')" = 2 ] ||
     fail "bottle build did not run Tier-2 preflight before and after tap materialization"
+  jq -e '
+    .["kandelo-dev/tap-core/hello"].bottle.rebuild == 1 and
+    .["kandelo-dev/tap-core/hello"].bottle.tags.wasm32_kandelo.local_filename ==
+      "hello--1.0.wasm32_kandelo.bottle.1.tar.gz" and
+    .["kandelo-dev/tap-core/hello"].bottle.tags.wasm32_kandelo.filename ==
+      "hello-1.0.wasm32_kandelo.bottle.1.tar.gz"
+  ' "$out/bottles/hello--1.0.wasm32_kandelo.bottle.json" >/dev/null ||
+    fail "candidate bottle metadata did not normalize both rebuilt filenames"
   jq -e '
     keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tier2_bridge"] and
     .schema == 4 and .arch == "wasm32" and
