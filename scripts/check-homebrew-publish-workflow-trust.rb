@@ -4512,11 +4512,7 @@ def check_publisher(workflow)
     check(bottle_builder.include?(fragment), "reviewed bottle builder lacks #{fragment}")
   end
   retained_receipt_bottle_command = <<~'SHELL'
-    bottle_args=(--json)
-    if [ -z "$STAGING_CANDIDATE_ABI" ]; then
-      bottle_args+=(--keep-old)
-    fi
-    bottle_args+=(--root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF")
+    bottle_args=(--json --keep-old --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF")
     run_brew_for_kandelo_bottles "$BREW_BIN" bottle "${bottle_args[@]}"
   SHELL
   retained_receipt_bottle_command = retained_receipt_bottle_command
