@@ -180,6 +180,7 @@ jobs:
 
       - name: Collect and project bounded public facts
         env:
+          ABI_STAGING_GITHUB_API_TOKEN: ${{ github.token }}
           EXPECTED_HEAD: ${{ matrix.subject.head }}
           EXPECTED_PR: ${{ matrix.subject.number }}
           EXPECTED_REPOSITORY: ${{ matrix.subject.repository }}
