@@ -4116,11 +4116,12 @@ def check_publisher(workflow)
   bottle_builder = File.read(File.join(REPO_ROOT, "scripts/homebrew-bottle-build.sh"))
   check(
     bottle_builder.scan("homebrew_local_tap_clone_url").length == 2 &&
+      bottle_builder.scan("homebrew_clone_tap").length == 2 &&
       bottle_builder.include?(
-        '"$BREW_BIN" tap "$TAP_NAME" "$PRIMARY_TAP_CLONE_URL"'
+        'homebrew_clone_tap "$BREW_BIN" "$TAP_NAME" "$PRIMARY_TAP_CLONE_URL"'
       ) &&
       bottle_builder.include?(
-        '"$BREW_BIN" tap "$dependency_tap" ' \
+        '"$BREW_BIN" "$dependency_tap" ' \
         '"$dependency_tap_clone_url"'
       ) &&
       !bottle_builder.include?(
@@ -4481,7 +4482,8 @@ def check_publisher(workflow)
     'DEPENDENCY_TAP_ROOTS=()',
     'export HOMEBREW_KANDELO_PRIMARY_TAP_ROOT="$TAPPED_TAP_ROOT"',
     'homebrew_local_tap_clone_url "$dependency_root"',
-    '"$BREW_BIN" tap "$dependency_tap" "$dependency_tap_clone_url"',
+    'homebrew_clone_tap',
+    '"$BREW_BIN" "$dependency_tap" "$dependency_tap_clone_url"',
     'DEPENDENCY_TAP_ROOTS+=("$dependency_root")',
     '"${DEPENDENCY_TAP_ROOTS[@]}"',
     'filter_target_dependencies()',
@@ -4512,7 +4514,10 @@ def check_publisher(workflow)
     check(bottle_builder.include?(fragment), "reviewed bottle builder lacks #{fragment}")
   end
   retained_receipt_bottle_command = <<~'SHELL'
-    bottle_args=(--json --keep-old --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF")
+    bottle_args=(--json --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF")
+    if [ -z "$STAGING_CANDIDATE_ABI" ]; then
+      bottle_args=(--json --keep-old --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF")
+    fi
     run_brew_for_kandelo_bottles "$BREW_BIN" bottle "${bottle_args[@]}"
   SHELL
   retained_receipt_bottle_command = retained_receipt_bottle_command
@@ -5125,7 +5130,6 @@ def check_publisher(workflow)
     [
       '.dependencies[] | [.tap_name, .root, .tap_commit] | @tsv',
       'homebrew_local_tap_clone_url "$dependency_root"',
-      '"$BREW_BIN" tap "$dependency_tap" "$dependency_tap_clone_url"',
       'tapped_dependency_root="$("$BREW_BIN" --repository "$dependency_tap")"',
       'locked_dependency_root="$(cd "$dependency_root" && pwd -P)"',
       '[ "$tapped_dependency_root" != "$locked_dependency_root" ]',
@@ -5135,6 +5139,12 @@ def check_publisher(workflow)
       check(formula_runner.include?(fragment),
             "Formula runner immutable dependency tap binding lacks #{fragment}")
     end
+    check(
+      formula_runner.match?(
+        /"\$BREW_BIN" (?:tap )?"\$dependency_tap" "\$dependency_tap_clone_url"/
+      ),
+      "Formula runner immutable dependency tap binding lacks its exact clone arguments"
+    )
     dependency_clean_index = formula_runner.index(
       '[ -z "$(git -C "$tapped_dependency_root" status --short --untracked-files=all)" ]'
     )
@@ -5243,7 +5253,7 @@ def check_publisher(workflow)
     end
   end
   builder_tap_clone_index = bottle_builder.index(
-    '"$BREW_BIN" tap "$TAP_NAME" "$PRIMARY_TAP_CLONE_URL"'
+    'homebrew_clone_tap "$BREW_BIN" "$TAP_NAME" "$PRIMARY_TAP_CLONE_URL"'
   )
   builder_clean_clone_index = bottle_builder.index(
     'git -C "$TAPPED_TAP_ROOT" rev-parse HEAD'

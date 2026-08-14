@@ -959,7 +959,10 @@ brew_install_build_bottle() {
   homebrew_patched_launcher_snapshot_target_cellar_layout \
     >"$TARGET_CELLAR_BEFORE_TEST"
   "$BREW_BIN" test "$FORMULA_REF"
-  bottle_args=(--json --keep-old --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF")
+  bottle_args=(--json --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF")
+  if [ -z "$STAGING_CANDIDATE_ABI" ]; then
+    bottle_args=(--json --keep-old --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF")
+  fi
   run_brew_for_kandelo_bottles "$BREW_BIN" bottle "${bottle_args[@]}"
   homebrew_patched_launcher_snapshot_target_cellar_layout \
     >"$TARGET_CELLAR_AFTER_TEST"
