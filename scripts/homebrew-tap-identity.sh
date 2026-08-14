@@ -166,3 +166,22 @@ import sys
 print(pathlib.Path(sys.argv[1]).as_uri())
 PY
 }
+
+homebrew_clone_tap() {
+  if [ "$#" -ne 3 ]; then
+    echo "homebrew_clone_tap: expected BREW TAP URL" >&2
+    return 2
+  fi
+  local brew_bin="$1" tap_name="$2" clone_url="$3"
+  local original_umask status
+
+  original_umask="$(umask)"
+  umask 022
+  if "$brew_bin" tap "$tap_name" "$clone_url"; then
+    status=0
+  else
+    status="$?"
+  fi
+  umask "$original_umask"
+  return "$status"
+}

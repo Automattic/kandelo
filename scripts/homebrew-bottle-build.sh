@@ -591,7 +591,7 @@ done
 # synthetic commit. The public source commit remains publication authority,
 # while Homebrew must truthfully record the synthetic commit it actually runs.
 PRIMARY_TAP_CLONE_URL="$(homebrew_local_tap_clone_url "$TAP_ROOT")"
-"$BREW_BIN" tap "$TAP_NAME" "$PRIMARY_TAP_CLONE_URL"
+homebrew_clone_tap "$BREW_BIN" "$TAP_NAME" "$PRIMARY_TAP_CLONE_URL"
 TAPPED_TAP_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"
 TAPPED_TAP_ROOT="$(cd "$TAPPED_TAP_ROOT" && pwd -P)"
 [ "$TAPPED_TAP_ROOT" != "$TAP_ROOT" ] && \
@@ -620,7 +620,8 @@ if [ -n "${KANDELO_HOMEBREW_RESOLVED_TAPS_FILE:-}" ]; then
     dependency_tap_clone_url="$(
       homebrew_local_tap_clone_url "$dependency_root"
     )"
-    "$BREW_BIN" tap "$dependency_tap" "$dependency_tap_clone_url"
+    homebrew_clone_tap \
+      "$BREW_BIN" "$dependency_tap" "$dependency_tap_clone_url"
     tapped_dependency_root="$("$BREW_BIN" --repository "$dependency_tap")"
     tapped_dependency_root="$(cd "$tapped_dependency_root" && pwd -P)"
     locked_dependency_root="$(cd "$dependency_root" && pwd -P)"
