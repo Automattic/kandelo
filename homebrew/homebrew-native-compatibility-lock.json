@@ -6552,7 +6552,7 @@
           "libgit2@1.9"
         ],
         "bottle_cellar": ":any",
-        "bottle_checksum": "190580065f7e95bafdb657415d226749ceef5d07508323454cd6d7035c7733c2",
+        "bottle_checksum": "0c13eaf7a228f13657080aa1e7f7e25318ab7e53c193e577e19fe5a62a2f1e77",
         "desc": "C library of Git core methods that is re-entrant and linkable",
         "executables": [
           "git2"
@@ -6583,8 +6583,8 @@
           }
         },
         "name": "libgit2",
-        "ruby_source_checksum": "ee93cfbfe4cb10a73271a09c584ccf053371263e3a99f2611a5fb49e4924d8fa",
-        "stable_checksum": "a88a42a4ea9bdab7aa8686eead3bf7d9c6dd74529caca16ab22eaa92433d31d9",
+        "ruby_source_checksum": "3c05e00e785d52861696958fd92ef06c8d4010fe7b8fc16a651aa5b5a438d48c",
+        "stable_checksum": "1a4fbe7589e814777ae76b64734ad80f4ecad22cd33a22682a2aaea4ae5375e7",
         "stable_dependencies": [
           "libssh2",
           "llhttp",
@@ -6599,9 +6599,9 @@
           }
         ],
         "stable_url_args": [
-          "https://github.com/libgit2/libgit2/archive/refs/tags/v1.9.6.tar.gz"
+          "https://github.com/libgit2/libgit2/archive/refs/tags/v1.9.7.tar.gz"
         ],
-        "stable_version": "1.9.6",
+        "stable_version": "1.9.7",
         "versioned_formulae": [
           "libgit2@1.8",
           "libgit2@1.7"
@@ -6612,7 +6612,7 @@
           "libgit2@1.9"
         ],
         "bottle_cellar": ":any",
-        "bottle_checksum": "190580065f7e95bafdb657415d226749ceef5d07508323454cd6d7035c7733c2",
+        "bottle_checksum": "0c13eaf7a228f13657080aa1e7f7e25318ab7e53c193e577e19fe5a62a2f1e77",
         "desc": "C library of Git core methods that is re-entrant and linkable",
         "executables": [
           "git2"
@@ -6643,8 +6643,8 @@
           }
         },
         "name": "libgit2",
-        "ruby_source_checksum": "ee93cfbfe4cb10a73271a09c584ccf053371263e3a99f2611a5fb49e4924d8fa",
-        "stable_checksum": "a88a42a4ea9bdab7aa8686eead3bf7d9c6dd74529caca16ab22eaa92433d31d9",
+        "ruby_source_checksum": "3c05e00e785d52861696958fd92ef06c8d4010fe7b8fc16a651aa5b5a438d48c",
+        "stable_checksum": "1a4fbe7589e814777ae76b64734ad80f4ecad22cd33a22682a2aaea4ae5375e7",
         "stable_dependencies": [
           "libssh2",
           "llhttp",
@@ -6659,9 +6659,9 @@
           }
         ],
         "stable_url_args": [
-          "https://github.com/libgit2/libgit2/archive/refs/tags/v1.9.6.tar.gz"
+          "https://github.com/libgit2/libgit2/archive/refs/tags/v1.9.7.tar.gz"
         ],
-        "stable_version": "1.9.6",
+        "stable_version": "1.9.7",
         "versioned_formulae": [
           "libgit2@1.8",
           "libgit2@1.7"
