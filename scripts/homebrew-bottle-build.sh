@@ -1200,6 +1200,47 @@ if jq -e '.schema == 3' "$TIER2_ATTESTATION" >/dev/null &&
   exit 1
 fi
 BOTTLE_REBUILD="$(jq -r --arg key "$FORMULA_KEY" '.[$key].bottle.rebuild' "$BOTTLE_SOURCE_JSON")"
+if [ -n "$STAGING_CANDIDATE_ABI" ] &&
+   [ "$BOTTLE_REBUILD" = "0" ] &&
+   [ "$EXPECTED_BOTTLE_REBUILD" != "0" ]; then
+  # WHY: candidate roots intentionally omit --keep-old so Homebrew cannot
+  # copy canonical-root metadata into the candidate JSON. Homebrew therefore
+  # emits rebuild zero even when the sealed Formula owns a positive rebuild.
+  # Bind the raw zero-rebuild archive first, then apply only that Formula-owned
+  # rebuild identity without changing the bottle bytes.
+  RAW_BOTTLE_FILENAME="${FORMULA}--${PKG_VERSION}.${BOTTLE_TAG}.bottle.tar.gz"
+  if ! jq -e \
+    --arg key "$FORMULA_KEY" \
+    --arg tag "$BOTTLE_TAG" \
+    --arg expected "$RAW_BOTTLE_FILENAME" \
+    '.[$key].bottle.tags[$tag].local_filename == $expected' \
+    "$BOTTLE_SOURCE_JSON" >/dev/null; then
+    echo "homebrew-bottle-build.sh: candidate rebuild-zero JSON does not identify $RAW_BOTTLE_FILENAME" >&2
+    exit 1
+  fi
+  mapfile -t raw_candidate_archives < <(
+    find "$WORK_DIR" -maxdepth 1 -type f -name '*.bottle*.tar.gz' -print | sort
+  )
+  if [ "${#raw_candidate_archives[@]}" -ne 1 ] ||
+     [ "$(basename "${raw_candidate_archives[0]}")" != "$RAW_BOTTLE_FILENAME" ]; then
+    echo "homebrew-bottle-build.sh: candidate rebuild-zero archive does not match its exact JSON identity" >&2
+    exit 1
+  fi
+  NORMALIZED_BOTTLE_FILENAME="${FORMULA}--${PKG_VERSION}.${BOTTLE_TAG}.bottle.${EXPECTED_BOTTLE_REBUILD}.tar.gz"
+  NORMALIZED_BOTTLE_JSON="$(mktemp "$WORK_DIR/.candidate-bottle-json.XXXXXX")"
+  jq \
+    --arg key "$FORMULA_KEY" \
+    --arg tag "$BOTTLE_TAG" \
+    --argjson rebuild "$EXPECTED_BOTTLE_REBUILD" \
+    --arg filename "$NORMALIZED_BOTTLE_FILENAME" '
+      .[$key].bottle.rebuild = $rebuild |
+      .[$key].bottle.tags[$tag].local_filename = $filename
+    ' "$BOTTLE_SOURCE_JSON" >"$NORMALIZED_BOTTLE_JSON"
+  mv -- "$NORMALIZED_BOTTLE_JSON" "$BOTTLE_SOURCE_JSON"
+  mv -- "${raw_candidate_archives[0]}" \
+    "$(dirname "${raw_candidate_archives[0]}")/$NORMALIZED_BOTTLE_FILENAME"
+  BOTTLE_REBUILD="$EXPECTED_BOTTLE_REBUILD"
+fi
 if [ "$BOTTLE_REBUILD" != "$EXPECTED_BOTTLE_REBUILD" ]; then
   echo "homebrew-bottle-build.sh: Homebrew bottle rebuild $BOTTLE_REBUILD differs from planned Formula rebuild $EXPECTED_BOTTLE_REBUILD" >&2
   exit 1

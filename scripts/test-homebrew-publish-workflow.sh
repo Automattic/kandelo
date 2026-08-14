@@ -4002,7 +4002,15 @@ for directory, names, files in os.walk(root):
         path = os.path.join(directory, name)
         os.utime(path, (timestamp, timestamp), follow_symlinks=False)
 ' "$bottle_stage" "${FAKE_BUILD_TIME:?}"
-    bottle_tar="$bottle_dir/hello--1.0.wasm32_kandelo.bottle.1.tar"
+    raw_bottle_rebuild=1
+    raw_bottle_suffix=.1
+    if [ -n "${FAKE_EXPECTED_STAGING_CANDIDATE_ABI:-}" ]; then
+      # Real Homebrew starts fresh candidate-root metadata at rebuild zero
+      # when --keep-old is intentionally omitted.
+      raw_bottle_rebuild=0
+      raw_bottle_suffix=
+    fi
+    bottle_tar="$bottle_dir/hello--1.0.wasm32_kandelo.bottle${raw_bottle_suffix}.tar"
     (
       cd "$bottle_stage"
       "$HOMEBREW_KANDELO_GNU_TAR" --create --numeric-owner \
@@ -4014,20 +4022,20 @@ for directory, names, files in os.walk(root):
         --file "$bottle_tar" hello/1.0
     )
     gzip -n -c "$bottle_tar" \
-      >"$bottle_dir/hello--1.0.wasm32_kandelo.bottle.1.tar.gz"
+      >"$bottle_dir/hello--1.0.wasm32_kandelo.bottle${raw_bottle_suffix}.tar.gz"
     rm -f "$bottle_tar"
     python3 -c 'import os, sys; os.utime(sys.argv[1], (1705948357, 1705948357))' \
-      "$bottle_dir/hello--1.0.wasm32_kandelo.bottle.1.tar.gz"
-    cat >hello--1.0.wasm32_kandelo.bottle.json <<'JSON'
+      "$bottle_dir/hello--1.0.wasm32_kandelo.bottle${raw_bottle_suffix}.tar.gz"
+    cat >hello--1.0.wasm32_kandelo.bottle.json <<JSON
 {
   "kandelo-dev/tap-core/hello": {
     "formula": {"name": "hello", "pkg_version": "1.0"},
     "bottle": {
       "date": "2024-01-22T17:12:37Z",
-      "rebuild": 1,
+      "rebuild": $raw_bottle_rebuild,
       "tags": {
         "wasm32_kandelo": {
-          "local_filename": "hello--1.0.wasm32_kandelo.bottle.1.tar.gz"
+          "local_filename": "hello--1.0.wasm32_kandelo.bottle${raw_bottle_suffix}.tar.gz"
         }
       }
     }
