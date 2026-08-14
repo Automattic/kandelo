@@ -178,6 +178,17 @@ if [ "$BOTTLE_ROOT_URL" != "$EXPECTED_BOTTLE_ROOT_URL" ]; then
   echo "homebrew-bottle-build.sh: bottle root URL does not match its exact publication authority" >&2
   exit 2
 fi
+DEPENDENCY_BOTTLE_ROOT_URL="$BOTTLE_ROOT_URL"
+DEPENDENCY_PROVENANCE_SCOPE_ARGS=()
+if [ -n "$STAGING_CANDIDATE_ABI" ]; then
+  # Candidate bottles have one repository per Formula. Dependency provenance
+  # describes the complete poured closure, so it is rooted at their common
+  # ABI candidate parent and appends each dependency Formula itself.
+  DEPENDENCY_BOTTLE_ROOT_URL="${BOTTLE_ROOT_URL%/*}"
+  DEPENDENCY_PROVENANCE_SCOPE_ARGS=(
+    --staging-candidate-abi "$STAGING_CANDIDATE_ABI"
+  )
+fi
 homebrew_select_guest_layout \
   "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}"
 PATCH_FILE="$HOMEBREW_GUEST_PATCH_FILE"
@@ -866,11 +877,12 @@ dependency_cache_args=(
   --tap-checkout-commit "$TAP_CHECKOUT_COMMIT"
   --formula "$FORMULA"
   --arch "$ARCH"
-  --bottle-root-url "$BOTTLE_ROOT_URL"
+  --bottle-root-url "$DEPENDENCY_BOTTLE_ROOT_URL"
   --expected-dependencies "$DEPENDENCY_LIST"
   --cache-root "$HOMEBREW_CACHE"
   --out "$DEPENDENCY_CACHE_EVIDENCE"
 )
+dependency_cache_args+=("${DEPENDENCY_PROVENANCE_SCOPE_ARGS[@]}")
 if [ -n "$HOMEBREW_GUEST_LAYOUT_SHA256" ]; then
   dependency_cache_args+=(
     --prefix-campaign-layout-sha256 "$HOMEBREW_GUEST_LAYOUT_SHA256"
@@ -944,13 +956,14 @@ dependency_provenance_args=(
   --tap-checkout-commit "$TAP_CHECKOUT_COMMIT" \
   --formula "$FORMULA" \
   --arch "$ARCH" \
-  --bottle-root-url "$BOTTLE_ROOT_URL" \
+  --bottle-root-url "$DEPENDENCY_BOTTLE_ROOT_URL" \
   --target-receipt "$TARGET_PREFIX/INSTALL_RECEIPT.json" \
   --expected-dependencies "$DEPENDENCY_LIST" \
   --install-log "$INSTALL_LOG" \
   --cache-evidence "$DEPENDENCY_CACHE_EVIDENCE" \
   --out "$DEPENDENCY_PROVENANCE"
 )
+dependency_provenance_args+=("${DEPENDENCY_PROVENANCE_SCOPE_ARGS[@]}")
 if [ -n "$HOMEBREW_GUEST_LAYOUT_SHA256" ]; then
   dependency_provenance_args+=(
     --prefix-campaign-layout-sha256 "$HOMEBREW_GUEST_LAYOUT_SHA256"

@@ -3921,6 +3921,13 @@ TARGET_GIT
       *) exit 43 ;;
     esac
     ;;
+  unlink)
+    [ "${FAKE_HOMEBREW_REALM:-target}" = native ] || exit 62
+    case "$*" in
+      'unlink homebrew/core/cmake'|'unlink homebrew/core/ninja') ;;
+      *) exit 62 ;;
+    esac
+    ;;
   info)
     [ "${FAKE_HOMEBREW_REALM:-target}" = native ] || exit 47
     case "$*" in
@@ -3956,7 +3963,8 @@ TARGET_GIT
     fi
     ;;
   bottle)
-    [ "$*" = 'bottle --json --keep-old --root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core kandelo-dev/tap-core/hello' ] || exit 55
+    expected_bottle_root="${FAKE_EXPECTED_BOTTLE_ROOT_URL:-https://ghcr.io/v2/kandelo-dev/homebrew-tap-core}"
+    [ "$*" = "bottle --json --keep-old --root-url $expected_bottle_root kandelo-dev/tap-core/hello" ] || exit 55
     printf 'bottle-tags=%s|%s\n' \
       "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
       >>"$FAKE_BREW_LOG"
@@ -4044,12 +4052,16 @@ out=""
 install_log=""
 cache_evidence=""
 cache_root=""
+bottle_root_url=""
+staging_candidate_abi=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --expected-dependencies) expected="${2:-}"; shift 2 ;;
     --install-log) install_log="${2:-}"; shift 2 ;;
     --cache-evidence) cache_evidence="${2:-}"; shift 2 ;;
     --cache-root) cache_root="${2:-}"; shift 2 ;;
+    --bottle-root-url) bottle_root_url="${2:-}"; shift 2 ;;
+    --staging-candidate-abi) staging_candidate_abi="${2:-}"; shift 2 ;;
     --out) out="${2:-}"; shift 2 ;;
     *) shift ;;
   esac
@@ -4057,11 +4069,19 @@ done
 case "$subcommand" in
   capture-cache)
     [ -n "$expected" ] && [ -n "$cache_root" ] && [ -n "$out" ] || exit 47
+    if [ -n "${FAKE_EXPECTED_DEPENDENCY_BOTTLE_ROOT_URL:-}" ]; then
+      [ "$bottle_root_url" = "$FAKE_EXPECTED_DEPENDENCY_BOTTLE_ROOT_URL" ] || exit 51
+      [ "$staging_candidate_abi" = "$FAKE_EXPECTED_STAGING_CANDIDATE_ABI" ] || exit 52
+    fi
     printf '{"schema":1}\n' >"$out"
     ;;
   capture)
     [ -n "$expected" ] && [ -n "$install_log" ] && [ -n "$out" ] || exit 48
     [ -n "$cache_evidence" ] && [ -f "$cache_evidence" ] || exit 49
+    if [ -n "${FAKE_EXPECTED_DEPENDENCY_BOTTLE_ROOT_URL:-}" ]; then
+      [ "$bottle_root_url" = "$FAKE_EXPECTED_DEPENDENCY_BOTTLE_ROOT_URL" ] || exit 53
+      [ "$staging_candidate_abi" = "$FAKE_EXPECTED_STAGING_CANDIDATE_ABI" ] || exit 54
+    fi
     cp "$expected" "$FAKE_PROVENANCE_CAPTURE"
     cp "$install_log" "$FAKE_PROVENANCE_LOG_CAPTURE"
     printf '{"schema":1}\n' >"$out"
@@ -4087,6 +4107,9 @@ EOF
     FAKE_BUILD_TIME=1700000000 \
     FAKE_ASSERT_GIT_CONTROL_PLANE=1 \
     FAKE_EXPECTED_HOST_GIT="$host_git_bin" \
+    FAKE_EXPECTED_BOTTLE_ROOT_URL=https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-43-candidates/hello \
+    FAKE_EXPECTED_DEPENDENCY_BOTTLE_ROOT_URL=https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-43-candidates \
+    FAKE_EXPECTED_STAGING_CANDIDATE_ABI=43 \
     FAKE_BREW_PREFIX="$brew_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \
     FAKE_TAP_ROOT="$tapped_main" \
@@ -4102,7 +4125,8 @@ EOF
       --formula hello \
       --arch wasm32 \
       --out "$out" \
-      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-43-candidates/hello \
+      --staging-candidate-abi 43 \
       >/dev/null 2>"$runner_err"; then
     fail "test dependency fixture did not complete: $(cat "$runner_err"); " \
       "last Brew commands: $(tail -n 12 "$realm_log" | tr '\n' ';')"
@@ -4793,6 +4817,13 @@ TARGET_GIT
         : >"$FAKE_STATE/target"
         ;;
       *) exit 47 ;;
+    esac
+    ;;
+  unlink)
+    [ "${FAKE_HOMEBREW_REALM:-target}" = native ] || exit 58
+    case "$*" in
+      'unlink homebrew/core/cmake'|'unlink homebrew/core/ninja') ;;
+      *) exit 58 ;;
     esac
     ;;
   list)
@@ -7900,6 +7931,13 @@ assert_formula_test_program_projection_is_current_and_bounded() {
   ' "$projection" "$committed" "$selected" ||
     fail "Formula checker projection is not the current selected package closure"
 }
+
+if [ "${KANDELO_HOMEBREW_PUBLISH_TEST_FOCUS:-}" = staging-candidate-dependency-root ]; then
+  make_formula_runner_fixture
+  assert_bottle_build_installs_test_dependencies
+  echo "test-homebrew-publish-workflow.sh: staging candidate dependency root ok"
+  exit 0
+fi
 
 assert_canonical_formula_support_is_load_order_independent
 make_formula_runner_fixture
