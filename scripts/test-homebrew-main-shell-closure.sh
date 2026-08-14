@@ -369,6 +369,19 @@ bash "$PRODUCT_STATE_TEST" ||
   fail "main-shell product-state contract tests failed"
 
 SOURCE_ROOT_COUNT="$(jq -er '.packages | length' "$SOURCE_LOCK")"
+BREWFILE_ROOT_COUNT="$(grep -Ec '^brew "[^"]+"$' "$BREWFILE")"
+STAGED_ROOT_COUNT="$((BREWFILE_ROOT_COUNT - SOURCE_ROOT_COUNT))"
+[ "$STAGED_ROOT_COUNT" -ge 0 ] ||
+  fail "main-shell Brewfile cannot contain fewer roots than the migration lock"
+TEST_LAZY_ARTIFACT_LOCK="$LAZY_ARTIFACT_LOCK"
+if [ "$STAGED_ROOT_COUNT" -gt 0 ]; then
+  TEST_LAZY_ARTIFACT_LOCK="$TMP_ROOT/review-pending-artifact-lock.json"
+  staged_brewfile_sha="$(sha256sum "$BREWFILE")"
+  staged_brewfile_sha="${staged_brewfile_sha%% *}"
+  jq --arg sha "$staged_brewfile_sha" \
+    '.inputs.brewfile_sha256 = $sha' \
+    "$LAZY_ARTIFACT_LOCK" >"$TEST_LAZY_ARTIFACT_LOCK"
+fi
 SOURCE_CLOSURE_COUNT="$(jq -er '.formula_closure | length' "$SOURCE_LOCK")"
 RUNTIME_FORMULA_COUNT="$(jq -er '.formula_order | length' "$RUNTIME_SUPPORT")"
 AUDITED_FORMULA_COUNT="$(jq -er '
@@ -711,9 +724,16 @@ grep -Fq 'assertPackageClosure(' "$IMAGE_CONTRACT" ||
   fail "post-archive image contract must compare exact Formula identities"
 [ "$(grep -Fc 'export SOURCE_DATE_EPOCH=0' "$BUILDER")" -eq 1 ] ||
   fail "strict shell composer must own one canonical timestamp epoch"
-bash "$LAZY_ARTIFACT_CHECKER" \
-  --lock "$LAZY_ARTIFACT_LOCK" --expected-source-date-epoch 0 ||
-  fail "lazy shell artifact lock is not an exact digest/size/timestamp contract"
+if [ "$STAGED_ROOT_COUNT" -gt 0 ]; then
+  expect_failure \
+    "bound input digest changed: homebrew/main-shell.Brewfile" \
+    bash "$LAZY_ARTIFACT_CHECKER" \
+      --lock "$LAZY_ARTIFACT_LOCK" --expected-source-date-epoch 0
+else
+  bash "$LAZY_ARTIFACT_CHECKER" \
+    --lock "$LAZY_ARTIFACT_LOCK" --expected-source-date-epoch 0 ||
+    fail "lazy shell artifact lock is not an exact digest/size/timestamp contract"
+fi
 [ "$(jq -er '.state' "$SELECTION_LOCK")" = pending ] ||
   fail "new shell selection authority must begin in review-only pending state"
 # WHY: preparation runs without write credentials in the workflow's first
@@ -2842,18 +2862,18 @@ expect_failure "homebrew-bootstrap source lock: output archive has" \
   --homebrew-bootstrap-env "$bootstrap_dir/homebrew-brew.env"
 
 wrong_epoch_lock="$TMP_ROOT/main-shell-wrong-epoch-lock.json"
-jq '.source_date_epoch = 1' "$LAZY_ARTIFACT_LOCK" >"$wrong_epoch_lock"
+jq '.source_date_epoch = 1' "$TEST_LAZY_ARTIFACT_LOCK" >"$wrong_epoch_lock"
 expect_failure "lock is invalid or uses a different timestamp epoch" \
   "$BUILDER" --lazy-shell --tap-root "$tap_worktree" \
   --work-dir "$TMP_ROOT/work-wrong-lazy-epoch" --migration-lock "$lock" \
   --lazy-artifact-lock "$wrong_epoch_lock"
 old_schema_lock="$TMP_ROOT/main-shell-old-schema-lock.json"
-jq '.schema = 2' "$LAZY_ARTIFACT_LOCK" >"$old_schema_lock"
+jq '.schema = 2' "$TEST_LAZY_ARTIFACT_LOCK" >"$old_schema_lock"
 expect_failure "lock is invalid or uses a different timestamp epoch" \
   bash "$LAZY_ARTIFACT_CHECKER" \
     --lock "$old_schema_lock" --expected-source-date-epoch 0
 extra_field_lock="$TMP_ROOT/main-shell-extra-field-lock.json"
-jq '.unexpected = true' "$LAZY_ARTIFACT_LOCK" >"$extra_field_lock"
+jq '.unexpected = true' "$TEST_LAZY_ARTIFACT_LOCK" >"$extra_field_lock"
 expect_failure "lock is invalid or uses a different timestamp epoch" \
   "$BUILDER" --lazy-shell --tap-root "$tap_worktree" \
   --work-dir "$TMP_ROOT/work-extra-lazy-lock-field" --migration-lock "$lock" \
@@ -2869,7 +2889,7 @@ jq '
     sha256: "0000000000000000000000000000000000000000000000000000000000000000",
     bytes: 1
   }
-' "$LAZY_ARTIFACT_LOCK" >"$sealed_fixture_lock"
+' "$TEST_LAZY_ARTIFACT_LOCK" >"$sealed_fixture_lock"
 expect_failure "--review-pending-artifact requires a pending artifact lock" \
   "$BUILDER" --lazy-shell --tap-root "$tap_worktree" \
   --work-dir "$TMP_ROOT/work-review-sealed-lazy-lock" \
@@ -2895,6 +2915,8 @@ for relative_path in \
 do
   cp "$REPO_ROOT/$relative_path" "$artifact_checker_root/$relative_path"
 done
+cp "$TEST_LAZY_ARTIFACT_LOCK" \
+  "$artifact_checker_root/homebrew/main-shell-lazy-artifact-lock.json"
 fixture_checker="$artifact_checker_root/scripts/verify-homebrew-main-shell-artifact-lock.sh"
 fixture_checked_lock="$artifact_checker_root/homebrew/main-shell-lazy-artifact-lock.json"
 bash "$fixture_checker" \
@@ -2917,13 +2939,13 @@ artifact_bytes="$(wc -c <"$artifact_fixture" | tr -d '[:space:]')"
 fixture_lock="$TMP_ROOT/lazy-shell-artifact-lock.json"
 jq --arg sha "$artifact_sha" --argjson bytes "$artifact_bytes" \
   '.state = "sealed" | .image = {sha256: $sha, bytes: $bytes}' \
-  "$LAZY_ARTIFACT_LOCK" >"$fixture_lock"
+  "$TEST_LAZY_ARTIFACT_LOCK" >"$fixture_lock"
 pending_fixture_lock="$TMP_ROOT/lazy-shell-pending-artifact-lock.json"
 # WHY: the checked-in lock advances from pending to sealed after a reviewed
 # artifact is reproduced. Keep testing the pre-publication fail-closed state
 # explicitly instead of making this test depend on that release phase.
 jq '.state = "pending" | .image = null' \
-  "$LAZY_ARTIFACT_LOCK" >"$pending_fixture_lock"
+  "$TEST_LAZY_ARTIFACT_LOCK" >"$pending_fixture_lock"
 bash "$LAZY_ARTIFACT_CHECKER" \
   --lock "$fixture_lock" --expected-source-date-epoch 0 \
   --artifact "$artifact_fixture" ||

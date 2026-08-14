@@ -121,6 +121,14 @@ publishes the application and compact VFS product; the compiler, libc++, and
 SDK bottle payloads remain on GHCR and materialize only on first use or an
 explicit package prefetch.
 
+During review, the transitional `main-shell.Brewfile` may append a lazy
+product root before that root has a canonical admission. The main-shell source
+checker keeps the migration lock's existing root sequence exact, verifies the
+appended suffix against the product catalog, and reports it as staged rather
+than finalized. The historical closed-selection root exporter and sealer reject
+that state. This rollout does not update the migration, selection, or artifact
+locks and cannot route the toolchain through the retired release lane.
+
 This is not a general user-facing Homebrew install guide yet. Do not document
 `brew tap` or guest `brew install` commands until that lifecycle is validated
 as a supported Kandelo user workflow. Homebrew Formulae and bottle metadata

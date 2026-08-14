@@ -44,6 +44,32 @@ for input in \
 do
   cp "$REPO_ROOT/homebrew/$input" "$fixture/homebrew/$input"
 done
+
+# Product review may append source roots while the checked-in historical locks
+# deliberately remain unchanged. Build the coherent pending-lock fixture that
+# the review-only finalizer would emit; this test owns state classification,
+# not whether the retired closed-selection lane may publish those roots.
+brewfile_sha="$(sha256sum "$fixture/homebrew/main-shell.Brewfile")"
+brewfile_sha="${brewfile_sha%% *}"
+jq --arg sha "$brewfile_sha" \
+  '.inputs.brewfile.sha256 = $sha' \
+  "$fixture/homebrew/main-shell-selection-lock.json" \
+  >"$fixture/homebrew/selection.next"
+mv "$fixture/homebrew/selection.next" \
+  "$fixture/homebrew/main-shell-selection-lock.json"
+selection_sha="$(sha256sum \
+  "$fixture/homebrew/main-shell-selection-lock.json")"
+selection_sha="${selection_sha%% *}"
+jq --arg brewfile "$brewfile_sha" --arg selection "$selection_sha" \
+  '.inputs.brewfile_sha256 = $brewfile |
+   .inputs.selection_lock_sha256 = $selection' \
+  "$fixture/homebrew/main-shell-lazy-artifact-lock.json" \
+  >"$fixture/homebrew/artifact.next"
+mv "$fixture/homebrew/artifact.next" \
+  "$fixture/homebrew/main-shell-lazy-artifact-lock.json"
+baseline_selection="$TMP_ROOT/main-shell-selection-lock.json"
+cp "$fixture/homebrew/main-shell-selection-lock.json" "$baseline_selection"
+
 [ "$(python3 "$STATE_TOOL" --root "$fixture")" = awaiting-selection ] ||
   fail "pending selection was not classified as awaiting-selection"
 
@@ -62,7 +88,7 @@ sed 's/"state": "pending"/"state": "pending", "state": "pending"/' \
   >"$fixture/homebrew/main-shell-selection-lock.json"
 expect_failure "JSON repeats key 'state'" \
   python3 "$STATE_TOOL" --root "$fixture"
-cp "$REPO_ROOT/homebrew/main-shell-selection-lock.json" \
+cp "$baseline_selection" \
   "$fixture/homebrew/main-shell-selection-lock.json"
 
 jq '.state = "sealed" | .release = {

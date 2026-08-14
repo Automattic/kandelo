@@ -20,6 +20,7 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 FINALIZER = REPO / "scripts/finalize-homebrew-main-shell-release.py"
 CHECKER = REPO / "scripts/check-homebrew-main-shell-brewfile.mjs"
 PRODUCT_STATE = REPO / "scripts/homebrew-main-shell-product-state.py"
+SELECTION_LOCK_TOOL = REPO / "scripts/homebrew-main-shell-selection-lock.py"
 EXECUTOR_PATH = REPO / "scripts/homebrew-prefix-campaign-executor.py"
 EXECUTOR_SPEC = importlib.util.spec_from_file_location(
     "homebrew_prefix_campaign_executor_for_finalizer_test",
@@ -124,6 +125,38 @@ def copy_source(root: pathlib.Path) -> pathlib.Path:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(REPO / relative, destination)
     return source
+
+
+def restore_historical_migration_projection(source: pathlib.Path) -> None:
+    """Remove product roots that intentionally await canonical admission."""
+    brewfile_path = source / "homebrew/main-shell.Brewfile"
+    brewfile = brewfile_path.read_text()
+    staged_line = 'brew "kandelo-dev/tap-core/kandelo-sdk"\n'
+    assert brewfile.count(staged_line) == 1
+    brewfile_path.write_text(brewfile.replace(staged_line, ""))
+
+    catalog_path = source / "images/vfs/products/generated/catalog.json"
+    catalog = json.loads(catalog_path.read_text())
+    shell = next(
+        entry
+        for entry in catalog["products"]
+        if entry["manifest"]["id"] == "browser-main-shell"
+    )
+    lazy = next(
+        group
+        for group in shell["manifest"]["software"]["homebrew"]
+        if group["materialization"] == "lazy"
+    )
+    assert lazy["formulae"].count("kandelo-sdk") == 1
+    lazy["formulae"].remove("kandelo-sdk")
+    manifest_payload = json.dumps(
+        shell["manifest"], sort_keys=True, separators=(",", ":")
+    ).encode() + b"\n"
+    shell["sha256"] = hashlib.sha256(manifest_payload).hexdigest()
+    catalog_path.write_bytes(
+        json.dumps(catalog, sort_keys=True, separators=(",", ":")).encode()
+        + b"\n"
+    )
 
 
 def package_record(
@@ -486,6 +519,25 @@ def misorder_embedded_formulae(policy: dict) -> None:
     )
 
 
+staged_selection = subprocess.run(
+    [
+        sys.executable,
+        str(SELECTION_LOCK_TOOL),
+        "--repo-root",
+        str(REPO),
+        "roots",
+    ],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    text=True,
+)
+assert staged_selection.returncode != 0
+assert (
+    "historical closed-selection roots are not finalized: kandelo-sdk"
+    in staged_selection.stderr
+)
+
+
 with tempfile.TemporaryDirectory(prefix="kandelo-shell-finalizer-test.") as temporary:
     root = pathlib.Path(temporary)
     source = copy_source(root)
@@ -578,6 +630,10 @@ with tempfile.TemporaryDirectory(prefix="kandelo-shell-finalizer-test.") as temp
     assert artifact_lock["image"] is None
     assert_product_state(source, "awaiting-selection")
     checker = run_checker(source, tap)
+    assert (
+        "1 staged product root remains outside the historical migration lock"
+        in checker.stdout
+    )
     assert (
         "38 base Formulae, 21 runtime Formulae, and 25 audited Formulae; "
         "the runtime adds 1 beyond the base, yielding 39 total Formulae"
@@ -815,6 +871,7 @@ with tempfile.TemporaryDirectory(
 ) as temporary:
     root = pathlib.Path(temporary)
     source = copy_source(root)
+    restore_historical_migration_projection(source)
     clean_source_tap = create_tap(root, source)
     clean_source_head = subprocess.run(
         ["git", "-C", str(clean_source_tap), "rev-parse", "HEAD"],
@@ -930,6 +987,7 @@ with tempfile.TemporaryDirectory(
 ) as temporary:
     root = pathlib.Path(temporary)
     source = copy_source(root)
+    restore_historical_migration_projection(source)
     selection, receipt, _source_commit = create_closed_selection(root, source)
     receipt_value = json.loads(receipt.read_text())
     receipt_value["target_commitish"] = "a" * 40
@@ -953,6 +1011,7 @@ with tempfile.TemporaryDirectory(
 ) as temporary:
     root = pathlib.Path(temporary)
     source = copy_source(root)
+    restore_historical_migration_projection(source)
     selection, receipt, source_commit = create_closed_selection(root, source)
     caller_metadata = selection / "tap/Kandelo/metadata.json"
     original_metadata = caller_metadata.read_bytes()
