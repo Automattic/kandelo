@@ -824,8 +824,11 @@ compact VFS contains authenticated lazy references for the ABI-qualified
 Formula's sealed same-tap dependency closure. It contains no compiler payload
 or browser-specific compiler URL. Ordinary boot, shell commands, `stat`, and
 directory listing do not fetch those trees. First compiler use downloads the
-admitted immutable GHCR assets, verifies their exact sizes and digests, and
-publishes the complete closure atomically.
+admitted immutable GHCR assets and publishes each tree only after verifying
+its exact size, digest, and inventory. The toolchain is ready only after the
+complete closure succeeds; a failed tree exposes no partial contents or usable
+partial compiler, while already verified dependency trees remain available
+for the immutable Retry.
 
 The **C development** gallery entry is presentation over this same shell, not
 an eighth VFS product. It prepares `/home/user/c/hello.c`, selects
@@ -833,7 +836,7 @@ an eighth VFS product. It prepares `/home/user/c/hello.c`, selects
 closure after the terminal is running. The terminal remains available during
 the download. The package-progress UI reports byte progress and failures;
 **Retry** uses the same immutable descriptor. A missing, truncated, or
-digest-mismatched response leaves the affected trees unmaterialized and the
+digest-mismatched response leaves the affected tree unmaterialized and the
 shell usable, with no fallback compiler.
 
 Successfully materialized bytes are reused for later compilations in the same
