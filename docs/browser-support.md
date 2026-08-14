@@ -797,11 +797,11 @@ No Perl, Python, or Erlang layer URL is built into the browser. Concrete
 entries require immutable published descriptor/content identities derived from
 their finalized bottle sidecars; missing or mismatched identities fail boot
 instead of falling back to a standalone language VFS. Historical lazy shell
-images used the same substrate directly. The current canonical shell eagerly
-materializes its reviewed runtime selection and registers only the separately
-admitted C/C++ SDK closure as bottle-backed deferred trees. The image-owned
-default-shell contract still selects the embedded Bash, so ordinary shell boot
-does not fetch compiler payloads.
+images used the same substrate directly. The current canonical shell embeds
+Bash and registers its ordinary Formula trees, including the separately
+admitted C/C++ SDK closure, as bottle-backed deferred trees. The image-owned
+default-shell contract still selects that embedded Bash; its dedicated
+Homebrew boot cohort does not include the compiler payloads.
 
 That direct release proves only its configured acceptance image; it does not
 set generic package browser flags. The separate gallery path first boots a
