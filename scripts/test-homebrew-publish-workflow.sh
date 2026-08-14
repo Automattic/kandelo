@@ -250,7 +250,8 @@ FORMULA_RUNNER_FIXTURE_ROOT="$TMPDIR/formula-runner-root"
 make_formula_runner_fixture() {
   local host_target
   mkdir -p "$FORMULA_RUNNER_FIXTURE_ROOT/scripts" \
-    "$FORMULA_RUNNER_FIXTURE_ROOT/homebrew/patches"
+    "$FORMULA_RUNNER_FIXTURE_ROOT/homebrew/patches" \
+    "$FORMULA_RUNNER_FIXTURE_ROOT/tools/bin"
   FORMULA_RUNNER_FIXTURE_ROOT="$(cd "$FORMULA_RUNNER_FIXTURE_ROOT" && pwd -P)"
   cp "$REPO_ROOT/scripts/homebrew-bottle-build.sh" \
     "$REPO_ROOT/scripts/homebrew-verify-poured-bottle.sh" \
@@ -292,6 +293,13 @@ fi
 exec "$(dirname "$0")/xtask.real" "$@"
 EOF
   chmod 0755 "$FORMULA_RUNNER_FIXTURE_ROOT/target/$host_target/release/xtask"
+  for tool in wasm-fork-instrument wasm-local-root-spill; do
+    cat >"$FORMULA_RUNNER_FIXTURE_ROOT/tools/bin/$tool" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+    chmod 0755 "$FORMULA_RUNNER_FIXTURE_ROOT/tools/bin/$tool"
+  done
   mkdir -p "$FORMULA_RUNNER_FIXTURE_ROOT/packages/registry/hello"
   cat >"$FORMULA_RUNNER_FIXTURE_ROOT/packages/registry/hello/package.toml" <<'EOF'
 kind = "program"
@@ -3877,6 +3885,18 @@ case "${1:-}" in
       echo "fake brew: candidate Formula received a writable primary tap root" >&2
       exit 63
     fi
+    if [ "${FAKE_REQUIRE_TAP_RECIPE_PLATFORM_TOOLS:-}" = 1 ]; then
+      [ "${HOMEBREW_KANDELO_FORK_INSTRUMENT:-}" = \
+        "${FAKE_EXPECTED_TAP_RECIPE_PLATFORM_ROOT:?}/tools/bin/wasm-fork-instrument" ] || {
+        echo "fake brew: candidate Formula did not receive the sealed fork instrument" >&2
+        exit 65
+      }
+      [ "${HOMEBREW_KANDELO_LOCAL_ROOT_SPILL:-}" = \
+        "$FAKE_EXPECTED_TAP_RECIPE_PLATFORM_ROOT/tools/bin/wasm-local-root-spill" ] || {
+        echo "fake brew: candidate Formula did not receive the sealed local-root-spill tool" >&2
+        exit 66
+      }
+    fi
     [ ! -e "$FAKE_TAP_ROOT/Kandelo/formula_support/test" ] || exit 54
     case "$*" in
       'deps --topological --full-name --formula kandelo-dev/tap-core/hello')
@@ -4196,6 +4216,8 @@ EOF
     FAKE_BREW_REPOSITORY="$brew_repo" \
     FAKE_TAP_ROOT="$tapped_pkg_drift" \
     FAKE_POST_BUILD_TAP_RECIPE_PKG_VERSION=1.0_2 \
+    FAKE_REQUIRE_TAP_RECIPE_PLATFORM_TOOLS=1 \
+    FAKE_EXPECTED_TAP_RECIPE_PLATFORM_ROOT="$FORMULA_RUNNER_FIXTURE_ROOT" \
     HOMEBREW_BREW_FILE="$fake_brew" \
     GITHUB_ACTIONS= \
     bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-bottle-build.sh" \

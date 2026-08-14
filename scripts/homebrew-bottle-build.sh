@@ -491,28 +491,6 @@ if ! jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" \
   echo "homebrew-bottle-build.sh: Tier-2 bridge attestation has an invalid schema" >&2
   exit 2
 fi
-if jq -e '.schema == 3' "$TIER2_ATTESTATION" >/dev/null; then
-  # WHY: closed tap recipes receive executable platform tools, never the Cargo
-  # workspace that could rebuild resolver/checker code. Build both helpers
-  # while the trusted workflow still owns the exact Kandelo checkout.
-  for tool in wasm-fork-instrument wasm-local-root-spill; do
-    tool_path="$KANDELO_ROOT/tools/bin/$tool"
-    if [ ! -f "$tool_path" ] || [ -L "$tool_path" ] || [ ! -x "$tool_path" ]; then
-      case "$tool" in
-        wasm-fork-instrument)
-          bash "$KANDELO_ROOT/scripts/build-fork-instrument-tool.sh"
-          ;;
-        wasm-local-root-spill)
-          bash "$KANDELO_ROOT/scripts/build-local-root-spill-tool.sh"
-          ;;
-      esac
-    fi
-    [ -f "$tool_path" ] && [ ! -L "$tool_path" ] && [ -x "$tool_path" ] || {
-      echo "homebrew-bottle-build.sh: required closed-recipe platform tool is unavailable: $tool" >&2
-      exit 2
-    }
-  done
-fi
 ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
   "$TAP_ROOT" "$TAP_NAME" "$FORMULA" --bottle-identity-json \
   >"$TARGET_BOTTLE_IDENTITY"
@@ -687,6 +665,33 @@ homebrew_native_contract_stage_marker tier2-attestation-staging starting
 homebrew_patched_launcher_stage_tier2_attestation \
   "$TIER2_EXECUTION_ATTESTATION"
 homebrew_native_contract_stage_marker tier2-attestation-staging completed
+
+if jq -e '.schema == 3' "$TIER2_ATTESTATION" >/dev/null; then
+  # WHY: closed tap recipes receive executable platform tools, never the Cargo
+  # workspace that could rebuild resolver/checker code. Build both helpers
+  # only after the tapped execution plan matches the reviewed plan, then bind
+  # candidate builds to the same sealed paths that the production launcher
+  # projects into its secondary Formula identity.
+  for tool in wasm-fork-instrument wasm-local-root-spill; do
+    tool_path="$KANDELO_ROOT/tools/bin/$tool"
+    if [ ! -f "$tool_path" ] || [ -L "$tool_path" ] || [ ! -x "$tool_path" ]; then
+      case "$tool" in
+        wasm-fork-instrument)
+          bash "$KANDELO_ROOT/scripts/build-fork-instrument-tool.sh"
+          ;;
+        wasm-local-root-spill)
+          bash "$KANDELO_ROOT/scripts/build-local-root-spill-tool.sh"
+          ;;
+      esac
+    fi
+    [ -f "$tool_path" ] && [ ! -L "$tool_path" ] && [ -x "$tool_path" ] || {
+      echo "homebrew-bottle-build.sh: required closed-recipe platform tool is unavailable: $tool" >&2
+      exit 2
+    }
+  done
+  export HOMEBREW_KANDELO_FORK_INSTRUMENT="$KANDELO_ROOT/tools/bin/wasm-fork-instrument"
+  export HOMEBREW_KANDELO_LOCAL_ROOT_SPILL="$KANDELO_ROOT/tools/bin/wasm-local-root-spill"
+fi
 
 if [ -z "$BUILD_USER" ]; then
   # Candidate jobs are deliberately uncredentialed and do not provision the
