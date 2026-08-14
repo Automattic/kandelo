@@ -1122,6 +1122,12 @@ chmod 0755 "$retire_brew"
     fail "Formula keg resolution accepted a caller-poisoned logical prefix"
   fi
   unset RETIRE_PREFIX_OVERRIDE
+  mv "$retire_brew" "$retire_brew.after-bottle"
+  [ "$(homebrew_patched_launcher_resolve_installed_formula_keg \
+      "$retire_brew" kandelo-dev/tap-core/hello hello)" = \
+      "$retire_prefix/Cellar/hello/1.0" ] ||
+    fail "Formula keg resolution required a launcher after bottling completed"
+  mv "$retire_brew.after-bottle" "$retire_brew"
   RETIRE_LIST_OVERRIDE=absent
   export RETIRE_LIST_OVERRIDE
   homebrew_patched_launcher_require_formula_absent \
