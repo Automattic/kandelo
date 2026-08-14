@@ -1573,13 +1573,13 @@ homebrew_patched_launcher_snapshot_target_cellar_layout() {
 
 # Homebrew reports an installed Formula's stable opt path from `brew --prefix
 # <formula>`. Resolve that logical path only after proving it is the exact
-# canonical opt link for the selected Formula. `brew bottle` may retire the
-# temporary protected wrapper after it creates the archive, so the already
-# bound protected prefix remains the authority when that exact wrapper path no
-# longer exists. A present wrapper must still be the real executable and must
-# report the same canonical opt path. Callers that need receipt or keg identity
-# must not mistake the Formula name at the end of the opt path for the installed
-# version at the end of the physical Cellar path.
+# canonical opt link for the selected Formula. Candidate builds use the exact
+# launcher symlink created by `homebrew_patched_launcher_prepare`; isolated
+# builds replace it with a regular protected wrapper. Accept only those two
+# already-bound shapes and require either launcher to report the same canonical
+# opt path. Callers that need receipt or keg identity must not mistake the
+# Formula name at the end of the opt path for the installed version at the end
+# of the physical Cellar path.
 homebrew_patched_launcher_resolve_installed_formula_keg() {
   if [ "$#" -ne 3 ]; then
     echo "homebrew_patched_launcher_resolve_installed_formula_keg: expected BREW FORMULA-REF FORMULA" >&2
@@ -1601,15 +1601,25 @@ homebrew_patched_launcher_resolve_installed_formula_keg() {
     return 2
   }
   expected_opt="$HOMEBREW_PATCHED_PREFIX/opt/$formula"
-  if [ -e "$brew_bin" ] || [ -L "$brew_bin" ]; then
-    [ -f "$brew_bin" ] && [ ! -L "$brew_bin" ] && [ -x "$brew_bin" ] || {
-      echo "homebrew-patched-launcher: Formula keg resolution found a replaced protected Brew wrapper" >&2
+  if [ -L "$brew_bin" ]; then
+    [ "$brew_bin" = "$HOMEBREW_PATCHED_LAUNCHER" ] &&
+      [ "${brew_bin%/*}" = "$HOMEBREW_PATCHED_PREFIX/bin" ] &&
+      [ -n "$HOMEBREW_PATCHED_OVERLAY" ] &&
+      [ "$(/usr/bin/readlink "$brew_bin")" = \
+        "$HOMEBREW_PATCHED_OVERLAY/bin/brew" ] &&
+      [ -f "$HOMEBREW_PATCHED_OVERLAY/bin/brew" ] &&
+      [ ! -L "$HOMEBREW_PATCHED_OVERLAY/bin/brew" ] &&
+      [ -x "$HOMEBREW_PATCHED_OVERLAY/bin/brew" ] || {
+      echo "homebrew-patched-launcher: Formula keg resolution found a changed candidate Brew launcher" >&2
       return 2
     }
-    logical_prefix="$("$brew_bin" --prefix "$formula_ref")" || return
   else
-    logical_prefix="$expected_opt"
+    [ -f "$brew_bin" ] && [ -x "$brew_bin" ] || {
+      echo "homebrew-patched-launcher: Formula keg resolution requires the active protected Brew wrapper" >&2
+      return 2
+    }
   fi
+  logical_prefix="$("$brew_bin" --prefix "$formula_ref")" || return
   target_rack="$HOMEBREW_PATCHED_PREFIX/Cellar/$formula"
   [ "$logical_prefix" = "$expected_opt" ] &&
     [ -L "$logical_prefix" ] &&
