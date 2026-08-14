@@ -834,7 +834,8 @@ NATIVE_INTERPRETER_EOF
       "$runtime_root/target/x86_64-unknown-linux-gnu/release/xtask" ]
     [ -z "${NODE_PATH+x}" ]
     for required in \
-      Cargo.toml package.json examples/run-example.ts \
+      Cargo.toml package.json examples/run-example-builtins.ts \
+      examples/run-example.ts \
       examples/run-example-vfs.ts \
       host/src/node-kernel-host.ts host/wasm/kandelo-kernel.wasm \
       host/wasm/program-packages.json \
@@ -2302,6 +2303,7 @@ PY
     "$REPO_ROOT/package-lock.json" \
     "$isolated_kandelo/"
   cp -- \
+    "$REPO_ROOT/examples/run-example-builtins.ts" \
     "$REPO_ROOT/examples/run-example.ts" \
     "$REPO_ROOT/examples/run-example-output.ts" \
     "$REPO_ROOT/examples/run-example-paths.ts" \
