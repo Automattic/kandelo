@@ -92,6 +92,7 @@ nix_develop=(
     --keep INPUT_REF \
     --keep INPUT_SKIP_TESTS \
     --keep INPUT_BUMP_LOCKFILE \
+    --keep ABI_STAGING_GITHUB_API_TOKEN \
     --keep GH_TOKEN \
     --keep GITHUB_REPOSITORY \
     --keep GITHUB_ACTOR \

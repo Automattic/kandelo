@@ -8,6 +8,7 @@ WORKFLOW = ARGV.empty? ?
   File.join(ROOT, ".github/workflows/abi-staging-pr-check.yml") :
   File.expand_path(ARGV.fetch(0))
 MERGE_GATE = File.join(ROOT, ".github/workflows/abi-staging-merge-gate.yml")
+DEV_SHELL = File.join(ROOT, "scripts/dev-shell.sh")
 
 CHECKOUT = "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
 UPLOAD = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
@@ -151,8 +152,23 @@ def check_workflow(workflow)
   check_filtered_host_target(collect_source, "collector")
   check(!collect_source.match?(%r{(?:bash|source|\.)\s+[^\n]*exact-head}),
         "collector executes candidate-head code")
-  check(!collect.fetch("env", {}).key?("GH_TOKEN"),
+  check(!collect.fetch("env", {}).key?("GH_TOKEN") &&
+        !collect.fetch("env", {}).key?("ABI_STAGING_GITHUB_API_TOKEN"),
         "collector exposes GitHub credentials job-wide")
+  collection_step = named_step(collect, "Collect and project bounded public facts")
+  check(
+    collection_step.dig("env", "ABI_STAGING_GITHUB_API_TOKEN") ==
+      "${{ github.token }}" &&
+      collect.fetch("steps").count do |step|
+        step.fetch("env", {}).key?("ABI_STAGING_GITHUB_API_TOKEN")
+      end == 1,
+    "collector does not scope one read-only GitHub API token to public discovery"
+  )
+  dev_shell = File.binread(DEV_SHELL)
+  check(
+    dev_shell.scan("--keep ABI_STAGING_GITHUB_API_TOKEN".b).length == 1,
+    "dev shell does not preserve the bounded GitHub API discovery token"
+  )
   candidate_checkout = named_step(collect, "Checkout inert exact PR head")
   check(candidate_checkout.fetch("uses").start_with?(CHECKOUT) &&
         candidate_checkout.dig("with", "ref") == "${{ matrix.subject.head }}" &&
@@ -436,6 +452,17 @@ begin
     },
     "collector write" => lambda { |copy|
       copy.dig("jobs", "collect-project", "permissions")["checks"] = "write"
+    },
+    "missing public API discovery token" => lambda { |copy|
+      step = copy.dig("jobs", "collect-project", "steps").find do |item|
+        item["name"] == "Collect and project bounded public facts"
+      end
+      step.fetch("env").delete("ABI_STAGING_GITHUB_API_TOKEN")
+    },
+    "job-wide public API discovery token" => lambda { |copy|
+      copy.dig("jobs", "collect-project")["env"] = {
+        "ABI_STAGING_GITHUB_API_TOKEN" => "${{ github.token }}"
+      }
     },
     "publisher candidate checkout" => lambda { |copy|
       copy.dig("jobs", "publish-check", "steps") << {
