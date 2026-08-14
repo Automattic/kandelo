@@ -88,3 +88,29 @@ test("lazy-download summaries survive raw-ring rollover and report resets", asyn
     summariesAfterReset: [],
   });
 });
+
+test("package-prefetch errors remain visible and expose a generic retry", async ({ page }) => {
+  await page.goto("/terminate-atomics-test.html");
+  await page.evaluate(async (moduleUrl) => {
+    const { mountPackagePrefetchToastFixture } = await import(/* @vite-ignore */ moduleUrl);
+    const container = document.createElement("div");
+    container.id = "package-prefetch-fixture";
+    document.body.append(container);
+    mountPackagePrefetchToastFixture(container, [{
+      id: "c-development-toolchain",
+      label: "C/C++ toolchain",
+      roots: ["kandelo-dev/tap-core/kandelo-sdk"],
+      status: "error",
+      attempt: 1,
+      error: "compiler tree digest mismatch",
+    }]);
+  }, kernelHostModuleUrl);
+
+  const error = page.getByRole("alert");
+  await expect(error).toContainText("C/C++ toolchain: compiler tree digest mismatch");
+  await error.getByRole("button", { name: "Retry" }).click();
+  await expect(page.locator("#package-prefetch-fixture"))
+    .toHaveAttribute("data-retry-id", "c-development-toolchain");
+  await page.waitForTimeout(5_100);
+  await expect(error).toBeVisible();
+});

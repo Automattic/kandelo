@@ -1188,7 +1188,7 @@
   opacity: 0.62;
 }
 
-.kdownload-toasts {
+.kdownload-toast-stack {
   position: fixed;
   top: 14px;
   right: 14px;
@@ -1198,6 +1198,11 @@
   flex-direction: column;
   gap: 8px;
   pointer-events: none;
+}
+
+.kdownload-toasts,
+.kpackage-prefetch-toasts {
+  display: contents;
 }
 
 .kdownload-toast {
@@ -1225,7 +1230,6 @@
 
 .kdownload-toast-error {
   border-color: color-mix(in oklch, var(--k-err) 52%, var(--k-border));
-  animation: kdownload-toast-fade-error 5s ease-out forwards;
 }
 
 .kdownload-toast-top {
@@ -1288,6 +1292,24 @@
   outline: none;
 }
 
+.kdownload-toast-retry {
+  margin-top: 8px;
+  border: 1px solid color-mix(in oklch, var(--k-err) 44%, var(--k-border));
+  border-radius: 6px;
+  background: color-mix(in oklch, var(--k-surface) 82%, transparent);
+  color: var(--k-err);
+  cursor: pointer;
+  padding: 4px 9px;
+  font: 700 11px/1.2 var(--k-font-ui);
+  pointer-events: auto;
+}
+
+.kdownload-toast-retry:hover,
+.kdownload-toast-retry:focus-visible {
+  border-color: var(--k-err);
+  outline: none;
+}
+
 .kdownload-toast-detail {
   margin-top: 3px;
   overflow: hidden;
@@ -1334,17 +1356,6 @@
 
 @keyframes kdownload-toast-fade-complete {
   0%, 58% {
-    opacity: 1;
-    transform: translateY(0);
-  }
-  100% {
-    opacity: 0;
-    transform: translateY(-6px);
-  }
-}
-
-@keyframes kdownload-toast-fade-error {
-  0%, 72% {
     opacity: 1;
     transform: translateY(0);
   }

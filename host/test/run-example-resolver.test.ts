@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -19,6 +21,52 @@ const runExample = join(repoRoot, "examples", "run-example.ts");
 const spawnSmokeWasm = join(repoRoot, "examples", "spawn-smoke.wasm");
 
 describe("run-example exec resolver", () => {
+  it("does not resolve optional commands before running an explicit Wasm program", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "kandelo-run-example-lazy-"));
+    const cacheRoot = join(tempDir, "cache");
+    const checker = join(tempDir, "xtask-sentinel");
+    const marker = join(tempDir, "resolver-was-invoked");
+    try {
+      mkdirSync(cacheRoot);
+      writeFileSync(
+        checker,
+        '#!/bin/sh\n: > "$KANDELO_RESOLVER_SENTINEL"\nexit 97\n',
+      );
+      chmodSync(checker, 0o755);
+
+      const result = spawnSync(
+        process.execPath,
+        [
+          "--experimental-wasm-exnref",
+          "--import",
+          "tsx/esm",
+          runExample,
+          join(repoRoot, "examples", "initial-credentials-test.wasm"),
+        ],
+        {
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            KERNEL_CWD: "/tmp",
+            TIMEOUT: "30000",
+            WASM_POSIX_BINARY_CACHE_ROOT: cacheRoot,
+            WASM_POSIX_DEPS_REGISTRY: "packages/registry",
+            WASM_POSIX_XTASK_BIN: checker,
+            KANDELO_RESOLVER_SENTINEL: marker,
+          },
+          encoding: "utf8",
+          timeout: 45_000,
+        },
+      );
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("uid=0 euid=0 gid=0 egid=0");
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("loads unrelated examples without probing legacy flat paths for multi-member packages", () => {
     const source = readFileSync(runExample, "utf8");
     const projection = JSON.parse(

@@ -8,8 +8,9 @@ export RANLIB="${RANLIB:-wasm32posix-ranlib}"
 export NM="${NM:-wasm32posix-nm}"
 export STRIP="${STRIP:-wasm32posix-strip}"
 export PKG_CONFIG="${PKG_CONFIG:-wasm32posix-pkg-config}"
-if [[ -z "${CONFIG_SITE:-}" && -f /usr/wasm32posix/config.site ]]; then
-  export CONFIG_SITE=/usr/wasm32posix/config.site
+SDK_DIR="/opt/kandelo/homebrew/opt/kandelo-sdk/libexec/wasm32posix"
+if [[ -z "${CONFIG_SITE:-}" && -f "$SDK_DIR/config.site" ]]; then
+  export CONFIG_SITE="$SDK_DIR/config.site"
 fi
 
 configure_script="./configure"

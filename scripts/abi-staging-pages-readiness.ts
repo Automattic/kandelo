@@ -1195,6 +1195,43 @@ function validateAdmission(
   formula: string,
   targetAbi: TargetAbiV1,
 ): void {
+  validateAdmissionIdentity(envelope, input, formula, targetAbi);
+  const canonical = envelope.record.admission.canonical;
+  const descriptor = envelope.canonical_vfs_composition_descriptor;
+  if (
+    input.descriptor === undefined || descriptor === undefined ||
+    !(descriptor.body instanceof Uint8Array) ||
+    !Number.isSafeInteger(descriptor.bytes) || descriptor.bytes <= 0 ||
+    descriptor.bytes !== descriptor.body.byteLength ||
+    descriptor.sha256 !== sha256(descriptor.body)
+  ) {
+    throw new ReadinessError(
+      "admission-invalid",
+      `Formula ${formula} lacks the exact canonical VFS composition descriptor`,
+    );
+  }
+  requireCanonicalReference(
+    descriptor.immutable_reference,
+    descriptor.sha256,
+    `Formula ${formula} canonical VFS composition descriptor`,
+  );
+  if (
+    canonicalRepository(descriptor.immutable_reference) !==
+      canonicalRepository(canonical.immutable_reference)
+  ) {
+    throw new ReadinessError(
+      "admission-invalid",
+      `Formula ${formula} canonical VFS descriptor uses another repository`,
+    );
+  }
+}
+
+function validateAdmissionIdentity(
+  envelope: AdmissionEnvelopeV1,
+  input: ResolvedVfsInputV1,
+  formula: string,
+  targetAbi: TargetAbiV1,
+): void {
   const record = envelope.record;
   if (
     record.schema !== 1 || record.kind !== "kandelo-abi-staging-admission" ||
@@ -1238,33 +1275,6 @@ function validateAdmission(
     );
   }
   requireCanonicalReference(canonical.immutable_reference, canonical.sha256, `Formula ${formula}`);
-  const descriptor = envelope.canonical_vfs_composition_descriptor;
-  if (
-    input.descriptor === undefined || descriptor === undefined ||
-    !(descriptor.body instanceof Uint8Array) ||
-    !Number.isSafeInteger(descriptor.bytes) || descriptor.bytes <= 0 ||
-    descriptor.bytes !== descriptor.body.byteLength ||
-    descriptor.sha256 !== sha256(descriptor.body)
-  ) {
-    throw new ReadinessError(
-      "admission-invalid",
-      `Formula ${formula} lacks the exact canonical VFS composition descriptor`,
-    );
-  }
-  requireCanonicalReference(
-    descriptor.immutable_reference,
-    descriptor.sha256,
-    `Formula ${formula} canonical VFS composition descriptor`,
-  );
-  if (
-    canonicalRepository(descriptor.immutable_reference) !==
-      canonicalRepository(canonical.immutable_reference)
-  ) {
-    throw new ReadinessError(
-      "admission-invalid",
-      `Formula ${formula} canonical VFS descriptor uses another repository`,
-    );
-  }
   const expectedAdmissionPrefix =
     `ghcr.io/kandelo-dev/homebrew-tap-core-abi-${targetAbi.version}/${formula}/admissions@sha256:`;
   if (
@@ -1300,6 +1310,9 @@ async function authenticateAdmissions(
       throw new ReadinessError("missing-admission", `Formula ${formula} lacks one exact admission`);
     }
     const envelope = matches[0]!;
+    // Reject candidate, mutable, credentialed, wrong-ABI, and mismatched-layer
+    // identities before allowing the record to select a network readback.
+    validateAdmissionIdentity(envelope, input, formula, targetAbi);
     try {
       await dependencies.validateAdmissionRecord(canonicalJsonBytes(envelope.record));
       const canonical = envelope.record?.admission?.canonical;
@@ -1331,7 +1344,67 @@ async function authenticateAdmissions(
       "product admissions include a record outside its exact Homebrew bottle inputs",
     );
   }
+  validateAuthenticatedAdmissionDependencyGraph(authenticated);
   return authenticated;
+}
+
+function validateAuthenticatedAdmissionDependencyGraph(
+  admissions: readonly AuthenticatedAdmissionEnvelopeV1[],
+): void {
+  const dependenciesByPackage = new Map<string, string[]>();
+  for (const admission of admissions) {
+    const formula = String(
+      admission.record.admission?.formula_metadata_update?.formula,
+    );
+    const packageName = `kandelo-dev/tap-core/${formula}`;
+    const descriptor = canonicalJsonValue(
+      admission.canonical_vfs_composition_descriptor.body,
+      `Formula ${formula} canonical VFS composition descriptor`,
+    );
+    if (
+      !Array.isArray(descriptor.dependencies) ||
+      descriptor.dependencies.some((dependency) => typeof dependency !== "string")
+    ) {
+      throw new ReadinessError(
+        "admission-invalid",
+        `Formula ${formula} canonical VFS composition dependencies are invalid`,
+      );
+    }
+    dependenciesByPackage.set(packageName, descriptor.dependencies as string[]);
+  }
+  for (const [packageName, dependencies] of dependenciesByPackage) {
+    for (const dependency of dependencies) {
+      if (!dependenciesByPackage.has(dependency)) {
+        throw new ReadinessError(
+          "admission-invalid",
+          `Formula ${packageName} canonical VFS dependency ${dependency} is absent`,
+        );
+      }
+    }
+  }
+  const active = new Set<string>();
+  const complete = new Set<string>();
+  const visit = (packageName: string): void => {
+    if (complete.has(packageName)) return;
+    if (active.has(packageName)) {
+      throw new ReadinessError(
+        "admission-invalid",
+        `canonical VFS dependency cycle includes ${packageName}`,
+      );
+    }
+    active.add(packageName);
+    const dependencies = dependenciesByPackage.get(packageName);
+    if (dependencies === undefined) {
+      throw new ReadinessError(
+        "admission-invalid",
+        `canonical VFS dependency ${packageName} is absent`,
+      );
+    }
+    for (const dependency of dependencies) visit(dependency);
+    active.delete(packageName);
+    complete.add(packageName);
+  };
+  for (const packageName of dependenciesByPackage.keys()) visit(packageName);
 }
 
 function validateCanonicalBottleReadback(
@@ -1391,7 +1464,7 @@ function validateCanonicalBottleReadback(
   const compositionDescriptor = validatedOciDescriptor(
     manifest.layers[2],
     "vfs-composition-descriptor",
-    "application/vnd.kandelo.homebrew.vfs-composition-descriptor.v1+json",
+    "application/vnd.kandelo.homebrew.vfs-composition-descriptor.v2+json",
     "canonical VFS composition descriptor",
   );
   validateDescriptorBody(
@@ -1488,14 +1561,29 @@ function validateCanonicalCompositionDescriptor(
   const value = canonicalJsonValue(bytes, "canonical VFS composition descriptor");
   exactKeys(
     value,
-    ["architecture", "formula", "kind", "required_by", "schema", "tap", "tree"],
+    [
+      "architecture",
+      "dependencies",
+      "formula",
+      "kind",
+      "required_by",
+      "schema",
+      "tap",
+      "tree",
+    ],
     "canonical VFS composition descriptor",
   );
   if (
-    value.schema !== 1 || value.kind !== "kandelo-homebrew-original-bottle-tree" ||
+    value.schema !== 2 || value.kind !== "kandelo-homebrew-original-bottle-tree" ||
     value.architecture !== input.architecture || value.formula !== formula ||
     value.tap !== "kandelo-dev/homebrew-tap-core" ||
-    !Array.isArray(value.required_by) || value.required_by.length === 0
+    !Array.isArray(value.required_by) || value.required_by.length === 0 ||
+    !Array.isArray(value.dependencies) || value.dependencies.length > 128 ||
+    value.dependencies.some((dependency: unknown) =>
+      typeof dependency !== "string" ||
+      !/^kandelo-dev\/tap-core\/[a-z0-9][a-z0-9+._-]{0,127}$/u.test(dependency)
+    ) ||
+    !jsonEqual(value.dependencies, [...new Set(value.dependencies)].sort(ordinal))
   ) {
     throw new Error("canonical VFS composition descriptor identity differs");
   }

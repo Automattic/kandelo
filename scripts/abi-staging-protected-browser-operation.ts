@@ -171,6 +171,37 @@ async function executeRepositorySuite(
 ): Promise<string> {
   const suite = text(probe.suite, "browser repository suite", 128);
   if (
+    (surface === "toolchain-shell" && suite === "main-shell-toolchain-browser") ||
+    (surface === "c-development" && suite === "main-shell-c-development-browser")
+  ) {
+    const work = "/tmp/kandelo-browser-toolchain";
+    const script = [
+      "set -eu",
+      "export HOME=/tmp MAKEFLAGS=-j1",
+      `printf '%s\\n' '#include <stdio.h>' ` +
+        `'int main(void) { puts("BROWSER_C_IN_GUEST_OK"); return 0; }' ` +
+        `> ${work}.c`,
+      `printf '%s\\n' '#include <iostream>' ` +
+        `'int main() { std::cout << "BROWSER_CXX_IN_GUEST_OK\\n"; return 0; }' ` +
+        `> ${work}.cpp`,
+      `cc ${work}.c -o ${work}-c.wasm`,
+      `c++ ${work}.cpp -o ${work}-cxx.wasm`,
+      `${work}-c.wasm`,
+      `${work}-cxx.wasm`,
+    ].join("\n");
+    const observation = await adapter.exec({
+      argv: ["/bin/bash", "-lc", script],
+    });
+    if (
+      observation.exitCode !== 0 ||
+      observation.stderr !== "" ||
+      observation.stdout !== "BROWSER_C_IN_GUEST_OK\nBROWSER_CXX_IN_GUEST_OK\n"
+    ) {
+      throw new Error("protected in-browser C/C++ compilation predicate failed");
+    }
+    return observation.stdout;
+  }
+  if (
     (surface === "wordpress-sqlite" && suite === "wordpress-sqlite-browser") ||
     (surface === "wordpress-mariadb" && suite === "wordpress-mariadb-browser")
   ) {

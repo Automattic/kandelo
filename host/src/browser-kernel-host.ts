@@ -39,6 +39,8 @@ import {
 } from "./vfs/closed-lazy-assets";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
 import type { MountSpec } from "./vfs/default-mounts";
+import type { HomebrewPackagePrefetchResult } from "./types";
+import { validateHomebrewPackagePrefetchRoots } from "./homebrew-package-prefetch";
 
 const DESTROY_REQUEST_TIMEOUT_MS = 2_000;
 const MAX_PENDING_PTY_OUTPUT_BYTES = 64 * 1024;
@@ -210,6 +212,10 @@ export class BrowserKernel {
   private unclaimedExitStatuses = new Map<number, { status: number; sequence: number }>();
   private exitSequence = 0;
   private pendingRequests = new Map<number, { resolve: (val: any) => void; reject: (err: Error) => void }>();
+  private pendingHomebrewPrefetchRequests = new Map<number, {
+    resolve: (result: HomebrewPackagePrefetchResult) => void;
+    reject: (err: Error) => void;
+  }>();
   private nextRequestId = 1;
   private ptyOutputCallbacks = new Map<number, (data: Uint8Array) => void>();
   /**
@@ -398,6 +404,7 @@ export class BrowserKernel {
         reject(err);
       }
       this.pendingRequests.clear();
+      this.rejectPendingHomebrewPrefetchRequests(err);
       this.options.onHttpBridgePendingRequests?.(0);
       const diagnostic: HostDiagnostic = {
         pid: 0,
@@ -1154,6 +1161,30 @@ export class BrowserKernel {
     return result;
   }
 
+  /** Materialize one or more authenticated Homebrew package closures. */
+  async prefetchHomebrewPackages(
+    roots: readonly string[],
+  ): Promise<HomebrewPackagePrefetchResult> {
+    if (!this.initialized) {
+      throw new Error("Homebrew package prefetch requires an initialized kernel");
+    }
+    const packages = validateHomebrewPackagePrefetchRoots(roots);
+    const requestId = this.nextRequestId++;
+    return new Promise((resolve, reject) => {
+      this.pendingHomebrewPrefetchRequests.set(requestId, { resolve, reject });
+      try {
+        this.sendToKernel({
+          type: "prefetch_homebrew_packages",
+          requestId,
+          packages,
+        });
+      } catch (error) {
+        this.pendingHomebrewPrefetchRequests.delete(requestId);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  }
+
   /** Destroy the kernel and release all resources. */
   async destroy(): Promise<void> {
     if (!this.workerStarted) return;
@@ -1185,6 +1216,9 @@ export class BrowserKernel {
     this.exitResolvers.clear();
     this.unclaimedExitStatuses.clear();
     this.pendingRequests.clear();
+    this.rejectPendingHomebrewPrefetchRequests(
+      new Error("browser kernel was destroyed during Homebrew package prefetch"),
+    );
     this.ptyOutputCallbacks.clear();
     this.options.onHttpBridgePendingRequests?.(0);
     this.lazyDownloadListeners.clear();
@@ -1290,6 +1324,13 @@ export class BrowserKernel {
     }
   }
 
+  private rejectPendingHomebrewPrefetchRequests(error: Error): void {
+    for (const { reject } of this.pendingHomebrewPrefetchRequests.values()) {
+      reject(error);
+    }
+    this.pendingHomebrewPrefetchRequests.clear();
+  }
+
   private handleWorkerMessage(msg: KernelToMainMessage): void {
     switch (msg.type) {
       case "ready":
@@ -1307,6 +1348,22 @@ export class BrowserKernel {
           } else {
             pending.resolve(msg.result);
           }
+        }
+        break;
+      }
+      case "homebrew_packages_prefetched": {
+        const pending = this.pendingHomebrewPrefetchRequests.get(msg.requestId);
+        if (pending) {
+          this.pendingHomebrewPrefetchRequests.delete(msg.requestId);
+          pending.resolve(msg.result);
+        }
+        break;
+      }
+      case "homebrew_packages_prefetch_failed": {
+        const pending = this.pendingHomebrewPrefetchRequests.get(msg.requestId);
+        if (pending) {
+          this.pendingHomebrewPrefetchRequests.delete(msg.requestId);
+          pending.reject(new Error(msg.error));
         }
         break;
       }

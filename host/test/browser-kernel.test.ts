@@ -16,6 +16,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { WASM_PAGE_SIZE } from "../src/constants";
 import type { HttpResponse } from "../src/networking";
+import type { HomebrewPackagePrefetchResult } from "../src/types";
 
 const defaultArtifactModuleState = vi.hoisted(() => ({ loads: 0 }));
 vi.mock("../src/browser-kernel-default-artifacts", () => {
@@ -115,6 +116,61 @@ describe("BrowserKernel", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("prefetches one closed Homebrew package root through the owning worker", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const init = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await init;
+    const root = "kandelo-dev/tap-core/kandelo-sdk";
+    const expected: HomebrewPackagePrefetchResult = {
+      roots: [root],
+      packages: [
+        "kandelo-dev/tap-core/libcxx",
+        "kandelo-dev/tap-core/clang",
+        root,
+      ],
+      materializedPackages: [
+        "kandelo-dev/tap-core/libcxx",
+        "kandelo-dev/tap-core/clang",
+        root,
+      ],
+      alreadyMaterializedPackages: [],
+    };
+
+    const pending = kernel.prefetchHomebrewPackages([root]);
+    const request = worker.lastMessage("prefetch_homebrew_packages");
+    expect(request.packages).toEqual([root]);
+    worker.simulateMessage({
+      type: "homebrew_packages_prefetched",
+      requestId: request.requestId + 1,
+      result: expected,
+    });
+    worker.simulateMessage({
+      type: "homebrew_packages_prefetched",
+      requestId: request.requestId,
+      result: expected,
+    });
+    await expect(pending).resolves.toEqual(expected);
+
+    const failed = kernel.prefetchHomebrewPackages([root]);
+    const failedRequest = worker.lastMessage("prefetch_homebrew_packages");
+    worker.simulateMessage({
+      type: "homebrew_packages_prefetch_failed",
+      requestId: failedRequest.requestId,
+      error: "injected browser prefetch failure",
+    });
+    await expect(failed).rejects.toThrow("injected browser prefetch failure");
+    await expect(kernel.prefetchHomebrewPackages(["clang"])).rejects.toThrow(
+      /full name is invalid/,
+    );
   });
 
   it("constructs without spawning a worker (kernel-owned VFS)", async () => {

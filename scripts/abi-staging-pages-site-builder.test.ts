@@ -392,12 +392,26 @@ test("assembles browser, documentation, API, and exactly seven canonical VFS fil
     assert.equal(vfs.length, 7);
     assert.equal(metadata.files.length, inventory(outputRoot).length);
     assert.deepEqual(metadata.products, gallery.products);
+    assert.deepEqual(
+      metadata.products.find(({ id }) => id === "browser-main-shell")
+        ?.gallery_entries,
+      ["c-dev", "doom", "modeset", "shell"],
+    );
+    assert.equal(metadata.products.length, 7);
     assert.equal(metadata.browser.path, "index.html");
     assert.equal(metadata.documentation.path, "guide/index.html");
     assert.equal(metadata.api.path, "api/index.html");
     assert.deepEqual(
       inventory(join(outputRoot, "assets")).filter((path) => /\.vfs(?:\.zst)?$/u.test(path)),
       [],
+    );
+    const publicInventory = inventory(outputRoot);
+    assert.equal(
+      publicInventory.some((path) =>
+        /private-product-map|private_path|homebrew-(?:libcxx|clang|kandelo-sdk)|compiler\.vfs/iu
+          .test(path)
+      ),
+      false,
     );
   });
 });
@@ -455,6 +469,34 @@ test("propagates one isolated binary cache root through the Phase B dev shell", 
       }
     }
   });
+});
+
+test("runs canonical C-development recovery against the ready producer tree", () => {
+  const workflow = readFileSync(
+    join(repoRoot, ".github/workflows/abi-staging-pages-canary.yml"),
+    "utf8",
+  );
+  const validation = workflow.indexOf(
+    "- name: Validate the complete canonical Pages tree",
+  );
+  const acceptance = workflow.indexOf(
+    "- name: Verify canonical C development in Chromium",
+  );
+  const freshness = workflow.indexOf(
+    "- name: Confirm this is the newest Pages canary run",
+  );
+  assert.ok(validation >= 0 && acceptance > validation && freshness > acceptance);
+  const step = workflow.slice(acceptance, freshness);
+  assert.match(step, /if: steps\.readiness\.outputs\.ready == 'true'/u);
+  assert.match(
+    step,
+    /KANDELO_ABI_STAGING_ASSEMBLED_SITE_ROOT="\$pages_output\/source-tree"/u,
+  );
+  assert.match(step, /KANDELO_C_DEVELOPMENT_CANONICAL_ACCEPTANCE=1/u);
+  assert.match(
+    step,
+    /npx playwright test test\/kandelo-c-development\.spec\.ts --project=chromium/u,
+  );
 });
 
 test("rejects VFS emitted by Vite and symlinks from every build", () => {

@@ -324,7 +324,12 @@ jq -e '
     (.annotations | keys == [
       "dev.kandelo.abi-staging.role", "org.opencontainers.image.title"
     ])
-  ))
+  )) and
+  ([.layers[] | select(
+    .annotations["dev.kandelo.abi-staging.role"] ==
+      "vfs-composition-descriptor") | .mediaType] == [
+    "application/vnd.kandelo.homebrew.vfs-composition-descriptor.v2+json"
+  ])
 ' "$MANIFEST" >/dev/null || {
   echo "abi-staging-verify-bottle.sh: candidate manifest structure is invalid" >&2
   exit 1
@@ -396,6 +401,38 @@ jq -e \
         .artifact.bytes == $composition_bytes)] | length) == 1
   ' "$CONFIG" >/dev/null || {
   echo "abi-staging-verify-bottle.sh: candidate record differs from manifest layers" >&2
+  exit 1
+}
+jq -e \
+  --slurpfile candidate "$CONFIG" \
+  --arg formula "$FORMULA" \
+  --arg architecture "$ARCHITECTURE" \
+  --arg tap_repository "$TAP_REPOSITORY" \
+  --arg bottle_sha256 "$LAYER_SHA256" \
+  --argjson bottle_bytes "$BOTTLE_BYTES" \
+  --arg transport_url \
+    "https://ghcr.io/v2/${TAP_REPOSITORY,,}-abi-${TARGET_ABI}-candidates/$FORMULA/blobs/$BOTTLE_DIGEST" '
+    ($tap_repository | split("/")) as $tap_parts |
+    ($tap_parts[0] + "/" + ($tap_parts[1] | sub("^homebrew-"; ""))) as $tap_name |
+    [$candidate[0].candidate.direct_dependency_layers[].id |
+      rtrimstr("-" + $architecture) | $tap_name + "/" + .] as $dependencies |
+    type == "object" and
+    keys == ["architecture", "dependencies", "formula", "kind",
+      "required_by", "schema", "tap", "tree"] and
+    .schema == 2 and
+    .kind == "kandelo-homebrew-original-bottle-tree" and
+    .architecture == $architecture and
+    .tap == $tap_repository and
+    .formula == $formula and
+    (.required_by | type == "array" and length >= 1 and length <= 256 and
+      . == (sort | unique)) and
+    .dependencies == $dependencies and
+    .tree.package == ($tap_name + "/" + $formula) and
+    .tree.content.sha256 == $bottle_sha256 and
+    .tree.content.bytes == $bottle_bytes and
+    .tree.transports == [{kind: "external-https", url: $transport_url}]
+  ' "$COMPOSITION_DESCRIPTOR" >/dev/null || {
+  echo "abi-staging-verify-bottle.sh: candidate VFS composition descriptor is invalid" >&2
   exit 1
 }
 case "$ARCHITECTURE" in wasm32|wasm64) ;; *) exit 2 ;; esac

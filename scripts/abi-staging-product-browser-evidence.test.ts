@@ -683,7 +683,13 @@ test("routes every browser runner surface through the protected adapter", async 
     },
     async exec(request) {
       calls.push(`exec:${request.argv[0]}:${request.stdin ?? ""}`);
-      return { exitCode: 0, stdout: "54\n", stderr: "" };
+      return {
+        exitCode: 0,
+        stdout: request.argv[0] === "/bin/bash"
+          ? "BROWSER_C_IN_GUEST_OK\nBROWSER_CXX_IN_GUEST_OK\n"
+          : "54\n",
+        stderr: "",
+      };
     },
     async pty(input) {
       calls.push(`pty:${String(input)}`);
@@ -802,6 +808,22 @@ test("routes every browser runner surface through the protected adapter", async 
         probe: { suite: "main-shell-modeset-browser" },
       },
     },
+    {
+      surface: "toolchain-shell",
+      definition: {
+        id: "main-shell-toolchain-browser",
+        runner: "repository-suite",
+        probe: { suite: "main-shell-toolchain-browser" },
+      },
+    },
+    {
+      surface: "c-development",
+      definition: {
+        id: "main-shell-c-development-browser",
+        runner: "repository-suite",
+        probe: { suite: "main-shell-c-development-browser" },
+      },
+    },
   ] as const;
 
   for (const item of cases) {
@@ -821,6 +843,8 @@ test("routes every browser runner surface through the protected adapter", async 
     "wordpress-login",
     "framebuffer:/usr/local/bin/fbdoom -iwad /doom1.wad",
     "modeset:/usr/local/bin/modeset",
+    "exec:/bin/bash:",
+    "exec:/bin/bash:",
   ]);
 });
 
@@ -1004,6 +1028,92 @@ test("binds basic, fbDOOM, and modeset to the same candidate main-shell image", 
     assert.equal(selected.vfs.sha256, digest);
     assert.equal(selected.vfs.sourceKind, "protected-local-candidate-vfs");
   }
+});
+
+test("selects protected main-shell toolchain browser evidence", () => {
+  for (const [definitionId, surface] of [
+    ["main-shell-toolchain-browser", "toolchain-shell"],
+    ["main-shell-c-development-browser", "c-development"],
+  ] as const) {
+    const selection = buildBrowserEvidenceSelection(
+      selectionInput("browser-main-shell", definitionId),
+    );
+    assert.equal(selection.surface, surface);
+    assert.deepEqual(
+      selection.lazyAssets.map(({ id }) => id),
+      ["homebrew-clang", "homebrew-kandelo-sdk", "homebrew-libcxx"],
+    );
+  }
+});
+
+test("rejects drift in protected main-shell toolchain browser definitions", () => {
+  const withDefinitionMutation = (
+    mutate: (definition: GeneratedEvidenceDefinitionV1) => void,
+  ): BrowserEvidenceSelectionInputV1 => {
+    const input = selectionInput(
+      "browser-main-shell",
+      "main-shell-toolchain-browser",
+    );
+    const registry = structuredClone(
+      input.definitions,
+    ) as GeneratedEvidenceDefinitionRegistryV1;
+    const definition = registry.definitions.find(
+      ({ id }) => id === input.definitionId,
+    )!;
+    mutate(definition);
+    definition.definition_sha256 = evidenceDefinitionSha256(definition);
+    input.definitions = registry;
+    return input;
+  };
+
+  assert.throws(
+    () => buildBrowserEvidenceSelection(withDefinitionMutation((definition) => {
+      definition.runner = "exec";
+    })),
+    /repository-suite definition differs/i,
+  );
+  assert.throws(
+    () => buildBrowserEvidenceSelection(withDefinitionMutation((definition) => {
+      definition.probe.suite = "main-shell-fbdoom-browser";
+    })),
+    /repository-suite definition differs/i,
+  );
+
+  const missing = selectionInput(
+    "browser-main-shell",
+    "main-shell-toolchain-browser",
+  );
+  missing.servedLazyAssets.pop();
+  assert.throws(
+    () => buildBrowserEvidenceSelection(missing),
+    /lazy.*differ|missing/i,
+  );
+
+  const extra = selectionInput(
+    "browser-main-shell",
+    "main-shell-toolchain-browser",
+  );
+  extra.servedLazyAssets.push({
+    id: "homebrew-extra",
+    reference:
+      `ghcr.io/kandelo-dev/homebrew-tap-core-abi-${targetAbi}-candidates/` +
+      `packages/homebrew-extra@sha256:${digest}`,
+    url: new URL("extra", extra.servedVfs.url).href,
+    sha256: digest,
+    bytes: 41,
+  });
+  assert.throws(
+    () => buildBrowserEvidenceSelection(extra),
+    /lazy.*differ|extra/i,
+  );
+
+  assert.throws(
+    () => buildBrowserEvidenceSelection(selectionInput(
+      "browser-node",
+      "main-shell-toolchain-browser",
+    )),
+    /test-owned registry/i,
+  );
 });
 
 test("binds the protected harness and browser runtime assets", async () => {

@@ -259,6 +259,28 @@ Browser Kandelo supports local loopback and virtual machine-to-machine UDP/TCP. 
 
 The browser UI uses pre-built **VFS images** - binary filesystem snapshots that load instantly at runtime. See [docs/browser-support.md](docs/browser-support.md#vfs-images) for details.
 
+### Compile C and C++ in the browser shell
+
+The ordinary browser shell exposes `cc`, `c++`, and the
+`wasm32posix-*` SDK commands without putting compiler payload bytes in the
+shell image. Booting and using the shell does not download the toolchain. The
+first compiler use downloads the exact ABI-qualified, digest-verified
+`kandelo-sdk` Homebrew closure from GHCR and reuses it for the rest of that
+browser session.
+
+The **C development** gallery entry is a preset over that same shell. It opens
+`/home/user/c`, prepares `/home/user/c/hello.c`, and starts the same compiler
+closure download in the background while the terminal remains usable. Download
+progress and failures are shown in the UI; **Retry** uses the same immutable
+descriptor, and a failed download does not make the shell unusable. This
+release does not cache compiler payloads across browser sessions, and
+compile-heavy work needs enough browser memory headroom for the toolchain and
+guest process together.
+
+The initial in-guest scope is C and C++ targeting wasm32. Programs that require
+generated fork-family instrumentation remain limited until an in-guest
+`wasm-fork-instrument` ships.
+
 ## Porting Software
 
 Build scripts for all ported software are in `packages/registry/`:

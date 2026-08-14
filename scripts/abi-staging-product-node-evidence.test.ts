@@ -374,10 +374,11 @@ async function realSdkFixtureVfs(
   root: string,
   candidateSource?: string,
 ): Promise<Uint8Array> {
-  const llvmDirectory = devShellToolDirectory("clang", "wasm-ld");
+  const llvmBinDirectory = devShellToolDirectory("clang", "wasm-ld");
+  const llvmDirectory = dirname(llvmBinDirectory);
   const bashPath = join(devShellToolDirectory("bash"), "bash");
   const resourceDirectory = execFileSync(
-    join(llvmDirectory, "clang"),
+    join(llvmBinDirectory, "clang"),
     ["--print-resource-dir"],
     { encoding: "utf8" },
   ).trim();
@@ -749,7 +750,11 @@ function contextFor(
 ): NodeEvidenceContextV1 {
   const product = productCatalog.products.find(
     (entry) => entry.manifest.evidence.node?.test === definition.id,
-  ) ?? productForDefinition("rootfs-node-startup");
+  ) ?? (definition.id === "main-shell-toolchain-node"
+    ? productCatalog.products.find(
+      (entry) => entry.manifest.id === "browser-main-shell",
+    )
+    : undefined) ?? productForDefinition("rootfs-node-startup");
   assert.ok(product.manifest.boot, `product ${product.manifest.id} lacks a boot contract`);
   const context: NodeEvidenceContextV1 = {
     schema: 1,
@@ -1354,6 +1359,7 @@ test("bounds SQL and Redis pipe bytes at the evidence transport boundary", async
 
 test("keeps registered Node product suites closed and outcome checked", () => {
   const suiteIds = [
+    "main-shell-toolchain-node",
     "mariadb-product-node",
     "php-product-node",
     "sqlite-product-node",
@@ -1416,6 +1422,40 @@ test("keeps registered Node product suites closed and outcome checked", () => {
     sqlite.steps.map((step) => step.argv[1]),
     ["test/select1.test", "test/func.test"],
   );
+});
+
+test("registers a protected in-guest C and C++ suite", () => {
+  const suite = protectedNodeSuiteDefinition("main-shell-toolchain-node");
+  assert.deepEqual(
+    suite.steps.map((step) => step.id),
+    ["compile-and-run-c", "compile-and-run-cxx"],
+  );
+  assert.equal(suite.steps[0]!.argv[0], "/bin/bash");
+  assert.deepEqual(suite.steps[0]!.stdout, {
+    kind: "exact",
+    value: "kandelo-c-ok\n",
+  });
+  assert.deepEqual(suite.steps[1]!.stdout, {
+    kind: "exact",
+    value: "kandelo-cxx-ok\n",
+  });
+  assert.match(suite.steps[0]!.argv.join(" "), /cc .*main\.c/);
+  assert.match(suite.steps[1]!.argv.join(" "), /c\+\+ .*main\.cpp/);
+
+  const definition = generatedDefinitions.definitions.find(
+    (candidate) => candidate.id === "main-shell-toolchain-node",
+  );
+  assert.ok(definition);
+  assert.equal(definition.host, "node");
+  assert.equal(definition.runner, "repository-suite");
+  assert.deepEqual(definition.probe, {
+    suite: "main-shell-toolchain-node",
+    lazy_inputs: [
+      "homebrew-clang",
+      "homebrew-kandelo-sdk",
+      "homebrew-libcxx",
+    ],
+  });
 });
 
 test("rejects every candidate credential class before execution", () => {

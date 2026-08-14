@@ -50,6 +50,10 @@ import {
 } from "./vfs/closed-lazy-assets";
 import { resolveLazyUrl } from "./vfs/lazy-url";
 import { prepareHomebrewFlatLazyBoot } from "./homebrew-flat-lazy-boot";
+import {
+  boundedHomebrewPackagePrefetchError,
+  prefetchHomebrewPackageClosures,
+} from "./homebrew-package-prefetch";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { findRepoRoot } from "./binary-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
@@ -2342,6 +2346,36 @@ async function handleDestroy(msg: { requestId: number }) {
   respond(msg.requestId, result);
 }
 
+async function handleHomebrewPackagePrefetch(
+  msg: Extract<MainToKernelMessage, { type: "prefetch_homebrew_packages" }>,
+): Promise<void> {
+  if (!initReady || rootfsMemfs === null) {
+    post({
+      type: "homebrew_packages_prefetch_failed",
+      requestId: msg.requestId,
+      error: "Homebrew package prefetch requires an initialized VFS kernel",
+    });
+    return;
+  }
+  try {
+    const result = await prefetchHomebrewPackageClosures(
+      rootfsMemfs,
+      msg.packages,
+    );
+    post({
+      type: "homebrew_packages_prefetched",
+      requestId: msg.requestId,
+      result,
+    });
+  } catch (error) {
+    post({
+      type: "homebrew_packages_prefetch_failed",
+      requestId: msg.requestId,
+      error: boundedHomebrewPackagePrefetchError(error),
+    });
+  }
+}
+
 // --- PTY ---
 
 function handlePtyWrite(pid: number, data: Uint8Array) {
@@ -2554,6 +2588,9 @@ port.on("message", (msg: MainToKernelMessage) => {
       break;
     case "destroy":
       void handleDestroy(msg);
+      break;
+    case "prefetch_homebrew_packages":
+      void handleHomebrewPackagePrefetch(msg);
       break;
     case "export_rootfs_image":
       void handleExportRootfsImage(msg);

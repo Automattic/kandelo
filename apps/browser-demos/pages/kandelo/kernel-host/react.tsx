@@ -10,6 +10,7 @@ import * as React from "react";
 import type {
   KernelHost, MachineStatus, DmesgLine, Snapshot, WebPreviewState, DemoPresentation,
   SurfaceAvailability, GalleryItem, GalleryTab, LazyDownloadEvent, LazyDownloadSummary,
+  HomebrewPackagePrefetchState,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { activeLazyDownloadSummaries } from "../../../../../web-libs/kandelo-session/src/lazy-download";
 import type { DemoGuideConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
@@ -107,6 +108,22 @@ export function useLazyDownloadSummaries(): LazyDownloadSummary[] {
     setItems(host.lazyDownloadSummaries());
     return host.subscribeLazyDownloadSummaries(() => {
       setItems(host.lazyDownloadSummaries());
+    });
+  }, [host]);
+
+  return items;
+}
+
+export function useHomebrewPackagePrefetches(): HomebrewPackagePrefetchState[] {
+  const host = useKernelHost();
+  const [items, setItems] = React.useState<HomebrewPackagePrefetchState[]>(() =>
+    host.homebrewPackagePrefetches()
+  );
+
+  React.useEffect(() => {
+    setItems(host.homebrewPackagePrefetches());
+    return host.subscribeHomebrewPackagePrefetches(() => {
+      setItems(host.homebrewPackagePrefetches());
     });
   }, [host]);
 

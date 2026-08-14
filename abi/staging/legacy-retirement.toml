@@ -160,6 +160,33 @@ removable = false
 
 [[entries]]
 repository = "Automattic/kandelo"
+path = "images/vfs/products/developer-kandelo-sdk.toml"
+current_consumers = ["developer-sdk-vfs-build", "package-generation", "supplementary-sdk-evidence"]
+replacement_component = "Admitted kandelo-sdk Formula selected by browser-main-shell"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "images/vfs/scripts/build-kandelo-sdk-vfs-image.sh"
+current_consumers = ["developer-sdk-vfs-build", "package-generation", "supplementary-sdk-evidence"]
+replacement_component = "Admitted kandelo-sdk Formula selected by browser-main-shell"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
+path = "images/vfs/scripts/build-kandelo-sdk-vfs-image.ts"
+current_consumers = ["developer-sdk-vfs-build", "package-generation", "supplementary-sdk-evidence"]
+replacement_component = "Admitted kandelo-sdk Formula selected by browser-main-shell"
+required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
+removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
+removable = false
+
+[[entries]]
+repository = "Automattic/kandelo"
 path = "images/vfs/scripts/build-shell-vfs-image.sh"
 current_consumers = ["legacy-shell-build-target", "run.sh"]
 replacement_component = "browser-main-shell transitional product builder adapter"
@@ -197,8 +224,8 @@ removable = false
 [[entries]]
 repository = "Automattic/kandelo"
 path = "packages/registry/kandelo-sdk"
-current_consumers = ["developer-sdk-vfs-build", "package-generation"]
-replacement_component = "developer-kandelo-sdk product manifest and direct build adapter"
+current_consumers = ["developer-sdk-vfs-build", "package-generation", "supplementary-sdk-evidence"]
+replacement_component = "Admitted kandelo-sdk Formula selected by browser-main-shell"
 required_evidence_ids = ["failure-recovery-proof", "generic-transition-acceptance", "pages-atomic-readiness", "prior-abi-history-protection", "product-authority-consumer-audit", "promotion-readback", "source-custody-retention"]
 removal_conditions = ["complete-generic-transition", "complete-retained-source-custody", "consumer-audit-complete", "failure-recovery-evidence", "independent-canonical-promotion", "protected-prior-abi-repair", "required-product-pages-evidence"]
 removable = false

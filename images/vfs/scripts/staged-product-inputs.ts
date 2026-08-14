@@ -27,7 +27,7 @@ import { loadVfsProductCatalog } from "../../../scripts/vfs-product-catalog.mjs"
 import {
   parseHomebrewOriginalBottleTreeDescriptor,
   registerHomebrewDeferredTreeCollection,
-  type HomebrewOriginalBottleTreeDescriptorV1,
+  type HomebrewOriginalBottleTreeDescriptorV2,
 } from "../../../host/src/homebrew-runtime-layer-consumer";
 import {
   MemoryFileSystem,
@@ -300,7 +300,7 @@ interface StagedBottleTree {
   formula: string;
   placement: "embedded" | "lazy-reference";
   bytes?: Uint8Array;
-  descriptor: HomebrewOriginalBottleTreeDescriptorV1;
+  descriptor: HomebrewOriginalBottleTreeDescriptorV2;
   handle?: DeferredTreeMaterializationHandle;
 }
 
@@ -439,6 +439,7 @@ export async function buildStagedBrowserMainShell(
           package: `kandelo-dev/tap-core/${formula}`,
           bottle: { sha256: input.sha256, bytes: input.bytes },
           allowedRoots: directRoots,
+          schema: 2,
         },
       );
       const transport = descriptor.tree.transports[0]?.url;
@@ -460,6 +461,7 @@ export async function buildStagedBrowserMainShell(
         descriptor,
       });
     }
+    validateClosedHomebrewDependencyGraph(bottleTrees);
     for (const root of directRoots) {
       if (!bottleTrees.some((item) => item.formula === root)) {
         throw new Error(`browser-main-shell omits declared Homebrew root ${root}`);
@@ -576,6 +578,8 @@ export async function buildStagedBrowserMainShell(
           materialization: item.placement,
           tree_id: item.descriptor.tree.id,
           required_by: item.descriptor.required_by,
+          keg: homebrewDescriptorKeg(item.descriptor),
+          dependencies: item.descriptor.dependencies,
         })),
         compatibility: compatibilityEvidence,
         bootstrap: bootstrapState,
@@ -629,6 +633,61 @@ export async function buildStagedBrowserMainShell(
   } finally {
     rmSync(work, { force: true, recursive: true });
   }
+}
+
+function validateClosedHomebrewDependencyGraph(
+  bottleTrees: readonly StagedBottleTree[],
+): void {
+  const byPackage = new Map<string, StagedBottleTree>();
+  for (const item of bottleTrees) {
+    const packageName = item.descriptor.tree.package;
+    if (packageName === undefined || byPackage.has(packageName)) {
+      throw new Error(`browser-main-shell repeats Homebrew package ${String(packageName)}`);
+    }
+    byPackage.set(packageName, item);
+  }
+  for (const item of bottleTrees) {
+    for (const dependency of item.descriptor.dependencies) {
+      if (!byPackage.has(dependency)) {
+        throw new Error(
+          `browser-main-shell dependency ${dependency} for ${item.formula} is absent`,
+        );
+      }
+    }
+  }
+  const active = new Set<string>();
+  const complete = new Set<string>();
+  const visit = (packageName: string): void => {
+    if (complete.has(packageName)) return;
+    if (active.has(packageName)) {
+      throw new Error(`browser-main-shell dependency cycle includes ${packageName}`);
+    }
+    active.add(packageName);
+    const item = byPackage.get(packageName);
+    if (item === undefined) {
+      throw new Error(`browser-main-shell dependency ${packageName} is absent`);
+    }
+    for (const dependency of item.descriptor.dependencies) visit(dependency);
+    active.delete(packageName);
+    complete.add(packageName);
+  };
+  for (const packageName of byPackage.keys()) visit(packageName);
+}
+
+function homebrewDescriptorKeg(
+  descriptor: HomebrewOriginalBottleTreeDescriptorV2,
+): string {
+  const prefix = `/opt/kandelo/homebrew/Cellar/${descriptor.formula}/`;
+  const roots = descriptor.tree.activation.roots.filter((root) =>
+    root.startsWith(prefix) && !root.slice(prefix.length).includes("/")
+  );
+  const [keg] = roots;
+  if (roots.length !== 1 || keg === undefined) {
+    throw new Error(
+      `browser-main-shell ${descriptor.formula} has no exact activation keg`,
+    );
+  }
+  return keg;
 }
 
 function stagedPackageTreeBinding(
@@ -2217,12 +2276,17 @@ function applyMainShellCompatibility(
   );
   const links: Array<{ path: string; target: string; package: string }> = [];
   const destinations = new Set<string>();
-  const install = (source: string, target: string, pkg: string): void => {
+  const install = (
+    source: string,
+    target: string,
+    pkg: string,
+    allowDirectory = false,
+  ): void => {
     if (destinations.has(target)) {
       throw new Error(`main-shell compatibility assigns ${target} more than once`);
     }
     destinations.add(target);
-    installHomebrewCompatibilityLink(fs, source, target);
+    installHomebrewCompatibilityLink(fs, source, target, allowDirectory);
     links.push({ package: pkg, path: target, target: source });
   };
 
@@ -2249,7 +2313,14 @@ function applyMainShellCompatibility(
     const source = alias.source_kind === "link"
       ? `${HOMEBREW_PREFIX}/${alias.source}`
       : `${bottle.descriptor.tree.activation.roots[0]}/${alias.source}`;
-    for (const target of alias.targets) install(source, target, alias.package);
+    for (const target of alias.targets) {
+      install(
+        source,
+        target,
+        alias.package,
+        alias.source_kind === "keg",
+      );
+    }
   }
 
   for (const conflict of policy.link_conflict_owners) {
@@ -2308,13 +2379,16 @@ function installHomebrewCompatibilityLink(
   fs: MemoryFileSystem,
   source: string,
   target: string,
+  allowDirectory: boolean,
 ): void {
   const sourceStat = fs.stat(source);
-  if (
-    (sourceStat.mode & 0xf000) !== 0x8000 ||
-    (sourceStat.mode & 0o111) === 0
-  ) {
-    throw new Error(`main-shell compatibility source is not executable: ${source}`);
+  const sourceKind = sourceStat.mode & 0xf000;
+  const isExecutableFile =
+    sourceKind === 0x8000 && (sourceStat.mode & 0o111) !== 0;
+  if (!isExecutableFile && !(allowDirectory && sourceKind === 0x4000)) {
+    throw new Error(
+      `main-shell compatibility source is not an executable file or keg directory: ${source}`,
+    );
   }
   const existing = tryVfsLstat(fs, target);
   if (existing !== null) {

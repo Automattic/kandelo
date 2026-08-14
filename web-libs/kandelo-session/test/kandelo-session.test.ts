@@ -3,6 +3,8 @@ import {
   LiveKernelHost,
   type BootDescriptor,
   type FileSystemLike,
+  type HomebrewPackagePrefetchResult,
+  type KernelLike,
   type LazyDownloadEvent,
   type MachineStatus,
   type ProcessEvent,
@@ -674,6 +676,255 @@ describe("LiveKernelHost: lazy download events", () => {
         eventCount: 2,
       }),
     ]);
+  });
+});
+
+function kernelWithPackagePrefetch(
+  prefetch: (roots: readonly string[]) => Promise<HomebrewPackagePrefetchResult>,
+): KernelLike {
+  const unavailable = () => {
+    throw new Error("not used by package-prefetch test");
+  };
+  return {
+    fs: {} as FileSystemLike,
+    spawn: unavailable,
+    onPtyOutput: unavailable,
+    ptyWrite: unavailable,
+    ptyResize: unavailable,
+    terminateProcess: async () => {},
+    prefetchHomebrewPackages: prefetch,
+  };
+}
+
+const TOOLCHAIN_ROOTS = ["kandelo-dev/tap-core/kandelo-sdk"] as const;
+const TOOLCHAIN_RESULT: HomebrewPackagePrefetchResult = {
+  roots: [...TOOLCHAIN_ROOTS],
+  packages: [
+    "kandelo-dev/tap-core/libcxx",
+    "kandelo-dev/tap-core/clang",
+    "kandelo-dev/tap-core/kandelo-sdk",
+  ],
+  materializedPackages: [
+    "kandelo-dev/tap-core/libcxx",
+    "kandelo-dev/tap-core/clang",
+    "kandelo-dev/tap-core/kandelo-sdk",
+  ],
+  alreadyMaterializedPackages: [],
+};
+
+describe("LiveKernelHost: Homebrew package prefetch", () => {
+  it("records one coalesced attempt and retries the same roots", async () => {
+    const prefetch = vi.fn()
+      .mockRejectedValueOnce(new Error("clang tree digest mismatch"))
+      .mockResolvedValueOnce(TOOLCHAIN_RESULT);
+    const host = new LiveKernelHost({
+      kernel: kernelWithPackagePrefetch(prefetch),
+    });
+
+    const first = host.prefetchHomebrewPackages(
+      "c-development-toolchain",
+      "C/C++ toolchain",
+      TOOLCHAIN_ROOTS,
+    );
+    const coalesced = host.prefetchHomebrewPackages(
+      "c-development-toolchain",
+      "C/C++ toolchain",
+      TOOLCHAIN_ROOTS,
+    );
+
+    await expect(first).rejects.toThrow("digest mismatch");
+    await expect(coalesced).rejects.toThrow("digest mismatch");
+    expect(prefetch).toHaveBeenCalledTimes(1);
+    expect(host.homebrewPackagePrefetches()).toEqual([
+      expect.objectContaining({
+        id: "c-development-toolchain",
+        status: "error",
+        attempt: 1,
+        error: "clang tree digest mismatch",
+      }),
+    ]);
+
+    await expect(
+      host.retryHomebrewPackagePrefetch("c-development-toolchain"),
+    ).resolves.toEqual(TOOLCHAIN_RESULT);
+    expect(prefetch).toHaveBeenNthCalledWith(2, TOOLCHAIN_ROOTS);
+    expect(host.homebrewPackagePrefetches()).toEqual([
+      expect.objectContaining({
+        status: "ready",
+        attempt: 2,
+        result: TOOLCHAIN_RESULT,
+      }),
+    ]);
+  });
+
+  it("rejects conflicting IDs and invalid retry transitions before the worker", async () => {
+    let resolvePrefetch!: (result: HomebrewPackagePrefetchResult) => void;
+    const prefetch = vi.fn(() => new Promise<HomebrewPackagePrefetchResult>((resolve) => {
+      resolvePrefetch = resolve;
+    }));
+    const host = new LiveKernelHost({
+      kernel: kernelWithPackagePrefetch(prefetch),
+    });
+    const pending = host.prefetchHomebrewPackages(
+      "c-development-toolchain",
+      "C/C++ toolchain",
+      TOOLCHAIN_ROOTS,
+    );
+
+    await expect(host.prefetchHomebrewPackages(
+      "c-development-toolchain",
+      "Different label",
+      TOOLCHAIN_ROOTS,
+    )).rejects.toThrow(/different label or roots/i);
+    await expect(host.prefetchHomebrewPackages(
+      "c-development-toolchain",
+      "C/C++ toolchain",
+      ["kandelo-dev/tap-core/clang"],
+    )).rejects.toThrow(/different label or roots/i);
+    await expect(host.retryHomebrewPackagePrefetch("unknown"))
+      .rejects.toThrow(/unknown/i);
+    await expect(host.retryHomebrewPackagePrefetch("c-development-toolchain"))
+      .rejects.toThrow(/not in an error state/i);
+    expect(prefetch).toHaveBeenCalledTimes(1);
+
+    resolvePrefetch(TOOLCHAIN_RESULT);
+    await pending;
+  });
+
+  it("records a stable error when the current kernel lacks package prefetch", async () => {
+    const host = new LiveKernelHost({
+      kernel: { fs: makeFs({ "/etc/passwd": "" }) } as KernelLike,
+    });
+
+    await expect(host.prefetchHomebrewPackages(
+      "c-development-toolchain",
+      "C/C++ toolchain",
+      TOOLCHAIN_ROOTS,
+    )).rejects.toThrow("current kernel cannot prefetch Homebrew packages");
+    expect(host.homebrewPackagePrefetches()).toEqual([
+      expect.objectContaining({
+        status: "error",
+        attempt: 1,
+        error: "current kernel cannot prefetch Homebrew packages",
+      }),
+    ]);
+  });
+
+  it("clears the ledger for attach, detach, halt, and reboot", async () => {
+    const createHost = () => new LiveKernelHost({
+      status: "running",
+      descriptor: DUMMY_DESCRIPTOR,
+      kernel: kernelWithPackagePrefetch(async () => TOOLCHAIN_RESULT),
+    });
+    const populate = async (host: LiveKernelHost) => {
+      await host.prefetchHomebrewPackages(
+        "c-development-toolchain",
+        "C/C++ toolchain",
+        TOOLCHAIN_ROOTS,
+      );
+      expect(host.homebrewPackagePrefetches()).toHaveLength(1);
+    };
+
+    const attached = createHost();
+    await populate(attached);
+    attached.attachKernel(kernelWithPackagePrefetch(async () => TOOLCHAIN_RESULT));
+    expect(attached.homebrewPackagePrefetches()).toEqual([]);
+
+    const detached = createHost();
+    await populate(detached);
+    detached.detachKernel();
+    expect(detached.homebrewPackagePrefetches()).toEqual([]);
+
+    const halted = createHost();
+    await populate(halted);
+    await halted.halt();
+    expect(halted.homebrewPackagePrefetches()).toEqual([]);
+
+    const rebooted = createHost();
+    await populate(rebooted);
+    await rebooted.reboot();
+    expect(rebooted.homebrewPackagePrefetches()).toEqual([]);
+  });
+
+  it("does not let a detached kernel repopulate or notify the new generation", async () => {
+    let resolvePrefetch!: (result: HomebrewPackagePrefetchResult) => void;
+    const host = new LiveKernelHost({
+      kernel: kernelWithPackagePrefetch(() =>
+        new Promise<HomebrewPackagePrefetchResult>((resolve) => {
+          resolvePrefetch = resolve;
+        })
+      ),
+    });
+    const states: string[][] = [];
+    host.subscribeHomebrewPackagePrefetches(() => {
+      states.push(host.homebrewPackagePrefetches().map(({ status }) => status));
+    });
+    const pending = host.prefetchHomebrewPackages(
+      "c-development-toolchain",
+      "C/C++ toolchain",
+      TOOLCHAIN_ROOTS,
+    );
+
+    host.attachKernel(kernelWithPackagePrefetch(async () => TOOLCHAIN_RESULT));
+    const stateCountAfterAttach = states.length;
+    resolvePrefetch(TOOLCHAIN_RESULT);
+    await expect(pending).resolves.toEqual(TOOLCHAIN_RESULT);
+
+    expect(host.homebrewPackagePrefetches()).toEqual([]);
+    expect(states).toHaveLength(stateCountAfterAttach);
+  });
+
+  it("returns defensive copies and bounds credential-redacted UTF-8 errors", async () => {
+    const overlong = "🧪".repeat(400);
+    const prefetch = vi.fn(async () => {
+      throw new Error(
+        "\u0000 https://user:secret@example.test/tree?token=secret#fragment " + overlong,
+      );
+    });
+    const roots = [...TOOLCHAIN_ROOTS];
+    const host = new LiveKernelHost({
+      kernel: kernelWithPackagePrefetch(prefetch),
+    });
+
+    await expect(host.prefetchHomebrewPackages(
+      "c-development-toolchain",
+      "C/C++ toolchain",
+      roots,
+    )).rejects.toThrow();
+    roots[0] = "kandelo-dev/tap-core/changed";
+    const first = host.homebrewPackagePrefetches()[0]!;
+    expect(first.roots).toEqual(TOOLCHAIN_ROOTS);
+    expect(first.error).not.toMatch(/secret|token|\u0000/u);
+    expect(first.error).toContain("https://example.test/tree");
+    expect(first.error).not.toContain("\ufffd");
+    expect(new TextEncoder().encode(first.error).byteLength).toBeLessThanOrEqual(512);
+
+    first.roots[0] = "kandelo-dev/tap-core/mutated";
+    expect(host.homebrewPackagePrefetches()[0]!.roots).toEqual(TOOLCHAIN_ROOTS);
+  });
+
+  it("validates package-prefetch IDs, labels, and full Formula roots", async () => {
+    const prefetch = vi.fn(async () => TOOLCHAIN_RESULT);
+    const host = new LiveKernelHost({
+      kernel: kernelWithPackagePrefetch(prefetch),
+    });
+
+    await expect(host.prefetchHomebrewPackages(
+      "Bad ID",
+      "C/C++ toolchain",
+      TOOLCHAIN_ROOTS,
+    )).rejects.toThrow(/id/i);
+    await expect(host.prefetchHomebrewPackages(
+      "valid-id",
+      "",
+      TOOLCHAIN_ROOTS,
+    )).rejects.toThrow(/label/i);
+    await expect(host.prefetchHomebrewPackages(
+      "valid-id",
+      "C/C++ toolchain",
+      ["clang"],
+    )).rejects.toThrow(/Formula identity/i);
+    expect(prefetch).not.toHaveBeenCalled();
   });
 });
 

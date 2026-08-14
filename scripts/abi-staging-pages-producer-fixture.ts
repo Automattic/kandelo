@@ -157,6 +157,9 @@ export async function createMiniaturePagesProducerFixture(
       manifests[0]!.sha256,
       runtimeBundleBytes,
       scenario === "missing-admission",
+      scenario === "missing-admission"
+        ? { homebrewFormula: "clang" }
+        : {},
     )],
     ["mini", candidateFixture(
       "mini",
@@ -335,13 +338,14 @@ function candidateFixture(
   manifestSha256: string,
   runtimeBundleBytes: Uint8Array,
   homebrew: boolean,
-  options: { dependency?: string } = {},
+  options: { dependency?: string; homebrewFormula?: string } = {},
 ) {
   const repository =
     `ghcr.io/kandelo-dev/homebrew-tap-core-abi-18-candidates/products/${productId}`;
   const embedded = new TextEncoder().encode("embedded current package\n");
   const lazy = new TextEncoder().encode("lazy current package\n");
-  const metadata = canonicalJsonBytes({ formula: "dash" });
+  const homebrewFormula = options.homebrewFormula ?? "dash";
+  const metadata = canonicalJsonBytes({ formula: homebrewFormula });
   const inputs = options.dependency !== undefined
     ? [{
       architecture: "wasm32",
@@ -364,12 +368,12 @@ function candidateFixture(
       declared_materialization: "lazy",
       descriptor: {
         bytes: metadata.byteLength,
-        path: "inputs/descriptors/homebrew-dash.json",
+        path: `inputs/descriptors/homebrew-${homebrewFormula}.json`,
         reference: `${repository}@sha256:${digest(metadata)}`,
         sha256: digest(metadata),
       },
       effective_materialization: "lazy-reference",
-      id: "homebrew-dash",
+      id: `homebrew-${homebrewFormula}`,
       kind: "homebrew-bottle",
       reference: `${repository}@sha256:${digest(lazy)}`,
       role: "runtime",

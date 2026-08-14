@@ -52,6 +52,15 @@ declare global {
   interface Window {
     __KANDELO_ABI_STAGING_BROWSER_EVIDENCE__?: unknown;
     __KANDELO_ABI_STAGING_ACTIVATE_PAGES_PRODUCT__?: () => Promise<void>;
+    __KANDELO_ABI_STAGING_LIVE_LEDGER__?: () => {
+      lazyDownloads: Array<{ status: string }>;
+      packagePrefetches: Array<{
+        id: string;
+        status: string;
+        roots: string[];
+        packages?: string[];
+      }>;
+    };
   }
 }
 
@@ -137,6 +146,7 @@ export class ProtectedBrowserEvidenceOutput {
 
 export type CandidateEvidenceLiveDemoId =
   | "shell"
+  | "c-dev"
   | "node"
   | "nginx"
   | "nginx-php"
@@ -149,6 +159,8 @@ const LIVE_DEMO_BY_EVIDENCE_PROFILE: Readonly<
   Record<string, CandidateEvidenceLiveDemoId>
 > = {
   shell: "shell",
+  "toolchain-shell": "shell",
+  "c-development": "c-dev",
   doom: "doom",
   modeset: "modeset",
   node: "node",

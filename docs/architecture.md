@@ -1052,6 +1052,18 @@ deferred tree. The first prepared open or executable resolution fetches the
 whole declared archive once, verifies it, and atomically materializes the
 complete group; later accesses do not fetch it again.
 
+Both host proxies also expose `prefetchHomebrewPackages(roots)`. The Node and
+browser proxies send the same `prefetch_homebrew_packages` request to their
+dedicated kernel worker; the main thread never reads the worker-owned VFS or
+interprets a package path, dependency list, transport URL, or compiler flag.
+The worker validates `/etc/kandelo/homebrew-vfs.json`, derives the requested
+full-name roots' dependency-first closure, and prepares each authenticated keg
+through the ordinary lazy VFS path. The response reports the normalized roots,
+complete package closure, newly materialized packages, and packages already
+present. Failures cross the worker boundary only as bounded, location-redacted
+diagnostics. This is a VFS lifecycle operation shared by both hosts, not a new
+kernel execution mode.
+
 ### VFS Images
 
 A `MemoryFileSystem` can be serialized to a portable binary image and restored later to boot a new kernel with a pre-populated filesystem. This enables snapshotting an initialized VFS (with all files, directories, symlinks, and permissions) and restoring it without repeating the setup work.

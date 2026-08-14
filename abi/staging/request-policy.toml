@@ -47,6 +47,8 @@ implementation_paths = [
   "apps/browser-demos/playwright-server-policy.ts",
   "apps/browser-demos/playwright.config.ts",
   "apps/browser-demos/test/abi-staging-product-evidence.spec.ts",
+  "apps/browser-demos/test/kandelo-c-development.spec.ts",
+  "apps/browser-demos/test/support/homebrew-lazy-transport.ts",
   "apps/browser-demos/test/support/terminal-command.ts",
   "apps/browser-demos/vite.config.ts",
   "flake.lock",

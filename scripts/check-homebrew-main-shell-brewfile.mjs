@@ -90,12 +90,18 @@ assertUnique(
 );
 assertUnique(expectedFormulae, "migration lock Formulae");
 assertUnique(actualFormulae, "main-shell Brewfile");
+// The product source can append lazy roots before their candidate bottles are
+// admitted. Keep the finalized historical prefix exact while allowing that
+// review-only source projection to lead the migration lock. The projection
+// check below proves the suffix is owned by browser-main-shell; publication
+// through the historical closed-selection lane rejects the same mismatch.
 assertExactSequence(
-  actualFormulae,
+  actualFormulae.slice(0, expectedFormulae.length),
   expectedFormulae,
   "main-shell Brewfile does not match the migration lock",
   (value) => value,
 );
+const stagedFormulae = actualFormulae.slice(expectedFormulae.length);
 checkMainShellProjection({
   catalogPath: productCatalogPath,
   brewfilePath: brewfile,
@@ -109,14 +115,16 @@ if (metadataPath !== undefined) {
 }
 
 console.log(
-  `Homebrew main-shell contract: ${actualFormulae.length} reviewed migration roots, ` +
+  `Homebrew main-shell contract: ${expectedFormulae.length} reviewed migration roots, ` +
     `${lock.formula_closure.length} base Formulae, ` +
     `${runtimeSupport.formulaOrder.length} runtime Formulae, and ` +
     `${runtimeSupport.availability.auditedFormulae.length} audited Formulae; ` +
     `the runtime adds ${runtimeSupport.additionalFormulaOrder.length} beyond the base, ` +
     `yielding ${runtimeSupport.compositionFormulaOrder.length} total Formulae, with ` +
     `${runtimeSupport.deferredFormulae.length} optional Formulae deferred at catalog ` +
-    `${lock.catalog.tap_commit}.`,
+    `${lock.catalog.tap_commit}; ${stagedFormulae.length} staged product ` +
+    `root${stagedFormulae.length === 1 ? " remains" : "s remain"} outside the ` +
+    `historical migration lock.`,
 );
 
 function readMigrationLock(path) {

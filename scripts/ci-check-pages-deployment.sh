@@ -657,6 +657,21 @@ if grep -Eq '^[[:space:]]+if:[[:space:]]*always\(\)' \
   fail "canary pre-upload work must remain success-gated"
 fi
 
+canary_c_development_block="$(
+  step_block "$CANARY_WORKFLOW" "Verify canonical C development in Chromium"
+)"
+grep -Fxq "        if: steps.readiness.outputs.ready == 'true'" \
+  <<<"$canary_c_development_block" &&
+  grep -Fq \
+    'KANDELO_ABI_STAGING_ASSEMBLED_SITE_ROOT="$pages_output/source-tree"' \
+    <<<"$canary_c_development_block" &&
+  grep -Fq 'KANDELO_C_DEVELOPMENT_CANONICAL_ACCEPTANCE=1' \
+    <<<"$canary_c_development_block" &&
+  grep -Fq \
+    'npx playwright test test/kandelo-c-development.spec.ts --project=chromium' \
+    <<<"$canary_c_development_block" ||
+  fail "canary must run canonical C development only for a ready source tree"
+
 canary_freshness_block="$(
   step_block "$CANARY_WORKFLOW" "Confirm this is the newest Pages canary run"
 )"
@@ -752,7 +767,7 @@ canary_if_count="$(
   awk '/^[[:space:]]+if:/ { count += 1 } END { print count + 0 }' \
     "$CANARY_WORKFLOW"
 )"
-[ "$canary_if_count" -eq 3 ] ||
+[ "$canary_if_count" -eq 4 ] ||
   fail "canary pre-upload work must remain success-gated"
 
 [ -f "$PAGES_PLAN" ] && [ -f "$BROWSER_SUPPORT" ] ||

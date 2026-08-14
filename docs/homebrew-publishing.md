@@ -68,6 +68,67 @@ recovery lane and do not override the current ownership and order above.
 Compatibility for already downloaded or persisted lazy images is tracked in
 [Future improvements](future-improvements.md#define-compatibility-for-restored-lazy-vfs-images).
 
+### Runtime-support claims require product evidence
+
+Per-Formula candidate verification and product runtime evidence answer
+different questions. Candidate verification proves that one bottle has the
+expected structure and passes its Formula-specific checks. It does not prove
+that a complete user-facing VFS product can resolve, mount, and execute that
+bottle with its exact dependency closure on either host. In particular, a
+browser candidate receipt must not set `browser_compatible = true` by itself.
+
+For policy-covered Formulae, promotion consumes the immutable published
+product-evidence locator from the same protected staging run. The planner
+anonymously reads back both the aggregate evidence record and its candidate
+product, binds the exact runtime bundle, resolved inputs, builder report, and
+every Node/browser receipt, and rederives the aggregate before trusting it.
+Accepted overrides, skipped tests, failed outcomes, unrelated products, and a
+resolved Formula layer that differs from the candidate bottle are rejected.
+The VFS composition descriptor also carries the complete sorted direct
+same-tap dependency identities so that evidence cannot silently omit a
+dependency edge.
+
+Only a successful protected product claim can project
+`runtime_support = ["node", "browser"]` and
+`browser_compatible = true` into the generated Formula sidecar and top-level
+metadata. The same claim, including the product-evidence record digest and
+Node/browser definition digests, is carried through the promotion decision,
+metadata patch, admission record, and Pages admission projection. Formulae
+outside the closed promotion policy cannot add a runtime claim, and older
+admissions without this field remain readable as historical records.
+
+### Lazy C/C++ toolchain composition
+
+The canonical `browser-main-shell` product names one lazy development root:
+`kandelo-dev/tap-core/kandelo-sdk`. Callers do not select `clang` or `libcxx`
+separately. The authenticated VFS composition descriptor records every
+selected Formula's sorted direct same-tap dependency identities, so the guest
+derives the `kandelo-sdk` closure (`clang` and `libcxx`) without a second root
+list, a hard-coded URL, or a caller-supplied install order.
+
+Toolchain delivery has two staging phases:
+
+1. Candidate product evidence composes the exact request's candidate GHCR
+   bottle layers and proves C and C++ compilation inside that candidate shell.
+2. Generic Pages readiness authenticates each Formula admission and the
+   canonical composition descriptor, replaces every candidate transport with
+   its admitted canonical GHCR reference, and recomposes the same product.
+
+The legacy closed-selection release and legacy main-shell bottle mirror are
+historical retirement paths. Neither may carry the compiler closure or supply
+candidate evidence, canonical recomposition, or Pages publication. Pages
+publishes the application and compact VFS product; the compiler, libc++, and
+SDK bottle payloads remain on GHCR and materialize only on first use or an
+explicit package prefetch.
+
+During review, the transitional `main-shell.Brewfile` may append a lazy
+product root before that root has a canonical admission. The main-shell source
+checker keeps the migration lock's existing root sequence exact, verifies the
+appended suffix against the product catalog, and reports it as staged rather
+than finalized. The historical closed-selection root exporter and sealer reject
+that state. This rollout does not update the migration, selection, or artifact
+locks and cannot route the toolchain through the retired release lane.
+
 This is not a general user-facing Homebrew install guide yet. Do not document
 `brew tap` or guest `brew install` commands until that lifecycle is validated
 as a supported Kandelo user workflow. Homebrew Formulae and bottle metadata

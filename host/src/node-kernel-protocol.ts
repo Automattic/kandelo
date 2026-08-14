@@ -19,6 +19,7 @@ import type {
   ClosedLazyAssetSource,
 } from "./vfs/closed-lazy-assets";
 import type { MountSpec } from "./vfs/default-mounts";
+import type { HomebrewPackagePrefetchResult } from "./types";
 
 export type { HttpRequest, HttpResponse };
 export type { HostDiagnostic } from "./host-diagnostic";
@@ -296,6 +297,12 @@ export interface KmsAttachStatsMessage {
   stats: SharedArrayBuffer;
 }
 
+export interface PrefetchHomebrewPackagesRequest {
+  type: "prefetch_homebrew_packages";
+  requestId: number;
+  packages: string[];
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
@@ -325,7 +332,8 @@ export type MainToKernelMessage =
   | DrainSyscallTraceMessage
   | HttpRequestMessage
   | KmsAttachCanvasMessage
-  | KmsAttachStatsMessage;
+  | KmsAttachStatsMessage
+  | PrefetchHomebrewPackagesRequest;
 
 // ── Kernel Worker → Main Thread ──
 
@@ -382,6 +390,18 @@ export interface LazyDownloadMessage {
   event: LazyDownloadEvent;
 }
 
+export interface PrefetchHomebrewPackagesResponse {
+  type: "homebrew_packages_prefetched";
+  requestId: number;
+  result: HomebrewPackagePrefetchResult;
+}
+
+export interface PrefetchHomebrewPackagesFailure {
+  type: "homebrew_packages_prefetch_failed";
+  requestId: number;
+  error: string;
+}
+
 /**
  * Posted whenever the kernel forks, execs, or posix_spawns. Mirrors the
  * browser-side ProcEventMessage. Exit events come via the existing
@@ -403,4 +423,6 @@ export type KernelToMainMessage =
   | PtyOutputMessage
   | ResolveExecRequestMessage
   | ProcEventMessage
-  | LazyDownloadMessage;
+  | LazyDownloadMessage
+  | PrefetchHomebrewPackagesResponse
+  | PrefetchHomebrewPackagesFailure;

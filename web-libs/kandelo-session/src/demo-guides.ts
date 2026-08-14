@@ -50,6 +50,8 @@ lsof | grep -E 'nginx|php-fpm' | head -60 || true`;
 
 export function builtinDemoGuide(profileId: string): DemoGuideConfig | null {
   switch (profileId) {
+    case "c-dev":
+      return cDevelopmentGuide();
     case "shell":
       return shellGuide();
     case "node":
@@ -70,6 +72,7 @@ export function builtinDemoGuide(profileId: string): DemoGuideConfig | null {
 
 export function builtinDemoPresentation(profileId: string): DemoPresentation | null {
   switch (profileId) {
+    case "c-dev":
     case "shell":
     case "node":
       return genericDemoPresentation("terminal");
@@ -131,6 +134,45 @@ export function shellGuide(): DemoGuideConfig {
         ["files", "Files"],
         ["type-ls", "Type input"],
       ]),
+    },
+  );
+}
+
+export function cDevelopmentGuide(): DemoGuideConfig {
+  const compileC = "cc hello.c -o hello.wasm && ./hello.wasm";
+  const compileCxx = [
+    "printf '%s\\n'",
+    "'#include <iostream>'",
+    "'int main() { std::cout << \"Hello from Kandelo C++!\\n\"; return 0; }'",
+    "> hello.cpp",
+    "&& c++ hello.cpp -o hello-cxx.wasm",
+    "&& ./hello-cxx.wasm",
+  ].join(" ");
+  return scriptGuide(
+    "C development",
+    "Compile wasm32 C and C++ inside Kandelo. The preset starts the admitted toolchain download in the background; first use may wait for it, and Retry always uses the same immutable version. Fork-family behavior in newly compiled programs is unsupported until Kandelo ships an in-guest fork instrumenter.",
+    [
+      actionGroup("Build and run", [
+        action(
+          "compile-c",
+          "Compile C",
+          "Compile and execute the reviewed hello.c workspace example.",
+          "terminal.run",
+          compileC,
+        ),
+        action(
+          "compile-cxx",
+          "Compile C++",
+          "Write, compile, and execute a tiny iostream program.",
+          "terminal.run",
+          compileCxx,
+        ),
+      ]),
+    ],
+    {
+      title: "C build command",
+      language: "sh",
+      initialText: compileC,
     },
   );
 }

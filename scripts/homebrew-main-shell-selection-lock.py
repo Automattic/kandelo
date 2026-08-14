@@ -197,6 +197,8 @@ def tap_formula_name(value: Any, tap_name: str, label: str) -> str:
 def derive_roots_and_required_formulae(
     root: pathlib.Path,
     inputs: dict[str, tuple[dict[str, Any], bytes]],
+    *,
+    require_finalized_brewfile: bool = False,
 ) -> tuple[list[str], set[str], str, int, str]:
     migration = inputs["migration_lock"][0]
     runtime = inputs["runtime_support"][0]
@@ -231,6 +233,31 @@ def derive_roots_and_required_formulae(
         fail("main-shell guest layout is not the canonical /opt prefix")
 
     roots = brewfile_roots(root, root / INPUT_PATHS["brewfile"])
+    if require_finalized_brewfile:
+        migration_roots: list[str] = []
+        packages = migration.get("packages")
+        if not isinstance(packages, list):
+            fail("main-shell migration roots are invalid")
+        for position, record in enumerate(packages):
+            formula = record.get("formula") if isinstance(record, dict) else None
+            migration_roots.append(
+                string(
+                    formula.get("name") if isinstance(formula, dict) else None,
+                    f"main-shell migration root #{position}",
+                    FORMULA,
+                )
+            )
+        if roots != migration_roots:
+            staged = [name for name in roots if name not in migration_roots]
+            if staged:
+                fail(
+                    "historical closed-selection roots are not finalized: "
+                    + ", ".join(staged)
+                )
+            fail(
+                "historical closed-selection Brewfile differs from the "
+                "migration roots"
+            )
     formula_roots = runtime.get("formula_roots")
     if not isinstance(formula_roots, list) or not formula_roots:
         fail("runtime-support Formula roots are invalid")
@@ -572,7 +599,9 @@ def verify_selection(
         # this CLI's stable error surface without hiding the useful reason.
         fail(f"closed selection is invalid: {error}")
     roots, required, tap_name, abi, source_commit = (
-        derive_roots_and_required_formulae(root, inputs)
+        derive_roots_and_required_formulae(
+            root, inputs, require_finalized_brewfile=True
+        )
     )
     if selection["arch"] != lock["arch"] or selection["kandelo_abi"] != abi:
         fail("closed selection architecture or ABI differs from Kandelo")
@@ -692,7 +721,9 @@ def main() -> int:
                 for name, relative in INPUT_PATHS.items()
             }
             roots, _required, _tap, _abi, _commit = (
-                derive_roots_and_required_formulae(root, loaded)
+                derive_roots_and_required_formulae(
+                    root, loaded, require_finalized_brewfile=True
+                )
             )
             value = {
                 "kind": "kandelo-homebrew-main-shell-selection-roots",

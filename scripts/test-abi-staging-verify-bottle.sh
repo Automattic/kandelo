@@ -136,9 +136,11 @@ composition = canonical({
     "formula": "mini-tool",
     "kind": "kandelo-homebrew-original-bottle-tree",
     "required_by": ["mini-tool"],
-    "schema": 1,
+    "dependencies": ["kandelo-dev/tap-core/mini-base"],
+    "schema": 2,
     "tap": "kandelo-dev/homebrew-tap-core",
     "tree": {
+        "package": "kandelo-dev/tap-core/mini-tool",
         "content": {
             "bytes": len(bottle),
             "sha256": digest(bottle),
@@ -245,7 +247,7 @@ manifest = {
         descriptor(
             "vfs-composition-descriptor",
             "vfs-composition-descriptor.json",
-            "application/vnd.kandelo.homebrew.vfs-composition-descriptor.v1+json",
+            "application/vnd.kandelo.homebrew.vfs-composition-descriptor.v2+json",
             composition,
         ),
         descriptor("bottle-contract", "bottle-contract.json", "application/json", contract),

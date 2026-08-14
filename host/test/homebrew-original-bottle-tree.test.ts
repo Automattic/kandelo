@@ -19,6 +19,7 @@ describe("Homebrew original-bottle tree descriptors", () => {
       package: "kandelo-dev/tap-core/bash",
       bottle: { sha256: SHA256, bytes: 123 },
       allowedRoots: new Set(["bash"]),
+      schema: 2,
     });
     const fs = MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024));
     fs.mkdir("/opt", 0o755);
@@ -53,6 +54,7 @@ describe("Homebrew original-bottle tree descriptors", () => {
       formula: "bash",
       bottle: { sha256: "b".repeat(64), bytes: 123 },
       allowedRoots: new Set(["bash"]),
+      schema: 2,
     })).toThrow(/exact bottle input/);
 
     const transport = descriptor();
@@ -86,6 +88,28 @@ describe("Homebrew original-bottle tree descriptors", () => {
     expect(() => parseHomebrewOriginalBottleTreeDescriptor(shared, expected()))
       .toThrow(/dependency roots.*product-declared/);
   });
+
+  it("requires authenticated direct dependencies for current descriptors", () => {
+    expect(parseHomebrewOriginalBottleTreeDescriptor(
+      descriptor(),
+      expected(),
+    ).dependencies).toEqual(["kandelo-dev/tap-core/ncurses"]);
+
+    const foreign = descriptor();
+    foreign.dependencies = ["other/tap/ncurses"];
+    expect(() => parseHomebrewOriginalBottleTreeDescriptor(foreign, expected()))
+      .toThrow(/same tap/);
+
+    const historical = descriptor();
+    historical.schema = 1;
+    delete historical.dependencies;
+    expect(() => parseHomebrewOriginalBottleTreeDescriptor(historical, expected()))
+      .toThrow(/unexpected or missing fields/);
+    expect(parseHomebrewOriginalBottleTreeDescriptor(historical, {
+      ...expected(),
+      schema: 1,
+    })).not.toHaveProperty("dependencies");
+  });
 });
 
 function expected() {
@@ -96,6 +120,7 @@ function expected() {
     package: "kandelo-dev/tap-core/bash",
     bottle: { sha256: SHA256, bytes: 123 },
     allowedRoots: new Set(["bash"]),
+    schema: 2 as const,
   };
 }
 
@@ -131,12 +156,13 @@ function descriptor(): any {
   ];
   entries.sort((left, right) => left.path.localeCompare(right.path));
   return {
-    schema: 1,
+    schema: 2,
     kind: "kandelo-homebrew-original-bottle-tree",
     architecture: "wasm32",
     tap: "kandelo-dev/homebrew-tap-core",
     formula: "bash",
     required_by: ["bash"],
+    dependencies: ["kandelo-dev/tap-core/ncurses"],
     tree: {
       id: "bash",
       package: "kandelo-dev/tap-core/bash",
