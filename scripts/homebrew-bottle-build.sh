@@ -401,7 +401,12 @@ if [ -n "$BUILD_USER" ] && [ "${WASM_POSIX_XTASK_BIN:-}" != "$XTASK_BIN" ]; then
   exit 2
 fi
 WASM_POSIX_XTASK_BIN="$XTASK_BIN"
-export WASM_POSIX_XTASK_BIN
+# WHY: Homebrew rebuilds the Formula-test environment and preserves only the
+# HOMEBREW_* transport alias. Candidate builds do not enter the production
+# build-user launcher that injects this alias, so bind both names to the same
+# independently validated exact-source checker before any Formula evaluation.
+HOMEBREW_KANDELO_XTASK_BIN="$XTASK_BIN"
+export WASM_POSIX_XTASK_BIN HOMEBREW_KANDELO_XTASK_BIN
 ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
   "$TAP_ROOT" "$TAP_NAME" "$FORMULA" --tier2-bridge-json \
   >"$TIER2_BRIDGE_PLAN"

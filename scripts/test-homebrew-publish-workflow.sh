@@ -3742,6 +3742,7 @@ assert_bottle_build_installs_test_dependencies() {
   local native_prefix_capture="$TMPDIR/bottle-test-dependency-native-prefix.txt"
   local native_prefix retired_guest_prefix real_python3 gnu_tar_bin
   local host_git_bin
+  local FAKE_EXPECTED_XTASK
   local KANDELO_HOMEBREW_RESOLVED_TAPS_FILE
   # WHY: prove the archive removed the retired identity without copying that
   # identity into another guest-owned source location.
@@ -3750,6 +3751,8 @@ assert_bottle_build_installs_test_dependencies() {
       "$REPO_ROOT/homebrew/kandelo-guest-layout.json"
   )"
   make_tap "$tap"
+  FAKE_EXPECTED_XTASK="$FORMULA_RUNNER_FIXTURE_ROOT/target/$(rustc -vV | sed -n 's/^host: //p')/release/xtask"
+  export FAKE_EXPECTED_XTASK
   mkdir -p "$brew_repo" "$brew_prefix" "$fake_bin"
   mkdir -p "$tap/Kandelo/formula_support/test"
   printf 'must not reach Formula execution\n' \
@@ -3955,6 +3958,7 @@ TARGET_GIT
     ;;
   test)
     [ "$*" = 'test kandelo-dev/tap-core/hello' ] || exit 46
+    [ "${HOMEBREW_KANDELO_XTASK_BIN:-}" = "${FAKE_EXPECTED_XTASK:?}" ] || exit 64
     if [ "${FAKE_ASSERT_GIT_CONTROL_PLANE:-}" = 1 ]; then
       [ -x "$FAKE_BREW_PREFIX/bin/git" ] || exit 56
       [ "${HOMEBREW_GIT_PATH:-}" = "$FAKE_EXPECTED_HOST_GIT" ] || exit 57
