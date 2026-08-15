@@ -1108,37 +1108,13 @@ def check_native_compatibility_workflow(workflow)
         "native compatibility workflow has unexpected top-level configuration")
   check(workflow["name"] == "Homebrew native publisher compatibility",
         "native compatibility workflow name changed")
-  check(workflow_events(workflow) == {
-    "pull_request" => {
-      "paths" => [
-        ".github/workflows/homebrew-native-publisher-compatibility.yml",
-        ".github/workflows/reusable-homebrew-bottle-publish.yml",
-        ".github/workflows/reusable-homebrew-closed-selection-publish.yml",
-        ".github/workflows/reusable-homebrew-prefix-first-child-publish.yml",
-        "flake.lock",
-        "flake.nix",
-        "homebrew/**",
-        "scripts/build-fork-instrument-tool.sh",
-        "scripts/build-musl.sh",
-        "scripts/check-homebrew-publish-workflow-trust.rb",
-        "scripts/dev-shell.sh",
-        "scripts/homebrew-*",
-        "scripts/materialize-exact-package-generations.sh",
-        "scripts/materialize-resolver-binaries.sh",
-        "scripts/prepare-homebrew-package-materializer.sh",
-        "scripts/require-exact-kandelo-main.sh",
-        "scripts/resolve-binary.sh",
-        "scripts/seal-homebrew-formula-checker.sh",
-        "scripts/test-homebrew-*",
-        "scripts/validate-software-gallery.mjs",
-      ],
-    },
-  }, "native compatibility workflow trigger surface changed")
+  check(workflow_events(workflow) == { "workflow_dispatch" => nil },
+        "native compatibility workflow must remain manual-only")
   check(exact_permissions?(workflow["permissions"], { "contents" => "read" }),
         "native compatibility workflow permission ceiling changed")
   check(workflow["concurrency"] == {
     "group" =>
-      "homebrew-native-publisher-${{ github.event.pull_request.number }}",
+      "homebrew-native-publisher-${{ github.run_id }}",
     "cancel-in-progress" => true,
   }, "native compatibility workflow concurrency changed")
   check_common(workflow, "native compatibility workflow")
@@ -1168,7 +1144,7 @@ def check_native_compatibility_workflow(workflow)
   check(checkout["uses"] == NATIVE_COMPATIBILITY_CHECKOUT_ACTION &&
         checkout["with"] == {
           "persist-credentials" => false,
-          "ref" => "${{ github.event.pull_request.head.sha }}",
+          "ref" => "${{ github.sha }}",
           "submodules" => false,
         }, "native compatibility source checkout changed")
   brew_checkout = named_step(steps, "Checkout exact reviewed Homebrew source")

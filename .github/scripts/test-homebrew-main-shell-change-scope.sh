@@ -408,8 +408,11 @@ grep -Fq 'if: always()' "$WORKFLOW" ||
 grep -Fq 'needs.exact-public-bottle-closure.result' "$WORKFLOW" ||
   fail "the stable exact-shell gate does not propagate implementation failure"
 
-grep -Fq '      - homebrew/**' "$NATIVE_WORKFLOW" ||
-  fail "native compatibility workflow does not own lock refreshes"
+grep -Fq '  workflow_dispatch:' "$NATIVE_WORKFLOW" ||
+  fail "native compatibility workflow is not manual-only"
+if grep -Fq '  pull_request:' "$NATIVE_WORKFLOW"; then
+  fail "native compatibility workflow still runs automatically on PRs"
+fi
 grep -Fq 'homebrew/homebrew-native-compatibility-lock.json' \
   "$NATIVE_WORKFLOW" ||
   fail "native compatibility workflow does not verify the reviewed lock"
