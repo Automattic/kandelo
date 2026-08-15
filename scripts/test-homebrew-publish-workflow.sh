@@ -4686,7 +4686,7 @@ assert_bottle_verifier_installs_test_dependencies() {
   local native_prefix_capture="$root/native-prefix.txt"
   local sysroot_build_root_capture="$root/sysroot-build-root.txt"
   local shared_temp="$root/shared-temp"
-  local playwright_browsers="$root/ms-playwright"
+  local playwright_browsers="$root/prepared-playwright"
   local verifier_home="$root/verifier-home"
   local renamed_err="$root/renamed-bottle.err"
   local nested_target_err="$root/nested-target.err"
@@ -4914,12 +4914,10 @@ TARGET_GIT
   test)
     [ "$*" = 'test kandelo-dev/tap-core/hello' ] && \
       [ -f "$FAKE_STATE/target" ] || exit 50
-    formula_test_home="$FAKE_STATE/formula-test-home"
-    formula_test_tmp="$(mktemp -d "$HOMEBREW_TEMP/hello-test.XXXXXX")"
-    mkdir "$formula_test_home"
+    formula_test_home="$(mktemp -d "$HOMEBREW_TEMP/hello-test.XXXXXX")"
     HOME="$formula_test_home"
-    TMPDIR="$formula_test_tmp"
-    unset PLAYWRIGHT_BROWSERS_PATH HOMEBREW_CACHE
+    TMPDIR="$HOMEBREW_TEMP"
+    unset PLAYWRIGHT_BROWSERS_PATH
     export HOME TMPDIR
     [ -x "$FAKE_BREW_PREFIX/bin/git" ] || exit 54
     [ "${HOMEBREW_GIT_PATH:-}" = "$FAKE_EXPECTED_HOST_GIT" ] || exit 55
@@ -4931,7 +4929,12 @@ TARGET_GIT
     [ "$(cd "$trusted_remote" && pwd -P)" = \
       "$(cd "$FAKE_RECONSTRUCTED_TAP" && pwd -P)" ] || exit 58
     [ "$(grep -c '^trust --tap kandelo-dev/tap-core$' "$FAKE_BREW_LOG")" -eq 1 ] || exit 59
-    formula_playwright_path="$(dirname "$TMPDIR")/ms-playwright"
+    formula_playwright_path="$(dirname "$HOMEBREW_CACHE")/ms-playwright"
+    [ "$formula_playwright_path" = "$FAKE_EXPECTED_FORMULA_PLAYWRIGHT_PATH" ] || {
+      printf 'Formula test Playwright search path=%s differs from expected %s\n' \
+        "$formula_playwright_path" "$FAKE_EXPECTED_FORMULA_PLAYWRIGHT_PATH" >&2
+      exit 70
+    }
     [ -f "$formula_playwright_path/browser.marker" ] || {
       printf 'Formula test Playwright discovery path=%s is unavailable\n' \
         "$formula_playwright_path" >&2
@@ -5073,6 +5076,7 @@ EOF
       FAKE_PROVENANCE_LOG_CAPTURE="$provenance_log_capture" \
       FAKE_FORCE_NODE_RECEIPT="${FAKE_FORCE_NODE_RECEIPT:-}" \
       FAKE_PLAYWRIGHT_BROWSERS_PATH="$playwright_browsers" \
+      FAKE_EXPECTED_FORMULA_PLAYWRIGHT_PATH="$root/ms-playwright" \
       HOME="$verifier_home" \
       HOMEBREW_BREW_FILE="$fake_brew" \
       HOMEBREW_CACHE="$cache" \

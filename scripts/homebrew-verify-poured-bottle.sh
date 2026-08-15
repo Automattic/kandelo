@@ -369,10 +369,10 @@ trap 'cleanup_and_exit $?' EXIT
 
 # Homebrew rebuilds the Formula-test environment and intentionally drops the
 # ordinary PLAYWRIGHT_BROWSERS_PATH variable. The tap-owned browser runners
-# recover a prepared browser from TMPDIR's parent, so project the already
-# validated browser root into this verifier's fresh Homebrew temp realm.
+# recover a prepared browser from HOMEBREW_CACHE's parent before considering
+# TMPDIR, so project the validated browser root into that exact cache realm.
 if [ -n "$PLAYWRIGHT_BROWSERS_PATH_INPUT" ]; then
-  PLAYWRIGHT_DISCOVERY_LINK="$HOMEBREW_TEMP/ms-playwright"
+  PLAYWRIGHT_DISCOVERY_LINK="$(dirname "$HOMEBREW_CACHE")/ms-playwright"
   if [ "$PLAYWRIGHT_DISCOVERY_LINK" != "$PLAYWRIGHT_BROWSERS_PATH_INPUT" ]; then
     if [ -e "$PLAYWRIGHT_DISCOVERY_LINK" ] || [ -L "$PLAYWRIGHT_DISCOVERY_LINK" ]; then
       echo "homebrew-verify-poured-bottle.sh: Playwright discovery projection already exists" >&2
