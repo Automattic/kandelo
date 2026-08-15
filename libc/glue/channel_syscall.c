@@ -16,6 +16,16 @@
  * User programs compiled with this glue have zero kernel imports.
  */
 
+/*
+ * This translation unit implements POSIX signal and clock behavior even when
+ * the user program selects a strict ISO C language mode.  musl intentionally
+ * hides those declarations unless a POSIX feature level is requested, so the
+ * glue must declare the platform contract before including system headers.
+ */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include <stddef.h>
 #include <stdint.h>
 #include <fcntl.h>

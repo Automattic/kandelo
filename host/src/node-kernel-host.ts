@@ -170,6 +170,8 @@ export interface NodeKernelHostOptions {
     mountPoint: string;
     hostPath: string;
     readonly?: boolean;
+    /** Caller guarantees that no external native writer can race this mount. */
+    exclusiveNativeWriters?: boolean;
     /** Virtual owner for existing host-backed mount entries. Defaults to root. */
     uid?: number;
     /** Virtual group for existing host-backed mount entries. Defaults to root. */
