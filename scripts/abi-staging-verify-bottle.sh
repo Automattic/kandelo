@@ -14,12 +14,13 @@ TAP_COMMIT=""
 TAP_CHECKOUT_COMMIT=""
 DEPENDENCY_PROVENANCE=""
 SYSROOT_BUILD_ROOT=""
+PLAYWRIGHT_BROWSERS_PATH_INPUT=""
 OUT=""
 FORBIDDEN_ROOTS=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/abi-staging-verify-bottle.sh --candidate-locator <json> --test-definition <json> --test-definition-sha256 <sha256> --host <build|node|browser> --attempt-ordinal <number> --run <json> --request-binding <json> --tap-root <dir> --tap-commit <sha> [--tap-checkout-commit <sha>] --dependency-provenance <json> --sysroot-build-root <dir> --forbidden-root <absolute-path> [--forbidden-root ...] --out <dir>
+usage: scripts/abi-staging-verify-bottle.sh --candidate-locator <json> --test-definition <json> --test-definition-sha256 <sha256> --host <build|node|browser> --attempt-ordinal <number> --run <json> --request-binding <json> --tap-root <dir> --tap-commit <sha> [--tap-checkout-commit <sha>] --dependency-provenance <json> --sysroot-build-root <dir> --playwright-browsers-path <dir> --forbidden-root <absolute-path> [--forbidden-root ...] --out <dir>
 
 The locator must be an immutable public GHCR @sha256 reference. The verifier
 downloads the exact candidate manifest, record, metadata, and bottle layer,
@@ -42,6 +43,7 @@ while [ "$#" -gt 0 ]; do
     --tap-checkout-commit) TAP_CHECKOUT_COMMIT="${2:-}"; shift 2 ;;
     --dependency-provenance) DEPENDENCY_PROVENANCE="${2:-}"; shift 2 ;;
     --sysroot-build-root) SYSROOT_BUILD_ROOT="${2:-}"; shift 2 ;;
+    --playwright-browsers-path) PLAYWRIGHT_BROWSERS_PATH_INPUT="${2:-}"; shift 2 ;;
     --forbidden-root) FORBIDDEN_ROOTS+=("${2:-}"); shift 2 ;;
     --out) OUT="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -65,6 +67,7 @@ for requirement in \
   "tap-commit:$TAP_COMMIT" \
   "dependency-provenance:$DEPENDENCY_PROVENANCE" \
   "sysroot-build-root:$SYSROOT_BUILD_ROOT" \
+  "playwright-browsers-path:$PLAYWRIGHT_BROWSERS_PATH_INPUT" \
   "out:$OUT"; do
   [ -n "${requirement#*:}" ] || {
     echo "abi-staging-verify-bottle.sh: --${requirement%%:*} is required" >&2
@@ -107,6 +110,19 @@ TAP_CHECKOUT_COMMIT="${TAP_CHECKOUT_COMMIT:-$TAP_COMMIT}"
   echo "abi-staging-verify-bottle.sh: invalid tap checkout commit" >&2
   exit 2
 }
+case "$PLAYWRIGHT_BROWSERS_PATH_INPUT" in
+  /*) ;;
+  *)
+    echo "abi-staging-verify-bottle.sh: prepared Playwright browser root is unavailable" >&2
+    exit 2
+    ;;
+esac
+[ -d "$PLAYWRIGHT_BROWSERS_PATH_INPUT" ] && \
+  [ ! -L "$PLAYWRIGHT_BROWSERS_PATH_INPUT" ] || {
+  echo "abi-staging-verify-bottle.sh: prepared Playwright browser root is unavailable" >&2
+  exit 2
+}
+PLAYWRIGHT_BROWSERS_PATH_INPUT="$(cd "$PLAYWRIGHT_BROWSERS_PATH_INPUT" && pwd -P)"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 : "${KANDELO_DEV_SHELL_TOOL_PATH:?run through scripts/dev-shell.sh}"
@@ -612,6 +628,7 @@ normal_verifier_args=(
   --dependency-provenance "$ABI_VERIFY_DEPENDENCY_PROVENANCE" \
   --selection-receipt "$ABI_VERIFY_SELECTION_RECEIPT" \
   --sysroot-build-root "$ABI_VERIFY_SYSROOT_BUILD_ROOT" \
+  --playwright-browsers-path "$ABI_VERIFY_PLAYWRIGHT_BROWSERS_PATH" \
   --out "$ABI_VERIFY_RUNTIME_EVIDENCE"
 )
 while IFS= read -r dependency; do
@@ -662,6 +679,7 @@ export ABI_VERIFY_DEPENDENCY_PROVENANCE="$DEPENDENCY_PROVENANCE"
 export ABI_VERIFY_STAGED_DEPENDENCY_FORMULAE="$STAGED_DEPENDENCY_FORMULAE"
 export ABI_VERIFY_SELECTION_RECEIPT="$SELECTION_RECEIPT"
 export ABI_VERIFY_SYSROOT_BUILD_ROOT="$SYSROOT_BUILD_ROOT"
+export ABI_VERIFY_PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH_INPUT"
 export ABI_VERIFY_RUNTIME_EVIDENCE="$RUNTIME_EVIDENCE"
 export ABI_VERIFY_TEST_POLICY="$TEST_POLICY"
 export ABI_VERIFY_REPO_ROOT="$REPO_ROOT"
