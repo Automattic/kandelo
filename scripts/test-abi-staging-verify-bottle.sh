@@ -116,13 +116,18 @@ dependency_artifact = {
     "target_abi": 8,
 }))
 metadata = canonical({
-    "mini-tool": {
+    "kandelo-dev/tap-core/mini-tool": {
         "bottle": {
+            "cellar": "any_skip_relocation",
             "rebuild": 0,
-            "root_url": "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-8-candidates/mini-tool",
+            "root_url": "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-8-candidates",
             "tags": {"wasm32_kandelo": {"sha256": digest(bottle)}},
         },
-        "formula": {"name": "mini-tool", "pkg_version": "1.0"},
+        "formula": {
+            "name": "mini-tool",
+            "path": "Library/Taps/kandelo-dev/homebrew-tap-core/Formula/mini-tool.rb",
+            "pkg_version": "1.0",
+        },
     }
 })
 (root / "bottle-metadata.json").write_bytes(metadata)
@@ -535,7 +540,7 @@ grep -F 'downloaded bottle differs from exact layer' "$TMP_ROOT/changed.stderr" 
   fail "changed bottle rejection was not explicit"
 
 cp "$FIXTURE/bottle-metadata.json" "$FIXTURE/exact-metadata.json"
-jq -cS '.["mini-tool"].formula.pkg_version = "9.9"' \
+jq -cS '.["kandelo-dev/tap-core/mini-tool"].formula.pkg_version = "9.9"' \
   "$FIXTURE/exact-metadata.json" >"$FIXTURE/bottle-metadata.json"
 if run_verifier "$TMP_ROOT/metadata" >"$TMP_ROOT/metadata.stdout" \
   2>"$TMP_ROOT/metadata.stderr"; then
