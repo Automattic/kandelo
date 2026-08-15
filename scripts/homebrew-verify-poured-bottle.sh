@@ -20,7 +20,6 @@ DEPENDENCY_PROVENANCE=""
 SELECTION_RECEIPT=""
 SYSROOT_BUILD_ROOT=""
 PLAYWRIGHT_BROWSERS_PATH_INPUT=""
-PLAYWRIGHT_CACHE_LINK=""
 OUT=""
 STAGING_CANDIDATE_ABI=""
 STAGED_DEPENDENCY_FORMULAE=()
@@ -131,6 +130,10 @@ if [ -n "$PLAYWRIGHT_BROWSERS_PATH_INPUT" ]; then
     exit 2
   }
   PLAYWRIGHT_BROWSERS_PATH_INPUT="$(cd "$PLAYWRIGHT_BROWSERS_PATH_INPUT" && pwd -P)"
+fi
+unset PLAYWRIGHT_BROWSERS_PATH
+if [ -n "$PLAYWRIGHT_BROWSERS_PATH_INPUT" ]; then
+  export PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH_INPUT"
 fi
 if [ -n "$STAGING_CANDIDATE_ABI" ]; then
   [[ "$STAGING_CANDIDATE_ABI" =~ ^[1-9][0-9]*$ ]] && \
@@ -319,9 +322,6 @@ cleanup() {
     launcher_status="$?"
   fi
   rm -rf "$CONTROL_DIR"
-  if [ -n "$PLAYWRIGHT_CACHE_LINK" ]; then
-    rm -f -- "$PLAYWRIGHT_CACHE_LINK"
-  fi
   if [ "$launcher_status" -ne 0 ]; then
     echo "homebrew-verify-poured-bottle.sh: preserving temporary Homebrew realms after cleanup failure" >&2
   elif [ -n "$BUILD_USER" ] && [ -n "${KANDELO_HOMEBREW_SUDO_BIN:-}" ]; then
@@ -359,36 +359,6 @@ cleanup_and_exit() {
   exit "$cleanup_status"
 }
 trap 'cleanup_and_exit $?' EXIT
-
-if [ -n "$PLAYWRIGHT_BROWSERS_PATH_INPUT" ]; then
-  case "${HOME:-}" in
-    /*) ;;
-    *)
-      echo "homebrew-verify-poured-bottle.sh: private verifier home is unavailable" >&2
-      exit 2
-      ;;
-  esac
-  [ -d "$HOME" ] && [ ! -L "$HOME" ] || {
-    echo "homebrew-verify-poured-bottle.sh: private verifier home is unavailable" >&2
-    exit 2
-  }
-  HOME="$(cd "$HOME" && pwd -P)"
-  export HOME
-  if [ -e "$HOME/.cache" ] || [ -L "$HOME/.cache" ]; then
-    [ -d "$HOME/.cache" ] && [ ! -L "$HOME/.cache" ] || {
-      echo "homebrew-verify-poured-bottle.sh: private verifier cache is unavailable" >&2
-      exit 2
-    }
-  else
-    mkdir "$HOME/.cache"
-  fi
-  PLAYWRIGHT_CACHE_LINK="$HOME/.cache/ms-playwright"
-  [ ! -e "$PLAYWRIGHT_CACHE_LINK" ] && [ ! -L "$PLAYWRIGHT_CACHE_LINK" ] || {
-    echo "homebrew-verify-poured-bottle.sh: private Playwright cache path already exists" >&2
-    exit 2
-  }
-  ln -s -- "$PLAYWRIGHT_BROWSERS_PATH_INPUT" "$PLAYWRIGHT_CACHE_LINK"
-fi
 
 export XDG_CONFIG_HOME="$WORK_DIR/xdg-config"
 mkdir -p "$XDG_CONFIG_HOME/homebrew"
