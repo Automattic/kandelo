@@ -4915,9 +4915,12 @@ TARGET_GIT
     [ "$*" = 'test kandelo-dev/tap-core/hello' ] && \
       [ -f "$FAKE_STATE/target" ] || exit 50
     formula_test_home="$FAKE_STATE/formula-test-home"
+    formula_test_tmp="$(mktemp -d "$HOMEBREW_TEMP/hello-test.XXXXXX")"
     mkdir "$formula_test_home"
     HOME="$formula_test_home"
-    export HOME
+    TMPDIR="$formula_test_tmp"
+    unset PLAYWRIGHT_BROWSERS_PATH HOMEBREW_CACHE
+    export HOME TMPDIR
     [ -x "$FAKE_BREW_PREFIX/bin/git" ] || exit 54
     [ "${HOMEBREW_GIT_PATH:-}" = "$FAKE_EXPECTED_HOST_GIT" ] || exit 55
     [ "$HOMEBREW_GIT_PATH" != "$FAKE_BREW_PREFIX/bin/git" ] || exit 56
@@ -4928,16 +4931,14 @@ TARGET_GIT
     [ "$(cd "$trusted_remote" && pwd -P)" = \
       "$(cd "$FAKE_RECONSTRUCTED_TAP" && pwd -P)" ] || exit 58
     [ "$(grep -c '^trust --tap kandelo-dev/tap-core$' "$FAKE_BREW_LOG")" -eq 1 ] || exit 59
-    [ "${PLAYWRIGHT_BROWSERS_PATH:-}" = \
-      "$FAKE_PLAYWRIGHT_BROWSERS_PATH" ] || {
-      printf 'Formula test Playwright path=%s expected=%s\n' \
-        "${PLAYWRIGHT_BROWSERS_PATH:-<unset>}" \
-        "$FAKE_PLAYWRIGHT_BROWSERS_PATH" >&2
+    formula_playwright_path="$(dirname "$TMPDIR")/ms-playwright"
+    [ -f "$formula_playwright_path/browser.marker" ] || {
+      printf 'Formula test Playwright discovery path=%s is unavailable\n' \
+        "$formula_playwright_path" >&2
       exit 69
     }
-    [ -f "$PLAYWRIGHT_BROWSERS_PATH/browser.marker" ] || exit 70
     cmp -s "$FAKE_PLAYWRIGHT_BROWSERS_PATH/browser.marker" \
-      "$PLAYWRIGHT_BROWSERS_PATH/browser.marker" || exit 71
+      "$formula_playwright_path/browser.marker" || exit 71
     printf 'test-tags=%s|%s\n' \
       "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
       >>"$FAKE_BREW_LOG"

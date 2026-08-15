@@ -313,6 +313,7 @@ if [ -n "$BUILD_USER" ]; then
 fi
 CONTROL_DIR="$(mktemp -d "$OUT_PARENT/.control.XXXXXX")"
 chmod 0700 "$CONTROL_DIR"
+PLAYWRIGHT_DISCOVERY_LINK=""
 
 cleanup() {
   local original_status="${1:-0}" launcher_status=0 realm_cleanup_status=0
@@ -320,6 +321,12 @@ cleanup() {
     :
   else
     launcher_status="$?"
+  fi
+  if [ -n "$PLAYWRIGHT_DISCOVERY_LINK" ]; then
+    rm -f -- "$PLAYWRIGHT_DISCOVERY_LINK" || {
+      realm_cleanup_status="$?"
+      echo "homebrew-verify-poured-bottle.sh: could not remove Playwright discovery projection" >&2
+    }
   fi
   rm -rf "$CONTROL_DIR"
   if [ "$launcher_status" -ne 0 ]; then
@@ -359,6 +366,23 @@ cleanup_and_exit() {
   exit "$cleanup_status"
 }
 trap 'cleanup_and_exit $?' EXIT
+
+# Homebrew rebuilds the Formula-test environment and intentionally drops the
+# ordinary PLAYWRIGHT_BROWSERS_PATH variable. The tap-owned browser runners
+# recover a prepared browser from TMPDIR's parent, so project the already
+# validated browser root into this verifier's fresh Homebrew temp realm.
+if [ -n "$PLAYWRIGHT_BROWSERS_PATH_INPUT" ]; then
+  PLAYWRIGHT_DISCOVERY_LINK="$HOMEBREW_TEMP/ms-playwright"
+  if [ "$PLAYWRIGHT_DISCOVERY_LINK" != "$PLAYWRIGHT_BROWSERS_PATH_INPUT" ]; then
+    if [ -e "$PLAYWRIGHT_DISCOVERY_LINK" ] || [ -L "$PLAYWRIGHT_DISCOVERY_LINK" ]; then
+      echo "homebrew-verify-poured-bottle.sh: Playwright discovery projection already exists" >&2
+      exit 2
+    fi
+    ln -s -- "$PLAYWRIGHT_BROWSERS_PATH_INPUT" "$PLAYWRIGHT_DISCOVERY_LINK"
+  else
+    PLAYWRIGHT_DISCOVERY_LINK=""
+  fi
+fi
 
 export XDG_CONFIG_HOME="$WORK_DIR/xdg-config"
 mkdir -p "$XDG_CONFIG_HOME/homebrew"
