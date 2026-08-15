@@ -532,6 +532,27 @@ jq -e \
   exit 1
 }
 
+# The immutable candidate preserves Homebrew's raw shared-namespace metadata.
+# The normal force-pour verifier consumes the reduced Formula-specific document
+# that was used to compose the candidate tap.  Derive that document only after
+# the raw metadata has been authenticated above.
+CELLAR="$(jq -er --arg formula_key "$FORMULA_KEY" \
+  '.[$formula_key].bottle.cellar' "$METADATA")"
+NORMALIZED_METADATA="$WORK_ROOT/normalized-bottle-metadata.json"
+jq -ncS \
+  --arg formula "$FORMULA" --arg formula_key "$FORMULA_KEY" \
+  --arg formula_path "$FORMULA_PATH" --arg pkg_version "$PKG_VERSION" \
+  --arg root "$FORMULA_BOTTLE_ROOT_URL" --arg cellar "$CELLAR" \
+  --arg tag "$BOTTLE_TAG" --arg sha256 "$LAYER_SHA256" \
+  --argjson rebuild "$REBUILD" '
+    {($formula_key): {
+      bottle: {cellar: $cellar, rebuild: $rebuild, root_url: $root,
+        tags: {($tag): {sha256: $sha256}}},
+      formula: {name: $formula, path: $formula_path,
+        pkg_version: $pkg_version}
+    }}
+  ' >"$NORMALIZED_METADATA"
+
 SELECTION_RECEIPT="$WORK_ROOT/selection-receipt.json"
 jq -ncS \
   --arg url "$BOTTLE_URL" --arg sha256 "$LAYER_SHA256" \
@@ -619,7 +640,7 @@ export ABI_VERIFY_NORMAL_VERIFIER="$NORMAL_VERIFIER"
 export ABI_VERIFY_TAP_REPOSITORY="$TAP_REPOSITORY"
 export ABI_VERIFY_TAP_COMMIT="$TAP_COMMIT"
 export ABI_VERIFY_TAP_CHECKOUT_COMMIT="$TAP_CHECKOUT_COMMIT"
-export ABI_VERIFY_METADATA="$METADATA"
+export ABI_VERIFY_METADATA="$NORMALIZED_METADATA"
 export ABI_VERIFY_BOTTLE_URL="$BOTTLE_URL"
 export ABI_VERIFY_LAYER_SHA256="$LAYER_SHA256"
 export ABI_VERIFY_BOTTLE_BYTES="$BOTTLE_BYTES"
