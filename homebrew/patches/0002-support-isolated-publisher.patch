@@ -238,7 +238,7 @@ new file mode 100644
 index 000000000..93929dc18
 --- /dev/null
 +++ b/Library/Homebrew/kandelo_publisher.rb
-@@ -0,0 +1,280 @@
+@@ -0,0 +1,284 @@
 +# typed: false
 +# frozen_string_literal: true
 +
@@ -289,9 +289,13 @@ index 000000000..93929dc18
 +    return if plan.nil? || tap.name != plan.fetch("tap")
 +
 +    tap_path = tap.path.to_s
++    # The launcher separately bind-mounts the complete taps tree read-only
++    # and proves that boundary with an actual write attempt. The backing Git
++    # checkout intentionally retains ordinary owner-writable mode bits, so
++    # File.writable? is not an accurate test of the mounted execution view.
 +    valid_tap_path = !PRIMARY_TAP_ROOT.empty? && tap_path == PRIMARY_TAP_ROOT &&
 +                     File.directory?(tap_path) && !File.symlink?(tap_path) &&
-+                     File.realpath(tap_path) == tap_path && !File.writable?(tap_path)
++                     File.realpath(tap_path) == tap_path
 +    raise "Kandelo publisher selected tap checkout path is invalid" unless valid_tap_path
 +
 +    target_tap = plan.fetch("target_taps").find do |candidate|
