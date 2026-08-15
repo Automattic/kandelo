@@ -370,6 +370,12 @@ for source in no-blank two-blanks; do
     echo "Formula identity changed after canonical bottle composition: $source" >&2
     exit 1
   }
+  [ "$(ruby "$SOURCE_IDENTITY_TOOL" --receipt-equivalent \
+    "$TMP_ROOT/source-identity/$source-composed.rb" \
+    "$TMP_ROOT/source-identity/$source.rb")" = "bottle-block-removed" ] || {
+    echo "Formula receipt rejected canonical bottle composition: $source" >&2
+    exit 1
+  }
 done
 
 build_child child32 wasm32

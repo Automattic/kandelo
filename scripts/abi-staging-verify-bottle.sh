@@ -193,11 +193,18 @@ if [ -n "$RECORD_VALIDATOR" ]; then
 fi
 
 WORK_ROOT="$(mktemp -d)"
+SOCKET_TEMP=""
 cleanup() {
   rm -rf "$WORK_ROOT"
+  [ -z "$SOCKET_TEMP" ] || rm -rf "$SOCKET_TEMP"
 }
 trap cleanup EXIT
 chmod 0700 "$WORK_ROOT"
+# WHY: Homebrew's safe_fork creates a UNIX socket below TMPDIR, whose Linux
+# pathname limit is 108 bytes.  The protected supervisor's private root can be
+# much deeper, so give verification one owned short-lived socket realm.
+SOCKET_TEMP="$(mktemp -d /tmp/k.XXXXXX)"
+chmod 0700 "$SOCKET_TEMP"
 CANONICAL="$WORK_ROOT/canonical.json"
 
 canonical_json() {
@@ -293,7 +300,7 @@ METADATA="$WORK_ROOT/bottle-metadata.json"
 COMPOSITION_DESCRIPTOR="$WORK_ROOT/vfs-composition-descriptor.json"
 BOTTLE_DIR="$WORK_ROOT/bottle-cache"
 mkdir -p "$BOTTLE_DIR" "$WORK_ROOT/home" "$WORK_ROOT/homebrew-cache" \
-  "$WORK_ROOT/homebrew-temp" "$WORK_ROOT/diagnostics"
+  "$WORK_ROOT/diagnostics"
 ANONYMOUS_CONFIG="$WORK_ROOT/anonymous-oras.json"
 printf '{"auths":{}}\n' >"$ANONYMOUS_CONFIG"
 env -u GH_TOKEN -u GITHUB_TOKEN -u HOMEBREW_GITHUB_API_TOKEN \
@@ -613,6 +620,7 @@ done <"$ABI_VERIFY_STAGED_DEPENDENCY_FORMULAE"
 HOME="$ABI_VERIFY_HOME" \
 HOMEBREW_CACHE="$ABI_VERIFY_CACHE" \
 HOMEBREW_TEMP="$ABI_VERIFY_TEMP" \
+TMPDIR="$ABI_VERIFY_TEMP" \
 "$ABI_VERIFY_NORMAL_VERIFIER" "${normal_verifier_args[@]}"
 case "$ABI_VERIFY_TEST_POLICY" in
   kandelo-bottle-structure-v1) ;;
@@ -640,7 +648,7 @@ export ABI_VERIFY_FORBIDDEN_ROOTS="$FORBIDDEN_FILE"
 export ABI_VERIFY_INSPECTOR="$INSPECTOR"
 export ABI_VERIFY_HOME="$WORK_ROOT/home"
 export ABI_VERIFY_CACHE="$WORK_ROOT/homebrew-cache"
-export ABI_VERIFY_TEMP="$WORK_ROOT/homebrew-temp"
+export ABI_VERIFY_TEMP="$SOCKET_TEMP"
 export ABI_VERIFY_NORMAL_VERIFIER="$NORMAL_VERIFIER"
 export ABI_VERIFY_TAP_REPOSITORY="$TAP_REPOSITORY"
 export ABI_VERIFY_TAP_COMMIT="$TAP_COMMIT"
