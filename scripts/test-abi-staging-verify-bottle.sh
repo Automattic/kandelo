@@ -393,6 +393,7 @@ printf '\n' >>"$FAKE_NORMAL_LOG"
 [ -d "$HOMEBREW_CACHE" ] && [ -z "$(find "$HOMEBREW_CACHE" -mindepth 1 -print -quit)" ]
 [ -d "$HOMEBREW_TEMP" ] && [ -z "$(find "$HOMEBREW_TEMP" -mindepth 1 -print -quit)" ]
 out=""; abi=""; arch=""; root=""; bottle_json=""; staging_abi=""
+selection_receipt=""
 staged_dependencies=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -401,6 +402,7 @@ while [ "$#" -gt 0 ]; do
     --arch) arch="$2"; shift 2 ;;
     --bottle-json) bottle_json="$2"; shift 2 ;;
     --bottle-root-url) root="$2"; shift 2 ;;
+    --selection-receipt) selection_receipt="$2"; shift 2 ;;
     --staging-candidate-abi) staging_abi="$2"; shift 2 ;;
     --staged-dependency-formula) staged_dependencies+=("$2"); shift 2 ;;
     *) shift 2 ;;
@@ -410,6 +412,11 @@ done
 [ "$staging_abi" = 8 ]
 [ "$root" = "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-8-candidates" ]
 [ "${staged_dependencies[*]}" = "mini-base" ]
+jq -e --arg sha256 "${FAKE_BOTTLE_SHA256:?}" '
+  .bottle.mode == "local-dry-run" and
+  .bottle.sha256 == $sha256 and
+  (.fetch == [("exact immutable candidate layer sha256:" + $sha256)])
+' "$selection_receipt" >/dev/null
 jq -e --arg sha256 "${FAKE_BOTTLE_SHA256:?}" '
   keys == ["kandelo-dev/tap-core/mini-tool"] and
   .["kandelo-dev/tap-core/mini-tool"] == {

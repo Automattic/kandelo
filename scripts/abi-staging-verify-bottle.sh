@@ -554,11 +554,16 @@ jq -ncS \
   ' >"$NORMALIZED_METADATA"
 
 SELECTION_RECEIPT="$WORK_ROOT/selection-receipt.json"
+# The candidate bytes above came from an anonymous immutable OCI read and were
+# authenticated against the candidate record.  Pour that exact local archive;
+# candidate repositories deliberately do not publish Homebrew's mutable
+# version tags for a second network fetch.
 jq -ncS \
   --arg url "$BOTTLE_URL" --arg sha256 "$LAYER_SHA256" \
   --argjson bytes "$BOTTLE_BYTES" '
-    {bottle: {bytes: $bytes, mode: "anonymous-public-readback",
-      sha256: $sha256, url: $url}, fetch: ["exact immutable candidate layer"],
+    {bottle: {bytes: $bytes, mode: "local-dry-run",
+      sha256: $sha256, url: $url},
+      fetch: [("exact immutable candidate layer sha256:" + $sha256)],
       schema: 1, status: "success"}
   ' >"$SELECTION_RECEIPT"
 
