@@ -159,6 +159,7 @@ LINK_POST_LIBS=(
     -Wl,--import-memory
     -Wl,--shared-memory
     -Wl,--max-memory=1073741824
+    -Wl,-z,stack-size=8388608
     -Wl,--allow-undefined
     -Wl,--table-base=3
     -Wl,--export-table
@@ -1176,6 +1177,7 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         -Wl,--import-memory
         -Wl,--shared-memory
         -Wl,--max-memory=1073741824
+        -Wl,-z,stack-size=8388608
         -Wl,--allow-undefined
         -Wl,--table-base=3
         -Wl,--export-table
