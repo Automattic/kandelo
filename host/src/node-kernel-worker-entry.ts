@@ -1214,18 +1214,18 @@ async function handleInit(msg: InitMessage) {
     },
   );
 
-  kernelWorker.setOutputCallbacks({
-    onStdout: (data: Uint8Array) => {
+  kernelWorker.setProcessOutputCallbacks({
+    onStdout: (pid, data) => {
       post({
         type: "stdout",
-        pid: (kernelWorker as any).currentHandlePid || 0,
+        pid,
         data: new Uint8Array(data),
       });
     },
-    onStderr: (data: Uint8Array) => {
+    onStderr: (pid, data) => {
       post({
         type: "stderr",
-        pid: (kernelWorker as any).currentHandlePid || 0,
+        pid,
         data: new Uint8Array(data),
       });
     },
