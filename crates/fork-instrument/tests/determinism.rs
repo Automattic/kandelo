@@ -7,9 +7,9 @@ use wasmparser::Validator;
 struct TestDir(PathBuf);
 
 impl TestDir {
-    fn new() -> Self {
+    fn new(label: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "fork-instrument-determinism-{}",
+            "fork-instrument-determinism-{label}-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&path);
@@ -30,7 +30,19 @@ impl Drop for TestDir {
 
 #[test]
 fn cli_output_is_byte_reproducible_across_processes() {
-    let dir = TestDir::new();
+    assert_reproducible_across_processes("default", &[]);
+}
+
+#[test]
+fn instrument_all_output_is_byte_reproducible_across_processes() {
+    // The ceiling mode combines the boundary seeds with every local function,
+    // and the two sets arrive in unrelated orders. Sorting the union is what
+    // keeps the emitted bytes stable across processes.
+    assert_reproducible_across_processes("instrument-all", &["--instrument-all"]);
+}
+
+fn assert_reproducible_across_processes(label: &str, extra_args: &[&str]) {
+    let dir = TestDir::new(label);
     let input_path = dir.path().join("input.wasm");
     let input = wat::parse_str(include_str!(
         "fixtures/determinism/multiple_nested_regions.wat"
@@ -47,6 +59,7 @@ fn cli_output_is_byte_reproducible_across_processes() {
             .arg(&input_path)
             .arg("--output")
             .arg(&output_path)
+            .args(extra_args)
             .output()
             .expect("run wasm-fork-instrument");
         assert!(

@@ -150,12 +150,25 @@ pub struct Options {
     /// every function import and unresolved reference dispatch becomes a
     /// possible cross-instance fork boundary.
     pub entry_import: String,
+
+    /// Add every locally defined function to the seed set, making every one of
+    /// them an instrumented activation.
+    ///
+    /// This is the instrumentation ceiling: no seed import produces a larger
+    /// activation set. It measures that ceiling on a module whose closure is
+    /// otherwise partial or empty, and it instruments a module for a seed
+    /// import that does not exist yet.
+    ///
+    /// The ordinary boundary seeds stay in the set. `entry_import` still names
+    /// the fork boundary, and its call site still carries unwind transport.
+    pub instrument_all: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
             entry_import: "kernel.kernel_fork".into(),
+            instrument_all: false,
         }
     }
 }
@@ -180,7 +193,8 @@ pub fn analyze(input: &[u8], opts: &Options) -> Result<Analysis> {
     let side_boundaries = uses_side_module_boundaries(&module, opts);
     let entry_imports = call_graph::find_import_funcs(&module, &opts.entry_import);
 
-    if entry_imports.is_empty()
+    if !opts.instrument_all
+        && entry_imports.is_empty()
         && !side_boundaries
         && !call_graph::has_dynamic_linker_imports(&module)
     {
@@ -191,7 +205,12 @@ pub fn analyze(input: &[u8], opts: &Options) -> Result<Analysis> {
         );
     }
 
-    let seeds = fork_boundary_seeds(&module, &entry_imports, side_boundaries);
+    let seeds = fork_boundary_seeds(
+        &module,
+        &entry_imports,
+        side_boundaries,
+        opts.instrument_all,
+    );
     let reaching = prepare_fork_path(
         &module,
         &seeds,
@@ -246,6 +265,28 @@ fn fork_boundary_seeds(
     module: &walrus::Module,
     entry_imports: &[walrus::FunctionId],
     side_boundaries: bool,
+    instrument_all: bool,
+) -> Vec<walrus::FunctionId> {
+    let mut seeds = boundary_import_seeds(module, entry_imports, side_boundaries);
+    if instrument_all {
+        // WHY: the closure is discovered by walking a seed's callers, so an
+        // import only ever enters it by being a seed itself. Seeding every
+        // local function alone therefore leaves the fork import outside
+        // `control_reachable`, its call site keeps no unwind transport, and
+        // `kernel_fork` returns its ignored-during-unwind result straight to
+        // the guest, which reads it as the child. Widen from the ordinary
+        // boundary seeds instead of replacing them.
+        seeds.extend(local_function_seeds(module));
+        seeds.sort();
+        seeds.dedup();
+    }
+    seeds
+}
+
+fn boundary_import_seeds(
+    module: &walrus::Module,
+    entry_imports: &[walrus::FunctionId],
+    side_boundaries: bool,
 ) -> Vec<walrus::FunctionId> {
     if side_boundaries {
         call_graph::imported_functions(module)
@@ -260,6 +301,13 @@ fn fork_boundary_seeds(
         seeds.dedup();
         seeds
     }
+}
+
+/// Every locally defined function. Adding this set to the closure seeds makes
+/// each of them a surviving activation, which is the instrumentation ceiling.
+/// The caller sorts the combined set, so the emitted bytes stay deterministic.
+fn local_function_seeds(module: &walrus::Module) -> Vec<walrus::FunctionId> {
+    module.funcs.iter_local().map(|(id, _)| id).collect()
 }
 
 /// Compute both the surviving activation set and the full semantic control
@@ -309,11 +357,16 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
         ensure_side_module_abi_version(&mut module, input)?;
     }
     let entry_imports = call_graph::find_import_funcs(&module, &opts.entry_import);
-    let seeds = fork_boundary_seeds(&module, &entry_imports, side_boundaries);
+    let seeds = fork_boundary_seeds(
+        &module,
+        &entry_imports,
+        side_boundaries,
+        opts.instrument_all,
+    );
     let has_dynamic_linker_imports = call_graph::has_dynamic_linker_imports(&module);
     let external_dynamic_dispatch = side_boundaries || has_dynamic_linker_imports;
     reject_reserved_unwind_import(&module)?;
-    if entry_imports.is_empty() && !external_dynamic_dispatch {
+    if !opts.instrument_all && entry_imports.is_empty() && !external_dynamic_dispatch {
         // WHY: this is a standalone executable with no route into fork or a
         // process-wide dynamic activation. Keeping the exact linker bytes
         // avoids imposing ABI 43's GC/exnref replay types on non-forking

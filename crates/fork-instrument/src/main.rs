@@ -48,6 +48,14 @@ struct Cli {
     #[arg(long, default_value = "kernel.kernel_fork")]
     entry: String,
 
+    /// Add every locally defined function to the closure that reaches
+    /// `--entry`. This is the instrumentation ceiling: no seed import produces
+    /// a larger activation set. Use it to measure that ceiling, and to
+    /// instrument a module whose seed import does not exist yet. `--entry`
+    /// still names the fork boundary.
+    #[arg(long)]
+    instrument_all: bool,
+
     /// Analyze the module and print the discovered fork-path function
     /// set as JSON to stdout. Skips instrumentation and output emission.
     /// Useful for validating call-graph discovery against
@@ -167,6 +175,7 @@ fn main() -> Result<()> {
 
     let opts = Options {
         entry_import: cli.entry,
+        instrument_all: cli.instrument_all,
     };
 
     if cli.discover_only {

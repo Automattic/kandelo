@@ -471,6 +471,15 @@ const FIXTURE_NO_FORK: &str = r#"
       (memory 1))
 "#;
 
+const FIXTURE_NO_FORK_NESTED_CALL: &str = r#"
+    (module
+      (func $inner (export "inner") (result i32)
+        i32.const 1)
+      (func $outer (export "outer") (result i32)
+        call $inner)
+      (memory 1))
+"#;
+
 const FIXTURE_MULTIVALUE: &str = r#"
     (module
       (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -749,6 +758,39 @@ fn module_without_fork_or_dynamic_boundary_is_byte_identical() {
     assert_eq!(
         bytes, input,
         "a standalone non-forking executable must not acquire fork-runtime features",
+    );
+}
+
+#[test]
+fn instrument_all_wraps_a_module_without_fork_or_dynamic_boundary() {
+    // The ceiling mode instruments the same module the test above returns
+    // untouched, so the transform can be measured and applied before a seed
+    // import exists.
+    let input = parse_wat(FIXTURE_NO_FORK_NESTED_CALL);
+    let bytes = instrument(
+        &input,
+        &Options {
+            instrument_all: true,
+            ..Options::default()
+        },
+    )
+    .expect("instrument");
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+    // `outer` owns the one resumable call site, so it carries the dispatch
+    // br_table. `inner` is a leaf: it has no call to resume to, so it gets the
+    // replay preamble without a dispatch.
+    let outer = func_by_name(&module, "outer");
+    assert_eq!(
+        count_br_tables(local_func(&module, outer)),
+        1,
+        "the caller should emit its dispatch br_table",
+    );
+    let inner = func_by_name(&module, "inner");
+    assert_ne!(
+        entry_instr_kinds(&module, inner),
+        vec![InstrKind::Const],
+        "the leaf must still be wrapped, not left byte-for-byte unchanged",
     );
 }
 
