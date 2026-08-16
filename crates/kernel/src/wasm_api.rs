@@ -9194,7 +9194,6 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32, retry_to
         deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
         return -(err as i32);
     }
-
     let (base, len) = if iov_len == 0 {
         (0, 0)
     } else {
