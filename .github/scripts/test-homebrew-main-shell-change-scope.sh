@@ -442,30 +442,31 @@ staging_preflight_condition="$(
 grep -Fq \
   "needs.change-scope.outputs.homebrew_publisher_only_changed == 'true'" \
   <<<"$staging_preflight_condition" ||
-  fail "publisher-only staging no longer runs the complete publisher preflight"
+  fail "publisher-only staging no longer runs its ordinary preflight"
 staging_preflight="$(
   sed -n '/^  preflight:/,/^  package-staging-not-required:/p' \
     "$STAGING_WORKFLOW"
 )"
-grep -Fq 'bash scripts/test-homebrew-publish-workflow.sh' \
-  <<<"$staging_preflight" ||
-  fail "publisher-only staging lost the complete publisher contract"
+if grep -Fq 'bash scripts/test-homebrew-publish-workflow.sh' \
+  <<<"$staging_preflight"; then
+  fail "ordinary staging restored the complete publisher integration suite"
+fi
 grep -Fq \
   'bash "$REPO_ROOT/scripts/test-homebrew-prefix-campaign-layout.sh"' \
   "$PUBLISHER_TEST" ||
-  fail "publisher-only staging lost its guest-layout contract evidence"
+  fail "publisher suite lost its guest-layout contract evidence"
 grep -Fq \
   'bash "$REPO_ROOT/scripts/test-homebrew-patched-launcher.sh"' \
   "$PUBLISHER_TEST" ||
-  fail "publisher-only staging lost its launcher isolation evidence"
+  fail "publisher suite lost its launcher isolation evidence"
 grep -Fq \
   'ruby "$REPO_ROOT/scripts/check-homebrew-publish-workflow-trust.rb"' \
   "$PUBLISHER_TEST" ||
-  fail "publisher-only staging lost its static trust evidence"
+  fail "publisher suite lost its static trust evidence"
 grep -Fq \
   'python3 "$REPO_ROOT/scripts/test-homebrew-tap-recipe-runner.py"' \
   "$PATCHED_LAUNCHER_TEST" ||
-  fail "publisher-only staging lost its recipe supervisor evidence"
+  fail "publisher suite lost its recipe supervisor evidence"
 
 staging_noop_condition="$(
   sed -n \
