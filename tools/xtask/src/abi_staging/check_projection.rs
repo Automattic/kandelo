@@ -2116,6 +2116,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn checked_in_required_check_activation_enforces_exact_staging() {
+        let activation_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("abi/staging/required-check-activation.toml");
+        assert_eq!(
+            required_check_activation_mode(&activation_path).unwrap(),
+            "enforce",
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn activation_mode_rejects_symlink_and_nonregular_inputs() {
