@@ -318,8 +318,9 @@ export FAKE_EXPECTED_PKG_VERSION="$(jq -r '
     "\($identity.version)_\($identity.revision)"
   end
 ' "$INPUT_ROOT/formula-plan.json")"
-export KANDELO_ABI_STAGING_TESTING=1
+export KANDELO_ABI_STAGING_PROTECTED_NORMAL_BUILDER=1
 export KANDELO_ABI_STAGING_NORMAL_BUILDER="$TMP_ROOT/fake-builder"
+export GITHUB_ACTIONS=true
 export GITHUB_TOKEN="ghp_abcdefghijklmnopqrstuvwxyz0123456789"
 export GH_TOKEN="ghp_abcdefghijklmnopqrstuvwxyz0123456789"
 export GHCR_PAT="github_pat_abcdefghijklmnopqrstuvwxyz0123456789"
