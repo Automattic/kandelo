@@ -99,6 +99,8 @@ chmod 0700 "$BUILD_ROOT"
 CONTEXT="$BUILD_ROOT/build-context.json"
 RAW_OUTPUT="$BUILD_ROOT/raw-output"
 SELECTED_DEPENDENCIES="$BUILD_ROOT/declared-dependencies"
+PREPARED_TAP="$BUILD_ROOT/prepared-tap"
+PREPARED_RESOLVED_TAPS="$BUILD_ROOT/prepared-resolved-taps.json"
 SOURCE_CUSTODY="$BUILD_ROOT/source-custody"
 mkdir -p "$RAW_OUTPUT/diagnostics"
 
@@ -118,6 +120,11 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$TAP_ROOT" \
     --context "$CONTEXT" \
     --out "$SELECTED_DEPENDENCIES"
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$TAP_ROOT" \
+  python3 -m scripts.abi_staging.handoff prepare-dependency-tap \
+    --context "$CONTEXT" \
+    --tap-root "$TAP_ROOT" \
+    --out "$PREPARED_TAP"
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$TAP_ROOT" \
   python3 -m scripts.abi_staging.handoff create-custody \
     --context "$CONTEXT" \
     --kandelo-root "$KANDELO_ROOT" \
@@ -129,6 +136,29 @@ ARCHITECTURE="$(jq -er '.architecture' "$CONTEXT")"
 TAP_REPOSITORY="$(jq -er '.tap_source.repository' "$CONTEXT")"
 BOTTLE_ROOT_URL="$(jq -er '.bottle_root_url' "$CONTEXT")"
 TARGET_ABI="$(jq -er '.target_abi' "$CONTEXT")"
+TAP_SOURCE_COMMIT="$(jq -er '.tap_source.commit' "$CONTEXT")"
+PREPARED_TAP_COMMIT="$(git -C "$PREPARED_TAP" rev-parse HEAD)"
+TAP_NAME="${TAP_REPOSITORY%%/*}/${TAP_REPOSITORY#*/homebrew-}"
+
+resolved_tap_args=()
+if [ -n "${KANDELO_HOMEBREW_RESOLVED_TAPS_FILE:-}" ]; then
+  while IFS=$'\t' read -r dependency_tap dependency_root; do
+    [ -n "$dependency_tap" ] && [ -n "$dependency_root" ] || {
+      echo "abi-staging-build-bottle.sh: resolved dependency tap is incomplete" >&2
+      exit 2
+    }
+    resolved_tap_args+=(--dependency-root "$dependency_tap=$dependency_root")
+  done < <(jq -er '.dependencies[] | [.tap_name, .root] | @tsv' \
+    "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE")
+fi
+python3 "$KANDELO_ROOT/scripts/homebrew-dependency-taps.py" resolve \
+  --tap-root "$PREPARED_TAP" \
+  --tap-name "$TAP_NAME" \
+  --tap-repository "$TAP_REPOSITORY" \
+  --tap-commit "$TAP_SOURCE_COMMIT" \
+  --checkout-commit "$PREPARED_TAP_COMMIT" \
+  "${resolved_tap_args[@]}" \
+  --out "$PREPARED_RESOLVED_TAPS"
 
 # Preserve only non-secret build configuration. Candidate execution has no
 # write authority, but stripping credentials prevents accidental disclosure in
@@ -148,12 +178,15 @@ export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_TERMINAL_PROMPT=0
 export GCM_INTERACTIVE=never
 export WASM_POSIX_SDK_ROOT="$KANDELO_ROOT/sdk"
-export KANDELO_ABI_STAGING_DEPENDENCY_ROOT="$SELECTED_DEPENDENCIES"
+export KANDELO_HOMEBREW_LOCAL_DEPENDENCY_CACHE="$SELECTED_DEPENDENCIES"
+export KANDELO_HOMEBREW_TAP_SOURCE_COMMIT="$TAP_SOURCE_COMMIT"
+export KANDELO_HOMEBREW_PREPARED_TAP_COMMIT="$PREPARED_TAP_COMMIT"
+export KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$PREPARED_RESOLVED_TAPS"
 umask 077
 
 set +e
 "$TIMEOUT_BIN" 21600s "$NORMAL_BUILDER" \
-  --tap-root "$TAP_ROOT" \
+  --tap-root "$PREPARED_TAP" \
   --tap-repository "$TAP_REPOSITORY" \
   --formula "$FORMULA" \
   --arch "$ARCHITECTURE" \
