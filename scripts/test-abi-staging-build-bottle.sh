@@ -120,6 +120,44 @@ contract_digest = hashlib.sha256(contract_body).hexdigest()
 contracts = output / "dependency-inputs/contracts"
 contracts.mkdir(parents=True)
 (contracts / f"sha256-{contract_digest}.json").write_bytes(contract_body)
+for dependency in formula["direct_dependencies"]:
+    dependency_formula = next(
+        item
+        for item in plan["formulae"]
+        if item["identity"]["name"] == dependency["formula"]
+        and item["identity"]["architecture"] == dependency["architecture"]
+    )
+    dependency_identity = dependency_formula["identity"]
+    dependency_contract = build_miniature_bottle_contract_fixture()
+    dependency_contract["target"] = {
+        "abi": plan["target_abi"]["version"],
+        "snapshot_sha256": plan["target_abi"]["snapshot_sha256"],
+        "architecture": dependency_identity["architecture"],
+    }
+    dependency_contract["formula"] = {
+        "name": dependency_identity["name"],
+        "version": dependency_identity["version"],
+        "revision": dependency_identity["revision"],
+        "rebuild": dependency_identity["rebuild"],
+        "normalized_source_sha256": dependency_identity["normalized_formula_sha256"],
+        "source_components": [
+            {
+                "id": "formula",
+                "sha256": dependency_identity["normalized_formula_sha256"],
+            }
+        ],
+    }
+    dependency_contract["direct_dependencies"] = []
+    dependency_contract = build_bottle_contract(dependency_contract)
+    dependency_contract_body = canonical_bytes(dependency_contract)
+    dependency_contract_digest = hashlib.sha256(
+        dependency_contract_body
+    ).hexdigest()
+    (contracts / f"sha256-{dependency_contract_digest}.json").write_bytes(
+        dependency_contract_body
+    )
+    dependency_formula["direct_dependencies"] = []
+    dependency_formula["contract_sha256"] = dependency_contract_digest
 subject = exact_formula_subject(identity["name"], identity["architecture"])
 assessment = {
     "schema": 1,
@@ -175,6 +213,7 @@ set -euo pipefail
 : "${KANDELO_HOMEBREW_TAP_SOURCE_COMMIT:?}"
 : "${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:?}"
 : "${FAKE_ORIGINAL_TAP_ROOT:?}"
+: "${FAKE_EXPECTED_PKG_VERSION:?}"
 for secret in GITHUB_TOKEN GH_TOKEN GHCR_PAT HOMEBREW_GITHUB_API_TOKEN NPM_TOKEN \
   NODE_AUTH_TOKEN SSH_AUTH_SOCK AWS_SECRET_ACCESS_KEY \
   ACTIONS_ID_TOKEN_REQUEST_TOKEN; do
@@ -221,7 +260,7 @@ done
 [[ "$STAGING_ABI" =~ ^[1-9][0-9]*$ ]]
 [[ "$FORMULA" =~ ^[a-z0-9][a-z0-9._-]*$ ]]
 [ "$ROOT" = "https://ghcr.io/v2/${TAP_REPOSITORY}-abi-${STAGING_ABI}-candidates/${FORMULA}" ]
-PAYLOAD_ROOT="$OUT/tar-root/libcurl/8.11.1_1"
+PAYLOAD_ROOT="$OUT/tar-root/libcurl/$FAKE_EXPECTED_PKG_VERSION"
 mkdir -p "$OUT/bottles" "$PAYLOAD_ROOT/.brew" "$PAYLOAD_ROOT/bin"
 printf 'class Libcurl < Formula\nend\n' >"$PAYLOAD_ROOT/.brew/libcurl.rb"
 printf '{}\n' >"$PAYLOAD_ROOT/INSTALL_RECEIPT.json"
@@ -234,20 +273,21 @@ if [ "${FAKE_BUILDER_FAIL:-0}" = "1" ]; then
   echo "fixture deterministic failure"
   exit 7
 fi
-BOTTLE_NAME="libcurl--8.11.1_1.wasm32_kandelo.bottle.4.tar.gz"
+BOTTLE_NAME="libcurl--${FAKE_EXPECTED_PKG_VERSION}.wasm32_kandelo.bottle.4.tar.gz"
 tar -czf "$OUT/bottles/$BOTTLE_NAME" \
-  -C "$OUT/tar-root" libcurl/8.11.1_1
+  -C "$OUT/tar-root" "libcurl/$FAKE_EXPECTED_PKG_VERSION"
 BOTTLE_SHA256="$(sha256sum "$OUT/bottles/$BOTTLE_NAME" | awk '{print $1}')"
 jq -n \
   --arg name "$BOTTLE_NAME" \
   --arg root "${ROOT%/$FORMULA}" \
   --arg sha256 "$BOTTLE_SHA256" \
+  --arg pkg_version "$FAKE_EXPECTED_PKG_VERSION" \
   '{
     "kandelo-dev/tap-core/libcurl": {
       formula: {
         name: "libcurl",
         path: "Library/Taps/kandelo-dev/homebrew-tap-core/Formula/libcurl.rb",
-        pkg_version: "8.11.1_1"
+        pkg_version: $pkg_version
       },
       bottle: {
         root_url: $root,
@@ -270,6 +310,14 @@ export PATH="$MOCK_BIN:$PATH"
 export FAKE_TIMEOUT_LOG="$TMP_ROOT/timeout.log"
 export FAKE_BUILDER_LOG="$TMP_ROOT/builder.log"
 export FAKE_ORIGINAL_TAP_ROOT="$TAP_ROOT"
+export FAKE_EXPECTED_PKG_VERSION="$(jq -r '
+  .identity as $identity |
+  if $identity.revision == 0 then
+    $identity.version
+  else
+    "\($identity.version)_\($identity.revision)"
+  end
+' "$INPUT_ROOT/formula-plan.json")"
 export KANDELO_ABI_STAGING_TESTING=1
 export KANDELO_ABI_STAGING_NORMAL_BUILDER="$TMP_ROOT/fake-builder"
 export GITHUB_TOKEN="ghp_abcdefghijklmnopqrstuvwxyz0123456789"
