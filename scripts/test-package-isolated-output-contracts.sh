@@ -25,6 +25,17 @@ php="$REPO_ROOT/packages/registry/php/build-php.sh"
 awk '/if \[ -n "\$\{WASM_POSIX_DEP_OUT_DIR:-\}" \]; then/,/else/' \
     "$php" | grep -F 'WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto' \
     >/dev/null || fail "PHP sealed install lacks explicit fork policy"
+php_fork_abi="$REPO_ROOT/packages/registry/php/fork-side-module-abi.c"
+[ -f "$php_fork_abi" ] ||
+    fail "PHP lacks the ABI identity source for its fork-instrumented side module"
+grep -F 'export_name("__abi_version")' "$php_fork_abi" >/dev/null ||
+    fail "PHP side-module ABI identity does not export __abi_version"
+grep -F 'return WASM_POSIX_ABI_VERSION;' "$php_fork_abi" >/dev/null ||
+    fail "PHP side-module ABI identity is not generated from the current ABI header"
+grep -F '"$SCRIPT_DIR/fork-side-module-abi.c"' "$php" >/dev/null ||
+    fail "PHP build does not compile its reviewed side-module ABI identity source"
+grep -F '"$FORK_SIDE_MODULE_ABI_OBJECT"' "$php" >/dev/null ||
+    fail "PHP opcache link omits its fork side-module ABI identity object"
 
 msmtpd="$REPO_ROOT/packages/registry/msmtpd/build-msmtpd.sh"
 msmtpd_source='https://snapshot.debian.org/archive/debian/20251129T142942Z/pool/main/m/msmtp/msmtp_1.8.32.orig.tar.xz'
