@@ -19,6 +19,10 @@ CHECKOUT_ACTION =
   "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
 SOURCE_STEP = "Checkout exact Homebrew lifecycle source"
 VALIDATION_STEP = "Validate Homebrew publisher trust contract"
+HOST_RUNTIME_STEP = "Seal conventional host runtime ownership"
+JAVASCRIPT_STEP = "Install JavaScript dependencies for Homebrew preflight"
+PUBLISHER_FLOW_CONDITION =
+  "${{ needs.change-scope.outputs.package_publish_flow_changed == 'true' }}"
 
 def check(condition, message)
   raise message unless condition
@@ -46,12 +50,20 @@ def check_contract(workflow, lifecycle, roots, dev_shell)
     "statuses" => "write",
   }, "staging preflight authority changed")
   steps = preflight.fetch("steps")
+  host_runtime = named_step(steps, HOST_RUNTIME_STEP)
   source = named_step(steps, SOURCE_STEP)
+  javascript = named_step(steps, JAVASCRIPT_STEP)
   validation = named_step(steps, VALIDATION_STEP)
   commit = lifecycle_commit(lifecycle)
 
+  [host_runtime, source, javascript, validation].each do |step|
+    check(step.fetch("if") == PUBLISHER_FLOW_CONDITION,
+          "#{step.fetch("name")} is not scoped to publisher-flow changes")
+  end
+
   check(source == {
     "name" => SOURCE_STEP,
+    "if" => PUBLISHER_FLOW_CONDITION,
     "uses" => CHECKOUT_ACTION,
     "with" => {
       "persist-credentials" => false,
@@ -62,7 +74,7 @@ def check_contract(workflow, lifecycle, roots, dev_shell)
   }, "staging lifecycle source is not the exact read-only checkout")
   check(steps.index(source) < steps.index(validation),
         "staging validates the publisher before provisioning its source")
-  check(validation.keys.sort == %w[name run],
+  check(validation.keys.sort == %w[if name run],
         "staging lifecycle validation gained ambient configuration")
 
   expected_run = <<~SHELL
@@ -109,6 +121,19 @@ dev_shell = File.read(DEV_SHELL_PATH)
 check_contract(workflow, lifecycle, roots, dev_shell)
 
 {
+  "unconditional publisher setup" => lambda { |candidate|
+    steps = candidate.fetch("jobs").fetch("preflight").fetch("steps")
+    named_step(steps, HOST_RUNTIME_STEP).delete("if")
+  },
+  "differently scoped publisher setup" => lambda { |candidate|
+    steps = candidate.fetch("jobs").fetch("preflight").fetch("steps")
+    named_step(steps, JAVASCRIPT_STEP)["if"] =
+      "${{ needs.change-scope.outputs.homebrew_publisher_only_changed == 'true' }}"
+  },
+  "unconditional publisher validation" => lambda { |candidate|
+    steps = candidate.fetch("jobs").fetch("preflight").fetch("steps")
+    named_step(steps, VALIDATION_STEP).delete("if")
+  },
   "mutable Homebrew source" => lambda { |candidate|
     named_step(
       candidate.fetch("jobs").fetch("preflight").fetch("steps"),

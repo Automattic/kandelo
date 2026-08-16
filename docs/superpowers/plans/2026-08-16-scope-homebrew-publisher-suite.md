@@ -21,19 +21,20 @@
 
 **Files:**
 - Modify: `scripts/test-homebrew-publisher-lifecycle-source.rb`
+- Modify: `scripts/check-homebrew-publish-workflow-trust.rb`
 - Modify: `.github/workflows/staging-build.yml`
 
 **Interfaces:**
 - Consumes: `needs.change-scope.outputs.package_publish_flow_changed`
 - Produces: four steps with the exact condition `${{ needs.change-scope.outputs.package_publish_flow_changed == 'true' }}`
 
-- [ ] **Step 1: Write the failing workflow contract assertions**
+- [x] **Step 1: Write the failing workflow contract assertions**
 
 Require the host-sealing, lifecycle checkout, JavaScript install, and publisher
 validation steps to have the exact publisher-flow condition. Add mutations
 that remove or change the condition and require rejection.
 
-- [ ] **Step 2: Run the focused contract to verify RED**
+- [x] **Step 2: Run the focused contract to verify RED**
 
 Run:
 
@@ -43,12 +44,14 @@ scripts/dev-shell.sh ruby scripts/test-homebrew-publisher-lifecycle-source.rb
 
 Expected: failure because the four steps are currently unconditional.
 
-- [ ] **Step 3: Add the minimal workflow conditions**
+- [x] **Step 3: Add the minimal workflow conditions**
 
 Set the same `if` expression on exactly the four publisher-only steps. Preserve
-their existing command bodies, source pin, and ordering.
+their existing command bodies, source pin, and ordering. Update the structural
+trust checker so reusable publication jobs still require unconditional host
+sealing while staging preflight requires this exact condition.
 
-- [ ] **Step 4: Run focused verification to GREEN**
+- [x] **Step 4: Run focused verification to GREEN**
 
 Run:
 
@@ -60,7 +63,7 @@ scripts/dev-shell.sh bash .github/scripts/test-homebrew-main-shell-change-scope.
 
 Expected: all commands exit zero.
 
-- [ ] **Step 5: Verify workflow syntax and scoped diff**
+- [x] **Step 5: Verify workflow syntax and scoped diff**
 
 Run:
 
@@ -71,13 +74,14 @@ git diff --name-only origin/main...HEAD
 ```
 
 Expected: actionlint and diff checks exit zero; only the two docs, workflow,
-and lifecycle-source contract test differ.
+structural trust checker, and lifecycle-source contract test differ.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add \
   .github/workflows/staging-build.yml \
+  scripts/check-homebrew-publish-workflow-trust.rb \
   scripts/test-homebrew-publisher-lifecycle-source.rb \
   docs/superpowers/specs/2026-08-16-scope-homebrew-publisher-suite-design.md \
   docs/superpowers/plans/2026-08-16-scope-homebrew-publisher-suite.md
