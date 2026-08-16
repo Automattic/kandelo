@@ -187,8 +187,8 @@ done
 [ "$GIT_CONFIG_GLOBAL" = "/dev/null" ]
 [ "$GIT_TERMINAL_PROMPT" = "0" ]
 [ -d "$WASM_POSIX_SDK_ROOT" ] && [ ! -L "$WASM_POSIX_SDK_ROOT" ]
-find "$KANDELO_HOMEBREW_LOCAL_DEPENDENCY_CACHE" -type f -name 'sha256-*.tar.gz' -print \
-  | sort >"$FAKE_BUILDER_LOG.dependencies"
+find "$KANDELO_HOMEBREW_LOCAL_DEPENDENCY_CACHE" -type f -name '*.tar.gz' \
+  -exec basename {} \; | sort >"$FAKE_BUILDER_LOG.dependencies"
 
 OUT=""
 ROOT=""
@@ -309,10 +309,10 @@ grep -Fq -- "--bottle-root-url $EXPECTED_CANDIDATE_ROOT" "$FAKE_BUILDER_LOG" ||
   fail "normal builder did not receive the visibly nonendorsed ABI-qualified candidate root"
 grep -Fq -- "--staging-candidate-abi $TARGET_ABI" "$FAKE_BUILDER_LOG" ||
   fail "normal builder did not receive the exact target ABI candidate authority"
-EXPECTED_DEPENDENCIES="$(jq '.dependency_sha256s | length' "$INPUT_ROOT/fixture.json")"
-ACTUAL_DEPENDENCIES="$(wc -l <"$FAKE_BUILDER_LOG.dependencies" | tr -d '[:space:]')"
-[ "$ACTUAL_DEPENDENCIES" = "$EXPECTED_DEPENDENCIES" ] ||
-  fail "normal builder did not receive exactly the declared dependency layers"
+jq -r '.dependency_sha256s[] + ".tar.gz"' "$INPUT_ROOT/fixture.json" | sort \
+  >"$TMP_ROOT/expected-dependency-cache"
+cmp -s "$TMP_ROOT/expected-dependency-cache" "$FAKE_BUILDER_LOG.dependencies" ||
+  fail "normal builder did not receive its exact declared dependency cache"
 [ -f "$SUCCESS_HANDOFF/bottle.tar.gz" ] || fail "successful handoff omitted bottle"
 [ -f "$SUCCESS_HANDOFF/attempt-record.json" ] || fail "successful handoff omitted attempt"
 [ -f "$SUCCESS_HANDOFF/build-result.json" ] || fail "successful handoff omitted result"
