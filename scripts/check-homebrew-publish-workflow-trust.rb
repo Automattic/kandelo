@@ -42,8 +42,6 @@ PRIVILEGED_RECIPE_JOBS = {
   ".github/workflows/reusable-homebrew-bottle-publish.yml:verify-bottle" =>
     "/usr/bin/python3 kandelo/scripts/" \
       "prepare-homebrew-recipe-host-runtime.py",
-  ".github/workflows/staging-build.yml:preflight" =>
-    "/usr/bin/python3 scripts/prepare-homebrew-recipe-host-runtime.py",
 }.freeze
 ROOTFS_PUBLICATION_SELECTION_PATH = File.join(
   REPO_ROOT, "scripts/homebrew-rootfs-publication-selection.sh"
@@ -9551,8 +9549,9 @@ end
 def self_test_privileged_recipe_host_runtime(workflows)
   expect_rejection("missing host-runtime preparation") do
     mutated = deep_copy(workflows)
-    steps = mutated.fetch(".github/workflows/staging-build.yml")
-      .fetch("jobs").fetch("preflight").fetch("steps")
+    steps = mutated.fetch(
+      ".github/workflows/reusable-homebrew-bottle-publish.yml"
+    ).fetch("jobs").fetch("build-and-test").fetch("steps")
     steps.reject! { |step| step["name"] == HOST_RUNTIME_PREPARATION_STEP }
     check_privileged_recipe_host_runtime(mutated)
   end
@@ -9576,8 +9575,10 @@ def self_test_privileged_recipe_host_runtime(workflows)
   expect_rejection("caller-selected host-runtime preparation") do
     mutated = deep_copy(workflows)
     step = mutate_named_step(
-      mutated.fetch(".github/workflows/staging-build.yml"),
-      "preflight",
+      mutated.fetch(
+        ".github/workflows/reusable-homebrew-bottle-publish.yml"
+      ),
+      "build-and-test",
       HOST_RUNTIME_PREPARATION_STEP
     )
     step["run"] = "#{step.fetch('run')} --root /tmp/usr"
@@ -9587,8 +9588,10 @@ def self_test_privileged_recipe_host_runtime(workflows)
   expect_rejection("conditional host-runtime preparation") do
     mutated = deep_copy(workflows)
     step = mutate_named_step(
-      mutated.fetch(".github/workflows/staging-build.yml"),
-      "preflight",
+      mutated.fetch(
+        ".github/workflows/reusable-homebrew-bottle-publish.yml"
+      ),
+      "build-and-test",
       HOST_RUNTIME_PREPARATION_STEP
     )
     step["if"] = "${{ false }}"
@@ -9598,8 +9601,10 @@ def self_test_privileged_recipe_host_runtime(workflows)
   expect_rejection("ignored host-runtime preparation failure") do
     mutated = deep_copy(workflows)
     step = mutate_named_step(
-      mutated.fetch(".github/workflows/staging-build.yml"),
-      "preflight",
+      mutated.fetch(
+        ".github/workflows/reusable-homebrew-bottle-publish.yml"
+      ),
+      "build-and-test",
       HOST_RUNTIME_PREPARATION_STEP
     )
     step["continue-on-error"] = true
