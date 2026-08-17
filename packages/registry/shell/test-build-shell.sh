@@ -31,12 +31,12 @@ expect_failure() {
     }
 }
 
-grep -Eq '^revision[[:space:]]*=[[:space:]]*25$' "$BUILD_TOML" ||
-    fail "canonical shell revision must be 25"
+grep -Eq '^revision[[:space:]]*=[[:space:]]*26$' "$BUILD_TOML" ||
+    fail "canonical shell revision must be 26"
 grep -Eq '^commit[[:space:]]*=[[:space:]]*"UNPUBLISHED"$' "$BUILD_TOML" ||
     fail "canonical shell must await publication under its authored commit"
-grep -Eq '^publication_state[[:space:]]*=[[:space:]]*"ready"$' \
-    "$BUILD_TOML" || fail "canonical flat shell must be publication-ready"
+grep -Eq '^publication_state[[:space:]]*=[[:space:]]*"pending"$' \
+    "$BUILD_TOML" || fail "canonical flat shell must await ABI-43 publication"
 for input in \
     homebrew/main-shell-flat-selection.json \
     homebrew/main-shell-materialization-policy.json \
@@ -55,6 +55,7 @@ for input in \
     host/src/homebrew-bottle-selection.ts \
     host/src/homebrew-bottle-types.ts \
     host/src/homebrew-bootstrap-consumer.ts \
+    host/src/homebrew-deferred-tree-adapter.ts \
     host/src/homebrew-flat-lazy-vfs-composer.ts \
     host/src/homebrew-guest-layout.ts \
     host/src/homebrew-lazy-layer-descriptor.ts \

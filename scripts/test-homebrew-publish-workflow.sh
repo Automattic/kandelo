@@ -375,6 +375,10 @@ homebrew_patched_launcher_select_host_git() {
   export HOMEBREW_GIT_PATH
 }
 
+homebrew_patched_launcher_restore_invoker_bootstrap_roots() {
+  [ "$#" -eq 2 ]
+}
+
 homebrew_patched_launcher_prepare() {
   HOMEBREW_PATCHED_BREW_BIN="$1"
   HOMEBREW_PATCHED_PREFIX="${FAKE_BREW_PREFIX:?}"
@@ -398,6 +402,15 @@ homebrew_patched_launcher_snapshot_target_cellar_layout() {
       done
     fi
   done | LC_ALL=C sort
+}
+
+homebrew_patched_launcher_seal_target_dependencies() {
+  [ "$#" -eq 2 ]
+}
+
+homebrew_patched_launcher_resolve_installed_formula_keg() {
+  [ "$#" -eq 3 ] || return 2
+  printf '%s/Cellar/%s/1.0\n' "$HOMEBREW_PATCHED_PREFIX" "$3"
 }
 
 homebrew_patched_launcher_native_prefix_path() {

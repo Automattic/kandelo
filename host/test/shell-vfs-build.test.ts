@@ -209,7 +209,7 @@ function flatLazyShellImageMetadata(maxByteLength: number): VfsImageMetadata {
       kind: "kandelo-homebrew-flat-selection-lazy-v1",
       selection: {
         sha256: "2".repeat(64),
-        name: "main-shell-abi42-wasm32",
+        name: `main-shell-abi${ABI_VERSION}-wasm32`,
         arch: "wasm32",
         kandeloAbi: ABI_VERSION,
         requestedVfsFilename: "shell.vfs.zst",

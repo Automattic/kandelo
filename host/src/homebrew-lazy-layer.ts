@@ -76,6 +76,7 @@ import {
   encodeMaterializationBytes,
   type LazyTreeMaterializationPlan,
 } from "./vfs/materialization-plan";
+import { KANDELO_HOMEBREW_GUEST_LAYOUT } from "./homebrew-guest-layout";
 import {
   assertVfsDeferredTreeCollectionUsage,
 } from "./vfs/deferred-tree-limits";
@@ -97,6 +98,7 @@ const HOMEBREW_VFS_REPORT_ASSET = "kandelo-homebrew-vfs-report.json";
 const HOMEBREW_NODE_EVIDENCE_ASSET = "kandelo-homebrew-node-evidence.json";
 const HOMEBREW_BROWSER_EVIDENCE_ASSET = "kandelo-homebrew-browser-evidence.json";
 const HOMEBREW_COMPOSITION_PATH = "/etc/kandelo/homebrew-vfs.json";
+const HOME_BREW_PREFIX = KANDELO_HOMEBREW_GUEST_LAYOUT.prefix;
 const ZIP_EPOCH = new Date(1980, 0, 1, 0, 0, 0);
 const S_IFMT = 0xf000;
 const S_IFREG = 0x8000;
@@ -261,61 +263,8 @@ export async function buildHomebrewOriginalBottleCollection(
     if (rich === undefined) {
       throw new Error(`Homebrew original bottle did not plan ${pkg.fullName}`);
     }
-    if (pkg.bytes > HOMEBREW_RUNTIME_LAYER_LIMITS.maxArchiveBytes) {
-      throw new Error(
-        `Homebrew original bottle ${pkg.fullName} exceeds the per-bottle archive cap`,
-      );
-    }
-    declaredArchiveBytes += pkg.bytes;
-  }
-  assertVfsDeferredTreeCollectionUsage({
-    groups: plan.packages.length,
-    archiveBytes: declaredArchiveBytes,
-    expandedBytes: 0,
-    payloadBytes: 0,
-    entries: 0,
-  }, "Homebrew original bottle collection");
-
-  const bottles: PreparedOriginalBottle[] = [];
-  let aggregateArchiveBytes = 0;
-  let aggregateExpandedBytes = 0;
-  let aggregateSourceEntries = 0;
-  for (const pkg of plan.packages) {
-    const bytes = await options.loadBottleBytes(pkg);
-    assertBottleIdentity(pkg, bytes);
-    const parsed = parseTarGzip(bytes, {
-      label: `Homebrew deferred bottle ${pkg.fullName}`,
-      limits: {
-        maxCompressedBytes: HOMEBREW_RUNTIME_LAYER_LIMITS.maxArchiveBytes,
-        maxUncompressedBytes: HOMEBREW_RUNTIME_LAYER_LIMITS.maxUncompressedBytes,
-        maxEntries: HOMEBREW_RUNTIME_LAYER_LIMITS.maxEntries,
-      },
-    });
-    const sourceEntries = createSourceInventory(parsed);
-    const relocation = prepareOriginalBottleRelocation(pkg, parsed);
-    aggregateArchiveBytes += bytes.byteLength;
-    aggregateExpandedBytes += gzipExpandedBytes(bytes);
-    aggregateSourceEntries += sourceEntries.length;
-    assertVfsDeferredTreeCollectionUsage({
-      groups: bottles.length + 1,
-      archiveBytes: aggregateArchiveBytes,
-      expandedBytes: aggregateExpandedBytes,
-      payloadBytes: 0,
-      entries: aggregateSourceEntries,
-    }, "Homebrew original bottle collection");
-    // The expanded TAR is released after each iteration; only compact source
-    // truth and the exact compressed object survive to collection closure.
-    bottles.push({
-      pkg,
-      bytes,
-      sourceEntries,
-      relocationSourcePaths: relocation.sourcePaths,
-      relocatedBytesByCanonicalSource: relocation.bytesByCanonicalSource,
-      ...(relocation.relocation === undefined
-        ? {}
-        : { relocation: relocation.relocation }),
-    });
-  }
+    return options.loadBottleBytes(rich);
+  });
 
   const bottleBytes = new Map(
     bottles.map((bottle) => [bottle.pkg.fullName, bottle.bytes]),
@@ -464,7 +413,11 @@ export async function projectHomebrewFlatOriginalBottleCollectionFromEagerProof(
       authoritativeDescriptors.get(pkg.fullName)!,
     ),
   );
-  const allEntries = collectLayerEntries(options.eagerProof.fs, options.baseFs);
+  const allEntries = collectLayerEntries(
+    options.eagerProof.fs,
+    options.baseFs,
+    homebrewPlanDestinationPrefix(planSnapshot),
+  );
   const selectedEntries = selectFlatOriginalBottleEntries(
     allEntries,
     projectionPackages,
@@ -885,6 +838,7 @@ async function prepareOriginalBottles(
       sourceEntries,
       relocationSourcePaths: relocation.sourcePaths,
       relocatedBytesByCanonicalSource: relocation.bytesByCanonicalSource,
+      relocation: relocation.relocation,
     });
   }
   return bottles;
@@ -1508,7 +1462,7 @@ function createDirectGuestEntry(
 
 function prepareOriginalBottleRelocation(
   pkg: HomebrewOriginalBottlePackagePlan,
-  materialization: HomebrewBottleMaterializationPackage,
+  bottleMaterialization: HomebrewBottleMaterializationPackage,
   entries: readonly TarEntry[],
 ): {
   sourcePaths: Set<string>;
@@ -1531,11 +1485,14 @@ function prepareOriginalBottleRelocation(
   const sourceByPath = new Map(entries.map((entry) => [entry.path, entry]));
   const sourceByGuestPath = new Map<string, TarEntry>();
   for (const entry of entries) {
-    const guestPath = mapHomebrewBottleEntryToGuestPath(materialization, entry.path);
+    const guestPath = mapHomebrewBottleEntryToGuestPath(
+      bottleMaterialization,
+      entry.path,
+    );
     if (guestPath !== null) sourceByGuestPath.set(guestPath, entry);
   }
   const receiptGuestPath = homebrewManifestSourcePath(
-    materialization,
+    bottleMaterialization,
     installReceipts[0]!,
   );
   const receiptSource = sourceByGuestPath.get(receiptGuestPath);
@@ -1549,10 +1506,10 @@ function prepareOriginalBottleRelocation(
     receiptGuestPath,
     receiptSource.path,
   );
-  if (destinationPrefix !== pkg.prefix) {
+  if (destinationPrefix !== pkg.relocation.prefix) {
     throw new Error(
       `Homebrew deferred bottle ${pkg.fullName} receipt prefix ` +
-        `${destinationPrefix} differs from package prefix ${pkg.prefix}`,
+        `${destinationPrefix} differs from package prefix ${pkg.relocation.prefix}`,
     );
   }
   let receipt: ReturnType<typeof parseHomebrewInstallReceiptRelocation>;
@@ -2210,7 +2167,9 @@ function commonArch(plan: HomebrewVfsPlan): "wasm32" | "wasm64" {
   return arch;
 }
 
-function homebrewPlanDestinationPrefix(plan: HomebrewVfsPlan): string {
+function homebrewPlanDestinationPrefix(
+  plan: { packages: readonly Pick<HomebrewVfsPackagePlan, "prefix">[] },
+): string {
   const prefixes = new Set(plan.packages.map((pkg) =>
     normalizeHomebrewBottleDestinationPrefix(pkg.prefix)
   ));

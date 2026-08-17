@@ -17,7 +17,7 @@ RETIRE_SOURCE_INSTALL=false
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-bottle-build.sh --tap-root <tap-root> [--tap-repository <owner/repo>] [--tap-name <owner/name>] --formula <name> --arch <wasm32|wasm64> --out <dir> --bottle-root-url <url> [--retire-source-install]
+usage: scripts/homebrew-bottle-build.sh --tap-root <tap-root> [--tap-repository <owner/repo>] [--tap-name <owner/name>] --formula <name> --arch <wasm32|wasm64> --out <dir> --bottle-root-url <url> [--staging-candidate-abi <positive-integer>] [--retire-source-install]
 
 This script is intended to run inside scripts/dev-shell.sh. It invokes the
 absolute Homebrew executable named by HOMEBREW_BREW_FILE, avoiding host PATH
@@ -40,6 +40,7 @@ while [ "$#" -gt 0 ]; do
     --arch) ARCH="${2:-}"; shift 2 ;;
     --out) OUT_DIR="${2:-}"; shift 2 ;;
     --bottle-root-url) BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
+    --staging-candidate-abi) STAGING_CANDIDATE_ABI="${2:-}"; shift 2 ;;
     --retire-source-install)
       [ "$RETIRE_SOURCE_INSTALL" = false ] || {
         echo "homebrew-bottle-build.sh: duplicate --retire-source-install" >&2
@@ -81,6 +82,11 @@ case "$ARCH" in
   wasm32|wasm64) ;;
   *) echo "homebrew-bottle-build.sh: invalid arch: $ARCH" >&2; exit 2 ;;
 esac
+if [ -n "$STAGING_CANDIDATE_ABI" ] &&
+   ! [[ "$STAGING_CANDIDATE_ABI" =~ ^[1-9][0-9]*$ ]]; then
+  echo "homebrew-bottle-build.sh: invalid staging candidate ABI: $STAGING_CANDIDATE_ABI" >&2
+  exit 2
+fi
 
 if [ -n "$LOCAL_BUILD_EVIDENCE" ]; then
   if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
@@ -495,8 +501,7 @@ ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
   echo "homebrew-bottle-build.sh: target bottle identity exceeds the size limit" >&2
   exit 2
 }
-if ! jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" \
-  --arg root "$BOTTLE_ROOT_URL" '
+if ! jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" '
     keys == ["bottle", "formula", "full_name", "schema", "tap"] and
     .schema == 1 and
     .tap == $tap and
@@ -504,9 +509,17 @@ if ! jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" \
     .full_name == ($tap + "/" + $formula) and
     (.bottle | keys == ["rebuild", "root_url"]) and
     (.bottle.rebuild | type == "number" and . >= 0 and floor == .) and
-    (.bottle.root_url == null or .bottle.root_url == $root)
+    (.bottle.root_url == null or
+      (.bottle.root_url | type == "string" and length <= 1024))
   ' "$TARGET_BOTTLE_IDENTITY" >/dev/null; then
-  echo "homebrew-bottle-build.sh: planned Formula bottle identity is invalid or uses a different root URL" >&2
+  echo "homebrew-bottle-build.sh: planned Formula bottle identity is invalid" >&2
+  exit 2
+fi
+FORMULA_BOTTLE_ROOT="$(jq -r '.bottle.root_url // ""' "$TARGET_BOTTLE_IDENTITY")"
+if ! homebrew_formula_bottle_root_matches_build_authority \
+  "$TAP_REPOSITORY" "$TAP_NAME" "$FORMULA" "$STAGING_CANDIDATE_ABI" \
+  "$BOTTLE_ROOT_URL" "$FORMULA_BOTTLE_ROOT"; then
+  echo "homebrew-bottle-build.sh: planned Formula bottle identity uses a different root URL" >&2
   exit 2
 fi
 EXPECTED_BOTTLE_REBUILD="$(jq -r '.bottle.rebuild' "$TARGET_BOTTLE_IDENTITY")"

@@ -38,6 +38,7 @@ import {
   type ClosedLazyAsset,
 } from "./vfs/closed-lazy-assets";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
+import type { MountSpec } from "./vfs/default-mounts";
 import { FILE_MODES } from "./generated/abi";
 import { BrowserPcmDriver } from "./audio/browser-pcm-driver";
 import type { PcmOutputState } from "./audio/pcm-driver";
@@ -48,6 +49,8 @@ import {
 } from "./vfs/privileged-projection";
 
 const DESTROY_REQUEST_TIMEOUT_MS = 2_000;
+const MAX_PENDING_PTY_OUTPUT_BYTES = 64 * 1024;
+const MAX_PENDING_PTY_OUTPUT_CHUNKS = 4_096;
 const defaultPcmWorkletUrl = new URL(
   "./audio/pcm-audio-worklet.js",
   import.meta.url,
@@ -123,7 +126,7 @@ export interface BrowserKernelOptions {
   /** Browser pages that are not controlled by Kandelo's service worker can
    *  use this to route guest HTTP(S) and external lazy VFS downloads through
    *  a CORS-capable proxy. Same-origin lazy assets remain direct. */
-  corsProxyUrl?: string;
+  corsProxy?: BrowserCorsProxyConfig;
   /** Override the packaged PCM AudioWorklet asset URL. */
   audioWorkletUrl?: string | URL;
 }

@@ -51,6 +51,7 @@ COPIED = [
     "homebrew/main-shell.Brewfile",
     "homebrew/main-shell-default.json",
     "homebrew/main-shell-demo.json",
+    "images/vfs/products/generated/catalog.json",
     "scripts/homebrew-brewfile-selection.rb",
     "packages/registry/homebrew-bootstrap/package.toml",
     "packages/registry/shell/package.toml",
@@ -86,6 +87,12 @@ DEPENDENCIES = {
 
 def digest(path: pathlib.Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def canonical_catalog_json(value: object) -> bytes:
+    return (
+        json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
 
 
 def run(*arguments: str, success: bool = True) -> subprocess.CompletedProcess[str]:
@@ -198,6 +205,27 @@ def copy_source(root: pathlib.Path) -> pathlib.Path:
             ],
         },
     )
+
+    # The ABI-42 fixture must carry the product catalog that describes its
+    # own legacy root set.  The current checked catalog intentionally names
+    # the review-pending ABI-43 login product instead.
+    catalog_path = source / "images/vfs/products/generated/catalog.json"
+    catalog = json.loads(catalog_path.read_text())
+    shell = next(
+        entry
+        for entry in catalog["products"]
+        if entry["manifest"]["id"] == "browser-main-shell"
+    )
+    homebrew = shell["manifest"]["software"]["homebrew"]
+    embedded = next(group for group in homebrew if group["materialization"] == "embedded")
+    lazy = next(group for group in homebrew if group["materialization"] == "lazy")
+    embedded["formulae"] = ["bash"]
+    if "ruby" not in lazy["formulae"]:
+        lazy["formulae"].append("ruby")
+    shell["sha256"] = hashlib.sha256(
+        canonical_catalog_json(shell["manifest"])
+    ).hexdigest()
+    catalog_path.write_bytes(canonical_catalog_json(catalog))
 
     support_path = source / "homebrew/main-shell-homebrew-runtime-support.json"
     support = json.loads(support_path.read_text())
