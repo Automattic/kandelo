@@ -403,6 +403,7 @@ case "$TMPDIR" in
 esac
 [ "${#TMPDIR}" -le 32 ] || exit 94
 out=""; abi=""; arch=""; root=""; bottle_json=""; staging_abi=""
+playwright_browsers=""
 selection_receipt=""
 staged_dependencies=()
 while [ "$#" -gt 0 ]; do
@@ -413,6 +414,7 @@ while [ "$#" -gt 0 ]; do
     --bottle-json) bottle_json="$2"; shift 2 ;;
     --bottle-root-url) root="$2"; shift 2 ;;
     --selection-receipt) selection_receipt="$2"; shift 2 ;;
+    --playwright-browsers-path) playwright_browsers="$2"; shift 2 ;;
     --staging-candidate-abi) staging_abi="$2"; shift 2 ;;
     --staged-dependency-formula) staged_dependencies+=("$2"); shift 2 ;;
     *) shift 2 ;;
@@ -422,6 +424,7 @@ done
 [ "$staging_abi" = 8 ]
 [ "$root" = "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-8-candidates" ]
 [ "${staged_dependencies[*]}" = "mini-base" ]
+[ "$playwright_browsers" = "${FAKE_PLAYWRIGHT_BROWSERS_PATH:?}" ]
 jq -e --arg sha256 "${FAKE_BOTTLE_SHA256:?}" '
   .bottle.mode == "local-dry-run" and
   .bottle.sha256 == $sha256 and
@@ -479,9 +482,13 @@ export FAKE_TIMEOUT_LOG="$TMP_ROOT/timeout.log"
 export FAKE_RECORD_LOG="$TMP_ROOT/record.log"
 export FAKE_INSPECTOR_LOG="$TMP_ROOT/inspector.log"
 export FAKE_NORMAL_LOG="$TMP_ROOT/normal.log"
+PLAYWRIGHT_BROWSERS="$TMP_ROOT/ms-playwright"
+mkdir "$PLAYWRIGHT_BROWSERS"
+export FAKE_PLAYWRIGHT_BROWSERS_PATH="$(cd "$PLAYWRIGHT_BROWSERS" && pwd -P)"
 
-run_verifier() {
+run_verifier_with_browser_root() {
   local out="$1"
+  local playwright_browsers="$2"
   TMPDIR="$LONG_TMPDIR" "$VERIFIER" \
     --candidate-locator "$FIXTURE/candidate-locator.json" \
     --test-definition "$FIXTURE/test-definition.json" \
@@ -494,8 +501,13 @@ run_verifier() {
     --tap-commit "$TAP_COMMIT" \
     --dependency-provenance "$FIXTURE/dependencies.json" \
     --sysroot-build-root "$SYSROOT" \
+    --playwright-browsers-path "$playwright_browsers" \
     --forbidden-root /opt/homebrew \
     --out "$out"
+}
+
+run_verifier() {
+  run_verifier_with_browser_root "$1" "$PLAYWRIGHT_BROWSERS"
 }
 
 SUCCESS="$TMP_ROOT/success"
@@ -529,11 +541,24 @@ grep -F -- '--staging-candidate-abi 8' "$FAKE_NORMAL_LOG" >/dev/null || \
   fail "normal verifier did not receive candidate namespace authority"
 grep -F -- '--staged-dependency-formula mini-base' "$FAKE_NORMAL_LOG" >/dev/null || \
   fail "normal verifier did not receive the exact staged dependency Formula"
+grep -F -- "--playwright-browsers-path $FAKE_PLAYWRIGHT_BROWSERS_PATH" \
+  "$FAKE_NORMAL_LOG" >/dev/null || \
+  fail "normal verifier did not receive the prepared Playwright browser root"
 [ "$(cat "$FAKE_TIMEOUT_LOG")" = 21600s ] || fail "timeout changed"
 if rg -n 'homebrew-bottle-build|source build|brew bottle' \
   "$FAKE_INSPECTOR_LOG" "$FAKE_NORMAL_LOG" "$VERIFIER"; then
   fail "verification exposed a fallback source-build path"
 fi
+
+ln -s "$PLAYWRIGHT_BROWSERS" "$TMP_ROOT/playwright-link"
+if run_verifier_with_browser_root "$TMP_ROOT/playwright-symlink" \
+  "$TMP_ROOT/playwright-link" >"$TMP_ROOT/playwright-symlink.stdout" \
+  2>"$TMP_ROOT/playwright-symlink.stderr"; then
+  fail "symlinked Playwright browser root succeeded"
+fi
+grep -F 'prepared Playwright browser root is unavailable' \
+  "$TMP_ROOT/playwright-symlink.stderr" >/dev/null || \
+  fail "symlinked Playwright browser root rejection was not explicit"
 
 if GITHUB_TOKEN=secret run_verifier "$TMP_ROOT/credential" \
   >"$TMP_ROOT/credential.stdout" 2>"$TMP_ROOT/credential.stderr"; then

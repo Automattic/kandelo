@@ -4686,6 +4686,8 @@ assert_bottle_verifier_installs_test_dependencies() {
   local native_prefix_capture="$root/native-prefix.txt"
   local sysroot_build_root_capture="$root/sysroot-build-root.txt"
   local shared_temp="$root/shared-temp"
+  local playwright_browsers="$root/prepared-playwright"
+  local verifier_home="$root/verifier-home"
   local renamed_err="$root/renamed-bottle.err"
   local nested_target_err="$root/nested-target.err"
   local checker_err="$root/checker.err"
@@ -4727,7 +4729,10 @@ EOF
 
   mkdir -p "$brew_repo" "$brew_prefix/opt" "$fake_bin" "$target_prefix" \
     "$nested_target_prefix" \
-    "$cache" "$brew_temp" "$state" "$sysroot_build_root/sysroot/lib" "$shared_temp"
+    "$cache" "$brew_temp" "$state" "$sysroot_build_root/sysroot/lib" "$shared_temp" \
+    "$playwright_browsers" "$verifier_home"
+  playwright_browsers="$(cd "$playwright_browsers" && pwd -P)"
+  printf 'prepared browser\n' >"$playwright_browsers/browser.marker"
   printf 'fixture libc archive\n' >"$sysroot_build_root/sysroot/lib/libc.a"
   ln -s ../Cellar/hello/1.0 "$target_opt_prefix"
   target_prefix="$(cd "$target_prefix" && pwd -P)"
@@ -4909,6 +4914,11 @@ TARGET_GIT
   test)
     [ "$*" = 'test kandelo-dev/tap-core/hello' ] && \
       [ -f "$FAKE_STATE/target" ] || exit 50
+    formula_test_home="$(mktemp -d "$HOMEBREW_TEMP/hello-test.XXXXXX")"
+    HOME="$formula_test_home"
+    TMPDIR="$HOMEBREW_TEMP"
+    unset PLAYWRIGHT_BROWSERS_PATH
+    export HOME TMPDIR
     [ -x "$FAKE_BREW_PREFIX/bin/git" ] || exit 54
     [ "${HOMEBREW_GIT_PATH:-}" = "$FAKE_EXPECTED_HOST_GIT" ] || exit 55
     [ "$HOMEBREW_GIT_PATH" != "$FAKE_BREW_PREFIX/bin/git" ] || exit 56
@@ -4919,6 +4929,19 @@ TARGET_GIT
     [ "$(cd "$trusted_remote" && pwd -P)" = \
       "$(cd "$FAKE_RECONSTRUCTED_TAP" && pwd -P)" ] || exit 58
     [ "$(grep -c '^trust --tap kandelo-dev/tap-core$' "$FAKE_BREW_LOG")" -eq 1 ] || exit 59
+    formula_playwright_path="$(dirname "$HOMEBREW_CACHE")/ms-playwright"
+    [ "$formula_playwright_path" = "$FAKE_EXPECTED_FORMULA_PLAYWRIGHT_PATH" ] || {
+      printf 'Formula test Playwright search path=%s differs from expected %s\n' \
+        "$formula_playwright_path" "$FAKE_EXPECTED_FORMULA_PLAYWRIGHT_PATH" >&2
+      exit 70
+    }
+    [ -f "$formula_playwright_path/browser.marker" ] || {
+      printf 'Formula test Playwright discovery path=%s is unavailable\n' \
+        "$formula_playwright_path" >&2
+      exit 69
+    }
+    cmp -s "$FAKE_PLAYWRIGHT_BROWSERS_PATH/browser.marker" \
+      "$formula_playwright_path/browser.marker" || exit 71
     printf 'test-tags=%s|%s\n' \
       "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
       >>"$FAKE_BREW_LOG"
@@ -5052,6 +5075,9 @@ EOF
       FAKE_PROVENANCE_CAPTURE="$provenance_capture" \
       FAKE_PROVENANCE_LOG_CAPTURE="$provenance_log_capture" \
       FAKE_FORCE_NODE_RECEIPT="${FAKE_FORCE_NODE_RECEIPT:-}" \
+      FAKE_PLAYWRIGHT_BROWSERS_PATH="$playwright_browsers" \
+      FAKE_EXPECTED_FORMULA_PLAYWRIGHT_PATH="$root/ms-playwright" \
+      HOME="$verifier_home" \
       HOMEBREW_BREW_FILE="$fake_brew" \
       HOMEBREW_CACHE="$cache" \
       HOMEBREW_TEMP="$brew_temp" \
@@ -5064,6 +5090,7 @@ EOF
       HOMEBREW_RELOCATE_BUILD_PREFIX=caller-poison \
       HOMEBREW_KANDELO_PRIMARY_TAP_ROOT=caller-poison \
       HOMEBREW_GIT_PATH=caller-poison \
+      PLAYWRIGHT_BROWSERS_PATH=caller-poison \
       GITHUB_ACTIONS= \
       bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-verify-poured-bottle.sh" \
         --tap-root "$tap" \
@@ -5081,6 +5108,7 @@ EOF
         --dependency-provenance "$dependency_provenance" \
         --selection-receipt "$selection_receipt" \
         --sysroot-build-root "$sysroot_build_root" \
+        --playwright-browsers-path "$playwright_browsers" \
         --out "$evidence_out"
   }
 
@@ -7992,6 +8020,13 @@ if [ "${KANDELO_HOMEBREW_PUBLISH_TEST_FOCUS:-}" = staging-candidate-dependency-r
   make_formula_runner_fixture
   assert_bottle_build_installs_test_dependencies
   echo "test-homebrew-publish-workflow.sh: staging candidate dependency root ok"
+  exit 0
+fi
+
+if [ "${KANDELO_HOMEBREW_PUBLISH_TEST_FOCUS:-}" = verification-playwright-cache ]; then
+  make_formula_runner_fixture
+  assert_bottle_verifier_installs_test_dependencies
+  echo "test-homebrew-publish-workflow.sh: verification Playwright cache ok"
   exit 0
 fi
 

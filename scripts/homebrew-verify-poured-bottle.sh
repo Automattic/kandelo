@@ -19,6 +19,7 @@ BOTTLE_ROOT_URL=""
 DEPENDENCY_PROVENANCE=""
 SELECTION_RECEIPT=""
 SYSROOT_BUILD_ROOT=""
+PLAYWRIGHT_BROWSERS_PATH_INPUT=""
 OUT=""
 STAGING_CANDIDATE_ABI=""
 STAGED_DEPENDENCY_FORMULAE=()
@@ -27,7 +28,7 @@ SHARED_TEMP="${KANDELO_HOMEBREW_SHARED_TEMP:-}"
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-verify-poured-bottle.sh --tap-root <dir> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> [--tap-checkout-commit <sha>] --formula <name> --arch <wasm32|wasm64> --abi <number> --bottle <archive> --bottle-json <json> --bottle-url <url> --bottle-sha256 <sha> --bottle-bytes <count> --bottle-root-url <url> --dependency-provenance <json> --selection-receipt <json> --sysroot-build-root <dir> [--staging-candidate-abi <N>] [--staged-dependency-formula <name> ...] --out <runtime-evidence.json>
+usage: scripts/homebrew-verify-poured-bottle.sh --tap-root <dir> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> [--tap-checkout-commit <sha>] --formula <name> --arch <wasm32|wasm64> --abi <number> --bottle <archive> --bottle-json <json> --bottle-url <url> --bottle-sha256 <sha> --bottle-bytes <count> --bottle-root-url <url> --dependency-provenance <json> --selection-receipt <json> --sysroot-build-root <dir> [--playwright-browsers-path <dir>] [--staging-candidate-abi <N>] [--staged-dependency-formula <name> ...] --out <runtime-evidence.json>
 
 The tap must already contain the reconstructed target bottle block. In CI all
 Homebrew and Formula execution runs as the dedicated isolated workflow user.
@@ -57,6 +58,7 @@ while [ "$#" -gt 0 ]; do
     --dependency-provenance) DEPENDENCY_PROVENANCE="${2:-}"; shift 2 ;;
     --selection-receipt) SELECTION_RECEIPT="${2:-}"; shift 2 ;;
     --sysroot-build-root) SYSROOT_BUILD_ROOT="${2:-}"; shift 2 ;;
+    --playwright-browsers-path) PLAYWRIGHT_BROWSERS_PATH_INPUT="${2:-}"; shift 2 ;;
     --staging-candidate-abi) STAGING_CANDIDATE_ABI="${2:-}"; shift 2 ;;
     --staged-dependency-formula) STAGED_DEPENDENCY_FORMULAE+=("${2:-}"); shift 2 ;;
     --out) OUT="${2:-}"; shift 2 ;;
@@ -114,6 +116,25 @@ case "$ARCH" in wasm32|wasm64) ;; *) echo "homebrew-verify-poured-bottle.sh: inv
 [[ "$ABI" =~ ^[1-9][0-9]*$ ]] || {
   echo "homebrew-verify-poured-bottle.sh: invalid ABI" >&2; exit 2;
 }
+if [ -n "$PLAYWRIGHT_BROWSERS_PATH_INPUT" ]; then
+  case "$PLAYWRIGHT_BROWSERS_PATH_INPUT" in
+    /*) ;;
+    *)
+      echo "homebrew-verify-poured-bottle.sh: prepared Playwright browser root is unavailable" >&2
+      exit 2
+      ;;
+  esac
+  [ -d "$PLAYWRIGHT_BROWSERS_PATH_INPUT" ] && \
+    [ ! -L "$PLAYWRIGHT_BROWSERS_PATH_INPUT" ] || {
+    echo "homebrew-verify-poured-bottle.sh: prepared Playwright browser root is unavailable" >&2
+    exit 2
+  }
+  PLAYWRIGHT_BROWSERS_PATH_INPUT="$(cd "$PLAYWRIGHT_BROWSERS_PATH_INPUT" && pwd -P)"
+fi
+unset PLAYWRIGHT_BROWSERS_PATH
+if [ -n "$PLAYWRIGHT_BROWSERS_PATH_INPUT" ]; then
+  export PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH_INPUT"
+fi
 if [ -n "$STAGING_CANDIDATE_ABI" ]; then
   [[ "$STAGING_CANDIDATE_ABI" =~ ^[1-9][0-9]*$ ]] && \
     [ "$STAGING_CANDIDATE_ABI" = "$ABI" ] || {
@@ -292,6 +313,7 @@ if [ -n "$BUILD_USER" ]; then
 fi
 CONTROL_DIR="$(mktemp -d "$OUT_PARENT/.control.XXXXXX")"
 chmod 0700 "$CONTROL_DIR"
+PLAYWRIGHT_DISCOVERY_LINK=""
 
 cleanup() {
   local original_status="${1:-0}" launcher_status=0 realm_cleanup_status=0
@@ -299,6 +321,12 @@ cleanup() {
     :
   else
     launcher_status="$?"
+  fi
+  if [ -n "$PLAYWRIGHT_DISCOVERY_LINK" ]; then
+    rm -f -- "$PLAYWRIGHT_DISCOVERY_LINK" || {
+      realm_cleanup_status="$?"
+      echo "homebrew-verify-poured-bottle.sh: could not remove Playwright discovery projection" >&2
+    }
   fi
   rm -rf "$CONTROL_DIR"
   if [ "$launcher_status" -ne 0 ]; then
@@ -338,6 +366,23 @@ cleanup_and_exit() {
   exit "$cleanup_status"
 }
 trap 'cleanup_and_exit $?' EXIT
+
+# Homebrew rebuilds the Formula-test environment and intentionally drops the
+# ordinary PLAYWRIGHT_BROWSERS_PATH variable. The tap-owned browser runners
+# recover a prepared browser from HOMEBREW_CACHE's parent before considering
+# TMPDIR, so project the validated browser root into that exact cache realm.
+if [ -n "$PLAYWRIGHT_BROWSERS_PATH_INPUT" ]; then
+  PLAYWRIGHT_DISCOVERY_LINK="$(dirname "$HOMEBREW_CACHE")/ms-playwright"
+  if [ "$PLAYWRIGHT_DISCOVERY_LINK" != "$PLAYWRIGHT_BROWSERS_PATH_INPUT" ]; then
+    if [ -e "$PLAYWRIGHT_DISCOVERY_LINK" ] || [ -L "$PLAYWRIGHT_DISCOVERY_LINK" ]; then
+      echo "homebrew-verify-poured-bottle.sh: Playwright discovery projection already exists" >&2
+      exit 2
+    fi
+    ln -s -- "$PLAYWRIGHT_BROWSERS_PATH_INPUT" "$PLAYWRIGHT_DISCOVERY_LINK"
+  else
+    PLAYWRIGHT_DISCOVERY_LINK=""
+  fi
+fi
 
 export XDG_CONFIG_HOME="$WORK_DIR/xdg-config"
 mkdir -p "$XDG_CONFIG_HOME/homebrew"
