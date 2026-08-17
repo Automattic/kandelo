@@ -375,12 +375,14 @@ change public bytes. GitHub did not apply the setting retroactively, so the
 existing `binaries-abi-v42` release remains the one explicitly grandfathered
 mutable ledger while the conventional registry is retired.
 
-This changes the future canonical contract. A new `binaries-abi-v<N>` must be
-initialized from the complete admitted package ledger before publication. It
-cannot receive later same-tag package updates. A writer that reaches a public
-immutable canonical release with new bytes fails loudly; a content-addressed
-generation or Homebrew bottle release must carry those bytes instead of
-weakening release immutability.
+This changes the future canonical contract. A new `binaries-abi-v<N>` normally
+comes from the complete admitted package ledger. During retirement of the
+conventional registry, an exact-main force rebuild may instead initialize one
+from an explicitly selected, dependency-complete consumer closure. In either
+case it cannot receive later same-tag package updates. A writer that reaches a
+public immutable canonical release with new bytes fails loudly; a
+content-addressed generation or Homebrew bottle release must carry those bytes
+instead of weakening release immutability.
 
 This is the fail-closed rule for the transitional conventional registry, not a
 new long-lived package-distribution design. The broader question of how to
@@ -1539,14 +1541,16 @@ success-then-failure-then-fallback grouping.
 
 ## ABI bumps
 
-Bumping `ABI_VERSION` in `crates/shared/src/lib.rs` invalidates every
-durable archive against the resolver's ABI check. The bump PR's candidate
-matrix rebuilds every package whose `cache_key_sha` is now stale (the ABI is
+Bumping `ABI_VERSION` in `crates/shared/src/lib.rs` invalidates every durable
+archive against the resolver's ABI check. The bump PR's candidate matrix
+normally rebuilds every package whose `cache_key_sha` is now stale (the ABI is
 part of the sha). Post-merge activation creates the new canonical release as a
 draft, copies the complete tested closure, commits its index transaction, and
-publishes it once. The exact-main `force-rebuild` path remains scoped to the
-grandfathered ABI 42 ledger until a later design gives partial rebuilds an
-immutable destination distinct from the complete canonical tag.
+publishes it once. If that candidate no longer exists, an exact-main force
+rebuild may publish one explicitly selected, dependency-complete closure as
+the immutable conventional fallback. This is a retirement bridge, not a way
+to reopen the ABI tag: later packages use content-addressed generations or
+Homebrew bottles.
 
 Because the resolver substitutes `{abi}` in `build.toml`'s
 `index_url`, no in-tree edit is required for the URL pivot — the

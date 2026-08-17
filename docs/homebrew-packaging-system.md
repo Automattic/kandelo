@@ -408,8 +408,12 @@ Use this sequence for an ABI candidate:
    producer tree equals the resulting `main` tree, creates the new
    `binaries-abi-v<N>` release, copies the complete tested closure,
    commits one canonical index transaction, and publishes the release
-   once. `force-rebuild.yml` is not the initializer for a new ABI
-   release.
+   once. When no compatible merge candidate exists during retirement of the
+   conventional registry, `force-rebuild.yml` may instead initialize a draft
+   from an explicitly selected, dependency-complete current-main closure and
+   publish it once after all selected levels succeed. That immutable fallback
+   cannot later receive more conventional packages; Homebrew bottles remain
+   independently additive for the ABI.
 4. Read the final `main` commit `M` and the immutable archive producer
    `S` from activation evidence. Promote the required roots with
    `promote-package-generation.yml`, using `identical-git-tree-v1` to

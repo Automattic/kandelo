@@ -368,10 +368,14 @@ ensure_release_exists() {
       fi
       ;;
     binaries-abi-v*)
-      if [ "$TARGET_TAG" != binaries-abi-v42 ]; then
-        # WHY: this per-package writer cannot know that a future immutable
-        # canonical release contains the complete ABI ledger. Only post-merge
-        # candidate activation has that proof and may create the draft.
+      if [ "$TARGET_TAG" != binaries-abi-v42 ] && {
+           [ "$NORMALIZED_REPOSITORY" != automattic/kandelo ] ||
+           [ -z "$CANONICAL_SOURCE_SHA" ];
+         }; then
+        # WHY: ordinary per-package writers cannot initialize a future
+        # canonical ledger. The exact-main rebuild workflow is the one
+        # exception: its source is rechecked against protected main before
+        # this draft creation and again beside every release mutation.
         echo "index-update.sh: new immutable canonical ABI releases must be initialized by post-merge candidate activation" >&2
         return 1
       fi

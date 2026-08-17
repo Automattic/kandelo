@@ -1882,17 +1882,22 @@ package-test dependencies are broader than an arbitrary rebuild selection;
 it does not recompute the ledger or walk raw registry roots.
 That workflow preserves concurrency within each true dependency level while
 strictly sequencing levels; it never relies on GitHub matrix scheduling order.
-While the conventional registry is being retired, force-rebuild updates only
-the grandfathered ABI 42 release. A new immutable ABI release is initialized
-from a complete tested merge candidate, not one partial rebuild request.
-Post-merge
-`activate-merge-candidate.yml` verifies the exact merged tree, copies all
-required archives, commits one complete canonical ledger through the
-journaled release-index state machine, seals a new canonical draft, and
-publishes it once. The existing ABI 42 release remains explicitly
-grandfathered because GitHub did not apply repository immutability
-retroactively. There is no bot rewrite of
-`package.toml` or `build.toml`.
+While the conventional registry is being retired, a new immutable ABI release
+normally comes from one complete tested merge candidate. The exact-main
+`force-rebuild.yml` escape hatch may also initialize a missing ABI release from
+one explicitly selected, dependency-complete consumer closure. It populates a
+draft, runs the requested test gate unless the maintainer explicitly skips it,
+and publishes only after every selected dependency level succeeds. Publication
+freezes that conventional package set; later software for the same ABI belongs
+in a content-addressed generation or a Homebrew bottle, not another mutation of
+the release.
+
+Post-merge `activate-merge-candidate.yml` remains the ordinary path. It verifies
+the exact merged tree, copies all required archives, commits one complete
+canonical ledger through the journaled release-index state machine, seals a new
+canonical draft, and publishes it once. The existing ABI 42 release remains
+explicitly grandfathered because GitHub did not apply repository immutability
+retroactively. There is no bot rewrite of `package.toml` or `build.toml`.
 
 ## Atomic cache install
 

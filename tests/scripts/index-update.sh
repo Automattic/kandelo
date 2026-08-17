@@ -651,6 +651,17 @@ grep -Fq 'must be initialized by post-merge candidate activation' \
   "$TMP_ROOT/future-canonical.err"
 
 canonical_sha="0123456789abcdef0123456789abcdef01234567"
+current_canonical_index="$(
+  run_index_update \
+    "binaries-abi-v${CURRENT_ABI}" "$CURRENT_ABI" 0 "" 0 \
+    "Automattic/kandelo" "$canonical_sha" 1
+)"
+assert_index_abi "$current_canonical_index" "$CURRENT_ABI"
+current_canonical_case_dir="$(dirname "$(dirname "$current_canonical_index")")"
+[ -f "$current_canonical_case_dir/gh-state/release-created" ]
+[ "$(cat "$current_canonical_case_dir/gh-state/release-target")" = \
+  "$canonical_sha" ]
+
 canonical_index="$(
   run_index_update \
     "binaries-abi-v42" 42 0 "" 0 "Automattic/kandelo" "$canonical_sha"

@@ -12,8 +12,10 @@ name: Force rebuild
 #     consume the prior level's same-run exact-main archive,
 #   * each matrix entry publishes its archive AND updates
 #     index.toml atomically via scripts/index-update.sh under the
-#     workflow-level state-lock subject for the target tag, then
-#   * gates on the test-suite.
+#     workflow-level state-lock subject for the target tag,
+#   * gates on the test-suite, then
+#   * seals and publishes a newly initialized immutable ABI release once the
+#     complete selected closure succeeds.
 #
 # No bot PR is opened (the prior amend-package-toml flow is retired):
 # the index.toml ledger on the release IS the consumer-visible state
@@ -956,12 +958,70 @@ jobs:
             exit 1
           fi
 
-  # publish / generate-index / amend-package-toml /
-  # merge-gate-finalize — REMOVED.
+  finalize-canonical-release:
+    needs:
+      - gate
+      - preflight
+      - toolchain-cache
+      - matrix-build-level-0
+      - matrix-build-level-1
+      - matrix-build-level-2
+      - matrix-build-level-3
+      - matrix-build-level-4
+      - matrix-build-level-5
+      - matrix-build-level-6
+      - matrix-build-level-7
+      - test-gate
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.preflight.outputs.package_matrix != '[]' &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled') &&
+      (inputs.skip_tests == true || needs.test-gate.result == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.gate.outputs.source_sha }}
+
+      - name: Seal and publish the exact-main canonical release
+        run: |
+          set -euo pipefail
+          body="$RUNNER_TEMP/canonical-release-body.txt"
+          empty_sentinel="$(bash scripts/release-index-state.sh sentinel)"
+          printf '%s\n\nBinaries for ABI v%s' \
+            "$empty_sentinel" '${{ needs.preflight.outputs.abi }}' >"$body"
+
+          state="$RUNNER_TEMP/canonical-release-lock.env"
+          export STATE_LOCK_OWNER_DETAIL="exact-main canonical finalizer"
+          STATE_LOCK_STATE_FILE="$state" \
+            bash .github/scripts/state-lock.sh acquire "$PACKAGE_TARGET_TAG"
+          release_lock() {
+            STATE_LOCK_STATE_FILE="$state" \
+              bash .github/scripts/state-lock.sh release || true
+          }
+          trap release_lock EXIT
+
+          bash .github/scripts/package-release-lifecycle.sh seal-publish \
+            --tag "$PACKAGE_TARGET_TAG" \
+            --target-commit '${{ needs.gate.outputs.source_sha }}' \
+            --title "$PACKAGE_TARGET_TAG" \
+            --body-file "$body" \
+            --prerelease false \
+            --canonical-source-sha "${{ needs.gate.outputs.source_sha }}"
+
+  # generate-index / amend-package-toml / merge-gate-finalize — REMOVED.
   #
   # Per binary-resolution-via-index-ledger, each matrix-build entry
-  # publishes its archive + mutates index.toml atomically via
-  # scripts/index-update.sh. There is no separate publish job, no
-  # generate-index aggregation pass, no bot-PR amend, and no
-  # merge-gate flow (force-rebuild is workflow_dispatch only,
-  # not part of any PR merge path).
+  # uploads its archive + mutates index.toml atomically via
+  # scripts/index-update.sh. The finalizer only makes that completed draft
+  # immutable; it does not aggregate or rewrite the index. There is no
+  # generate-index aggregation pass, no bot-PR amend, and no merge-gate flow
+  # (force-rebuild is workflow_dispatch only, not part of any PR merge path).
