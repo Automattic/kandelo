@@ -21,6 +21,50 @@ cat >"$work/abi.wat" <<'WAT'
 WAT
 wat2wasm --debug-names "$work/abi.wat" -o "$work/abi.wasm"
 
+cat >"$work/target-aware-exec.wat" <<'WAT'
+(module
+  (func (export "kernel_exec_target_prepare"))
+  (func (export "kernel_spawn_exec_target_prepare"))
+  (func (export "kernel_exec_target_size"))
+  (func (export "kernel_exec_target_read"))
+  (func (export "kernel_exec_target_cancel"))
+  (func (export "kernel_exec_commit"))
+  (func (export "kernel_publish_spawn_child"))
+  (func (export "kernel_spawn_exec_commit")))
+WAT
+wat2wasm "$work/target-aware-exec.wat" -o "$work/target-aware-exec.wasm"
+
+cat >"$work/hybrid-exec.wat" <<'WAT'
+(module
+  (func (export "kernel_exec_target_prepare"))
+  (func (export "kernel_spawn_exec_target_prepare"))
+  (func (export "kernel_exec_target_size"))
+  (func (export "kernel_exec_target_read"))
+  (func (export "kernel_exec_target_cancel"))
+  (func (export "kernel_exec_commit"))
+  (func (export "kernel_publish_spawn_child"))
+  (func (export "kernel_spawn_exec_commit"))
+  (func (export "kernel_exec_prepare"))
+  (func (export "kernel_exec_setup"))
+  (func (export "kernel_exec_setup_for_thread"))
+  (func (export "kernel_execve"))
+  (func (export "kernel_execveat")))
+WAT
+wat2wasm "$work/hybrid-exec.wat" -o "$work/hybrid-exec.wasm"
+
+if ! declare -F wasm_require_target_aware_exec_authority >/dev/null; then
+    echo "ERROR: target-aware exec artifact guard is unavailable" >&2
+    exit 1
+fi
+if ! wasm_require_target_aware_exec_authority "$work/target-aware-exec.wasm"; then
+    echo "ERROR: target-aware exec artifact was rejected" >&2
+    exit 1
+fi
+if wasm_require_target_aware_exec_authority "$work/hybrid-exec.wasm"; then
+    echo "ERROR: hybrid target-aware/legacy exec artifact was accepted" >&2
+    exit 1
+fi
+
 real_objdump="$(command -v wasm-objdump)"
 mkdir "$work/bin"
 missing_structural_tool="$work/bin/missing-wasm-fork-instrument"

@@ -2405,6 +2405,7 @@ export function describeWasmArtifactPolicyFailures(
   options: {
     expectedAbi?: number | null;
     requiredExports?: readonly string[];
+    forbiddenExports?: readonly string[];
     requireForkInstrumentation?: boolean;
     forbidForkInstrumentation?: boolean;
   } = {},
@@ -2427,6 +2428,12 @@ export function describeWasmArtifactPolicyFailures(
     const missing = options.requiredExports.filter((name) => !exports.has(name));
     if (missing.length > 0) {
       failures.push(`missing required exports: ${missing.join(", ")}`);
+    }
+  }
+  if (options.forbiddenExports) {
+    const forbidden = options.forbiddenExports.filter((name) => exports.has(name));
+    if (forbidden.length > 0) {
+      failures.push(`forbidden exports present: ${forbidden.join(", ")}`);
     }
   }
 

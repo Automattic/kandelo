@@ -9,6 +9,7 @@ import {
   CAPTURED_STDIO,
 } from "../src/kernel-worker";
 import { KernelReentrantEntryError } from "../src/kernel-entry-gate";
+import type { PreparedExecLaunchRequest } from "../src/exec-target";
 import { WASM_PAGE_SIZE } from "../src/constants";
 import { writeForkContinuationAnchor } from "../src/fork-continuation";
 import { FORK_SAVE_BUFFER_SIZE } from "../src/process-memory";
@@ -19,6 +20,7 @@ import {
   CH_ARG_SIZE,
   CH_STATUS,
   CH_SYSCALL,
+  ABI_VERSION,
   HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS,
   HOST_INTERCEPTED_SYSCALLS,
   WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
@@ -32,6 +34,9 @@ const WASM32_CONTINUATION_HEADER_SIZE =
 const TEST_FORK_CONTINUATION =
   2 * WASM_PAGE_SIZE + WASM32_CONTINUATION_HEADER_SIZE;
 const UNTRACKED_THREAD_CHANNEL_OFFSET = 2 * WASM_PAGE_SIZE;
+const preparedExecFixture = new Uint8Array(
+  readFileSync(join(repoRoot, "local-binaries/programs/wasm32/exec-child.wasm")),
+);
 
 function publishMainForkContinuation(
   memory: WebAssembly.Memory,
@@ -205,7 +210,19 @@ describe("kernel task-ID authority", () => {
         return executable.byteLength;
       },
     );
-    const onEmptyPathExec = vi.fn(async () => -2);
+    const onEmptyPathExec = vi.fn(async (request: PreparedExecLaunchRequest) => {
+      expect(request.pid).toBe(pid);
+      expect(Reflect.has(request, "ownerPid")).toBe(false);
+      expect(Reflect.has(request, "callerTid")).toBe(false);
+      expect(Reflect.has(request, "target")).toBe(false);
+      expect(Reflect.has(request, "commit")).toBe(false);
+      expect(request.diagnosticPath).toBe("/bin/program");
+      expect(request.argv).toEqual([]);
+      expect(request.envp).toEqual([]);
+      expect(new Uint8Array(request.targetBytes)).toEqual(preparedExecFixture);
+      return -2;
+    });
+    const prepareTarget = vi.fn(() => 31);
     const emptyPath = createTaskAuthorityHarness({
       pid,
       callbacks: { onExec: onEmptyPathExec },
@@ -214,6 +231,31 @@ describe("kernel task-ID authority", () => {
           throw new Error("AT_EMPTY_PATH used a directory-only path getter");
         }),
         kernel_get_fd_path: getRegularPath,
+        kernel_exec_target_prepare: prepareTarget,
+        kernel_exec_target_size: vi.fn(() => BigInt(preparedExecFixture.byteLength)),
+        kernel_exec_target_read: vi.fn((
+          _ownerPid: number,
+          _target: number,
+          offsetLo: number,
+          offsetHi: number,
+          destination: number,
+          capacity: number,
+        ) => {
+          const offset = Number(
+            (BigInt(offsetHi >>> 0) << 32n) | BigInt(offsetLo >>> 0),
+          );
+          const count = Math.min(
+            capacity,
+            preparedExecFixture.byteLength - offset,
+          );
+          new Uint8Array(
+            emptyPath.kernelMemory.buffer,
+            destination,
+            count,
+          ).set(preparedExecFixture.subarray(offset, offset + count));
+          return count;
+        }),
+        kernel_exec_target_cancel: vi.fn(() => 0),
       },
     });
     kernelBytes = new Uint8Array(emptyPath.kernelMemory.buffer);
@@ -229,14 +271,16 @@ describe("kernel task-ID authority", () => {
       emptyPath.channel,
     );
     await drainTaskAuthorityGate();
+    await vi.waitFor(() => expect(onEmptyPathExec).toHaveBeenCalledOnce());
 
     expect(getRegularPath).toHaveBeenCalledOnce();
-    expect(onEmptyPathExec).toHaveBeenCalledWith(
+    expect(prepareTarget).toHaveBeenCalledWith(
       pid,
-      "/bin/program",
-      [],
-      [],
       pid,
+      fd,
+      emptyPath.scratchPointer,
+      0,
+      0x1000,
     );
   });
 
@@ -555,8 +599,11 @@ describe("kernel task-ID authority", () => {
 
   it("requires every kernel child-allocation path at startup and artifact validation", () => {
     const requiredAuthorityExports = [
-      "kernel_exec_prepare",
-      "kernel_exec_setup_for_thread",
+      "kernel_exec_target_prepare",
+      "kernel_spawn_exec_target_prepare",
+      "kernel_exec_commit",
+      "kernel_spawn_exec_commit",
+      "kernel_publish_spawn_child",
       "kernel_fork_process",
       "kernel_spawn_process",
       "kernel_thread_exit",
@@ -706,6 +753,7 @@ function createTaskAuthorityHarness(
   const worker = createCentralizedKernelWorkerTestDouble({
     callbacks: options.callbacks,
   });
+  Reflect.set(worker, "kernelAbiVersion", ABI_VERSION);
   const scratchPointer = installKernelWorkerTestScratch(
     worker,
     kernelMemory,

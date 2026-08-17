@@ -137,6 +137,7 @@ describe.skipIf(!existsSync(driSmokeBinary))("dri-smoke integration", () => {
       programBytes,
       memory,
       channelOffset,
+      secureExec: kernel.processSecureExec(pid),
       argv: ["dri-smoke"],
       env: [],
       ptrWidth,

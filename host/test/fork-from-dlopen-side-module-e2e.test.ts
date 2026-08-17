@@ -118,7 +118,7 @@ function buildMainProgram(source: string): string {
     join(glueDir, "dlopen.c"),
     join(sysroot, "lib", "crt1.o"),
     join(sysroot, "lib", "libc.a"),
-    "-Wl,--entry=_start",
+    "-Wl,--no-entry",
     "-Wl,--export=_start",
     "-Wl,--export=__heap_base",
     "-Wl,--import-memory",

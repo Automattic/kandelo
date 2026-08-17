@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import * as browserEntry from "../src/browser";
 import * as nodeEntry from "../src/index";
+import * as privilegedProjectionModule from
+  "../src/vfs/privileged-projection";
 import {
   CentralizedKernelWorker,
   createCentralizedKernelWorkerTestDouble,
@@ -88,6 +90,16 @@ const hiddenPackageSymbols = [
   "kernelEntryInvokerForInstance",
   "kernelEntryGateForInstance",
   "KernelEntryGate",
+  "createReviewedPrivilegedProgramPolicy",
+  "readReviewedPrivilegedProgramPolicy",
+  "attachReviewedPrivilegedProgramPolicy",
+  "reviewedPrivilegedProgramPolicyForPlan",
+  "composeHomebrewRuntimeLayersWithReviewedProduct",
+  "publishPrivilegedProgramProduct",
+  "snapshotPublishedPrivilegedProgramBrowserMount",
+  "admitPrivilegedProgramProductCandidate",
+  "admitPrivilegedProgramProductCandidateForTest",
+  "validatePrivilegedProgramProductCandidate",
 ] as const;
 
 describe("kernel authority boundary", () => {
@@ -293,5 +305,19 @@ describe("kernel authority boundary", () => {
     expect(packageJson.exports).not.toHaveProperty("./kernel");
     expect(packageJson.exports).not.toHaveProperty("./kernel-worker");
     expect(packageJson.exports).not.toHaveProperty("./kernel-entry-gate");
+    expect(packageJson.exports).not.toHaveProperty("./vfs/privileged-projection");
+  });
+
+  it("exposes no arbitrary-candidate privileged publication path", () => {
+    expect(Reflect.has(
+      privilegedProjectionModule,
+      "admitPrivilegedProgramProductCandidate",
+    )).toBe(false);
+    expect(Reflect.has(
+      privilegedProjectionModule,
+      "admitPrivilegedProgramProductCandidateForTest",
+    )).toBe(false);
+    expect(typeof privilegedProjectionModule.validatePrivilegedProgramProductCandidate)
+      .toBe("function");
   });
 });

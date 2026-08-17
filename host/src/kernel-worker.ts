@@ -69,6 +69,13 @@ import {
   type HostOwnedProcessReapResult,
 } from "./host-owned-process-reap";
 import {
+  compileSpawnCandidateSnapshot,
+  launchPreparedExecTarget,
+  PreparedExecTargetError,
+  type ExecLaunchCallback,
+  type PreparedExecKernel,
+} from "./exec-target";
+import {
   buildRawHttpRequest,
   parseRawHttpResponse,
   type HttpRequest,
@@ -423,6 +430,7 @@ const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
 /** Errno values */
 const E2BIG = 7;
 const ESRCH = 3;
+const ECHILD = 10;
 const EAGAIN = 11;
 const EACCES = 13;
 const EBADF = 9;
@@ -782,7 +790,10 @@ function validateCompleteChannelInputSize(
     );
   }
   if (
-    syscallNr === ABI_SYSCALLS.Setgroups
+    (
+      syscallNr === ABI_SYSCALLS.Getgroups
+      || syscallNr === ABI_SYSCALLS.Setgroups
+    )
     && argIndex === 1
     && size > POSIX_NGROUPS_MAX * 4
   ) {
@@ -1035,8 +1046,6 @@ const SYS_PREADV = ABI_SYSCALLS.Preadv;
 const SYS_PWRITEV = ABI_SYSCALLS.Pwritev;
 const SYS_PREADV2 = ABI_SYSCALLS.Preadv2;
 const SYS_PWRITEV2 = ABI_SYSCALLS.Pwritev2;
-const SYS_GETGROUPS = ABI_SYSCALLS.Getgroups;
-
 /** fcntl commands that take a struct flock pointer */
 const SYS_FCNTL = ABI_SYSCALLS.Fcntl;
 
@@ -2291,13 +2300,7 @@ export interface CentralizedKernelCallbacks {
    * new binary, and attach its channels to the existing kernel Process.
    * Returns 0 on success, negative errno on error.
    */
-  onExec?: (
-    pid: number,
-    path: string,
-    argv: string[],
-    envp: string[],
-    callerTid: number,
-  ) => Promise<number>;
+  onExec?: ExecLaunchCallback;
 
   /**
    * Pre-flight resolution step for SYS_SPAWN. Returns the validated program
@@ -2317,13 +2320,13 @@ export interface CentralizedKernelCallbacks {
   onResolveSpawn?: (path: string, argv: string[]) => Promise<SpawnProgramResolution | null>;
 
   /**
-   * Launch a worker for the spawned child with the already-resolved bytes,
-   * compiled module, and argv from `onResolveSpawn`. The kernel has
-   * constructed the child Process descriptor under `childPid` with
-   * `parentPid` as its authoritative parent
-   * and applied file actions + attrs by the time this is called. The callback
-   * instantiates a fresh Worker and attaches its channels to the Process the
-   * kernel already created.
+   * Launch a worker for the spawned child with bytes and module derived from
+   * its exact committed target. `onResolveSpawn` is only a side-effect-free
+   * candidate; the shared worker re-resolves after attrs/file actions and
+   * recompiles whenever those bytes differ. The kernel has constructed and
+   * committed the child Process under `childPid` by the time this is called.
+   * The callback instantiates a fresh Worker and attaches its channels to that
+   * existing Process.
    *
    * Returns 0 on success, negative errno on failure. On non-zero return
    * the kernel descriptor is rolled back via `kernel_remove_process`.
@@ -2662,6 +2665,8 @@ interface CentralizedKernelWorkerTestAuthority {
     readonly blobLen: number;
     readonly program: ResolvedSpawnProgram;
     readonly envp: string[];
+    readonly authorityPath?: string;
+    readonly originalArgv?: string[];
   }): void;
   replaceProcessRegistrationForLifecycleTest(options: {
     readonly pid: number;
@@ -4657,7 +4662,9 @@ export class CentralizedKernelWorker {
               options.pidOutPtr,
               options.blobBytes,
               options.blobLen,
+              options.authorityPath ?? options.program.argv?.[0] ?? "",
               options.program,
+              options.originalArgv ?? options.program.argv,
               options.envp,
               entry,
             );
@@ -5920,6 +5927,36 @@ export class CentralizedKernelWorker {
             // WHY: a non-byte-count syscall may identify its complete output
             // through another generated record, but that producer field never
             // grants authority beyond this argument's owned capacity.
+            if (actualLength > planned.size) {
+              outputContractViolation = true;
+              break;
+            }
+            copySize = actualLength;
+          } else if (
+            desc.direction === "out"
+            && copyOutLength?.type === "return-value"
+          ) {
+            // A zero-capacity query may return a bounded logical count without
+            // producing bytes. Validate that producer count and its complete
+            // byte extent before the no-copy exit so the query cannot publish
+            // an impossible result.
+            if (
+              !Number.isSafeInteger(retVal)
+              || retVal < 0
+              || retVal > copyOutLength.maxValue
+            ) {
+              outputContractViolation = true;
+              break;
+            }
+            const actualLength = retVal * copyOutLength.multiplier;
+            if (
+              !Number.isSafeInteger(actualLength)
+              || actualLength < 0
+            ) {
+              outputContractViolation = true;
+              break;
+            }
+            if (planned.size === 0) continue;
             if (actualLength > planned.size) {
               outputContractViolation = true;
               break;
@@ -8131,76 +8168,265 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Validate the exec caller and apply deferred posix_spawn file actions.
-   * This is the fallible kernel preflight; no image-owned state is discarded.
+   * Prepare one exact executable target through Rust's process-relative path
+   * resolver. The path bytes exist only inside this entry-scoped lease.
    */
-  kernelExecPrepare(pid: number, callerTid: number): number {
+  execTargetPrepare(
+    pid: number,
+    callerTid: number,
+    dirfd: number,
+    path: string,
+    flags: number,
+  ): number {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
-    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
-      // Exec preflight returns an authoritative synchronous result. Queuing it
-      // would let the discarded caller continue before Rust validates it.
-      throw new KernelReentrantEntryError("kernel exec preparation");
-    }
-    let result = 0;
+    const encodedPath = new TextEncoder().encode(path);
+    if (encodedPath.byteLength > POSIX_PATH_MAX_BYTES) return -ENAMETOOLONG;
+    const region = this.#requireMainScratchRegion();
+    if (encodedPath.byteLength > region.capacity) return -ENAMETOOLONG;
+    let result = -EIO;
     let completed = false;
-    let missingExportError: Error | undefined;
     const deferred = this.#runOrDeferKernelEntry(
-      `kernel exec preparation pid=${pid}`,
+      `kernel exec target prepare pid=${pid}`,
       (entry) => {
-        const prepare = this.#kernelInstanceForEntry(entry).exports
-          .kernel_exec_prepare as
-          ((pid: number, callerTid: number) => number) | undefined;
-        if (!prepare) {
-          missingExportError = new Error(
-            "Kernel missing required kernel_exec_prepare export",
-          );
-          return undefined;
-        }
         const previousPid = this.currentHandlePid;
         this.currentHandlePid = pid;
         try {
-          result = prepare(pid, callerTid);
+          result = region.withLease((lease) => {
+            lease.copyFrom(encodedPath);
+            return this.#invokeEntryScratchExport(
+              entry,
+              lease,
+              "kernel_exec_target_prepare",
+              [
+                pid,
+                callerTid,
+                dirfd,
+                lease.exportPointer(0, encodedPath.byteLength),
+                encodedPath.byteLength,
+                flags,
+              ],
+            );
+          });
           completed = true;
         } finally {
           this.currentHandlePid = previousPid;
         }
-        // Deferred spawn actions can close descriptors and publish a Rust
-        // advisory-lock wake even when a later action makes prepare fail.
+        return undefined;
+      },
+    );
+    if (deferred || !completed) {
+      throw new KernelReentrantEntryError("kernel exec target prepare");
+    }
+    return result;
+  }
+
+  /** Prepare one target through the pending spawn child's final namespace. */
+  spawnExecTargetPrepare(
+    parentPid: number,
+    childPid: number,
+    path: string,
+  ): number {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const encodedPath = new TextEncoder().encode(path);
+    if (encodedPath.byteLength > POSIX_PATH_MAX_BYTES) return -ENAMETOOLONG;
+    const region = this.#requireMainScratchRegion();
+    if (encodedPath.byteLength > region.capacity) return -ENAMETOOLONG;
+    let result = -EIO;
+    let completed = false;
+    const deferred = this.#runOrDeferKernelEntry(
+      `kernel spawn exec target prepare child=${childPid}`,
+      (entry) => {
+        const previousPid = this.currentHandlePid;
+        this.currentHandlePid = childPid;
+        try {
+          result = region.withLease((lease) => {
+            lease.copyFrom(encodedPath);
+            return this.#invokeEntryScratchExport(
+              entry,
+              lease,
+              "kernel_spawn_exec_target_prepare",
+              [
+                parentPid,
+                childPid,
+                lease.exportPointer(0, encodedPath.byteLength),
+                encodedPath.byteLength,
+              ],
+            );
+          });
+          completed = true;
+        } finally {
+          this.currentHandlePid = previousPid;
+        }
+        return undefined;
+      },
+    );
+    if (deferred || !completed) {
+      throw new KernelReentrantEntryError("kernel spawn exec target prepare");
+    }
+    return result;
+  }
+
+  execTargetSize(ownerPid: number, target: number): bigint {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    let result = -EIO as number | bigint;
+    let completed = false;
+    let missingExportError: Error | undefined;
+    const deferred = this.#runOrDeferKernelEntry(
+      `kernel exec target size pid=${ownerPid} target=${target}`,
+      (entry) => {
+        const size = this.#kernelInstanceForEntry(entry).exports
+          .kernel_exec_target_size as
+          ((ownerPid: number, target: number) => bigint) | undefined;
+        if (!size) {
+          missingExportError = new Error(
+            "Kernel missing required kernel_exec_target_size export",
+          );
+          return undefined;
+        }
+        const previousPid = this.currentHandlePid;
+        this.currentHandlePid = ownerPid;
+        try {
+          result = size(ownerPid, target);
+          completed = true;
+        } finally {
+          this.currentHandlePid = previousPid;
+        }
+        return undefined;
+      },
+    );
+    if (missingExportError) throw missingExportError;
+    if (deferred || !completed || typeof result !== "bigint") {
+      throw new KernelReentrantEntryError("kernel exec target size");
+    }
+    return result;
+  }
+
+  execTargetRead(
+    ownerPid: number,
+    target: number,
+    offset: bigint,
+    destination: Uint8Array,
+  ): number {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const exactDestination = intrinsicUint8ArrayView(
+      destination,
+      "prepared exec target destination",
+    );
+    const region = this.#requireMainScratchRegion();
+    if (exactDestination.byteLength > region.capacity) return -EOVERFLOW;
+    if (offset < 0n || offset > 0x7fff_ffff_ffff_ffffn) return -EOVERFLOW;
+    let result = -EIO;
+    let completed = false;
+    const deferred = this.#runOrDeferKernelEntry(
+      `kernel exec target read pid=${ownerPid} target=${target}`,
+      (entry) => {
+        const previousPid = this.currentHandlePid;
+        this.currentHandlePid = ownerPid;
+        try {
+          result = region.withLease((lease) => {
+            const read = this.#invokeEntryScratchExport(
+              entry,
+              lease,
+              "kernel_exec_target_read",
+              [
+                ownerPid,
+                target,
+                Number(offset & 0xffff_ffffn),
+                Number((offset >> 32n) & 0xffff_ffffn),
+                lease.exportPointer(0, exactDestination.byteLength),
+                exactDestination.byteLength,
+              ],
+            );
+            if (read > 0) {
+              const byteLength = this.#checkedScratchProducerByteLength(
+                read,
+                exactDestination.byteLength,
+                "kernel_exec_target_read",
+              );
+              lease.copyTo(exactDestination, 0, 0, byteLength);
+            }
+            return read;
+          });
+          completed = true;
+        } finally {
+          this.currentHandlePid = previousPid;
+        }
+        return undefined;
+      },
+    );
+    if (deferred || !completed) {
+      throw new KernelReentrantEntryError("kernel exec target read");
+    }
+    return result;
+  }
+
+  execTargetCancel(ownerPid: number, target: number): number {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    let result = -EIO;
+    let completed = false;
+    let missingExportError: Error | undefined;
+    const deferred = this.#runOrDeferKernelEntry(
+      `kernel exec target cancel pid=${ownerPid} target=${target}`,
+      (entry) => {
+        const cancel = this.#kernelInstanceForEntry(entry).exports
+          .kernel_exec_target_cancel as
+          ((ownerPid: number, target: number) => number) | undefined;
+        if (!cancel) {
+          missingExportError = new Error(
+            "Kernel missing required kernel_exec_target_cancel export",
+          );
+          return undefined;
+        }
+        const previousPid = this.currentHandlePid;
+        this.currentHandlePid = ownerPid;
+        try {
+          result = cancel(ownerPid, target);
+          completed = true;
+        } finally {
+          this.currentHandlePid = previousPid;
+        }
         this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
         return undefined;
       },
     );
-    if (missingExportError !== undefined) throw missingExportError;
+    if (missingExportError) throw missingExportError;
     if (deferred || !completed) {
-      throw new KernelReentrantEntryError("kernel exec preparation");
+      throw new KernelReentrantEntryError("kernel exec target cancel");
     }
     return result;
   }
 
   /**
-   * Run kernel-side exec setup: close CLOEXEC fds, reset signal handlers.
+   * Atomically commit the exact prepared target selected by `target`.
    * Returns 0 on success, negative errno on failure.
-   * Called by onExec callbacks after confirming the target program exists.
+   * Called only by the shared prepared-target launcher after the asynchronous
+   * host callback returns a bounded preflight plan.
    */
-  kernelExecSetup(pid: number, callerTid: number): number {
+  kernelExecCommit(
+    pid: number,
+    callerTid: number,
+    target: number,
+    expectedSize?: number,
+    markTargetConsumed: () => void = () => {},
+  ): number {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     if (this.#kernelEntryGate.shouldDeferVoidIngress) {
       // A successful setup commits exec in Rust. Its result cannot be queued
       // behind the caller that needs to decide whether the old image survives.
-      throw new KernelReentrantEntryError("kernel exec setup");
+      throw new KernelReentrantEntryError("kernel exec commit");
     }
     let result = 0;
     let completed = false;
     let missingExportError: Error | undefined;
     const deferred = this.#runOrDeferKernelEntry(
-      `kernel exec setup pid=${pid}`,
+      `kernel exec commit pid=${pid} target=${target}`,
       (entry) => {
-        const threadAware = this.#kernelInstanceForEntry(entry).exports
-          .kernel_exec_setup_for_thread as
-          ((pid: number, callerTid: number) => number) | undefined;
-        if (!threadAware) {
+        const commit = this.#kernelInstanceForEntry(entry).exports
+          .kernel_exec_commit as
+          ((pid: number, callerTid: number, target: number) => number) | undefined;
+        if (!commit) {
           missingExportError = new Error(
-            "Kernel missing required kernel_exec_setup_for_thread export",
+            "Kernel missing required kernel_exec_commit export",
           );
           return undefined;
         }
@@ -8210,14 +8436,48 @@ export class CentralizedKernelWorker {
         try {
           const listenerWakeSnapshot =
             this.#snapshotExecTcpListenerWakeIdsWithinKernelEntry(pid, entry);
-          result = threadAware(pid, callerTid);
-          completed = true;
-          if (result === 0) {
-            prunePlan = this.#prepareExecFdMirrorPruneWithinKernelEntry(
-              pid,
-              listenerWakeSnapshot,
-              entry,
-            );
+          let leaseSizeMatches = true;
+          if (expectedSize !== undefined) {
+            const size = this.#kernelInstanceForEntry(entry).exports
+              .kernel_exec_target_size as
+              ((ownerPid: number, target: number) => bigint) | undefined;
+            if (!size) {
+              missingExportError = new Error(
+                "Kernel missing required kernel_exec_target_size export",
+              );
+              return undefined;
+            }
+            const currentSize = size(pid, target);
+            if (currentSize !== BigInt(expectedSize)) {
+              leaseSizeMatches = false;
+              const cancel = this.#kernelInstanceForEntry(entry).exports
+                .kernel_exec_target_cancel as
+                ((ownerPid: number, target: number) => number) | undefined;
+              if (!cancel) {
+                missingExportError = new Error(
+                  "Kernel missing required kernel_exec_target_cancel export",
+                );
+                return undefined;
+              }
+              markTargetConsumed();
+              const cancelled = cancel(pid, target);
+              result = currentSize < 0n
+                ? Number(currentSize)
+                : cancelled < 0 ? cancelled : -EIO;
+              completed = true;
+            }
+          }
+          if (leaseSizeMatches) {
+            markTargetConsumed();
+            result = commit(pid, callerTid, target);
+            completed = true;
+            if (result === 0) {
+              prunePlan = this.#prepareExecFdMirrorPruneWithinKernelEntry(
+                pid,
+                listenerWakeSnapshot,
+                entry,
+              );
+            }
           }
         } finally {
           this.currentHandlePid = previousPid;
@@ -8240,7 +8500,107 @@ export class CentralizedKernelWorker {
     );
     if (missingExportError !== undefined) throw missingExportError;
     if (deferred || !completed) {
-      throw new KernelReentrantEntryError("kernel exec setup");
+      throw new KernelReentrantEntryError("kernel exec commit");
+    }
+    return result;
+  }
+
+  /** Commit one exact target for a child that has not launched yet. */
+  kernelSpawnExecCommit(
+    parentPid: number,
+    childPid: number,
+    target: number,
+    expectedSize?: number,
+    markTargetConsumed: () => void = () => {},
+  ): number {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
+      throw new KernelReentrantEntryError("kernel spawn exec commit");
+    }
+    let result = 0;
+    let completed = false;
+    let missingExportError: Error | undefined;
+    const deferred = this.#runOrDeferKernelEntry(
+      `kernel spawn exec commit child=${childPid} target=${target}`,
+      (entry) => {
+        const commit = this.#kernelInstanceForEntry(entry).exports
+          .kernel_spawn_exec_commit as
+          ((parentPid: number, childPid: number, target: number) => number)
+            | undefined;
+        if (!commit) {
+          missingExportError = new Error(
+            "Kernel missing required kernel_spawn_exec_commit export",
+          );
+          return undefined;
+        }
+        const previousPid = this.currentHandlePid;
+        this.currentHandlePid = childPid;
+        let prunePlan: ExecFdMirrorPrunePlan | null = null;
+        try {
+          const listenerWakeSnapshot =
+            this.#snapshotExecTcpListenerWakeIdsWithinKernelEntry(
+              childPid,
+              entry,
+            );
+          let leaseSizeMatches = true;
+          if (expectedSize !== undefined) {
+            const size = this.#kernelInstanceForEntry(entry).exports
+              .kernel_exec_target_size as
+              ((ownerPid: number, target: number) => bigint) | undefined;
+            if (!size) {
+              missingExportError = new Error(
+                "Kernel missing required kernel_exec_target_size export",
+              );
+              return undefined;
+            }
+            const currentSize = size(childPid, target);
+            if (currentSize !== BigInt(expectedSize)) {
+              leaseSizeMatches = false;
+              const cancel = this.#kernelInstanceForEntry(entry).exports
+                .kernel_exec_target_cancel as
+                ((ownerPid: number, target: number) => number) | undefined;
+              if (!cancel) {
+                missingExportError = new Error(
+                  "Kernel missing required kernel_exec_target_cancel export",
+                );
+                return undefined;
+              }
+              markTargetConsumed();
+              const cancelled = cancel(childPid, target);
+              result = currentSize < 0n
+                ? Number(currentSize)
+                : cancelled < 0 ? cancelled : -EIO;
+              completed = true;
+            }
+          }
+          if (leaseSizeMatches) {
+            markTargetConsumed();
+            result = commit(parentPid, childPid, target);
+            completed = true;
+            if (result === 0) {
+              prunePlan = this.#prepareExecFdMirrorPruneWithinKernelEntry(
+                childPid,
+                listenerWakeSnapshot,
+                entry,
+              );
+            }
+          }
+        } finally {
+          this.currentHandlePid = previousPid;
+        }
+        this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
+        if (prunePlan !== null) {
+          entry.deferProtocolEffect(() => {
+            this.#publishExecFdMirrorPrune(prunePlan);
+            return undefined;
+          });
+        }
+        return undefined;
+      },
+    );
+    if (missingExportError !== undefined) throw missingExportError;
+    if (deferred || !completed) {
+      throw new KernelReentrantEntryError("kernel spawn exec commit");
     }
     return result;
   }
@@ -8726,7 +9086,7 @@ export class CentralizedKernelWorker {
     }
     this.invalidateSharedMmapFdCacheForPid(pid);
 
-    // kernelExecSetup is the irreversible Rust commit. It has already drained
+    // kernelExecCommit is the irreversible Rust commit. It has already drained
     // the authoritative attachment records and decremented nattch; repeating
     // detach here would release a different same-segment attachment.
     this.shmMappings.delete(pid);
@@ -9581,7 +9941,13 @@ export class CentralizedKernelWorker {
     // is authoritative for launch permission.
     this.stoppedPids.delete(pid);
     entry.deferProtocolTransactionStart(() => {
-      start();
+      try {
+        start();
+      } catch (error) {
+        cancel();
+        if (onStartError?.(error) === true) return undefined;
+        throw error;
+      }
       return undefined;
     });
     return "started";
@@ -11024,7 +11390,7 @@ export class CentralizedKernelWorker {
 
     // --- Intercept fork/exec/clone/exit before calling kernel ---
     // These syscalls need special async handling that can't go through
-    // direct kernel dispatch or the blocking host_exec import.
+    // direct kernel dispatch.
 
     if (syscallNr === SYS_FORK || syscallNr === SYS_VFORK) {
       if (logging) console.error(logEntry);
@@ -11138,15 +11504,6 @@ export class CentralizedKernelWorker {
     ) {
       if (logging) console.error(logEntry);
       this.#handleReadv(channel, syscallNr, origArgs, rawArgs, entry);
-      return;
-    }
-
-    // --- getgroups: the return value is an entry count, not a byte count ---
-    // A simple output descriptor cannot express that getgroups(0, list) must
-    // not touch list while every positive-size call exposes exactly one
-    // four-byte slot in Kandelo's current single-supplementary-group model.
-    if (syscallNr === SYS_GETGROUPS) {
-      this.handleGetgroups(channel, origArgs, rawArgs, entry);
       return;
     }
 
@@ -19303,128 +19660,6 @@ export class CentralizedKernelWorker {
     this.finishNetworkIoctl(channel, entry);
   }
 
-  /**
-   * Marshal getgroups without treating its entry-count return value as bytes.
-   *
-   * WHY: Kandelo currently exposes one supplementary gid. A positive-size
-   * request therefore lends Rust one exact four-byte destination; a size-zero
-   * count query lends no pointer at all. Passing the caller pointer directly
-   * or inferring capacity from total kernel memory would lose both facts.
-   */
-  private handleGetgroups(
-    channel: ChannelInfo,
-    origArgs: number[],
-    rawArgs: readonly bigint[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    const rawSize = rawArgs[0] ?? 0n;
-    if (rawSize < 0n || rawSize > 0x7fff_ffffn) {
-      this.completeChannelRawAndRelisten(channel, -1, EINVAL, entry);
-      return;
-    }
-    const size = Number(rawSize);
-    let processPointer = 0;
-    if (size > 0) {
-      try {
-        processPointer = this.checkedProcessRange(
-          channel,
-          rawArgs[1] ?? 0n,
-          4,
-          "getgroups output",
-        ).pointer;
-      } catch (error) {
-        this.#rejectScratchTransfer(channel, error, entry);
-        return;
-      }
-    }
-
-    let result: {
-      retVal: number;
-      errVal: number;
-      output: Uint8Array | null;
-    };
-    try {
-      result = this.#requireMainScratchRegion().withLease((lease) => {
-        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
-        for (let index = 0; index < CH_ARGS_COUNT; index++) {
-          kernelView.setBigInt64(CH_ARGS + index * CH_ARG_SIZE, 0n, true);
-        }
-        kernelView.setUint32(CH_SYSCALL, SYS_GETGROUPS, true);
-        kernelView.setBigInt64(CH_ARGS, BigInt(size), true);
-        if (size > 0) {
-          lease.fill(0, CH_DATA, 4);
-          lease.writeAddress(
-            CH_ARGS + CH_ARG_SIZE,
-            CH_DATA,
-            4,
-            "u64-le",
-          );
-          kernelView.setBigInt64(
-            CH_ARGS + 2 * CH_ARG_SIZE,
-            4n,
-            true,
-          );
-        }
-
-        this.#bindKernelTidForChannel(channel, entry);
-        this.currentHandlePid = channel.pid;
-        try {
-          this.#invokeEntryScratchExport(
-            entry,
-            lease,
-            "kernel_handle_channel",
-            [
-              lease.exportPointer(0, CH_TOTAL_SIZE),
-              CH_TOTAL_SIZE,
-              channel.pid,
-              0n,
-            ],
-          );
-        } finally {
-          this.currentHandlePid = 0;
-        }
-
-        let retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-        let errVal = kernelView.getUint32(CH_ERRNO, true);
-        let output: Uint8Array | null = null;
-        if (
-          !Number.isSafeInteger(retVal)
-          || (retVal >= 0 && size > 0 && (retVal > size || retVal > 1))
-        ) {
-          retVal = -1;
-          errVal = EIO;
-        } else if (retVal > 0 && size > 0) {
-          output = lease.copyOut(CH_DATA, retVal * 4);
-        }
-        return { retVal, errVal, output };
-      });
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-      if (error instanceof KernelScratchError) {
-        this.#rejectScratchTransfer(channel, error, entry);
-      } else {
-        this.completeChannelRawAndRelisten(channel, -1, EIO, entry);
-      }
-      return;
-    }
-
-    this.#dequeueSignalForDelivery(channel, entry);
-    if (this.#finishSignalTermination(channel, entry)) return;
-    this.completeChannel(
-      channel,
-      SYS_GETGROUPS,
-      origArgs,
-      undefined,
-      result.retVal,
-      result.errVal,
-      result.output
-        ? [{ ptr: processPointer, bytes: result.output }]
-        : undefined,
-      undefined,
-      entry,
-    );
-  }
-
   /** Map scalar and vector variants to one contiguous kernel operation. */
   #scalarTransferSyscall(syscallNr: number): number {
     switch (syscallNr) {
@@ -21742,6 +21977,10 @@ export class CentralizedKernelWorker {
       );
       return;
     }
+    // Preflight resolvers may follow a shebang and return rewritten argv.
+    // Preserve the blob's original vector so the authoritative child-state
+    // target parser performs that rewrite exactly once.
+    const originalArgv = [...argv];
 
     // ── PRE-FLIGHT: resolve and compile BEFORE calling the kernel ──
     // POSIX requires file_actions to run "exactly once." `posix_spawnp`'s
@@ -21753,16 +21992,38 @@ export class CentralizedKernelWorker {
     // program actually exists and compiles.
     const resolveSpawnProgram = async (): Promise<SpawnProgramResolution | null> => {
       const resolved = await this.callbacks.onResolveSpawn!(path, argv);
-      if (resolved || rawPath === path || !rawPath || rawPath.startsWith("/")) {
-        return resolved;
+      let selected = resolved;
+      if (
+        !selected
+        && rawPath !== path
+        && rawPath
+        && !rawPath.startsWith("/")
+      ) {
+        // SYS_SPAWN is also used by posix_spawnp-style PATH probes. Those
+        // callers may hand us a relative executable name that exists only in
+        // the host execPrograms map, not in the kernel VFS at CWD/name.
+        // Keep the CWD-resolved path as the primary POSIX exec target, but
+        // fall back to the original token for host-side program maps.
+        selected = await this.callbacks.onResolveSpawn!(rawPath, argv);
       }
+      if (!selected || isSpawnResolveError(selected)) return selected;
 
-      // SYS_SPAWN is also used by posix_spawnp-style PATH probes. Those
-      // callers may hand us a relative executable name that exists only in
-      // the host execPrograms map, not in the kernel VFS at CWD/name.
-      // Keep the CWD-resolved path as the primary POSIX exec target, but
-      // fall back to the original token for host-side program maps.
-      return this.callbacks.onResolveSpawn!(rawPath, argv);
+      try {
+        const candidate = await compileSpawnCandidateSnapshot(
+          selected.programBytes,
+          this.getKernelAbiVersion(),
+        );
+        return {
+          programBytes: candidate.targetBytes,
+          programModule: candidate.targetModule,
+          argv: [...selected.argv],
+        };
+      } catch (cause) {
+        if (cause instanceof PreparedExecTargetError) {
+          return { errno: cause.errno };
+        }
+        throw cause;
+      }
     };
 
     entry.deferProtocolTransactionStart(() => {
@@ -21809,7 +22070,9 @@ export class CentralizedKernelWorker {
               checkedPidOutPtr,
               blobBytes,
               blobLen,
+              rawPath,
               resolved,
+              originalArgv,
               envp,
               resolutionEntry,
             );
@@ -21974,6 +22237,122 @@ export class CentralizedKernelWorker {
     );
   }
 
+  #completeSuccessfulSpawnWithinKernelEntry(
+    channel: ChannelInfo,
+    origArgs: number[],
+    parentPid: number,
+    childPid: number,
+    pidOutPtr: number,
+    entry: KernelWorkerEntryContext,
+  ): void {
+    if (!this.#isAsyncChannelProcessActiveWithinKernelEntry(channel, entry)) {
+      if (this.#getProcessExitSignal(childPid, entry) === -ESRCH) {
+        // The detached completion still runs after parent transport teardown.
+        // If Rust also says the exact child is absent, only host mirrors may
+        // remain; issuing a second numeric removal would invent ownership.
+        this.#rollbackChildHostRegistrationWithinKernelEntry(childPid, entry);
+        this.wakeWaitingParent(parentPid, entry);
+        return;
+      }
+      // The parent has no live channel on which the spawn PID/result can be
+      // published. Retire the still-hidden child through the ordinary exact
+      // rollback seam instead of leaking an unreachable Process/PID.
+      this.#rollbackSpawnWithinKernelEntry(
+        channel,
+        origArgs,
+        parentPid,
+        childPid,
+        ECHILD,
+        undefined,
+        entry,
+      );
+      return;
+    }
+    const publishSpawnChild = this.#kernelInstanceForEntry(entry).exports
+      .kernel_publish_spawn_child as
+        ((parentPid: number, childPid: number) => number) | undefined;
+    if (typeof publishSpawnChild !== "function") {
+      this.#terminateForKernelProtocolFailureWithinKernelEntry(
+        channel,
+        "kernel spawn publication export is unavailable",
+        entry,
+      );
+      return;
+    }
+    const disposition = publishSpawnChild(parentPid, childPid);
+    if (disposition === -ESRCH) {
+      // The exact child is already absent, so a second numeric removal would
+      // target no transaction and could conceal a double-reap. Retire any
+      // surviving host registration and report the authoritative absence.
+      this.#rollbackChildHostRegistrationWithinKernelEntry(childPid, entry);
+      this.#completeSpawnWithinKernelEntry(
+        channel,
+        origArgs,
+        -1,
+        ESRCH,
+        entry,
+      );
+      this.wakeWaitingParent(parentPid, entry);
+      return;
+    }
+    if (disposition === -ECHILD) {
+      // Rust still owns the exact unpublished child, but its bound parent no
+      // longer exists. The ordinary rollback consumes that remaining child;
+      // ESRCH above deliberately skips numeric removal because it means the
+      // child itself is already absent.
+      this.#rollbackSpawnWithinKernelEntry(
+        channel,
+        origArgs,
+        parentPid,
+        childPid,
+        ECHILD,
+        undefined,
+        entry,
+      );
+      return;
+    }
+    if (!Number.isSafeInteger(disposition) || disposition < -1) {
+      this.#terminateForKernelProtocolFailureWithinKernelEntry(
+        channel,
+        `kernel rejected spawn child ${childPid} publication: ${disposition}`,
+        entry,
+      );
+      return;
+    }
+    if (pidOutPtr !== 0) {
+      new DataView(channel.memory.buffer).setInt32(pidOutPtr, childPid, true);
+    }
+    // Publish the spawn result before a waiter can consume the newly visible
+    // status. Both writes occur within this serialized kernel entry.
+    this.#completeSpawnWithinKernelEntry(channel, origArgs, 0, 0, entry);
+    if (disposition >= 0) {
+      this.notifyParentOfExitedProcess(childPid, entry);
+    } else {
+      // A waiter may have parked when this pending child was the only match.
+      // Live publication has no status to complete, but re-polling preserves
+      // that queued wait under the now-public child relationship.
+      this.wakeWaitingParent(parentPid, entry);
+    }
+  }
+
+  /**
+   * Complete one detached pending-child transaction even if the parent Worker
+   * and its mailbox registration disappeared while target work was awaiting.
+   * Parent memory is consulted only later by the liveness-gated publication
+   * seam; this ingress exists solely so exact child cleanup cannot be dropped.
+   */
+  #runOrDeferPendingSpawnCompletionKernelEntry(
+    childPid: number,
+    label: string,
+    operation: (entry: KernelWorkerEntryContext) => undefined,
+  ): void {
+    this.#kernelEntryGate.runOrDeferVoidIngress(
+      `${label} child=${childPid}`,
+      (scope, effects) =>
+        this.#runKernelEntryOperation(scope, effects, operation),
+    );
+  }
+
   #rollbackSpawnWithinKernelEntry(
     channel: ChannelInfo,
     origArgs: number[],
@@ -22016,6 +22395,9 @@ export class CentralizedKernelWorker {
       );
       return;
     }
+    // A sibling wait may have parked because the unpublished child was a real
+    // matching relationship. Removal makes that wait resolve to ECHILD.
+    this.wakeWaitingParent(parentPid, entry);
     if (
       this.#isAsyncChannelProcessActiveWithinKernelEntry(channel, entry)
     ) {
@@ -22037,7 +22419,9 @@ export class CentralizedKernelWorker {
     pidOutPtr: number,
     blobBytes: Uint8Array,
     blobLen: number,
+    authorityPath: string,
     program: ResolvedSpawnProgram,
+    originalArgv: string[],
     envp: string[],
     entry: KernelWorkerEntryContext,
   ): void {
@@ -22244,6 +22628,32 @@ export class CentralizedKernelWorker {
     }
     const childPid = result >>> 0;
 
+    // The preflight candidate is deliberately not pathname authority. Resolve
+    // diagnostics again from the resulting child CWD after RESETIDS, attrs,
+    // and the one file-action pass; Rust receives the original token below and
+    // performs the authoritative lookup in that same child state.
+    let finalDiagnosticPath = authorityPath;
+    if (finalDiagnosticPath && !finalDiagnosticPath.startsWith("/")) {
+      const resolvedPath = this.resolveExecPathAgainstCwd(
+        childPid,
+        finalDiagnosticPath,
+        entry,
+      );
+      if (resolvedPath.kind === "error") {
+        this.#rollbackSpawnWithinKernelEntry(
+          channel,
+          origArgs,
+          parentPid,
+          childPid,
+          resolvedPath.errno,
+          undefined,
+          entry,
+        );
+        return;
+      }
+      finalDiagnosticPath = resolvedPath.value;
+    }
+
     // posix_spawn clones listener sockets after applying fd actions. Install
     // those mirrors before async Worker launch so parent exec cannot close the
     // shared backend. Epoll backing tables are not yet cloned by spawn_child,
@@ -22264,21 +22674,45 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // Launching the Worker starts a host-owned asynchronous transaction after
-    // scope revocation. Its continuation retains only detached inputs and
-    // opens a new exact channel entry before consulting kernel liveness,
-    // rolling back, or publishing success.
+    // Prepared-target materialization, exact-byte validation, compilation,
+    // commit, and Worker launch form one detached pending-child transaction.
+    // Its continuation opens a new exact channel entry before consulting
+    // kernel liveness, rolling back, or publishing success.
     entry.deferProtocolTransactionStart(() => {
       let launch: Promise<number>;
       try {
         launch = this.#resolvePromise(
-          this.callbacks.onSpawn!(parentPid, childPid, program, envp),
+          this.#launchPreparedSpawn(
+            parentPid,
+            childPid,
+            authorityPath,
+            finalDiagnosticPath,
+            program,
+            originalArgv,
+            envp,
+          ),
         );
       } catch (cause) {
-        this.#runOrDeferChannelKernelEntry(
-          channel,
+        this.#runOrDeferPendingSpawnCompletionKernelEntry(
+          childPid,
           "spawn launch failure",
-          (rollbackEntry) => {
+          (completionEntry) => {
+            const exitSignal =
+              this.#finalizePendingChildTerminationWithinKernelEntry(
+                childPid,
+                completionEntry,
+              );
+            if (exitSignal > 0 || exitSignal < -1) {
+              this.#completeSuccessfulSpawnWithinKernelEntry(
+                channel,
+                origArgs,
+                parentPid,
+                childPid,
+                pidOutPtr,
+                completionEntry,
+              );
+              return undefined;
+            }
             this.#rollbackSpawnWithinKernelEntry(
               channel,
               origArgs,
@@ -22286,7 +22720,7 @@ export class CentralizedKernelWorker {
               childPid,
               EIO,
               cause,
-              rollbackEntry,
+              completionEntry,
             );
             return undefined;
           },
@@ -22294,11 +22728,27 @@ export class CentralizedKernelWorker {
         return undefined;
       }
       this.#continuePromise(launch, (rc) => {
-        this.#runOrDeferChannelKernelEntry(
-          channel,
+        this.#runOrDeferPendingSpawnCompletionKernelEntry(
+          childPid,
           "spawn launch completion",
           (completionEntry) => {
-            if (rc < 0) {
+            const exitSignal =
+              this.#finalizePendingChildTerminationWithinKernelEntry(
+                childPid,
+                completionEntry,
+              );
+            if (exitSignal < -1) {
+              this.#completeSuccessfulSpawnWithinKernelEntry(
+                channel,
+                origArgs,
+                parentPid,
+                childPid,
+                pidOutPtr,
+                completionEntry,
+              );
+              return undefined;
+            }
+            if (rc < 0 && exitSignal <= 0) {
               this.#rollbackSpawnWithinKernelEntry(
                 channel,
                 origArgs,
@@ -22310,37 +22760,38 @@ export class CentralizedKernelWorker {
               );
               return undefined;
             }
-            this.#finalizePendingChildTerminationWithinKernelEntry(
-              childPid,
-              completionEntry,
-            );
-            if (
-              !this.#isAsyncChannelProcessActiveWithinKernelEntry(
-                channel,
-                completionEntry,
-              )
-            ) {
-              return undefined;
-            }
-            if (pidOutPtr !== 0) {
-              new DataView(channel.memory.buffer)
-                .setInt32(pidOutPtr, childPid, true);
-            }
-            this.#completeSpawnWithinKernelEntry(
+            this.#completeSuccessfulSpawnWithinKernelEntry(
               channel,
               origArgs,
-              0,
-              0,
+              parentPid,
+              childPid,
+              pidOutPtr,
               completionEntry,
             );
             return undefined;
           },
         );
       }, (cause) => {
-        this.#runOrDeferChannelKernelEntry(
-          channel,
+        this.#runOrDeferPendingSpawnCompletionKernelEntry(
+          childPid,
           "spawn launch rejection",
-          (rollbackEntry) => {
+          (completionEntry) => {
+            const exitSignal =
+              this.#finalizePendingChildTerminationWithinKernelEntry(
+                childPid,
+                completionEntry,
+              );
+            if (exitSignal > 0 || exitSignal < -1) {
+              this.#completeSuccessfulSpawnWithinKernelEntry(
+                channel,
+                origArgs,
+                parentPid,
+                childPid,
+                pidOutPtr,
+                completionEntry,
+              );
+              return undefined;
+            }
             this.#rollbackSpawnWithinKernelEntry(
               channel,
               origArgs,
@@ -22348,7 +22799,7 @@ export class CentralizedKernelWorker {
               childPid,
               EIO,
               cause,
-              rollbackEntry,
+              completionEntry,
             );
             return undefined;
           },
@@ -22501,6 +22952,123 @@ export class CentralizedKernelWorker {
     );
   }
 
+  async #launchPreparedSpawn(
+    parentPid: number,
+    childPid: number,
+    authorityPath: string,
+    diagnosticPath: string,
+    candidate: ResolvedSpawnProgram,
+    originalArgv: string[],
+    envp: string[],
+  ): Promise<number> {
+    const callback = this.callbacks.onSpawn;
+    if (!callback) return -ENOSYS;
+    try {
+      return await launchPreparedExecTarget({
+        kernel: this as PreparedExecKernel,
+        ownerPid: childPid,
+        pid: childPid,
+        callerTid: childPid,
+        diagnosticPath,
+        argv: originalArgv,
+        envp,
+        expectedAbi: this.getKernelAbiVersion(),
+        materializePath: async (path) => {
+          await this.io.preparePath?.(path);
+        },
+        prepareInitialTarget: () =>
+          this.spawnExecTargetPrepare(parentPid, childPid, authorityPath),
+        prepareInterpreterTarget: (interpreterPath) =>
+          this.spawnExecTargetPrepare(parentPid, childPid, interpreterPath),
+        commitTarget: (target, expectedSize, markTargetConsumed) =>
+          this.kernelSpawnExecCommit(
+            parentPid,
+            childPid,
+            target,
+            expectedSize,
+            markTargetConsumed,
+          ),
+        preflightCandidate: {
+          targetBytes: candidate.programBytes,
+          targetModule: candidate.programModule,
+        },
+      }, async (request) => ({
+        // onSpawn owns no replacement image before commit. If a future host
+        // adds staged resources, they must remain bounded to this hook.
+        onCommitFailure: () => {},
+        startAfterCommit: () => callback(
+          parentPid,
+          childPid,
+          {
+            programBytes: request.targetBytes,
+            programModule: request.targetModule,
+            argv: request.argv,
+          },
+          request.envp,
+        ),
+      }));
+    } catch (error) {
+      if (error instanceof PreparedExecTargetError) return -error.errno;
+      throw error;
+    }
+  }
+
+  async #launchPreparedExec(
+    pid: number,
+    callerTid: number,
+    dirfd: number,
+    authorityPath: string,
+    flags: number,
+    diagnosticPath: string,
+    argv: string[],
+    envp: string[],
+  ): Promise<number> {
+    const callback = this.callbacks.onExec;
+    if (!callback) return -ENOSYS;
+    try {
+      return await launchPreparedExecTarget({
+        kernel: this as PreparedExecKernel,
+        ownerPid: pid,
+        pid,
+        callerTid,
+        diagnosticPath,
+        argv,
+        envp,
+        expectedAbi: this.getKernelAbiVersion(),
+        materializePath: async (path) => {
+          await this.io.preparePath?.(path);
+        },
+        prepareInitialTarget: () =>
+          this.execTargetPrepare(
+            pid,
+            callerTid,
+            dirfd,
+            authorityPath,
+            flags,
+          ),
+        prepareInterpreterTarget: (interpreterPath) =>
+          this.execTargetPrepare(
+            pid,
+            callerTid,
+            AT_FDCWD,
+            interpreterPath,
+            0,
+          ),
+        commitTarget: (target, expectedSize, markTargetConsumed) =>
+          this.kernelExecCommit(
+            pid,
+            callerTid,
+            target,
+            expectedSize,
+            markTargetConsumed,
+          ),
+      }, callback);
+    } catch (error) {
+      if (error instanceof PreparedExecTargetError) return -error.errno;
+      throw error;
+    }
+  }
+
   /**
    * Handle SYS_EXECVE: read path, argv, and envp from process memory,
    * then call the onExec callback to load the new program.
@@ -22529,7 +23097,8 @@ export class CentralizedKernelWorker {
       );
       return;
     }
-    let path = pathResult.value;
+    const authorityPath = pathResult.value;
+    let path = authorityPath;
     const argvResult = this.readStringArrayFromProcess(
       processMem,
       origArgs[1],
@@ -22638,7 +23207,16 @@ export class CentralizedKernelWorker {
       let transaction: Promise<number>;
       try {
         transaction = this.#resolvePromise(
-          this.callbacks.onExec!(pid, path, argv, envp, callerTid),
+          this.#launchPreparedExec(
+            pid,
+            callerTid,
+            AT_FDCWD,
+            authorityPath,
+            0,
+            path,
+            argv,
+            envp,
+          ),
         );
       } catch (cause) {
         this.#runOrDeferChannelKernelEntry(
@@ -22891,12 +23469,15 @@ export class CentralizedKernelWorker {
       let transaction: Promise<number>;
       try {
         transaction = this.#resolvePromise(
-          this.callbacks.onExec!(
+          this.#launchPreparedExec(
             pid,
+            callerTid,
+            dirfd,
+            pathStr,
+            flags,
             execPath,
             argv,
             envp,
-            callerTid,
           ),
         );
       } catch (cause) {
@@ -29256,6 +29837,44 @@ export class CentralizedKernelWorker {
       );
     }
     return count;
+  }
+
+  /** Kernel-owned sticky secure-execution state for one exact image. */
+  processSecureExec(pid: number): boolean {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    if (this.#kernelInstance === null) {
+      throw new Error("kernel_process_secure_exec export is unavailable");
+    }
+    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
+      throw new KernelReentrantEntryError(
+        `secure-exec query pid=${pid}`,
+      );
+    }
+    let marker: boolean | undefined;
+    const deferred = this.#runOrDeferKernelEntry(
+      `secure-exec query pid=${pid}`,
+      (entry) => {
+        const query = this.#kernelInstanceForEntry(entry).exports
+          .kernel_process_secure_exec as ((pid: number) => number) | undefined;
+        if (typeof query !== "function") {
+          throw new Error("kernel_process_secure_exec export is unavailable");
+        }
+        const raw = query(pid);
+        if (raw !== 0 && raw !== 1) {
+          throw new Error(
+            `kernel_process_secure_exec rejected pid=${pid}: ${raw}`,
+          );
+        }
+        marker = raw === 1;
+        return undefined;
+      },
+    );
+    if (deferred || marker === undefined) {
+      throw new KernelReentrantEntryError(
+        `secure-exec query pid=${pid}`,
+      );
+    }
+    return marker;
   }
 
   /**

@@ -35,6 +35,7 @@ declare global {
     __bootPackageLayerAcceptance: (request: {
       baseVfsUrl: string;
       descriptor: BootDescriptor;
+      reviewedProductProfile?: "package-layer-acceptance-v1";
       inspect?: {
         statPaths: string[];
         readdirPaths: string[];
@@ -43,6 +44,20 @@ declare global {
       layerIds: string[];
       stats: Array<{ path: string; mode: number; size: number }>;
       directories: Array<{ path: string; names: string[] }>;
+      privilegedProduct?: {
+        stats: Array<{
+          path: string;
+          mode: number;
+          uid: number;
+          gid: number;
+          nlink: number;
+        }>;
+        uniqueIdentityCount: number;
+        readonly: boolean;
+        trusted: boolean;
+        ordinaryBottleWritable: boolean;
+        ordinaryMountNosuid: boolean;
+      };
     }>;
     __readPackageLayerAcceptance: (path: string) => Promise<string>;
     __execPackageLayerAcceptance: (request: {
@@ -53,6 +68,12 @@ declare global {
     }) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
     __destroyPackageLayerAcceptance: () => Promise<void>;
     __packageLayerDiscardedBufferCount: () => number;
+    __inspectSharedWrapperAuthorityBoundary: () => {
+      distinctWrapper: boolean;
+      mutationShared: boolean;
+      candidateAdmission: boolean;
+      testCandidateAdmission: boolean;
+    };
   }
 }
 
@@ -689,8 +710,8 @@ async function createDirectBottleFixture(): Promise<DirectBottleFixture> {
   ];
   const rootTar = directTarBytes(rootSpecs);
   const dependencyTar = directTarBytes(dependencySpecs);
-  const rootArchive = gzipSync(rootTar);
-  const dependencyArchive = gzipSync(dependencyTar);
+  const rootArchive = gzipSync(rootTar, { mtime: 0 });
+  const dependencyArchive = gzipSync(dependencyTar, { mtime: 0 });
   const rootPackage = directPackageRecord(PACKAGE, VERSION, rootArchive);
   const dependencyPackage = directPackageRecord(
     dependency,
@@ -1277,6 +1298,141 @@ test("browser keeps independent original bottles lazy until their own first use"
     expect(rootBottleFetches).toBe(1);
     expect(dependencyBottleFetches).toBe(1);
     expect(externalBottleFetches).toBe(0);
+  } finally {
+    await page.evaluate(() => window.__destroyPackageLayerAcceptance());
+  }
+});
+
+test("browser publishes reviewed programs as independent trusted product inodes", async ({
+  page,
+  baseURL,
+}) => {
+  test.setTimeout(180_000);
+  if (!baseURL) throw new Error("Playwright baseURL is required");
+  const fixture = await createDirectBottleFixture();
+  const executableBytes = new Uint8Array(readFileSync(mountProbeProgram));
+  let rootBottleFetches = 0;
+  let dependencyBottleFetches = 0;
+  await routeBytes(page, fixture.urls.base, fixture.baseImage);
+  await routeBytes(page, fixture.urls.descriptor, fixture.descriptorBytes);
+  await routeBytes(
+    page,
+    fixture.urls.exec,
+    fixture.execArchive,
+    () => rootBottleFetches++,
+  );
+  await routeBytes(
+    page,
+    fixture.urls.data,
+    fixture.dataArchive,
+    () => dependencyBottleFetches++,
+  );
+
+  await page.goto(new URL("/pages/homebrew-vfs-test/", baseURL).href);
+  await expect.poll(
+    () => page.evaluate(() => window.__homebrewVfsTestReady),
+    { timeout: 120_000 },
+  ).toBe(true);
+
+  try {
+    await expect(page.evaluate(() =>
+      window.__inspectSharedWrapperAuthorityBoundary()
+    )).resolves.toMatchObject({
+      distinctWrapper: true,
+      mutationShared: true,
+      candidateAdmission: false,
+      testCandidateAdmission: false,
+    });
+    const projections = ["login", "sudo-lite", "sudo"].map((name) => ({
+      schema: 1,
+      formula: `${TAP_NAME}/${PACKAGE}`,
+      bottleSha256: sha256(fixture.execArchive),
+      sourcePath: `${PACKAGE}/${VERSION}/bin/mount-probe`,
+      destinationPath: `/usr/bin/${name}`,
+      uid: 0,
+      gid: 0,
+      mode: 0o4755,
+      mountPoint: "trusted-root-product",
+      artifactValidationSha256: sha256(executableBytes),
+    }));
+    const descriptorInjected = await page.evaluate(
+      ({ baseVfsUrl, descriptor, privilegedProjections }) =>
+        window.__bootPackageLayerAcceptance({
+          baseVfsUrl,
+          descriptor: {
+            ...descriptor,
+            privilegedProjections,
+          } as unknown as BootDescriptor,
+        }),
+      {
+        baseVfsUrl: fixture.urls.base,
+        descriptor: fixture.descriptor,
+        privilegedProjections: projections,
+      },
+    );
+    expect(descriptorInjected.privilegedProduct).toBeUndefined();
+    expect(rootBottleFetches).toBe(0);
+    await page.evaluate(() => window.__destroyPackageLayerAcceptance());
+    const unreviewed = await page.evaluate(
+      ({ baseVfsUrl, descriptor, privilegedProjections }) =>
+        window.__bootPackageLayerAcceptance({
+          baseVfsUrl,
+          descriptor,
+          privilegedProjections,
+        } as Parameters<Window["__bootPackageLayerAcceptance"]>[0] & {
+          privilegedProjections: unknown;
+        }),
+      {
+        baseVfsUrl: fixture.urls.base,
+        descriptor: fixture.descriptor,
+        privilegedProjections: projections,
+      },
+    );
+    expect(unreviewed.privilegedProduct).toBeUndefined();
+    expect(rootBottleFetches).toBe(0);
+    await page.evaluate(() => window.__destroyPackageLayerAcceptance());
+
+    const boot = await page.evaluate(
+      ({ baseVfsUrl, descriptor }) =>
+        window.__bootPackageLayerAcceptance({
+          baseVfsUrl,
+          descriptor,
+          reviewedProductProfile: "package-layer-acceptance-v1",
+        }),
+      {
+        baseVfsUrl: fixture.urls.base,
+        descriptor: fixture.descriptor,
+      },
+    );
+
+    expect(rootBottleFetches).toBe(1);
+    expect(dependencyBottleFetches).toBe(0);
+    expect(boot.privilegedProduct).toMatchObject({
+      uniqueIdentityCount: 3,
+      readonly: true,
+      trusted: true,
+      ordinaryBottleWritable: true,
+      ordinaryMountNosuid: true,
+    });
+    expect(boot.privilegedProduct?.stats.map((stat) => ({
+      path: stat.path,
+      kind: stat.mode & 0o170000,
+      mode: stat.mode & 0o7777,
+      uid: stat.uid,
+      gid: stat.gid,
+      nlink: stat.nlink,
+    }))).toEqual([
+      "/usr/bin/login",
+      "/usr/bin/sudo-lite",
+      "/usr/bin/sudo",
+    ].map((path) => ({
+      path,
+      kind: 0o100000,
+      mode: 0o4755,
+      uid: 0,
+      gid: 0,
+      nlink: 1,
+    })));
   } finally {
     await page.evaluate(() => window.__destroyPackageLayerAcceptance());
   }

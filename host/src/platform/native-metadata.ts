@@ -43,8 +43,24 @@ function checkedMilliseconds(valueNs: bigint, field: string): number {
 }
 
 const S_IFMT = FILE_MODES.S_IFMT;
+const S_IFREG = FILE_MODES.S_IFREG;
 const S_IFDIR = FILE_MODES.S_IFDIR;
 const S_IFLNK = FILE_MODES.S_IFLNK;
+
+export function modeAfterRegularFileMutation(
+  mode: number,
+  kind: "content" | "ownership",
+): number {
+  if ((mode & S_IFMT) !== S_IFREG) return mode;
+  // WHY: Kandelo has no System V mandatory-locking interpretation for a
+  // non-executable S_ISGID bit. POSIX permits clearing both bits after content
+  // mutation, so both audited mutation kinds deliberately share one policy.
+  switch (kind) {
+    case "content":
+    case "ownership":
+      return mode & ~SET_ID_BITS;
+  }
+}
 
 /**
  * Windows has no POSIX permission model: `fs.statSync` reports every entry as
@@ -160,9 +176,10 @@ export class NativeMetadataOverlay {
     const metadata = this.metadataFor(s);
     if (uid !== UID_GID_UNCHANGED) metadata.uid = uid;
     if (gid !== UID_GID_UNCHANGED) metadata.gid = gid;
-    const mode = metadata.mode ?? (checkedNumber(s.mode, "st_mode") & MODE_CHANGE_MASK);
-    if (s.isFile() && (mode & EXECUTE_BITS) !== 0) {
-      metadata.mode = mode & ~SET_ID_BITS;
+    const mode = this.modeFor(s, metadata);
+    const nextMode = modeAfterRegularFileMutation(mode, "ownership");
+    if (nextMode !== mode) {
+      metadata.mode = nextMode & MODE_CHANGE_MASK;
     }
     metadata.ctimeMs = Date.now();
   }
@@ -186,9 +203,24 @@ export class NativeMetadataOverlay {
   }
 
   noteNativeContentChange(s: BigIntStats): void {
-    const metadata = this.entries.get(this.key(s));
-    if (metadata === undefined) return;
-    this.clearTimeOverrides(metadata);
+    this.prepareNativeContentChange(s)();
+  }
+
+  /**
+   * Finish every fallible identity/mode allocation before native bytes change.
+   * The returned synchronous commit only mutates an already-owned metadata
+   * object, so an open/ftruncate failure can leave guest mode untouched.
+   */
+  prepareNativeContentChange(s: BigIntStats): () => void {
+    let metadata = this.entries.get(this.key(s));
+    const mode = this.modeFor(s, metadata);
+    const nextMode = modeAfterRegularFileMutation(mode, "content");
+    if (metadata === undefined && nextMode === mode) return () => {};
+    metadata ??= this.metadataFor(s);
+    return () => {
+      if (nextMode !== mode) metadata.mode = nextMode & MODE_CHANGE_MASK;
+      this.clearTimeOverrides(metadata);
+    };
   }
 
   forget(s: BigIntStats): void {
@@ -225,6 +257,13 @@ export class NativeMetadataOverlay {
       this.entries.set(key, metadata);
     }
     return metadata;
+  }
+
+  private modeFor(s: BigIntStats, metadata?: VirtualMetadata): number {
+    const nativeMode = checkedNumber(s.mode, "st_mode");
+    if (metadata?.mode === undefined) return nativeMode;
+    return (nativeMode & ~MODE_CHANGE_MASK) |
+      (metadata.mode & MODE_CHANGE_MASK);
   }
 
   private reconcileNativeTimes(

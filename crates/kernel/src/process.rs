@@ -7,6 +7,8 @@ use wasm_posix_shared::{
     WasmStatfs,
 };
 
+use crate::credentials::Credentials;
+use crate::exec_target::PreparedExecLedger;
 use crate::fd::FdTable;
 use crate::memory::MemoryManager;
 use crate::ofd::{FileType, OfdTable};
@@ -66,6 +68,11 @@ pub trait HostIO {
     fn host_statfs(&mut self, _path: &[u8]) -> Result<WasmStatfs, Errno> {
         Err(Errno::ENOSYS)
     }
+    /// Query filesystem policy through an already-open exact host object.
+    /// Pathname lookup is not an acceptable fallback for retained authority.
+    fn host_fstatfs(&mut self, _handle: i64) -> Result<WasmStatfs, Errno> {
+        Err(Errno::ENOSYS)
+    }
     fn host_pathconf(&mut self, _path: &[u8], _name: i32) -> Result<Option<i64>, Errno> {
         Err(Errno::ENOSYS)
     }
@@ -103,7 +110,6 @@ pub trait HostIO {
     fn host_fsync(&mut self, handle: i64) -> Result<(), Errno>;
     fn host_fchmod(&mut self, handle: i64, mode: u32) -> Result<(), Errno>;
     fn host_fchown(&mut self, handle: i64, uid: u32, gid: u32) -> Result<(), Errno>;
-    fn host_exec(&mut self, path: &[u8]) -> Result<(), Errno>;
     fn host_set_alarm(&mut self, seconds: u32) -> Result<(), Errno>;
     /// Arm/disarm a POSIX timer on the host.
     /// `timer_id` is the per-process timer slot index.
@@ -727,10 +733,22 @@ pub struct ProcessIdentity {
 pub struct Process {
     identity: ProcessIdentity,
     pub ppid: u32,
-    pub uid: u32,
-    pub gid: u32,
-    pub euid: u32,
-    pub egid: u32,
+    credentials: Credentials,
+    /// Kernel-owned secure-startup fact for the current process image.
+    ///
+    /// Task 9 only preserves this marker across process-state transport.
+    /// Target-aware exec commit is the sole future authority that may set it.
+    pub(crate) secure_exec: bool,
+    /// Successful image replacements advance this generation exactly once.
+    /// Prepared exec targets bind to its current value and cannot survive a
+    /// competing commit for the same persistent PID.
+    pub(crate) exec_generation: u64,
+    /// Kernel-owned exact executable-object leases awaiting commit/cancel.
+    pub(crate) prepared_exec_targets: PreparedExecLedger,
+    /// A `posix_spawn` child is a real signal target while its host launch is
+    /// pending, but it is not yet part of the parent's waitable child set.
+    /// Only the parent-bound spawn publication transaction may clear this.
+    pub(crate) spawn_publication_pending: bool,
     pub pgid: u32,
     pub sid: u32,
     /// True iff this process is the session leader of its session (i.e. the
@@ -798,13 +816,6 @@ pub struct Process {
     pub fork_exec_argv: Option<Vec<Vec<u8>>>,
     /// FD actions to apply before exec in fork child.
     pub fork_fd_actions: Vec<FdAction>,
-    /// Exact live task that completed the fallible exec-prepare phase.
-    ///
-    /// This is an ephemeral host/kernel handoff token. It is deliberately not
-    /// serialized across fork or legacy exec-state transfer: a replacement
-    /// image must be committed only by the same kernel-owned task that the
-    /// host explicitly prepared in the current process.
-    pub(crate) exec_prepared_tid: Option<u32>,
     /// Next ephemeral port to assign for bind(port=0).
     pub next_ephemeral_port: u16,
     /// Epoll instances owned by this process.
@@ -1054,13 +1065,11 @@ impl Process {
                 threads: Vec::new(),
             },
             ppid: 0,
-            // Default to root (uid=0). The kernel is single-user; privilege
-            // drops happen explicitly via setuid/setgid and gate cross-user
-            // operations (kill, sched_*).
-            uid: 0,
-            gid: 0,
-            euid: 0,
-            egid: 0,
+            credentials: Credentials::root(),
+            secure_exec: false,
+            exec_generation: 0,
+            prepared_exec_targets: PreparedExecLedger::new(),
+            spawn_publication_pending: false,
             pgid: pid,
             sid: 0,
             is_session_leader: false,
@@ -1095,7 +1104,6 @@ impl Process {
             fork_exec_path: None,
             fork_exec_argv: None,
             fork_fd_actions: Vec::new(),
-            exec_prepared_tid: None,
             next_ephemeral_port: 49152,
             epolls: Vec::new(),
             posix_timers: Vec::new(),
@@ -1115,6 +1123,107 @@ impl Process {
     /// Return the immutable process identity assigned by `ProcessTable`.
     pub fn pid(&self) -> u32 {
         self.identity.pid
+    }
+
+    pub fn real_uid(&self) -> u32 {
+        self.credentials.ruid
+    }
+
+    pub fn effective_uid(&self) -> u32 {
+        self.credentials.euid
+    }
+
+    pub fn saved_uid(&self) -> u32 {
+        self.credentials.suid
+    }
+
+    pub fn real_gid(&self) -> u32 {
+        self.credentials.rgid
+    }
+
+    pub fn effective_gid(&self) -> u32 {
+        self.credentials.egid
+    }
+
+    pub fn saved_gid(&self) -> u32 {
+        self.credentials.sgid
+    }
+
+    pub fn supplementary_groups(&self) -> &[u32] {
+        &self.credentials.supplementary_groups
+    }
+
+    pub fn is_member_of_group(&self, gid: u32) -> bool {
+        self.credentials.is_member_of_group(gid)
+    }
+
+    pub fn setuid(&mut self, uid: u32) -> Result<(), Errno> {
+        self.credentials.setuid(uid)
+    }
+
+    pub fn seteuid(&mut self, uid: u32) -> Result<(), Errno> {
+        self.credentials.seteuid(uid)
+    }
+
+    pub fn setresuid(&mut self, ruid: u32, euid: u32, suid: u32) -> Result<(), Errno> {
+        self.credentials.setresuid(ruid, euid, suid)
+    }
+
+    pub fn setreuid(&mut self, ruid: u32, euid: u32) -> Result<(), Errno> {
+        self.credentials.setreuid(ruid, euid)
+    }
+
+    pub fn setgid(&mut self, gid: u32) -> Result<(), Errno> {
+        self.credentials.setgid(gid)
+    }
+
+    pub fn setegid(&mut self, gid: u32) -> Result<(), Errno> {
+        self.credentials.setegid(gid)
+    }
+
+    pub fn setresgid(&mut self, rgid: u32, egid: u32, sgid: u32) -> Result<(), Errno> {
+        self.credentials.setresgid(rgid, egid, sgid)
+    }
+
+    pub fn setregid(&mut self, rgid: u32, egid: u32) -> Result<(), Errno> {
+        self.credentials.setregid(rgid, egid)
+    }
+
+    pub fn setgroups(&mut self, groups: &[u32]) -> Result<(), Errno> {
+        self.credentials.setgroups(groups)
+    }
+
+    pub(crate) fn credentials(&self) -> &Credentials {
+        &self.credentials
+    }
+
+    pub(crate) fn install_credentials(&mut self, credentials: Credentials) {
+        self.credentials = credentials;
+    }
+
+    /// Apply POSIX_SPAWN_RESETIDS to the inherited child record.
+    ///
+    /// Saved IDs and supplementary groups remain exactly as inherited. This
+    /// mutation is intentionally private to the kernel's pending-child setup;
+    /// ordinary credential syscalls have their own permission transitions.
+    pub(crate) fn reset_effective_ids_to_real(&mut self) {
+        self.credentials.euid = self.credentials.ruid;
+        self.credentials.egid = self.credentials.rgid;
+    }
+
+    pub(crate) fn configure_ids(&mut self, uid: Option<u32>, gid: Option<u32>) {
+        let mut credentials = self.credentials.clone();
+        if let Some(uid) = uid {
+            credentials.ruid = uid;
+            credentials.euid = uid;
+            credentials.suid = uid;
+        }
+        if let Some(gid) = gid {
+            credentials.rgid = gid;
+            credentials.egid = gid;
+            credentials.sgid = gid;
+        }
+        self.credentials = credentials;
     }
 
     /// Override a fixture identity without exposing a production mutation API.
@@ -1140,7 +1249,7 @@ impl Process {
             wait_status,
             si_code,
             si_status,
-            child_uid: self.uid,
+            child_uid: self.real_uid(),
             rusage: KernelRusage::default(),
         });
     }
@@ -1474,40 +1583,6 @@ impl Process {
             && matches!(self.state, ProcessState::Running | ProcessState::Stopped)
             && tid != 0
             && (tid == self.pid || self.get_thread(tid).is_some())
-    }
-
-    /// Begin the fallible exec phase for an exact kernel-owned caller.
-    pub(crate) fn begin_exec_prepare(&mut self, caller_tid: u32) -> Result<(), Errno> {
-        // A failed or superseded prepare must never authorize a later commit.
-        self.exec_prepared_tid = None;
-        if !self.is_live_explicit_tid(caller_tid) {
-            return Err(Errno::ESRCH);
-        }
-        Ok(())
-    }
-
-    /// Mark a successful exec prepare after all fallible file actions finish.
-    pub(crate) fn finish_exec_prepare(&mut self, caller_tid: u32) {
-        debug_assert!(self.is_live_explicit_tid(caller_tid));
-        self.exec_prepared_tid = Some(caller_tid);
-    }
-
-    /// Consume the one-shot exec authorization for the same exact caller.
-    pub(crate) fn consume_exec_prepare(&mut self, caller_tid: u32) -> Result<(), Errno> {
-        // Every setup attempt consumes the token, including an invalid or
-        // mismatched attempt, so stale authority cannot be retried later.
-        let prepared_tid = self.exec_prepared_tid.take();
-        if !self.is_live_explicit_tid(caller_tid) {
-            return Err(Errno::ESRCH);
-        }
-        if prepared_tid != Some(caller_tid) {
-            return Err(Errno::EINVAL);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn clear_exec_prepare(&mut self) {
-        self.exec_prepared_tid = None;
     }
 
     /// Effective blocked mask for the given TID.
@@ -2126,9 +2201,6 @@ pub(crate) mod test_host {
         fn host_fchown(&mut self, _h: i64, _u: u32, _g: u32) -> Result<(), Errno> {
             Ok(())
         }
-        fn host_exec(&mut self, _p: &[u8]) -> Result<(), Errno> {
-            Err(Errno::ENOSYS)
-        }
         fn host_set_alarm(&mut self, _s: u32) -> Result<(), Errno> {
             Ok(())
         }
@@ -2521,32 +2593,6 @@ mod tests {
 
         proc.state = ProcessState::Exited;
         assert_eq!(proc.pick_thread_for_shared_signal(15), None);
-    }
-
-    #[test]
-    fn exec_prepare_authorization_is_exact_and_one_shot() {
-        let mut proc = Process::new(41);
-        proc.add_thread(ThreadInfo::new(42, 0, 0, 0));
-
-        assert_eq!(proc.begin_exec_prepare(0), Err(Errno::ESRCH));
-        assert_eq!(proc.consume_exec_prepare(41), Err(Errno::EINVAL));
-        proc.begin_exec_prepare(42).unwrap();
-        proc.finish_exec_prepare(42);
-        assert_eq!(proc.consume_exec_prepare(41), Err(Errno::EINVAL));
-        assert_eq!(proc.consume_exec_prepare(42), Err(Errno::EINVAL));
-
-        proc.begin_exec_prepare(42).unwrap();
-        proc.finish_exec_prepare(42);
-        assert_eq!(proc.begin_exec_prepare(9_999), Err(Errno::ESRCH));
-        assert_eq!(proc.consume_exec_prepare(42), Err(Errno::EINVAL));
-
-        proc.begin_exec_prepare(42).unwrap();
-        proc.finish_exec_prepare(42);
-        assert_eq!(proc.consume_exec_prepare(42), Ok(()));
-        assert_eq!(proc.consume_exec_prepare(42), Err(Errno::EINVAL));
-
-        let mut synthetic_init = Process::new(1);
-        assert_eq!(synthetic_init.begin_exec_prepare(1), Err(Errno::ESRCH));
     }
 
     #[test]

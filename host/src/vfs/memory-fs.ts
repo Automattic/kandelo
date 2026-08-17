@@ -71,14 +71,19 @@ const IntrinsicUint8Array = Uint8Array;
 const intrinsicUint8ArraySet = Uint8Array.prototype.set;
 const intrinsicWeakSetAdd = WeakSet.prototype.add;
 const intrinsicWeakSetHas = WeakSet.prototype.has;
+const intrinsicWeakMapGet = WeakMap.prototype.get;
+const intrinsicWeakMapSet = WeakMap.prototype.set;
 const intrinsicSetHas = Set.prototype.has;
 const intrinsicMapGet = Map.prototype.get;
 const IntrinsicNumber = Number;
 const intrinsicNumberIsInteger = Number.isInteger;
 const IntrinsicTypeError = TypeError;
 const intrinsicSharedFsMount = SharedFS.mount;
+const intrinsicSharedFsMkfs = SharedFS.mkfs;
 const intrinsicSharedFsSnapshotState = SharedFS.prototype.snapshotState;
 const memoryFileSystemInstances = new WeakSet<object>();
+const memoryFileSystemDeviceIds = new WeakMap<object, number>();
+let nextMemoryFileSystemDeviceId = 1;
 const immutableProductBackends = new WeakSet<object>();
 
 function capturePrivatePrototype(prototype: object): object {
@@ -3223,6 +3228,29 @@ export class MemoryFileSystem implements FileSystemBackend {
     return new MemoryFileSystem(fs, cloneMetadata(this.imageMetadata));
   }
 
+  /** Capture one exact backend-qualified inode identity. */
+  private qualifiedInodeIdentity(path: string): MemoryFileSystemInodeIdentity {
+    const stat = this.fs.lstat(path);
+    let dev = intrinsicApply(
+      intrinsicWeakMapGet,
+      memoryFileSystemDeviceIds,
+      [this.fs.buffer],
+    ) as number | undefined;
+    if (dev === undefined) {
+      dev = nextMemoryFileSystemDeviceId++;
+      intrinsicApply(
+        intrinsicWeakMapSet,
+        memoryFileSystemDeviceIds,
+        [this.fs.buffer, dev],
+      );
+    }
+    return {
+      dev,
+      ino: stat.ino,
+      generation: stat.generation,
+    };
+  }
+
   private static canAdoptLegacyLazyStub(st: SfsStatResult): boolean {
     // Images from before data-sequence tracking stored regular lazy entries as
     // untouched zero-length stubs. Current registration performs one initial
@@ -4122,6 +4150,26 @@ export class MemoryFileSystem implements FileSystemBackend {
     maxSizeBytes?: number,
   ): MemoryFileSystem {
     return new MemoryFileSystem(SharedFS.mkfs(sab, maxSizeBytes));
+  }
+
+  /** Construct a fresh MemoryFS without accepting caller-owned backing. */
+  static createFresh(byteLength: number): MemoryFileSystem {
+    if (
+      typeof byteLength !== "number" ||
+      !intrinsicNumberIsInteger(byteLength) ||
+      byteLength <= 0
+    ) {
+      throw new IntrinsicTypeError(
+        "fresh MemoryFileSystem byte length must be a positive integer",
+      );
+    }
+    const buffer = new IntrinsicSharedArrayBuffer(byteLength);
+    const fs = intrinsicApply(
+      intrinsicSharedFsMkfs,
+      SharedFS,
+      [buffer],
+    ) as SharedFS;
+    return new MemoryFileSystem(fs);
   }
 
   static fromExisting(sab: SharedArrayBuffer): MemoryFileSystem {
@@ -7860,6 +7908,61 @@ export class MemoryFileSystem implements FileSystemBackend {
   closedir(handle: number): void {
     this.fs.closedir(handle);
   }
+}
+
+const intrinsicCreateFreshMemoryFileSystem = MemoryFileSystem.createFresh;
+
+/** Invoke the captured fresh-backing constructor. */
+export function createFreshMemoryFileSystem(
+  byteLength: number,
+): MemoryFileSystem {
+  return intrinsicApply(
+    intrinsicCreateFreshMemoryFileSystem,
+    MemoryFileSystem,
+    [byteLength],
+  ) as MemoryFileSystem;
+}
+
+export interface MemoryFileSystemInodeIdentity {
+  dev: number;
+  ino: number;
+  generation: number;
+}
+
+interface MemoryFileSystemIdentitySource {
+  qualifiedInodeIdentity(path: string): MemoryFileSystemInodeIdentity;
+}
+
+const intrinsicQualifiedInodeIdentity = (
+  MemoryFileSystem.prototype as unknown as MemoryFileSystemIdentitySource
+).qualifiedInodeIdentity;
+
+/**
+ * Capture one wrapper-qualified MemoryFS inode identity. JavaScript exposes no
+ * primitive for comparing distinct SharedArrayBuffer wrappers' backing data,
+ * so cross-wrapper security also requires fresh private construction.
+ *
+ * This read-only, single-path helper is deliberately absent from the public
+ * VFS entry point. It cannot mint the immutable-product brand.
+ */
+export function captureMemoryFileSystemInodeIdentity(
+  source: MemoryFileSystem,
+  path: string,
+): MemoryFileSystemInodeIdentity {
+  if (
+    !intrinsicApply(
+      intrinsicWeakSetHas,
+      memoryFileSystemInstances,
+      [source],
+    )
+  ) {
+    throw new Error("inode identity source must be a genuine MemoryFileSystem");
+  }
+  return intrinsicApply(
+    intrinsicQualifiedInodeIdentity,
+    source,
+    [path],
+  ) as MemoryFileSystemInodeIdentity;
 }
 
 const immutableProductMemoryFileSystemPrototype = capturePrivatePrototype(

@@ -51,6 +51,7 @@ export {
 } from "../../../host/src/homebrew-bootstrap-consumer";
 import { fetchHomebrewBottleBytes } from "../../../host/src/homebrew-vfs-fetch";
 import {
+  attachReviewedPrivilegedProgramPolicy,
   planFederatedHomebrewVfs,
   planHomebrewVfs,
   type HomebrewBottleArch,
@@ -58,6 +59,9 @@ import {
   type HomebrewVfsPackagePlan,
   type HomebrewVfsPlan,
 } from "../../../host/src/homebrew-vfs-planner";
+import {
+  createReviewedPrivilegedProgramPolicy,
+} from "../../../host/src/vfs/privileged-projection";
 import {
   assertHomebrewRuntimeSupportPlan,
   parseHomebrewRuntimeSupportContract,
@@ -132,6 +136,8 @@ interface CliOptions {
   packageTreeArchive?: string;
   homebrewBootstrapEnv?: string;
   homebrewRuntimeSupport?: string;
+  privilegedProjections?: string;
+  privilegedProductOut?: string;
   materializePackageTree: boolean;
 }
 
@@ -391,6 +397,18 @@ export async function runHomebrewVfsImageBuilder(
           },
         );
 
+  if (options.privilegedProjections !== undefined) {
+    // This CLI is a trusted build-operator boundary. Its JSON report/image is
+    // evidence, never reusable live mount authority; authority remains the
+    // non-serializable policy association on this in-memory plan.
+    attachReviewedPrivilegedProgramPolicy(
+      plan,
+      createReviewedPrivilegedProgramPolicy(
+        readJsonFile(options.privilegedProjections),
+      ),
+    );
+  }
+
   let runtimeSupport:
     | {
         contract: HomebrewRuntimeSupportContract;
@@ -500,6 +518,14 @@ export async function runHomebrewVfsImageBuilder(
       mirrorRepository: options.bottleMirrorRepository!,
     });
     result = materializedBuild.result;
+  }
+  if (
+    options.privilegedProjections !== undefined &&
+    result.privilegedProduct === undefined
+  ) {
+    throw new Error(
+      "privileged projection policy did not produce an independent product tree",
+    );
   }
   let packageTree:
     | {
@@ -874,9 +900,32 @@ export async function runHomebrewVfsImageBuilder(
       : {
           homebrew_bootstrap: homebrewBootstrapConsumerState,
         }),
+    ...(result.privilegedProduct === undefined ||
+        options.privilegedProductOut === undefined
+      ? {}
+      : {
+          privileged_product: {
+            image: basename(options.privilegedProductOut),
+            sha256: createHash("sha256")
+              .update(result.privilegedProduct.imageBytes)
+              .digest("hex"),
+            bytes: result.privilegedProduct.imageBytes.byteLength,
+          },
+        }),
     // Report a reproducible artifact identity, not a runner/worktree path.
     image: basename(options.out),
   };
+  if (
+    result.privilegedProduct !== undefined &&
+    options.privilegedProductOut !== undefined
+  ) {
+    mkdirSync(dirname(options.privilegedProductOut), { recursive: true });
+    writeFileSync(
+      options.privilegedProductOut,
+      result.privilegedProduct.imageBytes,
+    );
+    console.log(`Privileged product VFS: ${options.privilegedProductOut}`);
+  }
   mkdirSync(dirname(options.report), { recursive: true });
   writeFileSync(options.report, `${JSON.stringify(report, null, 2)}\n`);
   console.log(`Homebrew VFS report: ${options.report}`);
@@ -1067,6 +1116,18 @@ function parseArgs(args: string[]): CliOptions {
         }
         options.homebrewRuntimeSupport = requireValue(args, ++i, arg);
         break;
+      case "--privileged-projections":
+        if (options.privilegedProjections !== undefined) {
+          usage("--privileged-projections may be provided only once");
+        }
+        options.privilegedProjections = requireValue(args, ++i, arg);
+        break;
+      case "--privileged-product-out":
+        if (options.privilegedProductOut !== undefined) {
+          usage("--privileged-product-out may be provided only once");
+        }
+        options.privilegedProductOut = requireValue(args, ++i, arg);
+        break;
       case "--materialize-package-tree":
         if (options.materializePackageTree) {
           usage("--materialize-package-tree may be provided only once");
@@ -1123,6 +1184,30 @@ function parseArgs(args: string[]): CliOptions {
   }
   if (options.demoConfig && !existsSync(options.demoConfig)) {
     usage(`demo config does not exist: ${options.demoConfig}`);
+  }
+  if (
+    Boolean(options.privilegedProjections) !==
+      Boolean(options.privilegedProductOut)
+  ) {
+    usage(
+      "--privileged-projections and --privileged-product-out must be provided together",
+    );
+  }
+  if (
+    options.privilegedProjections !== undefined &&
+    !existsSync(options.privilegedProjections)
+  ) {
+    usage(
+      `privileged projection policy does not exist: ${options.privilegedProjections}`,
+    );
+  }
+  if (
+    options.privilegedProductOut !== undefined &&
+    existsSync(options.privilegedProductOut)
+  ) {
+    usage(
+      `privileged product output must not already exist: ${options.privilegedProductOut}`,
+    );
   }
   const materializationOptionCount = [
     options.materializationPolicy,
@@ -1952,6 +2037,8 @@ function usage(message?: string, code = 2): never {
   [--bottle-cache <dir>] [--base-image <base.vfs[.zst]>] \\
   [--max-bytes <bytes|MiB>] [--write-profile] \\
   [--shell-config <shell.json>] [--demo-config <demo.json>] \\
+  [--privileged-projections <projections.json> \\
+   --privileged-product-out <product.vfs>] \\
   [--catalog-commit <full-sha>] \\
   [--migration-lock <lock.json>] \\
   [--materialization-policy <policy.json> \\

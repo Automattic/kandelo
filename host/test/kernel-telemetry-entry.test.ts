@@ -17,6 +17,7 @@ const TELEMETRY_EXPORT_NAMES = [
   "kernel_get_fork_count",
   "kernel_get_memory_pages",
   "kernel_inject_mouse_event",
+  "kernel_process_secure_exec",
   "kernel_spawn_scratch_retained_capacity",
   "kernel_vblank",
 ] as const;
@@ -48,6 +49,7 @@ function makeHarness(
     kernel_get_fork_count: () => 11n,
     kernel_get_memory_pages: () => 321,
     kernel_inject_mouse_event: () => 0,
+    kernel_process_secure_exec: () => 0,
     kernel_spawn_scratch_retained_capacity: () =>
       kernelPointer(pointerWidth, 84_386),
     kernel_vblank: () => 0,
@@ -100,10 +102,12 @@ describe("kernel telemetry entry authority", () => {
       const getMemoryPages = vi.fn(() => 321);
       const getCapacity = vi.fn(() =>
         kernelPointer(pointerWidth, 84_386));
+      const getSecureExec = vi.fn(() => 1);
       const harness = makeHarness(pointerWidth, {
         implementations: {
           kernel_get_fork_count: getForkCount,
           kernel_get_memory_pages: getMemoryPages,
+          kernel_process_secure_exec: getSecureExec,
           kernel_spawn_scratch_retained_capacity: getCapacity,
         },
       });
@@ -111,9 +115,11 @@ describe("kernel telemetry entry authority", () => {
       expect(harness.worker.getForkCount(47)).toBe(11n);
       expect(harness.worker.getKernelMemoryPages()).toBe(321);
       expect(harness.worker.getSpawnScratchCapacity()).toBe(84_386);
+      expect(harness.worker.processSecureExec(47)).toBe(true);
       expect(getForkCount).toHaveBeenCalledExactlyOnceWith(47);
       expect(getMemoryPages).toHaveBeenCalledOnce();
       expect(getCapacity).toHaveBeenCalledOnce();
+      expect(getSecureExec).toHaveBeenCalledExactlyOnceWith(47);
 
       harness.implementations.kernel_spawn_scratch_retained_capacity =
         () => pointerWidth === 8 ? -1n : -1;
@@ -126,6 +132,17 @@ describe("kernel telemetry entry authority", () => {
       harness.implementations.kernel_spawn_scratch_retained_capacity =
         () => kernelPointer(pointerWidth, 4_096);
       expect(harness.worker.getSpawnScratchCapacity()).toBe(4_096);
+
+      for (const invalidMarker of [-3, 2]) {
+        const invalidHarness = makeHarness(pointerWidth, {
+          implementations: {
+            kernel_process_secure_exec: () => invalidMarker,
+          },
+        });
+        expect(() => invalidHarness.worker.processSecureExec(47)).toThrow(
+          /secure-exec query pid=47 failed/,
+        );
+      }
     },
   );
 
@@ -133,18 +150,21 @@ describe("kernel telemetry entry authority", () => {
     const forkCount = vi.fn(() => 13n);
     const memoryPages = vi.fn(() => 77);
     const capacity = vi.fn(() => 98_304);
+    const secureExec = vi.fn(() => 1);
     const caught: unknown[] = [];
     let harness!: TelemetryHarness;
     harness = makeHarness(4, {
       implementations: {
         kernel_get_fork_count: forkCount,
         kernel_get_memory_pages: memoryPages,
+        kernel_process_secure_exec: secureExec,
         kernel_spawn_scratch_retained_capacity: capacity,
         kernel_vblank: () => {
           for (const query of [
             () => harness.worker.getForkCount(51),
             () => harness.worker.getKernelMemoryPages(),
             () => harness.worker.getSpawnScratchCapacity(),
+            () => harness.worker.processSecureExec(51),
           ]) {
             try {
               query();
@@ -162,17 +182,19 @@ describe("kernel telemetry entry authority", () => {
     )();
     await Promise.resolve();
 
-    expect(caught).toHaveLength(3);
+    expect(caught).toHaveLength(4);
     for (const error of caught) {
       expect(error).toBeInstanceOf(KernelReentrantEntryError);
     }
     expect(forkCount).not.toHaveBeenCalled();
     expect(memoryPages).not.toHaveBeenCalled();
     expect(capacity).not.toHaveBeenCalled();
+    expect(secureExec).not.toHaveBeenCalled();
 
     expect(harness.worker.getForkCount(51)).toBe(13n);
     expect(harness.worker.getKernelMemoryPages()).toBe(77);
     expect(harness.worker.getSpawnScratchCapacity()).toBe(98_304);
+    expect(harness.worker.processSecureExec(51)).toBe(true);
   });
 
   it("materializes optional/missing-export outcomes after scope revocation", () => {

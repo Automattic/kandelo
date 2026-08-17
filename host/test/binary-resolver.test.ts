@@ -34,7 +34,10 @@ import {
   tryResolveBinaries,
   tryResolveBinarySet,
 } from "../src/binary-resolver";
-import { ABI_VERSION } from "../src/generated/abi";
+import {
+  ABI_VERSION,
+  HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS,
+} from "../src/generated/abi";
 import {
   MemoryFileSystem,
   type VfsImageMetadata,
@@ -192,6 +195,32 @@ function executableWasmWithAbi(abi: number): Uint8Array {
   return new Uint8Array(bytes);
 }
 
+function kernelWasmWithExports(
+  abi: number,
+  extraExports: readonly string[] = [],
+): Uint8Array {
+  const exportNames = [
+    ...new Set([...HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS, ...extraExports]),
+  ];
+  const bytes: number[] = [
+    0x00, 0x61, 0x73, 0x6d,
+    0x01, 0x00, 0x00, 0x00,
+  ];
+
+  bytes.push(...section(1, [0x01, 0x60, 0x00, 0x01, 0x7f]));
+  bytes.push(...section(3, [0x01, 0x00]));
+  bytes.push(...section(7, [
+    ...uleb128(exportNames.length),
+    ...exportNames.flatMap((name) => [...nameBytes(name), 0x00, 0x00]),
+  ]));
+  bytes.push(...section(10, [
+    0x01,
+    ...functionBody([0x41, ...sleb128I32(abi)]),
+  ]));
+
+  return new Uint8Array(bytes);
+}
+
 async function vfsImage(
   metadata: VfsImageMetadata | null | undefined,
   compressed: boolean,
@@ -343,6 +372,39 @@ function writeFixturePackageIdentity(
     cacheKey: cacheKeys.wasm32!,
   };
 }
+
+describe("kernel artifact exec authority", () => {
+  it("rejects a hybrid kernel that exports target-aware and legacy exec entrypoints", () => {
+    const sourceRepo = mkdtempSync(join(tmpdir(), "kandelo-kernel-resolver-"));
+    cleanupDirs.add(sourceRepo);
+    writeFileSync(join(sourceRepo, "Cargo.toml"), "[workspace]\n");
+    writeFileSync(
+      join(sourceRepo, "package.json"),
+      JSON.stringify({ name: "kandelo" }),
+    );
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = sourceRepo;
+
+    const hybrid = writeCandidate(
+      join(sourceRepo, "local-binaries"),
+      "kernel.wasm",
+      kernelWasmWithExports(ABI_VERSION, [
+        "kernel_exec_prepare",
+        "kernel_exec_setup",
+        "kernel_exec_setup_for_thread",
+        "kernel_execve",
+        "kernel_execveat",
+      ]),
+    );
+    const targetAware = writeCandidate(
+      join(sourceRepo, "binaries"),
+      "kernel.wasm",
+      kernelWasmWithExports(ABI_VERSION),
+    );
+
+    expect(hybrid).not.toBe(targetAware);
+    expect(resolveBinary("kernel.wasm")).toBe(targetAware);
+  });
+});
 
 describe("program package source freshness boundary", () => {
   it("checks every public program-resolution boundary without duplicate nested checks", () => {

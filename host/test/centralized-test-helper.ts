@@ -19,7 +19,15 @@ import {
   createProcessMemory,
   type ProcessMemoryLayout,
 } from "../src/process-memory";
-import { NodeKernelHost } from "../src/node-kernel-host";
+import {
+  NodeKernelHost,
+  resolveRootfsArtifact,
+} from "../src/node-kernel-host";
+import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import {
+  ensureDirRecursive,
+  writeVfsBinary,
+} from "../src/vfs/image-helpers";
 import {
   ForkHostImportOwnerRuntime,
   type ForkHostImportOwnerWorker,
@@ -141,7 +149,10 @@ export interface RunProgramOptions {
    *  programs can dial external hosts via real Node sockets. Worker-thread
    *  mode only — incompatible with `io`. */
   enableTcpNetwork?: boolean;
-  /** Map of virtual path → .wasm file path for exec targets */
+  /**
+   * Map of virtual path → .wasm file path staged into the test rootfs for
+   * exact-target exec. The map also remains available to spawn preflight.
+   */
   execPrograms?: Map<string, string>;
   /** Data to provide on stdin (process will see EOF after this data) */
   stdin?: string;
@@ -242,6 +253,8 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     }
   }
 
+  const rootfsImage = await prepareExecTargetTestRootfs(options);
+
   // Prepare stdin
   let stdinData: Uint8Array | undefined;
   if (options.stdinBytes != null) {
@@ -261,8 +274,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     maxPages: options.maxPages,
     maxProcessMemoryBytes: options.maxProcessMemoryBytes,
     execPrograms,
-    rootfsImage: options.rootfsImage
-      ?? (options.useDefaultRootfs === false ? undefined : "default"),
+    rootfsImage,
     enableTcpNetwork: options.enableTcpNetwork,
     onStdout: (_pid: number, data: Uint8Array) => {
       stdout += new TextDecoder().decode(data);
@@ -365,6 +377,45 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
   };
 }
 
+async function prepareExecTargetTestRootfs(
+  options: RunProgramOptions,
+): Promise<"default" | ArrayBuffer | Uint8Array | undefined> {
+  const configured = options.rootfsImage
+    ?? (options.useDefaultRootfs === false ? undefined : "default");
+  if (!options.execPrograms || options.execPrograms.size === 0) {
+    return configured;
+  }
+
+  let rootfs: MemoryFileSystem;
+  if (configured === undefined) {
+    let programBytes = 0;
+    for (const hostPath of options.execPrograms.values()) {
+      programBytes += readFileSync(hostPath).byteLength;
+    }
+    const capacity = Math.max(4 * 1024 * 1024, programBytes + 1024 * 1024);
+    if (!Number.isSafeInteger(capacity)) {
+      throw new Error("test exec target rootfs capacity overflows");
+    }
+    rootfs = MemoryFileSystem.create(new SharedArrayBuffer(capacity));
+  } else {
+    const image = configured === "default"
+      ? new Uint8Array(readFileSync(resolveRootfsArtifact().selectedPath))
+      : configured instanceof Uint8Array
+        ? configured
+        : new Uint8Array(configured);
+    rootfs = MemoryFileSystem.fromImagePreservingCapacity(image);
+  }
+
+  for (const [path, hostPath] of options.execPrograms) {
+    if (!path.startsWith("/") || path.includes("\0")) {
+      throw new Error(`test exec target is not an absolute guest path: ${path}`);
+    }
+    ensureDirRecursive(rootfs, dirname(path));
+    writeVfsBinary(rootfs, path, new Uint8Array(readFileSync(hostPath)), 0o755);
+  }
+  return rootfs.saveImage();
+}
+
 // ---------------------------------------------------------------------------
 // Main-thread mode (fallback for custom PlatformIO)
 // ---------------------------------------------------------------------------
@@ -426,6 +477,119 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true, enableSyscallLog: !!process.env.KERNEL_SYSCALL_LOG },
     io,
     {
+      onResolveSpawn: async (path, argv) => {
+        const mappedProgram = options.execPrograms?.get(path);
+        if (!mappedProgram) return null;
+        const spawnProgramBytes = loadProgramWasm(mappedProgram);
+        try {
+          return {
+            programBytes: spawnProgramBytes,
+            programModule: await WebAssembly.compile(spawnProgramBytes),
+            argv,
+          };
+        } catch (error) {
+          if (error instanceof WebAssembly.CompileError) return { errno: 8 };
+          throw error;
+        }
+      },
+      onSpawn: async (_parentPid, childPid, program, envp) => {
+        if (!kernelWorker.shouldLaunchPendingChild(childPid)) return 0;
+        const childPtrWidth = detectPtrWidth(program.programBytes);
+        const {
+          memory: childMemory,
+          layout: childLayout,
+          threadAllocator: childThreadAllocator,
+        } = createFreshProcessMemory(
+          program.programBytes,
+          childPtrWidth,
+          () => kernelWorker.reserveHostRegion(
+            childPid,
+            PAGES_PER_THREAD * WASM_PAGE_SIZE,
+          ) / WASM_PAGE_SIZE,
+          options.maxPages,
+        );
+        if (!kernelWorker.shouldLaunchPendingChild(childPid)) return 0;
+
+        const childChannelOffset = childLayout.channelOffset;
+        kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
+          ptrWidth: childPtrWidth,
+          brkBase: childLayout.brkBase,
+          mmapBase: childLayout.mmapBase,
+          maxAddr: childLayout.maxAddr,
+        });
+
+        const childGeneration = externrefProcessOwner.startGeneration(childPid);
+        let childWorker: ReturnType<NodeWorkerAdapter["createWorker"]>;
+        const childForkHostImports = forkHostImportOwnerRuntime.createWorker({
+          pid: childPid,
+          generationId: childGeneration.id,
+          authorizeSender: () => {
+            if (
+              workers.get(childPid) !== childWorker
+              || externrefGenerations.get(childPid) !== childGeneration
+            ) {
+              throw new Error(
+                `stale centralized-test host-import sender for spawn pid=${childPid}`,
+              );
+            }
+          },
+        });
+        const childInitData: CentralizedWorkerInitMessage = {
+          type: "centralized_init",
+          pid: childPid,
+          programBytes: program.programBytes,
+          programModule: program.programModule,
+          memory: childMemory,
+          channelOffset: childChannelOffset,
+          secureExec: kernelWorker.processSecureExec(childPid),
+          argv: program.argv,
+          env: envp,
+          ptrWidth: childPtrWidth,
+          externrefGenerationId: childGeneration.id,
+          forkHostImports: childForkHostImports.init,
+        };
+
+        try {
+          childWorker = workerAdapter.createWorker(childInitData);
+        } catch (error) {
+          childForkHostImports.close();
+          externrefProcessOwner.releaseGeneration(childGeneration);
+          kernelWorker.deactivateProcess(childPid);
+          throw error;
+        }
+        workers.set(childPid, childWorker);
+        externrefGenerations.set(childPid, childGeneration);
+        processForkHostImports.set(childPid, childForkHostImports);
+        processProgramBytes.set(childPid, program.programBytes);
+        processLayouts.set(childPid, childLayout);
+        threadAllocators.set(childPid, childThreadAllocator);
+        processPtrWidths.set(childPid, childPtrWidth);
+
+        const finalizeSpawnWorkerError = (reason: unknown): void => {
+          if (workers.get(childPid) !== childWorker) return;
+          const message = reason instanceof Error ? reason.message : String(reason);
+          stderr += `[spawn child ${childPid}] ${message}\n`;
+          try { kernelWorker.notifyHostProcessCrashed(childPid, SIGSEGV); } catch { /* best-effort */ }
+          try { kernelWorker.deactivateProcess(childPid); } catch { /* best-effort */ }
+          workers.delete(childPid);
+          processProgramBytes.delete(childPid);
+          processLayouts.delete(childPid);
+          threadAllocators.delete(childPid);
+          processPtrWidths.delete(childPid);
+          releaseProcessReferenceOwner(childPid);
+          childWorker.terminate().catch(() => {});
+        };
+        childWorker.on("error", finalizeSpawnWorkerError);
+        childWorker.on("message", (msg: unknown) => {
+          const message = msg as WorkerToHostMessage;
+          if (message.type === "error" && message.pid === childPid) {
+            finalizeSpawnWorkerError(message.message);
+          } else if (message.type === "fork_host_import") {
+            childForkHostImports.dispatch(message.wake);
+          }
+        });
+        return 0;
+      },
       onFork: async ({
         parentPid,
         childPid,
@@ -511,6 +675,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           programBytes: parentProgram,
           memory: childMemory,
           channelOffset: childChannelOffset,
+          secureExec: kernelWorker.processSecureExec(childPid),
           isForkChild: true,
           forkMode: mode,
           forkBufAddr,
@@ -610,10 +775,14 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           throw error;
         }
       },
-      onExec: async (execPid, path, argv, envp, callerTid) => {
-        const wasmPath = options.execPrograms?.get(path);
-        if (!wasmPath) return -2;
-        const newProgramBytes = loadProgramWasm(wasmPath);
+      onExec: async (request) => {
+        const {
+          pid: execPid,
+          targetBytes: newProgramBytes,
+          targetModule: newProgramModule,
+          argv,
+          envp,
+        } = request;
         const newPtrWidth = detectPtrWidth(newProgramBytes);
         const sourcePtrWidth = processPtrWidths.get(execPid) ?? newPtrWidth;
         const metadataResult = kernelWorker.validateExecMetadata(argv, envp, sourcePtrWidth);
@@ -634,130 +803,144 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         );
         const newChannelOffset = newLayout.channelOffset;
 
-        const prepareResult = kernelWorker.kernelExecPrepare(execPid, callerTid);
-        if (prepareResult < 0) return prepareResult;
         const addressSpaceResult = kernelWorker.prepareAddressSpaceForExec(execPid);
         if (addressSpaceResult < 0) return addressSpaceResult;
         let replacementWorker: ReturnType<NodeWorkerAdapter["createWorker"]> | undefined;
         let replacementGeneration: ForkExternrefGeneration | undefined;
         let replacementForkHostImports: ForkHostImportOwnerWorker | undefined;
-        try {
-          const setupResult = kernelWorker.kernelExecSetup(execPid, callerTid);
-          if (setupResult < 0) return setupResult;
-          kernelWorker.prepareProcessForExec(execPid);
-          const previousGeneration = externrefGenerations.get(execPid);
-          if (!previousGeneration) {
-            throw new Error(
-              `Unknown externref generation for exec pid ${execPid}`,
-            );
-          }
-          replacementGeneration =
-            externrefProcessOwner.replaceGeneration(previousGeneration);
-          externrefGenerations.set(execPid, replacementGeneration);
-
-          const finalizeResult = kernelWorker.finalizeAddressSpaceForExec(execPid);
-          if (finalizeResult < 0) {
-            throw new Error("failed to detach the discarded address space");
-          }
-
-          const oldWorker = workers.get(execPid);
-          processForkHostImports.get(execPid)?.close();
-          processForkHostImports.delete(execPid);
-          if (oldWorker) {
-            await oldWorker.terminate().catch(() => {});
-            workers.delete(execPid);
-          }
-          if (kernelWorker.finalizeExecHandoffTermination(execPid) > 0) {
-            externrefProcessOwner.releaseGeneration(replacementGeneration);
-            externrefGenerations.delete(execPid);
-            replacementGeneration = undefined;
-            return 0;
-          }
-
-          kernelWorker.registerProcess(execPid, newMemory, [newChannelOffset], {
-            preserveProcessState: true,
-            ptrWidth: newPtrWidth,
-            metadataPtrWidth: sourcePtrWidth,
-            brkBase: newLayout.brkBase,
-            mmapBase: newLayout.mmapBase,
-            maxAddr: newLayout.maxAddr,
-            argv,
-            env: envp,
-          });
-          processProgramBytes.set(execPid, newProgramBytes);
-          processLayouts.set(execPid, newLayout);
-          threadAllocators.set(execPid, newThreadAllocator);
-          processPtrWidths.set(execPid, newPtrWidth);
-          forkReplayContexts.delete(execPid);
-
-          replacementForkHostImports =
-            forkHostImportOwnerRuntime.createWorker({
-              pid: execPid,
-              generationId: replacementGeneration.id,
-              authorizeSender: () => {
-                if (
-                  !replacementWorker
-                  || workers.get(execPid) !== replacementWorker
-                  || externrefGenerations.get(execPid)
-                    !== replacementGeneration
-                ) {
-                  throw new Error(
-                    `stale centralized-test host-import sender for exec pid=${execPid}`,
-                  );
-                }
-              },
-            });
-          const initData: CentralizedWorkerInitMessage = {
-            type: "centralized_init",
-            pid: execPid,
-            programBytes: newProgramBytes,
-            memory: newMemory,
-            channelOffset: newChannelOffset,
-            argv,
-            env: envp,
-            ptrWidth: newPtrWidth,
-            externrefGenerationId: replacementGeneration.id,
-            forkHostImports: replacementForkHostImports.init,
-          };
-
-          replacementWorker = workerAdapter.createWorker(initData);
-          workers.set(execPid, replacementWorker);
-          processForkHostImports.set(execPid, replacementForkHostImports);
-          replacementWorker.on("error", (err: Error) => {
-            console.error(`[exec] worker error for pid ${execPid}:`, err);
-          });
-          replacementWorker.on("message", (msg: unknown) => {
-            const m = msg as WorkerToHostMessage;
-            if (m.type === "fork_host_import") {
-              replacementForkHostImports?.dispatch(m.wake);
+        let launchPlanState: "ready" | "discarded" | "started" = "ready";
+        return {
+          onCommitFailure: () => {
+            if (launchPlanState !== "ready") return;
+            launchPlanState = "discarded";
+          },
+          startAfterCommit: async () => {
+            if (launchPlanState !== "ready") {
+              throw new Error(
+                `Centralized-test exec plan for pid ${execPid} was already consumed`,
+              );
             }
-          });
-          kernelWorker.finishProcessExecHandoff(execPid);
-          return 0;
-        } catch (err) {
-          replacementForkHostImports?.close();
-          try { kernelWorker.prepareProcessForExec(execPid); } catch { /* best-effort */ }
-          if (replacementWorker && workers.get(execPid) !== replacementWorker) {
-            await replacementWorker.terminate().catch(() => {});
-          }
-          const currentWorker = workers.get(execPid);
-          if (currentWorker) {
-            await currentWorker.terminate().catch(() => {});
-            workers.delete(execPid);
-          }
-          try { kernelWorker.notifyHostProcessCrashed(execPid, SIGSEGV); } catch { /* best-effort */ }
-          try { kernelWorker.deactivateProcess(execPid); } catch { /* best-effort */ }
-          processProgramBytes.delete(execPid);
-          processLayouts.delete(execPid);
-          threadAllocators.delete(execPid);
-          processPtrWidths.delete(execPid);
-          forkReplayContexts.delete(execPid);
-          releaseProcessReferenceOwner(execPid);
-          const message = err instanceof Error ? err.message : String(err);
-          stderr += `[exec] post-commit transition failed: ${message}\n`;
-          if (execPid === pid) resolveExit(128 + SIGSEGV);
-          return 0;
-        }
+            launchPlanState = "started";
+            try {
+              const secureExec = kernelWorker.processSecureExec(execPid);
+              kernelWorker.prepareProcessForExec(execPid);
+              const previousGeneration = externrefGenerations.get(execPid);
+              if (!previousGeneration) {
+                throw new Error(
+                  `Unknown externref generation for exec pid ${execPid}`,
+                );
+              }
+              replacementGeneration =
+                externrefProcessOwner.replaceGeneration(previousGeneration);
+              externrefGenerations.set(execPid, replacementGeneration);
+
+              const finalizeResult = kernelWorker.finalizeAddressSpaceForExec(execPid);
+              if (finalizeResult < 0) {
+                throw new Error("failed to detach the discarded address space");
+              }
+
+              const oldWorker = workers.get(execPid);
+              processForkHostImports.get(execPid)?.close();
+              processForkHostImports.delete(execPid);
+              if (oldWorker) {
+                await oldWorker.terminate().catch(() => {});
+                workers.delete(execPid);
+              }
+              if (kernelWorker.finalizeExecHandoffTermination(execPid) > 0) {
+                externrefProcessOwner.releaseGeneration(replacementGeneration);
+                externrefGenerations.delete(execPid);
+                replacementGeneration = undefined;
+                return 0;
+              }
+
+              kernelWorker.registerProcess(execPid, newMemory, [newChannelOffset], {
+                preserveProcessState: true,
+                ptrWidth: newPtrWidth,
+                metadataPtrWidth: sourcePtrWidth,
+                brkBase: newLayout.brkBase,
+                mmapBase: newLayout.mmapBase,
+                maxAddr: newLayout.maxAddr,
+                argv,
+                env: envp,
+              });
+              processProgramBytes.set(execPid, newProgramBytes);
+              processLayouts.set(execPid, newLayout);
+              threadAllocators.set(execPid, newThreadAllocator);
+              processPtrWidths.set(execPid, newPtrWidth);
+              forkReplayContexts.delete(execPid);
+
+              replacementForkHostImports =
+                forkHostImportOwnerRuntime.createWorker({
+                  pid: execPid,
+                  generationId: replacementGeneration.id,
+                  authorizeSender: () => {
+                    if (
+                      !replacementWorker
+                      || workers.get(execPid) !== replacementWorker
+                      || externrefGenerations.get(execPid)
+                        !== replacementGeneration
+                    ) {
+                      throw new Error(
+                        `stale centralized-test host-import sender for exec pid=${execPid}`,
+                      );
+                    }
+                  },
+                });
+              const initData: CentralizedWorkerInitMessage = {
+                type: "centralized_init",
+                pid: execPid,
+                programBytes: newProgramBytes,
+                programModule: newProgramModule,
+                memory: newMemory,
+                channelOffset: newChannelOffset,
+                secureExec,
+                argv,
+                env: envp,
+                ptrWidth: newPtrWidth,
+                externrefGenerationId: replacementGeneration.id,
+                forkHostImports: replacementForkHostImports.init,
+              };
+
+              replacementWorker = workerAdapter.createWorker(initData);
+              workers.set(execPid, replacementWorker);
+              processForkHostImports.set(execPid, replacementForkHostImports);
+              replacementWorker.on("error", (err: Error) => {
+                console.error(`[exec] worker error for pid ${execPid}:`, err);
+              });
+              replacementWorker.on("message", (msg: unknown) => {
+                const m = msg as WorkerToHostMessage;
+                if (m.type === "fork_host_import") {
+                  replacementForkHostImports?.dispatch(m.wake);
+                }
+              });
+              kernelWorker.finishProcessExecHandoff(execPid);
+              return 0;
+            } catch (err) {
+              replacementForkHostImports?.close();
+              try { kernelWorker.prepareProcessForExec(execPid); } catch { /* best-effort */ }
+              if (replacementWorker && workers.get(execPid) !== replacementWorker) {
+                await replacementWorker.terminate().catch(() => {});
+              }
+              const currentWorker = workers.get(execPid);
+              if (currentWorker) {
+                await currentWorker.terminate().catch(() => {});
+                workers.delete(execPid);
+              }
+              try { kernelWorker.notifyHostProcessCrashed(execPid, SIGSEGV); } catch { /* best-effort */ }
+              try { kernelWorker.deactivateProcess(execPid); } catch { /* best-effort */ }
+              processProgramBytes.delete(execPid);
+              processLayouts.delete(execPid);
+              threadAllocators.delete(execPid);
+              processPtrWidths.delete(execPid);
+              forkReplayContexts.delete(execPid);
+              releaseProcessReferenceOwner(execPid);
+              const message = err instanceof Error ? err.message : String(err);
+              stderr += `[exec] post-commit transition failed: ${message}\n`;
+              if (execPid === pid) resolveExit(128 + SIGSEGV);
+              return 0;
+            }
+          },
+        };
       },
       onClone: async (attachment) => {
         const {
@@ -817,6 +1000,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           memory,
           processChannelOffset,
           channelOffset: alloc.channelOffset,
+          secureExec: kernelWorker.processSecureExec(clonePid),
           fnPtr,
           argPtr,
           stackPtr,
@@ -976,6 +1160,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     programBytes,
     memory,
     channelOffset,
+    secureExec: kernelWorker.processSecureExec(pid),
     env: options.env,
     argv: options.argv ?? [options.programPath],
     ptrWidth,

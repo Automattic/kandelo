@@ -44,6 +44,7 @@ describe.skipIf(!hasBinary)("centralizedWorkerMain", () => {
       programBytes: loadProgramBytes(),
       memory,
       channelOffset,
+      secureExec: false,
     };
 
     // Note: centralizedWorkerMain will call _start() which uses channel IPC.
@@ -59,6 +60,7 @@ describe.skipIf(!hasBinary)("centralizedWorkerMain", () => {
       programBytes: new ArrayBuffer(0),
       memory,
       channelOffset,
+      secureExec: false,
     };
 
     await centralizedWorkerMain(errorPort as any, errorInitData);

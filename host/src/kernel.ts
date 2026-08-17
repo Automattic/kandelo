@@ -14,6 +14,7 @@
  *   env.host_seek(handle: i64, offset_lo, offset_hi, whence) -> i64
  *   env.host_fstat(handle: i64, stat_ptr) -> i32
  *   env.host_statfs(path_ptr, path_len, statfs_ptr) -> i32
+ *   env.host_fstatfs(handle, statfs_ptr) -> i32
  *
  * IMPORTANT: Wasm i64 values appear as BigInt in JavaScript.
  */
@@ -770,7 +771,6 @@ const WASM_STATFS_SIZE = STRUCT_SIZE_WASM_STATFS;
 const WASM_DIRENT_SIZE = STRUCT_SIZE_WASM_DIRENT;
 
 export interface KernelCallbacks {
-  onExec?: (path: string) => number;
   onAlarm?: (seconds: number) => number;
   onPosixTimer?: (timerId: number, signo: number, valueMs: number, intervalMs: number) => number;
   onWaitpid?: (targetPid: number, options: number) => void;
@@ -1634,6 +1634,20 @@ export class WasmPosixKernel {
             return -14; // EFAULT
           }
         },
+        host_fstatfs: (handle: bigint, statfsPtr: KernelPointer): number => {
+          try {
+            return this.#hostFstatfs(
+              handle,
+              this.#rustLentKernelDestination(
+                statfsPtr,
+                WASM_STATFS_SIZE,
+                "host_fstatfs destination",
+              ),
+            );
+          } catch {
+            return -14; // EFAULT
+          }
+        },
         host_pathconf: (pathPtr: KernelPointer, pathLen: number, name: number, valuePtr: KernelPointer): number => {
           try {
             return this.#hostPathconf(
@@ -1768,9 +1782,6 @@ export class WasmPosixKernel {
         },
         host_fchown: (handle: bigint, uid: number, gid: number): number => {
           return this.#hostFchown(handle, uid, gid);
-        },
-        host_exec: (pathPtr: KernelPointer, pathLen: number): number => {
-          return this.#hostExec(pathPtr, pathLen);
         },
         host_set_alarm: (seconds: number): number => {
           return this.#hostSetAlarm(seconds);
@@ -3103,6 +3114,20 @@ export class WasmPosixKernel {
     }
   }
 
+  #hostFstatfs(
+    handle: bigint,
+    destination: RustLentKernelDestination,
+  ): number {
+    if (!this.io.fstatfs) return -38; // ENOSYS
+    try {
+      const statfs = this.io.fstatfs(Number(handle));
+      this.#writeStatfsToMemory(destination, statfs);
+      return 0;
+    } catch (e) {
+      return negErrno(e);
+    }
+  }
+
   #hostPathconf(
     pathPtr: KernelPointer,
     pathLen: number,
@@ -3644,22 +3669,6 @@ export class WasmPosixKernel {
     } catch {
       return -1;
     }
-  }
-
-  // ---- Phase 13e: Exec ----
-
-  #hostExec(pathPtr: KernelPointer, pathLen: number): number {
-    if (this.callbacks.onExec) {
-      try {
-        const path = new TextDecoder().decode(
-          this.#readKernelBytes(pathPtr, pathLen),
-        );
-        return this.callbacks.onExec(path);
-      } catch (error) {
-        return negErrno(error);
-      }
-    }
-    return -2; // -ENOENT
   }
 
   // ---- Phase 14: Alarm ----

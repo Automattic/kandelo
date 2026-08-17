@@ -309,9 +309,11 @@ export class HostFileSystem implements FileSystemBackend {
       ((flags & OPEN_FLAGS.O_CREAT) !== 0 &&
         (flags & OPEN_FLAGS.O_EXCL) !== 0);
     const nativePath = this.safePath(path, !noFollowFinal);
+    const truncate = (flags & OPEN_FLAGS.O_TRUNC) !== 0;
+    const nativeFlags = translateOpenFlags(flags);
     const { fd, created } = openNativeBackingFile(
       nativePath,
-      translateOpenFlags(flags),
+      truncate ? nativeFlags & ~fs.constants.O_TRUNC : nativeFlags,
       flags,
       mode,
     );
@@ -321,6 +323,19 @@ export class HostFileSystem implements FileSystemBackend {
       }
       this.fdPositions.set(fd, 0);
       this.positionedWrites.register(fd, flags, nativePath);
+      if (!created && truncate) {
+        const truncateHandle = this.positionedWrites.forTruncate(
+          fd,
+          flags,
+          nativePath,
+        );
+        const before = fs.fstatSync(fd, { bigint: true });
+        const commit = before.size === 0n
+          ? null
+          : this.metadata.prepareNativeContentChange(before);
+        fs.ftruncateSync(truncateHandle, 0);
+        commit?.();
+      }
       return fd;
     } catch (error) {
       this.fdPositions.delete(fd);
@@ -542,10 +557,12 @@ export class HostFileSystem implements FileSystemBackend {
   }
 
   ftruncate(handle: number, length: number): void {
+    const before = fs.fstatSync(handle, { bigint: true });
+    const commit = before.size === BigInt(length)
+      ? null
+      : this.metadata.prepareNativeContentChange(before);
     fs.ftruncateSync(handle, length);
-    this.metadata.noteNativeContentChange(
-      fs.fstatSync(handle, { bigint: true }),
-    );
+    commit?.();
   }
 
   fsync(handle: number): void {

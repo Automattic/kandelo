@@ -238,25 +238,20 @@ describe("Rust-owned advisory-lock retry scheduling", () => {
     );
   });
 
-  it("drains Rust lock wakes after both exec cleanup phases", () => {
-    const prepare = vi.fn(() => -5);
-    const setup = vi.fn(() => -5);
+  it("drains Rust lock wakes after the atomic target-aware exec commit", () => {
+    const commit = vi.fn(() => -5);
     const drain = vi.fn(() => 0);
     const worker = createWorker({
       kernel_drain_wakeup_events: drain,
-      kernel_exec_prepare: prepare,
-      kernel_exec_setup_for_thread: setup,
+      kernel_exec_commit: commit,
     });
 
-    expect(worker.kernelExecPrepare(19, 19)).toBe(-5);
-    expect(worker.kernelExecSetup(19, 19)).toBe(-5);
+    expect(worker.kernelExecCommit(19, 19, 23)).toBe(-5);
 
-    expect(drain).toHaveBeenCalledTimes(2);
-    expect(prepare.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(drain).toHaveBeenCalledOnce();
+    expect(commit).toHaveBeenCalledExactlyOnceWith(19, 19, 23);
+    expect(commit.mock.invocationCallOrder[0]).toBeLessThan(
       drain.mock.invocationCallOrder[0],
-    );
-    expect(setup.mock.invocationCallOrder[0]).toBeLessThan(
-      drain.mock.invocationCallOrder[1],
     );
   });
 

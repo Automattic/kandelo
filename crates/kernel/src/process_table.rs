@@ -20,6 +20,7 @@ use core::sync::atomic::AtomicI32;
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::flags::O_ACCMODE;
 
+use crate::credentials::Credentials;
 use crate::lock::AdvisoryLockManager;
 use crate::ofd::FileType;
 #[cfg(test)]
@@ -134,10 +135,7 @@ pub struct RemoveProcessResult {
 /// front under an immutable `&parent` borrow so the rest of `spawn_child`
 /// can mutate `self.processes` freely.
 struct SpawnInheritFromParent {
-    uid: u32,
-    gid: u32,
-    euid: u32,
-    egid: u32,
+    credentials: Credentials,
     pgid: u32,
     sid: u32,
     umask: u32,
@@ -789,10 +787,9 @@ impl ProcessTable {
     fn limbo_process_from(proc: &Process) -> Process {
         let mut limbo = Process::new_allocated(AllocatedTaskId(proc.pid));
         limbo.ppid = proc.ppid;
-        limbo.uid = proc.uid;
-        limbo.gid = proc.gid;
-        limbo.euid = proc.euid;
-        limbo.egid = proc.egid;
+        limbo.install_credentials(proc.credentials().clone());
+        limbo.secure_exec = proc.secure_exec;
+        limbo.exec_generation = proc.exec_generation;
         limbo.pgid = proc.pgid;
         limbo.sid = proc.sid;
         limbo.is_session_leader = proc.is_session_leader;
@@ -1147,10 +1144,7 @@ impl ProcessTable {
                 }
             }
             SpawnInheritFromParent {
-                uid: parent.uid,
-                gid: parent.gid,
-                euid: parent.euid,
-                egid: parent.egid,
+                credentials: parent.credentials().clone(),
                 pgid: parent.pgid,
                 sid: parent.sid,
                 umask: parent.umask,
@@ -1171,10 +1165,7 @@ impl ProcessTable {
 
         // ── POSIX-required inheritance ─────────────────────────────────
         child.ppid = parent_pid;
-        child.uid = inherit.uid;
-        child.gid = inherit.gid;
-        child.euid = inherit.euid;
-        child.egid = inherit.egid;
+        child.install_credentials(inherit.credentials);
         child.pgid = inherit.pgid; // POSIX_SPAWN_SETPGROUP may override (Task 9).
         child.sid = inherit.sid; // POSIX_SPAWN_SETSID may override (Task 9).
         child.umask = inherit.umask;
@@ -1231,11 +1222,14 @@ impl ProcessTable {
             }
         }
 
-        // Apply spawn attrs in POSIX order (SETSID → SETPGROUP → SETSIGMASK
-        // → SETSIGDEF). All operate on local Process state and are
-        // infallible; happens before file actions, before insertion.
+        // Apply spawn attrs in POSIX order (RESETIDS → SETSID → SETPGROUP
+        // → SETSIGMASK → SETSIGDEF). All operate on local Process state
+        // and are infallible; happens before file actions, before insertion.
         {
             use crate::spawn::attr_flags;
+            if attrs.flags & attr_flags::RESETIDS != 0 {
+                child.reset_effective_ids_to_real();
+            }
             if attrs.flags & attr_flags::SETSID != 0 {
                 child.sid = child.pid;
                 child.pgid = child.pid;
@@ -1271,6 +1265,11 @@ impl ProcessTable {
         // helper fork uses — this is the genuinely-shared concern.
         bump_inherited_resource_refcounts(parent_pid, &child)?;
 
+        // The child is a real kernel process and signal target, but the
+        // parent has not received a successful posix_spawn result yet. Wait
+        // selection must not consume it until the host completes the exact
+        // target launch transaction and publishes that result.
+        child.spawn_publication_pending = true;
         self.processes.insert(child_pid, child);
 
         // Apply file actions in forward order against the child. Any failure
@@ -1368,28 +1367,9 @@ impl ProcessTable {
             }
         }
 
-        // POSIX exec semantics: after file_actions are applied, any fd that
-        // still has FD_CLOEXEC set is closed before the new program image
-        // runs. The dup2(N, N) self-dup pattern clears FD_CLOEXEC on the
-        // target fd specifically to RESCUE it from this closure (sortix
-        // basic/spawn/posix_spawn_file_actions_adddup2 exercises exactly
-        // this). Run after the action loop so file actions can rescue or
-        // clear individual fds before the sweep.
-        let (child, advisory_locks) = self
-            .process_and_advisory_locks(child_pid)
-            .ok_or(Errno::ESRCH)?;
-        let cloexec_fds: Vec<i32> = child
-            .fd_table
-            .iter()
-            .filter(|(_fd, e)| e.fd_flags & wasm_posix_shared::fd_flags::FD_CLOEXEC != 0)
-            .map(|(fd, _)| fd)
-            .collect();
-        for fd in cloexec_fds {
-            // POSIX: close errors here are silently ignored — same policy
-            // as the FileAction::Close handler above.
-            let _ = crate::syscalls::sys_close_with_locks(child, advisory_locks, host, fd);
-        }
-
+        // FD_CLOEXEC closure is part of the exact prepared-target commit, not
+        // child construction. Keeping it there lets final-target preparation
+        // observe the descriptor state produced by the one file-action pass.
         Ok(())
     }
 
@@ -1517,9 +1497,56 @@ impl ProcessTable {
             .collect()
     }
 
-    /// Return the recorded parent pid for a process.
+    /// Return the host-visible parent pid for a process. An unpublished spawn
+    /// child is hidden so an early signal-exit finalizer cannot emit SIGCHLD
+    /// before the parent receives the successful spawn result.
     pub fn parent_pid(&self, pid: u32) -> Option<u32> {
-        self.processes.get(&pid).map(|proc| proc.ppid)
+        self.processes
+            .get(&pid)
+            .filter(|proc| !proc.spawn_publication_pending)
+            .map(|proc| proc.ppid)
+    }
+
+    /// Publish one pending spawn child to its exact parent.
+    ///
+    /// The result deliberately mirrors `kernel_get_process_exit_signal`: `-1`
+    /// means the child is live, `0` is a normal zombie, and a positive value
+    /// is the terminating signal. The caller can therefore publish the spawn
+    /// result before waking waiters without conflating a live child with the
+    /// `-ESRCH` absence error.
+    pub fn publish_spawn_child(
+        &mut self,
+        parent_pid: u32,
+        child_pid: u32,
+    ) -> Result<i32, Errno> {
+        let parent_accepts_publication = self
+            .processes
+            .get(&parent_pid)
+            .is_some_and(|parent| {
+                matches!(parent.state, ProcessState::Running | ProcessState::Stopped)
+            });
+        let child = self.processes.get_mut(&child_pid).ok_or(Errno::ESRCH)?;
+        if child.ppid != parent_pid {
+            return Err(Errno::ESRCH);
+        }
+        if !child.spawn_publication_pending {
+            return Err(Errno::EINVAL);
+        }
+        if child.state == ProcessState::Limbo {
+            return Err(Errno::ESRCH);
+        }
+        if !parent_accepts_publication {
+            // The exact unpublished child still exists and must be removed by
+            // the host's ordinary rollback seam. Distinguish that ownership
+            // from ESRCH, which means there is no exact child left to remove.
+            return Err(Errno::ECHILD);
+        }
+        child.spawn_publication_pending = false;
+        Ok(if child.state == ProcessState::Exited {
+            child.exit_signal as i32
+        } else {
+            -1
+        })
     }
 
     /// Pick the process/fd that should receive the next host-bridged TCP
@@ -1617,6 +1644,13 @@ impl ProcessTable {
             }
             saw_matching_child = true;
 
+            // The pending child is real enough to keep a blocking waiter
+            // parked, but neither WNOHANG nor a queued waiter may observe or
+            // consume its status before posix_spawn publishes the PID/result.
+            if child.spawn_publication_pending {
+                continue;
+            }
+
             let Some(event) = child.wait_event else {
                 continue;
             };
@@ -1640,7 +1674,11 @@ impl ProcessTable {
     pub fn is_exited_child_of(&self, parent_pid: u32, child_pid: u32) -> bool {
         self.processes
             .get(&child_pid)
-            .map(|child| child.ppid == parent_pid && child.state == ProcessState::Exited)
+            .map(|child| {
+                child.ppid == parent_pid
+                    && !child.spawn_publication_pending
+                    && child.state == ProcessState::Exited
+            })
             .unwrap_or(false)
     }
 
@@ -1669,6 +1707,105 @@ impl ProcessTable {
 #[cfg(test)]
 mod wait_tests {
     use super::*;
+
+    #[test]
+    fn spawn_inherits_credentials_as_one_complete_process_record() {
+        use crate::credentials::Credentials;
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let credentials = Credentials {
+            ruid: 1000,
+            euid: 2000,
+            suid: 3000,
+            rgid: 4000,
+            egid: 5000,
+            sgid: 6000,
+            supplementary_groups: vec![7000, 8000],
+        };
+        table
+            .get_mut(parent_pid)
+            .unwrap()
+            .install_credentials(credentials.clone());
+
+        let mut host = NoopHost;
+        let spawn_pid = table
+            .spawn_child_for_caller(
+                parent_pid,
+                parent_pid,
+                &[b"/bin/child".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .unwrap();
+
+        assert_eq!(table.get(spawn_pid).unwrap().credentials(), &credentials);
+    }
+
+    #[test]
+    fn spawn_resetids_changes_only_effective_ids_before_child_publication() {
+        use crate::credentials::Credentials;
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let parent_credentials = Credentials {
+            ruid: 1000,
+            euid: 2000,
+            suid: 3000,
+            rgid: 4000,
+            egid: 5000,
+            sgid: 6000,
+            supplementary_groups: vec![7000, 8000],
+        };
+        table
+            .get_mut(parent_pid)
+            .unwrap()
+            .install_credentials(parent_credentials.clone());
+
+        let attrs = SpawnAttrs {
+            flags: wasm_posix_shared::spawn_contract::ATTR_RESETIDS,
+            pgrp: 0,
+            sigdef: 0,
+            sigmask: 0,
+        };
+        let mut host = NoopHost;
+        let child_pid = table
+            .spawn_child_for_caller(
+                parent_pid,
+                parent_pid,
+                &[b"/bin/child".as_slice()],
+                &[],
+                &[],
+                &attrs,
+                &mut host,
+            )
+            .unwrap();
+
+        let child = table.get(child_pid).unwrap();
+        assert_eq!(
+            (
+                child.real_uid(),
+                child.effective_uid(),
+                child.saved_uid(),
+                child.real_gid(),
+                child.effective_gid(),
+                child.saved_gid(),
+            ),
+            (1000, 1000, 3000, 4000, 4000, 6000),
+        );
+        assert_eq!(child.supplementary_groups(), &[7000, 8000]);
+        assert_eq!(
+            table.get(parent_pid).unwrap().credentials(),
+            &parent_credentials,
+            "spawn attributes must never mutate the parent credential record",
+        );
+    }
 
     #[test]
     fn task_ids_are_shared_by_create_clone_fork_and_spawn() {
@@ -2084,6 +2221,134 @@ pub fn current_pid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exec_target_kernel_table_removal_fallback_closes_each_lease_once() {
+        use crate::exec_target::{PreparedExecOwner, PreparedExecTarget};
+        use crate::fd::OpenFileDescRef;
+        use crate::lock::FileId;
+        use wasm_posix_shared::{WasmStat, WasmStatfs};
+        use wasm_posix_shared::flags::O_RDONLY;
+        use wasm_posix_shared::mode::S_IFREG;
+        use wasm_posix_shared::statfs_flags::ST_NOSUID;
+
+        // Host teardown and forced vfork containment both converge on this
+        // table-removal fallback after their route-specific host fences. The
+        // vfork marker must not change exact OFD retirement here.
+        for (case, vfork_child) in [(0i64, false), (1, true)] {
+            let handle = 9_452_100 + case;
+            let mut table = ProcessTable::new();
+            let pid = table.create_process().unwrap();
+            let proc = table.get_mut(pid).unwrap();
+            proc.vfork_child = vfork_child;
+            let ofd_index = proc.ofd_table.create(
+                FileType::Regular,
+                O_RDONLY,
+                handle,
+                b"/bin/retained-removal-target".to_vec(),
+            );
+            let ofd_id = proc.ofd_table.get(ofd_index).unwrap().ofd_id;
+            let target = PreparedExecTarget::new(
+                PreparedExecOwner::Process {
+                    pid,
+                    caller_tid: pid,
+                    generation: 0,
+                },
+                OpenFileDescRef(ofd_index),
+                ofd_id,
+                Some(FileId::Host { dev: 7, ino: 11 }),
+                WasmStat {
+                    st_dev: 7,
+                    st_ino: 11,
+                    st_mode: S_IFREG | 0o755,
+                    st_nlink: 1,
+                    st_uid: 0,
+                    st_gid: 0,
+                    st_size: 0,
+                    st_atime_sec: 0,
+                    st_atime_nsec: 0,
+                    st_mtime_sec: 0,
+                    st_mtime_nsec: 0,
+                    st_ctime_sec: 0,
+                    st_ctime_nsec: 0,
+                    _pad: 0,
+                },
+                WasmStatfs {
+                    f_type: 1,
+                    f_bsize: 4096,
+                    f_blocks: 1,
+                    f_bfree: 0,
+                    f_bavail: 0,
+                    f_files: 1,
+                    f_ffree: 0,
+                    f_fsid: 19,
+                    f_namelen: 255,
+                    f_frsize: 4096,
+                    f_flags: ST_NOSUID,
+                    _pad: 0,
+                },
+                b"/bin/retained-removal-target".to_vec(),
+            )
+            .unwrap();
+            proc.prepared_exec_targets.insert(target).unwrap();
+
+            let removed = table.remove_process(pid).unwrap();
+            assert_eq!(
+                removed
+                    .host_closes
+                    .iter()
+                    .filter(|&&candidate| candidate == handle)
+                    .count(),
+                1,
+            );
+            assert_eq!(crate::ofd::host_handle_ref_count(handle), 0);
+        }
+    }
+
+    #[test]
+    fn vfork_child_credential_mutation_isolated_from_parent_record() {
+        use wasm_posix_shared::fork_contract::Mode;
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let parent_credentials = Credentials {
+            ruid: 1000,
+            euid: 0,
+            suid: 3000,
+            rgid: 4000,
+            egid: 5000,
+            sgid: 6000,
+            supplementary_groups: vec![7000, 8000],
+        };
+        {
+            let parent = table.get_mut(parent_pid).unwrap();
+            parent.install_credentials(parent_credentials.clone());
+            parent.secure_exec = true;
+        }
+
+        let child_pid = table
+            .fork_process_for_caller_with_mode(parent_pid, parent_pid, Mode::Vfork)
+            .unwrap();
+        {
+            let child = table.get_mut(child_pid).unwrap();
+            assert_eq!(child.credentials(), &parent_credentials);
+            assert!(child.secure_exec);
+            child.setgroups(&[42, 43]).unwrap();
+            child.setresuid(9000, 9001, 9002).unwrap();
+            child.secure_exec = false;
+        }
+
+        let parent = table.get(parent_pid).unwrap();
+        assert_eq!(parent.credentials(), &parent_credentials);
+        assert!(parent.secure_exec);
+        let child = table.get(child_pid).unwrap();
+        assert_eq!(
+            (child.real_uid(), child.effective_uid(), child.saved_uid()),
+            (9000, 9001, 9002),
+        );
+        assert_eq!(child.supplementary_groups(), &[42, 43]);
+        assert!(!child.secure_exec);
+    }
 
     #[test]
     fn fork_pipe_replay_includes_fds_above_default_nofile_limit() {
@@ -3420,6 +3685,146 @@ mod tests {
             assert_eq!(event.si_status, 15);
         }
         assert!(table.get(child_pid).unwrap().wait_event.is_some());
+    }
+
+    #[test]
+    fn pending_spawn_exit_is_hidden_until_one_parent_bound_publication() {
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+        use wasm_posix_shared::signal::SIGTERM;
+        use wasm_posix_shared::wait::{CLD_KILLED, EVENT_EXITED};
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let mut host = NoopHost;
+        let child_pid = table
+            .spawn_child_for_caller(
+                parent_pid,
+                parent_pid,
+                &[b"/bin/child".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .unwrap();
+
+        assert!(table.get_mut(child_pid).unwrap().record_signal_exit(SIGTERM));
+        assert_eq!(
+            table.poll_wait_event(parent_pid, -1, EVENT_EXITED, 0),
+            Ok(None),
+            "a sibling waiter may park but cannot consume an unpublished spawn child",
+        );
+        assert!(!table.is_exited_child_of(parent_pid, child_pid));
+
+        assert_eq!(
+            table.publish_spawn_child(parent_pid, child_pid),
+            Ok(SIGTERM as i32),
+        );
+        let (waited_pid, event) = table
+            .poll_wait_event(parent_pid, -1, EVENT_EXITED, 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(waited_pid, child_pid);
+        assert_eq!(event.wait_status, SIGTERM as i32);
+        assert_eq!(event.si_code, CLD_KILLED);
+        assert!(table.is_exited_child_of(parent_pid, child_pid));
+        assert_eq!(
+            table.publish_spawn_child(parent_pid, child_pid),
+            Err(Errno::EINVAL),
+            "publication is a one-shot parent/child transaction",
+        );
+    }
+
+    #[test]
+    fn failed_pending_spawn_removal_releases_the_hidden_wait_relationship() {
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+        use wasm_posix_shared::wait::EVENT_EXITED;
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let mut host = NoopHost;
+        let child_pid = table
+            .spawn_child_for_caller(
+                parent_pid,
+                parent_pid,
+                &[],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .unwrap();
+
+        assert_eq!(
+            table.poll_wait_event(parent_pid, -1, EVENT_EXITED, 0),
+            Ok(None),
+        );
+        assert!(table.remove_process(child_pid).is_some());
+        assert_eq!(
+            table.poll_wait_event(parent_pid, -1, EVENT_EXITED, 0),
+            Err(Errno::ECHILD),
+        );
+    }
+
+    #[test]
+    fn pending_spawn_with_absent_parent_remains_owned_for_one_rollback() {
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let mut host = NoopHost;
+        let child_pid = table
+            .spawn_child_for_caller(
+                parent_pid,
+                parent_pid,
+                &[],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .unwrap();
+
+        assert!(table.remove_process(parent_pid).is_some());
+        assert_eq!(
+            table.publish_spawn_child(parent_pid, child_pid),
+            Err(Errno::ECHILD),
+            "ECHILD tells the host that the exact unpublished child still needs rollback",
+        );
+        assert!(table.remove_process(child_pid).is_some());
+        assert!(table.get(child_pid).is_none());
+    }
+
+    #[test]
+    fn pending_spawn_with_exited_parent_remains_owned_for_one_rollback() {
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let mut host = NoopHost;
+        let child_pid = table
+            .spawn_child_for_caller(
+                parent_pid,
+                parent_pid,
+                &[],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .unwrap();
+
+        assert!(table.get_mut(parent_pid).unwrap().record_normal_exit(0));
+        assert_eq!(
+            table.publish_spawn_child(parent_pid, child_pid),
+            Err(Errno::ECHILD),
+            "an exited parent cannot receive the pending spawn result",
+        );
+        assert!(table.remove_process(child_pid).is_some());
     }
 
     #[test]

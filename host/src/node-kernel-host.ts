@@ -87,12 +87,15 @@ export interface NodeKernelHostOptions {
    *  Increase for programs that do large pwrite() calls (e.g. InnoDB). */
   dataBufferSize?: number;
   /**
-   * Virtual path → immutable host filesystem generation for exec resolution
-   * inside the worker.
+   * Virtual path → immutable host filesystem generation for the Task 12 spawn
+   * preflight. Exec does not consult this map; its authority is an executable
+   * already present in the kernel-owned VFS.
    */
   execPrograms?: Record<string, string>;
   /**
-   * Virtual path → exact program bytes for pre-VFS exec resolution.
+   * Virtual path → exact program bytes for the Task 12 spawn preflight. Exec
+   * does not consult this map; its authority is an executable already present
+   * in the kernel-owned VFS.
    *
    * Ordinary ArrayBuffer-backed bytes are copied during init and owned by the
    * worker for its complete lifetime; concurrently mutable SharedArrayBuffer

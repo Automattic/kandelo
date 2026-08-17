@@ -326,8 +326,8 @@ fn dev_fd_lstat(proc: &Process, path: &[u8], target_fd: i32) -> Result<WasmStat,
     Ok(crate::devfs::devfs_symlink_stat(
         path,
         target.len(),
-        proc.euid,
-        proc.egid,
+        proc.effective_uid(),
+        proc.effective_gid(),
     ))
 }
 
@@ -849,7 +849,7 @@ pub(crate) fn commit_exec_state(
     host: &mut dyn HostIO,
     caller_tid: u32,
 ) -> Result<(), Errno> {
-    commit_exec_state_impl(proc, None, host, caller_tid)
+    commit_exec_state_impl(proc, None, host, Some(caller_tid))
 }
 
 pub(crate) fn commit_exec_state_with_locks(
@@ -858,14 +858,25 @@ pub(crate) fn commit_exec_state_with_locks(
     host: &mut dyn HostIO,
     caller_tid: u32,
 ) -> Result<(), Errno> {
-    commit_exec_state_impl(proc, Some(locks), host, caller_tid)
+    commit_exec_state_impl(proc, Some(locks), host, Some(caller_tid))
+}
+
+/// Commit a spawned image before the child has a host-visible caller thread.
+/// The prepared target's parent/child launch tuple is the authority here; a
+/// synthetic child TID would weaken that binding.
+pub(crate) fn commit_spawn_exec_state_with_locks(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+) -> Result<(), Errno> {
+    commit_exec_state_impl(proc, Some(locks), host, None)
 }
 
 fn commit_exec_state_impl(
     proc: &mut Process,
     mut locks: Option<&mut AdvisoryLockManager>,
     host: &mut dyn HostIO,
-    caller_tid: u32,
+    caller_tid: Option<u32>,
 ) -> Result<(), Errno> {
     if matches!(
         proc.state,
@@ -873,8 +884,10 @@ fn commit_exec_state_impl(
     ) {
         return Err(Errno::ESRCH);
     }
-    if caller_tid != 0 && caller_tid != proc.pid && proc.get_thread(caller_tid).is_none() {
-        return Err(Errno::ESRCH);
+    if let Some(caller_tid) = caller_tid {
+        if caller_tid != 0 && caller_tid != proc.pid && proc.get_thread(caller_tid).is_none() {
+            return Err(Errno::ESRCH);
+        }
     }
     // The old image owns every blocked request snapshot. Release its stable
     // kernel targets before closing CLOEXEC descriptors or discarding sibling
@@ -895,10 +908,12 @@ fn commit_exec_state_impl(
     // can be generated while the host is asynchronously resolving the new
     // executable, so retain it through the irreversible commit point.
     let lifecycle_state = proc.state;
-    if caller_tid != 0 && caller_tid != proc.pid {
-        let caller = proc.remove_thread(caller_tid).ok_or(Errno::ESRCH)?;
-        proc.signals.blocked = caller.signals.blocked;
-        proc.main_thread_signals = caller.signals;
+    if let Some(caller_tid) = caller_tid {
+        if caller_tid != 0 && caller_tid != proc.pid {
+            let caller = proc.remove_thread(caller_tid).ok_or(Errno::ESRCH)?;
+            proc.signals.blocked = caller.signals.blocked;
+            proc.main_thread_signals = caller.signals;
+        }
     }
     cancel_fifo_opens_for_process(proc);
 
@@ -958,7 +973,6 @@ fn commit_exec_state_impl(
     proc.fork_exec_path = None;
     proc.fork_exec_argv = None;
     proc.fork_fd_actions.clear();
-    proc.clear_exec_prepare();
     proc.fork_pipe_replay.clear();
     proc.fork_count = 0;
     proc.has_exec = true;
@@ -1912,7 +1926,7 @@ const AT_EACCESS: u32 = 0x200;
 fn has_access_for_ids(
     uid: u32,
     gid: u32,
-    supplementary_gid: u32,
+    supplementary_groups: &[u32],
     st: &WasmStat,
     amode: u32,
 ) -> bool {
@@ -1930,7 +1944,7 @@ fn has_access_for_ids(
 
     let available = if uid == st.st_uid {
         (st.st_mode >> 6) & 0o7
-    } else if gid == st.st_gid || supplementary_gid == st.st_gid {
+    } else if gid == st.st_gid || supplementary_groups.contains(&st.st_gid) {
         (st.st_mode >> 3) & 0o7
     } else {
         st.st_mode & 0o7
@@ -1940,7 +1954,13 @@ fn has_access_for_ids(
 }
 
 fn has_access(proc: &Process, st: &WasmStat, amode: u32) -> bool {
-    has_access_for_ids(proc.euid, proc.egid, proc.gid, st, amode)
+    has_access_for_ids(
+        proc.effective_uid(),
+        proc.effective_gid(),
+        proc.supplementary_groups(),
+        st,
+        amode,
+    )
 }
 
 fn check_access(proc: &Process, st: &WasmStat, amode: u32) -> Result<(), Errno> {
@@ -1954,11 +1974,11 @@ fn check_access(proc: &Process, st: &WasmStat, amode: u32) -> Result<(), Errno> 
 fn check_access_for_ids(
     uid: u32,
     gid: u32,
-    supplementary_gid: u32,
+    supplementary_groups: &[u32],
     st: &WasmStat,
     amode: u32,
 ) -> Result<(), Errno> {
-    if has_access_for_ids(uid, gid, supplementary_gid, st, amode) {
+    if has_access_for_ids(uid, gid, supplementary_groups, st, amode) {
         Ok(())
     } else {
         Err(Errno::EACCES)
@@ -2023,8 +2043,8 @@ fn dev_fd_path_stat(proc: &Process) -> WasmStat {
         st_ino: 0,
         st_mode: S_IFCHR | 0o666,
         st_nlink: 1,
-        st_uid: proc.euid,
-        st_gid: proc.egid,
+        st_uid: proc.effective_uid(),
+        st_gid: proc.effective_gid(),
         st_size: 0,
         st_atime_sec: 0,
         st_atime_nsec: 0,
@@ -2074,19 +2094,27 @@ fn namespace_lstat_raw(
             Err(error) => return Err(error),
         }
     }
-    if let Some(st) = crate::devfs::match_devfs_stat(path, proc.euid, proc.egid) {
+    if let Some(st) = crate::devfs::match_devfs_stat(
+        path,
+        proc.effective_uid(),
+        proc.effective_gid(),
+    ) {
         return Ok(st);
     }
     if let Some(dev) = match_virtual_device(path) {
-        return Ok(virtual_device_stat(dev, proc.euid, proc.egid));
+        return Ok(virtual_device_stat(
+            dev,
+            proc.effective_uid(),
+            proc.effective_gid(),
+        ));
     }
-    if let Some(st) = match_pty_stat(path, proc.euid, proc.egid) {
+    if let Some(st) = match_pty_stat(path) {
         return Ok(st);
     }
     if match_dev_fd(path).is_some() {
         return Ok(dev_fd_path_stat(proc));
     }
-    if let Some(st) = synthetic_file_stat(path, proc.euid, proc.egid) {
+    if let Some(st) = synthetic_file_stat(path, proc.effective_uid(), proc.effective_gid()) {
         return Ok(st);
     }
     // Like procfs, kernel devfs owns its namespace. `/dev/shm` is the one
@@ -2209,11 +2237,17 @@ fn resolve_namespace_path_from(
         return Err(Errno::ENOTDIR);
     }
     let (search_uid, search_gid) = if options.use_real_ids {
-        (proc.uid, proc.gid)
+        (proc.real_uid(), proc.real_gid())
     } else {
-        (proc.euid, proc.egid)
+        (proc.effective_uid(), proc.effective_gid())
     };
-    check_access_for_ids(search_uid, search_gid, proc.gid, &root_stat, X_OK)?;
+    check_access_for_ids(
+        search_uid,
+        search_gid,
+        proc.supplementary_groups(),
+        &root_stat,
+        X_OK,
+    )?;
 
     let mut resolved = alloc::vec![b'/'];
     let mut final_stat = Some(root_stat);
@@ -2230,7 +2264,13 @@ fn resolve_namespace_path_from(
                 if stat.st_mode & S_IFMT != S_IFDIR {
                     return Err(Errno::ENOTDIR);
                 }
-                check_access_for_ids(search_uid, search_gid, proc.gid, &stat, X_OK)?;
+                check_access_for_ids(
+                    search_uid,
+                    search_gid,
+                    proc.supplementary_groups(),
+                    &stat,
+                    X_OK,
+                )?;
             }
             final_stat = Some(stat);
             continue;
@@ -2329,7 +2369,13 @@ fn resolve_namespace_path_from(
             if stat.st_mode & S_IFMT != S_IFDIR {
                 return Err(Errno::ENOTDIR);
             }
-            check_access_for_ids(search_uid, search_gid, proc.gid, &stat, X_OK)?;
+            check_access_for_ids(
+                search_uid,
+                search_gid,
+                proc.supplementary_groups(),
+                &stat,
+                X_OK,
+            )?;
         }
         resolved = candidate;
         final_stat = Some(stat);
@@ -2426,12 +2472,12 @@ fn check_parent_writable(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> 
 fn check_sticky_child(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let parent = parent_path(path);
     let parent_st = namespace_lstat_raw(proc, host, &parent)?;
-    if parent_st.st_mode & S_ISVTX == 0 || proc.euid == 0 {
+    if parent_st.st_mode & S_ISVTX == 0 || proc.effective_uid() == 0 {
         return Ok(());
     }
 
     let child_st = namespace_lstat_raw(proc, host, path)?;
-    if proc.euid == parent_st.st_uid || proc.euid == child_st.st_uid {
+    if proc.effective_uid() == parent_st.st_uid || proc.effective_uid() == child_st.st_uid {
         Ok(())
     } else {
         Err(Errno::EPERM)
@@ -2486,24 +2532,104 @@ fn check_open_permissions(
 }
 
 fn check_owner_or_root(proc: &Process, st: &WasmStat) -> Result<(), Errno> {
-    if proc.euid == 0 || proc.euid == st.st_uid {
+    if proc.effective_uid() == 0 || proc.effective_uid() == st.st_uid {
         Ok(())
     } else {
         Err(Errno::EPERM)
     }
 }
 
-fn check_exec_path(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
-    check_search_path(proc, host, path)?;
-    let st = host.host_stat(path)?;
-    if st.st_mode & S_IFMT != S_IFREG {
+pub(crate) fn check_prepared_exec_stat(
+    proc: &Process,
+    stat: &WasmStat,
+) -> Result<(), Errno> {
+    if stat.st_mode & S_IFMT != S_IFREG {
         return Err(Errno::EACCES);
     }
-    check_access(proc, &st, X_OK)
+    check_access(proc, stat, X_OK)
 }
 
-fn requested_id_allowed(current_real: u32, current_effective: u32, requested: u32) -> bool {
-    requested == 0xFFFFFFFF || requested == current_real || requested == current_effective
+pub(crate) struct PreparedExecOpen {
+    pub(crate) ofd_ref: OpenFileDescRef,
+    pub(crate) ofd_id: OfdId,
+    pub(crate) file_id: Option<FileId>,
+    pub(crate) stat: WasmStat,
+    pub(crate) statfs: WasmStatfs,
+    pub(crate) diagnostic_path: Vec<u8>,
+}
+
+/// Open one pathname target directly into the OFD table without publishing a
+/// guest descriptor. The resulting reference is owned by the prepared-target
+/// ledger, so RLIMIT_NOFILE and POSIX close-any-fd lock semantics do not enter
+/// this internal authority path.
+pub(crate) fn open_prepared_exec_target(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    dirfd: i32,
+    path: &[u8],
+    flags: u32,
+) -> Result<PreparedExecOpen, Errno> {
+    if path.is_empty() {
+        return Err(Errno::ENOENT);
+    }
+    if flags & !(AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW) != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let options = if flags & AT_SYMLINK_NOFOLLOW != 0 {
+        PathResolveOptions::NOFOLLOW
+    } else {
+        PathResolveOptions::FOLLOW
+    };
+    let resolved = resolve_at_path(proc, host, dirfd, path, options)?.path;
+    check_search_path(proc, host, &resolved)?;
+
+    let open_flags = O_RDONLY
+        | if flags & AT_SYMLINK_NOFOLLOW != 0 {
+            O_NOFOLLOW
+        } else {
+            0
+        };
+    let host_handle = host.host_open(&resolved, open_flags, 0)?;
+    let stat = match host.host_fstat(host_handle) {
+        Ok(stat) => stat,
+        Err(error) => {
+            let _ = host.host_close(host_handle);
+            return Err(error);
+        }
+    };
+    if stat.st_mode & S_IFMT != S_IFREG {
+        let _ = host.host_close(host_handle);
+        return Err(Errno::EACCES);
+    }
+    if let Err(error) = check_access(proc, &stat, X_OK) {
+        let _ = host.host_close(host_handle);
+        return Err(error);
+    }
+    let statfs = match host_fstatfs_or_default(host, host_handle) {
+        Ok(statfs) => statfs,
+        Err(error) => {
+            let _ = host.host_close(host_handle);
+            return Err(error);
+        }
+    };
+    let file_id = (stat.st_ino != 0).then_some(FileId::Host {
+        dev: stat.st_dev,
+        ino: stat.st_ino,
+    });
+    let ofd_index = proc
+        .ofd_table
+        .create(FileType::Regular, O_RDONLY, host_handle, resolved.clone());
+    let ofd = proc.ofd_table.get_mut(ofd_index).ok_or(Errno::EIO)?;
+    ofd.file_id = file_id;
+
+    Ok(PreparedExecOpen {
+        ofd_ref: OpenFileDescRef(ofd_index),
+        ofd_id: ofd.ofd_id,
+        file_id,
+        stat,
+        statfs,
+        diagnostic_path: resolved,
+    })
 }
 
 fn fifo_open_owner(proc: &Process) -> u64 {
@@ -2817,6 +2943,36 @@ fn try_open_fifo(
     .map(Some)
 }
 
+/// Publish one new PTY endpoint OFD as an fd, undoing both ownership layers
+/// if the descriptor table rejects publication.
+fn publish_pty_fd(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    file_type: FileType,
+    pty_idx: usize,
+    status_flags: u32,
+    fd_flags: u32,
+    path: Vec<u8>,
+) -> Result<i32, Errno> {
+    let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
+    match file_type {
+        FileType::PtyMaster => pty.master_refs += 1,
+        FileType::PtySlave => pty.slave_refs += 1,
+        _ => return Err(Errno::EINVAL),
+    }
+    let ofd_idx = proc
+        .ofd_table
+        .create(file_type, status_flags, pty_idx as i64, path);
+    match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
+        Ok(fd) => Ok(fd),
+        Err(error) => {
+            let cleanup = release_ofd_reference_impl(proc, None, host, ofd_idx);
+            debug_assert!(cleanup.is_ok(), "PTY publication rollback failed");
+            Err(error)
+        }
+    }
+}
+
 /// Open a file, returning the new file descriptor number.
 pub fn sys_open(
     proc: &mut Process,
@@ -2920,16 +3076,19 @@ pub fn sys_open(
 
     // /dev/ptmx — allocate a new PTY master
     if resolved == b"/dev/ptmx" {
-        let pty_idx = crate::pty::alloc_pty().ok_or(Errno::ENOSPC)?;
-        let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
-        pty.master_refs += 1;
+        let pty_idx = crate::pty::alloc_pty(proc.effective_uid(), proc.effective_gid())
+            .ok_or(Errno::ENOSPC)?;
         let status_flags = oflags & !CREATION_FLAGS;
-        let ofd_idx =
-            proc.ofd_table
-                .create(FileType::PtyMaster, status_flags, pty_idx as i64, resolved);
         let fd_flags = oflags_to_fd_flags(oflags);
-        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
-        return Ok(fd);
+        return publish_pty_fd(
+            proc,
+            host,
+            FileType::PtyMaster,
+            pty_idx,
+            status_flags,
+            fd_flags,
+            resolved,
+        );
     }
 
     // /dev/pts/N — open PTY slave
@@ -2940,38 +3099,53 @@ pub fn sys_open(
         if pty.locked {
             return Err(Errno::EIO); // must call unlockpt first
         }
-        pty.slave_refs += 1;
+        let stat = pty_pair_stat(pty_idx).ok_or(Errno::ENOENT)?;
+        check_access(proc, &stat, open_access_mask(oflags, &stat))?;
         let status_flags = oflags & !CREATION_FLAGS;
-        let ofd_idx =
-            proc.ofd_table
-                .create(FileType::PtySlave, status_flags, pty_idx as i64, resolved);
         let fd_flags = oflags_to_fd_flags(oflags);
-        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
-        return Ok(fd);
+        return publish_pty_fd(
+            proc,
+            host,
+            FileType::PtySlave,
+            pty_idx,
+            status_flags,
+            fd_flags,
+            resolved,
+        );
     }
 
     // /dev/tty — open controlling terminal (alias for current session's PTY or stdin)
     if resolved == b"/dev/tty" {
         // Check if any open fd refers to a PTY slave — use that
-        let pty_ofd = proc.fd_table.iter().find_map(|(_, entry)| {
-            proc.ofd_table
-                .get(entry.ofd_ref.0)
-                .is_some_and(|ofd| ofd.file_type == FileType::PtySlave)
-                .then_some(entry.ofd_ref)
+        let pty_idx = proc.fd_table.iter().find_map(|(_, entry)| {
+            let ofd = proc.ofd_table.get(entry.ofd_ref.0)?;
+            (ofd.file_type == FileType::PtySlave).then_some(ofd.host_handle as usize)
         });
-        if let Some(ofd_ref) = pty_ofd {
-            proc.ofd_table.inc_ref(ofd_ref.0);
+        if let Some(pty_idx) = pty_idx {
+            let status_flags = oflags & !CREATION_FLAGS;
             let fd_flags = oflags_to_fd_flags(oflags);
-            let fd = proc.fd_table.alloc(ofd_ref, fd_flags)?;
-            return Ok(fd);
+            return publish_pty_fd(
+                proc,
+                host,
+                FileType::PtySlave,
+                pty_idx,
+                status_flags,
+                fd_flags,
+                resolved,
+            );
         }
         // Fallback: dup stdin (fd 0) as the controlling terminal
         if let Ok(entry) = proc.fd_table.get(0) {
             let ofd_ref = entry.ofd_ref;
             proc.ofd_table.inc_ref(ofd_ref.0);
             let fd_flags = oflags_to_fd_flags(oflags);
-            let fd = proc.fd_table.alloc(ofd_ref, fd_flags)?;
-            return Ok(fd);
+            return match proc.fd_table.alloc(ofd_ref, fd_flags) {
+                Ok(fd) => Ok(fd),
+                Err(error) => {
+                    proc.ofd_table.dec_ref(ofd_ref.0);
+                    Err(error)
+                }
+            };
         }
         return Err(Errno::ENXIO);
     }
@@ -3024,7 +3198,7 @@ pub fn sys_open(
 
     let host_handle = host.host_open(&resolved, oflags, effective_mode)?;
     if created {
-        host.host_chown(&resolved, proc.euid, proc.egid)?;
+        host.host_chown(&resolved, proc.effective_uid(), proc.effective_gid())?;
     }
 
     // Cache lock identity from fstat on the live handle. Path-based stat is
@@ -3708,6 +3882,18 @@ fn release_ofd_reference_impl(
     }
 
     Ok(())
+}
+
+/// Release one kernel-owned prepared-target reference without pretending a
+/// guest descriptor was closed. The exact OFD cleanup path still owns final
+/// host-handle, device, and advisory-lock retirement.
+pub(crate) fn release_prepared_exec_ofd_with_locks(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    ofd_ref: OpenFileDescRef,
+) -> Result<(), Errno> {
+    release_ofd_reference_impl(proc, Some(locks), host, ofd_ref.0)
 }
 
 fn stable_ofd_target(proc: &Process, fd: i32) -> Result<StableOfdTarget, Errno> {
@@ -6241,12 +6427,16 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
         // the endpoint and verifies this with fstat(2).
         Ok(virtual_device_stat(
             VirtualDevice::Dsp,
-            proc.euid,
-            proc.egid,
+            proc.effective_uid(),
+            proc.effective_gid(),
         ))
     } else if ofd.file_type == FileType::CharDevice {
         if let Some(dev) = VirtualDevice::from_host_handle(ofd.host_handle) {
-            return Ok(virtual_device_stat(dev, proc.euid, proc.egid));
+            return Ok(virtual_device_stat(
+                dev,
+                proc.effective_uid(),
+                proc.effective_gid(),
+            ));
         }
         // Standard streams (0=stdin, 1=stdout, 2=stderr) — handle in-kernel
         // so browser hosts without real file descriptors still work.
@@ -6256,8 +6446,8 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
                 st_ino: 0x54545900 + ofd.host_handle as u64, // "TTY\0" + stream index
                 st_mode: S_IFCHR | 0o620,
                 st_nlink: 1,
-                st_uid: proc.euid,
-                st_gid: proc.egid,
+                st_uid: proc.effective_uid(),
+                st_gid: proc.effective_gid(),
                 st_size: 0,
                 st_atime_sec: 0,
                 st_atime_nsec: 0,
@@ -6271,24 +6461,13 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
         // Other char devices — delegate to host. VFS is the source of truth
         // for ownership; host_fstat already returns the real uid/gid.
         host.host_fstat(ofd.host_handle)
-    } else if matches!(ofd.file_type, FileType::PtyMaster | FileType::PtySlave) {
+    } else if ofd.file_type == FileType::PtySlave && ofd.path == b"/dev/tty" {
+        match_pty_stat(b"/dev/tty").ok_or(Errno::EIO)
+    } else if ofd.file_type == FileType::PtySlave {
         let pty_idx = ofd.host_handle as usize;
-        Ok(WasmStat {
-            st_dev: 5,                           // synthetic devpts device
-            st_ino: 0x50545900 + pty_idx as u64, // "PTY\0" + index
-            st_mode: S_IFCHR | 0o620,
-            st_nlink: 1,
-            st_uid: proc.euid,
-            st_gid: proc.egid,
-            st_size: 0,
-            st_atime_sec: 0,
-            st_atime_nsec: 0,
-            st_mtime_sec: 0,
-            st_mtime_nsec: 0,
-            st_ctime_sec: 0,
-            st_ctime_nsec: 0,
-            _pad: 0,
-        })
+        pty_pair_stat(pty_idx).ok_or(Errno::EIO)
+    } else if ofd.file_type == FileType::PtyMaster {
+        match_pty_stat(b"/dev/ptmx").ok_or(Errno::EIO)
     } else if ofd.file_type == FileType::MemFd {
         let memfd_idx = (-(ofd.host_handle + 1)) as usize;
         let size = crate::descriptor_backing::with_memfds(|table| {
@@ -6302,8 +6481,8 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
             st_ino: 0x4D454D00 + memfd_idx as u64, // "MEM\0" + index
             st_mode: S_IFREG | 0o600,
             st_nlink: 1,
-            st_uid: proc.euid,
-            st_gid: proc.egid,
+            st_uid: proc.effective_uid(),
+            st_gid: proc.effective_gid(),
             st_size: size,
             st_atime_sec: 0,
             st_atime_nsec: 0,
@@ -6314,7 +6493,8 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
             _pad: 0,
         })
     } else if crate::descriptor_backing::is_synthetic_regular_handle(ofd.host_handle) {
-        synthetic_file_stat(&ofd.path, proc.euid, proc.egid).ok_or(Errno::EBADF)
+        synthetic_file_stat(&ofd.path, proc.effective_uid(), proc.effective_gid())
+            .ok_or(Errno::EBADF)
     } else if ofd.file_type == FileType::Regular
         && crate::procfs::is_procfs_buf_handle(ofd.host_handle)
     {
@@ -6346,13 +6526,18 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
         }
     } else if ofd.host_handle == crate::devfs::DEVFS_DIR_HANDLE {
         Ok(
-            crate::devfs::match_devfs_stat(&ofd.path, proc.euid, proc.egid).unwrap_or(WasmStat {
+            crate::devfs::match_devfs_stat(
+                &ofd.path,
+                proc.effective_uid(),
+                proc.effective_gid(),
+            )
+            .unwrap_or(WasmStat {
                 st_dev: 6,
                 st_ino: 0xDE0100,
                 st_mode: wasm_posix_shared::mode::S_IFDIR | 0o755,
                 st_nlink: 2,
-                st_uid: proc.euid,
-                st_gid: proc.egid,
+                st_uid: proc.effective_uid(),
+                st_gid: proc.effective_gid(),
                 st_size: 0,
                 st_atime_sec: 0,
                 st_atime_nsec: 0,
@@ -6755,29 +6940,63 @@ pub fn sys_flock(
 use crate::process::{DirStream, ProcessState};
 use wasm_posix_shared::WasmDirent;
 
-/// Check if a resolved path is a PTY or terminal device path.
-/// Returns a synthetic stat for /dev/ptmx, /dev/pts/N, /dev/tty.
-fn match_pty_stat(resolved: &[u8], uid: u32, gid: u32) -> Option<WasmStat> {
-    if resolved == b"/dev/ptmx" || resolved == b"/dev/tty" || resolved.starts_with(b"/dev/pts/") {
-        Some(WasmStat {
-            st_dev: 5,
-            st_ino: 0x50545900,
-            st_mode: S_IFCHR | 0o620,
-            st_nlink: 1,
-            st_uid: uid,
-            st_gid: gid,
-            st_size: 0,
-            st_atime_sec: 0,
-            st_atime_nsec: 0,
-            st_mtime_sec: 0,
-            st_mtime_nsec: 0,
-            st_ctime_sec: 0,
-            st_ctime_nsec: 0,
-            _pad: 0,
-        })
-    } else {
-        None
+fn pty_slave_index(resolved: &[u8]) -> Option<usize> {
+    resolved
+        .strip_prefix(b"/dev/pts/")
+        .and_then(parse_ascii_usize)
+}
+
+/// Build devpts slave metadata from the one record owned by the live pair.
+/// Both path and descriptor stat flow through this helper.
+fn pty_pair_stat(pty_idx: usize) -> Option<WasmStat> {
+    let pty = crate::pty::get_pty(pty_idx)?;
+    Some(WasmStat {
+        st_dev: 5,
+        st_ino: 0x50545900 + pty_idx as u64,
+        st_mode: S_IFCHR | pty.mode(),
+        st_nlink: 1,
+        st_uid: pty.owner_uid(),
+        st_gid: pty.owner_gid(),
+        st_size: 0,
+        st_atime_sec: 0,
+        st_atime_nsec: 0,
+        st_mtime_sec: 0,
+        st_mtime_nsec: 0,
+        st_ctime_sec: 0,
+        st_ctime_nsec: 0,
+        _pad: 0,
+    })
+}
+
+fn pty_alias_stat(ino: u64) -> WasmStat {
+    WasmStat {
+        st_dev: 5,
+        st_ino: ino,
+        st_mode: S_IFCHR | crate::pty::DEFAULT_SLAVE_MODE,
+        st_nlink: 1,
+        st_uid: 0,
+        st_gid: 0,
+        st_size: 0,
+        st_atime_sec: 0,
+        st_atime_nsec: 0,
+        st_mtime_sec: 0,
+        st_mtime_nsec: 0,
+        st_ctime_sec: 0,
+        st_ctime_nsec: 0,
+        _pad: 0,
     }
+}
+
+/// Return persistent devpts metadata or stable metadata for the distinct
+/// clone and controlling-device nodes.
+fn match_pty_stat(resolved: &[u8]) -> Option<WasmStat> {
+    if resolved == b"/dev/ptmx" {
+        return Some(pty_alias_stat(0x50544d58)); // "PTMX"
+    }
+    if resolved == b"/dev/tty" {
+        return Some(pty_alias_stat(0x54545900)); // "TTY\0"
+    }
+    pty_pair_stat(pty_slave_index(resolved)?)
 }
 
 fn unix_socket_path_stat(
@@ -6905,9 +7124,13 @@ fn procfs_entry_stat(
 pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?.path;
     if let Some(dev) = match_virtual_device(&resolved) {
-        return Ok(virtual_device_stat(dev, proc.euid, proc.egid));
+        return Ok(virtual_device_stat(
+            dev,
+            proc.effective_uid(),
+            proc.effective_gid(),
+        ));
     }
-    if let Some(st) = match_pty_stat(&resolved, proc.euid, proc.egid) {
+    if let Some(st) = match_pty_stat(&resolved) {
         return Ok(st);
     }
     if let Some(target_fd) = match_dev_fd(&resolved) {
@@ -6917,11 +7140,15 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
         return procfs_entry_stat(proc, host, &entry, true);
     }
     if !is_host_backed_devfs_path(&resolved) {
-        if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
+        if let Some(st) = crate::devfs::match_devfs_stat(
+            &resolved,
+            proc.effective_uid(),
+            proc.effective_gid(),
+        ) {
             return Ok(st);
         }
     }
-    if let Some(st) = synthetic_file_stat(&resolved, proc.euid, proc.egid) {
+    if let Some(st) = synthetic_file_stat(&resolved, proc.effective_uid(), proc.effective_gid()) {
         return Ok(st);
     }
     if let Some(st) = fifo_path_stat(proc, host, &resolved, true)? {
@@ -6943,9 +7170,13 @@ pub fn sys_lstat(
 ) -> Result<WasmStat, Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?.path;
     if let Some(dev) = match_virtual_device(&resolved) {
-        return Ok(virtual_device_stat(dev, proc.euid, proc.egid));
+        return Ok(virtual_device_stat(
+            dev,
+            proc.effective_uid(),
+            proc.effective_gid(),
+        ));
     }
-    if let Some(st) = match_pty_stat(&resolved, proc.euid, proc.egid) {
+    if let Some(st) = match_pty_stat(&resolved) {
         return Ok(st);
     }
     if let Some(target_fd) = match_dev_fd(&resolved) {
@@ -6955,11 +7186,15 @@ pub fn sys_lstat(
         return procfs_entry_stat(proc, host, &entry, false);
     }
     if !is_host_backed_devfs_path(&resolved) {
-        if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
+        if let Some(st) = crate::devfs::match_devfs_stat(
+            &resolved,
+            proc.effective_uid(),
+            proc.effective_gid(),
+        ) {
             return Ok(st);
         }
     }
-    if let Some(st) = synthetic_file_stat(&resolved, proc.euid, proc.egid) {
+    if let Some(st) = synthetic_file_stat(&resolved, proc.effective_uid(), proc.effective_gid()) {
         return Ok(st);
     }
     if let Some(st) = fifo_path_stat(proc, host, &resolved, false)? {
@@ -6986,7 +7221,7 @@ pub fn sys_mkdir(
     let effective_mode = mode & !proc.umask;
     check_parent_writable(proc, host, &resolved)?;
     host.host_mkdir(&resolved, effective_mode)?;
-    host.host_chown(&resolved, proc.euid, proc.egid)
+    host.host_chown(&resolved, proc.effective_uid(), proc.effective_gid())
 }
 
 pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
@@ -7037,7 +7272,11 @@ fn make_fifo(
     let effective_mode = mode & !proc.umask;
     let flags = O_CREAT | O_EXCL | O_WRONLY;
     let handle = host.host_open(&resolved.path, flags, effective_mode)?;
-    if let Err(error) = host.host_chown(&resolved.path, proc.euid, proc.egid) {
+    if let Err(error) = host.host_chown(
+        &resolved.path,
+        proc.effective_uid(),
+        proc.effective_gid(),
+    ) {
         let _ = host.host_close(handle);
         let _ = host.host_unlink(&resolved.path);
         return Err(error);
@@ -7289,11 +7528,31 @@ pub fn sys_chmod(
     mode: u32,
 ) -> Result<(), Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?.path;
+    if chmod_pty_path(proc, host, &resolved, mode)?.is_some() {
+        return Ok(());
+    }
     ensure_host_mutable_namespace_path(&resolved)?;
     check_search_path(proc, host, &resolved)?;
     let st = host.host_stat(&resolved)?;
     check_owner_or_root(proc, &st)?;
     host.host_chmod(&resolved, mode)
+}
+
+fn chmod_pty_path(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    resolved: &[u8],
+    mode: u32,
+) -> Result<Option<()>, Errno> {
+    let Some(pty_idx) = pty_slave_index(resolved) else {
+        return Ok(None);
+    };
+    check_search_path(proc, host, resolved)?;
+    let st = pty_pair_stat(pty_idx).ok_or(Errno::ENOENT)?;
+    check_owner_or_root(proc, &st)?;
+    let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::ENOENT)?;
+    pty.set_mode(mode);
+    Ok(Some(()))
 }
 
 const CHOWN_ID_UNCHANGED: u32 = u32::MAX;
@@ -7304,16 +7563,13 @@ fn prepare_chown_ids(
     uid: u32,
     gid: u32,
 ) -> Result<(u32, u32), Errno> {
-    if proc.euid != 0 {
+    if proc.effective_uid() != 0 {
         // _POSIX_CHOWN_RESTRICTED: an unprivileged caller must own the file,
         // cannot give it to another user, and can select only a group in its
-        // group set. Kandelo currently exposes one synthesized supplementary
-        // group through getgroups(): the real GID. Keep that documented
-        // credential model coherent by accepting either it or the effective
-        // GID here. The unchanged sentinels preserve their corresponding IDs.
-        if proc.euid != st.st_uid
+        // group set. The unchanged sentinels preserve their corresponding IDs.
+        if proc.effective_uid() != st.st_uid
             || (uid != CHOWN_ID_UNCHANGED && uid != st.st_uid)
-            || (gid != CHOWN_ID_UNCHANGED && gid != proc.egid && gid != proc.gid)
+            || (gid != CHOWN_ID_UNCHANGED && !proc.is_member_of_group(gid))
         {
             return Err(Errno::EPERM);
         }
@@ -7332,6 +7588,24 @@ fn prepare_chown_ids(
     ))
 }
 
+fn chown_pty_path(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    resolved: &[u8],
+    uid: u32,
+    gid: u32,
+) -> Result<Option<()>, Errno> {
+    let Some(pty_idx) = pty_slave_index(resolved) else {
+        return Ok(None);
+    };
+    check_search_path(proc, host, resolved)?;
+    let st = pty_pair_stat(pty_idx).ok_or(Errno::ENOENT)?;
+    let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
+    let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::ENOENT)?;
+    pty.set_owner(uid, gid);
+    Ok(Some(()))
+}
+
 pub fn sys_chown(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -7340,6 +7614,9 @@ pub fn sys_chown(
     gid: u32,
 ) -> Result<(), Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?.path;
+    if chown_pty_path(proc, host, &resolved, uid, gid)?.is_some() {
+        return Ok(());
+    }
     ensure_host_mutable_namespace_path(&resolved)?;
     check_search_path(proc, host, &resolved)?;
     let st = host.host_stat(&resolved)?;
@@ -7355,6 +7632,9 @@ pub fn sys_lchown(
     gid: u32,
 ) -> Result<(), Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?;
+    if chown_pty_path(proc, host, &resolved.path, uid, gid)?.is_some() {
+        return Ok(());
+    }
     ensure_host_mutable_namespace_path(&resolved.path)?;
     check_search_path(proc, host, &resolved.path)?;
     let st = resolved.stat.ok_or(Errno::ENOENT)?;
@@ -7387,7 +7667,13 @@ pub fn sys_access(
         return Err(Errno::EACCES);
     }
     let st = resolved.stat.ok_or(Errno::ENOENT)?;
-    check_access_for_ids(proc.uid, proc.gid, proc.gid, &st, amode)
+    check_access_for_ids(
+        proc.real_uid(),
+        proc.real_gid(),
+        proc.supplementary_groups(),
+        &st,
+        amode,
+    )
 }
 
 /// Change the current working directory.
@@ -8103,22 +8389,22 @@ pub fn sys_getppid(proc: &Process) -> i32 {
 
 /// Get the real user ID.
 pub fn sys_getuid(proc: &Process) -> u32 {
-    proc.uid
+    proc.real_uid()
 }
 
 /// Get the effective user ID.
 pub fn sys_geteuid(proc: &Process) -> u32 {
-    proc.euid
+    proc.effective_uid()
 }
 
 /// Get the real group ID.
 pub fn sys_getgid(proc: &Process) -> u32 {
-    proc.gid
+    proc.real_gid()
 }
 
 /// Get the effective group ID.
 pub fn sys_getegid(proc: &Process) -> u32 {
-    proc.egid
+    proc.effective_gid()
 }
 
 /// getpgrp -- get process group ID.
@@ -8200,7 +8486,7 @@ pub fn sys_kill(proc: &mut Process, pid: i32, sig: u32) -> Result<(), Errno> {
     // synthesizing the recipient's identity. This process-local compatibility
     // path is self-delivery, so retain the same SI_USER metadata observable
     // through SA_SIGINFO as ordinary kill(getpid(), sig).
-    proc.raise_signal_with_metadata(sig, 0, 0, proc.pid, proc.uid);
+    proc.raise_signal_with_metadata(sig, 0, 0, proc.pid, proc.real_uid());
     Ok(())
 }
 
@@ -8209,24 +8495,18 @@ pub fn sys_raise(proc: &mut Process, sig: u32) -> Result<(), Errno> {
     sys_kill(proc, proc.pid as i32, sig)
 }
 
-/// Execute a new program. Delegates to host for binary loading.
-/// On success, the kernel process will be replaced (POSIX: exec doesn't return on success).
-/// On failure, returns the error.
+/// Reject the legacy path-only exec dispatch.
+///
+/// Executable selection and image commit require a prepared target token;
+/// callers must use the target-aware Wasm interface instead.
 pub fn sys_execve(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
-    if path.is_empty() {
-        return Err(Errno::ENOENT);
-    }
-    // Resolve and validate before tearing down mappings. POSIX exec
-    // failure must leave the current image intact.
-    let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?.path;
-    check_exec_path(proc, host, &resolved)?;
-    release_exec_image_state(proc, host);
-    host.host_exec(&resolved)
+    let _ = (proc, host, path);
+    Err(Errno::ENOSYS)
 }
 
-/// Execute a new program using a file descriptor (fexecve / execveat).
-/// When AT_EMPTY_PATH is set and path is empty, resolves the fd's file path.
-/// Otherwise resolves path relative to the directory fd.
+/// Reject the legacy path/fd-only exec dispatch.
+///
+/// `execveat` target selection is authorized only by a prepared target token.
 pub fn sys_execveat(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -8234,26 +8514,8 @@ pub fn sys_execveat(
     path: &[u8],
     flags: u32,
 ) -> Result<(), Errno> {
-    if flags & AT_EMPTY_PATH != 0 && path.is_empty() {
-        // fexecve path: exec the file referenced by dirfd
-        let entry = proc.fd_table.get(dirfd)?;
-        let ofd_idx = entry.ofd_ref.0;
-        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-        if ofd.path.is_empty() {
-            return Err(Errno::ENOENT);
-        }
-        let exec_path = ofd.path.clone();
-        check_exec_path(proc, host, &exec_path)?;
-        release_exec_image_state(proc, host);
-        host.host_exec(&exec_path)
-    } else if path.is_empty() {
-        Err(Errno::ENOENT)
-    } else {
-        let resolved = resolve_at_path(proc, host, dirfd, path, PathResolveOptions::FOLLOW)?.path;
-        check_exec_path(proc, host, &resolved)?;
-        release_exec_image_state(proc, host);
-        host.host_exec(&resolved)
-    }
+    let _ = (proc, host, dirfd, path, flags);
+    Err(Errno::ENOSYS)
 }
 
 /// Schedule a SIGALRM signal after `seconds` seconds.
@@ -8577,6 +8839,16 @@ fn cleanup_process_for_exit(
     mut locks: Option<&mut AdvisoryLockManager>,
     host: &mut dyn HostIO,
 ) {
+    // Prepared executable tokens are exact OFD leases owned by this image,
+    // not guest descriptors. Retire them before the ordinary fd walk so exit,
+    // signal death, and trap cleanup cannot leave host-visible authority alive.
+    if let Some(machine_locks) = locks.as_deref_mut() {
+        crate::exec_target::drain_prepared_exec_targets(proc, machine_locks, host);
+    } else {
+        let mut isolated_locks = AdvisoryLockManager::new();
+        crate::exec_target::drain_prepared_exec_targets(proc, &mut isolated_locks, host);
+    }
+
     // The exiting image owns every blocked request. Consume its stable
     // targets before the ordinary fd walk so a guest-closed descriptor, MQ
     // pin, SysV pin, or SCM_RIGHTS template cannot remain reachable only from
@@ -8824,7 +9096,10 @@ fn check_utimens_permissions(
 
     let both_now = times.is_some_and(|ts| ts[0].tv_nsec == UTIME_NOW && ts[1].tv_nsec == UTIME_NOW);
     if times.is_none() || both_now {
-        if proc.euid == 0 || proc.euid == st.st_uid || has_access(proc, st, W_OK) {
+        if proc.effective_uid() == 0
+            || proc.effective_uid() == st.st_uid
+            || has_access(proc, st, W_OK)
+        {
             return Ok(true);
         }
         return Err(Errno::EACCES);
@@ -10327,7 +10602,7 @@ fn udp_send_datagram(
     } else {
         src_addr
     };
-    let (src_pid, src_uid, src_gid) = (proc.pid, proc.uid, proc.gid);
+    let (src_pid, src_uid, src_gid) = (proc.pid, proc.real_uid(), proc.real_gid());
     if is_ipv4_multicast_addr(dst_addr) {
         use wasm_posix_shared::socket::{IPPROTO_IP, IP_MULTICAST_IF, IP_MULTICAST_LOOP};
 
@@ -10465,7 +10740,7 @@ fn unix_dgram_send_to_sock(
         return Err(Errno::EPIPE);
     }
 
-    let (src_pid, src_uid, src_gid) = (proc.pid, proc.uid, proc.gid);
+    let (src_pid, src_uid, src_gid) = (proc.pid, proc.real_uid(), proc.real_gid());
     let target = proc
         .sockets
         .get_mut(dst_sock_idx)
@@ -10693,7 +10968,7 @@ fn udp6_send_datagram(
     } else {
         src_addr
     };
-    let (src_pid, src_uid, src_gid) = (proc.pid, proc.uid, proc.gid);
+    let (src_pid, src_uid, src_gid) = (proc.pid, proc.real_uid(), proc.real_gid());
 
     let mut delivered = false;
     let sock_count = proc.sockets.len();
@@ -10842,8 +11117,8 @@ pub(crate) fn cross_process_loopback_udp_route(
     Some(CrossProcessLoopbackUdpRoute {
         sender_pid: proc.pid,
         sender_sock_idx,
-        sender_uid: proc.uid,
-        sender_gid: proc.gid,
+        sender_uid: proc.real_uid(),
+        sender_gid: proc.real_gid(),
         connected: sock.state == SocketState::Connected,
         dst_addr,
         dst_port,
@@ -12000,7 +12275,7 @@ pub fn sys_bind(
                     Err(Errno::EEXIST) => return Err(Errno::EADDRINUSE),
                     Err(e) => return Err(e),
                 };
-                host.host_chown(&resolved, proc.euid, proc.egid)?;
+                host.host_chown(&resolved, proc.effective_uid(), proc.effective_gid())?;
                 let _ = host.host_close(h);
             }
 
@@ -13651,16 +13926,19 @@ pub fn sys_openat(
 
     // /dev/ptmx — allocate a new PTY master
     if resolved == b"/dev/ptmx" {
-        let pty_idx = crate::pty::alloc_pty().ok_or(Errno::ENOSPC)?;
-        let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
-        pty.master_refs += 1;
+        let pty_idx = crate::pty::alloc_pty(proc.effective_uid(), proc.effective_gid())
+            .ok_or(Errno::ENOSPC)?;
         let status_flags = oflags & !CREATION_FLAGS;
-        let ofd_idx =
-            proc.ofd_table
-                .create(FileType::PtyMaster, status_flags, pty_idx as i64, resolved);
         let fd_flags = oflags_to_fd_flags(oflags);
-        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
-        return Ok(fd);
+        return publish_pty_fd(
+            proc,
+            host,
+            FileType::PtyMaster,
+            pty_idx,
+            status_flags,
+            fd_flags,
+            resolved,
+        );
     }
 
     // /dev/pts/N — open PTY slave
@@ -13671,36 +13949,51 @@ pub fn sys_openat(
         if pty.locked {
             return Err(Errno::EIO);
         }
-        pty.slave_refs += 1;
+        let stat = pty_pair_stat(pty_idx).ok_or(Errno::ENOENT)?;
+        check_access(proc, &stat, open_access_mask(oflags, &stat))?;
         let status_flags = oflags & !CREATION_FLAGS;
-        let ofd_idx =
-            proc.ofd_table
-                .create(FileType::PtySlave, status_flags, pty_idx as i64, resolved);
         let fd_flags = oflags_to_fd_flags(oflags);
-        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
-        return Ok(fd);
+        return publish_pty_fd(
+            proc,
+            host,
+            FileType::PtySlave,
+            pty_idx,
+            status_flags,
+            fd_flags,
+            resolved,
+        );
     }
 
     // /dev/tty — open controlling terminal
     if resolved == b"/dev/tty" {
-        let pty_ofd = proc.fd_table.iter().find_map(|(_, entry)| {
-            proc.ofd_table
-                .get(entry.ofd_ref.0)
-                .is_some_and(|ofd| ofd.file_type == FileType::PtySlave)
-                .then_some(entry.ofd_ref)
+        let pty_idx = proc.fd_table.iter().find_map(|(_, entry)| {
+            let ofd = proc.ofd_table.get(entry.ofd_ref.0)?;
+            (ofd.file_type == FileType::PtySlave).then_some(ofd.host_handle as usize)
         });
-        if let Some(ofd_ref) = pty_ofd {
-            proc.ofd_table.inc_ref(ofd_ref.0);
+        if let Some(pty_idx) = pty_idx {
+            let status_flags = oflags & !CREATION_FLAGS;
             let fd_flags = oflags_to_fd_flags(oflags);
-            let fd = proc.fd_table.alloc(ofd_ref, fd_flags)?;
-            return Ok(fd);
+            return publish_pty_fd(
+                proc,
+                host,
+                FileType::PtySlave,
+                pty_idx,
+                status_flags,
+                fd_flags,
+                resolved,
+            );
         }
         if let Ok(entry) = proc.fd_table.get(0) {
             let ofd_ref = entry.ofd_ref;
             proc.ofd_table.inc_ref(ofd_ref.0);
             let fd_flags = oflags_to_fd_flags(oflags);
-            let fd = proc.fd_table.alloc(ofd_ref, fd_flags)?;
-            return Ok(fd);
+            return match proc.fd_table.alloc(ofd_ref, fd_flags) {
+                Ok(fd) => Ok(fd),
+                Err(error) => {
+                    proc.ofd_table.dec_ref(ofd_ref.0);
+                    Err(error)
+                }
+            };
         }
         return Err(Errno::ENXIO);
     }
@@ -13759,7 +14052,7 @@ pub fn sys_openat(
 
     let host_handle = host.host_open(&resolved, oflags, effective_mode)?;
     if created {
-        host.host_chown(&resolved, proc.euid, proc.egid)?;
+        host.host_chown(&resolved, proc.effective_uid(), proc.effective_gid())?;
     }
 
     // Keep openat(2) on the same live-handle identity contract as open(2).
@@ -13833,7 +14126,14 @@ pub fn sys_fstatat(
     };
     let resolved = resolve_at_path(proc, host, dirfd, path, options)?.path;
     if let Some(dev) = match_virtual_device(&resolved) {
-        return Ok(virtual_device_stat(dev, proc.euid, proc.egid));
+        return Ok(virtual_device_stat(
+            dev,
+            proc.effective_uid(),
+            proc.effective_gid(),
+        ));
+    }
+    if let Some(st) = match_pty_stat(&resolved) {
+        return Ok(st);
     }
     if let Some(target_fd) = match_dev_fd(&resolved) {
         if flags & AT_SYMLINK_NOFOLLOW != 0 {
@@ -13846,11 +14146,15 @@ pub fn sys_fstatat(
         return procfs_entry_stat(proc, host, &entry, follow);
     }
     if !is_host_backed_devfs_path(&resolved) {
-        if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
+        if let Some(st) = crate::devfs::match_devfs_stat(
+            &resolved,
+            proc.effective_uid(),
+            proc.effective_gid(),
+        ) {
             return Ok(st);
         }
     }
-    if let Some(st) = synthetic_file_stat(&resolved, proc.euid, proc.egid) {
+    if let Some(st) = synthetic_file_stat(&resolved, proc.effective_uid(), proc.effective_gid()) {
         return Ok(st);
     }
     if let Some(st) = fifo_path_stat(proc, host, &resolved, flags & AT_SYMLINK_NOFOLLOW == 0)? {
@@ -13930,7 +14234,7 @@ pub fn sys_mkdirat(
     let effective_mode = mode & !proc.umask;
     check_parent_writable(proc, host, &resolved)?;
     host.host_mkdir(&resolved, effective_mode)?;
-    host.host_chown(&resolved, proc.euid, proc.egid)
+    host.host_chown(&resolved, proc.effective_uid(), proc.effective_gid())
 }
 
 /// renameat -- rename relative to directory fds.
@@ -15812,7 +16116,18 @@ pub fn sys_fchmod(
             check_owner_or_root(proc, &st)?;
             host.host_fchmod(ofd.host_handle, mode)
         }
-        // CharDevice / Pipe / Socket / PtyMaster / PtySlave / etc.: Linux
+        FileType::PtySlave => {
+            if ofd.path == b"/dev/tty" {
+                return Ok(());
+            }
+            let pty_idx = usize::try_from(ofd.host_handle).map_err(|_| Errno::EIO)?;
+            let st = pty_pair_stat(pty_idx).ok_or(Errno::EIO)?;
+            check_owner_or_root(proc, &st)?;
+            let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
+            pty.set_mode(mode);
+            Ok(())
+        }
+        // CharDevice / Pipe / Socket / PtyMaster / etc.: Linux
         // allows fchmod on these (e.g. on /dev/stderr or a unix-domain
         // socket fd — daemons like dinit do this routinely and abort on
         // EINVAL). The mode change has no observable effect for kernel-
@@ -15865,6 +16180,17 @@ pub fn sys_fchown(
             let st = host.host_fstat(ofd.host_handle)?;
             let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
             host.host_fchown(ofd.host_handle, uid, gid)
+        }
+        FileType::PtySlave => {
+            if ofd.path == b"/dev/tty" {
+                return Ok(());
+            }
+            let pty_idx = usize::try_from(ofd.host_handle).map_err(|_| Errno::EIO)?;
+            let st = pty_pair_stat(pty_idx).ok_or(Errno::EIO)?;
+            let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
+            let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
+            pty.set_owner(uid, gid);
+            Ok(())
         }
         // Match sys_fchmod above — accept the call on kernel-owned fd types
         // whose ownership metadata is not independently mutable. Regular
@@ -15927,7 +16253,7 @@ pub fn sys_setrlimit(proc: &mut Process, resource: u32, soft: u64, hard: u64) ->
         return Err(Errno::EINVAL);
     }
     let current_hard = proc.rlimits[resource as usize][1];
-    if proc.euid != 0 && hard > current_hard {
+    if proc.effective_uid() != 0 && hard > current_hard {
         return Err(Errno::EPERM);
     }
     proc.rlimits[resource as usize] = [soft, hard];
@@ -15980,11 +16306,11 @@ pub fn sys_faccessat(
     }
     let st = resolved.stat.ok_or(Errno::ENOENT)?;
     let (uid, gid) = if flags & AT_EACCESS != 0 {
-        (proc.euid, proc.egid)
+        (proc.effective_uid(), proc.effective_gid())
     } else {
-        (proc.uid, proc.gid)
+        (proc.real_uid(), proc.real_gid())
     };
-    check_access_for_ids(uid, gid, proc.gid, &st, amode)
+    check_access_for_ids(uid, gid, proc.supplementary_groups(), &st, amode)
 }
 
 /// fchmodat -- change file mode relative to directory fd.
@@ -16000,6 +16326,9 @@ pub fn sys_fchmodat(
     _flags: u32,
 ) -> Result<(), Errno> {
     let resolved = resolve_at_path(proc, host, dirfd, path, PathResolveOptions::FOLLOW)?.path;
+    if chmod_pty_path(proc, host, &resolved, mode)?.is_some() {
+        return Ok(());
+    }
     ensure_host_mutable_namespace_path(&resolved)?;
     check_search_path(proc, host, &resolved)?;
     let st = host.host_stat(&resolved)?;
@@ -16029,6 +16358,9 @@ pub fn sys_fchownat(
         PathResolveOptions::FOLLOW
     };
     let resolved = resolve_at_path(proc, host, dirfd, path, options)?;
+    if chown_pty_path(proc, host, &resolved.path, uid, gid)?.is_some() {
+        return Ok(());
+    }
     ensure_host_mutable_namespace_path(&resolved.path)?;
     check_search_path(proc, host, &resolved.path)?;
     let st = resolved.stat.ok_or(Errno::ENOENT)?;
@@ -16246,78 +16578,44 @@ pub fn sys_select(
     Err(Errno::EAGAIN)
 }
 
-/// setuid -- set real and effective user ID.
-///
-/// POSIX semantics (no saved-set-user-ID tracked):
-/// - If caller's euid is 0 (root), set both `uid` and `euid` to `uid`.
-/// - Else if the target `uid` equals the caller's real `uid`, set `euid` only.
-/// - Otherwise return EPERM.
+/// setuid -- update process-wide user credentials.
 pub fn sys_setuid(proc: &mut Process, uid: u32) -> Result<(), Errno> {
-    if proc.euid == 0 {
-        proc.uid = uid;
-        proc.euid = uid;
-        Ok(())
-    } else if uid == proc.uid {
-        proc.euid = uid;
-        Ok(())
-    } else {
-        Err(Errno::EPERM)
-    }
+    proc.setuid(uid)
 }
 
-/// setgid -- set real and effective group ID.
-///
-/// Mirrors setuid's privilege rules, gated on euid (the kernel doesn't track a
-/// separate "appropriate privileges" capability).
+/// setgid -- update process-wide group credentials.
 pub fn sys_setgid(proc: &mut Process, gid: u32) -> Result<(), Errno> {
-    if proc.euid == 0 {
-        proc.gid = gid;
-        proc.egid = gid;
-        Ok(())
-    } else if gid == proc.gid {
-        proc.egid = gid;
-        Ok(())
-    } else {
-        Err(Errno::EPERM)
-    }
+    proc.setgid(gid)
 }
 
-/// seteuid -- set effective user ID.
-///
-/// Root may set euid to any value. Others may only reset euid to their real uid.
+/// seteuid -- set effective user ID from the permitted real/saved set.
 pub fn sys_seteuid(proc: &mut Process, euid: u32) -> Result<(), Errno> {
-    if proc.euid == 0 || euid == proc.uid {
-        proc.euid = euid;
-        Ok(())
-    } else {
-        Err(Errno::EPERM)
-    }
+    proc.seteuid(euid)
 }
 
 /// setegid -- set effective group ID.
 pub fn sys_setegid(proc: &mut Process, egid: u32) -> Result<(), Errno> {
-    if proc.euid == 0 || egid == proc.gid {
-        proc.egid = egid;
-        Ok(())
-    } else {
-        Err(Errno::EPERM)
-    }
+    proc.setegid(egid)
 }
 
 /// POSIX permission test for `kill(pid, sig)`.
 ///
 /// Returns true if a process with (sender_uid, sender_euid) may signal a
-/// process with (target_uid, target_euid). Per POSIX: sender's real or
-/// effective uid must match target's real or saved-set-uid. Since we don't
-/// track saved-set-user-ID separately, the real uid stands in for it.
-pub fn can_signal(sender_uid: u32, sender_euid: u32, target_uid: u32, target_euid: u32) -> bool {
+/// process with (target_uid, target_saved_uid). Per POSIX: sender's real or
+/// effective UID must match the target's real or saved-set-user-ID.
+pub fn can_signal(
+    sender_uid: u32,
+    sender_euid: u32,
+    target_uid: u32,
+    target_saved_uid: u32,
+) -> bool {
     if sender_euid == 0 {
         return true;
     }
     sender_uid == target_uid
-        || sender_uid == target_euid
+        || sender_uid == target_saved_uid
         || sender_euid == target_uid
-        || sender_euid == target_euid
+        || sender_euid == target_saved_uid
 }
 
 /// POSIX permission test for `sched_getparam`/`sched_getscheduler` and their
@@ -16379,7 +16677,7 @@ pub fn sys_setpriority(proc: &mut Process, which: i32, who: u32, prio: i32) -> R
     }
     // Clamp to [-20, 19]
     let clamped = prio.max(-20).min(19);
-    if proc.euid != 0 && clamped < proc.nice {
+    if proc.effective_uid() != 0 && clamped < proc.nice {
         return Err(Errno::EPERM);
     }
     proc.nice = clamped;
@@ -16509,6 +16807,17 @@ fn host_statfs_or_default(host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat
     }
 }
 
+pub(crate) fn host_fstatfs_or_default(
+    host: &mut dyn HostIO,
+    handle: i64,
+) -> Result<WasmStatfs, Errno> {
+    match host.host_fstatfs(handle) {
+        Ok(statfs) => Ok(statfs),
+        Err(Errno::ENOSYS) => Ok(default_statfs()),
+        Err(error) => Err(error),
+    }
+}
+
 /// statfs — get filesystem statistics for an existing path.
 pub fn sys_statfs(
     proc: &mut Process,
@@ -16551,69 +16860,79 @@ pub fn sys_fstatfs(
     }
 }
 
-/// setresuid — set real, effective, and saved user IDs (simulated).
+/// setresuid — atomically set real, effective, and saved user IDs.
 pub fn sys_setresuid(proc: &mut Process, ruid: u32, euid: u32, suid: u32) -> Result<(), Errno> {
-    if proc.euid != 0
-        && (!requested_id_allowed(proc.uid, proc.euid, ruid)
-            || !requested_id_allowed(proc.uid, proc.euid, euid)
-            || !requested_id_allowed(proc.uid, proc.euid, suid))
-    {
-        return Err(Errno::EPERM);
-    }
-    if ruid != 0xFFFFFFFF {
-        proc.uid = ruid;
-    }
-    if euid != 0xFFFFFFFF {
-        proc.euid = euid;
-    }
-    Ok(())
+    proc.setresuid(ruid, euid, suid)
+}
+
+/// setreuid — atomically set real/effective UID and reseat the saved UID.
+pub fn sys_setreuid(proc: &mut Process, ruid: u32, euid: u32) -> Result<(), Errno> {
+    proc.setreuid(ruid, euid)
 }
 
 /// getresuid — get real, effective, and saved user IDs.
 pub fn sys_getresuid(proc: &Process) -> (u32, u32, u32) {
-    (proc.uid, proc.euid, proc.uid)
+    (proc.real_uid(), proc.effective_uid(), proc.saved_uid())
 }
 
-/// setresgid — set real, effective, and saved group IDs (simulated).
+/// setresgid — atomically set real, effective, and saved group IDs.
 pub fn sys_setresgid(proc: &mut Process, rgid: u32, egid: u32, sgid: u32) -> Result<(), Errno> {
-    if proc.euid != 0
-        && (!requested_id_allowed(proc.gid, proc.egid, rgid)
-            || !requested_id_allowed(proc.gid, proc.egid, egid)
-            || !requested_id_allowed(proc.gid, proc.egid, sgid))
-    {
-        return Err(Errno::EPERM);
-    }
-    if rgid != 0xFFFFFFFF {
-        proc.gid = rgid;
-    }
-    if egid != 0xFFFFFFFF {
-        proc.egid = egid;
-    }
-    Ok(())
+    proc.setresgid(rgid, egid, sgid)
+}
+
+/// setregid — atomically set real/effective GID and reseat the saved GID.
+pub fn sys_setregid(proc: &mut Process, rgid: u32, egid: u32) -> Result<(), Errno> {
+    proc.setregid(rgid, egid)
 }
 
 /// getresgid — get real, effective, and saved group IDs.
 pub fn sys_getresgid(proc: &Process) -> (u32, u32, u32) {
-    (proc.gid, proc.egid, proc.gid)
+    (proc.real_gid(), proc.effective_gid(), proc.saved_gid())
 }
 
 /// getgroups — get supplementary group IDs.
-/// Returns 1 group (the process's primary gid).
-pub fn sys_getgroups(proc: &Process, size: u32) -> Result<(u32, u32), Errno> {
-    if size == 0 {
-        // Return count only
-        return Ok((1, 0));
+pub fn sys_getgroups(proc: &Process, size: u32) -> Result<&[u32], Errno> {
+    if size as usize > crate::credentials::NGROUPS_MAX {
+        return Err(Errno::EINVAL);
     }
-    // Return count=1 and the group
-    Ok((1, proc.gid))
+    if size != 0 && (size as usize) < proc.supplementary_groups().len() {
+        return Err(Errno::EINVAL);
+    }
+    Ok(proc.supplementary_groups())
 }
 
-/// setgroups — set supplementary group IDs (no-op).
-pub fn sys_setgroups(proc: &mut Process, _size: u32) -> Result<(), Errno> {
-    if proc.euid != 0 {
-        return Err(Errno::EPERM);
+/// Copy a successful getgroups result into the adapter-provided destination.
+///
+/// A size-zero query is count-only and must not inspect or touch the pointer.
+#[cfg(any(test, target_arch = "wasm32", target_arch = "wasm64"))]
+pub(crate) fn copy_getgroups_to_destination(
+    size: u32,
+    list_ptr: *mut u32,
+    list_capacity_bytes: u32,
+    groups: &[u32],
+) -> Result<u32, Errno> {
+    let count = u32::try_from(groups.len()).map_err(|_| Errno::EOVERFLOW)?;
+    if size == 0 {
+        return Ok(count);
     }
-    Ok(())
+    let required_bytes = groups
+        .len()
+        .checked_mul(core::mem::size_of::<u32>())
+        .ok_or(Errno::EOVERFLOW)?;
+    if list_ptr.is_null() || required_bytes > list_capacity_bytes as usize {
+        return Err(Errno::EFAULT);
+    }
+    if required_bytes > 0 {
+        unsafe {
+            core::ptr::copy_nonoverlapping(groups.as_ptr(), list_ptr, groups.len());
+        }
+    }
+    Ok(count)
+}
+
+/// setgroups — atomically replace the ordered supplementary group list.
+pub fn sys_setgroups(proc: &mut Process, groups: &[u32]) -> Result<(), Errno> {
+    proc.setgroups(groups)
 }
 
 /// Send one message and its SCM_RIGHTS descriptors as a single owned
@@ -16930,12 +17249,61 @@ pub fn sys_memfd_create(proc: &mut Process, name: &[u8], flags: u32) -> Result<i
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credentials::Credentials;
     use crate::process::ProcessState;
     use wasm_posix_shared::mode::{S_IFDIR, S_IFLNK, S_IFMT, S_IFREG};
     use wasm_posix_shared::poll::{POLLHUP, POLLIN, POLLOUT};
 
     fn terminal_process(pid: u32) -> Process {
         Process::new_with_stdio(pid, crate::process::StdioConfig::terminal())
+    }
+
+    fn set_test_credentials(
+        proc: &mut Process,
+        ruid: u32,
+        euid: u32,
+        rgid: u32,
+        egid: u32,
+        supplementary_groups: &[u32],
+    ) {
+        proc.install_credentials(Credentials {
+            ruid,
+            euid,
+            suid: ruid,
+            rgid,
+            egid,
+            sgid: rgid,
+            supplementary_groups: supplementary_groups.to_vec(),
+        });
+    }
+
+    fn assert_same_stat(actual: &WasmStat, expected: &WasmStat) {
+        assert_eq!(actual.st_dev, expected.st_dev);
+        assert_eq!(actual.st_ino, expected.st_ino);
+        assert_eq!(actual.st_mode, expected.st_mode);
+        assert_eq!(actual.st_nlink, expected.st_nlink);
+        assert_eq!(actual.st_uid, expected.st_uid);
+        assert_eq!(actual.st_gid, expected.st_gid);
+        assert_eq!(actual.st_size, expected.st_size);
+        assert_eq!(actual.st_atime_sec, expected.st_atime_sec);
+        assert_eq!(actual.st_atime_nsec, expected.st_atime_nsec);
+        assert_eq!(actual.st_mtime_sec, expected.st_mtime_sec);
+        assert_eq!(actual.st_mtime_nsec, expected.st_mtime_nsec);
+        assert_eq!(actual.st_ctime_sec, expected.st_ctime_sec);
+        assert_eq!(actual.st_ctime_nsec, expected.st_ctime_nsec);
+    }
+
+    fn open_test_path(
+        proc: &mut Process,
+        host: &mut MockHostIO,
+        path: &[u8],
+        use_openat: bool,
+    ) -> Result<i32, Errno> {
+        if use_openat {
+            sys_openat(proc, host, AT_FDCWD, path, O_RDWR, 0)
+        } else {
+            sys_open(proc, host, path, O_RDWR, 0)
+        }
     }
 
     struct PtyFixture {
@@ -16951,7 +17319,7 @@ mod tests {
         fn new() -> Self {
             let pty_table = crate::pty::test_table_lock();
             let mut proc = Process::new(1);
-            let pty_idx = crate::pty::alloc_pty().expect("test PTY allocation");
+            let pty_idx = crate::pty::alloc_pty(0, 0).expect("test PTY allocation");
             let pty = crate::pty::get_pty(pty_idx).expect("allocated test PTY");
             pty.locked = false;
             pty.master_refs = 1;
@@ -17298,12 +17666,16 @@ mod tests {
         /// returns the same owners host_stat would for the path.
         handle_owners: std::collections::HashMap<i64, (u32, u32)>,
         handle_paths: std::collections::HashMap<i64, Vec<u8>>,
+        freeze_exec_handles: bool,
+        frozen_handle_stats: std::collections::HashMap<i64, WasmStat>,
+        frozen_handle_bytes: std::collections::HashMap<i64, Vec<u8>>,
         path_inodes: std::collections::HashMap<Vec<u8>, u64>,
         next_inode: u64,
         missing_paths: std::collections::HashSet<Vec<u8>>,
         symlink_targets: std::collections::HashMap<Vec<u8>, Vec<u8>>,
         lstat_paths: Vec<Vec<u8>>,
         statfs_by_path: std::collections::HashMap<Vec<u8>, WasmStatfs>,
+        handle_statfs: std::collections::HashMap<i64, WasmStatfs>,
         fsync_calls: Vec<i64>,
         /// Recorded `(pid, bo_id, addr, len)` for every `gbm_bo_bind` call so
         /// the DRI mmap path can be asserted against.
@@ -17357,6 +17729,7 @@ mod tests {
         pwrite_error: Option<Errno>,
         pread_reported: Option<usize>,
         pwrite_reported: Option<usize>,
+        prepared_exec_bytes: Option<Vec<u8>>,
     }
 
     impl MockHostIO {
@@ -17383,12 +17756,16 @@ mod tests {
                 file_times: std::collections::HashMap::new(),
                 handle_owners: std::collections::HashMap::new(),
                 handle_paths: std::collections::HashMap::new(),
+                freeze_exec_handles: false,
+                frozen_handle_stats: std::collections::HashMap::new(),
+                frozen_handle_bytes: std::collections::HashMap::new(),
                 path_inodes: std::collections::HashMap::new(),
                 next_inode: 1,
                 missing_paths: std::collections::HashSet::new(),
                 symlink_targets: std::collections::HashMap::new(),
                 lstat_paths: Vec::new(),
                 statfs_by_path: std::collections::HashMap::new(),
+                handle_statfs: std::collections::HashMap::new(),
                 fsync_calls: Vec::new(),
                 gbm_bo_bind_calls: Vec::new(),
                 gbm_bo_unbind_calls: Vec::new(),
@@ -17434,6 +17811,7 @@ mod tests {
                 pwrite_error: None,
                 pread_reported: None,
                 pwrite_reported: None,
+                prepared_exec_bytes: None,
             }
         }
 
@@ -17500,6 +17878,20 @@ mod tests {
                 self.path_inodes.insert(path.to_vec(), inode);
             }
             self.handle_paths.insert(handle, path.to_vec());
+            self.handle_statfs.insert(
+                handle,
+                self.statfs_by_path
+                    .get(path)
+                    .copied()
+                    .unwrap_or_else(default_statfs),
+            );
+            if self.freeze_exec_handles {
+                let snapshot = self.host_fstat(handle)?;
+                self.frozen_handle_stats.insert(handle, snapshot);
+                if let Some(bytes) = self.prepared_exec_bytes.clone() {
+                    self.frozen_handle_bytes.insert(handle, bytes);
+                }
+            }
             Ok(handle)
         }
 
@@ -17564,6 +17956,17 @@ mod tests {
             if let Some(error) = self.pread_error {
                 return Err(error);
             }
+            if let Some(data) = self
+                .frozen_handle_bytes
+                .get(&handle)
+                .or(self.prepared_exec_bytes.as_ref())
+            {
+                let offset = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
+                let available = data.get(offset..).unwrap_or(&[]);
+                let copied = buf.len().min(available.len());
+                buf[..copied].copy_from_slice(&available[..copied]);
+                return Ok(self.pread_reported.unwrap_or(copied));
+            }
             let data = b"hello";
             let copied = buf.len().min(data.len());
             buf[..copied].copy_from_slice(&data[..copied]);
@@ -17590,6 +17993,9 @@ mod tests {
         fn host_fstat(&mut self, handle: i64) -> Result<WasmStat, Errno> {
             if let Some(err) = self.fstat_error {
                 return Err(err);
+            }
+            if let Some(stat) = self.frozen_handle_stats.get(&handle) {
+                return Ok(*stat);
             }
             let (uid, gid) = self.handle_owners.get(&handle).copied().unwrap_or((0, 0));
             let mode = self
@@ -17704,6 +18110,13 @@ mod tests {
                 .get(path)
                 .copied()
                 .unwrap_or_else(default_statfs))
+        }
+
+        fn host_fstatfs(&mut self, handle: i64) -> Result<WasmStatfs, Errno> {
+            self.handle_statfs
+                .get(&handle)
+                .copied()
+                .ok_or(Errno::EBADF)
         }
 
         fn host_pathconf(&mut self, path: &[u8], name: i32) -> Result<Option<i64>, Errno> {
@@ -17964,10 +18377,6 @@ mod tests {
             Ok(())
         }
 
-        fn host_exec(&mut self, _path: &[u8]) -> Result<(), Errno> {
-            Ok(())
-        }
-
         fn host_set_alarm(&mut self, _seconds: u32) -> Result<(), Errno> {
             Ok(())
         }
@@ -18147,10 +18556,7 @@ mod tests {
 
     fn user_process(pid: u32) -> Process {
         let mut proc = Process::new(pid);
-        proc.uid = 1000;
-        proc.euid = 1000;
-        proc.gid = 1000;
-        proc.egid = 1000;
+        set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[]);
         proc
     }
 
@@ -18235,10 +18641,25 @@ mod tests {
     fn test_non_root_exec_without_execute_denied() {
         let mut proc = user_process(14);
         let mut host = MockHostIO::new();
+        let mut locks = AdvisoryLockManager::new();
         host.set_dir_with_owner(b"/home/user", 1000, 1000, 0o755);
         host.set_file_with_owner(b"/home/user/script", 1000, 1000, 0o644, b"");
 
-        let err = sys_execve(&mut proc, &mut host, b"/home/user/script").unwrap_err();
+        let owner = crate::exec_target::PreparedExecOwner::Process {
+            pid: proc.pid,
+            caller_tid: proc.pid,
+            generation: proc.exec_generation,
+        };
+        let err = crate::exec_target::prepare(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            owner,
+            AT_FDCWD,
+            b"/home/user/script",
+            0,
+        )
+        .unwrap_err();
 
         assert_eq!(err, Errno::EACCES);
     }
@@ -18275,8 +18696,8 @@ mod tests {
         let err = sys_setresuid(&mut proc, 0, 0, 0xFFFFFFFF).unwrap_err();
 
         assert_eq!(err, Errno::EPERM);
-        assert_eq!(proc.uid, 1000);
-        assert_eq!(proc.euid, 1000);
+        assert_eq!(proc.real_uid(), 1000);
+        assert_eq!(proc.effective_uid(), 1000);
     }
 
     #[test]
@@ -18286,17 +18707,677 @@ mod tests {
         let err = sys_setresgid(&mut proc, 0, 0, 0xFFFFFFFF).unwrap_err();
 
         assert_eq!(err, Errno::EPERM);
-        assert_eq!(proc.gid, 1000);
-        assert_eq!(proc.egid, 1000);
+        assert_eq!(proc.real_gid(), 1000);
+        assert_eq!(proc.effective_gid(), 1000);
     }
 
     #[test]
     fn test_non_root_setgroups_denied() {
         let mut proc = user_process(19);
 
-        let err = sys_setgroups(&mut proc, 0).unwrap_err();
+        let err = sys_setgroups(&mut proc, &[]).unwrap_err();
 
         assert_eq!(err, Errno::EPERM);
+    }
+
+    #[test]
+    fn permission_getgroups_sizes_and_setgroups_is_root_only_and_atomic() {
+        let mut proc = Process::new(20);
+        let ordered = [41, 7, 41];
+        assert_eq!(sys_setgroups(&mut proc, &ordered), Ok(()));
+        assert_eq!(sys_getgroups(&proc, 0), Ok(ordered.as_slice()));
+        assert_eq!(
+            sys_getgroups(&proc, ordered.len() as u32),
+            Ok(ordered.as_slice()),
+        );
+        assert_eq!(
+            sys_getgroups(&proc, ordered.len() as u32 - 1),
+            Err(Errno::EINVAL),
+        );
+
+        assert_eq!(proc.seteuid(1000), Ok(()));
+        let before = proc.credentials().clone();
+        assert_eq!(sys_setgroups(&mut proc, &[99]), Err(Errno::EPERM));
+        assert_eq!(proc.credentials(), &before);
+    }
+
+    #[test]
+    fn wasm_adapter_count_query_with_groups_never_touches_a_destination() {
+        let groups = [41, 42];
+        let mut untouched = 0xA5A5_A5A5;
+
+        assert_eq!(
+            copy_getgroups_to_destination(0, &mut untouched, 0, &groups),
+            Ok(2),
+        );
+        assert_eq!(untouched, 0xA5A5_A5A5);
+        assert_eq!(
+            copy_getgroups_to_destination(0, core::ptr::null_mut(), 0, &groups),
+            Ok(2),
+        );
+    }
+
+    #[test]
+    fn permission_file_group_access_uses_supplementary_membership() {
+        let mut proc = Process::new(21);
+        set_test_credentials(&mut proc, 1000, 1000, 2000, 3000, &[7000]);
+        let file = WasmStat {
+            st_dev: 1,
+            st_ino: 1,
+            st_mode: S_IFREG | 0o060,
+            st_nlink: 1,
+            st_uid: 9999,
+            st_gid: 7000,
+            st_size: 0,
+            st_atime_sec: 0,
+            st_atime_nsec: 0,
+            st_mtime_sec: 0,
+            st_mtime_nsec: 0,
+            st_ctime_sec: 0,
+            st_ctime_nsec: 0,
+            _pad: 0,
+        };
+        assert!(has_access(&proc, &file, R_OK | W_OK));
+
+        set_test_credentials(&mut proc, 1000, 1000, 2000, 3000, &[]);
+        assert!(!has_access(&proc, &file, R_OK));
+    }
+
+    #[test]
+    fn pty_production_stat_and_fstat_keep_the_creators_owner() {
+        let _pty_table = crate::pty::test_table_lock();
+        let mut host = MockHostIO::new();
+        let mut creator = Process::new(23);
+        set_test_credentials(&mut creator, 1000, 1000, 2000, 2000, &[]);
+        let master_fd = sys_open(&mut creator, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+        let master_ofd = creator.fd_table.get(master_fd).unwrap().ofd_ref.0;
+        let pty_idx = creator.ofd_table.get(master_ofd).unwrap().host_handle as usize;
+        crate::pty::get_pty(pty_idx).unwrap().locked = false;
+        let slave_path = format!("/dev/pts/{pty_idx}").into_bytes();
+
+        let mut observer = Process::new(24);
+        set_test_credentials(&mut observer, 3000, 3000, 4000, 4000, &[2000]);
+        let path_stat = sys_stat(&mut observer, &mut host, &slave_path).unwrap();
+        assert_eq!((path_stat.st_uid, path_stat.st_gid), (1000, 2000));
+
+        let slave_fd = sys_open(&mut observer, &mut host, &slave_path, O_WRONLY, 0).unwrap();
+        let fd_stat = sys_fstat(&observer, &mut host, slave_fd).unwrap();
+        assert_eq!((fd_stat.st_uid, fd_stat.st_gid), (1000, 2000));
+        crate::pty::free_pty(pty_idx);
+    }
+
+    #[test]
+    fn pty_slave_open_enforces_owner_group_supplementary_and_root_access() {
+        let _pty_table = crate::pty::test_table_lock();
+        let mut host = MockHostIO::new();
+        let mut creator = Process::new(25);
+        set_test_credentials(&mut creator, 1000, 1000, 2000, 2000, &[]);
+        let master_fd = sys_open(&mut creator, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+        let master_ofd = creator.fd_table.get(master_fd).unwrap().ofd_ref.0;
+        let pty_idx = creator.ofd_table.get(master_ofd).unwrap().host_handle as usize;
+        crate::pty::get_pty(pty_idx).unwrap().locked = false;
+        let slave_path = format!("/dev/pts/{pty_idx}").into_bytes();
+
+        let mut observer = Process::new(26);
+        set_test_credentials(&mut observer, 3000, 3000, 4000, 4000, &[]);
+        assert_eq!(
+            sys_open(&mut observer, &mut host, &slave_path, O_WRONLY, 0),
+            Err(Errno::EACCES),
+        );
+
+        set_test_credentials(&mut observer, 3000, 3000, 4000, 4000, &[2000]);
+        assert!(sys_open(&mut observer, &mut host, &slave_path, O_WRONLY, 0).is_ok());
+        assert!(sys_open(&mut creator, &mut host, &slave_path, O_RDWR, 0).is_ok());
+
+        let mut root = Process::new(27);
+        assert!(sys_open(&mut root, &mut host, &slave_path, O_RDWR, 0).is_ok());
+        crate::pty::free_pty(pty_idx);
+    }
+
+    #[test]
+    fn pty_master_metadata_does_not_alias_the_devpts_slave() {
+        let _pty_table = crate::pty::test_table_lock();
+        let mut host = MockHostIO::new();
+        let mut creator = Process::new(28);
+        set_test_credentials(&mut creator, 1000, 1000, 2000, 2000, &[]);
+        let master_fd = sys_open(&mut creator, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+        let master_ofd = creator.fd_table.get(master_fd).unwrap().ofd_ref.0;
+        let pty_idx = creator.ofd_table.get(master_ofd).unwrap().host_handle as usize;
+        crate::pty::get_pty(pty_idx).unwrap().locked = false;
+        let slave_path = format!("/dev/pts/{pty_idx}").into_bytes();
+
+        let master_path_stat = sys_stat(&mut creator, &mut host, b"/dev/ptmx").unwrap();
+        let master_fd_stat = sys_fstat(&creator, &mut host, master_fd).unwrap();
+        let slave_stat = sys_stat(&mut creator, &mut host, &slave_path).unwrap();
+
+        assert_same_stat(&master_fd_stat, &master_path_stat);
+        assert_eq!(
+            (master_fd_stat.st_uid, master_fd_stat.st_gid),
+            (0, 0),
+            "the master endpoint is /dev/ptmx, not its allocated slave",
+        );
+        assert_eq!(
+            (slave_stat.st_uid, slave_stat.st_gid),
+            (1000, 2000),
+        );
+        assert_ne!(
+            master_fd_stat.st_ino, slave_stat.st_ino,
+            "the clone node and allocated slave are distinct devices",
+        );
+
+        sys_fchmod(&mut creator, &mut host, master_fd, 0o777).unwrap();
+        sys_fchown(&mut creator, &mut host, master_fd, 77, 88).unwrap();
+        assert_same_stat(
+            &sys_stat(&mut creator, &mut host, &slave_path).unwrap(),
+            &slave_stat,
+        );
+        sys_close(&mut creator, &mut host, master_fd).unwrap();
+        assert!(crate::pty::get_pty(pty_idx).is_none());
+    }
+
+    #[test]
+    fn pty_slave_fstatat_and_statx_use_the_live_pair_record() {
+        let _pty_table = crate::pty::test_table_lock();
+        let mut host = MockHostIO::new();
+        let mut owner = Process::new(28_100);
+        set_test_credentials(&mut owner, 1000, 1000, 2000, 2000, &[]);
+        let master_fd = sys_open(&mut owner, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+        let master_ofd = owner.fd_table.get(master_fd).unwrap().ofd_ref.0;
+        let pty_idx = owner.ofd_table.get(master_ofd).unwrap().host_handle as usize;
+        crate::pty::get_pty(pty_idx).unwrap().locked = false;
+        let slave_path = format!("/dev/pts/{pty_idx}").into_bytes();
+        let slave_fd = sys_open(&mut owner, &mut host, &slave_path, O_RDWR, 0).unwrap();
+
+        sys_chmod(&mut owner, &mut host, &slave_path, 0o640).unwrap();
+        set_test_credentials(&mut owner, 0, 0, 0, 0, &[]);
+        sys_chown(&mut owner, &mut host, &slave_path, 1200, 2200).unwrap();
+        let expected = sys_stat(&mut owner, &mut host, &slave_path).unwrap();
+        assert_eq!(
+            (expected.st_mode & 0o7777, expected.st_uid, expected.st_gid),
+            (0o640, 1200, 2200),
+        );
+
+        let via_fstatat =
+            sys_fstatat(&mut owner, &mut host, AT_FDCWD, &slave_path, 0).unwrap();
+        assert_same_stat(&via_fstatat, &expected);
+        let via_statx =
+            sys_statx(&mut owner, &mut host, AT_FDCWD, &slave_path, 0, u32::MAX).unwrap();
+        assert_same_stat(&via_statx, &expected);
+
+        sys_close(&mut owner, &mut host, slave_fd).unwrap();
+        sys_close(&mut owner, &mut host, master_fd).unwrap();
+        assert!(crate::pty::get_pty(pty_idx).is_none());
+    }
+
+    #[test]
+    fn dev_tty_fd_keeps_control_alias_identity_and_cannot_mutate_slave() {
+        let _pty_table = crate::pty::test_table_lock();
+        let mut host = MockHostIO::new();
+        let mut owner = Process::new(28_200);
+        set_test_credentials(&mut owner, 1000, 1000, 2000, 2000, &[]);
+        let master_fd = sys_open(&mut owner, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+        let master_ofd = owner.fd_table.get(master_fd).unwrap().ofd_ref.0;
+        let pty_idx = owner.ofd_table.get(master_ofd).unwrap().host_handle as usize;
+        crate::pty::get_pty(pty_idx).unwrap().locked = false;
+        let slave_path = format!("/dev/pts/{pty_idx}").into_bytes();
+        let slave_fd = sys_open(&mut owner, &mut host, &slave_path, O_RDWR, 0).unwrap();
+        let slave_before = sys_stat(&mut owner, &mut host, &slave_path).unwrap();
+
+        set_test_credentials(&mut owner, 0, 0, 0, 0, &[]);
+        let tty_path = sys_stat(&mut owner, &mut host, b"/dev/tty").unwrap();
+        let tty_fd = sys_open(&mut owner, &mut host, b"/dev/tty", O_RDWR, 0).unwrap();
+        assert_ne!(
+            owner.fd_table.get(tty_fd).unwrap().ofd_ref,
+            owner.fd_table.get(slave_fd).unwrap().ofd_ref,
+            "/dev/tty must be a distinct open description, not a dup of the slave",
+        );
+        assert_same_stat(&sys_fstat(&owner, &mut host, tty_fd).unwrap(), &tty_path);
+        assert_ne!(tty_path.st_ino, slave_before.st_ino);
+
+        sys_fchmod(&mut owner, &mut host, tty_fd, 0o777).unwrap();
+        sys_fchown(&mut owner, &mut host, tty_fd, 77, 88).unwrap();
+        assert_same_stat(&sys_fstat(&owner, &mut host, tty_fd).unwrap(), &tty_path);
+        assert_same_stat(
+            &sys_stat(&mut owner, &mut host, &slave_path).unwrap(),
+            &slave_before,
+        );
+        assert_same_stat(
+            &sys_fstat(&owner, &mut host, slave_fd).unwrap(),
+            &slave_before,
+        );
+
+        sys_close(&mut owner, &mut host, tty_fd).unwrap();
+        sys_close(&mut owner, &mut host, slave_fd).unwrap();
+        sys_close(&mut owner, &mut host, master_fd).unwrap();
+        assert!(crate::pty::get_pty(pty_idx).is_none());
+    }
+
+    #[test]
+    fn pty_master_emfile_rolls_back_open_and_openat_lifetime() {
+        let _pty_table = crate::pty::test_table_lock();
+        for use_openat in [false, true] {
+            let mut host = MockHostIO::new();
+            let mut proc = Process::new(if use_openat { 28_301 } else { 28_300 });
+            proc.fd_table.set_max_fds(3);
+            let live_ofds_before = proc.ofd_table.iter().count();
+
+            assert_eq!(
+                open_test_path(&mut proc, &mut host, b"/dev/ptmx", use_openat),
+                Err(Errno::EMFILE),
+            );
+            assert_eq!(proc.ofd_table.iter().count(), live_ofds_before);
+            assert!(
+                crate::pty::get_pty(0).is_none(),
+                "failed master publication must destroy the unreferenced pair",
+            );
+
+            proc.fd_table.set_max_fds(4);
+            let master_fd =
+                open_test_path(&mut proc, &mut host, b"/dev/ptmx", use_openat).unwrap();
+            let master_ofd = proc.fd_table.get(master_fd).unwrap().ofd_ref.0;
+            assert_eq!(master_ofd, live_ofds_before);
+            assert_eq!(proc.ofd_table.get(master_ofd).unwrap().host_handle, 0);
+            sys_close(&mut proc, &mut host, master_fd).unwrap();
+            assert_eq!(proc.ofd_table.iter().count(), live_ofds_before);
+            assert!(crate::pty::get_pty(0).is_none());
+        }
+    }
+
+    #[test]
+    fn pty_slave_emfile_rolls_back_open_and_openat_lifetime() {
+        let _pty_table = crate::pty::test_table_lock();
+        for use_openat in [false, true] {
+            let mut host = MockHostIO::new();
+            let mut proc = Process::new(if use_openat { 28_401 } else { 28_400 });
+            let master_fd = sys_open(&mut proc, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+            let master_ofd = proc.fd_table.get(master_fd).unwrap().ofd_ref.0;
+            let pty_idx = proc.ofd_table.get(master_ofd).unwrap().host_handle as usize;
+            assert_eq!(pty_idx, 0);
+            crate::pty::get_pty(pty_idx).unwrap().locked = false;
+            let slave_path = format!("/dev/pts/{pty_idx}").into_bytes();
+            proc.fd_table.set_max_fds(4);
+            let live_ofds_before = proc.ofd_table.iter().count();
+
+            assert_eq!(
+                open_test_path(&mut proc, &mut host, &slave_path, use_openat),
+                Err(Errno::EMFILE),
+            );
+            assert_eq!(proc.ofd_table.iter().count(), live_ofds_before);
+            assert_eq!(crate::pty::get_pty(pty_idx).unwrap().slave_refs, 0);
+
+            proc.fd_table.set_max_fds(5);
+            let slave_fd =
+                open_test_path(&mut proc, &mut host, &slave_path, use_openat).unwrap();
+            let slave_ofd = proc.fd_table.get(slave_fd).unwrap().ofd_ref.0;
+            assert_eq!(slave_ofd, live_ofds_before);
+            sys_close(&mut proc, &mut host, slave_fd).unwrap();
+            assert_eq!(proc.ofd_table.iter().count(), live_ofds_before);
+            sys_close(&mut proc, &mut host, master_fd).unwrap();
+            assert!(crate::pty::get_pty(pty_idx).is_none());
+
+            let replacement = sys_open(&mut proc, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+            let replacement_ofd = proc.fd_table.get(replacement).unwrap().ofd_ref.0;
+            assert_eq!(proc.ofd_table.get(replacement_ofd).unwrap().host_handle, 0);
+            sys_close(&mut proc, &mut host, replacement).unwrap();
+        }
+    }
+
+    #[test]
+    fn dev_tty_emfile_rolls_back_open_and_openat_lifetime() {
+        let _pty_table = crate::pty::test_table_lock();
+        for use_openat in [false, true] {
+            let mut host = MockHostIO::new();
+            let mut proc = Process::new(if use_openat { 28_501 } else { 28_500 });
+            let master_fd = sys_open(&mut proc, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+            let master_ofd = proc.fd_table.get(master_fd).unwrap().ofd_ref.0;
+            let pty_idx = proc.ofd_table.get(master_ofd).unwrap().host_handle as usize;
+            assert_eq!(pty_idx, 0);
+            crate::pty::get_pty(pty_idx).unwrap().locked = false;
+            let slave_path = format!("/dev/pts/{pty_idx}").into_bytes();
+            let slave_fd = sys_open(&mut proc, &mut host, &slave_path, O_RDWR, 0).unwrap();
+            proc.fd_table.set_max_fds(5);
+            let live_ofds_before = proc.ofd_table.iter().count();
+
+            assert_eq!(
+                open_test_path(&mut proc, &mut host, b"/dev/tty", use_openat),
+                Err(Errno::EMFILE),
+            );
+            assert_eq!(proc.ofd_table.iter().count(), live_ofds_before);
+            assert_eq!(crate::pty::get_pty(pty_idx).unwrap().slave_refs, 1);
+
+            proc.fd_table.set_max_fds(6);
+            let tty_fd =
+                open_test_path(&mut proc, &mut host, b"/dev/tty", use_openat).unwrap();
+            let tty_ofd = proc.fd_table.get(tty_fd).unwrap().ofd_ref.0;
+            assert_eq!(tty_ofd, live_ofds_before);
+            sys_close(&mut proc, &mut host, tty_fd).unwrap();
+            assert_eq!(proc.ofd_table.iter().count(), live_ofds_before);
+            sys_close(&mut proc, &mut host, slave_fd).unwrap();
+            sys_close(&mut proc, &mut host, master_fd).unwrap();
+            assert!(crate::pty::get_pty(pty_idx).is_none());
+
+            proc.fd_table.set_max_fds(4);
+            let replacement = sys_open(&mut proc, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+            let replacement_ofd = proc.fd_table.get(replacement).unwrap().ofd_ref.0;
+            assert_eq!(proc.ofd_table.get(replacement_ofd).unwrap().host_handle, 0);
+            sys_close(&mut proc, &mut host, replacement).unwrap();
+        }
+    }
+
+    #[test]
+    fn dev_tty_stdin_fallback_emfile_rolls_back_ofd_reference() {
+        for use_openat in [false, true] {
+            let mut host = MockHostIO::new();
+            let mut proc = Process::new(if use_openat { 28_601 } else { 28_600 });
+            let stdin_ofd = proc.fd_table.get(0).unwrap().ofd_ref.0;
+            let refs_before = proc.ofd_table.get(stdin_ofd).unwrap().ref_count;
+            proc.fd_table.set_max_fds(3);
+
+            assert_eq!(
+                open_test_path(&mut proc, &mut host, b"/dev/tty", use_openat),
+                Err(Errno::EMFILE),
+            );
+            assert_eq!(
+                proc.ofd_table.get(stdin_ofd).unwrap().ref_count,
+                refs_before,
+            );
+
+            proc.fd_table.set_max_fds(4);
+            let tty_fd =
+                open_test_path(&mut proc, &mut host, b"/dev/tty", use_openat).unwrap();
+            assert_eq!(proc.fd_table.get(tty_fd).unwrap().ofd_ref.0, stdin_ofd);
+            assert_eq!(
+                proc.ofd_table.get(stdin_ofd).unwrap().ref_count,
+                refs_before + 1,
+            );
+            sys_close(&mut proc, &mut host, tty_fd).unwrap();
+            assert_eq!(
+                proc.ofd_table.get(stdin_ofd).unwrap().ref_count,
+                refs_before,
+            );
+        }
+    }
+
+    #[test]
+    fn pty_slave_metadata_mutations_are_persistent_authorized_and_atomic() {
+        let _pty_table = crate::pty::test_table_lock();
+        let mut host = MockHostIO::new();
+        let mut owner = Process::new(29);
+        set_test_credentials(&mut owner, 1000, 1000, 2000, 2000, &[3000, 4000]);
+        let master_fd = sys_open(&mut owner, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+        let master_ofd = owner.fd_table.get(master_fd).unwrap().ofd_ref.0;
+        let pty_idx = owner.ofd_table.get(master_ofd).unwrap().host_handle as usize;
+        crate::pty::get_pty(pty_idx).unwrap().locked = false;
+        let slave_path = format!("/dev/pts/{pty_idx}").into_bytes();
+        let slave_fd = sys_open(&mut owner, &mut host, &slave_path, O_RDWR, 0).unwrap();
+
+        let initial = sys_stat(&mut owner, &mut host, &slave_path).unwrap();
+        assert_eq!(
+            (initial.st_mode & 0o7777, initial.st_uid, initial.st_gid),
+            (0o620, 1000, 2000),
+        );
+        assert_same_stat(&sys_fstat(&owner, &mut host, slave_fd).unwrap(), &initial);
+
+        set_test_credentials(&mut owner, 9000, 9000, 9000, 9000, &[]);
+        assert_eq!(
+            sys_chmod(&mut owner, &mut host, &slave_path, 0o600),
+            Err(Errno::EPERM),
+        );
+        assert_eq!(
+            sys_fchmod(&mut owner, &mut host, slave_fd, 0o600),
+            Err(Errno::EPERM),
+        );
+        assert_eq!(
+            sys_chown(
+                &mut owner,
+                &mut host,
+                &slave_path,
+                CHOWN_ID_UNCHANGED,
+                9000,
+            ),
+            Err(Errno::EPERM),
+        );
+        assert_eq!(
+            sys_lchown(
+                &mut owner,
+                &mut host,
+                &slave_path,
+                CHOWN_ID_UNCHANGED,
+                9000,
+            ),
+            Err(Errno::EPERM),
+        );
+        assert_eq!(
+            sys_fchown(
+                &mut owner,
+                &mut host,
+                slave_fd,
+                CHOWN_ID_UNCHANGED,
+                9000,
+            ),
+            Err(Errno::EPERM),
+        );
+        assert_same_stat(
+            &sys_stat(&mut owner, &mut host, &slave_path).unwrap(),
+            &initial,
+        );
+        assert_same_stat(&sys_fstat(&owner, &mut host, slave_fd).unwrap(), &initial);
+
+        set_test_credentials(&mut owner, 1000, 1000, 2000, 2000, &[3000, 4000]);
+        sys_chmod(&mut owner, &mut host, &slave_path, 0o640).unwrap();
+        assert_eq!(
+            sys_stat(&mut owner, &mut host, &slave_path)
+                .unwrap()
+                .st_mode
+                & 0o7777,
+            0o640,
+        );
+        sys_fchmod(&mut owner, &mut host, slave_fd, 0o600).unwrap();
+        sys_chown(
+            &mut owner,
+            &mut host,
+            &slave_path,
+            CHOWN_ID_UNCHANGED,
+            3000,
+        )
+        .unwrap();
+        sys_lchown(
+            &mut owner,
+            &mut host,
+            &slave_path,
+            CHOWN_ID_UNCHANGED,
+            4000,
+        )
+        .unwrap();
+        sys_fchown(
+            &mut owner,
+            &mut host,
+            slave_fd,
+            CHOWN_ID_UNCHANGED,
+            2000,
+        )
+        .unwrap();
+        let owner_updated = sys_stat(&mut owner, &mut host, &slave_path).unwrap();
+        assert_eq!(
+            (
+                owner_updated.st_mode & 0o7777,
+                owner_updated.st_uid,
+                owner_updated.st_gid,
+            ),
+            (0o600, 1000, 2000),
+        );
+        assert_same_stat(
+            &sys_fstat(&owner, &mut host, slave_fd).unwrap(),
+            &owner_updated,
+        );
+
+        assert_eq!(
+            sys_fchown(
+                &mut owner,
+                &mut host,
+                slave_fd,
+                1001,
+                CHOWN_ID_UNCHANGED,
+            ),
+            Err(Errno::EPERM),
+        );
+        assert_same_stat(
+            &sys_fstat(&owner, &mut host, slave_fd).unwrap(),
+            &owner_updated,
+        );
+
+        set_test_credentials(&mut owner, 0, 0, 0, 0, &[]);
+        sys_chown(&mut owner, &mut host, &slave_path, 1100, 2100).unwrap();
+        sys_fchmod(&mut owner, &mut host, slave_fd, 0o660).unwrap();
+        sys_fchown(&mut owner, &mut host, slave_fd, 1200, 2200).unwrap();
+        sys_lchown(&mut owner, &mut host, &slave_path, 1300, 2300).unwrap();
+        let root_updated = sys_stat(&mut owner, &mut host, &slave_path).unwrap();
+        assert_eq!(
+            (
+                root_updated.st_mode & 0o7777,
+                root_updated.st_uid,
+                root_updated.st_gid,
+            ),
+            (0o660, 1300, 2300),
+        );
+        assert_same_stat(
+            &sys_fstat(&owner, &mut host, slave_fd).unwrap(),
+            &root_updated,
+        );
+
+        sys_close(&mut owner, &mut host, slave_fd).unwrap();
+        sys_close(&mut owner, &mut host, master_fd).unwrap();
+        assert!(crate::pty::get_pty(pty_idx).is_none());
+    }
+
+    #[test]
+    fn pty_slave_open_uses_live_mode_and_complete_group_membership() {
+        let _pty_table = crate::pty::test_table_lock();
+        let mut host = MockHostIO::new();
+        let mut creator = Process::new(30);
+        set_test_credentials(&mut creator, 1000, 1000, 2000, 2000, &[]);
+        let master_fd = sys_open(&mut creator, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+        let master_ofd = creator.fd_table.get(master_fd).unwrap().ofd_ref.0;
+        let pty_idx = creator.ofd_table.get(master_ofd).unwrap().host_handle as usize;
+        crate::pty::get_pty(pty_idx).unwrap().locked = false;
+        let slave_path = format!("/dev/pts/{pty_idx}").into_bytes();
+
+        let mut caller = Process::new(31);
+        set_test_credentials(&mut caller, 3000, 3000, 4000, 2000, &[]);
+        let effective_group_fd =
+            sys_open(&mut caller, &mut host, &slave_path, O_WRONLY, 0).unwrap();
+        sys_close(&mut caller, &mut host, effective_group_fd).unwrap();
+        assert_eq!(
+            sys_open(&mut caller, &mut host, &slave_path, O_RDONLY, 0),
+            Err(Errno::EACCES),
+        );
+
+        set_test_credentials(&mut caller, 3000, 3000, 4000, 4000, &[2000]);
+        let supplementary_fd =
+            sys_open(&mut caller, &mut host, &slave_path, O_WRONLY, 0).unwrap();
+        sys_close(&mut caller, &mut host, supplementary_fd).unwrap();
+
+        set_test_credentials(&mut caller, 3000, 3000, 4000, 4000, &[]);
+        let refs_before_denial = crate::pty::get_pty(pty_idx).unwrap().slave_refs;
+        assert_eq!(
+            sys_open(&mut caller, &mut host, &slave_path, O_WRONLY, 0),
+            Err(Errno::EACCES),
+        );
+        assert_eq!(
+            crate::pty::get_pty(pty_idx).unwrap().slave_refs,
+            refs_before_denial,
+            "a denied open must not publish a slave reference",
+        );
+
+        let mut root = Process::new(32);
+        let root_fd = sys_open(&mut root, &mut host, &slave_path, O_RDWR, 0).unwrap();
+        sys_close(&mut root, &mut host, root_fd).unwrap();
+
+        sys_chmod(&mut creator, &mut host, &slave_path, 0o640).unwrap();
+        set_test_credentials(&mut caller, 3000, 3000, 4000, 2000, &[]);
+        let group_read_fd =
+            sys_open(&mut caller, &mut host, &slave_path, O_RDONLY, 0).unwrap();
+        sys_close(&mut caller, &mut host, group_read_fd).unwrap();
+        assert_eq!(
+            sys_open(&mut caller, &mut host, &slave_path, O_WRONLY, 0),
+            Err(Errno::EACCES),
+        );
+        set_test_credentials(&mut caller, 3000, 3000, 4000, 4000, &[2000]);
+        let supplementary_read_fd =
+            sys_open(&mut caller, &mut host, &slave_path, O_RDONLY, 0).unwrap();
+        sys_close(&mut caller, &mut host, supplementary_read_fd).unwrap();
+
+        sys_close(&mut creator, &mut host, master_fd).unwrap();
+        assert!(crate::pty::get_pty(pty_idx).is_none());
+    }
+
+    #[test]
+    fn pty_slave_metadata_survives_reopen_and_is_destroyed_with_the_pair() {
+        let _pty_table = crate::pty::test_table_lock();
+        let mut host = MockHostIO::new();
+        let mut owner = Process::new(33);
+        set_test_credentials(&mut owner, 1000, 1000, 2000, 2000, &[]);
+        let master_fd = sys_open(&mut owner, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+        let master_ofd = owner.fd_table.get(master_fd).unwrap().ofd_ref.0;
+        let pty_idx = owner.ofd_table.get(master_ofd).unwrap().host_handle as usize;
+        crate::pty::get_pty(pty_idx).unwrap().locked = false;
+        let slave_path = format!("/dev/pts/{pty_idx}").into_bytes();
+        let slave_fd = sys_open(&mut owner, &mut host, &slave_path, O_RDWR, 0).unwrap();
+
+        sys_fchmod(&mut owner, &mut host, slave_fd, 0o600).unwrap();
+        sys_close(&mut owner, &mut host, slave_fd).unwrap();
+        let while_closed = sys_stat(&mut owner, &mut host, &slave_path).unwrap();
+        assert_eq!(while_closed.st_mode & 0o7777, 0o600);
+        let reopened = sys_open(&mut owner, &mut host, &slave_path, O_RDWR, 0).unwrap();
+        assert_same_stat(
+            &sys_fstat(&owner, &mut host, reopened).unwrap(),
+            &while_closed,
+        );
+        sys_close(&mut owner, &mut host, reopened).unwrap();
+        sys_close(&mut owner, &mut host, master_fd).unwrap();
+
+        assert!(crate::pty::get_pty(pty_idx).is_none());
+        assert_eq!(
+            sys_stat(&mut owner, &mut host, &slave_path).unwrap_err(),
+            Errno::ENOENT,
+        );
+
+        set_test_credentials(&mut owner, 3000, 3000, 4000, 4000, &[]);
+        let next_master = sys_open(&mut owner, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+        let next_ofd = owner.fd_table.get(next_master).unwrap().ofd_ref.0;
+        let reused_idx = owner.ofd_table.get(next_ofd).unwrap().host_handle as usize;
+        assert_eq!(reused_idx, pty_idx);
+        crate::pty::get_pty(reused_idx).unwrap().locked = false;
+        let fresh_path = format!("/dev/pts/{reused_idx}").into_bytes();
+        let fresh = sys_stat(&mut owner, &mut host, &fresh_path).unwrap();
+        assert_eq!(
+            (fresh.st_mode & 0o7777, fresh.st_uid, fresh.st_gid),
+            (0o620, 3000, 4000),
+        );
+        sys_close(&mut owner, &mut host, next_master).unwrap();
+        assert!(crate::pty::get_pty(reused_idx).is_none());
+    }
+
+    #[test]
+    fn permission_sticky_directory_uses_effective_uid_not_saved_uid() {
+        let mut proc = Process::new(22);
+        proc.install_credentials(Credentials {
+            ruid: 1000,
+            euid: 3000,
+            suid: 2000,
+            rgid: 1000,
+            egid: 1000,
+            sgid: 1000,
+            supplementary_groups: vec![],
+        });
+        let mut host = MockHostIO::new();
+        host.set_dir_with_owner(b"/tmp", 0, 0, 0o1777);
+        host.set_file_with_owner(b"/tmp/saved-owned", 2000, 0, 0o644, b"");
+
+        assert_eq!(
+            sys_unlink(&mut proc, &mut host, b"/tmp/saved-owned"),
+            Err(Errno::EPERM),
+        );
     }
 
     #[test]
@@ -18845,16 +19926,13 @@ mod tests {
         let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
         set_test_current_tid(0);
         let mut proc = Process::new(81_007);
-        proc.euid = 0;
-        proc.egid = 0;
         proc.umask = 0;
         let mut host = MockHostIO::new();
         let fifo = b"/tmp/fifo_futimens_permissions";
         create_test_fifo(&mut proc, &mut host, fifo, 0o666);
         let fd = sys_open(&mut proc, &mut host, fifo, O_RDWR, 0).unwrap();
 
-        proc.euid = 1000;
-        proc.egid = 1000;
+        set_test_credentials(&mut proc, 0, 1000, 0, 1000, &[]);
         host.clock_time = (1_500_000_010, 123_456_789);
         assert_eq!(
             sys_utimensat(&mut proc, &mut host, fd, b"", None, 0),
@@ -18913,8 +19991,7 @@ mod tests {
             ),
         );
 
-        proc.euid = 0;
-        proc.egid = 0;
+        set_test_credentials(&mut proc, 0, 0, 0, 0, &[]);
         sys_close(&mut proc, &mut host, fd).unwrap();
         sys_unlink(&mut proc, &mut host, fifo).unwrap();
     }
@@ -19013,8 +20090,6 @@ mod tests {
         let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
         set_test_current_tid(0);
         let mut proc = Process::new(81_030);
-        proc.euid = 0;
-        proc.egid = 0;
         let mut host = MockHostIO::new();
         let old = b"/tmp/fifo_metadata_old";
         let new = b"/tmp/fifo_metadata_new";
@@ -20159,8 +21234,8 @@ mod tests {
 
     /// VFS is the source of truth for file ownership. sys_stat must propagate
     /// uid/gid from the host VFS, not overwrite with the caller's effective
-    /// ids. proc.euid defaults to 0; with a host_stat returning (1000, 1000),
-    /// any override would clobber back to 0 (or to proc.euid) and fail.
+    /// IDs. The caller defaults to effective UID 0; with a host_stat returning
+    /// (1000, 1000), any caller-identity override would clobber the result.
     #[test]
     fn test_sys_stat_returns_host_uid_gid() {
         let mut proc = Process::new(1);
@@ -20210,8 +21285,8 @@ mod tests {
 
     /// sys_chown must propagate uid/gid into the host VFS so that a subsequent
     /// sys_stat returns the freshly written values. The asymmetric (uid != gid,
-    /// neither equal to proc.euid) pair catches any single-field clobber and
-    /// any "kernel overrides chown args with caller's euid" regression.
+    /// neither equal to the caller's effective UID) pair catches any
+    /// single-field clobber and any caller-identity override regression.
     #[test]
     fn test_sys_chown_round_trip_through_host() {
         let mut proc = Process::new(1);
@@ -20226,12 +21301,9 @@ mod tests {
     }
 
     #[test]
-    fn test_prepare_chown_ids_enforces_the_exposed_group_set() {
+    fn permission_prepare_chown_ids_enforces_the_authoritative_group_set() {
         let mut proc = Process::new(1);
-        proc.uid = 1000;
-        proc.euid = 1000;
-        proc.gid = 2000; // Kandelo's synthesized supplementary group.
-        proc.egid = 3000;
+        set_test_credentials(&mut proc, 1000, 1000, 2000, 3000, &[2000]);
         let st = WasmStat {
             st_dev: 0,
             st_ino: 1,
@@ -20267,7 +21339,7 @@ mod tests {
         );
 
         // An unprivileged owner cannot give a file away or name a group
-        // outside the effective-plus-synthesized group set. POSIX requires
+        // outside the effective-plus-supplementary group set. POSIX requires
         // the unchanged sentinel to preserve an existing foreign group;
         // explicitly naming that group is not authorized.
         assert_eq!(
@@ -20283,23 +21355,20 @@ mod tests {
             Err(Errno::EPERM),
         );
 
-        proc.euid = 1001;
+        set_test_credentials(&mut proc, 1000, 1001, 2000, 3000, &[2000]);
         assert_eq!(
             prepare_chown_ids(&proc, &st, CHOWN_ID_UNCHANGED, CHOWN_ID_UNCHANGED),
             Err(Errno::EPERM),
         );
 
-        proc.euid = 0;
+        set_test_credentials(&mut proc, 1000, 0, 2000, 3000, &[2000]);
         assert_eq!(prepare_chown_ids(&proc, &st, 5000, 6000), Ok((5000, 6000)),);
     }
 
     #[test]
     fn test_sys_chown_allows_owner_group_changes_but_rejects_foreign_ids() {
         let mut proc = Process::new(1);
-        proc.uid = 1000;
-        proc.euid = 1000;
-        proc.gid = 2000;
-        proc.egid = 1000;
+        set_test_credentials(&mut proc, 1000, 1000, 2000, 1000, &[2000]);
         let mut host = MockHostIO::new();
         host.set_file_with_owner(b"/owned", 1000, 4000, 0o755, b"hi");
 
@@ -20357,7 +21426,7 @@ mod tests {
     #[test]
     fn test_sys_chown_both_sentinels_require_owner_and_validate_path() {
         let mut proc = Process::new(1);
-        proc.euid = 1000;
+        set_test_credentials(&mut proc, 1000, 1000, 0, 0, &[]);
         let mut host = MockHostIO::new();
         host.set_file_with_owner(b"/owned", 1000, 2000, 0o644, b"hi");
 
@@ -20371,7 +21440,7 @@ mod tests {
         .unwrap();
         assert_eq!(host.chown_calls, vec![(b"/owned".to_vec(), 1000, 2000)],);
 
-        proc.euid = 2000;
+        set_test_credentials(&mut proc, 1000, 2000, 0, 0, &[]);
         assert_eq!(
             sys_chown(
                 &mut proc,
@@ -20441,7 +21510,7 @@ mod tests {
     #[test]
     fn test_sys_lchown_sentinels_use_link_owner_and_still_delegate() {
         let mut proc = Process::new(1);
-        proc.euid = 123;
+        set_test_credentials(&mut proc, 123, 123, 0, 0, &[]);
         let mut host = MockHostIO::new();
         host.set_symlink(b"/owned-link", b"/target");
         host.file_owners.insert(b"/owned-link".to_vec(), (123, 456));
@@ -20471,10 +21540,7 @@ mod tests {
     #[test]
     fn test_sys_lchown_authorizes_against_link_owner_and_caller_groups() {
         let mut proc = Process::new(1);
-        proc.uid = 1000;
-        proc.euid = 1000;
-        proc.gid = 2000;
-        proc.egid = 3000;
+        set_test_credentials(&mut proc, 1000, 1000, 2000, 3000, &[2000]);
         let mut host = MockHostIO::new();
         host.set_symlink(b"/link", b"/target");
         host.file_owners.insert(b"/link".to_vec(), (1000, 4000));
@@ -20515,7 +21581,7 @@ mod tests {
 
         sys_fchown(&mut proc, &mut host, fd, CHOWN_ID_UNCHANGED, 30).unwrap();
         sys_fchown(&mut proc, &mut host, fd, 40, CHOWN_ID_UNCHANGED).unwrap();
-        proc.euid = 40;
+        set_test_credentials(&mut proc, 40, 40, 0, 0, &[]);
         sys_fchown(
             &mut proc,
             &mut host,
@@ -20547,15 +21613,12 @@ mod tests {
     }
 
     #[test]
-    fn test_sys_fchown_uses_effective_and_synthesized_groups() {
+    fn test_sys_fchown_uses_effective_and_supplementary_groups() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         host.set_file_with_owner(b"/fd-group", 1000, 4000, 0o755, b"hi");
         let fd = sys_open(&mut proc, &mut host, b"/fd-group", O_RDONLY, 0).unwrap();
-        proc.uid = 1000;
-        proc.euid = 1000;
-        proc.gid = 2000;
-        proc.egid = 3000;
+        set_test_credentials(&mut proc, 1000, 1000, 2000, 3000, &[2000]);
 
         sys_fchown(&mut proc, &mut host, fd, CHOWN_ID_UNCHANGED, 3000).unwrap();
         sys_fchown(&mut proc, &mut host, fd, CHOWN_ID_UNCHANGED, 2000).unwrap();
@@ -20660,10 +21723,7 @@ mod tests {
         host.set_symlink(b"/dir/link", b"target");
         host.file_owners.insert(b"/dir/link".to_vec(), (1000, 4000));
         let dirfd = sys_open(&mut proc, &mut host, b"/dir", O_RDONLY | O_DIRECTORY, 0).unwrap();
-        proc.uid = 1000;
-        proc.euid = 1000;
-        proc.gid = 2000;
-        proc.egid = 3000;
+        set_test_credentials(&mut proc, 1000, 1000, 2000, 3000, &[2000]);
 
         sys_fchownat(
             &mut proc,
@@ -20917,10 +21977,7 @@ mod tests {
     #[test]
     fn access_uses_real_ids_for_component_search() {
         let mut proc = Process::new(1);
-        proc.uid = 1000;
-        proc.gid = 1000;
-        proc.euid = 0;
-        proc.egid = 0;
+        set_test_credentials(&mut proc, 1000, 0, 1000, 0, &[]);
         let mut host = MockHostIO::new();
         host.set_dir_with_owner(b"/secret", 0, 0, 0o700);
         host.set_file_with_owner(b"/secret/file", 0, 0, 0o644, b"");
@@ -20931,10 +21988,7 @@ mod tests {
         );
         assert!(sys_stat(&mut proc, &mut host, b"/secret/file").is_ok());
 
-        proc.uid = 0;
-        proc.gid = 0;
-        proc.euid = 1000;
-        proc.egid = 1000;
+        set_test_credentials(&mut proc, 0, 1000, 0, 1000, &[]);
         host.set_dir_with_owner(b"/root-only", 0, 0, 0o700);
         host.set_file_with_owner(b"/root-only/file", 0, 0, 0o644, b"");
 
@@ -20956,12 +22010,9 @@ mod tests {
     }
 
     #[test]
-    fn access_uses_effective_and_synthesized_supplementary_groups() {
+    fn access_uses_effective_and_authoritative_supplementary_groups() {
         let mut proc = Process::new(1);
-        proc.uid = 1000;
-        proc.euid = 1000;
-        proc.gid = 2000;
-        proc.egid = 3000;
+        set_test_credentials(&mut proc, 1000, 1000, 2000, 3000, &[2000]);
         let mut host = MockHostIO::new();
         host.set_dir_with_owner(b"/supp", 9999, 2000, 0o710);
         host.set_file_with_owner(b"/supp/file", 9999, 2000, 0o040, b"data");
@@ -21731,7 +22782,7 @@ mod tests {
     #[test]
     fn test_raise_preserves_self_sender_metadata() {
         let mut proc = Process::new(17);
-        proc.uid = 29;
+        set_test_credentials(&mut proc, 29, 29, 0, 0, &[]);
 
         sys_raise(&mut proc, 10).unwrap();
         let info = proc.consume_signal_for(17, 10).unwrap();
@@ -22976,7 +24027,7 @@ mod tests {
     }
 
     #[test]
-    fn spawn_cloexec_and_action_rollback_balance_all_shared_backings() {
+    fn pending_spawn_cloexec_and_action_rollback_balance_all_shared_backings() {
         use crate::process_table::ProcessTable;
         use crate::spawn::{FileAction, SpawnAttrs};
         use wasm_posix_shared::signal::SIGINT;
@@ -23032,8 +24083,8 @@ mod tests {
             )
             .unwrap();
         for (fd, file_type, idx, _) in tracked {
-            assert!(table.get(child).unwrap().fd_table.get(fd).is_err());
-            assert_eq!(descriptor_backing_ref_count(file_type, idx), Some(1));
+            assert!(table.get(child).unwrap().fd_table.get(fd).is_ok());
+            assert_eq!(descriptor_backing_ref_count(file_type, idx), Some(2));
         }
 
         let err = table
@@ -23051,7 +24102,7 @@ mod tests {
         for (_, file_type, idx, _) in tracked {
             assert_eq!(
                 descriptor_backing_ref_count(file_type, idx),
-                Some(1),
+                Some(2),
                 "failed spawn must roll back every inherited backing ref"
             );
         }
@@ -23243,7 +24294,7 @@ mod tests {
         ));
 
         let pty_table = crate::pty::test_table_lock();
-        let pty_index = crate::pty::alloc_pty().unwrap();
+        let pty_index = crate::pty::alloc_pty(0, 0).unwrap();
         for file_type in [FileType::PtyMaster, FileType::PtySlave] {
             assert_eq!(
                 validate_scm_rights_transfer_metadata(file_type, pty_index as i64),
@@ -23904,6 +24955,107 @@ mod tests {
                 .count(),
             1,
         );
+    }
+
+    #[test]
+    fn spawn_resetids_precedes_credential_sensitive_directory_actions_once() {
+        use crate::credentials::Credentials;
+        use crate::process_table::ProcessTable;
+        use crate::spawn::{FileAction, SpawnAttrs};
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let parent_credentials = Credentials {
+            ruid: 1000,
+            euid: 2000,
+            suid: 3000,
+            rgid: 4000,
+            egid: 5000,
+            sgid: 6000,
+            supplementary_groups: vec![7000, 8000],
+        };
+        {
+            let parent = table.get_mut(parent_pid).unwrap();
+            parent.install_credentials(parent_credentials.clone());
+            parent.cwd = b"/real-owned".to_vec();
+        }
+
+        let mut host = MockHostIO::new();
+        host.set_dir_with_owner(b"/real-owned", 1000, 4000, 0o700);
+        host.set_dir_with_owner(b"/real-owned/final", 1000, 4000, 0o700);
+        host.set_dir_with_owner(b"/real-owned/intermediate", 1000, 4000, 0o700);
+        // Replaying the list from its final directory would try this path.
+        // Keeping it absent makes a second pass observably fail instead of
+        // silently appearing idempotent.
+        host.set_missing_path(b"/real-owned/final/final");
+
+        let actions = [
+            FileAction::Open {
+                fd: 10,
+                path: b"final".to_vec(),
+                oflag: (O_RDONLY | O_DIRECTORY) as i32,
+                mode: 0,
+            },
+            FileAction::Chdir {
+                path: b"intermediate".to_vec(),
+            },
+            FileAction::Fchdir { fd: 10 },
+        ];
+
+        assert_eq!(
+            table.spawn_child_for_caller(
+                parent_pid,
+                parent_pid,
+                &[b"child".as_slice()],
+                &[],
+                &actions,
+                &SpawnAttrs::empty(),
+                &mut host,
+            ),
+            Err(Errno::EACCES),
+            "the parent's effective IDs cannot search the real-ID-only directory",
+        );
+        assert_eq!(host.next_handle, 100, "a failed action must not reach host_open");
+
+        let child_pid = table
+            .spawn_child_for_caller(
+                parent_pid,
+                parent_pid,
+                &[b"child".as_slice()],
+                &[],
+                &actions,
+                &SpawnAttrs {
+                    flags: wasm_posix_shared::spawn_contract::ATTR_RESETIDS,
+                    pgrp: 0,
+                    sigdef: 0,
+                    sigmask: 0,
+                },
+                &mut host,
+            )
+            .unwrap();
+
+        let child = table.get(child_pid).unwrap();
+        assert_eq!(child.effective_uid(), 1000);
+        assert_eq!(child.effective_gid(), 4000);
+        assert_eq!(child.supplementary_groups(), &[7000, 8000]);
+        assert_eq!(child.cwd, b"/real-owned/final");
+        assert_eq!(
+            child
+                .ofd_table
+                .get(child.fd_table.get(10).unwrap().ofd_ref.0)
+                .unwrap()
+                .path,
+            b"/real-owned/final",
+        );
+        assert_eq!(
+            host.next_handle, 101,
+            "the credential-sensitive open/chdir/fchdir action list runs once",
+        );
+        assert_eq!(
+            table.get(parent_pid).unwrap().credentials(),
+            &parent_credentials,
+        );
+        assert_eq!(table.get(parent_pid).unwrap().cwd, b"/real-owned");
     }
 
     #[test]
@@ -31246,10 +32398,11 @@ mod tests {
     #[test]
     fn test_setuid_as_root_sets_both() {
         let mut proc = Process::new(1);
-        assert_eq!(proc.uid, 0);
+        assert_eq!(proc.real_uid(), 0);
         sys_setuid(&mut proc, 42).unwrap();
-        assert_eq!(proc.uid, 42);
-        assert_eq!(proc.euid, 42);
+        assert_eq!(proc.real_uid(), 42);
+        assert_eq!(proc.effective_uid(), 42);
+        assert_eq!(proc.saved_uid(), 42);
     }
 
     #[test]
@@ -31259,7 +32412,7 @@ mod tests {
                                            // Simulate regaining privilege partly: impossible without saved-set,
                                            // but setting euid back to real uid is always allowed.
         sys_seteuid(&mut proc, 7).unwrap();
-        assert_eq!(proc.euid, 7);
+        assert_eq!(proc.effective_uid(), 7);
     }
 
     #[test]
@@ -31267,16 +32420,17 @@ mod tests {
         let mut proc = Process::new(1);
         sys_setuid(&mut proc, 7).unwrap();
         assert_eq!(sys_setuid(&mut proc, 99), Err(Errno::EPERM));
-        assert_eq!(proc.uid, 7);
-        assert_eq!(proc.euid, 7);
+        assert_eq!(proc.real_uid(), 7);
+        assert_eq!(proc.effective_uid(), 7);
     }
 
     #[test]
     fn test_setgid_as_root_sets_both() {
         let mut proc = Process::new(1);
         sys_setgid(&mut proc, 42).unwrap();
-        assert_eq!(proc.gid, 42);
-        assert_eq!(proc.egid, 42);
+        assert_eq!(proc.real_gid(), 42);
+        assert_eq!(proc.effective_gid(), 42);
+        assert_eq!(proc.saved_gid(), 42);
     }
 
     #[test]
@@ -31290,8 +32444,8 @@ mod tests {
     fn test_seteuid_as_root_allows_any() {
         let mut proc = Process::new(1);
         sys_seteuid(&mut proc, 500).unwrap();
-        assert_eq!(proc.uid, 0); // real uid unchanged
-        assert_eq!(proc.euid, 500);
+        assert_eq!(proc.real_uid(), 0); // real uid unchanged
+        assert_eq!(proc.effective_uid(), 500);
     }
 
     #[test]
@@ -31299,7 +32453,7 @@ mod tests {
         let mut proc = Process::new(1);
         sys_setuid(&mut proc, 7).unwrap();
         sys_seteuid(&mut proc, 7).unwrap();
-        assert_eq!(proc.euid, 7);
+        assert_eq!(proc.effective_uid(), 7);
     }
 
     #[test]
@@ -31313,8 +32467,8 @@ mod tests {
     fn test_setegid_as_root_allows_any() {
         let mut proc = Process::new(1);
         sys_setegid(&mut proc, 500).unwrap();
-        assert_eq!(proc.gid, 0);
-        assert_eq!(proc.egid, 500);
+        assert_eq!(proc.real_gid(), 0);
+        assert_eq!(proc.effective_gid(), 500);
     }
 
     #[test]
@@ -31329,10 +32483,10 @@ mod tests {
     }
 
     #[test]
-    fn test_can_signal_matches_real_or_effective() {
+    fn signal_permission_matches_target_real_or_saved_uid() {
         // sender.euid matches target.ruid
         assert!(can_signal(99, 7, 7, 0));
-        // sender.ruid matches target.euid
+        // sender.ruid matches target.suid
         assert!(can_signal(7, 99, 0, 7));
     }
 
@@ -31522,19 +32676,15 @@ mod tests {
     }
 
     #[test]
-    fn test_execve_empty_path_returns_enoent() {
+    fn test_direct_exec_dispatch_has_no_path_authority() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        let result = sys_execve(&mut proc, &mut host, b"");
-        assert_eq!(result, Err(Errno::ENOENT));
-    }
 
-    #[test]
-    fn test_execve_delegates_to_host() {
-        let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
-        let result = sys_execve(&mut proc, &mut host, b"/bin/ls");
-        assert!(result.is_ok());
+        assert_eq!(sys_execve(&mut proc, &mut host, b""), Err(Errno::ENOSYS));
+        assert_eq!(
+            sys_execve(&mut proc, &mut host, b"/bin/ls"),
+            Err(Errno::ENOSYS),
+        );
     }
 
     #[test]
@@ -31857,9 +33007,6 @@ mod tests {
             Ok(())
         }
         fn host_fchown(&mut self, _handle: i64, _uid: u32, _gid: u32) -> Result<(), Errno> {
-            Ok(())
-        }
-        fn host_exec(&mut self, _path: &[u8]) -> Result<(), Errno> {
             Ok(())
         }
         fn host_set_alarm(&mut self, _seconds: u32) -> Result<(), Errno> {
@@ -33014,9 +34161,6 @@ mod tests {
                 Ok(())
             }
             fn host_fchown(&mut self, _h: i64, _u: u32, _g: u32) -> Result<(), Errno> {
-                Ok(())
-            }
-            fn host_exec(&mut self, _p: &[u8]) -> Result<(), Errno> {
                 Ok(())
             }
             fn host_set_alarm(&mut self, _s: u32) -> Result<(), Errno> {
@@ -37228,9 +38372,6 @@ mod tests {
             fn host_fchown(&mut self, _h: i64, _u: u32, _g: u32) -> Result<(), Errno> {
                 Ok(())
             }
-            fn host_exec(&mut self, _p: &[u8]) -> Result<(), Errno> {
-                Ok(())
-            }
             fn host_set_alarm(&mut self, _s: u32) -> Result<(), Errno> {
                 Ok(())
             }
@@ -37445,9 +38586,6 @@ mod tests {
             fn host_fchown(&mut self, _h: i64, _u: u32, _g: u32) -> Result<(), Errno> {
                 Ok(())
             }
-            fn host_exec(&mut self, _p: &[u8]) -> Result<(), Errno> {
-                Ok(())
-            }
             fn host_set_alarm(&mut self, _s: u32) -> Result<(), Errno> {
                 Ok(())
             }
@@ -37657,9 +38795,6 @@ mod tests {
                 Ok(())
             }
             fn host_fchown(&mut self, _h: i64, _u: u32, _g: u32) -> Result<(), Errno> {
-                Ok(())
-            }
-            fn host_exec(&mut self, _p: &[u8]) -> Result<(), Errno> {
                 Ok(())
             }
             fn host_set_alarm(&mut self, _s: u32) -> Result<(), Errno> {
@@ -39007,7 +40142,7 @@ mod tests {
     }
 
     #[test]
-    fn execve_unbinds_fb_mapping_but_keeps_open_fd_owner() {
+    fn exec_commit_unbinds_fb_mapping_but_keeps_open_fd_owner() {
         use core::sync::atomic::Ordering;
         use wasm_posix_shared::flags::O_RDWR;
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
@@ -39028,8 +40163,7 @@ mod tests {
             0,
         )
         .unwrap();
-        // execve invokes host_exec which the tracking host returns Ok(()) for.
-        sys_execve(&mut proc, &mut host, b"/bin/sh").unwrap();
+        commit_exec_state(&mut proc, &mut host, 0).unwrap();
         assert!(proc.fb_binding.is_none());
         assert_eq!(host.unbind_framebuffer_calls, alloc::vec![proc.pid as i32]);
         assert_eq!(
@@ -39213,7 +40347,7 @@ mod tests {
         );
 
         crate::mouse::inject_event(2, 2, 0);
-        sys_execve(&mut proc, &mut host, b"/bin/sh").unwrap();
+        commit_exec_state(&mut proc, &mut host, 0).unwrap();
         assert_eq!(
             crate::mouse::MICE_OWNER.load(Ordering::SeqCst),
             proc.pid as i32
@@ -41871,7 +43005,7 @@ mod tests {
     }
 
     #[test]
-    fn execve_releases_dri_bo_and_gl_mappings() {
+    fn exec_commit_releases_dri_bo_and_gl_mappings() {
         use wasm_posix_shared::gl;
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
         let _g = crate::dri::bo::TEST_REGISTRY_LOCK
@@ -41911,7 +43045,7 @@ mod tests {
         )
         .unwrap();
 
-        sys_execve(&mut proc, &mut host, b"/bin/sh").unwrap();
+        commit_exec_state(&mut proc, &mut host, 0).unwrap();
         let bo_id = (offset >> 12) as u32;
         assert!(proc.dri_bindings.is_empty());
         assert_eq!(
@@ -42736,5 +43870,1158 @@ mod tests {
             cleanup_exiting_thread_with_state(&mut proc, &mut locks, &mut host, tid),
             Err(Errno::ESRCH)
         ));
+    }
+
+    fn prepare_test_exec(
+        proc: &mut Process,
+        locks: &mut AdvisoryLockManager,
+        host: &mut MockHostIO,
+        path: &[u8],
+    ) -> u32 {
+        host.stat_size = 5;
+        host.prepared_exec_bytes = Some(b"hello".to_vec());
+        host.set_file_with_owner(path, 0, 0, S_IFREG | 0o755, b"hello");
+        crate::exec_target::prepare(
+            proc,
+            locks,
+            host,
+            crate::exec_target::PreparedExecOwner::Process {
+                pid: proc.pid,
+                caller_tid: proc.pid,
+                generation: proc.exec_generation,
+            },
+            AT_FDCWD,
+            path,
+            0,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn exec_target_reads_are_positioned_and_cancel_is_exactly_once() {
+        let mut proc = Process::new(81);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let token = prepare_test_exec(&mut proc, &mut locks, &mut host, b"/bin/exact");
+        let ofd_ref = proc
+            .prepared_exec_targets
+            .get(token)
+            .unwrap()
+            .ofd_ref();
+        proc.ofd_table.get(ofd_ref.0).unwrap().set_offset(73);
+
+        let mut bytes = [0u8; 5];
+        assert_eq!(
+            crate::exec_target::read(&mut proc, &mut host, pid, token, 0, &mut bytes),
+            Ok(5),
+        );
+        assert_eq!(&bytes, b"hello");
+        assert_eq!(proc.ofd_table.get(ofd_ref.0).unwrap().offset(), 73);
+        assert_eq!(host.pread_calls, vec![(100, 0, 5)]);
+
+        crate::exec_target::cancel(&mut proc, &mut locks, &mut host, pid, token).unwrap();
+        assert_eq!(host.closed_handles, vec![100]);
+        assert_eq!(
+            crate::exec_target::cancel(&mut proc, &mut locks, &mut host, pid, token),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(host.closed_handles, vec![100]);
+    }
+
+    #[test]
+    fn exec_target_empty_path_outlives_guest_fd_close() {
+        let mut proc = Process::new(82);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.stat_size = 5;
+        host.prepared_exec_bytes = Some(b"hello".to_vec());
+        host.set_file_with_owner(b"/bin/fd-exec", 0, 0, S_IFREG | 0o755, b"hello");
+        let fd = sys_open(&mut proc, &mut host, b"/bin/fd-exec", O_RDONLY, 0).unwrap();
+        let owner = crate::exec_target::PreparedExecOwner::Process {
+            pid: proc.pid,
+            caller_tid: proc.pid,
+            generation: 0,
+        };
+        let token = crate::exec_target::prepare(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            owner,
+            fd,
+            b"",
+            AT_EMPTY_PATH,
+        )
+        .unwrap();
+        sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap();
+        assert!(host.closed_handles.is_empty());
+
+        let mut bytes = [0u8; 5];
+        assert_eq!(
+            crate::exec_target::read(&mut proc, &mut host, pid, token, 0, &mut bytes),
+            Ok(5),
+        );
+        assert_eq!(&bytes, b"hello");
+        crate::exec_target::cancel(&mut proc, &mut locks, &mut host, pid, token).unwrap();
+        assert_eq!(host.closed_handles, vec![100]);
+    }
+
+    #[test]
+    fn exec_target_pathname_execveat_resolves_relative_to_live_dirfd() {
+        let mut proc = Process::new(101);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.set_dir_with_owner(b"/opt/apps", 0, 0, 0o755);
+        host.set_dir_with_owner(b"/opt/apps/bin", 0, 0, 0o755);
+        host.set_file_with_owner(
+            b"/opt/apps/bin/program",
+            0,
+            0,
+            S_IFREG | 0o755,
+            b"hello",
+        );
+        host.stat_size = 5;
+        host.prepared_exec_bytes = Some(b"hello".to_vec());
+        let dirfd = sys_open(&mut proc, &mut host, b"/opt/apps", O_RDONLY, 0).unwrap();
+        let token = crate::exec_target::prepare(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            crate::exec_target::PreparedExecOwner::Process {
+                pid,
+                caller_tid: pid,
+                generation: 0,
+            },
+            dirfd,
+            b"bin/program",
+            0,
+        )
+        .unwrap();
+        let target_ofd = proc
+            .prepared_exec_targets
+            .get(token)
+            .unwrap()
+            .ofd_ref();
+        assert_eq!(
+            proc.ofd_table.get(target_ofd.0).unwrap().path,
+            b"/opt/apps/bin/program",
+        );
+        let mut image = [0u8; 5];
+        crate::exec_target::read(&mut proc, &mut host, pid, token, 0, &mut image)
+            .unwrap();
+        assert_eq!(&image, b"hello");
+
+        crate::exec_target::commit_process(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            pid,
+            pid,
+            token,
+        )
+        .unwrap();
+        assert_eq!(proc.exec_generation, 1);
+        assert!(proc.has_exec);
+    }
+
+    #[test]
+    fn exec_target_rename_unlink_and_replacement_keep_the_retained_object() {
+        let mut proc = Process::new(86);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        let token = prepare_test_exec(&mut proc, &mut locks, &mut host, b"/bin/original");
+
+        host.host_rename(b"/bin/original", b"/bin/moved").unwrap();
+        host.host_unlink(b"/bin/moved").unwrap();
+        host.set_file_with_owner(b"/bin/original", 0, 0, S_IFREG | 0o755, b"world");
+        host.prepared_exec_bytes = Some(b"world".to_vec());
+
+        let mut bytes = [0u8; 5];
+        assert_eq!(
+            crate::exec_target::read(&mut proc, &mut host, pid, token, 0, &mut bytes),
+            Ok(5),
+        );
+        assert_eq!(&bytes, b"hello");
+        crate::exec_target::commit_process(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            pid,
+            pid,
+            token,
+        )
+        .unwrap();
+        assert_eq!(proc.exec_generation, 1);
+        assert_eq!(host.closed_handles, vec![100]);
+    }
+
+    #[test]
+    fn exec_target_wrong_caller_generation_and_process_consume_exactly_once() {
+        let mut proc = Process::new(87);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+
+        let wrong_caller = prepare_test_exec(&mut proc, &mut locks, &mut host, b"/bin/tid");
+        let mut bytes = [0u8; 5];
+        crate::exec_target::read(
+            &mut proc,
+            &mut host,
+            pid,
+            wrong_caller,
+            0,
+            &mut bytes,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::exec_target::commit_process(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                pid,
+                pid + 1,
+                wrong_caller,
+            ),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(host.closed_handles, vec![100]);
+
+        let stale_generation =
+            prepare_test_exec(&mut proc, &mut locks, &mut host, b"/bin/generation");
+        crate::exec_target::read(
+            &mut proc,
+            &mut host,
+            pid,
+            stale_generation,
+            0,
+            &mut bytes,
+        )
+        .unwrap();
+        proc.exec_generation = 1;
+        assert_eq!(
+            crate::exec_target::commit_process(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                pid,
+                pid,
+                stale_generation,
+            ),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(host.closed_handles, vec![100, 101]);
+
+        proc.exec_generation = 0;
+        let wrong_process =
+            prepare_test_exec(&mut proc, &mut locks, &mut host, b"/bin/process");
+        assert_eq!(
+            crate::exec_target::commit_process(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                pid + 1,
+                pid,
+                wrong_process,
+            ),
+            Err(Errno::ESRCH),
+        );
+        assert_eq!(host.closed_handles, vec![100, 101, 102]);
+        assert_eq!(proc.exec_generation, 0);
+    }
+
+    #[test]
+    fn exec_target_spawn_owner_commits_without_a_fake_tid_and_rolls_back_stale_launch() {
+        let parent_pid = 73;
+        for (child_pid, make_stale) in [(74, false), (75, true)] {
+            let mut proc = Process::new(child_pid);
+            let cloexec_fd = sys_eventfd2(&mut proc, 0, O_CLOEXEC).unwrap();
+            let original_credentials = proc.credentials().clone();
+            let mut locks = AdvisoryLockManager::new();
+            let mut host = MockHostIO::new();
+            host.stat_size = 5;
+            host.prepared_exec_bytes = Some(b"hello".to_vec());
+            host.set_file_with_owner(
+                b"/bin/spawn-target",
+                0,
+                0,
+                S_IFREG | 0o755,
+                b"hello",
+            );
+            let launch = proc.exec_generation;
+            let token = crate::exec_target::prepare(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                crate::exec_target::PreparedExecOwner::Spawn {
+                    parent_pid,
+                    child_pid,
+                    launch,
+                },
+                AT_FDCWD,
+                b"/bin/spawn-target",
+                0,
+            )
+            .unwrap();
+            let mut bytes = [0u8; 5];
+            crate::exec_target::read(
+                &mut proc,
+                &mut host,
+                child_pid,
+                token,
+                0,
+                &mut bytes,
+            )
+            .unwrap();
+
+            if make_stale {
+                proc.exec_generation += 1;
+                assert_eq!(
+                    crate::exec_target::commit_spawn(
+                        &mut proc,
+                        &mut locks,
+                        &mut host,
+                        parent_pid,
+                        child_pid,
+                        token,
+                    ),
+                    Err(Errno::EINVAL),
+                );
+                assert!(!proc.has_exec);
+                assert!(proc.fd_table.get(cloexec_fd).is_ok());
+                assert_eq!(proc.credentials(), &original_credentials);
+                assert_eq!(proc.exec_generation, 1);
+            } else {
+                crate::exec_target::commit_spawn(
+                    &mut proc,
+                    &mut locks,
+                    &mut host,
+                    parent_pid,
+                    child_pid,
+                    token,
+                )
+                .unwrap();
+                assert!(proc.has_exec);
+                assert!(proc.fd_table.get(cloexec_fd).is_err());
+                assert_eq!(proc.exec_generation, 1);
+            }
+            assert_eq!(host.closed_handles, vec![100]);
+            assert_eq!(
+                crate::exec_target::commit_spawn(
+                    &mut proc,
+                    &mut locks,
+                    &mut host,
+                    parent_pid,
+                    child_pid,
+                    token,
+                ),
+                Err(Errno::EINVAL),
+            );
+            assert_eq!(host.closed_handles, vec![100]);
+        }
+    }
+
+    #[test]
+    fn exec_target_normal_and_signal_exit_drain_all_leases() {
+        // Failed-vfork children converge on the normal exit half; worker traps
+        // and containment call kernel_mark_process_signaled, which converges
+        // on the signal half. Host-route tests assert those entry paths.
+        for signal in [None, Some(wasm_posix_shared::signal::SIGTERM)] {
+            let mut proc = Process::new(88 + signal.is_some() as u32);
+            let pid = proc.pid;
+            let mut locks = AdvisoryLockManager::new();
+            let mut host = MockHostIO::new();
+            for path in [b"/bin/first".as_slice(), b"/bin/second".as_slice()] {
+                prepare_test_exec(&mut proc, &mut locks, &mut host, path);
+            }
+
+            if let Some(signum) = signal {
+                sys_exit_by_signal_with_locks(&mut proc, &mut locks, &mut host, signum);
+                assert_eq!(proc.exit_signal, signum);
+            } else {
+                sys_exit_with_locks(&mut proc, &mut locks, &mut host, 7);
+                assert_eq!(proc.exit_status, 7);
+            }
+            assert_eq!(proc.pid, pid);
+            assert_eq!(proc.state, ProcessState::Exited);
+            assert!(proc.prepared_exec_targets.is_empty());
+            assert_eq!(&host.closed_handles[..2], &[100, 101]);
+            assert_eq!(
+                host.closed_handles.iter().filter(|&&handle| handle == 100).count(),
+                1,
+            );
+            assert_eq!(
+                host.closed_handles.iter().filter(|&&handle| handle == 101).count(),
+                1,
+            );
+        }
+    }
+
+    #[test]
+    fn spawn_exec_target_signal_exit_drains_lease_before_stale_commit() {
+        let parent_pid = 90;
+        let child_pid = 91;
+        let mut proc = Process::new(child_pid);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.stat_size = 5;
+        host.prepared_exec_bytes = Some(b"hello".to_vec());
+        host.set_file_with_owner(
+            b"/bin/spawn-signal",
+            0,
+            0,
+            S_IFREG | 0o755,
+            b"hello",
+        );
+        let launch = proc.exec_generation;
+        let token = crate::exec_target::prepare(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            crate::exec_target::PreparedExecOwner::Spawn {
+                parent_pid,
+                child_pid,
+                launch,
+            },
+            AT_FDCWD,
+            b"/bin/spawn-signal",
+            0,
+        )
+        .unwrap();
+        let mut bytes = [0u8; 5];
+        crate::exec_target::read(
+            &mut proc,
+            &mut host,
+            child_pid,
+            token,
+            0,
+            &mut bytes,
+        )
+        .unwrap();
+
+        sys_exit_by_signal_with_locks(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            wasm_posix_shared::signal::SIGTERM,
+        );
+
+        assert_eq!(proc.state, ProcessState::Exited);
+        assert_eq!(proc.exit_signal, wasm_posix_shared::signal::SIGTERM);
+        assert!(proc.prepared_exec_targets.is_empty());
+        assert_eq!(
+            host.closed_handles
+                .iter()
+                .filter(|&&handle| handle == 100)
+                .count(),
+            1,
+        );
+        let closed_after_exit = host.closed_handles.clone();
+        assert_eq!(
+            crate::exec_target::commit_spawn(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                parent_pid,
+                child_pid,
+                token,
+            ),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(host.closed_handles, closed_after_exit);
+    }
+
+    #[test]
+    fn exec_target_incomplete_image_fails_without_committing_state() {
+        let mut proc = Process::new(90);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let token = prepare_test_exec(&mut proc, &mut locks, &mut host, b"/bin/incomplete");
+        let mut prefix = [0u8; 2];
+        crate::exec_target::read(&mut proc, &mut host, pid, token, 0, &mut prefix).unwrap();
+
+        assert_eq!(
+            crate::exec_target::commit_process(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                pid,
+                pid,
+                token,
+            ),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(proc.exec_generation, 0);
+        assert!(!proc.has_exec);
+        assert_eq!(host.closed_handles, vec![100]);
+    }
+
+    #[test]
+    fn exec_target_prepare_rejects_missing_directory_and_non_executable_files() {
+        let mut proc = Process::new(93);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let owner = crate::exec_target::PreparedExecOwner::Process {
+            pid: proc.pid,
+            caller_tid: proc.pid,
+            generation: 0,
+        };
+        host.set_missing_path(b"/bin/missing");
+        assert_eq!(
+            crate::exec_target::prepare(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                owner,
+                AT_FDCWD,
+                b"/bin/missing",
+                0,
+            ),
+            Err(Errno::ENOENT),
+        );
+
+        host.set_dir_with_owner(b"/bin/directory", 0, 0, 0o755);
+        assert_eq!(
+            crate::exec_target::prepare(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                owner,
+                AT_FDCWD,
+                b"/bin/directory",
+                0,
+            ),
+            Err(Errno::EACCES),
+        );
+
+        host.set_file_with_owner(b"/bin/noexec", 0, 0, S_IFREG | 0o644, b"hello");
+        assert_eq!(
+            crate::exec_target::prepare(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                owner,
+                AT_FDCWD,
+                b"/bin/noexec",
+                0,
+            ),
+            Err(Errno::EACCES),
+        );
+        assert!(proc.prepared_exec_targets.is_empty());
+        assert_eq!(host.closed_handles, vec![100, 101]);
+    }
+
+    #[test]
+    fn exec_target_scripts_and_nosuid_mounts_ignore_set_id_bits() {
+        for (pid, path, bytes, statfs) in [
+            (
+                91,
+                b"/bin/script".as_slice(),
+                b"#!ok\n".as_slice(),
+                WasmStatfs {
+                    f_flags: 0,
+                    f_fsid: 91,
+                    ..default_statfs()
+                },
+            ),
+            (
+                92,
+                b"/bin/nosuid".as_slice(),
+                b"hello".as_slice(),
+                default_statfs(),
+            ),
+        ] {
+            let mut proc = Process::new(pid);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[]);
+            let mut locks = AdvisoryLockManager::new();
+            let mut host = MockHostIO::new();
+            host.set_statfs(path, statfs);
+            host.set_file_with_owner(path, 42, 43, S_IFREG | S_ISUID | S_ISGID | 0o755, bytes);
+            host.stat_size = bytes.len() as u64;
+            host.prepared_exec_bytes = Some(bytes.to_vec());
+            let token = crate::exec_target::prepare(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                crate::exec_target::PreparedExecOwner::Process {
+                    pid,
+                    caller_tid: pid,
+                    generation: 0,
+                },
+                AT_FDCWD,
+                path,
+                0,
+            )
+            .unwrap();
+            let mut image = vec![0; bytes.len()];
+            crate::exec_target::read(&mut proc, &mut host, pid, token, 0, &mut image).unwrap();
+            crate::exec_target::commit_process(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                pid,
+                pid,
+                token,
+            )
+            .unwrap();
+
+            assert_eq!(proc.effective_uid(), 1000);
+            assert_eq!(proc.effective_gid(), 1000);
+            assert!(!proc.secure_exec);
+            assert_eq!(proc.exec_generation, 1);
+        }
+    }
+
+    #[test]
+    fn exec_target_mutation_fails_closed_without_partial_commit() {
+        let mut proc = Process::new(83);
+        let pid = proc.pid;
+        set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[20, 30]);
+        let metadata = proc.begin_metadata_replacement().unwrap();
+        proc.stage_metadata_entry(
+            metadata,
+            wasm_posix_shared::process_metadata_contract::KIND_ARGV,
+            b"old-program",
+        )
+        .unwrap();
+        proc.stage_metadata_entry(
+            metadata,
+            wasm_posix_shared::process_metadata_contract::KIND_ARGV,
+            b"old-argument",
+        )
+        .unwrap();
+        proc.stage_metadata_entry(
+            metadata,
+            wasm_posix_shared::process_metadata_contract::KIND_ENVIRONMENT,
+            b"OLD=value",
+        )
+        .unwrap();
+        proc.commit_metadata_replacement(metadata).unwrap();
+        sys_sigaction(
+            &mut proc,
+            wasm_posix_shared::signal::SIGUSR1,
+            0x1234,
+            wasm_posix_shared::signal::SA_RESTART,
+            crate::signal::sig_bit(wasm_posix_shared::signal::SIGTERM),
+        )
+        .unwrap();
+        proc.signals.raise(wasm_posix_shared::signal::SIGUSR1);
+        let original_credentials = proc.credentials().clone();
+        let original_argv = proc.argv.clone();
+        let original_environment = proc.environ.clone();
+        let original_action = proc
+            .signals
+            .get_action(wasm_posix_shared::signal::SIGUSR1);
+        let original_pending = proc.signals.pending;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let token = prepare_test_exec(&mut proc, &mut locks, &mut host, b"/bin/drift");
+        let cloexec = sys_open(&mut proc, &mut host, b"/tmp/keep-before-commit", O_RDONLY, 0)
+            .unwrap();
+        proc.fd_table.get_mut(cloexec).unwrap().fd_flags = FD_CLOEXEC;
+        let mut bytes = [0u8; 5];
+        crate::exec_target::read(&mut proc, &mut host, pid, token, 0, &mut bytes).unwrap();
+        host.prepared_exec_bytes = Some(b"world".to_vec());
+
+        assert_eq!(
+            crate::exec_target::commit_process(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                pid,
+                pid,
+                token,
+            ),
+            Err(Errno::ETXTBSY),
+        );
+        assert_eq!(proc.exec_generation, 0);
+        assert_eq!(proc.credentials(), &original_credentials);
+        assert_eq!(proc.argv, original_argv);
+        assert_eq!(proc.environ, original_environment);
+        let action = proc
+            .signals
+            .get_action(wasm_posix_shared::signal::SIGUSR1);
+        assert_eq!(action.handler, original_action.handler);
+        assert_eq!(action.flags, original_action.flags);
+        assert_eq!(action.mask, original_action.mask);
+        assert_eq!(proc.signals.pending, original_pending);
+        assert!(proc.fd_table.get(cloexec).is_ok());
+        assert_eq!(
+            crate::exec_target::commit_process(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                pid,
+                pid,
+                token,
+            ),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(host.closed_handles, vec![100]);
+    }
+
+    #[test]
+    fn exec_target_two_live_callers_compete_with_exactly_one_commit() {
+        use crate::process::ThreadInfo;
+
+        for winner_index in 0..2 {
+            let mut proc = Process::new(102 + winner_index as u32);
+            let pid = proc.pid;
+            let tids = [201, 202];
+            proc.add_thread(ThreadInfo::new(tids[0], 0, 0, 0));
+            proc.add_thread(ThreadInfo::new(tids[1], 0, 0, 0));
+            let mut locks = AdvisoryLockManager::new();
+            let mut host = MockHostIO::new();
+            host.stat_size = 5;
+            host.prepared_exec_bytes = Some(b"hello".to_vec());
+            let mut tokens = [0u32; 2];
+            for (index, tid) in tids.into_iter().enumerate() {
+                let path = if index == 0 {
+                    b"/bin/thread-one".as_slice()
+                } else {
+                    b"/bin/thread-two".as_slice()
+                };
+                host.set_file_with_owner(path, 0, 0, S_IFREG | 0o755, b"hello");
+                tokens[index] = crate::exec_target::prepare(
+                    &mut proc,
+                    &mut locks,
+                    &mut host,
+                    crate::exec_target::PreparedExecOwner::Process {
+                        pid,
+                        caller_tid: tid,
+                        generation: 0,
+                    },
+                    AT_FDCWD,
+                    path,
+                    0,
+                )
+                .unwrap();
+                let mut image = [0u8; 5];
+                crate::exec_target::read(
+                    &mut proc,
+                    &mut host,
+                    pid,
+                    tokens[index],
+                    0,
+                    &mut image,
+                )
+                .unwrap();
+            }
+
+            let loser_index = 1 - winner_index;
+            crate::exec_target::commit_process(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                pid,
+                tids[winner_index],
+                tokens[winner_index],
+            )
+            .unwrap();
+            assert_eq!(proc.exec_generation, 1);
+            assert!(proc.has_exec);
+            assert!(proc.threads.is_empty());
+            assert!(proc.prepared_exec_targets.is_empty());
+            assert_eq!(host.closed_handles.len(), 2);
+
+            assert_eq!(
+                crate::exec_target::commit_process(
+                    &mut proc,
+                    &mut locks,
+                    &mut host,
+                    pid,
+                    tids[loser_index],
+                    tokens[loser_index],
+                ),
+                Err(Errno::EINVAL),
+            );
+            assert_eq!(proc.exec_generation, 1);
+            assert_eq!(host.closed_handles.len(), 2);
+        }
+    }
+
+    #[test]
+    fn exec_target_metadata_and_mount_drift_fail_before_image_commit() {
+        for drift in ["mode", "owner", "mount"] {
+            let mut proc = Process::new(96);
+            let pid = proc.pid;
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[20, 30]);
+            let original_credentials = proc.credentials().clone();
+            let mut locks = AdvisoryLockManager::new();
+            let mut host = MockHostIO::new();
+            let path = b"/bin/metadata-drift";
+            let token = if drift == "mount" {
+                host.set_statfs(
+                    path,
+                    WasmStatfs {
+                        f_flags: 0,
+                        f_fsid: 77,
+                        ..default_statfs()
+                    },
+                );
+                host.set_file_with_owner(
+                    path,
+                    42,
+                    43,
+                    S_IFREG | S_ISUID | S_ISGID | 0o755,
+                    b"hello",
+                );
+                host.stat_size = 5;
+                host.prepared_exec_bytes = Some(b"hello".to_vec());
+                crate::exec_target::prepare(
+                    &mut proc,
+                    &mut locks,
+                    &mut host,
+                    crate::exec_target::PreparedExecOwner::Process {
+                        pid,
+                        caller_tid: pid,
+                        generation: 0,
+                    },
+                    AT_FDCWD,
+                    path,
+                    0,
+                )
+                .unwrap()
+            } else {
+                prepare_test_exec(&mut proc, &mut locks, &mut host, path)
+            };
+            let handle = proc
+                .prepared_exec_targets
+                .get(token)
+                .and_then(|target| {
+                    proc.ofd_table
+                        .get(target.ofd_ref().0)
+                        .map(|ofd| ofd.host_handle)
+                        .ok_or(Errno::EBADF)
+                })
+                .unwrap();
+            let mut bytes = [0u8; 5];
+            crate::exec_target::read(&mut proc, &mut host, pid, token, 0, &mut bytes)
+                .unwrap();
+
+            match drift {
+                "mode" => {
+                    host.file_modes
+                        .insert(path.to_vec(), S_IFREG | 0o700);
+                }
+                "owner" => {
+                    host.handle_owners.insert(handle, (42, 43));
+                }
+                "mount" => {
+                    host.handle_statfs.insert(
+                    handle,
+                    WasmStatfs {
+                        f_fsid: 99,
+                        ..default_statfs()
+                    },
+                    );
+                }
+                _ => unreachable!(),
+            }
+
+            assert_eq!(
+                crate::exec_target::commit_process(
+                    &mut proc,
+                    &mut locks,
+                    &mut host,
+                    pid,
+                    pid,
+                    token,
+                ),
+                Err(Errno::ETXTBSY),
+                "{drift} drift must fail closed",
+            );
+            assert_eq!(proc.credentials(), &original_credentials);
+            assert_eq!(proc.exec_generation, 0);
+            assert!(!proc.has_exec);
+            assert_eq!(host.closed_handles, vec![handle]);
+        }
+    }
+
+    #[test]
+    fn exec_target_revalidates_mount_source_and_policy_for_every_target() {
+        for (pid, path, mode, live_statfs) in [
+            (
+                99,
+                b"/bin/ordinary-mount-drift".as_slice(),
+                S_IFREG | 0o755,
+                WasmStatfs {
+                    f_fsid: 99,
+                    ..default_statfs()
+                },
+            ),
+            (
+                100,
+                b"/bin/nosuid-policy-drift".as_slice(),
+                S_IFREG | S_ISUID | 0o755,
+                WasmStatfs {
+                    f_flags: 0,
+                    ..default_statfs()
+                },
+            ),
+        ] {
+            let mut proc = Process::new(pid);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[]);
+            let original_credentials = proc.credentials().clone();
+            let mut locks = AdvisoryLockManager::new();
+            let mut host = MockHostIO::new();
+            host.set_file_with_owner(path, 42, 43, mode, b"hello");
+            host.stat_size = 5;
+            host.prepared_exec_bytes = Some(b"hello".to_vec());
+            let token = crate::exec_target::prepare(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                crate::exec_target::PreparedExecOwner::Process {
+                    pid,
+                    caller_tid: pid,
+                    generation: 0,
+                },
+                AT_FDCWD,
+                path,
+                0,
+            )
+            .unwrap();
+            let handle = proc
+                .prepared_exec_targets
+                .get(token)
+                .and_then(|target| {
+                    proc.ofd_table
+                        .get(target.ofd_ref().0)
+                        .map(|ofd| ofd.host_handle)
+                        .ok_or(Errno::EBADF)
+                })
+                .unwrap();
+            let mut bytes = [0u8; 5];
+            crate::exec_target::read(&mut proc, &mut host, pid, token, 0, &mut bytes)
+                .unwrap();
+
+            host.handle_statfs.insert(handle, live_statfs);
+
+            assert_eq!(
+                crate::exec_target::commit_process(
+                    &mut proc,
+                    &mut locks,
+                    &mut host,
+                    pid,
+                    pid,
+                    token,
+                ),
+                Err(Errno::ETXTBSY),
+            );
+            assert_eq!(proc.credentials(), &original_credentials);
+            assert_eq!(proc.exec_generation, 0);
+            assert!(!proc.has_exec);
+            assert_eq!(host.closed_handles, vec![handle]);
+        }
+    }
+
+    #[test]
+    fn exec_target_successful_set_id_commit_is_atomic_and_invalidates_competitors() {
+        let mut proc = Process::new(84);
+        let pid = proc.pid;
+        set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[20, 30]);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let trusted = WasmStatfs {
+            f_flags: 0,
+            f_fsid: 77,
+            ..default_statfs()
+        };
+        host.set_statfs(b"/bin/privileged", trusted);
+        host.set_file_with_owner(
+            b"/bin/privileged",
+            42,
+            43,
+            S_IFREG | S_ISUID | S_ISGID | 0o755,
+            b"hello",
+        );
+        host.stat_size = 5;
+        host.prepared_exec_bytes = Some(b"hello".to_vec());
+        let owner = crate::exec_target::PreparedExecOwner::Process {
+            pid: proc.pid,
+            caller_tid: proc.pid,
+            generation: 0,
+        };
+        let first = crate::exec_target::prepare(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            owner,
+            AT_FDCWD,
+            b"/bin/privileged",
+            0,
+        )
+        .unwrap();
+        let second = crate::exec_target::prepare(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            owner,
+            AT_FDCWD,
+            b"/bin/privileged",
+            0,
+        )
+        .unwrap();
+        for token in [first, second] {
+            let mut bytes = [0u8; 5];
+            crate::exec_target::read(&mut proc, &mut host, pid, token, 0, &mut bytes)
+                .unwrap();
+        }
+
+        crate::exec_target::commit_process(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            pid,
+            pid,
+            first,
+        )
+        .unwrap();
+        assert_eq!(proc.exec_generation, 1);
+        assert_eq!(proc.real_uid(), 1000);
+        assert_eq!(proc.effective_uid(), 42);
+        assert_eq!(proc.credentials().suid, 42);
+        assert_eq!(proc.real_gid(), 1000);
+        assert_eq!(proc.effective_gid(), 43);
+        assert_eq!(proc.credentials().sgid, 43);
+        assert!(proc.secure_exec);
+        assert_eq!(
+            crate::exec_target::cancel(&mut proc, &mut locks, &mut host, pid, second),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(host.closed_handles, vec![101, 100]);
+    }
+
+    #[test]
+    fn exec_target_diagnostic_path_cannot_change_exact_mount_policy() {
+        for (pid, prepared_flags, replacement_flags, expected_uid) in [
+            (97, 0, wasm_posix_shared::statfs_flags::ST_NOSUID, 42),
+            (98, wasm_posix_shared::statfs_flags::ST_NOSUID, 0, 1000),
+        ] {
+            let mut proc = Process::new(pid);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[]);
+            let mut locks = AdvisoryLockManager::new();
+            let mut host = MockHostIO::new();
+            let path = b"/bin/path-policy-is-not-authority";
+            host.set_statfs(
+                path,
+                WasmStatfs {
+                    f_flags: prepared_flags,
+                    f_fsid: 77,
+                    ..default_statfs()
+                },
+            );
+            host.set_file_with_owner(
+                path,
+                42,
+                43,
+                S_IFREG | S_ISUID | S_ISGID | 0o755,
+                b"hello",
+            );
+            host.stat_size = 5;
+            host.prepared_exec_bytes = Some(b"hello".to_vec());
+            let token = crate::exec_target::prepare(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                crate::exec_target::PreparedExecOwner::Process {
+                    pid,
+                    caller_tid: pid,
+                    generation: 0,
+                },
+                AT_FDCWD,
+                path,
+                0,
+            )
+            .unwrap();
+            let mut bytes = [0u8; 5];
+            crate::exec_target::read(&mut proc, &mut host, pid, token, 0, &mut bytes)
+                .unwrap();
+
+            // Replace what a lookup through the old pathname reports. The
+            // retained object and its admitted mount route did not change.
+            host.set_statfs(
+                path,
+                WasmStatfs {
+                    f_flags: replacement_flags,
+                    f_fsid: 99,
+                    ..default_statfs()
+                },
+            );
+
+            crate::exec_target::commit_process(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                pid,
+                pid,
+                token,
+            )
+            .unwrap();
+            assert_eq!(proc.effective_uid(), expected_uid);
+            assert_eq!(proc.secure_exec, expected_uid == 42);
+        }
+    }
+
+    #[test]
+    fn exec_target_unstable_set_id_source_is_rejected_without_credentials() {
+        let mut proc = Process::new(85);
+        let pid = proc.pid;
+        set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[]);
+        let original = proc.credentials().clone();
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.set_statfs(
+            b"/bin/unstable",
+            WasmStatfs {
+                f_flags: 0,
+                ..default_statfs()
+            },
+        );
+        host.set_file_with_owner(
+            b"/bin/unstable",
+            0,
+            0,
+            S_IFREG | S_ISUID | 0o755,
+            b"hello",
+        );
+        host.path_inodes.insert(b"/bin/unstable".to_vec(), 0);
+        host.stat_size = 5;
+        host.prepared_exec_bytes = Some(b"hello".to_vec());
+        let token = crate::exec_target::prepare(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            crate::exec_target::PreparedExecOwner::Process {
+                pid,
+                caller_tid: pid,
+                generation: 0,
+            },
+            AT_FDCWD,
+            b"/bin/unstable",
+            0,
+        )
+        .unwrap();
+        let mut bytes = [0u8; 5];
+        crate::exec_target::read(&mut proc, &mut host, pid, token, 0, &mut bytes).unwrap();
+        assert_eq!(
+            crate::exec_target::commit_process(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                pid,
+                pid,
+                token,
+            ),
+            Err(Errno::ENOTSUP),
+        );
+        assert_eq!(proc.credentials(), &original);
+        assert_eq!(proc.exec_generation, 0);
+        assert_eq!(host.closed_handles, vec![100]);
     }
 }

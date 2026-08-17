@@ -803,6 +803,21 @@ waits abortable, and rethrows its arbitrary `reason` unchanged before mirror
 fallback or VFS commit. Standard `AbortError`/`ABORT_ERR` failures remain the
 compatibility fallback when no signal is registered. Other 4xx responses and
 size, digest, or decode failures do not consume the same-URL retry budget.
+
+A public browser consumer cannot supply privileged projections through compose
+options, boot requests, descriptors, or shared URLs. Product-owned browser code
+may select a compiled reviewed profile whose opaque, non-serializable
+capability never enters those input records. Its projections are rebound to
+the descriptor's exact Formula owner, bottle digest, and complete source
+inventory. The owning bottle is materialized within the private composition
+transaction; unrelated bottles stay lazy. Chromium, Firefox, and WebKit use
+the same copy-and-admit path as Node and receive a separate immutable product
+backend, while the composed Homebrew filesystem remains the writable `nosuid`
+tree. `BrowserKernel.initFromPublishedPrivilegedProgramProduct` accepts only
+that exact published object and overlays its privately retained, immutable
+`/usr/bin` projection in the VFS-owning worker. Ordinary image init and all
+public descriptor/URL inputs remain `nosuid` and cannot populate the private
+worker message.
 There is no per-file or byte-range retrieval inside the gzip/TAR. A failed
 fetch, digest,
 decode, inventory check, or allocation leaves every regular inode pending and

@@ -366,7 +366,7 @@ max_executable_memory_size=1073741824
 
 exe_link_flags=(
   -nostdlib
-  -Wl,--entry=_start
+  -Wl,--no-entry
   -Wl,--export=_start
   -Wl,--export=__heap_base
   -Wl,--import-memory
