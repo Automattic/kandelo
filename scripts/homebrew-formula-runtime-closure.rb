@@ -2219,7 +2219,7 @@ elsif tier2_bridge_only
   record = formula_tier2_bridges.fetch(target_full_name)
   tap_recipe = record.fetch("tap_recipe")
   plan = {
-    "schema" => tap_recipe.nil? ? 2 : 3,
+    "schema" => tap_recipe.nil? ? 4 : 3,
     "tap" => tap_name,
     "formula" => target,
     "full_name" => target_full_name,

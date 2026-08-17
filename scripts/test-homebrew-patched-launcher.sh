@@ -1186,11 +1186,11 @@ local_tier2_attestation="$TMPDIR/local-tier2-attestation.json"
 printf '%s\n' '{"build":[],"build_and_test":[],"formula":"hello","full_name":"kandelo-dev/tap-core/hello","runtime_and_test":[],"schema":2,"tap":"kandelo-dev/tap-core"}' \
   >"$local_dependency_plan"
 chmod 0600 "$local_dependency_plan"
-active_tier2_attestation_json='{"arch":"wasm32","formula":"hello","formula_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","full_name":"kandelo-dev/tap-core/hello","schema":2,"support_runtime_sha256":"1111111111111111111111111111111111111111111111111111111111111111","support_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tap":"kandelo-dev/tap-core","tier2_bridge":{"build_toml_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","package":"hello","package_toml_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","script":"build-hello.sh","script_env_keys":[],"script_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","source_mode":"exact","source_sha256":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","source_url":"https://example.test/hello-1.0.tar.gz","version":"1.0"}}'
+active_tier2_attestation_json='{"arch":"wasm32","formula":"hello","formula_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","full_name":"kandelo-dev/tap-core/hello","schema":4,"support_runtime_sha256":"1111111111111111111111111111111111111111111111111111111111111111","support_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tap":"kandelo-dev/tap-core","tier2_bridge":{"package":"hello","script":"build-hello.sh","script_env_keys":[],"script_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","source_sha256":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","source_url":"https://example.test/hello-1.0.tar.gz","version":"1.0"}}'
 printf '%s\n' "$active_tier2_attestation_json" \
   >"$local_tier2_attestation"
 chmod 0600 "$local_tier2_attestation"
-[ "$(homebrew_patched_launcher_tier2_schema "$local_tier2_attestation")" = "2" ] ||
+[ "$(homebrew_patched_launcher_tier2_schema "$local_tier2_attestation")" = "4" ] ||
   fail "Tier-2 schema reader did not identify a registry bridge"
 tap_recipe_attestation="$TMPDIR/tap-recipe-attestation.json"
 printf '%s\n' \

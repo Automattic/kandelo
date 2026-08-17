@@ -291,7 +291,7 @@ jq -e '
   .[1].tap_recipe_manifest_sha256 ==
     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 ' <<<"$mixed" >/dev/null ||
-  fail "direct/schema-3 selection is not canonical: $mixed"
+  fail "schema-4 direct/schema-3 recipe selection is not canonical: $mixed"
 
 plain="$(selection plain)"
 jq -e '
@@ -412,7 +412,7 @@ if ARGV.last == "--host-dependencies-json"
   exit
 end
 puts JSON.generate({
-  "schema" => 2,
+  "schema" => 4,
   "tap" => tap,
   "formula" => formula,
   "full_name" => "#{tap}/#{formula}",

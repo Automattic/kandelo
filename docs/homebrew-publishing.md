@@ -160,11 +160,11 @@ and sealed campaign authority rather than branch-selected source.
 After cache-key planning removes already-current bottles, the publisher parses
 only the Formulae that will actually build. The static parser runs with the
 repository-pinned Nix Ruby, and its complete record is bounded for workflow
-transport. A strict schema-2 Formula with no registry bridge and a strict
+transport. A strict schema-4 Formula with no registry bridge and a strict
 schema-3 sealed tap recipe are admitted from those exact authority records.
-Transitional registry bridges carry broader main-repository recipe authority,
-so each Formula-to-registry-package identity is explicitly reviewed; the
-current temporary mappings are
+Transitional registry bridges bind one exact main-repository build-helper
+script, so each Formula-to-helper identity is explicitly reviewed; the current
+temporary mappings are
 `modeset` to `modeset` and `nethack` to `nethack`. The complete per-Formula
 record is compared again at the last workflow boundary before the bottle
 builder attests and executes the Formula. Adding a direct Formula or sealed tap
@@ -507,13 +507,15 @@ primary tap root regardless of whether Homebrew loaded primary or dependency
 support first. A missing root, changed module or runtime helper, different
 support API version, or Formula/support drift fails before Formula installation.
 
-Adding the runtime-tree digest changed the exact Tier-2 control-document shape.
-Registry-bridge and inert Formula plans therefore use schema 2. Formula-owned
-tap recipes use schema 3 so the publisher and runtime can distinguish them
-without inferring authority from optional fields. Schema 3 carries exactly one
-`tap_recipe` and a null `tier2_bridge`; schema 2 never carries `tap_recipe`.
-Schema 1 is rejected rather than interpreted as if it carried either newer
-runtime contract.
+Formula source URL, SHA-256, and version are owned by the selected Formula.
+Registry-bridge and inert Formula plans use schema 4; a registry bridge binds
+only the exact Kandelo build-helper script needed to compile that Formula.
+Legacy Kandelo `package.toml` and `build.toml` files do not participate in the
+bottle source decision. Formula-owned tap recipes continue to use schema 3 so
+the publisher and runtime can distinguish them without inferring authority
+from optional fields. Schema 3 carries exactly one `tap_recipe` and a null
+`tier2_bridge`; schema 4 never carries `tap_recipe`. Older schemas are rejected
+rather than interpreted as if they carried the current authority contract.
 
 The protected publisher plan repeats every target tap as a sorted immutable
 identity record containing its normalized tap name, conventional repository,

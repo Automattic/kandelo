@@ -49,7 +49,7 @@ ROOTFS_PUBLICATION_SELECTION_PATH = File.join(
   REPO_ROOT, "scripts/homebrew-rootfs-publication-selection.sh"
 )
 ROOTFS_PUBLICATION_SELECTION_SHA256 =
-  "f1dfb9efdb1dcb81990b907c3ebee44cfa6cee87304af5fc54161f3fe4fc67c2"
+  "4423cdc4c9a600400b60660890765e4b0ba4163b4341440f49e4727391888c06"
 TAP_CALLER_ROOT = File.join(REPO_ROOT, "homebrew/homebrew-tap-core/.github/workflows")
 CHECKOUT_ACTION = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
 # WHY: the reusable publishers freeze v6 in their reviewed step digests. This
@@ -4390,7 +4390,7 @@ def check_publisher(workflow)
           "static Formula closure lacks immutable tap identity binding: #{fragment}")
   end
   tier2_plan_output = formula_closure[/elsif tier2_bridge_only(.*?)elsif bottle_identity_only/m, 1]
-  check(tier2_plan_output&.include?('"schema" => tap_recipe.nil? ? 2 : 3') &&
+  check(tier2_plan_output&.include?('"schema" => tap_recipe.nil? ? 4 : 3') &&
         tier2_plan_output&.include?('plan["tap_recipe"] = tap_recipe unless tap_recipe.nil?') &&
         !tier2_plan_output&.include?('"schema" => 1'),
         "static Formula closure does not emit the exact bridge/recipe plan schema")
@@ -4473,7 +4473,7 @@ def check_publisher(workflow)
     'bash "$KANDELO_ROOT/scripts/homebrew-validate-host-dependency-plan.sh"',
     'jq -r \'.build_and_test[]\' "$HOST_DEPENDENCY_PLAN" >"$HOST_DEPENDENCY_LIST"',
     'TIER2_ATTESTATION="$CONTROL_DIR/tier2-attestation.json"',
-    '(.schema == 2 or .schema == 3)',
+    '(.schema == 4 or .schema == 3)',
     'keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tap_recipe", "tier2_bridge"]',
     '.tier2_bridge == null and .support_sha256 != null',
     '--repo-root "$KANDELO_ROOT" --tap-root "$TAP_ROOT" --arch "$ARCH"',

@@ -504,7 +504,7 @@ def validate_formula_source_contract(
         expected_keys.add("tap_recipe")
     plan = exact_keys(plan, expected_keys, "tap Formula source contract result")
     if (
-        schema not in (2, 3)
+        schema not in (3, 4)
         or plan["tap"] != normalized_identity(tap_name)
         or plan["formula"] != formula
         or plan["full_name"] != f"{normalized_identity(tap_name)}/{formula}"
