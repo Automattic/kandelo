@@ -72,12 +72,17 @@ if [ -e "$HANDOFF" ] || [ -L "$HANDOFF" ]; then
 fi
 
 TESTING="${KANDELO_ABI_STAGING_TESTING:-0}"
+PROTECTED_NORMAL_BUILDER="${KANDELO_ABI_STAGING_PROTECTED_NORMAL_BUILDER:-0}"
 NORMAL_BUILDER="$KANDELO_ROOT/scripts/homebrew-bottle-build.sh"
 if [ -n "${KANDELO_ABI_STAGING_NORMAL_BUILDER:-}" ]; then
-  if [ "$TESTING" != "1" ] || [ "${GITHUB_ACTIONS:-}" = "true" ]; then
-    echo "abi-staging-build-bottle.sh: normal-builder replacement is local-test-only" >&2
-    exit 2
-  fi
+  case "$TESTING:$PROTECTED_NORMAL_BUILDER:${GITHUB_ACTIONS:-}" in
+    1:0:) ;;
+    0:1:true) ;;
+    *)
+      echo "abi-staging-build-bottle.sh: normal-builder replacement lacks one exact execution authority" >&2
+      exit 2
+      ;;
+  esac
   NORMAL_BUILDER="$KANDELO_ABI_STAGING_NORMAL_BUILDER"
 fi
 if [ ! -f "$NORMAL_BUILDER" ] || [ -L "$NORMAL_BUILDER" ] || [ ! -x "$NORMAL_BUILDER" ]; then
@@ -172,7 +177,8 @@ while IFS='=' read -r name _; do
       ;;
   esac
 done < <(env)
-unset KANDELO_ABI_STAGING_NORMAL_BUILDER KANDELO_ABI_STAGING_TESTING
+unset KANDELO_ABI_STAGING_NORMAL_BUILDER KANDELO_ABI_STAGING_TESTING \
+  KANDELO_ABI_STAGING_PROTECTED_NORMAL_BUILDER
 export GIT_CONFIG_NOSYSTEM=1
 export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_TERMINAL_PROMPT=0
