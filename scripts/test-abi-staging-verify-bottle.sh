@@ -26,7 +26,9 @@ FIXTURE="$TMP_ROOT/fixture"
 TAP_ROOT="$TMP_ROOT/tap"
 SYSROOT="$TMP_ROOT/sysroot"
 MOCK_BIN="$TMP_ROOT/mock-bin"
-mkdir -p "$FIXTURE" "$TAP_ROOT/Formula" "$SYSROOT" "$MOCK_BIN"
+LONG_TMPDIR="$TMP_ROOT/a-verification-supervisor-with-a-deep-private-environment/tmp"
+mkdir -p "$FIXTURE" "$TAP_ROOT/Formula" "$SYSROOT" "$MOCK_BIN" \
+  "$LONG_TMPDIR"
 printf 'class MiniTool < Formula\nend\n' >"$TAP_ROOT/Formula/mini-tool.rb"
 printf 'class MiniBase < Formula\nend\n' >"$TAP_ROOT/Formula/mini-base.rb"
 git -C "$TAP_ROOT" init -q
@@ -392,7 +394,16 @@ printf '\n' >>"$FAKE_NORMAL_LOG"
 [ -d "$HOME" ] && [ -z "$(find "$HOME" -mindepth 1 -print -quit)" ]
 [ -d "$HOMEBREW_CACHE" ] && [ -z "$(find "$HOMEBREW_CACHE" -mindepth 1 -print -quit)" ]
 [ -d "$HOMEBREW_TEMP" ] && [ -z "$(find "$HOMEBREW_TEMP" -mindepth 1 -print -quit)" ]
+case "$TMPDIR" in
+  /tmp/k.??????) ;;
+  *)
+    echo "normal verifier received an unsafe socket temp root: $TMPDIR" >&2
+    exit 93
+    ;;
+esac
+[ "${#TMPDIR}" -le 32 ] || exit 94
 out=""; abi=""; arch=""; root=""; bottle_json=""; staging_abi=""
+selection_receipt=""
 staged_dependencies=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -401,6 +412,7 @@ while [ "$#" -gt 0 ]; do
     --arch) arch="$2"; shift 2 ;;
     --bottle-json) bottle_json="$2"; shift 2 ;;
     --bottle-root-url) root="$2"; shift 2 ;;
+    --selection-receipt) selection_receipt="$2"; shift 2 ;;
     --staging-candidate-abi) staging_abi="$2"; shift 2 ;;
     --staged-dependency-formula) staged_dependencies+=("$2"); shift 2 ;;
     *) shift 2 ;;
@@ -410,6 +422,11 @@ done
 [ "$staging_abi" = 8 ]
 [ "$root" = "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-8-candidates" ]
 [ "${staged_dependencies[*]}" = "mini-base" ]
+jq -e --arg sha256 "${FAKE_BOTTLE_SHA256:?}" '
+  .bottle.mode == "local-dry-run" and
+  .bottle.sha256 == $sha256 and
+  (.fetch == [("exact immutable candidate layer sha256:" + $sha256)])
+' "$selection_receipt" >/dev/null
 jq -e --arg sha256 "${FAKE_BOTTLE_SHA256:?}" '
   keys == ["kandelo-dev/tap-core/mini-tool"] and
   .["kandelo-dev/tap-core/mini-tool"] == {
@@ -465,7 +482,7 @@ export FAKE_NORMAL_LOG="$TMP_ROOT/normal.log"
 
 run_verifier() {
   local out="$1"
-  "$VERIFIER" \
+  TMPDIR="$LONG_TMPDIR" "$VERIFIER" \
     --candidate-locator "$FIXTURE/candidate-locator.json" \
     --test-definition "$FIXTURE/test-definition.json" \
     --test-definition-sha256 "$TEST_DEFINITION_SHA256" \

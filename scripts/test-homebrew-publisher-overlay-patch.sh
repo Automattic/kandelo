@@ -629,7 +629,11 @@ selected_tap_root = selected_tap_root.realpath
 selected_tap_head_file = selected_tap_root/".fixture-head"
 selected_tap_head_file.write("1111111111111111111111111111111111111111\n")
 selected_tap_head_file.chmod(0o444)
-selected_tap_root.chmod(0o555)
+# The isolated launcher makes the complete taps tree a read-only bind mount
+# and proves that boundary with an actual write probe. The backing checkout
+# retains its ordinary owner-writable mode bits, which must not make the
+# publisher reject the already-audited mount.
+selected_tap_root.chmod(0o755)
 git_invocations = Pathname(ARGV.fetch(0))/"selected-tap-git-invocations"
 protected_git = Pathname(ARGV.fetch(0))/"protected-git"
 protected_git.write(<<~SH)
