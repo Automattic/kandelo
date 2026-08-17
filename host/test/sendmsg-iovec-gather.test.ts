@@ -6,6 +6,9 @@
  * sd-bus (basu, which mako links) fronts its auth lines with an empty
  * iovec: the send returned 0 forever and mako's bus connection livelocked,
  * and a receive fronted the same way returned 0 — a fake end of stream.
+ *
+ * An array longer than IOV_MAX must fail with EMSGSIZE, which is what
+ * Linux returns here; readv and writev return EINVAL for that overflow.
  */
 import { describe, expect, it } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
@@ -28,6 +31,8 @@ describe("sendmsg / recvmsg iovec arrays", () => {
       expect(result.stdout, dump).toContain("GATHER: foobarbaz");
       expect(result.stdout, dump).toContain("SCATTER: quux|corge");
       expect(result.stdout, dump).toContain("LEADING_EMPTY: waldo");
+      expect(result.stdout, dump).toContain("IOV_MAX_OK: garply");
+      expect(result.stdout, dump).toContain("IOV_MAX: EMSGSIZE");
       expect(result.stdout, dump).toContain("PASS");
       expect(result.exitCode, dump).toBe(0);
     },

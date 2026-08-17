@@ -11,9 +11,12 @@
 //   GATHER: foobarbaz
 //   SCATTER: quux|corge
 //   LEADING_EMPTY: waldo
+//   IOV_MAX_OK: garply
+//   IOV_MAX: EMSGSIZE
 //   PASS
 
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -113,6 +116,37 @@ int main(void) {
         return 1;
     }
     printf("LEADING_EMPTY: %s\n", got);
+
+    // Exactly IOV_MAX iovecs still send; one more fails with EMSGSIZE,
+    // not the EINVAL that readv and writev return for that overflow.
+    static struct iovec over[IOV_MAX + 1];
+    for (int i = 0; i < IOV_MAX + 1; i++) {
+        over[i] = (struct iovec){.iov_base = empty, .iov_len = 0};
+    }
+    over[IOV_MAX - 1] = (struct iovec){.iov_base = (void *)"garply", .iov_len = 6};
+    if (send_iov(over, IOV_MAX) != 6) {
+        printf("FAIL: send at IOV_MAX errno=%d\n", errno);
+        return 1;
+    }
+    memset(got, 0, sizeof(got));
+    over[IOV_MAX - 1] = (struct iovec){.iov_base = got, .iov_len = 6};
+    if (recv_iov(over, IOV_MAX) != 6 || strcmp(got, "garply") != 0) {
+        printf("FAIL: recv at IOV_MAX got=\"%s\"\n", got);
+        return 1;
+    }
+    printf("IOV_MAX_OK: %s\n", got);
+
+    errno = 0;
+    if (send_iov(over, IOV_MAX + 1) != -1 || errno != EMSGSIZE) {
+        printf("FAIL: send over IOV_MAX errno=%d\n", errno);
+        return 1;
+    }
+    errno = 0;
+    if (recv_iov(over, IOV_MAX + 1) != -1 || errno != EMSGSIZE) {
+        printf("FAIL: recv over IOV_MAX errno=%d\n", errno);
+        return 1;
+    }
+    printf("IOV_MAX: EMSGSIZE\n");
 
     printf("PASS\n");
     return 0;

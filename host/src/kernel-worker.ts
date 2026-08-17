@@ -6569,6 +6569,15 @@ export class CentralizedKernelWorker {
     // ABI padding. Reading either as size_t would treat unrelated padding as
     // the high half of a count and reject or mis-size a valid message.
     const iovecCount = view.getUint32(layout.iovecCountOffset, true);
+    // Linux rejects msg_iovlen above IOV_MAX with EMSGSIZE — net/socket.c's
+    // __copy_msghdr serves both sendmsg and recvmsg — while readv/writev
+    // keep POSIX's EINVAL for the same overflow.
+    if (iovecCount > POSIX_IOV_MAX) {
+      throw new KernelScratchError(
+        `msg_iovlen must be at most ${POSIX_IOV_MAX}`,
+        EMSGSIZE,
+      );
+    }
     const rawControlPointer = pointerWidth === 8
       ? view.getBigUint64(layout.controlOffset, true)
       : view.getUint32(layout.controlOffset, true);
