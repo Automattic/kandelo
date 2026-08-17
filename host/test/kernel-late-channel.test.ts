@@ -56,6 +56,7 @@ describe("kernel_handle_channel", () => {
     const forkProcess = instance.exports.kernel_fork_process as (
       parentPid: number,
       callerTid: number,
+      mode: number,
     ) => number;
     const markProcessSignaled = instance.exports.kernel_mark_process_signaled as (
       pid: number,
@@ -73,7 +74,8 @@ describe("kernel_handle_channel", () => {
     ) => number;
 
     const parentPid = createProcess();
-    const childPid = forkProcess(parentPid, parentPid);
+    expect(forkProcess(parentPid, parentPid, 2)).toBe(-22);
+    const childPid = forkProcess(parentPid, parentPid, 0);
     const channelOffset = allocScratch(CH_TOTAL_SIZE);
     const channel = new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE);
     channel.fill(0);

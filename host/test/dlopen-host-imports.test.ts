@@ -87,6 +87,60 @@ function createImports(ptrWidth: 4 | 8): {
 }
 
 describe("dlopen host import pointer widths", () => {
+  it("keeps a borrowed vfork child's loader view read-only", () => {
+    const memory = new WebAssembly.Memory({
+      initial: 2,
+      maximum: 2,
+      shared: true,
+    });
+    const table = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
+    const stackPointer = new WebAssembly.Global(
+      { value: "i32", mutable: true },
+      32_768,
+    );
+    const archiveControlAddr = 128;
+    const support = buildDlopenImports(
+      memory,
+      4_096,
+      archiveControlAddr,
+      () => table,
+      () => stackPointer,
+      () => undefined,
+      4,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      2,
+      "borrowed",
+    );
+    const controlBefore = new Uint8Array(
+      new Uint8Array(memory.buffer, archiveControlAddr - 32, 32),
+    );
+
+    expect(support.readForkState()).toMatchObject({
+      nextHandle: 2,
+      libraries: [],
+    });
+    expect(() => support.acquireArchiveReader()).toThrow(
+      "cannot acquire the dynamic-loader archive reader",
+    );
+    expect(() => support.resetForkChildLock()).toThrow(
+      "cannot reset the parent's dynamic-loader lock",
+    );
+    expect(() => (
+      support.imports.__wasm_dlopen_main as () => number
+    )()).toThrow(
+      "borrowed vfork child cannot call __wasm_dlopen_main",
+    );
+    expect(new Uint8Array(memory.buffer, archiveControlAddr - 32, 32)).toEqual(
+      controlBefore,
+    );
+  });
+
   it.each([4, 8] as const)(
     "reads memory%d pointers without changing int handles, lengths, or results",
     (ptrWidth) => {

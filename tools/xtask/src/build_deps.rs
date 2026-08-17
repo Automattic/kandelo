@@ -50,6 +50,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 
@@ -5534,6 +5535,40 @@ fn wasm_artifact_policy_failures_for(
         }
     }
 
+    if facts.imports_kernel_fork {
+        let requirement = wasm_posix_shared::abi::WPK_FORK_PROCESS_IMPORT;
+        let identity = (requirement.module.to_string(), requirement.name.to_string());
+        match facts.function_imports.get(&identity).map(Vec::as_slice) {
+            Some([signature]) => {
+                if !program_artifact_signature_matches(
+                    signature,
+                    requirement.params,
+                    requirement.results,
+                    4,
+                ) {
+                    failures.push(format!(
+                        "ABI 43 process-fork import {}.{} has the wrong signature; expected {}",
+                        requirement.module,
+                        requirement.name,
+                        program_artifact_signature_text(
+                            requirement.params,
+                            requirement.results,
+                            4,
+                        )
+                    ));
+                }
+            }
+            Some(_) => failures.push(format!(
+                "has duplicate ABI 43 process-fork import {}.{}",
+                requirement.module, requirement.name
+            )),
+            None => failures.push(format!(
+                "is missing ABI 43 process-fork import {}.{}",
+                requirement.module, requirement.name
+            )),
+        }
+    }
+
     if let Err(error) = validate_fork_capabilities(&facts.fork_capabilities) {
         failures.push(error);
     }
@@ -6875,12 +6910,138 @@ fn cmd_resolve(
     if let Some(bdir) = binaries_dir {
         if matches!(m.kind, ManifestKind::Program) && !m.program_outputs.is_empty() {
             let cache_key_sha = manifest_cache_key_sha(m, registry, arch, current_abi_version())?;
-            place_binaries_symlinks(m, &path, bdir, arch, &cache_key_sha)?;
+            publish_resolved_program_artifacts(
+                m,
+                &path,
+                repo,
+                bdir,
+                arch,
+                &cache_key_sha,
+                force_source_build,
+            )?;
         }
     }
 
     println!("{}", path.display());
     Ok(())
+}
+
+/// Publish one resolved program through the identity contract of its target
+/// mirror.
+///
+/// `--binaries-dir` normally materializes fetched-cache links. The repository's
+/// `local-binaries` directory is different: the host treats it as the
+/// higher-priority direct-build tier and accepts package-owned links only when
+/// they select a claimed immutable local generation. A forced source proof
+/// therefore copies the selected target package into that namespace instead
+/// of creating cache links that the host must reject. Dependencies retain the
+/// ordinary resolver path; `--force-source-build` deliberately applies only to
+/// the selected package.
+fn publish_resolved_program_artifacts(
+    manifest: &DepsManifest,
+    canonical: &Path,
+    repo: &Path,
+    binaries_dir: &Path,
+    arch: TargetArch,
+    cache_key_sha: &str,
+    force_source_build: bool,
+) -> Result<(), String> {
+    let publication_root = canonical_real_directory(binaries_dir, "binaries publication root")?;
+    let repo_local_binaries = repo.join("local-binaries");
+    let publishes_to_local_tier = match std::fs::canonicalize(&repo_local_binaries) {
+        Ok(path) => path == publication_root,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(format!(
+                "inspect repository local-binaries root {}: {error}",
+                repo_local_binaries.display(),
+            ));
+        }
+    };
+
+    if force_source_build && publishes_to_local_tier {
+        return publish_forced_source_local_generation(
+            manifest,
+            canonical,
+            &publication_root,
+            arch,
+            cache_key_sha,
+        );
+    }
+
+    place_binaries_symlinks(
+        manifest,
+        canonical,
+        &publication_root,
+        arch,
+        cache_key_sha,
+    )
+}
+
+fn publish_forced_source_local_generation(
+    manifest: &DepsManifest,
+    canonical: &Path,
+    binaries_dir: &Path,
+    arch: TargetArch,
+    cache_key_sha: &str,
+) -> Result<(), String> {
+    validate_cache_artifacts(manifest, canonical)?;
+    let epoch_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("create forced-source local generation identity: {error}"))?
+        .as_nanos();
+    let sequence = MIRROR_TRANSACTION_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let session = format!(
+        "source-resolve-{}-{epoch_nanos}-{sequence}",
+        std::process::id(),
+    );
+
+    let mut outcome = None;
+    for artifact in manifest
+        .program_outputs
+        .iter()
+        .map(|output| output.wasm.as_str())
+        .chain(
+            manifest
+                .runtime_files
+                .iter()
+                .map(|runtime_file| runtime_file.artifact.as_str()),
+        )
+    {
+        let source = canonical.join(artifact);
+        outcome = Some(install_local_artifact(
+            manifest,
+            cache_key_sha,
+            artifact,
+            &source,
+            &session,
+            binaries_dir,
+            arch,
+        )?);
+    }
+
+    match outcome {
+        Some(LocalArtifactInstall::Published { .. })
+            if manifest.uses_package_mirror_directory() => Ok(()),
+        Some(LocalArtifactInstall::Replaced { .. })
+            if !manifest.uses_package_mirror_directory() => Ok(()),
+        Some(LocalArtifactInstall::Staged {
+            generation,
+            remaining,
+        }) => Err(format!(
+            "{}: forced-source local generation {} remained incomplete after collecting the declared closure ({remaining} missing)",
+            manifest.spec(),
+            generation.display(),
+        )),
+        Some(_) => Err(format!(
+            "{}: forced-source local generation produced an unexpected publication outcome",
+            manifest.spec(),
+        )),
+        None => Err(format!(
+            "{}: forced-source local generation has no declared artifacts",
+            manifest.spec(),
+        )),
+    }
 }
 
 const LOCAL_GENERATIONS_DIR: &str = ".kandelo-local-generations";
@@ -11596,12 +11757,19 @@ wasm = "second.wasm"
         // surface than the original three linked-frame hooks, and a
         // hand-maintained type-index switch silently went stale as reference
         // ownership was added.
+        let process_import = abi::WPK_FORK_PROCESS_IMPORT;
         let mut types = vec![
+            wasm_contract_function_type(
+                process_import.params,
+                process_import.results,
+                signature_pointer_width,
+            ),
             wasm_contract_function_type(&[], &[I32], signature_pointer_width),
             wasm_contract_function_type(&[], &[], signature_pointer_width),
         ];
         let kernel_fork_type = 0u32;
-        let empty_function_type = 1u32;
+        let abi_version_type = 1u32;
+        let empty_function_type = 2u32;
 
         let mut imports = Vec::new();
         if include_kernel_fork {
@@ -11643,7 +11811,7 @@ wasm = "second.wasm"
             ));
             local_functions.push((requirement.name, type_index, requirement.results));
         }
-        local_functions.push(("__abi_version", kernel_fork_type, &[I32]));
+        local_functions.push(("__abi_version", abi_version_type, &[I32]));
         local_functions.push(("_start", empty_function_type, &[]));
 
         let mut type_section = uleb(types.len() as u32);
@@ -11767,7 +11935,10 @@ wasm = "second.wasm"
         for name in custom_sections {
             bytes.extend(wasm_section(0, wasm_name(name)));
         }
-        bytes.extend(wasm_section(1, vec![0x01, 0x60, 0x00, 0x01, 0x7f]));
+        bytes.extend(wasm_section(
+            1,
+            vec![0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f],
+        ));
 
         let mut imports = vec![0x01];
         imports.extend(wasm_name("kernel"));
@@ -20586,6 +20757,73 @@ libs = ["lib/libF3b.a"]
             link.exists(),
             "symlink target unreadable: {}",
             link.display()
+        );
+    }
+
+    #[test]
+    fn forced_source_resolve_into_repo_local_binaries_claims_local_generation() {
+        let root = tempdir("resolve-local-generation-reg");
+        let cache = tempdir("resolve-local-generation-cache");
+        let bin_dir = root.join("local-binaries");
+        std::fs::create_dir(&bin_dir).unwrap();
+        write_program(
+            &root,
+            "localproof",
+            "0.1.0",
+            &[],
+            &emit_wasm_build_script("localproof.wasm", &minimal_executable_wasm()),
+            &[("localproof", "localproof.wasm")],
+        );
+        let registry = Registry {
+            roots: vec![root.clone()],
+        };
+        let manifest = registry.load("localproof").unwrap();
+        let forced = BTreeSet::from([manifest.name.clone()]);
+        let opts = ResolveOpts {
+            cache_root: &cache,
+            local_libs: None,
+            force_source_build: Some(&forced),
+            fetch_only: false,
+            repo_root: Some(&root),
+            binaries_dir: None,
+        };
+        let canonical =
+            ensure_built(&manifest, &registry, TEST_ARCH, TEST_ABI, &opts).unwrap();
+        let cache_key_sha =
+            manifest_cache_key_sha(&manifest, &registry, TEST_ARCH, TEST_ABI).unwrap();
+
+        publish_resolved_program_artifacts(
+            &manifest,
+            &canonical,
+            &root,
+            &bin_dir,
+            TEST_ARCH,
+            &cache_key_sha,
+            true,
+        )
+        .unwrap();
+
+        let mirror = bin_dir.join("programs/wasm32/localproof.wasm");
+        let target = std::fs::read_link(&mirror).unwrap();
+        let identity_root = std::fs::canonicalize(
+            bin_dir
+                .join(LOCAL_GENERATIONS_DIR)
+                .join("wasm32/localproof")
+                .join(&cache_key_sha),
+        )
+        .unwrap();
+        assert!(target.starts_with(&identity_root), "got: {}", target.display());
+        let generation = target.parent().unwrap();
+        let session = generation.file_name().unwrap().to_string_lossy();
+        let claim = identity_root.join(format!(".{session}.publication-claimed"));
+        assert!(claim.is_file(), "missing claim: {}", claim.display());
+        assert_eq!(
+            std::fs::read(&mirror).unwrap(),
+            minimal_executable_wasm(),
+        );
+        assert!(
+            !target.starts_with(&cache),
+            "local mirror must not point directly into the fetched cache",
         );
     }
 

@@ -55,6 +55,7 @@ import {
   WPK_FORK_MODULE_STATE_RECORD_VERSION,
   WPK_FORK_MODULE_STATE_REQUIRED_FLAGS,
   WPK_FORK_MODULE_STATE_ROOT_POINTER_WORD_OFFSET,
+  WPK_FORK_PROCESS_IMPORT,
   WPK_FORK_REQUIRED_EXPORTS,
   WPK_FORK_REQUIRED_IMPORTS,
   WPK_FORK_REQUIRED_TABLE_IMPORTS,
@@ -1993,6 +1994,32 @@ function describeForkArtifactContractFailures(
     failures.push(
       `incomplete wasm-fork-instrument exports; missing ${missingExports.join(", ")}`,
     );
+  }
+
+  if (facts.importsKernelFork) {
+    const identity =
+      `${WPK_FORK_PROCESS_IMPORT.module}.${WPK_FORK_PROCESS_IMPORT.name}`;
+    const signatures = facts.functionImports.get(identity);
+    if (signatures?.length !== 1) {
+      failures.push(`duplicate ABI 43 process-fork import ${identity}`);
+    } else if (
+      !signatureMatches(
+        signatures[0],
+        WPK_FORK_PROCESS_IMPORT.params,
+        WPK_FORK_PROCESS_IMPORT.results,
+        4,
+      )
+    ) {
+      failures.push(
+        `ABI 43 process-fork import ${identity} has the wrong signature; expected ${
+          signatureText(
+            WPK_FORK_PROCESS_IMPORT.params,
+            WPK_FORK_PROCESS_IMPORT.results,
+            4,
+          )
+        }`,
+      );
+    }
   }
 
   let pointerWidth: number | null = null;

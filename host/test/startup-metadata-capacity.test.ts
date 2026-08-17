@@ -1,6 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  CHANNEL_STATUS_COMPLETE,
+  CH_ERRNO,
+  CH_RETURN,
+  CH_STATUS,
+  CH_SYSCALL,
+  HOST_INTERCEPTED_SYSCALLS,
   POSIX_ARG_MAX_BYTES,
+  PROCESS_FORK_MODE_FORK,
+  PROCESS_FORK_MODE_VFORK,
   PROCESS_METADATA_ENTRY_MAX_BYTES,
   PROCESS_STARTUP_MAX_ARGV_COUNT,
   PROCESS_STARTUP_MAX_ENVP_COUNT,
@@ -299,4 +307,44 @@ describe("process startup metadata capacity contract", () => {
       expect(new TextDecoder().decode(bytes.slice(128, 134))).toBe("before");
     },
   );
+});
+
+describe("process fork-mode import contract", () => {
+  it("routes ordinary fork and vfork to distinct syscalls", () => {
+    const memory = new WebAssembly.Memory({
+      initial: 1,
+      maximum: 1,
+      shared: true,
+    });
+    const imports = buildKernelImportsForTest(memory, 0, 4);
+    const kernelFork = imports.kernel_fork as (mode: number) => number;
+    const view = new DataView(memory.buffer);
+    view.setBigInt64(CH_RETURN, 73n, true);
+    view.setUint32(CH_ERRNO, 0, true);
+    const wait = vi.spyOn(Atomics, "wait").mockImplementation(
+      (array, index, expected) => {
+        if (Atomics.load(array, index) !== expected) return "not-equal";
+        Atomics.store(array, index, CHANNEL_STATUS_COMPLETE);
+        return "ok";
+      },
+    );
+
+    try {
+      expect(kernelFork(PROCESS_FORK_MODE_FORK)).toBe(73);
+      expect(view.getUint32(CH_SYSCALL, true)).toBe(
+        HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
+      );
+      expect(kernelFork(PROCESS_FORK_MODE_VFORK)).toBe(73);
+      expect(view.getUint32(CH_SYSCALL, true)).toBe(
+        HOST_INTERCEPTED_SYSCALLS.SYS_VFORK,
+      );
+
+      const waitsBeforeInvalidMode = wait.mock.calls.length;
+      expect(kernelFork(2)).toBe(-EINVAL);
+      expect(wait).toHaveBeenCalledTimes(waitsBeforeInvalidMode);
+      expect(new Int32Array(memory.buffer)[CH_STATUS / 4]).toBe(0);
+    } finally {
+      wait.mockRestore();
+    }
+  });
 });

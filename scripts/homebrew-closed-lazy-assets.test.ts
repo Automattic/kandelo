@@ -152,7 +152,7 @@ function createFixture(root: string, writePayload = true): {
     pendingTree: {
       kind: "kandelo-deferred-tree-v2",
       content: {
-        decoder: "homebrew-bottle-tar-gzip-v1",
+        decoder: "tar-gzip-v1",
         mediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
         sha256: identity.sha256,
         bytes: identity.bytes,

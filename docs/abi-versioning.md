@@ -383,6 +383,45 @@ loading treat the capability as part of the artifact contract. Missing,
 duplicate, malformed, unknown-version, unknown-bit, or safety-bit-free
 capabilities fail before execution.
 
+ABI 43 also gives the process fork import an explicit transaction mode.
+`kernel.kernel_fork` changes from `() -> i32` to `(i32) -> i32`, where mode 0
+is ordinary fork and mode 1 is vfork. The process Worker maps those modes to
+`SYS_FORK` and `SYS_VFORK`, carries the selected mode through capture, parent
+replay, abort replay, child launch, and Worker initialization, and rejects a
+different mode at the inherited call site. The centralized host passes the
+same mode to the incompatible
+`kernel_fork_process(parent_pid, caller_tid, mode)` export; Rust rejects any
+unknown value with `EINVAL`. Artifact admission requires the exact import
+signature, and the ABI snapshot owns both values.
+
+For mode 1, the instrumented process Worker also places the exact aligned
+private-prefix bytes in host-intercepted `SYS_VFORK` argument 0 and the
+page-rounded reference/exception scratch high-water in argument 1. The host
+admits at most 61,440 prefix bytes and 65,536 scratch bytes and returns
+`EAGAIN` before the Rust child allocation when either bound is exceeded. This
+is an ABI 43 semantic channel contract: it changes no syscall number, linked
+frame encoding, kernel import/export signature, or structural snapshot field.
+Ordinary `SYS_FORK` keeps all six arguments zero.
+
+Mode 1 now selects the shared-memory vfork lifetime. A separate child Worker
+retains the parent's existing `Shared WebAssembly.Memory`; it constructs no
+child process Memory and copies no address-space bytes. The child receives a
+private syscall channel, bounded replay workspace, Wasm instance, loader, and
+continuation controller. The asynchronous import keeps only the calling parent
+thread parked until successful exec commit or exact `_exit()`/signal/trap
+teardown, while sibling pthreads remain runnable. Failed exec returns to the
+child without ending the lifetime. Ambiguous forced termination contains the
+whole shared address space rather than publishing an unsafe parent return.
+Ordinary fork behavior is unchanged.
+
+The exact-generation lifetime records and Node/browser Worker messages used to
+coordinate launch and teardown are host-private protocol, not persisted guest
+ABI. No new linked-frame field, marker getter, or public kernel export was
+needed beyond the ABI 43 mode-aware import/export and bounded workspace
+arguments described above. Release still requires the broader conformance,
+upstream CRuby, Homebrew, and resident-memory proofs; those gates do not alter
+the structural ABI decision.
+
 The instrumenter also rejects any input that already carries fork control
 exports, linked-frame imports, or fork metadata. This prevents a transformed
 ABI 42 module from being run through the ABI 43 tool merely to acquire the new

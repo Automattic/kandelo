@@ -1,4 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { WASM_PAGE_SIZE } from "../src/constants";
+import {
+  acquireForkMemoryClone,
+  ProcessMemoryAllocator,
+} from "../src/process-memory";
 import {
   VforkAddressSpaceBusyError,
   VforkLifetimeCoordinator,
@@ -32,29 +37,87 @@ async function expectPending(promise: Promise<unknown>): Promise<void> {
 }
 
 describe("shared vfork lifetime coordinator", () => {
+  it("borrows the exact parent Memory without a full child allocation", async () => {
+    const allocator = new ProcessMemoryAllocator({
+      maxMemories: 2,
+      maxTotalBytes: 4 * WASM_PAGE_SIZE,
+    });
+    const parentLease = allocator.acquire({
+      ptrWidth: 4,
+      initialPages: 2,
+      maximumPages: 2,
+    });
+    const childLease = parentLease.retainAlias();
+    const parentMemory = parentLease.memory;
+    const childMemory = childLease.memory;
+    const fullProcessMemoryCreations =
+      allocator.getRetirementStats().liveMemories - 1;
+    const coordinator = new VforkLifetimeCoordinator<Generation>();
+    const parent = generation("parent", parentMemory);
+    const child = generation("child", childMemory);
+    const events: string[] = [];
+    const lifetime = coordinator.begin(1, 2, parent, child);
+    let childReleasedMemory = false;
+    void lifetime.completion.then(() => {
+      events.push(
+        childReleasedMemory
+          ? "parent-resumed-after-release"
+          : "parent-resumed-before-release",
+      );
+    });
+
+    events.push("child-entered");
+    coordinator.markChildMayAccessMemory(child);
+    await expectPending(lifetime.completion);
+
+    expect(childMemory).toBe(parentMemory);
+    expect(fullProcessMemoryCreations).toBe(0);
+    expect(events).toContain("child-entered");
+    expect(events).not.toContain("parent-resumed-before-release");
+
+    childReleasedMemory = true;
+    coordinator.completeAfterExactTeardown(child, "exit");
+    await lifetime.completion;
+    expect(events).toContain("parent-resumed-after-release");
+
+    childLease.release();
+    const ordinaryForkLease = acquireForkMemoryClone(
+      allocator,
+      parentMemory,
+      4,
+      2,
+    );
+    expect(ordinaryForkLease.memory).not.toBe(parentMemory);
+    expect(allocator.getRetirementStats().liveMemories - 1).toBe(1);
+    ordinaryForkLease.release();
+    parentLease.release();
+    allocator.clear();
+  });
+
   it("requires an exact Shared Memory alias and distinct process identities", () => {
     const coordinator = new VforkLifetimeCoordinator<Generation>();
     const parent = generation("parent");
 
-    expect(() => coordinator.begin(
-      10,
-      11,
-      parent,
-      generation("copied-child"),
-    )).toThrow("does not alias");
+    expect(() =>
+      coordinator.begin(10, 11, parent, generation("copied-child")),
+    ).toThrow("does not alias");
 
     const privateMemory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
-    expect(() => coordinator.begin(
-      10,
-      11,
-      generation("private-parent", privateMemory),
-      generation("private-child", privateMemory),
-    )).toThrow("requires Shared");
+    expect(() =>
+      coordinator.begin(
+        10,
+        11,
+        generation("private-parent", privateMemory),
+        generation("private-child", privateMemory),
+      ),
+    ).toThrow("requires Shared");
 
-    expect(() => coordinator.begin(10, 10, parent, generation("child", parent.memory)))
-      .toThrow("PIDs must differ");
-    expect(() => coordinator.begin(10, 11, parent, parent))
-      .toThrow("generations must differ");
+    expect(() =>
+      coordinator.begin(10, 10, parent, generation("child", parent.memory)),
+    ).toThrow("PIDs must differ");
+    expect(() => coordinator.begin(10, 11, parent, parent)).toThrow(
+      "generations must differ",
+    );
   });
 
   it("parks the caller while sibling work and failed execs continue", async () => {
@@ -86,26 +149,49 @@ describe("shared vfork lifetime coordinator", () => {
     });
   });
 
-  it.each(["exec", "exit", "signal", "trap"] as const)(
-    "accepts exact %s teardown evidence once",
-    async (reason) => {
+  it.each([
+    { path: "successful exec", reason: "exec", failedExecErrnos: [] },
+    {
+      path: "failed exec followed by _exit",
+      reason: "exit",
+      failedExecErrnos: [2],
+    },
+    { path: "direct _exit", reason: "exit", failedExecErrnos: [] },
+    {
+      path: "cooperative signal death",
+      reason: "signal",
+      failedExecErrnos: [],
+    },
+    { path: "trap", reason: "trap", failedExecErrnos: [] },
+  ] as const)(
+    "accepts exact teardown evidence once for $path",
+    async ({ reason, failedExecErrnos }) => {
       const coordinator = new VforkLifetimeCoordinator<Generation>();
       const memory = sharedMemory();
       const parent = generation("parent", memory);
       const child = generation("child", memory);
       const lifetime = coordinator.begin(30, 31, parent, child);
+      let settlements = 0;
+      void lifetime.completion.then(() => settlements++);
       coordinator.markChildMayAccessMemory(child);
+      for (const errno of failedExecErrnos) {
+        coordinator.noteFailedExec(child, errno);
+      }
+      await expectPending(lifetime.completion);
 
       expect(coordinator.completeAfterExactTeardown(child, reason)).toBe(true);
       expect(coordinator.completeAfterExactTeardown(child, reason)).toBe(false);
-      expect(coordinator.requireAddressSpaceContainment(child, new Error("late")))
-        .toBe(false);
+      expect(
+        coordinator.requireAddressSpaceContainment(child, new Error("late")),
+      ).toBe(false);
       await expect(lifetime.completion).resolves.toMatchObject({
         kind: "resume-parent",
         parentGeneration: parent,
         childPid: 31,
         reason,
       });
+      expect(lifetime.failedExecAttempts).toBe(failedExecErrnos.length);
+      expect(settlements).toBe(1);
       expect(lifetime.phase).toBe("settled");
       expect(coordinator.activeCount).toBe(0);
     },
@@ -139,20 +225,24 @@ describe("shared vfork lifetime coordinator", () => {
     });
   });
 
-  it("resumes for an exact kernel death before Worker launch", async () => {
+  it("settles once for an exact Worker crash before memory access", async () => {
     const coordinator = new VforkLifetimeCoordinator<Generation>();
     const memory = sharedMemory();
     const parent = generation("parent", memory);
     const child = generation("child", memory);
     const lifetime = coordinator.begin(50, 51, parent, child);
 
-    coordinator.completeWithoutBorrow(child, "signal");
+    let settlements = 0;
+    void lifetime.completion.then(() => settlements++);
+    coordinator.completeWithoutBorrow(child, "trap");
     await expect(lifetime.completion).resolves.toEqual({
       kind: "resume-parent",
       parentGeneration: parent,
       childPid: 51,
-      reason: "signal",
+      reason: "trap",
     });
+    expect(settlements).toBe(1);
+    expect(coordinator.activeCount).toBe(0);
   });
 
   it("requires whole-address-space containment after ambiguous termination", async () => {
@@ -161,6 +251,8 @@ describe("shared vfork lifetime coordinator", () => {
     const parent = generation("parent", memory);
     const child = generation("child", memory);
     const lifetime = coordinator.begin(60, 61, parent, child);
+    let settlements = 0;
+    void lifetime.completion.then(() => settlements++);
     coordinator.markChildMayAccessMemory(child);
     const crash = new Error("Worker stopped without memory_quiescent");
 
@@ -172,6 +264,8 @@ describe("shared vfork lifetime coordinator", () => {
       childPid: 61,
       cause: crash,
     });
+    expect(settlements).toBe(1);
+    expect(coordinator.activeCount).toBe(0);
   });
 
   it("rejects overlapping and nested borrowers with EAGAIN", async () => {
@@ -180,7 +274,9 @@ describe("shared vfork lifetime coordinator", () => {
     const parent = generation("parent", memory);
     const firstChild = generation("first-child", memory);
     const first = coordinator.begin(70, 71, parent, firstChild);
+    expect(coordinator.phaseForChild(firstChild)).toBe("starting");
     coordinator.markChildMayAccessMemory(firstChild);
+    expect(coordinator.phaseForChild(firstChild)).toBe("borrowing");
 
     for (const [parentPid, childPid, initiator] of [
       [70, 72, parent],
@@ -202,6 +298,7 @@ describe("shared vfork lifetime coordinator", () => {
     }
 
     coordinator.completeAfterExactTeardown(firstChild, "exec");
+    expect(coordinator.phaseForChild(firstChild)).toBeUndefined();
     await first.completion;
   });
 

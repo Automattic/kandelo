@@ -49,6 +49,46 @@ describe("kernel entry-context static audit", () => {
     expect(violations).toEqual([]);
   });
 
+  it("audits immediate-result ingress as an exact lexical root", () => {
+    const violations = auditKernelEntryContext(`
+      interface KernelWorkerEntryContext {
+        instance: WebAssembly.Instance;
+      }
+      class CentralizedKernelWorker {
+        #runImmediateKernelEntry(
+          _label: string,
+          _operation: (entry: KernelWorkerEntryContext) => void,
+        ): void {}
+        #kernelInstanceForEntry(
+          entry: KernelWorkerEntryContext,
+        ): WebAssembly.Instance {
+          return entry.instance;
+        }
+        #read(entry: KernelWorkerEntryContext): void {
+          const fn = this.#kernelInstanceForEntry(entry).exports.read as
+            () => void;
+          fn();
+        }
+        claim(): void {
+          this.#runImmediateKernelEntry("claim", (entry) => {
+            this.#read(entry);
+          });
+        }
+        badClaim(): void {
+          this.#runImmediateKernelEntry("bad claim", (_entry) => {
+            this.#read(undefined as unknown as KernelWorkerEntryContext);
+          });
+        }
+      }
+    `);
+
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      kind: "missing-explicit-entry",
+      owner: expect.stringContaining("<scoped-root@"),
+    });
+  });
+
   it("admits only exact synchronous serialized host operations", () => {
     const safe = auditKernelEntryContext(`
       interface KernelWorkerEntryContext {

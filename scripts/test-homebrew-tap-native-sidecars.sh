@@ -1562,7 +1562,7 @@ PY
 )"
 jq -e '
   . as $descriptor |
-  .schema == 5 and .kind == "kandelo-homebrew-deferred-layer-draft" and
+  .schema == 6 and .kind == "kandelo-homebrew-deferred-layer-draft" and
   .mount_prefix == "/" and
   .selection.requested_packages == ["sidecar-tool"] and
   .selection.package_order == [
@@ -1603,6 +1603,16 @@ jq -e '
   $tree.inventory.entry_count == ($tree.inventory.entries | length) and
   $tree.inventory.source.schema == 1 and
   $tree.inventory.source.kind == "homebrew-bottle-tar-gzip-v1" and
+  $tree.inventory.relocation.schema == 1 and
+  $tree.inventory.relocation.kind == "homebrew-bottle-relocation-v1" and
+  $tree.inventory.relocation.receipt_source_path ==
+    "sidecar-tool/2.0_3/INSTALL_RECEIPT.json" and
+  $tree.inventory.relocation.materialization.schema == 1 and
+  $tree.inventory.relocation.materialization.kind ==
+    "archive-byte-transforms-v1" and
+  ($tree.inventory.relocation.materialization.assertions | length) == 1 and
+  $tree.inventory.relocation.materialization.recipes == [] and
+  $tree.inventory.relocation.materialization.transforms == [] and
   $tree.inventory.source_entry_count == ($tree.inventory.source.entries | length) and
   [$tree.inventory.source.entries[].path] ==
     ([$tree.inventory.source.entries[].path] | unique | sort) and
@@ -1629,7 +1639,7 @@ jq -e '
   --argjson bottle_bytes "${tool_bottle[3]}" \
   --argjson expanded_bytes "$RUNTIME_LAYER_EXPANDED_BYTES" \
   "$RUNTIME_LAYER_DESCRIPTOR" >/dev/null || {
-    echo "schema-5 original-bottle descriptor assertion failed" >&2
+    echo "schema-6 original-bottle descriptor assertion failed" >&2
     jq . "$RUNTIME_LAYER_DESCRIPTOR" >&2
     exit 1
   }
@@ -1654,7 +1664,7 @@ def require(condition, message):
 payload = payload_path.read_bytes()
 original = original_path.read_bytes()
 descriptor = json.loads(descriptor_path.read_text())
-require(descriptor["schema"] == 5, "runtime layer is not schema 5")
+require(descriptor["schema"] == 6, "runtime layer is not schema 6")
 require(
     descriptor["kind"] == "kandelo-homebrew-deferred-layer-draft",
     "runtime layer is not an inert producer draft",

@@ -259,6 +259,12 @@ export const WPK_FORK_REFERENCE_IMPORT_VECTOR_APPEND = "__wpk_fork_ref_vector_ap
 export const WPK_FORK_REFERENCE_IMPORT_VECTOR_BEGIN = "__wpk_fork_ref_vector_begin" as const;
 export const WPK_FORK_REFERENCE_IMPORT_VECTOR_FINISH = "__wpk_fork_ref_vector_finish" as const;
 export const WPK_FORK_REFERENCE_IMPORT_VECTOR_GET = "__wpk_fork_ref_vector_get" as const;
+export const PROCESS_FORK_MODE_FORK = 0 as const;
+export const PROCESS_FORK_MODE_VFORK = 1 as const;
+export type ProcessForkMode =
+  | typeof PROCESS_FORK_MODE_FORK
+  | typeof PROCESS_FORK_MODE_VFORK;
+export const WPK_FORK_PROCESS_IMPORT = { module: "kernel", name: "kernel_fork", params: ["i32"], results: ["i32"] } as const;
 export const WPK_FORK_REQUIRED_IMPORTS = [
   { module: "env", name: "__wpk_fork_frame_commit", params: ["ptr"], results: [] },
   { module: "env", name: "__wpk_fork_frame_next", params: ["ptr"], results: ["ptr"] },
@@ -663,13 +669,13 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_mark_process_signaled",
   "kernel_mq_descriptor_msgsize",
   "kernel_msqid_ds_bytes",
-  "kernel_pick_tcp_listener_target",
   "kernel_pcm_claim_transport",
   "kernel_pcm_clock_update",
   "kernel_pcm_reconcile",
   "kernel_pcm_transport_len",
   "kernel_pcm_transport_ptr",
   "kernel_pick_signal_target_tid",
+  "kernel_pick_tcp_listener_target",
   "kernel_pipe_has_readers",
   "kernel_posix_timer_fire",
   "kernel_process_metadata_begin",

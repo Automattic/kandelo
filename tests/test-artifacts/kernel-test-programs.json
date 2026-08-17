@@ -29,8 +29,12 @@
       "consumers": [
         "apps/browser-demos/test/nonzero-exit-diagnostic.spec.ts",
         "apps/browser-demos/test/process-memory-retirement.spec.ts",
+        "apps/browser-demos/test/ruby-posix-spawn.spec.ts",
+        "apps/browser-demos/test/vfork-lifecycle.spec.ts",
         "host/test/exec.test.ts",
-        "host/test/fixtures/ordinary-nonzero-exit.ts"
+        "host/test/fixtures/ordinary-nonzero-exit.ts",
+        "host/test/vfork-lifecycle-guest.test.ts",
+        "packages/registry/ruby/test/posix-spawn.test.ts"
       ]
     },
     {

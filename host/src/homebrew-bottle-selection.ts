@@ -91,11 +91,18 @@ export function projectHomebrewBottleSelection(
     root.requestedVfsFilename,
     "Homebrew bottle selection.requestedVfsFilename",
   );
+  const requiredAbiToken = `abi${kandeloAbi}`;
+  const hasExactAbiToken = new RegExp(
+    `(?:^|[._-])${requiredAbiToken}(?:[._-]|$)`,
+  ).test(requestedVfsFilename);
   if (
-    !OUTPUT_FILENAME_RE.test(requestedVfsFilename)
+    !OUTPUT_FILENAME_RE.test(requestedVfsFilename) ||
+    !requestedVfsFilename.includes("experimental") ||
+    !hasExactAbiToken
   ) {
     fail(
-      "Homebrew bottle selection.requestedVfsFilename must be a safe .vfs.zst basename",
+      "Homebrew bottle selection.requestedVfsFilename must be a safe .vfs.zst " +
+        `basename containing experimental and ${requiredAbiToken}`,
     );
   }
   if (

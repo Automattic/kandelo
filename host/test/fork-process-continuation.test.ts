@@ -151,6 +151,7 @@ function makeCoordinator(
   calls: string[],
   roots: Map<number, number>,
   label: string,
+  anchorMode: "writable" | "read-only" = "writable",
 ): {
   coordinator: ForkProcessContinuationCoordinator;
   arena: ForkModuleStateArena;
@@ -177,9 +178,13 @@ function makeCoordinator(
       continuation,
       ...(activationId === 0
         ? {
-            publishProcessLaunchRoot: (root: number) => {
-              roots.set(0, root);
-            },
+            ...(anchorMode === "writable"
+              ? {
+                  publishProcessLaunchRoot: (root: number) => {
+                    roots.set(0, root);
+                  },
+                }
+              : {}),
             readProcessLaunchRoot: () => roots.get(0) ?? 0,
           }
         : {}),
@@ -247,6 +252,10 @@ describe("ForkProcessContinuationCoordinator", () => {
       mainImports.__wpk_fork_frame_commit as (payload: number) => void
     )(mainPayload);
     parent.coordinator.sealCapture();
+    expect(parent.coordinator.borrowedReplayWorkspaceRequirements()).toEqual({
+      prefixBytes: 128,
+      scratchBytes: 0,
+    });
 
     const borrowedRanges = [arenaRoot, ...[0, 4].map((activationId) =>
       parent.coordinator.rootFor(activationId) - linkedFormat().chunkHeaderSize
@@ -273,7 +282,18 @@ describe("ForkProcessContinuationCoordinator", () => {
       [],
       launchRoots,
       "borrowed child",
+      "read-only",
     );
+    expect(child.coordinator).not.toBe(parent.coordinator);
+    expect(child.arena).not.toBe(parent.arena);
+    for (const activationId of [0, 4, 9]) {
+      expect(child.continuations.get(activationId)).not.toBe(
+        parent.continuations.get(activationId),
+      );
+    }
+    for (const [activationId, privatePrefix] of privatePrefixes) {
+      expect(privatePrefix).not.toBe(parent.coordinator.rootFor(activationId));
+    }
     child.arena.attachBorrowed(arenaRoot);
     const prefixRequests: number[] = [];
     child.coordinator.attachBorrowedChild(child.arena, (request) => {
@@ -300,6 +320,7 @@ describe("ForkProcessContinuationCoordinator", () => {
         .__wpk_fork_frame_next as (size: number) => number
     )(16);
     child.coordinator.finishReplay();
+    child.coordinator.clear();
 
     expect(child.coordinator.phaseName()).toBe("idle");
     expect(child.arena.hasActiveArena()).toBe(false);
@@ -369,6 +390,7 @@ describe("ForkProcessContinuationCoordinator", () => {
       [],
       launchRoots,
       "rollback child",
+      "read-only",
     );
     child.arena.attachBorrowed(arenaRoot);
     expect(() => child.coordinator.attachBorrowedChild(

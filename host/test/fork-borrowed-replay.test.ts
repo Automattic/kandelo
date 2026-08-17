@@ -130,6 +130,7 @@ describe("borrowed fork replay", () => {
       // final page models a child-owned mapping in the shared vfork address
       // space; parent continuation and module-state pages remain read-only.
       const childModuleBuffer = 7 * PAGE_SIZE;
+      expect(childModuleBuffer).not.toBe(moduleBuffer);
       const childWorker = new Worker(
         new URL("./fixtures/borrowed-fork-replay-worker.ts", import.meta.url),
         {

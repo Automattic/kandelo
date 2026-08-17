@@ -180,6 +180,7 @@ export class NodeWorkerAdapter implements WorkerAdapter {
   private _compiledEntry: URL | false | undefined;
   private _bundledSourceEntry: URL | false | undefined;
   private readonly initializeByMessage: boolean;
+  private injectedVforkStartFailure = false;
 
   constructor(entryUrl?: URL) {
     // WHY: arbitrary custom entries may read workerData directly and do not
@@ -291,6 +292,20 @@ export class NodeWorkerAdapter implements WorkerAdapter {
   }
 
   createWorker(workerData: unknown): WorkerHandle {
+    // Test-only fault boundary for the production DeferredWorker factory.
+    // The mode check leaves kernel/top-level/ordinary Workers untouched, and
+    // the one-shot throw occurs exactly where a native Worker constructor can
+    // fail synchronously after vfork has crossed child_may_access_memory.
+    if (
+      process.env.KANDELO_TEST_VFORK_WORKER_START_FAILURE === "once"
+      && !this.injectedVforkStartFailure
+      && typeof workerData === "object"
+      && workerData !== null
+      && (workerData as { forkMode?: unknown }).forkMode === 1
+    ) {
+      this.injectedVforkStartFailure = true;
+      throw new Error("injected vfork Worker constructor failure");
+    }
     const initialization = nodeWorkerInitialization(
       workerData,
       this.initializeByMessage,

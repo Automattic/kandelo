@@ -67,8 +67,10 @@ interface MutableVforkLifetime<
 export class VforkAddressSpaceBusyError extends Error {
   readonly errno = EAGAIN;
 
-  constructor() {
-    super("address space already has an active vfork lifetime");
+  constructor(
+    message = "address space already has an active vfork lifetime",
+  ) {
+    super(message);
     this.name = "VforkAddressSpaceBusyError";
   }
 }
@@ -112,6 +114,12 @@ export class VforkLifetimeCoordinator<
   isActiveBorrower(generation: TGeneration): boolean {
     const lifetime = this.byChild.get(generation);
     return lifetime?.phase === "borrowing";
+  }
+
+  phaseForChild(
+    generation: TGeneration,
+  ): VforkLifetimePhase | undefined {
+    return this.byChild.get(generation)?.phase;
   }
 
   begin(

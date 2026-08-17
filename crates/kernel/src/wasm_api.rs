@@ -1771,11 +1771,19 @@ pub extern "C" fn kernel_reap_process(pid: u32) -> i32 {
 /// Fork a process in the process table on behalf of a validated parent task.
 /// Clones parent's Process state under a kernel-allocated child pid and
 /// preserves the calling task's signal mask in the child.
+///
+/// Both modes inherit the same kernel-owned process state. The distinction is
+/// carried explicitly because the host memory/lifetime transaction differs:
+/// ordinary fork owns a memory clone, while genuine vfork will borrow the
+/// parent's memory and suspend only its calling thread until exec or exit.
 /// Returns the child pid on success, negative errno on error.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_fork_process(parent_pid: u32, caller_tid: u32) -> i32 {
+pub extern "C" fn kernel_fork_process(parent_pid: u32, caller_tid: u32, mode: u32) -> i32 {
+    let Some(mode) = wasm_posix_shared::fork_contract::Mode::from_u32(mode) else {
+        return -(Errno::EINVAL as i32);
+    };
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.fork_process_for_caller(parent_pid, caller_tid) {
+    match table.fork_process_for_caller_with_mode(parent_pid, caller_tid, mode) {
         Ok(child_pid) => child_pid as i32,
         Err(e) => -(e as i32),
     }
@@ -6506,7 +6514,7 @@ pub extern "C" fn kernel_get_pipe_ofds(buf_ptr: *mut u8, buf_len: u32) -> i32 {
             // positive host_handle index parity to distinguish read/write.
             // Since pipe pairs share the same |host_handle|, we check status_flags
             // for O_WRONLY (bit 0) to determine end.
-            let is_read = if ofd.status_flags & 1 == 0 {
+            let is_read = if ofd.status_flags() & 1 == 0 {
                 1u32
             } else {
                 0u32
@@ -9486,7 +9494,7 @@ pub extern "C" fn kernel_accept4(
                 if flags & SOCK_NONBLOCK != 0 {
                     if let Ok(entry) = proc.fd_table.get(new_fd) {
                         if let Some(ofd) = proc.ofd_table.get_mut(entry.ofd_ref.0) {
-                            ofd.status_flags |= O_NONBLOCK;
+                            ofd.set_status_flags_raw(ofd.status_flags() | O_NONBLOCK);
                         }
                     }
                 }
@@ -13386,7 +13394,7 @@ pub extern "C" fn kernel_is_fd_nonblock(pid: u32, fd: i32) -> i32 {
             Err(_) => -1,
         };
     }
-    if ofd.status_flags & wasm_posix_shared::flags::O_NONBLOCK != 0 {
+    if ofd.status_flags() & wasm_posix_shared::flags::O_NONBLOCK != 0 {
         1
     } else {
         0

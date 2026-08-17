@@ -312,7 +312,7 @@ uintptr_t __get_channel_base_addr(void) {
  * the host to save/restore the call stack across fork — so the child
  * resumes from the fork point with all local variables intact.
  *
- * IMPORTANT: fork()/vfork()/_Fork() call kernel_fork() directly below,
+ * IMPORTANT: fork()/vfork()/_Fork() call kernel_fork(mode) directly below,
  * NOT through __do_syscall(). This keeps fork instrumentation limited
  * to the fork call chain. If kernel_fork were reachable from __do_syscall,
  * the tool would instrument every function that makes any syscall (~54K
@@ -322,7 +322,7 @@ uintptr_t __get_channel_base_addr(void) {
 #define SYS_VFORK 213
 
 __attribute__((import_module("kernel"), import_name("kernel_fork")))
-int32_t kernel_fork(void);
+int32_t kernel_fork(int32_t mode);
 
 __attribute__((import_module("kernel"), import_name("kernel_exit")))
 _Noreturn void kernel_exit(int32_t status);
@@ -369,10 +369,8 @@ void __wasm_posix_after_fork_child(void);
  * as distinct non-inlined functions preserves both the fork call graph
  * and the observable side effect of the kernel_fork import. */
 
-__attribute__((noinline))
-int _Fork(void)
+static int __wasm_posix_finish_fork(long ret)
 {
-    long ret = (long)kernel_fork();
     if (ret == 0) {
         __wasm_posix_after_fork_child();
     } else {
@@ -392,6 +390,32 @@ int _Fork(void)
     return (int)ret;
 }
 
+static int __wasm_posix_finish_vfork(long ret)
+{
+    /*
+     * WHY: the vfork child is still borrowing the suspended caller's TLS and
+     * libc globals. Ordinary fork must rebind a copied pthread descriptor to
+     * the new PID, but doing that here would overwrite the live parent's TID,
+     * thread list, and threads_minus_1 count. A successful exec replaces this
+     * state; _exit needs no libc-side child reinitialization.
+     */
+    if (ret != 0) {
+        __wasm_posix_signal_checkpoint();
+    }
+    if (ret < 0) {
+        *__errno_location() = (int)(-ret);
+        return -1;
+    }
+    return (int)ret;
+}
+
+__attribute__((noinline))
+int _Fork(void)
+{
+    return __wasm_posix_finish_fork(
+        (long)kernel_fork(WASM_POSIX_FORK_MODE_FORK));
+}
+
 __attribute__((noinline))
 int fork(void)
 {
@@ -404,7 +428,10 @@ int fork(void)
 __attribute__((noinline))
 int vfork(void)
 {
-    return fork();
+    /* vfork neither runs pthread_atfork handlers nor rewrites the borrowed
+     * caller state before exec/_exit. */
+    return __wasm_posix_finish_vfork(
+        (long)kernel_fork(WASM_POSIX_FORK_MODE_VFORK));
 }
 
 /* ------------------------------------------------------------------ */
@@ -577,7 +604,7 @@ static long __do_syscall_impl(long n, long long a1, long long a2, long long a3,
                               int cancellation_point)
 {
     /* Fork/vfork are handled by fork()/_Fork()/vfork() overrides above,
-     * which call kernel_fork() directly.  If we somehow get here (e.g. a
+     * which call kernel_fork(mode) directly.  If we somehow get here (e.g. a
      * program calls __syscall(SYS_fork) directly), return ENOSYS because
      * fork instrumentation cannot save the call stack through the channel path. */
     if (n == SYS_FORK || n == SYS_VFORK) {

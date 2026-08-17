@@ -132,6 +132,7 @@ impl fmt::Display for ArtifactIdentity {
 
 #[derive(Debug, Clone, Copy)]
 enum ExpectedSignature {
+    I32ToI32,
     PointerToPointer,
     PointerToNil,
     NilToNil,
@@ -185,6 +186,8 @@ pub fn fork_contract_inventory(bytes: &[u8]) -> Result<ForkContractInventory> {
                             }
                             if import.module == "kernel" && import.name == "kernel_fork" {
                                 inventory.imports_kernel_fork += 1;
+                                checked_functions
+                                    .push((function_index, ExpectedSignature::I32ToI32));
                             }
                             if import.module == "env" && import.name == "fork" {
                                 inventory.imports_side_fork += 1;
@@ -735,6 +738,10 @@ fn unique_custom_section_hex(bytes: &[u8], expected_name: &str) -> Result<String
 
 fn signature_matches(signature: &FuncType, expected: ExpectedSignature, pointer: ValType) -> bool {
     let (params, results): (&[ValType], &[ValType]) = match expected {
+        ExpectedSignature::I32ToI32 => (
+            std::slice::from_ref(&ValType::I32),
+            std::slice::from_ref(&ValType::I32),
+        ),
         ExpectedSignature::PointerToPointer => (
             std::slice::from_ref(&pointer),
             std::slice::from_ref(&pointer),

@@ -427,14 +427,11 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
     });
   });
 
-  // P-08: vfork(). musl's vfork typically aliases fork (no copy-on-
-  // write distinction inside our kernel). If the libc returns
-  // ENOSYS or the symbol isn't linked, the test prints SKIP_VFORK
-  // and still passes — verifies the surface is at least gracefully
-  // handled.
-  it("P-08 vfork (or graceful unsupported skip)", async () => {
+  // P-08: ABI 43 vfork uses the borrowed-memory transaction and parks the
+  // caller until the child exits through the portable _exit-only path.
+  it("P-08 vfork child exit resumes the parent", async () => {
     await runFixture("programs/p_08_vfork.wasm", {
-      contains: ["PRE_VFORK", "PASS: P-08"],
+      contains: ["PRE_VFORK", "PARENT: child=", "PASS: P-08"],
     });
   });
 

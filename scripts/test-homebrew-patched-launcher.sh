@@ -835,6 +835,7 @@ NATIVE_INTERPRETER_EOF
     [ -z "${NODE_PATH+x}" ]
     for required in \
       Cargo.toml package.json examples/run-example.ts \
+      examples/run-example-vfs.ts \
       host/src/node-kernel-host.ts host/wasm/kandelo-kernel.wasm \
       host/wasm/program-packages.json \
       packages/registry/openssl/src/tls/1_2/connection.ts \
@@ -2179,6 +2180,7 @@ PY
     "$REPO_ROOT/examples/run-example.ts" \
     "$REPO_ROOT/examples/run-example-output.ts" \
     "$REPO_ROOT/examples/run-example-paths.ts" \
+    "$REPO_ROOT/examples/run-example-vfs.ts" \
     "$isolated_kandelo/examples/"
   cp -- "$REPO_ROOT/package.json" \
     "$isolated_kandelo/host/wasm/kandelo-kernel.wasm"

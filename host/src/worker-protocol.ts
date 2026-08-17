@@ -4,6 +4,9 @@ import type {
 import type {
   ForkExternrefImportWake,
 } from "./fork-externref-import-mailbox";
+import type { ProcessForkMode } from "./generated/abi";
+
+export type ForkMemoryOwnership = "copied" | "borrowed";
 
 // --- Host → Worker messages ---
 
@@ -61,8 +64,25 @@ export interface CentralizedWorkerInitMessage {
   cwd?: string;
   /** If true, this is a fork child — drive wpk_fork_rewind_begin instead of normal _start */
   isForkChild?: boolean;
+  /** Exact ordinary/vfork mode captured by the inherited fork import. */
+  forkMode?: ProcessForkMode;
+  /**
+   * Whether this child owns an independent copy or temporarily borrows its
+   * parent's exact Memory. Borrowed ownership is valid only for vfork.
+   */
+  forkMemoryOwnership?: ForkMemoryOwnership;
   /** Address of the fork save-buffer in memory (used for fork child rewind) */
   forkBufAddr?: number;
+  /** Parent process-wide archive/control anchor used read-only by a borrower. */
+  forkOwnerControlAddr?: number;
+  /** First byte of the child-private activation-prefix region. */
+  forkPrivatePrefixAddr?: number;
+  /** Exact admitted activation-prefix bytes. */
+  forkPrivatePrefixBytes?: number;
+  /** First byte of child-private reference/exception codec scratch. */
+  forkScratchAddr?: number;
+  /** Exact admitted scratch capacity. */
+  forkScratchBytes?: number;
   /**
    * Two-phase launch gate for a fork child. The child announces that all
    * reconstruction and activation frames reached the inherited fork import,

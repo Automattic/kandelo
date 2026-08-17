@@ -189,4 +189,41 @@ describe("process table replication publication", () => {
     child.reconcileNow();
     expect(applied).toEqual([3]);
   });
+
+  it("observes a borrowed immutable generation without acquiring its writer", () => {
+    const { archive } = archiveFixture();
+    archive.publishTablePatch(patch());
+    const dlopen = dlopenFixture(archive);
+    let writerAcquisitions = 0;
+    dlopen.withArchiveWriter = <T>(_operation: () => T): T => {
+      writerAcquisitions++;
+      throw new Error("borrowed snapshot attempted archive mutation");
+    };
+    dlopen.acquireArchiveWriter = () => {
+      writerAcquisitions++;
+      throw new Error("borrowed snapshot attempted archive mutation");
+    };
+    const child = __testCreateProcessTableReplicationOwner({
+      generationAddress: 64,
+      registry: {
+        restoreTableState: () => {},
+        applyFuncrefTablePatch: () => {},
+      } as unknown as ForkActivationRegistry,
+      dlopen,
+      newArena: () => arenaFixture(512),
+      materializeModules: () => {
+        throw new Error("borrowed snapshot was already materialized");
+      },
+      restoreSnapshots: false,
+      borrowedImmutableSnapshot: true,
+      label: "borrowed vfork child",
+    }) as TestTableReplicationOwner;
+
+    expect(child.reconcileNow()).toBe(archive.generation());
+    expect(writerAcquisitions).toBe(0);
+    expect(() => child.beginMutation()).toThrow(
+      "borrowed snapshot attempted archive mutation",
+    );
+    expect(writerAcquisitions).toBe(1);
+  });
 });

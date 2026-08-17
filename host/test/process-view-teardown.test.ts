@@ -1,7 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { CentralizedKernelWorker } from "../src/kernel-worker";
+import {
+  CentralizedKernelWorker,
+  createCentralizedKernelWorkerTestDouble,
+} from "../src/kernel-worker";
 import { WasmPosixKernel } from "../src/kernel";
+
+type TestableCentralizedKernelWorker = CentralizedKernelWorker & {
+  releaseProcessViews(
+    pid: number,
+    expectedMemory: WebAssembly.Memory,
+  ): boolean;
+};
 
 describe("process-owned device view teardown", () => {
   it("drops every device alias that can retain an exiting process generation", () => {
@@ -37,24 +47,23 @@ describe("process-owned device view teardown", () => {
     const oldMemory = new WebAssembly.Memory({ initial: 1 });
     const newMemory = new WebAssembly.Memory({ initial: 1 });
     const releaseProcessViews = vi.fn();
-    const worker = Object.assign(
-      Object.create(CentralizedKernelWorker.prototype),
-      {
-        processes: new Map([
-          [41, { pid: 41, memory: newMemory, channels: [] }],
-        ]),
-        kernel: { releaseProcessViews },
-      },
-    ) as CentralizedKernelWorker;
+    const worker = createCentralizedKernelWorkerTestDouble();
+    Object.assign(worker, {
+      processes: new Map([
+        [41, { pid: 41, memory: newMemory, channels: [] }],
+      ]),
+    });
+    const kernel = new WasmPosixKernel({}, {});
+    vi.spyOn(kernel, "releaseProcessViews").mockImplementation(
+      releaseProcessViews,
+    );
+    worker.testAuthority.replaceKernelForScratchBoundaryTest(kernel);
+    const testable = worker as unknown as TestableCentralizedKernelWorker;
 
-    expect(
-      (worker as any).releaseProcessViews(41, oldMemory),
-    ).toBe(false);
+    expect(testable.releaseProcessViews(41, oldMemory)).toBe(false);
     expect(releaseProcessViews).not.toHaveBeenCalled();
 
-    expect(
-      (worker as any).releaseProcessViews(41, newMemory),
-    ).toBe(true);
+    expect(testable.releaseProcessViews(41, newMemory)).toBe(true);
     expect(releaseProcessViews).toHaveBeenCalledWith(41);
   });
 });
