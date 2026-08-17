@@ -159,7 +159,12 @@ jobs:
           [[ $(printf '%s\n' "${packages[@]}" | sort -u | wc -l) \
             -eq ${#packages[@]} ]]
 
-          fetch_args=(--fetch-only)
+          # WHY: the selected product roots are the authority here. Their
+          # published archives may be complete even when unrelated members of
+          # the legacy package dependency walk are absent from the temporary
+          # ABI release. Fetch without source fallback, tolerate those
+          # unselected misses, then require every selected root below.
+          fetch_args=(--fetch-only --allow-stale)
           for package in "${packages[@]}"; do
             [[ $package =~ ^[a-z0-9][a-z0-9+._-]*$ ]]
             if [ "$package" != homebrew-bootstrap ]; then

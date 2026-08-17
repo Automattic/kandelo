@@ -411,14 +411,15 @@ if grep -Fq 'prepare-homebrew-browser-bootstrap.sh' <<<"$inputs_block" ||
    grep -Fq -- '--require-sealed-homebrew-selection' <<<"$inputs_block"; then
   fail "canary must not depend on the retired sealed shell selection"
 fi
-if grep -Fq -- '--allow-stale' <<<"$inputs_block" ||
-   grep -Fq -- '--force-source-build' <<<"$inputs_block" ||
+if grep -Fq -- '--force-source-build' <<<"$inputs_block" ||
    grep -Fq -- '--source-rootfs-shell' <<<"$inputs_block"; then
   fail "canary input materialization may source-build only homebrew-bootstrap"
 fi
 
-grep -Fq 'fetch_args=(--fetch-only)' <<<"$inputs_block" &&
-  grep -Fq 'fetch_args+=(--package "$package")' <<<"$inputs_block" &&
+grep -Fq 'fetch_args=(--fetch-only --allow-stale)' <<<"$inputs_block" &&
+  [ "$(grep -Foc -- '--allow-stale' <<<"$inputs_block")" -eq 1 ] ||
+  fail "canary must tolerate missing unselected package closure entries"
+grep -Fq 'fetch_args+=(--package "$package")' <<<"$inputs_block" &&
   grep -Fq 'bash scripts/fetch-binaries.sh "${fetch_args[@]}"' \
     <<<"$inputs_block" &&
   grep -Fq 'if [ "$package" != homebrew-bootstrap ]; then' \

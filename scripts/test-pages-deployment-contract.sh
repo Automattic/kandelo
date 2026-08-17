@@ -323,6 +323,15 @@ expect_current_bootstrap_input_required() {
     's#\./run\.sh --fetch-only prepare-browser#./run.sh --fetch-only --require-sealed-homebrew-selection prepare-browser#'
 }
 
+expect_direct_package_fetch_tolerance_required() {
+  grep -Fq 'fetch_args=(--fetch-only --allow-stale)' "$CANARY_WORKFLOW" ||
+    fail "canary must tolerate missing unselected package closure entries"
+  expect_canary_mutation_rejected \
+    "strict whole-registry package fetch" \
+    "canary must tolerate missing unselected package closure entries" \
+    's/fetch_args=\(--fetch-only --allow-stale\)/fetch_args=(--fetch-only)/'
+}
+
 case "${PAGES_CONTRACT_FOCUS:-all}" in
   atomic-chromium)
     expect_atomic_chromium_gate_required
@@ -353,6 +362,10 @@ case "${PAGES_CONTRACT_FOCUS:-all}" in
     ;;
   bootstrap-input)
     expect_current_bootstrap_input_required
+    exit 0
+    ;;
+  direct-package-inputs)
+    expect_direct_package_fetch_tolerance_required
     exit 0
     ;;
   all)
@@ -883,10 +896,11 @@ expect_canary_mutation_rejected \
 
 expect_canary_mutation_rejected \
   "source-build fallback" \
-  "canary input materialization may source-build only homebrew-bootstrap" \
+  "canary must tolerate missing unselected package closure entries" \
   's/--fetch-only/--allow-stale/'
 
 expect_current_bootstrap_input_required
+expect_direct_package_fetch_tolerance_required
 
 expect_canary_mutation_rejected \
   "implicit Playwright install root" \
