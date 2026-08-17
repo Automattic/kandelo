@@ -227,8 +227,10 @@
 #define BTN_A               0x130
 #define BTN_TOOL_PEN        0x140
 #define BTN_TOOL_FINGER     0x145
+#define BTN_STYLUS3         0x149
 #define BTN_TOUCH           0x14a
 #define BTN_STYLUS          0x14b
+#define BTN_STYLUS2         0x14c
 #define BTN_DPAD_UP         0x220
 #define BTN_TRIGGER_HAPPY   0x2c0
 

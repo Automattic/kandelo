@@ -1,0 +1,27 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+# JsonCpp (libjsoncpp.a). C++ base dep for the Waybar port (its
+# config parser).
+name = "jsoncpp"
+version = "1.9.6"
+kernel_abi = 17
+depends_on = ["libcxx@21"]
+
+[source]
+url = "https://github.com/open-source-parsers/jsoncpp/archive/refs/tags/1.9.6.tar.gz"
+sha256 = "f93b6dd7ce796b13d02c108bc9f79812245a82e577581c4c9aabe57075c90ea2"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/open-source-parsers/jsoncpp/blob/1.9.6/LICENSE"
+
+[build]
+script_path = "packages/registry/jsoncpp/build-jsoncpp.sh"
+
+[outputs]
+libs = ["lib/libjsoncpp.a"]
+headers = ["include/json"]
+pkgconfig = ["lib/pkgconfig/jsoncpp.pc"]
