@@ -396,6 +396,30 @@ grep -Fq -- '--canonical-source-sha "$CANONICAL_SOURCE_SHA"' \
   fail "canonical release creation does not pass exact-main authority"
 grep -Fq 'require_write_authority' "$RELEASE_LIFECYCLE" ||
   fail "draft creation and publication do not recheck exact-main authority"
+
+finalizer_block="$(
+  awk '
+    /^  finalize-canonical-release:/ { inside = 1 }
+    inside && /^  [a-zA-Z0-9_-]+:/ && !/^  finalize-canonical-release:/ { exit }
+    inside { print }
+  ' "$FORCE_REBUILD"
+)"
+[ -n "$finalizer_block" ] ||
+  fail "force-rebuild has no exact-main canonical release finalizer"
+for level in $(seq 0 7); do
+  grep -Fq "matrix-build-level-$level" <<<"$finalizer_block" ||
+    fail "canonical finalizer does not wait for matrix level $level"
+done
+for finalizer_contract in \
+  "needs.preflight.outputs.package_matrix != '[]'" \
+  "inputs.skip_tests == true || needs.test-gate.result == 'success'" \
+  'bash .github/scripts/state-lock.sh acquire "$PACKAGE_TARGET_TAG"' \
+  'bash .github/scripts/package-release-lifecycle.sh seal-publish' \
+  '--canonical-source-sha "${{ needs.gate.outputs.source_sha }}"'
+do
+  grep -Fq -- "$finalizer_contract" <<<"$finalizer_block" ||
+    fail "canonical finalizer lacks contract: $finalizer_contract"
+done
 retry_guard_line="$(
   grep -n '! require_canonical_source_authority' "$INDEX_UPDATE" |
     head -1 | cut -d: -f1

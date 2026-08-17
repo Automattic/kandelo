@@ -681,6 +681,7 @@ grep -Fq 'actual_sha256' "$ARCHIVE_DOWNLOAD_SCRIPT" || \
 # permissions contract.
 expected_lock_callers=$(cat <<'EOF'
 activate-merge-candidate.yml:activate
+force-rebuild.yml:finalize-canonical-release
 force-rebuild.yml:matrix-build-level-0
 force-rebuild.yml:matrix-build-level-1
 force-rebuild.yml:matrix-build-level-2
