@@ -160,11 +160,10 @@ jobs:
             -eq ${#packages[@]} ]]
 
           # WHY: the selected product roots are the authority here. Their
-          # published archives may be complete even when unrelated members of
-          # the legacy package dependency walk are absent from the temporary
-          # ABI release. Fetch without source fallback, tolerate those
-          # unselected misses, then require every selected root below.
-          fetch_args=(--fetch-only --allow-stale)
+          # published archives are complete independently of unrelated
+          # registry packages. Fetch only these roots without source fallback;
+          # a missing selected root is a real production-input failure.
+          fetch_args=(--fetch-only)
           for package in "${packages[@]}"; do
             [[ $package =~ ^[a-z0-9][a-z0-9+._-]*$ ]]
             if [ "$package" != homebrew-bootstrap ]; then
@@ -178,7 +177,7 @@ jobs:
           # only this one reviewed package from the protected current source.
           bash scripts/fetch-binaries.sh --package homebrew-bootstrap
 
-          ./run.sh --fetch-only prepare-browser
+          ./run.sh --already-materialized prepare-browser
 
           host_target=$(rustc -vV | awk '/^host/ {print $2}')
           cargo build --release -p xtask --target "$host_target"

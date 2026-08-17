@@ -416,9 +416,9 @@ if grep -Fq -- '--force-source-build' <<<"$inputs_block" ||
   fail "canary input materialization may source-build only homebrew-bootstrap"
 fi
 
-grep -Fq 'fetch_args=(--fetch-only --allow-stale)' <<<"$inputs_block" &&
-  [ "$(grep -Foc -- '--allow-stale' <<<"$inputs_block")" -eq 1 ] ||
-  fail "canary must tolerate missing unselected package closure entries"
+grep -Fq 'fetch_args=(--fetch-only)' <<<"$inputs_block" &&
+  ! grep -Fq -- '--allow-stale' <<<"$inputs_block" ||
+  fail "canary must fail immediately when a selected package root is missing"
 grep -Fq 'fetch_args+=(--package "$package")' <<<"$inputs_block" &&
   grep -Fq 'bash scripts/fetch-binaries.sh "${fetch_args[@]}"' \
     <<<"$inputs_block" &&
@@ -427,12 +427,14 @@ grep -Fq 'fetch_args+=(--package "$package")' <<<"$inputs_block" &&
   grep -Fq 'bash scripts/fetch-binaries.sh --package homebrew-bootstrap' \
     <<<"$inputs_block" &&
   [ "$(grep -Fc 'bash scripts/fetch-binaries.sh' <<<"$inputs_block")" -eq 2 ] &&
-  grep -Fq './run.sh --fetch-only prepare-browser' <<<"$inputs_block" &&
   grep -Fq '"$xtask" build-deps --arch wasm32 path "$package"' \
     <<<"$inputs_block" &&
   grep -Fq '[ -d "$package_root" ] && [ ! -L "$package_root" ]' \
     <<<"$inputs_block" ||
   fail "canary must materialize homebrew-bootstrap from current protected source"
+grep -Fq './run.sh --already-materialized prepare-browser' \
+  <<<"$inputs_block" ||
+  fail "canary must prepare the browser from only the already-materialized roots"
 grep -Fq 'bash scripts/dev-shell.sh env \' <<<"$inputs_block" &&
   grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
     <<<"$inputs_block" ||
