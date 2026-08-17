@@ -685,6 +685,21 @@ for src in "$REPO_ROOT/programs/"*.c; do
                 "$SYSROOT/lib/libgobject-2.0.a" \
                 "$SYSROOT/lib/libgmodule-2.0.a" \
                 "$SYSROOT/lib/libglib-2.0.a" \
+                "$SYSROOT/lib/libpcre2-8.a" \
+                "$SYSROOT/lib/libffi.a" \
+                "$SYSROOT/lib/libz.a"
+            ;;
+        notify-send.c)
+            # The omarchy demo's notification sender: one Notify over the
+            # session bus to the daemon owning org.freedesktop.Notifications
+            # (mako). Same glib stack as the gdbus smoke.
+            build_program "$src" "$OUT_DIR_32" \
+                "-I$SYSROOT/include/glib-2.0" \
+                "$SYSROOT/lib/libgio-2.0.a" \
+                "$SYSROOT/lib/libgobject-2.0.a" \
+                "$SYSROOT/lib/libgmodule-2.0.a" \
+                "$SYSROOT/lib/libglib-2.0.a" \
+                "$SYSROOT/lib/libpcre2-8.a" \
                 "$SYSROOT/lib/libffi.a" \
                 "$SYSROOT/lib/libz.a"
             ;;

@@ -11,6 +11,9 @@
  *   --client   call Ping("marco") expecting "polo" (prints PING_OK),
  *              then Notify(...) expecting a notification id
  *              (prints NOTIFY_OK).
+ *   --notify   notify-send analog for the PR24 mako gate: send one
+ *              Notify to whoever owns org.freedesktop.Notifications
+ *              (mako) and print the assigned id (NOTIFY_ID id=N).
  *
  * The session bus address comes from DBUS_SESSION_BUS_ADDRESS.
  */
@@ -225,12 +228,49 @@ static int run_client(void)
     return 0;
 }
 
+static int run_notify(void)
+{
+    GError *error = NULL;
+    GDBusConnection *bus = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, &error);
+    GVariant *reply;
+    guint32 id = 0;
+
+    if (bus == NULL) {
+        fprintf(stderr, "notify: bus connection failed: %s\n", error->message);
+        return 1;
+    }
+
+    reply = g_dbus_connection_call_sync(bus, "org.freedesktop.Notifications",
+                                        "/org/freedesktop/Notifications",
+                                        "org.freedesktop.Notifications",
+                                        "Notify",
+                                        g_variant_new("(susssasa{sv}i)",
+                                                      "glib_gdbus_smoke", 0u,
+                                                      "", "quux summary",
+                                                      "corge body", NULL, NULL,
+                                                      -1),
+                                        G_VARIANT_TYPE("(u)"),
+                                        G_DBUS_CALL_FLAGS_NONE, 10000, NULL,
+                                        &error);
+    if (reply == NULL) {
+        fprintf(stderr, "notify: Notify failed: %s\n", error->message);
+        return 1;
+    }
+    g_variant_get(reply, "(u)", &id);
+    printf("NOTIFY_ID id=%u\n", id);
+    g_variant_unref(reply);
+
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && strcmp(argv[1], "--server") == 0)
         return run_server();
     if (argc > 1 && strcmp(argv[1], "--client") == 0)
         return run_client();
-    fprintf(stderr, "usage: %s --server | --client\n", argv[0]);
+    if (argc > 1 && strcmp(argv[1], "--notify") == 0)
+        return run_notify();
+    fprintf(stderr, "usage: %s --server | --client | --notify\n", argv[0]);
     return 2;
 }
