@@ -431,7 +431,7 @@ export function parseHomebrewOriginalBottleTreeDescriptor(
     [root.tree],
     "",
     [],
-    5,
+    6,
     HOMEBREW_PREFIX,
     "external-only",
   );

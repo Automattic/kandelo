@@ -727,7 +727,7 @@ export async function installBoundHomebrewOriginalBottleTrees(
   const registered = registerHomebrewDeferredTreeCollection({
     fs: options.fs,
     id: options.id,
-    schema: 5,
+    schema: 6,
     trees,
     ...(options.atomicActivationGroup === undefined
       ? {}
