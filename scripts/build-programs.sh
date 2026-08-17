@@ -23,7 +23,7 @@ source "$REPO_ROOT/scripts/browser-memory64-example-fixtures.sh"
 OUT_DIR_32="$REPO_ROOT/local-binaries/programs/wasm32"
 OUT_DIR_64="$REPO_ROOT/local-binaries/programs/wasm64"
 TEST_FIXTURE_DIR="$REPO_ROOT/local-binaries/test-fixtures"
-mkdir -p "$OUT_DIR_32" "$OUT_DIR_64" "$TEST_FIXTURE_DIR"
+mkdir -p "$OUT_DIR_32" "$OUT_DIR_64" "$TEST_FIXTURE_DIR/wasm32"
 
 # Package-owned resolver paths must never be populated by this developer/test
 # compiler. A regular file at one of those paths has no immutable package
@@ -327,6 +327,12 @@ for src in "$REPO_ROOT/programs/"*.c; do
     # (sysroot/lib/libdrm.a, libgbm.a). EGL/GLES2 stubs are picked up
     # by build_program's header-based auto-detection.
     case "$(basename "$src")" in
+        login.c|sudo-lite.c)
+            # WHY: Task 18's reviewed Homebrew bottles own the product paths.
+            # These local builds exist only so runtime tests can exercise the
+            # guest sources before those immutable products are available.
+            build_program "$src" "$TEST_FIXTURE_DIR/wasm32"
+            ;;
         modeset.c|dri-modeset.c|dumb_roundtrip.c)
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"

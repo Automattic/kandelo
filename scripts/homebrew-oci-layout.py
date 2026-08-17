@@ -389,7 +389,7 @@ def canonical_bottle(args: argparse.Namespace) -> dict[str, Any]:
     if not isinstance(document, dict) or len(document) != 1:
         fail("canonical bottle JSON must contain exactly one Formula")
     key, record = next(iter(document.items()))
-    if key != args.formula:
+    if key != f"{selected_tap_name(args)}/{args.formula}":
         fail("canonical bottle JSON Formula key does not match")
     record = exact_keys(record, {"formula", "bottle"}, "canonical bottle record")
     formula = exact_keys(

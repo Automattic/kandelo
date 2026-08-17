@@ -3,6 +3,11 @@ import process from "node:process";
 
 import { resolveBinary } from "../../src/binary-resolver";
 import { NodeKernelHost } from "../../src/node-kernel-host";
+import { MemoryFileSystem } from "../../src/vfs/memory-fs";
+import {
+  ensureDirRecursive,
+  writeVfsBinary,
+} from "../../src/vfs/image-helpers";
 
 const MIB = 1024 * 1024;
 const childPath = "/bin/process-memory-reclamation-churn";
@@ -33,6 +38,17 @@ function readArrayBuffer(path: string | URL): ArrayBuffer {
     bytes.byteOffset,
     bytes.byteOffset + bytes.byteLength,
   ) as ArrayBuffer;
+}
+
+async function rootfsWithChurnProgram(
+  program: ArrayBuffer,
+): Promise<Uint8Array> {
+  const bytes = new Uint8Array(program);
+  const capacity = Math.max(4 * MIB, bytes.byteLength + MIB);
+  const rootfs = MemoryFileSystem.create(new SharedArrayBuffer(capacity));
+  ensureDirRecursive(rootfs, "/bin");
+  writeVfsBinary(rootfs, childPath, bytes, 0o755);
+  return await rootfs.saveImage();
 }
 
 function delay(ms: number): Promise<void> {
@@ -95,7 +111,10 @@ async function main(): Promise<void> {
   let currentPids = new Set<number>();
   const host = new NodeKernelHost({
     execPrograms: { [childPath]: programPath.pathname },
-    rootfsImage: undefined,
+    // `execPrograms` identifies the prepared host target, while the kernel
+    // executes the exact guest VFS path. Keep both authorities aligned so the
+    // churn child exercises normal posix_spawn rather than a host-only map.
+    rootfsImage: await rootfsWithChurnProgram(program),
     onStderr: (_pid, bytes) => {
       stderr.push(new TextDecoder().decode(bytes));
     },

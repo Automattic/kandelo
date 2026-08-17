@@ -1,7 +1,7 @@
 use wasm_posix_shared::{Errno, signal::NSIG};
 extern crate alloc;
 
-use alloc::collections::VecDeque;
+use alloc::{collections::VecDeque, vec::Vec};
 
 use crate::process::{HostIO, Process, ProcessState};
 
@@ -101,9 +101,13 @@ fn terminate_process_by_signal_impl(
     host: &mut dyn HostIO,
     signum: u32,
 ) {
-    proc.sigsuspend_saved_mask = None;
+    proc.mask_waits.clear();
+    proc.caught_handler_depth = 0;
+    proc.returned_handler_depths.clear();
     for thread in proc.thread_states_mut() {
-        thread.signals.sigsuspend_saved_mask = None;
+        thread.signals.mask_waits.clear();
+        thread.signals.caught_handler_depth = 0;
+        thread.signals.returned_handler_depths.clear();
     }
     match locks {
         Some(locks) => crate::syscalls::sys_exit_by_signal_with_locks(proc, locks, host, signum),
@@ -347,10 +351,35 @@ pub struct PerThreadSignalState {
     /// Queue of RT-signal and metadata-bearing standard-signal entries
     /// directed at this thread. Parallel bookkeeping to [`SignalState::rt_queue`].
     pub rt_queue: VecDeque<RtSigEntry>,
-    /// Saved blocked mask during sigsuspend / ppoll / pselect (per-thread).
-    /// Set on first entry into a blocking signal syscall that temporarily swaps
-    /// the mask, restored once a signal is dequeued or the call completes.
-    pub sigsuspend_saved_mask: Option<u64>,
+    /// Nested signal-mask-swapping waits owned by this exact task.
+    pub mask_waits: Vec<SignalMaskWaitContext>,
+    /// Number of caught signal handlers whose control frames are active.
+    pub caught_handler_depth: u32,
+    /// Handler depths retired by rt_sigreturn but not yet classified as a
+    /// normal mask restore or a nonlocal unwind.
+    pub returned_handler_depths: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignalMaskWaitKind {
+    Ppoll,
+    Pselect,
+    Sigsuspend,
+    Pause,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignalMaskWaitState {
+    Active,
+    Interrupted { handler_depth: u32 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignalMaskWaitContext {
+    pub saved_mask: u64,
+    pub replacement_mask: u64,
+    pub kind: SignalMaskWaitKind,
+    pub state: SignalMaskWaitState,
 }
 
 impl PerThreadSignalState {
@@ -359,7 +388,9 @@ impl PerThreadSignalState {
             blocked: 0,
             pending: 0,
             rt_queue: VecDeque::new(),
-            sigsuspend_saved_mask: None,
+            mask_waits: Vec::new(),
+            caught_handler_depth: 0,
+            returned_handler_depths: Vec::new(),
         }
     }
 

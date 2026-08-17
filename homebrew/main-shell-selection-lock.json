@@ -3,7 +3,7 @@
   "inputs": {
     "brewfile": {
       "path": "homebrew/main-shell.Brewfile",
-      "sha256": "6f59fe83d93548bd2521a0fe9af1942ab321b2fb249939bf9e6a37f7de0f4722"
+      "sha256": "91ae5dd3e333cedfcd6e6f7d1f10525b1c40a9866c24f100e467657e740619f6"
     },
     "guest_layout": {
       "path": "homebrew/kandelo-guest-layout.json",
@@ -11,11 +11,11 @@
     },
     "migration_lock": {
       "path": "homebrew/main-shell-migration-lock.json",
-      "sha256": "92b6c3946e40e9384de0ed98c13b6f9ec595e487a5112cc8a450bc2ac3ea524e"
+      "sha256": "9f26ff968b019e22ecbfe2bae7f004017aee80e2a2cc56eec92243286875827b"
     },
     "runtime_support": {
       "path": "homebrew/main-shell-homebrew-runtime-support.json",
-      "sha256": "4ee373429d0f26e459cd9fe5ea16901d1769f9947f89cffeaee262b94e403616"
+      "sha256": "68b96c6f9ad520f86b827ba294b65fb72fda57c9f3edb6eeb7c5b01cf21ece56"
     }
   },
   "kind": "kandelo-homebrew-main-shell-closed-selection-lock",

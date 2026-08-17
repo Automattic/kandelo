@@ -126,6 +126,14 @@ test("loads every exact fixture byte and binds payloads to the mirror plan", asy
   assert.deepEqual(loaded.bootstrapArchiveBytes, fixture.archiveBytes);
   assert.deepEqual(loaded.bootstrapEnvironmentBytes, fixture.environmentBytes);
   assert.deepEqual(loaded.bottleMirrorPlanBytes, fixture.planBytes);
+  assert.deepEqual(
+    loaded.compositionReportBytes,
+    fixture.compositionReportBytes,
+  );
+  assert.deepEqual(
+    loaded.privilegedProductBytes,
+    fixture.privilegedProductBytes,
+  );
   assert.deepEqual(loaded.closedBottleAssets, [{
     url: fixture.plan.assets[0]!.url,
     sha256: fixture.plan.assets[0]!.sha256,
@@ -204,6 +212,20 @@ test("rejects changed bytes and fixture identities that differ from the plan", a
         fetchImpl: createFixtureFetch(inconsistentBytesByUrl),
       }),
     /inconsistent derived identity/,
+  );
+});
+
+test("requires the exact composition-report and serialized-product pair", () => {
+  const fixture = createFixture();
+  assert.throws(
+    () =>
+      projectHomebrewGuestLifecycleBrowserFixture({
+        ...fixture.value,
+        loginProduct: {
+          compositionReport: fixture.value.loginProduct.compositionReport,
+        },
+      }),
+    /login product has unknown or missing fields/,
   );
 });
 
@@ -465,6 +487,8 @@ function createFixture() {
   const archiveBytes = new Uint8Array([4]);
   const environmentBytes = new Uint8Array([5]);
   const payloadBytes = new Uint8Array([6, 7, 8]);
+  const compositionReportBytes = new Uint8Array([9, 10]);
+  const privilegedProductBytes = new Uint8Array([11, 12, 13]);
   const repository = "example/project";
   const identity = {
     id: "bottle-test",
@@ -499,6 +523,8 @@ function createFixture() {
     archive: "https://example.test/homebrew-bootstrap.zip",
     environment: "https://example.test/homebrew-brew.env",
     plan: `${releaseRoot}/${HOMEBREW_BOTTLE_MIRROR_PLAN_ASSET}`,
+    compositionReport: "https://example.test/composition-report.json",
+    privilegedProduct: "https://example.test/main-shell.vfs.privileged.vfs",
   };
   const value = {
     schema: 1,
@@ -517,6 +543,10 @@ function createFixture() {
         ...exact(plan.assets[0]!.url, payloadBytes),
       }],
     },
+    loginProduct: {
+      compositionReport: exact(urls.compositionReport, compositionReportBytes),
+      privilegedProduct: exact(urls.privilegedProduct, privilegedProductBytes),
+    },
     revisions: {
       coreRevision: "1".repeat(40),
       canaryRevision: "2".repeat(40),
@@ -529,6 +559,8 @@ function createFixture() {
     [urls.archive, archiveBytes],
     [urls.environment, environmentBytes],
     [urls.plan, planBytes],
+    [urls.compositionReport, compositionReportBytes],
+    [urls.privilegedProduct, privilegedProductBytes],
     [plan.assets[0]!.url, payloadBytes],
   ]);
   return {
@@ -539,6 +571,8 @@ function createFixture() {
     archiveBytes,
     environmentBytes,
     payloadBytes,
+    compositionReportBytes,
+    privilegedProductBytes,
     plan,
     planBytes,
   };

@@ -15763,6 +15763,11 @@ export class CentralizedKernelWorker {
    *   - otherwise (not blocked, or already completed): no-op. The target
    *     will observe self->cancel on its next cancel-point entry.
    *
+   * The self-target form is also libc's exact post-handler cleanup for a
+   * non-restarted ppoll/pselect and for sigsuspend/pause. It retires only the
+   * caller's Rust-owned wait state, then checks signals made deliverable by
+   * final mask restoration.
+   *
    * The caller's own syscall always succeeds with 0.
    */
   private handleThreadCancel(
@@ -15771,7 +15776,27 @@ export class CentralizedKernelWorker {
     entry: KernelWorkerEntryContext,
   ): void {
     const targetTid = origArgs[0];
+    const callerTid = this.guestTidForChannel(channel);
     const registration = this.processes.get(channel.pid);
+
+    // pthread_cancel(self) is resolved entirely in libc and never emits this
+    // syscall. Reserve the self-target form for libc's post-handler decision:
+    // a non-restarted ppoll/pselect or a completed sigsuspend/pause uses it to
+    // consume the exact Rust-owned saved mask only after preserving the
+    // replacement mask through handler return. This is an ordinary existing
+    // cleanup operation, not a second signal-mask owner or a new channel
+    // protocol field.
+    if (targetTid === callerTid) {
+      if (!this.#cancelLiveTaskKernelWait(channel, entry)) {
+        this.#failBlockingRetryProtocol(
+          "self wait cancellation could not restore exact task state",
+        );
+      }
+      this.#dequeueSignalForDelivery(channel, entry);
+      if (this.#finishSignalTermination(channel, entry)) return;
+      this.completeChannelRawAndRelisten(channel, 0, 0, entry);
+      return;
+    }
 
     // Always complete the caller's syscall first so pthread_cancel returns.
     this.completeChannelRawAndRelisten(channel, 0, 0, entry);
@@ -17063,14 +17088,12 @@ export class CentralizedKernelWorker {
         return;
       }
       if (deliveredSignal > 0) {
-        if (
-          syscallNr === SYS_PPOLL
-          && !this.#cancelHostOwnedKernelWait(channel, syscallNr, entry)
-        ) {
-          this.#failBlockingRetryProtocol(
-            "ppoll could not restore its temporary mask for EINTR",
-          );
-        }
+        // Keep ppoll's saved pre-wait mask Rust-owned while libc runs the
+        // caught handler and decides whether SA_RESTART resubmits this logical
+        // wait. A final EINTR uses the exact self-target wait cancellation only
+        // after that decision, restoring the original mask exactly once.
+        // Cancelling here would expose the pre-wait mask to the handler and to
+        // a concurrently arriving signal.
         this.completeChannel(
           channel,
           syscallNr,

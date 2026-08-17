@@ -4310,13 +4310,13 @@ def check_publisher(workflow)
   )
   [
     'keys == ["build", "build_and_test", "formula", "full_name", "native_requirements", "runtime_and_test", "schema", "tap", "target_taps"]',
-    '.schema == 4',
+    '.schema == 5',
     '(.build | type == "array" and length <= 128)',
     '(.build_and_test | type == "array" and length <= 128)',
     '(.runtime_and_test | type == "array" and length <= 128)',
     'keys == ["class", "formula", "sentinel", "tags"]',
     '--slurpfile resolved "$RESOLVED_TAPS"',
-    'map({tap_name, tap_repository, tap_commit}) | sort_by(.tap_name)',
+    'checkout_commit: (.checkout_commit // .tap_commit)',
     '(.native_requirements == (.native_requirements | sort_by(.class)))',
     '((.native_requirements | map(.class)) == (.native_requirements | map(.class) | unique))',
     '(.tags == ["build"] or .tags == ["build", "test"])',
@@ -4423,9 +4423,9 @@ def check_publisher(workflow)
           "tap-recipe preflight trust boundary lacks #{fragment}")
   end
   host_dependency_plan_output = formula_closure[/elsif host_dependencies_only(.*?)elsif direct_only/m, 1]
-  check(host_dependency_plan_output&.include?('"schema" => 4') &&
+  check(host_dependency_plan_output&.include?('"schema" => 5') &&
         host_dependency_plan_output&.include?('"native_requirements" => native_requirements'),
-        "static Formula closure does not emit the sealed schema-4 native Requirement plan")
+        "static Formula closure does not emit the sealed schema-5 native Requirement plan")
   check(!formula_closure.include?("legacy_requires") &&
         formula_closure.include?(
           "if runtime_initializer_index.nil? || runtime_assignment_index != runtime_initializer_index + 1"
@@ -5504,9 +5504,11 @@ def check_publisher(workflow)
     "FileUtils.touch(bottle_path, mtime: tab_source_modified_time)",
     "def self.dependency_plan(formula = nil, require_match: true)",
     "def self.selected_tap_formula?(formula)",
-    'tap.keys.sort == %w[tap_commit tap_name tap_repository]',
+    'tap.keys.sort == %w[checkout_commit tap_commit tap_name tap_repository]',
     'tap_repository == "#{owner}/homebrew-#{short_name}"',
     'TAP_GIT_HEAD.match?(tap["tap_commit"])',
+    'TAP_GIT_HEAD.match?(tap["checkout_commit"])',
+    'target_tap&.fetch("checkout_commit")',
     'target_names == target_names.sort.uniq',
     'tap.fetch("tap_name")',
     'PLAN_FILENAME = ".kandelo-publisher-build-dependencies.json"',
@@ -5519,7 +5521,7 @@ def check_publisher(workflow)
     'NATIVE_SENTINEL_CONSTANT = :KANDELO_NATIVE_SENTINEL',
     'Dependency.new(requirement.fetch("formula"), [:build])',
     'actual == expected',
-    'plan["schema"] == 4',
+    'plan["schema"] == 5',
     "MAX_DEPENDENCIES = 128",
     "value.length <= MAX_DEPENDENCIES",
     "direct_native_build_dependencies.sort_by(&:name)",

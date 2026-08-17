@@ -2481,16 +2481,28 @@ fn hash_global_package_build_input(
     hash_build_input(path)
 }
 
-fn hash_gitlink_input(root: &Path, input: &str) -> Result<Option<[u8; 32]>, String> {
-    let output = match Command::new("git")
+fn gitlink_ls_tree_command(root: &Path, input: &str) -> Command {
+    let mut safe_directory = std::ffi::OsString::from("safe.directory=");
+    safe_directory.push(root.as_os_str());
+
+    let mut command = Command::new("git");
+    command
+        .arg("-c")
+        .arg(safe_directory)
         .arg("-C")
         .arg(root)
         .arg("ls-tree")
         .arg("HEAD")
         .arg("--")
-        .arg(input)
-        .output()
-    {
+        .arg(input);
+    command
+}
+
+fn hash_gitlink_input(root: &Path, input: &str) -> Result<Option<[u8; 32]>, String> {
+    // Package identity follows the exact source checkout's committed gitlink,
+    // even when a protected build user reads a checkout owned by the workflow
+    // user. Keep the trust exception scoped to this one command and directory.
+    let output = match gitlink_ls_tree_command(root, input).output() {
         Ok(output) => output,
         Err(_) => return Ok(None),
     };
@@ -12505,6 +12517,31 @@ index_url = "https://example.test/releases/binaries-abi-v{abi}/index.toml"
         assert_ne!(
             before[0].digest, after[0].digest,
             "global build input content changes must change its digest"
+        );
+    }
+
+    #[test]
+    fn gitlink_identity_admits_the_exact_source_checkout_across_build_users() {
+        let root = Path::new("/tmp/kandelo source");
+        let command = gitlink_ls_tree_command(root, "libc/musl");
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            args,
+            vec![
+                "-c",
+                "safe.directory=/tmp/kandelo source",
+                "-C",
+                "/tmp/kandelo source",
+                "ls-tree",
+                "HEAD",
+                "--",
+                "libc/musl",
+            ],
+            "the protected checker must admit only its exact read-only source alias instead of falling back to mutable submodule contents",
         );
     }
 

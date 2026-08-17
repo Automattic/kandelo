@@ -840,6 +840,40 @@ wasm_imports_side_module_fork() {
     grep -a -q 'fork' "$path" 2>/dev/null
 }
 
+# Print the exact loader fields from the wasmparser-backed artifact identity.
+# Return 127 only when that decoder is unavailable. An installed decoder that
+# fails or emits a malformed record is authoritative failure: callers must not
+# reinterpret partial output from an older text decoder as a valid module.
+_wasm_structural_loader_identity() {
+    local path="${1:-}"
+    local identity identity_status=0
+    local -a fields
+
+    identity="$(wasm_artifact_identity "$path")" || identity_status=$?
+    [ "$identity_status" -eq 0 ] || return "$identity_status"
+    IFS=$'\t' read -r -a fields <<< "$identity"
+    [ "${#fields[@]}" -eq 12 ] || return 2
+    [[ "${fields[0]}" =~ ^[01]$ ]] &&
+        [[ "${fields[1]}" =~ ^[0-9]+$ ]] &&
+        [[ "${fields[2]}" =~ ^[0-9]+$ ]] &&
+        [[ "${fields[5]}" =~ ^[0-9]+$ ]] &&
+        [[ "${fields[6]}" =~ ^[0-9]+$ ]] &&
+        [[ "${fields[7]}" =~ ^[01]$ ]] &&
+        [[ "${fields[8]}" =~ ^[0-9]+$ ]] &&
+        [[ "${fields[9]}" =~ ^[01]$ ]] &&
+        [[ "${fields[10]}" =~ ^[0-9]+$ ]] &&
+        [[ "${fields[11]}" =~ ^[0-9]+$ ]] || return 2
+    case "${fields[3]}" in
+        present) [[ "${fields[4]}" =~ ^[0-9]+$ ]] || return 2 ;;
+        missing|invalid) [ "${fields[4]}" = - ] || return 2 ;;
+        *) return 2 ;;
+    esac
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "${fields[1]}" "${fields[2]}" "${fields[8]}" \
+        "${fields[9]}" "${fields[10]}" "${fields[11]}"
+}
+
 # Print `executable` or `side-module` for a structurally decoded Wasm module.
 # A valid Kandelo side module carries exactly one `dylink.0` custom section as
 # its first section, matching the runtime loader contract in host/src/dylink.ts.
@@ -849,6 +883,31 @@ wasm_imports_side_module_fork() {
 wasm_artifact_role() {
     local path="${1:-}"
     wasm_is_binary "$path" || return 2
+
+    local identity identity_status=0
+    local memory_count memory64_count dylink_count dylink_first
+    local env_memory_count unsupported_side_import_count extra
+    identity="$(_wasm_structural_loader_identity "$path")" || identity_status=$?
+    if [ "$identity_status" -eq 0 ]; then
+        IFS=$'\t' read -r memory_count memory64_count dylink_count dylink_first \
+            env_memory_count unsupported_side_import_count extra <<< "$identity"
+        [ -z "$extra" ] || return 2
+        if [ "$dylink_count" = 0 ] && [ "$dylink_first" = 0 ]; then
+            printf 'executable\n'
+            return 0
+        fi
+        if [ "$dylink_count" = 1 ] && [ "$dylink_first" = 1 ]; then
+            printf 'side-module\n'
+            return 0
+        fi
+        return 3
+    elif [ "$identity_status" -ne 127 ]; then
+        return "$identity_status"
+    fi
+
+    # Source-only callers may run before the Rust decoder is installed. Keep
+    # the WABT path only for that explicit unavailable status; its entire
+    # command must succeed before any parsed stdout is trusted.
     command -v wasm-objdump >/dev/null 2>&1 || return 2
 
     _wasm_stream_awk '
@@ -881,6 +940,29 @@ wasm_artifact_role() {
 wasm_validate_side_module_imports() {
     local path="${1:-}"
     wasm_is_binary "$path" || return 2
+
+    local identity identity_status=0
+    local memory_count memory64_count dylink_count dylink_first
+    local env_memory_count unsupported_side_import_count extra
+    identity="$(_wasm_structural_loader_identity "$path")" || identity_status=$?
+    if [ "$identity_status" -eq 0 ]; then
+        IFS=$'\t' read -r memory_count memory64_count dylink_count dylink_first \
+            env_memory_count unsupported_side_import_count extra <<< "$identity"
+        [ -z "$extra" ] || return 2
+        [ "$memory_count" = 1 ] &&
+            { [ "$memory64_count" = 0 ] || [ "$memory64_count" = 1 ]; } &&
+            [ "$env_memory_count" = 1 ] &&
+            [ "$unsupported_side_import_count" = 0 ] || return 3
+        if [ "$memory64_count" = 1 ]; then
+            printf 'wasm64\n'
+        else
+            printf 'wasm32\n'
+        fi
+        return 0
+    elif [ "$identity_status" -ne 127 ]; then
+        return "$identity_status"
+    fi
+
     command -v wasm-objdump >/dev/null 2>&1 || return 2
 
     _wasm_stream_awk '

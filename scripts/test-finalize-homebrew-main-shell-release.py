@@ -117,12 +117,17 @@ def assert_product_state(source: pathlib.Path, expected: str) -> None:
         )
 
 
-def copy_source(root: pathlib.Path) -> pathlib.Path:
+def copy_local_source(root: pathlib.Path) -> pathlib.Path:
     source = root / "source"
     for relative in COPIED:
         destination = source / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(REPO / relative, destination)
+    return source
+
+
+def copy_source(root: pathlib.Path) -> pathlib.Path:
+    source = copy_local_source(root)
     # WHY: this finalizer exercises the reviewed ABI-42 shell-delivery
     # contract, including its ABI-42 bottle cohort. An unrelated Kandelo ABI
     # bump must not silently turn those historical fixtures into an ABI-43
@@ -138,6 +143,131 @@ def copy_source(root: pathlib.Path) -> pathlib.Path:
     )
     assert replacements == 1
     abi_path.write_text(abi_source)
+
+    # Preserve the still-supported public ABI-42 fixture independently of the
+    # repository's current review-pending local ABI-43 product. This lets the
+    # same finalizer prove that public inputs retain their existing behavior
+    # while local-test provenance fails before any candidate tap read.
+    old_commit = "6ad0e3dbc60e5572c4288c86919238f71c1bc110"
+    migration_path = source / "homebrew/main-shell-migration-lock.json"
+    migration = json.loads(migration_path.read_text())
+    excluded_roots = {"login", "sudo-lite", "sudo", "ruby"}
+    excluded_closure = {
+        f"{TAP_NAME}/login",
+        f"{TAP_NAME}/sudo-lite",
+        f"{TAP_NAME}/sudo",
+        f"{TAP_NAME}/libyaml",
+        f"{TAP_NAME}/ruby",
+    }
+    migration["catalog"]["tap_commit"] = old_commit
+    migration["packages"] = [
+        entry
+        for entry in migration["packages"]
+        if entry["formula"]["name"] not in excluded_roots
+    ]
+    migration["formula_closure"] = [
+        identity
+        for identity in migration["formula_closure"]
+        if identity not in excluded_closure
+    ]
+    migration.pop("product", None)
+    write_json(migration_path, migration)
+
+    brewfile_path = source / "homebrew/main-shell.Brewfile"
+    brewfile_path.write_text(
+        "".join(
+            line
+            for line in brewfile_path.read_text().splitlines(keepends=True)
+            if not any(
+                line == f'brew "{TAP_NAME}/{name}"\n'
+                for name in excluded_roots
+            )
+        )
+    )
+
+    write_json(
+        source / "homebrew/main-shell-materialization-policy.json",
+        {
+            "schema": 1,
+            "kind": "kandelo-homebrew-vfs-materialization-policy",
+            "embedded_roots": [f"{TAP_NAME}/bash"],
+            "embedded_package_order": [
+                f"{TAP_NAME}/libcxx",
+                f"{TAP_NAME}/ncurses",
+                f"{TAP_NAME}/bash",
+            ],
+        },
+    )
+
+    support_path = source / "homebrew/main-shell-homebrew-runtime-support.json"
+    support = json.loads(support_path.read_text())
+    support["catalog"]["tap_commit"] = old_commit
+    support["base_formula_order"] = [
+        identity
+        for identity in support["base_formula_order"]
+        if identity not in excluded_closure
+    ]
+    support["activation"]["bootstrap_package"]["required_kernel_abi"] = 42
+    support["formula_order"] = [
+        identity
+        for identity in support["formula_order"]
+        if identity != f"{TAP_NAME}/libyaml"
+    ]
+    support["additional_formula_order"] = [f"{TAP_NAME}/ruby"]
+    support["availability"] = {
+        "audited_catalog": {
+            "checkout_commit": old_commit,
+            "metadata_sha256": "1" * 64,
+            "metadata_tap_commit": "2" * 40,
+            "kandelo_commit": "3" * 40,
+            "runtime_bottle_provenance_sha256": "4" * 64,
+            "kandelo_abi": 42,
+            "release_tag": "bottles-abi-v42",
+            "required_arch": "wasm32",
+        },
+        "reusable_public_abi42": [
+            f"{TAP_NAME}/{name}"
+            for name in [
+                "zlib", "ruby", "coreutils", "dash", "ed", "diffutils",
+                "grep", "libcxx", "ncurses", "less", "openssl", "libcurl",
+                "sed", "vim", "git", "curl", "bzip2", "xz", "findutils",
+                "gawk", "gzip", "tar", "posix-utils-lite", "libmagic",
+                "file-formula",
+            ]
+        ],
+        "requires_rebuild": [],
+        "missing_metadata": [],
+        "can_be_deferred": [],
+    }
+    write_json(support_path, support)
+
+    # Keep the copied pending locks internally bound to the transformed
+    # ABI-42 fixture. The finalizer deliberately verifies these digests before
+    # it accepts a closed selection, so carrying the repository's ABI-43
+    # input hashes here would test only stale-lock rejection.
+    selection_path = source / "homebrew/main-shell-selection-lock.json"
+    selection = json.loads(selection_path.read_text())
+    for bound_input in selection["inputs"].values():
+        bound_input["sha256"] = digest(source / bound_input["path"])
+    write_json(selection_path, selection)
+
+    artifact_path = source / "homebrew/main-shell-lazy-artifact-lock.json"
+    artifact = json.loads(artifact_path.read_text())
+    artifact_inputs = {
+        "bootstrap_tree_spec_sha256": "homebrew/main-shell-brew-package-tree.json",
+        "brewfile_sha256": "homebrew/main-shell.Brewfile",
+        "demo_config_sha256": "homebrew/main-shell-demo.json",
+        "materialization_policy_sha256":
+            "homebrew/main-shell-materialization-policy.json",
+        "migration_lock_sha256": "homebrew/main-shell-migration-lock.json",
+        "runtime_support_sha256":
+            "homebrew/main-shell-homebrew-runtime-support.json",
+        "selection_lock_sha256": "homebrew/main-shell-selection-lock.json",
+        "shell_config_sha256": "homebrew/main-shell-default.json",
+    }
+    for key, relative in artifact_inputs.items():
+        artifact["inputs"][key] = digest(source / relative)
+    write_json(artifact_path, artifact)
     return source
 
 
@@ -499,6 +629,30 @@ def misorder_embedded_formulae(policy: dict) -> None:
     policy["embedded_package_order"][0:2] = reversed(
         policy["embedded_package_order"][0:2]
     )
+
+
+with tempfile.TemporaryDirectory(
+    prefix="kandelo-shell-finalizer-local-rejection."
+) as temporary:
+    root = pathlib.Path(temporary)
+    source = copy_local_source(root)
+    tap = root / "must-not-read-or-create"
+    paths = [source / relative for relative in COPIED]
+    before = {path: digest(path) for path in paths}
+    rejected = run(
+        "--source-root",
+        str(source),
+        "--tap-root",
+        str(tap),
+        "--apply",
+        success=False,
+    )
+    assert_failure(
+        rejected,
+        "local-test provenance is not promotable or selectable",
+    )
+    assert before == {path: digest(path) for path in paths}
+    assert not tap.exists()
 
 
 with tempfile.TemporaryDirectory(prefix="kandelo-shell-finalizer-test.") as temporary:
