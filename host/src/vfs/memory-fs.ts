@@ -1,37 +1,12 @@
 import { decompress as zstdDecompress } from "fzstd";
-import type {
-  AppendOutcome,
-  HostFileOffset,
-  PathconfValue,
-  StatResult,
-  StatfsResult,
-} from "../types";
-import {
-  hostFileLimitForNumberBackend,
-  hostFileOffsetToSafeNumber,
-  hostFilePositionToSafeNumber,
-} from "../file-offset";
+import type { PathconfValue, StatResult, StatfsResult } from "../types";
 import { filesystemPathconf } from "../pathconf";
 import { SFFS_SUPER_MAGIC } from "../statfs";
+import type { FileSystemBackend, DirEntry } from "./types";
 import {
-  ACCESS_MODES,
-  DIRENT_TYPES,
-  FILE_MODES,
-  OPEN_FLAGS,
-} from "../generated/abi";
-import {
-  ST_NOSUID,
-  type FileSystemBackend,
-  type DirEntry,
-  type MountConfig,
-  type MountSetIdCapability,
-} from "./types";
-import {
-  EROFS,
   O_CREAT,
   O_EXCL,
   O_TRUNC,
-  SFSError,
   SharedFS,
   type ConditionalNamespaceIdentity,
   type NamespaceEntryIdentity,
@@ -47,67 +22,9 @@ import {
   type VfsDeferredTreeUsage,
 } from "./deferred-tree-limits";
 import {
-  applyLazyTreeByteTransformRecipe,
-  decodeMaterializationBytes,
-  validateLazyTreeMaterializationPlan,
-  type LazyTreeByteIdentity,
-  type LazyTreeMaterializationPlan,
-} from "./materialization-plan";
-import {
-  assertUnicodeScalarText,
-  compareUnicodeScalarText,
-} from "./canonical-text";
-
-const intrinsicApply = Reflect.apply;
-const intrinsicObjectCreate = Object.create;
-const intrinsicObjectDefineProperties = Object.defineProperties;
-const intrinsicObjectFreeze = Object.freeze;
-const intrinsicObjectGetOwnPropertyDescriptors =
-  Object.getOwnPropertyDescriptors;
-const intrinsicObjectSetPrototypeOf = Object.setPrototypeOf;
-const IntrinsicProxy = Proxy;
-const IntrinsicSharedArrayBuffer = SharedArrayBuffer;
-const IntrinsicUint8Array = Uint8Array;
-const intrinsicUint8ArraySet = Uint8Array.prototype.set;
-const intrinsicWeakSetAdd = WeakSet.prototype.add;
-const intrinsicWeakSetHas = WeakSet.prototype.has;
-const intrinsicWeakMapGet = WeakMap.prototype.get;
-const intrinsicWeakMapSet = WeakMap.prototype.set;
-const intrinsicSetHas = Set.prototype.has;
-const intrinsicMapGet = Map.prototype.get;
-const IntrinsicNumber = Number;
-const intrinsicNumberIsInteger = Number.isInteger;
-const IntrinsicTypeError = TypeError;
-const intrinsicSharedFsMount = SharedFS.mount;
-const intrinsicSharedFsMkfs = SharedFS.mkfs;
-const intrinsicSharedFsSnapshotState = SharedFS.prototype.snapshotState;
-const memoryFileSystemInstances = new WeakSet<object>();
-const memoryFileSystemDeviceIds = new WeakMap<object, number>();
-let nextMemoryFileSystemDeviceId = 1;
-const immutableProductBackends = new WeakSet<object>();
-
-function capturePrivatePrototype(prototype: object): object {
-  const captured = intrinsicObjectCreate(null) as object;
-  intrinsicObjectDefineProperties(
-    captured,
-    intrinsicObjectGetOwnPropertyDescriptors(prototype),
-  );
-  return intrinsicObjectFreeze(captured);
-}
-
-const immutableProductSharedFsPrototype = capturePrivatePrototype(
-  SharedFS.prototype,
-);
-
-const NOSUID_CAPABILITY: MountSetIdCapability = intrinsicObjectFreeze({
-  kind: "nosuid",
-});
-const TRUSTED_ROOT_PRODUCT_CAPABILITY: MountSetIdCapability =
-  intrinsicObjectFreeze({
-    kind: "trusted-root-product",
-    guestWritable: false,
-    stableExecutableIdentity: true,
-  });
+  parseHomebrewInstallReceiptRelocation,
+  relocateHomebrewBottleFile,
+} from "../homebrew-bottle-relocation";
 
 /** Serializable lazy file entry for transfer between instances. */
 export interface LazyFileEntry {
@@ -222,18 +139,6 @@ interface SealedLazyAtomicState {
   verified: boolean;
 }
 
-/** Caller-inaccessible authority for one ordinary pending generic tree. */
-interface LazyTreeDefinitionSnapshot {
-  content: LazyTreeContent;
-  inventory: LazyTreeRegistrationEntry[];
-  activation: LazyTreeActivation;
-  url: string;
-  mountPrefix: string;
-  integrity: LazyArchiveIntegrity;
-  entries: LazyAtomicSnapshotEntry[];
-  materialized: boolean;
-}
-
 /** Per-file metadata for a file inside a lazy archive. */
 export interface LazyArchiveFileEntry {
   ino: number;
@@ -261,7 +166,7 @@ export interface LazyArchiveIntegrity {
 }
 
 /** Closed decoder set for an immutable deferred filesystem tree. */
-export type LazyTreeDecoder = "zip-v1" | "tar-gzip-v1";
+export type LazyTreeDecoder = "zip-v1" | "homebrew-bottle-tar-gzip-v1";
 
 export interface LazyTreeContent {
   decoder: LazyTreeDecoder;
@@ -277,10 +182,8 @@ export interface LazyTreeContent {
   transports: string[];
   /** Closed install-mode normalization for portable package ZIP outputs. */
   modePolicy?: "portable-posix-v1";
-  /** Complete source-member truth for the authenticated archive. */
+  /** Complete source-member truth for a byte-identical original bottle. */
   source?: LazyTreeSourceInventory;
-  /** Optional authenticated source assertions and byte transformations. */
-  materialization?: LazyTreeMaterializationPlan;
 }
 
 export interface LazyTreeSourceEntry {
@@ -293,7 +196,7 @@ export interface LazyTreeSourceEntry {
 
 export interface LazyTreeSourceInventory {
   schema: 1;
-  kind: "archive-source-inventory-v1";
+  kind: "homebrew-bottle-tar-gzip-v1";
   entries: LazyTreeSourceEntry[];
 }
 
@@ -302,9 +205,10 @@ export interface LazyTreeRegistrationEntry {
   vfsPath: string;
   /** Canonical member path interpreted by the selected decoder. */
   sourcePath: string;
-  /** Explicit only when a complete source inventory permits projections. */
+  /** Explicit only for the original-bottle source-inventory contract. */
   materialization?:
     | "archive"
+    | "archive-homebrew-relocate"
     | "archive-copy"
     | "archive-copy-mode"
     | "descriptor";
@@ -487,15 +391,12 @@ const VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES = 1 << 1;
 const VFS_IMAGE_FLAG_HAS_METADATA = 1 << 2;
 const VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES = 1 << 3;
 const VFS_IMAGE_HEADER_SIZE = 16; // magic(4) + version(4) + flags(4) + sabLen(4)
-const { S_IFMT, S_IFREG, S_IFDIR, S_IFLNK } = FILE_MODES;
-const { DT_UNKNOWN, DT_REG, DT_DIR, DT_LNK } = DIRENT_TYPES;
-const O_RDONLY = OPEN_FLAGS.O_RDONLY;
-const IMMUTABLE_PRODUCT_O_ACCMODE = OPEN_FLAGS.O_ACCMODE;
-const IMMUTABLE_PRODUCT_O_CREAT = OPEN_FLAGS.O_CREAT;
-const IMMUTABLE_PRODUCT_O_TRUNC = OPEN_FLAGS.O_TRUNC;
-const IMMUTABLE_PRODUCT_W_OK = ACCESS_MODES.W_OK;
-const O_WRONLY_CREAT_TRUNC =
-  OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
+const S_IFMT = 0xf000;
+const S_IFREG = 0x8000;
+const S_IFDIR = 0x4000;
+const S_IFLNK = 0xa000;
+const O_RDONLY = 0x0000;
+const O_WRONLY_CREAT_TRUNC = 0o1101;
 const COPY_CHUNK_BYTES = 1024 * 1024;
 const MIN_REBASE_INITIAL_BYTES = 16 * 1024 * 1024;
 const VFS_IMAGE_MAX_METADATA_BYTES = 64 * 1024;
@@ -1231,12 +1132,8 @@ function requireLazyTreeString(
   label: string,
   maximumBytes: number,
 ): string {
-  if (typeof value !== "string") {
-    throw new Error(`${label} is invalid or exceeds ${maximumBytes} bytes`);
-  }
-  assertUnicodeScalarText(value, label);
   if (
-    value.length === 0 || value.includes("\0") ||
+    typeof value !== "string" || value.length === 0 || value.includes("\0") ||
     new TextEncoder().encode(value).byteLength > maximumBytes
   ) {
     throw new Error(`${label} is invalid or exceeds ${maximumBytes} bytes`);
@@ -1265,8 +1162,6 @@ function validateLazyTreeContent(
     !Array.isArray(initial) && initial.source !== undefined;
   const hasModePolicy = typeof initial === "object" && initial !== null &&
     !Array.isArray(initial) && initial.modePolicy !== undefined;
-  const hasMaterialization = typeof initial === "object" && initial !== null &&
-    !Array.isArray(initial) && initial.materialization !== undefined;
   const record = exactLazyTreeRecord(value, [
     "decoder",
     "mediaType",
@@ -1277,11 +1172,10 @@ function validateLazyTreeContent(
     "transports",
     ...(hasModePolicy ? ["modePolicy"] : []),
     ...(hasSource ? ["source"] : []),
-    ...(hasMaterialization ? ["materialization"] : []),
   ], "Lazy tree content");
   const expectedMediaType = record.decoder === "zip-v1"
     ? "application/zip"
-    : record.decoder === "tar-gzip-v1"
+    : record.decoder === "homebrew-bottle-tar-gzip-v1"
       ? "application/vnd.oci.image.layer.v1.tar+gzip"
       : null;
   if (expectedMediaType === null || record.mediaType !== expectedMediaType) {
@@ -1322,9 +1216,6 @@ function validateLazyTreeContent(
   const source = hasSource
     ? validateLazyTreeSourceInventory(record.source, record.decoder)
     : undefined;
-  const materialization = hasMaterialization
-    ? validateLazyTreeMaterializationPlan(record.materialization, source!)
-    : undefined;
   const modePolicy = hasModePolicy ? record.modePolicy : undefined;
   if (
     modePolicy !== undefined &&
@@ -1345,7 +1236,6 @@ function validateLazyTreeContent(
     transports,
     ...(modePolicy === undefined ? {} : { modePolicy }),
     ...(source === undefined ? {} : { source }),
-    ...(materialization === undefined ? {} : { materialization }),
   };
 }
 
@@ -1474,15 +1364,15 @@ function validateLazyTreeSourceInventory(
   value: unknown,
   decoder: unknown,
 ): LazyTreeSourceInventory {
-  if (decoder !== "zip-v1" && decoder !== "tar-gzip-v1") {
-    throw new Error("Lazy tree source inventory requires a supported archive decoder");
+  if (decoder !== "homebrew-bottle-tar-gzip-v1") {
+    throw new Error("Lazy tree source inventory is valid only for original bottles");
   }
   const record = exactLazyTreeRecord(
     value,
     ["schema", "kind", "entries"],
     "Lazy tree source inventory",
   );
-  if (record.schema !== 1 || record.kind !== "archive-source-inventory-v1") {
+  if (record.schema !== 1 || record.kind !== "homebrew-bottle-tar-gzip-v1") {
     throw new Error("Lazy tree source inventory has an unsupported identity");
   }
   const byPath = new Map<string, LazyTreeSourceEntry>();
@@ -1515,7 +1405,7 @@ function validateLazyTreeSourceInventory(
       entry.mode,
       `Lazy tree source entry ${sourcePath} mode`,
       0,
-      FILE_MODES.S_MODE_BITS,
+      0o7777,
     );
     const size = requireLazyTreeInteger(
       entry.size,
@@ -1553,12 +1443,10 @@ function validateLazyTreeSourceInventory(
     return result;
   });
   const paths = entries.map((entry) => entry.sourcePath);
-  if (paths.some((path, index) =>
-    index > 0 && compareUnicodeScalarText(paths[index - 1]!, path) >= 0
-  )) {
+  if (paths.some((path, index) => index > 0 && paths[index - 1] >= path)) {
     throw new Error("Lazy tree source inventory is not in canonical path order");
   }
-  return { schema: 1, kind: "archive-source-inventory-v1", entries };
+  return { schema: 1, kind: "homebrew-bottle-tar-gzip-v1", entries };
 }
 
 function resolveLazyTreeSourceHardlinks(
@@ -1830,12 +1718,6 @@ function validateLazyTreeDefinition(
   const canonicalSourceByPath = content.source === undefined
     ? undefined
     : resolveLazyTreeSourceHardlinks(content.source.entries);
-  const transformByCanonicalSource = new Map(
-    content.materialization?.transforms.map((transform) => [
-      transform.sourcePath,
-      transform,
-    ]) ?? [],
-  );
   let decodedPayloadBytes = 0;
   for (const [index, value] of rawEntries.entries()) {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -1881,6 +1763,7 @@ function validateLazyTreeDefinition(
     if (
       completeSources !== undefined &&
       materialization !== "archive" &&
+      materialization !== "archive-homebrew-relocate" &&
       materialization !== "archive-copy" &&
       materialization !== "archive-copy-mode" &&
       materialization !== "descriptor"
@@ -1900,7 +1783,7 @@ function validateLazyTreeDefinition(
       record.mode,
       `Lazy tree entry ${vfsPath} mode`,
       0,
-      FILE_MODES.S_MODE_BITS,
+      0o7777,
     );
     const size = requireLazyTreeInteger(
       record.size,
@@ -1994,6 +1877,14 @@ function validateLazyTreeDefinition(
         ) {
           throw new Error(`Lazy tree archive copy ${vfsPath} differs from its source`);
         }
+      } else if (entry.materialization === "archive-homebrew-relocate") {
+        if (
+          (entry.type !== "file" && entry.type !== "hardlink") ||
+          source.type !== entry.type ||
+          (entry.type === "file" && source.mode !== entry.mode)
+        ) {
+          throw new Error(`Lazy tree receipt-relocated entry ${vfsPath} differs from its source`);
+        }
       } else if (
         source.type !== entry.type ||
         (entry.type === "symlink" && source.target !== entry.target) ||
@@ -2030,7 +1921,18 @@ function validateLazyTreeDefinition(
     "Lazy tree",
   );
   if (completeSources !== undefined) {
-    const referencedCanonicalSources = new Set<string>();
+    const relocatedCanonicalSources = new Set<string>();
+    for (const entry of entries) {
+      if (entry.materialization !== "archive-homebrew-relocate") continue;
+      const source = completeSources.get(entry.sourcePath)!;
+      const canonical = source.type === "file"
+        ? source
+        : canonicalSourceByPath!.get(source.sourcePath);
+      if (canonical?.type !== "file") {
+        throw new Error(`Lazy tree receipt-relocated entry ${entry.vfsPath} is not regular`);
+      }
+      relocatedCanonicalSources.add(canonical.sourcePath);
+    }
     for (const entry of entries) {
       if (
         entry.materialization === "descriptor" ||
@@ -2040,30 +1942,19 @@ function validateLazyTreeDefinition(
       const canonical = source.type === "file"
         ? source
         : canonicalSourceByPath!.get(source.sourcePath);
-      if (canonical?.type === "file") {
-        referencedCanonicalSources.add(canonical.sourcePath);
-      }
-      const transform = canonical?.type === "file"
-        ? transformByCanonicalSource.get(canonical.sourcePath)
-        : undefined;
       if (
         canonical?.type !== "file" ||
-        entry.size !== (transform?.output.bytes ?? canonical.size)
+        !relocatedCanonicalSources.has(canonical.sourcePath) &&
+          entry.size !== canonical.size
       ) {
         throw new Error(`Lazy tree archive entry ${entry.vfsPath} differs from its source`);
-      }
-    }
-    for (const sourcePath of transformByCanonicalSource.keys()) {
-      if (!referencedCanonicalSources.has(sourcePath)) {
-        throw new Error(
-          `Lazy tree materialization transform ${sourcePath} has no destination`,
-        );
       }
     }
     for (const entry of entries) {
       if (
         entry.type !== "hardlink" ||
-        entry.materialization !== "archive"
+        (entry.materialization !== "archive" &&
+          entry.materialization !== "archive-homebrew-relocate")
       ) continue;
       const source = completeSources.get(entry.sourcePath)!;
       const target = byPath.get(entry.target!);
@@ -2340,8 +2231,8 @@ function validateSerializedGenericTree(
   ) {
     throw new Error(
       expectedKind === SERIALIZED_DEFERRED_TREE_V1_KIND
-        ? "Serialized deferred-tree-v1 cannot contain complete source metadata"
-        : "Serialized deferred-tree-v2 requires complete source metadata",
+        ? "Serialized deferred-tree-v1 cannot contain original-bottle source metadata"
+        : "Serialized deferred-tree-v2 requires original-bottle source metadata",
     );
   }
   const atomicMembership = definition.activation.atomicGroup;
@@ -2567,25 +2458,6 @@ async function assertLazyIntegrity(
   }
 }
 
-async function assertLazyTreeByteIdentity(
-  data: Uint8Array,
-  expected: LazyTreeByteIdentity,
-  label: string,
-): Promise<void> {
-  if (data.byteLength !== expected.bytes) {
-    throw new Error(
-      `${label} byte count ${data.byteLength} does not match expected ` +
-        `${expected.bytes}`,
-    );
-  }
-  const actual = await sha256Hex(data, label);
-  if (actual !== expected.sha256) {
-    throw new Error(
-      `${label} SHA-256 ${actual} does not match expected ${expected.sha256}`,
-    );
-  }
-}
-
 function lazyAtomicDescriptorIdentityBytesFromValues(
   content: LazyTreeContent,
   inventory: readonly LazyTreeRegistrationEntry[],
@@ -2613,13 +2485,10 @@ function lazyAtomicDescriptorIdentityBytesFromValues(
         ? {}
         : { modePolicy: content.modePolicy }),
       ...(content.source === undefined ? {} : { source: content.source }),
-      ...(content.materialization === undefined
-        ? {}
-        : { materialization: content.materialization }),
     },
     mountPrefix,
     inventory: [...inventory].sort((left, right) =>
-      compareUnicodeScalarText(left.vfsPath, right.vfsPath)
+      left.vfsPath < right.vfsPath ? -1 : left.vfsPath > right.vfsPath ? 1 : 0
     ),
     activation: {
       mode: activation.mode,
@@ -2672,7 +2541,7 @@ function immutableLazyTreeContent(
     ? undefined
     : {
       schema: 1 as const,
-      kind: "archive-source-inventory-v1" as const,
+      kind: "homebrew-bottle-tar-gzip-v1" as const,
       entries: content.source.entries.map((entry) =>
         Object.freeze({ ...entry })
       ),
@@ -2681,9 +2550,6 @@ function immutableLazyTreeContent(
     Object.freeze(source.entries);
     Object.freeze(source);
   }
-  const materialization = content.materialization === undefined
-    ? undefined
-    : immutableLazyTreeMaterializationPlan(content.materialization);
   return Object.freeze({
     decoder: content.decoder,
     mediaType: content.mediaType,
@@ -2696,51 +2562,7 @@ function immutableLazyTreeContent(
       ? {}
       : { modePolicy: content.modePolicy }),
     ...(source === undefined ? {} : { source }),
-    ...(materialization === undefined ? {} : { materialization }),
   });
-}
-
-function cloneLazyTreeMaterializationPlan(
-  plan: LazyTreeMaterializationPlan,
-): LazyTreeMaterializationPlan {
-  return {
-    schema: 1,
-    kind: "archive-byte-transforms-v1",
-    assertions: plan.assertions.map((assertion) => ({ ...assertion })),
-    recipes: plan.recipes.map((recipe) => ({
-      id: recipe.id,
-      replacements: recipe.replacements.map((replacement) => ({ ...replacement })),
-      rejectHex: [...recipe.rejectHex],
-    })),
-    transforms: plan.transforms.map((transform) => ({
-      sourcePath: transform.sourcePath,
-      recipe: transform.recipe,
-      input: { ...transform.input },
-      output: { ...transform.output },
-    })),
-  };
-}
-
-function immutableLazyTreeMaterializationPlan(
-  plan: LazyTreeMaterializationPlan,
-): LazyTreeMaterializationPlan {
-  const copy = cloneLazyTreeMaterializationPlan(plan);
-  for (const assertion of copy.assertions) Object.freeze(assertion);
-  Object.freeze(copy.assertions);
-  for (const recipe of copy.recipes) {
-    for (const replacement of recipe.replacements) Object.freeze(replacement);
-    Object.freeze(recipe.replacements);
-    Object.freeze(recipe.rejectHex);
-    Object.freeze(recipe);
-  }
-  Object.freeze(copy.recipes);
-  for (const transform of copy.transforms) {
-    Object.freeze(transform.input);
-    Object.freeze(transform.output);
-    Object.freeze(transform);
-  }
-  Object.freeze(copy.transforms);
-  return Object.freeze(copy);
 }
 
 function cloneLazyTreeContent(content: LazyTreeContent): LazyTreeContent {
@@ -2760,16 +2582,9 @@ function cloneLazyTreeContent(content: LazyTreeContent): LazyTreeContent {
       : {
         source: {
           schema: 1,
-          kind: "archive-source-inventory-v1",
+          kind: "homebrew-bottle-tar-gzip-v1",
           entries: content.source.entries.map((entry) => ({ ...entry })),
         },
-      }),
-    ...(content.materialization === undefined
-      ? {}
-      : {
-        materialization: cloneLazyTreeMaterializationPlan(
-          content.materialization,
-        ),
       }),
   };
 }
@@ -2797,77 +2612,6 @@ function immutableLazyTreeActivation(
     roots,
     atomicGroup: Object.freeze({ id, member }),
   });
-}
-
-function immutableOrdinaryLazyTreeActivation(
-  activation: LazyTreeActivation,
-): LazyTreeActivation {
-  const capabilities = [...activation.capabilities];
-  const roots = [...activation.roots];
-  Object.freeze(capabilities);
-  Object.freeze(roots);
-  return Object.freeze({
-    mode: activation.mode,
-    capabilities,
-    roots,
-  });
-}
-
-function immutableLazyTreeDefinitionSnapshot(
-  content: LazyTreeContent,
-  inventory: readonly LazyTreeRegistrationEntry[],
-  activation: LazyTreeActivation,
-  url: string,
-  mountPrefix: string,
-  integrity: LazyArchiveIntegrity,
-  entries: readonly LazyAtomicSnapshotEntry[],
-  materialized: boolean,
-): LazyTreeDefinitionSnapshot {
-  const immutableEntries = entries.map((entry) =>
-    Object.freeze({ ...entry })
-  );
-  Object.freeze(immutableEntries);
-  return Object.freeze({
-    content: immutableLazyTreeContent(content),
-    inventory: immutableLazyTreeInventory(inventory),
-    activation: immutableOrdinaryLazyTreeActivation(activation),
-    url,
-    mountPrefix,
-    integrity: Object.freeze({ ...integrity }),
-    entries: immutableEntries,
-    materialized,
-  });
-}
-
-function replaceImmutableLazyTreeRuntimeState(
-  definition: LazyTreeDefinitionSnapshot,
-  entries: readonly LazyAtomicSnapshotEntry[],
-  materialized: boolean,
-): LazyTreeDefinitionSnapshot {
-  const immutableEntries = entries.map((entry) =>
-    Object.freeze({ ...entry })
-  );
-  Object.freeze(immutableEntries);
-  return Object.freeze({
-    ...definition,
-    entries: immutableEntries,
-    materialized,
-  });
-}
-
-function lazyTreeSnapshotEntries(
-  entries: ReadonlyMap<string, LazyArchiveFileEntry>,
-): LazyAtomicSnapshotEntry[] {
-  return Array.from(entries, ([vfsPath, entry]) => ({
-    vfsPath,
-    ...entry,
-  }));
-}
-
-function cloneLazyTreeSnapshotEntryMap(
-  entries: readonly LazyAtomicSnapshotEntry[],
-): Map<string, LazyArchiveFileEntry> {
-  return new Map(entries.map(({ vfsPath, ...entry }) => [vfsPath, entry]));
 }
 
 function sealedLazyTreeActivation(
@@ -3127,10 +2871,6 @@ function conditionalFileReplacement(
   };
 }
 
-function memoryFileSystemInodeKey(ino: number, generation: number): string {
-  return `${ino}:${generation}`;
-}
-
 export class MemoryFileSystem implements FileSystemBackend {
   private fs: SharedFS;
   private imageMetadata: VfsImageMetadata | null;
@@ -3172,18 +2912,6 @@ export class MemoryFileSystem implements FileSystemBackend {
     LazyArchiveGroup,
     SealedLazyAtomicState
   >();
-  /**
-   * Validated ordinary-tree definitions are private immutable authority.
-   *
-   * WHY: registerLazyTree() and higher-level adapters expose their group for
-   * diagnostics. Callers may mutate that compatibility object after validation;
-   * decode, export, restore, and rebase must continue from the exact accepted
-   * source inventory and materialization plan rather than re-reading it.
-   */
-  private ordinaryLazyTreeDefinitions = new WeakMap<
-    LazyArchiveGroup,
-    LazyTreeDefinitionSnapshot
-  >();
   private lazyDownloadListeners = new Set<LazyDownloadListener>();
   /** One in-flight fetch/commit per lazy file or archive group. */
   private lazyPreparations = new Map<object, LazyPreparation>();
@@ -3198,57 +2926,10 @@ export class MemoryFileSystem implements FileSystemBackend {
   private constructor(fs: SharedFS, metadata: VfsImageMetadata | null = null) {
     this.fs = fs;
     this.imageMetadata = metadata;
-    intrinsicApply(intrinsicWeakSetAdd, memoryFileSystemInstances, [this]);
   }
 
-  /** Capture one self-contained product tree without retaining producer state. */
-  private snapshotForImmutableProduct(): MemoryFileSystem {
-    if (this.lazyFiles.size !== 0 || this.lazyArchiveInodes.size !== 0) {
-      throw new Error(
-        "immutable product source must be completely materialized",
-      );
-    }
-    const { bytes } = intrinsicApply(
-      intrinsicSharedFsSnapshotState,
-      this.fs,
-      [],
-    ) as ReturnType<SharedFS["snapshotState"]>;
-    const sab = new IntrinsicSharedArrayBuffer(bytes.byteLength);
-    intrinsicApply(
-      intrinsicUint8ArraySet,
-      new IntrinsicUint8Array(sab),
-      [bytes],
-    );
-    const fs = intrinsicApply(
-      intrinsicSharedFsMount,
-      SharedFS,
-      [sab, { restoreImage: true }],
-    ) as SharedFS;
-    intrinsicObjectSetPrototypeOf(fs, immutableProductSharedFsPrototype);
-    return new MemoryFileSystem(fs, cloneMetadata(this.imageMetadata));
-  }
-
-  /** Capture one exact backend-qualified inode identity. */
-  private qualifiedInodeIdentity(path: string): MemoryFileSystemInodeIdentity {
-    const stat = this.fs.lstat(path);
-    let dev = intrinsicApply(
-      intrinsicWeakMapGet,
-      memoryFileSystemDeviceIds,
-      [this.fs.buffer],
-    ) as number | undefined;
-    if (dev === undefined) {
-      dev = nextMemoryFileSystemDeviceId++;
-      intrinsicApply(
-        intrinsicWeakMapSet,
-        memoryFileSystemDeviceIds,
-        [this.fs.buffer, dev],
-      );
-    }
-    return {
-      dev,
-      ino: stat.ino,
-      generation: stat.generation,
-    };
+  private static inodeKey(ino: number, generation: number): string {
+    return `${ino}:${generation}`;
   }
 
   private static canAdoptLegacyLazyStub(st: SfsStatResult): boolean {
@@ -3259,31 +2940,6 @@ export class MemoryFileSystem implements FileSystemBackend {
     return (
       (st.mode & S_IFMT) === S_IFREG && st.size === 0 && st.dataSequence <= 1
     );
-  }
-
-  private replaceOrdinaryLazyTreeRuntimeState(
-    group: LazyArchiveGroup,
-    entries: readonly LazyAtomicSnapshotEntry[],
-    materialized: boolean,
-  ): LazyTreeDefinitionSnapshot | undefined {
-    const definition = this.ordinaryLazyTreeDefinitions.get(group);
-    if (definition === undefined) return undefined;
-    const next = replaceImmutableLazyTreeRuntimeState(
-      definition,
-      entries,
-      materialized,
-    );
-    this.ordinaryLazyTreeDefinitions.set(group, next);
-    // WHY: these fields remain caller-visible compatibility diagnostics. The
-    // private replacement above commits authority first, so a hostile public
-    // map cannot affect the operation and a frozen mirror cannot roll it back.
-    try {
-      group.entries = cloneLazyTreeSnapshotEntryMap(next.entries);
-      group.materialized = next.materialized;
-    } catch {
-      // Private authority remains complete even if a caller froze its mirror.
-    }
-    return next;
   }
 
   /**
@@ -3325,7 +2981,7 @@ export class MemoryFileSystem implements FileSystemBackend {
               entry.materialized ||
               entry.generation === undefined
             ) continue;
-            const key = memoryFileSystemInodeKey(
+            const key = MemoryFileSystem.inodeKey(
               entry.ino,
               entry.generation,
             );
@@ -3341,79 +2997,10 @@ export class MemoryFileSystem implements FileSystemBackend {
         }
         continue;
       }
-      const ordinaryDefinition = this.ordinaryLazyTreeDefinitions.get(group);
-      if (ordinaryDefinition !== undefined) {
-        if (ordinaryDefinition.materialized) {
-          this.replaceOrdinaryLazyTreeRuntimeState(
-            group,
-            ordinaryDefinition.entries,
-            true,
-          );
-          continue;
-        }
-        const pendingByIdentity = new Map<
-          string,
-          LazyAtomicSnapshotEntry[]
-        >();
-        const reconciledEntries = ordinaryDefinition.entries
-          .filter((entry) =>
-            entry.deleted || entry.materialized || entry.isSymlink
-          )
-          .map((entry) => ({ ...entry }));
-        for (const entry of ordinaryDefinition.entries) {
-          if (
-            entry.deleted || entry.materialized || entry.isSymlink ||
-            entry.generation === undefined
-          ) continue;
-          const key = memoryFileSystemInodeKey(entry.ino, entry.generation);
-          const aliases = pendingByIdentity.get(key) ?? [];
-          aliases.push(entry);
-          pendingByIdentity.set(key, aliases);
-        }
-        for (const [key, aliases] of pendingByIdentity) {
-          const identity = identities.get(key);
-          if (
-            identity === undefined ||
-            identity.dataSequence !== (aliases[0]!.dataSequence ?? 0)
-          ) {
-            if (identity !== undefined) {
-              // A concrete write legitimately retired this deferred inode.
-              // Preserve that transition privately without adopting any
-              // caller-visible mapping fields.
-              for (const entry of aliases) {
-                reconciledEntries.push({ ...entry, materialized: true });
-              }
-            }
-            continue;
-          }
-          const byPath = new Map(
-            aliases.map((entry) => [entry.vfsPath, entry]),
-          );
-          const canonical = aliases.find((entry) => entry.type === "file") ??
-            aliases[0]!;
-          for (const path of identity.paths) {
-            const semantic = byPath.get(path) ?? canonical;
-            reconciledEntries.push({
-              ...semantic,
-              vfsPath: path,
-              ino: identity.ino,
-              generation: identity.generation,
-              dataSequence: identity.dataSequence,
-              deleted: false,
-              materialized: false,
-            });
-          }
-          if (identity.paths.length > 0) {
-            this.lazyArchiveInodes.set(key, group);
-          }
-        }
-        this.replaceOrdinaryLazyTreeRuntimeState(
-          group,
-          reconciledEntries,
-          false,
-        );
-        continue;
-      }
+      const unverifiedGenericTree =
+        group.content !== undefined &&
+        group.inventory !== undefined &&
+        !group.materialized;
       const pendingByIdentity = new Map<string, LazyArchiveFileEntry>();
       for (const entry of group.entries.values()) {
         if (
@@ -3422,7 +3009,7 @@ export class MemoryFileSystem implements FileSystemBackend {
           entry.generation === undefined
         )
           continue;
-        const key = memoryFileSystemInodeKey(entry.ino, entry.generation);
+        const key = MemoryFileSystem.inodeKey(entry.ino, entry.generation);
         if (!pendingByIdentity.has(key)) pendingByIdentity.set(key, entry);
       }
 
@@ -3460,6 +3047,7 @@ export class MemoryFileSystem implements FileSystemBackend {
         !Array.from(reconciled.values()).some((entry) =>
           !entry.isSymlink && !entry.materialized
         ) &&
+        !unverifiedGenericTree &&
         (atomicGroup === undefined || atomicGroup.committed);
     }
   }
@@ -3494,23 +3082,20 @@ export class MemoryFileSystem implements FileSystemBackend {
       const atomicGroup = this.lazyAtomicGroupByTree.get(group);
       const atomicState = this.sealedLazyAtomicStates.get(group);
       const snapshot = atomicState?.snapshot;
-      const ordinaryDefinition = this.ordinaryLazyTreeDefinitions.get(group);
       if (
         atomicGroup?.committed ||
+        (snapshot === undefined && group.materialized) ||
         (snapshot === undefined &&
-          (ordinaryDefinition?.materialized ?? group.materialized)) ||
-        (snapshot === undefined &&
-          ordinaryDefinition === undefined)
+          (group.content === undefined || group.inventory === undefined))
       ) {
         continue;
       }
-      const inventory = snapshot?.inventory ?? ordinaryDefinition!.inventory;
-      const registeredEntries = new Map(
-        (snapshot?.entries ?? ordinaryDefinition!.entries).map((entry) => [
-          entry.vfsPath,
-          entry,
-        ]),
-      );
+      const inventory = snapshot?.inventory ?? group.inventory!;
+      const registeredEntries = snapshot === undefined
+        ? group.entries
+        : new Map(
+          snapshot.entries.map((entry) => [entry.vfsPath, entry]),
+        );
       const aliasesByInodeGroup = new Map<string, number>();
       const pathsByInodeGroup = new Map<string, string[]>();
       const locallyDeletedInodeGroups = new Set<string>();
@@ -3556,7 +3141,7 @@ export class MemoryFileSystem implements FileSystemBackend {
             : S_IFREG;
         if (
           (identity.mode & S_IFMT) !== expectedType ||
-          (identity.mode & FILE_MODES.S_MODE_BITS) !== inventoryEntry.mode
+          (identity.mode & 0o7777) !== inventoryEntry.mode
         ) {
           throw new Error(
             `Lazy tree namespace entry ${inventoryEntry.vfsPath} ` +
@@ -3610,7 +3195,7 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   private lazyFileForStat(st: SfsStatResult) {
-    const key = memoryFileSystemInodeKey(st.ino, st.generation);
+    const key = MemoryFileSystem.inodeKey(st.ino, st.generation);
     const entry = this.lazyFiles.get(key);
     if (entry && entry.dataSequence !== st.dataSequence) {
       this.lazyFiles.delete(key);
@@ -3627,8 +3212,6 @@ export class MemoryFileSystem implements FileSystemBackend {
     if (atomicState !== undefined && !atomicGroup?.committed) {
       return atomicState.snapshot.entries;
     }
-    const ordinaryDefinition = this.ordinaryLazyTreeDefinitions.get(group);
-    if (ordinaryDefinition !== undefined) return ordinaryDefinition.entries;
     return Array.from(group.entries, ([vfsPath, entry]) => ({
       vfsPath,
       ...entry,
@@ -3636,7 +3219,7 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   private lazyArchiveForStat(st: SfsStatResult) {
-    const key = memoryFileSystemInodeKey(st.ino, st.generation);
+    const key = MemoryFileSystem.inodeKey(st.ino, st.generation);
     const group = this.lazyArchiveInodes.get(key);
     if (!group) return undefined;
     const entries = this.lazyArchiveEntriesForRead(group).filter(
@@ -3652,26 +3235,13 @@ export class MemoryFileSystem implements FileSystemBackend {
     this.lazyArchiveInodes.delete(key);
     const atomicState = this.sealedLazyAtomicStates.get(group);
     if (atomicState === undefined) {
-      const ordinaryDefinition = this.ordinaryLazyTreeDefinitions.get(group);
-      if (ordinaryDefinition !== undefined) {
-        this.replaceOrdinaryLazyTreeRuntimeState(
-          group,
-          ordinaryDefinition.entries.map((entry) =>
-            entry.ino === st.ino && entry.generation === st.generation
-              ? { ...entry, materialized: true }
-              : entry
-          ),
-          ordinaryDefinition.materialized,
-        );
-      } else {
-        for (const entry of entries) entry.materialized = true;
-      }
+      for (const entry of entries) entry.materialized = true;
     }
     return undefined;
   }
 
   private lazyBackingForStat(st: SfsStatResult): LazyBacking | null {
-    const key = memoryFileSystemInodeKey(st.ino, st.generation);
+    const key = MemoryFileSystem.inodeKey(st.ino, st.generation);
     // Preparation deliberately observes the registered identity even when a
     // peer advanced its data sequence. The identity-guarded commit will then
     // reconcile and preserve the peer's bytes, while callers still learn that
@@ -3700,14 +3270,13 @@ export class MemoryFileSystem implements FileSystemBackend {
     const metadataOnlyGroup = this.lazyArchiveGroups.find((group) => {
       const atomicGroup = this.lazyAtomicGroupByTree.get(group);
       const snapshot = this.sealedLazyAtomicStates.get(group)?.snapshot;
-      const ordinaryDefinition = this.ordinaryLazyTreeDefinitions.get(group);
       const pending = snapshot === undefined
-        ? !(ordinaryDefinition?.materialized ?? group.materialized)
+        ? !group.materialized
         : !atomicGroup?.committed;
-      const content = snapshot?.content ?? ordinaryDefinition?.content;
-      const inventory = snapshot?.inventory ?? ordinaryDefinition?.inventory;
-      const activation = snapshot?.activation ?? ordinaryDefinition?.activation;
-      const entries = snapshot?.entries ?? ordinaryDefinition?.entries ??
+      const content = snapshot?.content ?? group.content;
+      const inventory = snapshot?.inventory ?? group.inventory;
+      const activation = snapshot?.activation ?? group.activation;
+      const entries = snapshot?.entries ??
         Array.from(group.entries.values());
       return pending &&
         content !== undefined &&
@@ -4004,30 +3573,18 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   /** A successful guest data mutation makes any deferred backing obsolete. */
   private invalidateLazyData(st: SfsStatResult): void {
-    const key = memoryFileSystemInodeKey(st.ino, st.generation);
+    const key = MemoryFileSystem.inodeKey(st.ino, st.generation);
     this.lazyFiles.delete(key);
 
     const group = this.lazyArchiveInodes.get(key);
     if (!group) return;
     this.lazyArchiveInodes.delete(key);
-    const ordinaryDefinition = this.ordinaryLazyTreeDefinitions.get(group);
-    if (ordinaryDefinition !== undefined) {
-      this.replaceOrdinaryLazyTreeRuntimeState(
-        group,
-        ordinaryDefinition.entries.map((entry) =>
-          entry.ino === st.ino && entry.generation === st.generation
-            ? { ...entry, materialized: true }
-            : entry
-        ),
-        ordinaryDefinition.materialized,
-      );
-      return;
-    }
     for (const entry of group.entries.values()) {
-      if (entry.ino !== st.ino || entry.generation !== st.generation) continue;
-      // Keep the concrete inode in the image, but prevent a later archive
-      // fetch from overwriting data the guest supplied through any alias.
-      entry.materialized = true;
+      if (entry.ino === st.ino && entry.generation === st.generation) {
+        // Keep the concrete inode in the image, but prevent a later archive
+        // fetch from overwriting data the guest supplied through any alias.
+        entry.materialized = true;
+      }
     }
   }
 
@@ -4040,7 +3597,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     const newBase = newPath.length > 1 ? newPath.replace(/\/+$/, "") : newPath;
     const oldPrefix = `${oldBase}/`;
     const newPrefix = `${newBase}/`;
-    const sourceKey = memoryFileSystemInodeKey(source.ino, source.generation);
+    const sourceKey = MemoryFileSystem.inodeKey(source.ino, source.generation);
     const directory = (source.mode & S_IFMT) === S_IFDIR;
     const rewrite = (candidate: string): string =>
       candidate === oldBase
@@ -4056,66 +3613,12 @@ export class MemoryFileSystem implements FileSystemBackend {
     }
 
     for (const group of this.lazyArchiveGroups) {
-      const ordinaryDefinition = this.ordinaryLazyTreeDefinitions.get(group);
-      if (ordinaryDefinition !== undefined) {
-        const entries = ordinaryDefinition.entries.map((entry) => {
-          const entryKey = entry.generation === undefined
-            ? null
-            : memoryFileSystemInodeKey(entry.ino, entry.generation);
-          const vfsPath = directory || entryKey === sourceKey
-            ? rewrite(entry.vfsPath)
-            : entry.vfsPath;
-          return {
-            ...entry,
-            vfsPath,
-            ...(entry.type === "hardlink" && entry.target !== undefined
-              ? { target: rewrite(entry.target) }
-              : {}),
-          };
-        });
-        const inventory = ordinaryDefinition.inventory.map((entry) => ({
-          ...entry,
-          vfsPath: rewrite(entry.vfsPath),
-          ...(entry.type === "hardlink" && entry.target !== undefined
-            ? { target: rewrite(entry.target) }
-            : {}),
-        }));
-        const activation = {
-          ...ordinaryDefinition.activation,
-          capabilities: [...ordinaryDefinition.activation.capabilities],
-          roots: ordinaryDefinition.activation.roots.map(rewrite),
-        };
-        const next = immutableLazyTreeDefinitionSnapshot(
-          ordinaryDefinition.content,
-          inventory,
-          activation,
-          ordinaryDefinition.url,
-          ordinaryDefinition.mountPrefix,
-          ordinaryDefinition.integrity,
-          entries,
-          ordinaryDefinition.materialized,
-        );
-        this.ordinaryLazyTreeDefinitions.set(group, next);
-        try {
-          group.entries = cloneLazyTreeSnapshotEntryMap(next.entries);
-          group.materialized = next.materialized;
-          group.inventory = next.inventory.map((entry) => ({ ...entry }));
-          group.activation = {
-            ...next.activation,
-            capabilities: [...next.activation.capabilities],
-            roots: [...next.activation.roots],
-          };
-        } catch {
-          // Authorized private namespace state does not depend on its mirror.
-        }
-        continue;
-      }
       const rewritten = new Map<string, LazyArchiveFileEntry>();
       for (const [candidate, entry] of group.entries) {
         const entryKey =
           entry.generation === undefined
             ? null
-            : memoryFileSystemInodeKey(entry.ino, entry.generation);
+            : MemoryFileSystem.inodeKey(entry.ino, entry.generation);
         rewritten.set(
           directory || entryKey === sourceKey ? rewrite(candidate) : candidate,
           entry,
@@ -4150,26 +3653,6 @@ export class MemoryFileSystem implements FileSystemBackend {
     maxSizeBytes?: number,
   ): MemoryFileSystem {
     return new MemoryFileSystem(SharedFS.mkfs(sab, maxSizeBytes));
-  }
-
-  /** Construct a fresh MemoryFS without accepting caller-owned backing. */
-  static createFresh(byteLength: number): MemoryFileSystem {
-    if (
-      typeof byteLength !== "number" ||
-      !intrinsicNumberIsInteger(byteLength) ||
-      byteLength <= 0
-    ) {
-      throw new IntrinsicTypeError(
-        "fresh MemoryFileSystem byte length must be a positive integer",
-      );
-    }
-    const buffer = new IntrinsicSharedArrayBuffer(byteLength);
-    const fs = intrinsicApply(
-      intrinsicSharedFsMkfs,
-      SharedFS,
-      [buffer],
-    ) as SharedFS;
-    return new MemoryFileSystem(fs);
   }
 
   static fromExisting(sab: SharedArrayBuffer): MemoryFileSystem {
@@ -4530,7 +4013,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     }
     const st = this.fs.createLazyStub(path, mode);
     this.invalidateLazyData(st);
-    this.lazyFiles.set(memoryFileSystemInodeKey(st.ino, st.generation), {
+    this.lazyFiles.set(MemoryFileSystem.inodeKey(st.ino, st.generation), {
       ino: st.ino,
       generation: st.generation,
       dataSequence: st.dataSequence,
@@ -4586,7 +4069,7 @@ export class MemoryFileSystem implements FileSystemBackend {
         ? e.path
         : validPaths.values().next().value!;
       this.lazyFiles.set(
-        memoryFileSystemInodeKey(identity.ino, identity.generation),
+        MemoryFileSystem.inodeKey(identity.ino, identity.generation),
         {
           ino: identity.ino,
           generation: identity.generation,
@@ -4867,27 +4350,12 @@ export class MemoryFileSystem implements FileSystemBackend {
     for (const entry of group.entries.values()) {
       if (entry.isSymlink || entry.generation === undefined) continue;
       this.lazyArchiveInodes.set(
-        memoryFileSystemInodeKey(entry.ino, entry.generation),
+        MemoryFileSystem.inodeKey(entry.ino, entry.generation),
         group,
       );
     }
     this.lazyArchiveGroups.push(group);
     this.registerLazyAtomicGroupMembership(group);
-    if (activation.atomicGroup === undefined) {
-      this.ordinaryLazyTreeDefinitions.set(
-        group,
-        immutableLazyTreeDefinitionSnapshot(
-          content,
-          entries,
-          activation,
-          group.url,
-          validatedMountPrefix,
-          group.integrity!,
-          lazyTreeSnapshotEntries(group.entries),
-          false,
-        ),
-      );
-    }
     return group;
   }
 
@@ -5021,7 +4489,7 @@ export class MemoryFileSystem implements FileSystemBackend {
         };
         group.entries.set(vfsPath, entry);
         this.lazyArchiveInodes.set(
-          memoryFileSystemInodeKey(st.ino, st.generation),
+          MemoryFileSystem.inodeKey(st.ino, st.generation),
           group,
         );
       }
@@ -5194,7 +4662,7 @@ export class MemoryFileSystem implements FileSystemBackend {
               inventoryAtPath;
             if (
               !inventoryEntry || (st.mode & S_IFMT) !== S_IFREG || st.size !== 0 ||
-              (st.mode & FILE_MODES.S_MODE_BITS) !== inventoryEntry.mode ||
+              (st.mode & 0o7777) !== inventoryEntry.mode ||
               (inventoryAtPath?.inodeGroup !== undefined &&
                 inventoryAtPath.inodeGroup !== inventoryEntry.inodeGroup)
             ) {
@@ -5202,7 +4670,7 @@ export class MemoryFileSystem implements FileSystemBackend {
                 `Serialized lazy tree stub ${e.vfsPath} disagrees with its inventory`,
               );
             }
-            const identity = memoryFileSystemInodeKey(st.ino, st.generation);
+            const identity = MemoryFileSystem.inodeKey(st.ino, st.generation);
             const group = e.inodeGroup!;
             const priorIdentity = identityByGroup.get(group);
             const priorGroup = groupByIdentity.get(identity);
@@ -5263,7 +4731,7 @@ export class MemoryFileSystem implements FileSystemBackend {
             : S_IFLNK;
           if (
             (st.mode & S_IFMT) !== expectedType ||
-            (st.mode & FILE_MODES.S_MODE_BITS) !== inventoryEntry.mode ||
+            (st.mode & 0o7777) !== inventoryEntry.mode ||
             (
               inventoryEntry.type === "symlink" &&
               (
@@ -5349,7 +4817,7 @@ export class MemoryFileSystem implements FileSystemBackend {
             !entry.materialized &&
             entry.generation !== undefined
           ) {
-            const key = memoryFileSystemInodeKey(entry.ino, entry.generation);
+            const key = MemoryFileSystem.inodeKey(entry.ino, entry.generation);
             const planned = plannedInodes.get(key);
             if (planned !== undefined && planned !== group) {
               throw new Error(
@@ -5399,25 +4867,6 @@ export class MemoryFileSystem implements FileSystemBackend {
         group,
         sealedImportTrust === "verified",
       );
-      if (
-        group.content !== undefined && group.inventory !== undefined &&
-        group.activation !== undefined &&
-        group.activation.atomicGroup === undefined
-      ) {
-        this.ordinaryLazyTreeDefinitions.set(
-          group,
-          immutableLazyTreeDefinitionSnapshot(
-            group.content,
-            group.inventory,
-            group.activation,
-            group.url,
-            group.mountPrefix,
-            group.integrity!,
-            lazyTreeSnapshotEntries(group.entries),
-            group.materialized,
-          ),
-        );
-      }
     }
     for (const [key, group] of plannedInodes) {
       this.lazyArchiveInodes.set(key, group);
@@ -5448,27 +4897,7 @@ export class MemoryFileSystem implements FileSystemBackend {
         atomicState.snapshot = snapshot;
         continue;
       }
-      const ordinaryDefinition = this.ordinaryLazyTreeDefinitions.get(group);
-      if (ordinaryDefinition !== undefined) {
-        const content = immutableLazyTreeContent(
-          ordinaryDefinition.content,
-          ordinaryDefinition.content.transports.map(transform),
-        );
-        const next = immutableLazyTreeDefinitionSnapshot(
-          content,
-          ordinaryDefinition.inventory,
-          ordinaryDefinition.activation,
-          content.transports[0]!,
-          ordinaryDefinition.mountPrefix,
-          ordinaryDefinition.integrity,
-          ordinaryDefinition.entries,
-          ordinaryDefinition.materialized,
-        );
-        this.ordinaryLazyTreeDefinitions.set(group, next);
-        group.content = cloneLazyTreeContent(next.content);
-        group.url = next.url;
-        group.integrity = { ...next.integrity };
-      } else if (group.content) {
+      if (group.content) {
         group.content = {
           ...group.content,
           transports: group.content.transports.map(transform),
@@ -5508,30 +4937,33 @@ export class MemoryFileSystem implements FileSystemBackend {
         });
         continue;
       }
-      const ordinaryDefinition = this.ordinaryLazyTreeDefinitions.get(group);
-      const materialized = ordinaryDefinition?.materialized ?? group.materialized;
-      const entries = (
-        ordinaryDefinition?.entries ?? lazyTreeSnapshotEntries(group.entries)
-      ).map((entry) => ({ ...entry }))
-        .filter((entry) => !entry.deleted && !entry.materialized);
-      const content = ordinaryDefinition?.content ?? group.content;
-      const inventory = ordinaryDefinition?.inventory ?? group.inventory;
-      const activation = ordinaryDefinition?.activation ?? group.activation;
-      const url = ordinaryDefinition?.url ?? group.url;
-      const mountPrefix = ordinaryDefinition?.mountPrefix ?? group.mountPrefix;
-      const integrity = ordinaryDefinition?.integrity ?? group.integrity;
+      const entries = Array.from(group.entries, ([vfsPath, entry]) => ({
+        vfsPath,
+        ino: entry.ino,
+        generation: entry.generation,
+        dataSequence: entry.dataSequence,
+        size: entry.size,
+        isSymlink: entry.isSymlink,
+        deleted: entry.deleted,
+        materialized: entry.materialized,
+        archivePath: entry.archivePath,
+        sourcePath: entry.sourcePath,
+        type: entry.type,
+        inodeGroup: entry.inodeGroup,
+        target: entry.target,
+      })).filter((entry) => !entry.deleted && !entry.materialized);
       if (
         entries.length === 0 &&
-        !(content !== undefined && inventory !== undefined && !materialized)
+        !(group.content && group.inventory && !group.materialized)
       ) continue;
-      const genericTree = content !== undefined && inventory !== undefined &&
-        activation !== undefined;
-      if (genericTree && content.transports.length === 0) {
+      const genericTree = group.content !== undefined &&
+        group.inventory !== undefined && group.activation !== undefined;
+      if (genericTree && group.content!.transports.length === 0) {
         throw new Error(
           "Direct-materialization tree must be materialized before serialization",
         );
       }
-      const atomicMembership = activation?.atomicGroup;
+      const atomicMembership = group.activation?.atomicGroup;
       if (
         atomicMembership !== undefined &&
         !isSealedLazyAtomicMembership(atomicMembership)
@@ -5545,19 +4977,15 @@ export class MemoryFileSystem implements FileSystemBackend {
         ? {
           kind: atomicMembership !== undefined
             ? SERIALIZED_DEFERRED_TREE_V3_KIND
-            : content.source === undefined
+            : group.content!.source === undefined
               ? SERIALIZED_DEFERRED_TREE_V1_KIND
               : SERIALIZED_DEFERRED_TREE_V2_KIND,
-          content: cloneLazyTreeContent(content),
-          inventory: inventory.map((entry) => ({ ...entry })),
-          activation: {
-            ...activation,
-            capabilities: [...activation.capabilities],
-            roots: [...activation.roots],
-          },
-          url,
-          mountPrefix,
-          integrity: { ...integrity! },
+          content: group.content,
+          inventory: group.inventory,
+          activation: group.activation,
+          url: group.url,
+          mountPrefix: group.mountPrefix,
+          integrity: group.integrity,
           materialized: false,
           entries,
         }
@@ -5621,9 +5049,8 @@ export class MemoryFileSystem implements FileSystemBackend {
       const atomicGroup = this.lazyAtomicGroupByTree.get(group);
       const snapshot = this.sealedLazyAtomicStates.get(group)?.snapshot;
       if (snapshot !== undefined) return !atomicGroup?.committed;
-      const ordinaryDefinition = this.ordinaryLazyTreeDefinitions.get(group);
-      return !(ordinaryDefinition?.materialized ?? group.materialized) && (
-        ordinaryDefinition !== undefined ||
+      return !group.materialized && (
+        group.content !== undefined && group.inventory !== undefined ||
         Array.from(group.entries.values()).some((entry) =>
           !entry.deleted && !entry.materialized
         )
@@ -5672,11 +5099,7 @@ export class MemoryFileSystem implements FileSystemBackend {
    */
   async prepareBootDeferredTrees(): Promise<number> {
     const groups = this.lazyArchiveGroups.filter(
-      (group) => {
-        const definition = this.ordinaryLazyTreeDefinitions.get(group);
-        return !(definition?.materialized ?? group.materialized) &&
-          (definition?.activation ?? group.activation)?.mode === "boot-prefetch";
-      },
+      (group) => !group.materialized && group.activation?.mode === "boot-prefetch",
     );
     let next = 0;
     let failure: unknown;
@@ -5723,8 +5146,7 @@ export class MemoryFileSystem implements FileSystemBackend {
           "materialize the complete group instead",
       );
     }
-    const ordinaryDefinition = this.ordinaryLazyTreeDefinitions.get(group);
-    if (ordinaryDefinition?.materialized ?? group.materialized) return false;
+    if (group.materialized) return false;
     const existing = this.lazyPreparations.get(group);
     if (existing !== undefined) return existing.promise;
     const bytes = new Uint8Array(exactBytes.byteLength);
@@ -5737,9 +5159,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     // so a concurrent guest preparePath() joins this exact-byte operation
     // instead of starting a transport fetch for the same group.
     preparation.promise = Promise.resolve().then(async () => {
-      const integrity = this.ordinaryLazyTreeDefinitions.get(group)?.integrity ??
-        group.integrity;
-      await assertLazyIntegrity(bytes, "tree", integrity);
+      await assertLazyIntegrity(bytes, "tree", group.integrity);
       await this.materializeArchiveBytes(group, bytes);
       return true;
     }).then(
@@ -5766,21 +5186,15 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   private async prepareLazyTreeGroup(group: LazyTreeGroup): Promise<boolean> {
     const atomicGroup = this.lazyAtomicGroupByTree.get(group);
-    const ordinaryDefinition = this.ordinaryLazyTreeDefinitions.get(group);
-    if (
-      atomicGroup?.committed ||
-      (atomicGroup === undefined &&
-        (ordinaryDefinition?.materialized ?? group.materialized))
-    ) {
+    if (atomicGroup?.committed || (atomicGroup === undefined && group.materialized)) {
       return false;
     }
     const snapshot = this.sealedLazyAtomicStates.get(group)?.snapshot;
     const backing: LazyBacking = {
       token: atomicGroup?.token ?? group,
       path: snapshot?.activation.roots[0] ??
-        ordinaryDefinition?.activation.roots[0] ??
-        ordinaryDefinition?.mountPrefix ??
-        group.activation?.roots[0] ?? group.mountPrefix,
+        group.activation?.roots[0] ??
+        group.mountPrefix,
       directGroup: group,
       ...(atomicGroup === undefined ? {} : { atomicGroup }),
     };
@@ -5809,7 +5223,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     } catch {
       return false;
     }
-    const key = memoryFileSystemInodeKey(st.ino, st.generation);
+    const key = MemoryFileSystem.inodeKey(st.ino, st.generation);
     const entry = this.lazyFiles.get(key);
     if (entry) {
       const transport = this.lazyTransport;
@@ -5862,11 +5276,8 @@ export class MemoryFileSystem implements FileSystemBackend {
     data: Uint8Array,
     atomicSnapshot?: SealedLazyAtomicSnapshot,
   ): Promise<Map<string, Uint8Array>> {
-    const ordinaryDefinition = this.ordinaryLazyTreeDefinitions.get(group);
-    const content = atomicSnapshot?.content ?? ordinaryDefinition?.content ??
-      group.content;
-    const inventory = atomicSnapshot?.inventory ?? ordinaryDefinition?.inventory ??
-      group.inventory;
+    const content = atomicSnapshot?.content ?? group.content;
+    const inventory = atomicSnapshot?.inventory ?? group.inventory;
     if (!content || !inventory) {
       throw new Error("Lazy tree is missing its decoder or complete inventory");
     }
@@ -5948,7 +5359,7 @@ export class MemoryFileSystem implements FileSystemBackend {
               : (entry.mode & 0o111) !== 0
                 ? 0o755
                 : 0o644
-          : entry.mode & FILE_MODES.S_MODE_BITS;
+          : entry.mode & 0o7777;
         if (
           actualType !== expected.type ||
           actualMode !== expected.mode
@@ -6033,7 +5444,7 @@ export class MemoryFileSystem implements FileSystemBackend {
           `Lazy tree member ${sourcePath} is ${actual.type}, expected ${expectedType}`,
         );
       }
-      if ((actual.mode & FILE_MODES.S_MODE_BITS) !== expected.mode) {
+      if ((actual.mode & 0o7777) !== expected.mode) {
         throw new Error(`Lazy tree member ${sourcePath} mode differs from inventory`);
       }
       if (expectedType === "file" && actual.data?.byteLength !== expected.size) {
@@ -6049,47 +5460,86 @@ export class MemoryFileSystem implements FileSystemBackend {
       }
     }
 
-    const materialization = content.materialization;
-    if (materialization !== undefined) {
-      for (const assertion of materialization.assertions) {
-        const actual = decoded.get(assertion.sourcePath);
-        const expected = decodeMaterializationBytes(assertion.bytesHex);
+    const relocationSources = new Set(
+      inventory.flatMap((entry) =>
+        entry.materialization === "archive-homebrew-relocate"
+          ? [entry.sourcePath]
+          : []
+      ),
+    );
+    if (content.source !== undefined) {
+      const sourceByPath = new Map(
+        content.source.entries.map((entry) => [entry.sourcePath, entry]),
+      );
+      const canonicalByPath = resolveLazyTreeSourceHardlinks(content.source.entries);
+      const receiptSources = content.source.entries.filter((entry) =>
+        entry.sourcePath === "INSTALL_RECEIPT.json" ||
+        entry.sourcePath.endsWith("/INSTALL_RECEIPT.json")
+      );
+      if (receiptSources.length > 1) {
+        throw new Error(
+          `Lazy Homebrew bottle has ${receiptSources.length} INSTALL_RECEIPT.json ` +
+            "source members, expected at most one",
+        );
+      }
+      if (receiptSources.length === 0) {
+        if (relocationSources.size > 0) {
+          throw new Error(
+            "Lazy Homebrew bottle marks receipt relocation without INSTALL_RECEIPT.json",
+          );
+        }
+      } else {
+        const receiptSource = receiptSources[0]!;
+        const receiptCanonical = receiptSource.type === "file"
+          ? receiptSource
+          : canonicalByPath.get(receiptSource.sourcePath);
+        const receiptDecoded = receiptCanonical === undefined
+          ? undefined
+          : decoded.get(receiptCanonical.sourcePath);
+        if (receiptCanonical?.type !== "file" || receiptDecoded?.type !== "file" ||
+          receiptDecoded.data === undefined) {
+          throw new Error("Lazy Homebrew bottle INSTALL_RECEIPT.json is not regular");
+        }
+        const receipt = parseHomebrewInstallReceiptRelocation(receiptDecoded.data);
+        const separator = receiptSource.sourcePath.lastIndexOf("/");
+        const sourceRoot = separator < 0
+          ? ""
+          : receiptSource.sourcePath.slice(0, separator);
+        const receiptChangedSources = new Set(receipt.changedFiles.map((path) =>
+          sourceRoot.length === 0 ? path : `${sourceRoot}/${path}`
+        ));
         if (
-          actual?.type !== "file" || actual.data === undefined ||
-          actual.data.byteLength !== expected.byteLength ||
-          actual.data.some((byte, index) => byte !== expected[index])
+          relocationSources.size !== receiptChangedSources.size ||
+          [...relocationSources].some((path) => !receiptChangedSources.has(path))
         ) {
           throw new Error(
-            `Lazy tree source assertion ${assertion.sourcePath} differs from archive bytes`,
+            "Lazy Homebrew bottle relocation markers differ from INSTALL_RECEIPT.json",
           );
         }
-      }
-      const recipes = new Map(
-        materialization.recipes.map((recipe) => [recipe.id, recipe]),
-      );
-      for (const transform of materialization.transforms) {
-        const actual = decoded.get(transform.sourcePath);
-        if (actual?.type !== "file" || actual.data === undefined) {
-          throw new Error(
-            `Lazy tree transform ${transform.sourcePath} is not a regular source`,
-          );
+        const relocatedCanonicalSources = new Set<string>();
+        for (const sourcePath of receiptChangedSources) {
+          const source = sourceByPath.get(sourcePath);
+          const canonical = source?.type === "file"
+            ? source
+            : source === undefined
+              ? undefined
+              : canonicalByPath.get(source.sourcePath);
+          const actual = canonical === undefined
+            ? undefined
+            : decoded.get(canonical.sourcePath);
+          if (canonical?.type !== "file" || actual?.type !== "file" ||
+            actual.data === undefined) {
+            throw new Error(
+              `Lazy Homebrew bottle changed source ${sourcePath} is not regular`,
+            );
+          }
+          if (relocatedCanonicalSources.has(canonical.sourcePath)) continue;
+          actual.data = relocateHomebrewBottleFile(actual.data, receipt, sourcePath);
+          relocatedCanonicalSources.add(canonical.sourcePath);
         }
-        await assertLazyTreeByteIdentity(
-          actual.data,
-          transform.input,
-          `Lazy tree transform ${transform.sourcePath} input`,
-        );
-        const transformed = applyLazyTreeByteTransformRecipe(
-          actual.data,
-          recipes.get(transform.recipe)!,
-        );
-        await assertLazyTreeByteIdentity(
-          transformed,
-          transform.output,
-          `Lazy tree transform ${transform.sourcePath} output`,
-        );
-        actual.data = transformed;
       }
+    } else if (relocationSources.size > 0) {
+      throw new Error("Lazy tree receipt relocation requires original-bottle source truth");
     }
 
     const files = new Map<string, Uint8Array>();
@@ -6135,8 +5585,7 @@ export class MemoryFileSystem implements FileSystemBackend {
       }
       return;
     }
-    const ordinaryDefinition = this.ordinaryLazyTreeDefinitions.get(group);
-    if (ordinaryDefinition?.materialized ?? group.materialized) return;
+    if (group.materialized) return;
     const transport = this.lazyTransport;
     const archiveData = await this.fetchLazyArchiveData(group, transport);
     throwIfLazyTransportAborted(transport.signal);
@@ -6153,20 +5602,15 @@ export class MemoryFileSystem implements FileSystemBackend {
     transport: LazyTransport,
     atomicSnapshot?: SealedLazyAtomicSnapshot,
   ): Promise<Uint8Array> {
-    const ordinaryDefinition = this.ordinaryLazyTreeDefinitions.get(group);
-    const content = atomicSnapshot?.content ?? ordinaryDefinition?.content ??
-      group.content;
-    const inventory = atomicSnapshot?.inventory ?? ordinaryDefinition?.inventory ??
-      group.inventory;
+    const content = atomicSnapshot?.content ?? group.content;
+    const inventory = atomicSnapshot?.inventory ?? group.inventory;
     const genericTree = content !== undefined && inventory !== undefined;
-    const mountPrefix = atomicSnapshot?.mountPrefix ??
-      ordinaryDefinition?.mountPrefix ?? group.mountPrefix;
-    const integrity = atomicSnapshot?.integrity ?? ordinaryDefinition?.integrity ??
-      group.integrity;
+    const mountPrefix = atomicSnapshot?.mountPrefix ?? group.mountPrefix;
+    const integrity = atomicSnapshot?.integrity ?? group.integrity;
 
     const transports = genericTree
       ? content!.transports
-      : [atomicSnapshot?.url ?? ordinaryDefinition?.url ?? group.url];
+      : [atomicSnapshot?.url ?? group.url];
     const failures: string[] = [];
     let archiveData: Uint8Array | null = null;
     for (const [index, url] of transports.entries()) {
@@ -6205,15 +5649,14 @@ export class MemoryFileSystem implements FileSystemBackend {
     signal?: AbortSignal,
   ): Promise<void> {
     throwIfLazyTransportAborted(signal);
-    const definition = this.ordinaryLazyTreeDefinitions.get(group);
-    if (definition?.materialized ?? group.materialized) return;
+    if (group.materialized) return;
     const extractedByIdentity = await this.prepareLazyArchiveContents(
       group,
       archiveData,
       signal,
     );
     const requestedKey = requested
-      ? memoryFileSystemInodeKey(requested.ino, requested.generation)
+      ? MemoryFileSystem.inodeKey(requested.ino, requested.generation)
       : null;
     for (let attempt = 0; attempt < 3; attempt++) {
       const pending = this.collectLazyArchiveReplacements(
@@ -6238,10 +5681,7 @@ export class MemoryFileSystem implements FileSystemBackend {
       // same last cancellation boundary before publishing materialized state.
       throwIfLazyTransportAborted(signal);
       this.publishLazyArchiveReplacements(group, pending);
-      if (
-        this.ordinaryLazyTreeDefinitions.get(group)?.materialized ??
-          group.materialized
-      ) return;
+      if (group.materialized) return;
       this.reconcileLazyIdentityState(this.fs.identityState());
       if (requestedKey && !this.lazyArchiveInodes.has(requestedKey)) return;
     }
@@ -6263,11 +5703,8 @@ export class MemoryFileSystem implements FileSystemBackend {
     content: Uint8Array;
   }>> {
     throwIfLazyTransportAborted(signal);
-    const ordinaryDefinition = this.ordinaryLazyTreeDefinitions.get(group);
-    const content = atomicSnapshot?.content ?? ordinaryDefinition?.content ??
-      group.content;
-    const inventory = atomicSnapshot?.inventory ?? ordinaryDefinition?.inventory ??
-      group.inventory;
+    const content = atomicSnapshot?.content ?? group.content;
+    const inventory = atomicSnapshot?.inventory ?? group.inventory;
     const genericTree = content !== undefined && inventory !== undefined;
     const decodedTreeFiles = genericTree
       ? await this.decodeAndValidateLazyTree(
@@ -6288,19 +5725,16 @@ export class MemoryFileSystem implements FileSystemBackend {
       zipLookup.set(ze.fileName, ze);
     }
 
-    const mountPrefix = atomicSnapshot?.mountPrefix ??
-      ordinaryDefinition?.mountPrefix ?? group.mountPrefix;
+    const mountPrefix = atomicSnapshot?.mountPrefix ?? group.mountPrefix;
     const normalizedPrefix = mountPrefix.replace(/\/+$/, "");
     const extractedByIdentity = new Map<string, {
       archivePath: string;
       content: Uint8Array;
     }>();
-    const authoritativeEntries = atomicSnapshot?.entries ??
-      ordinaryDefinition?.entries;
     const runtimeEntries: Array<[string, LazyArchiveFileEntry]> =
-      authoritativeEntries === undefined
+      atomicSnapshot === undefined
         ? Array.from(group.entries)
-        : authoritativeEntries.map((entry) => [entry.vfsPath, entry]);
+        : atomicSnapshot.entries.map((entry) => [entry.vfsPath, entry]);
     for (const [vfsPath, archiveEntry] of runtimeEntries) {
       if (archiveEntry.deleted || archiveEntry.materialized) continue;
       const zipFileName =
@@ -6323,7 +5757,7 @@ export class MemoryFileSystem implements FileSystemBackend {
         );
       }
       if (archiveEntry.generation === undefined) continue;
-      const key = memoryFileSystemInodeKey(
+      const key = MemoryFileSystem.inodeKey(
         archiveEntry.ino,
         archiveEntry.generation,
       );
@@ -6360,20 +5794,17 @@ export class MemoryFileSystem implements FileSystemBackend {
     atomicSnapshot?: SealedLazyAtomicSnapshot,
   ): Map<string, PreparedLazyArchiveReplacement> {
     const pending = new Map<string, PreparedLazyArchiveReplacement>();
-    const ordinaryDefinition = this.ordinaryLazyTreeDefinitions.get(group);
-    const authoritativeEntries = atomicSnapshot?.entries ??
-      ordinaryDefinition?.entries;
     const runtimeEntries: Array<[string, LazyArchiveFileEntry]> =
-      authoritativeEntries === undefined
+      atomicSnapshot === undefined
         ? Array.from(group.entries)
-        : authoritativeEntries.map((entry) => [entry.vfsPath, entry]);
+        : atomicSnapshot.entries.map((entry) => [entry.vfsPath, entry]);
     for (const [vfsPath, archiveEntry] of runtimeEntries) {
       if (
         archiveEntry.deleted ||
         archiveEntry.materialized ||
         archiveEntry.generation === undefined
       ) continue;
-      const key = memoryFileSystemInodeKey(
+      const key = MemoryFileSystem.inodeKey(
         archiveEntry.ino,
         archiveEntry.generation,
       );
@@ -6409,23 +5840,6 @@ export class MemoryFileSystem implements FileSystemBackend {
     group: LazyArchiveGroup,
     pending: ReadonlyMap<string, PreparedLazyArchiveReplacement>,
   ): void {
-    const ordinaryDefinition = this.ordinaryLazyTreeDefinitions.get(group);
-    if (ordinaryDefinition !== undefined) {
-      const entries = ordinaryDefinition.entries.map((entry) => {
-        const key = entry.generation === undefined
-          ? undefined
-          : memoryFileSystemInodeKey(entry.ino, entry.generation);
-        if (key === undefined || !pending.has(key)) return entry;
-        this.lazyArchiveInodes.delete(key);
-        return { ...entry, materialized: true };
-      });
-      this.replaceOrdinaryLazyTreeRuntimeState(
-        group,
-        entries,
-        entries.every((entry) => entry.deleted || entry.materialized),
-      );
-      return;
-    }
     for (const [key, replacement] of pending) {
       this.lazyArchiveInodes.delete(key);
       for (const alias of group.entries.values()) {
@@ -6478,7 +5892,7 @@ export class MemoryFileSystem implements FileSystemBackend {
           : S_IFREG;
       if (
         (st.mode & S_IFMT) !== expectedType ||
-        (st.mode & FILE_MODES.S_MODE_BITS) !== inventoryEntry.mode
+        (st.mode & 0o7777) !== inventoryEntry.mode
       ) {
         throw new Error(
           `Lazy atomic tree changed at ${inventoryEntry.vfsPath}`,
@@ -6521,7 +5935,7 @@ export class MemoryFileSystem implements FileSystemBackend {
             `Lazy atomic tree changed at ${inventoryEntry.vfsPath}`,
           );
         }
-        const key = memoryFileSystemInodeKey(entry.ino, entry.generation);
+        const key = MemoryFileSystem.inodeKey(entry.ino, entry.generation);
         if (this.lazyArchiveInodes.get(key) !== group) {
           throw new Error(
             `Lazy atomic tree lost deferred ownership of ${inventoryEntry.vfsPath}`,
@@ -6906,7 +6320,7 @@ export class MemoryFileSystem implements FileSystemBackend {
           entry.materialized ||
           entry.generation === undefined
         ) continue;
-        const key = memoryFileSystemInodeKey(entry.ino, entry.generation);
+        const key = MemoryFileSystem.inodeKey(entry.ino, entry.generation);
         if (!pending.has(key)) {
           throw new Error(
             `Lazy atomic activation group ${atomicGroup.id} has an incomplete publication`,
@@ -6965,9 +6379,10 @@ export class MemoryFileSystem implements FileSystemBackend {
       const genericGroups = this.lazyArchiveGroups.filter((group) => {
         const atomicGroup = this.lazyAtomicGroupByTree.get(group);
         const snapshot = this.sealedLazyAtomicStates.get(group)?.snapshot;
-        const definition = this.ordinaryLazyTreeDefinitions.get(group);
         return snapshot === undefined
-          ? definition !== undefined && !definition.materialized
+          ? !group.materialized &&
+            group.content !== undefined &&
+            group.inventory !== undefined
           : !atomicGroup?.committed;
       });
       if (
@@ -6994,9 +6409,10 @@ export class MemoryFileSystem implements FileSystemBackend {
     const pendingGenericTree = this.lazyArchiveGroups.some((group) => {
       const atomicGroup = this.lazyAtomicGroupByTree.get(group);
       const snapshot = this.sealedLazyAtomicStates.get(group)?.snapshot;
-      const definition = this.ordinaryLazyTreeDefinitions.get(group);
       return snapshot === undefined
-        ? definition !== undefined && !definition.materialized
+        ? !group.materialized &&
+          group.content !== undefined &&
+          group.inventory !== undefined
         : !atomicGroup?.committed;
     });
     if (
@@ -7379,7 +6795,7 @@ export class MemoryFileSystem implements FileSystemBackend {
   read(
     handle: number,
     buffer: Uint8Array,
-    offset: HostFileOffset | null,
+    offset: number | null,
     length: number,
   ): number {
     if (length > 0) {
@@ -7393,13 +6809,7 @@ export class MemoryFileSystem implements FileSystemBackend {
       }
     }
     if (offset !== null) {
-      return this.fs.readAt(
-        handle,
-        buffer.subarray(0, length),
-        typeof offset === "bigint"
-          ? hostFilePositionToSafeNumber(offset)
-          : offset,
-      );
+      return this.fs.readAt(handle, buffer.subarray(0, length), offset);
     }
     return this.fs.read(handle, buffer.subarray(0, length));
   }
@@ -7407,17 +6817,11 @@ export class MemoryFileSystem implements FileSystemBackend {
   write(
     handle: number,
     buffer: Uint8Array,
-    offset: HostFileOffset | null,
+    offset: number | null,
     length: number,
   ): number {
     if (offset !== null) {
-      const n = this.fs.writeAt(
-        handle,
-        buffer.subarray(0, length),
-        typeof offset === "bigint"
-          ? hostFilePositionToSafeNumber(offset)
-          : offset,
-      );
+      const n = this.fs.writeAt(handle, buffer.subarray(0, length), offset);
       if (n > 0) this.invalidateLazyData(this.fs.fstat(handle));
       return n;
     }
@@ -7426,35 +6830,8 @@ export class MemoryFileSystem implements FileSystemBackend {
     return n;
   }
 
-  append(
-    handle: number,
-    buffer: Uint8Array,
-    length: number,
-    limit: HostFileOffset | null,
-  ): AppendOutcome {
-    const outcome = this.fs.append(
-      handle,
-      buffer.subarray(0, length),
-      hostFileLimitForNumberBackend(limit),
-    );
-    if (outcome.written > 0) {
-      this.invalidateLazyData(this.fs.fstat(handle));
-    }
-    return outcome;
-  }
-
-  seek(
-    handle: number,
-    offset: HostFileOffset,
-    whence: number,
-  ): HostFileOffset {
-    return this.fs.lseek(
-      handle,
-      typeof offset === "bigint"
-        ? hostFileOffsetToSafeNumber(offset)
-        : offset,
-      whence,
-    );
+  seek(handle: number, offset: number, whence: number): number {
+    return this.fs.lseek(handle, offset, whence);
   }
 
   fstat(handle: number): StatResult {
@@ -7506,7 +6883,7 @@ export class MemoryFileSystem implements FileSystemBackend {
       fsid: 0,
       namelen: stats.maxName,
       frsize: stats.blockSize,
-      flags: ST_NOSUID,
+      flags: 0,
     };
   }
 
@@ -7528,7 +6905,7 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   unlink(path: string): void {
     const removed = this.fs.unlink(path);
-    const key = memoryFileSystemInodeKey(removed.ino, removed.generation);
+    const key = MemoryFileSystem.inodeKey(removed.ino, removed.generation);
     if (
       removed.linkCount > 1 &&
       (this.lazyFiles.has(key) || this.lazyArchiveInodes.has(key))
@@ -7552,38 +6929,18 @@ export class MemoryFileSystem implements FileSystemBackend {
 
     const group = this.lazyArchiveInodes.get(key);
     if (group) {
-      const ordinaryDefinition = this.ordinaryLazyTreeDefinitions.get(group);
-      if (ordinaryDefinition !== undefined) {
-        const entries = removed.linkCount <= 1
-          ? ordinaryDefinition.entries.map((candidate) =>
+      const entry = group.entries.get(path);
+      if (removed.linkCount <= 1) {
+        for (const candidate of group.entries.values()) {
+          if (
             candidate.ino === removed.ino &&
-              candidate.generation === removed.generation
-              ? { ...candidate, deleted: true }
-              : candidate
+            candidate.generation === removed.generation
           )
-          : ordinaryDefinition.entries.filter((candidate) =>
-            candidate.vfsPath !== path
-          );
-        this.replaceOrdinaryLazyTreeRuntimeState(
-          group,
-          entries,
-          ordinaryDefinition.materialized,
-        );
-        if (removed.linkCount <= 1) this.lazyArchiveInodes.delete(key);
-      } else {
-        const entry = group.entries.get(path);
-        if (removed.linkCount <= 1) {
-          for (const candidate of group.entries.values()) {
-            if (
-              candidate.ino === removed.ino &&
-              candidate.generation === removed.generation
-            )
-              candidate.deleted = true;
-          }
-          this.lazyArchiveInodes.delete(key);
-        } else if (entry) {
-          group.entries.delete(path);
+            candidate.deleted = true;
         }
+        this.lazyArchiveInodes.delete(key);
+      } else if (entry) {
+        group.entries.delete(path);
       }
     }
   }
@@ -7600,7 +6957,7 @@ export class MemoryFileSystem implements FileSystemBackend {
 
     let reconciledNamespace = false;
     if (replaced) {
-      const replacedKey = memoryFileSystemInodeKey(
+      const replacedKey = MemoryFileSystem.inodeKey(
         replaced.ino,
         replaced.generation,
       );
@@ -7627,35 +6984,12 @@ export class MemoryFileSystem implements FileSystemBackend {
       }
       const replacedGroup = this.lazyArchiveInodes.get(replacedKey);
       if (!reconciledNamespace && replacedGroup) {
-        const ordinaryDefinition =
-          this.ordinaryLazyTreeDefinitions.get(replacedGroup);
-        if (ordinaryDefinition !== undefined) {
-          const entries = replaced.linkCount <= 1
-            ? ordinaryDefinition.entries.map((candidate) =>
-              candidate.ino === replaced.ino &&
-                candidate.generation === replaced.generation
-                ? { ...candidate, deleted: true }
-                : candidate
-            )
-            : ordinaryDefinition.entries.filter((candidate) =>
-              candidate.vfsPath !== newPath
-            );
-          this.replaceOrdinaryLazyTreeRuntimeState(
-            replacedGroup,
-            entries,
-            ordinaryDefinition.materialized,
-          );
-          if (replaced.linkCount <= 1) {
-            this.lazyArchiveInodes.delete(replacedKey);
-          }
-        } else {
-          const entry = replacedGroup.entries.get(newPath);
-          if (replaced.linkCount <= 1) {
-            if (entry) entry.deleted = true;
-            this.lazyArchiveInodes.delete(replacedKey);
-          } else if (entry) {
-            replacedGroup.entries.delete(newPath);
-          }
+        const entry = replacedGroup.entries.get(newPath);
+        if (replaced.linkCount <= 1) {
+          if (entry) entry.deleted = true;
+          this.lazyArchiveInodes.delete(replacedKey);
+        } else if (entry) {
+          replacedGroup.entries.delete(newPath);
         }
       }
     }
@@ -7667,7 +7001,7 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   link(existingPath: string, newPath: string): void {
     const sourceIdentity = this.fs.link(existingPath, newPath);
-    const key = memoryFileSystemInodeKey(
+    const key = MemoryFileSystem.inodeKey(
       sourceIdentity.ino,
       sourceIdentity.generation,
     );
@@ -7676,27 +7010,12 @@ export class MemoryFileSystem implements FileSystemBackend {
 
     const group = this.lazyArchiveInodes.get(key);
     if (group) {
-      const ordinaryDefinition = this.ordinaryLazyTreeDefinitions.get(group);
-      if (ordinaryDefinition !== undefined) {
-        const source = ordinaryDefinition.entries.find((entry) =>
+      const source = Array.from(group.entries.values()).find(
+        (entry) =>
           entry.ino === sourceIdentity.ino &&
-          entry.generation === sourceIdentity.generation
-        );
-        if (source !== undefined) {
-          this.replaceOrdinaryLazyTreeRuntimeState(
-            group,
-            [...ordinaryDefinition.entries, { ...source, vfsPath: newPath }],
-            ordinaryDefinition.materialized,
-          );
-        }
-      } else {
-        const source = Array.from(group.entries.values()).find(
-          (entry) =>
-            entry.ino === sourceIdentity.ino &&
-            entry.generation === sourceIdentity.generation,
-        );
-        if (source) group.entries.set(newPath, { ...source });
-      }
+          entry.generation === sourceIdentity.generation,
+      );
+      if (source) group.entries.set(newPath, { ...source });
     }
   }
 
@@ -7725,7 +7044,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     gid: number,
     content: Uint8Array,
   ): void {
-    const fd = this.open(path, O_WRONLY_CREAT_TRUNC, mode);
+    const fd = this.open(path, 0o1101, mode); // O_WRONLY | O_CREAT | O_TRUNC
     if (content.length > 0) this.write(fd, content, null, content.length);
     this.close(fd);
     this.chown(path, uid, gid);
@@ -7757,7 +7076,7 @@ export class MemoryFileSystem implements FileSystemBackend {
   ): void {
     const st = this.lstat(path);
     const kind = st.mode & S_IFMT;
-    const mode = st.mode & FILE_MODES.S_MODE_BITS;
+    const mode = st.mode & 0o7777;
 
     if (kind === S_IFDIR) {
       if (path === "/") {
@@ -7898,289 +7217,18 @@ export class MemoryFileSystem implements FileSystemBackend {
     if (!entry) return null;
     // Determine d_type from mode
     const mode = entry.stat.mode;
-    let dtype: number = DT_UNKNOWN;
-    if ((mode & S_IFMT) === S_IFREG) dtype = DT_REG;
-    else if ((mode & S_IFMT) === S_IFDIR) dtype = DT_DIR;
-    else if ((mode & S_IFMT) === S_IFLNK) dtype = DT_LNK;
+    let dtype = 0; // DT_UNKNOWN
+    if ((mode & 0xf000) === 0x8000)
+      dtype = 8; // DT_REG
+    else if ((mode & 0xf000) === 0x4000)
+      dtype = 4; // DT_DIR
+    else if ((mode & 0xf000) === 0xa000) dtype = 10; // DT_LNK
     return { name: entry.name, type: dtype, ino: entry.stat.ino };
   }
 
   closedir(handle: number): void {
     this.fs.closedir(handle);
   }
-}
-
-const intrinsicCreateFreshMemoryFileSystem = MemoryFileSystem.createFresh;
-
-/** Invoke the captured fresh-backing constructor. */
-export function createFreshMemoryFileSystem(
-  byteLength: number,
-): MemoryFileSystem {
-  return intrinsicApply(
-    intrinsicCreateFreshMemoryFileSystem,
-    MemoryFileSystem,
-    [byteLength],
-  ) as MemoryFileSystem;
-}
-
-export interface MemoryFileSystemInodeIdentity {
-  dev: number;
-  ino: number;
-  generation: number;
-}
-
-interface MemoryFileSystemIdentitySource {
-  qualifiedInodeIdentity(path: string): MemoryFileSystemInodeIdentity;
-}
-
-const intrinsicQualifiedInodeIdentity = (
-  MemoryFileSystem.prototype as unknown as MemoryFileSystemIdentitySource
-).qualifiedInodeIdentity;
-
-/**
- * Capture one wrapper-qualified MemoryFS inode identity. JavaScript exposes no
- * primitive for comparing distinct SharedArrayBuffer wrappers' backing data,
- * so cross-wrapper security also requires fresh private construction.
- *
- * This read-only, single-path helper is deliberately absent from the public
- * VFS entry point. It cannot mint the immutable-product brand.
- */
-export function captureMemoryFileSystemInodeIdentity(
-  source: MemoryFileSystem,
-  path: string,
-): MemoryFileSystemInodeIdentity {
-  if (
-    !intrinsicApply(
-      intrinsicWeakSetHas,
-      memoryFileSystemInstances,
-      [source],
-    )
-  ) {
-    throw new Error("inode identity source must be a genuine MemoryFileSystem");
-  }
-  return intrinsicApply(
-    intrinsicQualifiedInodeIdentity,
-    source,
-    [path],
-  ) as MemoryFileSystemInodeIdentity;
-}
-
-const immutableProductMemoryFileSystemPrototype = capturePrivatePrototype(
-  MemoryFileSystem.prototype,
-);
-
-const IMMUTABLE_PRODUCT_MUTATORS = new Set<PropertyKey>([
-  "write",
-  "append",
-  "ftruncate",
-  "fchmod",
-  "fchown",
-  "mkdir",
-  "rmdir",
-  "unlink",
-  "rename",
-  "link",
-  "symlink",
-  "chmod",
-  "chown",
-  "lchown",
-  "utimensat",
-]);
-
-const IMMUTABLE_PRODUCT_READ_OPERATIONS = new Map<PropertyKey, unknown>([
-  ["preparePath", MemoryFileSystem.prototype.preparePath],
-  ["close", MemoryFileSystem.prototype.close],
-  ["read", MemoryFileSystem.prototype.read],
-  ["seek", MemoryFileSystem.prototype.seek],
-  ["fstat", MemoryFileSystem.prototype.fstat],
-  ["fpathconf", MemoryFileSystem.prototype.fpathconf],
-  ["fsync", MemoryFileSystem.prototype.fsync],
-  ["stat", MemoryFileSystem.prototype.stat],
-  ["lstat", MemoryFileSystem.prototype.lstat],
-  ["statfs", MemoryFileSystem.prototype.statfs],
-  ["pathconf", MemoryFileSystem.prototype.pathconf],
-  ["readlink", MemoryFileSystem.prototype.readlink],
-  ["opendir", MemoryFileSystem.prototype.opendir],
-  ["readdir", MemoryFileSystem.prototype.readdir],
-  ["closedir", MemoryFileSystem.prototype.closedir],
-]);
-
-interface ImmutableProductSnapshotSource {
-  snapshotForImmutableProduct(): MemoryFileSystem;
-}
-
-const intrinsicImmutableProductSnapshot = (
-  MemoryFileSystem.prototype as unknown as ImmutableProductSnapshotSource
-).snapshotForImmutableProduct;
-const intrinsicMemoryFileSystemOpen = MemoryFileSystem.prototype.open;
-const intrinsicMemoryFileSystemAccess = MemoryFileSystem.prototype.access;
-
-function immutableProductReadonlyFailure(): never {
-  throw new SFSError(EROFS, "EROFS: Read-only file system");
-}
-
-function normalizeImmutableProductInteger(
-  value: unknown,
-  label: string,
-): number {
-  const normalized = IntrinsicNumber(value);
-  if (!intrinsicNumberIsInteger(normalized)) {
-    throw new IntrinsicTypeError(`${label} must be an integer`);
-  }
-  return normalized;
-}
-
-/**
- * Create the internal backend used for reviewed, immutable product binaries.
- *
- * This factory is deliberately not re-exported by the public VFS entry point.
- * The wrapper preserves MemoryFS's open inode-generation lease while denying
- * every guest-visible content, namespace, ownership, and mode mutation.
- */
-export function createImmutableProductBackend(
-  source: MemoryFileSystem,
-): FileSystemBackend {
-  if (
-    !intrinsicApply(
-      intrinsicWeakSetHas,
-      memoryFileSystemInstances,
-      [source],
-    )
-  ) {
-    throw new Error(
-      "immutable product source must be a genuine MemoryFileSystem",
-    );
-  }
-  const snapshot = intrinsicApply(
-    intrinsicImmutableProductSnapshot,
-    source,
-    [],
-  ) as MemoryFileSystem;
-  if (
-    snapshot === source ||
-    !intrinsicApply(
-      intrinsicWeakSetHas,
-      memoryFileSystemInstances,
-      [snapshot],
-    )
-  ) {
-    throw new Error("immutable product source snapshot was not isolated");
-  }
-  intrinsicObjectSetPrototypeOf(
-    snapshot,
-    immutableProductMemoryFileSystemPrototype,
-  );
-
-  const facade = intrinsicObjectCreate(null) as FileSystemBackend;
-  const backend = new IntrinsicProxy(facade, {
-    get(_target, property) {
-      if (
-        intrinsicApply(
-          intrinsicSetHas,
-          IMMUTABLE_PRODUCT_MUTATORS,
-          [property],
-        )
-      ) {
-        return immutableProductReadonlyFailure;
-      }
-      if (property === "open") {
-        return (path: string, flags: number, mode: number): number => {
-          const normalizedFlags = normalizeImmutableProductInteger(
-            flags,
-            "immutable product open flags",
-          );
-          const accessMode = normalizedFlags & IMMUTABLE_PRODUCT_O_ACCMODE;
-          const mutates =
-            (normalizedFlags &
-              (IMMUTABLE_PRODUCT_O_CREAT | IMMUTABLE_PRODUCT_O_TRUNC)) !== 0;
-          if (accessMode !== O_RDONLY || mutates) {
-            return immutableProductReadonlyFailure();
-          }
-          return intrinsicApply(
-            intrinsicMemoryFileSystemOpen,
-            snapshot,
-            [path, normalizedFlags, mode],
-          ) as number;
-        };
-      }
-      if (property === "access") {
-        return (path: string, mode: number): void => {
-          const normalizedMode = normalizeImmutableProductInteger(
-            mode,
-            "immutable product access mode",
-          );
-          if ((normalizedMode & IMMUTABLE_PRODUCT_W_OK) !== 0) {
-            immutableProductReadonlyFailure();
-          }
-          intrinsicApply(
-            intrinsicMemoryFileSystemAccess,
-            snapshot,
-            [path, normalizedMode],
-          );
-        };
-      }
-      const operation = intrinsicApply(
-        intrinsicMapGet,
-        IMMUTABLE_PRODUCT_READ_OPERATIONS,
-        [property],
-      ) as unknown;
-      if (typeof operation === "function") {
-        return (...args: unknown[]): unknown =>
-          intrinsicApply(operation, snapshot, args);
-      }
-      // Do not leak MemoryFileSystem's producer-only helpers or private state
-      // through the narrower FileSystemBackend wrapper.
-      return undefined;
-    },
-    set: () => false,
-    defineProperty: () => false,
-    deleteProperty: () => false,
-  });
-  intrinsicApply(intrinsicWeakSetAdd, immutableProductBackends, [backend]);
-  return backend;
-}
-
-/** Resolve one mount's set-ID policy from private backend provenance. */
-export function resolveMountSetIdCapability(
-  config: Pick<MountConfig, "backend" | "readonly" | "setIdCapability">,
-): MountSetIdCapability {
-  const requested = config.setIdCapability;
-  if (requested === undefined) {
-    return NOSUID_CAPABILITY;
-  }
-  if (
-    typeof requested !== "object" || requested === null ||
-    Array.isArray(requested)
-  ) {
-    throw new Error("unknown set-ID mount capability");
-  }
-  if (requested.kind === "nosuid") return NOSUID_CAPABILITY;
-  if (requested.kind !== "trusted-root-product") {
-    throw new Error("unknown set-ID mount capability");
-  }
-  if (requested.guestWritable !== false) {
-    throw new Error("trusted root product mount must not be guest-writable");
-  }
-  if (config.readonly !== true) {
-    throw new Error("trusted root product mount must be read-only");
-  }
-  if (requested.stableExecutableIdentity !== true) {
-    throw new Error(
-      "trusted root product mount must require stable executable identity",
-    );
-  }
-  if (
-    !intrinsicApply(
-      intrinsicWeakSetHas,
-      immutableProductBackends,
-      [config.backend],
-    )
-  ) {
-    throw new Error(
-      "trusted root product mount requires an admitted immutable product backend with immutable handle generation identity",
-    );
-  }
-  return TRUSTED_ROOT_PRODUCT_CAPABILITY;
 }
 
 // fzstd is a regular sync static import (see top of file). Earlier we

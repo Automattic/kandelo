@@ -12,12 +12,7 @@ import { ABI_VERSION } from "../../../host/src/generated/abi";
 import {
   MemoryFileSystem,
   type LazyTreeRegistrationEntry,
-  type LazyTreeSourceInventory,
 } from "../../../host/src/vfs/memory-fs";
-import {
-  encodeMaterializationBytes,
-  type LazyTreeMaterializationPlan,
-} from "../../../host/src/vfs/materialization-plan";
 import {
   derivePackageDeferredZipTree,
   materializePackageDeferredZipTree,
@@ -71,24 +66,18 @@ async function lazyImage(groups: Array<{
   archive: Uint8Array;
   tarBytes?: number;
   inventory?: LazyTreeRegistrationEntry[];
-  source?: LazyTreeSourceInventory;
-  materialization?: LazyTreeMaterializationPlan;
 }>): Promise<Uint8Array> {
   const fs = MemoryFileSystem.create(new SharedArrayBuffer(32 * 1024 * 1024));
   fs.setImageMetadata({ version: 1, kernelAbi: ABI_VERSION });
   for (const group of groups) {
     if (group.inventory && group.tarBytes !== undefined) {
       fs.registerLazyTree({
-        decoder: "tar-gzip-v1",
+        decoder: "homebrew-bottle-tar-gzip-v1",
         mediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
         ...identity(group.archive),
         expandedBytes: group.tarBytes,
-        sourceEntryCount: group.source?.entries.length ?? group.inventory.length,
+        sourceEntryCount: group.inventory.length,
         transports: [group.url],
-        ...(group.source === undefined ? {} : { source: group.source }),
-        ...(group.materialization === undefined
-          ? {}
-          : { materialization: group.materialization }),
       }, group.inventory);
     } else {
       fs.registerLazyArchiveFromEntries(
@@ -353,108 +342,6 @@ test("Chromium retries a transient lazy-tree response before surfacing EIO", asy
   expect(result.firstReadError).toBeUndefined();
   expect(result.readText).toBe("verified-after-transient-502");
   expect(fetches).toBe(2);
-});
-
-test("browser applies a generic authenticated archive transformation", async ({
-  page,
-  baseURL,
-}) => {
-  if (!baseURL) throw new Error("Playwright baseURL is required");
-  const archiveUrl = "https://fixtures.kandelo.invalid/transformed.tar.gz";
-  const imageUrl = "https://fixtures.kandelo.invalid/transformed.vfs";
-  const sourceBytes = new TextEncoder().encode("prefix=@@ROOT@@\n");
-  const outputBytes = new TextEncoder().encode("prefix=/etc\n");
-  const tar = tarBytes([{
-    path: "bundle/config",
-    mode: 0o644,
-    data: sourceBytes,
-  }]);
-  const archive = gzipSync(tar);
-  const source = {
-    schema: 1,
-    kind: "archive-source-inventory-v1",
-    entries: [{
-      sourcePath: "bundle/config",
-      type: "file",
-      mode: 0o644,
-      size: sourceBytes.byteLength,
-    }],
-  } as const satisfies LazyTreeSourceInventory;
-  const recipe = {
-    id: "browser-root-relocation-v1",
-    replacements: [{
-      matchHex: encodeMaterializationBytes(
-        new TextEncoder().encode("@@ROOT@@"),
-      ),
-      replacementHex: encodeMaterializationBytes(
-        new TextEncoder().encode("/etc"),
-      ),
-    }],
-    rejectHex: [
-      encodeMaterializationBytes(new TextEncoder().encode("@@ROOT@@")),
-    ],
-  };
-  const materialization = {
-    schema: 1,
-    kind: "archive-byte-transforms-v1",
-    assertions: [{
-      sourcePath: "bundle/config",
-      bytesHex: encodeMaterializationBytes(sourceBytes),
-    }],
-    recipes: [recipe],
-    transforms: [{
-      sourcePath: "bundle/config",
-      recipe: recipe.id,
-      input: identity(sourceBytes),
-      output: identity(outputBytes),
-    }],
-  } as const satisfies LazyTreeMaterializationPlan;
-  const image = await lazyImage([{
-    url: archiveUrl,
-    archive,
-    tarBytes: tar.byteLength,
-    source,
-    materialization,
-    inventory: [{
-      vfsPath: "/etc/transformed-data",
-      sourcePath: "bundle/config",
-      materialization: "archive",
-      type: "file",
-      mode: 0o644,
-      size: outputBytes.byteLength,
-      inodeGroup: "browser:transformed-data",
-    }],
-  }]);
-  let fetches = 0;
-  await routeBytes(page, imageUrl, image, "application/octet-stream");
-  await page.route(archiveUrl, async (route) => {
-    fetches++;
-    await route.fulfill({
-      status: 200,
-      body: Buffer.from(archive),
-      headers: {
-        "access-control-allow-origin": "*",
-        "content-length": String(archive.byteLength),
-      },
-    });
-  });
-
-  await page.goto(new URL("/pages/homebrew-vfs-test/", baseURL).href);
-  await expect.poll(
-    () => page.evaluate(() => window.__homebrewVfsTestReady),
-    { timeout: 120_000 },
-  ).toBe(true);
-  const result = await page.evaluate(
-    (url) => window.__runLazyVfsAcceptance({
-      vfsUrl: url,
-      readPath: "/etc/transformed-data",
-      timeoutMs: 30_000,
-    }),
-    imageUrl,
-  );
-
-  expect(result.readText).toBe("prefix=/etc\n");
-  expect(fetches).toBe(1);
 });
 
 test("browser workers proxy external lazy archives under cross-origin isolation", async ({

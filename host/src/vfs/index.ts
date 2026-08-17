@@ -1,33 +1,13 @@
 export { readPreparedPlatformFile, VirtualPlatformIO } from "./vfs";
-export type { HostFileOffset } from "../types";
 export type { PreparedPlatformFile } from "./vfs";
 export { HostFileSystem } from "./host-fs";
-export {
-  MemoryFileSystem,
-  resolveMountSetIdCapability,
-} from "./memory-fs";
+export { MemoryFileSystem } from "./memory-fs";
 export {
   assertVfsDeferredTreeCollectionUsage,
   VFS_DEFERRED_TREE_COLLECTION_LIMITS,
   VFS_DEFERRED_TREE_LIMITS,
 } from "./deferred-tree-limits";
 export type { VfsDeferredTreeUsage } from "./deferred-tree-limits";
-export {
-  applyLazyTreeByteTransformRecipe,
-  decodeMaterializationBytes,
-  encodeMaterializationBytes,
-  validateLazyTreeMaterializationPlan,
-} from "./materialization-plan";
-export type {
-  LazyTreeByteIdentity,
-  LazyTreeByteReplacement,
-  LazyTreeByteTransform,
-  LazyTreeByteTransformRecipe,
-  LazyTreeMaterializationPlan,
-  LazyTreeMaterializationSourceEntry,
-  LazyTreeMaterializationSourceInventory,
-  LazyTreeSourceAssertion,
-} from "./materialization-plan";
 export {
   createClosedLazyAssetFetcher,
   loadClosedLazyAssetSources,
@@ -83,14 +63,7 @@ export { DeviceFileSystem } from "./device-fs";
 export { OpfsFileSystem } from "./opfs";
 export { OpfsChannel, OpfsChannelStatus, OpfsOpcode, OPFS_CHANNEL_SIZE } from "./opfs-channel";
 export { NodeTimeProvider, BrowserTimeProvider } from "./time";
-export { ST_NOSUID } from "./types";
-export type {
-  FileSystemBackend,
-  TimeProvider,
-  MountConfig,
-  MountSetIdCapability,
-  DirEntry,
-} from "./types";
+export type { FileSystemBackend, TimeProvider, MountConfig, DirEntry } from "./types";
 export { PATHCONF_NAMES } from "../generated/abi";
 export { filesystemPathconf } from "../pathconf";
 export type { PathconfProfile } from "../pathconf";

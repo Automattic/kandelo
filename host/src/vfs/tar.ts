@@ -1,8 +1,7 @@
 import { Gunzip } from "fflate";
-import { FILE_MODES } from "../generated/abi";
 
 const TAR_BLOCK_BYTES = 512;
-const MODE_BITS = FILE_MODES.S_MODE_BITS;
+const MODE_BITS = 0o7777;
 const MEBIBYTE = 1024 * 1024;
 const UTF8_DECODER = new TextDecoder("utf-8", {
   fatal: true,

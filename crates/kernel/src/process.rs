@@ -2,13 +2,8 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use core::ops::Deref;
-use wasm_posix_shared::{
-    platform_limits, process_metadata_contract, Errno, KernelRusage, WasmStat,
-    WasmStatfs,
-};
+use wasm_posix_shared::{Errno, KernelRusage, WasmStat, WasmStatfs};
 
-use crate::credentials::Credentials;
-use crate::exec_target::PreparedExecLedger;
 use crate::fd::FdTable;
 use crate::memory::MemoryManager;
 use crate::ofd::{FileType, OfdTable};
@@ -26,51 +21,17 @@ pub struct DirStream {
     pub synth_dot_state: u8,
 }
 
-/// Result of one backing-owned append operation.
-///
-/// `end` is captured while the backing still owns the EOF serialization
-/// boundary. Callers must not reconstruct it from a separate stat.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct HostAppendOutcome {
-    pub written: usize,
-    pub end: u64,
-}
-
 /// Trait for host I/O operations that the kernel delegates to the runtime.
 pub trait HostIO {
     fn host_open(&mut self, path: &[u8], flags: u32, mode: u32) -> Result<i64, Errno>;
     fn host_close(&mut self, handle: i64) -> Result<(), Errno>;
     fn host_read(&mut self, handle: i64, buf: &mut [u8]) -> Result<usize, Errno>;
     fn host_write(&mut self, handle: i64, buf: &[u8]) -> Result<usize, Errno>;
-    fn host_append(
-        &mut self,
-        _handle: i64,
-        _buf: &[u8],
-        _limit: Option<u64>,
-    ) -> Result<HostAppendOutcome, Errno> {
-        // Append must remain one host operation. Emulating it with seek/write
-        // would lose atomicity at the backing-filesystem boundary.
-        Err(Errno::ENOSYS)
-    }
-    fn host_pread(&mut self, _handle: i64, _buf: &mut [u8], _offset: i64) -> Result<usize, Errno> {
-        // Positioned I/O must be one host operation. A default seek/read/seek
-        // implementation would race another user of the shared host cursor.
-        Err(Errno::ENOSYS)
-    }
-    fn host_pwrite(&mut self, _handle: i64, _buf: &[u8], _offset: i64) -> Result<usize, Errno> {
-        // See host_pread: unsupported is truthful; cursor emulation is not.
-        Err(Errno::ENOSYS)
-    }
     fn host_seek(&mut self, handle: i64, offset: i64, whence: u32) -> Result<i64, Errno>;
     fn host_fstat(&mut self, handle: i64) -> Result<WasmStat, Errno>;
     fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno>;
     fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno>;
     fn host_statfs(&mut self, _path: &[u8]) -> Result<WasmStatfs, Errno> {
-        Err(Errno::ENOSYS)
-    }
-    /// Query filesystem policy through an already-open exact host object.
-    /// Pathname lookup is not an acceptable fallback for retained authority.
-    fn host_fstatfs(&mut self, _handle: i64) -> Result<WasmStatfs, Errno> {
         Err(Errno::ENOSYS)
     }
     fn host_pathconf(&mut self, _path: &[u8], _name: i32) -> Result<Option<i64>, Errno> {
@@ -110,6 +71,7 @@ pub trait HostIO {
     fn host_fsync(&mut self, handle: i64) -> Result<(), Errno>;
     fn host_fchmod(&mut self, handle: i64, mode: u32) -> Result<(), Errno>;
     fn host_fchown(&mut self, handle: i64, uid: u32, gid: u32) -> Result<(), Errno>;
+    fn host_exec(&mut self, path: &[u8]) -> Result<(), Errno>;
     fn host_set_alarm(&mut self, seconds: u32) -> Result<(), Errno>;
     /// Arm/disarm a POSIX timer on the host.
     /// `timer_id` is the per-process timer slot index.
@@ -437,26 +399,6 @@ pub struct DriBoBinding {
     pub bo_id: crate::dri::BoId,
 }
 
-/// Kernel-owned identity for one System V shared-memory attachment.
-///
-/// The host retains byte-coherence snapshots because it owns guest Memory,
-/// but attachment identity and lifetime belong to the process table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ShmMapping {
-    pub addr: usize,
-    pub shmid: i32,
-    pub size: usize,
-}
-
-/// Exact Rust-owned timer identities whose platform handles must be retired.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HostTimerCleanup {
-    pub cancel_alarm: bool,
-    pub posix_timer_ids: Vec<u32>,
-}
-
-const MAX_SYSV_SHM_MAPPINGS_PER_PROCESS: usize = 4096;
-
 /// Read-only identity of a thread owned by [`crate::process_table::ProcessTable`].
 ///
 /// [`ThreadInfo`] dereferences to this view so existing `thread.tid` reads stay
@@ -616,8 +558,7 @@ pub struct TimerFdState {
 pub struct PosixTimerState {
     pub clock_id: u32,
     pub sigev_signo: u32,
-    /// Raw `union sigval` bits, zero-extended when supplied by wasm32.
-    pub sigev_value_bits: u64,
+    pub sigev_value: i32,
     /// Kernel-facing notification mode (`SIGEV_SIGNAL`, `SIGEV_NONE`, or
     /// Linux's `SIGEV_THREAD_ID`). musl implements POSIX `SIGEV_THREAD` by
     /// creating a helper pthread and asking the kernel to target that TID.
@@ -666,10 +607,7 @@ fn posix_timer_notification_validates_and_normalizes_signals() {
     assert_eq!(normalize_posix_timer_signo(SIGEV_SIGNAL, 64).unwrap(), 64);
     assert!(normalize_posix_timer_signo(SIGEV_SIGNAL, 0).is_err());
     assert!(normalize_posix_timer_signo(SIGEV_SIGNAL, 65).is_err());
-    assert_eq!(
-        normalize_posix_timer_signo(SIGEV_THREAD_ID, 14).unwrap(),
-        14
-    );
+    assert_eq!(normalize_posix_timer_signo(SIGEV_THREAD_ID, 14).unwrap(), 14);
     assert!(normalize_posix_timer_signo(SIGEV_THREAD_ID, 0).is_err());
 }
 
@@ -733,22 +671,10 @@ pub struct ProcessIdentity {
 pub struct Process {
     identity: ProcessIdentity,
     pub ppid: u32,
-    credentials: Credentials,
-    /// Kernel-owned secure-startup fact for the current process image.
-    ///
-    /// Task 9 only preserves this marker across process-state transport.
-    /// Target-aware exec commit is the sole future authority that may set it.
-    pub(crate) secure_exec: bool,
-    /// Successful image replacements advance this generation exactly once.
-    /// Prepared exec targets bind to its current value and cannot survive a
-    /// competing commit for the same persistent PID.
-    pub(crate) exec_generation: u64,
-    /// Kernel-owned exact executable-object leases awaiting commit/cancel.
-    pub(crate) prepared_exec_targets: PreparedExecLedger,
-    /// A `posix_spawn` child is a real signal target while its host launch is
-    /// pending, but it is not yet part of the parent's waitable child set.
-    /// Only the parent-bound spawn publication transaction may clear this.
-    pub(crate) spawn_publication_pending: bool,
+    pub uid: u32,
+    pub gid: u32,
+    pub euid: u32,
+    pub egid: u32,
     pub pgid: u32,
     pub sid: u32,
     /// True iff this process is the session leader of its session (i.e. the
@@ -768,10 +694,6 @@ pub struct Process {
     pub wait_event: Option<ChildWaitEvent>,
     pub fd_table: FdTable,
     pub ofd_table: OfdTable,
-    /// Exact kernel-owned resources retained across host-driven blocking
-    /// retries. Numeric descriptors and IPC ids may be reused while a task is
-    /// asleep, so they are never sufficient retry authority by themselves.
-    pub(crate) blocked_retries: crate::blocked_retry::BlockingRetryState,
     pub pipes: Vec<Option<PipeBuffer>>,
     pub sockets: SocketTable,
     pub cwd: Vec<u8>,
@@ -787,38 +709,31 @@ pub struct Process {
     pub terminal: TerminalState,
     pub environ: Vec<Vec<u8>>,
     pub argv: Vec<Vec<u8>>,
-    /// In-progress host replacement, invisible until one token-bound commit
-    /// swaps the complete argv/environment pair.
-    metadata_replacement: Option<ProcessMetadataReplacement>,
-    /// Positive transaction tokens are never reused for this Process.
-    next_metadata_replacement_token: u32,
     pub umask: u32,
     /// Scheduling priority nice value (-20 to 19, default 0).
     pub nice: i32,
     pub rlimits: [[u64; 2]; 16], // [soft, hard] pairs for each resource
     pub alarm_deadline_ns: u64,
     pub alarm_interval_ns: u64,
-    pub thread_name: [u8; wasm_posix_shared::kernel_scratch_wire::PRCTL_NAME_BYTES as usize],
+    pub thread_name: [u8; 16],
     /// True if this process is a fork child that should exec on startup.
     pub fork_child: bool,
-    /// True while this process borrows its vfork parent's address space.
-    ///
-    /// This is kernel-internal lifecycle state, not guest-visible fork replay
-    /// state. It prevents the borrower from creating another address-space or
-    /// pthread owner before successful exec replaces the borrowed image.
-    pub vfork_child: bool,
-    /// Nested signal-mask-swapping waits owned by the process leader.
-    pub mask_waits: Vec<crate::signal::SignalMaskWaitContext>,
-    /// Caught-handler bookkeeping for the process leader. Pthreads keep the
-    /// same fields in their PerThreadSignalState.
-    pub caught_handler_depth: u32,
-    pub returned_handler_depths: Vec<u32>,
+    /// Saved signal mask during sigsuspend host retry.
+    /// Set on first sigsuspend call, restored when a signal is delivered.
+    pub sigsuspend_saved_mask: Option<u64>,
     /// Path to exec after fork (set by posix_spawn before forking).
     pub fork_exec_path: Option<Vec<u8>>,
     /// Argv for exec after fork.
     pub fork_exec_argv: Option<Vec<Vec<u8>>>,
     /// FD actions to apply before exec in fork child.
     pub fork_fd_actions: Vec<FdAction>,
+    /// Exact live task that completed the fallible exec-prepare phase.
+    ///
+    /// This is an ephemeral host/kernel handoff token. It is deliberately not
+    /// serialized across fork or legacy exec-state transfer: a replacement
+    /// image must be committed only by the same kernel-owned task that the
+    /// host explicitly prepared in the current process.
+    pub(crate) exec_prepared_tid: Option<u32>,
     /// Next ephemeral port to assign for bind(port=0).
     pub next_ephemeral_port: u16,
     /// Epoll instances owned by this process.
@@ -826,9 +741,9 @@ pub struct Process {
     /// POSIX timers (timer_create / timer_settime).
     pub posix_timers: Vec<Option<PosixTimerState>>,
     /// Alternate signal stack (sigaltstack): ss_sp, ss_flags, ss_size.
-    pub alt_stack_sp: u64,
+    pub alt_stack_sp: usize,
     pub alt_stack_flags: u32,
-    pub alt_stack_size: u64,
+    pub alt_stack_size: usize,
     /// Number of nested signal handlers running with SA_ONSTACK on alt stack.
     /// When > 0, SS_ONSTACK is set in alt_stack_flags.
     pub alt_stack_depth: u32,
@@ -846,9 +761,6 @@ pub struct Process {
     /// memory region with the bo currently bound there so `sys_munmap`
     /// can issue the matching [`HostIO::gbm_bo_unbind`].
     pub dri_bindings: Vec<DriBoBinding>,
-    /// SysV shared-memory attachments keyed by the process virtual address
-    /// returned from `shmat`.
-    pub shm_mappings: Vec<ShmMapping>,
     /// Counts how many times this process has called fork() (parent side, on success).
     /// Read-only from outside the kernel via `kernel_get_fork_count`.
     /// Used as a regression guardrail by the spawn test suite to confirm
@@ -921,72 +833,8 @@ impl StdioConfig {
     }
 }
 
-struct ProcessMetadataReplacement {
-    token: u32,
-    argv: Vec<Vec<u8>>,
-    environment: Vec<Vec<u8>>,
-    failed: bool,
-}
-
-impl ProcessMetadataReplacement {
-    fn entries_mut(
-        &mut self,
-        kind: u32,
-    ) -> Result<(&mut Vec<Vec<u8>>, usize), Errno> {
-        match kind {
-            process_metadata_contract::KIND_ARGV => Ok((
-                &mut self.argv,
-                platform_limits::PROCESS_STARTUP_MAX_ARGV_COUNT,
-            )),
-            process_metadata_contract::KIND_ENVIRONMENT => Ok((
-                &mut self.environment,
-                platform_limits::PROCESS_STARTUP_MAX_ENVP_COUNT,
-            )),
-            _ => Err(Errno::EINVAL),
-        }
-    }
-
-    fn stage_entry_with<F>(
-        &mut self,
-        kind: u32,
-        entry: &[u8],
-        allocate: F,
-    ) -> Result<(), Errno>
-    where
-        F: FnOnce(&[u8]) -> Result<Vec<u8>, Errno>,
-    {
-        if self.failed {
-            return Err(Errno::EINVAL);
-        }
-
-        let result = (|| {
-            if entry.len() > platform_limits::PROCESS_METADATA_ENTRY_MAX_BYTES {
-                return Err(Errno::E2BIG);
-            }
-            let (entries, maximum_entries) = self.entries_mut(kind)?;
-            if entries.len() >= maximum_entries {
-                return Err(Errno::E2BIG);
-            }
-
-            // Allocate the entry and the vector slot before publishing either
-            // one into the transaction. A failure therefore leaves the
-            // already-staged prefix intact for cancellation and cannot touch
-            // the live process metadata.
-            let owned = allocate(entry)?;
-            entries.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
-            entries.push(owned);
-            Ok(())
-        })();
-
-        // WHY: after any matching stage fails, committing the successfully
-        // staged prefix would recreate the partial-replacement bug even if a
-        // future host forgot its cancel path.
-        if result.is_err() {
-            self.failed = true;
-        }
-        result
-    }
-}
+pub(crate) const PROCESS_METADATA_ARGV: u32 = 0;
+pub(crate) const PROCESS_METADATA_ENVIRONMENT: u32 = 1;
 
 impl Process {
     /// Create a process for an identity allocated by `ProcessTable`.
@@ -1068,11 +916,13 @@ impl Process {
                 threads: Vec::new(),
             },
             ppid: 0,
-            credentials: Credentials::root(),
-            secure_exec: false,
-            exec_generation: 0,
-            prepared_exec_targets: PreparedExecLedger::new(),
-            spawn_publication_pending: false,
+            // Default to root (uid=0). The kernel is single-user; privilege
+            // drops happen explicitly via setuid/setgid and gate cross-user
+            // operations (kill, sched_*).
+            uid: 0,
+            gid: 0,
+            euid: 0,
+            egid: 0,
             pgid: pid,
             sid: 0,
             is_session_leader: false,
@@ -1082,7 +932,6 @@ impl Process {
             wait_event: None,
             fd_table,
             ofd_table,
-            blocked_retries: crate::blocked_retry::BlockingRetryState::new(),
             pipes: Vec::new(),
             sockets: SocketTable::new(),
             cwd: alloc::vec![b'/'],
@@ -1093,22 +942,18 @@ impl Process {
             terminal,
             environ: Vec::new(),
             argv: Vec::new(),
-            metadata_replacement: None,
-            next_metadata_replacement_token: 1,
             umask: 0o022,
             nice: 0,
             rlimits,
             alarm_deadline_ns: 0,
             alarm_interval_ns: 0,
-            thread_name: [0u8; wasm_posix_shared::kernel_scratch_wire::PRCTL_NAME_BYTES as usize],
+            thread_name: [0u8; 16],
             fork_child: false,
-            vfork_child: false,
-            mask_waits: Vec::new(),
-            caught_handler_depth: 0,
-            returned_handler_depths: Vec::new(),
+            sigsuspend_saved_mask: None,
             fork_exec_path: None,
             fork_exec_argv: None,
             fork_fd_actions: Vec::new(),
+            exec_prepared_tid: None,
             next_ephemeral_port: 49152,
             epolls: Vec::new(),
             posix_timers: Vec::new(),
@@ -1120,7 +965,6 @@ impl Process {
             has_exec: false,
             fb_binding: None,
             dri_bindings: Vec::new(),
-            shm_mappings: Vec::new(),
             fork_count: 0,
         }
     }
@@ -1128,107 +972,6 @@ impl Process {
     /// Return the immutable process identity assigned by `ProcessTable`.
     pub fn pid(&self) -> u32 {
         self.identity.pid
-    }
-
-    pub fn real_uid(&self) -> u32 {
-        self.credentials.ruid
-    }
-
-    pub fn effective_uid(&self) -> u32 {
-        self.credentials.euid
-    }
-
-    pub fn saved_uid(&self) -> u32 {
-        self.credentials.suid
-    }
-
-    pub fn real_gid(&self) -> u32 {
-        self.credentials.rgid
-    }
-
-    pub fn effective_gid(&self) -> u32 {
-        self.credentials.egid
-    }
-
-    pub fn saved_gid(&self) -> u32 {
-        self.credentials.sgid
-    }
-
-    pub fn supplementary_groups(&self) -> &[u32] {
-        &self.credentials.supplementary_groups
-    }
-
-    pub fn is_member_of_group(&self, gid: u32) -> bool {
-        self.credentials.is_member_of_group(gid)
-    }
-
-    pub fn setuid(&mut self, uid: u32) -> Result<(), Errno> {
-        self.credentials.setuid(uid)
-    }
-
-    pub fn seteuid(&mut self, uid: u32) -> Result<(), Errno> {
-        self.credentials.seteuid(uid)
-    }
-
-    pub fn setresuid(&mut self, ruid: u32, euid: u32, suid: u32) -> Result<(), Errno> {
-        self.credentials.setresuid(ruid, euid, suid)
-    }
-
-    pub fn setreuid(&mut self, ruid: u32, euid: u32) -> Result<(), Errno> {
-        self.credentials.setreuid(ruid, euid)
-    }
-
-    pub fn setgid(&mut self, gid: u32) -> Result<(), Errno> {
-        self.credentials.setgid(gid)
-    }
-
-    pub fn setegid(&mut self, gid: u32) -> Result<(), Errno> {
-        self.credentials.setegid(gid)
-    }
-
-    pub fn setresgid(&mut self, rgid: u32, egid: u32, sgid: u32) -> Result<(), Errno> {
-        self.credentials.setresgid(rgid, egid, sgid)
-    }
-
-    pub fn setregid(&mut self, rgid: u32, egid: u32) -> Result<(), Errno> {
-        self.credentials.setregid(rgid, egid)
-    }
-
-    pub fn setgroups(&mut self, groups: &[u32]) -> Result<(), Errno> {
-        self.credentials.setgroups(groups)
-    }
-
-    pub(crate) fn credentials(&self) -> &Credentials {
-        &self.credentials
-    }
-
-    pub(crate) fn install_credentials(&mut self, credentials: Credentials) {
-        self.credentials = credentials;
-    }
-
-    /// Apply POSIX_SPAWN_RESETIDS to the inherited child record.
-    ///
-    /// Saved IDs and supplementary groups remain exactly as inherited. This
-    /// mutation is intentionally private to the kernel's pending-child setup;
-    /// ordinary credential syscalls have their own permission transitions.
-    pub(crate) fn reset_effective_ids_to_real(&mut self) {
-        self.credentials.euid = self.credentials.ruid;
-        self.credentials.egid = self.credentials.rgid;
-    }
-
-    pub(crate) fn configure_ids(&mut self, uid: Option<u32>, gid: Option<u32>) {
-        let mut credentials = self.credentials.clone();
-        if let Some(uid) = uid {
-            credentials.ruid = uid;
-            credentials.euid = uid;
-            credentials.suid = uid;
-        }
-        if let Some(gid) = gid {
-            credentials.rgid = gid;
-            credentials.egid = gid;
-            credentials.sgid = gid;
-        }
-        self.credentials = credentials;
     }
 
     /// Override a fixture identity without exposing a production mutation API.
@@ -1248,13 +991,19 @@ impl Process {
         self.fork_count += 1;
     }
 
-    fn set_wait_event(&mut self, event_mask: u32, wait_status: i32, si_code: i32, si_status: i32) {
+    fn set_wait_event(
+        &mut self,
+        event_mask: u32,
+        wait_status: i32,
+        si_code: i32,
+        si_status: i32,
+    ) {
         self.wait_event = Some(ChildWaitEvent {
             event_mask,
             wait_status,
             si_code,
             si_status,
-            child_uid: self.real_uid(),
+            child_uid: self.uid,
             rusage: KernelRusage::default(),
         });
     }
@@ -1343,7 +1092,9 @@ impl Process {
     /// Apply process-control effects when a signal is generated, before the
     /// signal is queued or tested against a mask/disposition.
     fn prepare_signal_generation(&mut self, signum: u32) {
-        use wasm_posix_shared::signal::{NSIG, SIGCONT, SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU};
+        use wasm_posix_shared::signal::{
+            NSIG, SIGCONT, SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU,
+        };
 
         if signum == 0 || signum >= NSIG {
             return;
@@ -1365,9 +1116,9 @@ impl Process {
         self.signals.raise(signum)
     }
 
-    pub fn raise_signal_with_value(&mut self, signum: u32, si_value_bits: u64) -> bool {
+    pub fn raise_signal_with_value(&mut self, signum: u32, si_value: i32) -> bool {
         self.prepare_signal_generation(signum);
-        self.signals.raise_with_value(signum, si_value_bits)
+        self.signals.raise_with_value(signum, si_value)
     }
 
     /// Queue a process-directed signal with the generation metadata exposed
@@ -1376,14 +1127,15 @@ impl Process {
     pub(crate) fn raise_signal_with_metadata(
         &mut self,
         signum: u32,
-        si_value_bits: u64,
+        si_value: i32,
         si_code: i32,
-        sender_pid: u32,
-        sender_uid: u32,
     ) -> bool {
-        self.prepare_signal_generation(signum);
-        self.signals
-            .raise_with_metadata(signum, si_value_bits, si_code, sender_pid, sender_uid)
+        debug_assert!(matches!(si_code, 0 | -1));
+        if si_code == 0 {
+            self.raise_signal(signum)
+        } else {
+            self.raise_signal_with_value(signum, si_value)
+        }
     }
 
     /// Compatibility helper for the legacy pipe slot vector, reusing the first
@@ -1474,100 +1226,6 @@ impl Process {
         self.identity.threads.clear();
     }
 
-    /// Record one SysV shared-memory attachment after the host commits mmap.
-    pub fn record_shm_mapping(
-        &mut self,
-        addr: usize,
-        shmid: i32,
-        size: usize,
-    ) -> Result<(), Errno> {
-        if addr == 0 || shmid < 0 || size == 0 {
-            return Err(Errno::EINVAL);
-        }
-        if size > i32::MAX as usize {
-            return Err(Errno::EOVERFLOW);
-        }
-        if let Some(mapping) = self.shm_mapping_at(addr) {
-            return if mapping.shmid == shmid && mapping.size == size {
-                Ok(())
-            } else {
-                Err(Errno::EINVAL)
-            };
-        }
-        if self.shm_mappings.len() >= MAX_SYSV_SHM_MAPPINGS_PER_PROCESS {
-            return Err(Errno::ENOMEM);
-        }
-        self.shm_mappings
-            .try_reserve_exact(1)
-            .map_err(|_| Errno::ENOMEM)?;
-        self.shm_mappings.push(ShmMapping { addr, shmid, size });
-        Ok(())
-    }
-
-    /// Find a SysV shared-memory attachment by its process address.
-    pub fn shm_mapping_at(&self, addr: usize) -> Option<ShmMapping> {
-        self.shm_mappings.iter().copied().find(|m| m.addr == addr)
-    }
-
-    /// Remove and return a SysV shared-memory attachment by its process address.
-    pub fn remove_shm_mapping(&mut self, addr: usize) -> Option<ShmMapping> {
-        let idx = self.shm_mappings.iter().position(|m| m.addr == addr)?;
-        Some(self.shm_mappings.swap_remove(idx))
-    }
-
-    /// Drain every SysV attachment owned by the discarded address space.
-    pub(crate) fn take_shm_mappings(&mut self) -> Vec<ShmMapping> {
-        core::mem::take(&mut self.shm_mappings)
-    }
-
-    /// Drain the complete process-owned host timer identity list when it fits.
-    ///
-    /// Timer handles themselves are host primitives, but Rust owns whether an
-    /// alarm or POSIX timer remains attached to this process. Build the exact
-    /// batch before mutating either side so allocation or ID conversion failure
-    /// cannot leave a partially drained cleanup transaction.
-    pub fn take_host_timer_cleanup(
-        &mut self,
-        max_posix_timer_ids: usize,
-    ) -> Result<HostTimerCleanup, Errno> {
-        let timer_count = self
-            .posix_timers
-            .iter()
-            .filter(|slot| slot.is_some())
-            .count();
-        if timer_count > max_posix_timer_ids {
-            return Err(Errno::ERANGE);
-        }
-        let mut posix_timer_ids = Vec::new();
-        posix_timer_ids
-            .try_reserve_exact(timer_count)
-            .map_err(|_| Errno::ENOMEM)?;
-        if timer_count != 0 {
-            for (timer_id, slot) in self.posix_timers.iter().enumerate() {
-                if slot.is_none() {
-                    continue;
-                }
-                posix_timer_ids.push(u32::try_from(timer_id).map_err(|_| Errno::EOVERFLOW)?);
-                if posix_timer_ids.len() == timer_count {
-                    break;
-                }
-            }
-        }
-
-        let cancel_alarm = self.alarm_deadline_ns != 0 || self.alarm_interval_ns != 0;
-        self.alarm_deadline_ns = 0;
-        self.alarm_interval_ns = 0;
-        for timer_id in &posix_timer_ids {
-            self.remove_posix_timer_notification(*timer_id);
-            self.posix_timers[*timer_id as usize] = None;
-        }
-
-        Ok(HostTimerCleanup {
-            cancel_alarm,
-            posix_timer_ids,
-        })
-    }
-
     /// True if `tid` names the process's main thread. The main thread's TID
     /// equals the process PID (Linux convention) and is not tracked in
     /// [`Process::threads`]; its blocked mask lives in [`Process::signals`]
@@ -1588,6 +1246,40 @@ impl Process {
             && matches!(self.state, ProcessState::Running | ProcessState::Stopped)
             && tid != 0
             && (tid == self.pid || self.get_thread(tid).is_some())
+    }
+
+    /// Begin the fallible exec phase for an exact kernel-owned caller.
+    pub(crate) fn begin_exec_prepare(&mut self, caller_tid: u32) -> Result<(), Errno> {
+        // A failed or superseded prepare must never authorize a later commit.
+        self.exec_prepared_tid = None;
+        if !self.is_live_explicit_tid(caller_tid) {
+            return Err(Errno::ESRCH);
+        }
+        Ok(())
+    }
+
+    /// Mark a successful exec prepare after all fallible file actions finish.
+    pub(crate) fn finish_exec_prepare(&mut self, caller_tid: u32) {
+        debug_assert!(self.is_live_explicit_tid(caller_tid));
+        self.exec_prepared_tid = Some(caller_tid);
+    }
+
+    /// Consume the one-shot exec authorization for the same exact caller.
+    pub(crate) fn consume_exec_prepare(&mut self, caller_tid: u32) -> Result<(), Errno> {
+        // Every setup attempt consumes the token, including an invalid or
+        // mismatched attempt, so stale authority cannot be retried later.
+        let prepared_tid = self.exec_prepared_tid.take();
+        if !self.is_live_explicit_tid(caller_tid) {
+            return Err(Errno::ESRCH);
+        }
+        if prepared_tid != Some(caller_tid) {
+            return Err(Errno::EINVAL);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn clear_exec_prepare(&mut self) {
+        self.exec_prepared_tid = None;
     }
 
     /// Effective blocked mask for the given TID.
@@ -1762,7 +1454,7 @@ impl Process {
         &mut self,
         tid: u32,
         signum: u32,
-        si_value_bits: u64,
+        si_value: i32,
     ) -> bool {
         if signum == 0 || signum >= wasm_posix_shared::signal::NSIG {
             return false;
@@ -1777,51 +1469,9 @@ impl Process {
         }
         if self.is_main_thread(tid) {
             self.main_thread_signals
-                .raise_with_value(signum, si_value_bits)
+                .raise_with_value(signum, si_value)
         } else if let Some(thread) = self.get_thread_mut(tid) {
-            thread.signals.raise_with_value(signum, si_value_bits)
-        } else {
-            false
-        }
-    }
-
-    /// Queue a directed signal with authoritative sender metadata.
-    pub(crate) fn raise_for_thread_with_metadata(
-        &mut self,
-        tid: u32,
-        signum: u32,
-        si_value_bits: u64,
-        si_code: i32,
-        sender_pid: u32,
-        sender_uid: u32,
-    ) -> bool {
-        if signum == 0 || signum >= wasm_posix_shared::signal::NSIG {
-            return false;
-        }
-        if !self.is_main_thread(tid) && self.get_thread(tid).is_none() {
-            return false;
-        }
-        self.prepare_signal_generation(signum);
-        let handler = self.signals.get_handler(signum);
-        if crate::signal::should_discard_pending(signum, &handler) {
-            return true;
-        }
-        if self.is_main_thread(tid) {
-            self.main_thread_signals.raise_with_metadata(
-                signum,
-                si_value_bits,
-                si_code,
-                sender_pid,
-                sender_uid,
-            )
-        } else if let Some(thread) = self.get_thread_mut(tid) {
-            thread.signals.raise_with_metadata(
-                signum,
-                si_value_bits,
-                si_code,
-                sender_pid,
-                sender_uid,
-            )
+            thread.signals.raise_with_value(signum, si_value)
         } else {
             false
         }
@@ -1833,7 +1483,7 @@ impl Process {
         &mut self,
         tid: u32,
         signum: u32,
-        si_value_bits: u64,
+        si_value: i32,
         timer_id: u32,
     ) -> bool {
         if signum == 0 || signum >= wasm_posix_shared::signal::NSIG {
@@ -1849,9 +1499,9 @@ impl Process {
         }
         if self.is_main_thread(tid) {
             self.main_thread_signals
-                .raise_timer(signum, si_value_bits, timer_id)
+                .raise_timer(signum, si_value, timer_id)
         } else if let Some(thread) = self.get_thread_mut(tid) {
-            thread.signals.raise_timer(signum, si_value_bits, timer_id)
+            thread.signals.raise_timer(signum, si_value, timer_id)
         } else {
             false
         }
@@ -1964,7 +1614,9 @@ impl Process {
     /// Purge a deleted timer's queued notification before its slot is reused.
     pub fn remove_posix_timer_notification(&mut self, timer_id: u32) -> bool {
         let mut removed = self.signals.remove_timer_notification(timer_id);
-        removed |= self.main_thread_signals.remove_timer_notification(timer_id);
+        removed |= self
+            .main_thread_signals
+            .remove_timer_notification(timer_id);
         for thread in &mut self.identity.threads {
             removed |= thread
                 .state_mut()
@@ -1974,238 +1626,33 @@ impl Process {
         removed
     }
 
-    fn mask_waits_for(
-        &self,
-        tid: u32,
-    ) -> Option<&[crate::signal::SignalMaskWaitContext]> {
+    /// Read the saved sigsuspend/ppoll/pselect mask for TID.
+    pub fn sigsuspend_saved_mask_for(&self, tid: u32) -> Option<u64> {
         if self.is_main_thread(tid) {
-            Some(&self.mask_waits)
+            self.sigsuspend_saved_mask
         } else {
             self.get_thread(tid)
-                .map(|thread| thread.signals.mask_waits.as_slice())
+                .and_then(|t| t.signals.sigsuspend_saved_mask)
         }
     }
 
-    fn mask_waits_for_mut(
-        &mut self,
-        tid: u32,
-    ) -> Option<&mut Vec<crate::signal::SignalMaskWaitContext>> {
+    /// Set the saved sigsuspend/ppoll/pselect mask for TID.
+    pub fn set_sigsuspend_saved_mask_for(&mut self, tid: u32, val: Option<u64>) {
         if self.is_main_thread(tid) {
-            Some(&mut self.mask_waits)
+            self.sigsuspend_saved_mask = val;
+        } else if let Some(t) = self.get_thread_mut(tid) {
+            t.signals.sigsuspend_saved_mask = val;
+        }
+    }
+
+    /// Take (clear) the saved sigsuspend mask for TID, returning the old value.
+    pub fn take_sigsuspend_saved_mask_for(&mut self, tid: u32) -> Option<u64> {
+        if self.is_main_thread(tid) {
+            self.sigsuspend_saved_mask.take()
         } else {
             self.get_thread_mut(tid)
-                .map(|thread| &mut thread.signals.mask_waits)
+                .and_then(|t| t.signals.sigsuspend_saved_mask.take())
         }
-    }
-
-    pub fn mask_wait_depth_for(&self, tid: u32) -> usize {
-        self.mask_waits_for(tid).map_or(0, |waits| waits.len())
-    }
-
-    pub fn caught_handler_depth_for(&self, tid: u32) -> u32 {
-        if self.is_main_thread(tid) {
-            self.caught_handler_depth
-        } else {
-            self.get_thread(tid)
-                .map_or(0, |thread| thread.signals.caught_handler_depth)
-        }
-    }
-
-    fn set_caught_handler_depth_for(&mut self, tid: u32, depth: u32) {
-        if self.is_main_thread(tid) {
-            self.caught_handler_depth = depth;
-        } else if let Some(thread) = self.get_thread_mut(tid) {
-            thread.signals.caught_handler_depth = depth;
-        }
-    }
-
-    fn returned_handler_depths_for_mut(&mut self, tid: u32) -> Option<&mut Vec<u32>> {
-        if self.is_main_thread(tid) {
-            Some(&mut self.returned_handler_depths)
-        } else {
-            self.get_thread_mut(tid)
-                .map(|thread| &mut thread.signals.returned_handler_depths)
-        }
-    }
-
-    /// Enter a mask-swapping wait, distinguishing a host retry or libc
-    /// restart from a new wait nested inside a caught handler.
-    pub fn enter_signal_mask_wait_for(
-        &mut self,
-        tid: u32,
-        kind: crate::signal::SignalMaskWaitKind,
-        new_mask: u64,
-    ) {
-        use crate::signal::SignalMaskWaitState;
-
-        let current_mask = self.blocked_for(tid);
-        let current_handler_depth = self.caught_handler_depth_for(tid);
-        let reuse = self
-            .mask_waits_for(tid)
-            .and_then(|waits| waits.last())
-            .is_some_and(|wait| {
-                wait.kind == kind
-                    && wait.replacement_mask == new_mask
-                    && current_mask == wait.replacement_mask
-                    && match wait.state {
-                        // Repeated kernel attempts remain part of the active
-                        // invocation, including a wait nested in a handler.
-                        SignalMaskWaitState::Active => true,
-                        // A libc restart can only occur after the handler
-                        // which interrupted this frame has returned. At that
-                        // point the current handler depth is lower. Equal or
-                        // greater depth is a genuinely nested invocation,
-                        // even when the handler restored the same mask.
-                        SignalMaskWaitState::Interrupted { handler_depth } => {
-                            current_handler_depth < handler_depth
-                        }
-                    }
-            });
-        if reuse {
-            if let Some(wait) = self
-                .mask_waits_for_mut(tid)
-                .and_then(|waits| waits.last_mut())
-            {
-                wait.state = SignalMaskWaitState::Active;
-            }
-            return;
-        }
-
-        let saved_mask = self.blocked_for(tid);
-        if let Some(waits) = self.mask_waits_for_mut(tid) {
-            waits.push(crate::signal::SignalMaskWaitContext {
-                saved_mask,
-                replacement_mask: new_mask,
-                kind,
-                state: SignalMaskWaitState::Active,
-            });
-            self.set_blocked_for(tid, new_mask);
-        }
-    }
-
-    /// Complete the active top wait in strict LIFO order.
-    pub fn finish_signal_mask_wait_for(
-        &mut self,
-        tid: u32,
-        kind: crate::signal::SignalMaskWaitKind,
-    ) -> bool {
-        use crate::signal::SignalMaskWaitState;
-
-        let saved = self.mask_waits_for_mut(tid).and_then(|waits| {
-            waits
-                .last()
-                .filter(|wait| wait.kind == kind && wait.state == SignalMaskWaitState::Active)?;
-            waits.pop().map(|wait| wait.saved_mask)
-        });
-        if let Some(saved) = saved {
-            self.set_blocked_for(tid, saved);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Record one normal or nonlocal rt_sigreturn boundary.
-    pub fn return_from_caught_handler_for(&mut self, tid: u32) -> bool {
-        let depth = self.caught_handler_depth_for(tid);
-        if depth == 0 {
-            return false;
-        }
-        self.set_caught_handler_depth_for(tid, depth - 1);
-        if let Some(returned) = self.returned_handler_depths_for_mut(tid) {
-            returned.push(depth);
-        }
-        true
-    }
-
-    /// A following sigprocmask is libc's normal-return restoration, not a
-    /// siglongjmp abandonment.
-    pub fn acknowledge_caught_handler_mask_restore_for(&mut self, tid: u32) {
-        if let Some(returned) = self.returned_handler_depths_for_mut(tid) {
-            returned.pop();
-        }
-    }
-
-    /// Retire one exact mask-wait context. A context paired with an
-    /// unacknowledged rt_sigreturn belongs to siglongjmp and is discarded
-    /// without exposing an intermediate mask; the jump buffer supplies the
-    /// final mask. Normal and host cancellations restore the saved mask.
-    pub fn cancel_signal_mask_wait_for(&mut self, tid: u32) -> bool {
-        use crate::signal::SignalMaskWaitState;
-
-        let current_depth = self.caught_handler_depth_for(tid);
-        let returned_depth = self
-            .returned_handler_depths_for_mut(tid)
-            .and_then(|returned| returned.last().copied());
-        if let Some(depth) = returned_depth {
-            if let Some(returned) = self.returned_handler_depths_for_mut(tid) {
-                returned.pop();
-            }
-            let abandoned = self.mask_waits_for_mut(tid).and_then(|waits| {
-                waits
-                    .last()
-                    .filter(|wait| {
-                        wait.state
-                            == SignalMaskWaitState::Interrupted {
-                                handler_depth: depth,
-                            }
-                    })?;
-                waits.pop()
-            });
-            return abandoned.is_some();
-        }
-
-        let saved = self.mask_waits_for_mut(tid).and_then(|waits| {
-            let top = waits.last()?;
-            let eligible = match top.state {
-                SignalMaskWaitState::Active => true,
-                SignalMaskWaitState::Interrupted { handler_depth } => {
-                    handler_depth == current_depth.saturating_add(1)
-                }
-            };
-            eligible.then(|| waits.pop().expect("checked top mask wait"))
-        });
-        if let Some(wait) = saved {
-            self.set_blocked_for(tid, wait.saved_mask);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Install the mask active while a caught handler runs and return the
-    /// mask that normal handler return must restore.
-    ///
-    /// ppoll, pselect, and sigsuspend leave their replacement mask current
-    /// while the handler runs.  Their saved pre-wait mask remains Rust-owned
-    /// until the wait reaches a terminal kernel attempt or exact host-owned
-    /// cancellation.  The delivery record therefore restores the current
-    /// replacement mask after the handler, preserving one logical restarted
-    /// wait without exposing the caller's pre-wait mask between attempts.
-    pub(crate) fn install_caught_handler_mask_for(
-        &mut self,
-        tid: u32,
-        action_mask: u64,
-        signum: u32,
-    ) -> u64 {
-        use crate::signal::SignalMaskWaitState;
-
-        let handler_base_mask = self.blocked_for(tid);
-        let handler_depth = self.caught_handler_depth_for(tid).saturating_add(1);
-        self.set_caught_handler_depth_for(tid, handler_depth);
-        if let Some(wait) = self
-            .mask_waits_for_mut(tid)
-            .and_then(|waits| waits.last_mut())
-        {
-            if wait.state == SignalMaskWaitState::Active {
-                wait.state = SignalMaskWaitState::Interrupted { handler_depth };
-            }
-        }
-        self.set_blocked_for(
-            tid,
-            handler_base_mask | action_mask | crate::signal::sig_bit(signum),
-        );
-        handler_base_mask
     }
 
     /// Collect every TID that has `sig` unblocked (main + worker threads).
@@ -2228,87 +1675,29 @@ impl Process {
         out
     }
 
-    pub(crate) fn begin_metadata_replacement(&mut self) -> Result<u32, Errno> {
-        if self.metadata_replacement.is_some() {
-            return Err(Errno::EBUSY);
+    fn metadata_vector_mut(&mut self, kind: u32) -> Result<&mut Vec<Vec<u8>>, Errno> {
+        match kind {
+            PROCESS_METADATA_ARGV => Ok(&mut self.argv),
+            PROCESS_METADATA_ENVIRONMENT => Ok(&mut self.environ),
+            _ => Err(Errno::EINVAL),
         }
-
-        let token = self.next_metadata_replacement_token;
-        if token == 0 || token > i32::MAX as u32 {
-            return Err(Errno::EOVERFLOW);
-        }
-        self.next_metadata_replacement_token = token + 1;
-        self.metadata_replacement = Some(ProcessMetadataReplacement {
-            token,
-            argv: Vec::new(),
-            environment: Vec::new(),
-            failed: false,
-        });
-        Ok(token)
     }
 
-    fn stage_metadata_entry_with<F>(
-        &mut self,
-        token: u32,
-        kind: u32,
-        entry: &[u8],
-        allocate: F,
-    ) -> Result<(), Errno>
-    where
-        F: FnOnce(&[u8]) -> Result<Vec<u8>, Errno>,
-    {
-        let transaction = self
-            .metadata_replacement
-            .as_mut()
-            .filter(|transaction| transaction.token == token)
-            .ok_or(Errno::EINVAL)?;
-        transaction.stage_entry_with(kind, entry, allocate)
-    }
-
-    pub(crate) fn stage_metadata_entry(
-        &mut self,
-        token: u32,
-        kind: u32,
-        entry: &[u8],
-    ) -> Result<(), Errno> {
-        self.stage_metadata_entry_with(token, kind, entry, |source| {
-            let mut owned = Vec::new();
-            owned
-                .try_reserve_exact(source.len())
-                .map_err(|_| Errno::ENOMEM)?;
-            owned.extend_from_slice(source);
-            Ok(owned)
-        })
-    }
-
-    pub(crate) fn commit_metadata_replacement(&mut self, token: u32) -> Result<(), Errno> {
-        let transaction = self
-            .metadata_replacement
-            .as_ref()
-            .filter(|transaction| transaction.token == token)
-            .ok_or(Errno::EINVAL)?;
-        if transaction.failed {
-            return Err(Errno::EINVAL);
-        }
-
-        let transaction = self
-            .metadata_replacement
-            .take()
-            .expect("validated metadata transaction disappeared");
-        // WHY: both new vectors are fully Rust-owned before either live field
-        // changes. No host import or fallible allocation occurs between these
-        // assignments, so one export makes the pair visible atomically.
-        self.argv = transaction.argv;
-        self.environ = transaction.environment;
+    pub(crate) fn clear_metadata(&mut self, kind: u32) -> Result<(), Errno> {
+        self.metadata_vector_mut(kind)?.clear();
         Ok(())
     }
 
-    pub(crate) fn cancel_metadata_replacement(&mut self, token: u32) -> Result<(), Errno> {
-        self.metadata_replacement
-            .as_ref()
-            .filter(|transaction| transaction.token == token)
-            .ok_or(Errno::EINVAL)?;
-        self.metadata_replacement = None;
+    pub(crate) fn push_metadata_entry(&mut self, kind: u32, entry: &[u8]) -> Result<(), Errno> {
+        let mut owned = Vec::new();
+        owned
+            .try_reserve_exact(entry.len())
+            .map_err(|_| Errno::ENOMEM)?;
+        owned.extend_from_slice(entry);
+
+        let entries = self.metadata_vector_mut(kind)?;
+        entries.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+        entries.push(owned);
         Ok(())
     }
 }
@@ -2411,6 +1800,9 @@ pub(crate) mod test_host {
         fn host_fchown(&mut self, _h: i64, _u: u32, _g: u32) -> Result<(), Errno> {
             Ok(())
         }
+        fn host_exec(&mut self, _p: &[u8]) -> Result<(), Errno> {
+            Err(Errno::ENOSYS)
+        }
         fn host_set_alarm(&mut self, _s: u32) -> Result<(), Errno> {
             Ok(())
         }
@@ -2503,134 +1895,6 @@ mod tests {
     use crate::ofd::FileType;
     use crate::pipe::PipeBuffer;
 
-    fn install_socket_with_fd(proc: &mut Process, socket: crate::socket::SocketInfo) -> usize {
-        let socket_index = proc.sockets.alloc(socket);
-        let ofd_index = proc.ofd_table.create(
-            FileType::Socket,
-            wasm_posix_shared::flags::O_RDWR,
-            -((socket_index as i64) + 1),
-            b"/dev/socket".to_vec(),
-        );
-        proc.fd_table
-            .alloc(crate::fd::OpenFileDescRef(ofd_index), 0)
-            .unwrap();
-        socket_index
-    }
-
-    #[test]
-    fn temporary_wait_mask_forms_handler_mask_and_cancel_restores_once() {
-        use crate::signal::{SignalMaskWaitKind, sig_bit};
-        use crate::syscalls::cancel_host_owned_wait_for_tid;
-        use wasm_posix_shared::signal::{SIGALRM, SIGTERM, SIGUSR1, SIGUSR2};
-
-        let mut proc = Process::new(740);
-        let worker_tid = 741;
-        proc.add_thread(ThreadInfo::new(worker_tid, 0, 0, 0));
-
-        let original = sig_bit(SIGUSR2);
-        let temporary = sig_bit(SIGTERM);
-        let action_mask = sig_bit(SIGUSR1);
-        let handler_mask = temporary | action_mask | sig_bit(SIGALRM);
-
-        for tid in [proc.pid, worker_tid] {
-            proc.set_blocked_for(tid, original);
-            proc.enter_signal_mask_wait_for(tid, SignalMaskWaitKind::Ppoll, temporary);
-
-            let restore_mask = proc.install_caught_handler_mask_for(tid, action_mask, SIGALRM);
-
-            assert_eq!(restore_mask, temporary);
-            assert_eq!(proc.blocked_for(tid), handler_mask);
-            assert_eq!(proc.mask_wait_depth_for(tid), 1);
-
-            // Normal handler return preserves the replacement mask while the
-            // interrupted wait decides whether it will be resubmitted.
-            assert!(proc.return_from_caught_handler_for(tid));
-            proc.set_blocked_for(tid, restore_mask);
-            proc.acknowledge_caught_handler_mask_restore_for(tid);
-            assert_eq!(proc.blocked_for(tid), temporary);
-
-            assert!(cancel_host_owned_wait_for_tid(&mut proc, tid));
-            assert_eq!(proc.blocked_for(tid), original);
-            assert_eq!(proc.mask_wait_depth_for(tid), 0);
-            assert!(!cancel_host_owned_wait_for_tid(&mut proc, tid));
-            assert_eq!(proc.blocked_for(tid), original);
-        }
-    }
-
-    #[test]
-    fn ordinary_handler_return_uses_the_current_mask() {
-        use crate::signal::sig_bit;
-        use wasm_posix_shared::signal::{SIGALRM, SIGUSR1, SIGUSR2};
-
-        let mut proc = Process::new(742);
-        let original = sig_bit(SIGUSR2);
-        let action_mask = sig_bit(SIGUSR1);
-
-        proc.set_blocked_for(proc.pid, original);
-        let restore_mask = proc.install_caught_handler_mask_for(proc.pid, action_mask, SIGALRM);
-
-        assert_eq!(restore_mask, original);
-        assert_eq!(
-            proc.blocked_for(proc.pid),
-            original | action_mask | sig_bit(SIGALRM),
-        );
-        assert_eq!(proc.mask_wait_depth_for(proc.pid), 0);
-        assert!(proc.return_from_caught_handler_for(proc.pid));
-        proc.acknowledge_caught_handler_mask_restore_for(proc.pid);
-    }
-
-    #[test]
-    fn nested_mask_waits_restore_lifo_and_nonlocal_unwind_discards_each_frame() {
-        use crate::signal::{SignalMaskWaitKind, sig_bit};
-        use wasm_posix_shared::signal::{SIGALRM, SIGTERM, SIGUSR1, SIGUSR2};
-
-        let mut proc = Process::new(743);
-        let tid = proc.pid;
-        let original = sig_bit(SIGUSR2);
-        let outer = sig_bit(SIGTERM);
-        let inner = sig_bit(SIGUSR1);
-
-        proc.set_blocked_for(tid, original);
-        proc.enter_signal_mask_wait_for(tid, SignalMaskWaitKind::Ppoll, outer);
-        let outer_handler = proc.install_caught_handler_mask_for(tid, 0, SIGALRM);
-        // A handler may deliberately restore the outer replacement mask. A
-        // same-kind, same-mask wait entered at this handler depth is still a
-        // nested invocation, not a restart of the interrupted outer wait.
-        proc.set_blocked_for(tid, outer_handler);
-        proc.enter_signal_mask_wait_for(tid, SignalMaskWaitKind::Ppoll, outer);
-        assert_eq!(proc.mask_wait_depth_for(tid), 2);
-        assert!(proc.finish_signal_mask_wait_for(tid, SignalMaskWaitKind::Ppoll));
-        assert_eq!(proc.blocked_for(tid), outer_handler);
-        assert_eq!(proc.mask_wait_depth_for(tid), 1);
-
-        proc.enter_signal_mask_wait_for(tid, SignalMaskWaitKind::Pselect, inner);
-        assert_eq!(proc.mask_wait_depth_for(tid), 2);
-        assert!(proc.finish_signal_mask_wait_for(tid, SignalMaskWaitKind::Pselect));
-        assert_eq!(proc.blocked_for(tid), outer_handler);
-        assert_eq!(proc.mask_wait_depth_for(tid), 1);
-
-        assert!(proc.return_from_caught_handler_for(tid));
-        proc.set_blocked_for(tid, outer_handler);
-        proc.acknowledge_caught_handler_mask_restore_for(tid);
-        proc.enter_signal_mask_wait_for(tid, SignalMaskWaitKind::Ppoll, outer);
-        assert_eq!(proc.mask_wait_depth_for(tid), 1);
-        assert!(proc.finish_signal_mask_wait_for(tid, SignalMaskWaitKind::Ppoll));
-        assert_eq!(proc.blocked_for(tid), original);
-
-        proc.enter_signal_mask_wait_for(tid, SignalMaskWaitKind::Ppoll, outer);
-        proc.install_caught_handler_mask_for(tid, 0, SIGALRM);
-        proc.enter_signal_mask_wait_for(tid, SignalMaskWaitKind::Sigsuspend, inner);
-        proc.install_caught_handler_mask_for(tid, 0, SIGUSR1);
-        assert_eq!(proc.mask_wait_depth_for(tid), 2);
-        assert!(proc.return_from_caught_handler_for(tid));
-        assert!(proc.cancel_signal_mask_wait_for(tid));
-        assert_eq!(proc.mask_wait_depth_for(tid), 1);
-        assert!(proc.return_from_caught_handler_for(tid));
-        assert!(proc.cancel_signal_mask_wait_for(tid));
-        assert_eq!(proc.mask_wait_depth_for(tid), 0);
-        assert!(!proc.cancel_signal_mask_wait_for(tid));
-    }
-
     #[test]
     fn fork_count_starts_at_zero() {
         let proc = Process::new(1);
@@ -2641,7 +1905,8 @@ mod tests {
     fn child_status_record_is_replaced_by_each_new_transition() {
         use wasm_posix_shared::signal::{SIGCONT, SIGTERM, SIGTSTP};
         use wasm_posix_shared::wait::{
-            CLD_CONTINUED, CLD_KILLED, CLD_STOPPED, EVENT_CONTINUED, EVENT_EXITED, EVENT_STOPPED,
+            CLD_CONTINUED, CLD_KILLED, CLD_STOPPED, EVENT_CONTINUED, EVENT_EXITED,
+            EVENT_STOPPED,
         };
 
         let mut proc = Process::new(41);
@@ -2726,151 +1991,27 @@ mod tests {
     }
 
     #[test]
-    fn metadata_replacement_commits_both_vectors_and_preserves_empty_values() {
+    fn metadata_entry_transport_preserves_empty_values_and_empty_environment() {
         let mut proc = Process::new(77);
         proc.argv = vec![b"old".to_vec()];
         proc.environ = vec![b"OLD=value".to_vec()];
 
-        let token = proc.begin_metadata_replacement().unwrap();
-        proc.stage_metadata_entry(
-            token,
-            process_metadata_contract::KIND_ARGV,
-            b"new",
-        )
-        .unwrap();
-        proc.stage_metadata_entry(
-            token,
-            process_metadata_contract::KIND_ARGV,
-            b"",
-        )
-        .unwrap();
-        proc.commit_metadata_replacement(token).unwrap();
+        proc.clear_metadata(PROCESS_METADATA_ARGV).unwrap();
+        proc.push_metadata_entry(PROCESS_METADATA_ARGV, b"new")
+            .unwrap();
+        proc.push_metadata_entry(PROCESS_METADATA_ARGV, b"")
+            .unwrap();
+        proc.clear_metadata(PROCESS_METADATA_ENVIRONMENT).unwrap();
 
         assert_eq!(proc.argv, vec![b"new".to_vec(), Vec::new()]);
         assert!(proc.environ.is_empty());
     }
 
     #[test]
-    fn metadata_replacement_later_environment_allocation_failure_rolls_back_pair() {
+    fn metadata_entry_transport_rejects_unknown_vector_kind() {
         let mut proc = Process::new(78);
-        proc.argv = vec![b"old-program".to_vec(), b"old-argument".to_vec()];
-        proc.environ = vec![b"OLD=value".to_vec()];
-
-        let token = proc.begin_metadata_replacement().unwrap();
-        proc.stage_metadata_entry(
-            token,
-            process_metadata_contract::KIND_ARGV,
-            b"new-program",
-        )
-        .unwrap();
-        proc.stage_metadata_entry(
-            token,
-            process_metadata_contract::KIND_ENVIRONMENT,
-            b"NEW=first",
-        )
-        .unwrap();
-        assert_eq!(
-            proc.stage_metadata_entry_with(
-                token,
-                process_metadata_contract::KIND_ENVIRONMENT,
-                b"NEW=second",
-                |_| Err(Errno::ENOMEM),
-            ),
-            Err(Errno::ENOMEM),
-        );
-
-        // A failed transaction is not committable even if a host omits its
-        // required cancel path.
-        assert_eq!(
-            proc.commit_metadata_replacement(token),
-            Err(Errno::EINVAL),
-        );
-        assert_eq!(
-            proc.argv,
-            vec![b"old-program".to_vec(), b"old-argument".to_vec()]
-        );
-        assert_eq!(proc.environ, vec![b"OLD=value".to_vec()]);
-        proc.cancel_metadata_replacement(token).unwrap();
-        assert_eq!(
-            proc.argv,
-            vec![b"old-program".to_vec(), b"old-argument".to_vec()]
-        );
-        assert_eq!(proc.environ, vec![b"OLD=value".to_vec()]);
-    }
-
-    #[test]
-    fn metadata_replacement_rejects_overlap_stale_tokens_and_unknown_kinds() {
-        let mut proc = Process::new(79);
-        proc.argv = vec![b"old".to_vec()];
-        proc.environ = vec![b"OLD=value".to_vec()];
-
-        let first = proc.begin_metadata_replacement().unwrap();
-        assert_eq!(
-            proc.begin_metadata_replacement(),
-            Err(Errno::EBUSY),
-        );
-        assert_eq!(
-            proc.stage_metadata_entry(
-                first + 1,
-                process_metadata_contract::KIND_ARGV,
-                b"stale",
-            ),
-            Err(Errno::EINVAL),
-        );
-        assert_eq!(
-            proc.cancel_metadata_replacement(first + 1),
-            Err(Errno::EINVAL),
-        );
-        assert_eq!(
-            proc.stage_metadata_entry(
-                first,
-                99,
-                b"unknown-kind",
-            ),
-            Err(Errno::EINVAL),
-        );
-        assert_eq!(
-            proc.commit_metadata_replacement(first),
-            Err(Errno::EINVAL),
-        );
-        proc.cancel_metadata_replacement(first).unwrap();
-        assert_eq!(proc.argv, vec![b"old".to_vec()]);
-        assert_eq!(proc.environ, vec![b"OLD=value".to_vec()]);
-
-        let second = proc.begin_metadata_replacement().unwrap();
-        assert!(second > first);
-        proc.stage_metadata_entry(
-            second,
-            process_metadata_contract::KIND_ARGV,
-            b"second",
-        )
-        .unwrap();
-        proc.stage_metadata_entry(
-            second,
-            process_metadata_contract::KIND_ENVIRONMENT,
-            b"SECOND=value",
-        )
-        .unwrap();
-        proc.commit_metadata_replacement(second).unwrap();
-        assert_eq!(proc.argv, vec![b"second".to_vec()]);
-        assert_eq!(proc.environ, vec![b"SECOND=value".to_vec()]);
-
-        let third = proc.begin_metadata_replacement().unwrap();
-        proc.stage_metadata_entry(
-            third,
-            process_metadata_contract::KIND_ARGV,
-            b"argv-only",
-        )
-        .unwrap();
-        proc.stage_metadata_entry(
-            third,
-            process_metadata_contract::KIND_ENVIRONMENT,
-            b"THIRD=value",
-        )
-        .unwrap();
-        proc.commit_metadata_replacement(third).unwrap();
-        assert_eq!(proc.argv, vec![b"argv-only".to_vec()]);
-        assert_eq!(proc.environ, vec![b"THIRD=value".to_vec()]);
+        assert_eq!(proc.clear_metadata(99), Err(Errno::EINVAL));
+        assert_eq!(proc.push_metadata_entry(99, b"value"), Err(Errno::EINVAL));
     }
 
     #[test]
@@ -2879,7 +2020,7 @@ mod tests {
         proc.posix_timers.push(Some(PosixTimerState {
             clock_id: 1,
             sigev_signo: 32,
-            sigev_value_bits: 7,
+            sigev_value: 7,
             sigev_notify: 0,
             sigev_tid: 0,
             interval_sec: 0,
@@ -2920,12 +2061,38 @@ mod tests {
     }
 
     #[test]
+    fn exec_prepare_authorization_is_exact_and_one_shot() {
+        let mut proc = Process::new(41);
+        proc.add_thread(ThreadInfo::new(42, 0, 0, 0));
+
+        assert_eq!(proc.begin_exec_prepare(0), Err(Errno::ESRCH));
+        assert_eq!(proc.consume_exec_prepare(41), Err(Errno::EINVAL));
+        proc.begin_exec_prepare(42).unwrap();
+        proc.finish_exec_prepare(42);
+        assert_eq!(proc.consume_exec_prepare(41), Err(Errno::EINVAL));
+        assert_eq!(proc.consume_exec_prepare(42), Err(Errno::EINVAL));
+
+        proc.begin_exec_prepare(42).unwrap();
+        proc.finish_exec_prepare(42);
+        assert_eq!(proc.begin_exec_prepare(9_999), Err(Errno::ESRCH));
+        assert_eq!(proc.consume_exec_prepare(42), Err(Errno::EINVAL));
+
+        proc.begin_exec_prepare(42).unwrap();
+        proc.finish_exec_prepare(42);
+        assert_eq!(proc.consume_exec_prepare(42), Ok(()));
+        assert_eq!(proc.consume_exec_prepare(42), Err(Errno::EINVAL));
+
+        let mut synthetic_init = Process::new(1);
+        assert_eq!(synthetic_init.begin_exec_prepare(1), Err(Errno::ESRCH));
+    }
+
+    #[test]
     fn legacy_interval_fire_preserves_host_signal_contract() {
         let mut proc = Process::new(1);
         proc.posix_timers.push(Some(PosixTimerState {
             clock_id: 1,
             sigev_signo: 10,
-            sigev_value_bits: 7,
+            sigev_value: 7,
             sigev_notify: 0,
             sigev_tid: 0,
             interval_sec: 0,
@@ -2954,7 +2121,7 @@ mod tests {
         proc.posix_timers.push(Some(PosixTimerState {
             clock_id: 1,
             sigev_signo: 10,
-            sigev_value_bits: 7,
+            sigev_value: 7,
             sigev_notify: 4,
             sigev_tid: 2,
             interval_sec: 0,
@@ -2965,16 +2132,13 @@ mod tests {
             overrun_current: 2,
             overrun_last: 0,
         }));
-        proc.get_thread_mut(2)
-            .unwrap()
-            .signals
-            .raise_timer(10, 7, 0);
+        proc.get_thread_mut(2).unwrap().signals.raise_timer(10, 7, 0);
 
         assert!(proc.remove_posix_timer_notification(0));
         proc.posix_timers[0] = Some(PosixTimerState {
             clock_id: 1,
             sigev_signo: 10,
-            sigev_value_bits: 8,
+            sigev_value: 8,
             sigev_notify: 0,
             sigev_tid: 0,
             interval_sec: 0,
@@ -3022,85 +2186,6 @@ mod tests {
     }
 
     #[test]
-    fn shm_mapping_bookkeeping_is_keyed_by_process_addr() {
-        let mut proc = Process::new(1);
-
-        proc.record_shm_mapping(0x20000, 7, 4096).unwrap();
-        assert_eq!(
-            proc.shm_mapping_at(0x20000),
-            Some(ShmMapping {
-                addr: 0x20000,
-                shmid: 7,
-                size: 4096,
-            })
-        );
-
-        assert_eq!(
-            proc.record_shm_mapping(0x20000, 8, 8192),
-            Err(Errno::EINVAL)
-        );
-        assert_eq!(
-            proc.record_shm_mapping(0x30000, 8, i32::MAX as usize + 1),
-            Err(Errno::EOVERFLOW)
-        );
-        assert_eq!(proc.shm_mappings.len(), 1);
-        assert_eq!(
-            proc.remove_shm_mapping(0x20000),
-            Some(ShmMapping {
-                addr: 0x20000,
-                shmid: 7,
-                size: 4096,
-            })
-        );
-        assert_eq!(proc.shm_mapping_at(0x20000), None);
-    }
-
-    #[test]
-    fn host_timer_cleanup_is_bounded_and_transactional() {
-        let timer = |signo| PosixTimerState {
-            clock_id: 1,
-            sigev_signo: signo,
-            sigev_value_bits: 0,
-            sigev_notify: 0,
-            sigev_tid: 0,
-            interval_sec: 0,
-            interval_nsec: 0,
-            value_sec: 1,
-            value_nsec: 0,
-            notification_pending: false,
-            overrun_current: 0,
-            overrun_last: 0,
-        };
-        let mut proc = Process::new(1);
-        proc.alarm_deadline_ns = 10;
-        proc.alarm_interval_ns = 5;
-        proc.posix_timers.push(Some(timer(14)));
-        proc.posix_timers.push(None);
-        proc.posix_timers.push(Some(timer(15)));
-
-        assert_eq!(proc.take_host_timer_cleanup(1), Err(Errno::ERANGE));
-        assert_eq!(proc.alarm_deadline_ns, 10);
-        assert_eq!(proc.alarm_interval_ns, 5);
-        assert!(proc.posix_timers[0].is_some());
-        assert!(proc.posix_timers[2].is_some());
-
-        let cleanup = proc.take_host_timer_cleanup(2).unwrap();
-        assert!(cleanup.cancel_alarm);
-        assert_eq!(cleanup.posix_timer_ids, alloc::vec![0, 2]);
-        assert_eq!(proc.alarm_deadline_ns, 0);
-        assert_eq!(proc.alarm_interval_ns, 0);
-        assert!(proc.posix_timers.iter().all(Option::is_none));
-
-        assert_eq!(
-            proc.take_host_timer_cleanup(1).unwrap(),
-            HostTimerCleanup {
-                cancel_alarm: false,
-                posix_timer_ids: alloc::vec![],
-            }
-        );
-    }
-
-    #[test]
     fn spawn_child_basic_inherits_cwd_and_returns_pid() {
         use crate::process_table::ProcessTable;
         use crate::spawn::SpawnAttrs;
@@ -3111,8 +2196,7 @@ mod tests {
         let mut host = test_host::NoopHost;
         let child_pid = table
             .spawn_child_for_caller(
-                parent_pid,
-                parent_pid,
+                parent_pid, parent_pid,
                 &[b"/bin/echo".as_slice(), b"hi".as_slice()],
                 &[b"PATH=/bin".as_slice()],
                 &[],
@@ -3157,10 +2241,12 @@ mod tests {
         let backlog_idx = unsafe { shared_listener_backlog_table().alloc() };
         let mut listener = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
         listener.shared_backlog_idx = Some(backlog_idx);
-        let _sock_idx = install_socket_with_fd(
-            table.processes.get_mut(&parent_pid).unwrap(),
-            listener,
-        );
+        let _sock_idx = table
+            .processes
+            .get_mut(&parent_pid)
+            .unwrap()
+            .sockets
+            .alloc(listener);
 
         let initial = unsafe { shared_listener_backlog_table().entries[backlog_idx].ref_count };
         assert_eq!(initial, 1, "alloc starts the slot at ref_count=1");
@@ -3168,8 +2254,7 @@ mod tests {
         let mut host = test_host::NoopHost;
         let _child_pid = table
             .spawn_child_for_caller(
-                parent_pid,
-                parent_pid,
+                parent_pid, parent_pid,
                 &[b"a".as_slice()],
                 &[],
                 &[],
@@ -3185,9 +2270,7 @@ mod tests {
         );
 
         // Same slot should also bump on fork — the helper is shared.
-        table
-            .fork_process_for_caller(parent_pid, parent_pid)
-            .expect("fork_process");
+        table.fork_process_for_caller(parent_pid, parent_pid).expect("fork_process");
         let after_fork = unsafe { shared_listener_backlog_table().entries[backlog_idx].ref_count };
         assert_eq!(
             after_fork, 3,
@@ -3213,7 +2296,12 @@ mod tests {
         const HANDLE: i32 = 42;
         let mut sock = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
         sock.host_net_handle = Some(HANDLE);
-        install_socket_with_fd(table.processes.get_mut(&parent_pid).unwrap(), sock);
+        table
+            .processes
+            .get_mut(&parent_pid)
+            .unwrap()
+            .sockets
+            .alloc(sock);
 
         // The handle isn't in the cross-process table yet — single-owner.
         assert_eq!(host_net_handle_ref_count(HANDLE), 0);
@@ -3223,8 +2311,7 @@ mod tests {
         let mut host = test_host::NoopHost;
         let _child = table
             .spawn_child_for_caller(
-                parent_pid,
-                parent_pid,
+                parent_pid, parent_pid,
                 &[b"a".as_slice()],
                 &[],
                 &[],
@@ -3239,9 +2326,7 @@ mod tests {
         );
 
         // Forking again bumps once more.
-        table
-            .fork_process_for_caller(parent_pid, parent_pid)
-            .expect("fork_process");
+        table.fork_process_for_caller(parent_pid, parent_pid).expect("fork_process");
         assert_eq!(
             host_net_handle_ref_count(HANDLE),
             3,
@@ -3283,8 +2368,8 @@ mod tests {
         let mut tcp = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
         tcp.oob_byte = Some(0xAB);
         let parent = table.processes.get_mut(&parent_pid).unwrap();
-        let udp_idx = install_socket_with_fd(parent, udp);
-        let tcp_idx = install_socket_with_fd(parent, tcp);
+        let udp_idx = parent.sockets.alloc(udp);
+        let tcp_idx = parent.sockets.alloc(tcp);
 
         // Sanity: parent still has the consume-once data.
         assert_eq!(
@@ -3312,8 +2397,7 @@ mod tests {
         let mut host = test_host::NoopHost;
         let child_pid = table
             .spawn_child_for_caller(
-                parent_pid,
-                parent_pid,
+                parent_pid, parent_pid,
                 &[b"a".as_slice()],
                 &[],
                 &[],
@@ -3360,7 +2444,7 @@ mod tests {
         listener.listen_backlog.push(7);
         listener.listen_backlog.push(11);
         let parent = table.processes.get_mut(&parent_pid).unwrap();
-        let listener_idx = install_socket_with_fd(parent, listener);
+        let listener_idx = parent.sockets.alloc(listener);
 
         // Sanity: parent has both pending entries.
         assert_eq!(
@@ -3379,8 +2463,7 @@ mod tests {
         let mut host = test_host::NoopHost;
         let spawn_child = table
             .spawn_child_for_caller(
-                parent_pid,
-                parent_pid,
+                parent_pid, parent_pid,
                 &[b"a".as_slice()],
                 &[],
                 &[],
@@ -3401,9 +2484,7 @@ mod tests {
         );
 
         // Fork child must NOT inherit them either.
-        let fork_child = table
-            .fork_process_for_caller(parent_pid, parent_pid)
-            .expect("fork_process");
+        let fork_child = table.fork_process_for_caller(parent_pid, parent_pid).expect("fork_process");
         assert!(
             table
                 .get(fork_child)
@@ -3446,15 +2527,18 @@ mod tests {
         let parent_pid = table.create_process().unwrap();
         let mut sock = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
         sock.host_net_handle = Some(HANDLE);
-        let _sock_idx =
-            install_socket_with_fd(table.processes.get_mut(&parent_pid).unwrap(), sock);
+        let _sock_idx = table
+            .processes
+            .get_mut(&parent_pid)
+            .unwrap()
+            .sockets
+            .alloc(sock);
 
         // Spawn a child → bump the refcount to (parent=1, child=2).
         let mut host = test_host::NoopHost;
         let child_pid = table
             .spawn_child_for_caller(
-                parent_pid,
-                parent_pid,
+                parent_pid, parent_pid,
                 &[b"a".as_slice()],
                 &[],
                 &[],
@@ -3512,9 +2596,7 @@ mod tests {
             .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
             .unwrap();
 
-        let child_pid = table
-            .fork_process_for_caller(parent_pid, parent_pid)
-            .expect("fork_process");
+        let child_pid = table.fork_process_for_caller(parent_pid, parent_pid).expect("fork_process");
         assert_eq!(host_handle_ref_count(HANDLE), 2);
 
         let child = table.remove_process(child_pid).expect("remove child");
@@ -3592,8 +2674,7 @@ mod tests {
         let mut host = test_host::NoopHost;
         let child_pid = table
             .spawn_child_for_caller(
-                parent_pid,
-                parent_pid,
+                parent_pid, parent_pid,
                 &[b"a".as_slice()],
                 &[],
                 &[FileAction::Close { fd: 5 }],
@@ -3647,8 +2728,7 @@ mod tests {
         let mut host = test_host::NoopHost;
         let child_pid = table
             .spawn_child_for_caller(
-                parent_pid,
-                parent_pid,
+                parent_pid, parent_pid,
                 &[b"a".as_slice()],
                 &[],
                 &[FileAction::Dup2 { srcfd: 5, fd: 1 }],
@@ -3678,9 +2758,9 @@ mod tests {
     }
 
     #[test]
-    fn spawn_child_late_action_failure_drops_partial_child() {
-        // A successful first action followed by Dup2 from a closed source fd
-        // must fail with EBADF and leave the parent's process table unchanged.
+    fn spawn_child_action_failure_drops_partial_child() {
+        // Dup2 from a closed source fd must fail with EBADF and leave the
+        // parent's process table unchanged.
         use crate::process_table::ProcessTable;
         use crate::spawn::{FileAction, SpawnAttrs};
         use wasm_posix_shared::Errno;
@@ -3689,19 +2769,14 @@ mod tests {
         let parent_pid = table.create_process().unwrap();
         let pids_before: Vec<u32> = table.all_pids();
         let parent_fork_count_before = table.get(parent_pid).unwrap().fork_count();
-        assert!(table.get(parent_pid).unwrap().fd_table.get(0).is_ok());
 
         let mut host = test_host::NoopHost;
         let err = table
             .spawn_child_for_caller(
-                parent_pid,
-                parent_pid,
+                parent_pid, parent_pid,
                 &[b"a".as_slice()],
                 &[],
-                &[
-                    FileAction::Close { fd: 0 },
-                    FileAction::Dup2 { srcfd: 999, fd: 1 },
-                ],
+                &[FileAction::Dup2 { srcfd: 999, fd: 1 }],
                 &SpawnAttrs::empty(),
                 &mut host,
             )
@@ -3711,10 +2786,6 @@ mod tests {
         // No new pid leaked.
         let pids_after: Vec<u32> = table.all_pids();
         assert_eq!(pids_before, pids_after, "no partial child must remain");
-        assert!(
-            table.get(parent_pid).unwrap().fd_table.get(0).is_ok(),
-            "the successful child-only action must not affect the parent"
-        );
         // fork_count still 0.
         assert_eq!(
             table.get(parent_pid).unwrap().fork_count(),
@@ -3741,15 +2812,7 @@ mod tests {
         };
         let mut host = test_host::NoopHost;
         let cpid = table
-            .spawn_child_for_caller(
-                parent_pid,
-                parent_pid,
-                &[b"a".as_slice()],
-                &[],
-                &[],
-                &attrs,
-                &mut host,
-            )
+            .spawn_child_for_caller(parent_pid, parent_pid, &[b"a".as_slice()], &[], &[], &attrs, &mut host)
             .unwrap();
 
         let child = table.get(cpid).unwrap();
@@ -3777,15 +2840,7 @@ mod tests {
         };
         let mut host = test_host::NoopHost;
         let cpid = table
-            .spawn_child_for_caller(
-                parent_pid,
-                parent_pid,
-                &[b"a".as_slice()],
-                &[],
-                &[],
-                &attrs,
-                &mut host,
-            )
+            .spawn_child_for_caller(parent_pid, parent_pid, &[b"a".as_slice()], &[], &[], &attrs, &mut host)
             .unwrap();
         assert_eq!(
             table.get(cpid).unwrap().pgid,
@@ -3810,15 +2865,7 @@ mod tests {
         };
         let mut host = test_host::NoopHost;
         let cpid = table
-            .spawn_child_for_caller(
-                parent_pid,
-                parent_pid,
-                &[b"a".as_slice()],
-                &[],
-                &[],
-                &attrs,
-                &mut host,
-            )
+            .spawn_child_for_caller(parent_pid, parent_pid, &[b"a".as_slice()], &[], &[], &attrs, &mut host)
             .unwrap();
         assert_eq!(table.get(cpid).unwrap().pgid, 42);
     }
@@ -3846,15 +2893,7 @@ mod tests {
         };
         let mut host = test_host::NoopHost;
         let cpid = table
-            .spawn_child_for_caller(
-                parent_pid,
-                parent_pid,
-                &[b"a".as_slice()],
-                &[],
-                &[],
-                &attrs,
-                &mut host,
-            )
+            .spawn_child_for_caller(parent_pid, parent_pid, &[b"a".as_slice()], &[], &[], &attrs, &mut host)
             .unwrap();
         assert_eq!(
             table.get(cpid).unwrap().signals.blocked,
@@ -3881,8 +2920,7 @@ mod tests {
         let mut host = test_host::NoopHost;
         let cpid = table
             .spawn_child_for_caller(
-                parent_pid,
-                parent_pid,
+                parent_pid, parent_pid,
                 &[b"a".as_slice()],
                 &[],
                 &[],
@@ -3917,8 +2955,7 @@ mod tests {
         let mut host = test_host::NoopHost;
         let cpid = table
             .spawn_child_for_caller(
-                parent_pid,
-                parent_pid,
+                parent_pid, parent_pid,
                 &[b"a".as_slice()],
                 &[],
                 &[],
@@ -3970,15 +3007,7 @@ mod tests {
         };
         let mut host = test_host::NoopHost;
         let cpid = table
-            .spawn_child_for_caller(
-                parent_pid,
-                parent_pid,
-                &[b"a".as_slice()],
-                &[],
-                &[],
-                &attrs,
-                &mut host,
-            )
+            .spawn_child_for_caller(parent_pid, parent_pid, &[b"a".as_slice()], &[], &[], &attrs, &mut host)
             .unwrap();
 
         let child = table.get(cpid).unwrap();
@@ -3994,18 +3023,10 @@ mod tests {
         // Sanity: counter starts at 0.
         assert_eq!(table.get(100).unwrap().fork_count(), 0);
 
-        assert_eq!(
-            table.fork_process_for_caller(100, 100).expect("first fork"),
-            101
-        );
+        assert_eq!(table.fork_process_for_caller(100, 100).expect("first fork"), 101);
         assert_eq!(table.get(100).unwrap().fork_count(), 1);
 
-        assert_eq!(
-            table
-                .fork_process_for_caller(100, 100)
-                .expect("second fork"),
-            102
-        );
+        assert_eq!(table.fork_process_for_caller(100, 100).expect("second fork"), 102);
         assert_eq!(table.get(100).unwrap().fork_count(), 2);
 
         // Children's counters are independent and start at 0 — they have not
@@ -4081,16 +3102,14 @@ mod tests {
         use wasm_posix_shared::signal::SIGUSR1;
 
         let mut proc = Process::new(100);
-        proc.raise_signal_with_metadata(SIGUSR1, 0, 0, 41, 42);
+        proc.raise_signal_with_metadata(SIGUSR1, 0, 0);
         let plain = proc.consume_signal_for(proc.pid, SIGUSR1).unwrap();
         assert_eq!(plain.si_code, 0);
-        assert_eq!(plain.si_value_bits, 0);
-        assert_eq!((plain.sender_pid, plain.sender_uid), (41, 42));
+        assert_eq!(plain.si_value, 0);
 
-        proc.raise_signal_with_metadata(SIGUSR1, 0x1234, -1, 51, 52);
+        proc.raise_signal_with_metadata(SIGUSR1, 0x1234, -1);
         let queued = proc.consume_signal_for(proc.pid, SIGUSR1).unwrap();
         assert_eq!(queued.si_code, -1);
-        assert_eq!(queued.si_value_bits, 0x1234);
-        assert_eq!((queued.sender_pid, queued.sender_uid), (51, 52));
+        assert_eq!(queued.si_value, 0x1234);
     }
 }

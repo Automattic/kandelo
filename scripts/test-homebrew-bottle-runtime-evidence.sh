@@ -3,7 +3,6 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 TMPDIR="$(mktemp -d)"
-TMPDIR="$(cd "$TMPDIR" && pwd -P)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
 fail() {
@@ -37,7 +36,6 @@ arch="wasm32"
 abi=39
 tap_repository="kandelo-dev/homebrew-tap-core"
 tap_name="kandelo-dev/tap-core"
-formula_key="$tap_name/$formula"
 tap_commit=""
 bottle_root="https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
 bottle="$TMPDIR/hello--1.0.wasm32_kandelo.bottle.tar.gz"
@@ -56,8 +54,6 @@ mkdir -p "$tap/Formula" "$target_prefix"
 cat >"$tap/Formula/hello.rb" <<'EOF'
 class Hello < Formula
   desc "fixture"
-  homepage "https://example.invalid/hello"
-  license "MIT"
   url "https://example.invalid/hello-1.0.tar.gz"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
 
@@ -87,41 +83,13 @@ git -C "$tap" commit -q -m fixture
 tap_commit="$(git -C "$tap" rev-parse HEAD)"
 formula_sha="$(sha256sum "$tap/Formula/hello.rb" | awk '{print $1}')"
 
-jq -nS --arg sha "$bottle_sha" --arg formula_key "$formula_key" \
-  --arg tap_commit "$tap_commit" --arg tap_remote "file://$tap" '{
-  ($formula_key): {
-    formula: {
-      name: "hello",
-      path: "Library/Taps/kandelo-dev/homebrew-tap-core/Formula/hello.rb",
-      pkg_version: "1.0",
-      tap_git_path: "Formula/hello.rb",
-      tap_git_revision: $tap_commit,
-      tap_git_remote: $tap_remote,
-      desc: "fixture",
-      license: "MIT",
-      homepage: "https://example.invalid/hello"
-    },
-    bottle: {
-      root_url: "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core",
-      cellar: "any_skip_relocation",
-      rebuild: 0,
-      date: "2026-08-12T00:00:00Z",
-      tags: {wasm32_kandelo: {
-        filename: "hello-1.0.wasm32_kandelo.bottle.tar.gz",
-        local_filename: "hello--1.0.wasm32_kandelo.bottle.tar.gz",
-        sha256: $sha,
-        tab: {},
-        sbom: {},
-        path_exec_files: ["bin/hello"],
-        all_files: ["bin/hello"],
-        installed_size: 21
-      }}
-    }
-  }
-}' >"$bottle_json"
+jq -nS --arg sha "$bottle_sha" '{hello: {
+  formula: {name: "hello", path: "Library/Taps/kandelo-dev/homebrew-tap-core/Formula/hello.rb", pkg_version: "1.0"},
+  bottle: {root_url: "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core", cellar: "any_skip_relocation", rebuild: 0,
+    tags: {wasm32_kandelo: {sha256: $sha}}}
+}}' >"$bottle_json"
 jq -nS --arg sha "$bottle_sha" --arg url "$bottle_url" --arg formula_sha "$formula_sha" '{
   formulae: [{name: "hello", full_name: "kandelo-dev/tap-core/hello",
-    desc: "fixture", homepage: "https://example.invalid/hello", license: "MIT",
     versions: {stable: "1.0", head: null, bottle: true}, revision: 0,
     ruby_source_checksum: {sha256: $formula_sha},
     bottle: {stable: {rebuild: 0, files: {wasm32_kandelo: {
@@ -207,102 +175,12 @@ set_capture_arg() {
   fail "capture argument is missing: $flag"
 }
 
-set_validate_arg() {
-  local flag="$1" value="$2" index
-  for index in "${!validate_args[@]}"; do
-    if [ "${validate_args[$index]}" = "$flag" ]; then
-      validate_args[$((index + 1))]="$value"
-      return 0
-    fi
-  done
-  fail "validate argument is missing: $flag"
-}
-
 python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" capture \
   "${capture_args[@]}" --out "$evidence"
 python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
   --input "$evidence" "${validate_args[@]}"
 
-short_key_bottle_json="$TMPDIR/short-key-bottle.json"
-jq --arg formula "$formula" 'with_entries(.key = $formula)' \
-  "$bottle_json" >"$short_key_bottle_json"
-set_capture_arg --bottle-json "$short_key_bottle_json"
-expect_capture_error "short canonical bottle Formula key" \
-  "canonical bottle JSON Formula key does not match"
-set_capture_arg --bottle-json "$bottle_json"
-
-expect_bottle_mutation_error() {
-  local label="$1" filter="$2" pattern="$3"
-  local mutated="$TMPDIR/mutated-bottle.json"
-  jq --arg formula_key "$formula_key" "$filter" "$bottle_json" >"$mutated"
-  set_capture_arg --bottle-json "$mutated"
-  expect_capture_error "$label" "$pattern"
-  set_capture_arg --bottle-json "$bottle_json"
-}
-
-expect_bottle_mutation_error \
-  "unknown raw Formula field" \
-  '.[$formula_key].formula.unexpected = true' \
-  "canonical Formula identity must contain exactly"
-expect_bottle_mutation_error \
-  "wrong raw Formula path" \
-  '.[$formula_key].formula.path = "Formula/hello.rb"' \
-  "canonical Formula path does not match the exact tap Formula"
-expect_bottle_mutation_error \
-  "wrong raw Formula tap Git path" \
-  '.[$formula_key].formula.tap_git_path = "Formula/other.rb"' \
-  "canonical Formula tap Git path does not match"
-expect_bottle_mutation_error \
-  "wrong raw Formula tap revision" \
-  '.[$formula_key].formula.tap_git_revision = ("a" * 40)' \
-  "canonical Formula tap Git revision does not match"
-expect_bottle_mutation_error \
-  "wrong raw Formula tap remote" \
-  '.[$formula_key].formula.tap_git_remote = "file:///does/not/exist"' \
-  "canonical Formula tap Git remote does not resolve"
-expect_bottle_mutation_error \
-  "invalid raw Formula license" \
-  '.[$formula_key].formula.license = null' \
-  "canonical Formula license must be a non-empty string"
-expect_bottle_mutation_error \
-  "wrong raw Formula license" \
-  '.[$formula_key].formula.license = "Apache-2.0"' \
-  "canonical Formula metadata differs from Homebrew Formula info"
-expect_bottle_mutation_error \
-  "wrong raw Formula description" \
-  '.[$formula_key].formula.desc = "other"' \
-  "canonical Formula metadata differs from Homebrew Formula info"
-expect_bottle_mutation_error \
-  "wrong raw Formula homepage" \
-  '.[$formula_key].formula.homepage = "https://example.invalid/other"' \
-  "canonical Formula metadata differs from Homebrew Formula info"
-printf 'unreviewed\n' >"$tap/untracked"
-expect_capture_error \
-  "dirty raw Formula tap remote" \
-  "canonical Formula tap Git remote does not identify the clean exact checkout"
-rm "$tap/untracked"
-expect_bottle_mutation_error \
-  "unknown raw bottle field" \
-  '.[$formula_key].bottle.unexpected = true' \
-  "canonical bottle must contain exactly"
-expect_bottle_mutation_error \
-  "unknown raw bottle tag field" \
-  '.[$formula_key].bottle.tags.wasm32_kandelo.unexpected = true' \
-  "canonical wasm32_kandelo bottle must contain exactly"
-
 tap_checkout_commit="$(printf 'b%.0s' {1..40})"
-minimal_bottle_json="$TMPDIR/minimal-bottle.json"
-jq --arg formula_key "$formula_key" --arg tag "${arch}_kandelo" '{
-  ($formula_key): {
-    formula: (.[$formula_key].formula | {name, path, pkg_version}),
-    bottle: (.[$formula_key].bottle | {
-      root_url, cellar, rebuild,
-      tags: {($tag): .tags[$tag] | {sha256}}
-    })
-  }
-}' "$bottle_json" >"$minimal_bottle_json"
-set_capture_arg --bottle-json "$minimal_bottle_json"
-set_validate_arg --bottle-json "$minimal_bottle_json"
 cp "$target_receipt" "$target_receipt.public-source"
 cp "$dependency_provenance" "$dependency_provenance.public-source"
 jq --arg checkout "$tap_checkout_commit" \
@@ -330,8 +208,6 @@ if python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" capture \
 fi
 mv "$target_receipt.public-source" "$target_receipt"
 mv "$dependency_provenance.public-source" "$dependency_provenance"
-set_capture_arg --bottle-json "$bottle_json"
-set_validate_arg --bottle-json "$bottle_json"
 
 jq -e --arg sha "$bottle_sha" --arg url "$bottle_url" \
   --arg tap_name "$tap_name" --arg cache_basename "${installed_bottle##*/}" \
@@ -380,14 +256,7 @@ mv "$install_log.manifest" "$install_log"
 cp "$bottle_json" "$bottle_json.rebuild0"
 cp "$formula_info" "$formula_info.rebuild0"
 cp "$install_log" "$install_log.rebuild0"
-jq --arg formula_key "$formula_key" --arg tag "${arch}_kandelo" '
-  .[$formula_key].bottle.rebuild = 1 |
-  .[$formula_key].bottle.tags[$tag].filename =
-    "hello-1.0.wasm32_kandelo.bottle.1.tar.gz" |
-  .[$formula_key].bottle.tags[$tag].local_filename =
-    "hello--1.0.wasm32_kandelo.bottle.1.tar.gz"
-' \
-  "$bottle_json" >"$bottle_json.next"
+jq '.hello.bottle.rebuild = 1' "$bottle_json" >"$bottle_json.next"
 mv "$bottle_json.next" "$bottle_json"
 jq '.formulae[0].bottle.stable.rebuild = 1' "$formula_info" >"$formula_info.next"
 mv "$formula_info.next" "$formula_info"
@@ -435,8 +304,7 @@ mv "$formula_info.rebuild1" "$formula_info"
 
 for invalid_rebuild in 'true' '-1' '1.5'; do
   cp "$bottle_json" "$bottle_json.valid"
-  jq --arg formula_key "$formula_key" --argjson rebuild "$invalid_rebuild" \
-    '.[$formula_key].bottle.rebuild = $rebuild' \
+  jq --argjson rebuild "$invalid_rebuild" '.hello.bottle.rebuild = $rebuild' \
     "$bottle_json.valid" >"$bottle_json"
   expect_capture_error "invalid canonical bottle rebuild $invalid_rebuild" \
     "canonical bottle rebuild must be a non-negative integer"
@@ -601,10 +469,6 @@ git -C "$tap" commit -q -m support-data
 support_data_tap_commit="$(git -C "$tap" rev-parse HEAD)"
 support_data_formula_sha="$(sha256sum "$tap/Formula/hello.rb" | awk '{print $1}')"
 
-jq --arg formula_key "$formula_key" --arg tap_commit "$support_data_tap_commit" \
-  '.[$formula_key].formula.tap_git_revision = $tap_commit' \
-  "$bottle_json" >"$bottle_json.next"
-mv "$bottle_json.next" "$bottle_json"
 jq --arg sha "$support_data_formula_sha" \
   '.formulae[0].ruby_source_checksum.sha256 = $sha' \
   "$formula_info" >"$formula_info.next"

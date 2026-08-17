@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { FILE_MODES } from "../generated/abi";
 
 import {
   MemoryFileSystem,
@@ -24,7 +23,10 @@ export {
   type PackageDeferredZipTreeSpec,
 } from "./package-deferred-tree-contract";
 
-const { S_IFMT, S_IFREG, S_IFDIR, S_IFLNK } = FILE_MODES;
+const S_IFMT = 0xf000;
+const S_IFREG = 0x8000;
+const S_IFDIR = 0x4000;
+const S_IFLNK = 0xa000;
 const textEncoder = new TextEncoder();
 
 export interface PackageDeferredZipTreeDescriptor {
@@ -539,7 +541,7 @@ export function assertPackageDeferredZipTreeState(
         : S_IFREG;
     if (
       (stat.mode & S_IFMT) !== expectedType ||
-      (stat.mode & FILE_MODES.S_MODE_BITS) !== entry.mode ||
+      (stat.mode & 0o7777) !== entry.mode ||
       stat.uid !== derived.descriptor.owner.uid ||
       stat.gid !== derived.descriptor.owner.gid ||
       (entry.type !== "directory" && stat.size !== entry.size) ||
@@ -721,7 +723,7 @@ function preflightNamespace(
     if (
       entry.type !== "directory" ||
       (existing.mode & S_IFMT) !== S_IFDIR ||
-      (existing.mode & FILE_MODES.S_MODE_BITS) !== entry.mode ||
+      (existing.mode & 0o7777) !== entry.mode ||
       existing.uid !== descriptor.owner.uid ||
       existing.gid !== descriptor.owner.gid
     ) {

@@ -601,24 +601,12 @@ function validateTapMetadata(lock, runtimeSupport, path) {
         `the reviewed closure requires ${lock.formula_closure.length}`,
     );
   }
-  if (lock.product === undefined) {
-    // Published ABI-42 locks historically reviewed the closure as a set. Keep
-    // that supported release contract while the local ABI-43 product requires
-    // its costly build sequence to be exact and dependency-first.
-    assertExactSet(
-      actualClosure,
-      lock.formula_closure,
-      "tap metadata dependency closure does not match reviewed formula_closure",
-      (value) => value,
-    );
-  } else {
-    assertExactSequence(
-      actualClosure,
-      lock.formula_closure,
-      "tap metadata dependency-first order does not match reviewed formula_closure",
-      (value) => value,
-    );
-  }
+  assertExactSet(
+    actualClosure,
+    lock.formula_closure,
+    "tap metadata dependency closure does not match reviewed formula_closure",
+    (value) => value,
+  );
   const actualRuntimeSupportClosure = resolveTapFormulaClosure(
     runtimeSupport.formulaRoots.map((entry) =>
       entry.package.slice(`${tapName}/`.length),
@@ -631,23 +619,21 @@ function validateTapMetadata(lock, runtimeSupport, path) {
     "tap metadata dependency closure does not match the Homebrew runtime-support layer",
     (value) => value,
   );
-  if (runtimeSupport.availability.reusablePublicAbi42 !== undefined) {
-    const actualRuntimeBottleProvenanceSha256 =
-      computeRuntimeBottleProvenanceSha256(
-        byName,
-        runtimeSupport.availability.reusablePublicAbi42,
-        auditedCatalog,
-      );
-    if (
-      actualRuntimeBottleProvenanceSha256 !==
-      auditedCatalog.runtime_bottle_provenance_sha256
-    ) {
-      throw new Error(
-        "Homebrew runtime-support bottle provenance digest differs from the " +
-          `reviewed cohort: expected ${auditedCatalog.runtime_bottle_provenance_sha256}, ` +
-          `actual ${actualRuntimeBottleProvenanceSha256}`,
-      );
-    }
+  const actualRuntimeBottleProvenanceSha256 =
+    computeRuntimeBottleProvenanceSha256(
+      byName,
+      runtimeSupport.availability.reusablePublicAbi42,
+      auditedCatalog,
+    );
+  if (
+    actualRuntimeBottleProvenanceSha256 !==
+    auditedCatalog.runtime_bottle_provenance_sha256
+  ) {
+    throw new Error(
+      "Homebrew runtime-support bottle provenance digest differs from the " +
+        `reviewed cohort: expected ${auditedCatalog.runtime_bottle_provenance_sha256}, ` +
+        `actual ${actualRuntimeBottleProvenanceSha256}`,
+    );
   }
 }
 
@@ -806,8 +792,7 @@ function readRuntimeSupport(path, lock) {
     activation.bootstrap_package.name !== "homebrew-bootstrap" ||
     JSON.stringify(activation.bootstrap_package.outputs) !==
       JSON.stringify(["homebrew-bootstrap.zip", "homebrew-brew.env"]) ||
-    activation.bootstrap_package.required_kernel_abi !==
-      availability.auditedCatalog.kandelo_abi
+    activation.bootstrap_package.required_kernel_abi !== 42
   ) {
     throw new Error(
       "Homebrew runtime support must be one atomic, deferred /usr/bin/brew activation",
@@ -906,59 +891,33 @@ function readRuntimeSupportAvailability(
   deferredFormulae,
   compositionFormulaOrder,
 ) {
-  if (!isRecord(value) || !isRecord(value.audited_catalog)) {
-    throw new Error(
-      "Homebrew runtime-support availability partition is invalid",
-    );
-  }
-  const keys = Object.keys(value).sort().join("\0");
-  const local =
-    keys ===
-    "audited_catalog\0can_be_deferred\0local_test_formulae\0missing_metadata\0provenance\0requires_rebuild";
-  const publishedAbi42 =
-    keys ===
-    "audited_catalog\0can_be_deferred\0missing_metadata\0requires_rebuild\0reusable_public_abi42";
   if (
-    (!local && !publishedAbi42) ||
-    (local &&
-      (!isRecord(value.provenance) ||
-        Object.keys(value.provenance).sort().join("\0") !==
-          "promotable\0provenance_kind\0published\0schema" ||
-        value.provenance.schema !== 1 ||
-        value.provenance.provenance_kind !== "local-test" ||
-        value.provenance.promotable !== false ||
-        value.provenance.published !== false))
+    !isRecord(value) ||
+    Object.keys(value).sort().join("\0") !==
+      "audited_catalog\0can_be_deferred\0missing_metadata\0requires_rebuild\0reusable_public_abi42" ||
+    !isRecord(value.audited_catalog)
   ) {
     throw new Error(
       "Homebrew runtime-support availability partition is invalid",
     );
   }
   const auditedCatalog = value.audited_catalog;
-  const localCatalogValid =
-    Object.keys(auditedCatalog).sort().join("\0") ===
-      "checkout_commit\0kandelo_abi\0release_tag\0required_arch" &&
-    auditedCatalog.kandelo_abi === 43 &&
-    auditedCatalog.release_tag === "bottles-abi-v43";
-  const publishedCatalogValid =
-    Object.keys(auditedCatalog).sort().join("\0") ===
-      "checkout_commit\0kandelo_abi\0kandelo_commit\0metadata_sha256\0metadata_tap_commit\0release_tag\0required_arch\0runtime_bottle_provenance_sha256" &&
-    gitShaPattern.test(auditedCatalog.metadata_tap_commit) &&
-    gitShaPattern.test(auditedCatalog.kandelo_commit) &&
-    /^[0-9a-f]{64}$/.test(auditedCatalog.metadata_sha256 ?? "") &&
-    /^[0-9a-f]{64}$/.test(
-      auditedCatalog.runtime_bottle_provenance_sha256 ?? "",
-    ) &&
-    auditedCatalog.kandelo_abi === 42 &&
-    auditedCatalog.release_tag === "bottles-abi-v42";
   if (
+    Object.keys(auditedCatalog).sort().join("\0") !==
+      "checkout_commit\0kandelo_abi\0kandelo_commit\0metadata_sha256\0metadata_tap_commit\0release_tag\0required_arch\0runtime_bottle_provenance_sha256" ||
     auditedCatalog.checkout_commit !== lock.catalog.tap_commit ||
-    auditedCatalog.required_arch !== "wasm32" ||
-    (local ? !localCatalogValid : !publishedCatalogValid)
+    !gitShaPattern.test(auditedCatalog.metadata_tap_commit) ||
+    !gitShaPattern.test(auditedCatalog.kandelo_commit) ||
+    typeof auditedCatalog.metadata_sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/.test(auditedCatalog.metadata_sha256) ||
+    typeof auditedCatalog.runtime_bottle_provenance_sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/.test(auditedCatalog.runtime_bottle_provenance_sha256) ||
+    auditedCatalog.kandelo_abi !== 42 ||
+    auditedCatalog.release_tag !== "bottles-abi-v42" ||
+    auditedCatalog.required_arch !== "wasm32"
   ) {
     throw new Error(
-      local
-        ? "Homebrew runtime-support availability must bind the local ABI-43 wasm32 catalog"
-        : "Homebrew runtime-support availability must bind the exact ABI-42 wasm32 catalog",
+      "Homebrew runtime-support availability must bind the exact ABI-42 wasm32 catalog",
     );
   }
 
@@ -974,14 +933,12 @@ function readRuntimeSupportAvailability(
     assertUnique(entries, `Homebrew runtime-support availability.${key}`);
     return entries;
   };
-  const admittedFormulae = readPartition(
-    local ? "local_test_formulae" : "reusable_public_abi42",
-  );
+  const reusablePublicAbi42 = readPartition("reusable_public_abi42");
   const requiresRebuild = readPartition("requires_rebuild");
   const missingMetadata = readPartition("missing_metadata");
   const canBeDeferred = readPartition("can_be_deferred");
   const partition = [
-    ...admittedFormulae,
+    ...reusablePublicAbi42,
     ...requiresRebuild,
     ...missingMetadata,
     ...canBeDeferred,
@@ -997,13 +954,12 @@ function readRuntimeSupportAvailability(
     );
   }
   const unavailableActivation = formulaOrder.filter(
-    (identity) => !admittedFormulae.includes(identity),
+    (identity) => !reusablePublicAbi42.includes(identity),
   );
   if (unavailableActivation.length !== 0) {
     throw new Error(
-      "Homebrew runtime-support activation includes Formulae without " +
-        (local ? "local-test bottles: " : "admitted public ABI-42 bottles: ") +
-        unavailableActivation.join(", "),
+      "Homebrew runtime-support activation includes Formulae without admitted " +
+        `public ABI-42 bottles: ${unavailableActivation.join(", ")}`,
     );
   }
   assertExactSequence(
@@ -1026,9 +982,7 @@ function readRuntimeSupportAvailability(
   );
   return {
     auditedCatalog,
-    ...(local
-      ? { localTestFormulae: admittedFormulae }
-      : { reusablePublicAbi42: admittedFormulae }),
+    reusablePublicAbi42,
     auditedFormulae: partition,
   };
 }

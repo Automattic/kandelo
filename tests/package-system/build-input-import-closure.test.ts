@@ -143,26 +143,22 @@ describe("package build input import closure", () => {
       /materializeWordPressSqlitePlugin\(\s*fs,\s*inputs\.sqliteDirectory,\s*\)/,
     );
 
-    const localBuildScript = readFileSync(
-      join(repoRoot, "packages/registry/wordpress/demo/build.sh"),
-      "utf8",
-    );
-    expect(localBuildScript).toContain('bash "$SCRIPT_DIR/../setup.sh"');
-
-    const localRunScript = readFileSync(
-      join(repoRoot, "packages/registry/wordpress/demo/run.sh"),
-      "utf8",
-    );
-    // WHY: the Node and browser demos now consume the same image-owned dinit
-    // service topology. Running the demo must resolve or build that VFS image,
-    // not silently reconstruct the former loose local WordPress tree.
-    expect(localRunScript).not.toContain("../setup.sh");
-    expect(localRunScript).toContain(
-      'scripts/resolve-binary.sh" programs/wordpress.vfs.zst',
-    );
-    expect(localRunScript).toContain(
-      'bash "$REPO_ROOT/run.sh" build wp-vfs',
-    );
+    for (const localDemoScript of [
+      "packages/registry/wordpress/demo/build.sh",
+      "packages/registry/wordpress/demo/run.sh",
+    ]) {
+      const executableLines = readFileSync(
+        join(repoRoot, localDemoScript),
+        "utf8",
+      )
+        .split(/\r?\n/)
+        .filter(
+          (line) => line.trim() !== "" && !line.trimStart().startsWith("#"),
+        );
+      expect(executableLines.join("\n")).toContain(
+        'bash "$SCRIPT_DIR/../setup.sh"',
+      );
+    }
   });
 
   for (const packageName of packages) {

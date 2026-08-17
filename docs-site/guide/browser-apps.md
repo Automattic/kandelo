@@ -18,7 +18,7 @@ const kernel = new BrowserKernel({ kernelOwnedFs: true });
 const { pid, exit } = await kernel.boot({
   vfsImage,
   argv: ["bash", "-l", "-i"],
-  cwd: "/home/maker",
+  cwd: "/home/user",
   uid: 1000,
   gid: 1000,
   pty: true,
@@ -67,11 +67,11 @@ const kernel = new BrowserKernel({
 const { pid, exit } = await kernel.boot({
   vfsImage,
   argv: ["bash", "-l", "-i"],
-  cwd: "/home/maker",
+  cwd: "/home/user",
   env: [
-    "HOME=/home/maker",
-    "USER=maker",
-    "LOGNAME=maker",
+    "HOME=/home/user",
+    "USER=user",
+    "LOGNAME=user",
     "TERM=xterm-256color",
     "LANG=en_US.UTF-8",
   ],

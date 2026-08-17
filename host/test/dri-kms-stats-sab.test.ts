@@ -1,17 +1,6 @@
-import {
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
-import {
-  createCentralizedKernelWorkerTestDouble,
-} from "../src/kernel-worker";
+import { beforeAll, describe, expect, it } from "vitest";
+import { CentralizedKernelWorker } from "../src/kernel-worker";
 import { NodePlatformIO } from "../src/platform/node";
-import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 beforeAll(() => {
   if (typeof (globalThis as { ImageData?: unknown }).ImageData === "undefined") {
@@ -29,37 +18,14 @@ function makeFakeCanvas(): OffscreenCanvas {
   } as unknown as OffscreenCanvas;
 }
 
-type TestKernel = ReturnType<typeof createCentralizedKernelWorkerTestDouble>;
-
-function makeKernel(
-  kernelExports: Readonly<Record<string, unknown>> = {},
-): TestKernel {
-  const kernel = createCentralizedKernelWorkerTestDouble({
-    config: {
-      maxWorkers: 1,
-      dataBufferSize: 65_536,
-      useSharedMemory: true,
-    },
-    io: new NodePlatformIO(),
-  });
-  const implementations = {
-    kernel_vblank: () => 0,
-    ...kernelExports,
-  };
-  installKernelWorkerTestScratch(
-    kernel,
-    new WebAssembly.Memory({ initial: 2 }),
-    128,
-    4,
-    {
-      kernelExports: implementations,
-      kernelExportNames: Object.keys(implementations),
-    },
+function makeKernel(): CentralizedKernelWorker {
+  return new CentralizedKernelWorker(
+    { maxWorkers: 1, dataBufferSize: 65536, useSharedMemory: true },
+    new NodePlatformIO(),
   );
-  return kernel;
 }
 
-function stubScanout(kernel: TestKernel, w: number, h: number): void {
+function stubScanout(kernel: CentralizedKernelWorker, w: number, h: number): void {
   const fb = { fb_id: 10, bo_id: 100, width: w, height: h, pixel_format: 0, pitch: w * 4 };
   const pixels = new Uint8Array(w * h * 4);
   (kernel.kms as unknown as { currentFb: (id: number) => unknown }).currentFb = () => fb;
@@ -67,17 +33,6 @@ function stubScanout(kernel: TestKernel, w: number, h: number): void {
 }
 
 describe("CentralizedKernelWorker KMS stats SAB", () => {
-  beforeEach(() => {
-    // The worker captures its scheduler during construction, so install fake
-    // timers before makeKernel and exercise the real registered interval.
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    vi.clearAllTimers();
-    vi.useRealTimers();
-  });
-
   it("tickVblank writes [count, ts_ms, width, height, tick_us] when a statsSab is attached", () => {
     const kernel = makeKernel();
     stubScanout(kernel, 32, 24);
@@ -88,14 +43,14 @@ describe("CentralizedKernelWorker KMS stats SAB", () => {
     // "auto" mode skips the blit branch and slots 0/1/4 stay 0.
     kernel.attachKmsCanvas(1, makeFakeCanvas(), statsSab, { mode: "2d" });
 
-    vi.advanceTimersByTime(17);
+    (kernel as unknown as { tickVblank: () => void }).tickVblank();
     expect(Atomics.load(view, 0)).toBe(1);
     expect(Atomics.load(view, 2)).toBe(32);
     expect(Atomics.load(view, 3)).toBe(24);
     expect(Atomics.load(view, 1)).toBeGreaterThanOrEqual(0);
     expect(Atomics.load(view, 4)).toBeGreaterThanOrEqual(0);
 
-    vi.advanceTimersByTime(17);
+    (kernel as unknown as { tickVblank: () => void }).tickVblank();
     expect(Atomics.load(view, 0)).toBe(2);
   });
 
@@ -103,19 +58,25 @@ describe("CentralizedKernelWorker KMS stats SAB", () => {
     const kernel = makeKernel();
     stubScanout(kernel, 8, 8);
     kernel.attachKmsCanvas(1, makeFakeCanvas());
-    expect(() => vi.advanceTimersByTime(17)).not.toThrow();
+    expect(() => (kernel as unknown as { tickVblank: () => void }).tickVblank()).not.toThrow();
   });
 
   it("tickVblank fills slots 5/6 from kernel kms_commit_count + kms_last_frame_us when SAB is sized for them", () => {
-    const kernel = makeKernel({
-      kernel_kms_commit_count: (_crtc: number) => 42n,
-      kernel_kms_last_frame_us: (_crtc: number) => 16_667n,
-    });
+    const kernel = makeKernel();
     stubScanout(kernel, 16, 16);
+    // Stub the kernel-wasm exports the way the production tickVblank
+    // path will read them, so the test exercises the real wire-up
+    // rather than the "no kernel instance → 0" defensive fallback.
+    (kernel as unknown as { kernelInstance: unknown }).kernelInstance = {
+      exports: {
+        kernel_kms_commit_count: (_crtc: number) => 42n,
+        kernel_kms_last_frame_us: (_crtc: number) => 16_667n,
+      },
+    };
     const statsSab = new SharedArrayBuffer(7 * 4);
     const view = new Int32Array(statsSab);
     kernel.attachKmsCanvas(1, makeFakeCanvas(), statsSab);
-    vi.advanceTimersByTime(17);
+    (kernel as unknown as { tickVblank: () => void }).tickVblank();
     expect(Atomics.load(view, 5)).toBe(42);
     expect(Atomics.load(view, 6)).toBe(16_667);
   });
@@ -128,7 +89,7 @@ describe("CentralizedKernelWorker KMS stats SAB", () => {
     const statsSab = new SharedArrayBuffer(5 * 4);
     const view = new Int32Array(statsSab);
     kernel.attachKmsCanvas(1, makeFakeCanvas(), statsSab);
-    vi.advanceTimersByTime(17);
+    (kernel as unknown as { tickVblank: () => void }).tickVblank();
     expect(Atomics.load(view, 2)).toBe(1920);
     expect(Atomics.load(view, 3)).toBe(1080);
     expect(Atomics.load(view, 0)).toBe(0);
@@ -136,30 +97,36 @@ describe("CentralizedKernelWorker KMS stats SAB", () => {
   });
 
   it("tickVblank leaves slots 5/6 alone when the SAB is the legacy 5-slot size", () => {
-    const kernel = makeKernel({
-      kernel_kms_commit_count: (_crtc: number) => {
-        throw new Error("should not be called for a 5-slot SAB");
-      },
-      kernel_kms_last_frame_us: (_crtc: number) => {
-        throw new Error("should not be called for a 5-slot SAB");
-      },
-    });
+    const kernel = makeKernel();
     stubScanout(kernel, 16, 16);
+    (kernel as unknown as { kernelInstance: unknown }).kernelInstance = {
+      exports: {
+        kernel_kms_commit_count: (_crtc: number) => {
+          throw new Error("should not be called for a 5-slot SAB");
+        },
+        kernel_kms_last_frame_us: (_crtc: number) => {
+          throw new Error("should not be called for a 5-slot SAB");
+        },
+      },
+    };
     const statsSab = new SharedArrayBuffer(5 * 4);
     kernel.attachKmsCanvas(1, makeFakeCanvas(), statsSab);
-    expect(() => vi.advanceTimersByTime(17)).not.toThrow();
+    expect(() => (kernel as unknown as { tickVblank: () => void }).tickVblank()).not.toThrow();
   });
 
   it("attachKmsStats publishes slots 5/6 without a canvas attachment", () => {
-    const kernel = makeKernel({
-      kernel_kms_commit_count: (_crtc: number) => 7n,
-      kernel_kms_last_frame_us: (_crtc: number) => 16_500n,
-    });
+    const kernel = makeKernel();
+    (kernel as unknown as { kernelInstance: unknown }).kernelInstance = {
+      exports: {
+        kernel_kms_commit_count: (_crtc: number) => 7n,
+        kernel_kms_last_frame_us: (_crtc: number) => 16_500n,
+      },
+    };
     const statsSab = new SharedArrayBuffer(7 * 4);
     const view = new Int32Array(statsSab);
     kernel.attachKmsStats(0, statsSab);
 
-    vi.advanceTimersByTime(17);
+    (kernel as unknown as { tickVblank: () => void }).tickVblank();
     expect(Atomics.load(view, 5)).toBe(7);
     expect(Atomics.load(view, 6)).toBe(16_500);
     expect(Atomics.load(view, 0)).toBe(0);
@@ -168,16 +135,19 @@ describe("CentralizedKernelWorker KMS stats SAB", () => {
   });
 
   it("attachKmsStats leaves slots 5/6 untouched when the SAB is too small", () => {
-    const kernel = makeKernel({
-      kernel_kms_commit_count: (_crtc: number) => {
-        throw new Error("should not be called for a 5-slot SAB");
+    const kernel = makeKernel();
+    (kernel as unknown as { kernelInstance: unknown }).kernelInstance = {
+      exports: {
+        kernel_kms_commit_count: (_crtc: number) => {
+          throw new Error("should not be called for a 5-slot SAB");
+        },
+        kernel_kms_last_frame_us: (_crtc: number) => {
+          throw new Error("should not be called for a 5-slot SAB");
+        },
       },
-      kernel_kms_last_frame_us: (_crtc: number) => {
-        throw new Error("should not be called for a 5-slot SAB");
-      },
-    });
+    };
     const statsSab = new SharedArrayBuffer(5 * 4);
     kernel.attachKmsStats(0, statsSab);
-    expect(() => vi.advanceTimersByTime(17)).not.toThrow();
+    expect(() => (kernel as unknown as { tickVblank: () => void }).tickVblank()).not.toThrow();
   });
 });

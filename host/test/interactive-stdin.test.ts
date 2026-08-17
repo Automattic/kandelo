@@ -70,26 +70,6 @@ describe.each(shells)(
       expect(result.stdout).toContain("got:hello");
     });
 
-    it("owns appended bytes before the caller can replace them", async () => {
-      const result = await runCentralizedProgram({
-        programPath: binary,
-        argv: [argv0, "-c", 'read line; echo "got:$line"'],
-        env,
-        timeout: 20_000,
-        onStarted: async (kernelWorker, pid) => {
-          await new Promise((r) => setTimeout(r, 200));
-          const callerBytes = new TextEncoder().encode("stable\n");
-          kernelWorker.appendStdinData(pid, callerBytes);
-          // The host keeps stdin across later kernel exports. Mutating the
-          // caller's view after append must not replace those retained bytes.
-          callerBytes.fill("x".charCodeAt(0));
-        },
-      });
-      expect(result.exitCode).toBe(0);
-      expect(result.stdout).toContain("got:stable");
-      expect(result.stdout).not.toContain("got:xxxxxx");
-    });
-
     it("delivers multiple lines incrementally", async () => {
       const result = await runCentralizedProgram({
         programPath: binary,

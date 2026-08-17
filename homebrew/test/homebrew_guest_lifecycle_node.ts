@@ -503,7 +503,7 @@ async function runGuestScript(options: {
         [options.shellArgv0, "-c", options.script],
         {
           env: [...HOMEBREW_GUEST_LIFECYCLE_ENV],
-          cwd: "/home/maker",
+          cwd: "/home/user",
           uid: 1000,
           gid: 1000,
           stdin: new Uint8Array(),

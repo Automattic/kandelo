@@ -244,7 +244,7 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
       "else\n" +
       "  printf 'KANDELO_BASH_FAIL:%s\\n' \"$PWD\"\n" +
       "fi",
-    /KANDELO_BASH_OK:[0-9][^\r\n]*:\/home\/maker/,
+    /KANDELO_BASH_OK:[0-9][^\r\n]*:\/home\/user/,
   );
   await runGuideScript(
     page,
@@ -311,8 +311,8 @@ test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page 
   const nodeContractCommand = [
     "node -e \"console.log('KANDELO_NODE_OK:' + (6 * 7))\"",
     "[ \"$(id -u)\" = 1000 ]",
-    "[ \"$HOME\" = /home/maker ]",
-    "[ \"$PWD\" = /home/maker ]",
+    "[ \"$HOME\" = /work ]",
+    "[ \"$PWD\" = /work ]",
     "[ \"$npm_config_cache\" = /tmp/.npm-cache ]",
     "[ \"$npm_config_registry\" = https://registry.npmjs.org/ ]",
     "spidermonkey-node -e \"console.log('KANDELO_NODE_ALIAS_OK')\"",
@@ -355,7 +355,7 @@ test("Kandelo nginx demo serves its web preview", async ({ page }) => {
   await waitForTerminalContent(page, /kandelo\$ ?/, 120_000);
   await runTerminalCommand(
     page,
-    "set -eu; test \"$(id -u):$HOME:$(pwd)\" = '1000:/home/maker:/home/maker'; " +
+    "set -eu; test \"$(id -u):$HOME:$(pwd)\" = '1000:/home/user:/home/user'; " +
       "printf 'KANDELO_NGINX_TERMINAL_OK\\n'",
     "KANDELO_NGINX_TERMINAL_OK",
   );
@@ -388,7 +388,7 @@ test("Kandelo nginx + PHP demo serves dynamic PHP through the web preview", asyn
   await waitForTerminalContent(page, /kandelo\$ ?/, 120_000);
   await runTerminalCommand(
     page,
-    "set -eu; test \"$(id -u):$HOME:$(pwd)\" = '1000:/home/maker:/home/maker'; " +
+    "set -eu; test \"$(id -u):$HOME:$(pwd)\" = '1000:/home/user:/home/user'; " +
       "printf 'KANDELO_NGINX_PHP_TERMINAL_OK\\n'",
     "KANDELO_NGINX_PHP_TERMINAL_OK",
   );
@@ -402,23 +402,15 @@ test("Kandelo WordPress MariaDB demo is preinstalled and logs into wp-admin", as
   await runWordPressPreinstalledLogin(page, "wordpress-mariadb", "WordPress MariaDB");
 });
 
-test("Kandelo fbDOOM demo renders and starts the OSS audio sink", async ({ page }) => {
+test("Kandelo fbDOOM demo renders to the framebuffer", async ({ page }) => {
   test.setTimeout(240_000);
 
   await gotoOrSkip(page, "/?demo=doom");
-  const canvas = page.locator("canvas").first();
-  await expect(canvas).toBeVisible({ timeout: 180_000 });
-
-  await canvas.click({ position: { x: 8, y: 8 } });
-  await expect(page.locator("[data-audio-state]").first()).toHaveAttribute(
-    "data-audio-state",
-    "running",
-    { timeout: 10_000 },
-  );
+  await expect(page.locator("canvas").first()).toBeVisible({ timeout: 180_000 });
 
   await expect
     .poll(async () => {
-      return canvas.evaluate((canvas: HTMLCanvasElement) => {
+      return page.locator("canvas").first().evaluate((canvas: HTMLCanvasElement) => {
         if (canvas.width === 0 || canvas.height === 0) return false;
         const ctx = canvas.getContext("2d");
         if (!ctx) return false;

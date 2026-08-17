@@ -8,11 +8,6 @@ import {
   LinkedForkContinuation,
   readLinkedFrameFormat,
 } from "../src/fork-continuation";
-import {
-  ForkModuleStateArena,
-  readForkModuleStateRoot,
-} from "../src/fork-module-state";
-import { SingleActivationForkRuntime } from "./fork-instrument-runtime-harness";
 
 const FIRST_PAYLOAD = 0x1234;
 const SECOND_PAYLOAD = 0x5678;
@@ -59,8 +54,7 @@ describe("plain-catch payload lifetime", () => {
       );
       execFileSync(instrumenterPath, [rawPath, "-o", instrumentedPath]);
 
-      const instrumentedBytes = readFileSync(instrumentedPath);
-      const module = new WebAssembly.Module(instrumentedBytes);
+      const module = new WebAssembly.Module(readFileSync(instrumentedPath));
       const memory = new WebAssembly.Memory({ initial: 4 });
       const view = new DataView(memory.buffer);
       let instance: WebAssembly.Instance;
@@ -76,25 +70,6 @@ describe("plain-catch payload lifetime", () => {
         () => {},
         "plain-catch-lifetime",
       );
-      let nextArenaAddress = 2 * 65_536;
-      const runtime = new SingleActivationForkRuntime({
-        module,
-        moduleBytes: instrumentedBytes,
-        memory,
-        continuation,
-        newArena: () => new ForkModuleStateArena(
-          memory,
-          4,
-          (size) => {
-            const address = nextArenaAddress;
-            nextArenaAddress += size;
-            return address;
-          },
-          () => {},
-          "plain-catch-lifetime module state",
-        ),
-        label: "plain-catch-lifetime",
-      });
 
       const scratchIsSentinel = (base: number): boolean =>
         view.getUint32(base + SCRATCH_ARM_OFFSET, true) === SENTINEL &&
@@ -107,12 +82,19 @@ describe("plain-catch payload lifetime", () => {
       instance = new WebAssembly.Instance(module, {
         env: {
           memory,
-          ...runtime.envImports,
+          __wpk_fork_frame_reserve: (size: number) =>
+            continuation.reserveFrame(size),
+          __wpk_fork_frame_commit: (payload: number) =>
+            continuation.commitFrame(payload),
+          __wpk_fork_frame_next: (size: number) =>
+            continuation.nextFrame(size),
         },
         kernel: {
           kernel_fork: () => {
-            if (runtime.coordinator.phaseName() === "parent-replay") {
-              runtime.coordinator.finishReplay();
+            const state = (instance.exports.wpk_fork_state as () => number)();
+            if (state === 2) {
+              (instance.exports.wpk_fork_rewind_end as () => void)();
+              continuation.finishReplayAndRelease();
               return normalForkCalls === 1 ? 7 : 11;
             }
 
@@ -124,21 +106,26 @@ describe("plain-catch payload lifetime", () => {
               secondCaptureKeptReleasedMemory = scratchIsSentinel(moduleBuffer);
             }
 
-            runtime.beginCapture();
-            moduleBuffer = runtime.coordinator.rootFor(0);
+            moduleBuffer = Number(continuation.beginUnwind());
+            (instance.exports.wpk_fork_unwind_begin as (addr: number) => void)(
+              moduleBuffer,
+            );
             return 0;
           },
         },
       });
-      runtime.register(instance);
 
       const run = instance.exports.run as (payload: number) => number;
       fillScratch(0);
 
-      // The first pass transports the private unwind to the worker boundary.
-      runtime.expectCaptureTransport(() => run(FIRST_PAYLOAD));
-      runtime.coordinator.sealCapture();
-      runtime.coordinator.beginParentReplay();
+      // The first pass drains frames and returns the function's result default.
+      expect(run(FIRST_PAYLOAD)).toBe(0);
+      (instance.exports.wpk_fork_unwind_end as () => void)();
+      continuation.finishUnwind();
+      continuation.beginReplay();
+      (instance.exports.wpk_fork_rewind_begin as (addr: number) => void)(
+        moduleBuffer,
+      );
       expect(run(FIRST_PAYLOAD)).toBe(FIRST_PAYLOAD + 7);
 
       // Once replay releases the continuation, its former bytes are no longer
@@ -146,9 +133,13 @@ describe("plain-catch payload lifetime", () => {
       // mutate either that retired mapping or low memory before its fork call.
       fillScratch(0);
       fillScratch(moduleBuffer);
-      runtime.expectCaptureTransport(() => run(SECOND_PAYLOAD));
-      runtime.coordinator.sealCapture();
-      runtime.coordinator.beginParentReplay();
+      expect(run(SECOND_PAYLOAD)).toBe(0);
+      (instance.exports.wpk_fork_unwind_end as () => void)();
+      continuation.finishUnwind();
+      continuation.beginReplay();
+      (instance.exports.wpk_fork_rewind_begin as (addr: number) => void)(
+        moduleBuffer,
+      );
       expect(run(SECOND_PAYLOAD)).toBe(SECOND_PAYLOAD + 11);
 
       expect({
@@ -221,11 +212,11 @@ describe("plain-catch payload lifetime", () => {
       );
       execFileSync(instrumenterPath, [rawPath, "-o", instrumentedPath]);
 
-      const instrumentedBytes = readFileSync(instrumentedPath);
-      const module = new WebAssembly.Module(instrumentedBytes);
+      const module = new WebAssembly.Module(readFileSync(instrumentedPath));
       const memory = new WebAssembly.Memory({ initial: 4 });
       const view = new DataView(memory.buffer);
       let instance: WebAssembly.Instance;
+      let moduleBuffer = 0;
       let normalForkCalls = 0;
       let recursiveCaptureKeptLowMemory = false;
       const continuation = new LinkedForkContinuation(
@@ -235,49 +226,48 @@ describe("plain-catch payload lifetime", () => {
         () => {},
         "plain-catch-recursion",
       );
-      const runtime = new SingleActivationForkRuntime({
-        module,
-        moduleBytes: instrumentedBytes,
-        memory,
-        continuation,
-        newArena: () => new ForkModuleStateArena(
-          memory,
-          4,
-          () => 2 * 65_536,
-          () => {},
-          "plain-catch-recursion module state",
-        ),
-        label: "plain-catch-recursion",
-      });
 
       instance = new WebAssembly.Instance(module, {
         env: {
           memory,
-          ...runtime.envImports,
+          __wpk_fork_frame_reserve: (size: number) =>
+            continuation.reserveFrame(size),
+          __wpk_fork_frame_commit: (payload: number) =>
+            continuation.commitFrame(payload),
+          __wpk_fork_frame_next: (size: number) =>
+            continuation.nextFrame(size),
         },
         kernel: {
           kernel_fork: () => {
-            if (runtime.coordinator.phaseName() === "parent-replay") {
-              runtime.coordinator.finishReplay();
+            const state = (instance.exports.wpk_fork_state as () => number)();
+            if (state === 2) {
+              (instance.exports.wpk_fork_rewind_end as () => void)();
+              continuation.finishReplayAndRelease();
               return 7;
             }
             normalForkCalls++;
             recursiveCaptureKeptLowMemory =
               view.getUint32(SCRATCH_ARM_OFFSET, true) === SENTINEL &&
               view.getUint32(SCRATCH_PAYLOAD_OFFSET, true) === SENTINEL;
-            runtime.beginCapture();
+            moduleBuffer = Number(continuation.beginUnwind());
+            (instance.exports.wpk_fork_unwind_begin as (addr: number) => void)(
+              moduleBuffer,
+            );
             return 0;
           },
         },
       });
-      runtime.register(instance);
 
       const run = instance.exports.run as (depth: number) => number;
       view.setUint32(SCRATCH_ARM_OFFSET, SENTINEL, true);
       view.setUint32(SCRATCH_PAYLOAD_OFFSET, SENTINEL, true);
-      runtime.expectCaptureTransport(() => run(2));
-      runtime.coordinator.sealCapture();
-      runtime.coordinator.beginParentReplay();
+      expect(run(2)).toBe(0);
+      (instance.exports.wpk_fork_unwind_end as () => void)();
+      continuation.finishUnwind();
+      continuation.beginReplay();
+      (instance.exports.wpk_fork_rewind_begin as (addr: number) => void)(
+        moduleBuffer,
+      );
 
       // WHY: all three calls execute the same static catch arm, but each
       // activation owns a distinct payload (102, 101, 100). The result slots
@@ -303,7 +293,7 @@ describe("plain-catch payload lifetime", () => {
     }
   });
 
-  it("reconstructs mixed plain and catch_ref state in a fresh child instance", () => {
+  it("distinguishes plain and catch_ref state in either reuse order", () => {
     const dir = mkdtempSync(join(tmpdir(), "kandelo-mixed-catch-lifetime-"));
     try {
       const watPath = join(dir, "mixed-catch-lifetime.wat");
@@ -313,13 +303,12 @@ describe("plain-catch payload lifetime", () => {
         (import "kernel" "kernel_fork" (func $fork (result i32)))
         (import "env" "memory" (memory 4))
         (tag $plain (param i32))
-        (tag $with_ref (param i32))
+        (tag $with_ref)
         (func (export "run") (param $take_plain i32) (result i32)
-          (local $caught i32)
           (block $done (result i32)
             (block $plain_handler (result i32)
-              (block $ref_handler (result i32 exnref)
-                (try_table (result i32 exnref)
+              (block $ref_handler (result exnref)
+                (try_table (result exnref)
                     (catch $plain $plain_handler)
                     (catch_ref $with_ref $ref_handler)
                   local.get $take_plain
@@ -327,19 +316,15 @@ describe("plain-catch payload lifetime", () => {
                     i32.const 41
                     throw $plain
                   else
-                    i32.const 42
                     throw $with_ref
                   end
                   unreachable))
               drop
-              local.set $caught
               call $fork
-              local.get $caught
+              i32.const 42
               i32.add
               br $done)
-            local.set $caught
             call $fork
-            local.get $caught
             i32.add
             br $done)))`);
       execFileSync("wat2wasm", [
@@ -352,132 +337,62 @@ describe("plain-catch payload lifetime", () => {
         new URL("../../tools/bin/wasm-fork-instrument", import.meta.url),
       );
       execFileSync(instrumenterPath, [rawPath, "-o", instrumentedPath]);
-      const instrumentedBytes = readFileSync(instrumentedPath);
-      const module = new WebAssembly.Module(instrumentedBytes);
+      const module = new WebAssembly.Module(readFileSync(instrumentedPath));
 
       const runOrder = (modes: readonly number[]): void => {
-        const parentMemory = new WebAssembly.Memory({ initial: 4 });
-        let parentInstance: WebAssembly.Instance;
+        const memory = new WebAssembly.Memory({ initial: 4 });
+        let instance: WebAssembly.Instance;
         let moduleBuffer = 0;
-        let nextParentArenaAddress = 2 * 65_536;
-        const parentContinuation = new LinkedForkContinuation(
-          parentMemory,
+        const continuation = new LinkedForkContinuation(
+          memory,
           readLinkedFrameFormat(module),
           () => 65_536,
           () => {},
-          "mixed-catch-parent",
+          "mixed-catch-lifetime",
         );
-        const parentRuntime = new SingleActivationForkRuntime({
-          module,
-          moduleBytes: instrumentedBytes,
-          memory: parentMemory,
-          continuation: parentContinuation,
-          newArena: () => new ForkModuleStateArena(
-            parentMemory,
-            4,
-            (size) => {
-              const address = nextParentArenaAddress;
-              nextParentArenaAddress += size;
-              return address;
-            },
-            () => {},
-            "mixed-catch-parent module state",
-          ),
-          label: "mixed-catch-parent",
-        });
-        parentInstance = new WebAssembly.Instance(module, {
+        instance = new WebAssembly.Instance(module, {
           env: {
-            memory: parentMemory,
-            ...parentRuntime.envImports,
+            memory,
+            __wpk_fork_frame_reserve: (size: number) =>
+              continuation.reserveFrame(size),
+            __wpk_fork_frame_commit: (payload: number) =>
+              continuation.commitFrame(payload),
+            __wpk_fork_frame_next: (size: number) =>
+              continuation.nextFrame(size),
           },
           kernel: {
             kernel_fork: () => {
-              parentRuntime.beginCapture();
-              moduleBuffer = parentRuntime.coordinator.rootFor(0);
+              const state = (instance.exports.wpk_fork_state as () => number)();
+              if (state === 2) {
+                (instance.exports.wpk_fork_rewind_end as () => void)();
+                continuation.finishReplayAndRelease();
+                return 7;
+              }
+              moduleBuffer = Number(continuation.beginUnwind());
+              (instance.exports.wpk_fork_unwind_begin as (addr: number) => void)(
+                moduleBuffer,
+              );
               return 0;
             },
           },
         });
-        parentRuntime.register(parentInstance);
-        const parentRun = parentInstance.exports.run as (takePlain: number) => number;
+        const run = instance.exports.run as (takePlain: number) => number;
 
         for (const mode of modes) {
-          parentRuntime.expectCaptureTransport(() => parentRun(mode));
-          parentRuntime.coordinator.sealCapture();
-
-          // Model the actual worker boundary: the child receives only copied
-          // linear memory and instantiates an otherwise fresh Wasm module.
-          const childMemory = new WebAssembly.Memory({
-            initial: parentMemory.buffer.byteLength / 65_536,
-          });
-          new Uint8Array(childMemory.buffer).set(
-            new Uint8Array(parentMemory.buffer),
+          expect(run(mode)).toBe(0);
+          (instance.exports.wpk_fork_unwind_end as () => void)();
+          continuation.finishUnwind();
+          continuation.beginReplay();
+          (instance.exports.wpk_fork_rewind_begin as (addr: number) => void)(
+            moduleBuffer,
           );
-
-          const childContinuation = new LinkedForkContinuation(
-            childMemory,
-            readLinkedFrameFormat(module),
-            () => {
-              throw new Error("fresh child replay must not allocate a continuation");
-            },
-            () => {},
-            "mixed-catch-child",
-          );
-          const childRuntime = new SingleActivationForkRuntime({
-            module,
-            moduleBytes: instrumentedBytes,
-            memory: childMemory,
-            continuation: childContinuation,
-            newArena: () => {
-              throw new Error(
-                "fresh child replay must attach copied module state",
-              );
-            },
-            label: "mixed-catch-child",
-          });
-          let childInstance: WebAssembly.Instance;
-          childInstance = new WebAssembly.Instance(module, {
-            env: {
-              memory: childMemory,
-              ...childRuntime.envImports,
-            },
-            kernel: {
-              kernel_fork: () => {
-                expect(childRuntime.coordinator.phaseName()).toBe(
-                  "child-replay",
-                );
-                childRuntime.coordinator.finishReplay();
-                return 7;
-              },
-            },
-          });
-          childRuntime.register(childInstance, { bootstrap: false });
-          childRuntime.setCopiedProcessLaunchRoot(moduleBuffer);
-          const copiedArena = new ForkModuleStateArena(
-            childMemory,
-            4,
-            () => {
-              throw new Error(
-                "fresh child replay must not allocate module-state storage",
-              );
-            },
-            () => {},
-            "mixed-catch-child module state",
-          );
-          copiedArena.attach(
-            readForkModuleStateRoot(childMemory, moduleBuffer, 4),
-          );
-          childRuntime.coordinator.attachChild(copiedArena);
-          const childRun = childInstance.exports.run as (takePlain: number) => number;
-          expect(childRun(mode)).toBe((mode ? 41 : 42) + 7);
-          parentRuntime.coordinator.abort();
+          expect(run(mode)).toBe((mode ? 41 : 42) + 7);
         }
       };
 
-      // Both arm orders exercise one long-lived parent instance, while every
-      // child has empty module globals/tables. CatchRef can pass only if rewind
-      // restores the scalar tag payload and rethrows the tag to create a new
-      // instance-local exnref.
+      // WHY: the exnref table is intentionally reused. A stale non-null
+      // entry after catch_ref must not make the next plain activation take
+      // throw_ref, and a preceding plain catch must not suppress catch_ref.
       runOrder([0, 1]);
       runOrder([1, 0]);
     } finally {

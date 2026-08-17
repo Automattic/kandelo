@@ -316,7 +316,7 @@ describe("flat Homebrew runtime support", () => {
       `${HOMEBREW_TEST_PREFIX}/Library/Taps`,
       `${HOMEBREW_TEST_PREFIX}/var/homebrew/linked`,
       `${HOMEBREW_TEST_PREFIX}/var/homebrew/locks`,
-      "/home/maker/.cache/Homebrew",
+      "/home/user/.cache/Homebrew",
     ]) {
       const stat = result.fs.lstat(path);
       expect(stat, path).toMatchObject({ uid: 1000, gid: 1000 });

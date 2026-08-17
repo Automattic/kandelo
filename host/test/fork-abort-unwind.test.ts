@@ -9,8 +9,6 @@ import {
   LinkedForkContinuation,
   readLinkedFrameFormat,
 } from "../src/fork-continuation";
-import { ForkModuleStateArena } from "../src/fork-module-state";
-import { SingleActivationForkRuntime } from "./fork-instrument-runtime-harness";
 
 describe("instrumented ABORT_UNWINDING", () => {
   it("reconstructs committed inner frames and permits a later successful fork", () => {
@@ -55,10 +53,10 @@ describe("instrumented ABORT_UNWINDING", () => {
       const module = new WebAssembly.Module(bytes);
       const memory = new WebAssembly.Memory({ initial: 8 });
       let instance: WebAssembly.Instance;
+      let moduleBuffer = 0;
       let forkResult = 0;
       let failGrowth = true;
       let nextAddress = 65_536;
-      let nextArenaAddress = 5 * 65_536;
       const released: Array<{ addr: number; size: number }> = [];
       const continuation = new LinkedForkContinuation(
         memory,
@@ -74,51 +72,41 @@ describe("instrumented ABORT_UNWINDING", () => {
         (addr, size) => released.push({ addr, size }),
         "abort-e2e",
       );
-      const runtime = new SingleActivationForkRuntime({
-        module,
-        moduleBytes: bytes,
-        memory,
-        continuation,
-        newArena: () => new ForkModuleStateArena(
-          memory,
-          4,
-          (size) => {
-            const address = nextArenaAddress;
-            nextArenaAddress += size;
-            const missing = nextArenaAddress - memory.buffer.byteLength;
-            if (missing > 0) memory.grow(Math.ceil(missing / 65_536));
-            return address;
-          },
-          () => {},
-          "abort-e2e module state",
-        ),
-        label: "abort-e2e",
-      });
 
       const imports = {
         env: {
           memory,
-          ...runtime.envImports,
+          __wpk_fork_frame_reserve: (size: number) => {
+            const frame = continuation.reserveFrame(size);
+            if (frame === 0) {
+              (instance.exports.wpk_fork_abort_begin as (addr: number) => void)(moduleBuffer);
+            }
+            return frame;
+          },
+          __wpk_fork_frame_commit: (payload: number) => continuation.commitFrame(payload),
+          __wpk_fork_frame_next: (size: number) => continuation.nextFrame(size),
         },
         kernel: {
           kernel_fork: () => {
-            const phase = runtime.coordinator.phaseName();
-            if (phase === "parent-replay") {
-              runtime.coordinator.finishReplay();
+            const state = (instance.exports.wpk_fork_state as () => number)();
+            if (state === 2) {
+              (instance.exports.wpk_fork_rewind_end as () => void)();
+              continuation.finishReplayAndRelease();
               return forkResult;
             }
-            if (phase === "abort-replay") {
+            if (state === 3) {
               const errno = continuation.abortErrno();
-              runtime.coordinator.finishAbortReplay();
+              (instance.exports.wpk_fork_abort_end as () => void)();
+              continuation.finishAbortReplayAndRelease();
               return -errno;
             }
-            runtime.beginCapture();
+            moduleBuffer = Number(continuation.beginUnwind());
+            (instance.exports.wpk_fork_unwind_begin as (addr: number) => void)(moduleBuffer);
             return 0;
           },
         },
       };
       instance = new WebAssembly.Instance(module, imports);
-      runtime.register(instance);
       const run = instance.exports.run as () => number;
       const state = instance.exports.wpk_fork_state as () => number;
 
@@ -131,21 +119,25 @@ describe("instrumented ABORT_UNWINDING", () => {
       // SYS_FORK result after a complete unwind must replay to the guest.
       failGrowth = false;
       nextAddress = 65_536;
-      runtime.expectCaptureTransport(run);
+      expect(run()).toBe(0); // transformed unwind returns the result-type default
       expect(state()).toBe(1);
-      runtime.coordinator.sealCapture();
+      (instance.exports.wpk_fork_unwind_end as () => void)();
+      continuation.finishUnwind();
       forkResult = -11;
-      runtime.coordinator.beginParentReplay();
+      continuation.beginReplay();
+      (instance.exports.wpk_fork_rewind_begin as (addr: number) => void)(moduleBuffer);
       expect(run()).toBe(-4);
       expect(state()).toBe(0);
       expect(continuation.hasActiveContinuation()).toBe(false);
 
       // A later independent fork can still complete successfully.
       nextAddress = 65_536;
-      runtime.expectCaptureTransport(run);
-      runtime.coordinator.sealCapture();
+      expect(run()).toBe(0);
+      (instance.exports.wpk_fork_unwind_end as () => void)();
+      continuation.finishUnwind();
       forkResult = 123;
-      runtime.coordinator.beginParentReplay();
+      continuation.beginReplay();
+      (instance.exports.wpk_fork_rewind_begin as (addr: number) => void)(moduleBuffer);
       expect(run()).toBe(130);
       expect(state()).toBe(0);
       expect(continuation.hasActiveContinuation()).toBe(false);
@@ -217,15 +209,13 @@ describe("instrumented ABORT_UNWINDING", () => {
         instrumentedPath,
       ]);
 
-      const bytes = readFileSync(instrumentedPath);
-      const module = new WebAssembly.Module(bytes);
+      const module = new WebAssembly.Module(readFileSync(instrumentedPath));
       const memory = new WebAssembly.Memory({ initial: 8 });
       const view = new DataView(memory.buffer);
       let instance: WebAssembly.Instance;
       let moduleBuffer = 0;
       let failGrowth = true;
       let nextAddress = 65_536;
-      let nextArenaAddress = 5 * 65_536;
       let abortCommits = 0;
       let successfulCommits = 0;
       let lowMemoryUntouched = false;
@@ -264,52 +254,41 @@ describe("instrumented ABORT_UNWINDING", () => {
         (addr, size) => released.push({ addr, size }),
         "abort-catch-e2e",
       );
-      const runtime = new SingleActivationForkRuntime({
-        module,
-        moduleBytes: bytes,
-        memory,
-        continuation,
-        newArena: () => new ForkModuleStateArena(
-          memory,
-          4,
-          (size) => {
-            const address = nextArenaAddress;
-            nextArenaAddress += size;
-            const missing = nextArenaAddress - memory.buffer.byteLength;
-            if (missing > 0) memory.grow(Math.ceil(missing / 65_536));
-            return address;
-          },
-          () => {},
-          "abort-catch-e2e module state",
-        ),
-        label: "abort-catch-e2e",
-      });
-      const coordinatedCommit = runtime.envImports.__wpk_fork_frame_commit as
-        (payload: number) => void;
 
       const imports = {
         env: {
           memory,
-          ...runtime.envImports,
+          __wpk_fork_frame_reserve: (size: number) => {
+            const frame = continuation.reserveFrame(size);
+            if (frame === 0) {
+              (instance.exports.wpk_fork_abort_begin as (addr: number) => void)(
+                moduleBuffer,
+              );
+            }
+            return frame;
+          },
           __wpk_fork_frame_commit: (payload: number) => {
-            coordinatedCommit(payload);
+            continuation.commitFrame(payload);
             if (failGrowth) {
               abortCommits++;
             } else {
               successfulCommits++;
             }
           },
+          __wpk_fork_frame_next: (size: number) => continuation.nextFrame(size),
         },
         kernel: {
           kernel_fork: () => {
-            const phase = runtime.coordinator.phaseName();
-            if (phase === "parent-replay") {
-              runtime.coordinator.finishReplay();
+            const state = (instance.exports.wpk_fork_state as () => number)();
+            if (state === 2) {
+              (instance.exports.wpk_fork_rewind_end as () => void)();
+              continuation.finishReplayAndRelease();
               return 17;
             }
-            if (phase === "abort-replay") {
+            if (state === 3) {
               const errno = continuation.abortErrno();
-              runtime.coordinator.finishAbortReplay();
+              (instance.exports.wpk_fork_abort_end as () => void)();
+              continuation.finishAbortReplayAndRelease();
               return -errno;
             }
 
@@ -319,14 +298,15 @@ describe("instrumented ABORT_UNWINDING", () => {
               lowMemoryUntouched = scratchWordsAreUntouched(0);
               retiredStorageUntouched = scratchWordsAreUntouched(moduleBuffer);
             }
-            runtime.beginCapture();
-            moduleBuffer = runtime.coordinator.rootFor(0);
+            moduleBuffer = Number(continuation.beginUnwind());
+            (instance.exports.wpk_fork_unwind_begin as (addr: number) => void)(
+              moduleBuffer,
+            );
             return 0;
           },
         },
       };
       instance = new WebAssembly.Instance(module, imports);
-      runtime.register(instance);
       const run = instance.exports.run as () => number;
       const state = instance.exports.wpk_fork_state as () => number;
 
@@ -346,10 +326,15 @@ describe("instrumented ABORT_UNWINDING", () => {
       fillScratchWords(moduleBuffer);
       failGrowth = false;
       nextAddress = 65_536;
-      runtime.expectCaptureTransport(run);
+      const unwindResult = run();
+      expect(unwindResult).toBe(0);
       expect(state()).toBe(1);
-      runtime.coordinator.sealCapture();
-      runtime.coordinator.beginParentReplay();
+      (instance.exports.wpk_fork_unwind_end as () => void)();
+      continuation.finishUnwind();
+      continuation.beginReplay();
+      (instance.exports.wpk_fork_rewind_begin as (addr: number) => void)(
+        moduleBuffer,
+      );
       const successfulResult = run();
 
       expect({

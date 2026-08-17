@@ -27,7 +27,6 @@ import {
   parseHomebrewVfsMaterializationPolicy,
 } from "../host/src/homebrew-vfs-materialization-policy";
 import { parseHomebrewRuntimeSupportPolicy } from "../host/src/homebrew-runtime-support";
-import { ABI_VERSION } from "../host/src/generated/abi";
 import {
   ensureDirRecursive,
   writeVfsBinary,
@@ -46,13 +45,7 @@ const MiB = 1024 * 1024;
 const encoder = new TextEncoder();
 const execFileAsync = promisify(execFile);
 const repoRoot = fileURLToPath(new URL("../", import.meta.url));
-const checkedSelectionBytes = bytes(
-  "../homebrew/main-shell-flat-selection.json",
-);
-const checkedSelectionAbi = JSON.parse(
-  new TextDecoder().decode(checkedSelectionBytes),
-).kandeloAbi as number;
-const selectionBytes = currentAbiSelectionBytes(checkedSelectionBytes);
+const selectionBytes = bytes("../homebrew/main-shell-flat-selection.json");
 const materializationPolicyBytes = bytes(
   "../homebrew/main-shell-materialization-policy.json",
 );
@@ -110,7 +103,7 @@ test("binds the exact 3/1/2/35 lazy shell and checked mirror plan", async () => 
     image: {
       sha256: sha256(fixture.imageBytes),
       bytes: fixture.imageBytes.byteLength,
-      kernel_abi: ABI_VERSION,
+      kernel_abi: 42,
     },
     homebrew_bootstrap: {
       sha256: sha256(fixture.bootstrapArchive),
@@ -154,7 +147,7 @@ test("CI mirror state admits the exact flat-lazy shell and requires its mirror",
     writeFileSync(
       expected,
       `${JSON.stringify({
-        abi_version: ABI_VERSION,
+        abi_version: 42,
         entries: [
           {
             package: "shell",
@@ -169,9 +162,9 @@ test("CI mirror state admits the exact flat-lazy shell and requires its mirror",
     );
     writeFileSync(
       blockers,
-      `${JSON.stringify({ abi_version: ABI_VERSION, entries: [] })}\n`,
+      `${JSON.stringify({ abi_version: 42, entries: [] })}\n`,
     );
-    writeFileSync(index, `abi_version = ${ABI_VERSION}\n`);
+    writeFileSync(index, "abi_version = 42\n");
     writeFileSync(
       xtask,
       "#!/usr/bin/env bash\n" +
@@ -189,30 +182,6 @@ test("CI mirror state admits the exact flat-lazy shell and requires its mirror",
       ...process.env,
       WASM_POSIX_XTASK_BIN: xtask,
     };
-    if (checkedSelectionAbi !== ABI_VERSION) {
-      await assert.rejects(
-        () =>
-          execFileAsync(
-            "bash",
-            [
-              command,
-              "create",
-              expected,
-              blockers,
-              index,
-              "https://example.invalid/index.toml",
-              image,
-              bootstrap,
-              state,
-            ],
-            { cwd: repoRoot, env: environment },
-          ),
-        new RegExp(
-          `selection uses ABI ${checkedSelectionAbi}, expected ABI ${ABI_VERSION}`,
-        ),
-      );
-      return;
-    }
     await execFileAsync(
       "bash",
       [
@@ -314,8 +283,7 @@ test("rejects flat lazy metadata with the wrong ordinary deferred count", async 
 });
 
 test("rejects a flat-lazy shell for a different kernel ABI", async () => {
-  const staleAbi = ABI_VERSION - 1;
-  const fixture = await productFixture({ kernelAbi: staleAbi });
+  const fixture = await productFixture({ kernelAbi: 41 });
   await assert.rejects(
     () =>
       inspectHomebrewMainShellPublicProduct({
@@ -327,7 +295,7 @@ test("rejects a flat-lazy shell for a different kernel ABI", async () => {
         runtimeSupportPolicyBytes,
         checkedMirrorPlanBytes,
       }),
-    new RegExp(`declares kernel ABI ${staleAbi}, expected ${ABI_VERSION}`),
+    /declares kernel ABI 41, expected 42/,
   );
 });
 
@@ -457,7 +425,7 @@ async function productFixture(options?: {
   );
   fs.setImageMetadata({
     version: 1,
-    kernelAbi: options?.kernelAbi ?? ABI_VERSION,
+    kernelAbi: options?.kernelAbi ?? 42,
     homebrewFlatLazy: {
       schema: 1,
       kind: "kandelo-homebrew-flat-selection-lazy-v1",
@@ -502,28 +470,6 @@ async function productFixture(options?: {
 
 function bytes(relative: string): Uint8Array {
   return new Uint8Array(readFileSync(new URL(relative, import.meta.url)));
-}
-
-function currentAbiSelectionBytes(input: Uint8Array): Uint8Array {
-  const selection = JSON.parse(new TextDecoder().decode(input));
-  selection.kandeloAbi = ABI_VERSION;
-  selection.name = `main-shell-abi${ABI_VERSION}-wasm32`;
-  for (const bottle of selection.bottles) bottle.kandeloAbi = ABI_VERSION;
-  const normalize = (value: unknown): unknown => {
-    if (Array.isArray(value)) return value.map(normalize);
-    if (value !== null && typeof value === "object") {
-      return Object.fromEntries(
-        Object.keys(value as Record<string, unknown>)
-          .sort()
-          .map((key) => [
-            key,
-            normalize((value as Record<string, unknown>)[key]),
-          ]),
-      );
-    }
-    return value;
-  };
-  return encoder.encode(`${JSON.stringify(normalize(selection))}\n`);
 }
 
 function homebrewBootstrapArchive(contents: string): Uint8Array {

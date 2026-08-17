@@ -12,7 +12,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <setjmp.h>
 
 /*
  * function prototypes
@@ -20,8 +19,6 @@
 void __wasm_setjmp(void *env, uint32_t label, void *func_invocation_id);
 uint32_t __wasm_setjmp_test(void *env, void *func_invocation_id);
 void __wasm_longjmp(void *env, int val);
-unsigned long __wasm_posix_caught_handler_depth(void);
-void __wasm_posix_longjmp_cleanup(unsigned long target_depth);
 
 /*
  * jmp_buf should have large enough size and alignment to contain
@@ -41,14 +38,7 @@ struct jmp_buf_impl {
 		void *env;
 		int val;
 	} arg;
-
-	/* Target caught-handler depth for generic and signal-aware longjmp.
-	 * This stays inside the existing architecture jmp_buf storage. */
-	unsigned long handler_depth;
 };
-
-_Static_assert(sizeof(struct jmp_buf_impl) <= sizeof(__jmp_buf),
-	"Wasm setjmp runtime exceeds architecture jmp_buf storage");
 
 void
 __wasm_setjmp(void *env, uint32_t label, void *func_invocation_id)
@@ -62,7 +52,6 @@ __wasm_setjmp(void *env, uint32_t label, void *func_invocation_id)
 	}
 	jb->func_invocation_id = func_invocation_id;
 	jb->label = label;
-	jb->handler_depth = __wasm_posix_caught_handler_depth();
 }
 
 uint32_t
@@ -86,7 +75,6 @@ __wasm_longjmp(void *env, int val)
 {
 	struct jmp_buf_impl *jb = env;
 	struct arg *arg = &jb->arg;
-	__wasm_posix_longjmp_cleanup(jb->handler_depth);
 	/*
 	 * C standard says:
 	 * The longjmp function cannot cause the setjmp macro to return

@@ -102,7 +102,7 @@ int main(void) {
     int rc = 0;
     rc |= check_pwent_iteration();
     rc |= check_pwnam("root", 1);
-    rc |= check_pwnam("maker", 1);
+    rc |= check_pwnam("user", 1);
     rc |= check_pwnam("nonexistent-user-xyz", 0);
     rc |= check_pwuid(0, 1);
     rc |= check_pwuid(1000, 1);

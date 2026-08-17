@@ -87,6 +87,7 @@ pub enum SocketState {
 }
 
 /// A received UDP datagram.
+#[derive(Clone)]
 pub struct Datagram {
     pub data: Vec<u8>,
     pub src_addr: [u8; 4],
@@ -538,7 +539,12 @@ pub fn tcp6_can_bind(pid: u32, sock_idx: usize, addr: [u8; 16], port: u16) -> bo
     })
 }
 
-pub fn tcp6_register(pid: u32, sock_idx: usize, addr: [u8; 16], port: u16) -> Result<(), Errno> {
+pub fn tcp6_register(
+    pid: u32,
+    sock_idx: usize,
+    addr: [u8; 16],
+    port: u16,
+) -> Result<(), Errno> {
     if port == 0 {
         return Err(Errno::EINVAL);
     }
@@ -670,11 +676,7 @@ pub struct SocketInfo {
     pub recv_timeout_us: u64,
     /// Send timeout in microseconds (0 = no timeout).
     pub send_timeout_us: u64,
-    /// Original bounded sockaddr name supplied to AF_UNIX bind().
-    ///
-    /// WHY: the UnixSocketRegistry owns the canonical namespace key. Keeping
-    /// that potentially much longer resolved path here would let getsockname()
-    /// report more bytes than the concrete sockaddr supplied by the caller.
+    /// Bound filesystem path for AF_UNIX sockets.
     pub bind_path: Option<Vec<u8>>,
     /// Errno cached from a failed host-delegated connect; read and cleared
     /// by SO_ERROR (Linux semantics). 0 means no error.
@@ -858,55 +860,6 @@ impl SocketTable {
             self.entries.push(None);
         }
         self.entries[idx] = Some(info);
-    }
-
-    /// Decode the negative `-(slot + 1)` stored in a socket OFD.
-    pub(crate) fn index_from_ofd_handle(host_handle: i64) -> Result<usize, Errno> {
-        let index = host_handle
-            .checked_add(1)
-            .and_then(i64::checked_neg)
-            .ok_or(Errno::EBADF)?;
-        usize::try_from(index).map_err(|_| Errno::EBADF)
-    }
-
-    /// Retain only socket slots owned by inherited OFDs.
-    ///
-    /// WHY: `peer_idx` is an operational process-local endpoint, not an owning
-    /// capability. Following it into a slot with no inherited OFD would create
-    /// a fake child-local peer that can accept bytes after the real peer has
-    /// closed. Edges between two independently inherited roots remain valid;
-    /// all other edges are cleared.
-    pub(crate) fn retain_inherited_roots(&mut self, roots: &[usize]) -> Result<(), Errno> {
-        let mut retained = Vec::new();
-        retained
-            .try_reserve_exact(self.entries.len())
-            .map_err(|_| Errno::ENOMEM)?;
-        retained.resize(self.entries.len(), false);
-
-        // Validate every owning root before mutating the cloned table so an
-        // invalid OFD cannot leave a partially filtered child.
-        for &root in roots {
-            if self.get(root).is_none() {
-                return Err(Errno::EBADF);
-            }
-            retained[root] = true;
-        }
-
-        for (index, slot) in self.entries.iter_mut().enumerate() {
-            if !retained[index] {
-                *slot = None;
-                continue;
-            }
-            if let Some(socket) = slot {
-                if socket
-                    .peer_idx
-                    .is_some_and(|peer| peer >= retained.len() || !retained[peer])
-                {
-                    socket.peer_idx = None;
-                }
-            }
-        }
-        Ok(())
     }
 }
 
@@ -1107,78 +1060,6 @@ mod tests {
     }
 
     #[test]
-    fn inherited_socket_roots_drop_non_root_peers_and_clear_dangling_edges() {
-        let mut table = SocketTable::new();
-        let root = table.alloc(SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0));
-        let peer = table.alloc(SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0));
-        let retry_only = table.alloc(SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0));
-        table.get_mut(root).unwrap().peer_idx = Some(peer);
-        table.get_mut(peer).unwrap().peer_idx = Some(root);
-
-        table.retain_inherited_roots(&[root]).unwrap();
-        assert!(table.get(root).is_some());
-        assert_eq!(table.get(root).unwrap().peer_idx, None);
-        assert!(table.get(peer).is_none());
-        assert!(table.get(retry_only).is_none());
-    }
-
-    #[test]
-    fn inherited_socket_roots_clear_a_dangling_peer() {
-        let mut table = SocketTable::new();
-        let root = table.alloc(SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0));
-        table.get_mut(root).unwrap().peer_idx = Some(9);
-
-        assert_eq!(table.retain_inherited_roots(&[root]), Ok(()));
-        assert!(table.get(root).is_some());
-        assert_eq!(table.get(root).unwrap().peer_idx, None);
-    }
-
-    #[test]
-    fn inherited_socket_roots_reject_an_invalid_root_without_partial_filtering() {
-        let mut table = SocketTable::new();
-        let left = table.alloc(SocketInfo::new(SocketDomain::Unix, SocketType::Dgram, 0));
-        let right = table.alloc(SocketInfo::new(SocketDomain::Unix, SocketType::Dgram, 0));
-        table.get_mut(left).unwrap().peer_idx = Some(right);
-
-        assert_eq!(
-            table.retain_inherited_roots(&[left, 99]),
-            Err(Errno::EBADF)
-        );
-        assert_eq!(table.get(left).unwrap().peer_idx, Some(right));
-        assert!(table.get(right).is_some());
-    }
-
-    #[test]
-    fn inherited_socket_roots_preserve_edges_between_two_owning_roots() {
-        let mut table = SocketTable::new();
-        let left = table.alloc(SocketInfo::new(SocketDomain::Unix, SocketType::Dgram, 0));
-        let right = table.alloc(SocketInfo::new(SocketDomain::Unix, SocketType::Dgram, 0));
-        let unrelated = table.alloc(SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0));
-        table.get_mut(left).unwrap().peer_idx = Some(right);
-        table.get_mut(right).unwrap().peer_idx = Some(left);
-
-        table.retain_inherited_roots(&[left, right]).unwrap();
-
-        assert_eq!(table.get(left).unwrap().peer_idx, Some(right));
-        assert_eq!(table.get(right).unwrap().peer_idx, Some(left));
-        assert!(table.get(unrelated).is_none());
-    }
-
-    #[test]
-    fn socket_ofd_handle_decoding_is_checked() {
-        assert_eq!(SocketTable::index_from_ofd_handle(-1), Ok(0));
-        assert_eq!(SocketTable::index_from_ofd_handle(-2), Ok(1));
-        assert_eq!(
-            SocketTable::index_from_ofd_handle(0),
-            Err(Errno::EBADF)
-        );
-        assert_eq!(
-            SocketTable::index_from_ofd_handle(i64::MAX),
-            Err(Errno::EBADF)
-        );
-    }
-
-    #[test]
     fn test_socket_state_transitions() {
         let mut sock = SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0);
         assert_eq!(sock.state, SocketState::Unbound);
@@ -1211,34 +1092,32 @@ mod tests {
         // A dual-stack wildcard listener reserves the same socket identity in
         // both protocol-family tables.
         tcp6_register(PARENT, DUAL_STACK_TCP_IDX, [0; 16], TCP_PORT).unwrap();
-        tcp_register(PARENT, DUAL_STACK_TCP_IDX, [0, 0, 0, 0], TCP_PORT).unwrap();
+        tcp_register(
+            PARENT,
+            DUAL_STACK_TCP_IDX,
+            [0, 0, 0, 0],
+            TCP_PORT,
+        )
+        .unwrap();
 
         inherit_inet_binding_owners(PARENT, CHILD, UDP4_IDX);
         inherit_inet_binding_owners(PARENT, CHILD, UDP6_IDX);
         inherit_inet_binding_owners(PARENT, CHILD, DUAL_STACK_TCP_IDX);
 
         let udp4_targets = udp_lookup([127, 0, 0, 1], UDP4_PORT);
-        assert!(
-            udp4_targets
-                .iter()
-                .any(|target| target.pid == PARENT && target.sock_idx == UDP4_IDX)
-        );
-        assert!(
-            udp4_targets
-                .iter()
-                .any(|target| target.pid == CHILD && target.sock_idx == UDP4_IDX)
-        );
+        assert!(udp4_targets
+            .iter()
+            .any(|target| target.pid == PARENT && target.sock_idx == UDP4_IDX));
+        assert!(udp4_targets
+            .iter()
+            .any(|target| target.pid == CHILD && target.sock_idx == UDP4_IDX));
         let udp6_targets = udp6_lookup(LOOPBACK6, UDP6_PORT);
-        assert!(
-            udp6_targets
-                .iter()
-                .any(|target| target.pid == PARENT && target.sock_idx == UDP6_IDX)
-        );
-        assert!(
-            udp6_targets
-                .iter()
-                .any(|target| target.pid == CHILD && target.sock_idx == UDP6_IDX)
-        );
+        assert!(udp6_targets
+            .iter()
+            .any(|target| target.pid == PARENT && target.sock_idx == UDP6_IDX));
+        assert!(udp6_targets
+            .iter()
+            .any(|target| target.pid == CHILD && target.sock_idx == UDP6_IDX));
 
         // Parent close removes only the parent's process-local identity.
         udp_unregister(PARENT, UDP4_IDX);
@@ -1248,16 +1127,10 @@ mod tests {
 
         let udp4_targets = udp_lookup([127, 0, 0, 1], UDP4_PORT);
         assert_eq!(udp4_targets.len(), 1);
-        assert_eq!(
-            (udp4_targets[0].pid, udp4_targets[0].sock_idx),
-            (CHILD, UDP4_IDX)
-        );
+        assert_eq!((udp4_targets[0].pid, udp4_targets[0].sock_idx), (CHILD, UDP4_IDX));
         let udp6_targets = udp6_lookup(LOOPBACK6, UDP6_PORT);
         assert_eq!(udp6_targets.len(), 1);
-        assert_eq!(
-            (udp6_targets[0].pid, udp6_targets[0].sock_idx),
-            (CHILD, UDP6_IDX)
-        );
+        assert_eq!((udp6_targets[0].pid, udp6_targets[0].sock_idx), (CHILD, UDP6_IDX));
         assert!(!udp_can_bind(
             CONTENDER,
             1,
@@ -1265,8 +1138,19 @@ mod tests {
             UDP4_PORT,
             false
         ));
-        assert!(!udp6_can_bind(CONTENDER, 2, LOOPBACK6, UDP6_PORT, false));
-        assert!(!tcp_can_bind(CONTENDER, 3, [0, 0, 0, 0], TCP_PORT));
+        assert!(!udp6_can_bind(
+            CONTENDER,
+            2,
+            LOOPBACK6,
+            UDP6_PORT,
+            false
+        ));
+        assert!(!tcp_can_bind(
+            CONTENDER,
+            3,
+            [0, 0, 0, 0],
+            TCP_PORT
+        ));
         assert!(!tcp6_can_bind(CONTENDER, 3, [0; 16], TCP_PORT));
 
         // Final close drops each logical reservation.
@@ -1276,9 +1160,26 @@ mod tests {
         tcp6_unregister(CHILD, DUAL_STACK_TCP_IDX);
         assert!(udp_lookup([127, 0, 0, 1], UDP4_PORT).is_empty());
         assert!(udp6_lookup(LOOPBACK6, UDP6_PORT).is_empty());
-        assert!(udp_can_bind(CONTENDER, 1, [127, 0, 0, 1], UDP4_PORT, false));
-        assert!(udp6_can_bind(CONTENDER, 2, LOOPBACK6, UDP6_PORT, false));
-        assert!(tcp_can_bind(CONTENDER, 3, [0, 0, 0, 0], TCP_PORT));
+        assert!(udp_can_bind(
+            CONTENDER,
+            1,
+            [127, 0, 0, 1],
+            UDP4_PORT,
+            false
+        ));
+        assert!(udp6_can_bind(
+            CONTENDER,
+            2,
+            LOOPBACK6,
+            UDP6_PORT,
+            false
+        ));
+        assert!(tcp_can_bind(
+            CONTENDER,
+            3,
+            [0, 0, 0, 0],
+            TCP_PORT
+        ));
         assert!(tcp6_can_bind(CONTENDER, 3, [0; 16], TCP_PORT));
     }
 
@@ -1298,22 +1199,21 @@ mod tests {
         inherit_inet_binding_owners(PARENT, CHILD, FIRST_IDX);
         let targets = udp_lookup([127, 0, 0, 1], PORT);
         assert_eq!(targets.len(), 3);
-        assert!(
-            targets
-                .iter()
-                .any(|target| target.pid == CHILD && target.sock_idx == FIRST_IDX)
-        );
-        assert!(
-            !targets
-                .iter()
-                .any(|target| target.pid == CHILD && target.sock_idx == SECOND_IDX)
-        );
+        assert!(targets
+            .iter()
+            .any(|target| target.pid == CHILD && target.sock_idx == FIRST_IDX));
+        assert!(!targets
+            .iter()
+            .any(|target| target.pid == CHILD && target.sock_idx == SECOND_IDX));
 
         udp_unregister(PARENT, FIRST_IDX);
         udp_unregister(CHILD, FIRST_IDX);
         let targets = udp_lookup([127, 0, 0, 1], PORT);
         assert_eq!(targets.len(), 1);
-        assert_eq!((targets[0].pid, targets[0].sock_idx), (PARENT, SECOND_IDX));
+        assert_eq!(
+            (targets[0].pid, targets[0].sock_idx),
+            (PARENT, SECOND_IDX)
+        );
 
         udp_unregister(PARENT, SECOND_IDX);
     }

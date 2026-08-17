@@ -164,12 +164,11 @@ host_plan="$(KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$PRIMARY_RESOLVED_TAPS" \
   ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core host-plan --host-dependencies-json)"
 jq -e '
   keys == ["build", "build_and_test", "formula", "full_name", "native_requirements", "runtime_and_test", "schema", "tap", "target_taps"] and
-  .schema == 5 and
+  .schema == 4 and
   .tap == "kandelo-dev/tap-core" and
   .formula == "host-plan" and
   .full_name == "kandelo-dev/tap-core/host-plan" and
   .target_taps == [{
-    checkout_commit: "1111111111111111111111111111111111111111",
     tap_commit: "1111111111111111111111111111111111111111",
     tap_name: "kandelo-dev/tap-core",
     tap_repository: "kandelo-dev/homebrew-tap-core"
@@ -194,19 +193,10 @@ campaign_host_plan="$(
     ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core host-plan \
       --host-dependencies-json
 )"
-jq -e '
-  .schema == 5 and
-  .target_taps == [{
-    checkout_commit: "2222222222222222222222222222222222222222",
-    tap_commit: "1111111111111111111111111111111111111111",
-    tap_name: "kandelo-dev/tap-core",
-    tap_repository: "kandelo-dev/homebrew-tap-core"
-  }]
-' <<<"$campaign_host_plan" >/dev/null
-jq -e --argjson normal "$host_plan" '
-  .target_taps[0].tap_commit == $normal.target_taps[0].tap_commit and
-  .target_taps[0].checkout_commit != $normal.target_taps[0].checkout_commit
-' <<<"$campaign_host_plan" >/dev/null
+[ "$campaign_host_plan" = "$host_plan" ] || {
+  echo "test-homebrew-formula-runtime-closure.sh: campaign checkout changed public dependency provenance" >&2
+  exit 1
+}
 
 cat >"$TAP_ROOT/Formula/third-party-plan.rb" <<'RUBY'
 class ThirdPartyPlan < Formula
@@ -338,16 +328,14 @@ jq -e '
 cross_host="$(KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$RESOLVED_TAPS" \
   ruby "$resolver" "$TAP_ROOT" acme/tools m4 --host-dependencies-json)"
 jq -e '
-  .schema == 5 and
+  .schema == 4 and
   .target_taps == [
     {
-      checkout_commit: "1111111111111111111111111111111111111111",
       tap_commit: "1111111111111111111111111111111111111111",
       tap_name: "acme/tools",
       tap_repository: "acme/homebrew-tools"
     },
     {
-      checkout_commit: "2222222222222222222222222222222222222222",
       tap_commit: "2222222222222222222222222222222222222222",
       tap_name: "kandelo-dev/tap-core",
       tap_repository: "kandelo-dev/homebrew-tap-core"
@@ -603,7 +591,7 @@ native_plan="$(KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$PRIMARY_RESOLVED_TAPS" \
   ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core native-requirements \
     --host-dependencies-json)"
 jq -e '
-  .schema == 5 and
+  .schema == 4 and
   .build == ["binaryen", "pkgconf", "wabt"] and
   .build_and_test == ["binaryen", "pkgconf", "wabt"] and
   .native_requirements == [
@@ -902,7 +890,7 @@ printf 'alpha\n' >"$TAP_ROOT/Kandelo/formula_support/a-runtime.txt"
 bridge_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core bridge --tier2-bridge-json)"
 jq -e '
   keys == ["formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tier2_bridge"] and
-  .schema == 4 and
+  .schema == 2 and
   .tap == "kandelo-dev/tap-core" and
   .formula == "bridge" and
   .full_name == "kandelo-dev/tap-core/bridge" and
@@ -1800,44 +1788,18 @@ KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$PRIMARY_RESOLVED_TAPS" \
   ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core retired-bottle \
     --host-dependencies-json >"$TMP_ROOT/retired-host-plan.json"
 jq -e '
-  .schema == 5 and
+  .schema == 4 and
   .formula == "retired-bottle" and
   .full_name == "kandelo-dev/tap-core/retired-bottle" and
   .native_requirements == []
 ' "$TMP_ROOT/retired-host-plan.json" >/dev/null
-ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core retired-bottle \
-  --bottle-identity-json >"$TMP_ROOT/retired-ordinary.out"
-jq -e '
-  .schema == 1 and
-  .full_name == "kandelo-dev/tap-core/retired-bottle" and
-  .bottle.root_url == "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core" and
-  .bottle.rebuild == 0
-' "$TMP_ROOT/retired-ordinary.out" >/dev/null
-KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$PRIMARY_RESOLVED_TAPS" \
-  ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core retired-bottle wasm32 \
-    >"$TMP_ROOT/retired-target-runtime.json"
-jq -e 'type == "object"' "$TMP_ROOT/retired-target-runtime.json" >/dev/null
-cat >"$TAP_ROOT/Formula/retired-consumer.rb" <<'RUBY'
-class RetiredConsumer < Formula
-  depends_on "kandelo-dev/tap-core/retired-bottle"
-
-  bottle do
-    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
-    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-  end
-end
-RUBY
-if KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$PRIMARY_RESOLVED_TAPS" \
-  ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core retired-consumer wasm32 \
-    >"$TMP_ROOT/retired-dependency.out" \
-    2>"$TMP_ROOT/retired-dependency.err"; then
-  echo "test-homebrew-formula-runtime-closure.sh: accepted a consumed retired-Cellar bottle" >&2
+if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core retired-bottle \
+    --bottle-identity-json >"$TMP_ROOT/retired-ordinary.out" \
+    2>"$TMP_ROOT/retired-ordinary.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: accepted the retired Cellar after cutover" >&2
   exit 1
 fi
-if ! grep -F 'Formula bottle block uses an unsupported cellar' \
-  "$TMP_ROOT/retired-dependency.err" >/dev/null; then
-  cat "$TMP_ROOT/retired-dependency.err" >&2
-  exit 1
-fi
+grep -F 'Formula bottle block uses an unsupported cellar' \
+  "$TMP_ROOT/retired-ordinary.err" >/dev/null
 
 echo "test-homebrew-formula-runtime-closure.sh: passed"

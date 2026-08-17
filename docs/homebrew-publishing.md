@@ -160,11 +160,11 @@ and sealed campaign authority rather than branch-selected source.
 After cache-key planning removes already-current bottles, the publisher parses
 only the Formulae that will actually build. The static parser runs with the
 repository-pinned Nix Ruby, and its complete record is bounded for workflow
-transport. A strict schema-4 Formula with no registry bridge and a strict
+transport. A strict schema-2 Formula with no registry bridge and a strict
 schema-3 sealed tap recipe are admitted from those exact authority records.
-Transitional registry bridges bind one exact main-repository build-helper
-script, so each Formula-to-helper identity is explicitly reviewed; the current
-temporary mappings are
+Transitional registry bridges carry broader main-repository recipe authority,
+so each Formula-to-registry-package identity is explicitly reviewed; the
+current temporary mappings are
 `modeset` to `modeset` and `nethack` to `nethack`. The complete per-Formula
 record is compared again at the last workflow boundary before the bottle
 builder attests and executes the Formula. Adding a direct Formula or sealed tap
@@ -507,15 +507,13 @@ primary tap root regardless of whether Homebrew loaded primary or dependency
 support first. A missing root, changed module or runtime helper, different
 support API version, or Formula/support drift fails before Formula installation.
 
-Formula source URL, SHA-256, and version are owned by the selected Formula.
-Registry-bridge and inert Formula plans use schema 4; a registry bridge binds
-only the exact Kandelo build-helper script needed to compile that Formula.
-Legacy Kandelo `package.toml` and `build.toml` files do not participate in the
-bottle source decision. Formula-owned tap recipes continue to use schema 3 so
-the publisher and runtime can distinguish them without inferring authority
-from optional fields. Schema 3 carries exactly one `tap_recipe` and a null
-`tier2_bridge`; schema 4 never carries `tap_recipe`. Older schemas are rejected
-rather than interpreted as if they carried the current authority contract.
+Adding the runtime-tree digest changed the exact Tier-2 control-document shape.
+Registry-bridge and inert Formula plans therefore use schema 2. Formula-owned
+tap recipes use schema 3 so the publisher and runtime can distinguish them
+without inferring authority from optional fields. Schema 3 carries exactly one
+`tap_recipe` and a null `tier2_bridge`; schema 2 never carries `tap_recipe`.
+Schema 1 is rejected rather than interpreted as if it carried either newer
+runtime contract.
 
 The protected publisher plan repeats every target tap as a sorted immutable
 identity record containing its normalized tap name, conventional repository,
@@ -627,7 +625,7 @@ diagnostic bootstrap still use the retired prefix recorded in the guest
 layout contract. Do not describe that transitional layout as the campaign
 endpoint.
 
-The target guest uses the existing `/home/maker` account for writable
+The target guest uses the existing `/home/user` account for writable
 cache and configuration state and exposes `/usr/bin/brew` as the stable
 command. After cutover, new images must not create a `linuxbrew` user,
 install below `/home/linuxbrew`, or add a compatibility symlink for the
@@ -3649,25 +3647,6 @@ when its fallback fields are complete. Maintenance exposes only `rebuild` and
 Homebrew-derived VFS images are built from sidecars and verified bottle bytes,
 not from Formula Ruby.
 
-An image build may also consume one closed privileged-program projection
-policy. At this trusted build-operator boundary, the CLI parses the JSON policy
-into a non-serializable opaque capability and associates it privately with the
-in-memory plan. Public planner, builder, runtime, and browser option records
-cannot mint or transport that authority. The association binds every record to
-a Formula in the selected closure and its exact bottle digest. After the
-ordinary bottle tree is materialized,
-the builder resolves source hard links only through the complete authenticated
-archive inventory, hashes the resulting regular bytes, and copies them into
-fresh root-owned `04755` inodes in a separate product tree. The ordinary
-Homebrew prefix remains writable and `nosuid`; the product tree is published
-only as a read-only privately branded backend after the complete projection
-group passes alias, ownership, parent-directory, digest, and
-generation-qualified collision checks. `--privileged-projections` and
-`--privileged-product-out` emit that separate tree and its artifact identity.
-The emitted JSON and image are data, not reusable live mount authority. The
-flags do not grant process credentials or make the policy string mount
-authority.
-
 The guest Homebrew bootstrap image is a separate diagnostic and integration
 artifact. Build it from the pinned upstream Homebrew revision, Kandelo's
 reviewed platform patch, and ABI-current Kandelo package artifacts with:
@@ -3961,24 +3940,20 @@ same browser-safe relocation implementation.
 
 First use still fetches and verifies the complete unmodified `.tar.gz`; the
 content digest and byte count never describe relocated or recompressed bytes.
-Before registration, the Homebrew adapter requires its relocation markers and
-generic transform plan to equal the exact receipt list and authenticated
-destination prefix. It then erases Homebrew policy into the generic
-`tar-gzip-v1` VFS contract. After decoding and complete source-inventory
-validation, the VFS verifies each transform input, applies its bounded literal
-replacements, verifies the declared output digest and length, preserves every
-hardlink alias, and only then atomically commits the group. A missing changed
-file, unsafe or duplicate receipt path, retained supported placeholder,
-unresolved Java dependency, marker mismatch, output identity mismatch, or
-expansion past the global VFS cap leaves the whole group pending and retryable.
-Upstream receipts may represent an empty `changed_files` list as either `null`
-or `[]`; both mean that no archive member is relocated.
+After decoding and complete source-inventory validation, the runtime requires
+its relocation markers to equal the exact receipt list, relocates the shared
+regular inode once, preserves every hardlink alias, and only then atomically
+commits the group. A missing changed file, unsafe or duplicate receipt path,
+retained supported placeholder, unresolved Java dependency, marker mismatch,
+or final-size mismatch leaves the whole group pending and retryable. Upstream
+receipts may represent an empty `changed_files` list as either `null` or `[]`;
+both mean that no archive member is relocated.
 
-The image builder emits an inert schema-6 draft because exact Node and Chromium
+The image builder emits an inert schema-5 draft because exact Node and Chromium
 evidence does not exist until the eager image has run. The credential-free
 release preparer validates that draft, every exact bottle payload, the eager
 descriptor, report, and both host evidence files, then closes the public
-schema-6 descriptor. Its `deferred_trees[]` contract names a Formula identity,
+schema-5 descriptor. Its `deferred_trees[]` contract names a Formula identity,
 immutable SHA-256 and byte count, decoder and media type, ordered transport
 locations, activation policy, complete source inventory, and complete guest
 projection. The closed descriptor also binds
@@ -4650,7 +4625,7 @@ path:
 ?vfs=https://github.com/<owner>/homebrew-<tap>/releases/download/homebrew-vfs-sha256-<sha256>/kandelo-homebrew.vfs.zst
 ```
 
-`kandelo-homebrew-<runtime-id>-layer.json` is a separate closed schema-6 entry
+`kandelo-homebrew-<runtime-id>-layer.json` is a separate closed schema-5 entry
 point for direct bottle content. Keeping it separate preserves the stable
 whole-image descriptor contract and gives the runtime layer an identity that
 cannot alias a changed base, payload, or inventory merely because the eager VFS
@@ -4697,7 +4672,7 @@ descriptor and VFS path. A `package-layer` mount targets `/` and carries a
 bounded descriptor URL, exact descriptor byte count, and lowercase SHA-256
 reference. Boot eagerly fetches and validates only those descriptor bytes. It
 then restores the exact compressed shell package output into a private
-filesystem, binds the schema-6 descriptor to that base, its ABI, and
+filesystem, binds the schema-5 descriptor to that base, its ABI, and
 `/etc/kandelo/homebrew-vfs.json` composition, and rejects base or pairwise
 package/path collisions. Only a completely registered selection whose required
 boot-prefetch trees have succeeded is returned to boot, so a failed composition
@@ -4913,7 +4888,7 @@ is the only legacy exception: reconciliation verifies all seven current handoff
 files byte-for-byte. A partial legacy set, an unknown name, or a mismatched
 legacy payload fails; the publisher never fills or rewrites an immutable legacy
 release. New acceptance releases always use five assets, and every new closed
-schema-6 direct layer uses an independent runtime release containing its
+schema-5 direct layer uses an independent runtime release containing its
 descriptor and exactly one payload per deferred bottle. Historical schema-4
 one-tree layers retain their two-asset release shape. The Actions receipt is
 only a receipt; release assets are the durable public product.

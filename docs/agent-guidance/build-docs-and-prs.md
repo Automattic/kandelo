@@ -131,57 +131,14 @@ scripts/build-programs.sh    # Rebuild test/example C programs
 against a stale `sysroot/lib/libc.a`, hiding or inventing syscall, ABI, and
 libc behavior.
 
-### First build in a fresh checkout or worktree
-
-A new `git worktree` does not inherit submodules, a musl sysroot, `node_modules`,
-or fetched binaries — so Vitest and the conformance/browser suites cannot run
-until you build them. This is a setup step, not a reason to say "I can't
-validate." The full sequence (see `validation.md` for detail):
-
-```bash
-git submodule update --init --recursive           # musl, libc-test, os-test
-# if libc/musl exists but is a stray partial dir: rm -rf libc/musl && git submodule update --init libc/musl
-scripts/dev-shell.sh bash scripts/build-musl.sh    # sysroot (~20s)
-scripts/dev-shell.sh bash build.sh                 # kernel wasm → local-binaries/, host, rootfs (~1.5min)
-npm ci && (cd host && npm ci)                      # root deps (tsx for conformance runners) + host deps
-scripts/dev-shell.sh bash scripts/fetch-binaries.sh # prebuilt test binaries build.sh does not produce
-```
-
-A stale `local-binaries/kernel.wasm` silently runs OLD kernel code in
-Vitest/conformance, so rebuild with `bash build.sh` after any kernel Rust edit.
-
 ## Documentation And PRs
 
-PR titles and commit subjects must begin with a concise purpose prefix in the
-form `Area: Purpose`. Use the primary contract or capability affected, not a
-mechanical verb or team name. Common prefixes include:
-
-- `ABI:` for the host/kernel binary contract and versioning.
-- `Browser:` for browser-only product or presentation behavior.
-- `CI:` for repository validation, release, and automation infrastructure.
-- `Docs:` for documentation-only changes.
-- `Homebrew:` for tap, bottle, publisher, and Homebrew VFS work.
-- `Host:` for shared Node.js/browser host-runtime behavior.
-- `Kernel:` for kernel implementation and internal process state.
-- `Libc:` for musl and libc glue.
-- `Packages:` for the general package system and package recipes.
-- `Performance:` for measured performance work.
-- `POSIX:` for externally observable POSIX semantics and conformance.
-- `SDK:` for cross-compilation and SDK behavior.
-
-Choose the prefix that gives a reviewer the most useful first routing signal.
-For cross-cutting work, prefer the primary user-visible purpose instead of
-stacking several prefixes. Use another clear area when the examples do not fit.
-Keep the same semantic prefix when a PR is squash-merged so the resulting
-commit remains identifiable in history; purpose-prefix substantive intermediate
-commits as well.
-
-The prefix does not replace a purpose-led title. PR titles, PR descriptions,
-and commit messages should lead with the platform contract, user-visible
-behavior, system invariant, or project capability being changed or protected.
-Every PR description must begin its substance with a plain-language `## Why`
-section. Put `## What changed`, implementation details, validation, and rollout
-information after it. The Why section must explain:
+PR titles, PR descriptions, and commit messages should lead with the purpose of
+the work: the platform contract, user-visible behavior, system invariant, or
+project capability being changed or protected. Every PR description must begin
+its substance with a plain-language `## Why` section. Put `## What changed`,
+implementation details, validation, and rollout information after it. The Why
+section must explain:
 
 - what currently fails, is risky, or is unnecessarily difficult;
 - who or what is affected; and

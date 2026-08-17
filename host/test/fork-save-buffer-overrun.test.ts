@@ -19,10 +19,16 @@
  * without implying that current linked continuations have the old ceiling.
  */
 import { describe, it, expect } from "vitest";
-import { forkSaveBufferOverrun } from "../src/worker-main";
+import type { SideModuleForkState } from "../src/dylink";
+import {
+  finalizeSideModuleForkUnwind,
+  forkSaveBufferOverrun,
+} from "../src/worker-main";
 import { FORK_SAVE_BUFFER_SIZE } from "../src/process-memory";
+import type { LinkedForkContinuation } from "../src/fork-continuation";
 
 const FORK_BUF_ADDR = 65536; // arbitrary page-aligned buffer base for the test
+const SIDE_FORK_BUF_ADDR = 32768; // separate from the process-main test buffer
 
 function writeCurrentPos(
   memory: WebAssembly.Memory,
@@ -33,6 +39,31 @@ function writeCurrentPos(
   const view = new DataView(memory.buffer);
   if (ptrWidth === 8) view.setBigUint64(addr, BigInt(value), true);
   else view.setUint32(addr, value, true);
+}
+
+function createSideForkState(
+  name: string,
+  forkBufAddr: number,
+  finishUnwind: () => void = () => {},
+): { state: SideModuleForkState; runtimeState: () => number } {
+  let value = 1; // UNWINDING
+  const instance = {
+    exports: {
+      wpk_fork_state: () => value,
+      wpk_fork_unwind_end: () => {
+        value = 0; // NORMAL
+      },
+    },
+  } as unknown as WebAssembly.Instance;
+  return {
+    state: {
+      name,
+      instance,
+      forkBufAddr,
+      continuation: { finishUnwind } as unknown as LinkedForkContinuation,
+    },
+    runtimeState: () => value,
+  };
 }
 
 describe("forkSaveBufferOverrun", () => {
@@ -99,5 +130,33 @@ describe("forkSaveBufferOverrun", () => {
     expect(
       forkSaveBufferOverrun(memory, FORK_BUF_ADDR, 8, FORK_SAVE_BUFFER_SIZE),
     ).toBe(1);
+  });
+
+  it("finalizes the side-module linked continuation", () => {
+    const memory = new WebAssembly.Memory({ initial: 3 });
+    let finalized = false;
+    const side = createSideForkState(
+      "libintl.so",
+      SIDE_FORK_BUF_ADDR,
+      () => { finalized = true; },
+    );
+
+    expect(() => finalizeSideModuleForkUnwind(memory, side.state, 4))
+      .not.toThrow();
+    expect(finalized).toBe(true);
+    expect(side.runtimeState()).toBe(0);
+  });
+
+  it("propagates linked continuation validation before fork dispatch", () => {
+    const memory = new WebAssembly.Memory({ initial: 3 });
+    const side = createSideForkState(
+      "libintl.so",
+      SIDE_FORK_BUF_ADDR,
+      () => { throw new Error("uncommitted linked frame"); },
+    );
+
+    expect(() => finalizeSideModuleForkUnwind(memory, side.state, 4))
+      .toThrow("uncommitted linked frame");
+    expect(side.runtimeState()).toBe(0);
   });
 });

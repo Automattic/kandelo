@@ -1350,10 +1350,6 @@ for workflow in "$STAGING_WORKFLOW" "$PREPARE"; do
   grep -Fq 'run: bash scripts/dev-shell.sh npm ci --no-audit --no-fund' \
     <<<"$root_install_step" ||
     fail "$(basename "$workflow") materialization validation must install the root esbuild dependency"
-  materialization_step="$(step_block "$workflow" "Test binary materialization flow")"
-  grep -Fq 'bash scripts/dev-shell.sh bash scripts/build-fork-instrument-tool.sh' \
-    <<<"$materialization_step" ||
-    fail "$(basename "$workflow") materialization validation must build the fork contract inventory tool"
 done
 
 grep -Fq 'cleanup-merge-candidates.sh' "$CLEANUP_WORKFLOW" || \

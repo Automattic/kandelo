@@ -16,7 +16,6 @@ import { encodeHomebrewBottleSelection } from "../src/homebrew-bottle-selection"
 import { planHomebrewVfsSelection } from "../src/homebrew-vfs-planner";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import {
-  HOMEBREW_TEST_ABI,
   homebrewTestBootstrapFixture,
   homebrewTestBottleDescriptor,
   homebrewTestBottleEntry,
@@ -271,7 +270,7 @@ describe("flat-selection lazy Homebrew composer", () => {
     ].sort());
     expect(metadata).toEqual({
       version: 1,
-      kernelAbi: HOMEBREW_TEST_ABI,
+      kernelAbi: 42,
       createdBy: "host/src/homebrew-flat-lazy-vfs-composer.ts",
       capacity: { maxByteLength: 512 * MiB },
       baseImage: fixture.options.baseImage,
@@ -695,9 +694,9 @@ function compositionFixture(
 
   const selectionBytes = encodeHomebrewBottleSelection({
     schema: 1,
-    name: `main-shell-abi${HOMEBREW_TEST_ABI}-wasm32`,
+    name: "main-shell-abi42-wasm32",
     arch: "wasm32",
-    kandeloAbi: HOMEBREW_TEST_ABI,
+    kandeloAbi: 42,
     bottles: descriptors,
     requestedVfsFilename: "shell.vfs.zst",
     resourcePolicy: "kandelo-homebrew-vfs-main-shell-v1",
@@ -707,11 +706,7 @@ function compositionFixture(
   const plan = planHomebrewVfsSelection(selectionBytes);
   const maxByteLength = 512 * MiB;
   const baseFs = fsWithCapacity(maxByteLength);
-  baseFs.setImageMetadata({
-    version: 1,
-    kernelAbi: HOMEBREW_TEST_ABI,
-    createdBy: "test base",
-  });
+  baseFs.setImageMetadata({ version: 1, kernelAbi: 42, createdBy: "test base" });
   const outputFs = baseFs.rebaseToNewFileSystem(maxByteLength);
   const scratchFs = baseFs.rebaseToNewFileSystem(maxByteLength);
   const materializationPolicyBytes = jsonBytes(MATERIALIZATION_POLICY);
@@ -735,7 +730,7 @@ function compositionFixture(
       baseImage: {
         sha256: "a".repeat(64),
         bytes: 4096,
-        kernelAbi: HOMEBREW_TEST_ABI,
+        kernelAbi: 42,
       },
       loadBottleBytes(descriptor: HomebrewBottleDescriptor) {
         loads.push(descriptor.fullName);

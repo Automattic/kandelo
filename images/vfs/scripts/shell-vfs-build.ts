@@ -646,7 +646,7 @@ function validatedFlatLazyBinding(
   if (
     binding.schema !== 1 ||
     binding.kind !== "kandelo-homebrew-flat-selection-lazy-v1" ||
-    selection.name !== `main-shell-abi${kernelAbi}-wasm32` ||
+    selection.name !== "main-shell-abi42-wasm32" ||
     selection.arch !== "wasm32" ||
     selection.kandeloAbi !== kernelAbi ||
     selection.requestedVfsFilename !== "shell.vfs.zst" ||

@@ -251,6 +251,26 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
+      # WHY: Some GitHub-hosted images make fixed /usr or /etc projection
+      # ancestors runner-owned even though selected children remain root-owned.
+      # Seal those directory inodes before this job exercises the same
+      # privileged recipe boundary as publication.
+      - name: Seal conventional host runtime ownership
+        run: >-
+          /usr/bin/python3
+          scripts/prepare-homebrew-recipe-host-runtime.py
+
+      # WHY: the real publisher lifecycle creates a detached worktree from
+      # reviewed Homebrew source. Give it an immutable source explicitly so
+      # runner-image Homebrew state cannot decide what the test executes.
+      - name: Checkout exact Homebrew lifecycle source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          repository: Homebrew/brew
+          ref: a92554a538e81fad0c5074443885dbcc4c36221d
+          path: homebrew-lifecycle-source
+
       - name: Fetch musl submodule
         # compute-cache-key-sha walks the package's source/build inputs
         # to derive a deterministic hash. It does NOT need libc-test or
@@ -266,6 +286,18 @@ jobs:
 
       - name: Warm Nix dev shell
         run: bash scripts/dev-shell.sh true
+
+      - name: Install JavaScript dependencies for Homebrew preflight
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+          '
+
+      - name: Validate Homebrew publisher trust contract
+        run: |
+          bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_SOURCE_REPOSITORY="$GITHUB_WORKSPACE/homebrew-lifecycle-source" \
+            bash scripts/test-homebrew-publish-workflow.sh
 
       - name: Cache xtask build
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
@@ -866,10 +898,6 @@ jobs:
       - name: Test binary materialization flow
         if: env.BINARY_MATERIALIZATION_CHANGED == 'true' && env.EXACT_ABI_STAGING_APPLICABLE != 'true'
         run: |
-          # WHY: artifact-guard integration tests query the ABI 43 binary
-          # contract inventory. This source-only job does not download the
-          # package-toolchain artifact, so prepare its host tool explicitly.
-          bash scripts/dev-shell.sh bash scripts/build-fork-instrument-tool.sh
           bash scripts/dev-shell.sh npx --prefix host vitest run --root . tests/package-system
 
   test-suite-early:
@@ -891,21 +919,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - suite: cargo-workspace
-            label: cargo-workspace
-            # Closed-by-default coverage for every workspace crate except
-            # independently gated xtask, including integration-test crates.
-            kernel_only: true
-            submodules: ''
-          - suite: cargo-xtask
-            label: cargo-xtask
-            # Package-system automation needs no prepared package workspace,
-            # but its repository-product inventory validates the exact musl
-            # license bytes declared by developer-kandelo-sdk.
-            kernel_only: false
-            submodules: libc/musl
+          - suite: cargo-kernel
+            label: cargo-kernel
+          - suite: fork-instrument
+            label: fork-instrument
     env:
-      KERNEL_ONLY: ${{ matrix.kernel_only }}
       KERNEL_CHANGED: ${{ needs.change-scope.outputs.kernel }}
       EXACT_ABI_STAGING_APPLICABLE: ${{ needs.change-scope.outputs.exact_abi_staging_applicable }}
       SKIP_STAGING_TESTS: ${{ needs.change-scope.outputs.skip_staging_tests }}
@@ -921,8 +939,7 @@ jobs:
             echo "skip-staging-tests label is present; $SUITE is deferred to prepare-merge."
             exit 0
           fi
-          if [ "$KERNEL_ONLY" = "true" ] && \
-             [ "$KERNEL_CHANGED" != "true" ] && \
+          if [ "$KERNEL_CHANGED" != "true" ] && \
              [ "$EXACT_ABI_STAGING_APPLICABLE" != "true" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "$SUITE is kernel-only and this diff does not require kernel suites."
@@ -934,12 +951,6 @@ jobs:
         if: steps.suite.outputs.skip != 'true'
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-
-      - name: Fetch early suite submodule
-        if: steps.suite.outputs.skip != 'true' && matrix.submodules != ''
-        uses: ./.github/actions/fetch-submodules
-        with:
-          submodules: ${{ matrix.submodules }}
 
       - name: Set up Nix
         if: steps.suite.outputs.skip != 'true'

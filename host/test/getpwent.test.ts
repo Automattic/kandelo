@@ -56,14 +56,14 @@ describe.skipIf(!haveSmoke || !haveRootfs)("getpwent via rootfs.vfs mount", () =
       "PWENT 5 name=mysql uid=101 gid=101 home=/var/lib/mysql shell=/usr/sbin/nologin",
     );
     expect(result.stdout).toContain(
-      "PWENT 6 name=maker uid=1000 gid=1000 home=/home/maker shell=/bin/sh",
+      "PWENT 6 name=user uid=1000 gid=1000 home=/home/user shell=/bin/sh",
     );
     expect(result.stdout).toContain("PWENT count=7");
 
     // Targeted name lookups.
     expect(result.stdout).toContain("PWNAM name=root uid=0 gid=0 home=/root shell=/bin/sh");
     expect(result.stdout).toContain(
-      "PWNAM name=maker uid=1000 gid=1000 home=/home/maker shell=/bin/sh",
+      "PWNAM name=user uid=1000 gid=1000 home=/home/user shell=/bin/sh",
     );
 
     // Missing entries must surface as NULL — proves we're not silently
@@ -73,7 +73,7 @@ describe.skipIf(!haveSmoke || !haveRootfs)("getpwent via rootfs.vfs mount", () =
     // Targeted uid lookups.
     expect(result.stdout).toContain("PWUID uid=0 name=root gid=0 home=/root shell=/bin/sh");
     expect(result.stdout).toContain(
-      "PWUID uid=1000 name=maker gid=1000 home=/home/maker shell=/bin/sh",
+      "PWUID uid=1000 name=user gid=1000 home=/home/user shell=/bin/sh",
     );
   });
 
@@ -87,9 +87,8 @@ describe.skipIf(!haveSmoke || !haveRootfs)("getpwent via rootfs.vfs mount", () =
     expect(result.exitCode, result.stderr || result.stdout).toBe(0);
     expect(result.stdout).toContain("GRENT 0 name=root gid=0");
     expect(result.stdout).toContain("GRENT 1 name=daemon gid=1");
-    expect(result.stdout).toContain("GRENT 7 name=wheel gid=10");
-    expect(result.stdout).toContain("GRENT 8 name=maker gid=1000");
-    expect(result.stdout).toContain("GRENT count=9");
+    expect(result.stdout).toContain("GRENT 7 name=user gid=1000");
+    expect(result.stdout).toContain("GRENT count=8");
   });
 
   it("resolves canonical service names and aliases from the rootfs image", async () => {

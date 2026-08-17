@@ -1161,10 +1161,6 @@ FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 # and feed the PIC objects to the SDK's `wasm32posix-cc -shared`,
 # which routes through `wasm-ld --shared --experimental-pic`.
 echo "==> Building opcache.so (Zend extension)..."
-FORK_SIDE_MODULE_ABI_OBJECT="$WORK_DIR/fork-side-module-abi.o"
-wasm32posix-cc -fPIC -O2 -I"$REPO_ROOT/libc/glue" -c \
-    "$SCRIPT_DIR/fork-side-module-abi.c" \
-    -o "$FORK_SIDE_MODULE_ABI_OBJECT"
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" \
     EXTRA_CFLAGS="$EXTRA_INC_LIBXML" \
     ext/opcache/ZendAccelerator.lo \
@@ -1193,8 +1189,7 @@ wasm32posix-cc -shared -fPIC -o "$BIN_DIR/opcache.so" \
     ext/opcache/.libs/zend_accelerator_util_funcs.o \
     ext/opcache/.libs/shared_alloc_shm.o \
     ext/opcache/.libs/shared_alloc_mmap.o \
-    ext/opcache/.libs/shared_alloc_posix.o \
-    "$FORK_SIDE_MODULE_ABI_OBJECT"
+    ext/opcache/.libs/shared_alloc_posix.o
 echo "==> Applying fork instrumentation to opcache.so side module..."
 "$FORK_INSTRUMENT" "$BIN_DIR/opcache.so" -o "$BIN_DIR/opcache.so.instr" --entry env.fork
 mv "$BIN_DIR/opcache.so.instr" "$BIN_DIR/opcache.so"

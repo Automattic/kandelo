@@ -9,7 +9,6 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
-use wasm_posix_shared::Errno;
 
 /// Entry in the Unix socket registry.
 #[derive(Debug, Clone)]
@@ -53,64 +52,57 @@ impl UnixSocketRegistry {
         true
     }
 
-    /// Record a fork/spawn child that inherited the parent's exact endpoint.
-    ///
-    /// The sockaddr retained by `SocketInfo` is not an authority lookup key:
-    /// the bound pathname may have been renamed and reused by another socket.
-    /// Match the stable parent owner tuple, then reserve before mutation so
-    /// allocation failure leaves the registry unchanged.
-    pub fn add_inherited_owner(
-        &mut self,
-        parent_pid: u32,
-        parent_sock_idx: usize,
-        child_pid: u32,
-        child_sock_idx: usize,
-    ) -> Result<bool, Errno> {
-        let Some(entry) = self
-            .entries
-            .values_mut()
-            .find(|entry| entry.owners.contains(&(parent_pid, parent_sock_idx)))
-        else {
-            // Unlinked/replaced pathname sockets no longer own a registry
-            // name, so there is no machine-wide name authority to inherit.
-            return Ok(false);
+    /// Record a fork/spawn child that inherited a bound AF_UNIX endpoint.
+    pub fn add_owner(&mut self, path: &[u8], pid: u32, sock_idx: usize) -> bool {
+        let Some(entry) = self.entries.get_mut(path) else {
+            return false;
         };
-        if entry.owners.contains(&(child_pid, child_sock_idx)) {
-            return Ok(false);
+        if !entry.owners.contains(&(pid, sock_idx)) {
+            entry.owners.push((pid, sock_idx));
         }
-        entry
-            .owners
-            .try_reserve_exact(1)
-            .map_err(|_| Errno::ENOMEM)?;
-        entry.owners.push((child_pid, child_sock_idx));
-        Ok(true)
+        true
     }
 
-    /// Drop the exact process-local owner independently of its current name.
-    ///
-    /// The name remains registered while any inherited endpoint is live;
-    /// otherwise an abstract name becomes reusable immediately. A pathname
-    /// socket retains its metadata tombstone until unlink.
-    pub fn remove_owner_exact(&mut self, pid: u32, sock_idx: usize) -> bool {
-        let mut removed = false;
-        self.entries.retain(|path, entry| {
-            if removed || !entry.owners.contains(&(pid, sock_idx)) {
-                return true;
+    /// Drop one process-local owner. The name remains registered while any
+    /// inherited endpoint is live; otherwise it becomes reusable (which is
+    /// essential for Linux abstract-namespace sockets, which have no inode).
+    pub fn remove_owner(&mut self, path: &[u8], pid: u32, sock_idx: usize) -> bool {
+        let resolved_path = if self.entries.contains_key(path) {
+            Some(path.to_vec())
+        } else {
+            // A bound pathname can be renamed while the socket remains open.
+            // SocketInfo intentionally retains the sockaddr supplied to
+            // bind(2), so locate the renamed registry entry by stable owner.
+            self.entries
+                .iter()
+                .find(|(_, entry)| entry.owners.contains(&(pid, sock_idx)))
+                .map(|(registered_path, _)| registered_path.clone())
+        };
+        let Some(resolved_path) = resolved_path else {
+            return false;
+        };
+        let Some(entry) = self.entries.get_mut(&resolved_path) else {
+            return false;
+        };
+        let old_len = entry.owners.len();
+        entry
+            .owners
+            .retain(|owner| *owner != (pid, sock_idx));
+        if entry.owners.len() == old_len {
+            return false;
+        }
+        if entry.owners.is_empty() {
+            // A pathname socket leaves its filesystem node behind after the
+            // last close; keep a metadata tombstone until unlink so stat still
+            // reports S_IFSOCK and bind still sees EADDRINUSE. Abstract names
+            // have no inode and disappear immediately.
+            if resolved_path.first().copied() == Some(0) {
+                self.entries.remove(&resolved_path);
             }
-
-            entry.owners.retain(|owner| *owner != (pid, sock_idx));
-            removed = true;
-            if entry.owners.is_empty() {
-                // A pathname socket leaves its filesystem node behind after
-                // last close; abstract names disappear immediately.
-                return path.first().copied() != Some(0);
-            }
-            if entry.pid == pid && entry.sock_idx == sock_idx {
-                (entry.pid, entry.sock_idx) = entry.owners[0];
-            }
-            true
-        });
-        removed
+        } else if entry.pid == pid && entry.sock_idx == sock_idx {
+            (entry.pid, entry.sock_idx) = entry.owners[0];
+        }
+        true
     }
 
     /// Re-key filesystem-backed socket metadata after a successful VFS
@@ -213,7 +205,7 @@ mod tests {
         assert!(reg.lookup(b"/tmp/old.sock").is_none());
         assert!(reg.lookup(b"/tmp/new.sock").is_some());
 
-        assert!(reg.remove_owner_exact(1, 7));
+        assert!(reg.remove_owner(b"/tmp/old.sock", 1, 7));
         assert!(reg.lookup(b"/tmp/new.sock").is_none());
         assert!(reg.contains(b"/tmp/new.sock"));
     }
@@ -245,7 +237,7 @@ mod tests {
     fn test_pathname_metadata_remains_until_unlink() {
         let mut reg = UnixSocketRegistry::new();
         reg.register(b"/tmp/stale.sock".to_vec(), 1, 0);
-        assert!(reg.remove_owner_exact(1, 0));
+        assert!(reg.remove_owner(b"/tmp/stale.sock", 1, 0));
         assert!(reg.contains(b"/tmp/stale.sock"));
         assert!(reg.lookup(b"/tmp/stale.sock").is_none());
         assert!(reg.unregister(b"/tmp/stale.sock"));
@@ -274,54 +266,11 @@ mod tests {
     fn test_inherited_owner_keeps_registration_live() {
         let mut reg = UnixSocketRegistry::new();
         reg.register(b"\0abstract".to_vec(), 10, 4);
-        assert_eq!(reg.add_inherited_owner(10, 4, 20, 4), Ok(true));
-        assert_eq!(reg.add_inherited_owner(10, 4, 20, 4), Ok(false));
-        assert!(reg.remove_owner_exact(10, 4));
+        assert!(reg.add_owner(b"\0abstract", 20, 4));
+        assert!(reg.remove_owner(b"\0abstract", 10, 4));
         let entry = reg.lookup(b"\0abstract").unwrap();
         assert_eq!((entry.pid, entry.sock_idx), (20, 4));
-        assert!(reg.remove_owner_exact(20, 4));
+        assert!(reg.remove_owner(b"\0abstract", 20, 4));
         assert!(reg.lookup(b"\0abstract").is_none());
-    }
-
-    #[test]
-    fn inheritance_and_removal_follow_exact_owner_across_rename_and_reuse() {
-        let mut reg = UnixSocketRegistry::new();
-        assert!(reg.register(b"/tmp/original.sock".to_vec(), 10, 4));
-        assert!(reg.rename_path(b"/tmp/original.sock", b"/tmp/renamed.sock"));
-        assert!(reg.register(b"/tmp/original.sock".to_vec(), 30, 9));
-
-        assert_eq!(reg.add_inherited_owner(10, 4, 20, 4), Ok(true));
-        assert_eq!(
-            (
-                reg.lookup(b"/tmp/renamed.sock").unwrap().pid,
-                reg.lookup(b"/tmp/renamed.sock").unwrap().sock_idx
-            ),
-            (10, 4)
-        );
-        assert_eq!(
-            (
-                reg.lookup(b"/tmp/original.sock").unwrap().pid,
-                reg.lookup(b"/tmp/original.sock").unwrap().sock_idx
-            ),
-            (30, 9)
-        );
-
-        // The old sockaddr now names pid 30, but exact removal must update the
-        // renamed entry and leave that unrelated registration untouched.
-        assert!(reg.remove_owner_exact(10, 4));
-        let renamed = reg.lookup(b"/tmp/renamed.sock").unwrap();
-        assert_eq!((renamed.pid, renamed.sock_idx), (20, 4));
-        let reused = reg.lookup(b"/tmp/original.sock").unwrap();
-        assert_eq!((reused.pid, reused.sock_idx), (30, 9));
-    }
-
-    #[test]
-    fn inheritance_without_an_exact_parent_owner_does_not_mutate_registry() {
-        let mut reg = UnixSocketRegistry::new();
-        assert!(reg.register(b"\0unrelated".to_vec(), 30, 9));
-
-        assert_eq!(reg.add_inherited_owner(10, 4, 20, 4), Ok(false));
-        let entry = reg.lookup(b"\0unrelated").unwrap();
-        assert_eq!((entry.pid, entry.sock_idx), (30, 9));
     }
 }

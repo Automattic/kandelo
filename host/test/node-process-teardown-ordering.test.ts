@@ -42,7 +42,7 @@ describe("Node process Worker teardown ordering", () => {
     const inFlightGuard = finalize.indexOf("processTeardowns.has(worker)");
     const crashNotification = finalize.indexOf("kernelWorker.notifyHostProcessCrashed");
     const sharedTeardown = finalize.indexOf(
-      'await finishProcessExit(pid, exitStatus, worker, "trap")',
+      "await finishProcessExit(pid, exitStatus, worker)",
     );
 
     expect(inFlightGuard).toBeGreaterThanOrEqual(0);

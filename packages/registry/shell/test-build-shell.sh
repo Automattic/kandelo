@@ -7,16 +7,6 @@ BUILD_TOML="$SCRIPT_DIR/build.toml"
 PACKAGE_TOML="$SCRIPT_DIR/package.toml"
 BUILD_TOOL_PATH="$SCRIPT_DIR/build-tool-path.sh"
 TMP_ROOT="$(mktemp -d)"
-EXPECTED_ABI=""
-while IFS= read -r line; do
-    if [[ "$line" =~ ^pub[[:space:]]+const[[:space:]]+ABI_VERSION:[[:space:]]+u32[[:space:]]*=[[:space:]]*([0-9]+)\;[[:space:]]*$ ]]; then
-        EXPECTED_ABI="${BASH_REMATCH[1]}"
-    fi
-done <"$SCRIPT_DIR/../../../crates/shared/src/lib.rs"
-[ -n "$EXPECTED_ABI" ] || {
-    echo "test-build-shell: could not read the exact ABI version" >&2
-    exit 1
-}
 
 cleanup() {
     rm -rf -- "$TMP_ROOT"
@@ -41,12 +31,12 @@ expect_failure() {
     }
 }
 
-grep -Eq '^revision[[:space:]]*=[[:space:]]*26$' "$BUILD_TOML" ||
-    fail "canonical shell revision must be 26"
+grep -Eq '^revision[[:space:]]*=[[:space:]]*25$' "$BUILD_TOML" ||
+    fail "canonical shell revision must be 25"
 grep -Eq '^commit[[:space:]]*=[[:space:]]*"UNPUBLISHED"$' "$BUILD_TOML" ||
     fail "canonical shell must await publication under its authored commit"
-grep -Eq '^publication_state[[:space:]]*=[[:space:]]*"pending"$' \
-    "$BUILD_TOML" || fail "canonical flat shell must await ABI-43 publication"
+grep -Eq '^publication_state[[:space:]]*=[[:space:]]*"ready"$' \
+    "$BUILD_TOML" || fail "canonical flat shell must be publication-ready"
 for input in \
     homebrew/main-shell-flat-selection.json \
     homebrew/main-shell-materialization-policy.json \
@@ -58,7 +48,6 @@ for input in \
     packages/registry/shell/prepare-build-tools.sh \
     crates/shared/src/lib.rs \
     host/src/constants.ts \
-    host/src/file-offset.ts \
     host/src/generated/abi.ts \
     host/src/homebrew-bottle-descriptor.ts \
     host/src/homebrew-bottle-mirror-plan.ts \
@@ -66,7 +55,6 @@ for input in \
     host/src/homebrew-bottle-selection.ts \
     host/src/homebrew-bottle-types.ts \
     host/src/homebrew-bootstrap-consumer.ts \
-    host/src/homebrew-deferred-tree-adapter.ts \
     host/src/homebrew-flat-lazy-vfs-composer.ts \
     host/src/homebrew-guest-layout.ts \
     host/src/homebrew-lazy-layer-descriptor.ts \
@@ -384,8 +372,8 @@ grep -Fq -- '--sab-size 536870912' "$FAKE_LOG" ||
     fail "platform base omitted the 512 MiB initial capacity"
 grep -Fq -- '--max-size 536870912' "$FAKE_LOG" ||
     fail "platform base omitted the 512 MiB maximum capacity"
-grep -Fq -- "--kernel-abi $EXPECTED_ABI" "$FAKE_LOG" ||
-    fail "platform base omitted ABI $EXPECTED_ABI"
+grep -Fq -- '--kernel-abi 42' "$FAKE_LOG" ||
+    fail "platform base omitted ABI 42"
 
 for out_dir in "$parallel_one" "$parallel_two"; do
     source_root="$out_dir/.homebrew-shell-build/source"

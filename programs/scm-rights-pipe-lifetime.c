@@ -93,11 +93,7 @@ static int receive_fds_with_flags(int socket_fd, int *fds, size_t capacity,
         .msg_iov = &iov,
         .msg_iovlen = 1,
         .msg_control = control,
-        // WHY: this is a logical descriptor capacity, not spare native
-        // alignment storage. On wasm64 CMSG_SPACE(one fd) is large enough to
-        // describe two canonical 32-bit FDs after the host translates the
-        // wider cmsghdr; CMSG_LEN keeps the one-FD truncation boundary exact.
-        .msg_controllen = CMSG_LEN(capacity * sizeof(int)),
+        .msg_controllen = CMSG_SPACE(capacity * sizeof(int)),
     };
     if (recvmsg(socket_fd, &message, 0) != 1)
         return -1;
@@ -233,52 +229,61 @@ static int unreturnable_endpoint_is_released(void) {
     return close(data_pipe[1]) | close(carrier[0]) | close(carrier[1]);
 }
 
-static int expect_socket_right_rejected(int sender, int receiver, int fd) {
-    errno = 0;
-    if (send_fd(sender, fd) != -1 || errno != EOPNOTSUPP) {
-        if (errno == 0)
-            errno = EIO;
+static int reachable_socket_right_cycles_deliver(void) {
+    int self[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, self) < 0 ||
+        send_fd(self[0], self[1]) < 0) {
+        return -1;
+    }
+    int received_self = receive_fd(self[1]);
+    char byte = 0;
+    if (received_self < 0 || close(self[1]) < 0 ||
+        write(self[0], "S", 1) != 1 || read(received_self, &byte, 1) != 1 ||
+        byte != 'S' || write(received_self, "T", 1) != 1 ||
+        read(self[0], &byte, 1) != 1 || byte != 'T' || close(self[0]) < 0 ||
+        close(received_self) < 0) {
         return -1;
     }
 
-    char byte = 0;
-    errno = 0;
-    if (recv(receiver, &byte, sizeof(byte), MSG_DONTWAIT) != -1 ||
-        (errno != EAGAIN && errno != EWOULDBLOCK)) {
-        errno = EIO;
+    int a[2];
+    int b[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, a) < 0 ||
+        socketpair(AF_UNIX, SOCK_STREAM, 0, b) < 0 ||
+        send_fd(a[0], b[1]) < 0 || send_fd(b[0], a[1]) < 0) {
+        return -1;
+    }
+    int received_b = receive_fd(a[1]);
+    int received_a = receive_fd(b[1]);
+    if (received_a < 0 || received_b < 0 || close(a[1]) < 0 ||
+        close(b[1]) < 0 || write(a[0], "A", 1) != 1 ||
+        read(received_a, &byte, 1) != 1 || byte != 'A' ||
+        write(b[0], "B", 1) != 1 || read(received_b, &byte, 1) != 1 ||
+        byte != 'B' || close(a[0]) < 0 || close(b[0]) < 0 ||
+        close(received_a) < 0 || close(received_b) < 0) {
         return -1;
     }
     return 0;
 }
 
-static int socket_right_cycles_are_rejected_before_publication(void) {
+static int abandoned_socket_right_cycles_are_collected(void) {
     for (int i = 0; i < 64; ++i) {
         int self[2];
-        char byte = 0;
         if (socketpair(AF_UNIX, SOCK_STREAM, 0, self) < 0 ||
-            expect_socket_right_rejected(self[0], self[1], self[1]) < 0 ||
-            write(self[0], "S", 1) != 1 ||
-            read(self[1], &byte, 1) != 1 || byte != 'S' ||
-            close(self[0]) < 0 || close(self[1]) < 0) {
+            send_fd(self[0], self[1]) < 0 || close(self[0]) < 0 ||
+            close(self[1]) < 0) {
             return -1;
         }
     }
 
     int a[2];
     int b[2];
-    char byte = 0;
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, a) < 0 ||
         socketpair(AF_UNIX, SOCK_STREAM, 0, b) < 0 ||
-        expect_socket_right_rejected(a[0], a[1], b[1]) < 0 ||
-        expect_socket_right_rejected(b[0], b[1], a[1]) < 0 ||
-        write(a[0], "A", 1) != 1 || read(a[1], &byte, 1) != 1 ||
-        byte != 'A' || write(b[0], "B", 1) != 1 ||
-        read(b[1], &byte, 1) != 1 || byte != 'B' ||
+        send_fd(a[0], b[1]) < 0 || send_fd(b[0], a[1]) < 0 ||
         close(a[0]) < 0 || close(a[1]) < 0 || close(b[0]) < 0 ||
         close(b[1]) < 0) {
         return -1;
     }
-    puts("SCM_RIGHTS_SOCKET_REJECTION_PASS");
     return 0;
 }
 
@@ -583,7 +588,8 @@ int main(void) {
         transferred_writer_survives_sender_close() < 0 ||
         abandoned_endpoint_is_released() < 0 ||
         unreturnable_endpoint_is_released() < 0 ||
-        socket_right_cycles_are_rejected_before_publication() < 0 ||
+        reachable_socket_right_cycles_deliver() < 0 ||
+        abandoned_socket_right_cycles_are_collected() < 0 ||
         receiver_control_truncation_installs_prefix_and_releases_excess() < 0 ||
         receiver_emfile_partially_installs_and_releases() < 0 ||
         transferred_fifo_path_survives_sender_close_and_unlink() < 0 ||

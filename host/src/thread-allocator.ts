@@ -58,7 +58,6 @@ export class ThreadPageAllocator {
   private readonly reservedSlots: number;
   private readonly reserveSlotStartPage?: () => number;
   private activeCount = 0;
-  private readonly hostControlPages = new Set<number>();
 
   constructor(options: ThreadPageAllocatorOptions);
   constructor(maxPages: number);
@@ -94,26 +93,7 @@ export class ThreadPageAllocator {
 
   /** Allocate pages for a new thread. Zeros the channel and TLS regions. */
   allocate(memory: WebAssembly.Memory): ThreadAllocation {
-    return this.allocateSlot(memory, false);
-  }
-
-  /**
-   * Allocate a host-owned control slot outside the guest pthread quota.
-   *
-   * WHY: a single-threaded executable can truthfully declare zero pthread
-   * slots and still call vfork. Its borrowing child needs an independent
-   * syscall channel, replay prefix, and scratch page, but that platform state
-   * must neither require nor consume capacity promised to pthread_create.
-   */
-  allocateHostControl(memory: WebAssembly.Memory): ThreadAllocation {
-    return this.allocateSlot(memory, true);
-  }
-
-  private allocateSlot(
-    memory: WebAssembly.Memory,
-    hostControl: boolean,
-  ): ThreadAllocation {
-    if (!hostControl && this.activeCount >= this.reservedSlots) {
+    if (this.activeCount >= this.reservedSlots) {
       throw new Error(
         `process pthread slot limit exhausted (limit=${this.reservedSlots}, ` +
           `active=${this.activeCount}). Rebuild with --kandelo-thread-slots=N ` +
@@ -164,8 +144,7 @@ export class ThreadPageAllocator {
     new Uint8Array(memory.buffer, forkSaveOffset, WASM_PAGE_SIZE).fill(0);
     new Uint8Array(memory.buffer, forkSaveOffset, FORK_SAVE_BUFFER_SIZE).fill(0);
 
-    if (hostControl) this.hostControlPages.add(slotStartPage);
-    else this.activeCount++;
+    this.activeCount++;
     return {
       slotStartPage,
       basePage: slotStartPage,
@@ -179,8 +158,6 @@ export class ThreadPageAllocator {
   /** Return pages to the free list after thread exit. */
   free(slotStartPage: number): void {
     this.freePages.push(slotStartPage);
-    if (!this.hostControlPages.delete(slotStartPage)) {
-      this.activeCount = Math.max(0, this.activeCount - 1);
-    }
+    this.activeCount = Math.max(0, this.activeCount - 1);
   }
 }

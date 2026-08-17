@@ -3,7 +3,7 @@
 	url = https://github.com/ifduyue/musl.git
 [submodule "libc-test"]
 	path = tests/libc/libc-test
-	url = https://github.com/PocketCluster/libc-test.git
+	url = git@github.com:PocketCluster/libc-test.git
 [submodule "os-test"]
 	path = tests/sortix/os-test
 	url = https://gitlab.com/sortix/os-test.git

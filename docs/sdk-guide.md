@@ -176,7 +176,6 @@ not currently supported.
 
 ```
 --target=wasm32-unknown-unknown    # Wasm target triple
--D__unix__=1 -D__unix=1           # Kandelo Unix source-environment identity
 -matomics                          # Enable atomics (SharedArrayBuffer)
 -mbulk-memory                      # Enable bulk memory operations
 -mexception-handling               # Enable Wasm exception handling
@@ -193,12 +192,6 @@ not currently supported.
 # <sysroot>, or /usr/src/kandelo-sdk/sysroot64 for the wasm64 <sysroot>.
 ```
 
-The generic LLVM Wasm triple does not imply an operating system. The SDK
-defines the conventional reserved Unix macros because Kandelo supplies a Unix
-and POSIX userspace; it deliberately does not define Linux, FreeBSD, WASI, or
-Emscripten platform macros. This lets upstream source choose generic Unix
-interfaces such as OSS without misrepresenting the kernel it will run on.
-
 The file, debug, and macro prefix maps cover paths owned and injected by the
 SDK. Linked Wasm debug information and `__FILE__` strings therefore do not
 depend on the checkout containing `libc/glue` or the target sysroot. Build
@@ -213,8 +206,7 @@ leave unresolved host imports in linked programs.
 
 ```
 -nostdlib                          # Don't use system libc
--Wl,--no-entry                    # Leave startup sequencing to musl
--Wl,--export=_start               # Export the host-invoked process entry
+-Wl,--entry=_start                 # Entry point
 -Wl,--import-memory                # Memory provided by host
 -Wl,--shared-memory                # Enable SharedArrayBuffer
 -Wl,--max-memory=1073741824        # 1GB max memory
@@ -227,11 +219,6 @@ leave unresolved host imports in linked programs.
 -Wl,--export=__tls_base            # Required for TLS
 -Wl,--export=__wasm_init_tls       # TLS initialization
 ```
-
-Kandelo deliberately uses reactor link mode while retaining the exported
-`_start` function. This prevents `wasm-ld` from inserting a constructor call
-ahead of libc startup; musl runs constructors only after it has installed the
-process environment and secure-execution state.
 
 `--allow-undefined` is not permission for arbitrary Kandelo-private symbols to
 escape into a package. `install_local_binary` rejects unresolved imports in the
@@ -336,12 +323,6 @@ When linking an executable (not compile-only), the SDK adds:
 - `libc/glue/compiler_rt.c` — soft-float and 64-bit builtins
 - `sysroot/lib/crt1.o` — C runtime startup
 - `sysroot/lib/libc.a` — musl libc
-
-The injected glue and startup objects precede user linker inputs, and the final
-musl archive follows them. The SDK preserves user source, object, archive, and
-`-l` ordering between those boundaries. This also makes an explicit `-lc`, as
-emitted by some Autoconf projects, equivalent to the automatically linked libc
-without pulling musl's syscall definitions ahead of Kandelo's glue overrides.
 
 ### Sysroot platform libraries
 

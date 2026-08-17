@@ -11,13 +11,12 @@
  * in once the policy lands.
  */
 
-import type { MountConfig, MountSetIdCapability } from "./types";
-import { FILE_MODES, OPEN_FLAGS } from "../generated/abi";
+import type { MountConfig } from "./types";
 import { MemoryFileSystem } from "./memory-fs";
 import { restoreVerifiedVfsImage } from "./load-image";
 
-const O_WRONLY_CREAT_TRUNC =
-  OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
+const S_IFMT = 0xf000;
+const S_IFDIR = 0x4000;
 
 export interface MountSpec {
   /** Absolute VFS mount point (e.g., "/etc"). No trailing slash except "/". */
@@ -29,8 +28,6 @@ export interface MountSpec {
   source: "image" | "scratch";
   /** Advisory until PR 5/5 enforces it on writes through `VirtualPlatformIO`. */
   readonly?: boolean;
-  /** Omitted mounts are nosuid; trusted requests still require backend proof. */
-  setIdCapability?: MountSetIdCapability;
   /** Directory mode for scratch mount roots. Mirrors MANIFEST for defaults. */
   mode?: number;
   /** Virtual owner for scratch mount roots. Defaults to root. */
@@ -44,7 +41,7 @@ export interface MountSpec {
 /**
  * Canonical mount layout. Mirrors the top-level system directories
  * declared in `MANIFEST` (Task 3.3): `/` is the read-only rootfs image;
- * `/tmp`, `/var/*`, `/home/maker`, `/root`, `/srv` are scratch.
+ * `/tmp`, `/var/*`, `/home/user`, `/root`, `/srv` are scratch.
  */
 export const DEFAULT_MOUNT_SPEC: MountSpec[] = [
   { path: "/",          source: "image",   readonly: true  },
@@ -52,7 +49,7 @@ export const DEFAULT_MOUNT_SPEC: MountSpec[] = [
   { path: "/var/tmp",   source: "scratch", mode: 0o1777 },
   { path: "/var/log",   source: "scratch", mode: 0o755 },
   { path: "/var/run",   source: "scratch", mode: 0o755, ephemeral: true },
-  { path: "/home/maker", source: "scratch", mode: 0o755, uid: 1000, gid: 1000 },
+  { path: "/home/user", source: "scratch", mode: 0o755, uid: 1000, gid: 1000 },
   { path: "/root",      source: "scratch", mode: 0o700, uid: 0, gid: 0 },
   { path: "/srv",       source: "scratch", mode: 0o755 },
 ];
@@ -101,7 +98,7 @@ function readTextFile(fs: MemoryFileSystem, path: string): string | null {
 
 function writeTextFile(fs: MemoryFileSystem, path: string, text: string): void {
   const bytes = new TextEncoder().encode(text);
-  const fd = fs.open(path, O_WRONLY_CREAT_TRUNC, 0o644);
+  const fd = fs.open(path, 0o1101, 0o644); // O_WRONLY | O_CREAT | O_TRUNC
   try {
     if (bytes.byteLength > 0) fs.write(fd, bytes, null, bytes.byteLength);
   } finally {
@@ -124,7 +121,7 @@ function normalizeMountPoint(path: string): string {
 }
 
 function isDirectoryMode(mode: number): boolean {
-  return (mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFDIR;
+  return (mode & S_IFMT) === S_IFDIR;
 }
 
 /**
@@ -261,7 +258,6 @@ async function resolveValidatedForBrowser(
         mountPoint: m.path,
         backend,
         readonly: m.readonly,
-        setIdCapability: m.setIdCapability,
       });
     } else {
       const bytes = options.scratchSabBytes?.[m.path] ?? BROWSER_SCRATCH_SAB_BYTES;
@@ -275,7 +271,6 @@ async function resolveValidatedForBrowser(
         mountPoint: m.path,
         backend,
         readonly: m.readonly,
-        setIdCapability: m.setIdCapability,
       });
     }
   }

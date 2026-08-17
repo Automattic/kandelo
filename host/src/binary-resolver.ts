@@ -1912,22 +1912,6 @@ function requiredExportsForRelPath(relPath: string): readonly string[] | undefin
   return undefined;
 }
 
-const LEGACY_KERNEL_EXEC_EXPORTS = Object.freeze([
-  "kernel_exec_prepare",
-  "kernel_exec_setup",
-  "kernel_exec_setup_for_thread",
-  "kernel_execve",
-  "kernel_execveat",
-] as const);
-
-function forbiddenExportsForRelPath(
-  relPath: string,
-): readonly string[] | undefined {
-  return applyDefaultArch(relPath) === "kernel.wasm"
-    ? LEGACY_KERNEL_EXEC_EXPORTS
-    : undefined;
-}
-
 function hasWasmArtifactPolicyFailures(
   path: string,
   relPath: string,
@@ -1943,7 +1927,6 @@ function hasWasmArtifactPolicyFailures(
     return describeWasmArtifactPolicyFailures(programBytes, {
       expectedAbi: ABI_VERSION,
       requiredExports: requiredExportsForRelPath(relPath),
-      forbiddenExports: forbiddenExportsForRelPath(relPath),
       requireForkInstrumentation: forkDisabled ? false : undefined,
       forbidForkInstrumentation: forkDisabled,
     }).length > 0;

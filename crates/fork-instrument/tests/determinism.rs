@@ -71,10 +71,7 @@ fn cli_output_is_byte_reproducible_across_processes() {
                 );
             }
         } else {
-            assert_ne!(
-                bytes, input,
-                "instrumentation unexpectedly changed no bytes"
-            );
+            assert_ne!(bytes, input, "instrumentation unexpectedly changed no bytes");
             Validator::new()
                 .validate_all(&bytes)
                 .expect("instrumented baseline validates");

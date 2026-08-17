@@ -40,6 +40,9 @@ GITHUB_RELEASE_URL_RE = re.compile(
 GUEST_PATH_RE = re.compile(
     r"^/(?:[A-Za-z0-9._@%+=:-]+/)*[A-Za-z0-9._@%+=:-]+$"
 )
+HOMEBREW_COMMAND_RE = re.compile(
+    r"^/opt/kandelo/homebrew/(?:bin|sbin)/[A-Za-z0-9._@%+=:-]+$"
+)
 
 IMAGE_ASSET = "kandelo-homebrew.vfs.zst"
 REPORT_ASSET = "kandelo-homebrew-vfs-report.json"
@@ -67,16 +70,16 @@ MAX_LAZY_LAYER_RUNTIME_ID_BYTES = (
 )
 MAX_LAZY_LAYER_ARCHIVE_BYTES = 256 * 1024 * 1024
 MAX_LAZY_LAYER_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
-MAX_LAZY_LAYER_MATERIALIZATION_ASSERTIONS = 32
-MAX_LAZY_LAYER_MATERIALIZATION_ASSERTION_BYTES = 1024 * 1024
-MAX_LAZY_LAYER_MATERIALIZATION_RECIPES = 32
-MAX_LAZY_LAYER_MATERIALIZATION_TRANSFORMS = 100_000
-MAX_LAZY_LAYER_MATERIALIZATION_DECODED_BYTES = 8 * 1024 * 1024
-MAX_LAZY_LAYER_TRANSFORM_REPLACEMENTS = 32
-MAX_LAZY_LAYER_TRANSFORM_PATTERN_BYTES = 8192
+HOMEBREW_PREFIX = "/opt/kandelo/homebrew"
 MAX_BOTTLE_CHANGED_FILES = 100_000
+HOMEBREW_REPLACEMENTS = (
+    (b"@@HOMEBREW_PREFIX@@", HOMEBREW_PREFIX.encode()),
+    (b"@@HOMEBREW_CELLAR@@", f"{HOMEBREW_PREFIX}/Cellar".encode()),
+    (b"@@HOMEBREW_REPOSITORY@@", HOMEBREW_PREFIX.encode()),
+    (b"@@HOMEBREW_LIBRARY@@", f"{HOMEBREW_PREFIX}/Library".encode()),
+    (b"@@HOMEBREW_PERL@@", f"{HOMEBREW_PREFIX}/opt/perl/bin/perl".encode()),
+)
 HOMEBREW_JAVA_PLACEHOLDER = b"@@HOMEBREW_JAVA@@"
-HOMEBREW_RELOCATION_RECIPE_ID = "homebrew-receipt-text-v1"
 TAR_BLOCK_BYTES = 512
 TAR_MAX_SAFE_INTEGER = (1 << 53) - 1
 TAR_ZERO_BLOCK = bytes(TAR_BLOCK_BYTES)
@@ -546,8 +549,8 @@ def validate_tap(
             fail("tap default-shell config has unexpected fields")
         exact(shell_config.get("version"), 1, "tap default-shell version")
         path = string(shell_config.get("path"), "tap default-shell path")
-        if GUEST_PATH_RE.fullmatch(path) is None:
-            fail("tap default-shell path is not an absolute guest path")
+        if not HOMEBREW_COMMAND_RE.fullmatch(path):
+            fail("tap default-shell path is not a canonical Homebrew command path")
         shell_argv = array(shell_config.get("argv"), "tap default-shell argv")
         if not shell_argv or len(shell_argv) > 64:
             fail("tap default-shell argv must contain 1 to 64 entries")
@@ -594,13 +597,10 @@ def validate_link_manifest_contract(
     exact(manifest.get("version"), package.get("version"), f"{label} reviewed version")
     exact(manifest.get("arch"), package.get("arch"), f"{label} reviewed architecture")
     exact(manifest.get("kandelo_abi"), expected_abi, f"{label} reviewed Kandelo ABI")
-    prefix = normalize_homebrew_destination_prefix(
-        package.get("prefix"), f"{label} package prefix"
-    )
-    exact(manifest.get("prefix"), prefix, f"{label} reviewed prefix")
+    exact(manifest.get("prefix"), package.get("prefix"), f"{label} reviewed prefix")
     exact(manifest.get("keg"), package.get("keg"), f"{label} reviewed keg")
     cellar = string(manifest.get("cellar"), f"{label} reviewed cellar", maximum=4096)
-    if cellar != f"{prefix}/Cellar" or not package["keg"].startswith(f"{cellar}/"):
+    if GUEST_PATH_RE.fullmatch(cellar) is None or not package["keg"].startswith(f"{cellar}/"):
         fail(f"{label} reviewed cellar is invalid")
     bottle = record(manifest.get("bottle"), f"{label} reviewed bottle")
     if set(bottle) != {"url", "sha256", "bytes", "cache_key_sha", "payload_root"}:
@@ -979,18 +979,6 @@ def validate_evidence(
         manifest_link_contracts[full_name] = validate_link_manifest_contract(
             checkout["root"], package, f"VFS report package {full_name}", abi
         )
-    destination_prefix = homebrew_destination_prefix(
-        list(report_packages.values()), "VFS report"
-    )
-    validate_homebrew_command_path(
-        config["executable"], destination_prefix, "tap VFS acceptance executable"
-    )
-    if config["default_shell"] is not None:
-        validate_homebrew_command_path(
-            config["default_shell"]["path"],
-            destination_prefix,
-            "tap default-shell path",
-        )
     applied_link_contracts, link_conflicts = reconstruct_applied_link_contracts(
         report, report_values, manifest_link_contracts
     )
@@ -1165,7 +1153,6 @@ def validate_evidence(
         "link_conflicts": link_conflicts,
         "tap_checkouts": tap_checkouts,
         "root_full_name": root_full_name,
-        "destination_prefix": destination_prefix,
     }
 
 
@@ -1192,45 +1179,7 @@ def safe_relative_path(value: Any, label: str) -> str:
     return path
 
 
-def normalize_homebrew_destination_prefix(value: Any, label: str) -> str:
-    """Validate the one receipt-authenticated destination namespace."""
-    prefix = string(value, label, maximum=MAX_LAZY_LAYER_PATH_BYTES)
-    if (
-        prefix == "/"
-        or GUEST_PATH_RE.fullmatch(prefix) is None
-        or "\\" in prefix
-        or any(component in ("", ".", "..") for component in prefix.split("/")[1:])
-    ):
-        fail(f"{label} is not a safe absolute Homebrew destination prefix")
-    return prefix
-
-
-def homebrew_destination_prefix(
-    packages: list[dict[str, Any]], label: str
-) -> str:
-    prefixes = {
-        normalize_homebrew_destination_prefix(
-            package.get("prefix"), f"{label} package {index} prefix"
-        )
-        for index, package in enumerate(packages)
-    }
-    if len(prefixes) != 1:
-        fail(f"{label} package destinations are inconsistent")
-    return next(iter(prefixes))
-
-
-def validate_homebrew_command_path(path: str, destination_prefix: str, label: str) -> None:
-    relative = path.removeprefix(f"{destination_prefix}/")
-    if (
-        relative == path
-        or re.fullmatch(r"(?:bin|sbin)/[A-Za-z0-9._@%+=:-]+", relative) is None
-    ):
-        fail(f"{label} is not a canonical Homebrew command path")
-
-
-def validate_lazy_package_record(
-    value: Any, label: str, destination_prefix: str
-) -> dict[str, Any]:
+def validate_lazy_package_record(value: Any, label: str) -> dict[str, Any]:
     package = record(value, label)
     required = {
         "name", "full_name", "tap_repository", "tap_name", "tap_commit",
@@ -1260,10 +1209,8 @@ def validate_lazy_package_record(
     safe_relative_path(package.get("link_manifest"), f"{label} link manifest")
     string(package.get("version"), f"{label} version", maximum=256)
     string(package.get("metadata_status"), f"{label} metadata status", maximum=256)
-    prefix = normalize_homebrew_destination_prefix(
-        package.get("prefix"), f"{label} prefix"
-    )
-    exact(prefix, destination_prefix, f"{label} prefix")
+    prefix = string(package.get("prefix"), f"{label} prefix", maximum=MAX_LAZY_LAYER_PATH_BYTES)
+    exact(prefix, HOMEBREW_PREFIX, f"{label} prefix")
     keg = string(package.get("keg"), f"{label} keg", maximum=MAX_LAZY_LAYER_PATH_BYTES)
     keg_root = f"{prefix}/Cellar/{name}/"
     if (
@@ -1614,9 +1561,7 @@ def parse_homebrew_install_receipt(value: bytes) -> dict[str, Any]:
     }
 
 
-def homebrew_java_home(
-    runtime_dependencies: Any, destination_prefix: str
-) -> bytes | None:
+def homebrew_java_home(runtime_dependencies: Any) -> bytes | None:
     if not isinstance(runtime_dependencies, list):
         return None
     names: set[str] = set()
@@ -1633,126 +1578,24 @@ def homebrew_java_home(
             names.add(name)
     if len(names) != 1:
         return None
-    return f"{destination_prefix}/opt/{next(iter(names))}/libexec".encode()
-
-
-def homebrew_replacements(destination_prefix: str) -> tuple[tuple[bytes, bytes], ...]:
-    return (
-        (b"@@HOMEBREW_PREFIX@@", destination_prefix.encode()),
-        (b"@@HOMEBREW_CELLAR@@", f"{destination_prefix}/Cellar".encode()),
-        (b"@@HOMEBREW_REPOSITORY@@", destination_prefix.encode()),
-        (b"@@HOMEBREW_LIBRARY@@", f"{destination_prefix}/Library".encode()),
-        (b"@@HOMEBREW_PERL@@", f"{destination_prefix}/opt/perl/bin/perl".encode()),
-    )
-
-
-def replace_homebrew_bytes_bounded(
-    value: bytes,
-    match: bytes,
-    replacement: bytes,
-    path: str,
-) -> bytes:
-    """Apply one replacement only after proving its allocation is bounded."""
-    if not match:
-        fail(f"Homebrew changed file {path} has an empty replacement pattern")
-    if (
-        len(match) > MAX_LAZY_LAYER_TRANSFORM_PATTERN_BYTES
-        or len(replacement) > MAX_LAZY_LAYER_TRANSFORM_PATTERN_BYTES
-    ):
-        fail(f"Homebrew changed file {path} exceeds the pattern byte limit")
-    if len(value) > MAX_LAZY_LAYER_UNCOMPRESSED_BYTES:
-        fail(f"Homebrew changed file {path} exceeds the source-byte limit")
-    if len(value) > TAR_MAX_SAFE_INTEGER:
-        fail(f"Homebrew changed file {path} exceeds the safe integer limit")
-
-    count = value.count(match)
-    delta = len(replacement) - len(match)
-    if delta > 0 and count > (TAR_MAX_SAFE_INTEGER - len(value)) // delta:
-        fail(f"Homebrew changed file {path} exceeds the safe integer limit")
-    output_bytes = len(value) + count * delta
-    if output_bytes < 0 or output_bytes > TAR_MAX_SAFE_INTEGER:
-        fail(f"Homebrew changed file {path} exceeds the safe integer limit")
-    if output_bytes > MAX_LAZY_LAYER_UNCOMPRESSED_BYTES:
-        fail(f"Homebrew changed file {path} exceeds the transformed-byte limit")
-    # WHY: bytes.replace allocates the result. The exact sequential result was
-    # proven above before allowing that allocation to occur.
-    return value.replace(match, replacement)
-
-
-def validate_homebrew_materialization_bounds(
-    receipt_bytes: bytes,
-    recipe_replacements: list[tuple[bytes, bytes]],
-    rejected_patterns: list[bytes],
-    transform_count: int,
-) -> None:
-    """Keep the independent publisher within the generic runtime contract."""
-    if 1 > MAX_LAZY_LAYER_MATERIALIZATION_ASSERTIONS:
-        fail("Homebrew materialization exceeds the assertion count limit")
-    if len(receipt_bytes) > MAX_LAZY_LAYER_MATERIALIZATION_ASSERTION_BYTES:
-        fail("Homebrew materialization exceeds the assertion byte limit")
-    if transform_count > MAX_LAZY_LAYER_MATERIALIZATION_TRANSFORMS:
-        fail("Homebrew materialization exceeds the transform count limit")
-
-    recipe_count = 1 if transform_count else 0
-    if recipe_count > MAX_LAZY_LAYER_MATERIALIZATION_RECIPES:
-        fail("Homebrew materialization exceeds the recipe count limit")
-    decoded_bytes = len(receipt_bytes)
-    if recipe_count:
-        if (
-            len(recipe_replacements) > MAX_LAZY_LAYER_TRANSFORM_REPLACEMENTS
-            or len(rejected_patterns) > MAX_LAZY_LAYER_TRANSFORM_REPLACEMENTS
-        ):
-            fail("Homebrew materialization exceeds the replacement count limit")
-        for match, replacement in recipe_replacements:
-            if (
-                not match
-                or len(match) > MAX_LAZY_LAYER_TRANSFORM_PATTERN_BYTES
-                or len(replacement) > MAX_LAZY_LAYER_TRANSFORM_PATTERN_BYTES
-            ):
-                fail("Homebrew materialization exceeds the pattern byte limit")
-            decoded_bytes += len(match) + len(replacement)
-        for pattern in rejected_patterns:
-            if (
-                not pattern
-                or len(pattern) > MAX_LAZY_LAYER_TRANSFORM_PATTERN_BYTES
-            ):
-                fail("Homebrew materialization exceeds the pattern byte limit")
-            decoded_bytes += len(pattern)
-    if (
-        decoded_bytes > TAR_MAX_SAFE_INTEGER
-        or decoded_bytes > MAX_LAZY_LAYER_MATERIALIZATION_DECODED_BYTES
-    ):
-        fail("Homebrew materialization exceeds the decoded byte limit")
+    return f"{HOMEBREW_PREFIX}/opt/{next(iter(names))}/libexec".encode()
 
 
 def relocate_homebrew_bottle_file(
-    value: bytes, receipt: dict[str, Any], path: str, destination_prefix: str
+    value: bytes, receipt: dict[str, Any], path: str
 ) -> bytes:
-    replacements = homebrew_replacements(destination_prefix)
     relocated = value
-    for placeholder, replacement in replacements:
-        relocated = replace_homebrew_bytes_bounded(
-            relocated,
-            placeholder,
-            replacement,
-            path,
-        )
+    for placeholder, replacement in HOMEBREW_REPLACEMENTS:
+        relocated = relocated.replace(placeholder, replacement)
     if HOMEBREW_JAVA_PLACEHOLDER in relocated:
-        java_home = homebrew_java_home(
-            receipt.get("runtime_dependencies"), destination_prefix
-        )
+        java_home = homebrew_java_home(receipt.get("runtime_dependencies"))
         if java_home is None:
             fail(
                 f"Homebrew changed file {path} uses "
                 "@@HOMEBREW_JAVA@@ without exactly one OpenJDK runtime dependency"
             )
-        relocated = replace_homebrew_bytes_bounded(
-            relocated,
-            HOMEBREW_JAVA_PLACEHOLDER,
-            java_home,
-            path,
-        )
-    for placeholder, _ in (*replacements, (HOMEBREW_JAVA_PLACEHOLDER, b"")):
+        relocated = relocated.replace(HOMEBREW_JAVA_PLACEHOLDER, java_home)
+    for placeholder, _ in (*HOMEBREW_REPLACEMENTS, (HOMEBREW_JAVA_PLACEHOLDER, b"")):
         if placeholder in relocated:
             fail(
                 f"Homebrew changed file {path} retains "
@@ -1766,7 +1609,6 @@ def original_bottle_relocation(
     source_entries: list[dict[str, Any]],
     canonical_source_by_path: dict[str, dict[str, Any]],
     expanded_bytes: int,
-    destination_prefix: str,
 ) -> dict[str, Any]:
     source_by_path = {entry["path"]: entry for entry in source_entries}
     receipts = [
@@ -1775,11 +1617,7 @@ def original_bottle_relocation(
         or entry["path"].endswith("/INSTALL_RECEIPT.json")
     ]
     if not receipts:
-        return {
-            "source_paths": set(),
-            "bytes_by_canonical": {},
-            "descriptor": None,
-        }
+        return {"source_paths": set(), "bytes_by_canonical": {}}
     if len(receipts) > 1:
         fail(
             f"Homebrew deferred bottle has {len(receipts)} INSTALL_RECEIPT.json "
@@ -1820,20 +1658,13 @@ def original_bottle_relocation(
                     )
                 return extracted.read()
 
-            receipt_bytes = regular_bytes(receipt_source)
-            if (
-                len(receipt_bytes)
-                > MAX_LAZY_LAYER_MATERIALIZATION_ASSERTION_BYTES
-            ):
-                fail("Homebrew materialization exceeds the assertion byte limit")
-            receipt = parse_homebrew_install_receipt(receipt_bytes)
+            receipt = parse_homebrew_install_receipt(regular_bytes(receipt_source))
             separator = receipt_source["path"].rfind("/")
             source_root = (
                 "" if separator < 0 else receipt_source["path"][:separator]
             )
             source_paths: set[str] = set()
             bytes_by_canonical: dict[str, bytes] = {}
-            input_by_canonical: dict[str, bytes] = {}
             for relative in receipt["changed_files"]:
                 source_path = relative if not source_root else f"{source_root}/{relative}"
                 source = source_by_path.get(source_path)
@@ -1848,78 +1679,16 @@ def original_bottle_relocation(
                 )
                 assert canonical is not None
                 relocated = relocate_homebrew_bottle_file(
-                    regular_bytes(source), receipt, source_path, destination_prefix
+                    regular_bytes(source), receipt, source_path
                 )
                 prior = bytes_by_canonical.get(canonical["path"])
                 if prior is not None and prior != relocated:
                     fail("Homebrew hard-link aliases produce different relocated bytes")
                 source_paths.add(source_path)
-                input_by_canonical[canonical["path"]] = regular_bytes(source)
                 bytes_by_canonical[canonical["path"]] = relocated
-            replacements = homebrew_replacements(destination_prefix)
-            raw_recipe_replacements = list(replacements)
-            java_home = homebrew_java_home(
-                receipt.get("runtime_dependencies"), destination_prefix
-            )
-            if java_home is not None:
-                raw_recipe_replacements.append(
-                    (HOMEBREW_JAVA_PLACEHOLDER, java_home)
-                )
-            rejected_patterns = [
-                match
-                for match, _ in (
-                    *replacements,
-                    (HOMEBREW_JAVA_PLACEHOLDER, b""),
-                )
-            ]
-            validate_homebrew_materialization_bounds(
-                receipt_bytes,
-                raw_recipe_replacements,
-                rejected_patterns,
-                len(bytes_by_canonical),
-            )
-            recipe_replacements = [
-                {"matchHex": match.hex(), "replacementHex": replacement.hex()}
-                for match, replacement in raw_recipe_replacements
-            ]
-            transforms = [
-                {
-                    "sourcePath": path,
-                    "recipe": HOMEBREW_RELOCATION_RECIPE_ID,
-                    "input": {
-                        "sha256": digest_bytes(input_by_canonical[path]),
-                        "bytes": len(input_by_canonical[path]),
-                    },
-                    "output": {
-                        "sha256": digest_bytes(bytes_by_canonical[path]),
-                        "bytes": len(bytes_by_canonical[path]),
-                    },
-                }
-                for path in sorted(bytes_by_canonical)
-            ]
-            materialization = {
-                "schema": 1,
-                "kind": "archive-byte-transforms-v1",
-                "assertions": [{
-                    "sourcePath": receipt_canonical["path"],
-                    "bytesHex": receipt_bytes.hex(),
-                }],
-                "recipes": [] if not transforms else [{
-                    "id": HOMEBREW_RELOCATION_RECIPE_ID,
-                    "replacements": recipe_replacements,
-                    "rejectHex": [pattern.hex() for pattern in rejected_patterns],
-                }],
-                "transforms": transforms,
-            }
             return {
                 "source_paths": source_paths,
                 "bytes_by_canonical": bytes_by_canonical,
-                "descriptor": {
-                    "schema": 1,
-                    "kind": "homebrew-bottle-relocation-v1",
-                    "receipt_source_path": receipt_source["path"],
-                    "materialization": materialization,
-                },
             }
     except tarfile.TarError as error:
         fail(f"Homebrew deferred TAR is invalid: {error}")
@@ -1928,10 +1697,8 @@ def original_bottle_relocation(
 def validate_original_bottle_inventory(
     value: Any,
     *,
-    descriptor_schema: int,
     tree_id: str,
     archive_value: bytes,
-    destination_prefix: str,
 ) -> tuple[
     list[dict[str, Any]],
     list[dict[str, Any]],
@@ -1944,7 +1711,7 @@ def validate_original_bottle_inventory(
         "layer_entry_count", "mergeable_directory_count", "expanded_bytes",
         "payload_bytes", "source", "entries",
     }
-    if set(inventory) not in (expected_inventory, expected_inventory | {"relocation"}):
+    if set(inventory) != expected_inventory:
         fail(f"Homebrew deferred tree {tree_id} inventory has unexpected fields")
     source_entries, canonical_source_by_path = validate_original_bottle_source(
         inventory.get("source"), tree_id
@@ -1959,22 +1726,7 @@ def validate_original_bottle_inventory(
         source_entries,
         canonical_source_by_path,
         expanded_bytes,
-        destination_prefix,
     )
-    if relocation["descriptor"] is None:
-        if "relocation" in inventory:
-            fail(f"Homebrew deferred tree {tree_id} has relocation without a receipt")
-    elif descriptor_schema != 6:
-        fail(
-            f"Homebrew deferred tree {tree_id} receipt relocation requires "
-            "runtime-layer schema 6"
-        )
-    else:
-        exact(
-            inventory.get("relocation"),
-            relocation["descriptor"],
-            f"Homebrew deferred tree {tree_id} relocation plan",
-        )
     source_by_path = {entry["path"]: entry for entry in source_entries}
     raw_entries = array(inventory.get("entries"), f"Homebrew deferred tree {tree_id} entries")
     if not raw_entries or len(raw_entries) > MAX_LAZY_LAYER_ENTRIES:
@@ -2006,7 +1758,7 @@ def validate_original_bottle_inventory(
         path = safe_relative_path(
             entry.get("path"), f"Homebrew deferred tree {tree_id} entry {index} path"
         )
-        if path != destination_prefix[1:] and not path.startswith(f"{destination_prefix[1:]}/"):
+        if path != HOMEBREW_PREFIX[1:] and not path.startswith(f"{HOMEBREW_PREFIX[1:]}/"):
             fail(f"Homebrew deferred tree {tree_id} entry {index} escapes Homebrew")
         if path in by_path:
             fail(f"Homebrew deferred tree {tree_id} duplicates guest path {path}")
@@ -2629,7 +2381,6 @@ def validate_canonical_original_bottle_trees(
 def validate_original_bottle_trees(
     trees: list[Any],
     *,
-    descriptor_schema: int,
     payload_values: dict[str, bytes],
     layer_packages: list[dict[str, Any]],
     applied_link_contracts: dict[str, dict[str, Any]],
@@ -2638,7 +2389,6 @@ def validate_original_bottle_trees(
     runtime_id: str,
     root_full_name: str,
     draft: bool,
-    destination_prefix: str,
 ) -> None:
     if not trees or len(trees) > len(layer_packages):
         fail("Homebrew original bottle trees differ from the layer package set")
@@ -2658,17 +2408,6 @@ def validate_original_bottle_trees(
         tree = record(raw, f"Homebrew deferred tree {index}")
         if set(tree) != {"id", "package", "activation", "content", "transports", "inventory"}:
             fail(f"Homebrew deferred tree {index} has unexpected fields")
-        if (
-            descriptor_schema != 6
-            and "relocation" in record(
-                tree.get("inventory"),
-                f"Homebrew deferred tree {index} inventory",
-            )
-        ):
-            fail(
-                f"Homebrew deferred tree {index} carries a schema-6 relocation "
-                f"plan under schema {descriptor_schema}"
-            )
         tree_id = string(
             tree.get("id"),
             f"Homebrew deferred tree {index} id",
@@ -2779,11 +2518,7 @@ def validate_original_bottle_trees(
             canonical_source_by_path,
             relocation,
         ) = validate_original_bottle_inventory(
-            tree.get("inventory"),
-            descriptor_schema=descriptor_schema,
-            tree_id=tree_id,
-            archive_value=archive_value,
-            destination_prefix=destination_prefix,
+            tree.get("inventory"), tree_id=tree_id, archive_value=archive_value
         )
         entries_by_path = {entry["path"]: entry for entry in entries}
         keg_path = package["keg"].removeprefix("/")
@@ -2892,9 +2627,6 @@ def validate_lazy_layer(
     draft: bool = False,
     payload_paths: dict[str, Path] | None = None,
 ) -> None:
-    destination_prefix = normalize_homebrew_destination_prefix(
-        result.get("destination_prefix"), "authenticated Homebrew destination prefix"
-    )
     descriptor_value, descriptor_raw = read_json(
         descriptor_path, "Homebrew lazy layer descriptor"
     )
@@ -2940,8 +2672,8 @@ def validate_lazy_layer(
     if set(descriptor) != expected_top_level:
         fail("Homebrew lazy layer descriptor has unexpected fields")
     descriptor_schema = descriptor.get("schema")
-    if descriptor_schema not in (4, 5, 6):
-        fail("Homebrew lazy layer schema must be 4, 5, or 6")
+    if descriptor_schema not in (4, 5):
+        fail("Homebrew lazy layer schema must be 4 or 5")
     exact(
         descriptor.get("kind"),
         (
@@ -3171,11 +2903,7 @@ def validate_lazy_layer(
     if set(packages_value) != {"base", "layer"}:
         fail("Homebrew lazy layer packages have unexpected fields")
     base_packages = [
-        validate_lazy_package_record(
-            value,
-            f"Homebrew lazy layer base package {index}",
-            destination_prefix,
-        )
+        validate_lazy_package_record(value, f"Homebrew lazy layer base package {index}")
         for index, value in enumerate(
             bounded_array(
                 packages_value.get("base"),
@@ -3185,11 +2913,7 @@ def validate_lazy_layer(
         )
     ]
     layer_packages = [
-        validate_lazy_package_record(
-            value,
-            f"Homebrew lazy layer package {index}",
-            destination_prefix,
-        )
+        validate_lazy_package_record(value, f"Homebrew lazy layer package {index}")
         for index, value in enumerate(
             bounded_array(
                 packages_value.get("layer"),
@@ -3505,10 +3229,9 @@ def validate_lazy_layer(
             )
 
     trees = array(descriptor.get("deferred_trees"), "Homebrew deferred trees")
-    if descriptor_schema in (5, 6):
+    if descriptor_schema == 5:
         validate_original_bottle_trees(
             trees,
-            descriptor_schema=descriptor_schema,
             payload_values=payload_values,
             layer_packages=layer_packages,
             applied_link_contracts=result["applied_link_contracts"],
@@ -3517,7 +3240,6 @@ def validate_lazy_layer(
             runtime_id=runtime_id,
             root_full_name=result["root_full_name"],
             draft=draft,
-            destination_prefix=destination_prefix,
         )
         if not draft:
             exact(
@@ -3690,8 +3412,8 @@ def validate_lazy_layer(
         ):
             fail(f"Homebrew lazy layer entry {index} has an unsafe path")
         if not (
-            path == destination_prefix[1:]
-            or path.startswith(f"{destination_prefix[1:]}/")
+            path == "opt/kandelo/homebrew"
+            or path.startswith("opt/kandelo/homebrew/")
         ):
             fail(f"Homebrew lazy layer entry {index} escapes the Homebrew prefix")
         if path in seen_paths:
@@ -4365,7 +4087,7 @@ def close_lazy_layer_descriptor(
     browser_value: bytes,
 ) -> dict[str, Any]:
     if (
-        draft.get("schema") not in (4, 5, 6)
+        draft.get("schema") not in (4, 5)
         or draft.get("kind") != "kandelo-homebrew-deferred-layer-draft"
     ):
         fail("Homebrew lazy layer closer received a non-draft descriptor")

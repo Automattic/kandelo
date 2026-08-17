@@ -32,8 +32,6 @@ describe('buildClangArgs', () => {
   it('compile-only: adds compile flags, no link flags', () => {
     const args = build(['-c', 'foo.c', '-o', 'foo.o']);
     expect(args).toContain('--target=wasm32-unknown-unknown');
-    expect(args).toContain('-D__unix__=1');
-    expect(args).toContain('-D__unix=1');
     expect(args).toContain('--sysroot=/tmp/sysroot');
     expect(args).toContain('-c');
     expect(args).toContain('foo.c');
@@ -44,7 +42,7 @@ describe('buildClangArgs', () => {
   it('compile+link: adds both compile and link flags plus glue', () => {
     const args = build(['foo.c', '-o', 'foo.wasm']);
     expect(args).toContain('--target=wasm32-unknown-unknown');
-    expect(args).toContain('-Wl,--no-entry');
+    expect(args).toContain('-Wl,--entry=_start');
     expect(args).toContain('-Wl,--import-memory');
     expect(args.join(' ')).toContain('channel_syscall.c');
     expect(args.join(' ')).toContain('compiler_rt.c');
@@ -116,7 +114,7 @@ describe('buildClangArgs', () => {
 
   it('link-only: object files without -c get link flags plus compile flags for glue', () => {
     const args = build(['foo.o', 'bar.o', '-o', 'out.wasm']);
-    expect(args).toContain('-Wl,--no-entry');
+    expect(args).toContain('-Wl,--entry=_start');
     expect(args.join(' ')).toContain('libc.a');
     expect(args).toContain('--target=wasm32-unknown-unknown');
     // Compile flags are present because glue .c files are compiled during linking
@@ -135,33 +133,6 @@ describe('buildClangArgs', () => {
     const args = build([...userLinkArgs, '-o', 'out.wasm']);
     const forwarded = args.slice(args.indexOf('main.o'), args.indexOf('-Wl,--end-group') + 1);
     expect(forwarded).toEqual(userLinkArgs);
-  });
-
-  it('orders explicit libc and user libraries after syscall glue', () => {
-    const args = build([
-      'main.o',
-      '-L', '/deps/lib',
-      '-lxml2',
-      'support.a',
-      '-lc',
-      '-o', 'out.wasm',
-    ]);
-    const channelGlue = args.indexOf('/tmp/glue/channel_syscall.c');
-    const crt = args.indexOf('/tmp/sysroot/lib/crt1.o');
-    const main = args.indexOf('main.o');
-    const libraryPath = args.indexOf('-L');
-    const xml = args.indexOf('-lxml2');
-    const support = args.indexOf('support.a');
-    const explicitLibc = args.indexOf('-lc');
-    const finalLibc = args.indexOf('/tmp/sysroot/lib/libc.a');
-
-    expect(channelGlue).toBeLessThan(crt);
-    expect(crt).toBeLessThan(main);
-    expect(main).toBeLessThan(libraryPath);
-    expect(libraryPath).toBeLessThan(xml);
-    expect(xml).toBeLessThan(support);
-    expect(support).toBeLessThan(explicitLibc);
-    expect(explicitLibc).toBeLessThan(finalLibc);
   });
 
   it('maps SDK-owned glue and sysroot paths to stable debug identities', () => {
@@ -213,7 +184,7 @@ describe('buildClangArgs', () => {
 
   it('treats linker response lists as link commands', () => {
     const args = build(['-fuse-ld=lld', '-o', 'out.wasm', '-Wl,@/tmp/objects.list']);
-    expect(args).toContain('-Wl,--no-entry');
+    expect(args).toContain('-Wl,--entry=_start');
     expect(args.join(' ')).toContain('channel_syscall.c');
     expect(args.join(' ')).toContain('libc.a');
   });

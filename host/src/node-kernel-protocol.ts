@@ -19,7 +19,6 @@ import type {
   ClosedLazyAssetSource,
 } from "./vfs/closed-lazy-assets";
 import type { MountSpec } from "./vfs/default-mounts";
-import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
 
 export type { HttpRequest, HttpResponse };
 export type { HostDiagnostic } from "./host-diagnostic";
@@ -42,16 +41,8 @@ export interface InitMessage {
     dataBufferSize?: number;
     useSharedMemory?: boolean;
   };
-  /**
-   * Virtual path → immutable host file for spawn-only preflight. Exec never
-   * consults this map and uses only a retained kernel VFS target.
-   */
+  /** Virtual path → host filesystem path for exec resolution */
   execPrograms?: Record<string, string>;
-  /**
-   * Virtual path → worker-owned bytes for spawn-only preflight through Task
-   * 12. Exec never consults this map.
-   */
-  execProgramBytes?: Record<string, ArrayBuffer>;
   /**
    * Bytes of `host/wasm/rootfs.vfs`, read on the main thread and forwarded
    * to the worker. When present, the worker materialises the default mount
@@ -62,11 +53,6 @@ export interface InitMessage {
   rootfsImage?: ArrayBuffer;
   /** Exact image/scratch mount contract. Absent preserves the host default. */
   rootfsMountSpec?: MountSpec[];
-  privilegedProgramMount?: {
-    kind: "published-privileged-program-product";
-    mountPoint: "/usr/bin";
-    imageBytes: Uint8Array;
-  };
   /** Base used to resolve relative lazy URLs embedded in rootfsImage. */
   rootfsLazyUrlBase?: string;
   /** Exhaustive exact-byte lazy transport for this rootfs; no network fallback. */
@@ -77,15 +63,9 @@ export interface InitMessage {
     mountPoint: string;
     hostPath: string;
     readonly?: boolean;
-    exclusiveNativeWriters?: boolean;
     uid?: number;
     gid?: number;
   }>;
-  /**
-   * Quiescent host trees copied beneath existing worker-owned scratch mounts
-   * before ready. Guest mutations never write back to the source.
-   */
-  sessionSeedTrees?: NodeSessionSeedTree[];
   /** Attach a real-TCP backend (TcpNetworkBackend) to the worker's PlatformIO
    *  so wasm programs can dial external hosts via Node `net.Socket`. */
   enableTcpNetwork?: boolean;
@@ -232,15 +212,6 @@ export interface ReadVfsFileMessage {
   path: string;
 }
 
-/** Create or replace one regular file through the worker-owned VFS. */
-export interface WriteVfsFileMessage {
-  type: "write_vfs_file";
-  requestId: number;
-  path: string;
-  data: Uint8Array;
-  mode: number;
-}
-
 /** Request the kernel's per-process fork counter. The kernel-worker entry
  * forwards this to `kernel_get_fork_count` and posts a `response` message
  * with `result` set to a `bigint` (u64 as BigInt). Used by the spawn
@@ -255,20 +226,6 @@ export interface GetForkCountRequestMessage {
 export interface GetKernelMemoryPagesRequestMessage {
   type: "get_kernel_memory_pages";
   requestId: number;
-}
-
-/** Read the retained capacity of the kernel-owned large-spawn region. */
-export interface GetSpawnScratchCapacityRequestMessage {
-  type: "get_spawn_scratch_capacity";
-  requestId: number;
-}
-
-/** Deliver `signum` to `pid`. Responds `true` when the process existed. */
-export interface SignalProcessMessage {
-  type: "signal_process";
-  requestId: number;
-  pid: number;
-  signum: number;
 }
 
 export interface ResolveExecResponseMessage {
@@ -359,11 +316,8 @@ export type MainToKernelMessage =
   | DestroyMessage
   | ExportRootfsImageMessage
   | ReadVfsFileMessage
-  | WriteVfsFileMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
-  | GetSpawnScratchCapacityRequestMessage
-  | SignalProcessMessage
   | ResolveExecResponseMessage
   | EnumProcsRequestMessage
   | ReadProcMapsRequestMessage
@@ -382,12 +336,6 @@ export interface ReadyMessage {
 /** Initialization failed before the worker could publish a usable kernel. */
 export interface InitErrorMessage {
   type: "init_error";
-  error: string;
-}
-
-/** The dedicated kernel instance is poisoned and has stopped permanently. */
-export interface KernelFatalMessage {
-  type: "kernel_fatal";
   error: string;
 }
 
@@ -447,7 +395,6 @@ export type ProcEventMessage =
 export type KernelToMainMessage =
   | ReadyMessage
   | InitErrorMessage
-  | KernelFatalMessage
   | ResponseMessage
   | ExitMessage
   | StdoutMessage

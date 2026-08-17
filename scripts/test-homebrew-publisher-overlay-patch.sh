@@ -4,19 +4,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 PATCH_FILE="$ROOT/homebrew/patches/0002-support-isolated-publisher.patch"
 TMPDIR="$(mktemp -d)"
-cleanup() {
-  chmod -R u+w "$TMPDIR" 2>/dev/null || true
-  rm -rf "$TMPDIR"
-}
-trap cleanup EXIT
+trap 'rm -rf "$TMPDIR"' EXIT
 
 mkdir -p "$TMPDIR/Library/Homebrew/dev-cmd" \
   "$TMPDIR/Library/Homebrew/extend/os/linux" \
   "$TMPDIR/Library/Homebrew/extend/os/linux/sandbox" \
   "$TMPDIR/Library/Homebrew/utils/github"
 for fixture in abstract_command.rb global.rb build_options.rb keg.rb extend/ENV.rb \
-  api.rb commands.rb exceptions.rb settings.rb system_command.rb utils/bottles.rb \
-  utils/output.rb utils/popen.rb utils/github/actions.rb \
+  exceptions.rb system_command.rb utils/bottles.rb utils/popen.rb utils/github/actions.rb \
   extend/os/linux/sandbox/bubblewrap.rb extend/os/linux/sandbox/landlock.rb; do
   : >"$TMPDIR/Library/Homebrew/$fixture"
 done
@@ -46,40 +41,6 @@ class Formula
   end
 end
 RUBY
-cat >"$TMPDIR/Library/Homebrew/tap.rb" <<'RUBY'
-# typed: strict
-# frozen_string_literal: true
-
-require "api"
-require "commands"
-require "settings"
-require "utils/output"
-
-class Tap
-  attr_reader :name, :path
-
-  def initialize(name, path, git_repository)
-    @name = name
-    @path = path
-    @git_repository = git_repository
-  end
-
-  def git_repository = @git_repository
-
-  # Git HEAD for this {Tap}.
-  #
-  # @api public
-  sig { returns(T.nilable(String)) }
-  def git_head
-    raise TapUnavailableError, name unless installed?
-
-    @git_head ||= T.let(git_repository.head_ref, T.nilable(String))
-  end
-
-  # Time since last git commit for this {Tap}.
-  def installed? = true
-end
-RUBY
 cat >"$TMPDIR/Library/Homebrew/dev-cmd/bottle.rb" <<'RUBY'
 # typed: strict
 # frozen_string_literal: true
@@ -95,9 +56,6 @@ module T
   class Array
     def self.[](*) = Object
   end
-
-  def self.let(value, _type) = value
-  def self.nilable(*) = Object
 end
 
 def sig(*) = nil
@@ -588,14 +546,6 @@ patched_line_count="$(grep -c 'next if trusted_tap?(tap)' \
   exit 1
 }
 
-selected_tap_head_count="$(grep -c \
-  'KandeloPublisher.selected_tap_git_head(self)' \
-  "$TMPDIR/Library/Homebrew/tap.rb" || true)"
-[ "$selected_tap_head_count" = "1" ] || {
-  echo "test-homebrew-publisher-overlay-patch.sh: patch did not route one selected tap HEAD lookup through the publisher" >&2
-  exit 1
-}
-
 repository_guard_count="$(grep -c \
   'reject { |dir| dir == HOMEBREW_REPOSITORY }' \
   "$TMPDIR/Library/Homebrew/diagnostic.rb")"
@@ -622,43 +572,6 @@ HOMEBREW_PREFIX = Pathname(ARGV.fetch(0))/"bottle-prefix"
 HOMEBREW_PREFIX.mkpath
 expected_gnu_tar = ARGV.fetch(1)
 
-selected_tap_root = Pathname(ARGV.fetch(0))/"selected-tap"
-selected_tap_root.mkpath
-selected_tap_root = selected_tap_root.realpath
-(selected_tap_root/".git").mkpath
-selected_tap_head_file = selected_tap_root/".fixture-head"
-selected_tap_head_file.write("1111111111111111111111111111111111111111\n")
-selected_tap_head_file.chmod(0o444)
-# The isolated launcher makes the complete taps tree a read-only bind mount
-# and proves that boundary with an actual write probe. The backing checkout
-# retains its ordinary owner-writable mode bits, which must not make the
-# publisher reject the already-audited mount.
-selected_tap_root.chmod(0o755)
-git_invocations = Pathname(ARGV.fetch(0))/"selected-tap-git-invocations"
-protected_git = Pathname(ARGV.fetch(0))/"protected-git"
-protected_git.write(<<~SH)
-  #!/bin/sh
-  set -eu
-  [ "${GIT_CONFIG_NOSYSTEM:-}" = 1 ]
-  [ "${GIT_CONFIG_GLOBAL:-}" = /dev/null ]
-  [ -z "${GIT_CONFIG_COUNT+x}" ]
-  [ "$#" -eq 8 ]
-  [ "$1" = -c ]
-  [ "$2" = "safe.directory=#{selected_tap_root}" ]
-  [ "$3" = -C ]
-  [ "$4" = "#{selected_tap_root}" ]
-  [ "$5" = rev-parse ]
-  [ "$6" = --verify ]
-  [ "$7" = --quiet ]
-  [ "$8" = 'HEAD^{commit}' ]
-  printf 'called\n' >>"#{git_invocations}"
-  exec /bin/cat "$4/.fixture-head"
-SH
-protected_git.chmod(0o555)
-protected_git = protected_git.realpath
-ENV["HOMEBREW_KANDELO_PRIMARY_TAP_ROOT"] = selected_tap_root.to_s
-ENV["HOMEBREW_GIT_PATH"] = protected_git.to_s
-
 class FixtureBottleArgs
   def only_json_tab? = false
 end
@@ -680,15 +593,14 @@ end
 
 plan_path = HOMEBREW_PREFIX/".kandelo-publisher-build-dependencies.json"
 plan = {
-  "schema" => 5,
+  "schema" => 4,
   "tap" => "kandelo-dev/tap-core",
   "formula" => "hello",
   "full_name" => "kandelo-dev/tap-core/hello",
   "target_taps" => [{
     "tap_name" => "kandelo-dev/tap-core",
     "tap_repository" => "kandelo-dev/homebrew-tap-core",
-    "tap_commit" => "2222222222222222222222222222222222222222",
-    "checkout_commit" => "1111111111111111111111111111111111111111",
+    "tap_commit" => "1111111111111111111111111111111111111111",
   }],
   "build" => [],
   "build_and_test" => [],
@@ -699,51 +611,6 @@ plan_path.write(JSON.generate(plan))
 plan_path.chmod(0o444)
 
 require "dev-cmd/bottle"
-require "tap"
-
-unexpected_git_repository = Object.new
-def unexpected_git_repository.head_ref = raise("selected tap used the ambient Git lookup")
-selected_tap = Tap.new("kandelo-dev/tap-core", selected_tap_root, unexpected_git_repository)
-ENV["GIT_CONFIG_COUNT"] = "99"
-ENV["GIT_CONFIG_KEY_0"] = "caller.poison"
-ENV["GIT_CONFIG_VALUE_0"] = "caller-poison"
-unless selected_tap.git_head == plan.fetch("target_taps").fetch(0).fetch("checkout_commit")
-  raise "selected tap did not resolve its exact protected checkout commit"
-end
-raise "selected tap Git was not invoked exactly once" unless git_invocations.readlines.length == 1
-
-wrong_tap_root = Pathname(ARGV.fetch(0))/"wrong-selected-tap"
-wrong_tap_root.mkpath
-wrong_tap_root = wrong_tap_root.realpath
-wrong_tap_root.chmod(0o555)
-wrong_tap = Tap.new("kandelo-dev/tap-core", wrong_tap_root, unexpected_git_repository)
-begin
-  wrong_tap.git_head
-  raise "publisher accepted a different tap checkout path"
-rescue RuntimeError => e
-  raise unless e.message.include?("selected tap checkout path")
-end
-raise "path mismatch reached protected Git" unless git_invocations.readlines.length == 1
-
-selected_tap_root.chmod(0o755)
-selected_tap_head_file.chmod(0o644)
-selected_tap_head_file.write("2222222222222222222222222222222222222222\n")
-selected_tap_head_file.chmod(0o444)
-selected_tap_root.chmod(0o555)
-changed_tap = Tap.new("kandelo-dev/tap-core", selected_tap_root, unexpected_git_repository)
-begin
-  changed_tap.git_head
-  raise "publisher accepted selected tap source drift"
-rescue RuntimeError => e
-  raise unless e.message.include?("selected tap commit")
-end
-raise "changed tap was not queried exactly once" unless git_invocations.readlines.length == 2
-
-selected_tap_root.chmod(0o755)
-selected_tap_head_file.chmod(0o644)
-selected_tap_head_file.write("1111111111111111111111111111111111111111\n")
-selected_tap_head_file.chmod(0o444)
-selected_tap_root.chmod(0o555)
 
 # KandeloPublisher captures this launcher-validated path before Formula source
 # can run. A Formula-side ENV mutation must not redirect archive creation.
@@ -974,7 +841,7 @@ end
 
 plan_path = HOMEBREW_PREFIX/".kandelo-publisher-build-dependencies.json"
 plan = {
-  "schema" => 5,
+  "schema" => 4,
   "tap" => "kandelo-dev/tap-core",
   "formula" => "hello",
   "full_name" => "kandelo-dev/tap-core/hello",
@@ -983,13 +850,11 @@ plan = {
       "tap_name" => "acme/tools",
       "tap_repository" => "acme/homebrew-tools",
       "tap_commit" => "1111111111111111111111111111111111111111",
-      "checkout_commit" => "1111111111111111111111111111111111111111",
     },
     {
       "tap_name" => "kandelo-dev/tap-core",
       "tap_repository" => "kandelo-dev/homebrew-tap-core",
       "tap_commit" => "2222222222222222222222222222222222222222",
-      "checkout_commit" => "2222222222222222222222222222222222222222",
     },
   ],
   "build" => ["binaryen", "wabt"],
@@ -1353,7 +1218,7 @@ end
 
 plan_path = HOMEBREW_PREFIX/".kandelo-publisher-build-dependencies.json"
 plan = {
-  "schema" => 5,
+  "schema" => 4,
   "tap" => "kandelo-dev/tap-core",
   "formula" => "hello",
   "full_name" => "kandelo-dev/tap-core/hello",
@@ -1362,13 +1227,11 @@ plan = {
       "tap_name" => "acme/tools",
       "tap_repository" => "acme/homebrew-tools",
       "tap_commit" => "1111111111111111111111111111111111111111",
-      "checkout_commit" => "1111111111111111111111111111111111111111",
     },
     {
       "tap_name" => "kandelo-dev/tap-core",
       "tap_repository" => "kandelo-dev/homebrew-tap-core",
       "tap_commit" => "2222222222222222222222222222222222222222",
-      "checkout_commit" => "2222222222222222222222222222222222222222",
     },
   ],
   "build" => ["wabt"],
@@ -1424,18 +1287,6 @@ plan_path.chmod(0o444)
 begin
   global_dependencies(target)
   raise "mutable target tap revision suppressed Linux global dependencies"
-rescue RuntimeError => e
-  raise unless e.message.include?("invalid target taps")
-end
-
-mutable_checkout_plan = JSON.parse(JSON.generate(plan))
-mutable_checkout_plan.fetch("target_taps").first["checkout_commit"] = "main"
-plan_path.chmod(0o644)
-plan_path.write(JSON.generate(mutable_checkout_plan))
-plan_path.chmod(0o444)
-begin
-  global_dependencies(target)
-  raise "mutable target tap checkout suppressed Linux global dependencies"
 rescue RuntimeError => e
   raise unless e.message.include?("invalid target taps")
 end
@@ -1503,7 +1354,7 @@ HOMEBREW_PREFIX = Pathname(ARGV.fetch(0))/"sandbox-prefix"
 HOMEBREW_PREFIX.mkpath
 plan_path = HOMEBREW_PREFIX/".kandelo-publisher-build-dependencies.json"
 plan = {
-  "schema" => 5,
+  "schema" => 4,
   "tap" => "kandelo-dev/tap-core",
   "formula" => "hello",
   "full_name" => "kandelo-dev/tap-core/hello",
@@ -1511,7 +1362,6 @@ plan = {
     "tap_name" => "kandelo-dev/tap-core",
     "tap_repository" => "kandelo-dev/homebrew-tap-core",
     "tap_commit" => "1111111111111111111111111111111111111111",
-    "checkout_commit" => "1111111111111111111111111111111111111111",
   }],
   "build" => [],
   "build_and_test" => [],

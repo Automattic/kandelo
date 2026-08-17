@@ -1,6 +1,5 @@
 #include <errno.h>
 #include <fcntl.h>
-#include <grp.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,105 +58,6 @@ static int expect_path_mode_ids(const char *path, mode_t mode, uid_t uid,
             (unsigned)gid);
         return -1;
     }
-    return 0;
-}
-
-static int expect_path_fd_mode(const char *path, int fd, mode_t mode,
-    const char *step)
-{
-    struct stat path_st;
-    struct stat fd_st;
-    if (stat(path, &path_st) != 0 || fstat(fd, &fd_st) != 0) {
-        perror(step);
-        return -1;
-    }
-    if ((path_st.st_mode & 07777) != mode ||
-        (fd_st.st_mode & 07777) != mode) {
-        fprintf(stderr,
-            "%s: got path mode=%04o fd mode=%04o, expected mode=%04o\n",
-            step, (unsigned)(path_st.st_mode & 07777),
-            (unsigned)(fd_st.st_mode & 07777), (unsigned)mode);
-        return -1;
-    }
-    return 0;
-}
-
-static int arm_setid(const char *path, int fd, const char *step)
-{
-    if (fchmod(fd, 06755) != 0) {
-        perror(step);
-        return -1;
-    }
-    return expect_path_fd_mode(path, fd, 06755, step);
-}
-
-static int run_setid_mutation_matrix(void)
-{
-    const char *path = "/tmp/setid-mutation-matrix";
-    const char byte = 'x';
-    int fd = open(path, O_CREAT | O_RDWR | O_TRUNC, 0600);
-    if (fd < 0)
-        return 46;
-
-    if (arm_setid(path, fd, "arm write") != 0 ||
-        write(fd, &byte, 1) != 1 ||
-        expect_path_fd_mode(path, fd, 0755, "write") != 0)
-        return 47;
-    if (arm_setid(path, fd, "arm pwrite") != 0 ||
-        pwrite(fd, &byte, 1, 0) != 1 ||
-        expect_path_fd_mode(path, fd, 0755, "pwrite") != 0)
-        return 48;
-
-    int status_flags = fcntl(fd, F_GETFL);
-    if (status_flags < 0 || fcntl(fd, F_SETFL, status_flags | O_APPEND) != 0 ||
-        arm_setid(path, fd, "arm append") != 0 ||
-        write(fd, &byte, 1) != 1 ||
-        expect_path_fd_mode(path, fd, 0755, "append") != 0 ||
-        fcntl(fd, F_SETFL, status_flags) != 0)
-        return 49;
-
-    if (arm_setid(path, fd, "arm O_TRUNC") != 0)
-        return 50;
-    int truncate_fd = open(path, O_WRONLY | O_TRUNC);
-    if (truncate_fd < 0 || close(truncate_fd) != 0 ||
-        expect_path_fd_mode(path, fd, 0755, "O_TRUNC") != 0)
-        return 51;
-
-    if (pwrite(fd, &byte, 1, 0) != 1 ||
-        arm_setid(path, fd, "arm truncate") != 0 || truncate(path, 0) != 0 ||
-        expect_path_fd_mode(path, fd, 0755, "truncate") != 0)
-        return 52;
-    if (pwrite(fd, &byte, 1, 0) != 1 ||
-        arm_setid(path, fd, "arm ftruncate") != 0 || ftruncate(fd, 0) != 0 ||
-        expect_path_fd_mode(path, fd, 0755, "ftruncate") != 0)
-        return 53;
-
-    if (arm_setid(path, fd, "arm chown") != 0 ||
-        chown(path, (uid_t)-1, (gid_t)-1) != 0 ||
-        expect_path_fd_mode(path, fd, 0755, "chown") != 0)
-        return 54;
-    if (arm_setid(path, fd, "arm fchown") != 0 ||
-        fchown(fd, (uid_t)-1, (gid_t)-1) != 0 ||
-        expect_path_fd_mode(path, fd, 0755, "fchown") != 0)
-        return 55;
-    if (arm_setid(path, fd, "arm lchown") != 0 ||
-        lchown(path, (uid_t)-1, (gid_t)-1) != 0 ||
-        expect_path_fd_mode(path, fd, 0755, "lchown") != 0)
-        return 56;
-
-    if (arm_setid(path, fd, "arm zero mutations") != 0 ||
-        write(fd, &byte, 0) != 0 || pwrite(fd, &byte, 0, 0) != 0 ||
-        truncate(path, 0) != 0 || ftruncate(fd, 0) != 0 ||
-        expect_path_fd_mode(path, fd, 06755, "zero mutations") != 0)
-        return 57;
-    truncate_fd = open(path, O_WRONLY | O_TRUNC);
-    if (truncate_fd < 0 || close(truncate_fd) != 0 ||
-        expect_path_fd_mode(path, fd, 06755, "empty O_TRUNC") != 0)
-        return 58;
-
-    close(fd);
-    unlink(path);
-    puts("SETID_MUTATION_MATRIX_PASS");
     return 0;
 }
 
@@ -294,17 +194,16 @@ int main(void)
     if (seteuid(0) != 0)
         return 16;
 
-    /* Exercise _POSIX_CHOWN_RESTRICTED with an explicit supplementary group:
-     * the first call uses effective uid/gid 1000, and the second selects the
-     * authoritative supplementary group 2000. */
+    /* Exercise _POSIX_CHOWN_RESTRICTED with Kandelo's current credential
+     * model: the first call uses effective uid/gid 1000; the distinct real
+     * gid then exercises the single synthesized supplementary group exposed
+     * by getgroups(). */
     const char *restricted = "/tmp/chown-restricted";
     int restricted_fd = open(restricted, O_CREAT | O_RDWR | O_TRUNC, 0644);
     if (restricted_fd < 0 || fchown(restricted_fd, 1000, 4000) != 0 ||
         fchmod(restricted_fd, 06755) != 0)
         return 34;
-    gid_t supplementary_group = 2000;
-    if (setgroups(1, &supplementary_group) != 0 || setgid(2000) != 0 ||
-        setegid(1000) != 0 || seteuid(1000) != 0)
+    if (setgid(2000) != 0 || setegid(1000) != 0 || seteuid(1000) != 0)
         return 35;
 
     if (chown(restricted, (uid_t)-1, 1000) != 0 ||
@@ -352,10 +251,6 @@ int main(void)
     if (seteuid(0) != 0 || setgid(0) != 0)
         return 44;
     close(restricted_fd);
-
-    int mutation_result = run_setid_mutation_matrix();
-    if (mutation_result != 0)
-        return mutation_result;
 
     close(fd);
     puts("CHOWN_SENTINEL_PASS");

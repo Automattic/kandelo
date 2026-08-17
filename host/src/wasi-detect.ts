@@ -13,10 +13,6 @@
  * true. For non-WASI workloads (the common case in this repo) it
  * never enters the worker.
  */
-import {
-  wasmModuleExports,
-  wasmModuleImports,
-} from "./wasm-module-reflection";
 
 /**
  * Detect whether a compiled WebAssembly module is a WASI module.
@@ -25,7 +21,7 @@ import {
  * supports; older `wasi_unstable` modules aren't recognized.
  */
 export function isWasiModule(module: WebAssembly.Module): boolean {
-  return wasmModuleImports(module).some(
+  return WebAssembly.Module.imports(module).some(
     imp => imp.module === "wasi_snapshot_preview1",
   );
 }
@@ -34,7 +30,7 @@ export function isWasiModule(module: WebAssembly.Module): boolean {
  * Check if a WASI module imports memory (required for shared memory channel).
  */
 export function wasiModuleImportsMemory(module: WebAssembly.Module): boolean {
-  return wasmModuleImports(module).some(
+  return WebAssembly.Module.imports(module).some(
     imp => imp.module === "env" && imp.name === "memory" && imp.kind === "memory",
   );
 }
@@ -43,7 +39,7 @@ export function wasiModuleImportsMemory(module: WebAssembly.Module): boolean {
  * Check if a WASI module defines its own memory (not supported).
  */
 export function wasiModuleDefinesMemory(module: WebAssembly.Module): boolean {
-  return wasmModuleExports(module).some(
+  return WebAssembly.Module.exports(module).some(
     exp => exp.name === "memory" && exp.kind === "memory",
   );
 }

@@ -42,17 +42,6 @@ import {
   declaredVfsMaxByteLength,
 } from "../web-libs/kandelo-session/src/vfs-capacity";
 import { parseHomebrewRuntimeSupportContract } from "../host/src/homebrew-runtime-support";
-import { appendProcessTreeRssSample } from "./measure-homebrew-vfork-rss";
-import {
-  assertLocalTestHomebrewTapBundle,
-  projectLocalTestHomebrewTapBundleBinding,
-  type LocalTestHomebrewTapBundleBinding,
-} from "../host/src/homebrew-vfs-builder";
-import {
-  createReviewedPrivilegedProgramPolicy,
-  publishPrivilegedProgramProduct,
-  type PrivilegedProgramProjection,
-} from "../host/src/vfs/privileged-projection";
 
 const {
   imagePath,
@@ -65,9 +54,6 @@ const {
   demoConfigPath,
   transportMode,
   bottleMirrorPlanPath,
-  rssReportPath,
-  compositionReportPath,
-  privilegedProductPath,
 } = parseArgs(process.argv.slice(2));
 if (homebrewBootstrapState !== "deferred") {
   throw new Error(
@@ -120,23 +106,9 @@ assertVfsImageFitsProfile(
 const fs = MemoryFileSystem.fromImage(imageBytes, {
   maxByteLength: MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
 });
-// WHY: product publication reads program sources from the imported image, so
-// authenticate its lazy atomic seals before any composition or product read.
+// WHY: the smoke exports lazy state as acceptance evidence, so imported
+// atomic seals must be authenticated before the synchronous assertions run.
 await fs.verifyImportedLazyAtomicGroupSeals();
-const compositionReport = compositionReportPath === undefined
-  ? undefined
-  : parseJson(
-      readRegularFile(compositionReportPath, "composition report"),
-      compositionReportPath,
-    );
-const privilegedProduct =
-  compositionReport === undefined || privilegedProductPath === undefined
-    ? undefined
-    : await createNodePrivilegedProduct(
-        fs,
-        compositionReport,
-        readRegularFile(privilegedProductPath, "serialized privileged product"),
-      );
 assertPackageDeferredZipTreeState(
   fs,
   homebrewBootstrapTree,
@@ -256,8 +228,11 @@ if (pendingTrees.length !== mirrorPlan.assets.length) {
   );
 }
 assertPendingTreeHomebrewBottleMirrorBinding(pendingTrees, mirrorPlan);
-const expectedPendingBottlePackages = guestPendingBottlePackages(guestManifest);
-const mirrorPackages = mirrorPlan.assets.map((asset) => asset.package).sort();
+const expectedPendingBottlePackages =
+  guestPendingBottlePackages(guestManifest);
+const mirrorPackages = mirrorPlan.assets
+  .map((asset) => asset.package)
+  .sort();
 if (
   JSON.stringify(mirrorPackages) !==
   JSON.stringify(expectedPendingBottlePackages)
@@ -344,14 +319,6 @@ const host = new NodeKernelHost({
   },
 });
 
-const sampleNodeRss = (phase: string): void => {
-  if (rssReportPath === undefined) return;
-  appendProcessTreeRssSample({
-    phase,
-    roots: new Map([["node", process.pid]]),
-    out: rssReportPath,
-  });
-};
 await host.init();
 try {
   const offlineCommand = `
@@ -530,7 +497,10 @@ printf 'homebrew-atomic-runtime-activated\n'
     homebrewBootstrapTransportUrl,
   );
   assertFetchedPackageSet(
-    withoutTransportUrl(runtimeActivationEvents, homebrewBootstrapTransportUrl),
+    withoutTransportUrl(
+      runtimeActivationEvents,
+      homebrewBootstrapTransportUrl,
+    ),
     pendingTrees,
     mirrorPlan,
     RUNTIME_SUPPORT_EXPECTED_PACKAGES,
@@ -558,7 +528,7 @@ test "$(/usr/bin/brew --repository 2>&1)" = /opt/kandelo/homebrew ||
   brew_smoke_fail 'brew --repository differs from the guest repository'
 test "$(/usr/bin/brew --cellar 2>&1)" = /opt/kandelo/homebrew/Cellar ||
   brew_smoke_fail 'brew --cellar differs from the guest Cellar'
-test "$(/usr/bin/brew --cache 2>&1)" = /home/maker/.cache/Homebrew ||
+test "$(/usr/bin/brew --cache 2>&1)" = /home/user/.cache/Homebrew ||
   brew_smoke_fail 'brew --cache differs from the guest cache'
 # WHY: \`brew ruby\` is a developer command and may query Homebrew's developer
 # package API. A temporary stock Bash command observes the same post-brew.env
@@ -590,7 +560,10 @@ printf 'homebrew-operational-runtime-ok\n'
   );
   const brewStdout = stdout.slice(brewOperationStdoutStart);
   const brewStderr = stderr.slice(brewOperationStderrStart);
-  if (brewStdout !== "homebrew-operational-runtime-ok\n" || brewStderr !== "") {
+  if (
+    brewStdout !== "homebrew-operational-runtime-ok\n" ||
+    brewStderr !== ""
+  ) {
     throw new Error(
       `operational Homebrew runtime returned unexpected output; ` +
         `stdout=${JSON.stringify(brewStdout)} stderr=${JSON.stringify(brewStderr)}`,
@@ -626,211 +599,11 @@ printf 'homebrew-operational-runtime-ok\n'
     "repeated Homebrew runtime use",
   );
 
-  if (privilegedProduct !== undefined) {
-    const catalog = asRecord(
-      asRecord(migrationLock, "migration lock").catalog,
-      "migration lock catalog",
-    );
-    const productTapCommit = catalog.tap_commit;
-    if (
-      typeof productTapCommit !== "string" ||
-      !/^[0-9a-f]{40}$/.test(productTapCommit)
-    ) {
-      throw new Error("migration lock catalog tap commit is invalid");
-    }
-    const stagedTap = readLocalTestTapBinding(
-      compositionReport,
-      productTapCommit,
-    );
-    assertLocalTestHomebrewTapBundle(fs, stagedTap);
-    let loginPtyOutput = "";
-    const loginHost = new NodeKernelHost({
-      maxWorkers: 8,
-      rootfsImage: imageBytes,
-      rootfsLazyUrlBase: homebrewBootstrapLazyBase,
-      rootfsLazyAssets: closedLazyAssets,
-      privilegedProduct,
-      enableTcpNetwork: true,
-      onPtyOutput: (_pid, data) => {
-        loginPtyOutput += new TextDecoder().decode(data);
-      },
-    });
-    const markers: string[] = [];
-    const encoder = new TextEncoder();
-    const waitFrom = async (
-      needle: string,
-      start: number,
-      label: string,
-    ): Promise<void> => {
-      const deadline = Date.now() + 120_000;
-      while (!loginPtyOutput.slice(start).includes(needle)) {
-        if (Date.now() >= deadline) {
-          throw new Error(
-            `${label} timed out; pty=${JSON.stringify(loginPtyOutput.slice(-4096))}`,
-          );
-        }
-        await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
-      }
-    };
-    const write = (pid: number, text: string): void => {
-      loginHost.ptyWrite(pid, encoder.encode(text));
-    };
-    const command = async (
-      pid: number,
-      text: string,
-      marker: string,
-    ): Promise<void> => {
-      const start = loginPtyOutput.length;
-      write(pid, `(${text}) && printf '${marker}\\n'\n`);
-      await waitFrom(marker, start, marker);
-      markers.push(marker);
-    };
-    const spawnLogin = (automatic: boolean) =>
-      loginHost.spawnFromVfs(
-        "/usr/bin/login",
-        automatic ? ["login", "-p", "-f", "maker"] : ["login", "-p"],
-        {
-          env: [
-            "TERM=xterm-kandelo",
-            "PATH=/opt/kandelo/homebrew/bin:/usr/bin:/bin",
-          ],
-          cwd: "/",
-          uid: 0,
-          gid: 0,
-          pty: true,
-          ptyCols: 100,
-          ptyRows: 30,
-        },
-      );
-    try {
-      sampleNodeRss("before-boot");
-      await loginHost.init();
-      const automatic = await spawnLogin(true);
-      await waitFrom(
-        "Every new terminal logs in automatically.",
-        0,
-        "automatic maker login",
-      );
-      markers.push("automatic-maker-login-ok");
-      await command(automatic.pid, "id | grep 'uid=1000'", "maker-id-ok");
-
-      let interactionStart = loginPtyOutput.length;
-      write(automatic.pid, "/usr/bin/sudo -S -k id\n");
-      await waitFrom("Password:", interactionStart, "sudo password prompt");
-      interactionStart = loginPtyOutput.length;
-      write(automatic.pid, "definitely-wrong\n");
-      await waitFrom(
-        "Sorry, try again",
-        interactionStart,
-        "failed sudo password rejection",
-      );
-      markers.push("failed-sudo-password-ok");
-      interactionStart = loginPtyOutput.length;
-      write(automatic.pid, "kandelo\n");
-      await waitFrom("uid=0", interactionStart, "sudo root identity");
-      markers.push("sudo-id-ok");
-      await command(
-        automatic.pid,
-        "printf 'kandelo\\n' | /usr/bin/sudo -S -l >/dev/null",
-        "sudo-list-ok",
-      );
-      await command(
-        automatic.pid,
-        "cp /usr/bin/sudo-lite /tmp/sudo-lite && chmod 4755 /tmp/sudo-lite && ! /tmp/sudo-lite id >/dev/null 2>&1",
-        "nosuid-copy-rejected",
-      );
-
-      sampleNodeRss("before-ruby");
-      for (let repetition = 1; repetition <= 3; repetition += 1) {
-        const live = `ruby-child-${repetition}-live`;
-        const reaped = `ruby-child-${repetition}-reaped`;
-        const repetitionStart = loginPtyOutput.length;
-        write(
-          automatic.pid,
-          `ruby --disable-gems -e 'require "rbconfig"; p=Process.spawn(RbConfig.ruby,"--disable-gems","-e","sleep 2"); puts "${live}"; STDOUT.flush; Process.wait(p); puts "${reaped}"'\n`,
-        );
-        await waitFrom(live, repetitionStart, live);
-        if (repetition === 1) sampleNodeRss("peak");
-        await waitFrom(reaped, repetitionStart, reaped);
-        if (repetition === 1) sampleNodeRss("after-child-reaping");
-        markers.push(reaped);
-      }
-      sampleNodeRss("after-three-repetitions");
-      await command(
-        automatic.pid,
-        "irb --version >/dev/null && erb --version >/dev/null && gem --version >/dev/null && bundle --version >/dev/null && rake --version >/dev/null",
-        "ruby-stock-tools-ok",
-      );
-      write(automatic.pid, "exit\n");
-      await automatic.exit;
-
-      const failedLoginStart = loginPtyOutput.length;
-      const failedLogin = await spawnLogin(false);
-      await waitFrom("login: ", failedLoginStart, "ordinary login prompt");
-      interactionStart = loginPtyOutput.length;
-      write(failedLogin.pid, "maker\n");
-      await waitFrom(
-        "Password: ",
-        interactionStart,
-        "ordinary password prompt",
-      );
-      interactionStart = loginPtyOutput.length;
-      write(failedLogin.pid, "definitely-wrong\n");
-      await waitFrom(
-        "Login incorrect",
-        interactionStart,
-        "ordinary failed password",
-      );
-      await failedLogin.exit;
-
-      const ordinaryStart = loginPtyOutput.length;
-      const ordinary = await spawnLogin(false);
-      await waitFrom("login: ", ordinaryStart, "ordinary retry login prompt");
-      interactionStart = loginPtyOutput.length;
-      write(ordinary.pid, "maker\n");
-      await waitFrom(
-        "Password: ",
-        interactionStart,
-        "ordinary retry password prompt",
-      );
-      write(ordinary.pid, "kandelo\n");
-      await command(ordinary.pid, "id | grep 'uid=1000'", "ordinary-login-ok");
-      await command(
-        ordinary.pid,
-        `export HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_FROM_API=1 HOMEBREW_AUTOMATICALLY_SET_NO_INSTALL_FROM_API=1 HOMEBREW_REQUIRE_TAP_TRUST=1 GIT_TERMINAL_PROMPT=0; /usr/bin/brew tap kandelo-dev/tap-core file:///opt/kandelo/homebrew/var/kandelo/local-test/homebrew-tap-core.bundle && tap=$(/usr/bin/brew --repository kandelo-dev/tap-core) && test "$(/opt/kandelo/homebrew/bin/git -C "$tap" rev-parse HEAD)" = ${stagedTap.prepared_commit} && /opt/kandelo/homebrew/bin/git -C "$tap" cat-file -e ${stagedTap.source_commit}^\\{commit\\} && /opt/kandelo/homebrew/bin/git -C "$tap" merge-base --is-ancestor ${stagedTap.source_commit} ${stagedTap.prepared_commit} && /usr/bin/brew uninstall --ignore-dependencies kandelo-dev/tap-core/bzip2 && /usr/bin/brew trust --formula kandelo-dev/tap-core/bzip2 && /usr/bin/brew install --no-ask --force-bottle kandelo-dev/tap-core/bzip2 && prefix=$(/usr/bin/brew --prefix kandelo-dev/tap-core/bzip2) && printf 'login-product-bzip2\\n' > /tmp/login-product-bzip2 && "$prefix/bin/bzip2" -f /tmp/login-product-bzip2 && "$prefix/bin/bzip2" -d -f /tmp/login-product-bzip2.bz2 && grep -Fx login-product-bzip2 /tmp/login-product-bzip2 >/dev/null`,
-        "brew-tap-install-execute-ok",
-      );
-      write(ordinary.pid, "exit\n");
-      await ordinary.exit;
-      const expectedMarkers = [
-        "automatic-maker-login-ok",
-        "maker-id-ok",
-        "sudo-list-ok",
-        "sudo-id-ok",
-        "failed-sudo-password-ok",
-        "ordinary-login-ok",
-        "nosuid-copy-rejected",
-        "ruby-child-3-reaped",
-        "ruby-stock-tools-ok",
-        "brew-tap-install-execute-ok",
-      ];
-      if (expectedMarkers.some((marker) => !markers.includes(marker))) {
-        throw new Error(
-          `Node generated login product omitted markers: ${JSON.stringify(markers)}`,
-        );
-      }
-    } finally {
-      await loginHost.destroy().catch(() => {});
-    }
-  }
-
-  const expectedFetchedPackages = [
-    ...new Set([
+  const expectedFetchedPackages = [...new Set([
     ...BASE_EXPECTED_FETCHED_PACKAGES,
     ...RUNTIME_SUPPORT_EXPECTED_PACKAGES,
     ...operationalRuntimePackages,
-    ]),
-  ].sort();
+  ])].sort();
   assertFetchedPackageSet(
     withoutTransportUrl(lazyDownloads, homebrewBootstrapTransportUrl),
     pendingTrees,
@@ -936,7 +709,7 @@ function assertHomebrewBootstrapConsumerContract(
     );
   }
   assertTreeOwner(fs, "/opt/kandelo/homebrew", 1000, 1000);
-  assertTreeOwner(fs, "/home/maker/.cache", 1000, 1000);
+  assertTreeOwner(fs, "/home/user/.cache", 1000, 1000);
 
   const imageMetadata = asRecord(metadata, "main-shell image metadata");
   const expected = {
@@ -955,7 +728,7 @@ function assertHomebrewBootstrapConsumerContract(
         "/opt/kandelo/homebrew/Library/Taps",
         "/opt/kandelo/homebrew/var/homebrew/linked",
         "/opt/kandelo/homebrew/var/homebrew/locks",
-        "/home/maker/.cache/Homebrew",
+        "/home/user/.cache/Homebrew",
       ],
     },
   };
@@ -1401,18 +1174,17 @@ async function spawnWithTimeout(
   argv: string[],
   label: string,
   output: () => { stdout: string; stderr: string },
-  whileRunning?: () => Promise<void>,
 ): Promise<void> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     const exitPromise = host.spawn(toArrayBuffer(programBytes), argv, {
       env: [
         "PATH=/opt/kandelo/homebrew/bin:/usr/bin:/bin",
-        "HOME=/home/maker",
-        "USER=maker",
+        "HOME=/home/user",
+        "USER=user",
         "TMPDIR=/tmp",
       ],
-      cwd: "/home/maker",
+      cwd: "/home/user",
       uid: 1000,
       gid: 1000,
       stdin: new Uint8Array(),
@@ -1423,7 +1195,6 @@ async function spawnWithTimeout(
         120_000,
       );
     });
-    if (whileRunning !== undefined) await whileRunning();
     const exitCode = await Promise.race([exitPromise, timeoutPromise]);
     if (exitCode !== 0) {
       const captured = output();
@@ -1448,9 +1219,6 @@ function parseArgs(args: string[]): {
   demoConfigPath: string;
   transportMode: "closed" | "public";
   bottleMirrorPlanPath?: string;
-  rssReportPath?: string;
-  compositionReportPath?: string;
-  privilegedProductPath?: string;
 } {
   const values = new Map<string, string>();
   const allowed = new Set([
@@ -1464,9 +1232,6 @@ function parseArgs(args: string[]): {
     "--demo-config",
     "--transport-mode",
     "--bottle-mirror-plan",
-    "--rss-report",
-    "--composition-report",
-    "--privileged-product",
   ]);
   for (let index = 0; index < args.length; index += 2) {
     const option = args[index];
@@ -1491,9 +1256,6 @@ function parseArgs(args: string[]): {
   const demoConfig = values.get("--demo-config");
   const mode = values.get("--transport-mode");
   const plan = values.get("--bottle-mirror-plan");
-  const rssReport = values.get("--rss-report");
-  const compositionReport = values.get("--composition-report");
-  const privilegedProduct = values.get("--privileged-product");
   if (
     !image ||
     !migrationLock ||
@@ -1506,8 +1268,7 @@ function parseArgs(args: string[]): {
       homebrewBootstrapState !== "materialized") ||
     (mode !== "closed" && mode !== "public") ||
     (mode === "closed" && !plan) ||
-    (mode === "public" && plan !== undefined) ||
-    (compositionReport === undefined) !== (privilegedProduct === undefined)
+    (mode === "public" && plan !== undefined)
   ) {
     return smokeUsage();
   }
@@ -1522,13 +1283,6 @@ function parseArgs(args: string[]): {
     demoConfigPath: resolve(demoConfig),
     transportMode: mode,
     ...(plan === undefined ? {} : { bottleMirrorPlanPath: resolve(plan) }),
-    ...(rssReport === undefined ? {} : { rssReportPath: resolve(rssReport) }),
-    ...(compositionReport === undefined
-      ? {}
-      : { compositionReportPath: resolve(compositionReport) }),
-    ...(privilegedProduct === undefined
-      ? {}
-      : { privilegedProductPath: resolve(privilegedProduct) }),
   };
 }
 
@@ -1543,100 +1297,8 @@ function smokeUsage(): never {
       "--homebrew-runtime-support <runtime-support.json> " +
       "--demo-config <main-shell-demo.json> --transport-mode <closed|public> " +
       "[--bottle-mirror-plan <kandelo-homebrew-bottle-mirror-plan.json>] " +
-      "[--rss-report <exact-process-tree-rss.json>] " +
-      "[--composition-report <composition-report.json>] " +
-      "[--privileged-product <main-shell.vfs.privileged.vfs>] " +
       "(the plan is required only in closed mode)",
   );
-}
-
-async function createNodePrivilegedProduct(
-  fs: MemoryFileSystem,
-  reportValue: unknown,
-  serializedProduct: Uint8Array,
-) {
-  const report = reportValue as {
-    privileged_programs?: { projections?: Array<Record<string, unknown>> };
-    privileged_product?: { image?: unknown; sha256?: unknown; bytes?: unknown };
-  };
-  const raw = report.privileged_programs?.projections;
-  if (!Array.isArray(raw)) {
-    throw new Error("composition report omits privileged projections");
-  }
-  const projections = raw.map((entry): PrivilegedProgramProjection => ({
-    schema: entry.schema as 1,
-    formula: entry.formula as string,
-    bottleSha256: entry.bottle_sha256 as string,
-    sourcePath: entry.source_path as string,
-    destinationPath: entry.destination_path as string,
-    uid: entry.uid as 0,
-    gid: entry.gid as 0,
-    mode: entry.mode as number,
-    mountPoint: entry.mount_point as string,
-    artifactValidationSha256: entry.artifact_validation_sha256 as string,
-  }));
-  const product = await publishPrivilegedProgramProduct({
-    policy: createReviewedPrivilegedProgramPolicy(projections),
-    sources: projections.map((projection) => {
-      const guestPath = `/opt/kandelo/homebrew/Cellar/${projection.sourcePath}`;
-      return {
-        formula: projection.formula,
-        bottleSha256: projection.bottleSha256,
-        fs,
-        inventory: {
-          entries: [
-            {
-              sourcePath: projection.sourcePath,
-              type: "file" as const,
-              size: fs.stat(guestPath).size,
-            },
-          ],
-        },
-        guestPathForSource: (sourcePath: string) =>
-          `/opt/kandelo/homebrew/Cellar/${sourcePath}`,
-      };
-    }),
-    writableBottleFileSystems: [fs],
-  });
-  const generatedSha256 = createHash("sha256")
-    .update(product.imageBytes)
-    .digest("hex");
-  const serializedSha256 = createHash("sha256")
-    .update(serializedProduct)
-    .digest("hex");
-  if (
-    report.privileged_product?.image !== "main-shell.vfs.privileged.vfs" ||
-    report.privileged_product.sha256 !== serializedSha256 ||
-    report.privileged_product.bytes !== serializedProduct.byteLength ||
-    generatedSha256 !== serializedSha256 ||
-    product.imageBytes.byteLength !== serializedProduct.byteLength
-  ) {
-    throw new Error(
-      "Node published privileged product differs from the exact serialized artifact",
-    );
-  }
-  return product;
-}
-
-function readLocalTestTapBinding(
-  reportValue: unknown,
-  expectedSourceCommit: string,
-): LocalTestHomebrewTapBundleBinding {
-  const report = asRecord(reportValue, "composition report");
-  const localTest = asRecord(report.local_test, "composition local-test");
-  const binding = projectLocalTestHomebrewTapBundleBinding(
-    localTest.staged_tap,
-  );
-  if (
-    localTest.source_tap_commit !== expectedSourceCommit ||
-    localTest.prepared_tap_commit !== binding.prepared_commit ||
-    binding.source_commit !== expectedSourceCommit
-  ) {
-    throw new Error(
-      "composition staged tap differs from its source/prepared report binding",
-    );
-  }
-  return binding;
 }
 
 function readRuntimeState(

@@ -17,16 +17,7 @@
           "mode": 420,
           "devCorsProxy": true
         }
-      ],
-      "ingest": {
-        "accept": [".wad"],
-        "targetPath": "/user.wad",
-        "maxBytes": 33554432,
-        "label": "Load WAD",
-        "onLoad": {
-          "restart": "/usr/local/bin/fbdoom -iwad /user.wad"
-        }
-      }
+      ]
     },
     "modeset": {
       "presentation": {

@@ -22,8 +22,8 @@
 //!   ;; --- PREAMBLE (runs only when state == REWINDING) ---
 //!   (if (i32.eq (global.get $_wpk_fork_state) (i32.const 2))
 //!     (then
-//!       ;; pop frame from save buffer, then restore catch_selector,
-//!       ;; reserved catch metadata, scalar locals, and arg-spill locals
+//!       ;; pop frame from save buffer, then restore catch_region_id,
+//!       ;; exnref_slot, scalar locals, and arg-spill locals
 //!     ))
 //!
 //!   ;; --- DISPATCH + WRAPPER + NESTED POST LABELS ---
@@ -43,7 +43,7 @@
 //!         )  ;; end $POST_0 — also the br_table landing for call_idx==0
 //!         <reload args for call 0>
 //!         (call $callee_0)           ;; or call_indirect
-//!         ;; catch capture already selected the exact dynamic arm
+//!         <Phase 6e: set catch_region_id_local / exnref_slot_local>
 //!         (global.get $_wpk_fork_state) (i32.const 1) (i32.eq)
 //!         (if (then
 //!           ;; frame.call_index = 0
@@ -55,7 +55,7 @@
 //!     )  ;; end $POST_{N-1}
 //!     <reload args for call N-1>
 //!     (call $callee_{N-1})
-//!     ;; catch capture already selected the exact dynamic arm
+//!     <Phase 6e>
 //!     (if state == UNWINDING:
 //!       frame.call_index = N-1
 //!       br $unwind_save)
@@ -65,31 +65,28 @@
 //!
 //!   ;; --- POSTAMBLE (runs only when branched-to via br $unwind_save) ---
 //!   ;; push frame header fields except call_index, save scalar user locals,
-//!   ;; save arg-spill locals, advance current_pos, push defaults for the
-//!   ;; function's result types
+//!   ;; save arg-spill locals, spill ref-typed user locals to aux tables,
+//!   ;; advance current_pos, push defaults for the function's result types
 //! )
 //! ```
 //!
-//! ## Supported replay surface
+//! ## MVP scope
 //!
-//! - **Top-level and nested fork-path calls.** Top-level calls use the
-//!   function switch-dispatch. Calls nested in structured control flow use a
-//!   per-block switch-dispatch so rewind never branches into a block from
-//!   outside it.
-//! - **Fork from statically tagged modern `try_table` catches is
-//!   supported.** Catch and CatchRef arm identity and scalar tag
-//!   payloads are frame-backed per activation. Rewind throws the tag
-//!   again so the fresh module instance creates a fresh exnref.
-//!   Fork-reachable legacy `try` handlers are normalized to this same modern
-//!   activation-owned representation before instrumentation.
-//! - **Abstract function and external references use activation-owned
-//!   recipes.** Live locals, parameters, call operands, and operand-stack
-//!   carryovers are encoded to deterministic recipe IDs in a call-specific
-//!   process vector and decoded against the fresh child instance.
-//!   Definitely-null references need no recipe. Statically tagged CatchRef
-//!   state is reconstructed by rethrowing its saved payload inside Wasm.
+//! - **Top-level fork-path calls only.**  A fork-path call nested
+//!   inside a `block`/`loop`/`if`/`try_table` causes `br_table` to be
+//!   unable to land at its site (wasm semantics forbid branching into
+//!   a block from outside).  The tool panics with a diagnostic in
+//!   that case; the function must be restructured or the tool
+//!   extended.
+//! - **Fork from modern `try_table` catches is supported.** Plain-catch
+//!   arm identity and scalar payloads are frame-backed per activation;
+//!   catch_ref values use the exnref auxiliary table. Legacy `try`
+//!   catch handlers remain unsupported.
+//! - **Scalar args only for fork-path calls.**  If a fork-path call
+//!   has a ref-typed argument, we'd need to spill it through an aux
+//!   table (not currently wired up).  Panic in that case.
 //!
-//! ## Frame layout
+//! ## Frame layout (unchanged from the previous transform)
 //!
 //! All offsets are relative to the frame's base address.
 //!
@@ -97,45 +94,37 @@
 //! |---------------|------|-------------------|
 //! | 0             | 4    | `func_index`      |
 //! | 4             | 4    | `call_index`      |
-//! | 8             | 4    | `catch_selector`  |
-//! | 12            | 4    | process reference-vector ordinal |
-//! | 16..          | var  | scalar locals (user, arg spills, tagged-catch state) |
+//! | 8             | 4    | `catch_region_id` |
+//! | 12            | 4    | `exnref_slot`     |
+//! | 16..          | var  | scalar locals (user, arg spills, plain-catch state) |
 //!
-//! There is deliberately no module-instance auxiliary reference storage:
-//! workers reconstruct a child from linear memory in a fresh Wasm instance.
+//! Ref-typed user locals are routed through module-level auxiliary
+//! tables; their storage is outside the frame.
 //!
 //! ## What's preserved verbatim
 //!
 //! - `crates/fork-instrument/src/call_graph.rs` — fork-path closure
 //!   discovery (direct + indirect).
-//! - `crates/fork-instrument/src/runtime.rs` — state machine, seven
+//! - `crates/fork-instrument/src/runtime.rs` — state machine, five
 //!   exported control functions, save-buffer layout, saved-globals
 //!   handling.
-//! - Phase 6a–6d plumbing for `try_table` / tagged-catch resume.
+//! - Phase 4f aux-table injection for ref-typed user locals.
+//! - Phase 6a–6d plumbing for `try_table` / catch-handler resume.
 
-use anyhow::Result;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use walrus::{
-    AbstractHeapType, ElementItems, ElementKind, ExportItem, FunctionBuilder, FunctionId,
-    FunctionKind, HeapType, LocalFunction, LocalId, MemoryId, Module, RawCustomSection, RefType,
-    TableId, TagId, TypeId, ValType,
+    AbstractHeapType, ExportItem, FunctionId, FunctionKind, HeapType, LocalFunction, LocalId,
+    MemoryId, Module, RefType, TableId, TagId, TypeId, ValType,
     ir::{
         AtomicWidth, BinaryOp, Binop, Block, Br, BrTable, Call, CallIndirect, Const, GlobalGet,
         IfElse, Instr, InstrLocId, InstrSeqId, InstrSeqType, LegacyCatch, LoadKind, LocalGet,
-        LocalSet, LocalTee, Loop, MemArg, RefAsNonNull, RefNull, Return, StoreKind, Throw,
-        TryTable, TryTableCatch, UnaryOp, Unreachable, Value,
+        LocalSet, LocalTee, Loop, MemArg, RefAsNonNull, RefNull, Return, StoreKind, TableGet,
+        TableSet, Throw, ThrowRef, TryTable, TryTableCatch, UnaryOp, Value,
     },
 };
 
-use crate::{
-    call_graph::{TailCallKind, TailCallSite},
-    reference_analysis::{
-        FunctionReferenceAnalysis, OriginalCallKind, ReferenceNullability,
-        analyze_function_references,
-    },
-    runtime::{self, ReferenceCodecClass as RefClass, Runtime},
-};
+use crate::runtime::{self, Runtime};
 
 const HOST_PARSED_MARKER_EXPORTS: &[&str] = &[
     "__abi_version",
@@ -143,132 +132,11 @@ const HOST_PARSED_MARKER_EXPORTS: &[&str] = &[
     "__get_channel_base_addr",
 ];
 
-pub const RESUME_CATALOG_EXPORT: &str = "__wpk_fork_resume_catalog";
-pub const RESUME_CATALOG_SECTION: &str = "kandelo.wpk_fork.resume_catalog";
-pub const RESUME_START_EXPORT: &str = "wpk_fork_resume_start";
-pub const RESUME_THREAD_EXPORT: &str = "wpk_fork_resume_thread";
-const RESUME_CATALOG_MAGIC: [u8; 4] = *b"KFRC";
-const RESUME_CATALOG_VERSION: u16 = 1;
-const RESUME_CATALOG_HEADER_SIZE: u16 = 12;
-
 fn is_host_parsed_marker_function(module: &Module, id: FunctionId) -> bool {
     module.exports.iter().any(|export| {
         HOST_PARSED_MARKER_EXPORTS.contains(&export.name.as_str())
             && matches!(export.item, ExportItem::Function(func) if func == id)
     })
-}
-
-/// Verify that every fork-reachable reference shape has a typed owner.
-///
-/// WHY this runs before any rewriting: the host creates fork children by
-/// copying linear memory into a newly instantiated module. The complete Wasm
-/// reference hierarchy is routed to a generated codec class here; mutable
-/// globals, tables, and segment lifetime are owned by the KFMS guest helpers,
-/// while activation references are owned by frame recipe IDs. Errors from
-/// this pass indicate malformed/stale transformation metadata, not a policy
-/// that excludes otherwise-valid reference-bearing programs.
-pub fn validate_activation_state(module: &Module, fork_path: &HashSet<FunctionId>) -> Result<()> {
-    validate_activation_state_with_targets(module, fork_path, fork_path)
-}
-
-/// Validate surviving activations while selecting suspension-capable call
-/// sites from the larger semantic control-reachability closure.
-///
-/// A function traversed only by `return_call*` is intentionally absent from
-/// `activations`: its frame no longer exists at the fork point. It remains in
-/// `fork_path_targets` so an older live caller recognizes that an ordinary
-/// call into the transparent tail chain is a replay landing.
-pub fn validate_activation_state_with_targets(
-    module: &Module,
-    activations: &HashSet<FunctionId>,
-    fork_path_targets: &HashSet<FunctionId>,
-) -> Result<()> {
-    if activations.is_empty() {
-        return Ok(());
-    }
-
-    let mut targets: Vec<FunctionId> = activations.iter().copied().collect();
-    targets.sort();
-    for func_id in targets {
-        let function = module.funcs.get(func_id);
-        let FunctionKind::Local(_) = &function.kind else {
-            continue;
-        };
-        if is_host_parsed_marker_function(module, func_id) {
-            continue;
-        }
-        let name = function.name.as_deref().unwrap_or("<unnamed>");
-
-        for (local_id, ty) in collect_user_locals(module, func_id) {
-            let ValType::Ref(reference) = ty else {
-                continue;
-            };
-            validate_reference_shape(
-                module,
-                reference,
-                &format!("fork-reachable function `{name}` local/parameter {local_id:?}"),
-            )?;
-        }
-
-        let signature = module.types.get(function.ty());
-        for reference in signature
-            .params()
-            .iter()
-            .chain(signature.results())
-            .filter_map(|ty| match ty {
-                ValType::Ref(reference) => Some(*reference),
-                _ => None,
-            })
-        {
-            validate_reference_shape(
-                module,
-                reference,
-                &format!("fork-reachable function `{name}` signature"),
-            )?;
-        }
-
-        let reference_analysis = analyze_function_references(module, func_id, fork_path_targets)?;
-        validate_reference_call_state(module, name, &reference_analysis)?;
-    }
-
-    Ok(())
-}
-
-fn validate_reference_shape(module: &Module, reference: RefType, _owner: &str) -> Result<()> {
-    // Every WebAssembly reference hierarchy has a typed recipe provider.
-    // Concrete function/GC types are upcast for encoding and cast back after
-    // decoding in the fresh instance.
-    let _ = RefClass::of(module, reference);
-    Ok(())
-}
-
-fn validate_reference_call_state(
-    module: &Module,
-    function_name: &str,
-    analysis: &FunctionReferenceAnalysis,
-) -> Result<()> {
-    for site in &analysis.call_sites {
-        for operand in site
-            .reference_arguments
-            .iter()
-            .chain(site.reference_carryovers.iter())
-        {
-            validate_reference_shape(
-                module,
-                operand.ty,
-                &format!(
-                    "fork-reachable function `{function_name}` call {:?} operand {}",
-                    site.id, operand.index
-                ),
-            )?;
-        }
-
-        if site.has_reference_callee {
-            // call_ref's concrete callee type is statically recovered with a
-            // Wasm ref.cast after decoding the abstract funcref recipe.
-        }
-    }
-    Ok(())
 }
 
 /// Instrument every function in `fork_path` that we can instrument.
@@ -278,53 +146,6 @@ pub fn instrument_functions(
     module: &mut Module,
     runtime: &Runtime,
     fork_path: &HashSet<FunctionId>,
-    plain_catch_plan: &PlainCatchPlan,
-) -> HashSet<FunctionId> {
-    instrument_functions_with_targets_and_tail_sites(
-        module,
-        runtime,
-        fork_path,
-        fork_path,
-        &[],
-        plain_catch_plan,
-    )
-}
-
-/// Instrument only activation-live functions, selecting their replay
-/// landings from the full semantic fork-reachability closure.
-pub fn instrument_functions_with_targets(
-    module: &mut Module,
-    runtime: &Runtime,
-    activations: &HashSet<FunctionId>,
-    fork_path_targets: &HashSet<FunctionId>,
-    plain_catch_plan: &PlainCatchPlan,
-) -> HashSet<FunctionId> {
-    instrument_functions_with_targets_and_tail_sites(
-        module,
-        runtime,
-        activations,
-        fork_path_targets,
-        &[],
-        plain_catch_plan,
-    )
-}
-
-/// Instrument activation-live functions after making every fork boundary use
-/// the private exception transport.
-///
-/// Ordinary direct calls to rewritten local functions need no shim: their
-/// generated postamble throws `__wpk_fork_unwind`. Imported fork entries and
-/// dynamic dispatch can instead return normally after setting
-/// `STATE_UNWINDING`, so those operations are moved into short generated
-/// helpers which check the state before exposing any result to the source
-/// activation. Fork-reaching tail sites tail-call the same helpers, retaining
-/// bounded-stack semantics for transparent tail chains.
-pub fn instrument_functions_with_targets_and_tail_sites(
-    module: &mut Module,
-    runtime: &Runtime,
-    activations: &HashSet<FunctionId>,
-    fork_path_targets: &HashSet<FunctionId>,
-    tail_call_sites: &[TailCallSite],
     plain_catch_plan: &PlainCatchPlan,
 ) -> HashSet<FunctionId> {
     let runtime_funcs: HashSet<FunctionId> = [
@@ -337,7 +158,7 @@ pub fn instrument_functions_with_targets_and_tail_sites(
     .into_iter()
     .collect();
 
-    let mut targets: Vec<FunctionId> = activations
+    let mut targets: Vec<FunctionId> = fork_path
         .iter()
         .copied()
         .filter(|id| !runtime_funcs.contains(id))
@@ -345,525 +166,35 @@ pub fn instrument_functions_with_targets_and_tail_sites(
         .filter(|id| matches!(module.funcs.get(*id).kind, FunctionKind::Local(_)))
         .collect();
     targets.sort();
-    let materialized_activations: HashSet<FunctionId> =
-        targets.iter().copied().collect();
 
-    let catch_plans = plan_catch_regions(module, &targets);
-    let transport_helpers = inject_unwind_transport_helpers(
-        module,
-        runtime,
-        &targets,
-        fork_path_targets,
-        tail_call_sites,
-    );
-    rewrite_activation_unwind_boundaries(module, &targets, tail_call_sites, &transport_helpers);
-    let unwind_frame_select = emit_unwind_frame_select_helper(module, runtime);
-    let mut transformed_call_targets = fork_path_targets.clone();
-    transformed_call_targets.extend(transport_helpers.values().copied());
-
-    // Analyze every target before rewriting the first body. Stable original
-    // program points are the ownership boundary: synthetic dispatch locals
-    // must never make an otherwise-dead guest reference look live.
-    let reference_analyses: HashMap<FunctionId, FunctionReferenceAnalysis> = targets
-        .iter()
-        .copied()
-        .map(|id| {
-            let analysis = analyze_function_references(module, id, &transformed_call_targets)
-                .unwrap_or_else(|error| panic!("fork reference analysis failed: {error:#}"));
-            (id, analysis)
-        })
-        .collect();
+    let (aux_tables, ref_plan, catch_plans) = plan_and_inject_aux_tables(module, &targets);
 
     let empty_plain_catches: Vec<(InstrSeqId, Vec<PlainCatchArm>)> = Vec::new();
 
     let mut instrumented = HashSet::new();
-    let mut resume_thunks = Vec::with_capacity(targets.len());
     for (ordinal, id) in targets.iter().enumerate() {
+        let empty_plan: Vec<RefLocalSlot> = Vec::new();
+        let this_plan = ref_plan.get(id).unwrap_or(&empty_plan);
         let empty_catch_plan: Vec<CatchRegionPlan> = Vec::new();
         let this_catch_plan = catch_plans.get(id).unwrap_or(&empty_catch_plan);
         let this_plain_catches = plain_catch_plan
             .per_function
             .get(id)
             .unwrap_or(&empty_plain_catches);
-        let thunk = instrument_one_function(
+        instrument_one_function(
             module,
             *id,
             runtime,
-            &materialized_activations,
-            &transformed_call_targets,
+            fork_path,
             ordinal as u32,
+            &aux_tables,
+            this_plan,
             this_catch_plan,
             this_plain_catches,
-            &reference_analyses[id],
-            unwind_frame_select,
         );
-        resume_thunks.push(thunk);
         instrumented.insert(*id);
     }
-    emit_resume_catalog(module, &resume_thunks);
-    emit_fixed_resume_boundaries(module, runtime);
     instrumented
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum UnwindTransportKey {
-    Direct(FunctionId),
-    Indirect { table: TableId, ty: TypeId },
-    Ref { ty: TypeId },
-}
-
-impl UnwindTransportKey {
-    fn stable_sort_key(self) -> (u8, usize, usize) {
-        match self {
-            Self::Direct(function) => (0, function.index(), 0),
-            Self::Indirect { table, ty } => (1, table.index(), ty.index()),
-            Self::Ref { ty } => (2, ty.index(), 0),
-        }
-    }
-}
-
-fn collect_unwind_transport_keys(
-    module: &Module,
-    targets: &[FunctionId],
-    fork_path_targets: &HashSet<FunctionId>,
-    tail_call_sites: &[TailCallSite],
-) -> Vec<UnwindTransportKey> {
-    fn visit(
-        module: &Module,
-        local: &LocalFunction,
-        seq: InstrSeqId,
-        fork_path_targets: &HashSet<FunctionId>,
-        keys: &mut HashSet<UnwindTransportKey>,
-    ) {
-        for (instruction, _) in &local.block(seq).instrs {
-            match instruction {
-                Instr::Call(call)
-                    if fork_path_targets.contains(&call.func)
-                        && matches!(module.funcs.get(call.func).kind, FunctionKind::Import(_)) =>
-                {
-                    keys.insert(UnwindTransportKey::Direct(call.func));
-                }
-                Instr::CallIndirect(call) => {
-                    keys.insert(UnwindTransportKey::Indirect {
-                        table: call.table,
-                        ty: call.ty,
-                    });
-                }
-                Instr::CallRef(call) => {
-                    keys.insert(UnwindTransportKey::Ref { ty: call.ty });
-                }
-                _ => {}
-            }
-            for child in nested_seqs(instruction) {
-                visit(module, local, child, fork_path_targets, keys);
-            }
-        }
-    }
-
-    let mut keys = HashSet::new();
-    for &target in targets {
-        let FunctionKind::Local(local) = &module.funcs.get(target).kind else {
-            continue;
-        };
-        visit(
-            module,
-            local,
-            local.entry_block(),
-            fork_path_targets,
-            &mut keys,
-        );
-    }
-
-    for &site in tail_call_sites {
-        let FunctionKind::Local(local) = &module.funcs.get(site.caller).kind else {
-            panic!("fork-reaching tail site belongs to a non-local function");
-        };
-        let Some((instruction, _)) = local
-            .block(site.sequence)
-            .instrs
-            .get(site.instruction_index)
-        else {
-            panic!("fork-reaching tail site points past its instruction sequence");
-        };
-        let key = match (site.kind, instruction) {
-            (TailCallKind::Direct, Instr::ReturnCall(call))
-                if matches!(module.funcs.get(call.func).kind, FunctionKind::Import(_)) =>
-            {
-                Some(UnwindTransportKey::Direct(call.func))
-            }
-            (TailCallKind::Direct, Instr::ReturnCall(_)) => None,
-            (TailCallKind::Indirect, Instr::ReturnCallIndirect(call)) => {
-                Some(UnwindTransportKey::Indirect {
-                    table: call.table,
-                    ty: call.ty,
-                })
-            }
-            (TailCallKind::Ref, Instr::ReturnCallRef(call)) => {
-                Some(UnwindTransportKey::Ref { ty: call.ty })
-            }
-            _ => panic!("fork-reaching tail-site metadata disagrees with the original instruction"),
-        };
-        if let Some(key) = key {
-            keys.insert(key);
-        }
-    }
-
-    let mut keys: Vec<_> = keys.into_iter().collect();
-    keys.sort_by_key(|key| key.stable_sort_key());
-    keys
-}
-
-fn emit_unwind_transport_helper(
-    module: &mut Module,
-    runtime: &Runtime,
-    key: UnwindTransportKey,
-) -> FunctionId {
-    let (mut params, results, name) = match key {
-        UnwindTransportKey::Direct(function) => {
-            let signature = module.types.get(module.funcs.get(function).ty());
-            (
-                signature.params().to_vec(),
-                signature.results().to_vec(),
-                format!("__wpk_fork_unwind_transport_direct_{}", function.index()),
-            )
-        }
-        UnwindTransportKey::Indirect { table, ty } => {
-            let signature = module.types.get(ty);
-            let mut params = signature.params().to_vec();
-            params.push(if module.tables.get(table).table64 {
-                ValType::I64
-            } else {
-                ValType::I32
-            });
-            (
-                params,
-                signature.results().to_vec(),
-                format!(
-                    "__wpk_fork_unwind_transport_indirect_{}_{}",
-                    table.index(),
-                    ty.index()
-                ),
-            )
-        }
-        UnwindTransportKey::Ref { ty } => {
-            let signature = module.types.get(ty);
-            let mut params = signature.params().to_vec();
-            params.push(ValType::Ref(RefType::FUNCREF));
-            (
-                params,
-                signature.results().to_vec(),
-                format!("__wpk_fork_unwind_transport_ref_{}", ty.index()),
-            )
-        }
-    };
-    let arguments: Vec<_> = params.drain(..).map(|ty| module.locals.add(ty)).collect();
-    let helper_params: Vec<_> = arguments
-        .iter()
-        .map(|argument| module.locals.get(*argument).ty())
-        .collect();
-    let mut builder = FunctionBuilder::new(&mut module.types, &helper_params, &results);
-    builder.name(name);
-    let helper = builder.finish(arguments.clone(), &mut module.funcs);
-
-    let local = local_mut(module, helper);
-    let throws_unwind = local
-        .builder_mut()
-        .dangling_instr_seq(InstrSeqType::Simple(None))
-        .id();
-    let normal_return = local
-        .builder_mut()
-        .dangling_instr_seq(InstrSeqType::Simple(None))
-        .id();
-    {
-        let out = &mut local.block_mut(throws_unwind).instrs;
-        push_instr(
-            out,
-            Instr::Throw(Throw {
-                tag: runtime
-                    .unwind_tag
-                    .expect("unwind transport helper requires private tag"),
-            }),
-        );
-    }
-    {
-        let out = &mut local.block_mut(local.entry_block()).instrs;
-        for &argument in &arguments {
-            push_instr(out, Instr::LocalGet(LocalGet { local: argument }));
-        }
-        match key {
-            UnwindTransportKey::Direct(function) => {
-                push_instr(out, Instr::Call(Call { func: function }));
-            }
-            UnwindTransportKey::Indirect { table, ty } => {
-                push_instr(out, Instr::CallIndirect(CallIndirect { ty, table }));
-            }
-            UnwindTransportKey::Ref { ty } => {
-                push_instr(
-                    out,
-                    Instr::RefCast(walrus::ir::RefCast {
-                        nullable: false,
-                        heap_type: HeapType::Concrete(ty),
-                    }),
-                );
-                push_instr(out, Instr::CallRef(walrus::ir::CallRef { ty }));
-            }
-        }
-        // WHY: results deliberately remain below this zero-result test only
-        // inside the short helper. The source activation receives them only
-        // after UNWINDING has been converted to the private tag, so engines
-        // never need result-spill scratch in every recursive source frame.
-        push_instr(
-            out,
-            Instr::GlobalGet(GlobalGet {
-                global: runtime.state_global,
-            }),
-        );
-        push_instr(
-            out,
-            Instr::Const(Const {
-                value: Value::I32(runtime::STATE_UNWINDING),
-            }),
-        );
-        push_instr(
-            out,
-            Instr::Binop(Binop {
-                op: BinaryOp::I32Eq,
-            }),
-        );
-        push_instr(
-            out,
-            Instr::IfElse(IfElse {
-                consequent: throws_unwind,
-                alternative: normal_return,
-            }),
-        );
-    }
-    helper
-}
-
-fn inject_unwind_transport_helpers(
-    module: &mut Module,
-    runtime: &Runtime,
-    targets: &[FunctionId],
-    fork_path_targets: &HashSet<FunctionId>,
-    tail_call_sites: &[TailCallSite],
-) -> HashMap<UnwindTransportKey, FunctionId> {
-    collect_unwind_transport_keys(module, targets, fork_path_targets, tail_call_sites)
-        .into_iter()
-        .map(|key| (key, emit_unwind_transport_helper(module, runtime, key)))
-        .collect()
-}
-
-/// Emit the cold unwind-only frame-selection path once per module.
-///
-/// Source activations pass only their constant frame size and static call
-/// index. Keeping reserve, null-result handling, abort-scratch selection, and
-/// the header write here avoids multiplying that sequence by every lexical
-/// call site without adding a local to ordinary recursive activations.
-fn emit_unwind_frame_select_helper(module: &mut Module, runtime: &Runtime) -> FunctionId {
-    let memory = first_memory(module);
-    let ptr_ty = runtime.buf_type;
-    let frame_size = module.locals.add(ptr_ty);
-    let call_index = module.locals.add(ValType::I32);
-    let mut builder =
-        FunctionBuilder::new(&mut module.types, &[ptr_ty, ValType::I32], &[ValType::I32]);
-    builder.name("__wpk_fork_select_unwind_frame".into());
-    let helper = builder.finish(vec![frame_size, call_index], &mut module.funcs);
-
-    let local = local_mut(module, helper);
-    let reserve_succeeded = local
-        .builder_mut()
-        .dangling_instr_seq(InstrSeqType::Simple(Some(ValType::I32)))
-        .id();
-    let reserve_failed = local
-        .builder_mut()
-        .dangling_instr_seq(InstrSeqType::Simple(Some(ValType::I32)))
-        .id();
-
-    {
-        let out = &mut local.block_mut(reserve_failed).instrs;
-        // WHY: `frame_reserve == 0` synchronously moves the host runtime to
-        // abort replay. The descriptor's fixed prefix is therefore the only
-        // module-owned frame scratch that remains valid for selecting the
-        // failing live activation.
-        push_instr(
-            out,
-            Instr::GlobalGet(GlobalGet {
-                global: runtime.buf_global,
-            }),
-        );
-        push_instr(
-            out,
-            Instr::GlobalGet(GlobalGet {
-                global: runtime.buf_global,
-            }),
-        );
-        push_instr(out, ptr_const(ptr_ty, runtime.frames_start_offset as i64));
-        push_instr(
-            out,
-            Instr::Binop(Binop {
-                op: ptr_add(ptr_ty),
-            }),
-        );
-        push_instr(out, store_ptr(memory, ptr_ty, 0));
-        push_current_frame_ptr(out, runtime, memory, ptr_ty);
-        push_instr(out, Instr::LocalGet(LocalGet { local: call_index }));
-        push_instr(out, store_i32(memory, CALL_INDEX_OFFSET));
-        push_instr(
-            out,
-            Instr::Const(Const {
-                value: Value::I32(0),
-            }),
-        );
-    }
-    {
-        let out = &mut local.block_mut(reserve_succeeded).instrs;
-        push_current_frame_ptr(out, runtime, memory, ptr_ty);
-        push_instr(out, Instr::LocalGet(LocalGet { local: call_index }));
-        push_instr(out, store_i32(memory, CALL_INDEX_OFFSET));
-        push_instr(
-            out,
-            Instr::Const(Const {
-                value: Value::I32(1),
-            }),
-        );
-    }
-    {
-        let out = &mut local.block_mut(local.entry_block()).instrs;
-        if let Some(frame_reserve) = runtime.frame_reserve {
-            push_instr(
-                out,
-                Instr::GlobalGet(GlobalGet {
-                    global: runtime.buf_global,
-                }),
-            );
-            push_instr(out, Instr::LocalGet(LocalGet { local: frame_size }));
-            push_instr(
-                out,
-                Instr::Call(Call {
-                    func: frame_reserve,
-                }),
-            );
-            push_instr(out, store_ptr(memory, ptr_ty, 0));
-
-            push_instr(
-                out,
-                Instr::GlobalGet(GlobalGet {
-                    global: runtime.buf_global,
-                }),
-            );
-            push_instr(out, load_ptr(memory, ptr_ty, 0));
-            push_instr(
-                out,
-                Instr::Unop(walrus::ir::Unop {
-                    op: match ptr_ty {
-                        ValType::I32 => UnaryOp::I32Eqz,
-                        ValType::I64 => UnaryOp::I64Eqz,
-                        other => unreachable!("unsupported pointer type {other:?}"),
-                    },
-                }),
-            );
-            push_instr(
-                out,
-                Instr::IfElse(IfElse {
-                    consequent: reserve_failed,
-                    alternative: reserve_succeeded,
-                }),
-            );
-        } else {
-            // The legacy contiguous runtime already points at its active
-            // frame, so only the static call-index write is required.
-            push_instr(
-                out,
-                Instr::Block(Block {
-                    seq: reserve_succeeded,
-                }),
-            );
-        }
-    }
-    helper
-}
-
-fn rewrite_activation_unwind_boundaries(
-    module: &mut Module,
-    targets: &[FunctionId],
-    tail_call_sites: &[TailCallSite],
-    helpers: &HashMap<UnwindTransportKey, FunctionId>,
-) {
-    fn rewrite_seq(
-        local: &mut LocalFunction,
-        seq: InstrSeqId,
-        helpers: &HashMap<UnwindTransportKey, FunctionId>,
-    ) {
-        let original = std::mem::take(&mut local.block_mut(seq).instrs);
-        let mut rewritten = Vec::with_capacity(original.len());
-        for (instruction, location) in original {
-            for child in nested_seqs(&instruction) {
-                rewrite_seq(local, child, helpers);
-            }
-            let instruction = match instruction {
-                Instr::Call(call) => helpers
-                    .get(&UnwindTransportKey::Direct(call.func))
-                    .map_or(Instr::Call(call), |&helper| {
-                        Instr::Call(Call { func: helper })
-                    }),
-                Instr::CallIndirect(call) => {
-                    let helper = helpers[&UnwindTransportKey::Indirect {
-                        table: call.table,
-                        ty: call.ty,
-                    }];
-                    Instr::Call(Call { func: helper })
-                }
-                Instr::CallRef(call) => {
-                    let helper = helpers[&UnwindTransportKey::Ref { ty: call.ty }];
-                    Instr::Call(Call { func: helper })
-                }
-                other => other,
-            };
-            rewritten.push((instruction, location));
-        }
-        local.block_mut(seq).instrs = rewritten;
-    }
-
-    for &target in targets {
-        let FunctionKind::Local(local) = &mut module.funcs.get_mut(target).kind else {
-            continue;
-        };
-        rewrite_seq(local, local.entry_block(), helpers);
-    }
-
-    for &site in tail_call_sites {
-        let FunctionKind::Local(local) = &mut module.funcs.get_mut(site.caller).kind else {
-            panic!("fork-reaching tail site belongs to a non-local function");
-        };
-        let Some((instruction, _)) = local
-            .block_mut(site.sequence)
-            .instrs
-            .get_mut(site.instruction_index)
-        else {
-            panic!("fork-reaching tail site points past its instruction sequence");
-        };
-        let helper = match (site.kind, &*instruction) {
-            (TailCallKind::Direct, Instr::ReturnCall(call)) => {
-                helpers.get(&UnwindTransportKey::Direct(call.func)).copied()
-            }
-            (TailCallKind::Indirect, Instr::ReturnCallIndirect(call)) => Some(
-                helpers[&UnwindTransportKey::Indirect {
-                    table: call.table,
-                    ty: call.ty,
-                }],
-            ),
-            (TailCallKind::Ref, Instr::ReturnCallRef(call)) => {
-                Some(helpers[&UnwindTransportKey::Ref { ty: call.ty }])
-            }
-            _ => {
-                panic!("fork-reaching tail-site metadata disagrees with the rewritten instruction")
-            }
-        };
-        if let Some(helper) = helper {
-            *instruction = Instr::ReturnCall(walrus::ir::ReturnCall { func: helper });
-        }
-    }
 }
 
 // ----------------------------------------------------------------------
@@ -873,51 +204,9 @@ fn rewrite_activation_unwind_boundaries(
 const HEADER_SIZE: u32 = 16;
 const FUNC_INDEX_OFFSET: u64 = 0;
 const CALL_INDEX_OFFSET: u64 = 4;
-const CATCH_SELECTOR_OFFSET: u64 = 8;
-const REFERENCE_VECTOR_OFFSET: u64 = 12;
+const CATCH_REGION_OFFSET: u64 = 8;
+const EXNREF_SLOT_OFFSET: u64 = 12;
 const LOCALS_START_OFFSET: u32 = HEADER_SIZE;
-
-/// One reference value addressable from a call-specific recipe vector.
-#[derive(Debug, Clone, Copy)]
-struct ReferenceFrameSlot {
-    local: LocalId,
-    ty: RefType,
-    class: RefClass,
-    /// Stable vector position for values present at every landing. Resume
-    /// thunks need this for function parameters before the original preamble
-    /// has consumed the frame.
-    universal_position: Option<u32>,
-}
-
-/// Per-call reference state derived from the original IR before rewriting.
-///
-/// A slot is emitted only when at least one call landing needs it. Each call
-/// names the exact slots to encode/decode; definitely-null live locals instead
-/// receive a direct `ref.null` restore and consume no frame bytes or host
-/// recipe entry.
-#[derive(Debug, Clone)]
-struct ReferenceFramePlan {
-    slots: Vec<ReferenceFrameSlot>,
-    slots_by_call: Vec<Vec<usize>>,
-    null_locals_by_call: Vec<Vec<(LocalId, RefType)>>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ResumeThunk {
-    func_ordinal: u32,
-    function: FunctionId,
-}
-
-impl ReferenceFramePlan {
-    fn frame_end(&self, start: u32) -> u32 {
-        // Reference recipes live in the process transaction's compact vector
-        // log. The frame owns only its vector ordinal in reserved header word
-        // 12, independent of function-wide reference liveness.
-        start
-    }
-}
-
-type TypedSpillLocal = (LocalId, ValType);
 
 // ----------------------------------------------------------------------
 // Per-function pipeline
@@ -928,44 +217,25 @@ type TypedSpillLocal = (LocalId, ValType);
 enum CallTarget {
     Direct(FunctionId),
     Indirect { table: TableId },
-    Ref,
 }
 
 /// A top-level call site awaiting dispatch-structure emission.
 struct CallSiteInfo {
     target: CallTarget,
-    /// A direct lexical callee whose activation owns the next replay frame.
-    ///
-    /// Such calls can enter the original function without an intervening
-    /// resume thunk. The callee's frame-next import still validates the exact
-    /// process event before consuming it.
-    direct_activation: bool,
     sig_ty: TypeId,
-    resume_ty: Option<TypeId>,
     loc: InstrLocId,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct CatchStateLocals {
-    /// Zero before any caught edge, otherwise the function-local ordinal of
-    /// the exact `(try_table region, catch arm)` pair most recently selected
-    /// by this activation's dynamic execution.
-    catch_selector: LocalId,
+    catch_region_id: LocalId,
+    exnref_slot: LocalId,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct AbortDispatch {
-    /// Partial allocation failure branches back to the dispatch loop after
-    /// writing its static call index into the module-owned abort scratch.
-    ///
-    /// The replay preamble intentionally lives outside this loop: fresh
-    /// parent/child replay consumes a committed frame once, while the still-
-    /// live failing activation restarts directly at its selected call without
-    /// a per-activation selector/flag local.
+    live_frame: LocalId,
     restart_loop: InstrSeqId,
-    /// Cold module helper which reserves/selects the frame and writes the
-    /// statically supplied call index, returning one on reservation success.
-    frame_select: FunctionId,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -973,16 +243,16 @@ fn instrument_one_function(
     module: &mut Module,
     func_id: FunctionId,
     runtime: &Runtime,
-    activations: &HashSet<FunctionId>,
     fork_path: &HashSet<FunctionId>,
     func_ordinal: u32,
+    aux_tables: &AuxTables,
+    ref_plan: &[RefLocalSlot],
     catch_plan: &[CatchRegionPlan],
     plain_catches: &[(InstrSeqId, Vec<PlainCatchArm>)],
-    reference_analysis: &FunctionReferenceAnalysis,
-    unwind_frame_select: FunctionId,
-) -> ResumeThunk {
+) {
     // Choose scheme based on call-site topology. Post-commit-4
-    // (2026-05-14) there are TWO live schemes (guard-dispatch was deleted):
+    // (2026-05-14) there are TWO live schemes (guard-dispatch was
+    // deleted; legacy catch-handler forks still panic defensively):
     //
     //   instrument_one_function_switch — top-level fork-path calls
     //   only. Body is restructured so a top-level `br_table` jumps
@@ -1004,73 +274,111 @@ fn instrument_one_function(
     // capture block mechanism (see Phase 6 + B1 stages 1+2 docs).
     //
     // Both schemes:
-    // - share the same fork-resume contract (state machine, linked
-    //   activation frames, and deterministic tagged-catch rethrow).
+    // - share the same fork-resume contract (state machine, frame
+    //   layout, aux-table ref-typed spills, throw_ref catch resume).
     // - skip body chunks before the chosen POST_K on REWIND, so
     //   non-fork-path calls and side-effect ops in those chunks run
     //   exactly once on NORMAL — no per-op gating needed (the
     //   pre-2.5/2.6 Phase 4g machinery was deleted with guard-
     //   dispatch in commit 4).
     if has_nested_fork_calls(module, func_id, fork_path) {
-        // Nested per-block switch-dispatch uses the cascading POST_K +
-        // per-region br_table transform for every validated Wasm shape.
-        // Classification below is only an internal typed-stack consistency
-        // check; it is not an artifact support policy.
+        // Nested per-block switch-dispatch: if classify_nested_pattern
+        // accepts the function's nesting shape, use the cascading
+        // POST_K + per-region br_table transform. Sub-commits 2.5/2.6
+        // expanded "supported" to cover Loops/TryTables/legacy Try
+        // bodies/multi-value-params/carryovers; only fork-from-legacy-
+        // catch remains a panic-defensive fallback.
         let nested_status = classify_nested_pattern(module, func_id, fork_path);
         if nested_status.is_supported() {
-            return instrument_one_function_nested_switch(
+            instrument_one_function_nested_switch(
                 module,
                 func_id,
                 runtime,
-                activations,
                 fork_path,
                 func_ordinal,
+                aux_tables,
+                ref_plan,
                 catch_plan,
                 plain_catches,
-                reference_analysis,
-                unwind_frame_select,
+            );
+            return;
+        }
+        // Commit 3 (2026-05-14): the only remaining
+        // `NestedSupportStatus` rejection is fork-from-legacy-catch.
+        // Sub-commits 2.5c/2.6c closed `UnsupportedCarryover` and
+        // `UnsupportedMultiValueParams` respectively; legacy Try bodies
+        // now use the same nested-switch route as TryTable bodies. If
+        // we reach this branch on a shipping binary, the fork-path call
+        // is in a legacy catch handler, which still needs exception
+        // state reconstruction.
+        let func = func_name(module, func_id);
+        if has_fork_call_in_catch_handler(module, func_id, fork_path) {
+            panic!(
+                "fork-instrument: function `{func}` has a fork-path call inside a \
+                 try_table catch-handler body. This pattern is currently \
+                 unsupported end-to-end (B1 stages 1+2 shipped machinery but the \
+                 C1 fixture still hangs). See \
+                 memory/fork-instrument-b1-followup.md and the C1 fixture in \
+                 programs/cpp_eh_fork_from_catch_test.cpp."
             );
         }
-        // Every Walrus producer is typed by `typed_instruction_pushes`.
-        // Reaching this branch means those exhaustive stack effects disagree
-        // with validated IR, which is an instrumenter bug rather than a
-        // reference/control shape the artifact is forbidden to contain.
-        let func = func_name(module, func_id);
         match nested_status {
-            NestedSupportStatus::AnalysisInvariantFailed => panic!(
-                "fork-instrument internal error: typed nested-stack analysis \
-                 disagrees with validated function `{func}`; every valid Wasm \
-                 reference, GC, EH, and multi-value producer must have an \
-                 activation-owned carryover type"
+            NestedSupportStatus::UnsupportedLegacyTry => panic!(
+                "fork-instrument: function `{func}` triggered `UnsupportedLegacyTry` \
+                 — a fork-path call inside a legacy `catch` handler. Legacy `try` \
+                 bodies are supported by nested switch-dispatch, but legacy catch \
+                 handlers still need exception-state reconstruction before REWIND \
+                 can re-enter the handler path."
+            ),
+            NestedSupportStatus::UnsupportedCarryover => panic!(
+                "fork-instrument: function `{func}` has a nested fork-path call with \
+                 an operand-stack carryover shape the nested-switch analyser cannot \
+                 type. Extend `compute_nested_carryover_types` / \
+                 `analyze_subregion_spill_types` for the specific producer."
+            ),
+            NestedSupportStatus::UnsupportedMultiValueParams => panic!(
+                "fork-instrument: function `{func}` has unsupported multi-value \
+                 params in nested fork-path control flow."
             ),
             NestedSupportStatus::Supported => unreachable!(),
         }
     }
 
     if has_top_level_stack_carryovers(module, func_id, fork_path) {
-        // Switch-dispatch absorbs every typed top-level carryover through
-        // in-place spill/reload. `None` can now mean only that the exhaustive
-        // Walrus stack model disagreed with validated IR.
+        // Sub-commit 2.4c (2026-05-14): switch-dispatch absorbs
+        // top-level carryovers via in-place spill/reload at the call
+        // site. The compute_carryover_types Option<ValType> refactor
+        // (sub-commit 9-followup) made the analyser succeed for any
+        // shape whose carryover values are statically typed — and
+        // unknown-type values consumed before any fork-path call are
+        // also tolerated. If the analyser still returns None here, a
+        // shipping binary has an unknown-type value AS a carryover at
+        // a fork-path call (genuinely rare LLVM output). Panic loudly
+        // for the same reason as the LegacyTry case above.
         if compute_carryover_types(module, func_id, fork_path).is_some() {
-            return instrument_one_function_switch(
+            instrument_one_function_switch(
                 module,
                 func_id,
                 runtime,
-                activations,
                 fork_path,
                 func_ordinal,
+                aux_tables,
+                ref_plan,
                 catch_plan,
                 plain_catches,
-                reference_analysis,
-                unwind_frame_select,
             );
+            return;
         }
         let func = func_name(module, func_id);
         panic!(
-            "fork-instrument internal error: typed top-level stack analysis \
-             disagrees with validated function `{func}`; every valid Wasm \
-             reference, GC, EH, and multi-value producer must have an \
-             activation-owned carryover type"
+            "fork-instrument: function `{func}` has a top-level fork-path call \
+             whose operand-stack carryover contains a value of a type the \
+             analyser can't statically determine or cannot scalar-spill \
+             (ref-typed producer, non-fork-path CallIndirect or CallRef, \
+             or ref-typed structured-control result). The 2.6c push-before \
+             emission can spill this carryover only if its type is known. \
+             Extend `compute_carryover_types` to handle the specific producer, \
+             or change the source to avoid the pattern."
         );
     }
 
@@ -1078,14 +386,13 @@ fn instrument_one_function(
         module,
         func_id,
         runtime,
-        activations,
         fork_path,
         func_ordinal,
+        aux_tables,
+        ref_plan,
         catch_plan,
         plain_catches,
-        reference_analysis,
-        unwind_frame_select,
-    )
+    );
 }
 
 /// Switch-dispatch transform: fork-path calls are hoisted out of the
@@ -1097,16 +404,15 @@ fn instrument_one_function_switch(
     module: &mut Module,
     func_id: FunctionId,
     runtime: &Runtime,
-    activations: &HashSet<FunctionId>,
     fork_path: &HashSet<FunctionId>,
     func_ordinal: u32,
+    aux_tables: &AuxTables,
+    ref_plan: &[RefLocalSlot],
     catch_plan: &[CatchRegionPlan],
     plain_catches: &[(InstrSeqId, Vec<PlainCatchArm>)],
-    reference_analysis: &FunctionReferenceAnalysis,
-    unwind_frame_select: FunctionId,
-) -> ResumeThunk {
-    // Pre-existing user locals (args + referenced in body). Validation
-    // guarantees that every one is scalar and therefore frame-owned.
+) {
+    // Pre-existing user locals (args + referenced in body). Scalars
+    // live in the frame; ref-typed locals go through aux tables.
     let all_user_locals = collect_user_locals(module, func_id);
     let user_scalar_locals: Vec<(LocalId, ValType)> = all_user_locals
         .iter()
@@ -1126,35 +432,38 @@ fn instrument_one_function_switch(
         std::mem::take(&mut local_mut(module, func_id).block_mut(entry_id).instrs);
 
     // Partition the body at top-level fork-path call sites.
-    let (mut chunks, mut call_sites) = partition_body(&original_body, fork_path, module);
-    for site in &mut call_sites {
-        site.direct_activation = matches!(
-            site.target,
-            CallTarget::Direct(target) if activations.contains(&target)
-        );
-        let results = module.types.get(site.sig_ty).results().to_vec();
-        site.resume_ty = Some(module.types.add(&[], &results));
-    }
+    let (mut chunks, call_sites) = partition_body(&original_body, fork_path, module);
     let n_calls = call_sites.len();
-    assert_reference_call_alignment(reference_analysis, &call_sites);
 
     // Allocate per-function synthetic locals.
     let catch_state_locals = if catch_plan.is_empty() && plain_catches.is_empty() {
         None
     } else {
         Some(CatchStateLocals {
-            catch_selector: module.locals.add(ValType::I32),
+            catch_region_id: module.locals.add(ValType::I32),
+            exnref_slot: module.locals.add(ValType::I32),
         })
     };
+    let abort_live_frame = module.locals.add(ValType::I32);
+
     // Per-call argument materialization. The default is the existing
-    // spill-local path; a conservative side-effect-free suffix can instead
-    // be replayed after POST_K and needs no frame-backed arg locals. Reference
-    // local.get operands are saved directly in the call's recipe vector.
+    // spill-local path; a conservative pure scalar suffix can instead
+    // be replayed after POST_K and needs no frame-backed arg locals.
     let pending_arg_materializations: Vec<PendingCallArgMaterialization> = call_sites
         .iter()
         .enumerate()
         .map(|(site_idx, cs)| {
             let arg_types = call_arg_types(module, cs);
+            for ty in &arg_types {
+                if !is_scalar(*ty) {
+                    let name = func_name(module, func_id);
+                    panic!(
+                        "fork-instrument: function `{name}` has a fork-path call with a ref-typed \
+                     argument ({ty:?}). Ref-typed call arguments need aux-table spilling, \
+                     which the MVP switch-dispatch transform does not yet support.",
+                    );
+                }
+            }
             plan_call_arg_materialization(module, &chunks[site_idx], arg_types)
         })
         .collect();
@@ -1177,11 +486,11 @@ fn instrument_one_function_switch(
         Some(v) if v.len() == n_calls => v,
         _ => vec![Vec::new(); n_calls],
     };
-    let mut carryover_spills: Vec<Vec<TypedSpillLocal>> = Vec::with_capacity(n_calls);
+    let mut carryover_spills: Vec<Vec<LocalId>> = Vec::with_capacity(n_calls);
     for site_carryovers in &carryover_types {
-        let spills: Vec<TypedSpillLocal> = site_carryovers
+        let spills: Vec<LocalId> = site_carryovers
             .iter()
-            .map(|&ty| (module.locals.add(spill_storage_type(ty)), ty))
+            .map(|&ty| module.locals.add(ty))
             .collect();
         carryover_spills.push(spills);
     }
@@ -1199,36 +508,18 @@ fn instrument_one_function_switch(
             .iter()
             .zip(arg_types.iter())
         {
-            if is_scalar(ty) {
-                frame_scalars.push((lid, ty));
-            }
+            frame_scalars.push((lid, ty));
         }
     }
-    for spills in &carryover_spills {
-        for &(lid, ty) in spills {
-            if is_scalar(ty) {
-                frame_scalars.push((lid, ty));
-            }
+    for (site_idx, cr_types) in carryover_types.iter().enumerate() {
+        for (&lid, &ty) in carryover_spills[site_idx].iter().zip(cr_types.iter()) {
+            frame_scalars.push((lid, ty));
         }
     }
+    append_plain_catch_frame_scalars(&mut frame_scalars, &plain_catch_state);
+
     let locals_with_offsets = assign_local_offsets(&frame_scalars, LOCALS_START_OFFSET);
-    let ordinary_scalar_end = HEADER_SIZE + user_locals_size(&frame_scalars);
-    let catch_scalar_frame = plan_plain_catch_scalar_frame(&plain_catch_state, ordinary_scalar_end);
-    let scalar_end = catch_scalar_frame.frame_end(ordinary_scalar_end);
-    let mut per_call_references = vec![Vec::new(); n_calls];
-    for call_idx in 0..call_sites.len() {
-        arg_materializations[call_idx]
-            .append_reference_inputs(module, &mut per_call_references[call_idx]);
-        for &(local, ty) in &carryover_spills[call_idx] {
-            if let Some(reference) = supported_reference(ty) {
-                per_call_references[call_idx].push((local, reference));
-            }
-        }
-    }
-    append_resume_parameter_references(module, func_id, &mut per_call_references);
-    append_plain_catch_frame_references(&mut per_call_references, &plain_catch_state);
-    let reference_frame = plan_reference_frame(module, reference_analysis, per_call_references);
-    let frame_size = reference_frame.frame_end(scalar_end);
+    let frame_size = HEADER_SIZE + user_locals_size(&frame_scalars);
 
     let result_types: Vec<ValType> = {
         let ty_id = module.funcs.get(func_id).ty();
@@ -1236,22 +527,29 @@ fn instrument_one_function_switch(
     };
     let restart_loop_ty = InstrSeqType::new(&mut module.types, &[], &result_types);
 
-    let catch_handlers = plan_catch_handlers(catch_plan, &plain_catch_state);
+    // Plan catch-handler entry-capture (Phase 6d). We allocate in_catch
+    // and captured_exnref locals now; the IR rewrite is applied later,
+    // after the body has been rebuilt.
+    let catch_handlers =
+        plan_catch_ref_handlers(module, func_id, catch_plan, aux_tables, &plain_catch_state);
 
     // Build the new body: preamble-if + Block($unwind_save) + postamble.
     let memory = first_memory(module);
     let ptr_ty = runtime.buf_type;
 
-    // Rewind rethrows the frame-restored tag and scalar payload. CatchRef
-    // clauses then manufacture a fresh instance-local exnref.
-    if !plain_catch_state.is_empty() {
+    // Phase 6c rewind-throw stubs: prepended to each fork-path
+    // try_table body. Phase 6 covers catch_ref / catch_all_ref.
+    // B1 Stage 2 (Task 2.3) extends the same stub with a plain-catch
+    // dispatch when `plain_catches` lists arms for the region.
+    if !catch_plan.is_empty() && aux_tables.exnref.is_some() {
         let catch_state =
-            catch_state_locals.expect("tagged catch plan requires catch-state locals");
+            catch_state_locals.expect("exnref catch plan requires catch-state locals");
         inject_rewind_throw_stubs(
             module,
             func_id,
             runtime,
-            catch_state.catch_selector,
+            catch_state.catch_region_id,
+            aux_tables,
             catch_plan,
             &plain_catch_state,
         );
@@ -1285,20 +583,9 @@ fn instrument_one_function_switch(
         .id();
     let restart_loop = local.builder_mut().dangling_instr_seq(restart_loop_ty).id();
     let abort = AbortDispatch {
+        live_frame: abort_live_frame,
         restart_loop,
-        frame_select: unwind_frame_select,
     };
-    let catch_scalar_restore_dispatch = catch_state_locals.and_then(|catch_state| {
-        build_plain_catch_scalar_dispatch(
-            local,
-            runtime,
-            memory,
-            ptr_ty,
-            catch_state.catch_selector,
-            &catch_scalar_frame,
-            PlainCatchScalarIo::Restore,
-        )
-    });
     let post_seqs: Vec<InstrSeqId> = (0..n_calls)
         .map(|_| {
             local
@@ -1317,8 +604,8 @@ fn instrument_one_function_switch(
         ptr_ty,
         catch_state_locals,
         &locals_with_offsets,
-        catch_scalar_restore_dispatch,
-        &reference_frame,
+        ref_plan,
+        aux_tables,
         frame_size,
     );
 
@@ -1340,23 +627,9 @@ fn instrument_one_function_switch(
     );
 
     // Postamble lives outside $unwind_save, in the entry block, right
-    // after the Block($unwind_save) instruction. It commits this
-    // activation and throws the private unwind tag; no function result
-    // is fabricated merely to walk the caller stack.
+    // after the Block($unwind_save) instruction. Built as a flat list
+    // of instructions.
     let mut postamble: Vec<(Instr, InstrLocId)> = Vec::new();
-    let catch_scalar_save_dispatch = catch_state_locals.and_then(|catch_state| {
-        build_plain_catch_scalar_dispatch(
-            local,
-            runtime,
-            memory,
-            ptr_ty,
-            catch_state.catch_selector,
-            &catch_scalar_frame,
-            PlainCatchScalarIo::Save,
-        )
-    });
-    let reference_save_dispatch =
-        build_reference_save_dispatch(local, runtime, memory, ptr_ty, &reference_frame);
     populate_postamble(
         &mut postamble,
         runtime,
@@ -1364,17 +637,17 @@ fn instrument_one_function_switch(
         ptr_ty,
         catch_state_locals,
         &locals_with_offsets,
-        catch_scalar_save_dispatch,
-        reference_save_dispatch,
+        ref_plan,
+        aux_tables,
         frame_size,
         func_ordinal,
+        &result_types,
     );
 
-    // The preamble is outside the result-typed live-restart loop. Fresh
-    // parent/child replay consumes its committed frame once; a synchronous
-    // reservation failure branches straight back to the selected call inside
-    // the loop without restoring over the still-live activation.
-    let entry_seq = &mut local.block_mut(entry_id).instrs;
+    // Rebuild the function body around a result-typed restart loop. A partial
+    // allocation failure branches here from the still-live activation; fresh
+    // inner activations keep abort_live_frame=0 and restore committed nodes.
+    let entry_seq = &mut local.block_mut(restart_loop).instrs;
     push_instr(
         entry_seq,
         Instr::GlobalGet(GlobalGet {
@@ -1395,46 +668,56 @@ fn instrument_one_function_switch(
     );
     push_instr(
         entry_seq,
+        Instr::LocalGet(LocalGet {
+            local: abort_live_frame,
+        }),
+    );
+    push_instr(
+        entry_seq,
+        Instr::Unop(walrus::ir::Unop {
+            op: UnaryOp::I32Eqz,
+        }),
+    );
+    push_instr(
+        entry_seq,
+        Instr::Binop(Binop {
+            op: BinaryOp::I32And,
+        }),
+    );
+    push_instr(
+        entry_seq,
         Instr::IfElse(IfElse {
             consequent: preamble_then,
             alternative: preamble_else,
         }),
     );
+    push_instr(entry_seq, Instr::Block(Block { seq: unwind_save }));
+    entry_seq.extend(postamble);
+    let entry_seq = &mut local.block_mut(entry_id).instrs;
+    entry_seq.clear();
     push_instr(entry_seq, Instr::Loop(Loop { seq: restart_loop }));
-    let restart_seq = &mut local.block_mut(restart_loop).instrs;
-    push_instr(restart_seq, Instr::Block(Block { seq: unwind_save }));
-    restart_seq.extend(postamble);
 
-    // Per-arm captures intercept both Catch and CatchRef dispatch after the
-    // body rebuild, save only transferable state, and forward the original
-    // handler operands.
+    // Phase 6d application: replaces each fork-path try_table with
+    // an $outer/$capture wrap so caught exnrefs are stashed and the
+    // original handler is re-entered via `br`. Runs after body rebuild
+    // so it finds the try_tables at their new locations inside chunks.
+    apply_catch_ref_handlers(module, func_id, &catch_handlers, aux_tables);
+
+    // Stage 2 (B1) plain-catch capture-block emission: per-arm
+    // captures intercept plain catch dispatch so the operand tuple
+    // can be saved at unwind time. Runs AFTER Phase 6 so it finds
+    // try_tables at their post-Phase-6 locations.
     if let Some(catch_state) = catch_state_locals {
-        shield_private_unwind_from_user_catches(module, func_id, runtime);
         apply_plain_catch_handlers(
             module,
             func_id,
-            catch_state.catch_selector,
+            catch_state.catch_region_id,
             &plain_catch_state,
+            catch_plan,
             &catch_handlers,
         );
     } else {
         debug_assert!(plain_catches.is_empty());
-        shield_private_unwind_from_user_catches(module, func_id, runtime);
-    }
-
-    ResumeThunk {
-        func_ordinal,
-        function: emit_resume_thunk(
-            module,
-            func_id,
-            runtime,
-            memory,
-            ptr_ty,
-            frame_size,
-            &locals_with_offsets,
-            &reference_frame,
-            func_ordinal,
-        ),
     }
 }
 
@@ -1475,7 +758,7 @@ fn has_nested_fork_calls(
                         return;
                     }
                 }
-                Instr::CallIndirect(_) | Instr::CallRef(_) => {
+                Instr::CallIndirect(_) => {
                     if depth > 0 {
                         *found = true;
                         return;
@@ -1514,11 +797,15 @@ fn has_nested_fork_calls(
 /// saving the per-instruction typed-stack walk on functions that
 /// don't need it).
 ///
-/// `top_level_stack_effect` is exhaustive over Walrus instructions,
-/// including Wasm GC and legacy/modern EH. A depth underflow therefore
-/// indicates malformed IR or an instrumenter bug; the exact typed walk will
-/// diagnose that invariant rather than treating a valid source shape as
-/// unsupported.
+/// The walk is conservative: if we encounter an instruction whose
+/// stack effect we can't statically determine (wasm-GC ops, legacy
+/// exception `try`, …), we report `true` so the caller invokes
+/// `compute_carryover_types`. That analyser may itself return `None`
+/// (forcing the post-commit-3 panic) if an unknown-type slot reaches
+/// a carryover; otherwise switch-dispatch handles it.
+/// Likewise for stack underflows — which shouldn't happen in valid
+/// wasm, but we defensively route to the post-commit-3 panic path if
+/// the input is malformed in a way we can't analyze.
 fn has_top_level_stack_carryovers(
     module: &Module,
     func_id: FunctionId,
@@ -1547,7 +834,6 @@ fn has_top_level_stack_carryovers(
                 // +1 for the table index on top of the signature's params.
                 Some(module.types.get(ci.ty).params().len() + 1)
             }
-            Instr::CallRef(call) => Some(module.types.get(call.ty).params().len() + 1),
             _ => None,
         };
         if let Some(expected) = expected_args {
@@ -1574,6 +860,10 @@ fn has_top_level_stack_carryovers(
                 // any fork-path call there is dead code.
                 return false;
             }
+            StackEffect::Unknown => {
+                // Can't analyze — play safe.
+                return true;
+            }
         }
     }
 
@@ -1583,13 +873,14 @@ fn has_top_level_stack_carryovers(
 enum StackEffect {
     Delta { pops: usize, pushes: usize },
     Terminator,
+    Unknown,
 }
 
 /// Compute the stack effect of a single instruction assuming it is
 /// reachable (i.e., not sitting in a polymorphic post-terminator
 /// region). Only used by `has_top_level_stack_carryovers`.
 fn top_level_stack_effect(module: &Module, local: &LocalFunction, instr: &Instr) -> StackEffect {
-    use StackEffect::{Delta, Terminator};
+    use StackEffect::{Delta, Terminator, Unknown};
 
     let block_params_results = |seq_id: InstrSeqId| -> (usize, usize) {
         let seq = local.block(seq_id);
@@ -1675,14 +966,12 @@ fn top_level_stack_effect(module: &Module, local: &LocalFunction, instr: &Instr)
         // br_if pops its condition; the target's expected args remain
         // on the stack on fall-through, so static delta is just pop 1.
         Instr::BrIf(_) => Delta { pops: 1, pushes: 0 },
-        // br_on_null refines and preserves the non-null fallthrough value.
-        // br_on_cast* likewise preserves either the source or target value on
-        // fallthrough. br_on_non_null consumes the known-null fallthrough
-        // value; its non-null value is carried only on the branch edge.
-        Instr::BrOnNull(_) | Instr::BrOnCast(_) | Instr::BrOnCastFail(_) => {
-            Delta { pops: 1, pushes: 1 }
-        }
-        Instr::BrOnNonNull(_) => Delta { pops: 1, pushes: 0 },
+        // br_on_null / br_on_non_null / br_on_cast / br_on_cast_fail:
+        // all pop 1 ref and push back on the non-branching path.
+        Instr::BrOnNull(_)
+        | Instr::BrOnNonNull(_)
+        | Instr::BrOnCast(_)
+        | Instr::BrOnCastFail(_) => Delta { pops: 1, pushes: 1 },
 
         // --- Nested blocks ---
         Instr::Block(b) => {
@@ -1746,43 +1035,70 @@ fn top_level_stack_effect(module: &Module, local: &LocalFunction, instr: &Instr)
         | Instr::ThrowRef(_)
         | Instr::Rethrow(_) => Terminator,
 
-        // --- Wasm-GC ---
-        Instr::StructNew(new) => Delta {
-            pops: module.types.get(new.ty).kind().unwrap_struct().fields.len(),
-            pushes: 1,
-        },
-        Instr::StructNewDefault(_) => Delta { pops: 0, pushes: 1 },
-        Instr::StructGet(_) | Instr::StructGetS(_) | Instr::StructGetU(_) => {
-            Delta { pops: 1, pushes: 1 }
-        }
-        Instr::StructSet(_) => Delta { pops: 2, pushes: 0 },
-        Instr::ArrayNew(_) => Delta { pops: 2, pushes: 1 },
-        Instr::ArrayNewDefault(_) => Delta { pops: 1, pushes: 1 },
-        Instr::ArrayNewFixed(new) => Delta {
-            pops: new.len as usize,
-            pushes: 1,
-        },
-        Instr::ArrayNewData(_) | Instr::ArrayNewElem(_) => Delta { pops: 2, pushes: 1 },
-        Instr::ArrayGet(_) | Instr::ArrayGetS(_) | Instr::ArrayGetU(_) => {
-            Delta { pops: 2, pushes: 1 }
-        }
-        Instr::ArraySet(_) => Delta { pops: 3, pushes: 0 },
-        Instr::ArrayLen(_) => Delta { pops: 1, pushes: 1 },
-        Instr::ArrayFill(_) => Delta { pops: 4, pushes: 0 },
-        Instr::ArrayCopy(_) => Delta { pops: 5, pushes: 0 },
-        Instr::ArrayInitData(_) | Instr::ArrayInitElem(_) => Delta { pops: 4, pushes: 0 },
+        // --- Wasm-GC: not produced by our LLVM toolchain today. Report
+        //     Unknown so we conservatively force the post-commit-3 panic
+        //     path if any ever appears. ---
+        Instr::StructNew(_)
+        | Instr::StructNewDefault(_)
+        | Instr::StructGet(_)
+        | Instr::StructGetS(_)
+        | Instr::StructGetU(_)
+        | Instr::StructSet(_)
+        | Instr::ArrayNew(_)
+        | Instr::ArrayNewDefault(_)
+        | Instr::ArrayNewFixed(_)
+        | Instr::ArrayNewData(_)
+        | Instr::ArrayNewElem(_)
+        | Instr::ArrayGet(_)
+        | Instr::ArrayGetS(_)
+        | Instr::ArrayGetU(_)
+        | Instr::ArraySet(_)
+        | Instr::ArrayLen(_)
+        | Instr::ArrayFill(_)
+        | Instr::ArrayCopy(_)
+        | Instr::ArrayInitData(_)
+        | Instr::ArrayInitElem(_) => Unknown,
     }
 }
 
-fn seq_result_types(
+fn seq_scalar_result_types(
     module: &Module,
     local: &LocalFunction,
     seq_id: InstrSeqId,
 ) -> Option<Vec<ValType>> {
     match local.block(seq_id).ty {
         InstrSeqType::Simple(None) => Some(Vec::new()),
-        InstrSeqType::Simple(Some(ty)) => Some(vec![ty]),
-        InstrSeqType::MultiValue(ty_id) => Some(module.types.get(ty_id).results().to_vec()),
+        InstrSeqType::Simple(Some(ty)) if is_scalar(ty) => Some(vec![ty]),
+        InstrSeqType::Simple(Some(_)) => None,
+        InstrSeqType::MultiValue(ty_id) => {
+            let results = module.types.get(ty_id).results();
+            if results.iter().all(|&ty| is_scalar(ty)) {
+                Some(results.to_vec())
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn push_structured_results(
+    stack: &mut Vec<Option<ValType>>,
+    module: &Module,
+    local: &LocalFunction,
+    seq_id: InstrSeqId,
+    fallback_pushes: usize,
+) {
+    match seq_scalar_result_types(module, local, seq_id) {
+        Some(types) => {
+            for ty in types {
+                stack.push(Some(ty));
+            }
+        }
+        None => {
+            for _ in 0..fallback_pushes {
+                stack.push(None);
+            }
+        }
     }
 }
 
@@ -1929,7 +1245,7 @@ fn atomic_width_pushes(width: AtomicWidth) -> ValType {
 
 fn select_pushes(explicit: Option<ValType>, pre_stack: &[Option<ValType>]) -> Option<ValType> {
     if let Some(ty) = explicit {
-        return Some(ty);
+        return is_scalar(ty).then_some(ty);
     }
     if pre_stack.len() < 3 {
         return None;
@@ -1937,18 +1253,11 @@ fn select_pushes(explicit: Option<ValType>, pre_stack: &[Option<ValType>]) -> Op
     let lhs = pre_stack[pre_stack.len() - 3];
     let rhs = pre_stack[pre_stack.len() - 2];
     match (lhs, rhs) {
-        (Some(a), Some(b)) if a == b => Some(a),
-        (Some(a), None) => Some(a),
-        (None, Some(b)) => Some(b),
+        (Some(a), Some(b)) if a == b && is_scalar(a) => Some(a),
+        (Some(a), None) if is_scalar(a) => Some(a),
+        (None, Some(b)) if is_scalar(b) => Some(b),
         _ => None,
     }
-}
-
-fn concrete_non_null_ref(ty: TypeId) -> ValType {
-    ValType::Ref(RefType {
-        nullable: false,
-        heap_type: HeapType::Concrete(ty),
-    })
 }
 
 fn typed_single_push(
@@ -1968,70 +1277,6 @@ fn typed_single_push(
             Some(module.locals.get(*l).ty())
         }
         Instr::GlobalGet(GlobalGet { global: g }) => Some(module.globals.get(*g).ty),
-        Instr::TableGet(table_get) => {
-            Some(ValType::Ref(module.tables.get(table_get.table).element_ty))
-        }
-        Instr::RefNull(reference) => Some(ValType::Ref(reference.ty)),
-        Instr::RefFunc(reference) => Some(ValType::Ref(RefType {
-            nullable: false,
-            heap_type: HeapType::Concrete(module.funcs.get(reference.func).ty()),
-        })),
-        Instr::BrOnNull(_) => pre_stack.last().copied().flatten().and_then(|ty| {
-            let ValType::Ref(mut reference) = ty else {
-                return None;
-            };
-            reference.nullable = false;
-            Some(ValType::Ref(reference))
-        }),
-        Instr::BrOnCast(cast) => Some(ValType::Ref(RefType {
-            nullable: cast.from_nullable,
-            heap_type: cast.from_heap_type,
-        })),
-        Instr::BrOnCastFail(cast) => Some(ValType::Ref(RefType {
-            nullable: cast.to_nullable,
-            heap_type: cast.to_heap_type,
-        })),
-        Instr::RefAsNonNull(_) => pre_stack.last().copied().flatten().map(|ty| match ty {
-            ValType::Ref(mut reference) => {
-                reference.nullable = false;
-                ValType::Ref(reference)
-            }
-            other => other,
-        }),
-        Instr::RefI31(_) => Some(ValType::Ref(RefType {
-            nullable: false,
-            heap_type: HeapType::Abstract(AbstractHeapType::I31),
-        })),
-        Instr::RefCast(cast) => Some(ValType::Ref(RefType {
-            nullable: cast.nullable,
-            heap_type: cast.heap_type,
-        })),
-        Instr::AnyConvertExtern(_) => Some(ValType::Ref(RefType::ANYREF)),
-        Instr::ExternConvertAny(_) => Some(ValType::Ref(RefType::EXTERNREF)),
-        Instr::StructNew(new) => Some(concrete_non_null_ref(new.ty)),
-        Instr::StructNewDefault(new) => Some(concrete_non_null_ref(new.ty)),
-        Instr::StructGet(get) => Some(
-            module.types.get(get.ty).kind().unwrap_struct().fields[get.field as usize]
-                .element_type
-                .unpack(),
-        ),
-        Instr::StructGetS(_) | Instr::StructGetU(_) => Some(ValType::I32),
-        Instr::ArrayNew(new) => Some(concrete_non_null_ref(new.ty)),
-        Instr::ArrayNewDefault(new) => Some(concrete_non_null_ref(new.ty)),
-        Instr::ArrayNewFixed(new) => Some(concrete_non_null_ref(new.ty)),
-        Instr::ArrayNewData(new) => Some(concrete_non_null_ref(new.ty)),
-        Instr::ArrayNewElem(new) => Some(concrete_non_null_ref(new.ty)),
-        Instr::ArrayGet(get) => Some(
-            module
-                .types
-                .get(get.ty)
-                .kind()
-                .unwrap_array()
-                .field
-                .element_type
-                .unpack(),
-        ),
-        Instr::ArrayGetS(_) | Instr::ArrayGetU(_) | Instr::ArrayLen(_) => Some(ValType::I32),
         Instr::Load(load) => Some(load_pushes(&load.kind)),
         Instr::LoadSimd(_) => Some(ValType::V128),
         Instr::Binop(b) => Some(binop_pushes(&b.op)),
@@ -2046,41 +1291,12 @@ fn typed_single_push(
         | Instr::TableSize(_)
         | Instr::TableGrow(_)
         | Instr::RefIsNull(_)
-        | Instr::RefTest(_)
         | Instr::RefEq(_)
         | Instr::I31GetS(_)
         | Instr::I31GetU(_) => Some(ValType::I32),
         Instr::I8x16Swizzle { .. } | Instr::I8x16Shuffle { .. } => Some(ValType::V128),
         _ => None,
     }
-}
-
-fn typed_instruction_pushes(
-    module: &Module,
-    local: &LocalFunction,
-    instr: &Instr,
-    pre_stack: &[Option<ValType>],
-) -> Option<Vec<ValType>> {
-    let types = match instr {
-        Instr::Call(call) => module
-            .types
-            .get(module.funcs.get(call.func).ty())
-            .results()
-            .to_vec(),
-        Instr::CallIndirect(call) => module.types.get(call.ty).results().to_vec(),
-        Instr::CallRef(call) => module.types.get(call.ty).results().to_vec(),
-        Instr::Block(block) => seq_result_types(module, local, block.seq)?,
-        Instr::Loop(loop_) => seq_result_types(module, local, loop_.seq)?,
-        Instr::IfElse(if_else) => seq_result_types(module, local, if_else.consequent)?,
-        Instr::TryTable(try_table) => seq_result_types(module, local, try_table.seq)?,
-        Instr::Try(try_) => seq_result_types(module, local, try_.seq)?,
-        Instr::I64Add128 { .. }
-        | Instr::I64Sub128 { .. }
-        | Instr::I64MulWideS { .. }
-        | Instr::I64MulWideU { .. } => vec![ValType::I64, ValType::I64],
-        _ => vec![typed_single_push(module, instr, pre_stack)?],
-    };
-    Some(types)
 }
 
 /// Compute the operand-stack carryover types for each top-level
@@ -2096,13 +1312,21 @@ fn typed_instruction_pushes(
 /// - `Some(per_call_carryovers)` where `per_call_carryovers[K]` is the
 ///   list of carryover ValTypes (deepest stack slot first) at call K.
 ///   Empty vec if call K has no carryover.
-/// - `None` only when the exhaustive typed stack model disagrees with
-///   already-validated Wasm IR (underflow, count mismatch, or impossible
-///   producer typing). Callers treat that as an instrumenter bug.
+/// - `None` if any producer instruction pushes a value of a type we
+///   can't statically determine AND that value ends up in a carryover.
+///   Post-commit-3, caller panics in this case — sub-commit 9-followup's
+///   `Vec<Option<ValType>>` refinement made the analyser succeed for
+///   any shape whose unknown slots are consumed before a fork-path
+///   call's carryover, so `None` should be vanishingly rare in
+///   shipping wasm. If it does fire, the panic message names the
+///   function so the specific producer can be added to the typed-
+///   producer list.
 ///
-/// `typed_instruction_pushes` covers every value-producing Walrus
-/// instruction, including references, GC, EH control, indirect/ref calls,
-/// structured multi-value results, and SIMD.
+/// Statically-typed producers handled here:
+///   `Const`, `LocalGet`, `LocalTee`, `GlobalGet`, `Load` (all kinds),
+///   `Binop` (encoded by op-name prefix), direct `Call` (signature
+///   results), `MemorySize`/`TableSize` (i32). Anything else triggers
+///   `None`.
 ///
 /// Used by `instrument_one_function`'s dispatch decision: if this
 /// returns Some, switch-dispatch can absorb the carryover by spilling
@@ -2119,9 +1343,18 @@ fn compute_carryover_types(
     };
     let entry = local.entry_block();
 
-    // Typed operand stack, bottom-to-top. `Option` remains as a defensive
-    // assertion channel for analyzer bugs; every valid producer has an exact
-    // `ValType`, including reference and GC producers.
+    // Typed operand stack — bottom-to-top. Sub-commit 9-followup
+    // (2026-05-14): tracked as `Vec<Option<ValType>>` so unknown
+    // producers (ref-typed producers, non-fork-path CallIndirect/
+    // CallRef, ref-typed structured-control results) push `None`
+    // without aborting. Failure is only triggered when a `None` slot
+    // ends up in a fork-path call's carryover. This mirrors
+    // `walk_seq_for_carryovers`'s 2.5c policy and closes the
+    // second `instrument_one_function_guard_dispatch` caller in
+    // `instrument_one_function` (since deleted by commit 4) for the
+    // case where a top-level fork-path call HAS no carryover but
+    // the function body still contains unknown-type producers
+    // consumed before the call.
     let mut stack: Vec<Option<ValType>> = Vec::new();
     let mut carryovers: Vec<Vec<ValType>> = Vec::new();
 
@@ -2137,20 +1370,6 @@ fn compute_carryover_types(
                 let n_args = sig.params().len();
                 if stack.len() < n_args {
                     return None; // ill-formed
-                }
-                let n_cr = stack.len() - n_args;
-                carryovers.push(snapshot(&stack[..n_cr])?);
-                stack.truncate(n_cr);
-                for &ty in sig.results() {
-                    stack.push(Some(ty));
-                }
-                continue;
-            }
-            Instr::CallRef(call) => {
-                let sig = module.types.get(call.ty);
-                let n_args = sig.params().len() + 1;
-                if stack.len() < n_args {
-                    return None;
                 }
                 let n_cr = stack.len() - n_args;
                 carryovers.push(snapshot(&stack[..n_cr])?);
@@ -2188,11 +1407,60 @@ fn compute_carryover_types(
                 if pushes == 0 {
                     continue;
                 }
-                let produced = typed_instruction_pushes(module, local, instr, &pre_stack)?;
-                if produced.len() != pushes {
-                    return None;
+                // Determine pushed type(s). Multi-push instructions
+                // are only Call / CallIndirect / CallRef; non-fork-
+                // path indirect calls go through here as `None` slots
+                // (the conservative `return None` from the legacy
+                // code only fired AFTER pops had already happened, so
+                // emitting None preserves stack-depth accounting).
+                match instr {
+                    Instr::Call(c) => {
+                        let sig = module.types.get(module.funcs.get(c.func).ty());
+                        for &ty in sig.results() {
+                            stack.push(Some(ty));
+                        }
+                        continue;
+                    }
+                    Instr::CallIndirect(ci) => {
+                        let sig = module.types.get(ci.ty);
+                        for _ in sig.results() {
+                            stack.push(None);
+                        }
+                        continue;
+                    }
+                    Instr::CallRef(cr) => {
+                        let sig = module.types.get(cr.ty);
+                        for _ in sig.results() {
+                            stack.push(None);
+                        }
+                        continue;
+                    }
+                    Instr::Block(b) => {
+                        push_structured_results(&mut stack, module, local, b.seq, pushes);
+                        continue;
+                    }
+                    Instr::Loop(l) => {
+                        push_structured_results(&mut stack, module, local, l.seq, pushes);
+                        continue;
+                    }
+                    Instr::IfElse(ie) => {
+                        push_structured_results(&mut stack, module, local, ie.consequent, pushes);
+                        continue;
+                    }
+                    Instr::TryTable(t) => {
+                        push_structured_results(&mut stack, module, local, t.seq, pushes);
+                        continue;
+                    }
+                    Instr::Try(t) => {
+                        push_structured_results(&mut stack, module, local, t.seq, pushes);
+                        continue;
+                    }
+                    _ => {}
                 }
-                stack.extend(produced.into_iter().map(Some));
+                // Single-push, non-call, non-structured-control
+                // producers.
+                debug_assert_eq!(pushes, 1, "multi-push non-Call should not appear");
+                stack.push(typed_single_push(module, instr, &pre_stack));
             }
             StackEffect::Terminator => {
                 // Post-terminator code in the same seq is unreachable
@@ -2212,7 +1480,7 @@ fn compute_carryover_types(
                         Instr::Call(c) if fork_path.contains(&c.func) => {
                             carryovers.push(Vec::new());
                         }
-                        Instr::CallIndirect(_) | Instr::CallRef(_) => {
+                        Instr::CallIndirect(_) => {
                             carryovers.push(Vec::new());
                         }
                         _ => {}
@@ -2220,6 +1488,7 @@ fn compute_carryover_types(
                 }
                 break;
             }
+            StackEffect::Unknown => return None,
         }
     }
 
@@ -2243,9 +1512,12 @@ fn compute_carryover_types(
 /// of carryover ValTypes (deepest stack slot first) for that call
 /// site; an empty vec means the call has no carryover.
 ///
-/// Returns `None` only if the exhaustive stack model disagrees with
-/// validated IR; reference, GC, EH, indirect/ref-call, and multi-value
-/// producers all have exact types.
+/// Returns `None` if any producer instruction in any walked seq
+/// pushes a value whose type can't be determined statically (e.g. a
+/// non-fork-path `CallIndirect` / `CallRef`, a wasm-GC ref, a
+/// multi-value or ref-typed `Block`/`Loop`/`IfElse`/`TryTable`
+/// result). The caller (sub-commit 2.5c) keeps the existing rejection
+/// in `seq_has_unsupported_carryover` for the `None` case.
 fn compute_nested_carryover_types(
     module: &Module,
     func_id: FunctionId,
@@ -2277,9 +1549,9 @@ fn compute_nested_carryover_types(
     for (&seq_id, direct_idxs) in &direct_idxs_per_seq {
         let per_seq = walk_seq_for_carryovers(module, local, seq_id, fork_path)?;
         if per_seq.len() != direct_idxs.len() {
-            // Mismatch means discovery and reachable typed walking disagree.
-            // Dead suffixes are excluded before this activation reaches the
-            // transform; a mismatch here is an internal invariant failure.
+            // Mismatch implies the walk terminated early (e.g., hit a
+            // terminator before the last fork-path call). Conservative
+            // fallback: report unanalyzable.
             return None;
         }
         for (cr, &idx) in per_seq.into_iter().zip(direct_idxs.iter()) {
@@ -2296,10 +1568,16 @@ fn compute_nested_carryover_types(
 /// instructions are treated as opaque — see
 /// `compute_nested_carryover_types`.
 ///
-/// Stack values retain `Option<ValType>` as an internal consistency channel.
-/// Every valid producer, including reference/GC values and CallRef results,
-/// pushes `Some(ty)`; `None` can therefore reach a snapshot only through an
-/// analyzer bug.
+/// Stack values are tracked as `Option<ValType>`: producers we can
+/// type statically push `Some(ty)`; producers we can't scalar-spill
+/// (e.g. ref-typed producers or non-fork-path CallRef results) push
+/// `None`.
+/// `None` slots are tolerated as long as they're consumed before
+/// the next fork-path call; only `None` slots that end up IN A
+/// carryover force `walk_seq_for_carryovers` to fail conservatively
+/// (returning `None`). This makes the analyser succeed for any
+/// fork-bearing seq with no carryover at all, regardless of the
+/// producer instructions it contains.
 fn walk_seq_for_carryovers(
     module: &Module,
     f: &LocalFunction,
@@ -2322,8 +1600,8 @@ fn walk_seq_for_carryovers(
     };
     let mut carryovers: Vec<Vec<ValType>> = Vec::new();
 
-    // Materialize the exact typed carryover. A `None` slot means the
-    // exhaustive producer model failed its internal invariant.
+    // Helper: materialise the typed-carryover slice. Returns None if
+    // any `None` slot would be captured.
     fn snapshot_carryover(slots: &[Option<ValType>]) -> Option<Vec<ValType>> {
         slots.iter().copied().collect::<Option<Vec<ValType>>>()
     }
@@ -2359,20 +1637,6 @@ fn walk_seq_for_carryovers(
                 }
                 continue;
             }
-            Instr::CallRef(call) => {
-                let sig = module.types.get(call.ty);
-                let n_args = sig.params().len() + 1;
-                if stack.len() < n_args {
-                    return None;
-                }
-                let n_cr = stack.len() - n_args;
-                carryovers.push(snapshot_carryover(&stack[..n_cr])?);
-                stack.truncate(n_cr);
-                for &ty in sig.results() {
-                    stack.push(Some(ty));
-                }
-                continue;
-            }
             _ => {}
         }
 
@@ -2386,11 +1650,67 @@ fn walk_seq_for_carryovers(
                 if pushes == 0 {
                     continue;
                 }
-                let produced = typed_instruction_pushes(module, f, instr, &pre_stack)?;
-                if produced.len() != pushes {
-                    return None;
+                // Determine pushed type(s). Multi-push instructions are
+                // only Call / CallIndirect / CallRef and structured
+                // control flow with a multi-value result. We type the
+                // single-result cases precisely; everything else
+                // contributes `None` slots so the seq can still proceed
+                // as long as the unknown slot is consumed before any
+                // carryover snapshot.
+                match instr {
+                    Instr::Call(c) => {
+                        let sig = module.types.get(module.funcs.get(c.func).ty());
+                        for &ty in sig.results() {
+                            stack.push(Some(ty));
+                        }
+                        continue;
+                    }
+                    Instr::CallIndirect(ci) => {
+                        // Non-fork-path CallIndirect (fork-path is
+                        // handled above). Unknown ref-typed result?
+                        // Push None slots — caller may or may not
+                        // observe them as a carryover.
+                        let sig = module.types.get(ci.ty);
+                        for _ in sig.results() {
+                            stack.push(None);
+                        }
+                        continue;
+                    }
+                    Instr::CallRef(cr) => {
+                        let sig = module.types.get(cr.ty);
+                        for _ in sig.results() {
+                            stack.push(None);
+                        }
+                        continue;
+                    }
+                    Instr::Block(b) => {
+                        push_structured_results(&mut stack, module, f, b.seq, pushes);
+                        continue;
+                    }
+                    Instr::Loop(l) => {
+                        push_structured_results(&mut stack, module, f, l.seq, pushes);
+                        continue;
+                    }
+                    Instr::IfElse(ie) => {
+                        push_structured_results(&mut stack, module, f, ie.consequent, pushes);
+                        continue;
+                    }
+                    Instr::TryTable(t) => {
+                        push_structured_results(&mut stack, module, f, t.seq, pushes);
+                        continue;
+                    }
+                    Instr::Try(t) => {
+                        push_structured_results(&mut stack, module, f, t.seq, pushes);
+                        continue;
+                    }
+                    _ => {}
                 }
-                stack.extend(produced.into_iter().map(Some));
+                // Single-push, non-call, non-block-typed producers.
+                debug_assert_eq!(
+                    pushes, 1,
+                    "multi-push non-call/non-structured-control should not reach here"
+                );
+                stack.push(typed_single_push(module, instr, &pre_stack));
             }
             StackEffect::Terminator => {
                 // Post-terminator code in this seq is unreachable.
@@ -2401,6 +1721,7 @@ fn walk_seq_for_carryovers(
                 // `carryovers`.)
                 return Some(carryovers);
             }
+            StackEffect::Unknown => return None,
         }
     }
 
@@ -2432,9 +1753,7 @@ fn partition_body(
                 let sig_ty = module.funcs.get(c.func).ty();
                 calls.push(CallSiteInfo {
                     target: CallTarget::Direct(c.func),
-                    direct_activation: false,
                     sig_ty,
-                    resume_ty: None,
                     loc: *loc,
                 });
                 chunks.push(Vec::new());
@@ -2442,19 +1761,7 @@ fn partition_body(
             Instr::CallIndirect(ci) => {
                 calls.push(CallSiteInfo {
                     target: CallTarget::Indirect { table: ci.table },
-                    direct_activation: false,
                     sig_ty: ci.ty,
-                    resume_ty: None,
-                    loc: *loc,
-                });
-                chunks.push(Vec::new());
-            }
-            Instr::CallRef(call) => {
-                calls.push(CallSiteInfo {
-                    target: CallTarget::Ref,
-                    direct_activation: false,
-                    sig_ty: call.ty,
-                    resume_ty: None,
                     loc: *loc,
                 });
                 chunks.push(Vec::new());
@@ -2470,42 +1777,11 @@ fn partition_body(
     (chunks, calls)
 }
 
-fn assert_reference_call_alignment(analysis: &FunctionReferenceAnalysis, calls: &[CallSiteInfo]) {
-    assert_eq!(
-        analysis.call_sites.len(),
-        calls.len(),
-        "original reference analysis and top-level transform discovered different call counts"
-    );
-    for (reference, call) in analysis.call_sites.iter().zip(calls) {
-        let aligned = match (reference.kind, call.target) {
-            (OriginalCallKind::Direct(expected), CallTarget::Direct(actual)) => expected == actual,
-            (
-                OriginalCallKind::Indirect {
-                    table: expected_table,
-                    ty: expected_ty,
-                },
-                CallTarget::Indirect {
-                    table: actual_table,
-                },
-            ) => expected_table == actual_table && expected_ty == call.sig_ty,
-            (OriginalCallKind::Ref { ty }, CallTarget::Ref) => ty == call.sig_ty,
-            _ => false,
-        };
-        assert!(
-            aligned,
-            "reference analysis call {:?} does not align with transformed call target {:?}",
-            reference.kind, call.target
-        );
-    }
-}
-
 fn call_arg_types(module: &Module, cs: &CallSiteInfo) -> Vec<ValType> {
     let params = module.types.get(cs.sig_ty).params().to_vec();
     let mut arg_types = params;
-    match cs.target {
-        CallTarget::Indirect { .. } => arg_types.push(ValType::I32),
-        CallTarget::Ref => arg_types.push(ValType::Ref(RefType::FUNCREF)),
-        CallTarget::Direct(_) => {}
+    if matches!(cs.target, CallTarget::Indirect { .. }) {
+        arg_types.push(ValType::I32);
     }
     arg_types
 }
@@ -2525,7 +1801,6 @@ enum PendingCallArgMaterialization {
 enum CallArgMaterialization {
     Spill {
         locals: Vec<LocalId>,
-        types: Vec<ValType>,
     },
     PureTail {
         tail: Vec<(Instr, InstrLocId)>,
@@ -2536,7 +1811,7 @@ enum CallArgMaterialization {
 impl CallArgMaterialization {
     fn spill_locals(&self) -> &[LocalId] {
         match self {
-            Self::Spill { locals, .. } => locals,
+            Self::Spill { locals } => locals,
             Self::PureTail { .. } => &[],
         }
     }
@@ -2547,34 +1822,6 @@ impl CallArgMaterialization {
             Self::PureTail { tail_len, .. } => *tail_len,
         }
     }
-
-    fn append_reference_inputs(&self, module: &Module, references: &mut Vec<(LocalId, RefType)>) {
-        match self {
-            Self::Spill { locals, types } => {
-                for (&local, &ty) in locals.iter().zip(types) {
-                    if let Some(reference) = supported_reference(ty) {
-                        references.push((local, reference));
-                    }
-                }
-            }
-            Self::PureTail { tail, .. } => {
-                // WHY: replaying a reference local.get is side-effect-free,
-                // but only if that exact local is itself activation-owned.
-                // Recording it here avoids a per-call reference spill local
-                // while ensuring the preamble restores it before reissuing
-                // the pure argument suffix.
-                for (instr, _) in tail {
-                    let Instr::LocalGet(LocalGet { local }) = instr else {
-                        continue;
-                    };
-                    let ValType::Ref(reference) = module.locals.get(*local).ty() else {
-                        continue;
-                    };
-                    references.push((*local, reference));
-                }
-            }
-        }
-    }
 }
 
 fn plan_call_arg_materialization(
@@ -2582,7 +1829,7 @@ fn plan_call_arg_materialization(
     chunk: &[(Instr, InstrLocId)],
     arg_types: Vec<ValType>,
 ) -> PendingCallArgMaterialization {
-    if let Some((tail_len, tail)) = split_pure_replay_tail(module, chunk, &arg_types) {
+    if let Some((tail_len, tail)) = split_pure_scalar_tail(module, chunk, &arg_types) {
         PendingCallArgMaterialization::PureTail { tail, tail_len }
     } else {
         PendingCallArgMaterialization::Spill { arg_types }
@@ -2595,14 +1842,8 @@ fn allocate_call_arg_materialization(
 ) -> CallArgMaterialization {
     match pending {
         PendingCallArgMaterialization::Spill { arg_types } => {
-            let locals = arg_types
-                .iter()
-                .map(|&ty| module.locals.add(spill_storage_type(ty)))
-                .collect();
-            CallArgMaterialization::Spill {
-                locals,
-                types: arg_types,
-            }
+            let locals = arg_types.iter().map(|&ty| module.locals.add(ty)).collect();
+            CallArgMaterialization::Spill { locals }
         }
         PendingCallArgMaterialization::PureTail { tail, tail_len } => {
             CallArgMaterialization::PureTail { tail, tail_len }
@@ -2618,7 +1859,7 @@ fn truncate_materialized_tail(chunk: &mut Vec<(Instr, InstrLocId)>, tail_len: us
     chunk.truncate(chunk.len() - tail_len);
 }
 
-fn split_pure_replay_tail(
+fn split_pure_scalar_tail(
     module: &Module,
     chunk: &[(Instr, InstrLocId)],
     expected_outputs: &[ValType],
@@ -2629,7 +1870,7 @@ fn split_pure_replay_tail(
 
     for start in 0..chunk.len() {
         let tail = &chunk[start..];
-        if let Some(outputs) = pure_replay_tail_outputs(module, tail) {
+        if let Some(outputs) = pure_scalar_tail_outputs(module, tail) {
             if outputs == expected_outputs {
                 return Some((tail.len(), tail.to_vec()));
             }
@@ -2639,13 +1880,16 @@ fn split_pure_replay_tail(
     None
 }
 
-fn pure_replay_tail_outputs(module: &Module, tail: &[(Instr, InstrLocId)]) -> Option<Vec<ValType>> {
+fn pure_scalar_tail_outputs(module: &Module, tail: &[(Instr, InstrLocId)]) -> Option<Vec<ValType>> {
     let mut stack: Vec<ValType> = Vec::new();
     for (instr, _) in tail {
         match instr {
             Instr::Const(c) => stack.push(pure_const_type(c)?),
             Instr::LocalGet(LocalGet { local }) => {
                 let ty = module.locals.get(*local).ty();
+                if !is_scalar(ty) {
+                    return None;
+                }
                 stack.push(ty);
             }
             Instr::Unop(u) => {
@@ -3097,7 +2341,7 @@ fn populate_dispatch_structure(
     chunks: &[Vec<(Instr, InstrLocId)>],
     call_sites: &[CallSiteInfo],
     arg_materializations: &[CallArgMaterialization],
-    carryover_spills: &[Vec<TypedSpillLocal>],
+    carryover_spills: &[Vec<LocalId>],
     catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
     memory: MemoryId,
@@ -3157,7 +2401,7 @@ fn emit_dispatch_node(
     chunks: &[Vec<(Instr, InstrLocId)>],
     call_sites: &[CallSiteInfo],
     arg_materializations: &[CallArgMaterialization],
-    carryover_spills: &[Vec<TypedSpillLocal>],
+    carryover_spills: &[Vec<LocalId>],
     catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
     memory: MemoryId,
@@ -3243,7 +2487,7 @@ fn emit_internal_dispatch(
     chunks: &[Vec<(Instr, InstrLocId)>],
     call_sites: &[CallSiteInfo],
     arg_materializations: &[CallArgMaterialization],
-    carryover_spills: &[Vec<TypedSpillLocal>],
+    carryover_spills: &[Vec<LocalId>],
     catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
     memory: MemoryId,
@@ -3366,7 +2610,7 @@ fn emit_leaf_dispatch(
     chunks: &[Vec<(Instr, InstrLocId)>],
     call_sites: &[CallSiteInfo],
     arg_materializations: &[CallArgMaterialization],
-    carryover_spills: &[Vec<TypedSpillLocal>],
+    carryover_spills: &[Vec<LocalId>],
     catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
     memory: MemoryId,
@@ -3512,15 +2756,11 @@ fn emit_leaf_dispatch(
 /// arg_0, ..., arg_{m-1}]` (bottom-to-top). After popping all args,
 /// we keep popping into `carryovers` (also reverse-order), so
 /// `carryovers[0]` ends up holding the deepest carryover slot.
-fn emit_spill_args(
-    out: &mut Vec<(Instr, InstrLocId)>,
-    spills: &[LocalId],
-    carryovers: &[TypedSpillLocal],
-) {
+fn emit_spill_args(out: &mut Vec<(Instr, InstrLocId)>, spills: &[LocalId], carryovers: &[LocalId]) {
     for &local in spills.iter().rev() {
         push_instr(out, Instr::LocalSet(LocalSet { local }));
     }
-    for &(local, _ty) in carryovers.iter().rev() {
+    for &local in carryovers.iter().rev() {
         push_instr(out, Instr::LocalSet(LocalSet { local }));
     }
 }
@@ -3528,7 +2768,7 @@ fn emit_spill_args(
 fn emit_spill_call_tail(
     out: &mut Vec<(Instr, InstrLocId)>,
     arg_materialization: &CallArgMaterialization,
-    carryovers: &[TypedSpillLocal],
+    carryovers: &[LocalId],
 ) {
     emit_spill_args(out, arg_materialization.spill_locals(), carryovers);
 }
@@ -3538,9 +2778,9 @@ fn emit_materialized_call_args(
     arg_materialization: &CallArgMaterialization,
 ) {
     match arg_materialization {
-        CallArgMaterialization::Spill { locals, types } => {
-            for (&local, &ty) in locals.iter().zip(types) {
-                push_typed_local_get(out, local, ty);
+        CallArgMaterialization::Spill { locals } => {
+            for &l in locals.iter() {
+                push_instr(out, Instr::LocalGet(LocalGet { local: l }));
             }
         }
         CallArgMaterialization::PureTail { tail, .. } => {
@@ -3549,22 +2789,115 @@ fn emit_materialized_call_args(
     }
 }
 
-/// Handle the private unwind tag at one statically known call site.
-///
-/// Successful reservation records the static call index and branches to the
-/// common frame postamble. A synchronous allocation failure instead selects
-/// the header-sized abort scratch, records the same index, and restarts the
-/// live activation at the dispatch loop. Since the replay preamble is outside
-/// that loop, no activation-local selector/flag is required.
-fn emit_static_call_unwind_handler(
+/// Emit Phase 6e writes inline. Must be called with mutable access to
+/// the function (so dangling seqs can be allocated for each handler's
+/// if-branch).
+fn emit_phase_6e_writes(
     local: &mut LocalFunction,
     seq_id: InstrSeqId,
+    catch_handlers: &[CatchHandlerInfo],
+    catch_state_locals: Option<CatchStateLocals>,
+) {
+    if catch_handlers.is_empty() {
+        return;
+    }
+    let catch_state = catch_state_locals.expect("catch handlers require catch-state locals");
+    {
+        let s = &mut local.block_mut(seq_id).instrs;
+        push_instr(
+            s,
+            Instr::Const(Const {
+                value: Value::I32(0),
+            }),
+        );
+        push_instr(
+            s,
+            Instr::LocalSet(LocalSet {
+                local: catch_state.catch_region_id,
+            }),
+        );
+        push_instr(
+            s,
+            Instr::Const(Const {
+                value: Value::I32(0),
+            }),
+        );
+        push_instr(
+            s,
+            Instr::LocalSet(LocalSet {
+                local: catch_state.exnref_slot,
+            }),
+        );
+    }
+    for info in catch_handlers {
+        let if_ty = InstrSeqType::Simple(None);
+        let ih_then = local.builder_mut().dangling_instr_seq(if_ty).id();
+        let ih_else = local.builder_mut().dangling_instr_seq(if_ty).id();
+        {
+            let s = &mut local.block_mut(ih_then).instrs;
+            push_instr(
+                s,
+                Instr::Const(Const {
+                    value: Value::I32(info.catch_region_id as i32),
+                }),
+            );
+            push_instr(
+                s,
+                Instr::LocalSet(LocalSet {
+                    local: catch_state.catch_region_id,
+                }),
+            );
+            push_instr(
+                s,
+                Instr::Const(Const {
+                    value: Value::I32(info.exnref_slot as i32),
+                }),
+            );
+            push_instr(
+                s,
+                Instr::LocalSet(LocalSet {
+                    local: catch_state.exnref_slot,
+                }),
+            );
+        }
+        let s = &mut local.block_mut(seq_id).instrs;
+        push_instr(
+            s,
+            Instr::LocalGet(LocalGet {
+                local: info.in_catch_local,
+            }),
+        );
+        push_instr(
+            s,
+            Instr::IfElse(IfElse {
+                consequent: ih_then,
+                alternative: ih_else,
+            }),
+        );
+    }
+}
+
+fn emit_call_index_store_and_unwind_branch(
+    local: &mut LocalFunction,
+    seq_id: InstrSeqId,
+    runtime: &Runtime,
+    memory: MemoryId,
     ptr_ty: ValType,
     frame_size: u32,
     call_idx: u32,
     unwind_save: InstrSeqId,
+    catch_handlers: &[CatchHandlerInfo],
+    catch_state_locals: Option<CatchStateLocals>,
     abort: AbortDispatch,
 ) {
+    let unwind_then = local
+        .builder_mut()
+        .dangling_instr_seq(InstrSeqType::Simple(None))
+        .id();
+    let normal_else = local
+        .builder_mut()
+        .dangling_instr_seq(InstrSeqType::Simple(None))
+        .id();
     let reserve_succeeded = local
         .builder_mut()
         .dangling_instr_seq(InstrSeqType::Simple(None))
@@ -3575,31 +2908,106 @@ fn emit_static_call_unwind_handler(
         .id();
 
     {
-        let s = &mut local.block_mut(seq_id).instrs;
-        push_instr(s, ptr_const(ptr_ty, frame_size as i64));
+        let s = &mut local.block_mut(unwind_then).instrs;
+        if let Some(frame_reserve) = runtime.frame_reserve {
+            // This is the first frame write on the unwind path. Reserve the
+            // complete node before publishing call_index or any postamble
+            // scalar/reference state.
+            push_instr(
+                s,
+                Instr::GlobalGet(GlobalGet {
+                    global: runtime.buf_global,
+                }),
+            );
+            push_instr(s, ptr_const(ptr_ty, frame_size as i64));
+            push_instr(
+                s,
+                Instr::Call(Call {
+                    func: frame_reserve,
+                }),
+            );
+            push_instr(s, store_ptr(memory, ptr_ty, 0));
+
+            push_instr(
+                s,
+                Instr::GlobalGet(GlobalGet {
+                    global: runtime.buf_global,
+                }),
+            );
+            push_instr(s, load_ptr(memory, ptr_ty, 0));
+            push_instr(
+                s,
+                Instr::Unop(walrus::ir::Unop {
+                    op: match ptr_ty {
+                        ValType::I32 => UnaryOp::I32Eqz,
+                        ValType::I64 => UnaryOp::I64Eqz,
+                        other => unreachable!("unsupported pointer type {other:?}"),
+                    },
+                }),
+            );
+            push_instr(
+                s,
+                Instr::IfElse(IfElse {
+                    consequent: reserve_failed,
+                    alternative: reserve_succeeded,
+                }),
+            );
+        } else {
+            push_instr(
+                s,
+                Instr::Block(Block {
+                    seq: reserve_succeeded,
+                }),
+            );
+        }
+    }
+
+    {
+        let s = &mut local.block_mut(reserve_failed).instrs;
+        push_instr(
+            s,
+            Instr::Const(Const {
+                value: Value::I32(1),
+            }),
+        );
+        push_instr(
+            s,
+            Instr::LocalSet(LocalSet {
+                local: abort.live_frame,
+            }),
+        );
+        // Select the module-owned abort scratch frame. Linked chunks begin
+        // after the descriptor's larger fixed prefix, so this header-sized
+        // area can carry the live activation's call index without touching a
+        // committed node.
+        push_instr(
+            s,
+            Instr::GlobalGet(GlobalGet {
+                global: runtime.buf_global,
+            }),
+        );
+        push_instr(
+            s,
+            Instr::GlobalGet(GlobalGet {
+                global: runtime.buf_global,
+            }),
+        );
+        push_instr(s, ptr_const(ptr_ty, runtime.frames_start_offset as i64));
+        push_instr(
+            s,
+            Instr::Binop(Binop {
+                op: ptr_add(ptr_ty),
+            }),
+        );
+        push_instr(s, store_ptr(memory, ptr_ty, 0));
+        push_current_frame_ptr(s, runtime, memory, ptr_ty);
         push_instr(
             s,
             Instr::Const(Const {
                 value: Value::I32(call_idx as i32),
             }),
         );
-        push_instr(
-            s,
-            Instr::Call(Call {
-                func: abort.frame_select,
-            }),
-        );
-        push_instr(
-            s,
-            Instr::IfElse(IfElse {
-                consequent: reserve_succeeded,
-                alternative: reserve_failed,
-            }),
-        );
-    }
-
-    {
-        let s = &mut local.block_mut(reserve_failed).instrs;
+        push_instr(s, store_i32(memory, CALL_INDEX_OFFSET));
         push_instr(
             s,
             Instr::Br(Br {
@@ -3608,250 +3016,53 @@ fn emit_static_call_unwind_handler(
         );
     }
 
+    emit_phase_6e_writes(local, reserve_succeeded, catch_handlers, catch_state_locals);
     {
         let s = &mut local.block_mut(reserve_succeeded).instrs;
+        push_current_frame_ptr(s, runtime, memory, ptr_ty);
+        push_instr(
+            s,
+            Instr::Const(Const {
+                value: Value::I32(call_idx as i32),
+            }),
+        );
+        push_instr(s, store_i32(memory, CALL_INDEX_OFFSET));
         push_instr(s, Instr::Br(Br { block: unwind_save }));
     }
+
+    emit_phase_6e_writes(local, normal_else, catch_handlers, catch_state_locals);
+
+    let s = &mut local.block_mut(seq_id).instrs;
+    push_instr(
+        s,
+        Instr::GlobalGet(GlobalGet {
+            global: runtime.state_global,
+        }),
+    );
+    push_instr(
+        s,
+        Instr::Const(Const {
+            value: Value::I32(runtime::STATE_UNWINDING),
+        }),
+    );
+    push_instr(
+        s,
+        Instr::Binop(Binop {
+            op: BinaryOp::I32Eq,
+        }),
+    );
+    push_instr(
+        s,
+        Instr::IfElse(IfElse {
+            consequent: unwind_then,
+            alternative: normal_else,
+        }),
+    );
 }
 
 // ----------------------------------------------------------------------
 // Preamble / postamble
 // ----------------------------------------------------------------------
-
-fn reference_plan_runs(
-    plan: &ReferenceFramePlan,
-) -> Vec<(usize, usize, Vec<usize>, Vec<(LocalId, RefType)>)> {
-    let mut runs = Vec::new();
-    let mut start = 0usize;
-    while start < plan.slots_by_call.len() {
-        let slots = &plan.slots_by_call[start];
-        let nulls = &plan.null_locals_by_call[start];
-        let mut end = start;
-        while end + 1 < plan.slots_by_call.len()
-            && plan.slots_by_call[end + 1] == *slots
-            && plan.null_locals_by_call[end + 1] == *nulls
-        {
-            end += 1;
-        }
-        if !slots.is_empty() || !nulls.is_empty() {
-            runs.push((start, end, slots.clone(), nulls.clone()));
-        }
-        start = end + 1;
-    }
-    runs
-}
-
-fn push_call_index_in_range(
-    out: &mut Vec<(Instr, InstrLocId)>,
-    runtime: &Runtime,
-    memory: MemoryId,
-    ptr_ty: ValType,
-    first: usize,
-    last: usize,
-) {
-    push_current_call_index(out, runtime, memory, ptr_ty);
-    push_instr(
-        out,
-        Instr::Const(Const {
-            value: Value::I32(first as i32),
-        }),
-    );
-    if first == last {
-        push_instr(
-            out,
-            Instr::Binop(Binop {
-                op: BinaryOp::I32Eq,
-            }),
-        );
-        return;
-    }
-    push_instr(
-        out,
-        Instr::Binop(Binop {
-            op: BinaryOp::I32GeU,
-        }),
-    );
-    push_current_call_index(out, runtime, memory, ptr_ty);
-    push_instr(
-        out,
-        Instr::Const(Const {
-            value: Value::I32(last as i32),
-        }),
-    );
-    push_instr(
-        out,
-        Instr::Binop(Binop {
-            op: BinaryOp::I32LeU,
-        }),
-    );
-    push_instr(
-        out,
-        Instr::Binop(Binop {
-            op: BinaryOp::I32And,
-        }),
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn emit_reference_restore_dispatch(
-    local: &mut LocalFunction,
-    seq: InstrSeqId,
-    runtime: &Runtime,
-    memory: MemoryId,
-    ptr_ty: ValType,
-    plan: &ReferenceFramePlan,
-) {
-    let codecs = runtime
-        .reference_codecs
-        .expect("linked fork reference plan requires typed host codecs");
-    let vector_get = runtime
-        .reference_vector_get
-        .expect("linked fork reference plan requires recipe-vector lookup");
-    for (first, last, slots, nulls) in reference_plan_runs(plan) {
-        let then_seq = local
-            .builder_mut()
-            .dangling_instr_seq(InstrSeqType::Simple(None))
-            .id();
-        let else_seq = local
-            .builder_mut()
-            .dangling_instr_seq(InstrSeqType::Simple(None))
-            .id();
-        {
-            let out = &mut local.block_mut(then_seq).instrs;
-            for (position, slot_idx) in slots.into_iter().enumerate() {
-                let slot = plan.slots[slot_idx];
-                let class = slot.class;
-                push_current_frame_ptr(out, runtime, memory, ptr_ty);
-                push_instr(out, load_i32(memory, REFERENCE_VECTOR_OFFSET));
-                push_instr(
-                    out,
-                    Instr::Const(Const {
-                        value: Value::I32(position as i32),
-                    }),
-                );
-                push_instr(out, Instr::Call(Call { func: vector_get }));
-                push_instr(
-                    out,
-                    Instr::Call(Call {
-                        func: class.decoder(codecs),
-                    }),
-                );
-                push_decoded_reference_narrowing(out, class, slot.ty);
-                push_instr(out, Instr::LocalSet(LocalSet { local: slot.local }));
-            }
-            for (local, ty) in nulls {
-                push_instr(out, Instr::RefNull(RefNull { ty }));
-                push_instr(out, Instr::LocalSet(LocalSet { local }));
-            }
-        }
-        let out = &mut local.block_mut(seq).instrs;
-        push_call_index_in_range(out, runtime, memory, ptr_ty, first, last);
-        push_instr(
-            out,
-            Instr::IfElse(IfElse {
-                consequent: then_seq,
-                alternative: else_seq,
-            }),
-        );
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn build_reference_save_dispatch(
-    local: &mut LocalFunction,
-    runtime: &Runtime,
-    memory: MemoryId,
-    ptr_ty: ValType,
-    plan: &ReferenceFramePlan,
-) -> Option<InstrSeqId> {
-    if plan.slots_by_call.iter().all(Vec::is_empty) {
-        return None;
-    }
-    let codecs = runtime
-        .reference_codecs
-        .expect("linked fork reference plan requires typed host codecs");
-    let vector_begin = runtime
-        .reference_vector_begin
-        .expect("linked fork reference plan requires recipe-vector allocation");
-    let vector_append = runtime
-        .reference_vector_append
-        .expect("linked fork reference plan requires recipe-vector append");
-    let vector_finish = runtime
-        .reference_vector_finish
-        .expect("linked fork reference plan requires recipe-vector finish");
-    let root = local
-        .builder_mut()
-        .dangling_instr_seq(InstrSeqType::Simple(None))
-        .id();
-    for (first, last, slots, _nulls) in reference_plan_runs(plan) {
-        if slots.is_empty() {
-            continue;
-        }
-        let then_seq = local
-            .builder_mut()
-            .dangling_instr_seq(InstrSeqType::Simple(None))
-            .id();
-        let else_seq = local
-            .builder_mut()
-            .dangling_instr_seq(InstrSeqType::Simple(None))
-            .id();
-        {
-            let out = &mut local.block_mut(then_seq).instrs;
-            push_current_frame_ptr(out, runtime, memory, ptr_ty);
-            push_instr(
-                out,
-                Instr::Const(Const {
-                    value: Value::I32(slots.len() as i32),
-                }),
-            );
-            push_instr(out, Instr::Call(Call { func: vector_begin }));
-            push_instr(out, store_i32(memory, REFERENCE_VECTOR_OFFSET));
-            for slot_idx in slots {
-                let slot = plan.slots[slot_idx];
-                let class = slot.class;
-                push_current_frame_ptr(out, runtime, memory, ptr_ty);
-                push_instr(out, load_i32(memory, REFERENCE_VECTOR_OFFSET));
-                push_typed_local_get(out, slot.local, ValType::Ref(slot.ty));
-                push_instr(
-                    out,
-                    Instr::Call(Call {
-                        func: class.encoder(codecs),
-                    }),
-                );
-                push_instr(
-                    out,
-                    Instr::Call(Call {
-                        func: vector_append,
-                    }),
-                );
-            }
-            // WHY: the frame must hold a durable canonical ordinal, never the
-            // transaction-local builder handle returned by vector_begin. This
-            // also interns identical vectors across recursive activations
-            // without adding a source-function local or frame byte.
-            push_current_frame_ptr(out, runtime, memory, ptr_ty);
-            push_current_frame_ptr(out, runtime, memory, ptr_ty);
-            push_instr(out, load_i32(memory, REFERENCE_VECTOR_OFFSET));
-            push_instr(
-                out,
-                Instr::Call(Call {
-                    func: vector_finish,
-                }),
-            );
-            push_instr(out, store_i32(memory, REFERENCE_VECTOR_OFFSET));
-        }
-        let out = &mut local.block_mut(root).instrs;
-        push_call_index_in_range(out, runtime, memory, ptr_ty, first, last);
-        push_instr(
-            out,
-            Instr::IfElse(IfElse {
-                consequent: then_seq,
-                alternative: else_seq,
-            }),
-        );
-    }
-    Some(root)
-}
 
 #[allow(clippy::too_many_arguments)]
 fn populate_preamble_then(
@@ -3862,14 +3073,15 @@ fn populate_preamble_then(
     ptr_ty: ValType,
     catch_state_locals: Option<CatchStateLocals>,
     locals_with_offsets: &[(LocalId, ValType, u32)],
-    catch_scalar_restore_dispatch: Option<InstrSeqId>,
-    reference_plan: &ReferenceFramePlan,
+    ref_plan: &[RefLocalSlot],
+    aux_tables: &AuxTables,
     frame_size: u32,
 ) {
+    let s = &mut local.block_mut(preamble_then).instrs;
+
     // Store the frame selected for replay in *(buf + 0). The linked format
     // asks the host-managed chain for the next committed frame; the legacy
     // format walks its contiguous buffer backward.
-    let s = &mut local.block_mut(preamble_then).instrs;
     push_instr(
         s,
         Instr::GlobalGet(GlobalGet {
@@ -3898,14 +3110,22 @@ fn populate_preamble_then(
     push_instr(s, store_ptr(memory, ptr_ty, 0));
 
     if let Some(catch_state) = catch_state_locals {
-        // Frame word +8 owns the exact `(region, arm)` selector. Scalar arm
-        // payloads are restored separately from their overlaid union.
+        // catch_region_id_local / exnref_slot_local
         push_current_frame_ptr(s, runtime, memory, ptr_ty);
-        push_instr(s, load_i32(memory, CATCH_SELECTOR_OFFSET));
+        push_instr(s, load_i32(memory, CATCH_REGION_OFFSET));
         push_instr(
             s,
             Instr::LocalSet(LocalSet {
-                local: catch_state.catch_selector,
+                local: catch_state.catch_region_id,
+            }),
+        );
+
+        push_current_frame_ptr(s, runtime, memory, ptr_ty);
+        push_instr(s, load_i32(memory, EXNREF_SLOT_OFFSET));
+        push_instr(
+            s,
+            Instr::LocalSet(LocalSet {
+                local: catch_state.exnref_slot,
             }),
         );
     }
@@ -3916,17 +3136,21 @@ fn populate_preamble_then(
         push_instr(s, load_scalar(memory, ty, off as u64));
         push_instr(s, Instr::LocalSet(LocalSet { local: lid }));
     }
-    if let Some(dispatch) = catch_scalar_restore_dispatch {
-        push_instr(s, Instr::Block(Block { seq: dispatch }));
+
+    // Restore ref-typed user locals from aux tables.
+    for slot in ref_plan {
+        let table = aux_tables
+            .table_for(slot.class)
+            .expect("aux table for this ref class must be injected");
+        push_instr(
+            s,
+            Instr::Const(Const {
+                value: Value::I32(slot.slot as i32),
+            }),
+        );
+        push_instr(s, Instr::TableGet(TableGet { table }));
+        push_instr(s, Instr::LocalSet(LocalSet { local: slot.local }));
     }
-    emit_reference_restore_dispatch(
-        local,
-        preamble_then,
-        runtime,
-        memory,
-        ptr_ty,
-        reference_plan,
-    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3937,10 +3161,11 @@ fn populate_postamble(
     ptr_ty: ValType,
     catch_state_locals: Option<CatchStateLocals>,
     locals_with_offsets: &[(LocalId, ValType, u32)],
-    catch_scalar_save_dispatch: Option<InstrSeqId>,
-    reference_save_dispatch: Option<InstrSeqId>,
+    ref_plan: &[RefLocalSlot],
+    aux_tables: &AuxTables,
     frame_size: u32,
     func_ordinal: u32,
+    result_types: &[ValType],
 ) {
     // frame[0] = func_ordinal
     push_current_frame_ptr(out, runtime, memory, ptr_ty);
@@ -3953,37 +3178,36 @@ fn populate_postamble(
     push_instr(out, store_i32(memory, FUNC_INDEX_OFFSET));
 
     if let Some(catch_state) = catch_state_locals {
-        // frame[8] = exact non-zero `(region, arm)` selector in a catch.
+        // frame[8] = dynamic catch_region_id for catch-capable functions.
         push_current_frame_ptr(out, runtime, memory, ptr_ty);
         push_instr(
             out,
             Instr::LocalGet(LocalGet {
-                local: catch_state.catch_selector,
+                local: catch_state.catch_region_id,
             }),
         );
-        push_instr(out, store_i32(memory, CATCH_SELECTOR_OFFSET));
+        push_instr(out, store_i32(memory, CATCH_REGION_OFFSET));
+
+        // frame[12] = dynamic exnref_slot for catch-capable functions.
+        push_current_frame_ptr(out, runtime, memory, ptr_ty);
+        push_instr(
+            out,
+            Instr::LocalGet(LocalGet {
+                local: catch_state.exnref_slot,
+            }),
+        );
+        push_instr(out, store_i32(memory, EXNREF_SLOT_OFFSET));
     } else {
-        // frame[8] = no active catch region.
+        // frame[8..16] = zero catch_region_id + exnref_slot.
         push_current_frame_ptr(out, runtime, memory, ptr_ty);
         push_instr(
             out,
             Instr::Const(Const {
-                value: Value::I32(0),
+                value: Value::I64(0),
             }),
         );
-        push_instr(out, store_i32(memory, CATCH_SELECTOR_OFFSET));
+        push_instr(out, store_scalar(memory, ValType::I64, CATCH_REGION_OFFSET));
     }
-    // frame[12] starts as the canonical empty reference-vector ordinal. The
-    // call-specific save dispatch replaces it only when this landing owns
-    // non-null recipe values.
-    push_current_frame_ptr(out, runtime, memory, ptr_ty);
-    push_instr(
-        out,
-        Instr::Const(Const {
-            value: Value::I32(0),
-        }),
-    );
-    push_instr(out, store_i32(memory, REFERENCE_VECTOR_OFFSET));
 
     // Save scalar user + arg-spill locals
     for &(lid, ty, off) in locals_with_offsets {
@@ -3991,18 +3215,24 @@ fn populate_postamble(
         push_instr(out, Instr::LocalGet(LocalGet { local: lid }));
         push_instr(out, store_scalar(memory, ty, off as u64));
     }
-    if let Some(dispatch) = catch_scalar_save_dispatch {
-        push_instr(out, Instr::Block(Block { seq: dispatch }));
-    }
 
-    if let Some(dispatch) = reference_save_dispatch {
-        // The call selector was written before entering this common postamble.
-        // Each case encodes only values live for that original call landing.
-        push_instr(out, Instr::Block(Block { seq: dispatch }));
+    // Spill ref-typed user locals to aux tables.
+    for slot in ref_plan {
+        let table = aux_tables
+            .table_for(slot.class)
+            .expect("aux table for this ref class must be injected");
+        push_instr(
+            out,
+            Instr::Const(Const {
+                value: Value::I32(slot.slot as i32),
+            }),
+        );
+        push_instr(out, Instr::LocalGet(LocalGet { local: slot.local }));
+        push_instr(out, Instr::TableSet(TableSet { table }));
     }
 
     if let Some(frame_commit) = runtime.frame_commit {
-        // Publish only after the complete activation-owned payload exists.
+        // Publish only after the complete payload and reference stashes exist.
         push_current_frame_ptr(out, runtime, memory, ptr_ty);
         push_instr(out, Instr::Call(Call { func: frame_commit }));
     } else {
@@ -4024,289 +3254,33 @@ fn populate_postamble(
         push_instr(out, store_ptr(memory, ptr_ty, 0));
     }
 
-    // WHY: a synthesized default is not a value owned by this activation,
-    // and non-nullable reference results do not have a valid default at all.
-    // The process-owned tag is independent of the function's result type and
-    // therefore transports unwind through every Wasm signature truthfully.
-    let unwind_tag = runtime
-        .unwind_tag
-        .expect("fork-path instrumentation requires the linked unwind tag");
-    push_instr(out, Instr::Throw(Throw { tag: unwind_tag }));
+    // Push defaults for the function's result types, or `unreachable`
+    // if any result is a non-nullable ref.
+    let mut fallback_unreachable = false;
+    for &ty in result_types {
+        match default_for_type(ty) {
+            Some(instr) => push_instr(out, instr),
+            None => {
+                fallback_unreachable = true;
+                break;
+            }
+        }
+    }
+    if fallback_unreachable {
+        push_instr(out, Instr::Unreachable(walrus::ir::Unreachable {}));
+    }
 }
 
-/// Post-call sequence for call site K, appended to sequence `seq_id`.
+/// Post-call sequence for call site K, appended to sequence `seq_id`:
+/// - reload spilled args
+/// - emit the call instruction
+/// - Phase 6e writes (compute catch_region_id / exnref_slot from active
+///   in_catch flags)
+/// - if state == UNWINDING, write K to frame.call_index and branch to
+///   `$unwind_save`
 ///
-/// The one-based call selector is installed before entering the callee. Every
-/// fork boundary either is an instrumented local function, whose postamble
-/// throws the private unwind tag, or a generated transport helper which
-/// converts a normal `STATE_UNWINDING` return to that tag before exposing its
-/// results. The function-level catch therefore owns all frame reservation and
-/// no source result remains on the operand stack across a state probe here.
-fn populate_lexical_call(
-    local: &mut LocalFunction,
-    sequence: InstrSeqId,
-    target: CallTarget,
-    sig_ty: TypeId,
-    location: InstrLocId,
-    arguments: &CallArgMaterialization,
-) {
-    let out = &mut local.block_mut(sequence).instrs;
-    emit_materialized_call_args(out, arguments);
-    if matches!(target, CallTarget::Ref) {
-        push_instr(
-            out,
-            Instr::RefCast(walrus::ir::RefCast {
-                nullable: false,
-                heap_type: HeapType::Concrete(sig_ty),
-            }),
-        );
-    }
-    let instruction = match target {
-        CallTarget::Direct(func) => Instr::Call(Call { func }),
-        CallTarget::Indirect { table } => Instr::CallIndirect(CallIndirect { ty: sig_ty, table }),
-        CallTarget::Ref => Instr::CallRef(walrus::ir::CallRef { ty: sig_ty }),
-    };
-    out.push((instruction, location));
-}
-
-#[allow(clippy::too_many_arguments)]
-fn emit_resume_selected_call(
-    local: &mut LocalFunction,
-    sequence: InstrSeqId,
-    target: CallTarget,
-    sig_ty: TypeId,
-    resume_ty: TypeId,
-    location: InstrLocId,
-    arguments: &CallArgMaterialization,
-    runtime: &Runtime,
-    diagnostic_type: i32,
-) {
-    let resume_peek = runtime
-        .resume_peek
-        .expect("replay-routed call requires process resume peek");
-    let resume_table = runtime
-        .resume_table
-        .expect("replay-routed call requires process resume table");
-    let branch_ty = InstrSeqType::MultiValue(resume_ty);
-    let lexical_sentinel = local.builder_mut().dangling_instr_seq(branch_ty).id();
-    let dispatch = local.builder_mut().dangling_instr_seq(branch_ty).id();
-
-    populate_lexical_call(local, lexical_sentinel, target, sig_ty, location, arguments);
-    {
-        let out = &mut local.block_mut(dispatch).instrs;
-        // `resume_peek` is non-consuming and the journal pins its selection
-        // until frame_next. Calling it again on this replay-only branch avoids
-        // adding one live i32 local to every ordinary function activation.
-        push_instr(
-            out,
-            Instr::Const(Const {
-                value: Value::I32(diagnostic_type),
-            }),
-        );
-        push_instr(out, Instr::Call(Call { func: resume_peek }));
-        push_instr(
-            out,
-            Instr::CallIndirect(CallIndirect {
-                ty: resume_ty,
-                table: resume_table,
-            }),
-        );
-    }
-    {
-        let out = &mut local.block_mut(sequence).instrs;
-        // The ordinal is diagnostic only. Exact template/event identity picks
-        // the target; Wasm call_indirect is the authoritative recursive-type
-        // compatibility check and leaves the event unconsumed on mismatch.
-        push_instr(
-            out,
-            Instr::Const(Const {
-                value: Value::I32(diagnostic_type),
-            }),
-        );
-        push_instr(out, Instr::Call(Call { func: resume_peek }));
-        push_instr(
-            out,
-            Instr::Unop(walrus::ir::Unop {
-                op: UnaryOp::I32Eqz,
-            }),
-        );
-        push_instr(
-            out,
-            Instr::IfElse(IfElse {
-                consequent: lexical_sentinel,
-                alternative: dispatch,
-            }),
-        );
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn emit_replay_routed_call(
-    local: &mut LocalFunction,
-    sequence: InstrSeqId,
-    target: CallTarget,
-    direct_activation: bool,
-    sig_ty: TypeId,
-    resume_ty: TypeId,
-    location: InstrLocId,
-    arguments: &CallArgMaterialization,
-    runtime: &Runtime,
-) {
-    let branch_ty = InstrSeqType::MultiValue(resume_ty);
-    let normal = local.builder_mut().dangling_instr_seq(branch_ty).id();
-    let replay = local.builder_mut().dangling_instr_seq(branch_ty).id();
-    populate_lexical_call(local, normal, target, sig_ty, location, arguments);
-    if direct_activation {
-        // WHY: adding a no-argument resume thunk in front of every ordinary
-        // recursive activation doubles native rewind depth. A materialized
-        // direct callee already owns the selected event; its preamble
-        // validates activation/function identity through frame_next before
-        // consuming it. Tail-transparent, indirect, and reference calls still
-        // require the process router because their lexical target need not be
-        // the next materialized activation.
-        debug_assert!(matches!(target, CallTarget::Direct(_)));
-        populate_lexical_call(local, replay, target, sig_ty, location, arguments);
-    } else {
-        emit_resume_selected_call(
-            local,
-            replay,
-            target,
-            sig_ty,
-            resume_ty,
-            location,
-            arguments,
-            runtime,
-            sig_ty.index() as i32,
-        );
-    }
-    let out = &mut local.block_mut(sequence).instrs;
-    push_instr(
-        out,
-        Instr::GlobalGet(GlobalGet {
-            global: runtime.state_global,
-        }),
-    );
-    push_instr(
-        out,
-        Instr::Const(Const {
-            value: Value::I32(runtime::STATE_REWINDING),
-        }),
-    );
-    push_instr(
-        out,
-        Instr::Binop(Binop {
-            op: BinaryOp::I32GeU,
-        }),
-    );
-    push_instr(
-        out,
-        Instr::IfElse(IfElse {
-            consequent: replay,
-            alternative: normal,
-        }),
-    );
-}
-
-/// Emit one result-typed private-tag boundary around a fork-reaching call.
-///
-/// Values carried below the call remain below `result_boundary`; a normal
-/// call branches out with only its declared results. A private unwind lands
-/// after `catch_boundary`, where the statically known call index selects the
-/// frame or live-abort restart without any source-function selector local.
-#[allow(clippy::too_many_arguments)]
-fn emit_replay_routed_call_with_unwind_boundary(
-    local: &mut LocalFunction,
-    sequence: InstrSeqId,
-    target: CallTarget,
-    direct_activation: bool,
-    sig_ty: TypeId,
-    resume_ty: TypeId,
-    location: InstrLocId,
-    arguments: &CallArgMaterialization,
-    call_idx: u32,
-    runtime: &Runtime,
-    _memory: MemoryId,
-    ptr_ty: ValType,
-    frame_size: u32,
-    unwind_save: InstrSeqId,
-    abort: AbortDispatch,
-) {
-    let result_ty = InstrSeqType::MultiValue(resume_ty);
-    let result_boundary = local.builder_mut().dangling_instr_seq(result_ty).id();
-    let catch_boundary = local
-        .builder_mut()
-        .dangling_instr_seq(InstrSeqType::Simple(None))
-        .id();
-    let call_body = local.builder_mut().dangling_instr_seq(result_ty).id();
-
-    emit_replay_routed_call(
-        local,
-        call_body,
-        target,
-        direct_activation,
-        sig_ty,
-        resume_ty,
-        location,
-        arguments,
-        runtime,
-    );
-    {
-        let out = &mut local.block_mut(catch_boundary).instrs;
-        push_instr(
-            out,
-            Instr::TryTable(TryTable {
-                seq: call_body,
-                catches: vec![TryTableCatch::Catch {
-                    tag: runtime
-                        .unwind_tag
-                        .expect("fork call boundary requires private unwind tag"),
-                    label: catch_boundary,
-                }],
-            }),
-        );
-        // On the normal edge the call's results satisfy the result boundary.
-        // The catch edge branches to the end of this simple block and enters
-        // the static unwind handler below with no fabricated result values.
-        push_instr(
-            out,
-            Instr::Br(Br {
-                block: result_boundary,
-            }),
-        );
-    }
-    {
-        let out = &mut local.block_mut(result_boundary).instrs;
-        push_instr(
-            out,
-            Instr::Block(Block {
-                seq: catch_boundary,
-            }),
-        );
-    }
-    emit_static_call_unwind_handler(
-        local,
-        result_boundary,
-        ptr_ty,
-        frame_size,
-        call_idx,
-        unwind_save,
-        abort,
-    );
-    // Both handler arms branch away, but make that fact explicit to the
-    // validator: the result-typed boundary has no fallthrough value on the
-    // caught edge.
-    push_instr(
-        &mut local.block_mut(result_boundary).instrs,
-        Instr::Unreachable(Unreachable {}),
-    );
-    push_instr(
-        &mut local.block_mut(sequence).instrs,
-        Instr::Block(Block {
-            seq: result_boundary,
-        }),
-    );
-}
-
+/// Takes `&mut LocalFunction` so Phase 6e can allocate dangling
+/// IfElse branches for each handler check.
 #[allow(clippy::too_many_arguments)]
 fn emit_post_call_via_local(
     local: &mut LocalFunction,
@@ -4314,13 +3288,13 @@ fn emit_post_call_via_local(
     call: &CallSiteInfo,
     call_idx: usize,
     arg_materialization: &CallArgMaterialization,
-    carryovers: &[TypedSpillLocal],
-    _catch_handlers: &[CatchHandlerInfo],
+    carryovers: &[LocalId],
+    catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
     frame_size: u32,
-    _catch_state_locals: Option<CatchStateLocals>,
+    catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
     abort: AbortDispatch,
 ) {
@@ -4329,254 +3303,33 @@ fn emit_post_call_via_local(
     // the stack — matching the original code's expected shape.
     {
         let s = &mut local.block_mut(seq_id).instrs;
-        for &(local, ty) in carryovers {
-            push_typed_local_get(s, local, ty);
+        for &l in carryovers.iter() {
+            push_instr(s, Instr::LocalGet(LocalGet { local: l }));
         }
+        emit_materialized_call_args(s, arg_materialization);
+        let call_instr = match call.target {
+            CallTarget::Direct(func) => Instr::Call(Call { func }),
+            CallTarget::Indirect { table } => Instr::CallIndirect(CallIndirect {
+                ty: call.sig_ty,
+                table,
+            }),
+        };
+        s.push((call_instr, call.loc));
     }
-    emit_replay_routed_call_with_unwind_boundary(
+
+    emit_call_index_store_and_unwind_branch(
         local,
         seq_id,
-        call.target,
-        call.direct_activation,
-        call.sig_ty,
-        call.resume_ty
-            .expect("call site resume type was not assigned"),
-        call.loc,
-        arg_materialization,
-        call_idx as u32,
         runtime,
         memory,
         ptr_ty,
         frame_size,
+        call_idx as u32,
         unwind_save,
+        catch_handlers,
+        catch_state_locals,
         abort,
     );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn emit_resume_thunk(
-    module: &mut Module,
-    resumed_function: FunctionId,
-    runtime: &Runtime,
-    memory: MemoryId,
-    ptr_ty: ValType,
-    frame_size: u32,
-    scalar_offsets: &[(LocalId, ValType, u32)],
-    references: &ReferenceFramePlan,
-    func_ordinal: u32,
-) -> FunctionId {
-    let frame_peek = runtime
-        .frame_peek
-        .expect("activation resume thunk requires linked frame peek");
-    let codecs = runtime
-        .reference_codecs
-        .expect("activation resume thunk requires reference codecs");
-    let vector_get = runtime
-        .reference_vector_get
-        .expect("activation resume thunk requires recipe-vector lookup");
-    let (arguments, results) = {
-        let function = module.funcs.get(resumed_function);
-        let FunctionKind::Local(local) = &function.kind else {
-            unreachable!("resume thunk target must be a local function");
-        };
-        (
-            local.args.clone(),
-            module.types.get(function.ty()).results().to_vec(),
-        )
-    };
-    let scalar_offsets: HashMap<LocalId, (ValType, u32)> = scalar_offsets
-        .iter()
-        .map(|&(local, ty, offset)| (local, (ty, offset)))
-        .collect();
-    let reference_slots: HashMap<LocalId, ReferenceFrameSlot> = references
-        .slots
-        .iter()
-        .copied()
-        .map(|slot| (slot.local, slot))
-        .collect();
-    let frame = module.locals.add(ptr_ty);
-    let mut builder = FunctionBuilder::new(&mut module.types, &[], &results);
-    builder.name(format!("__wpk_fork_resume_{func_ordinal}"));
-    {
-        let mut body = builder.func_body();
-        let out = body.instrs_mut();
-        push_instr(out, ptr_const(ptr_ty, frame_size as i64));
-        push_instr(out, Instr::Call(Call { func: frame_peek }));
-        push_instr(out, Instr::LocalSet(LocalSet { local: frame }));
-
-        for argument in arguments {
-            let ty = module.locals.get(argument).ty();
-            match ty {
-                ValType::Ref(reference) => {
-                    let slot = reference_slots.get(&argument).unwrap_or_else(|| {
-                        panic!("resume thunk parameter {argument:?} has no activation-owned recipe")
-                    });
-                    let position = slot.universal_position.unwrap_or_else(|| {
-                        panic!(
-                            "resume thunk parameter {argument:?} does not have a stable recipe-vector position"
-                        )
-                    });
-                    push_instr(out, Instr::LocalGet(LocalGet { local: frame }));
-                    push_instr(out, load_i32(memory, REFERENCE_VECTOR_OFFSET));
-                    push_instr(
-                        out,
-                        Instr::Const(Const {
-                            value: Value::I32(position as i32),
-                        }),
-                    );
-                    push_instr(out, Instr::Call(Call { func: vector_get }));
-                    push_instr(
-                        out,
-                        Instr::Call(Call {
-                            func: slot.class.decoder(codecs),
-                        }),
-                    );
-                    push_decoded_reference_narrowing(out, slot.class, reference);
-                }
-                scalar => {
-                    let &(saved_ty, offset) = scalar_offsets.get(&argument).unwrap_or_else(|| {
-                        panic!("resume thunk scalar parameter {argument:?} has no frame offset")
-                    });
-                    debug_assert_eq!(scalar, saved_ty);
-                    push_instr(out, Instr::LocalGet(LocalGet { local: frame }));
-                    push_instr(out, load_scalar(memory, scalar, offset as u64));
-                }
-            }
-        }
-        push_instr(
-            out,
-            Instr::Call(Call {
-                func: resumed_function,
-            }),
-        );
-    }
-    builder.finish(Vec::new(), &mut module.funcs)
-}
-
-fn emit_resume_catalog(module: &mut Module, thunks: &[ResumeThunk]) {
-    let size = thunks.len() as u64;
-    let table = module
-        .tables
-        .add_local(false, size, Some(size), RefType::FUNCREF);
-    module.tables.get_mut(table).name = Some(RESUME_CATALOG_EXPORT.into());
-    if !thunks.is_empty() {
-        module.elements.add(
-            ElementKind::Active {
-                table,
-                offset: walrus::ConstExpr::Value(Value::I32(0)),
-            },
-            ElementItems::Functions(thunks.iter().map(|thunk| thunk.function).collect()),
-        );
-    }
-    module.exports.add(RESUME_CATALOG_EXPORT, table);
-
-    // The host already validates the exact module template and event target.
-    // Function type equivalence remains the engine's job at the generated
-    // call_indirect site, avoiding a second recursive-type implementation.
-    let mut data = Vec::with_capacity(usize::from(RESUME_CATALOG_HEADER_SIZE) + thunks.len() * 8);
-    data.extend_from_slice(&RESUME_CATALOG_MAGIC);
-    data.extend_from_slice(&RESUME_CATALOG_VERSION.to_le_bytes());
-    data.extend_from_slice(&RESUME_CATALOG_HEADER_SIZE.to_le_bytes());
-    data.extend_from_slice(&(thunks.len() as u32).to_le_bytes());
-    for (slot, thunk) in thunks.iter().enumerate() {
-        debug_assert_eq!(thunk.func_ordinal, slot as u32);
-        data.extend_from_slice(&thunk.func_ordinal.to_le_bytes());
-        data.extend_from_slice(&(slot as u32).to_le_bytes());
-    }
-    module.customs.add(RawCustomSection {
-        name: RESUME_CATALOG_SECTION.into(),
-        data,
-    });
-}
-
-fn exported_function(module: &Module, name: &str) -> Option<FunctionId> {
-    module.exports.iter().find_map(|export| {
-        if export.name != name {
-            return None;
-        }
-        match export.item {
-            ExportItem::Function(function) => Some(function),
-            _ => None,
-        }
-    })
-}
-
-fn exported_table(module: &Module, name: &str) -> Option<TableId> {
-    module.exports.iter().find_map(|export| {
-        if export.name != name {
-            return None;
-        }
-        match export.item {
-            ExportItem::Table(table) => Some(table),
-            _ => None,
-        }
-    })
-}
-
-fn emit_fixed_resume_boundaries(module: &mut Module, runtime: &Runtime) {
-    if runtime.resume_peek.is_none() || runtime.resume_table.is_none() {
-        return;
-    }
-
-    if let Some(start) = exported_function(module, "_start") {
-        let start_ty = module.funcs.get(start).ty();
-        let signature = module.types.get(start_ty);
-        if signature.params().is_empty() && signature.results().is_empty() {
-            let resume_ty = module.types.add(&[], &[]);
-            let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
-            builder.name(RESUME_START_EXPORT.into());
-            let wrapper = builder.finish(Vec::new(), &mut module.funcs);
-            let entry = local_mut(module, wrapper).entry_block();
-            emit_resume_selected_call(
-                local_mut(module, wrapper),
-                entry,
-                CallTarget::Direct(start),
-                start_ty,
-                resume_ty,
-                InstrLocId::default(),
-                &CallArgMaterialization::Spill {
-                    locals: Vec::new(),
-                    types: Vec::new(),
-                },
-                runtime,
-                0,
-            );
-            module.exports.add(RESUME_START_EXPORT, wrapper);
-        }
-    }
-
-    if let Some(function_table) = exported_table(module, "__indirect_function_table") {
-        let ptr_ty = runtime.buf_type;
-        let thread_ty = module.types.add(&[ptr_ty], &[ptr_ty]);
-        let resume_ty = module.types.add(&[], &[ptr_ty]);
-        let table_index = module.locals.add(ValType::I32);
-        let argument = module.locals.add(ptr_ty);
-        let mut builder =
-            FunctionBuilder::new(&mut module.types, &[ValType::I32, ptr_ty], &[ptr_ty]);
-        builder.name(RESUME_THREAD_EXPORT.into());
-        let wrapper = builder.finish(vec![table_index, argument], &mut module.funcs);
-        let entry = local_mut(module, wrapper).entry_block();
-        emit_resume_selected_call(
-            local_mut(module, wrapper),
-            entry,
-            CallTarget::Indirect {
-                table: function_table,
-            },
-            thread_ty,
-            resume_ty,
-            InstrLocId::default(),
-            &CallArgMaterialization::Spill {
-                // call_indirect consumes function parameters first and its
-                // table index last; the public wrapper keeps the ergonomic
-                // host ABI `(table_index, arg)`.
-                locals: vec![argument, table_index],
-                types: vec![ptr_ty, ValType::I32],
-            },
-            runtime,
-            0,
-        );
-        module.exports.add(RESUME_THREAD_EXPORT, wrapper);
-    }
 }
 
 // ----------------------------------------------------------------------
@@ -4652,30 +3405,6 @@ fn collect_user_locals(module: &Module, func_id: FunctionId) -> Vec<(LocalId, Va
         .collect()
 }
 
-fn append_resume_parameter_references(
-    module: &Module,
-    func_id: FunctionId,
-    per_call_references: &mut [Vec<(LocalId, RefType)>],
-) {
-    let FunctionKind::Local(local) = &module.funcs.get(func_id).kind else {
-        return;
-    };
-    let params = module.types.get(module.funcs.get(func_id).ty()).params();
-    debug_assert_eq!(local.args.len(), params.len());
-    for (&argument, &ty) in local.args.iter().zip(params) {
-        let Some(reference) = supported_reference(ty) else {
-            continue;
-        };
-        // WHY: a resume thunk has no parameters so callers with a different
-        // lexical signature can bypass eliminated tail frames. Even a dead
-        // non-nullable parameter needs a valid value to enter the original
-        // function, whose preamble then consumes and restores this frame.
-        for references in per_call_references.iter_mut() {
-            references.push((argument, reference));
-        }
-    }
-}
-
 // ----------------------------------------------------------------------
 // Nested-seq traversal
 // ----------------------------------------------------------------------
@@ -4713,152 +3442,6 @@ fn is_scalar(ty: ValType) -> bool {
     !matches!(ty, ValType::Ref(_))
 }
 
-fn supported_reference(ty: ValType) -> Option<RefType> {
-    match ty {
-        ValType::Ref(reference) => Some(reference),
-        _ => None,
-    }
-}
-
-fn spill_storage_type(ty: ValType) -> ValType {
-    match supported_reference(ty) {
-        Some(reference) if !reference.nullable => {
-            let mut storage = reference;
-            storage.nullable = true;
-            ValType::Ref(storage)
-        }
-        _ => ty,
-    }
-}
-
-fn push_typed_local_get(out: &mut Vec<(Instr, InstrLocId)>, local: LocalId, expected: ValType) {
-    push_instr(out, Instr::LocalGet(LocalGet { local }));
-    if matches!(expected, ValType::Ref(reference) if !reference.nullable) {
-        push_instr(out, Instr::RefAsNonNull(RefAsNonNull {}));
-    }
-}
-
-fn push_decoded_reference_narrowing(
-    out: &mut Vec<(Instr, InstrLocId)>,
-    class: RefClass,
-    expected: RefType,
-) {
-    let broad = class.nullable_type();
-    if expected.heap_type != broad.heap_type {
-        push_instr(
-            out,
-            Instr::RefCast(walrus::ir::RefCast {
-                nullable: expected.nullable,
-                heap_type: expected.heap_type,
-            }),
-        );
-    } else if !expected.nullable {
-        push_instr(out, Instr::RefAsNonNull(RefAsNonNull {}));
-    }
-}
-
-fn plan_reference_frame(
-    module: &Module,
-    analysis: &FunctionReferenceAnalysis,
-    mut per_call_synthetic: Vec<Vec<(LocalId, RefType)>>,
-) -> ReferenceFramePlan {
-    debug_assert_eq!(analysis.call_sites.len(), per_call_synthetic.len());
-    let call_count = analysis.call_sites.len();
-    let mut per_call_refs: Vec<BTreeMap<LocalId, RefType>> = vec![BTreeMap::new(); call_count];
-    let mut null_locals_by_call = vec![Vec::new(); call_count];
-
-    for (call_idx, site) in analysis.call_sites.iter().enumerate() {
-        if site.reachable {
-            // The replayed callee can still throw after the child-side fork
-            // return. Preserve references used by either normal continuation
-            // or an exceptional successor; definitely-null cleanup locals
-            // remain recipe-free below.
-            for &local in &site.live_ref_locals_on_any_successor {
-                let ty = analysis.reference_locals[&local];
-                match site
-                    .local_nullability_before_call
-                    .get(&local)
-                    .copied()
-                    .unwrap_or(ReferenceNullability::MaybeNonNull)
-                {
-                    ReferenceNullability::DefinitelyNull if ty.nullable => {
-                        null_locals_by_call[call_idx].push((local, ty));
-                    }
-                    ReferenceNullability::DefinitelyNull | ReferenceNullability::MaybeNonNull => {
-                        per_call_refs[call_idx].insert(local, ty);
-                    }
-                }
-            }
-        }
-        for (local, ty) in per_call_synthetic[call_idx].drain(..) {
-            per_call_refs[call_idx]
-                .entry(local)
-                .and_modify(|existing| {
-                    debug_assert_eq!(RefClass::of(module, *existing), RefClass::of(module, ty));
-                    existing.nullable &= ty.nullable;
-                })
-                .or_insert(ty);
-        }
-    }
-
-    let mut union = BTreeMap::<LocalId, RefType>::new();
-    let mut occurrence_count = BTreeMap::<LocalId, usize>::new();
-    for refs in &per_call_refs {
-        for (&local, &ty) in refs {
-            union
-                .entry(local)
-                .and_modify(|existing| existing.nullable &= ty.nullable)
-                .or_insert(ty);
-            *occurrence_count.entry(local).or_default() += 1;
-        }
-    }
-
-    let mut slots = Vec::with_capacity(union.len());
-    let mut slot_by_local = BTreeMap::<LocalId, usize>::new();
-    // Values present at every landing form a stable vector prefix. Function
-    // reference parameters are deliberately added to every landing, allowing
-    // a no-parameter resume thunk to decode them without a synthetic local or
-    // a call-index dispatch.
-    let mut ordered: Vec<_> = union.into_iter().collect();
-    ordered.sort_by_key(|(local, _)| {
-        (
-            occurrence_count.get(local).copied().unwrap_or(0) != call_count,
-            *local,
-        )
-    });
-    let universal_count = ordered
-        .iter()
-        .take_while(|(local, _)| occurrence_count.get(local).copied().unwrap_or(0) == call_count)
-        .count();
-    for (position, (local, ty)) in ordered.into_iter().enumerate() {
-        let index = slots.len();
-        slots.push(ReferenceFrameSlot {
-            local,
-            ty,
-            class: RefClass::of(module, ty),
-            universal_position: (position < universal_count).then_some(position as u32),
-        });
-        slot_by_local.insert(local, index);
-    }
-    let slots_by_call = per_call_refs
-        .into_iter()
-        .map(|refs| {
-            let mut slots: Vec<_> = refs
-                .into_keys()
-                .map(|local| slot_by_local[&local])
-                .collect();
-            slots.sort_unstable();
-            slots
-        })
-        .collect();
-
-    ReferenceFramePlan {
-        slots,
-        slots_by_call,
-        null_locals_by_call,
-    }
-}
-
 fn scalar_size(ty: ValType) -> u32 {
     match ty {
         ValType::I32 | ValType::F32 => 4,
@@ -4870,6 +3453,28 @@ fn scalar_size(ty: ValType) -> u32 {
 
 fn natural_align(ty: ValType) -> u32 {
     scalar_size(ty)
+}
+
+fn default_for_type(ty: ValType) -> Option<Instr> {
+    Some(match ty {
+        ValType::I32 => Instr::Const(Const {
+            value: Value::I32(0),
+        }),
+        ValType::I64 => Instr::Const(Const {
+            value: Value::I64(0),
+        }),
+        ValType::F32 => Instr::Const(Const {
+            value: Value::F32(0.0),
+        }),
+        ValType::F64 => Instr::Const(Const {
+            value: Value::F64(0.0),
+        }),
+        ValType::V128 => Instr::Const(Const {
+            value: Value::V128(0),
+        }),
+        ValType::Ref(rt) if rt.nullable => Instr::RefNull(RefNull { ty: rt }),
+        ValType::Ref(_) => return None,
+    })
 }
 
 fn load_i32(memory: MemoryId, offset: u64) -> Instr {
@@ -5026,34 +3631,183 @@ fn push_current_call_index(
 }
 
 // ----------------------------------------------------------------------
-// Tagged-catch region planning
+// Phase 4f — ref-typed local spilling via aux tables
 // ----------------------------------------------------------------------
 
-fn plan_catch_regions(
-    module: &Module,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RefClass {
+    Funcref,
+    Externref,
+    Exnref,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RefLocalSlot {
+    pub local: LocalId,
+    pub class: RefClass,
+    pub slot: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AuxTables {
+    pub funcref: Option<TableId>,
+    pub externref: Option<TableId>,
+    pub exnref: Option<TableId>,
+}
+
+impl AuxTables {
+    pub fn table_for(&self, class: RefClass) -> Option<TableId> {
+        match class {
+            RefClass::Funcref => self.funcref,
+            RefClass::Externref => self.externref,
+            RefClass::Exnref => self.exnref,
+        }
+    }
+}
+
+fn classify_ref(rt: RefType) -> Option<RefClass> {
+    if !rt.nullable {
+        return None;
+    }
+    match rt.heap_type {
+        HeapType::Abstract(AbstractHeapType::Func) => Some(RefClass::Funcref),
+        HeapType::Abstract(AbstractHeapType::NoFunc) => Some(RefClass::Funcref),
+        HeapType::Abstract(AbstractHeapType::Extern) => Some(RefClass::Externref),
+        HeapType::Abstract(AbstractHeapType::NoExtern) => Some(RefClass::Externref),
+        HeapType::Abstract(AbstractHeapType::Exn) => Some(RefClass::Exnref),
+        HeapType::Abstract(AbstractHeapType::NoExn) => Some(RefClass::Exnref),
+        _ => None,
+    }
+}
+
+fn plan_and_inject_aux_tables(
+    module: &mut Module,
     targets: &[FunctionId],
-) -> HashMap<FunctionId, Vec<CatchRegionPlan>> {
+) -> (
+    AuxTables,
+    HashMap<FunctionId, Vec<RefLocalSlot>>,
+    HashMap<FunctionId, Vec<CatchRegionPlan>>,
+) {
+    let mut funcref_cursor: u32 = 0;
+    let mut externref_cursor: u32 = 0;
+    let mut exnref_cursor: u32 = 0;
+
+    let mut plan: HashMap<FunctionId, Vec<RefLocalSlot>> = HashMap::new();
+
+    for &id in targets {
+        let mut per_func: Vec<RefLocalSlot> = Vec::new();
+        for (local, ty) in collect_user_locals(module, id) {
+            let rt = match ty {
+                ValType::Ref(rt) => rt,
+                _ => continue,
+            };
+            let class = classify_ref(rt).unwrap_or_else(|| {
+                let name = module.funcs.get(id).name.as_deref().unwrap_or("<anon>");
+                panic!(
+                    "fork-instrument 4f: function `{name}` has a ref-typed local of \
+                     type {rt:?} which is not yet supported (non-nullable or non-abstract \
+                     ref).",
+                )
+            });
+            let slot = match class {
+                RefClass::Funcref => {
+                    let s = funcref_cursor;
+                    funcref_cursor += 1;
+                    s
+                }
+                RefClass::Externref => {
+                    let s = externref_cursor;
+                    externref_cursor += 1;
+                    s
+                }
+                RefClass::Exnref => {
+                    let s = exnref_cursor;
+                    exnref_cursor += 1;
+                    s
+                }
+            };
+            per_func.push(RefLocalSlot { local, class, slot });
+        }
+        if !per_func.is_empty() {
+            plan.insert(id, per_func);
+        }
+    }
+
     let mut catch_plans: HashMap<FunctionId, Vec<CatchRegionPlan>> = HashMap::new();
     for &id in targets {
         let bodies = discover_try_table_bodies(module, id);
         let mut per_func: Vec<CatchRegionPlan> = Vec::with_capacity(bodies.len());
         for (lex_idx, body_seq) in bodies.into_iter().enumerate() {
+            let slot = exnref_cursor;
+            exnref_cursor += 1;
             per_func.push(CatchRegionPlan {
                 body_seq,
                 catch_region_id: (lex_idx as u32) + 1,
+                exnref_slot: slot,
             });
         }
         if !per_func.is_empty() {
             catch_plans.insert(id, per_func);
         }
     }
-    catch_plans
+
+    let funcref = if funcref_cursor > 0 {
+        let id = module.tables.add_local(
+            false,
+            funcref_cursor as u64,
+            Some(funcref_cursor as u64),
+            RefType::FUNCREF,
+        );
+        module.tables.get_mut(id).name = Some("_wpk_fork_funcref_stash".into());
+        Some(id)
+    } else {
+        None
+    };
+    let externref = if externref_cursor > 0 {
+        let id = module.tables.add_local(
+            false,
+            externref_cursor as u64,
+            Some(externref_cursor as u64),
+            RefType::EXTERNREF,
+        );
+        module.tables.get_mut(id).name = Some("_wpk_fork_externref_stash".into());
+        Some(id)
+    } else {
+        None
+    };
+    let exnref = if exnref_cursor > 0 {
+        let exn_rt = RefType {
+            nullable: true,
+            heap_type: HeapType::Abstract(AbstractHeapType::Exn),
+        };
+        let id = module.tables.add_local(
+            false,
+            exnref_cursor as u64,
+            Some(exnref_cursor as u64),
+            exn_rt,
+        );
+        module.tables.get_mut(id).name = Some("_wpk_fork_exnref_stash".into());
+        Some(id)
+    } else {
+        None
+    };
+
+    (
+        AuxTables {
+            funcref,
+            externref,
+            exnref,
+        },
+        plan,
+        catch_plans,
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct CatchRegionPlan {
     pub body_seq: InstrSeqId,
     pub catch_region_id: u32,
+    pub exnref_slot: u32,
 }
 
 fn discover_try_table_bodies(module: &Module, func_id: FunctionId) -> Vec<InstrSeqId> {
@@ -5077,58 +3831,33 @@ fn visit_try_tables(f: &LocalFunction, seq: InstrSeqId, out: &mut Vec<InstrSeqId
     }
 }
 
-/// A statically tagged catch shape whose identity and scalar payload can be
-/// serialized in an activation frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaggedCatchKind {
-    Plain,
-    Ref,
-    /// A user CatchAll retargeted through CatchAllRef so the activation owns
-    /// the otherwise-hidden exception identity.
-    AllPlain,
-    AllRef,
-}
-
-impl TaggedCatchKind {
-    fn is_plain(self) -> bool {
-        matches!(self, Self::Plain | Self::AllPlain)
-    }
-
-    fn is_ref(self) -> bool {
-        matches!(self, Self::Ref | Self::AllRef)
-    }
-}
-
-/// Describes one catch clause in a fork-path try_table.
+/// Stage 1 (B1) — describes a single `catch $tag $label` clause in a
+/// fork-path try_table. Discovered alongside `CatchRegionPlan` and
+/// recorded per-region for later Stage 2 wiring.
 #[derive(Debug, Clone)]
 pub struct PlainCatchArm {
-    /// Index of this arm within its try_table's `catches` list. The emitted
-    /// state assigns the `(catch_region_id, arm_idx)` pair one non-zero
-    /// function-local selector stored directly in frame word +8.
+    /// Index of this arm within its try_table's `catches` list. Stage 2
+    /// writes this value to the region's frame-backed `active_arm`
+    /// local; the rewind path reads it to select which
+    /// `throw $tag (operands)` to emit. Combined with the function's
+    /// `catch_region_id` (tracked by `CatchRegionPlan`), the pair is
+    /// unique within the function — no module-wide arm_id is needed.
     pub arm_idx: u32,
-    /// Whether normal handler entry receives only the tag payload or the tag
-    /// payload followed by an instance-local exnref.
-    pub kind: TaggedCatchKind,
-    /// Tag this arm catches, or `None` for CatchAll/CatchAllRef.
-    pub tag: Option<TagId>,
+    /// Tag this arm catches.
+    pub tag: TagId,
     /// Label the arm branches to on catch (target block id).
     pub label: InstrSeqId,
     /// Tag's operand types (matches the params of the type that
     /// `module.tags.get(tag).ty()` references). Cached at discovery
     /// time so we don't re-look-up on emission.
     pub operand_tys: Vec<ValType>,
-    /// JavaScript cannot inspect `v128`, `exnref`, or GC/reference payloads.
-    /// Capture the entire exception as one exnref recipe and replay it with
-    /// `throw_ref` instead of serializing those operands independently.
-    pub uses_exception_recipe: bool,
 }
 
 /// Stage 1 (B1) — for each try_table in `func_id`, returns
-/// `(body_seq, catch_arms)` where every tagged and catch-all arm is represented.
-/// CatchAll is retargeted through CatchAllRef so an arbitrary Wasm/JSTag/raw
-/// exception has the same positive broker/recipe path as an explicit
-/// CatchAllRef. Tagged payloads that JavaScript cannot inspect are likewise
-/// captured through CatchRef and owned by one exnref recipe.
+/// `(body_seq, plain_catch_arms)` where `plain_catch_arms` lists
+/// every plain `Catch { tag, label }` clause. Following Phase 6's
+/// pattern: catch_ref / catch_all_ref clauses are skipped (Phase 6
+/// territory); plain catch is enumerated unfiltered.
 ///
 /// Function-level filtering happens at the call site (caller passes
 /// only fork-path `FunctionId`s, mirroring `discover_try_table_bodies`).
@@ -5158,36 +3887,22 @@ fn visit_for_plain_catch(
         if let Instr::TryTable(tt) = instr {
             let mut arms: Vec<PlainCatchArm> = Vec::new();
             for (i, c) in tt.catches.iter().enumerate() {
-                let (kind, tag, label) = match c {
-                    TryTableCatch::Catch { tag, label } => {
-                        (TaggedCatchKind::Plain, Some(*tag), *label)
-                    }
-                    TryTableCatch::CatchRef { tag, label } => {
-                        (TaggedCatchKind::Ref, Some(*tag), *label)
-                    }
-                    TryTableCatch::CatchAll { label } => (TaggedCatchKind::AllPlain, None, *label),
-                    TryTableCatch::CatchAllRef { label } => (TaggedCatchKind::AllRef, None, *label),
+                let (tag, label) = match c {
+                    TryTableCatch::Catch { tag, label } => (*tag, *label),
+                    _ => continue, // CatchRef / CatchAllRef: handled by Phase 6.
+                                   // CatchAll: unsupported today; not in B1 scope
+                                   // (no tag → no operand_tys to save).
                 };
-                let operand_tys: Vec<ValType> = tag
-                    .map(|tag| {
-                        module
-                            .types
-                            .get(module.tags.get(tag).ty())
-                            .params()
-                            .to_vec()
-                    })
-                    .unwrap_or_default();
-                let uses_exception_recipe = tag.is_none()
-                    || operand_tys
-                        .iter()
-                        .any(|ty| matches!(ty, ValType::Ref(_) | ValType::V128));
+                let operand_tys: Vec<ValType> = module
+                    .types
+                    .get(module.tags.get(tag).ty())
+                    .params()
+                    .to_vec();
                 arms.push(PlainCatchArm {
                     arm_idx: i as u32,
-                    kind,
                     tag,
                     label,
                     operand_tys,
-                    uses_exception_recipe,
                 });
             }
             if !arms.is_empty() {
@@ -5200,25 +3915,78 @@ fn visit_for_plain_catch(
     }
 }
 
-/// Module-wide static tagged-catch plan.
+/// Module-wide static plain-catch plan.
+///
+/// Stage 2 (Task 2.1) adds `b2_carveout`: functions whose plain-catch
+/// arms include unsupported operand types (e.g., ref-typed) land here
+/// instead of `per_function`. Stage 2 emission tasks check this set
+/// and skip plain-catch instrumentation for carved-out functions —
+/// falling back to today's behavior (Phase 6 catch_ref still works,
+/// plain-catch fork remains unsupported for those specific shapes).
 #[derive(Debug, Clone, Default)]
 pub struct PlainCatchPlan {
     /// Per-function per-region arm metadata. Outer Vec
     /// parallels `discover_plain_catch_arms`'s return shape (one
     /// entry per try_table that has at least one plain-catch arm).
     pub per_function: std::collections::HashMap<FunctionId, Vec<(InstrSeqId, Vec<PlainCatchArm>)>>,
+    /// Stage 2 (B1): functions whose plain-catch arms include
+    /// unsupported operand types (e.g., ref-typed). For these
+    /// functions, B1 emission tasks fall back to today's behavior
+    /// (Phase 6 doesn't intercept plain-catch arms — the function
+    /// works for catch_ref but is unsupported for plain-catch fork).
+    pub b2_carveout: std::collections::HashSet<FunctionId>,
 }
 
-/// Discover every tagged and catch-all clause across fork-path functions.
+/// Discover supported plain-catch arms across all fork-path functions.
 ///
-/// Every arm receives either exact scalar payload ownership or one complete
-/// exception recipe. Silently omitting an arm would be an instrumenter bug
-/// that surfaced only in a fresh child.
+/// Operand types are restricted to scalars (i32/i64/f32/f64/v128).
+/// Ref-typed operands (externref/funcref/exnref/GC refs) require
+/// auxiliary-table spilling and remain a conservative carve-out.
+///
+/// Stage 2 (Task 2.1) detects ref-typed payloads here and routes the
+/// affected function to `PlainCatchPlan.b2_carveout` instead of
+/// `per_function`. Stage 2 emission tasks check the carve-out set
+/// and skip plain-catch instrumentation for those functions.
+///
+/// The carve-out is whole-function: if any arm in any region of a
+/// function has a ref-typed operand, the entire function's
+/// plain-catch instrumentation is skipped. We don't selectively drop
+/// arms because Task 2.3's rewind dispatcher needs the whole
+/// region's arm set or none.
+///
 pub fn plan_plain_catches(module: &Module, targets: &[FunctionId]) -> PlainCatchPlan {
     let mut plan = PlainCatchPlan::default();
     for &fid in targets {
         let arms_per_region = discover_plain_catch_arms(module, fid);
         if arms_per_region.is_empty() {
+            continue;
+        }
+        // Stage 2 (B1): detect unsupported operand types and carve out
+        // the entire function. We can't selectively drop just the bad
+        // arms because replay needs a complete region-wide arm set.
+        let has_unsupported = arms_per_region.iter().any(|(_, arms)| {
+            arms.iter()
+                .any(|arm| arm.operand_tys.iter().any(|t| matches!(t, ValType::Ref(_))))
+        });
+        // Stage 2 (B1) Task 2.4: multi-target plain-catch guard.
+        // A try_table whose plain-catch arms branch to *different*
+        // labels has not been verified end-to-end. Per-arm capture
+        // blocks each branch to their own original target label, and
+        // the rewind dispatcher's re-throw routes through the
+        // try_table's catch clauses to reach those captures, so in
+        // principle multi-target should work — but until a real port
+        // exercises it, conservatively treat such functions as
+        // b2_carveout. Single-target multi-arm (multiple catches all
+        // pointing at the same label) remains supported.
+        let has_multi_target = arms_per_region.iter().any(|(_, arms)| {
+            if arms.len() <= 1 {
+                return false;
+            }
+            let first = arms[0].label;
+            arms.iter().any(|arm| arm.label != first)
+        });
+        if has_unsupported || has_multi_target {
+            plan.b2_carveout.insert(fid);
             continue;
         }
         plan.per_function.insert(fid, arms_per_region);
@@ -5230,21 +3998,7 @@ pub fn plan_plain_catches(module: &Module, targets: &[FunctionId]) -> PlainCatch
 #[derive(Debug, Clone)]
 struct PlainCatchArmState {
     arm: PlainCatchArm,
-    /// Non-zero function-local identity for this exact `(region, arm)` pair.
-    ///
-    /// WHY: frame word +8 is copied to a fresh child. Keeping the selector in
-    /// that existing header word avoids both a frame-backed `active_arm` local
-    /// and any module-instance auxiliary state.
-    selector: u32,
-    /// Typed per-region union used to forward the original tag payload and,
-    /// for scalar arms, back the selector-overlaid frame bytes. Recipe-backed
-    /// arms do not serialize these values independently because the exception
-    /// codec owns their payload atomically.
     operand_locals: Vec<LocalId>,
-    /// Function-shared CatchRef forwarding scratch for scalar arms, or
-    /// region-shared activation state for recipe-backed exceptions. Only the
-    /// latter is added to the linked frame's reference plan.
-    captured_exnref: Option<LocalId>,
 }
 
 /// Activation-owned state for one try_table with plain catches.
@@ -5254,19 +4008,7 @@ struct PlainCatchArmState {
 #[derive(Debug, Clone)]
 struct PlainCatchRegionState {
     body_seq: InstrSeqId,
-    /// Function-wide retained exception selected by frame word +8.
-    ///
-    /// WHY: only one catch selector is activation-live at a time. A retained
-    /// complete-exception recipe that cannot be named by that selector is not
-    /// replay state; user-visible exceptions that remain live have separate
-    /// typed local/operand ownership. Sharing this slot across regions keeps
-    /// static catch-region count out of the native activation footprint and
-    /// out of the process reference vector.
-    retained_recipe_exnref: Option<LocalId>,
-    /// Arms in a region receive one contiguous selector interval, allowing
-    /// the rewind guard to recognize the region with two unsigned compares.
-    first_selector: u32,
-    last_selector: u32,
+    active_arm: LocalId,
     arms: Vec<PlainCatchArmState>,
 }
 
@@ -5274,331 +4016,44 @@ fn allocate_plain_catch_state(
     module: &mut Module,
     plain_catches: &[(InstrSeqId, Vec<PlainCatchArm>)],
 ) -> Vec<PlainCatchRegionState> {
-    let forwarding_exnref_scratch = plain_catches
+    plain_catches
         .iter()
-        .flat_map(|(_, arms)| arms)
-        .any(|arm| arm.kind.is_ref() && !arm.uses_exception_recipe)
-        .then(|| {
-            module.locals.add(ValType::Ref(RefType {
-                nullable: true,
-                heap_type: HeapType::Abstract(AbstractHeapType::Exn),
-            }))
-        });
-    let retained_recipe_exnref = plain_catches
-        .iter()
-        .flat_map(|(_, arms)| arms)
-        .any(|arm| arm.uses_exception_recipe)
-        .then(|| {
-            module.locals.add(ValType::Ref(RefType {
-                nullable: true,
-                heap_type: HeapType::Abstract(AbstractHeapType::Exn),
-            }))
-        });
-    let mut next_selector = 1u32;
-    let mut regions = Vec::with_capacity(plain_catches.len());
-    let mut operand_pools: Vec<(ValType, Vec<LocalId>)> = Vec::new();
-    for (body_seq, arms) in plain_catches {
-        debug_assert!(!arms.is_empty());
-        let first_selector = next_selector;
-        let mut arm_states = Vec::with_capacity(arms.len());
-        for arm in arms.iter().cloned() {
-            let selector = next_selector;
-            next_selector = next_selector
-                .checked_add(1)
-                .expect("a Wasm function cannot contain 2^32 catch arms");
-            let mut uses_by_type: Vec<(ValType, usize)> = Vec::new();
-            let mut operand_locals = Vec::with_capacity(arm.operand_tys.len());
-            for &ty in &arm.operand_tys {
-                let storage_ty = spill_storage_type(ty);
-                let ordinal = match uses_by_type
-                    .iter_mut()
-                    .find(|(candidate, _)| *candidate == storage_ty)
-                {
-                    Some((_, next)) => {
-                        let ordinal = *next;
-                        *next += 1;
-                        ordinal
-                    }
-                    None => {
-                        uses_by_type.push((storage_ty, 1));
-                        0
-                    }
-                };
-                let pool_index = operand_pools
-                    .iter()
-                    .position(|(candidate, _)| *candidate == storage_ty)
-                    .unwrap_or_else(|| {
-                        operand_pools.push((storage_ty, Vec::new()));
-                        operand_pools.len() - 1
-                    });
-                let pool = &mut operand_pools[pool_index].1;
-                if pool.len() == ordinal {
-                    pool.push(module.locals.add(storage_ty));
-                }
-                // WHY: catch capture publishes one dynamically latest selector
-                // per activation, and the capture tail contains no call or
-                // throw between overwriting this typed scratch and publishing
-                // that selector. A function-wide typed union therefore cannot
-                // be observed half-updated by fork. Guest-visible values from
-                // earlier handlers have ordinary local/operand liveness
-                // ownership; this scratch exists only to rethrow the selected
-                // catch. Recursive activations still receive distinct native
-                // local tuples.
-                operand_locals.push(pool[ordinal]);
-            }
-            let captured_exnref = if arm.uses_exception_recipe {
-                // The single latest-catch selector owns this value. An older
-                // synthetic recipe cannot be replayed after another catch
-                // supersedes its selector; any guest-visible exception that
-                // remains live is captured independently by typed liveness.
-                retained_recipe_exnref
-            } else if arm.kind.is_ref() {
-                // WHY: a scalar CatchRef needs this local only to move the
-                // non-null exception past its scalar payload. The generated
-                // capture tail contains no call or throw and clears the local
-                // before entering user code, so mutually exclusive arms can
-                // share one function-local scratch without retaining a GC
-                // root or increasing every activation by one exnref per arm.
-                forwarding_exnref_scratch
-            } else {
-                None
-            };
-            arm_states.push(PlainCatchArmState {
-                arm,
-                selector,
-                operand_locals,
-                captured_exnref,
-            });
-        }
-        regions.push(PlainCatchRegionState {
+        .map(|(body_seq, arms)| PlainCatchRegionState {
             body_seq: *body_seq,
-            retained_recipe_exnref,
-            first_selector,
-            last_selector: next_selector - 1,
-            arms: arm_states,
-        });
-    }
-    regions
-}
-
-#[derive(Debug, Clone)]
-struct PlainCatchScalarArmFrame {
-    selector: u32,
-    fields: Vec<(LocalId, ValType, u32)>,
-}
-
-/// One overlaid scalar payload range shared by every catch arm in a function.
-///
-/// Only one `(region, arm)` selector can own a continuation landing. Giving
-/// each arm offsets relative to the same `start` therefore preserves the
-/// selected payload in `max(arm_size)` bytes instead of summing all static
-/// arms. Save/restore dispatch below makes the aliasing explicit and prevents
-/// inactive locals from overwriting the active arm.
-#[derive(Debug, Clone, Default)]
-struct PlainCatchScalarFrame {
-    arms: Vec<PlainCatchScalarArmFrame>,
-    byte_len: u32,
-}
-
-impl PlainCatchScalarFrame {
-    fn frame_end(&self, start: u32) -> u32 {
-        start
-            .checked_add(self.byte_len)
-            .expect("catch payload frame exceeds the 32-bit continuation format")
-    }
-}
-
-fn plan_plain_catch_scalar_frame(
-    regions: &[PlainCatchRegionState],
-    start: u32,
-) -> PlainCatchScalarFrame {
-    let mut plan = PlainCatchScalarFrame::default();
-    for region in regions {
-        for arm in &region.arms {
-            let mut relative = 0u32;
-            let mut fields = Vec::new();
-            if !arm.arm.uses_exception_recipe {
-                for (&local, &ty) in arm.operand_locals.iter().zip(&arm.arm.operand_tys) {
-                    fields.push((
-                        local,
-                        ty,
-                        start
-                            .checked_add(relative)
-                            .expect("catch payload offset exceeds the frame format"),
-                    ));
-                    relative = relative
-                        .checked_add(scalar_size(ty))
-                        .expect("catch payload exceeds the frame format");
-                }
-            }
-            plan.byte_len = plan.byte_len.max(relative);
-            plan.arms.push(PlainCatchScalarArmFrame {
-                selector: arm.selector,
-                fields,
-            });
-        }
-    }
-    plan
-}
-
-#[derive(Debug, Clone, Copy)]
-enum PlainCatchScalarIo {
-    Save,
-    Restore,
-}
-
-/// Build a selector-guarded frame I/O tree for the overlaid catch payload.
-///
-/// Inactive arms intentionally perform no memory access. A non-zero selector
-/// not present in the static function plan is corrupt continuation state and
-/// traps before replay can branch into user code.
-fn build_plain_catch_scalar_dispatch(
-    local: &mut LocalFunction,
-    runtime: &Runtime,
-    memory: MemoryId,
-    ptr_ty: ValType,
-    catch_selector: LocalId,
-    plan: &PlainCatchScalarFrame,
-    io: PlainCatchScalarIo,
-) -> Option<InstrSeqId> {
-    if plan.arms.is_empty() {
-        return None;
-    }
-
-    let empty = local
-        .builder_mut()
-        .dangling_instr_seq(InstrSeqType::Simple(None))
-        .id();
-    let invalid = local
-        .builder_mut()
-        .dangling_instr_seq(InstrSeqType::Simple(None))
-        .id();
-    push_instr(
-        &mut local.block_mut(invalid).instrs,
-        Instr::Unreachable(Unreachable {}),
-    );
-
-    // Selector zero is the common path outside a catch. Every other value
-    // must match an exact static arm below.
-    let mut chain = local
-        .builder_mut()
-        .dangling_instr_seq(InstrSeqType::Simple(None))
-        .id();
-    {
-        let out = &mut local.block_mut(chain).instrs;
-        push_instr(
-            out,
-            Instr::LocalGet(LocalGet {
-                local: catch_selector,
-            }),
-        );
-        push_instr(
-            out,
-            Instr::Unop(walrus::ir::Unop {
-                op: UnaryOp::I32Eqz,
-            }),
-        );
-        push_instr(
-            out,
-            Instr::IfElse(IfElse {
-                consequent: empty,
-                alternative: invalid,
-            }),
-        );
-    }
-
-    for arm in plan.arms.iter().rev() {
-        let action = local
-            .builder_mut()
-            .dangling_instr_seq(InstrSeqType::Simple(None))
-            .id();
-        {
-            let out = &mut local.block_mut(action).instrs;
-            for &(field, ty, offset) in &arm.fields {
-                match io {
-                    PlainCatchScalarIo::Save => {
-                        push_current_frame_ptr(out, runtime, memory, ptr_ty);
-                        push_instr(out, Instr::LocalGet(LocalGet { local: field }));
-                        push_instr(out, store_scalar(memory, ty, offset as u64));
+            active_arm: module.locals.add(ValType::I32),
+            arms: arms
+                .iter()
+                .cloned()
+                .map(|arm| {
+                    let operand_locals = arm
+                        .operand_tys
+                        .iter()
+                        .map(|&ty| module.locals.add(ty))
+                        .collect();
+                    PlainCatchArmState {
+                        arm,
+                        operand_locals,
                     }
-                    PlainCatchScalarIo::Restore => {
-                        push_current_frame_ptr(out, runtime, memory, ptr_ty);
-                        push_instr(out, load_scalar(memory, ty, offset as u64));
-                        push_instr(out, Instr::LocalSet(LocalSet { local: field }));
-                    }
-                }
-            }
-        }
-
-        let select = local
-            .builder_mut()
-            .dangling_instr_seq(InstrSeqType::Simple(None))
-            .id();
-        {
-            let out = &mut local.block_mut(select).instrs;
-            push_instr(
-                out,
-                Instr::LocalGet(LocalGet {
-                    local: catch_selector,
-                }),
-            );
-            push_instr(
-                out,
-                Instr::Const(Const {
-                    value: Value::I32(arm.selector as i32),
-                }),
-            );
-            push_instr(
-                out,
-                Instr::Binop(Binop {
-                    op: BinaryOp::I32Eq,
-                }),
-            );
-            push_instr(
-                out,
-                Instr::IfElse(IfElse {
-                    consequent: action,
-                    alternative: chain,
-                }),
-            );
-        }
-        chain = select;
-    }
-    Some(chain)
+                })
+                .collect(),
+        })
+        .collect()
 }
 
-fn append_plain_catch_frame_references(
-    per_call_references: &mut [Vec<(LocalId, RefType)>],
+fn append_plain_catch_frame_scalars(
+    frame_scalars: &mut Vec<(LocalId, ValType)>,
     regions: &[PlainCatchRegionState],
 ) {
-    let exnref = RefType {
-        nullable: true,
-        heap_type: HeapType::Abstract(AbstractHeapType::Exn),
-    };
-    let Some(exception) = regions
-        .iter()
-        .find_map(|region| region.retained_recipe_exnref)
-    else {
-        return;
-    };
-    debug_assert!(
-        regions
-            .iter()
-            .all(|region| region.retained_recipe_exnref == Some(exception))
-    );
-    debug_assert!(
-        regions
-            .iter()
-            .flat_map(|region| &region.arms)
-            .filter(|arm| arm.arm.uses_exception_recipe)
-            .all(|arm| arm.captured_exnref == Some(exception))
-    );
-    // Any call can be reached while a handler activation is live. Encoding
-    // null when no recipe catch is selected is the deterministic zero-recipe
-    // fast path; the selected arm's non-null exception is activation state and
-    // appears exactly once in each call-specific reference vector.
-    for references in per_call_references.iter_mut() {
-        references.push((exception, exnref));
+    for region in regions {
+        frame_scalars.push((region.active_arm, ValType::I32));
+        for arm in &region.arms {
+            frame_scalars.extend(
+                arm.operand_locals
+                    .iter()
+                    .copied()
+                    .zip(arm.arm.operand_tys.iter().copied()),
+            );
+        }
     }
 }
 
@@ -5610,21 +4065,32 @@ fn append_plain_catch_frame_references(
 /// Phase 6c (extended by B1 Stage 2 Task 2.3) — prepend a rewind-throw
 /// stub at the top of each fork-path try_table body.
 ///
-/// On REWIND, when `catch_selector_local` falls in this region's selector
-/// interval, the stub re-enters the try_table's catch dispatch so the original
-/// handler observes the same exception that was caught pre-fork.
+/// On REWIND, when `catch_region_id_local == K`, the stub re-enters the
+/// try_table's catch dispatch so the original handler observes the same
+/// exception that was caught pre-fork. The shape depends on what kind
+/// of catch was originally taken:
 ///
-/// Both Catch and CatchRef restore the exact selector from frame word +8 and
-/// scalar tag operands from the overlaid payload range, then throw the matching
-/// tag. The original CatchRef clause creates a fresh exnref in the child.
+/// Plain catches restore a frame-backed active-arm local and operand locals,
+/// then throw the matching tag. A catch_ref capture writes active-arm `-1`,
+/// so a mixed region falls through to the exnref `throw_ref` path without
+/// treating stale auxiliary-table contents as mode state.
 fn inject_rewind_throw_stubs(
     module: &mut Module,
     func_id: FunctionId,
     runtime: &Runtime,
-    catch_selector_local: LocalId,
+    catch_region_id_local: LocalId,
+    aux_tables: &AuxTables,
     catch_plan: &[CatchRegionPlan],
     plain_catches: &[PlainCatchRegionState],
 ) {
+    let exnref_table = match aux_tables.exnref {
+        Some(t) => t,
+        None => {
+            debug_assert!(catch_plan.is_empty());
+            return;
+        }
+    };
+
     let plain_lookup: HashMap<InstrSeqId, &PlainCatchRegionState> = plain_catches
         .iter()
         .map(|region| (region.body_seq, region))
@@ -5632,26 +4098,40 @@ fn inject_rewind_throw_stubs(
 
     for plan in catch_plan {
         let body_seq_id = plan.body_seq;
-        let Some(region) = plain_lookup.get(&body_seq_id).copied() else {
-            continue;
-        };
+        let region_id = plan.catch_region_id;
+        let slot = plan.exnref_slot;
+        let plain_region = plain_lookup.get(&body_seq_id).copied();
 
-        // An unknown arm means the continuation is corrupt or from an
-        // incompatible artifact. There is no module-instance reference
-        // fallback in ABI 43.
-        let invalid_arm = {
+        // Build the inner "catch_ref path" sequence (Phase 6's existing
+        // logic). Always emitted — used either as the only path or as
+        // the fallback when no exact plain arm is active.
+        let throw_ref_seq_id = {
             let local = local_mut(module, func_id);
             let s = local
                 .builder_mut()
                 .dangling_instr_seq(InstrSeqType::Simple(None))
                 .id();
             let block = &mut local.block_mut(s).instrs;
-            push_instr(block, Instr::Unreachable(Unreachable {}));
+            push_instr(
+                block,
+                Instr::Const(Const {
+                    value: Value::I32(slot as i32),
+                }),
+            );
+            push_instr(
+                block,
+                Instr::TableGet(TableGet {
+                    table: exnref_table,
+                }),
+            );
+            push_instr(block, Instr::RefAsNonNull(RefAsNonNull {}));
+            push_instr(block, Instr::ThrowRef(ThrowRef {}));
             s
         };
 
-        let dispatch_seq_id =
-            build_plain_catch_dispatch(module, func_id, region, catch_selector_local, invalid_arm);
+        let dispatch_seq_id = plain_region.map_or(throw_ref_seq_id, |region| {
+            build_plain_catch_dispatch(module, func_id, region, throw_ref_seq_id)
+        });
 
         // Build the empty else for the outer REWIND-match guard.
         let else_id = {
@@ -5662,9 +4142,8 @@ fn inject_rewind_throw_stubs(
                 .id()
         };
 
-        // Prepend the outer guard. Selectors are allocated contiguously per
-        // region, so two unsigned comparisons recognize this exact lexical
-        // try_table without another activation-local word.
+        // Prepend the outer guard `if state>=REWINDING && cri == K`
+        // to the try_table body.
         let local = local_mut(module, func_id);
         let original: Vec<(Instr, InstrLocId)> =
             std::mem::take(&mut local.block_mut(body_seq_id).instrs);
@@ -5691,43 +4170,19 @@ fn inject_rewind_throw_stubs(
         push_instr(
             body,
             Instr::LocalGet(LocalGet {
-                local: catch_selector_local,
+                local: catch_region_id_local,
             }),
         );
         push_instr(
             body,
             Instr::Const(Const {
-                value: Value::I32(region.first_selector as i32),
+                value: Value::I32(region_id as i32),
             }),
         );
         push_instr(
             body,
             Instr::Binop(Binop {
-                op: BinaryOp::I32GeU,
-            }),
-        );
-        push_instr(
-            body,
-            Instr::Binop(Binop {
-                op: BinaryOp::I32And,
-            }),
-        );
-        push_instr(
-            body,
-            Instr::LocalGet(LocalGet {
-                local: catch_selector_local,
-            }),
-        );
-        push_instr(
-            body,
-            Instr::Const(Const {
-                value: Value::I32(region.last_selector as i32),
-            }),
-        );
-        push_instr(
-            body,
-            Instr::Binop(Binop {
-                op: BinaryOp::I32LeU,
+                op: BinaryOp::I32Eq,
             }),
         );
         push_instr(
@@ -5748,17 +4203,20 @@ fn inject_rewind_throw_stubs(
     }
 }
 
-/// Build a dangling sequence that rethrows one frame-restored tagged catch.
+/// Build a dangling sequence that rethrows one frame-restored plain catch.
+///
+/// Exact nonnegative arm IDs select plain catches. `-1` deliberately falls
+/// through to `throw_ref_fallback`, which is what a catch_ref capture records
+/// for a mixed region.
 fn build_plain_catch_dispatch(
     module: &mut Module,
     func_id: FunctionId,
     region: &PlainCatchRegionState,
-    catch_selector_local: LocalId,
-    invalid_arm: InstrSeqId,
+    throw_ref_fallback: InstrSeqId,
 ) -> InstrSeqId {
     debug_assert!(!region.arms.is_empty());
 
-    let mut chain = invalid_arm;
+    let mut chain = throw_ref_fallback;
     for arm in region.arms.iter().rev() {
         let throw_id = {
             let local = local_mut(module, func_id);
@@ -5769,27 +4227,10 @@ fn build_plain_catch_dispatch(
         };
         let local = local_mut(module, func_id);
         let s = &mut local.block_mut(throw_id).instrs;
-        if arm.arm.uses_exception_recipe {
-            let exception = arm
-                .captured_exnref
-                .expect("recipe-backed catch must own an exnref local");
-            push_instr(s, Instr::LocalGet(LocalGet { local: exception }));
-            push_instr(s, Instr::RefAsNonNull(RefAsNonNull {}));
-            push_instr(s, Instr::ThrowRef(walrus::ir::ThrowRef {}));
-        } else {
-            for (&operand, &ty) in arm.operand_locals.iter().zip(&arm.arm.operand_tys) {
-                push_typed_local_get(s, operand, ty);
-            }
-            push_instr(
-                s,
-                Instr::Throw(Throw {
-                    tag: arm
-                        .arm
-                        .tag
-                        .expect("scalar tagged catch dispatch must have a tag"),
-                }),
-            );
+        for &operand in &arm.operand_locals {
+            push_instr(s, Instr::LocalGet(LocalGet { local: operand }));
         }
+        push_instr(s, Instr::Throw(Throw { tag: arm.arm.tag }));
 
         let outer_id = {
             let local = local_mut(module, func_id);
@@ -5804,13 +4245,13 @@ fn build_plain_catch_dispatch(
             push_instr(
                 s,
                 Instr::LocalGet(LocalGet {
-                    local: catch_selector_local,
+                    local: region.active_arm,
                 }),
             );
             push_instr(
                 s,
                 Instr::Const(Const {
-                    value: Value::I32(arm.selector as i32),
+                    value: Value::I32(arm.arm.arm_idx as i32),
                 }),
             );
             push_instr(
@@ -5839,286 +4280,280 @@ fn build_plain_catch_dispatch(
 
 #[derive(Debug, Clone, Copy)]
 struct CatchHandlerInfo {
+    catch_region_id: u32,
+    exnref_slot: u32,
     body_seq: InstrSeqId,
+    target_label: InstrSeqId,
+    in_catch_local: LocalId,
+    captured_exnref_local: LocalId,
+    plain_active_arm: Option<LocalId>,
 }
 
-fn plan_catch_handlers(
-    catch_plan: &[CatchRegionPlan],
-    plain_catches: &[PlainCatchRegionState],
-) -> Vec<CatchHandlerInfo> {
-    plain_catches
-        .iter()
-        .filter_map(|region| {
-            catch_plan
-                .iter()
-                .find(|plan| plan.body_seq == region.body_seq)
-                .map(|plan| CatchHandlerInfo {
-                    body_seq: plan.body_seq,
-                })
-        })
-        .collect()
-}
-
-// ----------------------------------------------------------------------
-// Per-arm capture-block emission for tagged catches
-// ----------------------------------------------------------------------
-
-/// Ensure a user `catch_all`/`catch_all_ref` can never consume the
-/// process-owned unwind transport.
-///
-/// A modern `try_table` catch transfers directly to an enclosing label, so a
-/// zero-result shield block is inserted around the original instruction:
-///
-/// ```text
-/// block $outer (param P) (result R)
-///   block $private_shield (param P)
-///     try_table (param P) (result R)
-///       (catch $__wpk_fork_unwind $private_shield)
-///       ...original catches...
-///     br $outer
-///   end
-///   throw $__wpk_fork_unwind
-/// end
-/// ```
-///
-/// Typed block parameters preserve the original operand stack without
-/// allocating reference temporaries (which would themselves become stale GC
-/// roots). Legacy EH has explicit handler sequences, so it only needs a typed
-/// private handler inserted immediately before its catch-all.
-fn shield_private_unwind_from_user_catches(
+fn plan_catch_ref_handlers(
     module: &mut Module,
     func_id: FunctionId,
-    runtime: &Runtime,
-) {
-    #[derive(Clone, Copy)]
-    enum Site {
-        TryTable { body: InstrSeqId, depth: u32 },
-        LegacyTry { body: InstrSeqId, depth: u32 },
+    catch_plan: &[CatchRegionPlan],
+    aux_tables: &AuxTables,
+    plain_catches: &[PlainCatchRegionState],
+) -> Vec<CatchHandlerInfo> {
+    let mut infos = Vec::new();
+    if aux_tables.exnref.is_none() {
+        return infos;
     }
+    let exnref_ty = RefType {
+        nullable: true,
+        heap_type: HeapType::Abstract(AbstractHeapType::Exn),
+    };
 
-    fn collect(
-        local: &LocalFunction,
-        seq: InstrSeqId,
-        depth: u32,
-        seen: &mut HashSet<InstrSeqId>,
-        out: &mut Vec<Site>,
-    ) {
-        if !seen.insert(seq) {
-            return;
-        }
-        for (instr, _) in &local.block(seq).instrs {
-            match instr {
-                Instr::TryTable(tt)
-                    if tt.catches.iter().any(|catch| {
-                        matches!(
-                            catch,
-                            TryTableCatch::CatchAll { .. } | TryTableCatch::CatchAllRef { .. }
-                        )
-                    }) =>
-                {
-                    out.push(Site::TryTable {
-                        body: tt.seq,
-                        depth,
-                    });
-                }
-                Instr::Try(legacy)
-                    if legacy
-                        .catches
-                        .iter()
-                        .any(|catch| matches!(catch, LegacyCatch::CatchAll { .. })) =>
-                {
-                    out.push(Site::LegacyTry {
-                        body: legacy.seq,
-                        depth,
-                    });
-                }
-                _ => {}
-            }
-            for child in nested_seqs(instr) {
-                collect(local, child, depth + 1, seen, out);
-            }
-        }
-    }
+    for plan in catch_plan {
+        let target_label_opt = {
+            let local = match &module.funcs.get(func_id).kind {
+                FunctionKind::Local(l) => l,
+                _ => continue,
+            };
+            let (_, tt) = match find_try_table_parent_seq(local, local.entry_block(), plan.body_seq)
+            {
+                Some(v) => v,
+                None => continue,
+            };
 
-    let unwind_tag = runtime
-        .unwind_tag
-        .expect("fork-path instrumentation requires the linked unwind tag");
-    let mut sites = Vec::new();
-    {
-        let local = match &module.funcs.get(func_id).kind {
-            FunctionKind::Local(local) => local,
-            _ => return,
+            let mut ref_targets: HashSet<InstrSeqId> = HashSet::new();
+            for c in &tt.catches {
+                match c {
+                    TryTableCatch::CatchRef { label, .. }
+                    | TryTableCatch::CatchAllRef { label } => {
+                        ref_targets.insert(*label);
+                    }
+                    _ => {}
+                }
+            }
+            if ref_targets.len() != 1 {
+                None
+            } else {
+                Some(*ref_targets.iter().next().unwrap())
+            }
         };
-        collect(
-            local,
-            local.entry_block(),
-            0,
-            &mut HashSet::new(),
-            &mut sites,
-        );
+        let target_label = match target_label_opt {
+            Some(t) => t,
+            None => continue,
+        };
+
+        let in_catch_local = module.locals.add(ValType::I32);
+        let captured_exnref_local = module.locals.add(ValType::Ref(exnref_ty));
+
+        infos.push(CatchHandlerInfo {
+            catch_region_id: plan.catch_region_id,
+            exnref_slot: plan.exnref_slot,
+            body_seq: plan.body_seq,
+            target_label,
+            in_catch_local,
+            captured_exnref_local,
+            plain_active_arm: plain_catches
+                .iter()
+                .find(|region| region.body_seq == plan.body_seq)
+                .map(|region| region.active_arm),
+        });
     }
-    sites.sort_by_key(|site| match site {
-        Site::TryTable { depth, .. } | Site::LegacyTry { depth, .. } => std::cmp::Reverse(*depth),
-    });
 
-    for site in sites {
-        match site {
-            Site::TryTable { body, .. } => {
-                let Some((parent, index, loc, mut table, body_ty)) = ({
-                    let local = match &module.funcs.get(func_id).kind {
-                        FunctionKind::Local(local) => local,
-                        _ => return,
-                    };
-                    find_try_table_instr_site(local, local.entry_block(), body)
-                }) else {
-                    continue;
-                };
+    infos
+}
 
-                let params = match body_ty {
-                    InstrSeqType::Simple(_) => Vec::new(),
-                    InstrSeqType::MultiValue(ty) => module.types.get(ty).params().to_vec(),
-                };
-                let shield_ty = InstrSeqType::new(&mut module.types, &params, &[]);
-                let (outer, shield) = {
-                    let local = local_mut(module, func_id);
-                    let outer = local.builder_mut().dangling_instr_seq(body_ty).id();
-                    let shield = local.builder_mut().dangling_instr_seq(shield_ty).id();
-                    (outer, shield)
-                };
+fn apply_catch_ref_handlers(
+    module: &mut Module,
+    func_id: FunctionId,
+    handlers: &[CatchHandlerInfo],
+    aux_tables: &AuxTables,
+) {
+    let exnref_table = match aux_tables.exnref {
+        Some(t) => t,
+        None => return,
+    };
 
-                let catch_all_index = table
-                    .catches
-                    .iter()
-                    .position(|catch| {
-                        matches!(
-                            catch,
-                            TryTableCatch::CatchAll { .. } | TryTableCatch::CatchAllRef { .. }
-                        )
-                    })
-                    .expect("collected try_table still has a catch-all");
-                table.catches.insert(
-                    catch_all_index,
-                    TryTableCatch::Catch {
-                        tag: unwind_tag,
-                        label: shield,
-                    },
+    for info in handlers {
+        let (parent_seq, original_catches, try_table_type, catch_sig_type) = {
+            let local = match &module.funcs.get(func_id).kind {
+                FunctionKind::Local(l) => l,
+                _ => continue,
+            };
+            let (parent, tt) =
+                match find_try_table_parent_seq(local, local.entry_block(), info.body_seq) {
+                    Some(v) => v,
+                    None => continue,
+                };
+            let catches = tt.catches.clone();
+            let try_sig = local.block(info.body_seq).ty;
+            let catch_sig = local.block(info.target_label).ty;
+            (parent, catches, try_sig, catch_sig)
+        };
+
+        let (outer_seq_id, capture_seq_id) = {
+            let local = local_mut(module, func_id);
+            let cap = local.builder_mut().dangling_instr_seq(catch_sig_type).id();
+            let out = local.builder_mut().dangling_instr_seq(try_table_type).id();
+            (out, cap)
+        };
+
+        let new_catches: Vec<TryTableCatch> = original_catches
+            .iter()
+            .map(|c| match c {
+                TryTableCatch::CatchRef { tag, .. } => TryTableCatch::CatchRef {
+                    tag: *tag,
+                    label: capture_seq_id,
+                },
+                TryTableCatch::CatchAllRef { .. } => TryTableCatch::CatchAllRef {
+                    label: capture_seq_id,
+                },
+                TryTableCatch::Catch { tag, label } => TryTableCatch::Catch {
+                    tag: *tag,
+                    label: *label,
+                },
+                TryTableCatch::CatchAll { label } => TryTableCatch::CatchAll { label: *label },
+            })
+            .collect();
+
+        {
+            let local = local_mut(module, func_id);
+            let s = &mut local.block_mut(capture_seq_id).instrs;
+            push_instr(
+                s,
+                Instr::TryTable(TryTable {
+                    seq: info.body_seq,
+                    catches: new_catches,
+                }),
+            );
+            push_instr(
+                s,
+                Instr::Br(Br {
+                    block: outer_seq_id,
+                }),
+            );
+        }
+
+        {
+            let local = local_mut(module, func_id);
+            let s = &mut local.block_mut(outer_seq_id).instrs;
+            push_instr(
+                s,
+                Instr::Block(Block {
+                    seq: capture_seq_id,
+                }),
+            );
+            push_instr(
+                s,
+                Instr::LocalTee(LocalTee {
+                    local: info.captured_exnref_local,
+                }),
+            );
+            if let Some(active_arm) = info.plain_active_arm {
+                // WHY: mixed catch regions must restore their capture kind
+                // from frame-owned state. A negative arm cannot match any
+                // plain catch, so replay falls through to throw_ref without
+                // consulting possibly stale exnref-table nullness.
+                push_instr(
+                    s,
+                    Instr::Const(Const {
+                        value: Value::I32(-1),
+                    }),
                 );
+                push_instr(s, Instr::LocalSet(LocalSet { local: active_arm }));
+            }
+            push_instr(
+                s,
+                Instr::Const(Const {
+                    value: Value::I32(1),
+                }),
+            );
+            push_instr(
+                s,
+                Instr::LocalSet(LocalSet {
+                    local: info.in_catch_local,
+                }),
+            );
+            push_instr(
+                s,
+                Instr::Const(Const {
+                    value: Value::I32(info.exnref_slot as i32),
+                }),
+            );
+            push_instr(
+                s,
+                Instr::LocalGet(LocalGet {
+                    local: info.captured_exnref_local,
+                }),
+            );
+            push_instr(
+                s,
+                Instr::TableSet(TableSet {
+                    table: exnref_table,
+                }),
+            );
+            push_instr(
+                s,
+                Instr::Br(Br {
+                    block: info.target_label,
+                }),
+            );
+        }
 
-                {
-                    let local = local_mut(module, func_id);
-                    let s = &mut local.block_mut(shield).instrs;
-                    push_instr(s, Instr::TryTable(table));
-                    push_instr(s, Instr::Br(Br { block: outer }));
-                }
-                {
-                    let local = local_mut(module, func_id);
-                    let s = &mut local.block_mut(outer).instrs;
-                    push_instr(s, Instr::Block(Block { seq: shield }));
-                    push_instr(s, Instr::Throw(Throw { tag: unwind_tag }));
-                }
-                local_mut(module, func_id).block_mut(parent).instrs[index] =
-                    (Instr::Block(Block { seq: outer }), loc);
-            }
-            Site::LegacyTry { body, .. } => {
-                let Some((parent, index, body_ty)) = ({
-                    let local = match &module.funcs.get(func_id).kind {
-                        FunctionKind::Local(local) => local,
-                        _ => return,
-                    };
-                    find_legacy_try_instr_site(local, local.entry_block(), body)
-                }) else {
-                    continue;
-                };
-                let results = match body_ty {
-                    InstrSeqType::Simple(None) => Vec::new(),
-                    InstrSeqType::Simple(Some(result)) => vec![result],
-                    InstrSeqType::MultiValue(ty) => module.types.get(ty).results().to_vec(),
-                };
-                let handler_ty = InstrSeqType::new(&mut module.types, &[], &results);
-                let handler = {
-                    let local = local_mut(module, func_id);
-                    local.builder_mut().dangling_instr_seq(handler_ty).id()
-                };
-                {
-                    let local = local_mut(module, func_id);
-                    push_instr(
-                        &mut local.block_mut(handler).instrs,
-                        Instr::Throw(Throw { tag: unwind_tag }),
-                    );
-                    let Instr::Try(legacy) = &mut local.block_mut(parent).instrs[index].0 else {
-                        unreachable!("legacy try site changed during shielding");
-                    };
-                    let catch_all_index = legacy
-                        .catches
-                        .iter()
-                        .position(|catch| matches!(catch, LegacyCatch::CatchAll { .. }))
-                        .expect("collected legacy try still has a catch-all");
-                    legacy.catches.insert(
-                        catch_all_index,
-                        LegacyCatch::Catch {
-                            tag: unwind_tag,
-                            handler,
-                        },
-                    );
-                }
-            }
+        {
+            let local = local_mut(module, func_id);
+            let parent_instrs = &mut local.block_mut(parent_seq).instrs;
+            let tt_idx = parent_instrs
+                .iter()
+                .position(|(i, _)| matches!(i, Instr::TryTable(tt) if tt.seq == info.body_seq))
+                .expect("try_table not found in its parent");
+            parent_instrs[tt_idx].0 = Instr::Block(Block { seq: outer_seq_id });
         }
     }
 }
 
-fn find_try_table_instr_site(
-    local: &LocalFunction,
-    seq: InstrSeqId,
-    body: InstrSeqId,
-) -> Option<(InstrSeqId, usize, InstrLocId, TryTable, InstrSeqType)> {
-    for (index, (instr, loc)) in local.block(seq).instrs.iter().enumerate() {
-        if let Instr::TryTable(table) = instr {
-            if table.seq == body {
-                return Some((seq, index, *loc, table.clone(), local.block(body).ty));
-            }
-        }
-        for child in nested_seqs(instr) {
-            if let Some(site) = find_try_table_instr_site(local, child, body) {
-                return Some(site);
-            }
-        }
-    }
-    None
-}
+// ----------------------------------------------------------------------
+// Stage 2 (B1) — per-arm capture-block emission for plain catch
+// ----------------------------------------------------------------------
 
-fn find_legacy_try_instr_site(
-    local: &LocalFunction,
-    seq: InstrSeqId,
-    body: InstrSeqId,
-) -> Option<(InstrSeqId, usize, InstrSeqType)> {
-    for (index, (instr, _)) in local.block(seq).instrs.iter().enumerate() {
-        if let Instr::Try(legacy) = instr {
-            if legacy.seq == body {
-                return Some((seq, index, local.block(body).ty));
-            }
-        }
-        for child in nested_seqs(instr) {
-            if let Some(site) = find_legacy_try_instr_site(local, child, body) {
-                return Some(site);
-            }
-        }
-    }
-    None
-}
-
-/// Emit per-arm capture blocks that intercept tagged Catch and CatchRef
-/// dispatch.
+/// Stage 2 (B1) — emit per-arm capture blocks that intercept plain
+/// catch dispatch.
 ///
-/// Each capture spills its scalar operands to activation-owned frame locals,
-/// records the active region/arm, re-pushes the original operands, and branches
-/// to the user's handler. CatchRef captures only the scalar tag payload; its
-/// instance-local exnref is forwarded and then cleared from the synthetic
-/// local so it does not survive as a stale GC root.
+/// For each fork-path try_table that has at least one plain-catch arm
+/// (and whose function is NOT in `b2_carveout`), this rewrites:
+///
+/// ```wat
+/// (try_table (catch $tag $h) ... body ...)   ;; original
+/// ```
+/// into:
+/// ```wat
+/// (block $b1_outer <try_table_type>
+///   (block $cap_arm_0 <tag0.params()>
+///     ...
+///     (block $cap_arm_N-1 <tagN-1.params()>
+///       (try_table (catch $tag0 $cap_arm_0) ... (catch $tagN-1 $cap_arm_N-1) body)
+///       br $b1_outer)
+///     ;; cap_arm_N-1 body: tagN-1.params on stack — save, set flags, br $hN-1
+///   ...
+///   ;; cap_arm_0 body: tag0.params on stack — save, set flags, br $h0
+/// ```
+///
+/// Inside each cap_arm_J body the operands are:
+///   1. spilled to activation-local, frame-backed locals.
+///   2. used to set the frame-backed active arm plus
+///      `in_catch_local = 1` and `catch_region_id_local =
+///      region_id`.
+///   3. re-pushed (in declaration order) and `br $hJ` executes.
+///
+/// CatchAll/CatchRef/CatchAllRef clauses are preserved verbatim. If
+/// Phase 6 already retargeted CatchRef/CatchAllRef clauses, those
+/// retargets are passed through unchanged.
+///
+/// `catch_handlers` is Phase 6's per-region info; the `in_catch_local`
+/// is reused for any region that overlaps with B1's emission. For
+/// plain-catch-only regions, a fresh `in_catch_local` is allocated.
+///
 fn apply_plain_catch_handlers(
     module: &mut Module,
     func_id: FunctionId,
-    catch_selector_local: LocalId,
+    catch_region_id_local: LocalId,
     plain_catches: &[PlainCatchRegionState],
+    catch_plan: &[CatchRegionPlan],
     catch_handlers: &[CatchHandlerInfo],
 ) {
     if plain_catches.is_empty() {
@@ -6132,6 +4567,10 @@ fn apply_plain_catch_handlers(
             continue;
         }
 
+        // Phase 6's `apply_catch_ref_handlers` may have moved this
+        // try_table inside its own capture block. `find_try_table_parent_seq`
+        // walks recursively from the entry block, so the new parent
+        // is discovered automatically.
         let (parent_seq, original_catches, try_table_type) = {
             let local = match &module.funcs.get(func_id).kind {
                 FunctionKind::Local(l) => l,
@@ -6145,7 +4584,23 @@ fn apply_plain_catch_handlers(
             (parent, tt.catches.clone(), local.block(body_seq).ty)
         };
 
-        debug_assert!(catch_handlers.iter().any(|h| h.body_seq == body_seq));
+        // Look up region_id from catch_plan (every fork-path try_table
+        // gets a catch_region_id assigned in plan_and_inject_aux_tables).
+        let catch_region_id = catch_plan
+            .iter()
+            .find(|p| p.body_seq == body_seq)
+            .map(|p| p.catch_region_id)
+            .unwrap_or(0);
+
+        // Reuse Phase 6's in_catch_local if the region overlaps; else
+        // allocate a fresh one. (Mixed catch_ref+plain regions share
+        // the same flag so post-call dispatch sees a single signal per
+        // region.)
+        let in_catch_local = catch_handlers
+            .iter()
+            .find(|h| h.body_seq == body_seq)
+            .map(|h| h.in_catch_local)
+            .unwrap_or_else(|| module.locals.add(ValType::I32));
 
         // ----------------------------------------------------------
         // Build dangling sequences: outer + N caps.
@@ -6159,100 +4614,40 @@ fn apply_plain_catch_handlers(
             local.builder_mut().dangling_instr_seq(try_table_type).id()
         };
 
-        // The original target label already carries the exact catch branch
-        // type. For CatchRef that is tag.params followed by a non-null exnref.
-        // Reusing it avoids weakening concrete EH reference types.
+        // Build per-arm InstrSeqType up-front (mutates module.types)
+        // before any &mut LocalFunction borrow is needed.
+        let cap_types: Vec<InstrSeqType> = arm_states
+            .iter()
+            .map(|state| InstrSeqType::new(&mut module.types, &[], &state.arm.operand_tys))
+            .collect();
+
         let mut cap_seq_ids: Vec<InstrSeqId> = Vec::with_capacity(arm_states.len());
-        for state in arm_states {
-            let original_ty = {
-                let local = match &module.funcs.get(func_id).kind {
-                    FunctionKind::Local(local) => local,
-                    _ => continue,
-                };
-                local.block(state.arm.label).ty
-            };
-            let cap_ty = if state.arm.kind.is_plain() && state.arm.uses_exception_recipe {
-                let mut results = match original_ty {
-                    InstrSeqType::Simple(None) => Vec::new(),
-                    InstrSeqType::Simple(Some(result)) => vec![result],
-                    InstrSeqType::MultiValue(ty) => module.types.get(ty).results().to_vec(),
-                };
-                // Retarget a plain catch to CatchRef so the capture owns
-                // the complete exception. The extra non-null exnref is
-                // consumed by the synthetic tail and never reaches the
-                // original plain handler.
-                results.push(ValType::Ref(RefType {
-                    nullable: false,
-                    heap_type: HeapType::Abstract(AbstractHeapType::Exn),
-                }));
-                InstrSeqType::new(&mut module.types, &[], &results)
-            } else {
-                original_ty
-            };
+        for cap_ty in &cap_types {
             let local = local_mut(module, func_id);
-            cap_seq_ids.push(local.builder_mut().dangling_instr_seq(cap_ty).id());
+            cap_seq_ids.push(local.builder_mut().dangling_instr_seq(*cap_ty).id());
         }
 
         // ----------------------------------------------------------
-        // Rewrite every planned tagged arm to its activation capture.
+        // Rewrite the inner try_table's catches: each plain Catch
+        // arm now points at its capture block; everything else (incl.
+        // catch_ref/catch_all_ref already retargeted by Phase 6) is
+        // preserved verbatim.
         //
         // We map by arm position within `arm_states` -- each entry's
         // `arm.arm_idx` is the arm's index in the original try_table's
-        // catches list before private-unwind shielding. Locate the live clause
-        // by its original label/tag instead of indexing directly: shielding
-        // inserts a private catch immediately before a user catch-all.
+        // catches list. We walk `original_catches` and substitute each
+        // matching plain Catch with its capture target.
         // ----------------------------------------------------------
         let mut new_catches: Vec<TryTableCatch> = original_catches.clone();
         for (j, state) in arm_states.iter().enumerate() {
-            let arm_idx = new_catches
-                .iter()
-                .position(|catch| match (state.arm.kind, catch) {
-                    (TaggedCatchKind::Plain, TryTableCatch::Catch { tag, label })
-                    | (TaggedCatchKind::Ref, TryTableCatch::CatchRef { tag, label }) => {
-                        Some(*tag) == state.arm.tag && *label == state.arm.label
-                    }
-                    (TaggedCatchKind::AllPlain, TryTableCatch::CatchAll { label })
-                    | (TaggedCatchKind::AllRef, TryTableCatch::CatchAllRef { label }) => {
-                        *label == state.arm.label
-                    }
-                    _ => false,
-                })
-                .expect("planned user catch no longer exists after private shielding");
+            let arm_idx = state.arm.arm_idx as usize;
             if let Some(c) = new_catches.get_mut(arm_idx) {
-                let replacement = match (state.arm.kind, &*c) {
-                    (TaggedCatchKind::Plain, TryTableCatch::Catch { tag, .. })
-                        if state.arm.uses_exception_recipe =>
-                    {
-                        TryTableCatch::CatchRef {
-                            tag: *tag,
-                            label: cap_seq_ids[j],
-                        }
-                    }
-                    (TaggedCatchKind::Plain, TryTableCatch::Catch { tag, .. }) => {
-                        TryTableCatch::Catch {
-                            tag: *tag,
-                            label: cap_seq_ids[j],
-                        }
-                    }
-                    (TaggedCatchKind::Ref, TryTableCatch::CatchRef { tag, .. }) => {
-                        TryTableCatch::CatchRef {
-                            tag: *tag,
-                            label: cap_seq_ids[j],
-                        }
-                    }
-                    (TaggedCatchKind::AllPlain, TryTableCatch::CatchAll { .. }) => {
-                        TryTableCatch::CatchAllRef {
-                            label: cap_seq_ids[j],
-                        }
-                    }
-                    (TaggedCatchKind::AllRef, TryTableCatch::CatchAllRef { .. }) => {
-                        TryTableCatch::CatchAllRef {
-                            label: cap_seq_ids[j],
-                        }
-                    }
-                    _ => unreachable!("validated catch plan no longer matches try_table"),
-                };
-                *c = replacement;
+                if let TryTableCatch::Catch { tag, .. } = c {
+                    *c = TryTableCatch::Catch {
+                        tag: *tag,
+                        label: cap_seq_ids[j],
+                    };
+                }
             }
         }
 
@@ -6329,9 +4724,11 @@ fn apply_plain_catch_handlers(
                 module,
                 func_id,
                 cap_seq_ids[j],
+                region.active_arm,
                 &arm_states[j + 1],
-                catch_selector_local,
-                region.retained_recipe_exnref,
+                in_catch_local,
+                catch_region_id_local,
+                catch_region_id,
             );
         }
 
@@ -6366,9 +4763,11 @@ fn apply_plain_catch_handlers(
             module,
             func_id,
             outer_seq_id,
+            region.active_arm,
             &arm_states[0],
-            catch_selector_local,
-            region.retained_recipe_exnref,
+            in_catch_local,
+            catch_region_id_local,
+            catch_region_id,
         );
 
         // ----------------------------------------------------------
@@ -6388,37 +4787,27 @@ fn apply_plain_catch_handlers(
     }
 }
 
-/// Emit the capture-block tail for one tagged catch. The operand stack holds
-/// `tag.params()` and, for CatchRef, a final exnref.
+/// Emit the capture-block "tail" for a single plain-catch arm: at the
+/// point where this is invoked, `tag.params()` are on the operand
+/// stack. The emitted sequence:
 ///
-///   1. Temporarily pop CatchRef's exnref, then spill scalar operands.
-///   2. Replace this activation's latest-catch selector with this exact arm.
-///   4. Re-push operands and, for the user's CatchRef, the exnref.
-///      Clear capture-only reference locals; retain a recipe-owned exception
-///      until this activation no longer needs catch replay.
+///   1. Spill operands to per-arm frame locals (top-of-stack first).
+///   2. Set the region's frame-backed active arm.
+///   3. Set `in_catch_local = 1`, `catch_region_id_local = region_id`.
+///   4. Re-push operands (declaration order).
 ///   5. `br arm.label` (original handler).
 fn emit_capture_save_and_branch(
     module: &mut Module,
     func_id: FunctionId,
     cap_seq_id: InstrSeqId,
+    active_arm: LocalId,
     arm: &PlainCatchArmState,
-    catch_selector_local: LocalId,
-    retained_recipe_exnref: Option<LocalId>,
+    in_catch_local: LocalId,
+    catch_region_id_local: LocalId,
+    catch_region_id: u32,
 ) {
     let local = local_mut(module, func_id);
     let s = &mut local.block_mut(cap_seq_id).instrs;
-
-    // CatchRef appends exnref after the tag payload, so it is first off the
-    // stack. A converted plain Catch also arrives here through CatchRef when
-    // the typed Wasm codec must own a reference/v128-bearing payload.
-    if let Some(captured_exnref) = arm.captured_exnref {
-        push_instr(
-            s,
-            Instr::LocalSet(LocalSet {
-                local: captured_exnref,
-            }),
-        );
-    }
 
     // 1. Spill operands. Operands were declared L-to-R but appear on
     //    the stack with the LAST one on top — so we spill in reverse
@@ -6432,99 +4821,44 @@ fn emit_capture_save_and_branch(
         );
     }
 
-    // 2. Record the dynamically latest catch for this activation.
-    //
-    // WHY: replay needs the most recently taken exception edge, not the
-    // lexically last try_table that ever caught. A loop can execute region B
-    // and later region A, and nested handlers can likewise supersede one
-    // another. One activation-local selector naturally follows that dynamic
-    // order and avoids both stale per-region markers and one native i32 local
-    // per static try_table.
+    // 2. Record which arm owns the operand locals for this activation.
     push_instr(
         s,
         Instr::Const(Const {
-            value: Value::I32(arm.selector as i32),
+            value: Value::I32(arm.arm.arm_idx as i32),
+        }),
+    );
+    push_instr(s, Instr::LocalSet(LocalSet { local: active_arm }));
+
+    // 3. Set flags.
+    push_instr(
+        s,
+        Instr::Const(Const {
+            value: Value::I32(1),
         }),
     );
     push_instr(
         s,
         Instr::LocalSet(LocalSet {
-            local: catch_selector_local,
+            local: in_catch_local,
         }),
     );
-    if !arm.arm.uses_exception_recipe {
-        if let Some(retained_recipe_exnref) = retained_recipe_exnref {
-            // WHY: a scalar catch has just superseded the only selector that
-            // could name the previous complete-exception recipe. Clear the
-            // function-wide slot before entering user code so the obsolete
-            // exception is neither serialized nor retained as a hidden GC
-            // root. Guest-visible references have independent typed owners.
-            push_instr(
-                s,
-                Instr::RefNull(RefNull {
-                    ty: RefType {
-                        nullable: true,
-                        heap_type: HeapType::Abstract(AbstractHeapType::Exn),
-                    },
-                }),
-            );
-            push_instr(
-                s,
-                Instr::LocalSet(LocalSet {
-                    local: retained_recipe_exnref,
-                }),
-            );
-        }
-    }
+    push_instr(
+        s,
+        Instr::Const(Const {
+            value: Value::I32(catch_region_id as i32),
+        }),
+    );
+    push_instr(
+        s,
+        Instr::LocalSet(LocalSet {
+            local: catch_region_id_local,
+        }),
+    );
 
     // 4. Re-push operands in declaration order.
-    for (&operand, &ty) in arm.operand_locals.iter().zip(&arm.arm.operand_tys) {
-        push_typed_local_get(s, operand, ty);
-    }
-    // Capture-only payload locals must not retain reference values as hidden
-    // GC roots after the branch. The already-pushed handler operands remain on
-    // the operand stack while these nullable storage locals are cleared.
-    for (&operand, &ty) in arm.operand_locals.iter().zip(&arm.arm.operand_tys) {
-        let ValType::Ref(mut reference) = ty else {
-            continue;
-        };
-        reference.nullable = true;
-        push_instr(s, Instr::RefNull(RefNull { ty: reference }));
-        push_instr(s, Instr::LocalSet(LocalSet { local: operand }));
-    }
-    if arm.arm.kind.is_ref() {
-        let captured_exnref = arm
-            .captured_exnref
-            .expect("CatchRef capture must own an exnref local");
-        push_instr(
-            s,
-            Instr::LocalGet(LocalGet {
-                local: captured_exnref,
-            }),
-        );
-        push_instr(s, Instr::RefAsNonNull(RefAsNonNull {}));
-    }
-    if let Some(captured_exnref) = arm
-        .captured_exnref
-        .filter(|_| !arm.arm.uses_exception_recipe)
-    {
-        // Scalar CatchRef replay reconstructs from the tag/payload, so its
-        // forwarding local is scratch and must not retain a stale exception.
-        push_instr(
-            s,
-            Instr::RefNull(RefNull {
-                ty: RefType {
-                    nullable: true,
-                    heap_type: HeapType::Abstract(AbstractHeapType::Exn),
-                },
-            }),
-        );
-        push_instr(
-            s,
-            Instr::LocalSet(LocalSet {
-                local: captured_exnref,
-            }),
-        );
+    for &operand in &arm.operand_locals {
+        push_instr(s, Instr::LocalGet(LocalGet { local: operand }));
     }
 
     // 5. Branch to original handler.
@@ -6561,18 +4895,26 @@ fn find_try_table_parent_seq<'a>(
 // (docs/plans/2026-05-13-fork-instrument-megaPR-eliminate-guard-dispatch-and-modern-EH-plan.md)
 // =====================================================================
 //
-// Guard-dispatch was deleted after nested switch-dispatch absorbed structured
-// carryovers and multi-value parameters. Fork-reachable legacy handlers are
-// now normalized to activation-owned modern EH before this file runs. The
-// trampoline scaffolding below remains unwired historical implementation.
+// Note: guard-dispatch was deleted in commit 4 (2026-05-14) after the
+// 2.5/2.6 sub-commits absorbed UnsupportedCarryover/MultiValueParams
+// into nested switch-dispatch, commit 9's modern-EH SDK flip
+// eliminated UnsupportedLegacyTry from shipping wasm, and commit 3
+// replaced the two `instrument_one_function_guard_dispatch` callers
+// with panics. The trampoline scaffolding below remains UNWIRED in
+// shipping fork-instrument runs; it's preserved for future use if a
+// new "genuinely impossible for switch-dispatch" case ever emerges.
 //
-// It was originally intended for three historical classes:
+// Replaces guard-dispatch as the fallback for the three classes
+// switch-dispatch can't handle today:
 //   (a) Nested fork-path call inside a Loop/IfElse/TryTable body that
-//       `classify_nested_pattern` could not type.
+//       `classify_nested_pattern` rejects (UnsupportedLegacyTry,
+//       UnsupportedMultiValueParams, UnsupportedCarryover).
 //   (b) Top-level fork-path call with operand-stack carryover.
 //   (c) Nested call_indirect to a fork-path callee, in combination
-//       with a carryover shape absent from the old typed model.
-// Nested switch-dispatch now owns all three.
+//       with another unsupported pattern. (Simple nested call_indirect
+//       in a loop is empirically already handled by nested switch-
+//       dispatch — see crates/fork-instrument/tests/trampoline.rs's
+//       `today_nested_call_indirect_uses_nested_switch_dispatch`.)
 //
 // Per-function dispatch table (open Q #3, resolved 2026-05-13):
 // each instrumented fork-path function emits its own
@@ -6582,9 +4924,10 @@ fn find_try_table_parent_seq<'a>(
 //
 // State after sub-commit 2.2 (this commit): the function below is
 // defined but UNREACHABLE — no caller exists. The body emission
-// landed in 2.3; later sub-commits wired carryovers, call_indirect, and
-// nested typed state one class at a time. Guard-dispatch has since been
-// deleted.
+// lands in 2.3; sub-commits 2.4 (carryover), 2.5 (call_indirect +
+// pattern), 2.6 (nested unsupported) wire callers one class at a
+// time. Once 2.6 ships, guard-dispatch is unreachable; commits 3-4
+// verify and delete it.
 
 /// Emit a per-function funcref dispatch table populated with the
 /// extracted post-call functions for one fork-path function.
@@ -6757,6 +5100,8 @@ fn instrument_one_function_trampoline_dispatch(
     _runtime: &Runtime,
     _fork_path: &HashSet<FunctionId>,
     _func_ordinal: u32,
+    _aux_tables: &AuxTables,
+    _ref_plan: &[RefLocalSlot],
     _catch_plan: &[CatchRegionPlan],
     _plain_catches: &[(InstrSeqId, Vec<PlainCatchArm>)],
 ) {
@@ -6797,13 +5142,21 @@ fn instrument_one_function_trampoline_dispatch(
 // back via `local.get` in the post-call sequence.
 //
 // MVP supported nesting: `Block` (any result type), `IfElse`,
-// `Loop`, `TryTable`, or normalized legacy-handler body.
+// `Loop`, `TryTable` body. Unsupported (routes to guard-dispatch):
+// legacy `Try`, multi-value-params blocks, sub-region landings whose
+// preceding chunk has a stack carryover.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NestedSupportStatus {
     Supported,
-    /// Exhaustive stack effects disagreed with already-validated Wasm IR.
-    /// This is an instrumenter invariant failure, never a source-shape policy.
-    AnalysisInvariantFailed,
+    UnsupportedLegacyTry,
+    /// Sub-commit 2.6c: no longer produced — multi-value-params
+    /// SubRegions now route to nested switch-dispatch via the body-
+    /// param prespill + reload mechanism in `transform_region_seq`.
+    /// Kept as a documented enum variant for future defensive use
+    /// (e.g., if a shape regression appears).
+    #[allow(dead_code)]
+    UnsupportedMultiValueParams,
+    UnsupportedCarryover,
 }
 
 impl NestedSupportStatus {
@@ -6812,9 +5165,18 @@ impl NestedSupportStatus {
     }
 }
 
-/// Verify that nested switch-dispatch can statically type every activation
-/// carryover. Structured control, multi-value parameters, modern EH, and
-/// normalized legacy handlers all use this path.
+/// Classify a function's nesting pattern. MVP scope: returns
+/// `Supported` iff every fork-path call in the function lives inside a
+/// chain of `Block` bodies only (any depth), no enclosing `IfElse` /
+/// `Loop` / `TryTable` / legacy `Try`, no multi-value-params blocks,
+/// no nested-seq stack carryovers.
+///
+/// This narrow scope handles the popen-class regression — popen's
+/// `__fork` and `posix_spawn` reach `kernel_fork` through `block`
+/// nesting (no IfElse around the fork-path call). Functions with
+/// IfElse-around-fork-call still fall back to guard-dispatch (today's
+/// behavior); that's a known divergence-bug exposure but is not the
+/// pattern that hangs popen on this branch.
 fn classify_nested_pattern(
     module: &Module,
     func_id: FunctionId,
@@ -6829,11 +5191,19 @@ fn classify_nested_pattern(
         return status;
     }
 
-    // Direct fork-path call landings with operand-stack carryovers are
-    // absorbed by per-call typed spill locals. Failure here means the
-    // exhaustive stack model disagreed with validated IR.
+    // Sub-commit 2.5c (2026-05-14): direct fork-path call landings
+    // with operand-stack carryovers are absorbed by nested switch-
+    // dispatch via the per-call carryover-spilling extension wired in
+    // 2.5b. The carryover types must be statically determinable —
+    // fall back to guard-dispatch when the analyser can't type them,
+    // mirroring the policy used by top-level switch-dispatch's 2.4c
+    // gate in `instrument_one_function`. The seq-level check in
+    // `seq_has_unsupported_carryover` no longer rejects these;
+    // function-level here is the appropriate granularity (the
+    // analyser needs the whole function's call_idx assignment to
+    // produce its result).
     if compute_nested_carryover_types(module, func_id, fork_path).is_none() {
-        return NestedSupportStatus::AnalysisInvariantFailed;
+        return NestedSupportStatus::UnsupportedCarryover;
     }
 
     NestedSupportStatus::Supported
@@ -6845,31 +5215,53 @@ fn classify_seq(
     seq: InstrSeqId,
     fork_path: &HashSet<FunctionId>,
 ) -> NestedSupportStatus {
-    if seq_stack_analysis_invariant_failed(module, f, seq) {
-        return NestedSupportStatus::AnalysisInvariantFailed;
+    let carryover = seq_has_unsupported_carryover(module, f, seq, fork_path);
+    if carryover {
+        return NestedSupportStatus::UnsupportedCarryover;
     }
 
     for (instr, _) in &f.block(seq).instrs {
         match instr {
             Instr::Loop(_) | Instr::Block(_) | Instr::IfElse(_) | Instr::TryTable(_) => {
-                // Loops, blocks, ifs, and try_tables are handled by
-                // per-block dispatch. For IfElse, the condition rewrite
-                // selects between the original condition (NORMAL) and the
-                // replay force flag. Catch handlers use activation-owned
-                // selector/payload or complete-exception recipes.
+                // Allowed. Loops, blocks, ifs, and try_tables are
+                // handled by per-block dispatch inside their body.
+                // For IfElse, the cond rewrite via `select` selects
+                // between original cond (NORMAL) and force-flag
+                // (REWIND).  Try_table catches branch to outer
+                // labels — fork-path calls reachable only via a
+                // catch (fork-from-catch) are still unsupported, but
+                // are detected separately as "carryover" / "unknown
+                // stack-effect" patterns and routed to guard-dispatch.
             }
-            Instr::Try(_) => {
-                // Fork-reachable legacy handlers were converted to modern
-                // try_table/catch_ref before this classifier runs. A surviving
-                // legacy try can therefore only be a handler-free delegate,
-                // whose body follows the ordinary nested-switch route.
+            Instr::Try(t) => {
+                // Legacy try bodies follow the same nested-switch route
+                // as block/loop/try_table bodies. Legacy catch handlers
+                // remain unsupported because REWIND cannot re-enter a
+                // handler without reconstructing the exception path.
+                for c in &t.catches {
+                    let handler = match c {
+                        LegacyCatch::Catch { handler, .. } => Some(*handler),
+                        LegacyCatch::CatchAll { handler } => Some(*handler),
+                        LegacyCatch::Delegate { .. } => None,
+                    };
+                    if let Some(h) = handler {
+                        if subtree_contains_fork_call(f, h, fork_path) {
+                            return NestedSupportStatus::UnsupportedLegacyTry;
+                        }
+                    }
+                }
             }
             _ => {}
         }
         for child in nested_seqs(instr) {
-            // Multi-value SubRegion parameters use the same typed
-            // `CarryoverPlan::spill_locals` machinery: spill at the chunk
-            // tail and restore before entering the SubRegion.
+            // Sub-commit 2.6c (2026-05-14): multi-value-params
+            // SubRegions are now absorbed by nested switch-dispatch
+            // via the typed `CarryoverPlan::spill_locals` machinery
+            // (2.6a/2.6b). The Block's declared type-params are
+            // spilled at the chunk tail (like any other carryover)
+            // and pushed back BEFORE the SubRegion runs at
+            // emit_post_landing. The function-level
+            // `UnsupportedMultiValueParams` rejection here is gone.
             let status = classify_seq(module, f, child, fork_path);
             if !status.is_supported() {
                 return status;
@@ -6879,16 +5271,172 @@ fn classify_seq(
     NestedSupportStatus::Supported
 }
 
-/// Check that the depth-only structured walk agrees with validated Wasm IR.
+fn subtree_contains_fork_call(
+    f: &LocalFunction,
+    seq: InstrSeqId,
+    fork_path: &HashSet<FunctionId>,
+) -> bool {
+    for (instr, _) in &f.block(seq).instrs {
+        match instr {
+            Instr::Call(c) if fork_path.contains(&c.func) => return true,
+            Instr::CallIndirect(_) => return true,
+            _ => {}
+        }
+        for child in nested_seqs(instr) {
+            if subtree_contains_fork_call(f, child, fork_path) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Returns true iff `seq` contains a fork-path landing (direct call
+/// or sub-region whose nested seq is fork-bearing) whose pre-landing
+/// stack has a carryover — extra values left on the stack from before
+/// the chunk's start that aren't part of the landing's required
+/// inputs. Per-block dispatch's `POST_K` blocks are typed `Simple(None)`
+/// (0 → 0), so carryovers can't be expressed.
 ///
-/// All carryover types—including references, GC values, EH references, and
-/// multi-value parameters/results—are handled by the typed spill planners.
-/// A `true` result here therefore signals an analyzer invariant failure, not a
-/// source shape the instrumenter intentionally excludes.
-fn seq_stack_analysis_invariant_failed(
+/// "Required inputs" per landing:
+///   - Direct fork-path Call: the call's params count.
+///   - CallIndirect: params + 1 (the table index).
+///   - Block / Loop / TryTable: 0 (we already reject multi-value
+///     params blocks elsewhere in classify_nested_pattern).
+///   - IfElse: 1 (the cond).
+///
+/// ## Known unfixed case: `tests/sortix/os-test/basic/spawn/posix_spawnattr_setpgroup` -O2
+///
+/// LLVM-O2 inlines `posix_spawn` into `main` and emits a sub-region
+/// carryover at the `kernel_fork`-bearing block:
+///
+/// ```text
+/// local.get 0           ;; push __errno_location() — carryover
+/// block (result i32)    ;; the block contains kernel_fork
+///   ... kernel_fork wrap ...
+/// end
+/// local.tee 1           ;; save posix_spawn return value
+/// i32.store             ;; *errno_location = posix_spawn_rc — consumes both
+/// ```
+///
+/// We currently route this to **guard-dispatch** (because
+/// switch-dispatch's `POST_K` blocks are 0 → 0 and can't express the
+/// carryover). On `-O0`/`-O1` the function passes; on `-O2` it fails
+/// with `waitpid: ECHILD` because the parent's local `pid` ends up at
+/// 0 instead of the child's pid. The `pid` write happens through the
+/// `&pid` pointer inside the inlined `posix_spawn` body, after the
+/// kernel_fork rewind handshake — but some divergence specific to the
+/// `-O2` shape causes that write not to take effect on the parent's
+/// REWIND path.
+///
+/// We **expected guard-dispatch + the c01554940 non-fork-path-call
+/// gate + the LocalTee identity-passthrough fix to handle this case**,
+/// but multiple sessions of debugging haven't pinned down the exact
+/// divergence; the bug is highly LLVM-codegen-sensitive (adding a
+/// single `fprintf`/`fflush` at the right spot makes it pass). The
+/// current best understanding is that some pre-call op leaves the
+/// stack or shadow-stack in a state that REWIND replay diverges from
+/// NORMAL, despite all the targeted fixes.
+///
+/// **Next step:** the proper fix is to extend per-block switch-dispatch
+/// to handle carryovers at sub-region landings via local-spilling
+/// (allocate spill locals, push values from carryover into them
+/// before the enclosing instruction, reload after) — that takes the
+/// function off the guard-dispatch path entirely and avoids the
+/// divergence. Implementation begins immediately below; see
+/// `partition_region_instrs` and `emit_chunk_tail_for_landing`.
+///
+/// **It remains worth revisiting whether guard-dispatch could be
+/// fixed for this case in the future** — a successful guard-dispatch
+/// solution would cover any other LLVM-codegen-sensitive carryover
+/// shape we discover later, not just the ones that fit the
+/// switch-dispatch carryover-spilling extension.
+#[allow(dead_code)]
+fn seq_has_direct_fork_carryover(
     module: &Module,
     f: &LocalFunction,
     seq: InstrSeqId,
+    fork_path: &HashSet<FunctionId>,
+) -> bool {
+    let mut depth: usize = 0;
+    for (instr, _) in &f.block(seq).instrs {
+        // Check direct fork-path call landings.
+        let direct_expected: Option<usize> = match instr {
+            Instr::Call(c) if fork_path.contains(&c.func) => Some(
+                module
+                    .types
+                    .get(module.funcs.get(c.func).ty())
+                    .params()
+                    .len(),
+            ),
+            Instr::CallIndirect(ci) => Some(module.types.get(ci.ty).params().len() + 1),
+            _ => None,
+        };
+        if let Some(expected) = direct_expected {
+            if depth > expected {
+                return true;
+            }
+        }
+
+        // Check sub-region landings: any enclosing instruction whose
+        // nested seq's subtree contains a fork-path call (so the
+        // partition would emit a SubRegion landing for it).
+        let is_subregion_landing = match instr {
+            Instr::Block(_)
+            | Instr::Loop(_)
+            | Instr::TryTable(_)
+            | Instr::Try(_)
+            | Instr::IfElse(_) => nested_seqs(instr)
+                .iter()
+                .any(|s| subtree_contains_fork_call(f, *s, fork_path)),
+            _ => false,
+        };
+        if is_subregion_landing {
+            let subregion_expected = match instr {
+                Instr::IfElse(_) => 1,
+                _ => 0,
+            };
+            if depth > subregion_expected {
+                return true;
+            }
+        }
+
+        match top_level_stack_effect(module, f, instr) {
+            StackEffect::Delta { pops, pushes } => {
+                if depth < pops {
+                    return true;
+                }
+                depth = depth - pops + pushes;
+            }
+            StackEffect::Terminator => return false,
+            StackEffect::Unknown => return true,
+        }
+    }
+    false
+}
+
+/// Like `seq_has_direct_fork_carryover` but only flags carryovers
+/// that the per-block switch-dispatch transform can NOT handle via
+/// local-spilling. Currently: every carryover except a 1-i32 stack
+/// item at a SubRegion (non-IfElse) landing whose enclosing
+/// instruction produces 0 or 1 i32 result.
+///
+/// MVP rationale: in C-emitted wasm at -O2, the most common carryover
+/// pattern is `local.get $ptr; block (result i32) { ... fork ... };
+/// local.tee; i32.store` — a single i32 (typically a pointer) pushed
+/// before a fork-bearing block and consumed after. We spill the i32
+/// via `local.set $carryover_local` at the chunk tail, then reload it
+/// after the block runs (juggling with a `tmp_result_local` if the
+/// block produces an i32 result).
+///
+/// Wider carryover patterns (multi-value, non-i32 types, carryovers at
+/// DirectCall landings) still reject; extending support is
+/// straightforward but not needed for the cases we've seen so far.
+fn seq_has_unsupported_carryover(
+    module: &Module,
+    f: &LocalFunction,
+    seq: InstrSeqId,
+    fork_path: &HashSet<FunctionId>,
 ) -> bool {
     // Sub-commit 2.6c: a Block/Loop/TryTable body with declared
     // type-params enters with those values already on the seq's
@@ -6900,6 +5448,46 @@ fn seq_stack_analysis_invariant_failed(
         _ => 0,
     };
     for (instr, _) in &f.block(seq).instrs {
+        // Sub-commit 2.5c (2026-05-14): direct fork-path call landings
+        // with operand-stack carryovers are now absorbed by nested
+        // switch-dispatch via the carryover-spilling extension (see
+        // `compute_nested_carryover_types` + the per-call
+        // `carryover_spills` wiring in `instrument_one_function_nested_switch`).
+        // The function-level fallback for shapes the analyser can't
+        // statically type lives at `classify_nested_pattern`. No
+        // per-seq direct-call rejection here.
+
+        // Sub-region landings.
+        let is_subregion = match instr {
+            Instr::Block(_)
+            | Instr::Loop(_)
+            | Instr::TryTable(_)
+            | Instr::Try(_)
+            | Instr::IfElse(_) => nested_seqs(instr)
+                .iter()
+                .any(|s| subtree_contains_fork_call(f, *s, fork_path)),
+            _ => false,
+        };
+        if is_subregion {
+            let is_ifelse = matches!(instr, Instr::IfElse(_));
+            // Sub-commit 2.6b: a SubRegion's `expected_input` includes
+            // both the cond (for IfElse) AND any declared type-params
+            // (for multi-value-params Block/Loop/TryTable). Values
+            // beyond that are real "extra carryover" above the params.
+            // The 2.6a analyser spills both bands uniformly into
+            // `CarryoverPlan::spill_locals`, so multi-value-params
+            // SubRegions are no longer rejected — their params are
+            // just one source of spill values.
+            let subregion_params = subregion_input_param_count(module, f, instr);
+            let expected_input: usize = if is_ifelse { 1 } else { subregion_params };
+            let carryover_depth = depth.saturating_sub(expected_input);
+            if carryover_depth > 0 {
+                // Otherwise: this is a supported extra-carryover
+                // (possibly combined with multi-value params, both
+                // spilled together by 2.6a's analyser).
+            }
+        }
+
         match top_level_stack_effect(module, f, instr) {
             StackEffect::Delta { pops, pushes } => {
                 if depth < pops {
@@ -6908,9 +5496,30 @@ fn seq_stack_analysis_invariant_failed(
                 depth = depth - pops + pushes;
             }
             StackEffect::Terminator => return false,
+            StackEffect::Unknown => return true,
         }
     }
     false
+}
+
+/// Sub-commit 2.6b: count the declared type-params of a SubRegion
+/// (Block/Loop/TryTable). Returns 0 for simple (non-multi-value)
+/// signatures, and 0 for non-SubRegion instructions.
+fn subregion_input_param_count(module: &Module, f: &LocalFunction, instr: &Instr) -> usize {
+    let body_seq = match instr {
+        Instr::Block(b) => Some(b.seq),
+        Instr::Loop(l) => Some(l.seq),
+        Instr::TryTable(t) => Some(t.seq),
+        Instr::Try(t) => Some(t.seq),
+        _ => None,
+    };
+    let Some(seq) = body_seq else {
+        return 0;
+    };
+    match f.block(seq).ty {
+        InstrSeqType::MultiValue(ty_id) => module.types.get(ty_id).params().len(),
+        _ => 0,
+    }
 }
 
 /// For each non-IfElse SubRegion landing in a fork-bearing seq,
@@ -6938,9 +5547,10 @@ fn seq_stack_analysis_invariant_failed(
 ///   value is the original condition and preceding values are restored
 ///   as carryovers below the condition.
 ///
-/// Returns `None` only if the exhaustive producer model disagrees with
-/// validated IR. Reference, GC, EH, and multi-value spill types are all
-/// preserved exactly.
+/// Returns `None` if any producer in this seq pushes a value whose
+/// type can't be statically determined AND that value ends up in a
+/// SubRegion's spill list. Producers that push unknown-type values
+/// consumed before any SubRegion landing are harmless.
 fn analyze_subregion_spill_types(
     module: &Module,
     f: &LocalFunction,
@@ -6976,7 +5586,6 @@ fn analyze_subregion_spill_types(
         let is_fork_landing = match instr {
             Instr::Call(c) => fork_path.contains(&c.func),
             Instr::CallIndirect(_) => true,
-            Instr::CallRef(_) => true,
             _ => false,
         };
         if is_fork_landing && direct_cursor < direct_idxs_at_this_seq.len() {
@@ -7016,8 +5625,10 @@ fn analyze_subregion_spill_types(
             }
         }
 
-        // Advance the exact typed stack. Fork-path Call/CallIndirect/CallRef
-        // pops args and pushes its declared result types.
+        // Advance the typed stack. Same logic as
+        // `walk_seq_for_carryovers` — known producers push `Some(ty)`,
+        // unknown producers push `None`. Fork-path Call/CallIndirect
+        // pops args and pushes typed results.
         match instr {
             Instr::Call(c) if fork_path.contains(&c.func) => {
                 let sig = module.types.get(module.funcs.get(c.func).ty());
@@ -7043,18 +5654,6 @@ fn analyze_subregion_spill_types(
                 }
                 continue;
             }
-            Instr::CallRef(call) => {
-                let sig = module.types.get(call.ty);
-                let n_args = sig.params().len() + 1;
-                if stack.len() < n_args {
-                    return None;
-                }
-                stack.truncate(stack.len() - n_args);
-                for &ty in sig.results() {
-                    stack.push(Some(ty));
-                }
-                continue;
-            }
             _ => {}
         }
 
@@ -7068,17 +5667,97 @@ fn analyze_subregion_spill_types(
                 if pushes == 0 {
                     continue;
                 }
-                let produced = typed_instruction_pushes(module, f, instr, &pre_stack)?;
-                if produced.len() != pushes {
-                    return None;
+                match instr {
+                    Instr::Call(c) => {
+                        let sig = module.types.get(module.funcs.get(c.func).ty());
+                        for &ty in sig.results() {
+                            stack.push(Some(ty));
+                        }
+                        continue;
+                    }
+                    Instr::CallRef(cr) => {
+                        let sig = module.types.get(cr.ty);
+                        for _ in sig.results() {
+                            stack.push(None);
+                        }
+                        continue;
+                    }
+                    Instr::Block(b) => {
+                        push_structured_results(&mut stack, module, f, b.seq, pushes);
+                        continue;
+                    }
+                    Instr::Loop(l) => {
+                        push_structured_results(&mut stack, module, f, l.seq, pushes);
+                        continue;
+                    }
+                    Instr::IfElse(ie) => {
+                        push_structured_results(&mut stack, module, f, ie.consequent, pushes);
+                        continue;
+                    }
+                    Instr::TryTable(t) => {
+                        push_structured_results(&mut stack, module, f, t.seq, pushes);
+                        continue;
+                    }
+                    Instr::Try(t) => {
+                        push_structured_results(&mut stack, module, f, t.seq, pushes);
+                        continue;
+                    }
+                    _ => {}
                 }
-                stack.extend(produced.into_iter().map(Some));
+                debug_assert_eq!(pushes, 1);
+                stack.push(typed_single_push(module, instr, &pre_stack));
             }
             StackEffect::Terminator => return Some(out),
+            StackEffect::Unknown => return None,
         }
     }
 
     Some(out)
+}
+
+fn has_fork_call_in_catch_handler(
+    module: &Module,
+    func_id: FunctionId,
+    fork_path: &HashSet<FunctionId>,
+) -> bool {
+    let local = match &module.funcs.get(func_id).kind {
+        FunctionKind::Local(l) => l,
+        _ => return false,
+    };
+    fn walk(f: &LocalFunction, seq: InstrSeqId, fork_path: &HashSet<FunctionId>) -> bool {
+        for (instr, _) in &f.block(seq).instrs {
+            if let Instr::TryTable(tt) = instr {
+                for c in &tt.catches {
+                    let handler = match c {
+                        TryTableCatch::Catch { label, .. }
+                        | TryTableCatch::CatchAll { label }
+                        | TryTableCatch::CatchRef { label, .. }
+                        | TryTableCatch::CatchAllRef { label } => *label,
+                    };
+                    // try_table catch labels target an enclosing block,
+                    // so a fork call in the body of THAT block is a
+                    // fork-from-catch candidate. We approximate: if the
+                    // handler label is reachable from a fork-path call
+                    // in the function. Since walrus IR doesn't easily
+                    // give us "code AT label X", we rely on the simpler
+                    // existing detection in classify_nested_pattern
+                    // which flags TryTable bodies; if you got here via
+                    // the fall-through guard-dispatch path, B1 status
+                    // is already known. Here we conservatively return
+                    // false — let guard-dispatch handle (today's
+                    // behavior).
+                    let _ = handler;
+                }
+            }
+            for child in nested_seqs(instr) {
+                if walk(f, child, fork_path) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    walk(local, local.entry_block(), fork_path)
 }
 
 // --- Discovery: walk the function in DFS order, assigning call_idx --
@@ -7087,7 +5766,6 @@ fn analyze_subregion_spill_types(
 enum NestedTarget {
     Direct(FunctionId),
     Indirect { table: TableId },
-    Ref,
 }
 
 #[derive(Debug, Clone)]
@@ -7095,9 +5773,7 @@ struct NestedCallSite {
     call_idx: u32,
     seq_id: InstrSeqId,
     target: NestedTarget,
-    direct_activation: bool,
     sig_ty: TypeId,
-    resume_ty: Option<TypeId>,
     loc: InstrLocId,
 }
 
@@ -7170,9 +5846,7 @@ fn walk_discover(
                     call_idx: idx,
                     seq_id: seq,
                     target: NestedTarget::Direct(c.func),
-                    direct_activation: false,
                     sig_ty: module.funcs.get(c.func).ty(),
-                    resume_ty: None,
                     loc: *loc,
                 });
                 my_idxs.push(idx);
@@ -7184,23 +5858,7 @@ fn walk_discover(
                     call_idx: idx,
                     seq_id: seq,
                     target: NestedTarget::Indirect { table: ci.table },
-                    direct_activation: false,
                     sig_ty: ci.ty,
-                    resume_ty: None,
-                    loc: *loc,
-                });
-                my_idxs.push(idx);
-            }
-            Instr::CallRef(call) => {
-                let idx = *next_idx;
-                *next_idx += 1;
-                sites.push(NestedCallSite {
-                    call_idx: idx,
-                    seq_id: seq,
-                    target: NestedTarget::Ref,
-                    direct_activation: false,
-                    sig_ty: call.ty,
-                    resume_ty: None,
                     loc: *loc,
                 });
                 my_idxs.push(idx);
@@ -7233,40 +5891,6 @@ fn walk_discover(
     }
 }
 
-fn assert_nested_reference_call_alignment(
-    analysis: &FunctionReferenceAnalysis,
-    sites: &[NestedCallSite],
-) {
-    assert_eq!(
-        analysis.call_sites.len(),
-        sites.len(),
-        "original reference analysis and nested transform discovered different call counts"
-    );
-    for (reference, site) in analysis.call_sites.iter().zip(sites) {
-        let aligned = match (reference.kind, site.target) {
-            (OriginalCallKind::Direct(expected), NestedTarget::Direct(actual)) => {
-                expected == actual
-            }
-            (
-                OriginalCallKind::Indirect {
-                    table: expected_table,
-                    ty: expected_ty,
-                },
-                NestedTarget::Indirect {
-                    table: actual_table,
-                },
-            ) => expected_table == actual_table && expected_ty == site.sig_ty,
-            (OriginalCallKind::Ref { ty }, NestedTarget::Ref) => ty == site.sig_ty,
-            _ => false,
-        };
-        assert!(
-            aligned,
-            "reference analysis call {:?} does not align with nested target {:?}",
-            reference.kind, site.target
-        );
-    }
-}
-
 // --- The main transform ----------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
@@ -7274,14 +5898,13 @@ fn instrument_one_function_nested_switch(
     module: &mut Module,
     func_id: FunctionId,
     runtime: &Runtime,
-    activations: &HashSet<FunctionId>,
     fork_path: &HashSet<FunctionId>,
     func_ordinal: u32,
+    aux_tables: &AuxTables,
+    ref_plan: &[RefLocalSlot],
     catch_plan: &[CatchRegionPlan],
     plain_catches: &[(InstrSeqId, Vec<PlainCatchArm>)],
-    reference_analysis: &FunctionReferenceAnalysis,
-    unwind_frame_select: FunctionId,
-) -> ResumeThunk {
+) {
     // Pre-existing user locals.
     let all_user_locals = collect_user_locals(module, func_id);
     let user_scalar_locals: Vec<(LocalId, ValType)> = all_user_locals
@@ -7292,33 +5915,24 @@ fn instrument_one_function_nested_switch(
 
     // Discover all fork-path call sites (with assigned call_idxs in
     // DFS order) and the per-seq region info.
-    let (mut sites, regions) = discover_calls_and_regions(module, func_id, fork_path);
-    for site in &mut sites {
-        site.direct_activation = matches!(
-            site.target,
-            NestedTarget::Direct(target) if activations.contains(&target)
-        );
-        let results = module.types.get(site.sig_ty).results().to_vec();
-        site.resume_ty = Some(module.types.add(&[], &results));
-    }
-    assert_nested_reference_call_alignment(reference_analysis, &sites);
+    let (sites, regions) = discover_calls_and_regions(module, func_id, fork_path);
     let n_calls = sites.len();
     if n_calls == 0 {
         // Defensive: function should have at least one fork-path call
         // by virtue of being in fork_path. Bail out to existing
         // top-level switch-dispatch (which handles n_calls==0 cleanly).
-        return instrument_one_function_switch(
+        instrument_one_function_switch(
             module,
             func_id,
             runtime,
-            activations,
             fork_path,
             func_ordinal,
+            aux_tables,
+            ref_plan,
             catch_plan,
             plain_catches,
-            reference_analysis,
-            unwind_frame_select,
         );
+        return;
     }
 
     // `HashMap` deliberately randomizes its iteration order. Keep one stable
@@ -7341,7 +5955,7 @@ fn instrument_one_function_nested_switch(
     };
 
     // Plan per-call argument materialization before allocating the
-    // frame. Side-effect-free argument tails are replayed after POST_K;
+    // frame. Pure scalar argument tails are replayed after POST_K;
     // all other shapes keep the existing frame-backed spill locals.
     let mut pending_arg_materializations: HashMap<u32, PendingCallArgMaterialization> =
         HashMap::new();
@@ -7366,6 +5980,16 @@ fn instrument_one_function_nested_switch(
                     .find(|site| site.call_idx == call_idx)
                     .expect("call_idx must have a discovered site");
                 let arg_types = nested_call_arg_types(module, site);
+                for &ty in &arg_types {
+                    if !is_scalar(ty) {
+                        let name = func_name(module, func_id);
+                        panic!(
+                            "fork-instrument: function `{name}` has a nested fork-path call \
+                     with a ref-typed argument ({ty:?}). Aux-table arg spilling \
+                     is not yet supported in the nested per-block transform."
+                        );
+                    }
+                }
                 pending_arg_materializations.insert(
                     call_idx,
                     plan_call_arg_materialization(module, &chunks[landing_idx], arg_types),
@@ -7394,23 +6018,21 @@ fn instrument_one_function_nested_switch(
     // round-trip through the fork frame so REWIND can reload them
     // beneath the call's result.
     //
-    // Classification already proved the exact typed stack model. Do not turn
-    // a later analyzer disagreement into empty carryovers: that would silently
-    // lose activation state.
+    // `compute_nested_carryover_types` may return `None` for shapes
+    // it can't statically type. Until sub-commit 2.5c flips the
+    // rejection in `seq_has_unsupported_carryover`, the only seqs
+    // that actually reach this point have already passed that check,
+    // so `None` here is unexpected — but we treat it identically to
+    // "no carryovers at any call" for safety (matches 2.4c behavior).
     let nested_carryover_types: HashMap<u32, Vec<ValType>> =
-        compute_nested_carryover_types(module, func_id, fork_path).unwrap_or_else(|| {
-            panic!("typed nested carryover analysis changed after classification")
-        });
-    let mut carryover_spills: HashMap<u32, Vec<TypedSpillLocal>> = HashMap::new();
+        compute_nested_carryover_types(module, func_id, fork_path).unwrap_or_default();
+    let mut carryover_spills: HashMap<u32, Vec<LocalId>> = HashMap::new();
     for site in &sites {
         let cr_types: &[ValType] = nested_carryover_types
             .get(&site.call_idx)
             .map(Vec::as_slice)
-            .unwrap_or_else(|| panic!("typed carryover plan omitted call {}", site.call_idx));
-        let spills: Vec<TypedSpillLocal> = cr_types
-            .iter()
-            .map(|&ty| (module.locals.add(spill_storage_type(ty)), ty))
-            .collect();
+            .unwrap_or(&[]);
+        let spills: Vec<LocalId> = cr_types.iter().map(|&ty| module.locals.add(ty)).collect();
         carryover_spills.insert(site.call_idx, spills);
     }
 
@@ -7428,30 +6050,35 @@ fn instrument_one_function_nested_switch(
             .iter()
             .zip(arg_types.iter())
         {
-            if is_scalar(ty) {
-                frame_scalars.push((lid, ty));
-            }
+            frame_scalars.push((lid, ty));
         }
     }
     for site in &sites {
-        for &(lid, ty) in &carryover_spills[&site.call_idx] {
-            if is_scalar(ty) {
-                frame_scalars.push((lid, ty));
-            }
+        let cr_types: &[ValType] = nested_carryover_types
+            .get(&site.call_idx)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        for (&lid, &ty) in carryover_spills[&site.call_idx].iter().zip(cr_types.iter()) {
+            frame_scalars.push((lid, ty));
         }
     }
+    append_plain_catch_frame_scalars(&mut frame_scalars, &plain_catch_state);
+
     // Synthetic locals.
     let catch_state_locals = if catch_plan.is_empty() && plain_catches.is_empty() {
         None
     } else {
         Some(CatchStateLocals {
-            catch_selector: module.locals.add(ValType::I32),
+            catch_region_id: module.locals.add(ValType::I32),
+            exnref_slot: module.locals.add(ValType::I32),
         })
     };
     // Tmp i32 used by the IfElse cond rewrite to swap stack order
     // (preserve original cond while computing force_flag and
     // is_rewind without touching the operand stack).
     let cond_swap_local = module.locals.add(ValType::I32);
+    let abort_live_frame = module.locals.add(ValType::I32);
+
     // Pre-pass: walk each fork-bearing seq, identify its
     // SubRegion-with-1-i32-carryover landings, and pre-allocate spill
     // locals (+ tmp_result_local for blocks producing 1 i32). The
@@ -7475,25 +6102,24 @@ fn instrument_one_function_nested_switch(
         let mut pending_plans: Vec<(InstrSeqId, usize, PendingCarryoverPlan)> = Vec::new();
         for &seq_id in &region_ids {
             let direct = direct_idxs_per_seq.get(&seq_id).unwrap_or(&empty_idxs);
-            // The typed analyser captures both SubRegion parameters and extra
-            // carryovers. An analysis failure here is an internal invariant;
-            // defaulting to no spills would silently lose activation state.
+            // Sub-commit 2.6a: typed analyser captures per-landing
+            // spill ValTypes (covering both SubRegion type-params and
+            // any extra carryover above them). None on unanalyzable
+            // shapes — `classify_nested_pattern` already gated on a
+            // best-effort version of this, so None here is the same
+            // conservative fallback (function routes to guard-dispatch
+            // unless 2.5c/2.6a's combined gates accepted it).
             let spill_types = analyze_subregion_spill_types(
                 module, local_ro, seq_id, fork_path, direct, &regions,
             )
-            .unwrap_or_else(|| {
-                panic!("typed SubRegion carryover analysis failed after classification")
-            });
+            .unwrap_or_default();
             let original = &local_ro.block(seq_id).instrs;
             let (chunks, landings) =
                 partition_region_instrs(local_ro, original, direct, &regions, fork_path);
-            assert_eq!(
-                spill_types.len(),
-                landings.len(),
-                "typed SubRegion carryover analysis and landing partition disagree"
-            );
             for (landing_idx, landing) in landings.iter().enumerate() {
-                let types = &spill_types[landing_idx];
+                let Some(types) = spill_types.get(landing_idx) else {
+                    continue;
+                };
                 if types.is_empty() {
                     continue;
                 }
@@ -7504,7 +6130,7 @@ fn instrument_one_function_nested_switch(
                 };
                 if pure_allowed {
                     if let Some((tail_len, tail)) =
-                        split_pure_replay_tail(module, &chunks[landing_idx], types)
+                        split_pure_scalar_tail(module, &chunks[landing_idx], types)
                     {
                         pending_plans.push((
                             seq_id,
@@ -7538,10 +6164,8 @@ fn instrument_one_function_nested_switch(
                 PendingCarryoverPlan::Spill { types } => {
                     let mut spill_locals: Vec<(LocalId, ValType)> = Vec::with_capacity(types.len());
                     for &ty in &types {
-                        let lid = module.locals.add(spill_storage_type(ty));
-                        if is_scalar(ty) {
-                            frame_scalars.push((lid, ty));
-                        }
+                        let lid = module.locals.add(ty);
+                        frame_scalars.push((lid, ty));
                         spill_locals.push((lid, ty));
                     }
                     CarryoverPlan::Spill { spill_locals }
@@ -7594,7 +6218,7 @@ fn instrument_one_function_nested_switch(
         for (seq_id, types) in to_allocate {
             let mut locals: Vec<(LocalId, ValType)> = Vec::with_capacity(types.len());
             for &ty in &types {
-                let lid = module.locals.add(spill_storage_type(ty));
+                let lid = module.locals.add(ty);
                 locals.push((lid, ty));
             }
             body_param_locals.insert(seq_id, locals);
@@ -7602,59 +6226,7 @@ fn instrument_one_function_nested_switch(
     }
 
     let locals_with_offsets = assign_local_offsets(&frame_scalars, LOCALS_START_OFFSET);
-    let ordinary_scalar_end = HEADER_SIZE + user_locals_size(&frame_scalars);
-    let catch_scalar_frame = plan_plain_catch_scalar_frame(&plain_catch_state, ordinary_scalar_end);
-    let scalar_end = catch_scalar_frame.frame_end(ordinary_scalar_end);
-    let mut per_call_references = vec![Vec::new(); n_calls];
-    for site in &sites {
-        let call_idx = site.call_idx as usize;
-        arg_materializations[&site.call_idx]
-            .append_reference_inputs(module, &mut per_call_references[call_idx]);
-        for &(local, ty) in &carryover_spills[&site.call_idx] {
-            if let Some(reference) = supported_reference(ty) {
-                per_call_references[call_idx].push((local, reference));
-            }
-        }
-    }
-    {
-        let local_ro = match &module.funcs.get(func_id).kind {
-            FunctionKind::Local(local) => local,
-            _ => unreachable!(),
-        };
-        let empty_idxs = Vec::new();
-        for &seq_id in &region_ids {
-            let direct = direct_idxs_per_seq.get(&seq_id).unwrap_or(&empty_idxs);
-            let original = &local_ro.block(seq_id).instrs;
-            let (_, landings) =
-                partition_region_instrs(local_ro, original, direct, &regions, fork_path);
-            for (landing_idx, landing) in landings.iter().enumerate() {
-                let Some(CarryoverPlan::Spill { spill_locals }) =
-                    carryover_plans.get(&(seq_id, landing_idx))
-                else {
-                    continue;
-                };
-                let (first, last) = match landing.kind {
-                    LandingKind::SubRegion { range_lo, range_hi }
-                    | LandingKind::SubRegionIfElse {
-                        range_lo, range_hi, ..
-                    } => (range_lo, range_hi),
-                    LandingKind::DirectCall { .. } => continue,
-                };
-                for &(local, ty) in spill_locals {
-                    let Some(reference) = supported_reference(ty) else {
-                        continue;
-                    };
-                    for call_idx in first..=last {
-                        per_call_references[call_idx as usize].push((local, reference));
-                    }
-                }
-            }
-        }
-    }
-    append_resume_parameter_references(module, func_id, &mut per_call_references);
-    append_plain_catch_frame_references(&mut per_call_references, &plain_catch_state);
-    let reference_frame = plan_reference_frame(module, reference_analysis, per_call_references);
-    let frame_size = reference_frame.frame_end(scalar_end);
+    let frame_size = HEADER_SIZE + user_locals_size(&frame_scalars);
 
     let result_types: Vec<ValType> = {
         let ty_id = module.funcs.get(func_id).ty();
@@ -7662,19 +6234,28 @@ fn instrument_one_function_nested_switch(
     };
     let restart_loop_ty = InstrSeqType::new(&mut module.types, &[], &result_types);
 
-    let catch_handlers = plan_catch_handlers(catch_plan, &plain_catch_state);
+    // Plan catch handlers (Phase 6d). These remain dead code for the
+    // nested transform's MVP (no fork-from-catch), but the plumbing is
+    // preserved for ref-typed exnref locals that still round-trip.
+    let catch_handlers =
+        plan_catch_ref_handlers(module, func_id, catch_plan, aux_tables, &plain_catch_state);
 
     let memory = first_memory(module);
     let ptr_ty = runtime.buf_type;
 
-    if !plain_catch_state.is_empty() {
+    // Phase 6c rewind-throw stubs (still emitted for try_table bodies
+    // without fork-path calls — preserves the exnref serialization
+    // path). Extended by B1 Stage 2 Task 2.3 with plain-catch arm
+    // dispatch when `plain_catches` lists arms for the region.
+    if !catch_plan.is_empty() && aux_tables.exnref.is_some() {
         let catch_state =
-            catch_state_locals.expect("tagged catch plan requires catch-state locals");
+            catch_state_locals.expect("exnref catch plan requires catch-state locals");
         inject_rewind_throw_stubs(
             module,
             func_id,
             runtime,
-            catch_state.catch_selector,
+            catch_state.catch_region_id,
+            aux_tables,
             catch_plan,
             &plain_catch_state,
         );
@@ -7696,20 +6277,9 @@ fn instrument_one_function_nested_switch(
         .id();
     let restart_loop = local.builder_mut().dangling_instr_seq(restart_loop_ty).id();
     let abort = AbortDispatch {
+        live_frame: abort_live_frame,
         restart_loop,
-        frame_select: unwind_frame_select,
     };
-    let catch_scalar_restore_dispatch = catch_state_locals.and_then(|catch_state| {
-        build_plain_catch_scalar_dispatch(
-            local,
-            runtime,
-            memory,
-            ptr_ty,
-            catch_state.catch_selector,
-            &catch_scalar_frame,
-            PlainCatchScalarIo::Restore,
-        )
-    });
 
     populate_preamble_then(
         local,
@@ -7719,8 +6289,8 @@ fn instrument_one_function_nested_switch(
         ptr_ty,
         catch_state_locals,
         &locals_with_offsets,
-        catch_scalar_restore_dispatch,
-        &reference_frame,
+        ref_plan,
+        aux_tables,
         frame_size,
     );
 
@@ -7820,19 +6390,6 @@ fn instrument_one_function_nested_switch(
 
     // Build postamble — same as switch-dispatch.
     let mut postamble: Vec<(Instr, InstrLocId)> = Vec::new();
-    let catch_scalar_save_dispatch = catch_state_locals.and_then(|catch_state| {
-        build_plain_catch_scalar_dispatch(
-            local,
-            runtime,
-            memory,
-            ptr_ty,
-            catch_state.catch_selector,
-            &catch_scalar_frame,
-            PlainCatchScalarIo::Save,
-        )
-    });
-    let reference_save_dispatch =
-        build_reference_save_dispatch(local, runtime, memory, ptr_ty, &reference_frame);
     populate_postamble(
         &mut postamble,
         runtime,
@@ -7840,13 +6397,14 @@ fn instrument_one_function_nested_switch(
         ptr_ty,
         catch_state_locals,
         &locals_with_offsets,
-        catch_scalar_save_dispatch,
-        reference_save_dispatch,
+        ref_plan,
+        aux_tables,
         frame_size,
         func_ordinal,
+        &result_types,
     );
 
-    // Wrap entry block with [preamble-if-else, live-restart loop].
+    // Wrap entry block with [preamble-if-else, Block(unwind_save), postamble].
     // The entry block's instrs (set by transform_entry_region) become
     // the body of `unwind_save`. We pull them out and place them inside
     // unwind_save here, then install the wrapper structure in entry.
@@ -7856,7 +6414,8 @@ fn instrument_one_function_nested_switch(
         let s = &mut local.block_mut(unwind_save).instrs;
         s.extend(entry_body);
     }
-    let entry_seq = &mut local.block_mut(entry_id).instrs;
+
+    let entry_seq = &mut local.block_mut(restart_loop).instrs;
     push_instr(
         entry_seq,
         Instr::GlobalGet(GlobalGet {
@@ -7877,44 +6436,50 @@ fn instrument_one_function_nested_switch(
     );
     push_instr(
         entry_seq,
+        Instr::LocalGet(LocalGet {
+            local: abort_live_frame,
+        }),
+    );
+    push_instr(
+        entry_seq,
+        Instr::Unop(walrus::ir::Unop {
+            op: UnaryOp::I32Eqz,
+        }),
+    );
+    push_instr(
+        entry_seq,
+        Instr::Binop(Binop {
+            op: BinaryOp::I32And,
+        }),
+    );
+    push_instr(
+        entry_seq,
         Instr::IfElse(IfElse {
             consequent: preamble_then,
             alternative: preamble_else,
         }),
     );
+    push_instr(entry_seq, Instr::Block(Block { seq: unwind_save }));
+    entry_seq.extend(postamble);
+    let entry_seq = &mut local.block_mut(entry_id).instrs;
+    entry_seq.clear();
     push_instr(entry_seq, Instr::Loop(Loop { seq: restart_loop }));
-    let restart_seq = &mut local.block_mut(restart_loop).instrs;
-    push_instr(restart_seq, Instr::Block(Block { seq: unwind_save }));
-    restart_seq.extend(postamble);
 
-    // Tagged-catch capture emission runs after the nested body rebuild.
+    apply_catch_ref_handlers(module, func_id, &catch_handlers, aux_tables);
+
+    // Stage 2 (B1) plain-catch capture-block emission. Runs AFTER
+    // Phase 6 so it sees post-Phase-6 try_table locations.
     if let Some(catch_state) = catch_state_locals {
-        shield_private_unwind_from_user_catches(module, func_id, runtime);
         apply_plain_catch_handlers(
             module,
             func_id,
-            catch_state.catch_selector,
+            catch_state.catch_region_id,
             &plain_catch_state,
+            catch_plan,
             &catch_handlers,
         );
     } else {
         debug_assert!(plain_catches.is_empty());
-        shield_private_unwind_from_user_catches(module, func_id, runtime);
-    }
-
-    ResumeThunk {
-        func_ordinal,
-        function: emit_resume_thunk(
-            module,
-            func_id,
-            runtime,
-            memory,
-            ptr_ty,
-            frame_size,
-            &locals_with_offsets,
-            &reference_frame,
-            func_ordinal,
-        ),
     }
 }
 
@@ -7933,7 +6498,7 @@ fn emit_chunk_tail_for_landing(
     out: &mut Vec<(Instr, InstrLocId)>,
     landing: &LandingInfo,
     arg_materializations: &HashMap<u32, CallArgMaterialization>,
-    carryover_spills: &HashMap<u32, Vec<TypedSpillLocal>>,
+    carryover_spills: &HashMap<u32, Vec<LocalId>>,
     cond_swap_local: LocalId,
 ) {
     match &landing.kind {
@@ -7945,7 +6510,7 @@ fn emit_chunk_tail_for_landing(
             // matching top-level switch-dispatch's 2.4c behavior).
             // `carryover_spills` is keyed by call_idx; an absent entry
             // is treated as no-carryover.
-            let empty: Vec<TypedSpillLocal> = Vec::new();
+            let empty: Vec<LocalId> = Vec::new();
             let cr = carryover_spills.get(call_idx).unwrap_or(&empty);
             emit_spill_call_tail(out, &arg_materializations[call_idx], cr);
         }
@@ -7986,10 +6551,8 @@ fn emit_chunk_tail_for_landing(
 
 fn nested_call_arg_types(module: &Module, site: &NestedCallSite) -> Vec<ValType> {
     let mut arg_types: Vec<ValType> = module.types.get(site.sig_ty).params().to_vec();
-    match site.target {
-        NestedTarget::Indirect { .. } => arg_types.push(ValType::I32),
-        NestedTarget::Ref => arg_types.push(ValType::Ref(RefType::FUNCREF)),
-        NestedTarget::Direct(_) => {}
+    if matches!(site.target, NestedTarget::Indirect { .. }) {
+        arg_types.push(ValType::I32);
     }
     arg_types
 }
@@ -8022,7 +6585,7 @@ fn transform_region_seq(
     sites: &[NestedCallSite],
     fork_path: &HashSet<FunctionId>,
     arg_materializations: &HashMap<u32, CallArgMaterialization>,
-    carryover_spills: &HashMap<u32, Vec<TypedSpillLocal>>,
+    carryover_spills: &HashMap<u32, Vec<LocalId>>,
     carryover_plans: &HashMap<(InstrSeqId, usize), CarryoverPlan>,
     catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
@@ -8056,8 +6619,11 @@ fn transform_region_seq(
     // Ordered deepest-first to match the original parent-stack layout.
     if !body_param_locals.is_empty() && !chunks.is_empty() {
         let mut prefix: Vec<(Instr, InstrLocId)> = Vec::with_capacity(body_param_locals.len());
-        for &(local, ty) in body_param_locals {
-            push_typed_local_get(&mut prefix, local, ty);
+        for (lid, _ty) in body_param_locals.iter() {
+            prefix.push((
+                Instr::LocalGet(LocalGet { local: *lid }),
+                InstrLocId::default(),
+            ));
         }
         prefix.extend(std::mem::take(&mut chunks[0]));
         chunks[0] = prefix;
@@ -8158,7 +6724,7 @@ fn transform_entry_region(
     sites: &[NestedCallSite],
     fork_path: &HashSet<FunctionId>,
     arg_materializations: &HashMap<u32, CallArgMaterialization>,
-    carryover_spills: &HashMap<u32, Vec<TypedSpillLocal>>,
+    carryover_spills: &HashMap<u32, Vec<LocalId>>,
     carryover_plans: &HashMap<(InstrSeqId, usize), CarryoverPlan>,
     catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
@@ -8390,7 +6956,6 @@ fn partition_region_instrs(
         let is_fork_landing = match instr {
             Instr::Call(c) => fork_path.contains(&c.func),
             Instr::CallIndirect(_) => true,
-            Instr::CallRef(_) => true,
             _ => false,
         };
         if is_fork_landing && direct_cursor < direct_idxs_at_this_seq.len() {
@@ -8595,7 +7160,7 @@ fn populate_region_dispatch_structure(
     landings: &[LandingInfo],
     sites: &[NestedCallSite],
     arg_materializations: &HashMap<u32, CallArgMaterialization>,
-    carryover_spills: &HashMap<u32, Vec<TypedSpillLocal>>,
+    carryover_spills: &HashMap<u32, Vec<LocalId>>,
     catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
     memory: MemoryId,
@@ -8730,14 +7295,14 @@ fn emit_post_landing(
     landing: &LandingInfo,
     sites: &[NestedCallSite],
     arg_materializations: &HashMap<u32, CallArgMaterialization>,
-    carryover_spills: &HashMap<u32, Vec<TypedSpillLocal>>,
-    _catch_handlers: &[CatchHandlerInfo],
+    carryover_spills: &HashMap<u32, Vec<LocalId>>,
+    catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
     frame_size: u32,
     cond_swap_local: LocalId,
-    _catch_state_locals: Option<CatchStateLocals>,
+    catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
     abort: AbortDispatch,
 ) {
@@ -8752,39 +7317,39 @@ fn emit_post_landing(
             // the carryovers + result on the stack — matching the
             // original code's expected shape, same as top-level
             // switch-dispatch's `emit_post_call_via_local`.
-            let empty: Vec<TypedSpillLocal> = Vec::new();
+            let empty: Vec<LocalId> = Vec::new();
             let carryovers = carryover_spills.get(call_idx).unwrap_or(&empty);
             {
                 let s = &mut local.block_mut(seq_id).instrs;
-                for &(local, ty) in carryovers {
-                    push_typed_local_get(s, local, ty);
+                for &l in carryovers.iter() {
+                    push_instr(s, Instr::LocalGet(LocalGet { local: l }));
                 }
+                emit_materialized_call_args(s, &arg_materializations[call_idx]);
+                let call_instr = match site.target {
+                    NestedTarget::Direct(func) => Instr::Call(Call { func }),
+                    NestedTarget::Indirect { table } => Instr::CallIndirect(CallIndirect {
+                        ty: site.sig_ty,
+                        table,
+                    }),
+                };
+                s.push((call_instr, site.loc));
             }
-            let target = match site.target {
-                NestedTarget::Direct(func) => CallTarget::Direct(func),
-                NestedTarget::Indirect { table } => CallTarget::Indirect { table },
-                NestedTarget::Ref => CallTarget::Ref,
-            };
-            emit_replay_routed_call_with_unwind_boundary(
+            // Phase 6e + call_idx frame write + UNWIND branch. Phase 6e is
+            // delayed until after frame reservation succeeds so an abort can
+            // replay the still-live activation without publishing state.
+            emit_call_index_store_and_unwind_branch(
                 local,
                 seq_id,
-                target,
-                site.direct_activation,
-                site.sig_ty,
-                site.resume_ty
-                    .expect("nested call site resume type was not assigned"),
-                site.loc,
-                &arg_materializations[call_idx],
-                *call_idx,
                 runtime,
                 memory,
                 ptr_ty,
                 frame_size,
+                *call_idx,
                 unwind_save,
+                catch_handlers,
+                catch_state_locals,
                 abort,
             );
-            // The statically scoped private-tag boundary records this exact
-            // call before any result becomes visible to the continuation.
         }
         LandingKind::SubRegion { .. } => {
             // Block/Loop/TryTable: preserve the enclosing instr
@@ -8817,8 +7382,8 @@ fn emit_post_landing(
             if let Some(plan) = &landing.carryover {
                 match plan {
                     CarryoverPlan::Spill { spill_locals } => {
-                        for &(local, ty) in spill_locals {
-                            push_typed_local_get(s, local, ty);
+                        for (l, _ty) in spill_locals.iter() {
+                            push_instr(s, Instr::LocalGet(LocalGet { local: *l }));
                         }
                     }
                     CarryoverPlan::PureTail { tail, .. } => {
@@ -8860,8 +7425,8 @@ fn emit_post_landing(
                         .last()
                         .copied()
                         .expect("IfElse spill plan must include the condition");
-                    for &(local, ty) in spill_locals.iter().take(spill_locals.len() - 1) {
-                        push_typed_local_get(s, local, ty);
+                    for (l, _ty) in spill_locals.iter().take(spill_locals.len() - 1) {
+                        push_instr(s, Instr::LocalGet(LocalGet { local: *l }));
                     }
                     IfElseCondSource::Local(cond_local)
                 }
@@ -9400,10 +7965,10 @@ mod trampoline_tests {
     }
 
     #[test]
-    fn compute_carryover_types_preserves_reference_for_validation() {
-        // A reference producer's value is the carryover at a fork-path call.
-        // Preserve the exact type so the activation recipe planner can assign
-        // its codec class and call-specific vector ownership.
+    fn compute_carryover_types_unknown_producer_in_carryover_returns_none() {
+        // Contrast case: a ref-typed producer's value IS the carryover
+        // at a fork-path call. The switch-dispatch spill path only
+        // supports scalar ValTypes, so the analyser correctly fails.
         let wat = r#"
             (module
               (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -9422,7 +7987,9 @@ mod trampoline_tests {
         let main = find_func_id(&module, "main");
         let fork_path = build_fork_path(&module, &["fork", "main"]);
         let result = compute_carryover_types(&module, main, &fork_path);
-        assert_eq!(result, Some(vec![vec![ValType::Ref(RefType::EXTERNREF)]]));
+        // Carryover would be [None] (the ref-typed result). Analyser
+        // refuses -> None.
+        assert_eq!(result, None);
     }
 
     // Sub-commit 2.5a: nested-aware carryover analyser. The analyser

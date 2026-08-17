@@ -36,7 +36,7 @@
 /etc/ssl/certs   d  0755  0  0
 
 # ── User home ──────────────────────────────────────────────────────
-/home/maker      d  0755  1000  1000
+/home/user       d  0755  1000  1000
 
 # ── /etc content (source: images/rootfs/etc/*) ────────────────────────────
 # passwd/group/hosts live in rootfs.vfs, which is the source of truth
@@ -53,8 +53,6 @@
 /etc/os-release    f  0644  0  0
 /etc/profile       f  0644  0  0
 /etc/motd          f  0644  0  0
-/etc/motd.autologin f 0644  0  0
-/etc/sudoers       f  0440  0  0
 # The rootfs file is the authoritative services database. Rootfs-derived
 # images inherit it rather than rebuilding or synthesizing a second table.
 /etc/services      f  0644  0  0

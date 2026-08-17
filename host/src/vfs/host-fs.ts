@@ -7,56 +7,14 @@
 
 import * as fs from "node:fs";
 import * as nodePath from "node:path";
-import {
-  HostAppendContractError,
-  isHostAppendContractError,
-} from "../append-contract";
-import type {
-  AppendOutcome,
-  HostFileOffset,
-  PathconfValue,
-  StatResult,
-  StatfsResult,
-} from "../types";
-import {
-  advanceHostFilePosition,
-  checkedHostFilePosition,
-  checkedSeekPosition,
-  hostFileOffsetFromBigInt,
-  hostFilePositionForNodeRead,
-  hostFilePositionToSafeNumber,
-} from "../file-offset";
-import {
-  NativePositionedWriteHandles,
-  openNativeBackingFile,
-} from "../native-positioned-write";
+import type { PathconfValue, StatResult, StatfsResult } from "../types";
 import { NativeMetadataOverlay } from "../platform/native-metadata";
 import { filesystemPathconf } from "../pathconf";
-import {
-  DIRENT_TYPES,
-  OPEN_FLAGS,
-  SEEK_WHENCE,
-} from "../generated/abi";
-import { ST_NOSUID, type FileSystemBackend, type DirEntry } from "./types";
+import type { FileSystemBackend, DirEntry } from "./types";
 import { DEFAULT_STATFS_BLOCK_SIZE, DEFAULT_STATFS_NAMELEN } from "../statfs";
 
 const UTIME_NOW = 0x3fffffff;
 const UTIME_OMIT = 0x3ffffffe;
-const MAX_SIGNED_I64 = (1n << 63n) - 1n;
-const intrinsicBigInt = BigInt;
-const intrinsicNumber = Number;
-const intrinsicNumberIsSafeInteger = Number.isSafeInteger;
-const intrinsicApply = Reflect.apply;
-const intrinsicWeakSetAdd = WeakSet.prototype.add;
-const intrinsicWeakSetHas = WeakSet.prototype.has;
-const exclusiveNativeWriterHostFileSystems = new WeakSet<object>();
-
-interface HostFileSystemOptions {
-  uid?: number;
-  gid?: number;
-  /** The caller owns every native writer for this directory's lifetime. */
-  exclusiveNativeWriters?: boolean;
-}
 
 function makeHostFsError(code: string, message: string): Error & { code: string } {
   const error = new Error(`${code}: ${message}`) as Error & { code: string };
@@ -64,18 +22,18 @@ function makeHostFsError(code: string, message: string): Error & { code: string 
   return error;
 }
 
-/**
- * Construct the backing for a freshly created, lifecycle-owned Node session
- * directory. This factory is intentionally not re-exported from the public VFS
- * entry point; the internal fresh-session resolver is its sole production
- * caller.
- */
-export function createSessionOwnedHostFileSystem(
-  rootPath: string,
-): HostFileSystem {
-  const backend = new HostFileSystem(rootPath);
-  intrinsicApply(intrinsicWeakSetAdd, exclusiveNativeWriterHostFileSystems, [backend]);
-  return backend;
+function checkedSeekPosition(base: number, offset: number): number {
+  if (!Number.isSafeInteger(base) || !Number.isSafeInteger(offset)) {
+    throw makeHostFsError("EOVERFLOW", "seek offset is not exactly representable");
+  }
+  const position = base + offset;
+  if (!Number.isSafeInteger(position)) {
+    throw makeHostFsError("EOVERFLOW", "seek result is not exactly representable");
+  }
+  if (position < 0) {
+    throw makeHostFsError("EINVAL", "negative seek offset");
+  }
+  return position;
 }
 
 /**
@@ -84,23 +42,35 @@ export function createSessionOwnedHostFileSystem(
  * The numeric values differ between Linux and macOS/BSD.
  */
 export function translateOpenFlags(linuxFlags: number): number {
+  // Linux flag constants (octal)
+  const L_O_WRONLY = 0o1;
+  const L_O_RDWR = 0o2;
+  const L_O_CREAT = 0o100;
+  const L_O_EXCL = 0o200;
+  const L_O_NOCTTY = 0o400;
+  const L_O_TRUNC = 0o1000;
+  const L_O_APPEND = 0o2000;
+  const L_O_NONBLOCK = 0o4000;
+  const L_O_DIRECTORY = 0o200000;
+  const L_O_NOFOLLOW = 0o400000;
+
   let native = 0;
 
   // Access mode (bottom 2 bits)
-  if (linuxFlags & OPEN_FLAGS.O_RDWR) native |= fs.constants.O_RDWR;
-  else if (linuxFlags & OPEN_FLAGS.O_WRONLY) native |= fs.constants.O_WRONLY;
+  if (linuxFlags & L_O_RDWR) native |= fs.constants.O_RDWR;
+  else if (linuxFlags & L_O_WRONLY) native |= fs.constants.O_WRONLY;
   // else O_RDONLY = 0
 
-  if (linuxFlags & OPEN_FLAGS.O_CREAT) native |= fs.constants.O_CREAT;
-  if (linuxFlags & OPEN_FLAGS.O_EXCL) native |= fs.constants.O_EXCL;
-  if (linuxFlags & OPEN_FLAGS.O_TRUNC) native |= fs.constants.O_TRUNC;
-  if (linuxFlags & OPEN_FLAGS.O_APPEND) native |= fs.constants.O_APPEND;
-  if (linuxFlags & OPEN_FLAGS.O_NONBLOCK) native |= fs.constants.O_NONBLOCK;
-  if (linuxFlags & OPEN_FLAGS.O_DIRECTORY && fs.constants.O_DIRECTORY)
+  if (linuxFlags & L_O_CREAT) native |= fs.constants.O_CREAT;
+  if (linuxFlags & L_O_EXCL) native |= fs.constants.O_EXCL;
+  if (linuxFlags & L_O_TRUNC) native |= fs.constants.O_TRUNC;
+  if (linuxFlags & L_O_APPEND) native |= fs.constants.O_APPEND;
+  if (linuxFlags & L_O_NONBLOCK) native |= fs.constants.O_NONBLOCK;
+  if (linuxFlags & L_O_DIRECTORY && fs.constants.O_DIRECTORY)
     native |= fs.constants.O_DIRECTORY;
-  if (linuxFlags & OPEN_FLAGS.O_NOFOLLOW && fs.constants.O_NOFOLLOW)
+  if (linuxFlags & L_O_NOFOLLOW && fs.constants.O_NOFOLLOW)
     native |= fs.constants.O_NOFOLLOW;
-  if (linuxFlags & OPEN_FLAGS.O_NOCTTY && fs.constants.O_NOCTTY)
+  if (linuxFlags & L_O_NOCTTY && fs.constants.O_NOCTTY)
     native |= fs.constants.O_NOCTTY;
   // O_LARGEFILE and O_CLOEXEC have no Node.js equivalent; ignored.
 
@@ -131,15 +101,14 @@ export function nativeStatfs(path: string): StatfsResult {
     fsid: 0,
     namelen: DEFAULT_STATFS_NAMELEN,
     frsize: bsize,
-    flags: ST_NOSUID,
+    flags: 0,
   };
 }
 
 export class HostFileSystem implements FileSystemBackend {
   private rootPath: string;
   private guestMountPoint: string;
-  private fdPositions = new Map<number, HostFileOffset>();
-  private readonly positionedWrites = new NativePositionedWriteHandles();
+  private fdPositions = new Map<number, number>();
   private dirHandles = new Map<number, fs.Dir>();
   private nextDirHandle = 1;
   private metadata: NativeMetadataOverlay;
@@ -147,7 +116,7 @@ export class HostFileSystem implements FileSystemBackend {
   constructor(
     rootPath: string,
     guestMountPoint = "/",
-    options: HostFileSystemOptions = {},
+    options: { uid?: number; gid?: number } = {},
   ) {
     const resolvedRoot = nodePath.resolve(rootPath);
     this.rootPath = fs.existsSync(resolvedRoot)
@@ -158,9 +127,6 @@ export class HostFileSystem implements FileSystemBackend {
       options.uid ?? 0,
       options.gid ?? 0,
     );
-    if (options.exclusiveNativeWriters === true) {
-      intrinsicApply(intrinsicWeakSetAdd, exclusiveNativeWriterHostFileSystems, [this]);
-    }
   }
 
   /**
@@ -310,74 +276,32 @@ export class HostFileSystem implements FileSystemBackend {
 
   open(path: string, flags: number, mode: number): number {
     const noFollowFinal =
-      (flags & OPEN_FLAGS.O_NOFOLLOW) !== 0 ||
-      ((flags & OPEN_FLAGS.O_CREAT) !== 0 &&
-        (flags & OPEN_FLAGS.O_EXCL) !== 0);
+      (flags & 0o400000) !== 0 ||
+      ((flags & 0o100) !== 0 && (flags & 0o200) !== 0);
     const nativePath = this.safePath(path, !noFollowFinal);
-    const truncate = (flags & OPEN_FLAGS.O_TRUNC) !== 0;
-    const nativeFlags = translateOpenFlags(flags);
-    const { fd, created } = openNativeBackingFile(
-      nativePath,
-      truncate ? nativeFlags & ~fs.constants.O_TRUNC : nativeFlags,
-      flags,
-      mode,
-    );
-    try {
-      if (created) {
-        this.metadata.chmod(fs.fstatSync(fd, { bigint: true }), mode);
-      }
-      this.fdPositions.set(fd, 0);
-      this.positionedWrites.register(fd, flags, nativePath);
-      if (!created && truncate) {
-        const truncateHandle = this.positionedWrites.forTruncate(
-          fd,
-          flags,
-          nativePath,
-        );
-        const before = fs.fstatSync(fd, { bigint: true });
-        const commit = before.size === 0n
-          ? null
-          : this.metadata.prepareNativeContentChange(before);
-        fs.ftruncateSync(truncateHandle, 0);
-        commit?.();
-      }
-      return fd;
-    } catch (error) {
-      this.fdPositions.delete(fd);
-      try {
-        this.positionedWrites.close(fd);
-      } catch {
-        // Preserve the route-establishment failure.
-      }
-      throw error;
-    }
+    const created = (flags & 0o100) !== 0 && !fs.existsSync(nativePath);
+    const fd = fs.openSync(nativePath, translateOpenFlags(flags), mode);
+    if (created) this.metadata.chmod(fs.fstatSync(fd, { bigint: true }), mode);
+    this.fdPositions.set(fd, 0);
+    return fd;
   }
 
   close(handle: number): number {
-    try {
-      this.positionedWrites.close(handle);
-    } finally {
-      this.fdPositions.delete(handle);
-    }
+    fs.closeSync(handle);
+    this.fdPositions.delete(handle);
     return 0;
   }
 
   read(
     handle: number,
     buffer: Uint8Array,
-    offset: HostFileOffset | null,
+    offset: number | null,
     length: number,
   ): number {
-    const pos = hostFilePositionForNodeRead(
-      offset ?? this.fdPositions.get(handle) ?? 0,
-      length,
-    );
+    const pos = offset ?? this.fdPositions.get(handle) ?? 0;
     const bytesRead = fs.readSync(handle, buffer, 0, length, pos);
     if (offset === null) {
-      this.fdPositions.set(
-        handle,
-        advanceHostFilePosition(pos, bytesRead),
-      );
+      this.fdPositions.set(handle, pos + bytesRead);
     }
     return bytesRead;
   }
@@ -385,155 +309,33 @@ export class HostFileSystem implements FileSystemBackend {
   write(
     handle: number,
     buffer: Uint8Array,
-    offset: HostFileOffset | null,
+    offset: number | null,
     length: number,
   ): number {
     const pos = offset ?? this.fdPositions.get(handle) ?? 0;
-    // Node's synchronous write API cannot represent a bigint position.
-    const nativePos = hostFilePositionToSafeNumber(pos);
-    const writeHandle = this.positionedWrites.forWrite(
-      handle,
-      offset !== null,
-    );
-    const bytesWritten = fs.writeSync(
-      writeHandle,
-      buffer,
-      0,
-      length,
-      nativePos,
-    );
+    const bytesWritten = fs.writeSync(handle, buffer, 0, length, pos);
     if (bytesWritten > 0) {
       this.metadata.noteNativeContentChange(
         fs.fstatSync(handle, { bigint: true }),
       );
     }
     if (offset === null) {
-      this.fdPositions.set(
-        handle,
-        advanceHostFilePosition(pos, bytesWritten),
-      );
+      this.fdPositions.set(handle, pos + bytesWritten);
     }
     return bytesWritten;
   }
 
-  append(
-    handle: number,
-    buffer: Uint8Array,
-    length: number,
-    limit: HostFileOffset | null,
-  ): AppendOutcome {
-    if (
-      !intrinsicApply(
-        intrinsicWeakSetHas,
-        exclusiveNativeWriterHostFileSystems,
-        [this],
-      )
-    ) {
-      // A later fstat cannot identify where this append ended if an unrelated
-      // native writer may run before or after it. Do not fabricate an exact
-      // outcome even when no file-size limit is active.
-      throw makeHostFsError(
-        "EOPNOTSUPP",
-        "exact append outcomes require exclusive native-writer ownership",
-      );
-    }
-    const appendHandle = this.positionedWrites.forAppend(handle);
-    if (
-      !intrinsicNumberIsSafeInteger(length)
-      || length < 0
-      || length > buffer.byteLength
-    ) {
-      throw makeHostFsError("EINVAL", "invalid append length");
-    }
-    const before = fs.fstatSync(appendHandle, { bigint: true });
-    const start = before.size;
-    const startOffset = hostFileOffsetFromBigInt(start);
-    const exactLimit = limit === null
-      ? null
-      : intrinsicBigInt(checkedHostFilePosition(limit));
-    if (exactLimit !== null && start >= exactLimit) {
-      this.fdPositions.set(handle, startOffset);
-      return { written: 0, end: startOffset };
-    }
-
-    const offsetCapacity = MAX_SIGNED_I64 - start;
-    if (offsetCapacity < 0n) {
-      throw makeHostFsError("EOVERFLOW", "append start is outside signed i64");
-    }
-    const limitedCapacity = exactLimit === null
-      ? offsetCapacity
-      : exactLimit - start < offsetCapacity
-        ? exactLimit - start
-        : offsetCapacity;
-    const writableLength = limitedCapacity < intrinsicBigInt(length)
-      ? intrinsicNumber(limitedCapacity)
-      : length;
-    if (length > 0 && writableLength === 0 && exactLimit === null) {
-      throw makeHostFsError("EOVERFLOW", "append end would exceed signed i64");
-    }
-    const bytesWritten = writableLength === 0
-      ? 0
-      : fs.writeSync(
-        appendHandle,
-        buffer,
-        0,
-        writableLength,
-        null,
-      );
-    if (
-      !intrinsicNumberIsSafeInteger(bytesWritten)
-      || bytesWritten < 0
-      || bytesWritten > writableLength
-    ) {
-      throw new HostAppendContractError(
-        "native append returned an invalid byte count",
-      );
-    }
-    try {
-      const exactEnd = start + intrinsicBigInt(bytesWritten);
-      const stat = fs.fstatSync(handle, { bigint: true });
-      if (stat.size !== exactEnd) {
-        throw new HostAppendContractError(
-          "session-owned append observed an unexpected native file size",
-        );
-      }
-      if (bytesWritten > 0) {
-        this.metadata.noteNativeContentChange(stat);
-      }
-      const end = hostFileOffsetFromBigInt(exactEnd);
-      this.fdPositions.set(handle, end);
-      return { written: bytesWritten, end };
-    } catch (error) {
-      if (isHostAppendContractError(error)) throw error;
-      // The native write already returned success. Any failure to verify and
-      // publish its exact end must poison the kernel generation rather than
-      // masquerade as an ordinary retryable filesystem errno.
-      throw new HostAppendContractError(
-        "session-owned append could not verify its post-write outcome",
-      );
-    }
-  }
-
-  seek(
-    handle: number,
-    offset: HostFileOffset,
-    whence: number,
-  ): HostFileOffset {
-    let newPos: HostFileOffset;
+  seek(handle: number, offset: number, whence: number): number {
+    let newPos: number;
     switch (whence) {
-      case SEEK_WHENCE.SEEK_SET:
+      case 0: // SEEK_SET
         newPos = checkedSeekPosition(0, offset);
         break;
-      case SEEK_WHENCE.SEEK_CUR:
+      case 1: // SEEK_CUR
         newPos = checkedSeekPosition(this.fdPositions.get(handle) ?? 0, offset);
         break;
-      case SEEK_WHENCE.SEEK_END:
-        newPos = checkedSeekPosition(
-          hostFileOffsetFromBigInt(
-            fs.fstatSync(handle, { bigint: true }).size,
-          ),
-          offset,
-        );
+      case 2: // SEEK_END
+        newPos = checkedSeekPosition(this.fstat(handle).size, offset);
         break;
       default:
         throw makeHostFsError("EINVAL", `invalid whence value: ${whence}`);
@@ -562,12 +364,10 @@ export class HostFileSystem implements FileSystemBackend {
   }
 
   ftruncate(handle: number, length: number): void {
-    const before = fs.fstatSync(handle, { bigint: true });
-    const commit = before.size === BigInt(length)
-      ? null
-      : this.metadata.prepareNativeContentChange(before);
     fs.ftruncateSync(handle, length);
-    commit?.();
+    this.metadata.noteNativeContentChange(
+      fs.fstatSync(handle, { bigint: true }),
+    );
   }
 
   fsync(handle: number): void {
@@ -741,20 +541,20 @@ export class HostFileSystem implements FileSystemBackend {
     const entry = dir.readSync();
     if (!entry) return null;
 
-    let dtype: number = DIRENT_TYPES.DT_UNKNOWN;
+    let dtype = 0; // DT_UNKNOWN
     if (entry.isFile())
-      dtype = DIRENT_TYPES.DT_REG;
+      dtype = 8; // DT_REG
     else if (entry.isDirectory())
-      dtype = DIRENT_TYPES.DT_DIR;
+      dtype = 4; // DT_DIR
     else if (entry.isSymbolicLink())
-      dtype = DIRENT_TYPES.DT_LNK;
+      dtype = 10; // DT_LNK
     else if (entry.isFIFO())
-      dtype = DIRENT_TYPES.DT_FIFO;
+      dtype = 1; // DT_FIFO
     else if (entry.isSocket())
-      dtype = DIRENT_TYPES.DT_SOCK;
+      dtype = 12; // DT_SOCK
     else if (entry.isCharacterDevice())
-      dtype = DIRENT_TYPES.DT_CHR;
-    else if (entry.isBlockDevice()) dtype = DIRENT_TYPES.DT_BLK;
+      dtype = 2; // DT_CHR
+    else if (entry.isBlockDevice()) dtype = 6; // DT_BLK
 
     return { name: entry.name, type: dtype, ino: 0 };
   }

@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { describe, expect, it, vi } from "vitest";
 
+import { CentralizedKernelWorker } from "../src/kernel-worker";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { uninitializedKernelPipeResult } from "../src/kernel-pipe-transport";
 import type {
@@ -11,6 +11,21 @@ import type {
 interface TestableNodeKernelHost {
   worker: { postMessage(message: MainToKernelMessage): void };
   handleWorkerMessage(message: KernelToMainMessage): void;
+}
+
+interface TestableKernelPipeWorker {
+  pumpHttpResponse(
+    pid: number,
+    sendPipeIdx: number,
+    recvPipeIdx: number,
+    pipeRead: (pid: number, pipeIdx: number, pointer: number, length: number) => number,
+    pipeIsWriteOpen: (pid: number, pipeIdx: number) => number,
+    pipeCloseRead: (pid: number, pipeIdx: number) => number,
+    pipeCloseWrite: (pid: number, pipeIdx: number) => number,
+    timeoutMs: number,
+    maxResponseBytes: number,
+    label: string,
+  ): Promise<unknown>;
 }
 
 function fixture() {
@@ -106,22 +121,194 @@ describe("NodeKernelHost kernel-pipe proxy parity", () => {
       { type: "wake_blocked_writers", pipeIdx: 21 },
     ]);
   });
+});
 
-  it("routes the Node worker protocol through the reentrant-safe pipe API", () => {
-    const entry = readFileSync(
-      new URL("../src/node-kernel-worker-entry.ts", import.meta.url),
-      "utf8",
+describe("CentralizedKernelWorker host pipe boundary", () => {
+  it("bounds one read and wakes the guest writer after draining bytes", () => {
+    const memory = new WebAssembly.Memory({ initial: 2 });
+    const bytes = new Uint8Array(memory.buffer);
+    let calls = 0;
+    const worker = Object.assign(
+      Object.create(CentralizedKernelWorker.prototype),
+      {
+        kernelInstance: {
+          exports: {
+            kernel_pipe_read: (
+              _pid: number,
+              _pipeIdx: number,
+              pointer: number,
+              length: number,
+            ) => {
+              calls += 1;
+              if (calls > 1) return 0;
+              expect(length).toBe(65_536);
+              bytes.set([4, 5, 6], pointer);
+              return 3;
+            },
+          },
+        },
+        kernelMemory: memory,
+        kernel: { toKernelPtr: (value: number | bigint) => value },
+        tcpScratchOffset: 4_096,
+        cachedKernelMem: null,
+        cachedKernelBuffer: null,
+        notifyPipeWritable: vi.fn(),
+      },
+    ) as CentralizedKernelWorker;
+
+    expect(worker.readHostPipe(0, 21)).toEqual(new Uint8Array([4, 5, 6]));
+    expect(calls).toBe(1);
+    expect(worker.notifyPipeWritable).toHaveBeenCalledWith(21);
+  });
+
+  it.each([65_537, 1.5])(
+    "rejects invalid host-pipe read count %s before copying kernel memory",
+    (returned) => {
+      const memory = new WebAssembly.Memory({ initial: 2 });
+      const worker = Object.assign(
+        Object.create(CentralizedKernelWorker.prototype),
+        {
+          kernelInstance: {
+            exports: { kernel_pipe_read: vi.fn(() => returned) },
+          },
+          kernelMemory: memory,
+          kernel: { toKernelPtr: (value: number | bigint) => value },
+          tcpScratchOffset: 4_096,
+          cachedKernelMem: null,
+          cachedKernelBuffer: null,
+          notifyPipeWritable: vi.fn(),
+        },
+      ) as CentralizedKernelWorker;
+
+      expect(() => worker.readHostPipe(0, 21)).toThrow(
+        "kernel_pipe_read returned an invalid byte count",
+      );
+      expect(worker.notifyPipeWritable).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([4, 1.5])(
+    "rejects invalid host-pipe write count %s before advancing the input",
+    (returned) => {
+      const memory = new WebAssembly.Memory({ initial: 2 });
+      const worker = Object.assign(
+        Object.create(CentralizedKernelWorker.prototype),
+        {
+          kernelInstance: {
+            exports: { kernel_pipe_write: vi.fn(() => returned) },
+          },
+          kernelMemory: memory,
+          kernel: { toKernelPtr: (value: number | bigint) => value },
+          tcpScratchOffset: 4_096,
+          cachedKernelMem: null,
+          cachedKernelBuffer: null,
+          notifyPipeReadable: vi.fn(),
+        },
+      ) as CentralizedKernelWorker;
+
+      expect(() => worker.writeHostPipe(0, 20, new Uint8Array([1, 2, 3])))
+        .toThrow("kernel_pipe_write returned an invalid byte count");
+      expect(worker.notifyPipeReadable).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects an overreported HTTP pipe read before retaining response bytes", async () => {
+    const getKernelMem = vi.fn(() => new Uint8Array(2 * 65_536));
+    const closeRead = vi.fn(() => 0);
+    const closeWrite = vi.fn(() => 0);
+    const worker = Object.assign(
+      Object.create(CentralizedKernelWorker.prototype),
+      {
+        kernel: { toKernelPtr: (value: number | bigint) => value },
+        tcpScratchOffset: 4_096,
+        getKernelMem,
+        notifyPipeReadable: vi.fn(),
+        notifyPipeWritable: vi.fn(),
+        scheduleWakeBlockedRetries: vi.fn(),
+      },
+    ) as unknown as TestableKernelPipeWorker;
+
+    await expect(worker.pumpHttpResponse(
+      0,
+      21,
+      20,
+      () => 65_537,
+      () => 1,
+      closeRead,
+      closeWrite,
+      1_000,
+      1_000_000,
+      "bounded test",
+    )).rejects.toThrow("kernel_pipe_read returned an invalid byte count");
+    expect(getKernelMem).not.toHaveBeenCalled();
+    expect(closeRead).toHaveBeenCalledWith(0, 21);
+    expect(closeWrite).toHaveBeenCalledWith(0, 20);
+  });
+
+  it("injects and writes through exact typed kernel exports", () => {
+    const memory = new WebAssembly.Memory({ initial: 2 });
+    const bytes = new Uint8Array(memory.buffer);
+    const inject = vi.fn(() => 20);
+    const write = vi.fn(
+      (_pid: number, _pipeIdx: number, pointer: number, length: number) => {
+        expect([...bytes.slice(pointer, pointer + length)]).toEqual([1, 2, 3]);
+        return length;
+      },
     );
+    const worker = Object.assign(
+      Object.create(CentralizedKernelWorker.prototype),
+      {
+        kernelInstance: {
+          exports: {
+            kernel_inject_connection: inject,
+            kernel_pipe_write: write,
+          },
+        },
+        kernelMemory: memory,
+        kernel: { toKernelPtr: (value: number | bigint) => value },
+        tcpScratchOffset: 4_096,
+        cachedKernelMem: null,
+        cachedKernelBuffer: null,
+        notifyPipeReadable: vi.fn(),
+        scheduleWakeBlockedRetries: vi.fn(),
+      },
+    ) as CentralizedKernelWorker;
 
-    expect(entry).toContain("kernelWorker.readPipeAvailable(msg.pid, msg.pipeIdx)");
-    expect(entry).toContain("kernelWorker.writePipeData(msg.pid, msg.pipeIdx, msg.data)");
-    expect(entry).toContain("kernelWorker.notifyPipeReadable(msg.pipeIdx)");
-    expect(entry).toContain("kernelWorker.injectConnection(");
-    expect(entry).toContain("kernelWorker.closePipeRead(msg.pid, msg.pipeIdx)");
-    expect(entry).toContain("kernelWorker.closePipeWrite(msg.pid, msg.pipeIdx)");
-    expect(entry).toContain("kernelWorker.isPipeWriteOpen(msg.pid, msg.pipeIdx)");
-    expect(entry).not.toContain("kernelWorker.readHostPipe(");
-    expect(entry).not.toContain("kernelWorker.writeHostPipe(");
-    expect(entry).not.toContain("kernelWorker.injectHostConnection(");
+    expect(worker.injectHostConnection(9, 4, [127, 0, 0, 1], 12_000)).toBe(20);
+    expect(inject).toHaveBeenCalledWith(9, 4, 127, 0, 0, 1, 12_000);
+    expect(worker.writeHostPipe(0, 20, new Uint8Array([1, 2, 3]))).toBe(3);
+    expect(worker.notifyPipeReadable).toHaveBeenCalledWith(20);
+  });
+
+  it("closes, checks, and wakes through the shared host boundary", () => {
+    const closeRead = vi.fn(() => 0);
+    const closeWrite = vi.fn(() => 0);
+    const isWriteOpen = vi.fn(() => 1);
+    const worker = Object.assign(
+      Object.create(CentralizedKernelWorker.prototype),
+      {
+        kernelInstance: {
+          exports: {
+            kernel_pipe_close_read: closeRead,
+            kernel_pipe_close_write: closeWrite,
+            kernel_pipe_is_write_open: isWriteOpen,
+          },
+        },
+        notifyPipeReadable: vi.fn(),
+        notifyPipeWritable: vi.fn(),
+      },
+    ) as CentralizedKernelWorker;
+
+    worker.closeHostPipeRead(0, 21);
+    worker.closeHostPipeWrite(0, 20);
+    expect(worker.isHostPipeWriteOpen(0, 20)).toBe(true);
+    worker.wakeHostPipeReaders(20);
+    worker.wakeHostPipeWriters(21);
+
+    expect(closeRead).toHaveBeenCalledWith(0, 21);
+    expect(closeWrite).toHaveBeenCalledWith(0, 20);
+    expect(isWriteOpen).toHaveBeenCalledWith(0, 20);
+    expect(worker.notifyPipeReadable).toHaveBeenCalledWith(20);
+    expect(worker.notifyPipeWritable).toHaveBeenCalledWith(21);
   });
 });

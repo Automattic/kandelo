@@ -29,12 +29,12 @@ else
     echo "--- SDK tools: OK ---"
 fi
 
-# Step 3: nginx service VFS image
-if ! "$REPO_ROOT/scripts/resolve-binary.sh" programs/nginx-vfs.vfs.zst >/dev/null 2>&1; then
-    echo "--- Building nginx VFS image ---"
-    bash "$REPO_ROOT/run.sh" build nginx-vfs
+# Step 3: nginx binary
+if ! "$REPO_ROOT/scripts/resolve-binary.sh" programs/nginx.wasm >/dev/null 2>&1; then
+    echo "--- Building nginx ---"
+    bash "$REPO_ROOT/packages/registry/nginx/build-nginx-local.sh"
 else
-    echo "--- nginx VFS image: OK ---"
+    echo "--- nginx.wasm: OK ---"
 fi
 
 # Step 4: Host dependencies

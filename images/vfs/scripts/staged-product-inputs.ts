@@ -476,7 +476,7 @@ export async function buildStagedBrowserMainShell(
     const registered = registerHomebrewDeferredTreeCollection({
       fs,
       id: "browser-main-shell",
-      schema: 6,
+      schema: 5,
       trees: bottleTrees.map((item) => item.descriptor.tree),
     });
     const handleByPackage = new Map(

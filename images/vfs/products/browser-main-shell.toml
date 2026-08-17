@@ -45,8 +45,7 @@ formulae = [
   "file-formula", "m4", "make", "findutils", "diffutils",
   "posix-utils-lite", "fbdoom", "modeset", "less", "tar", "curl",
   "netcat", "wget", "git", "gzip", "bzip2", "xz", "zstd", "zip",
-  "unzip", "lsof", "nano", "vim", "nethack", "login", "sudo-lite",
-  "sudo", "ruby",
+  "unzip", "lsof", "nano", "vim", "nethack", "ruby",
 ]
 materialization = "lazy"
 

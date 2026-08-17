@@ -26,9 +26,7 @@ FIXTURE="$TMP_ROOT/fixture"
 TAP_ROOT="$TMP_ROOT/tap"
 SYSROOT="$TMP_ROOT/sysroot"
 MOCK_BIN="$TMP_ROOT/mock-bin"
-LONG_TMPDIR="$TMP_ROOT/a-verification-supervisor-with-a-deep-private-environment/tmp"
-mkdir -p "$FIXTURE" "$TAP_ROOT/Formula" "$SYSROOT" "$MOCK_BIN" \
-  "$LONG_TMPDIR"
+mkdir -p "$FIXTURE" "$TAP_ROOT/Formula" "$SYSROOT" "$MOCK_BIN"
 printf 'class MiniTool < Formula\nend\n' >"$TAP_ROOT/Formula/mini-tool.rb"
 printf 'class MiniBase < Formula\nend\n' >"$TAP_ROOT/Formula/mini-base.rb"
 git -C "$TAP_ROOT" init -q
@@ -118,18 +116,13 @@ dependency_artifact = {
     "target_abi": 8,
 }))
 metadata = canonical({
-    "kandelo-dev/tap-core/mini-tool": {
+    "mini-tool": {
         "bottle": {
-            "cellar": "any_skip_relocation",
             "rebuild": 0,
-            "root_url": "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-8-candidates",
+            "root_url": "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-8-candidates/mini-tool",
             "tags": {"wasm32_kandelo": {"sha256": digest(bottle)}},
         },
-        "formula": {
-            "name": "mini-tool",
-            "path": "Library/Taps/kandelo-dev/homebrew-tap-core/Formula/mini-tool.rb",
-            "pkg_version": "1.0",
-        },
+        "formula": {"name": "mini-tool", "pkg_version": "1.0"},
     }
 })
 (root / "bottle-metadata.json").write_bytes(metadata)
@@ -394,27 +387,13 @@ printf '\n' >>"$FAKE_NORMAL_LOG"
 [ -d "$HOME" ] && [ -z "$(find "$HOME" -mindepth 1 -print -quit)" ]
 [ -d "$HOMEBREW_CACHE" ] && [ -z "$(find "$HOMEBREW_CACHE" -mindepth 1 -print -quit)" ]
 [ -d "$HOMEBREW_TEMP" ] && [ -z "$(find "$HOMEBREW_TEMP" -mindepth 1 -print -quit)" ]
-case "$TMPDIR" in
-  /tmp/k.??????) ;;
-  *)
-    echo "normal verifier received an unsafe socket temp root: $TMPDIR" >&2
-    exit 93
-    ;;
-esac
-[ "${#TMPDIR}" -le 32 ] || exit 94
-out=""; abi=""; arch=""; root=""; bottle_json=""; staging_abi=""
-playwright_browsers=""
-selection_receipt=""
-staged_dependencies=()
+out=""; abi=""; arch=""; root=""; staging_abi=""; staged_dependencies=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --out) out="$2"; shift 2 ;;
     --abi) abi="$2"; shift 2 ;;
     --arch) arch="$2"; shift 2 ;;
-    --bottle-json) bottle_json="$2"; shift 2 ;;
     --bottle-root-url) root="$2"; shift 2 ;;
-    --selection-receipt) selection_receipt="$2"; shift 2 ;;
-    --playwright-browsers-path) playwright_browsers="$2"; shift 2 ;;
     --staging-candidate-abi) staging_abi="$2"; shift 2 ;;
     --staged-dependency-formula) staged_dependencies+=("$2"); shift 2 ;;
     *) shift 2 ;;
@@ -424,28 +403,6 @@ done
 [ "$staging_abi" = 8 ]
 [ "$root" = "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-8-candidates" ]
 [ "${staged_dependencies[*]}" = "mini-base" ]
-[ "$playwright_browsers" = "${FAKE_PLAYWRIGHT_BROWSERS_PATH:?}" ]
-jq -e --arg sha256 "${FAKE_BOTTLE_SHA256:?}" '
-  .bottle.mode == "local-dry-run" and
-  .bottle.sha256 == $sha256 and
-  (.fetch == [("exact immutable candidate layer sha256:" + $sha256)])
-' "$selection_receipt" >/dev/null
-jq -e --arg sha256 "${FAKE_BOTTLE_SHA256:?}" '
-  keys == ["kandelo-dev/tap-core/mini-tool"] and
-  .["kandelo-dev/tap-core/mini-tool"] == {
-    bottle: {
-      cellar: "any_skip_relocation",
-      rebuild: 0,
-      root_url: "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-8-candidates/mini-tool",
-      tags: {wasm32_kandelo: {sha256: $sha256}}
-    },
-    formula: {
-      name: "mini-tool",
-      path: "Library/Taps/kandelo-dev/homebrew-tap-core/Formula/mini-tool.rb",
-      pkg_version: "1.0"
-    }
-  }
-' "$bottle_json" >/dev/null
 if [ "${FAKE_NORMAL_STATUS:-0}" != 0 ]; then
   echo 'deterministic verification failure'
   exit "$FAKE_NORMAL_STATUS"
@@ -482,14 +439,10 @@ export FAKE_TIMEOUT_LOG="$TMP_ROOT/timeout.log"
 export FAKE_RECORD_LOG="$TMP_ROOT/record.log"
 export FAKE_INSPECTOR_LOG="$TMP_ROOT/inspector.log"
 export FAKE_NORMAL_LOG="$TMP_ROOT/normal.log"
-PLAYWRIGHT_BROWSERS="$TMP_ROOT/ms-playwright"
-mkdir "$PLAYWRIGHT_BROWSERS"
-export FAKE_PLAYWRIGHT_BROWSERS_PATH="$(cd "$PLAYWRIGHT_BROWSERS" && pwd -P)"
 
-run_verifier_with_browser_root() {
+run_verifier() {
   local out="$1"
-  local playwright_browsers="$2"
-  TMPDIR="$LONG_TMPDIR" "$VERIFIER" \
+  "$VERIFIER" \
     --candidate-locator "$FIXTURE/candidate-locator.json" \
     --test-definition "$FIXTURE/test-definition.json" \
     --test-definition-sha256 "$TEST_DEFINITION_SHA256" \
@@ -501,13 +454,8 @@ run_verifier_with_browser_root() {
     --tap-commit "$TAP_COMMIT" \
     --dependency-provenance "$FIXTURE/dependencies.json" \
     --sysroot-build-root "$SYSROOT" \
-    --playwright-browsers-path "$playwright_browsers" \
     --forbidden-root /opt/homebrew \
     --out "$out"
-}
-
-run_verifier() {
-  run_verifier_with_browser_root "$1" "$PLAYWRIGHT_BROWSERS"
 }
 
 SUCCESS="$TMP_ROOT/success"
@@ -541,24 +489,11 @@ grep -F -- '--staging-candidate-abi 8' "$FAKE_NORMAL_LOG" >/dev/null || \
   fail "normal verifier did not receive candidate namespace authority"
 grep -F -- '--staged-dependency-formula mini-base' "$FAKE_NORMAL_LOG" >/dev/null || \
   fail "normal verifier did not receive the exact staged dependency Formula"
-grep -F -- "--playwright-browsers-path $FAKE_PLAYWRIGHT_BROWSERS_PATH" \
-  "$FAKE_NORMAL_LOG" >/dev/null || \
-  fail "normal verifier did not receive the prepared Playwright browser root"
 [ "$(cat "$FAKE_TIMEOUT_LOG")" = 21600s ] || fail "timeout changed"
 if rg -n 'homebrew-bottle-build|source build|brew bottle' \
   "$FAKE_INSPECTOR_LOG" "$FAKE_NORMAL_LOG" "$VERIFIER"; then
   fail "verification exposed a fallback source-build path"
 fi
-
-ln -s "$PLAYWRIGHT_BROWSERS" "$TMP_ROOT/playwright-link"
-if run_verifier_with_browser_root "$TMP_ROOT/playwright-symlink" \
-  "$TMP_ROOT/playwright-link" >"$TMP_ROOT/playwright-symlink.stdout" \
-  2>"$TMP_ROOT/playwright-symlink.stderr"; then
-  fail "symlinked Playwright browser root succeeded"
-fi
-grep -F 'prepared Playwright browser root is unavailable' \
-  "$TMP_ROOT/playwright-symlink.stderr" >/dev/null || \
-  fail "symlinked Playwright browser root rejection was not explicit"
 
 if GITHUB_TOKEN=secret run_verifier "$TMP_ROOT/credential" \
   >"$TMP_ROOT/credential.stdout" 2>"$TMP_ROOT/credential.stderr"; then
@@ -600,7 +535,7 @@ grep -F 'downloaded bottle differs from exact layer' "$TMP_ROOT/changed.stderr" 
   fail "changed bottle rejection was not explicit"
 
 cp "$FIXTURE/bottle-metadata.json" "$FIXTURE/exact-metadata.json"
-jq -cS '.["kandelo-dev/tap-core/mini-tool"].formula.pkg_version = "9.9"' \
+jq -cS '.["mini-tool"].formula.pkg_version = "9.9"' \
   "$FIXTURE/exact-metadata.json" >"$FIXTURE/bottle-metadata.json"
 if run_verifier "$TMP_ROOT/metadata" >"$TMP_ROOT/metadata.stdout" \
   2>"$TMP_ROOT/metadata.stderr"; then

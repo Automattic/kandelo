@@ -135,11 +135,11 @@ try {
     host.spawn(toArrayBuffer(shellBytes), [shellConfig.argv[0], "-c", command], {
       env: [
         "PATH=/usr/bin:/bin",
-        "HOME=/home/maker",
-        "USER=maker",
+        "HOME=/home/user",
+        "USER=user",
         "TMPDIR=/tmp",
       ],
-      cwd: "/home/maker",
+      cwd: "/home/user",
       uid: 1000,
       gid: 1000,
       stdin: new Uint8Array(),

@@ -32,14 +32,6 @@ import {
   homebrewRuntimeLayerReferences,
 } from "../../../lib/init/homebrew-package-layers";
 import {
-  publishRuntimeLayerPrivilegedPrograms,
-  type RegisteredHomebrewRuntimeLayer,
-} from "../../../../../host/src/homebrew-runtime-layer-consumer";
-import type {
-  PublishedPrivilegedProgramProduct,
-  ReviewedPrivilegedProgramPolicy,
-} from "../../../../../host/src/vfs/privileged-projection";
-import {
   homebrewBootstrapClosedBinding,
   homebrewClosedAcceptanceAssetRoot,
 } from "../../../lib/homebrew-closed-acceptance";
@@ -69,8 +61,8 @@ import {
   genericDemoPresentation,
   resolveDemoAssets,
   resolveDemoGuide,
-  resolveDemoIngest,
   resolveDemoPresentation,
+  type DemoAssetConfig,
   type KandeloDemoConfig,
 } from "../../../../../web-libs/kandelo-session/src/demo-config";
 import { readKandeloDemoConfigFromVfs } from "../../../../../web-libs/kandelo-session/src/demo-config-vfs";
@@ -94,7 +86,6 @@ import {
   builtinDemoGuide,
   builtinDemoPresentation,
 } from "../../../../../web-libs/kandelo-session/src/demo-guides";
-import { hasConfiguredDemoLogin } from "../../../../../images/vfs/lib/demo-login";
 import { PRESET_LIBRARY } from "../presets";
 import {
   descriptorWithVfsImageUrl,
@@ -126,9 +117,6 @@ import {
   createPagesVfsProductLoader,
   type PagesVfsProductEntry,
 } from "./pages-vfs-product-loader";
-import { DEMO_TERMINAL_SESSION_POLICY } from "./demo-terminal-sessions";
-import { stageConfiguredAssets } from "./configured-assets";
-import { initializeDemoLoginKernel } from "./demo-login-loader";
 
 import kernelWasmUrl from "@kernel-wasm?url";
 import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
@@ -274,8 +262,9 @@ const MYSQL_UID = 101;
 const MYSQL_GID = 101;
 const DEMO_UID = 1000;
 const DEMO_GID = 1000;
-const DEMO_USER = "maker";
-const DEMO_HOME = "/home/maker";
+const DEMO_USER = "user";
+const DEMO_HOME = "/home/user";
+const NODE_WORKDIR = "/work";
 const DINITCTL_PATH = "/sbin/dinitctl";
 const DINITCTL_SOCKET_PATH = "/tmp/dinitctl";
 const DINIT_STARTING_POLL_INTERVAL_MS = 2_000;
@@ -544,6 +533,7 @@ const APP_PREFIX = import.meta.env.BASE_URL + "app/";
 const APP_PATH = import.meta.env.BASE_URL + "app";
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
+const DEV_CORS_PROXY_PATH = import.meta.env.BASE_URL + "__kandelo_cors_proxy";
 const BROWSER_CORS_PROXY = resolveBrowserCorsProxyConfig({
   configuredUrl: import.meta.env.VITE_CORS_PROXY_URL,
   development: import.meta.env.DEV,
@@ -583,8 +573,8 @@ const SHELL_ENV: string[] = [
 ];
 
 const NODE_SHELL_ENV: string[] = [
-  `HOME=${DEMO_HOME}`,
-  `PWD=${DEMO_HOME}`,
+  `HOME=${NODE_WORKDIR}`,
+  `PWD=${NODE_WORKDIR}`,
   "TMPDIR=/tmp",
   "TERM=xterm-256color",
   "LANG=en_US.UTF-8",
@@ -592,7 +582,7 @@ const NODE_SHELL_ENV: string[] = [
   `USER=${DEMO_USER}`,
   `LOGNAME=${DEMO_USER}`,
   "PS1=spidermonkey-node$ ",
-  `HISTFILE=${DEMO_HOME}/.bash_history`,
+  `HISTFILE=${NODE_WORKDIR}/.bash_history`,
   "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
   "SSL_CERT_DIR=/etc/ssl/certs",
   "npm_config_cache=/tmp/.npm-cache",
@@ -620,7 +610,7 @@ const SERVICE_ENV: string[] = [
 
 const SHELL_PROFILES: Record<ShellProfile, { env: string[]; cwd: string }> = {
   default: { env: SHELL_ENV, cwd: DEMO_HOME },
-  node: { env: NODE_SHELL_ENV, cwd: DEMO_HOME },
+  node: { env: NODE_SHELL_ENV, cwd: NODE_WORKDIR },
 };
 
 const INIT_ENV_PROFILES: Record<InitEnvProfile, () => string[]> = {
@@ -638,10 +628,6 @@ export interface CreateLiveHostOptions {
   demo?: string | null;
   vfsUrl?: string | null;
   fb?: FbDemo;
-  /** Product-owned reviewed authority; boot descriptors cannot construct it. */
-  reviewedPrivilegedProgramPolicy?: ReviewedPrivilegedProgramPolicy;
-  /** Separately published authority; image/config/descriptor data cannot mint it. */
-  publishedPrivilegedProgramProduct?: PublishedPrivilegedProgramProduct;
 }
 
 export async function createLiveHost(
@@ -810,8 +796,6 @@ export async function createLiveHost(
         bootStartedAt,
         () => seq === bootSeq,
         requireServiceWorker,
-        opts.reviewedPrivilegedProgramPolicy,
-        opts.publishedPrivilegedProgramProduct,
       );
       if (seq !== bootSeq) {
         await kernel.destroy().catch(() => {});
@@ -1333,8 +1317,6 @@ async function bootProfile(
   requireServiceWorker: (
     tick?: (msg: string) => void,
   ) => Promise<ServiceWorker>,
-  reviewedPrivilegedProgramPolicy?: ReviewedPrivilegedProgramPolicy,
-  publishedPrivilegedProgramProduct?: PublishedPrivilegedProgramProduct,
 ): Promise<BrowserKernel> {
   const assertCurrent = () => {
     if (!isCurrent()) throw new BootSuperseded();
@@ -1426,7 +1408,6 @@ async function bootProfile(
   // image-switch OOM.
   const runtimeLayers = homebrewRuntimeLayerReferences(requestedDescriptor);
   let buildFs: MemoryFileSystem;
-  let registeredRuntimeLayers: RegisteredHomebrewRuntimeLayer[] = [];
   if (runtimeLayers.length > 0) {
     tick(
       `verifying ${runtimeLayers.length} selected runtime layer${
@@ -1441,7 +1422,6 @@ async function bootProfile(
       onStagedFileSystemDiscarded: trackTransientImageBuffer,
     });
     buildFs = composed.fs;
-    registeredRuntimeLayers = composed.layers;
   } else {
     buildFs = MemoryFileSystem.fromImage(fetchedVfsImageBytes, {
       maxByteLength: profile.maxVfsByteLength,
@@ -1550,11 +1530,6 @@ async function bootProfile(
     (imageConfig ? resolveDemoGuide(imageConfig, profile.id) : null) ??
     builtinDemoGuide(profile.id);
   host.setDemoGuide(demoGuide);
-  // Ingest is an image-owned capability. Absence is valid and must not be
-  // replaced with a package- or profile-name-specific UI promise.
-  host.setDemoIngest(
-    imageConfig ? resolveDemoIngest(imageConfig, profile.id) : null,
-  );
   const imageAssets = imageConfig
     ? resolveDemoAssets(imageConfig, profile.id)
     : [];
@@ -1571,21 +1546,6 @@ async function bootProfile(
     assertCurrent,
   );
   assertCurrent();
-
-  let privilegedProduct = publishedPrivilegedProgramProduct;
-  if (
-    privilegedProduct === undefined &&
-    reviewedPrivilegedProgramPolicy !== undefined &&
-    hasConfiguredDemoLogin(buildFs)
-  ) {
-    tick("publishing reviewed privileged programs...");
-    privilegedProduct = await publishRuntimeLayerPrivilegedPrograms(
-      buildFs,
-      registeredRuntimeLayers,
-      reviewedPrivilegedProgramPolicy,
-    );
-    assertCurrent();
-  }
 
   // Serialize the assembled image to transferable bytes, then let `buildFs`
   // go out of scope. `saveImage()` emits raw (uncompressed) bytes that
@@ -1658,35 +1618,33 @@ async function bootProfile(
         );
       },
     });
-    const loginSessionsEnabled = await initializeDemoLoginKernel({
-      kernel,
-      fs: buildFs,
-      kernelWasm: kernelBytes,
-      vfsImage: vfsImageBytes,
-      ...(closedLazyAssets === undefined ? {} : { closedLazyAssets }),
-      ...(privilegedProduct === undefined ? {} : { privilegedProduct }),
-    });
+    await kernel.initFromImage(profile.candidateEvidence === undefined
+      ? {
+        kernelWasm: kernelBytes,
+        vfsImage: vfsImageBytes,
+        ...(closedLazyAssets === undefined ? {} : { closedLazyAssets }),
+      }
+      : candidateEvidenceKernelInitOptions(
+        profile.candidateEvidence,
+        kernelBytes,
+        vfsImageBytes,
+        closedLazyAssets,
+      ));
     assertCurrent();
     host.attachKernel(kernel);
     const shellIdentity = shellIdentityForProfile(
       profile,
       profile.init ? undefined : effectiveBoot,
     );
-    if (loginSessionsEnabled) {
-      host.setTerminalSessionPolicy(DEMO_TERMINAL_SESSION_POLICY);
-    } else {
-      // Custom and legacy images without the exact account, policy, message,
-      // and reviewed login entry keep their declared shell identity.
-      host.setDefaultShell({
-        programPath: shellConfig?.path ?? "/bin/bash",
-        ...(shellProgramBytes ? { programBytes: shellProgramBytes } : {}),
-        argv: shellConfig?.argv ?? ["bash", "-l", "-i"],
-        env: shellIdentity.env,
-        cwd: shellIdentity.cwd,
-        uid: shellIdentity.uid,
-        gid: shellIdentity.gid,
-      });
-    }
+    host.setDefaultShell({
+      programPath: candidateShell?.path ?? shellConfig?.path ?? "/bin/bash",
+      ...(shellProgramBytes ? { programBytes: shellProgramBytes } : {}),
+      argv: candidateShell?.argv ?? shellConfig?.argv ?? ["bash", "-l", "-i"],
+      env: shellIdentity.env,
+      cwd: shellIdentity.cwd,
+      uid: shellIdentity.uid,
+      gid: shellIdentity.gid,
+    });
 
     if (profile.init?.web) {
       tick("initializing HTTP bridge...");
@@ -1886,6 +1844,7 @@ function ensureDemoHomes(fs: MemoryFileSystem): void {
   ensureDirRecursive(fs, "/home");
   ensureOwnedDir(fs, DEMO_HOME, 0o755, DEMO_UID, DEMO_GID);
   ensureOwnedDir(fs, ROOT_HOME, 0o700, ROOT_UID, ROOT_GID);
+  ensureOwnedDir(fs, NODE_WORKDIR, 0o755, DEMO_UID, DEMO_GID);
 }
 
 function ensureOwnedDir(
@@ -2221,6 +2180,46 @@ async function spawnLazy(
       `${argv[0]} failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+}
+
+async function stageConfiguredAssets(
+  fs: MemoryFileSystem,
+  assets: DemoAssetConfig[],
+  tick: (msg: string) => void,
+  assertCurrent: () => void,
+): Promise<void> {
+  for (const asset of assets) {
+    tick(`staging ${asset.path}...`);
+    const buffer: ArrayBuffer = await fetch(demoAssetFetchUrl(asset))
+      .then(failOn(asset.path))
+      .then((r) => r.arrayBuffer());
+    assertCurrent();
+    const bytes = new Uint8Array(buffer);
+    if (asset.sha256) {
+      const digest = await sha256Hex(buffer);
+      assertCurrent();
+      if (digest !== asset.sha256) {
+        throw new Error(
+          `${asset.path} sha256 mismatch: expected ${asset.sha256}, got ${digest}`,
+        );
+      }
+    }
+    writeVfsBinary(fs, asset.path, bytes, asset.mode ?? 0o644);
+  }
+}
+
+function demoAssetFetchUrl(asset: DemoAssetConfig): string {
+  if (!asset.devCorsProxy || !import.meta.env.DEV) return asset.url;
+  const proxyUrl = new URL(DEV_CORS_PROXY_PATH, window.location.href);
+  proxyUrl.searchParams.set("url", asset.url);
+  return proxyUrl.href;
+}
+
+async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 function maybeMarkWebReady(

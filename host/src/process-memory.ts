@@ -372,25 +372,19 @@ export interface ProcessMemoryLease {
   readonly ptrWidth: 4 | 8;
   readonly maximumPages: number;
   /**
-   * Retain one additional explicit host ownership token for this exact
-   * backing. This does not create a new POSIX address space and must never be
-   * used to implement ordinary fork, which requires an independent Memory.
-   */
-  retainAlias(): ProcessMemoryLease;
-  /**
-   * Release this alias after its Worker and channel have crossed their exact
-   * quiescence fence. The backing retires only after every retained alias is
-   * released. Each lease is one ownership token and may be consumed once.
+   * Retire this exact backing after every Worker and channel that could touch
+   * it has crossed its explicit quiescence fence. A lease is single-owner
+   * authority and may be consumed exactly once.
    */
   release(): void;
   /**
    * Drop this host's alias after force-terminating an owner that cannot
    * acknowledge quiescence.
    *
-   * A terminated Worker may keep its own Memory alive briefly. If other
-   * explicit aliases remain, the allocator remembers this ambiguity and marks
-   * the whole backing forced when the final alias is released. New aliases
-   * cannot be created after that point.
+   * Fresh-only allocation makes this safe: the terminated worker may keep its
+   * own Memory alive briefly, but the address space is never handed to another
+   * process. The allocator therefore applies temporary retirement admission
+   * backpressure without deliberately retaining the Memory.
    */
   releaseAfterForcedTermination(): void;
 }
@@ -408,8 +402,6 @@ export interface ProcessMemoryRetirementStats {
   readonly observedRetirements: number;
   readonly observedFinalizations: number;
   readonly liveMemories: number;
-  /** Number of explicit leases across the live backing records. */
-  readonly liveAliases: number;
   readonly liveBytes: number;
   readonly pendingRetirements: number;
   readonly pendingRetiredBytes: number;
@@ -558,8 +550,6 @@ type ProcessMemoryRecord = {
   maximumPages: number;
   accountedBytes: number;
   state: "leased" | "retiring";
-  activeAliases: number;
-  forcedTerminationObserved: boolean;
   retirementMode?: "quiescent" | "forced";
   retirementBackpressureActive: boolean;
   retirementBackpressureTimer?: ReturnType<typeof setTimeout>;
@@ -570,7 +560,6 @@ type ProcessMemoryRecord = {
 
 class OwnedProcessMemoryLease implements ProcessMemoryLease {
   private ownedMemory: WebAssembly.Memory | undefined;
-  private retainOwnedRecord: (() => ProcessMemoryLease) | undefined;
   private consumeOwnedRecord:
     | ((retirementMode: "quiescent" | "forced") => void)
     | undefined;
@@ -579,11 +568,9 @@ class OwnedProcessMemoryLease implements ProcessMemoryLease {
     memory: WebAssembly.Memory,
     readonly ptrWidth: 4 | 8,
     readonly maximumPages: number,
-    retainOwnedRecord: () => ProcessMemoryLease,
     consumeOwnedRecord: (retirementMode: "quiescent" | "forced") => void,
   ) {
     this.ownedMemory = memory;
-    this.retainOwnedRecord = retainOwnedRecord;
     this.consumeOwnedRecord = consumeOwnedRecord;
   }
 
@@ -592,13 +579,6 @@ class OwnedProcessMemoryLease implements ProcessMemoryLease {
       throw new Error("Process memory lease was already consumed");
     }
     return this.ownedMemory;
-  }
-
-  retainAlias(): ProcessMemoryLease {
-    if (!this.retainOwnedRecord || !this.ownedMemory) {
-      throw new Error("Process memory lease was already consumed");
-    }
-    return this.retainOwnedRecord();
   }
 
   release(): void {
@@ -618,7 +598,6 @@ class OwnedProcessMemoryLease implements ProcessMemoryLease {
     // WHY: a consumed lease may itself outlive the process record. Sever both
     // strong paths so merely retaining the lease cannot retain the Memory.
     this.ownedMemory = undefined;
-    this.retainOwnedRecord = undefined;
     this.consumeOwnedRecord = undefined;
   }
 }
@@ -626,12 +605,10 @@ class OwnedProcessMemoryLease implements ProcessMemoryLease {
 /**
  * Session-owned allocator for fresh process Shared WebAssembly.Memory objects.
  *
- * Every allocation is a new POSIX address space. `retainAlias()` is the only
- * deliberate exception: it creates another ownership token for the same
- * backing without charging the address space again. Safe retirement drops the
- * allocator's strong reference only after every exact alias proves that its
- * Worker generation and channel listeners are quiescent. Ambiguous forced
- * termination taints the record until its final release.
+ * Every allocation is a new POSIX address space. Safe retirement drops the
+ * allocator's strong reference only after the host proves that the exact
+ * Worker generation and all channel listeners are quiescent. Ambiguous
+ * forced termination uses a separately tracked retirement mode instead.
  *
  * A bounded FinalizationRegistry ledger records observed Memory/buffer/view
  * wrappers without retaining them. It is telemetry, not ownership authority:
@@ -746,7 +723,7 @@ export class ProcessMemoryAllocator {
   }
 
   acquire(request: ProcessMemoryAllocationRequest): ProcessMemoryLease {
-    return this.acquireInternal(request);
+    return this.acquireInternal(request, false);
   }
 
   /**
@@ -776,6 +753,21 @@ export class ProcessMemoryAllocator {
         );
       }
     }
+  }
+
+  /**
+   * Acquire the child's exact syscall-time fork snapshot synchronously.
+   *
+   * WHY: awaiting retirement admission before copying would let a sibling
+   * thread mutate the parent address space after fork committed. This narrow
+   * bypass still obeys the hard live count and sampled byte admission budget;
+   * callers must await `waitForRetirementBacklogCapacity()` before launching
+   * the child Worker.
+   */
+  acquireForForkSnapshot(
+    request: ProcessMemoryAllocationRequest,
+  ): ProcessMemoryLease {
+    return this.acquireInternal(request, true);
   }
 
   async waitForRetirementBacklogCapacity(
@@ -818,6 +810,7 @@ export class ProcessMemoryAllocator {
 
   private acquireInternal(
     request: ProcessMemoryAllocationRequest,
+    bypassRetirementBacklog: boolean,
   ): ProcessMemoryLease {
     this.validateRequest(request);
     this.refreshOwnedBytes();
@@ -830,7 +823,10 @@ export class ProcessMemoryAllocator {
         this.options.maxTotalBytes,
       );
     }
-    this.requireAllocationCapacity(requestedBytes);
+    this.requireAllocationCapacity(
+      requestedBytes,
+      bypassRetirementBacklog,
+    );
     const memory = this.createMemory(request);
     const record: ProcessMemoryRecord = {
       allocationId: this.nextAllocationId++,
@@ -839,8 +835,6 @@ export class ProcessMemoryAllocator {
       maximumPages: request.maximumPages,
       accountedBytes: memory.buffer.byteLength,
       state: "leased",
-      activeAliases: 1,
-      forcedTerminationObserved: false,
       retirementBackpressureActive: false,
       finalizationObserved: false,
       telemetryQueued: false,
@@ -852,40 +846,12 @@ export class ProcessMemoryAllocator {
     this.liveBytes = this.safeAdd(this.liveBytes, record.accountedBytes);
     this.observeTargetRecord(record, memory);
     this.observeTargetRecord(record, memory.buffer);
-    return this.createLease(record);
-  }
-
-  private createLease(record: ProcessMemoryRecord): ProcessMemoryLease {
-    const memory = record.memory;
-    if (!memory || record.state !== "leased") {
-      throw new Error("Cannot create a lease for retired process memory");
-    }
     return new OwnedProcessMemoryLease(
       memory,
       record.ptrWidth,
       record.maximumPages,
-      () => this.retainRecord(record),
       (retirementMode) => this.releaseRecord(record, retirementMode),
     );
-  }
-
-  private retainRecord(record: ProcessMemoryRecord): ProcessMemoryLease {
-    if (
-      this.records.get(record.allocationId) !== record
-      || record.state !== "leased"
-      || !record.memory
-      || record.activeAliases <= 0
-    ) {
-      throw new Error("Process memory record is not an active lease");
-    }
-    if (record.forcedTerminationObserved) {
-      throw new Error("Cannot retain process memory after forced termination");
-    }
-    if (record.activeAliases === Number.MAX_SAFE_INTEGER) {
-      throw new Error("Process memory alias count exceeds JavaScript precision");
-    }
-    record.activeAliases += 1;
-    return this.createLease(record);
   }
 
   /**
@@ -927,23 +893,18 @@ export class ProcessMemoryAllocator {
   getRetirementStats(): ProcessMemoryRetirementStats {
     let pendingRetirements = 0;
     let pendingRetiredBytes = 0;
-    let liveAliases = 0;
     for (const record of this.records.values()) {
-      if (record.state === "leased") {
-        liveAliases = this.safeAdd(liveAliases, record.activeAliases);
-      } else {
-        pendingRetirements += 1;
-        pendingRetiredBytes = this.safeAdd(
-          pendingRetiredBytes,
-          record.accountedBytes,
-        );
-      }
+      if (record.state !== "retiring") continue;
+      pendingRetirements += 1;
+      pendingRetiredBytes = this.safeAdd(
+        pendingRetiredBytes,
+        record.accountedBytes,
+      );
     }
     return {
       observedRetirements: this.observedRetirements,
       observedFinalizations: this.observedFinalizations,
       liveMemories: this.liveMemories,
-      liveAliases,
       liveBytes: this.liveBytes,
       pendingRetirements,
       pendingRetiredBytes,
@@ -965,17 +926,8 @@ export class ProcessMemoryAllocator {
     if (
       this.records.get(record.allocationId) !== record
       || record.state !== "leased"
-      || record.activeAliases <= 0
     ) {
       throw new Error("Process memory record is not an active lease");
-    }
-
-    if (retirementMode === "forced") {
-      record.forcedTerminationObserved = true;
-    }
-    if (record.activeAliases > 1) {
-      record.activeAliases -= 1;
-      return;
     }
 
     const memory = record.memory;
@@ -991,18 +943,12 @@ export class ProcessMemoryAllocator {
       this.liveBytes,
       actualBytes - record.accountedBytes,
     );
-    // Publish the final token consumption only after every fallible backing
-    // check. If an integrity check throws, the caller still owns a retryable
-    // lease rather than leaving a leased record with zero aliases.
-    record.activeAliases = 0;
     record.accountedBytes = actualBytes;
     this.liveBytes = Math.max(0, this.liveBytes - actualBytes);
     this.liveMemories = Math.max(0, this.liveMemories - 1);
     this.recordsByMemory.delete(memory);
     record.state = "retiring";
-    record.retirementMode = record.forcedTerminationObserved
-      ? "forced"
-      : "quiescent";
+    record.retirementMode = retirementMode;
     record.retirementBackpressureActive = true;
     record.memory = undefined;
     this.retirementBacklogMemories += 1;
@@ -1013,7 +959,7 @@ export class ProcessMemoryAllocator {
     this.observedRetirements += 1;
     const notice: ProcessMemoryRetirementNotice = Object.freeze({
       retirementId: record.allocationId,
-      retirementMode: record.retirementMode,
+      retirementMode,
       ptrWidth: record.ptrWidth,
       maximumPages: record.maximumPages,
       byteLength: record.accountedBytes,
@@ -1043,8 +989,9 @@ export class ProcessMemoryAllocator {
 
   private requireAllocationCapacity(
     requestedBytes: number,
+    bypassRetirementBacklog = false,
   ): void {
-    if (this.retirementBacklogSaturated()) {
+    if (!bypassRetirementBacklog && this.retirementBacklogSaturated()) {
       throw this.createRetirementBacklogError(requestedBytes);
     }
     if (this.liveMemories >= this.options.maxMemories) {
@@ -1295,11 +1242,7 @@ export function acquireForkMemoryClone(
   if (parentBytes % WASM_PAGE_SIZE !== 0) {
     throw new Error(`fork parent memory is not page-aligned: ${parentBytes}`);
   }
-  // WHY: this synchronous admission check is part of the fork snapshot
-  // transaction. It cannot await, because another parent thread could mutate
-  // Memory during a yield, but it must reject saturated retired-memory debt
-  // before constructing and copying another complete address space.
-  const lease = allocator.acquire({
+  const lease = allocator.acquireForForkSnapshot({
     ptrWidth,
     initialPages: parentBytes / WASM_PAGE_SIZE,
     maximumPages,

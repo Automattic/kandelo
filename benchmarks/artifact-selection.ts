@@ -40,7 +40,7 @@ export const BENCHMARK_STATIC_ARTIFACTS: BenchmarkStaticArtifactSelection[] = [
   },
   {
     path: "benchmarks/wasm/hello.wasm",
-    suites: ["process-lifecycle", "spawn-scratch"],
+    suites: ["process-lifecycle"],
   },
   {
     path: "benchmarks/wasm/fork-bench.wasm",
@@ -57,14 +57,13 @@ export const BENCHMARK_STATIC_ARTIFACTS: BenchmarkStaticArtifactSelection[] = [
   },
   {
     path: "benchmarks/wasm/spawn-bench.wasm",
-    suites: ["spawn-scratch"],
+    suites: ["process-lifecycle"],
   },
 ];
 
 export const RUNNABLE_BENCHMARK_SUITES = [
   "syscall-io",
   "process-lifecycle",
-  "spawn-scratch",
   "wordpress",
   "mariadb-aria",
   "mariadb-aria-64",
@@ -104,25 +103,6 @@ export function benchmarkStaticArtifactEvidenceFlags(options: {
   });
 }
 
-export function benchmarkRuntimeArtifactEvidenceFlags(options: {
-  host: "node" | "browser";
-  suiteFilter?: string;
-  artifactName: string;
-}): { required: boolean; used: boolean } {
-  const isRootfs = options.artifactName === "rootfs";
-  return benchmarkInputEvidenceFlags({
-    host: options.host,
-    suiteFilter: options.suiteFilter,
-    // The dedicated spawn-scratch suite supplies both executables and opts out
-    // of the default rootfs. The established process-lifecycle metrics retain
-    // their normal default-rootfs prerequisite and timing semantics.
-    suites: isRootfs
-      ? ["syscall-io", "process-lifecycle"]
-      : RUNNABLE_BENCHMARK_SUITES,
-    ...(isRootfs ? { hosts: ["node" as const] } : {}),
-  });
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -131,31 +111,28 @@ export function selectNodeBenchmarkRuntimeArtifacts(
   options: {
     resolveOptional?: OptionalResolver;
     resolveRootfs?: () => ResolvedRootfsArtifact;
-    includeRootfs?: boolean;
   } = {},
 ): BenchmarkRuntimeArtifactSelections {
   const resolveOptional = options.resolveOptional ?? tryResolveBinary;
   const resolveRootfs = options.resolveRootfs ?? resolveRootfsArtifact;
   const kernelPath = resolveOptional("kernel.wasm");
 
-  let rootfs: BenchmarkRuntimeArtifactSelection | undefined;
-  if (options.includeRootfs !== false) {
-    try {
-      const resolved = resolveRootfs();
-      rootfs = {
-        logicalPath: "rootfs.vfs",
-        selectedPath: resolved.selectedPath,
-        resolverRequest: resolved.resolverRequest,
-        resolverSelectedPath: resolved.selectedPath,
-      };
-    } catch (error) {
-      rootfs = {
-        logicalPath: "rootfs.vfs",
-        selectedPath: null,
-        resolverRequest: "rootfs.vfs -> programs/rootfs.vfs",
-        error: errorMessage(error),
-      };
-    }
+  let rootfs: BenchmarkRuntimeArtifactSelection;
+  try {
+    const resolved = resolveRootfs();
+    rootfs = {
+      logicalPath: "rootfs.vfs",
+      selectedPath: resolved.selectedPath,
+      resolverRequest: resolved.resolverRequest,
+      resolverSelectedPath: resolved.selectedPath,
+    };
+  } catch (error) {
+    rootfs = {
+      logicalPath: "rootfs.vfs",
+      selectedPath: null,
+      resolverRequest: "rootfs.vfs -> programs/rootfs.vfs",
+      error: errorMessage(error),
+    };
   }
 
   return {
@@ -168,7 +145,7 @@ export function selectNodeBenchmarkRuntimeArtifacts(
         ? { error: "tryResolveBinary(\"kernel.wasm\") returned no usable artifact" }
         : {}),
     },
-    ...(rootfs ? { rootfs } : {}),
+    rootfs,
   };
 }
 

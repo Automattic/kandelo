@@ -63,7 +63,7 @@ LINK_FLAGS=(
     "$GLUE_DIR/dlopen.c"
     "$SYSROOT/lib/crt1.o"
     "$SYSROOT/lib/libc.a"
-    -Wl,--no-entry
+    -Wl,--entry=_start
     -Wl,--export=_start
     -Wl,--export=__heap_base
     -Wl,--import-memory
