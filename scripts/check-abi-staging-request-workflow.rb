@@ -192,7 +192,10 @@ def check_workflow(workflow)
 
   derive_source = run_source(derive)
   check(derive_source.include?("request-policy check") &&
-        derive_source.include?("structural-report validate") &&
+        derive_source.include?("structural-report feed-disposition") &&
+        derive_source.match?(
+          /candidate-invalid:abi_structure_changed_without_bump\|candidate-invalid:request_invalid\)[\s\S]{0,256}continue/
+        ) &&
         derive_source.include?("previous_abi=$(sed -nE") &&
         derive_source.include?("--previous-abi \"$previous_abi\"") &&
         derive_source.include?("git -C \"$exact_head_data\" diff --name-only -z") &&
@@ -207,6 +210,8 @@ def check_workflow(workflow)
         !derive_source.include?('find "$evidence/reports"') &&
         derive_source.include?("authority_xtask"),
         "protected derivation does not revalidate inert exact-head data")
+  check(!derive_source.match?(/jq[^\n]*\.outcome/),
+        "protected derivation trusts the unvalidated report outcome")
   check_filtered_host_target(derive_source, "protected derivation")
   check(!derive_source.match?(%r{(?:bash|source|\.)\s+[^\n]*exact-head-data}),
         "protected derivation executes a file from the exact head")
@@ -300,8 +305,17 @@ begin
       copy.dig("jobs", "publish-request", "steps").last["run"] = "bash exact-head/script.sh"
     },
     "missing inert revalidation" => lambda { |copy|
-      step = copy.dig("jobs", "derive-request", "steps").find { |item| item["run"]&.include?("structural-report validate") }
-      step["run"] = step.fetch("run").gsub("structural-report validate", "echo trust-report")
+      step = copy.dig("jobs", "derive-request", "steps").find { |item| item["run"]&.include?("structural-report feed-disposition") }
+      step["run"] = step.fetch("run").gsub("structural-report feed-disposition", "echo trust-report")
+    },
+    "candidate invalid abort" => lambda { |copy|
+      step = copy.dig("jobs", "derive-request", "steps").find do |item|
+        item["run"]&.include?("candidate-invalid:abi_structure_changed_without_bump")
+      end
+      step["run"] = step.fetch("run").sub(
+        /(candidate-invalid:abi_structure_changed_without_bump\|candidate-invalid:request_invalid\)[\s\S]{0,200})\n\s+continue/,
+        "\\1\n      exit 1"
+      )
     },
     "missing classification musl materialization" => lambda { |copy|
       step = copy.dig("jobs", "classify-exact-head", "steps").find do |item|

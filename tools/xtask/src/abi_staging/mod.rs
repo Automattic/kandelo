@@ -171,7 +171,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
             }
         }
         [group, ..] if group == "structural-report" => {
-            eprintln!("xtask abi-staging: structural-report requires validate");
+            eprintln!("xtask abi-staging: structural-report requires validate or feed-disposition");
             ExitCode::from(2)
         }
         [group, action, rest @ ..] if group == "request" => {
@@ -232,6 +232,6 @@ pub fn run(args: Vec<String>) -> ExitCode {
 fn print_help() {
     println!("usage: xtask abi-staging <subcommand> [args...]");
     println!(
-        "subcommands: help, products <generate|check>, registries <generate|check>, evidence-definitions <generate|check>, runtime-bundle validate, product-evidence <validate-context|validate-result>, pages-readiness <validate-readiness|validate-site|activation-mode>, check-projection <project|activation-mode>, builder <validate-inputs|validate-report|compare-report>, guard-codes <generate|check>, request-policy <generate|check|activation-mode>, structural-report validate, request <classify|derive|fixture-check|requirements|select-current|plan-feed-write|validate-feed-plan>, records validate, mini run, requirements"
+        "subcommands: help, products <generate|check>, registries <generate|check>, evidence-definitions <generate|check>, runtime-bundle validate, product-evidence <validate-context|validate-result>, pages-readiness <validate-readiness|validate-site|activation-mode>, check-projection <project|activation-mode>, builder <validate-inputs|validate-report|compare-report>, guard-codes <generate|check>, request-policy <generate|check|activation-mode>, structural-report <validate|feed-disposition>, request <classify|derive|fixture-check|requirements|select-current|plan-feed-write|validate-feed-plan>, records validate, mini run, requirements"
     );
 }
