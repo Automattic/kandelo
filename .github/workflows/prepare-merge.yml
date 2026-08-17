@@ -1867,6 +1867,16 @@ jobs:
             wat2wasm --enable-threads \
               host/test/fixtures/deep-wasm-recursion.wat \
               -o host/test/fixtures/deep-wasm-recursion.wasm
+            npm ci --ignore-scripts --no-audit --no-fund --prefer-offline
+            mkdir -p target/exact-abi-source-test
+            printf "%s\n" "default_install = \"eager\"" \
+              > "$RUNNER_TEMP/exact-abi-source-test-packages.toml"
+            ROOTFS_SEALED_BUILD=1 \
+              ROOTFS_SKIP_PACKAGE_RESOLVE=1 \
+              ROOTFS_PACKAGES_CONFIG="$RUNNER_TEMP/exact-abi-source-test-packages.toml" \
+              ROOTFS_PACKAGE_MANIFEST="$RUNNER_TEMP/exact-abi-source-test-packages.MANIFEST" \
+              ROOTFS_OUT=target/exact-abi-source-test/rootfs.vfs \
+              bash scripts/build-rootfs.sh
           '
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

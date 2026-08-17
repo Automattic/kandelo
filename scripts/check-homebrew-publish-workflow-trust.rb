@@ -9449,6 +9449,9 @@ def check_exact_abi_route(workflows)
         "needs.change-scope.outputs.exact_abi_staging_applicable == 'true'"
       ), "#{path} #{job_name} is not exact-route-only")
       source = workflow_string_values(job).join("\n")
+      source_without_test_rootfs = source.gsub(
+        "target/exact-abi-source-test/rootfs.vfs", ""
+      )
       {
         /\bgh\s+release\b/ => "GitHub Release mutation",
         /\boras\s+push\b/ => "OCI mutation",
@@ -9457,13 +9460,28 @@ def check_exact_abi_route(workflows)
         /packages\/registry\/program-packages\.json/ => "package index",
         /\.vfs(?:\.zst)?\b/ => "product VFS",
       }.each do |pattern, label|
-        check(!source.match?(pattern),
+        checked_source = label == "product VFS" ? source_without_test_rootfs : source
+        check(!checked_source.match?(pattern),
               "#{path} #{job_name} contains #{label}")
       end
     end
     prepare_steps = job_steps(
       prepare_job, "#{path} exact-abi-source-test-prepare"
     )
+    build_fixtures = named_step(
+      prepare_steps, "Build exact kernel and source-test fixtures"
+    ).fetch("run")
+    [
+      "npm ci --ignore-scripts --no-audit --no-fund --prefer-offline",
+      "ROOTFS_SEALED_BUILD=1",
+      "ROOTFS_SKIP_PACKAGE_RESOLVE=1",
+      'ROOTFS_PACKAGES_CONFIG="$RUNNER_TEMP/' \
+        'exact-abi-source-test-packages.toml"',
+      "ROOTFS_OUT=target/exact-abi-source-test/rootfs.vfs",
+    ].each do |fragment|
+      check(build_fixtures.include?(fragment),
+            "#{path} exact source-test rootfs lacks #{fragment}")
+    end
     pack = named_step(prepare_steps, "Pack exact ABI source-test workspace")
     check(pack.fetch("run").include?(
       "bash abi-staging-authority/scripts/" \
@@ -9726,6 +9744,16 @@ def self_test_exact_abi_route(workflows)
       workflow = all.fetch(".github/workflows/prepare-merge.yml")
       job = workflow.fetch("jobs").fetch("exact-abi-source-test-suite")
       job.fetch("steps") << { "run" => "cp -R legacy binaries/" }
+    },
+    "exact route package-resolved source-test rootfs" => lambda { |all|
+      workflow = all.fetch(".github/workflows/staging-build.yml")
+      step = workflow.fetch("jobs").fetch("exact-abi-source-test-prepare")
+        .fetch("steps").find do |candidate|
+          candidate["name"] == "Build exact kernel and source-test fixtures"
+        end
+      step["run"] = step.fetch("run").sub(
+        "ROOTFS_SKIP_PACKAGE_RESOLVE=1", "ROOTFS_SKIP_PACKAGE_RESOLVE=0"
+      )
     },
     "exact route source-validation bypass" => lambda { |all|
       workflow = all.fetch(".github/workflows/staging-build.yml")
