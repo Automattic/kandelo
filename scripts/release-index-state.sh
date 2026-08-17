@@ -24,6 +24,7 @@ HEAD_FILE=""
 INDEX_PATH=""
 EXPECTED_HEAD=""
 CANONICAL_SOURCE_SHA=""
+SELECTED_RELEASE_ID=""
 MAX_ASSET_PAGES="${INDEX_STATE_MAX_ASSET_PAGES:-20}"
 ASSET_PER_PAGE="${INDEX_STATE_ASSET_PER_PAGE:-100}"
 RETRY_DELAY_SECONDS="${INDEX_STATE_RETRY_DELAY_SECONDS:-2}"
@@ -37,6 +38,7 @@ while [ "$#" -gt 0 ]; do
     --index-path) INDEX_PATH="$2"; shift 2 ;;
     --expected-head) EXPECTED_HEAD="$2"; shift 2 ;;
     --canonical-source-sha) CANONICAL_SOURCE_SHA="$2"; shift 2 ;;
+    --release-id) SELECTED_RELEASE_ID="$2"; shift 2 ;;
     --max-asset-pages) MAX_ASSET_PAGES="$2"; shift 2 ;;
     --asset-per-page) ASSET_PER_PAGE="$2"; shift 2 ;;
     *) echo "release-index-state: unknown flag $1" >&2; exit 2 ;;
@@ -53,6 +55,11 @@ case "$COMMAND" in read|snapshot|publish|recover) ;; *)
 esac
 if [ -z "$TARGET_TAG" ] || ! [[ "$EXPECTED_ABI" =~ ^[0-9]+$ ]]; then
   echo "release-index-state: --target-tag and numeric --expected-abi are required" >&2
+  exit 2
+fi
+if [ -n "$SELECTED_RELEASE_ID" ] &&
+   ! [[ "$SELECTED_RELEASE_ID" =~ ^[1-9][0-9]*$ ]]; then
+  echo "release-index-state: --release-id must be a positive integer" >&2
   exit 2
 fi
 if { [ "$COMMAND" = read ] || [ "$COMMAND" = snapshot ]; } &&
@@ -144,14 +151,21 @@ gh_retry() {
 
 refresh_state() {
   local rc page page_json count reached_end=false lines="$TMP_ROOT/assets.jsonl"
+  local release_endpoint="/repos/${REPOSITORY}/releases/tags/${TARGET_TAG}"
+  if [ -n "$SELECTED_RELEASE_ID" ]; then
+    release_endpoint="/repos/${REPOSITORY}/releases/${SELECTED_RELEASE_ID}"
+  fi
   GITHUB_API_CONTEXT=release-index-state \
     GITHUB_API_RETRY_DELAY_SECONDS="$RETRY_DELAY_SECONDS" \
-    github_api_get_json "/repos/${REPOSITORY}/releases/tags/${TARGET_TAG}" "$RELEASE_JSON" || rc=$?
+    github_api_get_json "$release_endpoint" "$RELEASE_JSON" || rc=$?
   rc=${rc:-0}
   if [ "$rc" -eq 44 ]; then return 44; fi
   [ "$rc" -eq 0 ] || return 1
-  if ! jq -e --arg tag "$TARGET_TAG" '
+  if ! jq -e --arg tag "$TARGET_TAG" \
+      --arg selected_release_id "$SELECTED_RELEASE_ID" '
       (.id | type == "number" and . > 0) and .tag_name == $tag and
+      ($selected_release_id == "" or
+        .id == ($selected_release_id | tonumber)) and
       (.body == null or (.body | type == "string"))
     ' "$RELEASE_JSON" >/dev/null
   then

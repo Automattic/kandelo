@@ -696,6 +696,7 @@ if [ "$IS_CANONICAL" = 1 ]; then
   bash "$RELEASE_INDEX_STATE_SCRIPT" read \
     --target-tag "$TARGET_TAG" \
     --expected-abi "$EXPECTED_ABI" \
+    --release-id "$RELEASE_ID" \
     --output "$INDEX_PATH" \
     --head-file "$INDEX_HEAD_FILE" \
     "${index_state_authority_args[@]}"
@@ -748,6 +749,7 @@ if [ "$IS_CANONICAL" = 1 ]; then
   bash "$RELEASE_INDEX_STATE_SCRIPT" publish \
     --target-tag "$TARGET_TAG" \
     --expected-abi "$EXPECTED_ABI" \
+    --release-id "$RELEASE_ID" \
     --index-path "$INDEX_PATH" \
     --expected-head "$(cat "$INDEX_HEAD_FILE")" \
     "${index_state_authority_args[@]}"

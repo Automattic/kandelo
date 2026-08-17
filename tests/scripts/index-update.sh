@@ -342,24 +342,37 @@ shift || true
 case "$command_name" in
   sentinel) printf '<!-- kandelo-index-state-v1:empty -->\n'; exit 0 ;;
   read)
-    output=""; head_file=""; abi=""
+    output=""; head_file=""; abi=""; release_id=""
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --output) output="$2"; shift 2 ;;
         --head-file) head_file="$2"; shift 2 ;;
         --expected-abi) abi="$2"; shift 2 ;;
+        --release-id) release_id="$2"; shift 2 ;;
         *) shift ;;
       esac
     done
+    [ "$release_id" = 7 ] || {
+      echo "index state did not receive the exact lifecycle release ID" >&2
+      exit 97
+    }
     if [ "${GH_STUB_HAS_INDEX:-0}" = 1 ]; then cp "$GH_STUB_INDEX_SOURCE" "$output"
     else printf 'abi_version = %s\n' "$abi" > "$output"; fi
     printf 'test-head\n' > "$head_file"
     ;;
   publish)
-    index=""
+    index=""; release_id=""
     while [ "$#" -gt 0 ]; do
-      case "$1" in --index-path) index="$2"; shift 2 ;; *) shift ;; esac
+      case "$1" in
+        --index-path) index="$2"; shift 2 ;;
+        --release-id) release_id="$2"; shift 2 ;;
+        *) shift ;;
+      esac
     done
+    [ "$release_id" = 7 ] || {
+      echo "index publication did not retain the exact lifecycle release ID" >&2
+      exit 97
+    }
     cp "$index" "$GH_STUB_UPLOAD_DIR/index.toml"
     ;;
   *) exit 99 ;;
