@@ -390,8 +390,8 @@ else
     set -euo pipefail
     bash build.sh
     npm --prefix apps/browser-demos install --prefer-offline
-    KANDELO_BROWSER_DEMO_INPUTS=main,kandelo,network \
-      npm --prefix apps/browser-demos run build
+    npm --prefix apps/browser-demos run build -- \
+      --mode abi-staging-browser-evidence
   '
 
   KERNEL_SOURCE="$SOURCE_ROOT/target/wasm32-unknown-unknown/release/kandelo_kernel.wasm"

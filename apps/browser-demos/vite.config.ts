@@ -43,6 +43,8 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
+const ABI_STAGING_BROWSER_EVIDENCE_VITE_MODE =
+  "abi-staging-browser-evidence";
 
 function canonicalizeFromExistingAncestor(file: string): string {
   const suffix: string[] = [];
@@ -376,6 +378,36 @@ function relativeBinaryMirrorImport(
   return null;
 }
 
+function abiStagingBrowserEvidenceArtifactBoundary(mode: string): Plugin {
+  const virtualPrefix = "\0abi-staging-browser-evidence-unavailable:";
+  return {
+    name: "abi-staging-browser-evidence-artifact-boundary",
+    enforce: "pre",
+    resolveId(source, importer) {
+      if (mode !== ABI_STAGING_BROWSER_EVIDENCE_VITE_MODE) return null;
+      const queryIndex = source.indexOf("?");
+      const pathPart = queryIndex === -1 ? source : source.slice(0, queryIndex);
+      let relPath: string | undefined;
+      if (pathPart === browserRootfsModuleSpecifier) {
+        relPath = "rootfs.vfs";
+      } else if (pathPart.startsWith("@binaries/")) {
+        relPath = applyDefaultProgramArch(pathPart.slice("@binaries/".length));
+      } else {
+        relPath = relativeBinaryMirrorImport(source, importer)?.relPath;
+      }
+      if (relPath === undefined) return null;
+      return virtualPrefix + encodeURIComponent(relPath);
+    },
+    load(id) {
+      if (!id.startsWith(virtualPrefix)) return null;
+      const relPath = decodeURIComponent(id.slice(virtualPrefix.length));
+      return `export default ${JSON.stringify(
+        `/__kandelo_abi_staging_unavailable__/${relPath}`,
+      )};`;
+    },
+  };
+}
+
 function resolveBinariesAlias(
   access: BinaryDevAccess,
   resolution: BrowserBinaryResolution,
@@ -681,6 +713,12 @@ const demoInputs = {
 function selectedDemoInputs(
   mode: string,
 ): typeof demoInputs | Record<string, string> {
+  if (mode === ABI_STAGING_BROWSER_EVIDENCE_VITE_MODE) {
+    // WHY: candidate evidence injects the complete product image and lazy
+    // inputs. Bundling ordinary demo fallbacks here would make exact runtime
+    // preparation depend on unrelated package archives before composition.
+    return { main: demoInputs.main };
+  }
   const acceptanceInputs = homebrewClosedAcceptanceInputNames(mode);
   if (acceptanceInputs !== undefined) {
     // WHY: the sealed closed-transport proof previews the real root product
@@ -726,6 +764,7 @@ export default defineConfig(({ mode }) => {
       alias: browserRepositoryAliases(repoRoot),
     },
     plugins: [
+      abiStagingBrowserEvidenceArtifactBoundary(mode),
       pagesVfsProducts,
       react(),
       resolveKernelArtifactsAlias(binaryDevAccess),
@@ -774,6 +813,7 @@ export default defineConfig(({ mode }) => {
     worker: {
       format: "es",
       plugins: () => [
+        abiStagingBrowserEvidenceArtifactBoundary(mode),
         canonicalPagesVfsProducts(base),
         resolveKernelArtifactsAlias(binaryDevAccess),
         resolveBinariesAlias(binaryDevAccess, browserBinaryResolution),

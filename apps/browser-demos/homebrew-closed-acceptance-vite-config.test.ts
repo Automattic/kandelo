@@ -18,6 +18,11 @@ const root = "/homebrew-main-shell-bottles";
 const appRoot = dirname(fileURLToPath(import.meta.url));
 const configFile = join(appRoot, "vite.config.ts");
 
+function loadedPlugins(value: unknown): Plugin[] {
+  const config = value as { config?: { plugins?: unknown[] } };
+  return (config.config?.plugins ?? []).flat(Infinity) as Plugin[];
+}
+
 test("Vite builds the private page only beside the real closed product inputs", async () => {
   const savedRoot = process.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT;
   const savedInputs = process.env.KANDELO_BROWSER_DEMO_INPUTS;
@@ -77,6 +82,63 @@ test("Vite builds the private page only beside the real closed product inputs", 
   }
 });
 
+test("ABI staging builds only the real UI and makes product fallbacks unavailable", async () => {
+  const loaded = await loadConfigFromFile(
+    { command: "build", mode: "abi-staging-browser-evidence" },
+    configFile,
+    undefined,
+    "silent",
+  );
+  assert.ok(loaded);
+  assert.deepEqual(
+    Object.keys(
+      loaded.config.build?.rollupOptions?.input as Record<string, string>,
+    ),
+    ["main"],
+  );
+
+  const plugins = loadedPlugins(loaded);
+  const boundary = plugins.find(
+    ({ name }) => name === "abi-staging-browser-evidence-artifact-boundary",
+  );
+  assert.ok(boundary);
+  assert.equal(typeof boundary.resolveId, "function");
+  const resolveId = boundary.resolveId as unknown as (
+    this: object,
+    source: string,
+    importer: string | undefined,
+    options: object,
+  ) => unknown | Promise<unknown>;
+  const shellId = await resolveId.call(
+    {} as never,
+    "@binaries/programs/wasm32/shell.vfs.zst?url",
+    undefined,
+    {} as never,
+  );
+  assert.equal(typeof shellId, "string");
+  assert.match(shellId as string, /^\0abi-staging-browser-evidence-unavailable:/);
+
+  assert.equal(typeof boundary.load, "function");
+  const load = boundary.load as unknown as (
+    this: object,
+    id: string,
+  ) => unknown | Promise<unknown>;
+  const unavailableModule = await load.call({} as never, shellId as string);
+  assert.equal(typeof unavailableModule, "string");
+  assert.match(
+    unavailableModule as string,
+    /__kandelo_abi_staging_unavailable__\/programs\/wasm32\/shell\.vfs\.zst/,
+  );
+
+  const kernelId = await resolveId.call(
+    {} as never,
+    "@kernel-wasm?url",
+    undefined,
+    {} as never,
+  );
+  assert.equal(kernelId, null);
+});
+
 test("Vite rewrites the service worker in the resolved custom output directory", async () => {
   const root = mkdtempSync(join(tmpdir(), "kandelo-vite-service-worker-"));
   try {
@@ -87,7 +149,7 @@ test("Vite rewrites the service worker in the resolved custom output directory",
       "silent",
     );
     assert.ok(loaded);
-    const plugins = (loaded.config.plugins ?? []).flat(Infinity) as Plugin[];
+    const plugins = loadedPlugins(loaded);
     const corsPlugin = plugins.find(
       ({ name }) => name === "inject-cors-proxy-config",
     );
