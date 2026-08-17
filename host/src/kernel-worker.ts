@@ -30663,121 +30663,6 @@ export class CentralizedKernelWorker {
     });
   }
 
-  /**
-   * Inject one host-owned connection into an in-kernel listener.
-   *
-   * This is the shared Node/browser boundary used by protected protocol
-   * clients. The returned receive pipe and its adjacent send pipe live in the
-   * kernel's global pipe table, so callers use pid 0 for subsequent pipe
-   * operations.
-   */
-  injectHostConnection(
-    pid: number,
-    listenerFd: number,
-    peerAddr: [number, number, number, number],
-    peerPort: number,
-  ): number {
-    if (!this.kernelInstance) return -1;
-    const injectConnection = this.kernelInstance.exports.kernel_inject_connection as (
-      pid: number,
-      fd: number,
-      a: number,
-      b: number,
-      c: number,
-      d: number,
-      port: number,
-    ) => number;
-    const recvPipeIdx = injectConnection(
-      pid,
-      listenerFd,
-      peerAddr[0],
-      peerAddr[1],
-      peerAddr[2],
-      peerAddr[3],
-      peerPort,
-    );
-    if (recvPipeIdx >= 0) this.scheduleWakeBlockedRetries();
-    return recvPipeIdx;
-  }
-
-  /** Drain at most one 64 KiB chunk from a host-owned kernel pipe. */
-  readHostPipe(pid: number, pipeIdx: number): Uint8Array | null {
-    if (!this.kernelInstance) return null;
-    const pipeRead = this.kernelInstance.exports.kernel_pipe_read as (
-      pid: number,
-      pipeIdx: number,
-      bufPtr: KernelPointer,
-      bufLen: number,
-    ) => number;
-    const maxBytes = 65_536;
-    const n = checkedKernelPipeTransferCount(
-      "kernel_pipe_read",
-      pipeRead(
-        pid,
-        pipeIdx,
-        this.toKernelPtr(this.tcpScratchOffset),
-        maxBytes,
-      ),
-      maxBytes,
-    );
-    if (n <= 0) return null;
-    const result = this.getKernelMem().slice(
-      this.tcpScratchOffset,
-      this.tcpScratchOffset + n,
-    );
-    this.notifyPipeWritable(pipeIdx);
-    return result;
-  }
-
-  /** Write exact bytes to a host-owned kernel pipe and wake guest readers. */
-  writeHostPipe(pid: number, pipeIdx: number, data: Uint8Array): number {
-    if (!this.kernelInstance) return -1;
-    const pipeWrite = this.kernelInstance.exports.kernel_pipe_write as (
-      pid: number,
-      pipeIdx: number,
-      bufPtr: KernelPointer,
-      bufLen: number,
-    ) => number;
-    const written = this.writePipeChunked(pipeWrite, pid, pipeIdx, data);
-    if (written > 0) this.notifyPipeReadable(pipeIdx);
-    return written;
-  }
-
-  closeHostPipeRead(pid: number, pipeIdx: number): void {
-    if (!this.kernelInstance) return;
-    const closeRead = this.kernelInstance.exports.kernel_pipe_close_read as (
-      pid: number,
-      pipeIdx: number,
-    ) => number;
-    closeRead(pid, pipeIdx);
-  }
-
-  closeHostPipeWrite(pid: number, pipeIdx: number): void {
-    if (!this.kernelInstance) return;
-    const closeWrite = this.kernelInstance.exports.kernel_pipe_close_write as (
-      pid: number,
-      pipeIdx: number,
-    ) => number;
-    closeWrite(pid, pipeIdx);
-  }
-
-  isHostPipeWriteOpen(pid: number, pipeIdx: number): boolean {
-    if (!this.kernelInstance) return false;
-    const isWriteOpen = this.kernelInstance.exports.kernel_pipe_is_write_open as (
-      pid: number,
-      pipeIdx: number,
-    ) => number;
-    return isWriteOpen(pid, pipeIdx) === 1;
-  }
-
-  wakeHostPipeReaders(pipeIdx: number): void {
-    this.notifyPipeReadable(pipeIdx);
-  }
-
-  wakeHostPipeWriters(pipeIdx: number): void {
-    this.notifyPipeWritable(pipeIdx);
-  }
-
   // ---------------------------------------------------------------------------
   // External HTTP request bridge (host → in-kernel server, no real TCP)
   // ---------------------------------------------------------------------------
@@ -31204,14 +31089,6 @@ export class CentralizedKernelWorker {
         this.notifyPipeReadable(recvPipeIdx);
         this.scheduleWakeBlockedRetries();
         resolve(response);
-      };
-
-      const fail = (error: unknown) => {
-        pipeCloseRead(pid, sendPipeIdx);
-        pipeCloseWrite(pid, recvPipeIdx);
-        this.notifyPipeReadable(recvPipeIdx);
-        this.scheduleWakeBlockedRetries();
-        reject(error instanceof Error ? error : new Error(String(error)));
       };
 
       const tick = () => {

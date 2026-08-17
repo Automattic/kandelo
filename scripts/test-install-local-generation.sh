@@ -28,6 +28,58 @@ fail() {
     exit 1
 }
 
+# Every native xtask lookup must pin the declared LLVM archive pair. On Darwin,
+# LLVM supplies llvm-ar rather than an `ar` alias, so dropping AR/RANLIB makes
+# a cold Cargo cache fall through to the incompatible Apple archiver. Target
+# build variables and caller C/C++ compiler flags must not leak into the native
+# helper invocation.
+metadata_tools="$work/metadata-tools"
+metadata_repo="$work/metadata-repo"
+metadata_calls="$work/metadata-calls"
+metadata_source="$work/metadata-source.wasm"
+metadata_runtime="$work/metadata-runtime.dat"
+mkdir -p "$metadata_tools" "$metadata_repo/scripts"
+cp "$REPO_ROOT/scripts/install-local-binary.sh" "$metadata_repo/scripts/"
+cp "$REPO_ROOT/scripts/wasm-artifact-guards.sh" "$metadata_repo/scripts/"
+printf '\000asm\001\000\000\000' >"$metadata_source"
+printf 'metadata runtime\n' >"$metadata_runtime"
+cat >"$metadata_tools/cargo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "${AR:-}" = "$METADATA_TOOLS/llvm-ar" ] || exit 41
+[ "${RANLIB:-}" = "$METADATA_TOOLS/llvm-ranlib" ] || exit 42
+[ -z "${CC+x}" ] || exit 43
+[ -z "${CFLAGS+x}" ] || exit 44
+printf '%s\n' "$*" >>"$METADATA_CALLS"
+case "$*" in
+  *'build-deps output-metadata kernel kandelo-kernel.wasm')
+    printf '%s\n' '{"source_artifact":"kandelo-kernel.wasm","mirror_path":"kernel.wasm","fork_instrumentation":"disabled"}'
+    ;;
+  *'build-deps --arch wasm32 --binaries-dir '*' install-local-artifact kernel kandelo-kernel.wasm'|*'build-deps --arch wasm32 --binaries-dir '*' install-local-artifact kernel metadata-runtime.dat')
+    ;;
+  *) exit 45 ;;
+esac
+EOF
+chmod +x "$metadata_tools/cargo"
+(
+    cd "$metadata_repo"
+    PATH="$metadata_tools:$PATH"
+    AR=caller-target-ar
+    RANLIB=caller-target-ranlib
+    LLVM_BIN="$metadata_tools"
+    CC=caller-compiler
+    CFLAGS=caller-flags
+    METADATA_TOOLS="$metadata_tools"
+    METADATA_CALLS="$metadata_calls"
+    export PATH AR RANLIB LLVM_BIN CC CFLAGS METADATA_TOOLS METADATA_CALLS
+    # shellcheck source=/dev/null
+    source "$metadata_repo/scripts/install-local-binary.sh"
+    install_local_binary kernel "$metadata_source" kandelo-kernel.wasm
+    install_local_runtime_file kernel "$metadata_runtime" metadata-runtime.dat
+)
+[ "$(wc -l <"$metadata_calls" | tr -d ' ')" = 3 ] ||
+    fail "native metadata calls did not all retain the declared archive tools"
+
 registry="$work/registry"
 package_dir="$registry/local-python"
 mirror="$work/local-binaries"

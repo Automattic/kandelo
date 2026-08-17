@@ -95,6 +95,7 @@ import {
   waitForWorkerQuiescence,
 } from "./worker-quiescence";
 import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
+import { uninitializedKernelPipeResult } from "./kernel-pipe-transport";
 import {
   ForkReplayGateCoordinator,
   observeForkReplayWorker,
@@ -936,6 +937,7 @@ async function buildVirtualPlatformIO(
   sessionSeedTrees?: InitMessage["sessionSeedTrees"],
   rootfsLazyUrlBase?: InitMessage["rootfsLazyUrlBase"],
   rootfsLazyAssets?: InitMessage["rootfsLazyAssets"],
+  rootfsLazyAssetSources?: InitMessage["rootfsLazyAssetSources"],
   privilegedProgramMount?: InitMessage["privilegedProgramMount"],
 ): Promise<VirtualPlatformIO> {
   const bootSessionDir = mkdtempSync(join(tmpdir(), "wasm-posix-session-"));
@@ -943,7 +945,7 @@ async function buildVirtualPlatformIO(
   let specMounts: MountConfig[];
   try {
     specMounts = await resolveForNodeKernelSession(
-      DEFAULT_MOUNT_SPEC,
+      rootfsMountSpec ?? DEFAULT_MOUNT_SPEC,
       new Uint8Array(rootfsImage),
       bootSessionDir,
       sessionSeedTrees,
@@ -1085,6 +1087,7 @@ async function handleInit(msg: InitMessage) {
       msg.sessionSeedTrees,
       msg.rootfsLazyUrlBase,
       msg.rootfsLazyAssets,
+      msg.rootfsLazyAssetSources,
       msg.privilegedProgramMount,
     )
     : new NodePlatformIO();
@@ -3510,7 +3513,7 @@ function handlePipeRead(
     respond(msg.requestId, uninitializedKernelPipeResult("read"));
     return;
   }
-  respond(msg.requestId, kernelWorker.readHostPipe(msg.pid, msg.pipeIdx));
+  respond(msg.requestId, kernelWorker.readPipeAvailable(msg.pid, msg.pipeIdx));
 }
 
 function handlePipeWrite(
@@ -3520,10 +3523,9 @@ function handlePipeWrite(
     respond(msg.requestId, uninitializedKernelPipeResult("write"));
     return;
   }
-  respond(
-    msg.requestId,
-    kernelWorker.writeHostPipe(msg.pid, msg.pipeIdx, msg.data),
-  );
+  const written = kernelWorker.writePipeData(msg.pid, msg.pipeIdx, msg.data);
+  kernelWorker.notifyPipeReadable(msg.pipeIdx);
+  respond(msg.requestId, written);
 }
 
 function handleInjectConnection(
@@ -3535,7 +3537,7 @@ function handleInjectConnection(
   }
   respond(
     msg.requestId,
-    kernelWorker.injectHostConnection(
+    kernelWorker.injectConnection(
       msg.pid,
       msg.fd,
       msg.peerAddr,
@@ -3730,24 +3732,24 @@ port.on("message", (msg: MainToKernelMessage) => {
       handlePipeWrite(msg);
       break;
     case "pipe_close_read":
-      if (initReady) kernelWorker.closeHostPipeRead(msg.pid, msg.pipeIdx);
+      if (initReady) kernelWorker.closePipeRead(msg.pid, msg.pipeIdx);
       break;
     case "pipe_close_write":
-      if (initReady) kernelWorker.closeHostPipeWrite(msg.pid, msg.pipeIdx);
+      if (initReady) kernelWorker.closePipeWrite(msg.pid, msg.pipeIdx);
       break;
     case "pipe_is_write_open":
       respond(
         msg.requestId,
         initReady
-          ? kernelWorker.isHostPipeWriteOpen(msg.pid, msg.pipeIdx)
+          ? kernelWorker.isPipeWriteOpen(msg.pid, msg.pipeIdx)
           : uninitializedKernelPipeResult("is-write-open"),
       );
       break;
     case "wake_blocked_readers":
-      if (initReady) kernelWorker.wakeHostPipeReaders(msg.pipeIdx);
+      if (initReady) kernelWorker.wakeBlockedReaders(msg.pipeIdx);
       break;
     case "wake_blocked_writers":
-      if (initReady) kernelWorker.wakeHostPipeWriters(msg.pipeIdx);
+      if (initReady) kernelWorker.wakeBlockedWriters(msg.pipeIdx);
       break;
     case "terminate_process":
       void handleTerminate(msg);

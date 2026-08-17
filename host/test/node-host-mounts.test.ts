@@ -50,6 +50,19 @@ const haveProbe = existsSync(probeWasm);
 const haveRootfs = existsSync(rootfsImage);
 
 describe("node session seed configuration", () => {
+  it("rejects a custom mount specification without a rootfs before starting a worker", async () => {
+    const host = new NodeKernelHost({
+      rootfsMountSpec: [],
+    });
+    try {
+      await expect(host.init(new ArrayBuffer(0))).rejects.toThrow(
+        "rootfsMountSpec requires rootfsImage",
+      );
+    } finally {
+      await host.destroy();
+    }
+  });
+
   it("rejects seeds without a rootfs before starting a worker", async () => {
     const host = new NodeKernelHost({
       sessionSeedTrees: [{
