@@ -732,6 +732,7 @@ describe("blocking retry snapshot contract", () => {
       "fcntl",
       "flock",
       "futex",
+      "ioctl",
       "mq_timedreceive",
       "mq_timedsend",
       "open",

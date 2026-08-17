@@ -21,6 +21,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/file.h>
+#include <sys/soundcard.h>
 #include <bits/kandelo_channel_scalars.h>
 #include <bits/kandelo_process_layouts.h>
 #include "abi_constants.h"
@@ -186,6 +187,9 @@ static int kandelo_should_restart_after_handler(
     case __NR_mq_timedsend:
     case __NR_mq_timedreceive:
         return 1;
+    case __NR_ioctl:
+        /* OSS output drain is a zero-progress slow-device wait. */
+        return (uint32_t)a2 == SNDCTL_DSP_SYNC;
     case __NR_fcntl:
         /*
          * musl aliases the feature-gated F_SETLKW64 spelling to this same
@@ -758,10 +762,12 @@ restart_wait_syscall:
         &delivered_signal
     );
 
-    /* A host-deferred blocking operation completes the channel with EINTR so
-     * the caught handler runs at the real interruption boundary. SA_RESTART
-     * resubmits only the explicitly classified zero-progress operations after
-     * handler mask restoration and cancellation preflight. */
+    /* A host-deferred blocking operation or slow PCM drain completes the
+     * channel with EINTR so the caught handler runs at the real interruption
+     * boundary. SA_RESTART resubmits only explicitly classified zero-progress
+     * operations after handler mask restoration and cancellation preflight.
+     * An interrupted final /dev/dsp close deliberately remains non-restarted:
+     * its fd stays valid for an explicit caller retry. */
     if (err == EINTR && delivered_signal &&
         (delivered_flags & SA_RESTART) != 0 &&
         kandelo_should_restart_after_handler(n, a1, a2, a3, a4, a5, a6)) {

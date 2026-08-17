@@ -176,6 +176,7 @@ not currently supported.
 
 ```
 --target=wasm32-unknown-unknown    # Wasm target triple
+-D__unix__=1 -D__unix=1           # Kandelo Unix source-environment identity
 -matomics                          # Enable atomics (SharedArrayBuffer)
 -mbulk-memory                      # Enable bulk memory operations
 -mexception-handling               # Enable Wasm exception handling
@@ -191,6 +192,12 @@ not currently supported.
 # The same three maps use /usr/src/kandelo-sdk/sysroot for the wasm32
 # <sysroot>, or /usr/src/kandelo-sdk/sysroot64 for the wasm64 <sysroot>.
 ```
+
+The generic LLVM Wasm triple does not imply an operating system. The SDK
+defines the conventional reserved Unix macros because Kandelo supplies a Unix
+and POSIX userspace; it deliberately does not define Linux, FreeBSD, WASI, or
+Emscripten platform macros. This lets upstream source choose generic Unix
+interfaces such as OSS without misrepresenting the kernel it will run on.
 
 The file, debug, and macro prefix maps cover paths owned and injected by the
 SDK. Linked Wasm debug information and `__FILE__` strings therefore do not

@@ -157,6 +157,8 @@ pub enum FileType {
     MemFd,
     PtyMaster,
     PtySlave,
+    /// Playback-only PCM stream backing used by the OSS `/dev/dsp` frontend.
+    PcmPlayback,
 }
 
 /// Live cmdbuf mapping for a process's GLES2 fd.

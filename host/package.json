@@ -61,6 +61,7 @@
         "default": "./dist/framebuffer/index.cjs"
       }
     },
+    "./audio/pcm-audio-worklet.js": "./dist/audio/pcm-audio-worklet.js",
     "./worker-entry": {
       "browser": {
         "types": "./dist/worker-entry-browser.d.ts",
