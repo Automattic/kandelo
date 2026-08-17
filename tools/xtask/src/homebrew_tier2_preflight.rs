@@ -7,7 +7,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::pkg_manifest::{BuildToml, DepsManifest, TargetArch};
+use crate::pkg_manifest::TargetArch;
 
 const MAX_BRIDGE_PLAN_BYTES: usize = 65_536;
 const MAX_SCRIPT_ENV_KEYS: usize = 64;
@@ -20,8 +20,6 @@ const MAX_TAP_RECIPE_BYTES: u64 = 67_108_864;
 const MAX_TAP_RECIPE_RESOURCES: usize = 32;
 const MAX_TAP_RECIPE_RESOURCE_NAME_BYTES: usize = 128;
 const MAX_TAP_RECIPE_RESOURCE_URL_BYTES: usize = 1_024;
-const ZERO_SHA256: &str = "0000000000000000000000000000000000000000000000000000000000000000";
-const KANDELO_REPOSITORY_URLS: [&str; 1] = ["https://github.com/Automattic/kandelo"];
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -119,16 +117,13 @@ struct BridgeAttestation {
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
 struct AttestedBridge {
-    build_toml_sha256: String,
     package: String,
-    package_toml_sha256: String,
     script: String,
     script_sha256: String,
     script_env_keys: Vec<String>,
     version: String,
     source_url: String,
     source_sha256: String,
-    source_mode: String,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -251,9 +246,9 @@ fn validate(
         }
     }
     match plan.schema {
-        2 if object.len() == 8 && !object.contains_key("tap_recipe") => {}
+        4 if object.len() == 8 && !object.contains_key("tap_recipe") => {}
         3 if object.len() == 9 && object.contains_key("tap_recipe") => {}
-        2 | 3 => return Err("Tier-2 bridge plan has unexpected fields".to_string()),
+        4 | 3 => return Err("Tier-2 bridge plan has unexpected fields".to_string()),
         _ => {}
     }
     validate_plan_identity(&plan)?;
@@ -293,7 +288,7 @@ fn validate(
     }
     let Some(bridge) = plan.tier2_bridge.0 else {
         return Ok(BridgeAttestation {
-            schema: 2,
+            schema: 4,
             arch: arch.as_str().to_string(),
             tap: plan.tap,
             formula: plan.formula,
@@ -323,99 +318,18 @@ fn validate(
     let registry = exact_child_directory(&packages, "registry", "package registry")?;
     let package_dir = exact_child_directory(&registry, &bridge.package, "registry package")?;
 
-    let package_toml_path = package_dir.join("package.toml");
-    let build_toml_path = package_dir.join("build.toml");
-    let package_text = read_bounded_utf8(
-        &package_toml_path,
-        MAX_MANIFEST_BYTES,
-        "registry package.toml",
-    )?;
-    let build_text =
-        read_bounded_utf8(&build_toml_path, MAX_MANIFEST_BYTES, "registry build.toml")?;
-    let manifest = DepsManifest::parse(&package_text, package_dir.clone())
-        .map_err(|e| format!("{}: {e}", package_toml_path.display()))?;
-    let build =
-        BuildToml::parse(&build_text).map_err(|e| format!("{}: {e}", build_toml_path.display()))?;
-    let package_toml_sha256 = sha256_hex(package_text.as_bytes());
-    let build_toml_sha256 = sha256_hex(build_text.as_bytes());
-
-    if manifest.name != bridge.package {
-        return Err(format!(
-            "registry manifest name {:?} differs from bridge package {:?}",
-            manifest.name, bridge.package
-        ));
-    }
-    if manifest.version != bridge.version {
-        return Err(format!(
-            "registry package {:?} version {:?} differs from Formula version {:?}",
-            bridge.package, manifest.version, bridge.version
-        ));
-    }
-    if !manifest.target_arches.contains(&arch) {
-        return Err(format!(
-            "registry package {:?} does not support architecture {:?}",
-            bridge.package,
-            arch.as_str()
-        ));
-    }
-
-    let expected_script_prefix = format!("packages/registry/{}/", bridge.package);
-    let script_path = manifest.build.script_path.as_deref().ok_or_else(|| {
-        format!(
-            "registry package {:?} package.toml must declare build.script_path",
-            bridge.package
-        )
-    })?;
-    if !script_path.starts_with(&expected_script_prefix) {
-        return Err(format!(
-            "registry package {:?} package.toml build.script_path must start with {:?}",
-            bridge.package, expected_script_prefix
-        ));
-    }
-    let script = &script_path[expected_script_prefix.len()..];
-    validate_component(script, "registry build script", true)?;
-    if build.script_path != script_path {
-        return Err(format!(
-            "registry package {:?} build.toml script_path {:?} differs from {:?}",
-            bridge.package, build.script_path, script_path
-        ));
-    }
-    exact_child_file(&package_dir, script, "registry build script")?;
+    let script = format!("build-{}.sh", bridge.package);
+    validate_component(&script, "registry build script", true)?;
+    exact_child_file(&package_dir, &script, "registry build script")?;
     let script_text = read_bounded_utf8(
-        &package_dir.join(script),
+        &package_dir.join(&script),
         MAX_BUILD_SCRIPT_BYTES,
         "registry build script",
     )?;
     let script_sha256 = sha256_hex(script_text.as_bytes());
 
-    let source_mode = if manifest.source.sha256 == ZERO_SHA256 {
-        if !KANDELO_REPOSITORY_URLS.contains(&manifest.source.url.as_str()) {
-            return Err(format!(
-                "registry package {:?} uses the all-zero in-repository source SHA-256 with unrecognized repository URL {:?}",
-                bridge.package, manifest.source.url
-            ));
-        }
-        validate_in_repository_formula_source(&manifest.source.url, &bridge.source_url)?;
-        if bridge.source_sha256 == ZERO_SHA256 {
-            return Err(
-                "in-repository Formula source must have a nonzero SHA-256 checksum".to_string(),
-            );
-        }
-        "in-repository-source"
-    } else {
-        if manifest.source.url != bridge.source_url
-            || manifest.source.sha256 != bridge.source_sha256
-        {
-            return Err(format!(
-                "registry package {:?} source URL/SHA-256 differs from the Formula source",
-                bridge.package
-            ));
-        }
-        "exact"
-    };
-
     Ok(BridgeAttestation {
-        schema: 2,
+        schema: 4,
         arch: arch.as_str().to_string(),
         tap: plan.tap,
         formula: plan.formula,
@@ -424,16 +338,13 @@ fn validate(
         support_sha256: Some(support_sha256.to_string()),
         support_runtime_sha256: Some(support_runtime_sha256.to_string()),
         tier2_bridge: Some(AttestedBridge {
-            build_toml_sha256,
             package: bridge.package,
-            package_toml_sha256,
-            script: script.to_string(),
+            script,
             script_sha256,
             script_env_keys: bridge.script_env_keys,
             version: bridge.version,
             source_url: bridge.source_url,
             source_sha256: bridge.source_sha256,
-            source_mode: source_mode.to_string(),
         }),
         tap_recipe: None,
     })
@@ -943,14 +854,14 @@ fn require_mode(
 }
 
 fn validate_plan_identity(plan: &BridgePlan) -> Result<(), String> {
-    if ![2, 3].contains(&plan.schema) {
+    if ![4, 3].contains(&plan.schema) {
         return Err(format!(
             "unsupported Tier-2 bridge plan schema {}",
             plan.schema
         ));
     }
-    if plan.schema == 2 && plan.tap_recipe.is_some() {
-        return Err("Tier-2 bridge plan schema 2 cannot declare a tap recipe".to_string());
+    if plan.schema == 4 && plan.tap_recipe.is_some() {
+        return Err("Tier-2 bridge plan schema 4 cannot declare a tap recipe".to_string());
     }
     if plan.schema == 3 && plan.tap_recipe.is_none() {
         return Err("Tier-2 bridge plan schema 3 requires a tap recipe".to_string());
@@ -1056,31 +967,6 @@ fn is_reserved_script_env_key(key: &str) -> bool {
             | "WASM_POSIX_DEP_WORK_DIR"
             | "WASM_POSIX_INSTALL_LOCAL_MIRROR"
     )
-}
-
-fn validate_in_repository_formula_source(
-    repository_url: &str,
-    formula_source_url: &str,
-) -> Result<(), String> {
-    let prefix = format!("{repository_url}/archive/");
-    let commit = formula_source_url
-        .strip_prefix(&prefix)
-        .and_then(|suffix| suffix.strip_suffix(".tar.gz"))
-        .ok_or_else(|| {
-            format!(
-                "in-repository Formula source must be a canonical commit archive from {repository_url:?}"
-            )
-        })?;
-    if commit.len() != 40
-        || !commit
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        return Err(format!(
-            "in-repository Formula source must pin one 40-character lowercase commit: {formula_source_url:?}"
-        ));
-    }
-    Ok(())
 }
 
 fn validate_tap_name(value: &str) -> Result<(), String> {
@@ -1307,7 +1193,6 @@ fn require_same_file(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     use std::os::unix::fs::{PermissionsExt, symlink};
 
     struct Fixture {
@@ -1324,7 +1209,7 @@ mod tests {
             let package = root.join("packages/registry/bridge");
             fs::create_dir_all(&package).unwrap();
             fs::write(package.join("build-bridge.sh"), "#!/bin/sh\n").unwrap();
-            fs::write(package.join("package.toml"), package_toml(false)).unwrap();
+            fs::write(package.join("package.toml"), package_toml()).unwrap();
             fs::write(package.join("build.toml"), build_toml()).unwrap();
             let plan = root.join("bridge-plan.json");
             fs::write(&plan, bridge_plan()).unwrap();
@@ -1347,7 +1232,7 @@ mod tests {
 
     fn bridge_plan() -> String {
         serde_json::json!({
-            "schema": 2,
+            "schema": 4,
             "tap": "kandelo-dev/tap-core",
             "formula": "bridge",
             "full_name": "kandelo-dev/tap-core/bridge",
@@ -1423,15 +1308,9 @@ mod tests {
         recipe_root
     }
 
-    fn package_toml(in_repository: bool) -> String {
-        let (url, sha256) = if in_repository {
-            (KANDELO_REPOSITORY_URLS[0], ZERO_SHA256)
-        } else {
-            (
-                "https://example.test/bridge-1.2.3.tar.gz",
-                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-            )
-        };
+    fn package_toml() -> String {
+        let url = "https://example.test/bridge-1.2.3.tar.gz";
+        let sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
         format!(
             r#"kind = "program"
 name = "bridge"
@@ -1468,7 +1347,7 @@ index_url = "https://example.test/index.toml"
     }
 
     #[test]
-    fn validates_exact_registry_identity_and_source() {
+    fn validates_registry_build_helper_with_formula_owned_source() {
         let fixture = Fixture::new();
         let attestation = fixture.validate(TargetArch::Wasm32).unwrap();
         let document = serde_json::to_value(&attestation).unwrap();
@@ -1491,7 +1370,7 @@ index_url = "https://example.test/index.toml"
                 "tier2_bridge",
             ]
         );
-        assert_eq!(document["schema"], 2);
+        assert_eq!(document["schema"], 4);
         assert_eq!(
             document["tier2_bridge"]
                 .as_object()
@@ -1500,13 +1379,10 @@ index_url = "https://example.test/index.toml"
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
             [
-                "build_toml_sha256",
                 "package",
-                "package_toml_sha256",
                 "script",
                 "script_env_keys",
                 "script_sha256",
-                "source_mode",
                 "source_sha256",
                 "source_url",
                 "version",
@@ -1514,20 +1390,58 @@ index_url = "https://example.test/index.toml"
         );
         let bridge = attestation.tier2_bridge.unwrap();
         assert_eq!(bridge.package, "bridge");
-        assert_eq!(
-            bridge.package_toml_sha256,
-            sha256_hex(package_toml(false).as_bytes())
-        );
-        assert_eq!(
-            bridge.build_toml_sha256,
-            sha256_hex(build_toml().as_bytes())
-        );
         assert_eq!(bridge.script, "build-bridge.sh");
         assert_eq!(bridge.script_sha256, sha256_hex(b"#!/bin/sh\n"));
         assert_eq!(bridge.script_env_keys, ["WASM_POSIX_DEP_ZLIB_DIR"]);
         assert_eq!(bridge.version, "1.2.3");
-        assert_eq!(bridge.source_mode, "exact");
         assert_eq!(attestation.arch, "wasm32");
+    }
+
+    #[test]
+    fn formula_source_and_version_do_not_depend_on_legacy_registry_metadata() {
+        let fixture = Fixture::new();
+        let manifest_path = fixture.package.join("package.toml");
+        let legacy = package_toml()
+            .replace("version = \"1.2.3\"", "version = \"0.9.0\"")
+            .replace(
+                "https://example.test/bridge-1.2.3.tar.gz",
+                "https://legacy.example.test/bridge-0.9.0.tar.gz",
+            )
+            .replace(
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            );
+        fs::write(&manifest_path, legacy).unwrap();
+
+        let bridge = fixture
+            .validate(TargetArch::Wasm32)
+            .unwrap()
+            .tier2_bridge
+            .unwrap();
+        assert_eq!(bridge.version, "1.2.3");
+        assert_eq!(
+            bridge.source_url,
+            "https://example.test/bridge-1.2.3.tar.gz"
+        );
+        assert_eq!(
+            bridge.source_sha256,
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        );
+    }
+
+    #[test]
+    fn formula_owned_bridge_does_not_require_legacy_registry_manifests() {
+        let fixture = Fixture::new();
+        fs::remove_file(fixture.package.join("package.toml")).unwrap();
+        fs::remove_file(fixture.package.join("build.toml")).unwrap();
+
+        let bridge = fixture
+            .validate(TargetArch::Wasm32)
+            .unwrap()
+            .tier2_bridge
+            .unwrap();
+        assert_eq!(bridge.package, "bridge");
+        assert_eq!(bridge.script, "build-bridge.sh");
     }
 
     #[test]
@@ -1573,16 +1487,8 @@ index_url = "https://example.test/index.toml"
                 "2.0_7",
                 Some("differs from its base version"),
             ),
-            (
-                "zero revision",
-                "1.2.3_0",
-                Some("invalid revision suffix"),
-            ),
-            (
-                "leading zero",
-                "1.2.3_07",
-                Some("invalid revision suffix"),
-            ),
+            ("zero revision", "1.2.3_0", Some("invalid revision suffix")),
+            ("leading zero", "1.2.3_07", Some("invalid revision suffix")),
             (
                 "nonnumeric revision",
                 "1.2.3_x",
@@ -1618,7 +1524,10 @@ index_url = "https://example.test/index.toml"
         write_tap_recipe(&fixture);
         let mut plan: serde_json::Value =
             serde_json::from_slice(&fs::read(&fixture.plan).unwrap()).unwrap();
-        plan["tap_recipe"].as_object_mut().unwrap().remove("pkg_version");
+        plan["tap_recipe"]
+            .as_object_mut()
+            .unwrap()
+            .remove("pkg_version");
         fs::write(&fixture.plan, serde_json::to_vec(&plan).unwrap()).unwrap();
         assert!(
             validate(
@@ -1907,7 +1816,7 @@ index_url = "https://example.test/index.toml"
     #[test]
     fn bridge_plan_rejects_previous_and_unknown_schemas() {
         let fixture = Fixture::new();
-        for schema in [1, 4] {
+        for schema in [1, 2] {
             let mut plan: serde_json::Value = serde_json::from_str(&bridge_plan()).unwrap();
             plan["schema"] = schema.into();
             fs::write(&fixture.plan, serde_json::to_vec(&plan).unwrap()).unwrap();
@@ -1917,171 +1826,6 @@ index_url = "https://example.test/index.toml"
                 format!("unsupported Tier-2 bridge plan schema {schema}")
             );
         }
-    }
-
-    #[test]
-    fn accepts_only_recognized_in_repository_source_sentinel() {
-        let fixture = Fixture::new();
-        fs::write(fixture.package.join("package.toml"), package_toml(true)).unwrap();
-        let mut plan: serde_json::Value = serde_json::from_str(&bridge_plan()).unwrap();
-        plan["tier2_bridge"]["source_url"] = serde_json::json!(format!(
-            "{}/archive/{}.tar.gz",
-            KANDELO_REPOSITORY_URLS[0],
-            "d".repeat(40)
-        ));
-        fs::write(&fixture.plan, serde_json::to_vec(&plan).unwrap()).unwrap();
-        let attestation = fixture.validate(TargetArch::Wasm64).unwrap();
-        assert_eq!(
-            attestation.tier2_bridge.unwrap().source_mode,
-            "in-repository-source"
-        );
-
-        let bad = package_toml(true).replace(
-            KANDELO_REPOSITORY_URLS[0],
-            "https://github.com/unrelated/project",
-        );
-        fs::write(fixture.package.join("package.toml"), bad).unwrap();
-        let error = fixture.validate(TargetArch::Wasm32).unwrap_err();
-        assert!(error.contains("unrecognized repository URL"), "{error}");
-    }
-
-    #[test]
-    fn in_repository_source_requires_one_immutable_same_repository_archive() {
-        for (source_url, source_sha256, expected) in [
-            (
-                "https://example.test/unrelated.tar.gz".to_string(),
-                "c".repeat(64),
-                "canonical commit archive",
-            ),
-            (
-                format!("{}/archive/main.tar.gz", KANDELO_REPOSITORY_URLS[0]),
-                "c".repeat(64),
-                "40-character lowercase commit",
-            ),
-            (
-                format!(
-                    "{}/archive/{}.tar.gz",
-                    KANDELO_REPOSITORY_URLS[0],
-                    "d".repeat(40)
-                ),
-                ZERO_SHA256.to_string(),
-                "nonzero SHA-256",
-            ),
-        ] {
-            let fixture = Fixture::new();
-            fs::write(fixture.package.join("package.toml"), package_toml(true)).unwrap();
-            let mut plan: serde_json::Value = serde_json::from_str(&bridge_plan()).unwrap();
-            plan["tier2_bridge"]["source_url"] = serde_json::json!(source_url);
-            plan["tier2_bridge"]["source_sha256"] = serde_json::json!(source_sha256);
-            fs::write(&fixture.plan, serde_json::to_vec(&plan).unwrap()).unwrap();
-            let error = fixture.validate(TargetArch::Wasm32).unwrap_err();
-            assert!(error.contains(expected), "{error}");
-        }
-    }
-
-    #[test]
-    fn rejects_nonzero_source_mismatch_even_for_kandelo_url() {
-        let fixture = Fixture::new();
-        let bad = package_toml(false).replace(
-            "https://example.test/bridge-1.2.3.tar.gz",
-            KANDELO_REPOSITORY_URLS[0],
-        );
-        fs::write(fixture.package.join("package.toml"), bad).unwrap();
-        let error = fixture.validate(TargetArch::Wasm32).unwrap_err();
-        assert!(error.contains("differs from the Formula source"), "{error}");
-    }
-
-    #[test]
-    fn rejects_manifest_identity_script_and_arch_mismatches() {
-        let fixture = Fixture::new();
-        let manifest_path = fixture.package.join("package.toml");
-        fs::write(
-            &manifest_path,
-            package_toml(false).replace("version = \"1.2.3\"", "version = \"9.9.9\""),
-        )
-        .unwrap();
-        assert!(
-            fixture
-                .validate(TargetArch::Wasm32)
-                .unwrap_err()
-                .contains("differs from Formula version")
-        );
-
-        fs::write(&manifest_path, package_toml(false)).unwrap();
-        fs::write(
-            fixture.package.join("build.toml"),
-            build_toml().replace("build-bridge.sh", "other.sh"),
-        )
-        .unwrap();
-        assert!(
-            fixture
-                .validate(TargetArch::Wasm32)
-                .unwrap_err()
-                .contains("build.toml script_path")
-        );
-
-        fs::write(fixture.package.join("build.toml"), build_toml()).unwrap();
-        fs::write(
-            &manifest_path,
-            package_toml(false)
-                .replace("arches = [\"wasm32\", \"wasm64\"]", "arches = [\"wasm32\"]"),
-        )
-        .unwrap();
-        assert!(
-            fixture
-                .validate(TargetArch::Wasm64)
-                .unwrap_err()
-                .contains("does not support architecture")
-        );
-
-        fs::write(
-            &manifest_path,
-            package_toml(false).replace(
-                "packages/registry/bridge/build-bridge.sh",
-                "packages/registry/bridge/other.sh",
-            ),
-        )
-        .unwrap();
-        assert!(
-            fixture
-                .validate(TargetArch::Wasm32)
-                .unwrap_err()
-                .contains("differs from")
-        );
-
-        fs::write(
-            &manifest_path,
-            package_toml(false).replace("name = \"bridge\"", "name = \"other\""),
-        )
-        .unwrap();
-        assert!(fixture.validate(TargetArch::Wasm32).is_err());
-    }
-
-    #[test]
-    fn derives_one_direct_script_from_both_authoritative_manifests() {
-        let fixture = Fixture::new();
-        let nested = "packages/registry/bridge/nested/build-bridge.sh";
-        fs::create_dir(fixture.package.join("nested")).unwrap();
-        fs::write(
-            fixture.package.join("nested/build-bridge.sh"),
-            "#!/bin/sh\n",
-        )
-        .unwrap();
-        fs::write(
-            fixture.package.join("package.toml"),
-            package_toml(false).replace("packages/registry/bridge/build-bridge.sh", nested),
-        )
-        .unwrap();
-        fs::write(
-            fixture.package.join("build.toml"),
-            build_toml().replace("packages/registry/bridge/build-bridge.sh", nested),
-        )
-        .unwrap();
-        let error = fixture.validate(TargetArch::Wasm32).unwrap_err();
-        assert!(
-            error.contains("one canonical ASCII path component"),
-            "{error}"
-        );
     }
 
     #[test]
@@ -2188,55 +1932,6 @@ index_url = "https://example.test/index.toml"
     }
 
     #[test]
-    fn active_in_repository_bridges_name_exact_authoritative_provenance() {
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        for package in ["lsof", "modeset", "posix-utils-lite"] {
-            let package_dir = repo_root.join("packages/registry").join(package);
-            let manifest = DepsManifest::parse(
-                &fs::read_to_string(package_dir.join("package.toml")).unwrap(),
-                package_dir.clone(),
-            )
-            .unwrap();
-            let build =
-                BuildToml::parse(&fs::read_to_string(package_dir.join("build.toml")).unwrap())
-                    .unwrap();
-            assert_eq!(manifest.source.url, KANDELO_REPOSITORY_URLS[0], "{package}");
-            assert_eq!(manifest.source.sha256, ZERO_SHA256, "{package}");
-            assert_eq!(
-                build.repo_url,
-                format!("{}.git", KANDELO_REPOSITORY_URLS[0]),
-                "{package}"
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_symlinked_registry_nodes_and_hard_linked_inputs() {
-        let fixture = Fixture::new();
-        let package_toml_path = fixture.package.join("package.toml");
-        let real_manifest = fixture.root().join("real-package.toml");
-        fs::rename(&package_toml_path, &real_manifest).unwrap();
-        symlink(&real_manifest, &package_toml_path).unwrap();
-        assert!(
-            fixture
-                .validate(TargetArch::Wasm32)
-                .unwrap_err()
-                .contains("regular non-symlink")
-        );
-
-        fs::remove_file(&package_toml_path).unwrap();
-        fs::rename(&real_manifest, &package_toml_path).unwrap();
-        let alias = fixture.root().join("manifest-alias");
-        fs::hard_link(&package_toml_path, &alias).unwrap();
-        assert!(
-            fixture
-                .validate(TargetArch::Wasm32)
-                .unwrap_err()
-                .contains("hard-link aliases")
-        );
-    }
-
-    #[test]
     fn rejects_symlinked_intermediate_directories_and_plan() {
         for node in ["packages", "registry", "package"] {
             let fixture = Fixture::new();
@@ -2274,17 +1969,7 @@ index_url = "https://example.test/index.toml"
     }
 
     #[test]
-    fn rejects_missing_or_non_file_manifest_and_script_nodes() {
-        let fixture = Fixture::new();
-        fs::remove_file(fixture.package.join("build.toml")).unwrap();
-        fs::create_dir(fixture.package.join("build.toml")).unwrap();
-        assert!(
-            fixture
-                .validate(TargetArch::Wasm32)
-                .unwrap_err()
-                .contains("regular non-symlink")
-        );
-
+    fn rejects_missing_or_non_file_script_nodes() {
         let fixture = Fixture::new();
         fs::remove_file(fixture.package.join("build-bridge.sh")).unwrap();
         assert!(
@@ -2293,47 +1978,6 @@ index_url = "https://example.test/index.toml"
                 .unwrap_err()
                 .contains("registry build script")
         );
-    }
-
-    #[test]
-    fn bounded_read_rejects_empty_oversized_and_invalid_utf8_inputs() {
-        let fixture = Fixture::new();
-        let manifest = fixture.package.join("package.toml");
-        fs::write(&manifest, []).unwrap();
-        assert!(
-            fixture
-                .validate(TargetArch::Wasm32)
-                .unwrap_err()
-                .contains("1 to 65536 bytes")
-        );
-
-        let mut file = File::create(&manifest).unwrap();
-        file.write_all(&vec![b'#'; MAX_MANIFEST_BYTES + 1]).unwrap();
-        assert!(
-            fixture
-                .validate(TargetArch::Wasm32)
-                .unwrap_err()
-                .contains("1 to 65536 bytes")
-        );
-
-        fs::write(&manifest, [0xff]).unwrap();
-        assert!(
-            fixture
-                .validate(TargetArch::Wasm32)
-                .unwrap_err()
-                .contains("not UTF-8")
-        );
-    }
-
-    #[test]
-    fn bounded_read_accepts_an_exactly_maximum_size_valid_manifest() {
-        let fixture = Fixture::new();
-        let mut text = package_toml(false);
-        text.push('#');
-        text.extend(std::iter::repeat_n('x', MAX_MANIFEST_BYTES - text.len()));
-        assert_eq!(text.len(), MAX_MANIFEST_BYTES);
-        fs::write(fixture.package.join("package.toml"), text).unwrap();
-        assert!(fixture.validate(TargetArch::Wasm32).is_ok());
     }
 
     #[test]
@@ -2346,37 +1990,6 @@ index_url = "https://example.test/index.toml"
         fs::write(&script, vec![b'#'; MAX_BUILD_SCRIPT_BYTES + 1]).unwrap();
         let error = fixture.validate(TargetArch::Wasm32).unwrap_err();
         assert!(error.contains("1 to 1048576 bytes"), "{error}");
-    }
-
-    #[test]
-    fn authoritative_toml_parsers_reject_malformed_tails_and_duplicates() {
-        let fixture = Fixture::new();
-        fs::write(
-            fixture.package.join("package.toml"),
-            format!("{}\nmalformed = [", package_toml(false)),
-        )
-        .unwrap();
-        assert!(fixture.validate(TargetArch::Wasm32).is_err());
-
-        let fixture = Fixture::new();
-        fs::write(
-            fixture.package.join("package.toml"),
-            package_toml(false).replacen(
-                "name = \"bridge\"",
-                "name = \"bridge\"\nname = 'bridge'",
-                1,
-            ),
-        )
-        .unwrap();
-        assert!(fixture.validate(TargetArch::Wasm32).is_err());
-
-        let fixture = Fixture::new();
-        fs::write(
-            fixture.package.join("build.toml"),
-            format!("{}\nmalformed = [", build_toml()),
-        )
-        .unwrap();
-        assert!(fixture.validate(TargetArch::Wasm32).is_err());
     }
 
     #[test]
@@ -2416,7 +2029,7 @@ index_url = "https://example.test/index.toml"
     #[test]
     fn bridge_plan_rejects_duplicate_fields_and_missing_support_digest() {
         let fixture = Fixture::new();
-        let duplicate = bridge_plan().replacen("\"schema\":2", "\"schema\":2,\"schema\":2", 1);
+        let duplicate = bridge_plan().replacen("\"schema\":4", "\"schema\":4,\"schema\":4", 1);
         fs::write(&fixture.plan, duplicate).unwrap();
         assert!(fixture.validate(TargetArch::Wasm32).is_err());
 
@@ -2472,7 +2085,7 @@ index_url = "https://example.test/index.toml"
         assert_eq!(attestation.support_runtime_sha256, None);
         assert_eq!(attestation.tier2_bridge, None);
         let document = serde_json::to_value(attestation).unwrap();
-        assert_eq!(document["schema"], 2);
+        assert_eq!(document["schema"], 4);
         assert_eq!(
             document
                 .as_object()

@@ -178,6 +178,17 @@ if [ "$BOTTLE_ROOT_URL" != "$EXPECTED_BOTTLE_ROOT_URL" ]; then
   echo "homebrew-bottle-build.sh: bottle root URL does not match its exact publication authority" >&2
   exit 2
 fi
+DEPENDENCY_BOTTLE_ROOT_URL="$BOTTLE_ROOT_URL"
+DEPENDENCY_PROVENANCE_SCOPE_ARGS=()
+if [ -n "$STAGING_CANDIDATE_ABI" ]; then
+  # Candidate bottles have one repository per Formula. Dependency provenance
+  # describes the complete poured closure, so it is rooted at their common
+  # ABI candidate parent and appends each dependency Formula itself.
+  DEPENDENCY_BOTTLE_ROOT_URL="${BOTTLE_ROOT_URL%/*}"
+  DEPENDENCY_PROVENANCE_SCOPE_ARGS=(
+    --staging-candidate-abi "$STAGING_CANDIDATE_ABI"
+  )
+fi
 homebrew_select_guest_layout \
   "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}"
 PATCH_FILE="$HOMEBREW_GUEST_PATCH_FILE"
@@ -209,9 +220,14 @@ if [ -n "$BUILD_USER" ]; then
 fi
 CONTROL_DIR="$(mktemp -d "$OUT_DIR/.control.XXXXXX")"
 chmod 0700 "$CONTROL_DIR"
+CANDIDATE_TAP_SEALED=0
 
 cleanup() {
-  local original_status="${1:-0}" launcher_status=0
+  local original_status="${1:-0}" launcher_status=0 tap_restore_status=0
+  if [ "$CANDIDATE_TAP_SEALED" = 1 ]; then
+    chmod -R u+w -- "$TAPPED_TAP_ROOT" || tap_restore_status="$?"
+    CANDIDATE_TAP_SEALED=0
+  fi
   if homebrew_patched_launcher_cleanup; then
     :
   else
@@ -226,6 +242,7 @@ cleanup() {
     rm -rf "$NATIVE_BASE" "$WORK_DIR"
   fi
   [ "$original_status" -eq 0 ] || return "$original_status"
+  [ "$tap_restore_status" -eq 0 ] || return "$tap_restore_status"
   return "$launcher_status"
 }
 
@@ -394,28 +411,25 @@ ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
 if ! jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" \
   --arg arch "$ARCH" '
     def sha256: type == "string" and test("^[0-9a-f]{64}$");
-    (.schema == 2 or .schema == 3) and
+    (.schema == 4 or .schema == 3) and
     .tap == $tap and .formula == $formula and .arch == $arch and
     .full_name == ($tap + "/" + $formula) and
     (.formula_sha256 | sha256) and
     (.support_sha256 == null or (.support_sha256 | sha256)) and
     (.support_runtime_sha256 == null or (.support_runtime_sha256 | sha256)) and
     ((.support_sha256 == null) == (.support_runtime_sha256 == null)) and
-    if .schema == 2 then
+    if .schema == 4 then
       keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tier2_bridge"] and
       (.tier2_bridge == null or .support_sha256 != null) and
       if .tier2_bridge == null then true else
-      (.tier2_bridge | keys == ["build_toml_sha256", "package", "package_toml_sha256", "script", "script_env_keys", "script_sha256", "source_mode", "source_sha256", "source_url", "version"]) and
+      (.tier2_bridge | keys == ["package", "script", "script_env_keys", "script_sha256", "source_sha256", "source_url", "version"]) and
       (.tier2_bridge.package | type == "string" and test("^[a-z0-9][a-z0-9._-]{0,254}$")) and
       (.tier2_bridge.script | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")) and
-      ([.tier2_bridge.package_toml_sha256, .tier2_bridge.build_toml_sha256,
-        .tier2_bridge.script_sha256, .tier2_bridge.source_sha256] |
+      ([.tier2_bridge.script_sha256, .tier2_bridge.source_sha256] |
         all(.[]; sha256)) and
       (.tier2_bridge.script_env_keys | type == "array" and
         . == (sort | unique) and length <= 64 and
         (map(length) | add // 0) <= 4096) and
-      (.tier2_bridge.source_mode == "exact" or
-        .tier2_bridge.source_mode == "in-repository-source") and
       (.tier2_bridge.source_url | type == "string" and startswith("https://")) and
       (.tier2_bridge.version | type == "string" and length > 0)
       end
@@ -668,6 +682,20 @@ homebrew_patched_launcher_stage_tier2_attestation \
   "$TIER2_EXECUTION_ATTESTATION"
 homebrew_native_contract_stage_marker tier2-attestation-staging completed
 
+if [ -z "$BUILD_USER" ]; then
+  # Candidate jobs are deliberately uncredentialed and do not provision the
+  # production-only secondary Formula identity. Seal the exact tapped checkout
+  # before any Homebrew Formula evaluation so the publisher patch observes the
+  # same read-only source contract; cleanup restores owner write permission
+  # only after every Brew command has finished.
+  chmod -R a-w -- "$TAPPED_TAP_ROOT"
+  CANDIDATE_TAP_SEALED=1
+  [ ! -w "$TAPPED_TAP_ROOT" ] || {
+    echo "homebrew-bottle-build.sh: candidate primary tap checkout remains writable" >&2
+    exit 2
+  }
+fi
+
 if [ -n "$BUILD_USER" ]; then
   # Formula helpers deliberately remove stale compiled host output before
   # loading TypeScript sources. Do that while the workflow identity still owns
@@ -869,11 +897,12 @@ dependency_cache_args=(
   --tap-checkout-commit "$TAP_CHECKOUT_COMMIT"
   --formula "$FORMULA"
   --arch "$ARCH"
-  --bottle-root-url "$BOTTLE_ROOT_URL"
+  --bottle-root-url "$DEPENDENCY_BOTTLE_ROOT_URL"
   --expected-dependencies "$DEPENDENCY_LIST"
   --cache-root "$HOMEBREW_CACHE"
   --out "$DEPENDENCY_CACHE_EVIDENCE"
 )
+dependency_cache_args+=("${DEPENDENCY_PROVENANCE_SCOPE_ARGS[@]}")
 if [ -n "$HOMEBREW_GUEST_LAYOUT_SHA256" ]; then
   dependency_cache_args+=(
     --prefix-campaign-layout-sha256 "$HOMEBREW_GUEST_LAYOUT_SHA256"
@@ -947,13 +976,14 @@ dependency_provenance_args=(
   --tap-checkout-commit "$TAP_CHECKOUT_COMMIT" \
   --formula "$FORMULA" \
   --arch "$ARCH" \
-  --bottle-root-url "$BOTTLE_ROOT_URL" \
+  --bottle-root-url "$DEPENDENCY_BOTTLE_ROOT_URL" \
   --target-receipt "$TARGET_PREFIX/INSTALL_RECEIPT.json" \
   --expected-dependencies "$DEPENDENCY_LIST" \
   --install-log "$INSTALL_LOG" \
   --cache-evidence "$DEPENDENCY_CACHE_EVIDENCE" \
   --out "$DEPENDENCY_PROVENANCE"
 )
+dependency_provenance_args+=("${DEPENDENCY_PROVENANCE_SCOPE_ARGS[@]}")
 if [ -n "$HOMEBREW_GUEST_LAYOUT_SHA256" ]; then
   dependency_provenance_args+=(
     --prefix-campaign-layout-sha256 "$HOMEBREW_GUEST_LAYOUT_SHA256"

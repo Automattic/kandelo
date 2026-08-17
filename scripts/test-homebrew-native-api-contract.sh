@@ -1020,6 +1020,49 @@ exercise_native_install_stage \
 exercise_native_install_stage \
   audit 53 installed-cellar-audit-1
 
+# Direct native roots are consumed through their sealed Cellar/opt paths, not
+# through the shared native prefix. Exercise the real Binaryen/WABT collision:
+# both ship wasm2c, so the second install can succeed only if the first root's
+# global links were removed while its opt link remained available.
+NATIVE_LINK_CALLS="$TMP_ROOT/native-link-calls.txt"
+NATIVE_LINK_STATE="$TMP_ROOT/native-link-state"
+: >"$NATIVE_LINK_CALLS"
+mkdir "$NATIVE_LINK_STATE"
+(
+  run_native_brew_logged() {
+    local command="$1" formula name
+    shift
+    case "$command" in
+      install)
+        formula="${3:-}"
+        name="${formula#homebrew/core/}"
+        printf 'install %s\n' "$name" >>"$NATIVE_LINK_CALLS"
+        if [ "$name" = wabt ] &&
+           [ -e "$NATIVE_LINK_STATE/binaryen" ]; then
+          printf 'bin/wasm2c is already linked by binaryen\n' >&2
+          return 55
+        fi
+        : >"$NATIVE_LINK_STATE/$name"
+        ;;
+      unlink)
+        formula="${1:-}"
+        name="${formula#homebrew/core/}"
+        printf 'unlink %s\n' "$name" >>"$NATIVE_LINK_CALLS"
+        rm -f "$NATIVE_LINK_STATE/$name"
+        ;;
+      *)
+        return 98
+        ;;
+    esac
+  }
+  homebrew_native_contract_install_root binaryen
+  homebrew_native_contract_install_root wabt
+)
+[ "$(cat "$NATIVE_LINK_CALLS")" = "$(printf '%s\n' \
+  'install binaryen' 'unlink binaryen' 'install wabt' 'unlink wabt')" ] &&
+  [ -z "$(find "$NATIVE_LINK_STATE" -mindepth 1 -print -quit)" ] ||
+  fail "native root installation retained colliding global prefix links"
+
 diagnostic_large_failure() {
   ruby -e '10_000.times { warn "earlier line" }; warn "final root cause"'
   return 29
