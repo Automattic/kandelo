@@ -5,12 +5,6 @@ import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridg
 import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
 import { bindImageOwnedRuntimeUrls } from "../../../lib/init/image-owned-runtime-urls";
 import { BrowserInputSource } from "../../../../../host/src/input/browser-input-source";
-import { BrowserAudioDriver } from "../../../../../host/src/audio/browser-audio-driver";
-import {
-  instrumentAudioDriver,
-  type InstrumentedAudioDriver,
-} from "../../../../../host/src/audio/instrumented-audio-driver";
-import wpkAudioWorkletUrl from "../../../../../host/src/audio/wpk-audio-worklet.js?url";
 import {
   ensureServiceWorkerReady,
   initServiceWorkerBridge,
@@ -568,11 +562,10 @@ interface LiveProfile {
    */
   evdevDemo: boolean;
   /**
-   * Attach a `BrowserAudioDriver` and spawn `espeak-ng "..."` from
-   * the booted shell. espeak-ng links against our patched pcaudiolib
-   * whose `create_audio_device_object` is wired to the kandelo
-   * backend (open /dev/snd/pcmC0D0p + WRITEI loop), so a single
-   * binary invocation produces audible synthesised speech without
+   * Spawn `espeak-ng "..."` from the booted shell. espeak-ng links
+   * against our patched pcaudiolib whose `create_audio_device_object`
+   * is wired to the kandelo backend, so a single binary invocation
+   * produces audible synthesised speech through `/dev/dsp` without
    * any host-side pipeline. The binary + data dir are baked into
    * the shell VFS image via `populateEspeakRuntime`.
    */
@@ -1885,32 +1878,15 @@ async function bootProfile(
     } else if (profile.espeakDemo) {
       // espeak-ng + its data dir are baked into the shell VFS image
       // (see populateEspeakRuntime in build-shell-vfs-image.ts), so
-      // no runtime binary staging is needed. The audio driver MUST be
-      // attached before the binary opens /dev/snd/pcmC0D0p — the
-      // WRITEI path returns EBADFD until the SAB ring is registered.
-      // espeak-ng emits at 22050 Hz mono (its internal synth rate);
-      // the worklet resamples to the AudioContext rate.
-      const kernelForEspeak = kernel;
+      // no runtime binary staging is needed. Playback rides the same
+      // /dev/dsp path every other sound demo uses.
       void (async () => {
         try {
-          tick("attaching audio driver...");
-          const audioDriver = createInstrumentedAudioDriver();
-          await kernelForEspeak.attachAudioDriver(audioDriver, {
-            pcmId: 0,
-            sampleRate: 22_050,
-            channels: 1,
-            periodFrames: 1024,
-            ringBytes: 64 * 1024,
-          });
           tick("running espeak-ng...");
-          try {
-            await host.runShellCommand(
-              `/usr/bin/espeak-ng "Welcome to Kandelo, the WebAssembly POSIX kernel"`,
-            );
-            tick("espeak-ng exited");
-          } finally {
-            audioDriver.stop(0);
-          }
+          await host.runShellCommand(
+            `/usr/bin/espeak-ng "Welcome to Kandelo, the WebAssembly POSIX kernel"`,
+          );
+          tick("espeak-ng exited");
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           tick(`espeak-ng failed: ${msg}`);
@@ -1984,23 +1960,6 @@ async function bootProfile(
     }
     throw err;
   }
-}
-
-/**
- * Wraps `BrowserAudioDriver` so the per-period tick callback also
- * bumps `window.__alsaFramesConsumed`. Playwright reads that counter
- * to confirm the AudioWorklet is alive and the kernel is being
- * ticked. The forwarding contract is exercised by
- * `host/test/instrumented-audio-driver.test.ts`.
- */
-function createInstrumentedAudioDriver(): InstrumentedAudioDriver {
-  return instrumentAudioDriver(
-    new BrowserAudioDriver(wpkAudioWorkletUrl),
-    (_frames, total) => {
-      (window as unknown as { __alsaFramesConsumed?: number })
-        .__alsaFramesConsumed = total;
-    },
-  );
 }
 
 function genericPresentationForProfile(profile: LiveProfile): DemoPresentation {
