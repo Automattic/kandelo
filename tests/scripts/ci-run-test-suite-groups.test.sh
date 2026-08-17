@@ -430,18 +430,26 @@ if [ "${1:-}" = "tsx" ]; then
             fi
             image_bytes="$(wc -c < "$image" | tr -d '[:space:]')"
             bootstrap_bytes="$(wc -c < "$bootstrap" | tr -d '[:space:]')"
+            kernel_abi=42
+            if [ -n "${KANDELO_CANONICAL_FLAT_SELECTION:-}" ]; then
+                kernel_abi="$(
+                    jq -er '.kandeloAbi' \
+                        "$KANDELO_CANONICAL_FLAT_SELECTION"
+                )"
+            fi
             jq -n \
                 --arg sha "$image_sha" \
                 --argjson bytes "$image_bytes" \
                 --arg bootstrap_sha "$bootstrap_sha" \
-                --argjson bootstrap_bytes "$bootstrap_bytes" '
+                --argjson bootstrap_bytes "$bootstrap_bytes" \
+                --argjson kernel_abi "$kernel_abi" '
               {
                 schema: 1,
                 kind: "kandelo-homebrew-main-shell-public-product",
                 image: {
                   sha256: $sha,
                   bytes: $bytes,
-                  kernel_abi: 42
+                  kernel_abi: $kernel_abi
                 },
                 homebrew_bootstrap: {
                   sha256: $bootstrap_sha,
@@ -1423,15 +1431,50 @@ for workflow in \
         /^            kernel_only: / {
             kernel_only = $0
             sub(/^            kernel_only: /, "", kernel_only)
-            print suite ":" kernel_only
+        }
+        /^            submodules: / {
+            submodules = $0
+            sub(/^            submodules: /, "", submodules)
+            gsub(/^\047|\047$/, "", submodules)
+            print suite ":" kernel_only ":" submodules
         }
     ')
-    expected_early_rows=$'cargo-workspace:true\ncargo-xtask:false'
+    expected_early_rows=$'cargo-workspace:true:\ncargo-xtask:false:libc/musl'
     if [ "$early_rows" != "$expected_early_rows" ]; then
         echo "$(basename "$workflow"): unexpected early Cargo suite matrix:" >&2
         printf '%s\n' "$early_rows" >&2
         exit 1
     fi
+    early_block="$TMP_DIR/$(basename "$workflow").early-cargo"
+    sed -n '/^  test-suite-early:/,/^  exact-abi-source-test-prepare:/p' \
+        "$workflow" > "$early_block"
+    grep -Fq '      - name: Fetch early suite submodule' "$early_block" || {
+        echo "$(basename "$workflow"): early Cargo suites do not fetch declared submodules" >&2
+        exit 1
+    }
+    grep -Fq '          submodules: ${{ matrix.submodules }}' "$early_block" || {
+        echo "$(basename "$workflow"): early Cargo submodule fetch ignores the matrix" >&2
+        exit 1
+    }
+
+    case "$(basename "$workflow")" in
+        staging-build.yml)
+            node_acceptance_name="Run exact staged Node npm acceptance"
+            ;;
+        prepare-merge.yml)
+            node_acceptance_name="Build and run exact candidate Node npm acceptance"
+            ;;
+    esac
+    node_acceptance_block="$TMP_DIR/$(basename "$workflow").node-acceptance"
+    awk -v expected="      - name: $node_acceptance_name" '
+        $0 == expected {
+            inside = 1
+            print
+            next
+        }
+        inside && /^      - name: / { exit }
+        inside { print }
+    ' "$workflow" > "$node_acceptance_block"
     if [ "$(basename "$workflow")" = prepare-merge.yml ]; then
         dev_shell_count="$(grep -Fc 'scripts/dev-shell.sh' "$node_acceptance_block")"
         if [ "$dev_shell_count" -ne 1 ] ||
@@ -2611,6 +2654,7 @@ selection.name = `main-shell-abi${abi}-wasm32`;
 for (const bottle of selection.bottles) bottle.kandeloAbi = abi;
 writeFileSync(process.argv[3], `${JSON.stringify(normalize(selection))}\n`);
 NODE
+export KANDELO_CANONICAL_FLAT_SELECTION="$mirror_selection"
 mirror_canonical_url="https://github.com/Automattic/kandelo/releases/download/binaries-abi-v${mirror_abi}/index.toml"
 mirror_state="$TMP_DIR/generated-homebrew-browser-mirror-state.json"
 mirror_shell_image="$TMP_DIR/canonical-flat-lazy-shell.vfs.zst"

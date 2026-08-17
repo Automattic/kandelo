@@ -127,7 +127,8 @@ candidate_out="$TMPDIR/candidate-out"
 candidate_err="$TMPDIR/candidate.err"
 mkdir -p "$candidate_tap/Formula"
 printf 'class Hello < Formula; end\n' >"$candidate_tap/Formula/hello.rb"
-if HOMEBREW_BREW_FILE="$TMPDIR/missing-brew" \
+if env -u GITHUB_ACTIONS \
+  HOMEBREW_BREW_FILE="$TMPDIR/missing-brew" \
   bash "$REPO_ROOT/scripts/homebrew-bottle-build.sh" \
     --tap-root "$candidate_tap" \
     --tap-repository kandelo-dev/homebrew-tap-core \

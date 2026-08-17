@@ -1729,11 +1729,14 @@ jobs:
             # Closed-by-default coverage for every workspace crate except
             # independently gated xtask, including integration-test crates.
             kernel_only: true
+            submodules: ''
           - suite: cargo-xtask
             label: cargo-xtask
-            # Package-system automation is independent of kernel changes and
-            # needs neither the toolchain nor the prepared test workspace.
+            # Package-system automation needs no prepared package workspace,
+            # but its repository-product inventory validates the exact musl
+            # license bytes declared by developer-kandelo-sdk.
             kernel_only: false
+            submodules: libc/musl
     env:
       KERNEL_ONLY: ${{ matrix.kernel_only }}
       KERNEL_CHANGED: ${{ needs.change-scope.outputs.kernel }}
@@ -1790,6 +1793,12 @@ jobs:
             echo "::error::Synthetic merge parent mismatch: parents=$parents base=$BASE_SHA head=$PR_HEAD_SHA"
             exit 1
           fi
+
+      - name: Fetch early suite submodule
+        if: steps.suite.outputs.skip != 'true' && matrix.submodules != ''
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: ${{ matrix.submodules }}
 
       - name: Set up Nix
         if: steps.suite.outputs.skip != 'true'
