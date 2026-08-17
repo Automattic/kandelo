@@ -147,6 +147,8 @@ describe("source-rootfs verified archive contract", () => {
 
   it("uses GNU's canonical mirror-selector path", () => {
     for (const packageName of gnuMirrorPackages) {
+      const mirrorSelectorPath =
+        packageName === "bc" ? "gnu/bc" : packageName;
       const manifest = readFileSync(
         resolve(repoRoot, `packages/registry/${packageName}/package.toml`),
         "utf8",
@@ -162,12 +164,18 @@ describe("source-rootfs verified archive contract", () => {
 
       expect(sourceUrl, packageName).toMatch(
         new RegExp(
-          `^https://ftpmirror\\.gnu\\.org/${packageName.replaceAll("-", "\\-")}/`,
+          `^https://ftpmirror\\.gnu\\.org/${mirrorSelectorPath.replaceAll("-", "\\-")}/`,
         ),
       );
-      expect(buildScript, packageName).not.toContain(
-        "https://ftpmirror.gnu.org/gnu/",
-      );
+      if (packageName === "bc") {
+        expect(buildScript, packageName).toContain(
+          "https://ftpmirror.gnu.org/gnu/bc/",
+        );
+      } else {
+        expect(buildScript, packageName).not.toContain(
+          "https://ftpmirror.gnu.org/gnu/",
+        );
+      }
     }
   });
 
