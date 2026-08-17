@@ -114,6 +114,27 @@ function fakeKernel() {
 }
 
 describe("production demo login loader", () => {
+  it("forwards the exact rootfs mount contract to kernel initialization", async () => {
+    const loginBytes = new Uint8Array([0, 97, 115, 109, 1]);
+    const fs = canonicalFs(loginBytes);
+    const kernel = fakeKernel();
+    const rootfsMountSpec = [
+      { path: "/", source: "image", readonly: true },
+      { path: "/tmp", source: "scratch", ephemeral: true },
+    ] as const;
+
+    await expect(initializeDemoLoginKernel({
+      kernel,
+      fs,
+      kernelWasm: new ArrayBuffer(0),
+      vfsImage: await fs.saveImage(),
+      rootfsMountSpec,
+    })).resolves.toBe(false);
+    expect(kernel.initFromImage).toHaveBeenCalledWith(
+      expect.objectContaining({ rootfsMountSpec }),
+    );
+  });
+
   it(
     "keeps a third-party image ordinary alone and admits its exact bytes " +
       "with a separate reviewed product",

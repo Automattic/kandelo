@@ -1658,12 +1658,22 @@ async function bootProfile(
         );
       },
     });
+    const kernelInitOptions = profile.candidateEvidence === undefined
+      ? {
+        kernelWasm: kernelBytes,
+        vfsImage: vfsImageBytes,
+        ...(closedLazyAssets === undefined ? {} : { closedLazyAssets }),
+      }
+      : candidateEvidenceKernelInitOptions(
+        profile.candidateEvidence,
+        kernelBytes,
+        vfsImageBytes,
+        closedLazyAssets,
+      );
     const loginSessionsEnabled = await initializeDemoLoginKernel({
       kernel,
       fs: buildFs,
-      kernelWasm: kernelBytes,
-      vfsImage: vfsImageBytes,
-      ...(closedLazyAssets === undefined ? {} : { closedLazyAssets }),
+      ...kernelInitOptions,
       ...(privilegedProduct === undefined ? {} : { privilegedProduct }),
     });
     assertCurrent();

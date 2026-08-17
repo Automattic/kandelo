@@ -18,6 +18,8 @@ fail() {
 if grep -Fq 'production runtime source must be this exact checkout' "$PREPARER"; then
   fail "protected runtime tooling requires the candidate source to own the script"
 fi
+grep -Fq -- '--mode abi-staging-browser-evidence' "$PREPARER" ||
+  fail "runtime preparation does not select the closed browser evidence build"
 
 SOURCE="$TMP_ROOT/source"
 mkdir -p "$SOURCE/abi" "$SOURCE/host/src/generated" "$SOURCE/host/src"

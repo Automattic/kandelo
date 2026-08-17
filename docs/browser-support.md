@@ -460,6 +460,12 @@ use the distinct ABI-, product-, digest-, and byte-bound Pages product URL.
 During pre-deployment evidence, canonical Pages, Homebrew, and prior-product
 lazy URLs remain the image authority while their authenticated current bytes
 are supplied through a closed local transport.
+The exact browser runtime uses a dedicated evidence build of the real root UI.
+That build keeps the exact kernel asset but maps ordinary demo rootfs and
+program fallbacks to unavailable URLs. Candidate VFS and lazy inputs therefore
+come only from the protected evidence handoff; an accidental fallback fetch is
+observed as a failed, unexpected request instead of making runtime preparation
+depend on unrelated package archives before product composition.
 An incomplete product set emits only `readiness.json`; a complete set emits the
 canonical artifacts, site manifest, and inert source tree for the Pages job.
 The canary validates that record before selecting its artifact protocol.

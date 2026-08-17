@@ -1,6 +1,7 @@
 import type { BrowserKernel } from "../../../../../host/src/browser-kernel-host";
 import type { ClosedLazyAsset } from "../../../../../host/src/vfs/closed-lazy-assets";
 import type { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
+import type { MountSpec } from "../../../../../host/src/vfs/default-mounts";
 import {
   publishedPrivilegedProgramMatchesFile,
   type PublishedPrivilegedProgramProduct,
@@ -22,6 +23,7 @@ export interface InitializeDemoLoginKernelOptions {
   vfsImage: Uint8Array | "default";
   closedLazyAssets?: readonly ClosedLazyAsset[];
   lazyUrlBase?: string;
+  rootfsMountSpec?: readonly MountSpec[];
   privilegedProduct?: PublishedPrivilegedProgramProduct;
 }
 
@@ -52,6 +54,9 @@ export async function initializeDemoLoginKernel(
     ...(options.lazyUrlBase === undefined
       ? {}
       : { lazyUrlBase: options.lazyUrlBase }),
+    ...(options.rootfsMountSpec === undefined
+      ? {}
+      : { rootfsMountSpec: options.rootfsMountSpec }),
   };
   if (loginSessionsEnabled) {
     await options.kernel.initFromPublishedPrivilegedProgramProduct({
