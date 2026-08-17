@@ -170,6 +170,29 @@ describe("spawn host parity", () => {
       expect(handler, `${entry} must not repeat candidate resolution`).not.toMatch(
         /resolveExecutableForLaunch|handlePosixSpawnResolve|execPrograms|readExecFromVfs/,
       );
+      expect(
+        handler,
+        `${entry} must consume the secure-exec state captured by commit`,
+      ).toContain("kernelWorker.takeCommittedExecSecureExec(childPid)");
+      expect(
+        handler,
+        `${entry} must not re-enter the kernel after the spawn commit`,
+      ).not.toContain("kernelWorker.processSecureExec(childPid)");
+    }
+  });
+
+  it("both exec adapters consume commit-captured secure-exec state", () => {
+    for (const entry of [nodeEntry, browserEntry]) {
+      const handler = execHandlerSource(readFileSync(entry, "utf8"));
+      const postCommit = handler.slice(handler.indexOf("const startAfterCommit"));
+      expect(
+        postCommit,
+        `${entry} must consume the secure-exec state captured by commit`,
+      ).toContain("kernelWorker.takeCommittedExecSecureExec(pid)");
+      expect(
+        postCommit,
+        `${entry} must not re-enter the kernel after the exec commit`,
+      ).not.toContain("kernelWorker.processSecureExec(pid)");
     }
   });
 

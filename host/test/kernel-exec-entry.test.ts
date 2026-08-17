@@ -24,6 +24,7 @@ const KERNEL_EXPORT_NAMES = [
   "kernel_fd_is_open",
   "kernel_find_listener_fd_by_accept_wake",
   "kernel_get_fd_accept_wake_idx",
+  "kernel_process_secure_exec",
   "kernel_vblank",
 ] as const;
 
@@ -69,10 +70,14 @@ function makeHarness(
     maximum: 4,
   });
   const gate = new KernelEntryGate();
+  const effectiveImplementations = {
+    kernel_process_secure_exec: () => 0,
+    ...implementations,
+  };
   const rawInstance = createKernelScratchTestInstance(
     4,
     kernelMemory,
-    () => implementations,
+    () => effectiveImplementations,
     () => 4_096,
     4,
     KERNEL_EXPORT_NAMES,
@@ -105,10 +110,35 @@ function makeHarness(
     gate,
     mainScratch,
   });
-  return { worker, gatedInstance, kernelMemory, implementations };
+  return {
+    worker,
+    gatedInstance,
+    kernelMemory,
+    implementations: effectiveImplementations,
+  };
 }
 
 describe("kernel exec entry authority", () => {
+  it("carries secure-exec state out of the commit without re-entering the kernel", () => {
+    const secureExec = vi.fn(() => 1);
+    const harness = makeHarness({
+      kernel_drain_wakeup_events: () => 0,
+      kernel_exec_commit: () => 0,
+      kernel_process_secure_exec: secureExec,
+      kernel_fd_is_open: () => 0,
+      kernel_find_listener_fd_by_accept_wake: () => -1,
+      kernel_get_fd_accept_wake_idx: () => -1,
+      kernel_vblank: () => 0,
+    });
+
+    expect(harness.worker.kernelExecCommit(7, 9, 31)).toBe(0);
+    expect(harness.worker.takeCommittedExecSecureExec(7)).toBe(true);
+    expect(secureExec).toHaveBeenCalledExactlyOnceWith(7);
+    expect(() => harness.worker.takeCommittedExecSecureExec(7)).toThrow(
+      "no committed secure-exec state for pid=7",
+    );
+  });
+
   it("marshals prepare/read/size/cancel under entry and preserves a 64-bit offset", () => {
     const preparedPath: number[] = [];
     const readWords: Array<[number, number]> = [];

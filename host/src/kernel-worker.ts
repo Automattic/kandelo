@@ -2800,6 +2800,15 @@ export class CentralizedKernelWorker {
   >();
   /** Pids whose old image committed exec but whose replacement has no channel yet. */
   private execHandoffPids = new Set<number>();
+  /**
+   * Secure-exec state captured in the same entry that commits an exec target.
+   *
+   * WHY: the entry gate may still have ordered protocol work queued when the
+   * shared prepared-target launcher starts the replacement Worker. A second
+   * result-bearing kernel query at that boundary is reentrant. Carry the one
+   * committed boolean across the host-only handoff instead.
+   */
+  private committedExecSecureExec = new Map<number, boolean>();
   /** Capacity travels with the allocator-owned pointer. */
   #scratchRegion: KernelScratchRegion | null = null;
   #pcmTransportDescriptor: PcmTransportDescriptor | null = null;
@@ -7855,6 +7864,7 @@ export class CentralizedKernelWorker {
 
     this.processes.delete(pid);
     this.execHandoffPids?.delete(pid);
+    this.committedExecSecureExec.delete(pid);
     this.stdinFinite.delete(pid);
     this.stdinBuffers.delete(pid);
 
@@ -8134,6 +8144,7 @@ export class CentralizedKernelWorker {
     this.clearProcessThreadTransportState(pid);
     this.processes.delete(pid);
     this.execHandoffPids?.delete(pid);
+    this.committedExecSecureExec.delete(pid);
     this.stdinFinite.delete(pid);
     this.stdinBuffers.delete(pid);
     // Cancel pending sleeps for every thread in this process.
@@ -8415,7 +8426,9 @@ export class CentralizedKernelWorker {
       // behind the caller that needs to decide whether the old image survives.
       throw new KernelReentrantEntryError("kernel exec commit");
     }
+    this.committedExecSecureExec.delete(pid);
     let result = 0;
+    let secureExec: boolean | undefined;
     let completed = false;
     let missingExportError: Error | undefined;
     const deferred = this.#runOrDeferKernelEntry(
@@ -8472,6 +8485,7 @@ export class CentralizedKernelWorker {
             result = commit(pid, callerTid, target);
             completed = true;
             if (result === 0) {
+              secureExec = this.#processSecureExecWithinKernelEntry(pid, entry);
               prunePlan = this.#prepareExecFdMirrorPruneWithinKernelEntry(
                 pid,
                 listenerWakeSnapshot,
@@ -8502,6 +8516,12 @@ export class CentralizedKernelWorker {
     if (deferred || !completed) {
       throw new KernelReentrantEntryError("kernel exec commit");
     }
+    if (result === 0) {
+      if (secureExec === undefined) {
+        throw new Error(`exec commit omitted secure-exec state for pid=${pid}`);
+      }
+      this.committedExecSecureExec.set(pid, secureExec);
+    }
     return result;
   }
 
@@ -8517,7 +8537,9 @@ export class CentralizedKernelWorker {
     if (this.#kernelEntryGate.shouldDeferVoidIngress) {
       throw new KernelReentrantEntryError("kernel spawn exec commit");
     }
+    this.committedExecSecureExec.delete(childPid);
     let result = 0;
+    let secureExec: boolean | undefined;
     let completed = false;
     let missingExportError: Error | undefined;
     const deferred = this.#runOrDeferKernelEntry(
@@ -8578,6 +8600,10 @@ export class CentralizedKernelWorker {
             result = commit(parentPid, childPid, target);
             completed = true;
             if (result === 0) {
+              secureExec = this.#processSecureExecWithinKernelEntry(
+                childPid,
+                entry,
+              );
               prunePlan = this.#prepareExecFdMirrorPruneWithinKernelEntry(
                 childPid,
                 listenerWakeSnapshot,
@@ -8602,7 +8628,25 @@ export class CentralizedKernelWorker {
     if (deferred || !completed) {
       throw new KernelReentrantEntryError("kernel spawn exec commit");
     }
+    if (result === 0) {
+      if (secureExec === undefined) {
+        throw new Error(
+          `spawn exec commit omitted secure-exec state for pid=${childPid}`,
+        );
+      }
+      this.committedExecSecureExec.set(childPid, secureExec);
+    }
     return result;
+  }
+
+  /** Consume the post-commit state without opening another kernel entry. */
+  takeCommittedExecSecureExec(pid: number): boolean {
+    const secureExec = this.committedExecSecureExec.get(pid);
+    if (secureExec === undefined) {
+      throw new Error(`no committed secure-exec state for pid=${pid}`);
+    }
+    this.committedExecSecureExec.delete(pid);
+    return secureExec;
   }
 
   /** Snapshot stable accept-queue identities before CLOEXEC closes aliases. */
@@ -29877,18 +29921,7 @@ export class CentralizedKernelWorker {
     const deferred = this.#runOrDeferKernelEntry(
       `secure-exec query pid=${pid}`,
       (entry) => {
-        const query = this.#kernelInstanceForEntry(entry).exports
-          .kernel_process_secure_exec as ((pid: number) => number) | undefined;
-        if (typeof query !== "function") {
-          throw new Error("kernel_process_secure_exec export is unavailable");
-        }
-        const raw = query(pid);
-        if (raw !== 0 && raw !== 1) {
-          throw new Error(
-            `kernel_process_secure_exec rejected pid=${pid}: ${raw}`,
-          );
-        }
-        marker = raw === 1;
+        marker = this.#processSecureExecWithinKernelEntry(pid, entry);
         return undefined;
       },
     );
@@ -29898,6 +29931,24 @@ export class CentralizedKernelWorker {
       );
     }
     return marker;
+  }
+
+  #processSecureExecWithinKernelEntry(
+    pid: number,
+    entry: KernelWorkerEntryContext,
+  ): boolean {
+    const query = this.#kernelInstanceForEntry(entry).exports
+      .kernel_process_secure_exec as ((pid: number) => number) | undefined;
+    if (typeof query !== "function") {
+      throw new Error("kernel_process_secure_exec export is unavailable");
+    }
+    const raw = query(pid);
+    if (raw !== 0 && raw !== 1) {
+      throw new Error(
+        `kernel_process_secure_exec rejected pid=${pid}: ${raw}`,
+      );
+    }
+    return raw === 1;
   }
 
   /**

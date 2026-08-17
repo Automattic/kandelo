@@ -2329,7 +2329,7 @@ async function handleExec(
     }
     launchPlanState = "started";
     try {
-      const secureExec = kernelWorker.processSecureExec(pid);
+      const secureExec = kernelWorker.takeCommittedExecSecureExec(pid);
       vmInterruptTimers.clear(pid, initiatingInfo);
 
       // Wake the exact old execution generation through the internal exec
@@ -2708,7 +2708,7 @@ async function handlePosixSpawn(
   program: ResolvedSpawnProgram,
   envp: string[],
 ): Promise<number> {
-  const secureExec = kernelWorker.processSecureExec(childPid);
+  const secureExec = kernelWorker.takeCommittedExecSecureExec(childPid);
   // Preserve a child that became a zombie before launch, but do not resurrect
   // it by registering a new execution generation.
   if (!kernelWorker.shouldLaunchPendingChild(childPid)) return 0;

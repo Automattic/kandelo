@@ -1869,6 +1869,12 @@ function createWorker(overrides: Record<string, unknown>): any {
   )) {
     exports.kernel_handle_channel = vi.fn(() => 0);
   }
+  if (!Object.prototype.hasOwnProperty.call(
+    suppliedExports,
+    "kernel_process_secure_exec",
+  )) {
+    exports.kernel_process_secure_exec = vi.fn(() => 0);
+  }
   for (const name of [
     "kernel_drain_wakeup_events",
     "kernel_get_parent_pid",

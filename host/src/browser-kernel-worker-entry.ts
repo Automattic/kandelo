@@ -2641,7 +2641,7 @@ async function handleExec(
     }
     launchPlanState = "started";
     try {
-      const secureExec = kernelWorker.processSecureExec(pid);
+      const secureExec = kernelWorker.takeCommittedExecSecureExec(pid);
       vmInterruptTimers.clear(pid, initiatingInfo);
 
       // Wake the exact old execution generation through the existing internal
@@ -3052,7 +3052,7 @@ async function handlePosixSpawn(
   program: ResolvedSpawnProgram,
   envp: string[],
 ): Promise<number> {
-  const secureExec = kernelWorker.processSecureExec(childPid);
+  const secureExec = kernelWorker.takeCommittedExecSecureExec(childPid);
   await waitForProcessTeardowns();
 
   // Unrelated teardown waits yield to the event loop. Keep a successfully
