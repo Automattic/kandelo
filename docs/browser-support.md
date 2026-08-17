@@ -378,7 +378,14 @@ swizzle happens in the fragment shader and the scaling on the GPU
 (trilinear over a per-frame mip chain, so a downscaled desktop doesn't
 shimmer). A runtime GPU-compositing failure tears the compositor's EGL
 session down, which hands the canvas back to the pump presenter
-(`markKmsCanvasGlReleased`) so the desktop keeps painting. A
+(`markKmsCanvasGlReleased`) so the desktop keeps painting. The rebuilt
+presenter inherits the dead session's WebGL2 context — `getContext`
+returns the existing one — so it restores the state its draw depends on
+rather than assuming fresh-context defaults. Pixel-store state matters
+most: a leftover `UNPACK_ROW_LENGTH` or a still-bound
+`PIXEL_UNPACK_BUFFER` makes every scanout upload `GL_INVALID_OPERATION`,
+which raises no JS exception, so the pump would report presents onto a
+black canvas. A
 main-thread ResizeObserver reports the pane's device-pixel size so the
 presenter renders at display resolution instead of letting the page
 compositor rescale an fb-sized bitmap; any letterbox is drawn in GL

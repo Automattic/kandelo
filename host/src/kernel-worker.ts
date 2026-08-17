@@ -2865,6 +2865,17 @@ function buildKmsGlPresenter(gl: WebGL2RenderingContext): KmsGlPresenter | null 
   gl.disable(gl.CULL_FACE);
   gl.disable(gl.RASTERIZER_DISCARD);
   gl.colorMask(true, true, true, true);
+  // A leftover row length, skip count or bound PIXEL_UNPACK_BUFFER makes
+  // every scanout upload GL_INVALID_OPERATION with no JS exception — the
+  // pump reports presents onto a black canvas. A leftover flip or
+  // premultiply uploads cleanly and corrupts the image instead.
+  gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+  gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+  gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+  gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
   const compile = (type: number, src: string): WebGLShader | null => {
     const sh = gl.createShader(type);
     if (!sh) return null;
