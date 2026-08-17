@@ -3973,11 +3973,7 @@ TARGET_GIT
     ;;
   bottle)
     expected_bottle_root="${FAKE_EXPECTED_BOTTLE_ROOT_URL:-https://ghcr.io/v2/kandelo-dev/homebrew-tap-core}"
-    if [ -n "${FAKE_EXPECTED_STAGING_CANDIDATE_ABI:-}" ]; then
-      expected_bottle_args="bottle --json --root-url $expected_bottle_root kandelo-dev/tap-core/hello"
-    else
-      expected_bottle_args="bottle --json --keep-old --root-url $expected_bottle_root kandelo-dev/tap-core/hello"
-    fi
+    expected_bottle_args="bottle --json --keep-old --root-url $expected_bottle_root kandelo-dev/tap-core/hello"
     [ "$*" = "$expected_bottle_args" ] || exit 55
     printf 'bottle-tags=%s|%s\n' \
       "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \

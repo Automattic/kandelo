@@ -73,6 +73,31 @@ assert_local_clone_transport_detaches_git_objects() {
     fail "transported local tap clone retained a shared Git object inode"
 }
 
+assert_tap_clone_uses_canonical_checkout_umask() {
+  local fake_brew="$TMPDIR/fake-brew-tap"
+  local observed="$TMPDIR/fake-brew-tap.umask"
+  local restored
+
+  cat >"$fake_brew" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$*" = 'tap acme/tools file:///reviewed/tap' ]
+umask >"$FAKE_TAP_UMASK_LOG"
+EOF
+  chmod +x "$fake_brew"
+
+  umask 077
+  if ! FAKE_TAP_UMASK_LOG="$observed" \
+    homebrew_clone_tap "$fake_brew" acme/tools file:///reviewed/tap; then
+    fail "canonical tap-clone helper did not invoke Brew"
+  fi
+  [ "$(cat "$observed")" = 0022 ] ||
+    fail "tap clone inherited the private candidate umask"
+  restored="$(umask)"
+  [ "$restored" = 0077 ] ||
+    fail "tap clone did not restore the private candidate umask: $restored"
+}
+
 [ "$(homebrew_resolve_tap_name kandelo-dev/homebrew-tap-core '')" = \
   "kandelo-dev/tap-core" ] || fail "protected default identity changed"
 [ "$(homebrew_resolve_tap_name Acme/homebrew-tools Acme/tools)" = \
@@ -167,6 +192,7 @@ expect_local_clone_rejection "a regular local tap checkout file" \
 expect_local_clone_rejection "a symlinked local tap checkout" \
   "$checkout_link"
 assert_local_clone_transport_detaches_git_objects
+assert_tap_clone_uses_canonical_checkout_umask
 
 # These identity-only `hello` values are synthetic input. They do not resolve a
 # tap Formula, read GHCR, or describe a package retained by the active tap.
