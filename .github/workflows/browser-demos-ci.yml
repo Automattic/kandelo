@@ -89,3 +89,11 @@ jobs:
             --project=chromium \
             --project=firefox \
             --project=webkit
+
+      # Chromium only: the gate needs WebGL2 on an OffscreenCanvas
+      # transferred into a worker, which the config's `chromium` channel
+      # provides and the headless shell does not. It builds its own
+      # scanout, so it runs on a bare checkout with no binaries.
+      - name: Run the KMS presenter regression gate
+        working-directory: apps/browser-demos
+        run: npx playwright test test/kandelo-kms-presenter.spec.ts --project=chromium
