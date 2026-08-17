@@ -401,7 +401,12 @@ if [ -n "$BUILD_USER" ] && [ "${WASM_POSIX_XTASK_BIN:-}" != "$XTASK_BIN" ]; then
   exit 2
 fi
 WASM_POSIX_XTASK_BIN="$XTASK_BIN"
-export WASM_POSIX_XTASK_BIN
+# WHY: Homebrew rebuilds the Formula-test environment and preserves only the
+# HOMEBREW_* transport alias. Candidate builds do not enter the production
+# build-user launcher that injects this alias, so bind both names to the same
+# independently validated exact-source checker before any Formula evaluation.
+HOMEBREW_KANDELO_XTASK_BIN="$XTASK_BIN"
+export WASM_POSIX_XTASK_BIN HOMEBREW_KANDELO_XTASK_BIN
 ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
   "$TAP_ROOT" "$TAP_NAME" "$FORMULA" --tier2-bridge-json \
   >"$TIER2_BRIDGE_PLAN"
@@ -953,8 +958,12 @@ brew_install_build_bottle() {
   homebrew_patched_launcher_snapshot_target_cellar_layout \
     >"$TARGET_CELLAR_BEFORE_TEST"
   "$BREW_BIN" test "$FORMULA_REF"
-  run_brew_for_kandelo_bottles "$BREW_BIN" bottle \
-    --json --keep-old --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF"
+  bottle_args=(--json)
+  if [ -z "$STAGING_CANDIDATE_ABI" ]; then
+    bottle_args+=(--keep-old)
+  fi
+  bottle_args+=(--root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF")
+  run_brew_for_kandelo_bottles "$BREW_BIN" bottle "${bottle_args[@]}"
   homebrew_patched_launcher_snapshot_target_cellar_layout \
     >"$TARGET_CELLAR_AFTER_TEST"
   if ! cmp -s "$TARGET_CELLAR_BEFORE_TEST" "$TARGET_CELLAR_AFTER_TEST"; then
