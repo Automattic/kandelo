@@ -168,6 +168,33 @@ validate_regular_artifact() {
     printf '%s\n' "$bytes"
 }
 
+prepare_source_test_rootfs() {
+    local source_root="$1"
+    local output="$2"
+    local packages_config="$3"
+    local package_manifest="$4"
+    [ -f "$source_root/scripts/dev-shell.sh" ] &&
+        [ ! -L "$source_root/scripts/dev-shell.sh" ] &&
+        [ -f "$source_root/scripts/build-rootfs.sh" ] &&
+        [ ! -L "$source_root/scripts/build-rootfs.sh" ] ||
+        fail "source checkout lacks the exact rootfs builder"
+    printf '%s\n' 'default_install = "eager"' > "$packages_config"
+    (
+        cd "$source_root"
+        bash scripts/dev-shell.sh bash -euo pipefail -c '
+            npm ci --ignore-scripts --no-audit --no-fund --prefer-offline
+            ROOTFS_SEALED_BUILD=1 \
+              ROOTFS_SKIP_PACKAGE_RESOLVE=1 \
+              ROOTFS_PACKAGES_CONFIG="$2" \
+              ROOTFS_PACKAGE_MANIFEST="$3" \
+              ROOTFS_OUT="$1" \
+              bash scripts/build-rootfs.sh
+        ' -- "$output" "$packages_config" "$package_manifest"
+    )
+    validate_regular_artifact "$output" \
+        "target/exact-abi-source-test/rootfs.vfs" >/dev/null
+}
+
 write_inventory() {
     local stage="$1"
     local commit="$2"
@@ -222,21 +249,34 @@ pack_workspace() {
     assert_no_forbidden_source_artifacts "$source_root"
     validate_kernel_generation "$source_root"
 
-    local private stage total=0 source_path destination_path bytes
+    local private stage total=0 source_path destination_path bytes artifact_source
     private="$(mktemp -d "${RUNNER_TEMP:-/tmp}/kandelo-exact-workspace-pack.XXXXXX")"
     EXACT_WORKSPACE_PRIVATE_ROOT="$private"
     stage="$private/workspace"
     mkdir -p "$stage"
+    local prepared_rootfs="$private/rootfs.vfs"
+    prepare_source_test_rootfs \
+        "$source_root" \
+        "$prepared_rootfs" \
+        "$private/rootfs-packages.toml" \
+        "$private/rootfs-packages.MANIFEST"
+    [ "$(validate_source_checkout "$source_root")" = "$source_identity" ] ||
+        fail "source identity changed while preparing the test rootfs"
     local -a destinations=()
     while IFS=$'\t' read -r source_path destination_path extra; do
         [ -n "$source_path" ] && [ -n "$destination_path" ] && [ -z "$extra" ] ||
             fail "internal artifact allowlist is invalid"
-        validate_source_artifact_ancestors "$source_root" "$source_path"
-        bytes="$(validate_regular_artifact "$source_root/$source_path" "$source_path")"
+        if [ "$source_path" = "target/exact-abi-source-test/rootfs.vfs" ]; then
+            artifact_source="$prepared_rootfs"
+        else
+            validate_source_artifact_ancestors "$source_root" "$source_path"
+            artifact_source="$source_root/$source_path"
+        fi
+        bytes="$(validate_regular_artifact "$artifact_source" "$source_path")"
         total=$((total + bytes))
         [ "$total" -le "$MAX_TOTAL_BYTES" ] || fail "source-test workspace exceeds its aggregate bound"
         mkdir -p "$stage/$(dirname "$destination_path")"
-        cp -- "$source_root/$source_path" "$stage/$destination_path"
+        cp -- "$artifact_source" "$stage/$destination_path"
         chmod u=rw,go=r "$stage/$destination_path"
         destinations+=("$destination_path")
     done < <(artifact_rows)
