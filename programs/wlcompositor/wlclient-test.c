@@ -36,6 +36,9 @@
 #include "xdg-shell-client-protocol.h"
 #include "xdg-decoration-v1-client-protocol.h"
 #include "presentation-time-client-protocol.h"
+#include "xdg-output-v1-client-protocol.h"
+#include "viewporter-client-protocol.h"
+#include "fractional-scale-v1-client-protocol.h"
 
 #include <xkbcommon/xkbcommon.h>
 
@@ -54,6 +57,9 @@ struct client {
     struct wl_output *output;
     struct zxdg_decoration_manager_v1 *decor_mgr;
     struct wp_presentation *presentation;
+    struct zxdg_output_manager_v1 *xdg_output_mgr;
+    struct wp_viewporter *viewporter;
+    struct wp_fractional_scale_manager_v1 *fractional_scale_mgr;
 
     struct wl_surface *surface;
     struct xdg_surface *xdg_surface;
@@ -81,6 +87,31 @@ static const struct wp_presentation_listener presentation_listener = {
     .clock_id = presentation_clock_id,
 };
 
+/* ---- wl_output v4 ------------------------------------------------------ */
+
+static void output_geometry(void *data, struct wl_output *o, int32_t x,
+                            int32_t y, int32_t phys_w, int32_t phys_h,
+                            int32_t subpixel, const char *make,
+                            const char *model, int32_t transform) {}
+static void output_mode(void *data, struct wl_output *o, uint32_t flags,
+                        int32_t w, int32_t h, int32_t refresh) {}
+static void output_done(void *data, struct wl_output *o) {}
+static void output_scale(void *data, struct wl_output *o, int32_t factor) {}
+static void output_name(void *data, struct wl_output *o, const char *name) {
+    printf("OUTPUT_NAME %s\n", name);
+    fflush(stdout);
+}
+static void output_description(void *data, struct wl_output *o,
+                               const char *description) {}
+static const struct wl_output_listener output_listener = {
+    .geometry = output_geometry,
+    .mode = output_mode,
+    .done = output_done,
+    .scale = output_scale,
+    .name = output_name,
+    .description = output_description,
+};
+
 /* ---- registry ---------------------------------------------------------- */
 
 static void registry_global(void *data, struct wl_registry *reg, uint32_t name,
@@ -95,8 +126,11 @@ static void registry_global(void *data, struct wl_registry *reg, uint32_t name,
         c->wm_base = wl_registry_bind(reg, name, &xdg_wm_base_interface, 1);
     else if (strcmp(iface, "wl_seat") == 0)
         c->seat = wl_registry_bind(reg, name, &wl_seat_interface, 1);
-    else if (strcmp(iface, "wl_output") == 0)
-        c->output = wl_registry_bind(reg, name, &wl_output_interface, 2);
+    else if (strcmp(iface, "wl_output") == 0) {
+        c->output = wl_registry_bind(reg, name, &wl_output_interface,
+                                     version < 4 ? version : 4);
+        wl_output_add_listener(c->output, &output_listener, c);
+    }
     else if (strcmp(iface, "zxdg_decoration_manager_v1") == 0)
         c->decor_mgr = wl_registry_bind(
             reg, name, &zxdg_decoration_manager_v1_interface, 1);
@@ -106,8 +140,55 @@ static void registry_global(void *data, struct wl_registry *reg, uint32_t name,
         /* clock_id arrives on the bind roundtrip — listen from the start. */
         wp_presentation_add_listener(c->presentation, &presentation_listener,
                                      c);
-    }
+    } else if (strcmp(iface, "zxdg_output_manager_v1") == 0)
+        c->xdg_output_mgr = wl_registry_bind(
+            reg, name, &zxdg_output_manager_v1_interface,
+            version < 3 ? version : 3);
+    else if (strcmp(iface, "wp_viewporter") == 0)
+        c->viewporter =
+            wl_registry_bind(reg, name, &wp_viewporter_interface, 1);
+    else if (strcmp(iface, "wp_fractional_scale_manager_v1") == 0)
+        c->fractional_scale_mgr = wl_registry_bind(
+            reg, name, &wp_fractional_scale_manager_v1_interface, 1);
 }
+
+/* ---- xdg-output / fractional-scale ------------------------------------- */
+
+static void xdg_output_logical_position(void *data, struct zxdg_output_v1 *xo,
+                                        int32_t x, int32_t y) {
+    printf("XDG_OUTPUT_POS x=%d y=%d\n", x, y);
+    fflush(stdout);
+}
+static void xdg_output_logical_size(void *data, struct zxdg_output_v1 *xo,
+                                    int32_t w, int32_t h) {
+    printf("XDG_OUTPUT_SIZE w=%d h=%d\n", w, h);
+    fflush(stdout);
+}
+static void xdg_output_done(void *data, struct zxdg_output_v1 *xo) {}
+static void xdg_output_name(void *data, struct zxdg_output_v1 *xo,
+                            const char *name) {
+    printf("XDG_OUTPUT_NAME %s\n", name);
+    fflush(stdout);
+}
+static void xdg_output_description(void *data, struct zxdg_output_v1 *xo,
+                                   const char *description) {}
+static const struct zxdg_output_v1_listener xdg_output_listener = {
+    .logical_position = xdg_output_logical_position,
+    .logical_size = xdg_output_logical_size,
+    .done = xdg_output_done,
+    .name = xdg_output_name,
+    .description = xdg_output_description,
+};
+
+static void fractional_scale_preferred(void *data,
+                                       struct wp_fractional_scale_v1 *fs,
+                                       uint32_t scale) {
+    printf("FRACTIONAL_SCALE scale=%u\n", scale);
+    fflush(stdout);
+}
+static const struct wp_fractional_scale_v1_listener fractional_scale_listener = {
+    .preferred_scale = fractional_scale_preferred,
+};
 
 static void feedback_sync_output(void *data,
                                  struct wp_presentation_feedback *fb,
@@ -401,6 +482,30 @@ int main(void) {
         zxdg_toplevel_decoration_v1_add_listener(deco, &decor_listener, &c);
         zxdg_toplevel_decoration_v1_set_mode(
             deco, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+    }
+
+    /* Optional (PR24): exercise the logical-output + crop/scale globals. The
+     * xdg_output burst and the preferred scale arrive on the roundtrip; the
+     * viewport doubles the mapped size, which the compositor's VIEWPORT
+     * marker reports at commit. */
+    if (getenv("WLC_PROTOS")) {
+        if (!c.xdg_output_mgr || !c.viewporter || !c.fractional_scale_mgr) {
+            fprintf(stderr, "missing protocol globals: xdg_out=%p vp=%p frac=%p\n",
+                    (void *)c.xdg_output_mgr, (void *)c.viewporter,
+                    (void *)c.fractional_scale_mgr);
+            return 1;
+        }
+        struct zxdg_output_v1 *xo =
+            zxdg_output_manager_v1_get_xdg_output(c.xdg_output_mgr, c.output);
+        zxdg_output_v1_add_listener(xo, &xdg_output_listener, &c);
+        struct wp_fractional_scale_v1 *fs =
+            wp_fractional_scale_manager_v1_get_fractional_scale(
+                c.fractional_scale_mgr, c.surface);
+        wp_fractional_scale_v1_add_listener(fs, &fractional_scale_listener, &c);
+        struct wp_viewport *vp =
+            wp_viewporter_get_viewport(c.viewporter, c.surface);
+        wp_viewport_set_destination(vp, WIN_W * 2, WIN_H * 2);
+        wl_display_roundtrip(display);
     }
 
     wl_surface_commit(c.surface);
