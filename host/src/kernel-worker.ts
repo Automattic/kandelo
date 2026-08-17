@@ -79,6 +79,7 @@ import {
   ABI_KERNEL_EXPORT,
   ABI_SYSCALL_NAMES,
   ABI_SYSCALLS,
+  AT_FLAGS,
   CHANNEL_STATUS_COMPLETE,
   CHANNEL_STATUS_PENDING,
   CH_ARG_SIZE,
@@ -102,11 +103,16 @@ import {
   CHANNEL_REQUEST_FLAG_CANCELLATION_POINT,
   CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED,
   CHANNEL_REQUEST_FLAGS_KNOWN_MASK,
+  EPOLL_EVENTS,
+  FCNTL_COMMANDS,
   FCNTL_FLOCK_BYTES,
+  FILE_MODES,
   HOST_INTERCEPTED_SYSCALLS,
   IOCTL_REQUESTS,
+  OPEN_FLAGS,
   PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
   PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
+  POLL_EVENTS,
   KERNEL_WAIT_RESULT_CHILD_UID_OFFSET,
   KERNEL_WAIT_RESULT_RUSAGE_OFFSET,
   KERNEL_WAIT_RESULT_SI_CODE_OFFSET,
@@ -252,8 +258,9 @@ import {
   WAIT_WNOWAIT,
   WAIT_WSTOPPED,
   WAIT_WUNTRACED,
-  WAKE_PROCESS_CONTINUED,
-  WAKE_PROCESS_STOPPED,
+  WAKEUP_EVENT_FIELDS,
+  WAKEUP_EVENT_RECORD_BYTES,
+  WAKEUP_EVENT_TYPES,
   type SyscallArgDesc,
 } from "./generated/abi";
 import { validateKernelHostAdapterManifest } from "./host-adapter-manifest";
@@ -962,13 +969,13 @@ const PROT_WRITE = 0x02;
 const MAP_FIXED = 0x10;
 const MAP_ANONYMOUS = 0x20;
 const MREMAP_FIXED = 0x02;
-const O_RDONLY = 0;
-const O_WRONLY = 1;
-const O_RDWR = 2;
-const O_ACCMODE = 3;
-const O_TRUNC = 0o1000;
+const O_RDONLY = OPEN_FLAGS.O_RDONLY;
+const O_WRONLY = OPEN_FLAGS.O_WRONLY;
+const O_RDWR = OPEN_FLAGS.O_RDWR;
+const O_ACCMODE = OPEN_FLAGS.O_ACCMODE;
+const O_TRUNC = OPEN_FLAGS.O_TRUNC;
 const FILE_PAGE_SIZE = 4096;
-const AT_FDCWD = -100;
+const AT_FDCWD = AT_FLAGS.AT_FDCWD;
 
 /** clone flags whose corresponding channel slots are process pointers. */
 const CLONE_PARENT_SETTID = 0x00100000;
@@ -986,10 +993,10 @@ const FUTEX_WAKE_BITSET = 10;
 const FUTEX_PRIVATE_FLAG = 128;
 const FUTEX_CLOCK_REALTIME = 256;
 
-const F_DUPFD = 0;
-const F_GETFL = 3;
-const F_DUPFD_CLOFORK = 1028;
-const F_DUPFD_CLOEXEC = 1030;
+const F_DUPFD = FCNTL_COMMANDS.F_DUPFD;
+const F_GETFL = FCNTL_COMMANDS.F_GETFL;
+const F_DUPFD_CLOFORK = FCNTL_COMMANDS.F_DUPFD_CLOFORK;
+const F_DUPFD_CLOEXEC = FCNTL_COMMANDS.F_DUPFD_CLOEXEC;
 
 function alignWasmPageLength(len: number): number {
   return Math.ceil(len / WASM_PAGE_SIZE) * WASM_PAGE_SIZE;
@@ -2379,6 +2386,13 @@ interface TcpListenerCleanupPlan {
   readonly listenerServersToClose: readonly import("net").Server[];
 }
 
+interface ProcessHostTimerCleanupPlan {
+  readonly cancelAlarm: boolean;
+  readonly posixTimerIds: readonly number[];
+  /** Coherence failure to raise only after every named host handle is retired. */
+  readonly mismatch: string | null;
+}
+
 /**
  * Module-private observation seams for the legacy scratch-boundary suite.
  *
@@ -2525,7 +2539,6 @@ interface WaitableChildCapacityProbeTestOptions {
 interface ThreadTransportStateTestResult {
   readonly channelTidEntries: number;
   readonly forkContextEntries: number;
-  readonly clearTidEntries: number;
   readonly activeThreadChannels: number;
 }
 
@@ -2942,8 +2955,6 @@ export class CentralizedKernelWorker {
     string,
     { pid: number; deadline: number }
   >();
-  /** Maps "pid:tid" to ctidPtr for CLONE_CHILD_CLEARTID on thread exit */
-  private threadCtidPtrs = new Map<string, number>();
   /** TCP listeners: "pid:fd" → { server, pid, port, connections } */
   private tcpListeners = new Map<string, TcpListenerBridge>();
   /** TCP listener targets: port → listener aliases for round-robin dispatch.
@@ -3175,7 +3186,13 @@ export class CentralizedKernelWorker {
    *  to convert epoll_pwait to poll without calling kernel_handle_channel
    *  (which crashes in Chrome for epoll_pwait due to a suspected V8 bug). */
   private epollInterests = new Map<string, Array<{ fd: number; events: number; data: bigint }>>();
-  /** Per-process SysV shared-memory attachments. */
+  /**
+   * Byte-coherence mirrors for Rust-owned SysV shared-memory attachments.
+   *
+   * WHY: separate WebAssembly memories cannot directly share segment bytes.
+   * Rust owns attachment identity and lifetime; the shared host still needs
+   * snapshots and versions to reconcile bytes across those memories.
+   */
   private shmMappings = new Map<number, Map<number, SysvShmMapping>>();
   /** Authoritative segment version, incremented after each merged publication. */
   private shmSegmentVersions = new Map<number, number>();
@@ -3882,13 +3899,13 @@ export class CentralizedKernelWorker {
         return result;
       },
       drainWakeupEventsForTest: (): void => {
-        // WHY: advisory-lock tests must exercise the real Rust wake decoder
+        // WHY: wake-stream tests must exercise the real Rust event decoder
         // under one exact generation scope. Expose only this argument-free
         // operation; returning the instance, scratch, or a target-bearing
         // dispatcher would reopen the authority boundary that the sealed
         // worker is meant to protect.
         this.#runImmediateKernelEntry(
-          "advisory-lock wake drain test",
+          "kernel wake-event drain test",
           (entry) => {
             this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
             return undefined;
@@ -4354,10 +4371,11 @@ export class CentralizedKernelWorker {
           inputError?: TypeError;
           value?: ThreadTransportStateTestResult;
         } = {};
-        // WHY: unregister cleanup has no public observer for its three
+        // WHY: unregister cleanup has no public observer for its two
         // host-only pthread ownership indexes. Return only their per-PID
         // aggregate counts so the test can prove retirement without learning
-        // or mutating any channel, continuation, clear-TID pointer, or Map.
+        // or mutating any channel, continuation, or Map. Rust owns clear-TID
+        // pointers, so they are intentionally absent from this host observer.
         this.#runImmediateKernelEntry(
           "pthread transport state lifecycle inspection",
           () => {
@@ -4374,7 +4392,6 @@ export class CentralizedKernelWorker {
             const prefix = `${pid}:`;
             let channelTidEntries = 0;
             let forkContextEntries = 0;
-            let clearTidEntries = 0;
             let activeThreadChannels = 0;
             for (const [key, tid] of this.channelTids) {
               if (key.startsWith(prefix) && tid !== pid) {
@@ -4383,9 +4400,6 @@ export class CentralizedKernelWorker {
             }
             for (const key of this.threadForkContexts.keys()) {
               if (key.startsWith(prefix)) forkContextEntries++;
-            }
-            for (const key of this.threadCtidPtrs.keys()) {
-              if (key.startsWith(prefix)) clearTidEntries++;
             }
             for (const channel of this.activeChannels) {
               if (channel.pid !== pid) continue;
@@ -4399,7 +4413,6 @@ export class CentralizedKernelWorker {
             outcome.value = kernelEntryIntrinsicObjectFreeze({
               channelTidEntries,
               forkContextEntries,
-              clearTidEntries,
               activeThreadChannels,
             });
             return undefined;
@@ -7716,7 +7729,7 @@ export class CentralizedKernelWorker {
     if (!registration) return true;
     if (expectedMemory && registration.memory !== expectedMemory) return false;
 
-    this.cancelAlarmTimerForProcess(pid);
+    this.#retireProcessHostTimersWithinKernelEntry(pid, entry, true);
     this.retireAsyncChannelsForProcess(pid, entry);
     this.discardStoppedChannelStateForProcess(pid);
     this.waitingForChild = (this.waitingForChild ?? []).filter(
@@ -7823,6 +7836,180 @@ export class CentralizedKernelWorker {
     this.#cancelRegisteredTimeout(alarmTimer);
   }
 
+  private hostPosixTimerIdsForProcess(pid: number): number[] {
+    const prefix = `${pid}:`;
+    const timerIds: number[] = [];
+    for (const key of this.posixTimers.keys()) {
+      if (!key.startsWith(prefix)) continue;
+      const timerId = Number(key.slice(prefix.length));
+      if (!Number.isSafeInteger(timerId) || timerId < 0 || timerId > 0xffff_ffff) {
+        throw new Error(`invalid host POSIX timer identity ${key}`);
+      }
+      timerIds.push(timerId);
+    }
+    return timerIds;
+  }
+
+  /** Materialize Rust-owned timer identities before a process can be reaped. */
+  #prepareProcessHostTimerCleanupWithinKernelEntry(
+    pid: number,
+    entry: KernelWorkerEntryContext,
+    allowMissingRustProcess: boolean,
+  ): ProcessHostTimerCleanupPlan {
+    const scratch = this.#requireMainScratchRegion();
+    const headerBytes = 8;
+    const timerIdBytes = 4;
+    if (scratch.capacity < headerBytes + timerIdBytes) {
+      throw new KernelScratchError(
+        "kernel timer cleanup scratch cannot hold one timer identity",
+        EIO,
+      );
+    }
+    const outCapacity = scratch.capacity
+      - ((scratch.capacity - headerBytes) % timerIdBytes);
+    const maxTimerIds = (outCapacity - headerBytes) / timerIdBytes;
+    const output = scratch.withLease((lease) => {
+      const result = this.#invokeEntryScratchExport(
+        entry,
+        lease,
+        "kernel_take_process_timer_cleanup",
+        [pid, lease.exportPointer(0, outCapacity), outCapacity],
+      );
+      if (result < 0) return { result, bytes: null };
+      if (!Number.isSafeInteger(result) || result > maxTimerIds) {
+        throw new KernelScratchError(
+          `kernel returned invalid timer cleanup count ${result}`,
+          EIO,
+        );
+      }
+      return {
+        result,
+        bytes: lease.copyOut(0, headerBytes + result * timerIdBytes),
+      };
+    });
+
+    if (
+      output.result === -ERANGE
+      || (output.result === -ESRCH && allowMissingRustProcess)
+    ) {
+      // WHY: an oversized list remains wholly Rust-owned, while wait/reap may
+      // remove a zombie before asynchronous Worker detachment. In either
+      // explicit boundary, these maps are still exact platform-handle evidence
+      // and Rust has consumed no partial cleanup list.
+      return {
+        cancelAlarm: this.alarmTimers.has(pid),
+        posixTimerIds: this.hostPosixTimerIdsForProcess(pid),
+        mismatch: null,
+      };
+    }
+    if (output.result < 0) {
+      throw new KernelScratchError(
+        `kernel process timer cleanup failed: ${output.result}`,
+        -output.result,
+      );
+    }
+    const bytes = output.bytes;
+    if (bytes === null) {
+      throw new KernelScratchError(
+        "kernel timer cleanup omitted a successful output",
+        EIO,
+      );
+    }
+    const view = new DataView(
+      bytes.buffer,
+      bytes.byteOffset,
+      bytes.byteLength,
+    );
+    const headerCount = view.getUint32(4, true);
+    if (headerCount !== output.result) {
+      throw new KernelScratchError(
+        `kernel timer cleanup header count ${headerCount} did not match `
+          + `result ${output.result}`,
+        EIO,
+      );
+    }
+    const cancelAlarm = view.getUint32(0, true) !== 0;
+    const rustTimerIds: number[] = [];
+    const seenTimerIds = new Set<number>();
+    for (let index = 0; index < headerCount; index++) {
+      const timerId = view.getUint32(
+        headerBytes + index * timerIdBytes,
+        true,
+      );
+      if (seenTimerIds.has(timerId)) {
+        throw new KernelScratchError(
+          `kernel repeated timer cleanup identity ${timerId}`,
+          EIO,
+        );
+      }
+      seenTimerIds.add(timerId);
+      rustTimerIds.push(timerId);
+    }
+
+    const hostAlarmExists = this.alarmTimers.has(pid);
+    const extraHostTimerIds = this.hostPosixTimerIdsForProcess(pid)
+      .filter((timerId) => !seenTimerIds.has(timerId));
+    const mismatchParts: string[] = [];
+    if (hostAlarmExists && !cancelAlarm) {
+      mismatchParts.push("host alarm had no Rust owner");
+    }
+    if (extraHostTimerIds.length !== 0) {
+      mismatchParts.push(
+        `${extraHostTimerIds.length} host POSIX timer(s) had no Rust owner`,
+      );
+    }
+    return {
+      cancelAlarm: cancelAlarm || hostAlarmExists,
+      posixTimerIds: [...rustTimerIds, ...extraHostTimerIds],
+      mismatch: mismatchParts.length === 0 ? null : mismatchParts.join("; "),
+    };
+  }
+
+  private applyProcessHostTimerCleanup(
+    pid: number,
+    plan: ProcessHostTimerCleanupPlan,
+  ): void {
+    if (plan.cancelAlarm) this.cancelAlarmTimerForProcess(pid);
+    for (const timerId of plan.posixTimerIds) {
+      const key = `${pid}:${timerId}`;
+      const timer = this.posixTimers.get(key);
+      if (timer === undefined) continue;
+      // Delete first so an already-queued callback cannot act on a generation
+      // whose Rust timer identity has just been consumed.
+      this.posixTimers.delete(key);
+      this.#cancelRegisteredTimeout(timer.timeout);
+      if (timer.interval !== undefined) {
+        this.#cancelRegisteredInterval(timer.interval);
+      }
+    }
+    if (plan.mismatch !== null) {
+      throw new Error(`process ${pid} timer ownership mismatch: ${plan.mismatch}`);
+    }
+  }
+
+  #retireProcessHostTimersWithinKernelEntry(
+    pid: number,
+    entry: KernelWorkerEntryContext,
+    allowMissingRustProcess = false,
+  ): void {
+    const plan = this.#prepareProcessHostTimerCleanupWithinKernelEntry(
+      pid,
+      entry,
+      allowMissingRustProcess,
+    );
+    if (
+      !plan.cancelAlarm
+      && plan.posixTimerIds.length === 0
+      && plan.mismatch === null
+    ) {
+      return;
+    }
+    entry.deferProtocolEffect(() => {
+      this.applyProcessHostTimerCleanup(pid, plan);
+      return undefined;
+    });
+  }
+
   deactivateProcess(
     pid: number,
     expectedMemory?: WebAssembly.Memory,
@@ -7846,16 +8033,7 @@ export class CentralizedKernelWorker {
     if (deferred) {
       throw new KernelReentrantEntryError(`process deactivation pid=${pid}`);
     }
-    if (!result) return false;
-    // Cancel any pending posix timers for this process
-    for (const [key, entry] of this.posixTimers) {
-      if (key.startsWith(`${pid}:`)) {
-        clearTimeout(entry.timeout);
-        if (entry.interval) clearInterval(entry.interval);
-        this.posixTimers.delete(key);
-      }
-    }
-    return true;
+    return result;
   }
 
   #deactivateProcessWithinKernelEntry(
@@ -7866,7 +8044,7 @@ export class CentralizedKernelWorker {
     const registration = this.processes.get(pid);
     if (!registration) return true;
     if (expectedMemory && registration.memory !== expectedMemory) return false;
-    this.cancelAlarmTimerForProcess(pid);
+    this.#retireProcessHostTimersWithinKernelEntry(pid, entry, true);
     this.retireAsyncChannelsForProcess(pid, entry);
     this.discardStoppedChannelStateForProcess(pid);
     this.waitingForChild = (this.waitingForChild ?? []).filter(
@@ -8474,11 +8652,7 @@ export class CentralizedKernelWorker {
     }
   }
 
-  /**
-   * Forget mappings and detach SysV segments after the irreversible kernel
-   * exec commit. A failure here is post-commit and must be treated as fatal by
-   * the caller; returning to the discarded image is no longer possible.
-   */
+  /** Forget host byte mirrors after Rust commits the exec address-space drop. */
   finalizeAddressSpaceForExec(pid: number): number {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     if (this.#kernelEntryGate.shouldDeferVoidIngress) {
@@ -8511,23 +8685,11 @@ export class CentralizedKernelWorker {
     }
     this.invalidateSharedMmapFdCacheForPid(pid);
 
-    const sysv = this.shmMappings.get(pid);
-    if (!sysv) return 0;
-    const detach = this.#kernelInstanceForEntry(entry).exports.kernel_ipc_shmdt_for_process as
-      ((pid: number, shmid: number) => number) | undefined;
-    let result = 0;
-    try {
-      if (!detach) return -EIO;
-      for (const mapping of sysv.values()) {
-        if (detach(pid, mapping.segId) < 0) result = -EIO;
-      }
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-      result = -EIO;
-    } finally {
-      this.shmMappings.delete(pid);
-    }
-    return result;
+    // kernelExecSetup is the irreversible Rust commit. It has already drained
+    // the authoritative attachment records and decremented nattch; repeating
+    // detach here would release a different same-segment attachment.
+    this.shmMappings.delete(pid);
+    return 0;
   }
 
   /**
@@ -8611,8 +8773,8 @@ export class CentralizedKernelWorker {
       if (channel.pid === pid) this.activeChannelRequests.delete(channel);
     }
 
-    // Thread mailbox identity and fork/clear-TID metadata belong to the old
-    // image even though exec preserves the process id.
+    // Thread mailbox identity belongs to the old image even though exec
+    // preserves the process id. Rust retires its own clear-TID metadata.
     this.clearProcessThreadTransportState(pid);
 
     for (const [key, entry] of this.posixTimers) {
@@ -8652,9 +8814,6 @@ export class CentralizedKernelWorker {
     // Clean up any orphaned pre-invariant context left by a failed launch.
     for (const key of this.threadForkContexts.keys()) {
       if (key.startsWith(prefix)) this.threadForkContexts.delete(key);
-    }
-    for (const key of this.threadCtidPtrs.keys()) {
-      if (key.startsWith(prefix)) this.threadCtidPtrs.delete(key);
     }
   }
 
@@ -14346,7 +14505,7 @@ export class CentralizedKernelWorker {
       pollfds.inputBytes.byteOffset,
       pollfds.inputBytes.byteLength,
     );
-    const POLLIN = 0x001;
+    const { POLLIN } = POLL_EVENTS;
     for (let i = 0; i < nfds; i++) {
       const pollfdOffset = i * STRUCT_SIZE_WASM_POLL_FD;
       const fd = pollView.getInt32(
@@ -14393,7 +14552,7 @@ export class CentralizedKernelWorker {
     const key = `${pid}:`;
     const indices: number[] = [];
     const acceptIndices: number[] = [];
-    const EPOLLIN = 0x001;
+    const { EPOLLIN } = EPOLL_EVENTS;
     for (const [k, interests] of this.epollInterests) {
       if (!k.startsWith(key)) continue;
       for (const interest of interests) {
@@ -14430,18 +14589,29 @@ export class CentralizedKernelWorker {
     }
   }
 
-  private wakeBlockedPoll(pid: number, pipeIdx: number): void {
+  private wakeBlockedPollRetriesForPipe(
+    pipeIdx: number,
+    pidFilter?: number,
+    options: { deferSignalSafe?: boolean } = {},
+  ): boolean {
     // retrySyscall runs handleSyscall synchronously, which can re-insert
     // the same key via pendingPollRetries.set when the kernel returns
     // EAGAIN. JS Map iterators are not snapshots — re-inserted entries
     // appear at the new tail and the iterator yields them, livelocking
-    // wakeBlockedPoll-hit / poll / poll-register inside one tick. Mirror
+    // wakeup-event / poll / poll-register inside one tick. Mirror
     // wakeAllBlockedRetries' snapshot-and-skip-if-replaced pattern.
+    let deferredSignalSafeWake = false;
     const matches = Array.from(this.pendingPollRetries.entries()).filter(
-      ([, e]) => e.channel.pid === pid && e.pipeIndices.includes(pipeIdx),
+      ([, entry]) =>
+        (pidFilter === undefined || entry.channel.pid === pidFilter)
+        && entry.pipeIndices.includes(pipeIdx),
     );
     for (const [key, entry] of matches) {
       if (this.pendingPollRetries.get(key) !== entry) continue;
+      if (options.deferSignalSafe && entry.needsSignalSafeWake) {
+        deferredSignalSafeWake = true;
+        continue;
+      }
       if (entry.timer !== null) {
         this.#cancelRegisteredTimeout(entry.timer);
       }
@@ -14450,6 +14620,7 @@ export class CentralizedKernelWorker {
         this.retrySyscall(entry.channel);
       }
     }
+    return deferredSignalSafeWake;
   }
 
   /**
@@ -14469,8 +14640,8 @@ export class CentralizedKernelWorker {
    *
    * Without step 2, blocked pollers wait for the fallback timer in
    * `handleBlockingRetry` to fire, which is the bug behind PR fixing
-  * the WordPress LAMP demo's slow install.php (see commit history).
-  */
+   * the WordPress LAMP demo's slow install.php (see commit history).
+   */
   public notifyPipeReadable(pipeIdx: number, pidFilter?: number): void {
     this.#runOrDeferKernelEntry(
       `pipe readable notification index=${pipeIdx}`,
@@ -14500,23 +14671,8 @@ export class CentralizedKernelWorker {
         }
       }
     }
-    // 2. Blocked pollers watching this pipe. Snapshot-and-skip-if-replaced:
-    //    retrySyscall runs synchronously and a re-parking wait re-inserts the
-    //    same exact-channel key, which a raw for..of over the live Map would
-    //    revisit forever (see wakeBlockedPoll / sendSignalToProcess).
-    const pollMatches = Array.from(this.pendingPollRetries.entries()).filter(
-      ([, e]) =>
-        (pidFilter === undefined || e.channel.pid === pidFilter) &&
-        e.pipeIndices.includes(pipeIdx),
-    );
-    for (const [key, entry] of pollMatches) {
-      if (this.pendingPollRetries.get(key) !== entry) continue;
-      if (entry.timer !== null) this.#cancelRegisteredTimeout(entry.timer);
-      this.pendingPollRetries.delete(key);
-      if (this.isRegisteredChannel(entry.channel)) {
-        this.retrySyscall(entry.channel);
-      }
-    }
+    // 2. Blocked pollers watching this pipe.
+    this.wakeBlockedPollRetriesForPipe(pipeIdx, pidFilter);
     // 3. Broad wake for any other pending retries
     this.scheduleWakeBlockedRetries(entry);
   }
@@ -14525,8 +14681,9 @@ export class CentralizedKernelWorker {
    * Public wake helper for host-side pipe reads (response pump in
    * the TCP/HTTP bridges). Call this AFTER directly reading data
    * from a pipe so any process blocked writing because the pipe was
-  * full can resume, plus a broad wake.
-  */
+   * full, or polling that pipe for writability, can resume. A broad
+   * wake still runs for wait classes without pipe identities.
+   */
   public notifyPipeWritable(pipeIdx: number): void {
     this.#runOrDeferKernelEntry(
       `pipe writable notification index=${pipeIdx}`,
@@ -14550,6 +14707,7 @@ export class CentralizedKernelWorker {
         }
       }
     }
+    this.wakeBlockedPollRetriesForPipe(pipeIdx);
     this.scheduleWakeBlockedRetries(entry);
   }
 
@@ -14603,8 +14761,7 @@ export class CentralizedKernelWorker {
     if (!drainFn) return;
 
     const MAX_EVENTS = 256;
-    const BYTES_PER_EVENT = 5;
-    const bufSize = MAX_EVENTS * BYTES_PER_EVENT;
+    const bufSize = MAX_EVENTS * WAKEUP_EVENT_RECORD_BYTES;
 
     // Own the complete batch before acting on any event. STOPPED/CONTINUED
     // processing can send SIGCHLD and complete a parent wait, both of which
@@ -14634,50 +14791,56 @@ export class CentralizedKernelWorker {
         return {
           count,
           bytes: count > 0
-            ? lease.copyOut(0, count * BYTES_PER_EVENT)
+            ? lease.copyOut(0, count * WAKEUP_EVENT_RECORD_BYTES)
             : new Uint8Array(0),
         };
       });
       const { count } = batch;
       if (count <= 0) break;
       for (let i = 0; i < count; i++) {
-        const off = i * BYTES_PER_EVENT;
+        const off = i * WAKEUP_EVENT_RECORD_BYTES;
+        const idxOffset = off + WAKEUP_EVENT_FIELDS.idx.offset;
         events.push({
           wakeIdx:
-            (batch.bytes[off] |
-              (batch.bytes[off + 1] << 8) |
-              (batch.bytes[off + 2] << 16) |
-              (batch.bytes[off + 3] << 24)) >>>
+            (batch.bytes[idxOffset] |
+              (batch.bytes[idxOffset + 1] << 8) |
+              (batch.bytes[idxOffset + 2] << 16) |
+              (batch.bytes[idxOffset + 3] << 24)) >>>
             0,
-          wakeType: batch.bytes[off + 4],
+          wakeType: batch.bytes[off + WAKEUP_EVENT_FIELDS.wakeType.offset],
         });
       }
       if (count < MAX_EVENTS) break;
     }
     if (events.length === 0) return;
 
-    const WAKE_READABLE = 1;
-    const WAKE_WRITABLE = 2;
-    const WAKE_ACCEPT = 4;
-    const WAKE_DATAGRAM_WRITABLE = 8;
-    const WAKE_ADVISORY_LOCK = 64;
     let needBroadWake = false;
     let needDatagramWriterWake = false;
     let needAdvisoryLockWake = false;
+    let needSignalSafeDeferredWake = false;
 
     for (const { wakeIdx, wakeType } of events) {
       const lifecycleEvent =
-        wakeType & (WAKE_PROCESS_STOPPED | WAKE_PROCESS_CONTINUED);
+        wakeType & (
+          WAKEUP_EVENT_TYPES.processStopped
+          | WAKEUP_EVENT_TYPES.processContinued
+        );
       const lifecycleSupersededByExit =
         lifecycleEvent !== 0 &&
         this.finalizeExitedProcessBeforeLifecycleNotification(wakeIdx, entry);
 
-      if (!lifecycleSupersededByExit && wakeType & WAKE_PROCESS_STOPPED) {
+      if (
+        !lifecycleSupersededByExit
+        && wakeType & WAKEUP_EVENT_TYPES.processStopped
+      ) {
         (this.stoppedPids ??= new Set()).add(wakeIdx);
         this.notifyParentOfChildStateTransition(wakeIdx, entry);
       }
 
-      if (!lifecycleSupersededByExit && wakeType & WAKE_PROCESS_CONTINUED) {
+      if (
+        !lifecycleSupersededByExit
+        && wakeType & WAKEUP_EVENT_TYPES.processContinued
+      ) {
         if (this.resumeStoppedProcess(wakeIdx, entry)) {
           this.notifyParentOfChildStateTransition(wakeIdx, entry);
         } else {
@@ -14689,7 +14852,7 @@ export class CentralizedKernelWorker {
         }
       }
 
-      if (wakeType & WAKE_READABLE) {
+      if (wakeType & WAKEUP_EVENT_TYPES.readable) {
         // Pipe became readable — wake pending readers on this pipe
         const readers = this.pendingPipeReaders.get(wakeIdx);
         if (readers && readers.length > 0) {
@@ -14702,7 +14865,7 @@ export class CentralizedKernelWorker {
         }
       }
 
-      if (wakeType & WAKE_WRITABLE) {
+      if (wakeType & WAKEUP_EVENT_TYPES.writable) {
         // Pipe became writable — wake pending writers on this pipe
         const writers = this.pendingPipeWriters.get(wakeIdx);
         if (writers && writers.length > 0) {
@@ -14715,11 +14878,26 @@ export class CentralizedKernelWorker {
         }
       }
 
-      if (wakeType & WAKE_ACCEPT) {
+      if (
+        wakeType
+        & (WAKEUP_EVENT_TYPES.readable | WAKEUP_EVENT_TYPES.writable)
+      ) {
+        if (
+          this.wakeBlockedPollRetriesForPipe(
+            wakeIdx,
+            undefined,
+            { deferSignalSafe: true },
+          )
+        ) {
+          needSignalSafeDeferredWake = true;
+        }
+      }
+
+      if (wakeType & WAKEUP_EVENT_TYPES.accept) {
         this.wakeBlockedAccept(wakeIdx);
       }
 
-      if (wakeType & WAKE_DATAGRAM_WRITABLE) {
+      if (wakeType & WAKEUP_EVENT_TYPES.datagramWritable) {
         // Datagram queues have no pipe token that identifies every blocked
         // sender. Retry generic blocked writes synchronously so a short
         // SO_SNDTIMEO cannot win after the send has become ready or acquired
@@ -14729,13 +14907,16 @@ export class CentralizedKernelWorker {
         needDatagramWriterWake = true;
       }
 
-      if (wakeType & WAKE_ADVISORY_LOCK) {
+      if (wakeType & WAKEUP_EVENT_TYPES.advisoryLock) {
         needAdvisoryLockWake = true;
       }
 
       if (
         wakeType &
-        (WAKE_READABLE | WAKE_WRITABLE | WAKE_ACCEPT | WAKE_DATAGRAM_WRITABLE)
+        (WAKEUP_EVENT_TYPES.readable
+          | WAKEUP_EVENT_TYPES.writable
+          | WAKEUP_EVENT_TYPES.accept
+          | WAKEUP_EVENT_TYPES.datagramWritable)
       ) {
         needBroadWake = true;
       }
@@ -14761,10 +14942,9 @@ export class CentralizedKernelWorker {
     // time to land. Kill-triggered wakes (line ~2050) always use the
     // immediate setImmediate path — by the time kill has been processed
     // the signal is already queued, so there's no race. Pipe
-    // reader/writer wakes above run synchronously (not via this
-    // deferred path), so plain read/write throughput is unaffected. We
-    // only pay the delay when a pipe event happens to wake a ppoll or
-    // pselect6 caller.
+    // reader/writer and non-signal-safe poll wakes above run synchronously
+    // (not via this deferred path). Only matching signal-safe ppoll entries
+    // remain parked for the grace period.
     if (needDatagramWriterWake) {
       this.wakeBlockedFallbackWriters();
     }
@@ -14772,7 +14952,10 @@ export class CentralizedKernelWorker {
       this.wakeBlockedAdvisoryLockRetries();
     }
     if (needBroadWake) {
-      if (this.anyPendingRetryNeedsSignalSafeWake()) {
+      if (
+        needSignalSafeDeferredWake
+        || this.anyPendingRetryNeedsSignalSafeWake()
+      ) {
         this.scheduleWakeBlockedRetriesDeferred(entry);
       } else {
         this.scheduleWakeBlockedRetries(entry);
@@ -18529,14 +18712,8 @@ export class CentralizedKernelWorker {
     }
 
     // EPOLL event flags → poll event flags
-    const EPOLLIN = 0x001;
-    const EPOLLOUT = 0x004;
-    const EPOLLERR = 0x008;
-    const EPOLLHUP = 0x010;
-    const POLLIN = 0x001;
-    const POLLOUT = 0x004;
-    const POLLERR = 0x008;
-    const POLLHUP = 0x010;
+    const { EPOLLIN, EPOLLOUT, EPOLLERR, EPOLLHUP } = EPOLL_EVENTS;
+    const { POLLIN, POLLOUT, POLLERR, POLLHUP } = POLL_EVENTS;
 
     // Build fixed pollfd records in kernel scratch data.
     const nfds = interests.length;
@@ -21158,8 +21335,8 @@ export class CentralizedKernelWorker {
     // The kernel child is real before its host Worker launches. Install its
     // host-only fd mirrors synchronously so a sibling exec cannot remove the
     // parent's last listener and close the shared backend during onFork's
-    // async worker setup. Exact listener selection still ignores the child
-    // until onFork registers its process memory.
+    // async worker setup. Rust owns target selection; these mirrors retain the
+    // host backend and stable wake identity across that launch window.
     try {
       this.inheritHostFdMirrors(parentPid, childPid, entry);
     } catch (err) {
@@ -22448,7 +22625,6 @@ export class CentralizedKernelWorker {
     origArgs: number[],
     entry: KernelWorkerEntryContext,
   ): void {
-    const AT_EMPTY_PATH = 0x1000;
     const dirfd = origArgs[0];
     const flags = origArgs[4];
 
@@ -22532,7 +22708,7 @@ export class CentralizedKernelWorker {
 
     let execPath: string;
 
-    if ((flags & AT_EMPTY_PATH) !== 0 && pathStr === "") {
+    if ((flags & AT_FLAGS.AT_EMPTY_PATH) !== 0 && pathStr === "") {
       const output = this.#readKernelOwnedPath(channel.pid, dirfd, entry);
       if (output.kind === "error" || output.value.byteLength === 0) {
         this.completeChannel(
@@ -22824,12 +23000,6 @@ export class CentralizedKernelWorker {
       const stackPtr = origArgs[1];
       const tlsPtr = origArgs[3];
 
-      // Register only the effective CLONE_CHILD_CLEARTID pointer before the
-      // Worker starts. A short-lived pthread can reach SYS_EXIT immediately.
-      if (ctidPtr !== 0) {
-        this.threadCtidPtrs.set(`${channel.pid}:${tid}`, ctidPtr);
-      }
-
       const createdAttachment = createThreadChannelAttachment(
         this,
         channel.pid,
@@ -23072,7 +23242,6 @@ export class CentralizedKernelWorker {
       }
       state.pendingAttachment!.attachedChannelOffset = undefined;
     }
-    this.threadCtidPtrs.delete(`${channel.pid}:${tid}`);
     if (state.parentTidWritten) {
       new DataView(channel.memory.buffer).setInt32(ptidPtr, 0, true);
       state.parentTidWritten = false;
@@ -23214,6 +23383,7 @@ export class CentralizedKernelWorker {
     // produce two SIGCHLDs / two parent wake-ups. Cleared by
     // deactivateProcess and registerProcess.
     if (!this.hostReaped.has(exitingPid)) {
+      this.#retireProcessHostTimersWithinKernelEntry(exitingPid, entry);
       this.hostReaped.add(exitingPid);
       this.notifyParentOfExitedProcess(exitingPid, entry);
     }
@@ -23276,6 +23446,7 @@ export class CentralizedKernelWorker {
     // consume and reap the zombie, after which the kernel query returns ESRCH.
     const signal = this.#getProcessExitSignal(exitingPid, entry);
     this.#forgetBlockingRetrySnapshotsAfterKernelLifecycle(exitingPid);
+    this.#retireProcessHostTimersWithinKernelEntry(exitingPid, entry);
     this.hostReaped.add(exitingPid);
     this.releaseAllSharedMemoryForProcess(exitingPid, true, entry);
     // Default signal delivery has already transitioned the Rust Process to
@@ -23387,6 +23558,7 @@ export class CentralizedKernelWorker {
       );
     }
     this.#forgetBlockingRetrySnapshotsAfterKernelLifecycle(pid);
+    this.#retireProcessHostTimersWithinKernelEntry(pid, entry);
     this.discardStoppedChannelStateForProcess(pid);
     this.hostReaped.add(pid);
     this.releaseAllSharedMemoryForProcess(pid, true, entry);
@@ -23502,6 +23674,7 @@ export class CentralizedKernelWorker {
     if (this.hostReaped.has(pid)) return signal;
 
     this.#forgetBlockingRetrySnapshotsAfterKernelLifecycle(pid);
+    this.#retireProcessHostTimersWithinKernelEntry(pid, entry);
     this.hostReaped.add(pid);
     this.releaseAllSharedMemoryForProcess(pid, true, entry);
     this.notifyParentOfExitedProcess(pid, entry);
@@ -24572,17 +24745,16 @@ export class CentralizedKernelWorker {
 
   /**
    * Notify the kernel that a thread has exited.
-   * Removes thread state from the process's thread table.
+   *
+   * WHY: whole-process forced teardown retires the process memory, so it does
+   * not need to publish a clear-TID wake. A surviving process must instead use
+   * `finalizeThreadExit`, which clears and wakes the pointer returned by Rust.
    */
   notifyThreadExit(pid: number, tid: number): void {
     this.#runOrDeferKernelEntry(
       "thread exit",
       (entry) => {
-        this.#notifyThreadExitWithinKernelEntry(
-          pid,
-          tid,
-          entry,
-        );
+        this.#notifyThreadExitWithinKernelEntry(pid, tid, entry);
         return undefined;
       },
     );
@@ -24592,16 +24764,16 @@ export class CentralizedKernelWorker {
     pid: number,
     tid: number,
     entry?: KernelWorkerEntryContext,
-  ): void {
+  ): number {
     const threadExit = this.#kernelInstanceForEntry(entry).exports
       .kernel_thread_exit as
-      ((pid: number, tid: number) => number) | undefined;
+      ((pid: number, tid: number) => bigint) | undefined;
     if (!threadExit) {
       throw new Error("Kernel missing required kernel_thread_exit export");
     }
     const result = threadExit(pid, tid);
-    if (result !== 0) {
-      const errno = result < 0 ? -result : EIO;
+    if (result < 0n) {
+      const errno = Number(-result);
       throw new KernelTaskBindingError(
         pid,
         tid,
@@ -24609,6 +24781,16 @@ export class CentralizedKernelWorker {
         `Kernel could not remove tid ${tid} from process ${pid}: errno ${errno}`,
       );
     }
+    const ctidPtr = Number(result);
+    if (!Number.isSafeInteger(ctidPtr)) {
+      throw new KernelTaskBindingError(
+        pid,
+        tid,
+        EIO,
+        `Kernel returned an invalid clear-TID pointer for tid ${tid} in process ${pid}`,
+      );
+    }
+    return ctidPtr;
   }
 
   /**
@@ -24663,8 +24845,6 @@ export class CentralizedKernelWorker {
     channelOffset: number,
     entry: KernelWorkerEntryContext,
   ): void {
-    const ctidKey = `${pid}:${tid}`;
-    const ctidPtr = this.threadCtidPtrs.get(ctidKey);
     const channel = this.activeChannels.find(
       (ch) => ch.pid === pid && ch.channelOffset === channelOffset,
     );
@@ -24673,14 +24853,14 @@ export class CentralizedKernelWorker {
     // Remove authoritative ThreadInfo before any host-memory bookkeeping can
     // fail. The clone path prevalidates ctid, but this check also rejects stale
     // or externally-constructed registrations without stranding a kernel TID.
-    this.#notifyThreadExitWithinKernelEntry(pid, tid, entry);
+    const ctidPtr = this.#notifyThreadExitWithinKernelEntry(pid, tid, entry);
     if (channel) {
       // kernel_thread_exit consumed this TID's exact retry binding before it
       // removed task authority. Host retirement must not release it twice.
       this.#forgetBlockingRetrySnapshotAfterKernelLifecycle(channel);
     }
     try {
-      if (ctidPtr && ctidPtr !== 0) {
+      if (ctidPtr !== 0) {
         if (!memory) {
           throw new KernelTaskBindingError(
             pid,
@@ -24704,7 +24884,6 @@ export class CentralizedKernelWorker {
         Atomics.notify(i32View, ctidPtr / 4, 1);
       }
     } finally {
-      this.threadCtidPtrs.delete(ctidKey);
       this.#removeChannelWithinKernelEntry(pid, channelOffset, entry);
     }
   }
@@ -25447,7 +25626,9 @@ export class CentralizedKernelWorker {
     const statResult = this.getFdStatForSharedMapping(channel, fd, entry);
     if (statResult.kind === "error") return statResult;
     const stat = statResult.value;
-    if ((stat.mode & 0o170000) !== 0o100000) return { kind: "unsupported" };
+    if ((stat.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFREG) {
+      return { kind: "unsupported" };
+    }
     if (stat.hostHandle === null) {
       // MemFd and synthetic regular files complete fstat inside the kernel,
       // so there is no persistent host capability to retain. They need a
@@ -25876,7 +26057,7 @@ export class CentralizedKernelWorker {
         backing.sizeValid = false;
         return EIO;
       }
-      if ((snapshot.mode & 0o170000) !== 0o100000) {
+      if ((snapshot.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFREG) {
         backing.sizeValid = false;
         return EIO;
       }
@@ -26469,7 +26650,7 @@ export class CentralizedKernelWorker {
       });
       if (
         !Number.isSafeInteger(snapshot.mode)
-        || (snapshot.mode & 0o170000) !== 0o100000
+        || (snapshot.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFREG
       ) return null;
       const key = snapshot.key;
       return key ? this.sharedMmapBackings.get(key) ?? null : null;
@@ -26854,7 +27035,9 @@ export class CentralizedKernelWorker {
       }
       return null;
     }
-    if ((statResult.value.mode & 0o170000) !== 0o100000) {
+    if (
+      (statResult.value.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFREG
+    ) {
       this.sharedMmapFdCache.set(cacheKey, { backingKey: null });
       return null;
     }
@@ -28060,41 +28243,111 @@ export class CentralizedKernelWorker {
     const kernelShmdt = this.#kernelInstanceForEntry(entry).exports
       .kernel_ipc_shmdt_for_process as
       ((pid: number, shmid: number) => number) | undefined;
+    const recordMapping = this.#kernelInstanceForEntry(entry).exports
+      .kernel_ipc_shm_record_mapping_for_process as
+      ((
+        pid: number,
+        addr: KernelPointer,
+        shmid: number,
+        size: number,
+      ) => number) | undefined;
+    const kernelShmdtAddr = this.#kernelInstanceForEntry(entry).exports
+      .kernel_ipc_shmdt_addr_for_process as
+      ((pid: number, addr: KernelPointer) => number) | undefined;
     if (
       prepared.sysvMappings.length > 0
-      && (!kernelShmat || !kernelShmdt)
+      && (!kernelShmat || !kernelShmdt || !recordMapping || !kernelShmdtAddr)
     ) {
       return new Error("Kernel lacks SysV SHM inheritance exports");
     }
 
-    const attachedSegments: number[] = [];
+    let kernelMapAddrs: KernelPointer[];
+    try {
+      // Validate the complete child set before the first shmat. A mixed-model
+      // guest address that the kernel usize cannot represent must not acquire
+      // an attachment that Rust is then unable to identify for rollback.
+      kernelMapAddrs = prepared.sysvMappings.map((mapping) =>
+        this.toKernelPtr(mapping.mapAddr));
+    } catch (cause) {
+      return new Error(
+        "Cannot represent inherited SysV mapping in the kernel address model",
+        { cause },
+      );
+    }
+
+    const attachedMappings: Array<{ mapAddr: number; segId: number }> = [];
     const materializedSysv: MaterializedInheritedSysvMapping[] = [];
-    for (const mapping of prepared.sysvMappings) {
+    for (const [mappingIndex, mapping] of prepared.sysvMappings.entries()) {
       const result = kernelShmat!(
         prepared.childPid,
         mapping.segId,
         mapping.mapAddr,
         mapping.readOnly ? SHM_RDONLY : 0,
       );
-      // Every non-negative return represents a completed attachment, even if
-      // an incompatible kernel reports an unexpected size.
-      if (Number.isSafeInteger(result) && result >= 0) {
-        attachedSegments.push(mapping.segId);
-      }
       if (
         !Number.isSafeInteger(result)
         || result < 0
         || result !== mapping.size
       ) {
+        // Every nonnegative shmat result already incremented nattch, even when
+        // an incompatible kernel reports an unexpected size. It has no Rust
+        // address record yet, so release this one by segment identity.
+        if (Number.isSafeInteger(result) && result >= 0) {
+          const detachResult = kernelShmdt!(
+            prepared.childPid,
+            mapping.segId,
+          );
+          if (!Number.isSafeInteger(detachResult) || detachResult !== 0) {
+            throw new Error(
+              `SysV shmdt rollback failed for segment ${mapping.segId}`,
+            );
+          }
+        }
         this.#rollbackInheritedSysvAttachmentsWithinKernelEntry(
           prepared.childPid,
-          attachedSegments,
+          attachedMappings,
           entry,
         );
         return new Error(
           `SysV shmat inheritance failed for segment ${mapping.segId}`,
         );
       }
+      const recordResult = recordMapping!(
+        prepared.childPid,
+        kernelMapAddrs[mappingIndex]!,
+        mapping.segId,
+        mapping.size,
+      );
+      if (!Number.isSafeInteger(recordResult) || recordResult !== 0) {
+        if (Number.isSafeInteger(recordResult) && recordResult < 0) {
+          const detachResult = kernelShmdt!(
+            prepared.childPid,
+            mapping.segId,
+          );
+          if (!Number.isSafeInteger(detachResult) || detachResult !== 0) {
+            throw new Error(
+              `SysV shmdt rollback failed for segment ${mapping.segId}`,
+            );
+          }
+          this.#rollbackInheritedSysvAttachmentsWithinKernelEntry(
+            prepared.childPid,
+            attachedMappings,
+            entry,
+          );
+          return new Error(
+            `Cannot record inherited SysV segment ${mapping.segId}`,
+          );
+        }
+        // A positive or imprecise response violates the additive ABI's
+        // 0/-errno contract, so attachment state is no longer provable.
+        throw new Error(
+          `Invalid SysV mapping record result for segment ${mapping.segId}`,
+        );
+      }
+      attachedMappings.push({
+        mapAddr: mapping.mapAddr,
+        segId: mapping.segId,
+      });
       const latest = this.readSysvShmRange(
         mapping.segId,
         0,
@@ -28104,7 +28357,7 @@ export class CentralizedKernelWorker {
       if (!latest) {
         this.#rollbackInheritedSysvAttachmentsWithinKernelEntry(
           prepared.childPid,
-          attachedSegments,
+          attachedMappings,
           entry,
         );
         return new Error(
@@ -28125,7 +28378,7 @@ export class CentralizedKernelWorker {
     if (postExportValidation !== null) {
       this.#rollbackInheritedSysvAttachmentsWithinKernelEntry(
         prepared.childPid,
-        attachedSegments,
+        attachedMappings,
         entry,
       );
       return postExportValidation;
@@ -28147,21 +28400,24 @@ export class CentralizedKernelWorker {
 
   #rollbackInheritedSysvAttachmentsWithinKernelEntry(
     childPid: number,
-    attachedSegments: readonly number[],
+    attachedMappings: readonly { mapAddr: number; segId: number }[],
     entry: KernelWorkerEntryContext,
   ): void {
-    const kernelShmdt = this.#kernelInstanceForEntry(entry).exports
-      .kernel_ipc_shmdt_for_process as
-      ((pid: number, shmid: number) => number) | undefined;
-    if (!kernelShmdt) {
+    const kernelShmdtAddr = this.#kernelInstanceForEntry(entry).exports
+      .kernel_ipc_shmdt_addr_for_process as
+      ((pid: number, addr: KernelPointer) => number) | undefined;
+    if (!kernelShmdtAddr) {
       throw new Error("Kernel lost required SysV SHM rollback export");
     }
-    for (let index = attachedSegments.length - 1; index >= 0; index--) {
-      const segId = attachedSegments[index]!;
-      const result = kernelShmdt(childPid, segId);
+    for (let index = attachedMappings.length - 1; index >= 0; index--) {
+      const mapping = attachedMappings[index]!;
+      const result = kernelShmdtAddr(
+        childPid,
+        this.toKernelPtr(mapping.mapAddr),
+      );
       if (!Number.isSafeInteger(result) || result < 0) {
         throw new Error(
-          `SysV shmdt rollback failed for inherited segment ${segId}`,
+          `SysV shmdt rollback failed for inherited segment ${mapping.segId}`,
         );
       }
     }
@@ -28287,10 +28543,19 @@ export class CentralizedKernelWorker {
         entry,
       );
     }
-    const kernelShmdt = this.#kernelInstanceForEntry(entry).exports.kernel_ipc_shmdt_for_process as
-      ((pid: number, shmid: number) => number) | undefined;
-    if (kernelShmdt) {
-      for (const mapping of pidMap.values()) kernelShmdt(pid, mapping.segId);
+    const kernelShmdtAddr = this.#kernelInstanceForEntry(entry).exports
+      .kernel_ipc_shmdt_addr_for_process as
+      ((pid: number, addr: KernelPointer) => number) | undefined;
+    if (!kernelShmdtAddr) {
+      throw new Error("Kernel lacks address-owned SysV SHM teardown export");
+    }
+    for (const [addr, mapping] of pidMap) {
+      const result = kernelShmdtAddr(pid, this.toKernelPtr(addr));
+      if (!Number.isSafeInteger(result) || result !== 0) {
+        throw new Error(
+          `Cannot detach SysV segment ${mapping.segId} at ${addr} for pid=${pid}`,
+        );
+      }
     }
     this.shmMappings.delete(pid);
   }
@@ -29176,8 +29441,9 @@ export class CentralizedKernelWorker {
       );
     }
 
-    // Register this pid:fd as a target for this port (needed for both
-    // Node.js TCP bridging and browser service-worker connection injection).
+    // Register this pid:fd as a fallback/readiness target for this port.
+    // Runtime target selection is Rust-owned; Node and browser still need this
+    // mirror to retain bridge resources and stable accept-wakeup identities.
     if (!this.tcpListenerTargets.has(port)) {
       this.tcpListenerTargets.set(port, []);
       this.tcpListenerRRIndex.set(port, 0);
@@ -29252,6 +29518,7 @@ export class CentralizedKernelWorker {
     this.tcpListeners.set(key, { server, pid, port, connections });
   }
 
+  /** Select the Rust-authoritative listener target for host-side injection. */
   pickListenerTarget(port: number): { pid: number; fd: number } | null {
     if (!Number.isSafeInteger(port) || port < 0 || port > 0xffff) {
       throw new RangeError(`invalid listener port ${String(port)}`);
@@ -29276,31 +29543,46 @@ export class CentralizedKernelWorker {
   #pickListenerTargetWithinKernelEntry(
     port: number,
     entry: KernelWorkerEntryContext,
+    excludePid = 0,
   ): TcpListenerTarget | null {
-    const targets = this.tcpListenerTargets.get(port);
-    if (!targets || targets.length === 0) return null;
-    const alive = targets.filter((target) => this.processes.has(target.pid));
-    if (alive.length === 0) return null;
-
-    // Do not prune unregistered targets here: a fork/spawn child owns its
-    // kernel listener before async Worker registration completes. Explicit
-    // process teardown removes truly dead targets.
-
-    // If there are fork children among targets, prefer them over the original
-    // listener (the master doesn't accept connections, workers do).
-    let candidates = alive;
-    if (alive.length > 1) {
-      const children = alive.filter(
-        (target) => this.getParentPid(target.pid, entry) !== undefined,
+    const scratch = this.#requireMainScratchRegion();
+    return scratch.withLease((lease) => {
+      const result = this.#invokeEntryScratchExport(
+        entry,
+        lease,
+        "kernel_pick_tcp_listener_target",
+        [port, excludePid, lease.exportPointer(0, 8), 8],
       );
-      if (children.length > 0) {
-        candidates = children;
+      if (result < 0) {
+        throw new KernelScratchError(
+          `kernel listener target selection failed: ${result}`,
+          -result,
+        );
       }
-    }
+      if (result === 0) return null;
+      if (result !== 1) {
+        throw new KernelScratchError(
+          `kernel returned invalid listener target count ${result}`,
+          EIO,
+        );
+      }
 
-    const idx = (this.tcpListenerRRIndex.get(port) ?? 0) % candidates.length;
-    this.tcpListenerRRIndex.set(port, idx + 1);
-    return candidates[idx]!;
+      const bytes = lease.copyOut(0, 8);
+      const view = new DataView(
+        bytes.buffer,
+        bytes.byteOffset,
+        bytes.byteLength,
+      );
+      const pid = view.getUint32(0, true);
+      const fd = view.getInt32(4, true);
+      if (pid === 0 || fd < 0) {
+        throw new KernelScratchError(
+          `kernel returned invalid listener target pid=${pid} fd=${fd}`,
+          EIO,
+        );
+      }
+      return { pid, fd };
+    });
   }
 
   /**
@@ -31674,6 +31956,12 @@ export class CentralizedKernelWorker {
         return;
       }
 
+      // Validate the kernel-side identity before materializing either bytes or
+      // a host mirror. If a memory64 address cannot fit the kernel's pointer
+      // model, the catch path can still roll back the raw nattch and mmap
+      // without leaving non-authoritative state behind.
+      const kernelAllocatedAddr = this.toKernelPtr(allocatedAddr);
+
       this.ensureProcessMemoryCovers(
         channel.pid,
         channel.memory,
@@ -31713,6 +32001,18 @@ export class CentralizedKernelWorker {
         pidMappings = new Map();
         this.shmMappings.set(channel.pid, pidMappings);
       }
+      if (pidMappings.has(allocatedAddr)) {
+        this.#rollbackIpcShmatWithinKernelEntry(
+          channel,
+          shmid,
+          size,
+          allocatedAddr,
+          entry,
+        );
+        if (this.hostReaped.has(channel.pid)) return;
+        this.completeChannelRawAndRelisten(channel, -EIO, EIO, entry);
+        return;
+      }
       pidMappings.set(allocatedAddr, {
         segId: shmid,
         size,
@@ -31720,6 +32020,41 @@ export class CentralizedKernelWorker {
         snapshot,
         seenVersion: this.shmSegmentVersions.get(shmid) ?? 0,
       });
+      const recordMapping = this.#kernelInstanceForEntry(entry).exports
+        .kernel_ipc_shm_record_mapping_for_task as
+        ((
+          pid: number,
+          tid: number,
+          addr: KernelPointer,
+          shmid: number,
+          size: number,
+        ) => number) | undefined;
+      const recordResult = recordMapping
+        ? recordMapping(
+          channel.pid,
+          callerTid,
+          kernelAllocatedAddr,
+          shmid,
+          size,
+        )
+        : -EIO;
+      if (!Number.isSafeInteger(recordResult) || recordResult !== 0) {
+        pidMappings.delete(allocatedAddr);
+        if (pidMappings.size === 0) this.shmMappings.delete(channel.pid);
+        this.#rollbackIpcShmatWithinKernelEntry(
+          channel,
+          shmid,
+          size,
+          allocatedAddr,
+          entry,
+        );
+        if (this.hostReaped.has(channel.pid)) return;
+        const errno = Number.isSafeInteger(recordResult) && recordResult < 0
+          ? -recordResult
+          : EIO;
+        this.completeChannelRawAndRelisten(channel, -errno, errno, entry);
+        return;
+      }
     } catch (err) {
       this.#rethrowKernelEntryFatal(err);
       if (err instanceof KernelIpcShmatRollbackError) throw err;
@@ -31760,16 +32095,56 @@ export class CentralizedKernelWorker {
       this.#rejectScratchTransfer(channel, error, entry);
       return;
     }
+    let kernelAddr: KernelPointer;
+    try {
+      kernelAddr = this.toKernelPtr(addr);
+    } catch {
+      // A valid wasm64 pointer can still exceed the kernel's address model.
+      // No successful shmat can have recorded that address, so POSIX shmdt
+      // reports an invalid attachment without truncating to a low mapping.
+      this.completeChannelRawAndRelisten(channel, -EINVAL, EINVAL, entry);
+      return;
+    }
     const callerTid = this.guestTidForChannel(channel);
     this.validateKernelTid(channel.pid, callerTid, entry);
+    const lookupMapping = this.#kernelInstanceForEntry(entry).exports
+      .kernel_ipc_shm_lookup_mapping_for_task as
+      ((pid: number, tid: number, addr: KernelPointer) => bigint) | undefined;
+    if (!lookupMapping) {
+      this.completeChannelRawAndRelisten(channel, -EIO, EIO, entry);
+      return;
+    }
+    const packed = lookupMapping(
+      channel.pid,
+      callerTid,
+      kernelAddr,
+    );
+    if (packed < 0n) {
+      const errno = Number(-packed);
+      this.completeChannelRawAndRelisten(channel, -errno, errno, entry);
+      return;
+    }
+    const kernelMapping = {
+      segId: Number(BigInt.asIntN(32, packed)),
+      size: Number((packed >> 32n) & 0xffff_ffffn),
+    };
     const pidMappings = this.shmMappings.get(channel.pid);
     if (!pidMappings) {
-      this.completeChannelRawAndRelisten(channel, -22, 22, entry); // EINVAL
+      this.completeChannelRawAndRelisten(channel, -EIO, EIO, entry);
       return;
     }
     const mapping = pidMappings.get(addr);
-    if (!mapping) {
-      this.completeChannelRawAndRelisten(channel, -22, 22, entry); // EINVAL
+    // Rust is authoritative. A missing or divergent byte mirror means the
+    // host cannot publish the attachment safely, so retain the Rust record
+    // for teardown and report the internal coherence failure truthfully.
+    if (
+      !mapping
+      || kernelMapping.segId < 0
+      || kernelMapping.size <= 0
+      || mapping.segId !== kernelMapping.segId
+      || mapping.size !== kernelMapping.size
+    ) {
+      this.completeChannelRawAndRelisten(channel, -EIO, EIO, entry);
       return;
     }
 
@@ -31785,13 +32160,12 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    const kernelShmdt = this.#kernelInstanceForEntry(entry).exports.kernel_ipc_shmdt_for_task as
-      (pid: number, tid: number, shmid: number) => number;
-    const result = kernelShmdt(
-      channel.pid,
-      callerTid,
-      mapping.segId,
-    );
+    const kernelShmdt = this.#kernelInstanceForEntry(entry).exports
+      .kernel_ipc_shmdt_addr_for_task as
+      ((pid: number, tid: number, addr: KernelPointer) => number) | undefined;
+    const result = kernelShmdt
+      ? kernelShmdt(channel.pid, callerTid, kernelAddr)
+      : -EIO;
 
     if (result < 0) {
       this.completeChannelRawAndRelisten(channel, result, -result, entry);

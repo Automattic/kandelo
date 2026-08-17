@@ -38,7 +38,7 @@ import {
   type ClosedLazyAsset,
 } from "./vfs/closed-lazy-assets";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
-import type { MountSpec } from "./vfs/default-mounts";
+import { FILE_MODES } from "./generated/abi";
 
 const DESTROY_REQUEST_TIMEOUT_MS = 2_000;
 const MAX_PENDING_PTY_OUTPUT_BYTES = 64 * 1024;
@@ -1155,7 +1155,7 @@ export class BrowserKernel {
       requestId,
       path,
       data: owned,
-      mode: mode & 0o7777,
+      mode: mode & FILE_MODES.S_MODE_BITS,
     }, [owned.buffer]);
   }
 

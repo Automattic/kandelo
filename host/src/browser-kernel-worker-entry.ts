@@ -82,6 +82,7 @@ import type {
 } from "./worker-protocol";
 import { ThreadPageAllocator } from "./thread-allocator";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD } from "./constants";
+import { FILE_MODES, OPEN_FLAGS } from "./generated/abi";
 import {
   acquireForkMemoryClone,
   computeProcessMemoryLayout,
@@ -110,6 +111,8 @@ import {
 import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
 
 const PAGE_SIZE = 65536;
+const O_WRONLY_CREAT_TRUNC =
+  OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
 // State
 let kernelWorker: CentralizedKernelWorker;
 let workerAdapter: BrowserWorkerAdapter;
@@ -1035,7 +1038,11 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       try { memfs.mkdir(dir, 0o755); } catch { /* exists */ }
     }
     const certBytes = new TextEncoder().encode(caCertPem);
-    const certFd = memfs.open("/etc/ssl/certs/ca-certificates.crt", 0o1101, 0o644);
+    const certFd = memfs.open(
+      "/etc/ssl/certs/ca-certificates.crt",
+      O_WRONLY_CREAT_TRUNC,
+      0o644,
+    );
     memfs.write(certFd, certBytes, 0, certBytes.length);
     memfs.close(certFd);
   } catch (e) {
@@ -2786,7 +2793,7 @@ async function handleReadVfsFile(
       "read or materialize a rootfs file",
     );
     const { data, stat } = await readPreparedPlatformFile(io, msg.path);
-    if ((stat.mode & 0o170000) !== 0o100000) {
+    if ((stat.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFREG) {
       respond(msg.requestId, null);
       return;
     }
@@ -2794,7 +2801,9 @@ async function handleReadVfsFile(
     const result = data.slice();
     respond(
       msg.requestId,
-      msg.includeMode ? { data: result, mode: stat.mode & 0o7777 } : result,
+      msg.includeMode
+        ? { data: result, mode: stat.mode & FILE_MODES.S_MODE_BITS }
+        : result,
     );
   } catch (error) {
     if (isMissingPathError(error)) respond(msg.requestId, null);
@@ -2813,7 +2822,11 @@ function handleWriteVfsFile(msg: Extract<MainToKernelMessage, { type: "write_vfs
   let fd: number | null = null;
   try {
     releaseMutation = rootfsSnapshotGate.beginMutation("write a rootfs file");
-    fd = io.open(msg.path, 0o1101 /* O_WRONLY|O_CREAT|O_TRUNC */, msg.mode & 0o7777);
+    fd = io.open(
+      msg.path,
+      O_WRONLY_CREAT_TRUNC,
+      msg.mode & FILE_MODES.S_MODE_BITS,
+    );
     let offset = 0;
     while (offset < msg.data.byteLength) {
       const written = io.write(
@@ -2831,7 +2844,7 @@ function handleWriteVfsFile(msg: Extract<MainToKernelMessage, { type: "write_vfs
     fd = null;
     // open(O_CREAT) preserves an existing file's mode. Apply the caller's
     // requested mode explicitly so replacement and creation behave alike.
-    io.chmod(msg.path, msg.mode & 0o7777);
+    io.chmod(msg.path, msg.mode & FILE_MODES.S_MODE_BITS);
     respond(msg.requestId, true);
   } catch (err) {
     if (fd !== null) {
@@ -3356,7 +3369,7 @@ async function handleHttpRequestMessage(msg: {
 
 function readFileFromFs(path: string): ArrayBuffer | null {
   try {
-    const fd = memfs.open(path, 0 /* O_RDONLY */, 0);
+    const fd = memfs.open(path, OPEN_FLAGS.O_RDONLY, 0);
     try {
       const stat = memfs.fstat(fd);
       const size = stat.size;

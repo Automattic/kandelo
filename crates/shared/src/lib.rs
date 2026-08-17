@@ -190,6 +190,29 @@ pub mod process_snapshot_wire {
     pub const HEADER_BYTES: usize = CMDLINE_LEN_OFFSET + size_of::<u32>();
 }
 
+/// Packed kernel/host wire layout for one readiness or lifecycle wake event.
+///
+/// The event type is a bitset because one kernel transition may make several
+/// host-owned retry classes eligible at once. Keep both producers and the
+/// shared Node/browser consumer on these generated values.
+pub mod wakeup_event_wire {
+    use core::mem::size_of;
+
+    pub const IDX_OFFSET: usize = 0;
+    pub const IDX_BYTES: usize = size_of::<u32>();
+    pub const TYPE_OFFSET: usize = IDX_OFFSET + IDX_BYTES;
+    pub const TYPE_BYTES: usize = size_of::<u8>();
+    pub const RECORD_BYTES: usize = TYPE_OFFSET + TYPE_BYTES;
+
+    pub const TYPE_READABLE: u8 = 1;
+    pub const TYPE_WRITABLE: u8 = 2;
+    pub const TYPE_ACCEPT: u8 = 4;
+    pub const TYPE_DATAGRAM_WRITABLE: u8 = 8;
+    pub const TYPE_PROCESS_STOPPED: u8 = 16;
+    pub const TYPE_PROCESS_CONTINUED: u8 = 32;
+    pub const TYPE_ADVISORY_LOCK: u8 = 64;
+}
+
 /// Cross-layer layout values and defensive limits for the non-forking spawn
 /// protocol.
 ///
@@ -892,6 +915,7 @@ pub mod flags {
     pub const O_ACCMODE: u32 = 3;
     pub const O_CREAT: u32 = 0o100;
     pub const O_EXCL: u32 = 0o200;
+    pub const O_NOCTTY: u32 = 0o400;
     pub const O_TRUNC: u32 = 0o1000;
     pub const O_APPEND: u32 = 0o2000;
     pub const O_NONBLOCK: u32 = 0o4000;
@@ -904,6 +928,7 @@ pub mod flags {
     pub const AT_FDCWD: i32 = -100;
     pub const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
     pub const AT_REMOVEDIR: u32 = 0x200;
+    pub const AT_EMPTY_PATH: u32 = 0x1000;
 }
 
 /// File descriptor flags (FD_*).
@@ -1081,6 +1106,14 @@ pub mod poll {
     pub const POLLNVAL: i16 = 0x0020;
 }
 
+/// Epoll event constants.
+pub mod epoll {
+    pub const EPOLLIN: u32 = 0x0001;
+    pub const EPOLLOUT: u32 = 0x0004;
+    pub const EPOLLERR: u32 = 0x0008;
+    pub const EPOLLHUP: u32 = 0x0010;
+}
+
 /// Seek whence constants.
 pub mod seek {
     pub const SEEK_SET: u32 = 0;
@@ -1120,6 +1153,11 @@ pub mod mode {
     pub const S_IFCHR: u32 = 0o020000;
     pub const S_IFIFO: u32 = 0o010000;
 
+    // Special permission bits
+    pub const S_ISUID: u32 = 0o4000;
+    pub const S_ISGID: u32 = 0o2000;
+    pub const S_ISVTX: u32 = 0o1000;
+
     // Owner permissions
     pub const S_IRWXU: u32 = 0o700;
     pub const S_IRUSR: u32 = 0o400;
@@ -1137,6 +1175,9 @@ pub mod mode {
     pub const S_IROTH: u32 = 0o004;
     pub const S_IWOTH: u32 = 0o002;
     pub const S_IXOTH: u32 = 0o001;
+
+    pub const S_MODE_BITS: u32 =
+        S_ISUID | S_ISGID | S_ISVTX | S_IRWXU | S_IRWXG | S_IRWXO;
 }
 
 /// Shared-memory channel layout offsets and sizes.
@@ -1447,9 +1488,9 @@ pub mod wait {
     pub const PROCESS_STATE_EXITED: i32 = 2;
 
     /// Host retry wake reason: the process entered a stopped state.
-    pub const WAKE_PROCESS_STOPPED: u8 = 16;
+    pub const WAKE_PROCESS_STOPPED: u8 = super::wakeup_event_wire::TYPE_PROCESS_STOPPED;
     /// Host retry wake reason: the process resumed from a stopped state.
-    pub const WAKE_PROCESS_CONTINUED: u8 = 32;
+    pub const WAKE_PROCESS_CONTINUED: u8 = super::wakeup_event_wire::TYPE_PROCESS_CONTINUED;
 }
 
 /// Fixed-width kernel/musl resource-usage wire record.
@@ -2894,14 +2935,20 @@ pub mod abi {
         "kernel_has_sa_nocldstop",
         "kernel_host_adapter_manifest_len",
         "kernel_host_adapter_manifest_ptr",
+        "kernel_ipc_shm_lookup_mapping_for_task",
+        "kernel_ipc_shm_record_mapping_for_process",
+        "kernel_ipc_shm_record_mapping_for_task",
         "kernel_ipc_shmat_for_process",
         "kernel_ipc_shmat_for_task",
+        "kernel_ipc_shmdt_addr_for_process",
+        "kernel_ipc_shmdt_addr_for_task",
         "kernel_ipc_shmdt_for_process",
         "kernel_ipc_shmdt_for_task",
         "kernel_is_fd_nonblock",
         "kernel_mark_process_signaled",
         "kernel_mq_descriptor_msgsize",
         "kernel_msqid_ds_bytes",
+        "kernel_pick_tcp_listener_target",
         "kernel_pick_signal_target_tid",
         "kernel_pipe_has_readers",
         "kernel_posix_timer_fire",
@@ -2923,6 +2970,7 @@ pub mod abi {
         "kernel_spawn_scratch_capacity",
         "kernel_spawn_scratch_pointer",
         "kernel_spawn_scratch_retained_capacity",
+        "kernel_take_process_timer_cleanup",
         "kernel_thread_exit",
         "kernel_thread_has_deliverable",
         "kernel_transfer_channel_execute",

@@ -29,6 +29,8 @@ const KERNEL_EXPORT_NAMES = [
   "kernel_get_memory_pages",
   "kernel_get_process_exit_signal",
   "kernel_handle_channel",
+  "kernel_ipc_shm_read_chunk",
+  "kernel_ipc_shm_record_mapping_for_task",
   "kernel_ipc_shmat_for_task",
   "kernel_ipc_shmdt_for_process",
   "kernel_set_current_tid",
@@ -58,6 +60,7 @@ function makeHarness(
     worker: Record<string, any>,
     kernelMemory: WebAssembly.Memory,
   ) => Record<string, unknown>,
+  kernelPointerWidth: 4 | 8 = pointerWidth,
 ): {
   readonly worker: Record<string, any>;
   readonly channel: TestChannel;
@@ -86,10 +89,10 @@ function makeHarness(
   let worker!: Record<string, any>;
   let mutableImplementations!: Record<string, unknown>;
   const rawInstance = createKernelScratchTestInstance(
-    pointerWidth,
+    kernelPointerWidth,
     kernelMemory,
     () => mutableImplementations,
-    () => kernelPointer(pointerWidth, 4_096),
+    () => kernelPointer(kernelPointerWidth, 4_096),
     4,
     KERNEL_EXPORT_NAMES,
   );
@@ -99,7 +102,7 @@ function makeHarness(
     gatedInstance.exports.kernel_alloc_scratch as
       (capacity: number) => number | bigint,
     CH_TOTAL_SIZE,
-    pointerWidth,
+    kernelPointerWidth,
     "IPC shmat entry test scratch",
     gatedInstance,
   );
@@ -171,6 +174,200 @@ function readResult(channel: TestChannel): {
 }
 
 describe("IPC shmat rollback entry authority", () => {
+  it.each([
+    ["wasm32", 4],
+    ["wasm64", 8],
+  ] as const)(
+    "%s records Rust ownership only after bytes and the host mirror exist",
+    (_name, pointerWidth) => {
+      const address = 0x7_000;
+      const segment = new Uint8Array([3, 1, 4, 1]);
+      const recordMapping = vi.fn(() => 0);
+      const shmdt = vi.fn(() => 0);
+      const harness = makeHarness(
+        pointerWidth,
+        {},
+        (_worker, kernelMemory) => ({
+          kernel_drain_wakeup_events: () => 0,
+          kernel_get_memory_pages: () => 256,
+          kernel_get_process_exit_signal: () => 0,
+          kernel_handle_channel: (rawPointer: number | bigint) => {
+            const view = new DataView(
+              kernelMemory.buffer,
+              Number(rawPointer),
+              CH_TOTAL_SIZE,
+            );
+            view.setBigInt64(CH_RETURN, BigInt(address), true);
+            view.setUint32(CH_ERRNO, 0, true);
+            return 0;
+          },
+          kernel_ipc_shm_read_chunk: (
+            _shmid: number,
+            _offset: number,
+            outPointer: number | bigint,
+            length: number,
+          ) => {
+            new Uint8Array(kernelMemory.buffer).set(
+              segment.subarray(0, length),
+              Number(outPointer),
+            );
+            return length;
+          },
+          kernel_ipc_shm_record_mapping_for_task: recordMapping,
+          kernel_ipc_shmat_for_task: () => segment.byteLength,
+          kernel_ipc_shmdt_for_process: shmdt,
+          kernel_set_current_tid: () => 0,
+          kernel_validate_task: () => 0,
+        }),
+      );
+      writeShmat(harness.channel, 17, address);
+
+      harness.worker.handleSyscall(harness.channel);
+
+      expect(recordMapping).toHaveBeenCalledExactlyOnceWith(
+        41,
+        41,
+        kernelPointer(pointerWidth, address),
+        17,
+        segment.byteLength,
+      );
+      expect(shmdt).not.toHaveBeenCalled();
+      expect(
+        Array.from(
+          new Uint8Array(
+            harness.channel.memory.buffer,
+            address,
+            segment.byteLength,
+          ),
+        ),
+      ).toEqual(Array.from(segment));
+      expect(harness.worker.shmMappings.get(41)?.get(address)).toMatchObject({
+        segId: 17,
+        size: segment.byteLength,
+      });
+      expect(readResult(harness.channel)).toEqual({
+        status: CHANNEL_STATUS_COMPLETE,
+        retVal: address,
+        errno: 0,
+      });
+    },
+  );
+
+  it("rolls back mmap, the byte mirror, and nattch when Rust rejects the record", () => {
+    const address = 0x7_000;
+    const segmentSize = 4;
+    const syscalls: number[] = [];
+    const shmdt = vi.fn(() => 0);
+    const harness = makeHarness(4, {}, (_worker, kernelMemory) => ({
+      kernel_drain_wakeup_events: () => 0,
+      kernel_get_memory_pages: () => 256,
+      kernel_get_process_exit_signal: () => 0,
+      kernel_handle_channel: (rawPointer: number) => {
+        const view = new DataView(
+          kernelMemory.buffer,
+          rawPointer,
+          CH_TOTAL_SIZE,
+        );
+        const syscall = view.getUint32(CH_SYSCALL, true);
+        syscalls.push(syscall);
+        view.setBigInt64(
+          CH_RETURN,
+          BigInt(syscall === ABI_SYSCALLS.Mmap ? address : 0),
+          true,
+        );
+        view.setUint32(CH_ERRNO, 0, true);
+        return 0;
+      },
+      kernel_ipc_shm_read_chunk: (
+        _shmid: number,
+        _offset: number,
+        outPointer: number,
+        length: number,
+      ) => {
+        new Uint8Array(kernelMemory.buffer, outPointer, length).fill(0x55);
+        return length;
+      },
+      kernel_ipc_shm_record_mapping_for_task: () => -12,
+      kernel_ipc_shmat_for_task: () => segmentSize,
+      kernel_ipc_shmdt_for_process: shmdt,
+      kernel_set_current_tid: () => 0,
+      kernel_validate_task: () => 0,
+    }));
+    writeShmat(harness.channel, 19, address);
+
+    harness.worker.handleSyscall(harness.channel);
+
+    expect(syscalls).toEqual([
+      ABI_SYSCALLS.Mmap,
+      ABI_SYSCALLS.Munmap,
+    ]);
+    expect(shmdt).toHaveBeenCalledExactlyOnceWith(41, 19);
+    expect(harness.worker.shmMappings.has(41)).toBe(false);
+    expect(readResult(harness.channel)).toEqual({
+      status: CHANNEL_STATUS_COMPLETE,
+      retVal: -12,
+      errno: 12,
+    });
+  });
+
+  it("rolls back before creating a mirror when the kernel cannot name a wasm64 mapping", () => {
+    const address = 0x1_0000_7000;
+    const segmentSize = 4;
+    const syscalls: number[] = [];
+    const readChunk = vi.fn(() => segmentSize);
+    const recordMapping = vi.fn(() => 0);
+    const shmdt = vi.fn(() => 0);
+    const harness = makeHarness(
+      8,
+      {},
+      (_worker, kernelMemory) => ({
+        kernel_drain_wakeup_events: () => 0,
+        kernel_get_memory_pages: () => 256,
+        kernel_get_process_exit_signal: () => 0,
+        kernel_handle_channel: (rawPointer: number) => {
+          const view = new DataView(
+            kernelMemory.buffer,
+            rawPointer,
+            CH_TOTAL_SIZE,
+          );
+          const syscall = view.getUint32(CH_SYSCALL, true);
+          syscalls.push(syscall);
+          view.setBigInt64(
+            CH_RETURN,
+            BigInt(syscall === ABI_SYSCALLS.Mmap ? address : 0),
+            true,
+          );
+          view.setUint32(CH_ERRNO, 0, true);
+          return 0;
+        },
+        kernel_ipc_shm_read_chunk: readChunk,
+        kernel_ipc_shm_record_mapping_for_task: recordMapping,
+        kernel_ipc_shmat_for_task: () => segmentSize,
+        kernel_ipc_shmdt_for_process: shmdt,
+        kernel_set_current_tid: () => 0,
+        kernel_validate_task: () => 0,
+      }),
+      4,
+    );
+    writeShmat(harness.channel, 19, address);
+
+    harness.worker.handleSyscall(harness.channel);
+
+    expect(syscalls).toEqual([
+      ABI_SYSCALLS.Mmap,
+      ABI_SYSCALLS.Munmap,
+    ]);
+    expect(readChunk).not.toHaveBeenCalled();
+    expect(recordMapping).not.toHaveBeenCalled();
+    expect(shmdt).toHaveBeenCalledExactlyOnceWith(41, 19);
+    expect(harness.worker.shmMappings.has(41)).toBe(false);
+    expect(readResult(harness.channel)).toEqual({
+      status: CHANNEL_STATUS_COMPLETE,
+      retVal: -5,
+      errno: 5,
+    });
+  });
+
   it.each([
     ["wasm32", 4],
     ["wasm64", 8],

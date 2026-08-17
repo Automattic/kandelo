@@ -8,6 +8,8 @@ import {
   ABI_SYSCALL_NAMES,
   ABI_SYSCALLS,
   ABI_VERSION,
+  ACCESS_MODES,
+  AT_FLAGS,
   CHANNEL_STATUS,
   CH_ARG_SIZE,
   CH_ARGS,
@@ -35,6 +37,11 @@ import {
   CH_STATUS,
   CH_SYSCALL,
   CH_TOTAL_SIZE,
+  DIRENT_TYPES,
+  EPOLL_EVENTS,
+  FCNTL_COMMANDS,
+  FD_FLAGS,
+  FILE_MODES,
   HOST_ADAPTER_MANIFEST_FIELDS,
   HOST_ADAPTER_MANIFEST_MAGIC,
   HOST_ADAPTER_MANIFEST_SIZE,
@@ -46,6 +53,7 @@ import {
   HOST_ADAPTER_VERSION,
   HOST_ADAPTER_WORKER_FEATURES,
   HOST_INTERCEPTED_SYSCALLS,
+  OPEN_FLAGS,
   PROCESS_MEMORY_DEFAULT_INITIAL_PAGES,
   PROCESS_MEMORY_DEFAULT_MAX_PAGES,
   PROCESS_MEMORY_DEFAULT_THREAD_SLOTS,
@@ -67,6 +75,7 @@ import {
   PROCESS_MEMORY_WASM_PAGE_SIZE,
   PROCESS_METADATA_KIND_ARGV,
   PROCESS_METADATA_KIND_ENVIRONMENT,
+  POLL_EVENTS,
   PROCESS_SNAPSHOT_CMDLINE_LEN_OFFSET,
   PROCESS_SNAPSHOT_COMM_LEN_OFFSET,
   PROCESS_SNAPSHOT_COUNT_BYTES,
@@ -98,6 +107,12 @@ import {
   STRUCT_SIZE_WASM_STATFS,
   STRUCT_SIZE_WASM_TIMESPEC,
   SYSCALL_ARGS,
+  SELECT_FD_SET_BYTES,
+  SELECT_FD_SETSIZE,
+  SEEK_WHENCE,
+  WAKEUP_EVENT_FIELDS,
+  WAKEUP_EVENT_RECORD_BYTES,
+  WAKEUP_EVENT_TYPES,
   WASM_DIRENT_INO_OFFSET,
   WASM_DIRENT_NAME_LENGTH_OFFSET,
   WASM_DIRENT_TYPE_OFFSET,
@@ -199,6 +214,18 @@ function processSnapshotFieldOffset(fieldName: string): number {
   return field.offset;
 }
 
+function wakeupEventField(
+  fieldName: string,
+): { offset: number; size: number; type: string } {
+  const field = snapshot.wakeup_event_wire.fields.find(
+    (candidate: { name: string }) => candidate.name === fieldName,
+  );
+  if (!field) {
+    throw new Error(`missing wakeup event field ${fieldName}`);
+  }
+  return { offset: field.offset, size: field.size, type: field.type };
+}
+
 function statusNumber(name: string): number {
   const status = snapshot.channel_status_codes.find((s: { name: string }) => s.name === name);
   if (!status) throw new Error(`missing channel_status_codes entry ${name}`);
@@ -221,6 +248,12 @@ function signalOffset(name: string): number {
 
 function namedNumberMap(entries: NamedNumber[]): Record<string, number> {
   return Object.fromEntries(entries.map(({ name, number }) => [name, number]));
+}
+
+function namedValueMap(
+  entries: Array<{ name: string; value: number }>,
+): Record<string, number> {
+  return Object.fromEntries(entries.map(({ name, value }) => [name, value]));
 }
 
 function hostAdapterManifestField(name: string): { offset: number; size: number } {
@@ -463,6 +496,54 @@ describe("generated host ABI bindings", () => {
       .toBe(processSnapshotFieldOffset("comm_len"));
     expect(PROCESS_SNAPSHOT_CMDLINE_LEN_OFFSET)
       .toBe(processSnapshotFieldOffset("cmdline_len"));
+  });
+
+  it("match the packed wakeup-event wire contract", () => {
+    expect(WAKEUP_EVENT_RECORD_BYTES)
+      .toBe(snapshot.wakeup_event_wire.record_size);
+    expect(WAKEUP_EVENT_FIELDS.idx).toEqual(wakeupEventField("idx"));
+    expect(WAKEUP_EVENT_FIELDS.wakeType)
+      .toEqual(wakeupEventField("wakeType"));
+    expect(Object.entries(WAKEUP_EVENT_TYPES)).toEqual(
+      snapshot.wakeup_event_wire.types.map(
+        (eventType: { name: string; bit: number }) => [
+          eventType.name,
+          eventType.bit,
+        ],
+      ),
+    );
+  });
+
+  it("match Rust-owned I/O multiplexing metadata", () => {
+    expect(POLL_EVENTS).toEqual(
+      namedValueMap(snapshot.io_multiplexing.poll_events),
+    );
+    expect(EPOLL_EVENTS).toEqual(
+      namedValueMap(snapshot.io_multiplexing.epoll_events),
+    );
+    expect(SELECT_FD_SETSIZE)
+      .toBe(snapshot.io_multiplexing.select.fd_setsize);
+    expect(SELECT_FD_SET_BYTES)
+      .toBe(snapshot.io_multiplexing.select.fd_set_bytes);
+  });
+
+  it("match Rust-owned VFS metadata", () => {
+    expect(OPEN_FLAGS).toEqual(namedValueMap(snapshot.vfs_metadata.open_flags));
+    expect(AT_FLAGS).toEqual(namedValueMap(snapshot.vfs_metadata.at_flags));
+    expect(FD_FLAGS).toEqual(namedValueMap(snapshot.vfs_metadata.fd_flags));
+    expect(FCNTL_COMMANDS).toEqual(
+      namedValueMap(snapshot.vfs_metadata.fcntl_commands),
+    );
+    expect(ACCESS_MODES).toEqual(
+      namedValueMap(snapshot.vfs_metadata.access_modes),
+    );
+    expect(FILE_MODES).toEqual(namedValueMap(snapshot.vfs_metadata.file_modes));
+    expect(DIRENT_TYPES).toEqual(
+      namedValueMap(snapshot.vfs_metadata.dirent_types),
+    );
+    expect(SEEK_WHENCE).toEqual(
+      namedValueMap(snapshot.vfs_metadata.seek_whence),
+    );
   });
 
   it("match the atomic process-metadata transaction contract", () => {

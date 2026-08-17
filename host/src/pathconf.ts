@@ -1,4 +1,5 @@
 import {
+  FILE_MODES,
   PATHCONF_NAMES,
   POSIX_PATH_MAX_BYTES,
 } from "./generated/abi";
@@ -42,7 +43,7 @@ export function filesystemPathconf(
       return 1; // the common resolver rejects overlong byte components
     case PATHCONF_NAMES.ASYNC_IO:
       // musl implements AIO with guest pthreads over pread/pwrite/fsync.
-      return (stat.mode & 0o170000) === 0o100000
+      return (stat.mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFREG
         ? 1
         : invalidAssociation(name);
     case PATHCONF_NAMES.SYNC_IO:
@@ -63,13 +64,15 @@ export function filesystemPathconf(
     case PATHCONF_NAMES.TIMESTAMP_RESOLUTION:
       return profile.timestampResolutionNs;
     case PATHCONF_NAMES.PIPE_BUF: {
-      const fileType = stat.mode & 0o170000;
+      const fileType = stat.mode & FILE_MODES.S_IFMT;
       // Named FIFO support and host atomicity are not uniform yet. Preserve
       // the valid association without fabricating a numeric guarantee. For a
       // directory the value applies to FIFOs created within that directory.
-      return fileType === 0o010000 || fileType === 0o040000
-        ? null
-        : invalidAssociation(name);
+      if (
+        fileType === FILE_MODES.S_IFIFO ||
+        fileType === FILE_MODES.S_IFDIR
+      ) return null;
+      return invalidAssociation(name);
     }
     case PATHCONF_NAMES.MAX_CANON:
     case PATHCONF_NAMES.MAX_INPUT:

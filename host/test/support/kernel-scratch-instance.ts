@@ -207,6 +207,18 @@ function signatures(
       parameters: [i32, i32, pointer, i32],
       result: i32,
     },
+    kernel_ipc_shm_lookup_mapping_for_task: {
+      parameters: [i32, i32, pointer],
+      result: i64,
+    },
+    kernel_ipc_shm_record_mapping_for_process: {
+      parameters: [i32, pointer, i32, i32],
+      result: i32,
+    },
+    kernel_ipc_shm_record_mapping_for_task: {
+      parameters: [i32, i32, pointer, i32, i32],
+      result: i32,
+    },
     kernel_ipc_shmat_for_process: {
       parameters: [i32, i32, i32, i32],
       result: i32,
@@ -217,6 +229,18 @@ function signatures(
     },
     kernel_ipc_shmdt_for_process: {
       parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_ipc_shmdt_addr: {
+      parameters: [pointer],
+      result: i32,
+    },
+    kernel_ipc_shmdt_addr_for_process: {
+      parameters: [i32, pointer],
+      result: i32,
+    },
+    kernel_ipc_shmdt_addr_for_task: {
+      parameters: [i32, i32, pointer],
       result: i32,
     },
     kernel_ipc_shmdt_for_task: {
@@ -435,10 +459,18 @@ function signatures(
     },
     kernel_thread_exit: {
       parameters: [i32, i32],
-      result: i32,
+      result: i64,
     },
     kernel_thread_has_deliverable: {
       parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_pick_tcp_listener_target: {
+      parameters: [i32, i32, pointer, i32],
+      result: i32,
+    },
+    kernel_take_process_timer_cleanup: {
+      parameters: [i32, pointer, i32],
       result: i32,
     },
     kernel_transfer_scratch_begin: {

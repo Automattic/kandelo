@@ -281,7 +281,17 @@ function sysvHarness() {
   const shmat = vi.fn(() => size);
   const shmdt = vi.fn(() => 0);
   const shmatForTask = vi.fn(() => size);
-  const shmdtForTask = vi.fn(() => 0);
+  const recordForProcess = vi.fn(() => 0);
+  const recordForTask = vi.fn(() => 0);
+  const lookupForTask = vi.fn((
+    _pid: number,
+    _tid: number,
+    addr: number,
+  ) => addr === mapAddr
+    ? (BigInt(size) << 32n) | BigInt(segId)
+    : -22n);
+  const shmdtAddrForProcess = vi.fn(() => 0);
+  const shmdtAddrForTask = vi.fn(() => 0);
   const validateTask = vi.fn(() => 0);
   const handleChannel = vi.fn((channelPtr: number | bigint) => {
     const view = new DataView(
@@ -297,8 +307,17 @@ function sysvHarness() {
           view.getBigInt64(CH_ARGS + index * CH_ARG_SIZE, true),
       ),
     });
-    view.setBigInt64(CH_RETURN, -1n, true);
-    view.setUint32(CH_ERRNO, 12, true);
+    const syscallNr = view.getUint32(CH_SYSCALL, true);
+    view.setBigInt64(
+      CH_RETURN,
+      syscallNr === ABI_SYSCALLS.Mmap ? -1n : 0n,
+      true,
+    );
+    view.setUint32(
+      CH_ERRNO,
+      syscallNr === ABI_SYSCALLS.Mmap ? 12 : 0,
+      true,
+    );
     return 0;
   });
   const readChunk = vi.fn((id: number, offset: number, outPtr: number, maxLen: number) => {
@@ -344,10 +363,14 @@ function sysvHarness() {
       kernelExports: {
         kernel_get_process_exit_signal: () => 0,
         kernel_handle_channel: handleChannel,
+        kernel_ipc_shm_lookup_mapping_for_task: lookupForTask,
+        kernel_ipc_shm_record_mapping_for_process: recordForProcess,
+        kernel_ipc_shm_record_mapping_for_task: recordForTask,
         kernel_ipc_shmat_for_process: shmat,
         kernel_ipc_shmat_for_task: shmatForTask,
+        kernel_ipc_shmdt_addr_for_process: shmdtAddrForProcess,
+        kernel_ipc_shmdt_addr_for_task: shmdtAddrForTask,
         kernel_ipc_shmdt_for_process: shmdt,
-        kernel_ipc_shmdt_for_task: shmdtForTask,
         kernel_ipc_shm_read_chunk: readChunk,
         kernel_ipc_shm_write_chunk: writeChunk,
         kernel_set_current_tid: () => 0,
@@ -356,10 +379,14 @@ function sysvHarness() {
       kernelExportNames: [
         "kernel_get_process_exit_signal",
         "kernel_handle_channel",
+        "kernel_ipc_shm_lookup_mapping_for_task",
+        "kernel_ipc_shm_record_mapping_for_process",
+        "kernel_ipc_shm_record_mapping_for_task",
         "kernel_ipc_shmat_for_process",
         "kernel_ipc_shmat_for_task",
+        "kernel_ipc_shmdt_addr_for_process",
+        "kernel_ipc_shmdt_addr_for_task",
         "kernel_ipc_shmdt_for_process",
-        "kernel_ipc_shmdt_for_task",
         "kernel_ipc_shm_read_chunk",
         "kernel_ipc_shm_write_chunk",
         "kernel_set_current_tid",
@@ -370,16 +397,20 @@ function sysvHarness() {
   return {
     kw,
     handleChannel,
+    lookupForTask,
     mapAddr,
     memories,
     pids,
     readChunk,
+    recordForProcess,
+    recordForTask,
     segment,
     segId,
     shmat,
     shmatForTask,
     shmdt,
-    shmdtForTask,
+    shmdtAddrForProcess,
+    shmdtAddrForTask,
     size,
     syntheticMemorySyscalls,
     validateTask,
@@ -433,13 +464,35 @@ describe("SysV SHM coherence and lifecycle", () => {
     const h = sysvHarness();
     h.kw.inheritProcessSharedMappings(h.pids[0], h.pids[2]);
     expect(h.shmat).toHaveBeenCalledWith(h.pids[2], h.segId, h.mapAddr, 0);
+    expect(h.recordForProcess).toHaveBeenCalledWith(
+      h.pids[2],
+      h.mapAddr,
+      h.segId,
+      h.size,
+    );
     expect((h.kw as any).shmMappings.get(h.pids[2]).size).toBe(1);
 
     (h.kw as any).releaseAllSharedMemoryForProcess(h.pids[2]);
-    expect(h.shmdt).toHaveBeenCalledTimes(1);
-    expect(h.shmdt).toHaveBeenCalledWith(h.pids[2], h.segId);
+    expect(h.shmdtAddrForProcess).toHaveBeenCalledTimes(1);
+    expect(h.shmdtAddrForProcess).toHaveBeenCalledWith(
+      h.pids[2],
+      h.mapAddr,
+    );
     (h.kw as any).releaseAllSharedMemoryForProcess(h.pids[2]);
-    expect(h.shmdt).toHaveBeenCalledTimes(1);
+    expect(h.shmdtAddrForProcess).toHaveBeenCalledTimes(1);
+    expect(h.shmdt).not.toHaveBeenCalled();
+  });
+
+  it("retains the byte mirror when Rust cannot prove lifecycle detach", () => {
+    const h = sysvHarness();
+    h.shmdtAddrForProcess.mockReturnValue(-5);
+
+    expect(() => {
+      (h.kw as any).releaseAllSharedMemoryForProcess(h.pids[0]);
+    }).toThrow(/Cannot detach SysV segment/);
+
+    expect((h.kw as any).shmMappings.get(h.pids[0])?.has(h.mapAddr))
+      .toBe(true);
   });
 
   it("rolls back attachments when inherited SysV setup fails", () => {
@@ -455,7 +508,12 @@ describe("SysV SHM coherence and lifecycle", () => {
     h.shmat.mockImplementationOnce(() => h.size).mockImplementationOnce(() => -12);
 
     expect(() => h.kw.inheritProcessSharedMappings(h.pids[0], h.pids[2])).toThrow();
-    expect(h.shmdt).toHaveBeenCalledTimes(1);
+    expect(h.shmdtAddrForProcess).toHaveBeenCalledTimes(1);
+    expect(h.shmdtAddrForProcess).toHaveBeenCalledWith(
+      h.pids[2],
+      h.mapAddr,
+    );
+    expect(h.shmdt).not.toHaveBeenCalled();
     expect((h.kw as any).shmMappings.has(h.pids[2])).toBe(false);
   });
 
@@ -587,6 +645,70 @@ describe("SysV SHM coherence and lifecycle", () => {
     expect(relisten).toHaveBeenCalledWith(channel);
   });
 
+  it("resolves shmdt identity in Rust before publishing and detaching", () => {
+    const h = sysvHarness();
+    const pid = h.pids[0];
+    const process = (h.kw as any).processes.get(pid);
+    const channel = process.channels[0];
+    const relisten = vi.fn();
+    h.kw.testAuthority.configureScratchBoundaryHooksForTest({
+      relistenChannel: relisten,
+    });
+    new Uint8Array(process.memory.buffer)[h.mapAddr + 7] = 0x7d;
+
+    writeChannelSyscall(
+      channel,
+      ABI_SYSCALLS.Shmdt,
+      [BigInt(h.mapAddr)],
+    );
+    h.kw.testAuthority.dispatchScratchBoundarySyscallForTest(channel);
+
+    expect(h.lookupForTask).toHaveBeenCalledWith(
+      pid,
+      pid,
+      h.mapAddr,
+    );
+    expect(h.segment[7]).toBe(0x7d);
+    expect(h.shmdtAddrForTask).toHaveBeenCalledExactlyOnceWith(
+      pid,
+      pid,
+      h.mapAddr,
+    );
+    expect((h.kw as any).shmMappings.has(pid)).toBe(false);
+    expect(h.syntheticMemorySyscalls.at(-1)).toMatchObject({
+      syscallNr: ABI_SYSCALLS.Munmap,
+    });
+    const view = new DataView(channel.memory.buffer, channel.channelOffset);
+    expect(Number(view.getBigInt64(CH_RETURN, true))).toBe(0);
+    expect(view.getUint32(CH_ERRNO, true)).toBe(0);
+    expect(view.getUint32(CH_STATUS, true)).toBe(CHANNEL_STATUS_COMPLETE);
+    expect(relisten).toHaveBeenCalledWith(channel);
+  });
+
+  it("keeps the host mirror when address-owned shmdt fails", () => {
+    const h = sysvHarness();
+    const pid = h.pids[0];
+    const process = (h.kw as any).processes.get(pid);
+    const channel = process.channels[0];
+    h.shmdtAddrForTask.mockReturnValue(-5);
+    h.kw.testAuthority.configureScratchBoundaryHooksForTest({
+      relistenChannel: vi.fn(),
+    });
+
+    writeChannelSyscall(
+      channel,
+      ABI_SYSCALLS.Shmdt,
+      [BigInt(h.mapAddr)],
+    );
+    h.kw.testAuthority.dispatchScratchBoundarySyscallForTest(channel);
+
+    expect((h.kw as any).shmMappings.get(pid)?.has(h.mapAddr)).toBe(true);
+    expect(h.syntheticMemorySyscalls).toHaveLength(0);
+    const view = new DataView(channel.memory.buffer, channel.channelOffset);
+    expect(Number(view.getBigInt64(CH_RETURN, true))).toBe(-5);
+    expect(view.getUint32(CH_ERRNO, true)).toBe(5);
+  });
+
   it("does not alias a wasm64 shmdt address to an existing low mapping", () => {
     const h = sysvHarness();
     const process = (h.kw as any).processes.get(h.pids[0]);
@@ -606,7 +728,8 @@ describe("SysV SHM coherence and lifecycle", () => {
     h.kw.testAuthority.dispatchScratchBoundarySyscallForTest(channel);
 
     expect((h.kw as any).shmMappings.get(h.pids[0]).has(h.mapAddr)).toBe(true);
-    expect(h.shmdtForTask).not.toHaveBeenCalled();
+    expect(h.lookupForTask).not.toHaveBeenCalled();
+    expect(h.shmdtAddrForTask).not.toHaveBeenCalled();
     expect(h.handleChannel).not.toHaveBeenCalled();
     const view = new DataView(channel.memory.buffer, channel.channelOffset);
     expect(Number(view.getBigInt64(CH_RETURN, true))).toBe(-22);

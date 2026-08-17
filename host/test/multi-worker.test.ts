@@ -49,7 +49,10 @@ import {
   PROCESS_STATE_RUNNING,
   WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
 } from "../src/generated/abi";
-import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
+import {
+  emptyProcessTimerCleanup,
+  installKernelWorkerTestScratch,
+} from "./kernel-worker-test-scratch";
 
 const MAX_PAGES = 1024; // 64 MiB: enough to prove initial < maximum.
 const WASM32_CONTINUATION_HEADER_SIZE =
@@ -152,6 +155,7 @@ function createGatedLifecycleHarness(options: {
     kernel_remove_process: vi.fn(() => 0),
     kernel_set_current_tid: vi.fn(() => 0),
     kernel_set_max_addr: vi.fn(() => 0),
+    kernel_take_process_timer_cleanup: emptyProcessTimerCleanup(kernelMemory),
     kernel_thread_exit: vi.fn(() => 0),
     kernel_validate_task: vi.fn(() => 0),
     ...(options.kernelExports ?? {}),
@@ -662,6 +666,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       shared: true,
     });
     publishMainForkContinuation(parentMemory, oldChannelOffset);
+    let selectedListenerPid = parentPid;
     let finishFork!: (offsets: number[]) => void;
     const forkLaunch = new Promise<number[]>((resolve) => {
       finishFork = resolve;
@@ -675,6 +680,22 @@ describe("CentralizedKernelWorker Process Management", () => {
           _pid: number,
           fd: number,
         ) => fd === listenerFd ? 41 : -1,
+        kernel_pick_tcp_listener_target: (
+          _port: number,
+          _excludePid: number,
+          outPtr: number,
+          outCapacity: number,
+        ) => {
+          if (outCapacity !== 8) return -22;
+          const view = new DataView(
+            harness.kernelMemory.buffer,
+            outPtr,
+            outCapacity,
+          );
+          view.setUint32(0, selectedListenerPid, true);
+          view.setInt32(4, listenerFd, true);
+          return 1;
+        },
       },
     });
     const [oldChannel] = harness.worker.testAuthority
@@ -707,6 +728,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       () => onFork.mock.calls.length === 1,
       "fork worker launch",
     );
+    selectedListenerPid = childPid;
 
     // The fork path must install child mirrors before the async worker launch.
     // Replace the parent generation while that launch is pending, then remove
@@ -925,7 +947,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       view.setUint32(CH_ERRNO, 0, true);
       return 0;
     });
-    const threadExit = vi.fn(() => 0);
+    const threadExit = vi.fn(() => 0n);
     harness = createGatedLifecycleHarness({
       callbacks: { onClone, onThreadExit },
       kernelExports: {
@@ -997,7 +1019,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       view.setUint32(CH_ERRNO, 0, true);
       return 0;
     });
-    const threadExit = vi.fn(() => 0);
+    const threadExit = vi.fn(() => 0n);
     harness = createGatedLifecycleHarness({
       callbacks: { onClone },
       kernelExports: {
@@ -1045,7 +1067,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       maximum: 4,
       shared: true,
     });
-    const threadExit = vi.fn(() => 0);
+    const threadExit = vi.fn(() => 0n);
     const onThreadExit = vi.fn();
     const harness = createGatedLifecycleHarness({
       callbacks: { onThreadExit },
@@ -1217,7 +1239,9 @@ describe("CentralizedKernelWorker Process Management", () => {
       view.setUint32(CH_ERRNO, 0, true);
       return 0;
     });
-    const threadExit = vi.fn(() => 0);
+    const threadExit = vi.fn()
+      .mockReturnValueOnce(BigInt(ctidPtr))
+      .mockReturnValueOnce(0n);
     harness = createGatedLifecycleHarness({
       callbacks: { onClone },
       kernelExports: {
@@ -1300,7 +1324,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       view.setUint32(CH_ERRNO, 0, true);
       return 0;
     });
-    const threadExit = vi.fn(() => 0);
+    const threadExit = vi.fn(() => BigInt(ctidPtr));
     harness = createGatedLifecycleHarness({
       callbacks: { onClone },
       kernelExports: {
@@ -1388,7 +1412,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       view.setUint32(CH_ERRNO, 0, true);
       return 0;
     });
-    const threadExit = vi.fn(() => 0);
+    const threadExit = vi.fn(() => BigInt(newCtidPtr));
     harness = createGatedLifecycleHarness({
       callbacks: { onClone },
       kernelExports: {
@@ -1837,7 +1861,6 @@ describe("CentralizedKernelWorker Process Management", () => {
       ).toEqual({
         channelTidEntries: 1,
         forkContextEntries: 1,
-        clearTidEntries: 1,
         activeThreadChannels: 1,
       });
     }
@@ -1850,7 +1873,6 @@ describe("CentralizedKernelWorker Process Management", () => {
     ).toEqual({
       channelTidEntries: 0,
       forkContextEntries: 0,
-      clearTidEntries: 0,
       activeThreadChannels: 0,
     });
     expect(
@@ -1859,7 +1881,6 @@ describe("CentralizedKernelWorker Process Management", () => {
     ).toEqual({
       channelTidEntries: 1,
       forkContextEntries: 1,
-      clearTidEntries: 1,
       activeThreadChannels: 1,
     });
     expect(kw.getProcessMemory(firstPid)).toBeUndefined();
@@ -1872,7 +1893,6 @@ describe("CentralizedKernelWorker Process Management", () => {
     ).toEqual({
       channelTidEntries: 0,
       forkContextEntries: 0,
-      clearTidEntries: 0,
       activeThreadChannels: 0,
     });
     expect(kw.getProcessMemory(secondPid)).toBeUndefined();

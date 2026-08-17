@@ -1,13 +1,16 @@
 import type { BigIntStats } from "node:fs";
+import { ACCESS_MODES, FILE_MODES } from "../generated/abi";
 import type { StatResult } from "../types";
 
-const MODE_CHANGE_MASK = 0o7777;
+const MODE_CHANGE_MASK = FILE_MODES.S_MODE_BITS;
 const UID_GID_UNCHANGED = 0xffffffff;
-const SET_ID_BITS = 0o6000;
-const EXECUTE_BITS = 0o111;
-const X_OK = 0o1;
-const W_OK = 0o2;
-const R_OK = 0o4;
+const SET_ID_BITS = FILE_MODES.S_ISUID | FILE_MODES.S_ISGID;
+const EXECUTE_BITS =
+  FILE_MODES.S_IXUSR | FILE_MODES.S_IXGRP | FILE_MODES.S_IXOTH;
+const READABLE_BITS =
+  FILE_MODES.S_IRUSR | FILE_MODES.S_IRGRP | FILE_MODES.S_IROTH;
+const WRITABLE_BITS =
+  FILE_MODES.S_IWUSR | FILE_MODES.S_IWGRP | FILE_MODES.S_IWOTH;
 const MAX_SAFE_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
 const MIN_SAFE_INTEGER = BigInt(Number.MIN_SAFE_INTEGER);
 const NANOSECONDS_PER_MILLISECOND = 1_000_000n;
@@ -39,9 +42,9 @@ function checkedMilliseconds(valueNs: bigint, field: string): number {
   return Number(wholeMilliseconds) + Number(fractionalMilliseconds) / 1_000_000;
 }
 
-const S_IFMT = 0o170000;
-const S_IFDIR = 0o040000;
-const S_IFLNK = 0o120000;
+const S_IFMT = FILE_MODES.S_IFMT;
+const S_IFDIR = FILE_MODES.S_IFDIR;
+const S_IFLNK = FILE_MODES.S_IFLNK;
 
 /**
  * Windows has no POSIX permission model: `fs.statSync` reports every entry as
@@ -194,9 +197,24 @@ export class NativeMetadataOverlay {
 
   access(s: BigIntStats, amode: number): void {
     const mode = this.toStatResult(s).mode;
-    if ((amode & R_OK) !== 0 && (mode & 0o444) === 0) throw new Error("EACCES");
-    if ((amode & W_OK) !== 0 && (mode & 0o222) === 0) throw new Error("EACCES");
-    if ((amode & X_OK) !== 0 && (mode & 0o111) === 0) throw new Error("EACCES");
+    if (
+      (amode & ACCESS_MODES.R_OK) !== 0 &&
+      (mode & READABLE_BITS) === 0
+    ) {
+      throw new Error("EACCES");
+    }
+    if (
+      (amode & ACCESS_MODES.W_OK) !== 0 &&
+      (mode & WRITABLE_BITS) === 0
+    ) {
+      throw new Error("EACCES");
+    }
+    if (
+      (amode & ACCESS_MODES.X_OK) !== 0 &&
+      (mode & EXECUTE_BITS) === 0
+    ) {
+      throw new Error("EACCES");
+    }
   }
 
   private metadataFor(s: BigIntStats): VirtualMetadata {

@@ -22,6 +22,19 @@ interface KernelWorkerTestScratchOptions {
   readonly kernelExportNames?: readonly string[];
 }
 
+/** Neutral Rust-owned timer teardown result for tests without platform timers. */
+export function emptyProcessTimerCleanup(
+  memory: WebAssembly.Memory,
+): (_pid: number, outPointer: number | bigint, outCapacity: number) => number {
+  return (_pid, outPointer, outCapacity) => {
+    if (outCapacity < 12 || (outCapacity - 8) % 4 !== 0) return -22;
+    const output = new DataView(memory.buffer);
+    output.setUint32(Number(outPointer), 0, true);
+    output.setUint32(Number(outPointer) + 4, 0, true);
+    return 0;
+  };
+}
+
 /**
  * Install the same gated, capacity-carrying main scratch contract that
  * worker.init() creates.
@@ -58,10 +71,17 @@ export function installKernelWorkerTestScratch(
   }
   const gate = options.gate ?? new KernelEntryGate();
   const gatedInstance = options.boundInstance ?? (() => {
+    const kernelExports = {
+      // Most worker tests do not model platform timers. An empty, bounded
+      // Rust-owned cleanup record is the neutral production result; timer
+      // ownership tests override this implementation explicitly.
+      kernel_take_process_timer_cleanup: emptyProcessTimerCleanup(memory),
+      ...options.kernelExports,
+    };
     const rawInstance = createKernelScratchTestInstance(
       pointerWidth,
       memory,
-      () => options.kernelExports ?? {},
+      () => kernelExports,
       () => pointerWidth === 8 ? BigInt(pointer) : pointer,
       4,
       options.kernelExportNames,

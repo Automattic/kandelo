@@ -38,6 +38,7 @@ import {
 import {
   createKernelScratchTestInstance,
 } from "./support/kernel-scratch-instance";
+import { emptyProcessTimerCleanup } from "./kernel-worker-test-scratch";
 
 const SIGCHLD = 17;
 const SIGTERM = 15;
@@ -117,6 +118,8 @@ function createWorkerHarness(
   implementations.kernel_get_parent_pid = () => 0;
   implementations.kernel_dequeue_signal = () => 0;
   implementations.kernel_drain_wakeup_events = () => 0;
+  implementations.kernel_take_process_timer_cleanup =
+    emptyProcessTimerCleanup(kernelMemory);
 
   const gate = new KernelEntryGate();
   const rawInstance = createKernelScratchTestInstance(

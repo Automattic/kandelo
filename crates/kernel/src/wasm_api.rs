@@ -1983,6 +1983,88 @@ pub extern "C" fn kernel_get_process_state(pid: u32) -> i32 {
     }
 }
 
+/// Pick the next live process/fd that should receive a host-bridged TCP
+/// connection for `port`.
+///
+/// Writes `{ u32 pid, i32 fd }` to `out_ptr`; returns 1 if a target was
+/// written, 0 if none exists, or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pick_tcp_listener_target(
+    port: u32,
+    exclude_pid: u32,
+    out_ptr: *mut u8,
+    out_capacity: u32,
+) -> i32 {
+    if out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    if out_capacity != 8 {
+        return -(Errno::EINVAL as i32);
+    }
+    if port > u16::MAX as u32 {
+        return -(Errno::EINVAL as i32);
+    }
+
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.pick_tcp_listener_target(port as u16, exclude_pid) {
+        Some((pid, fd)) => {
+            let out = unsafe { core::slice::from_raw_parts_mut(out_ptr, 8) };
+            out[0..4].copy_from_slice(&pid.to_le_bytes());
+            out[4..8].copy_from_slice(&fd.to_le_bytes());
+            1
+        }
+        None => 0,
+    }
+}
+
+/// Drain the complete bounded Rust-owned timer identity list for host teardown.
+///
+/// Writes `{ u32 cancel_alarm, u32 posix_count, u32 timer_ids[posix_count] }`
+/// into the caller's exact scratch capacity. The return value is
+/// `posix_count`. If the complete list does not fit, returns `ERANGE` without
+/// consuming any timer state.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_take_process_timer_cleanup(
+    pid: u32,
+    out_ptr: *mut u8,
+    out_capacity: u32,
+) -> i32 {
+    const HEADER_BYTES: usize = 8;
+    const TIMER_ID_BYTES: usize = 4;
+
+    if out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    let out_capacity = out_capacity as usize;
+    if out_capacity < HEADER_BYTES + TIMER_ID_BYTES
+        || (out_capacity - HEADER_BYTES) % TIMER_ID_BYTES != 0
+    {
+        return -(Errno::EINVAL as i32);
+    }
+    let max_timer_ids = (out_capacity - HEADER_BYTES) / TIMER_ID_BYTES;
+
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get_mut(pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    let cleanup = match proc.take_host_timer_cleanup(max_timer_ids) {
+        Ok(cleanup) => cleanup,
+        Err(error) => return -(error as i32),
+    };
+
+    let out_len = HEADER_BYTES + cleanup.posix_timer_ids.len() * TIMER_ID_BYTES;
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr, out_len) };
+    out[0..4].copy_from_slice(&(cleanup.cancel_alarm as u32).to_le_bytes());
+    out[4..8].copy_from_slice(&(cleanup.posix_timer_ids.len() as u32).to_le_bytes());
+    for (index, timer_id) in cleanup.posix_timer_ids.iter().enumerate() {
+        let offset = HEADER_BYTES + index * TIMER_ID_BYTES;
+        out[offset..offset + TIMER_ID_BYTES].copy_from_slice(&timer_id.to_le_bytes());
+    }
+    cleanup.posix_timer_ids.len() as i32
+}
+
 /// Mark a process as signal-terminated without removing it from the table.
 ///
 /// Used by the host when the Worker dies before the guest reaches SYS_EXIT.
@@ -4646,8 +4728,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             kernel_ipc_shmat(a1, a2, a3)
         }
         346 => {
-            let _shmaddr = conditional_process_address!(0);
-            kernel_ipc_shmdt(a1)
+            let shmaddr = conditional_process_address!(0);
+            kernel_ipc_shmdt_addr(shmaddr)
         }
         347 => {
             // SYS_SHMCTL: (shmid, cmd, buf_ptr)
@@ -5977,7 +6059,13 @@ pub extern "C" fn kernel_ipc_shmat_for_process(
     };
     let ipc = unsafe { crate::ipc::global_ipc_table() };
     match ipc.shmat(shmid, pid, flags as u32, uid, gid) {
-        Ok(size) => size as i32,
+        Ok(size) => match i32::try_from(size) {
+            Ok(size) => size,
+            Err(_) => {
+                let _ = ipc.shmdt(shmid, pid);
+                -(Errno::EOVERFLOW as i32)
+            }
+        },
         Err(e) => -(e as i32),
     }
 }
@@ -5996,6 +6084,153 @@ pub extern "C" fn kernel_ipc_shmat_for_task(
         return -(Errno::ESRCH as i32);
     }
     kernel_ipc_shmat_for_process(pid, shmid, shmaddr, flags)
+}
+
+fn ipc_record_shm_mapping(
+    pid: u32,
+    addr: usize,
+    shmid: i32,
+    size: u32,
+    require_live_process: bool,
+) -> Result<(), Errno> {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let proc = table.get_mut(pid).ok_or(Errno::ESRCH)?;
+    if proc.state == ProcessState::Limbo
+        || (require_live_process
+            && !matches!(proc.state, ProcessState::Running | ProcessState::Stopped))
+    {
+        return Err(Errno::ESRCH);
+    }
+    proc.record_shm_mapping(addr, shmid, size as usize)
+}
+
+/// Record one host-materialized attachment for a retained process.
+///
+/// This process form is used while a fork child exists in Rust but has no
+/// running guest task yet. The host byte mirror is not authoritative for
+/// attachment identity or lifetime.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shm_record_mapping_for_process(
+    pid: u32,
+    addr: usize,
+    shmid: i32,
+    size: u32,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    match ipc_record_shm_mapping(pid, addr, shmid, size, true) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Record one host-materialized attachment for an exact live calling task.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shm_record_mapping_for_task(
+    pid: u32,
+    tid: u32,
+    addr: usize,
+    shmid: i32,
+    size: u32,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    if let Err(e) = table.validate_task(pid, tid) {
+        return -(e as i32);
+    }
+    match ipc_record_shm_mapping(pid, addr, shmid, size, true) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Look up an attachment owned by an exact live task.
+///
+/// The nonnegative result packs the byte size in the upper 32 bits and the
+/// shmid in the lower 32 bits. Sizes are capped when recorded so every valid
+/// result remains distinguishable from a negative errno without borrowing the
+/// shared scratch channel.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shm_lookup_mapping_for_task(
+    pid: u32,
+    tid: u32,
+    addr: usize,
+) -> i64 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    if let Err(e) = table.validate_task(pid, tid) {
+        return -(e as i64);
+    }
+    let mapping = match table.get(pid).and_then(|proc| proc.shm_mapping_at(addr)) {
+        Some(mapping) => mapping,
+        None => return -(Errno::EINVAL as i64),
+    };
+    let size = match u32::try_from(mapping.size) {
+        Ok(size) if size <= i32::MAX as u32 => size,
+        _ => return -(Errno::EOVERFLOW as i64),
+    };
+    ((size as i64) << 32) | i64::from(mapping.shmid as u32)
+}
+
+fn ipc_shmdt_addr(pid: u32, addr: usize, require_live_process: bool) -> Result<(), Errno> {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let mapping = {
+        let proc = table.get(pid).ok_or(Errno::ESRCH)?;
+        if pid == crate::process_table::SYNTHETIC_INIT_PID
+            || proc.state == ProcessState::Limbo
+            || (require_live_process
+                && !matches!(proc.state, ProcessState::Running | ProcessState::Stopped))
+        {
+            return Err(Errno::ESRCH);
+        }
+        proc.shm_mapping_at(addr).ok_or(Errno::EINVAL)?
+    };
+
+    // Remove metadata only after nattch was released. A failed detach leaves
+    // the exact record available for teardown or a truthful retry.
+    unsafe { crate::ipc::global_ipc_table() }.shmdt(mapping.shmid, pid)?;
+    match table.get_mut(pid).and_then(|proc| proc.remove_shm_mapping(addr)) {
+        Some(removed) if removed == mapping => Ok(()),
+        _ => Err(Errno::EIO),
+    }
+}
+
+/// Detach the attachment at an exact address for a retained process.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shmdt_addr_for_process(pid: u32, addr: usize) -> i32 {
+    let _gkl = GklGuard::acquire();
+    match ipc_shmdt_addr(pid, addr, false) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Detach the attachment at an exact address for a live calling task.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shmdt_addr_for_task(pid: u32, tid: u32, addr: usize) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    if let Err(e) = table.validate_task(pid, tid) {
+        return -(e as i32);
+    }
+    match ipc_shmdt_addr(pid, addr, true) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Dispatch-bound shmdt wrapper used by the scalar syscall path.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shmdt_addr(addr: usize) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let pid = table.current_pid();
+    let tid = table.current_tid();
+    if pid == 0 || tid == 0 || table.validate_task(pid, tid).is_err() {
+        return -(Errno::ESRCH as i32);
+    }
+    match ipc_shmdt_addr(pid, addr, true) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
 }
 
 /// Detach from shared memory segment.
@@ -12528,14 +12763,20 @@ pub extern "C" fn kernel_get_robust_list(_pid: u32, _head_ptr: usize, _len_ptr: 
 
 /// thread_exit — clean up thread state in the kernel.
 /// Called by the host when a thread Worker exits.
-/// Removes the thread from the process's thread table.
+/// Removes the thread from the process's thread table and returns the
+/// CLONE_CHILD_CLEARTID pointer recorded in ThreadInfo, or 0 if no clear-tid
+/// wake is needed. Errors are returned as negative errno values.
+///
+/// WHY: an i64 keeps every wasm32 `usize` pointer nonnegative while reserving
+/// negative results for errno; narrowing to i32 would make high pointers
+/// indistinguishable from failures.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_thread_exit(pid: u32, tid: u32) -> i32 {
+pub extern "C" fn kernel_thread_exit(pid: u32, tid: u32) -> i64 {
     let _gkl = GklGuard::acquire();
     let pt = unsafe { &mut *PROCESS_TABLE.0.get() };
     match kernel_thread_exit_in_table(pt, pid, tid) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
+        Ok(ctid_ptr) => ctid_ptr as i64,
+        Err(e) => -(e as i64),
     }
 }
 
@@ -12543,10 +12784,11 @@ fn kernel_thread_exit_in_table(
     pt: &mut crate::process_table::ProcessTable,
     pid: u32,
     tid: u32,
-) -> Result<(), Errno> {
+) -> Result<usize, Errno> {
     let (proc, locks) = pt.process_and_advisory_locks(pid).ok_or(Errno::ESRCH)?;
     let mut host = WasmHostIO;
-    syscalls::cleanup_exiting_thread(proc, locks, &mut host, tid)
+    syscalls::cleanup_exiting_thread_with_state(proc, locks, &mut host, tid)
+        .map(|thread| thread.ctid_ptr)
 }
 
 #[cfg(test)]
@@ -12558,14 +12800,14 @@ mod thread_exit_tests {
         let mut pt = crate::process_table::ProcessTable::new();
         let first = pt.create_process().unwrap();
         let second = pt.create_process().unwrap();
-        let tid = pt.create_thread(first, first, 0, 0, 0).unwrap();
+        let tid = pt.create_thread(first, first, 0, 0, 0x2000).unwrap();
 
         assert_eq!(
             kernel_thread_exit_in_table(&mut pt, second, tid),
             Err(Errno::ESRCH)
         );
         assert!(pt.get(first).unwrap().get_thread(tid).is_some());
-        assert_eq!(kernel_thread_exit_in_table(&mut pt, first, tid), Ok(()));
+        assert_eq!(kernel_thread_exit_in_table(&mut pt, first, tid), Ok(0x2000));
         assert!(pt.get(first).unwrap().get_thread(tid).is_none());
         assert_eq!(
             kernel_thread_exit_in_table(&mut pt, first, tid),

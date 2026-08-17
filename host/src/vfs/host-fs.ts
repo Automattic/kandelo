@@ -32,6 +32,11 @@ import {
 } from "../native-positioned-write";
 import { NativeMetadataOverlay } from "../platform/native-metadata";
 import { filesystemPathconf } from "../pathconf";
+import {
+  DIRENT_TYPES,
+  OPEN_FLAGS,
+  SEEK_WHENCE,
+} from "../generated/abi";
 import type { FileSystemBackend, DirEntry } from "./types";
 import { DEFAULT_STATFS_BLOCK_SIZE, DEFAULT_STATFS_NAMELEN } from "../statfs";
 
@@ -77,35 +82,23 @@ export function createSessionOwnedHostFileSystem(
  * The numeric values differ between Linux and macOS/BSD.
  */
 export function translateOpenFlags(linuxFlags: number): number {
-  // Linux flag constants (octal)
-  const L_O_WRONLY = 0o1;
-  const L_O_RDWR = 0o2;
-  const L_O_CREAT = 0o100;
-  const L_O_EXCL = 0o200;
-  const L_O_NOCTTY = 0o400;
-  const L_O_TRUNC = 0o1000;
-  const L_O_APPEND = 0o2000;
-  const L_O_NONBLOCK = 0o4000;
-  const L_O_DIRECTORY = 0o200000;
-  const L_O_NOFOLLOW = 0o400000;
-
   let native = 0;
 
   // Access mode (bottom 2 bits)
-  if (linuxFlags & L_O_RDWR) native |= fs.constants.O_RDWR;
-  else if (linuxFlags & L_O_WRONLY) native |= fs.constants.O_WRONLY;
+  if (linuxFlags & OPEN_FLAGS.O_RDWR) native |= fs.constants.O_RDWR;
+  else if (linuxFlags & OPEN_FLAGS.O_WRONLY) native |= fs.constants.O_WRONLY;
   // else O_RDONLY = 0
 
-  if (linuxFlags & L_O_CREAT) native |= fs.constants.O_CREAT;
-  if (linuxFlags & L_O_EXCL) native |= fs.constants.O_EXCL;
-  if (linuxFlags & L_O_TRUNC) native |= fs.constants.O_TRUNC;
-  if (linuxFlags & L_O_APPEND) native |= fs.constants.O_APPEND;
-  if (linuxFlags & L_O_NONBLOCK) native |= fs.constants.O_NONBLOCK;
-  if (linuxFlags & L_O_DIRECTORY && fs.constants.O_DIRECTORY)
+  if (linuxFlags & OPEN_FLAGS.O_CREAT) native |= fs.constants.O_CREAT;
+  if (linuxFlags & OPEN_FLAGS.O_EXCL) native |= fs.constants.O_EXCL;
+  if (linuxFlags & OPEN_FLAGS.O_TRUNC) native |= fs.constants.O_TRUNC;
+  if (linuxFlags & OPEN_FLAGS.O_APPEND) native |= fs.constants.O_APPEND;
+  if (linuxFlags & OPEN_FLAGS.O_NONBLOCK) native |= fs.constants.O_NONBLOCK;
+  if (linuxFlags & OPEN_FLAGS.O_DIRECTORY && fs.constants.O_DIRECTORY)
     native |= fs.constants.O_DIRECTORY;
-  if (linuxFlags & L_O_NOFOLLOW && fs.constants.O_NOFOLLOW)
+  if (linuxFlags & OPEN_FLAGS.O_NOFOLLOW && fs.constants.O_NOFOLLOW)
     native |= fs.constants.O_NOFOLLOW;
-  if (linuxFlags & L_O_NOCTTY && fs.constants.O_NOCTTY)
+  if (linuxFlags & OPEN_FLAGS.O_NOCTTY && fs.constants.O_NOCTTY)
     native |= fs.constants.O_NOCTTY;
   // O_LARGEFILE and O_CLOEXEC have no Node.js equivalent; ignored.
 
@@ -312,8 +305,9 @@ export class HostFileSystem implements FileSystemBackend {
 
   open(path: string, flags: number, mode: number): number {
     const noFollowFinal =
-      (flags & 0o400000) !== 0 ||
-      ((flags & 0o100) !== 0 && (flags & 0o200) !== 0);
+      (flags & OPEN_FLAGS.O_NOFOLLOW) !== 0 ||
+      ((flags & OPEN_FLAGS.O_CREAT) !== 0 &&
+        (flags & OPEN_FLAGS.O_EXCL) !== 0);
     const nativePath = this.safePath(path, !noFollowFinal);
     const { fd, created } = openNativeBackingFile(
       nativePath,
@@ -507,13 +501,13 @@ export class HostFileSystem implements FileSystemBackend {
   ): HostFileOffset {
     let newPos: HostFileOffset;
     switch (whence) {
-      case 0: // SEEK_SET
+      case SEEK_WHENCE.SEEK_SET:
         newPos = checkedSeekPosition(0, offset);
         break;
-      case 1: // SEEK_CUR
+      case SEEK_WHENCE.SEEK_CUR:
         newPos = checkedSeekPosition(this.fdPositions.get(handle) ?? 0, offset);
         break;
-      case 2: // SEEK_END
+      case SEEK_WHENCE.SEEK_END:
         newPos = checkedSeekPosition(
           hostFileOffsetFromBigInt(
             fs.fstatSync(handle, { bigint: true }).size,
@@ -725,20 +719,20 @@ export class HostFileSystem implements FileSystemBackend {
     const entry = dir.readSync();
     if (!entry) return null;
 
-    let dtype = 0; // DT_UNKNOWN
+    let dtype: number = DIRENT_TYPES.DT_UNKNOWN;
     if (entry.isFile())
-      dtype = 8; // DT_REG
+      dtype = DIRENT_TYPES.DT_REG;
     else if (entry.isDirectory())
-      dtype = 4; // DT_DIR
+      dtype = DIRENT_TYPES.DT_DIR;
     else if (entry.isSymbolicLink())
-      dtype = 10; // DT_LNK
+      dtype = DIRENT_TYPES.DT_LNK;
     else if (entry.isFIFO())
-      dtype = 1; // DT_FIFO
+      dtype = DIRENT_TYPES.DT_FIFO;
     else if (entry.isSocket())
-      dtype = 12; // DT_SOCK
+      dtype = DIRENT_TYPES.DT_SOCK;
     else if (entry.isCharacterDevice())
-      dtype = 2; // DT_CHR
-    else if (entry.isBlockDevice()) dtype = 6; // DT_BLK
+      dtype = DIRENT_TYPES.DT_CHR;
+    else if (entry.isBlockDevice()) dtype = DIRENT_TYPES.DT_BLK;
 
     return { name: entry.name, type: dtype, ino: 0 };
   }

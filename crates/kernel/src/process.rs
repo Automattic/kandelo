@@ -431,6 +431,26 @@ pub struct DriBoBinding {
     pub bo_id: crate::dri::BoId,
 }
 
+/// Kernel-owned identity for one System V shared-memory attachment.
+///
+/// The host retains byte-coherence snapshots because it owns guest Memory,
+/// but attachment identity and lifetime belong to the process table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShmMapping {
+    pub addr: usize,
+    pub shmid: i32,
+    pub size: usize,
+}
+
+/// Exact Rust-owned timer identities whose platform handles must be retired.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostTimerCleanup {
+    pub cancel_alarm: bool,
+    pub posix_timer_ids: Vec<u32>,
+}
+
+const MAX_SYSV_SHM_MAPPINGS_PER_PROCESS: usize = 4096;
+
 /// Read-only identity of a thread owned by [`crate::process_table::ProcessTable`].
 ///
 /// [`ThreadInfo`] dereferences to this view so existing `thread.tid` reads stay
@@ -806,6 +826,9 @@ pub struct Process {
     /// memory region with the bo currently bound there so `sys_munmap`
     /// can issue the matching [`HostIO::gbm_bo_unbind`].
     pub dri_bindings: Vec<DriBoBinding>,
+    /// SysV shared-memory attachments keyed by the process virtual address
+    /// returned from `shmat`.
+    pub shm_mappings: Vec<ShmMapping>,
     /// Counts how many times this process has called fork() (parent side, on success).
     /// Read-only from outside the kernel via `kernel_get_fork_count`.
     /// Used as a regression guardrail by the spawn test suite to confirm
@@ -1077,6 +1100,7 @@ impl Process {
             has_exec: false,
             fb_binding: None,
             dri_bindings: Vec::new(),
+            shm_mappings: Vec::new(),
             fork_count: 0,
         }
     }
@@ -1327,6 +1351,100 @@ impl Process {
     /// Remove all non-leader tasks during exec replacement.
     pub(crate) fn clear_threads(&mut self) {
         self.identity.threads.clear();
+    }
+
+    /// Record one SysV shared-memory attachment after the host commits mmap.
+    pub fn record_shm_mapping(
+        &mut self,
+        addr: usize,
+        shmid: i32,
+        size: usize,
+    ) -> Result<(), Errno> {
+        if addr == 0 || shmid < 0 || size == 0 {
+            return Err(Errno::EINVAL);
+        }
+        if size > i32::MAX as usize {
+            return Err(Errno::EOVERFLOW);
+        }
+        if let Some(mapping) = self.shm_mapping_at(addr) {
+            return if mapping.shmid == shmid && mapping.size == size {
+                Ok(())
+            } else {
+                Err(Errno::EINVAL)
+            };
+        }
+        if self.shm_mappings.len() >= MAX_SYSV_SHM_MAPPINGS_PER_PROCESS {
+            return Err(Errno::ENOMEM);
+        }
+        self.shm_mappings
+            .try_reserve_exact(1)
+            .map_err(|_| Errno::ENOMEM)?;
+        self.shm_mappings.push(ShmMapping { addr, shmid, size });
+        Ok(())
+    }
+
+    /// Find a SysV shared-memory attachment by its process address.
+    pub fn shm_mapping_at(&self, addr: usize) -> Option<ShmMapping> {
+        self.shm_mappings.iter().copied().find(|m| m.addr == addr)
+    }
+
+    /// Remove and return a SysV shared-memory attachment by its process address.
+    pub fn remove_shm_mapping(&mut self, addr: usize) -> Option<ShmMapping> {
+        let idx = self.shm_mappings.iter().position(|m| m.addr == addr)?;
+        Some(self.shm_mappings.swap_remove(idx))
+    }
+
+    /// Drain every SysV attachment owned by the discarded address space.
+    pub(crate) fn take_shm_mappings(&mut self) -> Vec<ShmMapping> {
+        core::mem::take(&mut self.shm_mappings)
+    }
+
+    /// Drain the complete process-owned host timer identity list when it fits.
+    ///
+    /// Timer handles themselves are host primitives, but Rust owns whether an
+    /// alarm or POSIX timer remains attached to this process. Build the exact
+    /// batch before mutating either side so allocation or ID conversion failure
+    /// cannot leave a partially drained cleanup transaction.
+    pub fn take_host_timer_cleanup(
+        &mut self,
+        max_posix_timer_ids: usize,
+    ) -> Result<HostTimerCleanup, Errno> {
+        let timer_count = self
+            .posix_timers
+            .iter()
+            .filter(|slot| slot.is_some())
+            .count();
+        if timer_count > max_posix_timer_ids {
+            return Err(Errno::ERANGE);
+        }
+        let mut posix_timer_ids = Vec::new();
+        posix_timer_ids
+            .try_reserve_exact(timer_count)
+            .map_err(|_| Errno::ENOMEM)?;
+        if timer_count != 0 {
+            for (timer_id, slot) in self.posix_timers.iter().enumerate() {
+                if slot.is_none() {
+                    continue;
+                }
+                posix_timer_ids.push(u32::try_from(timer_id).map_err(|_| Errno::EOVERFLOW)?);
+                if posix_timer_ids.len() == timer_count {
+                    break;
+                }
+            }
+        }
+
+        let cancel_alarm = self.alarm_deadline_ns != 0 || self.alarm_interval_ns != 0;
+        self.alarm_deadline_ns = 0;
+        self.alarm_interval_ns = 0;
+        for timer_id in &posix_timer_ids {
+            self.remove_posix_timer_notification(*timer_id);
+            self.posix_timers[*timer_id as usize] = None;
+        }
+
+        Ok(HostTimerCleanup {
+            cancel_alarm,
+            posix_timer_ids,
+        })
     }
 
     /// True if `tid` names the process's main thread. The main thread's TID
@@ -2524,6 +2642,85 @@ mod tests {
             assert_eq!(ofd.host_handle, fd as i64);
         }
         assert_eq!(proc.terminal.foreground_pgid, 1);
+    }
+
+    #[test]
+    fn shm_mapping_bookkeeping_is_keyed_by_process_addr() {
+        let mut proc = Process::new(1);
+
+        proc.record_shm_mapping(0x20000, 7, 4096).unwrap();
+        assert_eq!(
+            proc.shm_mapping_at(0x20000),
+            Some(ShmMapping {
+                addr: 0x20000,
+                shmid: 7,
+                size: 4096,
+            })
+        );
+
+        assert_eq!(
+            proc.record_shm_mapping(0x20000, 8, 8192),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            proc.record_shm_mapping(0x30000, 8, i32::MAX as usize + 1),
+            Err(Errno::EOVERFLOW)
+        );
+        assert_eq!(proc.shm_mappings.len(), 1);
+        assert_eq!(
+            proc.remove_shm_mapping(0x20000),
+            Some(ShmMapping {
+                addr: 0x20000,
+                shmid: 7,
+                size: 4096,
+            })
+        );
+        assert_eq!(proc.shm_mapping_at(0x20000), None);
+    }
+
+    #[test]
+    fn host_timer_cleanup_is_bounded_and_transactional() {
+        let timer = |signo| PosixTimerState {
+            clock_id: 1,
+            sigev_signo: signo,
+            sigev_value_bits: 0,
+            sigev_notify: 0,
+            sigev_tid: 0,
+            interval_sec: 0,
+            interval_nsec: 0,
+            value_sec: 1,
+            value_nsec: 0,
+            notification_pending: false,
+            overrun_current: 0,
+            overrun_last: 0,
+        };
+        let mut proc = Process::new(1);
+        proc.alarm_deadline_ns = 10;
+        proc.alarm_interval_ns = 5;
+        proc.posix_timers.push(Some(timer(14)));
+        proc.posix_timers.push(None);
+        proc.posix_timers.push(Some(timer(15)));
+
+        assert_eq!(proc.take_host_timer_cleanup(1), Err(Errno::ERANGE));
+        assert_eq!(proc.alarm_deadline_ns, 10);
+        assert_eq!(proc.alarm_interval_ns, 5);
+        assert!(proc.posix_timers[0].is_some());
+        assert!(proc.posix_timers[2].is_some());
+
+        let cleanup = proc.take_host_timer_cleanup(2).unwrap();
+        assert!(cleanup.cancel_alarm);
+        assert_eq!(cleanup.posix_timer_ids, alloc::vec![0, 2]);
+        assert_eq!(proc.alarm_deadline_ns, 0);
+        assert_eq!(proc.alarm_interval_ns, 0);
+        assert!(proc.posix_timers.iter().all(Option::is_none));
+
+        assert_eq!(
+            proc.take_host_timer_cleanup(1).unwrap(),
+            HostTimerCleanup {
+                cancel_alarm: false,
+                posix_timer_ids: alloc::vec![],
+            }
+        );
     }
 
     #[test]

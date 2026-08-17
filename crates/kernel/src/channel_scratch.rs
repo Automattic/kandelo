@@ -1068,8 +1068,8 @@ mod tests {
                 1,
             ),
             (
-                r#"let _shmaddr = conditional_process_address!(0);
-            kernel_ipc_shmdt(a1)"#,
+                r#"let shmaddr = conditional_process_address!(0);
+            kernel_ipc_shmdt_addr(shmaddr)"#,
                 1,
             ),
             (
