@@ -14,7 +14,11 @@
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { HostDiagnosticMessage } from "./host-diagnostic";
 import type { LazyDownloadEvent } from "./vfs/memory-fs";
-import type { ClosedLazyAsset } from "./vfs/closed-lazy-assets";
+import type {
+  ClosedLazyAsset,
+  ClosedLazyAssetSource,
+} from "./vfs/closed-lazy-assets";
+import type { MountSpec } from "./vfs/default-mounts";
 import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
 
 export type { HttpRequest, HttpResponse };
@@ -56,6 +60,8 @@ export interface InitMessage {
    * (custom-io / legacy path).
    */
   rootfsImage?: ArrayBuffer;
+  /** Exact image/scratch mount contract. Absent preserves the host default. */
+  rootfsMountSpec?: MountSpec[];
   privilegedProgramMount?: {
     kind: "published-privileged-program-product";
     mountPoint: "/usr/bin";
