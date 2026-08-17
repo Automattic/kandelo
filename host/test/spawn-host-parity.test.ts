@@ -181,6 +181,29 @@ describe("spawn host parity", () => {
     }
   });
 
+  it("both spawn adapters check child liveness only after allocation yields", () => {
+    for (const entry of [nodeEntry, browserEntry]) {
+      const handler = posixSpawnHandlerSource(readFileSync(entry, "utf8"));
+      const allocation = handler.indexOf("createFreshProcessMemory(");
+      const liveness = handler.indexOf("shouldLaunchPendingChild(childPid)");
+      const registration = handler.indexOf("registerProcess(childPid");
+      expect(
+        handler.match(/shouldLaunchPendingChild\(childPid\)/g) ?? [],
+        `${entry} must retain exactly one post-allocation liveness fence`,
+      ).toHaveLength(1);
+      expect(allocation, `${entry} must allocate process memory`)
+        .toBeGreaterThanOrEqual(0);
+      expect(
+        liveness,
+        `${entry} must check the child after allocation yields`,
+      ).toBeGreaterThan(allocation);
+      expect(
+        registration,
+        `${entry} must check liveness before registering the Worker generation`,
+      ).toBeGreaterThan(liveness);
+    }
+  });
+
   it("both exec adapters consume the complete commit-captured transition", () => {
     for (const entry of [nodeEntry, browserEntry]) {
       const handler = execHandlerSource(readFileSync(entry, "utf8"));

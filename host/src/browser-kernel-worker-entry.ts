@@ -3056,9 +3056,10 @@ async function handlePosixSpawn(
   const secureExec = kernelWorker.takeCommittedExecSecureExec(childPid);
   await waitForProcessTeardowns();
 
-  // Unrelated teardown waits yield to the event loop. Keep a successfully
-  // created zombie, but never resurrect it with a new Worker.
-  if (!kernelWorker.shouldLaunchPendingChild(childPid)) return 0;
+  // The shared launcher already committed the exact pending child. The
+  // post-allocation fence below owns any exit observed across this teardown
+  // wait or allocation yield; do not add a separate kernel entry while the
+  // postcommit transaction is still draining.
   post({ type: "proc_event", kind: "spawn", pid: childPid, ppid: parentPid });
 
   const { programBytes, programModule, argv } = program;
