@@ -12,6 +12,28 @@ cleanup() {
 }
 trap cleanup EXIT
 
+expected_rootfs_row=$'target/exact-abi-source-test/rootfs.vfs\thost/wasm/rootfs.vfs'
+bash "$PACKER" list | grep -Fxq "$expected_rootfs_row" || {
+    echo "exact workspace packer does not transport the source-built test rootfs" >&2
+    exit 1
+}
+for workflow in \
+    "$REPO_ROOT/.github/workflows/staging-build.yml" \
+    "$REPO_ROOT/.github/workflows/prepare-merge.yml"; do
+    grep -Fq \
+        'ROOTFS_OUT=target/exact-abi-source-test/rootfs.vfs' \
+        "$workflow" || {
+        echo "$(basename "$workflow") does not build the exact source-test rootfs" >&2
+        exit 1
+    }
+    grep -Fq \
+        'ROOTFS_PACKAGES_CONFIG="$RUNNER_TEMP/exact-abi-source-test-packages.toml"' \
+        "$workflow" || {
+        echo "$(basename "$workflow") does not isolate the exact source-test rootfs from packages" >&2
+        exit 1
+    }
+done
+
 SOURCE="$PRIVATE/source"
 CONSUMER="$PRIVATE/consumer"
 ARCHIVE="$PRIVATE/exact-source.tar.zst"
@@ -84,7 +106,10 @@ while IFS= read -r destination_path; do
     }
 done < "$expected_paths"
 
-if tar --zstd -tf "$ARCHIVE" | grep -Eq \
+if tar --zstd -tf "$ARCHIVE" |
+   sed -e 's#^\./##' -e '/^$/d' |
+   grep -Ev '^host/wasm/rootfs\.vfs$' |
+   grep -Eq \
     '(^|/)(binaries|packages/registry/program-packages\.json)(/|$)|\.vfs(\.zst)?$|\.tar\.zst$'; then
     echo "exact source workspace retained a package or product artifact" >&2
     exit 1
