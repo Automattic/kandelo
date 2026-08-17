@@ -959,7 +959,9 @@ fn commit_exec_state_impl(
     proc.exit_signal = 0;
     proc.thread_name = [0; wasm_posix_shared::kernel_scratch_wire::PRCTL_NAME_BYTES as usize];
     proc.clear_threads();
-    proc.sigsuspend_saved_mask = None;
+    proc.mask_waits.clear();
+    proc.caught_handler_depth = 0;
+    proc.returned_handler_depths.clear();
     proc.alt_stack_sp = 0;
     proc.alt_stack_flags = 2; // SS_DISABLE
     proc.alt_stack_size = 0;
@@ -2658,8 +2660,7 @@ pub(crate) fn cancel_fifo_open_for_owner(proc: &mut Process, owner: u64) -> bool
 pub(crate) fn cancel_host_owned_wait_for_tid(proc: &mut Process, tid: u32) -> bool {
     let owner = ((proc.pid as u64) << 32) | tid as u64;
     let mut cancelled = cancel_fifo_open_for_owner(proc, owner);
-    if let Some(saved) = proc.take_sigsuspend_saved_mask_for(tid) {
-        proc.set_blocked_for(tid, saved);
+    if proc.cancel_signal_mask_wait_for(tid) {
         cancelled = true;
     }
     cancelled
@@ -8689,27 +8690,30 @@ pub fn sys_sigtimedwait(
 /// Atomically replaces the process's signal mask with `mask` (SIGKILL and SIGSTOP cannot
 /// be blocked), then blocks until a deliverable signal arrives. The original mask is
 /// restored before returning. Always returns Err(EINTR).
-pub fn sys_sigsuspend(proc: &mut Process, _host: &mut dyn HostIO, mask: u64) -> Result<(), Errno> {
+fn sys_sigsuspend_with_kind(
+    proc: &mut Process,
+    mask: u64,
+    kind: crate::signal::SignalMaskWaitKind,
+) -> Result<(), Errno> {
     use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
 
     let tid = current_tid_for_process(proc);
     let sig_guard = crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP);
     let new_mask = mask & !sig_guard;
 
-    // Keep the sigsuspend mask active between EAGAIN retries. On first call,
-    // save old mask. On retries, the temp mask is already set.
-    if proc.sigsuspend_saved_mask_for(tid).is_none() {
-        let old = proc.blocked_for(tid);
-        proc.set_sigsuspend_saved_mask_for(tid, Some(old));
-        proc.set_blocked_for(tid, new_mask);
-    }
+    proc.enter_signal_mask_wait_for(tid, kind, new_mask);
     if proc.deliverable_for(tid) != 0 {
-        // Signal arrived — return EINTR but keep temp mask active so that
-        // dequeueSignalForDelivery picks the signal that woke sigsuspend.
-        // The mask will be restored in kernel_dequeue_signal after dequeue.
+        // Signal arrived — return EINTR but keep the temporary mask active so
+        // dequeueSignalForDelivery picks the signal that woke sigsuspend. The
+        // handler frame restores that current mask; libc then invokes exact
+        // wait cleanup to consume and restore the Rust-owned pre-wait mask.
         return Err(Errno::EINTR);
     }
     Err(Errno::EAGAIN)
+}
+
+pub fn sys_sigsuspend(proc: &mut Process, _host: &mut dyn HostIO, mask: u64) -> Result<(), Errno> {
+    sys_sigsuspend_with_kind(proc, mask, crate::signal::SignalMaskWaitKind::Sigsuspend)
 }
 
 /// pause -- suspend until a signal is delivered.
@@ -8717,8 +8721,10 @@ pub fn sys_sigsuspend(proc: &mut Process, _host: &mut dyn HostIO, mask: u64) -> 
 /// Equivalent to sigsuspend with the current signal mask (blocks until any
 /// unblocked signal arrives). Always returns EINTR.
 pub fn sys_pause(proc: &mut Process, host: &mut dyn HostIO) -> Result<(), Errno> {
-    let current_mask = proc.signals.blocked;
-    sys_sigsuspend(proc, host, current_mask)
+    let _ = host;
+    let tid = current_tid_for_process(proc);
+    let current_mask = proc.blocked_for(tid);
+    sys_sigsuspend_with_kind(proc, current_mask, crate::signal::SignalMaskWaitKind::Pause)
 }
 
 /// Set signal action. Accepts full sigaction struct fields.
@@ -15056,26 +15062,23 @@ pub fn sys_ppoll(
     timeout_ms: i32,
     mask: Option<u64>,
 ) -> Result<i32, Errno> {
-    // Use the sigsuspend_saved_mask pattern for atomic mask swap. The mask
-    // stays swapped across EAGAIN retries so cross-process signals arriving
-    // between retries are caught on the next poll.
+    // A per-task LIFO context keeps this swap distinct from waits nested in a
+    // caught handler while host retries reuse the active top context.
     let tid = current_tid_for_process(proc);
     if let Some(new_mask) = mask {
         use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
-        if proc.sigsuspend_saved_mask_for(tid).is_none() {
-            proc.set_sigsuspend_saved_mask_for(tid, Some(proc.blocked_for(tid)));
-            let m = new_mask & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
-            proc.set_blocked_for(tid, m);
-        }
+        let m = new_mask & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
+        proc.enter_signal_mask_wait_for(tid, crate::signal::SignalMaskWaitKind::Ppoll, m);
         if proc.deliverable_for(tid) != 0 {
             return Err(Errno::EINTR);
         }
     }
     let result = sys_poll(proc, host, fds, timeout_ms);
-    if !matches!(result, Err(Errno::EAGAIN)) && proc.deliverable_for(tid) == 0 {
-        if let Some(saved) = proc.take_sigsuspend_saved_mask_for(tid) {
-            proc.set_blocked_for(tid, saved);
-        }
+    if mask.is_some()
+        && !matches!(result, Err(Errno::EAGAIN))
+        && proc.deliverable_for(tid) == 0
+    {
+        proc.finish_signal_mask_wait_for(tid, crate::signal::SignalMaskWaitKind::Ppoll);
     }
     result
 }
@@ -15092,26 +15095,23 @@ pub fn sys_pselect6(
     timeout_ms: i32,
     mask: Option<u64>,
 ) -> Result<i32, Errno> {
-    // Use the sigsuspend_saved_mask pattern for atomic mask swap. The mask
-    // stays swapped across EAGAIN retries so cross-process signals arriving
-    // between retries are caught on the next select.
+    // A per-task LIFO context keeps this swap distinct from waits nested in a
+    // caught handler while host retries reuse the active top context.
     let tid = current_tid_for_process(proc);
     if let Some(new_mask) = mask {
         use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
-        if proc.sigsuspend_saved_mask_for(tid).is_none() {
-            proc.set_sigsuspend_saved_mask_for(tid, Some(proc.blocked_for(tid)));
-            let m = new_mask & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
-            proc.set_blocked_for(tid, m);
-        }
+        let m = new_mask & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
+        proc.enter_signal_mask_wait_for(tid, crate::signal::SignalMaskWaitKind::Pselect, m);
         if proc.deliverable_for(tid) != 0 {
             return Err(Errno::EINTR);
         }
     }
     let result = sys_select(proc, host, nfds, readfds, writefds, exceptfds, timeout_ms);
-    if !matches!(result, Err(Errno::EAGAIN)) && proc.deliverable_for(tid) == 0 {
-        if let Some(saved) = proc.take_sigsuspend_saved_mask_for(tid) {
-            proc.set_blocked_for(tid, saved);
-        }
+    if mask.is_some()
+        && !matches!(result, Err(Errno::EAGAIN))
+        && proc.deliverable_for(tid) == 0
+    {
+        proc.finish_signal_mask_wait_for(tid, crate::signal::SignalMaskWaitKind::Pselect);
     }
     result
 }
@@ -28628,7 +28628,7 @@ mod tests {
         );
         assert_eq!(fds[0].revents, 0);
         assert_eq!(proc.blocked_for(tid), original_mask);
-        assert_eq!(proc.sigsuspend_saved_mask_for(tid), None);
+        assert_eq!(proc.mask_wait_depth_for(tid), 0);
     }
 
     #[test]
@@ -32734,7 +32734,7 @@ mod tests {
         let tid = current_tid_for_process(&proc);
         assert_eq!(result, Err(Errno::EINTR));
         assert_eq!(proc.signals.blocked, 0);
-        assert_eq!(proc.sigsuspend_saved_mask_for(tid), Some(0xFF));
+        assert_eq!(proc.mask_wait_depth_for(tid), 1);
     }
 
     #[test]
@@ -32765,7 +32765,7 @@ mod tests {
         let tid = current_tid_for_process(&proc);
         assert_eq!(result, Err(Errno::EAGAIN));
         assert_eq!(proc.signals.blocked, 0);
-        assert_eq!(proc.sigsuspend_saved_mask_for(tid), Some(0xFF));
+        assert_eq!(proc.mask_wait_depth_for(tid), 1);
     }
 
     // ---- *at() syscalls with real dirfd ----
@@ -43485,12 +43485,16 @@ mod tests {
             (proc.pid, 0x1234_u64, 0x5678_u64),
             (worker_tid, 0x9abc_u64, 0xdef0_u64),
         ] {
-            proc.set_blocked_for(tid, temporary);
-            proc.set_sigsuspend_saved_mask_for(tid, Some(original));
+            proc.set_blocked_for(tid, original);
+            proc.enter_signal_mask_wait_for(
+                tid,
+                crate::signal::SignalMaskWaitKind::Ppoll,
+                temporary,
+            );
 
             assert!(cancel_host_owned_wait_for_tid(&mut proc, tid));
             assert_eq!(proc.blocked_for(tid), original);
-            assert_eq!(proc.sigsuspend_saved_mask_for(tid), None);
+            assert_eq!(proc.mask_wait_depth_for(tid), 0);
             assert!(!cancel_host_owned_wait_for_tid(&mut proc, tid));
             assert_eq!(proc.blocked_for(tid), original);
         }

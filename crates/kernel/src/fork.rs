@@ -1619,7 +1619,9 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     // state snapshot has been installed. Never inherit a parent's transient
     // borrowing marker through serialized process state.
     child.vfork_child = false;
-    child.sigsuspend_saved_mask = None;
+    child.mask_waits.clear();
+    child.caught_handler_depth = 0;
+    child.returned_handler_depths.clear();
     child.fork_exec_path = fork_exec_path;
     child.fork_exec_argv = fork_exec_argv;
     child.fork_fd_actions = fork_fd_actions;
@@ -2078,7 +2080,9 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         [0u8; wasm_posix_shared::kernel_scratch_wire::PRCTL_NAME_BYTES as usize];
     process.fork_child = false;
     process.vfork_child = false;
-    process.sigsuspend_saved_mask = None;
+    process.mask_waits.clear();
+    process.caught_handler_depth = 0;
+    process.returned_handler_depths.clear();
     process.fork_exec_path = None;
     process.fork_exec_argv = None;
     process.fork_fd_actions.clear();

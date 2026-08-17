@@ -867,10 +867,41 @@ until libc runs the handler and clears it. If the syscall would otherwise
 remain blocked, the host captures and releases its exact retry authority, then
 completes the channel with `EINTR` before it can park again. Public nonblocking
 `EAGAIN` outcomes remain `EAGAIN`. After the handler, libc resubmits only its
-reviewed zero-progress `SA_RESTART` allowlist, including `accept` and
-`accept4`; timeout-bearing operations suppress restart when a new submission
-would reset their deadline. The shared `CentralizedKernelWorker` state machine
-provides the same behavior in Node.js and browser hosts.
+reviewed zero-progress `SA_RESTART` allowlist, including `accept`, `accept4`,
+and `ppoll`. POSIX does not give `ppoll` the `pselect`
+restart-versus-`EINTR` exception, so it remains on that list; Kandelo
+deliberately selects `EINTR` for `pselect`, whose `SA_RESTART` outcome POSIX
+makes implementation-defined. Other timeout-bearing operations remain out
+when a new submission would reset their deadline. The shared
+`CentralizedKernelWorker` state machine provides the same behavior in Node.js
+and browser hosts.
+
+For a signal-mask-swapping `ppoll` or `pselect`, each TID owns a LIFO stack of
+wait contexts. Each context records both the caller's saved mask and the
+replacement mask. An active frame accepts repeated kernel attempts. Once a
+signal interrupts it, reuse additionally requires the current caught-handler
+depth to have fallen below the handler depth recorded by that frame. A wait
+entered by a catcher is therefore distinct from the interrupted outer wait
+even if the catcher explicitly restores the replacement mask and reuses
+identical syscall arguments. The signal record restores the mask current at
+delivery, so a restarted `ppoll` keeps its replacement mask continuously
+installed between attempts. Terminal success restores the top context in the
+normal syscall path; final `EINTR` uses the existing exact-task host-wait
+cancellation after the catcher returns. That cancellation also finalizes
+`sigsuspend` and `pause` after their catcher.
+
+The Wasm setjmp runtime records caught-handler depth in every jump environment.
+Both `longjmp` and `siglongjmp` first retire every abandoned handler and its
+paired wait context through the existing `rt_sigreturn` and exact-task
+cancellation operations. `siglongjmp` then applies the jump environment's
+saved mask when requested; an application using `longjmp` from a catcher must
+restore its signal mask as POSIX requires. An ordinary jump outside a catcher
+has no handler context to retire. A finite restarted `ppoll`
+keeps its absolute deadline in the libc call frame rather than host channel
+state. Nested calls and later same-argument calls therefore have independent
+deadlines, while catcher time is still charged to the interrupted call. The
+internal timestamp request defers caught-signal publication so a signal
+already pending at ppoll entry still interrupts ppoll itself.
 
 For a represented retry, the initial call uses token zero. Before returning
 `EAGAIN`, Rust pins any exact target required by that operation. The host
@@ -1686,7 +1717,7 @@ operations require a lifecycle-owned backing, not merely a reachable one.
 | `/var/tmp`  | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 | `/var/log`  | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 | `/var/run`  | scratch (ephemeral) | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
-| `/home/user`| scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
+| `/home/maker` | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 | `/root`     | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 | `/srv`      | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 
@@ -1719,7 +1750,7 @@ mounts it read-only at `/usr/bin` over the ordinary `nosuid` root image. Public
 boot descriptors, shared URLs, and `initFromImage` have no field that can
 request this mount or supply its authority.
 
-The browser host layers two additional, host-specific mounts on top: `/dev/shm` (the POSIX-semaphore SAB shared with main-thread surfaces) and `/dev` (`DeviceFileSystem` for `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`, `/dev/pts/N`). Sticky bits, the uid 1000 owner on `/home/user`, mode `0700` on `/root`, etc. are baked into the rootfs image at build time per the canonical `MANIFEST` and reflected honestly through the `MemoryFileSystem` inode metadata. Scratch mounts on Node start owned by uid/gid 0 because `HostFileSystem` synthesises them.
+The browser host layers two additional, host-specific mounts on top: `/dev/shm` (the POSIX-semaphore SAB shared with main-thread surfaces) and `/dev` (`DeviceFileSystem` for `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`, `/dev/pts/N`). Sticky bits, the uid 1000 owner on `/home/maker`, mode `0700` on `/root`, etc. are baked into the rootfs image at build time per the canonical `MANIFEST` and reflected honestly through the `MemoryFileSystem` inode metadata. Scratch mounts on Node start owned by uid/gid 0 because `HostFileSystem` synthesises them.
 
 ### rootfs image as the source of truth
 
@@ -1730,6 +1761,37 @@ program that calls `getpwnam`, `gethostbyname`, `getservbyname`, or OpenSSL's
 default configuration/trust lookup reads the same image bytes that `cat` would.
 The kernel synthesizes `/etc/mtab` because it reports live mount state; it does
 not synthesize static `/etc` policy or trust data.
+
+The rootfs data defines the canonical interactive image account as
+`maker` at uid/gid 1000 with home `/home/maker`. Its password hash, wheel
+membership, sudoers policy, and login messages are ordinary rootfs files.
+Reviewed `login`, `sudo-lite`, and `sudo` artifacts are published through the
+privileged-program path before that account is product-ready; the rootfs does
+not synthesize those executables or a preauthenticated shell.
+
+The reusable browser session layer owns one lifecycle record per logical PTY.
+Under the current browser trust boundary, the live loader selects that policy
+only after all configured assets have been staged and both of these checks
+succeed: the final writable image has the one exact canonical `maker` account,
+password, wheel, sudoers, and autologin records; and a separately
+publisher-admitted product supplies the same exact `login` bytes through
+`BrowserKernel.initFromPublishedPrivilegedProgramProduct`. Image origin is not
+part of this decision, so an otherwise third-party image remains eligible when
+its final state is canonical and it is paired with that separate product.
+Image/config/descriptor data alone cannot construct the private product
+capability. This describes the repository's present safety boundary; the
+larger trust model for deliberately user-selected images remains an open
+architecture question rather than a policy settled by terminal sessions.
+
+For an eligible image/product pair, the first process is root-authorized
+`login -p -f maker`; every later process is ordinary `login -p`. UI handles
+only attach listeners to that record, while the terminal tab's explicit close
+action, kernel detach, reboot, and destruction invalidate its process
+generation, terminate the active process, and cancel pending restart. Short
+processes back off from 250 milliseconds to a five-second cap, a process that
+survives two seconds resets the delay, and a replacement launch failure remains
+visible in the terminal without automatic retry. Password authentication stays
+in the guest program and final VFS credentials rather than React.
 
 VFS images can also carry image-level metadata outside the guest file tree. The first declaration is `kernelAbi`, an exact `ABI_VERSION` requirement for images that carry ABI-bound Wasm programs. `MemoryFileSystem.readImageMetadata(image)` reads this declaration without materialising the filesystem, and `MemoryFileSystem.assertImageKernelAbi(image, abi)` validates it for callers that already know the running kernel ABI. Legacy/data-only images may omit the field.
 
@@ -2375,8 +2437,21 @@ Signals are delivered at syscall boundaries. When a process has a pending signal
 
 1. `kernel_handle_channel` checks for pending signals after each syscall
 2. If a signal handler is registered (SA_SIGINFO), the kernel writes signal info to the channel's data buffer
-3. The glue reads the signal info and calls the handler on the process's stack (or alternate signal stack if SA_ONSTACK)
-4. After the handler returns, the glue calls `SYS_RT_SIGRETURN` to restore the signal mask
+3. The glue reads the signal info and calls the handler on the process's stack
+   (or alternate signal stack if SA_ONSTACK). For a ppoll/pselect replacement
+   mask, handler setup starts from that current replacement mask, then adds
+   sa_mask and the delivered signal.
+4. After the handler returns, the glue calls `SYS_RT_SIGRETURN` for
+   handler-frame state and applies the signal record's exact old mask with
+   `SYS_SIGPROCMASK`. For ppoll/pselect, the record contains the mask current
+   at delivery while Rust retains a per-TID LIFO wait context. A restarted
+   ppoll therefore preserves its replacement mask through resubmission;
+   terminal completion or exact post-handler cancellation restores the
+   pre-wait mask once. Nested ppoll, pselect, sigsuspend, and pause calls own
+   separate contexts. `sigsuspend` and `pause` use that same exact
+   post-handler cancellation to restore their pre-wait mask before returning
+   `EINTR`. `longjmp` and `siglongjmp` retire abandoned handler/wait contexts;
+   `siglongjmp` then applies the jump buffer's saved mask when requested.
 5. If the signal interrupted a blocking syscall, EINTR is returned
 
 The host distinguishes the kernel's internal `EAGAIN` retry sentinel from a

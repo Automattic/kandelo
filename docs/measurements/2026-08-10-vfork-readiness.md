@@ -29,8 +29,25 @@ quiescence evidence.
 | Gate | Status | Evidence |
 | --- | --- | --- |
 | Mechanism | PASS | Exact wrapper exited 0 at `334703abc` |
-| Integration | NOT RUN | Credential and secure-exec integration belongs to later tasks |
+| Integration | PASS | Exact wrapper exited 0 at `9fe84cc44` on 2026-08-12 |
 | Release | NOT RUN | Outside this mechanism-readiness task |
+
+### Integration revalidation — 2026-08-12
+
+`scripts/dev-shell.sh bash scripts/run-vfork-readiness.sh integration` passed
+at `9fe84cc4420a98a25a9b64fccc6056a35917a9bd`. The gate rebuilt its guest
+fixtures, ran 126 host checks in 18 files, ran the complete host-target
+`fork-instrument` suite, ran the focused kernel credential set (12 passed),
+and ran 42 Playwright checks across Chromium, Firefox, and WebKit.
+
+The integration wrapper now invokes the workspace's actual kernel package,
+`kandelo`, rather than its removed `wasm-posix-kernel` name. It covers
+prepared target commit/failure, secure-exec and `nosuid` behavior, the
+credential process record, exact caller-thread suspension, private borrowed
+state, and ordinary-fork independence. The external compute-bound borrower
+case still demonstrates whole-address-space containment in all browser
+engines; it does not claim an exact portable external-kill quiescence fence or
+safe parent resumption.
 
 `ABI_VERSION` remains 43. No vfork import, fork mode, instrument-frame field,
 memory-ownership protocol, safe-point architecture, or host protocol was

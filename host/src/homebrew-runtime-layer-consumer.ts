@@ -233,7 +233,8 @@ async function composeHomebrewRuntimeLayersInternal(
   }
 }
 
-async function publishRuntimeLayerPrivilegedPrograms(
+/** Product-owned final publication adapter; intentionally absent from barrels. */
+export async function publishRuntimeLayerPrivilegedPrograms(
   fs: MemoryFileSystem,
   layers: readonly RegisteredHomebrewRuntimeLayer[],
   policy: ReviewedPrivilegedProgramPolicy,

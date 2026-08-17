@@ -20,10 +20,12 @@
 #include <stdint.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <time.h>
 #include <sys/file.h>
 #include <sys/soundcard.h>
 #include <bits/kandelo_channel_scalars.h>
 #include <bits/kandelo_process_layouts.h>
+#include <bits/kandelo_thread_syscalls.h>
 #include "abi_constants.h"
 
 #ifdef __cplusplus
@@ -86,6 +88,8 @@ int *__errno_location(void);
     WASM_POSIX_CHANNEL_REQUEST_FLAG_CANCELLATION_POINT
 #define CH_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED \
     WASM_POSIX_CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED
+#define CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY \
+    WASM_POSIX_CHANNEL_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY
 #define CH_SIG_SIGNUM  WASM_POSIX_CHANNEL_SIG_SIGNUM_OFFSET
 #define CH_SIG_HANDLER WASM_POSIX_CHANNEL_SIG_HANDLER_OFFSET
 #define CH_SIG_FLAGS   WASM_POSIX_CHANNEL_SIG_FLAGS_OFFSET
@@ -130,10 +134,118 @@ _Static_assert(sizeof(uint64_t) == WASM_POSIX_CHANNEL_SIG_ALT_SIZE_BYTES,
 #define SYS_WAITID __NR_waitid
 #define SYS_SIGPROCMASK __NR_sigprocmask
 #define SYS_RT_SIGRETURN __NR_rt_sigreturn
+#define SYS_GETTID __NR_gettid
+#define SYS_CLOCK_GETTIME __NR_clock_gettime
+#define SYS_THREAD_CANCEL KANDELO_SYS_THREAD_CANCEL
 
 #define KANDELO_FUTEX_WAIT 0
 #define KANDELO_FUTEX_WAIT_BITSET 9
 #define KANDELO_FUTEX_CMD_MASK 0x7f
+
+static long __do_syscall(long n, long long a1, long long a2, long long a3,
+                         long long a4, long long a5, long long a6);
+static long __do_syscall_impl(long n, long long a1, long long a2, long long a3,
+                              long long a4, long long a5, long long a6,
+                              int cancellation_point,
+                              uint32_t extra_request_flags);
+
+static _Thread_local uint32_t kandelo_caught_handler_depth;
+
+unsigned long __wasm_posix_caught_handler_depth(void)
+{
+    return kandelo_caught_handler_depth;
+}
+
+void __wasm_posix_longjmp_cleanup(unsigned long target_depth)
+{
+    /* Generic setjmp/longjmp at equal depth is an ordinary nonlocal jump.
+     * Avoid even a diagnostic syscall so signal-aware longjmp can share this
+     * idempotent helper before its mask restore and the runtime throw. */
+    if (kandelo_caught_handler_depth <= target_depth)
+        return;
+
+    long tid = __do_syscall(SYS_GETTID, 0, 0, 0, 0, 0, 0);
+
+    while (kandelo_caught_handler_depth > target_depth) {
+        /* Retire the handler frame first. The immediately following exact
+         * self cancellation is then distinguishable from normal return,
+         * whose rt_sigreturn is followed by libc's old-mask restoration. */
+        kandelo_caught_handler_depth--;
+        (void)__do_syscall(SYS_RT_SIGRETURN, 0, 0, 0, 0, 0, 0);
+        if (tid > 0)
+            (void)__do_syscall(SYS_THREAD_CANCEL, tid, 0, 0, 0, 0, 0);
+    }
+}
+
+static int kandelo_capture_ppoll_deadline(
+    long n,
+    long long timeout_arg,
+    struct timespec *deadline)
+{
+    struct timespec timeout;
+    struct timespec now;
+    uintptr_t timeout_ptr;
+    uintptr_t memory_bytes;
+
+    if (n != __NR_ppoll || timeout_arg == 0)
+        return 0;
+    timeout_ptr = (uintptr_t)timeout_arg;
+    memory_bytes = (uintptr_t)__builtin_wasm_memory_size(0) * 65536u;
+    if (timeout_ptr > memory_bytes ||
+        sizeof(timeout) > memory_bytes - timeout_ptr)
+        return 0;
+    __builtin_memcpy(&timeout, (const void *)timeout_ptr, sizeof(timeout));
+    if (timeout.tv_sec < 0 || timeout.tv_nsec < 0 ||
+        timeout.tv_nsec >= 1000000000L)
+        return 0;
+    /* Reading the clock is internal accounting for the enclosing ppoll, not
+     * a guest signal checkpoint. In particular, a signal already pending at
+     * ppoll entry must interrupt ppoll itself rather than this timestamp. */
+    if (__do_syscall_impl(
+            SYS_CLOCK_GETTIME,
+            CLOCK_MONOTONIC,
+            (long long)(uintptr_t)&now,
+            0, 0, 0, 0,
+            0,
+            CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY
+        ) != 0)
+        return 0;
+    deadline->tv_sec = now.tv_sec + timeout.tv_sec;
+    deadline->tv_nsec = now.tv_nsec + timeout.tv_nsec;
+    if (deadline->tv_nsec >= 1000000000L) {
+        deadline->tv_sec++;
+        deadline->tv_nsec -= 1000000000L;
+    }
+    return 1;
+}
+
+static void kandelo_ppoll_remaining(
+    const struct timespec *deadline,
+    struct timespec *remaining)
+{
+    struct timespec now;
+
+    if (__do_syscall_impl(
+            SYS_CLOCK_GETTIME,
+            CLOCK_MONOTONIC,
+            (long long)(uintptr_t)&now,
+            0, 0, 0, 0,
+            0,
+            CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY
+        ) != 0 || now.tv_sec > deadline->tv_sec ||
+        (now.tv_sec == deadline->tv_sec && now.tv_nsec >= deadline->tv_nsec)) {
+        remaining->tv_sec = 0;
+        remaining->tv_nsec = 0;
+        return;
+    }
+    remaining->tv_sec = deadline->tv_sec - now.tv_sec;
+    if (deadline->tv_nsec < now.tv_nsec) {
+        remaining->tv_sec--;
+        remaining->tv_nsec = 1000000000L + deadline->tv_nsec - now.tv_nsec;
+    } else {
+        remaining->tv_nsec = deadline->tv_nsec - now.tv_nsec;
+    }
+}
 
 /*
  * Classify only operations whose zero-progress interruption may be submitted
@@ -142,9 +254,12 @@ _Static_assert(sizeof(uint64_t) == WASM_POSIX_CHANNEL_SIG_ALT_SIZE_BYTES,
  * WHY: CH_SIG_FLAGS carries the effective action flags for this interruption.
  * The host clears SA_RESTART in its owned signal record when an exact socket
  * OFD has SO_RCVTIMEO/SO_SNDTIMEO, so the socket cases below cannot reset a
- * live deadline. Relative-time readiness calls, signal waits, sleeps, and
- * SysV IPC are deliberately absent: Linux exposes EINTR for them even when
- * the action was installed with SA_RESTART.
+ * live deadline. ppoll is included because POSIX requires an interruptible
+ * function to restart with SA_RESTART unless that function says otherwise;
+ * unlike pselect, ppoll has no implementation-defined EINTR exception.
+ * pselect, signal waits, sleeps, and SysV IPC are deliberately absent:
+ * Kandelo selects pselect's POSIX-permitted EINTR behavior, while the other
+ * operations have their own interruption rules.
  */
 static int kandelo_should_restart_after_handler(
     long n,
@@ -165,6 +280,7 @@ static int kandelo_should_restart_after_handler(
     case __NR_openat:
     case __NR_wait4:
     case __NR_waitid:
+    case __NR_ppoll:
     case __NR_read:
     case __NR_write:
     case __NR_pread:
@@ -208,6 +324,34 @@ static int kandelo_should_restart_after_handler(
     }
     default:
         return 0;
+    }
+}
+
+/*
+ * Cancel the Rust-owned state of an interrupted signal-mask-swapping wait.
+ *
+ * The kernel deliberately retains the pre-wait mask while libc runs a caught
+ * handler and decides whether SA_RESTART applies. A restarted ppoll simply
+ * resubmits with the replacement mask still current. A final ppoll/pselect
+ * EINTR, rt_sigsuspend, or pause instead uses the existing exact-task
+ * host-wait cancellation syscall after the handler has returned. The
+ * self-target form is reserved for this cleanup; pthread_cancel(self) never
+ * issues SYS_THREAD_CANCEL. No poll/select result buffers are touched and no
+ * second mask owner or channel field is introduced.
+ */
+static void kandelo_finish_interrupted_mask_wait(
+    long n,
+    long long a4,
+    long long a6)
+{
+    if ((n == __NR_ppoll && a4 != 0) ||
+        (n == __NR_pselect6 && a6 != 0) ||
+        n == __NR_rt_sigsuspend ||
+        n == __NR_pause) {
+        long tid = __do_syscall(SYS_GETTID, 0, 0, 0, 0, 0, 0);
+        if (tid > 0) {
+            (void)__do_syscall(SYS_THREAD_CANCEL, tid, 0, 0, 0, 0, 0);
+        }
     }
 }
 
@@ -326,9 +470,6 @@ int32_t kernel_fork(int32_t mode);
 
 __attribute__((import_module("kernel"), import_name("kernel_exit")))
 _Noreturn void kernel_exit(int32_t status);
-
-static long __do_syscall(long n, long long a1, long long a2, long long a3,
-                         long long a4, long long a5, long long a6);
 
 /*
  * Complete one ordinary guest-owned channel request after a host import that
@@ -533,6 +674,8 @@ static uint32_t __deliver_pending_signal(uintptr_t base, int *delivered)
         __asm__ volatile("local.get %0\nglobal.set __stack_pointer" :: "r"(new_sp));
     }
 
+    kandelo_caught_handler_depth++;
+
     /* Invoke the signal handler via function pointer.
      * In Wasm, function pointers are table indices — casting the
      * handler_index to a function pointer and calling it uses
@@ -584,6 +727,7 @@ static uint32_t __deliver_pending_signal(uintptr_t base, int *delivered)
 
     /* Notify kernel that signal handler has returned.
      * This clears SS_ONSTACK if we were on the alt stack. */
+    kandelo_caught_handler_depth--;
     __do_syscall(SYS_RT_SIGRETURN, 0, 0, 0, 0, 0, 0);
 
     /* Restore the old blocked mask via sigprocmask syscall.
@@ -601,8 +745,16 @@ static uint32_t __deliver_pending_signal(uintptr_t base, int *delivered)
 
 static long __do_syscall_impl(long n, long long a1, long long a2, long long a3,
                               long long a4, long long a5, long long a6,
-                              int cancellation_point)
+                              int cancellation_point,
+                              uint32_t extra_request_flags)
 {
+    struct timespec kandelo_ppoll_deadline;
+    struct timespec kandelo_ppoll_remaining_timeout;
+    int kandelo_ppoll_has_deadline = kandelo_capture_ppoll_deadline(
+        n,
+        a3,
+        &kandelo_ppoll_deadline
+    );
     /* Fork/vfork are handled by fork()/_Fork()/vfork() overrides above,
      * which call kernel_fork(mode) directly.  If we somehow get here (e.g. a
      * program calls __syscall(SYS_fork) directly), return ENOSYS because
@@ -699,7 +851,7 @@ restart_wait_syscall:
      * waitpid and wait4). Publish the call-site identity before the
      * release-ordered PENDING store. The host consumes and clears it with this
      * request, so mailbox reuse cannot inherit cancellation authority. */
-    uint32_t request_flags = 0u;
+    uint32_t request_flags = extra_request_flags;
     if (cancellation_point) {
         request_flags |= CH_REQUEST_FLAG_CANCELLATION_POINT;
         /*
@@ -806,10 +958,23 @@ restart_wait_syscall:
          * cancellation exits through pthread_exit. */
         if (cancellation_point) {
             long checked = __syscall_cp_check(-(long)EINTR);
-            if (checked != -(long)EINTR)
+            if (checked != -(long)EINTR) {
+                kandelo_finish_interrupted_mask_wait(n, a4, a6);
                 return checked;
+            }
+        }
+        if (kandelo_ppoll_has_deadline) {
+            kandelo_ppoll_remaining(
+                &kandelo_ppoll_deadline,
+                &kandelo_ppoll_remaining_timeout
+            );
+            a3 = (long long)(uintptr_t)&kandelo_ppoll_remaining_timeout;
         }
         goto restart_wait_syscall;
+    }
+
+    if (err == EINTR && delivered_signal) {
+        kandelo_finish_interrupted_mask_wait(n, a4, a6);
     }
 
     /* Return in musl's expected format: negative errno on error.
@@ -823,7 +988,7 @@ restart_wait_syscall:
 static long __do_syscall(long n, long long a1, long long a2, long long a3,
                          long long a4, long long a5, long long a6)
 {
-    return __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 0);
+    return __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 0, 0u);
 }
 
 /* ================================================================== */
@@ -900,7 +1065,7 @@ long __syscall_cp(long n, long long a1, long long a2, long long a3,
 {
     long pending = __syscall_cp_cancel_preflight();
     if (pending) return pending;
-    long r = __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 1);
+    long r = __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 1, 0u);
     return __syscall_cp_check(r);
 }
 

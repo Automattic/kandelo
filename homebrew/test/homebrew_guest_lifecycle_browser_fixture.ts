@@ -44,6 +44,10 @@ export interface HomebrewGuestLifecycleBrowserFixture {
     plan: HomebrewGuestLifecycleExactAsset;
     payloads?: HomebrewGuestLifecycleBottlePayloadFixture[];
   };
+  loginProduct?: {
+    compositionReport: HomebrewGuestLifecycleExactAsset;
+    privilegedProduct: HomebrewGuestLifecycleExactAsset;
+  };
   revisions: HomebrewGuestLifecycleRevisions;
   timeoutMs: number;
 }
@@ -55,6 +59,8 @@ export interface LoadedHomebrewGuestLifecycleBrowserFixture {
   bootstrapArchiveBytes: Uint8Array;
   bootstrapEnvironmentBytes: Uint8Array;
   bottleMirrorPlanBytes: Uint8Array;
+  compositionReportBytes?: Uint8Array;
+  privilegedProductBytes?: Uint8Array;
   closedBottleAssets?: readonly ClosedLazyAsset[];
 }
 
@@ -127,13 +133,14 @@ const TOP_LEVEL_KEYS = [
   "revisions",
   "timeoutMs",
 ] as const;
+const LOGIN_PRODUCT_KEYS = ["compositionReport", "privilegedProduct"] as const;
 const BOOTSTRAP_KEYS = ["spec", "archive", "environment"] as const;
 const MIRROR_KEYS = ["plan", "payloads"] as const;
 const REVISION_KEYS = ["coreRevision", "canaryRevision"] as const;
 const ASSET_KEYS = ["url", "sha256", "bytes"] as const;
 const PAYLOAD_KEYS = ["asset", "url", "sha256", "bytes"] as const;
 const SHA256_RE = /^[0-9a-f]{64}$/;
-const FIXED_EXACT_ASSET_COUNT = 5;
+const BASE_FIXED_EXACT_ASSET_COUNT = 5;
 
 /**
  * Reject ambient or partially specified live inputs before any browser fetch.
@@ -145,7 +152,8 @@ export function projectHomebrewGuestLifecycleBrowserFixture(
 ): HomebrewGuestLifecycleBrowserFixture {
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, TOP_LEVEL_KEYS)
+    (!hasExactKeys(value, TOP_LEVEL_KEYS) &&
+      !hasExactKeys(value, [...TOP_LEVEL_KEYS, "loginProduct"]))
   ) {
     throw new Error(
       "Homebrew browser lifecycle fixture has unknown or missing fields",
@@ -192,7 +200,15 @@ export function projectHomebrewGuestLifecycleBrowserFixture(
     );
   }
 
-  const bottleMirror = projectBottleMirror(value.bottleMirror);
+  const loginProduct = value.loginProduct === undefined
+    ? undefined
+    : projectLoginProduct(value.loginProduct);
+  const fixedExactAssetCount =
+    BASE_FIXED_EXACT_ASSET_COUNT + (loginProduct === undefined ? 0 : 2);
+  const bottleMirror = projectBottleMirror(
+    value.bottleMirror,
+    fixedExactAssetCount,
+  );
   if (
     (
       value.transportMode === "closed" &&
@@ -226,6 +242,7 @@ export function projectHomebrewGuestLifecycleBrowserFixture(
       ),
     },
     bottleMirror,
+    ...(loginProduct === undefined ? {} : { loginProduct }),
     revisions,
     timeoutMs: value.timeoutMs as number,
   };
@@ -260,8 +277,17 @@ async function loadHomebrewGuestLifecycleBrowserFixtureImpl(
     fixture.bootstrap.archive,
     fixture.bootstrap.environment,
     fixture.bottleMirror.plan,
+    ...(fixture.loginProduct === undefined
+      ? []
+      : [
+          fixture.loginProduct.compositionReport,
+          fixture.loginProduct.privilegedProduct,
+        ]),
     ...payloads,
   ];
+  const fixedExactAssetCount =
+    BASE_FIXED_EXACT_ASSET_COUNT +
+    (fixture.loginProduct === undefined ? 0 : 2);
   // WHY: validate the entire transport set before I/O so staging the
   // authority plan ahead of its payloads cannot accidentally grant each
   // stage a separate count/byte budget or permit a duplicate canonical URL.
@@ -278,7 +304,7 @@ async function loadHomebrewGuestLifecycleBrowserFixtureImpl(
   // identities. Fetch fixed inputs and that plan first; do not issue payload
   // requests until the decoded plan proves the fixture declared the same set.
   const loadedFixedAssets = await loadFixtureAssetSources(
-    sources.slice(0, FIXED_EXACT_ASSET_COUNT),
+    sources.slice(0, fixedExactAssetCount),
     fetchImpl,
     options.signal,
     transportController,
@@ -295,6 +321,12 @@ async function loadHomebrewGuestLifecycleBrowserFixtureImpl(
   const bootstrapArchiveBytes = bootstrapArchive!.bytes;
   const bootstrapEnvironmentBytes = bootstrapEnvironment!.bytes;
   const bottleMirrorPlanBytes = bottleMirrorPlan!.bytes;
+  const compositionReportBytes = fixture.loginProduct === undefined
+    ? undefined
+    : loadedFixedAssets[BASE_FIXED_EXACT_ASSET_COUNT]!.bytes;
+  const privilegedProductBytes = fixture.loginProduct === undefined
+    ? undefined
+    : loadedFixedAssets[BASE_FIXED_EXACT_ASSET_COUNT + 1]!.bytes;
   const plan = decodeHomebrewBottleMirrorPlan(
     bottleMirrorPlanBytes,
     "live Homebrew bottle mirror plan",
@@ -316,6 +348,12 @@ async function loadHomebrewGuestLifecycleBrowserFixtureImpl(
       bootstrapArchiveBytes,
       bootstrapEnvironmentBytes,
       bottleMirrorPlanBytes,
+      ...(compositionReportBytes === undefined
+        ? {}
+        : { compositionReportBytes }),
+      ...(privilegedProductBytes === undefined
+        ? {}
+        : { privilegedProductBytes }),
     };
   }
 
@@ -345,7 +383,7 @@ async function loadHomebrewGuestLifecycleBrowserFixtureImpl(
   }
 
   const loadedPayloads = await loadFixtureAssetSources(
-    sources.slice(FIXED_EXACT_ASSET_COUNT),
+    sources.slice(fixedExactAssetCount),
     fetchImpl,
     options.signal,
     transportController,
@@ -383,6 +421,8 @@ async function loadHomebrewGuestLifecycleBrowserFixtureImpl(
     bootstrapArchiveBytes,
     bootstrapEnvironmentBytes,
     bottleMirrorPlanBytes,
+    ...(compositionReportBytes === undefined ? {} : { compositionReportBytes }),
+    ...(privilegedProductBytes === undefined ? {} : { privilegedProductBytes }),
     closedBottleAssets,
   };
 }
@@ -457,7 +497,10 @@ async function loadFixtureAssetSources(
   }
 }
 
-function projectBottleMirror(value: unknown):
+function projectBottleMirror(
+  value: unknown,
+  fixedExactAssetCount: number,
+):
   HomebrewGuestLifecycleBrowserFixture["bottleMirror"] {
   if (
     !isRecord(value) ||
@@ -481,7 +524,7 @@ function projectBottleMirror(value: unknown):
   if (
     value.payloads !== undefined &&
     value.payloads.length >
-      MAX_CLOSED_LAZY_ASSETS - FIXED_EXACT_ASSET_COUNT
+      MAX_CLOSED_LAZY_ASSETS - fixedExactAssetCount
   ) {
     throw new Error(
       `Homebrew browser lifecycle fixture exceeds ` +
@@ -512,6 +555,26 @@ function projectBottleMirror(value: unknown):
   return {
     plan: projectExactAsset(value.plan, "bottle mirror plan"),
     ...(payloads === undefined ? {} : { payloads }),
+  };
+}
+
+function projectLoginProduct(
+  value: unknown,
+): NonNullable<HomebrewGuestLifecycleBrowserFixture["loginProduct"]> {
+  if (!isRecord(value) || !hasExactKeys(value, LOGIN_PRODUCT_KEYS)) {
+    throw new Error(
+      "Homebrew browser lifecycle login product has unknown or missing fields",
+    );
+  }
+  return {
+    compositionReport: projectExactAsset(
+      value.compositionReport,
+      "login product composition report",
+    ),
+    privilegedProduct: projectExactAsset(
+      value.privilegedProduct,
+      "serialized privileged product",
+    ),
   };
 }
 

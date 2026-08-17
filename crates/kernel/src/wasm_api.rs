@@ -2649,7 +2649,7 @@ pub extern "C" fn kernel_dequeue_signal(
     out_ptr: *mut u8,
     out_capacity: u32,
 ) -> i32 {
-    use crate::signal::{sig_bit, SignalHandler};
+    use crate::signal::SignalHandler;
     use wasm_posix_shared::kernel_scratch_wire as signal_wire;
 
     if let Err(error) = crate::process_wire::validate_signal_delivery_output(out_ptr, out_capacity)
@@ -2675,15 +2675,14 @@ pub extern "C" fn kernel_dequeue_signal(
             SignalHandler::Handler(idx) => {
                 let (_sig, si_value, si_code, siginfo_word_1, siginfo_word_2) =
                     dequeue_signal_for(proc, tid, signum);
-                // If returning from sigsuspend/ppoll/pselect, restore original
-                // mask *before* saving old_mask for the handler, so the
-                // handler's saved mask is the pre-sigsuspend mask.
-                if let Some(saved) = proc.take_sigsuspend_saved_mask_for(tid) {
-                    proc.set_blocked_for(tid, saved);
-                }
-                // Save old mask, apply new (POSIX: block sa_mask + the signal itself)
-                let old_mask = proc.blocked_for(tid);
-                proc.set_blocked_for(tid, old_mask | action.mask | sig_bit(signum));
+                // ppoll, pselect, and sigsuspend keep their replacement mask
+                // installed until the logical wait finally completes. Form
+                // the handler mask from that current mask and place the same
+                // current mask in the delivery record for normal handler
+                // return. The saved pre-wait mask stays Rust-owned across an
+                // SA_RESTART resubmission and is consumed only by terminal
+                // wait completion or exact host-owned cancellation.
+                let old_mask = proc.install_caught_handler_mask_for(tid, action.mask, signum);
                 // If SA_ONSTACK and alt stack is configured (not SS_DISABLE),
                 // mark that we're executing on the alt stack.
                 const SA_ONSTACK: u32 = 0x08000000;
@@ -3835,6 +3834,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                     Ok(old) => old,
                     Err(e) => return -(e as i32),
                 };
+                proc.acknowledge_caught_handler_mask_restore_for(
+                    syscalls::current_tid_for_process(proc),
+                );
                 if args[2] != 0 {
                     let ptr = channel_mut_ptr!(2, u8);
                     unsafe {
@@ -3850,9 +3852,10 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             } else {
                 // set is NULL: just read the current mask without modifying
                 if args[2] != 0 {
+                    let tid = syscalls::current_tid_for_process(proc);
                     let ptr = channel_mut_ptr!(2, u8);
                     unsafe {
-                        let bytes = proc.signals.blocked.to_le_bytes();
+                        let bytes = proc.blocked_for(tid).to_le_bytes();
                         for i in 0..8 {
                             *ptr.add(i) = bytes[i];
                         }
@@ -5016,6 +5019,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         // SYS_RT_SIGRETURN: signal handler return — clean up alt stack state
         208 => {
             let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+            proc.return_from_caught_handler_for(syscalls::current_tid_for_process(proc));
             if proc.alt_stack_depth > 0 {
                 proc.alt_stack_depth -= 1;
                 if proc.alt_stack_depth == 0 {
@@ -8438,7 +8442,12 @@ pub extern "C" fn kernel_sigprocmask(how: u32, set_lo: u32, set_hi: u32) -> i64 
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let set = ((set_hi as u64) << 32) | (set_lo as u64);
     let result = match syscalls::sys_sigprocmask(proc, how, set) {
-        Ok(old) => old as i64,
+        Ok(old) => {
+            proc.acknowledge_caught_handler_mask_restore_for(
+                syscalls::current_tid_for_process(proc),
+            );
+            old as i64
+        }
         Err(e) => -(e as i64),
     };
     let mut host = WasmHostIO;

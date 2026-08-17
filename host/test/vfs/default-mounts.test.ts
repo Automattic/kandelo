@@ -123,7 +123,7 @@ describe("DEFAULT_MOUNT_SPEC", () => {
     expect(paths).toEqual(
       [
         "/",
-        "/home/user",
+        "/home/maker",
         "/root",
         "/srv",
         "/tmp",
@@ -193,6 +193,38 @@ describe("resolveForNode", () => {
     expect(new TextDecoder().decode(onDisk)).toBe("hello via host fs");
   });
 
+  it("keeps the canonical maker profile on a writable Node scratch mount", async () => {
+    const makerSessionDir = mkdtempSync(
+      join(tmpdir(), "wasm-posix-maker-profile-"),
+    );
+    const mounts = await resolveForNode(
+      DEFAULT_MOUNT_SPEC,
+      image,
+      makerSessionDir,
+    );
+    const home = mounts.find((m) => m.mountPoint === "/home/maker");
+
+    try {
+      expect(home).toBeDefined();
+      const data = new TextEncoder().encode("maker node profile");
+      const fd = home!.backend.open(
+        "/profile.txt",
+        O_WRONLY | O_CREAT | O_TRUNC,
+        0o644,
+      );
+      home!.backend.write(fd, data, null, data.length);
+      home!.backend.close(fd);
+      expect(
+        readFileSync(
+          join(makerSessionDir, "home", "maker", "profile.txt"),
+          "utf8",
+        ),
+      ).toBe("maker node profile");
+    } finally {
+      rmSync(makerSessionDir, { recursive: true, force: true });
+    }
+  });
+
   it("pre-creates every scratch directory under sessionDir", async () => {
     await resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
     for (const spec of DEFAULT_MOUNT_SPEC) {
@@ -210,7 +242,7 @@ describe("resolveForNode", () => {
     );
     const tmp = mounts.find((m) => m.mountPoint === "/tmp")!;
     const varTmp = mounts.find((m) => m.mountPoint === "/var/tmp")!;
-    const home = mounts.find((m) => m.mountPoint === "/home/user")!;
+    const home = mounts.find((m) => m.mountPoint === "/home/maker")!;
     const root = mounts.find((m) => m.mountPoint === "/root")!;
 
     try {
@@ -698,24 +730,40 @@ describe("resolveForBrowser", () => {
     expect(new TextDecoder().decode(passwd)).toContain("root:x:0:0");
   });
 
-  it("scratch mounts are independent writable memfs instances", async () => {
+  it("keeps the maker profile on an independent writable browser scratch mount", async () => {
     const mounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
       scratchSabBytes: tinyScratch,
     });
     const tmp = mounts.find((m) => m.mountPoint === "/tmp");
-    const home = mounts.find((m) => m.mountPoint === "/home/user");
+    const home = mounts.find((m) => m.mountPoint === "/home/maker");
     expect(tmp).toBeDefined();
     expect(home).toBeDefined();
     expect(tmp!.backend).not.toBe(home!.backend);
 
-    const data = new TextEncoder().encode("scratch");
-    const fd = tmp!.backend.open("/x.txt", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
-    tmp!.backend.write(fd, data, null, data.length);
-    tmp!.backend.close(fd);
-    expect(new TextDecoder().decode(readMountFile(tmp!.backend, "/x.txt"))).toBe(
-      "scratch",
+    const tmpData = new TextEncoder().encode("tmp scratch");
+    const tmpFd = tmp!.backend.open(
+      "/x.txt",
+      O_WRONLY | O_CREAT | O_TRUNC,
+      0o644,
     );
-    expect(() => home!.backend.stat("/x.txt")).toThrow();
+    tmp!.backend.write(tmpFd, tmpData, null, tmpData.length);
+    tmp!.backend.close(tmpFd);
+    expect(new TextDecoder().decode(readMountFile(tmp!.backend, "/x.txt"))).toBe(
+      "tmp scratch",
+    );
+
+    const homeData = new TextEncoder().encode("profile scratch");
+    const homeFd = home!.backend.open(
+      "/profile.txt",
+      O_WRONLY | O_CREAT | O_TRUNC,
+      0o644,
+    );
+    home!.backend.write(homeFd, homeData, null, homeData.length);
+    home!.backend.close(homeFd);
+    expect(
+      new TextDecoder().decode(readMountFile(home!.backend, "/profile.txt")),
+    ).toBe("profile scratch");
+    expect(() => tmp!.backend.stat("/profile.txt")).toThrow();
   });
 
   it("applies declared scratch root modes", async () => {
@@ -724,7 +772,7 @@ describe("resolveForBrowser", () => {
     });
     const tmp = mounts.find((m) => m.mountPoint === "/tmp")!.backend as MemoryFileSystem;
     const varTmp = mounts.find((m) => m.mountPoint === "/var/tmp")!.backend as MemoryFileSystem;
-    const home = mounts.find((m) => m.mountPoint === "/home/user")!.backend as MemoryFileSystem;
+    const home = mounts.find((m) => m.mountPoint === "/home/maker")!.backend as MemoryFileSystem;
     const root = mounts.find((m) => m.mountPoint === "/root")!.backend as MemoryFileSystem;
     expect(tmp.stat("/").mode & 0o7777).toBe(0o1777);
     expect(varTmp.stat("/").mode & 0o7777).toBe(0o1777);

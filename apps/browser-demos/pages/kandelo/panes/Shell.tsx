@@ -110,6 +110,10 @@ const ShellTerminalHost: React.FC<{
     if (status !== "running") return;
     if (!containerRef.current) return;
 
+    // React StrictMode mounts this effect twice. Clear renderer nodes that
+    // xterm leaves behind without removing the host-owned logical PTY.
+    containerRef.current.replaceChildren();
+
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 13,
@@ -252,7 +256,7 @@ const PreBoot: React.FC<{ status: string }> = ({ status }) => (
 |  | | |  |    image: b3:9f2a3b81d2c47f1e
 |__|_|_|__|    Waiting for the kernel to reach 'running'.`}
     </pre>
-    <span className="kshell-dim">user@kandelo</span>
+    <span className="kshell-dim">maker@kandelo</span>
     <span className="kshell-dim">:~$ </span>
     <span className="kshell-cursor" />
   </div>

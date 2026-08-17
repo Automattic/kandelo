@@ -44,7 +44,7 @@ export interface MountSpec {
 /**
  * Canonical mount layout. Mirrors the top-level system directories
  * declared in `MANIFEST` (Task 3.3): `/` is the read-only rootfs image;
- * `/tmp`, `/var/*`, `/home/user`, `/root`, `/srv` are scratch.
+ * `/tmp`, `/var/*`, `/home/maker`, `/root`, `/srv` are scratch.
  */
 export const DEFAULT_MOUNT_SPEC: MountSpec[] = [
   { path: "/",          source: "image",   readonly: true  },
@@ -52,7 +52,7 @@ export const DEFAULT_MOUNT_SPEC: MountSpec[] = [
   { path: "/var/tmp",   source: "scratch", mode: 0o1777 },
   { path: "/var/log",   source: "scratch", mode: 0o755 },
   { path: "/var/run",   source: "scratch", mode: 0o755, ephemeral: true },
-  { path: "/home/user", source: "scratch", mode: 0o755, uid: 1000, gid: 1000 },
+  { path: "/home/maker", source: "scratch", mode: 0o755, uid: 1000, gid: 1000 },
   { path: "/root",      source: "scratch", mode: 0o700, uid: 0, gid: 0 },
   { path: "/srv",       source: "scratch", mode: 0o755 },
 ];

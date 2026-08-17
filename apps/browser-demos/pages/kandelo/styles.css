@@ -763,6 +763,37 @@
   white-space: nowrap;
 }
 
+.kdock-terminal-tab {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.kdock-terminal-tab .kdock-view-tab {
+  padding-right: 24px;
+}
+
+.kdock-terminal-close {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  line-height: 16px;
+}
+
+.kdock-terminal-close:hover,
+.kdock-terminal-close:focus-visible {
+  background: color-mix(in oklch, var(--kdock-text) 14%, transparent);
+  outline: none;
+}
+
 .kdock-view-iconbtn {
   width: 28px;
   display: inline-flex;

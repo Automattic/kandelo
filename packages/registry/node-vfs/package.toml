@@ -5,11 +5,11 @@ kernel_abi = 7
 depends_on = ["node@0.1.0", "shell@0.1.0"]
 
 # Pre-built VFS image layered on the resolved shell.vfs.zst image, adding the
-# exact resolved Node executable, npm 10.9.2, and a writable /work tree for the
-# browser Node demos. Node is eager because this dedicated image always uses
-# it; shell's own package owns the sealed flat-lazy Homebrew composition and
-# its authenticated mirror binding, which node-vfs preserves instead of
-# reconstructing from transitive dependencies.
+# exact resolved Node executable, npm 10.9.2, and a guest profile that creates
+# the starter workspace inside the mounted canonical /home/maker. Node is
+# eager because this dedicated image always uses it; shell's own package still
+# owns the lazy shell utility/archive inputs and node-vfs must not reconstruct
+# that environment from transitive dependencies.
 [source]
 url = "https://registry.npmjs.org/npm/-/npm-10.9.2.tgz"
 sha256 = "5cd1e5ab971ea6333f910bc2d50700167c5ef4e66da279b2a3efc874c6b116e4"

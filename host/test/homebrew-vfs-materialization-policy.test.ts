@@ -82,142 +82,53 @@ function shellPlan(): HomebrewVfsPlan {
     kandeloCommit: "2".repeat(40),
     kandeloAbi: 41,
     releaseTag: "bottles-abi-v41",
-    requestedPackages: ["dash", "bash", "coreutils"],
+    requestedPackages: [
+      "dash",
+      "bash",
+      "coreutils",
+      "login",
+      "sudo-lite",
+      "sudo",
+      "ruby",
+    ],
     packages: [
       pkg("dash"),
       pkg("libcxx"),
       pkg("ncurses", [dependency("libcxx")]),
       pkg("bash", [dependency("ncurses")]),
       pkg("coreutils"),
+      pkg("zlib"),
+      pkg("login"),
+      pkg("sudo-lite"),
+      pkg("sudo"),
+      pkg("libyaml"),
+      pkg("ruby", [dependency("libyaml"), dependency("zlib")]),
     ],
   };
 }
 
 describe("Homebrew VFS materialization policy", () => {
-  it("derives every lazy role from the active flat selection dependency closure", () => {
-    const selection = checkedInFlatSelection();
-    const partition = deriveFlatLazyCompositionPartition(
-      selection,
-      checkedInPolicy(),
-      checkedInRuntimeSupportPolicy(),
-    );
-
-    expect(partition.embeddedPackageOrder).toEqual([
-      "kandelo-dev/tap-core/libcxx",
-      "kandelo-dev/tap-core/ncurses",
-      "kandelo-dev/tap-core/bash",
-    ]);
-    expect(partition.bootstrapPackage).toBe(
-      "kandelo-dev/tap-core/homebrew-bootstrap",
-    );
-    expect(partition.runtimeCohortPackageOrder).toEqual([
-      "kandelo-dev/tap-core/libyaml",
-      "kandelo-dev/tap-core/ruby",
-    ]);
-    expect(partition.ordinaryDeferredPackageOrder).toHaveLength(35);
-    expect(partition.deferredPackageOrder).toHaveLength(37);
-
-    const roleMembership = [
-      ...partition.embeddedPackageOrder,
-      partition.bootstrapPackage,
-      ...partition.ordinaryDeferredPackageOrder,
-      ...partition.runtimeCohortPackageOrder,
-    ];
-    expect(roleMembership).toHaveLength(41);
-    expect(new Set(roleMembership).size).toBe(41);
-    expect(new Set(roleMembership)).toEqual(
-      new Set(selection.bottles.map((bottle) => bottle.fullName)),
-    );
-    expect(partition.runtimeCohortPackageOrder).not.toContain(
-      "kandelo-dev/tap-core/zlib",
-    );
-    expect(Object.isFrozen(partition)).toBe(true);
-    expect(Object.isFrozen(partition.embeddedPackageOrder)).toBe(true);
-  });
-
-  it("fails closed when the flat selection no longer supports the policy roles", () => {
-    const selection = checkedInFlatSelection();
-    const materialization = checkedInPolicy();
-    const runtime = checkedInRuntimeSupportPolicy();
-
-    const reordered = structuredClone(materialization);
-    reordered.embedded_package_order.reverse();
-    expect(() => deriveFlatLazyCompositionPartition(selection, reordered, runtime))
-      .toThrow(/embedded closure differs from the reviewed policy/);
-
-    const missingEdge = structuredClone(selection);
-    missingEdge.bottles.find((bottle) => bottle.fullName === `${TAP_NAME}/bash`)!
-      .dependencies = [];
-    expect(() => deriveFlatLazyCompositionPartition(missingEdge, materialization, runtime))
-      .toThrow(/embedded closure differs from the reviewed policy/);
-
-    const duplicateRole = structuredClone(runtime);
-    (duplicateRole as { bootstrapPackage: string }).bootstrapPackage = `${TAP_NAME}/bash`;
-    const duplicateRoleSelection = structuredClone(selection);
-    duplicateRoleSelection.bottles.find(
-      (bottle) => bottle.fullName === `${TAP_NAME}/bash`,
-    )!.materialization = "homebrew-runtime-support-v1";
-    expect(() => deriveFlatLazyCompositionPartition(
-      duplicateRoleSelection,
-      materialization,
-      duplicateRole,
-    ))
-      .toThrow(/roles overlap/);
-
-    const noDeferredSelection = structuredClone(selection);
-    noDeferredSelection.bottles = noDeferredSelection.bottles.filter((bottle) =>
-      [
-        "homebrew-bootstrap",
-        "libcxx",
-        "ncurses",
-        "bash",
-        "ruby",
-      ].includes(bottle.name)
-    );
-    noDeferredSelection.bottles.find(
-      (bottle) => bottle.fullName === `${TAP_NAME}/ruby`,
-    )!.dependencies = [];
-    expect(() => deriveFlatLazyCompositionPartition(
-      noDeferredSelection,
-      {
-        ...materialization,
-        embedded_roots: [`${TAP_NAME}/bash`, `${TAP_NAME}/ruby`],
-        embedded_package_order: [
-          `${TAP_NAME}/libcxx`,
-          `${TAP_NAME}/ncurses`,
-          `${TAP_NAME}/bash`,
-          `${TAP_NAME}/ruby`,
-        ],
-      },
-      runtime,
-    )).toThrow(/leaves no deferred packages/);
-
-    const absentBootstrap = structuredClone(runtime);
-    (absentBootstrap as { bootstrapPackage: string }).bootstrapPackage =
-      `${TAP_NAME}/missing-bootstrap`;
-    expect(() => deriveFlatLazyCompositionPartition(
-      selection,
-      materialization,
-      absentBootstrap,
-    )).toThrow(/bootstrap .* is absent from the selection/);
-
-    const staleRuntimeRoot = structuredClone(runtime);
-    (staleRuntimeRoot as { runtimeRoots: string[] }).runtimeRoots = [
-      `${TAP_NAME}/missing-runtime`,
-    ];
-    expect(() => deriveFlatLazyCompositionPartition(selection, materialization, staleRuntimeRoot))
-      .toThrow(/runtime root .* is absent from the selection/);
-  });
-
-  it("pins Bash and its exact dependency-first closure in the main shell", () => {
+  it("pins the login product and its exact dependency-first closure", () => {
     expect(checkedInPolicy()).toEqual({
       schema: 1,
       kind: "kandelo-homebrew-vfs-materialization-policy",
-      embedded_roots: [`${TAP_NAME}/bash`],
+      embedded_roots: [
+        `${TAP_NAME}/bash`,
+        `${TAP_NAME}/login`,
+        `${TAP_NAME}/sudo-lite`,
+        `${TAP_NAME}/sudo`,
+        `${TAP_NAME}/ruby`,
+      ],
       embedded_package_order: [
         `${TAP_NAME}/libcxx`,
         `${TAP_NAME}/ncurses`,
         `${TAP_NAME}/bash`,
+        `${TAP_NAME}/zlib`,
+        `${TAP_NAME}/login`,
+        `${TAP_NAME}/sudo-lite`,
+        `${TAP_NAME}/sudo`,
+        `${TAP_NAME}/libyaml`,
+        `${TAP_NAME}/ruby`,
       ],
     });
   });
@@ -237,11 +148,23 @@ describe("Homebrew VFS materialization policy", () => {
 
   it("partitions every planned package without overlap or loss", () => {
     const selection = selectHomebrewVfsMaterialization(shellPlan(), checkedInPolicy());
-    expect(selection.embeddedRoots).toEqual([`${TAP_NAME}/bash`]);
+    expect(selection.embeddedRoots).toEqual([
+      `${TAP_NAME}/bash`,
+      `${TAP_NAME}/login`,
+      `${TAP_NAME}/sudo-lite`,
+      `${TAP_NAME}/sudo`,
+      `${TAP_NAME}/ruby`,
+    ]);
     expect(selection.embeddedPackages.map((entry) => entry.name)).toEqual([
       "libcxx",
       "ncurses",
       "bash",
+      "zlib",
+      "login",
+      "sudo-lite",
+      "sudo",
+      "libyaml",
+      "ruby",
     ]);
     expect(selection.deferredPackages.map((entry) => entry.name)).toEqual([
       "dash",
@@ -259,11 +182,17 @@ describe("Homebrew VFS materialization policy", () => {
     const plan = shellPlan();
     const selection = selectHomebrewVfsMaterialization(plan, checkedInPolicy());
     expect(projectEmbeddedHomebrewVfsPlan(plan, selection)).toMatchObject({
-      requestedPackages: ["bash"],
+      requestedPackages: ["bash", "login", "sudo-lite", "sudo", "ruby"],
       packages: [
         { name: "libcxx" },
         { name: "ncurses" },
         { name: "bash" },
+        { name: "zlib" },
+        { name: "login" },
+        { name: "sudo-lite" },
+        { name: "sudo" },
+        { name: "libyaml" },
+        { name: "ruby" },
       ],
     });
   });
@@ -274,12 +203,28 @@ describe("Homebrew VFS materialization policy", () => {
       `${TAP_NAME}/dash`,
       `${TAP_NAME}/bash`,
       `${TAP_NAME}/coreutils`,
+      `${TAP_NAME}/login`,
+      `${TAP_NAME}/sudo-lite`,
+      `${TAP_NAME}/sudo`,
+      `${TAP_NAME}/ruby`,
     ];
     plan.taps = [];
     const selection = selectHomebrewVfsMaterialization(plan, checkedInPolicy());
     const projected = projectEmbeddedHomebrewVfsPlan(plan, selection) as HomebrewFederatedVfsPlan;
-    expect(projected.requestedFullNames).toEqual([`${TAP_NAME}/bash`]);
-    expect(projected.requestedPackages).toEqual(["bash"]);
+    expect(projected.requestedFullNames).toEqual([
+      `${TAP_NAME}/bash`,
+      `${TAP_NAME}/login`,
+      `${TAP_NAME}/sudo-lite`,
+      `${TAP_NAME}/sudo`,
+      `${TAP_NAME}/ruby`,
+    ]);
+    expect(projected.requestedPackages).toEqual([
+      "bash",
+      "login",
+      "sudo-lite",
+      "sudo",
+      "ruby",
+    ]);
   });
 
   it("requires the embedded root to be an explicit reviewed plan root", () => {
@@ -340,10 +285,9 @@ describe("Homebrew VFS materialization policy", () => {
 
   it("rejects an all-embedded plan because the cutover requires a deferred partition", () => {
     const plan = shellPlan();
-    plan.requestedPackages = ["bash"];
-    plan.packages = plan.packages.filter((entry) =>
-      entry.name === "libcxx" || entry.name === "ncurses" || entry.name === "bash"
-    );
+    const embedded = new Set(checkedInPolicy().embedded_package_order);
+    plan.requestedPackages = ["bash", "login", "sudo-lite", "sudo", "ruby"];
+    plan.packages = plan.packages.filter((entry) => embedded.has(entry.fullName));
     expect(() =>
       selectHomebrewVfsMaterialization(plan, checkedInPolicy())
     ).toThrow("policy leaves no deferred packages");

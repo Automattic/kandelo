@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from homebrew_cache_archive import (
     CacheArchiveError,
@@ -34,6 +35,29 @@ TAP_REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 SOURCE_BUILD = re.compile(r"\b(?:building|built)\b.*\bfrom source\b", re.IGNORECASE)
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 OCI_TAG = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
+RFC3339_UTC = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+RAW_FORMULA_KEYS = {
+    "desc",
+    "homepage",
+    "license",
+    "name",
+    "path",
+    "pkg_version",
+    "tap_git_path",
+    "tap_git_remote",
+    "tap_git_revision",
+}
+RAW_BOTTLE_KEYS = {"cellar", "date", "rebuild", "root_url", "tags"}
+RAW_TAG_KEYS = {
+    "all_files",
+    "filename",
+    "installed_size",
+    "local_filename",
+    "path_exec_files",
+    "sbom",
+    "sha256",
+    "tab",
+}
 
 
 class EvidenceError(RuntimeError):
@@ -55,6 +79,13 @@ def require_string(value: Any, label: str, pattern: re.Pattern[str] | None = Non
         fail(f"{label} must be a non-empty string")
     if "\0" in value or pattern is not None and pattern.fullmatch(value) is None:
         fail(f"{label} has an invalid value: {value!r}")
+    return value
+
+
+def require_bounded_string(value: Any, label: str, maximum: int = 4_096) -> str:
+    value = require_string(value, label)
+    if len(value.encode("utf-8")) > maximum:
+        fail(f"{label} exceeds {maximum} bytes")
     return value
 
 
@@ -297,23 +328,74 @@ def dependency_closure_identity(
     return identity
 
 
-def canonical_bottle(args: argparse.Namespace) -> tuple[str, str, int, str]:
+def canonical_bottle(
+    args: argparse.Namespace,
+) -> tuple[str, str, int, str, dict[str, str] | None]:
     document = load_json(pathlib.Path(args.bottle_json), "canonical bottle JSON")
     if not isinstance(document, dict) or len(document) != 1:
         fail("canonical bottle JSON must contain one Formula")
     formula_key, entry = next(iter(document.items()))
-    if formula_key != args.formula:
+    expected_formula_key = f"{normalized_tap_name(args)}/{args.formula}"
+    if formula_key != expected_formula_key:
         fail("canonical bottle JSON Formula key does not match")
     entry = exact_keys(entry, {"formula", "bottle"}, "canonical bottle entry")
+    formula_value = entry["formula"]
+    if not isinstance(formula_value, dict):
+        fail("canonical Formula identity must be an object")
+    raw_builder_json = set(formula_value) == RAW_FORMULA_KEYS
     formula = exact_keys(
-        entry["formula"], {"name", "path", "pkg_version"}, "canonical Formula identity"
+        formula_value,
+        RAW_FORMULA_KEYS if raw_builder_json else {"name", "path", "pkg_version"},
+        "canonical Formula identity",
     )
     bottle = exact_keys(
-        entry["bottle"], {"root_url", "cellar", "rebuild", "tags"}, "canonical bottle"
+        entry["bottle"],
+        RAW_BOTTLE_KEYS
+        if raw_builder_json
+        else {"root_url", "cellar", "rebuild", "tags"},
+        "canonical bottle",
     )
-    version = require_string(formula["pkg_version"], "canonical Formula version", PKG_VERSION)
+    version = require_string(
+        formula["pkg_version"], "canonical Formula version", PKG_VERSION
+    )
     if formula["name"] != args.formula:
         fail("canonical Formula name does not match")
+    expected_formula_path = (
+        f"Library/Taps/{normalized_tap_name(args).split('/', 1)[0]}/"
+        f"homebrew-{normalized_tap_name(args).split('/', 1)[1]}/"
+        f"Formula/{args.formula}.rb"
+    )
+    if formula["path"] != expected_formula_path:
+        fail("canonical Formula path does not match the exact tap Formula")
+    raw_formula_metadata = None
+    if raw_builder_json:
+        if formula["tap_git_path"] != f"Formula/{args.formula}.rb":
+            fail("canonical Formula tap Git path does not match")
+        if formula["tap_git_revision"] != selected_tap_checkout_commit(args):
+            fail("canonical Formula tap Git revision does not match")
+        validate_raw_formula_remote(
+            args,
+            require_bounded_string(
+                formula["tap_git_remote"], "canonical Formula tap Git remote"
+            ),
+            formula["tap_git_revision"],
+        )
+        description = require_bounded_string(
+            formula["desc"], "canonical Formula description"
+        )
+        license_value = require_bounded_string(
+            formula["license"], "canonical Formula license"
+        )
+        homepage = require_bounded_string(
+            formula["homepage"], "canonical Formula homepage"
+        )
+        if not re.fullmatch(r"https?://[^\s]+", homepage):
+            fail("canonical Formula homepage is invalid")
+        raw_formula_metadata = {
+            "desc": description,
+            "homepage": homepage,
+            "license": license_value,
+        }
     rebuild = bottle["rebuild"]
     if not isinstance(rebuild, int) or isinstance(rebuild, bool) or rebuild < 0:
         fail("canonical bottle rebuild must be a non-negative integer")
@@ -321,7 +403,11 @@ def canonical_bottle(args: argparse.Namespace) -> tuple[str, str, int, str]:
     tags = bottle["tags"]
     if not isinstance(tags, dict) or set(tags) != {tag_name}:
         fail(f"canonical bottle JSON must contain only {tag_name}")
-    tag = exact_keys(tags[tag_name], {"sha256"}, f"canonical {tag_name} bottle")
+    tag = exact_keys(
+        tags[tag_name],
+        RAW_TAG_KEYS if raw_builder_json else {"sha256"},
+        f"canonical {tag_name} bottle",
+    )
     if tag["sha256"] != args.bottle_sha256:
         fail("canonical bottle digest does not match the selected bytes")
     expected_metadata_root = args.bottle_root_url
@@ -331,11 +417,91 @@ def canonical_bottle(args: argparse.Namespace) -> tuple[str, str, int, str]:
         fail("canonical bottle root URL does not match")
     rebuild_suffix = f".{rebuild}" if rebuild else ""
     filename = f"{args.formula}--{version}.{tag_name}.bottle{rebuild_suffix}.tar.gz"
-    return version, tag_name, rebuild, filename
+    if raw_builder_json:
+        require_string(bottle["date"], "canonical bottle date", RFC3339_UTC)
+        require_bounded_string(bottle["cellar"], "canonical bottle cellar")
+        url_filename = (
+            f"{args.formula}-{version}.{tag_name}.bottle{rebuild_suffix}.tar.gz"
+        )
+        if tag["filename"] != url_filename or tag["local_filename"] != filename:
+            fail("canonical bottle filenames do not match")
+        if (
+            not isinstance(tag["installed_size"], int)
+            or isinstance(tag["installed_size"], bool)
+            or tag["installed_size"] <= 0
+        ):
+            fail("canonical bottle installed size must be positive")
+        for field in ("all_files", "path_exec_files"):
+            values = tag[field]
+            if not isinstance(values, list) or len(values) > 65_536:
+                fail(f"canonical bottle {field} must be a bounded array")
+            for index, value in enumerate(values):
+                require_bounded_string(value, f"canonical bottle {field}[{index}]")
+        if not isinstance(tag["tab"], dict) or not isinstance(tag["sbom"], dict):
+            fail("canonical bottle tab and SBOM must be objects")
+    return version, tag_name, rebuild, filename, raw_formula_metadata
+
+
+def validate_raw_formula_remote(
+    args: argparse.Namespace, remote: str, revision: str
+) -> None:
+    repository = normalized_tap_repository(args)
+    if remote in (
+        f"https://github.com/{repository}",
+        f"https://github.com/{repository}.git",
+    ):
+        return
+    parsed = urlsplit(remote)
+    if (
+        parsed.scheme != "file"
+        or parsed.netloc
+        or parsed.query
+        or parsed.fragment
+    ):
+        fail("canonical Formula tap Git remote does not match the exact tap")
+    decoded = unquote(parsed.path)
+    path = pathlib.Path(decoded)
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError:
+        fail("canonical Formula tap Git remote does not resolve")
+    if not path.is_absolute() or path.is_symlink() or resolved != path:
+        fail("canonical Formula tap Git remote is not one exact real path")
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+        status = subprocess.run(
+            ["git", "-C", str(path), "status", "--short", "--untracked-files=all"],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        fail(f"cannot authenticate canonical Formula tap Git remote: {error}")
+    if (
+        head.returncode != 0
+        or head.stdout.decode("ascii", errors="replace").strip() != revision
+        or status.returncode != 0
+        or status.stdout
+        or status.stderr
+    ):
+        fail("canonical Formula tap Git remote does not identify the clean exact checkout")
 
 
 def validate_formula_info(
-    args: argparse.Namespace, version: str, tag_name: str, rebuild: int
+    args: argparse.Namespace,
+    version: str,
+    tag_name: str,
+    rebuild: int,
+    raw_formula_metadata: dict[str, str] | None,
 ) -> None:
     document = exact_keys(
         load_json(pathlib.Path(args.formula_info), "Homebrew Formula info"),
@@ -343,14 +509,25 @@ def validate_formula_info(
         "Homebrew Formula info",
     )
     formulae = document["formulae"]
-    if document["casks"] != [] or not isinstance(formulae, list) or len(formulae) != 1:
+    if (
+        document["casks"] != []
+        or not isinstance(formulae, list)
+        or len(formulae) != 1
+    ):
         fail("Homebrew Formula info must contain one Formula and no casks")
     formula = formulae[0]
     if not isinstance(formula, dict):
         fail("Homebrew Formula info record must be an object")
     expected_full_name = f"{normalized_tap_name(args)}/{args.formula}"
-    if formula.get("name") != args.formula or str(formula.get("full_name", "")).lower() != expected_full_name:
+    if (
+        formula.get("name") != args.formula
+        or str(formula.get("full_name", "")).lower() != expected_full_name
+    ):
         fail("Homebrew Formula info identity does not match the exact tap Formula")
+    if raw_formula_metadata is not None and any(
+        formula.get(field) != value for field, value in raw_formula_metadata.items()
+    ):
+        fail("canonical Formula metadata differs from Homebrew Formula info")
     versions = formula.get("versions")
     stable_version = versions.get("stable") if isinstance(versions, dict) else None
     revision = formula.get("revision")
@@ -676,8 +853,10 @@ def selection_evidence(args: argparse.Namespace) -> dict[str, Any]:
 
 def build_document(args: argparse.Namespace) -> dict[str, Any]:
     validate_arguments(args)
-    version, tag_name, rebuild, bottle_filename = canonical_bottle(args)
-    validate_formula_info(args, version, tag_name, rebuild)
+    version, tag_name, rebuild, bottle_filename, raw_formula_metadata = (
+        canonical_bottle(args)
+    )
+    validate_formula_info(args, version, tag_name, rebuild, raw_formula_metadata)
     dependencies = validate_dependency_provenance(args)
     selection = selection_evidence(args)
     test_contract = formula_test_contract(args)
@@ -799,7 +978,7 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         )
     if tap != expected_tap:
         fail("runtime evidence tap identity does not match")
-    version, tag_name, rebuild, bottle_filename = canonical_bottle(args)
+    version, tag_name, rebuild, bottle_filename, _ = canonical_bottle(args)
     bottle = exact_keys(
         root["bottle"], {"bytes", "sha256", "tag", "url", "version"}, "runtime evidence bottle"
     )

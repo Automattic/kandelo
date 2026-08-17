@@ -76,6 +76,8 @@ wasm_require_exports "$OUT" \
     kernel_process_metadata_cancel \
     kernel_process_metadata_commit \
     kernel_process_metadata_stage \
+    kernel_process_secure_exec \
+    kernel_publish_spawn_child \
     kernel_reap_exited_child \
     kernel_remove_process \
     kernel_semctl_array_bytes \
@@ -83,7 +85,6 @@ wasm_require_exports "$OUT" \
     kernel_set_current_tid \
     kernel_set_cwd \
     kernel_shmid_ds_bytes \
-    kernel_publish_spawn_child \
     kernel_spawn_exec_commit \
     kernel_spawn_exec_target_prepare \
     kernel_spawn_process \

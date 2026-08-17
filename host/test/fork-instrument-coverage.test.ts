@@ -82,24 +82,19 @@ async function runFixture(relPath: string, expected: Expected) {
 /** Echo fixture registered for popen/posix_spawn child exec targets. */
 const echoBinary = resolveBinary("programs/echo.wasm");
 const echoExecMap = new Map<string, string>([
-  ["echo", echoBinary],
-  ["/echo", echoBinary],
-  ["/tmp/echo", echoBinary],
   ["/bin/echo", echoBinary],
   ["/usr/bin/echo", echoBinary],
+  ["/tmp/echo", echoBinary],
 ]);
 
 /** Minimal sh fixture built from programs/sh.c for popen("/bin/sh -c ..."). */
 const shCandidate = resolveBinary("programs/sh.wasm");
 const popenExecMap = new Map<string, string>([
-  ["sh", shCandidate],
   ["/bin/sh", shCandidate],
   ["/usr/bin/sh", shCandidate],
-  ["echo", echoBinary],
-  ["/echo", echoBinary],
-  ["/tmp/echo", echoBinary],
   ["/bin/echo", echoBinary],
   ["/usr/bin/echo", echoBinary],
+  ["/tmp/echo", echoBinary],
 ]);
 
 // ---------------------------------------------------------------------------

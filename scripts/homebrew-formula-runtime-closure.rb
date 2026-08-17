@@ -2312,18 +2312,26 @@ elsif host_dependencies_only
     end
   end
   immutable_target_taps = tap_contexts.values.sort_by { |context| context.fetch("tap_name") }.map do |context|
+    # Publication authority remains the reviewed source commit. A prefix
+    # campaign may execute a later, immutable bottle-block materialization;
+    # the sealed plan must preserve both identities for its install receipt.
     commit = context.fetch("tap_commit")
+    checkout_commit = context.fetch("checkout_commit", commit)
     unless commit.is_a?(String) && commit.match?(/\A[0-9a-f]{40}\z/)
       abort "host dependency plan requires an immutable resolved tap map"
+    end
+    unless checkout_commit.is_a?(String) && checkout_commit.match?(/\A[0-9a-f]{40}\z/)
+      abort "host dependency plan requires an immutable resolved tap checkout"
     end
     {
       "tap_name" => context.fetch("tap_name"),
       "tap_repository" => context.fetch("tap_repository"),
       "tap_commit" => commit,
+      "checkout_commit" => checkout_commit,
     }
   end
   puts JSON.generate({
-    "schema" => 4,
+    "schema" => 5,
     "tap" => tap_name,
     "formula" => target,
     "full_name" => "#{tap_name}/#{target}",

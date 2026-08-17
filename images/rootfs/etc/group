@@ -5,4 +5,5 @@ nobody:x:65534:
 www-data:x:33:
 redis:x:100:
 mysql:x:101:
-user:x:1000:
+wheel:x:10:maker
+maker:x:1000:

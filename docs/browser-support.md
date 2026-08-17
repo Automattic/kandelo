@@ -72,6 +72,14 @@ Service Worker ──MessagePort──> Kernel Worker       │
   `WebAssembly.Module.imports()` API cannot produce descriptors for them.
   Modules created by an external embedder without registered bytes retain the
   native reflection fallback.
+- **Signal-wait engine matrix**: the real BrowserKernel worker path runs the
+  wasm32 ppoll/pselect interruption matrix and wait4 unknown-option rejection
+  on Chromium, Firefox, and WebKit. Chromium and Firefox also run its wasm64
+  counterpart. The current Playwright WebKit engine rejects the Memory64
+  module at `WebAssembly.validate`, so WebKit's truthful boundary is wasm32
+  rather than a skipped or simulated wasm64 success. Browser injection waits
+  on guest-published atomic gates in the real process memory, so acceptance
+  does not depend on a fixed event-loop delay.
 - **Exec reads from filesystem**: Like a real OS, `exec()` reads binaries from the kernel-side `MemoryFileSystem`. Programs are baked into the VFS image at build time (or written by the page in the legacy path before spawning). Symlinks are used for multicall binaries (e.g., coreutils).
 - **dinit for service supervision**: Multi-process demos (nginx, redis,
   mariadb, nginx-php, wordpress, lamp, mariadb-test) bake `/sbin/dinit` and
@@ -711,6 +719,34 @@ readable `/etc/profile.d/*.sh` fragments there, so an image composer can add
 package-manager environment setup without teaching the browser about a
 particular package or prefix.
 
+Under the current browser trust boundary, a supervised demo login requires the
+final fully staged image to contain exactly one canonical `maker` passwd,
+shadow, and wheel record, the exact sudoers policy and autologin message, and
+an exact local `/usr/bin/login` byte match for a separately
+publisher-admitted privileged product. The loader makes this decision after
+configured assets and lazy inputs have been staged, then boots through
+`BrowserKernel.initFromPublishedPrivilegedProgramProduct`. A raw image,
+descriptor, or demo configuration cannot mint that private capability.
+Conversely, image origin is not a gate: an otherwise third-party image with
+the exact final state remains eligible when paired with a separately admitted
+product. This documents current repository behavior only; the broader trust
+model for deliberately user-selected images remains unresolved.
+
+For an eligible image/product pair, each newly allocated logical terminal
+starts root-authorized `login -p -f maker` once.
+When that login shell exits, the same terminal starts ordinary `login -p` with
+a bounded restart delay. Closing and reopening the terminal UI only detaches
+and reattaches its renderer; it neither repeats autologin nor replaces the
+guest process. The explicit close control in the terminal tab removes the
+logical terminal; that action, kernel detach, reboot, and host destruction
+stop the active process and cancel pending restarts.
+
+Images that do not satisfy the complete final predicate, or that have no
+separately admitted product, retain their declared default shell. The browser
+does not infer readiness from an arbitrary unlocked password or implement
+authentication in React; both preauthentication and password verification
+remain in the guest `login` program and VFS state.
+
 `terminal.run` sends a command through the persistent PTY-backed shell.
 `terminal.write` sends raw text to that PTY, which is useful for entering input
 into an already-running REPL. `guide.companion.srcDoc` runs in a sandboxed
@@ -728,8 +764,8 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | Python (legacy opt-in) | `python-vfs.vfs.zst` | `bash packages/registry/python-vfs/build-python-vfs.sh` | ABI-bound CPython interpreter, complete stdlib, license, aliases, and demo metadata |
 | Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
-| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the sealed flat-lazy bottle closure selected by `homebrew/main-shell-flat-selection.json`; Bash is embedded, the bootstrap/libyaml/Ruby cohort is prepared at boot, and 35 ordinary bottle trees remain first-use |
-| Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | exact lazy shell image plus the package-resolved Node executable, npm 10.9.2 distribution, writable `/work`, and Node demo metadata |
+| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the complete reviewed current-shell closure: embedded `libcxx`/Ncurses/Bash, with the other base Formula trees independently lazy. `/usr/bin/brew` names a separate lazy source and an atomic runtime-support layer derived from the selected dependency graph; dependencies absent from the base, such as Ruby and its selected `libyaml` dependency, remain lazy together. |
+| Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | embedded package-resolved Node executable + npm 10.9.2 dist + a guest profile that initializes the starter workspace inside the mounted canonical `/home/maker`; shell Formula trees remain lazy |
 | WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
 | MariaDB test | `mariadb-test.vfs.zst` | `bash images/vfs/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |

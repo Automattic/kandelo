@@ -59,7 +59,7 @@ const MUTABLE_DIRECTORIES = Object.freeze([
   `${PREFIX}/Library/Taps`,
   `${PREFIX}/var/homebrew/linked`,
   `${PREFIX}/var/homebrew/locks`,
-  "/home/user/.cache/Homebrew",
+  "/home/maker/.cache/Homebrew",
 ]);
 
 export interface PreparedHomebrewRuntimeSupport {
@@ -198,7 +198,7 @@ export function finalizeHomebrewRuntimeSupport(
     }
 
     recursivelyLchown(fs, PREFIX, USER_ID, GROUP_ID);
-    recursivelyLchown(fs, "/home/user/.cache", USER_ID, GROUP_ID);
+    recursivelyLchown(fs, "/home/maker/.cache", USER_ID, GROUP_ID);
     assertFinalRuntimeSupport(fs, prepared, verifiedExtractionCommands);
   } catch (error) {
     if (error instanceof HomebrewRuntimeSupportMaterializationError) throw error;
@@ -615,7 +615,7 @@ function assertFinalRuntimeSupport(
   }
   assertSelectedHomebrewExtractionCommandAliases(fs, extractionCommands, "eager");
   assertRecursiveOwnership(fs, PREFIX, USER_ID, GROUP_ID);
-  assertRecursiveOwnership(fs, "/home/user/.cache", USER_ID, GROUP_ID);
+  assertRecursiveOwnership(fs, "/home/maker/.cache", USER_ID, GROUP_ID);
 }
 
 function recursivelyLchown(

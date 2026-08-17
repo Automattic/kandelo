@@ -71,6 +71,313 @@ const MAX_MIGRATION_LOCK_BYTES = 65_536;
 const MAX_RUNTIME_STATE_TEXT_BYTES = 65_536;
 const MAX_RUNTIME_STATE_ID = 0x7fff_ffff;
 
+const MAX_LOCAL_TEST_TAP_BUNDLE_BYTES = 32 * 1024 * 1024;
+
+export const LOCAL_TEST_HOMEBREW_TAP_BUNDLE_PATH =
+  "/opt/kandelo/homebrew/var/kandelo/local-test/homebrew-tap-core.bundle";
+
+export interface LocalTestHomebrewTapBundleBinding {
+  path: typeof LOCAL_TEST_HOMEBREW_TAP_BUNDLE_PATH;
+  sha256: string;
+  bytes: number;
+  source_commit: string;
+  prepared_commit: string;
+}
+export interface LocalTestHomebrewProvenance {
+  schema: 1;
+  provenance_kind: "local-test";
+  promotable: false;
+  published: false;
+}
+
+export interface LocalTestPrivilegedProgramTemplate {
+  schema: 1;
+  formula: string;
+  source_path: string;
+  destination_path: string;
+  uid: 0;
+  gid: 0;
+  mode: number;
+  mount_point: "trusted-root-product";
+}
+
+/** Stage the exact final local tap without presenting it as a remote catalog. */
+export function installLocalTestHomebrewTapBundle(
+  fs: MemoryFileSystem,
+  value: Uint8Array,
+  commits: { sourceCommit: string; preparedCommit: string },
+): LocalTestHomebrewTapBundleBinding {
+  const bytes = Uint8Array.from(value);
+  if (
+    bytes.byteLength === 0 ||
+    bytes.byteLength > MAX_LOCAL_TEST_TAP_BUNDLE_BYTES ||
+    !GIT_SHA_RE.test(commits.sourceCommit) ||
+    !GIT_SHA_RE.test(commits.preparedCommit) ||
+    commits.sourceCommit === commits.preparedCommit
+  ) {
+    throw new HomebrewVfsBuildError(
+      "local-test tap bundle identity is invalid",
+    );
+  }
+  if (tryLstat(fs, LOCAL_TEST_HOMEBREW_TAP_BUNDLE_PATH) !== null) {
+    throw new HomebrewVfsBuildError(
+      "refusing to replace the local-test Homebrew tap bundle",
+    );
+  }
+  const ownerRoot = "/opt/kandelo/homebrew/var/kandelo";
+  const bundleRoot = `${ownerRoot}/local-test`;
+  ensureDirRecursive(fs, ownerRoot);
+  fs.mkdirWithOwner(bundleRoot, 0o555, 0, 0);
+  fs.createFileWithOwner(
+    LOCAL_TEST_HOMEBREW_TAP_BUNDLE_PATH,
+    0o444,
+    0,
+    0,
+    bytes,
+  );
+  const binding: LocalTestHomebrewTapBundleBinding = {
+    path: LOCAL_TEST_HOMEBREW_TAP_BUNDLE_PATH,
+    sha256: sha256(bytes),
+    bytes: bytes.byteLength,
+    source_commit: commits.sourceCommit,
+    prepared_commit: commits.preparedCommit,
+  };
+  assertLocalTestHomebrewTapBundle(fs, binding);
+  return binding;
+}
+
+/** Fail before guest lifecycle boot if the composed local tap bytes changed. */
+export function assertLocalTestHomebrewTapBundle(
+  fs: MemoryFileSystem,
+  binding: LocalTestHomebrewTapBundleBinding,
+): void {
+  let stat: StatResult;
+  try {
+    stat = fs.lstat(binding.path);
+  } catch {
+    throw new HomebrewVfsBuildError(
+      "local-test Homebrew tap bundle is missing",
+    );
+  }
+  if (
+    binding.path !== LOCAL_TEST_HOMEBREW_TAP_BUNDLE_PATH ||
+    !SHA256_RE.test(binding.sha256) ||
+    !Number.isSafeInteger(binding.bytes) ||
+    binding.bytes <= 0 ||
+    binding.bytes > MAX_LOCAL_TEST_TAP_BUNDLE_BYTES ||
+    !GIT_SHA_RE.test(binding.source_commit) ||
+    !GIT_SHA_RE.test(binding.prepared_commit) ||
+    binding.source_commit === binding.prepared_commit ||
+    kind(stat) !== S_IFREG ||
+    (stat.mode & MODE_BITS) !== 0o444 ||
+    stat.uid !== 0 ||
+    stat.gid !== 0 ||
+    stat.size !== binding.bytes
+  ) {
+    throw new HomebrewVfsBuildError(
+      "local-test Homebrew tap bundle changed identity",
+    );
+  }
+  const fd = fs.open(binding.path, 0, 0);
+  try {
+    const bytes = new Uint8Array(binding.bytes);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const read = fs.read(fd, bytes.subarray(offset), null, bytes.length - offset);
+      if (!Number.isInteger(read) || read <= 0) {
+        throw new HomebrewVfsBuildError(
+          "local-test Homebrew tap bundle changed identity",
+        );
+      }
+      offset += read;
+    }
+    if (sha256(bytes) !== binding.sha256) {
+      throw new HomebrewVfsBuildError(
+        "local-test Homebrew tap bundle changed identity",
+      );
+    }
+  } finally {
+    fs.close(fd);
+  }
+}
+
+export function projectLocalTestHomebrewTapBundleBinding(
+  value: unknown,
+): LocalTestHomebrewTapBundleBinding {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new HomebrewVfsBuildError(
+      "local-test Homebrew tap bundle binding is invalid",
+    );
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    Object.keys(record).sort().join("\0") !==
+      [
+        "bytes",
+        "path",
+        "prepared_commit",
+        "sha256",
+        "source_commit",
+      ].join("\0") ||
+    record.path !== LOCAL_TEST_HOMEBREW_TAP_BUNDLE_PATH ||
+    typeof record.sha256 !== "string" ||
+    !SHA256_RE.test(record.sha256) ||
+    typeof record.bytes !== "number" ||
+    !Number.isSafeInteger(record.bytes) ||
+    record.bytes <= 0 ||
+    record.bytes > MAX_LOCAL_TEST_TAP_BUNDLE_BYTES ||
+    typeof record.source_commit !== "string" ||
+    !GIT_SHA_RE.test(record.source_commit) ||
+    typeof record.prepared_commit !== "string" ||
+    !GIT_SHA_RE.test(record.prepared_commit) ||
+    record.source_commit === record.prepared_commit
+  ) {
+    throw new HomebrewVfsBuildError(
+      "local-test Homebrew tap bundle binding is invalid",
+    );
+  }
+  return {
+    path: LOCAL_TEST_HOMEBREW_TAP_BUNDLE_PATH,
+    sha256: record.sha256,
+    bytes: record.bytes,
+    source_commit: record.source_commit,
+    prepared_commit: record.prepared_commit,
+  };
+}
+
+/**
+ * Admit non-promotable provenance only at the explicit local evidence path.
+ * Callers outside this boundary must reject the marker rather than silently
+ * treating local bytes as published sidecars.
+ */
+export function assertLocalTestHomebrewProvenance(
+  value: unknown,
+  boundary: { localHarness: boolean; reviewPendingArtifact: boolean },
+): asserts value is LocalTestHomebrewProvenance {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new HomebrewVfsBuildError("local-test provenance must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  if (
+    keys.join("\0") !==
+      ["promotable", "provenance_kind", "published", "schema"].join("\0") ||
+    record.schema !== 1 ||
+    record.provenance_kind !== "local-test" ||
+    record.promotable !== false ||
+    record.published !== false
+  ) {
+    throw new HomebrewVfsBuildError(
+      "local-test provenance must be exact and not promotable or published",
+    );
+  }
+  if (!boundary.localHarness) {
+    throw new HomebrewVfsBuildError(
+      "local-test provenance is restricted to the local harness",
+    );
+  }
+  if (!boundary.reviewPendingArtifact) {
+    throw new HomebrewVfsBuildError(
+      "local-test provenance requires the review-pending artifact boundary",
+    );
+  }
+}
+
+/** Bind reviewed path policy to the exact local bottle and Wasm digests. */
+export function createLocalTestPrivilegedProgramProjections(
+  value: unknown,
+  identities: {
+    bottleDigests: Record<string, string>;
+    artifactDigests: Record<string, string>;
+  },
+): Array<{
+  schema: 1;
+  formula: string;
+  bottleSha256: string;
+  sourcePath: string;
+  destinationPath: string;
+  uid: 0;
+  gid: 0;
+  mode: number;
+  mountPoint: "trusted-root-product";
+  artifactValidationSha256: string;
+}> {
+  if (!Array.isArray(value) || value.length !== 3) {
+    throw new HomebrewVfsBuildError(
+      "local privileged program policy must contain exactly three programs",
+    );
+  }
+  return value.map((entry, index) => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw new HomebrewVfsBuildError(
+        `local privileged program ${index} is invalid`,
+      );
+    }
+    const template = entry as Record<string, unknown>;
+    const keys = Object.keys(template).sort().join("\0");
+    const expectedKeys = [
+      "destination_path",
+      "formula",
+      "gid",
+      "mode",
+      "mount_point",
+      "schema",
+      "source_path",
+      "uid",
+    ].join("\0");
+    if (keys !== expectedKeys) {
+      throw new HomebrewVfsBuildError(
+        `local privileged program ${index} must use the closed template schema`,
+      );
+    }
+    const formula = template.formula;
+    if (
+      typeof formula !== "string" ||
+      !/^kandelo-dev\/tap-core\/[a-z0-9-]+$/.test(formula)
+    ) {
+      throw new HomebrewVfsBuildError(
+        `local privileged program ${index} formula is invalid`,
+      );
+    }
+    const name = formula.split("/").at(-1)!;
+    const bottleSha256 = identities.bottleDigests[name];
+    const artifactValidationSha256 = identities.artifactDigests[name];
+    if (
+      !SHA256_RE.test(bottleSha256 ?? "") ||
+      !SHA256_RE.test(artifactValidationSha256 ?? "")
+    ) {
+      throw new HomebrewVfsBuildError(
+        `local privileged program ${formula} lacks exact bottle or artifact evidence`,
+      );
+    }
+    if (
+      template.schema !== 1 ||
+      typeof template.source_path !== "string" ||
+      typeof template.destination_path !== "string" ||
+      template.uid !== 0 ||
+      template.gid !== 0 ||
+      template.mode !== 0o4755 ||
+      template.mount_point !== "trusted-root-product"
+    ) {
+      throw new HomebrewVfsBuildError(
+        `local privileged program ${formula} violates the reviewed projection policy`,
+      );
+    }
+    return {
+      schema: 1,
+      formula,
+      bottleSha256,
+      sourcePath: template.source_path,
+      destinationPath: template.destination_path,
+      uid: 0,
+      gid: 0,
+      mode: 0o4755,
+      mountPoint: "trusted-root-product" as const,
+      artifactValidationSha256,
+    };
+  });
+}
+
 export class HomebrewVfsBuildError extends Error {
   constructor(message: string) {
     super(message);
