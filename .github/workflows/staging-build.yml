@@ -256,6 +256,7 @@ jobs:
       # Seal those directory inodes before this job exercises the same
       # privileged recipe boundary as publication.
       - name: Seal conventional host runtime ownership
+        if: ${{ needs.change-scope.outputs.package_publish_flow_changed == 'true' }}
         run: >-
           /usr/bin/python3
           scripts/prepare-homebrew-recipe-host-runtime.py
@@ -264,6 +265,7 @@ jobs:
       # reviewed Homebrew source. Give it an immutable source explicitly so
       # runner-image Homebrew state cannot decide what the test executes.
       - name: Checkout exact Homebrew lifecycle source
+        if: ${{ needs.change-scope.outputs.package_publish_flow_changed == 'true' }}
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
@@ -288,12 +290,14 @@ jobs:
         run: bash scripts/dev-shell.sh true
 
       - name: Install JavaScript dependencies for Homebrew preflight
+        if: ${{ needs.change-scope.outputs.package_publish_flow_changed == 'true' }}
         run: |
           bash scripts/dev-shell.sh bash -c '
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
           '
 
       - name: Validate Homebrew publisher trust contract
+        if: ${{ needs.change-scope.outputs.package_publish_flow_changed == 'true' }}
         run: |
           bash scripts/dev-shell.sh env \
             KANDELO_HOMEBREW_SOURCE_REPOSITORY="$GITHUB_WORKSPACE/homebrew-lifecycle-source" \

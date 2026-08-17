@@ -30,6 +30,9 @@ HOST_RUNTIME_PREPARER_PATH = File.join(
   REPO_ROOT, "scripts/prepare-homebrew-recipe-host-runtime.py"
 )
 HOST_RUNTIME_PREPARATION_STEP = "Seal conventional host runtime ownership"
+PUBLISHER_FLOW_CONDITION =
+  "${{ needs.change-scope.outputs.package_publish_flow_changed == 'true' }}"
+STAGING_PREFLIGHT_LABEL = ".github/workflows/staging-build.yml:preflight"
 PRIVILEGED_RECIPE_ENTRYPOINTS = %w[
   scripts/homebrew-bottle-build.sh
   scripts/homebrew-verify-poured-bottle.sh
@@ -201,11 +204,18 @@ def check_privileged_recipe_host_runtime(workflows)
   )
   actual.each do |label, (steps, privileged_indices)|
     expected_command = PRIVILEGED_RECIPE_JOBS.fetch(label)
+    expected_condition =
+      label == STAGING_PREFLIGHT_LABEL ? PUBLISHER_FLOW_CONDITION : nil
     preparation_indices = steps.each_index.select do |index|
       step = steps.fetch(index)
+      condition_matches = if expected_condition
+                            step["if"] == expected_condition
+                          else
+                            !step.key?("if")
+                          end
       step["name"] == HOST_RUNTIME_PREPARATION_STEP &&
         step["run"] == expected_command &&
-        !step.key?("if") &&
+        condition_matches &&
         !step.key?("continue-on-error")
     end
     check(
