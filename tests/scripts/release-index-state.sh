@@ -82,10 +82,16 @@ case "$command_name" in
       exit 0
     fi
     if [[ "$endpoint" == */releases/tags/* ]]; then
-      if [ ! -f "$GH_STATE/release.json" ]; then
+      if [ -f "$GH_STATE/draft-only" ] || [ ! -f "$GH_STATE/release.json" ]; then
         if [ "$include" = true ]; then printf 'HTTP/2.0 404 Not Found\n\n{}\n'; fi
         exit 1
       fi
+      if [ "$include" = true ]; then printf 'HTTP/2.0 200 OK\n\n'; fi
+      cat "$GH_STATE/release.json"
+      exit 0
+    fi
+    if [ "$endpoint" = "/repos/example/repo/releases/7" ]; then
+      [ -f "$GH_STATE/release.json" ] || exit 1
       if [ "$include" = true ]; then printf 'HTTP/2.0 200 OK\n\n'; fi
       cat "$GH_STATE/release.json"
       exit 0
@@ -184,6 +190,12 @@ read_state() {
     --output "$output" --head-file "$head"
 }
 
+read_state_by_id() {
+  local store="$1" output="$2" head="$3"
+  run_state "$store" read --target-tag binaries-abi-v39 --expected-abi 39 \
+    --release-id 7 --output "$output" --head-file "$head"
+}
+
 snapshot_state() {
   local store="$1" output="$2" head="$3"
   run_state "$store" snapshot --target-tag binaries-abi-v39 --expected-abi 39 \
@@ -231,6 +243,16 @@ printf 'abi_version = 39\nvalue = "new"\n' > "$NEW"
 OLD_SHA=$(sha_file "$OLD")
 NEW_SHA=$(sha_file "$NEW")
 SENTINEL=$(bash "$SCRIPT" sentinel)
+
+# Draft releases are intentionally hidden from GitHub's get-by-tag endpoint.
+# The package lifecycle hands the exact selected release ID to the state
+# machine so the first canonical writer can initialize that draft.
+DRAFT_STORE="$TMP_ROOT/draft-bootstrap"
+new_store "$DRAFT_STORE" "$SENTINEL"
+touch "$DRAFT_STORE/draft-only"
+read_state_by_id \
+  "$DRAFT_STORE" "$TMP_ROOT/draft-empty.toml" "$TMP_ROOT/draft-empty.head"
+[ "$(cat "$TMP_ROOT/draft-empty.head")" = empty ]
 
 # Bootstrap is allowed only when release creation carried the exact sentinel.
 STORE="$TMP_ROOT/bootstrap"
