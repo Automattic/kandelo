@@ -167,14 +167,13 @@ jobs:
             fi
           done
           bash scripts/fetch-binaries.sh "${fetch_args[@]}"
+          # WHY: the old ABI 42 shell-selection release was a migration lane,
+          # not an input to current Pages products. The ABI 43 package release
+          # deliberately does not carry this support-data package, so build
+          # only this one reviewed package from the protected current source.
+          bash scripts/fetch-binaries.sh --package homebrew-bootstrap
 
-          bootstrap_root="$input_root/homebrew-bootstrap-root"
-          bash scripts/prepare-homebrew-browser-bootstrap.sh \
-            --output-directory "$bootstrap_root" \
-            --require-sealed
-
-          ./run.sh --fetch-only \
-            --require-sealed-homebrew-selection prepare-browser
+          ./run.sh --fetch-only prepare-browser
 
           host_target=$(rustc -vV | awk '/^host/ {print $2}')
           cargo build --release -p xtask --target "$host_target"
@@ -183,13 +182,9 @@ jobs:
           all_package_roots="$input_root/all-package-roots.json"
           printf '{}\n' >"$all_package_roots"
           for package in "${packages[@]}"; do
-            if [ "$package" = homebrew-bootstrap ]; then
-              package_root=$bootstrap_root
-            else
-              package_root=$(
-                "$xtask" build-deps --arch wasm32 path "$package"
-              )
-            fi
+            package_root=$(
+              "$xtask" build-deps --arch wasm32 path "$package"
+            )
             [ -d "$package_root" ] && [ ! -L "$package_root" ]
             next="$input_root/.all-package-roots.next"
             jq -cS --arg package "$package" --arg path "$package_root" \
