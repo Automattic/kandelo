@@ -322,7 +322,7 @@ Located in `apps/browser-demos/pages/`:
 | modeset | modeset.c | `kernel.boot` + spawn | Minimal KMS client: opens `/dev/dri/card0`, becomes DRM master, allocates dumb buffers, draws an animated gradient, and commits real `drmModePageFlip` ioctls. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
 | wayland | wlcompositor + wlclock + wlpaint + wlterm | `kernel.boot` + spawn | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. |
 | hyprland | wlcompositor (dwindle) + wlclock + 2× wlterm (+ wlpaint via keybind) | `kernel.boot` + spawn | Hyprland-class tiling desktop; `Ctrl+Return`/`Ctrl+K`/`Ctrl+P` open new terminal/clock/paint panes — see [Hyprland tiling demo](#hyprland-tiling-demo) below. |
-| omarchy | the hyprland set + kbar + klauncher + themes | `kernel.boot` + spawn | The tiling desktop with its shell: a layer-shell status bar, `Ctrl+Space` launcher, `Ctrl+Shift+Space` theme cycling — see [Omarchy desktop demo](#omarchy-desktop-demo) below. |
+| omarchy | the hyprland set + Waybar + mako + klauncher + themes | `kernel.boot` + spawn | The tiling desktop with its shell: unmodified Waybar on layer shell, `Ctrl+Space` launcher, `Ctrl+Shift+Space` theme cycling — see [Omarchy desktop demo](#omarchy-desktop-demo) below. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first user process.
@@ -497,14 +497,30 @@ binary with its own `/etc/kandelo/wlcompositor.conf`, an app registry under
 — all staged into the VFS at boot from
 `apps/browser-demos/pages/kandelo/kernel-host/omarchy-desktop.ts`.
 
-- **The bar.** `kbar` anchors a 30 px `zwlr_layer_shell_v1` surface across the
-  top with a matching exclusive zone, so the windows tile *under* it rather
-  than behind it. It shows workspace pills, the focused window, the kernel's
-  monotonic uptime, and a clock, fed by the compositor's `kwlctl` event
-  stream.
-- **Notifications.** A theme switch spawns `knotify` through the config's
-  `notify =` hook — a transient overlay toast in the top-right corner, themed
-  like the rest of the desktop, that dismisses itself.
+- **The bar.** Unmodified upstream **Waybar 0.14.0** — the real GTK3 bar, on
+  the ported gtkmm/gtk-layer-shell stack, reading a translated version of
+  Omarchy's own `config.jsonc` and `style.css` from
+  `~/.config/waybar`. `gtk_layer_shell` anchors it across the top with an
+  exclusive zone, so the windows tile *under* it rather than behind it. Its
+  `hyprland/workspaces` and `hyprland/window` modules speak Hyprland IPC to
+  the compositor's socket pair at `/tmp/hypr/wlcompositor/` — `j/`-prefixed
+  JSON queries plus the `event>>data` stream — exactly as they would to
+  hyprctl. Modules that need hardware or daemons this kernel does not serve
+  (battery, cpu, memory, network, pulseaudio, tray) are not part of the
+  build, and the clock is Waybar's `simpleclock` (no timezone database).
+  GDK backs the bar's `wl_shm` pools with `gbm` prime-fd dumb bos (the
+  gtk3 package's `wayland-shm-gbm-pool.patch`, foot's contract), which is
+  what carries its pixels across to the compositor. The bar runs at
+  `-l debug`, so every Hyprland IPC event it consumes shows up in the
+  Internals syslog next to the compositor's own marker.
+- **Notifications.** The demo boots a `dbus-daemon` session bus and
+  unmodified upstream mako on it. A theme switch reaches `notify-send`
+  through the config's `notify =` hook (the theme script above execs it) — a real
+  `org.freedesktop.Notifications.Notify` call over the bus, which mako
+  renders as a layer-shell toast in the top-right corner that dismisses
+  itself after five seconds. The bus address
+  (`DBUS_SESSION_BUS_ADDRESS`) is in every desktop process's
+  environment, so `notify-send` also works from any terminal.
 - **The launcher.** `Ctrl+Space` opens `klauncher`, an overlay-layer surface
   that takes the keyboard exclusively — so what you type filters its list
   instead of reaching the terminal underneath. Type to narrow, `Up`/`Down` to
@@ -524,10 +540,17 @@ binary with its own `/etc/kandelo/wlcompositor.conf`, an app registry under
   back to the root; `Esc` at the root dismisses.
 - **Themes.** `Ctrl+Shift+Space` cycles Tokyo Night, Catppuccin, Gruvbox,
   Nord, Everforest and Rosé Pine. One palette file drives the whole desktop at
-  once: the compositor's window borders, gaps and wallpaper, and the bar's and
-  launcher's own colours, which they reload when the compositor broadcasts the
-  switch. Each theme ships an aurora wallpaper the page renders to raw pixels
-  at staging time (`renderWallpaperKwlp`); the compositor scales it to the
+  once: the compositor's window borders, gaps and wallpaper, the
+  launcher's own colours, which it reloads when the compositor broadcasts the
+  switch, and the bar's. Waybar reads its stylesheet once per load, as
+  upstream does, so the switch takes the path a real Omarchy session takes:
+  the compositor's `notify =` hook (`/usr/local/bin/omarchy-theme-changed`)
+  writes `~/.config/waybar/style.css` from the new `theme.conf` and sends
+  Waybar `SIGUSR2`, which reloads it. The hook then execs `notify-send`, so
+  the toast is the same one. Each theme ships its real Omarchy background, which the page
+  decodes and renders to raw pixels at staging time
+  (`renderImageWallpaperKwlp`, with an aurora fallback via
+  `renderWallpaperKwlp` if the decode fails); the compositor scales it to the
   output and falls back to a gradient for themes without one.
 - **The rest of the keybinds** are the Hyprland demo's: `Ctrl+Return` a
   terminal, `Ctrl+K` a clock, `Ctrl+P` a paint canvas, `Ctrl+W` closes the
@@ -538,7 +561,8 @@ binary with its own `/etc/kandelo/wlcompositor.conf`, an app registry under
 See
 [architecture.md](architecture.md#desktop-shell-zwlr_layer_shell_v1-kbar-klauncher-themes).
 Gated node-side by
-`host/test/wlcompositor-{layer-shell,theme}-smoke.test.ts` and in the browser by
+`host/test/wlcompositor-{layer-shell,theme}-smoke.test.ts`,
+`host/test/{waybar,mako}-smoke.test.ts` and in the browser by
 `apps/browser-demos/test/kandelo-omarchy.spec.ts`.
 
 Run the browser app: `cd apps/browser-demos && npm run dev`, then open

@@ -535,6 +535,9 @@ has_nano()          { pkg_has_output nano nano.wasm || [ -f "$REPO_ROOT/packages
 has_nethack()       { pkg_has_output nethack nethack.wasm || [ -f "$REPO_ROOT/packages/registry/nethack/bin/nethack.wasm" ]; }
 has_fbdoom()        { pkg_has_output fbdoom fbdoom.wasm || [ -f "$REPO_ROOT/packages/registry/fbdoom/fbdoom.wasm" ]; }
 has_foot()          { pkg_has_output foot foot.wasm; }
+has_dbus()          { pkg_has_output dbus dbus-daemon.wasm; }
+has_mako()          { pkg_has_output mako mako.wasm; }
+has_waybar()        { pkg_has_output waybar waybar.wasm; }
 has_vim()           { pkg_has_output vim vim.wasm || [ -f "$REPO_ROOT/packages/registry/vim/bin/vim.wasm" ]; }
 has_git()           { pkg_has_output git git.wasm || [ -f "$REPO_ROOT/packages/registry/git/bin/git.wasm" ]; }
 has_perl()          { pkg_has_output perl perl.wasm || [ -f "$REPO_ROOT/packages/registry/perl/bin/perl.wasm" ]; }
@@ -2289,6 +2292,51 @@ build_foot() {
     info "foot resolved"
 }
 
+build_dbus() {
+    if has_dbus; then
+        info "dbus"
+        return
+    fi
+    need_kernel
+    need_sdk
+    step "Resolving dbus-daemon.wasm"
+    local host_target
+    host_target="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$host_target" --quiet -- \
+        build-deps --arch wasm32 --binaries-dir "$REPO_ROOT/binaries" resolve dbus)
+    info "dbus resolved"
+}
+
+build_mako() {
+    if has_mako; then
+        info "mako"
+        return
+    fi
+    need_kernel
+    need_sdk
+    step "Resolving mako.wasm"
+    local host_target
+    host_target="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$host_target" --quiet -- \
+        build-deps --arch wasm32 --binaries-dir "$REPO_ROOT/binaries" resolve mako)
+    info "mako resolved"
+}
+
+build_waybar() {
+    if has_waybar; then
+        info "waybar"
+        return
+    fi
+    need_kernel
+    need_sdk
+    step "Resolving waybar.wasm"
+    local host_target
+    host_target="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$host_target" --quiet -- \
+        build-deps --arch wasm32 --binaries-dir "$REPO_ROOT/binaries" resolve waybar)
+    info "waybar resolved"
+}
+
 build_vim() {
     if has_vim; then
         info "Vim"
@@ -2432,6 +2480,9 @@ build_target() {
         nethack-zip) build_nethack_zip ;;
         fbdoom)     build_fbdoom ;;
         foot)       build_foot ;;
+        dbus)       build_dbus ;;
+        mako)       build_mako ;;
+        waybar)     build_waybar ;;
         ncurses)    build_ncurses ;;
         zlib)       build_zlib ;;
         openssl)    build_openssl ;;
@@ -2468,7 +2519,7 @@ BROWSER_FETCH_SKIP_PKGS=(spidermonkey node)
 # sysroot/sysroot64 are NOT listed: they're toolchain prerequisites for source
 # builds, and any `build_X` whose prebuilt is missing calls `need_sysroot`
 # lazily.
-BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom foot git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node node-vfs wp-vfs lamp-vfs)
+BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom foot dbus mako waybar git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node node-vfs wp-vfs lamp-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do

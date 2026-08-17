@@ -326,6 +326,16 @@ trampolines. wasm32 cannot generate code at runtime.
   rendering with Omarchy's actual waybar config (translated), mako
   showing a real notification via gdbus, foot as the terminal. This is
   the "unmodified GTK app runs" milestone the Wayland plan's §7 named.
+- **Waybar's IPC, as built.** Pointing Waybar's hyprland modules at
+  `kwlctl` alone was not enough: they resolve their socket from
+  `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/`, use two
+  sockets (request/reply + events), and read a wider JSON field set
+  than PR14 emitted. The compositor now serves the same command table
+  and event bus on that socket pair as well, accepts hyprctl's `j/`
+  prefix, answers `activeworkspace`/`monitors`/`workspacerules`, and
+  emits the `v2` event family — see the Hyprland IPC compatibility
+  bullet in `docs/architecture.md`. Window titles are stored for this
+  reason alone.
 
 Tier 2 risks, ranked: (1) ffi_closure correctness (PR20 — mitigated by
 the test-matrix-first rule); (2) GTK3 port sheer size (PR24 —

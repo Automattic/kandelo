@@ -112,11 +112,18 @@ import { PRESET_LIBRARY } from "../presets";
 import {
   OMARCHY_APPS,
   OMARCHY_APPS_DIR,
+  OMARCHY_BUS_SOCKET,
   OMARCHY_CONF_PATH,
+  OMARCHY_DBUS_SESSION_CONF,
   OMARCHY_FONTS_CONF,
+  OMARCHY_MAKO_CONFIG,
   OMARCHY_THEME_DIR,
+  OMARCHY_THEME_HOOK,
   OMARCHY_THEMES,
+  OMARCHY_WAYBAR_CONFIG,
+  OMARCHY_WAYBAR_STYLE,
   OMARCHY_WLCOMPOSITOR_CONF,
+  renderImageWallpaperKwlp,
   renderWallpaperKwlp,
 } from "./omarchy-desktop";
 import {
@@ -242,10 +249,10 @@ const OPTIONAL_BINARY_URLS = {
   ...import.meta.glob("../../../../../binaries/programs/wasm32/wlpaint.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/kbar.wasm", {
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/waybar.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/kbar.wasm", {
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/waybar.wasm", {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../../../local-binaries/programs/wasm32/klauncher.wasm", {
@@ -254,10 +261,22 @@ const OPTIONAL_BINARY_URLS = {
   ...import.meta.glob("../../../../../binaries/programs/wasm32/klauncher.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/knotify.wasm", {
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/dbus/dbus-daemon.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/knotify.wasm", {
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/dbus/dbus-daemon.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/mako/mako.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/mako/mako.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/notify-send.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/notify-send.wasm", {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../../../local-binaries/programs/wasm32/foot.wasm", {
@@ -660,7 +679,7 @@ interface LiveProfile {
    */
   hyprlandDemo: boolean;
   /**
-   * Like hyprlandDemo, plus the desktop shell Omarchy is made of: `kbar` on a
+   * Like hyprlandDemo, plus the desktop shell Omarchy is made of: Waybar on a
    * wlr-layer-shell surface reserving the top strip, `klauncher` on
    * SUPER/CTRL+Space, and the theme directory the compositor and both clients
    * read. This is the O1 milestone of
@@ -2244,13 +2263,15 @@ async function bootProfile(
       // libkwl/vt100 clients honor by rebuilding at the tile size (KWL_RESIZE).
       // That client-side resize is the crux — floating clients never resize.
       //
-      // The omarchy demo is the same desktop with its shell on top: kbar on a
-      // layer-shell surface, klauncher on SUPER+Space, and the theme set. Only
-      // the extra staging and the two extra binaries differ, so it shares this
+      // The omarchy demo is the same desktop with its shell on top: Waybar on
+      // a layer-shell surface, klauncher on SUPER+Space, and the theme set.
+      // Only the extra staging and the extra binaries differ, so it shares this
       // path rather than duplicating the KMS sizing and spawn ordering.
       const omarchy = profile.omarchyDemo;
       const kernelForHyprland = kernel;
       let omarchyBarBytes: ArrayBuffer | null = null;
+      let omarchyDaemonBytes: ArrayBuffer | null = null;
+      let omarchyMakoBytes: ArrayBuffer | null = null;
       void (async () => {
         try {
           const compositorUrl = await optionalBinaryUrl([
@@ -2272,11 +2293,11 @@ async function bootProfile(
             "../../../../../local-binaries/programs/wasm32/wlpaint.wasm",
             "../../../../../binaries/programs/wasm32/wlpaint.wasm",
           ], "wlpaint.wasm");
-          const kbarUrl = omarchy
+          const waybarUrl = omarchy
             ? await optionalBinaryUrl([
-              "../../../../../local-binaries/programs/wasm32/kbar.wasm",
-              "../../../../../binaries/programs/wasm32/kbar.wasm",
-            ], "kbar.wasm")
+              "../../../../../local-binaries/programs/wasm32/waybar.wasm",
+              "../../../../../binaries/programs/wasm32/waybar.wasm",
+            ], "waybar.wasm")
             : null;
           const klauncherUrl = omarchy
             ? await optionalBinaryUrl([
@@ -2284,11 +2305,23 @@ async function bootProfile(
               "../../../../../binaries/programs/wasm32/klauncher.wasm",
             ], "klauncher.wasm")
             : null;
-          const knotifyUrl = omarchy
+          const dbusDaemonUrl = omarchy
             ? await optionalBinaryUrl([
-              "../../../../../local-binaries/programs/wasm32/knotify.wasm",
-              "../../../../../binaries/programs/wasm32/knotify.wasm",
-            ], "knotify.wasm")
+              "../../../../../local-binaries/programs/wasm32/dbus/dbus-daemon.wasm",
+              "../../../../../binaries/programs/wasm32/dbus/dbus-daemon.wasm",
+            ], "dbus-daemon.wasm")
+            : null;
+          const makoUrl = omarchy
+            ? await optionalBinaryUrl([
+              "../../../../../local-binaries/programs/wasm32/mako/mako.wasm",
+              "../../../../../binaries/programs/wasm32/mako/mako.wasm",
+            ], "mako.wasm")
+            : null;
+          const notifySendUrl = omarchy
+            ? await optionalBinaryUrl([
+              "../../../../../local-binaries/programs/wasm32/notify-send.wasm",
+              "../../../../../binaries/programs/wasm32/notify-send.wasm",
+            ], "notify-send.wasm")
             : null;
           const footUrl = omarchy
             ? await optionalBinaryUrl([
@@ -2333,25 +2366,55 @@ async function bootProfile(
           // the files they and the compositor read — one config, one app
           // registry, one theme directory.
           if (omarchy) {
-            const [barBytes, launcherBytes, notifyBytes, footBytes, fontBytes] =
+            const [barBytes, launcherBytes, daemonBytes, makoBytes,
+              notifySendBytes, footBytes, fontBytes] =
               await Promise.all([
-                fetch(kbarUrl!).then(failOn("kbar.wasm")).then((r) => r.arrayBuffer()),
+                fetch(waybarUrl!).then(failOn("waybar.wasm")).then((r) => r.arrayBuffer()),
                 fetch(klauncherUrl!).then(failOn("klauncher.wasm"))
                   .then((r) => r.arrayBuffer()),
-                fetch(knotifyUrl!).then(failOn("knotify.wasm"))
+                fetch(dbusDaemonUrl!).then(failOn("dbus-daemon.wasm"))
+                  .then((r) => r.arrayBuffer()),
+                fetch(makoUrl!).then(failOn("mako.wasm"))
+                  .then((r) => r.arrayBuffer()),
+                fetch(notifySendUrl!).then(failOn("notify-send.wasm"))
                   .then((r) => r.arrayBuffer()),
                 fetch(footUrl!).then(failOn("foot.wasm")).then((r) => r.arrayBuffer()),
                 fetch(inconsolataFontUrl).then(failOn("Inconsolata-Regular.ttf"))
                   .then((r) => r.arrayBuffer()),
               ]);
-            writeVfsBinary(kernelForHyprland.fs, "/usr/local/bin/kbar",
+            writeVfsBinary(kernelForHyprland.fs, "/usr/local/bin/waybar",
               new Uint8Array(barBytes), 0o755);
+            ensureDirRecursive(kernelForHyprland.fs, `${DEMO_HOME}/.config/waybar`);
+            writeVfsFile(kernelForHyprland.fs, `${DEMO_HOME}/.config/waybar/config.jsonc`,
+              OMARCHY_WAYBAR_CONFIG, 0o644);
+            writeVfsFile(kernelForHyprland.fs, `${DEMO_HOME}/.config/waybar/style.css`,
+              OMARCHY_WAYBAR_STYLE, 0o644);
+            // The theme hook rewrites the stylesheet as the desktop's user,
+            // so the file and its directory belong to that user.
+            kernelForHyprland.fs.chown(`${DEMO_HOME}/.config/waybar`,
+              DEMO_UID, DEMO_GID);
+            kernelForHyprland.fs.chown(`${DEMO_HOME}/.config/waybar/style.css`,
+              DEMO_UID, DEMO_GID);
             writeVfsBinary(kernelForHyprland.fs, "/usr/local/bin/klauncher",
               new Uint8Array(launcherBytes), 0o755);
-            writeVfsBinary(kernelForHyprland.fs, "/usr/local/bin/knotify",
-              new Uint8Array(notifyBytes), 0o755);
+            writeVfsBinary(kernelForHyprland.fs, "/usr/local/bin/dbus-daemon",
+              new Uint8Array(daemonBytes), 0o755);
+            writeVfsBinary(kernelForHyprland.fs, "/usr/local/bin/mako",
+              new Uint8Array(makoBytes), 0o755);
+            writeVfsBinary(kernelForHyprland.fs, "/usr/local/bin/notify-send",
+              new Uint8Array(notifySendBytes), 0o755);
+            writeVfsFile(kernelForHyprland.fs,
+              "/usr/local/bin/omarchy-theme-changed", OMARCHY_THEME_HOOK, 0o755);
             writeVfsBinary(kernelForHyprland.fs, "/usr/local/bin/foot",
               new Uint8Array(footBytes), 0o755);
+            ensureDirRecursive(kernelForHyprland.fs, "/etc/dbus-1");
+            writeVfsFile(kernelForHyprland.fs, "/etc/dbus-1/session.conf",
+              OMARCHY_DBUS_SESSION_CONF, 0o644);
+            ensureDirRecursive(kernelForHyprland.fs, `${DEMO_HOME}/.config/mako`);
+            writeVfsFile(kernelForHyprland.fs, `${DEMO_HOME}/.config/mako/config`,
+              OMARCHY_MAKO_CONFIG, 0o644);
+            omarchyDaemonBytes = daemonBytes;
+            omarchyMakoBytes = makoBytes;
             ensureDirRecursive(kernelForHyprland.fs, "/usr/share/fonts");
             writeVfsBinary(kernelForHyprland.fs,
               "/usr/share/fonts/Inconsolata-Regular.ttf",
@@ -2369,9 +2432,12 @@ async function bootProfile(
               ensureDirRecursive(kernelForHyprland.fs, `${OMARCHY_THEME_DIR}/${name}`);
               writeVfsFile(kernelForHyprland.fs,
                 `${OMARCHY_THEME_DIR}/${name}/theme.conf`, theme.conf, 0o644);
+              const image = theme.wallpaper.image
+                ? await renderImageWallpaperKwlp(theme.wallpaper.image)
+                : null;
               writeVfsBinary(kernelForHyprland.fs,
                 `${OMARCHY_THEME_DIR}/${name}/background.kwlp`,
-                renderWallpaperKwlp(theme), 0o644);
+                image ?? renderWallpaperKwlp(theme), 0o644);
             }
           }
 
@@ -2419,8 +2485,13 @@ async function bootProfile(
           // Clients retry their connect to /tmp/wayland-0, so the compositor
           // and clients can be spawned without an ordering barrier.
           tick("running wlcompositor...");
-          const spawnBg = (bytes: ArrayBuffer, name: string, extraEnv: string[] = []) =>
-            void kernelForHyprland.spawn(bytes, [name], {
+          const spawnBg = (
+            bytes: ArrayBuffer,
+            name: string,
+            extraEnv: string[] = [],
+            args: string[] = [],
+          ) =>
+            void kernelForHyprland.spawn(bytes, [name, ...args], {
               env: extraEnv.length ? [...SHELL_ENV, ...extraEnv] : SHELL_ENV,
               cwd: DEMO_HOME,
               uid: DEMO_UID,
@@ -2430,24 +2501,85 @@ async function bootProfile(
               (err: unknown) =>
                 tick(`${name} failed: ${err instanceof Error ? err.message : String(err)}`),
             );
+          // Every omarchy desktop process gets the session bus address: the
+          // compositor passes it on to everything it execs (notify-send on a
+          // theme switch, launched terminals), and the terminals' shells can
+          // run notify-send themselves.
+          const busEnv = omarchy
+            ? [`DBUS_SESSION_BUS_ADDRESS=unix:path=${OMARCHY_BUS_SOCKET}`]
+            : [];
           spawnBg(compBytes, "wlcompositor", [
             "WLC_LAYOUT=dwindle",
             "WLC_CONFIG=/etc/kandelo/wlcompositor.conf",
+            ...busEnv,
           ]);
+
+          const vfsExists = (path: string) => {
+            try {
+              kernelForHyprland.fs.stat(path);
+              return true;
+            } catch {
+              return false;
+            }
+          };
+          const waitForSockets = async (paths: string[]) => {
+            const deadline = performance.now() + 30_000;
+            while (
+              paths.some((path) => !vfsExists(path)) &&
+              performance.now() < deadline
+            )
+              await new Promise((resolve) => setTimeout(resolve, 100));
+          };
+
+          // The notification stack: the session bus, then mako on it. mako
+          // connects to the compositor and the bus exactly once (stock
+          // wl_display_connect + sd-bus, no retry), so hold it until both
+          // sockets exist in the VFS.
+          if (omarchyDaemonBytes && omarchyMakoBytes) {
+            tick("running dbus-daemon + mako...");
+            spawnBg(omarchyDaemonBytes, "dbus-daemon", [], [
+              "--config-file=/etc/dbus-1/session.conf",
+              "--nofork",
+            ]);
+            const makoBytes = omarchyMakoBytes;
+            void (async () => {
+              await waitForSockets(["/tmp/wayland-0", OMARCHY_BUS_SOCKET]);
+              spawnBg(makoBytes, "mako", busEnv);
+            })();
+          }
 
           // The bar first: its exclusive zone must be reserved before the
           // windows tile, or they would lay out over the full output and be
-          // re-configured a frame later.
+          // re-configured a frame later. Waybar connects to the display and
+          // the Hyprland IPC pair exactly once (GTK does not retry), so wait
+          // for both sockets inline — they are bound before COMPOSITOR_UP,
+          // and the terminals below retry their own connects.
           if (omarchyBarBytes) {
-            tick("running kbar...");
-            spawnBg(omarchyBarBytes, "kbar");
+            tick("running waybar...");
+            // Waybar is a Gtk::Application, so g_application_register
+            // needs the session bus: without it GIO tries to autolaunch
+            // one and exits on the missing machine-id. Wait for the bus
+            // socket alongside the display and the Hyprland pair.
+            await waitForSockets([
+              "/tmp/wayland-0",
+              "/tmp/hypr/wlcompositor/.socket.sock",
+              ...(omarchyDaemonBytes ? [OMARCHY_BUS_SOCKET] : []),
+            ]);
+            // `-l debug` is what makes the bar legible in the Internals
+            // syslog: Waybar logs every Hyprland IPC event it receives at
+            // debug level, so a workspace switch or a window focus shows
+            // up as the bar's own line next to the compositor's marker.
+            spawnBg(omarchyBarBytes, "waybar", [
+              "HYPRLAND_INSTANCE_SIGNATURE=wlcompositor",
+              ...busEnv,
+            ], ["-l", "debug"]);
           }
 
           // The clock + first terminal run in the background; the foreground
           // terminal's shell keeps the demo alive (as waylandDemo does).
           tick("running wlclock + wlterm...");
           spawnBg(clockBytes, "wlclock");
-          spawnBg(termBytes, "wlterm");
+          spawnBg(termBytes, "wlterm", busEnv);
 
           tick("running wlterm...");
           // Keep-alive 3rd tiling client. Launch it through the non-forking
@@ -2460,7 +2592,7 @@ async function bootProfile(
           // exitPromise in kernel-host.ts), so awaiting it keeps the demo alive
           // exactly as the foreground shell command did.
           await kernelForHyprland.spawn(termBytes, ["wlterm"], {
-            env: SHELL_ENV,
+            env: busEnv.length ? [...SHELL_ENV, ...busEnv] : SHELL_ENV,
             cwd: DEMO_HOME,
             uid: DEMO_UID,
             gid: DEMO_GID,
