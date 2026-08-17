@@ -12,6 +12,7 @@ import { CentralizedKernelWorker } from "../src/kernel-worker";
 const EINPROGRESS = 115;
 const EALREADY = 114;
 const ECONNREFUSED = 111;
+const EINTR = 4;
 
 type KernelResult = { retVal: number; errVal: number };
 
@@ -21,7 +22,11 @@ function createSharedMemory(pages = 2): WebAssembly.Memory {
 
 function createConnectHarness(
   results: KernelResult[],
-  options: { nonblock?: boolean; family?: number } = {},
+  options: {
+    nonblock?: boolean;
+    family?: number;
+    handlerSignal?: number;
+  } = {},
 ) {
   const kernelMemory = createSharedMemory();
   const processMemory = createSharedMemory();
@@ -84,7 +89,7 @@ function createConnectHarness(
     bindKernelTidForChannel: vi.fn(),
     highControlFloorForProcess: vi.fn(() => null),
     getProcessExitSignal: vi.fn(() => 0),
-    dequeueSignalForDelivery: vi.fn(() => 0),
+    dequeueSignalForDelivery: vi.fn(() => options.handlerSignal ?? 0),
     finishSignalTermination: vi.fn(() => false),
     completeChannel,
     completeChannelRaw: vi.fn(),
@@ -133,6 +138,20 @@ describe("pending AF_INET connect routing", () => {
     expect(harness.handleChannel).toHaveBeenCalledTimes(2);
     expect(harness.completeChannel).toHaveBeenCalledOnce();
     expect(harness.completeChannel.mock.calls[0].slice(-2)).toEqual([0, 0]);
+    expect(harness.worker.pendingPollRetries.size).toBe(0);
+  });
+
+  it("interrupts a blocking pending connect for a caught signal", () => {
+    const harness = createConnectHarness(
+      [{ retVal: -1, errVal: EINPROGRESS }],
+      { handlerSignal: 10 },
+    );
+
+    harness.worker.handleSyscall(harness.channel);
+
+    expect(harness.completeChannel).toHaveBeenCalledOnce();
+    expect(harness.completeChannel.mock.calls[0].slice(-2))
+      .toEqual([-1, EINTR]);
     expect(harness.worker.pendingPollRetries.size).toBe(0);
   });
 
