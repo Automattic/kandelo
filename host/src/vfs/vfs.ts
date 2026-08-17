@@ -15,6 +15,7 @@ import {
   type TimeProvider,
 } from "./types";
 import { resolveMountSetIdCapability } from "./memory-fs";
+import { OPEN_FLAGS } from "../generated/abi";
 
 interface MountEntry {
   prefix: string;
@@ -27,6 +28,7 @@ interface HandleInfo {
   backend: FileSystemBackend;
   backendId: number;
   localHandle: number;
+  statfs?: StatfsResult;
 }
 
 const MAX_U64 = (1n << 64n) - 1n;
@@ -50,6 +52,11 @@ function normalizeMountPoint(mp: string): string {
     return mp.slice(0, -1);
   }
   return mp;
+}
+
+function parentPath(path: string): string {
+  const slash = path.lastIndexOf("/");
+  return slash <= 0 ? "/" : path.slice(0, slash);
 }
 
 export class VirtualPlatformIO implements PlatformIO {
@@ -200,10 +207,28 @@ export class VirtualPlatformIO implements PlatformIO {
   }
 
   open(path: string, flags: number, mode: number): number {
-    const { backend, backendId, relativePath } = this.resolve(path);
+    const { backend, backendId, relativePath, setIdCapability } = this.resolve(path);
+    // O_CREAT may name a missing final component. Its already-resolved backend
+    // and existing parent provide the filesystem metadata; the open below
+    // remains the sole authority for validating and creating the final path.
+    const statfsPath = (flags & OPEN_FLAGS.O_CREAT) !== 0
+      ? parentPath(relativePath)
+      : relativePath;
+    const backendStatfs = backend.statfs(statfsPath);
+    const statfs = {
+      ...backendStatfs,
+      flags: setIdCapability.kind === "nosuid"
+        ? backendStatfs.flags | ST_NOSUID
+        : backendStatfs.flags & ~ST_NOSUID,
+    };
     const localHandle = backend.open(relativePath, flags, mode);
     const globalHandle = this.nextFileHandle++;
-    this.fileHandles.set(globalHandle, { backend, backendId, localHandle });
+    this.fileHandles.set(globalHandle, {
+      backend,
+      backendId,
+      localHandle,
+      statfs,
+    });
     return globalHandle;
   }
 
@@ -256,6 +281,14 @@ export class VirtualPlatformIO implements PlatformIO {
   fstat(handle: number): StatResult {
     const info = this.getFileHandle(handle);
     return this.qualifyStat(info.backend, info.backend.fstat(info.localHandle));
+  }
+
+  fstatfs(handle: number): StatfsResult {
+    const info = this.getFileHandle(handle);
+    if (info.statfs === undefined) {
+      throw new Error(`EBADF: file handle ${handle} has no mount route`);
+    }
+    return { ...info.statfs };
   }
 
   fpathconf(handle: number, name: number): PathconfValue {

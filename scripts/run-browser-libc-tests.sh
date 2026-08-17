@@ -117,7 +117,7 @@ LINK_FLAGS=(
     "$GLUE_DIR/compiler_rt.c"
     "$SYSROOT/lib/crt1.o"
     "$SYSROOT/lib/libc.a"
-    -Wl,--entry=_start
+    -Wl,--no-entry
     -Wl,--export=_start
     -Wl,--import-memory
     -Wl,--shared-memory

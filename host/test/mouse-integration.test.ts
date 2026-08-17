@@ -148,6 +148,7 @@ describe.skipIf(!existsSync(mousetestBinary))("mouse integration", () => {
       programBytes,
       memory,
       channelOffset,
+      secureExec: kernel.processSecureExec(pid),
       argv: ["mousetest", "3"],
       env: [],
       ptrWidth,

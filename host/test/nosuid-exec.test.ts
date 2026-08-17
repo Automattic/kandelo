@@ -241,6 +241,34 @@ describe("set-ID execution mount evidence", () => {
     );
   });
 
+  it("binds set-ID policy to the exact open route instead of a later path lookup", () => {
+    const backend = createImmutableProductBackend(createSetIdFileSystem());
+    const vfs = new VirtualPlatformIO(
+      [
+        {
+          mountPoint: "/trusted",
+          backend,
+          readonly: true,
+          setIdCapability: TRUSTED_ROOT_PRODUCT,
+        },
+        { mountPoint: "/raw", backend, readonly: true },
+      ],
+      new NodeTimeProvider(),
+    );
+
+    const trustedHandle = vfs.open(
+      "/trusted/bin/tool",
+      OPEN_FLAGS.O_RDONLY,
+      0,
+    );
+    const rawHandle = vfs.open("/raw/bin/tool", OPEN_FLAGS.O_RDONLY, 0);
+    expect(vfs.fstatfs(trustedHandle).flags & ST_NOSUID).toBe(0);
+    expect(vfs.fstatfs(rawHandle).flags & ST_NOSUID).toBe(ST_NOSUID);
+    expect(vfs.statfs("/raw/bin/tool").flags & ST_NOSUID).toBe(ST_NOSUID);
+    vfs.close(trustedHandle);
+    vfs.close(rawHandle);
+  });
+
   it("snapshots product state away from caller-retained mutation authority", () => {
     const source = createSetIdFileSystem();
     const backend = createImmutableProductBackend(source);

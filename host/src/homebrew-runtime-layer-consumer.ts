@@ -17,6 +17,13 @@ import {
   type LazyTreeRegistrationEntry,
 } from "./vfs/memory-fs";
 import {
+  publishPrivilegedProgramProduct,
+  readReviewedPrivilegedProgramPolicy,
+  type PrivilegedProgramSource,
+  type PublishedPrivilegedProgramProduct,
+  type ReviewedPrivilegedProgramPolicy,
+} from "./vfs/privileged-projection";
+import {
   adaptHomebrewDeferredTree,
   type AdaptedHomebrewDeferredTree,
 } from "./homebrew-deferred-tree-adapter";
@@ -83,6 +90,7 @@ export interface RegisteredHomebrewRuntimeLayer {
 export interface ComposedHomebrewRuntimeLayers {
   fs: MemoryFileSystem;
   layers: RegisteredHomebrewRuntimeLayer[];
+  privilegedProduct?: PublishedPrivilegedProgramProduct;
 }
 
 interface RegisterHomebrewRuntimeLayersOptions extends ComposeHomebrewRuntimeLayersOptions {
@@ -171,6 +179,21 @@ export interface HomebrewOriginalBottleTreeDescriptorV1 {
 export async function composeHomebrewRuntimeLayers(
   options: ComposeHomebrewRuntimeLayersOptions,
 ): Promise<ComposedHomebrewRuntimeLayers> {
+  return composeHomebrewRuntimeLayersInternal(options);
+}
+
+/** Direct internal adapter; intentionally absent from public host barrels. */
+export async function composeHomebrewRuntimeLayersWithReviewedProduct(
+  options: ComposeHomebrewRuntimeLayersOptions,
+  policy: ReviewedPrivilegedProgramPolicy,
+): Promise<ComposedHomebrewRuntimeLayers> {
+  return composeHomebrewRuntimeLayersInternal(options, policy);
+}
+
+async function composeHomebrewRuntimeLayersInternal(
+  options: ComposeHomebrewRuntimeLayersOptions,
+  policy?: ReviewedPrivilegedProgramPolicy,
+): Promise<ComposedHomebrewRuntimeLayers> {
   const fs = options.maxByteLength === undefined
     ? MemoryFileSystem.fromImagePreservingCapacity(options.baseImageBytes)
     : MemoryFileSystem.fromImage(options.baseImageBytes, {
@@ -184,7 +207,18 @@ export async function composeHomebrewRuntimeLayers(
     const layers = options.layers.length === 0
       ? []
       : await registerHomebrewRuntimeLayersOnStagedFileSystem({ ...options, fs });
-    return { fs, layers };
+    const privilegedProduct = policy === undefined
+      ? undefined
+      : await publishRuntimeLayerPrivilegedPrograms(
+        fs,
+        layers,
+        policy,
+      );
+    return {
+      fs,
+      layers,
+      ...(privilegedProduct === undefined ? {} : { privilegedProduct }),
+    };
   } catch (error) {
     // This filesystem was deliberately private until the composition
     // transaction completed, so a rejection gives the caller no other way to
@@ -197,6 +231,95 @@ export async function composeHomebrewRuntimeLayers(
     }
     throw error;
   }
+}
+
+async function publishRuntimeLayerPrivilegedPrograms(
+  fs: MemoryFileSystem,
+  layers: readonly RegisteredHomebrewRuntimeLayer[],
+  policy: ReviewedPrivilegedProgramPolicy,
+): Promise<PublishedPrivilegedProgramProduct> {
+  const projections = readReviewedPrivilegedProgramPolicy(policy);
+  const sources = runtimeLayerPrivilegedSources(fs, layers);
+  const sourcesByFormula = new Map(sources.map((source) => [source.formula, source]));
+  for (const projection of projections) {
+    const source = sourcesByFormula.get(projection.formula);
+    if (source === undefined) {
+      throw new Error(
+        `privileged projection formula ${projection.formula} has no authenticated runtime tree`,
+      );
+    }
+    if (source.bottleSha256 !== projection.bottleSha256) {
+      throw new Error(
+        `privileged projection bottle digest mismatch for ${projection.formula}`,
+      );
+    }
+    // Materialization remains part of the private composition transaction.
+    // No product backend is returned until every source and destination passes.
+    await fs.preparePath(source.guestPathForSource(projection.sourcePath));
+  }
+  return publishPrivilegedProgramProduct({
+    policy,
+    sources,
+    writableBottleFileSystems: [fs],
+  });
+}
+
+function runtimeLayerPrivilegedSources(
+  fs: MemoryFileSystem,
+  layers: readonly RegisteredHomebrewRuntimeLayer[],
+): PrivilegedProgramSource[] {
+  const sources: PrivilegedProgramSource[] = [];
+  for (const layer of layers) {
+    const packagesByFormula = new Map(
+      layer.descriptor.packages.layer.map((pkg) => [pkg.full_name, pkg]),
+    );
+    for (const tree of layer.descriptor.deferred_trees) {
+      if (tree.package === undefined || tree.inventory.source === undefined) continue;
+      const pkg = packagesByFormula.get(tree.package);
+      if (pkg === undefined) {
+        throw new Error(
+          `privileged runtime tree ${tree.id} has no exact Formula owner`,
+        );
+      }
+      if (pkg.sha256 !== tree.content.sha256) {
+        throw new Error(
+          `privileged runtime tree ${tree.id} differs from its bottle digest`,
+        );
+      }
+      const guestPathsBySource = new Map<string, string>();
+      for (const entry of tree.inventory.entries) {
+        if (entry.type !== "file" && entry.type !== "hardlink") continue;
+        const guestPath = `/${entry.path}`;
+        const prior = guestPathsBySource.get(entry.source_path);
+        if (prior === undefined || guestPath < prior) {
+          guestPathsBySource.set(entry.source_path, guestPath);
+        }
+      }
+      sources.push({
+        formula: tree.package,
+        bottleSha256: tree.content.sha256,
+        fs,
+        inventory: {
+          entries: tree.inventory.source.entries.map((entry) => ({
+            sourcePath: entry.path,
+            type: entry.type,
+            size: entry.size,
+            ...(entry.target === undefined ? {} : { target: entry.target }),
+          })),
+        },
+        guestPathForSource(sourcePath) {
+          const path = guestPathsBySource.get(sourcePath);
+          if (path === undefined) {
+            throw new Error(
+              `privileged source ${sourcePath} is absent from runtime tree ${tree.id}`,
+            );
+          }
+          return path;
+        },
+      });
+    }
+  }
+  return sources;
 }
 
 /**

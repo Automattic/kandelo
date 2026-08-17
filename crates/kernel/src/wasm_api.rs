@@ -85,6 +85,7 @@ unsafe extern "C" {
     fn host_stat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32;
     fn host_lstat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32;
     fn host_statfs(path_ptr: *const u8, path_len: u32, statfs_ptr: *mut u8) -> i32;
+    fn host_fstatfs(handle: i64, statfs_ptr: *mut u8) -> i32;
     fn host_pathconf(path_ptr: *const u8, path_len: u32, name: i32, value_ptr: *mut i64) -> i32;
     fn host_fpathconf(handle: i64, name: i32, value_ptr: *mut i64) -> i32;
     fn host_mkdir(path_ptr: *const u8, path_len: u32, mode: u32) -> i32;
@@ -112,7 +113,6 @@ unsafe extern "C" {
     fn host_fsync(handle: i64) -> i32;
     fn host_fchmod(handle: i64, mode: u32) -> i32;
     fn host_fchown(handle: i64, uid: u32, gid: u32) -> i32;
-    fn host_exec(path_ptr: *const u8, path_len: u32) -> i32;
     fn host_set_alarm(seconds: u32) -> i32;
     fn host_set_posix_timer(
         timer_id: i32,
@@ -450,6 +450,27 @@ impl HostIO for WasmHostIO {
         Ok(statfs)
     }
 
+    fn host_fstatfs(&mut self, handle: i64) -> Result<WasmStatfs, Errno> {
+        let mut statfs = WasmStatfs {
+            f_type: 0,
+            f_bsize: 0,
+            f_blocks: 0,
+            f_bfree: 0,
+            f_bavail: 0,
+            f_files: 0,
+            f_ffree: 0,
+            f_fsid: 0,
+            f_namelen: 0,
+            f_frsize: 0,
+            f_flags: 0,
+            _pad: 0,
+        };
+        let statfs_ptr = &mut statfs as *mut WasmStatfs as *mut u8;
+        let result = unsafe { host_fstatfs(handle, statfs_ptr) };
+        i32_to_result(result)?;
+        Ok(statfs)
+    }
+
     fn host_pathconf(&mut self, path: &[u8], name: i32) -> Result<Option<i64>, Errno> {
         let mut value = -1i64;
         let result = unsafe {
@@ -647,18 +668,6 @@ impl HostIO for WasmHostIO {
     fn host_fchown(&mut self, handle: i64, uid: u32, gid: u32) -> Result<(), Errno> {
         let result = unsafe { host_fchown(handle, uid, gid) };
         i32_to_result(result)
-    }
-
-    fn host_exec(&mut self, path: &[u8]) -> Result<(), Errno> {
-        let ret = unsafe { host_exec(path.as_ptr(), path.len() as u32) };
-        if ret < 0 {
-            match Errno::from_u32((-ret) as u32) {
-                Some(e) => Err(e),
-                None => Err(Errno::EIO),
-            }
-        } else {
-            Ok(())
-        }
     }
 
     fn host_set_alarm(&mut self, seconds: u32) -> Result<(), Errno> {
@@ -1262,7 +1271,7 @@ fn current_pid_eids() -> (u32, u32, u32) {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let pid = table.current_pid();
     match table.get(pid) {
-        Some(p) => (pid, p.euid, p.egid),
+        Some(p) => (pid, p.effective_uid(), p.effective_gid()),
         None => (pid, 0, 0),
     }
 }
@@ -1610,17 +1619,28 @@ pub extern "C" fn kernel_set_cwd(pid: u32, path_ptr: *const u8, path_len: u32) -
 pub extern "C" fn kernel_set_process_credentials(pid: u32, uid: u32, gid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     if let Some(proc) = table.get_mut(pid) {
-        if uid != u32::MAX {
-            proc.uid = uid;
-            proc.euid = uid;
-        }
-        if gid != u32::MAX {
-            proc.gid = gid;
-            proc.egid = gid;
-        }
+        proc.configure_ids(
+            (uid != u32::MAX).then_some(uid),
+            (gid != u32::MAX).then_some(gid),
+        );
         0
     } else {
         -(Errno::ESRCH as i32)
+    }
+}
+
+/// Return the sticky secure-execution marker for one committed process image.
+///
+/// The host queries this only after the kernel has committed the exact exec
+/// target (or after creating/copying an initial/fork process record).  The
+/// value is kernel-owned: launch paths must not reconstruct it from ids,
+/// paths, argv, environment, or host configuration.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_process_secure_exec(pid: u32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.get(pid) {
+        Some(proc) => i32::from(proc.secure_exec),
+        None => -(Errno::ESRCH as i32),
     }
 }
 
@@ -1853,6 +1873,21 @@ pub extern "C" fn kernel_spawn_reserved_process(
     spawn_parsed_for_caller(parent_pid, caller_tid, parsed)
 }
 
+/// Publish one fully launched `posix_spawn` child to its exact parent.
+///
+/// `-1` is the live-child sentinel, `0` identifies a normal zombie, a
+/// positive result is the terminating signal, and other negative values are
+/// negated errnos. Keeping publication in Rust makes wait selection/reaping
+/// atomic with the state transition instead of trusting a host shadow.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_publish_spawn_child(parent_pid: u32, child_pid: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.publish_spawn_child(parent_pid, child_pid) {
+        Ok(disposition) => disposition,
+        Err(error) => -(error as i32),
+    }
+}
+
 fn spawn_parsed_for_caller(
     parent_pid: u32,
     caller_tid: u32,
@@ -1959,7 +1994,8 @@ pub extern "C" fn kernel_get_process_exit_signal(pid: u32) -> i32 {
     }
 }
 
-/// Return the recorded parent pid for a process, or -ESRCH if absent.
+/// Return the host-visible parent pid for a process, or -ESRCH if absent or
+/// still hidden inside an unpublished spawn transaction.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_parent_pid(pid: u32) -> i32 {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
@@ -2291,7 +2327,7 @@ pub extern "C" fn kernel_generate_host_signal(pid: u32, signum: u32) -> i32 {
         return 0;
     }
 
-    let sender_uid = proc.uid;
+    let sender_uid = proc.real_uid();
     proc.raise_signal_with_metadata(signum, 0, 0, pid, sender_uid);
     if let Some(target_tid) = proc.pick_thread_for_shared_signal(signum) {
         let mut host = WasmHostIO;
@@ -2540,8 +2576,8 @@ pub extern "C" fn kernel_enum_procs(out_ptr: *mut u8, out_len: u32) -> i32 {
             &ProcessSnapshotHeader {
                 pid: proc.pid,
                 ppid: proc.ppid,
-                uid: proc.euid,
-                gid: proc.egid,
+                uid: proc.effective_uid(),
+                gid: proc.effective_gid(),
                 vsize,
                 state,
                 comm_len,
@@ -2719,91 +2755,202 @@ pub extern "C" fn kernel_dequeue_signal(
     }
 }
 
-/// Thread-aware exec setup. When a pthread invokes exec, its signal mask and
-/// directed pending signals become the surviving process thread's state. The
-/// same exact kernel-owned task must first have completed
-/// [`kernel_exec_prepare`].
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_exec_setup_for_thread(pid: u32, caller_tid: u32) -> i32 {
-    kernel_exec_setup_inner(pid, caller_tid)
-}
-
-/// Validate the exec caller and apply any deferred posix_spawn file actions.
-///
-/// The host calls this before it starts the irreversible address-space
-/// transition. Keeping these fallible operations separate means a bad caller
-/// tid or failed file action cannot strand a process after its old image has
-/// already been discarded.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_exec_prepare(pid: u32, caller_tid: u32) -> i32 {
-    match prepare_exec_state(pid, caller_tid) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
+fn checked_exec_path<'a>(path_ptr: usize, path_len: usize) -> Result<&'a [u8], Errno> {
+    if path_len > wasm_posix_shared::platform_limits::PATH_MAX_BYTES {
+        return Err(Errno::ENAMETOOLONG);
     }
-}
-
-fn prepare_exec_state(pid: u32, caller_tid: u32) -> Result<(), Errno> {
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let (proc, advisory_locks) = table.process_and_advisory_locks(pid).ok_or(Errno::ESRCH)?;
-
-    proc.begin_exec_prepare(caller_tid)?;
-
-    // Apply pending fork fd actions (from posix_spawn) before exec.
-    // These are dup2/close/open operations that rearrange descriptors (for
-    // example, a pipe write end onto fd 1) and must precede CLOEXEC removal.
-    let actions: alloc::vec::Vec<_> = proc.fork_fd_actions.drain(..).collect();
-    let mut host = WasmHostIO;
-    for action in actions {
-        use crate::process::FdAction;
-        match action {
-            FdAction::Dup2 { old_fd, new_fd } => {
-                syscalls::sys_dup2_with_locks(proc, advisory_locks, &mut host, old_fd, new_fd)?;
-            }
-            FdAction::Close { fd } => {
-                syscalls::sys_close_implicit_with_locks(
-                    proc,
-                    advisory_locks,
-                    &mut host,
-                    fd,
-                )?;
-            }
-            FdAction::Open {
-                fd,
-                ref path,
-                flags,
-                mode,
-            } => {
-                let opened_fd =
-                    syscalls::sys_open(proc, &mut host, path, flags as u32, mode as u32)?;
-                if opened_fd != fd {
-                    syscalls::sys_dup2_with_locks(proc, advisory_locks, &mut host, opened_fd, fd)?;
-                    let _ = syscalls::sys_close_implicit_with_locks(
-                        proc,
-                        advisory_locks,
-                        &mut host,
-                        opened_fd,
-                    );
-                }
-            }
-        }
+    if path_len == 0 {
+        return Ok(&[]);
     }
-    proc.finish_exec_prepare(caller_tid);
-    Ok(())
+    if path_ptr == 0 || path_ptr.checked_add(path_len).is_none() {
+        return Err(Errno::EFAULT);
+    }
+    Ok(unsafe { core::slice::from_raw_parts(path_ptr as *const u8, path_len) })
 }
 
-fn kernel_exec_setup_inner(pid: u32, caller_tid: u32) -> i32 {
+/// Prepare one exact pathname or `AT_EMPTY_PATH` executable object.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exec_target_prepare(
+    pid: u32,
+    caller_tid: u32,
+    dirfd: i32,
+    path_ptr: usize,
+    path_len: usize,
+    flags: u32,
+) -> i32 {
+    let path = match checked_exec_path(path_ptr, path_len) {
+        Ok(path) => path,
+        Err(error) => return -(error as i32),
+    };
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let (proc, advisory_locks) = match table.process_and_advisory_locks(pid) {
         Some(pair) => pair,
         None => return -(Errno::ESRCH as i32),
     };
-    if let Err(e) = proc.consume_exec_prepare(caller_tid) {
-        return -(e as i32);
+    if !proc.is_live_explicit_tid(caller_tid) {
+        return -(Errno::ESRCH as i32);
     }
     let mut host = WasmHostIO;
-    match syscalls::commit_exec_state_with_locks(proc, advisory_locks, &mut host, caller_tid) {
+    let owner = crate::exec_target::PreparedExecOwner::Process {
+        pid,
+        caller_tid,
+        generation: proc.exec_generation,
+    };
+    match crate::exec_target::prepare(
+        proc,
+        advisory_locks,
+        &mut host,
+        owner,
+        dirfd,
+        path,
+        flags,
+    ) {
+        Ok(token) => token as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Prepare the exact initial executable for a newly allocated spawn child.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_spawn_exec_target_prepare(
+    parent_pid: u32,
+    child_pid: u32,
+    path_ptr: usize,
+    path_len: usize,
+) -> i32 {
+    let path = match checked_exec_path(path_ptr, path_len) {
+        Ok(path) if !path.is_empty() => path,
+        Ok(_) => return -(Errno::ENOENT as i32),
+        Err(error) => return -(error as i32),
+    };
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let parent_exists = table.get(parent_pid).is_some();
+    let (child, advisory_locks) = match table.process_and_advisory_locks(child_pid) {
+        Some(pair) if parent_exists && pair.0.ppid == parent_pid => pair,
+        _ => return -(Errno::ESRCH as i32),
+    };
+    let mut host = WasmHostIO;
+    let owner = crate::exec_target::PreparedExecOwner::Spawn {
+        parent_pid,
+        child_pid,
+        launch: child.exec_generation,
+    };
+    match crate::exec_target::prepare(
+        child,
+        advisory_locks,
+        &mut host,
+        owner,
+        wasm_posix_shared::flags::AT_FDCWD,
+        path,
+        0,
+    ) {
+        Ok(token) => token as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exec_target_size(owner_pid: u32, target: u32) -> i64 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get(owner_pid) else {
+        return -(Errno::ESRCH as i64);
+    };
+    match crate::exec_target::size(proc, owner_pid, target) {
+        Ok(size) => size,
+        Err(error) => -(error as i64),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exec_target_read(
+    owner_pid: u32,
+    target: u32,
+    offset_lo: u32,
+    offset_hi: i32,
+    buffer_ptr: usize,
+    buffer_len: usize,
+) -> i32 {
+    if buffer_len > i32::MAX as usize {
+        return -(Errno::EOVERFLOW as i32);
+    }
+    if buffer_len != 0 && (buffer_ptr == 0 || buffer_ptr.checked_add(buffer_len).is_none()) {
+        return -(Errno::EFAULT as i32);
+    }
+    let buffer = if buffer_len == 0 {
+        &mut []
+    } else {
+        unsafe { core::slice::from_raw_parts_mut(buffer_ptr as *mut u8, buffer_len) }
+    };
+    let offset = ((offset_hi as i64) << 32) | i64::from(offset_lo);
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get_mut(owner_pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    let mut host = WasmHostIO;
+    match crate::exec_target::read(proc, &mut host, owner_pid, target, offset, buffer) {
+        Ok(read) => read as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exec_target_cancel(owner_pid: u32, target: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let (proc, advisory_locks) = match table.process_and_advisory_locks(owner_pid) {
+        Some(pair) => pair,
+        None => return -(Errno::ESRCH as i32),
+    };
+    let mut host = WasmHostIO;
+    match crate::exec_target::cancel(proc, advisory_locks, &mut host, owner_pid, target) {
         Ok(()) => 0,
-        Err(e) => -(e as i32),
+        Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exec_commit(pid: u32, caller_tid: u32, target: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let (proc, advisory_locks) = match table.process_and_advisory_locks(pid) {
+        Some(pair) => pair,
+        None => return -(Errno::ESRCH as i32),
+    };
+    let mut host = WasmHostIO;
+    match crate::exec_target::commit_process(
+        proc,
+        advisory_locks,
+        &mut host,
+        pid,
+        caller_tid,
+        target,
+    ) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_spawn_exec_commit(
+    parent_pid: u32,
+    child_pid: u32,
+    target: u32,
+) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let parent_exists = table.get(parent_pid).is_some();
+    let (child, advisory_locks) = match table.process_and_advisory_locks(child_pid) {
+        Some(pair) if parent_exists && pair.0.ppid == parent_pid => pair,
+        _ => return -(Errno::ESRCH as i32),
+    };
+    let mut host = WasmHostIO;
+    match crate::exec_target::commit_spawn(
+        child,
+        advisory_locks,
+        &mut host,
+        parent_pid,
+        child_pid,
+        target,
+    ) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
     }
 }
 
@@ -4271,12 +4418,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             channel_mut_ptr!(2, u32),
         ), // SYS_GETRESGID
         135 => {
-            let list_pointer = if a1 == 0 {
+            let size = process_size_u32!(0);
+            let list_pointer = if size == 0 {
                 core::ptr::null_mut()
             } else {
                 channel_mut_ptr!(1, u32)
             };
-            kernel_getgroups(a1 as u32, list_pointer, a3 as u32)
+            kernel_getgroups(size, list_pointer)
         } // SYS_GETGROUPS
         136 => kernel_setgroups(process_size_u32!(0), channel_const_ptr!(1, u32)), // SYS_SETGROUPS
 
@@ -4289,18 +4437,10 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         ), // SYS_WAIT4
 
         // Fork/exec/clone
-        211 => {
-            // SYS_EXECVE: (path, ...)
-            let p = channel_const_ptr!(0, u8);
-            let len = channel_cstr_len!(p);
-            kernel_execve(p, len)
-        }
-        386 => {
-            // SYS_EXECVEAT: (dirfd, path, argv, envp, flags)
-            let p = channel_const_ptr!(1, u8);
-            let len = channel_cstr_len!(p);
-            kernel_execveat(a1 as i32, p, len, a5 as u32)
-        }
+        // Exec launch is a host-orchestrated exact-target transaction. Direct
+        // channel dispatch has neither a retained object token nor authority
+        // to replace a worker, so it must not revive pathname-only exec.
+        211 | 386 => -(Errno::ENOSYS as i32), // SYS_EXECVE / SYS_EXECVEAT
         // The centralized host must intercept fork and ask ProcessTable to
         // allocate the child identity. A direct dispatch cannot create a
         // worker without bypassing that authority, so fail truthfully.
@@ -4351,9 +4491,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         }
         113 => kernel_fpathconf(a1, a2, channel_mut_ptr!(2, i64)), // SYS_FPATHCONF
 
-        // setreuid/setregid — map to setresuid/setresgid with -1 for saved ID
-        215 => kernel_setresuid(a1 as u32, a2 as u32, 0xFFFFFFFF), // SYS_SETREUID
-        216 => kernel_setresgid(a1 as u32, a2 as u32, 0xFFFFFFFF), // SYS_SETREGID
+        215 => kernel_setreuid(a1 as u32, a2 as u32), // SYS_SETREUID
+        216 => kernel_setregid(a1 as u32, a2 as u32), // SYS_SETREGID
 
         // Timer
         225 => {
@@ -5322,11 +5461,11 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         // --- setfsuid/setfsgid: return previous fsuid/fsgid (we mirror euid/egid) ---
         370 => {
             let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-            proc.euid as i32
+            proc.effective_uid() as i32
         }
         371 => {
             let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-            proc.egid as i32
+            proc.effective_gid() as i32
         }
 
         // --- faccessat2/fchmodat2: delegate to existing implementations ---
@@ -5471,7 +5610,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                         let sender_pid = process_table.current_pid();
                         let sender_uid = process_table
                             .get(sender_pid)
-                            .map(|process| process.uid)
+                            .map(Process::real_uid)
                             .unwrap_or(0);
                         if queue_mqueue_signal_notification(
                             process_table,
@@ -6066,7 +6205,7 @@ pub extern "C" fn kernel_ipc_shmat_for_process(
             if pid != crate::process_table::SYNTHETIC_INIT_PID
                 && matches!(proc.state, ProcessState::Running | ProcessState::Stopped) =>
         {
-            (proc.euid, proc.egid)
+            (proc.effective_uid(), proc.effective_gid())
         }
         _ => return -(Errno::ESRCH as i32),
     };
@@ -6366,7 +6505,7 @@ pub extern "C" fn kernel_semctl_array_bytes(pid: u32, tid: u32, semid: i32, cmd:
         return -(error as i32);
     }
     let (uid, gid) = match table.get(pid) {
-        Some(process) => (process.euid, process.egid),
+        Some(process) => (process.effective_uid(), process.effective_gid()),
         None => return -(Errno::ESRCH as i32),
     };
     let ipc = unsafe { crate::ipc::global_ipc_table() };
@@ -7706,7 +7845,11 @@ fn kernel_kill_with_metadata(pid: i32, sig: u32, si_value_bits: u64, si_code: i3
     let caller_tid = table.current_tid();
     let (caller_pgid, sender_uid, sender_euid) = match table.get(caller_pid) {
         Some(caller) if caller.is_live_explicit_tid(caller_tid) => {
-            (caller.pgid, caller.uid, caller.euid)
+            (
+                caller.pgid,
+                caller.real_uid(),
+                caller.effective_uid(),
+            )
         }
         None => return -(Errno::ESRCH as i32),
         Some(_) => return -(Errno::ESRCH as i32),
@@ -7729,7 +7872,12 @@ fn kernel_kill_with_metadata(pid: i32, sig: u32, si_value_bits: u64, si_code: i3
         let target_pid = pid as u32;
         let result = match table.get(target_pid) {
             Some(target)
-                if !syscalls::can_signal(sender_uid, sender_euid, target.uid, target.euid) =>
+                if !syscalls::can_signal(
+                    sender_uid,
+                    sender_euid,
+                    target.real_uid(),
+                    target.saved_uid(),
+                ) =>
             {
                 -(Errno::EPERM as i32)
             }
@@ -7778,7 +7926,12 @@ fn kernel_kill_with_metadata(pid: i32, sig: u32, si_value_bits: u64, si_code: i3
             let Some(target) = table.get(target_pid) else {
                 continue;
             };
-            if !syscalls::can_signal(sender_uid, sender_euid, target.uid, target.euid) {
+            if !syscalls::can_signal(
+                sender_uid,
+                sender_euid,
+                target.real_uid(),
+                target.saved_uid(),
+            ) {
                 any_perm_denied = true;
                 continue;
             }
@@ -7829,7 +7982,12 @@ fn kernel_kill_with_metadata(pid: i32, sig: u32, si_value_bits: u64, si_code: i3
         let mut any_perm_denied = false;
         for &target_pid in &pids {
             if let Some(target) = table.get(target_pid) {
-                if !syscalls::can_signal(sender_uid, sender_euid, target.uid, target.euid) {
+                if !syscalls::can_signal(
+                    sender_uid,
+                    sender_euid,
+                    target.real_uid(),
+                    target.saved_uid(),
+                ) {
                     any_perm_denied = true;
                     continue;
                 }
@@ -7972,13 +8130,17 @@ fn kernel_sched_validate_pid(pid: i32) -> i32 {
         return 0; // pid 0 means current process
     }
     let (_gkl, caller) = unsafe { get_process() };
-    let sender_euid = caller.euid;
+    let sender_euid = caller.effective_uid();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     table.ensure_init();
     match table.get(pid as u32) {
         None => -(Errno::ESRCH as i32),
         Some(target) => {
-            if syscalls::can_query_sched(sender_euid, target.uid, target.euid) {
+            if syscalls::can_query_sched(
+                sender_euid,
+                target.real_uid(),
+                target.effective_uid(),
+            ) {
                 0
             } else {
                 -(Errno::EPERM as i32)
@@ -8170,7 +8332,7 @@ fn kernel_tkill_with_value(tid: u32, sig: u32, si_value_bits: u64, si_code: i32)
     }
 
     let sender_pid = proc.pid;
-    let sender_uid = proc.uid;
+    let sender_uid = proc.real_uid();
 
     // Main thread: use its directed queue rather than the process-shared set.
     if proc.is_main_thread(tid) {
@@ -8501,6 +8663,30 @@ pub extern "C" fn kernel_fstatfs(fd: i32, buf_ptr: *mut u8, process_pointer_widt
     result
 }
 
+/// setreuid/setregid channel implementations. These remain private because
+/// syscall dispatch, not a new Wasm export, is their ABI-43 entry point.
+fn kernel_setreuid(ruid: u32, euid: u32) -> i32 {
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let result = match syscalls::sys_setreuid(proc, ruid, euid) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    };
+    let mut host = WasmHostIO;
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    result
+}
+
+fn kernel_setregid(rgid: u32, egid: u32) -> i32 {
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let result = match syscalls::sys_setregid(proc, rgid, egid) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    };
+    let mut host = WasmHostIO;
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    result
+}
+
 /// setresuid — set real, effective, and saved user IDs.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_setresuid(ruid: u32, euid: u32, suid: u32) -> i32 {
@@ -8569,36 +8755,34 @@ pub extern "C" fn kernel_getresgid(
 
 /// getgroups — get supplementary group IDs.
 /// Returns count on success, negative errno on error.
-fn validate_getgroups_destination(
-    size: u32,
-    list_ptr: *mut u32,
-    list_capacity_bytes: u32,
-) -> Result<(), Errno> {
-    if size > 0 && (list_ptr.is_null() || list_capacity_bytes < core::mem::size_of::<u32>() as u32)
-    {
+fn validate_getgroups_destination(size: u32, list_ptr: *mut u32) -> Result<(), Errno> {
+    if size as usize > crate::credentials::NGROUPS_MAX {
+        return Err(Errno::EINVAL);
+    }
+    if size > 0 && list_ptr.is_null() {
         return Err(Errno::EFAULT);
     }
     Ok(())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_getgroups(size: u32, list_ptr: *mut u32, list_capacity_bytes: u32) -> i32 {
-    if let Err(error) = validate_getgroups_destination(size, list_ptr, list_capacity_bytes) {
+pub extern "C" fn kernel_getgroups(size: u32, list_ptr: *mut u32) -> i32 {
+    if let Err(error) = validate_getgroups_destination(size, list_ptr) {
         return -(error as i32);
     }
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_getgroups(proc, size) {
-        Ok((count, gid)) => {
-            if size > 0 {
-                // WHY: the host lends exactly the declared allocation
-                // capacity. Kernel linear-memory bounds alone do not prove
-                // that the following four bytes belong to that allocation.
-                unsafe {
-                    *list_ptr = gid;
-                }
-            }
-            count as i32
-        }
+        // WHY: the shared descriptor lends exactly size * sizeof(gid_t).
+        // Count-only queries never name or inspect a destination.
+        Ok(groups) => match syscalls::copy_getgroups_to_destination(
+            size,
+            list_ptr,
+            size * size_of::<u32>() as u32,
+            groups,
+        ) {
+            Ok(count) => count as i32,
+            Err(error) => -(error as i32),
+        },
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
@@ -8613,32 +8797,45 @@ mod getgroups_destination_tests {
     #[test]
     fn count_query_does_not_require_a_destination() {
         assert_eq!(
-            validate_getgroups_destination(0, core::ptr::null_mut(), 0),
+            validate_getgroups_destination(0, core::ptr::null_mut()),
             Ok(())
         );
     }
 
     #[test]
-    fn positive_request_requires_the_explicit_gid_capacity() {
+    fn positive_request_requires_a_destination_and_bounded_count() {
         let pointer = core::ptr::NonNull::<u32>::dangling().as_ptr();
         assert_eq!(
-            validate_getgroups_destination(1, core::ptr::null_mut(), 4),
+            validate_getgroups_destination(1, core::ptr::null_mut()),
             Err(Errno::EFAULT)
         );
         assert_eq!(
-            validate_getgroups_destination(1, pointer, 3),
-            Err(Errno::EFAULT)
+            validate_getgroups_destination(
+                crate::credentials::NGROUPS_MAX as u32 + 1,
+                pointer,
+            ),
+            Err(Errno::EINVAL)
         );
-        assert_eq!(validate_getgroups_destination(1, pointer, 4), Ok(()));
-        assert_eq!(validate_getgroups_destination(1, pointer, 5), Ok(()));
+        assert_eq!(validate_getgroups_destination(1, pointer), Ok(()));
     }
 }
 
-/// setgroups — set supplementary group IDs (no-op).
+/// setgroups — replace the complete ordered supplementary group list.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_setgroups(size: u32, _list_ptr: *const u32) -> i32 {
+pub extern "C" fn kernel_setgroups(size: u32, list_ptr: *const u32) -> i32 {
+    if size as usize > crate::credentials::NGROUPS_MAX {
+        return -(Errno::EINVAL as i32);
+    }
+    if size > 0 && list_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let result = match syscalls::sys_setgroups(proc, size) {
+    let groups = if size == 0 {
+        &[][..]
+    } else {
+        unsafe { core::slice::from_raw_parts(list_ptr, size as usize) }
+    };
+    let result = match syscalls::sys_setgroups(proc, groups) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
@@ -11755,87 +11952,6 @@ pub extern "C" fn kernel_realpath(
     result
 }
 
-// ---------------------------------------------------------------------------
-// execve
-// ---------------------------------------------------------------------------
-
-/// Execute a new program. On success, traps (never returns) because the
-/// process image is being replaced asynchronously by the host. On failure,
-/// returns negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_execve(path_ptr: *const u8, path_len: u32) -> i32 {
-    let result = {
-        let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-        let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
-        let mut host = WasmHostIO;
-        match syscalls::sys_execve(proc, &mut host, path) {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-                Err(e)
-            }
-        }
-        // _gkl is dropped here, releasing the Global Kernel Lock
-    };
-
-    match result {
-        Ok(()) => {
-            // Exec succeeded — the host is asynchronously replacing this process
-            // image. Trap to stop the current wasm execution immediately.
-            // GKL must be released before trapping so subsequent centralized
-            // kernel calls during the host's exec transition do not deadlock.
-            unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
-            #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-            unsafe {
-                core::hint::unreachable_unchecked();
-            }
-            #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-            {
-                0
-            }
-        }
-        Err(e) => -(e as i32),
-    }
-}
-
-/// Execute a new program via file descriptor (fexecve / execveat).
-/// Same trap-on-success semantics as kernel_execve.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_execveat(
-    dirfd: i32,
-    path_ptr: *const u8,
-    path_len: u32,
-    flags: u32,
-) -> i32 {
-    let result = {
-        let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-        let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
-        let mut host = WasmHostIO;
-        match syscalls::sys_execveat(proc, &mut host, dirfd, path, flags) {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-                Err(e)
-            }
-        }
-    };
-
-    match result {
-        Ok(()) => {
-            unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
-            #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-            unsafe {
-                core::hint::unreachable_unchecked();
-            }
-            #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-            {
-                0
-            }
-        }
-        Err(e) => -(e as i32),
-    }
-}
-
 /// clone — spawn a new thread. Returns child TID in parent, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_clone(
@@ -13506,7 +13622,7 @@ pub extern "C" fn kernel_pty_create(pid: u32) -> i32 {
     };
 
     // Allocate a new PTY pair
-    let pty_idx = match crate::pty::alloc_pty() {
+    let pty_idx = match crate::pty::alloc_pty(proc.effective_uid(), proc.effective_gid()) {
         Some(idx) => idx,
         None => return -(Errno::ENOSPC as i32),
     };

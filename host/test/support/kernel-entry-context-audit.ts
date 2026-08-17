@@ -87,6 +87,14 @@ const ROOT_INGRESS_METHODS = new Map([
   ["#runImmediateKernelEntry", 1],
   ["#runOrDeferKernelEntry", 1],
   ["#runOrDeferChannelKernelEntry", 2],
+  ["#runOrDeferPendingSpawnCompletionKernelEntry", 2],
+]);
+const TRANSACTION_COMPLETION_INGRESS_METHODS = new Set([
+  "#runOrDeferChannelKernelEntry",
+  // Spawn owns a second kernel Process after child reservation. Its detached
+  // completion must retain cleanup authority when the parent channel has
+  // retired, while the completion body separately gates parent-memory writes.
+  "#runOrDeferPendingSpawnCompletionKernelEntry",
 ]);
 const ENTRY_SELECTORS = new Set([
   "#kernelInstanceForEntry",
@@ -1564,7 +1572,7 @@ export function auditKernelEntryContext(
       }
       return callbacks;
     };
-    const directlyOpensChannelIngress = (
+    const directlyOpensTransactionCompletionIngress = (
       callback: ts.ArrowFunction | ts.FunctionExpression,
     ): boolean => {
       let found = false;
@@ -1573,7 +1581,9 @@ export function auditKernelEntryContext(
         if (node !== callback.body && isFunctionExpressionLike(node)) return;
         if (
           ts.isCallExpression(node)
-          && resolvedThisMethodName(node) === "#runOrDeferChannelKernelEntry"
+          && TRANSACTION_COMPLETION_INGRESS_METHODS.has(
+            resolvedThisMethodName(node) ?? "",
+          )
         ) {
           found = true;
           return;
@@ -1602,14 +1612,14 @@ export function auditKernelEntryContext(
       }
       if (
         callbackPhase === "transaction-continuation"
-        && !directlyOpensChannelIngress(callback)
+        && !directlyOpensTransactionCompletionIngress(callback)
       ) {
         report(
           "transaction-continuation-without-channel-ingress",
           owner,
           callback,
           "a protocol transaction continuation must directly re-enter through "
-            + "#runOrDeferChannelKernelEntry before completion or rollback",
+            + "a reviewed completion ingress before completion or rollback",
         );
       }
       visitCallable(callback, callbackPhase);
@@ -2484,14 +2494,15 @@ export function auditKernelEntryContext(
         if (ROOT_INGRESS_METHODS.has(call.callee)) {
           if (
             call.phase === "transaction-continuation"
-            && call.callee !== "#runOrDeferChannelKernelEntry"
+            && !TRANSACTION_COMPLETION_INGRESS_METHODS.has(call.callee)
           ) {
             report(
               "transaction-continuation-without-channel-ingress",
               scope.owner,
               call.node,
-              "protocol transaction completion must use the channel ingress "
-                + "that validates exact registration and CH_PENDING",
+              "protocol transaction completion must use a reviewed ingress "
+                + "that either validates the exact pending channel or owns "
+                + "pending-spawn cleanup after parent retirement",
             );
           }
           continue;

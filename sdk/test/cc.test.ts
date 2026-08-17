@@ -44,7 +44,7 @@ describe('buildClangArgs', () => {
   it('compile+link: adds both compile and link flags plus glue', () => {
     const args = build(['foo.c', '-o', 'foo.wasm']);
     expect(args).toContain('--target=wasm32-unknown-unknown');
-    expect(args).toContain('-Wl,--entry=_start');
+    expect(args).toContain('-Wl,--no-entry');
     expect(args).toContain('-Wl,--import-memory');
     expect(args.join(' ')).toContain('channel_syscall.c');
     expect(args.join(' ')).toContain('compiler_rt.c');
@@ -116,7 +116,7 @@ describe('buildClangArgs', () => {
 
   it('link-only: object files without -c get link flags plus compile flags for glue', () => {
     const args = build(['foo.o', 'bar.o', '-o', 'out.wasm']);
-    expect(args).toContain('-Wl,--entry=_start');
+    expect(args).toContain('-Wl,--no-entry');
     expect(args.join(' ')).toContain('libc.a');
     expect(args).toContain('--target=wasm32-unknown-unknown');
     // Compile flags are present because glue .c files are compiled during linking
@@ -213,7 +213,7 @@ describe('buildClangArgs', () => {
 
   it('treats linker response lists as link commands', () => {
     const args = build(['-fuse-ld=lld', '-o', 'out.wasm', '-Wl,@/tmp/objects.list']);
-    expect(args).toContain('-Wl,--entry=_start');
+    expect(args).toContain('-Wl,--no-entry');
     expect(args.join(' ')).toContain('channel_syscall.c');
     expect(args.join(' ')).toContain('libc.a');
   });

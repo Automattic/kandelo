@@ -184,6 +184,9 @@ int32_t kernel_seekdir(int32_t dir_handle, uint32_t loc_lo, uint32_t loc_hi);
 /* Process info                                                        */
 /* ------------------------------------------------------------------ */
 
+KERNEL_IMPORT(kernel_get_secure_exec)
+int32_t kernel_get_secure_exec(void);
+
 KERNEL_IMPORT(kernel_getpid)
 int32_t kernel_getpid(void);
 
@@ -685,8 +688,7 @@ int32_t kernel_getresgid(uint32_t *rgid_ptr, uint32_t *egid_ptr,
                          uint32_t *sgid_ptr);
 
 KERNEL_IMPORT(kernel_getgroups)
-int32_t kernel_getgroups(uint32_t size, uint32_t *list_ptr,
-                         uint32_t list_capacity_bytes);
+int32_t kernel_getgroups(uint32_t size, uint32_t *list_ptr);
 
 KERNEL_IMPORT(kernel_setgroups)
 int32_t kernel_setgroups(uint32_t size, const uint32_t *list_ptr);

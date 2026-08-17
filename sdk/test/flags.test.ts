@@ -203,8 +203,10 @@ describe('COMPILE_FLAGS', () => {
 });
 
 describe('LINK_FLAGS', () => {
-  it('includes entry and memory flags', () => {
-    expect(LINK_FLAGS).toContain('-Wl,--entry=_start');
+  it('leaves constructors to musl while exporting the process entry', () => {
+    expect(LINK_FLAGS).toContain('-Wl,--no-entry');
+    expect(LINK_FLAGS).toContain('-Wl,--export=_start');
+    expect(LINK_FLAGS).not.toContain('-Wl,--entry=_start');
     expect(LINK_FLAGS).toContain('-Wl,--import-memory');
     expect(LINK_FLAGS).toContain('-Wl,--shared-memory');
   });

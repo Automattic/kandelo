@@ -608,29 +608,6 @@ fn validate_special_layout(
         number if number == Syscall::Sendmsg as u32 || number == Syscall::Recvmsg as u32 => unsafe {
             validate_message_layout(args, region)
         },
-        number if number == Syscall::Getgroups as u32 => {
-            let mut validated = ValidatedChannelScratchArgs::new();
-            let count = checked_size_scalar(args[0])?;
-            if count == 0 {
-                if checked_pointer(args[1])? != 0 || args[2] != 0 {
-                    return Err(Errno::EFAULT);
-                }
-                validated.mark_null(1)?;
-            } else {
-                if args[2] != size_of::<u32>() as i64 {
-                    return Err(Errno::EINVAL);
-                }
-                checked_exact_range(
-                    &mut validated,
-                    args,
-                    1,
-                    region.start,
-                    size_of::<u32>(),
-                    region,
-                )?;
-            }
-            Ok(validated)
-        }
         number if number == Syscall::Select as u32 => validate_select_layout(args, region, false),
         extended_syscalls::SYS_PSELECT6 => validate_select_layout(args, region, true),
         extended_syscalls::SYS_MSGRCV | extended_syscalls::SYS_MSGSND => {
@@ -718,6 +695,13 @@ pub(crate) unsafe fn validate_channel_scratch_arguments(
     args: &[i64; 6],
     region: ChannelScratchRegion,
 ) -> Result<ValidatedChannelScratchArgs, Errno> {
+    if matches!(
+        syscall_number,
+        number if number == Syscall::Getgroups as u32 || number == Syscall::Setgroups as u32
+    ) && checked_size_scalar(args[0])? > crate::credentials::NGROUPS_MAX
+    {
+        return Err(Errno::EINVAL);
+    }
     // PR_SET_NAME and PR_GET_NAME use arg 1 as the generated fixed-size name
     // pointer, while other prctl options use the same slot as a scalar. A
     // generic pointer descriptor would either dereference a scalar or fail to
@@ -825,6 +809,40 @@ mod tests {
                 unsafe { validate_channel_scratch_arguments(syscall, &empty, region) }.unwrap();
             assert_eq!(validated.pointer(1), Ok(start));
         }
+    }
+
+    #[test]
+    fn group_descriptors_prove_complete_vectors_and_reject_oversized_counts() {
+        let bytes = vec![0u8; crate::credentials::NGROUPS_MAX * size_of::<u32>()];
+        let start = bytes.as_ptr() as usize;
+        let region = ChannelScratchRegion::new(start, bytes.len()).unwrap();
+
+        let mut getgroups = [0i64; 6];
+        getgroups[0] = 3;
+        getgroups[1] = pointer_arg(start);
+        let validated = unsafe {
+            validate_channel_scratch_arguments(Syscall::Getgroups as u32, &getgroups, region)
+        }
+        .unwrap();
+        assert_eq!(validated.pointer(1), Ok(start));
+
+        getgroups[0] = (crate::credentials::NGROUPS_MAX + 1) as i64;
+        getgroups[2] = size_of::<u32>() as i64;
+        assert_eq!(
+            unsafe {
+                validate_channel_scratch_arguments(Syscall::Getgroups as u32, &getgroups, region)
+            },
+            Err(Errno::EINVAL),
+        );
+
+        let mut setgroups = [0i64; 6];
+        setgroups[0] = 3;
+        setgroups[1] = pointer_arg(start);
+        let validated = unsafe {
+            validate_channel_scratch_arguments(Syscall::Setgroups as u32, &setgroups, region)
+        }
+        .unwrap();
+        assert_eq!(validated.pointer(1), Ok(start));
     }
 
     #[test]

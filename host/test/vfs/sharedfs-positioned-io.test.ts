@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { Worker } from "node:worker_threads";
 import { MemoryFileSystem } from "../../src/vfs/memory-fs";
 import {
+  MAX_FDS,
   O_APPEND,
   O_CREAT,
+  O_RDONLY,
   O_RDWR,
   O_TRUNC,
   SEEK_SET,
@@ -111,6 +113,38 @@ describe("SharedFS positioned I/O", () => {
     expect(text(full)).toBe("aXc!");
   });
 
+  it("clears set-ID after a genuinely short positive scalar write", () => {
+    const fs = SharedFS.mkfs(new SharedArrayBuffer(1024 * 1024));
+    const path = "/short-scalar";
+    const fd = fs.open(path, O_RDWR | O_CREAT | O_TRUNC, 0o600);
+    fs.chmod(path, 0o6755);
+    const requested = new Uint8Array(2 * 1024 * 1024);
+
+    const written = fs.write(fd, requested);
+
+    expect(written).toBeGreaterThan(0);
+    expect(written).toBeLessThan(requested.byteLength);
+    expect(fs.stat(path).mode & 0o7777).toBe(0o755);
+    expect(fs.fstat(fd).mode & 0o7777).toBe(0o755);
+    fs.close(fd);
+  });
+
+  it("clears set-ID after a genuinely short positive positioned write", () => {
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
+    const path = "/short-positioned";
+    const fd = fs.open(path, O_RDWR | O_CREAT | O_TRUNC, 0o600);
+    fs.chmod(path, 0o6755);
+    const requested = new Uint8Array(2 * 1024 * 1024);
+
+    const written = fs.write(fd, requested, 0, requested.byteLength);
+
+    expect(written).toBeGreaterThan(0);
+    expect(written).toBeLessThan(requested.byteLength);
+    expect(fs.stat(path).mode & 0o7777).toBe(0o755);
+    expect(fs.fstat(fd).mode & 0o7777).toBe(0o755);
+    fs.close(fd);
+  });
+
   it("applies the append limit under the inode lock and reports exact EOF", () => {
     const sab = new SharedArrayBuffer(4 * 1024 * 1024);
     const first = MemoryFileSystem.create(sab);
@@ -202,5 +236,76 @@ describe("SharedFS positioned I/O", () => {
       );
     }
     fs.close(verifyFd);
+  }, 10_000);
+
+  it("publishes distinct lowest descriptors across concurrent workers", async () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const fs = MemoryFileSystem.create(sab);
+    const seed = fs.open(
+      "/reservation-race",
+      O_RDWR | O_CREAT | O_TRUNC,
+      0o600,
+    );
+    fs.close(seed);
+    const fillers: number[] = [];
+    for (let index = 0; index < MAX_FDS - 2; index++) {
+      fillers.push(fs.open("/reservation-race", O_RDONLY, 0));
+    }
+
+    const controlBuffer = new SharedArrayBuffer(5 * Int32Array.BYTES_PER_ELEMENT);
+    const control = new Int32Array(controlBuffer);
+    const workerUrl = new URL(
+      "../fixtures/sharedfs-fd-reservation-worker.ts",
+      import.meta.url,
+    );
+    const workers = [0, 1].map(
+      (slot) =>
+        new Worker(workerUrl, {
+          execArgv: ["--import", "tsx"],
+          workerData: { fsBuffer: sab, controlBuffer, slot },
+        }),
+    );
+    const results = workers.map(
+      (worker) =>
+        new Promise<{ ok: boolean; error?: string }>((resolve, reject) => {
+          worker.once("message", resolve);
+          worker.once("error", reject);
+          worker.once("exit", (code) => {
+            if (code !== 0) reject(new Error(`fd worker exited ${code}`));
+          });
+        }),
+    );
+
+    Atomics.store(control, 0, 1);
+    Atomics.notify(control, 0, workers.length);
+    try {
+      const deadline = Date.now() + 5_000;
+      while (Atomics.load(control, 1) !== workers.length) {
+        if (Date.now() >= deadline) {
+          throw new Error("fd reservation workers did not publish in time");
+        }
+        await Atomics.waitAsync(
+          control,
+          1,
+          Atomics.load(control, 1),
+          100,
+        ).value;
+      }
+      expect(new Set([Atomics.load(control, 3), Atomics.load(control, 4)]))
+        .toEqual(new Set([MAX_FDS - 2, MAX_FDS - 1]));
+
+      Atomics.store(control, 2, 1);
+      Atomics.notify(control, 2, workers.length);
+      expect(await Promise.all(results)).toEqual([{ ok: true }, { ok: true }]);
+
+      const reused = fs.open("/reservation-race", O_RDONLY, 0);
+      expect(reused).toBe(MAX_FDS - 2);
+      fs.close(reused);
+    } finally {
+      Atomics.store(control, 2, 1);
+      Atomics.notify(control, 2, workers.length);
+      await Promise.all(workers.map((worker) => worker.terminate()));
+      for (const filler of fillers) fs.close(filler);
+    }
   }, 10_000);
 });

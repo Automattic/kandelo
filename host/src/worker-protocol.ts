@@ -42,6 +42,8 @@ export interface CentralizedWorkerInitMessage {
   memory: WebAssembly.Memory;
   /** Channel offset within the shared Memory for this thread's syscall channel */
   channelOffset: number;
+  /** Kernel-owned sticky secure-execution state for this exact image. */
+  secureExec: boolean;
   /**
    * Exact process-image generation issued by the kernel-side externref owner.
    * Workers use this scalar only when routing token-bearing host imports; the
@@ -124,6 +126,8 @@ export interface CentralizedThreadInitMessage {
    * archive head relative to this live shared-memory anchor before fork. */
   processChannelOffset: number;
   channelOffset: number;
+  /** Same sticky image marker as the process worker. */
+  secureExec: boolean;
   /**
    * Same process-image externref generation as the process's main Worker.
    * Optional only for direct non-fork harnesses.

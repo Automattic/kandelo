@@ -1543,10 +1543,13 @@ describe("kernel scratch transfer capacity regressions", () => {
     expectScratchTailUntouched(harness);
   });
 
-  it("lends getgroups exactly one gid slot and snapshots it before reuse", () => {
-    const harness = makeScratchHarness();
-    const destination = harness.processBytes.byteLength - 4;
-    const gid = 0x1234_5678;
+  it("lends the complete getgroups capacity and copies back only returned groups", () => {
+    const harness = makeScratchHarness(8);
+    prepareGenericSyscallHarness(harness, 8);
+    const destination = harness.processBytes.byteLength - 20;
+    const originalTail = Uint8Array.of(0xa1, 0xa2, 0xa3, 0xa4, 0xb1, 0xb2, 0xb3, 0xb4);
+    harness.processBytes.set(originalTail, destination + 12);
+    const groups = [0x1234_5678, 0x89ab_cdef, 0x1020_3040];
     harness.handleChannel.mockImplementation(() => {
       const channelView = new DataView(
         harness.kernelBytes.buffer,
@@ -1555,104 +1558,151 @@ describe("kernel scratch transfer capacity regressions", () => {
       const outputPointer = Number(
         channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
       );
-      const outputCapacity = Number(
-        channelView.getBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, true),
-      );
       expect(outputPointer).toBeGreaterThanOrEqual(
         harness.scratchOffset + CH_DATA,
       );
-      expect(outputCapacity).toBe(4);
-      new DataView(harness.kernelBytes.buffer).setUint32(
-        outputPointer,
-        gid,
-        true,
-      );
-      channelView.setBigInt64(CH_RETURN, 1n, true);
+      const output = new DataView(harness.kernelBytes.buffer);
+      groups.forEach((gid, index) => output.setUint32(outputPointer + index * 4, gid, true));
+      channelView.setBigInt64(CH_RETURN, BigInt(groups.length), true);
       channelView.setUint32(CH_ERRNO, 0, true);
       return 0;
     });
 
-    dispatchScratchBoundarySyscallWithArgs(harness, ABI_SYSCALLS.Getgroups, [
-      1n,
+    writeChannelSyscall(harness, ABI_SYSCALLS.Getgroups, [
+      5n,
       BigInt(destination),
-      0n,
-      0n,
-      0n,
-      0n,
     ]);
+    dispatchScratchBoundarySyscall(harness);
 
     expect(harness.completeChannel).toHaveBeenCalledTimes(1);
     const completion = harness.completeChannel.mock.calls[0];
-    expect(completion.slice(4, 6)).toEqual([1, 0]);
+    expect(completion.slice(4, 6)).toEqual([groups.length, 0]);
     expect(completion[6]).toEqual([
       {
         ptr: destination,
-        bytes: new Uint8Array([0x78, 0x56, 0x34, 0x12]),
+        bytes: new Uint8Array([
+          0x78, 0x56, 0x34, 0x12,
+          0xef, 0xcd, 0xab, 0x89,
+          0x40, 0x30, 0x20, 0x10,
+        ]),
       },
     ]);
+    expect(harness.processBytes.slice(destination + 12, destination + 20))
+      .toEqual(originalTail);
     expectScratchTailUntouched(harness);
   });
 
-  it("keeps a getgroups count query pointer-free", () => {
-    const harness = makeScratchHarness(8);
-    harness.handleChannel.mockImplementation(() => {
-      const channelView = new DataView(
-        harness.kernelBytes.buffer,
-        harness.scratchOffset,
+  it.each([4, 8] as const)(
+    "keeps a valid wasm%s getgroups count query pointer-free",
+    (pointerWidth) => {
+      const harness = makeScratchHarness(pointerWidth);
+      prepareGenericSyscallHarness(harness, pointerWidth);
+      harness.handleChannel.mockImplementation(() => {
+        const channelView = new DataView(
+          harness.kernelBytes.buffer,
+          harness.scratchOffset,
+        );
+        expect(channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true)).toBe(
+          BigInt(harness.scratchOffset + CH_DATA),
+        );
+        channelView.setBigInt64(CH_RETURN, 3n, true);
+        channelView.setUint32(CH_ERRNO, 0, true);
+        return 0;
+      });
+
+      writeChannelSyscall(harness, ABI_SYSCALLS.Getgroups, [
+        0n,
+        0n,
+      ]);
+      dispatchScratchBoundarySyscall(harness);
+
+      expect(harness.completeChannel).toHaveBeenCalledWith(
+        harness.channel,
+        ABI_SYSCALLS.Getgroups,
+        // A count query names no destination in either process data model.
+        [0, 0, 0, 0, 0, 0],
+        SYSCALL_ARGS[ABI_SYSCALLS.Getgroups],
+        3,
+        0,
+        [],
       );
-      expect(channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true)).toBe(0n);
-      expect(channelView.getBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, true)).toBe(0n);
-      channelView.setBigInt64(CH_RETURN, 1n, true);
-      channelView.setUint32(CH_ERRNO, 0, true);
-      return 0;
+      expectScratchTailUntouched(harness);
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "rejects a wasm%s getgroups zero-query over-report without publication",
+    (pointerWidth) => {
+      const harness = makeScratchHarness(pointerWidth);
+      prepareGenericSyscallHarness(harness, pointerWidth);
+      harness.handleChannel.mockImplementation(() => {
+        const channelView = new DataView(
+          harness.kernelBytes.buffer,
+          harness.scratchOffset,
+        );
+        channelView.setBigInt64(
+          CH_RETURN,
+          BigInt(POSIX_NGROUPS_MAX + 1),
+          true,
+        );
+        channelView.setUint32(CH_ERRNO, 0, true);
+        return 0;
+      });
+
+      writeChannelSyscall(harness, ABI_SYSCALLS.Getgroups, [0n, 0n]);
+      dispatchScratchBoundarySyscall(harness);
+
+      expect(harness.handleChannel).toHaveBeenCalledOnce();
+      expect(harness.completeChannel.mock.calls[0]?.slice(4, 6)).toEqual([
+        -1,
+        EIO,
+      ]);
+      expect(harness.completeChannel.mock.calls[0]?.[6] ?? []).toEqual([]);
+      expectScratchTailUntouched(harness);
+    },
+  );
+
+  it("generates the logical getgroups return bound", () => {
+    expect(SYSCALL_ARGS[ABI_SYSCALLS.Getgroups][0]?.copyOutLength).toEqual({
+      type: "return-value",
+      multiplier: 4,
+      maxValue: POSIX_NGROUPS_MAX,
     });
-
-    dispatchScratchBoundarySyscallWithArgs(harness, ABI_SYSCALLS.Getgroups, [
-      0n,
-      BigInt(Number.MAX_SAFE_INTEGER) + 1n,
-      0n,
-      0n,
-      0n,
-      0n,
-    ]);
-
-    expect(harness.completeChannel).toHaveBeenCalledWith(
-      harness.channel,
-      ABI_SYSCALLS.Getgroups,
-      // The pointer is ignored when size is zero. Keep its unsafe wasm64 bits
-      // out of the Number-valued host-control projection.
-      [0, 0, 0, 0, 0, 0],
-      undefined,
-      1,
-      0,
-      undefined,
-    );
-    expectScratchTailUntouched(harness);
   });
 
   it.each([
-    ["negative size", -1n, 1n, EINVAL],
-    ["oversized size", 0x8000_0000n, 1n, EINVAL],
+    ["oversized count", BigInt(POSIX_NGROUPS_MAX + 1), 1n, EINVAL],
+    ["multiplication overflow", BigInt(Number.MAX_SAFE_INTEGER), 1n, EINVAL],
     ["null output", 1n, 0n, EFAULT],
   ] as const)(
     "rejects an invalid getgroups %s before kernel dispatch",
     (_name, size, pointer, errno) => {
       const harness = makeScratchHarness(8);
-      dispatchScratchBoundarySyscallWithArgs(harness, ABI_SYSCALLS.Getgroups, [
+      prepareGenericSyscallHarness(harness, 8);
+      writeChannelSyscall(harness, ABI_SYSCALLS.Getgroups, [
         size,
         pointer,
-        0n,
-        0n,
-        0n,
-        0n,
       ]);
+      dispatchScratchBoundarySyscall(harness);
 
       expect(harness.handleChannel).not.toHaveBeenCalled();
-      expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-        harness.channel,
-        -1,
-        errno,
-      );
+      if (_name === "oversized count") {
+        expect(harness.completeChannel).not.toHaveBeenCalled();
+        expect(harness.completeChannelRaw).toHaveBeenCalledWith(
+          harness.channel,
+          -1,
+          errno,
+        );
+      } else {
+        expect(harness.completeChannel).toHaveBeenCalledWith(
+          harness.channel,
+          ABI_SYSCALLS.Getgroups,
+          expect.any(Array),
+          undefined,
+          -1,
+          errno,
+        );
+      }
       expectScratchTailUntouched(harness);
     },
   );

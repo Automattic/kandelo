@@ -646,8 +646,11 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_create_process",
   "kernel_create_process_with_stdio",
   "kernel_dequeue_signal",
-  "kernel_exec_prepare",
-  "kernel_exec_setup_for_thread",
+  "kernel_exec_commit",
+  "kernel_exec_target_cancel",
+  "kernel_exec_target_prepare",
+  "kernel_exec_target_read",
+  "kernel_exec_target_size",
   "kernel_fork_process",
   "kernel_get_cwd",
   "kernel_get_dirfd_path",
@@ -686,6 +689,8 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_process_metadata_cancel",
   "kernel_process_metadata_commit",
   "kernel_process_metadata_stage",
+  "kernel_process_secure_exec",
+  "kernel_publish_spawn_child",
   "kernel_reap_exited_child",
   "kernel_remove_process",
   "kernel_semctl_array_bytes",
@@ -693,6 +698,8 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_set_current_tid",
   "kernel_set_cwd",
   "kernel_shmid_ds_bytes",
+  "kernel_spawn_exec_commit",
+  "kernel_spawn_exec_target_prepare",
   "kernel_spawn_process",
   "kernel_spawn_reserved_process",
   "kernel_spawn_scratch_begin",
@@ -1198,6 +1205,7 @@ export const CHANNEL_SCALAR_SLOT_CONTRACTS: Readonly<
   122: { 2: "process-size", },
   126: { 0: "process-address", 1: "process-size", 2: "process-size", },
   128: { 0: "process-address", 1: "process-size", },
+  135: { 0: "process-size", },
   136: { 0: "process-size", },
   200: { 0: "process-address", },
   203: { 0: "process-address", },
@@ -1512,7 +1520,8 @@ export type SyscallArgSizeSpec =
   | { type: "process-layout"; wasm32Size: number; wasm64Size: number };
 
 export type SyscallArgCopyOutLengthSpec =
-  { type: "u32-field"; argIndex: number; offset: number };
+  | { type: "u32-field"; argIndex: number; offset: number }
+  | { type: "return-value"; multiplier: number; maxValue: number };
 
 export const PROCESS_POINTER_WIDTH_ARG_INDEX = 5 as const;
 
@@ -1886,6 +1895,9 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
     { argIndex: 0, direction: "out", size: { type: "fixed", size: 4 }, required: true },
     { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 }, required: true },
     { argIndex: 2, direction: "out", size: { type: "fixed", size: 4 }, required: true },
+  ],
+  135: [
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 0, multiplier: 4 }, required: true, copyOutLength: { type: "return-value", multiplier: 4, maxValue: 32 } },
   ],
   136: [
     { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 0, multiplier: 4 }, required: true },

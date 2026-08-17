@@ -15,7 +15,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { gzipSync, zipSync, type Zippable } from "fflate";
+import * as browserEntry from "../src/browser";
 import { ABI_VERSION } from "../src/generated/abi";
+import * as nodeEntry from "../src/index";
 import {
   applyHomebrewVfsConsumerState,
   buildHomebrewVfs,
@@ -54,19 +56,24 @@ import {
   HOMEBREW_RUNTIME_LAYER_LIMITS,
   parseHomebrewRuntimeLayerDescriptor,
   composeHomebrewRuntimeLayers,
+  composeHomebrewRuntimeLayersWithReviewedProduct,
   type HomebrewRuntimeLayerReference,
 } from "../src/homebrew-runtime-layer-consumer";
 import {
+  attachReviewedPrivilegedProgramPolicy,
   planFederatedHomebrewVfs,
   planHomebrewVfs,
   type HomebrewLinkManifest,
   type HomebrewTapMetadata,
   type HomebrewVfsPlan,
 } from "../src/homebrew-vfs-planner";
+import { createReviewedPrivilegedProgramPolicy } from
+  "../src/vfs/privileged-projection";
 import type { HomebrewRuntimeSupportContract } from
   "../src/homebrew-runtime-support";
 import {
   MemoryFileSystem,
+  resolveMountSetIdCapability,
   type LazyArchiveFileEntry,
   type LazyTreeGroup,
 } from "../src/vfs/memory-fs";
@@ -1311,6 +1318,103 @@ function makeLazyLayerPlanFederated(plan: HomebrewVfsPlan): void {
 }
 
 describe("Homebrew runtime layer consumer", () => {
+  it("does not mint a trusted product from public caller projection data", async () => {
+    const programs = {
+      login: utf8("public login\n"),
+      "sudo-lite": utf8("public sudo-lite\n"),
+      sudo: utf8("public sudo\n"),
+    };
+    const fixture = await runtimeLayerConsumerFixture({
+      runtimeExtraEntries: Object.entries(programs).map(([name, data]) => ({
+        path: `runtime/3.0/bin/${name}`,
+        data,
+        mode: 0o755,
+      })),
+    });
+    const runtime = runtimeLayerReference("runtime", fixture.descriptor);
+    expect(nodeEntry.composeHomebrewRuntimeLayers).toBe(
+      browserEntry.composeHomebrewRuntimeLayers,
+    );
+
+    const composed = await nodeEntry.composeHomebrewRuntimeLayers({
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [runtime.reference],
+      privilegedProjections: Object.entries(programs).map(([name, data]) => ({
+        schema: 1,
+        formula: "kandelo-dev/tap-core/runtime",
+        bottleSha256: sha256(fixture.runtimeBytes),
+        sourcePath: `runtime/3.0/bin/${name}`,
+        destinationPath: `/usr/bin/${name}`,
+        uid: 0,
+        gid: 0,
+        mode: 0o4755,
+        mountPoint: "trusted-root-product",
+        artifactValidationSha256: sha256(data),
+      })),
+      fetch: async () => new Response(runtime.bytes),
+      archiveFetch: async () => new Response(fixture.archive),
+    } as Parameters<typeof nodeEntry.composeHomebrewRuntimeLayers>[0] & {
+      privilegedProjections: unknown;
+    });
+
+    expect(composed.privilegedProduct).toBeUndefined();
+  });
+
+  it("projects authenticated lazy bottle members before runtime publication", async () => {
+    const programs = {
+      login: utf8("runtime login\n"),
+      "sudo-lite": utf8("runtime sudo-lite\n"),
+      sudo: utf8("runtime sudo\n"),
+    };
+    const fixture = await runtimeLayerConsumerFixture({
+      runtimeExtraEntries: Object.entries(programs).map(([name, data]) => ({
+        path: `runtime/3.0/bin/${name}`,
+        data,
+        mode: 0o755,
+      })),
+    });
+    const runtime = runtimeLayerReference("runtime", fixture.descriptor);
+    let archiveFetches = 0;
+    const policy = createReviewedPrivilegedProgramPolicy(
+      Object.entries(programs).map(([name, data]) => ({
+        schema: 1,
+        formula: "kandelo-dev/tap-core/runtime",
+        bottleSha256: sha256(fixture.runtimeBytes),
+        sourcePath: `runtime/3.0/bin/${name}`,
+        destinationPath: `/usr/bin/${name}`,
+        uid: 0,
+        gid: 0,
+        mode: 0o4755,
+        mountPoint: "trusted-root-product",
+        artifactValidationSha256: sha256(data),
+      })),
+    );
+    const composed = await composeHomebrewRuntimeLayersWithReviewedProduct({
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [runtime.reference],
+      fetch: async () => new Response(runtime.bytes),
+      archiveFetch: async () => {
+        archiveFetches += 1;
+        return new Response(fixture.archive);
+      },
+    }, policy);
+
+    expect(archiveFetches).toBe(1);
+    expect(composed.privilegedProduct?.evidence).toHaveLength(3);
+    expect(composed.fs.lstat(`${fixture.runtimeKeg}/bin/login`).mode & 0o7777)
+      .toBe(0o755);
+    expect(composed.privilegedProduct!.mount.backend.lstat("/usr/bin/login"))
+      .toMatchObject({ uid: 0, gid: 0, nlink: 1 });
+    expect(
+      composed.privilegedProduct!.mount.backend.lstat("/usr/bin/login").mode &
+        0o7777,
+    ).toBe(0o4755);
+  });
+
   it("authenticates sealed base trees before registering runtime layers", async () => {
     const fixture = await runtimeLayerConsumerFixture();
     const base = MemoryFileSystem.fromImage(fixture.baseImageBytes);
@@ -3508,6 +3612,105 @@ describe("Homebrew VFS planner public bounds", () => {
 });
 
 describe("Homebrew VFS builder", () => {
+  it("publishes reviewed bottle members as a separate immutable product tree", async () => {
+    const programBytes = {
+      login: utf8("login program\n"),
+      "sudo-lite": utf8("sudo-lite program\n"),
+      sudo: utf8("sudo program\n"),
+    };
+    const bytes = bottleTar(standardEntries([
+      {
+        path: "hello/2.12.1/bin/login-real",
+        data: programBytes.login,
+        mode: 0o755,
+      },
+      {
+        path: "hello/2.12.1/bin/login",
+        type: "hardlink",
+        linkName: "hello/2.12.1/bin/login-real",
+        mode: 0o755,
+      },
+      {
+        path: "hello/2.12.1/bin/sudo-lite",
+        data: programBytes["sudo-lite"],
+        mode: 0o755,
+      },
+      {
+        path: "hello/2.12.1/bin/sudo",
+        data: programBytes.sudo,
+        mode: 0o755,
+      },
+    ]));
+    const rawProjections = [
+      ["login", "/usr/bin/login"],
+      ["sudo-lite", "/usr/bin/sudo-lite"],
+      ["sudo", "/usr/bin/sudo"],
+    ].map(([name, destinationPath]) => ({
+      schema: 1,
+      formula: "kandelo-dev/tap-core/hello",
+      bottleSha256: sha256(bytes),
+      sourcePath: `hello/2.12.1/bin/${name}`,
+      destinationPath,
+      uid: 0,
+      gid: 0,
+      mode: 0o4755,
+      mountPoint: "trusted-root-product",
+      artifactValidationSha256:
+        sha256(programBytes[name as keyof typeof programBytes]),
+    }));
+    const forged = await buildFixture(bytes, {
+      mutatePlan(plan) {
+        Object.assign(plan, { privilegedProjections: rawProjections });
+      },
+    });
+    expect(forged.privilegedProduct).toBeUndefined();
+    expect(forged.report.privileged_programs).toBeUndefined();
+
+    const result = await buildFixture(bytes, {
+      mutatePlan(plan) {
+        attachReviewedPrivilegedProgramPolicy(
+          plan,
+          createReviewedPrivilegedProgramPolicy(rawProjections),
+        );
+      },
+    });
+
+    expect(result.privilegedProduct).toBeDefined();
+    expect(result.report.privileged_programs?.projections).toHaveLength(3);
+    expect(result.privilegedProduct!.evidence[0]).toMatchObject({
+      sourcePath: "hello/2.12.1/bin/login",
+      canonicalSourcePath: "hello/2.12.1/bin/login-real",
+      destinationPath: "/usr/bin/login",
+      collidesWithWritableBottle: false,
+    });
+    const identities = new Set(
+      result.privilegedProduct!.evidence.map((entry) =>
+        JSON.stringify(entry.destinationIdentity)
+      ),
+    );
+    expect(identities.size).toBe(3);
+    for (const destination of [
+      "/usr/bin/login",
+      "/usr/bin/sudo-lite",
+      "/usr/bin/sudo",
+    ]) {
+      const stat = result.privilegedProduct!.mount.backend.lstat(destination);
+      expect(stat.mode & 0o170000).toBe(0o100000);
+      expect(stat.mode & 0o7777).toBe(0o4755);
+      expect(stat.uid).toBe(0);
+      expect(stat.gid).toBe(0);
+      expect(stat.nlink).toBe(1);
+    }
+    expect(() => result.privilegedProduct!.mount.backend.unlink("/usr/bin/login"))
+      .toThrow(/EROFS/);
+    expect(result.fs.lstat(`${KEG}/bin/login`).mode & 0o7777).toBe(0o755);
+    expect(resolveMountSetIdCapability({ backend: result.fs })).toEqual({
+      kind: "nosuid",
+    });
+    result.fs.chmod(`${KEG}/bin/login`, 0o555);
+    expect(result.fs.lstat(`${KEG}/bin/login`).mode & 0o7777).toBe(0o555);
+  });
+
   it("builds a deterministic deferred tree containing only base-exclusive package output", async () => {
     const fixture = await lazyLayerFixture();
     const first = await fixture.build();

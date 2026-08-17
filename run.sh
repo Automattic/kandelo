@@ -272,8 +272,11 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_create_process
     kernel_create_process_with_stdio
     kernel_dequeue_signal
-    kernel_exec_prepare
-    kernel_exec_setup_for_thread
+    kernel_exec_commit
+    kernel_exec_target_cancel
+    kernel_exec_target_prepare
+    kernel_exec_target_read
+    kernel_exec_target_size
     kernel_fork_process
     kernel_get_cwd
     kernel_get_dirfd_path
@@ -319,6 +322,9 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_set_current_tid
     kernel_set_cwd
     kernel_shmid_ds_bytes
+    kernel_publish_spawn_child
+    kernel_spawn_exec_commit
+    kernel_spawn_exec_target_prepare
     kernel_spawn_process
     kernel_spawn_reserved_process
     kernel_spawn_scratch_begin
@@ -346,7 +352,8 @@ has_valid_kernel_file() {
     current_abi="$(wasm_current_abi_version "$REPO_ROOT" || true)"
     ! wasm_has_legacy_asyncify "$path" &&
         ! wasm_has_stale_abi "$path" "$current_abi" &&
-        ! wasm_has_missing_exports "$path" "${KERNEL_REQUIRED_EXPORTS[@]}"
+        ! wasm_has_missing_exports "$path" "${KERNEL_REQUIRED_EXPORTS[@]}" &&
+        wasm_require_target_aware_exec_authority "$path" >/dev/null 2>&1
 }
 
 # pkg_xtask_bin: build xtask once (lazy) and return the binary path so

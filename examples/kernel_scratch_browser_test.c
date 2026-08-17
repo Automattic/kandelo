@@ -284,6 +284,55 @@ static int test_zero_iov(void)
     return 0;
 }
 
+static int test_groups(void)
+{
+    gid_t initial[] = { 7000, 42, 9000 };
+    gid_t output[5] = { 0, 0, 0, 0x5a5a, 0xa5a5 };
+
+    if (setgroups(3, initial) < 0)
+        fail("setgroups complete vector");
+    int group_count = getgroups(0, NULL);
+    if (group_count != 3) {
+        fprintf(stderr, "getgroups count=%d errno=%d\n", group_count, errno);
+        errno = EIO;
+        fail("getgroups count query");
+    }
+    errno = 0;
+    expect_errno_result(getgroups(2, output), EINVAL,
+        "getgroups insufficient capacity");
+    errno = 0;
+    expect_errno_result(getgroups(1, NULL), EFAULT,
+        "getgroups null output");
+    if (getgroups(5, output) != 3 ||
+        memcmp(output, initial, sizeof(initial)) != 0 ||
+        output[3] != 0x5a5a || output[4] != 0xa5a5) {
+        errno = EIO;
+        fail("getgroups bounded copyback");
+    }
+
+    gid_t maximum[32];
+    gid_t maximum_output[32];
+    for (size_t index = 0; index < 32; index++)
+        maximum[index] = (gid_t)(10000 + index * 7);
+    if (setgroups(32, maximum) < 0)
+        fail("setgroups maximum vector");
+    if (getgroups(32, maximum_output) != 32 ||
+        memcmp(maximum_output, maximum, sizeof(maximum)) != 0) {
+        errno = EIO;
+        fail("getgroups maximum vector");
+    }
+    errno = 0;
+    expect_errno_result(setgroups(33, maximum), EINVAL,
+        "setgroups oversized vector");
+    errno = 0;
+    expect_errno_result(setgroups(1, NULL), EFAULT,
+        "setgroups null input");
+
+    printf("KERNEL_SCRATCH_GROUPS_PASS pointer_bits=%zu groups=%zu\n",
+        sizeof(uintptr_t) * CHAR_BIT, sizeof(maximum) / sizeof(maximum[0]));
+    return 0;
+}
+
 static int test_readv(size_t iovec_count, size_t bytes_per_iovec)
 {
     if (iovec_count > IOV_MAX ||
@@ -581,6 +630,8 @@ int main(int argc, char **argv)
         return test_append_flags();
     if (argc == 2 && strcmp(argv[1], "zero-iov") == 0)
         return test_zero_iov();
+    if (argc == 2 && strcmp(argv[1], "groups") == 0)
+        return test_groups();
     if (argc == 4 && strcmp(argv[1], "readv") == 0) {
         return test_readv(
             parse_size(argv[2], "readv iovec count"),
@@ -611,7 +662,7 @@ int main(int argc, char **argv)
         "usage: %s readv IOVEC_COUNT BYTES_PER_IOVEC | "
         "dgram-vector IOVEC_COUNT BYTES_PER_IOVEC | "
         "positioned-vector IOVEC_COUNT BYTES_PER_IOVEC | "
-        "append-flags | zero-iov | "
+        "append-flags | zero-iov | groups | "
         "pty EXPECTED_LENGTH EXPECTED_BYTE\n",
         argv[0]);
     return 2;

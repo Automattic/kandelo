@@ -33,8 +33,11 @@ wasm_require_exports "$OUT" \
     kernel_create_process \
     kernel_create_process_with_stdio \
     kernel_dequeue_signal \
-    kernel_exec_prepare \
-    kernel_exec_setup_for_thread \
+    kernel_exec_commit \
+    kernel_exec_target_cancel \
+    kernel_exec_target_prepare \
+    kernel_exec_target_read \
+    kernel_exec_target_size \
     kernel_fork_process \
     kernel_get_cwd \
     kernel_get_dirfd_path \
@@ -80,6 +83,9 @@ wasm_require_exports "$OUT" \
     kernel_set_current_tid \
     kernel_set_cwd \
     kernel_shmid_ds_bytes \
+    kernel_publish_spawn_child \
+    kernel_spawn_exec_commit \
+    kernel_spawn_exec_target_prepare \
     kernel_spawn_process \
     kernel_spawn_reserved_process \
     kernel_spawn_scratch_begin \
@@ -98,6 +104,8 @@ wasm_require_exports "$OUT" \
     kernel_transfer_scratch_pointer \
     kernel_validate_task \
     kernel_wait_child_poll
+
+wasm_require_target_aware_exec_authority "$OUT"
 
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     # WHY: a resolver build owns only its sealed output directory. Writing a

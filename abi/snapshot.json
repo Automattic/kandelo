@@ -463,6 +463,17 @@
             "kind": "process-size"
           }
         ],
+        "musl_name": "getgroups",
+        "number": 135,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-size"
+          }
+        ],
         "musl_name": "setgroups",
         "number": 136,
         "result": "i32"
@@ -1050,8 +1061,11 @@
       "kernel_create_process",
       "kernel_create_process_with_stdio",
       "kernel_dequeue_signal",
-      "kernel_exec_prepare",
-      "kernel_exec_setup_for_thread",
+      "kernel_exec_commit",
+      "kernel_exec_target_cancel",
+      "kernel_exec_target_prepare",
+      "kernel_exec_target_read",
+      "kernel_exec_target_size",
       "kernel_fork_process",
       "kernel_get_cwd",
       "kernel_get_dirfd_path",
@@ -1090,6 +1104,8 @@
       "kernel_process_metadata_cancel",
       "kernel_process_metadata_commit",
       "kernel_process_metadata_stage",
+      "kernel_process_secure_exec",
+      "kernel_publish_spawn_child",
       "kernel_reap_exited_child",
       "kernel_remove_process",
       "kernel_semctl_array_bytes",
@@ -1097,6 +1113,8 @@
       "kernel_set_current_tid",
       "kernel_set_cwd",
       "kernel_shmid_ds_bytes",
+      "kernel_spawn_exec_commit",
+      "kernel_spawn_exec_target_prepare",
       "kernel_spawn_process",
       "kernel_spawn_reserved_process",
       "kernel_spawn_scratch_begin",
@@ -1964,23 +1982,28 @@
     },
     {
       "kind": "func",
-      "name": "kernel_exec_prepare",
+      "name": "kernel_exec_commit",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exec_target_cancel",
       "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
-      "name": "kernel_exec_setup_for_thread",
-      "signature": "(i32,i32) -> (i32)"
+      "name": "kernel_exec_target_prepare",
+      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
-      "name": "kernel_execve",
-      "signature": "(i32,i32) -> (i32)"
+      "name": "kernel_exec_target_read",
+      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
-      "name": "kernel_execveat",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
+      "name": "kernel_exec_target_size",
+      "signature": "(i32,i32) -> (i64)"
     },
     {
       "kind": "func",
@@ -2255,7 +2278,7 @@
     {
       "kind": "func",
       "name": "kernel_getgroups",
-      "signature": "(i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2739,6 +2762,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_process_secure_exec",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_pselect6",
       "signature": "(i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
@@ -2761,6 +2789,11 @@
       "kind": "func",
       "name": "kernel_pty_set_winsize",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_publish_spawn_child",
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -3076,6 +3109,16 @@
       "kind": "func",
       "name": "kernel_socketpair",
       "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_spawn_exec_commit",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_spawn_exec_target_prepare",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -7454,6 +7497,23 @@
         "size": {
           "size": 4,
           "type": "fixed"
+        }
+      }
+    ],
+    "135": [
+      {
+        "argIndex": 1,
+        "copyOutLength": {
+          "maxValue": 32,
+          "multiplier": 4,
+          "type": "return-value"
+        },
+        "direction": "out",
+        "required": true,
+        "size": {
+          "argIndex": 0,
+          "multiplier": 4,
+          "type": "arg"
         }
       }
     ],

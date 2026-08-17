@@ -259,7 +259,9 @@ export function linkFlags(
 ): string[] {
   return [
     '-nostdlib',
-    '-Wl,--entry=_start',
+    // Reactor link mode leaves constructor ownership with musl. The host still
+    // enters through the explicitly exported `_start` below.
+    '-Wl,--no-entry',
     '-Wl,--export=_start',
     '-Wl,--export=__heap_base',
     '-Wl,--import-memory',

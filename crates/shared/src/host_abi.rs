@@ -62,6 +62,15 @@ pub enum SyscallArgSize {
 pub enum SyscallArgCopyOutLength {
     /// Read a little-endian `u32` field from another staged argument.
     U32Field { arg_index: u8, offset: u32 },
+    /// Bound a successful syscall return value, then multiply it by a fixed
+    /// byte width.
+    ///
+    /// This covers results such as `getgroups`, whose return value counts
+    /// native entries instead of bytes.
+    ReturnValue {
+        multiplier: u32,
+        max_value: u32,
+    },
 }
 
 /// One pointer argument descriptor for host-side marshalling.
@@ -88,6 +97,14 @@ impl SyscallArgDesc {
         self.copy_out_length = Some(SyscallArgCopyOutLength::U32Field {
             arg_index,
             offset,
+        });
+        self
+    }
+
+    const fn with_copy_out_return_value(mut self, multiplier: u32, max_value: u32) -> Self {
+        self.copy_out_length = Some(SyscallArgCopyOutLength::ReturnValue {
+            multiplier,
+            max_value,
         });
         self
     }
@@ -615,6 +632,11 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
             desc!(1, Out, fixed!(4), required),
             desc!(2, Out, fixed!(4), required),
         ]
+    ),
+    entry!(
+        Syscall::Getgroups as u32,
+        [desc!(1, Out, arg!(0, mul 4), required)
+            .with_copy_out_return_value(4, platform_limits::NGROUPS_MAX as u32)]
     ),
     entry!(
         Syscall::Setgroups as u32,
@@ -1432,6 +1454,26 @@ mod tests {
         );
         assert!(setgroups.required);
 
+        let getgroups = find(Syscall::Getgroups as u32).args[0];
+        assert_eq!(getgroups.arg_index, 1);
+        assert_eq!(getgroups.direction, SyscallArgDirection::Out);
+        assert_eq!(
+            getgroups.size,
+            SyscallArgSize::Arg {
+                arg_index: 0,
+                multiplier: 4,
+                add: 0,
+            }
+        );
+        assert_eq!(
+            getgroups.copy_out_length,
+            Some(SyscallArgCopyOutLength::ReturnValue {
+                multiplier: 4,
+                max_value: platform_limits::NGROUPS_MAX as u32,
+            }),
+        );
+        assert!(getgroups.required);
+
         let semop = find(extra_syscalls::SYS_SEMOP).args[0].size;
         assert_eq!(
             semop,
@@ -1649,9 +1691,7 @@ mod tests {
 
         for entry in SYSCALL_ARG_DESCRIPTORS {
             for desc in entry.args {
-                let Some(SyscallArgCopyOutLength::U32Field { arg_index, offset }) =
-                    desc.copy_out_length
-                else {
+                let Some(copy_out_length) = desc.copy_out_length else {
                     continue;
                 };
                 assert_eq!(
@@ -1661,6 +1701,20 @@ mod tests {
                     entry.syscall_number,
                     desc.arg_index,
                 );
+                let (arg_index, offset) = match copy_out_length {
+                    SyscallArgCopyOutLength::U32Field { arg_index, offset } => {
+                        (arg_index, offset)
+                    }
+                    SyscallArgCopyOutLength::ReturnValue {
+                        multiplier,
+                        max_value,
+                    } => {
+                        assert_ne!(multiplier, 0);
+                        assert_ne!(max_value, 0);
+                        assert!(multiplier.checked_mul(max_value).is_some());
+                        continue;
+                    }
+                };
                 assert!(
                     matches!(desc.size, SyscallArgSize::Arg { .. }),
                     "syscall {} arg {} copy-out override needs an explicit caller capacity",
@@ -1694,7 +1748,6 @@ mod tests {
             extra_syscalls::SYS_PWRITEV2,
             Syscall::Sendmsg as u32,
             Syscall::Recvmsg as u32,
-            Syscall::Getgroups as u32,
             extra_syscalls::SYS_MSGRCV,
             extra_syscalls::SYS_MSGSND,
         ] {
