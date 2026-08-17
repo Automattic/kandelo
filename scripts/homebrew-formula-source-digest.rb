@@ -139,13 +139,19 @@ def receipt_match_kind(selected, receipt)
   return "exact" if selected.source == receipt.source
   return nil if selected.bottle_range.nil? || !receipt.bottle_range.nil?
 
-  lines = selected.lines.dup
-  removal_end = selected.bottle_range.end
-  removal_end += 1 if lines[removal_end + 1] == "\n"
-  lines.slice!(selected.bottle_range.begin..removal_end)
-  if lines.join == receipt.source
-    "bottle-block-removed"
+  range = selected.bottle_range
+  if range.end + 2 == selected.lines.length - 1 &&
+     selected.lines[range.end + 1] == "\n" &&
+     selected.lines[range.end + 2] == "end\n"
+    variants = source_without_new_bottle_variants(selected)
+    return "bottle-block-removed" if variants.include?(receipt.source)
   end
+
+  lines = selected.lines.dup
+  removal_end = range.end
+  removal_end += 1 if lines[removal_end + 1] == "\n"
+  lines.slice!(range.begin..removal_end)
+  "bottle-block-removed" if lines.join == receipt.source
 end
 
 def source_identity_without_bottle(parsed)
