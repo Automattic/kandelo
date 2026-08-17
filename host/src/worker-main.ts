@@ -5870,11 +5870,19 @@ export async function centralizedThreadWorkerMain(
       wasmInitTls(ptrWidth === 8 ? BigInt(tlsBlock) : tlsBlock);
     }
 
-    // Set __stack_pointer
-    const stackPointer = instance.exports.__stack_pointer as
-      WebAssembly.Global | undefined;
+    // Set __stack_pointer, rounded down to the 16-byte alignment the wasm
+    // C ABI requires of it. musl's pthread_create only aligns the new
+    // thread's stack to sizeof(uintptr_t) — 4 here — and then subtracts
+    // `struct start_args`, so the value it hands to clone is routinely 4
+    // mod 8. Clang lays out a callee's frame from an SP it assumes is
+    // 16-aligned, so on such a thread every 64-bit vararg is written and
+    // read four bytes apart: printf("%lld", 1000) prints garbage, and
+    // GDBus EXTERNAL auth claims uid 0 for every process. Rounding down
+    // stays inside the thread's own stack region.
+    const stackPointer = instance.exports.__stack_pointer as WebAssembly.Global | undefined;
     if (stackPointer) {
-      stackPointer.value = ptrWidth === 8 ? BigInt(stackPtr) : stackPtr;
+      const alignedStackPtr = stackPtr - (stackPtr % 16);
+      stackPointer.value = ptrWidth === 8 ? BigInt(alignedStackPtr) : alignedStackPtr;
     }
 
     // Initialize musl thread pointer if available
