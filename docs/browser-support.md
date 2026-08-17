@@ -322,7 +322,7 @@ Located in `apps/browser-demos/pages/`:
 | modeset | modeset.c | `kernel.boot` + spawn | Minimal KMS client: opens `/dev/dri/card0`, becomes DRM master, allocates dumb buffers, draws an animated gradient, and commits real `drmModePageFlip` ioctls. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
 | wayland | wlcompositor + wlclock + wlpaint + wlterm | `kernel.boot` + spawn | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. |
 | hyprland | wlcompositor (dwindle) + wlclock + 2× wlterm (+ wlpaint via keybind) | `kernel.boot` + spawn | Hyprland-class tiling desktop; `Ctrl+Return`/`Ctrl+K`/`Ctrl+P` open new terminal/clock/paint panes — see [Hyprland tiling demo](#hyprland-tiling-demo) below. |
-| omarchy | the hyprland set + Waybar + mako + klauncher + themes | `kernel.boot` + spawn | The tiling desktop with its shell: unmodified Waybar on layer shell, `Ctrl+Space` launcher, `Ctrl+Shift+Space` theme cycling — see [Omarchy desktop demo](#omarchy-desktop-demo) below. |
+| omarchy | wlcompositor (dwindle) + Waybar + mako + klauncher + themes | `kernel.boot` + spawn | The tiling desktop with its shell: unmodified Waybar on layer shell, `Ctrl+Space` launcher, `Ctrl+Shift+Space` theme cycling. Boots to wallpaper + bar with no windows open — see [Omarchy desktop demo](#omarchy-desktop-demo) below. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first user process.
@@ -503,6 +503,10 @@ binary with its own `/etc/kandelo/wlcompositor.conf`, an app registry under
 `/usr/share/kandelo/apps`, and six themes under `/usr/share/kandelo/themes`
 — all staged into the VFS at boot from
 `apps/browser-demos/pages/kandelo/kernel-host/omarchy-desktop.ts`.
+
+The desktop comes up bare: wallpaper and bar, no windows. Every client is one
+the user opens, through the binds below or the launcher. The demo stays alive
+on the compositor's own process rather than on a foreground terminal.
 
 - **The bar.** Unmodified upstream **Waybar 0.14.0** — the real GTK3 bar, on
   the ported gtkmm/gtk-layer-shell stack, reading a translated version of

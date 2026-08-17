@@ -2491,7 +2491,7 @@ async function bootProfile(
             extraEnv: string[] = [],
             args: string[] = [],
           ) =>
-            void kernelForHyprland.spawn(bytes, [name, ...args], {
+            kernelForHyprland.spawn(bytes, [name, ...args], {
               env: extraEnv.length ? [...SHELL_ENV, ...extraEnv] : SHELL_ENV,
               cwd: DEMO_HOME,
               uid: DEMO_UID,
@@ -2508,7 +2508,7 @@ async function bootProfile(
           const busEnv = omarchy
             ? [`DBUS_SESSION_BUS_ADDRESS=unix:path=${OMARCHY_BUS_SOCKET}`]
             : [];
-          spawnBg(compBytes, "wlcompositor", [
+          const compositorExit = spawnBg(compBytes, "wlcompositor", [
             "WLC_LAYOUT=dwindle",
             "WLC_CONFIG=/etc/kandelo/wlcompositor.conf",
             ...busEnv,
@@ -2537,14 +2537,14 @@ async function bootProfile(
           // sockets exist in the VFS.
           if (omarchyDaemonBytes && omarchyMakoBytes) {
             tick("running dbus-daemon + mako...");
-            spawnBg(omarchyDaemonBytes, "dbus-daemon", [], [
+            void spawnBg(omarchyDaemonBytes, "dbus-daemon", [], [
               "--config-file=/etc/dbus-1/session.conf",
               "--nofork",
             ]);
             const makoBytes = omarchyMakoBytes;
             void (async () => {
               await waitForSockets(["/tmp/wayland-0", OMARCHY_BUS_SOCKET]);
-              spawnBg(makoBytes, "mako", busEnv);
+              void spawnBg(makoBytes, "mako", busEnv);
             })();
           }
 
@@ -2569,38 +2569,48 @@ async function bootProfile(
             // syslog: Waybar logs every Hyprland IPC event it receives at
             // debug level, so a workspace switch or a window focus shows
             // up as the bar's own line next to the compositor's marker.
-            spawnBg(omarchyBarBytes, "waybar", [
+            void spawnBg(omarchyBarBytes, "waybar", [
               "HYPRLAND_INSTANCE_SIGNATURE=wlcompositor",
               ...busEnv,
             ], ["-l", "debug"]);
           }
 
-          // The clock + first terminal run in the background; the foreground
-          // terminal's shell keeps the demo alive (as waylandDemo does).
-          tick("running wlclock + wlterm...");
-          spawnBg(clockBytes, "wlclock");
-          spawnBg(termBytes, "wlterm", busEnv);
+          if (omarchy) {
+            // The Omarchy desktop comes up bare — wallpaper and bar, no
+            // windows. Its clients are the ones the user opens, through the
+            // binds (CTRL+Return, CTRL+K) or the launcher. The compositor is
+            // the process whose lifetime is the desktop's, so awaiting it is
+            // what keeps the demo alive.
+            tick("omarchy desktop ready");
+            await compositorExit;
+          } else {
+            // The clock + first terminal run in the background; the foreground
+            // terminal's shell keeps the demo alive (as waylandDemo does).
+            tick("running wlclock + wlterm...");
+            void spawnBg(clockBytes, "wlclock");
+            void spawnBg(termBytes, "wlterm", busEnv);
 
-          tick("running wlterm...");
-          // Keep-alive 3rd tiling client. Launch it through the non-forking
-          // `spawn` path (like the clock + first terminal) instead of
-          // runShellCommand, which makes the pts/0 shell fork()+exec the client.
-          // That shell-fork races the first terminal's forkpty under CI's Linux
-          // headless-chromium worker scheduling and intermittently fails to
-          // start the client, so it never connects (CLIENT_CONNECTED count=3
-          // never fires). `spawn` resolves on process EXIT (it is used as an
-          // exitPromise in kernel-host.ts), so awaiting it keeps the demo alive
-          // exactly as the foreground shell command did.
-          await kernelForHyprland.spawn(termBytes, ["wlterm"], {
-            env: busEnv.length ? [...SHELL_ENV, ...busEnv] : SHELL_ENV,
-            cwd: DEMO_HOME,
-            uid: DEMO_UID,
-            gid: DEMO_GID,
-          }).then(
-            () => tick("wlterm exited"),
-            (err: unknown) =>
-              tick(`wlterm failed: ${err instanceof Error ? err.message : String(err)}`),
-          );
+            tick("running wlterm...");
+            // Keep-alive 3rd tiling client. Launch it through the non-forking
+            // `spawn` path (like the clock + first terminal) instead of
+            // runShellCommand, which makes the pts/0 shell fork()+exec the client.
+            // That shell-fork races the first terminal's forkpty under CI's Linux
+            // headless-chromium worker scheduling and intermittently fails to
+            // start the client, so it never connects (CLIENT_CONNECTED count=3
+            // never fires). `spawn` resolves on process EXIT (it is used as an
+            // exitPromise in kernel-host.ts), so awaiting it keeps the demo alive
+            // exactly as the foreground shell command did.
+            await kernelForHyprland.spawn(termBytes, ["wlterm"], {
+              env: busEnv.length ? [...SHELL_ENV, ...busEnv] : SHELL_ENV,
+              cwd: DEMO_HOME,
+              uid: DEMO_UID,
+              gid: DEMO_GID,
+            }).then(
+              () => tick("wlterm exited"),
+              (err: unknown) =>
+                tick(`wlterm failed: ${err instanceof Error ? err.message : String(err)}`),
+            );
+          }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           tick(`${omarchy ? "omarchy" : "hyprland"} failed: ${msg}`);
