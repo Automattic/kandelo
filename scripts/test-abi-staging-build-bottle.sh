@@ -10,7 +10,15 @@ if [ -z "$TAP_ROOT" ] || [ ! -d "$TAP_ROOT/scripts/abi_staging" ]; then
 fi
 TAP_ROOT="$(cd "$TAP_ROOT" && pwd -P)"
 TMP_ROOT="$(mktemp -d)"
-trap 'rm -rf "$TMP_ROOT"' EXIT
+cleanup() {
+  local status="$?"
+  if [ "${KANDELO_KEEP_ABI_STAGING_TEST_TMP:-0}" = "1" ] && [ "$status" -ne 0 ]; then
+    printf 'test-abi-staging-build-bottle.sh: preserved failure root: %s\n' "$TMP_ROOT" >&2
+    return
+  fi
+  rm -rf "$TMP_ROOT"
+}
+trap cleanup EXIT
 INPUT_ROOT="$TMP_ROOT/inputs"
 mkdir -p "$INPUT_ROOT"
 
@@ -163,7 +171,10 @@ cat >"$TMP_ROOT/fake-builder" <<'EOF'
 set -euo pipefail
 : "${FAKE_BUILDER_LOG:?}"
 : "${WASM_POSIX_SDK_ROOT:?}"
-: "${KANDELO_ABI_STAGING_DEPENDENCY_ROOT:?}"
+: "${KANDELO_HOMEBREW_LOCAL_DEPENDENCY_CACHE:?}"
+: "${KANDELO_HOMEBREW_TAP_SOURCE_COMMIT:?}"
+: "${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:?}"
+: "${FAKE_ORIGINAL_TAP_ROOT:?}"
 for secret in GITHUB_TOKEN GH_TOKEN GHCR_PAT HOMEBREW_GITHUB_API_TOKEN NPM_TOKEN \
   NODE_AUTH_TOKEN SSH_AUTH_SOCK AWS_SECRET_ACCESS_KEY \
   ACTIONS_ID_TOKEN_REQUEST_TOKEN; do
@@ -176,14 +187,15 @@ done
 [ "$GIT_CONFIG_GLOBAL" = "/dev/null" ]
 [ "$GIT_TERMINAL_PROMPT" = "0" ]
 [ -d "$WASM_POSIX_SDK_ROOT" ] && [ ! -L "$WASM_POSIX_SDK_ROOT" ]
-find "$KANDELO_ABI_STAGING_DEPENDENCY_ROOT" -type f -name 'sha256-*.tar.gz' -print \
-  | sort >"$FAKE_BUILDER_LOG.dependencies"
+find "$KANDELO_HOMEBREW_LOCAL_DEPENDENCY_CACHE" -type f -name '*.tar.gz' \
+  -exec basename {} \; | sort >"$FAKE_BUILDER_LOG.dependencies"
 
 OUT=""
 ROOT=""
 STAGING_ABI=""
 FORMULA=""
 TAP_REPOSITORY=""
+BUILD_TAP_ROOT=""
 printf '%q ' "$@" >"$FAKE_BUILDER_LOG"
 printf '\n' >>"$FAKE_BUILDER_LOG"
 while [ "$#" -gt 0 ]; do
@@ -193,17 +205,28 @@ while [ "$#" -gt 0 ]; do
     --staging-candidate-abi) STAGING_ABI="$2"; shift 2 ;;
     --formula) FORMULA="$2"; shift 2 ;;
     --tap-repository) TAP_REPOSITORY="$2"; shift 2 ;;
-    --tap-root|--arch) shift 2 ;;
+    --tap-root) BUILD_TAP_ROOT="$2"; shift 2 ;;
+    --arch) shift 2 ;;
     *) echo "unexpected builder flag: $1" >&2; exit 91 ;;
   esac
 done
 [ -n "$OUT" ]
+[ -n "$BUILD_TAP_ROOT" ]
+[ "$BUILD_TAP_ROOT" != "$FAKE_ORIGINAL_TAP_ROOT" ]
+[ "$(git -C "$FAKE_ORIGINAL_TAP_ROOT" rev-parse HEAD)" = "$KANDELO_HOMEBREW_TAP_SOURCE_COMMIT" ]
+[ "$(git -C "$BUILD_TAP_ROOT" rev-parse HEAD)" = "$KANDELO_HOMEBREW_PREPARED_TAP_COMMIT" ]
+[ "$(git -C "$BUILD_TAP_ROOT" rev-parse HEAD^)" = "$KANDELO_HOMEBREW_TAP_SOURCE_COMMIT" ]
+[ -z "$(git -C "$BUILD_TAP_ROOT" status --short --untracked-files=all)" ]
 [ "$TAP_REPOSITORY" = "kandelo-dev/homebrew-tap-core" ]
 [[ "$STAGING_ABI" =~ ^[1-9][0-9]*$ ]]
 [[ "$FORMULA" =~ ^[a-z0-9][a-z0-9._-]*$ ]]
 [ "$ROOT" = "https://ghcr.io/v2/${TAP_REPOSITORY}-abi-${STAGING_ABI}-candidates/${FORMULA}" ]
-mkdir -p "$OUT/bottles" "$OUT/tar-root/mini/bin"
-printf 'tool\n' >"$OUT/tar-root/mini/bin/tool"
+PAYLOAD_ROOT="$OUT/tar-root/libcurl/8.11.1_1"
+mkdir -p "$OUT/bottles" "$PAYLOAD_ROOT/.brew" "$PAYLOAD_ROOT/bin"
+printf 'class Libcurl < Formula\nend\n' >"$PAYLOAD_ROOT/.brew/libcurl.rb"
+printf '{}\n' >"$PAYLOAD_ROOT/INSTALL_RECEIPT.json"
+printf 'tool\n' >"$PAYLOAD_ROOT/bin/tool"
+chmod 0755 "$PAYLOAD_ROOT/bin/tool"
 if [ "${FAKE_BUILDER_MUTATE_CUSTODY:-0}" = "1" ]; then
   printf 'candidate mutation\n' >>"$(dirname "$OUT")/source-custody/kandelo.bundle"
 fi
@@ -211,10 +234,34 @@ if [ "${FAKE_BUILDER_FAIL:-0}" = "1" ]; then
   echo "fixture deterministic failure"
   exit 7
 fi
-tar -czf "$OUT/bottles/libcurl--fixture.wasm32_kandelo.bottle.tar.gz" \
-  -C "$OUT/tar-root" mini
-printf '{"architecture":"wasm32","formula":"libcurl"}\n' \
-  >"$OUT/bottles/libcurl.bottle.json"
+BOTTLE_NAME="libcurl--8.11.1_1.wasm32_kandelo.bottle.4.tar.gz"
+tar -czf "$OUT/bottles/$BOTTLE_NAME" \
+  -C "$OUT/tar-root" libcurl/8.11.1_1
+BOTTLE_SHA256="$(sha256sum "$OUT/bottles/$BOTTLE_NAME" | awk '{print $1}')"
+jq -n \
+  --arg name "$BOTTLE_NAME" \
+  --arg root "${ROOT%/$FORMULA}" \
+  --arg sha256 "$BOTTLE_SHA256" \
+  '{
+    "kandelo-dev/tap-core/libcurl": {
+      formula: {
+        name: "libcurl",
+        path: "Library/Taps/kandelo-dev/homebrew-tap-core/Formula/libcurl.rb",
+        pkg_version: "8.11.1_1"
+      },
+      bottle: {
+        root_url: $root,
+        cellar: ":any_skip_relocation",
+        rebuild: 4,
+        tags: {
+          wasm32_kandelo: {
+            local_filename: $name,
+            sha256: $sha256
+          }
+        }
+      }
+    }
+  }' >"$OUT/bottles/libcurl.bottle.json"
 echo "fixture build succeeded"
 EOF
 chmod 0755 "$MOCK_BIN/timeout" "$TMP_ROOT/fake-builder"
@@ -222,6 +269,7 @@ chmod 0755 "$MOCK_BIN/timeout" "$TMP_ROOT/fake-builder"
 export PATH="$MOCK_BIN:$PATH"
 export FAKE_TIMEOUT_LOG="$TMP_ROOT/timeout.log"
 export FAKE_BUILDER_LOG="$TMP_ROOT/builder.log"
+export FAKE_ORIGINAL_TAP_ROOT="$TAP_ROOT"
 export KANDELO_ABI_STAGING_TESTING=1
 export KANDELO_ABI_STAGING_NORMAL_BUILDER="$TMP_ROOT/fake-builder"
 export GITHUB_TOKEN="ghp_abcdefghijklmnopqrstuvwxyz0123456789"
@@ -261,10 +309,10 @@ grep -Fq -- "--bottle-root-url $EXPECTED_CANDIDATE_ROOT" "$FAKE_BUILDER_LOG" ||
   fail "normal builder did not receive the visibly nonendorsed ABI-qualified candidate root"
 grep -Fq -- "--staging-candidate-abi $TARGET_ABI" "$FAKE_BUILDER_LOG" ||
   fail "normal builder did not receive the exact target ABI candidate authority"
-EXPECTED_DEPENDENCIES="$(jq '.dependency_sha256s | length' "$INPUT_ROOT/fixture.json")"
-ACTUAL_DEPENDENCIES="$(wc -l <"$FAKE_BUILDER_LOG.dependencies" | tr -d '[:space:]')"
-[ "$ACTUAL_DEPENDENCIES" = "$EXPECTED_DEPENDENCIES" ] ||
-  fail "normal builder did not receive exactly the declared dependency layers"
+jq -r '.dependency_sha256s[] + ".tar.gz"' "$INPUT_ROOT/fixture.json" | sort \
+  >"$TMP_ROOT/expected-dependency-cache"
+cmp -s "$TMP_ROOT/expected-dependency-cache" "$FAKE_BUILDER_LOG.dependencies" ||
+  fail "normal builder did not receive its exact declared dependency cache"
 [ -f "$SUCCESS_HANDOFF/bottle.tar.gz" ] || fail "successful handoff omitted bottle"
 [ -f "$SUCCESS_HANDOFF/attempt-record.json" ] || fail "successful handoff omitted attempt"
 [ -f "$SUCCESS_HANDOFF/build-result.json" ] || fail "successful handoff omitted result"
