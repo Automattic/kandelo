@@ -26,6 +26,7 @@ import {
   resolveForNode,
   resolveForNodeKernelSession,
 } from "../../src/vfs/default-mounts-node";
+import { restoreBrowserKernelInitMounts } from "../../src/browser-kernel-vfs-init";
 import {
   addSealedLazyAtomicTestTree,
   forgeLazyAtomicSeal,
