@@ -17,22 +17,6 @@ bash "$PACKER" list | grep -Fxq "$expected_rootfs_row" || {
     echo "exact workspace packer does not transport the source-built test rootfs" >&2
     exit 1
 }
-for workflow in \
-    "$REPO_ROOT/.github/workflows/staging-build.yml" \
-    "$REPO_ROOT/.github/workflows/prepare-merge.yml"; do
-    grep -Fq \
-        'ROOTFS_OUT=target/exact-abi-source-test/rootfs.vfs' \
-        "$workflow" || {
-        echo "$(basename "$workflow") does not build the exact source-test rootfs" >&2
-        exit 1
-    }
-    grep -Fq \
-        'ROOTFS_PACKAGES_CONFIG="$RUNNER_TEMP/exact-abi-source-test-packages.toml"' \
-        "$workflow" || {
-        echo "$(basename "$workflow") does not isolate the exact source-test rootfs from packages" >&2
-        exit 1
-    }
-done
 
 SOURCE="$PRIVATE/source"
 CONSUMER="$PRIVATE/consumer"
@@ -43,9 +27,35 @@ git -C "$SOURCE" init -q
 git -C "$SOURCE" config user.name "Kandelo exact workspace test"
 git -C "$SOURCE" config user.email "exact-workspace@example.invalid"
 printf '%s\n' '/target/' '/host/wasm/' '/host/test/fixtures/*.wasm' \
-    '/local-binaries/' > "$SOURCE/.gitignore"
+    '/local-binaries/' '/node_modules/' > "$SOURCE/.gitignore"
 printf '%s\n' 'exact source fixture' > "$SOURCE/README.md"
-git -C "$SOURCE" add .gitignore README.md
+mkdir -p "$SOURCE/scripts" "$SOURCE/test-bin"
+cat > "$SOURCE/scripts/dev-shell.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+export PATH="$(cd "$(dirname "$0")/.." && pwd)/test-bin:$PATH"
+exec "$@"
+EOF
+cat > "$SOURCE/test-bin/npm" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$#" -ge 1 ] && [ "$1" = ci ] || exit 2
+mkdir -p node_modules/tsx/dist node_modules/fflate node_modules/fzstd
+: > node_modules/tsx/dist/cli.mjs
+EOF
+cat > "$SOURCE/scripts/build-rootfs.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "${ROOTFS_SEALED_BUILD:-}" = 1 ]
+[ "${ROOTFS_SKIP_PACKAGE_RESOLVE:-}" = 1 ]
+grep -Fxq 'default_install = "eager"' "$ROOTFS_PACKAGES_CONFIG"
+[ ! -e "$ROOTFS_PACKAGE_MANIFEST" ]
+mkdir -p "$(dirname "$ROOTFS_OUT")"
+printf 'protected-package-free-rootfs\n' > "$ROOTFS_OUT"
+EOF
+chmod +x "$SOURCE/scripts/dev-shell.sh" "$SOURCE/test-bin/npm" \
+    "$SOURCE/scripts/build-rootfs.sh"
+git -C "$SOURCE" add .gitignore README.md scripts test-bin
 git -C "$SOURCE" commit -q -m fixture
 
 declare -A created_sources=()
@@ -55,6 +65,9 @@ while IFS=$'\t' read -r source_path destination_path extra; do
         exit 1
     }
     if [ -z "${created_sources[$source_path]:-}" ]; then
+        if [ "$source_path" = "target/exact-abi-source-test/rootfs.vfs" ]; then
+            continue
+        fi
         mkdir -p "$SOURCE/$(dirname "$source_path")"
         printf 'fixture:%s\n' "$source_path" > "$SOURCE/$source_path"
         created_sources[$source_path]=1
@@ -73,6 +86,10 @@ git clone -q "$SOURCE" "$CONSUMER"
 bash "$PACKER" pack \
     --source-root "$SOURCE" \
     --archive "$ARCHIVE"
+[ ! -e "$SOURCE/target/exact-abi-source-test/rootfs.vfs" ] || {
+    echo "protected rootfs preparation mutated the exact source checkout" >&2
+    exit 1
+}
 bash "$PACKER" pack \
     --source-root "$SOURCE" \
     --archive "$SECOND_ARCHIVE"
@@ -105,6 +122,11 @@ while IFS= read -r destination_path; do
         exit 1
     }
 done < "$expected_paths"
+grep -Fxq 'protected-package-free-rootfs' \
+    "$CONSUMER/host/wasm/rootfs.vfs" || {
+    echo "protected rootfs preparation did not supply the extracted test image" >&2
+    exit 1
+}
 
 if tar --zstd -tf "$ARCHIVE" |
    sed -e 's#^\./##' -e '/^$/d' |
