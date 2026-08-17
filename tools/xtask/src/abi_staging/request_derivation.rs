@@ -29,6 +29,8 @@ use std::process::Command;
 
 const STRUCTURAL_REPORT_SCHEMA: u64 = 1;
 const STRUCTURAL_REPORT_KIND: &str = "kandelo-structural-abi-report";
+const STRUCTURAL_FEED_DISPOSITION_SCHEMA: u64 = 1;
+const STRUCTURAL_FEED_DISPOSITION_KIND: &str = "kandelo-structural-abi-feed-disposition";
 const PRODUCT_DIRECTORY: &str = "images/vfs/products";
 const MAX_CHANGED_PATH_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CHANGED_PATH_LENGTH: usize = 4096;
@@ -60,6 +62,22 @@ pub struct StructuralAbiReportV1 {
     pub snapshot_file_sha256: String,
     pub check_command_sha256: String,
     pub outcome: StructuralAbiOutcomeV1,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum StructuralFeedDispositionStatusV1 {
+    Eligible,
+    CandidateInvalid,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StructuralFeedDispositionV1 {
+    schema: u64,
+    kind: String,
+    status: StructuralFeedDispositionStatusV1,
+    guard: Option<GuardCodeV1>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -120,6 +138,31 @@ pub fn validate_structural_abi_report_against_previous_abi(
     protected_previous_abi: u64,
     report: &StructuralAbiReportV1,
 ) -> Result<(), String> {
+    let outcome = authenticate_structural_abi_report_against_previous_abi(
+        exact_head_root,
+        pull_request,
+        protected_previous_abi,
+        report,
+    )?;
+    match outcome {
+        StructuralAbiOutcomeV1::Compatible | StructuralAbiOutcomeV1::BumpedWithSnapshot => Ok(()),
+        StructuralAbiOutcomeV1::ChangedWithoutBump => Err(
+            GuardCodeV1::AbiStructureChangedWithoutBump
+                .as_str()
+                .to_string(),
+        ),
+        StructuralAbiOutcomeV1::Invalid => {
+            Err(GuardCodeV1::RequestInvalid.as_str().to_string())
+        }
+    }
+}
+
+fn authenticate_structural_abi_report_against_previous_abi(
+    exact_head_root: &Path,
+    pull_request: &PullRequestIdentityV1,
+    protected_previous_abi: u64,
+    report: &StructuralAbiReportV1,
+) -> Result<StructuralAbiOutcomeV1, String> {
     validate_pull_request_identity(pull_request)?;
     validate_structural_report_shape(report)?;
     if report.source.repository != pull_request.exact_head_repository
@@ -181,15 +224,37 @@ pub fn validate_structural_abi_report_against_previous_abi(
             }
         }
         StructuralAbiOutcomeV1::ChangedWithoutBump => {
-            return Err(GuardCodeV1::AbiStructureChangedWithoutBump
-                .as_str()
-                .to_string());
+            return Ok(StructuralAbiOutcomeV1::ChangedWithoutBump);
         }
         StructuralAbiOutcomeV1::Invalid => {
-            return Err(GuardCodeV1::RequestInvalid.as_str().to_string());
+            return Ok(StructuralAbiOutcomeV1::Invalid);
         }
     }
-    Ok(())
+    Ok(report.outcome)
+}
+
+fn structural_feed_disposition(
+    outcome: StructuralAbiOutcomeV1,
+) -> StructuralFeedDispositionV1 {
+    let (status, guard) = match outcome {
+        StructuralAbiOutcomeV1::Compatible | StructuralAbiOutcomeV1::BumpedWithSnapshot => {
+            (StructuralFeedDispositionStatusV1::Eligible, None)
+        }
+        StructuralAbiOutcomeV1::ChangedWithoutBump => (
+            StructuralFeedDispositionStatusV1::CandidateInvalid,
+            Some(GuardCodeV1::AbiStructureChangedWithoutBump),
+        ),
+        StructuralAbiOutcomeV1::Invalid => (
+            StructuralFeedDispositionStatusV1::CandidateInvalid,
+            Some(GuardCodeV1::RequestInvalid),
+        ),
+    };
+    StructuralFeedDispositionV1 {
+        schema: STRUCTURAL_FEED_DISPOSITION_SCHEMA,
+        kind: STRUCTURAL_FEED_DISPOSITION_KIND.to_string(),
+        status,
+        guard,
+    }
 }
 
 pub fn derive_abi_staging_request(
@@ -370,28 +435,48 @@ pub fn classify_changed_paths(bytes: &[u8]) -> Result<Vec<ChangeClass>, String> 
 }
 
 pub fn run_structural_report_cli(action: &str, args: &[String]) -> Result<(), String> {
-    if action != "validate" {
-        return Err(format!("unknown structural-report subcommand {action:?}"));
-    }
-    let flags = parse_path_flags(
-        args,
-        &[
+    let expected_flags = match action {
+        "validate" => vec![
             "--exact-head-root",
             "--previous-abi",
             "--pull-request",
             "--report",
         ],
-    )?;
+        "feed-disposition" => vec![
+            "--exact-head-root",
+            "--previous-abi",
+            "--pull-request",
+            "--report",
+            "--out",
+        ],
+        _ => return Err(format!("unknown structural-report subcommand {action:?}")),
+    };
+    let flags = parse_path_flags(args, &expected_flags)?;
     let pull_request: PullRequestIdentityV1 = read_canonical_json(&flags["--pull-request"])?;
     let report_bytes = read_bounded_regular_file(&flags["--report"], MAX_DOCUMENT_BYTES)?;
     let report = parse_structural_abi_report(&flags["--report"], &report_bytes)?;
     let previous_abi = parse_positive_u64_flag(&flags["--previous-abi"], "--previous-abi")?;
-    validate_structural_abi_report_against_previous_abi(
-        &flags["--exact-head-root"],
-        &pull_request,
-        previous_abi,
-        &report,
-    )
+    match action {
+        "validate" => validate_structural_abi_report_against_previous_abi(
+            &flags["--exact-head-root"],
+            &pull_request,
+            previous_abi,
+            &report,
+        ),
+        "feed-disposition" => {
+            let outcome = authenticate_structural_abi_report_against_previous_abi(
+                &flags["--exact-head-root"],
+                &pull_request,
+                previous_abi,
+                &report,
+            )?;
+            atomic_write_regular(
+                &flags["--out"],
+                &canonical_json_bytes(&structural_feed_disposition(outcome))?,
+            )
+        }
+        _ => unreachable!(),
+    }
 }
 
 pub fn run_request_cli(action: &str, args: &[String]) -> Result<(), String> {
@@ -738,6 +823,36 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
+
+    fn feed_disposition_args(
+        fixture: &Fixture,
+        report: &StructuralAbiReportV1,
+    ) -> (Vec<String>, PathBuf) {
+        let pull_request_path = fixture.root.path().join("pull-request.json");
+        let report_path = fixture.root.path().join("structural-report.json");
+        let disposition_path = fixture.root.path().join("feed-disposition.json");
+        fs::write(
+            &pull_request_path,
+            canonical_json_bytes(&fixture.pull_request).unwrap(),
+        )
+        .unwrap();
+        fs::write(&report_path, canonical_json_bytes(report).unwrap()).unwrap();
+        (
+            vec![
+                "--exact-head-root".to_string(),
+                fixture.root.path().display().to_string(),
+                "--previous-abi".to_string(),
+                "7".to_string(),
+                "--pull-request".to_string(),
+                pull_request_path.display().to_string(),
+                "--report".to_string(),
+                report_path.display().to_string(),
+                "--out".to_string(),
+                disposition_path.display().to_string(),
+            ],
+            disposition_path,
+        )
     }
 
     fn fixture() -> Fixture {
@@ -1088,6 +1203,57 @@ host = "not-applicable"
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn writes_authenticated_candidate_invalid_feed_disposition() {
+        let fixture = fixture();
+        let mut report = fixture.structural.clone();
+        report.outcome = StructuralAbiOutcomeV1::Invalid;
+        let (args, disposition_path) = feed_disposition_args(&fixture, &report);
+
+        assert_eq!(
+            validate_structural_abi_report_against_previous_abi(
+                fixture.root.path(),
+                &fixture.pull_request,
+                7,
+                &report,
+            )
+            .unwrap_err(),
+            "request_invalid"
+        );
+        run_structural_report_cli("feed-disposition", &args).unwrap();
+        assert_eq!(
+            fs::read(disposition_path).unwrap(),
+            b"{\"guard\":\"request_invalid\",\"kind\":\"kandelo-structural-abi-feed-disposition\",\"schema\":1,\"status\":\"candidate-invalid\"}\n"
+        );
+    }
+
+    #[test]
+    fn maps_changed_without_bump_to_its_registered_feed_guard() {
+        let fixture = fixture();
+        let mut report = fixture.structural.clone();
+        report.outcome = StructuralAbiOutcomeV1::ChangedWithoutBump;
+        let (args, disposition_path) = feed_disposition_args(&fixture, &report);
+
+        run_structural_report_cli("feed-disposition", &args).unwrap();
+        assert_eq!(
+            fs::read(disposition_path).unwrap(),
+            b"{\"guard\":\"abi_structure_changed_without_bump\",\"kind\":\"kandelo-structural-abi-feed-disposition\",\"schema\":1,\"status\":\"candidate-invalid\"}\n"
+        );
+    }
+
+    #[test]
+    fn does_not_write_feed_disposition_for_mismatched_report_identity() {
+        let fixture = fixture();
+        let mut report = fixture.structural.clone();
+        report.outcome = StructuralAbiOutcomeV1::Invalid;
+        report.check_command_sha256 = "9".repeat(64);
+        let (args, disposition_path) = feed_disposition_args(&fixture, &report);
+
+        let error = run_structural_report_cli("feed-disposition", &args).unwrap_err();
+        assert!(error.contains("checker identity"));
+        assert!(!disposition_path.exists());
     }
 
     #[test]
