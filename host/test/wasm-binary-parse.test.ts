@@ -813,6 +813,17 @@ describe("extractHeapBase", () => {
     expect(extractHeapBase(wasm)).toBe(0x1051D70n);
   });
 
+  it("skips a preceding global whose constant immediate contains the end opcode byte", () => {
+    const wasm = buildWasm({
+      globals: [
+        { valType: I32, mut: 0, init: [0x41, ...sleb128_i32(11)] },
+        { valType: I32, mut: 0, init: [0x41, ...sleb128_i32(0x1051D70)] },
+      ],
+      exports: [{ name: "__heap_base", kind: 3, index: 1 }],
+    });
+    expect(extractHeapBase(wasm)).toBe(0x1051D70n);
+  });
+
   it("reads an i64 __heap_base for wasm64", () => {
     const expected = 0x100000000n; // 4 GiB
     const wasm = buildWasm({

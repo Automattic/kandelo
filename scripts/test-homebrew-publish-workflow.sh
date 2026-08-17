@@ -250,7 +250,8 @@ FORMULA_RUNNER_FIXTURE_ROOT="$TMPDIR/formula-runner-root"
 make_formula_runner_fixture() {
   local host_target
   mkdir -p "$FORMULA_RUNNER_FIXTURE_ROOT/scripts" \
-    "$FORMULA_RUNNER_FIXTURE_ROOT/homebrew/patches"
+    "$FORMULA_RUNNER_FIXTURE_ROOT/homebrew/patches" \
+    "$FORMULA_RUNNER_FIXTURE_ROOT/tools/bin"
   FORMULA_RUNNER_FIXTURE_ROOT="$(cd "$FORMULA_RUNNER_FIXTURE_ROOT" && pwd -P)"
   cp "$REPO_ROOT/scripts/homebrew-bottle-build.sh" \
     "$REPO_ROOT/scripts/homebrew-verify-poured-bottle.sh" \
@@ -292,6 +293,13 @@ fi
 exec "$(dirname "$0")/xtask.real" "$@"
 EOF
   chmod 0755 "$FORMULA_RUNNER_FIXTURE_ROOT/target/$host_target/release/xtask"
+  for tool in wasm-fork-instrument wasm-local-root-spill; do
+    cat >"$FORMULA_RUNNER_FIXTURE_ROOT/tools/bin/$tool" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+    chmod 0755 "$FORMULA_RUNNER_FIXTURE_ROOT/tools/bin/$tool"
+  done
   mkdir -p "$FORMULA_RUNNER_FIXTURE_ROOT/packages/registry/hello"
   cat >"$FORMULA_RUNNER_FIXTURE_ROOT/packages/registry/hello/package.toml" <<'EOF'
 kind = "program"
@@ -3877,6 +3885,18 @@ case "${1:-}" in
       echo "fake brew: candidate Formula received a writable primary tap root" >&2
       exit 63
     fi
+    if [ "${FAKE_REQUIRE_TAP_RECIPE_PLATFORM_TOOLS:-}" = 1 ]; then
+      [ "${HOMEBREW_KANDELO_FORK_INSTRUMENT:-}" = \
+        "${FAKE_EXPECTED_TAP_RECIPE_PLATFORM_ROOT:?}/tools/bin/wasm-fork-instrument" ] || {
+        echo "fake brew: candidate Formula did not receive the sealed fork instrument" >&2
+        exit 65
+      }
+      [ "${HOMEBREW_KANDELO_LOCAL_ROOT_SPILL:-}" = \
+        "$FAKE_EXPECTED_TAP_RECIPE_PLATFORM_ROOT/tools/bin/wasm-local-root-spill" ] || {
+        echo "fake brew: candidate Formula did not receive the sealed local-root-spill tool" >&2
+        exit 66
+      }
+    fi
     [ ! -e "$FAKE_TAP_ROOT/Kandelo/formula_support/test" ] || exit 54
     case "$*" in
       'deps --topological --full-name --formula kandelo-dev/tap-core/hello')
@@ -3973,7 +3993,11 @@ TARGET_GIT
     ;;
   bottle)
     expected_bottle_root="${FAKE_EXPECTED_BOTTLE_ROOT_URL:-https://ghcr.io/v2/kandelo-dev/homebrew-tap-core}"
-    expected_bottle_args="bottle --json --keep-old --root-url $expected_bottle_root kandelo-dev/tap-core/hello"
+    if [ -n "${FAKE_EXPECTED_STAGING_CANDIDATE_ABI:-}" ]; then
+      expected_bottle_args="bottle --json --root-url $expected_bottle_root kandelo-dev/tap-core/hello"
+    else
+      expected_bottle_args="bottle --json --keep-old --root-url $expected_bottle_root kandelo-dev/tap-core/hello"
+    fi
     [ "$*" = "$expected_bottle_args" ] || exit 55
     printf 'bottle-tags=%s|%s\n' \
       "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
@@ -3998,7 +4022,15 @@ for directory, names, files in os.walk(root):
         path = os.path.join(directory, name)
         os.utime(path, (timestamp, timestamp), follow_symlinks=False)
 ' "$bottle_stage" "${FAKE_BUILD_TIME:?}"
-    bottle_tar="$bottle_dir/hello--1.0.wasm32_kandelo.bottle.1.tar"
+    raw_bottle_rebuild=1
+    raw_bottle_suffix=.1
+    if [ -n "${FAKE_EXPECTED_STAGING_CANDIDATE_ABI:-}" ]; then
+      # Real Homebrew starts fresh candidate-root metadata at rebuild zero
+      # when --keep-old is intentionally omitted.
+      raw_bottle_rebuild=0
+      raw_bottle_suffix=
+    fi
+    bottle_tar="$bottle_dir/hello--1.0.wasm32_kandelo.bottle${raw_bottle_suffix}.tar"
     (
       cd "$bottle_stage"
       "$HOMEBREW_KANDELO_GNU_TAR" --create --numeric-owner \
@@ -4010,20 +4042,21 @@ for directory, names, files in os.walk(root):
         --file "$bottle_tar" hello/1.0
     )
     gzip -n -c "$bottle_tar" \
-      >"$bottle_dir/hello--1.0.wasm32_kandelo.bottle.1.tar.gz"
+      >"$bottle_dir/hello--1.0.wasm32_kandelo.bottle${raw_bottle_suffix}.tar.gz"
     rm -f "$bottle_tar"
     python3 -c 'import os, sys; os.utime(sys.argv[1], (1705948357, 1705948357))' \
-      "$bottle_dir/hello--1.0.wasm32_kandelo.bottle.1.tar.gz"
-    cat >hello--1.0.wasm32_kandelo.bottle.json <<'JSON'
+      "$bottle_dir/hello--1.0.wasm32_kandelo.bottle${raw_bottle_suffix}.tar.gz"
+    cat >hello--1.0.wasm32_kandelo.bottle.json <<JSON
 {
   "kandelo-dev/tap-core/hello": {
     "formula": {"name": "hello", "pkg_version": "1.0"},
     "bottle": {
       "date": "2024-01-22T17:12:37Z",
-      "rebuild": 1,
+      "rebuild": $raw_bottle_rebuild,
       "tags": {
         "wasm32_kandelo": {
-          "local_filename": "hello--1.0.wasm32_kandelo.bottle.1.tar.gz"
+          "filename": "hello-1.0.wasm32_kandelo.bottle${raw_bottle_suffix}.tar.gz",
+          "local_filename": "hello--1.0.wasm32_kandelo.bottle${raw_bottle_suffix}.tar.gz"
         }
       }
     }
@@ -4147,6 +4180,14 @@ EOF
   [ "$(wc -l <"$tier2_preflight_log" | tr -d '[:space:]')" = 2 ] ||
     fail "bottle build did not run Tier-2 preflight before and after tap materialization"
   jq -e '
+    .["kandelo-dev/tap-core/hello"].bottle.rebuild == 1 and
+    .["kandelo-dev/tap-core/hello"].bottle.tags.wasm32_kandelo.local_filename ==
+      "hello--1.0.wasm32_kandelo.bottle.1.tar.gz" and
+    .["kandelo-dev/tap-core/hello"].bottle.tags.wasm32_kandelo.filename ==
+      "hello-1.0.wasm32_kandelo.bottle.1.tar.gz"
+  ' "$out/bottles/hello--1.0.wasm32_kandelo.bottle.json" >/dev/null ||
+    fail "candidate bottle metadata did not normalize both rebuilt filenames"
+  jq -e '
     keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tier2_bridge"] and
     .schema == 4 and .arch == "wasm32" and
     .tap == "kandelo-dev/tap-core" and .formula == "hello" and
@@ -4184,6 +4225,8 @@ EOF
     FAKE_BREW_REPOSITORY="$brew_repo" \
     FAKE_TAP_ROOT="$tapped_pkg_drift" \
     FAKE_POST_BUILD_TAP_RECIPE_PKG_VERSION=1.0_2 \
+    FAKE_REQUIRE_TAP_RECIPE_PLATFORM_TOOLS=1 \
+    FAKE_EXPECTED_TAP_RECIPE_PLATFORM_ROOT="$FORMULA_RUNNER_FIXTURE_ROOT" \
     HOMEBREW_BREW_FILE="$fake_brew" \
     GITHUB_ACTIONS= \
     bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-bottle-build.sh" \

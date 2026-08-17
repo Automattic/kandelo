@@ -3,6 +3,24 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+fail() {
+    echo "test-package-build-roots.sh: $*" >&2
+    exit 1
+}
+
+netcat_script="$REPO_ROOT/packages/registry/netcat/build-netcat.sh"
+if grep -F 'automake --print-libdir' "$netcat_script" >/dev/null; then
+    fail "netcat executes the relocated Automake wrapper to locate support data"
+fi
+grep -F 'AUTOMAKE_PREFIX=' "$netcat_script" >/dev/null ||
+    fail "netcat does not derive the declared Automake keg from its executable"
+grep -F 'automake_aux_dirs' "$netcat_script" >/dev/null ||
+    fail "netcat does not require one exact Automake support-data directory"
+if [ "${KANDELO_PACKAGE_BUILD_ROOTS_TEST_FOCUS:-}" = "netcat-automake-aux" ]; then
+    echo "test-package-build-roots.sh: netcat Automake support-data contract ok"
+    exit 0
+fi
+
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
     build-deps program-index-check \
@@ -16,11 +34,6 @@ cleanup() {
     rm -rf "$TMP_ROOT"
 }
 trap cleanup EXIT
-
-fail() {
-    echo "test-package-build-roots.sh: $*" >&2
-    exit 1
-}
 
 tree_digest() {
     local root="$1"
