@@ -123,6 +123,21 @@ def copy_source(root: pathlib.Path) -> pathlib.Path:
         destination = source / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(REPO / relative, destination)
+    # WHY: this finalizer exercises the reviewed ABI-42 shell-delivery
+    # contract, including its ABI-42 bottle cohort. An unrelated Kandelo ABI
+    # bump must not silently turn those historical fixtures into an ABI-43
+    # publication claim; a later ABI-43 Homebrew campaign must supply and seal
+    # its own matching bottles and selection.
+    abi_path = source / "crates/shared/src/lib.rs"
+    abi_source, replacements = re.subn(
+        r"^pub const ABI_VERSION: u32 = [0-9]+;$",
+        "pub const ABI_VERSION: u32 = 42;",
+        abi_path.read_text(),
+        count=1,
+        flags=re.MULTILINE,
+    )
+    assert replacements == 1
+    abi_path.write_text(abi_source)
     return source
 
 
@@ -924,6 +939,40 @@ with tempfile.TemporaryDirectory(
         "sha256": digest(artifact),
     }
     assert_product_state(source, "publishable")
+
+with tempfile.TemporaryDirectory(
+    prefix="kandelo-shell-finalizer-cross-abi-selection."
+) as temporary:
+    root = pathlib.Path(temporary)
+    source = copy_source(root)
+    selection, receipt, _source_commit = create_closed_selection(root, source)
+    abi_path = source / "crates/shared/src/lib.rs"
+    abi_source, replacements = re.subn(
+        r"^pub const ABI_VERSION: u32 = 42;$",
+        "pub const ABI_VERSION: u32 = 43;",
+        abi_path.read_text(),
+        count=1,
+        flags=re.MULTILINE,
+    )
+    assert replacements == 1
+    abi_path.write_text(abi_source)
+    paths = [source / relative for relative in COPIED]
+    before = {path: digest(path) for path in paths}
+
+    cross_abi = run(
+        "--source-root",
+        str(source),
+        "--selection",
+        str(selection),
+        "--selection-receipt",
+        str(receipt),
+        success=False,
+    )
+    assert_failure(
+        cross_abi,
+        "closed selection architecture or ABI differs from Kandelo",
+    )
+    assert before == {path: digest(path) for path in paths}
 
 with tempfile.TemporaryDirectory(
     prefix="kandelo-shell-finalizer-selection-authority."

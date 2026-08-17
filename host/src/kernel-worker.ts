@@ -148,6 +148,8 @@ import {
   POSIX_NAME_MAX_BYTES,
   POSIX_NGROUPS_MAX,
   POSIX_PATH_MAX_BYTES,
+  PROCESS_FORK_MODE_FORK,
+  PROCESS_FORK_MODE_VFORK,
   MAX_REPORTABLE_TRANSFER_BYTES,
   MAX_TRANSFER_ALLOCATION_BYTES,
   PROCESS_METADATA_ENTRY_MAX_BYTES,
@@ -168,6 +170,7 @@ import {
   PROCESS_SNAPSHOT_UID_OFFSET,
   PROCESS_SNAPSHOT_VSIZE_OFFSET,
   PROCESS_CMSGHDR_WASM32_ALIGN,
+  type ProcessForkMode,
   PROCESS_CMSGHDR_WASM32_DATA_OFFSET,
   PROCESS_CMSGHDR_WASM32_LEN_OFFSET,
   PROCESS_CMSGHDR_WASM32_LEVEL_OFFSET,
@@ -271,6 +274,7 @@ import {
   PROCESS_MMAP_BASE,
   growMemoryToCover,
 } from "./process-memory";
+import { VforkAddressSpaceBusyError } from "./vfork-lifetime";
 import { readForkContinuationAnchor } from "./fork-continuation";
 import { EXEC_RETIRE_SIGNAL_CODE } from "./worker-protocol";
 import {
@@ -320,6 +324,9 @@ const kernelEntryIntrinsicAtomicsStore = Atomics.store;
 const kernelEntryIntrinsicAtomicsNotify = Atomics.notify;
 const KERNEL_ENTRY_I32_BYTES = 4;
 
+// WHY: callers already hold the KernelEntryGate token for the exact process
+// memory they are materializing. Use the captured intrinsic getter so guest
+// hooks cannot replace WebAssembly.Memory.prototype.buffer mid-entry.
 function kernelEntryMemoryBuffer(
   memory: WebAssembly.Memory,
 ): ArrayBufferLike {
@@ -909,9 +916,10 @@ const P_PGID = 2;
 const SIGCHLD = 17;
 const SIGALRM = 14;
 const SIGSEGV = 11;
-/** SIGKILL — used only as the host-teardown "exit now" marker handed to the
- *  guest glue (see killAllBlockedForTeardown). SIGKILL is never delivered to
- *  the guest in normal operation, so the glue treats it unambiguously.
+/** SIGKILL — used as the host-owned "exit now" marker handed to the guest
+ *  glue after Rust has already committed process death (see
+ *  killAllBlockedForTeardown and borrowed-process completion below). It is never
+ *  delivered as a catchable guest signal, so the glue treats it unambiguously.
  *  [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — part of the workaround; see
  *  docs/jsc-terminate-atomics-wait-workaround.md. */
 const SIGKILL = 9;
@@ -1667,6 +1675,8 @@ interface ProcessRegistration {
   pid: number;
   memory: WebAssembly.Memory;
   channels: ChannelInfo[];
+  /** True only while a vfork child borrows its suspended parent's Memory. */
+  borrowedAddressSpace: boolean;
   /** Pointer width: 4 for wasm32, 8 for wasm64. */
   ptrWidth: 4 | 8;
   /**
@@ -1814,6 +1824,8 @@ interface RegisterProcessOptions {
   maxAddr?: number;
   /** brk ceiling below host-owned control pages. */
   brkLimit?: number;
+  /** The process is a vfork child borrowing another process's Memory. */
+  borrowedAddressSpace?: boolean;
 }
 
 type RegisterProcessStdioKind = "pipe" | "terminal";
@@ -1973,11 +1985,21 @@ export type ForkContinuationContext =
       readonly kind: "thread";
     } & Readonly<ForkFromThreadContext>);
 
+export interface ForkBorrowedReplayWorkspace {
+  /** Aligned bytes needed for every active activation's mutable prefix. */
+  readonly prefixBytes: number;
+  /** Page-rounded reference/exception codec scratch high-water. */
+  readonly scratchBytes: number;
+}
+
 export interface ForkLaunchRequest {
   readonly parentPid: number;
   readonly childPid: number;
+  readonly mode: ProcessForkMode;
   readonly parentMemory: WebAssembly.Memory;
   readonly continuation: ForkContinuationContext;
+  /** Present only for vfork, measured before the kernel child is allocated. */
+  readonly borrowedReplay?: ForkBorrowedReplayWorkspace;
 }
 
 export interface ResolvedSpawnProgram {
@@ -4009,14 +4031,18 @@ export class CentralizedKernelWorker {
           (entry) => {
             const forkProcess = this.#kernelInstanceForEntry(entry).exports
               .kernel_fork_process as
-              | ((parent: number, caller: number) => number)
+              | ((parent: number, caller: number, mode: number) => number)
               | undefined;
             if (forkProcess === undefined) {
               throw new Error(
                 "kernel missing advisory-lock fork test export",
               );
             }
-            const result = forkProcess(parentPid, callerTid);
+            const result = forkProcess(
+              parentPid,
+              callerTid,
+              PROCESS_FORK_MODE_FORK,
+            );
             if (
               !Number.isSafeInteger(result)
               || result <= 0
@@ -4467,6 +4493,7 @@ export class CentralizedKernelWorker {
             this.handleFork(
               channelSnapshot.channel,
               argsSnapshot.args,
+              PROCESS_FORK_MODE_FORK,
               entry,
             );
             return undefined;
@@ -4734,6 +4761,7 @@ export class CentralizedKernelWorker {
               pid,
               memory,
               channels,
+              borrowedAddressSpace: false,
               ptrWidth: pointerWidth,
               explicitMaxAddr: false,
             });
@@ -6749,6 +6777,7 @@ export class CentralizedKernelWorker {
       pid,
       memory,
       channels,
+      borrowedAddressSpace: options?.borrowedAddressSpace === true,
       ptrWidth,
       explicitMaxAddr: explicitMaxAddr !== undefined,
     };
@@ -10999,7 +11028,14 @@ export class CentralizedKernelWorker {
 
     if (syscallNr === SYS_FORK || syscallNr === SYS_VFORK) {
       if (logging) console.error(logEntry);
-      this.handleFork(channel, origArgs, entry);
+      this.handleFork(
+        channel,
+        origArgs,
+        syscallNr === SYS_VFORK
+          ? PROCESS_FORK_MODE_VFORK
+          : PROCESS_FORK_MODE_FORK,
+        entry,
+      );
       return;
     }
 
@@ -21208,9 +21244,11 @@ export class CentralizedKernelWorker {
     if (
       this.#isAsyncChannelProcessActiveWithinKernelEntry(channel, entry)
     ) {
-      const errno = cause instanceof ProcessMemoryRetirementBacklogError
-        ? 11 // EAGAIN: bounded retired-memory debt denied admission.
-        : 12; // ENOMEM: worker launch or ordinary allocation failure.
+      const errno =
+        cause instanceof ProcessMemoryRetirementBacklogError
+        || cause instanceof VforkAddressSpaceBusyError
+          ? 11 // EAGAIN: bounded debt or vfork workspace denied admission.
+          : 12; // ENOMEM: worker launch or ordinary allocation failure.
       this.#completeForkWithinKernelEntry(
         channel,
         origArgs,
@@ -21228,6 +21266,7 @@ export class CentralizedKernelWorker {
   private handleFork(
     channel: ChannelInfo,
     _origArgs: number[],
+    mode: ProcessForkMode,
     entry: KernelWorkerEntryContext,
   ): void {
     if (!this.callbacks.onFork) {
@@ -21236,6 +21275,33 @@ export class CentralizedKernelWorker {
         channel, _origArgs, -1, 38, entry,
       );
       return;
+    }
+
+    let borrowedReplay: ForkBorrowedReplayWorkspace | undefined;
+    if (mode === PROCESS_FORK_MODE_VFORK) {
+      const prefixBytes = _origArgs[0];
+      const scratchBytes = _origArgs[1];
+      if (
+        !Number.isSafeInteger(prefixBytes)
+        || prefixBytes <= 0
+        || prefixBytes > FORK_BUF_SIZE
+        || !Number.isSafeInteger(scratchBytes)
+        || scratchBytes < 0
+        || scratchBytes > WASM_PAGE_SIZE
+      ) {
+        // One host control slot is the bounded vfork workspace. Refuse the
+        // transaction before Rust allocates a child PID or any Worker can see
+        // shared memory; post-launch exhaustion cannot safely return errno.
+        this.#completeForkWithinKernelEntry(
+          channel,
+          _origArgs,
+          -1,
+          EAGAIN,
+          entry,
+        );
+        return;
+      }
+      borrowedReplay = { prefixBytes, scratchBytes };
     }
 
     const parentPid = channel.pid;
@@ -21318,8 +21384,8 @@ export class CentralizedKernelWorker {
     // Fork atomically allocates the child PID and inserts its Process in Rust.
     // The host receives that identity only after the authoritative state exists.
     const kernelForkProcess = this.#kernelInstanceForEntry(entry).exports.kernel_fork_process as
-      (parentPid: number, callerTid: number) => number;
-    const forkResult = kernelForkProcess(parentPid, callerTid);
+      (parentPid: number, callerTid: number, mode: ProcessForkMode) => number;
+    const forkResult = kernelForkProcess(parentPid, callerTid, mode);
     if (forkResult <= 0) {
       // Fork failed in kernel (e.g., ESRCH, ENOMEM)
       const errno = forkResult < 0 ? (-forkResult) >>> 0 : EIO;
@@ -21406,8 +21472,10 @@ export class CentralizedKernelWorker {
           this.callbacks.onFork!({
             parentPid,
             childPid,
+            mode,
             parentMemory: channel.memory,
             continuation,
+            ...(borrowedReplay ? { borrowedReplay } : {}),
           }),
         );
       } catch (cause) {
@@ -23480,6 +23548,15 @@ export class CentralizedKernelWorker {
     entry: KernelWorkerEntryContext,
   ): void {
     const exitingPid = channel.pid;
+    const registration = this.processes.get(exitingPid);
+    const canQuiesceBorrowedWorker =
+      registration?.borrowedAddressSpace === true
+      && registration.channels.length === 1
+      && registration.channels[0] === channel
+      && Atomics.load(
+          new Int32Array(channel.memory.buffer, channel.channelOffset),
+          CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
+        ) === CH_PENDING;
     this.discardStoppedChannelStateForProcess(exitingPid);
     // Idempotency guard — both handleExit and reapKilledProcessesAfterSyscall
     // can route here for the same pid; do the parent-wakeup work exactly
@@ -23503,9 +23580,20 @@ export class CentralizedKernelWorker {
     this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
     this.notifyParentOfExitedProcess(exitingPid, entry);
 
-    // Do NOT complete the channel — the worker is blocked on Atomics.wait
-    // and waking it would cause the C code to continue executing.
-    // onExit will terminate the worker.
+    if (canQuiesceBorrowedWorker) {
+      // WHY: forced Worker termination cannot prove that a vfork child has
+      // stopped touching its parent's shared Memory. At an exact pending
+      // syscall boundary, replace the dead process's result with Kandelo's
+      // private exit marker. Libc enters kernel_exit before any user
+      // instruction can run, the wrapper publishes memory_quiescent, and the
+      // original Rust signal status remains authoritative for waitpid().
+      this.wakeChannelForTeardownExit(channel, entry);
+      return;
+    }
+
+    // A Worker with no pending channel has no cooperative ownership
+    // fence. Do not wake an ordinary dead process back into C; force its host
+    // teardown, retaining/containing shared Memory when quiescence is unknown.
     entry.deferProtocolEffect(() => {
       this.callbacks.onExit?.(
         exitingPid,
@@ -29376,7 +29464,14 @@ export class CentralizedKernelWorker {
         this.#kernelPointerWidth,
         "PCM transport",
       );
-      const buffer = kernelEntryMemoryBuffer(this.#kernelMemory!);
+      // WHY: SharedArrayBuffer cannot lend a bounded subrange. The trusted
+      // machine-level audio driver receives the backing plus checked offsets;
+      // its protocol exposes only this validated control-and-ring window.
+      const buffer = kernelEntryIntrinsicApply(
+        kernelEntryIntrinsicMemoryBuffer,
+        this.#kernelMemory!,
+        [],
+      ) as ArrayBufferLike;
       if (!(buffer instanceof SharedArrayBuffer)) {
         throw new KernelScratchError(
           "PCM transport is not backed by shared kernel memory",
@@ -31445,8 +31540,9 @@ export class CentralizedKernelWorker {
     udpPlan: UdpBindingCleanupPlan,
     tcpPlan: TcpListenerCleanupPlan,
   ): void {
-    // Publish every replacement before the first callback. The gate keeps
-    // reentrant ingress behind the complete detached protocol-effect record.
+    // Publish every replacement before the first callback. Reentrant void
+    // ingress can join the gate after this complete record; roots that owe a
+    // synchronous result reject reentrancy rather than returning a fiction.
     this.udpBindings = udpPlan.udpBindings;
     this.tcpListenerTargets = tcpPlan.tcpListenerTargets;
     this.tcpListenerRRIndex = tcpPlan.tcpListenerRRIndex;

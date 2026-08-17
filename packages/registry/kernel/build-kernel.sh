@@ -47,15 +47,26 @@ wasm_require_exports "$OUT" \
     kernel_has_sa_nocldstop \
     kernel_host_adapter_manifest_len \
     kernel_host_adapter_manifest_ptr \
+    kernel_ipc_shm_lookup_mapping_for_task \
+    kernel_ipc_shm_record_mapping_for_process \
+    kernel_ipc_shm_record_mapping_for_task \
     kernel_ipc_shmat_for_process \
     kernel_ipc_shmat_for_task \
+    kernel_ipc_shmdt_addr_for_process \
+    kernel_ipc_shmdt_addr_for_task \
     kernel_ipc_shmdt_for_process \
     kernel_ipc_shmdt_for_task \
     kernel_is_fd_nonblock \
     kernel_mark_process_signaled \
     kernel_mq_descriptor_msgsize \
     kernel_msqid_ds_bytes \
+    kernel_pcm_claim_transport \
+    kernel_pcm_clock_update \
+    kernel_pcm_reconcile \
+    kernel_pcm_transport_len \
+    kernel_pcm_transport_ptr \
     kernel_pick_signal_target_tid \
+    kernel_pick_tcp_listener_target \
     kernel_pipe_has_readers \
     kernel_posix_timer_fire \
     kernel_process_metadata_begin \
@@ -76,6 +87,7 @@ wasm_require_exports "$OUT" \
     kernel_spawn_scratch_capacity \
     kernel_spawn_scratch_pointer \
     kernel_spawn_scratch_retained_capacity \
+    kernel_take_process_timer_cleanup \
     kernel_thread_exit \
     kernel_thread_has_deliverable \
     kernel_transfer_channel_execute \

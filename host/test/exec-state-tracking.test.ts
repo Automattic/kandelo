@@ -1454,9 +1454,12 @@ function createWorker(overrides: Record<string, unknown>): any {
     pointerWidth,
     {
       kernelExports: exports,
-      kernelExportNames: Object.entries(exports)
-        .filter(([, value]) => typeof value === "function")
-        .map(([name]) => name),
+      kernelExportNames: [
+        "kernel_take_process_timer_cleanup",
+        ...Object.entries(exports)
+          .filter(([, value]) => typeof value === "function")
+          .map(([name]) => name),
+      ],
     },
   );
   workerKernelExports.set(worker, exports);

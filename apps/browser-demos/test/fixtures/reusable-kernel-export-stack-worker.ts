@@ -4,8 +4,8 @@ import { BrowserTimeProvider } from "../../../../host/src/vfs/time";
 import { VirtualPlatformIO } from "../../../../host/src/vfs/vfs";
 
 interface ReusableKernelExports extends WebAssembly.Exports {
+  kernel_commit_process_exit(status: number): number;
   kernel_create_process(): number;
-  kernel_exit(status: number): void;
   kernel_get_stack_pointer(): number;
   kernel_reap_process(pid: number): number;
   kernel_set_current_tid(pid: number, tid: number): number;
@@ -118,11 +118,17 @@ async function runProbe({
       throw new Error(`bind process ${iteration} failed: ${bindResult}`);
     }
 
-    // A kernel instance is reusable for the lifetime of the machine. A
-    // successful process exit must return through Rust's Wasm epilogue; using
-    // a trap as success control flow leaks that activation's shadow-stack
-    // frame and exhausts the kernel after enough short-lived children.
-    exports.kernel_exit(0);
+    // A kernel instance is reusable for the lifetime of the machine. The
+    // host adapter must commit process exit through Rust's returning Wasm
+    // epilogue so repeated short-lived children cannot consume its shadow
+    // stack. The separate guest kernel_exit boundary intentionally traps to
+    // preserve _exit's non-returning contract.
+    const committedStatus = exports.kernel_commit_process_exit(0);
+    if (committedStatus !== 0) {
+      throw new Error(
+        `exit process ${iteration} returned ${committedStatus}`,
+      );
+    }
     const stackPointer = exports.kernel_get_stack_pointer();
     if (stackPointer !== baselineStackPointer) {
       throw new Error(

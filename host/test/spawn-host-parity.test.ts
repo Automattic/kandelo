@@ -44,8 +44,8 @@ function posixSpawnHandlerSource(src: string): string {
   return src.slice(start, end);
 }
 
-function forkHandlerSource(src: string): string {
-  const start = src.indexOf("async function handleFork(");
+function ordinaryForkHandlerSource(src: string): string {
+  const start = src.indexOf("async function handleOrdinaryFork(");
   const end = src.indexOf("\nasync function handleExec(", start);
   expect(start).toBeGreaterThanOrEqual(0);
   expect(end).toBeGreaterThan(start);
@@ -103,7 +103,7 @@ function expectDeadStartUsesOrdinaryTeardown(handler: string, entry: string): vo
 describe("spawn host parity", () => {
   it("both hosts own the exact fork clone before their first async yield", () => {
     for (const entry of [nodeEntry, browserEntry]) {
-      const handler = forkHandlerSource(readFileSync(entry, "utf8"));
+      const handler = ordinaryForkHandlerSource(readFileSync(entry, "utf8"));
       const clone = handler.indexOf("acquireForkMemoryClone(");
       const firstAwait = handler.indexOf("await ");
       expect(clone, `${entry} must acquire the fork clone`).toBeGreaterThanOrEqual(0);
@@ -118,7 +118,10 @@ describe("spawn host parity", () => {
   it("all fork and spawn dead-start paths transfer cleanup exactly once", () => {
     for (const entry of [nodeEntry, browserEntry]) {
       const source = readFileSync(entry, "utf8");
-      expectDeadStartUsesOrdinaryTeardown(forkHandlerSource(source), entry);
+      expectDeadStartUsesOrdinaryTeardown(
+        ordinaryForkHandlerSource(source),
+        entry,
+      );
       expectDeadStartUsesOrdinaryTeardown(posixSpawnHandlerSource(source), entry);
     }
   });

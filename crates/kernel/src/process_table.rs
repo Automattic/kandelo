@@ -278,7 +278,7 @@ pub(crate) fn bump_inherited_resource_refcounts(
         if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
             let pipe_idx = (-(ofd.host_handle + 1)) as usize;
             if let Some(pipe) = pipe_table.get_mut(pipe_idx) {
-                if let Some(kind) = pipe.reference_kind(ofd.status_flags) {
+                if let Some(kind) = pipe.reference_kind(ofd.status_flags()) {
                     pipe.add_reference(kind);
                 }
             }
@@ -376,7 +376,7 @@ fn build_fork_pipe_replay(child: &Process) -> Vec<(i32, i32)> {
                 {
                     continue;
                 }
-                let access_mode = ofd.status_flags & O_ACCMODE;
+                let access_mode = ofd.status_flags() & O_ACCMODE;
                 let pair = pipe_fd_pairs.entry(pipe_idx).or_insert((-1, -1));
                 if access_mode == wasm_posix_shared::flags::O_RDONLY {
                     pair.0 = fd;
@@ -529,7 +529,7 @@ impl ProcessTable {
                 if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
                     let pipe_idx = (-(ofd.host_handle + 1)) as usize;
                     if let Some(pipe) = pipe_table.get_mut(pipe_idx) {
-                        if let Some(kind) = pipe.reference_kind(ofd.status_flags) {
+                        if let Some(kind) = pipe.reference_kind(ofd.status_flags()) {
                             pipe.close_reference(kind);
                         }
                     }
@@ -1030,6 +1030,24 @@ impl ProcessTable {
         parent_pid: u32,
         caller_tid: u32,
     ) -> Result<u32, Errno> {
+        self.fork_process_for_caller_with_mode(
+            parent_pid,
+            caller_tid,
+            wasm_posix_shared::fork_contract::Mode::Fork,
+        )
+    }
+
+    /// Fork a process with an explicit host address-space lifetime mode.
+    ///
+    /// Both modes inherit identical POSIX process state. The vfork marker is
+    /// kernel-internal authority that rejects creation of another process or
+    /// pthread owner while the child still borrows its parent's Memory.
+    pub fn fork_process_for_caller_with_mode(
+        &mut self,
+        parent_pid: u32,
+        caller_tid: u32,
+        mode: wasm_posix_shared::fork_contract::Mode,
+    ) -> Result<u32, Errno> {
         let (serialized_parent, caller_blocked) = {
             let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
             if matches!(
@@ -1040,6 +1058,9 @@ impl ProcessTable {
             }
             if !parent.is_live_explicit_tid(caller_tid) {
                 return Err(Errno::ESRCH);
+            }
+            if parent.vfork_child {
+                return Err(Errno::EAGAIN);
             }
             (
                 serialize_fork_state_with_growing_buffer(parent)?,
@@ -1054,10 +1075,21 @@ impl ProcessTable {
         // already allocated here; the deserializer cannot select a PID.
         let mut child = Process::new_allocated_empty(child_task_id);
         crate::fork::deserialize_allocated_fork_state(&serialized_parent, &mut child)?;
+        // WHY: bytes preserve an OfdId and scalar snapshot, not object
+        // identity. Relink before publication so fork and vfork inherit the
+        // parent's exact open file description instead of a matching copy.
+        child.ofd_table.link_shared_states_from(
+            &self
+                .processes
+                .get(&parent_pid)
+                .ok_or(Errno::ESRCH)?
+                .ofd_table,
+        )?;
         // POSIX fork leaves one thread in the child, and that thread inherits
         // the mask of the task that called fork rather than the process
         // leader's mask.
         child.signals.blocked = caller_blocked;
+        child.vfork_child = mode == wasm_posix_shared::fork_contract::Mode::Vfork;
 
         // Bump cross-process refcounts on inherited fd state (host handles,
         // global pipes, PTYs, socket-pipes). Identical to spawn's needs —
@@ -1103,6 +1135,9 @@ impl ProcessTable {
             }
             if !parent.is_live_explicit_tid(caller_tid) {
                 return Err(Errno::ESRCH);
+            }
+            if parent.vfork_child {
+                return Err(Errno::EAGAIN);
             }
             // Compute the SIG_IGN-disposition bitmask for signals 1..=64.
             let mut ignored_signals: u64 = 0;
@@ -1713,6 +1748,43 @@ mod wait_tests {
             )
             .unwrap();
         assert_eq!(table.get(spawn_pid).unwrap().signals.blocked, 0x22);
+    }
+
+    #[test]
+    fn vfork_child_rejects_nested_process_owners() {
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+        use wasm_posix_shared::fork_contract::Mode;
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let ordinary_child_pid = table
+            .fork_process_for_caller_with_mode(parent_pid, parent_pid, Mode::Fork)
+            .unwrap();
+        assert!(!table.get(ordinary_child_pid).unwrap().vfork_child);
+
+        let child_pid = table
+            .fork_process_for_caller_with_mode(parent_pid, parent_pid, Mode::Vfork)
+            .unwrap();
+        assert!(table.get(child_pid).unwrap().vfork_child);
+
+        assert_eq!(
+            table.fork_process_for_caller(child_pid, child_pid),
+            Err(Errno::EAGAIN),
+        );
+        let mut host = NoopHost;
+        assert_eq!(
+            table.spawn_child_for_caller(
+                child_pid,
+                child_pid,
+                &[b"/bin/child".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            ),
+            Err(Errno::EAGAIN),
+        );
     }
 
     #[test]
@@ -2856,7 +2928,7 @@ mod tests {
                 b"/inherited-directory".to_vec(),
             );
             let ofd = parent.ofd_table.get_mut(ofd_idx).unwrap();
-            ofd.offset = 4;
+            ofd.set_directory_offset(4);
             ofd.dir_host_handle = ITERATOR_HANDLE;
             ofd.dir_synth_state = 2;
             ofd.dir_entry_offset = 4;
@@ -2893,7 +2965,7 @@ mod tests {
             .ofd_table
             .get(child_entry.ofd_ref.0)
             .unwrap();
-        assert_eq!(child_ofd.offset, 4);
+        assert_eq!(child_ofd.offset(), 4);
         assert_eq!(child_ofd.dir_entry_offset, 4);
         assert_eq!(child_ofd.dir_synth_state, 2);
         assert_eq!(child_ofd.dir_host_handle, -1);
@@ -2952,7 +3024,7 @@ mod tests {
                 b"/forked-directory".to_vec(),
             );
             let ofd = parent.ofd_table.get_mut(ofd_idx).unwrap();
-            ofd.offset = 3;
+            ofd.set_directory_offset(3);
             ofd.dir_host_handle = ITERATOR_HANDLE;
             ofd.dir_synth_state = 2;
             ofd.dir_entry_offset = 3;
@@ -2980,7 +3052,7 @@ mod tests {
             .ofd_table
             .get(child_entry.ofd_ref.0)
             .unwrap();
-        assert_eq!(child_ofd.offset, 3);
+        assert_eq!(child_ofd.offset(), 3);
         assert_eq!(child_ofd.dir_entry_offset, 3);
         assert_eq!(child_ofd.dir_host_handle, -1);
         assert!(child_ofd.dir_pending_entry.is_none());
@@ -2996,6 +3068,102 @@ mod tests {
                 .count(),
             1,
         );
+    }
+
+    #[test]
+    fn fork_modes_share_mutable_ofd_state_with_exact_lifetime() {
+        use crate::fd::OpenFileDescRef;
+        use wasm_posix_shared::flags::{O_APPEND, O_NONBLOCK, O_RDWR};
+        use wasm_posix_shared::fork_contract::Mode;
+
+        for mode in [Mode::Fork, Mode::Vfork] {
+            let mut table = ProcessTable::new();
+            let parent_pid = table.create_process().unwrap();
+            let ofd_idx = {
+                let parent = table.get_mut(parent_pid).unwrap();
+                let ofd_idx = parent.ofd_table.create(
+                    FileType::Regular,
+                    O_RDWR,
+                    9_452_010,
+                    b"/shared-ofd".to_vec(),
+                );
+                parent
+                    .fd_table
+                    .alloc(OpenFileDescRef(ofd_idx), 0)
+                    .unwrap();
+                let ofd = parent.ofd_table.get_mut(ofd_idx).unwrap();
+                ofd.set_offset(4);
+                ofd.set_owner_pid(parent_pid);
+                assert_eq!(ofd.shared_state_ref_count(), 1);
+                ofd_idx
+            };
+
+            let child_pid = table
+                .fork_process_for_caller_with_mode(parent_pid, parent_pid, mode)
+                .unwrap();
+            assert_eq!(
+                table
+                    .get(parent_pid)
+                    .unwrap()
+                    .ofd_table
+                    .get(ofd_idx)
+                    .unwrap()
+                    .shared_state_ref_count(),
+                2,
+            );
+
+            {
+                let child_ofd = table
+                    .get_mut(child_pid)
+                    .unwrap()
+                    .ofd_table
+                    .get_mut(ofd_idx)
+                    .unwrap();
+                child_ofd.set_offset(17);
+                child_ofd.set_status_flags_raw(O_RDWR | O_NONBLOCK);
+                child_ofd.set_owner_pid(child_pid);
+            }
+            let parent_ofd = table
+                .get(parent_pid)
+                .unwrap()
+                .ofd_table
+                .get(ofd_idx)
+                .unwrap();
+            assert_eq!(parent_ofd.offset(), 17);
+            assert_eq!(parent_ofd.status_flags(), O_RDWR | O_NONBLOCK);
+            assert_eq!(parent_ofd.owner_pid(), child_pid);
+
+            table
+                .get_mut(parent_pid)
+                .unwrap()
+                .ofd_table
+                .get_mut(ofd_idx)
+                .unwrap()
+                .set_status_flags_raw(O_RDWR | O_APPEND);
+            assert_eq!(
+                table
+                    .get(child_pid)
+                    .unwrap()
+                    .ofd_table
+                    .get(ofd_idx)
+                    .unwrap()
+                    .status_flags(),
+                O_RDWR | O_APPEND,
+            );
+
+            table.remove_process(child_pid).unwrap();
+            assert_eq!(
+                table
+                    .get(parent_pid)
+                    .unwrap()
+                    .ofd_table
+                    .get(ofd_idx)
+                    .unwrap()
+                    .shared_state_ref_count(),
+                1,
+            );
+            table.remove_process(parent_pid).unwrap();
+        }
     }
 
     #[test]

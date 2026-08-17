@@ -62,6 +62,11 @@ export type ForkBorrowedReplayPrefixAllocator = (
   request: ForkBorrowedReplayPrefixRequest,
 ) => WasmGuestPointer;
 
+export interface ForkBorrowedReplayWorkspaceRequirements {
+  readonly prefixBytes: number;
+  readonly scratchBytes: number;
+}
+
 export interface ForkProcessActivationBinding {
   readonly activationId: number;
   readonly continuation: LinkedForkContinuation;
@@ -71,9 +76,11 @@ export interface ForkProcessActivationBinding {
    * Only activation zero owns this process-wide anchor. Its value may name
    * any active activation's continuation: a side module can call the fork
    * import without placing a main-module Wasm frame on the captured stack.
+   * A vfork child deliberately omits this writer: it may read the suspended
+   * parent's root for borrowed replay, but must never clear or replace it.
    */
   readonly publishProcessLaunchRoot?: (address: number) => void;
-  /** Read the copied process launch root after fresh-child instantiation. */
+  /** Read the copied or borrowed process launch root after instantiation. */
   readonly readProcessLaunchRoot?: () => number;
 }
 
@@ -163,11 +170,11 @@ export class ForkProcessContinuationCoordinator {
       );
     }
     if (
-      (binding.publishProcessLaunchRoot === undefined)
-      !== (binding.readProcessLaunchRoot === undefined)
+      binding.publishProcessLaunchRoot !== undefined
+      && binding.readProcessLaunchRoot === undefined
     ) {
       throw new Error(
-        `${this.label}: process launch anchor must provide both read and publish`,
+        `${this.label}: a writable process launch anchor must also be readable`,
       );
     }
     this.prepared.set(binding.activationId, binding);
@@ -671,6 +678,36 @@ export class ForkProcessContinuationCoordinator {
     return this.phase;
   }
 
+  /**
+   * Measure child-private workspace after the complete process graph seals.
+   *
+   * Prefixes remain live through inherited-frame rewind, while reference
+   * scratch is stack-disciplined and reports its capture high-water. Keeping
+   * the two regions separate lets the host use one control slot without
+   * allowing either allocator to overwrite the other.
+   */
+  borrowedReplayWorkspaceRequirements(): ForkBorrowedReplayWorkspaceRequirements {
+    this.requirePhase(
+      "sealed-parent",
+      "measure borrowed replay workspace",
+    );
+    let prefixBytes = 0;
+    for (const activation of this.activeActivations()) {
+      const { alignment, fixedPrefixSize } = activation.continuation.format;
+      prefixBytes = Math.ceil(prefixBytes / alignment) * alignment;
+      prefixBytes += fixedPrefixSize;
+      if (!Number.isSafeInteger(prefixBytes)) {
+        throw new RangeError(
+          `${this.label}: borrowed replay prefix size exceeds JavaScript precision`,
+        );
+      }
+    }
+    return {
+      prefixBytes,
+      scratchBytes: this.registry.borrowedReplayScratchCapacity(),
+    };
+  }
+
   rootFor(activationId: number): number {
     return this.getActivation(activationId).root;
   }
@@ -906,7 +943,7 @@ export class ForkProcessContinuationCoordinator {
   private readProcessLaunchRoot(): number {
     const owner = this.activations.get(0);
     const read = owner?.readProcessLaunchRoot;
-    if (!owner || !owner.publishProcessLaunchRoot || !read) {
+    if (!owner || !read) {
       throw new Error(
         `${this.label}: activation zero has no process launch anchor`,
       );

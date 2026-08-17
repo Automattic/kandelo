@@ -12,6 +12,27 @@ WASM="$TMP_ROOT/tool.wasm"
 ABI_VERSION="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
   "$REPO_ROOT/crates/shared/src/lib.rs" | head -n1)"
 FORBIDDEN_ROOT="/trusted/runner/workspace"
+
+assert_fork_fixture_wat() {
+  local arch="$1"
+  local wat="$TMP_ROOT/fork-fixture-$arch.wat"
+  local wasm="$TMP_ROOT/fork-fixture-$arch.wasm"
+  KANDELO_FORK_FIXTURE_WAT_OUTPUT="$wat" \
+    bash "$REPO_ROOT/scripts/build-fork-instrumented-test-fixture.sh" \
+      --arch "$arch" --output "$wasm"
+  grep -Fx '  (import "kernel" "kernel_fork" (func $kernel_fork (param i32) (result i32)))' "$wat" >/dev/null || {
+    echo "test-homebrew-inspect-bottle.sh: $arch fixture has wrong kernel_fork import" >&2
+    exit 1
+  }
+  grep -Fx '    (drop (call $kernel_fork (i32.const 0)))))' "$wat" >/dev/null || {
+    echo "test-homebrew-inspect-bottle.sh: $arch fixture does not call ordinary fork mode 0" >&2
+    exit 1
+  }
+}
+
+assert_fork_fixture_wat wasm32
+assert_fork_fixture_wat wasm64
+
 cat >"$FORMULA_SOURCE" <<'RUBY'
 class Tool < Formula
   desc "Archive inspector fixture"

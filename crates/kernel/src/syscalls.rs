@@ -590,10 +590,8 @@ fn handle_dsp_ioctl(
         }
         SNDCTL_DSP_NONBLOCK => {
             crate::audio::set_nonblock(handle, true)?;
-            proc.ofd_table
-                .get_mut(ofd_idx)
-                .ok_or(Errno::EBADF)?
-                .status_flags |= O_NONBLOCK;
+            let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
+            ofd.set_status_flags_raw(ofd.status_flags() | O_NONBLOCK);
             Ok(())
         }
         SOUND_PCM_READ_RATE => {
@@ -954,6 +952,7 @@ fn commit_exec_state_impl(
     }
     proc.posix_timers.clear();
     proc.fork_child = false;
+    proc.vfork_child = false;
     proc.fork_exec_path = None;
     proc.fork_exec_argv = None;
     proc.fork_fd_actions.clear();
@@ -3203,20 +3202,21 @@ pub(crate) fn snapshot_scm_rights_fd(
     path.try_reserve_exact(ofd.path.len())
         .map_err(|_| Errno::ENOMEM)?;
     path.extend_from_slice(&ofd.path);
-    let mut in_flight = crate::pipe::InFlightFd::new(
+    let mut in_flight = crate::pipe::InFlightFd::new_with_shared_state(
         ofd.ofd_id,
         ofd.file_id,
         ofd.file_type,
-        ofd.status_flags,
+        ofd.status_flags(),
         ofd.host_handle,
-        ofd.offset,
+        ofd.offset(),
         path,
+        ofd.shared_state(),
     );
 
     if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
         let pipe_idx = decode_scm_rights_kernel_pipe_handle(ofd.host_handle)?;
         in_flight.pipe_ref_kind = unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }
-            .and_then(|pipe| pipe.reference_kind(ofd.status_flags));
+            .and_then(|pipe| pipe.reference_kind(ofd.status_flags()));
         if in_flight.pipe_ref_kind.is_none() {
             return Err(Errno::EOPNOTSUPP);
         }
@@ -3300,6 +3300,7 @@ pub(crate) fn install_scm_rights_fds_with_flags(
             entry.status_flags,
             entry.host_handle,
             entry.offset,
+            entry.shared_state(),
             // The receiver becomes the only consumer of this snapshot path;
             // moving it avoids an infallible allocation in a receive path
             // whose resource failures must remain recoverable.
@@ -3457,7 +3458,7 @@ fn release_ofd_reference_impl(
         (
             ofd.host_handle,
             ofd.file_type,
-            ofd.status_flags,
+            ofd.status_flags(),
             ofd.dir_host_handle,
             ofd.ofd_id,
         )
@@ -4133,7 +4134,7 @@ pub fn sys_read(
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
     // Check that the fd is open for reading (access mode != O_WRONLY).
-    let access_mode = ofd.status_flags & O_ACCMODE;
+    let access_mode = ofd.status_flags() & O_ACCMODE;
     if ofd.is_path_only() || access_mode == O_WRONLY {
         return Err(Errno::EBADF);
     }
@@ -4147,7 +4148,7 @@ pub fn sys_read(
 
     let host_handle = ofd.host_handle;
     let file_type = ofd.file_type;
-    let status_flags = ofd.status_flags;
+    let status_flags = ofd.status_flags();
     match file_type {
         FileType::Pipe => {
             if host_handle >= 0 {
@@ -4472,7 +4473,7 @@ pub fn sys_read(
                 let current = crate::descriptor_backing::current_offset(
                     ofd.file_type,
                     ofd.host_handle,
-                    ofd.offset,
+                    ofd.offset(),
                 )?;
                 let offset = usize::try_from(current).map_err(|_| Errno::EOVERFLOW)?;
                 let data = synthetic_file_content(&ofd.path).ok_or(Errno::EBADF)?;
@@ -4490,7 +4491,11 @@ pub fn sys_read(
                 return Ok(n);
             }
 
-            let current_offset = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.offset;
+            let current_offset = proc
+                .ofd_table
+                .get(ofd_idx)
+                .ok_or(Errno::EBADF)?
+                .offset();
             // WHY: Rust owns the ordinary-file cursor. A backend cursor can
             // be different after fork/SCM_RIGHTS metadata is copied, and a
             // seek/read pair would expose an intermediate cursor to nested or
@@ -4505,7 +4510,10 @@ pub fn sys_read(
                 host.host_read(host_handle, buf)?
             };
             let new_offset = checked_host_cursor_advance(current_offset, buf.len(), n)?;
-            proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?.offset = new_offset;
+            proc.ofd_table
+                .get_mut(ofd_idx)
+                .ok_or(Errno::EBADF)?
+                .set_offset(new_offset);
             Ok(n)
         }
     }
@@ -4523,14 +4531,14 @@ pub fn sys_write(
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
     // Check that the fd is open for writing (access mode != O_RDONLY).
-    let access_mode = ofd.status_flags & O_ACCMODE;
+    let access_mode = ofd.status_flags() & O_ACCMODE;
     if ofd.is_path_only() || access_mode == O_RDONLY {
         return Err(Errno::EBADF);
     }
 
     let host_handle = ofd.host_handle;
     let file_type = ofd.file_type;
-    let status_flags = ofd.status_flags;
+    let status_flags = ofd.status_flags();
 
     // Zero-length write: POSIX returns 0 without writing
     if buf.is_empty() {
@@ -4721,14 +4729,16 @@ pub fn sys_write(
                                     0,
                                 );
                             }
-                            let offset = ofd.offset.max(0) as usize;
+                            let offset = ofd.offset().max(0) as usize;
                             let max_off = (FB_SMEM_LEN as usize).saturating_sub(offset);
                             let n = buf.len().min(max_off);
                             if n > 0 {
-                                let new_offset = checked_offset_advance(ofd.offset, n)?;
+                                let new_offset = checked_offset_advance(ofd.offset(), n)?;
                                 host.fb_write(proc.pid as i32, offset, &buf[..n]);
-                                proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?.offset =
-                                    new_offset;
+                                proc.ofd_table
+                                    .get_mut(ofd_idx)
+                                    .ok_or(Errno::EBADF)?
+                                    .set_offset(new_offset);
                             }
                             // Linux fbdev returns the requested length even
                             // when capping at smem_len; we mirror that.
@@ -4754,7 +4764,10 @@ pub fn sys_write(
                 let outcome = host.host_append(host_handle, buf, fsize_limit)?;
                 let (written, end) =
                     validate_append_outcome(proc, caller_tid, buf.len(), fsize_limit, outcome)?;
-                proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?.offset = end;
+                proc.ofd_table
+                    .get_mut(ofd_idx)
+                    .ok_or(Errno::EBADF)?
+                    .set_offset(end);
                 return Ok(written);
             }
 
@@ -4802,18 +4815,28 @@ pub fn sys_write(
                 // persistent backend flag or relies on its mutable cursor.
                 let n = host.host_pwrite(host_handle, &buf[..writable_len], start)?;
                 let new_offset = checked_host_cursor_advance(start, writable_len, n)?;
-                proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?.offset = new_offset;
+                proc.ofd_table
+                    .get_mut(ofd_idx)
+                    .ok_or(Errno::EBADF)?
+                    .set_offset(new_offset);
                 return Ok(n);
             }
 
-            let current_offset = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.offset;
+            let current_offset = proc
+                .ofd_table
+                .get(ofd_idx)
+                .ok_or(Errno::EBADF)?
+                .offset();
             // A successful write consumes some prefix of the attempted
             // capacity. Prove even the complete attempt is representable
             // before the host can make an irreversible backing-file change.
             checked_offset_advance(current_offset, writable_len)?;
             let n = host.host_write(host_handle, &buf[..writable_len])?;
             let new_offset = checked_host_cursor_advance(current_offset, writable_len, n)?;
-            proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?.offset = new_offset;
+            proc.ofd_table
+                .get_mut(ofd_idx)
+                .ok_or(Errno::EBADF)?
+                .set_offset(new_offset);
             Ok(n)
         }
     }
@@ -4889,7 +4912,7 @@ pub fn sys_lseek(
             ofd.dir_synth_state = offset.min(2) as u8;
             ofd.dir_entry_offset = offset;
             ofd.dir_pending_entry = None;
-            ofd.offset = offset;
+            ofd.set_directory_offset(offset);
             if old_dir_handle >= 0 && old_dir_handle != sentinel {
                 let _ = host.host_closedir(old_dir_handle);
             }
@@ -4949,7 +4972,7 @@ pub fn sys_lseek(
         ofd.dir_synth_state = new_synth_state;
         ofd.dir_entry_offset = offset;
         ofd.dir_pending_entry = None;
-        ofd.offset = offset;
+        ofd.set_directory_offset(offset);
         if old_dir_handle >= 0 && old_dir_handle != new_dir_handle {
             let _ = host.host_closedir(old_dir_handle);
         }
@@ -4962,7 +4985,7 @@ pub fn sys_lseek(
     if ofd.file_type == FileType::CharDevice {
         if let Some(dev) = VirtualDevice::from_host_handle(ofd.host_handle) {
             if dev == VirtualDevice::Fb0 {
-                let cur = ofd.offset;
+                let cur = ofd.offset();
                 let new_off = match whence {
                     SEEK_SET => offset,
                     SEEK_CUR => cur.checked_add(offset).ok_or(Errno::EOVERFLOW)?,
@@ -4974,7 +4997,7 @@ pub fn sys_lseek(
                 if new_off < 0 {
                     return Err(Errno::EINVAL);
                 }
-                ofd.offset = new_off;
+                ofd.set_offset(new_off);
                 return Ok(new_off);
             }
             return Ok(0);
@@ -4991,7 +5014,11 @@ pub fn sys_lseek(
                 .ok_or(Errno::EBADF)
         })?;
         let current =
-            crate::descriptor_backing::current_offset(ofd.file_type, ofd.host_handle, ofd.offset)?;
+            crate::descriptor_backing::current_offset(
+                ofd.file_type,
+                ofd.host_handle,
+                ofd.offset(),
+            )?;
         let new_pos = match whence {
             SEEK_SET => offset,
             SEEK_CUR => current.checked_add(offset).ok_or(Errno::EOVERFLOW)?,
@@ -5008,7 +5035,11 @@ pub fn sys_lseek(
     if crate::descriptor_backing::is_synthetic_regular_handle(ofd.host_handle) {
         let size = synthetic_file_content(&ofd.path).map_or(0, |d| d.len() as i64);
         let current =
-            crate::descriptor_backing::current_offset(ofd.file_type, ofd.host_handle, ofd.offset)?;
+            crate::descriptor_backing::current_offset(
+                ofd.file_type,
+                ofd.host_handle,
+                ofd.offset(),
+            )?;
         let new_pos = match whence {
             SEEK_SET => offset,
             SEEK_CUR => current.checked_add(offset).ok_or(Errno::EOVERFLOW)?,
@@ -5032,7 +5063,11 @@ pub fn sys_lseek(
                 .ok_or(Errno::EBADF)
         })?;
         let current =
-            crate::descriptor_backing::current_offset(ofd.file_type, ofd.host_handle, ofd.offset)?;
+            crate::descriptor_backing::current_offset(
+                ofd.file_type,
+                ofd.host_handle,
+                ofd.offset(),
+            )?;
         let new_pos = match whence {
             SEEK_SET => offset,
             SEEK_CUR => current.checked_add(offset).ok_or(Errno::EOVERFLOW)?,
@@ -5055,7 +5090,10 @@ pub fn sys_lseek(
             offset
         }
         SEEK_CUR => {
-            let pos = ofd.offset.checked_add(offset).ok_or(Errno::EOVERFLOW)?;
+            let pos = ofd
+                .offset()
+                .checked_add(offset)
+                .ok_or(Errno::EOVERFLOW)?;
             if pos < 0 {
                 return Err(Errno::EINVAL);
             }
@@ -5070,7 +5108,7 @@ pub fn sys_lseek(
         return Err(Errno::EINVAL);
     }
 
-    ofd.offset = new_offset;
+    ofd.set_offset(new_offset);
     Ok(new_offset)
 }
 
@@ -5089,7 +5127,7 @@ pub fn sys_pread(
     let ofd_idx = resolve_io_ofd(proc, fd)?;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
-    let access_mode = ofd.status_flags & O_ACCMODE;
+    let access_mode = ofd.status_flags() & O_ACCMODE;
     if access_mode == O_WRONLY {
         return Err(Errno::EBADF);
     }
@@ -5271,9 +5309,9 @@ fn write_operation_plan(
         let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
         (
             ofd.file_type,
-            ofd.status_flags,
+            ofd.status_flags(),
             ofd.host_handle,
-            ofd.offset,
+            ofd.offset(),
             ofd.is_path_only(),
         )
     };
@@ -5336,7 +5374,7 @@ pub(crate) fn write_operation_budget(
 fn validate_transfer_input(proc: &Process, fd: i32, offset: Option<i64>) -> Result<(), Errno> {
     let ofd_idx = resolve_io_ofd(proc, fd)?;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-    if ofd.is_path_only() || ofd.status_flags & O_ACCMODE == O_WRONLY {
+    if ofd.is_path_only() || ofd.status_flags() & O_ACCMODE == O_WRONLY {
         return Err(Errno::EBADF);
     }
     if matches!(offset, Some(value) if value < 0) {
@@ -5398,7 +5436,7 @@ fn stage_transfer_input(
     let ofd_idx = resolve_io_ofd(proc, fd)?;
     let (file_type, host_handle, local_offset) = {
         let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-        (ofd.file_type, ofd.host_handle, ofd.offset)
+        (ofd.file_type, ofd.host_handle, ofd.offset())
     };
     match file_type {
         FileType::Regular | FileType::MemFd => {
@@ -5452,7 +5490,10 @@ fn commit_staged_transfer_input(
                 return Err(Errno::EIO);
             }
             if !crate::descriptor_backing::set_current_offset(file_type, host_handle, end)? {
-                proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?.offset = end;
+                proc.ofd_table
+                    .get_mut(ofd_idx)
+                    .ok_or(Errno::EBADF)?
+                    .set_offset(end);
             }
             Ok(())
         }
@@ -5480,10 +5521,13 @@ fn transfer_output_plan(
 ) -> Result<(usize, bool), Errno> {
     let ofd_idx = resolve_io_ofd(proc, fd)?;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-    if ofd.is_path_only() || ofd.status_flags & O_ACCMODE == O_RDONLY {
+    if ofd.is_path_only() || ofd.status_flags() & O_ACCMODE == O_RDONLY {
         return Err(Errno::EBADF);
     }
-    if offset.is_none() && ofd.file_type == FileType::Regular && ofd.status_flags & O_APPEND != 0 {
+    if offset.is_none()
+        && ofd.file_type == FileType::Regular
+        && ofd.status_flags() & O_APPEND != 0
+    {
         // WHY: only the backing-owned append operation has a current EOF.
         // Do not pre-limit against fstat: concurrent growth could raise an
         // early EFBIG, and concurrent shrink could under-copy. The exact
@@ -5511,7 +5555,7 @@ pub fn sys_pwrite(
     let ofd_idx = resolve_io_ofd(proc, fd)?;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
-    let access_mode = ofd.status_flags & O_ACCMODE;
+    let access_mode = ofd.status_flags() & O_ACCMODE;
     if access_mode == O_RDONLY {
         return Err(Errno::EBADF);
     }
@@ -6125,10 +6169,10 @@ pub fn sys_pipe2(proc: &mut Process, flags: u32) -> Result<(i32, i32), Errno> {
         let read_ofd_idx = proc.fd_table.get(read_fd)?.ofd_ref.0;
         let write_ofd_idx = proc.fd_table.get(write_fd)?.ofd_ref.0;
         if let Some(ofd) = proc.ofd_table.get_mut(read_ofd_idx) {
-            ofd.status_flags |= O_NONBLOCK;
+            ofd.set_status_flags_raw(ofd.status_flags() | O_NONBLOCK);
         }
         if let Some(ofd) = proc.ofd_table.get_mut(write_ofd_idx) {
-            ofd.status_flags |= O_NONBLOCK;
+            ofd.set_status_flags_raw(ofd.status_flags() | O_NONBLOCK);
         }
     }
 
@@ -6382,7 +6426,7 @@ pub fn sys_fcntl(proc: &mut Process, fd: i32, cmd: u32, arg: u32) -> Result<i32,
             let entry = proc.fd_table.get(fd)?;
             let ofd_idx = entry.ofd_ref.0;
             let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-            let mut flags = ofd.status_flags;
+            let mut flags = ofd.status_flags();
             if ofd.file_type == FileType::PcmPlayback {
                 if crate::audio::is_nonblock(ofd.host_handle)? {
                     flags |= O_NONBLOCK;
@@ -6414,7 +6458,7 @@ pub fn sys_fcntl(proc: &mut Process, fd: i32, cmd: u32, arg: u32) -> Result<i32,
             if ofd.is_path_only() {
                 return Err(Errno::EBADF);
             }
-            ofd.owner_pid = arg;
+            ofd.set_owner_pid(arg);
             Ok(0)
         }
         F_GETOWN => {
@@ -6424,7 +6468,7 @@ pub fn sys_fcntl(proc: &mut Process, fd: i32, cmd: u32, arg: u32) -> Result<i32,
             if ofd.is_path_only() {
                 return Err(Errno::EBADF);
             }
-            Ok(ofd.owner_pid as i32)
+            Ok(ofd.owner_pid() as i32)
         }
         F_GETLK | F_SETLK | F_SETLKW => {
             // Lock operations need the flock struct - use sys_fcntl_lock instead
@@ -6533,8 +6577,8 @@ fn sys_fcntl_lock_with_owner(
         (
             ofd.host_handle,
             ofd.file_type,
-            ofd.status_flags,
-            ofd.offset,
+            ofd.status_flags(),
+            ofd.offset(),
             ofd.ofd_id,
         )
     };
@@ -7663,6 +7707,21 @@ pub fn sys_getdents64(
     }
 
     let path = ofd.path.clone();
+    let stale_dir_handle =
+        ofd.directory_iterator_is_stale().then_some(ofd.dir_host_handle);
+    if let Some(old_handle) = stale_dir_handle {
+        // WHY: inherited descriptors share the POSIX directory position, but
+        // the host iterator and pending entry are process-local. Rebuild this
+        // process's iterator whenever a peer advances the shared cookie.
+        proc.ofd_table
+            .get_mut(ofd_idx)
+            .ok_or(Errno::EBADF)?
+            .reset_directory_iterator_for_reopen();
+        if old_handle >= 0 {
+            let _ = host.host_closedir(old_handle);
+        }
+    }
+    let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
     let reopen_cookie =
         (ofd.dir_host_handle == -1 && ofd.dir_entry_offset > 2).then_some(ofd.dir_entry_offset);
 
@@ -7697,7 +7756,7 @@ pub fn sys_getdents64(
             crate::devfs::devfs_getdents64(proc, &path, buf, entry_offset)?;
         if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
             ofd.dir_entry_offset = new_offset;
-            ofd.offset = new_offset;
+            ofd.set_directory_offset(new_offset);
             if exhausted {
                 ofd.dir_host_handle = -2;
             }
@@ -7741,7 +7800,7 @@ pub fn sys_getdents64(
                         )?;
                     if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
                         ofd.dir_entry_offset = new_offset;
-                        ofd.offset = new_offset;
+                        ofd.set_directory_offset(new_offset);
                         if exhausted {
                             ofd.dir_host_handle = -2;
                         }
@@ -7755,7 +7814,7 @@ pub fn sys_getdents64(
             crate::procfs::procfs_getdents64(proc, &path, buf, entry_offset, &pids)?;
         if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
             ofd.dir_entry_offset = new_offset;
-            ofd.offset = new_offset;
+            ofd.set_directory_offset(new_offset);
             if exhausted {
                 ofd.dir_host_handle = -2; // mark exhausted
             }
@@ -7796,7 +7855,7 @@ pub fn sys_getdents64(
             if written == 0 {
                 if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
                     ofd.dir_entry_offset = entry_offset - 1;
-                    ofd.offset = entry_offset - 1;
+                    ofd.set_directory_offset(entry_offset - 1);
                     ofd.dir_synth_state = 2 + i as u8;
                 }
                 if pos == 0 {
@@ -7808,7 +7867,7 @@ pub fn sys_getdents64(
         }
         if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
             ofd.dir_entry_offset = entry_offset;
-            ofd.offset = entry_offset;
+            ofd.set_directory_offset(entry_offset);
             ofd.dir_host_handle = -2;
         }
         return Ok(pos);
@@ -7859,7 +7918,7 @@ pub fn sys_getdents64(
             if written == 0 {
                 if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
                     ofd.dir_entry_offset = entry_offset - 1; // didn't emit this one
-                    ofd.offset = entry_offset - 1;
+                    ofd.set_directory_offset(entry_offset - 1);
                     ofd.dir_synth_state = next_synth_state;
                 }
                 if pos == 0 {
@@ -7890,7 +7949,7 @@ pub fn sys_getdents64(
                     if name_len > name_buf.len() {
                         if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
                             ofd.dir_entry_offset = entry_offset;
-                            ofd.offset = entry_offset;
+                            ofd.set_directory_offset(entry_offset);
                         }
                         if pos == 0 {
                             return Err(Errno::EIO);
@@ -7908,7 +7967,7 @@ pub fn sys_getdents64(
                 Err(err) => {
                     if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
                         ofd.dir_entry_offset = entry_offset;
-                        ofd.offset = entry_offset;
+                        ofd.set_directory_offset(entry_offset);
                     }
                     if pos == 0 {
                         return Err(err);
@@ -7955,7 +8014,7 @@ pub fn sys_getdents64(
                             name: name.into_owned(),
                         });
                         ofd.dir_entry_offset = entry_offset - 1;
-                        ofd.offset = entry_offset - 1;
+                        ofd.set_directory_offset(entry_offset - 1);
                     }
                     if pos == 0 {
                         return Err(Errno::EINVAL);
@@ -7999,7 +8058,7 @@ pub fn sys_getdents64(
                             // Save progress — we'll resume from here on next call
                             if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
                                 ofd.dir_entry_offset = entry_offset - 1;
-                                ofd.offset = entry_offset - 1;
+                                ofd.set_directory_offset(entry_offset - 1);
                                 ofd.dir_host_handle = -3; // signal: host exhausted, virtuals pending
                                 ofd.dir_synth_state = 2 + i as u8;
                             }
@@ -8024,7 +8083,7 @@ pub fn sys_getdents64(
     // Persist the entry offset for subsequent calls
     if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
         ofd.dir_entry_offset = entry_offset;
-        ofd.offset = entry_offset;
+        ofd.set_directory_offset(entry_offset);
     }
 
     Ok(pos)
@@ -9077,7 +9136,7 @@ pub(crate) fn fd_supports_mmap_writeback(proc: &Process, fd: i32) -> bool {
     };
     ofd.file_type == FileType::Regular
         && ofd.host_handle >= 0
-        && (ofd.status_flags & O_ACCMODE) == O_RDWR
+        && (ofd.status_flags() & O_ACCMODE) == O_RDWR
 }
 
 /// mmap -- supports anonymous, file-backed MAP_PRIVATE and MAP_SHARED mappings.
@@ -13240,7 +13299,7 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                     let pipe_idx = (-(ofd.host_handle + 1)) as usize;
                     let pipe = unsafe { crate::pipe::global_pipe_table().get(pipe_idx) };
                     if let Some(pipe) = pipe {
-                        match ofd.status_flags & O_ACCMODE {
+                        match ofd.status_flags() & O_ACCMODE {
                             O_RDONLY => {
                                 if pollfd.events & POLLIN != 0 && pipe.available() > 0 {
                                     revents |= POLLIN;
@@ -14026,9 +14085,13 @@ pub fn sys_ioctl(
         let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
         let pcm_handle = (ofd.file_type == FileType::PcmPlayback).then_some(ofd.host_handle);
         if val != 0 {
-            ofd.status_flags |= wasm_posix_shared::flags::O_NONBLOCK;
+            ofd.set_status_flags_raw(
+                ofd.status_flags() | wasm_posix_shared::flags::O_NONBLOCK,
+            );
         } else {
-            ofd.status_flags &= !wasm_posix_shared::flags::O_NONBLOCK;
+            ofd.set_status_flags_raw(
+                ofd.status_flags() & !wasm_posix_shared::flags::O_NONBLOCK,
+            );
         }
         if let Some(handle) = pcm_handle {
             crate::audio::set_nonblock(handle, val != 0)?;
@@ -14044,9 +14107,9 @@ pub fn sys_ioctl(
         let val = i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
         let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
         if val != 0 {
-            ofd.status_flags |= wasm_posix_shared::flags::O_ASYNC;
+            ofd.set_status_flags_raw(ofd.status_flags() | wasm_posix_shared::flags::O_ASYNC);
         } else {
-            ofd.status_flags &= !wasm_posix_shared::flags::O_ASYNC;
+            ofd.set_status_flags_raw(ofd.status_flags() & !wasm_posix_shared::flags::O_ASYNC);
         }
         return Ok(());
     }
@@ -14669,6 +14732,9 @@ pub fn sys_clone(
     // channel mailbox but the kernel stores masks by TID.
     let caller_tid = table.current_tid();
     let pid = table.current_pid();
+    if table.get(pid).is_some_and(|proc| proc.vfork_child) {
+        return Err(Errno::EAGAIN);
+    }
     let tid = table.create_thread(pid, caller_tid, stack_ptr, effective_tls, effective_ctid)?;
 
     let _ = flags & CLONE_PARENT_SETTID;
@@ -15586,7 +15652,7 @@ pub fn sys_ftruncate(
     let ofd_idx = entry.ofd_ref.0;
     let (file_type, status_flags, host_handle) = {
         let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-        (ofd.file_type, ofd.status_flags, ofd.host_handle)
+        (ofd.file_type, ofd.status_flags(), ofd.host_handle)
     };
 
     // Must be a regular file or memfd
@@ -18359,7 +18425,7 @@ mod tests {
         let (dir_fd, dir_ofd) = install_fd(&mut proc, FileType::Directory, 71, b"/dir");
         {
             let ofd = proc.ofd_table.get_mut(dir_ofd).unwrap();
-            ofd.offset = 4;
+            ofd.set_offset(4);
             ofd.dir_synth_state = 2;
             ofd.dir_entry_offset = 4;
         }
@@ -18369,7 +18435,7 @@ mod tests {
         );
         let ofd = proc.ofd_table.get(dir_ofd).unwrap();
         assert_eq!(
-            (ofd.offset, ofd.dir_synth_state, ofd.dir_entry_offset),
+            (ofd.offset(), ofd.dir_synth_state, ofd.dir_entry_offset),
             (4, 2, 4)
         );
 
@@ -18379,12 +18445,12 @@ mod tests {
             crate::procfs::PROCFS_DIR_HANDLE,
             b"/proc",
         );
-        proc.ofd_table.get_mut(proc_ofd).unwrap().offset = 3;
+        proc.ofd_table.get_mut(proc_ofd).unwrap().set_offset(3);
         assert_eq!(
             sys_lseek(&mut proc, &mut host, proc_fd, -1, SEEK_SET),
             Err(Errno::EINVAL)
         );
-        assert_eq!(proc.ofd_table.get(proc_ofd).unwrap().offset, 3);
+        assert_eq!(proc.ofd_table.get(proc_ofd).unwrap().offset(), 3);
 
         let (fb_fd, fb_ofd) = install_fd(
             &mut proc,
@@ -18397,7 +18463,7 @@ mod tests {
             sys_lseek(&mut proc, &mut host, fb_fd, i64::MAX, SEEK_CUR),
             Err(Errno::EOVERFLOW)
         );
-        assert_eq!(proc.ofd_table.get(fb_ofd).unwrap().offset, 7);
+        assert_eq!(proc.ofd_table.get(fb_ofd).unwrap().offset(), 7);
 
         let synthetic_handle = crate::descriptor_backing::alloc_synthetic_regular();
         let (synthetic_fd, synthetic_ofd) =
@@ -18414,7 +18480,7 @@ mod tests {
             crate::descriptor_backing::current_offset(
                 FileType::Regular,
                 synthetic_handle,
-                proc.ofd_table.get(synthetic_ofd).unwrap().offset,
+                proc.ofd_table.get(synthetic_ofd).unwrap().offset(),
             ),
             Ok(2)
         );
@@ -19674,7 +19740,7 @@ mod tests {
                 ofd.dir_host_handle,
                 ofd.dir_synth_state,
                 ofd.dir_entry_offset,
-                ofd.offset,
+                ofd.offset(),
                 ofd.dir_pending_entry.clone(),
             )
         };
@@ -19696,7 +19762,7 @@ mod tests {
                 ofd.dir_host_handle,
                 ofd.dir_synth_state,
                 ofd.dir_entry_offset,
-                ofd.offset,
+                ofd.offset(),
                 ofd.dir_pending_entry.clone(),
             ),
             before,
@@ -19725,7 +19791,7 @@ mod tests {
                 ofd.dir_host_handle,
                 ofd.dir_synth_state,
                 ofd.dir_entry_offset,
-                ofd.offset,
+                ofd.offset(),
                 ofd.dir_pending_entry.clone(),
             )
         };
@@ -19743,7 +19809,7 @@ mod tests {
                 after_open_error.dir_host_handle,
                 after_open_error.dir_synth_state,
                 after_open_error.dir_entry_offset,
-                after_open_error.offset,
+                after_open_error.offset(),
                 after_open_error.dir_pending_entry.clone(),
             ),
             snapshot,
@@ -19764,7 +19830,7 @@ mod tests {
                 after_replay_error.dir_host_handle,
                 after_replay_error.dir_synth_state,
                 after_replay_error.dir_entry_offset,
-                after_replay_error.offset,
+                after_replay_error.offset(),
                 after_replay_error.dir_pending_entry.clone(),
             ),
             snapshot,
@@ -19968,7 +20034,7 @@ mod tests {
             assert_eq!(
                 (
                     proc.ofd_table.get(ofd_idx).unwrap().dir_entry_offset,
-                    proc.ofd_table.get(ofd_idx).unwrap().offset,
+                    proc.ofd_table.get(ofd_idx).unwrap().offset(),
                 ),
                 (0, 0),
             );
@@ -23296,9 +23362,9 @@ mod tests {
                 ofd.ofd_id,
                 ofd.file_id,
                 ofd.file_type,
-                ofd.status_flags,
+                ofd.status_flags(),
                 ofd.host_handle,
-                ofd.offset,
+                ofd.offset(),
                 ofd.path.clone(),
             )
         };
@@ -23353,9 +23419,9 @@ mod tests {
             ofd.ofd_id,
             ofd.file_id,
             ofd.file_type,
-            ofd.status_flags,
+            ofd.status_flags(),
             ofd.host_handle,
-            ofd.offset,
+            ofd.offset(),
             ofd.path.clone(),
         );
         assert_eq!(queued.retain_reference(), Err(Errno::EOPNOTSUPP));
@@ -23513,9 +23579,9 @@ mod tests {
                     carried_ofd.ofd_id,
                     carried_ofd.file_id,
                     carried_ofd.file_type,
-                    carried_ofd.status_flags,
+                    carried_ofd.status_flags(),
                     carried_ofd.host_handle,
-                    carried_ofd.offset,
+                    carried_ofd.offset(),
                     carried_ofd.path.clone(),
                 ),
             )
@@ -23589,9 +23655,9 @@ mod tests {
                     carried_ofd.ofd_id,
                     carried_ofd.file_id,
                     carried_ofd.file_type,
-                    carried_ofd.status_flags,
+                    carried_ofd.status_flags(),
                     carried_ofd.host_handle,
-                    carried_ofd.offset,
+                    carried_ofd.offset(),
                     carried_ofd.path.clone(),
                 ),
             )
@@ -23748,7 +23814,7 @@ mod tests {
         let sender_ofd = sender.ofd_table.get(sender_ofd_idx).unwrap();
         assert_eq!(sender_ofd.dir_host_handle, 200);
         assert_eq!(sender_ofd.dir_entry_offset, 3);
-        assert_eq!(sender_ofd.offset, 3);
+        assert_eq!(sender_ofd.offset(), 3);
         assert_eq!(
             sender_ofd.dir_pending_entry.as_ref().unwrap().name,
             b"foo.txt"
@@ -23762,7 +23828,7 @@ mod tests {
         let received_ofd = receiver.ofd_table.get(received_ofd_idx).unwrap();
         assert_eq!(received_ofd.dir_host_handle, -1);
         assert_eq!(received_ofd.dir_entry_offset, 3);
-        assert_eq!(received_ofd.offset, 3);
+        assert_eq!(received_ofd.offset(), 3);
         assert!(received_ofd.dir_pending_entry.is_none());
 
         // A failed lazy reopen preserves the unopened snapshot state so the
@@ -23814,7 +23880,7 @@ mod tests {
     }
 
     #[test]
-    fn fork_and_spawn_directories_reopen_at_the_snapshot_cookie() {
+    fn fork_and_spawn_directories_follow_one_shared_cookie() {
         use crate::process_table::ProcessTable;
         use crate::spawn::SpawnAttrs;
 
@@ -23887,34 +23953,83 @@ mod tests {
                 .unwrap();
             assert_eq!(child_ofd.dir_host_handle, -1);
             assert_eq!(child_ofd.dir_entry_offset, 3);
-            assert_eq!(child_ofd.offset, 3);
+            assert_eq!(child_ofd.offset(), 3);
             assert!(child_ofd.dir_pending_entry.is_none());
-
-            let mut one = [0u8; 32];
-            let len = sys_getdents64(table.get_mut(pid).unwrap(), &mut host, parent_fd, &mut one)
-                .unwrap();
-            assert_eq!(parse_linux_dirents64(&one, len)[0].2, b"foo.txt");
         }
 
-        // Both child iterators resumed independently, while the parent kept
-        // its live pending record at the same snapshot cookie.
+        let mut one = [0u8; 32];
+        let len = sys_getdents64(
+            table.get_mut(fork_child).unwrap(),
+            &mut host,
+            parent_fd,
+            &mut one,
+        )
+        .unwrap();
+        assert_eq!(parse_linux_dirents64(&one, len)[0].2, b"foo.txt");
+        for pid in [parent_pid, fork_child, spawn_child] {
+            let entry = table.get(pid).unwrap().fd_table.get(parent_fd).unwrap();
+            assert_eq!(
+                table
+                    .get(pid)
+                    .unwrap()
+                    .ofd_table
+                    .get(entry.ofd_ref.0)
+                    .unwrap()
+                    .offset(),
+                4,
+            );
+        }
+
+        let len = sys_getdents64(
+            table.get_mut(spawn_child).unwrap(),
+            &mut host,
+            parent_fd,
+            &mut one,
+        )
+        .unwrap();
+        assert_eq!(parse_linux_dirents64(&one, len)[0].2, b"bar.txt");
+        for pid in [parent_pid, fork_child, spawn_child] {
+            let entry = table.get(pid).unwrap().fd_table.get(parent_fd).unwrap();
+            assert_eq!(
+                table
+                    .get(pid)
+                    .unwrap()
+                    .ofd_table
+                    .get(entry.ofd_ref.0)
+                    .unwrap()
+                    .offset(),
+                5,
+            );
+        }
+
+        // The parent's host iterator still carries a now-obsolete pending
+        // record. A read must discard it, replay the shared cookie, and see
+        // EOF rather than exposing `foo.txt` a second time.
+        assert_eq!(
+            sys_getdents64(
+                table.get_mut(parent_pid).unwrap(),
+                &mut host,
+                parent_fd,
+                &mut one,
+            ),
+            Ok(0),
+        );
         let parent_ofd = table
             .get(parent_pid)
             .unwrap()
             .ofd_table
             .get(parent_ofd_idx)
             .unwrap();
-        assert_eq!(parent_ofd.dir_host_handle, 200);
-        assert_eq!(parent_ofd.dir_entry_offset, 3);
-        assert_eq!(
-            parent_ofd.dir_pending_entry.as_ref().unwrap().name,
-            b"foo.txt"
-        );
+        assert_eq!(parent_ofd.offset(), 5);
+        assert_eq!(parent_ofd.dir_entry_offset, 5);
+        assert_eq!(parent_ofd.dir_host_handle, -2);
+        assert!(parent_ofd.dir_pending_entry.is_none());
 
         for pid in [fork_child, spawn_child, parent_pid] {
             sys_close(table.get_mut(pid).unwrap(), &mut host, parent_fd).unwrap();
         }
-        assert_eq!(host.closed_dir_handles, [201, 202, 200]);
+        host.closed_dir_handles.sort_unstable();
+        assert_eq!(host.closed_dir_handles, [200, 201, 202, 203]);
         assert_eq!(
             host.closed_handles
                 .iter()
@@ -23939,11 +24054,11 @@ mod tests {
         let sender_fd = sys_memfd_create(&mut sender, b"scm-ofd", 0).unwrap();
         set_whole_file_ofd_lock(&mut sender, &mut locks, &mut host, sender_fd);
 
-        let (expected_ofd_id, expected_file_id) = {
+        let (sender_ofd_idx, expected_ofd_id, expected_file_id) = {
             let fd_entry = sender.fd_table.get(sender_fd).unwrap();
             let ofd = sender.ofd_table.get(fd_entry.ofd_ref.0).unwrap();
             assert_eq!(ofd.file_type, FileType::MemFd);
-            (ofd.ofd_id, ofd.file_id)
+            (fd_entry.ofd_ref.0, ofd.ofd_id, ofd.file_id)
         };
         let deferred_before = crate::pipe::deferred_in_flight_release_state();
         let queued = retain_fd_for_scm_rights(&sender, sender_fd);
@@ -23952,6 +24067,14 @@ mod tests {
         let deferred_retained = crate::pipe::deferred_in_flight_release_state();
         assert_eq!(deferred_retained.0, deferred_before.0);
         assert_eq!(deferred_retained.1, deferred_before.1 + 1);
+
+        // SCM_RIGHTS transfers the open file description, not a frozen copy
+        // of its scalar fields. Mutations after send must remain observable
+        // even when the sender closes before the receiver installs the fd.
+        let sender_ofd = sender.ofd_table.get(sender_ofd_idx).unwrap();
+        sender_ofd.set_offset(19);
+        sender_ofd.set_status_flags_raw(O_RDWR | O_NONBLOCK);
+        sender_ofd.set_owner_pid(9_999);
 
         // Closing the sender is not the final machine reference while the
         // descriptor is queued, so OFD/flock ownership must remain live.
@@ -23971,6 +24094,9 @@ mod tests {
         assert_eq!(received_ofd.ofd_id, expected_ofd_id);
         assert_eq!(received_ofd.file_id, expected_file_id);
         assert_eq!(received_ofd.file_type, FileType::MemFd);
+        assert_eq!(received_ofd.offset(), 19);
+        assert_eq!(received_ofd.status_flags(), O_RDWR | O_NONBLOCK);
+        assert_eq!(received_ofd.owner_pid(), 9_999);
 
         sys_close_with_locks(&mut receiver, &mut locks, &mut host, received[0]).unwrap();
         assert!(locks.is_empty());
@@ -25920,6 +26046,7 @@ mod tests {
             .unwrap();
         proc.alarm_deadline_ns = 8_000_000_000;
         proc.alarm_interval_ns = 1_000_000_000;
+        proc.vfork_child = true;
         proc.posix_timers.push(Some(PosixTimerState {
             clock_id: 0,
             sigev_signo: SIGINT,
@@ -25951,6 +26078,7 @@ mod tests {
         assert_eq!(proc.alarm_deadline_ns, 8_000_000_000);
         assert_eq!(proc.alarm_interval_ns, 1_000_000_000);
         assert!(proc.posix_timers.is_empty());
+        assert!(!proc.vfork_child);
         assert!(proc.has_exec);
     }
 
@@ -28395,7 +28523,10 @@ mod tests {
             .ofd_table
             .get(proc.fd_table.get(1).unwrap().ofd_ref.0)
             .unwrap();
-        assert_ne!(ofd.status_flags & wasm_posix_shared::flags::O_NONBLOCK, 0);
+        assert_ne!(
+            ofd.status_flags() & wasm_posix_shared::flags::O_NONBLOCK,
+            0
+        );
         // Clear it
         let mut buf = 0i32.to_le_bytes();
         sys_ioctl(&mut proc, &mut host, 1, 0x5421, &mut buf).unwrap();
@@ -28403,7 +28534,10 @@ mod tests {
             .ofd_table
             .get(proc.fd_table.get(1).unwrap().ofd_ref.0)
             .unwrap();
-        assert_eq!(ofd.status_flags & wasm_posix_shared::flags::O_NONBLOCK, 0);
+        assert_eq!(
+            ofd.status_flags() & wasm_posix_shared::flags::O_NONBLOCK,
+            0
+        );
     }
 
     #[test]
@@ -28585,7 +28719,7 @@ mod tests {
         let fd = result.unwrap();
         let entry = proc.fd_table.get(fd).unwrap();
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
-        assert_eq!(ofd.status_flags & O_NOFOLLOW, 0); // Not in status flags
+        assert_eq!(ofd.status_flags() & O_NOFOLLOW, 0); // Not in status flags
     }
 
     #[test]
@@ -29407,8 +29541,8 @@ mod tests {
         // Verify O_NONBLOCK is set on the OFDs
         let r_ofd = proc.ofd_table.get(r_entry.ofd_ref.0).unwrap();
         let w_ofd = proc.ofd_table.get(w_entry.ofd_ref.0).unwrap();
-        assert_ne!(r_ofd.status_flags & O_NONBLOCK, 0);
-        assert_ne!(w_ofd.status_flags & O_NONBLOCK, 0);
+        assert_ne!(r_ofd.status_flags() & O_NONBLOCK, 0);
+        assert_ne!(w_ofd.status_flags() & O_NONBLOCK, 0);
     }
 
     #[test]
@@ -29643,7 +29777,7 @@ mod tests {
         )
         .unwrap();
         let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
-        proc.ofd_table.get_mut(ofd_idx).unwrap().offset = 29;
+        proc.ofd_table.get_mut(ofd_idx).unwrap().set_offset(29);
 
         host.pread_reported = Some(2);
         let mut byte = [0u8; 1];
@@ -29651,11 +29785,11 @@ mod tests {
             sys_read(&mut proc, &mut host, fd, &mut byte),
             Err(Errno::EIO),
         );
-        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset, 29);
+        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset(), 29);
 
         host.pwrite_reported = Some(2);
         assert_eq!(sys_write(&mut proc, &mut host, fd, b"x"), Err(Errno::EIO),);
-        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset, 29);
+        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset(), 29);
     }
 
     #[test]
@@ -29673,29 +29807,35 @@ mod tests {
         let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
         let mut byte = [0u8; 1];
 
-        proc.ofd_table.get_mut(ofd_idx).unwrap().offset = i64::MAX - 1;
+        proc.ofd_table
+            .get_mut(ofd_idx)
+            .unwrap()
+            .set_offset(i64::MAX - 1);
         assert_eq!(sys_read(&mut proc, &mut host, fd, &mut byte), Ok(1));
-        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset, i64::MAX);
+        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset(), i64::MAX);
 
         host.pread_reported = Some(0);
         assert_eq!(sys_read(&mut proc, &mut host, fd, &mut byte), Ok(0),);
-        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset, i64::MAX);
+        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset(), i64::MAX);
         assert_eq!(
             host.pread_calls.len(),
             2,
             "the host must be consulted to distinguish EOF from overflow",
         );
 
-        proc.ofd_table.get_mut(ofd_idx).unwrap().offset = i64::MAX - 1;
+        proc.ofd_table
+            .get_mut(ofd_idx)
+            .unwrap()
+            .set_offset(i64::MAX - 1);
         assert_eq!(sys_write(&mut proc, &mut host, fd, b"x"), Ok(1));
-        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset, i64::MAX);
+        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset(), i64::MAX);
         assert_eq!(host.pwrite_calls.len(), 1);
 
         assert_eq!(
             sys_write(&mut proc, &mut host, fd, b"x"),
             Err(Errno::EOVERFLOW),
         );
-        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset, i64::MAX);
+        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset(), i64::MAX);
         assert_eq!(
             host.pwrite_calls.len(),
             1,
@@ -29751,7 +29891,7 @@ mod tests {
         );
         let entry = proc.fd_table.get(fd).unwrap();
         assert_eq!(
-            proc.ofd_table.get(entry.ofd_ref.0).unwrap().offset,
+            proc.ofd_table.get(entry.ofd_ref.0).unwrap().offset(),
             37,
             "positioned I/O must not mutate the shared open-file cursor",
         );
@@ -29842,11 +29982,11 @@ mod tests {
         assert_eq!(sys_write(&mut proc, &mut host, fd, b"cd"), Ok(2));
         assert_eq!(host.append_calls, vec![(100, b"cd".to_vec(), None)]);
         let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
-        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset, 12);
+        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset(), 12);
 
         // Positioned writes ignore O_APPEND and leave the OFD cursor intact.
         assert_eq!(sys_pwrite(&mut proc, &mut host, duplicate, b"X", 1), Ok(1));
-        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset, 12);
+        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset(), 12);
         assert_eq!(
             host.pwrite_calls,
             vec![(100, 3, b"ab".to_vec()), (100, 1, b"X".to_vec()),],
@@ -29864,7 +30004,7 @@ mod tests {
         host.seek_calls.clear();
         assert_eq!(sys_write(&mut proc, &mut host, fd, b"Y"), Ok(1));
         assert_eq!(host.pwrite_calls.last(), Some(&(100, 4, b"Y".to_vec())),);
-        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset, 5);
+        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset(), 5);
         assert!(
             host.seek_calls.is_empty(),
             "ordinary regular writes must not synchronize a backend cursor",
@@ -29884,7 +30024,7 @@ mod tests {
         )
         .unwrap();
         let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
-        proc.ofd_table.get_mut(ofd_idx).unwrap().offset = 7;
+        proc.ofd_table.get_mut(ofd_idx).unwrap().set_offset(7);
 
         host.stat_size = i64::MAX as u64;
         assert_eq!(
@@ -29893,14 +30033,14 @@ mod tests {
         );
         assert_eq!(host.append_calls, vec![(100, b"x".to_vec(), None)]);
         assert!(host.append_mutations.is_empty());
-        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset, 7);
+        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset(), 7);
 
         host.append_calls.clear();
         host.stat_size = 20;
         host.append_reported = Some(2);
         assert_eq!(sys_write(&mut proc, &mut host, fd, b"x"), Err(Errno::EIO),);
         assert_eq!(host.append_calls, vec![(100, b"x".to_vec(), None)]);
-        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset, 7);
+        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset(), 7);
     }
 
     #[test]
@@ -29916,18 +30056,18 @@ mod tests {
         )
         .unwrap();
         let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
-        proc.ofd_table.get_mut(ofd_idx).unwrap().offset = 3;
+        proc.ofd_table.get_mut(ofd_idx).unwrap().set_offset(3);
 
         host.stat_size = 8;
         host.append_reported = Some(2);
         host.append_end = Some(1);
         assert_eq!(sys_write(&mut proc, &mut host, fd, b"ab"), Err(Errno::EIO),);
-        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset, 3);
+        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset(), 3);
 
         host.append_end = Some(11);
         sys_setrlimit(&mut proc, RLIMIT_FSIZE, 10, 10).unwrap();
         assert_eq!(sys_write(&mut proc, &mut host, fd, b"ab"), Err(Errno::EIO),);
-        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset, 3);
+        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset(), 3);
     }
 
     #[test]
@@ -29947,7 +30087,7 @@ mod tests {
 
         assert_eq!(sys_write(&mut proc, &mut host, fd, b"abcd"), Ok(2));
         let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
-        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset, 42);
+        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset(), 42);
         assert_eq!(host.append_mutations, vec![b"ab".to_vec()]);
     }
 
@@ -30294,7 +30434,7 @@ mod tests {
 
         assert_eq!(sys_write(&mut proc, &mut host, fd, b"abcde"), Ok(2));
         let entry = proc.fd_table.get(fd).unwrap();
-        assert_eq!(proc.ofd_table.get(entry.ofd_ref.0).unwrap().offset, 10);
+        assert_eq!(proc.ofd_table.get(entry.ofd_ref.0).unwrap().offset(), 10);
         assert!(host.seek_calls.is_empty());
         assert_eq!(host.append_calls, vec![(100, b"abcde".to_vec(), Some(10))],);
         assert_eq!(host.append_mutations, vec![b"ab".to_vec()]);
@@ -30316,12 +30456,12 @@ mod tests {
             )
             .unwrap();
             let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
-            proc.ofd_table.get_mut(ofd_idx).unwrap().offset = 4;
+            proc.ofd_table.get_mut(ofd_idx).unwrap().set_offset(4);
             sys_setrlimit(&mut proc, RLIMIT_FSIZE, 10, 10).unwrap();
 
             assert_eq!(sys_write(&mut proc, &mut host, fd, b"x"), Err(Errno::EFBIG),);
             assert!(fsize_signal_pending(&proc));
-            assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset, 4);
+            assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset(), 4);
             assert_eq!(host.append_calls, vec![(100, b"x".to_vec(), Some(10))],);
             assert!(host.append_mutations.is_empty());
         }
@@ -30440,13 +30580,13 @@ mod tests {
         let empty_input = sys_memfd_create(&mut proc, b"empty-input", 0).unwrap();
         let output_entry = proc.fd_table.get(output).unwrap();
         let output_ofd = output_entry.ofd_ref.0;
-        let original_offset = proc.ofd_table.get(output_ofd).unwrap().offset;
+        let original_offset = proc.ofd_table.get(output_ofd).unwrap().offset();
         assert_eq!(
             sys_sendfile(&mut proc, &mut host, output, empty_input, -1, 4),
             Ok(0)
         );
         assert_eq!(
-            proc.ofd_table.get(output_ofd).unwrap().offset,
+            proc.ofd_table.get(output_ofd).unwrap().offset(),
             original_offset
         );
         assert!(host.seek_calls.is_empty());
@@ -31348,6 +31488,7 @@ mod tests {
     fn test_fork_child_fields_default_to_false() {
         let proc = Process::new(1);
         assert!(!proc.fork_child);
+        assert!(!proc.vfork_child);
         assert!(proc.fork_exec_path.is_none());
         assert!(proc.fork_exec_argv.is_none());
         assert!(proc.fork_fd_actions.is_empty());
@@ -33658,7 +33799,7 @@ mod tests {
         let entry = proc.fd_table.get(accepted_fd).unwrap();
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
         assert_eq!(
-            ofd.status_flags & O_NONBLOCK,
+            ofd.status_flags() & O_NONBLOCK,
             0,
             "accept() should leave the accepted OFD blocking",
         );
@@ -35817,6 +35958,31 @@ mod tests {
     }
 
     #[test]
+    fn test_vfork_child_rejects_thread_clone() {
+        let mut table = crate::process_table::ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        table.get_mut(pid).unwrap().vfork_child = true;
+        table.bind_current_tid(pid, pid).unwrap();
+        const CLONE_VM: u32 = 0x00000100;
+        const CLONE_THREAD: u32 = 0x00010000;
+
+        assert_eq!(
+            sys_clone(
+                &mut table,
+                0,
+                0x8000,
+                CLONE_VM | CLONE_THREAD,
+                0,
+                0,
+                0,
+                0,
+            ),
+            Err(Errno::EAGAIN),
+        );
+        assert!(table.get(pid).unwrap().get_thread(pid + 1).is_none());
+    }
+
+    #[test]
     fn test_gettid_returns_pid_for_main_thread() {
         let _guard = THREAD_IDENTITY_LOCK.lock().unwrap();
         set_test_current_tid(0);
@@ -36108,7 +36274,7 @@ mod tests {
         let entry = proc.fd_table.get(fd).unwrap();
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
         assert_eq!(ofd.file_type, FileType::EventFd);
-        assert_eq!(ofd.status_flags & O_ACCMODE, O_RDWR);
+        assert_eq!(ofd.status_flags() & O_ACCMODE, O_RDWR);
     }
 
     #[test]
@@ -36197,7 +36363,7 @@ mod tests {
         let fd = sys_eventfd2(&mut proc, 0, O_NONBLOCK).unwrap();
         let entry = proc.fd_table.get(fd).unwrap();
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
-        assert_ne!(ofd.status_flags & O_NONBLOCK, 0);
+        assert_ne!(ofd.status_flags() & O_NONBLOCK, 0);
     }
 
     #[test]
@@ -36375,7 +36541,7 @@ mod tests {
 
         let entry = proc.fd_table.get(fd).unwrap();
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
-        assert_ne!(ofd.status_flags & O_NONBLOCK, 0);
+        assert_ne!(ofd.status_flags() & O_NONBLOCK, 0);
     }
 
     #[test]
@@ -36618,7 +36784,7 @@ mod tests {
 
         let entry = proc.fd_table.get(fd).unwrap();
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
-        assert_ne!(ofd.status_flags & O_NONBLOCK, 0);
+        assert_ne!(ofd.status_flags() & O_NONBLOCK, 0);
     }
 
     #[test]

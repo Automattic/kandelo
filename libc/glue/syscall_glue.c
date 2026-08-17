@@ -1719,8 +1719,10 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     /* ============================================================== */
 
     case SYS_FORK:
+        return (long)kernel_fork(WASM_POSIX_FORK_MODE_FORK);
+
     case SYS_VFORK:
-        return (long)kernel_fork();
+        return (long)kernel_fork(WASM_POSIX_FORK_MODE_VFORK);
 
     case SYS_CLONE:
         /* Thread-style clone: a1=flags, a2=stack, a3=ptid, a4=tls, a5=ctid

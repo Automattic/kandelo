@@ -1616,7 +1616,7 @@ mod tests {
                     {
                         "name": "node_smoke",
                         "status": "success",
-                        "passed": ["fixture"],
+                        "passed": ["hello exits 0 under Node.js"],
                         "failed": [],
                         "skipped": []
                     }

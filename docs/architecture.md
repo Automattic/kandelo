@@ -73,7 +73,7 @@ kernel_create_process() → assigned_pid | -errno
 kernel_create_process_with_stdio(stdin_kind, stdout_kind, stderr_kind) → assigned_pid | -errno
 kernel_validate_task(pid, tid) → 0 | -errno
 kernel_set_current_tid(pid, tid) → 0 | -errno
-kernel_fork_process(parent_pid, caller_tid) → assigned_child_pid | -errno
+kernel_fork_process(parent_pid, caller_tid, mode) → assigned_child_pid | -errno
 kernel_spawn_process(parent_pid, caller_tid, blob_ptr, blob_len) → assigned_child_pid | -errno
 kernel_remove_process(pid) → 0
 kernel_handle_channel(channel_offset, channel_capacity, pid, retry_token) → result
@@ -690,10 +690,11 @@ message or failed receiver fd allocation releases it and removes
 OFD/`flock()` records only if it was the true final reference. Destructors
 enqueue fixed cleanup metadata into pre-reserved, high-water storage, and
 cleanup runs after pipe-table borrows end. The host schedules the syscall but
-never stores or examines lock state. Ordinary regular-file offsets and status
-flags still live in per-process OFD records, so their sharing across fork and
-`SCM_RIGHTS` remains the separate global-OFD gap documented in
-[future-improvements.md](future-improvements.md).
+never stores or examines lock state. Each process keeps its descriptor and OFD
+table shell, but mutable offset, status flags, and async owner live in an
+exactly owned `Rc<Cell>` state shared across fork, vfork, spawn, and supported
+`SCM_RIGHTS`. A queued descriptor keeps that same state live, so receipt sees
+mutations made after send rather than a frozen scalar snapshot.
 
 On an AF_UNIX stream, retained rights are associated with absolute byte ranges
 in the stream rather than a separate first-in/first-out side queue. A receive
@@ -1001,8 +1002,9 @@ embedded ABI version, linked-frame contract, control exports, and ABI 43
 `FORK_CAP_ACTIVATION_STATE_SAFE` claim. Pthread and side-module entry points
 apply the same policy.
 
-1. User calls `fork()` → musl → `__syscall(SYS_clone, ...)` → glue
-2. The host's `kernel_fork` override begins one process continuation
+1. User calls `fork()` → musl → `kernel_fork(FORK)`; the process adapter
+   validates the ABI-owned mode.
+2. The host's `kernel_fork(mode)` override begins one process continuation
    transaction. It captures activation catalogs and module state, maps each
    participating activation's root continuation chunk, and calls
    `wpk_fork_unwind_begin(root + chunk_header_size)`. The tool-injected export
@@ -1015,8 +1017,9 @@ apply the same policy.
    into one process recipe graph and the frame stores only its reference-vector
    ordinal. The host maps additional page-rounded chunks when necessary. No
    accepted frame names a module-instance reference-table slot.
-4. Once `_start` returns (top-of-stack), the host sends SYS_FORK through the channel.
-5. Kernel's `kernel_fork_process(parent_pid, caller_tid)` validates the caller,
+4. Once `_start` returns (top-of-stack), the host sends `SYS_FORK` through the
+   channel for the captured ordinary-fork mode.
+5. Kernel's `kernel_fork_process(parent_pid, caller_tid, mode)` validates the caller,
    allocates the child PID from the global task-ID sequence, and copies process
    metadata and the fd/OFD tables. The child receives the calling task's blocked
    signal mask, while inherited stateful descriptors retain references to their
@@ -1039,13 +1042,44 @@ apply the same policy.
 8. Each instrumented function's preamble requests and validates the next committed frame, then re-enters the call site where the parent was interrupted. Eventually it reaches the `kernel_fork` call site in the leaf function, which returns 0. Libc then refreshes the copied pthread TID from the kernel through `set_tid_address` before returning to user code.
 9. `wpk_fork_rewind_end` resets state; parent and child independently unmap their continuation chunks; fork returns 0 in child and the child PID in the parent.
 
+ABI 43 also lets libc call `kernel_fork(VFORK)`, which remains the same exact
+mode through unwind/replay and reaches `SYS_VFORK`, the kernel export, and the
+child Worker initialization record. After admission and kernel child creation,
+that mode branches away from ordinary step 6: the host retains an exact alias
+to the parent's existing `Shared WebAssembly.Memory` and launches a separate
+child Worker without constructing or copying a child process Memory. The child
+receives its own syscall channel, host-reserved replay workspace, Wasm
+instance, loader, and continuation controller. Only the calling parent thread
+stays parked in the asynchronous fork import; sibling pthreads continue to
+run.
+
+The kernel marks the vfork child's independent Process record. Nested fork,
+vfork, spawn, and pthread clone fail with `EAGAIN`; failed exec preserves the
+marker and returns to the child. Successful exec commit, `_exit()`, and exact
+signal/trap teardown quiesce the borrowing Worker, release its alias and
+workspace, and resume the exact parked caller once. An ambiguous forced Worker
+termination cannot prove that shared-memory access stopped, so the host
+contains the complete address-space owner group rather than resuming the
+parent unsafely. Ordinary fork continues to use only the ordinary mode and the
+independent-memory path above.
+
+After vfork capture seals, its process Worker reports two exact workspace
+requirements in host-intercepted syscall arguments: all active activation
+prefixes after alignment and the reference/exception codec scratch high-water.
+The centralized host accepts one four-page control slot and returns `EAGAIN`
+before allocating the kernel child when the 61,440-byte prefix region or
+65,536-byte scratch page would be exceeded. This preflight is connected, but
+the workspace belongs to host-reserved control storage rather than a second
+process address space.
+
 Step 6 is materially different from native virtual-memory fork. Native
 kernels normally map the parent's pages into the child with copy-on-write
 ownership, so unchanged pages are not copied. Browser WebAssembly exposes no
 equivalent operation for cloning a `WebAssembly.Memory`. Kandelo must allocate
-a fresh memory and copy the parent's complete current address space before the
-child runs. A child that immediately calls `exec()` therefore pays for both
-the discarded fork copy and the replacement program memory. Kandelo's
+a fresh memory and copy the parent's complete current address space before an
+ordinary fork child runs. An ordinary fork child that immediately calls
+`exec()` therefore pays for both the discarded fork copy and the replacement
+program memory. Kandelo's
 non-forking `posix_spawn()` path avoids that copy when the caller can describe
 the requested child entirely with spawn actions and attributes.
 
@@ -1163,15 +1197,15 @@ from a pthread after dynamic loading; the fork child reconstructs only the
 calling thread but receives the process module/table recipe state. The
 generation fast path avoids reparsing or reinstantiating unchanged state.
 
-Fork and non-forking spawn still copy each process's fd and OFD metadata. The
-objects whose mutable state must remain identical across those copies use
-refcounted kernel-global backings: eventfd counters, timerfd timers, signalfd
-masks, memfd contents and cursors, and procfs snapshots and cursors. Pipes,
-sockets, PTYs, terminal devices, and listener queues likewise retain their
-existing global object identity. Ordinary regular-file OFD metadata, including
-the seek position and status flags, is still copied rather than shared; that
-remaining POSIX gap is tracked in [posix-status.md](posix-status.md) and
-[future-improvements.md](future-improvements.md).
+Fork and non-forking spawn copy each process's descriptor-table shell while
+retaining one exact mutable OFD state object. Offset, status flags, and async
+owner therefore remain shared across the copies. Directory host iterators are
+process-local because their handles and pending records cannot be owned by two
+processes safely; a shared position generation makes a stale iterator close,
+reopen, and replay at the authoritative cookie before its next read. Stateful
+objects additionally retain their kernel-global backings: eventfd counters,
+timerfd timers, signalfd masks, memfd contents and cursors, procfs snapshots,
+pipes, sockets, PTYs, terminal devices, and listener queues.
 
 ### exec()
 
@@ -1650,8 +1684,9 @@ concrete files rather than copying aliases into independent inodes. A rebase
 walks one quiescent source snapshot, so a peer rename cannot mix lazy paths
 from one namespace state with bytes from another.
 
-`registerLazyTree` is the format-neutral grouped form used by schema-4 package
-layers. Its serialized metadata adds a closed decoder/media type, immutable
+`registerLazyTree` is the format-neutral grouped form used by package layers
+and other archive-backed consumers. Its serialized metadata adds a closed
+decoder/media type, immutable
 digest and byte count, transport locations, activation policy, complete source
 and guest inventory, and regular-inode groups. Existing
 `registerLazyArchiveFromEntries` ZIP consumers remain supported. Registration
@@ -1662,6 +1697,15 @@ the POSIX result. Every member is decoded and checked before an
 identity-guarded batch replacement, so failure leaves all pending regular
 inodes unchanged. Hard-link aliases use one SharedFS inode and retain that
 identity when the lazy metadata is transferred or saved in an image.
+
+Generic TAR+gzip trees use the closed `tar-gzip-v1` decoder. A tree may carry
+a bounded `archive-byte-transforms-v1` plan containing exact source-byte
+assertions, ordered literal byte-replacement recipes, and declared input and
+output SHA-256/length identities. The VFS interprets no producer callbacks,
+regular expressions, scripts, or package policy. It applies the same plan to
+eager and lazy decoding, verifies both identities, and publishes only after
+the complete transformed tree passes validation. Plan fields participate in
+atomic-tree identity and survive image restore and filesystem rebase.
 
 Several first-use trees can opt into one fail-closed activation cohort. Each
 tree registers a producer-stable member name, and the producer must explicitly
@@ -1704,7 +1748,7 @@ Content, activation, mount prefix, inventory, and pending inode metadata reject
 unknown fields, unsafe or oversized strings, count/size disagreement, and
 missing, cyclic, or cross-inode hard-link targets before a group is installed.
 Serialized groups carry an explicit `kandelo-deferred-tree-v1` (derived ZIP),
-`kandelo-deferred-tree-v2` (original bottle), or
+`kandelo-deferred-tree-v2` (complete source inventory), or
 `kandelo-legacy-zip-v1` kind. A sealed multi-tree cohort uses
 `kandelo-deferred-tree-v3`, regardless of decoder, because its atomic membership
 is an additional closed wire contract; v1/v2 records cannot quietly acquire

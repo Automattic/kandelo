@@ -394,6 +394,37 @@ describe("ForkReferenceTransaction", () => {
     expect(released).toEqual([[0x1_0000, 65_536]]);
   });
 
+  it("reports the exact capture scratch high-water before borrowed replay", () => {
+    const memory = new WebAssembly.Memory({ initial: 8 });
+    let next = 0x1_0000;
+    const released: Array<[number, number]> = [];
+    const transaction = new ForkReferenceTransaction(
+      makeFunctionCatalog(0, []),
+      makeExternrefs().provider,
+      memory,
+      (size) => {
+        const addr = next;
+        next += size;
+        return addr;
+      },
+      (addr, size) => released.push([addr, size]),
+      "borrowed scratch high-water test",
+    );
+    transaction.beginCapture();
+    const outer = transaction.reserveScratch(65_520);
+    const inner = transaction.reserveScratch(32);
+    transaction.releaseScratch(inner, 32);
+    transaction.releaseScratch(outer, 65_520);
+
+    withArena((arena) => transaction.sealInto(arena));
+    expect(transaction.borrowedReplayScratchCapacity()).toBe(2 * 65_536);
+    transaction.abort();
+    expect(released).toEqual([
+      [0x2_0000, 65_536],
+      [0x1_0000, 65_536],
+    ]);
+  });
+
   it("interns Wasm-only exception identity and transfers exact scalar/reference payloads", () => {
     const memory = new WebAssembly.Memory({ initial: 2 });
     const thrown = new WebAssembly.Exception(

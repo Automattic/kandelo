@@ -24,15 +24,12 @@ one import closure and instance-global state, make pthread callers and side
 modules substantially harder to isolate, and make a child `exec()` retire the
 Worker that must later resume the parent.
 
-This record establishes that architecture but does **not** claim that genuine
-`vfork()` is implemented. The integration branch now carries the proposed ABI
-43 activation-state protocol, but it still has no vfork guest import or fork
-mode, kernel marker, child launch protocol, libc selection path, or parent
-suspension path. Those semantic and structural choices must be explicit in the
-same ABI 43 batch and snapshot, with the required approval, rather than hidden
-under the copied-fork contract.
+The integration branch now implements that core architecture. This is not yet
+a broad release or Homebrew completion claim: complete conformance suites,
+published upstream CRuby artifacts, real resident set size (RSS), artifact
+publication, and the exact Homebrew lifecycle remain explicit gates.
 
-Five independently reviewable foundations are implemented now:
+The independently reviewable implementation now includes:
 
 - ordinary `fork()` performs retired-memory admission before constructing or
   copying child memory and returns `EAGAIN` when the retirement ledger is
@@ -44,15 +41,30 @@ Five independently reviewable foundations are implemented now:
   mutable prefix;
 - a cross-host lifetime coordinator admits only one borrower per address
   space and distinguishes exact parent resumption, safe pre-launch failure,
-  and ambiguous termination that requires whole-address-space containment; and
+  and ambiguous termination that requires whole-address-space containment;
 - ABI 43 activation and dynamic-linker reconstruction can borrow the sealed
   process manifest and parent frame nodes while giving every active main/side
-  activation a private prefix and refusing loader-controlled memory writes.
-
-The last four are not connected to a guest-visible vfork path in ABI 43. They
-prove and enforce host ownership, replay, and terminal-gating primitives the
-selected architecture needs; they do not by themselves implement the guest
-mode, child launch, or parent-channel completion.
+  activation a private prefix and refusing loader-controlled memory writes;
+- ABI 43 owns ordinary/vfork mode values, an exact `(i32) -> i32` process
+  import, mode-stable capture/replay, a mode-aware kernel export, and symmetric
+  Node/browser child-launch metadata;
+- the kernel marks the independent Process record created for a vfork
+  transaction, rejects nested fork, spawn, and pthread creation with `EAGAIN`,
+  and clears the marker only after successful exec replaces the borrowed
+  image;
+- the production Node and browser hosts launch a separate vfork child Worker
+  over an exact alias to the parent's existing Memory without constructing or
+  copying a child process Memory;
+- private syscall-channel, replay-prefix, reference-codec, loader, and
+  continuation-control state prevents the child from overwriting the parked
+  parent's control state;
+- the asynchronous fork import parks only the calling parent thread through
+  failed exec and until successful exec commit or exact
+  `_exit()`/signal/trap teardown;
+- fork, vfork, non-forking spawn, and supported `SCM_RIGHTS` retain one
+  exactly owned mutable OFD state for offsets, status flags, and async owner,
+  while directory host iterators remain process-local and replay the shared
+  cookie.
 
 Sparse exact cloning reduced resident set size (RSS) in a controlled sparse
 memory case, but increased scan/copy time and has no real Homebrew result. It
@@ -84,16 +96,24 @@ The reviewable implementation slices on this branch are:
 - `2822cb109`, separate-Worker borrowed replay in Chromium, Firefox, and
   WebKit;
 - `ab2873a25`, the ABI 43 forward-port of borrowed process-wide activation and
-  write-free side-module reconstruction; and
+  write-free side-module reconstruction;
 - `6e71ac438`, ABI 43 main-continuation and wasm-ld reconstruction proofs in
-  Chromium, Firefox, and WebKit; and
+  Chromium, Firefox, and WebKit;
 - `6f481ba85`, ABI 43 active-side-continuation borrowing in separate Workers on
-  Chromium, Firefox, and WebKit.
+  Chromium, Firefox, and WebKit;
+- `1a245ddec` through `68d858757`, explicit mode, kernel ownership guards,
+  bounded workspace admission, and private borrowed replay state;
+- `faef5e3d8` and `903dfa4ea`, truthful admission and shared-memory launch;
+- `2d9cc839e` through `7765b75a2`, host-reserved control ownership, stable
+  parent anchors, and pthread-safe libc restoration;
+- `c19fa2e44` through `43dedc20f`, cross-engine exit, suspension, zero-copy,
+  signal, trap, and fatal-teardown proofs;
+- `02e2d60a4`, exact shared inherited OFD state;
+- `eeb7d50cc`, the Node/browser POSIX process-state fixture; and
+- `7961f47a1`, cross-engine compute-running borrower containment.
 
-All slices after the ordinary-fork admission guard are deliberately unwired
-foundations or component proofs. The guest import, libc, kernel state, Worker
-protocol, Node/browser lifecycle integration, and fork-instrument seed changes
-remain in the coordinated ABI series.
+The connected commits remain individual in the ABI 43 integration train. They
+must not be squashed when the umbrella branch is linearized.
 
 The temporary CRuby change on
 [PR #1166](https://github.com/Automattic/kandelo/pull/1166) was inspected from
@@ -205,11 +225,15 @@ instance receives its own value. Stale objects that depend on the legacy
 shared-memory channel-base fallback must fail the new ABI epoch rather than
 enter vfork.
 
-The slot's fork-save/scratch page also supplies the child-private replay
-prefix described below. The main prefix and an active side-module prefix must
-fit before launch; otherwise vfork returns `EAGAIN` before creating a borrower.
-The serialized descriptor already gives the exact prefix size. A future
-implementation must not assume every possible pair fits merely because normal
+The slot's fork-save page also supplies the child-private replay prefixes
+described below, while its otherwise-unused TLS/control page supplies typed
+reference and exception codec scratch. Every active main/side prefix must fit
+within 61,440 bytes and the page-rounded scratch high-water must fit within
+65,536 bytes. Otherwise vfork returns `EAGAIN` before allocating a child PID or
+creating a borrower. Version-1 descriptors already give each exact prefix
+size; the parent reference transaction now records the capacity high-water
+observed while the same generated codecs encode the inherited graph. The
+implementation must not assume every possible graph fits merely because normal
 programs use a small prefix.
 
 The host memory allocator needs retained leases for this one explicit sharing
@@ -258,11 +282,12 @@ module and the same shared Memory to a module Worker. Chromium, Firefox, and
 WebKit each replayed through a private prefix without child allocation or
 release, left every parent chunk byte-identical, and then allowed the parent
 instance to replay and release the chain. This is cross-engine component
-evidence for safe separate-Worker replay. It is not yet a guest-visible vfork
-process-lifecycle test.
+evidence for safe separate-Worker replay. At that checkpoint it was not yet a
+guest-visible vfork process-lifecycle test; the later connected validation is
+recorded below.
 
-The host now has the corresponding unwired process-wide side-module
-foundation. Borrowed dynamic-linker replay reconstructs each complete archive
+The host has the corresponding connected process-wide side-module path.
+Borrowed dynamic-linker replay reconstructs each complete archive
 entry at the parent's exact memory and table bases while creating fresh
 Worker-local instances, tables, imported globals, symbol maps, and activation
 controllers. After all activations exist, the process manifest identifies the
@@ -321,8 +346,9 @@ point for both modes. It already:
 - validates the exact calling task;
 - creates a globally unique PID and one-task child;
 - inherits the caller's blocked signal mask;
-- copies descriptor and OFD metadata while retaining kernel-global backing
-  references;
+- copies the process-local descriptor/OFD table shell, relinks each inherited
+  OFD's mutable offset/status/owner state to the parent's exact object, and
+  retains kernel-global backing references;
 - copies cwd, credentials, process group, session, umask, limits, and signal
   dispositions;
 - preserves parentage and wait/reaping state; and
@@ -335,9 +361,9 @@ credential checks, process-group changes, `exec()` commit, signal death,
 zombie state, and `waitpid()` therefore continue through the ordinary kernel
 path.
 
-The coordinator must add an explicit vfork-child state so operations that
-would create ambiguous shared-memory ownership fail before mutation. The
-initial implementation should return `EAGAIN` for:
+The kernel Process now carries an internal vfork-child marker so operations
+that would create ambiguous shared-memory ownership fail before mutation. It
+returns `EAGAIN` for:
 
 - another active vfork from the same address space;
 - nested vfork or ordinary fork from a vfork child;
@@ -347,8 +373,16 @@ initial implementation should return `EAGAIN` for:
 
 Those calls are outside the permitted vfork-child pre-exec use. Returning a
 truthful failure is safer than silently treating them as ordinary fork or
-allowing channel/control collisions. Sequential vfork calls after the prior
-child completes remain supported and must be tested.
+allowing channel/control collisions. The production lifecycle fixture covers
+sequential vfork calls after the prior child completes.
+
+The marker is set only for the explicit vfork mode, is not inherited through
+serialized process state, survives failed exec, and clears only when exec
+successfully commits the replacement Process image. Process removal naturally
+retires it on `_exit()` or signal death. It is kernel-internal state: no getter,
+new export, or additional guest ABI field is needed because the mode-aware
+fork export and Rust-owned spawn and clone paths enforce the affected
+transitions directly.
 
 For nested `fork()`/`vfork()`, the vfork-child Worker must reject directly in
 its `kernel_fork` import before `beginUnwind()`, frame reservation, anchor
@@ -399,7 +433,7 @@ leases keep the old backing alive for the child, but the coordinator suppresses
 the stale parent completion and releases the parent alias through the normal
 generation ledger.
 
-### Host lifetime coordinator foundation
+### Host lifetime coordinator
 
 The shared `VforkLifetimeCoordinator` records exact parent and child generation
 objects and keys active borrowing by `WebAssembly.Memory`, not numeric PID. It
@@ -417,25 +451,25 @@ produces `contain-address-space`, never a normal return. Failed exec merely
 increments diagnostic state and leaves the lifetime pending.
 
 The coordinator retains the exact parent generation in every disposition.
-The eventual Node/browser integration must still compare it with the current
-PID registration before completing the parked channel; this preserves the
-existing stale-generation suppression when a sibling pthread execs or exits
-the parent. The 13 focused state-machine tests cover an unresolved caller gate
+The Node/browser integrations compare it with the current PID registration
+before completing the parked channel; this preserves the existing
+stale-generation suppression when a sibling pthread execs or exits the parent.
+The 13 focused state-machine tests cover an unresolved caller gate
 with unrelated event-loop progress, repeated failed exec, all exact terminal
 reasons, pre-launch rollback, pre-launch signal death, ambiguous termination,
 competing terminal notifications, overlapping/nested `EAGAIN`, distinct
 concurrent address spaces, sequential reuse, child-generation reuse rejection,
 and stale-parent identity.
 
-This coordinator is deliberately unwired until the ABI mode and Process marker
-are coordinated. Existing async `onFork` completion is the actual caller-thread
-parking transport, and existing Worker-quiescence and exact-generation detach
-ledgers remain the source of terminal evidence.
+Production Node and browser handlers wire the coordinator to the ABI mode and
+Process marker. Existing async `onFork` completion is the caller-thread parking
+transport, and Worker-quiescence plus exact-generation detach ledgers remain
+the source of terminal evidence.
 
 ### Test matrix for the vfork series
 
-The vfork implementation is not complete until tests prove all of the
-following on Node and the applicable browser hosts:
+The broad vfork completion claim remains gated on the following evidence on
+Node and the applicable browser hosts:
 
 - no `WebAssembly.Memory` constructor and no full-memory copy occur on vfork;
 - a main-thread caller cannot pass the call site before child exec/_exit;
@@ -444,6 +478,8 @@ following on Node and the applicable browser hosts:
 - failed exec returns to the child and leaves the parent parked;
 - successful exec, `_exit`, caught signal death, trap, and Worker crash each
   settle exactly once and cannot wedge or prematurely resume the parent;
+- a fatal signal delivered while the child has no pending syscall contains the
+  complete shared address space rather than publishing an unsafe parent return;
 - descriptors/OFDs, cwd, credentials, signal masks/dispositions, process
   groups, parentage, zombie state, and wait/reaping match the kernel contract;
 - repeated sequential calls work and unsupported overlapping/nested calls
@@ -581,7 +617,7 @@ remove the pre-reclamation peak that motivates vfork.
 The browser process-retirement integration ran 100 real fork/exec iterations
 per engine and passed in Chromium, Firefox, and WebKit. This validates the
 ordinary fork/exec and retirement path affected by pre-copy admission. It is
-not evidence for unimplemented vfork behavior or a browser RSS ceiling.
+not evidence for the later connected vfork behavior or a browser RSS ceiling.
 
 ## Upstream CRuby integration
 
@@ -602,48 +638,59 @@ as uid 1000 naturally selects upstream vfork for this eligible async-safe
 fork/exec path. Root and other privileged shapes intentionally retain
 ordinary fork. No Ruby-specific command classification is needed.
 
-The worktree-local SDK already defaults `ac_cv_func_vfork=yes`, but
-`packages/registry/ruby/build-ruby.sh` overrides it with
-`ac_cv_func_vfork=no`. That override is truthful today because Kandelo's
-`vfork()` is only an alias for fork. It must change to `yes` only after the
-platform implementation and conformance evidence land in the coordinated ABI
-epoch.
+The ABI 43 integration recipe now supplies truthful working-vfork cache
+answers, retains `HAVE_VFORK` and `HAVE_WORKING_VFORK`, and removes the
+temporary `kandelo-posix-spawn.patch`. The checksum-pinned source tree still
+receives Kandelo's unrelated portability edits and library-root patch, but
+upstream `process.c` is no longer modified. Recipe assertions reject both
+residue from PR #1166 and a configuration that does not enable the upstream
+vfork branch.
 
-PR #1166 adds `kandelo-posix-spawn.patch` and applies it to `process.c`. Its
-tests correctly constrain the temporary exception to command shapes that the
-current spawn contract can reproduce. That source patch is not part of the
-vfork design and must be deleted, not generalized.
+The first clean configure exposed an independent cross-probe error. The
+recipe had disabled `getresuid()` and `getresgid()` while accidentally
+allowing CRuby's AIX-only `getuidx()` and `getgidx()` fallback to be detected
+from the build host. Kandelo libc and the kernel already implement the two
+POSIX saved-ID queries, so the recipe now reports those functions as present
+and the AIX interfaces as absent. No Ruby or libc source workaround was
+added.
 
 ## ABI and release impact
 
 Changing `kernel.kernel_fork` from `() -> i32` to `(i32) -> i32` is an
-incompatible process ABI change. The coordinated implementation must include:
+incompatible process ABI change. The current ABI 43 integration checkpoint
+includes:
 
-- an `ABI_VERSION` bump from the active batch's base;
+- the batch's `ABI_VERSION` 43 selection;
 - regenerated `abi/snapshot.json` and generated TypeScript constants;
 - libc `_Fork()`/`fork()`/`vfork()` callers with explicit mode constants;
 - host import closures for main and pthread Workers;
-- side-module `env.fork` mode propagation;
-- `ForkLaunchRequest` and Worker-init protocol metadata for vfork, inherited
-  process-control offset, and borrowed replay;
-- fork-instrument tests proving a parameterized seed call preserves its mode
-  through unwind/replay;
-- loud rejection of stale ABI 42 programs, packages, and VFS images; and
-- rebuild/publish of every ABI-bound kernel, program, package archive, and VFS
-  artifact.
+- mode-stable main/pthread capture, replay, and abort replay;
+- `ForkLaunchRequest` and Worker-init mode metadata in both hosts;
+- host-intercepted `SYS_VFORK` arguments 0 and 1 carrying the measured replay
+  prefix and codec-scratch bytes, with bounded pre-PID admission;
+- a mode-aware `kernel_fork_process(parent, caller, mode)` export; and
+- exact artifact admission for the parameterized process import.
 
-As of this record, draft
-[PR #1096](https://github.com/Automattic/kandelo/pull/1096) already owns the
-ABI 43 activation-state-safe fork epoch, while draft
-[PR #1098](https://github.com/Automattic/kandelo/pull/1098) also carries ABI 43
-host/kernel work. Brandon must choose the exact agreed base and whether vfork
-joins that epoch or follows it. This branch must not independently claim ABI
-43 or restack either draft.
+The connected implementation now includes child-private process control,
+borrowed Node/browser replay, parent-caller suspension, exact terminal
+release, and side-module and nested-call failure proofs. Release still
+requires broad stale-artifact rejection evidence plus rebuild and publication
+of every ABI-bound kernel, program, package archive, and VFS artifact.
+
+The selected integration branch combines drafts
+[PR #1096](https://github.com/Automattic/kandelo/pull/1096) and
+[PR #1098](https://github.com/Automattic/kandelo/pull/1098) with the accepted
+ABI 43 batch. This is development and review composition, not merge approval;
+kernel, ABI, libc, host, and fork-instrument changes still require Brandon's
+explicit approval before merge.
 
 The linked continuation descriptor does not need a new serialized field for
 borrowed replay, because it already carries `fixed_prefix_size`. The Worker
-protocol does need separate addresses for the parent's continuation root and
-the child's mutable prefix. The ABI bump is still mandatory: old host
+protocol does need separate addresses for the parent's continuation root, the
+child's mutable prefixes, and its codec scratch. The intercepted syscall now
+carries exact byte requirements, but no new linked-frame field, syscall number,
+kernel import, export, or ABI snapshot entry is required. The ABI bump is still
+mandatory: old host
 semantics would consume the shared chain and old libc cannot express the mode.
 
 The current pre-copy admission change alters no guest-visible structure,
@@ -714,7 +761,8 @@ would only mask ownership or admission defects.
 
 ## PR #1166 removal and proof plan
 
-After the coordinated vfork series is complete:
+The local integration branch has completed steps 1 through 5 below. They are
+implementation evidence, not authorization to merge or publish the removal.
 
 1. Delete `packages/registry/ruby/patches/kandelo-posix-spawn.patch` and its
    application block from `build-ruby.sh`; do not replace it with another
@@ -729,7 +777,8 @@ After the coordinated vfork series is complete:
 5. Add an upstream-selection fixture that runs as uid 1000 and proves
    `retry_fork_async_signal_safe()` reaches `SYS_VFORK` with no full memory
    allocation/copy. Run the matched root/privileged fixture and prove it
-   reaches ordinary `SYS_FORK` and still clones independently.
+   reaches ordinary `SYS_FORK`; retain the platform's independent ordinary
+   fork isolation tests alongside that selection proof.
 6. Exercise failed exec, successful exec, `_exit`, trap/crash, descriptors,
    signals, cwd/credentials, process groups, main/pthread callers, sequential
    repetition, rejected nesting, and dynamic side modules through platform
@@ -751,10 +800,11 @@ After the coordinated vfork series is complete:
     headroom to prove ordinary fork behavior independently; do not expect that
     fallback to have vfork's memory profile.
 
-Only after that evidence should #1166's migration exception and documentation
-be removed. Until then, this record supports a design, one generic admission
-guardrail, and unwired host foundations, not the claim that Homebrew's
-fork-then-exec problem is fully resolved.
+The recipe removal must not be merged or published until the remaining
+platform, publication, and lifecycle gates support it. Until then, this
+record supports the connected platform implementation and ordinary-fork
+admission guardrail, not the claim that Homebrew's fork-then-exec problem is
+fully resolved.
 
 ## Validation recorded for this change
 
@@ -825,10 +875,248 @@ evidence for either path.
 
 Still required before a broad vfork or Homebrew completion claim:
 
-- the coordinated ABI snapshot/bump and complete vfork implementation;
 - libc, POSIX, Sortix, kernel, host, fork-instrument, ABI, Node, and browser
-  conformance suites selected for that implementation;
-- vfork-specific failure/rollback and cross-engine tests listed above;
+  conformance suites selected for the connected implementation;
 - pristine upstream-selection tests at uid 1000 and privileged uid 0;
 - rebuilt and anonymously published Ruby/VFS artifacts; and
 - the exact real in-guest Homebrew lifecycle and RSS proof.
+
+### Selected ABI 43 batch validation — 2026-08-01
+
+The selected non-Homebrew PR batch, PRs #1096 and #1098, the borrowed-replay
+foundation, and PR #947 were composed on
+`integration/abi43-batch-20260731`. The frozen sources, history rule, and next
+implementation steps are recorded in
+`docs/plans/2026-08-01-abi-43-batch-plan.md`.
+
+The latest broad host run through `scripts/dev-shell.sh` recorded 4,027 passed,
+five failed, and 130 skipped tests out of 4,162. Every failure was an explicit
+missing complete ABI 43 program-artifact closure in the run-example credential
+or resolver fixtures. The exact 4,096-child `posix_spawn` churn passed in that
+same concurrent run.
+
+An earlier concurrent run had terminated a churn child with signal 11. Added
+diagnostics identified a test-only ownership race: the installed-host-package
+test ran tsup in the shared checkout, whose clean step removed
+`host/dist/worker-entry.js` while the churn machine was launching its next
+Worker. Building that package in a private temporary source tree removed the
+race; this was not evidence of kernel stack loss, renderer OOM, or incorrect
+fork admission.
+
+At this batch-validation checkpoint, the guest-visible vfork mode was distinct
+but genuine vfork remained unimplemented. The mode reached
+`SYS_VFORK`, Rust, and symmetric Node/browser launch metadata while still
+using a full copied child Memory. Rust marked that child's Process record,
+rejected nested process/thread ownership, and cleared the marker after
+successful exec; failed exec intentionally left it set. The process Worker
+also published exact prefix/scratch requirements, and the centralized host
+rejected an oversized one-slot workspace with `EAGAIN` before child PID
+allocation. No result above should be read as proof of parent suspension,
+zero-copy vfork launch, terminal host cleanup, or pristine upstream Ruby
+selection.
+
+### Connected vfork and OFD validation — 2026-08-01
+
+Subsequent purpose-scoped commits connected the admitted mode to production
+shared-memory launch, caller suspension, private child replay/control state,
+and exact terminal teardown on both hosts. A production guest also exposed a
+generic inherited-open-file-description defect: Kandelo preserved `OfdId` but
+copied mutable offset/status/owner fields. The kernel now retains those fields
+in an exactly owned shared state object and reconstructs process-local
+directory iterators at one shared cookie.
+
+All commands supporting the following claims ran through
+`scripts/dev-shell.sh`:
+
+- the full kernel suite passed 1,522 unit tests, four integration tests, and
+  six doc tests;
+- focused kernel tests proved shared fork/vfork OFD lifetime, shared directory
+  cookies, and post-send `SCM_RIGHTS` mutation/lifetime behavior;
+- `bash scripts/check-abi-version.sh` passed native and wasm32/wasm64 layout,
+  kernel Wasm export, generated C/TypeScript, snapshot, and version checks;
+- `bash build.sh` completed. Because the unpublished ABI 43 release index
+  returned 404, the resolver rebuilt its verified-source package closure and
+  produced `host/wasm/rootfs.vfs` at 16,787,687 bytes;
+- the production Node lifecycle suite passed five cases: repeated `_exit()`
+  and failed/successful exec, pthread caller suspension with a runnable
+  sibling, exact trap/self-`SIGKILL` teardown, and independent POSIX Process
+  state with a shared OFD, plus sibling-delivered `SIGKILL` while the borrower
+  was in a no-syscall compute loop;
+- the same five cases passed in Chromium, Firefox, and WebKit, for 15 browser
+  cases total; and
+- the declared program build rebuilt P-08 with ABI 43 instrumentation, and its
+  focused production-host case passed (one selected, 50 skipped).
+
+Focused allocation assertions and the pthread fixture's already-exhausted
+post-growth process-memory budget prove that the vfork launch retained the
+existing Memory rather than constructing or copying a child process Memory.
+Output ordering proves that the caller did not pass the vfork call site before
+the terminal boundary, while the sibling-thread fixture proves that unrelated
+parent pthreads remained runnable. The process-state fixture covers descriptor
+flags/close isolation, shared seek position, cwd, credentials, process group,
+and wait/reaping. The lifecycle fixture covers failed exec coherence,
+successful exec release, sequential calls, and nested fork/vfork/pthread
+`EAGAIN`.
+
+This is still not broad completion evidence. The external-signal case proves
+the documented browser boundary: a compute-running borrower has no generally
+available Worker quiescence fence, so the safe fallback is loud
+whole-address-space containment rather than parent resumption. The complete
+fork-instrument run is blocked by the stale/rejected `programs/sh.wasm`
+artifact closure. A libc vfork runner timed out, and a direct `/bin/sh` exec
+attempt reported an exec-format error; neither is recorded as a libc pass. The
+development shell did not provide `cargo fmt`, so no formatting-pass claim is
+made. Complete libc, POSIX, Sortix, host, browser, fork-instrument,
+performance/RSS, artifact-publication, and Homebrew lifecycle proofs remain
+outstanding.
+
+### Upstream CRuby selection and patch removal — 2026-08-01
+
+The Ruby 4.0.5 recipe now removes PR #1166 rather than broadening it. Its build
+revision is 14, its source marker rejects a work directory that contains the
+retired patch, and its configure contract requires upstream working-vfork
+selection plus Kandelo's real `getresuid()` and `getresgid()` support.
+
+A clean build used the official checksum-pinned tarball with SHA-256
+`7d6149079a63f8ae1d326c9fa65c6019ba2dc3155eae7b39159817911c88958e`.
+The generated configuration contained `HAVE_VFORK`,
+`HAVE_WORKING_VFORK`, and `HAVE_WORKING_FORK`. The recipe compiled upstream
+`process.c`, linked Ruby, applied local-root spilling and ABI 43 fork
+instrumentation, and staged both declared outputs through the sealed package
+installer. The 23 MiB executable had SHA-256
+`7d6bedf59930881b7f87bad8c9ab78a1b93816d4b0bdba60ec949c497a12851f`
+in two builds.
+
+The first final-install attempt found an integration seam: WABT 1.0.36 could
+not decode the modern typed-reference entries emitted by the ABI 43 tools,
+although Node/V8 compiled the module. The fail-closed guard was not bypassed.
+The existing wasmparser-backed artifact decoder now inventories reserved
+`env.__wasm_posix_*` imports structurally, retains WABT only as a source-only
+fallback, and rejects decoder failure. Its 14 focused Rust tests and the
+complete shell artifact-guard suite passed before the package build was
+repeated.
+
+The extracted runtime ZIP contents were identical across the two builds, but
+the ZIP container SHA changed because its entry timestamps were not
+normalized. No byte-reproducibility claim is made for that archive; one exact
+rebuilt archive must be selected and bound when publication is authorized.
+
+The exact local executable then passed three production Node cases. At uid
+1000, failed exec returned `ENOENT` and successful exec replaced the child
+while a memory ceiling equal to Ruby's initial address space admitted vfork.
+At uid 0, upstream CRuby intentionally selected ordinary fork; both its first
+attempt and garbage-collection retry were rejected before a full child clone
+by the same ceiling. The uid-1000 failed-exec case also passed in Chromium,
+Firefox, and WebKit. Chromium additionally passed successful exec and the
+root fallback, for four passing Playwright cases and two intentional
+cross-engine skips.
+
+No artifact was published, no Homebrew image was rebuilt, no real tap/install
+lifecycle was run, and no application RSS claim was measured. Those remain
+release gates along with the broad suites listed above.
+
+### Broad validation and current performance — 2026-08-01
+
+The remaining locally runnable conformance gates were then run through
+`scripts/dev-shell.sh` against commit `5c0455db6`:
+
+- the CI-shaped host run passed 339 files and skipped 28; it recorded
+  4,131 passing tests, two expected failures, and 129 skips, including
+  the three upstream Ruby selection cases;
+- the JavaScriptCore/Bun teardown and pthread supplement passed three
+  tests in two files;
+- libc recorded 303 passes, zero failures, 20 expected failures, and one
+  passing flaky case out of 324;
+- POSIX recorded 174 passes, zero failures, three expected failures, and
+  two skips out of 179;
+- Sortix recorded 5,037 passes, zero failures, 23 expected failures, and
+  53 skips out of 5,113;
+- the Rust workspace gate completed successfully, including 1,522 kernel
+  tests, four pointer-contract tests, 13 root-spill tests, 48 shared-ABI
+  tests, fork-instrument, and documentation tests;
+- `xtask` passed 639 unit tests and its cache-root integration test; and
+- the ABI gate again matched native, wasm32, and wasm64 layouts, the
+  committed snapshot, generated C and TypeScript bindings, and the
+  42-to-43 bump.
+
+The focused browser vfork lifecycle remained green in Chromium, Firefox,
+and WebKit: five cases per engine, 15 total. The upstream Ruby browser
+proof recorded four passes and two intentional cross-engine skips. The
+full product browser suite could not start with a complete asset
+closure: the ABI 43 release index at `binaries-abi-v43/index.toml`
+returns HTTP 404, and the local tree has no accepted ABI 43 application
+package set.
+Substituting ABI 42 artifacts would violate the artifact and ABI
+contracts, so no such fallback was used.
+
+The component RSS harness was repeated twice against the final
+64,151-byte ABI 43 `fork-bench.wasm`:
+
+| Case | Run A | Run B |
+|---|---:|---:|
+| Worker-only peak RSS growth | 13.063 MiB | 13.453 MiB |
+| Module-Worker peak RSS growth | 13.500 MiB | 13.172 MiB |
+| Shared-memory Worker RSS growth | 11.094 MiB | 11.156 MiB |
+| Full-clone RSS growth | 496.344 MiB | 496.344 MiB |
+| Sparse-clone RSS growth | 262.656 MiB | 262.641 MiB |
+| Full-clone elapsed | 35.287 ms | 35.338 ms |
+| Sparse-clone elapsed | 95.125 ms | 79.470 ms |
+
+The final artifact therefore reproduces the architectural result:
+sharing an existing 256 MiB Memory adds Worker-scale RSS, while a
+complete clone adds 496.344 MiB in this sparse-parent experiment. Sparse
+cloning saves RSS but still faults and scans the parent and takes
+2.25 to 2.70 times as long. This remains component evidence, not a
+Homebrew application RSS result.
+
+All three self-contained benchmark suites ran for three rounds on Node
+and Chromium. The final medians included:
+
+| Host and suite | Selected medians |
+|---|---|
+| Node process lifecycle | hello 271.00 ms; fork 79.54 ms; exec 337.81 ms; clone 64.38 ms |
+| Chromium process lifecycle | hello 373.20 ms; fork 41.00 ms; clone 28.00 ms |
+| Node spawn scratch | spawn 74.50 ms; large first 70.69 ms; repeat 69.54 ms |
+| Chromium spawn scratch | spawn 33.00 ms; large first 28.00 ms; repeat 26.40 ms |
+| Node syscall I/O | pipe 62.37 MiB/s; syscall 27.30 us |
+| Chromium syscall I/O | pipe 58.82 MiB/s; syscall 32.00 us |
+
+The spawn scratch shape retained exactly 84,386 bytes and ended with
+17,760,256 kernel bytes on both hosts. The all-suite gates stopped
+before any workload because Node lacked ABI 43 PHP, WordPress, and both
+MariaDB architectures. The browser lacked the WordPress and two MariaDB
+VFS images. No broad application-performance or no-regression claim is
+made.
+
+A same-day rebuild of pre-batch commit `2f5b3c411` confirmed a real
+lifecycle regression in the combined ABI train:
+
+| Metric | Pre-batch | Final | Change |
+|---|---:|---:|---:|
+| hello start | 190.10 ms | 271.00 ms | +42.6% |
+| fork and child exit | 53.01 ms | 79.54 ms | +50.0% |
+| exec | 234.43 ms | 337.81 ms | +44.1% |
+| pthread clone | 46.92 ms | 64.38 ms | +37.2% |
+
+Seven-run empty-VFS phase measurements separated the broad ABI batch
+from the later vfork commits:
+
+| Revision | Kernel-host init | Hello process launch |
+|---|---:|---:|
+| pre-batch `2f5b3c411` | 127.584 ms | 51.401 ms |
+| pre-vfork ABI 43 `40992ab95` | 177.738 ms | 72.726 ms |
+| final `5c0455db6` | 181.967 ms | 74.367 ms |
+
+The generated kernel Worker grew from 1,162,219 bytes before the batch
+to 2,028,243 bytes before vfork and 2,055,252 bytes in the final tree.
+The process Worker grew from 219,027 to 978,422 to 993,077 bytes. The
+pre-vfork ABI 43 checkpoint therefore already contains about 39 to 42
+percent of the empty-VFS regression; the connected vfork stack adds
+about 2.3 to 2.4 percent on top. This does not make the broad regression
+acceptable, but it rejects vfork as its primary cause and keeps the
+integration train bisectable for a separate startup-size investigation.
+
+Artifact publication remains the release boundary. Until the exact
+ABI 43 Ruby, shell, and application closure is published, neither the
+complete browser benchmark matrix nor the real in-guest Homebrew
+tap/install and RSS lifecycle can be claimed.

@@ -6,13 +6,14 @@ import { describe, expect, it } from "vitest";
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(testDir, "..", "..");
 
-function forkHandlerSource(relativePath: string): string {
+function ordinaryForkHandlerSource(relativePath: string): string {
   const path = join(repoRoot, relativePath);
   const source = readFileSync(path, "utf8");
-  const start = source.indexOf("async function handleFork(");
+  const start = source.indexOf("async function handleOrdinaryFork(");
   const end = source.indexOf("\nasync function handleExec(", start);
-  expect(start, `${relativePath} must define handleFork`).toBeGreaterThanOrEqual(0);
-  expect(end, `${relativePath} must define handleExec after handleFork`)
+  expect(start, `${relativePath} must define handleOrdinaryFork`)
+    .toBeGreaterThanOrEqual(0);
+  expect(end, `${relativePath} must define handleExec after handleOrdinaryFork`)
     .toBeGreaterThan(start);
   return source.slice(start, end);
 }
@@ -22,7 +23,7 @@ describe.each([
   ["browser", "host/src/browser-kernel-worker-entry.ts"],
 ])("%s fork replay launch transaction", (_host, relativePath) => {
   it("waits for the exact child generation before committing and resolving", () => {
-    const handler = forkHandlerSource(relativePath);
+    const handler = ordinaryForkHandlerSource(relativePath);
     const wait = handler.indexOf("await forkReplay.waitUntilReady()");
     const generationCheck = handler.indexOf(
       "processes.get(childPid)?.worker !== launchedWorker",
@@ -40,7 +41,7 @@ describe.each([
   });
 
   it("cancels both a deferred launch and the rollback path", () => {
-    const handler = forkHandlerSource(relativePath);
+    const handler = ordinaryForkHandlerSource(relativePath);
     const launchGate = handler.indexOf("startProcessWorkerWhenRunnable(");
     const launchCancellation = handler.indexOf("forkReplay.cancel(", launchGate);
     const rollback = handler.indexOf("} catch (error)");
@@ -60,7 +61,7 @@ describe.each([
   });
 
   it("grants the exact copied externref graph before launch and retires rollback", () => {
-    const handler = forkHandlerSource(relativePath);
+    const handler = ordinaryForkHandlerSource(relativePath);
     const grant = handler.indexOf(
       "externrefProcessOwner.forkGenerationFromContinuation(",
     );

@@ -10,6 +10,22 @@ export {
 } from "./deferred-tree-limits";
 export type { VfsDeferredTreeUsage } from "./deferred-tree-limits";
 export {
+  applyLazyTreeByteTransformRecipe,
+  decodeMaterializationBytes,
+  encodeMaterializationBytes,
+  validateLazyTreeMaterializationPlan,
+} from "./materialization-plan";
+export type {
+  LazyTreeByteIdentity,
+  LazyTreeByteReplacement,
+  LazyTreeByteTransform,
+  LazyTreeByteTransformRecipe,
+  LazyTreeMaterializationPlan,
+  LazyTreeMaterializationSourceEntry,
+  LazyTreeMaterializationSourceInventory,
+  LazyTreeSourceAssertion,
+} from "./materialization-plan";
+export {
   createClosedLazyAssetFetcher,
   loadClosedLazyAssetSources,
   MAX_CLOSED_LAZY_ASSETS,

@@ -25,6 +25,7 @@ import {
   PROCESS_STATE_EXITED,
 } from "../src/generated/abi";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
+import { emptyProcessTimerCleanup } from "./kernel-worker-test-scratch";
 
 const CLONE_PARENT_SETTID = 0x0010_0000;
 const ENOMEM = 12;
@@ -39,6 +40,7 @@ const KERNEL_EXPORT_NAMES = [
   "kernel_handle_channel",
   "kernel_inject_mouse_event",
   "kernel_set_current_tid",
+  "kernel_take_process_timer_cleanup",
   "kernel_thread_exit",
 ] as const;
 
@@ -103,6 +105,7 @@ function makeHarness(
     kernel_handle_channel: () => 0,
     kernel_inject_mouse_event: () => 0,
     kernel_set_current_tid: () => 0,
+    kernel_take_process_timer_cleanup: emptyProcessTimerCleanup(kernelMemory),
     kernel_thread_exit: () => 0,
     ...implementations,
   };

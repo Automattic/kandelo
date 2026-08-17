@@ -84,6 +84,7 @@ interface MethodInfo extends ScopeScan {
 }
 
 const ROOT_INGRESS_METHODS = new Map([
+  ["#runImmediateKernelEntry", 1],
   ["#runOrDeferKernelEntry", 1],
   ["#runOrDeferChannelKernelEntry", 2],
 ]);

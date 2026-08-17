@@ -85,7 +85,7 @@ function signatures(
       result: i32,
     },
     kernel_fork_process: {
-      parameters: [i32, i32],
+      parameters: [i32, i32, i32],
       result: i32,
     },
     kernel_ftruncate: {

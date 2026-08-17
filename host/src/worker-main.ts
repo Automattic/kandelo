@@ -11,6 +11,7 @@ import {
   type CentralizedThreadInitMessage,
   type WorkerToHostMessage,
 } from "./worker-protocol";
+import { BorrowedVforkWorkspace } from "./vfork-workspace";
 import {
   createCppExceptionTag,
   createLongjmpTag,
@@ -47,13 +48,15 @@ import {
   CH_REQUEST_FLAGS,
   CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY,
   CH_RETURN,
-  CH_SIG_BASE,
+  CH_SIG_SI_CODE,
   CH_SIG_SIGNUM,
   CH_STATUS,
   CH_SYSCALL,
   CH_TOTAL_SIZE,
   HOST_INTERCEPTED_SYSCALLS,
   POSIX_ARG_MAX_BYTES,
+  PROCESS_FORK_MODE_FORK,
+  PROCESS_FORK_MODE_VFORK,
   PROCESS_METADATA_ENTRY_MAX_BYTES,
   PROCESS_STARTUP_MAX_ARGV_COUNT,
   PROCESS_STARTUP_MAX_ENVP_COUNT,
@@ -64,6 +67,7 @@ import {
   WPK_FORK_REQUIRED_EXPORTS,
   WPK_FORK_REQUIRED_IMPORTS,
   WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+  type ProcessForkMode,
 } from "./generated/abi";
 import {
   FORK_SAVE_BUFFER_SIZE,
@@ -118,7 +122,10 @@ import {
   readForkGcCodecDescriptor,
   type ForkGcCodecProvider,
 } from "./fork-gc-codec";
-import { ForkProcessContinuationCoordinator } from "./fork-process-continuation";
+import {
+  ForkProcessContinuationCoordinator,
+  type ForkBorrowedReplayWorkspaceRequirements,
+} from "./fork-process-continuation";
 import { forkResumeTargetsFromInstance } from "./fork-resume-catalog";
 import {
   ForkExternrefTokenCache,
@@ -160,9 +167,29 @@ function alignUp(value: number, align: number): number {
 const SYS_MMAP_NR = ABI_SYSCALLS.Mmap;
 const PROT_READ_WRITE = 3;
 const MAP_PRIVATE_ANONYMOUS = 0x22;
-const CH_SIG_SI_CODE = CH_SIG_BASE + 24;
+const SIGKILL = 9;
 
 class ExecRetirement extends Error {}
+
+/** @internal Exported so cross-engine exit-trap recognition is tested. */
+export function isWasmUnreachableTrap(error: unknown): boolean {
+  // WHY: WebKit describes the same Wasm `unreachable` trap as
+  // "Unreachable code should not be executed" while V8 uses lowercase
+  // "unreachable". The RuntimeError guard keeps an ordinary JavaScript Error
+  // containing that word from masquerading as a committed guest exit.
+  return error instanceof WebAssembly.RuntimeError
+    && /\bunreachable\b/i.test(error.message);
+}
+
+/** @internal Exported so ABI-generated retirement-marker decoding is tested. */
+export function isExecRetirementMarker(
+  view: DataView,
+  channelOffset: number,
+): boolean {
+  return view.getUint32(channelOffset + CH_SIG_SIGNUM, true) === SIGKILL
+    && view.getUint32(channelOffset + CH_SIG_SI_CODE, true)
+      === EXEC_RETIRE_SIGNAL_CODE;
+}
 
 function markDeferredSignalDelivery(
   view: DataView,
@@ -279,13 +306,26 @@ function continuationMunmap(
  */
 type KernelImports = Record<string, WebAssembly.ExportValue> & {
   kernel_exit: (status: number) => void;
-  kernel_fork: (...args: unknown[]) => number;
+  kernel_fork: (mode: number) => number;
 };
 
 const STARTUP_E2BIG = 7;
+const STARTUP_EAGAIN = 11;
 const STARTUP_EFAULT = 14;
 const STARTUP_EINVAL = 22;
 const STARTUP_ERANGE = 34;
+
+function processForkMode(value: number): ProcessForkMode | null {
+  if (value === PROCESS_FORK_MODE_FORK) return PROCESS_FORK_MODE_FORK;
+  if (value === PROCESS_FORK_MODE_VFORK) return PROCESS_FORK_MODE_VFORK;
+  return null;
+}
+
+function processForkSyscall(mode: ProcessForkMode): number {
+  return mode === PROCESS_FORK_MODE_VFORK
+    ? HOST_INTERCEPTED_SYSCALLS.SYS_VFORK
+    : HOST_INTERCEPTED_SYSCALLS.SYS_FORK;
+}
 
 interface EncodedStartupMetadata {
   argv: readonly Uint8Array[];
@@ -436,11 +476,7 @@ function buildKernelImports(
     kernel_exit: (status: number): void => {
       const view = new DataView(memory.buffer);
       const base = channelOffset;
-      if (
-        view.getUint32(base + CH_SIG_SIGNUM, true) === 9
-        && view.getUint32(base + CH_SIG_SI_CODE, true)
-          === EXEC_RETIRE_SIGNAL_CODE
-      ) {
+      if (isExecRetirementMarker(view, base)) {
         // Exec keeps the kernel Process alive. The old browser Worker must
         // unwind without publishing SYS_EXIT, then its wrapper emits the
         // exact-generation memory_quiescent ownership fence.
@@ -518,13 +554,15 @@ function buildKernelImports(
       return result;
     },
 
-    // Fork dispatches through channel (SYS_FORK)
-    kernel_fork: (): number => {
+    // Fork dispatches through the mode's dedicated channel syscall.
+    kernel_fork: (rawMode: number): number => {
+      const mode = processForkMode(rawMode);
+      if (mode === null) return -STARTUP_EINVAL;
       const view = new DataView(memory.buffer);
       const base = channelOffset;
       view.setInt32(
         base + CH_SYSCALL,
-        HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
+        processForkSyscall(mode),
         true,
       );
       for (let i = 0; i < 6; i++)
@@ -1040,6 +1078,7 @@ export function buildDlopenImports(
   ) => void,
   hostImportRuntime?: ForkHostImportWorkerRuntime,
   workerIdentity = 1,
+  memoryOwnership: "copied" | "borrowed" = "copied",
 ): DlopenSupport {
   if (
     !Number.isInteger(workerIdentity) ||
@@ -1057,6 +1096,13 @@ export function buildDlopenImports(
   const n = (v: number | bigint): number =>
     typeof v === "bigint" ? Number(v) : v;
   const resolvedLibraryPaths = new Map<string, string>();
+  const requireOwnedMemory = (operation: string): void => {
+    if (memoryOwnership === "borrowed") {
+      throw new Error(
+        `borrowed vfork child cannot ${operation} before exec or _exit`,
+      );
+    }
+  };
 
   const headOffset =
     ptrWidth === 8 ? DLOPEN_HEAD_OFFSET_WASM64 : DLOPEN_HEAD_OFFSET_WASM32;
@@ -1094,6 +1140,7 @@ export function buildDlopenImports(
     return Number(value);
   };
   const writeGenerationFence = (generation: number): void => {
+    requireOwnedMemory("publish a dynamic-loader generation");
     if (!Number.isSafeInteger(generation) || generation <= 0) {
       throw new RangeError(
         `invalid dlopen process generation ${String(generation)}`,
@@ -1121,6 +1168,7 @@ export function buildDlopenImports(
       ? Number(Atomics.load(new BigUint64Array(memory.buffer, headSlot, 1), 0))
       : Atomics.load(new Uint32Array(memory.buffer, headSlot, 1), 0);
   const writeArchiveHead = (value: number): void => {
+    requireOwnedMemory("replace the dynamic-loader archive");
     if (ptrWidth === 8) {
       Atomics.store(
         new BigUint64Array(memory.buffer, headSlot, 1),
@@ -1229,6 +1277,7 @@ export function buildDlopenImports(
     }
   };
   const acquireArchiveWriter = (): void => {
+    requireOwnedMemory("acquire the dynamic-loader archive writer");
     if (mainArchiveReaderDepth > 0) {
       throw new Error(
         "cannot acquire the process archive writer while owning a reader",
@@ -1262,6 +1311,7 @@ export function buildDlopenImports(
     finishFreshWriterAcquisition();
   };
   const acquireArchiveReader = (): void => {
+    requireOwnedMemory("acquire the dynamic-loader archive reader");
     if (mainDlopenDepth > 0) {
       throw new Error(
         "cannot acquire a process archive reader while owning its writer",
@@ -1365,6 +1415,7 @@ export function buildDlopenImports(
   // The kernel mmap allocator. Shared with the linker, but also used
   // directly by persistArchiveEntry to obtain blocks for the archive.
   const allocateMemory = (size: number, align: number): number => {
+    requireOwnedMemory("allocate dynamic-loader memory");
     const requested = size + Math.max(align, 1) - 1;
     const view = new DataView(memory.buffer);
     const base = channelOffset;
@@ -1414,6 +1465,7 @@ export function buildDlopenImports(
     size: number,
     allowCopiedArchiveAllocation = false,
   ): void => {
+    requireOwnedMemory("release dynamic-loader memory");
     const allocation = linkerAllocations.get(addr);
     if (!allocation && !allowCopiedArchiveAllocation) {
       throw new Error(
@@ -1830,6 +1882,7 @@ export function buildDlopenImports(
   };
 
   const resetForkChildLock = (): void => {
+    requireOwnedMemory("reset the parent's dynamic-loader lock");
     Atomics.store(archiveLock, 0, 0);
     Atomics.notify(archiveLock, 0);
     const copiedOwner = Atomics.load(loaderOwner, 0);
@@ -2184,6 +2237,19 @@ export function buildDlopenImports(
       return range.length;
     },
   };
+
+  if (memoryOwnership === "borrowed") {
+    // POSIX permits a vfork child to call only exec-family functions or
+    // _exit(). Keep every dynamic-loader entry point fail-closed so undefined
+    // guest behavior cannot mutate the suspended parent's archive or memory.
+    for (const name of Object.keys(imports)) {
+      imports[name] = () => {
+        throw new Error(
+          `borrowed vfork child cannot call ${name} before exec or _exit`,
+        );
+      };
+    }
+  }
 
   return {
     imports,
@@ -2756,6 +2822,13 @@ function createProcessTableReplicationOwner(options: {
   readonly newArena: () => ForkModuleStateArena;
   readonly materializeModules: (snapshot: DylinkForkArchiveSnapshot) => void;
   readonly restoreSnapshots: boolean;
+  /**
+   * The vfork parent holds the archive reader from capture until its parked
+   * fork syscall returns, so the borrowed child's already-materialized
+   * snapshot cannot change. Generation guards may observe that local
+   * generation without mutating the parent's reader/writer lock words.
+   */
+  readonly borrowedImmutableSnapshot?: boolean;
   readonly label: string;
 }): ProcessTableReplicationOwner {
   const generationAddress = new WebAssembly.Global(
@@ -2804,6 +2877,13 @@ function createProcessTableReplicationOwner(options: {
     },
     `${options.label}: table replica`,
   );
+  if (options.borrowedImmutableSnapshot) {
+    // Capture holds the parent's process-archive reader until the parked
+    // syscall returns. Adopt the exact immutable generation the child has
+    // already materialized so side-module guards report truthful state
+    // without attempting to mutate either archive lock word.
+    replica.adoptPublishedGeneration(options.dlopen.archive.generation());
+  }
 
   const reconcileLocked = (): number => {
     replicaMaterializing = true;
@@ -2885,7 +2965,9 @@ function createProcessTableReplicationOwner(options: {
   });
 
   const reconcileNow = (): number =>
-    options.dlopen.withArchiveWriter(reconcileLocked);
+    options.borrowedImmutableSnapshot
+      ? replica.generation()
+      : options.dlopen.withArchiveWriter(reconcileLocked);
   const abortActiveMutations = (): void => {
     while (mutationContexts.length > 0) {
       mutationContexts.pop();
@@ -3198,8 +3280,84 @@ export async function centralizedWorkerMain(
     );
     // Fork state — captured by kernel_fork closure
     let forkResult = 0;
+    let forkMode: ProcessForkMode = initData.isForkChild
+      ? (processForkMode(initData.forkMode ?? -1) ?? (() => {
+          throw new Error(`pid=${pid}: fork child is missing a valid fork mode`);
+        })())
+      : PROCESS_FORK_MODE_FORK;
     let forkBufAddr = initData.forkBufAddr ?? 0;
-    const dlopenArchiveControlAddr = channelOffset - FORK_BUF_SIZE;
+    const forkMemoryOwnership = initData.isForkChild
+      ? (initData.forkMemoryOwnership ?? "copied")
+      : "copied";
+    const borrowedForkChild = forkMemoryOwnership === "borrowed";
+    if (borrowedForkChild && forkMode !== PROCESS_FORK_MODE_VFORK) {
+      throw new Error(`pid=${pid}: only a vfork child may borrow process memory`);
+    }
+    if (
+      borrowedForkChild
+      && !wasmModuleImports(module).some(
+        (entry) =>
+          entry.module === "env"
+          && entry.name === "__channel_base"
+          && entry.kind === "global",
+      )
+    ) {
+      throw new Error(
+        `pid=${pid}: borrowed vfork requires imported env.__channel_base`,
+      );
+    }
+    const requiredBorrowedNumber = (
+      value: number | undefined,
+      name: string,
+      allowZero = false,
+    ): number => {
+      if (
+        !Number.isSafeInteger(value)
+        || value === undefined
+        || (allowZero ? value < 0 : value <= 0)
+      ) {
+        throw new Error(`pid=${pid}: borrowed vfork has invalid ${name}`);
+      }
+      return value;
+    };
+    const dlopenArchiveControlAddr = borrowedForkChild
+      ? requiredBorrowedNumber(
+          initData.forkOwnerControlAddr,
+          "owner control address",
+        )
+      : channelOffset - FORK_BUF_SIZE;
+    const borrowedWorkspace = borrowedForkChild
+      ? new BorrowedVforkWorkspace(
+          memory,
+          ptrWidth,
+          {
+            prefixAddress: requiredBorrowedNumber(
+              initData.forkPrivatePrefixAddr,
+              "private prefix address",
+            ),
+            prefixBytes: requiredBorrowedNumber(
+              initData.forkPrivatePrefixBytes,
+              "private prefix bytes",
+            ),
+            scratchAddress: requiredBorrowedNumber(
+              initData.forkScratchAddr,
+              "scratch address",
+            ),
+            scratchBytes: requiredBorrowedNumber(
+              initData.forkScratchBytes,
+              "scratch bytes",
+              true,
+            ),
+          },
+          `pid=${pid}: borrowed vfork workspace`,
+        )
+      : null;
+    if (borrowedForkChild) {
+      // A vfork child may not create another pthread owner before exec. Keep
+      // the request off its channel entirely; Rust's Process marker remains a
+      // second defense for malformed or direct host traffic.
+      kernelImports.kernel_clone = () => -STARTUP_EAGAIN;
+    }
 
     if (hasForkInstrumentation) {
       const linkedFrameFormat = readLinkedFrameFormat(module);
@@ -3225,21 +3383,33 @@ export async function centralizedWorkerMain(
         new ForkModuleStateArena(
           memory,
           ptrWidth,
-          (size) =>
-            continuationMmap(
+          (size) => {
+            if (borrowedForkChild) {
+              throw new Error(
+                `pid=${pid}: borrowed child cannot allocate module state`,
+              );
+            }
+            return continuationMmap(
               memory,
               channelOffset,
               size,
               `pid=${pid}: module state`,
-            ),
-          (addr, size) =>
+            );
+          },
+          (addr, size) => {
+            if (borrowedForkChild) {
+              throw new Error(
+                `pid=${pid}: borrowed child cannot release parent module state`,
+              );
+            }
             continuationMunmap(
               memory,
               channelOffset,
               addr,
               size,
               `pid=${pid}: module state`,
-            ),
+            );
+          },
           `pid=${pid}`,
         );
 
@@ -3278,21 +3448,27 @@ export async function centralizedWorkerMain(
         memory,
         externrefRecipes,
         `pid=${pid}: fork activations`,
-        (size) =>
-          continuationMmap(
-            memory,
-            channelOffset,
-            size,
-            `pid=${pid}: reference scratch`,
-          ),
-        (addr, size) =>
+        (size) => borrowedWorkspace
+          ? borrowedWorkspace.allocateScratch(size)
+          : continuationMmap(
+              memory,
+              channelOffset,
+              size,
+              `pid=${pid}: reference scratch`,
+            ),
+        (addr, size) => {
+          if (borrowedWorkspace) {
+            borrowedWorkspace.deallocateScratch(addr, size);
+            return;
+          }
           continuationMunmap(
             memory,
             channelOffset,
             addr,
             size,
             `pid=${pid}: reference scratch`,
-          ),
+          );
+        },
       );
       // Every process instance, including a freshly reconstructed child, owns
       // the provenance manifest for any fork it may issue later.
@@ -3412,15 +3588,17 @@ export async function centralizedWorkerMain(
       };
 
       const readProcessLaunchRoot = (): number => {
+        if (borrowedForkChild) return forkBufAddr;
         const view = new DataView(memory.buffer);
         return ptrWidth === 8
           ? Number(view.getBigUint64(dlopenArchiveControlAddr, true))
           : view.getUint32(dlopenArchiveControlAddr, true);
       };
-      let copiedLaunchRoot = 0;
+      let inheritedLaunchRoot = 0;
       let childArena: ForkModuleStateArena | null = null;
       if (initData.isForkChild) {
         if (
+          !borrowedForkChild &&
           initData.forkChildThreadFnPtr !== undefined &&
           initData.forkBufAddr !== undefined
         ) {
@@ -3435,45 +3613,56 @@ export async function centralizedWorkerMain(
             initData.forkBufAddr,
           );
         }
-        copiedLaunchRoot = readProcessLaunchRoot();
+        inheritedLaunchRoot = readProcessLaunchRoot();
         if (
           initData.forkBufAddr !== undefined &&
-          copiedLaunchRoot !== initData.forkBufAddr
+          inheritedLaunchRoot !== initData.forkBufAddr
         ) {
           throw new Error(
-            `pid=${pid}: copied process launch root ${copiedLaunchRoot} ` +
+            `pid=${pid}: inherited process launch root ${inheritedLaunchRoot} ` +
               `does not match launch root ${initData.forkBufAddr}`,
           );
         }
-        if (!Number.isSafeInteger(copiedLaunchRoot) || copiedLaunchRoot <= 0) {
+        if (
+          !Number.isSafeInteger(inheritedLaunchRoot)
+          || inheritedLaunchRoot <= 0
+        ) {
           throw new Error(
-            `pid=${pid}: fork child has no copied process launch root`,
+            `pid=${pid}: fork child has no inherited process launch root`,
           );
         }
         const moduleStateRoot = readForkModuleStateRoot(
           memory,
-          copiedLaunchRoot,
+          inheritedLaunchRoot,
           ptrWidth,
         );
         childArena = newModuleStateArena();
-        childArena.attach(
-          ptrWidth === 8 ? BigInt(moduleStateRoot) : moduleStateRoot,
-        );
+        const arenaRoot = ptrWidth === 8
+          ? BigInt(moduleStateRoot)
+          : moduleStateRoot;
+        if (borrowedForkChild) childArena.attachBorrowed(arenaRoot);
+        else childArena.attach(arenaRoot);
       }
       processContinuation.prepareActivation({
         activationId: 0,
         continuation: forkContinuation,
-        publishProcessLaunchRoot: (address) => {
-          // WHY: this copied control-page word is the fresh child's route to
-          // the main activation. No JavaScript closure survives fork.
-          writeForkContinuationAnchor(
-            memory,
-            dlopenArchiveControlAddr,
-            ptrWidth,
-            address,
-          );
-          forkBufAddr = address;
-        },
+        ...(borrowedForkChild
+          ? {}
+          : {
+              publishProcessLaunchRoot: (address: number) => {
+                // WHY: this copied control-page word is the fresh child's
+                // route to the main activation. No JavaScript closure
+                // survives fork. A borrowed vfork child receives no writer
+                // because this word still belongs to its suspended parent.
+                writeForkContinuationAnchor(
+                  memory,
+                  dlopenArchiveControlAddr,
+                  ptrWidth,
+                  address,
+                );
+                forkBufAddr = address;
+              },
+            }),
         readProcessLaunchRoot,
       });
 
@@ -3495,11 +3684,18 @@ export async function centralizedWorkerMain(
         }
       };
 
-      kernelImports.kernel_fork = (): number => {
+      kernelImports.kernel_fork = (rawMode: number): number => {
         if (!processInstance) return -38; // ENOSYS
+        const mode = processForkMode(rawMode);
+        if (mode === null) return -STARTUP_EINVAL;
 
         const phase = processContinuation.phaseName();
         if (phase === "parent-replay" || phase === "child-replay") {
+          if (mode !== forkMode) {
+            throw new Error(
+              `pid=${pid}: fork replay mode ${mode} does not match captured mode ${forkMode}`,
+            );
+          }
           try {
             processContinuation.finishReplay();
           } finally {
@@ -3524,6 +3720,11 @@ export async function centralizedWorkerMain(
           return forkResult;
         }
         if (phase === "abort-replay") {
+          if (mode !== forkMode) {
+            throw new Error(
+              `pid=${pid}: fork abort mode ${mode} does not match captured mode ${forkMode}`,
+            );
+          }
           const errno = forkContinuation.abortErrno();
           try {
             processContinuation.finishAbortReplay();
@@ -3537,6 +3738,8 @@ export async function centralizedWorkerMain(
             `pid=${pid}: fork import reached while process continuation is ${phase}`,
           );
         }
+        if (borrowedForkChild) return -STARTUP_EAGAIN;
+        forkMode = mode;
 
         // The arena and every activation prefix are allocated before any user
         // frame commits. If this fails, fork returns errno with no partially
@@ -3623,6 +3826,7 @@ export async function centralizedWorkerMain(
         },
         processHostImportRuntime,
         pid,
+        forkMemoryOwnership,
       );
       processDlopenSupport = dlopenSupport;
       processTableReplication = createProcessTableReplicationOwner({
@@ -3631,13 +3835,16 @@ export async function centralizedWorkerMain(
         dlopen: dlopenSupport,
         newArena: newModuleStateArena,
         materializeModules: (snapshot) => {
-          dlopenSupport.replayDlopens(snapshot);
+          dlopenSupport.replayDlopens(snapshot, {
+            memoryOwnership: forkMemoryOwnership,
+          });
         },
-        // The copied fork arena restores a child process's complete
+        // The inherited fork arena restores a child process's complete
         // global/table/reference graph and preserves aliases with live frames.
         // The process table journal is for separately instantiated pthread
         // Workers and later generations, not a second initial child restore.
         restoreSnapshots: !initData.isForkChild,
+        borrowedImmutableSnapshot: borrowedForkChild,
         label: `pid=${pid}`,
       });
       if (initData.isForkChild) {
@@ -3646,11 +3853,13 @@ export async function centralizedWorkerMain(
             `pid=${pid}: fork child lost its validated module-state arena`,
           );
         }
-        // A parent can be copied while the archive mutex word names its
-        // now-nonexistent Worker. The validated archive bytes are immutable
-        // for this child launch, so clear that private lock before creating
-        // any loader state.
-        dlopenSupport.resetForkChildLock();
+        if (!borrowedForkChild) {
+          // A parent can be copied while the archive mutex word names its
+          // now-nonexistent Worker. The validated archive bytes are immutable
+          // for this child launch, so clear that private lock before creating
+          // any loader state. A borrower must leave the parent's lock intact.
+          dlopenSupport.resetForkChildLock();
+        }
         childDylinkState = dlopenSupport.readForkState();
         const records = childArena.recordViews();
         decodedChildReferences = decodeSegmentedForkReferenceTransaction(
@@ -3697,21 +3906,27 @@ export async function centralizedWorkerMain(
             abort: () => activationRegistry.abortEarlyGcTransit(),
           },
           memory,
-          allocateScratch: (size) =>
-            continuationMmap(
-              memory,
-              channelOffset,
-              size,
-              `pid=${pid}: early reference scratch`,
-            ),
-          deallocateScratch: (addr, size) =>
+          allocateScratch: (size) => borrowedWorkspace
+            ? borrowedWorkspace.allocateScratch(size)
+            : continuationMmap(
+                memory,
+                channelOffset,
+                size,
+                `pid=${pid}: early reference scratch`,
+              ),
+          deallocateScratch: (addr, size) => {
+            if (borrowedWorkspace) {
+              borrowedWorkspace.deallocateScratch(addr, size);
+              return;
+            }
             continuationMunmap(
               memory,
               channelOffset,
               addr,
               size,
               `pid=${pid}: early reference scratch`,
-            ),
+            );
+          },
           label: `pid=${pid}: early child references`,
         });
         importedStatePlanner = new ForkImportedGlobalPlanner(
@@ -3734,7 +3949,7 @@ export async function centralizedWorkerMain(
           )
         ) {
           throw new Error(
-            `pid=${pid}: copied activation import dependencies require order ` +
+            `pid=${pid}: inherited activation import dependencies require order ` +
               `${plannedOrder.join(",")}, but the replay archive provides ` +
               archivedOrder.join(","),
           );
@@ -3897,10 +4112,15 @@ export async function centralizedWorkerMain(
         // whichever instance happens to load first in the child.
         try {
           if (!childDylinkState) {
-            throw new Error("copied dynamic-linker state was not prepared");
+            throw new Error("inherited dynamic-linker state was not prepared");
           }
-          dlopenSupport.replayDlopens(childDylinkState);
-          processTableReplication.reconcileNow();
+          dlopenSupport.replayDlopens(childDylinkState, {
+            memoryOwnership: forkMemoryOwnership,
+          });
+          // Ordinary children reconcile a copied archive under their private
+          // lock. Borrowed children already replayed the validated snapshot;
+          // taking either archive lock would mutate the suspended parent.
+          if (!borrowedForkChild) processTableReplication.reconcileNow();
         } catch (error) {
           throw new Error(
             `fork-replay-dlopen failed: ${
@@ -3929,20 +4149,31 @@ export async function centralizedWorkerMain(
           ),
         );
         const early = earlyChildReferences;
-        processContinuation.attachChild(
-          childArena,
-          () => {
-            early.adoptInto(activationRegistry.currentReferences());
-            earlyChildReferences = null;
-          },
-          decodedChildReferences ?? undefined,
-        );
+        const adoptEarlyReferences = (): void => {
+          early.adoptInto(activationRegistry.currentReferences());
+          earlyChildReferences = null;
+        };
+        if (borrowedWorkspace) {
+          processContinuation.attachBorrowedChild(
+            childArena,
+            borrowedWorkspace.reservePrefix,
+            adoptEarlyReferences,
+            decodedChildReferences ?? undefined,
+          );
+          borrowedWorkspace.assertAttachComplete();
+        } else {
+          processContinuation.attachChild(
+            childArena,
+            adoptEarlyReferences,
+            decodedChildReferences ?? undefined,
+          );
+        }
         decodedChildReferences = null;
         importedStatePlanner.clear();
         importedStatePlanner = null;
         forkResult = 0;
 
-        // attachChild restores __tls_base/__stack_pointer for every
+        // Child attach restores __tls_base/__stack_pointer for every
         // activation before any continuation frame can execute.
         setupChannelBase(
           instance,
@@ -4015,10 +4246,7 @@ export async function centralizedWorkerMain(
           } catch (e) {
             if (isForkUnwindException(e, processForkUnwindTag)) {
               transportedForkUnwind = true;
-            } else if (
-              e instanceof Error &&
-              e.message.includes("unreachable")
-            ) {
+            } else if (isWasmUnreachableTrap(e)) {
               if (kernelExitStatus !== null) {
                 exitCode = kernelExitStatus;
                 break; // Normal exit via kernel_exit -> unreachable trap
@@ -4038,7 +4266,15 @@ export async function centralizedWorkerMain(
           }
           if (phase === "capture") {
             processContinuation.sealCapture();
-            const childPid = sendForkSyscall(memory, channelOffset);
+            const borrowedReplay = Number(forkMode) === PROCESS_FORK_MODE_VFORK
+              ? processContinuation.borrowedReplayWorkspaceRequirements()
+              : undefined;
+            const childPid = sendForkSyscall(
+              memory,
+              channelOffset,
+              forkMode,
+              borrowedReplay,
+            );
             forkResult = childPid;
             if (childPid < 0) {
               processContinuation.beginAbortReplay(-childPid);
@@ -4063,11 +4299,7 @@ export async function centralizedWorkerMain(
       } catch (e) {
         processTableReplication.abortActiveMutations();
         releaseProcessForkArchiveReader();
-        if (
-          e instanceof Error &&
-          e.message.includes("unreachable") &&
-          kernelExitStatus !== null
-        ) {
+        if (isWasmUnreachableTrap(e) && kernelExitStatus !== null) {
           exitCode = kernelExitStatus;
         } else {
           if (processContinuation.phaseName() !== "idle") {
@@ -4096,7 +4328,7 @@ export async function centralizedWorkerMain(
       // No fork instrumentation: fork cannot be represented safely because
       // the child cannot resume at the fork call site. Fail loudly if the
       // program reaches kernel_fork instead of silently degrading.
-      kernelImports.kernel_fork = (): number => {
+      kernelImports.kernel_fork = (_mode: number): number => {
         throw new Error(
           `pid=${pid}: kernel_fork reached without complete wasm-fork-instrument ` +
             "exports. Rebuild the program with scripts/run-wasm-fork-instrument.sh.",
@@ -4169,7 +4401,7 @@ export async function centralizedWorkerMain(
           exitCode = kernelExitStatus;
         }
       } catch (e) {
-        if (e instanceof Error && e.message.includes("unreachable")) {
+        if (isWasmUnreachableTrap(e)) {
           if (kernelExitStatus !== null) {
             exitCode = kernelExitStatus;
           } else {
@@ -4479,15 +4711,32 @@ function setupChannelBase(
 function sendForkSyscall(
   memory: WebAssembly.Memory,
   channelOffset: number,
+  mode: ProcessForkMode,
+  borrowedReplay?: ForkBorrowedReplayWorkspaceRequirements,
 ): number {
   const view = new DataView(memory.buffer);
   view.setInt32(
     channelOffset + CH_SYSCALL,
-    HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
+    processForkSyscall(mode),
     true,
   );
   for (let i = 0; i < 6; i++) {
     view.setBigInt64(channelOffset + CH_ARGS + i * CH_ARG_SIZE, 0n, true);
+  }
+  if (mode === PROCESS_FORK_MODE_VFORK) {
+    if (!borrowedReplay) {
+      throw new Error("vfork capture is missing borrowed replay workspace");
+    }
+    view.setBigInt64(
+      channelOffset + CH_ARGS,
+      BigInt(borrowedReplay.prefixBytes),
+      true,
+    );
+    view.setBigInt64(
+      channelOffset + CH_ARGS + CH_ARG_SIZE,
+      BigInt(borrowedReplay.scratchBytes),
+      true,
+    );
   }
 
   markDeferredSignalDelivery(view, channelOffset);
@@ -5297,6 +5546,7 @@ export async function centralizedThreadWorkerMain(
       },
     };
     let forkResult = 0;
+    let forkMode: ProcessForkMode = PROCESS_FORK_MODE_FORK;
 
     let kernelThreadExitStatus: number | null = null;
     const kernelImports = buildKernelImports(
@@ -5310,11 +5560,19 @@ export async function centralizedThreadWorkerMain(
       },
     );
     if (hasForkInstrumentation) {
-      kernelImports.kernel_fork = (): number => {
+      kernelImports.kernel_fork = (rawMode: number): number => {
         if (!threadInstance || !threadProcessContinuation) return -38; // ENOSYS
+        const mode = processForkMode(rawMode);
+        if (mode === null) return -STARTUP_EINVAL;
 
         const phase = threadProcessContinuation.phaseName();
         if (phase === "parent-replay") {
+          if (mode !== forkMode) {
+            throw new Error(
+              `pid=${pid} tid=${tid}: fork replay mode ${mode} does not ` +
+                `match captured mode ${forkMode}`,
+            );
+          }
           try {
             threadProcessContinuation.finishReplay();
           } finally {
@@ -5323,6 +5581,12 @@ export async function centralizedThreadWorkerMain(
           return forkResult;
         }
         if (phase === "abort-replay") {
+          if (mode !== forkMode) {
+            throw new Error(
+              `pid=${pid} tid=${tid}: fork abort mode ${mode} does not ` +
+                `match captured mode ${forkMode}`,
+            );
+          }
           const errno = threadForkContinuation!.abortErrno();
           try {
             threadProcessContinuation.finishAbortReplay();
@@ -5337,6 +5601,7 @@ export async function centralizedThreadWorkerMain(
               `continuation is ${phase}`,
           );
         }
+        forkMode = mode;
 
         try {
           // Reconciliation may instantiate a missing side module and execute
@@ -5373,7 +5638,7 @@ export async function centralizedThreadWorkerMain(
         return 0;
       };
     } else {
-      kernelImports.kernel_fork = (): number => {
+      kernelImports.kernel_fork = (_mode: number): number => {
         throw new Error(
           `pid=${pid} tid=${tid}: kernel_fork reached without complete ` +
             "wasm-fork-instrument exports. Rebuild the program with " +
@@ -5660,9 +5925,7 @@ export async function centralizedThreadWorkerMain(
           if (isForkUnwindException(e, threadForkUnwindTag)) {
             transportedForkUnwind = true;
           } else if (
-            e instanceof Error &&
-            e.message.includes("unreachable") &&
-            kernelThreadExitStatus !== null
+            isWasmUnreachableTrap(e) && kernelThreadExitStatus !== null
           ) {
             result = kernelThreadExitStatus;
             break;
@@ -5680,7 +5943,15 @@ export async function centralizedThreadWorkerMain(
         }
         if (phase === "capture") {
           threadProcessContinuation.sealCapture();
-          const childPid = sendForkSyscall(memory, channelOffset);
+          const borrowedReplay = Number(forkMode) === PROCESS_FORK_MODE_VFORK
+            ? threadProcessContinuation.borrowedReplayWorkspaceRequirements()
+            : undefined;
+          const childPid = sendForkSyscall(
+            memory,
+            channelOffset,
+            forkMode,
+            borrowedReplay,
+          );
           forkResult = childPid;
           if (childPid < 0) {
             threadProcessContinuation.beginAbortReplay(-childPid);
@@ -5702,11 +5973,7 @@ export async function centralizedThreadWorkerMain(
         const raw = threadFn(...threadArgs);
         result = Number(raw);
       } catch (e) {
-        if (
-          e instanceof Error &&
-          e.message.includes("unreachable") &&
-          kernelThreadExitStatus !== null
-        ) {
+        if (isWasmUnreachableTrap(e) && kernelThreadExitStatus !== null) {
           result = kernelThreadExitStatus;
         } else {
           throw e;

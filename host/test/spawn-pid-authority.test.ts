@@ -349,10 +349,11 @@ describe("kernel task-ID authority", () => {
     await Promise.resolve();
 
     expect(kernelForkProcess).toHaveBeenCalledOnce();
-    expect(kernelForkProcess).toHaveBeenCalledWith(parentPid, parentPid);
+    expect(kernelForkProcess).toHaveBeenCalledWith(parentPid, parentPid, 0);
     expect(onFork).toHaveBeenCalledWith({
       parentPid,
       childPid,
+      mode: 0,
       parentMemory: harness.processMemory,
       continuation: {
         kind: "main",

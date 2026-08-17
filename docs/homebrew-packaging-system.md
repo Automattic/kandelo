@@ -473,6 +473,27 @@ a separate immutable bottle transport. A sealed atomic runtime cohort
 may activate its selected dependency members together so the program
 never observes a partial closure; unrelated bottles remain lazy.
 
+Homebrew owns the translation from a bottle to the generic VFS contract.
+A schema-6 bottle descriptor authenticates the complete TAR inventory,
+exact receipt bytes, guest projection, and closed byte-transformation plan.
+The shared Homebrew adapter derives the prefix and Cellar from the receipt's
+authenticated guest destination, checks that every direct member remains in
+the same keg, compares the relocation set with receipt `changed_files`, and
+proves that the generic recipe is exactly the Homebrew relocation recipe for
+that prefix. Only then does it register generic `tar-gzip-v1` archive metadata
+with MemoryFS.
+
+MemoryFS does not recognize Formulae, bottles, kegs, `Cellar`, Homebrew
+prefixes, or `INSTALL_RECEIPT.json`. It verifies source bytes, the complete
+decoded inventory, bounded transformations, output identities, paths, links,
+collisions, and atomic publication. This division lets ordinary TAR or ZIP
+sources use the same eager or lazy mechanism without being placed below a
+Cellar. It also keeps Node and browser behavior on the same shared path.
+
+Schema-4 ZIP layers remain readable. A schema-5 direct bottle that needs
+receipt relocation must be rebuilt as schema 6; the consumer fails closed
+instead of reconstructing an unauthenticated plan from fetched bottle bytes.
+
 Small, independent command binaries from a bundle such as
 `posix-utils-lite` may later use per-program lazy references. A program
 such as Vim needs runtime data beside its executable and should normally
