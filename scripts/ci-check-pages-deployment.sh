@@ -407,23 +407,31 @@ pages_catalog_projection_count="$(
   grep -Fq 'done < <(jq -r '\''.products[].id'\'' "$registry")' \
     <<<"$inputs_block" ||
   fail "canary must bind the complete protected Pages registry"
+if grep -Fq 'prepare-homebrew-browser-bootstrap.sh' <<<"$inputs_block" ||
+   grep -Fq -- '--require-sealed-homebrew-selection' <<<"$inputs_block"; then
+  fail "canary must not depend on the retired sealed shell selection"
+fi
+if grep -Fq -- '--allow-stale' <<<"$inputs_block" ||
+   grep -Fq -- '--force-source-build' <<<"$inputs_block" ||
+   grep -Fq -- '--source-rootfs-shell' <<<"$inputs_block"; then
+  fail "canary input materialization may source-build only homebrew-bootstrap"
+fi
+
 grep -Fq 'fetch_args=(--fetch-only)' <<<"$inputs_block" &&
   grep -Fq 'fetch_args+=(--package "$package")' <<<"$inputs_block" &&
   grep -Fq 'bash scripts/fetch-binaries.sh "${fetch_args[@]}"' \
     <<<"$inputs_block" &&
   grep -Fq 'if [ "$package" != homebrew-bootstrap ]; then' \
     <<<"$inputs_block" &&
-  grep -Fq 'scripts/prepare-homebrew-browser-bootstrap.sh \' \
+  grep -Fq 'bash scripts/fetch-binaries.sh --package homebrew-bootstrap' \
     <<<"$inputs_block" &&
-  grep -Fq -- '--require-sealed' <<<"$inputs_block" &&
-  grep -Fq './run.sh --fetch-only \' <<<"$inputs_block" &&
-  grep -Fq -- '--require-sealed-homebrew-selection prepare-browser' \
-    <<<"$inputs_block" &&
+  [ "$(grep -Fc 'bash scripts/fetch-binaries.sh' <<<"$inputs_block")" -eq 2 ] &&
+  grep -Fq './run.sh --fetch-only prepare-browser' <<<"$inputs_block" &&
   grep -Fq '"$xtask" build-deps --arch wasm32 path "$package"' \
     <<<"$inputs_block" &&
   grep -Fq '[ -d "$package_root" ] && [ ! -L "$package_root" ]' \
     <<<"$inputs_block" ||
-  fail "canary input materialization must forbid source fallback"
+  fail "canary must materialize homebrew-bootstrap from current protected source"
 grep -Fq 'bash scripts/dev-shell.sh env \' <<<"$inputs_block" &&
   grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
     <<<"$inputs_block" ||
@@ -437,12 +445,6 @@ grep -Fq "curl --fail --location --proto '=https'" <<<"$inputs_block" &&
   grep -Fq 'package-roots.json' <<<"$inputs_block" &&
   grep -Fq 'archive-files.json' <<<"$inputs_block" ||
   fail "canary must materialize exact anonymous package and archive maps"
-if grep -Fq -- '--allow-stale' <<<"$inputs_block" ||
-   grep -Fq -- '--force-source-build' <<<"$inputs_block" ||
-   grep -Fq -- '--source-rootfs-shell' <<<"$inputs_block"; then
-  fail "canary input materialization must forbid source fallback"
-fi
-
 handoff_block="$(
   step_block "$CANARY_WORKFLOW" "Write the bounded production handoff"
 )"

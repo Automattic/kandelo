@@ -312,6 +312,17 @@ expect_hardcoded_hold_inventory_rejected() {
     's/            hold_inventory=\$\(python3 - "\$pages_output" <<'\''PY'\''.*?            \)\n/            hold_inventory='\''["readiness.json"]'\''\n/s'
 }
 
+expect_current_bootstrap_input_required() {
+  expect_canary_mutation_rejected \
+    "missing transitional bootstrap build" \
+    "canary must materialize homebrew-bootstrap from current protected source" \
+    's#bash scripts/fetch-binaries\.sh --package homebrew-bootstrap#bash scripts/fetch-binaries.sh --fetch-only --package homebrew-bootstrap#'
+  expect_canary_mutation_rejected \
+    "restored legacy sealed selection" \
+    "canary must not depend on the retired sealed shell selection" \
+    's#\./run\.sh --fetch-only prepare-browser#./run.sh --fetch-only --require-sealed-homebrew-selection prepare-browser#'
+}
+
 case "${PAGES_CONTRACT_FOCUS:-all}" in
   atomic-chromium)
     expect_atomic_chromium_gate_required
@@ -338,6 +349,10 @@ case "${PAGES_CONTRACT_FOCUS:-all}" in
     ;;
   hardcoded-hold-inventory)
     expect_hardcoded_hold_inventory_rejected
+    exit 0
+    ;;
+  bootstrap-input)
+    expect_current_bootstrap_input_required
     exit 0
     ;;
   all)
@@ -868,8 +883,10 @@ expect_canary_mutation_rejected \
 
 expect_canary_mutation_rejected \
   "source-build fallback" \
-  "canary input materialization must forbid source fallback" \
+  "canary input materialization may source-build only homebrew-bootstrap" \
   's/--fetch-only/--allow-stale/'
+
+expect_current_bootstrap_input_required
 
 expect_canary_mutation_rejected \
   "implicit Playwright install root" \
