@@ -24,6 +24,7 @@ inputs = [
   "package-lock.json",
   "crates/shared/src/lib.rs",
   "host/src/constants.ts",
+  "host/src/file-offset.ts",
   "host/src/generated/abi.ts",
   "host/src/homebrew-bottle-descriptor.ts",
   "host/src/homebrew-bottle-mirror-plan.ts",
@@ -31,6 +32,7 @@ inputs = [
   "host/src/homebrew-bottle-selection.ts",
   "host/src/homebrew-bottle-types.ts",
   "host/src/homebrew-bootstrap-consumer.ts",
+  "host/src/homebrew-deferred-tree-adapter.ts",
   "host/src/homebrew-flat-lazy-vfs-composer.ts",
   "host/src/homebrew-guest-layout.ts",
   "host/src/homebrew-lazy-layer-descriptor.ts",
@@ -58,11 +60,11 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 25
-# WHY: this recipe is bound to the admitted ABI-42 flat selection and emits the
-# sealed lazy product directly. It no longer depends on the retired lazy shell
-# campaign or its unpublished derived artifact lock.
-publication_state = "ready"
+revision    = 26
+# WHY: the sealed lazy-shell architecture and the ABI-43 guest/runtime inputs
+# both change the product bytes. Keep ordinary resolution closed until this
+# exact revision is rebuilt and admitted through the package workflow.
+publication_state = "pending"
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

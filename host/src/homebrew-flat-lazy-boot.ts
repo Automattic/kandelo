@@ -220,7 +220,7 @@ function assertCanonicalFlatLazyBootBinding(
   if (
     binding.schema !== 1 ||
     binding.kind !== HOMEBREW_FLAT_LAZY_KIND ||
-    selection.name !== "main-shell-abi42-wasm32" ||
+    selection.name !== `main-shell-abi${ABI_VERSION}-wasm32` ||
     selection.arch !== "wasm32" ||
     selection.kandeloAbi !== ABI_VERSION ||
     selection.requestedVfsFilename !== "shell.vfs.zst" ||

@@ -354,6 +354,13 @@ a complete fetched package, but local, fetched, and installed-package tiers
 are never combined. If artifacts exist but no tier has the complete accepted
 closure, resolution fails loudly.
 
+The repo-side bridge incrementally builds the current release `xtask` once and
+then executes that prepared binary for metadata queries. CI and other direct
+callers may provide `WASM_POSIX_XTASK_BIN`; as with program-index checking,
+that override attests that the regular file was prepared from the current
+source. The bridge does not rebuild or silently substitute an explicitly
+provided tool.
+
 The host resolver applies the same rule automatically when any member of a
 program package with more than one total `[[outputs]]` plus
 `[[runtime_files]]` entry is requested. This includes a package with one
@@ -760,6 +767,23 @@ atomically materializes its guest projection. It does not fetch individual TAR
 members or use HTTP ranges. Dependency bottles have separate identities and
 remain unfetched until a path owned by that dependency is used.
 
+The underlying deferred-tree contract is package-manager neutral. A package or
+image builder may authenticate a complete ZIP or TAR+gzip source inventory,
+project ordinary files, directories, symbolic links, and hard links to
+canonical VFS destinations, and optionally declare exact bounded byte
+transformations. The lazy and eager paths consume the same source identity,
+inventory, transformation plan, and destination inventory. A non-Homebrew
+archive therefore does not need a Formula, Cellar path, receipt, or bottle
+marker to remain lazy.
+
+Homebrew-specific descriptor code owns the additional receipt, prefix, Cellar,
+keg, and link-manifest checks. Its schema-6 adapter validates those rules and
+translates them into the generic archive contract before MemoryFS registration.
+MemoryFS never infers Homebrew meaning from filenames or destinations. A stale
+schema-5 bottle that requires receipt relocation must be rebuilt through the
+normal bottle publication path because it lacks the authenticated generic
+plan.
+
 The guest `brew` implementation is distributed as the
 `homebrew-bootstrap` support-data Formula bottle. Its tap-native recipe
 declares two `libexec` outputs: `homebrew-bootstrap.zip`, a deterministic
@@ -903,9 +927,12 @@ parsed `DepsManifest` at load time) and defaults to 1 when
 
 Program packages that use fork instrumentation also hash the
 fork-instrument host tool inputs (`crates/fork-instrument`, the
-workspace Cargo lockfile, and the wrapper/build scripts). Programs
-that declare `fork_instrumentation = "disabled"` do not hash that
-tooling.
+target-unfiltered non-dev Cargo dependency closure selected from the
+workspace lockfile, and the wrapper/build scripts). The dependency closure is
+the union across build-host target predicates: package cache paths do not have
+a build-host dimension, so filtering through the current macOS or Linux host
+would give identical source trees different identities. Programs that declare
+`fork_instrumentation = "disabled"` do not hash that tooling.
 
 The global toolchain/sysroot fingerprint covers the reproducible build
 environment and sysroot recipe: the Nix flake, Rust toolchain file,

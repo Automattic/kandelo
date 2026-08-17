@@ -7,7 +7,8 @@
  * TypeScript fixtures.
  */
 import { execFileSync } from "node:child_process";
-import { isAbsolute } from "node:path";
+import { lstatSync, realpathSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
 import { tryResolveBinarySet } from "../host/src/binary-resolver";
 
 export interface PackageRuntimeFileContract {
@@ -25,32 +26,78 @@ export interface ResolvedPackageRuntimeFile extends PackageRuntimeFileContract {
   closureHostPaths: ReadonlyMap<string, string>;
 }
 
-let cachedHostTarget: string | undefined;
+let preparedRuntimeMetadataXtask:
+  | { repoRoot: string; xtaskPath: string }
+  | undefined;
 
-function hostTarget(): string {
-  if (cachedHostTarget) return cachedHostTarget;
-  const output = execFileSync("rustc", ["-vV"], { encoding: "utf8" });
+function hostTarget(repoRoot: string): string {
+  const inDevShell = process.env.KANDELO_DEV_SHELL_TOOL_PATH !== undefined;
+  const command = inDevShell ? "rustc" : "bash";
+  const args = inDevShell
+    ? ["-vV"]
+    : [join(repoRoot, "scripts", "dev-shell.sh"), "rustc", "-vV"];
+  const output = execFileSync(command, args, {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
   const target = output.match(/^host:\s*(\S+)$/m)?.[1];
   if (!target) throw new Error("rustc -vV did not report a host target");
-  cachedHostTarget = target;
   return target;
 }
 
-function hostCargoEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const name of [
-    "CC",
-    "CXX",
-    "AR",
-    "RANLIB",
-    "CFLAGS",
-    "CXXFLAGS",
-    "CPPFLAGS",
-    "LDFLAGS",
-  ]) {
-    delete env[name];
+function requireRegularXtask(path: string): string {
+  try {
+    if (lstatSync(path).isFile()) return realpathSync(path);
+  } catch {
+    // Report one stable preparation error below.
   }
-  return env;
+  throw new Error(`Prepared xtask is not a regular file: ${path}`);
+}
+
+function prepareRuntimeMetadataXtask(repoRoot: string): string {
+  const explicit = process.env.WASM_POSIX_XTASK_BIN;
+  if (explicit !== undefined) {
+    const explicitPath = isAbsolute(explicit)
+      ? resolve(explicit)
+      : resolve(repoRoot, explicit);
+    return requireRegularXtask(explicitPath);
+  }
+  if (preparedRuntimeMetadataXtask?.repoRoot === repoRoot) {
+    return requireRegularXtask(preparedRuntimeMetadataXtask.xtaskPath);
+  }
+
+  const target = hostTarget(repoRoot);
+  const xtaskPath = join(
+    repoRoot,
+    "target",
+    target,
+    "release",
+    process.platform === "win32" ? "xtask.exe" : "xtask",
+  );
+  const cargoArgs = [
+    "build",
+    "--release",
+    "-p",
+    "xtask",
+    "--target",
+    target,
+    "--quiet",
+  ];
+  const inDevShell = process.env.KANDELO_DEV_SHELL_TOOL_PATH !== undefined;
+  const command = inDevShell ? "cargo" : "bash";
+  const args = inDevShell
+    ? cargoArgs
+    : [join(repoRoot, "scripts", "dev-shell.sh"), "cargo", ...cargoArgs];
+  // WHY: deleting compiler variables here also deletes the dev shell's
+  // declared host archiver and makes native Cargo build scripts fall back to
+  // ambient platform tools. Cargo's incremental build is the current-source
+  // attestation; CI can instead provide the exact prepared binary below.
+  execFileSync(command, args, { cwd: repoRoot, encoding: "utf8" });
+  preparedRuntimeMetadataXtask = {
+    repoRoot,
+    xtaskPath: requireRegularXtask(xtaskPath),
+  };
+  return preparedRuntimeMetadataXtask.xtaskPath;
 }
 
 export function readPackageRuntimeFileContract(
@@ -59,21 +106,14 @@ export function readPackageRuntimeFileContract(
   artifact: string,
 ): PackageRuntimeFileContract {
   const raw = execFileSync(
-    "cargo",
+    prepareRuntimeMetadataXtask(repoRoot),
     [
-      "run",
-      "-p",
-      "xtask",
-      "--target",
-      hostTarget(),
-      "--quiet",
-      "--",
       "build-deps",
       "runtime-file-metadata",
       packageName,
       artifact,
     ],
-    { cwd: repoRoot, encoding: "utf8", env: hostCargoEnv() },
+    { cwd: repoRoot, encoding: "utf8" },
   ).trim();
   return parsePackageRuntimeFileContract(raw, packageName, artifact);
 }

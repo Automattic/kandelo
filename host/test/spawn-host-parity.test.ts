@@ -35,6 +35,8 @@ const repoRoot = join(__dirname, "..", "..");
 
 const nodeEntry = join(repoRoot, "host", "src", "node-kernel-worker-entry.ts");
 const browserEntry = join(repoRoot, "host", "src", "browser-kernel-worker-entry.ts");
+const sharedWorker = join(repoRoot, "host", "src", "kernel-worker.ts");
+const sharedExecTarget = join(repoRoot, "host", "src", "exec-target.ts");
 
 function posixSpawnHandlerSource(src: string): string {
   const start = src.indexOf("async function handlePosixSpawn(");
@@ -44,9 +46,17 @@ function posixSpawnHandlerSource(src: string): string {
   return src.slice(start, end);
 }
 
-function forkHandlerSource(src: string): string {
-  const start = src.indexOf("async function handleFork(");
+function ordinaryForkHandlerSource(src: string): string {
+  const start = src.indexOf("async function handleOrdinaryFork(");
   const end = src.indexOf("\nasync function handleExec(", start);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  return src.slice(start, end);
+}
+
+function execHandlerSource(src: string): string {
+  const start = src.indexOf("async function handleExec(");
+  const end = src.indexOf("\n/**\n * Pre-flight resolver", start);
   expect(start).toBeGreaterThanOrEqual(0);
   expect(end).toBeGreaterThan(start);
   return src.slice(start, end);
@@ -101,9 +111,96 @@ function expectDeadStartUsesOrdinaryTeardown(handler: string, entry: string): vo
 }
 
 describe("spawn host parity", () => {
+  it("both exec callbacks carry one opaque prepared-target request", () => {
+    const shared = readFileSync(sharedWorker, "utf8");
+    expect(shared).toMatch(/onExec\?:\s*ExecLaunchCallback/);
+    expect(shared).not.toMatch(
+      /onExec\?:\s*\(\s*pid:\s*number,\s*path:\s*string,/s,
+    );
+
+    for (const entry of [nodeEntry, browserEntry]) {
+      const source = readFileSync(entry, "utf8");
+      expect(source, `${entry} must accept a target-shaped request`).toMatch(
+        /onExec:\s*async\s*\(request\)\s*=>[\s\S]*handleExec\(request\)/,
+      );
+      expect(source, `${entry} must remove the Task 10 staging gate`).not.toContain(
+        "preparedExecTargetReaderPending",
+      );
+      expect(source, `${entry} must not carry credential path authority`).not.toContain(
+        "credentialPath",
+      );
+      const handler = execHandlerSource(source);
+      expect(handler, `${entry} must source replacement bytes from the target request`)
+        .toMatch(/targetBytes:\s*(?:programBytes|bytes)/);
+      expect(handler, `${entry} must send only target-derived bytes to the Worker`)
+        .toMatch(/(?:\bprogramBytes,|programBytes:\s*bytes,)/);
+      expect(handler, `${entry} must not receive kernel commit authority`)
+        .not.toMatch(/request\.commit\(\)|kernelExecCommit\(/);
+      expect(
+        handler,
+        `${entry} must return a bounded postcommit launch action`,
+      ).toContain("startAfterCommit");
+      expect(handler, `${entry} must not resolve exec by path`).not.toMatch(
+        /resolveExecutableForLaunch|resolveExec\(|execPrograms|execProgramBytes|readFileSync/,
+      );
+    }
+    expect(
+      readFileSync(sharedExecTarget, "utf8"),
+      "the shared launcher must own the only target commit",
+    )
+      .toContain("options.commitTarget(");
+  });
+
+  it("both spawn adapters receive only the shared exact committed target", () => {
+    const shared = readFileSync(sharedWorker, "utf8");
+    const prepare = shared.indexOf("this.spawnExecTargetPrepare(");
+    const commit = shared.indexOf("this.kernelSpawnExecCommit(");
+    const launch = shared.indexOf("startAfterCommit: () => callback(");
+    expect(prepare).toBeGreaterThanOrEqual(0);
+    expect(commit).toBeGreaterThan(prepare);
+    expect(launch).toBeGreaterThan(commit);
+    expect(shared).toMatch(
+      /programBytes:\s*request\.targetBytes,[\s\S]*programModule:\s*request\.targetModule/,
+    );
+
+    for (const entry of [nodeEntry, browserEntry]) {
+      const handler = posixSpawnHandlerSource(readFileSync(entry, "utf8"));
+      expect(handler, `${entry} must launch the supplied committed module`)
+        .toContain("const { programBytes, programModule, argv } = program;");
+      expect(handler, `${entry} must not repeat candidate resolution`).not.toMatch(
+        /resolveExecutableForLaunch|handlePosixSpawnResolve|execPrograms|readExecFromVfs/,
+      );
+      expect(
+        handler,
+        `${entry} must consume the secure-exec state captured by commit`,
+      ).toContain("kernelWorker.takeCommittedExecSecureExec(childPid)");
+      expect(
+        handler,
+        `${entry} must not re-enter the kernel after the spawn commit`,
+      ).not.toContain("kernelWorker.processSecureExec(childPid)");
+    }
+  });
+
+  it("both exec adapters consume the complete commit-captured transition", () => {
+    for (const entry of [nodeEntry, browserEntry]) {
+      const handler = execHandlerSource(readFileSync(entry, "utf8"));
+      const postCommit = handler.slice(handler.indexOf("const startAfterCommit"));
+      expect(
+        postCommit,
+        `${entry} must consume the complete transition captured by commit`,
+      ).toContain("kernelWorker.takeCommittedExecTransition(");
+      expect(
+        postCommit,
+        `${entry} must not issue result-bearing kernel calls before quiescence`,
+      ).not.toMatch(
+        /kernelWorker\.(?:processSecureExec|wakeProcessWorkersForExecRetirement|finalizeAddressSpaceForExec)\(/,
+      );
+    }
+  });
+
   it("both hosts own the exact fork clone before their first async yield", () => {
     for (const entry of [nodeEntry, browserEntry]) {
-      const handler = forkHandlerSource(readFileSync(entry, "utf8"));
+      const handler = ordinaryForkHandlerSource(readFileSync(entry, "utf8"));
       const clone = handler.indexOf("acquireForkMemoryClone(");
       const firstAwait = handler.indexOf("await ");
       expect(clone, `${entry} must acquire the fork clone`).toBeGreaterThanOrEqual(0);
@@ -118,7 +215,10 @@ describe("spawn host parity", () => {
   it("all fork and spawn dead-start paths transfer cleanup exactly once", () => {
     for (const entry of [nodeEntry, browserEntry]) {
       const source = readFileSync(entry, "utf8");
-      expectDeadStartUsesOrdinaryTeardown(forkHandlerSource(source), entry);
+      expectDeadStartUsesOrdinaryTeardown(
+        ordinaryForkHandlerSource(source),
+        entry,
+      );
       expectDeadStartUsesOrdinaryTeardown(posixSpawnHandlerSource(source), entry);
     }
   });

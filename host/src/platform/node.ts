@@ -9,9 +9,30 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { PathconfValue, PlatformIO, StatResult, StatfsResult } from "../types";
+import type {
+  AppendOutcome,
+  HostFileOffset,
+  PathconfValue,
+  PlatformIO,
+  StatResult,
+  StatfsResult,
+} from "../types";
+import {
+  advanceHostFilePosition,
+  checkedSeekPosition,
+  hostFileOffsetFromBigInt,
+  hostFilePositionForNodeRead,
+  hostFilePositionToSafeNumber,
+} from "../file-offset";
+import {
+  NativePositionedWriteHandles,
+  openNativeBackingFile,
+} from "../native-positioned-write";
 import { filesystemPathconf } from "../pathconf";
 import { nativeStatfs, translateOpenFlags } from "../vfs/host-fs";
+import { zeroCapacityStatfs } from "../statfs";
+import { ST_NOSUID } from "../vfs/types";
+import { OPEN_FLAGS } from "../generated/abi";
 import { NativeMetadataOverlay } from "./native-metadata";
 
 const UTIME_NOW = 0x3fffffff;
@@ -23,24 +44,11 @@ function makeFsError(code: string, message: string): Error & { code: string } {
   return error;
 }
 
-function checkedSeekPosition(base: number, offset: number): number {
-  if (!Number.isSafeInteger(base) || !Number.isSafeInteger(offset)) {
-    throw makeFsError("EOVERFLOW", "seek offset is not exactly representable");
-  }
-  const position = base + offset;
-  if (!Number.isSafeInteger(position)) {
-    throw makeFsError("EOVERFLOW", "seek result is not exactly representable");
-  }
-  if (position < 0) {
-    throw makeFsError("EINVAL", "negative seek offset");
-  }
-  return position;
-}
-
 export class NodePlatformIO implements PlatformIO {
   private dirHandles = new Map<number, fs.Dir>();
   private nextDirHandle = 1;
-  private fdPositions = new Map<number, number>();
+  private fdPositions = new Map<number, HostFileOffset>();
+  private readonly positionedWrites = new NativePositionedWriteHandles();
   // Offset from hrtime (monotonic) to epoch, computed once at startup.
   private readonly _epochOffsetNs: bigint;
   // hrtime at creation, used as process start for CPUTIME clocks.
@@ -86,29 +94,70 @@ export class NodePlatformIO implements PlatformIO {
 
   open(path: string, flags: number, mode: number): number {
     const nativePath = this.rewritePath(path);
-    const created = (flags & 0o100) !== 0 && !fs.existsSync(nativePath);
-    const fd = fs.openSync(nativePath, translateOpenFlags(flags), mode);
-    if (created) this.metadata.chmod(fs.fstatSync(fd, { bigint: true }), mode);
-    this.fdPositions.set(fd, 0);
-    return fd;
+    const truncate = (flags & OPEN_FLAGS.O_TRUNC) !== 0;
+    const nativeFlags = translateOpenFlags(flags);
+    const { fd, created } = openNativeBackingFile(
+      nativePath,
+      truncate ? nativeFlags & ~fs.constants.O_TRUNC : nativeFlags,
+      flags,
+      mode,
+    );
+    try {
+      if (created) {
+        this.metadata.chmod(fs.fstatSync(fd, { bigint: true }), mode);
+      }
+      this.fdPositions.set(fd, 0);
+      this.positionedWrites.register(fd, flags, nativePath);
+      if (!created && truncate) {
+        const truncateHandle = this.positionedWrites.forTruncate(
+          fd,
+          flags,
+          nativePath,
+        );
+        const before = fs.fstatSync(fd, { bigint: true });
+        const commit = before.size === 0n
+          ? null
+          : this.metadata.prepareNativeContentChange(before);
+        fs.ftruncateSync(truncateHandle, 0);
+        commit?.();
+      }
+      return fd;
+    } catch (error) {
+      this.fdPositions.delete(fd);
+      try {
+        this.positionedWrites.close(fd);
+      } catch {
+        // Preserve the route-establishment failure.
+      }
+      throw error;
+    }
   }
 
   close(handle: number): number {
-    fs.closeSync(handle);
-    this.fdPositions.delete(handle);
+    try {
+      this.positionedWrites.close(handle);
+    } finally {
+      this.fdPositions.delete(handle);
+    }
     return 0;
   }
 
   read(
     handle: number,
     buffer: Uint8Array,
-    offset: number | null,
+    offset: HostFileOffset | null,
     length: number,
   ): number {
-    const pos = offset ?? this.fdPositions.get(handle) ?? 0;
+    const pos = hostFilePositionForNodeRead(
+      offset ?? this.fdPositions.get(handle) ?? 0,
+      length,
+    );
     const bytesRead = fs.readSync(handle, buffer, 0, length, pos);
     if (offset === null) {
-      this.fdPositions.set(handle, pos + bytesRead);
+      this.fdPositions.set(
+        handle,
+        advanceHostFilePosition(pos, bytesRead),
+      );
     }
     return bytesRead;
   }
@@ -116,29 +165,60 @@ export class NodePlatformIO implements PlatformIO {
   write(
     handle: number,
     buffer: Uint8Array,
-    offset: number | null,
+    offset: HostFileOffset | null,
     length: number,
   ): number {
     const pos = offset ?? this.fdPositions.get(handle) ?? 0;
-    const bytesWritten = fs.writeSync(handle, buffer, 0, length, pos);
+    // Node's synchronous read API accepts bigint positions, but writeSync's
+    // position contract is number-only (and silently ignores a bigint).
+    const nativePos = hostFilePositionToSafeNumber(pos);
+    const writeHandle = this.positionedWrites.forWrite(
+      handle,
+      offset !== null,
+    );
+    const bytesWritten = fs.writeSync(
+      writeHandle,
+      buffer,
+      0,
+      length,
+      nativePos,
+    );
     if (bytesWritten > 0) {
       this.metadata.noteNativeContentChange(
         fs.fstatSync(handle, { bigint: true }),
       );
     }
     if (offset === null) {
-      this.fdPositions.set(handle, pos + bytesWritten);
+      this.fdPositions.set(
+        handle,
+        advanceHostFilePosition(pos, bytesWritten),
+      );
     }
     return bytesWritten;
   }
 
+  append(
+    _handle: number,
+    _buffer: Uint8Array,
+    _length: number,
+    _limit: HostFileOffset | null,
+  ): AppendOutcome {
+    // Raw Node paths are explicitly externally mutable. O_APPEND itself is
+    // atomic, but Node exposes neither its exact resulting offset nor a way to
+    // combine it with a guest-specific size ceiling.
+    throw makeFsError(
+      "EOPNOTSUPP",
+      "exact append outcomes require exclusive native-writer ownership",
+    );
+  }
+
   seek(
     handle: number,
-    offset: number,
+    offset: HostFileOffset,
     whence: number,
-  ): number {
+  ): HostFileOffset {
     // SEEK_SET=0, SEEK_CUR=1, SEEK_END=2
-    let newPos: number;
+    let newPos: HostFileOffset;
     switch (whence) {
       case 0: // SEEK_SET
         newPos = checkedSeekPosition(0, offset);
@@ -150,8 +230,10 @@ export class NodePlatformIO implements PlatformIO {
       }
       case 2: {
         // SEEK_END — compute from file size
-        const stat = this.fstat(handle);
-        newPos = checkedSeekPosition(stat.size, offset);
+        const size = hostFileOffsetFromBigInt(
+          fs.fstatSync(handle, { bigint: true }).size,
+        );
+        newPos = checkedSeekPosition(size, offset);
         break;
       }
       default:
@@ -169,6 +251,14 @@ export class NodePlatformIO implements PlatformIO {
   // match. Same policy as HostFileSystem.
   fstat(handle: number): StatResult {
     return this.metadata.toStatResult(fs.fstatSync(handle, { bigint: true }));
+  }
+
+  fstatfs(handle: number): StatfsResult {
+    // Node exposes statfs(path) but no portable fstatfs(fd). This direct host
+    // backend is never admitted for set-ID execution, so validate the exact
+    // handle and publish its fixed nosuid route without consulting a path.
+    this.fstat(handle);
+    return { ...zeroCapacityStatfs(0), flags: ST_NOSUID };
   }
 
   fpathconf(handle: number, name: number): PathconfValue {
@@ -364,10 +454,12 @@ export class NodePlatformIO implements PlatformIO {
   }
 
   ftruncate(handle: number, length: number): void {
+    const before = fs.fstatSync(handle, { bigint: true });
+    const commit = before.size === BigInt(length)
+      ? null
+      : this.metadata.prepareNativeContentChange(before);
     fs.ftruncateSync(handle, length);
-    this.metadata.noteNativeContentChange(
-      fs.fstatSync(handle, { bigint: true }),
-    );
+    commit?.();
   }
 
   fsync(handle: number): void {

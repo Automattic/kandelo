@@ -11,11 +11,12 @@ import type {
 } from "./vfs/memory-fs";
 import type { HostDiagnostic, HostDiagnosticMessage } from "./host-diagnostic";
 import type { ClosedLazyAsset } from "./vfs/closed-lazy-assets";
+import type { PcmTransportDescriptor } from "./audio/pcm-transport";
+import type { MountSpec } from "./vfs/default-mounts";
 import {
   type BrowserCorsProxyConfig,
   validateBrowserCorsProxyConfig,
 } from "./networking/browser-cors-proxy";
-import type { MountSpec } from "./vfs/default-mounts";
 
 export type { HttpRequest, HttpResponse };
 export type { HostDiagnostic } from "./host-diagnostic";
@@ -72,6 +73,16 @@ export interface InitMessage {
   vfsImage: Uint8Array;
   /** Exact image/scratch mount contract. Absent preserves the host default. */
   rootfsMountSpec?: MountSpec[];
+  /**
+   * Private host-to-worker authority for an image admitted by the privileged
+   * product publisher. Public boot descriptors and ordinary image init cannot
+   * populate this field.
+   */
+  privilegedProgramMount?: {
+    kind: "published-privileged-program-product";
+    mountPoint: "/usr/bin";
+    imageBytes: Uint8Array;
+  };
   /** Base URL for relative lazy file/archive URLs stored in vfsImage. */
   lazyUrlBase?: string;
   /** Exhaustive exact-byte lazy transport for this image; no network fallback. */
@@ -148,6 +159,7 @@ export interface ReadVfsFileMessage {
 export interface WriteVfsFileMessage {
   type: "write_vfs_file";
   requestId: number;
+  /** Normalized absolute guest path whose parent already exists. */
   path: string;
   data: Uint8Array;
   mode: number;
@@ -254,6 +266,14 @@ export interface IsStdinConsumedMessage {
   pid: number;
 }
 
+/** Deliver `signum` to `pid`. Responds `true` when the process existed. */
+export interface SignalProcessMessage {
+  type: "signal_process";
+  requestId: number;
+  pid: number;
+  signum: number;
+}
+
 export interface PickListenerTargetMessage {
   type: "pick_listener_target";
   requestId: number;
@@ -324,6 +344,12 @@ export interface GetForkCountRequestMessage {
 /** Read the kernel Wasm instance's current 64 KiB linear-memory page count. */
 export interface GetKernelMemoryPagesRequestMessage {
   type: "get_kernel_memory_pages";
+  requestId: number;
+}
+
+/** Read the retained capacity of the kernel-owned large-spawn region. */
+export interface GetSpawnScratchCapacityRequestMessage {
+  type: "get_spawn_scratch_capacity";
   requestId: number;
 }
 
@@ -425,6 +451,7 @@ export type MainToKernelMessage =
   | WakeBlockedReadersMessage
   | WakeBlockedWritersMessage
   | IsStdinConsumedMessage
+  | SignalProcessMessage
   | PickListenerTargetMessage
   | DestroyMessage
   | RegisterPtyOutputMessage
@@ -432,6 +459,7 @@ export type MainToKernelMessage =
   | RegisterLazyArchivesMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
+  | GetSpawnScratchCapacityRequestMessage
   | MouseInjectMessage
   | AudioDrainMessage
   | EnumProcsRequestMessage
@@ -447,10 +475,18 @@ export type MainToKernelMessage =
 
 export interface ReadyMessage {
   type: "ready";
+  /** Versioned PCM-only shared transport claimed by the kernel worker. */
+  pcmTransport?: PcmTransportDescriptor;
 }
 
 export interface InitErrorMessage {
   type: "init_error";
+  error: string;
+}
+
+/** The dedicated kernel instance is poisoned and has stopped permanently. */
+export interface KernelFatalMessage {
+  type: "kernel_fatal";
   error: string;
 }
 
@@ -606,6 +642,7 @@ export interface LazyDownloadMessage {
 export type KernelToMainMessage =
   | ReadyMessage
   | InitErrorMessage
+  | KernelFatalMessage
   | ResponseMessage
   | ExitMessage
   | StdoutMessage

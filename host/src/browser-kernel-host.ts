@@ -39,10 +39,22 @@ import {
 } from "./vfs/closed-lazy-assets";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
 import type { MountSpec } from "./vfs/default-mounts";
+import { FILE_MODES } from "./generated/abi";
+import { BrowserPcmDriver } from "./audio/browser-pcm-driver";
+import type { PcmOutputState } from "./audio/pcm-driver";
+import type { PcmTransportDescriptor } from "./audio/pcm-transport";
+import {
+  snapshotPublishedPrivilegedProgramBrowserMount,
+  type PublishedPrivilegedProgramProduct,
+} from "./vfs/privileged-projection";
 
 const DESTROY_REQUEST_TIMEOUT_MS = 2_000;
 const MAX_PENDING_PTY_OUTPUT_BYTES = 64 * 1024;
 const MAX_PENDING_PTY_OUTPUT_CHUNKS = 4_096;
+const defaultPcmWorkletUrl = new URL(
+  "./audio/pcm-audio-worklet.js",
+  import.meta.url,
+);
 
 export interface BrowserKernelOptions {
   /** Maximum concurrent workers (default: 4) */
@@ -115,6 +127,8 @@ export interface BrowserKernelOptions {
    *  use this to route guest HTTP(S) and external lazy VFS downloads through
    *  a CORS-capable proxy. Same-origin lazy assets remain direct. */
   corsProxy?: BrowserCorsProxyConfig;
+  /** Override the packaged PCM AudioWorklet asset URL. */
+  audioWorkletUrl?: string | URL;
 }
 
 /** Options for {@link BrowserKernel.boot}. */
@@ -206,7 +220,11 @@ export class BrowserKernel {
     Pick<BrowserKernelOptions, "maxWorkers" | "env">
   > &
     BrowserKernelOptions;
-  private exitResolvers = new Map<number, (status: number) => void>();
+  private exitResolvers = new Map<number, {
+    resolve: (status: number) => void;
+    reject: (error: Error) => void;
+  }>();
+  private kernelFatalError: Error | null = null;
   private unclaimedExitStatuses = new Map<number, { status: number; sequence: number }>();
   private exitSequence = 0;
   private pendingRequests = new Map<number, { resolve: (val: any) => void; reject: (err: Error) => void }>();
@@ -239,6 +257,8 @@ export class BrowserKernel {
   private pendingPtyOutputChunks = 0;
   private pendingPtyOutputFailure: Error | undefined;
   private lazyDownloadListeners = new Set<(event: LazyDownloadEvent) => void>();
+  private pcmTransport: PcmTransportDescriptor | null = null;
+  private pcmDriver: BrowserPcmDriver | null = null;
 
   constructor(options: BrowserKernelOptions = {}) {
     this.maxPages = options.maxMemoryPages ?? DEFAULT_MAX_PAGES;
@@ -331,6 +351,42 @@ export class BrowserKernel {
   }
 
   /**
+   * Overlay a publisher-admitted privileged program product at `/usr/bin` on
+   * an ordinary browser root image. The publisher's module-private brand is
+   * checked before any authority crosses into the owning worker; raw images,
+   * boot descriptors, and structurally similar objects use {@link initFromImage}
+   * and remain `nosuid`.
+   */
+  async initFromPublishedPrivilegedProgramProduct(options: {
+    kernelWasm?: ArrayBuffer;
+    vfsImage: Uint8Array | "default";
+    closedLazyAssets?: readonly ClosedLazyAsset[];
+    privilegedProduct: PublishedPrivilegedProgramProduct;
+  }): Promise<void> {
+    const privilegedProgramMount =
+      snapshotPublishedPrivilegedProgramBrowserMount(
+        options.privilegedProduct,
+      );
+    const [wasmBytes, vfsImage] = await Promise.all([
+      options.kernelWasm
+        ? Promise.resolve(options.kernelWasm)
+        : fetchDefaultBrowserKernelArtifact("kernelWasm"),
+      options.vfsImage === "default"
+        ? fetchDefaultBrowserKernelArtifact("rootfsVfs")
+            .then((bytes) => new Uint8Array(bytes))
+        : Promise.resolve(options.vfsImage),
+    ]);
+    await this.bootWorker({
+      kernelWasmBytes: wasmBytes,
+      vfsImage,
+      lazyUrlBase: import.meta.env.BASE_URL,
+      closedLazyAssets: options.closedLazyAssets,
+      takeVfsImageOwnership: false,
+      privilegedProgramMount,
+    });
+  }
+
+  /**
    * Load an image by transferring its one whole ordinary ArrayBuffer to the
    * VFS-owning worker. Unlike {@link initFromImage}, this deliberately
    * detaches the caller's buffer. Keeping the two entry points explicit
@@ -369,6 +425,10 @@ export class BrowserKernel {
     closedLazyAssets?: readonly ClosedLazyAsset[];
     rootfsMountSpec?: readonly MountSpec[];
     takeVfsImageOwnership: boolean;
+    privilegedProgramMount?: {
+      mountPoint: "/usr/bin";
+      imageBytes: Uint8Array;
+    };
   }): Promise<void> {
     if (
       opts.takeVfsImageOwnership &&
@@ -382,6 +442,7 @@ export class BrowserKernel {
         "owned VFS image must be one whole ordinary ArrayBuffer",
       );
     }
+    this.kernelFatalError = null;
     const closedLazyAssets = opts.closedLazyAssets === undefined
       ? undefined
       : snapshotClosedLazyAssets(opts.closedLazyAssets);
@@ -394,10 +455,8 @@ export class BrowserKernel {
     };
     this.kernelWorkerHandle.onerror = (e: ErrorEvent) => {
       const err = new Error(`Kernel worker error: ${e.message}`);
-      for (const [, { reject }] of this.pendingRequests) {
-        reject(err);
-      }
-      this.pendingRequests.clear();
+      this.failKernelHost(err);
+      this.kernelWorkerHandle.terminate();
       this.options.onHttpBridgePendingRequests?.(0);
       const diagnostic: HostDiagnostic = {
         pid: 0,
@@ -440,6 +499,8 @@ export class BrowserKernel {
             settleResolve();
           } else if (e.data?.type === "init_error") {
             settleReject(new Error(`Kernel worker init failed: ${e.data.error}`));
+          } else if (e.data?.type === "kernel_fatal") {
+            settleReject(new Error(`Kernel worker failed: ${e.data.error}`));
           }
         };
         const errorHandler = (e: ErrorEvent) => {
@@ -458,6 +519,15 @@ export class BrowserKernel {
           type: "init",
           kernelWasmBytes: transferBuf,
           vfsImage: opts.vfsImage,
+          ...(opts.privilegedProgramMount !== undefined
+            ? {
+                privilegedProgramMount: {
+                  kind: "published-privileged-program-product" as const,
+                  mountPoint: opts.privilegedProgramMount.mountPoint,
+                  imageBytes: opts.privilegedProgramMount.imageBytes,
+                },
+              }
+            : {}),
           lazyUrlBase: opts.lazyUrlBase,
           closedLazyAssets,
           rootfsMountSpec: opts.rootfsMountSpec === undefined
@@ -486,6 +556,11 @@ export class BrowserKernel {
           // prevents a second 512 MiB structured-clone allocation while the
           // worker restores its own kernel-owned filesystem.
           transfer.push(opts.vfsImage.buffer as ArrayBuffer);
+        }
+        if (opts.privilegedProgramMount !== undefined) {
+          transfer.push(
+            opts.privilegedProgramMount.imageBytes.buffer as ArrayBuffer,
+          );
         }
         for (const asset of closedLazyAssets ?? []) {
           // snapshotClosedLazyAssets always allocates one ordinary ArrayBuffer
@@ -707,6 +782,24 @@ export class BrowserKernel {
     });
     if (!Number.isSafeInteger(result) || result < 0) {
       throw new Error(`kernel worker returned an invalid memory-page count: ${String(result)}`);
+    }
+    return result;
+  }
+
+  /**
+   * Return the retained capacity of the kernel-owned large-spawn region.
+   * Zero means no spawn has exceeded the ordinary channel-sized scratch.
+   */
+  async getSpawnScratchCapacity(): Promise<number> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "get_spawn_scratch_capacity",
+      requestId,
+    });
+    if (!Number.isSafeInteger(result) || result < 0) {
+      throw new Error(
+        `kernel worker returned an invalid spawn scratch capacity: ${String(result)}`,
+      );
     }
     return result;
   }
@@ -941,6 +1034,22 @@ export class BrowserKernel {
   }
 
   /**
+   * Deliver a POSIX signal to `pid`. Resolves false when the process is gone
+   * (ESRCH). Unlike {@link terminateProcess}, which tears down the wasm worker
+   * from the host, this runs the kernel's signal path, so the target's
+   * disposition and the kernel's exit cleanup both apply.
+   */
+  async signalProcess(pid: number, signum: number): Promise<boolean> {
+    const requestId = this.nextRequestId++;
+    return this.request(requestId, {
+      type: "signal_process",
+      requestId,
+      pid,
+      signum,
+    }) as Promise<boolean>;
+  }
+
+  /**
    * Push a mouse event into the kernel's `/dev/input/mice` queue. Pass
    * deltas in PS/2 sign convention (positive-right, positive-up — invert
    * the browser's deltaY before calling) and a button bitmask
@@ -987,10 +1096,9 @@ export class BrowserKernel {
    * rate / channel count so the caller can build a correctly-sized
    * `AudioBuffer`. Empty `Uint8Array` if the ring is empty.
    *
-   * The audio scheduler in `apps/browser-demos/pages/doom/main.ts` calls
-   * this every ~50 ms via setInterval, decodes S16 → Float32, and
-   * schedules the result on a chained `AudioBufferSourceNode` so DOOM
-   * SFX play continuously while the game is running.
+   * @deprecated BrowserKernel now claims the shared-clock PCM transport for
+   * its machine-level AudioWorklet. This compatibility method returns an
+   * empty buffer while that transport is active.
    */
   async drainAudio(maxBytes: number): Promise<{
     bytes: Uint8Array;
@@ -1003,6 +1111,45 @@ export class BrowserKernel {
       requestId,
       maxBytes,
     }) as Promise<{ bytes: Uint8Array; sampleRate: number; channels: number }>;
+  }
+
+  /** Preload the machine-level PCM sink without attempting user activation. */
+  async prepareAudio(): Promise<void> {
+    const transport = this.pcmTransport;
+    if (!transport) throw new Error("PCM transport is not available");
+    const driver = this.pcmDriver ??= new BrowserPcmDriver({
+      workletUrl: this.options.audioWorkletUrl ?? defaultPcmWorkletUrl,
+    });
+    await driver.prepare(transport);
+  }
+
+  /** Resume audible PCM output. Call directly from a trusted user gesture. */
+  async resumeAudio(): Promise<void> {
+    await this.prepareAudio();
+    await this.pcmDriver!.resume();
+  }
+
+  /** Suspend the browser audio clock without discarding queued PCM. */
+  async suspendAudio(): Promise<void> {
+    await this.pcmDriver?.suspend();
+  }
+
+  getAudioState(): PcmOutputState {
+    return this.pcmDriver?.getState() ??
+      (this.pcmTransport ? "unprepared" : "unavailable");
+  }
+
+  onAudioStateChange(listener: (state: PcmOutputState) => void): () => void {
+    if (!this.pcmDriver && this.pcmTransport) {
+      this.pcmDriver = new BrowserPcmDriver({
+        workletUrl: this.options.audioWorkletUrl ?? defaultPcmWorkletUrl,
+      });
+    }
+    if (!this.pcmDriver) {
+      listener("unavailable");
+      return () => {};
+    }
+    return this.pcmDriver.subscribe(listener);
   }
 
   // ── PTY methods ──
@@ -1063,7 +1210,7 @@ export class BrowserKernel {
     // Resolve exit promise
     const resolver = this.exitResolvers.get(pid);
     this.exitResolvers.delete(pid);
-    if (resolver) resolver(status);
+    if (resolver) resolver.resolve(status);
   }
 
   /**
@@ -1100,9 +1247,9 @@ export class BrowserKernel {
 
   /**
    * Create or replace a regular file in the worker-owned VFS. The mutation is
-   * performed by the kernel worker, preserving exclusive VFS ownership; call
-   * this only while guest processes that could access the path are stopped.
-   * The parent directory must already exist.
+   * performed by the kernel worker, preserving exclusive VFS ownership. The
+   * parent directory must already exist, and callers must coordinate access
+   * with guest processes that may use the same path.
    */
   async writeFileToVfs(
     path: string,
@@ -1116,7 +1263,7 @@ export class BrowserKernel {
       requestId,
       path,
       data: owned,
-      mode: mode & 0o7777,
+      mode: mode & FILE_MODES.S_MODE_BITS,
     }, [owned.buffer]);
   }
 
@@ -1158,7 +1305,7 @@ export class BrowserKernel {
   async destroy(): Promise<void> {
     if (!this.workerStarted) return;
     let gracefulDetachFailure: string | undefined;
-    if (this.initialized) {
+    if (this.initialized && this.kernelFatalError === null) {
       const requestId = this.nextRequestId++;
       gracefulDetachFailure = await awaitGracefulKernelRealmDestroy(
         () =>
@@ -1170,6 +1317,10 @@ export class BrowserKernel {
       );
     }
     this.initialized = false;
+    await this.pcmDriver?.settleOutputPipeline().catch(() => {});
+    await this.pcmDriver?.close().catch(() => {});
+    this.pcmDriver = null;
+    this.pcmTransport = null;
     // WHY: process/pthread Workers are owned beneath the kernel worker. After
     // the worker's bounded graceful attempt, terminating this outer realm is
     // the final release fence for aliases that could not be detached exactly.
@@ -1262,6 +1413,7 @@ export class BrowserKernel {
   }
 
   private sendToKernel(msg: MainToKernelMessage, transfer?: Transferable[]): void {
+    if (this.kernelFatalError !== null) throw this.kernelFatalError;
     this.kernelWorkerHandle.postMessage(msg, transfer ?? []);
   }
 
@@ -1271,16 +1423,33 @@ export class BrowserKernel {
     if (unclaimed !== undefined && unclaimed.sequence > spawnStartedBeforeExitSequence) {
       return Promise.resolve(unclaimed.status);
     }
-    return new Promise<number>((resolve) => {
-      this.exitResolvers.set(pid, resolve);
+    return new Promise<number>((resolve, reject) => {
+      if (this.kernelFatalError !== null) {
+        reject(this.kernelFatalError);
+        return;
+      }
+      this.exitResolvers.set(pid, { resolve, reject });
     });
   }
 
   private request(requestId: number, msg: MainToKernelMessage, transfer?: Transferable[]): Promise<any> {
     return new Promise((resolve, reject) => {
+      if (this.kernelFatalError !== null) {
+        reject(this.kernelFatalError);
+        return;
+      }
       this.pendingRequests.set(requestId, { resolve, reject });
       this.sendToKernel(msg, transfer);
     });
+  }
+
+  private failKernelHost(error: Error): void {
+    if (this.kernelFatalError !== null) return;
+    this.kernelFatalError = error;
+    for (const { reject } of this.pendingRequests.values()) reject(error);
+    this.pendingRequests.clear();
+    for (const { reject } of this.exitResolvers.values()) reject(error);
+    this.exitResolvers.clear();
   }
 
   private emitLazyDownload(event: LazyDownloadEvent): void {
@@ -1292,12 +1461,35 @@ export class BrowserKernel {
 
   private handleWorkerMessage(msg: KernelToMainMessage): void {
     switch (msg.type) {
-      case "ready":
+      case "ready": {
+        if (msg.pcmTransport) {
+          this.pcmTransport = msg.pcmTransport;
+          if (
+            typeof globalThis.AudioContext === "function" ||
+            "webkitAudioContext" in globalThis
+          ) {
+            void this.prepareAudio().catch((error) => {
+              this.options.onHostDiagnostic?.({
+                pid: 0,
+                source: "browser PCM output",
+                message: error instanceof Error ? error.message : String(error),
+              });
+            });
+          }
+        }
+        break;
+      }
       case "init_error":
         // The temporary boot listener resolves or rejects initialization. The
-        // permanent listener also receives these messages, so account for
-        // them explicitly rather than relying on an implicit fall-through.
+        // permanent listener also receives this message, so account for it.
         break;
+      case "kernel_fatal": {
+        const error = new Error(`Kernel worker failed: ${msg.error}`);
+        this.failKernelHost(error);
+        this.options.onHttpBridgePendingRequests?.(0);
+        this.kernelWorkerHandle.terminate();
+        break;
+      }
       case "response": {
         const pending = this.pendingRequests.get(msg.requestId);
         if (pending) {
@@ -1318,7 +1510,7 @@ export class BrowserKernel {
         const resolver = this.exitResolvers.get(msg.pid);
         if (resolver) {
           this.exitResolvers.delete(msg.pid);
-          resolver(msg.status);
+          resolver.resolve(msg.status);
         } else {
           this.unclaimedExitStatuses.set(msg.pid, {
             status: msg.status,

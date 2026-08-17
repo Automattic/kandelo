@@ -254,7 +254,7 @@ describe("Homebrew VFS image publication boundary", () => {
         fs.chown("/opt/kandelo/homebrew", 0, 0);
         break;
       case "cache-owner":
-        fs.chown("/home/user/.cache/Homebrew", 0, 0);
+        fs.chown("/home/maker/.cache/Homebrew", 0, 0);
         break;
     }
 
@@ -515,7 +515,7 @@ function bootstrapConsumerFs(): MemoryFileSystem {
     "/opt/kandelo/homebrew/Cellar/existing/1",
     "/opt/kandelo/homebrew/Cellar/existing/1/bin",
     "/home",
-    "/home/user",
+    "/home/maker",
     "/usr",
     "/usr/bin",
     "/etc",

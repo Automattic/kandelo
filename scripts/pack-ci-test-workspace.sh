@@ -9,6 +9,10 @@ PUBLICATION_BLOCKERS_REL=".ci-test-publication-blockers.json"
 HOMEBREW_BROWSER_MIRROR_STATE_REL=".ci-homebrew-browser-mirror-state.json"
 STAGING_SHELL_RECEIPT_REL=".ci-staging-shell-receipt.json"
 STAGING_SHELL_REPORT_REL=".ci-staging-shell-report.json"
+BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$REPO_ROOT"
+BROWSER_MEMORY64_FIXTURES_MANIFEST="$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/browser-memory64-example-fixtures.sh"
 
 publication_blockers=""
 homebrew_browser_mirror_state=""
@@ -70,21 +74,26 @@ if [ ! -x "$xtask_path" ]; then
     exit 1
 fi
 
-for required in \
-    local-binaries/kernel.wasm \
-    host/wasm/rootfs.vfs \
-    examples/gencat.wasm \
-    examples/pthread_channel_reuse_test.wasm \
-    examples/wait_lifecycle_test.wasm \
-    examples/wait_lifecycle_test.wasm64.wasm \
-    examples/terminal_attributes_api_test.wasm64.wasm \
-    benchmarks/wasm/pipe-throughput.wasm \
-    benchmarks/wasm/file-throughput.wasm \
-    benchmarks/wasm/syscall-latency.wasm \
-    benchmarks/wasm/fork-bench.wasm \
-    benchmarks/wasm/clone-bench.wasm \
-    benchmarks/wasm/spawn-bench.wasm \
-    benchmarks/wasm/hello.wasm; do
+required_items=(
+    local-binaries/kernel.wasm
+    host/wasm/rootfs.vfs
+    examples/gencat.wasm
+    examples/pthread_channel_reuse_test.wasm
+    examples/wait_lifecycle_test.wasm
+    benchmarks/wasm/pipe-throughput.wasm
+    benchmarks/wasm/file-throughput.wasm
+    benchmarks/wasm/syscall-latency.wasm
+    benchmarks/wasm/fork-bench.wasm
+    benchmarks/wasm/clone-bench.wasm
+    benchmarks/wasm/spawn-bench.wasm
+    benchmarks/wasm/hello.wasm
+)
+memory64_example_outputs="$(browser_memory64_fixture_outputs)"
+while IFS= read -r output; do
+    required_items+=("$output")
+done <<< "$memory64_example_outputs"
+
+for required in "${required_items[@]}"; do
     if [ ! -f "$required" ]; then
         echo "pack-ci-test-workspace: missing required artifact: $required" >&2
         exit 1
@@ -397,20 +406,19 @@ if [ -e local-binaries ] || [ -L local-binaries ]; then
     unsafe_local_link="$(
         find "$stage/local-binaries" -type l -print0 |
         while IFS= read -r -d '' link; do
-            case "$(readlink "$link")" in
-                /*)
-                    printf '%s\n' "$link"
-                    break
-                    ;;
-            esac
+            # WHY: macOS Bash 3.2 misparses case patterns inside this outer
+            # command substitution. Prefix removal preserves the same
+            # absolute/escape checks in prepared workspaces on every host.
+            link_target="$(readlink "$link")"
+            if [ "${link_target#/}" != "$link_target" ]; then
+                printf '%s\n' "$link"
+                break
+            fi
             resolved="$(realpath "$link" 2>/dev/null || true)"
-            case "$resolved" in
-                "$stage/local-binaries"/*) ;;
-                *)
-                    printf '%s\n' "$link"
-                    break
-                    ;;
-            esac
+            if [ "${resolved#"$stage/local-binaries"/}" = "$resolved" ]; then
+                printf '%s\n' "$link"
+                break
+            fi
         done
     )"
     if [ -n "$unsafe_local_link" ]; then

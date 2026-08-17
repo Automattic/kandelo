@@ -25,13 +25,26 @@ const guests = [
     ],
   },
   {
-    name: "SCM_RIGHTS pipe and FIFO reference lifetime",
+    name: "SCM_RIGHTS pipe and FIFO reference lifetime (wasm32)",
     programPath: resolve(
       __dirname,
       "../../../local-binaries/programs/wasm32/scm-rights-pipe-lifetime.wasm",
     ),
     argv: ["scm-rights-pipe-lifetime"],
     markers: [
+      "SCM_RIGHTS_SOCKET_REJECTION_PASS",
+      "PASS: SCM_RIGHTS owns pipe and FIFO references in flight and after receipt",
+    ],
+  },
+  {
+    name: "SCM_RIGHTS pipe and FIFO reference lifetime (memory64)",
+    programPath: resolve(
+      __dirname,
+      "../../../local-binaries/programs/wasm64/scm-rights-pipe-lifetime.wasm",
+    ),
+    argv: ["scm-rights-pipe-lifetime"],
+    markers: [
+      "SCM_RIGHTS_SOCKET_REJECTION_PASS",
       "PASS: SCM_RIGHTS owns pipe and FIFO references in flight and after receipt",
     ],
   },
@@ -61,7 +74,9 @@ for (const guest of guests) {
       );
     });
 
-    await page.goto(new URL("/pages/test-runner/", baseURL).href);
+    await page.goto(
+      new URL("/pages/test-runner/?minimal=1", baseURL).href,
+    );
     await page.waitForFunction(() => (window as any).__testRunnerReady === true);
 
     const programUrl = new URL(`/@fs/${guest.programPath}`, baseURL).href;

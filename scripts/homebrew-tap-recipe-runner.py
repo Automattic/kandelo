@@ -105,9 +105,11 @@ FORMULA_TEST_RUNTIME_NODE_MODULE_ROOTS = (
 )
 FORMULA_TEST_RUNTIME_FILES = (
     Path("Cargo.toml"),
+    Path("examples/run-example-builtins.ts"),
     Path("examples/run-example-output.ts"),
     Path("examples/run-example-paths.ts"),
     Path("examples/run-example.ts"),
+    Path("examples/run-example-vfs.ts"),
     Path("package.json"),
 )
 # WHY: Formula tests need package identity for only the physical generations

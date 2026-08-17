@@ -24,7 +24,11 @@ import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { detectPtrWidth } from "../src/constants";
 import { tryResolveBinary } from "../src/binary-resolver";
-import type { CentralizedWorkerInitMessage } from "../src/worker-protocol";
+import type {
+  CentralizedWorkerInitMessage,
+  WorkerToHostMessage,
+} from "../src/worker-protocol";
+import { TestProcessReferenceOwners } from "./process-reference-owner-helper";
 
 const fbtestBinary = tryResolveBinary("programs/fbtest.wasm") ?? "";
 const kernelBinary = tryResolveBinary("kernel.wasm") ?? "";
@@ -55,15 +59,22 @@ describe.skipIf(!existsSync(fbtestBinary))("framebuffer integration", () => {
 
     const io = new NodePlatformIO();
     const workerAdapter = new NodeWorkerAdapter();
-    const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
+    const referenceOwners = new TestProcessReferenceOwners();
+    const workers = new Map<
+      number,
+      ReturnType<NodeWorkerAdapter["createWorker"]>
+    >();
 
     let pid = 0;
 
     let stdout = "";
+    let stderr = "";
     let stdoutResolved = false;
     let resolveOk: () => void;
-    const okPromise = new Promise<void>((resolve) => {
+    let rejectOk: (reason: Error) => void;
+    const okPromise = new Promise<void>((resolve, reject) => {
       resolveOk = resolve;
+      rejectOk = reject;
     });
     let resolveExit: (status: number) => void;
     const exitPromise = new Promise<number>((resolve) => {
@@ -71,11 +82,17 @@ describe.skipIf(!existsSync(fbtestBinary))("framebuffer integration", () => {
     });
 
     const kernel = new CentralizedKernelWorker(
-      { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true, enableSyscallLog: false },
+      {
+        maxWorkers: 4,
+        dataBufferSize: 65536,
+        useSharedMemory: true,
+        enableSyscallLog: !!process.env.KERNEL_SYSCALL_LOG,
+      },
       io,
       {
         onExit: (exitPid, exitStatus) => {
           if (exitPid === pid) {
+            referenceOwners.release(exitPid);
             kernel.unregisterProcess(exitPid);
             const w = workers.get(exitPid);
             if (w) {
@@ -96,7 +113,9 @@ describe.skipIf(!existsSync(fbtestBinary))("framebuffer integration", () => {
           resolveOk();
         }
       },
-      onStderr: () => {},
+      onStderr: (data: Uint8Array) => {
+        stderr += new TextDecoder().decode(data);
+      },
     });
 
     await kernel.init(kernelWasmBytes);
@@ -109,6 +128,7 @@ describe.skipIf(!existsSync(fbtestBinary))("framebuffer integration", () => {
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
     kernel.registerProcess(pid, memory, [channelOffset], { ptrWidth });
+    const referenceInit = referenceOwners.start(pid);
 
     const initData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
@@ -116,12 +136,32 @@ describe.skipIf(!existsSync(fbtestBinary))("framebuffer integration", () => {
       programBytes,
       memory,
       channelOffset,
+      secureExec: kernel.processSecureExec(pid),
       argv: ["fbtest"],
       env: [],
       ptrWidth,
+      ...referenceInit,
     };
 
     const mainWorker = workerAdapter.createWorker(initData);
+    referenceOwners.attach(pid, mainWorker);
+    mainWorker.on("error", (error) => rejectOk(error));
+    mainWorker.on("message", (raw: unknown) => {
+      const message = raw as WorkerToHostMessage;
+      if (message.type === "error" && message.pid === pid) {
+        rejectOk(new Error(message.message));
+      }
+    });
+    mainWorker.on("exit", (code) => {
+      if (!stdoutResolved) {
+        rejectOk(
+          new Error(
+            `fbtest worker exited with status ${code} before readiness` +
+              (stderr ? `: ${stderr}` : ""),
+          ),
+        );
+      }
+    });
     workers.set(pid, mainWorker);
 
     try {
@@ -129,7 +169,16 @@ describe.skipIf(!existsSync(fbtestBinary))("framebuffer integration", () => {
       await Promise.race([
         okPromise,
         new Promise<void>((_, reject) =>
-          setTimeout(() => reject(new Error("fbtest didn't print 'ok' in 10s")), 10_000),
+          setTimeout(
+            () =>
+              reject(
+                new Error(
+                  "fbtest didn't print 'ok' in 10s" +
+                    (stderr ? `: ${stderr}` : ""),
+                ),
+              ),
+            10_000,
+          ),
         ),
       ]);
 
@@ -154,7 +203,7 @@ describe.skipIf(!existsSync(fbtestBinary))("framebuffer integration", () => {
       // bit of `r << 16` ORs into the alpha byte; the test simply
       // recomputes the formula so it stays self-consistent.
       const expected = (r: number, c: number) =>
-        ((0xff000000 | (r << 16) | c) >>> 0);
+        (0xff000000 | (r << 16) | c) >>> 0;
       expect(sample(0, 0)).toBe(expected(0, 0));
       expect(sample(10, 20)).toBe(expected(10, 20));
       expect(sample(255, 255)).toBe(expected(255, 255));
@@ -167,6 +216,7 @@ describe.skipIf(!existsSync(fbtestBinary))("framebuffer integration", () => {
       // test harness in main-thread mode.
     } finally {
       for (const [, w] of workers) await w.terminate().catch(() => {});
+      referenceOwners.close();
       // Avoid an unhandled-promise warning if the program never exits.
       void exitPromise.catch(() => {});
     }

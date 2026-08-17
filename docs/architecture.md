@@ -73,25 +73,62 @@ kernel_create_process() → assigned_pid | -errno
 kernel_create_process_with_stdio(stdin_kind, stdout_kind, stderr_kind) → assigned_pid | -errno
 kernel_validate_task(pid, tid) → 0 | -errno
 kernel_set_current_tid(pid, tid) → 0 | -errno
-kernel_fork_process(parent_pid, caller_tid) → assigned_child_pid | -errno
+kernel_fork_process(parent_pid, caller_tid, mode) → assigned_child_pid | -errno
 kernel_spawn_process(parent_pid, caller_tid, blob_ptr, blob_len) → assigned_child_pid | -errno
 kernel_remove_process(pid) → 0
-kernel_handle_channel(channel_offset, pid) → result
-kernel_exec_prepare(pid, caller_tid) → 0 | -errno
-kernel_exec_setup_for_thread(pid, caller_tid) → 0 | -errno
+kernel_handle_channel(channel_offset, channel_capacity, pid, retry_token) → result
+kernel_blocking_retry_token(pid, tid, syscall_nr) → opaque_token | -errno
+kernel_blocking_retry_release(pid, tid, opaque_token) → 0 | -errno
+kernel_exec_target_prepare(pid, caller_tid, dirfd, path_ptr, path_len, flags) → opaque_target | -errno
+kernel_spawn_exec_target_prepare(parent_pid, child_pid, path_ptr, path_len) → opaque_target | -errno
+kernel_exec_target_size(owner_pid, opaque_target) → byte_length | -errno
+kernel_exec_target_read(owner_pid, opaque_target, offset_lo, offset_hi, dst_ptr, dst_capacity) → bytes_read | -errno
+kernel_exec_target_cancel(owner_pid, opaque_target) → 0 | -errno
+kernel_exec_commit(pid, caller_tid, opaque_target) → 0 | -errno
+kernel_spawn_exec_commit(parent_pid, child_pid, opaque_target) → 0 | -errno
+kernel_publish_spawn_child(parent_pid, child_pid) → disposition | -errno
 kernel_thread_exit(pid, tid) → 0 | -errno
-kernel_dequeue_signal(pid, tid, out_ptr) → 0 | signum | -errno
-kernel_wait_child_poll(parent_pid, caller_tid, target_pid, event_mask, flags, out_ptr) → child_pid | 0 | -errno
-kernel_prepare_write_operation(pid, tid, fd, offset, len, positioned) → allowed_len | -errno
+kernel_commit_process_exit(status) → committed_low_8_bits
+kernel_dequeue_signal(pid, tid, out_ptr, out_capacity) → 0 | signum | -errno
+kernel_wait_child_poll(parent_pid, caller_tid, target_pid, event_mask, flags, out_ptr, out_capacity) → child_pid | 0 | -errno
+kernel_pick_tcp_listener_target(port, exclude_pid, out_ptr, out_capacity) → 1 | 0 | -errno
+kernel_take_process_timer_cleanup(pid, out_ptr, out_capacity) → posix_count | -errno
 kernel_ipc_shmat_for_task(pid, tid, shmid, addr, flags) → segment_size | -errno
-kernel_ipc_shmdt_for_task(pid, tid, shmid) → 0 | -errno
+kernel_ipc_shm_record_mapping_for_task(pid, tid, addr, shmid, size) → 0 | -errno
+kernel_ipc_shm_lookup_mapping_for_task(pid, tid, addr) → packed_size_and_shmid | -errno
+kernel_ipc_shmdt_addr_for_task(pid, tid, addr) → 0 | -errno
 kernel_ipc_shmat_for_process(pid, shmid, addr, flags) → segment_size | -errno
-kernel_ipc_shmdt_for_process(pid, shmid) → 0 | -errno
-kernel_get_cwd(pid, buf, len) → bytes_written
+kernel_ipc_shm_record_mapping_for_process(pid, addr, shmid, size) → 0 | -errno
+kernel_ipc_shmdt_addr_for_process(pid, addr) → 0 | -errno
+kernel_alloc_scratch(size) → kernel_owned_pointer | 0
+kernel_transfer_scratch_begin(minimum_capacity) → reservation_token | -errno
+kernel_transfer_scratch_pointer(reservation_token) → kernel_owned_pointer | 0
+kernel_transfer_scratch_capacity(reservation_token) → reservation_capacity | 0
+kernel_transfer_scratch_cancel(reservation_token) → 0 | -errno
+kernel_transfer_io_execute(pid, tid, reservation_token, len, syscall, fd, offset, retry_token) → bytes | -errno
+kernel_transfer_channel_execute(pid, tid, reservation_token, retry_token) → 0 | -errno
+kernel_spawn_scratch_begin(minimum_capacity) → reservation_token | -errno
+kernel_spawn_scratch_pointer(reservation_token) → kernel_owned_pointer | 0
+kernel_spawn_scratch_capacity(reservation_token) → reservation_capacity | 0
+kernel_spawn_scratch_retained_capacity() → retained_capacity
+kernel_spawn_scratch_cancel(reservation_token) → 0 | -errno
+kernel_spawn_reserved_process(parent_pid, caller_tid, reservation_token, blob_len) → assigned_child_pid | -errno
+kernel_msqid_ds_bytes(process_pointer_width) → bytes | -errno
+kernel_semctl_array_bytes(pid, tid, semid, command) → bytes | -errno
+kernel_semid_ds_bytes(process_pointer_width) → bytes | -errno
+kernel_shmid_ds_bytes(process_pointer_width) → bytes | -errno
+kernel_get_cwd(pid, buf, capacity) → required_or_written_bytes | -errno
+kernel_get_fd_path(pid, fd, buf, capacity) → required_or_written_bytes | -errno
+kernel_get_dirfd_path(pid, fd, buf, capacity) → required_or_written_bytes | -errno
+kernel_enum_procs(buf, capacity) → complete_snapshot_bytes | -errno
+kernel_process_metadata_begin(pid) → transaction_token | -errno
+kernel_process_metadata_stage(pid, transaction_token, kind, buf, len) → 0 | -errno
+kernel_process_metadata_commit(pid, transaction_token) → 0 | -errno
+kernel_process_metadata_cancel(pid, transaction_token) → 0 | -errno
 kernel_set_max_addr(pid, addr) → 0
 kernel_set_brk_base(pid, addr) → 0
 kernel_set_mmap_base(pid, addr) → 0
-kernel_is_fd_nonblock(pid, fd) → bool
+kernel_is_fd_nonblock(pid, fd) → 1 | 0 | -1
 ```
 
 Normal guest exit closes descriptors before the process becomes reapable.
@@ -147,6 +184,447 @@ Key host components:
 | NodeWorkerAdapter | `worker-adapter.ts` | Creates Node.js worker_threads |
 | BrowserWorkerAdapter | `worker-adapter-browser.ts` | Creates Web Workers |
 
+`NodeWorkerAdapter` prefers the compiled worker entry distributed with the
+host package. In a source checkout without `host/dist`, it bundles the
+TypeScript entry once per adapter and reuses that temporary module for later
+process workers; if bundling is unavailable, it falls back to the `tsx`
+loader. Browser worker entries are bundled by the browser build and do not use
+this Node-only source fallback.
+
+Kernel module instantiation snapshots the caller's exact intrinsic
+`ArrayBuffer`, typed-array, or `DataView` byte window before inspecting it.
+Pointer-width detection and `WebAssembly.compile` consume that same detached
+snapshot. This prevents an overridden view getter or a later caller mutation
+from making the host configure wasm32 imports for a different wasm64 module,
+or vice versa.
+
+A `WasmPosixKernel` wrapper owns exactly one instantiated kernel generation.
+`init` and `initWithMemory` are mutually exclusive one-shot entry points:
+concurrent or post-success calls reject before changing pointer width, memory,
+instance, or cached scratch authority. A failed first attempt clears its
+partially published state and may be retried. This matters because a
+`KernelScratchRegion` is bound to the exact allocator, instance, memory,
+pointer, and capacity that created it; replacing the wrapper generation while
+retaining an audio or public-API region would make the old allocation appear
+valid under unrelated new state.
+
+### Kernel-owned scratch transfers
+
+The host moves syscall payloads through allocations owned by the Rust kernel.
+`host/src/kernel-scratch.ts::KernelScratchRegion` carries each allocation's
+pointer and declared capacity together. The exported region, lease, and
+guarded-data-view names are structural interfaces; their concrete classes are
+module-private. A compiler-backed contract inventories every direct or aliased
+factory call, so repository runtime code cannot add a callback that merely
+claims an arbitrary pointer/capacity pair without a new exact review entry.
+Callers can read or write a region only inside a synchronous
+`KernelScratchLease`, which checks:
+
+1. safe-integer and non-negative offsets and lengths;
+2. lossless wasm32/wasm64 pointer conversion;
+3. the requested range against the allocation capacity; and
+4. the resulting address against the current kernel `Memory.buffer`.
+
+This contract is ABI 43 on top of PR #1097's merged ABI-42 result,
+`c7d039794a43788acfa0b0aea30a700c257f57cb`. The bump is required by actual
+incompatible exports and wires: among them, `kernel_handle_channel`,
+`kernel_dequeue_signal`, and `kernel_wait_child_poll` gain capacity arguments,
+and the signal-delivery record changes size. Centralizing unchanged constants
+alone would not require a bump. Exact final-head validation remains a PR
+readiness gate and must be recorded with the commit SHA it actually tested.
+
+The capacity check and memory-buffer check answer different questions. The
+second proves that an address exists in linear memory. It does not prove that
+the allocator assigned all of those bytes to this scratch region. For example,
+a 70 KiB write may fit comfortably in a multi-megabyte `Memory` while crossing
+the end of a 65 KiB scratch allocation and corrupting the next Rust heap
+object.
+
+The central worker owns separate main-syscall and TCP regions for the kernel
+lifetime. Sequential operations reuse them cheaply. A lease rejects nested or
+promise-returning work, and a guarded data view is revoked when the lease ends,
+so a callback or retry cannot observe bytes replaced by another operation.
+The lease is revoked before the callback's return value is inspected for a
+promise/thenable, so even an adversarial `then` getter cannot perform one last
+scratch access. Bulk copies read intrinsic typed-array slots and detach output;
+constructors, slot getters, `set`, `fill`, DataView methods, and
+`Reflect.apply` are captured at module initialization. Each bulk write receiver
+spans exactly the checked allocation range, so a replaced live prototype or
+subclass override cannot widen or intercept the write, reenter the lease, or
+retain a live kernel view.
+Scalar access checks the lease on every operation. The native `DataView` stays
+private and may be reused only while `Memory.buffer` has the same identity; a
+`memory.grow()` replaces that buffer and forces the complete capacity and
+current-memory proof to run again before the view is refreshed.
+Each genuine buffer identity is brand-checked once against captured native
+`ArrayBuffer`/`SharedArrayBuffer` getters. The successful getter—not its
+result—is cached, so repeated shared-memory proofs avoid an exception while
+every proof still observes the live post-growth byte length.
+Async syscall preparation detaches caller data into host-owned arrays; the
+final stage, Rust call, and output snapshot happen in one lease without an
+`await`. Retry, timeout, stopped-process, and signal completion state carries
+only those detached writes; `completeChannel` never rereads reusable scratch
+after the lease has ended.
+
+An `EAGAIN` retry must preserve more than the copied bytes. The host freezes an
+immutable request snapshot, while Rust pins any exact resource selected by the
+first attempt and exposes an opaque positive retry token. That token is bound
+to the process, task, and normalized operation; it is not an fd, queue id,
+pointer, or allocation address. Reentry reconstructs scratch only from the
+snapshot and activates the pinned target instead of rereading the live mailbox
+or resolving a numeric descriptor that may have been closed and reused.
+
+Normal completion, cancellation, and exact channel retirement consume a
+positive token before deleting the matching host snapshot. Exec, thread exit,
+process exit, and forced removal consume their Rust-owned bindings before the
+corresponding task or image state disappears. A zero token is an explicit
+host-only disposition, not a missing binding. This ordering prevents both
+leaked kernel references and a later operation observing scratch bytes or a
+descriptor identity from the wrong request.
+
+The generated channel `request_flags` word records whether the call entered
+through libc's cancellation-point path and whether that point may currently be
+woken. The host captures and clears those bits with the initial mailbox
+snapshot and carries them through the asynchronous wait. Cancellation or exact
+channel retirement settles that frozen request before the mailbox and its
+scratch allocation can be reused; neither path infers authority later from a
+replacement channel.
+
+The Rust channel dispatcher carries the same ownership boundary numerically as
+`ChannelScratchRegion { start, capacity }`. The host passes the complete
+channel capacity to `kernel_handle_channel`; Rust rejects any value other than
+the canonical allocation size before decoding the header. Generated pointer
+descriptors classify every argument as exactly one of required or nullable.
+A null pointer with positive extent is accepted only when that shared
+descriptor explicitly permits null. An argument-sized null pointer with zero
+extent is instead canonicalized to a non-null, allocator-owned empty range, so
+an arbitrary process-space address never crosses into the kernel merely
+because its byte count is zero.
+
+Before laying out any descriptor, the host captures every `Deref`-derived
+`u32` length, such as a `socklen_t`, from the validated caller range. The same
+captured value sizes the destination and stages the length record, independent
+of generated descriptor order. A non-null outer buffer with no length pointer
+fails before dispatch. Rust then validates descriptor order, eight-byte
+alignment, non-overlap, and every complete subrange against the same channel
+allocation. Bespoke vector, message, polling, System V IPC, message-queue, and
+other manual wire layouts have corresponding Rust validators rather than a
+raw channel-pointer escape.
+
+The generic aligned wire does not carry a second unpadded suballocation
+capacity for each descriptor. Rust therefore recomputes a dynamic range from
+the staged length and cannot independently distinguish a hypothetical
+post-staging length change that remains within the same eight-byte alignment
+bucket. The host's pre-captured value is the exact-capacity authority, and the
+stage, Rust call, and output snapshot occur in one non-reentrant synchronous
+lease, so repository runtime code has no interval in which to make that
+change. A stronger independent cross-check would require an additional ABI
+capacity field or a wire layout without alignment slack; the existing Rust
+proof should not be described as reconstructing information the wire does not
+encode.
+
+`prctl` is kept out of generic pointer metadata because its second argument is
+option-sensitive. `PR_SET_NAME` and `PR_GET_NAME` stage one required, exact
+16-byte buffer; every other supported option preserves the low 32-bit scalar
+value and stages no scratch pointer. The two option numbers, name-buffer size,
+fixed Fcntl lock-record size, and fixed signal-mask size live in shared Rust
+ABI modules and are generated into the TypeScript host, so the bespoke
+validators cannot drift by repeating protocol literals.
+
+A C-string argument is accepted only when its pointer is inside the exact
+channel data allocation and a NUL terminator occurs before the allocation
+ends. This allocation bound is not a substitute for a syscall's semantic
+limit: pathname consumers still apply the generated `PATH_MAX`, while generic
+C-string consumers may validly use more than `PATH_MAX` when the complete
+string fits channel scratch.
+
+Vector-message syscalls add a width-translation boundary. Musl's native
+`iovec`, `msghdr`, and `cmsghdr` layouts differ between wasm32 and wasm64, so
+their sizes, offsets, and alignments are generated from the shared Rust ABI
+source into TypeScript and a musl contract header. The kernel scratch wire is
+deliberately fixed: an eight-byte `KernelIovecWire`, a 28-byte
+`KernelMsghdrWire`, and a 12-byte-aligned `KernelCmsghdrWire`. These are
+separate contracts; copying a native wasm64 header and hoping the fixed parser
+interprets it is invalid even when the bytes fit in linear memory.
+Socket-address sizing is likewise generated as two distinct contracts.
+The 128-byte `sockaddr_storage` bounds every generic input and output staging
+region; the 110-byte `sockaddr_un` bounds family-specific AF_UNIX parsing.
+Musl layout assertions bind those totals, the two-byte `sun_path` offset, and
+the 108-byte path field to both native data models. The Unix socket registry
+owns the canonical namespace key, while `SocketInfo` retains the bounded
+original name supplied to `bind()`. This distinction matters for a relative
+name in a deep current directory: canonicalization may produce a much longer
+lookup key, but it must not enlarge the value returned by `getsockname()`.
+An exact 108-byte non-NUL pathname can make Linux-compatible `getsockname()`
+report 111 bytes after accounting for its appended terminator, which still
+fits the generic 128-byte output region.
+
+For `sendmsg`, the host validates the complete native header and iovec table,
+every nested caller range, `IOV_MAX`, and the complete fixed-wire footprint.
+It translates each ancillary record, flattens all caller iovecs in order into
+one capacity-owned payload, and invokes Rust with a zero-or-one-iovec wire
+inside one synchronous lease. Rust validates the complete aligned ancillary
+stream and the receiver-reconstructibility of every requested `SCM_RIGHTS`
+description before retaining any reference or publishing carrier bytes. Socket
+descriptions are not reconstructible from a process-local socket snapshot, so
+an ancillary batch containing one fails atomically with `EOPNOTSUPP`; Kandelo
+does not pretend that a copied socket record is the original endpoint. The
+exact flattened-iovec count is generated from the shared protocol contract,
+and a Rust compile-time guard makes changing that count fail until the fixed
+parser changes with it.
+Nested `sendmsg.msg_name` accepts exactly the same 128-byte input maximum as
+`sendto`; it cannot bypass that check by living inside `msghdr`. For
+`recvmsg`, the host proves and reserves at most 128 name bytes even when the
+caller advertises a larger buffer, derives fixed-wire control capacity from
+the caller-native data capacity,
+snapshots the result, validates the entire returned record, expands it with
+zeroed native padding, and scatters payload bytes across every caller iovec.
+A retry or malformed kernel result publishes none of those detached outputs.
+This flatten/scatter design preserves the public multi-iovec behavior while
+keeping the ordinary transport allocation fixed and cheap.
+
+Guest process memory is a separate owner, not another spelling for kernel
+scratch. `CentralizedKernelWorker.registerProcess` rejects the active kernel
+`WebAssembly.Memory` object as a process memory before entering any export or
+publishing a channel. This identity check keeps later process-memory ranges,
+framebuffers, mappings, and worker transport outside the kernel-allocation
+model even if an internal caller accidentally passes the wrong memory object.
+
+Scalar and vectored reads or writes at most `CH_DATA_SIZE` use the main
+channel region. The host validates the complete caller range or native iovec
+table, flattens a vector directly into the data area, and dispatches one scalar
+kernel operation. A vector is never split merely to fit scratch; preserving
+one logical operation is required for pipe atomicity, datagram boundaries,
+short reads, EOF, and operation-wide file-size limits.
+
+Larger operations reserve
+`crates/kernel/src/transfer.rs::TransferScratch`. Begin creates a fresh,
+initialized Rust-owned allocation and returns a positive token. The host reads
+the token's pointer and explicit capacity together, proves the current-memory
+range, and copies under one synchronous lease. For widened syscall and channel
+execution, execute changes the reservation from `Reserved` to `Executing`
+before releasing the mutex and entering exactly one kernel operation. A
+normal return, including an errno, changes it to `Ready`; cancellation then
+drops the allocation. No pointer-only execute path exists.
+
+Canonical CWD and open-file-description path snapshots use the same allocation
+owner with a deliberately different `Reserved`-state lifetime. The host first
+tries its ordinary main region. `ERANGE` triggers a zero-capacity required-size
+query, followed by an exact `TransferScratch` reservation when necessary.
+`kernel_get_cwd`, `kernel_get_fd_path`, or `kernel_get_dirfd_path` then writes
+the complete result while that token remains `Reserved`; the host detaches the
+bytes, revokes the region, and cancels the token before leaving the same
+synchronous kernel entry. No promise, callback, or second reservation can
+overlap that snapshot. A positive short capacity writes nothing and returns
+`ERANGE`; zero capacity never dereferences its pointer. The directory-only
+export additionally returns `ENOTDIR` for a non-directory descriptor, so
+relative `execveat` and shared-mapping lookup cannot join a path against an
+ordinary file.
+
+These returned canonical paths are not capped by `PATH_MAX`. That limit
+constrains one caller-supplied pathname, not the absolute spelling produced by
+resolving a short relative name from an already-deep CWD. Treating the
+canonical output as a 4,096-byte object would either produce a false failure
+or, worse, publish a prefix that names a different executable or mapping
+backing. Host admission therefore requires all three complete-copy exports in
+ABI 43 and retains only detached bytes across the later spawn, exec, or
+mapping callback.
+
+A host-import trap can prevent Rust from leaving `Executing`. Cancellation
+must not free or reuse a region whose callback may have observed only a prefix,
+so this state poisons the complete kernel generation. `KernelEntryGate`
+serializes every export entry, revokes its lexical scope before running
+detached callbacks, and discards queued ingress after a fatal latch. This is a
+lifetime guarantee: later work cannot overwrite the reservation or publish a
+channel completion against an uncertain Rust transition.
+
+Positioned host-backed I/O uses required `host_pread` and `host_pwrite`
+imports. Signed 64-bit offsets remain exact across TypeScript routing and are
+split and reconstructed losslessly at the Wasm boundary; one positioned
+operation leaves the shared open-file-description cursor unchanged. A backend
+that cannot represent an offset exactly returns `EOVERFLOW` instead of
+rounding it or emulating it with seek/read-or-write/seek.
+
+Host-backed `O_APPEND` uses a separate exact-outcome contract. Rust passes the
+complete payload and optional `RLIMIT_FSIZE` ceiling to `host_append`; the
+backend owns EOF selection, clipping, mutation, and ending-position
+observation as one serialized operation. `host_append_position` consumes the
+matching one-shot ending offset, and Rust validates the written prefix and
+derived start before publishing the cursor. Backends that cannot prove that
+pair return `EOPNOTSUPP` before mutation. They do not infer ownership from a
+later `stat`.
+
+For `sendfile`, `copy_file_range`, and `splice` into such an append
+destination, the source is staged without publishing its cursor or consuming
+pipe bytes. Only the prefix reported by the append is committed. An append
+rejection, file-size clip, or short write therefore cannot consume source data
+that the destination did not publish.
+
+Large spawn blobs use a different kernel-owned high-water region in
+`crates/kernel/src/spawn.rs::SpawnScratchBuffer`. Every large operation calls
+`kernel_spawn_scratch_begin`, which may grow the Rust `Vec` only while no
+reservation is active and returns a fresh positive token. Begin and the
+pointer/capacity queries are nonblocking: mutex contention makes begin return
+`EBUSY` and makes query exports return zero. The host then reads the token's
+pointer and capacity together, proves that the complete blob fits both that
+allocation and the current `Memory.buffer`, and copies under one synchronous
+lease. `kernel_spawn_reserved_process` accepts no host-selected pointer: it
+consumes the matching token, parses the selected prefix into Rust-owned
+vectors, and releases the scratch mutex before entering the process table or
+any host import. After every successful begin, including setup or copy failure,
+the host invokes cancellation in a `finally` block. Commit and cancellation
+wait through mutex contention; neither guarded path can call a host import, so
+each returns with a definitive token state. Cancellation success releases an
+unconsumed matching token; `EINVAL` means the never-reused token was already
+consumed or is stale. For the just-issued in-contract token after commit, the
+consumed case is expected.
+Stale tokens, overlapping reservations, and reentrant large-spawn attempts
+fail without replacing live bytes. The reservation-derived host region is
+single-use and is revoked after the attempt, so a later Rust-owned `Vec`
+growth cannot revive its old pointer/capacity pair.
+
+The allocation lives until the kernel instance ends and may retain the largest
+accepted blob seen. Because WebAssembly memory cannot shrink, freeing or
+replacing Rust allocations does not reduce the visible linear-memory
+high-water mark. The growable design is selected for its ownership and
+lifetime contract, not an unrecorded performance claim. Before/after retained
+capacity, peak kernel memory, and timing are mutable validation evidence rather
+than architecture: the draft PR ledger must record the exact baseline,
+candidate head/tree, workload, runtime-artifact fingerprints, and separate
+Node.js and real-Chromium results after the candidate is frozen. ABI 43
+requires the complete transactional export set and has no older-kernel
+fixed-buffer fallback under the same version.
+
+Rust-lent host-import destinations are deliberately separate. Rust supplies a
+pointer and capacity valid for that synchronous import, so
+`checkedWasmImportMemoryRange` normalizes the raw wasm32/wasm64 import value
+and `WasmPosixKernel.writeKernelBytes` checks that range and the producer's
+intrinsic byte span without claiming it came from the scratch allocator.
+Process memory,
+framebuffers, and explicit shared-memory mappings keep their own ownership
+models. A TypeScript-compiler-backed JavaScript/TypeScript repository audit
+follows kernel-memory ownership through aliases, parameters, and returns and
+reports raw views, writes, escapes, and allocator/reservation calls. Its exact
+multiset allowlist names every necessary exception with a reason and fails if
+an occurrence is added, duplicated, or removed. This keeps framebuffer,
+process-memory, and shared-memory paths explicit without conflating their
+ownership with kernel scratch. Because untyped JavaScript can erase a receiver
+type, the audit also treats a zero-argument `.getMemory()` call in JavaScript
+source as a potential reintroduction of the former raw kernel-memory accessor
+and follows its result into aliases, helper parameters, views, and writes.
+Same-named non-kernel APIs need an exact reviewed allowance. This narrow
+backstop is not a claim of sound general JavaScript taint analysis.
+
+The Rust dispatcher has a separate source-contract test for raw process
+addresses. It rejects the former raw-channel-pointer macro, matches every
+remaining `process_address!` use against its exact reviewed syscall context,
+and also checks the total use count. Those sites represent guest virtual
+addresses for memory-management, clone, futex, and related operations; they
+are not authority to dereference kernel scratch. A new site, a removed site
+paired with an unrelated replacement, or a reintroduced bare channel pointer
+therefore requires an explicit review instead of passing a count-only
+allowlist.
+
+The former low-level `WasmPosixKernel.getMemory/getInstance` and
+`CentralizedKernelWorker.getKernel/getKernelInstance` accessors are no longer
+part of the supported host API. The public wrappers expose bounded queries
+such as kernel-memory page count, not mutable `WebAssembly.Memory`, a raw
+`WebAssembly.Instance`, or its export namespace. A module-private capability
+gives only the dedicated kernel worker the exact gate and memory it owns; it is
+not re-exported to embedders. This is an intentional host-API incompatibility:
+downstream consumers of the former raw accessors must migrate to an
+ownership-specific bounded operation. The compiler-backed audit retains the
+old method spellings as fail-closed regression seeds so reintroducing an
+unreviewed raw accessor becomes a contract failure.
+
+Current host-adapter admission requires `kernel_set_cwd`,
+`kernel_get_cwd`, `kernel_get_fd_path`, `kernel_get_dirfd_path`,
+`kernel_process_metadata_begin`, `kernel_process_metadata_stage`,
+`kernel_process_metadata_commit`, and `kernel_process_metadata_cancel`.
+Initial cwd and process argv/environment therefore cannot silently fall back
+to an older pointer-only aggregate setter, clear-then-push sequence, or no-op
+after the runtime has negotiated the capacity-owned scratch contract. One
+positive metadata token stages a complete argv/environment pair in Rust-owned
+vectors while the live pair remains unchanged. The host supplies both vectors
+or neither; it rejects a partial replacement before entering the kernel so the
+aggregate `ARG_MAX` proof can never omit preserved live bytes. A failed stage
+makes the token uncommittable, and the host cancels every uncommitted token in
+a `finally` path. Commit performs no fallible allocation or host import while
+it swaps both vectors, so observers see either the old pair or the complete
+replacement, never a staged prefix. Relative spawn/exec and mapping resolution
+likewise cannot fall back to a fixed or truncating canonical-path query.
+
+System V control operations use the same capacity-bearing main region, but
+their wire sizes also depend on the caller. The required structure-size exports
+select musl's target structure from the process pointer width:
+
+| Structure | wasm32 time64 | wasm64 LP64 |
+|---|---:|---:|
+| `msqid_ds` | 96 bytes | 120 bytes |
+| `semid_ds` | 72 bytes | 88 bytes |
+| `shmid_ds` | 88 bytes | 112 bytes |
+
+The host stages `msgctl`/`shmctl` `IPC_STAT` and `IPC_SET` according to the
+command and passes that process pointer width in the otherwise host-private
+sixth dispatch slot. The kernel Wasm's own width is not a valid substitute
+because one kernel may serve both guest widths.
+`kernel_semctl_array_bytes(pid, tid, semid, command)` separately performs the
+permission-aware GETALL/SETALL size preflight. All four sizing exports are
+required in ABI 43. There is no `IPC_STAT` sizing fallback for semaphore
+arrays: a process may have permission to write a semaphore set without
+permission to read its metadata.
+
+Other caller-native records use the generated
+`SyscallArgSize::ProcessLayout` descriptor. Encountering that descriptor makes
+the host select the exact size from the process width and carry the same width
+in the private sixth dispatch slot:
+
+| Record | wasm32 | wasm64 |
+|---|---:|---:|
+| `stack_t` | 12 bytes | 24 bytes |
+| kernel-facing `itimerval` | 16 bytes | 32 bytes |
+| `mq_attr` | 32 bytes | 64 bytes |
+| `sigevent` | 64 bytes | 64 bytes |
+| `statfs` | 88 bytes | 120 bytes |
+| `sysinfo` | 312 bytes | 368 bytes |
+| `siginfo_t` for `rt_sigqueueinfo` | 128 bytes | 128 bytes |
+
+The timer distinction is intentional: wasm32 musl translates its public
+time64 `itimerval` to four native `long` values before entering the kernel.
+Rust parses or serializes each complete caller-native record into a
+capacity-bounded scratch slice and initializes padding and reserved bytes.
+The kernel Wasm's own pointer width is never used to infer the process layout.
+The generated fixed-size descriptors separately carry `stat` (112 bytes) and
+`sched_param` (48 bytes); those two records do not use width selection or the
+private process-width dispatch slot.
+
+`setsockopt` carries the same independent caller-width fact for native IPv4
+multicast group records. `group_req` is 132 bytes with its group at offset 4
+on wasm32 and 136 bytes with the group at offset 8 on wasm64.
+`group_source_req` is 260/264 bytes with its source address at offset 132/136.
+The syscall has five public arguments, so the host writes the process width to
+the otherwise private sixth channel slot before dispatch. Rust accepts only 4
+or 8 and selects these generated layouts from that value. `optlen` is merely a
+caller byte extent, and padding is caller data; neither may be used to guess
+the process data model. The public five-argument `kernel_setsockopt` export
+keeps its signature and uses the kernel's native width for direct calls, while
+the channel path uses the calling process's width.
+
+Process enumeration uses a separate complete-output rule on the fixed main
+region. `kernel_enum_procs` first computes the entire snapshot with checked
+arithmetic: one four-byte count, one exact packed 36-byte header per live
+process, and the variable `comm` and command-line bytes. The packed header is
+not a native `repr(C)` structure (which would be 40 bytes after alignment);
+`wasm_posix_shared::process_snapshot_wire` owns every offset and generates the
+TypeScript consumer plus ABI snapshot evidence. If the complete total exceeds
+the supplied capacity Rust returns `ENOSPC` before touching the destination.
+On success Rust preflights each complete header-plus-payload record and creates
+only the exact required output slice. The host rejects an over-reported byte
+count or any malformed count, truncated record, unsafe numeric field, or
+trailing byte before returning a process list. Total Wasm memory beyond the
+supplied allocation is irrelevant, and neither a short buffer nor a malformed
+later record exposes a partial list.
+
 ### Kernel heap lifetime
 
 The Rust kernel uses a reclaiming `dlmalloc` heap inside its own Wasm linear
@@ -201,18 +679,47 @@ capacity checks all happen in Rust. Conflicts are reported as `EAGAIN` before
 capacity is considered; a mutation that would exceed the record limit or
 cannot reserve its final capacity returns `ENOLCK` without partial state.
 
-An `SCM_RIGHTS` queue entry retains the source description's `OfdId`, `FileId`,
-and real backing reference. It therefore participates in final-reference
-checks even after the sender closes its descriptor. Successful receipt
-transfers that retained reference into the receiver without changing lock
-ownership; a discarded message or failed receiver fd allocation releases it
-and removes OFD/`flock()` records only if it was the true final reference.
-Destructors enqueue fixed cleanup metadata into pre-reserved, high-water
-storage, and cleanup runs after pipe-table borrows end. The host schedules the
-syscall but never stores or examines lock state. Ordinary regular-file offsets
-and status flags still live in per-process OFD records, so their sharing across
-fork and `SCM_RIGHTS` remains the separate global-OFD gap documented in
-[future-improvements.md](future-improvements.md).
+For a supported `SCM_RIGHTS` description, the queue entry retains the source
+description's `OfdId`, `FileId`, and a live reconstructible backing reference.
+Transfer validation is repeated before retain and before receiver
+installation; stale, non-owning, structurally incomplete, socket, epoll, and
+other process-owned descriptions fail with `EOPNOTSUPP` instead of becoming a
+lossy snapshot. In particular, a batch containing a socket fails before its
+carrier data or rights become visible. Supporting socket transfer requires one
+authoritative machine-wide socket backing and is not approximated here with a
+copied process-local record.
+
+A valid queued reference participates in final-reference checks even after the
+sender closes its descriptor. Successful receipt transfers that retained
+reference into the receiver without changing lock ownership; a discarded
+message or failed receiver fd allocation releases it and removes
+OFD/`flock()` records only if it was the true final reference. Destructors
+enqueue fixed cleanup metadata into pre-reserved, high-water storage, and
+cleanup runs after pipe-table borrows end. The host schedules the syscall but
+never stores or examines lock state. Each process keeps its descriptor and OFD
+table shell, but mutable offset, status flags, and async owner live in an
+exactly owned `Rc<Cell>` state shared across fork, vfork, spawn, and supported
+`SCM_RIGHTS`. A queued descriptor keeps that same state live, so receipt sees
+mutations made after send rather than a frozen scalar snapshot.
+
+On an AF_UNIX stream, retained rights are associated with absolute byte ranges
+in the stream rather than a separate first-in/first-out side queue. A receive
+cannot observe a descriptor before it reaches that record's carrier bytes, and
+`MSG_WAITALL` stops at an ancillary boundary instead of consuming bytes beyond
+the rights it can return. Ordinary `read()` discards rights only when it
+consumes their carrier range. `MSG_PEEK` fallibly duplicates the retained
+references without consuming either bytes or rights, so a short control buffer
+can report `MSG_CTRUNC` repeatedly and a later full receive still obtains the
+descriptors.
+
+An AF_UNIX datagram stores payload, source address, and retained rights in one
+queue entry. Publication is atomic: a full queue or failed descriptor retain
+publishes neither bytes nor rights. Zero-length datagrams remain real messages,
+so `recvmsg()` with no iovecs can consume one and receive its control records;
+ordinary `read(fd, ..., 0)` remains a no-op and cannot consume it. Addressed
+and connected same-process AF_UNIX datagram sends use this same ownership
+path. Cross-process AF_UNIX datagram routing remains unsupported as documented
+in the networking section.
 
 ABI 40 removes the required `host_fcntl_lock` import and the public
 `SharedLockTable` host-package export. This is an intentional host API break:
@@ -280,7 +787,7 @@ Offset  Size   Field
 8       48     arguments (6 × i64)
 56      8      return_value (i64)
 64      4      errno_value (i32)
-68      4      reserved/padding
+68      4      request_flags (u32; cancellation and signal-delivery authority)
 72      65536  data_buffer (for path strings, read/write buffers, etc.)
 ```
 
@@ -291,6 +798,19 @@ public variadic `syscall()` entry point still reads 32-bit `long` arguments,
 because that is the C calling convention its callers use. The non-variadic
 `__syscallN` and cancellation-point `__syscall_cp` paths widen values to 64
 bits before calling the glue layer so offsets and lengths are not truncated.
+Both paths overwrite `request_flags` before publishing the atomic status.
+Plain calls write zero; cancellation-point calls use generated flag constants.
+The host captures and clears the field with the request snapshot.
+
+Bits 0 and 1 of `request_flags` identify cancellation points and authorize a
+cancellation wake, respectively. A wake is valid only when both bits are set.
+Bit 2, `REQUEST_FLAG_DEFER_SIGNAL_DELIVERY`, identifies a completion consumed
+by process-worker JavaScript instead of libc's post-syscall signal trampoline.
+The kernel leaves caught signals pending on those completions. Fork, clone,
+continuation allocation/cleanup, and staged-loader VFS/memory requests set the
+bit and clear it before returning control to guest code. Libc then uses an
+ordinary side-effect-free `getpid` syscall as the signal-delivery checkpoint
+after the owning import returns. Ordinary guest syscalls clear the flags word.
 
 ### Status Values
 
@@ -306,14 +826,17 @@ bits before calling the glue layer so offsets and lengths are not truncated.
 ```
 Process Worker                          Kernel Worker (host)
 ─────────────                          ────────────────────
-1. Write syscall_number + args
+1. Write syscall_number + args + request_flags
    to channel
 2. Atomics.store(status, SYSCALL_READY)
 3. Atomics.notify(status)
 4. Atomics.wait(status, SYSCALL_READY)
    ─── blocks ───                      5. Atomics.waitAsync detects change
-                                        6. Read channel: syscall + args
-                                        7. Call kernel_handle_channel(offset, pid)
+                                        6. Read channel: syscall + args;
+                                           capture and clear request_flags
+                                        7. Call kernel_handle_channel(offset,
+                                                                      capacity, pid,
+                                                                      retry_token=0)
                                         8. Kernel reads args from process memory
                                         9. Kernel executes syscall logic
                                        10. Kernel writes return_value + errno
@@ -324,17 +847,99 @@ Process Worker                          Kernel Worker (host)
 15. Return to caller
 ```
 
+Steps 10–15 normally include caught-signal publication and libc handler
+dispatch. A request marked `REQUEST_FLAG_DEFER_SIGNAL_DELIVERY` deliberately
+omits that publication because JavaScript owns its completion and has no
+signal-handler trampoline. The next explicit guest checkpoint performs the
+same delivery only after the host import has returned; this avoids both signal
+loss and a reentrant host-to-Wasm callback.
+
 ### Blocking Syscalls and Retry
 
-Some syscalls (read from empty pipe, accept on socket, poll with timeout) cannot complete immediately. The kernel returns `-EAGAIN` and the host enters a retry loop:
+Some syscalls (read from an empty pipe, accept on a socket, or poll with a
+timeout) cannot complete immediately. The process worker remains blocked in
+`Atomics.wait` while the host parks and wakes its pending channel through
+`Atomics.waitAsync`.
 
-1. Kernel returns EAGAIN for the syscall
-2. Host checks if the fd is non-blocking (`kernel_is_fd_nonblock`). If so, return EAGAIN to the process.
-3. If blocking: host stores RETRY status, keeps the channel pending
-4. When another process writes to the pipe / connects to the socket / etc., the host wakes the pending channel
-5. Host re-calls `kernel_handle_channel` — if still EAGAIN, continue waiting; if result ready, write RESULT_READY and notify
+The retry boundary also owns caught-signal delivery. Once Rust dequeues a
+caught signal into `CH_SIG`, that channel is the signal record's sole owner
+until libc runs the handler and clears it. If the syscall would otherwise
+remain blocked, the host captures and releases its exact retry authority, then
+completes the channel with `EINTR` before it can park again. Public nonblocking
+`EAGAIN` outcomes remain `EAGAIN`. After the handler, libc resubmits only its
+reviewed zero-progress `SA_RESTART` allowlist, including `accept`, `accept4`,
+and `ppoll`. POSIX does not give `ppoll` the `pselect`
+restart-versus-`EINTR` exception, so it remains on that list; Kandelo
+deliberately selects `EINTR` for `pselect`, whose `SA_RESTART` outcome POSIX
+makes implementation-defined. Other timeout-bearing operations remain out
+when a new submission would reset their deadline. The shared
+`CentralizedKernelWorker` state machine provides the same behavior in Node.js
+and browser hosts.
 
-This mechanism is critical: the process worker blocks on `Atomics.wait` while the host manages async retry via `Atomics.waitAsync`.
+For a signal-mask-swapping `ppoll` or `pselect`, each TID owns a LIFO stack of
+wait contexts. Each context records both the caller's saved mask and the
+replacement mask. An active frame accepts repeated kernel attempts. Once a
+signal interrupts it, reuse additionally requires the current caught-handler
+depth to have fallen below the handler depth recorded by that frame. A wait
+entered by a catcher is therefore distinct from the interrupted outer wait
+even if the catcher explicitly restores the replacement mask and reuses
+identical syscall arguments. The signal record restores the mask current at
+delivery, so a restarted `ppoll` keeps its replacement mask continuously
+installed between attempts. Terminal success restores the top context in the
+normal syscall path; final `EINTR` uses the existing exact-task host-wait
+cancellation after the catcher returns. That cancellation also finalizes
+`sigsuspend` and `pause` after their catcher.
+
+The Wasm setjmp runtime records caught-handler depth in every jump environment.
+Both `longjmp` and `siglongjmp` first retire every abandoned handler and its
+paired wait context through the existing `rt_sigreturn` and exact-task
+cancellation operations. `siglongjmp` then applies the jump environment's
+saved mask when requested; an application using `longjmp` from a catcher must
+restore its signal mask as POSIX requires. An ordinary jump outside a catcher
+has no handler context to retire. A finite restarted `ppoll`
+keeps its absolute deadline in the libc call frame rather than host channel
+state. Nested calls and later same-argument calls therefore have independent
+deadlines, while catcher time is still charged to the interrupted call. The
+internal timestamp request defers caught-signal publication so a signal
+already pending at ppoll entry still interrupts ppoll itself.
+
+For a represented retry, the initial call uses token zero. Before returning
+`EAGAIN`, Rust pins any exact target required by that operation. The host
+detaches the complete request, queries the authoritative token, and either
+completes a nonblocking call or parks the immutable snapshot. A later wake
+rebuilds scratch from that snapshot and calls the kernel with the same token;
+it does not reread caller memory or follow a reused fd. Terminal completion or
+cancellation consumes the token before the host drops its snapshot.
+
+This mechanism is critical: asynchronous scheduling never owns a live scratch
+view, while Rust retains the resource identity and lifetime needed by the next
+synchronous entry.
+
+Rust serializes readiness and lifecycle changes through one packed wake-event
+stream. `crates/shared::wakeup_event_wire` owns its five-byte record layout and
+every reason bit; generated bindings give the shared Node/browser host the
+same offsets and values. The host owns a complete copied batch before acting
+on any event, because process stop/continue handling can synchronously reenter
+kernel operations that reuse scratch. The same generated ABI surface owns the
+`poll` and `epoll` event bits and `fd_set` sizing used by host-side readiness
+marshalling, so the host does not restate those values.
+
+For pipe-readable and pipe-writable records, the host first retries ordinary
+`poll()` and `ppoll()` channels whose captured kernel pipe index matches the
+event. A signal-mask-swapping `ppoll()` remains parked for the existing
+signal-safe grace period, and the broad fallback still covers wait classes
+without an exact pipe identity, including `select()` and `pselect6()`.
+Host-originated pipe bridge notifications use the same target-before-fallback
+order in the shared Node.js/browser runtime.
+
+Finite `poll()`/`ppoll()` and `select()`/`pselect6()` waits retain one absolute
+deadline from their first attempt. Targeted readiness events, broad wakeups,
+and safety retries use the remaining duration instead of restarting the
+caller's timeout. Except for descriptor-free `select()` used only as a sleep,
+expiry performs one zero-time kernel pass. That pass makes the final readiness
+decision, clears readiness outputs, and restores any temporary `ppoll()` or
+`pselect6()` signal mask. The host rebuilds the pass from its immutable request
+snapshot; it does not overwrite the caller's original timeout or arguments.
 
 `F_SETLKW` uses the same parking mechanism with a narrower wake contract. A
 conflict returns the internal retry result, and the host parks only that lock
@@ -398,8 +1003,11 @@ exit trap from an older ABI 42 kernel, then applies the same authoritative
 `Exited` state check. The compatibility path does not treat a trap alone as
 successful exit.
 Signal dequeue, child-wait polling, write-limit preparation, and guest SysV
-shared-memory attachment also carry the exact live caller TID explicitly;
-lifecycle cleanup uses separately named process-level SysV exports.
+shared-memory attachment also carry the exact live caller TID explicitly.
+Rust owns each attachment's address, segment id, size, and lifetime; the shared
+host retains versioned snapshots only to reconcile bytes between distinct
+process memories. Fork-child materialization and lifecycle cleanup use
+separately named process-level SysV exports.
 Fork and spawn carry the channel's caller TID to the kernel, which validates it
 as a live task belonging to the parent. That value selects caller-specific
 state; it is never a candidate child identity. Clone validates the bound caller
@@ -426,28 +1034,89 @@ channel, fork-context, and clear-TID metadata.
 ### fork()
 
 Fork uses the in-tree `wasm-fork-instrument` tool to snapshot the Wasm call stack (details in [fork-instrumentation.md](fork-instrumentation.md)):
+Before compilation or worker launch, Node and browser hosts validate the
+embedded ABI version, linked-frame contract, control exports, and ABI 43
+`FORK_CAP_ACTIVATION_STATE_SAFE` claim. Pthread and side-module entry points
+apply the same policy.
 
-1. User calls `fork()` → musl → `__syscall(SYS_clone, ...)` → glue
-2. The host's `kernel_fork` override maps a root continuation chunk and calls `wpk_fork_unwind_begin(root + chunk_header_size)`. The tool-injected export sets state to UNWINDING and snapshots every mutable scalar global (including `__tls_base` and `__stack_pointer`) into the root's fixed prefix.
-3. The return-to-caller chain unwinds. After each fork-path call returns in the unwinding state, the caller asks the host to reserve a complete node before its first frame write; its postamble commits the node only after all scalar and reference state has been saved. The host maps additional page-rounded chunks when necessary.
-4. Once `_start` returns (top-of-stack), the host sends SYS_FORK through the channel.
-5. Kernel's `kernel_fork_process(parent_pid, caller_tid)` validates the caller,
+1. User calls `fork()` → musl → `kernel_fork(FORK)`; the process adapter
+   validates the ABI-owned mode.
+2. The host's `kernel_fork(mode)` override begins one process continuation
+   transaction. It captures activation catalogs and module state, maps each
+   participating activation's root continuation chunk, and calls
+   `wpk_fork_unwind_begin(root + chunk_header_size)`. The tool-injected export
+   sets state to UNWINDING and snapshots every mutable scalar global (including
+   `__tls_base` and `__stack_pointer`) into that activation's fixed prefix.
+3. The return-to-caller chain unwinds. After each fork-path call returns in the
+   unwinding state, the caller asks the host to reserve a complete node before
+   its first frame write; its postamble commits the node only after all
+   activation-owned scalar state has been saved. Live references are interned
+   into one process recipe graph and the frame stores only its reference-vector
+   ordinal. The host maps additional page-rounded chunks when necessary. No
+   accepted frame names a module-instance reference-table slot.
+4. Once `_start` returns (top-of-stack), the host sends `SYS_FORK` through the
+   channel for the captured ordinary-fork mode.
+5. Kernel's `kernel_fork_process(parent_pid, caller_tid, mode)` validates the caller,
    allocates the child PID from the global task-ID sequence, and copies process
    metadata and the fd/OFD tables. The child receives the calling task's blocked
    signal mask, while inherited stateful descriptors retain references to their
    existing kernel-global backings.
-6. Host copies the parent's linear memory, including continuation mappings, to a new `WebAssembly.Memory` and spawns a child worker. Kernel mmap metadata is inherited with the process state.
-7. Child worker attaches to the copied root and calls `wpk_fork_rewind_begin(buf)` — the tool's export restores all saved globals. The host then calls `setupChannelBase(...)` (which reads the now-correct `__tls_base`) and invokes `_start`.
+6. Host copies the parent's linear memory, including continuation mappings, to
+   a new `WebAssembly.Memory` and spawns a child worker. Kernel mmap metadata is
+   inherited with the process state. The worker creates a fresh Wasm instance:
+   mutable globals, tables, exception references, and Store-owned references
+   are not copied and are not evidence that replay state survived.
+7. The child validates the copied KFRV/KFMS arena, instantiates every required
+   main/side activation, materializes static roots, typed GC objects, opaque
+   owner tokens, and complete exceptions, then restores reference globals,
+   table contents/length, and segment lifetime. Only after those owners are
+   ready does it call `wpk_fork_rewind_begin(buf)` to restore scalar globals.
+   Typed object allocation also installs the child's own weak constructor
+   provenance, so a later nested fork encodes child-local objects rather than
+   depending on identities retained from the original parent.
+   The host then calls `setupChannelBase(...)` (which reads the now-correct
+   `__tls_base`) and invokes the selected main or pthread resume root.
 8. Each instrumented function's preamble requests and validates the next committed frame, then re-enters the call site where the parent was interrupted. Eventually it reaches the `kernel_fork` call site in the leaf function, which returns 0. Libc then refreshes the copied pthread TID from the kernel through `set_tid_address` before returning to user code.
 9. `wpk_fork_rewind_end` resets state; parent and child independently unmap their continuation chunks; fork returns 0 in child and the child PID in the parent.
+
+ABI 43 also lets libc call `kernel_fork(VFORK)`, which remains the same exact
+mode through unwind/replay and reaches `SYS_VFORK`, the kernel export, and the
+child Worker initialization record. After admission and kernel child creation,
+that mode branches away from ordinary step 6: the host retains an exact alias
+to the parent's existing `Shared WebAssembly.Memory` and launches a separate
+child Worker without constructing or copying a child process Memory. The child
+receives its own syscall channel, host-reserved replay workspace, Wasm
+instance, loader, and continuation controller. Only the calling parent thread
+stays parked in the asynchronous fork import; sibling pthreads continue to
+run.
+
+The kernel marks the vfork child's independent Process record. Nested fork,
+vfork, spawn, and pthread clone fail with `EAGAIN`; failed exec preserves the
+marker and returns to the child. Successful exec commit, `_exit()`, and exact
+signal/trap teardown quiesce the borrowing Worker, release its alias and
+workspace, and resume the exact parked caller once. An ambiguous forced Worker
+termination cannot prove that shared-memory access stopped, so the host
+contains the complete address-space owner group rather than resuming the
+parent unsafely. Ordinary fork continues to use only the ordinary mode and the
+independent-memory path above.
+
+After vfork capture seals, its process Worker reports two exact workspace
+requirements in host-intercepted syscall arguments: all active activation
+prefixes after alignment and the reference/exception codec scratch high-water.
+The centralized host accepts one four-page control slot and returns `EAGAIN`
+before allocating the kernel child when the 61,440-byte prefix region or
+65,536-byte scratch page would be exceeded. This preflight is connected, but
+the workspace belongs to host-reserved control storage rather than a second
+process address space.
 
 Step 6 is materially different from native virtual-memory fork. Native
 kernels normally map the parent's pages into the child with copy-on-write
 ownership, so unchanged pages are not copied. Browser WebAssembly exposes no
 equivalent operation for cloning a `WebAssembly.Memory`. Kandelo must allocate
-a fresh memory and copy the parent's complete current address space before the
-child runs. A child that immediately calls `exec()` therefore pays for both
-the discarded fork copy and the replacement program memory. Kandelo's
+a fresh memory and copy the parent's complete current address space before an
+ordinary fork child runs. An ordinary fork child that immediately calls
+`exec()` therefore pays for both the discarded fork copy and the replacement
+program memory. Kandelo's
 non-forking `posix_spawn()` path avoids that copy when the caller can describe
 the requested child entirely with spawn actions and attributes.
 
@@ -469,17 +1138,34 @@ errno. A negative `SYS_FORK` result after step 4 instead uses the complete
 parent rewind. These resource failures create no child and leave the parent in
 `NORMAL`, able to continue or retry `fork()`.
 
-The instrumentation handles LLVM's new-EH `try_table` output correctly, including fork from inside C++ catch handlers. See [fork-instrumentation.md](fork-instrumentation.md) for the current guarantees and documented unanticipated Wasm-level carve-outs.
+ABI 43 reconstructs reference locals/parameters/carryovers, concrete and
+abstract GC objects, mutable reference globals, and complete exception state.
+Statically tagged scalar `Catch`/`CatchRef` arms keep their exact selector and
+maximum live operand tuple in activation-owned bytes; rewind rethrows the tag
+so the original clause creates a fresh instance-local exnref.
+Reference/vector payloads, `CatchAll`/`CatchAllRef`, JSTag ingress, and modern
+C++ cleanup exnrefs use the complete-exception recipe and likewise re-enter the
+original Wasm handler without parent-instance scratch. See
+[fork-instrumentation.md](fork-instrumentation.md) for the ownership formats
+and cleanup ordering.
 
-A fork reached directly inside an instrumented dlopened side module uses two
-ordered state machines and two linked continuations: side then main during unwind, main
-then side during rewind. Versioned fork-instrument capability metadata lets
-marker-present artifacts prove their role. ABI 16 defines the historical
+A fork reached inside instrumented dlopened side modules uses one process-wide
+event journal plus one linked continuation per active module. Unwind records
+the exact leaf-to-root activation/function order; fresh-child replay consumes
+the reverse order. This supports nested main-to-side-to-side stacks without
+assuming that the main activation is present at the leaf. Versioned
+fork-instrument capability metadata lets
+marker-present artifacts prove their role, and ABI 43 additionally requires
+`FORK_CAP_ACTIVATION_STATE_SAFE` before launch. ABI 16 defines the historical
 five-export fallback, while ABI 18 and later require role claims and reject
 stale call-graph artifacts. The ABI 36 epoch combines that contract with
 side-module replay state and concurrent pthread-fork arbitration. Dlopen replay
 records both the parent's memory base and exact table base, including null gaps
-left by failed loads. TLS-bearing side modules additionally record their live,
+left by failed loads, then re-instantiates each side module's static element
+initialization at that exact base in the child. The process table journal then
+applies later loader and guest `table.set`/`fill`/`copy`/`init`/`grow` effects
+through typed recipes after every referenced activation catalog is present.
+TLS-bearing side modules additionally record their live,
 positive `__tls_base`. A child restores the pointer-width-correct mutable
 global without calling `__wasm_init_tls`, because copied memory already holds
 the parent's live TLS bytes and reinitialization would reset C++ unwinder state
@@ -487,66 +1173,148 @@ and application `thread_local` values. C++ exceptions and longjmp use one
 canonical pointer-width tag identity across the main image and all side
 modules; a main-exported tag wins over the host-created fallback.
 
+ABI 43 libc drives dynamic initialization as a non-reentrant transaction.
+`__wasm_dlopen_prepare` validates and owns a private transaction without
+entering guest code. Each `__wasm_dlopen_next` advances host-only compilation
+and instantiation of the `DT_NEEDED` closure as needed. Instrumentation has
+removed the native start section and converted active segments plus the
+original start function into an explicit bootstrap, so
+`new WebAssembly.Instance(...)` cannot run that guest path inside `next`.
+The call publishes one canonical initializer table entry and returns; libc
+then calls that entry as ordinary Wasm before requesting the next stage. A
+constructor that calls `fork()` thus has a normal instrumentable Wasm call
+chain rather than a suspended host import beneath it. Before reachability
+analysis, the instrumenter turns the
+historical two-, four-, and five-argument private `__wasm_dlopen` function
+imports into in-place local adapters that prepare the transaction and
+tail-call an ordinary Wasm driver for their initializers. This retains all
+aliases of the old function without retaining the reentrant host boundary.
+The two-argument form retains its original
+`dlopen:<buffer-address>:<byte-length>` identity. ABI 43 artifact and launch
+validation require both the legacy import and the completed artifact's native
+start section to be absent. Valid source modules may contain a start section;
+instrumentation transfers it to `wpk_fork_module_bootstrap` before admission.
+The lower-level `DynamicLinker.dlopenSync()` driver remains available to
+standalone embedders, but it is not a process import.
+
+The kernel cannot replace the process-local half of this protocol. It can own
+path authorization, loader scheduling, and replay policy, but the kernel
+Worker cannot inject Store-local functions, exception tags, or GC identities
+into the process Worker's tables. Core Wasm cannot instantiate arbitrary
+runtime module bytes itself, and those JavaScript references are not
+structured-clonable between Workers. A kernel syscall would therefore need a
+request/yield/resume protocol that still delegates instantiation and catalog
+registration to the process Worker; it would relocate, rather than remove, the
+boundary. In particular, using the generic syscall import instead of a named
+loader import would not itself change reentrancy. The contract is that every
+process-local host operation returns before guest initialization begins.
+
+The process worker can issue VFS and mapping requests while a staged loader
+import is active, but those JavaScript-owned channel completions cannot invoke
+libc's signal trampoline. They set
+`REQUEST_FLAG_DEFER_SIGNAL_DELIVERY`, leaving any caught signal in the kernel,
+and libc performs an ordinary checkpoint after every `prepare`/`next` return
+and after `dlclose`. Constructors still begin only after both the import and
+checkpoint return, so signal delivery and dynamic initialization add no
+host-to-Wasm reentrancy.
+
 The dlopen replay list and its atomic pthread-fork lock live in a transient,
 host-private control record. The same host build writes and reads that record
 during one process lifetime; guest code and persisted artifacts never
 interpret it. Changing that record's size is therefore not a guest ABI change,
 while the public ABI snapshot/classifier remains authoritative.
 
-Pthread workers have separate Wasm instances, tables, and exception tags, none
-of which can be structured-cloned from the process worker. `dlopen()` from a
-pthread therefore fails normally with `dlerror()`. If the process has loaded a
-side module, `fork()` from a pthread returns `ENOTSUP`; an atomic process lock
-excludes a racing main-worker dlopen across the pthread's archive check,
-unwind, memory copy, and parent rewind. The supported
-direct-main-to-side boundary and the remaining opaque cross-side callback
-limitation are specified in
-[fork-instrumentation.md](fork-instrumentation.md#fork-from-a-dlopened-side-module).
+Pthread workers have separate Wasm instances, tables, and exception tags, so
+no JavaScript reference is structured-cloned from the process worker. Each
+pthread owns a local dynamic-linker replica. Under the process archive lock it
+compares a shared generation, instantiates missing side modules at their exact
+bases, registers fresh function/exception catalogs, and applies the typed table
+journal. The same mechanism supports `dlopen`/`dlsym` from a pthread and fork
+from a pthread after dynamic loading; the fork child reconstructs only the
+calling thread but receives the process module/table recipe state. The
+generation fast path avoids reparsing or reinstantiating unchanged state.
 
-Fork and non-forking spawn still copy each process's fd and OFD metadata. The
-objects whose mutable state must remain identical across those copies use
-refcounted kernel-global backings: eventfd counters, timerfd timers, signalfd
-masks, memfd contents and cursors, and procfs snapshots and cursors. Pipes,
-sockets, PTYs, terminal devices, and listener queues likewise retain their
-existing global object identity. Ordinary regular-file OFD metadata, including
-the seek position and status flags, is still copied rather than shared; that
-remaining POSIX gap is tracked in [posix-status.md](posix-status.md) and
-[future-improvements.md](future-improvements.md).
+Fork and non-forking spawn copy each process's descriptor-table shell while
+retaining one exact mutable OFD state object. Offset, status flags, and async
+owner therefore remain shared across the copies. Directory host iterators are
+process-local because their handles and pending records cannot be owned by two
+processes safely; a shared position generation makes a stale iterator close,
+reopen, and replay at the authoritative cookie before its next read. Stateful
+objects additionally retain their kernel-global backings: eventfd counters,
+timerfd timers, signalfd masks, memfd contents and cursors, procfs snapshots,
+pipes, sockets, PTYs, terminal devices, and listener queues.
 
 ### exec()
 
-1. User calls `execve(path, argv, envp)` → kernel returns exec request to host
-2. Host resolves `path` to a Wasm binary (via filesystem or program map)
-3. The host compiles the replacement module, checks its ABI marker, and preallocates its fresh `WebAssembly.Memory` before the irreversible transition. It also validates a 4 MiB combined argv/environment representation (UTF-8 strings, NUL terminators, and caller-width pointer entries, with each string limited to one 64 KiB scratch transfer); oversized metadata returns `E2BIG` to the old image. After commit, argv and environment entries cross into the kernel one at a time, so the fixed host scratch allocation is never overrun and an empty environment explicitly clears the prior one.
-4. The host calls `kernel_exec_prepare(pid, caller_tid)` while the old image is
-   still live. The kernel validates that the exact caller is a live task owned
-   by the process and applies deferred `posix_spawn` file actions; any failure
-   returns before the address-space transition. The host then publishes and
-   flushes writable tracked mappings while the old image is still live.
-   Tracked shared file mappings hold a lifetime-stable host handle independent
-   of the guest fd, so closing the original fd does not by itself prevent
-   writeback. A failed flush leaves the old mapping trackers and SysV
-   attachments in place.
-   At the commit boundary, `kernel_exec_setup_for_thread(pid, caller_tid)`
-   closes CLOEXEC fds and directory streams and resets image-specific state
-   **in place**, including the program break (POSIX/Linux behavior — the prior
-   program's brk does not carry over). Exact kernel objects
-   behind surviving descriptors are never fork-cloned or reconstructed: socket
-   queues, eventfd/epoll/timerfd/signalfd state, memfd contents, procfs
-   snapshots, terminal input, and OFD identity therefore survive without
-   refcount churn. After that commit the host forgets the old mapping trackers
-   and detaches SysV segments. The calling pthread's signal mask and directed
-   queue become the process state; sibling workers terminate.
-   `alarm()`/`ITIMER_REAL` survives, while `timer_create()` timers are deleted.
-   The conformance gaps in [posix-status.md](posix-status.md) still apply,
-   notably numeric-fd epoll tracking and main-thread-directed signal
-   attribution.
-5. Host terminates the old process and sibling-thread workers, then re-registers the PID with the preallocated memory
-6. Host parses the new binary's `__heap_base` export and calls `kernel_set_brk_base(pid, __heap_base)` so `brk(0)` returns a value above the new program's data + stack region
-7. Host spawns a new worker with the new program binary
-8. New program starts from `_start` with the given argv/envp
+1. A process calls `execve()` or `execveat()`. The centralized kernel worker
+   reads the pathname arguments and derives a `diagnosticPath`. For
+   `AT_EMPTY_PATH` and relative `execveat()`, path getters may help produce that
+   display string. The host may pass it to `preparePath()` as a lazy VFS
+   materialization hint. Both uses are diagnostic-only: neither the string, a
+   path getter, nor a host program map authorizes the executable.
+2. While the old image is live, the same kernel-worker entry calls
+   `kernel_exec_target_prepare(pid, caller_tid, dirfd, path, flags)`. Rust
+   validates the exact caller and `execveat()` lookup rules, resolves the
+   executable from authoritative process/VFS state, checks execute capability,
+   and returns an owner-bound one-shot token retaining the exact open file
+   description (OFD), bytes, and security metadata.
+3. The host queries `kernel_exec_target_size` and copies the retained target
+   through bounded `kernel_exec_target_read` calls into only the explicitly
+   lent destination. A precommit failure calls `kernel_exec_target_cancel`
+   exactly once. For a shebang, the script token is canceled, `argv` is
+   rewritten once, and a separately prepared interpreter becomes the sole
+   final target; script set-ID state is never applied.
+4. The host validates the exact bytes' ABI marker and fork-artifact policy,
+   compiles those same bytes, validates the 4 MiB combined argv/environment
+   representation and generated vector caps, and completes replacement
+   `WebAssembly.Memory` allocation/layout preflight before the irreversible
+   transition. Each metadata string must also fit the current 64 KiB transfer.
+   Any failure here cancels the token and returns to the old image.
+5. Still before commit, the host publishes and flushes writable tracked
+   mappings. A failed flush leaves the old mapping trackers and SysV
+   attachments in place. Tracked shared mappings retain a lifetime-stable host
+   handle independent of the guest fd, so closing that fd does not prevent
+   writeback.
+6. The asynchronous host callback receives target-derived data but no token or
+   commit closure, and returns a bounded replacement-memory launch plan. The
+   shared launcher then invokes
+   `kernel_exec_commit(pid, caller_tid, opaque_target)` synchronously through
+   the same centralized entry and starts the returned postcommit action before
+   yielding. Rust consumes the token,
+   revalidates the final retained target's exact handle, byte length, bytes,
+   metadata, and execute capability, then atomically commits the in-place
+   process transition. Commit closes CLOEXEC fds and directory streams, resets
+   image-specific state including the program break, and preserves the exact
+   kernel objects behind surviving descriptors without pathname re-resolution.
+   The diagnostic-only path and caller-provided bytes are never commit
+   authority.
+7. After commit, the host retires the old process and sibling-thread workers,
+   detaches old SysV mappings, installs the preflighted replacement memory, and
+   starts the replacement Worker. Failure to construct or initialize that
+   Worker is fatal because the committed old image cannot return. The host
+   parses the replacement's `__heap_base` and registers it so `brk(0)` starts
+   above the new data and stack layout. `alarm()`/`ITIMER_REAL` survives, while
+   `timer_create()` timers are deleted. The remaining descriptor, signal, and
+   mapping gaps are tracked in [posix-status.md](posix-status.md).
+8. The new program starts from `_start` with the given argv/envp. The process
+   worker holds one immutable UTF-8 snapshot for the complete launch. The CRT
+   first queries every entry length with zero destination capacity, verifies
+   the generated count, per-entry, and caller-width aggregate limits, and then
+   obtains an exact-lifetime anonymous mapping through the ordinary syscall
+   channel. Each second call carries that entry's exact capacity and must
+   either copy the complete unchanged bytes or return `ERANGE`; allocation
+   failure, an invalid guest pointer/range, or a query/copy mismatch traps
+   before `_start_c` publishes any argv or environment pointer. The mapping
+   remains live because libc's `argv` and `environ` retain those pointers.
+   This is guest-process memory, not kernel scratch, and it avoids reserving a
+   4 MiB worst-case static buffer in every program.
 
-Step 6 is required: without it, `MemoryManager` falls back to a hardcoded 16MB `INITIAL_BRK`, which can land *inside* the stack region of programs whose data section pushes `__heap_base` above 16MB (mariadbd's `__heap_base ≈ 16.32MB`). Heap allocations there collide with shadow-stack frames during C++ static initialization, corrupting memory and hanging in `__wasm_call_ctors`.
+The `__heap_base` registration in step 7 is required: without it,
+`MemoryManager` falls back to a hardcoded 16MB `INITIAL_BRK`, which can land
+*inside* the stack region of programs whose data section pushes `__heap_base`
+above 16MB (mariadbd's `__heap_base ≈ 16.32MB`). Heap allocations there collide
+with shadow-stack frames during C++ static initialization, corrupting memory
+and hanging in `__wasm_call_ctors`.
 
 ### posix_spawn() (non-forking)
 
@@ -564,13 +1332,53 @@ caller now take.
    `docs/plans/2026-05-04-non-forking-posix-spawn-design.md` Section 1.
 2. Host (`handleSpawn` in `kernel-worker.ts`) reads the blob from
    caller memory, validates argv + envp against the same 4 MiB `ARG_MAX`
-   contract as `execve`, copies it to bounded kernel-owned scratch, and calls
-   `kernel_spawn_process(parent_pid, caller_tid, blob_ptr, blob_len)`. Ordinary
-   blobs reuse the channel-sized syscall scratch. A blob above that size
-   lazily allocates one whole-spawn buffer and reuses it for the kernel
-   lifetime. Keeping both paths kernel-owned prevents a large environment or
-   file-action list from overwriting adjacent Rust heap state; the explicit
-   whole-blob ceiling also bounds data that `ARG_MAX` does not count.
+   contract as `execve`, and performs a side-effect-free candidate lookup and
+   compilation. Shared trusted code immediately snapshots the resolver bytes
+   and compiles the candidate module from that exact isolated snapshot; a
+   separately callback-supplied module is ignored. That preflight prevents
+   failed PATH probes from creating a child, but it is never executable
+   authority. The host then copies the blob to bounded kernel-owned scratch.
+   Each argv/environment entry also has the separate 64 KiB
+   process-metadata transport limit described for `execve`; this
+   implementation ceiling is not `ARG_MAX`.
+   Ordinary blobs reuse the channel-sized syscall region and call
+   `kernel_spawn_process(parent_pid, caller_tid, blob_ptr, blob_len)` while its
+   lease is active. A blob above that size begins an exclusive tokenized
+   reservation in the Rust-owned reusable region, reads its pointer and
+   capacity, copies under a lease, and commits with
+   `kernel_spawn_reserved_process(parent_pid, caller_tid, token, blob_len)`.
+   Begin and the pointer/capacity queries are nonblocking and report
+   contention as `EBUSY` or zero. Commit consumes the token before parsing.
+   After every successful begin, the host unconditionally calls cancellation
+   from a `finally` block, including setup and copy failures. Cancellation
+   success releases an unconsumed matching token; `EINVAL` means the
+   never-reused token was already consumed or is stale. For the just-issued
+   in-contract token after commit, consumption is expected. Commit and
+   cancellation use a blocking critical section that performs no host imports,
+   so both return with a definitive token state.
+   Host-side reentry protection rejects a second large spawn while the first
+   reservation is active. Keeping both paths kernel-owned prevents a
+   large environment or file-action list from overwriting adjacent Rust heap
+   state. Merely fitting within the total kernel `Memory` would not establish
+   this allocation-ownership fact. The explicit 8,417,320-byte whole-blob
+   ceiling also bounds file-action data that `ARG_MAX` does not count. The
+   advertised 4 MiB `ARG_MAX`,
+   4,096-byte `PATH_MAX`, and 1,024-entry `IOV_MAX` live in
+   `crates/shared/src/lib.rs::platform_limits` and generate the Rust,
+   TypeScript, and musl consumers. The same platform module owns the defensive
+   4,096-entry process-startup caps; the spawn parser aliases them rather than
+   repeating the values. The separate authoritative spawn wire
+   contract generates the four-byte string-offset width; every offset in the
+   40-byte header and 28-byte action record; the `OPEN`, `CLOSE`, `DUP2`,
+   `CHDIR`, and `FCHDIR` opcodes; musl's complete transported spawn-attribute
+   byte; the shared argv and environment entry caps; 1,024 actions; and the
+   complete ceiling. Transporting an attribute bit does not claim its
+   behavior is implemented: the kernel currently interprets `RESETIDS`,
+   `SETPGROUP`, `SETSIGDEF`, `SETSIGMASK`, and `SETSID`; `SETSCHEDPARAM`,
+   `SETSCHEDULER`, and `USEVFORK` remain unimplemented. The
+   argv/environment count caps defend the admitted process representation and
+   are not additional POSIX `ARG_MAX` promises. The action count remains a
+   spawn-parser limit.
 3. Kernel parses the blob (`crates/kernel/src/spawn.rs::parse_blob` —
    the trust boundary; bails with EINVAL on any malformed offset), validates
    `caller_tid` as a live task belonging to the parent, and calls
@@ -578,23 +1386,53 @@ caller now take.
 4. `spawn_child_for_caller` allocates the child PID from the same global task-ID sequence
    used by top-level creation, fork, and clone, then consumes that opaque
    allocation token to build the child Process plus selective inheritance from the
-   parent (uid/gid/pgid/sid/cwd/umask/rlimits, the calling task's blocked
+   parent (the complete real/effective/saved uid/gid and supplementary-group
+   record, pgid/sid/cwd/umask/rlimits, the calling task's blocked
    signal mask, fd_table + ofd_table +
    sockets via the `bump_inherited_resource_refcounts` helper that
-   fork also uses), applies attrs in POSIX order (SETSID → SETPGROUP →
-   SETSIGMASK → SETSIGDEF), so `POSIX_SPAWN_SETSIGMASK` replaces the
-   inherited caller mask, then applies file actions in forward
-   order. Failure on any action rolls back via `remove_process`.
-5. The kernel returns the allocated pid via `pid_out_ptr` in caller
-   memory. The host's `onSpawn` callback (Node:
+   fork also uses), applies attrs in POSIX order (RESETIDS → SETSID →
+   SETPGROUP → SETSIGMASK → SETSIGDEF), so `POSIX_SPAWN_RESETIDS` changes only
+   effective IDs to the inherited real IDs and `POSIX_SPAWN_SETSIGMASK`
+   replaces the inherited caller mask, then applies file actions once in
+   forward order. Failure on any action rolls back via `remove_process`.
+5. In the resulting child CWD, descriptor, and credential state, the host asks
+   Rust to prepare an exact executable target. The host reads those retained
+   bytes and reuses only the module compiled from the isolated preflight
+   snapshot, and only when every byte is identical; otherwise it recompiles
+   the final bytes. The opaque child-bound token is
+   committed with `kernel_spawn_exec_commit`, which evaluates set-ID and
+   trusted-mount/nosuid policy and closes remaining `FD_CLOEXEC` descriptors.
+   Any prepare, read, policy, compile, or commit failure cancels the exact
+   target and removes the pending child and its host mirrors without replaying
+   file actions or mutating the parent.
+6. Only after exact commit does the host's `onSpawn` callback (Node:
    `host/src/node-kernel-worker-entry.ts::handlePosixSpawn`; Browser:
    `host/src/browser-kernel-worker-entry.ts::handlePosixSpawn`)
-   receives the authoritative parent pid, resolves the program bytes,
-   instantiates a fresh Worker for the child, and publishes a parented
-   `proc_event` spawn notification. The host registers the Worker's memory and
-   channels against the Process the kernel already inserted; registration does
-   not create or select the child identity. Its initialization metadata carries
-   the same parent pid.
+   receive the target-derived bytes and module and instantiate a fresh Worker
+   for the child. Until that callback succeeds, the kernel marks the child as
+   an unpublished spawn transaction: it remains signalable and retains real
+   exit status, but sibling `waitpid()` calls cannot select or reap it.
+   Completion calls the parent-bound `kernel_publish_spawn_child` exactly once
+   in the same serialized kernel entry that publishes the spawn result, then
+   wakes queued waiters. A child that died during asynchronous target work is
+   therefore returned successfully to `posix_spawn()` and becomes a waitable
+   zombie only after its PID is published. Ordinary failure removes the hidden
+   child and wakes parked waiters to observe `ECHILD`. Existing target commit
+   cannot provide this seam because it runs before Worker launch, while
+   `kernel_remove_process` is failure-only; neither can atomically change wait
+   visibility and return the final disposition after host launch.
+   If the parent exits before publication, Rust returns `ECHILD` while retaining
+   exact ownership of the hidden child so the same rollback seam removes it
+   once; an absent child instead returns `ESRCH` and is never removed again.
+   The detached completion enters the serialized kernel directly rather than
+   through the parent's mailbox registration, so parent Worker teardown cannot
+   drop that final removal. Parent memory is written only after the completion
+   separately proves that the exact channel registration is still active.
+   The host registers the Worker's memory and channels against the Process the
+   kernel already inserted; registration does not create or select the child
+   identity. The kernel returns the allocated pid via `pid_out_ptr` only after
+   this launch and publication succeed. A parented `proc_event` spawn
+   notification remains a separate observer effect.
 
 PATH search lives in libc (`posix_spawnp.c`); the kernel never sees
 PATH-relative names.
@@ -782,10 +1620,17 @@ dated Node, Chromium, Firefox, and WebKit measurements and their limitations
 are recorded in
 [`docs/measurements/2026-07-28-process-memory-retirement-rss.md`](measurements/2026-07-28-process-memory-retirement-rss.md).
 
-Fork children synchronously acquire an exactly sized fresh backing and copy the
-parent's current memory length before the first asynchronous host operation.
-This preserves the syscall-time snapshot even if a sibling thread execs while
-Worker launch waits for retirement admission. The child copies the current
+Fork first checks live-memory capacity and the retired-generation count and
+byte thresholds synchronously. If retired debt is already saturated, fork
+returns `EAGAIN` before constructing or copying another address space. It
+cannot wait asynchronously at that point: a sibling thread could mutate the
+parent memory while the caller yielded, changing the purported syscall-time
+snapshot.
+
+Once admitted, the host synchronously acquires an exactly sized fresh backing
+and copies the parent's current memory length before the first asynchronous
+host operation. This preserves the syscall-time snapshot even if a sibling
+thread execs while the child Worker is prepared. The child copies the current
 length, not the configured maximum, because `memory.size()` and the accessible
 address-space boundary are part of the state fork duplicates. Pthread workers
 share the owning process memory plus that process's thread allocator. A fork
@@ -819,9 +1664,18 @@ The kernel's hardcoded `INITIAL_BRK` (16MB) is a fallback for binaries that don'
 
 ### Mount table model
 
-`VirtualPlatformIO` (`host/src/vfs/vfs.ts`) is the kernel's filesystem router on both hosts. It is configured with a list of `MountConfig { mountPoint, backend, readonly? }` entries and dispatches every path-based syscall to the backend whose mount prefix is the longest match. Cross-mount operations (`rename`, `link`) are rejected with `EXDEV`. A path that matches no mount returns `ENOENT`. `MountConfig.readonly` is currently advisory — write enforcement and full POSIX permission checks are deferred to a follow-up PR.
+`VirtualPlatformIO` (`host/src/vfs/vfs.ts`) is the kernel's filesystem router on both hosts. It is configured with a list of `MountConfig { mountPoint, backend, readonly?, setIdCapability? }` entries and dispatches every path-based syscall to the backend whose mount prefix is the longest match. Cross-mount operations (`rename`, `link`) are rejected with `EXDEV`. A path that matches no mount returns `ENOENT`. Omitted set-ID capability means `nosuid`. A `trusted-root-product` request is accepted only when the mount is explicitly read-only and its backend carries the module-private immutable-product brand; no public structural field or configuration value can mint that brand. Malformed or unbranded requests fail during mount construction. The internal factory snapshots a quiescent, fully materialized product tree into privately owned storage before branding its null-prototype read-only facade. The private snapshot uses captured, frozen copies of the complete `MemoryFileSystem` and SharedFS operation prototypes; operation helpers and thresholds are module-lexical rather than mutable class properties; and generated open, access, pathconf, file-mode, and directory-type tables are captured as numeric scalars before they can participate in the trusted path. Each caller-supplied open flag or access mode is normalized and validated once, and only that same primitive integer is used for the guard and delegated operation. Retaining the producer tree, reaching its TypeScript-private backing reflectively, replacing either producer-reachable prototype or class property, mutating a generated table, or supplying a stateful coercible flag therefore grants no post-admission authority over trusted bytes, metadata, or read results. `VirtualPlatformIO.statfs` then authoritatively sets `ST_NOSUID` for nosuid mounts or clears it for the admitted trusted mount, regardless of the backend's raw flags. `MountConfig.readonly` remains advisory for ordinary mounts, while the trusted product facade rejects every guest-visible mutation with `EROFS`.
 
 `FileSystemBackend` (`host/src/vfs/types.ts`) is the per-mount interface (open/read/write/stat/readdir/symlink/...). Two backends are in use today:
+
+Guest-visible VFS numbers come from `crates/shared` and are recorded under
+`vfs_metadata` in `abi/snapshot.json`. The generated
+`host/src/generated/abi.ts` bindings supply open and `*at` flags, descriptor
+and `fcntl` values, access modes, statfs flags, file modes, directory-entry
+types, and seek constants to shared Node/browser host adapters. This records Kandelo's existing
+guest ABI; it does not establish a general Linux-compatibility contract. The
+standalone OPFS worker and the vendored SharedFS implementation retain local
+copies at their explicit entry-point and vendor boundaries.
 
 - **`MemoryFileSystem`** (`vfs/memory-fs.ts`) — SAB-backed in-memory FS. Used for the rootfs image mount and for browser scratch mounts. Honours uid/gid/mode stored on each inode.
 - **`HostFileSystem`** (`vfs/host-fs.ts`) — proxies a Node host directory. Used for Node scratch mounts. Normalises stat uid/gid to `0/0` so the user's macOS/Linux uid does not leak into the kernel. Native creation receives the requested file/directory mode, but later guest `chmod`/`chown` updates are held in VFS metadata only; the Node host never applies native ownership changes.
@@ -844,6 +1698,18 @@ image state and allocate browser scratch filesystems or create Node scratch
 directories. A forged later image therefore cannot leave an earlier mount
 normalized or a host scratch directory published as a partial boot.
 
+Node may also seed a strict descendant of an existing scratch mount through
+`NodeKernelHost.sessionSeedTrees`. The worker authenticates the complete root
+image first, copies every quiescent source tree into opaque staging paths using
+new regular-file inodes, and renames all completed trees into the private
+session before constructing any session-owned `HostFileSystem` backend or
+publishing `ready`. Symlinks, special files, overlapping destinations, image
+destinations, and destinations shadowed by another mount are rejected. Guest
+changes are never written back to the source. This copy boundary matters
+because access to a path somewhere inside a Node process is not proof that
+Kandelo exclusively owns the inode; exact append and related stateful
+operations require a lifecycle-owned backing, not merely a reachable one.
+
 | Mount point | Source | Browser backend | Node backend |
 |-------------|--------|-----------------|--------------|
 | `/`         | image (advisory readonly) | awaited verified `MemoryFileSystem` restore | awaited verified `MemoryFileSystem` restore |
@@ -851,11 +1717,40 @@ normalized or a host scratch directory published as a partial boot.
 | `/var/tmp`  | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 | `/var/log`  | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 | `/var/run`  | scratch (ephemeral) | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
-| `/home/user`| scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
+| `/home/maker` | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 | `/root`     | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 | `/srv`      | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 
-The browser host layers two additional, host-specific mounts on top: `/dev/shm` (the POSIX-semaphore SAB shared with main-thread surfaces) and `/dev` (`DeviceFileSystem` for `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`, `/dev/pts/N`). Sticky bits, the uid 1000 owner on `/home/user`, mode `0700` on `/root`, etc. are baked into the rootfs image at build time per the canonical `MANIFEST` and reflected honestly through the `MemoryFileSystem` inode metadata. Scratch mounts on Node start owned by uid/gid 0 because `HostFileSystem` synthesises them.
+Every mount in the default layout is `nosuid` on both hosts, including the
+advisory-read-only root image. Reviewed privileged-program policy can copy an
+authenticated regular bottle member into a fresh root-owned inode on a
+separate privately branded immutable product backend. Admission covers the
+complete three-program group, rejects links and writable aliases, and compares
+each `(dev, ino, generation)` identity with every inode in the writable bottle
+tree before publication. The candidate is created on a fresh private
+`SharedArrayBuffer`, and its one-shot construction proof is consumed before
+admission; no second wrapper over writable backing can enter the production
+path even though `structuredClone()` can create distinct wrappers for one
+shared data block. The record value `trusted-root-product` names that policy;
+it is not authority. Product review authority is a non-serializable opaque
+capability minted only at internal product/build boundaries. Mount authority
+still comes only from the private backend brand and resolved read-only mount
+capability. Ordinary image,
+scratch, host, OPFS, device, and user-provided backends cannot acquire that
+capability from public fields, prototypes, or configuration.
+
+The browser peer consumes a published product through
+`BrowserKernel.initFromPublishedPrivilegedProgramProduct`. The publisher keeps
+a private serialized `/usr/bin` projection behind the exact publication
+object; neither mutation of the public build artifact nor a structurally
+similar object can retrieve it. The browser main thread copies that private
+projection into its worker-only init message, where the VFS-owning worker
+verifies the image, snapshots it behind a new immutable-product backend, and
+mounts it read-only at `/usr/bin` over the ordinary `nosuid` root image. Public
+boot descriptors, shared URLs, and `initFromImage` have no field that can
+request this mount or supply its authority.
+
+The browser host layers two additional, host-specific mounts on top: `/dev/shm` (the POSIX-semaphore SAB shared with main-thread surfaces) and `/dev` (`DeviceFileSystem` for `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`, `/dev/pts/N`). Sticky bits, the uid 1000 owner on `/home/maker`, mode `0700` on `/root`, etc. are baked into the rootfs image at build time per the canonical `MANIFEST` and reflected honestly through the `MemoryFileSystem` inode metadata. Scratch mounts on Node start owned by uid/gid 0 because `HostFileSystem` synthesises them.
 
 ### rootfs image as the source of truth
 
@@ -867,11 +1762,63 @@ default configuration/trust lookup reads the same image bytes that `cat` would.
 The kernel synthesizes `/etc/mtab` because it reports live mount state; it does
 not synthesize static `/etc` policy or trust data.
 
+The rootfs data defines the canonical interactive image account as
+`maker` at uid/gid 1000 with home `/home/maker`. Its password hash, wheel
+membership, sudoers policy, and login messages are ordinary rootfs files.
+Reviewed `login`, `sudo-lite`, and `sudo` artifacts are published through the
+privileged-program path before that account is product-ready; the rootfs does
+not synthesize those executables or a preauthenticated shell.
+
+The reusable browser session layer owns one lifecycle record per logical PTY.
+Under the current browser trust boundary, the live loader selects that policy
+only after all configured assets have been staged and both of these checks
+succeed: the final writable image has the one exact canonical `maker` account,
+password, wheel, sudoers, and autologin records; and a separately
+publisher-admitted product supplies the same exact `login` bytes through
+`BrowserKernel.initFromPublishedPrivilegedProgramProduct`. Image origin is not
+part of this decision, so an otherwise third-party image remains eligible when
+its final state is canonical and it is paired with that separate product.
+Image/config/descriptor data alone cannot construct the private product
+capability. This describes the repository's present safety boundary; the
+larger trust model for deliberately user-selected images remains an open
+architecture question rather than a policy settled by terminal sessions.
+
+For an eligible image/product pair, the first process is root-authorized
+`login -p -f maker`; every later process is ordinary `login -p`. UI handles
+only attach listeners to that record, while the terminal tab's explicit close
+action, kernel detach, reboot, and destruction invalidate its process
+generation, terminate the active process, and cancel pending restart. Short
+processes back off from 250 milliseconds to a five-second cap, a process that
+survives two seconds resets the delay, and a replacement launch failure remains
+visible in the terminal without automatic retry. Password authentication stays
+in the guest program and final VFS credentials rather than React.
+
 VFS images can also carry image-level metadata outside the guest file tree. The first declaration is `kernelAbi`, an exact `ABI_VERSION` requirement for images that carry ABI-bound Wasm programs. `MemoryFileSystem.readImageMetadata(image)` reads this declaration without materialising the filesystem, and `MemoryFileSystem.assertImageKernelAbi(image, abi)` validates it for callers that already know the running kernel ABI. Legacy/data-only images may omit the field.
 
 ### Node host
 
-`NodeKernelHost` accepts `rootfsImage: "default" | ArrayBuffer | Uint8Array | undefined`. With `"default"` (the path used by the vitest suite), the worker reads `host/wasm/rootfs.vfs`, applies `DEFAULT_MOUNT_SPEC` via `resolveForNode`, and constructs a `VirtualPlatformIO` for the kernel. The image supplies both `/etc/ssl/cert.pem` and `/etc/ssl/certs/ca-certificates.crt`; Node does not silently add them to caller-supplied images. Without a rootfs image, the worker falls back to raw `NodePlatformIO` (every host path reachable) — kept for legacy callers that haven't migrated.
+`NodeKernelHost` accepts
+`rootfsImage: "default" | ArrayBuffer | Uint8Array | undefined`. With
+`"default"` (the path used by the vitest suite), the worker reads
+`host/wasm/rootfs.vfs`, applies `DEFAULT_MOUNT_SPEC` via the private-session
+Node resolver, and constructs a `VirtualPlatformIO` for the kernel. The image
+supplies both `/etc/ssl/cert.pem` and
+`/etc/ssl/certs/ca-certificates.crt`; Node does not silently add them to
+caller-supplied images. Optional `sessionSeedTrees` require a rootfs image and
+absolute host source paths; each source must remain quiescent until `init()`
+resolves. Graceful destroy, initialization failure, and fatal worker paths
+attempt to remove the complete session tree; abrupt process termination
+cannot run that best-effort hook, so cleanup is not the ownership proof. New
+private inodes and publication-before-`ready` establish ownership.
+
+`execPrograms` and `execProgramBytes` are spawn-preflight inputs only. They
+cannot authorize `execve` or `execveat`, whose executable bytes and metadata
+come exclusively from the exact retained target prepared through the calling
+process's kernel VFS state. Tests that name an exec fixture stage it into an
+explicit test rootfs before boot. A virtual spawn-preflight path cannot use
+both mapping sources. Without a rootfs image, the worker falls back to raw
+`NodePlatformIO` (every host path reachable) — kept for legacy callers that
+have not migrated.
 
 ### Browser host
 
@@ -915,8 +1862,9 @@ concrete files rather than copying aliases into independent inodes. A rebase
 walks one quiescent source snapshot, so a peer rename cannot mix lazy paths
 from one namespace state with bytes from another.
 
-`registerLazyTree` is the format-neutral grouped form used by schema-4 package
-layers. Its serialized metadata adds a closed decoder/media type, immutable
+`registerLazyTree` is the format-neutral grouped form used by package layers
+and other archive-backed consumers. Its serialized metadata adds a closed
+decoder/media type, immutable
 digest and byte count, transport locations, activation policy, complete source
 and guest inventory, and regular-inode groups. Existing
 `registerLazyArchiveFromEntries` ZIP consumers remain supported. Registration
@@ -927,6 +1875,15 @@ the POSIX result. Every member is decoded and checked before an
 identity-guarded batch replacement, so failure leaves all pending regular
 inodes unchanged. Hard-link aliases use one SharedFS inode and retain that
 identity when the lazy metadata is transferred or saved in an image.
+
+Generic TAR+gzip trees use the closed `tar-gzip-v1` decoder. A tree may carry
+a bounded `archive-byte-transforms-v1` plan containing exact source-byte
+assertions, ordered literal byte-replacement recipes, and declared input and
+output SHA-256/length identities. The VFS interprets no producer callbacks,
+regular expressions, scripts, or package policy. It applies the same plan to
+eager and lazy decoding, verifies both identities, and publishes only after
+the complete transformed tree passes validation. Plan fields participate in
+atomic-tree identity and survive image restore and filesystem rebase.
 
 Several first-use trees can opt into one fail-closed activation cohort. Each
 tree registers a producer-stable member name, and the producer must explicitly
@@ -969,7 +1926,7 @@ Content, activation, mount prefix, inventory, and pending inode metadata reject
 unknown fields, unsafe or oversized strings, count/size disagreement, and
 missing, cyclic, or cross-inode hard-link targets before a group is installed.
 Serialized groups carry an explicit `kandelo-deferred-tree-v1` (derived ZIP),
-`kandelo-deferred-tree-v2` (original bottle), or
+`kandelo-deferred-tree-v2` (complete source inventory), or
 `kandelo-legacy-zip-v1` kind. A sealed multi-tree cohort uses
 `kandelo-deferred-tree-v3`, regardless of decoder, because its atomic membership
 is an additional closed wire contract; v1/v2 records cannot quietly acquire
@@ -1149,6 +2106,13 @@ There are two consumption patterns for VFS images, depending on whether the demo
 
 Build scripts are in `images/vfs/scripts/` and share common helpers (`vfs-image-helpers.ts` for VFS write primitives, `dinit-image-helpers.ts` for the dinit binary + standard rootfs files + service-file rendering). To build all VFS images, use the per-demo scripts above or the convenience targets in `run.sh` (e.g., `./run.sh build python-vfs`). The repaired Python and Erlang recipes remain disabled legacy compatibility paths: staging does not publish them, and they are not Homebrew distribution units.
 
+The Node counterparts for the service-supervised demos consume these same
+images. They authenticate imported lazy-tree seals, apply transient runtime
+configuration to a private restored image, give the resulting root filesystem
+to `NodeKernelHost`, and start `/sbin/dinit` with `spawnFromVfs()`. They do not
+reconstruct the browser service graph by launching loose package binaries from
+the host filesystem.
+
 **Binary format:**
 
 `MemoryFileSystem.saveImage()` returns the raw VFS image below. The image
@@ -1206,8 +2170,12 @@ extension reports the original datagram length while copying no more than the
 supplied buffer. Without `MSG_PEEK`, the datagram is consumed and any uncopied
 suffix is discarded; with `MSG_PEEK`, it remains queued. This receive-side
 truncation does not weaken AF_UNIX send reliability or its full-queue
-backpressure contract above. The current `recvmsg()` wrapper does not populate
-output `msg_flags`, so it cannot report output `MSG_TRUNC` there.
+backpressure contract above. `recvmsg()` independently reports output
+`MSG_TRUNC` whenever the datagram was longer than the supplied payload
+capacity; the input flag controls only whether its return value is the copied
+prefix length or the full datagram length. `MSG_CMSG_CLOEXEC` installs every
+received descriptor with `FD_CLOEXEC`, and that reflected flag is published
+atomically with the returned control data.
 
 Loopback addresses are scoped to one Kandelo machine, but not every socket path is machine-wide yet. IPv4 and IPv6 loopback TCP and AF_UNIX streams have explicit cross-process paths. Current in-kernel IPv4/IPv6 loopback datagrams, AF_UNIX datagrams, and IPv4 multicast delivery are confined to the sending process. Forked sockets retain their kernel-local bind reservations and local lookup targets, but host-backed UDP endpoint registrations are not yet shared or transferred between processes. AF_INET6 represents `sockaddr_in6`, supports `::`/`::1`, and models dual-stack wildcard stream-port reservation, but it has no external or virtual-network IPv6 transport and no IPv6 multicast delivery. AF_INET6 datagrams therefore report `IPV6_V6ONLY=1`; disabling it fails until dual-stack datagram routing exists.
 
@@ -1315,29 +2283,153 @@ Single-open semantics match real Linux mousedev exclusive-grab. The host inverts
 
 ## Audio output (`/dev/dsp`)
 
-The kernel exposes an OSS-style `/dev/dsp` character device so unmodified Linux audio software (fbDOOM, etc.) can play sound through a browser `AudioContext`. Direction is reversed vs. mouse: PCM samples flow **process → kernel → host**.
+Kandelo separates the Unix compatibility API from its physical audio
+transport. OSS is the first frontend; the state below it is an
+implementation-neutral, playback-only PCM stream rather than an ALSA or Web
+Audio model.
 
+```text
+ SDL2 / SDL3 / Unix application
+       open, ioctl, write, poll
+                 |
+          OSS /dev/dsp frontend
+                 |
+        Kandelo PCM stream core
+   format + geometry + monotonic cursors
+                 |
+       shared bounded PCM transport
+          /                    \
+ Browser AudioWorklet      Node clocked sink
 ```
-   user process                       kernel-worker / kernel                browser main thread
-   ────────────                       ──────────────────────                ───────────────────────
-   open("/dev/dsp", O_WRONLY)
-   ioctl SNDCTL_DSP_SPEED          ──►  audio::set_sample_rate
-   ioctl SNDCTL_DSP_STEREO         ──►  audio::set_channels
-   ioctl SNDCTL_DSP_SETFMT          ──►  audio::set_format (must be S16_LE)
-   write(fd, pcm, len)             ──►  audio::write_pcm
-                                       push bytes to 256 KiB ring
-                                       (drop oldest whole frames on overflow)
-                                                                ◄────────────  setInterval(50ms): drainAudio(maxBytes)
-                                       kernel_drain_audio(out_ptr, out_len)
-                                       drain whole-frame bytes from ring
-                                                                ─────────────►  decode S16 → Float32
-                                                                                schedule AudioBufferSourceNode
-                                                                                on AudioContext clock
-```
 
-The kernel does **not** mix or synthesize audio. The user program (DOOM's mixer in `i_kernel_sound.c` plus the OPL2 software synth in `i_oplmusic.c` + `opl/opl3.c` for music) does that work and writes interleaved S16_LE frames; the kernel ring is just transport. fbDOOM's mixer produces 1280 stereo frames per ~28 ms game tic — slightly more than the 1260 frames the AudioContext consumes per tic — so the ring stays full enough to hide drain jitter, and the drop-oldest-on-overflow policy keeps memory bounded.
+The PCM core owns requested and actual format, sample rate and channel count;
+fragment geometry; 64-bit monotonic producer, consumer, and discard positions;
+started, stopped, and draining state; reset generation; underrun count; and
+write/drain waiters. The OSS frontend translates fixed-width `soundcard.h`
+arguments into that model. No Web Audio concept appears in the guest ABI.
+Configuration fields are published under a configuring flag and become visible
+as one generation. Finishing a drain also advances the generation, so host
+resamplers reset their phase before the next logical playback stream.
 
-Single-open semantics match the typical OSS exclusive-grab model. Ownership is released on `close` of the last `/dev/dsp` fd or on process exit; a surviving non-CLOEXEC fd retains both ownership and queued samples across exec. The ring is flushed when ownership is released so a successor open hears silence rather than the previous owner's tail. ABI version bumped 7 → 8 to register the new `kernel_drain_audio(i64, i32) -> i32` export plus the three readouts `kernel_audio_sample_rate / channels / pending`. The OSS ioctl encodings live in `crates/shared/src/lib.rs::oss`.
+There is one physical/default playback device and, initially, one exclusive
+stream. Ownership belongs to the open file description (OFD): `dup()` and
+descriptors inherited through `fork()` share the stream, while a distinct
+`open()` returns `EBUSY`. A surviving non-`CLOEXEC` descriptor keeps the same
+stream across `exec`. There is no kernel mixer, routing policy, capture stream,
+or concatenation of data from unrelated writers.
+
+The transport reserves one 64 KiB PCM ring plus a 128-byte fixed-width control
+header in the kernel's shared Wasm memory: 65,664 bytes total. The active queue is latency-sized:
+four 1024-byte fragments (4096 bytes) by default, and `SETFRAGMENT` may select
+another geometry up to the 64 KiB physical bound. At the default 48 kHz,
+stereo S16 configuration, 4096 bytes are about 21.3 ms of queued audio. The
+host receives a descriptor for this same memory; it does not allocate a second
+persistent PCM ring. Browser-engine Float32 render buffers are transient.
+
+Writes form one continuous byte stream and never discard previously queued
+audio. Bytes from an incomplete PCM frame remain queued across later writes.
+`SYNC` or final OFD close pads only a terminal incomplete frame with format
+silence (`0x80` for U8 and zero for S16_LE/S16_BE) before draining; `POST` does
+not fabricate padding. A frame-aligned blocking request no larger than the
+active capacity waits until the entire request can be accepted, which covers
+normal SDL periods. If an earlier unaligned write has left the ring ending in
+an incomplete frame, a later blocking write may return the prefix that
+completes that frame rather than deadlocking behind bytes the audio clock
+cannot yet consume. Larger requests and nonblocking requests may likewise
+report partial progress; a nonblocking write with no capacity returns
+`EAGAIN`.
+`poll(POLLOUT)` becomes ready only when at least one fragment is free. When the
+host audio clock advances the consumer position, the kernel reconciles the
+monotonic cursors and wakes writers, poll waiters, and drain waiters. Running
+out of queued frames is an underrun and produces silence; it does not move the
+producer or overwrite old frames.
+
+An explicit final `close()` drains to the audio clock before releasing the
+exclusive device. `SNDCTL_DSP_RESET` is the explicit discard operation for an
+application that does not want to drain. Exit, `CLOEXEC`, and forced teardown
+cannot keep a syscall alive, so a queued tail becomes an orphan drain: the
+device remains exclusive until the host consumes that tail, then releases
+automatically. This prevents a final buffer from being truncated or joined to
+the next opener's stream. Caught signals interrupt a blocked write, `SYNC`, or
+explicit final close through the ordinary `EINTR` path. `SA_RESTART` restarts
+write and `SYNC`; an interrupted close leaves the descriptor valid for an
+explicit caller retry.
+
+In browsers an `AudioWorkletProcessor` consumes and converts PCM in render
+quanta (normally 128 output frames), advances the shared consumer cursor, and
+emits silence on underrun. The main thread only creates/resumes the
+`AudioContext` and connects the node; it is not the audio clock and does not
+drain through a timer. At 48 kHz one render quantum is about 2.7 ms; browser
+device `baseLatency`/`outputLatency` is additional and platform-dependent.
+After machine teardown drains the shared ring, a running browser context is
+suspended to hand already-rendered blocks to the output device, then retained
+for a bounded base/output-latency-plus-quantum settlement interval before it is
+closed. Teardown never resumes a suspended or interrupted context, preserving
+the browser's user-activation boundary.
+Node uses the same cursor and wakeup contract with a wall-clock-paced null sink
+for headless execution, so callbacks cannot run at CPU speed. Its running tick
+follows the negotiated fragment duration, preserves fractional-frame drift,
+and falls back to 10 ms polling while idle.
+
+A permanent sink failure is distinct from recoverable browser suspension. The
+host latches a shared fatal flag and wakes the kernel: writes and drains fail
+with `EIO`, polling reports `POLLERR`, and final close discards the unplayable
+tail, releases ownership, and returns `EIO`. If the failure arrives after an
+implicit close has orphaned a tail, reconciliation discards that unplayable
+tail and releases ownership; no descriptor remains to receive `EIO`. A
+suspended or interrupted `AudioContext` does not set that flag; it stops the
+consumer clock and applies normal queue backpressure until resume.
+
+The AudioWorklet/shared-ring transport builds on the exploration in PR #698,
+while deliberately omitting that experiment's ALSA state machine and
+`/dev/snd` ABI. OSS command details are documented in
+[POSIX status](posix-status.md#oss-playback-compatibility).
+
+### Measured PCM footprint
+
+The following historical measurements were recorded for the original PR #947
+implementation. They compare its clean starting commit
+`92d5940f7e0107514ea12ab813d395257678377e` with that branch's ABI 40 result.
+They establish the footprint of the audio architecture in that source branch;
+they are not a current ABI 43 artifact-size claim. The ABI 43 integration must
+be remeasured after its package artifacts are finalized. Compressed sizes use
+`zstd -19`; JavaScript totals cover the same ten existing ESM entry files on
+both sides, with the new worklet shown separately.
+
+| Artifact | Before raw / compressed | After raw / compressed | Delta |
+|---|---:|---:|---:|
+| Kernel Wasm | 532,311 / 143,233 B | 612,569 / 147,554 B | +80,258 / +4,321 B |
+| Host ESM entries | 3,711,675 / 634,586 B | 3,771,682 / 644,709 B | +60,007 / +10,123 B |
+| PCM AudioWorklet | absent | 8,863 / 2,462 B | new |
+| `audiotest.wasm` | 30,180 / 13,092 B | 30,365 / 13,183 B | +185 / +91 B |
+| `dsp_signal_test.wasm` | absent | 32,355 / 13,890 B | new |
+
+The upstream integration artifacts measure as follows:
+
+| Artifact | Raw / compressed (`zstd -19`) |
+|---|---:|
+| SDL2 2.32.10 `libSDL2.a` | 1,192,694 / 322,705 B |
+| SDL3 3.4.10 `libSDL3.a` | 1,970,446 / 513,937 B |
+| SDL2 DSP fixture Wasm | 1,573,606 / 391,329 B |
+| SDL3 DSP fixture Wasm | 2,470,559 / 521,937 B |
+| SDL_mixer 2.8.2 `playwave` Wasm | 1,800,045 / 434,029 B |
+
+The installed regular-file totals are 3,864,113 bytes for the SDL2 package,
+5,545,678 bytes for SDL3, and approximately 4.04 MB for the combined fixture
+package. Deterministically staged package archives measured approximately
+0.66 MB, 0.95 MB, and 0.70 MB respectively after `zstd -19`; exact published
+archives vary slightly with provenance strings. The test-only `playwave`
+package contains one 1,800,045-byte regular file; its compressed size is the
+434,029-byte value above.
+
+Steady-state transport memory is the fixed 65,664-byte allocation described
+above, versus a growable old queue whose maximum occupancy was 262,144 PCM
+bytes. The default active queue is 21.333 ms. A normal 128-frame browser
+quantum adds 2.667 ms at 48 kHz, for 24 ms of configured software buffering
+before platform-specific `baseLatency` and `outputLatency`. Node advances in
+the default 256-frame (5.333 ms) fragment cadence against the same 21.333 ms
+bounded queue. These are footprint and configured-buffer measurements, not a
+throughput or performance claim.
 
 ## Signal Subsystem
 
@@ -1345,11 +2437,38 @@ Signals are delivered at syscall boundaries. When a process has a pending signal
 
 1. `kernel_handle_channel` checks for pending signals after each syscall
 2. If a signal handler is registered (SA_SIGINFO), the kernel writes signal info to the channel's data buffer
-3. The glue reads the signal info and calls the handler on the process's stack (or alternate signal stack if SA_ONSTACK)
-4. After the handler returns, the glue calls `SYS_RT_SIGRETURN` to restore the signal mask
+3. The glue reads the signal info and calls the handler on the process's stack
+   (or alternate signal stack if SA_ONSTACK). For a ppoll/pselect replacement
+   mask, handler setup starts from that current replacement mask, then adds
+   sa_mask and the delivered signal.
+4. After the handler returns, the glue calls `SYS_RT_SIGRETURN` for
+   handler-frame state and applies the signal record's exact old mask with
+   `SYS_SIGPROCMASK`. For ppoll/pselect, the record contains the mask current
+   at delivery while Rust retains a per-TID LIFO wait context. A restarted
+   ppoll therefore preserves its replacement mask through resubmission;
+   terminal completion or exact post-handler cancellation restores the
+   pre-wait mask once. Nested ppoll, pselect, sigsuspend, and pause calls own
+   separate contexts. `sigsuspend` and `pause` use that same exact
+   post-handler cancellation to restore their pre-wait mask before returning
+   `EINTR`. `longjmp` and `siglongjmp` retire abandoned handler/wait contexts;
+   `siglongjmp` then applies the jump buffer's saved mask when requested.
 5. If the signal interrupted a blocking syscall, EINTR is returned
 
+The host distinguishes the kernel's internal `EAGAIN` retry sentinel from a
+completed nonblocking `EAGAIN`. When a caught signal is prepared while an
+internal retry is still blocked, the host publishes `EINTR` without discarding
+the prepared `CH_SIG` record. Libc runs the handler before deciding whether
+`SA_RESTART` permits resubmitting that syscall.
+
 Features: RT signal queuing with `si_value`, cross-process `kill`/`killpg`, `sigaltstack` with shadow stack swap, `sigsuspend`, `sigtimedwait`, `setitimer`/`alarm` via host timers.
+
+The exception is a channel request whose completion is owned by
+process-worker JavaScript. Its ABI 43 request flag tells the kernel not to
+dequeue a caught signal into a record that JavaScript cannot consume. The
+signal remains pending until libc makes the explicit ordinary-channel
+checkpoint after `fork`, `clone`, or a staged-loader import. Handler invocation
+and `rt_sigreturn` therefore still occur on the guest side after the host
+import has returned.
 
 Exact-thread delivery never degrades into process-wide delivery. `tkill` and
 `tgkill` resolve their target against retained live task records in the calling
@@ -1367,10 +2486,21 @@ not synthesize timer signals or fall back to a process-wide notification.
 
 Musl implements POSIX `SIGEV_THREAD` with a detached helper pthread and an
 exact-thread kernel notification. The helper retains the callback and native
-`union sigval` locally—including a full-width wasm64 pointer—while the
-kernel-facing `sigevent` remains a fixed four-i32 wire. Direct wasm64 signal
-notifications therefore remain limited to `sival_int` until that wire is
-extended in a later ABI.
+`union sigval` locally. Other timer notifications stage the complete generated
+caller-native 64-byte `sigevent`; the process pointer width selects the union
+width, and Rust retains its raw bits in a `u64`. The fixed channel delivery
+record also carries eight raw value bytes. A wasm64 recipient therefore
+receives the complete `sival_ptr`; a wasm32 recipient receives the
+target-native low 32 bits. The glue reconstructs the recipient's native union
+with `memcpy` so it does not select the wrong union member.
+
+POSIX message-queue notification uses the same Rust-owned signal metadata.
+Registration accepts a `SIGEV_SIGNAL` notification only when
+`1 <= signo < NSIG`; the first message sent to an empty queue queues one
+`SI_MESGQ` record with the registering process's complete `union sigval` and
+authoritative sender credentials. The small host drain record is only a wake
+instruction—the host does not synthesize a second signal or replace the queued
+metadata.
 
 Normal exit status and signal termination are stored separately. `_exit()` and
 `exit_group()` retain the low eight status bits, including values 128 through
@@ -1598,12 +2728,12 @@ For schema, resolver behavior, and the build-script contract see [docs/package-m
 
 ## Test Suites
 
-| Suite | Command | What it tests |
-|-------|---------|---------------|
-| Cargo | `cargo test -p kandelo --target aarch64-apple-darwin --lib` | Kernel unit tests (610+) |
-| Vitest | `cd host && npx vitest run` | Host integration tests (227+) — runs real Wasm programs |
-| libc-test | `scripts/run-libc-tests.sh` | musl libc conformance (C standard library) |
-| POSIX | `scripts/run-posix-tests.sh` | Open POSIX Test Suite (POSIX API conformance) |
-| Sortix | `scripts/run-sortix-tests.sh --all` | Sortix os-test suite (4817+ tests, most comprehensive) |
-
-All five suites must pass with 0 unexpected failures before merging changes.
+Validation always runs through `scripts/dev-shell.sh`. Kernel, host, ABI,
+libc, Open POSIX, Sortix, fork-instrument, and real-browser suites prove
+different contracts; there is no fixed short list whose success establishes
+every change. Use the CI-shaped commands and change-to-suite matrix in
+[`docs/agent-guidance/validation.md`](agent-guidance/validation.md), including
+generated-file/snapshot checks for ABI-adjacent work and real Chromium
+evidence for shared browser runtime changes. Report exact commands, counts,
+unexpected failures, skipped suites, and environmental blocks rather than
+using a narrow passing suite as a broad readiness claim.

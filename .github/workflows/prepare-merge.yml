@@ -1695,6 +1695,10 @@ jobs:
       - name: Test binary materialization flow
         if: env.BINARY_MATERIALIZATION_CHANGED == 'true' && env.EXACT_ABI_STAGING_APPLICABLE != 'true'
         run: |
+          # WHY: artifact-guard integration tests query the ABI 43 binary
+          # contract inventory. This source-only job does not download the
+          # package-toolchain artifact, so prepare its host tool explicitly.
+          bash scripts/dev-shell.sh bash scripts/build-fork-instrument-tool.sh
           bash scripts/dev-shell.sh npx --prefix host vitest run --root . tests/package-system
 
   test-suite-early:
@@ -1720,11 +1724,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - suite: cargo-kernel
-            label: cargo-kernel
-          - suite: fork-instrument
-            label: fork-instrument
+          - suite: cargo-workspace
+            label: cargo-workspace
+            # Closed-by-default coverage for every workspace crate except
+            # independently gated xtask, including integration-test crates.
+            kernel_only: true
+            submodules: ''
+          - suite: cargo-xtask
+            label: cargo-xtask
+            # Package-system automation needs no prepared package workspace,
+            # but its repository-product inventory validates the exact musl
+            # license bytes declared by developer-kandelo-sdk.
+            kernel_only: false
+            submodules: libc/musl
     env:
+      KERNEL_ONLY: ${{ matrix.kernel_only }}
       KERNEL_CHANGED: ${{ needs.change-scope.outputs.kernel }}
       EXACT_ABI_STAGING_APPLICABLE: ${{ needs.change-scope.outputs.exact_abi_staging_applicable }}
       SUITE: ${{ matrix.suite }}
@@ -1733,7 +1747,8 @@ jobs:
         id: suite
         run: |
           set -euo pipefail
-          if [ "$KERNEL_CHANGED" != "true" ] && \
+          if [ "$KERNEL_ONLY" = "true" ] && \
+             [ "$KERNEL_CHANGED" != "true" ] && \
              [ "$EXACT_ABI_STAGING_APPLICABLE" != "true" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "$SUITE is kernel-only and this diff does not require kernel suites."
@@ -1778,6 +1793,12 @@ jobs:
             echo "::error::Synthetic merge parent mismatch: parents=$parents base=$BASE_SHA head=$PR_HEAD_SHA"
             exit 1
           fi
+
+      - name: Fetch early suite submodule
+        if: steps.suite.outputs.skip != 'true' && matrix.submodules != ''
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: ${{ matrix.submodules }}
 
       - name: Set up Nix
         if: steps.suite.outputs.skip != 'true'

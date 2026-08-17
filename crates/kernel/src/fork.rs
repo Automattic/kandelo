@@ -2,8 +2,8 @@
 //!
 //! The binary format is little-endian and consists of:
 //! - Header (12 bytes): magic, version, total_size
-//! - Scalars (40 bytes): identity, credentials, process group/session, umask,
-//!   nice value, and session-leader state
+//! - Identity, complete credentials, secure-exec state, process group/session,
+//!   umask, nice value, and session-leader state
 //! - Signal state (variable): blocked mask + non-default handlers
 //! - FD table (variable): max_fds, then each open fd entry
 //! - OFD table (variable): each open file description
@@ -20,15 +20,17 @@ extern crate alloc;
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
+use core::mem::size_of;
 use wasm_posix_shared::Errno;
 #[cfg(test)]
 use wasm_posix_shared::fd_flags::FD_CLOEXEC;
 use wasm_posix_shared::fd_flags::FD_CLOFORK;
 
+use crate::credentials::{Credentials, NGROUPS_MAX};
 use crate::fd::{FdEntry, FdTable, OpenFileDescRef};
 use crate::lock::{FileId, KernelFileKind, OfdId};
 use crate::memory::{MappedRegion, MemoryLayoutMetadata, MemoryManager};
-use crate::ofd::{FileType, OfdTable, OpenFileDesc};
+use crate::ofd::{FileType, OfdTable, OpenFileDesc, SharedOfdState};
 use crate::process::{Process, ProcessState};
 use crate::signal::{PerThreadSignalState, RtSigEntry, SignalAction, SignalHandler, SignalState};
 use crate::socket::SocketTable;
@@ -37,10 +39,11 @@ use crate::terminal::{NCCS, TerminalState, WinSize};
 const FORK_MAGIC: u32 = 0x464F524B; // "FORK"
 #[cfg(test)]
 const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
-// v13 preserves the terminal's authoritative foreground process group across
-// fork and the test-only serialized exec format instead of reconstructing it
-// as synthetic PID 1.
-const FORK_VERSION: u32 = 13;
+// This header version is also shared by the cfg(test) exec-state fixture.
+// v15 preserves complete credentials plus the kernel-owned secure-exec marker.
+// Production fork serialization still clears and omits pending directed
+// signals; the exec-state fixture preserves them for replacement tests.
+const FORK_VERSION: u32 = 15;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -257,8 +260,10 @@ fn write_directed_signal_state(
     w.write_u32(count)?;
     for entry in &state.rt_queue {
         w.write_u32(entry.signum)?;
-        w.write_i32(entry.si_value)?;
+        w.write_u64(entry.si_value_bits)?;
         w.write_i32(entry.si_code)?;
+        w.write_u32(entry.sender_pid)?;
+        w.write_u32(entry.sender_uid)?;
         w.write_i32(entry.timer_id.map(|id| id as i32).unwrap_or(-1))?;
     }
     Ok(())
@@ -280,8 +285,10 @@ fn read_directed_signal_state(r: &mut Reader<'_>) -> Result<PerThreadSignalState
         {
             return Err(Errno::EINVAL);
         }
-        let si_value = r.read_i32()?;
+        let si_value_bits = r.read_u64()?;
         let si_code = r.read_i32()?;
+        let sender_pid = r.read_u32()?;
+        let sender_uid = r.read_u32()?;
         let timer_id = match r.read_i32()? {
             -1 => None,
             id if id >= 0 => Some(id as u32),
@@ -289,8 +296,10 @@ fn read_directed_signal_state(r: &mut Reader<'_>) -> Result<PerThreadSignalState
         };
         state.rt_queue.push_back(RtSigEntry {
             signum,
-            si_value,
+            si_value_bits,
             si_code,
+            sender_pid,
+            sender_uid,
             timer_id,
         });
     }
@@ -326,6 +335,70 @@ fn read_bounded_count(r: &mut Reader<'_>, max: usize) -> Result<usize, Errno> {
         return Err(Errno::EINVAL);
     }
     Ok(count)
+}
+
+fn write_credentials_and_secure_exec(w: &mut Writer<'_>, proc: &Process) -> Result<(), Errno> {
+    let credentials = proc.credentials();
+    if credentials.supplementary_groups.len() > NGROUPS_MAX {
+        return Err(Errno::EINVAL);
+    }
+    w.write_u32(credentials.ruid)?;
+    w.write_u32(credentials.euid)?;
+    w.write_u32(credentials.suid)?;
+    w.write_u32(credentials.rgid)?;
+    w.write_u32(credentials.egid)?;
+    w.write_u32(credentials.sgid)?;
+    w.write_u32(credentials.supplementary_groups.len() as u32)?;
+    for group in &credentials.supplementary_groups {
+        w.write_u32(*group)?;
+    }
+    w.write_u32(u32::from(proc.secure_exec))
+}
+
+fn read_credentials_and_secure_exec(r: &mut Reader<'_>) -> Result<(Credentials, bool), Errno> {
+    let ruid = r.read_u32()?;
+    let euid = r.read_u32()?;
+    let suid = r.read_u32()?;
+    let rgid = r.read_u32()?;
+    let egid = r.read_u32()?;
+    let sgid = r.read_u32()?;
+    let group_count = r.read_u32()? as usize;
+    if group_count > NGROUPS_MAX {
+        return Err(Errno::EINVAL);
+    }
+    let group_bytes = group_count
+        .checked_mul(size_of::<u32>())
+        .ok_or(Errno::EINVAL)?;
+    let remaining_required = group_bytes
+        .checked_add(size_of::<u32>())
+        .ok_or(Errno::EINVAL)?;
+    if r.remaining() < remaining_required {
+        return Err(Errno::EINVAL);
+    }
+    let mut supplementary_groups = Vec::new();
+    supplementary_groups
+        .try_reserve_exact(group_count)
+        .map_err(|_| Errno::ENOMEM)?;
+    for _ in 0..group_count {
+        supplementary_groups.push(r.read_u32()?);
+    }
+    let secure_exec = match r.read_u32()? {
+        0 => false,
+        1 => true,
+        _ => return Err(Errno::EINVAL),
+    };
+    Ok((
+        Credentials {
+            ruid,
+            euid,
+            suid,
+            rgid,
+            egid,
+            sgid,
+            supplementary_groups,
+        },
+        secure_exec,
+    ))
 }
 
 fn read_ipv4_addr(r: &mut Reader<'_>) -> Result<[u8; 4], Errno> {
@@ -465,6 +538,7 @@ fn file_type_to_u32(ft: FileType) -> u32 {
         FileType::MemFd => 9,
         FileType::PtyMaster => 10,
         FileType::PtySlave => 11,
+        FileType::PcmPlayback => 12,
     }
 }
 
@@ -482,6 +556,7 @@ fn u32_to_file_type(v: u32) -> Result<FileType, Errno> {
         9 => Ok(FileType::MemFd),
         10 => Ok(FileType::PtyMaster),
         11 => Ok(FileType::PtySlave),
+        12 => Ok(FileType::PcmPlayback),
         _ => Err(Errno::EINVAL),
     }
 }
@@ -564,10 +639,7 @@ const DRI_TAG_RENDER_NODE: u8 = 1;
 const DRI_TAG_CARD: u8 = 2;
 const DRI_TAG_PRIME_BO: u8 = 3;
 
-fn write_dri_fd_state(
-    w: &mut Writer<'_>,
-    dri: &crate::ofd::DriFdState,
-) -> Result<(), Errno> {
+fn write_dri_fd_state(w: &mut Writer<'_>, dri: &crate::ofd::DriFdState) -> Result<(), Errno> {
     w.write_u32(dri.handles.len() as u32)?;
     for (handle, bo_id) in &dri.handles {
         w.write_u32(*handle)?;
@@ -780,13 +852,10 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     let total_size_offset = w.pos;
     w.write_u32(0)?; // placeholder for total_size
 
-    // ── Scalars (40 bytes) ──
+    // ── Identity, credentials, and process scalars ──
     // Write the parent's pid as the child's ppid (child's parent is this process)
     w.write_u32(proc.pid)?;
-    w.write_u32(proc.uid)?;
-    w.write_u32(proc.gid)?;
-    w.write_u32(proc.euid)?;
-    w.write_u32(proc.egid)?;
+    write_credentials_and_secure_exec(&mut w, proc)?;
     w.write_u32(proc.pgid)?;
     w.write_u32(proc.sid)?;
     w.write_u32(proc.umask)?;
@@ -825,7 +894,11 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         .collect();
     let mut inherited_ofd_refs: BTreeMap<usize, u32> = BTreeMap::new();
     for (_, entry) in &fd_entries {
-        *inherited_ofd_refs.entry(entry.ofd_ref.0).or_insert(0) += 1;
+        if proc.ofd_table.get(entry.ofd_ref.0).is_none() {
+            return Err(Errno::EBADF);
+        }
+        let count = inherited_ofd_refs.entry(entry.ofd_ref.0).or_insert(0);
+        *count = count.checked_add(1).ok_or(Errno::EOVERFLOW)?;
     }
     w.write_u32(fd_entries.len() as u32)?;
     for (fd_num, entry) in &fd_entries {
@@ -846,9 +919,9 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         w.write_u64(ofd.ofd_id.0)?;
         write_file_id(&mut w, ofd.file_id)?;
         w.write_u32(file_type_to_u32(ofd.file_type))?;
-        w.write_u32(ofd.status_flags)?;
+        w.write_u32(ofd.status_flags())?;
         w.write_i64(ofd.host_handle)?;
-        w.write_i64(ofd.offset)?;
+        w.write_i64(ofd.offset())?;
         w.write_u32(inherited_ofd_refs[index])?;
         w.write_u32(ofd.path.len() as u32)?;
         w.write_bytes(&ofd.path)?;
@@ -962,20 +1035,36 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     // ── Socket table (v10) ──
     {
         use crate::socket::{SocketDomain, SocketState, SocketType};
-        if proc.sockets.len() > MAX_SOCKET_SLOTS {
+        let socket_root_count = ofd_entries
+            .iter()
+            .filter(|(_, ofd)| ofd.file_type == FileType::Socket)
+            .count();
+        let mut socket_roots = Vec::new();
+        socket_roots
+            .try_reserve_exact(socket_root_count)
+            .map_err(|_| Errno::ENOMEM)?;
+        for (_, ofd) in &ofd_entries {
+            if ofd.file_type == FileType::Socket {
+                socket_roots.push(SocketTable::index_from_ofd_handle(ofd.host_handle)?);
+            }
+        }
+        let mut inherited_sockets = proc.sockets.clone();
+        inherited_sockets.retain_inherited_roots(&socket_roots)?;
+
+        if inherited_sockets.len() > MAX_SOCKET_SLOTS {
             return Err(Errno::EINVAL);
         }
         // Count actual sockets
         let mut sock_count = 0u32;
-        for idx in 0..proc.sockets.len() {
-            if proc.sockets.get(idx).is_some() {
+        for idx in 0..inherited_sockets.len() {
+            if inherited_sockets.get(idx).is_some() {
                 sock_count += 1;
             }
         }
-        w.write_u32(proc.sockets.len() as u32)?; // total slots (for index preservation)
+        w.write_u32(inherited_sockets.len() as u32)?; // total slots (for index preservation)
         w.write_u32(sock_count)?;
-        for idx in 0..proc.sockets.len() {
-            if let Some(sock) = proc.sockets.get(idx) {
+        for idx in 0..inherited_sockets.len() {
+            if let Some(sock) = inherited_sockets.get(idx) {
                 w.write_u32(idx as u32)?;
                 w.write_u32(match sock.domain {
                     SocketDomain::Unix => 0,
@@ -1055,7 +1144,7 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     }
 
     // ── Patch total_size ──
-    let total = w.pos as u32;
+    let total = u32::try_from(w.pos).map_err(|_| Errno::EOVERFLOW)?;
     w.patch_u32(total_size_offset, total);
 
     Ok(w.pos)
@@ -1086,14 +1175,14 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     if version != FORK_VERSION {
         return Err(Errno::EINVAL);
     }
-    let _total_size = r.read_u32()?;
+    let total_size = r.read_u32()? as usize;
+    if total_size != buf.len() {
+        return Err(Errno::EINVAL);
+    }
 
-    // ── Scalars ──
+    // ── Identity, credentials, and process scalars ──
     let ppid = r.read_u32()?;
-    let uid = r.read_u32()?;
-    let gid = r.read_u32()?;
-    let euid = r.read_u32()?;
-    let egid = r.read_u32()?;
+    let (credentials, secure_exec) = read_credentials_and_secure_exec(&mut r)?;
     let pgid = r.read_u32()?;
     let sid = r.read_u32()?;
     let umask = r.read_u32()?;
@@ -1178,15 +1267,14 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
             ofd_id,
             file_id,
             file_type,
-            status_flags,
+            shared_state: SharedOfdState::new(status_flags, offset, child_pid),
             host_handle,
-            offset,
             ref_count,
-            owner_pid: child_pid,
             path,
             dir_host_handle: -1,
             dir_synth_state: 0,
             dir_entry_offset: 0,
+            dir_position_generation: 0,
             dir_pending_entry: None,
             dri_state,
         };
@@ -1243,10 +1331,10 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     let ws_col = r.read_u16()?;
     let ws_xpixel = r.read_u16()?;
     let ws_ypixel = r.read_u16()?;
-    let c_line = r.read_u8().unwrap_or(0);
-    let c_ispeed = r.read_u32().unwrap_or(0o0000017); // B38400
-    let c_ospeed = r.read_u32().unwrap_or(0o0000017);
-    let session_id = r.read_i32().unwrap_or(0);
+    let c_line = r.read_u8()?;
+    let c_ispeed = r.read_u32()?;
+    let c_ospeed = r.read_u32()?;
+    let session_id = r.read_i32()?;
     let foreground_pgid = r.read_i32()?;
 
     let terminal = TerminalState {
@@ -1283,79 +1371,79 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     memory.set_layout_metadata(memory_layout);
     memory.set_brk(program_break as usize);
 
-    // ── mmap mappings (v5) ──
-    if r.remaining() >= 4 {
-        let mapping_count = r.read_u32()? as usize;
-        if mapping_count > 4096 {
-            return Err(Errno::EINVAL);
-        }
-        let mut mappings = Vec::with_capacity(mapping_count);
-        for _ in 0..mapping_count {
-            let addr = r.read_u32()? as usize;
-            let len = r.read_u32()? as usize;
-            let prot = r.read_u32()?;
-            let flags = r.read_u32()?;
-            mappings.push(MappedRegion {
-                addr,
-                len,
-                prot,
-                flags,
-            });
-        }
-        memory.set_mappings(mappings);
+    // ── mmap mappings ──
+    let mapping_count = r.read_u32()? as usize;
+    if mapping_count > 4096 {
+        return Err(Errno::EINVAL);
     }
+    let mapping_bytes = mapping_count.checked_mul(16).ok_or(Errno::EINVAL)?;
+    if r.remaining() < mapping_bytes {
+        return Err(Errno::EINVAL);
+    }
+    let mut mappings = Vec::with_capacity(mapping_count);
+    for _ in 0..mapping_count {
+        let addr = r.read_u32()? as usize;
+        let len = r.read_u32()? as usize;
+        let prot = r.read_u32()?;
+        let flags = r.read_u32()?;
+        mappings.push(MappedRegion {
+            addr,
+            len,
+            prot,
+            flags,
+        });
+    }
+    memory.set_mappings(mappings);
 
-    // ── Fork exec state (v3) ──
-    let fork_exec_path = if r.remaining() >= 4 {
-        let path_len = r.read_u32()? as usize;
-        if path_len > 0 {
-            Some(r.read_bounded_bytes(path_len, MAX_PATH_LEN)?.to_vec())
-        } else {
-            None
-        }
+    // ── Fork exec state ──
+    let path_len = r.read_u32()? as usize;
+    let fork_exec_path = if path_len > 0 {
+        Some(r.read_bounded_bytes(path_len, MAX_PATH_LEN)?.to_vec())
     } else {
         None
     };
-    let fork_exec_argv = if r.remaining() >= 4 {
-        let argc = r.read_u32()? as usize;
-        if argc > 0 {
-            if argc > MAX_ARGV as usize {
-                return Err(Errno::EINVAL);
-            }
-            let mut args = Vec::with_capacity(argc);
-            for _ in 0..argc {
-                let len = r.read_u32()? as usize;
-                args.push(r.read_bounded_bytes(len, MAX_STRING_LEN)?.to_vec());
-            }
-            Some(args)
-        } else {
-            None
+    let argc = r.read_u32()? as usize;
+    let fork_exec_argv = if argc > 0 {
+        if argc > MAX_ARGV as usize {
+            return Err(Errno::EINVAL);
         }
+        let mut args = Vec::with_capacity(argc);
+        for _ in 0..argc {
+            let len = r.read_u32()? as usize;
+            args.push(r.read_bounded_bytes(len, MAX_STRING_LEN)?.to_vec());
+        }
+        Some(args)
     } else {
         None
     };
     let mut fork_fd_actions = Vec::new();
-    if r.remaining() >= 4 {
-        let action_count = r.read_u32()? as usize;
-        for _ in 0..action_count {
-            let action_type = r.read_u32()?;
-            let fd1 = r.read_u32()? as i32;
-            let fd2 = r.read_u32()? as i32;
-            use crate::process::FdAction;
-            match action_type {
-                0 => fork_fd_actions.push(FdAction::Dup2 {
-                    old_fd: fd1,
-                    new_fd: fd2,
-                }),
-                1 => fork_fd_actions.push(FdAction::Close { fd: fd1 }),
-                _ => {} // skip unknown actions
+    let action_count = r.read_u32()? as usize;
+    let action_bytes = action_count.checked_mul(12).ok_or(Errno::EINVAL)?;
+    if r.remaining() < action_bytes {
+        return Err(Errno::EINVAL);
+    }
+    for _ in 0..action_count {
+        let action_type = r.read_u32()?;
+        let fd1 = r.read_u32()? as i32;
+        let fd2 = r.read_u32()? as i32;
+        use crate::process::FdAction;
+        match action_type {
+            0 => fork_fd_actions.push(FdAction::Dup2 {
+                old_fd: fd1,
+                new_fd: fd2,
+            }),
+            1 => fork_fd_actions.push(FdAction::Close { fd: fd1 }),
+            2 => {
+                // Open actions contain host-owned prepared state and are not
+                // reconstructed from the serialized compatibility record.
             }
+            _ => return Err(Errno::EINVAL),
         }
     }
 
-    // ── Socket table (v10) ──
+    // ── Socket table ──
     let mut sockets = SocketTable::new();
-    if r.remaining() >= 8 {
+    {
         use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
         let total_slots = r.read_u32()? as usize;
         let sock_count = r.read_u32()? as usize;
@@ -1491,11 +1579,13 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
         }
     }
 
+    if r.remaining() != 0 {
+        return Err(Errno::EINVAL);
+    }
+
     child.ppid = ppid;
-    child.uid = uid;
-    child.gid = gid;
-    child.euid = euid;
-    child.egid = egid;
+    child.install_credentials(credentials);
+    child.secure_exec = secure_exec;
     child.pgid = pgid;
     child.sid = sid;
     // POSIX: fork children inherit sid but are NEVER session leaders. The
@@ -1522,13 +1612,19 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     child.rlimits = rlimits;
     child.alarm_deadline_ns = 0;
     child.alarm_interval_ns = 0;
-    child.thread_name = [0u8; 16];
+    child.thread_name =
+        [0u8; wasm_posix_shared::kernel_scratch_wire::PRCTL_NAME_BYTES as usize];
     child.fork_child = true;
-    child.sigsuspend_saved_mask = None;
+    // The host selects ordinary versus vfork only after this common POSIX
+    // state snapshot has been installed. Never inherit a parent's transient
+    // borrowing marker through serialized process state.
+    child.vfork_child = false;
+    child.mask_waits.clear();
+    child.caught_handler_depth = 0;
+    child.returned_handler_depths.clear();
     child.fork_exec_path = fork_exec_path;
     child.fork_exec_argv = fork_exec_argv;
     child.fork_fd_actions = fork_fd_actions;
-    child.exec_prepared_tid = None;
     child.next_ephemeral_port = 49152;
     child.clear_threads(); // POSIX: child has one task, the process leader.
     child.epolls.clear();
@@ -1584,13 +1680,10 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     let total_size_offset = w.pos;
     w.write_u32(0)?; // placeholder for total_size
 
-    // ── Scalars (40 bytes) ──
+    // ── Identity, credentials, and process scalars ──
     // Preserve the process's own ppid (exec replaces the image, not the process)
     w.write_u32(proc.ppid)?;
-    w.write_u32(proc.uid)?;
-    w.write_u32(proc.gid)?;
-    w.write_u32(proc.euid)?;
-    w.write_u32(proc.egid)?;
+    write_credentials_and_secure_exec(&mut w, proc)?;
     w.write_u32(proc.pgid)?;
     w.write_u32(proc.sid)?;
     w.write_u32(proc.is_session_leader as u32)?;
@@ -1655,9 +1748,9 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         w.write_u64(ofd.ofd_id.0)?;
         write_file_id(&mut w, ofd.file_id)?;
         w.write_u32(file_type_to_u32(ofd.file_type))?;
-        w.write_u32(ofd.status_flags)?;
+        w.write_u32(ofd.status_flags())?;
         w.write_i64(ofd.host_handle)?;
-        w.write_i64(ofd.offset)?;
+        w.write_i64(ofd.offset())?;
         w.write_u32(surviving_ofd_refs[index])?;
         w.write_u32(ofd.path.len() as u32)?;
         w.write_bytes(&ofd.path)?;
@@ -1711,7 +1804,7 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     w.write_u32(proc.memory.get_brk() as u32)?;
 
     // ── Patch total_size ──
-    let total = w.pos as u32;
+    let total = u32::try_from(w.pos).map_err(|_| Errno::EOVERFLOW)?;
     w.patch_u32(total_size_offset, total);
 
     Ok(w.pos)
@@ -1761,14 +1854,14 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     if version != FORK_VERSION {
         return Err(Errno::EINVAL);
     }
-    let _total_size = r.read_u32()?;
+    let total_size = r.read_u32()? as usize;
+    if total_size != buf.len() {
+        return Err(Errno::EINVAL);
+    }
 
-    // ── Scalars ──
+    // ── Identity, credentials, and process scalars ──
     let ppid = r.read_u32()?;
-    let uid = r.read_u32()?;
-    let gid = r.read_u32()?;
-    let euid = r.read_u32()?;
-    let egid = r.read_u32()?;
+    let (credentials, secure_exec) = read_credentials_and_secure_exec(&mut r)?;
     let pgid = r.read_u32()?;
     let sid = r.read_u32()?;
     let is_session_leader = r.read_u32()? != 0; // preserved across exec
@@ -1849,15 +1942,14 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             ofd_id,
             file_id,
             file_type,
-            status_flags,
+            shared_state: SharedOfdState::new(status_flags, offset, pid),
             host_handle,
-            offset,
             ref_count,
-            owner_pid: pid,
             path,
             dir_host_handle: -1,
             dir_synth_state: 0,
             dir_entry_offset: 0,
+            dir_position_generation: 0,
             dir_pending_entry: None,
             dri_state,
         };
@@ -1914,10 +2006,10 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     let ws_col = r.read_u16()?;
     let ws_xpixel = r.read_u16()?;
     let ws_ypixel = r.read_u16()?;
-    let c_line = r.read_u8().unwrap_or(0);
-    let c_ispeed = r.read_u32().unwrap_or(0o0000017); // B38400
-    let c_ospeed = r.read_u32().unwrap_or(0o0000017);
-    let session_id = r.read_i32().unwrap_or(0);
+    let c_line = r.read_u8()?;
+    let c_ispeed = r.read_u32()?;
+    let c_ospeed = r.read_u32()?;
+    let session_id = r.read_i32()?;
     let foreground_pgid = r.read_i32()?;
 
     let terminal = TerminalState {
@@ -1952,12 +2044,14 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     let _program_break = r.read_u32()?;
     let memory = MemoryManager::new();
 
+    if r.remaining() != 0 {
+        return Err(Errno::EINVAL);
+    }
+
     let mut process = Process::new_empty_for_test(pid);
     process.ppid = ppid;
-    process.uid = uid;
-    process.gid = gid;
-    process.euid = euid;
-    process.egid = egid;
+    process.install_credentials(credentials);
+    process.secure_exec = secure_exec;
     process.pgid = pgid;
     process.sid = sid;
     process.is_session_leader = is_session_leader;
@@ -1982,13 +2076,16 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     process.rlimits = rlimits;
     process.alarm_deadline_ns = 0;
     process.alarm_interval_ns = 0;
-    process.thread_name = [0u8; 16];
+    process.thread_name =
+        [0u8; wasm_posix_shared::kernel_scratch_wire::PRCTL_NAME_BYTES as usize];
     process.fork_child = false;
-    process.sigsuspend_saved_mask = None;
+    process.vfork_child = false;
+    process.mask_waits.clear();
+    process.caught_handler_depth = 0;
+    process.returned_handler_depths.clear();
     process.fork_exec_path = None;
     process.fork_exec_argv = None;
     process.fork_fd_actions.clear();
-    process.exec_prepared_tid = None;
     process.next_ephemeral_port = 49152;
     process.clear_threads(); // exec resets to the process leader only.
     process.epolls.clear();
@@ -2011,10 +2108,33 @@ mod tests {
     use crate::process::Process;
     use crate::signal::SignalHandler;
 
+    fn rewrite_total_size(bytes: &mut [u8]) {
+        let total_size = u32::try_from(bytes.len()).unwrap();
+        bytes[8..12].copy_from_slice(&total_size.to_le_bytes());
+    }
+
+    fn install_socket_for_fork(
+        proc: &mut Process,
+        socket: crate::socket::SocketInfo,
+    ) -> usize {
+        let socket_index = proc.sockets.alloc(socket);
+        let ofd_index = proc.ofd_table.create(
+            FileType::Socket,
+            wasm_posix_shared::flags::O_RDWR,
+            -((socket_index as i64) + 1),
+            b"/dev/socket".to_vec(),
+        );
+        proc.fd_table
+            .alloc(OpenFileDescRef(ofd_index), 0)
+            .unwrap();
+        socket_index
+    }
+
     #[test]
     fn test_roundtrip_default_process() {
         let mut proc = Process::new(1);
         proc.terminal.foreground_pgid = 313;
+        proc.record_shm_mapping(0x20000, 17, 4096).unwrap();
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_fork_state(&proc, &mut buf).unwrap();
         assert!(written > 12);
@@ -2024,14 +2144,224 @@ mod tests {
         assert!(child.wait_event.is_none());
         assert_eq!(child.pid, 42);
         assert_eq!(child.ppid, proc.pid); // child's ppid is parent's pid
-        assert_eq!(child.uid, proc.uid);
-        assert_eq!(child.gid, proc.gid);
+        assert_eq!(child.real_uid(), proc.real_uid());
+        assert_eq!(child.real_gid(), proc.real_gid());
         assert_eq!(child.umask, proc.umask);
         assert_eq!(child.nice, proc.nice);
         assert_eq!(child.cwd, proc.cwd);
         assert_eq!(child.signals.pending, 0);
         assert_eq!(child.main_thread_signals.pending, 0);
         assert_eq!(child.terminal.foreground_pgid, 313);
+        // The host fork transaction records child attachments only after the
+        // corresponding shmat and byte materialization have both succeeded.
+        assert!(child.shm_mappings.is_empty());
+    }
+
+    #[test]
+    fn fork_version_15_roundtrips_complete_credentials_in_wire_order() {
+        let mut proc = Process::new(1);
+        proc.install_credentials(Credentials {
+            ruid: 1000,
+            euid: 2000,
+            suid: 3000,
+            rgid: 4000,
+            egid: 5000,
+            sgid: 6000,
+            supplementary_groups: vec![7000, 8000],
+        });
+        proc.secure_exec = true;
+        let mut buf = vec![0u8; 64 * 1024];
+
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+        let child = deserialize_fork_state(&buf[..written], 42).unwrap();
+
+        assert_eq!(u32::from_le_bytes(buf[4..8].try_into().unwrap()), 15);
+        let credential_words: Vec<u32> = buf[16..52]
+            .chunks_exact(4)
+            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+            .collect();
+        assert_eq!(
+            credential_words,
+            vec![1000, 2000, 3000, 4000, 5000, 6000, 2, 7000, 8000],
+        );
+        assert_eq!(u32::from_le_bytes(buf[52..56].try_into().unwrap()), 1);
+        assert_eq!(child.real_uid(), 1000);
+        assert_eq!(child.effective_uid(), 2000);
+        assert_eq!(child.saved_uid(), 3000);
+        assert_eq!(child.real_gid(), 4000);
+        assert_eq!(child.effective_gid(), 5000);
+        assert_eq!(child.saved_gid(), 6000);
+        assert_eq!(child.supplementary_groups(), &[7000, 8000]);
+        assert!(child.secure_exec);
+    }
+
+    #[test]
+    fn fork_version_15_roundtrips_zero_and_ngroups_max_groups() {
+        for groups in [vec![], (0..32).map(|index| 20_000 + index).collect()] {
+            let mut proc = Process::new(1);
+            proc.install_credentials(Credentials {
+                supplementary_groups: groups.clone(),
+                ..Credentials::from_ids(1000, 2000)
+            });
+            let mut buf = vec![0u8; 64 * 1024];
+
+            let written = serialize_fork_state(&proc, &mut buf).unwrap();
+            let child = deserialize_fork_state(&buf[..written], 42).unwrap();
+
+            assert_eq!(child.supplementary_groups(), groups.as_slice());
+            assert!(!child.secure_exec);
+        }
+    }
+
+    #[test]
+    fn fork_version_15_rejects_wrong_version_malformed_groups_and_trailing_bytes() {
+        let mut proc = Process::new(1);
+        proc.install_credentials(Credentials {
+            ruid: 1000,
+            euid: 2000,
+            suid: 3000,
+            rgid: 4000,
+            egid: 5000,
+            sgid: 6000,
+            supplementary_groups: vec![7000, 8000],
+        });
+        proc.secure_exec = true;
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+
+        for version in [14u32, 16] {
+            let mut malformed = buf[..written].to_vec();
+            malformed[4..8].copy_from_slice(&version.to_le_bytes());
+            assert!(deserialize_fork_state(&malformed, 42).is_err());
+        }
+        for count in [33u32, u32::MAX] {
+            let mut malformed = buf[..written].to_vec();
+            malformed[40..44].copy_from_slice(&count.to_le_bytes());
+            assert!(matches!(
+                deserialize_fork_state(&malformed, 42),
+                Err(Errno::EINVAL),
+            ));
+        }
+        let mut trailing = buf[..written].to_vec();
+        trailing.push(0xa5);
+        rewrite_total_size(&mut trailing);
+        assert!(matches!(
+            deserialize_fork_state(&trailing, 42),
+            Err(Errno::EINVAL),
+        ));
+    }
+
+    #[test]
+    fn fork_version_15_rejects_truncation_at_every_new_credential_field() {
+        let mut proc = Process::new(1);
+        proc.install_credentials(Credentials {
+            ruid: 1000,
+            euid: 2000,
+            suid: 3000,
+            rgid: 4000,
+            egid: 5000,
+            sgid: 6000,
+            supplementary_groups: (0..32).collect(),
+        });
+        proc.secure_exec = true;
+        let mut buf = vec![0u8; 64 * 1024];
+        let _written = serialize_fork_state(&proc, &mut buf).unwrap();
+
+        // Header + ppid, then each complete v15 credential field. Every
+        // one-byte-short prefix must fail before a Process record is changed.
+        let credential_field_ends = (20usize..=44)
+            .step_by(4)
+            .chain((48usize..=172).step_by(4))
+            .chain(core::iter::once(176));
+        for end in credential_field_ends {
+            let mut truncated = buf[..end - 1].to_vec();
+            rewrite_total_size(&mut truncated);
+            assert!(
+                matches!(deserialize_fork_state(&truncated, 42), Err(Errno::EINVAL),),
+                "accepted truncation before credential byte {end}"
+            );
+        }
+    }
+
+    #[test]
+    fn exec_version_15_roundtrips_complete_credentials_and_secure_exec() {
+        let mut proc = Process::new(1);
+        proc.install_credentials(Credentials {
+            ruid: 101,
+            euid: 202,
+            suid: 303,
+            rgid: 404,
+            egid: 505,
+            sgid: 606,
+            supplementary_groups: vec![707, 808, 909],
+        });
+        proc.secure_exec = true;
+        let mut buf = vec![0u8; 64 * 1024];
+
+        let written = serialize_exec_state(&proc, &mut buf).unwrap();
+        let restored = deserialize_exec_state(&buf[..written], proc.pid).unwrap();
+
+        assert_eq!(restored.credentials(), proc.credentials());
+        assert!(restored.secure_exec);
+    }
+
+    #[test]
+    fn exec_version_15_rejects_wrong_version_truncation_and_trailing_bytes() {
+        let mut proc = Process::new(1);
+        proc.install_credentials(Credentials {
+            ruid: 101,
+            euid: 202,
+            suid: 303,
+            rgid: 404,
+            egid: 505,
+            sgid: 606,
+            supplementary_groups: (0..32).collect(),
+        });
+        proc.secure_exec = true;
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_exec_state(&proc, &mut buf).unwrap();
+
+        for version in [14u32, 16] {
+            let mut malformed = buf[..written].to_vec();
+            malformed[4..8].copy_from_slice(&version.to_le_bytes());
+            assert!(matches!(
+                deserialize_exec_state(&malformed, proc.pid),
+                Err(Errno::EINVAL),
+            ));
+        }
+
+        for count in [33u32, u32::MAX] {
+            let mut malformed = buf[..written].to_vec();
+            malformed[40..44].copy_from_slice(&count.to_le_bytes());
+            assert!(matches!(
+                deserialize_exec_state(&malformed, proc.pid),
+                Err(Errno::EINVAL),
+            ));
+        }
+
+        let credential_field_ends = (20usize..=44)
+            .step_by(4)
+            .chain((48usize..=172).step_by(4))
+            .chain(core::iter::once(176));
+        for end in credential_field_ends {
+            let mut truncated = buf[..end - 1].to_vec();
+            rewrite_total_size(&mut truncated);
+            assert!(
+                matches!(
+                    deserialize_exec_state(&truncated, proc.pid),
+                    Err(Errno::EINVAL),
+                ),
+                "accepted exec truncation before credential byte {end}"
+            );
+        }
+
+        let mut trailing = buf[..written].to_vec();
+        trailing.push(0xa5);
+        rewrite_total_size(&mut trailing);
+        assert!(matches!(
+            deserialize_exec_state(&trailing, proc.pid),
+            Err(Errno::EINVAL),
+        ));
     }
 
     #[test]
@@ -2071,13 +2401,10 @@ mod tests {
             700,
             b"/dir".to_vec(),
         );
-        parent
-            .fd_table
-            .alloc(OpenFileDescRef(ofd_idx), 0)
-            .unwrap();
+        parent.fd_table.alloc(OpenFileDescRef(ofd_idx), 0).unwrap();
         {
             let ofd = parent.ofd_table.get_mut(ofd_idx).unwrap();
-            ofd.offset = 4;
+            ofd.set_directory_offset(4);
             ofd.dir_host_handle = 701;
             ofd.dir_synth_state = 2;
             ofd.dir_entry_offset = 4;
@@ -2093,7 +2420,7 @@ mod tests {
         let child = deserialize_fork_state(&buf[..written], 2).unwrap();
 
         let inherited = child.ofd_table.get(ofd_idx).unwrap();
-        assert_eq!(inherited.offset, 4);
+        assert_eq!(inherited.offset(), 4);
         assert_eq!(inherited.dir_entry_offset, 4);
         assert_eq!(inherited.dir_synth_state, 2);
         assert_eq!(inherited.dir_host_handle, -1);
@@ -2101,7 +2428,10 @@ mod tests {
 
         let parent_ofd = parent.ofd_table.get(ofd_idx).unwrap();
         assert_eq!(parent_ofd.dir_host_handle, 701);
-        assert_eq!(parent_ofd.dir_pending_entry.as_ref().unwrap().name, b"pending");
+        assert_eq!(
+            parent_ofd.dir_pending_entry.as_ref().unwrap().name,
+            b"pending"
+        );
     }
 
     #[test]
@@ -2276,6 +2606,7 @@ mod tests {
     fn test_exec_roundtrip_default_process() {
         let mut proc = Process::new(1);
         proc.terminal.foreground_pgid = 919;
+        proc.record_shm_mapping(0x20000, 17, 4096).unwrap();
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_exec_state(&proc, &mut buf).unwrap();
         assert!(written > 12);
@@ -2287,6 +2618,7 @@ mod tests {
         assert_eq!(restored.signals.pending, 0);
         assert_eq!(restored.main_thread_signals.pending, 0);
         assert_eq!(restored.terminal.foreground_pgid, 919);
+        assert!(restored.shm_mappings.is_empty());
     }
 
     #[test]
@@ -2294,7 +2626,8 @@ mod tests {
         let mut proc = Process::new(1);
         proc.main_thread_signals.raise(25);
         proc.main_thread_signals.raise_with_value(32, 101);
-        proc.main_thread_signals.raise_with_value(32, 202);
+        proc.main_thread_signals
+            .raise_with_metadata(32, 0x0123_4567_89ab_cdef, -1, 77, 88);
         proc.main_thread_signals.raise_timer(10, 303, 7);
 
         let serialized = serialize_exec_state_with_growing_buffer(&proc).unwrap();
@@ -2308,10 +2641,10 @@ mod tests {
             restored.main_thread_signals.consume_one(32),
             Some((101, -1))
         );
-        assert_eq!(
-            restored.main_thread_signals.consume_one(32),
-            Some((202, -1))
-        );
+        let full_width = restored.main_thread_signals.consume_one_info(32);
+        assert_eq!(full_width.si_value_bits, 0x0123_4567_89ab_cdef);
+        assert_eq!(full_width.si_code, -1);
+        assert_eq!((full_width.sender_pid, full_width.sender_uid), (77, 88));
         assert_eq!(restored.main_thread_signals.pending, 0);
     }
 
@@ -2319,9 +2652,7 @@ mod tests {
     fn test_exec_rejects_oversized_main_directed_queue() {
         let mut proc = Process::new(1);
         for value in 0..=MAX_DIRECTED_SIGNAL_QUEUE {
-            assert!(proc
-                .main_thread_signals
-                .raise_with_value(32, value as i32));
+            assert!(proc.main_thread_signals.raise_with_value(32, value as u64));
         }
 
         assert_eq!(
@@ -2500,7 +2831,7 @@ mod tests {
                 included_sources: vec![[10, 88, 0, 3], [10, 88, 0, 4]],
             },
         ];
-        let socket_idx = proc.sockets.alloc(socket);
+        let socket_idx = install_socket_for_fork(&mut proc, socket);
 
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_fork_state(&proc, &mut buf).unwrap();
@@ -2545,7 +2876,7 @@ mod tests {
         let mut proc = Process::new(1);
         let mut socket = SocketInfo::new(SocketDomain::Inet, SocketType::Dgram, 17);
         socket.bind_device = Some(vec![b'x'; MAX_SOCKET_STRING_LEN + 1]);
-        proc.sockets.alloc(socket);
+        install_socket_for_fork(&mut proc, socket);
         let mut buf = vec![0u8; 64 * 1024];
         assert_eq!(serialize_fork_state(&proc, &mut buf), Err(Errno::EINVAL));
 
@@ -2558,7 +2889,7 @@ mod tests {
             blocked_sources: vec![[127, 0, 0, 2]; MAX_IPV4_MULTICAST_SOURCES + 1],
             included_sources: vec![],
         }];
-        proc.sockets.alloc(socket);
+        install_socket_for_fork(&mut proc, socket);
         assert_eq!(serialize_fork_state(&proc, &mut buf), Err(Errno::EINVAL));
     }
 
@@ -2743,7 +3074,10 @@ mod tests {
         // For fork-from-pthread, the host then retains only the caller slot
         // with `kernel_reserve_host_region_at`.
         assert!(child.memory.reserved_regions().is_empty());
-        assert_eq!(child.memory.reserve_host_region_at(caller, slot_len), caller);
+        assert_eq!(
+            child.memory.reserve_host_region_at(caller, slot_len),
+            caller
+        );
         assert_eq!(child.memory.reserved_regions().len(), 1);
         assert!(child.memory.overlaps_host_reserved_region(caller, slot_len));
 
@@ -2909,9 +3243,12 @@ mod tests {
         handles: &[(u32, crate::dri::BoId)],
     ) -> usize {
         use crate::ofd::{DriFdState, DriOfdState};
-        let ofd_idx =
-            proc.ofd_table
-                .create(crate::ofd::FileType::CharDevice, 0, host_handle, path.to_vec());
+        let ofd_idx = proc.ofd_table.create(
+            crate::ofd::FileType::CharDevice,
+            0,
+            host_handle,
+            path.to_vec(),
+        );
         let mut dri = DriFdState::default();
         for &(h, bo) in handles {
             dri.handles.insert(h, bo);
@@ -3092,12 +3429,13 @@ mod tests {
             crate::ofd::FileType::Regular,
             0,
             -200,
-            alloc::format!("/dev/dri/prime-{bo}-{cookie:x}")
-                .into_bytes(),
+            alloc::format!("/dev/dri/prime-{bo}-{cookie:x}").into_bytes(),
         );
-        proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state = Some(
-            alloc::boxed::Box::new(DriOfdState::PrimeBo(PrimeBoState { bo_id: bo, cookie })),
-        );
+        proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
+            Some(alloc::boxed::Box::new(DriOfdState::PrimeBo(PrimeBoState {
+                bo_id: bo,
+                cookie,
+            })));
         proc.fd_table
             .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
             .unwrap();

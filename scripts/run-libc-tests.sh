@@ -16,7 +16,9 @@ SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/libc/glue"
 LIBC_TEST="$REPO_ROOT/tests/libc/libc-test"
 BUILD_DIR="$REPO_ROOT/tests/libc/libc-test/build"
+RUNNER_FIXTURE_ROOT="$BUILD_DIR/runner-fixture"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
+PROGRAM_INDEX_CHECKER=""
 
 # ── Expected failures ──────────────────────────────────────
 # Tests known to fail due to wasm32 soft-float precision limits (no hardware FPU rounding control).
@@ -101,7 +103,7 @@ LINK_FLAGS=(
     "$GLUE_DIR/compiler_rt.c"
     "$SYSROOT/lib/crt1.o"
     "$SYSROOT/lib/libc.a"
-    -Wl,--entry=_start
+    -Wl,--no-entry
     -Wl,--export=_start
     -Wl,--import-memory
     -Wl,--shared-memory
@@ -255,6 +257,15 @@ run_test() {
     local category="$1"
     local test_name="$2"
     local wasm="$BUILD_DIR/$category/${test_name}.wasm"
+    local fixture_root=""
+    local fixture_cwd=""
+    local kernel_path="/usr/local/bin:/usr/bin:/bin"
+
+    if [ "$category/$test_name" = "functional/spawn" ]; then
+        fixture_root="$RUNNER_FIXTURE_ROOT"
+        fixture_cwd="work"
+        kernel_path="/tmp/kandelo-run/bin:$kernel_path"
+    fi
 
     # Determine expected-failure list for this category
     local -a xfail_list=()
@@ -290,7 +301,17 @@ run_test() {
     # stdin redirected to /dev/null: run-example.ts reads process.stdin
     # when not a TTY, which would drain any pipe the caller supplies.
     set +e
-    output=$(cd "$REPO_ROOT" && timeout "$TEST_TIMEOUT" node --experimental-wasm-exnref --import tsx/esm examples/run-example.ts "${wasm}" </dev/null 2>&1)
+    output=$(cd "$REPO_ROOT" && \
+        KERNEL_CWD= \
+        KERNEL_PATH="$kernel_path" \
+        WASM_POSIX_XTASK_BIN="$PROGRAM_INDEX_CHECKER" \
+        KANDELO_RUNNER_FIXTURE_ROOT="$fixture_root" \
+        KANDELO_RUNNER_FIXTURE_CWD="$fixture_cwd" \
+        KANDELO_RUNNER_GUEST_PROGRAM= \
+        KANDELO_RUNNER_VFS=isolated \
+        timeout "$TEST_TIMEOUT" node --experimental-wasm-exnref \
+            --import tsx/esm examples/run-example.ts "${wasm}" \
+            </dev/null 2>&1)
     rc=$?
     set -e
 
@@ -380,12 +401,41 @@ if [ ! -f "$KERNEL_WASM" ]; then
     echo "Error: kernel wasm not found. Run build.sh first." >&2
     exit 1
 fi
+
+# Prepare source-projection policy once outside the per-test timeout. Every
+# runner process still executes this exact checker, so package freshness stays
+# authoritative without charging a cold release build to guest runtime.
+RUST_HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+if [ -z "$RUST_HOST_TARGET" ]; then
+    echo "Error: could not determine the Rust host target." >&2
+    exit 1
+fi
+cargo build --release -p xtask --target "$RUST_HOST_TARGET" --quiet
+PROGRAM_INDEX_CHECKER="$REPO_ROOT/target/$RUST_HOST_TARGET/release/xtask"
+if [ ! -f "$PROGRAM_INDEX_CHECKER" ]; then
+    echo "Error: prepared xtask was not found at $PROGRAM_INDEX_CHECKER" >&2
+    exit 1
+fi
+
 if ! build_example_program echo; then
     err=$(head -5 /tmp/libc-test-build-err.txt 2>/dev/null || echo "(no error output)")
     echo "Error: failed to build examples/echo.wasm" >&2
     echo "$err" | head -3 | sed 's/^/  /' >&2
     exit 1
 fi
+
+# WHY: posix_spawnp() must prove a PATH candidate exists with access(X_OK)
+# before asking the host to launch it. The host-only exec map is intentionally
+# not visible to VFS access(), and the canonical rootfs contains deferred
+# package stubs whose payloads are outside this isolated conformance run.
+# Snapshot the freshly built helper into owned guest scratch so the libc test
+# exercises the real POSIX PATH lookup and the normal VFS-backed spawn path.
+mkdir -p "$RUNNER_FIXTURE_ROOT/bin" "$RUNNER_FIXTURE_ROOT/work"
+if [ -e "$RUNNER_FIXTURE_ROOT/bin/echo" ]; then
+    chmod 0755 "$RUNNER_FIXTURE_ROOT/bin/echo"
+fi
+cp "$REPO_ROOT/examples/echo.wasm" "$RUNNER_FIXTURE_ROOT/bin/echo"
+chmod 0555 "$RUNNER_FIXTURE_ROOT/bin/echo"
 
 PASS=0
 FAIL=0

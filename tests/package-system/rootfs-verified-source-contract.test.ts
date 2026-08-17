@@ -65,6 +65,20 @@ describe("source-rootfs verified archive contract", () => {
     "utf8",
   );
 
+  it("uses the ncurses maintainer archive mirror for the hash-verified source", () => {
+    const manifest = readFileSync(
+      resolve(repoRoot, "packages/registry/ncurses/package.toml"),
+      "utf8",
+    );
+
+    expect(sourceField(manifest, "url")).toBe(
+      "https://invisible-mirror.net/archives/ncurses/ncurses-6.5.tar.gz",
+    );
+    expect(sourceField(manifest, "sha256")).toBe(
+      "136d91bc269a9a5785e5f9e980bc76ab57428f604ce3e5a5a90cebc767971cc6",
+    );
+  });
+
   for (const [
     packageName,
     versionVariable,
@@ -133,6 +147,8 @@ describe("source-rootfs verified archive contract", () => {
 
   it("uses GNU's canonical mirror-selector path", () => {
     for (const packageName of gnuMirrorPackages) {
+      const mirrorSelectorPath =
+        packageName === "bc" ? "gnu/bc" : packageName;
       const manifest = readFileSync(
         resolve(repoRoot, `packages/registry/${packageName}/package.toml`),
         "utf8",
@@ -148,12 +164,18 @@ describe("source-rootfs verified archive contract", () => {
 
       expect(sourceUrl, packageName).toMatch(
         new RegExp(
-          `^https://ftpmirror\\.gnu\\.org/${packageName.replaceAll("-", "\\-")}/`,
+          `^https://ftpmirror\\.gnu\\.org/${mirrorSelectorPath.replaceAll("-", "\\-")}/`,
         ),
       );
-      expect(buildScript, packageName).not.toContain(
-        "https://ftpmirror.gnu.org/gnu/",
-      );
+      if (packageName === "bc") {
+        expect(buildScript, packageName).toContain(
+          "https://ftpmirror.gnu.org/gnu/bc/",
+        );
+      } else {
+        expect(buildScript, packageName).not.toContain(
+          "https://ftpmirror.gnu.org/gnu/",
+        );
+      }
     }
   });
 

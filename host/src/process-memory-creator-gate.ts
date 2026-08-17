@@ -16,23 +16,68 @@ export class ProcessMemoryCreatorGate {
    * Run one admitted creator and release its admission on every terminal path.
    */
   run<T>(operation: string, creator: () => T | PromiseLike<T>): Promise<T> {
+    return this.runUntilCommitted(operation, () => creator());
+  }
+
+  /**
+   * Admit ownership that must transfer out of an async setup callback.
+   *
+   * The owner must release the admission after either publishing the exact
+   * process generation or abandoning it. Release is idempotent so terminal
+   * cleanup can share one path with setup failures without double-releasing
+   * the gate.
+   */
+  acquire(operation: string): { release: () => void } {
     if (!this.open) {
-      return Promise.reject(
-        new Error(
-          `kernel worker is being destroyed; cannot start ${operation}`,
-        ),
+      throw new Error(
+        `kernel worker is being destroyed; cannot start ${operation}`,
       );
     }
     this.activeCreators += 1;
+    let released = false;
+    return {
+      release: () => {
+        if (released) return;
+        released = true;
+        this.releaseCreator();
+      },
+    };
+  }
+
+  /**
+   * Admit a creator whose semantic completion can outlive its installation.
+   *
+   * `commit()` releases destroy admission once the exact generation and all
+   * of its ownership handles are published in the host process registry. The
+   * returned operation may remain pending afterward. This is required for
+   * vfork: its onFork promise parks the caller until child exec/_exit, but a
+   * terminal host destroy must be able to sweep that already-visible child
+   * instead of waiting for the parked syscall first.
+   *
+   * If the creator fails or completes before commit, its terminal path releases
+   * admission. Calling commit more than once is harmless so a common finally
+   * path cannot double-release the gate.
+   */
+  runUntilCommitted<T>(
+    operation: string,
+    creator: (commit: () => void) => T | PromiseLike<T>,
+  ): Promise<T> {
+    let admission: { release: () => void };
+    try {
+      admission = this.acquire(operation);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    const commit = admission.release;
     let result: T | PromiseLike<T>;
     try {
-      result = creator();
+      result = creator(commit);
     } catch (error) {
-      this.releaseCreator();
+      commit();
       return Promise.reject(error);
     }
     return Promise.resolve(result).finally(() => {
-      this.releaseCreator();
+      commit();
     });
   }
 

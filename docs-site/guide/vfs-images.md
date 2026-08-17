@@ -90,7 +90,7 @@ Example:
 ```text
 /etc             d  0755  0     0
 /home            d  0755  0     0
-/home/user       d  0755  1000  1000
+/home/maker      d  0755  1000  1000
 /etc/passwd      f  0644  0     0
 /bin/sh          l  0777  0     0  target=/usr/bin/bash
 /usr/bin/bash    f  0755  0     0  lazy_url=binaries/programs/wasm32/bash.wasm lazy_size=1234567
@@ -152,7 +152,9 @@ Images consumed by the Kandelo UI can include:
 /etc/kandelo/demo.json
 ```
 
-This file lets the image declare presentation preferences, guide actions, companion HTML, assets, and automatic commands. Build scripts in this repo write it with:
+This file lets the image declare presentation preferences, guide actions,
+companion HTML, assets, automatic commands, and an optional fixed-path file
+ingest. Build scripts in this repo write it with:
 
 ```ts
 writeKandeloDemoConfig(fs, {
@@ -180,6 +182,13 @@ writeKandeloDemoConfig(fs, {
             ],
           },
         ],
+      },
+      ingest: {
+        accept: [".rom"],
+        targetPath: "/inputs/game.rom",
+        maxBytes: 8 * 1024 * 1024,
+        label: "Load ROM",
+        onLoad: { restart: "emulator /inputs/game.rom" },
       },
     },
   },

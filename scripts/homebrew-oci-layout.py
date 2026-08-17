@@ -389,7 +389,7 @@ def canonical_bottle(args: argparse.Namespace) -> dict[str, Any]:
     if not isinstance(document, dict) or len(document) != 1:
         fail("canonical bottle JSON must contain exactly one Formula")
     key, record = next(iter(document.items()))
-    if key != args.formula:
+    if key != f"{selected_tap_name(args)}/{args.formula}":
         fail("canonical bottle JSON Formula key does not match")
     record = exact_keys(record, {"formula", "bottle"}, "canonical bottle record")
     formula = exact_keys(
@@ -504,7 +504,7 @@ def validate_formula_source_contract(
         expected_keys.add("tap_recipe")
     plan = exact_keys(plan, expected_keys, "tap Formula source contract result")
     if (
-        schema not in (2, 3)
+        schema not in (3, 4)
         or plan["tap"] != normalized_identity(tap_name)
         or plan["formula"] != formula
         or plan["full_name"] != f"{normalized_identity(tap_name)}/{formula}"

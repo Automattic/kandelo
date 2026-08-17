@@ -92,6 +92,24 @@ describe("process memory creator destroy gate", () => {
     ]);
   });
 
+  it("keeps transferred exec-plan ownership in the destroy drain until release", async () => {
+    const gate = new ProcessMemoryCreatorGate();
+    const sweep = vi.fn();
+    const admission = gate.acquire("an exec replacement plan");
+
+    const destroy = gate.closeAndRunAfterDrain(sweep);
+    await Promise.resolve();
+    expect(sweep).not.toHaveBeenCalled();
+
+    admission.release();
+    admission.release();
+    await expect(destroy).resolves.toBeUndefined();
+    expect(sweep).toHaveBeenCalledOnce();
+    expect(() => gate.acquire("a late exec replacement plan")).toThrow(
+      "kernel worker is being destroyed; cannot start a late exec replacement plan",
+    );
+  });
+
   it("releases admission when a creator throws", async () => {
     const gate = new ProcessMemoryCreatorGate();
     const sweep = vi.fn();
@@ -119,6 +137,58 @@ describe("process memory creator destroy gate", () => {
     expect(sweep).not.toHaveBeenCalled();
     resume.resolve();
     await expect(creator).rejects.toThrow("injected async creator failure");
+    await expect(destroy).resolves.toBeUndefined();
+    expect(sweep).toHaveBeenCalledOnce();
+  });
+
+  it("lets destroy sweep a committed generation while its syscall stays parked", async () => {
+    const gate = new ProcessMemoryCreatorGate();
+    const vforkLifetime = deferred();
+    const generationPublished = vi.fn();
+    const sweep = vi.fn(() => ({ gracefulDetachComplete: true }));
+    const vfork = gate.runUntilCommitted(
+      "vfork process Worker",
+      async (commit) => {
+        generationPublished();
+        commit();
+        await vforkLifetime.promise;
+        return 41;
+      },
+    );
+
+    const destroy = gate.closeAndRunAfterDrain(sweep);
+    await expect(destroy).resolves.toEqual({ gracefulDetachComplete: true });
+    expect(generationPublished).toHaveBeenCalledOnce();
+    expect(sweep).toHaveBeenCalledOnce();
+
+    let vforkFinished = false;
+    void vfork.then(() => {
+      vforkFinished = true;
+    });
+    await Promise.resolve();
+    expect(vforkFinished).toBe(false);
+
+    vforkLifetime.resolve();
+    await expect(vfork).resolves.toBe(41);
+  });
+
+  it("keeps pre-commit creation failures in the destroy drain", async () => {
+    const gate = new ProcessMemoryCreatorGate();
+    const rollback = deferred();
+    const sweep = vi.fn();
+    const creator = gate.runUntilCommitted(
+      "failing vfork setup",
+      async (_commit) => {
+        await rollback.promise;
+        throw new Error("injected pre-commit failure");
+      },
+    );
+    const destroy = gate.closeAndRunAfterDrain(sweep);
+
+    await Promise.resolve();
+    expect(sweep).not.toHaveBeenCalled();
+    rollback.resolve();
+    await expect(creator).rejects.toThrow("injected pre-commit failure");
     await expect(destroy).resolves.toBeUndefined();
     expect(sweep).toHaveBeenCalledOnce();
   });

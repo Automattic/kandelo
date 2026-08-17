@@ -91,12 +91,12 @@ export function projectHomebrewBottleSelection(
     root.requestedVfsFilename,
     "Homebrew bottle selection.requestedVfsFilename",
   );
-  if (
-    !OUTPUT_FILENAME_RE.test(requestedVfsFilename)
-  ) {
-    fail(
-      "Homebrew bottle selection.requestedVfsFilename must be a safe .vfs.zst basename",
-    );
+  const requiredAbiToken = `abi${kandeloAbi}`;
+  const hasExactAbiToken = new RegExp(
+    `(?:^|[._-])${requiredAbiToken}(?:[._-]|$)`,
+  ).test(requestedVfsFilename);
+  if (!OUTPUT_FILENAME_RE.test(requestedVfsFilename)) {
+    fail("Homebrew bottle selection.requestedVfsFilename must be a safe .vfs.zst basename");
   }
   if (
     root.resourcePolicy !== "kandelo-homebrew-vfs-generous-v1" &&
@@ -108,17 +108,29 @@ export function projectHomebrewBottleSelection(
     );
   }
   const resourcePolicy = root.resourcePolicy;
-  const experimentalProduct =
+  const isExperimentalProduct =
     name.startsWith("experimental-") &&
     arch === "wasm32" &&
-    kandeloAbi === 42 &&
-    requestedVfsFilename.includes("experimental") &&
-    requestedVfsFilename.includes("abi42") &&
     resourcePolicy === "kandelo-homebrew-vfs-generous-v1";
+  if (
+    isExperimentalProduct &&
+    (!name.includes(requiredAbiToken) ||
+      !requestedVfsFilename.includes("experimental") ||
+      !hasExactAbiToken)
+  ) {
+    fail(
+      "Homebrew bottle selection.requestedVfsFilename must contain experimental " +
+        `and ${requiredAbiToken}`,
+    );
+  }
+  const experimentalProduct =
+    isExperimentalProduct &&
+    name.includes(requiredAbiToken) &&
+    requestedVfsFilename.includes("experimental") &&
+    hasExactAbiToken;
   const mainShellProduct =
-    name === "main-shell-abi42-wasm32" &&
+    name === `main-shell-abi${kandeloAbi}-wasm32` &&
     arch === "wasm32" &&
-    kandeloAbi === 42 &&
     requestedVfsFilename === "shell.vfs.zst" &&
     resourcePolicy === "kandelo-homebrew-vfs-main-shell-v1";
   if (!experimentalProduct && !mainShellProduct) {

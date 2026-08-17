@@ -43,8 +43,22 @@ export const S_IFLNK = 0xa000;
 export const S_IFMT = 0xf000;
 const S_ISUID = 0o4000;
 const S_ISGID = 0o2000;
-const EXECUTE_BITS = 0o111;
 const UID_GID_UNCHANGED = 0xffffffff;
+
+function modeAfterRegularFileMutation(
+  mode: number,
+  kind: "content" | "ownership",
+): number {
+  if ((mode & S_IFMT) !== S_IFREG) return mode;
+  // WHY: Kandelo does not implement System V mandatory locking for a
+  // non-executable S_ISGID bit. Keep the mutation kind explicit for audit
+  // call sites while deliberately applying the same clear-both policy.
+  switch (kind) {
+    case "content":
+    case "ownership":
+      return mode & ~(S_ISUID | S_ISGID);
+  }
+}
 
 // Open flags
 export const O_RDONLY = 0x0000;
@@ -64,6 +78,7 @@ export const SEEK_END = 2;
 
 // Dirent
 const DIRENT_HEADER_SIZE = 8;
+const DIR_INDEX_MIN_SIZE = 64 * 1024;
 
 // Error codes
 export const EPERM = -1;
@@ -78,6 +93,7 @@ export const EINVAL = -22;
 export const EMFILE = -24;
 export const EFBIG = -27;
 export const ENOSPC = -28;
+export const EROFS = -30;
 export const ENAMETOOLONG = -36;
 export const ENOTEMPTY = -39;
 export const ELOOP = -40;
@@ -124,6 +140,9 @@ const INO_DATA_SEQUENCE = 120; // u32, incremented after explicit data mutation
 // 124-127 reserved for future fields (flags, xattrs, etc.)
 
 // FD entry layout
+const FD_FREE = 0;
+const FD_PUBLISHED = 1;
+const FD_RESERVED = 2;
 const FD_INO = 4;
 const FD_OFFSET = 8; // uint64
 const FD_FLAGS = 16;
@@ -150,6 +169,11 @@ export interface StatResult {
   atime: number;
   uid: number;
   gid: number;
+}
+
+export interface SharedFsAppendOutcome {
+  readonly written: number;
+  readonly end: number;
 }
 
 export interface SharedFsStats {
@@ -258,6 +282,7 @@ const ERROR_MESSAGES: Record<number, string> = {
   [EMFILE]: "Too many open files",
   [EFBIG]: "File too large",
   [ENOSPC]: "No space left on device",
+  [EROFS]: "Read-only file system",
   [ENAMETOOLONG]: "File name too long",
   [ENOTEMPTY]: "Directory not empty",
   [ELOOP]: "Too many symbolic links",
@@ -317,8 +342,6 @@ export class SharedFS {
    * entry locations so each repeated exact-name lookup does not rescan every
    * preceding variable-length record.
    */
-  private static readonly DIR_INDEX_MIN_SIZE = 64 * 1024;
-
   private constructor(public readonly buffer: SharedArrayBuffer) {
     this.view = new DataView(buffer);
     this.i32 = new Int32Array(buffer);
@@ -1318,6 +1341,16 @@ export class SharedFS {
     return totalWritten;
   }
 
+  private invalidateSetIdAfterRegularFileMutation(
+    ino: number,
+    kind: "content" | "ownership",
+  ): void {
+    const inoOff = this.inodeOffset(ino);
+    const mode = this.r32(inoOff + INO_MODE);
+    const nextMode = modeAfterRegularFileMutation(mode, kind);
+    if (nextMode !== mode) this.w32(inoOff + INO_MODE, nextMode);
+  }
+
   private zeroInodeRange(ino: number, start: number, end: number): void {
     while (start < end) {
       const fileBlock = Math.floor(start / BLOCK_SIZE);
@@ -1594,7 +1627,7 @@ export class SharedFS {
     }
     if (cached) this.dirIndexes.delete(dirIno);
 
-    if (dirSize < SharedFS.DIR_INDEX_MIN_SIZE) return null;
+    if (dirSize < DIR_INDEX_MIN_SIZE) return null;
     return this.rebuildDirIndex(dirIno, generation, mutationSequence, dirSize);
   }
 
@@ -2255,24 +2288,79 @@ export class SharedFS {
 
   // ── FD table ─────────────────────────────────────────────────────
 
-  private fdAlloc(ino: number, flags: number, isDir: boolean): number {
+  /**
+   * Claim the lowest free slot without exposing a usable descriptor.
+   * fdGet() recognizes only FD_PUBLISHED, while the atomic reserved state
+   * prevents another SharedFS worker from selecting the same number.
+   */
+  private fdReserve(): number {
     for (let i = 0; i < MAX_FDS; i++) {
       const base = FD_TABLE_OFFSET + i * FD_ENTRY_SIZE;
       const idx = base >> 2;
-      const old = Atomics.compareExchange(this.i32, idx, 0, 1);
-      if (old === 0) {
-        this.w32(base + FD_INO, ino);
-        this.w64(base + FD_OFFSET, 0);
-        this.w32(base + FD_FLAGS, flags);
-        this.w32(base + FD_IS_DIR, isDir ? 1 : 0);
-        if (!this.inodeAddOpenRef(ino)) {
-          Atomics.store(this.i32, idx, 0);
-          return ENOENT;
-        }
-        return i;
-      }
+      const old = Atomics.compareExchange(
+        this.i32,
+        idx,
+        FD_FREE,
+        FD_RESERVED,
+      );
+      if (old === FD_FREE) return i;
     }
     return EMFILE;
+  }
+
+  private fdPrepare(
+    fd: number,
+    ino: number,
+    flags: number,
+    isDir: boolean,
+  ): void {
+    const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
+    if (Atomics.load(this.i32, base >> 2) !== FD_RESERVED) {
+      throw new SFSError(EIO);
+    }
+    this.w32(base + FD_INO, ino);
+    this.w64(base + FD_OFFSET, 0);
+    this.w32(base + FD_FLAGS, flags);
+    this.w32(base + FD_IS_DIR, isDir ? 1 : 0);
+  }
+
+  private fdPublish(fd: number): void {
+    const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
+    Atomics.store(this.i32, base >> 2, FD_PUBLISHED);
+  }
+
+  private fdReleaseReservation(fd: number): void {
+    const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
+    const old = Atomics.compareExchange(
+      this.i32,
+      base >> 2,
+      FD_RESERVED,
+      FD_FREE,
+    );
+    if (old !== FD_RESERVED) throw new SFSError(EIO);
+  }
+
+  private fdAlloc(ino: number, flags: number, isDir: boolean): number {
+    const fd = this.fdReserve();
+    if (fd < 0) return fd;
+    let referenced = false;
+    let published = false;
+    try {
+      this.fdPrepare(fd, ino, flags, isDir);
+      if (!this.inodeAddOpenRef(ino)) return ENOENT;
+      referenced = true;
+      this.fdPublish(fd);
+      published = true;
+      return fd;
+    } finally {
+      if (!published) {
+        try {
+          if (referenced) this.inodeDropOpenRef(ino);
+        } finally {
+          this.fdReleaseReservation(fd);
+        }
+      }
+    }
   }
 
   private fdGet(fd: number): {
@@ -2284,8 +2372,8 @@ export class SharedFS {
   } | null {
     if (fd < 0 || fd >= MAX_FDS) return null;
     const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
-    const inUse = Atomics.load(this.i32, base >> 2);
-    if (!inUse) return null;
+    const state = Atomics.load(this.i32, base >> 2);
+    if (state !== FD_PUBLISHED) return null;
     return {
       base,
       ino: this.r32(base + FD_INO),
@@ -2298,7 +2386,7 @@ export class SharedFS {
   private fdFree(fd: number): void {
     if (fd >= 0 && fd < MAX_FDS) {
       const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
-      Atomics.store(this.i32, base >> 2, 0);
+      Atomics.store(this.i32, base >> 2, FD_FREE);
     }
   }
 
@@ -2593,77 +2681,105 @@ export class SharedFS {
     const accMode = flags & O_ACCMODE;
     const creating = (flags & O_CREAT) !== 0;
     const exclusive = (flags & O_EXCL) !== 0;
+    const fd = this.fdReserve();
+    if (fd < 0) throw new SFSError(fd);
+    let referencedIno: number | null = null;
+    let published = false;
 
-    if (creating && exclusive) {
-      const existing = this.pathResolve(path, false);
-      if (existing >= 0) throw new SFSError(EEXIST);
-      if (existing !== ENOENT) throw new SFSError(existing);
-    }
+    try {
+      if (creating && exclusive) {
+        const existing = this.pathResolve(path, false);
+        if (existing >= 0) throw new SFSError(EEXIST);
+        if (existing !== ENOENT) throw new SFSError(existing);
+      }
 
-    let ino = this.pathResolve(path, true);
+      let ino = this.pathResolve(path, true);
+      let created = false;
 
-    if (ino < 0 && ino === ENOENT && creating) {
-      // Create the file
-      const { parentIno, name } = this.pathResolveParent(path);
-      this.inodeWriteLock(parentIno);
-      try {
-        // Double-check it doesn't exist now
-        const nameBytes = encoder.encode(name);
-        const existing = this.dirLookup(parentIno, nameBytes);
-        if (existing >= 0) {
-          if (exclusive) throw new SFSError(EEXIST);
-          ino = existing;
-        } else {
-          const newIno = this.inodeAlloc();
-          if (newIno < 0) throw new SFSError(ENOSPC);
+      if (ino < 0 && ino === ENOENT && creating) {
+        // Create the file
+        const { parentIno, name } = this.pathResolveParent(path);
+        this.inodeWriteLock(parentIno);
+        try {
+          // Double-check it doesn't exist now
+          const nameBytes = encoder.encode(name);
+          const existing = this.dirLookup(parentIno, nameBytes);
+          if (existing >= 0) {
+            if (exclusive) throw new SFSError(EEXIST);
+            ino = existing;
+          } else {
+            const newIno = this.inodeAlloc();
+            if (newIno < 0) throw new SFSError(ENOSPC);
 
-          const newOff = this.inodeOffset(newIno);
-          this.w32(newOff + INO_MODE, S_IFREG | (createMode & 0o7777));
-          this.w32(newOff + INO_LINK_COUNT, 1);
-          this.w64(newOff + INO_SIZE, 0);
-          const now = Date.now();
-          this.w64(newOff + INO_ATIME, now);
-          this.w64(newOff + INO_MTIME, now);
-          this.w64(newOff + INO_CTIME, now);
+            const newOff = this.inodeOffset(newIno);
+            this.w32(newOff + INO_MODE, S_IFREG | (createMode & 0o7777));
+            this.w32(newOff + INO_LINK_COUNT, 1);
+            this.w64(newOff + INO_SIZE, 0);
+            const now = Date.now();
+            this.w64(newOff + INO_ATIME, now);
+            this.w64(newOff + INO_MTIME, now);
+            this.w64(newOff + INO_CTIME, now);
 
-          const rc = this.dirAddEntry(parentIno, nameBytes, newIno);
-          if (rc < 0) {
-            this.inodeFree(newIno);
-            throw new SFSError(rc);
+            const rc = this.dirAddEntry(parentIno, nameBytes, newIno);
+            if (rc < 0) {
+              this.inodeFree(newIno);
+              throw new SFSError(rc);
+            }
+            ino = newIno;
+            created = true;
           }
-          ino = newIno;
+        } finally {
+          this.inodeWriteUnlock(parentIno);
         }
-      } finally {
-        this.inodeWriteUnlock(parentIno);
+      }
+
+      if (ino < 0) throw new SFSError(ino);
+
+      const inoOff = this.inodeOffset(ino);
+      const mode = this.r32(inoOff + INO_MODE);
+
+      if ((mode & S_IFMT) === S_IFDIR) {
+        if (accMode !== O_RDONLY) throw new SFSError(EISDIR);
+      }
+
+      // O_DIRECTORY: reject non-directories
+      if (flags & O_DIRECTORY && (mode & S_IFMT) !== S_IFDIR) {
+        throw new SFSError(ENOTDIR);
+      }
+
+      this.fdPrepare(fd, ino, flags, false);
+      if (!this.inodeAddOpenRef(ino)) throw new SFSError(ENOENT);
+      referencedIno = ino;
+
+      // Truncate if requested
+      if (flags & O_TRUNC) {
+        if ((mode & S_IFMT) === S_IFDIR) throw new SFSError(EISDIR);
+        this.inodeWriteLock(ino);
+        try {
+          const sizeChanged = this.r64(inoOff + INO_SIZE) !== 0;
+          this.inodeTruncate(ino, 0, true);
+          if (!created && sizeChanged) {
+            this.invalidateSetIdAfterRegularFileMutation(ino, "content");
+          }
+        } finally {
+          this.inodeWriteUnlock(ino);
+        }
+      }
+
+      this.fdPublish(fd);
+      published = true;
+      return fd;
+    } finally {
+      if (!published) {
+        try {
+          if (referencedIno !== null) {
+            this.inodeDropOpenRef(referencedIno);
+          }
+        } finally {
+          this.fdReleaseReservation(fd);
+        }
       }
     }
-
-    if (ino < 0) throw new SFSError(ino);
-
-    const inoOff = this.inodeOffset(ino);
-    const mode = this.r32(inoOff + INO_MODE);
-
-    if ((mode & S_IFMT) === S_IFDIR) {
-      if (accMode !== O_RDONLY) throw new SFSError(EISDIR);
-    }
-
-    // O_DIRECTORY: reject non-directories
-    if (flags & O_DIRECTORY && (mode & S_IFMT) !== S_IFDIR) {
-      throw new SFSError(ENOTDIR);
-    }
-
-    // Truncate if requested
-    if (flags & O_TRUNC) {
-      if ((mode & S_IFMT) === S_IFDIR) throw new SFSError(EISDIR);
-      this.inodeWriteLock(ino);
-      this.inodeTruncate(ino, 0, true);
-      this.inodeWriteUnlock(ino);
-    }
-
-    const fd = this.fdAlloc(ino, flags, false);
-    if (fd < 0) throw new SFSError(fd);
-
-    return fd;
   }
 
   close(fd: number): void {
@@ -2745,10 +2861,77 @@ export class SharedFS {
         data.length,
       );
       if (nwritten < 0) return nwritten;
+      if (nwritten > 0) {
+        this.invalidateSetIdAfterRegularFileMutation(entry.ino, "content");
+      }
       // Update offset
       const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
       this.w64(base + FD_OFFSET, offset + nwritten);
       return nwritten;
+    } finally {
+      this.inodeWriteUnlock(entry.ino);
+    }
+  }
+
+  append(
+    fd: number,
+    data: Uint8Array,
+    limit: number | null,
+  ): SharedFsAppendOutcome {
+    const entry = this.fdGet(fd);
+    if (!entry) throw new SFSError(EBADF);
+
+    const accMode = entry.flags & O_ACCMODE;
+    if (accMode === O_RDONLY) throw new SFSError(EBADF);
+    if (limit !== null && (!Number.isSafeInteger(limit) || limit < 0)) {
+      throw new SFSError(EINVAL);
+    }
+
+    this.inodeWriteLock(entry.ino);
+    try {
+      // WHY: resolve EOF and mutate the inode under the same lock. The
+      // caller's current O_APPEND bit is Rust-owned, so this operation is
+      // deliberately independent of the flags captured by SharedFS.open().
+      // The file-size ceiling is applied before releasing this same lock, so
+      // another SharedFS actor cannot move EOF between the limit decision and
+      // the append.
+      const inoOff = this.inodeOffset(entry.ino);
+      const offset = this.r64(inoOff + INO_SIZE);
+      if (!Number.isSafeInteger(offset) || offset < 0) {
+        throw new SFSError(EINVAL);
+      }
+      if (offset > MAX_FILE_SIZE) {
+        throw new SFSError(EFBIG);
+      }
+
+      if (limit !== null && offset >= limit) {
+        const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
+        this.w64(base + FD_OFFSET, offset);
+        return { written: 0, end: offset };
+      }
+
+      const limitAvailable = limit === null
+        ? data.length
+        : Math.min(data.length, limit - offset);
+      const fsAvailable = MAX_FILE_SIZE - offset;
+      if (limitAvailable > fsAvailable) {
+        throw new SFSError(EFBIG);
+      }
+      const writable = data.subarray(0, limitAvailable);
+      const nwritten = this.inodeWriteData(
+        entry.ino,
+        offset,
+        writable,
+        writable.length,
+      );
+      if (nwritten < 0) throw new SFSError(nwritten);
+      if (nwritten > 0) {
+        this.invalidateSetIdAfterRegularFileMutation(entry.ino, "content");
+      }
+      const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
+      const end = offset + nwritten;
+      this.w64(base + FD_OFFSET, end);
+      return { written: nwritten, end };
     } finally {
       this.inodeWriteUnlock(entry.ino);
     }
@@ -2768,7 +2951,16 @@ export class SharedFS {
       if (offset > MAX_FILE_SIZE || data.length > MAX_FILE_SIZE - offset) {
         throw new SFSError(EFBIG);
       }
-      return this.inodeWriteData(entry.ino, offset, data, data.length);
+      const nwritten = this.inodeWriteData(
+        entry.ino,
+        offset,
+        data,
+        data.length,
+      );
+      if (nwritten > 0) {
+        this.invalidateSetIdAfterRegularFileMutation(entry.ino, "content");
+      }
+      return nwritten;
     } finally {
       this.inodeWriteUnlock(entry.ino);
     }
@@ -2806,7 +2998,13 @@ export class SharedFS {
 
     this.inodeWriteLock(entry.ino);
     try {
+      const sizeChanged = this.r64(
+        this.inodeOffset(entry.ino) + INO_SIZE,
+      ) !== length;
       this.inodeTruncate(entry.ino, length, true);
+      if (sizeChanged) {
+        this.invalidateSetIdAfterRegularFileMutation(entry.ino, "content");
+      }
     } finally {
       this.inodeWriteUnlock(entry.ino);
     }
@@ -3290,10 +3488,7 @@ export class SharedFS {
     if (uid !== UID_GID_UNCHANGED) this.w32(off + INO_UID, uid);
     if (gid !== UID_GID_UNCHANGED) this.w32(off + INO_GID, gid);
 
-    const mode = this.r32(off + INO_MODE);
-    if ((mode & S_IFMT) === S_IFREG && (mode & EXECUTE_BITS) !== 0) {
-      this.w32(off + INO_MODE, mode & ~(S_ISUID | S_ISGID));
-    }
+    this.invalidateSetIdAfterRegularFileMutation(ino, "ownership");
     this.w64(off + INO_CTIME, Date.now());
   }
 

@@ -82,33 +82,6 @@ browser product that ships them.
 
 ## Kernel
 
-### Per-process ordinary OFD metadata still breaks POSIX fork sharing
-Open File Descriptions live inside `Process` (`crates/kernel/src/ofd.rs`'s
-`OfdTable`), not in a kernel-global table. POSIX requires a child descriptor to
-refer to the same open file description as its parent counterpart. Kandelo now
-retains exact refcounted backings for stateful objects that cannot be safely
-reconstructed: pipes, sockets, PTYs, eventfd, timerfd, signalfd, memfd, and
-procfs snapshots/cursors. Those fixes preserve the underlying object state but
-do not make the ordinary OFD record itself global.
-
-Regular-file seek positions, status flags, and owners are therefore still
-deep-copied at fork/spawn and when `SCM_RIGHTS` installs a transferred regular
-file in another process. The ancillary queue already preserves the stable
-`OfdId`, `FileId`, backing lifetime, and OFD/`flock()` ownership; the remaining
-gap is the mutable ordinary-file OFD metadata itself. A program that forks or
-passes a regular fd and coordinates writes through it can observe divergent
-positions or flag changes.
-
-The cleanest redesign is still to move OFDs to a kernel-global `OfdTable` and
-have `Process` hold `FdTable<OfdRef>`, where `OfdRef` is a stable index. Fork's
-fd inheritance then becomes the pointer/refcount operation POSIX describes,
-and much of the per-resource inheritance bookkeeping can collapse into the
-global OFD lifetime.
-
-Cost of the redesign: locking / borrow-checker complexity around the global table, plus a careful migration that doesn't regress the syscall hot path. Worth scheduling on the next big initiative — the savings compound across fork, spawn, exec, and dup.
-
-**Files:** `crates/kernel/src/ofd.rs`, `crates/kernel/src/process.rs`, `crates/kernel/src/process_table.rs`, `crates/kernel/src/fork.rs`, `crates/kernel/src/syscalls.rs`
-
 ### `sys_openat` duplicates `sys_open` logic
 `sys_openat` reimplements umask application, file type determination, creation flag stripping, and O_CLOEXEC handling rather than sharing code with `sys_open`. Consider extracting a shared internal helper or implementing `sys_open` as `sys_openat(proc, host, AT_FDCWD, path, oflags, mode)`.
 

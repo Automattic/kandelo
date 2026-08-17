@@ -167,39 +167,39 @@ describe("flat Homebrew bottle selection", () => {
     }
   });
 
-  it("admits only the experimental and canonical main-shell product tuples", () => {
-    const experimental = selectionFixture();
-    const mainShell = {
-      ...selectionFixture(),
-      name: "main-shell-abi42-wasm32",
-      requestedVfsFilename: "shell.vfs.zst",
-      resourcePolicy: "kandelo-homebrew-vfs-main-shell-v1",
-    };
+  it("binds the output basename to the selection's exact ABI", () => {
+    const fixture = selectionFixture();
+    fixture.name = "experimental-abi43-fixture";
+    fixture.kandeloAbi = 43;
+    fixture.requestedVfsFilename =
+      "kandelo-homebrew-experimental-abi43-wasm32.vfs.zst";
+    for (const bottle of fixture.bottles) bottle.kandeloAbi = 43;
 
-    expect(projectHomebrewBottleSelection(experimental)).toMatchObject({
-      name: "experimental-abi42-fixture",
-      requestedVfsFilename:
-        "kandelo-homebrew-experimental-abi42-wasm32.vfs.zst",
-      resourcePolicy: "kandelo-homebrew-vfs-generous-v1",
-    });
-    expect(projectHomebrewBottleSelection(mainShell)).toMatchObject({
-      name: "main-shell-abi42-wasm32",
-      requestedVfsFilename: "shell.vfs.zst",
-      resourcePolicy: "kandelo-homebrew-vfs-main-shell-v1",
-    });
+    expect(() => projectHomebrewBottleSelection(fixture, { expectedAbi: 43 }))
+      .not.toThrow();
 
-    for (const crossed of [
-      { ...experimental, resourcePolicy: "kandelo-homebrew-vfs-main-shell-v1" },
-      { ...mainShell, resourcePolicy: "kandelo-homebrew-vfs-generous-v1" },
-      { ...mainShell, name: "experimental-abi42-main-shell" },
-      {
-        ...experimental,
-        requestedVfsFilename: "shell.vfs.zst",
-      },
+    for (const requestedVfsFilename of [
+      "kandelo-homebrew-experimental-abi42-wasm32.vfs.zst",
+      "kandelo-homebrew-experimental-abi430-wasm32.vfs.zst",
+      "kandelo-homebrew-experimental-xabi43x-wasm32.vfs.zst",
     ]) {
-      expect(() => projectHomebrewBottleSelection(crossed))
-        .toThrow(/supported tuple/);
+      expect(() => projectHomebrewBottleSelection({
+        ...fixture,
+        requestedVfsFilename,
+      })).toThrow(/requestedVfsFilename.*abi43/);
     }
+  });
+
+  it("admits the ABI-versioned main-shell selection form", () => {
+    const fixture = selectionFixture();
+    fixture.name = "main-shell-abi43-wasm32";
+    fixture.kandeloAbi = 43;
+    fixture.requestedVfsFilename = "shell.vfs.zst";
+    fixture.resourcePolicy = "kandelo-homebrew-vfs-main-shell-v1";
+    for (const bottle of fixture.bottles) bottle.kandeloAbi = 43;
+
+    expect(() => projectHomebrewBottleSelection(fixture, { expectedAbi: 43 }))
+      .not.toThrow();
   });
 
   it("preserves bottle order in stable canonical encoding and rejects noncanonical bytes", () => {

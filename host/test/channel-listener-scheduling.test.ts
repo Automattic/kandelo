@@ -1,10 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CentralizedKernelWorker } from "../src/kernel-worker";
 import {
+  createCentralizedKernelWorkerTestDouble,
+} from "../src/kernel-worker";
+import {
+  ABI_SYSCALLS,
+  CHANNEL_STATUS_COMPLETE,
   CHANNEL_STATUS_IDLE,
   CHANNEL_STATUS_PENDING,
+  CH_ERRNO,
+  CH_RETURN,
   CH_STATUS,
+  CH_SYSCALL,
 } from "../src/generated/abi";
+import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 describe("browser channel-listener scheduling", () => {
   afterEach(() => {
@@ -14,36 +22,39 @@ describe("browser channel-listener scheduling", () => {
   it("defers every batch-1 relisten through setImmediate, not queueMicrotask", () => {
     const tasks = controlTaskQueues();
     const { worker, channel } = createScheduler();
-    const listenOnChannel = vi.fn();
-    worker.listenOnChannel = listenOnChannel;
+    const waitAsync = vi.spyOn(Atomics, "waitAsync").mockReturnValue({
+      async: true,
+      value: new Promise<"ok">(() => {}),
+    } as any);
 
     worker.relistenChannel(channel);
 
     expect(worker.relistenBatchSize).toBe(1);
     expect(tasks.setImmediate).toHaveBeenCalledOnce();
     expect(tasks.queueMicrotask).not.toHaveBeenCalled();
-    expect(listenOnChannel).not.toHaveBeenCalled();
+    expect(waitAsync).not.toHaveBeenCalled();
 
     tasks.runNextImmediate();
-    expect(listenOnChannel).toHaveBeenCalledOnce();
-    expect(listenOnChannel).toHaveBeenCalledWith(channel);
+    expect(waitAsync).toHaveBeenCalledOnce();
   });
 
   it("defers an already-pending batch-1 dispatch", () => {
     const tasks = controlTaskQueues();
-    const { worker, channel } = createScheduler(CHANNEL_STATUS_PENDING);
-    const handleSyscall = vi.fn();
-    worker.handleSyscall = handleSyscall;
+    const { handleChannel, worker, channel } =
+      createScheduler(CHANNEL_STATUS_PENDING);
 
     worker.listenOnChannel(channel);
 
     expect(tasks.setImmediate).toHaveBeenCalledOnce();
     expect(tasks.queueMicrotask).not.toHaveBeenCalled();
-    expect(handleSyscall).not.toHaveBeenCalled();
+    expect(handleChannel).not.toHaveBeenCalled();
 
     tasks.runNextImmediate();
-    expect(handleSyscall).toHaveBeenCalledOnce();
-    expect(handleSyscall).toHaveBeenCalledWith(channel);
+    expect(handleChannel).toHaveBeenCalledOnce();
+    expect(Atomics.load(
+      channel.i32View,
+      CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
+    )).toBe(CHANNEL_STATUS_COMPLETE);
   });
 
   it("arms Atomics.waitAsync for an idle channel instead of polling", async () => {
@@ -53,10 +64,15 @@ describe("browser channel-listener scheduling", () => {
     const waited = new Promise<"ok">((resolve) => {
       wake = resolve;
     });
-    const waitAsync = vi.spyOn(Atomics, "waitAsync").mockReturnValue({
-      async: true,
-      value: waited,
-    } as any);
+    const waitAsync = vi.spyOn(Atomics, "waitAsync")
+      .mockReturnValueOnce({
+        async: true,
+        value: waited,
+      } as any)
+      .mockReturnValueOnce({
+        async: true,
+        value: new Promise<"ok">(() => {}),
+      } as any);
 
     worker.listenOnChannel(channel);
 
@@ -70,21 +86,17 @@ describe("browser channel-listener scheduling", () => {
     expect(tasks.setImmediate).not.toHaveBeenCalled();
     expect(tasks.queueMicrotask).not.toHaveBeenCalled();
 
-    const listenAgain = vi.fn();
-    worker.listenOnChannel = listenAgain;
     wake("ok");
     await waited;
     await Promise.resolve();
 
-    expect(listenAgain).toHaveBeenCalledOnce();
-    expect(listenAgain).toHaveBeenCalledWith(channel);
+    expect(waitAsync).toHaveBeenCalledTimes(2);
   });
 
   it("drops an already-pending dispatch when exec replaces its channel", () => {
     const tasks = controlTaskQueues();
-    const { worker, channel } = createScheduler(CHANNEL_STATUS_PENDING);
-    const handleSyscall = vi.fn();
-    worker.handleSyscall = handleSyscall;
+    const { handleChannel, worker, channel } =
+      createScheduler(CHANNEL_STATUS_PENDING);
 
     worker.listenOnChannel(channel);
 
@@ -98,15 +110,13 @@ describe("browser channel-listener scheduling", () => {
     worker.activeChannels = [replacement];
     tasks.runNextImmediate();
 
-    expect(handleSyscall).not.toHaveBeenCalled();
+    expect(handleChannel).not.toHaveBeenCalled();
   });
 
   it("makes a queued relisten a no-op after unregister", () => {
     const tasks = controlTaskQueues();
     const { worker, channel } = createScheduler(CHANNEL_STATUS_IDLE);
     const waitAsync = vi.spyOn(Atomics, "waitAsync");
-    const handleSyscall = vi.fn();
-    worker.handleSyscall = handleSyscall;
 
     worker.relistenChannel(channel);
     worker.processes.delete(channel.pid);
@@ -114,19 +124,31 @@ describe("browser channel-listener scheduling", () => {
     tasks.runNextImmediate();
 
     expect(waitAsync).not.toHaveBeenCalled();
-    expect(handleSyscall).not.toHaveBeenCalled();
   });
 });
 
 function createScheduler(status = CHANNEL_STATUS_IDLE): {
   worker: any;
   channel: any;
+  handleChannel: ReturnType<typeof vi.fn>;
 } {
   const pid = 7;
   const memory = createMemory();
   const channel = createChannel(pid, memory);
   Atomics.store(channel.i32View, CH_STATUS / Int32Array.BYTES_PER_ELEMENT, status);
-  const worker = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+  new DataView(memory.buffer).setUint32(
+    CH_SYSCALL,
+    ABI_SYSCALLS.Getpid,
+    true,
+  );
+  const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+  const handleChannel = vi.fn((scratchPtr: number) => {
+    const view = new DataView(kernelMemory.buffer, scratchPtr);
+    view.setBigInt64(CH_RETURN, BigInt(pid), true);
+    view.setUint32(CH_ERRNO, 0, true);
+    return 0;
+  });
+  const worker = Object.assign(createCentralizedKernelWorkerTestDouble(), {
     processes: new Map([[pid, { pid, memory, channels: [channel] }]]),
     activeChannels: [channel],
     stoppedPids: new Set(),
@@ -136,7 +158,22 @@ function createScheduler(status = CHANNEL_STATUS_IDLE): {
     relistenBatchSize: 1,
     relistenCount: 0,
   });
-  return { worker, channel };
+  installKernelWorkerTestScratch(
+    worker,
+    kernelMemory,
+    128,
+    4,
+    {
+      kernelExports: {
+        kernel_dequeue_signal: vi.fn(() => 0),
+        kernel_drain_wakeup_events: vi.fn(() => 0),
+        kernel_get_process_exit_signal: vi.fn(() => -1),
+        kernel_handle_channel: handleChannel,
+        kernel_set_current_tid: vi.fn(() => 0),
+      },
+    },
+  );
+  return { handleChannel, worker, channel };
 }
 
 function createMemory(): WebAssembly.Memory {

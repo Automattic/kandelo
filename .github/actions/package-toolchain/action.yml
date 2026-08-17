@@ -27,7 +27,7 @@ runs:
       run: |
         set -euo pipefail
         musl_gitlink="$(git rev-parse HEAD:libc/musl)"
-        KEY="musl-sysroot-v5-${{ runner.os }}-$musl_gitlink-${{ hashFiles('flake.nix', 'flake.lock', 'rust-toolchain.toml', 'scripts/dev-shell.sh', 'scripts/build-musl.sh', 'scripts/install-overlay-headers.sh', 'packages/registry/libcxx/**', 'libc/musl-overlay/**', 'libc/glue/**', 'sdk/activate.sh', 'sdk/bin/**', 'sdk/config.site', 'sdk/package.json', 'sdk/package-lock.json', 'sdk/src/**') }}"
+        KEY="musl-sysroot-v6-${{ runner.os }}-$musl_gitlink-${{ hashFiles('.github/actions/package-toolchain/**', 'flake.nix', 'flake.lock', 'rust-toolchain.toml', 'scripts/dev-shell.sh', 'scripts/build-musl.sh', 'scripts/install-overlay-headers.sh', 'packages/registry/libcxx/**', 'libc/musl-overlay/**', 'libc/glue/**', 'sdk/activate.sh', 'sdk/bin/**', 'sdk/config.site', 'sdk/package.json', 'sdk/package-lock.json', 'sdk/src/**') }}"
         echo "value=$KEY" >> "$GITHUB_OUTPUT"
         echo "toolchain-cache key: $KEY"
 
@@ -56,16 +56,55 @@ runs:
               build-deps path libcxx --arch "$arch")"
             if [ "$arch" = "wasm64" ]; then sysroot="sysroot64"; else sysroot="sysroot"; fi
             mkdir -p "$sysroot/lib" "$sysroot/include/c++"
-            ln -sf "$prefix/lib/libc++.a"    "$sysroot/lib/libc++.a"
-            ln -sf "$prefix/lib/libc++abi.a" "$sysroot/lib/libc++abi.a"
+            # WHY: the resolver prefix is runner-local and is neither cached nor
+            # packed below. Copy these inputs so downstream test shards receive
+            # a self-contained sysroot instead of dangling absolute symlinks.
+            rm -f "$sysroot/lib/libc++.a" "$sysroot/lib/libc++abi.a"
+            install -m 0644 "$prefix/lib/libc++.a" "$sysroot/lib/libc++.a"
+            install -m 0644 "$prefix/lib/libc++abi.a" "$sysroot/lib/libc++abi.a"
             rm -rf "$sysroot/include/c++/v1"
-            ln -sfn "$prefix/include/c++/v1" "$sysroot/include/c++/v1"
+            cp -a "$prefix/include/c++/v1" "$sysroot/include/c++/v1"
           done
         '
 
     - name: Build fork-instrument host tool
       shell: bash
       run: bash scripts/dev-shell.sh bash scripts/build-fork-instrument-tool.sh
+
+    - name: Validate portable toolchain sysroots
+      shell: bash
+      run: |
+        set -euo pipefail
+        for sysroot in sysroot sysroot64; do
+          for archive in libc++.a libc++abi.a; do
+            path="$sysroot/lib/$archive"
+            if [ ! -f "$path" ] || [ -L "$path" ]; then
+              echo "package-toolchain: non-portable libc++ archive: $path" >&2
+              exit 1
+            fi
+          done
+          headers="$sysroot/include/c++/v1"
+          if [ ! -d "$headers" ] || [ -L "$headers" ]; then
+            echo "package-toolchain: non-portable libc++ headers: $headers" >&2
+            exit 1
+          fi
+
+          # WHY: tar preserves symlinks, but it does not carry targets outside
+          # the archived sysroot. Reject any escaping or dangling link before
+          # publication so consumers cannot receive a locally valid artifact
+          # that becomes incomplete after extraction.
+          sysroot_root="$(realpath "$sysroot")"
+          while IFS= read -r -d '' link; do
+            target="$(realpath "$link" 2>/dev/null || true)"
+            case "$target" in
+              "$sysroot_root"/*) ;;
+              *)
+                echo "package-toolchain: sysroot link escapes archive: $link" >&2
+                exit 1
+                ;;
+            esac
+          done < <(find "$sysroot" -type l -print0)
+        done
 
     - name: Pack toolchain sysroots + host tools
       shell: bash

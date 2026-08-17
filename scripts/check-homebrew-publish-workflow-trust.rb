@@ -42,14 +42,12 @@ PRIVILEGED_RECIPE_JOBS = {
   ".github/workflows/reusable-homebrew-bottle-publish.yml:verify-bottle" =>
     "/usr/bin/python3 kandelo/scripts/" \
       "prepare-homebrew-recipe-host-runtime.py",
-  ".github/workflows/staging-build.yml:preflight" =>
-    "/usr/bin/python3 scripts/prepare-homebrew-recipe-host-runtime.py",
 }.freeze
 ROOTFS_PUBLICATION_SELECTION_PATH = File.join(
   REPO_ROOT, "scripts/homebrew-rootfs-publication-selection.sh"
 )
 ROOTFS_PUBLICATION_SELECTION_SHA256 =
-  "f1dfb9efdb1dcb81990b907c3ebee44cfa6cee87304af5fc54161f3fe4fc67c2"
+  "4423cdc4c9a600400b60660890765e4b0ba4163b4341440f49e4727391888c06"
 TAP_CALLER_ROOT = File.join(REPO_ROOT, "homebrew/homebrew-tap-core/.github/workflows")
 CHECKOUT_ACTION = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
 # WHY: the reusable publishers freeze v6 in their reviewed step digests. This
@@ -1108,37 +1106,13 @@ def check_native_compatibility_workflow(workflow)
         "native compatibility workflow has unexpected top-level configuration")
   check(workflow["name"] == "Homebrew native publisher compatibility",
         "native compatibility workflow name changed")
-  check(workflow_events(workflow) == {
-    "pull_request" => {
-      "paths" => [
-        ".github/workflows/homebrew-native-publisher-compatibility.yml",
-        ".github/workflows/reusable-homebrew-bottle-publish.yml",
-        ".github/workflows/reusable-homebrew-closed-selection-publish.yml",
-        ".github/workflows/reusable-homebrew-prefix-first-child-publish.yml",
-        "flake.lock",
-        "flake.nix",
-        "homebrew/**",
-        "scripts/build-fork-instrument-tool.sh",
-        "scripts/build-musl.sh",
-        "scripts/check-homebrew-publish-workflow-trust.rb",
-        "scripts/dev-shell.sh",
-        "scripts/homebrew-*",
-        "scripts/materialize-exact-package-generations.sh",
-        "scripts/materialize-resolver-binaries.sh",
-        "scripts/prepare-homebrew-package-materializer.sh",
-        "scripts/require-exact-kandelo-main.sh",
-        "scripts/resolve-binary.sh",
-        "scripts/seal-homebrew-formula-checker.sh",
-        "scripts/test-homebrew-*",
-        "scripts/validate-software-gallery.mjs",
-      ],
-    },
-  }, "native compatibility workflow trigger surface changed")
+  check(workflow_events(workflow) == { "workflow_dispatch" => nil },
+        "native compatibility workflow must remain manual-only")
   check(exact_permissions?(workflow["permissions"], { "contents" => "read" }),
         "native compatibility workflow permission ceiling changed")
   check(workflow["concurrency"] == {
     "group" =>
-      "homebrew-native-publisher-${{ github.event.pull_request.number }}",
+      "homebrew-native-publisher-${{ github.run_id }}",
     "cancel-in-progress" => true,
   }, "native compatibility workflow concurrency changed")
   check_common(workflow, "native compatibility workflow")
@@ -1168,7 +1142,7 @@ def check_native_compatibility_workflow(workflow)
   check(checkout["uses"] == NATIVE_COMPATIBILITY_CHECKOUT_ACTION &&
         checkout["with"] == {
           "persist-credentials" => false,
-          "ref" => "${{ github.event.pull_request.head.sha }}",
+          "ref" => "${{ github.sha }}",
           "submodules" => false,
         }, "native compatibility source checkout changed")
   brew_checkout = named_step(steps, "Checkout exact reviewed Homebrew source")
@@ -4116,11 +4090,12 @@ def check_publisher(workflow)
   bottle_builder = File.read(File.join(REPO_ROOT, "scripts/homebrew-bottle-build.sh"))
   check(
     bottle_builder.scan("homebrew_local_tap_clone_url").length == 2 &&
+      bottle_builder.scan("homebrew_clone_tap").length == 2 &&
       bottle_builder.include?(
-        '"$BREW_BIN" tap "$TAP_NAME" "$PRIMARY_TAP_CLONE_URL"'
+        'homebrew_clone_tap "$BREW_BIN" "$TAP_NAME" "$PRIMARY_TAP_CLONE_URL"'
       ) &&
       bottle_builder.include?(
-        '"$BREW_BIN" tap "$dependency_tap" ' \
+        '"$BREW_BIN" "$dependency_tap" ' \
         '"$dependency_tap_clone_url"'
       ) &&
       !bottle_builder.include?(
@@ -4310,13 +4285,13 @@ def check_publisher(workflow)
   )
   [
     'keys == ["build", "build_and_test", "formula", "full_name", "native_requirements", "runtime_and_test", "schema", "tap", "target_taps"]',
-    '.schema == 4',
+    '.schema == 5',
     '(.build | type == "array" and length <= 128)',
     '(.build_and_test | type == "array" and length <= 128)',
     '(.runtime_and_test | type == "array" and length <= 128)',
     'keys == ["class", "formula", "sentinel", "tags"]',
     '--slurpfile resolved "$RESOLVED_TAPS"',
-    'map({tap_name, tap_repository, tap_commit}) | sort_by(.tap_name)',
+    'checkout_commit: (.checkout_commit // .tap_commit)',
     '(.native_requirements == (.native_requirements | sort_by(.class)))',
     '((.native_requirements | map(.class)) == (.native_requirements | map(.class) | unique))',
     '(.tags == ["build"] or .tags == ["build", "test"])',
@@ -4390,7 +4365,7 @@ def check_publisher(workflow)
           "static Formula closure lacks immutable tap identity binding: #{fragment}")
   end
   tier2_plan_output = formula_closure[/elsif tier2_bridge_only(.*?)elsif bottle_identity_only/m, 1]
-  check(tier2_plan_output&.include?('"schema" => tap_recipe.nil? ? 2 : 3') &&
+  check(tier2_plan_output&.include?('"schema" => tap_recipe.nil? ? 4 : 3') &&
         tier2_plan_output&.include?('plan["tap_recipe"] = tap_recipe unless tap_recipe.nil?') &&
         !tier2_plan_output&.include?('"schema" => 1'),
         "static Formula closure does not emit the exact bridge/recipe plan schema")
@@ -4423,9 +4398,9 @@ def check_publisher(workflow)
           "tap-recipe preflight trust boundary lacks #{fragment}")
   end
   host_dependency_plan_output = formula_closure[/elsif host_dependencies_only(.*?)elsif direct_only/m, 1]
-  check(host_dependency_plan_output&.include?('"schema" => 4') &&
+  check(host_dependency_plan_output&.include?('"schema" => 5') &&
         host_dependency_plan_output&.include?('"native_requirements" => native_requirements'),
-        "static Formula closure does not emit the sealed schema-4 native Requirement plan")
+        "static Formula closure does not emit the sealed schema-5 native Requirement plan")
   check(!formula_closure.include?("legacy_requires") &&
         formula_closure.include?(
           "if runtime_initializer_index.nil? || runtime_assignment_index != runtime_initializer_index + 1"
@@ -4473,7 +4448,7 @@ def check_publisher(workflow)
     'bash "$KANDELO_ROOT/scripts/homebrew-validate-host-dependency-plan.sh"',
     'jq -r \'.build_and_test[]\' "$HOST_DEPENDENCY_PLAN" >"$HOST_DEPENDENCY_LIST"',
     'TIER2_ATTESTATION="$CONTROL_DIR/tier2-attestation.json"',
-    '(.schema == 2 or .schema == 3)',
+    '(.schema == 4 or .schema == 3)',
     'keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tap_recipe", "tier2_bridge"]',
     '.tier2_bridge == null and .support_sha256 != null',
     '--repo-root "$KANDELO_ROOT" --tap-root "$TAP_ROOT" --arch "$ARCH"',
@@ -4481,7 +4456,8 @@ def check_publisher(workflow)
     'DEPENDENCY_TAP_ROOTS=()',
     'export HOMEBREW_KANDELO_PRIMARY_TAP_ROOT="$TAPPED_TAP_ROOT"',
     'homebrew_local_tap_clone_url "$dependency_root"',
-    '"$BREW_BIN" tap "$dependency_tap" "$dependency_tap_clone_url"',
+    'homebrew_clone_tap',
+    '"$BREW_BIN" "$dependency_tap" "$dependency_tap_clone_url"',
     'DEPENDENCY_TAP_ROOTS+=("$dependency_root")',
     '"${DEPENDENCY_TAP_ROOTS[@]}"',
     'filter_target_dependencies()',
@@ -4511,10 +4487,15 @@ def check_publisher(workflow)
   ].each do |fragment|
     check(bottle_builder.include?(fragment), "reviewed bottle builder lacks #{fragment}")
   end
-  retained_receipt_bottle_command = <<~'SHELL'.chomp
-    run_brew_for_kandelo_bottles "$BREW_BIN" bottle \
-        --json --keep-old --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF"
+  retained_receipt_bottle_command = <<~'SHELL'
+    bottle_args=(--json --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF")
+    if [ -z "$STAGING_CANDIDATE_ABI" ]; then
+      bottle_args=(--json --keep-old --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF")
+    fi
+    run_brew_for_kandelo_bottles "$BREW_BIN" bottle "${bottle_args[@]}"
   SHELL
+  retained_receipt_bottle_command = retained_receipt_bottle_command
+    .lines.map { |line| "  #{line}" }.join.chomp
   check(bottle_builder.include?(retained_receipt_bottle_command) &&
         !bottle_builder.include?("--no-rebuild") &&
         !bottle_builder.match?(/bottle \\\n\s+--only-json-tab/),
@@ -5123,7 +5104,6 @@ def check_publisher(workflow)
     [
       '.dependencies[] | [.tap_name, .root, .tap_commit] | @tsv',
       'homebrew_local_tap_clone_url "$dependency_root"',
-      '"$BREW_BIN" tap "$dependency_tap" "$dependency_tap_clone_url"',
       'tapped_dependency_root="$("$BREW_BIN" --repository "$dependency_tap")"',
       'locked_dependency_root="$(cd "$dependency_root" && pwd -P)"',
       '[ "$tapped_dependency_root" != "$locked_dependency_root" ]',
@@ -5133,6 +5113,12 @@ def check_publisher(workflow)
       check(formula_runner.include?(fragment),
             "Formula runner immutable dependency tap binding lacks #{fragment}")
     end
+    check(
+      formula_runner.match?(
+        /"\$BREW_BIN" (?:tap )?"\$dependency_tap" "\$dependency_tap_clone_url"/
+      ),
+      "Formula runner immutable dependency tap binding lacks its exact clone arguments"
+    )
     dependency_clean_index = formula_runner.index(
       '[ -z "$(git -C "$tapped_dependency_root" status --short --untracked-files=all)" ]'
     )
@@ -5241,7 +5227,7 @@ def check_publisher(workflow)
     end
   end
   builder_tap_clone_index = bottle_builder.index(
-    '"$BREW_BIN" tap "$TAP_NAME" "$PRIMARY_TAP_CLONE_URL"'
+    'homebrew_clone_tap "$BREW_BIN" "$TAP_NAME" "$PRIMARY_TAP_CLONE_URL"'
   )
   builder_clean_clone_index = bottle_builder.index(
     'git -C "$TAPPED_TAP_ROOT" rev-parse HEAD'
@@ -5504,9 +5490,11 @@ def check_publisher(workflow)
     "FileUtils.touch(bottle_path, mtime: tab_source_modified_time)",
     "def self.dependency_plan(formula = nil, require_match: true)",
     "def self.selected_tap_formula?(formula)",
-    'tap.keys.sort == %w[tap_commit tap_name tap_repository]',
+    'tap.keys.sort == %w[checkout_commit tap_commit tap_name tap_repository]',
     'tap_repository == "#{owner}/homebrew-#{short_name}"',
     'TAP_GIT_HEAD.match?(tap["tap_commit"])',
+    'TAP_GIT_HEAD.match?(tap["checkout_commit"])',
+    'target_tap&.fetch("checkout_commit")',
     'target_names == target_names.sort.uniq',
     'tap.fetch("tap_name")',
     'PLAN_FILENAME = ".kandelo-publisher-build-dependencies.json"',
@@ -5519,7 +5507,7 @@ def check_publisher(workflow)
     'NATIVE_SENTINEL_CONSTANT = :KANDELO_NATIVE_SENTINEL',
     'Dependency.new(requirement.fetch("formula"), [:build])',
     'actual == expected',
-    'plan["schema"] == 4',
+    'plan["schema"] == 5',
     "MAX_DEPENDENCIES = 128",
     "value.length <= MAX_DEPENDENCIES",
     "direct_native_build_dependencies.sort_by(&:name)",
@@ -9565,8 +9553,9 @@ end
 def self_test_privileged_recipe_host_runtime(workflows)
   expect_rejection("missing host-runtime preparation") do
     mutated = deep_copy(workflows)
-    steps = mutated.fetch(".github/workflows/staging-build.yml")
-      .fetch("jobs").fetch("preflight").fetch("steps")
+    steps = mutated.fetch(
+      ".github/workflows/reusable-homebrew-bottle-publish.yml"
+    ).fetch("jobs").fetch("build-and-test").fetch("steps")
     steps.reject! { |step| step["name"] == HOST_RUNTIME_PREPARATION_STEP }
     check_privileged_recipe_host_runtime(mutated)
   end
@@ -9590,8 +9579,10 @@ def self_test_privileged_recipe_host_runtime(workflows)
   expect_rejection("caller-selected host-runtime preparation") do
     mutated = deep_copy(workflows)
     step = mutate_named_step(
-      mutated.fetch(".github/workflows/staging-build.yml"),
-      "preflight",
+      mutated.fetch(
+        ".github/workflows/reusable-homebrew-bottle-publish.yml"
+      ),
+      "build-and-test",
       HOST_RUNTIME_PREPARATION_STEP
     )
     step["run"] = "#{step.fetch('run')} --root /tmp/usr"
@@ -9601,8 +9592,10 @@ def self_test_privileged_recipe_host_runtime(workflows)
   expect_rejection("conditional host-runtime preparation") do
     mutated = deep_copy(workflows)
     step = mutate_named_step(
-      mutated.fetch(".github/workflows/staging-build.yml"),
-      "preflight",
+      mutated.fetch(
+        ".github/workflows/reusable-homebrew-bottle-publish.yml"
+      ),
+      "build-and-test",
       HOST_RUNTIME_PREPARATION_STEP
     )
     step["if"] = "${{ false }}"
@@ -9612,8 +9605,10 @@ def self_test_privileged_recipe_host_runtime(workflows)
   expect_rejection("ignored host-runtime preparation failure") do
     mutated = deep_copy(workflows)
     step = mutate_named_step(
-      mutated.fetch(".github/workflows/staging-build.yml"),
-      "preflight",
+      mutated.fetch(
+        ".github/workflows/reusable-homebrew-bottle-publish.yml"
+      ),
+      "build-and-test",
       HOST_RUNTIME_PREPARATION_STEP
     )
     step["continue-on-error"] = true

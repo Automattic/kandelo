@@ -44,6 +44,25 @@ export interface StatfsResult {
 /** `null` represents a successful indeterminate/unsupported-option result. */
 export type PathconfValue = number | null;
 
+/**
+ * An exact signed i64 file offset. Ordinary offsets remain numbers; bigint is
+ * used when a Wasm64 caller's value cannot be represented safely as a number.
+ */
+export type HostFileOffset = number | bigint;
+
+/**
+ * The result of one append operation while the backing still owns its EOF
+ * serialization boundary.
+ *
+ * `end` is the file position immediately after the bytes reported by
+ * `written`. Keeping both values prevents callers from reconstructing the
+ * append start from a stale pre-write stat.
+ */
+export interface AppendOutcome {
+  readonly written: number;
+  readonly end: HostFileOffset;
+}
+
 export interface PlatformIO {
   /**
    * Resolve and materialize deferred backing for a path before a synchronous
@@ -56,17 +75,33 @@ export interface PlatformIO {
   read(
     handle: number,
     buffer: Uint8Array,
-    offset: number | null,
+    offset: HostFileOffset | null,
     length: number,
   ): number;
   write(
     handle: number,
     buffer: Uint8Array,
-    offset: number | null,
+    offset: HostFileOffset | null,
     length: number,
   ): number;
-  seek(handle: number, offset: number, whence: number): number;
+  /**
+   * Atomically resolve EOF, apply an optional exclusive file-size ceiling,
+   * and append within one backing-owned operation.
+   */
+  append(
+    handle: number,
+    buffer: Uint8Array,
+    length: number,
+    limit: HostFileOffset | null,
+  ): AppendOutcome;
+  seek(
+    handle: number,
+    offset: HostFileOffset,
+    whence: number,
+  ): HostFileOffset;
   fstat(handle: number): StatResult;
+  /** Filesystem identity and set-ID policy bound to this exact open handle. */
+  fstatfs?(handle: number): StatfsResult;
   fpathconf(handle: number, name: number): PathconfValue;
 
   /**
@@ -108,6 +143,10 @@ export interface PlatformIO {
   utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void;
 
   // Directory iteration
+  /**
+   * Open a directory and return an opaque handle. A handle must not be reused
+   * while its previous directory iterator is still live.
+   */
   opendir(path: string): number;
   /**
    * Return and consume the next entry. If this throws, the iterator must stay

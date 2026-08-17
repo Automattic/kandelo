@@ -1,10 +1,18 @@
-import type { PathconfValue, StatResult, StatfsResult } from "../types";
+import type {
+  AppendOutcome,
+  HostFileOffset,
+  PathconfValue,
+  StatResult,
+  StatfsResult,
+} from "../types";
+import { checkedHostFileOffset } from "../file-offset";
 import { filesystemPathconf } from "../pathconf";
+import { DIRENT_TYPES, FILE_MODES } from "../generated/abi";
 import type { FileSystemBackend, DirEntry } from "./types";
 import { DEVFS_SUPER_MAGIC, zeroCapacityStatfs } from "../statfs";
 
-const S_IFCHR = 0o020000;
-const S_IFDIR = 0o040000;
+const { DT_CHR, DT_DIR, DT_LNK } = DIRENT_TYPES;
+const { S_IFCHR, S_IFDIR } = FILE_MODES;
 
 type DeviceReader = (buffer: Uint8Array, length: number) => number;
 type DeviceWriter = (buffer: Uint8Array, length: number) => number;
@@ -65,12 +73,12 @@ const SUBDIRS = ["pts", "shm", "mqueue"];
 
 /** Extra entries to list in /dev readdir (kernel-managed, not in devices map). */
 const EXTRA_ENTRIES: DirEntry[] = [
-  { name: "ptmx", type: 2 /* DT_CHR */, ino: 0x100 },
-  { name: "pts", type: 4 /* DT_DIR */, ino: 0x101 },
-  { name: "fd", type: 10 /* DT_LNK */, ino: 0x102 },
-  { name: "stdin", type: 10 /* DT_LNK */, ino: 0x103 },
-  { name: "stdout", type: 10 /* DT_LNK */, ino: 0x104 },
-  { name: "stderr", type: 10 /* DT_LNK */, ino: 0x105 },
+  { name: "ptmx", type: DT_CHR, ino: 0x100 },
+  { name: "pts", type: DT_DIR, ino: 0x101 },
+  { name: "fd", type: DT_LNK, ino: 0x102 },
+  { name: "stdin", type: DT_LNK, ino: 0x103 },
+  { name: "stdout", type: DT_LNK, ino: 0x104 },
+  { name: "stderr", type: DT_LNK, ino: 0x105 },
 ];
 
 function isRootPath(path: string): boolean {
@@ -120,21 +128,53 @@ export class DeviceFileSystem implements FileSystemBackend {
     return 0;
   }
 
-  read(handle: number, buffer: Uint8Array, _offset: number | null, length: number): number {
+  read(
+    handle: number,
+    buffer: Uint8Array,
+    offset: HostFileOffset | null,
+    length: number,
+  ): number {
+    if (typeof offset === "bigint") checkedHostFileOffset(offset);
     const h = this.handles.get(handle);
     if (!h) throw new Error("EBADF");
     if (!h.device) throw new Error("EISDIR");
     return h.device.reader(buffer, Math.min(length, buffer.length));
   }
 
-  write(handle: number, buffer: Uint8Array, _offset: number | null, length: number): number {
+  write(
+    handle: number,
+    buffer: Uint8Array,
+    offset: HostFileOffset | null,
+    length: number,
+  ): number {
+    if (typeof offset === "bigint") checkedHostFileOffset(offset);
     const h = this.handles.get(handle);
     if (!h) throw new Error("EBADF");
     if (!h.device) throw new Error("EISDIR");
     return h.device.writer(buffer, Math.min(length, buffer.length));
   }
 
-  seek(_handle: number, _offset: number, _whence: number): number {
+  append(
+    _handle: number,
+    _buffer: Uint8Array,
+    _length: number,
+    _limit: HostFileOffset | null,
+  ): AppendOutcome {
+    // Append outcomes carry a regular file's exact final position. Character
+    // devices have no such position, and the Rust kernel never selects this
+    // operation for them.
+    const error = new Error("EOPNOTSUPP: append requires a regular file") as
+      Error & { code: string };
+    error.code = "EOPNOTSUPP";
+    throw error;
+  }
+
+  seek(
+    _handle: number,
+    offset: HostFileOffset,
+    _whence: number,
+  ): HostFileOffset {
+    if (typeof offset === "bigint") checkedHostFileOffset(offset);
     return 0; // character devices don't seek
   }
 
@@ -266,7 +306,11 @@ export class DeviceFileSystem implements FileSystemBackend {
     if (isRootPath(path)) {
       // /dev root: device nodes + extra kernel-managed entries
       entries = [
-        ...this.deviceNames.map((n, i) => ({ name: n, type: 2 /* DT_CHR */, ino: i + 1 })),
+        ...this.deviceNames.map((n, i) => ({
+          name: n,
+          type: DT_CHR,
+          ino: i + 1,
+        })),
         ...EXTRA_ENTRIES.filter(e => !this.devices.has(e.name)),
       ];
     } else if (SUBDIRS.includes(name)) {

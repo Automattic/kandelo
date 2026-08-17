@@ -210,7 +210,10 @@ describe("LinkedForkContinuation", () => {
       "child",
     );
     child.attachForReplay(moduleBuffer);
+    const peekOuter = Number(child.peekFrame(24));
+    expect(Number(child.peekFrame(24))).toBe(peekOuter);
     const replayOuter = Number(child.nextFrame(24));
+    expect(replayOuter).toBe(peekOuter);
     const replayInner = Number(child.nextFrame(16));
     expect(new Uint8Array(childMemory.buffer, replayOuter, 24)).toEqual(
       new Uint8Array(24).fill(0x22),
@@ -282,6 +285,164 @@ describe("LinkedForkContinuation", () => {
       expect(childAllocator.releases).toEqual(
         [...parentAllocator.allocations].reverse(),
       );
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "borrows a wasm%s continuation without consuming or releasing its frames",
+    (ptrWidth) => {
+      const format = formatFor(ptrWidth);
+      const memory = new WebAssembly.Memory({ initial: 8 });
+      const parentAllocator = allocator(memory);
+      const parent = new LinkedForkContinuation(
+        memory,
+        format,
+        parentAllocator.allocate,
+        parentAllocator.deallocate,
+        `borrow-parent-wasm${ptrWidth * 8}`,
+      );
+      const moduleBuffer = parent.beginUnwind();
+      const frames = Array.from({ length: 4 }, (_, index) => ({
+        size: 40_000 + index * format.alignment,
+        byte: 0x31 + index,
+      }));
+      for (const frame of frames) {
+        const payload = parent.reserveFrame(
+          guestPointer(frame.size, ptrWidth),
+        );
+        new Uint8Array(memory.buffer, Number(payload), frame.size).fill(
+          frame.byte,
+        );
+        parent.commitFrame(payload);
+      }
+      parent.finishUnwind();
+      expect(parentAllocator.allocations.length).toBeGreaterThan(1);
+      const privateModuleBuffer = 7 * PAGE_SIZE;
+      new Uint8Array(
+        memory.buffer,
+        Number(moduleBuffer),
+        format.fixedPrefixSize,
+      ).fill(0x6d);
+      const savedChunks = parentAllocator.allocations.map(({ addr, size }) => ({
+        addr,
+        bytes: new Uint8Array(memory.buffer, addr, size).slice(),
+      }));
+
+      const borrower = new LinkedForkContinuation(
+        memory,
+        format,
+        () => { throw new Error("borrowed replay must not allocate"); },
+        () => { throw new Error("borrowed replay must not release"); },
+        `borrow-child-wasm${ptrWidth * 8}`,
+      );
+      expect(borrower.attachForBorrowedReplay(
+        moduleBuffer,
+        guestPointer(privateModuleBuffer, ptrWidth),
+      )).toBe(guestPointer(privateModuleBuffer, ptrWidth));
+      expect(new Uint8Array(
+        memory.buffer,
+        privateModuleBuffer,
+        format.fixedPrefixSize,
+      )).toEqual(new Uint8Array(
+        memory.buffer,
+        Number(moduleBuffer),
+        format.fixedPrefixSize,
+      ));
+      expect(() => borrower.reserveFrame(guestPointer(8, ptrWidth))).toThrow(
+        "frame reservation outside unwind",
+      );
+      expect(() => borrower.commitFrame(guestPointer(8, ptrWidth))).toThrow(
+        "frame commit outside owned unwind",
+      );
+      expect(() => borrower.beginReplay()).toThrow(
+        "cannot begin replay from incomplete continuation",
+      );
+      expect(() => borrower.beginAbortReplay(12)).toThrow(
+        "cannot abort-replay an incomplete continuation",
+      );
+      expect(() => borrower.cancelUnwindAndRelease()).toThrow(
+        "cannot cancel an inactive unwind",
+      );
+      expect(() => borrower.finishBorrowedReplay()).toThrow(
+        "rewind ended before all linked frames were read",
+      );
+      for (const frame of [...frames].reverse()) {
+        const payload = borrower.nextFrame(
+          guestPointer(frame.size, ptrWidth),
+        );
+        const bytes = new Uint8Array(
+          memory.buffer,
+          Number(payload),
+          frame.size,
+        );
+        expect(bytes[0]).toBe(frame.byte);
+        expect(bytes[bytes.length - 1]).toBe(frame.byte);
+      }
+      expect(() => borrower.finishReplayAndRelease()).toThrow(
+        "borrowed replay cannot release continuation storage",
+      );
+      borrower.finishBorrowedReplay();
+      expect(() => borrower.finishBorrowedReplay()).toThrow(
+        "no borrowed continuation replay is active",
+      );
+      expect(borrower.hasActiveContinuation()).toBe(false);
+      for (const saved of savedChunks) {
+        expect(new Uint8Array(
+          memory.buffer,
+          saved.addr,
+          saved.bytes.length,
+        )).toEqual(saved.bytes);
+      }
+      expect(parentAllocator.releases).toEqual([]);
+
+      parent.beginReplay();
+      for (const frame of [...frames].reverse()) {
+        const payload = parent.nextFrame(
+          guestPointer(frame.size, ptrWidth),
+        );
+        expect(new Uint8Array(memory.buffer, Number(payload), frame.size)[0])
+          .toBe(frame.byte);
+      }
+      parent.finishReplayAndRelease();
+      expect(parentAllocator.releases).toEqual(
+        [...parentAllocator.allocations].reverse(),
+      );
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "rejects a wasm%s borrowed replay prefix that aliases owned chunks",
+    (ptrWidth) => {
+      const format = formatFor(ptrWidth);
+      const memory = new WebAssembly.Memory({ initial: 4 });
+      const parentAllocator = allocator(memory);
+      const parent = new LinkedForkContinuation(
+        memory,
+        format,
+        parentAllocator.allocate,
+        parentAllocator.deallocate,
+        `borrow-overlap-parent-wasm${ptrWidth * 8}`,
+      );
+      const moduleBuffer = parent.beginUnwind();
+      const payload = parent.reserveFrame(guestPointer(32, ptrWidth));
+      parent.commitFrame(payload);
+      parent.finishUnwind();
+
+      const borrower = new LinkedForkContinuation(
+        memory,
+        format,
+        () => { throw new Error("borrowed replay must not allocate"); },
+        () => { throw new Error("borrowed replay must not release"); },
+        `borrow-overlap-child-wasm${ptrWidth * 8}`,
+      );
+      expect(() => borrower.attachForBorrowedReplay(
+        moduleBuffer,
+        moduleBuffer,
+      )).toThrow("borrowed replay prefix overlaps continuation storage");
+      expect(borrower.hasActiveContinuation()).toBe(false);
+      expect(parentAllocator.releases).toEqual([]);
+
+      parent.cancelUnwindAndRelease();
     },
   );
 

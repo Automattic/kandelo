@@ -1,6 +1,6 @@
 /**
  * Task 4.3 — Node host wires `host/wasm/rootfs.vfs` and applies
- * `DEFAULT_MOUNT_SPEC` via `resolveForNode` at boot when the caller
+ * `DEFAULT_MOUNT_SPEC` via the fresh-session Node resolver at boot when the caller
  * does not supply a custom `io`.
  *
  * Each probe runs `examples/mount_probe_test.wasm` with a mode argv:
@@ -22,7 +22,15 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { readFileSync, existsSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
@@ -40,6 +48,37 @@ const opensslConfigSource = join(repoRoot, "images/rootfs/etc/ssl/openssl.cnf");
 
 const haveProbe = existsSync(probeWasm);
 const haveRootfs = existsSync(rootfsImage);
+
+describe("node session seed configuration", () => {
+  it("rejects a custom mount specification without a rootfs before starting a worker", async () => {
+    const host = new NodeKernelHost({
+      rootfsMountSpec: [],
+    });
+    try {
+      await expect(host.init(new ArrayBuffer(0))).rejects.toThrow(
+        "rootfsMountSpec requires rootfsImage",
+      );
+    } finally {
+      await host.destroy();
+    }
+  });
+
+  it("rejects seeds without a rootfs before starting a worker", async () => {
+    const host = new NodeKernelHost({
+      sessionSeedTrees: [{
+        sourcePath: "/not-consulted",
+        destinationPath: "/tmp/seed",
+      }],
+    });
+    try {
+      await expect(host.init(new ArrayBuffer(0))).rejects.toThrow(
+        "sessionSeedTrees requires rootfsImage",
+      );
+    } finally {
+      await host.destroy();
+    }
+  });
+});
 
 describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () => {
   it("stores exact root-owned OpenSSL files in the canonical image", () => {
@@ -97,6 +136,58 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
     expect(result.exitCode, result.stderr).toBe(0);
     expect(result.stdout).toContain("SCRATCH size=24");
     expect(result.stdout).toContain("content=scratch-mount-roundtrip");
+  });
+
+  it("gives concurrent boots independent private copies of one seed tree", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-node-seed-"));
+    const sourceFile = join(fixtureRoot, "suite", "fixture");
+    mkdirSync(dirname(sourceFile), { recursive: true });
+    writeFileSync(sourceFile, "seed");
+    const program = readFileSync(probeWasm);
+    const programBytes = program.buffer.slice(
+      program.byteOffset,
+      program.byteOffset + program.byteLength,
+    );
+    const options = {
+      rootfsImage: "default" as const,
+      sessionSeedTrees: [{
+        sourcePath: fixtureRoot,
+        destinationPath: "/tmp/kandelo-run",
+      }],
+    };
+    const first = new NodeKernelHost(options);
+    const second = new NodeKernelHost(options);
+
+    try {
+      await Promise.all([first.init(), second.init()]);
+      writeFileSync(sourceFile, "external");
+
+      for (const host of [first, second]) {
+        await expect(
+          host.readFileFromVfs("/tmp/kandelo-run/suite/fixture"),
+        ).resolves.toEqual(new TextEncoder().encode("seed"));
+      }
+
+      expect(
+        await first.spawn(programBytes, [
+          "mount_probe_test",
+          "scratch",
+          "/tmp/kandelo-run/suite/fixture",
+        ]),
+      ).toBe(0);
+      await expect(
+        first.readFileFromVfs("/tmp/kandelo-run/suite/fixture"),
+      ).resolves.toEqual(
+        new TextEncoder().encode("scratch-mount-roundtrip\n"),
+      );
+      await expect(
+        second.readFileFromVfs("/tmp/kandelo-run/suite/fixture"),
+      ).resolves.toEqual(new TextEncoder().encode("seed"));
+      expect(readFileSync(sourceFile, "utf8")).toBe("external");
+    } finally {
+      await Promise.allSettled([first.destroy(), second.destroy()]);
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 
   it.each([

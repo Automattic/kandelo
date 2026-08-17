@@ -19,10 +19,14 @@ wasm-posix-shared = { path = "../shared" }
 
 # walrus — typed wasm IR with validator. The primary workhorse for
 # parsing, manipulating, and emitting instrumented modules.
-walrus = "0.26"
+# 0.26.4 pre-registers implicit multi-value legacy-catch block types. Earlier
+# 0.26 releases panic while parsing valid `[tag params] -> [try results]`
+# handlers, before the legacy-to-modern normalization pass can run.
+walrus = "0.26.4"
 
 # anyhow — ergonomic error chaining for a CLI / build tool.
 anyhow = "1"
+sha2 = "0.10"
 
 # clap — argument parsing. `derive` feature for #[derive(Parser)].
 clap = { version = "4", features = ["derive"] }

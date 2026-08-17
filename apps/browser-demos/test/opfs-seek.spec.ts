@@ -81,6 +81,7 @@ test("OPFS preserves signed 64-bit seek results and failed offsets", async ({
           wideResult: number;
           overflowError: string | null;
           afterOverflow: number;
+          content: string;
         }>(client, "result");
         client.postMessage({
           buffer,
@@ -102,5 +103,6 @@ test("OPFS preserves signed 64-bit seek results and failed offsets", async ({
     wideResult: 2 ** 32 + 1,
     overflowError: "EOVERFLOW",
     afterOverflow: Number.MAX_SAFE_INTEGER,
+    content: "aXcdef!",
   });
 });

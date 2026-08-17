@@ -1,4 +1,5 @@
 import { MemoryFileSystem } from "./memory-fs";
+import { FILE_MODES } from "../generated/abi";
 import {
   ENOENT,
   ENOSPC,
@@ -6,12 +7,10 @@ import {
   O_RDONLY,
   O_TRUNC,
   O_WRONLY,
-  S_IFDIR,
-  S_IFLNK,
-  S_IFMT,
-  S_IFREG,
   SFSError,
 } from "./sharedfs-vendor";
+
+const { S_IFDIR, S_IFLNK, S_IFMT, S_IFREG } = FILE_MODES;
 
 function lstatIfPresent(fs: MemoryFileSystem, path: string) {
   try {
@@ -108,7 +107,7 @@ function copyMissingRootfsPath(
     } else {
       target.mkdirWithOwner(
         path,
-        sourceStat.mode & 0o7777,
+        sourceStat.mode & FILE_MODES.S_MODE_BITS,
         sourceStat.uid,
         sourceStat.gid,
       );
@@ -150,7 +149,7 @@ function copyMissingRootfsPath(
     target,
     path,
     readFile(source, path, sourceStat.size),
-    sourceStat.mode & 0o7777,
+    sourceStat.mode & FILE_MODES.S_MODE_BITS,
     sourceStat.uid,
     sourceStat.gid,
   );

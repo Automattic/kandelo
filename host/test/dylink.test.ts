@@ -10,6 +10,7 @@ import {
   loadSharedLibrary,
   loadSharedLibrarySync,
   DynamicLinker,
+  FORK_CAP_ACTIVATION_STATE_SAFE,
   FORK_CAP_DYLINK_MAIN,
   FORK_CAP_SIDE_ENTRY,
   FORK_CAPABILITIES_SECTION,
@@ -17,14 +18,26 @@ import {
   forkInstrumentRoleAvailable,
   readForkInstrumentCapabilityClaim,
   readForkInstrumentCapabilities,
+  SIDE_MODULE_FORK_EXPORTS,
+  type DylinkForkActivationOwner,
+  type DylinkForkActivationRequest,
   type LoadSharedLibraryOptions,
-  type SideModuleForkState,
 } from "../src/dylink.ts";
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { LINKED_FRAME_FORMAT_SECTION } from "../src/fork-continuation";
+import { ABI_VERSION } from "../src/generated/abi";
+import { ForkAnyrefTransitTable } from "../src/fork-anyref-transit";
+import {
+  createForkUnwindTag,
+  FORK_UNWIND_TAG_IMPORT_NAME,
+} from "../src/fork-unwind-transport";
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
+const forkInstrument = join(repoRoot, "scripts", "run-wasm-fork-instrument.sh");
 
 function hasCompiler(compiler = "wasm32posix-cc"): boolean {
   try {
@@ -79,18 +92,27 @@ function buildDylinkWat(
   memorySize = 0,
   wat2wasmFlags: string[] = [],
   tlsExports: string[] = [],
+  abiVersion: number | null = ABI_VERSION,
+  neededDynlibs: string[] = [],
 ): Uint8Array {
   const dir = join(tmpdir(), "wasm-dylink-wat-test");
   mkdirSync(dir, { recursive: true });
   const watPath = join(dir, `${name}.wat`);
   const wasmPath = join(dir, `${name}.wasm`);
-  const linkedWat = forkCapabilities !== undefined
+  let linkedWat = forkCapabilities !== undefined
       && (forkCapabilities & FORK_CAP_SIDE_ENTRY) !== 0
     ? wat.replace("(module", `(module
           (import "env" "__wpk_fork_frame_reserve" (func (param i32) (result i32)))
           (import "env" "__wpk_fork_frame_commit" (func (param i32)))
           (import "env" "__wpk_fork_frame_next" (func (param i32) (result i32)))`)
     : wat;
+  if (forkCapabilities !== undefined && abiVersion !== null) {
+    const moduleEnd = linkedWat.lastIndexOf(")");
+    if (moduleEnd < 0) throw new Error("test WAT has no module terminator");
+    linkedWat = `${linkedWat.slice(0, moduleEnd)}
+          (func (export "__abi_version") (result i32) i32.const ${abiVersion})
+        ${linkedWat.slice(moduleEnd)}`;
+  }
   writeFileSync(watPath, linkedWat);
   execFileSync("wat2wasm", ["--enable-threads", ...wat2wasmFlags, watPath, "-o", wasmPath], {
     stdio: "pipe",
@@ -107,11 +129,25 @@ function buildDylinkWat(
   const exportInfo = tlsExports.length > 0
     ? [3, 1 + exportInfoBody.length, tlsExports.length, ...exportInfoBody]
     : [];
-  const payload = new Uint8Array(1 + dylinkName.length + 6 + exportInfo.length);
+  const neededBody = neededDynlibs.flatMap((libraryName) => {
+    const bytes = [...new TextEncoder().encode(libraryName)];
+    if (bytes.length >= 128) throw new Error("test dependency name is too long");
+    return [bytes.length, ...bytes];
+  });
+  const neededInfo = neededDynlibs.length > 0
+    ? [2, 1 + neededBody.length, neededDynlibs.length, ...neededBody]
+    : [];
+  const payload = new Uint8Array(
+    1 + dylinkName.length + 6 + neededInfo.length + exportInfo.length,
+  );
+  if (payload.length >= 128) {
+    throw new Error("test dylink section helper only supports one-byte LEB lengths");
+  }
   payload[0] = dylinkName.length;
   payload.set(dylinkName, 1);
   payload.set([1, 4, memorySize, 0, tableSize, 0], 1 + dylinkName.length);
-  payload.set(exportInfo, 1 + dylinkName.length + 6);
+  payload.set(neededInfo, 1 + dylinkName.length + 6);
+  payload.set(exportInfo, 1 + dylinkName.length + 6 + neededInfo.length);
   const section = new Uint8Array(2 + payload.length);
   section[0] = 0;
   section[1] = payload.length;
@@ -124,7 +160,10 @@ function buildDylinkWat(
   let marked = appendCustomSection(
         out,
         FORK_CAPABILITIES_SECTION,
-        new Uint8Array([FORK_CAPABILITIES_VERSION, forkCapabilities]),
+        new Uint8Array([
+          FORK_CAPABILITIES_VERSION,
+          forkCapabilities | FORK_CAP_ACTIVATION_STATE_SAFE,
+        ]),
       );
   if ((forkCapabilities & FORK_CAP_SIDE_ENTRY) !== 0) {
     marked = appendCustomSection(
@@ -140,6 +179,155 @@ function buildDylinkWat(
     );
   }
   return marked;
+}
+
+/** Build a real ABI-43 side artifact instead of hand-maintaining its contract. */
+function buildInstrumentedDylinkWat(
+  wat: string,
+  name: string,
+  neededDynlibs: string[] = [],
+): Uint8Array {
+  const dir = join(tmpdir(), "wasm-dylink-instrumented-test");
+  mkdirSync(dir, { recursive: true });
+  const inputPath = join(dir, `${name}.input.wasm`);
+  const outputPath = join(dir, `${name}.instrumented.wasm`);
+  const moduleEnd = wat.lastIndexOf(")");
+  if (moduleEnd < 0) throw new Error("instrumented test WAT has no module terminator");
+  const versionedWat = `${wat.slice(0, moduleEnd)}
+    (func (export "__abi_version") (result i32) i32.const ${ABI_VERSION})
+  ${wat.slice(moduleEnd)}`;
+  writeFileSync(
+    inputPath,
+    buildDylinkWat(
+      versionedWat,
+      `${name}-raw`,
+      undefined,
+      0,
+      0,
+      [],
+      [],
+      null,
+      neededDynlibs,
+    ),
+  );
+  execFileSync(
+    "bash",
+    [forkInstrument, inputPath, "-o", outputPath, "--entry", "env.fork"],
+    { cwd: repoRoot, stdio: "pipe" },
+  );
+  return new Uint8Array(readFileSync(outputPath));
+}
+
+interface TestForkActivationOwner {
+  readonly owner: DylinkForkActivationOwner;
+  readonly prepares: DylinkForkActivationRequest[];
+  readonly registered: Array<{ activationId: number; instance: WebAssembly.Instance }>;
+  readonly unregistered: number[];
+  readonly active: ReadonlySet<number>;
+  readonly forkImport: () => number;
+  readonly wrappedImports: WebAssembly.Imports[];
+}
+
+/**
+ * Minimal process owner for loader contract tests.
+ *
+ * The real worker binds state arenas and typed codecs. These fixtures never
+ * execute a continuation, so inert functions are sufficient; tables and the
+ * private exception tag still use their exact WebAssembly types.
+ */
+function createTestForkActivationOwner(
+  firstActivationId = 1,
+): TestForkActivationOwner {
+  const prepares: DylinkForkActivationRequest[] = [];
+  const registered: Array<{
+    activationId: number;
+    instance: WebAssembly.Instance;
+  }> = [];
+  const unregistered: number[] = [];
+  const wrappedImports: WebAssembly.Imports[] = [];
+  const active = new Set<number>();
+  const gcTransit = new ForkAnyrefTransitTable();
+  const resumeTable = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
+  const unwindTag = createForkUnwindTag();
+  const forkImport = () => -12;
+  let nextActivationId = firstActivationId;
+
+  const owner: DylinkForkActivationOwner = {
+    prepare(request) {
+      const activationId = request.replayActivationId ?? nextActivationId++;
+      prepares.push(request);
+      if (active.has(activationId)) {
+        throw new Error(`duplicate test activation id ${activationId}`);
+      }
+      active.add(activationId);
+
+      const env: Record<string, WebAssembly.ImportValue> = {};
+      for (const imported of WebAssembly.Module.imports(request.module)) {
+        if (imported.module !== "env") continue;
+        if (imported.name === "fork") {
+          env[imported.name] = forkImport;
+        } else if (imported.name === "__wpk_fork_ref_gc_transit") {
+          env[imported.name] = gcTransit.table;
+        } else if (imported.name === "__wpk_fork_resume_table") {
+          env[imported.name] = resumeTable;
+        } else if (
+          imported.name === FORK_UNWIND_TAG_IMPORT_NAME
+          && (imported.kind as string) === "tag"
+        ) {
+          env[imported.name] =
+            unwindTag as unknown as WebAssembly.ImportValue;
+        } else if (
+          imported.name.startsWith("__wpk_fork_")
+          && imported.kind === "function"
+        ) {
+          env[imported.name] = () => 0;
+        } else if (
+          imported.name.startsWith("__wpk_fork_")
+          && imported.kind === "global"
+        ) {
+          env[imported.name] =
+            imported.name === "__wpk_fork_module_state_table_generation_addr"
+              ? new WebAssembly.Global(
+                  { value: "i64", mutable: false },
+                  0n,
+                )
+              : new WebAssembly.Global(
+                  { value: "i32", mutable: false },
+                  activationId,
+                );
+        }
+      }
+
+      let released = false;
+      return {
+        activationId,
+        env,
+        wrapImports(imports) {
+          wrappedImports.push(imports);
+          return imports;
+        },
+        register(instance) {
+          registered.push({ activationId, instance });
+        },
+        unregister() {
+          if (released) throw new Error(`test activation ${activationId} released twice`);
+          released = true;
+          active.delete(activationId);
+          unregistered.push(activationId);
+        },
+      };
+    },
+  };
+
+  return {
+    owner,
+    prepares,
+    registered,
+    unregistered,
+    active,
+    forkImport,
+    wrappedImports,
+  };
 }
 
 describe.skipIf(typeof WebAssembly.Tag !== "function")("longjmp tag identity", () => {
@@ -636,29 +824,556 @@ describe.skipIf(!hasCompiler())("synchronous loading (loadSharedLibrarySync)", (
 });
 
 function createSideForkLoadOptions(): LoadSharedLibraryOptions {
-  const memory = new WebAssembly.Memory({ initial: 1, maximum: 100, shared: true });
-  let nextContinuation = 65536;
   return {
-    memory,
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 100, shared: true }),
     table: new WebAssembly.Table({ initial: 1, element: "anyfunc" }),
     stackPointer: new WebAssembly.Global({ value: "i32", mutable: true }, 65536),
     heapPointer: { value: 1024 },
-    allocateContinuation: (size) => {
-      const addr = nextContinuation;
-      nextContinuation += size;
-      const requiredPages = Math.ceil(nextContinuation / 65536);
-      const currentPages = memory.buffer.byteLength / 65536;
-      if (requiredPages > currentPages) memory.grow(requiredPages - currentPages);
-      return addr;
-    },
-    deallocateContinuation: () => {},
     globalSymbols: new Map(),
     got: new Map(),
     loadedLibraries: new Map(),
   };
 }
 
+describe("DynamicLinker deterministic replay events", () => {
+  it("loads dependencies without handles and replays exact open/close state", () => {
+    const dependencyBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (func (export "dependency_value") (result i32) i32.const 5))
+    `, "replay-event-dependency");
+    const consumerBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "env" "dependency_value" (func $dependency_value (result i32)))
+        (func (export "consumer_value") (result i32) call $dependency_value))
+    `, "replay-event-consumer", undefined, 0, 0, [], [], null, [
+      "libevent-dependency.so",
+    ]);
+    const options = createSideForkLoadOptions();
+    options.resolveLibrarySync = (name) =>
+      name === "libevent-dependency.so" ? dependencyBytes : null;
+    const linker = new DynamicLinker(options);
+
+    const consumer = linker.loadModuleSync(
+      "libevent-consumer.so",
+      consumerBytes,
+    );
+    expect(Array.from(options.loadedLibraries.keys())).toEqual([
+      "libevent-dependency.so",
+      "libevent-consumer.so",
+    ]);
+    const dependency = options.loadedLibraries.get("libevent-dependency.so")!;
+    expect(dependency.moduleBytes).toEqual(dependencyBytes);
+    expect(dependency.moduleBytes).not.toBe(dependencyBytes);
+    expect(consumer.moduleBytes).toEqual(consumerBytes);
+    expect(linker.forkState()).toMatchObject({
+      nextHandle: 2,
+      libraries: [
+        { name: "libevent-dependency.so" },
+        { name: "libevent-consumer.so" },
+      ],
+    });
+    expect(linker.forkLibraryState("libevent-dependency.so")).not.toHaveProperty("handle");
+    expect(linker.forkLibraryState("libevent-consumer.so")).not.toHaveProperty("handle");
+    expect((consumer.exports.consumer_value as () => number)()).toBe(5);
+    expect(linker.dlsym(2, "consumer_value")).toBeNull();
+    expect(linker.dlerror()).toContain("invalid handle");
+
+    expect(() => linker.replayOpen("libevent-consumer.so", 3))
+      .toThrow(/does not match next handle 2/);
+    expect(linker.replayOpen("libevent-consumer.so", 2)).toBe(2);
+    expect(linker.replayOpen("libevent-consumer.so", 2)).toBe(2);
+    expect(linker.forkLibraryState("libevent-consumer.so")).toMatchObject({
+      handle: 2,
+      refCount: 2,
+    });
+    expect(linker.forkState().nextHandle).toBe(3);
+    expect(() => linker.replayOpen("libevent-dependency.so", 2))
+      .toThrow(/does not match next handle 3/);
+    expect(linker.replayOpen("libevent-dependency.so", 3)).toBe(3);
+
+    linker.replayClose(2);
+    expect(linker.forkLibraryState("libevent-consumer.so")).toMatchObject({
+      handle: 2,
+      refCount: 1,
+    });
+    expect(options.loadedLibraries.has("libevent-consumer.so")).toBe(true);
+    linker.replayClose(2);
+    expect(options.loadedLibraries.has("libevent-consumer.so")).toBe(false);
+    expect(options.loadedLibraries.has("libevent-dependency.so")).toBe(true);
+    expect(() => linker.replayClose(2)).toThrow(/invalid dlopen handle 2/);
+
+    expect(linker.forkState()).toMatchObject({
+      nextHandle: 4,
+      libraries: [
+        {
+          name: "libevent-dependency.so",
+          handle: 3,
+          refCount: 1,
+        },
+      ],
+    });
+  });
+
+  it("retains NEEDED providers until both dependency and handle owners release", () => {
+    const dependencyBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (func (export "dependency_value") (result i32) i32.const 5))
+    `, "dependency-retain-provider");
+    const consumerBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "env" "dependency_value" (func $dependency_value (result i32)))
+        (func (export "consumer_value") (result i32) call $dependency_value))
+    `, "dependency-retain-consumer", undefined, 0, 0, [], [], null, [
+      "libretain-provider.so",
+    ]);
+    const options = createSideForkLoadOptions();
+    options.resolveLibrarySync = (name) =>
+      name === "libretain-provider.so" ? dependencyBytes : null;
+    const linker = new DynamicLinker(options);
+
+    const consumerHandle = linker.dlopenSync("libretain-consumer.so", consumerBytes);
+    const providerHandle = linker.dlopenSync("libretain-provider.so", dependencyBytes);
+    expect(consumerHandle).toBe(2);
+    expect(providerHandle).toBe(3);
+
+    expect(linker.dlclose(providerHandle)).toBe(0);
+    expect(options.loadedLibraries.has("libretain-provider.so")).toBe(true);
+    expect(linker.forkLibraryState("libretain-provider.so")).not.toHaveProperty("handle");
+    expect(linker.dlclose(consumerHandle)).toBe(0);
+    expect(options.loadedLibraries.size).toBe(0);
+    expect(linker.forkState()).toMatchObject({
+      nextHandle: 4,
+      libraries: [],
+    });
+  });
+
+  it("retains a side-module provider captured by a direct relocation", () => {
+    const providerBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (func (export "runtime_provider") (result i32) i32.const 41))
+    `, "runtime-provider-retain-provider");
+    const consumerBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "env" "runtime_provider"
+          (func $runtime_provider (result i32)))
+        (func (export "runtime_consumer") (result i32)
+          call $runtime_provider
+          i32.const 1
+          i32.add))
+    `, "runtime-provider-retain-consumer");
+    const options = createSideForkLoadOptions();
+    const linker = new DynamicLinker(options);
+    const providerHandle = linker.dlopenSync(
+      "libruntime-provider.so",
+      providerBytes,
+    );
+    const consumerHandle = linker.dlopenSync(
+      "libruntime-consumer.so",
+      consumerBytes,
+    );
+    expect(
+      linker.forkLibraryState("libruntime-consumer.so")
+        ?.providerDependencies,
+    ).toEqual(["libruntime-provider.so"]);
+
+    expect(linker.dlclose(providerHandle)).toBe(0);
+    expect(options.loadedLibraries.has("libruntime-provider.so")).toBe(true);
+    const consumer = linker.dlsym(consumerHandle, "runtime_consumer");
+    expect((options.table.get(consumer!) as () => number)()).toBe(42);
+
+    expect(linker.dlclose(consumerHandle)).toBe(0);
+    expect(options.loadedLibraries.size).toBe(0);
+  });
+
+  it("keeps RTLD_LOCAL exports private and archives their later promotion", () => {
+    const wasmBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (func (export "local_then_global") (result i32) i32.const 37))
+    `, "staged-local-visibility");
+    const options = createSideForkLoadOptions();
+    const linker = new DynamicLinker(options);
+
+    const localHandle = linker.dlopenSync(
+      "liblocal-visibility.so",
+      wasmBytes,
+      undefined,
+      false,
+    );
+    const explicit = linker.dlsym(localHandle, "local_then_global");
+    expect(explicit).not.toBeNull();
+    expect(linker.dlsym(0, "local_then_global")).toBeNull();
+    expect(linker.forkState().libraries[0]).toMatchObject({
+      globalVisibility: false,
+    });
+    expect(linker.forkState().libraries[0]).not.toHaveProperty(
+      "committedGlobalRoot",
+    );
+
+    const promotedHandle = linker.dlopenSync(
+      "liblocal-visibility.so",
+      wasmBytes,
+      undefined,
+      true,
+    );
+    expect(promotedHandle).toBe(localHandle);
+    expect(linker.dlsym(0, "local_then_global")).toBe(explicit);
+    expect(linker.forkState().libraries[0]).toMatchObject({
+      globalVisibility: true,
+      committedGlobalRoot: true,
+    });
+  });
+
+  it("binds an RTLD_LOCAL root through its private NEEDED scope", () => {
+    const dependency = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (func (export "dependency_value") (result i32) i32.const 29))
+    `, "staged-local-needed-dependency");
+    const root = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "env" "dependency_value" (func $dependency_value (result i32)))
+        (func (export "root_value") (result i32)
+          call $dependency_value
+          i32.const 8
+          i32.add))
+    `, "staged-local-needed-root", undefined, 0, 0, [], [], null, [
+      "libscope-dep.so",
+    ]);
+    const options = createSideForkLoadOptions();
+    options.resolveLibrarySync = (name) =>
+      name === "libscope-dep.so" ? dependency : null;
+    const linker = new DynamicLinker(options);
+
+    const localHandle = linker.dlopenSync(
+      "libscope-root.so",
+      root,
+      undefined,
+      false,
+    );
+    const rootIndex = linker.dlsym(localHandle, "root_value");
+    expect(rootIndex).not.toBeNull();
+    expect((options.table.get(rootIndex!) as () => number)()).toBe(37);
+    expect(
+      options.loadedLibraries.get("libscope-dep.so")?.globalVisibility,
+    ).toBe(false);
+    expect(linker.dlsym(0, "root_value")).toBeNull();
+    expect(linker.dlsym(0, "dependency_value")).toBeNull();
+
+    expect(linker.dlopenSync(
+      "libscope-root.so",
+      root,
+      undefined,
+      true,
+    )).toBe(localHandle);
+    expect(
+      options.loadedLibraries.get("libscope-dep.so")?.globalVisibility,
+    ).toBe(true);
+    expect(linker.dlsym(0, "root_value")).toBe(rootIndex);
+    expect(linker.dlsym(0, "dependency_value")).not.toBeNull();
+  });
+
+  it("restores compact handle/refcount state with closed-handle gaps", () => {
+    const firstBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (func (export "first_value") (result i32) i32.const 1))
+    `, "fork-handle-first");
+    const secondBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (func (export "second_value") (result i32) i32.const 2))
+    `, "fork-handle-second");
+    const parentOptions = createSideForkLoadOptions();
+    const parent = new DynamicLinker(parentOptions);
+
+    expect(parent.dlopenSync("libfirst.so", firstBytes)).toBe(2);
+    expect(parent.dlopenSync("libsecond.so", secondBytes)).toBe(3);
+    expect(parent.dlopenSync("libsecond.so", secondBytes)).toBe(3);
+    expect(parent.dlclose(2)).toBe(0);
+    const archived = parent.forkState();
+    expect(archived).toMatchObject({
+      nextHandle: 4,
+      libraries: [{
+        name: "libsecond.so",
+        handle: 3,
+        refCount: 2,
+      }],
+    });
+
+    const childOptions = createSideForkLoadOptions();
+    const child = new DynamicLinker(childOptions);
+    for (const library of archived.libraries) {
+      child.loadModuleSync(
+        library.name,
+        new Uint8Array(library.moduleBytes),
+        {
+          memoryBase: library.memoryBase,
+          tableBase: library.tableBase,
+          activationId: library.activationId,
+          tlsBase: library.tlsBase,
+          globalVisibility: library.globalVisibility,
+          committedGlobalRoot: library.committedGlobalRoot,
+        },
+      );
+    }
+    child.restoreForkHandleState(archived);
+    expect(child.forkState()).toEqual(archived);
+
+    // The duplicate open keeps the inherited handle and reference count.
+    expect(child.dlopenSync("libsecond.so", secondBytes)).toBe(3);
+    expect(child.forkLibraryState("libsecond.so")).toMatchObject({
+      handle: 3,
+      refCount: 3,
+    });
+    // The next new module must not reuse the parent's closed handle 2.
+    expect(child.dlopenSync("libfirst.so", firstBytes)).toBe(4);
+  });
+
+  it("reconciles dlopen function recipes to fresh Worker-local table entries", () => {
+    const sideBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "env" "__indirect_function_table" (table 1 funcref))
+        (import "env" "__table_base" (global $table_base i32))
+        (func $side_value (export "side_value") (result i32) i32.const 73)
+        (elem (global.get $table_base) func $side_value))
+    `, "fork-table-replica", undefined, 1);
+    const parentOptions = createSideForkLoadOptions();
+    const parentMutations: Array<[number, number]> = [];
+    parentOptions.onTableMutation = (_table, firstIndex, length) => {
+      parentMutations.push([firstIndex, length]);
+    };
+    const parent = new DynamicLinker(parentOptions);
+    expect(parent.dlopenSync("libtable-replica.so", sideBytes)).toBe(2);
+    const archived = parent.forkState();
+    const parentLibrary = archived.libraries[0]!;
+    const parentFunction = parentOptions.table.get(parentLibrary.tableBase);
+    expect(typeof parentFunction).toBe("function");
+    expect((parentFunction as () => number)()).toBe(73);
+    expect(parentMutations).toContainEqual([
+      parentOptions.table.length - 1,
+      1,
+    ]);
+
+    const replicaOptions = createSideForkLoadOptions();
+    const replicaMutations: Array<[number, number]> = [];
+    replicaOptions.onTableMutation = (_table, firstIndex, length) => {
+      replicaMutations.push([firstIndex, length]);
+    };
+    const replica = new DynamicLinker(replicaOptions);
+    replica.reconcileForkModules(archived);
+    const freshFunction = replicaOptions.table.get(parentLibrary.tableBase);
+    expect(typeof freshFunction).toBe("function");
+    expect(freshFunction).not.toBe(parentFunction);
+    expect((freshFunction as () => number)()).toBe(73);
+    expect(replicaMutations).toContainEqual([
+      replicaOptions.table.length - 1,
+      1,
+    ]);
+
+    const length = replicaOptions.table.length;
+    replica.reconcileForkModules(archived);
+    expect(replicaOptions.table.length).toBe(length);
+    expect(replicaOptions.table.get(parentLibrary.tableBase)).toBe(freshFunction);
+
+    const parentOwnedEntries = [
+      ...parentOptions.loadedLibraries.get("libtable-replica.so")!
+        .ownedTableEntries,
+    ];
+    const replicaOwnedEntries = [
+      ...replicaOptions.loadedLibraries.get("libtable-replica.so")!
+        .ownedTableEntries,
+    ];
+    expect(parent.dlclose(2)).toBe(0);
+    for (const index of parentOwnedEntries) {
+      expect(parentOptions.table.get(index)).toBeNull();
+    }
+    expect(parentOptions.globalSymbols.has("side_value")).toBe(false);
+    expect(parent.dlsym(0, "side_value")).toBeNull();
+    const closed = parent.forkState();
+    expect(closed.libraries).toEqual([]);
+
+    replica.reconcileForkModules(closed);
+    expect(replicaOptions.loadedLibraries.size).toBe(0);
+    for (const index of replicaOwnedEntries) {
+      expect(replicaOptions.table.get(index)).toBeNull();
+    }
+  });
+
+  it("rejects non-pristine or inconsistent compact handle snapshots", () => {
+    const wasmBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (func (export "value") (result i32) i32.const 1))
+    `, "fork-handle-validation");
+    const options = createSideForkLoadOptions();
+    const linker = new DynamicLinker(options);
+    const live = linker.loadModuleSync("libvalidation.so", wasmBytes);
+    const baseState = {
+      nextHandle: 4,
+      libraries: [{
+        name: live.name,
+        moduleBytes: live.moduleBytes,
+        memoryBase: live.memoryBase,
+        tableBase: live.tableBase,
+        globalVisibility: live.globalVisibility,
+        handle: 3,
+        refCount: 1,
+      }],
+    };
+
+    expect(() => linker.restoreForkHandleState({
+      ...baseState,
+      libraries: [
+        ...baseState.libraries,
+        { ...baseState.libraries[0]!, handle: 2 },
+      ],
+    })).toThrow(/exact live module closure/);
+    expect(() => linker.restoreForkHandleState({
+      ...baseState,
+      libraries: [{ ...baseState.libraries[0]!, handle: 4 }],
+    })).toThrow(/fork handle 4 is invalid/);
+    linker.restoreForkHandleState(baseState);
+    expect(() => linker.restoreForkHandleState(baseState))
+      .toThrow(/requires a pristine child handle index/);
+  });
+
+  it("rejects replay of the same module-load record twice", () => {
+    const wasmBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (func (export "value") (result i32) i32.const 1))
+    `, "duplicate-replay-load");
+    const options = createSideForkLoadOptions();
+    const linker = new DynamicLinker(options);
+    const loaded = linker.loadModuleSync("libduplicate-replay.so", wasmBytes, {
+      memoryBase: 0,
+      tableBase: 1,
+    });
+    expect(loaded.name).toBe("libduplicate-replay.so");
+
+    expect(() => linker.loadModuleSync("libduplicate-replay.so", wasmBytes, {
+      memoryBase: 0,
+      tableBase: 1,
+    })).toThrow(/archive entries must be unique/);
+  });
+});
+
 describe("side-module fork contract", () => {
+  it("keeps raw side modules legal when the process has no fork activation owner", () => {
+    const wasmBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (func (export "raw_value") (result i32) i32.const 17))
+    `, "raw-side-without-fork-owner");
+    const options = createSideForkLoadOptions();
+
+    const loaded = loadSharedLibrarySync(
+      "libraw-nonfork.so",
+      wasmBytes,
+      options,
+    );
+
+    expect((loaded.exports.raw_value as () => number)()).toBe(17);
+    expect(loaded.activationId).toBeUndefined();
+  });
+
+  it("rejects a raw side module before instantiation in a fork-capable process", () => {
+    const wasmBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (func (export "raw_value") (result i32) i32.const 17))
+    `, "raw-side-with-fork-owner");
+    const testOwner = createTestForkActivationOwner();
+    const options = createSideForkLoadOptions();
+    options.forkActivationOwner = testOwner.owner;
+
+    expect(() => loadSharedLibrarySync(
+      "libraw-fork-process.so",
+      wasmBytes,
+      options,
+    )).toThrow(/requires complete ABI 43 side-boundary instrumentation/);
+    expect(testOwner.prepares).toEqual([]);
+    expect(options.loadedLibraries.size).toBe(0);
+  });
+
+  it("accepts a complete side-boundary artifact without an env.fork import", () => {
+    const wasmBytes = buildInstrumentedDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "env" "host_value" (func $host_value (result i32)))
+        (func (export "side_value") (result i32)
+          call $host_value
+          i32.const 1
+          i32.add))
+    `, "side-boundary-without-fork-import");
+    const module = new WebAssembly.Module(
+      wasmBytes as unknown as BufferSource,
+    );
+    expect(WebAssembly.Module.imports(module).some(
+      (entry) =>
+        entry.module === "env"
+        && entry.name === "fork"
+        && entry.kind === "function",
+    )).toBe(false);
+    expect(readForkInstrumentCapabilities(module) & FORK_CAP_SIDE_ENTRY)
+      .toBe(FORK_CAP_SIDE_ENTRY);
+
+    const testOwner = createTestForkActivationOwner(21);
+    const options = createSideForkLoadOptions();
+    options.globalSymbols.set("host_value", () => 16);
+    options.forkActivationOwner = testOwner.owner;
+
+    const loaded = loadSharedLibrarySync(
+      "libside-boundary.so",
+      wasmBytes,
+      options,
+    );
+
+    expect(loaded.activationId).toBe(21);
+    expect((loaded.exports.side_value as () => number)()).toBe(17);
+    expect(testOwner.registered).toEqual([
+      { activationId: 21, instance: loaded.instance },
+    ]);
+  });
+
+  it("validates ABI 43 reconstruction metadata before side-module instantiation", () => {
+    // Export every reserved function name so the loader takes the complete
+    // ABI-43 path. Deliberately give the stubs the wrong signatures and omit
+    // reconstruction descriptors/imports: none of this module may execute.
+    const reservedStubs = SIDE_MODULE_FORK_EXPORTS
+      .map((name) => `(func (export "${name}"))`)
+      .join("\n");
+    const wasmBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        ${reservedStubs})
+    `, "side-fork-invalid-reconstruction-contract", 0);
+    const options = createSideForkLoadOptions();
+    let prepareCalls = 0;
+    options.forkActivationOwner = {
+      prepare() {
+        prepareCalls++;
+        throw new Error("must not prepare an invalid artifact");
+      },
+    };
+
+    expect(() => loadSharedLibrarySync("libinvalidfork.so", wasmBytes, options))
+      .toThrow(
+        /invalid ABI 43 fork reconstruction contract: .*exception_codec.*imported_globals/,
+      );
+    expect(prepareCalls).toBe(0);
+    expect(options.loadedLibraries.has("libinvalidfork.so")).toBe(false);
+  });
+
   it("rejects an uninstrumented side module that imports fork", () => {
     const wasmBytes = buildDylinkWat(`
       (module
@@ -667,49 +1382,9 @@ describe("side-module fork contract", () => {
         (func (export "side_fork") (result i32) call $fork))
     `, "side-fork-uninstrumented");
     const options = createSideForkLoadOptions();
-    options.sideModuleFork = {
-      setActiveFork: () => {},
-      clearActiveFork: () => {},
-      invokeMainFork: () => 0,
-      beginMainAbort: () => {},
-    };
 
     expect(() => loadSharedLibrarySync("libbadfork.so", wasmBytes, options))
       .toThrow(/requires complete side-module instrumentation/);
-  });
-
-  it("applies the generated ABI transition to a legacy five-export side artifact", () => {
-    const wasmBytes = buildDylinkWat(`
-      (module
-        (import "env" "memory" (memory 1 100 shared))
-        (import "env" "fork" (func $fork (result i32)))
-        (func (export "wpk_fork_unwind_begin") (param i32))
-        (func (export "wpk_fork_unwind_end"))
-        (func (export "wpk_fork_rewind_begin") (param i32))
-        (func (export "wpk_fork_rewind_end"))
-        (func (export "wpk_fork_abort_begin") (param i32))
-        (func (export "wpk_fork_abort_end"))
-        (func (export "wpk_fork_state") (result i32) i32.const 0)
-        (func (export "side_fork") (result i32) call $fork))
-    `, "side-fork-generic");
-    const options = createSideForkLoadOptions();
-    options.sideModuleFork = {
-      setActiveFork: () => {},
-      clearActiveFork: () => {},
-      invokeMainFork: () => 0,
-      beginMainAbort: () => {},
-    };
-
-    const load = () => loadSharedLibrarySync("liblegacyfork.so", wasmBytes, options);
-    const legacyAllowed = forkInstrumentRoleAvailable(
-      { present: false, flags: 0 },
-      FORK_CAP_SIDE_ENTRY,
-    );
-    if (legacyAllowed) {
-      expect(load).not.toThrow();
-    } else {
-      expect(load).toThrow(/versioned side-entry capability/);
-    }
   });
 
   it("makes missing side and main role claims mandatory at ABI 17", () => {
@@ -731,30 +1406,49 @@ describe("side-module fork contract", () => {
     )).toBe(false);
   });
 
-  it("rejects a marker-present artifact that does not claim side-entry coverage", () => {
-    const wasmBytes = buildDylinkWat(`
+  it("binds a side module's activation-safety claim to ABI 43", () => {
+    const reservedStubs = SIDE_MODULE_FORK_EXPORTS
+      .map((name) => `(func (export "${name}"))`)
+      .join("\n");
+    const sideWat = `
       (module
         (import "env" "memory" (memory 1 100 shared))
-        (import "env" "fork" (func $fork (result i32)))
-        (func (export "wpk_fork_unwind_begin") (param i32))
-        (func (export "wpk_fork_unwind_end"))
-        (func (export "wpk_fork_rewind_begin") (param i32))
-        (func (export "wpk_fork_rewind_end"))
-        (func (export "wpk_fork_abort_begin") (param i32))
-        (func (export "wpk_fork_abort_end"))
-        (func (export "wpk_fork_state") (result i32) i32.const 0)
-        (func (export "side_fork") (result i32) call $fork))
-    `, "side-fork-wrong-marker", 0);
+        ${reservedStubs})
+    `;
     const options = createSideForkLoadOptions();
-    options.sideModuleFork = {
-      setActiveFork: () => {},
-      clearActiveFork: () => {},
-      invokeMainFork: () => 0,
-      beginMainAbort: () => {},
+    let prepareCalls = 0;
+    options.forkActivationOwner = {
+      prepare() {
+        prepareCalls++;
+        throw new Error("must not prepare an ABI-mismatched artifact");
+      },
     };
+    const stale = buildDylinkWat(
+      sideWat,
+      "side-fork-stale-abi",
+      0,
+      0,
+      0,
+      [],
+      [],
+      ABI_VERSION - 1,
+    );
+    expect(() => loadSharedLibrarySync("libstale.so", stale, options))
+      .toThrow(/declares ABI 42, but the host requires ABI 43/);
 
-    expect(() => loadSharedLibrarySync("libwrongmarker.so", wasmBytes, options))
-      .toThrow(/versioned side-entry capability/);
+    const missing = buildDylinkWat(
+      sideWat,
+      "side-fork-missing-abi",
+      0,
+      0,
+      0,
+      [],
+      [],
+      null,
+    );
+    expect(() => loadSharedLibrarySync("libmissing.so", missing, options))
+      .toThrow(/missing __abi_version/);
+    expect(prepareCalls).toBe(0);
   });
 
   it("reads the versioned side-entry capability independently", () => {
@@ -764,9 +1458,11 @@ describe("side-module fork contract", () => {
     const module = new WebAssembly.Module(wasmBytes as unknown as BufferSource);
     expect(readForkInstrumentCapabilityClaim(module)).toEqual({
       present: true,
-      flags: FORK_CAP_SIDE_ENTRY,
+      flags: FORK_CAP_SIDE_ENTRY | FORK_CAP_ACTIVATION_STATE_SAFE,
     });
-    expect(readForkInstrumentCapabilities(module)).toBe(FORK_CAP_SIDE_ENTRY);
+    expect(readForkInstrumentCapabilities(module)).toBe(
+      FORK_CAP_SIDE_ENTRY | FORK_CAP_ACTIVATION_STATE_SAFE,
+    );
   });
 
   it("rejects a malformed marker even during the ABI-16 compatibility window", () => {
@@ -784,183 +1480,292 @@ describe("side-module fork contract", () => {
       .toThrow(/malformed kandelo\.wpk_fork\.capabilities custom section/);
   });
 
-  it("reports an explicit stale-main diagnostic for a valid side artifact", () => {
-    const wasmBytes = buildDylinkWat(`
+  it("requires a process activation owner for a valid ABI-43 side module", () => {
+    const wasmBytes = buildInstrumentedDylinkWat(`
       (module
         (import "env" "memory" (memory 1 100 shared))
         (import "env" "fork" (func $fork (result i32)))
-        (func (export "wpk_fork_unwind_begin") (param i32))
-        (func (export "wpk_fork_unwind_end"))
-        (func (export "wpk_fork_rewind_begin") (param i32))
-        (func (export "wpk_fork_rewind_end"))
-        (func (export "wpk_fork_abort_begin") (param i32))
-        (func (export "wpk_fork_abort_end"))
-        (func (export "wpk_fork_state") (result i32) i32.const 0)
         (func (export "side_fork") (result i32) call $fork))
-    `, "side-with-stale-main", FORK_CAP_SIDE_ENTRY);
+    `, "side-fork-owner-required");
     const options = createSideForkLoadOptions();
-    options.sideModuleForkUnavailableReason =
-      "main module lacks the versioned dlopen-main fork capability; rebuild it";
+    options.forkActivationOwnerUnavailableReason =
+      "main activation registry is unavailable; rebuild or relaunch the process";
 
-    expect(() => loadSharedLibrarySync("libside.so", wasmBytes, options))
-      .toThrow(/main module lacks the versioned dlopen-main fork capability; rebuild it/);
+    expect(() => loadSharedLibrarySync("libowner-required.so", wasmBytes, options))
+      .toThrow(/main activation registry is unavailable/);
   });
 
-  it("rejects a fork-capable side module without process-mapping storage", () => {
-    const wasmBytes = buildDylinkWat(`
+  it("registers multiple linked side activations without module-static fork roots", () => {
+    const providerBytes = buildInstrumentedDylinkWat(`
       (module
         (import "env" "memory" (memory 1 100 shared))
         (import "env" "fork" (func $fork (result i32)))
-        (func (export "wpk_fork_unwind_begin") (param i32))
-        (func (export "wpk_fork_unwind_end"))
-        (func (export "wpk_fork_rewind_begin") (param i32))
-        (func (export "wpk_fork_rewind_end"))
-        (func (export "wpk_fork_abort_begin") (param i32))
-        (func (export "wpk_fork_abort_end"))
-        (func (export "wpk_fork_state") (result i32) i32.const 0)
-        (func (export "side_fork") (result i32) call $fork))
-    `, "side-without-continuation-mapping", FORK_CAP_SIDE_ENTRY);
-    const options = createSideForkLoadOptions();
-    options.allocateContinuation = undefined;
-    options.deallocateContinuation = undefined;
-    options.sideModuleFork = {
-      setActiveFork: () => {},
-      clearActiveFork: () => {},
-      invokeMainFork: () => 0,
-      beginMainAbort: () => {},
-    };
-
-    expect(() => loadSharedLibrarySync("libunmappedfork.so", wasmBytes, options))
-      .toThrow(/require process-mapping allocation and cleanup/);
-  });
-
-  it("drives repeated instrumented side-module forks through exact states", () => {
-    const wasmBytes = buildDylinkWat(`
-      (module
-        (import "env" "memory" (memory 1 100 shared))
-        (import "env" "fork" (func $fork (result i32)))
-        (global $state (mut i32) (i32.const 0))
-        (global $buf (mut i32) (i32.const 0))
-        (func (export "wpk_fork_unwind_begin") (param $addr i32)
-          local.get $addr
-          global.set $buf
-          i32.const 1
-          global.set $state)
-        (func (export "wpk_fork_unwind_end")
-          i32.const 0
-          global.set $state)
-        (func (export "wpk_fork_rewind_begin") (param $addr i32)
-          local.get $addr
-          global.set $buf
-          i32.const 2
-          global.set $state)
-        (func (export "wpk_fork_rewind_end")
-          i32.const 0
-          global.set $state)
-        (func (export "wpk_fork_abort_begin") (param $addr i32)
-          local.get $addr
-          global.set $buf
-          i32.const 3
-          global.set $state)
-        (func (export "wpk_fork_abort_end")
-          i32.const 0
-          global.set $state)
-        (func (export "wpk_fork_state") (result i32)
-          global.get $state)
-        (func (export "side_fork_with_local") (result i32)
-          i32.const 41
-          call $fork
-          i32.add))
-    `, "side-fork-instrumented", FORK_CAP_SIDE_ENTRY);
-    const options = createSideForkLoadOptions();
-    let forkResult = 0;
-    let active: SideModuleForkState | null = null;
-    options.sideModuleFork = {
-      setActiveFork: (state) => {
-        expect(active).toBeNull();
-        active = state;
-      },
-      clearActiveFork: (state) => {
-        expect(active).toBe(state);
-        active = null;
-      },
-      invokeMainFork: () => forkResult,
-      beginMainAbort: () => {},
-    };
-
-    const lib = loadSharedLibrarySync("libsidefork.so", wasmBytes, options);
-    const sideFork = lib.exports.side_fork_with_local as () => number;
-    const state = lib.instance.exports.wpk_fork_state as () => number;
-    const unwindEnd = lib.instance.exports.wpk_fork_unwind_end as () => void;
-    const rewindBegin = lib.instance.exports.wpk_fork_rewind_begin as (addr: number) => void;
-
-    // A main root-allocation failure returns synchronously before either Wasm
-    // stack has unwound. The side owner must cancel its just-opened root and
-    // clear the persisted active identity without entering replay.
-    forkResult = -12;
-    expect(sideFork()).toBe(29);
-    expect(state()).toBe(0);
-    expect(active).toBeNull();
-    expect(lib.forkContinuation?.hasActiveContinuation()).toBe(false);
-
-    for (const expectedForkResult of [101, 202]) {
-      forkResult = 0;
-      expect(sideFork()).toBe(41);
-      expect(state()).toBe(1);
-      expect(active?.forkBufAddr).toBe(lib.forkBufAddr);
-      expect(active?.continuation).toBe(lib.forkContinuation);
-
-      unwindEnd();
-      forkResult = expectedForkResult;
-      rewindBegin(lib.forkBufAddr!);
-      expect(sideFork()).toBe(41 + expectedForkResult);
-      expect(state()).toBe(0);
-      expect(active).toBeNull();
-    }
-  });
-
-  it("allows independent extensions but rejects visible side-to-side fork nesting", () => {
-    const options = createSideForkLoadOptions();
-    options.sideModuleFork = {
-      setActiveFork: () => {},
-      clearActiveFork: () => {},
-      invokeMainFork: () => 0,
-      beginMainAbort: () => {},
-    };
-    const provider = buildDylinkWat(`
-      (module
-        (import "env" "memory" (memory 1 100 shared))
+        (export "raw_fork_import" (func $fork))
         (func (export "provider_value") (result i32) i32.const 7))
-    `, "fork-provider");
-    loadSharedLibrarySync("libprovider.so", provider, options);
-
-    const independentFork = buildDylinkWat(`
+    `, "side-fork-provider");
+    const consumerBytes = buildInstrumentedDylinkWat(`
       (module
         (import "env" "memory" (memory 1 100 shared))
         (import "env" "fork" (func $fork (result i32)))
-        (global $state (mut i32) (i32.const 0))
-        (func (export "wpk_fork_unwind_begin") (param i32)
-          i32.const 1 global.set $state)
-        (func (export "wpk_fork_unwind_end") i32.const 0 global.set $state)
-        (func (export "wpk_fork_rewind_begin") (param i32)
-          i32.const 2 global.set $state)
-        (func (export "wpk_fork_rewind_end") i32.const 0 global.set $state)
-        (func (export "wpk_fork_abort_begin") (param i32)
-          i32.const 3 global.set $state)
-        (func (export "wpk_fork_abort_end") i32.const 0 global.set $state)
-        (func (export "wpk_fork_state") (result i32) global.get $state)
-        (func (export "side_fork") (result i32) call $fork))
-    `, "independent-fork-side", FORK_CAP_SIDE_ENTRY);
-    loadSharedLibrarySync("libindependent-fork.so", independentFork, options);
+        (import "env" "provider_value" (func $provider_value (result i32)))
+        (func (export "nested_value") (result i32)
+          call $provider_value
+          i32.const 1
+          i32.add)
+        (func (export "consumer_fork") (result i32) call $fork))
+    `, "side-fork-consumer");
+    const testOwner = createTestForkActivationOwner();
+    const options = createSideForkLoadOptions();
+    options.forkActivationOwner = testOwner.owner;
 
-    const visibleConsumer = buildDylinkWat(`
+    const provider = loadSharedLibrarySync(
+      "libfork-provider.so",
+      providerBytes,
+      options,
+    );
+    const consumer = loadSharedLibrarySync(
+      "libfork-consumer.so",
+      consumerBytes,
+      options,
+    );
+
+    expect(provider.activationId).toBe(1);
+    expect(consumer.activationId).toBe(2);
+    expect(testOwner.registered).toEqual([
+      { activationId: 1, instance: provider.instance },
+      { activationId: 2, instance: consumer.instance },
+    ]);
+    expect((consumer.exports.nested_value as () => number)()).toBe(8);
+    // Engines expose a Wasm wrapper when an imported JS function is
+    // re-exported, so behavior—not JS object identity—proves the exact owner
+    // callback reached the module.
+    expect((provider.instance.exports.raw_fork_import as () => number)()).toBe(-12);
+    expect("forkBufAddr" in provider).toBe(false);
+    expect("forkContinuation" in provider).toBe(false);
+    expect(typeof provider.activationId).toBe("number");
+  });
+
+  it("wraps the final lazy imports before instantiation without collapsing duplicates", () => {
+    const wasmBytes = buildInstrumentedDylinkWat(`
       (module
         (import "env" "memory" (memory 1 100 shared))
-        (import "env" "side_fork" (func $side_fork (result i32)))
-        (func (export "nested") (result i32) call $side_fork))
-    `, "visible-side-consumer");
-    expect(() => loadSharedLibrarySync("libnested.so", visibleConsumer, options))
-      .toThrow(/fork-capable side-module nesting/);
+        (import "env" "__indirect_function_table" (table 1 funcref))
+        (import "env" "shared_counter" (global $first_counter (mut i32)))
+        (import "env" "shared_counter" (global $second_counter (mut i32)))
+        (import "env" "fork" (func $fork (result i32)))
+        (func (export "counter_sum") (result i32)
+          global.get $first_counter
+          global.get $second_counter
+          i32.add)
+        (func (export "side_fork") (result i32) call $fork))
+    `, "side-fork-lazy-import-capture");
+    const testOwner = createTestForkActivationOwner(31);
+    const options = createSideForkLoadOptions();
+    const sharedCounter = new WebAssembly.Global(
+      { value: "i32", mutable: true },
+      6,
+    );
+    options.globalSymbols.set("shared_counter", sharedCounter);
+    const observedGlobals: unknown[] = [];
+    const observedTables: unknown[] = [];
+    options.forkActivationOwner = {
+      prepare(request) {
+        const prepared = testOwner.owner.prepare(request);
+        return {
+          ...prepared,
+          wrapImports(imports) {
+            const baseImports = prepared.wrapImports(imports);
+            return new Proxy(baseImports as object, {
+              get(target, moduleName, receiver) {
+                const namespace = Reflect.get(target, moduleName, receiver);
+                if (moduleName !== "env" || typeof namespace !== "object") {
+                  return namespace;
+                }
+                return new Proxy(namespace as object, {
+                  get(namespaceTarget, importName, namespaceReceiver) {
+                    const value = Reflect.get(
+                      namespaceTarget,
+                      importName,
+                      namespaceReceiver,
+                    );
+                    if (importName === "shared_counter") {
+                      observedGlobals.push(value);
+                    } else if (importName === "__indirect_function_table") {
+                      observedTables.push(value);
+                    }
+                    return value;
+                  },
+                });
+              },
+            }) as WebAssembly.Imports;
+          },
+        };
+      },
+    };
+
+    const loaded = loadSharedLibrarySync(
+      "libfork-lazy-import-capture.so",
+      wasmBytes,
+      options,
+    );
+
+    expect(observedGlobals).toEqual([sharedCounter, sharedCounter]);
+    expect(observedTables).toEqual([options.table]);
+    expect(testOwner.wrappedImports).toHaveLength(1);
+    expect(testOwner.registered).toEqual([
+      { activationId: 31, instance: loaded.instance },
+    ]);
+    expect((loaded.exports.counter_sum as () => number)()).toBe(12);
+  });
+
+  it("replays dependency-first with the parent's exact activation ids", () => {
+    const dependencyBytes = buildInstrumentedDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "env" "fork" (func $fork (result i32)))
+        (func (export "dependency_value") (result i32) i32.const 19)
+        (func (export "dependency_fork") (result i32) call $fork))
+    `, "side-fork-needed-dependency");
+    const consumerBytes = buildInstrumentedDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "env" "fork" (func $fork (result i32)))
+        (import "env" "dependency_value" (func $dependency_value (result i32)))
+        (func (export "needed_value") (result i32) call $dependency_value)
+        (func (export "needed_fork") (result i32) call $fork))
+    `, "side-fork-needed-consumer", ["libfork-dependency.so"]);
+    const parentOwner = createTestForkActivationOwner(41);
+    const parent = createSideForkLoadOptions();
+    parent.forkActivationOwner = parentOwner.owner;
+    parent.resolveLibrarySync = (name) =>
+      name === "libfork-dependency.so" ? dependencyBytes : null;
+
+    const parentConsumer = loadSharedLibrarySync(
+      "libfork-consumer.so",
+      consumerBytes,
+      parent,
+    );
+    const parentDependency = parent.loadedLibraries.get("libfork-dependency.so")!;
+    expect(Array.from(parent.loadedLibraries)).toEqual([
+      ["libfork-dependency.so", parentDependency],
+      ["libfork-consumer.so", parentConsumer],
+    ]);
+    expect(parentDependency.activationId).toBe(41);
+    expect(parentConsumer.activationId).toBe(42);
+
+    const childOwner = createTestForkActivationOwner(100);
+    const child = createSideForkLoadOptions();
+    child.forkActivationOwner = childOwner.owner;
+    expect(() => loadSharedLibrarySync(
+      "libfork-consumer.so",
+      consumerBytes,
+      child,
+      {
+        memoryBase: parentConsumer.memoryBase,
+        tableBase: parentConsumer.tableBase,
+        activationId: parentConsumer.activationId,
+      },
+    )).toThrow(/archive entries must be replayed in dependency order/);
+    expect(childOwner.prepares).toHaveLength(0);
+
+    const childDependency = loadSharedLibrarySync(
+      "libfork-dependency.so",
+      dependencyBytes,
+      child,
+      {
+        memoryBase: parentDependency.memoryBase,
+        tableBase: parentDependency.tableBase,
+        activationId: parentDependency.activationId,
+      },
+    );
+    const childConsumer = loadSharedLibrarySync(
+      "libfork-consumer.so",
+      consumerBytes,
+      child,
+      {
+        memoryBase: parentConsumer.memoryBase,
+        tableBase: parentConsumer.tableBase,
+        activationId: parentConsumer.activationId,
+      },
+    );
+
+    expect(childDependency.activationId).toBe(41);
+    expect(childConsumer.activationId).toBe(42);
+    expect(childOwner.prepares.map((request) => request.replayActivationId))
+      .toEqual([41, 42]);
+    expect((childConsumer.exports.needed_value as () => number)()).toBe(19);
+  });
+
+  it("unregisters exactly once when post-instantiation startup rolls back", () => {
+    const wasmBytes = buildInstrumentedDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "env" "fork" (func $fork (result i32)))
+        (func (export "__wasm_call_ctors") unreachable)
+        (func (export "side_fork") (result i32) call $fork))
+    `, "side-fork-rollback");
+    const testOwner = createTestForkActivationOwner(9);
+    const options = createSideForkLoadOptions();
+    options.forkActivationOwner = testOwner.owner;
+
+    expect(() => loadSharedLibrarySync("libfork-rollback.so", wasmBytes, options))
+      .toThrow();
+    expect(testOwner.registered).toHaveLength(1);
+    expect(testOwner.unregistered).toEqual([9]);
+    expect(testOwner.active.size).toBe(0);
+    expect(options.loadedLibraries.size).toBe(0);
+  });
+
+  it("does not fall back to process symbols for owner-controlled fork imports", () => {
+    const wasmBytes = buildInstrumentedDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "env" "fork" (func $fork (result i32)))
+        (func (export "side_fork") (result i32) call $fork))
+    `, "side-fork-owner-import");
+    const testOwner = createTestForkActivationOwner(15);
+    const options = createSideForkLoadOptions();
+    options.globalSymbols.set("fork", () => 123);
+    options.forkActivationOwner = {
+      prepare(request) {
+        const prepared = testOwner.owner.prepare(request);
+        const { fork: _fork, ...envWithoutFork } = prepared.env;
+        return { ...prepared, env: envWithoutFork };
+      },
+    };
+
+    expect(() => loadSharedLibrarySync("libfork-owner-import.so", wasmBytes, options))
+      .toThrow(/function import requires a callable/);
+    expect(testOwner.unregistered).toEqual([15]);
+    expect(testOwner.active.size).toBe(0);
+  });
+
+  it("keeps a shared activation until the final dlclose reference", () => {
+    const wasmBytes = buildInstrumentedDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "env" "fork" (func $fork (result i32)))
+        (func (export "side_fork") (result i32) call $fork))
+    `, "side-fork-refcount");
+    const testOwner = createTestForkActivationOwner(27);
+    const options = createSideForkLoadOptions();
+    options.forkActivationOwner = testOwner.owner;
+    const linker = new DynamicLinker(options);
+
+    const firstHandle = linker.dlopenSync("libfork-refcount.so", wasmBytes);
+    const secondHandle = linker.dlopenSync("libfork-refcount.so", wasmBytes);
+    expect(firstHandle).toBeGreaterThan(0);
+    expect(secondHandle).toBe(firstHandle);
+    expect(testOwner.prepares).toHaveLength(1);
+
+    expect(linker.dlclose(firstHandle)).toBe(0);
+    expect(testOwner.unregistered).toEqual([]);
+    expect(options.loadedLibraries.has("libfork-refcount.so")).toBe(true);
+
+    expect(linker.dlclose(secondHandle)).toBe(0);
+    expect(testOwner.unregistered).toEqual([27]);
+    expect(testOwner.active.size).toBe(0);
+    expect(options.loadedLibraries.has("libfork-refcount.so")).toBe(false);
   });
 });
 
@@ -1008,6 +1813,146 @@ describe("dylink symbol interposition", () => {
 });
 
 describe("dylink replay layout and rollback", () => {
+  it("rebuilds borrowed instances without running start or data relocations", () => {
+    const wasmBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "env" "__memory_base" (global $memory_base i32))
+        (func $write (param $value i32)
+          global.get $memory_base
+          local.get $value
+          i32.store)
+        (func $start (export "__wasm_init_memory")
+          i32.const 91
+          call $write)
+        (start $start)
+        (func (export "__wasm_apply_data_relocs")
+          i32.const 92
+          call $write)
+        (func (export "read_value") (result i32)
+          global.get $memory_base
+          i32.load))
+    `, "borrowed-no-loader-writes", undefined, 0, 4);
+    const options = createSideForkLoadOptions();
+    const memoryBase = 4_096;
+    new DataView(options.memory.buffer).setInt32(memoryBase, 77, true);
+
+    const library = loadSharedLibrarySync(
+      "libborrowed-no-loader-writes.so",
+      wasmBytes,
+      options,
+      {
+        memoryBase,
+        tableBase: options.table.length,
+        memoryOwnership: "borrowed",
+      },
+    );
+
+    expect((library.exports.read_value as () => number)()).toBe(77);
+    expect(new DataView(options.memory.buffer).getInt32(memoryBase, true))
+      .toBe(77);
+  });
+
+  it("rejects active data before borrowed instantiation can write", () => {
+    const wasmBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (data (i32.const 4096) "\\01\\00\\00\\00"))
+    `, "borrowed-active-data", undefined, 0, 4);
+    const options = createSideForkLoadOptions();
+    const memoryBase = 4_096;
+    new DataView(options.memory.buffer).setInt32(memoryBase, 77, true);
+
+    expect(() => loadSharedLibrarySync(
+      "libborrowed-active-data.so",
+      wasmBytes,
+      options,
+      {
+        memoryBase,
+        tableBase: options.table.length,
+        memoryOwnership: "borrowed",
+      },
+    )).toThrow(/borrowed replay requires passive data segments/);
+    expect(new DataView(options.memory.buffer).getInt32(memoryBase, true))
+      .toBe(77);
+  });
+
+  it("rejects an unrecognized start instead of silently skipping it", () => {
+    const wasmBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "env" "__memory_base" (global $memory_base i32))
+        (func $start
+          global.get $memory_base
+          i32.const 93
+          i32.store)
+        (start $start))
+    `, "borrowed-unknown-start", undefined, 0, 4);
+    const options = createSideForkLoadOptions();
+    const memoryBase = 4_096;
+    new DataView(options.memory.buffer).setInt32(memoryBase, 77, true);
+
+    expect(() => loadSharedLibrarySync(
+      "libborrowed-unknown-start.so",
+      wasmBytes,
+      options,
+      {
+        memoryBase,
+        tableBase: options.table.length,
+        memoryOwnership: "borrowed",
+      },
+    )).toThrow(/cannot suppress unrecognized start function/);
+    expect(new DataView(options.memory.buffer).getInt32(memoryBase, true))
+      .toBe(77);
+  });
+
+  it("rejects in-flight loader transactions at the borrowed boundary", () => {
+    const linker = new DynamicLinker(createSideForkLoadOptions());
+    expect(() => linker.reconcileForkModules({
+      nextHandle: 2,
+      libraries: [],
+      transactions: [{
+        token: 1,
+        name: "libpending.so",
+        moduleBytes: new Uint8Array(),
+        globalVisibility: false,
+      }],
+    }, {
+      memoryOwnership: "borrowed",
+    })).toThrow(/cannot restore an in-flight dlopen transaction/);
+  });
+
+  it("does not apply data relocations twice to copied child memory", () => {
+    const wasmBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (func (export "__wasm_apply_data_relocs")
+          i32.const 32
+          i32.const 32
+          i32.load
+          i32.const 1
+          i32.add
+          i32.store))
+    `, "replay-does-not-relocate-twice");
+    const parent = createSideForkLoadOptions();
+    const loaded = loadSharedLibrarySync(
+      "librelocate-once.so",
+      wasmBytes,
+      parent,
+    );
+    expect(new DataView(parent.memory.buffer).getInt32(32, true)).toBe(1);
+
+    const child = createSideForkLoadOptions();
+    new Uint8Array(child.memory.buffer).set(
+      new Uint8Array(parent.memory.buffer),
+    );
+    loadSharedLibrarySync("librelocate-once.so", wasmBytes, child, {
+      memoryBase: loaded.memoryBase,
+      tableBase: loaded.tableBase,
+    });
+    expect(new DataView(child.memory.buffer).getInt32(32, true)).toBe(1);
+  });
+
   it("restores copied live TLS without re-running side-module TLS initialization", () => {
     const tlsSide = buildDylinkWat(`
       (module
@@ -1264,6 +2209,55 @@ describe("dylink replay layout and rollback", () => {
   });
 });
 
+describe.skipIf(!hasCompiler())("borrowed wasm-ld replay", () => {
+  it("reconstructs passive-data state in shared Memory without writes", () => {
+    const wasmBytes = buildSharedLib(
+      `
+      static int counter = 41;
+      int get_counter(void) { return counter; }
+      void inc_counter(void) { counter++; }
+      `,
+      "borrowed-standard-side",
+    );
+    const parentOptions = createSideForkLoadOptions();
+    const parent = new DynamicLinker(parentOptions);
+    expect(parent.dlopenSync("libborrowed-standard-side.so", wasmBytes)).toBe(2);
+    const parentLibrary = parentOptions.loadedLibraries.get(
+      "libborrowed-standard-side.so",
+    )!;
+    (parentLibrary.exports.inc_counter as () => void)();
+    expect((parentLibrary.exports.get_counter as () => number)()).toBe(42);
+    const archived = parent.forkState();
+    const savedData = new Uint8Array(
+      parentOptions.memory.buffer,
+      parentLibrary.memoryBase,
+      parentLibrary.metadata.memorySize,
+    ).slice();
+
+    const childOptions = createSideForkLoadOptions();
+    childOptions.memory = parentOptions.memory;
+    childOptions.allocateMemory = () => {
+      throw new Error("borrowed side replay must not allocate process memory");
+    };
+    childOptions.deallocateMemory = () => {
+      throw new Error("borrowed side replay must not release process memory");
+    };
+    const child = new DynamicLinker(childOptions);
+    child.reconcileForkModules(archived, { memoryOwnership: "borrowed" });
+    const childLibrary = childOptions.loadedLibraries.get(
+      "libborrowed-standard-side.so",
+    )!;
+
+    expect((childLibrary.exports.get_counter as () => number)()).toBe(42);
+    expect(new Uint8Array(
+      parentOptions.memory.buffer,
+      parentLibrary.memoryBase,
+      parentLibrary.metadata.memorySize,
+    )).toEqual(savedData);
+    expect((parentLibrary.exports.get_counter as () => number)()).toBe(42);
+  });
+});
+
 describe.skipIf(!hasCompiler())("DynamicLinker", () => {
   function createLinker(): DynamicLinker {
     const memory = new WebAssembly.Memory({ initial: 1, maximum: 100, shared: true });
@@ -1302,6 +2296,532 @@ describe.skipIf(!hasCompiler())("DynamicLinker", () => {
 
     // dlclose
     expect(linker.dlclose(handle)).toBe(0);
+  });
+
+  it("lets libc drive initialization without a host-to-Wasm callback", () => {
+    const memory = new WebAssembly.Memory({ initial: 1 });
+    const table = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
+    const stackPointer = new WebAssembly.Global(
+      { value: "i32", mutable: true },
+      65536,
+    );
+    const linker = new DynamicLinker({
+      memory,
+      table,
+      stackPointer,
+      heapPointer: { value: 1024 },
+      globalSymbols: new Map(),
+      got: new Map(),
+      loadedLibraries: new Map(),
+    });
+    const wasmBytes = buildDylinkWat(`
+      (module
+        (global $state (mut i32) (i32.const 0))
+        (func (export "__wasm_apply_data_relocs")
+          global.get $state
+          i32.const 1
+          i32.add
+          global.set $state)
+        (func (export "__wasm_call_ctors")
+          global.get $state
+          i32.const 10
+          i32.add
+          global.set $state)
+        (func (export "initialization_state") (result i32)
+          global.get $state))
+    `, "process-driven-initialization");
+
+    const token = linker.beginDlopenSync(
+      "libprocess-driven-initialization.so",
+      wasmBytes,
+      false,
+    );
+    expect(token).toBeGreaterThan(0);
+
+    const relocations = linker.nextDlopenInitialization(token);
+    expect(relocations).toBeGreaterThan(0);
+    expect(linker.forkState()).toMatchObject({
+      libraries: [{ globalVisibility: false }],
+      transactions: [{ token, globalVisibility: false }],
+    });
+    const relocationEntry = table.get(relocations);
+    expect(typeof relocationEntry).toBe("function");
+    (relocationEntry as () => void)();
+
+    const constructors = linker.nextDlopenInitialization(token);
+    expect(constructors).toBe(relocations);
+    const constructorEntry = table.get(constructors);
+    expect(typeof constructorEntry).toBe("function");
+    (constructorEntry as () => void)();
+
+    expect(linker.nextDlopenInitialization(token)).toBe(0);
+    expect(table.get(relocations)).toBeNull();
+    const handle = linker.commitDlopenSync(token);
+    expect(handle).toBeGreaterThan(0);
+    const stateIndex = linker.dlsym(handle, "initialization_state");
+    expect(stateIndex).not.toBeNull();
+    expect((table.get(stateIndex!) as () => number)()).toBe(11);
+    expect(linker.dlsym(0, "initialization_state")).toBeNull();
+  });
+
+  it("reconstructs an issued initialization entry in a fresh instance", () => {
+    const wasmBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1))
+        (func (export "__wasm_apply_data_relocs")
+          i32.const 32
+          i32.const 32
+          i32.load
+          i32.const 1
+          i32.add
+          i32.store)
+        (func (export "__wasm_call_ctors")
+          i32.const 32
+          i32.const 32
+          i32.load
+          i32.const 10
+          i32.add
+          i32.store)
+        (func (export "initialization_state") (result i32)
+          i32.const 32
+          i32.load))
+    `, "fresh-process-driven-initialization");
+    const parentMemory = new WebAssembly.Memory({ initial: 1 });
+    const parentTable = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
+    const parent = new DynamicLinker({
+      memory: parentMemory,
+      table: parentTable,
+      stackPointer: new WebAssembly.Global(
+        { value: "i32", mutable: true },
+        65536,
+      ),
+      heapPointer: { value: 1024 },
+      globalSymbols: new Map(),
+      got: new Map(),
+      loadedLibraries: new Map(),
+    });
+    const token = parent.beginDlopenSync(
+      "libfresh-process-driven.so",
+      wasmBytes,
+      false,
+    );
+    const relocations = parent.nextDlopenInitialization(token);
+    (parentTable.get(relocations) as () => void)();
+    const constructors = parent.nextDlopenInitialization(token);
+    expect(constructors).toBe(relocations);
+    const archived = parent.forkState();
+    expect(archived.transactions).toHaveLength(1);
+    expect(archived.transactions![0]).toMatchObject({
+      globalVisibility: false,
+    });
+    expect(archived.libraries[0]!.initialization).toMatchObject({
+      transactionToken: token,
+      stage: "constructors",
+      tableIndex: constructors,
+    });
+
+    const childMemory = new WebAssembly.Memory({ initial: 1 });
+    new Uint8Array(childMemory.buffer).set(
+      new Uint8Array(parentMemory.buffer),
+    );
+    const childTable = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
+    const child = new DynamicLinker({
+      memory: childMemory,
+      table: childTable,
+      stackPointer: new WebAssembly.Global(
+        { value: "i32", mutable: true },
+        65536,
+      ),
+      heapPointer: { value: 1024 },
+      globalSymbols: new Map(),
+      got: new Map(),
+      loadedLibraries: new Map(),
+    });
+    child.reconcileForkModules(archived);
+    child.reconcileForkHandleState(archived);
+
+    const childConstructor = childTable.get(constructors);
+    expect(typeof childConstructor).toBe("function");
+    (childConstructor as () => void)();
+    expect(child.nextDlopenInitialization(token)).toBe(0);
+    const handle = child.commitDlopenSync(token);
+    expect(handle).toBe(2);
+    const stateIndex = child.dlsym(handle, "initialization_state");
+    expect(stateIndex).not.toBeNull();
+    expect((childTable.get(stateIndex!) as () => number)()).toBe(11);
+    expect(child.dlsym(0, "initialization_state")).toBeNull();
+  });
+
+  it("archives constructor dlsym ownership across a fresh staged replay", () => {
+    const providerBytes = buildDylinkWat(`
+      (module
+        (func (export "runtime_provider") (result i32) i32.const 61))
+    `, "fresh-constructor-provider");
+    const consumerBytes = buildDylinkWat(`
+      (module
+        (import "env" "lookup_provider"
+          (func $lookup_provider (result i32)))
+        (func (export "__wasm_call_ctors")
+          call $lookup_provider
+          drop)
+        (func (export "consumer_value") (result i32) i32.const 17))
+    `, "fresh-constructor-provider-consumer");
+    const parentOptions = createSideForkLoadOptions();
+    let parent!: DynamicLinker;
+    let providerHandle = 0;
+    parentOptions.globalSymbols.set("lookup_provider", () => {
+      return parent.dlsym(providerHandle, "runtime_provider") ?? 0;
+    });
+    parent = new DynamicLinker(parentOptions);
+    providerHandle = parent.dlopenSync(
+      "libconstructor-provider.so",
+      providerBytes,
+    );
+    const token = parent.beginDlopenSync(
+      "libconstructor-consumer.so",
+      consumerBytes,
+    );
+    const constructor = parent.nextDlopenInitialization(token);
+    (parentOptions.table.get(constructor) as () => void)();
+    const archived = parent.forkState();
+    expect(
+      archived.libraries.find(
+        (library) => library.name === "libconstructor-consumer.so",
+      )?.providerDependencies,
+    ).toEqual(["libconstructor-provider.so"]);
+
+    const childOptions = createSideForkLoadOptions();
+    childOptions.globalSymbols.set("lookup_provider", () => 0);
+    const child = new DynamicLinker(childOptions);
+    child.reconcileForkModules(archived);
+    child.reconcileForkHandleState(archived);
+    expect(child.nextDlopenInitialization(token)).toBe(0);
+    const consumerHandle = child.commitDlopenSync(token);
+    expect(consumerHandle).toBe(3);
+
+    expect(child.dlclose(providerHandle)).toBe(0);
+    expect(
+      childOptions.loadedLibraries.has("libconstructor-provider.so"),
+    ).toBe(true);
+    expect(child.dlclose(consumerHandle)).toBe(0);
+    expect(Array.from(childOptions.loadedLibraries.keys())).toEqual([]);
+  });
+
+  it("reconciles staged initializer generations without repeating guest calls", () => {
+    const wasmBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1))
+        (func (export "__wasm_apply_data_relocs")
+          i32.const 32
+          i32.const 32
+          i32.load
+          i32.const 1
+          i32.add
+          i32.store)
+        (func (export "__wasm_call_ctors")
+          i32.const 32
+          i32.const 32
+          i32.load
+          i32.const 10
+          i32.add
+          i32.store)
+        (func (export "initialization_state") (result i32)
+          i32.const 32
+          i32.load))
+    `, "replicated-process-driven-initialization");
+    const memory = new WebAssembly.Memory({ initial: 1 });
+    const parentTable = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
+    const replicaTable = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
+    const makeLinker = (table: WebAssembly.Table): DynamicLinker =>
+      new DynamicLinker({
+        memory,
+        table,
+        stackPointer: new WebAssembly.Global(
+          { value: "i32", mutable: true },
+          65536,
+        ),
+        heapPointer: { value: 1024 },
+        globalSymbols: new Map(),
+        got: new Map(),
+        loadedLibraries: new Map(),
+      });
+    const parent = makeLinker(parentTable);
+    const replica = makeLinker(replicaTable);
+
+    const token = parent.beginDlopenSync("libreplicated-stages.so", wasmBytes);
+    const relocations = parent.nextDlopenInitialization(token);
+    const relocationState = parent.forkState();
+    replica.reconcileForkModules(relocationState);
+    replica.reconcileForkHandleState(relocationState);
+    expect(typeof replicaTable.get(relocations)).toBe("function");
+
+    (parentTable.get(relocations) as () => void)();
+    const constructors = parent.nextDlopenInitialization(token);
+    expect(constructors).toBe(relocations);
+    const constructorState = parent.forkState();
+    replica.reconcileForkModules(constructorState);
+    replica.reconcileForkHandleState(constructorState);
+    expect(typeof replicaTable.get(constructors)).toBe("function");
+    // Only the source Worker called the relocation entry.
+    expect(new DataView(memory.buffer).getInt32(32, true)).toBe(1);
+
+    (parentTable.get(constructors) as () => void)();
+    expect(parent.nextDlopenInitialization(token)).toBe(0);
+    expect(parent.commitDlopenSync(token)).toBe(2);
+    const committedState = parent.forkState();
+    replica.reconcileForkModules(committedState);
+    replica.reconcileForkHandleState(committedState);
+    expect(replicaTable.get(constructors)).toBeNull();
+    expect(new DataView(memory.buffer).getInt32(32, true)).toBe(11);
+    const stateIndex = replica.dlsym(2, "initialization_state");
+    expect(stateIndex).not.toBeNull();
+    expect((replicaTable.get(stateIndex!) as () => number)()).toBe(11);
+  });
+
+  it("retires a replicated staged initializer after authoritative rollback", () => {
+    const wasmBytes = buildDylinkWat(`
+      (module
+        (func (export "__wasm_call_ctors"))
+      )
+    `, "replicated-process-driven-rollback");
+    const makeLinker = (): {
+      readonly linker: DynamicLinker;
+      readonly table: WebAssembly.Table;
+    } => {
+      const table = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
+      return {
+        table,
+        linker: new DynamicLinker({
+          memory: new WebAssembly.Memory({ initial: 1 }),
+          table,
+          stackPointer: new WebAssembly.Global(
+            { value: "i32", mutable: true },
+            65536,
+          ),
+          heapPointer: { value: 1024 },
+          globalSymbols: new Map(),
+          got: new Map(),
+          loadedLibraries: new Map(),
+        }),
+      };
+    };
+    const parent = makeLinker();
+    const replica = makeLinker();
+    const token = parent.linker.beginDlopenSync(
+      "libreplicated-rollback.so",
+      wasmBytes,
+    );
+    const constructors = parent.linker.nextDlopenInitialization(token);
+    const issuedState = parent.linker.forkState();
+    replica.linker.reconcileForkModules(issuedState);
+    replica.linker.reconcileForkHandleState(issuedState);
+    expect(typeof replica.table.get(constructors)).toBe("function");
+
+    parent.linker.abortDlopenTransaction(token, new Error("constructor failed"));
+    const rolledBackState = parent.linker.forkState();
+    replica.linker.reconcileForkModules(rolledBackState);
+    replica.linker.reconcileForkHandleState(rolledBackState);
+    expect(replica.table.get(constructors)).toBeNull();
+    expect(rolledBackState.libraries).toHaveLength(0);
+  });
+
+  it("rolls back completed NEEDED objects when the staged root fails", () => {
+    const dependencyBytes = buildDylinkWat(`
+      (module
+        (func (export "__wasm_call_ctors"))
+        (func (export "dependency_value") (result i32) i32.const 7)
+      )
+    `, "staged-needed-rollback-dependency");
+    const rootBytes = buildDylinkWat(`
+      (module
+        (import "env" "missing_root_symbol" (func))
+      )
+    `, "staged-needed-rollback-root", undefined, 0, 0, [], [], null, [
+      "libstaged-needed-dependency.so",
+    ]);
+    const options = createSideForkLoadOptions();
+    options.resolveLibrarySync = (name) =>
+      name === "libstaged-needed-dependency.so" ? dependencyBytes : null;
+    const linker = new DynamicLinker(options);
+    const token = linker.beginDlopenSync("libstaged-needed-root.so", rootBytes);
+    const dependencyConstructor = linker.nextDlopenInitialization(token);
+    expect(dependencyConstructor).toBeGreaterThan(0);
+    (options.table.get(dependencyConstructor) as () => void)();
+
+    expect(linker.nextDlopenInitialization(token)).toBe(-1);
+    expect(options.loadedLibraries.size).toBe(0);
+    expect(linker.forkState()).toMatchObject({
+      nextHandle: 2,
+      libraries: [],
+    });
+    expect(options.table.get(dependencyConstructor)).toBeNull();
+  });
+
+  it("preserves an independently committed constructor-nested load", () => {
+    const nestedBytes = buildDylinkWat(`
+      (module
+        (func (export "nested_value") (result i32) i32.const 19)
+      )
+    `, "staged-independent-nested");
+    const outerBytes = buildDylinkWat(`
+      (module
+        (import "env" "nested_open" (func $nested_open))
+        (func (export "__wasm_call_ctors")
+          call $nested_open
+          unreachable)
+      )
+    `, "staged-failing-outer-independent");
+    const options = createSideForkLoadOptions();
+    let linker!: DynamicLinker;
+    let nestedHandle = 0;
+    options.globalSymbols.set("nested_open", () => {
+      const token = linker.beginDlopenSync(
+        "libindependent-nested.so",
+        nestedBytes,
+      );
+      const result = linker.advanceDlopenSync(token);
+      expect(result.entry).toBe(0);
+      nestedHandle = result.handle;
+    });
+    linker = new DynamicLinker(options);
+
+    const outerToken = linker.beginDlopenSync(
+      "libfailing-outer-independent.so",
+      outerBytes,
+    );
+    const constructor = linker.nextDlopenInitialization(outerToken);
+    let failure: unknown;
+    try {
+      (options.table.get(constructor) as () => void)();
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(WebAssembly.RuntimeError);
+    linker.abortDlopenTransaction(outerToken, failure);
+
+    expect(nestedHandle).toBe(2);
+    expect(Array.from(options.loadedLibraries.keys())).toEqual([
+      "libindependent-nested.so",
+    ]);
+    const nestedValue = linker.dlsym(nestedHandle, "nested_value");
+    expect(nestedValue).not.toBeNull();
+    expect((options.table.get(nestedValue!) as () => number)()).toBe(19);
+  });
+
+  it("preserves an independently committed nested GLOBAL promotion", () => {
+    const localBytes = buildDylinkWat(`
+      (module
+        (func (export "promoted_value") (result i32) i32.const 31)
+      )
+    `, "staged-independent-promotion");
+    const outerBytes = buildDylinkWat(`
+      (module
+        (import "env" "nested_promote" (func $nested_promote))
+        (func (export "__wasm_call_ctors")
+          call $nested_promote
+          unreachable)
+      )
+    `, "staged-failing-outer-promotion");
+    const options = createSideForkLoadOptions();
+    let linker!: DynamicLinker;
+    let promotedHandle = 0;
+    options.globalSymbols.set("nested_promote", () => {
+      const token = linker.beginDlopenSync(
+        "libpromoted-local.so",
+        localBytes,
+        true,
+      );
+      const result = linker.advanceDlopenSync(token);
+      expect(result.entry).toBe(0);
+      promotedHandle = result.handle;
+    });
+    linker = new DynamicLinker(options);
+    const localHandle = linker.dlopenSync(
+      "libpromoted-local.so",
+      localBytes,
+      undefined,
+      false,
+    );
+    expect(localHandle).toBeGreaterThan(0);
+    expect(linker.dlsym(0, "promoted_value")).toBeNull();
+
+    const outerToken = linker.beginDlopenSync(
+      "libfailing-outer-promotion.so",
+      outerBytes,
+    );
+    const constructor = linker.nextDlopenInitialization(outerToken);
+    let failure: unknown;
+    try {
+      (options.table.get(constructor) as () => void)();
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(WebAssembly.RuntimeError);
+    linker.abortDlopenTransaction(outerToken, failure);
+
+    expect(promotedHandle).toBe(localHandle);
+    const promoted = options.loadedLibraries.get("libpromoted-local.so")!;
+    expect(promoted.globalVisibility).toBe(true);
+    expect(promoted.committedGlobalRoot).toBe(true);
+    expect(linker.forkLibraryState("libpromoted-local.so")).toMatchObject({
+      globalVisibility: true,
+      committedGlobalRoot: true,
+      handle: localHandle,
+      refCount: 2,
+    });
+    const value = linker.dlsym(0, "promoted_value");
+    expect(value).not.toBeNull();
+    expect((options.table.get(value!) as () => number)()).toBe(31);
+  });
+
+  it("cascades rollback into a constructor-nested load bound to the outer", () => {
+    const nestedBytes = buildDylinkWat(`
+      (module
+        (import "env" "outer_value" (func $outer_value (result i32)))
+        (func (export "nested_value") (result i32) call $outer_value)
+      )
+    `, "staged-dependent-nested");
+    const outerBytes = buildDylinkWat(`
+      (module
+        (import "env" "nested_open" (func $nested_open))
+        (func (export "outer_value") (result i32) i32.const 23)
+        (func (export "__wasm_call_ctors")
+          call $nested_open
+          unreachable)
+      )
+    `, "staged-failing-outer-dependent");
+    const options = createSideForkLoadOptions();
+    let linker!: DynamicLinker;
+    let nestedHandle = 0;
+    options.globalSymbols.set("nested_open", () => {
+      const token = linker.beginDlopenSync(
+        "libdependent-nested.so",
+        nestedBytes,
+      );
+      const result = linker.advanceDlopenSync(token);
+      expect(result.entry).toBe(0);
+      nestedHandle = result.handle;
+    });
+    linker = new DynamicLinker(options);
+
+    const outerToken = linker.beginDlopenSync(
+      "libfailing-outer-dependent.so",
+      outerBytes,
+    );
+    const constructor = linker.nextDlopenInitialization(outerToken);
+    let failure: unknown;
+    try {
+      (options.table.get(constructor) as () => void)();
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(WebAssembly.RuntimeError);
+    linker.abortDlopenTransaction(outerToken, failure);
+
+    expect(nestedHandle).toBe(2);
+    expect(options.loadedLibraries.size).toBe(0);
+    expect(linker.dlsym(nestedHandle, "nested_value")).toBeNull();
+    expect(linker.dlerror()).toBe("invalid handle");
   });
 
   it("reserves a stable handle for the main program symbol scope", () => {
@@ -1365,6 +2885,110 @@ describe.skipIf(!hasCompiler())("DynamicLinker", () => {
     expect(handle).toBeGreaterThan(0);
     expect(allocSize).toBeGreaterThan(0);
     expect(allocAlign).toBeGreaterThan(0);
+  });
+
+  it("adopts copied mmap ownership and releases it on child dlclose", () => {
+    const wasmBytes = buildSharedLib(
+      `
+      int value = 7;
+      int get_value(void) { return value; }
+      `,
+      "dl-fork-allocation-owner",
+    );
+    const parentMemory = new WebAssembly.Memory({
+      initial: 2,
+      maximum: 100,
+      shared: true,
+    });
+    const parentTable = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
+    const parentAllocations = new Map<
+      number,
+      { mappingAddress: number; mappingSize: number }
+    >();
+    const parent = new DynamicLinker({
+      memory: parentMemory,
+      table: parentTable,
+      stackPointer: new WebAssembly.Global(
+        { value: "i32", mutable: true },
+        65536,
+      ),
+      allocateMemory: (size) => {
+        const address = 0x3000;
+        parentAllocations.set(address, {
+          mappingAddress: 0x2ff0,
+          mappingSize: size + 31,
+        });
+        return address;
+      },
+      describeMemoryAllocation: (address) => parentAllocations.get(address)!,
+      deallocateMemory: () => {},
+      globalSymbols: new Map(),
+      got: new Map(),
+      loadedLibraries: new Map(),
+    });
+    const handle = parent.dlopenSync("libfork-allocation.so", wasmBytes);
+    expect(handle).toBeGreaterThan(0);
+    const forkState = parent.forkState();
+    expect(forkState.libraries[0]?.allocations).toEqual([{
+      address: 0x3000,
+      size: expect.any(Number),
+      mappingAddress: 0x2ff0,
+      mappingSize: expect.any(Number),
+    }]);
+
+    const childMemory = new WebAssembly.Memory({
+      initial: 2,
+      maximum: 100,
+      shared: true,
+    });
+    new Uint8Array(childMemory.buffer).set(
+      new Uint8Array(parentMemory.buffer),
+    );
+    const adopted = new Map<
+      number,
+      { mappingAddress: number; mappingSize: number }
+    >();
+    const released: Array<{
+      address: number;
+      mappingAddress: number;
+      mappingSize: number;
+    }> = [];
+    const child = new DynamicLinker({
+      memory: childMemory,
+      table: new WebAssembly.Table({ initial: 1, element: "anyfunc" }),
+      stackPointer: new WebAssembly.Global(
+        { value: "i32", mutable: true },
+        65536,
+      ),
+      adoptMemoryAllocation: (allocation) => {
+        adopted.set(allocation.address, {
+          mappingAddress: allocation.mappingAddress,
+          mappingSize: allocation.mappingSize,
+        });
+      },
+      deallocateMemory: (address) => {
+        const mapping = adopted.get(address);
+        if (!mapping) throw new Error("missing adopted mmap owner");
+        released.push({ address, ...mapping });
+        adopted.delete(address);
+      },
+      globalSymbols: new Map(),
+      got: new Map(),
+      loadedLibraries: new Map(),
+    });
+    child.reconcileForkModules(forkState);
+    child.reconcileForkHandleState(forkState);
+    expect(adopted.get(0x3000)).toEqual({
+      mappingAddress: 0x2ff0,
+      mappingSize: forkState.libraries[0]!.allocations![0]!.mappingSize,
+    });
+    expect(child.dlclose(handle)).toBe(0);
+    expect(released).toEqual([{
+      address: 0x3000,
+      mappingAddress: 0x2ff0,
+      mappingSize: forkState.libraries[0]!.allocations![0]!.mappingSize,
+    }]);
+    expect(adopted.size).toBe(0);
   });
 
   it("dlerror reports failures", () => {

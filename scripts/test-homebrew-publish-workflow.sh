@@ -250,7 +250,8 @@ FORMULA_RUNNER_FIXTURE_ROOT="$TMPDIR/formula-runner-root"
 make_formula_runner_fixture() {
   local host_target
   mkdir -p "$FORMULA_RUNNER_FIXTURE_ROOT/scripts" \
-    "$FORMULA_RUNNER_FIXTURE_ROOT/homebrew/patches"
+    "$FORMULA_RUNNER_FIXTURE_ROOT/homebrew/patches" \
+    "$FORMULA_RUNNER_FIXTURE_ROOT/tools/bin"
   FORMULA_RUNNER_FIXTURE_ROOT="$(cd "$FORMULA_RUNNER_FIXTURE_ROOT" && pwd -P)"
   cp "$REPO_ROOT/scripts/homebrew-bottle-build.sh" \
     "$REPO_ROOT/scripts/homebrew-verify-poured-bottle.sh" \
@@ -292,6 +293,13 @@ fi
 exec "$(dirname "$0")/xtask.real" "$@"
 EOF
   chmod 0755 "$FORMULA_RUNNER_FIXTURE_ROOT/target/$host_target/release/xtask"
+  for tool in wasm-fork-instrument wasm-local-root-spill; do
+    cat >"$FORMULA_RUNNER_FIXTURE_ROOT/tools/bin/$tool" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+    chmod 0755 "$FORMULA_RUNNER_FIXTURE_ROOT/tools/bin/$tool"
+  done
   mkdir -p "$FORMULA_RUNNER_FIXTURE_ROOT/packages/registry/hello"
   cat >"$FORMULA_RUNNER_FIXTURE_ROOT/packages/registry/hello/package.toml" <<'EOF'
 kind = "program"
@@ -375,6 +383,10 @@ homebrew_patched_launcher_select_host_git() {
   export HOMEBREW_GIT_PATH
 }
 
+homebrew_patched_launcher_restore_invoker_bootstrap_roots() {
+  [ "$#" -eq 2 ]
+}
+
 homebrew_patched_launcher_prepare() {
   HOMEBREW_PATCHED_BREW_BIN="$1"
   HOMEBREW_PATCHED_PREFIX="${FAKE_BREW_PREFIX:?}"
@@ -400,6 +412,15 @@ homebrew_patched_launcher_snapshot_target_cellar_layout() {
   done | LC_ALL=C sort
 }
 
+homebrew_patched_launcher_seal_target_dependencies() {
+  [ "$#" -eq 2 ]
+}
+
+homebrew_patched_launcher_resolve_installed_formula_keg() {
+  [ "$#" -eq 3 ] || return 2
+  printf '%s/Cellar/%s/1.0\n' "$HOMEBREW_PATCHED_PREFIX" "$3"
+}
+
 homebrew_patched_launcher_native_prefix_path() {
   printf '%s/p\n' "$1"
 }
@@ -421,7 +442,7 @@ homebrew_patched_launcher_stage_dependency_plan() {
 homebrew_patched_launcher_stage_tier2_attestation() {
   jq -e '
     keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tier2_bridge"] and
-    .schema == 2 and
+    .schema == 4 and
     (.formula_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
     (.support_sha256 == null or
       (.support_sha256 | type == "string" and test("^[0-9a-f]{64}$"))) and
@@ -430,7 +451,7 @@ homebrew_patched_launcher_stage_tier2_attestation() {
     ((.support_sha256 == null) == (.support_runtime_sha256 == null)) and
     (.tier2_bridge == null or .support_sha256 != null) and
     if .tier2_bridge == null then true else
-      (.tier2_bridge | keys == ["build_toml_sha256", "package", "package_toml_sha256", "script", "script_env_keys", "script_sha256", "source_mode", "source_sha256", "source_url", "version"])
+      (.tier2_bridge | keys == ["package", "script", "script_env_keys", "script_sha256", "source_sha256", "source_url", "version"])
     end
   ' "$1" >/dev/null || return 2
   if [ -n "${FAKE_POST_BUILD_TAP_RECIPE_PKG_VERSION:-}" ]; then
@@ -1317,7 +1338,7 @@ RUBY
     --arch wasm32 \
     --release-tag bottles-abi-v18 \
     --bottle-json "$canonical_bottle_json" \
-    --expected-sha256 "$(jq -er '.hello.bottle.tags.wasm32_kandelo.sha256' "$canonical_bottle_json")" \
+    --expected-sha256 "$(jq -er '.["acme/tools/hello"].bottle.tags.wasm32_kandelo.sha256' "$canonical_bottle_json")" \
     --expected-root-url https://ghcr.io/v2/acme/homebrew-tools \
     --expected-cellar any_skip_relocation >/dev/null
   grep -F 'root_url "https://ghcr.io/v2/acme/homebrew-tools"' \
@@ -1491,20 +1512,20 @@ assert_build_handoff_is_minimal_and_validated() {
       fail "validated handoff env lost dependency provenance"
   )
   jq -e --arg sha256 "$(jq -r '.bottle.sha256' "$handoff/manifest.json")" '
-    keys == ["hello"] and
-    (.hello | keys == ["bottle", "formula"]) and
-    (.hello.formula | keys == ["name", "path", "pkg_version"]) and
-    .hello.formula == {
+    keys == ["kandelo-dev/tap-core/hello"] and
+    (.["kandelo-dev/tap-core/hello"] | keys == ["bottle", "formula"]) and
+    (.["kandelo-dev/tap-core/hello"].formula | keys == ["name", "path", "pkg_version"]) and
+    .["kandelo-dev/tap-core/hello"].formula == {
       name: "hello",
       path: "Library/Taps/kandelo-dev/homebrew-tap-core/Formula/hello.rb",
       pkg_version: "2.12.1"
     } and
-    (.hello.bottle | keys == ["cellar", "rebuild", "root_url", "tags"]) and
-    .hello.bottle.root_url == "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core" and
-    .hello.bottle.cellar == "any_skip_relocation" and
-    .hello.bottle.rebuild == 0 and
-    (.hello.bottle.tags | keys == ["wasm32_kandelo"]) and
-    .hello.bottle.tags.wasm32_kandelo == {
+    (.["kandelo-dev/tap-core/hello"].bottle | keys == ["cellar", "rebuild", "root_url", "tags"]) and
+    .["kandelo-dev/tap-core/hello"].bottle.root_url == "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core" and
+    .["kandelo-dev/tap-core/hello"].bottle.cellar == "any_skip_relocation" and
+    .["kandelo-dev/tap-core/hello"].bottle.rebuild == 0 and
+    (.["kandelo-dev/tap-core/hello"].bottle.tags | keys == ["wasm32_kandelo"]) and
+    .["kandelo-dev/tap-core/hello"].bottle.tags.wasm32_kandelo == {
       sha256: $sha256
     }
   ' "$canonical_json" >/dev/null ||
@@ -3729,6 +3750,7 @@ assert_bottle_build_installs_test_dependencies() {
   local native_prefix_capture="$TMPDIR/bottle-test-dependency-native-prefix.txt"
   local native_prefix retired_guest_prefix real_python3 gnu_tar_bin
   local host_git_bin
+  local FAKE_EXPECTED_XTASK
   local KANDELO_HOMEBREW_RESOLVED_TAPS_FILE
   # WHY: prove the archive removed the retired identity without copying that
   # identity into another guest-owned source location.
@@ -3737,6 +3759,8 @@ assert_bottle_build_installs_test_dependencies() {
       "$REPO_ROOT/homebrew/kandelo-guest-layout.json"
   )"
   make_tap "$tap"
+  FAKE_EXPECTED_XTASK="$FORMULA_RUNNER_FIXTURE_ROOT/target/$(rustc -vV | sed -n 's/^host: //p')/release/xtask"
+  export FAKE_EXPECTED_XTASK
   mkdir -p "$brew_repo" "$brew_prefix" "$fake_bin"
   mkdir -p "$tap/Kandelo/formula_support/test"
   printf 'must not reach Formula execution\n' \
@@ -3856,6 +3880,23 @@ case "${1:-}" in
       echo "fake brew: target Formula did not receive the canonical primary tap root" >&2
       exit 56
     fi
+    if [ "${FAKE_REQUIRE_PRIMARY_TAP_READ_ONLY:-}" = 1 ] &&
+       [ -w "$FAKE_TAP_ROOT" ]; then
+      echo "fake brew: candidate Formula received a writable primary tap root" >&2
+      exit 63
+    fi
+    if [ "${FAKE_REQUIRE_TAP_RECIPE_PLATFORM_TOOLS:-}" = 1 ]; then
+      [ "${HOMEBREW_KANDELO_FORK_INSTRUMENT:-}" = \
+        "${FAKE_EXPECTED_TAP_RECIPE_PLATFORM_ROOT:?}/tools/bin/wasm-fork-instrument" ] || {
+        echo "fake brew: candidate Formula did not receive the sealed fork instrument" >&2
+        exit 65
+      }
+      [ "${HOMEBREW_KANDELO_LOCAL_ROOT_SPILL:-}" = \
+        "$FAKE_EXPECTED_TAP_RECIPE_PLATFORM_ROOT/tools/bin/wasm-local-root-spill" ] || {
+        echo "fake brew: candidate Formula did not receive the sealed local-root-spill tool" >&2
+        exit 66
+      }
+    fi
     [ ! -e "$FAKE_TAP_ROOT/Kandelo/formula_support/test" ] || exit 54
     case "$*" in
       'deps --topological --full-name --formula kandelo-dev/tap-core/hello')
@@ -3908,6 +3949,13 @@ TARGET_GIT
       *) exit 43 ;;
     esac
     ;;
+  unlink)
+    [ "${FAKE_HOMEBREW_REALM:-target}" = native ] || exit 62
+    case "$*" in
+      'unlink homebrew/core/cmake'|'unlink homebrew/core/ninja') ;;
+      *) exit 62 ;;
+    esac
+    ;;
   info)
     [ "${FAKE_HOMEBREW_REALM:-target}" = native ] || exit 47
     case "$*" in
@@ -3930,6 +3978,7 @@ TARGET_GIT
     ;;
   test)
     [ "$*" = 'test kandelo-dev/tap-core/hello' ] || exit 46
+    [ "${HOMEBREW_KANDELO_XTASK_BIN:-}" = "${FAKE_EXPECTED_XTASK:?}" ] || exit 64
     if [ "${FAKE_ASSERT_GIT_CONTROL_PLANE:-}" = 1 ]; then
       [ -x "$FAKE_BREW_PREFIX/bin/git" ] || exit 56
       [ "${HOMEBREW_GIT_PATH:-}" = "$FAKE_EXPECTED_HOST_GIT" ] || exit 57
@@ -3943,7 +3992,13 @@ TARGET_GIT
     fi
     ;;
   bottle)
-    [ "$*" = 'bottle --json --keep-old --root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core kandelo-dev/tap-core/hello' ] || exit 55
+    expected_bottle_root="${FAKE_EXPECTED_BOTTLE_ROOT_URL:-https://ghcr.io/v2/kandelo-dev/homebrew-tap-core}"
+    if [ -n "${FAKE_EXPECTED_STAGING_CANDIDATE_ABI:-}" ]; then
+      expected_bottle_args="bottle --json --root-url $expected_bottle_root kandelo-dev/tap-core/hello"
+    else
+      expected_bottle_args="bottle --json --keep-old --root-url $expected_bottle_root kandelo-dev/tap-core/hello"
+    fi
+    [ "$*" = "$expected_bottle_args" ] || exit 55
     printf 'bottle-tags=%s|%s\n' \
       "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
       >>"$FAKE_BREW_LOG"
@@ -3967,7 +4022,15 @@ for directory, names, files in os.walk(root):
         path = os.path.join(directory, name)
         os.utime(path, (timestamp, timestamp), follow_symlinks=False)
 ' "$bottle_stage" "${FAKE_BUILD_TIME:?}"
-    bottle_tar="$bottle_dir/hello--1.0.wasm32_kandelo.bottle.1.tar"
+    raw_bottle_rebuild=1
+    raw_bottle_suffix=.1
+    if [ -n "${FAKE_EXPECTED_STAGING_CANDIDATE_ABI:-}" ]; then
+      # Real Homebrew starts fresh candidate-root metadata at rebuild zero
+      # when --keep-old is intentionally omitted.
+      raw_bottle_rebuild=0
+      raw_bottle_suffix=
+    fi
+    bottle_tar="$bottle_dir/hello--1.0.wasm32_kandelo.bottle${raw_bottle_suffix}.tar"
     (
       cd "$bottle_stage"
       "$HOMEBREW_KANDELO_GNU_TAR" --create --numeric-owner \
@@ -3979,20 +4042,21 @@ for directory, names, files in os.walk(root):
         --file "$bottle_tar" hello/1.0
     )
     gzip -n -c "$bottle_tar" \
-      >"$bottle_dir/hello--1.0.wasm32_kandelo.bottle.1.tar.gz"
+      >"$bottle_dir/hello--1.0.wasm32_kandelo.bottle${raw_bottle_suffix}.tar.gz"
     rm -f "$bottle_tar"
     python3 -c 'import os, sys; os.utime(sys.argv[1], (1705948357, 1705948357))' \
-      "$bottle_dir/hello--1.0.wasm32_kandelo.bottle.1.tar.gz"
-    cat >hello--1.0.wasm32_kandelo.bottle.json <<'JSON'
+      "$bottle_dir/hello--1.0.wasm32_kandelo.bottle${raw_bottle_suffix}.tar.gz"
+    cat >hello--1.0.wasm32_kandelo.bottle.json <<JSON
 {
   "kandelo-dev/tap-core/hello": {
     "formula": {"name": "hello", "pkg_version": "1.0"},
     "bottle": {
       "date": "2024-01-22T17:12:37Z",
-      "rebuild": 1,
+      "rebuild": $raw_bottle_rebuild,
       "tags": {
         "wasm32_kandelo": {
-          "local_filename": "hello--1.0.wasm32_kandelo.bottle.1.tar.gz"
+          "filename": "hello-1.0.wasm32_kandelo.bottle${raw_bottle_suffix}.tar.gz",
+          "local_filename": "hello--1.0.wasm32_kandelo.bottle${raw_bottle_suffix}.tar.gz"
         }
       }
     }
@@ -4031,12 +4095,16 @@ out=""
 install_log=""
 cache_evidence=""
 cache_root=""
+bottle_root_url=""
+staging_candidate_abi=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --expected-dependencies) expected="${2:-}"; shift 2 ;;
     --install-log) install_log="${2:-}"; shift 2 ;;
     --cache-evidence) cache_evidence="${2:-}"; shift 2 ;;
     --cache-root) cache_root="${2:-}"; shift 2 ;;
+    --bottle-root-url) bottle_root_url="${2:-}"; shift 2 ;;
+    --staging-candidate-abi) staging_candidate_abi="${2:-}"; shift 2 ;;
     --out) out="${2:-}"; shift 2 ;;
     *) shift ;;
   esac
@@ -4044,11 +4112,19 @@ done
 case "$subcommand" in
   capture-cache)
     [ -n "$expected" ] && [ -n "$cache_root" ] && [ -n "$out" ] || exit 47
+    if [ -n "${FAKE_EXPECTED_DEPENDENCY_BOTTLE_ROOT_URL:-}" ]; then
+      [ "$bottle_root_url" = "$FAKE_EXPECTED_DEPENDENCY_BOTTLE_ROOT_URL" ] || exit 51
+      [ "$staging_candidate_abi" = "$FAKE_EXPECTED_STAGING_CANDIDATE_ABI" ] || exit 52
+    fi
     printf '{"schema":1}\n' >"$out"
     ;;
   capture)
     [ -n "$expected" ] && [ -n "$install_log" ] && [ -n "$out" ] || exit 48
     [ -n "$cache_evidence" ] && [ -f "$cache_evidence" ] || exit 49
+    if [ -n "${FAKE_EXPECTED_DEPENDENCY_BOTTLE_ROOT_URL:-}" ]; then
+      [ "$bottle_root_url" = "$FAKE_EXPECTED_DEPENDENCY_BOTTLE_ROOT_URL" ] || exit 53
+      [ "$staging_candidate_abi" = "$FAKE_EXPECTED_STAGING_CANDIDATE_ABI" ] || exit 54
+    fi
     cp "$expected" "$FAKE_PROVENANCE_CAPTURE"
     cp "$install_log" "$FAKE_PROVENANCE_LOG_CAPTURE"
     printf '{"schema":1}\n' >"$out"
@@ -4074,6 +4150,10 @@ EOF
     FAKE_BUILD_TIME=1700000000 \
     FAKE_ASSERT_GIT_CONTROL_PLANE=1 \
     FAKE_EXPECTED_HOST_GIT="$host_git_bin" \
+    FAKE_EXPECTED_BOTTLE_ROOT_URL=https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-43-candidates/hello \
+    FAKE_EXPECTED_DEPENDENCY_BOTTLE_ROOT_URL=https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-43-candidates \
+    FAKE_EXPECTED_STAGING_CANDIDATE_ABI=43 \
+    FAKE_REQUIRE_PRIMARY_TAP_READ_ONLY=1 \
     FAKE_BREW_PREFIX="$brew_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \
     FAKE_TAP_ROOT="$tapped_main" \
@@ -4089,22 +4169,32 @@ EOF
       --formula hello \
       --arch wasm32 \
       --out "$out" \
-      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-43-candidates/hello \
+      --staging-candidate-abi 43 \
       >/dev/null 2>"$runner_err"; then
     fail "test dependency fixture did not complete: $(cat "$runner_err"); " \
       "last Brew commands: $(tail -n 12 "$realm_log" | tr '\n' ';')"
   fi
+  [ -w "$tapped_main" ] ||
+    fail "candidate tap checkout permissions were not restored after cleanup"
   [ "$(wc -l <"$tier2_preflight_log" | tr -d '[:space:]')" = 2 ] ||
     fail "bottle build did not run Tier-2 preflight before and after tap materialization"
   jq -e '
+    .["kandelo-dev/tap-core/hello"].bottle.rebuild == 1 and
+    .["kandelo-dev/tap-core/hello"].bottle.tags.wasm32_kandelo.local_filename ==
+      "hello--1.0.wasm32_kandelo.bottle.1.tar.gz" and
+    .["kandelo-dev/tap-core/hello"].bottle.tags.wasm32_kandelo.filename ==
+      "hello-1.0.wasm32_kandelo.bottle.1.tar.gz"
+  ' "$out/bottles/hello--1.0.wasm32_kandelo.bottle.json" >/dev/null ||
+    fail "candidate bottle metadata did not normalize both rebuilt filenames"
+  jq -e '
     keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tier2_bridge"] and
-    .schema == 2 and .arch == "wasm32" and
+    .schema == 4 and .arch == "wasm32" and
     .tap == "kandelo-dev/tap-core" and .formula == "hello" and
-    (.tier2_bridge | keys == ["build_toml_sha256", "package", "package_toml_sha256", "script", "script_env_keys", "script_sha256", "source_mode", "source_sha256", "source_url", "version"]) and
+    (.tier2_bridge | keys == ["package", "script", "script_env_keys", "script_sha256", "source_sha256", "source_url", "version"]) and
     .tier2_bridge.package == "cpython" and
     .tier2_bridge.script == "build-cpython.sh" and
     .tier2_bridge.script_env_keys == [] and
-    .tier2_bridge.source_mode == "exact" and
     .tier2_bridge.version == "1.0"
   ' "$tier2_attestation_capture" >/dev/null ||
     fail "bottle build did not stage the exact active Tier-2 attestation"
@@ -4135,6 +4225,8 @@ EOF
     FAKE_BREW_REPOSITORY="$brew_repo" \
     FAKE_TAP_ROOT="$tapped_pkg_drift" \
     FAKE_POST_BUILD_TAP_RECIPE_PKG_VERSION=1.0_2 \
+    FAKE_REQUIRE_TAP_RECIPE_PLATFORM_TOOLS=1 \
+    FAKE_EXPECTED_TAP_RECIPE_PLATFORM_ROOT="$FORMULA_RUNNER_FIXTURE_ROOT" \
     HOMEBREW_BREW_FILE="$fake_brew" \
     GITHUB_ACTIONS= \
     bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-bottle-build.sh" \
@@ -4594,6 +4686,8 @@ assert_bottle_verifier_installs_test_dependencies() {
   local native_prefix_capture="$root/native-prefix.txt"
   local sysroot_build_root_capture="$root/sysroot-build-root.txt"
   local shared_temp="$root/shared-temp"
+  local playwright_browsers="$root/prepared-playwright"
+  local verifier_home="$root/verifier-home"
   local renamed_err="$root/renamed-bottle.err"
   local nested_target_err="$root/nested-target.err"
   local checker_err="$root/checker.err"
@@ -4635,7 +4729,10 @@ EOF
 
   mkdir -p "$brew_repo" "$brew_prefix/opt" "$fake_bin" "$target_prefix" \
     "$nested_target_prefix" \
-    "$cache" "$brew_temp" "$state" "$sysroot_build_root/sysroot/lib" "$shared_temp"
+    "$cache" "$brew_temp" "$state" "$sysroot_build_root/sysroot/lib" "$shared_temp" \
+    "$playwright_browsers" "$verifier_home"
+  playwright_browsers="$(cd "$playwright_browsers" && pwd -P)"
+  printf 'prepared browser\n' >"$playwright_browsers/browser.marker"
   printf 'fixture libc archive\n' >"$sysroot_build_root/sysroot/lib/libc.a"
   ln -s ../Cellar/hello/1.0 "$target_opt_prefix"
   target_prefix="$(cd "$target_prefix" && pwd -P)"
@@ -4647,7 +4744,7 @@ EOF
   bottle_sha="$(sha256sum "$bottle" | awk '{print $1}')"
   bottle_bytes="$(wc -c <"$bottle" | tr -d '[:space:]')"
   jq -nS --arg sha256 "$bottle_sha" '{
-    hello: {
+    "kandelo-dev/tap-core/hello": {
       formula: {name: "hello", path: "Formula/hello.rb", pkg_version: "1.0"},
       bottle: {
         root_url: "https://example.invalid",
@@ -4783,6 +4880,13 @@ TARGET_GIT
       *) exit 47 ;;
     esac
     ;;
+  unlink)
+    [ "${FAKE_HOMEBREW_REALM:-target}" = native ] || exit 58
+    case "$*" in
+      'unlink homebrew/core/cmake'|'unlink homebrew/core/ninja') ;;
+      *) exit 58 ;;
+    esac
+    ;;
   list)
     case "$*" in
       'list --formula cmake'|'list --formula ninja') ;;
@@ -4810,6 +4914,11 @@ TARGET_GIT
   test)
     [ "$*" = 'test kandelo-dev/tap-core/hello' ] && \
       [ -f "$FAKE_STATE/target" ] || exit 50
+    formula_test_home="$(mktemp -d "$HOMEBREW_TEMP/hello-test.XXXXXX")"
+    HOME="$formula_test_home"
+    TMPDIR="$HOMEBREW_TEMP"
+    unset PLAYWRIGHT_BROWSERS_PATH
+    export HOME TMPDIR
     [ -x "$FAKE_BREW_PREFIX/bin/git" ] || exit 54
     [ "${HOMEBREW_GIT_PATH:-}" = "$FAKE_EXPECTED_HOST_GIT" ] || exit 55
     [ "$HOMEBREW_GIT_PATH" != "$FAKE_BREW_PREFIX/bin/git" ] || exit 56
@@ -4820,6 +4929,19 @@ TARGET_GIT
     [ "$(cd "$trusted_remote" && pwd -P)" = \
       "$(cd "$FAKE_RECONSTRUCTED_TAP" && pwd -P)" ] || exit 58
     [ "$(grep -c '^trust --tap kandelo-dev/tap-core$' "$FAKE_BREW_LOG")" -eq 1 ] || exit 59
+    formula_playwright_path="$(dirname "$HOMEBREW_CACHE")/ms-playwright"
+    [ "$formula_playwright_path" = "$FAKE_EXPECTED_FORMULA_PLAYWRIGHT_PATH" ] || {
+      printf 'Formula test Playwright search path=%s differs from expected %s\n' \
+        "$formula_playwright_path" "$FAKE_EXPECTED_FORMULA_PLAYWRIGHT_PATH" >&2
+      exit 70
+    }
+    [ -f "$formula_playwright_path/browser.marker" ] || {
+      printf 'Formula test Playwright discovery path=%s is unavailable\n' \
+        "$formula_playwright_path" >&2
+      exit 69
+    }
+    cmp -s "$FAKE_PLAYWRIGHT_BROWSERS_PATH/browser.marker" \
+      "$formula_playwright_path/browser.marker" || exit 71
     printf 'test-tags=%s|%s\n' \
       "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
       >>"$FAKE_BREW_LOG"
@@ -4953,6 +5075,9 @@ EOF
       FAKE_PROVENANCE_CAPTURE="$provenance_capture" \
       FAKE_PROVENANCE_LOG_CAPTURE="$provenance_log_capture" \
       FAKE_FORCE_NODE_RECEIPT="${FAKE_FORCE_NODE_RECEIPT:-}" \
+      FAKE_PLAYWRIGHT_BROWSERS_PATH="$playwright_browsers" \
+      FAKE_EXPECTED_FORMULA_PLAYWRIGHT_PATH="$root/ms-playwright" \
+      HOME="$verifier_home" \
       HOMEBREW_BREW_FILE="$fake_brew" \
       HOMEBREW_CACHE="$cache" \
       HOMEBREW_TEMP="$brew_temp" \
@@ -4965,6 +5090,7 @@ EOF
       HOMEBREW_RELOCATE_BUILD_PREFIX=caller-poison \
       HOMEBREW_KANDELO_PRIMARY_TAP_ROOT=caller-poison \
       HOMEBREW_GIT_PATH=caller-poison \
+      PLAYWRIGHT_BROWSERS_PATH=caller-poison \
       GITHUB_ACTIONS= \
       bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-verify-poured-bottle.sh" \
         --tap-root "$tap" \
@@ -4982,6 +5108,7 @@ EOF
         --dependency-provenance "$dependency_provenance" \
         --selection-receipt "$selection_receipt" \
         --sysroot-build-root "$sysroot_build_root" \
+        --playwright-browsers-path "$playwright_browsers" \
         --out "$evidence_out"
   }
 
@@ -7888,6 +8015,20 @@ assert_formula_test_program_projection_is_current_and_bounded() {
   ' "$projection" "$committed" "$selected" ||
     fail "Formula checker projection is not the current selected package closure"
 }
+
+if [ "${KANDELO_HOMEBREW_PUBLISH_TEST_FOCUS:-}" = staging-candidate-dependency-root ]; then
+  make_formula_runner_fixture
+  assert_bottle_build_installs_test_dependencies
+  echo "test-homebrew-publish-workflow.sh: staging candidate dependency root ok"
+  exit 0
+fi
+
+if [ "${KANDELO_HOMEBREW_PUBLISH_TEST_FOCUS:-}" = verification-playwright-cache ]; then
+  make_formula_runner_fixture
+  assert_bottle_verifier_installs_test_dependencies
+  echo "test-homebrew-publish-workflow.sh: verification Playwright cache ok"
+  exit 0
+fi
 
 assert_canonical_formula_support_is_load_order_independent
 make_formula_runner_fixture

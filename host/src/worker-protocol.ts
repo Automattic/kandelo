@@ -1,3 +1,13 @@
+import type {
+  ForkHostImportWorkerInit,
+} from "./fork-host-import-runtime";
+import type {
+  ForkExternrefImportWake,
+} from "./fork-externref-import-mailbox";
+import type { ProcessForkMode } from "./generated/abi";
+
+export type ForkMemoryOwnership = "copied" | "borrowed";
+
 // --- Host → Worker messages ---
 
 /**
@@ -32,6 +42,22 @@ export interface CentralizedWorkerInitMessage {
   memory: WebAssembly.Memory;
   /** Channel offset within the shared Memory for this thread's syscall channel */
   channelOffset: number;
+  /** Kernel-owned sticky secure-execution state for this exact image. */
+  secureExec: boolean;
+  /**
+   * Exact process-image generation issued by the kernel-side externref owner.
+   * Workers use this scalar only when routing token-bearing host imports; the
+   * broker capability and real JavaScript values never cross the Worker edge.
+   * Optional only for direct non-fork harnesses; an instrumented artifact must
+   * reject launch unless this and `forkHostImports` are both present.
+   */
+  externrefGenerationId?: number;
+  /**
+   * One fixed owner-import mailbox for this Worker. Side modules reuse it.
+   * Optional only for direct non-fork test harnesses that do not create a
+   * durable process owner; production Node/browser launch paths always set it.
+   */
+  forkHostImports?: ForkHostImportWorkerInit;
   /** Optional env vars to set up in the program */
   env?: string[];
   /** Optional argv */
@@ -40,8 +66,31 @@ export interface CentralizedWorkerInitMessage {
   cwd?: string;
   /** If true, this is a fork child — drive wpk_fork_rewind_begin instead of normal _start */
   isForkChild?: boolean;
+  /** Exact ordinary/vfork mode captured by the inherited fork import. */
+  forkMode?: ProcessForkMode;
+  /**
+   * Whether this child owns an independent copy or temporarily borrows its
+   * parent's exact Memory. Borrowed ownership is valid only for vfork.
+   */
+  forkMemoryOwnership?: ForkMemoryOwnership;
   /** Address of the fork save-buffer in memory (used for fork child rewind) */
   forkBufAddr?: number;
+  /** Parent process-wide archive/control anchor used read-only by a borrower. */
+  forkOwnerControlAddr?: number;
+  /** First byte of the child-private activation-prefix region. */
+  forkPrivatePrefixAddr?: number;
+  /** Exact admitted activation-prefix bytes. */
+  forkPrivatePrefixBytes?: number;
+  /** First byte of child-private reference/exception codec scratch. */
+  forkScratchAddr?: number;
+  /** Exact admitted scratch capacity. */
+  forkScratchBytes?: number;
+  /**
+   * Two-phase launch gate for a fork child. The child announces that all
+   * reconstruction and activation frames reached the inherited fork import,
+   * then waits here until the kernel host commits the launch.
+   */
+  forkReplayGate?: SharedArrayBuffer;
   /**
    * Entry-point override for fork children created by a non-main thread.
    *
@@ -77,6 +126,15 @@ export interface CentralizedThreadInitMessage {
    * archive head relative to this live shared-memory anchor before fork. */
   processChannelOffset: number;
   channelOffset: number;
+  /** Same sticky image marker as the process worker. */
+  secureExec: boolean;
+  /**
+   * Same process-image externref generation as the process's main Worker.
+   * Optional only for direct non-fork harnesses.
+   */
+  externrefGenerationId?: number;
+  /** Distinct pthread mailbox; side modules in this pthread reuse it. */
+  forkHostImports?: ForkHostImportWorkerInit;
   fnPtr: number;
   argPtr: number;
   stackPtr: number;
@@ -100,6 +158,7 @@ export interface WorkerTerminateMessage {
 
 export type WorkerToHostMessage =
   | WorkerReadyMessage
+  | ForkReplayReadyMessage
   | WorkerExitMessage
   | ThreadExitMessage
   | WorkerMemoryQuiescentMessage
@@ -108,10 +167,16 @@ export type WorkerToHostMessage =
   | ExecRequestMessage
   | ExecCompleteMessage
   | AlarmSetMessage
-  | VmInterruptTimerMessage;
+  | VmInterruptTimerMessage
+  | ForkHostImportWakeMessage;
 
 export interface WorkerReadyMessage {
   type: "ready";
+  pid: number;
+}
+
+export interface ForkReplayReadyMessage {
+  type: "fork_replay_ready";
   pid: number;
 }
 
@@ -173,6 +238,12 @@ export interface VmInterruptTimerMessage {
   timedOutPtr: number;
   vmInterruptPtr: number;
   seconds: number;
+}
+
+export interface ForkHostImportWakeMessage {
+  type: "fork_host_import";
+  /** Contains scalar identity/sequence fields only; the SAB moved at init. */
+  wake: ForkExternrefImportWake;
 }
 
 export interface ExecReplyMessage {

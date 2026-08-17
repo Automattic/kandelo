@@ -23,6 +23,7 @@ import {
   type HomebrewGuestObservedProcessEvent,
   type HomebrewGuestObservedScriptResult,
   runHomebrewGuestLifecycle,
+  runHomebrewGuestShippingProof,
   runHomebrewGuestLifecycleProcess,
 } from "./homebrew_guest_lifecycle_runner";
 import {
@@ -51,6 +52,54 @@ export interface HomebrewGuestLifecycleBrowserResult {
   phaseOneCompletedUrls: string[];
   phaseOneLazyDownloads: readonly LazyDownloadEvent[];
   phaseTwoLazyDownloads: readonly LazyDownloadEvent[];
+}
+
+export async function runHomebrewGuestCoreShippingProofInBrowser(options: {
+  fixture: unknown;
+  kernelWasm: ArrayBuffer;
+  corsProxy: BrowserCorsProxyConfig;
+  closedAssetRootUrl?: string;
+  fetchImpl?: FetchLike;
+  afterMachineDestroy?: () => Promise<void>;
+}): Promise<{ coreRevision: string; completedUrls: string[] }> {
+  const fixture = projectHomebrewGuestLifecycleBrowserFixture(options.fixture);
+  const loaded = await loadHomebrewGuestLifecycleBrowserFixture(fixture, {
+    fetchImpl: options.fetchImpl,
+    sourceUrl: (canonicalUrl) => fixture.transportMode === "closed"
+      ? createClosedFixtureSourceUrl(options.closedAssetRootUrl, canonicalUrl)
+      : createCorsProxySourceUrl(options.corsProxy, canonicalUrl),
+  });
+  const runtime = await deriveHomebrewGuestLifecycleRuntimeInputs({
+    imageBytes: loaded.imageBytes,
+    takeImageOwnership: true,
+    bootstrapSpecBytes: loaded.bootstrapSpecBytes,
+    bootstrapArchiveBytes: loaded.bootstrapArchiveBytes,
+    bootstrapArchiveSha256: fixture.bootstrap.archive.sha256,
+    bootstrapEnvironmentBytes: loaded.bootstrapEnvironmentBytes,
+    coreRevision: fixture.revisions.coreRevision,
+    transportMode: fixture.transportMode,
+    expectedEmbeddedBottlePlanBytes: loaded.bottleMirrorPlanBytes,
+    lazyUrlBase: "https://closed.kandelo.invalid/homebrew-login-product/",
+    ...(fixture.transportMode === "closed"
+      ? { closedBottleAssets: loaded.closedBottleAssets! }
+      : { expectedBootstrapTransportUrl: fixture.bootstrap.archive.url }),
+  });
+  const result = await runHomebrewGuestShippingProof({
+    runtime,
+    revisions: fixture.revisions,
+    scope: "core",
+    deadlineMs: Date.now() + fixture.timeoutMs,
+    createMachine: (machineRuntime) => createBrowserLifecycleMachine({
+      runtime: machineRuntime,
+      kernelWasm: options.kernelWasm,
+      corsProxy: options.corsProxy,
+      afterDestroy: options.afterMachineDestroy,
+    }),
+  });
+  return {
+    coreRevision: fixture.revisions.coreRevision,
+    completedUrls: [...result.completedUrls].sort(),
+  };
 }
 
 type FetchLike = (

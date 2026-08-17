@@ -505,12 +505,7 @@ build_timestamp = "2026-05-05T12:34:56Z"
             .as_ref()
             .expect("test archive manifest must have compatibility")
             .target_arch;
-        let fname = crate::package_archive_name::render(
-            &manifest,
-            target_arch,
-            abi,
-            cache_key_sha,
-        );
+        let fname = crate::package_archive_name::render(&manifest, target_arch, abi, cache_key_sha);
         let path = dir.join(&fname);
         fs::write(&path, &bytes).unwrap();
         path
@@ -535,42 +530,10 @@ build_timestamp = "2026-05-05T12:34:56Z"
         fs::create_dir_all(&archives).unwrap();
         let out = dir.join("index.toml");
 
-        write_real_archive(
-            &archives,
-            "alpha",
-            "1.0.0",
-            1,
-            6,
-            "wasm32",
-            &"a".repeat(64),
-        );
-        write_real_archive(
-            &archives,
-            "alpha",
-            "1.0.0",
-            1,
-            6,
-            "wasm64",
-            &"b".repeat(64),
-        );
-        write_real_archive(
-            &archives,
-            "beta",
-            "2.0.0",
-            1,
-            6,
-            "wasm32",
-            &"c".repeat(64),
-        );
-        write_real_archive(
-            &archives,
-            "beta",
-            "2.0.0",
-            1,
-            6,
-            "wasm64",
-            &"d".repeat(64),
-        );
+        write_real_archive(&archives, "alpha", "1.0.0", 1, 6, "wasm32", &"a".repeat(64));
+        write_real_archive(&archives, "alpha", "1.0.0", 1, 6, "wasm64", &"b".repeat(64));
+        write_real_archive(&archives, "beta", "2.0.0", 1, 6, "wasm32", &"c".repeat(64));
+        write_real_archive(&archives, "beta", "2.0.0", 1, 6, "wasm64", &"d".repeat(64));
 
         super::run(vec![
             "--abi".into(),
@@ -671,15 +634,7 @@ build_timestamp = "2026-05-05T12:34:56Z"
         fs::create_dir_all(&archives).unwrap();
         let out = dir.join("index.toml");
 
-        write_real_archive(
-            &archives,
-            "solo",
-            "1.0.0",
-            1,
-            6,
-            "wasm32",
-            &"e".repeat(64),
-        );
+        write_real_archive(&archives, "solo", "1.0.0", 1, 6, "wasm32", &"e".repeat(64));
 
         super::run(vec![
             "--abi".into(),
@@ -716,33 +671,9 @@ build_timestamp = "2026-05-05T12:34:56Z"
         let archives = dir.join("archives");
         fs::create_dir_all(&archives).unwrap();
 
-        write_real_archive(
-            &archives,
-            "alpha",
-            "1.0.0",
-            1,
-            6,
-            "wasm32",
-            &"a".repeat(64),
-        );
-        write_real_archive(
-            &archives,
-            "alpha",
-            "1.0.0",
-            1,
-            6,
-            "wasm64",
-            &"b".repeat(64),
-        );
-        write_real_archive(
-            &archives,
-            "beta",
-            "2.3.4",
-            7,
-            6,
-            "wasm32",
-            &"c".repeat(64),
-        );
+        write_real_archive(&archives, "alpha", "1.0.0", 1, 6, "wasm32", &"a".repeat(64));
+        write_real_archive(&archives, "alpha", "1.0.0", 1, 6, "wasm64", &"b".repeat(64));
+        write_real_archive(&archives, "beta", "2.3.4", 7, 6, "wasm32", &"c".repeat(64));
 
         let common = |out: PathBuf| {
             super::run(vec![
@@ -782,24 +713,8 @@ build_timestamp = "2026-05-05T12:34:56Z"
         fs::create_dir_all(&archives).unwrap();
         let out = dir.join("index.toml");
 
-        write_real_archive(
-            &archives,
-            "x",
-            "1.0.0",
-            1,
-            6,
-            "wasm32",
-            &"a".repeat(64),
-        );
-        write_real_archive(
-            &archives,
-            "x",
-            "1.0.1",
-            1,
-            6,
-            "wasm64",
-            &"b".repeat(64),
-        );
+        write_real_archive(&archives, "x", "1.0.0", 1, 6, "wasm32", &"a".repeat(64));
+        write_real_archive(&archives, "x", "1.0.1", 1, 6, "wasm64", &"b".repeat(64));
 
         let err = super::run(vec![
             "--abi".into(),
@@ -823,15 +738,7 @@ build_timestamp = "2026-05-05T12:34:56Z"
         fs::create_dir_all(&archives).unwrap();
         let out = dir.join("index.toml");
 
-        write_real_archive(
-            &archives,
-            "x",
-            "1.0.0",
-            1,
-            5,
-            "wasm32",
-            &"a".repeat(64),
-        );
+        write_real_archive(&archives, "x", "1.0.0", 1, 5, "wasm32", &"a".repeat(64));
 
         let err = super::run(vec![
             "--abi".into(),
@@ -902,10 +809,8 @@ build_timestamp = "2026-05-05T12:34:56Z"
         fs::create_dir_all(&archives).unwrap();
         let out = dir.join("index.toml");
 
-        let first_key =
-            "0f5290453e6ea7f68e5ee1e50bd6dbf23221368e7aeb7a54c34953cef453920d";
-        let second_key =
-            "a88651d0cd72a9100a67c90fa4b5600659258b10890c852ff10ab125cf770212";
+        let first_key = "0f5290453e6ea7f68e5ee1e50bd6dbf23221368e7aeb7a54c34953cef453920d";
+        let second_key = "a88651d0cd72a9100a67c90fa4b5600659258b10890c852ff10ab125cf770212";
         let first = write_real_archive(
             &archives,
             "spidermonkey-node",
@@ -952,7 +857,10 @@ build_timestamp = "2026-05-05T12:34:56Z"
         ] {
             assert!(err.contains(value), "missing {value:?} from: {err}");
         }
-        assert!(!out.exists(), "a rejected inventory must not write an index");
+        assert!(
+            !out.exists(),
+            "a rejected inventory must not write an index"
+        );
     }
 
     #[test]

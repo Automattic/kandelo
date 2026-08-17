@@ -12,9 +12,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "../..");
 const kernelPath = tryResolveBinary("kernel.wasm");
 const blockForeverPath = join(repoRoot, "examples/block-forever.wasm");
+const spawnSmokePath = join(repoRoot, "examples/spawn-smoke.wasm");
 const wasiHelloPath = join(here, "fixtures/wasi-hello.wasm");
 const haveKernel = kernelPath !== null;
 const haveBlockForever = existsSync(blockForeverPath);
+const haveSpawnSmoke = existsSync(spawnSmokePath);
 const haveWasiHello = existsSync(wasiHelloPath);
 
 function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -91,11 +93,45 @@ async function createExecutableRootfs(
 }
 
 describe("NodeKernelHost rootfs export contract", () => {
+  it("rejects ambiguous path and byte exec sources before starting a worker", async () => {
+    const host = new NodeKernelHost({
+      execPrograms: { "/bin/tool": wasiHelloPath },
+      execProgramBytes: { "/bin/tool": new Uint8Array([0]) },
+    });
+    try {
+      await expect(host.init(new ArrayBuffer(0))).rejects.toThrow(
+        'exec program "/bin/tool" has both path and byte sources',
+      );
+    } finally {
+      await host.destroy();
+    }
+  });
+
+  it("rejects concurrently mutable shared exec bytes before starting a worker", async () => {
+    const host = new NodeKernelHost({
+      execProgramBytes: {
+        "/bin/tool": new Uint8Array(
+          new SharedArrayBuffer(1),
+        ) as unknown as Uint8Array<ArrayBuffer>,
+      },
+    });
+    try {
+      await expect(host.init(new ArrayBuffer(0))).rejects.toThrow(
+        "bytes must use an ordinary ArrayBuffer",
+      );
+    } finally {
+      await host.destroy();
+    }
+  });
+
   it("rejects export before initialization without starting a worker", async () => {
     const host = new NodeKernelHost({ rootfsImage: new Uint8Array() });
     await expect(host.readFileFromVfs("/missing")).rejects.toThrow(
       "VFS read requires an initialized kernel",
     );
+    await expect(
+      host.writeFileToVfs("/tmp/file", new Uint8Array([1])),
+    ).rejects.toThrow("VFS write requires an initialized kernel");
     await expect(host.exportRootfsImage()).rejects.toThrow(
       "rootfs export requires an initialized kernel",
     );
@@ -109,6 +145,9 @@ describe("NodeKernelHost rootfs export contract", () => {
       try {
         await host.init(asArrayBuffer(new Uint8Array(readFileSync(kernelPath!))));
         await expect(host.readFileFromVfs("/missing")).resolves.toBeNull();
+        await expect(
+          host.writeFileToVfs("/tmp/file", new Uint8Array([1])),
+        ).rejects.toThrow("VFS is not initialized");
         await expect(host.exportRootfsImage()).rejects.toThrow(
           "rootfs export requires a VFS-backed kernel",
         );
@@ -127,6 +166,11 @@ describe("NodeKernelHost rootfs export contract", () => {
       let exported: Uint8Array;
       try {
         await first.init(asArrayBuffer(kernel));
+        const staged = new Uint8Array([9, 8, 7, 6]);
+        await first.writeFileToVfs("/var/lib/ingested", staged, 0o620);
+        await expect(
+          first.readFileFromVfs("/var/lib/ingested"),
+        ).resolves.toEqual(staged);
         exported = await first.exportRootfsImage();
       } finally {
         await first.destroy();
@@ -138,6 +182,10 @@ describe("NodeKernelHost rootfs export contract", () => {
         readFile(restored, "/var/lib/persisted-state"),
       )).toBe("survives reboot\n");
       expect(restored.stat("/var/lib/persisted-state").mode & 0o7777).toBe(0o640);
+      expect(readFile(restored, "/var/lib/ingested")).toEqual(
+        new Uint8Array([9, 8, 7, 6]),
+      );
+      expect(restored.stat("/var/lib/ingested").mode & 0o7777).toBe(0o620);
       expect(restored.exportLazyEntries()).toEqual([expect.objectContaining({
         path: "/opt/lazy-tool",
         url: "https://packages.example.test/lazy-tool.wasm",
@@ -195,6 +243,64 @@ describe("NodeKernelHost rootfs export contract", () => {
         await terminating;
         await expect(exit).resolves.toBe(143);
         await expect(host.exportRootfsImage()).resolves.toBeInstanceOf(Uint8Array);
+      } finally {
+        await host.destroy();
+      }
+    },
+  );
+
+  it.skipIf(!haveKernel || !haveSpawnSmoke || !haveWasiHello)(
+    "uses worker-owned VFS bytes without resolving an ambient executable",
+    async () => {
+      const kernel = new Uint8Array(readFileSync(kernelPath!));
+      const spawnSmoke = new Uint8Array(readFileSync(spawnSmokePath));
+      const programSource = new Uint8Array(readFileSync(wasiHelloPath));
+      const rootfs = await createExecutableRootfs(
+        "/bin/exact-tool",
+        programSource,
+      );
+      let stdout = "";
+      let lazyDownloads = 0;
+      let ambientResolveRequests = 0;
+      const host = new NodeKernelHost({
+        rootfsImage: rootfs,
+        onLazyDownload: () => {
+          lazyDownloads += 1;
+        },
+        onResolveExec: () => {
+          ambientResolveRequests += 1;
+          return null;
+        },
+        onStdout: (_pid, bytes) => {
+          stdout += new TextDecoder().decode(bytes);
+        },
+      });
+      try {
+        await host.init(asArrayBuffer(kernel));
+        // The host copied the exact generation during init. Later caller
+        // replacement must not affect sequential reuse, and each overlapping
+        // launch must receive an independently transferable copy.
+        programSource.fill(0);
+        for (let invocation = 0; invocation < 2; invocation += 1) {
+          await expect(host.spawn(
+            asArrayBuffer(spawnSmoke),
+            ["spawn-smoke", "/bin/exact-tool"],
+          )).resolves.toBe(0);
+        }
+        await expect(Promise.all([
+          host.spawn(
+            asArrayBuffer(spawnSmoke),
+            ["spawn-smoke", "/bin/exact-tool"],
+          ),
+          host.spawn(
+            asArrayBuffer(spawnSmoke),
+            ["spawn-smoke", "/bin/exact-tool"],
+          ),
+        ])).resolves.toEqual([0, 0]);
+        expect(stdout.match(/Hello from WASI\n/g)).toHaveLength(4);
+        expect(stdout.match(/OK\n/g)).toHaveLength(4);
+        expect(lazyDownloads).toBe(0);
+        expect(ambientResolveRequests).toBe(0);
       } finally {
         await host.destroy();
       }

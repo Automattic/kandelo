@@ -1,4 +1,4 @@
-import type { DemoGuideConfig } from "./demo-config";
+import type { DemoGuideConfig, DemoIngestConfig } from "./demo-config";
 import { advanceLazyDownloadSummary } from "./lazy-download";
 
 // KernelHost — the contract between Kandelo session UI and the kernel/host runtime.
@@ -80,7 +80,14 @@ export interface KernelSyscallEvent {
   t: number;
   pid: number;
   nr: number;
-  args: [number, number, number, number, number, number];
+  args: [
+    number | bigint,
+    number | bigint,
+    number | bigint,
+    number | bigint,
+    number | bigint,
+    number | bigint,
+  ];
 }
 
 export type LazyDownloadKind = "file" | "tree" | "archive";
@@ -119,8 +126,8 @@ export interface LazyDownloadSummary extends LazyDownloadEvent {
 }
 
 export interface KernelLike {
-  /** Synchronous VFS the kernel-worker sees. */
-  readonly fs: FileSystemLike;
+  /** Legacy synchronous VFS surface; worker-owned hosts intentionally omit it. */
+  readonly fs?: FileSystemLike;
   /** /dev/fb0 binding registry. Used by attachFramebuffer. */
   readonly framebuffers?: FramebufferRegistryLike;
   /**
@@ -128,6 +135,19 @@ export interface KernelLike {
    * bindings; write-based bindings (fbDOOM) don't reach into this.
    */
   getProcessMemory?(pid: number): WebAssembly.Memory | undefined;
+  /**
+   * Deliver a POSIX signal to `pid` through the kernel's signal path (not a
+   * host-side worker teardown). Resolves false when the process is already
+   * gone. Used to stop a process that owns a single-owner device — e.g. the
+   * /dev/fb0 holder — before launching its replacement.
+   */
+  signalProcess?(pid: number, signum: number): Promise<boolean>;
+  /**
+   * Write `bytes` to `path` in the kernel-owned VFS. Its parent must already
+   * exist. The kernel worker owns the filesystem, so this is an async
+   * round-trip (unlike the deprecated synchronous {@link fs}).
+   */
+  writeFileToVfs?(path: string, bytes: Uint8Array, mode?: number): Promise<void>;
   /**
    * Append bytes to a process's stdin buffer. Used by the framebuffer
    * input path so DOM key events on the canvas reach the fb-bound
@@ -163,13 +183,21 @@ export interface KernelLike {
    */
   kmsAttachStats?(crtcId: number, stats: SharedArrayBuffer): void;
   /**
-   * Drain PCM bytes buffered in `/dev/dsp` for browser playback.
+   * Legacy main-thread PCM drain endpoint.
+   *
+   * @deprecated PCM playback is owned by the machine-level host and its
+   * AudioWorklet transport. New callers should use `resumeAudio`.
    */
   drainAudio?(maxBytes: number): Promise<{
     bytes: Uint8Array;
     sampleRate: number;
     channels: number;
   }>;
+  prepareAudio?(): Promise<void>;
+  resumeAudio?(): Promise<void>;
+  suspendAudio?(): Promise<void>;
+  getAudioState?(): MachineAudioState;
+  onAudioStateChange?(cb: (state: MachineAudioState) => void): () => void;
   /**
    * Subscribe to the kernel-worker's live syscall trace. Each event
    * carries the raw syscall number + args + firing pid. The underlying
@@ -309,17 +337,36 @@ export interface PtyHandle {
   write(bytes: string | Uint8Array): void;
   onData(cb: (bytes: Uint8Array) => void): () => void;
   resize(cols: number, rows: number): void;
+  /** Detach this UI handle and its listeners without removing the logical PTY. */
   close(): void;
+}
+
+export interface TerminalProgram {
+  programPath: string;
+  programBytes?: ArrayBuffer;
+  argv: string[];
+  env?: string[];
+  cwd?: string;
+  uid?: number;
+  gid?: number;
+}
+
+export interface TerminalSessionPolicy {
+  initial: TerminalProgram;
+  afterExit: TerminalProgram;
+  shortRunThresholdMs: number;
+  initialRestartDelayMs: number;
+  maximumRestartDelayMs: number;
 }
 
 /**
  * Handle returned by `attachFramebuffer`. The canvas is wired up to paint
- * frames; this handle lets the embedder bridge input/audio for whichever
+ * frames; this handle lets the embedder bridge input for whichever
  * process is currently bound to `/dev/fb0` (fbDOOM, fbtest, etc.).
  *
  * Keyboard input is delivered as raw bytes to the bound process's stdin —
  * the same channel fbDOOM reads scancodes from. Mouse input goes through
- * `/dev/input/mice`; audio drains from `/dev/dsp`.
+ * `/dev/input/mice`. PCM playback belongs to the machine-level host.
  */
 export interface FramebufferHandle {
   /** Send raw bytes to the fb-bound process's stdin. No-op if nothing is bound. */
@@ -330,8 +377,11 @@ export interface FramebufferHandle {
    */
   sendMouseEvent(dx: number, dy: number, buttons: number): void;
   /**
-   * Start draining `/dev/dsp` into Web Audio. Returns null when the wrapped
-   * kernel does not expose audio draining.
+   * Return a compatibility handle for the machine-level PCM output.
+   *
+   * @deprecated PCM is not framebuffer-scoped. Call `KernelHost.resumeAudio`
+   * from a trusted user gesture instead. Closing this compatibility handle
+   * does not stop machine audio.
    */
   startAudio(): Promise<AudioOutputHandle | null>;
   /** Pid currently bound to /dev/fb0, or null if no binding is live. */
@@ -342,11 +392,25 @@ export interface FramebufferHandle {
   close(): void;
 }
 
+/**
+ * Legacy Web Audio-shaped output handle retained for source compatibility.
+ *
+ * @deprecated Use the machine-level audio methods on `KernelHost`.
+ */
 export interface AudioOutputHandle {
   resume(): Promise<void>;
   close(): void;
   getState(): AudioContextState | "unavailable";
 }
+
+export type MachineAudioState =
+  | "unavailable"
+  | "unprepared"
+  | "suspended"
+  | "running"
+  | "interrupted"
+  | "closed"
+  | "error";
 
 /**
  * Handle returned by `attachKmsDisplay`. The wrapped canvas is wired up
@@ -574,6 +638,10 @@ export interface KernelHost {
 
   // shell / pty
   attachPty(path?: string, opts?: { cols: number; rows: number }): Promise<PtyHandle>;
+  /** Remove the logical PTY, including its process and pending restart. */
+  removePty(path: string): void;
+  /** Resolve after a command has been written, without waiting for a prompt. */
+  dispatchShellCommand(command: string): Promise<void>;
   runShellCommand(command: string): Promise<void>;
 
   // VFS / procfs
@@ -581,6 +649,19 @@ export interface KernelHost {
   readFileText(path: string): Promise<string>;
   readDir(path: string): Promise<VfsDirent[]>;
   stat(path: string): Promise<VfsDirent | null>;
+  /**
+   * Write `bytes` to `path` in the live guest VFS. The parent directory must
+   * already exist. Callers are responsible for validating both the path and
+   * the payload — this is a raw capability, not a policy layer.
+   */
+  writeFile(path: string, bytes: Uint8Array, mode?: number): Promise<void>;
+
+  // process control
+  /**
+   * Deliver a POSIX signal to `pid`. Resolves false when the process no longer
+   * exists. Rejects when the attached kernel cannot signal.
+   */
+  signalProcess(pid: number, signum: number): Promise<boolean>;
 
   // inspector
   enumProcs(): Promise<ProcessInfo[]>;
@@ -590,9 +671,18 @@ export interface KernelHost {
   subscribeSyscalls(cb: (e: SyscallEvent) => void, filter?: SyscallFilter): () => void;
   syscallHistory(filter?: SyscallFilter): SyscallEvent[];
 
+  // Machine-level physical/default PCM sink. Browser callers should invoke
+  // resumeAudio directly from a trusted user gesture.
+  prepareAudio(): Promise<void>;
+  resumeAudio(): Promise<void>;
+  suspendAudio(): Promise<void>;
+  getAudioState(): MachineAudioState;
+  subscribeAudioState(cb: (state: MachineAudioState) => void): () => void;
+
   // framebuffer — mirrors /dev/fb0 into a 2D canvas and returns a handle
-  // that the embedder uses to forward keyboard, mouse, and audio device
-  // traffic for the bound process.
+  // that the embedder uses to forward keyboard and mouse input for the bound
+  // process. PCM output is machine-level; startAudio remains as a deprecated
+  // compatibility adapter.
   attachFramebuffer(canvas: HTMLCanvasElement): FramebufferHandle;
 
   // KMS display — registers a canvas as the scanout target for a
@@ -620,6 +710,9 @@ export interface KernelHost {
   subscribeSurfaceAvailability(cb: (state: SurfaceAvailability) => void): () => void;
   getDemoGuide(): DemoGuideConfig | null;
   subscribeDemoGuide(cb: (state: DemoGuideConfig | null) => void): () => void;
+  /** File-ingest capability declared by the current VFS image, if any. */
+  getDemoIngest(): DemoIngestConfig | null;
+  subscribeDemoIngest(cb: (state: DemoIngestConfig | null) => void): () => void;
 
   // sharing
   snapshot(opts?: SnapshotOptions): Promise<Snapshot>;
@@ -647,11 +740,21 @@ class ListenerSet<T> {
 }
 
 interface LivePtySession {
+  path: string;
   pid: number;
-  generation: number;
+  logicalGeneration: number;
+  processGeneration: number;
+  autologinConsumed: boolean;
+  startedAt: number;
+  restartDelayMs: number;
+  restartTimer: ReturnType<typeof setTimeout> | null;
+  removed: boolean;
   dataListeners: ListenerSet<Uint8Array>;
   history: Uint8Array[];
   closed: boolean;
+  cols: number;
+  rows: number;
+  supervised: boolean;
 }
 
 function clampPendingRequestCount(count: number): number {
@@ -713,6 +816,44 @@ function waitForPtyReadiness(
 
 function nowMs(): number {
   return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+
+function cloneTerminalProgram(program: TerminalProgram): TerminalProgram {
+  return {
+    ...program,
+    argv: program.argv.slice(),
+    ...(program.env ? { env: program.env.slice() } : {}),
+  };
+}
+
+function validateTerminalSessionPolicy(policy: TerminalSessionPolicy): void {
+  for (const [label, program] of [
+    ["initial", policy.initial],
+    ["afterExit", policy.afterExit],
+  ] as const) {
+    if (!program.programPath.startsWith("/")) {
+      throw new Error(
+        `LiveKernelHost.setTerminalSessionPolicy ${label}.programPath must be absolute`,
+      );
+    }
+    if (program.argv.length === 0) {
+      throw new Error(
+        `LiveKernelHost.setTerminalSessionPolicy ${label}.argv must not be empty`,
+      );
+    }
+  }
+  if (
+    !Number.isFinite(policy.shortRunThresholdMs) ||
+    policy.shortRunThresholdMs < 0 ||
+    !Number.isFinite(policy.initialRestartDelayMs) ||
+    policy.initialRestartDelayMs < 0 ||
+    !Number.isFinite(policy.maximumRestartDelayMs) ||
+    policy.maximumRestartDelayMs < policy.initialRestartDelayMs
+  ) {
+    throw new Error(
+      "LiveKernelHost.setTerminalSessionPolicy requires bounded non-negative restart timings",
+    );
+  }
 }
 
 // ── LiveKernelHost — wraps the real host runtime in host/src/ ──────────────
@@ -825,6 +966,8 @@ export class LiveKernelHost implements KernelHost {
   private surfaceListeners = new ListenerSet<SurfaceAvailability>();
   private galleryListeners = new ListenerSet<void>();
   private demoGuideListeners = new ListenerSet<DemoGuideConfig | null>();
+  private demoIngestListeners = new ListenerSet<DemoIngestConfig | null>();
+  private audioStateListeners = new ListenerSet<MachineAudioState>();
 
   private _descriptor: BootDescriptor;
   private presentation: DemoPresentation;
@@ -832,12 +975,15 @@ export class LiveKernelHost implements KernelHost {
   private galleryItems: GalleryItem[];
   private webPreview: WebPreviewState | null = null;
   private demoGuide: DemoGuideConfig | null = null;
+  private demoIngest: DemoIngestConfig | null = null;
   private surfaceAvailability: SurfaceAvailability = { ...DEFAULT_SURFACE_AVAILABILITY };
   private offFramebufferAvailability: (() => void) | null = null;
   private offLazyDownloads: (() => void) | null = null;
+  private offAudioState: (() => void) | null = null;
 
   private kernel?: KernelLike;
   private shell?: NonNullable<LiveKernelHostOptions["shell"]>;
+  private terminalSessions?: TerminalSessionPolicy;
   private ptySessions = new Map<string, LivePtySession>();
   private ptyAttachPromises = new Map<string, Promise<LivePtySession>>();
   private ptyCommandQueues = new Map<string, Promise<void>>();
@@ -878,17 +1024,17 @@ export class LiveKernelHost implements KernelHost {
 
   /** Replace the wrapped KernelLike. Used after `boot` resolves. */
   attachKernel(kernel: KernelLike): void {
+    const previousKernel = this.kernel;
     this.cancelLazyDownloads("kernel replaced");
     this.clearLazyDownloadState();
     this.offFramebufferAvailability?.();
     this.offFramebufferAvailability = null;
     this.offLazyDownloads?.();
     this.offLazyDownloads = null;
+    this.offAudioState?.();
+    this.offAudioState = null;
+    this.invalidatePtySessions(previousKernel);
     this.kernel = kernel;
-    this.ptySessions.clear();
-    this.ptyAttachPromises.clear();
-    this.ptyCommandQueues.clear();
-    this.shellPids.clear();
     if (kernel.framebuffers) {
       this.offFramebufferAvailability = kernel.framebuffers.onChange(() => {
         this.refreshFramebufferAvailability();
@@ -899,6 +1045,12 @@ export class LiveKernelHost implements KernelHost {
         this.emitLazyDownloadEvent(event);
       });
     }
+    if (kernel.onAudioStateChange) {
+      this.offAudioState = kernel.onAudioStateChange((state) => {
+        this.audioStateListeners.emit(state);
+      });
+    }
+    this.audioStateListeners.emit(this.getAudioState());
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
     this.refreshKmsAvailability();
@@ -906,21 +1058,23 @@ export class LiveKernelHost implements KernelHost {
 
   /** Clear the wrapped kernel after a failed boot without changing status. */
   detachKernel(): void {
+    const detachedKernel = this.kernel;
     this.cancelLazyDownloads("kernel detached");
     this.clearLazyDownloadState();
     this.offFramebufferAvailability?.();
     this.offFramebufferAvailability = null;
     this.offLazyDownloads?.();
     this.offLazyDownloads = null;
+    this.offAudioState?.();
+    this.offAudioState = null;
+    this.invalidatePtySessions(detachedKernel);
     this.kernel = undefined;
-    this.ptySessions.clear();
-    this.ptyAttachPromises.clear();
-    this.ptyCommandQueues.clear();
-    this.shellPids.clear();
+    this.audioStateListeners.emit("unavailable");
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
     this.setSurfaceAvailability({ web: false, kms: false });
     this.setDemoGuide(null);
+    this.setDemoIngest(null);
   }
 
   /** Configure the program attachPty spawns by default. */
@@ -929,6 +1083,21 @@ export class LiveKernelHost implements KernelHost {
       throw new Error("LiveKernelHost.setDefaultShell requires programPath or programBytes");
     }
     this.shell = shell;
+    this.terminalSessions = undefined;
+    this.refreshTerminalAvailability();
+  }
+
+  /** Configure initial and post-exit programs for every logical PTY. */
+  setTerminalSessionPolicy(policy: TerminalSessionPolicy): void {
+    validateTerminalSessionPolicy(policy);
+    this.terminalSessions = {
+      initial: cloneTerminalProgram(policy.initial),
+      afterExit: cloneTerminalProgram(policy.afterExit),
+      shortRunThresholdMs: policy.shortRunThresholdMs,
+      initialRestartDelayMs: policy.initialRestartDelayMs,
+      maximumRestartDelayMs: policy.maximumRestartDelayMs,
+    };
+    this.shell = undefined;
     this.refreshTerminalAvailability();
   }
 
@@ -950,14 +1119,18 @@ export class LiveKernelHost implements KernelHost {
     this.demoGuideListeners.emit(this.getDemoGuide());
   }
 
-  /**
-   * Write a command into the persistent PTY-backed shell. Owner code uses
-   * this for demos like Doom where the app should visibly originate from a
-   * real terminal command even when the terminal drawer starts closed.
-   */
-  async runShellCommand(command: string): Promise<void> {
+  /** Update the optional file-ingest capability exposed by the current image. */
+  setDemoIngest(ingest: DemoIngestConfig | null): void {
+    this.demoIngest = ingest ? structuredClone(ingest) : null;
+    this.demoIngestListeners.emit(this.getDemoIngest());
+  }
+
+  private async startShellCommand(
+    command: string,
+  ): Promise<{ completion: Promise<void> }> {
     const sessionKey = "/dev/pts/0";
-    const previousCommandDone = this.ptyCommandQueues.get(sessionKey) ?? Promise.resolve();
+    const previousCommandDone =
+      this.ptyCommandQueues.get(sessionKey) ?? Promise.resolve();
     let resolveCommandDone!: () => void;
     let rejectCommandDone!: (err: unknown) => void;
     const commandDone = new Promise<void>((resolve, reject) => {
@@ -975,8 +1148,13 @@ export class LiveKernelHost implements KernelHost {
     try {
       await previousCommandDone.catch(() => {});
       const pty = await this.attachPty(sessionKey, { cols: 100, rows: 30 });
-      const prompt = this.shell ? shellPrompt(this.shell) : null;
-      await waitForPtyReadiness(pty, { includeHistory: true, timeoutMs: 1200, prompt }).catch(() => {});
+      const terminalProgram = this.shell ?? this.terminalSessions?.initial;
+      const prompt = terminalProgram ? shellPrompt(terminalProgram) : null;
+      await waitForPtyReadiness(pty, {
+        includeHistory: true,
+        timeoutMs: 1200,
+        prompt,
+      }).catch(() => {});
       const completion = waitForPtyReadiness(pty, {
         includeHistory: false,
         timeoutMs: 300_000,
@@ -984,11 +1162,26 @@ export class LiveKernelHost implements KernelHost {
       });
       void completion.then(resolveCommandDone, rejectCommandDone);
       pty.write(command.endsWith("\n") ? command : `${command}\n`);
-      await commandDone;
+      return { completion: commandDone };
     } catch (err) {
       rejectCommandDone(err);
       throw err;
     }
+  }
+
+  /**
+   * Write a command into the persistent PTY-backed shell and resolve once the
+   * write has succeeded. This is the truthful dispatch surface for long-lived
+   * foreground programs that intentionally do not return to a shell prompt.
+   */
+  async dispatchShellCommand(command: string): Promise<void> {
+    await this.startShellCommand(command);
+  }
+
+  /** Write a command and wait until the shell presents its next prompt. */
+  async runShellCommand(command: string): Promise<void> {
+    const { completion } = await this.startShellCommand(command);
+    await completion;
   }
 
   /** Update the status and fan out to subscribers. */
@@ -1114,7 +1307,9 @@ export class LiveKernelHost implements KernelHost {
 
   private refreshTerminalAvailability(): void {
     this.setSurfaceAvailability({
-      terminal: this._status === "running" && Boolean(this.kernel && this.shell),
+      terminal:
+        this._status === "running" &&
+        Boolean(this.kernel && (this.shell || this.terminalSessions)),
     });
   }
 
@@ -1171,12 +1366,19 @@ export class LiveKernelHost implements KernelHost {
     this.offFramebufferAvailability = null;
     this.offLazyDownloads?.();
     this.offLazyDownloads = null;
+    this.offAudioState?.();
+    this.offAudioState = null;
     this.setSurfaceAvailability({ terminal: false, framebuffer: false, web: false, kms: false });
     this.setDemoGuide(null);
-    await this.kernel?.destroy?.();
+    this.setDemoIngest(null);
+    const kernel = this.kernel;
+    this.invalidatePtySessions(kernel);
+    this.kernel = undefined;
+    await kernel?.destroy?.();
   }
 
   async reboot(): Promise<void> {
+    this.invalidatePtySessions(this.kernel);
     await this.applyBootDescriptor(this.getBootDescriptor());
   }
 
@@ -1226,47 +1428,77 @@ export class LiveKernelHost implements KernelHost {
         "or pass { kernel } to the constructor."
       );
     }
-    if (!this.shell) {
+    if (!this.shell && !this.terminalSessions) {
       throw new Error(
-        "LiveKernelHost.attachPty: no default shell configured. " +
-        "Call setDefaultShell({ programPath or programBytes, argv, env, cwd }) before attachPty()."
+        "LiveKernelHost.attachPty: no terminal program configured. " +
+        "Call setDefaultShell(...) or setTerminalSessionPolicy(...) before attachPty()."
       );
     }
     const kernel = this.kernel;
-    const shell = this.shell;
     const sessionKey = path || "/dev/pts/0";
     const session = await this.withPtyAttachLock(sessionKey, () =>
-      this.ensurePtySession(sessionKey, kernel, shell, opts),
+      this.ensurePtySession(
+        sessionKey,
+        kernel,
+        this.shell,
+        this.terminalSessions,
+        opts,
+      ),
     );
 
-    kernel.ptyResize(session.pid, opts.rows, opts.cols);
+    session.cols = opts.cols;
+    session.rows = opts.rows;
+    if (session.pid > 0 && !session.closed) {
+      kernel.ptyResize(session.pid, opts.rows, opts.cols);
+    }
 
     const encoder = new TextEncoder();
     let closed = false;
+    const dataSubscriptions = new Set<() => void>();
 
     return {
       write: (bytes) => {
         if (closed) return;
         const buf = typeof bytes === "string" ? encoder.encode(bytes) : bytes;
-        if (session.closed) return;
+        if (!this.isCurrentPtySession(sessionKey, session) || session.closed) return;
         kernel.ptyWrite(session.pid, buf);
       },
       onData: (cb) => {
-        for (const chunk of session.history) cb(chunk);
-        return session.dataListeners.add(cb);
+        if (closed) return () => {};
+        const off = session.dataListeners.add(cb);
+        const detach = () => {
+          dataSubscriptions.delete(detach);
+          off();
+        };
+        dataSubscriptions.add(detach);
+        for (const chunk of session.history.slice()) cb(chunk);
+        return detach;
       },
       resize: (cols, rows) => {
         if (closed) return;
-        if (session.closed) return;
+        session.cols = cols;
+        session.rows = rows;
+        if (!this.isCurrentPtySession(sessionKey, session) || session.closed) return;
         kernel.ptyResize(session.pid, rows, cols);
       },
       close: () => {
         if (closed) return;
         closed = true;
+        for (const detach of Array.from(dataSubscriptions)) detach();
         // Detach this UI handle only. The PTY-backed shell intentionally
         // persists across drawer open/close so users keep command history.
       },
     };
+  }
+
+  removePty(path: string): void {
+    const sessionKey = path || "/dev/pts/0";
+    const session = this.ptySessions.get(sessionKey);
+    if (!session) return;
+    this.invalidatePtySession(session, this.kernel);
+    this.ptySessions.delete(sessionKey);
+    this.ptyAttachPromises.delete(sessionKey);
+    this.ptyCommandQueues.delete(sessionKey);
   }
 
   private async withPtyAttachLock(
@@ -1290,98 +1522,317 @@ export class LiveKernelHost implements KernelHost {
   private async ensurePtySession(
     sessionKey: string,
     kernel: KernelLike,
-    shell: NonNullable<LiveKernelHostOptions["shell"]>,
+    shell: LiveKernelHostOptions["shell"],
+    policy: TerminalSessionPolicy | undefined,
     opts: { cols: number; rows: number },
   ): Promise<LivePtySession> {
     let session = this.ptySessions.get(sessionKey);
     if (session && !session.closed && !(await this.isPtySessionAlive(session.pid))) {
-      this.shellPids.delete(session.pid);
-      session.pid = 0;
-      session.history.length = 0;
-      session.closed = true;
-    }
-
-    if (!session || session.closed) {
-      let pid: number;
-      let exitPromise: Promise<number>;
-      if (shell.programPath && kernel.spawnFromVfs) {
-        const spawned = await kernel.spawnFromVfs(shell.programPath, shell.argv, {
-          pty: true,
-          env: shell.env,
-          cwd: shell.cwd,
-          uid: shell.uid,
-          gid: shell.gid,
-          ptyCols: opts.cols,
-          ptyRows: opts.rows,
-        });
-        pid = spawned.pid;
-        exitPromise = spawned.exit;
+      if (session.supervised) {
+        this.handlePtyProcessExit(
+          sessionKey,
+          session,
+          kernel,
+          session.logicalGeneration,
+          session.processGeneration,
+          session.pid,
+        );
       } else {
-        if (!shell.programBytes) {
-          throw new Error(
-            "LiveKernelHost.attachPty: the configured default shell is VFS-only, " +
-            "but this kernel does not support spawnFromVfs().",
-          );
-        }
-        let resolveStarted!: (pid: number) => void;
-        let rejectStarted!: (reason?: unknown) => void;
-        const started = new Promise<number>((resolve, reject) => {
-          resolveStarted = resolve;
-          rejectStarted = reject;
-        });
-        exitPromise = kernel.spawn(shell.programBytes, shell.argv, {
-          pty: true,
-          env: shell.env,
-          cwd: shell.cwd,
-          uid: shell.uid,
-          gid: shell.gid,
-          ptyCols: opts.cols,
-          ptyRows: opts.rows,
-          onStarted: resolveStarted,
-        });
-        void exitPromise.catch(rejectStarted);
-        pid = await started;
+        this.shellPids.delete(session.pid);
+        session.pid = 0;
+        session.closed = true;
+        session.processGeneration++;
       }
-      this.shellPids.set(pid, sessionKey);
-
-      if (session) {
-        session.pid = pid;
-        session.generation++;
-        session.closed = false;
-        session.history.length = 0;
-      } else {
-        session = {
-          pid,
-          generation: 0,
-          dataListeners: new ListenerSet<Uint8Array>(),
-          history: [],
-          closed: false,
-        };
-      }
-      const activeSession = session;
-      const generation = activeSession.generation;
-      this.ptySessions.set(sessionKey, session);
-      kernel.onPtyOutput(pid, (data) => {
-        if (this.ptySessions.get(sessionKey) !== activeSession) return;
-        if (activeSession.closed || activeSession.generation !== generation) return;
-        const copy = data.slice();
-        activeSession.history.push(copy);
-        if (activeSession.history.length > 2048) activeSession.history.shift();
-        activeSession.dataListeners.emit(copy);
-      });
-      void exitPromise.finally(() => {
-        if (this.ptySessions.get(sessionKey) !== activeSession) return;
-        if (activeSession.generation !== generation) return;
-        activeSession.closed = true;
-        activeSession.pid = 0;
-        this.shellPids.delete(pid);
-      });
     }
 
     if (!session) {
-      throw new Error("LiveKernelHost.attachPty: failed to create PTY session.");
+      session = {
+        path: sessionKey,
+        pid: 0,
+        logicalGeneration: 1,
+        processGeneration: 0,
+        autologinConsumed: false,
+        startedAt: 0,
+        restartDelayMs: policy?.initialRestartDelayMs ?? 0,
+        restartTimer: null,
+        removed: false,
+        dataListeners: new ListenerSet<Uint8Array>(),
+        history: [],
+        closed: true,
+        cols: opts.cols,
+        rows: opts.rows,
+        supervised: policy !== undefined,
+      };
+      this.ptySessions.set(sessionKey, session);
+    } else {
+      session.cols = opts.cols;
+      session.rows = opts.rows;
+    }
+
+    if (!session.closed) return session;
+    if (session.restartTimer !== null) return session;
+
+    if (session.supervised) {
+      if (session.autologinConsumed || !policy) return session;
+      session.autologinConsumed = true;
+      try {
+        await this.startPtyProgram(sessionKey, session, kernel, policy.initial);
+      } catch (error) {
+        this.reportPtyStartFailure(sessionKey, session, error);
+        throw error;
+      }
+    } else if (shell) {
+      await this.startPtyProgram(sessionKey, session, kernel, shell);
     }
     return session;
+  }
+
+  private async startPtyProgram(
+    sessionKey: string,
+    session: LivePtySession,
+    kernel: KernelLike,
+    program: NonNullable<LiveKernelHostOptions["shell"]>,
+  ): Promise<void> {
+    const logicalGeneration = session.logicalGeneration;
+    const processGeneration = ++session.processGeneration;
+    let pid: number;
+    let exitPromise: Promise<number>;
+    if (program.programPath && kernel.spawnFromVfs) {
+      const spawned = await kernel.spawnFromVfs(program.programPath, program.argv, {
+        pty: true,
+        env: program.env,
+        cwd: program.cwd,
+        uid: program.uid,
+        gid: program.gid,
+        ptyCols: session.cols,
+        ptyRows: session.rows,
+      });
+      pid = spawned.pid;
+      exitPromise = spawned.exit;
+    } else {
+      if (!program.programBytes) {
+        throw new Error(
+          "LiveKernelHost.attachPty: the configured terminal program is VFS-only, " +
+          "but this kernel does not support spawnFromVfs().",
+        );
+      }
+      let resolveStarted!: (pid: number) => void;
+      let rejectStarted!: (reason?: unknown) => void;
+      const started = new Promise<number>((resolve, reject) => {
+        resolveStarted = resolve;
+        rejectStarted = reject;
+      });
+      exitPromise = kernel.spawn(program.programBytes, program.argv, {
+        pty: true,
+        env: program.env,
+        cwd: program.cwd,
+        uid: program.uid,
+        gid: program.gid,
+        ptyCols: session.cols,
+        ptyRows: session.rows,
+        onStarted: resolveStarted,
+      });
+      void exitPromise.catch(rejectStarted);
+      pid = await started;
+    }
+
+    if (
+      !this.isCurrentPtySession(sessionKey, session) ||
+      session.logicalGeneration !== logicalGeneration ||
+      session.processGeneration !== processGeneration ||
+      this.kernel !== kernel
+    ) {
+      void kernel.terminateProcess(pid).catch(() => {});
+      throw new Error(`LiveKernelHost.attachPty: ${sessionKey} was removed during launch`);
+    }
+
+    session.pid = pid;
+    session.closed = false;
+    session.startedAt = nowMs();
+    this.shellPids.set(pid, sessionKey);
+    kernel.onPtyOutput(pid, (data) => {
+      if (!this.isCurrentPtyProcess(
+        sessionKey,
+        session,
+        logicalGeneration,
+        processGeneration,
+        pid,
+      )) return;
+      this.emitPtyData(session, data);
+    });
+    void exitPromise.then(
+      () => this.handlePtyProcessExit(
+        sessionKey,
+        session,
+        kernel,
+        logicalGeneration,
+        processGeneration,
+        pid,
+      ),
+      (error) => this.handlePtyProcessExit(
+        sessionKey,
+        session,
+        kernel,
+        logicalGeneration,
+        processGeneration,
+        pid,
+        error,
+      ),
+    );
+  }
+
+  private handlePtyProcessExit(
+    sessionKey: string,
+    session: LivePtySession,
+    kernel: KernelLike,
+    logicalGeneration: number,
+    processGeneration: number,
+    pid: number,
+    exitError?: unknown,
+  ): void {
+    if (!this.isCurrentPtyProcess(
+      sessionKey,
+      session,
+      logicalGeneration,
+      processGeneration,
+      pid,
+    )) return;
+
+    session.pid = 0;
+    session.closed = true;
+    this.shellPids.delete(pid);
+    if (exitError !== undefined) {
+      this.emitPtyDiagnostic(
+        session,
+        `kandelo: terminal process failed: ${String(exitError)}`,
+      );
+    }
+    if (!session.supervised || !this.terminalSessions || this.kernel !== kernel) {
+      return;
+    }
+
+    const policy = this.terminalSessions;
+    const runtimeMs = Math.max(0, nowMs() - session.startedAt);
+    const delayMs = runtimeMs >= policy.shortRunThresholdMs
+      ? policy.initialRestartDelayMs
+      : session.restartDelayMs;
+    session.restartDelayMs = runtimeMs >= policy.shortRunThresholdMs
+      ? policy.initialRestartDelayMs
+      : Math.min(
+          policy.maximumRestartDelayMs,
+          Math.max(policy.initialRestartDelayMs, session.restartDelayMs * 2),
+        );
+    if (session.restartTimer !== null) return;
+
+    session.restartTimer = setTimeout(() => {
+      session.restartTimer = null;
+      if (
+        !this.isCurrentPtySession(sessionKey, session) ||
+        session.logicalGeneration !== logicalGeneration ||
+        session.processGeneration !== processGeneration ||
+        !session.closed ||
+        this.kernel !== kernel
+      ) return;
+      void this.withPtyAttachLock(sessionKey, async () => {
+        if (
+          !this.isCurrentPtySession(sessionKey, session) ||
+          session.logicalGeneration !== logicalGeneration ||
+          session.processGeneration !== processGeneration ||
+          !session.closed ||
+          this.kernel !== kernel
+        ) return session;
+        try {
+          await this.startPtyProgram(
+            sessionKey,
+            session,
+            kernel,
+            policy.afterExit,
+          );
+        } catch (error) {
+          this.reportPtyStartFailure(sessionKey, session, error);
+        }
+        return session;
+      });
+    }, delayMs);
+  }
+
+  private reportPtyStartFailure(
+    sessionKey: string,
+    session: LivePtySession,
+    error: unknown,
+  ): void {
+    if (!this.isCurrentPtySession(sessionKey, session)) return;
+    session.pid = 0;
+    session.closed = true;
+    session.restartTimer = null;
+    this.emitPtyDiagnostic(
+      session,
+      `kandelo: unable to start terminal process: ${String(error)}`,
+    );
+  }
+
+  private emitPtyDiagnostic(session: LivePtySession, message: string): void {
+    this.emitPtyData(session, new TextEncoder().encode(`\r\n${message}\r\n`));
+  }
+
+  private emitPtyData(session: LivePtySession, data: Uint8Array): void {
+    const copy = data.slice();
+    session.history.push(copy);
+    if (session.history.length > 2048) session.history.shift();
+    session.dataListeners.emit(copy);
+  }
+
+  private isCurrentPtySession(
+    sessionKey: string,
+    session: LivePtySession,
+  ): boolean {
+    return !session.removed && this.ptySessions.get(sessionKey) === session;
+  }
+
+  private isCurrentPtyProcess(
+    sessionKey: string,
+    session: LivePtySession,
+    logicalGeneration: number,
+    processGeneration: number,
+    pid: number,
+  ): boolean {
+    return (
+      this.isCurrentPtySession(sessionKey, session) &&
+      session.logicalGeneration === logicalGeneration &&
+      session.processGeneration === processGeneration &&
+      !session.closed &&
+      session.pid === pid
+    );
+  }
+
+  private invalidatePtySession(
+    session: LivePtySession,
+    kernel: KernelLike | undefined,
+  ): void {
+    session.removed = true;
+    session.logicalGeneration++;
+    session.processGeneration++;
+    if (session.restartTimer !== null) {
+      clearTimeout(session.restartTimer);
+      session.restartTimer = null;
+    }
+    const pid = session.pid;
+    session.pid = 0;
+    session.closed = true;
+    if (pid > 0) {
+      this.shellPids.delete(pid);
+      void kernel?.terminateProcess(pid).catch(() => {});
+    }
+  }
+
+  private invalidatePtySessions(kernel: KernelLike | undefined): void {
+    for (const session of this.ptySessions.values()) {
+      this.invalidatePtySession(session, kernel);
+    }
+    this.ptySessions.clear();
+    this.ptyAttachPromises.clear();
+    this.ptyCommandQueues.clear();
+    this.shellPids.clear();
   }
 
   private async isPtySessionAlive(pid: number): Promise<boolean> {
@@ -1403,6 +1854,32 @@ export class LiveKernelHost implements KernelHost {
 
   async readFileText(path: string): Promise<string> {
     return new TextDecoder().decode(await this.readFile(path));
+  }
+
+  /**
+   * Create or replace one live guest file through the VFS-owning worker. The
+   * parent must already exist. Completion proves that the worker closed the
+   * file and applied its requested mode; no reboot or image rebuild is needed.
+   */
+  async writeFile(path: string, bytes: Uint8Array, mode = 0o644): Promise<void> {
+    if (!this.kernel?.writeFileToVfs) {
+      throw new Error(
+        `LiveKernelHost.writeFile(${path}): the attached kernel cannot write ` +
+        `to the VFS (no writeFileToVfs).`,
+      );
+    }
+    await this.kernel.writeFileToVfs(path, bytes, mode);
+  }
+
+  // ── KernelHost: process control ─────────────────────────────────────────
+
+  async signalProcess(pid: number, signum: number): Promise<boolean> {
+    if (!this.kernel?.signalProcess) {
+      throw new Error(
+        "LiveKernelHost.signalProcess: the attached kernel cannot deliver signals.",
+      );
+    }
+    return this.kernel.signalProcess(pid, signum);
   }
 
   async readDir(path: string): Promise<VfsDirent[]> {
@@ -1474,10 +1951,9 @@ export class LiveKernelHost implements KernelHost {
   }
 
   private requireFs(): FileSystemLike {
-    if (!this.kernel) {
+    if (!this.kernel?.fs) {
       throw new Error(
-        "LiveKernelHost: no kernel attached. " +
-        "Call attachKernel() before reading the VFS.",
+        "LiveKernelHost: the attached kernel has no synchronous VFS surface.",
       );
     }
     return this.kernel.fs;
@@ -1493,8 +1969,10 @@ export class LiveKernelHost implements KernelHost {
     // version and the kernel ship together (ABI ≥ 9).
     if (this.kernel?.enumProcs) {
       const snaps = await this.kernel.enumProcs();
-      const names = loadIdNameMaps(this.kernel.fs);
-      return snaps.map((s) => toProcessInfo(s, names.users));
+      const users = this.kernel.fs
+        ? loadIdNameMaps(this.kernel.fs).users
+        : new Map<number, string>([[0, "root"]]);
+      return snaps.map((s) => toProcessInfo(s, users));
     }
     const fs = this.requireFs();
     const names = loadIdNameMaps(fs);
@@ -1584,7 +2062,9 @@ export class LiveKernelHost implements KernelHost {
         t: `+${((raw.t - t0) / 1000).toFixed(6)}`,
         pid: raw.pid,
         call: name,
-        args: raw.args.filter((a) => a !== 0).join(", ") || "—",
+        args: raw.args
+          .filter((a) => a !== 0 && a !== 0n)
+          .join(", ") || "—",
         // Return value isn't available at trace-emit time (we only see
         // the entry, not the completion). v0 leaves this blank; future
         // work can pair entry/return events.
@@ -1615,6 +2095,34 @@ export class LiveKernelHost implements KernelHost {
       history = history.filter((e) => allowed.has(e.call));
     }
     return history.slice();
+  }
+
+  async prepareAudio(): Promise<void> {
+    if (!this.kernel?.prepareAudio) {
+      throw new Error("PCM output is unavailable");
+    }
+    await this.kernel.prepareAudio();
+  }
+
+  async resumeAudio(): Promise<void> {
+    if (!this.kernel?.resumeAudio) {
+      throw new Error("PCM output is unavailable");
+    }
+    await this.kernel.resumeAudio();
+  }
+
+  async suspendAudio(): Promise<void> {
+    await this.kernel?.suspendAudio?.();
+  }
+
+  getAudioState(): MachineAudioState {
+    return this.kernel?.getAudioState?.() ?? "unavailable";
+  }
+
+  subscribeAudioState(cb: (state: MachineAudioState) => void): () => void {
+    const off = this.audioStateListeners.add(cb);
+    cb(this.getAudioState());
+    return off;
   }
 
   /**
@@ -1766,11 +2274,28 @@ export class LiveKernelHost implements KernelHost {
         kernel.injectMouseEvent?.(dx, dy, buttons);
       },
       startAudio: async () => {
-        if (!kernel.drainAudio) return null;
-        const { createPcmAudioScheduler } = await import("../../../host/src/framebuffer/browser-controls.js");
-        return createPcmAudioScheduler({
-          drainAudio: kernel.drainAudio.bind(kernel),
-        });
+        if (!kernel.resumeAudio) return null;
+        return {
+          resume: () => kernel.resumeAudio!(),
+          // Audio is a machine resource shared by all Unix applications. A
+          // framebuffer-scoped compatibility handle must not tear it down.
+          close: () => {},
+          getState: () => {
+            switch (kernel.getAudioState?.() ?? "unavailable") {
+              case "running":
+                return "running";
+              case "closed":
+                return "closed";
+              case "suspended":
+              case "interrupted":
+              case "unprepared":
+                return "suspended";
+              case "unavailable":
+              case "error":
+                return "unavailable";
+            }
+          },
+        };
       },
       getBoundPid: () => attachedPid,
       onBoundPidChange: (cb) => boundPidListeners.add(cb),
@@ -1849,6 +2374,14 @@ export class LiveKernelHost implements KernelHost {
 
   getDemoGuide(): DemoGuideConfig | null {
     return this.demoGuide ? structuredClone(this.demoGuide) : null;
+  }
+
+  getDemoIngest(): DemoIngestConfig | null {
+    return this.demoIngest ? structuredClone(this.demoIngest) : null;
+  }
+
+  subscribeDemoIngest(cb: (state: DemoIngestConfig | null) => void): () => void {
+    return this.demoIngestListeners.add(cb);
   }
 
   subscribeDemoGuide(cb: (state: DemoGuideConfig | null) => void): () => void {

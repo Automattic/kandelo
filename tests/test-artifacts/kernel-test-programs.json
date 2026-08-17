@@ -28,9 +28,17 @@
       "resolver_path": "programs/exec-child.wasm",
       "consumers": [
         "apps/browser-demos/test/nonzero-exit-diagnostic.spec.ts",
+        "apps/browser-demos/test/prepared-exec-target.spec.ts",
         "apps/browser-demos/test/process-memory-retirement.spec.ts",
+        "apps/browser-demos/test/ruby-posix-spawn.spec.ts",
+        "apps/browser-demos/test/vfork-lifecycle.spec.ts",
         "host/test/exec.test.ts",
-        "host/test/fixtures/ordinary-nonzero-exit.ts"
+        "host/test/exec-state-tracking.test.ts",
+        "host/test/fixtures/ordinary-nonzero-exit.ts",
+        "host/test/spawn-credential-order.test.ts",
+        "host/test/spawn-pid-authority.test.ts",
+        "host/test/vfork-lifecycle-guest.test.ts",
+        "packages/registry/ruby/test/posix-spawn.test.ts"
       ]
     },
     {

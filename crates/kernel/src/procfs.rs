@@ -25,8 +25,7 @@ pub const PROCFS_BUF_BASE: i64 = 200;
 /// Check if a host_handle is a procfs buffer handle.
 #[inline]
 pub fn is_procfs_buf_handle(h: i64) -> bool {
-    h <= -PROCFS_BUF_BASE
-        && h > -crate::descriptor_backing::SYNTHETIC_REGULAR_HANDLE_BASE
+    h <= -PROCFS_BUF_BASE && h > -crate::descriptor_backing::SYNTHETIC_REGULAR_HANDLE_BASE
 }
 
 /// Decode a procfs buffer index from a host_handle.
@@ -49,25 +48,25 @@ fn procfs_buf_handle(idx: usize) -> i64 {
 /// A parsed procfs path entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcfsEntry {
-    Root,              // /proc
-    Mounts,            // /proc/mounts
-    SelfLink,          // /proc/self (symlink → /proc/<pid>)
-    ThreadSelfLink,    // /proc/thread-self (symlink)
-    PidDir(u32),       // /proc/<pid>
-    PidMounts(u32),    // /proc/<pid>/mounts
-    PidMountinfo(u32), // /proc/<pid>/mountinfo
-    FdDir(u32),        // /proc/<pid>/fd
-    FdLink(u32, i32),  // /proc/<pid>/fd/<N> (symlink)
-    FdInfoDir(u32),    // /proc/<pid>/fdinfo
-    FdInfo(u32, i32),  // /proc/<pid>/fdinfo/<N>
-    Stat(u32),         // /proc/<pid>/stat
-    Status(u32),       // /proc/<pid>/status
-    Cmdline(u32),      // /proc/<pid>/cmdline
-    Environ(u32),      // /proc/<pid>/environ
-    Maps(u32),         // /proc/<pid>/maps
-    Cwd(u32),          // /proc/<pid>/cwd (symlink)
-    Exe(u32),          // /proc/<pid>/exe (symlink)
-    Root_(u32),        // /proc/<pid>/root (symlink)
+    Root,                 // /proc
+    Mounts,               // /proc/mounts
+    SelfLink,             // /proc/self (symlink → /proc/<pid>)
+    ThreadSelfLink,       // /proc/thread-self (symlink)
+    PidDir(u32),          // /proc/<pid>
+    PidMounts(u32),       // /proc/<pid>/mounts
+    PidMountinfo(u32),    // /proc/<pid>/mountinfo
+    FdDir(u32),           // /proc/<pid>/fd
+    FdLink(u32, i32),     // /proc/<pid>/fd/<N> (symlink)
+    FdInfoDir(u32),       // /proc/<pid>/fdinfo
+    FdInfo(u32, i32),     // /proc/<pid>/fdinfo/<N>
+    Stat(u32),            // /proc/<pid>/stat
+    Status(u32),          // /proc/<pid>/status
+    Cmdline(u32),         // /proc/<pid>/cmdline
+    Environ(u32),         // /proc/<pid>/environ
+    Maps(u32),            // /proc/<pid>/maps
+    Cwd(u32),             // /proc/<pid>/cwd (symlink)
+    Exe(u32),             // /proc/<pid>/exe (symlink)
+    Root_(u32),           // /proc/<pid>/root (symlink)
     NetDir(Option<u32>),  // /proc/net or /proc/<pid>/net
     NetTcp(Option<u32>),  // /proc/net/tcp or /proc/<pid>/net/tcp
     NetUnix(Option<u32>), // /proc/net/unix or /proc/<pid>/net/unix
@@ -332,13 +331,17 @@ pub fn generate_status(proc: &Process) -> Vec<u8> {
     use alloc::format;
 
     let name = process_name(proc);
+    let groups = proc
+        .supplementary_groups()
+        .iter()
+        .map(|gid| format!("{gid}"))
+        .collect::<Vec<_>>()
+        .join(" ");
 
     let state_str = match proc.state {
         crate::process::ProcessState::Running => "R (running)",
         crate::process::ProcessState::Stopped => "T (stopped)",
-        crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo => {
-            "Z (zombie)"
-        }
+        crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo => "Z (zombie)",
     };
 
     let content = format!(
@@ -352,6 +355,7 @@ pub fn generate_status(proc: &Process) -> Vec<u8> {
          TracerPid:\t0\n\
          Uid:\t{}\t{}\t{}\t{}\n\
          Gid:\t{}\t{}\t{}\t{}\n\
+         Groups:\t{}\n\
          FDSize:\t{}\n\
          VmSize:\t0 kB\n\
          Threads:\t{}\n\
@@ -363,14 +367,15 @@ pub fn generate_status(proc: &Process) -> Vec<u8> {
         proc.pid,
         proc.pid,
         proc.ppid,
-        proc.uid,
-        proc.euid,
-        proc.euid,
-        proc.euid,
-        proc.gid,
-        proc.egid,
-        proc.egid,
-        proc.egid,
+        proc.real_uid(),
+        proc.effective_uid(),
+        proc.saved_uid(),
+        proc.effective_uid(),
+        proc.real_gid(),
+        proc.effective_gid(),
+        proc.saved_gid(),
+        proc.effective_gid(),
+        groups,
         count_open_fds(&proc.fd_table),
         1 + proc.threads.len(), // main thread + spawned threads
         proc.pending_for(proc.pid),
@@ -432,11 +437,11 @@ pub fn generate_fdinfo(proc: &Process, fd: i32) -> Option<Vec<u8>> {
     let entry = proc.fd_table.get(fd).ok()?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0)?;
     let offset =
-        crate::descriptor_backing::current_offset(ofd.file_type, ofd.host_handle, ofd.offset)
+        crate::descriptor_backing::current_offset(ofd.file_type, ofd.host_handle, ofd.offset())
             .ok()?;
     let content = format!(
         "pos:\t{}\nflags:\t{:o}\nmnt_id:\t0\n",
-        offset, ofd.status_flags,
+        offset, ofd.status_flags(),
     );
     Some(content.into_bytes())
 }
@@ -673,8 +678,11 @@ pub fn procfs_open(
 /// Generate content for a procfs regular file entry.
 fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errno> {
     match entry {
-        ProcfsEntry::Stat(pid) | ProcfsEntry::Status(pid) | ProcfsEntry::Cmdline(pid)
-        | ProcfsEntry::Environ(pid) | ProcfsEntry::Maps(pid) => {
+        ProcfsEntry::Stat(pid)
+        | ProcfsEntry::Status(pid)
+        | ProcfsEntry::Cmdline(pid)
+        | ProcfsEntry::Environ(pid)
+        | ProcfsEntry::Maps(pid) => {
             validate_pid(proc, *pid)?;
             if *pid == proc.pid {
                 match entry {
@@ -687,9 +695,13 @@ fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errn
                 }
             } else {
                 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-                { crate::wasm_api::procfs_generate_for_pid(*pid, entry).ok_or(Errno::ENOENT) }
+                {
+                    crate::wasm_api::procfs_generate_for_pid(*pid, entry).ok_or(Errno::ENOENT)
+                }
                 #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-                { Err(Errno::ENOENT) }
+                {
+                    Err(Errno::ENOENT)
+                }
             }
         }
         ProcfsEntry::FdInfo(pid, fd) => {
@@ -698,9 +710,14 @@ fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errn
                 generate_fdinfo(proc, *fd).ok_or(Errno::ENOENT)
             } else {
                 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-                { crate::wasm_api::procfs_generate_for_pid(*pid, entry).ok_or(Errno::ENOENT) }
+                {
+                    crate::wasm_api::procfs_generate_for_pid(*pid, entry).ok_or(Errno::ENOENT)
+                }
                 #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-                { let _ = fd; Err(Errno::ENOENT) }
+                {
+                    let _ = fd;
+                    Err(Errno::ENOENT)
+                }
             }
         }
         ProcfsEntry::Mounts => Ok(MOUNTS_CONTENT.to_vec()),
@@ -1043,7 +1060,11 @@ fn dir_entries(
 /// Get the process name from argv[0] or thread_name.
 fn process_name(proc: &Process) -> &str {
     // Try thread_name first (set by prctl PR_SET_NAME)
-    let name_len = proc.thread_name.iter().position(|&b| b == 0).unwrap_or(16);
+    let name_len = proc
+        .thread_name
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(wasm_posix_shared::kernel_scratch_wire::PRCTL_NAME_BYTES as usize);
     if name_len > 0 {
         if let Ok(s) = core::str::from_utf8(&proc.thread_name[..name_len]) {
             if !s.is_empty() {
@@ -1081,6 +1102,7 @@ fn count_open_fds(fd_table: &crate::fd::FdTable) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credentials::Credentials;
     use crate::process::Process;
 
     fn dirent_len(name: &[u8]) -> usize {
@@ -1276,6 +1298,26 @@ mod tests {
     }
 
     #[test]
+    fn credentials_process_inspection_reports_saved_ids_and_ordered_groups() {
+        let mut proc = Process::new(41);
+        proc.install_credentials(Credentials {
+            ruid: 1000,
+            euid: 2000,
+            suid: 3000,
+            rgid: 4000,
+            egid: 5000,
+            sgid: 6000,
+            supplementary_groups: vec![7000, 8000, 7000],
+        });
+
+        let status = generate_status(&proc);
+        let status = core::str::from_utf8(&status).unwrap();
+        assert!(status.contains("Uid:\t1000\t2000\t3000\t2000\n"));
+        assert!(status.contains("Gid:\t4000\t5000\t6000\t5000\n"));
+        assert!(status.contains("Groups:\t7000 8000 7000\n"));
+    }
+
+    #[test]
     fn stopped_process_uses_linux_t_state_in_stat_and_status() {
         let mut proc = Process::new(44);
         proc.argv.push(b"sleeping".to_vec());
@@ -1449,14 +1491,8 @@ mod tests {
         assert!(!exhausted);
 
         let mut suffix_buf = [0u8; 4096];
-        let (suffix_bytes, resumed_end, exhausted) = procfs_getdents64(
-            &proc,
-            b"/proc",
-            &mut suffix_buf,
-            resume_cookie,
-            &pids,
-        )
-        .unwrap();
+        let (suffix_bytes, resumed_end, exhausted) =
+            procfs_getdents64(&proc, b"/proc", &mut suffix_buf, resume_cookie, &pids).unwrap();
         assert!(exhausted);
         assert_eq!(resumed_end, end_cookie);
 
@@ -1478,14 +1514,8 @@ mod tests {
         let last_name = entries.last().unwrap().0.clone();
         let mut exact = vec![0u8; dirent_len(&last_name)];
 
-        let (bytes, cookie, exhausted) = procfs_getdents64(
-            &proc,
-            b"/proc",
-            &mut exact,
-            end_cookie - 1,
-            &pids,
-        )
-        .unwrap();
+        let (bytes, cookie, exhausted) =
+            procfs_getdents64(&proc, b"/proc", &mut exact, end_cookie - 1, &pids).unwrap();
         assert_eq!(bytes, exact.len());
         assert_eq!(cookie, end_cookie);
         assert!(exhausted);

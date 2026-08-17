@@ -4,6 +4,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMPDIR="$(mktemp -d)"
+TMPDIR="$(cd "$TMPDIR" && pwd -P)"
 trap 'rm -rf "$TMPDIR"' EXIT
 TEST_FORBIDDEN_ROOT="/trusted/publisher/build-root"
 MOCK_BIN="$TMPDIR/mock-bin"
@@ -527,6 +528,7 @@ generate_sidecars() {
   local bottle_filename
   local merged_tap="${out}-merged-tap"
   local canonical_json="${out}-merge-bottle.json"
+  local minimal_json="${out}-minimal-bottle.json"
   local dependency_provenance="${out}-dependency-provenance.json"
   local runtime_evidence="${out}-runtime-evidence.json"
   local formula_source_root tap_commit tap_checkout_commit
@@ -546,12 +548,13 @@ generate_sidecars() {
   rm -rf "$merged_tap" "$out"
   cp -a "$formula_source_root" "$merged_tap"
   mkdir -p "$out"
-  jq -e --arg formula "$formula" --arg tag "${arch}_kandelo" '
+  jq -e --arg formula "$formula" --arg formula_key "kandelo-dev/tap-core/$formula" \
+    --arg tag "${arch}_kandelo" '
     if type != "object" or length != 1 then
       error("expected one raw bottle entry")
     else
       to_entries[0].value as $entry |
-      {($formula): {
+      {($formula_key): {
         formula: {
           name: $entry.formula.name,
           path: $entry.formula.path,
@@ -566,7 +569,51 @@ generate_sidecars() {
       }}
     end
   ' \
-    "$bottle_json" >"$canonical_json"
+    "$bottle_json" >"$minimal_json"
+  case "${SIDECAR_BOTTLE_JSON_MODE:-minimal}" in
+    minimal)
+      cp "$minimal_json" "$canonical_json"
+      ;;
+    raw)
+      local raw_json="${out}-raw-bottle.json"
+      local raw_tmp="${out}-raw-bottle.tmp.json"
+      local url_filename="${bottle_filename/--/-}"
+      jq -e \
+        --arg formula_key "kandelo-dev/tap-core/$formula" \
+        --arg tag "${arch}_kandelo" \
+        --arg tap_remote "file://$formula_source_root" \
+        --arg url_filename "$url_filename" \
+        --argjson installed_size "$bytes" '
+        .[$formula_key] as $entry |
+        {($formula_key): {
+          formula: ($entry.formula + {
+            desc: "tap-native raw builder fixture",
+            homepage: "https://example.invalid/tap-native",
+            license: "MIT",
+            tap_git_remote: $tap_remote
+          }),
+          bottle: ($entry.bottle + {
+            date: "2026-08-12T00:00:00Z",
+            tags: {($tag): ($entry.bottle.tags[$tag] + {
+              filename: $url_filename,
+              installed_size: $installed_size,
+              sbom: {}
+            })}
+          })
+        }}
+      ' "$bottle_json" >"$raw_json"
+      if [ -n "${SIDECAR_RAW_BOTTLE_MUTATION:-}" ]; then
+        jq --arg formula_key "kandelo-dev/tap-core/$formula" \
+          "$SIDECAR_RAW_BOTTLE_MUTATION" "$raw_json" >"$raw_tmp"
+        mv "$raw_tmp" "$raw_json"
+      fi
+      cp "$raw_json" "$canonical_json"
+      ;;
+    *)
+      echo "unsupported sidecar bottle JSON fixture mode" >&2
+      return 2
+      ;;
+  esac
   write_dependency_provenance \
     "$formula" "$arch" "$tap_commit" "$tap_checkout_commit" \
     "$formula_source_root" "$dependency_provenance"
@@ -576,7 +623,7 @@ generate_sidecars() {
     --formula "$formula" \
     --arch "$arch" \
     --release-tag "bottles-abi-v${ABI_VERSION}" \
-    --bottle-json "$canonical_json" \
+    --bottle-json "$minimal_json" \
     --expected-sha256 "$sha" \
     --expected-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
     --expected-cellar any_skip_relocation >/dev/null
@@ -585,7 +632,8 @@ generate_sidecars() {
   runtime_provenance_sha="${SIDECAR_RUNTIME_PROVENANCE_SHA:-$provenance_sha}"
   runtime_dependency_bottle_sha="${SIDECAR_RUNTIME_DEPENDENCY_BOTTLE_SHA:-}"
   runtime_dependency_receipt_sha="${SIDECAR_RUNTIME_DEPENDENCY_RECEIPT_SHA:-}"
-  version="$(jq -er --arg formula "$formula" '.[$formula].formula.pkg_version' \
+  version="$(jq -er --arg formula_key "kandelo-dev/tap-core/$formula" \
+    '.[$formula_key].formula.pkg_version' \
     "$canonical_json")"
   jq -nS \
     --arg formula "$formula" \
@@ -736,6 +784,38 @@ mapfile -t dep_bottle < <(make_dep_bottle)
 mapfile -t dep64_bottle < <(make_dep_wasm64_bottle "${dep_bottle[0]}" "${dep_bottle[1]}")
 mapfile -t data_bottle < <(make_data_bottle)
 generate_sidecars sidecar-dep "${dep_bottle[@]}" "$DEP_OUT"
+RAW_DEP_OUT="$TMPDIR/dep-raw-sidecars"
+SIDECAR_BOTTLE_JSON_MODE=raw \
+  generate_sidecars sidecar-dep "${dep_bottle[@]}" "$RAW_DEP_OUT"
+jq -S 'del(.generated_at, .packages[].bottles[].built_at)' \
+  "$DEP_OUT/sidecars-input.json" >"$TMPDIR/dep-minimal-normalized.json"
+jq -S 'del(.generated_at, .packages[].bottles[].built_at)' \
+  "$RAW_DEP_OUT/sidecars-input.json" >"$TMPDIR/dep-raw-normalized.json"
+cmp "$TMPDIR/dep-minimal-normalized.json" \
+  "$TMPDIR/dep-raw-normalized.json" >/dev/null || {
+  echo "raw and publisher-minimal bottle JSON produced different sidecar inputs" >&2
+  exit 1
+}
+SIDECAR_BOTTLE_JSON_MODE=raw \
+SIDECAR_RAW_BOTTLE_MUTATION='.[$formula_key].formula.unexpected = true' \
+  expect_generate_failure raw-builder-extra-formula-field \
+  'canonical Formula identity must contain exactly' \
+  sidecar-dep "${dep_bottle[@]}" "$TMPDIR/raw-extra-sidecars"
+SIDECAR_BOTTLE_JSON_MODE=raw \
+SIDECAR_RAW_BOTTLE_MUTATION='.[$formula_key].formula.tap_git_revision = ("0" * 40)' \
+  expect_generate_failure raw-builder-wrong-tap-revision \
+  'canonical Formula tap Git revision does not match' \
+  sidecar-dep "${dep_bottle[@]}" "$TMPDIR/raw-revision-sidecars"
+SIDECAR_BOTTLE_JSON_MODE=raw \
+SIDECAR_RAW_BOTTLE_MUTATION='.[$formula_key].formula.tap_git_path = "Formula/other.rb"' \
+  expect_generate_failure raw-builder-wrong-tap-path \
+  'canonical Formula tap Git path does not match' \
+  sidecar-dep "${dep_bottle[@]}" "$TMPDIR/raw-path-sidecars"
+SIDECAR_BOTTLE_JSON_MODE=raw \
+SIDECAR_RAW_BOTTLE_MUTATION='.[$formula_key].formula.tap_git_remote = "file:///does/not/exist"' \
+  expect_generate_failure raw-builder-wrong-tap-remote \
+  'canonical Formula tap Git remote does not resolve' \
+  sidecar-dep "${dep_bottle[@]}" "$TMPDIR/raw-remote-sidecars"
 
 # The public tap commit and the deterministic campaign checkout are separate
 # identities. Exercise the real validators and generator with A != B so a
@@ -1562,7 +1642,7 @@ PY
 )"
 jq -e '
   . as $descriptor |
-  .schema == 5 and .kind == "kandelo-homebrew-deferred-layer-draft" and
+  .schema == 6 and .kind == "kandelo-homebrew-deferred-layer-draft" and
   .mount_prefix == "/" and
   .selection.requested_packages == ["sidecar-tool"] and
   .selection.package_order == [
@@ -1603,6 +1683,16 @@ jq -e '
   $tree.inventory.entry_count == ($tree.inventory.entries | length) and
   $tree.inventory.source.schema == 1 and
   $tree.inventory.source.kind == "homebrew-bottle-tar-gzip-v1" and
+  $tree.inventory.relocation.schema == 1 and
+  $tree.inventory.relocation.kind == "homebrew-bottle-relocation-v1" and
+  $tree.inventory.relocation.receipt_source_path ==
+    "sidecar-tool/2.0_3/INSTALL_RECEIPT.json" and
+  $tree.inventory.relocation.materialization.schema == 1 and
+  $tree.inventory.relocation.materialization.kind ==
+    "archive-byte-transforms-v1" and
+  ($tree.inventory.relocation.materialization.assertions | length) == 1 and
+  $tree.inventory.relocation.materialization.recipes == [] and
+  $tree.inventory.relocation.materialization.transforms == [] and
   $tree.inventory.source_entry_count == ($tree.inventory.source.entries | length) and
   [$tree.inventory.source.entries[].path] ==
     ([$tree.inventory.source.entries[].path] | unique | sort) and
@@ -1629,7 +1719,7 @@ jq -e '
   --argjson bottle_bytes "${tool_bottle[3]}" \
   --argjson expanded_bytes "$RUNTIME_LAYER_EXPANDED_BYTES" \
   "$RUNTIME_LAYER_DESCRIPTOR" >/dev/null || {
-    echo "schema-5 original-bottle descriptor assertion failed" >&2
+    echo "schema-6 original-bottle descriptor assertion failed" >&2
     jq . "$RUNTIME_LAYER_DESCRIPTOR" >&2
     exit 1
   }
@@ -1654,7 +1744,7 @@ def require(condition, message):
 payload = payload_path.read_bytes()
 original = original_path.read_bytes()
 descriptor = json.loads(descriptor_path.read_text())
-require(descriptor["schema"] == 5, "runtime layer is not schema 5")
+require(descriptor["schema"] == 6, "runtime layer is not schema 6")
 require(
     descriptor["kind"] == "kandelo-homebrew-deferred-layer-draft",
     "runtime layer is not an inert producer draft",

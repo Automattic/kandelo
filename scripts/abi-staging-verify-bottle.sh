@@ -14,12 +14,13 @@ TAP_COMMIT=""
 TAP_CHECKOUT_COMMIT=""
 DEPENDENCY_PROVENANCE=""
 SYSROOT_BUILD_ROOT=""
+PLAYWRIGHT_BROWSERS_PATH_INPUT=""
 OUT=""
 FORBIDDEN_ROOTS=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/abi-staging-verify-bottle.sh --candidate-locator <json> --test-definition <json> --test-definition-sha256 <sha256> --host <build|node|browser> --attempt-ordinal <number> --run <json> --request-binding <json> --tap-root <dir> --tap-commit <sha> [--tap-checkout-commit <sha>] --dependency-provenance <json> --sysroot-build-root <dir> --forbidden-root <absolute-path> [--forbidden-root ...] --out <dir>
+usage: scripts/abi-staging-verify-bottle.sh --candidate-locator <json> --test-definition <json> --test-definition-sha256 <sha256> --host <build|node|browser> --attempt-ordinal <number> --run <json> --request-binding <json> --tap-root <dir> --tap-commit <sha> [--tap-checkout-commit <sha>] --dependency-provenance <json> --sysroot-build-root <dir> --playwright-browsers-path <dir> --forbidden-root <absolute-path> [--forbidden-root ...] --out <dir>
 
 The locator must be an immutable public GHCR @sha256 reference. The verifier
 downloads the exact candidate manifest, record, metadata, and bottle layer,
@@ -42,6 +43,7 @@ while [ "$#" -gt 0 ]; do
     --tap-checkout-commit) TAP_CHECKOUT_COMMIT="${2:-}"; shift 2 ;;
     --dependency-provenance) DEPENDENCY_PROVENANCE="${2:-}"; shift 2 ;;
     --sysroot-build-root) SYSROOT_BUILD_ROOT="${2:-}"; shift 2 ;;
+    --playwright-browsers-path) PLAYWRIGHT_BROWSERS_PATH_INPUT="${2:-}"; shift 2 ;;
     --forbidden-root) FORBIDDEN_ROOTS+=("${2:-}"); shift 2 ;;
     --out) OUT="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -65,6 +67,7 @@ for requirement in \
   "tap-commit:$TAP_COMMIT" \
   "dependency-provenance:$DEPENDENCY_PROVENANCE" \
   "sysroot-build-root:$SYSROOT_BUILD_ROOT" \
+  "playwright-browsers-path:$PLAYWRIGHT_BROWSERS_PATH_INPUT" \
   "out:$OUT"; do
   [ -n "${requirement#*:}" ] || {
     echo "abi-staging-verify-bottle.sh: --${requirement%%:*} is required" >&2
@@ -107,6 +110,19 @@ TAP_CHECKOUT_COMMIT="${TAP_CHECKOUT_COMMIT:-$TAP_COMMIT}"
   echo "abi-staging-verify-bottle.sh: invalid tap checkout commit" >&2
   exit 2
 }
+case "$PLAYWRIGHT_BROWSERS_PATH_INPUT" in
+  /*) ;;
+  *)
+    echo "abi-staging-verify-bottle.sh: prepared Playwright browser root is unavailable" >&2
+    exit 2
+    ;;
+esac
+[ -d "$PLAYWRIGHT_BROWSERS_PATH_INPUT" ] && \
+  [ ! -L "$PLAYWRIGHT_BROWSERS_PATH_INPUT" ] || {
+  echo "abi-staging-verify-bottle.sh: prepared Playwright browser root is unavailable" >&2
+  exit 2
+}
+PLAYWRIGHT_BROWSERS_PATH_INPUT="$(cd "$PLAYWRIGHT_BROWSERS_PATH_INPUT" && pwd -P)"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 : "${KANDELO_DEV_SHELL_TOOL_PATH:?run through scripts/dev-shell.sh}"
@@ -193,11 +209,18 @@ if [ -n "$RECORD_VALIDATOR" ]; then
 fi
 
 WORK_ROOT="$(mktemp -d)"
+SOCKET_TEMP=""
 cleanup() {
   rm -rf "$WORK_ROOT"
+  [ -z "$SOCKET_TEMP" ] || rm -rf "$SOCKET_TEMP"
 }
 trap cleanup EXIT
 chmod 0700 "$WORK_ROOT"
+# WHY: Homebrew's safe_fork creates a UNIX socket below TMPDIR, whose Linux
+# pathname limit is 108 bytes.  The protected supervisor's private root can be
+# much deeper, so give verification one owned short-lived socket realm.
+SOCKET_TEMP="$(mktemp -d /tmp/k.XXXXXX)"
+chmod 0700 "$SOCKET_TEMP"
 CANONICAL="$WORK_ROOT/canonical.json"
 
 canonical_json() {
@@ -293,7 +316,7 @@ METADATA="$WORK_ROOT/bottle-metadata.json"
 COMPOSITION_DESCRIPTOR="$WORK_ROOT/vfs-composition-descriptor.json"
 BOTTLE_DIR="$WORK_ROOT/bottle-cache"
 mkdir -p "$BOTTLE_DIR" "$WORK_ROOT/home" "$WORK_ROOT/homebrew-cache" \
-  "$WORK_ROOT/homebrew-temp" "$WORK_ROOT/diagnostics"
+  "$WORK_ROOT/diagnostics"
 ANONYMOUS_CONFIG="$WORK_ROOT/anonymous-oras.json"
 printf '{"auths":{}}\n' >"$ANONYMOUS_CONFIG"
 env -u GH_TOKEN -u GITHUB_TOKEN -u HOMEBREW_GITHUB_API_TOKEN \
@@ -487,28 +510,83 @@ BOTTLE_URL="$FORMULA_BOTTLE_ROOT_URL/blobs/$BOTTLE_DIGEST"
   exit 1
 }
 
+# Homebrew records the fully qualified tap name and the shared candidate
+# namespace in its raw bottle JSON.  The protected tap planner separately
+# reduces that rich document to the Formula-specific root consumed by the
+# composer.  Verify the authenticated raw document here instead of expecting
+# the reduced composer input.
+# shellcheck source=/dev/null
+. "$REPO_ROOT/scripts/homebrew-tap-identity.sh"
+NORMALIZED_TAP_REPOSITORY="$(
+  printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]'
+)"
+TAP_OWNER="${NORMALIZED_TAP_REPOSITORY%%/*}"
+TAP_REPOSITORY_NAME="${NORMALIZED_TAP_REPOSITORY#*/}"
+case "$TAP_REPOSITORY_NAME" in
+  homebrew-?*) ;;
+  *)
+    echo "abi-staging-verify-bottle.sh: candidate tap repository is invalid" >&2
+    exit 1
+    ;;
+esac
+TAP_NAME="$(homebrew_resolve_tap_name \
+  "$TAP_REPOSITORY" "$TAP_OWNER/${TAP_REPOSITORY_NAME#homebrew-}")"
+FORMULA_KEY="$TAP_NAME/$FORMULA"
+FORMULA_PATH="Library/Taps/${TAP_NAME%%/*}/homebrew-${TAP_NAME#*/}/Formula/"
+FORMULA_PATH+="$FORMULA.rb"
 jq -e \
-  --arg formula "$FORMULA" --arg pkg_version "$PKG_VERSION" \
-  --arg root "$FORMULA_BOTTLE_ROOT_URL" --arg tag "$BOTTLE_TAG" \
+  --arg formula "$FORMULA" --arg formula_key "$FORMULA_KEY" \
+  --arg formula_path "$FORMULA_PATH" --arg pkg_version "$PKG_VERSION" \
+  --arg root "$BOTTLE_ROOT_URL" --arg tag "$BOTTLE_TAG" \
   --arg sha256 "$LAYER_SHA256" --argjson rebuild "$REBUILD" '
-    type == "object" and keys == [$formula] and
-    .[$formula].formula.name == $formula and
-    .[$formula].formula.pkg_version == $pkg_version and
-    .[$formula].bottle.root_url == $root and
-    .[$formula].bottle.rebuild == $rebuild and
-    (.[$formula].bottle.tags | keys == [$tag]) and
-    .[$formula].bottle.tags[$tag].sha256 == $sha256
+    type == "object" and keys == [$formula_key] and
+    .[$formula_key].formula.name == $formula and
+    .[$formula_key].formula.path == $formula_path and
+    .[$formula_key].formula.pkg_version == $pkg_version and
+    .[$formula_key].bottle.root_url == $root and
+    (.[$formula_key].bottle.cellar |
+      . == "any" or . == "any_skip_relocation" or
+      . == "/opt/kandelo/homebrew/Cellar") and
+    .[$formula_key].bottle.rebuild == $rebuild and
+    (.[$formula_key].bottle.tags | keys == [$tag]) and
+    .[$formula_key].bottle.tags[$tag].sha256 == $sha256
   ' "$METADATA" >/dev/null || {
   echo "abi-staging-verify-bottle.sh: bottle metadata differs from candidate identity" >&2
   exit 1
 }
 
+# The immutable candidate preserves Homebrew's raw shared-namespace metadata.
+# The normal force-pour verifier consumes the reduced Formula-specific document
+# that was used to compose the candidate tap.  Derive that document only after
+# the raw metadata has been authenticated above.
+CELLAR="$(jq -er --arg formula_key "$FORMULA_KEY" \
+  '.[$formula_key].bottle.cellar' "$METADATA")"
+NORMALIZED_METADATA="$WORK_ROOT/normalized-bottle-metadata.json"
+jq -ncS \
+  --arg formula "$FORMULA" --arg formula_key "$FORMULA_KEY" \
+  --arg formula_path "$FORMULA_PATH" --arg pkg_version "$PKG_VERSION" \
+  --arg root "$FORMULA_BOTTLE_ROOT_URL" --arg cellar "$CELLAR" \
+  --arg tag "$BOTTLE_TAG" --arg sha256 "$LAYER_SHA256" \
+  --argjson rebuild "$REBUILD" '
+    {($formula_key): {
+      bottle: {cellar: $cellar, rebuild: $rebuild, root_url: $root,
+        tags: {($tag): {sha256: $sha256}}},
+      formula: {name: $formula, path: $formula_path,
+        pkg_version: $pkg_version}
+    }}
+  ' >"$NORMALIZED_METADATA"
+
 SELECTION_RECEIPT="$WORK_ROOT/selection-receipt.json"
+# The candidate bytes above came from an anonymous immutable OCI read and were
+# authenticated against the candidate record.  Pour that exact local archive;
+# candidate repositories deliberately do not publish Homebrew's mutable
+# version tags for a second network fetch.
 jq -ncS \
   --arg url "$BOTTLE_URL" --arg sha256 "$LAYER_SHA256" \
   --argjson bytes "$BOTTLE_BYTES" '
-    {bottle: {bytes: $bytes, mode: "anonymous-public-readback",
-      sha256: $sha256, url: $url}, fetch: ["exact immutable candidate layer"],
+    {bottle: {bytes: $bytes, mode: "local-dry-run",
+      sha256: $sha256, url: $url},
+      fetch: [("exact immutable candidate layer sha256:" + $sha256)],
       schema: 1, status: "success"}
   ' >"$SELECTION_RECEIPT"
 
@@ -550,6 +628,7 @@ normal_verifier_args=(
   --dependency-provenance "$ABI_VERIFY_DEPENDENCY_PROVENANCE" \
   --selection-receipt "$ABI_VERIFY_SELECTION_RECEIPT" \
   --sysroot-build-root "$ABI_VERIFY_SYSROOT_BUILD_ROOT" \
+  --playwright-browsers-path "$ABI_VERIFY_PLAYWRIGHT_BROWSERS_PATH" \
   --out "$ABI_VERIFY_RUNTIME_EVIDENCE"
 )
 while IFS= read -r dependency; do
@@ -558,6 +637,7 @@ done <"$ABI_VERIFY_STAGED_DEPENDENCY_FORMULAE"
 HOME="$ABI_VERIFY_HOME" \
 HOMEBREW_CACHE="$ABI_VERIFY_CACHE" \
 HOMEBREW_TEMP="$ABI_VERIFY_TEMP" \
+TMPDIR="$ABI_VERIFY_TEMP" \
 "$ABI_VERIFY_NORMAL_VERIFIER" "${normal_verifier_args[@]}"
 case "$ABI_VERIFY_TEST_POLICY" in
   kandelo-bottle-structure-v1) ;;
@@ -585,12 +665,12 @@ export ABI_VERIFY_FORBIDDEN_ROOTS="$FORBIDDEN_FILE"
 export ABI_VERIFY_INSPECTOR="$INSPECTOR"
 export ABI_VERIFY_HOME="$WORK_ROOT/home"
 export ABI_VERIFY_CACHE="$WORK_ROOT/homebrew-cache"
-export ABI_VERIFY_TEMP="$WORK_ROOT/homebrew-temp"
+export ABI_VERIFY_TEMP="$SOCKET_TEMP"
 export ABI_VERIFY_NORMAL_VERIFIER="$NORMAL_VERIFIER"
 export ABI_VERIFY_TAP_REPOSITORY="$TAP_REPOSITORY"
 export ABI_VERIFY_TAP_COMMIT="$TAP_COMMIT"
 export ABI_VERIFY_TAP_CHECKOUT_COMMIT="$TAP_CHECKOUT_COMMIT"
-export ABI_VERIFY_METADATA="$METADATA"
+export ABI_VERIFY_METADATA="$NORMALIZED_METADATA"
 export ABI_VERIFY_BOTTLE_URL="$BOTTLE_URL"
 export ABI_VERIFY_LAYER_SHA256="$LAYER_SHA256"
 export ABI_VERIFY_BOTTLE_BYTES="$BOTTLE_BYTES"
@@ -599,6 +679,7 @@ export ABI_VERIFY_DEPENDENCY_PROVENANCE="$DEPENDENCY_PROVENANCE"
 export ABI_VERIFY_STAGED_DEPENDENCY_FORMULAE="$STAGED_DEPENDENCY_FORMULAE"
 export ABI_VERIFY_SELECTION_RECEIPT="$SELECTION_RECEIPT"
 export ABI_VERIFY_SYSROOT_BUILD_ROOT="$SYSROOT_BUILD_ROOT"
+export ABI_VERIFY_PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH_INPUT"
 export ABI_VERIFY_RUNTIME_EVIDENCE="$RUNTIME_EVIDENCE"
 export ABI_VERIFY_TEST_POLICY="$TEST_POLICY"
 export ABI_VERIFY_REPO_ROOT="$REPO_ROOT"

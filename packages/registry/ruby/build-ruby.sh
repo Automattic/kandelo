@@ -35,6 +35,10 @@ SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://cache.ruby-lang.org/pub/ruby/${
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 PACKAGE_NAME="${WASM_POSIX_DEP_NAME:-ruby}"
 GUEST_PREFIX="${WASM_POSIX_DEP_GUEST_PREFIX-/usr}"
+# Bump this when a source-tree port edit changes. In particular, this keeps a
+# developer work directory that contains the retired #1166 process.c patch
+# from being reused after the recipe returns to upstream CRuby's exec path.
+EXPECTED_SOURCE_MARKER="$RUBY_VERSION kandelo-port-14-upstream-vfork"
 
 validate_guest_prefix() {
     local value="$1"
@@ -81,8 +85,8 @@ if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
 fi
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$RUBY_VERSION" ]; then
-    echo "==> Existing Ruby source is not $RUBY_VERSION; cleaning Ruby build directories..."
+if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$EXPECTED_SOURCE_MARKER" ]; then
+    echo "==> Existing Ruby source is not the selected $RUBY_VERSION port revision; cleaning Ruby build directories..."
     rm -rf "$SRC_DIR" "$HOST_BUILD_DIR" "$CROSS_BUILD_DIR" "$INSTALL_DIR" "$BIN_DIR"
 fi
 
@@ -167,7 +171,7 @@ if [ ! -d "$SRC_DIR" ]; then
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/${TARBALL}"
-    printf '%s\n' "$RUBY_VERSION" > "$SOURCE_MARKER"
+    printf '%s\n' "$EXPECTED_SOURCE_MARKER" > "$SOURCE_MARKER"
     echo "==> Source extracted to $SRC_DIR"
 fi
 
@@ -481,10 +485,22 @@ if ! grep -q 'kandelo_require_libraries_state' "$SRC_DIR/ruby.c"; then
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/kandelo-require-libraries-roots.patch"
 fi
 
-if ! grep -q 'kandelo_execarg_can_posix_spawn' "$SRC_DIR/process.c"; then
-    echo "==> Patching process.c: using non-forking spawn when options are representable..."
-    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/kandelo-posix-spawn.patch"
+# WHY: CRuby already routes eligible unprivileged fork-then-exec operations
+# through vfork when HAVE_WORKING_VFORK is true. Keep process.c on that upstream
+# path; a stale #1166 work directory must fail rather than silently rebuilding
+# the package-specific posix_spawn backend.
+if grep -q 'kandelo_execarg_can_posix_spawn' "$SRC_DIR/process.c"; then
+    echo "ERROR: Ruby process.c still contains the retired #1166 patch" >&2
+    exit 1
 fi
+grep -F '#if defined(HAVE_WORKING_VFORK)' "$SRC_DIR/process.c" >/dev/null || {
+    echo "ERROR: Ruby process.c is missing the upstream vfork selection guard" >&2
+    exit 1
+}
+grep -F 'pid = vfork();' "$SRC_DIR/process.c" >/dev/null || {
+    echo "ERROR: Ruby process.c is missing the upstream vfork call" >&2
+    exit 1
+}
 
 reject_asyncify_coroutine() {
     if [ -f Makefile ] && grep -Eq '^(COROUTINE_TYPE = asyncify|COROUTINE_H = coroutine/asyncify/Context\.h)$|wasm/(setjmp|fiber|runtime|machine)|--asyncify|asyncify_' Makefile; then
@@ -782,7 +798,11 @@ ac_cv_func_lutimes=no
 ac_cv_func_strlcpy=no
 ac_cv_func_strlcat=no
 ac_cv_func_strsignal=no
-ac_cv_func_vfork=no
+# Kandelo provides real vfork semantics. These cross-compile cache answers let
+# AC_FUNC_FORK define both HAVE_VFORK and HAVE_WORKING_VFORK instead of
+# rewriting vfork to fork. Runtime tests cover the semantic claim.
+ac_cv_func_vfork=yes
+ac_cv_func_vfork_works=yes
 ac_cv_func_tcgetattr=no
 ac_cv_func_tcsetattr=no
 ac_cv_func_tcflush=no
@@ -809,8 +829,12 @@ ac_cv_func_sethostname=no
 ac_cv_func_if_nameindex=no
 ac_cv_func_mkfifoat=no
 ac_cv_func_siginterrupt=no
-ac_cv_func_getresgid=no
-ac_cv_func_getresuid=no
+# CRuby's upstream vfork privilege guard needs saved IDs. Kandelo libc exposes
+# the POSIX getres* interfaces; the AIX get*idx substitutes do not exist.
+ac_cv_func_getresgid=yes
+ac_cv_func_getresuid=yes
+ac_cv_func_getgidx=no
+ac_cv_func_getuidx=no
 ac_cv_func_getsid=no
 ac_cv_func_posix_fadvise=no
 ac_cv_func_posix_fallocate=no
@@ -1015,7 +1039,7 @@ disable = {
     'HAVE_GETRLIMIT', 'HAVE_SETRLIMIT',
     'HAVE_GETRUSAGE', 'HAVE_CONFSTR', 'HAVE_FDATASYNC',
     'HAVE_STRLCPY', 'HAVE_STRLCAT', 'HAVE_STRSIGNAL',
-    'HAVE_VFORK', 'HAVE_TCGETATTR', 'HAVE_TCSETATTR',
+    'HAVE_TCGETATTR', 'HAVE_TCSETATTR',
     'HAVE_TCFLUSH', 'HAVE_TCGETPGRP', 'HAVE_TCSETPGRP',
     'HAVE_CLOCK_SETTIME', 'HAVE_CLOCK_NANOSLEEP',
     'HAVE_GETPRIORITY', 'HAVE_SETPRIORITY', 'HAVE_NICE',
@@ -1081,6 +1105,14 @@ with open('$CONFIG_H', 'w') as f:
     f.write(content)
 print(f'Disabled {disabled} HAVE_* defines in $CONFIG_H')
 "
+        grep -Eq '^#define HAVE_VFORK 1$' "$CONFIG_H" || {
+            echo "ERROR: Ruby configure did not retain HAVE_VFORK" >&2
+            exit 1
+        }
+        grep -Eq '^#define HAVE_WORKING_VFORK 1$' "$CONFIG_H" || {
+            echo "ERROR: Ruby configure did not select working vfork" >&2
+            exit 1
+        }
     fi
 fi
 

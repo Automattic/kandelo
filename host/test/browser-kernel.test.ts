@@ -16,6 +16,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { WASM_PAGE_SIZE } from "../src/constants";
 import type { HttpResponse } from "../src/networking";
+import { createPcmTransport } from "./pcm-test-helpers";
 
 const defaultArtifactModuleState = vi.hoisted(() => ({ loads: 0 }));
 vi.mock("../src/browser-kernel-default-artifacts", () => {
@@ -96,6 +97,64 @@ async function loadBrowserKernel() {
   // Dynamic import after globals are stubbed.
   const mod = await import("../src/browser-kernel-host");
   return mod.BrowserKernel as typeof import("../src/browser-kernel-host").BrowserKernel;
+}
+
+function browserAudioGlobals() {
+  const addModule = vi.fn(async () => {});
+  const context = {
+    state: "suspended" as AudioContextState,
+    sampleRate: 48_000,
+    baseLatency: 0.01,
+    outputLatency: 0.02,
+    renderQuantumSize: 128,
+    destination: {},
+    audioWorklet: { addModule },
+    onstatechange: null as (() => void) | null,
+    resume: vi.fn(async function (this: typeof context) {
+      this.state = "running";
+      this.onstatechange?.();
+    }),
+    suspend: vi.fn(async function (this: typeof context) {
+      this.state = "suspended";
+      this.onstatechange?.();
+    }),
+    close: vi.fn(async function (this: typeof context) {
+      this.state = "closed";
+      this.onstatechange?.();
+    }),
+  };
+  const port = {
+    onmessage: null as ((event: MessageEvent) => void) | null,
+    close: vi.fn(),
+  };
+  const node = {
+    port,
+    onprocessorerror: null as (() => void) | null,
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+  };
+  let nodeOptions: AudioWorkletNodeOptions | undefined;
+  const AudioContextCtor = vi.fn(function () {
+    return context;
+  });
+  const AudioWorkletNodeCtor = vi.fn(function (
+    _context: AudioContext,
+    _name: string,
+    options: AudioWorkletNodeOptions,
+  ) {
+    nodeOptions = options;
+    return node;
+  });
+  vi.stubGlobal("AudioContext", AudioContextCtor);
+  vi.stubGlobal("AudioWorkletNode", AudioWorkletNodeCtor);
+  return {
+    addModule,
+    context,
+    node,
+    AudioContextCtor,
+    AudioWorkletNodeCtor,
+    get nodeOptions() { return nodeOptions; },
+  };
 }
 
 
@@ -596,9 +655,13 @@ describe("BrowserKernel", () => {
       requestId: spawn.requestId,
       result: 100,
     });
-    await bootPromise;
+    const { exit } = await bootPromise;
+    const exitRejection = expect(exit).rejects.toThrow(
+      "Kernel worker error: worker crashed",
+    );
 
     worker.onerror?.({ message: "worker crashed" });
+    await exitRejection;
 
     expect(onHostDiagnostic).toHaveBeenCalledOnce();
     expect(onHostDiagnostic).toHaveBeenCalledWith({
@@ -610,6 +673,70 @@ describe("BrowserKernel", () => {
     expect(consoleError).toHaveBeenCalledWith(
       "[BrowserKernel] kernel worker error: worker crashed",
     );
+  });
+
+  it("fails pending and future work when the kernel worker reports a fatal instance", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
+
+    const spawnPromise = kernel.spawnFromVfs("/bin/sleep", ["/bin/sleep"]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const spawn = worker.lastMessage("spawn");
+    worker.simulateMessage({
+      type: "response",
+      requestId: spawn.requestId,
+      result: 101,
+    });
+    const { exit } = await spawnPromise;
+
+    const pendingRequest = kernel.getKernelMemoryPages();
+    const fatalMessage = "reserved transfer execution trapped";
+    const pendingRejection = expect(pendingRequest).rejects.toThrow(
+      `Kernel worker failed: ${fatalMessage}`,
+    );
+    const exitRejection = expect(exit).rejects.toThrow(
+      `Kernel worker failed: ${fatalMessage}`,
+    );
+    const messagesBeforeFatal = worker.sent.length;
+
+    worker.simulateMessage({ type: "kernel_fatal", error: fatalMessage });
+
+    await Promise.all([pendingRejection, exitRejection]);
+    expect(worker.terminated).toBe(true);
+
+    await expect(kernel.getKernelMemoryPages()).rejects.toThrow(
+      `Kernel worker failed: ${fatalMessage}`,
+    );
+    expect(worker.sent).toHaveLength(messagesBeforeFatal);
+  });
+
+  it("rejects initialization when the kernel becomes fatal before ready", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+
+    worker.simulateMessage({
+      type: "kernel_fatal",
+      error: "kernel initialization trapped",
+    });
+
+    await expect(initPromise).rejects.toThrow(
+      "Kernel worker failed: kernel initialization trapped",
+    );
+    expect(worker.terminated).toBe(true);
   });
 
   it("forwards posix_spawn parentage from the browser kernel worker", async () => {
@@ -665,6 +792,30 @@ describe("BrowserKernel", () => {
     const bytes = new Uint8Array([1, 2, 3]);
     w.simulateMessage({ type: "response", requestId: read.requestId, result: bytes });
     expect(await readPromise).toEqual(bytes);
+  });
+
+  it("signalProcess round-trips through the browser kernel worker", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
+
+    const signalPromise = kernel.signalProcess(41, 15);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const signal = worker.lastMessage("signal_process");
+    expect(signal).toMatchObject({ pid: 41, signum: 15 });
+    worker.simulateMessage({
+      type: "response",
+      requestId: signal.requestId,
+      result: true,
+    });
+    await expect(signalPromise).resolves.toBe(true);
   });
 
   it("mutates files through the VFS-owning worker with lossless snapshots", async () => {
@@ -870,6 +1021,42 @@ describe("BrowserKernel", () => {
       result: "321",
     });
     await expect(invalidPromise).rejects.toThrow("invalid memory-page count");
+  });
+
+  it("reads and validates retained spawn scratch telemetry", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
+
+    const capacityPromise = kernel.getSpawnScratchCapacity();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const request = worker.lastMessage("get_spawn_scratch_capacity");
+    expect(request).toBeDefined();
+    worker.simulateMessage({
+      type: "response",
+      requestId: request.requestId,
+      result: 84_386,
+    });
+    await expect(capacityPromise).resolves.toBe(84_386);
+
+    const invalidPromise = kernel.getSpawnScratchCapacity();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const invalidRequest = worker.lastMessage("get_spawn_scratch_capacity");
+    worker.simulateMessage({
+      type: "response",
+      requestId: invalidRequest.requestId,
+      result: -1,
+    });
+    await expect(invalidPromise).rejects.toThrow(
+      "invalid spawn scratch capacity",
+    );
   });
 
   describe("fetchInKernel", () => {
@@ -1389,5 +1576,108 @@ describe("BrowserKernel", () => {
     expect(kernel.getProcessMemory(pid)).toBeUndefined();
     bind();
     expect(kernel.getProcessMemory(pid)).toBe(memory);
+  });
+
+  it("prepares the browser PCM sink from the worker ready transport", async () => {
+    const audio = browserAudioGlobals();
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
+      audioWorkletUrl: "/assets/kandelo-pcm-output.js",
+    });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    const transport = createPcmTransport();
+
+    worker.simulateMessage({ type: "ready", pcmTransport: transport });
+    await initPromise;
+    await vi.waitFor(() => {
+      expect(kernel.getAudioState()).toBe("suspended");
+    });
+
+    expect(audio.AudioContextCtor).toHaveBeenCalledOnce();
+    expect(audio.addModule).toHaveBeenCalledWith(
+      "/assets/kandelo-pcm-output.js",
+    );
+    expect(audio.AudioWorkletNodeCtor).toHaveBeenCalledWith(
+      audio.context,
+      "kandelo-pcm-output",
+      expect.any(Object),
+    );
+    expect(audio.nodeOptions?.processorOptions).toMatchObject(transport);
+    expect(audio.node.connect).toHaveBeenCalledWith(audio.context.destination);
+  });
+
+  it("settles and closes browser PCM before terminating the kernel worker", async () => {
+    const audio = browserAudioGlobals();
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({
+      type: "ready",
+      pcmTransport: createPcmTransport(),
+    });
+    await initPromise;
+    await vi.waitFor(() => {
+      expect(kernel.getAudioState()).toBe("suspended");
+    });
+    await kernel.resumeAudio();
+
+    const teardownOrder: string[] = [];
+    let finishPcmSettlement!: () => void;
+    audio.context.suspend.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          teardownOrder.push("pcm-pipeline-settle");
+          finishPcmSettlement = () => {
+            audio.context.state = "suspended";
+            audio.context.onstatechange?.();
+            resolve();
+          };
+        }),
+    );
+    audio.context.close.mockImplementationOnce(async () => {
+      teardownOrder.push("pcm-context-close");
+      audio.context.state = "closed";
+      audio.context.onstatechange?.();
+    });
+    vi.spyOn(worker, "terminate").mockImplementationOnce(() => {
+      teardownOrder.push("kernel-worker-terminate");
+      worker.terminated = true;
+    });
+
+    const destroyPromise = kernel.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const destroy = worker.lastMessage("destroy");
+    worker.simulateMessage({
+      type: "response",
+      requestId: destroy.requestId,
+      result: { gracefulDetachComplete: true },
+    });
+    await vi.waitFor(() => {
+      expect(teardownOrder).toEqual(["pcm-pipeline-settle"]);
+    });
+    expect(audio.context.close).not.toHaveBeenCalled();
+    expect(worker.terminated).toBe(false);
+    finishPcmSettlement();
+    await destroyPromise;
+
+    expect(teardownOrder).toEqual([
+      "pcm-pipeline-settle",
+      "pcm-context-close",
+      "kernel-worker-terminate",
+    ]);
+    expect(audio.node.disconnect).toHaveBeenCalledOnce();
+    expect(audio.node.port.close).toHaveBeenCalledOnce();
+    expect(kernel.getAudioState()).toBe("unavailable");
   });
 });

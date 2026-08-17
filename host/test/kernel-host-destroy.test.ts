@@ -67,13 +67,13 @@ describe("kernel host destroy containment boundary", () => {
       testable.request = vi.fn(() => new Promise<never>(() => {}));
 
       const destroyPromise = host.destroy();
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(5_000);
       await destroyPromise;
 
       expect(terminate).toHaveBeenCalledOnce();
       expect(testable.pendingRequests.size).toBe(0);
       expect(diagnostics).toEqual([
-        expect.stringContaining("timed out after 2000ms"),
+        expect.stringContaining("timed out after 5000ms"),
       ]);
     } finally {
       vi.useRealTimers();

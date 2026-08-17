@@ -12,6 +12,14 @@ import {
   VFS_DEFERRED_TREE_COLLECTION_LIMITS,
   VFS_DEFERRED_TREE_LIMITS,
 } from "../src/vfs/deferred-tree-limits";
+import {
+  applyLazyTreeByteTransformRecipe,
+  decodeMaterializationBytes,
+  encodeMaterializationBytes,
+  validateLazyTreeMaterializationPlan,
+  type LazyTreeMaterializationPlan,
+  type LazyTreeMaterializationSourceInventory,
+} from "../src/vfs/materialization-plan";
 
 const BLOCK = 512;
 const O_WRONLY_CREAT = 0x0041;
@@ -219,6 +227,314 @@ describe("format-neutral deferred trees", () => {
     const afterAlias = fs.lstat("/runtime/tool-hardlink");
     expect(afterAlias.ino).toBe(afterTarget.ino);
     expect(afterTarget.nlink).toBe(2);
+  });
+
+  it("validates and applies the exact generic byte-transform contract", () => {
+    const plan = exactGenericMaterializationPlan();
+    const inventory: LazyTreeMaterializationSourceInventory = {
+      entries: [{
+        sourcePath: "bin/tool",
+        type: "file",
+        size: 5,
+      }],
+    };
+
+    expect(validateLazyTreeMaterializationPlan(plan, inventory)).toEqual(plan);
+    expect(
+      decoder.decode(applyLazyTreeByteTransformRecipe(
+        encoder.encode("/old/"),
+        plan.recipes[0]!,
+      )),
+    ).toBe("/new/");
+    expect(decodeMaterializationBytes(encodeMaterializationBytes(
+      new Uint8Array([0, 1, 15, 16, 255]),
+    ))).toEqual(new Uint8Array([0, 1, 15, 16, 255]));
+    expect(decoder.decode(applyLazyTreeByteTransformRecipe(
+      encoder.encode("x/x"),
+      {
+        id: "length-changing",
+        replacements: [{ matchHex: "78", replacementHex: "616263" }],
+        rejectHex: ["78"],
+      },
+    ))).toBe("abc/abc");
+    expect(() => applyLazyTreeByteTransformRecipe(
+      new Uint8Array(32_769),
+      {
+        id: "bounded-expansion",
+        replacements: [{
+          matchHex: "00",
+          replacementHex: "01".repeat(8192),
+        }],
+        rejectHex: ["00"],
+      },
+    )).toThrow(/transformed-byte limit/);
+  });
+
+  it("rejects malformed or unbounded generic materialization plans", () => {
+    const inventory: LazyTreeMaterializationSourceInventory = {
+      entries: [{
+        sourcePath: "bin/tool",
+        type: "file",
+        size: 5,
+      }],
+    };
+    const cases: Array<{
+      label: string;
+      mutate: (plan: Record<string, any>) => void;
+      error: RegExp;
+    }> = [{
+      label: "unknown key",
+      mutate: (plan) => plan.unexpected = true,
+      error: /unexpected fields/,
+    }, {
+      label: "duplicate recipe",
+      mutate: (plan) => plan.recipes.push(structuredClone(plan.recipes[0])),
+      error: /recipe 1 id is invalid|duplicates recipe/,
+    }, {
+      label: "duplicate transform",
+      mutate: (plan) => plan.transforms.push(structuredClone(plan.transforms[0])),
+      error: /repeats transform/,
+    }, {
+      label: "odd hexadecimal bytes",
+      mutate: (plan) => plan.assertions[0].bytesHex = "0",
+      error: /canonical bounded hexadecimal bytes/,
+    }, {
+      label: "non-hexadecimal bytes",
+      mutate: (plan) => plan.assertions[0].bytesHex = "zz",
+      error: /canonical bounded hexadecimal bytes/,
+    }, {
+      label: "replacement count",
+      mutate: (plan) => {
+        plan.recipes[0].replacements = new Array(33).fill({
+          matchHex: "00",
+          replacementHex: "00",
+        });
+      },
+      error: /replacements must contain 0 to 32 items/,
+    }, {
+      label: "missing source member",
+      mutate: (plan) => plan.transforms[0].sourcePath = "bin/missing",
+      error: /not a regular source/,
+    }, {
+      label: "unsafe source path",
+      mutate: (plan) => plan.transforms[0].sourcePath = "bin/../tool",
+      error: /canonical relative path/,
+    }, {
+      label: "decoded plan byte budget",
+      mutate: (plan) => plan.assertions[0].bytesHex = "00".repeat(1_048_577),
+      error: /decoded byte limit|canonical bounded hexadecimal bytes/,
+    }];
+
+    for (const testCase of cases) {
+      const plan = structuredClone(exactGenericMaterializationPlan()) as
+        unknown as Record<string, any>;
+      testCase.mutate(plan);
+      expect(
+        () => validateLazyTreeMaterializationPlan(plan, inventory),
+        testCase.label,
+      ).toThrow(testCase.error);
+    }
+  });
+
+  it("uses Unicode-scalar order for generic source inventories and plans", () => {
+    const bmp = "\ue000";
+    const nonBmp = "\u{10000}";
+    const sourceEntries = [
+      { sourcePath: bmp, type: "file" as const, size: 1 },
+      { sourcePath: nonBmp, type: "file" as const, size: 1 },
+    ];
+    const plan: LazyTreeMaterializationPlan = {
+      schema: 1,
+      kind: "archive-byte-transforms-v1",
+      assertions: sourceEntries.map((entry) => ({
+        sourcePath: entry.sourcePath,
+        bytesHex: "78",
+      })),
+      recipes: [],
+      transforms: [],
+    };
+    expect(validateLazyTreeMaterializationPlan(plan, { entries: sourceEntries }))
+      .toEqual(plan);
+    expect(() => validateLazyTreeMaterializationPlan({
+      ...plan,
+      assertions: [...plan.assertions].reverse(),
+    }, { entries: sourceEntries })).toThrow(/canonical order/);
+    expect(() => validateLazyTreeMaterializationPlan({
+      ...plan,
+      assertions: [{ sourcePath: "\ud800", bytesHex: "78" }],
+    }, {
+      entries: [{ sourcePath: "\ud800", type: "file", size: 1 }],
+    })).toThrow(/Unicode scalar values/);
+
+    const specs: TarSpec[] = sourceEntries.map((entry) => ({
+      path: entry.sourcePath,
+      mode: 0o644,
+      data: "x",
+    }));
+    const tar = tarBytes(specs);
+    const payload = gzipSync(tar);
+    const content = {
+      decoder: "tar-gzip-v1" as const,
+      mediaType: "application/vnd.oci.image.layer.v1.tar+gzip" as const,
+      sha256: createHash("sha256").update(payload).digest("hex"),
+      bytes: payload.byteLength,
+      expandedBytes: tar.byteLength,
+      sourceEntryCount: sourceEntries.length,
+      transports: ["https://example.invalid/unicode-scalars.tar.gz"],
+      source: {
+        schema: 1 as const,
+        kind: "archive-source-inventory-v1" as const,
+        entries: sourceEntries.map((entry) => ({
+          ...entry,
+          mode: 0o644,
+        })),
+      },
+    };
+    const inventory = sourceEntries.map((entry) => ({
+      vfsPath: `/${entry.sourcePath}`,
+      sourcePath: entry.sourcePath,
+      materialization: "archive" as const,
+      type: "file" as const,
+      mode: 0o644,
+      size: 1,
+      inodeGroup: `unicode:${entry.sourcePath}`,
+    }));
+    expect(() => createFs().registerLazyTree(content, inventory)).not.toThrow();
+    expect(() => createFs().registerLazyTree({
+      ...content,
+      source: {
+        ...content.source,
+        entries: [...content.source.entries].reverse(),
+      },
+    }, inventory)).toThrow(/canonical path order/);
+  });
+
+  it("materializes a transformed generic TAR identically in eager and lazy paths", async () => {
+    const fixture = transformedGenericTarTreeFixture();
+    const lazy = createFs();
+    lazy.registerLazyTree(
+      fixture.content,
+      fixture.inventory,
+      "/srv",
+      fixture.activation,
+    );
+    lazy.setLazyFetcher(async () => new Response(fixture.payload));
+    await expect(lazy.preparePath("/srv/bin/tool-alias")).resolves.toBe(true);
+
+    const eager = createFs();
+    const handle = eager.registerLazyTreeWithMaterializationHandle(
+      { ...fixture.content, transports: [] },
+      fixture.inventory,
+      "/srv",
+      fixture.activation,
+    );
+    await expect(
+      eager.materializeRegisteredDeferredTree(handle, fixture.payload),
+    ).resolves.toBe(true);
+
+    for (const path of [
+      "/srv",
+      "/srv/bin",
+      "/srv/bin/tool",
+      "/srv/bin/tool-alias",
+      "/srv/current",
+    ]) {
+      const lazyStat = lazy.lstat(path);
+      const eagerStat = eager.lstat(path);
+      expect(lazyStat.mode & 0o177777).toBe(eagerStat.mode & 0o177777);
+      expect(lazyStat.size).toBe(eagerStat.size);
+    }
+    expect(readText(lazy, "/srv/bin/tool")).toBe("/new/");
+    expect(readText(eager, "/srv/bin/tool")).toBe("/new/");
+    expect(lazy.readlink("/srv/current")).toBe("bin/tool");
+    expect(eager.readlink("/srv/current")).toBe("bin/tool");
+    expect(lazy.lstat("/srv/bin/tool").ino).toBe(
+      lazy.lstat("/srv/bin/tool-alias").ino,
+    );
+    expect(eager.lstat("/srv/bin/tool").ino).toBe(
+      eager.lstat("/srv/bin/tool-alias").ino,
+    );
+  });
+
+  it("fails before publication when transform input or output identity drifts", async () => {
+    const fixture = transformedGenericTarTreeFixture();
+    for (const field of ["input", "output"] as const) {
+      const content = structuredClone(fixture.content);
+      content.materialization.transforms[0]![field].sha256 = "0".repeat(64);
+      const fs = createFs();
+      fs.registerLazyTree(content, fixture.inventory, "/srv", fixture.activation);
+      fs.setLazyFetcher(async () => new Response(fixture.payload));
+
+      await expect(fs.preparePath("/srv/bin/tool"), field).rejects.toThrow(
+        new RegExp(`transform .* ${field} SHA-256`),
+      );
+      expect(fs.isPathDeferred("/srv/bin/tool")).toBe(true);
+    }
+
+    const content = structuredClone(fixture.content);
+    content.materialization.transforms[0]!.output.bytes = 4;
+    const inventory = structuredClone(fixture.inventory);
+    for (const entry of inventory) {
+      if (entry.type === "file" || entry.type === "hardlink") entry.size = 4;
+    }
+    const fs = createFs();
+    fs.registerLazyTree(content, inventory, "/srv", fixture.activation);
+    fs.setLazyFetcher(async () => new Response(fixture.payload));
+    await expect(fs.preparePath("/srv/bin/tool")).rejects.toThrow(
+      /transform .* output byte count 5 does not match expected 4/,
+    );
+    expect(fs.isPathDeferred("/srv/bin/tool")).toBe(true);
+  });
+
+  it("preserves a replacement across transformed generation cleanup", async () => {
+    const fixture = transformedGenericTarTreeFixture();
+    const fs = createFs();
+    fs.registerLazyTree(
+      fixture.content,
+      fixture.inventory,
+      "/srv",
+      fixture.activation,
+    );
+    const peer = MemoryFileSystem.fromExisting(fs.sharedBuffer);
+    peer.unlink("/srv/bin/tool");
+    const fd = peer.open("/srv/bin/tool", O_WRONLY_CREAT, 0o600);
+    const replacement = encoder.encode("replacement\n");
+    expect(peer.write(fd, replacement, null, replacement.byteLength))
+      .toBe(replacement.byteLength);
+    peer.close(fd);
+    fs.setLazyFetcher(async () => new Response(fixture.payload));
+
+    await expect(fs.preparePath("/srv/bin/tool-alias")).resolves.toBe(true);
+    expect(readText(fs, "/srv/bin/tool")).toBe("replacement\n");
+    expect(readText(fs, "/srv/bin/tool-alias")).toBe("/new/");
+    expect(fs.lstat("/srv/bin/tool").ino).not.toBe(
+      fs.lstat("/srv/bin/tool-alias").ino,
+    );
+    expect(fs.exportLazyArchiveEntries()).toEqual([]);
+  });
+
+  it("preserves a generic plan through image restore and rebase", async () => {
+    const fixture = transformedGenericTarTreeFixture();
+    const source = createFs();
+    source.registerLazyTree(
+      fixture.content,
+      fixture.inventory,
+      "/srv",
+      fixture.activation,
+    );
+    const restored = MemoryFileSystem.fromImage(await source.saveImage());
+    expect(restored.exportLazyArchiveEntries()[0]!.content!.materialization)
+      .toEqual(fixture.content.materialization);
+    expect(JSON.stringify(restored.exportLazyArchiveEntries())).not.toMatch(
+      /homebrew|bottle|receipt|Cellar|keg|Formula/,
+    );
+
+    const rebased = restored.rebaseToNewFileSystem(8 * 1024 * 1024);
+    expect(rebased.exportLazyArchiveEntries()[0]!.content!.materialization)
+      .toEqual(fixture.content.materialization);
+    rebased.setLazyFetcher(async () => new Response(fixture.payload));
+    await expect(rebased.preparePath("/srv/bin/tool")).resolves.toBe(true);
+    expect(readText(rebased, "/srv/bin/tool")).toBe("/new/");
   });
 
   it("commits an atomic activation group only after every tree validates", async () => {
@@ -834,6 +1150,250 @@ describe("format-neutral deferred trees", () => {
       ).rejects.toThrow(forgery.expected);
       expect(restored.isPathDeferred("/atomic-forged-seal/tool")).toBe(true);
       expect(fetcher).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([
+    ["plan", (group: LazyTreeGroup) => {
+      group.content!.materialization = {
+        ...group.content!.materialization!,
+        assertions: [{ sourcePath: "bin/tool", bytesHex: "00" }],
+      };
+    }],
+    ["assertions", (group: LazyTreeGroup) => {
+      (group.content!.materialization!.assertions[0] as { bytesHex: string })
+        .bytesHex = "00";
+    }],
+    ["recipes", (group: LazyTreeGroup) => {
+      (group.content!.materialization!.recipes[0]!.replacements[0] as {
+        replacementHex: string;
+      }).replacementHex = encodeMaterializationBytes(encoder.encode("/evil/"));
+    }],
+    ["transforms", (group: LazyTreeGroup) => {
+      (group.content!.materialization!.transforms[0]!.output as { bytes: number })
+        .bytes = 1;
+    }],
+    ["source inventory", (group: LazyTreeGroup) => {
+      group.content!.source!.entries[1]!.sourcePath = "bin/substitute";
+    }],
+    ["registration inventory", (group: LazyTreeGroup) => {
+      group.inventory!.find((entry) => entry.type === "file")!.sourcePath =
+        "bin/substitute";
+    }],
+  ] as const)(
+    "materializes from its private snapshot after exposed %s mutation",
+    async (_label, mutate) => {
+      const fixture = transformedGenericTarTreeFixture();
+      const fs = createFs();
+      const group = fs.registerLazyTree(
+        fixture.content,
+        fixture.inventory,
+        "/srv",
+        fixture.activation,
+      );
+      mutate(group);
+      fs.setLazyFetcher(async () => new Response(fixture.payload));
+
+      await expect(fs.preparePath("/srv/bin/tool")).resolves.toBe(true);
+      expect(readText(fs, "/srv/bin/tool")).toBe("/new/");
+    },
+  );
+
+  it("exports, restores, and rebases the private ordinary-tree snapshot", async () => {
+    const fixture = transformedGenericTarTreeFixture();
+    const fs = createFs();
+    const group = fs.registerLazyTree(
+      fixture.content,
+      fixture.inventory,
+      "/srv",
+      fixture.activation,
+    );
+    (group.content!.materialization!.assertions[0] as { bytesHex: string })
+      .bytesHex = "00";
+    group.content!.source!.entries[1]!.sourcePath = "bin/substitute";
+    group.inventory!.find((entry) => entry.type === "file")!.sourcePath =
+      "bin/substitute";
+
+    const exported = fs.exportLazyArchiveEntries();
+    expect(exported[0]!.content!.materialization).toEqual(
+      fixture.content.materialization,
+    );
+    expect(exported[0]!.content!.source).toEqual(fixture.content.source);
+    expect(exported[0]!.inventory).toEqual(fixture.inventory);
+
+    const restored = MemoryFileSystem.fromImage(await fs.saveImage());
+    const rebased = fs.rebaseToNewFileSystem(8 * 1024 * 1024);
+    for (const candidate of [fs, restored, rebased]) {
+      candidate.setLazyFetcher(async () => new Response(fixture.payload));
+      await expect(candidate.preparePath("/srv/bin/tool")).resolves.toBe(true);
+      expect(readText(candidate, "/srv/bin/tool")).toBe("/new/");
+    }
+  });
+
+  it("does not let an ordinary public archivePath substitute ZIP members", async () => {
+    const fixture = zipTreeFixture("edge", [
+      ["a", "alpha"],
+      ["b", "bravo"],
+    ]);
+    const fs = createFs();
+    const group = fs.registerLazyTree(
+      fixture.content,
+      fixture.inventory,
+      "/",
+      fixture.activation,
+    );
+    group.entries.get("/edge/a")!.archivePath =
+      group.entries.get("/edge/b")!.archivePath;
+    fs.setLazyFetcher(async () => new Response(fixture.payload));
+
+    await expect(fs.preparePath("/edge/a")).resolves.toBe(true);
+    expect(readText(fs, "/edge/a")).toBe("alpha");
+    expect(readText(fs, "/edge/b")).toBe("bravo");
+  });
+
+  const ordinaryEntryAuthorityMutations: readonly (readonly [
+    label: string,
+    mutate: (
+      group: LazyTreeGroup,
+      a: LazyArchiveFileEntry,
+      b: LazyArchiveFileEntry,
+    ) => void,
+  ])[] = [
+    ["archivePath", (_group, a, b) => a.archivePath = b.archivePath],
+    ["destination path", (group, a) => {
+      group.entries.delete("/edge/a");
+      group.entries.set("/edge/redirected", a);
+    }],
+    ["entry presence", (group) => group.entries.delete("/edge/a")],
+    ["inode number", (_group, a, b) => a.ino = b.ino],
+    ["inode generation", (_group, a) => a.generation = 999_999],
+    ["data sequence", (_group, a) => {
+      a.dataSequence = (a.dataSequence ?? 0) + 1;
+    }],
+    ["size", (_group, a) => a.size = 0],
+    ["symlink kind", (_group, a) => a.isSymlink = true],
+    ["deletion state", (_group, a) => a.deleted = true],
+    ["materialization state", (_group, a) => a.materialized = true],
+    ["sourcePath", (_group, a, b) => a.sourcePath = b.sourcePath],
+    ["entry type", (_group, a) => a.type = "hardlink"],
+    ["inode group", (_group, a, b) => a.inodeGroup = b.inodeGroup],
+    ["link target", (_group, a, b) => a.target = b.sourcePath],
+    ["tree materialization state", (group) => group.materialized = true],
+    ["inventory mode", (group) => {
+      group.inventory!.find((entry) => entry.vfsPath === "/edge/a")!.mode = 0;
+    }],
+  ];
+
+  it.each(ordinaryEntryAuthorityMutations)(
+    "keeps ordinary %s mutation out of entry authority",
+    async (_label, mutate) => {
+      const fixture = zipTreeFixture("edge", [
+        ["a", "alpha"],
+        ["b", "bravo"],
+      ]);
+      const register = () => {
+        const fs = createFs();
+        const group = fs.registerLazyTree(
+          fixture.content,
+          fixture.inventory,
+          "/",
+          fixture.activation,
+        );
+        const a = group.entries.get("/edge/a")!;
+        const b = group.entries.get("/edge/b")!;
+        const expectedIdentity = {
+          ino: a.ino,
+          generation: a.generation,
+          dataSequence: a.dataSequence,
+        };
+        mutate(group, a, b);
+        return { fs, group, expectedIdentity };
+      };
+
+      const materialized = register();
+      materialized.fs.setLazyFetcher(
+        async () => new Response(fixture.payload),
+      );
+      await expect(materialized.fs.preparePath("/edge/a")).resolves.toBe(true);
+      expect(readText(materialized.fs, "/edge/a")).toBe("alpha");
+      expect(readText(materialized.fs, "/edge/b")).toBe("bravo");
+      expect(materialized.fs.stat("/edge/a").mode & 0o7777).toBe(0o755);
+
+      const exported = register();
+      const serialized = exported.fs.exportLazyArchiveEntries()[0]!;
+      const serializedA = serialized.entries.find(
+        (entry) => entry.vfsPath === "/edge/a",
+      )!;
+      expect(serializedA).toMatchObject({
+        vfsPath: "/edge/a",
+        ...exported.expectedIdentity,
+        size: 5,
+        isSymlink: false,
+        deleted: false,
+        materialized: false,
+        archivePath: "edge/a",
+        sourcePath: "edge/a",
+        type: "file",
+        inodeGroup: "edge:a",
+      });
+      expect(serializedA.target).toBeUndefined();
+      expect(serialized.inventory!.find(
+        (entry) => entry.vfsPath === "/edge/a",
+      )!.mode).toBe(0o755);
+    },
+  );
+
+  it("keeps authorized rename, link, and chmod live during first use", async () => {
+    const fixture = zipTreeFixture("edge", [
+      ["a", "alpha"],
+      ["b", "bravo"],
+    ]);
+    const fs = createFs();
+    fs.registerLazyTree(fixture.content, fixture.inventory, "/", fixture.activation);
+    fs.rename("/edge/a", "/edge/moved");
+    fs.link("/edge/moved", "/edge/alias");
+    fs.chmod("/edge/moved", 0o640);
+    fs.setLazyFetcher(async () => new Response(fixture.payload));
+
+    await expect(fs.preparePath("/edge/alias")).resolves.toBe(true);
+    expect(readText(fs, "/edge/moved")).toBe("alpha");
+    expect(readText(fs, "/edge/alias")).toBe("alpha");
+    expect(readText(fs, "/edge/b")).toBe("bravo");
+    expect(fs.stat("/edge/moved").mode & 0o7777).toBe(0o640);
+  });
+
+  it("preserves a replacement inode after authorized unlink", async () => {
+    const fixture = zipTreeFixture("edge", [
+      ["a", "alpha"],
+      ["b", "bravo"],
+    ]);
+    const fs = createFs();
+    fs.registerLazyTree(fixture.content, fixture.inventory, "/", fixture.activation);
+    fs.unlink("/edge/a");
+    fs.createFileWithOwner("/edge/a", 0o600, 0, 0, encoder.encode("local"));
+    fs.setLazyFetcher(async () => new Response(fixture.payload));
+
+    await expect(fs.preparePath("/edge/b")).resolves.toBe(true);
+    expect(readText(fs, "/edge/a")).toBe("local");
+    expect(readText(fs, "/edge/b")).toBe("bravo");
+  });
+
+  it("restores and rebases an authorized ordinary-tree rename", async () => {
+    const fixture = zipTreeFixture("edge", [
+      ["a", "alpha"],
+      ["b", "bravo"],
+    ]);
+    const fs = createFs();
+    fs.registerLazyTree(fixture.content, fixture.inventory, "/", fixture.activation);
+    fs.rename("/edge/a", "/edge/moved");
+
+    const restored = MemoryFileSystem.fromImage(await fs.saveImage());
+    const rebased = fs.rebaseToNewFileSystem(8 * 1024 * 1024);
+    for (const candidate of [fs, restored, rebased]) {
+      candidate.setLazyFetcher(async () => new Response(fixture.payload));
+      await expect(candidate.preparePath("/edge/moved")).resolves.toBe(true);
+      expect(readText(candidate, "/edge/moved")).toBe("alpha");
+      expect(readText(candidate, "/edge/b")).toBe("bravo");
     }
   });
 
@@ -2285,8 +2845,8 @@ describe("format-neutral deferred trees", () => {
     expect(() => fs.lstat("/runtime")).toThrow();
   });
 
-  it("binds original-bottle copy modes unless the link manifest explicitly overrides them", async () => {
-    const fixture = originalBottleTreeFixture();
+  it("binds source-copy modes unless the producer explicitly overrides them", async () => {
+    const fixture = completeSourceTreeFixture();
     const mismatched = structuredClone(fixture.inventory);
     mismatched.find((entry) => entry.materialization === "archive-copy")!.mode = 0o644;
     const rejected = createFs();
@@ -2325,7 +2885,7 @@ describe("format-neutral deferred trees", () => {
     expect(rebased.stat("/runtime/tool-copy").mode & 0o777).toBe(0o644);
   });
 
-  it("keeps legacy v1 and original-bottle v2 serialized shapes disjoint", () => {
+  it("keeps legacy v1 and complete-source v2 serialized shapes disjoint", () => {
     const legacyFixture = tarTreeFixture("first-use");
     const legacy = createFs();
     legacy.registerLazyTree(
@@ -2339,9 +2899,9 @@ describe("format-neutral deferred trees", () => {
     legacyV1.kind = "kandelo-deferred-tree-v2";
     expect(() => MemoryFileSystem.fromExisting(legacy.sharedBuffer)
       .importLazyArchiveEntries([legacyV1]))
-      .toThrow(/v2 requires original-bottle source metadata/);
+      .toThrow(/v2 requires complete source metadata/);
 
-    const directFixture = originalBottleTreeFixture();
+    const directFixture = completeSourceTreeFixture();
     const direct = createFs();
     direct.registerLazyTree(
       directFixture.content,
@@ -2354,7 +2914,7 @@ describe("format-neutral deferred trees", () => {
     directV2.kind = "kandelo-deferred-tree-v1";
     expect(() => MemoryFileSystem.fromExisting(direct.sharedBuffer)
       .importLazyArchiveEntries([directV2]))
-      .toThrow(/v1 cannot contain original-bottle source metadata/);
+      .toThrow(/v1 cannot contain complete source metadata/);
 
     const incompleteV2 = structuredClone(direct.exportLazyArchiveEntries()[0]) as any;
     delete incompleteV2.content.source;
@@ -2367,7 +2927,7 @@ describe("format-neutral deferred trees", () => {
     );
     expect(() => MemoryFileSystem.fromExisting(direct.sharedBuffer)
       .importLazyArchiveEntries([incompleteV2]))
-      .toThrow(/v2 requires original-bottle source metadata/);
+      .toThrow(/v2 requires complete source metadata/);
   });
 
   it("preserves ZIP inventories whose hardlinks reuse the canonical member", () => {
@@ -2687,7 +3247,7 @@ describe("format-neutral deferred trees", () => {
 
     const payloadSource = createFs();
     for (const root of ["payload-a", "payload-b", "payload-c"]) {
-      const fixture = originalBottleTreeFixture(root);
+      const fixture = completeSourceTreeFixture(root);
       payloadSource.registerLazyTree(
         fixture.content,
         fixture.inventory,
@@ -2749,7 +3309,7 @@ describe("format-neutral deferred trees", () => {
     expect(entryPeer.exportLazyArchiveEntries()).toEqual([]);
   });
 
-  it("applies the same generic-tree validator during restore and rebase", async () => {
+  it("validates restore and rebases from private generic-tree authority", async () => {
     const fixture = tarTreeFixture("first-use");
     const source = createFs();
     source.registerLazyTree(fixture.content, fixture.inventory, "/", fixture.activation);
@@ -2795,8 +3355,10 @@ describe("format-neutral deferred trees", () => {
       lazyArchiveGroups: Array<{ content: { expandedBytes: number } }>;
     };
     internal.lazyArchiveGroups[0].content.expandedBytes = 0;
-    expect(() => source.rebaseToNewFileSystem(8 * 1024 * 1024))
-      .toThrow(/expanded byte count differs from its inventory/);
+    const rebased = source.rebaseToNewFileSystem(8 * 1024 * 1024);
+    expect(rebased.exportLazyArchiveEntries()[0]!.content!.expandedBytes).toBe(
+      fixture.content.expandedBytes,
+    );
   });
 });
 
@@ -2928,7 +3490,7 @@ function tarTreeFixture(
     payload,
     inventory,
     content: {
-      decoder: "homebrew-bottle-tar-gzip-v1" as const,
+      decoder: "tar-gzip-v1" as const,
       mediaType: "application/vnd.oci.image.layer.v1.tar+gzip" as const,
       sha256: createHash("sha256").update(payload).digest("hex"),
       bytes: payload.byteLength,
@@ -2944,7 +3506,146 @@ function tarTreeFixture(
   };
 }
 
-function originalBottleTreeFixture(root = "runtime") {
+function exactGenericMaterializationPlan(): LazyTreeMaterializationPlan {
+  return {
+    schema: 1,
+    kind: "archive-byte-transforms-v1",
+    assertions: [{ sourcePath: "bin/tool", bytesHex: "2f6f6c642f" }],
+    recipes: [{
+      id: "prefix",
+      replacements: [{
+        matchHex: "2f6f6c642f",
+        replacementHex: "2f6e65772f",
+      }],
+      rejectHex: ["2f666f7262696464656e2f"],
+    }],
+    transforms: [{
+      sourcePath: "bin/tool",
+      recipe: "prefix",
+      input: {
+        sha256: "0da8bba3f971e84a1cb42935a03959b06879abcffc01c472d41030227bb19cf7",
+        bytes: 5,
+      },
+      output: {
+        sha256: "92a2fb6a1bcf1f8af0366d946016ee2601311aae9106f6eccaf905b1bfc6ab04",
+        bytes: 5,
+      },
+    }],
+  };
+}
+
+function transformedGenericTarTreeFixture() {
+  const specs: TarSpec[] = [{
+    path: "bin",
+    type: "directory",
+    mode: 0o755,
+  }, {
+    path: "bin/tool",
+    mode: 0o755,
+    data: "/old/",
+  }, {
+    path: "bin/tool-alias",
+    type: "hardlink",
+    mode: 0o755,
+    target: "bin/tool",
+  }, {
+    path: "current",
+    type: "symlink",
+    mode: 0o777,
+    target: "bin/tool",
+  }];
+  const tar = tarBytes(specs);
+  const payload = gzipSync(tar);
+  const content = {
+    decoder: "tar-gzip-v1" as const,
+    mediaType: "application/vnd.oci.image.layer.v1.tar+gzip" as const,
+    sha256: createHash("sha256").update(payload).digest("hex"),
+    bytes: payload.byteLength,
+    expandedBytes: tar.byteLength,
+    sourceEntryCount: 4,
+    transports: ["https://example.invalid/generic-transformed.tar.gz"],
+    source: {
+      schema: 1 as const,
+      kind: "archive-source-inventory-v1" as const,
+      entries: [{
+        sourcePath: "bin",
+        type: "directory" as const,
+        mode: 0o755,
+        size: 0,
+      }, {
+        sourcePath: "bin/tool",
+        type: "file" as const,
+        mode: 0o755,
+        size: 5,
+      }, {
+        sourcePath: "bin/tool-alias",
+        type: "hardlink" as const,
+        mode: 0o755,
+        size: 0,
+        target: "bin/tool",
+      }, {
+        sourcePath: "current",
+        type: "symlink" as const,
+        mode: 0o777,
+        size: 0,
+        target: "bin/tool",
+      }],
+    },
+    materialization: exactGenericMaterializationPlan(),
+  };
+  const inventory: LazyTreeRegistrationEntry[] = [{
+    vfsPath: "/srv",
+    sourcePath: "projection-root",
+    materialization: "descriptor",
+    type: "directory",
+    mode: 0o755,
+    size: 0,
+  }, {
+    vfsPath: "/srv/bin",
+    sourcePath: "bin",
+    materialization: "archive",
+    type: "directory",
+    mode: 0o755,
+    size: 0,
+  }, {
+    vfsPath: "/srv/bin/tool",
+    sourcePath: "bin/tool",
+    materialization: "archive",
+    type: "file",
+    mode: 0o755,
+    size: 5,
+    inodeGroup: "generic:tool",
+  }, {
+    vfsPath: "/srv/bin/tool-alias",
+    sourcePath: "bin/tool-alias",
+    materialization: "archive",
+    type: "hardlink",
+    mode: 0o755,
+    size: 5,
+    target: "/srv/bin/tool",
+    inodeGroup: "generic:tool",
+  }, {
+    vfsPath: "/srv/current",
+    sourcePath: "current",
+    materialization: "archive",
+    type: "symlink",
+    mode: 0o777,
+    size: 8,
+    target: "bin/tool",
+  }];
+  return {
+    payload,
+    content,
+    inventory,
+    activation: {
+      mode: "first-use" as const,
+      capabilities: ["test:generic-transform"],
+      roots: ["/srv"],
+    } satisfies LazyTreeActivation,
+  };
+}
+
+function completeSourceTreeFixture(root = "runtime") {
   const fixture = tarTreeFixture("first-use", root);
   const inventory: LazyTreeRegistrationEntry[] = fixture.inventory.map((entry) => ({
     ...entry,
@@ -2965,7 +3666,7 @@ function originalBottleTreeFixture(root = "runtime") {
       ...fixture.content,
       source: {
         schema: 1 as const,
-        kind: "homebrew-bottle-tar-gzip-v1" as const,
+        kind: "archive-source-inventory-v1" as const,
         entries: [
           {
             sourcePath: root,
@@ -3014,7 +3715,7 @@ function symlinkTreeFixture() {
       target,
     }],
     content: {
-      decoder: "homebrew-bottle-tar-gzip-v1" as const,
+      decoder: "tar-gzip-v1" as const,
       mediaType: "application/vnd.oci.image.layer.v1.tar+gzip" as const,
       sha256: createHash("sha256").update(payload).digest("hex"),
       bytes: payload.byteLength,

@@ -195,14 +195,18 @@ describe('needsLinking', () => {
 describe('COMPILE_FLAGS', () => {
   it('includes target and wasm features', () => {
     expect(COMPILE_FLAGS).toContain('--target=wasm32-unknown-unknown');
+    expect(COMPILE_FLAGS).toContain('-D__unix__=1');
+    expect(COMPILE_FLAGS).toContain('-D__unix=1');
     expect(COMPILE_FLAGS).toContain('-matomics');
     expect(COMPILE_FLAGS).toContain('-mbulk-memory');
   });
 });
 
 describe('LINK_FLAGS', () => {
-  it('includes entry and memory flags', () => {
-    expect(LINK_FLAGS).toContain('-Wl,--entry=_start');
+  it('leaves constructors to musl while exporting the process entry', () => {
+    expect(LINK_FLAGS).toContain('-Wl,--no-entry');
+    expect(LINK_FLAGS).toContain('-Wl,--export=_start');
+    expect(LINK_FLAGS).not.toContain('-Wl,--entry=_start');
     expect(LINK_FLAGS).toContain('-Wl,--import-memory');
     expect(LINK_FLAGS).toContain('-Wl,--shared-memory');
   });

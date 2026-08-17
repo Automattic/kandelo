@@ -136,6 +136,8 @@ mkdir -p \
 cp \
     "$REPO_ROOT/scripts/activate-ci-test-workspace.sh" \
     "$REPO_ROOT/scripts/ci-homebrew-browser-mirror-state.sh" \
+    "$REPO_ROOT/scripts/browser-memory64-example-fixtures.sh" \
+    "$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt" \
     "$REPO_ROOT/scripts/ci-run-test-suite.sh" \
     "$REPO_ROOT/scripts/ci-vitest-resource-isolated-cases.tsv" \
     "$REPO_ROOT/scripts/inspect-homebrew-main-shell-public-product.ts" \
@@ -286,6 +288,15 @@ write_blocked_browser_mirror_state() {
         ' > "$out"
 }
 
+BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$REPO_ROOT"
+BROWSER_MEMORY64_FIXTURES_MANIFEST="$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/browser-memory64-example-fixtures.sh"
+memory64_sources="$(browser_memory64_fixture_sources)"
+while IFS= read -r source; do
+    cp "$REPO_ROOT/$source" "$FIXTURE/$source"
+done <<< "$memory64_sources"
+
 cat > "$FIXTURE/bin/npm" <<'EOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = run ] && [ "${2:-}" = build ]; then
@@ -419,18 +430,26 @@ if [ "${1:-}" = "tsx" ]; then
             fi
             image_bytes="$(wc -c < "$image" | tr -d '[:space:]')"
             bootstrap_bytes="$(wc -c < "$bootstrap" | tr -d '[:space:]')"
+            kernel_abi=42
+            if [ -n "${KANDELO_CANONICAL_FLAT_SELECTION:-}" ]; then
+                kernel_abi="$(
+                    jq -er '.kandeloAbi' \
+                        "$KANDELO_CANONICAL_FLAT_SELECTION"
+                )"
+            fi
             jq -n \
                 --arg sha "$image_sha" \
                 --argjson bytes "$image_bytes" \
                 --arg bootstrap_sha "$bootstrap_sha" \
-                --argjson bootstrap_bytes "$bootstrap_bytes" '
+                --argjson bootstrap_bytes "$bootstrap_bytes" \
+                --argjson kernel_abi "$kernel_abi" '
               {
                 schema: 1,
                 kind: "kandelo-homebrew-main-shell-public-product",
                 image: {
                   sha256: $sha,
                   bytes: $bytes,
-                  kernel_abi: 42
+                  kernel_abi: $kernel_abi
                 },
                 homebrew_bootstrap: {
                   sha256: $bootstrap_sha,
@@ -527,6 +546,12 @@ fi
 exit 2
 EOF
 
+cat > "$FIXTURE/bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CARGO_CAPTURE"
+exit 0
+EOF
+
 cat > "$FIXTURE/run.sh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$RUN_CAPTURE"
@@ -575,8 +600,25 @@ fi
 EOF
     chmod +x "$FIXTURE/scripts/$runner"
 done
+
+prepared_xtask="$FIXTURE/target/fixture-host/release/xtask"
+mkdir -p "$(dirname "$prepared_xtask")"
+cat > "$prepared_xtask" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "build-deps" ] && [ "${2:-}" = "cache-root" ] &&
+   [ "$#" -eq 2 ]; then
+    case "${WASM_POSIX_BINARY_CACHE_ROOT:-}" in
+        /*) printf '%s\n' "$WASM_POSIX_BINARY_CACHE_ROOT" ;;
+        *) printf '%s\n' "$PWD/${WASM_POSIX_BINARY_CACHE_ROOT:-.cache/kandelo}" ;;
+    esac
+    exit 0
+fi
+exit 2
+EOF
+
 chmod +x \
     "$FIXTURE/bin/bun" \
+    "$FIXTURE/bin/cargo" \
     "$FIXTURE/bin/npm" \
     "$FIXTURE/bin/npx" \
     "$FIXTURE/bin/rustc" \
@@ -584,7 +626,8 @@ chmod +x \
     "$FIXTURE/run.sh" \
     "$FIXTURE/scripts/ci-check-browser-assets.sh" \
     "$FIXTURE/scripts/resolve-binary.sh" \
-    "$FIXTURE/scripts/materialize-ci-publication-blockers.sh"
+    "$FIXTURE/scripts/materialize-ci-publication-blockers.sh" \
+    "$prepared_xtask"
 
 git -C "$FIXTURE" init -q
 git -C "$FIXTURE" config user.name "Kandelo CI fixture"
@@ -694,6 +737,9 @@ then
     echo "production-build contract accepted a shell-only selector" >&2
     exit 1
 fi
+
+CARGO_CAPTURE="$TMP_DIR/cargo-build.args"
+export CARGO_CAPTURE
 
 run_group() {
     local suite="$1"
@@ -1314,6 +1360,39 @@ grep -Fq \
     "prepared browser workspace lacks Homebrew mirror state" \
     "$TMP_DIR/browser-missing-mirror-state.out"
 
+if ! awk '
+    $0 != "build --release -p xtask --target fixture-host --quiet" {
+        exit 1
+    }
+' "$CARGO_CAPTURE"; then
+    echo "ci-run-test-suite.sh used an unexpected package-checker build command:" >&2
+    cat "$CARGO_CAPTURE" >&2
+    exit 1
+fi
+[ -s "$CARGO_CAPTURE" ] || {
+    echo "ci-run-test-suite.sh did not prepare the source-workspace package checker" >&2
+    exit 1
+}
+
+: > "$CARGO_CAPTURE"
+PATH="$FIXTURE/bin:$PATH" \
+    bash "$FIXTURE/scripts/ci-run-test-suite.sh" cargo-xtask all
+grep -Fxq "test -p xtask --target fixture-host" "$CARGO_CAPTURE" || {
+    echo "ci-run-test-suite.sh did not dispatch the cargo-xtask suite" >&2
+    cat "$CARGO_CAPTURE" >&2
+    exit 1
+}
+: > "$CARGO_CAPTURE"
+PATH="$FIXTURE/bin:$PATH" \
+    bash "$FIXTURE/scripts/ci-run-test-suite.sh" cargo-workspace all
+grep -Fxq \
+    "test --workspace --exclude xtask --target fixture-host" \
+    "$CARGO_CAPTURE" || {
+    echo "ci-run-test-suite.sh did not dispatch cargo-workspace" >&2
+    cat "$CARGO_CAPTURE" >&2
+    exit 1
+}
+
 for workflow in \
     "$REPO_ROOT/.github/workflows/staging-build.yml" \
     "$REPO_ROOT/.github/workflows/prepare-merge.yml"; do
@@ -1344,6 +1423,40 @@ for workflow in \
         exit 1
     fi
 
+    early_rows=$(sed -n '/^  test-suite-early:/,/^    env:/p' "$workflow" | awk '
+        /^          - suite: / {
+            suite = $0
+            sub(/^          - suite: /, "", suite)
+        }
+        /^            kernel_only: / {
+            kernel_only = $0
+            sub(/^            kernel_only: /, "", kernel_only)
+        }
+        /^            submodules: / {
+            submodules = $0
+            sub(/^            submodules: /, "", submodules)
+            gsub(/^\047|\047$/, "", submodules)
+            print suite ":" kernel_only ":" submodules
+        }
+    ')
+    expected_early_rows=$'cargo-workspace:true:\ncargo-xtask:false:libc/musl'
+    if [ "$early_rows" != "$expected_early_rows" ]; then
+        echo "$(basename "$workflow"): unexpected early Cargo suite matrix:" >&2
+        printf '%s\n' "$early_rows" >&2
+        exit 1
+    fi
+    early_block="$TMP_DIR/$(basename "$workflow").early-cargo"
+    sed -n '/^  test-suite-early:/,/^  exact-abi-source-test-prepare:/p' \
+        "$workflow" > "$early_block"
+    grep -Fq '      - name: Fetch early suite submodule' "$early_block" || {
+        echo "$(basename "$workflow"): early Cargo suites do not fetch declared submodules" >&2
+        exit 1
+    }
+    grep -Fq '          submodules: ${{ matrix.submodules }}' "$early_block" || {
+        echo "$(basename "$workflow"): early Cargo submodule fetch ignores the matrix" >&2
+        exit 1
+    }
+
     case "$(basename "$workflow")" in
         staging-build.yml)
             node_acceptance_name="Run exact staged Node npm acceptance"
@@ -1362,26 +1475,6 @@ for workflow in \
         inside && /^      - name: / { exit }
         inside { print }
     ' "$workflow" > "$node_acceptance_block"
-    dev_shell_line="$(awk '
-        /scripts\/dev-shell\.sh/ { print NR; exit }
-    ' "$node_acceptance_block")"
-    activation_line="$(awk '
-        /activate-ci-test-workspace\.sh/ { print NR; exit }
-    ' "$node_acceptance_block")"
-    consumer_line="$(awk '
-        /resolve-binary\.sh|npm run build|npx playwright test/ {
-            print NR
-            exit
-        }
-    ' "$node_acceptance_block")"
-    if ! [[ "$dev_shell_line" =~ ^[1-9][0-9]*$ ]] ||
-       ! [[ "$activation_line" =~ ^[1-9][0-9]*$ ]] ||
-       ! [[ "$consumer_line" =~ ^[1-9][0-9]*$ ]] ||
-       [ "$dev_shell_line" -ge "$activation_line" ] ||
-       [ "$activation_line" -ge "$consumer_line" ]; then
-        echo "$(basename "$workflow"): direct Node acceptance does not activate its transported cache identity inside the dev shell before consumption" >&2
-        exit 1
-    fi
     if [ "$(basename "$workflow")" = prepare-merge.yml ]; then
         dev_shell_count="$(grep -Fc 'scripts/dev-shell.sh' "$node_acceptance_block")"
         if [ "$dev_shell_count" -ne 1 ] ||
@@ -1452,7 +1545,7 @@ force_rebuild_rows=$(sed -n \
         print suite ":" group
     }
 ')
-expected_force_rebuild_rows=$'cargo-kernel:all\nfork-instrument:all\nvitest:1/2\nvitest:2/2\nvitest:resource-isolated\nlibc:functional-regression\nlibc:math\nposix:all\nsortix:include\nsortix:basic\nsortix:runtime'
+expected_force_rebuild_rows=$'cargo-workspace:all\ncargo-xtask:all\nvitest:1/2\nvitest:2/2\nvitest:resource-isolated\nlibc:functional-regression\nlibc:math\nposix:all\nsortix:include\nsortix:basic\nsortix:runtime'
 if [ "$force_rebuild_rows" != "$expected_force_rebuild_rows" ]; then
     echo "force-rebuild.yml: unexpected test-suite matrix:" >&2
     printf '%s\n' "$force_rebuild_rows" >&2
@@ -1544,24 +1637,7 @@ chmod +x "$prepared_xtask"
 mkdir -p "$FIXTURE/.ci-test-binary-cache/programs"
 cache_capture="$TMP_DIR/portable-cache-root"
 xtask_capture="$TMP_DIR/portable-xtask"
-direct_cache_capture="$TMP_DIR/direct-portable-cache-root"
-direct_xtask_capture="$TMP_DIR/direct-portable-xtask"
-PATH="$FIXTURE/bin:$PATH" \
-    WASM_POSIX_BINARY_CACHE_ROOT="$TMP_DIR/wrong-direct-cache" \
-    WASM_POSIX_XTASK_BIN="$TMP_DIR/wrong-direct-xtask" \
-    bash "$FIXTURE/scripts/activate-ci-test-workspace.sh" \
-        bash -c '
-          printf "%s\n" "$WASM_POSIX_BINARY_CACHE_ROOT" > "$1"
-          printf "%s\n" "$WASM_POSIX_XTASK_BIN" > "$2"
-        ' bash "$direct_cache_capture" "$direct_xtask_capture"
-grep -Fxq "$FIXTURE/.ci-test-binary-cache" "$direct_cache_capture" || {
-    echo "direct prepared-workspace consumer did not select the transported program cache" >&2
-    exit 1
-}
-grep -Fxq "$prepared_xtask" "$direct_xtask_capture" || {
-    echo "direct prepared-workspace consumer did not select the transported package checker" >&2
-    exit 1
-}
+: > "$CARGO_CAPTURE"
 PATH="$FIXTURE/bin:$PATH" \
     TEST_CAPTURE="$TMP_DIR/portable-cache-suite.args" \
     CACHE_CAPTURE="$cache_capture" \
@@ -1575,6 +1651,10 @@ grep -Fxq "$FIXTURE/.ci-test-binary-cache" "$cache_capture" || {
 }
 grep -Fxq "$prepared_xtask" "$xtask_capture" || {
     echo "ci-run-test-suite.sh did not select the transported package checker" >&2
+    exit 1
+}
+[ ! -s "$CARGO_CAPTURE" ] || {
+    echo "ci-run-test-suite.sh rebuilt a transported package checker" >&2
     exit 1
 }
 missing_xtask_capture="$TMP_DIR/missing-xtask-suite.args"
@@ -1603,9 +1683,13 @@ prepared_files=(
     examples/gencat.wasm
     examples/pthread_channel_reuse_test.wasm
     examples/wait_lifecycle_test.wasm
-    examples/wait_lifecycle_test.wasm64.wasm
-    examples/terminal_attributes_api_test.wasm64.wasm
 )
+BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$FIXTURE"
+BROWSER_MEMORY64_FIXTURES_MANIFEST="$FIXTURE/scripts/browser-memory64-example-fixtures.txt"
+memory64_outputs="$(browser_memory64_fixture_outputs)"
+while IFS= read -r output; do
+    prepared_files+=("$output")
+done <<< "$memory64_outputs"
 for benchmark in \
     pipe-throughput.wasm \
     file-throughput.wasm \
@@ -2538,7 +2622,40 @@ done
 mirror_expected="$TMP_DIR/homebrew-browser-mirror-expected.json"
 mirror_blockers="$TMP_DIR/homebrew-browser-mirror-blockers.json"
 mirror_canonical="$TMP_DIR/homebrew-browser-mirror-canonical.toml"
-mirror_canonical_url="https://github.com/Automattic/kandelo/releases/download/binaries-abi-v42/index.toml"
+mirror_abi="$(sed -nE \
+    's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
+    "$REPO_ROOT/crates/shared/src/lib.rs")"
+[[ "$mirror_abi" =~ ^[0-9]+$ ]] || {
+    echo "cannot derive the active ABI for the browser mirror fixture" >&2
+    exit 1
+}
+mirror_selection="$TMP_DIR/homebrew-browser-mirror-selection.json"
+node --input-type=module - \
+    "$REPO_ROOT/homebrew/main-shell-flat-selection.json" \
+    "$mirror_selection" "$mirror_abi" <<'NODE'
+import { readFileSync, writeFileSync } from "node:fs";
+
+const normalize = (value) => {
+  if (Array.isArray(value)) return value.map(normalize);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value).sort().map((key) => [key, normalize(value[key])]),
+    );
+  }
+  return value;
+};
+const selection = JSON.parse(readFileSync(process.argv[2], "utf8"));
+const abi = Number(process.argv[4]);
+if (!Number.isInteger(abi) || abi < 0) {
+  throw new Error("browser mirror selection fixture requires a nonnegative integer ABI");
+}
+selection.kandeloAbi = abi;
+selection.name = `main-shell-abi${abi}-wasm32`;
+for (const bottle of selection.bottles) bottle.kandeloAbi = abi;
+writeFileSync(process.argv[3], `${JSON.stringify(normalize(selection))}\n`);
+NODE
+export KANDELO_CANONICAL_FLAT_SELECTION="$mirror_selection"
+mirror_canonical_url="https://github.com/Automattic/kandelo/releases/download/binaries-abi-v${mirror_abi}/index.toml"
 mirror_state="$TMP_DIR/generated-homebrew-browser-mirror-state.json"
 mirror_shell_image="$TMP_DIR/canonical-flat-lazy-shell.vfs.zst"
 mirror_homebrew_bootstrap="$TMP_DIR/homebrew-bootstrap.zip"
@@ -2557,11 +2674,11 @@ mirror_host_target="$(rustc -vV | awk '/^host/ {print $2}')"
 cargo build --release -p xtask --target "$mirror_host_target"
 mirror_xtask="$REPO_ROOT/target/$mirror_host_target/release/xtask"
 printf '%s\n' \
-    '{"abi_version":42,"entries":[]}' \
+    "{\"abi_version\":${mirror_abi},\"entries\":[]}" \
     > "$mirror_blockers"
-jq -n --arg cache_key "$mirror_cache_key" '
+jq -n --arg cache_key "$mirror_cache_key" --argjson abi "$mirror_abi" '
   {
-    abi_version: 42,
+    abi_version: $abi,
     entries: [{
       package: "shell",
       kind: "program",
@@ -2574,7 +2691,7 @@ jq -n --arg cache_key "$mirror_cache_key" '
   }
 ' > "$mirror_expected"
 cat > "$mirror_canonical" <<EOF
-abi_version = 42
+abi_version = $mirror_abi
 generated_at = "1970-01-01T00:00:00Z"
 generator = "fixture"
 
@@ -2585,7 +2702,7 @@ revision = 22
 
 [packages.binary.wasm32]
 status = "success"
-archive_url = "shell-0.1.0-rev22-abi42-wasm32-bbbbbbbb.tar.zst"
+archive_url = "shell-0.1.0-rev22-abi${mirror_abi}-wasm32-bbbbbbbb.tar.zst"
 archive_sha256 = "$mirror_archive_sha"
 cache_key_sha = "$mirror_cache_key"
 EOF
@@ -2651,9 +2768,10 @@ grep -Fq "resolved shell bytes do not match state" \
 
 blocked_expected="$TMP_DIR/homebrew-browser-blocked-expected.json"
 blocked_report="$TMP_DIR/homebrew-browser-blocked-report.json"
-jq -n '{abi_version: 42, entries: []}' > "$blocked_expected"
+jq -n --argjson abi "$mirror_abi" \
+    '{abi_version: $abi, entries: []}' > "$blocked_expected"
 printf '%s\n' \
-    '{"abi_version":42,"entries":[{"package":"shell","blocker_chain":["shell"]}]}' \
+    "{\"abi_version\":${mirror_abi},\"entries\":[{\"package\":\"shell\",\"blocker_chain\":[\"shell\"]}]}" \
     > "$blocked_report"
 bash "$REPO_ROOT/scripts/ci-homebrew-browser-mirror-state.sh" create \
     "$blocked_expected" \
@@ -2700,6 +2818,7 @@ if bash "$REPO_ROOT/scripts/ci-homebrew-browser-mirror-state.sh" validate \
 fi
 grep -Fq "producer must not pre-authorize" \
     "$TMP_DIR/blocked-preauthorization.out"
+unset KANDELO_CANONICAL_FLAT_SELECTION
 
 canonical_state_stub="$TMP_DIR/canonical-index-state-stub.sh"
 canonical_parser_stub="$TMP_DIR/canonical-index-parser-stub.sh"

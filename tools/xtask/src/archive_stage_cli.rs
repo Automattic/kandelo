@@ -16,7 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::archive_stage::{self, StageOptions};
-use crate::build_deps::{self, default_cache_root, parse_target_arch, Registry, ResolveOpts};
+use crate::build_deps::{self, Registry, ResolveOpts, default_cache_root, parse_target_arch};
 use crate::pkg_manifest::{BuildToml, DepsManifest, ManifestKind, TargetArch};
 use crate::publication_policy::PublicationPolicy;
 use crate::repo_root;
@@ -898,6 +898,11 @@ built_by = "test"
         );
         let name = &entries[0];
         // <name>-<version>-rev<N>-abi<N>-<arch>-<short8>.tar.zst
+        // Derive the abi<N> segment from the shared const so the assertion
+        // tracks ABI_VERSION instead of drifting on every bump, and doubles as a
+        // guard that the canonical filename encodes the real ABI. (The sibling
+        // `cli_archive_filename_uses_build_toml_revision` stays abi-pinned on
+        // purpose: it passes `--abi "4"` to test the revision field.)
         let prefix = format!("z-1.0.0-rev1-abi{}-wasm32-", shared::ABI_VERSION);
         assert!(name.starts_with(&prefix), "got: {name}");
         assert!(name.ends_with(".tar.zst"), "got: {name}");
@@ -905,9 +910,11 @@ built_by = "test"
         let suffix = ".tar.zst";
         let short = &name[prefix.len()..name.len() - suffix.len()];
         assert_eq!(short.len(), 8, "short_sha slot must be 8 chars: {short:?}");
-        assert!(short
-            .chars()
-            .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
+        assert!(
+            short
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase())
+        );
 
         let index_path = dir.join("index.toml");
         crate::build_index::run(vec![

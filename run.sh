@@ -35,6 +35,10 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$REPO_ROOT"
+BROWSER_MEMORY64_FIXTURES_MANIFEST="$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/browser-memory64-example-fixtures.sh"
 
 # Activate the worktree-local SDK toolchain (no global npm link required).
 # Build scripts also source this directly; sourcing here makes the tools
@@ -262,32 +266,82 @@ has_resolvable() {
 KERNEL_REQUIRED_EXPORTS=(
     __abi_version
     kernel_alloc_scratch
+    kernel_blocking_retry_release
+    kernel_blocking_retry_token
+    kernel_commit_process_exit
     kernel_create_process
     kernel_create_process_with_stdio
     kernel_dequeue_signal
-    kernel_exec_prepare
-    kernel_exec_setup_for_thread
+    kernel_exec_commit
+    kernel_exec_target_cancel
+    kernel_exec_target_prepare
+    kernel_exec_target_read
+    kernel_exec_target_size
     kernel_fork_process
+    kernel_get_cwd
+    kernel_get_dirfd_path
+    kernel_get_fd_path
     kernel_get_parent_pid
     kernel_get_process_exit_signal
     kernel_get_process_state
+    kernel_get_socket_timeout_ms
     kernel_handle_channel
     kernel_has_sa_nocldstop
     kernel_host_adapter_manifest_len
     kernel_host_adapter_manifest_ptr
+    kernel_ipc_shm_lookup_mapping_for_task
+    kernel_ipc_shm_record_mapping_for_process
+    kernel_ipc_shm_record_mapping_for_task
     kernel_ipc_shmat_for_process
     kernel_ipc_shmat_for_task
+    kernel_ipc_shmdt_addr_for_process
+    kernel_ipc_shmdt_addr_for_task
     kernel_ipc_shmdt_for_process
     kernel_ipc_shmdt_for_task
+    kernel_is_fd_nonblock
     kernel_mark_process_signaled
+    kernel_mq_descriptor_msgsize
+    kernel_msqid_ds_bytes
+    kernel_pcm_claim_transport
+    kernel_pcm_clock_update
+    kernel_pcm_reconcile
+    kernel_pcm_transport_len
+    kernel_pcm_transport_ptr
+    kernel_pick_signal_target_tid
+    kernel_pick_tcp_listener_target
     kernel_pipe_has_readers
     kernel_posix_timer_fire
-    kernel_prepare_write_operation
+    kernel_process_metadata_begin
+    kernel_process_metadata_cancel
+    kernel_process_metadata_commit
+    kernel_process_metadata_stage
+    kernel_process_secure_exec
+    kernel_publish_spawn_child
     kernel_reap_exited_child
     kernel_remove_process
+    kernel_semctl_array_bytes
+    kernel_semid_ds_bytes
     kernel_set_current_tid
+    kernel_set_cwd
+    kernel_shmid_ds_bytes
+    kernel_spawn_exec_commit
+    kernel_spawn_exec_target_prepare
     kernel_spawn_process
+    kernel_spawn_reserved_process
+    kernel_spawn_scratch_begin
+    kernel_spawn_scratch_cancel
+    kernel_spawn_scratch_capacity
+    kernel_spawn_scratch_pointer
+    kernel_spawn_scratch_retained_capacity
+    kernel_take_process_timer_cleanup
     kernel_thread_exit
+    kernel_thread_has_deliverable
+    kernel_transfer_channel_execute
+    kernel_transfer_io_execute
+    kernel_transfer_scratch_begin
+    kernel_transfer_scratch_cancel
+    kernel_transfer_scratch_capacity
+    kernel_transfer_scratch_pointer
     kernel_validate_task
     kernel_wait_child_poll
 )
@@ -299,7 +353,8 @@ has_valid_kernel_file() {
     current_abi="$(wasm_current_abi_version "$REPO_ROOT" || true)"
     ! wasm_has_legacy_asyncify "$path" &&
         ! wasm_has_stale_abi "$path" "$current_abi" &&
-        ! wasm_has_missing_exports "$path" "${KERNEL_REQUIRED_EXPORTS[@]}"
+        ! wasm_has_missing_exports "$path" "${KERNEL_REQUIRED_EXPORTS[@]}" &&
+        wasm_require_target_aware_exec_authority "$path" >/dev/null 2>&1
 }
 
 # pkg_xtask_bin: build xtask once (lazy) and return the binary path so
@@ -405,12 +460,20 @@ has_sysroot64() { [ -f "$REPO_ROOT/sysroot64/lib/libc.a" ]; }
 has_sdk()       { command -v wasm32posix-cc &>/dev/null; }
 has_host()      { [ -d "$REPO_ROOT/host/dist" ]; }
 has_rootfs()    { [ -f "$REPO_ROOT/host/wasm/rootfs.vfs" ]; }
+has_browser_memory64_example_fixtures() {
+    local output
+    local outputs
+    outputs="$(browser_memory64_fixture_outputs)" || return 1
+    while IFS= read -r output; do
+        [ -f "$REPO_ROOT/$output" ] || return 1
+    done <<< "$outputs"
+}
 has_programs() {
     has_resolvable programs/fork-exec.wasm &&
     has_resolvable programs/fbtest.wasm &&
     [ -f "$REPO_ROOT/examples/pthread_channel_reuse_test.wasm" ] &&
     [ -f "$REPO_ROOT/examples/wait_lifecycle_test.wasm" ] &&
-    [ -f "$REPO_ROOT/examples/wait_lifecycle_test.wasm64.wasm" ] &&
+    has_browser_memory64_example_fixtures &&
     [ -f "$REPO_ROOT/benchmarks/wasm/pipe-throughput.wasm" ] &&
     [ -f "$REPO_ROOT/benchmarks/wasm/file-throughput.wasm" ] &&
     [ -f "$REPO_ROOT/benchmarks/wasm/syscall-latency.wasm" ] &&
@@ -2486,11 +2549,14 @@ build_all() {
     build_nethack
     build_git
     build_nginx
+    build_nginx_vfs
     build_php
     build_php_fpm
+    build_nginx_php_vfs
     build_mariadb
     build_mariadb_vfs
     build_redis
+    build_redis_vfs
     build_dinit
     build_msmtpd
     build_cpython
@@ -2743,6 +2809,7 @@ clean_target() {
             warn "Cleaned NetHack (also invalidated nethack.zip and shell.vfs.zst; run '$0 build shell-vfs' to regenerate for browser demo)" ;;
         fbdoom)
             rm -rf "$REPO_ROOT/packages/registry/fbdoom/fbdoom-src" \
+                   "$REPO_ROOT/packages/registry/fbdoom/fbdoom-build" \
                    "$REPO_ROOT/local-binaries/programs/wasm32/fbdoom"
             rm -f "$REPO_ROOT/packages/registry/fbdoom/fbdoom.wasm" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/fbdoom.wasm" \
@@ -2876,42 +2943,42 @@ cmd_run() {
 
     case "$example" in
         nginx)
-            build_nginx
+            build_nginx_vfs
             step "Starting nginx"
             exec npx tsx "$REPO_ROOT/packages/registry/nginx/demo/serve.ts" "$@"
             ;;
         mariadb)
-            build_mariadb
+            local use_wasm64=false
+            for arg in "$@"; do
+                if [ "$arg" = "--wasm64" ]; then
+                    use_wasm64=true
+                fi
+            done
+            if [ "$use_wasm64" = true ]; then
+                build_mariadb64_vfs
+            else
+                build_mariadb_vfs
+            fi
             step "Starting MariaDB"
             exec npx tsx "$REPO_ROOT/packages/registry/mariadb/demo/serve.ts" "$@"
             ;;
         redis)
-            build_redis
+            build_redis_vfs
             step "Starting Redis"
             exec npx tsx "$REPO_ROOT/packages/registry/redis/demo/serve.ts" "$@"
             ;;
         wordpress)
-            build_php
-            build_wordpress
-            step "Starting WordPress (PHP built-in server + SQLite)"
+            build_wp_vfs
+            step "Starting WordPress (nginx + PHP-FPM + SQLite)"
             exec npx tsx "$REPO_ROOT/packages/registry/wordpress/demo/serve.ts" "$@"
             ;;
         wordpress-nginx)
-            build_nginx
-            build_php_fpm
-            build_wordpress
+            build_wp_vfs
             step "Starting WordPress (nginx + PHP-FPM + SQLite)"
             exec npx tsx "$REPO_ROOT/packages/registry/wordpress/demo/serve-nginx.ts" "$@"
             ;;
         lamp)
-            build_mariadb
-            build_nginx
-            build_php_fpm
-            # LAMP uses its own WordPress setup (MySQL mode)
-            if [ ! -f "$REPO_ROOT/packages/registry/lamp/demo/wordpress/wp-settings.php" ]; then
-                step "Setting up LAMP WordPress"
-                bash "$REPO_ROOT/packages/registry/lamp/demo/setup.sh"
-            fi
+            build_lamp_vfs
             step "Starting LAMP stack (MariaDB + PHP-FPM + nginx + WordPress)"
             exec npx tsx "$REPO_ROOT/packages/registry/lamp/demo/serve.ts" "$@"
             ;;
@@ -3155,11 +3222,14 @@ cmd_list() {
     echo "  fbdoom      fbDOOM (framebuffer DOOM via /dev/fb0) $(has_fbdoom && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  git         Git 2.47.1                             $(has_git && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  nginx       nginx 1.24 Wasm binary                $(has_nginx && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  nginx-vfs   nginx service VFS image               $(has_nginx_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  php         PHP 8.3 CLI binary                    $(has_php && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  php-fpm     PHP-FPM Wasm binary                   $(has_php_fpm && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  nginx-php-vfs nginx + PHP-FPM VFS image           $(has_nginx_php_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  mariadb     MariaDB 10.5 Wasm binary (wasm32)     $(has_mariadb && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  mariadb64   MariaDB 10.5 Wasm binary (wasm64)     $(has_mariadb64 && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  redis       Redis 7.2 Wasm binary                 $(has_redis && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  redis-vfs   Redis service VFS image               $(has_redis_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  dinit       dinit service supervisor              $(has_dinit && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  msmtpd      Local SMTP capture server             $(has_msmtpd && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  cpython     CPython 3.13 Wasm binary              $(has_cpython && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
@@ -3210,7 +3280,7 @@ cmd_list() {
     echo "  ./run.sh run nginx [port]            nginx HTTP server"
     echo "  ./run.sh run redis [port]            Redis key-value store"
     echo "  ./run.sh run mariadb                 MariaDB standalone"
-    echo "  ./run.sh run wordpress [port]        WordPress (PHP built-in + SQLite)"
+    echo "  ./run.sh run wordpress [port]        WordPress (nginx + PHP-FPM + SQLite)"
     echo "  ./run.sh run wordpress-nginx [port]  WordPress (nginx + PHP-FPM + SQLite)"
     echo "  ./run.sh run lamp [port]             Full LAMP stack (MariaDB + nginx + PHP-FPM)"
     echo "  ./run.sh run erlang [-eval 'Expr']    Erlang BEAM VM"

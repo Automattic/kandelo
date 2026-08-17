@@ -1,0 +1,11 @@
+script_path = "packages/registry/sdl2-mixer-playwave/build-sdl2-mixer-playwave.sh"
+inputs = [
+  "packages/registry/sdl2-mixer-playwave/build-sdl2-mixer-playwave.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

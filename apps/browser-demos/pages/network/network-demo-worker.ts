@@ -236,8 +236,13 @@ async function runProgram(
   new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
   pid = kernelWorker.createProcess(CAPTURED_STDIO);
+  // WHY: registration replaces argv and environment as one Rust-owned
+  // transaction, so this harness's intentionally empty environment must be
+  // explicit rather than inferred after argv has already been published.
+  const environment: string[] = [];
   kernelWorker.registerProcess(pid, memory, [channelOffset], {
     argv: options.argv,
+    env: environment,
     ptrWidth,
   });
   const initialHeapBase = extractHeapBase(options.programBytes);
@@ -253,7 +258,9 @@ async function runProgram(
     memory,
     channelOffset,
     argv: options.argv,
+    env: environment,
     ptrWidth,
+    secureExec: kernelWorker.processSecureExec(pid),
   };
   const mainWorker = workerAdapter.createWorker(initData);
   workers.set(pid, mainWorker);

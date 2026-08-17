@@ -19,6 +19,7 @@ BOTTLE_ROOT_URL=""
 DEPENDENCY_PROVENANCE=""
 SELECTION_RECEIPT=""
 SYSROOT_BUILD_ROOT=""
+PLAYWRIGHT_BROWSERS_PATH_INPUT=""
 OUT=""
 STAGING_CANDIDATE_ABI=""
 STAGED_DEPENDENCY_FORMULAE=()
@@ -27,7 +28,7 @@ SHARED_TEMP="${KANDELO_HOMEBREW_SHARED_TEMP:-}"
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-verify-poured-bottle.sh --tap-root <dir> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> [--tap-checkout-commit <sha>] --formula <name> --arch <wasm32|wasm64> --abi <number> --bottle <archive> --bottle-json <json> --bottle-url <url> --bottle-sha256 <sha> --bottle-bytes <count> --bottle-root-url <url> --dependency-provenance <json> --selection-receipt <json> --sysroot-build-root <dir> [--staging-candidate-abi <N>] [--staged-dependency-formula <name> ...] --out <runtime-evidence.json>
+usage: scripts/homebrew-verify-poured-bottle.sh --tap-root <dir> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> [--tap-checkout-commit <sha>] --formula <name> --arch <wasm32|wasm64> --abi <number> --bottle <archive> --bottle-json <json> --bottle-url <url> --bottle-sha256 <sha> --bottle-bytes <count> --bottle-root-url <url> --dependency-provenance <json> --selection-receipt <json> --sysroot-build-root <dir> [--playwright-browsers-path <dir>] [--staging-candidate-abi <N>] [--staged-dependency-formula <name> ...] --out <runtime-evidence.json>
 
 The tap must already contain the reconstructed target bottle block. In CI all
 Homebrew and Formula execution runs as the dedicated isolated workflow user.
@@ -57,6 +58,7 @@ while [ "$#" -gt 0 ]; do
     --dependency-provenance) DEPENDENCY_PROVENANCE="${2:-}"; shift 2 ;;
     --selection-receipt) SELECTION_RECEIPT="${2:-}"; shift 2 ;;
     --sysroot-build-root) SYSROOT_BUILD_ROOT="${2:-}"; shift 2 ;;
+    --playwright-browsers-path) PLAYWRIGHT_BROWSERS_PATH_INPUT="${2:-}"; shift 2 ;;
     --staging-candidate-abi) STAGING_CANDIDATE_ABI="${2:-}"; shift 2 ;;
     --staged-dependency-formula) STAGED_DEPENDENCY_FORMULAE+=("${2:-}"); shift 2 ;;
     --out) OUT="${2:-}"; shift 2 ;;
@@ -114,6 +116,25 @@ case "$ARCH" in wasm32|wasm64) ;; *) echo "homebrew-verify-poured-bottle.sh: inv
 [[ "$ABI" =~ ^[1-9][0-9]*$ ]] || {
   echo "homebrew-verify-poured-bottle.sh: invalid ABI" >&2; exit 2;
 }
+if [ -n "$PLAYWRIGHT_BROWSERS_PATH_INPUT" ]; then
+  case "$PLAYWRIGHT_BROWSERS_PATH_INPUT" in
+    /*) ;;
+    *)
+      echo "homebrew-verify-poured-bottle.sh: prepared Playwright browser root is unavailable" >&2
+      exit 2
+      ;;
+  esac
+  [ -d "$PLAYWRIGHT_BROWSERS_PATH_INPUT" ] && \
+    [ ! -L "$PLAYWRIGHT_BROWSERS_PATH_INPUT" ] || {
+    echo "homebrew-verify-poured-bottle.sh: prepared Playwright browser root is unavailable" >&2
+    exit 2
+  }
+  PLAYWRIGHT_BROWSERS_PATH_INPUT="$(cd "$PLAYWRIGHT_BROWSERS_PATH_INPUT" && pwd -P)"
+fi
+unset PLAYWRIGHT_BROWSERS_PATH
+if [ -n "$PLAYWRIGHT_BROWSERS_PATH_INPUT" ]; then
+  export PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH_INPUT"
+fi
 if [ -n "$STAGING_CANDIDATE_ABI" ]; then
   [[ "$STAGING_CANDIDATE_ABI" =~ ^[1-9][0-9]*$ ]] && \
     [ "$STAGING_CANDIDATE_ABI" = "$ABI" ] || {
@@ -144,6 +165,7 @@ KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 . "$KANDELO_ROOT/scripts/homebrew-formula-support-inputs.sh"
 TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
 BOTTLE_TAG="${ARCH}_kandelo"
+FORMULA_KEY="${TAP_NAME}/${FORMULA}"
 for file in "$BOTTLE" "$BOTTLE_JSON" "$DEPENDENCY_PROVENANCE" "$SELECTION_RECEIPT"; do
   [ -f "$file" ] && [ ! -L "$file" ] || {
     echo "homebrew-verify-poured-bottle.sh: required input is not a regular file: $file" >&2
@@ -156,26 +178,27 @@ if [ -n "$STAGING_CANDIDATE_ABI" ]; then
 fi
 if ! jq -e \
   --arg formula "$FORMULA" \
+  --arg formula_key "$FORMULA_KEY" \
   --arg bottle_tag "$BOTTLE_TAG" \
   --arg bottle_root_url "$FORMULA_BOTTLE_ROOT_URL" \
   --arg sha256 "$BOTTLE_SHA256" '
-    type == "object" and keys == [$formula] and
-    (.[$formula].formula | type == "object") and
-    .[$formula].formula.name == $formula and
-    (.[$formula].formula.pkg_version |
+    type == "object" and keys == [$formula_key] and
+    (.[$formula_key].formula | type == "object") and
+    .[$formula_key].formula.name == $formula and
+    (.[$formula_key].formula.pkg_version |
       type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._+,-]{0,255}$")) and
-    (.[$formula].bottle | type == "object") and
-    .[$formula].bottle.root_url == $bottle_root_url and
-    (.[$formula].bottle.rebuild |
+    (.[$formula_key].bottle | type == "object") and
+    .[$formula_key].bottle.root_url == $bottle_root_url and
+    (.[$formula_key].bottle.rebuild |
       type == "number" and . >= 0 and floor == .) and
-    (.[$formula].bottle.tags | type == "object" and keys == [$bottle_tag]) and
-    .[$formula].bottle.tags[$bottle_tag].sha256 == $sha256
+    (.[$formula_key].bottle.tags | type == "object" and keys == [$bottle_tag]) and
+    .[$formula_key].bottle.tags[$bottle_tag].sha256 == $sha256
   ' "$BOTTLE_JSON" >/dev/null; then
   echo "homebrew-verify-poured-bottle.sh: canonical bottle JSON does not match the selected bottle" >&2
   exit 2
 fi
-PKG_VERSION="$(jq -r --arg formula "$FORMULA" '.[$formula].formula.pkg_version' "$BOTTLE_JSON")"
-BOTTLE_REBUILD="$(jq -r --arg formula "$FORMULA" '.[$formula].bottle.rebuild' "$BOTTLE_JSON")"
+PKG_VERSION="$(jq -r --arg formula_key "$FORMULA_KEY" '.[$formula_key].formula.pkg_version' "$BOTTLE_JSON")"
+BOTTLE_REBUILD="$(jq -r --arg formula_key "$FORMULA_KEY" '.[$formula_key].bottle.rebuild' "$BOTTLE_JSON")"
 BOTTLE_REBUILD_SUFFIX=""
 if [ "$BOTTLE_REBUILD" != "0" ]; then
   BOTTLE_REBUILD_SUFFIX=".$BOTTLE_REBUILD"
@@ -246,6 +269,10 @@ PUBLISHER_ISOLATION_PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0002-support-isol
 . "$KANDELO_ROOT/scripts/homebrew-native-install-contract.sh"
 homebrew_patched_launcher_select_host_git
 if [ -n "$BUILD_USER" ]; then
+  homebrew_patched_launcher_restore_invoker_bootstrap_roots \
+    "$BUILD_USER" "$HOMEBREW_GUEST_PREFIX"
+fi
+if [ -n "$BUILD_USER" ]; then
   HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
   XTASK_BIN="$KANDELO_ROOT/target/$HOST_TARGET/release/xtask"
   if [ -z "$HOST_TARGET" ] || [ ! -f "$XTASK_BIN" ] || [ -L "$XTASK_BIN" ] ||
@@ -286,6 +313,7 @@ if [ -n "$BUILD_USER" ]; then
 fi
 CONTROL_DIR="$(mktemp -d "$OUT_PARENT/.control.XXXXXX")"
 chmod 0700 "$CONTROL_DIR"
+PLAYWRIGHT_DISCOVERY_LINK=""
 
 cleanup() {
   local original_status="${1:-0}" launcher_status=0 realm_cleanup_status=0
@@ -293,6 +321,12 @@ cleanup() {
     :
   else
     launcher_status="$?"
+  fi
+  if [ -n "$PLAYWRIGHT_DISCOVERY_LINK" ]; then
+    rm -f -- "$PLAYWRIGHT_DISCOVERY_LINK" || {
+      realm_cleanup_status="$?"
+      echo "homebrew-verify-poured-bottle.sh: could not remove Playwright discovery projection" >&2
+    }
   fi
   rm -rf "$CONTROL_DIR"
   if [ "$launcher_status" -ne 0 ]; then
@@ -332,6 +366,23 @@ cleanup_and_exit() {
   exit "$cleanup_status"
 }
 trap 'cleanup_and_exit $?' EXIT
+
+# Homebrew rebuilds the Formula-test environment and intentionally drops the
+# ordinary PLAYWRIGHT_BROWSERS_PATH variable. The tap-owned browser runners
+# recover a prepared browser from HOMEBREW_CACHE's parent before considering
+# TMPDIR, so project the validated browser root into that exact cache realm.
+if [ -n "$PLAYWRIGHT_BROWSERS_PATH_INPUT" ]; then
+  PLAYWRIGHT_DISCOVERY_LINK="$(dirname "$HOMEBREW_CACHE")/ms-playwright"
+  if [ "$PLAYWRIGHT_DISCOVERY_LINK" != "$PLAYWRIGHT_BROWSERS_PATH_INPUT" ]; then
+    if [ -e "$PLAYWRIGHT_DISCOVERY_LINK" ] || [ -L "$PLAYWRIGHT_DISCOVERY_LINK" ]; then
+      echo "homebrew-verify-poured-bottle.sh: Playwright discovery projection already exists" >&2
+      exit 2
+    fi
+    ln -s -- "$PLAYWRIGHT_BROWSERS_PATH_INPUT" "$PLAYWRIGHT_DISCOVERY_LINK"
+  else
+    PLAYWRIGHT_DISCOVERY_LINK=""
+  fi
+fi
 
 export XDG_CONFIG_HOME="$WORK_DIR/xdg-config"
 mkdir -p "$XDG_CONFIG_HOME/homebrew"
@@ -654,6 +705,43 @@ validate_dependency_list "$DEPENDENCY_LIST" "runtime dependency list"
 validate_dependency_list \
   "$SAME_TAP_TEST_DEPENDENCY_LIST" "test dependency list"
 validate_dependency_list "$DEPENDENCY_POUR_LIST" "dependency pour list"
+
+LOCAL_DEPENDENCY_CACHE="${KANDELO_HOMEBREW_LOCAL_DEPENDENCY_CACHE:-}"
+if [ -n "$LOCAL_DEPENDENCY_CACHE" ]; then
+  if [ "${GITHUB_ACTIONS:-}" = true ] || [ ! -d "$LOCAL_DEPENDENCY_CACHE" ] ||
+     [ -L "$LOCAL_DEPENDENCY_CACHE" ]; then
+    echo "homebrew-verify-poured-bottle.sh: local dependency cache is restricted to a real non-CI directory" >&2
+    exit 2
+  fi
+  LOCAL_DEPENDENCY_CACHE="$(cd "$LOCAL_DEPENDENCY_CACHE" && pwd -P)"
+  LOCAL_DEPENDENCIES_JSON="$CONTROL_DIR/local-dependencies.json"
+  ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+    "$PROVENANCE_TAP_ROOT" "$TAP_NAME" "$FORMULA" "$ARCH" \
+    >"$LOCAL_DEPENDENCIES_JSON"
+  while IFS= read -r dependency; do
+    [ -n "$dependency" ] || continue
+    dependency_sha="$(jq -er --arg dependency "$dependency" \
+      '.[$dependency].sha256' "$LOCAL_DEPENDENCIES_JSON")"
+    source_archive="$LOCAL_DEPENDENCY_CACHE/$dependency_sha.tar.gz"
+    if [ ! -f "$source_archive" ] || [ -L "$source_archive" ] ||
+       [ "$(sha256sum "$source_archive" | awk '{print $1}')" != "$dependency_sha" ]; then
+      echo "homebrew-verify-poured-bottle.sh: local dependency cache lacks exact $dependency bottle $dependency_sha" >&2
+      exit 1
+    fi
+    cache_archive="$(run_brew_for_kandelo_bottles "$BREW_BIN" --cache \
+      --bottle-tag="$BOTTLE_TAG" --formula "$dependency")"
+    case "$cache_archive" in
+      "$HOMEBREW_CACHE"/*) ;;
+      *)
+        echo "homebrew-verify-poured-bottle.sh: Homebrew dependency cache path escapes its private cache" >&2
+        exit 1
+        ;;
+    esac
+    mkdir -p "$(dirname "$cache_archive")"
+    cp "$source_archive" "$cache_archive"
+    chmod 0444 "$cache_archive"
+  done <"$DEPENDENCY_POUR_LIST"
+fi
 
 while IFS= read -r dependency; do
   [ -n "$dependency" ] || continue

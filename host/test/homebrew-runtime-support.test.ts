@@ -84,13 +84,29 @@ describe("Homebrew shell runtime-support contract", () => {
       capability: "homebrew:runtime",
       root: "/usr/bin/brew",
       atomicGroup: "homebrew-runtime-support",
+      requiredKernelAbi: 43,
+    });
+    expect(contract.availability).toEqual({
+      provenance: {
+        schema: 1,
+        provenance_kind: "local-test",
+        promotable: false,
+        published: false,
+      },
+      auditedCatalog: {
+        checkoutCommit: "af70e3ba06367dbafb8a95fabbacc3e1352b58b2",
+        kandeloAbi: 43,
+        releaseTag: "bottles-abi-v43",
+        requiredArch: "wasm32",
+      },
     });
     expect(contract.additionalFormulaOrder).toEqual(
       contract.formulaOrder.filter(
         (name) => !contract.baseFormulaOrder.includes(name),
       ),
     );
-    expect(contract.additionalFormulaOrder).toContain(
+    expect(contract.additionalFormulaOrder).toEqual([]);
+    expect(contract.baseFormulaOrder).toContain(
       "kandelo-dev/tap-core/ruby",
     );
     expect(contract.deferredRelocationFormulae).toEqual([]);
@@ -161,8 +177,8 @@ function plan(packageOrder: readonly string[]): HomebrewVfsPlan {
     tapCommit: "1".repeat(40),
     kandeloRepository: "Automattic/kandelo",
     kandeloCommit: "2".repeat(40),
-    kandeloAbi: 42,
-    releaseTag: "bottles-abi-v42",
+    kandeloAbi: 43,
+    releaseTag: "bottles-abi-v43",
     requestedPackages: ["runtime"],
     packages: packageOrder.map((fullName) => packagePlan(fullName)),
   };

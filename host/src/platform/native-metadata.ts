@@ -1,13 +1,16 @@
 import type { BigIntStats } from "node:fs";
+import { ACCESS_MODES, FILE_MODES } from "../generated/abi";
 import type { StatResult } from "../types";
 
-const MODE_CHANGE_MASK = 0o7777;
+const MODE_CHANGE_MASK = FILE_MODES.S_MODE_BITS;
 const UID_GID_UNCHANGED = 0xffffffff;
-const SET_ID_BITS = 0o6000;
-const EXECUTE_BITS = 0o111;
-const X_OK = 0o1;
-const W_OK = 0o2;
-const R_OK = 0o4;
+const SET_ID_BITS = FILE_MODES.S_ISUID | FILE_MODES.S_ISGID;
+const EXECUTE_BITS =
+  FILE_MODES.S_IXUSR | FILE_MODES.S_IXGRP | FILE_MODES.S_IXOTH;
+const READABLE_BITS =
+  FILE_MODES.S_IRUSR | FILE_MODES.S_IRGRP | FILE_MODES.S_IROTH;
+const WRITABLE_BITS =
+  FILE_MODES.S_IWUSR | FILE_MODES.S_IWGRP | FILE_MODES.S_IWOTH;
 const MAX_SAFE_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
 const MIN_SAFE_INTEGER = BigInt(Number.MIN_SAFE_INTEGER);
 const NANOSECONDS_PER_MILLISECOND = 1_000_000n;
@@ -37,6 +40,64 @@ function checkedMilliseconds(valueNs: bigint, field: string): number {
   }
   const fractionalMilliseconds = valueNs % NANOSECONDS_PER_MILLISECOND;
   return Number(wholeMilliseconds) + Number(fractionalMilliseconds) / 1_000_000;
+}
+
+const S_IFMT = FILE_MODES.S_IFMT;
+const S_IFREG = FILE_MODES.S_IFREG;
+const S_IFDIR = FILE_MODES.S_IFDIR;
+const S_IFLNK = FILE_MODES.S_IFLNK;
+
+export function modeAfterRegularFileMutation(
+  mode: number,
+  kind: "content" | "ownership",
+): number {
+  if ((mode & S_IFMT) !== S_IFREG) return mode;
+  // WHY: Kandelo has no System V mandatory-locking interpretation for a
+  // non-executable S_ISGID bit. POSIX permits clearing both bits after content
+  // mutation, so both audited mutation kinds deliberately share one policy.
+  switch (kind) {
+    case "content":
+    case "ownership":
+      return mode & ~SET_ID_BITS;
+  }
+}
+
+/**
+ * Windows has no POSIX permission model: `fs.statSync` reports every entry as
+ * `0o666` (writable) or `0o444` (read-only), with no owner/group/other split
+ * and no execute/search bit on directories, and `chmod` cannot set an execute
+ * bit on a directory or otherwise express POSIX bits. Two things break for a
+ * guest process that drops privileges (e.g. a php-fpm worker running as a
+ * non-root uid):
+ *
+ *   - Directory lookup enforces `X_OK` on every path component, so with no
+ *     search bit the worker can't traverse any host-backed directory.
+ *   - The worker often has to *write* into the mount (WordPress writes its
+ *     SQLite database, uploads, and cache under the mounted tree). Hosts grant
+ *     this by `chmod`-ing those directories world-writable — a no-op on Windows
+ *     that also never reaches this overlay, so the intent is invisible here.
+ *
+ * This is a host-platform boundary, not a POSIX gap in the kernel: Windows ACLs
+ * don't map to POSIX bits, so the kernel can't enforce them anyway. Represent
+ * host-backed entries as world-accessible — `0o777` directories, `0o666` files
+ * — so a privilege-dropped guest can both traverse and write the sandbox it was
+ * given, while still honoring the one attribute Windows does expose by mapping
+ * read-only entries to `0o555`/`0o444`. Type bits come from the native mode, and
+ * a genuine host-level read-only file still fails its write at the native fs
+ * layer. Guest `chmod`/`chown` continue to override through the overlay.
+ */
+const SYNTHESIZE_POSIX_MODE = process.platform === "win32";
+
+export function synthesizePosixMode(nativeMode: number): number {
+  const type = nativeMode & S_IFMT;
+  // Node sets the owner-write bit (0o200) only when the entry is not
+  // read-only; use it to carry the read-only attribute across.
+  const writable = (nativeMode & 0o200) !== 0;
+  let perms: number;
+  if (type === S_IFDIR) perms = writable ? 0o777 : 0o555;
+  else if (type === S_IFLNK) perms = 0o777;
+  else perms = writable ? 0o666 : 0o444;
+  return type | perms;
 }
 
 interface VirtualMetadata {
@@ -80,12 +141,19 @@ export class NativeMetadataOverlay {
       );
     }
     const nativeMode = checkedNumber(s.mode, "st_mode");
+    // On hosts that don't expose POSIX permission bits (Windows), replace the
+    // native permission bits with synthesized ones so a privilege-dropped guest
+    // can traverse and write host-backed mounts. Type bits are untouched, and a
+    // guest chmod (metadata.mode) still wins.
+    const baseMode = SYNTHESIZE_POSIX_MODE
+      ? synthesizePosixMode(nativeMode)
+      : nativeMode;
     return {
       dev: s.dev,
       ino: s.ino,
       mode: metadata?.mode === undefined
-        ? nativeMode
-        : (nativeMode & ~MODE_CHANGE_MASK) | (metadata.mode & MODE_CHANGE_MASK),
+        ? baseMode
+        : (baseMode & ~MODE_CHANGE_MASK) | (metadata.mode & MODE_CHANGE_MASK),
       nlink: checkedNumber(s.nlink, "st_nlink"),
       uid: metadata?.uid ?? this.defaultUid,
       gid: metadata?.gid ?? this.defaultGid,
@@ -108,9 +176,10 @@ export class NativeMetadataOverlay {
     const metadata = this.metadataFor(s);
     if (uid !== UID_GID_UNCHANGED) metadata.uid = uid;
     if (gid !== UID_GID_UNCHANGED) metadata.gid = gid;
-    const mode = metadata.mode ?? (checkedNumber(s.mode, "st_mode") & MODE_CHANGE_MASK);
-    if (s.isFile() && (mode & EXECUTE_BITS) !== 0) {
-      metadata.mode = mode & ~SET_ID_BITS;
+    const mode = this.modeFor(s, metadata);
+    const nextMode = modeAfterRegularFileMutation(mode, "ownership");
+    if (nextMode !== mode) {
+      metadata.mode = nextMode & MODE_CHANGE_MASK;
     }
     metadata.ctimeMs = Date.now();
   }
@@ -134,9 +203,24 @@ export class NativeMetadataOverlay {
   }
 
   noteNativeContentChange(s: BigIntStats): void {
-    const metadata = this.entries.get(this.key(s));
-    if (metadata === undefined) return;
-    this.clearTimeOverrides(metadata);
+    this.prepareNativeContentChange(s)();
+  }
+
+  /**
+   * Finish every fallible identity/mode allocation before native bytes change.
+   * The returned synchronous commit only mutates an already-owned metadata
+   * object, so an open/ftruncate failure can leave guest mode untouched.
+   */
+  prepareNativeContentChange(s: BigIntStats): () => void {
+    let metadata = this.entries.get(this.key(s));
+    const mode = this.modeFor(s, metadata);
+    const nextMode = modeAfterRegularFileMutation(mode, "content");
+    if (metadata === undefined && nextMode === mode) return () => {};
+    metadata ??= this.metadataFor(s);
+    return () => {
+      if (nextMode !== mode) metadata.mode = nextMode & MODE_CHANGE_MASK;
+      this.clearTimeOverrides(metadata);
+    };
   }
 
   forget(s: BigIntStats): void {
@@ -145,9 +229,24 @@ export class NativeMetadataOverlay {
 
   access(s: BigIntStats, amode: number): void {
     const mode = this.toStatResult(s).mode;
-    if ((amode & R_OK) !== 0 && (mode & 0o444) === 0) throw new Error("EACCES");
-    if ((amode & W_OK) !== 0 && (mode & 0o222) === 0) throw new Error("EACCES");
-    if ((amode & X_OK) !== 0 && (mode & 0o111) === 0) throw new Error("EACCES");
+    if (
+      (amode & ACCESS_MODES.R_OK) !== 0 &&
+      (mode & READABLE_BITS) === 0
+    ) {
+      throw new Error("EACCES");
+    }
+    if (
+      (amode & ACCESS_MODES.W_OK) !== 0 &&
+      (mode & WRITABLE_BITS) === 0
+    ) {
+      throw new Error("EACCES");
+    }
+    if (
+      (amode & ACCESS_MODES.X_OK) !== 0 &&
+      (mode & EXECUTE_BITS) === 0
+    ) {
+      throw new Error("EACCES");
+    }
   }
 
   private metadataFor(s: BigIntStats): VirtualMetadata {
@@ -158,6 +257,13 @@ export class NativeMetadataOverlay {
       this.entries.set(key, metadata);
     }
     return metadata;
+  }
+
+  private modeFor(s: BigIntStats, metadata?: VirtualMetadata): number {
+    const nativeMode = checkedNumber(s.mode, "st_mode");
+    if (metadata?.mode === undefined) return nativeMode;
+    return (nativeMode & ~MODE_CHANGE_MASK) |
+      (metadata.mode & MODE_CHANGE_MASK);
   }
 
   private reconcileNativeTimes(

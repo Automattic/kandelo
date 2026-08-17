@@ -12,6 +12,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { isWithinRealDirectory } from "../../examples/run-example-paths";
+import { resolveRunExampleBuiltinPrograms } from "../../examples/run-example-builtins";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "..", "..");
@@ -19,6 +20,29 @@ const runExample = join(repoRoot, "examples", "run-example.ts");
 const spawnSmokeWasm = join(repoRoot, "examples", "spawn-smoke.wasm");
 
 describe("run-example exec resolver", () => {
+  it("skips generic built-in package resolution for explicit-only consumers", () => {
+    const resolved = resolveRunExampleBuiltinPrograms(
+      { KANDELO_RUNNER_BUILTINS: "explicit" },
+      () => {
+        throw new Error("legacy package resolver must not run");
+      },
+    );
+
+    expect(resolved).toEqual({
+      programs: {},
+      snapshotNames: new Set(),
+    });
+  });
+
+  it("rejects unknown built-in package modes", () => {
+    expect(() =>
+      resolveRunExampleBuiltinPrograms(
+        { KANDELO_RUNNER_BUILTINS: "legacy-ish" },
+        () => ({ programs: {}, snapshotNames: new Set() }),
+      )
+    ).toThrow(/KANDELO_RUNNER_BUILTINS/);
+  });
+
   it("loads unrelated examples without probing legacy flat paths for multi-member packages", () => {
     const source = readFileSync(runExample, "utf8");
     const projection = JSON.parse(
@@ -138,4 +162,32 @@ describe("run-example exec resolver", () => {
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it("keeps explicit isolated exec mappings ahead of lazy rootfs stubs", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--experimental-wasm-exnref",
+        "--import",
+        "tsx/esm",
+        runExample,
+        spawnSmokeWasm,
+      ],
+      {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          KANDELO_RUNNER_VFS: "isolated",
+          TIMEOUT: "30000",
+        },
+        encoding: "utf8",
+        timeout: 45_000,
+      },
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("spawned-ok");
+    expect(result.stdout).toContain("OK");
+    expect(result.stderr).not.toContain("LazyHttpResponseError");
+  }, 45_000);
 });

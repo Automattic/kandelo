@@ -3,6 +3,32 @@ import {
   PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
   PROCESS_MEMORY_THREAD_SLOT_DECL_EXPORT,
   PROCESS_MEMORY_WASM_PAGE_SIZE,
+  WPK_FORK_CAPABILITIES_SECTION,
+  WPK_FORK_CAPABILITIES_VERSION,
+  WPK_FORK_CAP_KNOWN_MASK,
+  WPK_FORK_CAP_REQUIRED_FLAGS,
+  WPK_FORK_EXCEPTION_CODEC_HEADER_SIZE,
+  WPK_FORK_EXCEPTION_CODEC_SECTION,
+  WPK_FORK_EXCEPTION_CODEC_TAG_RECORD_SIZE,
+  WPK_FORK_EXCEPTION_CODEC_VERSION,
+  WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE,
+  WPK_FORK_EXCEPTION_IMPORT_ACTIVATION,
+  WPK_FORK_GLOBAL_CATALOG_EXPORT_PREFIX,
+  WPK_FORK_IMPORTED_GLOBALS_FLAG_MUTABLE,
+  WPK_FORK_IMPORTED_GLOBALS_FLAG_SHARED,
+  WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE,
+  WPK_FORK_IMPORTED_GLOBALS_KNOWN_FLAGS,
+  WPK_FORK_IMPORTED_GLOBALS_MAGIC,
+  WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE,
+  WPK_FORK_IMPORTED_GLOBALS_SECTION,
+  WPK_FORK_IMPORTED_GLOBALS_VERSION,
+  WPK_FORK_IMPORTED_TABLES_FLAG_TABLE64,
+  WPK_FORK_IMPORTED_TABLES_HEADER_SIZE,
+  WPK_FORK_IMPORTED_TABLES_KNOWN_FLAGS,
+  WPK_FORK_IMPORTED_TABLES_MAGIC,
+  WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE,
+  WPK_FORK_IMPORTED_TABLES_SECTION,
+  WPK_FORK_IMPORTED_TABLES_VERSION,
   WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE,
   WPK_FORK_LINKED_FRAME_FORMAT_MAGIC,
   WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
@@ -10,9 +36,44 @@ import {
   WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
   WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT,
   WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS,
+  WPK_FORK_MODULE_STATE_ARENA_VERSION,
+  WPK_FORK_MODULE_STATE_DESCRIPTOR_SIZE,
+  WPK_FORK_MODULE_STATE_FORMAT_MAGIC,
+  WPK_FORK_MODULE_STATE_FORMAT_SECTION,
+  WPK_FORK_MODULE_STATE_FORMAT_VERSION,
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_ANYREF,
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXNREF,
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXTERNREF,
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_F32,
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_F64,
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_FUNCREF,
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I32,
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I64,
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_V128,
+  WPK_FORK_MODULE_STATE_POINTER_WIDTHS,
+  WPK_FORK_MODULE_STATE_RECORD_ALIGNMENT,
+  WPK_FORK_MODULE_STATE_RECORD_VERSION,
+  WPK_FORK_MODULE_STATE_REQUIRED_FLAGS,
+  WPK_FORK_MODULE_STATE_ROOT_POINTER_WORD_OFFSET,
+  WPK_FORK_PROCESS_IMPORT,
   WPK_FORK_REQUIRED_EXPORTS,
   WPK_FORK_REQUIRED_IMPORTS,
+  WPK_FORK_REQUIRED_TABLE_IMPORTS,
+  WPK_FORK_STATIC_ROOT_CATALOG_EXPORT as FORK_STATIC_ROOT_CATALOG_EXPORT,
+  WPK_FORK_STATIC_ROOT_CATALOG_HEADER_SIZE as FORK_STATIC_ROOT_CATALOG_HEADER_SIZE,
+  WPK_FORK_STATIC_ROOT_CATALOG_MAGIC,
+  WPK_FORK_STATIC_ROOT_CATALOG_SECTION as FORK_STATIC_ROOT_CATALOG_SECTION,
+  WPK_FORK_STATIC_ROOT_CATALOG_VERSION as FORK_STATIC_ROOT_CATALOG_VERSION,
+  WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX,
+  WPK_FORK_UNWIND_TAG_IMPORT_MODULE as FORK_UNWIND_TAG_IMPORT_MODULE,
+  WPK_FORK_UNWIND_TAG_IMPORT_NAME as FORK_UNWIND_TAG_IMPORT_NAME,
+  WPK_FORK_UNWIND_TRANSPORT_PAYLOAD_ARITY as FORK_UNWIND_TRANSPORT_PAYLOAD_ARITY,
+  WPK_FORK_UNWIND_TRANSPORT_SECTION as FORK_UNWIND_TRANSPORT_SECTION,
+  WPK_FORK_UNWIND_TRANSPORT_VERSION as FORK_UNWIND_TRANSPORT_VERSION,
 } from "./generated/abi";
+
+const FORK_STATIC_ROOT_CATALOG_MAGIC =
+  Uint8Array.from(WPK_FORK_STATIC_ROOT_CATALOG_MAGIC);
 
 /** WebAssembly page size (64 KiB) */
 export const WASM_PAGE_SIZE = PROCESS_MEMORY_WASM_PAGE_SIZE;
@@ -101,6 +162,105 @@ function readSLEB128_i64(buf: Uint8Array, off: number): [bigint, number] {
   return [result, pos - off];
 }
 
+export interface WasmValueType {
+  /**
+   * Leading binary opcode. Fork ABI signatures only compare numeric pointer
+   * types, but retaining the leading opcode keeps diagnostics deterministic
+   * while the parser skips the complete GC/reference encoding.
+   */
+  code: number;
+  /** Signed heap type for the multi-byte `ref`/`ref null`/`exact` forms. */
+  heapType?: number;
+  /** Whether a multi-byte reference uses the shared heap-type prefix. */
+  shared: boolean;
+}
+
+interface ParsedWasmValueType extends WasmValueType {
+  next: number;
+}
+
+function skipSignedLeb128(
+  buf: Uint8Array,
+  off: number,
+  maxBytes: number,
+  context: string,
+): number {
+  for (let count = 0; count < maxBytes; count++) {
+    if (off >= buf.length) throw new Error(`${context} is truncated`);
+    if ((buf[off++]! & 0x80) === 0) return off;
+  }
+  throw new Error(`${context} has an overlong LEB128 encoding`);
+}
+
+/**
+ * Read one complete value/reference type.
+ *
+ * Concrete and exact references are multi-byte (`ref[ null] heaptype`), and
+ * recursive GC modules can use them in function, table, and global types.
+ * Treating every value type as one byte desynchronizes the artifact guard and
+ * can make a valid ABI function appear to have an arbitrary signature.
+ */
+function readWasmValueType(
+  buf: Uint8Array,
+  off: number,
+  context: string,
+): ParsedWasmValueType {
+  if (off >= buf.length) throw new Error(`${context} is truncated`);
+  const code = buf[off++]!;
+  switch (code) {
+    case 0x7f: // i32
+    case 0x7e: // i64
+    case 0x7d: // f32
+    case 0x7c: // f64
+    case 0x7b: // v128
+    case 0x75: // nocontref
+    case 0x74: // noexnref
+    case 0x73: // nofuncref
+    case 0x72: // noexternref
+    case 0x71: // nullref
+    case 0x70: // funcref
+    case 0x6f: // externref
+    case 0x6e: // anyref
+    case 0x6d: // eqref
+    case 0x6c: // i31ref
+    case 0x6b: // structref
+    case 0x6a: // arrayref
+    case 0x69: // exnref
+    case 0x68: // contref
+      return { code, shared: false, next: off };
+    case 0x62: // exact heaptype
+    case 0x63: // ref null heaptype
+    case 0x64: { // ref heaptype
+      // Shared abstract heap types add a prefix before the signed heap type.
+      const shared = buf[off] === 0x65;
+      if (shared) off++;
+      const next = skipSignedLeb128(buf, off, 5, `${context} heap type`);
+      const [heapType] = readSLEB128_i64(buf, off);
+      return {
+        code,
+        heapType: Number(heapType),
+        shared,
+        next,
+      };
+    }
+    default:
+      throw new Error(
+        `${context} has unknown value type 0x${code.toString(16)}`,
+      );
+  }
+}
+
+function readWasmStorageType(
+  buf: Uint8Array,
+  off: number,
+  context: string,
+): ParsedWasmValueType {
+  if (buf[off] === 0x78 || buf[off] === 0x77) {
+    return { code: buf[off]!, shared: false, next: off + 1 };
+  }
+  return readWasmValueType(buf, off, context);
+}
+
 function skipWasmBlockType(buf: Uint8Array, off: number): number {
   const first = buf[off];
   if (
@@ -117,6 +277,163 @@ function skipWasmBlockType(buf: Uint8Array, off: number): number {
   }
   const [, bytes] = readSLEB128_i32(buf, off);
   return off + bytes;
+}
+
+function readWasmFunctionType(
+  src: Uint8Array,
+  pos: number,
+  context: string,
+): { signature: WasmFunctionSignature; next: number } {
+  const [paramCount, paramCountBytes] = readULEB128(src, pos);
+  pos += paramCountBytes;
+  const params: number[] = [];
+  const paramTypes: WasmValueType[] = [];
+  for (let index = 0; index < paramCount; index++) {
+    const value = readWasmValueType(
+      src,
+      pos,
+      `${context} parameter ${index}`,
+    );
+    params.push(value.code);
+    paramTypes.push({
+      code: value.code,
+      heapType: value.heapType,
+      shared: value.shared,
+    });
+    pos = value.next;
+  }
+  const [resultCount, resultCountBytes] = readULEB128(src, pos);
+  pos += resultCountBytes;
+  const results: number[] = [];
+  const resultTypes: WasmValueType[] = [];
+  for (let index = 0; index < resultCount; index++) {
+    const value = readWasmValueType(
+      src,
+      pos,
+      `${context} result ${index}`,
+    );
+    results.push(value.code);
+    resultTypes.push({
+      code: value.code,
+      heapType: value.heapType,
+      shared: value.shared,
+    });
+    pos = value.next;
+  }
+  return {
+    signature: { params, results, paramTypes, resultTypes },
+    next: pos,
+  };
+}
+
+function readWasmFieldType(
+  src: Uint8Array,
+  pos: number,
+  context: string,
+): number {
+  const storage = readWasmStorageType(src, pos, context);
+  pos = storage.next;
+  if (pos >= src.length) throw new Error(`${context} mutability is truncated`);
+  const mutability = src[pos++]!;
+  if (mutability !== 0 && mutability !== 1) {
+    throw new Error(`${context} has invalid mutability ${mutability}`);
+  }
+  return pos;
+}
+
+function readWasmCompositeType(
+  src: Uint8Array,
+  opcode: number,
+  pos: number,
+  context: string,
+): { signature?: WasmFunctionSignature; next: number } {
+  if (opcode === 0x65) {
+    if (pos >= src.length) throw new Error(`${context} shared type is truncated`);
+    opcode = src[pos++]!;
+  }
+  // Descriptor types may prefix the actual composite type.
+  for (const prefix of [0x4c, 0x4d]) {
+    if (opcode !== prefix) continue;
+    const [, indexBytes] = readULEB128(src, pos);
+    pos += indexBytes;
+    if (pos >= src.length) throw new Error(`${context} descriptor is truncated`);
+    opcode = src[pos++]!;
+  }
+
+  if (opcode === 0x60) {
+    return readWasmFunctionType(src, pos, context);
+  }
+  if (opcode === 0x5f) {
+    const [fieldCount, fieldCountBytes] = readULEB128(src, pos);
+    pos += fieldCountBytes;
+    for (let index = 0; index < fieldCount; index++) {
+      pos = readWasmFieldType(src, pos, `${context} field ${index}`);
+    }
+    return { next: pos };
+  }
+  if (opcode === 0x5e) {
+    return {
+      next: readWasmFieldType(src, pos, `${context} array field`),
+    };
+  }
+  if (opcode === 0x5d) {
+    return {
+      next: skipSignedLeb128(src, pos, 5, `${context} continuation type`),
+    };
+  }
+  throw new Error(
+    `${context} has unknown composite type 0x${opcode.toString(16)}`,
+  );
+}
+
+function readWasmSubtype(
+  src: Uint8Array,
+  pos: number,
+  context: string,
+): { signature?: WasmFunctionSignature; next: number } {
+  if (pos >= src.length) throw new Error(`${context} is truncated`);
+  let opcode = src[pos++]!;
+  if (opcode === 0x4f || opcode === 0x50) {
+    const [supertypeCount, countBytes] = readULEB128(src, pos);
+    pos += countBytes;
+    for (let index = 0; index < supertypeCount; index++) {
+      const [, indexBytes] = readULEB128(src, pos);
+      pos += indexBytes;
+    }
+    if (pos >= src.length) throw new Error(`${context} body is truncated`);
+    opcode = src[pos++]!;
+  }
+  return readWasmCompositeType(src, opcode, pos, context);
+}
+
+function readWasmTypeSection(
+  src: Uint8Array,
+  pos: number,
+): { types: Array<WasmFunctionSignature | undefined>; next: number } {
+  const [groupCount, groupCountBytes] = readULEB128(src, pos);
+  pos += groupCountBytes;
+  const types: Array<WasmFunctionSignature | undefined> = [];
+  for (let groupIndex = 0; groupIndex < groupCount; groupIndex++) {
+    if (src[pos] === 0x4e) {
+      pos++;
+      const [typeCount, typeCountBytes] = readULEB128(src, pos);
+      pos += typeCountBytes;
+      for (let typeIndex = 0; typeIndex < typeCount; typeIndex++) {
+        const parsed = readWasmSubtype(
+          src,
+          pos,
+          `recursive type ${groupIndex}:${typeIndex}`,
+        );
+        types.push(parsed.signature);
+        pos = parsed.next;
+      }
+    } else {
+      const parsed = readWasmSubtype(src, pos, `type ${groupIndex}`);
+      types.push(parsed.signature);
+      pos = parsed.next;
+    }
+  }
+  return { types, next: pos };
 }
 
 function skipVectorMemarg(buf: Uint8Array, off: number): number {
@@ -233,19 +550,20 @@ function skipImportEntry(
     const [, n] = readULEB128(src, pos); pos += n;
   } else if (kind === 1) {
     // table: reftype + limits
-    pos++; // reftype
-    const f = src[pos++];
-    const [, n] = readULEB128(src, pos); pos += n;
-    if (f & 1) { const [, n2] = readULEB128(src, pos); pos += n2; }
+    pos = readWasmValueType(src, pos, "table import type").next;
+    pos = readLimits(src, pos).next;
   } else if (kind === 2) {
     // memory: limits
-    const f = src[pos++];
-    const [, n] = readULEB128(src, pos); pos += n;
-    if (f & 1) { const [, n2] = readULEB128(src, pos); pos += n2; }
+    pos = readLimits(src, pos).next;
   } else if (kind === 3) {
     // global: valtype + mutability
     counts.globalImports++;
-    pos += 2;
+    pos = readWasmValueType(src, pos, "global import type").next;
+    pos++;
+  } else if (kind === 4) {
+    // exception tag: attribute byte + function type index
+    pos++;
+    const [, n] = readULEB128(src, pos); pos += n;
   }
   return pos;
 }
@@ -286,17 +604,137 @@ function containsAscii(src: Uint8Array, needle: string): boolean {
  */
 export const WPK_FORK_EXPORTS = WPK_FORK_REQUIRED_EXPORTS.map(({ name }) => name);
 
-interface WasmFunctionSignature {
-  params: number[];
-  results: number[];
+export interface WasmFunctionSignature {
+  readonly params: readonly number[];
+  readonly results: readonly number[];
+  /** Complete binary value types, including concrete heap type and nullability. */
+  readonly paramTypes: readonly WasmValueType[];
+  /** Complete binary value types, including concrete heap type and nullability. */
+  readonly resultTypes: readonly WasmValueType[];
+}
+
+export interface WasmFunctionImportType {
+  readonly module: string;
+  readonly name: string;
+  /** Ordinal among every import-section entry, regardless of import kind. */
+  readonly importOrdinal: number;
+  /** Function index assigned by the core Wasm index space. */
+  readonly functionIndex: number;
+  readonly signature: WasmFunctionSignature;
+}
+
+interface WasmGlobalImportType {
+  module: string;
+  name: string;
+  importOrdinal: number;
+  index: number;
+  valueType: number;
+  recipeTypeCode: number | null;
+  mutable: boolean;
+  shared: boolean;
+}
+
+interface WasmTableType {
+  elementType: number;
+  table64: boolean;
+  minimum: number;
+  maximum: number | null;
+}
+
+interface WasmTableImportType extends WasmTableType {
+  module: string;
+  name: string;
+  importOrdinal: number;
+  index: number;
+  recipeTypeCode: number | null;
+}
+
+interface WasmExportEntry {
+  kind: number;
+  index: number;
 }
 
 interface WasmForkArtifactFacts {
+  functionTypes: readonly (WasmFunctionSignature | undefined)[];
+  functionTypeIndices: readonly number[];
   functionImports: Map<string, WasmFunctionSignature[]>;
+  functionImportEntries: WasmFunctionImportType[];
+  globalImports: Map<string, WasmGlobalImportType[]>;
+  tableImports: Map<string, WasmTableImportType[]>;
+  tables: WasmTableType[];
+  tagImports: Map<string, WasmFunctionSignature[]>;
   functionExports: Map<string, WasmFunctionSignature[]>;
+  globalExports: Map<string, number[]>;
+  tableExports: Map<string, number[]>;
+  exports: Map<string, WasmExportEntry[]>;
   memoryPointerWidths: number[];
+  forkCapabilities: Uint8Array[];
   linkedFrameDescriptors: Uint8Array[];
+  exceptionCodecDescriptors: Uint8Array[];
+  importedGlobalsDescriptors: Uint8Array[];
+  importedTablesDescriptors: Uint8Array[];
+  moduleStateDescriptors: Uint8Array[];
+  staticRootDescriptors: Uint8Array[];
+  unwindTransportDescriptors: Uint8Array[];
+  nativeStartCount: number;
   importsKernelFork: boolean;
+}
+
+function forkGlobalRecipeTypeCode(
+  valueType: ParsedWasmValueType,
+  functionTypes: readonly (WasmFunctionSignature | undefined)[],
+): number | null {
+  switch (valueType.code) {
+    case 0x7f:
+      return WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I32;
+    case 0x7e:
+      return WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I64;
+    case 0x7d:
+      return WPK_FORK_MODULE_STATE_GLOBAL_TYPE_F32;
+    case 0x7c:
+      return WPK_FORK_MODULE_STATE_GLOBAL_TYPE_F64;
+    case 0x7b:
+      return WPK_FORK_MODULE_STATE_GLOBAL_TYPE_V128;
+    case 0x70: // funcref
+    case 0x73: // nofuncref
+      return WPK_FORK_MODULE_STATE_GLOBAL_TYPE_FUNCREF;
+    case 0x6f: // externref
+    case 0x72: // noexternref
+      return WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXTERNREF;
+    case 0x69: // exnref
+    case 0x74: // noexnref
+      return WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXNREF;
+    case 0x68: // contref
+    case 0x6a: // arrayref
+    case 0x6b: // structref
+    case 0x6c: // i31ref
+    case 0x6d: // eqref
+    case 0x6e: // anyref
+    case 0x71: // nullref
+    case 0x75: // nocontref
+      return WPK_FORK_MODULE_STATE_GLOBAL_TYPE_ANYREF;
+    case 0x62: // exact heaptype
+    case 0x63: // ref null heaptype
+    case 0x64: { // ref heaptype
+      const heapType = valueType.heapType;
+      if (heapType === undefined) return null;
+      if (heapType === -16 || heapType === -13) {
+        return WPK_FORK_MODULE_STATE_GLOBAL_TYPE_FUNCREF;
+      }
+      if (heapType === -17 || heapType === -14) {
+        return WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXTERNREF;
+      }
+      if (heapType === -23 || heapType === -12) {
+        return WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXNREF;
+      }
+      if (heapType >= 0 && functionTypes[heapType] !== undefined) {
+        return WPK_FORK_MODULE_STATE_GLOBAL_TYPE_FUNCREF;
+      }
+      return WPK_FORK_MODULE_STATE_GLOBAL_TYPE_ANYREF;
+    }
+    default:
+      return null;
+  }
 }
 
 function appendSignature(
@@ -312,23 +750,40 @@ function appendSignature(
   signatures.set(identity, values);
 }
 
+function appendImportType<T>(
+  imports: Map<string, T[]>,
+  identity: string,
+  value: T,
+): void {
+  const values = imports.get(identity) ?? [];
+  values.push(value);
+  imports.set(identity, values);
+}
+
 function readLimits(
   src: Uint8Array,
   pos: number,
-): { flags: number; next: number } {
+): {
+  flags: number;
+  minimum: number;
+  maximum: number | null;
+  next: number;
+} {
   const [flags, flagBytes] = readULEB128(src, pos);
   pos += flagBytes;
-  const [, minBytes] = readULEB128(src, pos);
+  const [minimum, minBytes] = readULEB128(src, pos);
   pos += minBytes;
+  let maximum: number | null = null;
   if ((flags & 1) !== 0) {
-    const [, maxBytes] = readULEB128(src, pos);
+    const [value, maxBytes] = readULEB128(src, pos);
     pos += maxBytes;
+    maximum = value;
   }
-  return { flags, next: pos };
+  return { flags, minimum, maximum, next: pos };
 }
 
 /**
- * Parse the portions of a final Wasm module that jointly define the ABI 42
+ * Parse the portions of a final Wasm module that jointly define the ABI 43
  * fork-artifact contract.
  *
  * WHY: names alone can look complete while the host and guest disagree about
@@ -339,17 +794,37 @@ function readWasmForkArtifactFacts(programBytes: ArrayBuffer): WasmForkArtifactF
   const src = new Uint8Array(programBytes);
   if (!hasWasmMagic(src)) throw new Error("not a wasm binary");
 
-  const functionTypes: WasmFunctionSignature[] = [];
+  const functionTypes: Array<WasmFunctionSignature | undefined> = [];
   const functionTypeIndices: number[] = [];
   const pendingFunctionExports: Array<{ name: string; index: number }> = [];
   const facts: WasmForkArtifactFacts = {
+    functionTypes,
+    functionTypeIndices,
     functionImports: new Map(),
+    functionImportEntries: [],
+    globalImports: new Map(),
+    tableImports: new Map(),
+    tables: [],
+    tagImports: new Map(),
     functionExports: new Map(),
+    globalExports: new Map(),
+    tableExports: new Map(),
+    exports: new Map(),
     memoryPointerWidths: [],
+    forkCapabilities: [],
     linkedFrameDescriptors: [],
+    exceptionCodecDescriptors: [],
+    importedGlobalsDescriptors: [],
+    importedTablesDescriptors: [],
+    moduleStateDescriptors: [],
+    staticRootDescriptors: [],
+    unwindTransportDescriptors: [],
+    nativeStartCount: 0,
     importsKernelFork: false,
   };
 
+  let globalImportCount = 0;
+  let tableImportCount = 0;
   let offset = 8;
   while (offset < src.length) {
     const sectionId = src[offset];
@@ -364,25 +839,26 @@ function readWasmForkArtifactFacts(programBytes: ArrayBuffer): WasmForkArtifactF
       const [name, afterName] = readName(src, pos);
       if (name === WPK_FORK_LINKED_FRAME_FORMAT_SECTION) {
         facts.linkedFrameDescriptors.push(src.slice(afterName, sectionEnd));
+      } else if (name === WPK_FORK_CAPABILITIES_SECTION) {
+        facts.forkCapabilities.push(src.slice(afterName, sectionEnd));
+      } else if (name === WPK_FORK_EXCEPTION_CODEC_SECTION) {
+        facts.exceptionCodecDescriptors.push(src.slice(afterName, sectionEnd));
+      } else if (name === WPK_FORK_IMPORTED_GLOBALS_SECTION) {
+        facts.importedGlobalsDescriptors.push(src.slice(afterName, sectionEnd));
+      } else if (name === WPK_FORK_IMPORTED_TABLES_SECTION) {
+        facts.importedTablesDescriptors.push(src.slice(afterName, sectionEnd));
+      } else if (name === WPK_FORK_MODULE_STATE_FORMAT_SECTION) {
+        facts.moduleStateDescriptors.push(src.slice(afterName, sectionEnd));
+      } else if (name === FORK_STATIC_ROOT_CATALOG_SECTION) {
+        facts.staticRootDescriptors.push(src.slice(afterName, sectionEnd));
+      } else if (name === FORK_UNWIND_TRANSPORT_SECTION) {
+        facts.unwindTransportDescriptors.push(src.slice(afterName, sectionEnd));
       }
     } else if (sectionId === 1) {
       requireFullyConsumed = true;
-      const [count, countBytes] = readULEB128(src, pos);
-      pos += countBytes;
-      for (let i = 0; i < count; i++) {
-        if (src[pos++] !== 0x60) {
-          throw new Error("unsupported non-function type in fork artifact");
-        }
-        const [paramCount, paramCountBytes] = readULEB128(src, pos);
-        pos += paramCountBytes;
-        const params = [...src.slice(pos, pos + paramCount)];
-        pos += paramCount;
-        const [resultCount, resultCountBytes] = readULEB128(src, pos);
-        pos += resultCountBytes;
-        const results = [...src.slice(pos, pos + resultCount)];
-        pos += resultCount;
-        functionTypes.push({ params, results });
-      }
+      const parsed = readWasmTypeSection(src, pos);
+      functionTypes.push(...parsed.types);
+      pos = parsed.next;
     } else if (sectionId === 2) {
       requireFullyConsumed = true;
       const [count, countBytes] = readULEB128(src, pos);
@@ -395,23 +871,101 @@ function readWasmForkArtifactFacts(programBytes: ArrayBuffer): WasmForkArtifactF
         if (kind === 0) {
           const [typeIndex, typeBytes] = readULEB128(src, pos);
           pos += typeBytes;
+          const functionIndex = functionTypeIndices.length;
           functionTypeIndices.push(typeIndex);
           const identity = `${moduleName}.${fieldName}`;
-          appendSignature(facts.functionImports, identity, functionTypes[typeIndex]);
+          const signature = functionTypes[typeIndex];
+          appendSignature(facts.functionImports, identity, signature);
+          facts.functionImportEntries.push({
+            module: moduleName,
+            name: fieldName,
+            importOrdinal: i,
+            functionIndex,
+            signature: signature!,
+          });
           if (identity === "kernel.kernel_fork") facts.importsKernelFork = true;
         } else if (kind === 1) {
-          pos++; // reference type
-          pos = readLimits(src, pos).next;
+          const element = readWasmValueType(
+            src,
+            pos,
+            `table import ${moduleName}.${fieldName}`,
+          );
+          pos = element.next;
+          const limits = readLimits(src, pos);
+          pos = limits.next;
+          appendImportType(
+            facts.tableImports,
+            `${moduleName}.${fieldName}`,
+            {
+              module: moduleName,
+              name: fieldName,
+              importOrdinal: i,
+              index: tableImportCount++,
+              elementType: element.code,
+              recipeTypeCode: forkGlobalRecipeTypeCode(
+                element,
+                functionTypes,
+              ),
+              table64: (limits.flags & 4) !== 0,
+              minimum: limits.minimum,
+              maximum: limits.maximum,
+            },
+          );
+          facts.tables.push({
+            elementType: element.code,
+            table64: (limits.flags & 4) !== 0,
+            minimum: limits.minimum,
+            maximum: limits.maximum,
+          });
         } else if (kind === 2) {
           const limits = readLimits(src, pos);
           pos = limits.next;
           facts.memoryPointerWidths.push((limits.flags & 4) !== 0 ? 8 : 4);
         } else if (kind === 3) {
-          pos += 2; // value type + mutability
+          const valueType = readWasmValueType(
+            src,
+            pos,
+            `global import ${moduleName}.${fieldName}`,
+          );
+          pos = valueType.next;
+          if (pos >= src.length) {
+            throw new Error(`global import ${moduleName}.${fieldName} is truncated`);
+          }
+          const flags = src[pos++]!;
+          if ((flags & ~0b11) !== 0) {
+            throw new Error(
+              `global import ${moduleName}.${fieldName} has invalid flags ${flags}`,
+            );
+          }
+          appendImportType(
+            facts.globalImports,
+            `${moduleName}.${fieldName}`,
+            {
+              module: moduleName,
+              name: fieldName,
+              importOrdinal: i,
+              index: globalImportCount++,
+              valueType: valueType.code,
+              recipeTypeCode: forkGlobalRecipeTypeCode(
+                valueType,
+                functionTypes,
+              ),
+              mutable: (flags & 0b01) !== 0,
+              shared: (flags & 0b10) !== 0,
+            },
+          );
         } else if (kind === 4) {
-          pos++; // tag attribute
-          const [, typeBytes] = readULEB128(src, pos);
+          const attribute = src[pos++];
+          if (attribute !== 0) {
+            throw new Error(`unsupported wasm tag attribute ${attribute}`);
+          }
+          const [typeIndex, typeBytes] = readULEB128(src, pos);
           pos += typeBytes;
+          appendSignature(
+            facts.tagImports,
+            `${moduleName}.${fieldName}`,
+            functionTypes[typeIndex],
+          );
         } else {
           throw new Error(`unsupported wasm import kind ${kind}`);
         }
@@ -424,6 +978,26 @@ function readWasmForkArtifactFacts(programBytes: ArrayBuffer): WasmForkArtifactF
         const [typeIndex, typeBytes] = readULEB128(src, pos);
         pos += typeBytes;
         functionTypeIndices.push(typeIndex);
+      }
+    } else if (sectionId === 4) {
+      requireFullyConsumed = true;
+      const [count, countBytes] = readULEB128(src, pos);
+      pos += countBytes;
+      for (let index = 0; index < count; index++) {
+        const element = readWasmValueType(
+          src,
+          pos,
+          `defined table ${index}`,
+        );
+        pos = element.next;
+        const limits = readLimits(src, pos);
+        pos = limits.next;
+        facts.tables.push({
+          elementType: element.code,
+          table64: (limits.flags & 4) !== 0,
+          minimum: limits.minimum,
+          maximum: limits.maximum,
+        });
       }
     } else if (sectionId === 5) {
       requireFullyConsumed = true;
@@ -444,8 +1018,20 @@ function readWasmForkArtifactFacts(programBytes: ArrayBuffer): WasmForkArtifactF
         const kind = src[pos++];
         const [index, indexBytes] = readULEB128(src, pos);
         pos += indexBytes;
-        if (kind === 0) pendingFunctionExports.push({ name, index });
+        appendImportType(facts.exports, name, { kind, index });
+        if (kind === 0) {
+          pendingFunctionExports.push({ name, index });
+        } else if (kind === 3) {
+          appendImportType(facts.globalExports, name, index);
+        } else if (kind === 1) {
+          appendImportType(facts.tableExports, name, index);
+        }
       }
+    } else if (sectionId === 8) {
+      requireFullyConsumed = true;
+      facts.nativeStartCount++;
+      const [, functionIndexBytes] = readULEB128(src, pos);
+      pos += functionIndexBytes;
     }
 
     if (requireFullyConsumed && pos !== sectionEnd) {
@@ -514,18 +1100,713 @@ function validateLinkedFrameDescriptor(descriptor: Uint8Array): number {
   return pointerFormat.bytes;
 }
 
+function validateForkCapabilities(sections: Uint8Array[]): string[] {
+  if (sections.length === 0) {
+    return [`missing required ${WPK_FORK_CAPABILITIES_SECTION} capability`];
+  }
+  if (sections.length !== 1) {
+    return [
+      `has ${sections.length} ${WPK_FORK_CAPABILITIES_SECTION} sections, expected exactly one`,
+    ];
+  }
+  const capability = sections[0];
+  if (capability.byteLength !== 2) {
+    return [
+      `${WPK_FORK_CAPABILITIES_SECTION} has ${capability.byteLength} bytes, expected 2`,
+    ];
+  }
+  if (capability[0] !== WPK_FORK_CAPABILITIES_VERSION) {
+    return [
+      `${WPK_FORK_CAPABILITIES_SECTION} version ${capability[0]} is unsupported`,
+    ];
+  }
+  const flags = capability[1]!;
+  if ((flags & ~WPK_FORK_CAP_KNOWN_MASK) !== 0) {
+    return [
+      `${WPK_FORK_CAPABILITIES_SECTION} has unknown flags 0x${flags.toString(16)}`,
+    ];
+  }
+  if ((flags & WPK_FORK_CAP_REQUIRED_FLAGS) !== WPK_FORK_CAP_REQUIRED_FLAGS) {
+    return [
+      `${WPK_FORK_CAPABILITIES_SECTION} flags 0x${flags.toString(16)} omit required activation-state safety flags 0x${WPK_FORK_CAP_REQUIRED_FLAGS.toString(16)}`,
+    ];
+  }
+  return [];
+}
+
+function validateForkUnwindTransport(facts: WasmForkArtifactFacts): string[] {
+  const failures: string[] = [];
+  const identity = `${FORK_UNWIND_TAG_IMPORT_MODULE}.${FORK_UNWIND_TAG_IMPORT_NAME}`;
+  const tags = facts.tagImports.get(identity);
+  if (!tags) {
+    failures.push(`missing required private fork-unwind tag import ${identity}`);
+  } else if (tags.length !== 1) {
+    failures.push(`duplicate private fork-unwind tag import ${identity}`);
+  } else if (tags[0]!.params.length !== 0 || tags[0]!.results.length !== 0) {
+    failures.push(`private fork-unwind tag ${identity} must have an empty payload`);
+  }
+
+  if (facts.unwindTransportDescriptors.length === 0) {
+    failures.push(`missing required ${FORK_UNWIND_TRANSPORT_SECTION} descriptor`);
+  } else if (facts.unwindTransportDescriptors.length !== 1) {
+    failures.push(
+      `has ${facts.unwindTransportDescriptors.length} ${FORK_UNWIND_TRANSPORT_SECTION} descriptors, expected exactly one`,
+    );
+  } else {
+    const descriptor = facts.unwindTransportDescriptors[0]!;
+    if (
+      descriptor.length !== 2
+      || descriptor[0] !== FORK_UNWIND_TRANSPORT_VERSION
+      || descriptor[1] !== FORK_UNWIND_TRANSPORT_PAYLOAD_ARITY
+    ) {
+      failures.push(
+        `${FORK_UNWIND_TRANSPORT_SECTION} must be [${
+          FORK_UNWIND_TRANSPORT_VERSION
+        }, ${FORK_UNWIND_TRANSPORT_PAYLOAD_ARITY}]`,
+      );
+    }
+  }
+  return failures;
+}
+
+function validateForkModuleStateDescriptor(
+  descriptors: readonly Uint8Array[],
+  expectedPointerWidth: number | null,
+): string[] {
+  if (descriptors.length === 0) {
+    return [`missing required ${WPK_FORK_MODULE_STATE_FORMAT_SECTION} descriptor`];
+  }
+  if (descriptors.length !== 1) {
+    return [
+      `has ${descriptors.length} ${WPK_FORK_MODULE_STATE_FORMAT_SECTION} descriptors, expected exactly one`,
+    ];
+  }
+  const bytes = descriptors[0]!;
+  if (bytes.byteLength !== WPK_FORK_MODULE_STATE_DESCRIPTOR_SIZE) {
+    return [
+      `${WPK_FORK_MODULE_STATE_FORMAT_SECTION} has ${bytes.byteLength} bytes, expected ${WPK_FORK_MODULE_STATE_DESCRIPTOR_SIZE}`,
+    ];
+  }
+  if (!WPK_FORK_MODULE_STATE_FORMAT_MAGIC.every((byte, index) => bytes[index] === byte)) {
+    return [`${WPK_FORK_MODULE_STATE_FORMAT_SECTION} has invalid magic`];
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const version = view.getUint16(4, true);
+  const declaredSize = view.getUint16(6, true);
+  const pointerWidth = view.getUint8(8);
+  const pointerFormat = WPK_FORK_MODULE_STATE_POINTER_WIDTHS.find(
+    ({ bytes }) => bytes === pointerWidth,
+  );
+  const alignment = view.getUint8(9);
+  const flags = view.getUint16(10, true);
+  const arenaVersion = view.getUint16(12, true);
+  const recordVersion = view.getUint16(14, true);
+  const rootWord = view.getUint32(16, true);
+  const reserved = view.getUint32(20, true);
+  const failures: string[] = [];
+  if (version !== WPK_FORK_MODULE_STATE_FORMAT_VERSION) {
+    failures.push(`${WPK_FORK_MODULE_STATE_FORMAT_SECTION} version ${version} is unsupported`);
+  }
+  if (declaredSize !== WPK_FORK_MODULE_STATE_DESCRIPTOR_SIZE) {
+    failures.push(`${WPK_FORK_MODULE_STATE_FORMAT_SECTION} declares size ${declaredSize}`);
+  }
+  if (!pointerFormat) {
+    failures.push(`${WPK_FORK_MODULE_STATE_FORMAT_SECTION} pointer width ${pointerWidth} is unsupported`);
+  } else if (expectedPointerWidth !== null && pointerWidth !== expectedPointerWidth) {
+    failures.push(
+      `${WPK_FORK_MODULE_STATE_FORMAT_SECTION} pointer width ${pointerWidth} does not match linked frames ${expectedPointerWidth}`,
+    );
+  }
+  if (alignment !== WPK_FORK_MODULE_STATE_RECORD_ALIGNMENT) {
+    failures.push(`${WPK_FORK_MODULE_STATE_FORMAT_SECTION} alignment ${alignment} is unsupported`);
+  }
+  if (flags !== WPK_FORK_MODULE_STATE_REQUIRED_FLAGS) {
+    failures.push(
+      `${WPK_FORK_MODULE_STATE_FORMAT_SECTION} flags 0x${flags.toString(16)} do not equal required flags 0x${WPK_FORK_MODULE_STATE_REQUIRED_FLAGS.toString(16)}`,
+    );
+  }
+  if (arenaVersion !== WPK_FORK_MODULE_STATE_ARENA_VERSION) {
+    failures.push(`${WPK_FORK_MODULE_STATE_FORMAT_SECTION} arena version ${arenaVersion} is unsupported`);
+  }
+  if (recordVersion !== WPK_FORK_MODULE_STATE_RECORD_VERSION) {
+    failures.push(`${WPK_FORK_MODULE_STATE_FORMAT_SECTION} record version ${recordVersion} is unsupported`);
+  }
+  if (rootWord !== WPK_FORK_MODULE_STATE_ROOT_POINTER_WORD_OFFSET) {
+    failures.push(`${WPK_FORK_MODULE_STATE_FORMAT_SECTION} root word ${rootWord} is unsupported`);
+  }
+  if (reserved !== 0) {
+    failures.push(`${WPK_FORK_MODULE_STATE_FORMAT_SECTION} reserved field is nonzero`);
+  }
+  return failures;
+}
+
+function validateForkExceptionCodecDescriptor(
+  descriptors: readonly Uint8Array[],
+): string[] {
+  if (descriptors.length === 0) {
+    return [`missing required ${WPK_FORK_EXCEPTION_CODEC_SECTION} descriptor`];
+  }
+  if (descriptors.length !== 1) {
+    return [
+      `has ${descriptors.length} ${WPK_FORK_EXCEPTION_CODEC_SECTION} descriptors, expected exactly one`,
+    ];
+  }
+  const bytes = descriptors[0]!;
+  if (bytes.byteLength < WPK_FORK_EXCEPTION_CODEC_HEADER_SIZE) {
+    return [`${WPK_FORK_EXCEPTION_CODEC_SECTION} descriptor is truncated`];
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const failures: string[] = [];
+  if (view.getUint8(0) !== WPK_FORK_EXCEPTION_CODEC_VERSION) {
+    failures.push(
+      `${WPK_FORK_EXCEPTION_CODEC_SECTION} version ${view.getUint8(0)} is unsupported`,
+    );
+  }
+  if (view.getUint8(1) !== 0 || view.getUint16(2, true) !== 0) {
+    failures.push(`${WPK_FORK_EXCEPTION_CODEC_SECTION} reserved fields are nonzero`);
+  }
+  const count = view.getUint32(4, true);
+  const expectedSize = WPK_FORK_EXCEPTION_CODEC_HEADER_SIZE
+    + count * WPK_FORK_EXCEPTION_CODEC_TAG_RECORD_SIZE;
+  if (!Number.isSafeInteger(expectedSize) || bytes.byteLength !== expectedSize) {
+    failures.push(
+      `${WPK_FORK_EXCEPTION_CODEC_SECTION} has ${bytes.byteLength} bytes, expected ${expectedSize}`,
+    );
+    return failures;
+  }
+
+  const layouts = new Set<number>();
+  for (let index = 0; index < count; index++) {
+    const offset = WPK_FORK_EXCEPTION_CODEC_HEADER_SIZE
+      + index * WPK_FORK_EXCEPTION_CODEC_TAG_RECORD_SIZE;
+    const ordinal = view.getUint32(offset, true);
+    const layoutId = view.getUint32(offset + 4, true);
+    if (ordinal !== index) {
+      failures.push(
+        `${WPK_FORK_EXCEPTION_CODEC_SECTION} tag ordinal ${ordinal} is noncanonical at ${index}`,
+      );
+    }
+    if (layoutId > 0x7fff_ffff || layouts.has(layoutId)) {
+      failures.push(
+        `${WPK_FORK_EXCEPTION_CODEC_SECTION} layout id ${layoutId} is invalid or duplicated`,
+      );
+    }
+    layouts.add(layoutId);
+    // The remaining u32 fields are deliberately shape-neutral byte/reference
+    // counts. Any tag payload is legal when the instrumenter can emit its
+    // recursive reference recipe; the guard validates format, not user shape.
+  }
+  return failures;
+}
+
+const FORK_IMPORTED_GLOBAL_TYPE_CODES = new Set<number>([
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I32,
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I64,
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_F32,
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_F64,
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_V128,
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_FUNCREF,
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXTERNREF,
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXNREF,
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_ANYREF,
+]);
+
+interface ForkImportedGlobalRecord {
+  ownerId: number;
+  typeCode: number;
+  flags: number;
+  importOrdinal: number;
+  module: string;
+  name: string;
+}
+
+function importedGlobalNeedsRecipe(global: WasmGlobalImportType): boolean {
+  return !(
+    global.module === WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE
+    && (
+      global.name === WPK_FORK_EXCEPTION_IMPORT_ACTIVATION
+      || global.name === "__channel_base"
+      // This immutable control address is reconstructed by each host Worker
+      // from the ABI-defined process channel layout. It is not guest module
+      // state and must not be serialized as an imported-global recipe.
+      || global.name === "__wpk_fork_module_state_table_generation_addr"
+    )
+  );
+}
+
+function validateForkImportedGlobalsDescriptor(
+  facts: WasmForkArtifactFacts,
+): string[] {
+  const descriptors = facts.importedGlobalsDescriptors;
+  if (descriptors.length === 0) {
+    return [`missing required ${WPK_FORK_IMPORTED_GLOBALS_SECTION} descriptor`];
+  }
+  if (descriptors.length !== 1) {
+    return [
+      `has ${descriptors.length} ${WPK_FORK_IMPORTED_GLOBALS_SECTION} descriptors, expected exactly one`,
+    ];
+  }
+  const bytes = descriptors[0]!;
+  if (bytes.byteLength < WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE) {
+    return [`${WPK_FORK_IMPORTED_GLOBALS_SECTION} descriptor is truncated`];
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const failures: string[] = [];
+  if (!WPK_FORK_IMPORTED_GLOBALS_MAGIC.every((byte, index) => bytes[index] === byte)) {
+    failures.push(`${WPK_FORK_IMPORTED_GLOBALS_SECTION} has invalid magic`);
+  }
+  if (view.getUint16(4, true) !== WPK_FORK_IMPORTED_GLOBALS_VERSION) {
+    failures.push(
+      `${WPK_FORK_IMPORTED_GLOBALS_SECTION} version ${view.getUint16(4, true)} is unsupported`,
+    );
+  }
+  if (view.getUint16(6, true) !== WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE) {
+    failures.push(`${WPK_FORK_IMPORTED_GLOBALS_SECTION} declares an invalid header size`);
+  }
+  const count = view.getUint32(8, true);
+  if (view.getUint32(12, true) !== 0) {
+    failures.push(`${WPK_FORK_IMPORTED_GLOBALS_SECTION} reserved field is nonzero`);
+  }
+
+  const owners = new Set<number>();
+  const importOrdinals = new Set<number>();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const records: ForkImportedGlobalRecord[] = [];
+  let previousImportOrdinal = -1;
+  let offset = WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE;
+  for (let index = 0; index < count; index++) {
+    if (offset + WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE > bytes.byteLength) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_GLOBALS_SECTION} record ${index} header is truncated`,
+      );
+      return failures;
+    }
+    const recordSize = view.getUint32(offset, true);
+    const ownerId = view.getUint32(offset + 4, true);
+    const typeCode = view.getUint8(offset + 8);
+    const flags = view.getUint8(offset + 9);
+    const moduleLength = view.getUint32(offset + 12, true);
+    const nameLength = view.getUint32(offset + 16, true);
+    const importOrdinal = view.getUint32(offset + 20, true);
+    const expectedSize = WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE
+      + moduleLength
+      + nameLength;
+    if (
+      !Number.isSafeInteger(expectedSize)
+      || recordSize !== expectedSize
+      || recordSize < WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE
+      || offset + recordSize > bytes.byteLength
+    ) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_GLOBALS_SECTION} record ${index} has invalid bounds`,
+      );
+      return failures;
+    }
+    if (ownerId === 0 || owners.has(ownerId)) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_GLOBALS_SECTION} record ${index} has invalid or duplicated owner ${ownerId}`,
+      );
+    }
+    owners.add(ownerId);
+    if (!FORK_IMPORTED_GLOBAL_TYPE_CODES.has(typeCode)) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_GLOBALS_SECTION} record ${index} has unknown value type ${typeCode}`,
+      );
+    }
+    if ((flags & ~WPK_FORK_IMPORTED_GLOBALS_KNOWN_FLAGS) !== 0) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_GLOBALS_SECTION} record ${index} has unknown flags 0x${flags.toString(16)}`,
+      );
+    }
+    if (view.getUint16(offset + 10, true) !== 0) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_GLOBALS_SECTION} record ${index} reserved fields are nonzero`,
+      );
+    }
+    if (
+      importOrdinals.has(importOrdinal)
+      || importOrdinal <= previousImportOrdinal
+    ) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_GLOBALS_SECTION} record ${index} has duplicated or unordered import ordinal`,
+      );
+    }
+    importOrdinals.add(importOrdinal);
+    previousImportOrdinal = importOrdinal;
+    const namesOffset = offset + WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE;
+    try {
+      const module = decoder.decode(
+        bytes.subarray(namesOffset, namesOffset + moduleLength),
+      );
+      const name = decoder.decode(
+        bytes.subarray(
+          namesOffset + moduleLength,
+          namesOffset + moduleLength + nameLength,
+        ),
+      );
+      records.push({
+        ownerId,
+        typeCode,
+        flags,
+        importOrdinal,
+        module,
+        name,
+      });
+    } catch {
+      failures.push(
+        `${WPK_FORK_IMPORTED_GLOBALS_SECTION} record ${index} contains invalid UTF-8`,
+      );
+    }
+    offset += recordSize;
+  }
+  if (offset !== bytes.byteLength) {
+    failures.push(`${WPK_FORK_IMPORTED_GLOBALS_SECTION} has trailing bytes`);
+  }
+
+  const globalImports = [...facts.globalImports.values()].flat();
+  const globalImportsByIndex = new Map(
+    globalImports.map((global) => [global.index, global]),
+  );
+  const matchedImportIndices = new Set<number>();
+  for (const record of records) {
+    const catalogName =
+      `${WPK_FORK_GLOBAL_CATALOG_EXPORT_PREFIX}${record.ownerId}`;
+    const catalog = facts.exports.get(catalogName);
+    if (!catalog || catalog.length !== 1 || catalog[0]!.kind !== 3) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_GLOBALS_SECTION} owner ${record.ownerId} lacks exactly one global catalog export ${catalogName}`,
+      );
+      continue;
+    }
+    const imported = globalImportsByIndex.get(catalog[0]!.index);
+    if (!imported || !importedGlobalNeedsRecipe(imported)) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_GLOBALS_SECTION} owner ${record.ownerId} does not identify a reconstructible imported global`,
+      );
+      continue;
+    }
+    if (
+      imported.module !== record.module
+      || imported.name !== record.name
+      || imported.importOrdinal !== record.importOrdinal
+      || imported.recipeTypeCode !== record.typeCode
+      || imported.mutable !==
+        ((record.flags & WPK_FORK_IMPORTED_GLOBALS_FLAG_MUTABLE) !== 0)
+      || imported.shared !==
+        ((record.flags & WPK_FORK_IMPORTED_GLOBALS_FLAG_SHARED) !== 0)
+    ) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_GLOBALS_SECTION} owner ${record.ownerId} does not match its imported global declaration`,
+      );
+      continue;
+    }
+    if (matchedImportIndices.has(imported.index)) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_GLOBALS_SECTION} repeats imported global index ${imported.index}`,
+      );
+      continue;
+    }
+    matchedImportIndices.add(imported.index);
+  }
+
+  for (const imported of globalImports) {
+    if (
+      importedGlobalNeedsRecipe(imported)
+      && !matchedImportIndices.has(imported.index)
+    ) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_GLOBALS_SECTION} omits imported global ` +
+          `${imported.module}.${imported.name} at index ${imported.index}`,
+      );
+    }
+  }
+
+  for (const [name, exports] of facts.exports) {
+    if (!name.startsWith(WPK_FORK_GLOBAL_CATALOG_EXPORT_PREFIX)) continue;
+    const suffix = name.slice(WPK_FORK_GLOBAL_CATALOG_EXPORT_PREFIX.length);
+    const owner = Number(suffix);
+    if (
+      !/^[1-9][0-9]*$/.test(suffix)
+      || !Number.isSafeInteger(owner)
+      || owner > 0xffff_ffff
+      || exports.length !== 1
+      || exports[0]!.kind !== 3
+    ) {
+      failures.push(`malformed reserved fork global catalog export ${name}`);
+    }
+  }
+  return failures;
+}
+
+const FORK_IMPORTED_TABLE_TYPE_CODES = new Set<number>([
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_FUNCREF,
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXTERNREF,
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXNREF,
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_ANYREF,
+]);
+
+interface ForkImportedTableRecord {
+  ownerId: number;
+  typeCode: number;
+  flags: number;
+  importOrdinal: number;
+  module: string;
+  name: string;
+}
+
+function importedTableNeedsRecipe(table: WasmTableImportType): boolean {
+  return !WPK_FORK_REQUIRED_TABLE_IMPORTS.some(
+    ({ module, name }) => table.module === module && table.name === name,
+  );
+}
+
+/**
+ * Validate the pre-instantiation table-identity recipe one declaration at a
+ * time.
+ *
+ * WHY: the same import-object property may feed several Wasm table imports,
+ * and an imported table may be shared by several module activations. Names
+ * alone cannot prove which declaration owns which catalog export; the full
+ * import ordinal and exact table index make that identity deterministic before
+ * any child continuation executes.
+ */
+function validateForkImportedTablesDescriptor(
+  facts: WasmForkArtifactFacts,
+): string[] {
+  const descriptors = facts.importedTablesDescriptors;
+  if (descriptors.length === 0) {
+    return [`missing required ${WPK_FORK_IMPORTED_TABLES_SECTION} descriptor`];
+  }
+  if (descriptors.length !== 1) {
+    return [
+      `has ${descriptors.length} ${WPK_FORK_IMPORTED_TABLES_SECTION} descriptors, expected exactly one`,
+    ];
+  }
+  const bytes = descriptors[0]!;
+  if (bytes.byteLength < WPK_FORK_IMPORTED_TABLES_HEADER_SIZE) {
+    return [`${WPK_FORK_IMPORTED_TABLES_SECTION} descriptor is truncated`];
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const failures: string[] = [];
+  if (!WPK_FORK_IMPORTED_TABLES_MAGIC.every((byte, index) => bytes[index] === byte)) {
+    failures.push(`${WPK_FORK_IMPORTED_TABLES_SECTION} has invalid magic`);
+  }
+  if (view.getUint16(4, true) !== WPK_FORK_IMPORTED_TABLES_VERSION) {
+    failures.push(
+      `${WPK_FORK_IMPORTED_TABLES_SECTION} version ${view.getUint16(4, true)} is unsupported`,
+    );
+  }
+  if (view.getUint16(6, true) !== WPK_FORK_IMPORTED_TABLES_HEADER_SIZE) {
+    failures.push(`${WPK_FORK_IMPORTED_TABLES_SECTION} declares an invalid header size`);
+  }
+  const count = view.getUint32(8, true);
+  if (view.getUint32(12, true) !== 0) {
+    failures.push(`${WPK_FORK_IMPORTED_TABLES_SECTION} reserved field is nonzero`);
+  }
+
+  const owners = new Set<number>();
+  const importOrdinals = new Set<number>();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const records: ForkImportedTableRecord[] = [];
+  let previousImportOrdinal = -1;
+  let offset = WPK_FORK_IMPORTED_TABLES_HEADER_SIZE;
+  for (let index = 0; index < count; index++) {
+    if (offset + WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE > bytes.byteLength) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_TABLES_SECTION} record ${index} header is truncated`,
+      );
+      return failures;
+    }
+    const recordSize = view.getUint32(offset, true);
+    const ownerId = view.getUint32(offset + 4, true);
+    const typeCode = view.getUint8(offset + 8);
+    const flags = view.getUint8(offset + 9);
+    const moduleLength = view.getUint32(offset + 12, true);
+    const nameLength = view.getUint32(offset + 16, true);
+    const importOrdinal = view.getUint32(offset + 20, true);
+    const expectedSize = WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE
+      + moduleLength
+      + nameLength;
+    if (
+      !Number.isSafeInteger(expectedSize)
+      || recordSize !== expectedSize
+      || recordSize < WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE
+      || offset + recordSize > bytes.byteLength
+    ) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_TABLES_SECTION} record ${index} has invalid bounds`,
+      );
+      return failures;
+    }
+    if (ownerId === 0 || owners.has(ownerId)) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_TABLES_SECTION} record ${index} has invalid or duplicated owner ${ownerId}`,
+      );
+    }
+    owners.add(ownerId);
+    if (!FORK_IMPORTED_TABLE_TYPE_CODES.has(typeCode)) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_TABLES_SECTION} record ${index} has unknown element type ${typeCode}`,
+      );
+    }
+    if ((flags & ~WPK_FORK_IMPORTED_TABLES_KNOWN_FLAGS) !== 0) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_TABLES_SECTION} record ${index} has unknown flags 0x${flags.toString(16)}`,
+      );
+    }
+    if (view.getUint16(offset + 10, true) !== 0) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_TABLES_SECTION} record ${index} reserved fields are nonzero`,
+      );
+    }
+    if (
+      importOrdinals.has(importOrdinal)
+      || importOrdinal <= previousImportOrdinal
+    ) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_TABLES_SECTION} record ${index} has duplicated or unordered import ordinal`,
+      );
+    }
+    importOrdinals.add(importOrdinal);
+    previousImportOrdinal = importOrdinal;
+    const namesOffset = offset + WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE;
+    try {
+      const module = decoder.decode(
+        bytes.subarray(namesOffset, namesOffset + moduleLength),
+      );
+      const name = decoder.decode(
+        bytes.subarray(
+          namesOffset + moduleLength,
+          namesOffset + moduleLength + nameLength,
+        ),
+      );
+      records.push({
+        ownerId,
+        typeCode,
+        flags,
+        importOrdinal,
+        module,
+        name,
+      });
+    } catch {
+      failures.push(
+        `${WPK_FORK_IMPORTED_TABLES_SECTION} record ${index} contains invalid UTF-8`,
+      );
+    }
+    offset += recordSize;
+  }
+  if (offset !== bytes.byteLength) {
+    failures.push(`${WPK_FORK_IMPORTED_TABLES_SECTION} has trailing bytes`);
+  }
+
+  const tableImports = [...facts.tableImports.values()].flat();
+  const tableImportsByIndex = new Map(
+    tableImports.map((table) => [table.index, table]),
+  );
+  const matchedImportIndices = new Set<number>();
+  for (const record of records) {
+    const catalogName =
+      `${WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX}${record.ownerId}`;
+    const catalog = facts.exports.get(catalogName);
+    if (!catalog || catalog.length !== 1 || catalog[0]!.kind !== 1) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_TABLES_SECTION} owner ${record.ownerId} lacks exactly one table catalog export ${catalogName}`,
+      );
+      continue;
+    }
+    const imported = tableImportsByIndex.get(catalog[0]!.index);
+    if (!imported || !importedTableNeedsRecipe(imported)) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_TABLES_SECTION} owner ${record.ownerId} does not identify a reconstructible imported table`,
+      );
+      continue;
+    }
+    if (
+      imported.module !== record.module
+      || imported.name !== record.name
+      || imported.importOrdinal !== record.importOrdinal
+      || imported.recipeTypeCode !== record.typeCode
+      || imported.table64 !==
+        ((record.flags & WPK_FORK_IMPORTED_TABLES_FLAG_TABLE64) !== 0)
+    ) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_TABLES_SECTION} owner ${record.ownerId} does not match its imported table declaration`,
+      );
+      continue;
+    }
+    if (matchedImportIndices.has(imported.index)) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_TABLES_SECTION} repeats imported table index ${imported.index}`,
+      );
+      continue;
+    }
+    matchedImportIndices.add(imported.index);
+  }
+
+  for (const imported of tableImports) {
+    if (
+      importedTableNeedsRecipe(imported)
+      && !matchedImportIndices.has(imported.index)
+    ) {
+      failures.push(
+        `${WPK_FORK_IMPORTED_TABLES_SECTION} omits imported table ` +
+          `${imported.module}.${imported.name} at index ${imported.index}`,
+      );
+    }
+  }
+
+  for (const [name, exports] of facts.exports) {
+    if (!name.startsWith(WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX)) continue;
+    const suffix = name.slice(WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX.length);
+    const owner = Number(suffix);
+    if (
+      !/^[1-9][0-9]*$/.test(suffix)
+      || !Number.isSafeInteger(owner)
+      || owner > 0xffff_ffff
+      || exports.length !== 1
+      || exports[0]!.kind !== 1
+    ) {
+      failures.push(`malformed reserved fork table catalog export ${name}`);
+    }
+  }
+  return failures;
+}
+
+type ForkAbiValueType =
+  | "ptr"
+  | "i32"
+  | "i64"
+  | "anyref"
+  | "exnref"
+  | "externref"
+  | "funcref";
+
 function expectedWasmValueType(
-  value: "ptr" | "i32",
+  value: ForkAbiValueType,
   pointerWidth: number,
 ): number {
-  if (value === "i32") return 0x7f;
-  return pointerWidth === 8 ? 0x7e : 0x7f;
+  switch (value) {
+    case "ptr":
+      return pointerWidth === 8 ? 0x7e : 0x7f;
+    case "i32":
+      return 0x7f;
+    case "i64":
+      return 0x7e;
+    case "anyref":
+      return 0x6e;
+    case "exnref":
+      return 0x69;
+    case "externref":
+      return 0x6f;
+    case "funcref":
+      return 0x70;
+  }
 }
 
 function signatureMatches(
   actual: WasmFunctionSignature,
-  params: readonly ("ptr" | "i32")[],
-  results: readonly ("ptr" | "i32")[],
+  params: readonly ForkAbiValueType[],
+  results: readonly ForkAbiValueType[],
   pointerWidth: number,
 ): boolean {
   return actual.params.length === params.length &&
@@ -539,24 +1820,171 @@ function signatureMatches(
 }
 
 function signatureText(
-  params: readonly ("ptr" | "i32")[],
-  results: readonly ("ptr" | "i32")[],
+  params: readonly ForkAbiValueType[],
+  results: readonly ForkAbiValueType[],
   pointerWidth: number,
 ): string {
-  const render = (value: "ptr" | "i32") =>
-    value === "ptr" ? (pointerWidth === 8 ? "i64" : "i32") : "i32";
+  const render = (value: ForkAbiValueType) =>
+    value === "ptr" ? (pointerWidth === 8 ? "i64" : "i32") : value;
   return `(${params.map(render).join(", ")}) -> (${results.map(render).join(", ")})`;
+}
+
+function validateForkActivationImport(facts: WasmForkArtifactFacts): string[] {
+  const identity =
+    `${WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE}.${WPK_FORK_EXCEPTION_IMPORT_ACTIVATION}`;
+  const imports = facts.globalImports.get(identity);
+  if (!imports) {
+    return [`missing required immutable exception-codec activation import ${identity}`];
+  }
+  if (imports.length !== 1) {
+    return [`duplicate exception-codec activation import ${identity}`];
+  }
+  if (imports[0]!.valueType !== 0x7f || imports[0]!.mutable) {
+    return [`exception-codec activation import ${identity} must be immutable i32`];
+  }
+  return [];
+}
+
+function validateForkTableImports(facts: WasmForkArtifactFacts): string[] {
+  const failures: string[] = [];
+  for (const requirement of WPK_FORK_REQUIRED_TABLE_IMPORTS) {
+    const identity = `${requirement.module}.${requirement.name}`;
+    const imports = facts.tableImports.get(identity);
+    if (!imports) {
+      failures.push(`missing required ABI 43 fork-runtime table import ${identity}`);
+      continue;
+    }
+    if (imports.length !== 1) {
+      failures.push(`duplicate ABI 43 fork-runtime table import ${identity}`);
+      continue;
+    }
+    const actual = imports[0]!;
+    const expectedElement = expectedWasmValueType(requirement.element, 4);
+    if (
+      actual.elementType !== expectedElement
+      || actual.table64 !== requirement.table64
+      || actual.minimum !== requirement.minimum
+      || actual.maximum !== requirement.maximum
+    ) {
+      failures.push(
+        `ABI 43 fork-runtime table import ${identity} has the wrong type or limits`,
+      );
+    }
+  }
+  return failures;
+}
+
+function validateForkStaticRootCatalog(
+  facts: WasmForkArtifactFacts,
+): string[] {
+  if (facts.staticRootDescriptors.length === 0) {
+    return [`missing required ${FORK_STATIC_ROOT_CATALOG_SECTION} descriptor`];
+  }
+  if (facts.staticRootDescriptors.length !== 1) {
+    return [
+      `has ${facts.staticRootDescriptors.length} ${FORK_STATIC_ROOT_CATALOG_SECTION} descriptors, expected exactly one`,
+    ];
+  }
+  const descriptor = facts.staticRootDescriptors[0]!;
+  if (descriptor.byteLength !== FORK_STATIC_ROOT_CATALOG_HEADER_SIZE) {
+    return [
+      `${FORK_STATIC_ROOT_CATALOG_SECTION} has ${descriptor.byteLength} bytes, expected ${FORK_STATIC_ROOT_CATALOG_HEADER_SIZE}`,
+    ];
+  }
+  const failures: string[] = [];
+  if (
+    FORK_STATIC_ROOT_CATALOG_MAGIC.some(
+      (byte, index) => descriptor[index] !== byte,
+    )
+  ) {
+    failures.push(`${FORK_STATIC_ROOT_CATALOG_SECTION} has invalid magic`);
+  }
+  const view = new DataView(
+    descriptor.buffer,
+    descriptor.byteOffset,
+    descriptor.byteLength,
+  );
+  if (view.getUint16(4, true) !== FORK_STATIC_ROOT_CATALOG_VERSION) {
+    failures.push(
+      `${FORK_STATIC_ROOT_CATALOG_SECTION} version ${view.getUint16(4, true)} is unsupported`,
+    );
+  }
+  if (view.getUint16(6, true) !== FORK_STATIC_ROOT_CATALOG_HEADER_SIZE) {
+    failures.push(
+      `${FORK_STATIC_ROOT_CATALOG_SECTION} declares an invalid header size`,
+    );
+  }
+  const count = view.getUint32(8, true);
+  const exports = facts.tableExports.get(FORK_STATIC_ROOT_CATALOG_EXPORT);
+  if (!exports || exports.length !== 1) {
+    failures.push(
+      `missing exactly one table export ${FORK_STATIC_ROOT_CATALOG_EXPORT}`,
+    );
+    return failures;
+  }
+  const importedTableCount = [...facts.tableImports.values()]
+    .reduce((total, entries) => total + entries.length, 0);
+  const tableIndex = exports[0]!;
+  const table = facts.tables[tableIndex];
+  if (tableIndex < importedTableCount || !table) {
+    failures.push(
+      `${FORK_STATIC_ROOT_CATALOG_EXPORT} must export a module-local table`,
+    );
+    return failures;
+  }
+  if (
+    table.elementType !== 0x6e
+    || table.table64
+    || table.minimum !== count
+    || table.maximum !== count
+  ) {
+    failures.push(
+      `${FORK_STATIC_ROOT_CATALOG_EXPORT} must be a fixed table32 anyref catalog of length ${count}`,
+    );
+  }
+  return failures;
 }
 
 function describeForkArtifactContractFailures(
   facts: WasmForkArtifactFacts,
 ): string[] {
   const failures: string[] = [];
+  if (facts.nativeStartCount !== 0) {
+    // WHY: staged dlopen may instantiate this module while a loader import is
+    // active. The transform must defer the source start function to the
+    // explicit bootstrap so guest Wasm cannot reenter that import.
+    failures.push(
+      `ABI 43 fork artifact retains ${facts.nativeStartCount} native Wasm start ` +
+        `section${facts.nativeStartCount === 1 ? "" : "s"}; rebuild and ` +
+        "reinstrument it so initialization is owned by " +
+        "wpk_fork_module_bootstrap",
+    );
+  }
+  if (facts.functionImports.has("env.__wasm_dlopen")) {
+    // WHY: this host import can synchronously enter side-module Wasm before
+    // returning. ABI 43 instrumentation lowers every valid occurrence to the
+    // staged prepare/next/commit protocol, so retaining it proves that the
+    // activation-state capability was copied or emitted by an incomplete
+    // transform.
+    failures.push(
+      "ABI 43 fork artifact retains reentrant env.__wasm_dlopen; " +
+        "rebuild and reinstrument it with the staged loader lowering",
+    );
+  }
+  failures.push(...validateForkCapabilities(facts.forkCapabilities));
+  failures.push(
+    ...validateForkExceptionCodecDescriptor(facts.exceptionCodecDescriptors),
+    ...validateForkImportedGlobalsDescriptor(facts),
+    ...validateForkImportedTablesDescriptor(facts),
+    ...validateForkActivationImport(facts),
+    ...validateForkTableImports(facts),
+    ...validateForkStaticRootCatalog(facts),
+  );
   for (const requirement of WPK_FORK_REQUIRED_EXPORTS) {
     const signatures = facts.functionExports.get(requirement.name);
     if (!signatures) continue;
     if (signatures.length !== 1) {
-      failures.push(`duplicate ABI 42 wasm-fork-instrument export ${requirement.name}`);
+      failures.push(`duplicate ABI 43 wasm-fork-instrument export ${requirement.name}`);
     }
   }
   const missingExports = WPK_FORK_REQUIRED_EXPORTS
@@ -566,6 +1994,32 @@ function describeForkArtifactContractFailures(
     failures.push(
       `incomplete wasm-fork-instrument exports; missing ${missingExports.join(", ")}`,
     );
+  }
+
+  if (facts.importsKernelFork) {
+    const identity =
+      `${WPK_FORK_PROCESS_IMPORT.module}.${WPK_FORK_PROCESS_IMPORT.name}`;
+    const signatures = facts.functionImports.get(identity);
+    if (signatures?.length !== 1) {
+      failures.push(`duplicate ABI 43 process-fork import ${identity}`);
+    } else if (
+      !signatureMatches(
+        signatures[0],
+        WPK_FORK_PROCESS_IMPORT.params,
+        WPK_FORK_PROCESS_IMPORT.results,
+        4,
+      )
+    ) {
+      failures.push(
+        `ABI 43 process-fork import ${identity} has the wrong signature; expected ${
+          signatureText(
+            WPK_FORK_PROCESS_IMPORT.params,
+            WPK_FORK_PROCESS_IMPORT.results,
+            4,
+          )
+        }`,
+      );
+    }
   }
 
   let pointerWidth: number | null = null;
@@ -582,25 +2036,40 @@ function describeForkArtifactContractFailures(
       failures.push(error instanceof Error ? error.message : String(error));
     }
   }
+  failures.push(
+    ...validateForkModuleStateDescriptor(
+      facts.moduleStateDescriptors,
+      pointerWidth,
+    ),
+  );
 
   const presentFrameImports = WPK_FORK_REQUIRED_IMPORTS.filter(({ module, name }) =>
     facts.functionImports.has(`${module}.${name}`)
   );
+  const unwindTagIdentity =
+    `${FORK_UNWIND_TAG_IMPORT_MODULE}.${FORK_UNWIND_TAG_IMPORT_NAME}`;
   const requiresFrameImports = facts.importsKernelFork || presentFrameImports.length > 0;
+  const requiresUnwindTransport =
+    requiresFrameImports
+    || facts.tagImports.has(unwindTagIdentity)
+    || facts.unwindTransportDescriptors.length > 0;
+  if (requiresUnwindTransport) {
+    failures.push(...validateForkUnwindTransport(facts));
+  }
   if (requiresFrameImports) {
     const missingImports = WPK_FORK_REQUIRED_IMPORTS
       .filter(({ module, name }) => !facts.functionImports.has(`${module}.${name}`))
       .map(({ module, name }) => `${module}.${name}`);
     if (missingImports.length > 0) {
       failures.push(
-        `incomplete ABI 42 linked-frame imports; missing ${missingImports.join(", ")}`,
+        `incomplete ABI 43 fork-runtime imports; missing ${missingImports.join(", ")}`,
       );
     }
     for (const requirement of WPK_FORK_REQUIRED_IMPORTS) {
       const identity = `${requirement.module}.${requirement.name}`;
       const signatures = facts.functionImports.get(identity);
       if (signatures && signatures.length !== 1) {
-        failures.push(`duplicate ABI 42 linked-frame import ${identity}`);
+        failures.push(`duplicate ABI 43 fork-runtime import ${identity}`);
       }
     }
   }
@@ -608,12 +2077,12 @@ function describeForkArtifactContractFailures(
   if (pointerWidth !== null) {
     if (facts.memoryPointerWidths.length !== 1) {
       failures.push(
-        `ABI 42 fork instrumentation requires exactly one module memory, found ${facts.memoryPointerWidths.length}`,
+        `ABI 43 fork instrumentation requires exactly one module memory, found ${facts.memoryPointerWidths.length}`,
       );
     } else if (facts.memoryPointerWidths[0] !== pointerWidth) {
       const article = pointerWidth === 8 ? "an" : "a";
       failures.push(
-        `ABI 42 linked-frame descriptor declares ${article} ${pointerWidth}-byte pointer but the module memory uses ${facts.memoryPointerWidths[0]}-byte addresses`,
+        `ABI 43 linked-frame descriptor declares ${article} ${pointerWidth}-byte pointer but the module memory uses ${facts.memoryPointerWidths[0]}-byte addresses`,
       );
     }
     for (const requirement of WPK_FORK_REQUIRED_EXPORTS) {
@@ -628,7 +2097,7 @@ function describeForkArtifactContractFailures(
         )
       ) {
         failures.push(
-          `ABI 42 wasm-fork-instrument export ${requirement.name} has the wrong signature; expected ${
+          `ABI 43 wasm-fork-instrument export ${requirement.name} has the wrong signature; expected ${
             signatureText(requirement.params, requirement.results, pointerWidth)
           }`,
         );
@@ -648,7 +2117,7 @@ function describeForkArtifactContractFailures(
           )
         ) {
           failures.push(
-            `ABI 42 linked-frame import ${identity} has the wrong signature; expected ${
+            `ABI 43 fork-runtime import ${identity} has the wrong signature; expected ${
               signatureText(requirement.params, requirement.results, pointerWidth)
             }`,
           );
@@ -661,16 +2130,132 @@ function describeForkArtifactContractFailures(
 }
 
 /**
- * Return import names in `module.field` form. This is intentionally a small
- * section parser rather than `new WebAssembly.Module(...)` so release/resolver
- * guards can inspect binaries built with newer wasm features than the current
- * JS engine can instantiate.
+ * Validate the complete ABI-epoch fork contract without compiling or running
+ * the artifact. This is shared by program admission and the dynamic linker so
+ * a side module cannot defer a malformed reconstruction recipe until replay.
  */
-export function readWasmImportNames(programBytes: ArrayBuffer): string[] {
+export function describeWasmForkArtifactContractFailures(
+  programBytes: ArrayBuffer,
+): string[] {
+  try {
+    return describeForkArtifactContractFailures(
+      readWasmForkArtifactFacts(programBytes),
+    );
+  } catch (error) {
+    return [
+      `cannot validate ABI 43 fork-artifact contract: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    ];
+  }
+}
+
+/**
+ * Return exact function-import identities, ordinals, and binary signatures.
+ *
+ * WebAssembly.Module.imports() omits function types. Fork-safe host-import
+ * routing needs the artifact-declared signature so an owner descriptor cannot
+ * accidentally reinterpret the same scalar words under a different type.
+ */
+export function readWasmFunctionImports(
+  programBytes: ArrayBuffer,
+): readonly WasmFunctionImportType[] {
+  return Object.freeze(
+    readWasmForkArtifactFacts(programBytes).functionImportEntries.map(
+      (entry) =>
+        Object.freeze({
+          ...entry,
+          signature: Object.freeze({
+            params: Object.freeze([...entry.signature.params]),
+            results: Object.freeze([...entry.signature.results]),
+            paramTypes: Object.freeze(
+              entry.signature.paramTypes.map((type) =>
+                Object.freeze({ ...type })
+              ),
+            ),
+            resultTypes: Object.freeze(
+              entry.signature.resultTypes.map((type) =>
+                Object.freeze({ ...type })
+              ),
+            ),
+          }),
+        }),
+    ),
+  );
+}
+
+/** Return the exact parameter/result arity for one core function index. */
+export function readWasmFunctionArity(
+  programBytes: ArrayBuffer,
+  functionIndex: number,
+): Readonly<{ parameters: number; results: number }> | null {
+  if (!Number.isSafeInteger(functionIndex) || functionIndex < 0) return null;
+  const facts = readWasmForkArtifactFacts(programBytes);
+  const typeIndex = facts.functionTypeIndices[functionIndex];
+  if (typeIndex === undefined) return null;
+  const signature = facts.functionTypes[typeIndex];
+  if (signature === undefined) return null;
+  return Object.freeze({
+    parameters: signature.params.length,
+    results: signature.results.length,
+  });
+}
+
+export type DecodedWasmExternalKind =
+  | "function"
+  | "table"
+  | "memory"
+  | "global"
+  | "tag";
+
+export interface DecodedWasmImportDescriptor {
+  readonly module: string;
+  readonly name: string;
+  readonly kind: DecodedWasmExternalKind;
+}
+
+export interface DecodedWasmExportDescriptor {
+  readonly name: string;
+  readonly kind: DecodedWasmExternalKind;
+}
+
+function decodedExternalKind(
+  kind: number,
+  context: string,
+): DecodedWasmExternalKind {
+  switch (kind) {
+    case 0:
+      return "function";
+    case 1:
+      return "table";
+    case 2:
+      return "memory";
+    case 3:
+      return "global";
+    case 4:
+      return "tag";
+    default:
+      throw new Error(`${context} has unsupported external kind ${kind}`);
+  }
+}
+
+/**
+ * Decode every import name and kind in declaration order.
+ *
+ * This is intentionally a binary-section parser rather than
+ * `WebAssembly.Module.imports()`: release/resolver guards can inspect binaries
+ * built with newer Wasm features than the current JS engine can reflect, and
+ * WebKit cannot currently produce descriptors for some valid exception-
+ * reference imports. The same parser already validates the richer ABI 43
+ * function/global/table contract above.
+ */
+export function readWasmImportDescriptors(
+  programBytes: ArrayBuffer,
+): readonly DecodedWasmImportDescriptor[] {
   const src = new Uint8Array(programBytes);
   if (!hasWasmMagic(src)) return [];
 
-  const names: string[] = [];
+  const imports: DecodedWasmImportDescriptor[] = [];
   let offset = 8;
   while (offset < src.length) {
     const sectionId = src[offset];
@@ -684,23 +2269,27 @@ export function readWasmImportNames(programBytes: ArrayBuffer): string[] {
       for (let i = 0; i < importCount; i++) {
         const [moduleName, afterModule] = readName(src, pos);
         const [fieldName, afterField] = readName(src, afterModule);
-        names.push(`${moduleName}.${fieldName}`);
 
         pos = afterField;
         const kind = src[pos++];
+        imports.push({
+          module: moduleName,
+          name: fieldName,
+          kind: decodedExternalKind(kind, `import ${moduleName}.${fieldName}`),
+        });
         if (kind === 0) {
           const [, n] = readULEB128(src, pos); pos += n;
         } else if (kind === 1) {
-          pos++;
-          const flags = src[pos++];
-          const [, minBytes] = readULEB128(src, pos); pos += minBytes;
-          if (flags & 1) { const [, maxBytes] = readULEB128(src, pos); pos += maxBytes; }
+          pos = readWasmValueType(src, pos, "table import type").next;
+          pos = readLimits(src, pos).next;
         } else if (kind === 2) {
-          const flags = src[pos++];
-          const [, minBytes] = readULEB128(src, pos); pos += minBytes;
-          if (flags & 1) { const [, maxBytes] = readULEB128(src, pos); pos += maxBytes; }
+          pos = readLimits(src, pos).next;
         } else if (kind === 3) {
-          pos += 2;
+          pos = readWasmValueType(src, pos, "global import type").next;
+          pos++;
+        } else if (kind === 4) {
+          pos++; // tag attribute
+          const [, typeBytes] = readULEB128(src, pos); pos += typeBytes;
         }
       }
       break;
@@ -708,15 +2297,24 @@ export function readWasmImportNames(programBytes: ArrayBuffer): string[] {
 
     offset = contentOffset + sectionSize;
   }
-  return names;
+  return imports;
 }
 
-/** Return all export names from a wasm module. */
-export function readWasmExportNames(programBytes: ArrayBuffer): string[] {
+/** Return import names in `module.field` form. */
+export function readWasmImportNames(programBytes: ArrayBuffer): string[] {
+  return readWasmImportDescriptors(programBytes).map(
+    ({ module, name }) => `${module}.${name}`,
+  );
+}
+
+/** Decode every export name and kind in declaration order. */
+export function readWasmExportDescriptors(
+  programBytes: ArrayBuffer,
+): readonly DecodedWasmExportDescriptor[] {
   const src = new Uint8Array(programBytes);
   if (!hasWasmMagic(src)) return [];
 
-  const names: string[] = [];
+  const exports: DecodedWasmExportDescriptor[] = [];
   let offset = 8;
   while (offset < src.length) {
     const sectionId = src[offset];
@@ -729,8 +2327,12 @@ export function readWasmExportNames(programBytes: ArrayBuffer): string[] {
       pos += countBytes;
       for (let i = 0; i < exportCount; i++) {
         const [name, afterName] = readName(src, pos);
-        names.push(name);
-        pos = afterName + 1;
+        pos = afterName;
+        const kind = src[pos++];
+        exports.push({
+          name,
+          kind: decodedExternalKind(kind, `export ${name}`),
+        });
         const [, indexBytes] = readULEB128(src, pos);
         pos += indexBytes;
       }
@@ -739,7 +2341,12 @@ export function readWasmExportNames(programBytes: ArrayBuffer): string[] {
 
     offset = contentOffset + sectionSize;
   }
-  return names;
+  return exports;
+}
+
+/** Return all export names from a wasm module. */
+export function readWasmExportNames(programBytes: ArrayBuffer): string[] {
+  return readWasmExportDescriptors(programBytes).map(({ name }) => name);
 }
 
 /** Return all custom-section names from a wasm module. */
@@ -777,7 +2384,10 @@ export function wasmHasCompleteForkInstrumentation(programBytes: ArrayBuffer): b
     const facts = readWasmForkArtifactFacts(programBytes);
     const hasForkSurface = WPK_FORK_REQUIRED_EXPORTS.some(({ name }) =>
       facts.functionExports.has(name)
-    ) || facts.linkedFrameDescriptors.length > 0;
+    ) || facts.linkedFrameDescriptors.length > 0
+      || facts.exceptionCodecDescriptors.length > 0
+      || facts.importedGlobalsDescriptors.length > 0
+      || facts.importedTablesDescriptors.length > 0;
     return hasForkSurface && describeForkArtifactContractFailures(facts).length === 0;
   } catch {
     return false;
@@ -795,19 +2405,21 @@ export function describeWasmArtifactPolicyFailures(
   options: {
     expectedAbi?: number | null;
     requiredExports?: readonly string[];
+    forbiddenExports?: readonly string[];
     requireForkInstrumentation?: boolean;
     forbidForkInstrumentation?: boolean;
   } = {},
 ): string[] {
   const failures: string[] = [];
+  let declaredAbi: number | null = null;
   if (wasmContainsLegacyAsyncify(programBytes)) {
     failures.push("contains asyncify_");
   }
 
   if (options.expectedAbi !== undefined && options.expectedAbi !== null) {
-    const abi = extractAbiVersion(programBytes);
-    if (abi !== null && abi !== options.expectedAbi) {
-      failures.push(`ABI ${abi}, expected ${options.expectedAbi}`);
+    declaredAbi = extractAbiVersion(programBytes);
+    if (declaredAbi !== null && declaredAbi !== options.expectedAbi) {
+      failures.push(`ABI ${declaredAbi}, expected ${options.expectedAbi}`);
     }
   }
 
@@ -816,6 +2428,12 @@ export function describeWasmArtifactPolicyFailures(
     const missing = options.requiredExports.filter((name) => !exports.has(name));
     if (missing.length > 0) {
       failures.push(`missing required exports: ${missing.join(", ")}`);
+    }
+  }
+  if (options.forbiddenExports) {
+    const forbidden = options.forbiddenExports.filter((name) => exports.has(name));
+    if (forbidden.length > 0) {
+      failures.push(`forbidden exports present: ${forbidden.join(", ")}`);
     }
   }
 
@@ -828,10 +2446,50 @@ export function describeWasmArtifactPolicyFailures(
   const descriptorCount = customSections.filter((name) =>
     name === WPK_FORK_LINKED_FRAME_FORMAT_SECTION
   ).length;
+  const capabilityCount = customSections.filter((name) =>
+    name === WPK_FORK_CAPABILITIES_SECTION
+  ).length;
+  const moduleStateDescriptorCount = customSections.filter((name) =>
+    name === WPK_FORK_MODULE_STATE_FORMAT_SECTION
+  ).length;
+  const exceptionCodecDescriptorCount = customSections.filter((name) =>
+    name === WPK_FORK_EXCEPTION_CODEC_SECTION
+  ).length;
+  const importedGlobalsDescriptorCount = customSections.filter((name) =>
+    name === WPK_FORK_IMPORTED_GLOBALS_SECTION
+  ).length;
+  const importedTablesDescriptorCount = customSections.filter((name) =>
+    name === WPK_FORK_IMPORTED_TABLES_SECTION
+  ).length;
+  const unwindTransportCount = customSections.filter((name) =>
+    name === FORK_UNWIND_TRANSPORT_SECTION
+  ).length;
+  const hasUnwindTagImport = importNames.includes(
+    `${FORK_UNWIND_TAG_IMPORT_MODULE}.${FORK_UNWIND_TAG_IMPORT_NAME}`,
+  );
   const hasForkArtifactSurface =
-    presentWpkExports.length > 0 || presentWpkImports.length > 0 || descriptorCount > 0;
+    presentWpkExports.length > 0 || presentWpkImports.length > 0 ||
+    descriptorCount > 0 || capabilityCount > 0 ||
+    moduleStateDescriptorCount > 0 || exceptionCodecDescriptorCount > 0 ||
+    importedGlobalsDescriptorCount > 0 || importedTablesDescriptorCount > 0 ||
+    unwindTransportCount > 0 ||
+    hasUnwindTagImport;
+  if (
+    options.expectedAbi !== undefined &&
+    options.expectedAbi !== null &&
+    hasForkArtifactSurface &&
+    declaredAbi === null
+  ) {
+    // WHY: the safety bit names an ABI-epoch contract. Without the program's
+    // ABI marker, copied capability metadata could make an ABI 42 transform
+    // look safe to an ABI 43 host.
+    failures.push(
+      `ABI ${options.expectedAbi} fork artifact is missing __abi_version; ` +
+        "the activation-state capability epoch cannot be verified",
+    );
+  }
   if (options.forbidForkInstrumentation && hasForkArtifactSurface) {
-    failures.push("contains ABI 42 wasm-fork-instrument metadata, imports, or exports");
+    failures.push("contains ABI 43 wasm-fork-instrument metadata, imports, or exports");
   }
 
   const requireForkInstrumentation =
@@ -846,7 +2504,7 @@ export function describeWasmArtifactPolicyFailures(
       );
     } catch (error) {
       failures.push(
-        `cannot validate ABI 42 fork-artifact contract: ${
+        `cannot validate ABI 43 fork-artifact contract: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
@@ -863,7 +2521,7 @@ export function describeWasmArtifactPolicyFailures(
  */
 function readGlobalInitAddr(src: Uint8Array, pos: number): bigint | null {
   // valtype + mut + init expr (terminated by 0x0B)
-  pos++; // valtype
+  pos = readWasmValueType(src, pos, "global type").next;
   pos++; // mut
   const opcode = src[pos++];
   if (opcode === 0x41) {
@@ -885,9 +2543,42 @@ function readGlobalInitAddr(src: Uint8Array, pos: number): bigint | null {
  * expression ends at the first 0x0B (end) opcode.
  */
 function skipGlobalEntry(src: Uint8Array, pos: number): number {
-  pos += 2; // valtype + mut
-  while (src[pos] !== 0x0B) pos++;
-  return pos + 1; // skip the end opcode
+  pos = readWasmValueType(src, pos, "global type").next;
+  pos++; // mutability
+  for (;;) {
+    if (pos >= src.length) throw new Error("global init expression is truncated");
+    const opcode = src[pos++]!;
+    switch (opcode) {
+      case 0x0b: // end
+        return pos;
+      case 0x41: // i32.const
+        pos = skipSignedLeb128(src, pos, 5, "i32 global initializer");
+        break;
+      case 0x42: // i64.const
+        pos = skipSignedLeb128(src, pos, 10, "i64 global initializer");
+        break;
+      case 0x43: // f32.const
+        pos += 4;
+        break;
+      case 0x44: // f64.const
+        pos += 8;
+        break;
+      case 0x23: // global.get
+      case 0xd2: { // ref.func
+        const [, bytes] = readULEB128(src, pos);
+        pos += bytes;
+        break;
+      }
+      case 0xd0: // ref.null heaptype
+        pos = skipSignedLeb128(src, pos, 5, "ref.null global initializer");
+        break;
+      default:
+        throw new Error(
+          `global init expression has unsupported opcode 0x${opcode.toString(16)}`,
+        );
+    }
+    if (pos > src.length) throw new Error("global init expression is truncated");
+  }
 }
 
 /**
@@ -1057,7 +2748,11 @@ function extractI32ConstFunctionExport(
     pos += localGroupsBytes;
     for (let i = 0; i < localGroups; i++) {
       const [, n] = readULEB128(src, pos); pos += n; // count
-      pos++; // valtype
+      try {
+        pos = readWasmValueType(src, pos, `function local group ${i}`).next;
+      } catch {
+        return null;
+      }
       if (pos > bodyEnd) return null;
     }
     return pos;
@@ -1176,48 +2871,41 @@ export function detectPtrWidth(programBytes: ArrayBuffer): 4 | 8 {
   const src = new Uint8Array(programBytes);
   if (src.length < 8) return 4;
 
-  function readLEB128(buf: Uint8Array, off: number): [number, number] {
-    let result = 0, shift = 0, pos = off;
-    for (;;) {
-      const byte = buf[pos++];
-      result |= (byte & 0x7f) << shift;
-      if ((byte & 0x80) === 0) break;
-      shift += 7;
-    }
-    return [result, pos - off];
-  }
-
   // Skip magic + version (8 bytes)
   let offset = 8;
   while (offset < src.length) {
     const sectionId = src[offset];
-    const [sectionSize, sizeBytes] = readLEB128(src, offset + 1);
+    const [sectionSize, sizeBytes] = readULEB128(src, offset + 1);
     const contentOffset = offset + 1 + sizeBytes;
 
     if (sectionId === 2) {
       // Import section — look for memory imports
       let pos = contentOffset;
-      const [importCount, countBytes] = readLEB128(src, pos);
+      const [importCount, countBytes] = readULEB128(src, pos);
       pos += countBytes;
       for (let i = 0; i < importCount; i++) {
-        const [modLen, modLenBytes] = readLEB128(src, pos); pos += modLenBytes + modLen;
-        const [fieldLen, fieldLenBytes] = readLEB128(src, pos); pos += fieldLenBytes + fieldLen;
+        const [modLen, modLenBytes] = readULEB128(src, pos); pos += modLenBytes + modLen;
+        const [fieldLen, fieldLenBytes] = readULEB128(src, pos); pos += fieldLenBytes + fieldLen;
         const kind = src[pos++];
         if (kind === 2) {
-          // Memory import: flags byte, then limits
-          const flags = src[pos];
-          if (flags & 0x04) return 8; // memory64 bit set
+          const limits = readLimits(src, pos);
+          if ((limits.flags & 0x04) !== 0) return 8;
           return 4;
         }
         // Skip non-memory imports
-        if (kind === 0) { const [, n] = readLEB128(src, pos); pos += n; }
+        if (kind === 0) { const [, n] = readULEB128(src, pos); pos += n; }
         else if (kind === 1) {
-          pos++; // ref type
-          const f = src[pos++];
-          const [, n] = readLEB128(src, pos); pos += n;
-          if (f & 1) { const [, n2] = readLEB128(src, pos); pos += n2; }
+          pos = readWasmValueType(src, pos, "table import type").next;
+          pos = readLimits(src, pos).next;
         }
-        else if (kind === 3) { pos += 2; } // global: type + mutability
+        else if (kind === 3) {
+          pos = readWasmValueType(src, pos, "global import type").next;
+          pos++;
+        } else if (kind === 4) {
+          pos++; // tag attribute
+          const [, typeBytes] = readULEB128(src, pos);
+          pos += typeBytes;
+        }
       }
       break;
     }

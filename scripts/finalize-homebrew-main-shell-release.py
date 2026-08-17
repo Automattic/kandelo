@@ -36,6 +36,7 @@ SHELL_PACKAGE_PATH = "packages/registry/shell/package.toml"
 BOOTSTRAP_PACKAGE_PATH = "packages/registry/homebrew-bootstrap/package.toml"
 DOC_PATH = "docs/homebrew-publishing.md"
 BREWFILE_PATH = "homebrew/main-shell.Brewfile"
+PRODUCT_CATALOG_PATH = "images/vfs/products/generated/catalog.json"
 BOUND_INPUTS = {
     "bootstrap_tree_spec_sha256": "homebrew/main-shell-brew-package-tree.json",
     "brewfile_sha256": BREWFILE_PATH,
@@ -873,6 +874,22 @@ def prepare_stable_inputs(
     }
     migration = exact_json(old[MIGRATION_PATH], "migration lock")
     support = exact_json(old[SUPPORT_PATH], "runtime support")
+    provenance = (
+        support.get("availability", {}).get("provenance")
+        if isinstance(support, dict)
+        else None
+    )
+    if (
+        isinstance(provenance, dict)
+        and provenance.get("provenance_kind") == "local-test"
+    ):
+        # WHY: the review-pending harness can prove local bytes, but neither a
+        # clean tap nor a closed selection turns that evidence into release
+        # authority. Reject it before reading tap/selection inputs or staging
+        # any replacement lock bytes.
+        raise FinalizeError(
+            "local-test provenance is not promotable or selectable"
+        )
     artifact_lock = require_artifact_lock(
         exact_json(old[ARTIFACT_PATH], "artifact lock")
     )

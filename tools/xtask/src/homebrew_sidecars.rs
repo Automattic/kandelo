@@ -562,10 +562,7 @@ impl Generator<'_> {
         link_outputs: &mut Vec<(String, Value)>,
     ) -> Result<PackageOutput, String> {
         require_relative_path(&package.formula_path, "formula_path")?;
-        require_sha256(
-            &package.formula_source_sha256,
-            "formula_source_sha256",
-        )?;
+        require_sha256(&package.formula_source_sha256, "formula_source_sha256")?;
         sha256_file(&self.options.tap_root.join(&package.formula_path))?;
         let formula_sidecar_path = format!("Kandelo/formula/{}.json", package.name);
         require_relative_path(&formula_sidecar_path, "formula sidecar path")?;
@@ -577,12 +574,8 @@ impl Generator<'_> {
         let mut provenance_reports = 0;
 
         for bottle in &bottles {
-            let bottle_value = self.generate_bottle(
-                package,
-                bottle,
-                &formula_sidecar_path,
-                link_outputs,
-            )?;
+            let bottle_value =
+                self.generate_bottle(package, bottle, &formula_sidecar_path, link_outputs)?;
             if bottle_status(bottle) == "success" {
                 link_manifests += 1;
                 provenance_reports += 1;
@@ -803,10 +796,7 @@ impl Generator<'_> {
             bottle,
             "archived_formula_sha256",
         )?;
-        require_sha256(
-            expected_archived_formula_sha,
-            "archived_formula_sha256",
-        )?;
+        require_sha256(expected_archived_formula_sha, "archived_formula_sha256")?;
         let payload_root = required_field(&bottle.payload_root, package, bottle, "payload_root")?;
         let build = bottle.build.as_ref().ok_or_else(|| {
             bottle_error(package, bottle, "success bottle requires build evidence")
@@ -1304,7 +1294,11 @@ fn verify_bottle_payload(
 ) -> Result<String, String> {
     require_relative_path(payload_root, "payload_root")?;
     let formula_receipt = format!(".brew/{}.rb", package.name);
-    if !bottle.receipts.iter().any(|receipt| receipt == &formula_receipt) {
+    if !bottle
+        .receipts
+        .iter()
+        .any(|receipt| receipt == &formula_receipt)
+    {
         return Err(bottle_error(
             package,
             bottle,
@@ -1312,13 +1306,15 @@ fn verify_bottle_payload(
         ));
     }
     let (entries, archived_formula_sha) =
-        tar_gz_entries_and_formula_sha(bottle_path, payload_root, &formula_receipt).map_err(|e| {
-        bottle_error(
-            package,
-            bottle,
-            &format!("cannot inspect bottle payload: {e}"),
-        )
-    })?;
+        tar_gz_entries_and_formula_sha(bottle_path, payload_root, &formula_receipt).map_err(
+            |e| {
+                bottle_error(
+                    package,
+                    bottle,
+                    &format!("cannot inspect bottle payload: {e}"),
+                )
+            },
+        )?;
 
     for link in &bottle.links {
         require_relative_path(&link.source, "link source")?;
@@ -1387,9 +1383,9 @@ fn tar_gz_entries_and_formula_sha(
                 let mut hasher = Sha256::new();
                 let mut buffer = [0_u8; 64 * 1024];
                 loop {
-                    let read = entry.read(&mut buffer).map_err(|e| {
-                        format!("read {} formula receipt: {e}", path.display())
-                    })?;
+                    let read = entry
+                        .read(&mut buffer)
+                        .map_err(|e| format!("read {} formula receipt: {e}", path.display()))?;
                     if read == 0 {
                         break;
                     }
@@ -1580,8 +1576,7 @@ mod tests {
         });
         if status == "success" {
             bottle["bottle_file"] = json!(bottle_file);
-            bottle["archived_formula_sha256"] =
-                json!(sha256_bytes(FORMULA_TEXT.as_bytes()));
+            bottle["archived_formula_sha256"] = json!(sha256_bytes(FORMULA_TEXT.as_bytes()));
             bottle["url"] = json!(repository_bottle_url(
                 "kandelo-dev/homebrew-tap-core",
                 "hello",
@@ -1621,7 +1616,7 @@ mod tests {
                     {
                         "name": "node_smoke",
                         "status": "success",
-                        "passed": ["fixture"],
+                        "passed": ["hello exits 0 under Node.js"],
                         "failed": [],
                         "skipped": []
                     }
@@ -1673,10 +1668,7 @@ mod tests {
             let tap_root = dir.path().join("tap");
             let input_dir = dir.path().join("inputs");
             fs::create_dir_all(&input_dir).unwrap();
-            write_text(
-                &tap_root.join("Formula/hello.rb"),
-                FORMULA_TEXT,
-            );
+            write_text(&tap_root.join("Formula/hello.rb"), FORMULA_TEXT);
             let bottle_path = input_dir.join("hello.bottle.tar.gz");
             write_bottle(&bottle_path, FORMULA_TEXT);
             let bottle_sha256 = sha256_file_and_len(&bottle_path).unwrap().0;
@@ -1951,9 +1943,8 @@ mod tests {
         previous.run(None);
         let previous_metadata: Value =
             load_json(&previous.tap_root.join("Kandelo/metadata.json")).unwrap();
-        let previous_built_from = previous_metadata["packages"][0]["bottles"][0]
-            ["built_from"]
-            .clone();
+        let previous_built_from =
+            previous_metadata["packages"][0]["bottles"][0]["built_from"].clone();
         let previous_formula_sha = previous_built_from["formula_sha256"]
             .as_str()
             .unwrap()
@@ -1998,11 +1989,7 @@ mod tests {
         current.run(Some(&previous.tap_root.join("Kandelo/metadata.json")));
 
         let metadata: Value = load_json(&current.tap_root.join("Kandelo/metadata.json")).unwrap();
-        write_formula_from_metadata(
-            &current.tap_root,
-            CURRENT_ARCHIVED_FORMULA_TEXT,
-            &metadata,
-        );
+        write_formula_from_metadata(&current.tap_root, CURRENT_ARCHIVED_FORMULA_TEXT, &metadata);
         let bottles = metadata["packages"][0]["bottles"].as_array().unwrap();
         let arches: Vec<_> = bottles
             .iter()

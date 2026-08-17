@@ -10,10 +10,11 @@
 // and nudge WebKit's collector to reclaim it between boots.
 import { MemoryFileSystem } from "@host/vfs/memory-fs";
 import { overlayEtcFromRootfs } from "@host/vfs/rootfs-overlay";
-// @ts-expect-error — vite ?url virtual module (resolved by the kernel-artifacts plugin)
+import { isWebKitLikeBrowser } from "./browser-engine";
 import rootfsVfsUrl from "@rootfs-vfs?url";
 
 export { overlayEtcFromRootfs };
+export { isWebKitLikeBrowser, isWebKitLikeUserAgent } from "./browser-engine";
 
 const WEBKIT_RECLAIM_TIMEOUT_MS = 1_500;
 const WEBKIT_RECLAIM_STEP_MS = 150;
@@ -27,12 +28,6 @@ const imageBufferRegistry =
         pendingImageBufferReclaims = Math.max(0, pendingImageBufferReclaims - 1);
       })
     : null;
-
-export function isWebKitLikeBrowser(): boolean {
-  const ua = navigator.userAgent;
-  return /AppleWebKit/i.test(ua)
-    && !/(Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS)/i.test(ua);
-}
 
 /**
  * Track a transient image-build buffer so {@link settleWebKitReclaim} can wait

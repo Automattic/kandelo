@@ -12,7 +12,7 @@ import type {
   SurfaceAvailability, GalleryItem, GalleryTab, LazyDownloadEvent, LazyDownloadSummary,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { activeLazyDownloadSummaries } from "../../../../../web-libs/kandelo-session/src/lazy-download";
-import type { DemoGuideConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
+import type { DemoGuideConfig, DemoIngestConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
 
 const KernelHostContext = React.createContext<KernelHost | null>(null);
 const LAZY_DOWNLOAD_COMPLETE_VISIBLE_MS = 2400;
@@ -30,6 +30,12 @@ export function useKernelHost(): KernelHost {
     throw new Error("useKernelHost() called outside <KernelHostProvider>");
   }
   return host;
+}
+
+/** Explicitly remove a logical terminal in response to a user UI action. */
+export function useRemovePty(): (path: string) => void {
+  const host = useKernelHost();
+  return React.useCallback((path: string) => host.removePty(path), [host]);
 }
 
 export function useStatus(): MachineStatus {
@@ -166,6 +172,16 @@ export function useDemoGuide(): DemoGuideConfig | null {
   React.useEffect(() => {
     setState(host.getDemoGuide());
     return host.subscribeDemoGuide(setState);
+  }, [host]);
+  return state;
+}
+
+export function useDemoIngest(): DemoIngestConfig | null {
+  const host = useKernelHost();
+  const [state, setState] = React.useState<DemoIngestConfig | null>(() => host.getDemoIngest());
+  React.useEffect(() => {
+    setState(host.getDemoIngest());
+    return host.subscribeDemoIngest(setState);
   }, [host]);
   return state;
 }

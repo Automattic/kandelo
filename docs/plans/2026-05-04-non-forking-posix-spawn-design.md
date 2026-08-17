@@ -1,9 +1,23 @@
 # Non-forking `posix_spawn` syscall — design
 
 **Date:** 2026-05-04
-**Status:** Design validated, ready for implementation planning
-**Branch:** `non-forking-posix_spawn-syscall-implementation`
-**ABI bump:** 7 → 8
+**Status:** Historical design; implemented and subsequently superseded in
+details described below
+**Original branch:** `non-forking-posix_spawn-syscall-implementation`
+**Original proposed ABI bump:** 7 → 8
+
+> **Historical contract notice (updated 2026-07-26):** This document preserves
+> the original proposal, including the superseded syscall number 141 and ABI
+> 7 → 8 rollout below. The implemented syscall is the host-intercepted
+> `SYS_SPAWN = 500`. PR #1097 merged as
+> `c7d039794a43788acfa0b0aea30a700c257f57cb` with ABI 42; the capacity-bound
+> transport was retargeted to that exact merge result and intentionally
+> advances the incompatible contract to ABI 43.
+> Do not copy numeric contracts from this historical body. The authoritative
+> current values live in `crates/shared/src/lib.rs::spawn_contract` and are
+> generated for Rust, TypeScript, and C consumers. The validation commands
+> below are archival too; current verification runs through
+> `scripts/dev-shell.sh` under `docs/agent-guidance/validation.md`.
 
 ## Goal
 
@@ -102,13 +116,44 @@ strings:         u8[]                                     // packed null-termina
 covering FDOP_OPEN, FDOP_CLOSE, FDOP_DUP2, FDOP_CHDIR, FDOP_FCHDIR. Strings
 (open paths, chdir paths) interned in `strings[]` at `path_off`.
 
-`attr_flags` mirrors POSIX: `SETSIGDEF=0x10`, `SETSID=0x80`,
-`SETPGROUP=0x02`, `SETSIGMASK=0x08`. `pgrp/sigdef/sigmask` are unused unless
-the corresponding flag bit is set.
+`attr_flags` transports musl's complete POSIX flag byte without translation:
+`RESETIDS=0x01`, `SETPGROUP=0x02`, `SETSIGDEF=0x04`,
+`SETSIGMASK=0x08`, `SETSCHEDPARAM=0x10`, `SETSCHEDULER=0x20`,
+`USEVFORK=0x40`, and `SETSID=0x80`. Transporting a bit does not imply that
+Kandelo implements its behavior. The current kernel acts on `SETPGROUP`,
+`SETSIGDEF`, `SETSIGMASK`, and `SETSID`; the other values remain explicit
+unsupported-contract entries. `pgrp/sigdef/sigmask` are unused unless the
+corresponding implemented flag bit is set.
 
 The blob is a transient request: the kernel copies it to scratch like every
 other syscall, parses it once, and never references it again. The descriptor
 the kernel constructs for the child lives in `ProcessTable`.
+
+Implementation update (2026-07-25): the original design above predates ABI
+43's capacity-bound scratch contract. Small blobs still use the 65,608-byte
+kernel-owned syscall region under one synchronous pointer-plus-capacity lease.
+Every larger operation now begins a fresh exclusive reservation on a
+Rust-owned reusable `Vec<u8>`, receives an opaque token, reads the token's
+pointer and capacity, copies under a lease, and either commits or cancels that
+same token. Commit accepts no host-selected pointer, consumes the reservation
+before parsing into Rust-owned data, and releases the scratch lock before
+process-table work or host imports. The host also calls cancellation after
+every commit attempt; success releases a pre-consume failure and `EINVAL`
+means the never-reused token was already consumed. Commit and cancellation
+wait through a no-host-import Rust critical section. Host reentry protection
+and the Rust reservation state prevent a second operation from replacing live
+bytes.
+
+The authoritative advertised `ARG_MAX` and `PATH_MAX` live in
+`crates/shared/src/lib.rs::platform_limits`. The separate 40-byte header,
+28-byte action record, count caps, and 8,417,320-byte complete ceiling live in
+`crates/shared/src/lib.rs::spawn_contract`; together they generate the C and
+TypeScript consumers. See
+`docs/plans/2026-07-25-kernel-scratch-transfer-audit.md` for the ownership
+audit and the exact measurement plan. That audit does not currently record
+uncontended exact-head Node.js or Chromium retained-memory results, so it
+supports no retained-capacity, speedup, or broad performance no-regression
+claim.
 
 ## Section 2 — Kernel side
 

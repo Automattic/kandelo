@@ -172,9 +172,10 @@ If the caller inserts even a short `nanosleep` between `aio_read` and `sigsuspen
    `sigprocmask`, `sigsuspend`, `rt_sigpending`, `ppoll`, `pselect6`, and
    `sigtimedwait` therefore operate on the calling task rather than a PID-only
    selector.
-3. `kernel_dequeue_signal(pid, tid, out_ptr)` validates the target task and
-   dequeues only signals deliverable to it. Unknown, foreign, stale, or exited
-   tasks return `ESRCH` without consuming signal state.
+3. `kernel_dequeue_signal(pid, tid, out_ptr, out_capacity)` validates the
+   target task and output allocation before dequeuing only signals deliverable
+   to it. Unknown, foreign, stale, or exited tasks return `ESRCH` without
+   consuming signal state.
 4. `tkill` and `tgkill` write only to an exact live task's directed queue.
 5. Fork receives the validated caller TID, copies only that task's signal mask,
    and no longer uses the obsolete host-driven `kernel_reset_signal_mask` path.

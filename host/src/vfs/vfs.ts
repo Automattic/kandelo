@@ -1,22 +1,34 @@
 import type {
+  AppendOutcome,
+  HostFileOffset,
   NetworkIO,
   PathconfValue,
   PlatformIO,
   StatResult,
   StatfsResult,
 } from "../types";
-import type { FileSystemBackend, MountConfig, TimeProvider } from "./types";
+import {
+  ST_NOSUID,
+  type FileSystemBackend,
+  type MountConfig,
+  type MountSetIdCapability,
+  type TimeProvider,
+} from "./types";
+import { resolveMountSetIdCapability } from "./memory-fs";
+import { OPEN_FLAGS } from "../generated/abi";
 
 interface MountEntry {
   prefix: string;
   backend: FileSystemBackend;
   backendId: number;
+  setIdCapability: MountSetIdCapability;
 }
 
 interface HandleInfo {
   backend: FileSystemBackend;
   backendId: number;
   localHandle: number;
+  statfs?: StatfsResult;
 }
 
 const MAX_U64 = (1n << 64n) - 1n;
@@ -40,6 +52,11 @@ function normalizeMountPoint(mp: string): string {
     return mp.slice(0, -1);
   }
   return mp;
+}
+
+function parentPath(path: string): string {
+  const slash = path.lastIndexOf("/");
+  return slash <= 0 ? "/" : path.slice(0, slash);
 }
 
 export class VirtualPlatformIO implements PlatformIO {
@@ -73,6 +90,7 @@ export class VirtualPlatformIO implements PlatformIO {
           prefix: normalizeMountPoint(m.mountPoint),
           backend: m.backend,
           backendId,
+          setIdCapability: resolveMountSetIdCapability(m),
         };
       })
       .sort((a, b) => b.prefix.length - a.prefix.length);
@@ -82,9 +100,16 @@ export class VirtualPlatformIO implements PlatformIO {
     }
   }
 
+  /** Effective set-ID policy for the mount that owns an absolute guest path. */
+  getMountSetIdCapability(path: string): MountSetIdCapability {
+    const { setIdCapability } = this.resolve(path);
+    return setIdCapability;
+  }
+
   private resolve(path: string): {
     backend: FileSystemBackend;
     backendId: number;
+    setIdCapability: MountSetIdCapability;
     relativePath: string;
   } {
     for (const m of this.mounts) {
@@ -92,6 +117,7 @@ export class VirtualPlatformIO implements PlatformIO {
         return {
           backend: m.backend,
           backendId: m.backendId,
+          setIdCapability: m.setIdCapability,
           relativePath: path,
         };
       }
@@ -101,6 +127,7 @@ export class VirtualPlatformIO implements PlatformIO {
         return {
           backend: m.backend,
           backendId: m.backendId,
+          setIdCapability: m.setIdCapability,
           relativePath: rel,
         };
       }
@@ -180,10 +207,28 @@ export class VirtualPlatformIO implements PlatformIO {
   }
 
   open(path: string, flags: number, mode: number): number {
-    const { backend, backendId, relativePath } = this.resolve(path);
+    const { backend, backendId, relativePath, setIdCapability } = this.resolve(path);
+    // O_CREAT may name a missing final component. Its already-resolved backend
+    // and existing parent provide the filesystem metadata; the open below
+    // remains the sole authority for validating and creating the final path.
+    const statfsPath = (flags & OPEN_FLAGS.O_CREAT) !== 0
+      ? parentPath(relativePath)
+      : relativePath;
+    const backendStatfs = backend.statfs(statfsPath);
+    const statfs = {
+      ...backendStatfs,
+      flags: setIdCapability.kind === "nosuid"
+        ? backendStatfs.flags | ST_NOSUID
+        : backendStatfs.flags & ~ST_NOSUID,
+    };
     const localHandle = backend.open(relativePath, flags, mode);
     const globalHandle = this.nextFileHandle++;
-    this.fileHandles.set(globalHandle, { backend, backendId, localHandle });
+    this.fileHandles.set(globalHandle, {
+      backend,
+      backendId,
+      localHandle,
+      statfs,
+    });
     return globalHandle;
   }
 
@@ -197,7 +242,7 @@ export class VirtualPlatformIO implements PlatformIO {
   read(
     handle: number,
     buffer: Uint8Array,
-    offset: number | null,
+    offset: HostFileOffset | null,
     length: number,
   ): number {
     const info = this.getFileHandle(handle);
@@ -207,14 +252,28 @@ export class VirtualPlatformIO implements PlatformIO {
   write(
     handle: number,
     buffer: Uint8Array,
-    offset: number | null,
+    offset: HostFileOffset | null,
     length: number,
   ): number {
     const info = this.getFileHandle(handle);
     return info.backend.write(info.localHandle, buffer, offset, length);
   }
 
-  seek(handle: number, offset: number, whence: number): number {
+  append(
+    handle: number,
+    buffer: Uint8Array,
+    length: number,
+    limit: HostFileOffset | null,
+  ): AppendOutcome {
+    const info = this.getFileHandle(handle);
+    return info.backend.append(info.localHandle, buffer, length, limit);
+  }
+
+  seek(
+    handle: number,
+    offset: HostFileOffset,
+    whence: number,
+  ): HostFileOffset {
     const info = this.getFileHandle(handle);
     return info.backend.seek(info.localHandle, offset, whence);
   }
@@ -222,6 +281,14 @@ export class VirtualPlatformIO implements PlatformIO {
   fstat(handle: number): StatResult {
     const info = this.getFileHandle(handle);
     return this.qualifyStat(info.backend, info.backend.fstat(info.localHandle));
+  }
+
+  fstatfs(handle: number): StatfsResult {
+    const info = this.getFileHandle(handle);
+    if (info.statfs === undefined) {
+      throw new Error(`EBADF: file handle ${handle} has no mount route`);
+    }
+    return { ...info.statfs };
   }
 
   fpathconf(handle: number, name: number): PathconfValue {
@@ -262,8 +329,12 @@ export class VirtualPlatformIO implements PlatformIO {
   }
 
   statfs(path: string): StatfsResult {
-    const { backend, relativePath } = this.resolve(path);
-    return backend.statfs(relativePath);
+    const { backend, relativePath, setIdCapability } = this.resolve(path);
+    const statfs = backend.statfs(relativePath);
+    const flags = setIdCapability.kind === "nosuid"
+      ? statfs.flags | ST_NOSUID
+      : statfs.flags & ~ST_NOSUID;
+    return { ...statfs, flags };
   }
 
   pathconf(path: string, name: number): PathconfValue {

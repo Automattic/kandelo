@@ -6,6 +6,7 @@
 HOMEBREW_PATCHED_REPO=""
 HOMEBREW_PATCHED_PREFIX=""
 HOMEBREW_PATCHED_OVERLAY=""
+HOMEBREW_PATCHED_SEED_BREW_BIN=""
 HOMEBREW_PATCHED_LAUNCHER=""
 HOMEBREW_PATCHED_BREW_BIN=""
 HOMEBREW_PATCHED_PROTECTED_DIR=""
@@ -425,6 +426,7 @@ homebrew_patched_launcher_formula_test_runtime_manifest() {
   local -a required_files=(
     Cargo.toml
     package.json
+    examples/run-example-builtins.ts
     examples/run-example.ts
     examples/run-example-output.ts
     examples/run-example-paths.ts
@@ -1570,6 +1572,243 @@ homebrew_patched_launcher_snapshot_target_cellar_layout() {
   fi
 }
 
+# Homebrew reports an installed Formula's stable opt path from `brew --prefix
+# <formula>`. Resolve that logical path only after proving it is the exact
+# canonical opt link for the selected Formula. Candidate builds use the exact
+# launcher symlink created by `homebrew_patched_launcher_prepare`; isolated
+# builds replace it with a regular protected wrapper. Accept only those two
+# already-bound shapes and require either launcher to report the same canonical
+# opt path. Callers that need receipt or keg identity must not mistake the
+# Formula name at the end of the opt path for the installed version at the end
+# of the physical Cellar path.
+homebrew_patched_launcher_resolve_installed_formula_keg() {
+  if [ "$#" -ne 3 ]; then
+    echo "homebrew_patched_launcher_resolve_installed_formula_keg: expected BREW FORMULA-REF FORMULA" >&2
+    return 2
+  fi
+  local brew_bin="$1" formula_ref="$2" formula="$3"
+  local tap_ref logical_prefix expected_opt target_rack target_keg version
+
+  [ -n "$HOMEBREW_PATCHED_PREFIX" ] &&
+    [ "$brew_bin" = "$HOMEBREW_PATCHED_BREW_BIN" ] || {
+    echo "homebrew-patched-launcher: Formula keg resolution requires the bound protected Brew identity" >&2
+    return 2
+  }
+  tap_ref="${formula_ref%/*}"
+  [[ "$formula" =~ ^[a-z0-9][a-z0-9._-]*$ ]] &&
+    [ "${formula_ref##*/}" = "$formula" ] &&
+    [[ "$tap_ref" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
+    echo "homebrew-patched-launcher: Formula keg resolution received an invalid Formula identity" >&2
+    return 2
+  }
+  expected_opt="$HOMEBREW_PATCHED_PREFIX/opt/$formula"
+  if [ -L "$brew_bin" ]; then
+    [ "$brew_bin" = "$HOMEBREW_PATCHED_LAUNCHER" ] &&
+      [ "${brew_bin%/*}" = "$HOMEBREW_PATCHED_PREFIX/bin" ] &&
+      [ -n "$HOMEBREW_PATCHED_OVERLAY" ] &&
+      [ "$(/usr/bin/readlink "$brew_bin")" = \
+        "$HOMEBREW_PATCHED_OVERLAY/bin/brew" ] &&
+      [ -f "$HOMEBREW_PATCHED_OVERLAY/bin/brew" ] &&
+      [ ! -L "$HOMEBREW_PATCHED_OVERLAY/bin/brew" ] &&
+      [ -x "$HOMEBREW_PATCHED_OVERLAY/bin/brew" ] || {
+      echo "homebrew-patched-launcher: Formula keg resolution found a changed candidate Brew launcher" >&2
+      return 2
+    }
+  else
+    [ -f "$brew_bin" ] && [ -x "$brew_bin" ] || {
+      echo "homebrew-patched-launcher: Formula keg resolution requires the active protected Brew wrapper" >&2
+      return 2
+    }
+  fi
+  logical_prefix="$("$brew_bin" --prefix "$formula_ref")" || return
+  target_rack="$HOMEBREW_PATCHED_PREFIX/Cellar/$formula"
+  [ "$logical_prefix" = "$expected_opt" ] &&
+    [ -L "$logical_prefix" ] &&
+    [ -d "$target_rack" ] && [ ! -L "$target_rack" ] &&
+    [ "$(cd "$target_rack" && pwd -P)" = "$target_rack" ] || {
+    echo "homebrew-patched-launcher: Formula prefix is not the exact canonical opt link" >&2
+    return 1
+  }
+  target_keg="$(cd "$logical_prefix" && pwd -P)" || return
+  version="${target_keg##*/}"
+  [[ "$version" =~ ^[A-Za-z0-9][A-Za-z0-9._+,-]{0,255}$ ]] &&
+    [ "$target_keg" = "$target_rack/$version" ] &&
+    [ -d "$target_keg" ] && [ ! -L "$target_keg" ] &&
+    [ "$(readlink "$logical_prefix")" = "../Cellar/$formula/$version" ] || {
+    echo "homebrew-patched-launcher: Formula opt link does not select one canonical installed keg" >&2
+    return 1
+  }
+  printf '%s\n' "$target_keg"
+}
+
+# `brew list --versions --formula` returns status 1 with no output when the
+# exact fully-qualified Formula is absent. Preserve that narrow semantic while
+# rejecting command failures and warnings that an `|| true` check would hide.
+homebrew_patched_launcher_require_formula_absent() {
+  if [ "$#" -ne 2 ]; then
+    echo "homebrew_patched_launcher_require_formula_absent: expected BREW FORMULA-REF" >&2
+    return 2
+  fi
+  local brew_bin="$1" formula_ref="$2" formula tap_ref output status
+
+  [ -n "$HOMEBREW_PATCHED_PREFIX" ] &&
+    [ "$brew_bin" = "$HOMEBREW_PATCHED_BREW_BIN" ] &&
+    [ -f "$brew_bin" ] && [ ! -L "$brew_bin" ] && [ -x "$brew_bin" ] || {
+    echo "homebrew-patched-launcher: Formula absence requires the active protected Brew wrapper" >&2
+    return 2
+  }
+  formula="${formula_ref##*/}"
+  tap_ref="${formula_ref%/*}"
+  [[ "$formula" =~ ^[a-z0-9][a-z0-9._-]*$ ]] &&
+    [[ "$tap_ref" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
+    echo "homebrew-patched-launcher: Formula absence received an invalid Formula identity" >&2
+    return 2
+  }
+  if output="$("$brew_bin" list --versions --formula "$formula_ref" 2>&1)"; then
+    status=0
+  else
+    status=$?
+  fi
+  [ "$status" -eq 1 ] && [ -z "$output" ] || {
+    echo "homebrew-patched-launcher: Formula absence query did not report exact absence" >&2
+    return 1
+  }
+}
+
+# A hosted bottle build and its verifier use different fresh runners. The
+# local batch harness deliberately reuses one prefix, so remove only the
+# source-built target through the still-active protected Brew wrapper before
+# that bottle is independently poured. Installed dependencies must remain
+# byte-for-byte the same Cellar layout for the next phase and Formula.
+homebrew_patched_launcher_retire_source_target() {
+  if [ "$#" -ne 7 ]; then
+    echo "homebrew_patched_launcher_retire_source_target: expected BREW FORMULA-REF FORMULA VERSION BOTTLE BOTTLE-JSON RECEIPT" >&2
+    return 2
+  fi
+  local brew_bin="$1" formula_ref="$2" formula="$3" version="$4"
+  local bottle="$5" bottle_json="$6" receipt="$7"
+  local tap_ref target_rack target_keg target_opt expected_opt installed dependents
+  local before_layout expected_layout after_layout target_entries=0 entry
+  local bottle_state bottle_json_state bottle_sha bottle_json_sha state links
+
+  [ -n "$HOMEBREW_PATCHED_BUILD_USER" ] &&
+    [ -n "$HOMEBREW_PATCHED_PREFIX" ] &&
+    [ "$brew_bin" = "$HOMEBREW_PATCHED_BREW_BIN" ] &&
+    [ -f "$brew_bin" ] && [ ! -L "$brew_bin" ] && [ -x "$brew_bin" ] || {
+    echo "homebrew-patched-launcher: source target retirement requires the active protected Brew wrapper" >&2
+    return 2
+  }
+  tap_ref="${formula_ref%/*}"
+  [[ "$formula" =~ ^[a-z0-9][a-z0-9._-]*$ ]] &&
+    [ "${formula_ref##*/}" = "$formula" ] &&
+    [[ "$tap_ref" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] &&
+    [[ "$version" =~ ^[A-Za-z0-9][A-Za-z0-9._+,-]{0,255}$ ]] || {
+    echo "homebrew-patched-launcher: source target retirement received an invalid Formula identity" >&2
+    return 2
+  }
+  target_rack="$HOMEBREW_PATCHED_PREFIX/Cellar/$formula"
+  target_keg="$target_rack/$version"
+  target_opt="$HOMEBREW_PATCHED_PREFIX/opt/$formula"
+  expected_opt="../Cellar/$formula/$version"
+  [ -d "$target_rack" ] && [ ! -L "$target_rack" ] &&
+    [ -d "$target_keg" ] && [ ! -L "$target_keg" ] &&
+    [ -L "$target_opt" ] &&
+    [ "$(readlink "$target_opt")" = "$expected_opt" ] &&
+    [ "$(cd "$target_opt" && pwd -P)" = "$target_keg" ] || {
+    echo "homebrew-patched-launcher: source target retirement found a changed target keg" >&2
+    return 1
+  }
+
+  for entry in "$bottle" "$bottle_json" "$receipt"; do
+    [ -f "$entry" ] && [ ! -L "$entry" ] || {
+      echo "homebrew-patched-launcher: source target retirement input is not a regular file: $entry" >&2
+      return 2
+    }
+    if state="$(stat -c '%d:%i:%u:%g:%a:%h:%s' "$entry" 2>/dev/null)"; then
+      links="$(stat -c '%h' "$entry")"
+    else
+      state="$(stat -f '%d:%i:%u:%g:%Lp:%l:%z' "$entry")" || return 2
+      links="$(stat -f '%l' "$entry")" || return 2
+    fi
+    [ "$links" = 1 ] || {
+      echo "homebrew-patched-launcher: source target retirement input is not single-linked: $entry" >&2
+      return 2
+    }
+    case "$entry" in
+      "$bottle") bottle_state="$state" ;;
+      "$bottle_json") bottle_json_state="$state" ;;
+    esac
+  done
+  bottle_sha="$(homebrew_sha256_stream <"$bottle")" || return 2
+  bottle_json_sha="$(homebrew_sha256_stream <"$bottle_json")" || return 2
+
+  installed="$("$brew_bin" list --versions --formula "$formula_ref")" || return
+  [ "$installed" = "$formula $version" ] || {
+    echo "homebrew-patched-launcher: source target retirement selected a different installed Formula: $installed" >&2
+    return 1
+  }
+  dependents="$("$brew_bin" uses --installed --formula "$formula_ref")" || return
+  [ -z "$dependents" ] || {
+    echo "homebrew-patched-launcher: source target retirement would remove an installed dependency: $dependents" >&2
+    return 1
+  }
+  before_layout="$(homebrew_patched_launcher_snapshot_target_cellar_layout)" || return
+  expected_layout=""
+  while IFS= read -r entry; do
+    case "$entry" in
+      "rack:$formula"|"keg:$formula/$version")
+        target_entries=$((target_entries + 1))
+        ;;
+      "keg:$formula/"*)
+        echo "homebrew-patched-launcher: source target retirement found an additional target keg: $entry" >&2
+        return 1
+        ;;
+      *)
+        if [ -z "$expected_layout" ]; then
+          expected_layout="$entry"
+        else
+          expected_layout="$expected_layout"$'\n'"$entry"
+        fi
+        ;;
+    esac
+  done <<<"$before_layout"
+  [ "$target_entries" -eq 2 ] || {
+    echo "homebrew-patched-launcher: source target retirement did not find one exact target rack and keg" >&2
+    return 1
+  }
+
+  "$brew_bin" uninstall --formula "$formula_ref" || return
+  homebrew_patched_launcher_require_formula_absent \
+    "$brew_bin" "$formula_ref" || return
+  [ ! -e "$target_rack" ] && [ ! -L "$target_rack" ] &&
+    [ ! -e "$target_opt" ] && [ ! -L "$target_opt" ] || {
+    echo "homebrew-patched-launcher: source target retirement left the target installed" >&2
+    return 1
+  }
+  after_layout="$(homebrew_patched_launcher_snapshot_target_cellar_layout)" || return
+  [ "$after_layout" = "$expected_layout" ] || {
+    echo "homebrew-patched-launcher: source target retirement changed installed dependencies" >&2
+    return 1
+  }
+  for entry in "$bottle" "$bottle_json"; do
+    if state="$(stat -c '%d:%i:%u:%g:%a:%h:%s' "$entry" 2>/dev/null)"; then
+      :
+    else
+      state="$(stat -f '%d:%i:%u:%g:%Lp:%l:%z' "$entry")" || return 2
+    fi
+    case "$entry" in
+      "$bottle")
+        [ "$state" = "$bottle_state" ] &&
+          [ "$(homebrew_sha256_stream <"$entry")" = "$bottle_sha" ] || return 1
+        ;;
+      "$bottle_json")
+        [ "$state" = "$bottle_json_state" ] &&
+          [ "$(homebrew_sha256_stream <"$entry")" = "$bottle_json_sha" ] || return 1
+        ;;
+    esac
+  done
+}
+
 homebrew_patched_launcher_stage_control_file() {
   if [ "$#" -ne 5 ]; then
     echo "homebrew_patched_launcher_stage_control_file: expected KEY SOURCE BASENAME MAX_BYTES LABEL" >&2
@@ -1577,6 +1816,8 @@ homebrew_patched_launcher_stage_control_file() {
   fi
   local key="$1" source="$2" basename="$3" max_bytes="$4" label="$5"
   local destination source_state source_uid source_mode source_links bytes digest
+  local invoker_uid prefix_uid prefix_gid prefix_mode build_gid sudo_bin sudo_mode
+  local staging_path=""
   if [ -z "$HOMEBREW_PATCHED_PREFIX" ] || [ -n "$HOMEBREW_PATCHED_BUILD_USER" ]; then
     echo "homebrew-patched-launcher: stage the $label after preparation and before isolation" >&2
     return 2
@@ -1622,8 +1863,61 @@ homebrew_patched_launcher_stage_control_file() {
   HOMEBREW_PATCHED_CONTROL_FILE_MAX_BYTES[$key]="$max_bytes"
   HOMEBREW_PATCHED_CONTROL_FILE_SHA256[$key]=""
   HOMEBREW_PATCHED_CONTROL_FILE_STATE[$key]="staging"
-  if ! cp "$source" "$destination" || ! chmod 0444 "$destination" ||
-     ! digest="$(homebrew_sha256_stream <"$destination")"; then
+  invoker_uid="$(/usr/bin/id -u)" || return 2
+  if source_state="$(stat -c '%u:%g:%a' "$HOMEBREW_PATCHED_PREFIX" 2>/dev/null)"; then
+    IFS=: read -r prefix_uid prefix_gid prefix_mode <<<"$source_state"
+  else
+    source_state="$(stat -f '%u:%g:%Lp' "$HOMEBREW_PATCHED_PREFIX")" || return 2
+    IFS=: read -r prefix_uid prefix_gid prefix_mode <<<"$source_state"
+  fi
+  if [ "$prefix_uid" = "$invoker_uid" ]; then
+    if ! cp "$source" "$destination" || ! chmod 0444 "$destination"; then
+      echo "homebrew-patched-launcher: could not stage the $label" >&2
+      homebrew_patched_launcher_remove_control_file "$key" || true
+      return 1
+    fi
+  else
+    build_gid="$(/usr/bin/id -g "${KANDELO_HOMEBREW_BUILD_USER:-}" 2>/dev/null || true)"
+    sudo_bin="$HOMEBREW_PATCHED_SUDO_BIN"
+    sudo_mode="$(/usr/bin/stat -c '%a' "$sudo_bin" 2>/dev/null || true)"
+    if [ "$prefix_uid:$prefix_gid:$prefix_mode" != "0:$build_gid:1775" ] ||
+       [ -z "$build_gid" ] || [ "$sudo_bin" != /usr/bin/sudo ] ||
+       [ ! -f "$sudo_bin" ] || [ -L "$sudo_bin" ] || [ ! -x "$sudo_bin" ] ||
+       [ "$(/usr/bin/stat -c '%u' "$sudo_bin" 2>/dev/null || true)" != 0 ] ||
+       ! [[ "$sudo_mode" =~ ^[0-7]{3,4}$ ]] ||
+       [ $((8#$sudo_mode & 0022)) -ne 0 ]; then
+      echo "homebrew-patched-launcher: reused prefix cannot stage the $label safely" >&2
+      homebrew_patched_launcher_remove_control_file "$key" || true
+      return 2
+    fi
+    staging_path="$(
+      "$sudo_bin" -n -- /usr/bin/mktemp \
+        "$HOMEBREW_PATCHED_PREFIX/$basename.staging.XXXXXX"
+    )" || {
+      echo "homebrew-patched-launcher: could not stage the $label" >&2
+      return 1
+    }
+    case "$staging_path" in
+      "$destination".staging.??????) ;;
+      *)
+        echo "homebrew-patched-launcher: privileged $label staging path escaped the prefix" >&2
+        return 1
+        ;;
+    esac
+    if [ ! -f "$staging_path" ] || [ -L "$staging_path" ] ||
+       [ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$staging_path")" != "0:0:600:1" ] ||
+       ! "$sudo_bin" -n -- /usr/bin/install -o root -g root -m 0444 -- \
+         "$source" "$staging_path" ||
+       ! "$sudo_bin" -n -- /usr/bin/ln -- "$staging_path" "$destination" ||
+       ! "$sudo_bin" -n -- /usr/bin/rm -f -- "$staging_path"; then
+      echo "homebrew-patched-launcher: could not stage the $label" >&2
+      "$sudo_bin" -n -- /usr/bin/rm -f -- "$staging_path" >/dev/null 2>&1 || true
+      homebrew_patched_launcher_remove_control_file "$key" || true
+      return 1
+    fi
+    staging_path=""
+  fi
+  if ! digest="$(homebrew_sha256_stream <"$destination")"; then
     echo "homebrew-patched-launcher: could not stage the $label" >&2
     homebrew_patched_launcher_remove_control_file "$key" || true
     return 1
@@ -1724,7 +2018,18 @@ homebrew_patched_launcher_remove_control_file() {
         echo "homebrew-patched-launcher: partial $label ownership is unsafe" >&2
         return 1
       fi
-      rm -f -- "$expected" || return
+      if [ "$destination_uid" = "$(/usr/bin/id -u)" ]; then
+        rm -f -- "$expected" || return
+      elif [ "$HOMEBREW_PATCHED_SUDO_BIN" = /usr/bin/sudo ] &&
+           [ -f "$HOMEBREW_PATCHED_SUDO_BIN" ] &&
+           [ ! -L "$HOMEBREW_PATCHED_SUDO_BIN" ] &&
+           [ "$(/usr/bin/stat -c '%u' "$HOMEBREW_PATCHED_SUDO_BIN")" = 0 ]; then
+        "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/rm -f -- \
+          "$expected" || return
+      else
+        echo "homebrew-patched-launcher: refusing untrusted partial $label cleanup" >&2
+        return 1
+      fi
     fi
   else
     homebrew_patched_launcher_verify_control_file "$key" || return
@@ -2589,7 +2894,160 @@ homebrew_patched_launcher_cleanup() {
   HOMEBREW_PATCHED_PREFIX=""
   HOMEBREW_PATCHED_BREW_BIN=""
   HOMEBREW_PATCHED_OVERLAY=""
+  HOMEBREW_PATCHED_SEED_BREW_BIN=""
   HOMEBREW_PATCHED_LAUNCHER=""
+}
+
+homebrew_patched_launcher_create_as_build_user() {
+  if [ "$#" -ne 2 ]; then
+    echo "homebrew_patched_launcher_create_as_build_user: expected TARGET LINK" >&2
+    return 2
+  fi
+  local target="$1" link="$2"
+  local build_user="${KANDELO_HOMEBREW_BUILD_USER:-}"
+  local sudo_bin="${KANDELO_HOMEBREW_SUDO_BIN:-}" sudo_mode
+  [ -n "$build_user" ] && /usr/bin/id "$build_user" >/dev/null 2>&1 &&
+    [ "$(/usr/bin/id -u "$build_user")" != "$(/usr/bin/id -u)" ] || return 1
+  sudo_mode="$(/usr/bin/stat -c '%a' "$sudo_bin" 2>/dev/null || true)"
+  if [ "$sudo_bin" != /usr/bin/sudo ] || [ ! -f "$sudo_bin" ] ||
+     [ -L "$sudo_bin" ] || [ ! -x "$sudo_bin" ] ||
+     [ "$(/usr/bin/stat -c '%u' "$sudo_bin" 2>/dev/null || true)" != 0 ] ||
+     ! [[ "$sudo_mode" =~ ^[0-7]{3,4}$ ]] ||
+     [ $((8#$sudo_mode & 0022)) -ne 0 ]; then
+    return 1
+  fi
+  # A prior Formula lifecycle deliberately leaves the insertion point writable
+  # only to the dedicated build group. Create the next ephemeral link through
+  # that already-declared identity, then immediately return its ownership to
+  # the trusted boundary before executing it.
+  "$sudo_bin" -n -H -u "$build_user" -- /usr/bin/ln -s -- \
+    "$target" "$link" || return 1
+  if ! "$sudo_bin" -n -- /usr/bin/chown -h root:root "$link" ||
+     [ "$(/usr/bin/stat -c '%u:%g' "$link" 2>/dev/null || true)" != 0:0 ] ||
+     [ "$(/usr/bin/readlink "$link" 2>/dev/null || true)" != "$target" ]; then
+    "$sudo_bin" -n -- /usr/bin/rm -f -- "$link" >/dev/null 2>&1 || true
+    return 1
+  fi
+  HOMEBREW_PATCHED_SUDO_BIN="$sudo_bin"
+}
+
+# Return the narrow Homebrew roots needed by the next trusted Brew bootstrap
+# to the invoking workflow identity. The reusable publisher gives build and
+# verification separate fresh runners; a local batch campaign deliberately
+# reuses one target prefix, whose isolated Formula lifecycle made these roots
+# build-user-owned. Never transfer the surrounding prefix, Cellar, or
+# var/homebrew tree.
+homebrew_patched_launcher_restore_invoker_bootstrap_roots() {
+  if [ "$#" -ne 2 ]; then
+    echo "homebrew_patched_launcher_restore_invoker_bootstrap_roots: expected BUILD_USER PREFIX" >&2
+    return 2
+  fi
+  local build_user="$1" prefix="$2"
+  local sudo_bin="${KANDELO_HOMEBREW_SUDO_BIN:-}" sudo_mode
+  local invoker_uid invoker_gid build_uid build_gid root physical unexpected
+  local lock_root prefix_owner
+  local -a roots
+
+  [ -n "$build_user" ] && \
+    [ "$build_user" = "${KANDELO_HOMEBREW_BUILD_USER:-}" ] && \
+    /usr/bin/id "$build_user" >/dev/null 2>&1 || {
+    echo "homebrew-patched-launcher: bootstrap handoff requires the declared build user" >&2
+    return 2
+  }
+  invoker_uid="$(/usr/bin/id -u)" || return 2
+  invoker_gid="$(/usr/bin/id -g)" || return 2
+  build_uid="$(/usr/bin/id -u "$build_user")" || return 2
+  build_gid="$(/usr/bin/id -g "$build_user")" || return 2
+  [ "$build_uid" != "$invoker_uid" ] || {
+    echo "homebrew-patched-launcher: bootstrap build user must differ from the invoker" >&2
+    return 2
+  }
+
+  sudo_mode="$(/usr/bin/stat -c '%a' "$sudo_bin" 2>/dev/null || true)"
+  if [ "$sudo_bin" != /usr/bin/sudo ] || [ ! -f "$sudo_bin" ] ||
+     [ -L "$sudo_bin" ] || [ ! -x "$sudo_bin" ] ||
+     [ "$(/usr/bin/stat -c '%u' "$sudo_bin" 2>/dev/null || true)" != 0 ] ||
+     ! [[ "$sudo_mode" =~ ^[0-7]{3,4}$ ]] ||
+     [ $((8#$sudo_mode & 0022)) -ne 0 ]; then
+    echo "homebrew-patched-launcher: bootstrap handoff requires protected /usr/bin/sudo" >&2
+    return 2
+  fi
+  [ -n "${HOMEBREW_GUEST_PREFIX:-}" ] &&
+    [ "$prefix" = "$HOMEBREW_GUEST_PREFIX" ] &&
+    [ -d "$prefix" ] && [ ! -L "$prefix" ] || {
+    echo "homebrew-patched-launcher: bootstrap handoff requires the selected real guest prefix" >&2
+    return 2
+  }
+  physical="$(/usr/bin/realpath -- "$prefix")" || return 2
+  [ "$physical" = "$prefix" ] || {
+    echo "homebrew-patched-launcher: bootstrap handoff prefix is not canonical" >&2
+    return 2
+  }
+
+  lock_root="$prefix/var/homebrew/locks"
+  prefix_owner="$(/usr/bin/stat -c '%u:%g' "$prefix")" || return 2
+  roots=("${HOMEBREW_CACHE:-}" "${HOMEBREW_TEMP:-}")
+  if [ -e "$lock_root" ] || [ -L "$lock_root" ]; then
+    roots=("$lock_root" "${roots[@]}")
+  elif [ "$prefix_owner" != "$invoker_uid:$invoker_gid" ]; then
+    echo "homebrew-patched-launcher: reused prefix requires its exact Homebrew lock root" >&2
+    return 2
+  fi
+  for root in "${roots[@]}"; do
+    [ -n "$root" ] && [[ "$root" = /* ]] &&
+      [ -d "$root" ] && [ ! -L "$root" ] || {
+      echo "homebrew-patched-launcher: bootstrap root must be a real absolute directory: $root" >&2
+      return 2
+    }
+    physical="$(/usr/bin/realpath -- "$root")" || return 2
+    [ "$physical" = "$root" ] || {
+      echo "homebrew-patched-launcher: bootstrap root is not canonical: $root" >&2
+      return 2
+    }
+  done
+  case "${HOMEBREW_CACHE:-}/" in "$prefix/"*)
+    echo "homebrew-patched-launcher: Homebrew cache cannot be inside the target prefix" >&2
+    return 2
+  esac
+  case "${HOMEBREW_TEMP:-}/" in "$prefix/"*)
+    echo "homebrew-patched-launcher: Homebrew temp cannot be inside the target prefix" >&2
+    return 2
+  esac
+  case "${HOMEBREW_CACHE:-}/" in "${HOMEBREW_TEMP:-}/"*)
+    echo "homebrew-patched-launcher: Homebrew cache and temp roots overlap" >&2
+    return 2
+  esac
+  case "${HOMEBREW_TEMP:-}/" in "${HOMEBREW_CACHE:-}/"*)
+    echo "homebrew-patched-launcher: Homebrew temp and cache roots overlap" >&2
+    return 2
+  esac
+
+  for root in "${roots[@]}"; do
+    unexpected="$(
+      "$sudo_bin" -n -- /usr/bin/find "$root" -xdev \
+        ! \( \( -uid "$invoker_uid" -gid "$invoker_gid" \) -o \
+             \( -uid "$build_uid" -gid "$build_gid" \) \) \
+        -print -quit
+    )" || return 2
+    [ -z "$unexpected" ] || {
+      echo "homebrew-patched-launcher: bootstrap root has an unexpected owner: $unexpected" >&2
+      return 2
+    }
+  done
+  for root in "${roots[@]}"; do
+    "$sudo_bin" -n -- /usr/bin/find "$root" -xdev \
+      -exec /usr/bin/chown -h "$invoker_uid:$invoker_gid" -- '{}' + ||
+      return
+    unexpected="$(
+      "$sudo_bin" -n -- /usr/bin/find "$root" -xdev \
+        \( ! -uid "$invoker_uid" -o ! -gid "$invoker_gid" \) \
+        -print -quit
+    )" || return 2
+    [ -z "$unexpected" ] || {
+      echo "homebrew-patched-launcher: bootstrap root ownership handoff failed: $unexpected" >&2
+      return 1
+    }
+  done
 }
 
 # Return a child of BASE whose byte length exactly matches Linuxbrew's bottle
@@ -2746,7 +3204,11 @@ homebrew_patched_launcher_prepare_native_prefix() {
   HOMEBREW_PATCHED_NATIVE_TEMP="${native_roots[2]}"
   HOMEBREW_PATCHED_NATIVE_CONFIG="${native_roots[3]}"
   HOMEBREW_PATCHED_NATIVE_HOME="${native_roots[4]}"
-  mkdir -p "$HOMEBREW_PATCHED_NATIVE_PREFIX/bin"
+  # Native Formula plans may be empty. Establish the Cellar contract during
+  # prefix preparation so later sealing authenticates the same real directory
+  # whether or not an install command happened to create it.
+  mkdir -p "$HOMEBREW_PATCHED_NATIVE_PREFIX/bin" \
+    "$HOMEBREW_PATCHED_NATIVE_PREFIX/Cellar"
   native_brew="$HOMEBREW_PATCHED_NATIVE_PREFIX/bin/brew"
   [ ! -e "$native_brew" ] && [ ! -L "$native_brew" ] || {
     echo "homebrew-patched-launcher: native Homebrew launcher already exists" >&2
@@ -3537,7 +3999,7 @@ homebrew_patched_launcher_tier2_schema() {
     return 2
   fi
   case "${lines[0]}" in
-    *'"schema":2,'*) printf '2\n' ;;
+    *'"schema":4,'*) printf '4\n' ;;
     *'"schema":3,'*) printf '3\n' ;;
     *)
       echo "homebrew-patched-launcher: protected Tier-2 attestation has an unsupported schema" >&2
@@ -4005,6 +4467,12 @@ homebrew_patched_launcher_isolate() {
   done
   if [ ! -d "$HOMEBREW_PATCHED_PREFIX/bin" ] || \
      [ -L "$HOMEBREW_PATCHED_PREFIX/bin" ] || \
+     [ "$HOMEBREW_PATCHED_SEED_BREW_BIN" != \
+       "$HOMEBREW_PATCHED_PREFIX/bin/brew" ] || \
+     [ ! -f "$HOMEBREW_PATCHED_SEED_BREW_BIN" ] || \
+     [ ! -x "$HOMEBREW_PATCHED_SEED_BREW_BIN" ] || \
+     [ "$(/usr/bin/readlink -f -- "$HOMEBREW_PATCHED_SEED_BREW_BIN")" != \
+       "$(/usr/bin/readlink -f -- "$HOMEBREW_PATCHED_REPO/bin/brew")" ] || \
      [ ! -L "$HOMEBREW_PATCHED_LAUNCHER" ] || \
      [ "${HOMEBREW_PATCHED_LAUNCHER%/*}" != "$HOMEBREW_PATCHED_PREFIX/bin" ] || \
      [ "$(/usr/bin/readlink "$HOMEBREW_PATCHED_LAUNCHER")" != \
@@ -4069,8 +4537,12 @@ homebrew_patched_launcher_isolate() {
     "$HOMEBREW_PATCHED_PREFIX" "$HOMEBREW_PATCHED_PREFIX/bin" \
     "$HOMEBREW_PATCHED_PREFIX/Cellar" "$HOMEBREW_PATCHED_PREFIX/opt" \
     "$HOMEBREW_PATCHED_PREFIX/etc"
+  "$sudo_bin" /usr/bin/chown -h root:root \
+    "$HOMEBREW_PATCHED_SEED_BREW_BIN"
   "$sudo_bin" /usr/bin/chown -h root:root "$HOMEBREW_PATCHED_LAUNCHER"
-  [ "$(/usr/bin/stat -c '%u:%g' "$HOMEBREW_PATCHED_LAUNCHER")" = "0:0" ] && \
+  [ "$(/usr/bin/stat -c '%u:%g' "$HOMEBREW_PATCHED_SEED_BREW_BIN")" = \
+      "0:0" ] && \
+    [ "$(/usr/bin/stat -c '%u:%g' "$HOMEBREW_PATCHED_LAUNCHER")" = "0:0" ] && \
     [ "$(/usr/bin/stat -c '%u:%g:%a' "$HOMEBREW_PATCHED_PREFIX/bin")" = \
       "0:$build_gid:1775" ] && \
     [ "$(/usr/bin/stat -c '%u:%g:%a' "$HOMEBREW_PATCHED_PREFIX/etc")" = \
@@ -5129,6 +5601,7 @@ homebrew_patched_launcher_prepare() {
 
   HOMEBREW_PATCHED_REPO="$("$brew_bin" --repository)" || return
   HOMEBREW_PATCHED_PREFIX="$("$brew_bin" --prefix)" || return
+  HOMEBREW_PATCHED_SEED_BREW_BIN="$brew_bin"
   HOMEBREW_PATCHED_BREW_BIN="$brew_bin"
 
   if [ ! -f "$patch_file" ] ||
@@ -5155,7 +5628,9 @@ homebrew_patched_launcher_prepare() {
   while [ "$attempt" -lt 100 ]; do
     attempt=$((attempt + 1))
     candidate="$HOMEBREW_PATCHED_PREFIX/bin/.kandelo-brew-$$-${RANDOM}-${attempt}"
-    if ln -s "$HOMEBREW_PATCHED_OVERLAY/bin/brew" "$candidate" 2>/dev/null; then
+    if ln -s "$HOMEBREW_PATCHED_OVERLAY/bin/brew" "$candidate" 2>/dev/null ||
+       homebrew_patched_launcher_create_as_build_user \
+         "$HOMEBREW_PATCHED_OVERLAY/bin/brew" "$candidate" 2>/dev/null; then
       HOMEBREW_PATCHED_LAUNCHER="$candidate"
       break
     fi

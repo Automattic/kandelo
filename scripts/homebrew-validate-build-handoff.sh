@@ -429,6 +429,7 @@ if [ -n "$OUT_BOTTLE_JSON" ]; then
   bottle_json_tmp="$(mktemp "$bottle_json_parent/.homebrew-canonical-bottle.XXXXXX")"
   jq -nS \
     --arg formula "$FORMULA" \
+    --arg formula_key "$FORMULA_KEY" \
     --arg formula_path "$FORMULA_PATH" \
     --arg pkg_version "$PKG_VERSION" \
     --arg root_url "$BOTTLE_ROOT_URL" \
@@ -437,7 +438,7 @@ if [ -n "$OUT_BOTTLE_JSON" ]; then
     --arg cellar "$BOTTLE_RELOCATION_CELLAR" \
     --arg sha256 "$ACTUAL_SHA256" '
       {
-        ($formula): {
+        ($formula_key): {
           formula: {
             name: $formula,
             path: $formula_path,
