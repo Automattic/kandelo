@@ -43,11 +43,11 @@ import tarfile
 root = pathlib.Path(sys.argv[1])
 
 
-def bottle(name, version, command, receipt=None):
+def bottle(name, version, command):
     stream = io.BytesIO()
     payload_root = f"{name}/{version}"
     with tarfile.open(fileobj=stream, mode="w:", format=tarfile.USTAR_FORMAT) as archive:
-        for path in (payload_root, f"{payload_root}/bin", f"{payload_root}/lib"):
+        for path in (payload_root, f"{payload_root}/bin"):
             info = tarfile.TarInfo(f"{path}/")
             info.type = tarfile.DIRTYPE
             info.mode = 0o755
@@ -62,32 +62,13 @@ def bottle(name, version, command, receipt=None):
         link.mode = 0o777
         link.linkname = command
         archive.addfile(link)
-        if receipt is not None:
-            receipt_value = (
-                b'{"changed_files":["INSTALL_RECEIPT.json","lib/runtime.conf"],'
-                b'"runtime_dependencies":[{"full_name":"openjdk@21"}],'
-                b'"source":{"path":"@@HOMEBREW_LIBRARY@@/Formula/' + name.encode() + b'.rb"}}\n'
-            )
-            receipt_info = tarfile.TarInfo(f"{payload_root}/INSTALL_RECEIPT.json")
-            receipt_info.mode = 0o644
-            receipt_info.size = len(receipt_value)
-            archive.addfile(receipt_info, io.BytesIO(receipt_value))
-            config_value = (
-                b"prefix=@@HOMEBREW_PREFIX@@\n"
-                b"library=@@HOMEBREW_LIBRARY@@\n"
-                b"java=@@HOMEBREW_JAVA@@\n"
-            )
-            config_info = tarfile.TarInfo(f"{payload_root}/lib/runtime.conf")
-            config_info.mode = 0o644
-            config_info.size = len(config_value)
-            archive.addfile(config_info, io.BytesIO(config_value))
     (root / f"{name}.bottle.tar.gz").write_bytes(
         gzip.compress(stream.getvalue(), mtime=0)
     )
 
 
 bottle("dash", "0.5.12", "dash")
-bottle("file-formula", "5.46", "file", receipt=True)
+bottle("file-formula", "5.46", "file")
 PY
 file_bottle="$prebuilt/file-formula.bottle.tar.gz"
 dash_bottle="$prebuilt/dash.bottle.tar.gz"
@@ -138,11 +119,7 @@ jq -nS \
       },
       {type: "file", source: "bin/file", target: "bin/file-default"}
     ],
-    receipts: [
-      "Cellar/file-formula/5.46/bin/file",
-      "Cellar/file-formula/5.46/INSTALL_RECEIPT.json",
-      "Cellar/file-formula/5.46/lib/runtime.conf"
-    ],
+    receipts: ["Cellar/file-formula/5.46/bin/file"],
     env: {PATH_prepend: ["bin"]}
   }
   ' >"$tap/Kandelo/links/file-formula.json"
@@ -272,11 +249,7 @@ jq -nS \
         prefix: "/opt/kandelo/homebrew",
         keg: "/opt/kandelo/homebrew/Cellar/file-formula/5.46",
         staged_files: 1, staged_directories: 2, staged_symlinks: 1,
-        receipts: [
-          "Cellar/file-formula/5.46/bin/file",
-          "Cellar/file-formula/5.46/INSTALL_RECEIPT.json",
-          "Cellar/file-formula/5.46/lib/runtime.conf"
-        ],
+        receipts: ["Cellar/file-formula/5.46/bin/file"],
         links: ["bin/file", "bin/file-default"],
         opt_link: {path: "opt/file-formula", target: "../Cellar/file-formula/5.46"},
         built_from: {
@@ -700,7 +673,7 @@ cmp "$direct_source/$dependency_asset" \
   "$direct_handoff/$dependency_asset" >/dev/null ||
   fail "release handoff recompressed the dependency bottle"
 jq -e '
-  .schema == 6 and
+  .schema == 5 and
   .kind == "kandelo-homebrew-deferred-layer" and
   (.deferred_trees | length) == 2 and
   ([.deferred_trees[].package] | sort) == [
@@ -709,133 +682,6 @@ jq -e '
   (.bundle.assets.deferred_trees | length) == 2
 ' "$direct_handoff/kandelo-homebrew-file-formula-layer.json" >/dev/null ||
   fail "direct multi-bottle closure is incomplete"
-
-# A receipt-authenticated bottle destination is not a host default. Exercise
-# the actual prepare/close/validate path with the historical Linuxbrew prefix;
-# the generated sidecar, activation roots, and inventory must keep that exact
-# namespace all the way through publication.
-historical_prefix="/home/linuxbrew/.linuxbrew"
-historical_tap="$TMP_ROOT/historical-tap"
-historical_dependency_tap="$TMP_ROOT/historical-dependency-tap"
-historical_source="$TMP_ROOT/historical-source"
-cp -a "$tap" "$historical_tap"
-cp -a "$dependency_tap" "$historical_dependency_tap"
-cp -a "$source_root" "$historical_source"
-PYTHONDONTWRITEBYTECODE=1 python3 - \
-  "$historical_prefix" "$historical_tap" "$historical_dependency_tap" <<'PY'
-import json
-import pathlib
-import sys
-
-prefix, *roots = sys.argv[1:]
-old = "/opt/kandelo/homebrew"
-
-def rewrite(value):
-    if isinstance(value, str):
-        return value.replace(old, prefix)
-    if isinstance(value, list):
-        return [rewrite(item) for item in value]
-    if isinstance(value, dict):
-        return {key: rewrite(item) for key, item in value.items()}
-    return value
-
-for root_text in roots:
-    root = pathlib.Path(root_text)
-    for path in sorted(root.rglob("*.json")):
-        value = json.loads(path.read_text())
-        path.write_text(json.dumps(rewrite(value), sort_keys=True, indent=2) + "\n")
-PY
-git -C "$historical_tap" add .
-git -C "$historical_tap" commit -q -m "historical Linuxbrew prefix"
-historical_tap_commit="$(git -C "$historical_tap" rev-parse HEAD)"
-git -C "$historical_dependency_tap" add .
-git -C "$historical_dependency_tap" commit -q -m "historical Linuxbrew prefix"
-historical_dependency_tap_commit="$(git -C "$historical_dependency_tap" rev-parse HEAD)"
-PYTHONDONTWRITEBYTECODE=1 python3 - \
-  "$historical_source" "$historical_prefix" "$tap_commit" "$historical_tap_commit" \
-  "$dependency_tap_commit" "$historical_dependency_tap_commit" "$historical_tap" <<'PY'
-import hashlib
-import json
-import pathlib
-import sys
-
-source = pathlib.Path(sys.argv[1])
-prefix, old_tap, new_tap, old_dependency, new_dependency, tap_root = sys.argv[2:]
-old_prefix = "/opt/kandelo/homebrew"
-
-def rewrite(value):
-    if isinstance(value, str):
-        return (value.replace(old_prefix, prefix)
-                .replace(old_tap, new_tap)
-                .replace(old_dependency, new_dependency))
-    if isinstance(value, list):
-        return [rewrite(item) for item in value]
-    if isinstance(value, dict):
-        return {key: rewrite(item) for key, item in value.items()}
-    return value
-
-for name in ("report.json", "node.json", "browser.json", "layer.json"):
-    path = source / name
-    path.write_text(json.dumps(rewrite(json.loads(path.read_text())), sort_keys=True, indent=2) + "\n")
-
-shell = (pathlib.Path(tap_root) / "Kandelo" / "shell.json").read_bytes()
-for name in ("report.json", "node.json"):
-    path = source / name
-    value = json.loads(path.read_text())
-    value["default_shell"]["config_sha256"] = hashlib.sha256(shell).hexdigest()
-    value["default_shell"]["config_bytes"] = len(shell)
-    path.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n")
-PY
-"$TSX" "$REPO_ROOT/scripts/test-homebrew-vfs-release-fixture.ts" \
-  "$historical_source" "$historical_tap" "$historical_dependency_tap" "$prebuilt"
-historical_dependency_tree_id="$(jq -er '
-  .deferred_trees[] | select(.package == "third-party/runtime/dash") | .id
-' "$historical_source/layer.json")"
-historical_dependency_asset="$(jq -er --arg id "$historical_dependency_tree_id" '
-  .deferred_trees[] | select(.id == $id) |
-  .transports[] | select(.kind == "bundle-release") | .asset
-' "$historical_source/layer.json")"
-historical_handoff="$TMP_ROOT/historical-handoff"
-historical_identity_args=(
-  --tap-root "$historical_tap"
-  --dependency-tap-root "third-party/runtime=$historical_dependency_tap"
-  --tap-repository kandelo-dev/homebrew-tap-core
-  --tap-name kandelo-dev/tap-core
-  --tap-commit "$historical_tap_commit"
-  --formula file-formula
-  --kandelo-commit "$kandelo_commit"
-  --abi 42
-  --bottle-release-tag bottles-abi-v42
-)
-python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" prepare \
-  --image "$historical_source/image.vfs.zst" \
-  --report "$historical_source/report.json" \
-  --node-evidence "$historical_source/node.json" \
-  --browser-evidence "$historical_source/browser.json" \
-  --lazy-layer "$historical_source/direct-root.bin" \
-  --lazy-layer-descriptor "$historical_source/layer.json" \
-  --out "$historical_handoff" "${historical_identity_args[@]}" >/dev/null
-python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
-  --handoff "$historical_handoff" "${historical_identity_args[@]}" >/dev/null
-jq -e --arg prefix "$historical_prefix" '
-  ([.packages.base[], .packages.layer[]] | all(.[]; .prefix == $prefix)) and
-  ([.deferred_trees[].activation.roots[]] |
-    all(.[]; startswith($prefix + "/Cellar/"))) and
-  ([.deferred_trees[].inventory.entries[]] |
-    all(.[]; .path == $prefix[1:] or (.path | startswith($prefix[1:] + "/")))) and
-  ([.deferred_trees[].inventory.entries[] |
-    select(.source_path == "file-formula/5.46/lib/runtime.conf") |
-    .materialization] == ["archive-homebrew-relocate"]) and
-  ([.deferred_trees[].inventory.relocation?.materialization.transforms[]? |
-    select(.sourcePath == "file-formula/5.46/lib/runtime.conf")] | length) == 1
-' "$historical_handoff/kandelo-homebrew-file-formula-layer.json" >/dev/null ||
-  fail "historical receipt destination escaped its authenticated namespace"
-grep -F -- '/opt/kandelo/homebrew' \
-  "$historical_handoff/kandelo-homebrew-file-formula-layer.json" >/dev/null &&
-  fail "historical receipt destination retained the ambient Homebrew prefix"
-cmp "$historical_source/$historical_dependency_asset" \
-  "$historical_handoff/$historical_dependency_asset" >/dev/null ||
-  fail "historical receipt publication recompressed a dependency bottle"
 
 # A failed staged copy must leave no final handoff and the exact same output
 # path must be immediately retryable.
@@ -966,26 +812,6 @@ expect_direct_prepare_failure() {
       --lazy-layer-descriptor "$source/layer.json" \
       --out "$output" "${common_args[@]}"
 }
-
-direct_draft_negative="$TMP_ROOT/direct-draft-schema5-plan-negative"
-cp -a "$direct_source" "$direct_draft_negative"
-jq '.schema = 5' \
-  "$direct_draft_negative/layer.json" >"$direct_draft_negative/layer.tmp"
-mv "$direct_draft_negative/layer.tmp" "$direct_draft_negative/layer.json"
-expect_direct_prepare_failure \
-  "draft validator accepted a schema-6 relocation plan under schema 5" \
-  "carries a schema-6 relocation plan under schema 5" \
-  "$direct_draft_negative" "$TMP_ROOT/direct-schema5-plan-output"
-
-direct_draft_negative="$TMP_ROOT/direct-draft-schema5-receipt-negative"
-cp -a "$direct_source" "$direct_draft_negative"
-jq '.schema = 5 | del(.deferred_trees[].inventory.relocation)' \
-  "$direct_draft_negative/layer.json" >"$direct_draft_negative/layer.tmp"
-mv "$direct_draft_negative/layer.tmp" "$direct_draft_negative/layer.json"
-expect_direct_prepare_failure \
-  "draft validator accepted schema-5 receipt relocation without a plan" \
-  "receipt relocation requires runtime-layer schema 6" \
-  "$direct_draft_negative" "$TMP_ROOT/direct-schema5-receipt-output"
 
 direct_draft_negative="$TMP_ROOT/direct-draft-mode-negative"
 cp -a "$direct_source" "$direct_draft_negative"
@@ -1160,9 +986,7 @@ import sys
 release = runpy.run_path(sys.argv[1])
 parse_receipt = release["parse_homebrew_install_receipt"]
 java_home = release["homebrew_java_home"]
-normalize_destination = release["normalize_homebrew_destination_prefix"]
-destination_for = release["homebrew_destination_prefix"]
-prefix = "/opt/kandelo/homebrew"
+prefix = release["HOMEBREW_PREFIX"]
 ValidationError = release["ValidationError"]
 assert parse_receipt(b'{"changed_files":null}') == {
     "changed_files": [],
@@ -1174,26 +998,10 @@ except ValidationError as error:
     assert "changed_files must be an array or null" in str(error)
 else:
     raise AssertionError("non-null non-array changed_files was accepted")
-assert java_home([{"full_name": None, "name": "openjdk@21"}], prefix) == (
+assert java_home([{"full_name": None, "name": "openjdk@21"}]) == (
     f"{prefix}/opt/openjdk@21/libexec".encode()
 )
-assert java_home([{"full_name": "openjdk@21\n"}], prefix) is None
-for invalid in ("", "relative/homebrew", "/opt/../homebrew", "/opt/./homebrew", "/opt\0homebrew"):
-    try:
-        normalize_destination(invalid, "fixture destination")
-    except ValidationError:
-        pass
-    else:
-        raise AssertionError(f"unsafe destination was accepted: {invalid!r}")
-try:
-    destination_for([
-        {"prefix": prefix},
-        {"prefix": "/home/linuxbrew/.linuxbrew"},
-    ], "fixture")
-except ValidationError as error:
-    assert "destinations are inconsistent" in str(error)
-else:
-    raise AssertionError("mixed destinations were accepted")
+assert java_home([{"full_name": "openjdk@21\n"}]) is None
 
 validate = release["validate_canonical_original_bottle_trees"]
 tree_id = release["expected_original_bottle_tree_id"]
@@ -1355,193 +1163,6 @@ payload_changed_tag="$(jq -er '.release.tag' \
   fail "lazy payload change reused a runtime-layer identity"
 [ "$payload_changed_tag" != "$base_changed_tag" ] ||
   fail "different runtime-layer bundles shared an identity"
-PYTHONDONTWRITEBYTECODE=1 python3 - \
-  "$REPO_ROOT/scripts/homebrew-vfs-release.py" <<'PY'
-import gzip
-import io
-import json
-import runpy
-import sys
-import tarfile
-
-release = runpy.run_path(sys.argv[1])
-original_relocation = release["original_bottle_relocation"]
-relocate_file = release["relocate_homebrew_bottle_file"]
-ValidationError = release["ValidationError"]
-runtime = original_relocation.__globals__
-
-expected_limits = {
-    "MAX_LAZY_LAYER_MATERIALIZATION_ASSERTIONS": 32,
-    "MAX_LAZY_LAYER_MATERIALIZATION_ASSERTION_BYTES": 1024 * 1024,
-    "MAX_LAZY_LAYER_MATERIALIZATION_RECIPES": 32,
-    "MAX_LAZY_LAYER_MATERIALIZATION_TRANSFORMS": 100_000,
-    "MAX_LAZY_LAYER_MATERIALIZATION_DECODED_BYTES": 8 * 1024 * 1024,
-    "MAX_LAZY_LAYER_TRANSFORM_REPLACEMENTS": 32,
-    "MAX_LAZY_LAYER_TRANSFORM_PATTERN_BYTES": 8192,
-}
-for name, expected in expected_limits.items():
-    if runtime[name] != expected:
-        raise AssertionError(f"{name} differs from the runtime bound")
-
-
-def archive_fixture(changed_files):
-    receipt = json.dumps(
-        {"changed_files": changed_files},
-        separators=(",", ":"),
-    ).encode() + b"\n"
-    values = {"pkg/1/INSTALL_RECEIPT.json": receipt}
-    for path in changed_files:
-        values[f"pkg/1/{path}"] = b"prefix=@@HOMEBREW_PREFIX@@\n"
-    stream = io.BytesIO()
-    with tarfile.open(fileobj=stream, mode="w:", format=tarfile.PAX_FORMAT) as archive:
-        for path in sorted(values):
-            value = values[path]
-            info = tarfile.TarInfo(path)
-            info.mode = 0o644
-            info.size = len(value)
-            archive.addfile(info, io.BytesIO(value))
-    tar_value = stream.getvalue()
-    entries = [
-        {"path": path, "type": "file", "mode": 0o644, "size": len(value)}
-        for path, value in sorted(values.items())
-    ]
-    return receipt, gzip.compress(tar_value, mtime=0), tar_value, entries
-
-
-def publish(changed_files):
-    receipt, archive, tar_value, entries = archive_fixture(changed_files)
-    return receipt, original_relocation(
-        archive,
-        entries,
-        {},
-        len(tar_value),
-        "/x",
-    )
-
-
-def expect_rejected(label, operation, message):
-    try:
-        operation()
-    except ValidationError as error:
-        if message not in str(error):
-            raise AssertionError(
-                f"{label} failed for the wrong reason: {error}"
-            ) from error
-    else:
-        raise AssertionError(f"release publisher accepted {label}")
-
-
-bmp = "\ue000"
-non_bmp = "\U00010000"
-changed = [f"lib/{bmp}", f"lib/{non_bmp}"]
-receipt, scalar = publish(changed)
-plan = scalar["descriptor"]["materialization"]
-if [item["sourcePath"] for item in plan["transforms"]] != [
-    f"pkg/1/lib/{bmp}",
-    f"pkg/1/lib/{non_bmp}",
-]:
-    raise AssertionError("publisher did not use Python Unicode-scalar order")
-
-
-def check_boundary(name, boundary, message):
-    saved = runtime[name]
-    try:
-        runtime[name] = boundary
-        publish(changed)
-        runtime[name] = boundary - 1
-        expect_rejected(name, lambda: publish(changed), message)
-    finally:
-        runtime[name] = saved
-
-
-check_boundary(
-    "MAX_LAZY_LAYER_MATERIALIZATION_ASSERTIONS",
-    1,
-    "assertion count limit",
-)
-check_boundary(
-    "MAX_LAZY_LAYER_MATERIALIZATION_ASSERTION_BYTES",
-    len(receipt),
-    "assertion byte limit",
-)
-check_boundary(
-    "MAX_LAZY_LAYER_MATERIALIZATION_RECIPES",
-    1,
-    "recipe count limit",
-)
-check_boundary(
-    "MAX_LAZY_LAYER_MATERIALIZATION_TRANSFORMS",
-    len(changed),
-    "transform count limit",
-)
-check_boundary(
-    "MAX_LAZY_LAYER_TRANSFORM_REPLACEMENTS",
-    max(
-        len(plan["recipes"][0]["replacements"]),
-        len(plan["recipes"][0]["rejectHex"]),
-    ),
-    "replacement count limit",
-)
-pattern_boundary = max(
-    len(bytes.fromhex(value))
-    for recipe in plan["recipes"]
-    for replacement in recipe["replacements"]
-    for value in (replacement["matchHex"], replacement["replacementHex"])
-)
-pattern_boundary = max(
-    pattern_boundary,
-    max(len(bytes.fromhex(value)) for value in plan["recipes"][0]["rejectHex"]),
-)
-check_boundary(
-    "MAX_LAZY_LAYER_TRANSFORM_PATTERN_BYTES",
-    pattern_boundary,
-    "pattern byte limit",
-)
-decoded_boundary = sum(
-    len(bytes.fromhex(assertion["bytesHex"]))
-    for assertion in plan["assertions"]
-) + sum(
-    len(bytes.fromhex(value))
-    for recipe in plan["recipes"]
-    for replacement in recipe["replacements"]
-    for value in (replacement["matchHex"], replacement["replacementHex"])
-) + sum(
-    len(bytes.fromhex(value))
-    for recipe in plan["recipes"]
-    for value in recipe["rejectHex"]
-)
-check_boundary(
-    "MAX_LAZY_LAYER_MATERIALIZATION_DECODED_BYTES",
-    decoded_boundary,
-    "decoded byte limit",
-)
-
-expanding_source = b"@@HOMEBREW_PREFIX@@" * 2
-destination = "/" + "x" * 40
-expanded_boundary = len(destination.encode()) * 2
-saved_output = runtime["MAX_LAZY_LAYER_UNCOMPRESSED_BYTES"]
-saved_safe = runtime["TAR_MAX_SAFE_INTEGER"]
-try:
-    runtime["MAX_LAZY_LAYER_UNCOMPRESSED_BYTES"] = expanded_boundary
-    if len(relocate_file(expanding_source, {}, "bin/tool", destination)) != expanded_boundary:
-        raise AssertionError("publisher changed the exact transformed-byte boundary")
-    runtime["MAX_LAZY_LAYER_UNCOMPRESSED_BYTES"] = expanded_boundary - 1
-    expect_rejected(
-        "high-expansion replacement",
-        lambda: relocate_file(expanding_source, {}, "bin/tool", destination),
-        "transformed-byte limit",
-    )
-    runtime["MAX_LAZY_LAYER_UNCOMPRESSED_BYTES"] = expanded_boundary
-    runtime["TAR_MAX_SAFE_INTEGER"] = expanded_boundary - 1
-    expect_rejected(
-        "unsafe replacement arithmetic",
-        lambda: relocate_file(expanding_source, {}, "bin/tool", destination),
-        "safe integer limit",
-    )
-finally:
-    runtime["MAX_LAZY_LAYER_UNCOMPRESSED_BYTES"] = saved_output
-    runtime["TAR_MAX_SAFE_INTEGER"] = saved_safe
-PY
 PYTHONDONTWRITEBYTECODE=1 python3 - \
   "$REPO_ROOT/scripts/homebrew-vfs-release.py" <<'PY'
 import gzip

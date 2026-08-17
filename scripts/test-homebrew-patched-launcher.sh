@@ -834,9 +834,7 @@ NATIVE_INTERPRETER_EOF
       "$runtime_root/target/x86_64-unknown-linux-gnu/release/xtask" ]
     [ -z "${NODE_PATH+x}" ]
     for required in \
-      Cargo.toml package.json examples/run-example-builtins.ts \
-      examples/run-example.ts \
-      examples/run-example-vfs.ts \
+      Cargo.toml package.json examples/run-example.ts \
       host/src/node-kernel-host.ts host/wasm/kandelo-kernel.wasm \
       host/wasm/program-packages.json \
       packages/registry/openssl/src/tls/1_2/connection.ts \
@@ -1062,129 +1060,6 @@ if homebrew_patched_launcher_snapshot_target_cellar_layout >/dev/null 2>&1; then
   fail "launcher accepted a same-name symlinked target keg"
 fi
 rm -rf "$prefix/Cellar"
-
-retire_prefix="$TMPDIR/retire-prefix"
-retire_brew="$TMPDIR/retire-brew"
-retire_bottle="$TMPDIR/hello--1.0.wasm32_kandelo.bottle.tar.gz"
-retire_json="$TMPDIR/hello--1.0.bottle.json"
-retire_marker="$TMPDIR/retire-uninstall"
-retire_receipt="$retire_prefix/Cellar/hello/1.0/INSTALL_RECEIPT.json"
-mkdir -p "$retire_prefix/Cellar/dependency/2.0" \
-  "$retire_prefix/Cellar/hello/1.0" "$retire_prefix/opt"
-ln -s ../Cellar/hello/1.0 "$retire_prefix/opt/hello"
-printf 'canonical bottle\n' >"$retire_bottle"
-printf '{"canonical":true}\n' >"$retire_json"
-printf '{"poured_from_bottle":false}\n' >"$retire_receipt"
-cp "$retire_bottle" "$retire_bottle.before"
-cp "$retire_json" "$retire_json.before"
-cat >"$retire_brew" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-case "\$*" in
-  '--prefix kandelo-dev/tap-core/hello')
-    printf '%s\n' "\${RETIRE_PREFIX_OVERRIDE:-$retire_prefix/opt/hello}"
-    ;;
-  'list --versions --formula kandelo-dev/tap-core/hello')
-    case "\${RETIRE_LIST_OVERRIDE:-}" in
-      absent) exit 1 ;;
-      broken) printf 'query failed\n' >&2; exit 2 ;;
-      noisy-absent) printf 'unexpected warning\n' >&2; exit 1 ;;
-    esac
-    if [ -d "$retire_prefix/Cellar/hello/1.0" ]; then
-      printf 'hello 1.0\n'
-    else
-      exit 1
-    fi
-    ;;
-  'uses --installed --formula kandelo-dev/tap-core/hello')
-    printf '%s' "\${RETIRE_DEPENDENTS:-}"
-    ;;
-  'uninstall --formula kandelo-dev/tap-core/hello')
-    rm -rf "$retire_prefix/Cellar/hello" "$retire_prefix/opt/hello"
-    : >"$retire_marker"
-    ;;
-  *) exit 97 ;;
-esac
-EOF
-chmod 0755 "$retire_brew"
-(
-  HOMEBREW_PATCHED_PREFIX="$retire_prefix"
-  HOMEBREW_PATCHED_BREW_BIN="$retire_brew"
-  HOMEBREW_PATCHED_BUILD_USER=fixture-build-user
-  [ "$(homebrew_patched_launcher_resolve_installed_formula_keg \
-      "$retire_brew" kandelo-dev/tap-core/hello hello)" = \
-      "$retire_prefix/Cellar/hello/1.0" ] ||
-    fail "logical Formula prefix did not resolve to its canonical installed keg"
-  RETIRE_PREFIX_OVERRIDE="$retire_prefix/opt/dependency"
-  export RETIRE_PREFIX_OVERRIDE
-  if homebrew_patched_launcher_resolve_installed_formula_keg \
-      "$retire_brew" kandelo-dev/tap-core/hello hello \
-      >/dev/null 2>&1; then
-    fail "Formula keg resolution accepted a caller-poisoned logical prefix"
-  fi
-  unset RETIRE_PREFIX_OVERRIDE
-  retire_overlay="$TMPDIR/retire-overlay"
-  retire_launcher="$retire_prefix/bin/.kandelo-brew-fixture"
-  mkdir -p "$retire_overlay/bin" "$retire_prefix/bin"
-  cp -p "$retire_brew" "$retire_overlay/bin/brew"
-  ln -s "$retire_overlay/bin/brew" "$retire_launcher"
-  HOMEBREW_PATCHED_OVERLAY="$retire_overlay"
-  HOMEBREW_PATCHED_LAUNCHER="$retire_launcher"
-  HOMEBREW_PATCHED_BREW_BIN="$retire_launcher"
-  [ "$(homebrew_patched_launcher_resolve_installed_formula_keg \
-      "$retire_launcher" kandelo-dev/tap-core/hello hello)" = \
-      "$retire_prefix/Cellar/hello/1.0" ] ||
-    fail "Formula keg resolution rejected the exact candidate launcher"
-  rm -f "$retire_launcher"
-  rm -rf "$retire_overlay"
-  HOMEBREW_PATCHED_OVERLAY=""
-  HOMEBREW_PATCHED_LAUNCHER=""
-  HOMEBREW_PATCHED_BREW_BIN="$retire_brew"
-  RETIRE_LIST_OVERRIDE=absent
-  export RETIRE_LIST_OVERRIDE
-  homebrew_patched_launcher_require_formula_absent \
-    "$retire_brew" kandelo-dev/tap-core/hello
-  RETIRE_LIST_OVERRIDE=broken
-  if homebrew_patched_launcher_require_formula_absent \
-      "$retire_brew" kandelo-dev/tap-core/hello \
-      >/dev/null 2>&1; then
-    fail "Formula absence accepted a failed Brew query"
-  fi
-  RETIRE_LIST_OVERRIDE=noisy-absent
-  if homebrew_patched_launcher_require_formula_absent \
-      "$retire_brew" kandelo-dev/tap-core/hello \
-      >/dev/null 2>&1; then
-    fail "Formula absence accepted diagnostic output"
-  fi
-  unset RETIRE_LIST_OVERRIDE
-  if homebrew_patched_launcher_retire_source_target \
-      "$retire_brew" kandelo-dev/tap-core/not-hello hello 1.0 \
-      "$retire_bottle" "$retire_json" "$retire_receipt" \
-      >/dev/null 2>&1; then
-    fail "source target retirement accepted a different Formula identity"
-  fi
-  export RETIRE_DEPENDENTS='kandelo-dev/tap-core/consumer'
-  if homebrew_patched_launcher_retire_source_target \
-      "$retire_brew" kandelo-dev/tap-core/hello hello 1.0 \
-      "$retire_bottle" "$retire_json" "$retire_receipt" \
-      >/dev/null 2>&1; then
-    fail "source target retirement ignored an installed dependent"
-  fi
-  [ -d "$retire_prefix/Cellar/hello/1.0" ] && [ ! -e "$retire_marker" ] ||
-    fail "rejected source target retirement changed the installed target"
-  unset RETIRE_DEPENDENTS
-  homebrew_patched_launcher_retire_source_target \
-    "$retire_brew" kandelo-dev/tap-core/hello hello 1.0 \
-    "$retire_bottle" "$retire_json" "$retire_receipt"
-)
-[ ! -e "$retire_prefix/Cellar/hello" ] &&
-  [ ! -e "$retire_prefix/opt/hello" ] &&
-  [ -d "$retire_prefix/Cellar/dependency/2.0" ] &&
-  [ -e "$retire_marker" ] ||
-  fail "source target retirement did not preserve only installed dependencies"
-cmp "$retire_bottle.before" "$retire_bottle" >/dev/null &&
-  cmp "$retire_json.before" "$retire_json" >/dev/null ||
-  fail "source target retirement changed canonical bottle artifacts"
 [ "$($HOMEBREW_PATCHED_BREW_BIN --prefix cmake)" = "$prefix/opt/cmake" ] ||
   fail "launcher moved a core dependency prefix"
 [ "$($HOMEBREW_PATCHED_BREW_BIN --repository)" = "$HOMEBREW_PATCHED_OVERLAY" ] ||
@@ -1204,11 +1079,11 @@ local_tier2_attestation="$TMPDIR/local-tier2-attestation.json"
 printf '%s\n' '{"build":[],"build_and_test":[],"formula":"hello","full_name":"kandelo-dev/tap-core/hello","runtime_and_test":[],"schema":2,"tap":"kandelo-dev/tap-core"}' \
   >"$local_dependency_plan"
 chmod 0600 "$local_dependency_plan"
-active_tier2_attestation_json='{"arch":"wasm32","formula":"hello","formula_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","full_name":"kandelo-dev/tap-core/hello","schema":4,"support_runtime_sha256":"1111111111111111111111111111111111111111111111111111111111111111","support_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tap":"kandelo-dev/tap-core","tier2_bridge":{"package":"hello","script":"build-hello.sh","script_env_keys":[],"script_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","source_sha256":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","source_url":"https://example.test/hello-1.0.tar.gz","version":"1.0"}}'
+active_tier2_attestation_json='{"arch":"wasm32","formula":"hello","formula_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","full_name":"kandelo-dev/tap-core/hello","schema":2,"support_runtime_sha256":"1111111111111111111111111111111111111111111111111111111111111111","support_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tap":"kandelo-dev/tap-core","tier2_bridge":{"build_toml_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","package":"hello","package_toml_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","script":"build-hello.sh","script_env_keys":[],"script_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","source_mode":"exact","source_sha256":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","source_url":"https://example.test/hello-1.0.tar.gz","version":"1.0"}}'
 printf '%s\n' "$active_tier2_attestation_json" \
   >"$local_tier2_attestation"
 chmod 0600 "$local_tier2_attestation"
-[ "$(homebrew_patched_launcher_tier2_schema "$local_tier2_attestation")" = "4" ] ||
+[ "$(homebrew_patched_launcher_tier2_schema "$local_tier2_attestation")" = "2" ] ||
   fail "Tier-2 schema reader did not identify a registry bridge"
 tap_recipe_attestation="$TMPDIR/tap-recipe-attestation.json"
 printf '%s\n' \
@@ -1620,8 +1495,6 @@ homebrew_patched_launcher_prepare_native_prefix \
 native_base_mode="$(stat -c %a "$native_base" 2>/dev/null || stat -f %Lp "$native_base")"
 [ "$native_base_mode" = 711 ] ||
   fail "native Homebrew changed its caller-owned parent mode: $native_base_mode"
-[ -d "$native_prefix/Cellar" ] && [ ! -L "$native_prefix/Cellar" ] ||
-  fail "prepared native Homebrew omitted its empty Cellar"
 for native_root in "$native_prefix" "$native_cache" "$native_temp" "$native_config" \
   "$native_home"; do
   [ "$(stat -c %a "$native_root" 2>/dev/null || stat -f %Lp "$native_root")" = 700 ] ||
@@ -2303,11 +2176,9 @@ PY
     "$REPO_ROOT/package-lock.json" \
     "$isolated_kandelo/"
   cp -- \
-    "$REPO_ROOT/examples/run-example-builtins.ts" \
     "$REPO_ROOT/examples/run-example.ts" \
     "$REPO_ROOT/examples/run-example-output.ts" \
     "$REPO_ROOT/examples/run-example-paths.ts" \
-    "$REPO_ROOT/examples/run-example-vfs.ts" \
     "$isolated_kandelo/examples/"
   cp -- "$REPO_ROOT/package.json" \
     "$isolated_kandelo/host/wasm/kandelo-kernel.wasm"
@@ -2344,7 +2215,7 @@ EOF
   printf 'target work\n' >"$isolated_work/target-work-marker"
   printf 'external target untouched\n' >"$external_cellar/sentinel"
   printf 'external target untouched\n' >"$external_opt/sentinel"
-  dependency_plan_json='{"build":["cmake"],"build_and_test":["cmake","ninja"],"formula":"hello","full_name":"kandelo-dev/tap-core/hello","native_requirements":[],"runtime_and_test":["ninja"],"schema":5,"tap":"kandelo-dev/tap-core","target_taps":[{"checkout_commit":"1111111111111111111111111111111111111111","tap_commit":"1111111111111111111111111111111111111111","tap_name":"kandelo-dev/tap-core","tap_repository":"kandelo-dev/homebrew-tap-core"}]}'
+  dependency_plan_json='{"build":["cmake"],"build_and_test":["cmake","ninja"],"formula":"hello","full_name":"kandelo-dev/tap-core/hello","native_requirements":[],"runtime_and_test":["ninja"],"schema":4,"tap":"kandelo-dev/tap-core","target_taps":[{"tap_commit":"1111111111111111111111111111111111111111","tap_name":"kandelo-dev/tap-core","tap_repository":"kandelo-dev/homebrew-tap-core"}]}'
   printf '%s\n' "$dependency_plan_json" >"$isolated_dependency_plan"
   chmod 0600 "$isolated_dependency_plan"
   tier2_attestation_json='{"arch":"wasm32","formula":"hello","formula_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","full_name":"kandelo-dev/tap-core/hello","schema":3,"support_runtime_sha256":"1111111111111111111111111111111111111111111111111111111111111111","support_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tap":"kandelo-dev/tap-core","tap_recipe":{"dependencies":[],"entrypoint":"build.sh","file_count":1,"manifest_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","pkg_version":"1.0_2","resources":[],"script_env_keys":[],"source_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","source_url":"https://example.test/hello-1.0.tar.gz","total_bytes":1,"version":"1.0"},"tier2_bridge":null}'
@@ -3928,7 +3799,7 @@ EOF
   chmod 0600 "$schema2_config/homebrew/trust.json" \
     "$schema2_config/homebrew/trust.json.lock"
   printf '%s\n' \
-    '{"build":["cmake"],"build_and_test":["cmake"],"formula":"hello","full_name":"kandelo-dev/tap-core/hello","native_requirements":[],"runtime_and_test":[],"schema":5,"tap":"kandelo-dev/tap-core","target_taps":[{"checkout_commit":"1111111111111111111111111111111111111111","tap_commit":"1111111111111111111111111111111111111111","tap_name":"kandelo-dev/tap-core","tap_repository":"kandelo-dev/homebrew-tap-core"}]}' \
+    '{"build":["cmake"],"build_and_test":["cmake"],"formula":"hello","full_name":"kandelo-dev/tap-core/hello","native_requirements":[],"runtime_and_test":[],"schema":4,"tap":"kandelo-dev/tap-core","target_taps":[{"tap_commit":"1111111111111111111111111111111111111111","tap_name":"kandelo-dev/tap-core","tap_repository":"kandelo-dev/homebrew-tap-core"}]}' \
     >"$schema2_dependency_plan"
   printf '%s\n' "$active_tier2_attestation_json" >"$schema2_attestation"
   chmod 0600 "$schema2_dependency_plan" "$schema2_attestation"

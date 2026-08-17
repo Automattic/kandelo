@@ -89,9 +89,10 @@ describe("non-forking posix_spawn", () => {
       expect(result.stdout, `missing 'OK ${subtest}' in stdout`).toContain(`OK ${subtest}`);
     }
     expect(result.stdout).toContain("ALL OK");
-    // GUARDRAIL: all three successful spawn calls create a child without
-    // changing the parent's monotonic fork counter.
-    expect(result.forkCountSamples).toEqual([0n, 0n, 0n]);
+    // GUARDRAIL: the two successful calls each create a child. The first
+    // (spawnp) fails before child creation, but a fork bump there would remain
+    // visible because fork_count is monotonic and taint both later samples.
+    expect(result.forkCountSamples).toEqual([0n, 0n]);
   });
 
   it("reports ENOEXEC for non-Wasm spawn targets before launching a worker", async () => {

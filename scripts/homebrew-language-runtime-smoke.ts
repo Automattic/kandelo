@@ -35,7 +35,7 @@ const CLEAN_ENV = [
   "HOME=/tmp",
   `PATH=${HOMEBREW_PREFIX}/bin:/usr/bin:/bin`,
   "TMPDIR=/tmp",
-  "USER=maker",
+  "USER=user",
 ];
 
 export interface LanguageRuntimeResult {

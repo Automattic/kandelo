@@ -22,8 +22,6 @@ import { resolveHomebrewVfsResourcePolicy } from "../src/homebrew-vfs-resource-p
 import { ensureDirRecursive, writeVfsFile } from "../src/vfs/image-helpers";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import {
-  HOMEBREW_TEST_ABI,
-  HOMEBREW_TEST_VFS_FILENAME,
   homebrewTestBootstrapFixture,
   homebrewTestBottleDescriptor,
   homebrewTestBottleEntry,
@@ -33,7 +31,8 @@ import {
   homebrewTestSelectionBytes,
 } from "./fixtures/homebrew-flat-vfs";
 
-const OUTPUT_FILENAME = HOMEBREW_TEST_VFS_FILENAME;
+const OUTPUT_FILENAME =
+  "kandelo-homebrew-experimental-abi42-wasm32.vfs.zst";
 const SHELL_CONFIG = fileURLToPath(
   new URL("../../homebrew/main-shell-default.json", import.meta.url),
 );
@@ -106,7 +105,7 @@ describe("flat Homebrew VFS CLI", () => {
     await restored.verifyImportedLazyAtomicGroupSeals();
     expect(restored.getImageMetadata()).toMatchObject({
       version: 1,
-      kernelAbi: HOMEBREW_TEST_ABI,
+      kernelAbi: 42,
       createdBy: "images/vfs/scripts/build-homebrew-flat-vfs-image.ts",
       homebrewFlat: {
         selectionSha256: sha(originalSelection),
@@ -282,11 +281,7 @@ describe("flat Homebrew VFS CLI", () => {
       0o755,
     );
     writeFileSync(fixture.base, await baseFs.saveImage({
-      metadata: {
-        version: 1,
-        kernelAbi: HOMEBREW_TEST_ABI,
-        createdBy: "lazy-base-test",
-      },
+      metadata: { version: 1, kernelAbi: 42, createdBy: "lazy-base-test" },
       normalizeTimestampsMs: 0,
     }));
     const fetchBottleBytes = vi.fn(async () => new Uint8Array());
@@ -448,11 +443,7 @@ async function createFixture(
   }
   const base = join(directory, "base.vfs");
   writeFileSync(base, await baseFs.saveImage({
-    metadata: {
-      version: 1,
-      kernelAbi: HOMEBREW_TEST_ABI,
-      createdBy: "flat-cli-test",
-    },
+    metadata: { version: 1, kernelAbi: 42, createdBy: "flat-cli-test" },
     normalizeTimestampsMs: 0,
   }));
 

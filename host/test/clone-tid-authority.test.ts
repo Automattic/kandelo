@@ -1,60 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  createCentralizedKernelWorkerTestDouble, CentralizedKernelWorker
-} from "../src/kernel-worker";
+import { CentralizedKernelWorker } from "../src/kernel-worker";
 import { WASM_PAGE_SIZE } from "../src/constants";
 import {
   ABI_SYSCALLS,
-  CHANNEL_STATUS_COMPLETE,
-  CHANNEL_STATUS_PENDING,
-  CH_ARGS,
-  CH_ARG_SIZE,
   CH_DATA,
   CH_ERRNO,
   CH_RETURN,
-  CH_STATUS,
-  CH_SYSCALL,
 } from "../src/generated/abi";
-import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 const PID = 47;
 const KERNEL_TID = 318;
 const CHANNEL_OFFSET = WASM_PAGE_SIZE;
 const CLONE_ARGS = [0x0021_0100, 0x0080_0000, 0, 0x0090_0000, 0x0004_0000, 0];
-
-interface TestChannel {
-  readonly pid: number;
-  readonly channelOffset: number;
-  readonly memory: WebAssembly.Memory;
-  i32View: Int32Array;
-  consecutiveSyscalls: number;
-  handling?: boolean;
-}
-
-function writeCloneRequest(channel: TestChannel, args: readonly number[]): void {
-  const view = new DataView(channel.memory.buffer, channel.channelOffset);
-  view.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
-  view.setUint32(CH_DATA, 11, true);
-  view.setUint32(CH_DATA + 4, 22, true);
-  view.setUint32(CH_SYSCALL, ABI_SYSCALLS.Clone, true);
-  for (let index = 0; index < args.length; index++) {
-    view.setBigInt64(CH_ARGS + index * CH_ARG_SIZE, BigInt(args[index]!), true);
-  }
-}
-
-function readCloneCompletion(channel: TestChannel): {
-  readonly status: number;
-  readonly retVal: number;
-  readonly errno: number;
-} {
-  const view = new DataView(channel.memory.buffer, channel.channelOffset);
-  return {
-    status: view.getUint32(CH_STATUS, true),
-    retVal: Number(view.getBigInt64(CH_RETURN, true)),
-    errno: view.getUint32(CH_ERRNO, true),
-  };
-}
 
 function makeCloneHarness(
   onClone: (...args: unknown[]) => Promise<unknown>,
@@ -66,76 +24,73 @@ function makeCloneHarness(
     maximum: 16,
     shared: true,
   });
-  const channel: TestChannel = {
-    pid: PID,
-    channelOffset: CHANNEL_OFFSET,
-    memory,
-    i32View: new Int32Array(memory.buffer, CHANNEL_OFFSET),
-    consecutiveSyscalls: 0,
-  };
+  const channel = { pid: PID, channelOffset: CHANNEL_OFFSET, memory };
+  const processView = new DataView(memory.buffer, CHANNEL_OFFSET);
+  processView.setUint32(CH_DATA, 11, true);
+  processView.setUint32(CH_DATA + 4, 22, true);
 
-  const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
-  const kernelHandleChannel = vi.fn((offset: number | bigint) => {
-    const kernelView = new DataView(kernelMemory.buffer, Number(offset));
-    kernelView.setBigInt64(CH_RETURN, BigInt(kernelTid), true);
-    kernelView.setUint32(CH_ERRNO, 0, true);
-    return 0;
-  });
-  const notifyThreadExit = vi.fn(() => 0);
-  let worker!: CentralizedKernelWorker;
-  worker = createCentralizedKernelWorkerTestDouble({
-    callbacks: {
-      onClone: (attachment) => {
-        if (autoAttach) {
-          worker.attachThreadChannel(
-            attachment,
-            2 * WASM_PAGE_SIZE,
-          );
-        }
-        return onClone(attachment) as Promise<void>;
-      },
-    },
-  });
-  Object.assign(worker, {
-    currentHandlePid: 0,
-    activeChannels: [channel],
-    channelTids: new Map<string, number>(),
-    execHandoffPids: new Set<number>(),
-    hostReaped: new Set<number>(),
-    processes: new Map([[PID, {
-      pid: PID,
-      channels: [channel],
-      memory,
-      explicitMaxAddr: true,
-    }]]),
-    threadForkContexts: new Map<string, { fnPtr: number; argPtr: number }>(),
-    usePolling: true,
-  });
-  installKernelWorkerTestScratch(
-    worker as unknown as Record<string, unknown>,
-    kernelMemory,
-    128,
-    4,
+  const kernelMemory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
+  const kernelView = new DataView(kernelMemory.buffer);
+  const completeChannel = vi.fn();
+  const notifyThreadExit = vi.fn();
+  const worker = Object.assign(
+    Object.create(CentralizedKernelWorker.prototype),
     {
-      kernelExports: {
-        kernel_drain_wakeup_events: vi.fn(() => 0),
-        kernel_get_process_exit_signal: vi.fn(() => -1),
-        kernel_get_process_state: vi.fn(() => 0),
-        kernel_handle_channel: kernelHandleChannel,
-        kernel_set_current_tid: vi.fn(() => 0),
-        kernel_thread_exit: notifyThreadExit,
-        kernel_validate_task: vi.fn(() => 0),
+      callbacks: {},
+      kernel: {
+        toKernelPtr(value: number | bigint): number {
+          return Number(value);
+        },
+      },
+      kernelMemory,
+      scratchOffset: 0,
+      currentHandlePid: 0,
+      activeChannels: [channel],
+      channelTids: new Map<string, number>(),
+      execHandoffPids: new Set<number>(),
+      hostReaped: new Set<number>(),
+      processes: new Map([[PID, {
+        pid: PID,
+        channels: [channel],
+        memory,
+        explicitMaxAddr: true,
+      }]]),
+      threadCtidPtrs: new Map<string, number>(),
+      threadForkContexts: new Map<string, { fnPtr: number; argPtr: number }>(),
+      retireExactChannelAsyncState: vi.fn(),
+      usePolling: true,
+      completeChannel,
+      notifyThreadExit,
+      bindKernelTidForChannel: vi.fn(),
+      kernelInstance: {
+        exports: {
+          kernel_get_process_exit_signal: vi.fn(() => -1),
+          kernel_validate_task: vi.fn(() => 0),
+          kernel_handle_channel: vi.fn(() => {
+            kernelView.setBigInt64(CH_RETURN, BigInt(kernelTid), true);
+            kernelView.setUint32(CH_ERRNO, 0, true);
+            return 0;
+          }),
+        },
       },
     },
-  );
+  ) as CentralizedKernelWorker;
+  (worker as any).callbacks = {
+    onClone: (attachment: unknown) => {
+      if (autoAttach) {
+        worker.attachThreadChannel(
+          attachment as Parameters<CentralizedKernelWorker["attachThreadChannel"]>[0],
+          2 * WASM_PAGE_SIZE,
+        );
+      }
+      return onClone(attachment);
+    },
+  };
 
   return {
     channel,
-    dispatch(args: readonly number[] = CLONE_ARGS) {
-      writeCloneRequest(channel, args);
-      (worker as any).handleSyscall(channel);
-    },
-    kernelHandleChannel,
+    completeChannel,
+    kernelHandleChannel: (worker as any).kernelInstance.exports.kernel_handle_channel,
     notifyThreadExit,
     worker,
   };
@@ -148,7 +103,7 @@ function makeChannelOwnershipHarness() {
     shared: true,
   });
   const mainChannelOffset = WASM_PAGE_SIZE;
-  const mainChannel: TestChannel = {
+  const mainChannel = {
     pid: PID,
     channelOffset: mainChannelOffset,
     memory,
@@ -156,90 +111,81 @@ function makeChannelOwnershipHarness() {
     consecutiveSyscalls: 0,
   };
   const validateTask = vi.fn(() => 0);
-  const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+  const retireExactChannelAsyncState = vi.fn();
+  const kernelMemory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
+  const kernelView = new DataView(kernelMemory.buffer);
   let nextKernelTid = 0;
-  let receiveAttachment:
-    | ((
-        attachment: Parameters<
-          CentralizedKernelWorker["attachThreadChannel"]
-        >[0],
-      ) => Promise<void>)
-    | undefined;
-  const worker = createCentralizedKernelWorkerTestDouble({
-    callbacks: {
-      onClone: (attachment) => {
-        if (!receiveAttachment) {
-          throw new Error("clone attachment receiver is not armed");
-        }
-        return receiveAttachment(attachment);
-      },
-    },
-  });
-  Object.assign(worker, {
-    currentHandlePid: 0,
-    activeChannels: [mainChannel],
-    channelTids: new Map<string, number>(),
-    execHandoffPids: new Set<number>(),
-    hostReaped: new Set<number>(),
-    processes: new Map([
-      [PID, {
-        pid: PID,
-        memory,
-        channels: [mainChannel],
-        explicitMaxAddr: true,
-      }],
-    ]),
-    threadForkContexts: new Map<string, { fnPtr: number; argPtr: number }>(),
-    usePolling: true,
-  });
-  installKernelWorkerTestScratch(
-    worker as unknown as Record<string, unknown>,
-    kernelMemory,
-    128,
-    4,
+  const worker = Object.assign(
+    Object.create(CentralizedKernelWorker.prototype),
     {
-      kernelExports: {
-        kernel_drain_wakeup_events: vi.fn(() => 0),
-        kernel_get_process_exit_signal: vi.fn(() => -1),
-        kernel_get_process_state: vi.fn(() => 0),
-        kernel_handle_channel: vi.fn((offset: number | bigint) => {
-          const kernelView = new DataView(kernelMemory.buffer, Number(offset));
-          kernelView.setBigInt64(CH_RETURN, BigInt(nextKernelTid), true);
-          kernelView.setUint32(CH_ERRNO, 0, true);
-          return 0;
-        }),
-        kernel_set_current_tid: vi.fn(() => 0),
-        kernel_thread_exit: vi.fn(() => 0),
-        kernel_validate_task: validateTask,
+      callbacks: {},
+      kernel: {
+        toKernelPtr(value: number | bigint): number {
+          return Number(value);
+        },
+      },
+      kernelMemory,
+      scratchOffset: 0,
+      currentHandlePid: 0,
+      activeChannels: [mainChannel],
+      channelTids: new Map<string, number>(),
+      execHandoffPids: new Set<number>(),
+      hostReaped: new Set<number>(),
+      processes: new Map([
+        [PID, {
+          pid: PID,
+          memory,
+          channels: [mainChannel],
+          explicitMaxAddr: true,
+        }],
+      ]),
+      retireExactChannelAsyncState,
+      threadCtidPtrs: new Map<string, number>(),
+      threadForkContexts: new Map<string, { fnPtr: number; argPtr: number }>(),
+      usePolling: true,
+      completeChannel: vi.fn(),
+      notifyThreadExit: vi.fn(),
+      bindKernelTidForChannel: vi.fn(),
+      kernelInstance: {
+        exports: {
+          kernel_get_process_exit_signal: vi.fn(() => -1),
+          kernel_validate_task: validateTask,
+          kernel_handle_channel: vi.fn(() => {
+            kernelView.setBigInt64(CH_RETURN, BigInt(nextKernelTid), true);
+            kernelView.setUint32(CH_ERRNO, 0, true);
+            return 0;
+          }),
+        },
       },
     },
-  );
+  ) as CentralizedKernelWorker;
 
   return {
     mainChannel,
     memory,
+    retireExactChannelAsyncState,
     validateTask,
     worker,
-    async issueThreadAttachment(tid: number, fnPtr = 11, argPtr = 22) {
+    issueThreadAttachment(tid: number, fnPtr = 11, argPtr = 22) {
       let attachment:
         | Parameters<CentralizedKernelWorker["attachThreadChannel"]>[0]
         | undefined;
       nextKernelTid = tid;
-      receiveAttachment = (
-        value: Parameters<CentralizedKernelWorker["attachThreadChannel"]>[0],
-      ) => {
-        attachment = value;
-        return new Promise<void>(() => {});
-      };
-      writeCloneRequest(
-        mainChannel,
-        [0, 0x0080_0000, 0, 0x0090_0000, 0, 0],
-      );
       const processView = new DataView(memory.buffer, mainChannelOffset);
       processView.setUint32(CH_DATA, fnPtr, true);
       processView.setUint32(CH_DATA + 4, argPtr, true);
-      (worker as any).handleSyscall(mainChannel);
-      await flushCloneContinuation();
+      (worker as any).callbacks = {
+        onClone: (
+          value: Parameters<CentralizedKernelWorker["attachThreadChannel"]>[0],
+        ) => {
+          attachment = value;
+          return new Promise<void>(() => {});
+        },
+      };
+      (worker as any).handleClone(
+        mainChannel,
+        [0, 0x0080_0000, 0, 0x0090_0000, 0, 0],
+      );
       if (!attachment) throw new Error("clone callback did not receive attachment");
       return attachment;
     },
@@ -247,25 +193,8 @@ function makeChannelOwnershipHarness() {
 }
 
 async function flushCloneContinuation(): Promise<void> {
-  for (let index = 0; index < 8; index++) {
-    await Promise.resolve();
-  }
-}
-
-function expectIngressFailureCause(
-  operation: () => void,
-  expectedMessage: string,
-): void {
-  let failure: unknown;
-  try {
-    operation();
-  } catch (error) {
-    failure = error;
-  }
-  expect(failure).toBeInstanceOf(Error);
-  const cause = (failure as Error & { cause?: unknown }).cause;
-  expect(cause).toBeInstanceOf(Error);
-  expect((cause as Error).message).toContain(expectedMessage);
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 describe("kernel TID authority", () => {
@@ -282,80 +211,99 @@ describe("kernel TID authority", () => {
       0,
     ];
 
-    first.dispatch(parentArgs);
+    (first.worker as any).handleClone(first.channel, parentArgs);
     expect(first.kernelHandleChannel).not.toHaveBeenCalled();
-    expect(readCloneCompletion(first.channel)).toEqual({
-      status: CHANNEL_STATUS_COMPLETE,
-      retVal: -1,
-      errno: 14,
-    });
+    expect(first.completeChannel).toHaveBeenCalledWith(
+      first.channel,
+      ABI_SYSCALLS.Clone,
+      parentArgs,
+      undefined,
+      -1,
+      14,
+    );
 
     const second = makeCloneHarness(onClone);
     const childArgs = [...CLONE_ARGS];
     childArgs[4] = invalidPtr;
-    second.dispatch(childArgs);
+    (second.worker as any).handleClone(second.channel, childArgs);
     expect(second.kernelHandleChannel).not.toHaveBeenCalled();
-    expect(readCloneCompletion(second.channel)).toEqual({
-      status: CHANNEL_STATUS_COMPLETE,
-      retVal: -1,
-      errno: 14,
-    });
+    expect(second.completeChannel).toHaveBeenCalledWith(
+      second.channel,
+      ABI_SYSCALLS.Clone,
+      childArgs,
+      undefined,
+      -1,
+      14,
+    );
     expect(onClone).not.toHaveBeenCalled();
   });
 
-  it("rolls back the exact Rust TID when the clone callback throws synchronously", async () => {
+  it("rolls back the exact Rust TID when the clone callback throws synchronously", () => {
     const launchError = new Error("synchronous worker construction failed");
     const onClone = vi.fn(() => {
       throw launchError;
     });
-    const harness = makeCloneHarness(onClone);
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { channel, notifyThreadExit, worker } = makeCloneHarness(onClone);
 
-    try {
-      // A synchronous constructor failure is an asynchronous clone-transaction
-      // failure at the mailbox boundary; it must roll back and complete the
-      // caller rather than escape the worker listener.
-      expect(() => harness.dispatch()).not.toThrow();
-      await flushCloneContinuation();
-
-      expect(harness.notifyThreadExit).toHaveBeenCalledOnce();
-      expect(harness.notifyThreadExit).toHaveBeenCalledWith(PID, KERNEL_TID);
-      expect(readCloneCompletion(harness.channel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        retVal: -1,
-        errno: 12,
-      });
-    } finally {
-      consoleError.mockRestore();
-    }
+    expect(() => (worker as any).handleClone(channel, CLONE_ARGS))
+      .toThrow(launchError);
+    expect(notifyThreadExit).toHaveBeenCalledOnce();
+    expect(notifyThreadExit).toHaveBeenCalledWith(PID, KERNEL_TID);
   });
 
   it("does not track an unflagged child-TID pointer as clear-on-exit state", async () => {
     const onClone = vi.fn(async () => {});
-    const harness = makeCloneHarness(onClone);
+    const { channel, worker } = makeCloneHarness(onClone);
     const args = [...CLONE_ARGS];
     args[0] &= ~0x0020_0000;
 
-    harness.dispatch(args);
+    (worker as any).handleClone(channel, args);
     await flushCloneContinuation();
 
     expect(onClone.mock.calls[0][0]).toMatchObject({ ctidPtr: 0 });
-    expect(harness.notifyThreadExit).not.toHaveBeenCalled();
+    expect((worker as any).threadCtidPtrs.size).toBe(0);
+  });
+
+  it("does not bind a pthread clone as the process leader when its mapping is missing", () => {
+    const onClone = vi.fn(async () => {});
+    const { channel, worker } = makeCloneHarness(onClone);
+    const mainChannel = {
+      pid: PID,
+      channelOffset: 2 * WASM_PAGE_SIZE,
+      memory: channel.memory,
+    };
+    const kernelHandleChannel = (worker as any).kernelInstance.exports
+      .kernel_handle_channel as ReturnType<typeof vi.fn>;
+    (worker as any).processes = new Map([
+      [PID, { channels: [mainChannel, channel] }],
+    ]);
+    (worker as any).channelTids = new Map();
+    delete (worker as any).bindKernelTidForChannel;
+    const expected =
+      `No kernel-validated TID for non-main channel ${CHANNEL_OFFSET} of process ${PID}`;
+
+    expect(() => (worker as any).handleClone(channel, CLONE_ARGS)).toThrow(expected);
+    expect(kernelHandleChannel).not.toHaveBeenCalled();
+    expect(onClone).not.toHaveBeenCalled();
   });
 
   it("rejects zero before a host callback can attach an unallocated task", () => {
     const onClone = vi.fn(async () => {});
-    const harness = makeCloneHarness(onClone, 0);
+    const { channel, completeChannel, notifyThreadExit, worker } =
+      makeCloneHarness(onClone, 0);
 
-    harness.dispatch();
+    (worker as any).handleClone(channel, CLONE_ARGS);
 
     expect(onClone).not.toHaveBeenCalled();
-    expect(harness.notifyThreadExit).not.toHaveBeenCalled();
-    expect(readCloneCompletion(harness.channel)).toEqual({
-      status: CHANNEL_STATUS_COMPLETE,
-      retVal: -1,
-      errno: 5,
-    });
+    expect(notifyThreadExit).not.toHaveBeenCalled();
+    expect(completeChannel).toHaveBeenCalledWith(
+      channel,
+      ABI_SYSCALLS.Clone,
+      CLONE_ARGS,
+      undefined,
+      -1,
+      5,
+    );
   });
 
   it("ignores a host callback return value and completes with the Rust-assigned TID", async () => {
@@ -363,9 +311,9 @@ describe("kernel TID authority", () => {
     // current callback type is Promise<void>, and the runtime must likewise
     // ignore any value so the host cannot become an alternate TID authority.
     const onClone = vi.fn(async () => 999);
-    const harness = makeCloneHarness(onClone);
+    const { channel, completeChannel, worker } = makeCloneHarness(onClone);
 
-    harness.dispatch();
+    (worker as any).handleClone(channel, CLONE_ARGS);
     await flushCloneContinuation();
 
     expect(onClone).toHaveBeenCalledWith(expect.objectContaining({
@@ -376,33 +324,40 @@ describe("kernel TID authority", () => {
       stackPtr: CLONE_ARGS[1],
       tlsPtr: CLONE_ARGS[3],
       ctidPtr: CLONE_ARGS[4],
-      memory: harness.channel.memory,
+      memory: channel.memory,
     }));
-    expect(readCloneCompletion(harness.channel)).toEqual({
-      status: CHANNEL_STATUS_COMPLETE,
-      retVal: KERNEL_TID,
-      errno: 0,
-    });
+    expect(completeChannel).toHaveBeenCalledWith(
+      channel,
+      ABI_SYSCALLS.Clone,
+      CLONE_ARGS,
+      undefined,
+      KERNEL_TID,
+      0,
+    );
   });
 
   it("rolls back the exact Rust-assigned TID when host thread launch fails", async () => {
     const onClone = vi.fn(async () => {
       throw new Error("worker launch failed");
     });
-    const harness = makeCloneHarness(onClone);
+    const { channel, completeChannel, notifyThreadExit, worker } =
+      makeCloneHarness(onClone);
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 
     try {
-      harness.dispatch();
+      (worker as any).handleClone(channel, CLONE_ARGS);
       await flushCloneContinuation();
 
-      expect(harness.notifyThreadExit).toHaveBeenCalledOnce();
-      expect(harness.notifyThreadExit).toHaveBeenCalledWith(PID, KERNEL_TID);
-      expect(readCloneCompletion(harness.channel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        retVal: -1,
-        errno: 12,
-      });
+      expect(notifyThreadExit).toHaveBeenCalledOnce();
+      expect(notifyThreadExit).toHaveBeenCalledWith(PID, KERNEL_TID);
+      expect(completeChannel).toHaveBeenCalledWith(
+        channel,
+        ABI_SYSCALLS.Clone,
+        CLONE_ARGS,
+        undefined,
+        -1,
+        12,
+      );
     } finally {
       consoleError.mockRestore();
     }
@@ -410,19 +365,23 @@ describe("kernel TID authority", () => {
 
   it("does not complete clone when the callback fails to consume its attachment", async () => {
     const onClone = vi.fn(async () => {});
-    const harness = makeCloneHarness(onClone, KERNEL_TID, false);
+    const { channel, completeChannel, notifyThreadExit, worker } =
+      makeCloneHarness(onClone, KERNEL_TID, false);
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 
     try {
-      harness.dispatch();
+      (worker as any).handleClone(channel, CLONE_ARGS);
       await flushCloneContinuation();
 
-      expect(harness.notifyThreadExit).toHaveBeenCalledWith(PID, KERNEL_TID);
-      expect(readCloneCompletion(harness.channel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        retVal: -1,
-        errno: 12,
-      });
+      expect(notifyThreadExit).toHaveBeenCalledWith(PID, KERNEL_TID);
+      expect(completeChannel).toHaveBeenCalledWith(
+        channel,
+        ABI_SYSCALLS.Clone,
+        CLONE_ARGS,
+        undefined,
+        -1,
+        12,
+      );
     } finally {
       consoleError.mockRestore();
     }
@@ -434,23 +393,21 @@ describe("thread channel ownership", () => {
   const secondThreadOffset = 3 * WASM_PAGE_SIZE;
   const thirdThreadOffset = 4 * WASM_PAGE_SIZE;
 
-  it("rejects a duplicate channel offset instead of remapping its TID", async () => {
+  it("rejects a duplicate channel offset instead of remapping its TID", () => {
     const { issueThreadAttachment, validateTask, worker } =
       makeChannelOwnershipHarness();
     worker.attachThreadChannel(
-      await issueThreadAttachment(KERNEL_TID),
+      issueThreadAttachment(KERNEL_TID),
       firstThreadOffset,
     );
-    const duplicateOffsetAttachment =
-      await issueThreadAttachment(KERNEL_TID + 1);
 
-    expectIngressFailureCause(
-      () => worker.attachThreadChannel(
-        duplicateOffsetAttachment,
-        firstThreadOffset,
-      ),
-      `Channel offset ${firstThreadOffset} for process ${PID} is already registered`,
-    );
+    expect(() => worker.attachThreadChannel(
+      issueThreadAttachment(KERNEL_TID + 1),
+      firstThreadOffset,
+    ))
+      .toThrow(
+        `Channel offset ${firstThreadOffset} for process ${PID} is already registered`,
+      );
 
     expect(validateTask).toHaveBeenCalledTimes(1);
     expect((worker as any).processes.get(PID).channels).toHaveLength(2);
@@ -460,22 +417,21 @@ describe("thread channel ownership", () => {
       .toEqual({ fnPtr: 11, argPtr: 22 });
   });
 
-  it("rejects assigning one kernel TID to a second channel", async () => {
+  it("rejects assigning one kernel TID to a second channel", () => {
     const { issueThreadAttachment, validateTask, worker } =
       makeChannelOwnershipHarness();
     worker.attachThreadChannel(
-      await issueThreadAttachment(KERNEL_TID),
+      issueThreadAttachment(KERNEL_TID),
       firstThreadOffset,
     );
-    const duplicateTidAttachment = await issueThreadAttachment(KERNEL_TID);
 
-    expectIngressFailureCause(
-      () => worker.attachThreadChannel(
-        duplicateTidAttachment,
-        secondThreadOffset,
-      ),
-      `Kernel TID ${KERNEL_TID} is already attached to channel ${PID}:${firstThreadOffset}`,
-    );
+    expect(() => worker.attachThreadChannel(
+      issueThreadAttachment(KERNEL_TID),
+      secondThreadOffset,
+    ))
+      .toThrow(
+        `Kernel TID ${KERNEL_TID} is already attached to channel ${PID}:${firstThreadOffset}`,
+      );
 
     expect(validateTask).toHaveBeenNthCalledWith(2, PID, KERNEL_TID);
     expect((worker as any).processes.get(PID).channels).toHaveLength(2);
@@ -484,28 +440,26 @@ describe("thread channel ownership", () => {
       .toBe(false);
   });
 
-  it("rejects a wrong-but-valid sibling TID for another clone channel", async () => {
+  it("rejects a wrong-but-valid sibling TID for another clone channel", () => {
     const siblingTid = KERNEL_TID + 1;
     const { issueThreadAttachment, validateTask, worker } =
       makeChannelOwnershipHarness();
     worker.attachThreadChannel(
-      await issueThreadAttachment(KERNEL_TID),
+      issueThreadAttachment(KERNEL_TID),
       firstThreadOffset,
     );
     worker.attachThreadChannel(
-      await issueThreadAttachment(siblingTid),
+      issueThreadAttachment(siblingTid),
       secondThreadOffset,
     );
-    const duplicateSiblingAttachment =
-      await issueThreadAttachment(siblingTid);
 
-    expectIngressFailureCause(
-      () => worker.attachThreadChannel(
-        duplicateSiblingAttachment,
-        thirdThreadOffset,
-      ),
-      `Kernel TID ${siblingTid} is already attached to channel ${PID}:${secondThreadOffset}`,
-    );
+    expect(() => worker.attachThreadChannel(
+      issueThreadAttachment(siblingTid),
+      thirdThreadOffset,
+    ))
+      .toThrow(
+        `Kernel TID ${siblingTid} is already attached to channel ${PID}:${secondThreadOffset}`,
+      );
 
     expect(validateTask).toHaveBeenLastCalledWith(PID, siblingTid);
     expect(validateTask).toHaveBeenCalledTimes(3);
@@ -514,13 +468,22 @@ describe("thread channel ownership", () => {
       .toBe(false);
   });
 
-  it("keeps concurrent pending TIDs bound to uncopyable one-shot attachments", async () => {
+  it("keeps concurrent pending TIDs bound to uncopyable one-shot attachments", () => {
     const siblingTid = KERNEL_TID + 1;
     const { issueThreadAttachment, worker } = makeChannelOwnershipHarness();
-    const first = await issueThreadAttachment(KERNEL_TID);
-    const sibling = await issueThreadAttachment(siblingTid, 33, 44);
+    const first = issueThreadAttachment(KERNEL_TID);
+    const sibling = issueThreadAttachment(siblingTid, 33, 44);
+    const forgedSibling = Object.freeze({
+      ...sibling,
+      tid: KERNEL_TID,
+    }) as typeof sibling;
+
+    expect(() => worker.attachThreadChannel(forgedSibling, firstThreadOffset))
+      .toThrow("Unknown, expired, or already consumed thread attachment");
 
     worker.attachThreadChannel(first, firstThreadOffset);
+    expect(() => worker.attachThreadChannel(first, thirdThreadOffset))
+      .toThrow("Unknown, expired, or already consumed thread attachment");
     worker.attachThreadChannel(sibling, secondThreadOffset);
 
     expect((worker as any).channelTids.get(`${PID}:${firstThreadOffset}`))
@@ -530,49 +493,27 @@ describe("thread channel ownership", () => {
     expect((worker as any).threadForkContexts.get(`${PID}:${secondThreadOffset}`))
       .toEqual({ fnPtr: 33, argPtr: 44 });
     expect((worker as any).addChannel).toBeUndefined();
-
-    // A failed public ingress poisons this deliberately conservative test
-    // generation, so make the one-shot replay assertion the final operation.
-    expectIngressFailureCause(
-      () => worker.attachThreadChannel(first, thirdThreadOffset),
-      "Unknown, expired, or already consumed thread attachment",
-    );
   });
 
-  it("rejects a copied attachment with substituted identity", async () => {
-    const { issueThreadAttachment, worker } = makeChannelOwnershipHarness();
-    const attachment = await issueThreadAttachment(KERNEL_TID);
-    const forged = Object.freeze({
-      ...attachment,
-      tid: KERNEL_TID + 1,
-    }) as typeof attachment;
-
-    expectIngressFailureCause(
-      () => worker.attachThreadChannel(forged, firstThreadOffset),
-      "Unknown, expired, or already consumed thread attachment",
-    );
-    expect((worker as any).channelTids.size).toBe(0);
-    expect((worker as any).threadForkContexts.size).toBe(0);
-  });
-
-  it("releases channel ownership on removal so a later clone can reuse the slot", async () => {
+  it("releases channel ownership on removal so a later clone can reuse the slot", () => {
     const replacementTid = KERNEL_TID + 1;
-    const { issueThreadAttachment, worker } =
+    const { issueThreadAttachment, retireExactChannelAsyncState, worker } =
       makeChannelOwnershipHarness();
     worker.attachThreadChannel(
-      await issueThreadAttachment(KERNEL_TID, 11, 22),
+      issueThreadAttachment(KERNEL_TID, 11, 22),
       firstThreadOffset,
     );
 
     worker.removeChannel(PID, firstThreadOffset);
 
+    expect(retireExactChannelAsyncState).toHaveBeenCalledOnce();
     expect((worker as any).channelTids.has(`${PID}:${firstThreadOffset}`))
       .toBe(false);
     expect((worker as any).threadForkContexts.has(`${PID}:${firstThreadOffset}`))
       .toBe(false);
 
     worker.attachThreadChannel(
-      await issueThreadAttachment(replacementTid, 33, 44),
+      issueThreadAttachment(replacementTid, 33, 44),
       firstThreadOffset,
     );
     expect((worker as any).channelTids.get(`${PID}:${firstThreadOffset}`))

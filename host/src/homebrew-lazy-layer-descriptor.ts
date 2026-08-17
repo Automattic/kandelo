@@ -1,11 +1,5 @@
 /** Browser-safe schema types shared by the lazy-layer producer and consumer. */
 
-import type { LazyTreeMaterializationPlan } from "./vfs/materialization-plan";
-import {
-  assertUnicodeScalarText,
-  compareUnicodeScalarText,
-} from "./vfs/canonical-text";
-
 /** Immutable package-release identity for the exact lower VFS output. */
 export interface HomebrewLazyLayerBasePackageSource {
   schema: 1;
@@ -124,7 +118,7 @@ export interface HomebrewDeferredTreeDescriptor {
     layer_entry_count: number;
     /** Legacy schema-4 directories which must already exist in the base. */
     shared_base_directory_count?: number;
-    /** Schema-5/6 directories which may be created once or merged with a real directory. */
+    /** Schema-5 directories which may be created once or merged with a real directory. */
     mergeable_directory_count?: number;
     /** Decoder expansion bound (ZIP member bytes or complete TAR bytes). */
     expanded_bytes: number;
@@ -138,13 +132,6 @@ export interface HomebrewDeferredTreeDescriptor {
       schema: 1;
       kind: "homebrew-bottle-tar-gzip-v1";
       entries: HomebrewDeferredTreeSourceEntry[];
-    };
-    /** Authenticated policy retained until the adapter erases producer terms. */
-    relocation?: {
-      schema: 1;
-      kind: "homebrew-bottle-relocation-v1";
-      receipt_source_path: string;
-      materialization: LazyTreeMaterializationPlan;
     };
     entries: HomebrewLazyLayerEntry[];
   };
@@ -213,8 +200,8 @@ export interface HomebrewLazyLayerPackageRecord {
 }
 
 interface HomebrewLazyLayerDescriptorCommon {
-  /** Schema 4 is legacy ZIP; schema 5 is unrelocated TAR; schema 6 adds plans. */
-  schema: 4 | 5 | 6;
+  /** Schema 4 is the exact legacy ZIP contract; schema 5 owns original bottles. */
+  schema: 4 | 5;
   arch: "wasm32" | "wasm64";
   mount_prefix: "/";
   tap: {
@@ -412,9 +399,32 @@ function sortJson(value: unknown): unknown {
  * canonical-json-v1 has one cross-host key order for non-BMP text.
  */
 export function compareHomebrewCanonicalText(left: string, right: string): number {
-  return compareUnicodeScalarText(left, right);
+  assertHomebrewCanonicalText(left);
+  assertHomebrewCanonicalText(right);
+  let leftOffset = 0;
+  let rightOffset = 0;
+  while (leftOffset < left.length && rightOffset < right.length) {
+    const leftScalar = left.codePointAt(leftOffset)!;
+    const rightScalar = right.codePointAt(rightOffset)!;
+    if (leftScalar !== rightScalar) return leftScalar < rightScalar ? -1 : 1;
+    leftOffset += leftScalar > 0xffff ? 2 : 1;
+    rightOffset += rightScalar > 0xffff ? 2 : 1;
+  }
+  return leftOffset < left.length ? 1 : rightOffset < right.length ? -1 : 0;
 }
 
 export function assertHomebrewCanonicalText(value: string): void {
-  assertUnicodeScalarText(value, "canonical-json-v1 strings");
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charCodeAt(index);
+    if (unit < 0xd800 || unit > 0xdfff) continue;
+    if (
+      unit <= 0xdbff && index + 1 < value.length &&
+      value.charCodeAt(index + 1) >= 0xdc00 &&
+      value.charCodeAt(index + 1) <= 0xdfff
+    ) {
+      index += 1;
+      continue;
+    }
+    throw new Error("canonical-json-v1 strings must contain only Unicode scalar values");
+  }
 }

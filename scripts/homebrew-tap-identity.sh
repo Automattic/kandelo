@@ -82,53 +82,6 @@ homebrew_candidate_bottle_root_url() {
     "$normalized_repository" "$target_abi" "$formula"
 }
 
-homebrew_formula_bottle_root_matches_build_authority() {
-  if [ "$#" -ne 6 ]; then
-    echo "homebrew_formula_bottle_root_matches_build_authority: expected REPOSITORY TAP_NAME FORMULA TARGET_ABI BUILD_ROOT FORMULA_ROOT" >&2
-    return 2
-  fi
-  local repository="$1" tap_name="$2" formula="$3" target_abi="$4"
-  local build_root="$5" formula_root="$6"
-  local normalized_repository canonical_root candidate_root prefix suffix source_abi
-
-  homebrew_resolve_tap_name "$repository" "$tap_name" >/dev/null || return
-  if ! [[ "$formula" =~ ^[a-z0-9][a-z0-9._-]*$ ]] ||
-     [ "${#formula}" -gt 128 ]; then
-    return 1
-  fi
-  canonical_root="$(homebrew_bottle_root_url "$repository" "$tap_name")" || return
-  if [ -z "$target_abi" ]; then
-    [ "$build_root" = "$canonical_root" ] &&
-      { [ -z "$formula_root" ] || [ "$formula_root" = "$build_root" ]; }
-    return
-  fi
-  if ! [[ "$target_abi" =~ ^[1-9][0-9]*$ ]]; then
-    return 1
-  fi
-  candidate_root="$(homebrew_candidate_bottle_root_url \
-    "$repository" "$target_abi" "$formula")" || return
-  [ "$build_root" = "$candidate_root" ] || return 1
-  case "$formula_root" in
-    ""|"$canonical_root"|"$candidate_root") return 0 ;;
-  esac
-
-  normalized_repository="$(printf '%s' "$repository" | tr '[:upper:]' '[:lower:]')"
-  prefix="https://ghcr.io/v2/${normalized_repository}-abi-"
-  case "$formula_root" in
-    "$prefix"*) ;;
-    *) return 1 ;;
-  esac
-  suffix="${formula_root#"$prefix"}"
-  source_abi="${suffix%%/*}"
-  [ "$suffix" = "$source_abi/$formula" ] || return 1
-  [[ "$source_abi" =~ ^[1-9][0-9]*$ ]] || return 1
-  if [ "${#source_abi}" -lt "${#target_abi}" ]; then
-    return 0
-  fi
-  [ "${#source_abi}" -eq "${#target_abi}" ] &&
-    [[ "$source_abi" < "$target_abi" ]]
-}
-
 homebrew_local_tap_clone_url() {
   if [ "$#" -ne 1 ]; then
     echo "homebrew_local_tap_clone_url: expected CHECKOUT" >&2
@@ -165,23 +118,4 @@ import sys
 
 print(pathlib.Path(sys.argv[1]).as_uri())
 PY
-}
-
-homebrew_clone_tap() {
-  if [ "$#" -ne 3 ]; then
-    echo "homebrew_clone_tap: expected BREW TAP URL" >&2
-    return 2
-  fi
-  local brew_bin="$1" tap_name="$2" clone_url="$3"
-  local original_umask status
-
-  original_umask="$(umask)"
-  umask 022
-  if "$brew_bin" tap "$tap_name" "$clone_url"; then
-    status=0
-  else
-    status="$?"
-  fi
-  umask "$original_umask"
-  return "$status"
 }

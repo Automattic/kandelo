@@ -1,7 +1,7 @@
 use wasm_posix_shared::{Errno, signal::NSIG};
 extern crate alloc;
 
-use alloc::{collections::VecDeque, vec::Vec};
+use alloc::collections::VecDeque;
 
 use crate::process::{HostIO, Process, ProcessState};
 
@@ -82,7 +82,11 @@ pub(crate) enum DefaultSignalOutcome {
 
 /// Finish a signal-caused process exit, including resource cleanup, before
 /// publishing the parent-visible exit record.
-pub(crate) fn terminate_process_by_signal(proc: &mut Process, host: &mut dyn HostIO, signum: u32) {
+pub(crate) fn terminate_process_by_signal(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    signum: u32,
+) {
     terminate_process_by_signal_impl(proc, None, host, signum);
 }
 
@@ -101,13 +105,9 @@ fn terminate_process_by_signal_impl(
     host: &mut dyn HostIO,
     signum: u32,
 ) {
-    proc.mask_waits.clear();
-    proc.caught_handler_depth = 0;
-    proc.returned_handler_depths.clear();
+    proc.sigsuspend_saved_mask = None;
     for thread in proc.thread_states_mut() {
-        thread.signals.mask_waits.clear();
-        thread.signals.caught_handler_depth = 0;
-        thread.signals.returned_handler_depths.clear();
+        thread.signals.sigsuspend_saved_mask = None;
     }
     match locks {
         Some(locks) => crate::syscalls::sys_exit_by_signal_with_locks(proc, locks, host, signum),
@@ -161,10 +161,10 @@ pub(crate) fn dequeue_signal_for(
     proc: &mut Process,
     tid: u32,
     signum: u32,
-) -> (u32, u64, i32, i32, i32) {
+) -> (u32, i32, i32, i32, i32) {
     if proc.state == ProcessState::Stopped && signum == wasm_posix_shared::signal::SIGKILL {
         proc.clear_signal_everywhere(signum);
-        return (signum, 0, 0, proc.pid as i32, proc.real_uid() as i32);
+        return (signum, 0, 0, proc.pid as i32, proc.uid as i32);
     }
     let info = proc.consume_signal_for(tid, signum).unwrap_or_default();
     let (word_1, word_2) = match info.timer_id {
@@ -172,17 +172,16 @@ pub(crate) fn dequeue_signal_for(
             timer_id as i32,
             proc.accept_posix_timer_notification(timer_id).unwrap_or(0),
         ),
-        None => (info.sender_pid as i32, info.sender_uid as i32),
+        None => (proc.pid as i32, proc.uid as i32),
     };
-    (signum, info.si_value_bits, info.si_code, word_1, word_2)
+    (signum, info.si_value, info.si_code, word_1, word_2)
 }
 
 /// Consume default/ignored pending signals at a syscall boundary. Caught
 /// signals stay queued for the guest glue. While stopped, Process selection
 /// exposes only SIGKILL; SIGCONT has already resumed at generation time.
 pub(crate) fn deliver_pending_signals(proc: &mut Process, host: &mut dyn HostIO) {
-    let tid = crate::syscalls::current_tid_for_process(proc);
-    deliver_pending_signals_impl(proc, None, host, tid);
+    deliver_pending_signals_impl(proc, None, host, crate::process_table::current_tid());
 }
 
 pub(crate) fn deliver_pending_signals_with_locks(
@@ -190,8 +189,7 @@ pub(crate) fn deliver_pending_signals_with_locks(
     locks: &mut crate::lock::AdvisoryLockManager,
     host: &mut dyn HostIO,
 ) {
-    let tid = crate::syscalls::current_tid_for_process(proc);
-    deliver_pending_signals_impl(proc, Some(locks), host, tid);
+    deliver_pending_signals_impl(proc, Some(locks), host, crate::process_table::current_tid());
 }
 
 /// Consume default/ignored signals for one exact kernel-owned task.
@@ -261,25 +259,17 @@ pub(crate) fn should_discard_pending(signum: u32, handler: &SignalHandler) -> bo
 #[derive(Debug, Clone, Copy)]
 pub struct RtSigEntry {
     pub signum: u32,
-    /// Raw `union sigval` bits, zero-extended when supplied by wasm32.
-    pub si_value_bits: u64,
+    pub si_value: i32,
     /// SI_QUEUE (-1) if sent via sigqueue(), SI_USER (0) if via kill()/raise().
     pub si_code: i32,
-    /// Authoritative kernel-derived sender credentials for non-timer signals.
-    pub sender_pid: u32,
-    pub sender_uid: u32,
     /// Owning POSIX timer for SI_TIMER notifications.
     pub timer_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PendingSignalInfo {
-    /// Raw `union sigval` bits, zero-extended when supplied by wasm32.
-    pub si_value_bits: u64,
+    pub si_value: i32,
     pub si_code: i32,
-    /// Authoritative kernel-derived sender credentials for non-timer signals.
-    pub sender_pid: u32,
-    pub sender_uid: u32,
     pub timer_id: Option<u32>,
 }
 
@@ -293,14 +283,10 @@ fn consume_pending_info(
     }
 
     let info = if let Some(pos) = queue.iter().position(|entry| entry.signum == signum) {
-        let entry = queue
-            .remove(pos)
-            .expect("queued signal index remains valid");
+        let entry = queue.remove(pos).expect("queued signal index remains valid");
         PendingSignalInfo {
-            si_value_bits: entry.si_value_bits,
+            si_value: entry.si_value,
             si_code: entry.si_code,
-            sender_pid: entry.sender_pid,
-            sender_uid: entry.sender_uid,
             timer_id: entry.timer_id,
         }
     } else {
@@ -313,7 +299,11 @@ fn consume_pending_info(
     info
 }
 
-fn remove_timer_info(pending: &mut u64, queue: &mut VecDeque<RtSigEntry>, timer_id: u32) -> bool {
+fn remove_timer_info(
+    pending: &mut u64,
+    queue: &mut VecDeque<RtSigEntry>,
+    timer_id: u32,
+) -> bool {
     let signum = match queue
         .iter()
         .find(|entry| entry.timer_id == Some(timer_id))
@@ -351,35 +341,10 @@ pub struct PerThreadSignalState {
     /// Queue of RT-signal and metadata-bearing standard-signal entries
     /// directed at this thread. Parallel bookkeeping to [`SignalState::rt_queue`].
     pub rt_queue: VecDeque<RtSigEntry>,
-    /// Nested signal-mask-swapping waits owned by this exact task.
-    pub mask_waits: Vec<SignalMaskWaitContext>,
-    /// Number of caught signal handlers whose control frames are active.
-    pub caught_handler_depth: u32,
-    /// Handler depths retired by rt_sigreturn but not yet classified as a
-    /// normal mask restore or a nonlocal unwind.
-    pub returned_handler_depths: Vec<u32>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SignalMaskWaitKind {
-    Ppoll,
-    Pselect,
-    Sigsuspend,
-    Pause,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SignalMaskWaitState {
-    Active,
-    Interrupted { handler_depth: u32 },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SignalMaskWaitContext {
-    pub saved_mask: u64,
-    pub replacement_mask: u64,
-    pub kind: SignalMaskWaitKind,
-    pub state: SignalMaskWaitState,
+    /// Saved blocked mask during sigsuspend / ppoll / pselect (per-thread).
+    /// Set on first entry into a blocking signal syscall that temporarily swaps
+    /// the mask, restored once a signal is dequeued or the call completes.
+    pub sigsuspend_saved_mask: Option<u64>,
 }
 
 impl PerThreadSignalState {
@@ -388,48 +353,22 @@ impl PerThreadSignalState {
             blocked: 0,
             pending: 0,
             rt_queue: VecDeque::new(),
-            mask_waits: Vec::new(),
-            caught_handler_depth: 0,
-            returned_handler_depths: Vec::new(),
+            sigsuspend_saved_mask: None,
         }
     }
 
     /// Mark a signal as pending on this thread (via tkill/tgkill/pthread_kill).
     /// Returns true on success, false for invalid signal numbers.
     pub fn raise(&mut self, signum: u32) -> bool {
-        self.raise_internal(signum, 0, 0, 0, 0) // kernel-originated SI_USER
+        self.raise_internal(signum, 0, 0) // SI_USER
     }
 
     /// Mark a signal as pending with an si_value (sigqueue-style).
-    pub fn raise_with_value(&mut self, signum: u32, si_value_bits: u64) -> bool {
-        self.raise_internal(signum, si_value_bits, -1, 0, 0) // SI_QUEUE
+    pub fn raise_with_value(&mut self, signum: u32, si_value: i32) -> bool {
+        self.raise_internal(signum, si_value, -1) // SI_QUEUE
     }
 
-    pub(crate) fn raise_with_metadata(
-        &mut self,
-        signum: u32,
-        si_value_bits: u64,
-        si_code: i32,
-        sender_pid: u32,
-        sender_uid: u32,
-    ) -> bool {
-        self.raise_internal(
-            signum,
-            si_value_bits,
-            si_code,
-            sender_pid,
-            sender_uid,
-        )
-    }
-
-    fn raise_internal(
-        &mut self,
-        signum: u32,
-        si_value_bits: u64,
-        si_code: i32,
-        sender_pid: u32,
-        sender_uid: u32,
-    ) -> bool {
+    fn raise_internal(&mut self, signum: u32, si_value: i32, si_code: i32) -> bool {
         if signum == 0 || signum >= NSIG {
             return false;
         }
@@ -437,10 +376,8 @@ impl PerThreadSignalState {
             // RT signals: always queue (multiple instances allowed)
             self.rt_queue.push_back(RtSigEntry {
                 signum,
-                si_value_bits,
+                si_value,
                 si_code,
-                sender_pid,
-                sender_uid,
                 timer_id: None,
             });
         } else if let Some(entry) = self
@@ -451,18 +388,14 @@ impl PerThreadSignalState {
             // Standard non-timer signals coalesce independently of timer
             // notifications using the same signal number.
             if si_code != 0 {
-                entry.si_value_bits = si_value_bits;
+                entry.si_value = si_value;
                 entry.si_code = si_code;
-                entry.sender_pid = sender_pid;
-                entry.sender_uid = sender_uid;
             }
         } else {
             self.rt_queue.push_back(RtSigEntry {
                 signum,
-                si_value_bits,
+                si_value,
                 si_code,
-                sender_pid,
-                sender_uid,
                 timer_id: None,
             });
         }
@@ -470,12 +403,7 @@ impl PerThreadSignalState {
         true
     }
 
-    pub(crate) fn raise_timer(
-        &mut self,
-        signum: u32,
-        si_value_bits: u64,
-        timer_id: u32,
-    ) -> bool {
+    pub(crate) fn raise_timer(&mut self, signum: u32, si_value: i32, timer_id: u32) -> bool {
         if signum == 0 || signum >= NSIG {
             return false;
         }
@@ -485,20 +413,16 @@ impl PerThreadSignalState {
         {
             self.rt_queue.push_back(RtSigEntry {
                 signum,
-                si_value_bits: 0,
+                si_value: 0,
                 si_code: 0,
-                sender_pid: 0,
-                sender_uid: 0,
                 timer_id: None,
             });
         }
         self.pending |= sig_bit(signum);
         self.rt_queue.push_back(RtSigEntry {
             signum,
-            si_value_bits,
+            si_value,
             si_code: -2,
-            sender_pid: 0,
-            sender_uid: 0,
             timer_id: Some(timer_id),
         });
         true
@@ -523,12 +447,15 @@ impl PerThreadSignalState {
     /// Consume one directed instance of `signum` regardless of its blocked
     /// state. Standard signals coalesce; RT signals retain the pending bit
     /// until their final queued instance is consumed.
-    pub fn consume_one(&mut self, signum: u32) -> Option<(u64, i32)> {
-        if signum == 0 || signum >= NSIG || self.pending & sig_bit(signum) == 0 {
+    pub fn consume_one(&mut self, signum: u32) -> Option<(i32, i32)> {
+        if signum == 0
+            || signum >= NSIG
+            || self.pending & sig_bit(signum) == 0
+        {
             return None;
         }
         let info = self.consume_one_info(signum);
-        Some((info.si_value_bits, info.si_code))
+        Some((info.si_value, info.si_code))
     }
 
     pub fn is_pending(&self, signum: u32) -> bool {
@@ -545,7 +472,7 @@ impl PerThreadSignalState {
 
     /// Dequeue the lowest-numbered deliverable signal on this thread.
     /// Returns (signum, si_value, si_code) or None.
-    pub fn dequeue(&mut self) -> Option<(u32, u64, i32)> {
+    pub fn dequeue(&mut self) -> Option<(u32, i32, i32)> {
         let deliverable = self.pending & !self.blocked;
         if deliverable == 0 {
             return None;
@@ -670,39 +597,15 @@ impl SignalState {
     /// Standard signals (1-31) are coalesced. RT signals (32-63) are queued.
     /// Bit position = signum - 1 (musl convention: signal N uses bit N-1).
     pub fn raise(&mut self, signum: u32) -> bool {
-        self.raise_internal(signum, 0, 0, 0, 0) // kernel-originated SI_USER
+        self.raise_internal(signum, 0, 0) // SI_USER
     }
 
     /// Mark a signal as pending with an si_value (for sigqueue — SI_QUEUE).
-    pub fn raise_with_value(&mut self, signum: u32, si_value_bits: u64) -> bool {
-        self.raise_internal(signum, si_value_bits, -1, 0, 0) // SI_QUEUE
+    pub fn raise_with_value(&mut self, signum: u32, si_value: i32) -> bool {
+        self.raise_internal(signum, si_value, -1) // SI_QUEUE
     }
 
-    pub(crate) fn raise_with_metadata(
-        &mut self,
-        signum: u32,
-        si_value_bits: u64,
-        si_code: i32,
-        sender_pid: u32,
-        sender_uid: u32,
-    ) -> bool {
-        self.raise_internal(
-            signum,
-            si_value_bits,
-            si_code,
-            sender_pid,
-            sender_uid,
-        )
-    }
-
-    fn raise_internal(
-        &mut self,
-        signum: u32,
-        si_value_bits: u64,
-        si_code: i32,
-        sender_pid: u32,
-        sender_uid: u32,
-    ) -> bool {
+    fn raise_internal(&mut self, signum: u32, si_value: i32, si_code: i32) -> bool {
         if signum == 0 || signum >= 65 {
             return false;
         }
@@ -713,10 +616,8 @@ impl SignalState {
             // RT signals: always queue (multiple instances allowed)
             self.rt_queue.push_back(RtSigEntry {
                 signum,
-                si_value_bits,
+                si_value,
                 si_code,
-                sender_pid,
-                sender_uid,
                 timer_id: None,
             });
         } else if let Some(entry) = self
@@ -727,18 +628,14 @@ impl SignalState {
             // Standard non-timer signals coalesce independently of timer
             // notifications using the same signal number.
             if si_code != 0 {
-                entry.si_value_bits = si_value_bits;
+                entry.si_value = si_value;
                 entry.si_code = si_code;
-                entry.sender_pid = sender_pid;
-                entry.sender_uid = sender_uid;
             }
         } else {
             self.rt_queue.push_back(RtSigEntry {
                 signum,
-                si_value_bits,
+                si_value,
                 si_code,
-                sender_pid,
-                sender_uid,
                 timer_id: None,
             });
         }
@@ -746,12 +643,7 @@ impl SignalState {
         true
     }
 
-    pub(crate) fn raise_timer(
-        &mut self,
-        signum: u32,
-        si_value_bits: u64,
-        timer_id: u32,
-    ) -> bool {
+    pub(crate) fn raise_timer(&mut self, signum: u32, si_value: i32, timer_id: u32) -> bool {
         if signum == 0 || signum >= NSIG {
             return false;
         }
@@ -761,20 +653,16 @@ impl SignalState {
         {
             self.rt_queue.push_back(RtSigEntry {
                 signum,
-                si_value_bits: 0,
+                si_value: 0,
                 si_code: 0,
-                sender_pid: 0,
-                sender_uid: 0,
                 timer_id: None,
             });
         }
         self.pending |= sig_bit(signum);
         self.rt_queue.push_back(RtSigEntry {
             signum,
-            si_value_bits,
+            si_value,
             si_code: -2,
-            sender_pid: 0,
-            sender_uid: 0,
             timer_id: Some(timer_id),
         });
         true
@@ -859,7 +747,7 @@ impl SignalState {
     /// RT signals (32-63) are dequeued from the queue; the pending bit is
     /// only cleared when no more instances of that signal remain in the queue.
     /// Returns (signum, si_value, si_code). si_value and si_code are 0 for standard signals.
-    pub fn dequeue(&mut self) -> Option<(u32, u64, i32)> {
+    pub fn dequeue(&mut self) -> Option<(u32, i32, i32)> {
         let deliverable = self.pending & !self.blocked;
         if deliverable == 0 {
             return None;
@@ -867,7 +755,7 @@ impl SignalState {
         // trailing_zeros gives 0-based bit position; signal number = bit + 1
         let signum = deliverable.trailing_zeros() + 1;
         let info = self.consume_one(signum);
-        Some((signum, info.si_value_bits, info.si_code))
+        Some((signum, info.si_value, info.si_code))
     }
 
     /// Check if the next deliverable signal has SA_RESTART set.
@@ -925,10 +813,8 @@ impl SignalState {
             if (pending & sig_bit(sig)) != 0 {
                 rt_queue.push_back(RtSigEntry {
                     signum: sig,
-                    si_value_bits: 0,
+                    si_value: 0,
                     si_code: 0,
-                    sender_pid: 0,
-                    sender_uid: 0,
                     timer_id: None,
                 });
             }
@@ -1074,13 +960,24 @@ mod tests {
         let mut locks = AdvisoryLockManager::new();
         let mut host = NoopHost;
         assert_eq!(
-            deliver_pending_signals_for_tid_with_locks(&mut proc, &mut locks, &mut host, 70,),
+            deliver_pending_signals_for_tid_with_locks(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                70,
+            ),
             Err(Errno::ESRCH),
         );
         assert_eq!(proc.state, ProcessState::Running);
         assert!(proc.signals.is_pending(SIGTERM));
 
-        deliver_pending_signals_for_tid_with_locks(&mut proc, &mut locks, &mut host, 61).unwrap();
+        deliver_pending_signals_for_tid_with_locks(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            61,
+        )
+        .unwrap();
         assert_eq!(proc.state, ProcessState::Exited);
     }
 
@@ -1317,13 +1214,13 @@ mod tests {
 
         let first = state.consume_one(SIGUSR1);
         assert_eq!(first.si_code, -2);
-        assert_eq!(first.si_value_bits, 41);
+        assert_eq!(first.si_value, 41);
         assert_eq!(first.timer_id, Some(3));
         assert!(state.is_pending(SIGUSR1));
 
         let second = state.consume_one(SIGUSR1);
         assert_eq!(second.si_code, -2);
-        assert_eq!(second.si_value_bits, 42);
+        assert_eq!(second.si_value, 42);
         assert_eq!(second.timer_id, Some(4));
         assert!(!state.is_pending(SIGUSR1));
     }
@@ -1338,7 +1235,7 @@ mod tests {
         assert!(state.is_pending(SIGUSR1));
         let remaining = state.consume_one(SIGUSR1);
         assert_eq!(remaining.timer_id, Some(4));
-        assert_eq!(remaining.si_value_bits, 42);
+        assert_eq!(remaining.si_value, 42);
         assert!(!state.is_pending(SIGUSR1));
     }
 
@@ -1351,13 +1248,13 @@ mod tests {
         let timer = state.consume_one(SIGUSR1);
         assert_eq!(timer.timer_id, Some(3));
         assert_eq!(timer.si_code, -2);
-        assert_eq!(timer.si_value_bits, 41);
+        assert_eq!(timer.si_value, 41);
         assert!(state.is_pending(SIGUSR1));
 
         let queued = state.consume_one(SIGUSR1);
         assert_eq!(queued.timer_id, None);
         assert_eq!(queued.si_code, -1);
-        assert_eq!(queued.si_value_bits, 99);
+        assert_eq!(queued.si_value, 99);
         assert!(!state.is_pending(SIGUSR1));
     }
 
@@ -1372,7 +1269,7 @@ mod tests {
         let plain = state.consume_one(SIGUSR1);
         assert_eq!(plain.timer_id, None);
         assert_eq!(plain.si_code, 0);
-        assert_eq!(plain.si_value_bits, 0);
+        assert_eq!(plain.si_value, 0);
         assert!(!state.is_pending(SIGUSR1));
     }
 

@@ -1,7 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runFetchedWasmProgram } from "./run-fetched-wasm-program";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const programs = [
@@ -52,24 +51,35 @@ for (const program of programs)
       }
     });
 
-    await page.goto(
-      new URL("/pages/test-runner/?minimal=1", baseURL).href,
-    );
+    await page.goto(new URL("/pages/test-runner/", baseURL).href);
     await page.waitForFunction(
       () => (window as any).__testRunnerReady === true,
     );
 
     const programUrl = new URL(`/@fs/${program.path}`, baseURL).href;
     const result = await page.evaluate(
-      runFetchedWasmProgram,
-      {
-        programUrl,
-        argv: ["wait-lifecycle-test"],
-        timeoutMs: 30_000,
-        wasmByteDataFiles: program.selfSpawnPath
-          ? [program.selfSpawnPath]
-          : [],
+      async ({ programUrl, selfSpawnPath }) => {
+        const response = await fetch(programUrl);
+        if (!response.ok) {
+          throw new Error(
+            `program fetch failed: ${response.status} ${response.url}`,
+          );
+        }
+        const wasmBytes = await response.arrayBuffer();
+        return (window as any).__runTest(
+          wasmBytes,
+          ["wait-lifecycle-test"],
+          30_000,
+          selfSpawnPath
+            ? {
+                dataFiles: [
+                  { path: selfSpawnPath, useWasmBytes: true },
+                ],
+              }
+            : undefined,
+        );
       },
+      { programUrl, selfSpawnPath: program.selfSpawnPath },
     );
 
     expect(result.exitCode).toBe(0);

@@ -12,12 +12,11 @@ MUTATED="$TMP_ROOT/mutated.json"
 
 cat >"$RESOLVED" <<'JSON'
 {
-  "schema": 2,
+  "schema": 1,
   "primary": {
     "tap_name": "kandelo-dev/tap-core",
     "tap_repository": "kandelo-dev/homebrew-tap-core",
     "tap_commit": "1111111111111111111111111111111111111111",
-    "checkout_commit": "2222222222222222222222222222222222222222",
     "root": "/tmp/unused-tap-root"
   },
   "dependencies": []
@@ -26,12 +25,11 @@ JSON
 
 cat >"$PLAN" <<'JSON'
 {
-  "schema": 5,
+  "schema": 4,
   "tap": "kandelo-dev/tap-core",
   "formula": "fixture",
   "full_name": "kandelo-dev/tap-core/fixture",
   "target_taps": [{
-    "checkout_commit": "2222222222222222222222222222222222222222",
     "tap_name": "kandelo-dev/tap-core",
     "tap_repository": "kandelo-dev/homebrew-tap-core",
     "tap_commit": "1111111111111111111111111111111111111111"
@@ -73,11 +71,7 @@ mutate_and_reject() {
   assert_rejected "$label"
 }
 
-mutate_and_reject "legacy schema 4 without checkout identity" '
-  .schema = 4 | .target_taps |= map(del(.checkout_commit))
-'
-mutate_and_reject "source commit substituted for checkout commit" \
-  '.target_taps[0].checkout_commit = .target_taps[0].tap_commit'
+mutate_and_reject "legacy schema 3" '.schema = 3'
 mutate_and_reject "unsorted native Requirement records" '.native_requirements |= reverse'
 mutate_and_reject "duplicate native Requirement class" \
   '.native_requirements += [.native_requirements[0]]'

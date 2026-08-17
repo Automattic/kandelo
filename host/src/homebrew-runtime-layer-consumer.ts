@@ -16,17 +16,6 @@ import {
   type LazyTreeGroup,
   type LazyTreeRegistrationEntry,
 } from "./vfs/memory-fs";
-import {
-  publishPrivilegedProgramProduct,
-  readReviewedPrivilegedProgramPolicy,
-  type PrivilegedProgramSource,
-  type PublishedPrivilegedProgramProduct,
-  type ReviewedPrivilegedProgramPolicy,
-} from "./vfs/privileged-projection";
-import {
-  adaptHomebrewDeferredTree,
-  type AdaptedHomebrewDeferredTree,
-} from "./homebrew-deferred-tree-adapter";
 import type { VfsDeferredTreeUsage } from "./vfs/deferred-tree-limits";
 import { resolveHardlinkGraph } from "./vfs/hardlink-graph";
 import {
@@ -34,11 +23,10 @@ import {
   isHomebrewRuntimeLayerId,
 } from "./homebrew-runtime-layer-limits";
 import { KANDELO_HOMEBREW_GUEST_LAYOUT } from "./homebrew-guest-layout";
-import { normalizeHomebrewBottleDestinationPrefix } from "./homebrew-bottle-relocation";
 export { HOMEBREW_RUNTIME_LAYER_LIMITS } from "./homebrew-runtime-layer-limits";
 
-const COMPOSITION_PATH = "/etc/kandelo/homebrew-vfs.json";
 const HOMEBREW_PREFIX = KANDELO_HOMEBREW_GUEST_LAYOUT.prefix;
+const COMPOSITION_PATH = "/etc/kandelo/homebrew-vfs.json";
 const ACCEPTANCE_ASSET = "kandelo-homebrew.vfs.zst";
 const ACCEPTANCE_DESCRIPTOR_ASSET = "kandelo-homebrew-vfs.json";
 const ACCEPTANCE_REPORT_ASSET = "kandelo-homebrew-vfs-report.json";
@@ -92,7 +80,6 @@ export interface RegisteredHomebrewRuntimeLayer {
 export interface ComposedHomebrewRuntimeLayers {
   fs: MemoryFileSystem;
   layers: RegisteredHomebrewRuntimeLayer[];
-  privilegedProduct?: PublishedPrivilegedProgramProduct;
 }
 
 interface RegisterHomebrewRuntimeLayersOptions extends ComposeHomebrewRuntimeLayersOptions {
@@ -106,13 +93,12 @@ interface LoadedLayer {
 
 interface PlannedTree {
   descriptor: HomebrewDeferredTreeDescriptor;
-  adapted: AdaptedHomebrewDeferredTree;
   entries: LazyTreeRegistrationEntry[];
 }
 
 interface HomebrewDeferredTreeCollectionPlan {
   id: string;
-  schema: 4 | 5 | 6;
+  schema: 4 | 5;
   mountPrefix: string;
   trees: readonly HomebrewDeferredTreeDescriptor[];
 }
@@ -126,8 +112,8 @@ export interface RegisterHomebrewDeferredTreeCollectionOptions {
   fs: MemoryFileSystem;
   /** Human-readable identity used in collision diagnostics. */
   id: string;
-  /** Schemas 5 and 6 admit absent/equal mergeable directories. */
-  schema: 4 | 5 | 6;
+  /** Schema 5 admits absent/equal mergeable directories. */
+  schema: 4 | 5;
   mountPrefix?: string;
   /** Producer-verified closed trees with concrete immutable transport URLs. */
   trees: readonly HomebrewDeferredTreeDescriptor[];
@@ -181,21 +167,6 @@ export interface HomebrewOriginalBottleTreeDescriptorV1 {
 export async function composeHomebrewRuntimeLayers(
   options: ComposeHomebrewRuntimeLayersOptions,
 ): Promise<ComposedHomebrewRuntimeLayers> {
-  return composeHomebrewRuntimeLayersInternal(options);
-}
-
-/** Direct internal adapter; intentionally absent from public host barrels. */
-export async function composeHomebrewRuntimeLayersWithReviewedProduct(
-  options: ComposeHomebrewRuntimeLayersOptions,
-  policy: ReviewedPrivilegedProgramPolicy,
-): Promise<ComposedHomebrewRuntimeLayers> {
-  return composeHomebrewRuntimeLayersInternal(options, policy);
-}
-
-async function composeHomebrewRuntimeLayersInternal(
-  options: ComposeHomebrewRuntimeLayersOptions,
-  policy?: ReviewedPrivilegedProgramPolicy,
-): Promise<ComposedHomebrewRuntimeLayers> {
   const fs = options.maxByteLength === undefined
     ? MemoryFileSystem.fromImagePreservingCapacity(options.baseImageBytes)
     : MemoryFileSystem.fromImage(options.baseImageBytes, {
@@ -209,18 +180,7 @@ async function composeHomebrewRuntimeLayersInternal(
     const layers = options.layers.length === 0
       ? []
       : await registerHomebrewRuntimeLayersOnStagedFileSystem({ ...options, fs });
-    const privilegedProduct = policy === undefined
-      ? undefined
-      : await publishRuntimeLayerPrivilegedPrograms(
-        fs,
-        layers,
-        policy,
-      );
-    return {
-      fs,
-      layers,
-      ...(privilegedProduct === undefined ? {} : { privilegedProduct }),
-    };
+    return { fs, layers };
   } catch (error) {
     // This filesystem was deliberately private until the composition
     // transaction completed, so a rejection gives the caller no other way to
@@ -233,96 +193,6 @@ async function composeHomebrewRuntimeLayersInternal(
     }
     throw error;
   }
-}
-
-/** Product-owned final publication adapter; intentionally absent from barrels. */
-export async function publishRuntimeLayerPrivilegedPrograms(
-  fs: MemoryFileSystem,
-  layers: readonly RegisteredHomebrewRuntimeLayer[],
-  policy: ReviewedPrivilegedProgramPolicy,
-): Promise<PublishedPrivilegedProgramProduct> {
-  const projections = readReviewedPrivilegedProgramPolicy(policy);
-  const sources = runtimeLayerPrivilegedSources(fs, layers);
-  const sourcesByFormula = new Map(sources.map((source) => [source.formula, source]));
-  for (const projection of projections) {
-    const source = sourcesByFormula.get(projection.formula);
-    if (source === undefined) {
-      throw new Error(
-        `privileged projection formula ${projection.formula} has no authenticated runtime tree`,
-      );
-    }
-    if (source.bottleSha256 !== projection.bottleSha256) {
-      throw new Error(
-        `privileged projection bottle digest mismatch for ${projection.formula}`,
-      );
-    }
-    // Materialization remains part of the private composition transaction.
-    // No product backend is returned until every source and destination passes.
-    await fs.preparePath(source.guestPathForSource(projection.sourcePath));
-  }
-  return publishPrivilegedProgramProduct({
-    policy,
-    sources,
-    writableBottleFileSystems: [fs],
-  });
-}
-
-function runtimeLayerPrivilegedSources(
-  fs: MemoryFileSystem,
-  layers: readonly RegisteredHomebrewRuntimeLayer[],
-): PrivilegedProgramSource[] {
-  const sources: PrivilegedProgramSource[] = [];
-  for (const layer of layers) {
-    const packagesByFormula = new Map(
-      layer.descriptor.packages.layer.map((pkg) => [pkg.full_name, pkg]),
-    );
-    for (const tree of layer.descriptor.deferred_trees) {
-      if (tree.package === undefined || tree.inventory.source === undefined) continue;
-      const pkg = packagesByFormula.get(tree.package);
-      if (pkg === undefined) {
-        throw new Error(
-          `privileged runtime tree ${tree.id} has no exact Formula owner`,
-        );
-      }
-      if (pkg.sha256 !== tree.content.sha256) {
-        throw new Error(
-          `privileged runtime tree ${tree.id} differs from its bottle digest`,
-        );
-      }
-      const guestPathsBySource = new Map<string, string>();
-      for (const entry of tree.inventory.entries) {
-        if (entry.type !== "file" && entry.type !== "hardlink") continue;
-        const guestPath = `/${entry.path}`;
-        const prior = guestPathsBySource.get(entry.source_path);
-        if (prior === undefined || guestPath < prior) {
-          guestPathsBySource.set(entry.source_path, guestPath);
-        }
-      }
-      sources.push({
-        formula: tree.package,
-        bottleSha256: tree.content.sha256,
-        fs,
-        inventory: {
-          entries: tree.inventory.source.entries.map((entry) => ({
-            sourcePath: entry.path,
-            type: entry.type,
-            size: entry.size,
-            ...(entry.target === undefined ? {} : { target: entry.target }),
-          })),
-        },
-        guestPathForSource(sourcePath) {
-          const path = guestPathsBySource.get(sourcePath);
-          if (path === undefined) {
-            throw new Error(
-              `privileged source ${sourcePath} is absent from runtime tree ${tree.id}`,
-            );
-          }
-          return path;
-        },
-      });
-    }
-  }
-  return sources;
 }
 
 /**
@@ -431,8 +301,7 @@ export function parseHomebrewOriginalBottleTreeDescriptor(
     [root.tree],
     "",
     [],
-    6,
-    HOMEBREW_PREFIX,
+    5,
     "external-only",
   );
   if (
@@ -447,8 +316,8 @@ export function parseHomebrewOriginalBottleTreeDescriptor(
   ) {
     throw new Error("Homebrew original-bottle tree differs from its exact bottle input");
   }
-  validateCompleteDirectBottleDirectories(tree.inventory.entries, HOMEBREW_PREFIX);
-  validateStandaloneDirectBottleBinding(tree, expected.formula, HOMEBREW_PREFIX);
+  validateCompleteDirectBottleDirectories(tree.inventory.entries);
+  validateStandaloneDirectBottleBinding(tree, expected.formula);
   return {
     schema: 1,
     kind: "kandelo-homebrew-original-bottle-tree",
@@ -624,7 +493,7 @@ function deferredTreeUsage(
   return usage;
 }
 
-/** Parse a closed legacy ZIP or original-bottle descriptor. */
+/** Parse a closed legacy schema-4 or original-bottle schema-5 descriptor. */
 export function parseHomebrewRuntimeLayerDescriptor(
   value: unknown,
 ): HomebrewLazyLayerDescriptor {
@@ -647,7 +516,7 @@ export function parseHomebrewRuntimeLayerDescriptor(
     "deferred_trees",
   ], "Homebrew runtime layer descriptor");
   if (
-    (root.schema !== 4 && root.schema !== 5 && root.schema !== 6) ||
+    (root.schema !== 4 && root.schema !== 5) ||
     root.kind !== "kandelo-homebrew-deferred-layer"
   ) {
     throw new Error("Homebrew runtime layer descriptor has an unsupported identity");
@@ -834,10 +703,6 @@ export function parseHomebrewRuntimeLayerDescriptor(
   ) {
     throw new Error("Homebrew runtime layer package records differ from selection order");
   }
-  const destinationPrefix = validateLayerDestinationPrefix([
-    ...basePackages,
-    ...layerPackages,
-  ]);
 
   const baseVfs = validateBaseVfs(root.base_vfs, arch, kandeloAbi, baseOrder);
 
@@ -1007,14 +872,13 @@ export function parseHomebrewRuntimeLayerDescriptor(
     releaseRoot,
     bundledTrees,
     root.schema,
-    destinationPrefix,
   );
   const entries = deferredTrees.flatMap((tree) => tree.inventory.entries);
   if (new Set(entries.map((entry) => entry.path)).size !== entries.length) {
     throw new Error("Homebrew runtime layer deferred trees duplicate a VFS path");
   }
-  if (root.schema !== 4) {
-    validateCompleteDirectBottleDirectories(entries, destinationPrefix);
+  if (root.schema === 5) {
+    validateCompleteDirectBottleDirectories(entries);
   }
   validateDirectBottleBindings(layerPackages, deferredTrees);
   validateLayerPackageEntries(layerPackages, entries);
@@ -1025,10 +889,9 @@ export function parseHomebrewRuntimeLayerDescriptor(
 
 function validateCompleteDirectBottleDirectories(
   entries: readonly HomebrewLazyLayerEntry[],
-  destinationPrefix: string,
 ): void {
   const byPath = new Map(entries.map((entry) => [entry.path, entry]));
-  const prefix = destinationPrefix.slice(1);
+  const prefix = HOMEBREW_PREFIX.slice(1);
   const prefixDepth = prefix.split("/").length;
   for (const entry of entries) {
     const components = entry.path.split("/");
@@ -1043,24 +906,11 @@ function validateCompleteDirectBottleDirectories(
   }
 }
 
-function validateLayerDestinationPrefix(
-  packages: readonly HomebrewLazyLayerPackageRecord[],
-): string {
-  const prefixes = new Set(packages.map((pkg) =>
-    normalizeHomebrewBottleDestinationPrefix(pkg.prefix)
-  ));
-  if (prefixes.size !== 1) {
-    throw new Error("Homebrew runtime layer package destinations are inconsistent");
-  }
-  return prefixes.values().next().value!;
-}
-
 function validateStandaloneDirectBottleBinding(
   tree: HomebrewDeferredTreeDescriptor,
   formula: string,
-  destinationPrefix: string,
 ): void {
-  const expectedKegPrefix = `${destinationPrefix}/Cellar/${formula}/`;
+  const expectedKegPrefix = `${HOMEBREW_PREFIX}/Cellar/${formula}/`;
   if (
     tree.activation.roots.length !== 1 ||
     !tree.activation.roots[0]!.startsWith(expectedKegPrefix) ||
@@ -1072,7 +922,7 @@ function validateStandaloneDirectBottleBinding(
   }
   const kegPath = tree.activation.roots[0]!.slice(1);
   const version = tree.activation.roots[0]!.slice(expectedKegPrefix.length);
-  const optPath = `${destinationPrefix}/opt/${formula}`.slice(1);
+  const optPath = `${HOMEBREW_PREFIX}/opt/${formula}`.slice(1);
   const entries = tree.inventory.entries;
   const keg = entries.find((entry) => entry.path === kegPath);
   const opt = entries.find((entry) => entry.path === optPath);
@@ -1184,15 +1034,6 @@ function validateDirectBottleBindings(
       ) {
         throw new Error(
           `Homebrew runtime layer bottle ${fullName} maps an archive member outside its keg`,
-        );
-      }
-      if (
-        entry.materialization === "archive-homebrew-relocate" &&
-        entry.path !== `${pkg.prefix.slice(1)}/Cellar/${entry.source_path}`
-      ) {
-        throw new Error(
-          `Homebrew runtime layer bottle ${fullName} receipt-relocated destination ` +
-            `${entry.path} differs from its authenticated prefix`,
         );
       }
       if (entry.materialization === "archive" && entry.type === "symlink") {
@@ -1529,17 +1370,13 @@ function preflightDeferredTreeCollections(
     const directories: HomebrewLazyLayerEntry[] = [];
     const trees: PlannedTree[] = [];
     for (const tree of collection.trees) {
-      const adapted = adaptHomebrewDeferredTree(tree);
-      const adaptedByPath = new Map(
-        adapted.entries.map((entry) => [entry.vfsPath, entry]),
-      );
       const registrationEntries: LazyTreeRegistrationEntry[] = [];
       for (const entry of tree.inventory.entries) {
         const vfsPath = `/${entry.path}`;
         const base = lstatOrNull(fs, vfsPath);
         if (entry.ownership === "mergeable-directory") {
           if (
-            collection.schema === 4 ||
+            collection.schema !== 5 ||
             base !== null && (base.mode & S_IFMT) !== S_IFDIR
           ) {
             throw new Error(
@@ -1602,9 +1439,22 @@ function preflightDeferredTreeCollections(
         ) {
           directories.push(entry);
         }
-        registrationEntries.push(adaptedByPath.get(vfsPath)!);
+        registrationEntries.push({
+          vfsPath,
+          sourcePath: entry.source_path,
+          ...(entry.materialization === undefined
+            ? {}
+            : { materialization: entry.materialization }),
+          type: entry.type,
+          mode: entry.mode,
+          size: entry.size,
+          ...(entry.target === undefined
+            ? {}
+            : { target: entry.type === "hardlink" ? `/${entry.target}` : entry.target }),
+          ...(entry.inode_group === undefined ? {} : { inodeGroup: entry.inode_group }),
+        });
       }
-      trees.push({ descriptor: tree, adapted, entries: registrationEntries });
+      trees.push({ descriptor: tree, entries: registrationEntries });
     }
     directories.sort((left, right) =>
       pathDepth(left.path) - pathDepth(right.path) ||
@@ -1695,17 +1545,26 @@ function registerPlannedDeferredTreeWithHandle(
 
 function plannedDeferredTreeContent(tree: PlannedTree) {
   return {
-    decoder: tree.adapted.decoder,
+    decoder: tree.descriptor.content.decoder,
     mediaType: tree.descriptor.content.media_type,
     sha256: tree.descriptor.content.sha256,
     bytes: tree.descriptor.content.bytes,
     expandedBytes: tree.descriptor.inventory.expanded_bytes,
     sourceEntryCount: tree.descriptor.inventory.source_entry_count,
     transports: tree.descriptor.transports.map((transport) => transport.url),
-    ...(tree.adapted.source === undefined ? {} : { source: tree.adapted.source }),
-    ...(tree.adapted.materialization === undefined
-      ? {}
-      : { materialization: tree.adapted.materialization }),
+    ...(tree.descriptor.inventory.source === undefined ? {} : {
+      source: {
+        schema: 1 as const,
+        kind: "homebrew-bottle-tar-gzip-v1" as const,
+        entries: tree.descriptor.inventory.source.entries.map((entry) => ({
+          sourcePath: entry.path,
+          type: entry.type,
+          mode: entry.mode,
+          size: entry.size,
+          ...(entry.target === undefined ? {} : { target: entry.target }),
+        })),
+      },
+    }),
   };
 }
 
@@ -1901,18 +1760,18 @@ function validatePackageRecord(
   requireInteger(record.bytes, `${label} bytes`, 1, 2 * 1024 * 1024 * 1024);
   requireSha256(record.cache_key_sha, `${label} cache key`);
   requireSafeRelativePath(record.link_manifest, `${label} link manifest`);
-  const destinationPrefix = normalizeHomebrewBottleDestinationPrefix(
-    requireString(record.prefix, `${label} prefix`, 4096),
-  );
+  if (record.prefix !== HOMEBREW_PREFIX) {
+    throw new Error(`${label} prefix is unsupported`);
+  }
   const keg = requireCanonicalAbsolutePath(record.keg, `${label} keg`, 4096);
-  const kegRoot = `${destinationPrefix}/Cellar/${name}/`;
+  const kegRoot = `${HOMEBREW_PREFIX}/Cellar/${name}/`;
   if (!keg.startsWith(kegRoot) || keg.slice(kegRoot.length).includes("/")) {
     throw new Error(`${label} keg escapes its package Cellar path`);
   }
   const opt = exactRecord(record.opt_link, ["path", "target"], `${label} opt link`);
   if (
     opt.path !== `opt/${name}` ||
-    opt.target !== `../${keg.slice(destinationPrefix.length + 1)}`
+    opt.target !== `../${keg.slice(HOMEBREW_PREFIX.length + 1)}`
   ) {
     throw new Error(`${label} opt link is inconsistent`);
   }
@@ -1964,8 +1823,7 @@ function validateDeferredTrees(
     sha256: string;
     bytes: number;
   }>,
-  descriptorSchema: 4 | 5 | 6,
-  destinationPrefix: string,
+  descriptorSchema: 4 | 5,
   transportPolicy: "bundle-release" | "external-only" = "bundle-release",
 ): HomebrewDeferredTreeDescriptor[] {
   const values = requireArray(
@@ -1978,7 +1836,7 @@ function validateDeferredTrees(
   const digests = new Set<string>();
   const urls = new Set<string>();
   const trees = values.map((item, index) => {
-    const directBottle = descriptorSchema !== 4;
+    const directBottle = descriptorSchema === 5;
     const tree = exactRecord(
       item,
       [
@@ -2154,13 +2012,6 @@ function validateDeferredTrees(
       `Homebrew runtime layer deferred tree ${id} inventory`,
     );
     const hasSource = initialInventory.source !== undefined;
-    const hasRelocation = initialInventory.relocation !== undefined;
-    if (descriptorSchema !== 6 && hasRelocation) {
-      throw new Error(
-        `Homebrew runtime layer schema ${descriptorSchema} tree ${id} ` +
-          "cannot carry a schema-6 relocation plan",
-      );
-    }
     if (directBottle !== hasSource) {
       throw new Error(
         `Homebrew runtime layer schema ${descriptorSchema} tree ${id} has incompatible bottle metadata`,
@@ -2180,7 +2031,6 @@ function validateDeferredTrees(
         "expanded_bytes",
         "payload_bytes",
         ...(hasSource ? ["source"] : []),
-        ...(hasRelocation ? ["relocation"] : []),
         "entries",
       ],
       `Homebrew runtime layer deferred tree ${id} inventory`,
@@ -2193,7 +2043,6 @@ function validateDeferredTrees(
       inventory,
       content.decoder,
       source,
-      destinationPrefix,
     );
     for (const root of roots) {
       const relative = root.slice(1);
@@ -2204,11 +2053,7 @@ function validateDeferredTrees(
       }
     }
     void packageName;
-    const validated = tree as unknown as HomebrewDeferredTreeDescriptor;
-    // WHY: Homebrew markers are erased only after the authenticated receipt,
-    // prefix, source inventory, and generic plan agree in full.
-    adaptHomebrewDeferredTree(validated);
-    return validated;
+    return tree as unknown as HomebrewDeferredTreeDescriptor;
   });
   if (
     !arraysEqual(
@@ -2352,11 +2197,10 @@ function validateEntries(
   value: unknown,
   inventory: Record<string, unknown>,
   decoder: unknown,
-  sourceInventory: {
+  sourceInventory?: {
     entries: HomebrewDeferredTreeSourceEntry[];
     canonicalByPath: Map<string, HomebrewDeferredTreeSourceEntry>;
-  } | undefined,
-  destinationPrefix: string,
+  },
 ): HomebrewLazyLayerEntry[] {
   const values = requireArray(
     value,
@@ -2440,8 +2284,10 @@ function validateEntries(
     ) {
       throw new Error(`Homebrew runtime layer entry ${index} materialization is invalid`);
     }
-    const prefix = destinationPrefix.slice(1);
-    if (path !== prefix && !path.startsWith(`${prefix}/`)) {
+    if (
+      path !== HOMEBREW_PREFIX.slice(1) &&
+      !path.startsWith(`${HOMEBREW_PREFIX.slice(1)}/`)
+    ) {
       throw new Error(`Homebrew runtime layer entry ${index} escapes the Homebrew prefix`);
     }
     if (paths.has(path)) {
@@ -2679,7 +2525,7 @@ function validateLayerPackageEntries(
       );
     }
 
-    const optPath = `${pkg.prefix.slice(1)}/${pkg.opt_link.path}`;
+    const optPath = `${HOMEBREW_PREFIX.slice(1)}/${pkg.opt_link.path}`;
     const opt = entriesByPath.get(optPath);
     if (
       opt === undefined ||

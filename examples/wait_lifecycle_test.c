@@ -1,7 +1,6 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
-#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <spawn.h>
@@ -165,155 +164,6 @@ static int test_cancel_preserves_completed_syscall(void)
     }
     return 0;
 }
-
-struct disabled_poll_cancel_ctx {
-    int read_fd;
-    atomic_int ready;
-    atomic_int poll_returned;
-    atomic_int cancellation_enabled;
-    atomic_int after_testcancel;
-    atomic_int cleanup_ran;
-    int poll_result;
-    int poll_errno;
-    short poll_revents;
-};
-
-static void record_disabled_poll_cancel_cleanup(void *opaque)
-{
-    struct disabled_poll_cancel_ctx *ctx = opaque;
-    atomic_store_explicit(&ctx->cleanup_ran, 1, memory_order_release);
-}
-
-static void *disabled_poll_cancel_thread(void *opaque)
-{
-    struct disabled_poll_cancel_ctx *ctx = opaque;
-    struct pollfd descriptor = {
-        .fd = ctx->read_fd,
-        .events = POLLIN,
-        .revents = 0,
-    };
-    int previous_state = PTHREAD_CANCEL_ENABLE;
-
-    if (pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &previous_state) != 0)
-        return (void *)(uintptr_t)1;
-
-    pthread_cleanup_push(record_disabled_poll_cancel_cleanup, ctx);
-    atomic_store_explicit(&ctx->ready, 1, memory_order_release);
-    errno = 0;
-    ctx->poll_result = poll(&descriptor, 1, -1);
-    ctx->poll_errno = errno;
-    ctx->poll_revents = descriptor.revents;
-    atomic_store_explicit(&ctx->poll_returned, 1, memory_order_release);
-
-    if (pthread_setcancelstate(previous_state, NULL) != 0)
-        return (void *)(uintptr_t)2;
-    atomic_store_explicit(
-        &ctx->cancellation_enabled,
-        1,
-        memory_order_release
-    );
-    pthread_testcancel();
-    atomic_store_explicit(&ctx->after_testcancel, 1, memory_order_release);
-    pthread_cleanup_pop(0);
-    return NULL;
-}
-
-static int test_disabled_blocked_poll_cancellation(void)
-{
-    int pipe_fds[2];
-    if (pipe(pipe_fds) != 0)
-        return fail("disabled-poll pipe");
-
-    struct disabled_poll_cancel_ctx ctx = {
-        .read_fd = pipe_fds[0],
-        .ready = ATOMIC_VAR_INIT(0),
-        .poll_returned = ATOMIC_VAR_INIT(0),
-        .cancellation_enabled = ATOMIC_VAR_INIT(0),
-        .after_testcancel = ATOMIC_VAR_INIT(0),
-        .cleanup_ran = ATOMIC_VAR_INIT(0),
-        .poll_result = -2,
-        .poll_errno = 0,
-        .poll_revents = 0,
-    };
-    pthread_t thread;
-    int error = pthread_create(
-        &thread,
-        NULL,
-        disabled_poll_cancel_thread,
-        &ctx
-    );
-    if (error != 0) {
-        errno = error;
-        close(pipe_fds[0]);
-        close(pipe_fds[1]);
-        return fail("disabled-poll pthread_create");
-    }
-
-    while (!atomic_load_explicit(&ctx.ready, memory_order_acquire))
-        usleep(1000);
-    /* The target publishes ready immediately before poll. Give the host time
-     * to install the exact infinite poll registration before cancellation. */
-    usleep(20000);
-
-    error = pthread_cancel(thread);
-    if (error != 0) {
-        errno = error;
-        close(pipe_fds[0]);
-        close(pipe_fds[1]);
-        return fail("disabled-poll pthread_cancel");
-    }
-    usleep(50000);
-    int returned_after_cancel = atomic_load_explicit(
-        &ctx.poll_returned,
-        memory_order_acquire
-    );
-
-    if (write(pipe_fds[1], "x", 1) != 1) {
-        close(pipe_fds[0]);
-        close(pipe_fds[1]);
-        return fail("disabled-poll release");
-    }
-
-    void *joined = NULL;
-    error = pthread_join(thread, &joined);
-    close(pipe_fds[0]);
-    close(pipe_fds[1]);
-    if (error != 0) {
-        errno = error;
-        return fail("disabled-poll pthread_join");
-    }
-
-    if (returned_after_cancel || joined != PTHREAD_CANCELED ||
-        ctx.poll_result != 1 || ctx.poll_errno != 0 ||
-        (ctx.poll_revents & POLLIN) == 0 ||
-        !atomic_load_explicit(&ctx.poll_returned, memory_order_acquire) ||
-        !atomic_load_explicit(
-            &ctx.cancellation_enabled,
-            memory_order_acquire
-        ) ||
-        atomic_load_explicit(&ctx.after_testcancel, memory_order_acquire) ||
-        !atomic_load_explicit(&ctx.cleanup_ran, memory_order_acquire)) {
-        fprintf(stderr,
-            "disabled poll cancellation mismatch: early=%d joined=%p "
-            "result=%d errno=%d revents=%#x returned=%d enabled=%d "
-            "after_testcancel=%d cleanup=%d\n",
-            returned_after_cancel, joined, ctx.poll_result, ctx.poll_errno,
-            ctx.poll_revents,
-            atomic_load_explicit(&ctx.poll_returned, memory_order_relaxed),
-            atomic_load_explicit(
-                &ctx.cancellation_enabled,
-                memory_order_relaxed
-            ),
-            atomic_load_explicit(
-                &ctx.after_testcancel,
-                memory_order_relaxed
-            ),
-            atomic_load_explicit(&ctx.cleanup_ran, memory_order_relaxed));
-        return -1;
-    }
-    return 0;
-}
-
 
 static int read_all(const char *path, char *buf, size_t size)
 {
@@ -643,31 +493,6 @@ static int test_getrusage_pointer_validation(void)
     return expect_zero_rusage(&usage);
 }
 
-struct delayed_stop_ctx {
-    int fd;
-    atomic_int armed;
-    int error;
-};
-
-static void *release_delayed_stop(void *opaque)
-{
-    struct delayed_stop_ctx *ctx = opaque;
-    while (!atomic_load_explicit(&ctx->armed, memory_order_acquire))
-        usleep(1000);
-
-    /*
-     * The main thread sets armed immediately before entering waitpid.
-     * Leave enough time for it to publish the blocking wait to the kernel;
-     * otherwise a fast fresh child can stop and deliver SIGCHLD before the
-     * wait begins, in which case POSIX correctly permits that later wait to
-     * remain blocked.
-     */
-    usleep(50000);
-    if (write(ctx->fd, "s", 1) != 1)
-        ctx->error = errno != 0 ? errno : EIO;
-    return NULL;
-}
-
 static int test_nonmatching_sigchld_interrupts_wait(void)
 {
     struct sigaction action;
@@ -679,76 +504,16 @@ static int test_nonmatching_sigchld_interrupts_wait(void)
     sigchld_count = 0;
 
     int gate[2];
-    if (pipe(gate) != 0)
-        return fail("interrupt test pipe");
-    pid_t pid = fork();
+    pid_t pid = spawn_stopping_child(gate, 27);
     if (pid < 0)
-        return fail("interrupt test fork");
-    if (pid == 0) {
-        close(gate[1]);
-        char byte = 0;
-        if (read(gate[0], &byte, 1) != 1)
-            _exit(121);
-        if (raise(SIGSTOP) != 0)
-            _exit(120);
-        if (read(gate[0], &byte, 1) != 1)
-            _exit(121);
-        close(gate[0]);
-        _exit(27);
-    }
-    close(gate[0]);
-
-    /*
-     * SIGCHLD is process-directed. Block it while creating the helper so the
-     * helper inherits the blocked mask, then restore the main thread's mask.
-     * The child's stop notification therefore has exactly one eligible
-     * recipient: the thread blocked in waitpid below.
-     */
-    sigset_t block;
-    sigset_t previous;
-    sigemptyset(&block);
-    sigaddset(&block, SIGCHLD);
-    int error = pthread_sigmask(SIG_BLOCK, &block, &previous);
-    if (error != 0) {
-        errno = error;
-        return fail("interrupt test block SIGCHLD");
-    }
-    struct delayed_stop_ctx stop = {
-        .fd = gate[1],
-        .armed = ATOMIC_VAR_INIT(0),
-        .error = 0,
-    };
-    pthread_t releaser;
-    error = pthread_create(&releaser, NULL, release_delayed_stop, &stop);
-    if (error != 0) {
-        pthread_sigmask(SIG_SETMASK, &previous, NULL);
-        errno = error;
-        return fail("interrupt test pthread_create");
-    }
-    error = pthread_sigmask(SIG_SETMASK, &previous, NULL);
-    if (error != 0) {
-        errno = error;
-        return fail("interrupt test restore SIGCHLD mask");
-    }
+        return -1;
 
     int status = 0;
     errno = 0;
-    atomic_store_explicit(&stop.armed, 1, memory_order_release);
-    pid_t got = waitpid(pid, &status, 0);
-    int wait_errno = errno;
-    error = pthread_join(releaser, NULL);
-    if (error != 0) {
-        errno = error;
-        return fail("interrupt test pthread_join");
-    }
-    if (stop.error != 0) {
-        errno = stop.error;
-        return fail("interrupt test release stop");
-    }
-    if (got != -1 || wait_errno != EINTR || sigchld_count != 1) {
+    if (waitpid(pid, &status, 0) != -1 || errno != EINTR || sigchld_count != 1) {
         fprintf(stderr,
             "nonmatching stop SIGCHLD did not interrupt wait: errno=%d count=%d\n",
-            wait_errno, (int)sigchld_count);
+            errno, (int)sigchld_count);
         return -1;
     }
 
@@ -1430,8 +1195,6 @@ int main(int argc, char **argv)
 #endif
     if (test_cancel_preserves_completed_syscall() != 0)
         return 12;
-    if (test_disabled_blocked_poll_cancellation() != 0)
-        return 13;
 #if __SIZEOF_POINTER__ == 8
     if (test_memory64_wait_layouts() != 0)
         return 1;

@@ -1,10 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CH_STATUS } from "../src/generated/abi";
-import {
-  CentralizedKernelWorker,
-  createCentralizedKernelWorkerTestDouble,
-} from "../src/kernel-worker";
+import { CentralizedKernelWorker } from "../src/kernel-worker";
 
 type ChannelFixture = {
   pid: number;
@@ -87,7 +84,7 @@ function createHarness(channels: ChannelFixture[]): ListenerHarness {
     }
   }
 
-  return Object.assign(createCentralizedKernelWorkerTestDouble(), {
+  return Object.assign(Object.create(CentralizedKernelWorker.prototype), {
     processes,
     activeChannels: [...channels],
     retiredChannelListeners: new Set<ChannelFixture>(),

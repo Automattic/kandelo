@@ -28,28 +28,10 @@ activate_ci_test_workspace
 
 suite="${1:-}"
 if [ -z "$suite" ]; then
-    echo "usage: $0 <cargo-workspace|cargo-xtask|vitest|browser|libc|posix|sortix> [group]" >&2
+    echo "usage: $0 <cargo-kernel|fork-instrument|vitest|browser|libc|posix|sortix> [group]" >&2
     exit 2
 fi
 group="${2:-${TEST_GROUP:-all}}"
-
-# WHY: every conformance case starts a fresh Node resolver under a short
-# timeout. Prepare one exact worktree-local checker before parallel cases
-# begin; each process still executes the source-freshness check, but none
-# starts a competing Cargo build or waits on Cargo's target-directory lock.
-case "$suite" in
-    vitest|browser|libc|posix|sortix)
-        prepared_xtask="$REPO_ROOT/target/$(host_target)/release/xtask"
-        if [ ! -d "$REPO_ROOT/.ci-test-binary-cache/programs" ]; then
-            cargo build --release -p xtask --target "$(host_target)" --quiet
-        fi
-        if [ ! -f "$prepared_xtask" ] || [ ! -x "$prepared_xtask" ]; then
-            echo "ci-run-test-suite: missing executable prepared package checker: $prepared_xtask" >&2
-            exit 1
-        fi
-        export WASM_POSIX_XTASK_BIN="$prepared_xtask"
-        ;;
-esac
 
 invalid_group() {
     echo "unknown $suite test group: $group" >&2
@@ -803,28 +785,13 @@ run_pages_shaped_browser_build() {
 }
 
 case "$suite" in
-    cargo-workspace)
-        # Host-run unit + integration tests for every workspace crate EXCEPT
-        # xtask: kandelo (kernel), fork-instrument, wasm-posix-shared,
-        # wasm-posix-userspace, wasm-local-root-spill. `--workspace` is
-        # closed-by-default: a new crate under crates/ is gated with no
-        # allow-list edit, and each crate's integration tests run too (no
-        # `--lib`, which would silently run 0 tests for a bin-only crate such
-        # as wasm-local-root-spill). xtask is excluded because it is gated
-        # separately as the always-run `cargo-xtask` suite -- it lives under
-        # tools/ (outside the kernel change-scope) and its regressions are
-        # independent of kernel changes. `--target <host>` is REQUIRED: the
-        # default wasm32-unknown-unknown target has no host test runner, and
-        # host-only deps (getrandom; xtask's ring/zstd) do not cross-compile.
+    cargo-kernel)
         HOST_TARGET="$(host_target)"
-        cargo test --workspace --exclude xtask --target "$HOST_TARGET"
+        cargo test -p kandelo --target "$HOST_TARGET" --lib
         ;;
-    cargo-xtask)
-        # Package-system automation unit tests (tools/xtask/**): package
-        # resolver, binaries-dir placement, and archive staging/naming. Pure
-        # host-target cargo tests; no wasm sysroots or prepared workspace needed.
+    fork-instrument)
         HOST_TARGET="$(host_target)"
-        cargo test -p xtask --target "$HOST_TARGET"
+        cargo test -p fork-instrument --target "$HOST_TARGET"
         ;;
     vitest)
         if [ "$group" = "exact-abi-source" ]; then
@@ -1063,7 +1030,6 @@ case "$suite" in
                     test/coi.spec.ts \
                     test/package-deferred-tree-browser.spec.ts \
                     test/vfs-import-seal-boundary.spec.ts \
-                    test/wasm-gc-reference-transport.spec.ts \
                     test/wasm-trap-signal.spec.ts \
                     --project=chromium --project=firefox --project=webkit
         )

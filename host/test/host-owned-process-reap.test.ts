@@ -5,7 +5,6 @@ import { describe, expect, it, vi } from "vitest";
 import { reapHostOwnedExitedProcess } from "../src/host-owned-process-reap";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { signalExitStatus, SIGILL } from "../src/trap-signals";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const helloWasm = join(__dirname, "../../examples/hello.wasm");
@@ -27,20 +26,6 @@ function kernelInstanceWithLifecycle(
 function loadProgramBytes(path: string): ArrayBuffer {
   const bytes = readFileSync(path);
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-}
-
-async function spawnSmokeRootfs(): Promise<Uint8Array> {
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
-  fs.mkdir("/usr", 0o755);
-  fs.mkdir("/usr/bin", 0o755);
-  fs.createFileWithOwner(
-    "/usr/bin/hello",
-    0o755,
-    0,
-    0,
-    new Uint8Array(readFileSync(helloWasm)),
-  );
-  return fs.saveImage();
 }
 
 describe("host-owned exited-process reaping", () => {
@@ -159,7 +144,7 @@ describe("host-owned exited-process reaping", () => {
       }> = [];
       const host = new NodeKernelHost({
         execPrograms: { "/usr/bin/hello": helloWasm },
-        rootfsImage: await spawnSmokeRootfs(),
+        rootfsImage: undefined,
         onHostDiagnostic: (diagnostic) => diagnostics.push(diagnostic.message),
         onProcessEvent: (event) => processEvents.push(event),
       });

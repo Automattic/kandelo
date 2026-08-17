@@ -7,9 +7,6 @@ use core::cell::UnsafeCell;
 /// Maximum number of concurrent PTY pairs.
 pub const MAX_PTYS: usize = 64;
 
-/// Initial permissions for a newly allocated devpts slave.
-pub const DEFAULT_SLAVE_MODE: u32 = 0o620;
-
 /// Default capacity for PTY data buffers (bytes).
 const PTY_BUF_CAPACITY: usize = 4096;
 
@@ -19,12 +16,6 @@ const PTY_BUF_CAPACITY: usize = 4096;
 ///   master write → line discipline → slave read  (input: keyboard → program)
 ///   slave write  → output processing → master read (output: program → screen)
 pub struct PtyPair {
-    /// Persistent devpts metadata initialized from the creator's effective
-    /// credentials. In the absence of a separately configured tty group, the
-    /// creator's effective GID is the authoritative tty-group source.
-    owner_uid: u32,
-    owner_gid: u32,
-    mode: u32,
     /// Terminal state (termios attributes, winsize, foreground pgrp).
     pub terminal: TerminalState,
     /// Input buffer: data written by master, readable from slave (after line discipline).
@@ -40,11 +31,8 @@ pub struct PtyPair {
 }
 
 impl PtyPair {
-    fn new(owner_uid: u32, owner_gid: u32) -> Self {
+    fn new() -> Self {
         PtyPair {
-            owner_uid,
-            owner_gid,
-            mode: DEFAULT_SLAVE_MODE,
             terminal: TerminalState::new(),
             input_buf: VecDeque::with_capacity(PTY_BUF_CAPACITY),
             output_buf: VecDeque::with_capacity(PTY_BUF_CAPACITY),
@@ -52,27 +40,6 @@ impl PtyPair {
             master_refs: 0,
             slave_refs: 0,
         }
-    }
-
-    pub fn owner_uid(&self) -> u32 {
-        self.owner_uid
-    }
-
-    pub fn owner_gid(&self) -> u32 {
-        self.owner_gid
-    }
-
-    pub fn mode(&self) -> u32 {
-        self.mode
-    }
-
-    pub fn set_mode(&mut self, mode: u32) {
-        self.mode = mode & 0o7777;
-    }
-
-    pub fn set_owner(&mut self, uid: u32, gid: u32) {
-        self.owner_uid = uid;
-        self.owner_gid = gid;
     }
 
     /// Process a byte through the line discipline (for master→slave input).
@@ -237,11 +204,11 @@ fn get_table() -> &'static mut [Option<PtyPair>; MAX_PTYS] {
 }
 
 /// Allocate a new PTY pair. Returns the index (pty number) or None if full.
-pub fn alloc_pty(owner_uid: u32, owner_gid: u32) -> Option<usize> {
+pub fn alloc_pty() -> Option<usize> {
     let table = get_table();
     for (i, slot) in table.iter_mut().enumerate() {
         if slot.is_none() {
-            *slot = Some(PtyPair::new(owner_uid, owner_gid));
+            *slot = Some(PtyPair::new());
             return Some(i);
         }
     }
@@ -291,30 +258,19 @@ mod tests {
         let _pty_table = test_table_lock();
         reset_table();
 
-        let idx = alloc_pty(1000, 2000).unwrap();
+        let idx = alloc_pty().unwrap();
         assert_eq!(idx, 0);
         let pty = get_pty(idx).unwrap();
         assert!(pty.locked);
-        assert_eq!((pty.owner_uid(), pty.owner_gid()), (1000, 2000));
-        assert_eq!(pty.mode(), DEFAULT_SLAVE_MODE);
         assert_eq!(pty.master_refs, 0);
         assert_eq!(pty.slave_refs, 0);
 
-        let idx2 = alloc_pty(3000, 4000).unwrap();
+        let idx2 = alloc_pty().unwrap();
         assert_eq!(idx2, 1);
 
         free_pty(idx);
-        let idx3 = alloc_pty(5000, 6000).unwrap();
+        let idx3 = alloc_pty().unwrap();
         assert_eq!(idx3, 0); // reuses freed slot
-        let replacement = get_pty(idx3).unwrap();
-        assert_eq!(
-            (
-                replacement.owner_uid(),
-                replacement.owner_gid(),
-                replacement.mode()
-            ),
-            (5000, 6000, DEFAULT_SLAVE_MODE),
-        );
 
         reset_table();
     }
@@ -324,7 +280,7 @@ mod tests {
         let _pty_table = test_table_lock();
         reset_table();
 
-        let idx = alloc_pty(0, 0).unwrap();
+        let idx = alloc_pty().unwrap();
         let pty = get_pty(idx).unwrap();
         pty.terminal.c_lflag &= !crate::terminal::ICANON; // raw mode
         pty.terminal.c_lflag &= !crate::terminal::ECHO; // no echo
@@ -352,7 +308,7 @@ mod tests {
         let _pty_table = test_table_lock();
         reset_table();
 
-        let idx = alloc_pty(0, 0).unwrap();
+        let idx = alloc_pty().unwrap();
         let pty = get_pty(idx).unwrap();
         // Default is canonical mode with echo
 
@@ -377,7 +333,7 @@ mod tests {
 
     #[test]
     fn test_pty_canonical_to_raw_preserves_pending_input_order() {
-        let mut pty = PtyPair::new(0, 0);
+        let mut pty = PtyPair::new();
         pty.terminal.c_lflag &= !crate::terminal::ECHO;
 
         for &byte in b"first\nq" {
@@ -399,7 +355,7 @@ mod tests {
 
     #[test]
     fn test_pty_tcsaflush_discards_pending_input() {
-        let mut pty = PtyPair::new(0, 0);
+        let mut pty = PtyPair::new();
         pty.terminal.c_lflag &= !crate::terminal::ECHO;
 
         for &byte in b"first\nq" {
@@ -418,7 +374,7 @@ mod tests {
 
     #[test]
     fn test_pty_raw_to_canonical_makes_unread_input_immediately_readable() {
-        let mut pty = PtyPair::new(0, 0);
+        let mut pty = PtyPair::new();
         pty.terminal.c_lflag &= !(crate::terminal::ICANON | crate::terminal::ECHO);
         pty.process_master_input(b'q');
         pty.process_master_input(0);
@@ -441,7 +397,7 @@ mod tests {
         let _pty_table = test_table_lock();
         reset_table();
 
-        let idx = alloc_pty(0, 0).unwrap();
+        let idx = alloc_pty().unwrap();
         let pty = get_pty(idx).unwrap();
         // OPOST | ONLCR is on by default
 
@@ -459,7 +415,7 @@ mod tests {
         let _pty_table = test_table_lock();
         reset_table();
 
-        let idx = alloc_pty(0, 0).unwrap();
+        let idx = alloc_pty().unwrap();
         let pty = get_pty(idx).unwrap();
         // Default: canonical + ISIG + ECHO
 
@@ -487,7 +443,7 @@ mod tests {
         let _pty_table = test_table_lock();
         reset_table();
 
-        let idx = alloc_pty(0, 0).unwrap();
+        let idx = alloc_pty().unwrap();
         let pty = get_pty(idx).unwrap();
         pty.terminal.c_lflag &= !crate::terminal::ICANON; // raw mode
         // ISIG still set by default
@@ -507,7 +463,7 @@ mod tests {
         let _pty_table = test_table_lock();
         reset_table();
 
-        let idx = alloc_pty(0, 0).unwrap();
+        let idx = alloc_pty().unwrap();
         let pty = get_pty(idx).unwrap();
         pty.terminal.c_lflag &= !crate::terminal::ICANON; // raw mode
         pty.terminal.c_lflag &= !crate::terminal::ISIG; // disable ISIG

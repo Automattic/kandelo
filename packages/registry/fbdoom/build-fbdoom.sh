@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Cross-compile maximevince/fbDOOM for Kandelo using wasm32posix-cc. The
 # fbdev frontend writes BGRA32 pixels into the framebuffer mmap; the canvas
-# renderer consumes them, and the OSS frontend writes PCM to `/dev/dsp`.
+# renderer consumes them.
 #
 # A direct build writes packages/registry/fbdoom/fbdoom.wasm. Resolver and
 # Formula builds instead write only below their declared work and output roots.
@@ -119,14 +119,9 @@ echo "==> Cleaning previous build..."
 make clean || true
 
 echo "==> Cross-compiling fbdoom (wasm32, NOSDL=1)..."
-# fbDOOM's own Makefile wires NOSDL=1 to the framebuffer frontend; the
-# patch series adds a conventional OSS PCM module alongside it. We only
-# override the toolchain here.
-#
-# LIBS="-lm" — wasm32posix-cc auto-injects channel_syscall.c plus the
-# musl libc.a; passing -lc explicitly (the upstream Makefile default)
-# would cause duplicate-symbol errors for fork / _Fork / __syscall_cp.
-# We keep -lm because the SDK doesn't auto-link libm.
+# fbDOOM's Makefile wires NOSDL=1 to the framebuffer and null-audio frontend.
+# Passing -lc explicitly would duplicate the SDK-injected channel syscall glue;
+# retain -lm because the SDK does not inject libm.
 make CC=wasm32posix-cc \
      LD=wasm32posix-cc \
      CFLAGS="-O2 -DNORMALUNIX -DLINUX -D_DEFAULT_SOURCE -Iopl" \
@@ -141,8 +136,7 @@ ls -la "$OUT_BIN"
 echo "==> fbdoom.wasm built."
 
 # No IWAD is bundled. The browser demo fetches the freely redistributable Doom
-# shareware IWAD at page load and caches it via the Cache API; see
-# apps/browser-demos/pages/doom/main.ts.
+# shareware IWAD at page load and caches it via the Cache API.
 cd "$REPO_ROOT"
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary fbdoom "$OUT_BIN" fbdoom.wasm

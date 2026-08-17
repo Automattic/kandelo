@@ -1,6 +1,3 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   parsePackageRuntimeFileContract,
@@ -38,83 +35,6 @@ describe("package runtime-file closure metadata", () => {
       "php/icu.dat",
     ]);
   }, 120_000);
-
-  it("uses an explicitly prepared xtask without ambient host tools", () => {
-    const root = mkdtempSync(join(tmpdir(), "kandelo-runtime-metadata-"));
-    const xtask = join(root, "xtask");
-    writeFileSync(
-      xtask,
-      `#!/bin/sh
-[ "$#" = 4 ]
-[ "$1" = build-deps ]
-[ "$2" = runtime-file-metadata ]
-[ "$3" = php ]
-[ "$4" = icu.dat ]
-printf '%s\\n' '${metadata()}'
-`,
-    );
-    chmodSync(xtask, 0o755);
-    const savedXtask = process.env.WASM_POSIX_XTASK_BIN;
-    const hadSavedXtask = Object.prototype.hasOwnProperty.call(
-      process.env,
-      "WASM_POSIX_XTASK_BIN",
-    );
-    const savedPath = process.env.PATH;
-    const hadSavedPath = Object.prototype.hasOwnProperty.call(
-      process.env,
-      "PATH",
-    );
-    process.env.WASM_POSIX_XTASK_BIN = xtask;
-    process.env.PATH = "";
-    try {
-      expect(readPackageRuntimeFileContract(findRepoRoot(), "php", "icu.dat"))
-        .toEqual({
-          artifact: "icu.dat",
-          guestPath: "/usr/lib/php/icu.dat",
-          mode: 0o644,
-          mirrorPath: "php/icu.dat",
-          closureMirrorPaths: [
-            "php/php.wasm",
-            "php/intl.so",
-            "php/icu.dat",
-          ],
-        });
-    } finally {
-      if (hadSavedXtask) {
-        process.env.WASM_POSIX_XTASK_BIN = savedXtask ?? "";
-      } else {
-        delete process.env.WASM_POSIX_XTASK_BIN;
-      }
-      if (hadSavedPath) {
-        process.env.PATH = savedPath ?? "";
-      } else {
-        delete process.env.PATH;
-      }
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects a prepared xtask path that is not a regular file", () => {
-    const root = mkdtempSync(join(tmpdir(), "kandelo-runtime-metadata-"));
-    const savedXtask = process.env.WASM_POSIX_XTASK_BIN;
-    const hadSavedXtask = Object.prototype.hasOwnProperty.call(
-      process.env,
-      "WASM_POSIX_XTASK_BIN",
-    );
-    process.env.WASM_POSIX_XTASK_BIN = root;
-    try {
-      expect(() =>
-        readPackageRuntimeFileContract(findRepoRoot(), "php", "icu.dat")
-      ).toThrow(/Prepared xtask is not a regular file/);
-    } finally {
-      if (hadSavedXtask) {
-        process.env.WASM_POSIX_XTASK_BIN = savedXtask ?? "";
-      } else {
-        delete process.env.WASM_POSIX_XTASK_BIN;
-      }
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
 
   it("rejects duplicate or incomplete closure path metadata", () => {
     expect(() => parsePackageRuntimeFileContract(

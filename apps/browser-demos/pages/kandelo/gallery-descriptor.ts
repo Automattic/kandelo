@@ -21,14 +21,9 @@ export function descriptorFromGalleryItem(
   // into Shell (or root service settings into user sessions). The live host
   // merges these identity overrides onto the selected profile's canonical
   // environment.
-  const makerEnv = nodeBoot
-    ? {
-        HOME: "/home/maker",
-        PWD: "/home/maker",
-        USER: "maker",
-        LOGNAME: "maker",
-      }
-    : { HOME: "/home/maker", USER: "maker", LOGNAME: "maker" };
+  const userEnv = nodeBoot
+    ? { HOME: "/work", PWD: "/work", USER: "user", LOGNAME: "user" }
+    : { HOME: "/home/user", USER: "user", LOGNAME: "user" };
   const rootEnv = { HOME: "/root", USER: "root", LOGNAME: "root" };
   return {
     ...base,
@@ -39,8 +34,8 @@ export function descriptorFromGalleryItem(
     boot: {
       ...base.boot,
       argv: item.bootCommand,
-      cwd: rootBoot ? "/root" : "/home/maker",
-      env: rootBoot ? rootEnv : makerEnv,
+      cwd: rootBoot ? "/root" : nodeBoot ? "/work" : "/home/user",
+      env: rootBoot ? rootEnv : userEnv,
       uid: rootBoot ? 0 : 1000,
       gid: rootBoot ? 0 : 1000,
     },

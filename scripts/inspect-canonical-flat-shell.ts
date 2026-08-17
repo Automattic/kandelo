@@ -91,7 +91,7 @@ export async function inspectCanonicalFlatShell(input: {
     expectedAbi: ABI_VERSION,
   });
   if (
-    selection.name !== `main-shell-abi${ABI_VERSION}-wasm32` ||
+    selection.name !== "main-shell-abi42-wasm32" ||
     selection.arch !== "wasm32" ||
     selection.requestedVfsFilename !== "shell.vfs.zst" ||
     selection.resourcePolicy !== "kandelo-homebrew-vfs-main-shell-v1"

@@ -50,13 +50,10 @@ import {
   compareHomebrewCanonicalText,
 } from "./homebrew-lazy-layer-descriptor";
 import {
-  createHomebrewBottleRelocationRecipe,
-  deriveHomebrewBottleDestinationPrefix,
-  HOMEBREW_BOTTLE_RELOCATION_RECIPE_ID,
-  normalizeHomebrewBottleDestinationPrefix,
   parseHomebrewInstallReceiptRelocation,
   relocateHomebrewBottleFile,
 } from "./homebrew-bottle-relocation";
+import { KANDELO_HOMEBREW_GUEST_LAYOUT } from "./homebrew-guest-layout";
 export type {
   HomebrewDeferredTreeDescriptor,
   HomebrewDeferredTreeDraftDescriptor,
@@ -72,11 +69,6 @@ export type {
   HomebrewRuntimeLayerAssetIdentity,
 } from "./homebrew-lazy-layer-descriptor";
 import { MemoryFileSystem } from "./vfs/memory-fs";
-import {
-  encodeMaterializationBytes,
-  type LazyTreeMaterializationPlan,
-} from "./vfs/materialization-plan";
-import { KANDELO_HOMEBREW_GUEST_LAYOUT } from "./homebrew-guest-layout";
 import {
   assertVfsDeferredTreeCollectionUsage,
 } from "./vfs/deferred-tree-limits";
@@ -253,7 +245,6 @@ export async function buildHomebrewOriginalBottleCollection(
   }
   await authenticateHomebrewCompositionBase(options.baseFs);
   commonArch(plan);
-  const destinationPrefix = homebrewPlanDestinationPrefix(plan);
   const tapLock = planTapLock(plan);
   validatePackageTapOwnership(plan.packages, tapLock);
   const originalPackages = plan.packages.map(legacyOriginalBottlePackage);
@@ -286,11 +277,7 @@ export async function buildHomebrewOriginalBottleCollection(
     compatibilityPolicy: options.compatibilityPolicy,
     consumerState: "defer",
   });
-  const finalEntries = collectLayerEntries(
-    options.fs,
-    options.baseFs,
-    destinationPrefix,
-  );
+  const finalEntries = collectLayerEntries(options.fs, options.baseFs);
   const trees = createOriginalBottleTrees(
     bottles,
     finalEntries,
@@ -413,11 +400,7 @@ export async function projectHomebrewFlatOriginalBottleCollectionFromEagerProof(
       authoritativeDescriptors.get(pkg.fullName)!,
     ),
   );
-  const allEntries = collectLayerEntries(
-    options.eagerProof.fs,
-    options.baseFs,
-    homebrewPlanDestinationPrefix(planSnapshot),
-  );
+  const allEntries = collectLayerEntries(options.eagerProof.fs, options.baseFs);
   const selectedEntries = selectFlatOriginalBottleEntries(
     allEntries,
     projectionPackages,
@@ -528,10 +511,6 @@ async function buildSelectedHomebrewLazyPackageCollection(
   const base = parseBaseComposition(options.baseVfs, selectedPlan.kandeloAbi);
   const tapLock = planTapLock(selectedPlan);
   validatePackageTapOwnership(selectedPlan.packages, tapLock);
-  // The descriptor publishes base and deferred records together. Authenticate
-  // one namespace before partitioning so a base record cannot retain a
-  // different destination than the deferred collection validates below.
-  homebrewPlanDestinationPrefix(selectedPlan);
   const basePackages: HomebrewVfsPackagePlan[] = [];
   const layerPackages: HomebrewVfsPackagePlan[] = [];
 
@@ -569,7 +548,7 @@ async function buildSelectedHomebrewLazyPackageCollection(
     id: bundleId,
     payloads: collection.payloads,
     descriptor: {
-      schema: 6,
+      schema: 5,
       kind: "kandelo-homebrew-deferred-layer-draft",
       arch,
       mount_prefix: "/",
@@ -678,12 +657,6 @@ interface PreparedOriginalBottle {
   sourceEntries: HomebrewDeferredTreeSourceEntry[];
   relocationSourcePaths: Set<string>;
   relocatedBytesByCanonicalSource: Map<string, Uint8Array>;
-  relocation?: {
-    schema: 1;
-    kind: "homebrew-bottle-relocation-v1";
-    receipt_source_path: string;
-    materialization: LazyTreeMaterializationPlan;
-  };
 }
 
 function legacyOriginalBottlePackage(
@@ -838,7 +811,6 @@ async function prepareOriginalBottles(
       sourceEntries,
       relocationSourcePaths: relocation.sourcePaths,
       relocatedBytesByCanonicalSource: relocation.bytesByCanonicalSource,
-      relocation: relocation.relocation,
     });
   }
   return bottles;
@@ -1300,9 +1272,6 @@ function createOriginalBottleTrees(
             kind: "homebrew-bottle-tar-gzip-v1",
             entries: sourceEntries,
           },
-          ...(bottle.relocation === undefined
-            ? {}
-            : { relocation: bottle.relocation }),
           entries,
         },
       },
@@ -1462,12 +1431,11 @@ function createDirectGuestEntry(
 
 function prepareOriginalBottleRelocation(
   pkg: HomebrewOriginalBottlePackagePlan,
-  bottleMaterialization: HomebrewBottleMaterializationPackage,
+  materialization: HomebrewBottleMaterializationPackage,
   entries: readonly TarEntry[],
 ): {
   sourcePaths: Set<string>;
   bytesByCanonicalSource: Map<string, Uint8Array>;
-  relocation?: PreparedOriginalBottle["relocation"];
 } {
   const installReceipts = pkg.relocation.receipts.filter(
     (receipt) => receipt === "INSTALL_RECEIPT.json" ||
@@ -1485,14 +1453,11 @@ function prepareOriginalBottleRelocation(
   const sourceByPath = new Map(entries.map((entry) => [entry.path, entry]));
   const sourceByGuestPath = new Map<string, TarEntry>();
   for (const entry of entries) {
-    const guestPath = mapHomebrewBottleEntryToGuestPath(
-      bottleMaterialization,
-      entry.path,
-    );
+    const guestPath = mapHomebrewBottleEntryToGuestPath(materialization, entry.path);
     if (guestPath !== null) sourceByGuestPath.set(guestPath, entry);
   }
   const receiptGuestPath = homebrewManifestSourcePath(
-    bottleMaterialization,
+    materialization,
     installReceipts[0]!,
   );
   const receiptSource = sourceByGuestPath.get(receiptGuestPath);
@@ -1502,16 +1467,6 @@ function prepareOriginalBottleRelocation(
     );
   }
   const receiptFile = resolveTarRegularSource(receiptSource, sourceByPath, pkg);
-  const destinationPrefix = deriveHomebrewBottleDestinationPrefix(
-    receiptGuestPath,
-    receiptSource.path,
-  );
-  if (destinationPrefix !== pkg.relocation.prefix) {
-    throw new Error(
-      `Homebrew deferred bottle ${pkg.fullName} receipt prefix ` +
-        `${destinationPrefix} differs from package prefix ${pkg.relocation.prefix}`,
-    );
-  }
   let receipt: ReturnType<typeof parseHomebrewInstallReceiptRelocation>;
   try {
     receipt = parseHomebrewInstallReceiptRelocation(receiptFile.data);
@@ -1535,10 +1490,7 @@ function prepareOriginalBottleRelocation(
     sourcePaths.add(source.path);
     const canonical = resolveTarRegularSource(source, sourceByPath, pkg);
     try {
-      const relocated = relocateHomebrewBottleFile(canonical.data, receipt, {
-        destinationPrefix,
-        path: guestPath,
-      });
+      const relocated = relocateHomebrewBottleFile(canonical.data, receipt, guestPath);
       const prior = bytesByCanonicalSource.get(canonical.path);
       if (prior !== undefined && !bytesEqual(prior, relocated)) {
         throw new Error("hard-link aliases produce different relocated bytes");
@@ -1550,58 +1502,7 @@ function prepareOriginalBottleRelocation(
       );
     }
   }
-  const transforms = Array.from(
-    bytesByCanonicalSource,
-    ([sourcePath, output]) => {
-      const source = sourceByPath.get(sourcePath);
-      if (source?.type !== "file") {
-        throw new Error(
-          `Homebrew deferred bottle ${pkg.fullName} has no canonical source ` +
-            sourcePath,
-        );
-      }
-      return {
-        sourcePath,
-        recipe: HOMEBREW_BOTTLE_RELOCATION_RECIPE_ID,
-        input: {
-          sha256: digest(source.data),
-          bytes: source.data.byteLength,
-        },
-        output: {
-          sha256: digest(output),
-          bytes: output.byteLength,
-        },
-      };
-    },
-  ).sort((left, right) => compareHomebrewCanonicalText(
-    left.sourcePath,
-    right.sourcePath,
-  ));
-  const materialization: LazyTreeMaterializationPlan = {
-    schema: 1,
-    kind: "archive-byte-transforms-v1",
-    assertions: [{
-      sourcePath: receiptFile.path,
-      bytesHex: encodeMaterializationBytes(receiptFile.data),
-    }],
-    recipes: transforms.length === 0
-      ? []
-      : [createHomebrewBottleRelocationRecipe(receipt, {
-          destinationPrefix,
-          path: receiptSource.path,
-        })],
-    transforms,
-  };
-  return {
-    sourcePaths,
-    bytesByCanonicalSource,
-    relocation: {
-      schema: 1,
-      kind: "homebrew-bottle-relocation-v1",
-      receipt_source_path: receiptSource.path,
-      materialization,
-    },
-  };
+  return { sourcePaths, bytesByCanonicalSource };
 }
 
 function resolveTarRegularSource(
@@ -1879,7 +1780,7 @@ export function closeHomebrewLazyLayerDescriptor(
   evidence: HomebrewLazyLayerClosureEvidence,
 ): HomebrewLazyLayerDescriptor {
   if (
-    (draft.schema !== 4 && draft.schema !== 5 && draft.schema !== 6) ||
+    (draft.schema !== 4 && draft.schema !== 5) ||
     draft.kind !== "kandelo-homebrew-deferred-layer-draft"
   ) {
     throw new Error("Homebrew lazy layer draft has an unsupported identity");
@@ -2063,7 +1964,7 @@ function assertLazyLayerDraftSchemaShape(
         `Homebrew lazy layer draft tree ${tree.id} has invalid activation roots`,
       );
     }
-    const originalBottle = draft.schema !== 4;
+    const originalBottle = draft.schema === 5;
     const hasPackage = tree.package !== undefined;
     const hasSource = tree.inventory.source !== undefined;
     const hasCompleteMaterialization = tree.inventory.entries.every(
@@ -2072,12 +1973,6 @@ function assertLazyLayerDraftSchemaShape(
     const hasAnyMaterialization = tree.inventory.entries.some(
       (entry) => entry.materialization !== undefined,
     );
-    if (draft.schema !== 6 && tree.inventory.relocation !== undefined) {
-      throw new Error(
-        `Homebrew lazy layer schema ${draft.schema} tree ${tree.id} ` +
-          "cannot carry a schema-6 relocation plan",
-      );
-    }
     if (originalBottle) {
       if (
         !hasPackage || !hasSource || !hasCompleteMaterialization ||
@@ -2086,8 +1981,7 @@ function assertLazyLayerDraftSchemaShape(
           "application/vnd.oci.image.layer.v1.tar+gzip"
       ) {
         throw new Error(
-          `Homebrew lazy layer schema ${draft.schema} tree ${tree.id} ` +
-            "is not a complete original bottle",
+          `Homebrew lazy layer schema 5 tree ${tree.id} is not a complete original bottle`,
         );
       }
     } else if (
@@ -2165,18 +2059,6 @@ function commonArch(plan: HomebrewVfsPlan): "wasm32" | "wasm64" {
     throw new Error("Homebrew lazy layer plan must have one non-empty architecture");
   }
   return arch;
-}
-
-function homebrewPlanDestinationPrefix(
-  plan: { packages: readonly Pick<HomebrewVfsPackagePlan, "prefix">[] },
-): string {
-  const prefixes = new Set(plan.packages.map((pkg) =>
-    normalizeHomebrewBottleDestinationPrefix(pkg.prefix)
-  ));
-  if (prefixes.size !== 1) {
-    throw new Error("Homebrew lazy layer plan has inconsistent bottle destinations");
-  }
-  return prefixes.values().next().value!;
 }
 
 function planTapLock(plan: HomebrewVfsPlan): HomebrewVfsTapIdentity[] {
@@ -2470,13 +2352,12 @@ function packageArtifactIdentity(value: unknown): Record<string, unknown> {
 function collectLayerEntries(
   layerFs: MemoryFileSystem,
   baseFs: MemoryFileSystem,
-  destinationPrefix: string,
 ): HomebrewLazyLayerEntry[] {
-  if (!pathExists(layerFs, destinationPrefix)) {
+  if (!pathExists(layerFs, HOME_BREW_PREFIX)) {
     throw new Error("Homebrew lazy layer is missing its poured prefix");
   }
   const entries: HomebrewLazyLayerEntry[] = [];
-  collectPath(layerFs, destinationPrefix, entries, new Map());
+  collectPath(layerFs, HOME_BREW_PREFIX, entries, new Map());
   entries.sort((left, right) => compareHomebrewCanonicalText(left.path, right.path));
   for (const entry of entries) {
     const basePath = `/${entry.path}`;

@@ -9333,19 +9333,7 @@ def compose_reuse_child(
     )
     try:
         canonical_bottle = temporary / "bottle.json"
-        # WHY: dependency merging deliberately consumes a short Formula key,
-        # while OCI publication binds the complete tap-qualified Homebrew
-        # identity.  Requalify the already-validated minimal record at this
-        # boundary instead of weakening either consumer's input contract.
-        canonical_bottle.write_bytes(
-            pretty_json(
-                {
-                    f"{campaign['authority']['tap_name']}/{formula_name}": (
-                        canonical[formula_name]
-                    )
-                }
-            )
-        )
+        canonical_bottle.write_bytes(pretty_json(canonical))
         child = temporary / "child"
         layout = child / "layout"
         receipt_path = child / "receipt.json"

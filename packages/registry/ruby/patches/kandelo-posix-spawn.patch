@@ -1,0 +1,341 @@
+--- a/process.c
++++ b/process.c
+@@ -36,6 +36,10 @@
+
+ #ifdef HAVE_PROCESS_H
+ # include <process.h>
++#endif
++
++#ifdef RUBY_KANDELO_POSIX
++# include <spawn.h>
+ #endif
+
+ #ifndef EXIT_SUCCESS
+@@ -4519,8 +4523,304 @@
+     return StringValueCStr(*prog);
+ }
+ #endif
++
++#ifdef RUBY_KANDELO_POSIX
++static int
++kandelo_execarg_fd_is_target(VALUE redirects, int fd)
++{
++    long i;
+
++    if (redirects == Qfalse) return 0;
++    for (i = 0; i < RARRAY_LEN(redirects); i++) {
++        VALUE entry = RARRAY_AREF(redirects, i);
++        if (FIX2INT(RARRAY_AREF(entry, 0)) == fd) return 1;
++    }
++    return 0;
++}
++
++static int
++kandelo_execarg_redirect_source(const struct rb_execarg *eargp, int fd)
++{
++    long i;
++
++    if (eargp->fd_dup2 == Qfalse) return fd;
++    for (i = 0; i < RARRAY_LEN(eargp->fd_dup2); i++) {
++        VALUE entry = RARRAY_AREF(eargp->fd_dup2, i);
++        if (FIX2INT(RARRAY_AREF(entry, 0)) == fd) {
++            return FIX2INT(RARRAY_AREF(entry, 1));
++        }
++    }
++    return fd;
++}
++
++static int
++kandelo_execarg_has_independent_redirects(const struct rb_execarg *eargp)
++{
++    long i;
++
++    if (eargp->fd_dup2 == Qfalse) return 1;
++    for (i = 0; i < RARRAY_LEN(eargp->fd_dup2); i++) {
++        VALUE entry = RARRAY_AREF(eargp->fd_dup2, i);
++        int target = FIX2INT(RARRAY_AREF(entry, 0));
++        int source = FIX2INT(RARRAY_AREF(entry, 1));
++
++        /* A source that is also replaced needs Ruby's temporary-fd graph
++         * algorithm. Applying such dup2 actions in array order can destroy
++         * the source before another action consumes it. */
++        if (source != target &&
++            kandelo_execarg_fd_is_target(eargp->fd_dup2, source)) {
++            return 0;
++        }
++    }
++    return 1;
++}
++
++struct kandelo_fd_status_flags {
++    int fd;
++    int flags;
++};
++
++static int
++kandelo_execarg_clear_nonblock_stdio(
++    const struct rb_execarg *eargp,
++    struct kandelo_fd_status_flags saved[3])
++{
++    int fd;
++    int saved_count = 0;
++
++    for (fd = 0; fd < 3; fd++) {
++        int source;
++        int flags;
++        int i;
++
++        source = kandelo_execarg_redirect_source(eargp, fd);
++
++        /* Two standard streams may share one source. Save and mutate each
++         * open-file description once so failure restoration cannot apply an
++         * already-cleared snapshot over its original O_NONBLOCK state. */
++        for (i = 0; i < saved_count; i++) {
++            if (saved[i].fd == source) break;
++        }
++        if (i < saved_count) continue;
++
++        flags = fcntl(source, F_GETFL);
++        if (flags < 0 || !(flags & O_NONBLOCK)) continue;
++        if (set_blocking(source) == 0) {
++            saved[saved_count].fd = source;
++            saved[saved_count].flags = flags;
++            saved_count++;
++        }
++    }
++
++    return saved_count;
++}
++
++static void
++kandelo_execarg_restore_fd_flags(
++    const struct kandelo_fd_status_flags saved[3],
++    int saved_count)
++{
++    int i;
++
++    for (i = 0; i < saved_count; i++) {
++        (void)fcntl(saved[i].fd, F_SETFL, saved[i].flags);
++    }
++}
++
++static int
++kandelo_execarg_can_posix_spawn(const struct rb_execarg *eargp)
++{
++    /* This first backend intentionally accepts only options Kandelo's
++     * non-forking spawn contract can reproduce exactly. Unsupported Ruby
++     * options stay on the established fork path instead of being ignored. */
++    if (eargp->use_shell || NIL_P(eargp->invoke.cmd.command_abspath)) return 0;
++    if (eargp->umask_given || eargp->uid_given || eargp->gid_given) return 0;
++    if (eargp->rlimit_limits != Qfalse || eargp->fd_dup2_child != Qfalse) return 0;
++    /* Ruby reports an explicit close of an invalid descriptor as EBADF.
++     * Kandelo's current spawn action deliberately ignores close failures, so
++     * retain Ruby's fork backend whenever an explicit close was requested. */
++    if (eargp->fd_close != Qfalse) return 0;
++    /* Kandelo resolves the executable before applying spawn file actions.
++     * Ruby applies chdir first, so a relative executable containing a slash
++     * must remain on the fork path to be resolved in the child's directory. */
++    if (eargp->chdir_given &&
++        !rb_is_absolute_path(RSTRING_PTR(eargp->invoke.cmd.command_abspath))) {
++        return 0;
++    }
++    /* Ruby-created descriptors are CLOEXEC, so omitting close_others needs no
++     * special action. An explicit true value asks Ruby to sweep arbitrary
++     * non-CLOEXEC descriptors, which Kandelo's spawn actions cannot express. */
++    if (eargp->close_others_do) return 0;
++
++    /* Kandelo supports creating the child's own process group. Explicitly
++     * joining another group still needs the kernel's full session and
++     * permission validation, so retain Ruby's fork/setpgid path for it. */
++    if (eargp->pgroup_given && eargp->pgroup_pgid > 0) return 0;
++
++    if (!kandelo_execarg_has_independent_redirects(eargp)) return 0;
++    return 1;
++}
++
++static int
++kandelo_posix_spawn_add_file_actions(
++    posix_spawn_file_actions_t *actions,
++    const struct rb_execarg *eargp)
++{
++    long i;
++    int error;
++
++    if (eargp->fd_dup2 != Qfalse) {
++        for (i = 0; i < RARRAY_LEN(eargp->fd_dup2); i++) {
++            VALUE entry = RARRAY_AREF(eargp->fd_dup2, i);
++            int target = FIX2INT(RARRAY_AREF(entry, 0));
++            int source = FIX2INT(RARRAY_AREF(entry, 1));
++            error = posix_spawn_file_actions_adddup2(actions, source, target);
++            if (error) return error;
++        }
++    }
++
++    /* Ruby applies chdir after descriptor redirection. Preserve that order;
++     * changing it would make relative redirection paths observe a different
++     * directory from the existing fork implementation. */
++    if (eargp->chdir_given) {
++        error = posix_spawn_file_actions_addchdir(
++            actions, RSTRING_PTR(eargp->chdir_dir));
++        if (error) return error;
++    }
++
++    return 0;
++}
++
+ static rb_pid_t
++kandelo_posix_spawn_process(
++    struct rb_execarg *eargp)
++{
++    extern char **environ;
++    posix_spawn_file_actions_t actions;
++    posix_spawnattr_t attrs;
++    sigset_t empty_mask;
++    sigset_t default_mask;
++    short attr_flags = POSIX_SPAWN_SETSIGMASK;
++    rb_pid_t pid = -1;
++    int actions_initialized = 0;
++    int attrs_initialized = 0;
++    volatile int try_gc = 1;
++    struct kandelo_fd_status_flags saved_fd_flags[3];
++    int saved_fd_count = 0;
++    char **envp;
++    int error;
++
++    if (eargp->status) {
++        eargp->status->pid = 0;
++        eargp->status->status = 0;
++        eargp->status->error = 0;
++    }
++
++    while (1) {
++        /* prefork() can raise while flushing Ruby streams. Run it before
++         * allocating C spawn objects so a nonlocal exit cannot leak them. */
++        prefork();
++        actions_initialized = 0;
++        attrs_initialized = 0;
++        saved_fd_count = 0;
++
++        error = posix_spawn_file_actions_init(&actions);
++        if (error) goto attempt_done;
++        actions_initialized = 1;
++
++        error = posix_spawnattr_init(&attrs);
++        if (error) goto attempt_done;
++        attrs_initialized = 1;
++
++        error = kandelo_posix_spawn_add_file_actions(&actions, eargp);
++        if (error) goto attempt_done;
++
++        /* Ruby's fork child unblocks every signal before exec and deliberately
++         * resets SIGPIPE even when the Ruby parent ignored it. The spawn child
++         * would otherwise inherit both pieces of Ruby runtime state. */
++        if (sigemptyset(&empty_mask) < 0) {
++            error = errno;
++            goto attempt_done;
++        }
++        error = posix_spawnattr_setsigmask(&attrs, &empty_mask);
++        if (error) goto attempt_done;
++
++        if (sigemptyset(&default_mask) < 0) {
++            error = errno;
++            goto attempt_done;
++        }
++#ifdef SIGPIPE
++        if (sigaddset(&default_mask, SIGPIPE) < 0) {
++            error = errno;
++            goto attempt_done;
++        }
++        attr_flags |= POSIX_SPAWN_SETSIGDEF;
++        error = posix_spawnattr_setsigdefault(&attrs, &default_mask);
++        if (error) goto attempt_done;
++#endif
++
++        if (eargp->pgroup_given && eargp->pgroup_pgid == 0) {
++            attr_flags |= POSIX_SPAWN_SETPGROUP;
++            error = posix_spawnattr_setpgroup(&attrs, 0);
++            if (error) goto attempt_done;
++        }
++        error = posix_spawnattr_setflags(&attrs, attr_flags);
++        if (error) goto attempt_done;
++
++        /* Ruby's fork child clears O_NONBLOCK after dup2. File status flags
++         * live on the shared open-file description, so the parent observes
++         * that change too. Clear each resulting stdio source here to preserve
++         * the same behavior without a nonstandard spawn file action. */
++        saved_fd_count = kandelo_execarg_clear_nonblock_stdio(
++            eargp, saved_fd_flags);
++        /* CRuby leaves envp_str empty when Process.spawn has no environment
++         * options. Read environ immediately before every attempt: EAGAIN can
++         * let another Ruby thread replace that vector before a retry. */
++        envp = eargp->envp_str ? RB_IMEMO_TMPBUF_PTR(eargp->envp_str) : environ;
++        error = posix_spawn(
++            &pid,
++            RSTRING_PTR(eargp->invoke.cmd.command_abspath),
++            &actions,
++            &attrs,
++            ARGVSTR2ARGV(eargp->invoke.cmd.argv_str),
++            envp);
++
++attempt_done:
++        if (attrs_initialized) posix_spawnattr_destroy(&attrs);
++        if (actions_initialized) posix_spawn_file_actions_destroy(&actions);
++        if (!error) break;
++        /* No child exists after an error, so restore the parent's descriptor
++         * flags before Ruby performs its normal EAGAIN wait or one ENOMEM GC
++         * retry. Reusing handle_fork_error preserves the established retry
++         * and interruption behavior instead of inventing package policy. */
++        kandelo_execarg_restore_fd_flags(saved_fd_flags, saved_fd_count);
++        saved_fd_count = 0;
++        if (handle_fork_error(
++                error, eargp->status, NULL, &try_gc) != 0) {
++            break;
++        }
++    }
++
++    if (error) {
++        /* A successful spawn intentionally leaves the shared stdio open-file
++         * descriptions blocking, matching Ruby's fork path. If no child was
++         * created, put the parent's flags back exactly as they were. */
++        kandelo_execarg_restore_fd_flags(saved_fd_flags, saved_fd_count);
++        if (eargp->status) eargp->status->error = error;
++        /* Return the syscall error unchanged. rb_spawn_process retries only
++         * ENOEXEC, whose Kandelo preflight is side-effect-free; retrying any
++         * later exec or file-action failure would be observably different. */
++        errno = error;
++        return -1;
++    }
++
++    if (eargp->status) eargp->status->pid = pid;
++    if (eargp->waitpid_state) eargp->waitpid_state->pid = pid;
++    return pid;
++}
++#endif
++
++static rb_pid_t
+ rb_spawn_process(struct rb_execarg *eargp, char *errmsg, size_t errmsg_buflen)
+ {
+     rb_pid_t pid;
+@@ -4530,6 +4830,22 @@
+ # if !defined HAVE_SPAWNV
+     int status;
+ # endif
++#endif
++
++#ifdef RUBY_KANDELO_POSIX
++    if (kandelo_execarg_can_posix_spawn(eargp)) {
++        pid = kandelo_posix_spawn_process(eargp);
++        if (pid >= 0 || errno != ENOEXEC) return pid;
++
++        /* Ruby retries an ENOEXEC executable through /bin/sh. Kandelo checks
++         * the module format before it creates a child or applies file
++         * actions, so this one error can safely retain that behavior. */
++        if (eargp->status) {
++            eargp->status->pid = 0;
++            eargp->status->status = 0;
++            eargp->status->error = 0;
++        }
++    }
+ #endif
+
+ #if defined HAVE_WORKING_FORK && !USE_SPAWNV

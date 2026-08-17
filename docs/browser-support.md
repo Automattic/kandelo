@@ -64,35 +64,8 @@ Service Worker ──MessagePort──> Kernel Worker       │
   device, and shared-memory mounts are boot-local and are recreated when those
   bytes start another machine.
 - **Legacy shared VFS** (`memfs:` constructor option + `kernel.spawn()`): main thread holds a `MemoryFileSystem` and shares the SAB with the kernel worker. Used by demos that fetch transient binaries at runtime (test runners, REPLs that load arbitrary user code, benchmark suites). The main thread transfers each program's bytes, but the Rust `ProcessTable` allocates the PID and the worker returns it. Top-level creation, guest fork/spawn, and thread clone all draw from that one authoritative task-ID sequence; no browser or host-side allocator exists.
-- **Exact module reflection**: each process worker binds a compiled module to
-  the exact Wasm bytes that passed artifact admission. Import and export names,
-  kinds, and declaration order come from Kandelo's binary contract parser.
-  This keeps Node.js, Chromium, Firefox, and WebKit on one path; in particular,
-  WebKit can compile ABI 43 exception-reference imports even when its
-  `WebAssembly.Module.imports()` API cannot produce descriptors for them.
-  Modules created by an external embedder without registered bytes retain the
-  native reflection fallback.
-- **Signal-wait engine matrix**: the real BrowserKernel worker path runs the
-  wasm32 ppoll/pselect interruption matrix and wait4 unknown-option rejection
-  on Chromium, Firefox, and WebKit. Chromium and Firefox also run its wasm64
-  counterpart. The current Playwright WebKit engine rejects the Memory64
-  module at `WebAssembly.validate`, so WebKit's truthful boundary is wasm32
-  rather than a skipped or simulated wasm64 success. Browser injection waits
-  on guest-published atomic gates in the real process memory, so acceptance
-  does not depend on a fixed event-loop delay.
 - **Exec reads from filesystem**: Like a real OS, `exec()` reads binaries from the kernel-side `MemoryFileSystem`. Programs are baked into the VFS image at build time (or written by the page in the legacy path before spawning). Symlinks are used for multicall binaries (e.g., coreutils).
-- **dinit for service supervision**: Multi-process demos (nginx, redis,
-  mariadb, nginx-php, wordpress, lamp, mariadb-test) bake `/sbin/dinit` and
-  per-service files under `/etc/dinit.d/` into the VFS image via
-  `addDinitInit()` (`images/vfs/scripts/dinit-image-helpers.ts`). dinit is the
-  first user process, not PID 1. It reaps its directly supervised children and
-  handles `depends-on` ordering and bootstrap-then-daemon chains. Synthetic
-  PID 1 has no wait loop, so Kandelo does not yet reap children reparented to
-  it. Page code waits for service-ready via `onListenTcp` (port-bind)
-  callbacks, then starts driving the demo over kernel-loopback TCP or the HTTP
-  bridge. The corresponding Node demo commands resolve and authenticate the
-  same VFS artifacts, apply only per-run configuration such as a listen port,
-  and start image-owned dinit through `NodeKernelHost.spawnFromVfs()`.
+- **dinit for service supervision**: Multi-process demos (nginx, redis, mariadb, nginx-php, wordpress, lamp, mariadb-test) bake `/sbin/dinit` and per-service files under `/etc/dinit.d/` into the VFS image via `addDinitInit()` (`images/vfs/scripts/dinit-image-helpers.ts`). dinit is the first user process, not PID 1. It reaps its directly supervised children and handles `depends-on` ordering and bootstrap-then-daemon chains. Synthetic PID 1 has no wait loop, so Kandelo does not yet reap children reparented to it. Page code waits for service-ready via `onListenTcp` (port-bind) callbacks, then starts driving the demo over kernel-loopback TCP or the HTTP bridge.
 - **Connection pump in kernel worker**: HTTP↔TCP bridge runs inside the kernel worker with synchronous pipe I/O (direct Wasm export calls). Service worker transfers a MessagePort to the kernel worker for HTTP request delivery.
 - **App clients on main thread**: MySQL and Redis wire protocol clients stay on the main thread and use async pipe operations via the message protocol.
 - **Rust-owned advisory locks**: the browser host does not hold advisory-lock
@@ -232,67 +205,10 @@ pipe pair.
 - Single-owner device (one process can hold `/dev/input/mice` open at a time; second open from another pid returns `EBUSY`).
 
 ### Audio output (`/dev/dsp`)
-
-- The kernel exposes a playback-only OSS `/dev/dsp` frontend over its generic
-  PCM stream core. Applications may write U8, signed 16-bit little-endian, or
-  signed 16-bit big-endian mono/stereo PCM at 8–192 kHz. The worklet converts
-  those PCM concepts to the browser output format; Web Audio types are not
-  exposed to guests.
-- The queue is bounded and backpressured. It defaults to four 1024-byte
-  fragments (4096 active bytes), within a fixed 65,664-byte transport
-  allocation (128-byte control header plus 65,536-byte ring).
-  The kernel never drops the oldest samples. Blocking writers sleep for
-  capacity, nonblocking writers receive partial progress or `EAGAIN`, and
-  `POLLOUT` requires at least one free fragment. Writes may end between PCM
-  frame boundaries: later writes continue the same byte stream, while a drain
-  pads only a terminal incomplete frame with format-appropriate silence.
-- An `AudioWorkletProcessor`, running on the Web Audio render clock, reads the
-  shared PCM ring directly, advances the kernel-visible consumer cursor, and
-  outputs silence on underrun. There is no main-thread audio-drain timer and no
-  second persistent PCM queue; browser-provided Float32 output buffers are
-  transient. Consumption wakes blocked writes, `poll()`, and
-  `SNDCTL_DSP_SYNC`/close drain waiters in the kernel worker.
-- The default 4096-byte queue is about 21.3 ms at 48 kHz stereo S16. A normal
-  128-frame worklet render quantum adds about 2.7 ms at 48 kHz; the browser's
-  `AudioContext.baseLatency` and `outputLatency` are device-specific and must
-  be measured separately. Machine teardown first waits for the shared PCM ring
-  to drain. If the context is running, it then suspends the context so Web
-  Audio hands already-rendered blocks to the output device and waits a bounded
-  interval covering the reported base/output latency and final render quantum
-  before closing the context. A suspended or interrupted context is never
-  resumed implicitly during teardown.
-- **A user gesture is required.** Preparing the PCM driver may leave its
-  `AudioContext` suspended. The application must call the session audio-resume
-  path from a click, keypress, or other browser-recognized activation. If the
-  context is suspended or interrupted, the consumer cursor intentionally
-  stops: the queue fills, writers apply backpressure, and drain/close stays
-  pending instead of pretending audio played. Resuming the context continues
-  from the queued position.
-- Browser policy suspension and interruption are recoverable and do not poison
-  the stream. A permanent worklet, processor, or sink failure is latched into
-  the shared transport instead: blocked calls wake, `write()` and drain return
-  `EIO`, `poll()` reports `POLLERR`, and final close releases the exclusive
-  device after discarding only the tail that can no longer be played. A fatal
-  failure during an orphan drain likewise discards the unplayable tail and
-  releases ownership instead of wedging subsequent opens.
-- The one physical device is exclusive by OFD. `dup()` and inherited
-  descriptors share it; another `open()` gets `EBUSY`. Explicit final close
-  drains. Exit or `CLOEXEC` leaves any queued tail as an orphan drain and keeps
-  the device busy until the worklet reaches it. `RESET` is the explicit way to
-  discard a tail. A caught signal can interrupt a blocked write, drain, or
-  explicit close; write and drain honor `SA_RESTART`, while interrupted close
-  leaves the fd valid for the caller to retry.
-- Capture, duplex, `mmap`, OSS mixer devices, and kernel multi-client mixing
-  are not implemented. `open(O_RDONLY)` and `open(O_RDWR)` fail with
-  `ENOTSUP`, so browser software does not discover a fake recording device.
-
-Node uses the same transport and state transitions. Its default headless sink
-advances the consumer position from elapsed wall-clock time at the configured
-sample rate and emits consumed bytes to an optional observer; it never drains
-the queue instantaneously or keeps a second PCM copy. Running ticks follow the
-negotiated fragment duration, preserve fractional-frame drift, and use 10 ms
-idle polling. Applications therefore see the same write and SDL callback
-pacing even when no physical Node audio device is attached.
+- The kernel exposes an OSS-style `/dev/dsp` character device. User programs `open(O_WRONLY)`, configure rate / channels / format via `SNDCTL_DSP_*` ioctls, and `write()` interleaved 16-bit-LE PCM. The kernel buffers samples in a 256 KiB ring (~1.5 s of stereo S16 @ 44.1 kHz). On overflow the *oldest* whole frame drops — same trade-off real OSS hardware makes under hardware overrun.
+- Demo pages drive a `setInterval` loop (~50 ms cadence) that calls `BrowserKernel.drainAudio(maxBytes)`. The kernel-worker drains the ring via the `kernel_drain_audio` wasm export (which respects whole-frame boundaries so stereo L/R never tear) and posts the bytes back. Main thread converts S16 → Float32, builds an `AudioBuffer`, and schedules an `AudioBufferSourceNode` on the `AudioContext` clock with a small lookahead so brief drain hiccups don't underrun.
+- Single-owner device. A non-CLOEXEC fd retains ownership and queued samples across `execve`; last close or process exit releases the owner and flushes the ring so a successor starts from silence. Format must be `AFMT_S16_LE`; other formats are `EINVAL`.
+- **AudioContext gesture requirement.** `new AudioContext()` starts suspended in modern browsers and only resumes after a user gesture. The DOOM demo creates the context immediately after the user's "Start" click (which is itself a gesture), so `audioCtx.resume()` succeeds without a separate prompt.
 
 ## Browser Demos
 
@@ -327,20 +243,6 @@ The "Boot pattern" column reflects how the demo enters the kernel:
 
 Run the browser app: `cd apps/browser-demos && npm run dev`, then open
 `http://127.0.0.1:5401/`.
-
-For a manual OSS playback check after changing the port, first run
-`./run.sh clean fbdoom && ./run.sh build fbdoom` so an ignored local artifact
-from an older package revision cannot be reused. Then run `./run.sh browser`,
-select the fbDOOM demo, and click the framebuffer to satisfy the browser's
-audio-activation requirement. The title-screen music checks the software OPL
-path; starting a game and firing the pistol checks mixed sound effects. Quit
-through DOOM's menu to exercise the normal `/dev/dsp` drain-and-close path.
-This demo is a direct OSS consumer, not an SDL test; the `sdl-dsp-test` package
-and host audio integration suite exercise the unmodified SDL2 and SDL3 `dsp`
-backends. That suite also runs SDL_mixer 2.8.2's unmodified `playwave` example
-against deterministic WAVs and compares the Node sink's consumed PCM exactly.
-Browser output remains a manual audible check because the production
-AudioWorklet intentionally exposes transport cursors, not rendered samples.
 
 ### Kandelo session UI
 
@@ -605,34 +507,6 @@ Any extra files needed by an image-declared `autoCommand` can be declared in
 `assets`; the loader stages those paths generically and hash-verifies them when
 `sha256` is provided.
 
-A profile may also declare one fixed-path file-ingest capability. The current
-Kandelo browser UI presents it on the framebuffer surface as a file picker and
-drop target:
-
-```json
-{
-  "ingest": {
-    "accept": [".wad"],
-    "targetPath": "/user.wad",
-    "maxBytes": 33554432,
-    "label": "Load WAD",
-    "onLoad": {
-      "restart": "/usr/local/bin/fbdoom -iwad /user.wad"
-    }
-  }
-}
-```
-
-The image, not the uploaded filename or profile name, owns `targetPath` and the
-optional restart command. The path must be absolute and normalized, its parent
-must already exist, extensions are matched case-insensitively, and `maxBytes`
-cannot exceed 64 MiB. The browser checks both the file's declared size and the
-actual buffer length. It writes before stopping a current device owner, then
-uses the kernel signal path and bounded process/device waits before dispatching
-the image-owned command. Write, signal, timeout, and command-dispatch failures
-remain visible. An absent `ingest` block means the image exposes no upload
-capability; the loader does not infer one from a package or profile name.
-
 The runtime treats this file as untrusted image input. It must be a regular
 file no larger than 256 KiB, contain valid UTF-8 and JSON, and use a supported
 version. The loader validates every profile before using any of them, so a
@@ -719,34 +593,6 @@ readable `/etc/profile.d/*.sh` fragments there, so an image composer can add
 package-manager environment setup without teaching the browser about a
 particular package or prefix.
 
-Under the current browser trust boundary, a supervised demo login requires the
-final fully staged image to contain exactly one canonical `maker` passwd,
-shadow, and wheel record, the exact sudoers policy and autologin message, and
-an exact local `/usr/bin/login` byte match for a separately
-publisher-admitted privileged product. The loader makes this decision after
-configured assets and lazy inputs have been staged, then boots through
-`BrowserKernel.initFromPublishedPrivilegedProgramProduct`. A raw image,
-descriptor, or demo configuration cannot mint that private capability.
-Conversely, image origin is not a gate: an otherwise third-party image with
-the exact final state remains eligible when paired with a separately admitted
-product. This documents current repository behavior only; the broader trust
-model for deliberately user-selected images remains unresolved.
-
-For an eligible image/product pair, each newly allocated logical terminal
-starts root-authorized `login -p -f maker` once.
-When that login shell exits, the same terminal starts ordinary `login -p` with
-a bounded restart delay. Closing and reopening the terminal UI only detaches
-and reattaches its renderer; it neither repeats autologin nor replaces the
-guest process. The explicit close control in the terminal tab removes the
-logical terminal; that action, kernel detach, reboot, and host destruction
-stop the active process and cancel pending restarts.
-
-Images that do not satisfy the complete final predicate, or that have no
-separately admitted product, retain their declared default shell. The browser
-does not infer readiness from an arbitrary unlocked password or implement
-authentication in React; both preauthentication and password verification
-remain in the guest `login` program and VFS state.
-
 `terminal.run` sends a command through the persistent PTY-backed shell.
 `terminal.write` sends raw text to that PTY, which is useful for entering input
 into an already-running REPL. `guide.companion.srcDoc` runs in a sandboxed
@@ -809,7 +655,7 @@ requested root equal to its layer ID. The wider 128-name descriptor/parser
 bound is shared with planning and leaves room for collection artifacts, but it
 does not turn this boot mount into a multi-root layer. Phase 3 composes the
 multi-root main shell through the bottle-collection primitive instead.
-Schema-6 direct-bottle `deferred_trees` carry a complete source inventory and guest
+Schema-5 direct-bottle `deferred_trees` carry a complete source inventory and guest
 projection: paths, types, modes, links, regular-inode groups, materialization
 provenance, immutable content identity, a closed decoder/media-type pair, and
 one to eight byte-identical immutable HTTPS transports. Exactly one
@@ -839,21 +685,6 @@ waits abortable, and rethrows its arbitrary `reason` unchanged before mirror
 fallback or VFS commit. Standard `AbortError`/`ABORT_ERR` failures remain the
 compatibility fallback when no signal is registered. Other 4xx responses and
 size, digest, or decode failures do not consume the same-URL retry budget.
-
-A public browser consumer cannot supply privileged projections through compose
-options, boot requests, descriptors, or shared URLs. Product-owned browser code
-may select a compiled reviewed profile whose opaque, non-serializable
-capability never enters those input records. Its projections are rebound to
-the descriptor's exact Formula owner, bottle digest, and complete source
-inventory. The owning bottle is materialized within the private composition
-transaction; unrelated bottles stay lazy. Chromium, Firefox, and WebKit use
-the same copy-and-admit path as Node and receive a separate immutable product
-backend, while the composed Homebrew filesystem remains the writable `nosuid`
-tree. `BrowserKernel.initFromPublishedPrivilegedProgramProduct` accepts only
-that exact published object and overlays its privately retained, immutable
-`/usr/bin` projection in the VFS-owning worker. Ordinary image init and all
-public descriptor/URL inputs remain `nosuid` and cannot populate the private
-worker message.
 There is no per-file or byte-range retrieval inside the gzip/TAR. A failed
 fetch, digest,
 decode, inventory check, or allocation leaves every regular inode pending and
@@ -930,24 +761,18 @@ layers and non-Homebrew deferred archives, but is not produced as a substitute
 for an original Homebrew bottle.
 
 The source inventory and materialization provenance are additive deferred-tree
-metadata. Homebrew owns receipt parsing, changed-file and keg policy, prefix
-authentication, and the legacy `homebrew-bottle-tar-gzip-v1` vocabulary. Its
-adapter validates that policy and erases it into the generic `tar-gzip-v1`
-source inventory and byte-transform plan before calling the VFS. Schema-5
-bottles remain readable only when they need no receipt relocation; a schema-5
-receipt-relocation marker or schema-6 plan fails closed. Existing schema-4 ZIP
-descriptors and serialized legacy deferred trees remain valid on the new host.
-An older host rejects a direct-bottle
+metadata. Existing schema-4 ZIP descriptors and serialized legacy deferred
+trees remain valid on the new host. An older host rejects a direct-bottle
 descriptor because the closed object contains fields it does not understand;
 it does not reinterpret the bottle as the older one-source-per-guest-entry
 shape. These metadata additions do not change the kernel/process ABI or the
-ABI binding carried by a VFS image; the kernel/process ABI remains 43.
+ABI binding carried by a VFS image.
 
 Boot accepts at most eight package layers and 16 MiB of descriptor bytes in
 aggregate. The shared consumer additionally caps aggregate compressed payload
 bytes, expanded bytes, and entry count. Boot-prefetch downloads use at most two
 workers. Each package's declared keg and `opt` link must match its indexed
-paths. Every schema-6 ancestor at or below the authenticated Homebrew prefix must be
+paths. Every schema-5 ancestor at or below `/opt/kandelo/homebrew` must be
 declared in the aggregate guest projection. Equal-mode `mergeable-directory`
 claims can create an absent directory once or reuse an equal-mode lower-image
 directory; undeclared ancestors, unequal modes, and non-directory collisions
@@ -1119,12 +944,7 @@ later process. `maxMemoryPages` still caps each backing's guest brk/mmap growth
 and should be tuned for workloads that need large address spaces. Fork
 synchronously copies the parent's exact current byte length into another fresh
 backing so its observable `memory.size()` and accessible address-space boundary
-match the parent before any asynchronous Worker launch work can yield. Before
-constructing that backing, fork synchronously checks both live capacity and
-the retired-generation count and byte thresholds. Saturated retirement debt
-returns `EAGAIN` without allocating or copying another full address space; an
-asynchronous pre-copy wait would let another parent thread invalidate the
-fork-time snapshot.
+match the parent before any asynchronous Worker launch work can yield.
 
 Browser `Worker.terminate()` is not treated as proof that a Worker stopped
 touching shared memory. Cooperative exit and exec publish an exact terminal

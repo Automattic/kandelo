@@ -1,62 +1,92 @@
 /**
- * serve.ts — Run the nginx service VFS on the Node host.
+ * serve.ts — Run nginx.wasm serving static files on the kernel.
  *
- * The image boots dinit as the first user process, and dinit starts nginx from
- * /etc/dinit.d/nginx. This mirrors the browser demo instead of staging
- * nginx manually on the Node host filesystem.
+ * Starts nginx with master_process on and 2 worker processes.
+ * The kernel-assigned master forks 2 workers that handle connections.
+ *
+ * Uses NodeKernelHost which runs the kernel in a dedicated worker_thread
+ * for optimal syscall throughput. TCP bridging is automatic.
  *
  * Usage:
- *   npx tsx packages/registry/nginx/demo/serve.ts [port]
+ *   npx tsx packages/registry/nginx/demo/serve.ts
  *
  * Then: curl http://localhost:8080/
  */
 
-import {
-  bootDinitServiceVfs,
-  finishWhenDinitExits,
-  installSignalHandlers,
-  rewriteNginxListenPort,
-  trackDinitExit,
-  waitForHttp,
-} from "../../service-vfs-demo";
+import { readFileSync, mkdirSync } from "fs";
+import { resolve, dirname, join } from "path";
+import { NodeKernelHost } from "../../../../host/src/node-kernel-host";
+import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 
-async function main() {
-  const port = parsePort(process.argv[2] ?? "8080");
+const scriptDir = dirname(new URL(import.meta.url).pathname);
+const repoRoot = resolve(scriptDir, "../../../..");
 
-  console.log("Booting nginx VFS with dinit...");
-  const { host, exitPromise } = await bootDinitServiceVfs({
-    image: {
-      relPath: "programs/nginx-vfs.vfs.zst",
-      publicFile: "nginx.vfs.zst",
-      buildHint: "./run.sh build nginx-vfs",
-    },
-    target: "nginx",
-    maxWorkers: 8,
-    configure: (fs) => rewriteNginxListenPort(fs, port),
-  });
+// Set up filesystem layout for nginx
+const prefix = resolve(scriptDir);
+const tmpDir = "/tmp/nginx-wasm";
 
-  installSignalHandlers(host);
-  const dinitExited = trackDinitExit(exitPromise);
+// Create temp directories nginx needs
+for (const dir of ["client_body_temp", "proxy_temp", "fastcgi_temp"]) {
+    mkdirSync(join(tmpDir, dir), { recursive: true });
+}
+mkdirSync(join(tmpDir, "logs"), { recursive: true });
 
-  console.log(`Waiting for nginx on http://localhost:${port}/...`);
-  await waitForHttp(`http://localhost:${port}/`, 120_000, dinitExited);
-
-  console.log("\nnginx running under dinit.");
-  console.log(`  Static files: curl http://localhost:${port}/`);
-  console.log("\nPress Ctrl+C to stop.");
-
-  await finishWhenDinitExits(host, exitPromise);
+function loadBytes(path: string): ArrayBuffer {
+    const buf = readFileSync(path);
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
-function parsePort(value: string): number {
-  const port = Number(value);
-  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-    throw new Error(`Invalid port: ${value}`);
-  }
-  return port;
+async function main() {
+    const nginxWasm = tryResolveBinary("programs/nginx.wasm");
+    if (!nginxWasm) {
+        console.error(
+            "nginx.wasm not found. Run: scripts/fetch-binaries.sh " +
+            "(or bash packages/registry/nginx/build-nginx-local.sh to build locally).",
+        );
+        process.exit(1);
+    }
+
+    const nginxBytes = loadBytes(nginxWasm);
+    const confPath = resolve(scriptDir, "nginx.conf");
+
+    const host = new NodeKernelHost({
+        maxWorkers: 8,
+        onStdout: (_pid, data) => process.stdout.write(data),
+        onStderr: (_pid, data) => process.stderr.write(data),
+    });
+
+    await host.init();
+
+    console.log(`Starting nginx multi-worker (prefix=${prefix})...`);
+    console.log("  master + 2 worker processes (kernel-assigned PIDs)");
+    console.log("Listening on http://localhost:8080/");
+    console.log("Press Ctrl+C to stop.");
+
+    const exitPromise = host.spawn(nginxBytes, [
+        "nginx",
+        "-p", prefix + "/",
+        "-c", confPath,
+    ], {
+        env: [
+            "HOME=/tmp",
+            "PATH=/usr/local/bin:/usr/bin:/bin",
+        ],
+        cwd: prefix,
+    });
+
+    // Handle Ctrl+C gracefully
+    process.on("SIGINT", async () => {
+        console.log("\nShutting down...");
+        await host.destroy().catch(() => {});
+        process.exit(0);
+    });
+
+    const status = await exitPromise;
+    await host.destroy().catch(() => {});
+    process.exit(status);
 }
 
 main().catch((e) => {
-  console.error(e);
-  process.exit(1);
+    console.error(e);
+    process.exit(1);
 });

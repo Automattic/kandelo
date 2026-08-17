@@ -114,14 +114,13 @@ TAG="${ARCH}_kandelo"
 FORMULA_JSON_PATH="Library/Taps/${TAP_NAME%%/*}/homebrew-${TAP_NAME#*/}/Formula/${FORMULA}.rb"
 jq -e \
   --arg formula "$FORMULA" \
-  --arg formula_key "$TAP_NAME/$FORMULA" \
   --arg formula_path "$FORMULA_JSON_PATH" \
   --arg tag "$TAG" \
   --arg sha "$EXPECTED_SHA256" \
   --arg root "$EXPECTED_ROOT_URL" \
   --arg cellar "$EXPECTED_CELLAR" '
     (keys | length) == 1 and
-    (to_entries[0].key == $formula_key) and
+    (to_entries[0].key == $formula) and
     (to_entries[0].value.formula.name == $formula) and
     (to_entries[0].value.formula.path == $formula_path) and
     (to_entries[0].value.bottle.root_url == $root) and

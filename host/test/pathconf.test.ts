@@ -3,10 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  PATHCONF_NAMES,
-  POSIX_PATH_MAX_BYTES,
-} from "../src/generated/abi";
+import { PATHCONF_NAMES } from "../src/generated/abi";
 import { filesystemPathconf } from "../src/pathconf";
 import { DeviceFileSystem } from "../src/vfs/device-fs";
 import { HostFileSystem } from "../src/vfs/host-fs";
@@ -67,7 +64,7 @@ describe("pathconf capability values", () => {
     ).toBe(255);
     expect(
       filesystemPathconf(regularStat, PATHCONF_NAMES.PATH_MAX, memoryProfile),
-    ).toBe(POSIX_PATH_MAX_BYTES);
+    ).toBe(4096);
     expect(
       filesystemPathconf(regularStat, PATHCONF_NAMES.NO_TRUNC, memoryProfile),
     ).toBe(1);
@@ -210,8 +207,7 @@ describe("HostFileSystem fpathconf", () => {
     const fd = fs.open("/file", O_RDONLY, 0);
     fs.unlink("/file");
 
-    expect(fs.fpathconf(fd, PATHCONF_NAMES.PATH_MAX))
-      .toBe(POSIX_PATH_MAX_BYTES);
+    expect(fs.fpathconf(fd, PATHCONF_NAMES.PATH_MAX)).toBe(4096);
     expect(() => fs.pathconf("/file", PATHCONF_NAMES.PATH_MAX)).toThrow(/ENOENT/);
     fs.close(fd);
   });

@@ -35,16 +35,6 @@ test("creates one exact closed-browser lifecycle fixture", () => {
     const spec = write(root, "tree.json", new Uint8Array([2]));
     const archive = write(root, "homebrew-bootstrap.zip", new Uint8Array([3]));
     const environment = write(root, "homebrew-brew.env", new Uint8Array([4]));
-    const compositionReport = write(
-      root,
-      "composition-report.json",
-      new Uint8Array([7]),
-    );
-    const privilegedProduct = write(
-      root,
-      "main-shell.vfs.privileged.vfs",
-      new Uint8Array([8]),
-    );
     const mirror = join(root, "mirror");
     mkdirSync(mirror);
     const payloadBytes = new Uint8Array([5, 6]);
@@ -62,8 +52,6 @@ test("creates one exact closed-browser lifecycle fixture", () => {
       bootstrapArchive: archive,
       bootstrapEnvironment: environment,
       bottleMirror: mirror,
-      compositionReport,
-      privilegedProduct,
       fixedAssetUrlRoot: "https://closed.example.test/run/",
       coreRevision: "1".repeat(40),
       canaryRevision: "2".repeat(40),
@@ -88,36 +76,6 @@ test("creates one exact closed-browser lifecycle fixture", () => {
       sha256: plan.assets[0]!.sha256,
       bytes: payloadBytes.byteLength,
     }]);
-    assert.deepEqual(fixture.loginProduct, {
-      compositionReport: {
-        url: "https://closed.example.test/run/composition-report.json",
-        sha256: sha256(new Uint8Array([7])),
-        bytes: 1,
-      },
-      privilegedProduct: {
-        url: "https://closed.example.test/run/main-shell.vfs.privileged.vfs",
-        sha256: sha256(new Uint8Array([8])),
-        bytes: 1,
-      },
-    });
-
-    assert.throws(
-      () =>
-        createHomebrewGuestLifecycleFixture({
-          image,
-          bootstrapSpec: spec,
-          bootstrapArchive: archive,
-          bootstrapEnvironment: environment,
-          bottleMirror: mirror,
-          compositionReport,
-          fixedAssetUrlRoot: "https://closed.example.test/run/",
-          coreRevision: "1".repeat(40),
-          canaryRevision: "2".repeat(40),
-          timeoutMs: 900_000,
-          out: join(root, "partial-product.json"),
-        }),
-      /one exact pair/,
-    );
 
     writeFileSync(join(mirror, plan.assets[0]!.asset), new Uint8Array([9, 9]));
     assert.throws(

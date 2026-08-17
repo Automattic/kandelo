@@ -10,10 +10,6 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/libc/glue"
-BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$REPO_ROOT"
-BROWSER_MEMORY64_FIXTURES_MANIFEST="$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt"
-# shellcheck source=/dev/null
-source "$REPO_ROOT/scripts/browser-memory64-example-fixtures.sh"
 # Per-arch output dirs match the layout the resolver's
 # `place_binaries_symlinks` writes:
 # binaries/programs/<arch>/ and local-binaries/programs/<arch>/.
@@ -23,7 +19,7 @@ source "$REPO_ROOT/scripts/browser-memory64-example-fixtures.sh"
 OUT_DIR_32="$REPO_ROOT/local-binaries/programs/wasm32"
 OUT_DIR_64="$REPO_ROOT/local-binaries/programs/wasm64"
 TEST_FIXTURE_DIR="$REPO_ROOT/local-binaries/test-fixtures"
-mkdir -p "$OUT_DIR_32" "$OUT_DIR_64" "$TEST_FIXTURE_DIR/wasm32"
+mkdir -p "$OUT_DIR_32" "$OUT_DIR_64" "$TEST_FIXTURE_DIR"
 
 # Package-owned resolver paths must never be populated by this developer/test
 # compiler. A regular file at one of those paths has no immutable package
@@ -146,7 +142,7 @@ LINK_PRE_LIBS=(
 # linker pass.
 LINK_POST_LIBS=(
     "$SYSROOT/lib/libc.a"
-    -Wl,--no-entry
+    -Wl,--entry=_start
     -Wl,--export=_start
     -Wl,--import-memory
     -Wl,--shared-memory
@@ -178,8 +174,6 @@ build_program() {
     local name arch=""
     name=$(basename "$src" .c)
     local wasm="$out_dir/${name}.wasm"
-    local raw_wasm="$out_dir/${name}.raw.wasm"
-    local next_wasm="$out_dir/${name}.next.wasm"
 
     case "$out_dir" in
         "$OUT_DIR_32") arch=wasm32 ;;
@@ -216,9 +210,6 @@ build_program() {
     fi
 
     echo "  Compiling $name..."
-    # WHY: a failed compile or instrumentation pass must not leave a raw or
-    # stale-ABI module at the resolver-visible final path.
-    rm -f "$wasm" "$raw_wasm" "$next_wasm"
     # Bash 3.2 (macOS system bash) under `set -u` treats expansion of
     # an empty array as unbound; the `${arr[@]+...}` guard suppresses
     # that when extra_libs is empty.
@@ -226,16 +217,15 @@ build_program() {
         "${LINK_PRE_LIBS[@]}" \
         ${extra_libs[@]+"${extra_libs[@]}"} \
         "${LINK_POST_LIBS[@]}" \
-        -o "$raw_wasm"
+        -o "$wasm"
 
-    # Apply fork instrumentation if the program can participate in fork. The
-    # tool returns standalone executables without a fork or dynamic-loader
-    # boundary byte-for-byte unchanged, so it is safe to run unconditionally.
-    # Side modules and loader-capable mains still receive process-image state
-    # helpers even when they have no local fork import.
-    "$FORK_INSTRUMENT" "$raw_wasm" -o "$next_wasm"
-    mv "$next_wasm" "$wasm"
-    rm -f "$raw_wasm"
+    # Apply fork instrumentation if the program uses fork. The tool is a
+    # no-op for modules without `kernel.kernel_fork`, so it's safe to run
+    # unconditionally on every program. Programs without fork stay
+    # byte-identical except for a small ABI metadata section the tool
+    # always emits (see runtime::inject_runtime).
+    "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr"
+    mv "$wasm.instr" "$wasm"
 }
 
 # Build a C++ program via the SDK's wasm32posix-c++ wrapper. The SDK
@@ -250,11 +240,8 @@ build_cpp_program() {
     local name
     name=$(basename "$src" .cpp)
     local wasm="$out_dir/${name}.wasm"
-    local raw_wasm="$out_dir/${name}.raw.wasm"
-    local next_wasm="$out_dir/${name}.next.wasm"
 
     echo "  Compiling $name (C++)..."
-    rm -f "$wasm" "$raw_wasm" "$next_wasm"
     # -fwasm-exceptions is required for clang to lower C++ try/catch
     # to wasm-EH `try`/`catch` instructions. Without it clang emits
     # `__cxa_throw; unreachable` and DCEs the catch handlers, so the
@@ -265,26 +252,24 @@ build_cpp_program() {
         -fwasm-exceptions \
         "$src" \
         -lc++ -lc++abi \
-        -o "$raw_wasm"
+        -o "$wasm"
 
-    # Preserve a raw no-fork control for issue #918 independently of the
-    # normally instrumented fork-bearing program.
+    # Preserve a real pre-instrumentation control for issue #918. The source
+    # contains an unreachable-at-test-time fork branch solely so the normal
+    # output is transformed below. A raw module with kernel_fork but without
+    # wpk_fork_* exports is test evidence, not a distributable program, so it
+    # lives outside the resolver's programs tree.
     if [ "$name" = "sjlj_noexcept_boundary" ]; then
         mkdir -p "$TEST_FIXTURE_DIR/wasm32"
-        wasm32posix-c++ \
-            -O2 \
-            -fwasm-exceptions \
-            -DKANDELO_SJLJ_NO_FORK_ANCHOR \
-            "$src" \
-            -lc++ -lc++abi \
-            -o "$TEST_FIXTURE_DIR/wasm32/${name}.raw.wasm"
+        cp "$wasm" "$TEST_FIXTURE_DIR/wasm32/${name}.raw.wasm"
     fi
 
-    # Publish the resolver-visible path only after instrumentation and its
-    # complete ABI 43 artifact contract succeed.
-    "$FORK_INSTRUMENT" "$raw_wasm" -o "$next_wasm"
-    mv "$next_wasm" "$wasm"
-    rm -f "$raw_wasm"
+    # Phase 7: fork support comes from wasm-fork-instrument. The tool is
+    # a no-op for modules without `kernel.kernel_fork`, so it's safe to
+    # run unconditionally — programs without fork stay byte-identical
+    # except for the ABI metadata section.
+    "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr"
+    mv "$wasm.instr" "$wasm"
 }
 
 ensure_libcxx_in_sysroot() {
@@ -327,12 +312,6 @@ for src in "$REPO_ROOT/programs/"*.c; do
     # (sysroot/lib/libdrm.a, libgbm.a). EGL/GLES2 stubs are picked up
     # by build_program's header-based auto-detection.
     case "$(basename "$src")" in
-        login.c|sudo-lite.c)
-            # WHY: Task 18's reviewed Homebrew bottles own the product paths.
-            # These local builds exist only so runtime tests can exercise the
-            # guest sources before those immutable products are available.
-            build_program "$src" "$TEST_FIXTURE_DIR/wasm32"
-            ;;
         modeset.c|dri-modeset.c|dumb_roundtrip.c)
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
@@ -393,7 +372,7 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         "$GLUE_DIR/compiler_rt.c"
         "$SYSROOT64/lib/crt1.o"
         "$SYSROOT64/lib/libc.a"
-        -Wl,--no-entry
+        -Wl,--entry=_start
         -Wl,--export=_start
         -Wl,--import-memory
         -Wl,--shared-memory
@@ -415,8 +394,6 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         "$REPO_ROOT/programs/"hello64.c \
         "$REPO_ROOT/programs/"ifhwaddr.c \
         "$REPO_ROOT/programs/"posix-timer-thread.c \
-        "$REPO_ROOT/programs/"scm-rights-pipe-lifetime.c \
-        "$REPO_ROOT/programs/"scm-rights-semantics.c \
         "$REPO_ROOT/programs/"sched-getaffinity.c; do
         [ -f "$src" ] || continue
         local_name=$(basename "$src" .c)
@@ -430,20 +407,28 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
             -o "$OUT_DIR_64/${local_name}.wasm"
     done
 
-    # WHY: owning Vitests can build these on demand, but browser-only and
-    # packed CI workspaces cannot depend on a prior test runner leaving ambient
-    # artifacts behind. Every browser-owned example comes from the one
-    # contract-checked manifest. Their memory64 execution paths do not require
-    # fork rewind instrumentation; the wait fixture selects posix_spawn because
-    # that instrumentation is currently a wasm32 artifact contract.
-    memory64_example_sources="$(browser_memory64_fixture_sources)"
-    while IFS= read -r source_rel; do
-        source_path="$REPO_ROOT/$source_rel"
-        output_path="$REPO_ROOT/${source_rel%.c}.wasm64.wasm"
-        echo "  Compiling $(basename "$source_rel" .c) (wasm64)..."
-        "$CC" "${CFLAGS64[@]}" "$source_path" "${LINK_FLAGS64[@]}" \
-            -o "$output_path"
-    done <<< "$memory64_example_sources"
+    # Keep the memory64 wait-lifecycle browser fixture on the same owned build
+    # path as its wasm32 counterpart. The owning Vitest builds this fixture on
+    # demand, but browser-only and packed CI workspaces must not depend on a
+    # prior test runner having left a generated artifact behind. This fixture
+    # deliberately uses posix_spawn rather than fork because fork rewind
+    # instrumentation is currently a wasm32 artifact contract.
+    wait_lifecycle_src="$REPO_ROOT/examples/wait_lifecycle_test.c"
+    if [ -f "$wait_lifecycle_src" ]; then
+        echo "  Compiling wait_lifecycle_test (wasm64)..."
+        "$CC" "${CFLAGS64[@]}" "$wait_lifecycle_src" "${LINK_FLAGS64[@]}" \
+            -o "$REPO_ROOT/examples/wait_lifecycle_test.wasm64.wasm"
+    fi
+
+    # Terminal-attribute marshalling is pointer-width sensitive in the host,
+    # so browser-only and packed CI workspaces need the same memory64 guest
+    # fixture that the owning Vitest can build on demand.
+    terminal_attributes_src="$REPO_ROOT/examples/terminal_attributes_api_test.c"
+    if [ -f "$terminal_attributes_src" ]; then
+        echo "  Compiling terminal_attributes_api_test (wasm64)..."
+        "$CC" "${CFLAGS64[@]}" "$terminal_attributes_src" "${LINK_FLAGS64[@]}" \
+            -o "$REPO_ROOT/examples/terminal_attributes_api_test.wasm64.wasm"
+    fi
 
     # Fork continuation instrumentation is currently a wasm32 artifact
     # contract. Still cover the compiler's architecture-independent SjLj /

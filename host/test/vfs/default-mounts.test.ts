@@ -1,19 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
-import {
-  existsSync,
-  linkSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { MemoryFileSystem } from "../../src/vfs/memory-fs";
 import { HostFileSystem } from "../../src/vfs/host-fs";
 import {
@@ -22,24 +10,18 @@ import {
   resolveForBrowser,
   type MountSpec,
 } from "../../src/vfs/default-mounts";
-import {
-  resolveForNode,
-  resolveForNodeKernelSession,
-} from "../../src/vfs/default-mounts-node";
+import { resolveForNode } from "../../src/vfs/default-mounts-node";
 import { restoreBrowserKernelInitMounts } from "../../src/browser-kernel-vfs-init";
 import {
   addSealedLazyAtomicTestTree,
   forgeLazyAtomicSeal,
   type LazyAtomicSealForgery,
 } from "../lazy-atomic-seal-fixture";
-import { resolveMountSetIdCapability } from "../../src/vfs/memory-fs";
-import { ST_NOSUID } from "../../src/vfs/types";
 
 const O_RDONLY = 0x0000;
 const O_WRONLY = 0x0001;
 const O_CREAT = 0x0040;
 const O_TRUNC = 0x0200;
-const O_APPEND = 0x0400;
 const PERMISSION_MASK = 0o777;
 const FILE_TYPE_MASK = 0xf000;
 const DIRECTORY_MODE = 0x4000;
@@ -105,26 +87,13 @@ async function withUmask<T>(
   }
 }
 
-function typeScriptSources(root: string): string[] {
-  const files: string[] = [];
-  for (const entry of readdirSync(root, { withFileTypes: true })) {
-    const path = join(root, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...typeScriptSources(path));
-    } else if (entry.isFile() && entry.name.endsWith(".ts")) {
-      files.push(path);
-    }
-  }
-  return files;
-}
-
 describe("DEFAULT_MOUNT_SPEC", () => {
   it("includes the eight canonical mount points", () => {
     const paths = DEFAULT_MOUNT_SPEC.map((m) => m.path).sort();
     expect(paths).toEqual(
       [
         "/",
-        "/home/maker",
+        "/home/user",
         "/root",
         "/srv",
         "/tmp",
@@ -163,8 +132,6 @@ describe("resolveForNode", () => {
     for (const m of mounts) {
       expect(typeof m.mountPoint).toBe("string");
       expect(m.backend).toBeDefined();
-      expect(resolveMountSetIdCapability(m)).toEqual({ kind: "nosuid" });
-      expect(m.backend.statfs("/").flags & ST_NOSUID).toBe(ST_NOSUID);
     }
   });
 
@@ -194,38 +161,6 @@ describe("resolveForNode", () => {
     expect(new TextDecoder().decode(onDisk)).toBe("hello via host fs");
   });
 
-  it("keeps the canonical maker profile on a writable Node scratch mount", async () => {
-    const makerSessionDir = mkdtempSync(
-      join(tmpdir(), "wasm-posix-maker-profile-"),
-    );
-    const mounts = await resolveForNode(
-      DEFAULT_MOUNT_SPEC,
-      image,
-      makerSessionDir,
-    );
-    const home = mounts.find((m) => m.mountPoint === "/home/maker");
-
-    try {
-      expect(home).toBeDefined();
-      const data = new TextEncoder().encode("maker node profile");
-      const fd = home!.backend.open(
-        "/profile.txt",
-        O_WRONLY | O_CREAT | O_TRUNC,
-        0o644,
-      );
-      home!.backend.write(fd, data, null, data.length);
-      home!.backend.close(fd);
-      expect(
-        readFileSync(
-          join(makerSessionDir, "home", "maker", "profile.txt"),
-          "utf8",
-        ),
-      ).toBe("maker node profile");
-    } finally {
-      rmSync(makerSessionDir, { recursive: true, force: true });
-    }
-  });
-
   it("pre-creates every scratch directory under sessionDir", async () => {
     await resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
     for (const spec of DEFAULT_MOUNT_SPEC) {
@@ -243,7 +178,7 @@ describe("resolveForNode", () => {
     );
     const tmp = mounts.find((m) => m.mountPoint === "/tmp")!;
     const varTmp = mounts.find((m) => m.mountPoint === "/var/tmp")!;
-    const home = mounts.find((m) => m.mountPoint === "/home/maker")!;
+    const home = mounts.find((m) => m.mountPoint === "/home/user")!;
     const root = mounts.find((m) => m.mountPoint === "/root")!;
 
     try {
@@ -352,328 +287,6 @@ describe("resolveForNode", () => {
   });
 });
 
-describe("Node worker session seed trees", () => {
-  it("keeps exact native append branding limited to the private-session resolver", () => {
-    const sourceRoot = fileURLToPath(new URL("../../src/", import.meta.url));
-    const token = "createSessionOwnedHostFileSystem";
-    const uses = typeScriptSources(sourceRoot)
-      .map((path) => ({
-        count: readFileSync(path, "utf8").split(token).length - 1,
-        file: relative(sourceRoot, path).replaceAll("\\", "/"),
-      }))
-      .filter(({ count }) => count > 0)
-      .sort((left, right) => left.file.localeCompare(right.file));
-
-    expect(uses).toEqual([
-      { count: 2, file: "vfs/default-mounts-node.ts" },
-      { count: 1, file: "vfs/host-fs.ts" },
-    ]);
-  });
-
-  it("authenticates the root image before inspecting or staging seeds", async () => {
-    const sessionRoot = mkdtempSync(join(tmpdir(), "kandelo-seed-auth-"));
-    const forgedImage = await buildForgedLegacyDinitImage("member");
-    try {
-      await expect(
-        resolveForNodeKernelSession(
-          DEFAULT_MOUNT_SPEC,
-          forgedImage,
-          sessionRoot,
-          [{
-            sourcePath: join(sessionRoot, "does-not-exist"),
-            destinationPath: "/tmp/kandelo-run",
-          }],
-        ),
-      ).rejects.toThrow(/activation member/i);
-      expect(existsSync(join(sessionRoot, "tmp"))).toBe(false);
-      expect(existsSync(join(sessionRoot, ".seed-staging-0"))).toBe(false);
-    } finally {
-      rmSync(sessionRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("breaks external hardlink aliases before granting exact append authority", async () => {
-    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-snapshot-source-"));
-    const sessionRoot = mkdtempSync(join(tmpdir(), "kandelo-snapshot-session-"));
-    const outside = join(fixtureRoot, "outside");
-    const source = join(fixtureRoot, "fixtures");
-    const staged = join(source, "suite", "fixture");
-    try {
-      mkdirSync(join(source, "suite"), { recursive: true });
-      writeFileSync(outside, "seed");
-      linkSync(outside, staged);
-
-      const mounts = await resolveForNodeKernelSession(
-        DEFAULT_MOUNT_SPEC,
-        await buildFixtureImage(),
-        sessionRoot,
-        [{
-          sourcePath: source,
-          destinationPath: "/tmp/kandelo-run",
-        }],
-      );
-      const mount = mounts.find((entry) => entry.mountPoint === "/tmp")!;
-
-      // The source entry still aliases the external file. Mutating it after
-      // initialization must not replace bytes inside the worker-owned copy.
-      writeFileSync(outside, "external");
-      expect(readFileSync(staged, "utf8")).toBe("external");
-      expect(new TextDecoder().decode(
-        readMountFile(mount.backend, "/kandelo-run/suite/fixture"),
-      )).toBe("seed");
-
-      const bytes = new TextEncoder().encode("+guest");
-      const fd = mount.backend.open(
-        "/kandelo-run/suite/fixture",
-        O_WRONLY | O_APPEND,
-        0,
-      );
-      try {
-        expect(mount.backend.append(fd, bytes, bytes.byteLength, null)).toEqual({
-          written: bytes.byteLength,
-          end: 10,
-        });
-      } finally {
-        mount.backend.close(fd);
-      }
-
-      expect(new TextDecoder().decode(
-        readMountFile(mount.backend, "/kandelo-run/suite/fixture"),
-      )).toBe("seed+guest");
-      expect(readFileSync(outside, "utf8")).toBe("external");
-    } finally {
-      rmSync(sessionRoot, { recursive: true, force: true });
-      rmSync(fixtureRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects image destinations and a source that contains the private session", async () => {
-    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-snapshot-validation-"));
-    const source = join(fixtureRoot, "source");
-    const nestedSession = join(source, "worker-session");
-    mkdirSync(nestedSession, { recursive: true });
-    try {
-      await expect(
-        resolveForNodeKernelSession(
-          DEFAULT_MOUNT_SPEC,
-          await buildFixtureImage(),
-          nestedSession,
-          [{ sourcePath: source, destinationPath: "/etc/fixtures" }],
-        )
-      ).rejects.toThrow(/below a scratch mount/i);
-
-      await expect(
-        resolveForNodeKernelSession(
-          DEFAULT_MOUNT_SPEC,
-          await buildFixtureImage(),
-          nestedSession,
-          [{
-            sourcePath: source,
-            destinationPath: "/tmp/kandelo-run",
-          }],
-        )
-      ).rejects.toThrow(/contains the private session/i);
-    } finally {
-      rmSync(fixtureRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects source symlinks before publishing a seeded backend", async () => {
-    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-seed-symlink-"));
-    const sessionRoot = mkdtempSync(join(tmpdir(), "kandelo-seed-session-"));
-    const source = join(fixtureRoot, "source");
-    mkdirSync(source);
-    writeFileSync(join(fixtureRoot, "outside"), "outside");
-    symlinkSync("../outside", join(source, "escape"));
-    try {
-      await expect(
-        resolveForNodeKernelSession(
-          DEFAULT_MOUNT_SPEC,
-          await buildFixtureImage(),
-          sessionRoot,
-          [{
-            sourcePath: source,
-            destinationPath: "/tmp/kandelo-run",
-          }],
-        ),
-      ).rejects.toThrow(/symlink or unsupported special entry/i);
-    } finally {
-      rmSync(sessionRoot, { recursive: true, force: true });
-      rmSync(fixtureRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("publishes no final destination when a later seed copy fails", async () => {
-    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-seed-atomic-"));
-    const sessionRoot = mkdtempSync(join(tmpdir(), "kandelo-seed-session-"));
-    const valid = join(fixtureRoot, "valid");
-    const invalid = join(fixtureRoot, "invalid");
-    mkdirSync(valid);
-    mkdirSync(invalid);
-    writeFileSync(join(valid, "complete"), "complete");
-    writeFileSync(join(fixtureRoot, "outside"), "outside");
-    symlinkSync("../outside", join(invalid, "escape"));
-    try {
-      await expect(
-        resolveForNodeKernelSession(
-          DEFAULT_MOUNT_SPEC,
-          await buildFixtureImage(),
-          sessionRoot,
-          [
-            { sourcePath: valid, destinationPath: "/tmp/first" },
-            { sourcePath: invalid, destinationPath: "/tmp/second" },
-          ],
-        ),
-      ).rejects.toThrow(/symlink or unsupported special entry/i);
-      expect(existsSync(join(sessionRoot, "tmp", "first"))).toBe(false);
-      expect(existsSync(join(sessionRoot, "tmp", "second"))).toBe(false);
-    } finally {
-      rmSync(sessionRoot, { recursive: true, force: true });
-      rmSync(fixtureRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("publishes a seed through the deepest declared scratch mount", async () => {
-    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-seed-routing-"));
-    const sessionRoot = mkdtempSync(join(tmpdir(), "kandelo-seed-session-"));
-    const source = join(fixtureRoot, "source");
-    mkdirSync(source);
-    writeFileSync(join(source, "value"), "seed");
-    const nestedScratchSpec: MountSpec[] = [
-      { path: "/", source: "image", readonly: true },
-      { path: "/tmp", source: "scratch" },
-      { path: "/tmp/nested", source: "scratch" },
-    ];
-    try {
-      const mounts = await resolveForNodeKernelSession(
-        nestedScratchSpec,
-        await buildFixtureImage(),
-        sessionRoot,
-        [{
-          sourcePath: source,
-          destinationPath: "/tmp/nested/fixtures",
-        }],
-      );
-      const owner = mounts.find(
-        (mount) => mount.mountPoint === "/tmp/nested",
-      )!;
-      expect(new TextDecoder().decode(
-        readMountFile(owner.backend, "/fixtures/value"),
-      )).toBe("seed");
-    } finally {
-      rmSync(sessionRoot, { recursive: true, force: true });
-      rmSync(fixtureRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects overlapping, mount-shadowed, and mount-root destinations", async () => {
-    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-seed-overlap-"));
-    const sessionRoot = mkdtempSync(join(tmpdir(), "kandelo-seed-session-"));
-    const first = join(fixtureRoot, "first");
-    const second = join(fixtureRoot, "second");
-    mkdirSync(first);
-    mkdirSync(second);
-    const image = await buildFixtureImage();
-    try {
-      await expect(
-        resolveForNodeKernelSession(
-          DEFAULT_MOUNT_SPEC,
-          image,
-          sessionRoot,
-          [
-            { sourcePath: first, destinationPath: "/tmp/fixtures" },
-            { sourcePath: second, destinationPath: "/tmp/fixtures/nested" },
-          ],
-        ),
-      ).rejects.toThrow(/destinations overlap/i);
-
-      await expect(
-        resolveForNodeKernelSession(
-          DEFAULT_MOUNT_SPEC,
-          image,
-          sessionRoot,
-          [{ sourcePath: first, destinationPath: "/tmp/extra/fixtures" }],
-          ["/tmp/extra"],
-        ),
-      ).rejects.toThrow(/overlaps another mount/i);
-
-      const nestedImageSpec: MountSpec[] = [
-        { path: "/", source: "image", readonly: true },
-        { path: "/tmp", source: "scratch" },
-        { path: "/tmp/shadow", source: "image", readonly: true },
-      ];
-      await expect(
-        resolveForNodeKernelSession(
-          nestedImageSpec,
-          image,
-          sessionRoot,
-          [{
-            sourcePath: first,
-            destinationPath: "/tmp/shadow/fixtures",
-          }],
-        ),
-      ).rejects.toThrow(/routed through a scratch mount/i);
-
-      const nestedScratchSpec: MountSpec[] = [
-        { path: "/", source: "image", readonly: true },
-        { path: "/tmp", source: "scratch" },
-        { path: "/tmp/fixtures/nested", source: "scratch" },
-      ];
-      await expect(
-        resolveForNodeKernelSession(
-          nestedScratchSpec,
-          image,
-          sessionRoot,
-          [{ sourcePath: first, destinationPath: "/tmp/fixtures" }],
-        ),
-      ).rejects.toThrow(/overlaps another declared mount/i);
-
-      await expect(
-        resolveForNodeKernelSession(
-          DEFAULT_MOUNT_SPEC,
-          image,
-          sessionRoot,
-          [{ sourcePath: first, destinationPath: "/tmp" }],
-        ),
-      ).rejects.toThrow(/below a scratch mount/i);
-
-      await expect(
-        resolveForNodeKernelSession(
-          DEFAULT_MOUNT_SPEC,
-          image,
-          sessionRoot,
-          [
-            { sourcePath: first, destinationPath: "/tmp/fixtures" },
-            { sourcePath: second, destinationPath: "/tmp//fixtures" },
-          ],
-        ),
-      ).rejects.toThrow(/canonical POSIX path/i);
-
-      await expect(
-        resolveForNodeKernelSession(
-          DEFAULT_MOUNT_SPEC,
-          image,
-          sessionRoot,
-          [{ sourcePath: first, destinationPath: "/tmp/extra/fixtures" }],
-          ["/tmp//extra"],
-        ),
-      ).rejects.toThrow(/canonical POSIX path/i);
-
-      await expect(
-        resolveForNodeKernelSession(
-          DEFAULT_MOUNT_SPEC,
-          image,
-          sessionRoot,
-          [{ sourcePath: "relative", destinationPath: "/tmp/relative" }],
-        ),
-      ).rejects.toThrow(/source path must be absolute/i);
-    } finally {
-      rmSync(sessionRoot, { recursive: true, force: true });
-      rmSync(fixtureRoot, { recursive: true, force: true });
-    }
-  });
-});
-
 describe("resolveForBrowser", () => {
   let image: Uint8Array;
   // Shrink scratch SABs so the 7 scratch mounts × default 16 MiB don't
@@ -699,8 +312,6 @@ describe("resolveForBrowser", () => {
     for (const m of mounts) {
       expect(m.backend).toBeInstanceOf(MemoryFileSystem);
       expect(m.backend).not.toBeInstanceOf(HostFileSystem);
-      expect(resolveMountSetIdCapability(m)).toEqual({ kind: "nosuid" });
-      expect(m.backend.statfs("/").flags & ST_NOSUID).toBe(ST_NOSUID);
     }
   });
 
@@ -731,40 +342,24 @@ describe("resolveForBrowser", () => {
     expect(new TextDecoder().decode(passwd)).toContain("root:x:0:0");
   });
 
-  it("keeps the maker profile on an independent writable browser scratch mount", async () => {
+  it("scratch mounts are independent writable memfs instances", async () => {
     const mounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
       scratchSabBytes: tinyScratch,
     });
     const tmp = mounts.find((m) => m.mountPoint === "/tmp");
-    const home = mounts.find((m) => m.mountPoint === "/home/maker");
+    const home = mounts.find((m) => m.mountPoint === "/home/user");
     expect(tmp).toBeDefined();
     expect(home).toBeDefined();
     expect(tmp!.backend).not.toBe(home!.backend);
 
-    const tmpData = new TextEncoder().encode("tmp scratch");
-    const tmpFd = tmp!.backend.open(
-      "/x.txt",
-      O_WRONLY | O_CREAT | O_TRUNC,
-      0o644,
-    );
-    tmp!.backend.write(tmpFd, tmpData, null, tmpData.length);
-    tmp!.backend.close(tmpFd);
+    const data = new TextEncoder().encode("scratch");
+    const fd = tmp!.backend.open("/x.txt", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
+    tmp!.backend.write(fd, data, null, data.length);
+    tmp!.backend.close(fd);
     expect(new TextDecoder().decode(readMountFile(tmp!.backend, "/x.txt"))).toBe(
-      "tmp scratch",
+      "scratch",
     );
-
-    const homeData = new TextEncoder().encode("profile scratch");
-    const homeFd = home!.backend.open(
-      "/profile.txt",
-      O_WRONLY | O_CREAT | O_TRUNC,
-      0o644,
-    );
-    home!.backend.write(homeFd, homeData, null, homeData.length);
-    home!.backend.close(homeFd);
-    expect(
-      new TextDecoder().decode(readMountFile(home!.backend, "/profile.txt")),
-    ).toBe("profile scratch");
-    expect(() => tmp!.backend.stat("/profile.txt")).toThrow();
+    expect(() => home!.backend.stat("/x.txt")).toThrow();
   });
 
   it("applies declared scratch root modes", async () => {
@@ -773,7 +368,7 @@ describe("resolveForBrowser", () => {
     });
     const tmp = mounts.find((m) => m.mountPoint === "/tmp")!.backend as MemoryFileSystem;
     const varTmp = mounts.find((m) => m.mountPoint === "/var/tmp")!.backend as MemoryFileSystem;
-    const home = mounts.find((m) => m.mountPoint === "/home/maker")!.backend as MemoryFileSystem;
+    const home = mounts.find((m) => m.mountPoint === "/home/user")!.backend as MemoryFileSystem;
     const root = mounts.find((m) => m.mountPoint === "/root")!.backend as MemoryFileSystem;
     expect(tmp.stat("/").mode & 0o7777).toBe(0o1777);
     expect(varTmp.stat("/").mode & 0o7777).toBe(0o1777);

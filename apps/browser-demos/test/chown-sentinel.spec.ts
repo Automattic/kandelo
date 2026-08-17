@@ -8,14 +8,15 @@ const programPath = resolve(
   "../../../examples/chown_sentinel_test.wasm",
 );
 
-test("file mutation and chown set-ID invalidation work", async ({
+test("chown sentinels and no-follow link ownership work in Chromium", async ({
   page,
   baseURL,
+  browserName,
 }) => {
+  test.skip(browserName !== "chromium", "the aggregate browser gate uses Chromium");
   expect(baseURL).toBeTruthy();
 
-  // This probe needs the real browser worker and VFS, but no shell packages.
-  await page.goto(new URL("/pages/test-runner/?minimal=1", baseURL).href);
+  await page.goto(new URL("/pages/test-runner/", baseURL).href);
   await page.waitForFunction(() => (window as any).__testRunnerReady === true);
 
   const programUrl = new URL(`/@fs/${programPath}`, baseURL).href;
@@ -32,7 +33,6 @@ test("file mutation and chown set-ID invalidation work", async ({
   }, { programUrl });
 
   expect(result.exitCode).toBe(0);
-  expect(result.stdout).toContain("SETID_MUTATION_MATRIX_PASS");
   expect(result.stdout).toContain("CHOWN_SENTINEL_PASS");
   expect(result.stderr).toBe("");
 });

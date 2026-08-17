@@ -14,7 +14,7 @@ pub const WASM_PAGE_SIZE: u64 = 64 * 1024;
 /// Alignment used for chunk and node records.
 pub const RECORD_ALIGNMENT: u64 = abi::WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT as u64;
 
-/// Linked-frame artifact metadata version used by ABI 42 and later.
+/// Linked-frame artifact metadata version used by ABI 42.
 pub const LINKED_FRAME_FORMAT_VERSION: u16 = abi::WPK_FORK_LINKED_FRAME_FORMAT_VERSION;
 pub const LINKED_FRAME_FORMAT_SECTION: &str = abi::WPK_FORK_LINKED_FRAME_FORMAT_SECTION;
 

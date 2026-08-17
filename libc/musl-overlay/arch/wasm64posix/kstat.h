@@ -1,12 +1,11 @@
 /* kstat.h — kernel stat format for wasm64posix.
  *
- * This is the complete 112-byte native syscall result. The kernel's internal
- * WasmStat metadata record supplies the prefix through st_ctime_nsec; its
- * native serializer initializes the rdev/blksize/blocks suffix to zero.
+ * This matches the kernel's WasmStat layout (88 bytes) exactly.
+ * musl's fstatat.c copies from kstat fields to struct stat fields.
  *
- * Keeping the complete allocation explicit prevents a host copy-back sized
- * for struct kstat from exposing reused scratch bytes after the 88-byte
- * internal prefix. See #928 for truthful filesystem-provided suffix values.
+ * The kernel fills all 88 bytes. The rdev/blksize/blocks fields are appended
+ * for musl compatibility, initialized to zero by libc, and not filled by the
+ * kernel. See #928 for adding truthful filesystem-provided values.
  */
 struct kstat {
 	unsigned long long st_dev;          /* offset  0, 8 bytes */
@@ -25,17 +24,8 @@ struct kstat {
 	long long          st_ctime_sec;    /* offset 72, 8 bytes */
 	unsigned int       st_ctime_nsec;   /* offset 80, 4 bytes */
 	unsigned int       __ctime_pad;     /* offset 84, 4 bytes */
-	/* --- end of the internal 88-byte WasmStat prefix --- */
-	unsigned long long st_rdev;         /* offset 88, zero until reported */
-	int                st_blksize;      /* offset 96, zero until reported */
-	int                __blocks_pad;    /* offset 100, initialized padding */
-	long long          st_blocks;       /* offset 104, zero until reported */
+	/* --- end of 88-byte WasmStat --- */
+	unsigned long long st_rdev;         /* zero until kernel reports it */
+	int                st_blksize;      /* zero until kernel reports it */
+	int                st_blocks;       /* zero until kernel reports it */
 };
-
-_Static_assert(sizeof(struct kstat) == 112, "wasm64 kstat size mismatch");
-_Static_assert(__builtin_offsetof(struct kstat, st_rdev) == 88,
-	"wasm64 kstat st_rdev offset mismatch");
-_Static_assert(__builtin_offsetof(struct kstat, st_blksize) == 96,
-	"wasm64 kstat st_blksize offset mismatch");
-_Static_assert(__builtin_offsetof(struct kstat, st_blocks) == 104,
-	"wasm64 kstat st_blocks offset mismatch");

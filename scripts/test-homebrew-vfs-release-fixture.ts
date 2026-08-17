@@ -136,7 +136,7 @@ const collection = await buildHomebrewOriginalBottleCollection(plan, {
   treeIdOverrides: new Map([["kandelo-dev/tap-core/file-formula", "file-formula"]]),
 });
 
-descriptor.schema = 6;
+descriptor.schema = 5;
 descriptor.selection.requested_packages = [...plan.requestedPackages];
 descriptor.selection.package_order = packagePlans.map((pkg) => pkg.fullName);
 descriptor.selection.base_package_order = [];

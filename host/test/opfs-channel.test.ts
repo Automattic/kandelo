@@ -19,9 +19,6 @@ describe("OpfsChannel", () => {
 
     ch.opcode = OpfsOpcode.READ;
     expect(ch.opcode).toBe(OpfsOpcode.READ);
-
-    ch.opcode = OpfsOpcode.APPEND;
-    expect(ch.opcode).toBe(OpfsOpcode.APPEND);
   });
 
   it("reads and writes args", () => {

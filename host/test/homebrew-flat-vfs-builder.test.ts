@@ -17,9 +17,6 @@ import { resolveHomebrewVfsResourcePolicy } from "../src/homebrew-vfs-resource-p
 import { ensureDirRecursive, writeVfsFile } from "../src/vfs/image-helpers";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import {
-  HOMEBREW_TEST_ABI,
-  HOMEBREW_TEST_SELECTION_NAME,
-  HOMEBREW_TEST_VFS_FILENAME,
   homebrewTestBootstrapEntries,
   homebrewTestBootstrapFixture,
 } from "./fixtures/homebrew-flat-vfs";
@@ -80,19 +77,17 @@ describe("flat Homebrew VFS builder", () => {
     });
     const canonicalSelection = encodeHomebrewBottleSelection({
       schema: 1,
-      name: HOMEBREW_TEST_SELECTION_NAME,
+      name: "experimental-abi42-flat-builder",
       arch: "wasm32",
-      kandeloAbi: HOMEBREW_TEST_ABI,
+      kandeloAbi: 42,
       bottles: [bootstrap, hello],
-      requestedVfsFilename: HOMEBREW_TEST_VFS_FILENAME,
+      requestedVfsFilename: "kandelo-homebrew-experimental-abi42-wasm32.vfs.zst",
       resourcePolicy: "kandelo-homebrew-vfs-generous-v1",
       linkPolicy: "kandelo-homebrew-link-ownership-v1",
       runtimeSupport: "kandelo-homebrew-bootstrap-v1",
     });
 
-    const plan = planHomebrewVfsSelection(canonicalSelection, {
-      expectedAbi: HOMEBREW_TEST_ABI,
-    });
+    const plan = planHomebrewVfsSelection(canonicalSelection, { expectedAbi: 42 });
     const loaded: string[] = [];
     const result = await buildHomebrewVfsSelection(plan, {
       loadBottleBytes(pkg) {
@@ -103,11 +98,11 @@ describe("flat Homebrew VFS builder", () => {
 
     expect(plan).toMatchObject({
       schema: 1,
-      name: HOMEBREW_TEST_SELECTION_NAME,
+      name: "experimental-abi42-flat-builder",
       arch: "wasm32",
-      kandeloAbi: HOMEBREW_TEST_ABI,
+      kandeloAbi: 42,
       selectionSha256: sha256(canonicalSelection),
-      requestedVfsFilename: HOMEBREW_TEST_VFS_FILENAME,
+      requestedVfsFilename: "kandelo-homebrew-experimental-abi42-wasm32.vfs.zst",
       resourcePolicy: "kandelo-homebrew-vfs-generous-v1",
       linkPolicy: "kandelo-homebrew-link-ownership-v1",
       runtimeSupport: "kandelo-homebrew-bootstrap-v1",
@@ -126,11 +121,11 @@ describe("flat Homebrew VFS builder", () => {
     const metadata = JSON.parse(readVfsFile(result.fs, "/etc/kandelo/homebrew-vfs.json"));
     expect(metadata).toMatchObject({
       schema: 1,
-      name: HOMEBREW_TEST_SELECTION_NAME,
+      name: "experimental-abi42-flat-builder",
       arch: "wasm32",
-      kandelo_abi: HOMEBREW_TEST_ABI,
+      kandelo_abi: 42,
       selection_sha256: sha256(canonicalSelection),
-      requested_vfs_filename: HOMEBREW_TEST_VFS_FILENAME,
+      requested_vfs_filename: "kandelo-homebrew-experimental-abi42-wasm32.vfs.zst",
       resource_policy: "kandelo-homebrew-vfs-generous-v1",
       link_policy: "kandelo-homebrew-link-ownership-v1",
       runtime_support: "kandelo-homebrew-bootstrap-v1",
@@ -1168,7 +1163,7 @@ function descriptor(options: {
     revision: 0,
     bottleRebuild: 0,
     arch: "wasm32",
-    kandeloAbi: HOMEBREW_TEST_ABI,
+    kandeloAbi: 42,
     bottleTag: "wasm32_kandelo",
     layout: "kandelo-homebrew-v1",
     materialization,
@@ -1247,11 +1242,11 @@ function simpleBottle(
 function selectionBytes(bottles: HomebrewBottleDescriptor[]): Uint8Array {
   return encodeHomebrewBottleSelection({
     schema: 1,
-    name: HOMEBREW_TEST_SELECTION_NAME,
+    name: "experimental-abi42-flat-builder",
     arch: "wasm32",
-    kandeloAbi: HOMEBREW_TEST_ABI,
+    kandeloAbi: 42,
     bottles,
-    requestedVfsFilename: HOMEBREW_TEST_VFS_FILENAME,
+    requestedVfsFilename: "kandelo-homebrew-experimental-abi42-wasm32.vfs.zst",
     resourcePolicy: "kandelo-homebrew-vfs-generous-v1",
     linkPolicy: "kandelo-homebrew-link-ownership-v1",
     runtimeSupport: "kandelo-homebrew-bootstrap-v1",

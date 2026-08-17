@@ -7,7 +7,7 @@
  *   /usr/bin/node          — exact resolved Node executable bytes
  *   /usr/local/lib/npm/...   — full npm dist (bin/npm-cli.js + lib + node_modules)
  *   /usr/bin/npm          — wrapper that runs npm through the node binary
- *   /etc/profile.d/...       — guest initializer for the mounted maker home
+ *   /work/package.json       — empty starter package, used as --prefix and HOME
  *   /tmp/                    — writable, mode 0o777
  *
  * Excludes npm's man/ and docs/ (man pages + markdown docs add ~3 MB and
@@ -56,6 +56,8 @@ const NPM_MOUNT = "/usr/local/lib/npm";
 // The Node image contains the complete canonical shell plus npm. It cannot
 // truthfully advertise a smaller ceiling than its 512 MiB shell base.
 const NODE_IMAGE_MAX_BYTES = SHELL_DERIVED_VFS_PROFILE_MAX_BYTES;
+const DEMO_UID = 1000;
+const DEMO_GID = 1000;
 const NODE_WASM_ARTIFACT_POLICY = {
   path: NODE_BINARY_SPEC.vfsPath,
   forkInstrumentation: "disabled",
@@ -86,9 +88,11 @@ export async function buildNodeVfsImage(
 
   // Node/npm workspace additions.
   ensureDirRecursive(fs, "/usr/local/lib");
+  ensureDirRecursive(fs, "/work");
   // /etc/ssl needs to exist before the browser kernel worker auto-writes
   // the MITM CA cert to /etc/ssl/certs/ca-certificates.crt on init.
   ensureDirRecursive(fs, "/etc/ssl");
+  fs.chmod("/work", 0o777);
 
   // npm dist — skip man/ and docs/ (not used at install time)
   console.log(`Mounting npm dist at ${NPM_MOUNT}...`);
@@ -98,6 +102,17 @@ export async function buildNodeVfsImage(
   });
   console.log(`  ${written} files written`);
   stageSpiderMonkeyNpmRuntime(fs);
+
+  // Starter package.json so `npm install --prefix /work` has somewhere to write.
+  fs.createFileWithOwner(
+    "/work/package.json",
+    0o644,
+    DEMO_UID,
+    DEMO_GID,
+    new TextEncoder().encode(
+      JSON.stringify({ name: "demo", version: "0.0.1" }, null, 2) + "\n",
+    ),
+  );
   writeKandeloDemoConfig(fs, {
     version: 1,
     profiles: {

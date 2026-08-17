@@ -1311,11 +1311,9 @@ class FormulaTestRuntimeProjectionTests(unittest.TestCase):
         selected_files = {
             "Cargo.toml": b"[workspace]\nmembers = []\n",
             "package.json": b'{"name":"kandelo","type":"module"}\n',
-            "examples/run-example-builtins.ts": b"export const builtins = true;\n",
             "examples/run-example-output.ts": b"export const output = true;\n",
             "examples/run-example-paths.ts": b"export const paths = true;\n",
             "examples/run-example.ts": b"export const run = true;\n",
-            "examples/run-example-vfs.ts": b"export const vfs = true;\n",
         }
         for relative, data in selected_files.items():
             path = source / relative
@@ -1442,18 +1440,6 @@ class FormulaTestRuntimeProjectionTests(unittest.TestCase):
                     b'{"format":"kandelo-program-packages-v2",'
                     b'"identities":{},"packages":{}}\n'
                 ),
-            )
-            self.assertEqual(
-                (
-                    destination / "examples/run-example-builtins.ts"
-                ).read_bytes(),
-                b"export const builtins = true;\n",
-            )
-            self.assertEqual(
-                (
-                    destination / "examples/run-example-vfs.ts"
-                ).read_bytes(),
-                b"export const vfs = true;\n",
             )
             self.assertEqual(
                 (

@@ -109,7 +109,7 @@ export const PRESET_LIBRARY: Preset[] = [
   {
     id: "doom",
     title: "fbDOOM",
-    summary: "DOOM on /dev/fb0 with OSS audio through /dev/dsp.",
+    summary: "id Software's DOOM rendering directly to /dev/fb0.",
     base: SHELL_BASE,
     packages: ["fbdoom@local", "doom-shareware@local", "bash@local", "coreutils@local"],
     accent: "#b5301c",

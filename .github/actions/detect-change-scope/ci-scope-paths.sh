@@ -94,7 +94,6 @@ binary_materialization_changed_files() {
   grep -E \
     -e '^packages/registry/program-packages\.json$' \
     -e '^tools/xtask/src/(index_candidate|index_toml|package_archive_name|remote_fetch|util)\.rs$' \
-    -e '^scripts/browser-memory64-example-fixtures\.(sh|txt)$' \
     -e '^scripts/(activate-local-shell-build-override|ci-homebrew-browser-mirror-state|fetch-binaries|install-local-binary|install-local-shell-artifact|materialize-ci-canonical-package-index|materialize-ci-publication-blockers|materialize-pr-overlays|materialize-resolver-binaries|pack-ci-test-workspace|resolve-binary|stage-portable-resolver-binaries|test-wasm-artifact-guards|validate-publication-blocker-report|wasm-artifact-guards)\.sh$' \
     -e '^scripts/(build-resolve-binary-bundle|test-resolve-binary-bundle)\.sh$' \
     -e '^scripts/resolve-binary\.(ts|bundle\.mjs|bundle\.LICENSES\.txt)$' \
@@ -113,9 +112,7 @@ kernel_runtime_changed_files() {
     -e '^tests/vfs-products\.(toml|generated\.json)$' \
     -e '^tools/xtask/src/abi_staging/' \
     -e '^(Cargo\.(lock|toml)|flake\.(nix|lock)|rust-toolchain\.toml|\.gitmodules)$' \
-    -e '^scripts/browser-memory64-example-fixtures\.(sh|txt)$' \
-    -e '^scripts/check-browser-memory64-example-fixtures\.ts$' \
-    -e '^scripts/(build-musl|build-libcxx|build-programs|check-abi-version|check-libcxx-toolchain-version|ci-check-browser-assets|ci-run-test-suite|dev-shell|run-libc-tests|run-posix-tests|run-sortix-tests)\.sh$' \
+    -e '^scripts/(build-musl|build-libcxx|build-programs|check-abi-version|check-libcxx-toolchain-version|ci-run-test-suite|dev-shell|run-libc-tests|run-posix-tests|run-sortix-tests)\.sh$' \
     -e '^scripts/(abi-staging-pages-(producer(-fixture)?|readiness)(\.test)?\.ts|abi-staging-product-(browser|node)-evidence(\.test)?\.ts|abi-staging-product-input-sources\.ts|check-pages-vfs-product-registry(\.test)?\.mjs|run-vfs-product-builder(\.test)?\.ts|test-abi-staging-(mini-lifecycle|pages-atomic|product-authority)\.sh|vfs-product-catalog(\.test)?\.mjs)$' \
     -e '^examples/run-example\.ts$' \
     || true

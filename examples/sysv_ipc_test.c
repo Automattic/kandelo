@@ -9,7 +9,6 @@
 #include <sys/msg.h>
 #include <sys/sem.h>
 #include <sys/shm.h>
-#include <unistd.h>
 
 /* Use a custom struct for message passing (system msgbuf has mtext[1]) */
 struct my_msgbuf {
@@ -25,44 +24,6 @@ int test_msgq(void) {
         return 1;
     }
     printf("msgget: qid=%d\n", qid);
-
-    /*
-     * Exercise the complete guest -> host scratch -> Rust IPC_SET path.
-     * The target-width msqid_ds is 96 bytes on wasm32 and 120 bytes on
-     * wasm64, so running this fixture for both architectures catches layout
-     * or copy-direction mistakes that IPC_STAT alone cannot.
-     */
-    struct msqid_ds queue_info;
-    if (msgctl(qid, IPC_STAT, &queue_info) != 0) {
-        perror("msgctl IPC_STAT before IPC_SET");
-        msgctl(qid, IPC_RMID, NULL);
-        return 1;
-    }
-    queue_info.msg_perm.uid = geteuid();
-    queue_info.msg_perm.gid = getegid();
-    queue_info.msg_perm.mode =
-        (queue_info.msg_perm.mode & ~0777u) | 0600u;
-    queue_info.msg_qbytes = 4096;
-    if (msgctl(qid, IPC_SET, &queue_info) != 0) {
-        perror("msgctl IPC_SET");
-        msgctl(qid, IPC_RMID, NULL);
-        return 1;
-    }
-    memset(&queue_info, 0, sizeof(queue_info));
-    if (msgctl(qid, IPC_STAT, &queue_info) != 0) {
-        perror("msgctl IPC_STAT after IPC_SET");
-        msgctl(qid, IPC_RMID, NULL);
-        return 1;
-    }
-    if ((queue_info.msg_perm.mode & 0777u) != 0600u ||
-        queue_info.msg_qbytes != 4096) {
-        printf("FAIL: msgctl IPC_SET round trip mode=%o qbytes=%lu\n",
-               (unsigned)(queue_info.msg_perm.mode & 0777u),
-               (unsigned long)queue_info.msg_qbytes);
-        msgctl(qid, IPC_RMID, NULL);
-        return 1;
-    }
-    printf("msgctl IPC_SET: mode=0600 qbytes=4096\n");
 
     /* Send a message */
     struct my_msgbuf msg;
@@ -212,42 +173,6 @@ int test_shm(void) {
         return 1;
     }
     printf("shmget: shmid=%d\n", shmid);
-
-    /*
-     * Like msgctl above, this proves IPC_SET consumes the caller's complete
-     * target-width shmid_ds (88 bytes on wasm32, 112 bytes on wasm64) before
-     * IPC_STAT serializes the updated values back out.
-     */
-    struct shmid_ds segment_info;
-    if (shmctl(shmid, IPC_STAT, &segment_info) != 0) {
-        perror("shmctl IPC_STAT before IPC_SET");
-        shmctl(shmid, IPC_RMID, NULL);
-        return 1;
-    }
-    segment_info.shm_perm.uid = geteuid();
-    segment_info.shm_perm.gid = getegid();
-    segment_info.shm_perm.mode =
-        (segment_info.shm_perm.mode & ~0777u) | 0600u;
-    if (shmctl(shmid, IPC_SET, &segment_info) != 0) {
-        perror("shmctl IPC_SET");
-        shmctl(shmid, IPC_RMID, NULL);
-        return 1;
-    }
-    memset(&segment_info, 0, sizeof(segment_info));
-    if (shmctl(shmid, IPC_STAT, &segment_info) != 0) {
-        perror("shmctl IPC_STAT after IPC_SET");
-        shmctl(shmid, IPC_RMID, NULL);
-        return 1;
-    }
-    if ((segment_info.shm_perm.mode & 0777u) != 0600u ||
-        segment_info.shm_segsz != 4096) {
-        printf("FAIL: shmctl IPC_SET round trip mode=%o segsz=%lu\n",
-               (unsigned)(segment_info.shm_perm.mode & 0777u),
-               (unsigned long)segment_info.shm_segsz);
-        shmctl(shmid, IPC_RMID, NULL);
-        return 1;
-    }
-    printf("shmctl IPC_SET: mode=0600 segsz=4096\n");
 
     /* Attach */
     void *ptr = shmat(shmid, NULL, 0);

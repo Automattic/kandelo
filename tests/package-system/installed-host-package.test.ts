@@ -25,45 +25,13 @@ afterAll(() => {
 
 describe("installed host package binary policy", () => {
   it("binds installed scalar and multi-member bytes to packaged projection identity", () => {
-    const root = mkdtempSync(join(tmpdir(), "kandelo-packed-host-"));
-    fixtureRoots.push(root);
-    const isolatedRepo = join(root, "source");
-    const isolatedHost = join(isolatedRepo, "host");
-    mkdirSync(isolatedHost, { recursive: true });
-    cpSync(join(repoRoot, "host", "src"), join(isolatedHost, "src"), {
-      recursive: true,
-    });
-    for (const file of [
-      "package-lock.json",
-      "package.json",
-      "tsconfig.json",
-      "tsup.config.ts",
-    ]) {
-      cpSync(join(repoRoot, "host", file), join(isolatedHost, file));
-    }
-    symlinkSync(
-      join(repoRoot, "host", "node_modules"),
-      join(isolatedHost, "node_modules"),
-      "dir",
-    );
-    symlinkSync(
-      join(repoRoot, "packages"),
-      join(isolatedRepo, "packages"),
-      "dir",
-    );
-    symlinkSync(
-      join(repoRoot, "web-libs"),
-      join(isolatedRepo, "web-libs"),
-      "dir",
-    );
-    // WHY: tsup cleans its output directory before rebuilding. Vitest runs
-    // files concurrently, so building in the checkout could temporarily
-    // remove the worker entry used by an unrelated live Kandelo machine.
-    execFileSync("npm", ["run", "build"], {
-      cwd: isolatedHost,
+    execFileSync("npm", ["--prefix", "host", "run", "build"], {
+      cwd: repoRoot,
       stdio: "pipe",
     });
 
+    const root = mkdtempSync(join(tmpdir(), "kandelo-packed-host-"));
+    fixtureRoots.push(root);
     const staging = join(root, "staging");
     const wasmRoot = join(staging, "wasm");
     const multiName = "packed-runtime";
@@ -188,7 +156,7 @@ version = "1.0.0"
     mkdirSync(join(wasmRoot, dirname(imageRel)), { recursive: true });
     mkdirSync(join(wasmRoot, dirname(runtimeRel)), { recursive: true });
     mkdirSync(join(wasmRoot, dirname(scalarRel)), { recursive: true });
-    cpSync(join(isolatedHost, "dist"), join(staging, "dist"), {
+    cpSync(join(repoRoot, "host", "dist"), join(staging, "dist"), {
       recursive: true,
     });
     cpSync(join(repoRoot, "host", "package.json"), join(staging, "package.json"));

@@ -56,14 +56,6 @@ Homebrew path remains subject to the normal writability check, and
 explicit `brew trust` operations still use the normal mutation path and
 fail against an immutable publisher store.
 
-The sealed tapped checkout is also workflow-owned, so the isolated Formula
-identity cannot use Homebrew's ordinary Git query without Git rejecting the
-foreign ownership. Resolve only the selected tap through the root-owned
-publisher plan: require its canonical read-only checkout path, run the
-launcher-validated Git with command-scoped `safe.directory` in an otherwise
-empty environment, and require the observed commit to equal the plan before
-the receipt or bottle uses it. Other taps retain Homebrew's ordinary lookup.
-
 This patch is applied only to the publisher's temporary Homebrew
 overlay. Guest Homebrew keeps its normal repository, trust, and
 dependency behavior.
@@ -73,11 +65,10 @@ dependency behavior.
  Library/Homebrew/diagnostic.rb              |   1 +
  Library/Homebrew/extend/os/linux/formula.rb |   4 +
  Library/Homebrew/extend/os/linux/sandbox.rb |   3 +
- Library/Homebrew/kandelo_publisher.rb       | 280 +++++++++++++++++++++++++++
- Library/Homebrew/tap.rb                     |   8 ++++++--
+ Library/Homebrew/kandelo_publisher.rb       | 225 ++++++++++++++++++++
  Library/Homebrew/test.rb                    |   2 +
  Library/Homebrew/trust.rb                   |   1 +
- 9 files changed, 339 insertions(+), 3 deletions(-)
+ 8 files changed, 278 insertions(+), 1 deletion(-)
  create mode 100644 Library/Homebrew/kandelo_publisher.rb
 
 diff --git a/Library/Homebrew/build.rb b/Library/Homebrew/build.rb
@@ -235,15 +226,14 @@ index 6216a189c..b29e304ca 100644
 
 diff --git a/Library/Homebrew/kandelo_publisher.rb b/Library/Homebrew/kandelo_publisher.rb
 new file mode 100644
-index 000000000..93929dc18
+index 000000000..7ee01d23d
 --- /dev/null
 +++ b/Library/Homebrew/kandelo_publisher.rb
-@@ -0,0 +1,284 @@
+@@ -0,0 +1,225 @@
 +# typed: false
 +# frozen_string_literal: true
 +
 +require "json"
-+require "open3"
 +
 +# Publisher-only validation for the root-owned dependency plan. This file is
 +# added only to Kandelo's temporary Homebrew overlay.
@@ -265,10 +255,6 @@ index 000000000..93929dc18
 +  GNU_TAR_ENV = "HOMEBREW_KANDELO_GNU_TAR"
 +  GNU_TAR_PATH = ENV.fetch(GNU_TAR_ENV, "").dup.freeze
 +  NIX_GNU_TAR_PATH = %r{\A/nix/store/[0-9a-z]{32}-gnutar-[^/]+/bin/tar\z}
-+  PRIMARY_TAP_ROOT_ENV = "HOMEBREW_KANDELO_PRIMARY_TAP_ROOT"
-+  PRIMARY_TAP_ROOT = ENV.fetch(PRIMARY_TAP_ROOT_ENV, "").dup.freeze
-+  PROTECTED_GIT_ENV = "HOMEBREW_GIT_PATH"
-+  PROTECTED_GIT = ENV.fetch(PROTECTED_GIT_ENV, "").dup.freeze
 +  TAP_GIT_HEAD = /\A[0-9a-f]{40}\z/
 +
 +  def self.active?
@@ -282,60 +268,6 @@ index 000000000..93929dc18
 +    plan.fetch("target_taps").any? do |tap|
 +      formula.full_name.start_with?("#{tap.fetch("tap_name")}/")
 +    end
-+  end
-+
-+  def self.selected_tap_git_head(tap)
-+    plan = dependency_plan(nil)
-+    return if plan.nil? || tap.name != plan.fetch("tap")
-+
-+    tap_path = tap.path.to_s
-+    # The launcher separately bind-mounts the complete taps tree read-only
-+    # and proves that boundary with an actual write attempt. The backing Git
-+    # checkout intentionally retains ordinary owner-writable mode bits, so
-+    # File.writable? is not an accurate test of the mounted execution view.
-+    valid_tap_path = !PRIMARY_TAP_ROOT.empty? && tap_path == PRIMARY_TAP_ROOT &&
-+                     File.directory?(tap_path) && !File.symlink?(tap_path) &&
-+                     File.realpath(tap_path) == tap_path
-+    raise "Kandelo publisher selected tap checkout path is invalid" unless valid_tap_path
-+
-+    target_tap = plan.fetch("target_taps").find do |candidate|
-+      candidate.fetch("tap_name") == plan.fetch("tap")
-+    end
-+    expected_commit = target_tap&.fetch("checkout_commit")
-+    unless expected_commit.is_a?(String) && TAP_GIT_HEAD.match?(expected_commit)
-+      raise "Kandelo publisher selected tap commit is invalid"
-+    end
-+
-+    git_stat = File.lstat(PROTECTED_GIT)
-+    protected_git = File.file?(PROTECTED_GIT) && !File.symlink?(PROTECTED_GIT) &&
-+                    File.executable?(PROTECTED_GIT) && (git_stat.mode & 0o022).zero? &&
-+                    File.realpath(PROTECTED_GIT) == PROTECTED_GIT
-+    raise "Kandelo publisher protected Git is invalid" unless protected_git
-+
-+    stdout, _stderr, status = Open3.capture3(
-+      {
-+        "HOME" => "/nonexistent",
-+        "PATH" => "/usr/bin:/bin",
-+        "LC_ALL" => "C",
-+        "GIT_CONFIG_NOSYSTEM" => "1",
-+        "GIT_CONFIG_GLOBAL" => "/dev/null",
-+        "GIT_NO_REPLACE_OBJECTS" => "1",
-+        "GIT_OPTIONAL_LOCKS" => "0",
-+      },
-+      PROTECTED_GIT,
-+      "-c", "safe.directory=#{tap_path}",
-+      "-C", tap_path,
-+      "rev-parse", "--verify", "--quiet", "HEAD^{commit}",
-+      unsetenv_others: true,
-+    )
-+    actual_commit = stdout.strip
-+    unless status.success? && TAP_GIT_HEAD.match?(actual_commit) && actual_commit == expected_commit
-+      raise "Kandelo publisher selected tap commit differs from the protected plan"
-+    end
-+
-+    actual_commit
-+  rescue Errno::ENOENT, Errno::ENOTDIR
-+    raise "Kandelo publisher protected tap Git input is unavailable"
 +  end
 +
 +  def self.reproducible_gnu_tar
@@ -450,7 +382,7 @@ index 000000000..93929dc18
 +    end
 +
 +    plan = JSON.parse(contents)
-+    identified_plan = plan.is_a?(Hash) && plan.keys.sort == PLAN_KEYS && plan["schema"] == 5 &&
++    identified_plan = plan.is_a?(Hash) && plan.keys.sort == PLAN_KEYS && plan["schema"] == 4 &&
 +                      plan["tap"].is_a?(String) && plan["formula"].is_a?(String) &&
 +                      plan["full_name"] == "#{plan["tap"]}/#{plan["formula"]}"
 +    raise "Kandelo publisher dependency plan has an invalid identity" unless identified_plan
@@ -458,16 +390,16 @@ index 000000000..93929dc18
 +    valid_target_taps = target_taps.is_a?(Array) && target_taps.length <= 9 &&
 +                        target_taps.all? do |tap|
 +      next false unless tap.is_a?(Hash) &&
-+                        tap.keys.sort == %w[checkout_commit tap_commit tap_name tap_repository]
++                        tap.keys.sort == %w[tap_commit tap_name tap_repository]
 +
 +      tap_name = tap["tap_name"]
 +      tap_repository = tap["tap_repository"]
 +      owner, short_name = tap_name.split("/", 2) if tap_name.is_a?(String)
 +      tap_name.is_a?(String) && tap_repository.is_a?(String) &&
-+        tap["tap_commit"].is_a?(String) && tap["checkout_commit"].is_a?(String) &&
++        tap["tap_commit"].is_a?(String) &&
 +        TAP_NAME.match?(tap_name) && TAP_REPOSITORY.match?(tap_repository) &&
 +        tap_repository == "#{owner}/homebrew-#{short_name}" &&
-+        TAP_GIT_HEAD.match?(tap["tap_commit"]) && TAP_GIT_HEAD.match?(tap["checkout_commit"])
++        TAP_GIT_HEAD.match?(tap["tap_commit"])
 +    end
 +    target_names = valid_target_taps ? target_taps.map { |tap| tap.fetch("tap_name") } : []
 +    valid_target_taps &&= target_names == target_names.sort.uniq && target_names.include?(plan["tap"])
@@ -523,27 +455,6 @@ index 000000000..93929dc18
 +    raise "Kandelo publisher dependency plan is invalid JSON: #{e.message}"
 +  end
 +end
-diff --git a/Library/Homebrew/tap.rb b/Library/Homebrew/tap.rb
-index 0a4832c6b..babe21bf3 100644
---- a/Library/Homebrew/tap.rb
-+++ b/Library/Homebrew/tap.rb
-@@ -4,4 +4,5 @@
- require "api"
- require "commands"
-+require "kandelo_publisher"
- require "settings"
- require "utils/output"
-@@ -442,5 +443,8 @@ class Tap
-   def git_head
-     raise TapUnavailableError, name unless installed?
--
--    @git_head ||= T.let(git_repository.head_ref, T.nilable(String))
-+
-+    @git_head ||= T.let(
-+      KandeloPublisher.selected_tap_git_head(self) || git_repository.head_ref,
-+      T.nilable(String),
-+    )
-   end
 diff --git a/Library/Homebrew/test.rb b/Library/Homebrew/test.rb
 index b0c522709..2d2350a54 100644
 --- a/Library/Homebrew/test.rb

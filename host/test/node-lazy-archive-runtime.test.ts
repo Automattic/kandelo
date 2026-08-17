@@ -96,7 +96,7 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
       "https://github.com/example/project/releases/download/v1/unbound.tar.gz";
     const fs = MemoryFileSystem.create(new SharedArrayBuffer(32 * 1024 * 1024));
     fs.registerLazyTree({
-      decoder: "tar-gzip-v1",
+      decoder: "homebrew-bottle-tar-gzip-v1",
       mediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
       ...integrity(boundArchive),
       expandedBytes: boundTar.byteLength,
@@ -111,7 +111,7 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
       inodeGroup: "closed-bound",
     }]);
     fs.registerLazyTree({
-      decoder: "tar-gzip-v1",
+      decoder: "homebrew-bottle-tar-gzip-v1",
       mediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
       ...integrity(unboundArchive),
       expandedBytes: unboundTar.byteLength,
@@ -206,7 +206,7 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
 
     const fs = MemoryFileSystem.create(new SharedArrayBuffer(32 * 1024 * 1024));
     fs.registerLazyTree({
-      decoder: "tar-gzip-v1",
+      decoder: "homebrew-bottle-tar-gzip-v1",
       mediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
       ...integrity(execArchive),
       expandedBytes: execTar.byteLength,

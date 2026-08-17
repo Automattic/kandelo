@@ -68,7 +68,7 @@ the source tap repository under `homebrew-vfs-sha256-<image-sha256>`. Lazy
 runtime content publishes separately under
 `homebrew-runtime-layer-sha256-<bundle-sha256>`; that closed identity binds its
 shell base, payload inventory, bottle provenance, and acceptance evidence.
-The eager release contains its five acceptance assets. A schema-6 direct
+The eager release contains its five acceptance assets. A schema-5 direct
 runtime release contains its closed descriptor plus one exact payload per
 deferred bottle; a historical schema-4 one-tree release contains its descriptor
 and single payload. Generic browser gallery output

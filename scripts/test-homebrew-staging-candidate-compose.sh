@@ -27,7 +27,7 @@ SHA256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 ROOT_URL="https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-8-candidates/asa"
 jq -ncS \
   --arg sha256 "$SHA256" --arg root "$ROOT_URL" '
-  {"kandelo-dev/tap-core/asa": {
+  {asa: {
     bottle: {cellar: "any_skip_relocation", rebuild: 1, root_url: $root,
       tags: {wasm32_kandelo: {sha256: $sha256}}},
     formula: {name: "asa", path:

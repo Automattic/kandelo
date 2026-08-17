@@ -105,43 +105,6 @@ describe("BrowserWorkerAdapter", () => {
       expect(typeof handle.off).toBe("function");
       expect(typeof handle.terminate).toBe("function");
     });
-
-    it("terminates the exact Worker when its initial post cannot be cloned", () => {
-      const cloneFailure = new DOMException(
-        "workerData could not be cloned",
-        "DataCloneError",
-      );
-      let constructions = 0;
-      let postAttempts = 0;
-      let terminations = 0;
-      class InitialPostFailureWorker extends MockBrowserWorker {
-        constructor(url: string | URL, options?: any) {
-          super(url, options);
-          constructions += 1;
-          lastMockWorker = this;
-        }
-
-        override postMessage(_msg: unknown, _transfer?: any[]): void {
-          postAttempts += 1;
-          throw cloneFailure;
-        }
-
-        override terminate(): void {
-          terminations += 1;
-          super.terminate();
-        }
-      }
-      vi.stubGlobal("Worker", InitialPostFailureWorker);
-      const adapter = new BrowserWorkerAdapter("worker.js");
-
-      expect(() => adapter.createWorker({ pid: 42 })).toThrow(cloneFailure);
-      expect(constructions).toBe(1);
-      expect(postAttempts).toBe(1);
-      expect(terminations).toBe(1);
-      expect(lastMockWorker!.terminated).toBe(true);
-      expect(lastMockWorker!.onmessage).toBeNull();
-      expect(lastMockWorker!.onerror).toBeNull();
-    });
   });
 
   // ---- BrowserWorkerHandle message routing --------------------------------

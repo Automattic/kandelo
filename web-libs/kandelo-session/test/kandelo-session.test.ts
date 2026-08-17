@@ -1,13 +1,11 @@
-import { afterEach, describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   LiveKernelHost,
   type BootDescriptor,
   type FileSystemLike,
-  type KernelLike,
   type LazyDownloadEvent,
   type MachineStatus,
   type ProcessEvent,
-  type TerminalSessionPolicy,
 } from "../src/kernel-host";
 import {
   genericDemoPresentation,
@@ -705,83 +703,6 @@ describe("LiveKernelHost: process listing", () => {
   });
 });
 
-describe("LiveKernelHost: machine PCM lifecycle", () => {
-  it("forwards explicit activation and state changes independently of framebuffer", async () => {
-    let state: import("../src/kernel-host").MachineAudioState = "suspended";
-    let emit: ((next: import("../src/kernel-host").MachineAudioState) => void) | null = null;
-    const prepareAudio = vi.fn(async () => {});
-    const resumeAudio = vi.fn(async () => {
-      state = "running";
-      emit?.(state);
-    });
-    const suspendAudio = vi.fn(async () => {
-      state = "suspended";
-      emit?.(state);
-    });
-    const host = new LiveKernelHost({
-      kernel: {
-        prepareAudio,
-        resumeAudio,
-        suspendAudio,
-        getAudioState: () => state,
-        onAudioStateChange: (cb: typeof emit) => {
-          emit = cb;
-          cb?.(state);
-          return () => { emit = null; };
-        },
-      } as never,
-    });
-    const observed: string[] = [];
-    const off = host.subscribeAudioState((next) => observed.push(next));
-
-    await host.prepareAudio();
-    await host.resumeAudio();
-    expect(prepareAudio).toHaveBeenCalledOnce();
-    expect(resumeAudio).toHaveBeenCalledOnce();
-    expect(host.getAudioState()).toBe("running");
-    await host.suspendAudio();
-    expect(host.getAudioState()).toBe("suspended");
-    expect(observed).toContain("running");
-    expect(observed.at(-1)).toBe("suspended");
-
-    host.detachKernel();
-    expect(observed.at(-1)).toBe("unavailable");
-    off();
-  });
-
-  it("retains framebuffer startAudio as a non-owning machine-audio adapter", async () => {
-    let state: import("../src/kernel-host").MachineAudioState = "suspended";
-    const resumeAudio = vi.fn(async () => { state = "running"; });
-    const suspendAudio = vi.fn(async () => { state = "suspended"; });
-    const framebuffers = {
-      list: () => [],
-      onChange: () => () => {},
-    };
-    const host = new LiveKernelHost({
-      kernel: {
-        framebuffers,
-        getProcessMemory: () => undefined,
-        resumeAudio,
-        suspendAudio,
-        getAudioState: () => state,
-      } as never,
-    });
-
-    const framebuffer = host.attachFramebuffer({} as HTMLCanvasElement);
-    const output = await framebuffer.startAudio();
-    expect(output).not.toBeNull();
-    expect(output!.getState()).toBe("suspended");
-    await output!.resume();
-    expect(resumeAudio).toHaveBeenCalledOnce();
-    expect(output!.getState()).toBe("running");
-
-    output!.close();
-    expect(suspendAudio).not.toHaveBeenCalled();
-    expect(output!.getState()).toBe("running");
-    framebuffer.close();
-  });
-});
-
 describe("LiveKernelHost: shell command queue", () => {
   it("uses the worker-returned pid for a transferred shell binary", async () => {
     const outputPids: number[] = [];
@@ -810,7 +731,7 @@ describe("LiveKernelHost: shell command queue", () => {
       programBytes: new ArrayBuffer(0),
       argv: ["bash", "-l", "-i"],
       env: ["PS1=kandelo$ "],
-      cwd: "/home/maker",
+      cwd: "/home/user",
     });
 
     const pty = await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
@@ -840,7 +761,7 @@ describe("LiveKernelHost: shell command queue", () => {
       programPath: "/opt/kandelo/homebrew/bin/dash",
       argv: ["dash", "-l", "-i"],
       env: ["PS1=kandelo$ "],
-      cwd: "/home/maker",
+      cwd: "/home/user",
       uid: 1000,
       gid: 1000,
     });
@@ -852,7 +773,7 @@ describe("LiveKernelHost: shell command queue", () => {
       ["dash", "-l", "-i"],
       expect.objectContaining({
         pty: true,
-        cwd: "/home/maker",
+        cwd: "/home/user",
         uid: 1000,
         gid: 1000,
         ptyCols: 100,
@@ -918,7 +839,7 @@ describe("LiveKernelHost: shell command queue", () => {
       programBytes: new ArrayBuffer(0),
       argv: ["bash", "-l", "-i"],
       env: ["PS1=kandelo$ "],
-      cwd: "/home/maker",
+      cwd: "/home/user",
     });
 
     let completed = false;
@@ -966,7 +887,7 @@ describe("LiveKernelHost: shell command queue", () => {
       programBytes: new ArrayBuffer(0),
       argv: ["bash", "-l", "-i"],
       env: ["PS1=kandelo$ "],
-      cwd: "/home/maker",
+      cwd: "/home/user",
     });
 
     let completed = false;
@@ -1022,7 +943,7 @@ describe("LiveKernelHost: shell command queue", () => {
       programBytes: new ArrayBuffer(0),
       argv: ["bash", "-l", "-i"],
       env: ["PS1=kandelo$ "],
-      cwd: "/home/maker",
+      cwd: "/home/user",
     });
 
     const visibleAttach = host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
@@ -1091,7 +1012,7 @@ describe("LiveKernelHost: shell command queue", () => {
       programBytes: new ArrayBuffer(0),
       argv: ["bash", "-l", "-i"],
       env: ["PS1=kandelo$ "],
-      cwd: "/home/maker",
+      cwd: "/home/user",
     });
 
     const firstHandle = await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
@@ -1147,7 +1068,7 @@ describe("LiveKernelHost: shell command queue", () => {
       programBytes: new ArrayBuffer(0),
       argv: ["bash", "-l", "-i"],
       env: ["PS1=kandelo$ "],
-      cwd: "/home/maker",
+      cwd: "/home/user",
     });
 
     const firstHandle = await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
@@ -1170,368 +1091,6 @@ describe("LiveKernelHost: shell command queue", () => {
     firstHandle.write("echo old-handle\n");
     expect(writes).toEqual([101, 101]);
     expect(seen).toContain("write:101:echo old-handle");
-  });
-});
-
-const LOGIN_SESSION_POLICY = {
-  initial: {
-    programPath: "/usr/bin/login",
-    argv: ["login", "-p", "-f", "maker"],
-    uid: 0,
-    gid: 0,
-  },
-  afterExit: {
-    programPath: "/usr/bin/login",
-    argv: ["login", "-p"],
-    uid: 0,
-    gid: 0,
-  },
-  shortRunThresholdMs: 2_000,
-  initialRestartDelayMs: 250,
-  maximumRestartDelayMs: 5_000,
-} satisfies TerminalSessionPolicy;
-
-type TerminalSpawn = {
-  pid: number;
-  programPath: string;
-  argv: string[];
-  uid?: number;
-  gid?: number;
-};
-
-function terminalSessionHarness() {
-  const encoder = new TextEncoder();
-  const spawns: TerminalSpawn[] = [];
-  const activePids = new Set<number>();
-  const exitResolvers = new Map<number, (status: number) => void>();
-  const outputCallbacks = new Map<number, (data: Uint8Array) => void>();
-  const terminateProcess = vi.fn(async (pid: number, status = 0) => {
-    exitResolvers.get(pid)?.(status);
-  });
-  let nextPid = 1;
-  let nextSpawnError: Error | null = null;
-  let maximumActiveProcesses = 0;
-
-  const kernel: KernelLike = {
-    spawn: vi.fn(),
-    async spawnFromVfs(programPath, argv, options) {
-      if (nextSpawnError) {
-        const error = nextSpawnError;
-        nextSpawnError = null;
-        throw error;
-      }
-      const pid = nextPid++;
-      spawns.push({
-        pid,
-        programPath,
-        argv: argv.slice(),
-        uid: options?.uid,
-        gid: options?.gid,
-      });
-      activePids.add(pid);
-      maximumActiveProcesses = Math.max(
-        maximumActiveProcesses,
-        activePids.size,
-      );
-      let settled = false;
-      const exit = new Promise<number>((resolve) => {
-        exitResolvers.set(pid, (status) => {
-          if (settled) return;
-          settled = true;
-          activePids.delete(pid);
-          resolve(status);
-        });
-      });
-      return { pid, exit };
-    },
-    onPtyOutput(pid, callback) {
-      outputCallbacks.set(pid, callback);
-    },
-    ptyWrite: vi.fn(),
-    ptyResize: vi.fn(),
-    terminateProcess,
-    destroy: vi.fn(async () => {}),
-    enumProcs: vi.fn(async () => [999, ...activePids].map((pid) => ({
-      pid,
-      ppid: 0,
-      uid: 0,
-      gid: 0,
-      vsizeBytes: 0,
-      state: "R" as const,
-      comm: "login",
-      cmdline: "login",
-    }))),
-  };
-  const host = new LiveKernelHost({ kernel, status: "running" });
-  host.setTerminalSessionPolicy(LOGIN_SESSION_POLICY);
-
-  return {
-    activePids,
-    dropProcess(pid: number) {
-      activePids.delete(pid);
-    },
-    exit(pid: number, status = 0) {
-      const resolve = exitResolvers.get(pid);
-      if (!resolve) throw new Error(`missing exit resolver for pid ${pid}`);
-      resolve(status);
-    },
-    failNextSpawn(message = "exec failed") {
-      nextSpawnError = new Error(message);
-    },
-    host,
-    kernel,
-    maximumActiveProcesses: () => maximumActiveProcesses,
-    output(pid: number, text: string) {
-      outputCallbacks.get(pid)?.(encoder.encode(text));
-    },
-    spawns,
-    terminateProcess,
-  };
-}
-
-async function settleTerminalSessionWork(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-}
-
-describe("LiveKernelHost: supervised terminal sessions", () => {
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it("autologins once per logical PTY and UI reattachment starts no process", async () => {
-    vi.useFakeTimers();
-    const harness = terminalSessionHarness();
-
-    const first = await harness.host.attachPty("/dev/pts/0");
-    let detachedOutput = "";
-    first.onData((bytes) => {
-      detachedOutput += new TextDecoder().decode(bytes);
-    });
-    first.close();
-    harness.output(1, "after detach\n");
-    await harness.host.attachPty("/dev/pts/0");
-    await harness.host.attachPty("/dev/pts/1");
-
-    expect(harness.spawns.map(({ argv }) => argv)).toEqual([
-      ["login", "-p", "-f", "maker"],
-      ["login", "-p", "-f", "maker"],
-    ]);
-    expect(detachedOutput).toBe("");
-    expect(harness.activePids.size).toBe(2);
-    expect(vi.getTimerCount()).toBe(0);
-  });
-
-  it("uses ordinary login after logout and backs short runs off to the cap", async () => {
-    vi.useFakeTimers();
-    const harness = terminalSessionHarness();
-    await harness.host.attachPty("/dev/pts/0");
-    const expectedDelays = [250, 500, 1_000, 2_000, 4_000, 5_000, 5_000];
-
-    for (const [index, delay] of expectedDelays.entries()) {
-      harness.exit(harness.spawns.at(-1)!.pid);
-      await settleTerminalSessionWork();
-      expect(vi.getTimerCount()).toBe(1);
-      await vi.advanceTimersByTimeAsync(delay - 1);
-      expect(harness.spawns).toHaveLength(index + 1);
-      expect(vi.getTimerCount()).toBe(1);
-      await vi.advanceTimersByTimeAsync(1);
-      await settleTerminalSessionWork();
-      expect(harness.spawns.at(-1)!.argv).toEqual(["login", "-p"]);
-      expect(vi.getTimerCount()).toBe(0);
-    }
-
-    expect(harness.spawns[0].argv).toEqual([
-      "login",
-      "-p",
-      "-f",
-      "maker",
-    ]);
-    expect(harness.spawns.slice(1).every(({ argv }) =>
-      argv.length === 2 && argv[0] === "login" && argv[1] === "-p"
-    )).toBe(true);
-    expect(harness.maximumActiveProcesses()).toBe(1);
-  });
-
-  it("resets restart delay after a process survives for two seconds", async () => {
-    vi.useFakeTimers();
-    const harness = terminalSessionHarness();
-    await harness.host.attachPty("/dev/pts/0");
-
-    harness.exit(1);
-    await settleTerminalSessionWork();
-    await vi.advanceTimersByTimeAsync(250);
-    await vi.advanceTimersByTimeAsync(2_000);
-    harness.exit(2);
-    await settleTerminalSessionWork();
-    expect(vi.getTimerCount()).toBe(1);
-    await vi.advanceTimersByTimeAsync(249);
-    expect(harness.spawns).toHaveLength(2);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(harness.spawns).toHaveLength(3);
-
-    harness.exit(3);
-    await settleTerminalSessionWork();
-    await vi.advanceTimersByTimeAsync(249);
-    expect(harness.spawns).toHaveLength(3);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(harness.spawns).toHaveLength(4);
-    expect(harness.maximumActiveProcesses()).toBe(1);
-  });
-
-  it("prints a restart failure and neither retries nor repeats autologin", async () => {
-    vi.useFakeTimers();
-    const harness = terminalSessionHarness();
-    const pty = await harness.host.attachPty("/dev/pts/0");
-    let output = "";
-    pty.onData((bytes) => {
-      output += new TextDecoder().decode(bytes);
-    });
-
-    harness.failNextSpawn("missing /usr/bin/login");
-    harness.exit(1);
-    await settleTerminalSessionWork();
-    await vi.advanceTimersByTimeAsync(250);
-    await settleTerminalSessionWork();
-
-    expect(output).toContain("missing /usr/bin/login");
-    expect(harness.spawns).toHaveLength(1);
-    expect(vi.getTimerCount()).toBe(0);
-    await vi.advanceTimersByTimeAsync(60_000);
-    pty.close();
-    await harness.host.attachPty("/dev/pts/0");
-    expect(harness.spawns).toHaveLength(1);
-    expect(vi.getTimerCount()).toBe(0);
-  });
-
-  it("consumes initial autologin before a failed first launch", async () => {
-    vi.useFakeTimers();
-    const harness = terminalSessionHarness();
-    harness.failNextSpawn("initial login launch failed");
-
-    await expect(harness.host.attachPty("/dev/pts/0"))
-      .rejects.toThrow("initial login launch failed");
-    const pty = await harness.host.attachPty("/dev/pts/0");
-    let output = "";
-    pty.onData((bytes) => {
-      output += new TextDecoder().decode(bytes);
-    });
-
-    expect(output).toContain("initial login launch failed");
-    expect(harness.spawns).toHaveLength(0);
-    expect(vi.getTimerCount()).toBe(0);
-  });
-
-  it("logical removal cancels restart and allocates fresh autologin state", async () => {
-    vi.useFakeTimers();
-    const harness = terminalSessionHarness();
-    await harness.host.attachPty("/dev/pts/0");
-    harness.exit(1);
-    await settleTerminalSessionWork();
-    expect(vi.getTimerCount()).toBe(1);
-
-    harness.host.removePty("/dev/pts/0");
-    expect(vi.getTimerCount()).toBe(0);
-    await vi.advanceTimersByTimeAsync(5_000);
-    await harness.host.attachPty("/dev/pts/0");
-
-    expect(harness.spawns.map(({ argv }) => argv)).toEqual([
-      ["login", "-p", "-f", "maker"],
-      ["login", "-p", "-f", "maker"],
-    ]);
-    expect(harness.activePids).toEqual(new Set([2]));
-  });
-
-  it.each(["detach", "reboot", "halt"] as const)(
-    "cancels pending restart on kernel $transition",
-    async (transition) => {
-      vi.useFakeTimers();
-      const harness = terminalSessionHarness();
-      await harness.host.attachPty("/dev/pts/0");
-      harness.exit(1);
-      await settleTerminalSessionWork();
-      expect(vi.getTimerCount()).toBe(1);
-
-      if (transition === "detach") harness.host.detachKernel();
-      else if (transition === "reboot") await harness.host.reboot();
-      else await harness.host.halt();
-
-      expect(vi.getTimerCount()).toBe(0);
-      await vi.advanceTimersByTimeAsync(5_000);
-      expect(harness.spawns).toHaveLength(1);
-    },
-  );
-
-  it.each(["remove", "detach", "reboot", "destroy"] as const)(
-    "terminates an active login process on $transition",
-    async (transition) => {
-      vi.useFakeTimers();
-      const harness = terminalSessionHarness();
-      await harness.host.attachPty("/dev/pts/0");
-      expect(harness.activePids).toEqual(new Set([1]));
-
-      if (transition === "remove") harness.host.removePty("/dev/pts/0");
-      else if (transition === "detach") harness.host.detachKernel();
-      else if (transition === "reboot") await harness.host.reboot();
-      else await harness.host.halt();
-      await settleTerminalSessionWork();
-
-      expect(harness.terminateProcess).toHaveBeenCalledWith(1);
-      expect(harness.activePids).toEqual(new Set());
-      if (transition === "destroy") {
-        expect(harness.kernel.destroy).toHaveBeenCalledOnce();
-      }
-      expect(vi.getTimerCount()).toBe(0);
-    },
-  );
-
-  it("ignores stale exit and output callbacks after path reuse", async () => {
-    vi.useFakeTimers();
-    const harness = terminalSessionHarness();
-    const oldPty = await harness.host.attachPty("/dev/pts/0");
-    let oldOutput = "";
-    oldPty.onData((bytes) => {
-      oldOutput += new TextDecoder().decode(bytes);
-    });
-
-    harness.host.removePty("/dev/pts/0");
-    const currentPty = await harness.host.attachPty("/dev/pts/0");
-    let currentOutput = "";
-    currentPty.onData((bytes) => {
-      currentOutput += new TextDecoder().decode(bytes);
-    });
-    harness.output(1, "stale\n");
-    harness.exit(1);
-    await settleTerminalSessionWork();
-
-    expect(oldOutput).toBe("");
-    expect(currentOutput).toBe("");
-    expect(harness.spawns).toHaveLength(2);
-    expect(harness.activePids).toEqual(new Set([2]));
-    expect(vi.getTimerCount()).toBe(0);
-  });
-
-  it("turns reattach-time liveness loss into one ordinary-login restart", async () => {
-    vi.useFakeTimers();
-    const harness = terminalSessionHarness();
-    const first = await harness.host.attachPty("/dev/pts/0");
-    harness.dropProcess(1);
-
-    first.close();
-    await harness.host.attachPty("/dev/pts/0");
-    expect(vi.getTimerCount()).toBe(1);
-    await vi.advanceTimersByTimeAsync(250);
-    await settleTerminalSessionWork();
-    expect(harness.spawns.map(({ argv }) => argv)).toEqual([
-      ["login", "-p", "-f", "maker"],
-      ["login", "-p"],
-    ]);
-
-    harness.exit(1);
-    await settleTerminalSessionWork();
-    expect(vi.getTimerCount()).toBe(0);
-    expect(harness.activePids).toEqual(new Set([2]));
   });
 });
 

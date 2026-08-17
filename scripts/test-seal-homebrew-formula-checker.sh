@@ -49,31 +49,6 @@ printf 'changed deps artifact\n' >"$artifact"
 [ "$(sha256sum "$checker" | awk '{print $1}')" = "$source_sha256" ] ||
   fail "Cargo's alternate path can mutate the sealed checker"
 
-# A batched local build can run trusted Cargo tooling between Formulae. Model
-# Cargo rematerializing the same authenticated bytes as its normal 0755,
-# two-link release output, then require the shared sealer to restore the exact
-# next-Formula boundary without accepting changed bytes.
-rm "$artifact"
-cp "$checker" "$artifact"
-chmod 0755 "$artifact"
-rm "$checker"
-ln "$artifact" "$checker"
-[ "$(stat -c '%h:%a' "$checker")" = "2:755" ] ||
-  fail "second-Formula fixture did not recreate Cargo's release output"
-[ "$(sha256sum "$checker" | awk '{print $1}')" = "$source_sha256" ] ||
-  fail "second-Formula fixture changed the authenticated checker bytes"
-reported="$(
-  bash "$REPO_ROOT/scripts/seal-homebrew-formula-checker.sh" \
-    --root "$root" \
-    --checker "$checker"
-)"
-[ "$reported" = "$checker" ] ||
-  fail "second-Formula sealer did not report the exact checker"
-[ "$(stat -c '%h:%a' "$checker")" = "1:555" ] ||
-  fail "second-Formula checker is not one read-only inode"
-[ "$(sha256sum "$checker" | awk '{print $1}')" = "$source_sha256" ] ||
-  fail "second-Formula checker changed after resealing"
-
 unsafe="$root/target/unsafe/release/xtask"
 mkdir -p "${unsafe%/*}"
 cp "$checker" "$unsafe"

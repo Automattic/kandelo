@@ -9,16 +9,10 @@ import type {
   HomebrewBottleSupportOutput,
   HomebrewLinkEntry,
 } from "../../src";
-import { ABI_VERSION } from "../../src/generated/abi";
 import { encodeHomebrewBottleSelection } from "../../src/homebrew-bottle-selection";
 
 export const HOMEBREW_TEST_PREFIX = "/opt/kandelo/homebrew";
 export const HOMEBREW_TEST_CELLAR = `${HOMEBREW_TEST_PREFIX}/Cellar`;
-export const HOMEBREW_TEST_ABI = ABI_VERSION;
-export const HOMEBREW_TEST_SELECTION_NAME =
-  `experimental-abi${HOMEBREW_TEST_ABI}-flat-builder`;
-export const HOMEBREW_TEST_VFS_FILENAME =
-  `kandelo-homebrew-experimental-abi${HOMEBREW_TEST_ABI}-wasm32.vfs.zst`;
 export const HOMEBREW_TEST_BOOTSTRAP_FULL_NAME =
   "kandelo-dev/tap-core/homebrew-bootstrap";
 
@@ -199,7 +193,7 @@ export function homebrewTestBottleDescriptor(
     revision: 0,
     bottleRebuild: 0,
     arch,
-    kandeloAbi: HOMEBREW_TEST_ABI,
+    kandeloAbi: 42,
     bottleTag: `${arch}_kandelo`,
     layout: "kandelo-homebrew-v1",
     materialization: options.materialization ?? "keg",
@@ -227,11 +221,11 @@ export function homebrewTestSelectionBytes(
 ): Uint8Array {
   return encodeHomebrewBottleSelection({
     schema: 1,
-    name: HOMEBREW_TEST_SELECTION_NAME,
+    name: "experimental-abi42-flat-builder",
     arch: "wasm32",
-    kandeloAbi: HOMEBREW_TEST_ABI,
+    kandeloAbi: 42,
     bottles,
-    requestedVfsFilename: HOMEBREW_TEST_VFS_FILENAME,
+    requestedVfsFilename: "kandelo-homebrew-experimental-abi42-wasm32.vfs.zst",
     resourcePolicy: "kandelo-homebrew-vfs-generous-v1",
     linkPolicy: "kandelo-homebrew-link-ownership-v1",
     runtimeSupport: "kandelo-homebrew-bootstrap-v1",

@@ -37,8 +37,8 @@
 //!   `call_graph::reaching_closure` covers it.
 //! - **Legacy `try` body** — 2026-05-17 CI showed that shipping C
 //!   ports can still contain legacy `try` in fork-path functions even
-//!   with explicit modern-EH flags. Fork-reachable handlers are normalized to
-//!   activation-owned modern EH before nested switch-dispatch runs.
+//!   with explicit modern-EH flags. Forks in the try body are absorbed
+//!   by nested switch-dispatch; legacy catch-handler forks still panic.
 //!
 //! Net result: the trampoline scaffolding is preserved in
 //! `crates/fork-instrument/src/instrument.rs` but currently has no
@@ -56,11 +56,6 @@
 //! | `nested_call_indirect.wat`           | nested switch (2.1)       | already handled empirically    |
 
 use fork_instrument::{Options, instrument};
-use std::{
-    fs,
-    process::Command,
-    sync::atomic::{AtomicU64, Ordering},
-};
 use walrus::{
     LocalFunction, Module,
     ir::{Block, IfElse, Instr, InstrSeqId, Loop, Try, TryTable},
@@ -79,38 +74,6 @@ fn validate(bytes: &[u8]) {
 /// can't handle the fixture's instructions (notably legacy try/catch).
 fn try_parse(wat_src: &str) -> Option<Vec<u8>> {
     wat::parse_str(wat_src).ok()
-}
-
-fn parse_legacy_wat(wat_src: &str) -> Vec<u8> {
-    if let Some(bytes) = try_parse(wat_src) {
-        return bytes;
-    }
-
-    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    let base = std::env::temp_dir().join(format!(
-        "kandelo-fork-instrument-legacy-{}-{id}",
-        std::process::id(),
-    ));
-    let wat_path = base.with_extension("wat");
-    let wasm_path = base.with_extension("wasm");
-    fs::write(&wat_path, wat_src).expect("write legacy WAT fixture");
-    let output = Command::new("wat2wasm")
-        .args(["--enable-exceptions"])
-        .arg(&wat_path)
-        .arg("-o")
-        .arg(&wasm_path)
-        .output()
-        .expect("run wat2wasm for legacy EH fixture");
-    assert!(
-        output.status.success(),
-        "wat2wasm failed for legacy EH fixture:\n{}",
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let bytes = fs::read(&wasm_path).expect("read compiled legacy EH fixture");
-    let _ = fs::remove_file(wat_path);
-    let _ = fs::remove_file(wasm_path);
-    bytes
 }
 
 /// Walk every instruction sequence reachable from `seq` (including
@@ -135,10 +98,7 @@ fn nested_of(instr: &Instr) -> Vec<InstrSeqId> {
     match instr {
         Instr::Block(Block { seq }) => vec![*seq],
         Instr::Loop(Loop { seq }) => vec![*seq],
-        Instr::IfElse(IfElse {
-            consequent,
-            alternative,
-        }) => vec![*consequent, *alternative],
+        Instr::IfElse(IfElse { consequent, alternative }) => vec![*consequent, *alternative],
         Instr::TryTable(TryTable { seq, .. }) => vec![*seq],
         Instr::Try(Try { seq, .. }) => vec![*seq],
         _ => vec![],
@@ -176,12 +136,10 @@ fn has_br_table_in(module: &Module, export_name: &str) -> bool {
 /// `<fn>_post_table` per fork-path function.
 #[allow(dead_code)] // used by the ignored trampoline_* tests in 2.3
 fn has_table_with_prefix(module: &Module, prefix: &str) -> bool {
-    module.tables.iter().any(|t| {
-        t.name
-            .as_deref()
-            .map(|n| n.starts_with(prefix))
-            .unwrap_or(false)
-    })
+    module
+        .tables
+        .iter()
+        .any(|t| t.name.as_deref().map(|n| n.starts_with(prefix)).unwrap_or(false))
 }
 
 // ---------------------------------------------------------------------
@@ -292,8 +250,8 @@ fn nested_multivalue_params_uses_nested_switch_dispatch() {
          switch-dispatch (br_table emitted), not guard-dispatch"
     );
     // Trampoline post-table is NOT emitted — switch-dispatch absorbs
-    // this case. Fork-reachable legacy catches are normalized to modern
-    // activation-owned EH before dispatch selection.
+    // this case. The trampoline scaffolding stays reserved for
+    // unimplemented cases such as fork-from-legacy-catch.
     assert!(
         !has_table_with_prefix(&module, "_start_post_table"),
         "post-2.6c: nested switch-dispatch absorbs multi-value-params; \
@@ -307,8 +265,9 @@ fn nested_multivalue_params_uses_nested_switch_dispatch() {
 //
 // 2026-05-17 CI disproved the "modern flags remove every legacy Try"
 // invariant for C ports such as bash, spidermonkey, and vim. A fork in the
-// legacy try body and handlers use the same per-region nested-switch route as
-// Block/Loop/TryTable after normalization to modern activation-owned EH.
+// legacy try body can use the same per-region nested-switch route as
+// Block/Loop/TryTable bodies. Legacy catch handlers still need their
+// exception path reconstructed and remain unsupported.
 //
 // Note: the wat crate may not parse legacy try/catch on the host's
 // version (it's gated behind the legacy-EH feature). Skip cleanly
@@ -317,7 +276,10 @@ fn nested_multivalue_params_uses_nested_switch_dispatch() {
 #[test]
 fn legacy_try_body_fork_uses_nested_switch_dispatch() {
     let wat = include_str!("fixtures/trampoline/legacy_try_fork.wat");
-    let input = parse_legacy_wat(wat);
+    let Some(input) = try_parse(wat) else {
+        eprintln!("skip: wat crate did not parse legacy try/catch fixture");
+        return;
+    };
     let output = instrument(&input, &Options::default()).expect("instrument");
     validate(&output);
     let module = Module::from_buffer(&output).expect("walrus parse");
@@ -328,200 +290,16 @@ fn legacy_try_body_fork_uses_nested_switch_dispatch() {
     );
 }
 
-#[test]
-fn legacy_catch_handler_fork_is_lowered_to_activation_owned_modern_catch() {
-    let wat = include_str!("fixtures/trampoline/legacy_catch_fork.wat");
-    let input = parse_legacy_wat(wat);
-    let output = instrument(&input, &Options::default()).expect("instrument legacy catch handler");
-    validate(&output);
-    let module = Module::from_buffer(&output).expect("walrus parse");
-
-    assert!(
-        has_br_table_in(&module, "_start"),
-        "legacy catch-handler fork must route through nested switch replay",
-    );
-    let start = module
-        .exports
-        .iter()
-        .find_map(|export| match export.item {
-            walrus::ExportItem::Function(id) if export.name == "_start" => Some(id),
-            _ => None,
-        })
-        .expect("_start export");
-    let start = match &module.funcs.get(start).kind {
-        walrus::FunctionKind::Local(local) => local,
-        _ => panic!("_start is not local"),
-    };
-    let mut has_catch_ref = false;
-    let mut has_throw_ref = false;
-    let mut legacy_handlers = 0usize;
-    walk_all(
-        start,
-        start.entry_block(),
-        0,
-        &mut |_, _, instr| match instr {
-            Instr::TryTable(table) => {
-                has_catch_ref |= table.catches.iter().any(|catch| {
-                    matches!(
-                        catch,
-                        walrus::ir::TryTableCatch::CatchRef { .. }
-                            | walrus::ir::TryTableCatch::CatchAllRef { .. }
-                    )
-                });
-            }
-            Instr::ThrowRef(_) => has_throw_ref = true,
-            Instr::Try(legacy) => {
-                legacy_handlers += legacy
-                    .catches
-                    .iter()
-                    .filter(|catch| !matches!(catch, walrus::ir::LegacyCatch::Delegate { .. }))
-                    .count();
-            }
-            _ => {}
-        },
-    );
-    assert_eq!(
-        legacy_handlers, 0,
-        "normalization must eliminate implicit legacy handler contexts before \
-         continuation instrumentation",
-    );
-    assert!(has_catch_ref, "legacy catch must lower through catch_ref");
-    assert!(
-        has_throw_ref,
-        "rewind must reconstruct the caught exception with throw_ref",
-    );
-}
-
-#[test]
-fn legacy_catch_all_handler_fork_uses_complete_exception_recipe() {
-    let input = parse_legacy_wat(
-        r#"
-        (module
-          (import "kernel" "kernel_fork" (func $fork (result i32)))
-          (tag $failure)
-          (memory 1)
-          (func (export "_start") (result i32)
-            (try (result i32)
-              (do
-                throw $failure)
-              (catch_all
-                call $fork))))
-        "#,
-    );
-    let output = instrument(&input, &Options::default()).expect("instrument legacy catch_all");
-    validate(&output);
-    let printed = wasmprinter::print_bytes(&output).expect("print instrumented legacy catch_all");
-    assert!(
-        printed.contains("catch_all_ref"),
-        "legacy catch_all must capture the complete exception, including unknown tags",
-    );
-    assert!(
-        printed.contains("throw_ref"),
-        "legacy catch_all rewind must replay the complete exception recipe",
-    );
-}
-
-#[test]
-fn legacy_rethrow_after_fork_uses_owned_exception_and_clears_legacy_opcode() {
-    let input = parse_legacy_wat(
-        r#"
-        (module
-          (import "kernel" "kernel_fork" (func $fork (result i32)))
-          (tag $number (param i32))
-          (memory 1)
-          (func (export "_start") (result i32)
-            (try (result i32)
-              (do
-                (try (result i32)
-                  (do
-                    i32.const 73
-                    throw $number)
-                  (catch $number
-                    call $fork
-                    drop
-                    rethrow 0)))
-              (catch $number))))
-        "#,
-    );
-    let output = instrument(&input, &Options::default()).expect("instrument legacy rethrow");
-    validate(&output);
-    let module = Module::from_buffer(&output).expect("parse normalized rethrow module");
-    let start = module
-        .exports
-        .iter()
-        .find_map(|export| match export.item {
-            walrus::ExportItem::Function(id) if export.name == "_start" => Some(id),
-            _ => None,
-        })
-        .expect("_start export");
-    let start = match &module.funcs.get(start).kind {
-        walrus::FunctionKind::Local(local) => local,
-        _ => panic!("_start is not local"),
-    };
-    let mut rethrows = 0usize;
-    let mut throw_refs = 0usize;
-    walk_all(
-        start,
-        start.entry_block(),
-        0,
-        &mut |_, _, instr| match instr {
-            Instr::Rethrow(_) => rethrows += 1,
-            Instr::ThrowRef(_) => throw_refs += 1,
-            _ => {}
-        },
-    );
-    assert_eq!(
-        rethrows, 0,
-        "legacy implicit catch contexts must not survive normalization",
-    );
-    assert!(
-        throw_refs >= 2,
-        "normalization and rewind must both use owned exnref throws",
-    );
-}
-
-#[test]
-fn legacy_handler_br_table_exit_clears_owned_exception_through_typed_shim() {
-    let input = parse_legacy_wat(
-        r#"
-        (module
-          (import "kernel" "kernel_fork" (func $fork (result i32)))
-          (tag $number (param i32))
-          (memory 1)
-          (func (export "_start") (result i32)
-            (block $done (result i32)
-              (try (result i32)
-                (do
-                  i32.const 91
-                  throw $number)
-                (catch $number
-                  call $fork
-                  drop
-                  i32.const 0
-                  br_table $done $done)))))
-        "#,
-    );
-    let output = instrument(&input, &Options::default()).expect("instrument legacy br_table exit");
-    validate(&output);
-    let printed = wasmprinter::print_bytes(&output).expect("print legacy br_table output");
-    assert!(
-        printed.contains("br_table"),
-        "typed branch cleanup must preserve br_table rather than scalarizing dispatch",
-    );
-    assert!(
-        printed.contains("ref.null exn"),
-        "the branch shim must clear its activation-local exception root",
-    );
-}
-
 // ---------------------------------------------------------------------
 // (c) Nested call_indirect — empirically NOT a trampoline case
 // ---------------------------------------------------------------------
 //
 // Empirical finding (sub-commit 2.1): the simple nested call_indirect
 // case is already handled by nested switch-dispatch today. See the
-// fixture's header comment for the explanation. Nested switch-dispatch now
-// also owns call_indirect with typed carryovers.
+// fixture's header comment for the explanation. The real class (c)
+// trampoline gap is `call_indirect + another unsupported pattern`
+// (e.g. carryover); a fixture for that lands in 2.5 once we audit
+// which LLVM emission shapes actually trigger it.
 //
 // This test is a regression gate that nested call_indirect stays on
 // the switch-dispatch path.

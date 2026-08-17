@@ -28,58 +28,6 @@ fail() {
     exit 1
 }
 
-# Every native xtask lookup must pin the declared LLVM archive pair. On Darwin,
-# LLVM supplies llvm-ar rather than an `ar` alias, so dropping AR/RANLIB makes
-# a cold Cargo cache fall through to the incompatible Apple archiver. Target
-# build variables and caller C/C++ compiler flags must not leak into the native
-# helper invocation.
-metadata_tools="$work/metadata-tools"
-metadata_repo="$work/metadata-repo"
-metadata_calls="$work/metadata-calls"
-metadata_source="$work/metadata-source.wasm"
-metadata_runtime="$work/metadata-runtime.dat"
-mkdir -p "$metadata_tools" "$metadata_repo/scripts"
-cp "$REPO_ROOT/scripts/install-local-binary.sh" "$metadata_repo/scripts/"
-cp "$REPO_ROOT/scripts/wasm-artifact-guards.sh" "$metadata_repo/scripts/"
-printf '\000asm\001\000\000\000' >"$metadata_source"
-printf 'metadata runtime\n' >"$metadata_runtime"
-cat >"$metadata_tools/cargo" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-[ "${AR:-}" = "$METADATA_TOOLS/llvm-ar" ] || exit 41
-[ "${RANLIB:-}" = "$METADATA_TOOLS/llvm-ranlib" ] || exit 42
-[ -z "${CC+x}" ] || exit 43
-[ -z "${CFLAGS+x}" ] || exit 44
-printf '%s\n' "$*" >>"$METADATA_CALLS"
-case "$*" in
-  *'build-deps output-metadata kernel kandelo-kernel.wasm')
-    printf '%s\n' '{"source_artifact":"kandelo-kernel.wasm","mirror_path":"kernel.wasm","fork_instrumentation":"disabled"}'
-    ;;
-  *'build-deps --arch wasm32 --binaries-dir '*' install-local-artifact kernel kandelo-kernel.wasm'|*'build-deps --arch wasm32 --binaries-dir '*' install-local-artifact kernel metadata-runtime.dat')
-    ;;
-  *) exit 45 ;;
-esac
-EOF
-chmod +x "$metadata_tools/cargo"
-(
-    cd "$metadata_repo"
-    PATH="$metadata_tools:$PATH"
-    AR=caller-target-ar
-    RANLIB=caller-target-ranlib
-    LLVM_BIN="$metadata_tools"
-    CC=caller-compiler
-    CFLAGS=caller-flags
-    METADATA_TOOLS="$metadata_tools"
-    METADATA_CALLS="$metadata_calls"
-    export PATH AR RANLIB LLVM_BIN CC CFLAGS METADATA_TOOLS METADATA_CALLS
-    # shellcheck source=/dev/null
-    source "$metadata_repo/scripts/install-local-binary.sh"
-    install_local_binary kernel "$metadata_source" kandelo-kernel.wasm
-    install_local_runtime_file kernel "$metadata_runtime" metadata-runtime.dat
-)
-[ "$(wc -l <"$metadata_calls" | tr -d ' ')" = 3 ] ||
-    fail "native metadata calls did not all retain the declared archive tools"
-
 registry="$work/registry"
 package_dir="$registry/local-python"
 mirror="$work/local-binaries"
@@ -340,22 +288,42 @@ EOF
 write_kernel_wat() {
     local marker="$1"
     local output="$2"
-    local required_exports
-    required_exports="$(
-        jq -er '.host_adapter.required_kernel_exports[]' \
-            "$REPO_ROOT/abi/snapshot.json"
-    )" || fail "could not read required kernel exports from the ABI snapshot"
-    [ -n "$required_exports" ] ||
-        fail "ABI snapshot has no required kernel exports"
     {
         printf '%s\n' '(module' \
             '  (func $entry (result i32) i32.const 0)'
-        # WHY: this fixture validates relocation, not an independent adapter
-        # protocol. Reading the generated ABI evidence prevents every required
-        # export change from creating a second hand-maintained manifest here.
-        while IFS= read -r export_name; do
+        for export_name in \
+            __abi_version \
+            kernel_alloc_scratch \
+            kernel_create_process \
+            kernel_create_process_with_stdio \
+            kernel_dequeue_signal \
+            kernel_exec_prepare \
+            kernel_exec_setup_for_thread \
+            kernel_fork_process \
+            kernel_get_parent_pid \
+            kernel_get_process_exit_signal \
+            kernel_get_process_state \
+            kernel_handle_channel \
+            kernel_has_sa_nocldstop \
+            kernel_host_adapter_manifest_len \
+            kernel_host_adapter_manifest_ptr \
+            kernel_ipc_shmat_for_process \
+            kernel_ipc_shmat_for_task \
+            kernel_ipc_shmdt_for_process \
+            kernel_ipc_shmdt_for_task \
+            kernel_mark_process_signaled \
+            kernel_pipe_has_readers \
+            kernel_posix_timer_fire \
+            kernel_prepare_write_operation \
+            kernel_reap_exited_child \
+            kernel_remove_process \
+            kernel_set_current_tid \
+            kernel_spawn_process \
+            kernel_thread_exit \
+            kernel_validate_task \
+            kernel_wait_child_poll; do
             printf '  (export "%s" (func $entry))\n' "$export_name"
-        done <<<"$required_exports"
+        done
         printf '  (global (export "%s") i32 (i32.const 1)))\n' "$marker"
     } >"$work/kernel-$marker.wat"
     wat2wasm "$work/kernel-$marker.wat" -o "$output"
@@ -413,30 +381,16 @@ mkdir -p \
     "$composed_repo/examples" \
     "$composed_repo/benchmarks/wasm" \
     "$composed_repo/target/$HOST_TARGET/release"
-for packer_support in \
-    pack-ci-test-workspace.sh \
-    browser-memory64-example-fixtures.sh \
-    browser-memory64-example-fixtures.txt; do
-    cp "$REPO_ROOT/scripts/$packer_support" "$composed_repo/scripts/"
-done
+cp "$REPO_ROOT/scripts/pack-ci-test-workspace.sh" "$composed_repo/scripts/"
 : >"$composed_repo/host/wasm/rootfs.vfs"
 for required in \
     gencat.wasm \
     pthread_channel_reuse_test.wasm \
-    wait_lifecycle_test.wasm; do
+    wait_lifecycle_test.wasm \
+    wait_lifecycle_test.wasm64.wasm \
+    terminal_attributes_api_test.wasm64.wasm; do
     : >"$composed_repo/examples/$required"
 done
-memory64_sources="$(
-    BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$REPO_ROOT"
-    BROWSER_MEMORY64_FIXTURES_MANIFEST="$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt"
-    # shellcheck source=/dev/null
-    source "$REPO_ROOT/scripts/browser-memory64-example-fixtures.sh"
-    browser_memory64_fixture_sources
-)" || fail "could not read the browser memory64 fixture contract"
-while IFS= read -r source; do
-    cp "$REPO_ROOT/$source" "$composed_repo/$source"
-    : >"$composed_repo/${source%.c}.wasm64.wasm"
-done <<<"$memory64_sources"
 for required in \
     pipe-throughput.wasm \
     file-throughput.wasm \

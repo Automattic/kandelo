@@ -7,16 +7,15 @@
 
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
-use wasm_posix_shared::wakeup_event_wire;
 
 /// Pipe became readable (data was written, or write-end closed).
-pub const WAKE_READABLE: u8 = wakeup_event_wire::TYPE_READABLE;
+pub const WAKE_READABLE: u8 = 1;
 
 /// Pipe became writable (data was read, or read-end closed).
-pub const WAKE_WRITABLE: u8 = wakeup_event_wire::TYPE_WRITABLE;
+pub const WAKE_WRITABLE: u8 = 2;
 
 /// Listener accept queue received a pending connection.
-pub const WAKE_ACCEPT: u8 = wakeup_event_wire::TYPE_ACCEPT;
+pub const WAKE_ACCEPT: u8 = 4;
 
 /// AF_UNIX datagram send readiness or its immediate result changed.
 ///
@@ -24,11 +23,11 @@ pub const WAKE_ACCEPT: u8 = wakeup_event_wire::TYPE_ACCEPT;
 /// host therefore retries untargeted blocked sends and issues a broad
 /// readiness wake for poll/select/epoll operations when capacity,
 /// associations, shutdown, close, or pathname state changes.
-pub const WAKE_DATAGRAM_WRITABLE: u8 = wakeup_event_wire::TYPE_DATAGRAM_WRITABLE;
+pub const WAKE_DATAGRAM_WRITABLE: u8 = 8;
 
 /// Advisory-lock state changed in a way that may unblock F_SETLKW waiters.
 /// The host only reschedules parked channels; lock state remains in Rust.
-pub const WAKE_ADVISORY_LOCK: u8 = wakeup_event_wire::TYPE_ADVISORY_LOCK;
+pub const WAKE_ADVISORY_LOCK: u8 = 64;
 
 /// A readiness change event.
 #[derive(Debug, Clone, Copy)]
@@ -105,7 +104,7 @@ pub fn push_advisory_lock() {
 /// Drain all pending wakeup events, writing them to the output buffer.
 /// Returns the number of events written.
 ///
-/// Each event uses [`wakeup_event_wire`]: idx (u32 LE) + wake_type (u8).
+/// Each event is serialized as: idx (u32 LE) + wake_type (u8) = 5 bytes.
 pub fn drain(out: &mut [u8], max_events: u32) -> u32 {
     #[cfg(test)]
     {
@@ -122,17 +121,19 @@ pub fn drain(out: &mut [u8], max_events: u32) -> u32 {
 
 fn drain_events(events: &mut Vec<WakeupEvent>, out: &mut [u8], max_events: u32) -> u32 {
     let count = events.len().min(max_events as usize);
-    let max_by_buf = out.len() / wakeup_event_wire::RECORD_BYTES;
+    let bytes_per_event = 5;
+    let max_by_buf = out.len() / bytes_per_event;
     let count = count.min(max_by_buf);
 
     for i in 0..count {
         let ev = &events[i];
-        let offset = i * wakeup_event_wire::RECORD_BYTES;
+        let offset = i * bytes_per_event;
         let idx_bytes = ev.idx.to_le_bytes();
-        out[offset + wakeup_event_wire::IDX_OFFSET
-            ..offset + wakeup_event_wire::IDX_OFFSET + wakeup_event_wire::IDX_BYTES]
-            .copy_from_slice(&idx_bytes);
-        out[offset + wakeup_event_wire::TYPE_OFFSET] = ev.wake_type;
+        out[offset] = idx_bytes[0];
+        out[offset + 1] = idx_bytes[1];
+        out[offset + 2] = idx_bytes[2];
+        out[offset + 3] = idx_bytes[3];
+        out[offset + 4] = ev.wake_type;
     }
 
     // Preserve events that did not fit this host drain. Lifecycle wakeups

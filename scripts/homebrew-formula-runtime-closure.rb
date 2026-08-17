@@ -1537,17 +1537,16 @@ parse_formula = lambda do |full_name|
       end
       if method == "bottle"
         abort "Formula class has multiple bottle blocks: #{path}" unless bottle.nil?
-        # WHY: a source rebuild binds the target Formula's complete source but
-        # never pours its previous bottle. Allow that target to migrate from a
-        # retired Cellar while continuing to reject every dependency bottle
-        # that would actually be consumed by this build.
+        # WHY: build planning binds the whole Formula source but does not
+        # consume its old bottle. A campaign may therefore classify native
+        # requirements or a Tier-2 bridge for a Formula whose previous bottle
+        # used a retired Cellar. The rebuilt bottle must still pass the strict
+        # runtime Cellar check in every mode that reads bottle identity.
         bottle = parse_bottle.call(
           statement,
           lines,
           path,
-          !(tier2_bridge_only || host_dependencies_only) &&
-            (full_name != "#{tap_name}/#{target}" ||
-              !PREFIX_CAMPAIGN_LAYOUT_SHA256.empty?),
+          !(tier2_bridge_only || host_dependencies_only),
         )
       elsif method == "patch"
         validate_static_block.call(statement, path, "patch", Set["apply", "sha256", "type", "url"])
@@ -2220,7 +2219,7 @@ elsif tier2_bridge_only
   record = formula_tier2_bridges.fetch(target_full_name)
   tap_recipe = record.fetch("tap_recipe")
   plan = {
-    "schema" => tap_recipe.nil? ? 4 : 3,
+    "schema" => tap_recipe.nil? ? 2 : 3,
     "tap" => tap_name,
     "formula" => target,
     "full_name" => target_full_name,
@@ -2313,26 +2312,18 @@ elsif host_dependencies_only
     end
   end
   immutable_target_taps = tap_contexts.values.sort_by { |context| context.fetch("tap_name") }.map do |context|
-    # Publication authority remains the reviewed source commit. A prefix
-    # campaign may execute a later, immutable bottle-block materialization;
-    # the sealed plan must preserve both identities for its install receipt.
     commit = context.fetch("tap_commit")
-    checkout_commit = context.fetch("checkout_commit", commit)
     unless commit.is_a?(String) && commit.match?(/\A[0-9a-f]{40}\z/)
       abort "host dependency plan requires an immutable resolved tap map"
-    end
-    unless checkout_commit.is_a?(String) && checkout_commit.match?(/\A[0-9a-f]{40}\z/)
-      abort "host dependency plan requires an immutable resolved tap checkout"
     end
     {
       "tap_name" => context.fetch("tap_name"),
       "tap_repository" => context.fetch("tap_repository"),
       "tap_commit" => commit,
-      "checkout_commit" => checkout_commit,
     }
   end
   puts JSON.generate({
-    "schema" => 5,
+    "schema" => 4,
     "tap" => tap_name,
     "formula" => target,
     "full_name" => "#{tap_name}/#{target}",

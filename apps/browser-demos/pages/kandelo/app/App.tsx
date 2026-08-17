@@ -15,10 +15,8 @@ import type {
   BootDescriptor,
   GalleryItem,
   LazyDownloadEvent,
-  MachineAudioState,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { lazyDownloadAssetLabel } from "../../../../../web-libs/kandelo-session/src/lazy-download";
-import { TerminalDockControls } from "./TerminalDockControls";
 
 type InternalsTab = "syslog" | "procs" | "vfs" | "lazy-load" | "config" | "syscalls";
 type ThemeFamily = "ubuntu" | "wordpress" | "kandelo";
@@ -74,40 +72,11 @@ export const App: React.FC = () => {
   const [themeOpen, setThemeOpen] = React.useState(false);
   const [terminals, setTerminals] = React.useState<ShellTerminal[]>(() => [createShellTerminal(1)]);
   const [activeTerminalId, setActiveTerminalId] = React.useState("tty-1");
-  const [audioState, setAudioState] = React.useState<MachineAudioState>(() => host.getAudioState());
-  const [audioError, setAudioError] = React.useState<string | null>(null);
   const nextTerminalIndex = React.useRef(2);
   const autoOpenedDemoGuideKey = React.useRef<string | null>(null);
 
   const desc = host.getBootDescriptor();
   const resolvedThemeMode = theme.mode === "auto" ? systemThemeMode : theme.mode;
-
-  React.useEffect(
-    () => host.subscribeAudioState((state) => {
-      setAudioState(state);
-      if (state === "running") setAudioError(null);
-    }),
-    [host],
-  );
-
-  const activateAudio = React.useCallback(() => {
-    if (host.getAudioState() === "running") return;
-    void host.resumeAudio().then(
-      () => setAudioError(null),
-      (error) => setAudioError(error instanceof Error ? error.message : String(error)),
-    );
-  }, [host]);
-
-  // Web Audio starts only after a trusted gesture. Keep activation at the
-  // machine shell so terminal-only SDL applications use the same PCM sink.
-  React.useEffect(() => {
-    window.addEventListener("pointerdown", activateAudio, { capture: true });
-    window.addEventListener("keydown", activateAudio, { capture: true });
-    return () => {
-      window.removeEventListener("pointerdown", activateAudio, { capture: true });
-      window.removeEventListener("keydown", activateAudio, { capture: true });
-    };
-  }, [activateAudio]);
 
   React.useEffect(() => {
     const query = window.matchMedia("(prefers-color-scheme: dark)");
@@ -225,18 +194,6 @@ export const App: React.FC = () => {
     setActiveTerminalId(terminal.id);
   }, []);
 
-  const onRemoveTerminalId = React.useCallback((id: string) => {
-    const removedIndex = terminals.findIndex((terminal) => terminal.id === id);
-    if (removedIndex < 0 || terminals.length <= 1) return;
-    const next = terminals.filter((terminal) => terminal.id !== id);
-    setTerminals(next);
-    setActiveTerminalId((active) =>
-      active === id
-        ? next[Math.min(removedIndex, next.length - 1)]!.id
-        : active
-    );
-  }, [terminals]);
-
   const isEmpty = surface.status === "idle";
   const dockActiveView: DockViewId | null = !isEmpty && surface.activeView !== "internals"
     ? surface.activeView
@@ -251,7 +208,6 @@ export const App: React.FC = () => {
             activeTerminalId={activeTerminalId}
             onActiveTerminalId={setActiveTerminalId}
             onAddTerminal={onAddTerminal}
-            onRemoveTerminalId={onRemoveTerminalId}
           />
         )
         : null
@@ -287,7 +243,7 @@ export const App: React.FC = () => {
   }, []);
 
   return (
-    <div className={appClassName} style={appStyle} data-audio-state={audioState}>
+    <div className={appClassName} style={appStyle}>
       <main className={`kmain kdocked-main${isEmpty ? " kmain-flush" : ""}`}>
         {isEmpty ? (
           <EmptyState
@@ -335,13 +291,6 @@ export const App: React.FC = () => {
       )}
 
       <LazyDownloadToasts downloads={lazyDownloads} />
-      {surface.status === "running" && audioState !== "running" && (
-        <AudioStatusToast
-          state={audioState}
-          error={audioError}
-          onEnable={activateAudio}
-        />
-      )}
 
       <Dock
         activePane={dockPane}
@@ -376,36 +325,38 @@ export const App: React.FC = () => {
   );
 };
 
-const AudioStatusToast: React.FC<{
-  state: MachineAudioState;
-  error: string | null;
-  onEnable: () => void;
-}> = ({ state, error, onEnable }) => {
-  const detail = error ?? (
-    state === "interrupted"
-      ? "Audio output was interrupted by the browser or operating system."
-      : state === "unavailable"
-      ? "This browser does not provide the required Web Audio output."
-      : state === "error"
-      ? "The browser audio sink could not be started."
-      : "Browser policy pauses audio until you interact with this machine."
-  );
-  return (
-    <aside className="kdownload-toasts kpcm-audio-status" aria-label="Audio status" aria-live="polite">
-      <div className={`kdownload-toast${error || state === "error" ? " kpcm-audio-error" : ""}`}>
-        <div className="kdownload-toast-top">
-          <span className="kdownload-toast-title">Audio {state}</span>
-          {state !== "unavailable" && state !== "closed" && (
-            <button type="button" className="kpcm-audio-enable" onClick={onEnable}>
-              Enable
-            </button>
-          )}
-        </div>
-        <div className="kdownload-toast-detail">{detail}</div>
-      </div>
-    </aside>
-  );
-};
+const TerminalDockControls: React.FC<{
+  terminals: ShellTerminal[];
+  activeTerminalId: string;
+  onActiveTerminalId: (id: string) => void;
+  onAddTerminal: () => void;
+}> = ({ terminals, activeTerminalId, onActiveTerminalId, onAddTerminal }) => (
+  <div className="kdock-view-tabs" role="tablist" aria-label="Terminals">
+    {terminals.map((terminal) => (
+      <button
+        key={terminal.id}
+        type="button"
+        className="kdock-view-tab"
+        role="tab"
+        aria-selected={terminal.id === activeTerminalId}
+        onClick={() => onActiveTerminalId(terminal.id)}
+      >
+        {terminal.label}
+      </button>
+    ))}
+    <button
+      type="button"
+      className="kdock-view-iconbtn"
+      title="New terminal"
+      aria-label="New terminal"
+      onClick={onAddTerminal}
+    >
+      <svg width="13" height="13" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <path d="M6 2v8M2 6h8" />
+      </svg>
+    </button>
+  </div>
+);
 
 const InternalsPopup: React.FC<{
   activeTab: string;

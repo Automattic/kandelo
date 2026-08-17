@@ -15,10 +15,7 @@ import { join } from "node:path";
 import { NodePlatformIO } from "../src/platform/node";
 import { NativeMetadataOverlay } from "../src/platform/native-metadata";
 import type { StatResult } from "../src/types";
-import {
-  createSessionOwnedHostFileSystem,
-  HostFileSystem,
-} from "../src/vfs/host-fs";
+import { HostFileSystem } from "../src/vfs/host-fs";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
 import { NodeTimeProvider } from "../src/vfs/time";
 import { DEFAULT_MOUNT_SPEC } from "../src/vfs/default-mounts";
@@ -37,21 +34,12 @@ interface MetadataBackend {
   open(path: string, flags: number, mode: number): number;
   close(handle: number): number;
   read(handle: number, buffer: Uint8Array, offset: number | null, length: number): number;
-  write(handle: number, buffer: Uint8Array, offset: number | null, length: number): number;
-  append(
-    handle: number,
-    buffer: Uint8Array,
-    length: number,
-    limit: number | null,
-  ): { written: number; end: number | bigint };
   seek(handle: number, offset: number, whence: number): number;
   fstat(handle: number): StatResult;
   chmod(path: string, mode: number): void;
   chown(path: string, uid: number, gid: number): void;
-  lchown(path: string, uid: number, gid: number): void;
   fchmod(handle: number, mode: number): void;
   fchown(handle: number, uid: number, gid: number): void;
-  ftruncate(handle: number, length: number): void;
   mkdir(path: string, mode: number): void;
   access(path: string, mode: number): void;
   link(existingPath: string, newPath: string): void;
@@ -64,7 +52,6 @@ interface BackendCase {
   backend: MetadataBackend;
   vfsPath(name: string): string;
   nativePath(name: string): string;
-  appendSupported: boolean;
 }
 
 const tempRoots: string[] = [];
@@ -120,10 +107,9 @@ const backendFactories: Array<[string, () => BackendCase]> = [
       const root = makeTempRoot("wasm-posix-host-fs-vfs-only-");
       return {
         root,
-        backend: createSessionOwnedHostFileSystem(root),
+        backend: new HostFileSystem(root),
         vfsPath: (name) => `/${name}`,
         nativePath: (name) => join(root, name),
-        appendSupported: true,
       };
     },
   ],
@@ -136,34 +122,12 @@ const backendFactories: Array<[string, () => BackendCase]> = [
         backend: new NodePlatformIO() as MetadataBackend,
         vfsPath: (name) => join(root, name),
         nativePath: (name) => join(root, name),
-        appendSupported: false,
       };
     },
   ],
 ];
 
 describe.each(backendFactories)("%s", (_name, makeCase) => {
-  it("keeps O_RDONLY | O_TRUNC truncation and descriptor access coherent", () => {
-    const c = makeCase();
-    const path = c.vfsPath("read-only-truncate");
-    const native = c.nativePath("read-only-truncate");
-    writeFileSync(native, "truncate through the selected inode");
-    c.backend.chmod(path, 0o6755);
-
-    const fd = c.backend.open(path, O_TRUNC, 0);
-    try {
-      expect(c.backend.stat(path)).toMatchObject({ size: 0 });
-      expect(c.backend.fstat(fd)).toMatchObject({ size: 0 });
-      expect(c.backend.stat(path).mode & MODE_MASK).toBe(0o755);
-      expect(c.backend.fstat(fd).mode & MODE_MASK).toBe(0o755);
-      expect(() =>
-        c.backend.write(fd, new Uint8Array([0x78]), null, 1)
-      ).toThrow();
-    } finally {
-      c.backend.close(fd);
-    }
-  });
-
   it("returns exact bigint identity with checked numeric size and times", () => {
     const c = makeCase();
     const native = c.nativePath("exact-stat");
@@ -280,13 +244,13 @@ describe.each(backendFactories)("%s", (_name, makeCase) => {
     expectNativeMetadataUnchanged(fdNative, fdBefore);
   });
 
-  it("clears set-ID bits on non-executable regular files but not directories", () => {
+  it("retains set-ID bits on non-executable regular files and directories", () => {
     const c = makeCase();
     const fileNative = c.nativePath("set-id-data");
     writeFileSync(fileNative, "data");
     c.backend.chmod(c.vfsPath("set-id-data"), 0o6600);
     c.backend.chown(c.vfsPath("set-id-data"), 1234, 5678);
-    expect(c.backend.stat(c.vfsPath("set-id-data")).mode & MODE_MASK).toBe(0o600);
+    expect(c.backend.stat(c.vfsPath("set-id-data")).mode & MODE_MASK).toBe(0o6600);
 
     c.backend.mkdir(c.vfsPath("set-id-dir"), 0o770);
     c.backend.chmod(c.vfsPath("set-id-dir"), 0o6770);
@@ -294,192 +258,20 @@ describe.each(backendFactories)("%s", (_name, makeCase) => {
     expect(c.backend.stat(c.vfsPath("set-id-dir")).mode & MODE_MASK).toBe(0o6770);
   });
 
-  it("invalidates set-ID metadata after every qualifying file mutation", () => {
-    const c = makeCase();
-    const path = c.vfsPath("mutation-matrix");
-    const native = c.nativePath("mutation-matrix");
-    writeFileSync(native, "seed");
-    chmodSync(native, 0o600);
-
-    const fd = c.backend.open(path, O_RDWR, 0);
-    const byte = new Uint8Array([0x78]);
-    const expectMode = (mode: number): void => {
-      expect(c.backend.stat(path).mode & MODE_MASK).toBe(mode);
-      expect(c.backend.fstat(fd).mode & MODE_MASK).toBe(mode);
-    };
-    const arm = (mode = 0o6755): void => {
-      c.backend.chmod(path, mode);
-      expectMode(mode);
-    };
-
-    try {
-      arm();
-      expect(c.backend.write(fd, byte, null, 1)).toBe(1);
-      expectMode(0o755);
-
-      arm();
-      expect(c.backend.write(fd, byte, 0, 1)).toBe(1);
-      expectMode(0o755);
-
-      arm();
-      if (c.appendSupported) {
-        expect(c.backend.append(fd, byte, 1, null).written).toBe(1);
-        expectMode(0o755);
-      } else {
-        expect(() => c.backend.append(fd, byte, 1, null)).toThrow(/EOPNOTSUPP/);
-        expectMode(0o6755);
-      }
-
-      arm();
-      const truncateFd = c.backend.open(path, O_RDWR | O_TRUNC, 0);
-      c.backend.close(truncateFd);
-      expectMode(0o755);
-
-      expect(c.backend.write(fd, byte, 0, 1)).toBe(1);
-      arm();
-      c.backend.ftruncate(fd, 0);
-      expectMode(0o755);
-
-      arm();
-      c.backend.chown(path, 1001, 2001);
-      expectMode(0o755);
-
-      arm();
-      c.backend.fchown(fd, 1002, 2002);
-      expectMode(0o755);
-
-      arm();
-      c.backend.lchown(path, 1003, 2003);
-      expectMode(0o755);
-
-      arm(0o6600);
-      expect(c.backend.write(fd, byte, 0, 1)).toBe(1);
-      expectMode(0o600);
-
-      arm(0o6600);
-      c.backend.chown(path, 1004, 2004);
-      expectMode(0o600);
-
-      arm();
-      expect(c.backend.write(fd, byte, null, 0)).toBe(0);
-      expect(c.backend.write(fd, byte, 0, 0)).toBe(0);
-      if (c.appendSupported) {
-        expect(c.backend.append(fd, byte, 0, null).written).toBe(0);
-      } else {
-        expect(() => c.backend.append(fd, byte, 0, null)).toThrow(/EOPNOTSUPP/);
-      }
-      expectMode(0o6755);
-
-      const unchangedSize = c.backend.fstat(fd).size;
-      c.backend.ftruncate(fd, unchangedSize);
-      expectMode(0o6755);
-      if (unchangedSize !== 0) {
-        c.backend.ftruncate(fd, 0);
-        arm();
-      }
-      const emptyTruncateFd = c.backend.open(path, O_RDWR | O_TRUNC, 0);
-      c.backend.close(emptyTruncateFd);
-      expectMode(0o6755);
-
-      const readOnlyFd = c.backend.open(path, 0, 0);
-      try {
-        expect(() => c.backend.write(readOnlyFd, byte, null, 1)).toThrow();
-        expect(() => c.backend.ftruncate(readOnlyFd, 0)).toThrow();
-      } finally {
-        c.backend.close(readOnlyFd);
-      }
-      expectMode(0o6755);
-    } finally {
-      c.backend.close(fd);
-    }
-
-    c.backend.mkdir(c.vfsPath("mutation-directory"), 0o755);
-    c.backend.chmod(c.vfsPath("mutation-directory"), 0o6770);
-    c.backend.chown(c.vfsPath("mutation-directory"), 3001, 3002);
-    expect(c.backend.stat(c.vfsPath("mutation-directory")).mode & MODE_MASK)
-      .toBe(0o6770);
-  });
-
-  it("keeps mode coherent after positive and failed mutation attempts", () => {
-    const c = makeCase();
-    const path = c.vfsPath("mutation-failures");
-    const native = c.nativePath("mutation-failures");
-    writeFileSync(native, "seed");
-    chmodSync(native, 0o600);
-    const fd = c.backend.open(path, O_RDWR, 0);
-    const bytes = new Uint8Array([0x78, 0x79]);
-    const expectMode = (mode: number): void => {
-      expect(c.backend.stat(path).mode & MODE_MASK).toBe(mode);
-      expect(c.backend.fstat(fd).mode & MODE_MASK).toBe(mode);
-    };
-    const arm = (): void => {
-      c.backend.chmod(path, 0o6755);
-      expectMode(0o6755);
-    };
-    const expectFailure = (operation: () => unknown): void => {
-      expect(operation).toThrow();
-      expectMode(0o6755);
-    };
-
-    try {
-      arm();
-      expect(c.backend.write(fd, bytes, null, 1)).toBe(1);
-      expectMode(0o755);
-
-      arm();
-      expect(c.backend.write(fd, bytes, 0, 1)).toBe(1);
-      expectMode(0o755);
-
-      if (c.appendSupported) {
-        arm();
-        const limit = c.backend.fstat(fd).size + 1;
-        expect(c.backend.append(fd, bytes, bytes.length, limit).written).toBe(1);
-        expectMode(0o755);
-      }
-
-      arm();
-      const readOnlyFd = c.backend.open(path, 0, 0);
-      try {
-        expectFailure(() => c.backend.write(readOnlyFd, bytes, null, 1));
-        expectFailure(() => c.backend.write(readOnlyFd, bytes, 0, 1));
-        expectFailure(() => c.backend.append(readOnlyFd, bytes, 1, null));
-        expectFailure(() => c.backend.ftruncate(readOnlyFd, 0));
-      } finally {
-        c.backend.close(readOnlyFd);
-      }
-
-      expectFailure(() =>
-        c.backend.open(c.vfsPath("missing-truncate"), O_RDWR | O_TRUNC, 0)
-      );
-      expectFailure(() =>
-        c.backend.chown(c.vfsPath("missing-chown"), 1000, 2000)
-      );
-      expectFailure(() => c.backend.fchown(999_999, 1000, 2000));
-      expectFailure(() =>
-        c.backend.lchown(c.vfsPath("missing-lchown"), 1000, 2000)
-      );
-    } finally {
-      c.backend.close(fd);
-    }
-  });
-
-  it("uses a private native create mode and records the requested guest mode", () => {
+  it("relays open(O_CREAT) mode to native creation and records it virtually", () => {
     const c = makeCase();
     const fd = withUmask(0, () =>
       c.backend.open(c.vfsPath("created-file"), O_RDWR | O_CREAT | O_TRUNC, 0o751),
     );
     try {
       expect(c.backend.fstat(fd).mode & MODE_MASK).toBe(0o751);
-      // WHY: creation must not expose a permissive host inode before virtual
-      // metadata owns the guest-visible mode. The guest still observes its
-      // requested 0751 through the authoritative virtual metadata.
-      expect(fstatSync(fd).mode & MODE_MASK).toBe(0o600);
+      expect(fstatSync(fd).mode & MODE_MASK).toBe(0o751);
     } finally {
       c.backend.close(fd);
     }
 
     expect(c.backend.stat(c.vfsPath("created-file")).mode & MODE_MASK).toBe(0o751);
-    expect(nativeMode(c.nativePath("created-file"))).toBe(0o600);
+    expect(nativeMode(c.nativePath("created-file"))).toBe(0o751);
   });
 
   it("relays mkdir mode to native creation and records it virtually", () => {

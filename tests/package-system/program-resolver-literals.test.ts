@@ -1,4 +1,8 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+} from "node:fs";
 import { basename, extname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -173,7 +177,10 @@ function sourceFilesUnder(relPath: string): string[] {
     if (entry.isSymbolicLink()) return [];
     const child = join(relPath, entry.name);
     if (entry.isDirectory()) {
-      if (excludedDirectories.has(entry.name) || child === "docs/plans") {
+      if (
+        excludedDirectories.has(entry.name)
+        || child === "docs/plans"
+      ) {
         return [];
       }
       return sourceFilesUnder(child);
@@ -232,7 +239,6 @@ function stalePathsInLine(
 function staleLiteralFailures(
   candidates: ReadonlyMap<string, StalePathOwner[]>,
 ): string[] {
-  if (candidates.size === 0) return [];
   const failures: string[] = [];
   const trie = stalePathTrie(candidates);
   for (const relPath of auditedSourceFiles()) {
@@ -263,8 +269,8 @@ function staleLiteralFailures(
           .map((packageName) => JSON.stringify(packageName))
           .join(", ");
         failures.push(
-          `${relPath}:${index + 1}: ${JSON.stringify(stalePath)} is a stale flat ` +
-            `resolver path owned by package ${packages}; use ${replacements}`,
+          `${relPath}:${index + 1}: ${JSON.stringify(stalePath)} is a stale flat `
+          + `resolver path owned by package ${packages}; use ${replacements}`,
         );
       }
     }

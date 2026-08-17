@@ -1,22 +1,4 @@
-import type {
-  AppendOutcome,
-  HostFileOffset,
-  PathconfValue,
-  StatResult,
-  StatfsResult,
-} from "../types";
-import { STATFS_FLAGS } from "../generated/abi";
-
-/** POSIX statfs(2) flag for filesystems that ignore set-ID mode bits. */
-export const ST_NOSUID = STATFS_FLAGS.ST_NOSUID;
-
-export type MountSetIdCapability =
-  | { kind: "nosuid" }
-  | {
-      kind: "trusted-root-product";
-      guestWritable: false;
-      stableExecutableIdentity: true;
-    };
+import type { PathconfValue, StatResult, StatfsResult } from "../types";
 
 export interface DirEntry {
   name: string;
@@ -30,33 +12,9 @@ export interface FileSystemBackend {
   // File handle operations
   open(path: string, flags: number, mode: number): number;
   close(handle: number): number;
-  read(
-    handle: number,
-    buffer: Uint8Array,
-    offset: HostFileOffset | null,
-    length: number,
-  ): number;
-  write(
-    handle: number,
-    buffer: Uint8Array,
-    offset: HostFileOffset | null,
-    length: number,
-  ): number;
-  /**
-   * Atomically resolve EOF, apply an optional exclusive file-size ceiling,
-   * and append within one backing-owned operation.
-   */
-  append(
-    handle: number,
-    buffer: Uint8Array,
-    length: number,
-    limit: HostFileOffset | null,
-  ): AppendOutcome;
-  seek(
-    handle: number,
-    offset: HostFileOffset,
-    whence: number,
-  ): HostFileOffset;
+  read(handle: number, buffer: Uint8Array, offset: number | null, length: number): number;
+  write(handle: number, buffer: Uint8Array, offset: number | null, length: number): number;
+  seek(handle: number, offset: number, whence: number): number;
   fstat(handle: number): StatResult;
   fpathconf(handle: number, name: number): PathconfValue;
   ftruncate(handle: number, length: number): void;
@@ -98,5 +56,4 @@ export interface MountConfig {
   mountPoint: string;
   backend: FileSystemBackend;
   readonly?: boolean;
-  setIdCapability?: MountSetIdCapability;
 }

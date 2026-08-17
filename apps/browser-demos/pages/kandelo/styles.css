@@ -763,37 +763,6 @@
   white-space: nowrap;
 }
 
-.kdock-terminal-tab {
-  position: relative;
-  display: inline-flex;
-  flex-shrink: 0;
-}
-
-.kdock-terminal-tab .kdock-view-tab {
-  padding-right: 24px;
-}
-
-.kdock-terminal-close {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  line-height: 16px;
-}
-
-.kdock-terminal-close:hover,
-.kdock-terminal-close:focus-visible {
-  background: color-mix(in oklch, var(--kdock-text) 14%, transparent);
-  outline: none;
-}
-
 .kdock-view-iconbtn {
   width: 28px;
   display: inline-flex;
@@ -881,92 +850,6 @@
   border-color: color-mix(in oklch, var(--kdock-active-bg) 72%, var(--kdock-border));
   background: color-mix(in oklch, var(--kdock-active-bg) 24%, transparent);
   color: var(--kdock-active-text);
-}
-
-/* Pushes everything after the title to the right edge of the dock. */
-.kdemo-surface-spacer {
-  flex: 1 1 auto;
-}
-
-.kdemo-surface-action {
-  flex: 0 0 auto;
-  padding: 3px 8px;
-  border: 1px solid color-mix(in oklch, var(--kdock-active-bg) 72%, var(--kdock-border));
-  border-radius: 5px;
-  background: color-mix(in oklch, var(--kdock-active-bg) 24%, transparent);
-  color: var(--kdock-active-text);
-  font: inherit;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  cursor: pointer;
-}
-
-.kdemo-surface-action:hover:not(:disabled) {
-  background: color-mix(in oklch, var(--kdock-active-bg) 40%, transparent);
-}
-
-.kdemo-surface-action:disabled {
-  cursor: progress;
-  opacity: 0.7;
-}
-
-/* Drag-and-drop affordance + ingest status, overlaid on the fb stage. */
-.kframebuffer-surface[data-drag-active="true"] {
-  outline: 2px dashed var(--k-accent);
-  outline-offset: -6px;
-}
-
-.kframebuffer-dropzone {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: color-mix(in oklch, var(--k-accent) 12%, transparent);
-  color: var(--k-fb-text);
-  font-family: var(--k-font-mono);
-  font-size: 12px;
-  pointer-events: none;
-}
-
-/* Anchored to the top of the stage: the surface dock overlays the bottom, so a
-   bottom-anchored toast is hidden behind it. */
-.kframebuffer-toast {
-  position: absolute;
-  left: 50%;
-  top: 12px;
-  transform: translateX(-50%);
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  max-width: min(90%, 520px);
-  padding: 6px 10px;
-  border: 1px solid var(--kdock-border);
-  border-radius: 6px;
-  background: var(--kdock-bg-sunk);
-  color: var(--k-fb-text);
-  font-family: var(--k-font-mono);
-  font-size: 11px;
-  line-height: 1.35;
-}
-
-.kframebuffer-toast[data-error="true"] {
-  border-color: color-mix(in oklch, red 55%, var(--kdock-border));
-  background: color-mix(in oklch, red 18%, var(--kdock-bg-sunk));
-}
-
-.kframebuffer-toast-dismiss {
-  flex: 0 0 auto;
-  border: 0;
-  background: none;
-  color: inherit;
-  font: inherit;
-  font-size: 14px;
-  line-height: 1;
-  cursor: pointer;
 }
 
 .kdock-popover-dismiss-layer {
@@ -1343,25 +1226,6 @@
 .kdownload-toast-error {
   border-color: color-mix(in oklch, var(--k-err) 52%, var(--k-border));
   animation: kdownload-toast-fade-error 5s ease-out forwards;
-}
-
-.kpcm-audio-status {
-  top: auto;
-  bottom: calc(var(--kdock-height, 0px) + 14px);
-}
-
-.kpcm-audio-error {
-  border-color: color-mix(in oklch, var(--k-err) 52%, var(--k-border));
-}
-
-.kpcm-audio-enable {
-  margin-left: auto;
-  border: 1px solid color-mix(in oklch, var(--k-accent) 42%, var(--k-border));
-  border-radius: 6px;
-  background: color-mix(in oklch, var(--k-accent) 12%, var(--k-surface));
-  color: var(--k-accent);
-  cursor: pointer;
-  padding: 3px 8px;
 }
 
 .kdownload-toast-top {

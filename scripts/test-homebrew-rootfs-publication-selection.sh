@@ -291,7 +291,7 @@ jq -e '
   .[1].tap_recipe_manifest_sha256 ==
     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 ' <<<"$mixed" >/dev/null ||
-  fail "schema-4 direct/schema-3 recipe selection is not canonical: $mixed"
+  fail "direct/schema-3 selection is not canonical: $mixed"
 
 plain="$(selection plain)"
 jq -e '
@@ -393,13 +393,11 @@ if ARGV.last == "--host-dependencies-json"
   )
   target_taps = [resolved.fetch("primary"), *resolved.fetch("dependencies")]
     .map do |entry|
-      entry.slice("tap_name", "tap_repository", "tap_commit").merge(
-        "checkout_commit" => entry.fetch("checkout_commit", entry.fetch("tap_commit")),
-      )
+      entry.slice("tap_name", "tap_repository", "tap_commit")
     end
     .sort_by { |entry| entry.fetch("tap_name") }
   puts JSON.generate({
-    "schema" => 5,
+    "schema" => 4,
     "tap" => tap,
     "formula" => formula,
     "full_name" => "#{tap}/#{formula}",
@@ -412,7 +410,7 @@ if ARGV.last == "--host-dependencies-json"
   exit
 end
 puts JSON.generate({
-  "schema" => 4,
+  "schema" => 2,
   "tap" => tap,
   "formula" => formula,
   "full_name" => "#{tap}/#{formula}",

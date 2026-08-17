@@ -52,13 +52,7 @@ export const enum OpfsOpcode {
   READDIR = 17,
   CLOSEDIR = 18,
   STATFS = 19,
-  APPEND = 20,
 }
-
-// This is deliberately outside the errno range. It means an append may have
-// mutated the backing but the OPFS worker could not report an exact outcome;
-// the receiving kernel generation must stop instead of treating it as EIO.
-export const OPFS_APPEND_CONTRACT_FAILURE = -0x4b41;
 
 /** Default SAB size: 4 MB */
 export const OPFS_CHANNEL_SIZE = 4 * 1024 * 1024;

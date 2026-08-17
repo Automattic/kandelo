@@ -37,14 +37,3 @@ for tool in cmake make; do
     esac
     "$tool" --version >/dev/null
 done
-
-for tool_path in "${AR:-}" "${RANLIB:-}"; do
-    case "$tool_path" in
-        "$nix_store"/*/bin/llvm-ar | "$nix_store"/*/bin/llvm-ranlib) ;;
-        *)
-            echo "ERROR: archive tool resolved outside the declared LLVM tool set: ${tool_path:-<missing>}" >&2
-            exit 1
-            ;;
-    esac
-    "$tool_path" --version >/dev/null
-done

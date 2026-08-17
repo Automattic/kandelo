@@ -12,10 +12,10 @@ ARCHES=""
 REQUIRE_VFS_ACCEPTANCE=""
 RUBY_BIN=""
 
-# WHY: a registry bridge executes one authenticated main-owned build helper
-# until that helper moves into the tap. Admit each temporary Formula-to-helper
-# mapping explicitly; the selected Formula remains the sole source and version
-# authority.
+# WHY: a registry bridge executes an authenticated, main-owned registry recipe
+# with broader source-tree authority than a direct Formula or sealed tap
+# recipe. Admit each temporary Formula-to-package mapping explicitly until the
+# build becomes tap-owned.
 readonly ROOTFS_WASM32_ALLOWED_BRIDGES=(
   "modeset:modeset"
   "nethack:nethack"
@@ -286,7 +286,7 @@ for formula in "${selected_formulae[@]}"; do
       (.support_runtime_sha256 | type == "string" and test("^[0-9a-f]{64}$"))) and
     ((.support_sha256 == null) == (.support_runtime_sha256 == null)) and
     (
-      (.schema == 4 and
+      (.schema == 2 and
        keys == [
          "formula", "formula_sha256", "full_name", "schema",
          "support_runtime_sha256", "support_sha256", "tap", "tier2_bridge"
@@ -346,13 +346,13 @@ for formula in "${selected_formulae[@]}"; do
     authority_class="tap-recipe"
     tap_recipe_manifest="$(jq -c '.tap_recipe.manifest_sha256' "$plan")"
   elif jq -e '
-      .schema == 4 and
+      .schema == 2 and
       (has("tap_recipe") | not) and
       .tier2_bridge == null
     ' "$plan" >/dev/null; then
     authority_class="direct"
   elif jq -e '
-      .schema == 4 and
+      .schema == 2 and
       (has("tap_recipe") | not) and
       (.tier2_bridge | type == "object") and
       (.tier2_bridge.package | type == "string") and
