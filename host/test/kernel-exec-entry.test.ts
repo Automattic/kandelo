@@ -10,7 +10,12 @@ import {
   KernelReentrantEntryError,
 } from "../src/kernel-entry-gate";
 import { allocateKernelScratchRegion } from "../src/kernel-scratch";
-import { CH_TOTAL_SIZE } from "../src/generated/abi";
+import {
+  CHANNEL_STATUS_PENDING,
+  CH_STATUS,
+  CH_SYSCALL,
+  CH_TOTAL_SIZE,
+} from "../src/generated/abi";
 import type { PlatformIO } from "../src/types";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
@@ -24,6 +29,7 @@ const KERNEL_EXPORT_NAMES = [
   "kernel_fd_is_open",
   "kernel_find_listener_fd_by_accept_wake",
   "kernel_get_fd_accept_wake_idx",
+  "kernel_process_secure_exec",
   "kernel_vblank",
 ] as const;
 
@@ -69,10 +75,14 @@ function makeHarness(
     maximum: 4,
   });
   const gate = new KernelEntryGate();
+  const effectiveImplementations = {
+    kernel_process_secure_exec: () => 0,
+    ...implementations,
+  };
   const rawInstance = createKernelScratchTestInstance(
     4,
     kernelMemory,
-    () => implementations,
+    () => effectiveImplementations,
     () => 4_096,
     4,
     KERNEL_EXPORT_NAMES,
@@ -105,10 +115,70 @@ function makeHarness(
     gate,
     mainScratch,
   });
-  return { worker, gatedInstance, kernelMemory, implementations };
+  return {
+    worker,
+    gatedInstance,
+    kernelMemory,
+    implementations: effectiveImplementations,
+  };
+}
+
+function registerExecCaller(
+  harness: ExecEntryHarness,
+  pid = 7,
+  channelOffset = 0,
+): WebAssembly.Memory {
+  const processMemory = new WebAssembly.Memory({
+    initial: 2,
+    maximum: 2,
+    shared: true,
+  });
+  (
+    harness.worker as ReturnType<
+      typeof createCentralizedKernelWorkerTestDouble
+    >
+  ).testAuthority.replaceProcessRegistrationForLifecycleTest({
+    pid,
+    memory: processMemory,
+    channelOffsets: [channelOffset],
+  });
+  const channel = new DataView(processMemory.buffer, channelOffset);
+  channel.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
+  channel.setUint32(CH_SYSCALL, 211, true); // SYS_EXECVE
+  return processMemory;
 }
 
 describe("kernel exec entry authority", () => {
+  it("carries the complete exec transition out of commit without re-entering the kernel", () => {
+    const secureExec = vi.fn(() => 1);
+    const harness = makeHarness({
+      kernel_drain_wakeup_events: () => 0,
+      kernel_exec_commit: () => 0,
+      kernel_process_secure_exec: secureExec,
+      kernel_fd_is_open: () => 0,
+      kernel_find_listener_fd_by_accept_wake: () => -1,
+      kernel_get_fd_accept_wake_idx: () => -1,
+      kernel_vblank: () => 0,
+    });
+    const processMemory = registerExecCaller(harness);
+    const channelOffset = 0;
+
+    expect(harness.worker.kernelExecCommit(7, 9, 31)).toBe(0);
+    expect(
+      harness.worker.takeCommittedExecTransition(7, processMemory),
+    ).toEqual({
+      secureExec: true,
+      retiredChannelOffsets: new Set([channelOffset]),
+      addressSpaceResult: 0,
+    });
+    expect(secureExec).toHaveBeenCalledExactlyOnceWith(7);
+    expect(() =>
+      harness.worker.takeCommittedExecTransition(7, processMemory)
+    ).toThrow(
+      "no committed exec transition for pid=7",
+    );
+  });
+
   it("marshals prepare/read/size/cancel under entry and preserves a 64-bit offset", () => {
     const preparedPath: number[] = [];
     const readWords: Array<[number, number]> = [];
@@ -158,6 +228,7 @@ describe("kernel exec entry authority", () => {
       kernel_get_fd_accept_wake_idx: () => -1,
       kernel_vblank: () => 0,
     });
+    registerExecCaller(harness);
 
     expect(
       harness.worker.execTargetPrepare(7, 9, -100, "/bin/exact", 0),
@@ -198,6 +269,7 @@ describe("kernel exec entry authority", () => {
         return 0;
       },
     });
+    registerExecCaller(harness);
 
     (harness.gatedInstance.exports.kernel_vblank as () => number)();
     await Promise.resolve();
@@ -212,7 +284,9 @@ describe("kernel exec entry authority", () => {
     // Rejection does not queue an authority result or poison the generation.
     expect(harness.worker.kernelExecCommit(7, 11, 13)).toBe(0);
     expect(commit).toHaveBeenCalledExactlyOnceWith(7, 11, 13);
-    expect(drain).toHaveBeenCalledOnce();
+    // Retirement completion drains its wake batch before the commit's final
+    // CLOEXEC/mirror drain.
+    expect(drain).toHaveBeenCalledTimes(2);
   });
 
   it("publishes a complete mirror plan before closing host listeners", () => {
@@ -269,6 +343,7 @@ describe("kernel exec entry authority", () => {
         },
       } as unknown as Partial<PlatformIO>,
     );
+    registerExecCaller(harness);
     state = execState(harness.worker);
     state.currentHandlePid = 0;
     state.epollInterests = new Map([
@@ -291,6 +366,14 @@ describe("kernel exec entry authority", () => {
     expect(harness.worker.kernelExecCommit(7, 11, 13)).toBe(0);
 
     expect(observations).toEqual([
+      {
+        phase: "wake drain",
+        epollPresent: true,
+        targetsPresent: true,
+        listenerPresent: true,
+        virtualKeyPresent: true,
+        currentHandlePid: 7,
+      },
       {
         phase: "wake drain",
         epollPresent: true,
