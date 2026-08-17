@@ -487,21 +487,71 @@ BOTTLE_URL="$FORMULA_BOTTLE_ROOT_URL/blobs/$BOTTLE_DIGEST"
   exit 1
 }
 
+# Homebrew records the fully qualified tap name and the shared candidate
+# namespace in its raw bottle JSON.  The protected tap planner separately
+# reduces that rich document to the Formula-specific root consumed by the
+# composer.  Verify the authenticated raw document here instead of expecting
+# the reduced composer input.
+# shellcheck source=/dev/null
+. "$REPO_ROOT/scripts/homebrew-tap-identity.sh"
+NORMALIZED_TAP_REPOSITORY="$(
+  printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]'
+)"
+TAP_OWNER="${NORMALIZED_TAP_REPOSITORY%%/*}"
+TAP_REPOSITORY_NAME="${NORMALIZED_TAP_REPOSITORY#*/}"
+case "$TAP_REPOSITORY_NAME" in
+  homebrew-?*) ;;
+  *)
+    echo "abi-staging-verify-bottle.sh: candidate tap repository is invalid" >&2
+    exit 1
+    ;;
+esac
+TAP_NAME="$(homebrew_resolve_tap_name \
+  "$TAP_REPOSITORY" "$TAP_OWNER/${TAP_REPOSITORY_NAME#homebrew-}")"
+FORMULA_KEY="$TAP_NAME/$FORMULA"
+FORMULA_PATH="Library/Taps/${TAP_NAME%%/*}/homebrew-${TAP_NAME#*/}/Formula/"
+FORMULA_PATH+="$FORMULA.rb"
 jq -e \
-  --arg formula "$FORMULA" --arg pkg_version "$PKG_VERSION" \
-  --arg root "$FORMULA_BOTTLE_ROOT_URL" --arg tag "$BOTTLE_TAG" \
+  --arg formula "$FORMULA" --arg formula_key "$FORMULA_KEY" \
+  --arg formula_path "$FORMULA_PATH" --arg pkg_version "$PKG_VERSION" \
+  --arg root "$BOTTLE_ROOT_URL" --arg tag "$BOTTLE_TAG" \
   --arg sha256 "$LAYER_SHA256" --argjson rebuild "$REBUILD" '
-    type == "object" and keys == [$formula] and
-    .[$formula].formula.name == $formula and
-    .[$formula].formula.pkg_version == $pkg_version and
-    .[$formula].bottle.root_url == $root and
-    .[$formula].bottle.rebuild == $rebuild and
-    (.[$formula].bottle.tags | keys == [$tag]) and
-    .[$formula].bottle.tags[$tag].sha256 == $sha256
+    type == "object" and keys == [$formula_key] and
+    .[$formula_key].formula.name == $formula and
+    .[$formula_key].formula.path == $formula_path and
+    .[$formula_key].formula.pkg_version == $pkg_version and
+    .[$formula_key].bottle.root_url == $root and
+    (.[$formula_key].bottle.cellar |
+      . == "any" or . == "any_skip_relocation" or
+      . == "/opt/kandelo/homebrew/Cellar") and
+    .[$formula_key].bottle.rebuild == $rebuild and
+    (.[$formula_key].bottle.tags | keys == [$tag]) and
+    .[$formula_key].bottle.tags[$tag].sha256 == $sha256
   ' "$METADATA" >/dev/null || {
   echo "abi-staging-verify-bottle.sh: bottle metadata differs from candidate identity" >&2
   exit 1
 }
+
+# The immutable candidate preserves Homebrew's raw shared-namespace metadata.
+# The normal force-pour verifier consumes the reduced Formula-specific document
+# that was used to compose the candidate tap.  Derive that document only after
+# the raw metadata has been authenticated above.
+CELLAR="$(jq -er --arg formula_key "$FORMULA_KEY" \
+  '.[$formula_key].bottle.cellar' "$METADATA")"
+NORMALIZED_METADATA="$WORK_ROOT/normalized-bottle-metadata.json"
+jq -ncS \
+  --arg formula "$FORMULA" --arg formula_key "$FORMULA_KEY" \
+  --arg formula_path "$FORMULA_PATH" --arg pkg_version "$PKG_VERSION" \
+  --arg root "$FORMULA_BOTTLE_ROOT_URL" --arg cellar "$CELLAR" \
+  --arg tag "$BOTTLE_TAG" --arg sha256 "$LAYER_SHA256" \
+  --argjson rebuild "$REBUILD" '
+    {($formula_key): {
+      bottle: {cellar: $cellar, rebuild: $rebuild, root_url: $root,
+        tags: {($tag): {sha256: $sha256}}},
+      formula: {name: $formula, path: $formula_path,
+        pkg_version: $pkg_version}
+    }}
+  ' >"$NORMALIZED_METADATA"
 
 SELECTION_RECEIPT="$WORK_ROOT/selection-receipt.json"
 jq -ncS \
@@ -590,7 +640,7 @@ export ABI_VERIFY_NORMAL_VERIFIER="$NORMAL_VERIFIER"
 export ABI_VERIFY_TAP_REPOSITORY="$TAP_REPOSITORY"
 export ABI_VERIFY_TAP_COMMIT="$TAP_COMMIT"
 export ABI_VERIFY_TAP_CHECKOUT_COMMIT="$TAP_CHECKOUT_COMMIT"
-export ABI_VERIFY_METADATA="$METADATA"
+export ABI_VERIFY_METADATA="$NORMALIZED_METADATA"
 export ABI_VERIFY_BOTTLE_URL="$BOTTLE_URL"
 export ABI_VERIFY_LAYER_SHA256="$LAYER_SHA256"
 export ABI_VERIFY_BOTTLE_BYTES="$BOTTLE_BYTES"

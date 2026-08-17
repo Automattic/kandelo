@@ -1,34 +1,17 @@
 name: Homebrew native publisher compatibility
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/homebrew-native-publisher-compatibility.yml
-      - .github/workflows/reusable-homebrew-bottle-publish.yml
-      - .github/workflows/reusable-homebrew-closed-selection-publish.yml
-      - .github/workflows/reusable-homebrew-prefix-first-child-publish.yml
-      - flake.lock
-      - flake.nix
-      - homebrew/**
-      - scripts/build-fork-instrument-tool.sh
-      - scripts/build-musl.sh
-      - scripts/check-homebrew-publish-workflow-trust.rb
-      - scripts/dev-shell.sh
-      - scripts/homebrew-*
-      - scripts/materialize-exact-package-generations.sh
-      - scripts/materialize-resolver-binaries.sh
-      - scripts/prepare-homebrew-package-materializer.sh
-      - scripts/require-exact-kandelo-main.sh
-      - scripts/resolve-binary.sh
-      - scripts/seal-homebrew-formula-checker.sh
-      - scripts/test-homebrew-*
-      - scripts/validate-software-gallery.mjs
+  # This legacy proof rebuilt a complete native Homebrew realm on every
+  # relevant PR and added roughly 17 minutes without contributing to the ABI
+  # staging result. Keep it available only for deliberate investigation while
+  # the tap-owned candidate path replaces the legacy publisher.
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: homebrew-native-publisher-${{ github.event.pull_request.number }}
+  group: homebrew-native-publisher-${{ github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -42,7 +25,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.sha }}
           submodules: false
 
       - name: Checkout exact reviewed Homebrew source

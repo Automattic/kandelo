@@ -77,6 +77,7 @@ export interface InitMessage {
     mountPoint: string;
     hostPath: string;
     readonly?: boolean;
+    exclusiveNativeWriters?: boolean;
     uid?: number;
     gid?: number;
   }>;

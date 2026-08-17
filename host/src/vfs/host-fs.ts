@@ -49,11 +49,13 @@ const intrinsicNumberIsSafeInteger = Number.isSafeInteger;
 const intrinsicApply = Reflect.apply;
 const intrinsicWeakSetAdd = WeakSet.prototype.add;
 const intrinsicWeakSetHas = WeakSet.prototype.has;
-const sessionOwnedHostFileSystems = new WeakSet<object>();
+const exclusiveNativeWriterHostFileSystems = new WeakSet<object>();
 
 interface HostFileSystemOptions {
   uid?: number;
   gid?: number;
+  /** The caller owns every native writer for this directory's lifetime. */
+  exclusiveNativeWriters?: boolean;
 }
 
 function makeHostFsError(code: string, message: string): Error & { code: string } {
@@ -72,7 +74,7 @@ export function createSessionOwnedHostFileSystem(
   rootPath: string,
 ): HostFileSystem {
   const backend = new HostFileSystem(rootPath);
-  intrinsicApply(intrinsicWeakSetAdd, sessionOwnedHostFileSystems, [backend]);
+  intrinsicApply(intrinsicWeakSetAdd, exclusiveNativeWriterHostFileSystems, [backend]);
   return backend;
 }
 
@@ -156,6 +158,9 @@ export class HostFileSystem implements FileSystemBackend {
       options.uid ?? 0,
       options.gid ?? 0,
     );
+    if (options.exclusiveNativeWriters === true) {
+      intrinsicApply(intrinsicWeakSetAdd, exclusiveNativeWriterHostFileSystems, [this]);
+    }
   }
 
   /**
@@ -420,7 +425,7 @@ export class HostFileSystem implements FileSystemBackend {
     if (
       !intrinsicApply(
         intrinsicWeakSetHas,
-        sessionOwnedHostFileSystems,
+        exclusiveNativeWriterHostFileSystems,
         [this],
       )
     ) {

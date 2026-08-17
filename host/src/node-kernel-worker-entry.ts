@@ -920,6 +920,7 @@ async function buildVirtualPlatformIO(
     mountPoint: string;
     hostPath: string;
     readonly?: boolean;
+    exclusiveNativeWriters?: boolean;
     uid?: number;
     gid?: number;
   }>,
@@ -958,6 +959,7 @@ async function buildVirtualPlatformIO(
   const extras: MountConfig[] = (extraMounts ?? []).map((m) => ({
     mountPoint: m.mountPoint,
     backend: new HostFileSystem(m.hostPath, m.mountPoint, {
+      exclusiveNativeWriters: m.exclusiveNativeWriters,
       uid: m.uid,
       gid: m.gid,
     }),
