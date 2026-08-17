@@ -116,7 +116,7 @@ mod tests {
 
     fn install_process(pid: u32) -> &'static mut Process {
         let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-        let _ = table.create_process(pid);
+        table.processes.insert(pid, Process::new(pid));
         let proc = table.processes.get_mut(&pid).unwrap();
         unsafe { &mut *(proc as *mut Process) }
     }

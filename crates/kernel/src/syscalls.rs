@@ -3244,7 +3244,15 @@ pub fn sys_open(
         allow_missing_directory: false,
         use_real_ids: false,
     };
-    let resolved_entry = resolve_namespace_path(proc, host, path, resolve_options)?;
+    // A deliberately-disabled node is not listed in the synthetic tree, so
+    // resolution reports it missing. Report why it cannot open instead.
+    let resolved_entry = match resolve_namespace_path(proc, host, path, resolve_options) {
+        Err(Errno::ENOENT) => match disabled_virtual_device(path) {
+            Some(errno) => return Err(errno),
+            None => return Err(Errno::ENOENT),
+        },
+        other => other?,
+    };
     if resolved_entry
         .stat
         .is_some_and(|stat| stat.st_mode & S_IFMT == S_IFLNK)

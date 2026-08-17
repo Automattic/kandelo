@@ -809,6 +809,9 @@ impl OfdTable {
             dir_position_generation: 0,
             dir_pending_entry: None,
             dri_state: None,
+            input_state: None,
+            audio: None,
+            audio_ctl: None,
         };
         ofd.reset_directory_iterator_for_reopen();
         self.insert(ofd)
