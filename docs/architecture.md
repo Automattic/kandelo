@@ -85,10 +85,15 @@ kernel_thread_exit(pid, tid) → 0 | -errno
 kernel_commit_process_exit(status) → committed_low_8_bits
 kernel_dequeue_signal(pid, tid, out_ptr, out_capacity) → 0 | signum | -errno
 kernel_wait_child_poll(parent_pid, caller_tid, target_pid, event_mask, flags, out_ptr, out_capacity) → child_pid | 0 | -errno
+kernel_pick_tcp_listener_target(port, exclude_pid, out_ptr, out_capacity) → 1 | 0 | -errno
+kernel_take_process_timer_cleanup(pid, out_ptr, out_capacity) → posix_count | -errno
 kernel_ipc_shmat_for_task(pid, tid, shmid, addr, flags) → segment_size | -errno
-kernel_ipc_shmdt_for_task(pid, tid, shmid) → 0 | -errno
+kernel_ipc_shm_record_mapping_for_task(pid, tid, addr, shmid, size) → 0 | -errno
+kernel_ipc_shm_lookup_mapping_for_task(pid, tid, addr) → packed_size_and_shmid | -errno
+kernel_ipc_shmdt_addr_for_task(pid, tid, addr) → 0 | -errno
 kernel_ipc_shmat_for_process(pid, shmid, addr, flags) → segment_size | -errno
-kernel_ipc_shmdt_for_process(pid, shmid) → 0 | -errno
+kernel_ipc_shm_record_mapping_for_process(pid, addr, shmid, size) → 0 | -errno
+kernel_ipc_shmdt_addr_for_process(pid, addr) → 0 | -errno
 kernel_alloc_scratch(size) → kernel_owned_pointer | 0
 kernel_transfer_scratch_begin(minimum_capacity) → reservation_token | -errno
 kernel_transfer_scratch_pointer(reservation_token) → kernel_owned_pointer | 0
@@ -872,6 +877,23 @@ This mechanism is critical: asynchronous scheduling never owns a live scratch
 view, while Rust retains the resource identity and lifetime needed by the next
 synchronous entry.
 
+Rust serializes readiness and lifecycle changes through one packed wake-event
+stream. `crates/shared::wakeup_event_wire` owns its five-byte record layout and
+every reason bit; generated bindings give the shared Node/browser host the
+same offsets and values. The host owns a complete copied batch before acting
+on any event, because process stop/continue handling can synchronously reenter
+kernel operations that reuse scratch. The same generated ABI surface owns the
+`poll` and `epoll` event bits and `fd_set` sizing used by host-side readiness
+marshalling, so the host does not restate those values.
+
+For pipe-readable and pipe-writable records, the host first retries ordinary
+`poll()` and `ppoll()` channels whose captured kernel pipe index matches the
+event. A signal-mask-swapping `ppoll()` remains parked for the existing
+signal-safe grace period, and the broad fallback still covers wait classes
+without an exact pipe identity, including `select()` and `pselect6()`.
+Host-originated pipe bridge notifications use the same target-before-fallback
+order in the shared Node.js/browser runtime.
+
 Finite `poll()`/`ppoll()` and `select()`/`pselect6()` waits retain one absolute
 deadline from their first attempt. Targeted readiness events, broad wakeups,
 and safety retries use the remaining duration instead of restarting the
@@ -943,8 +965,11 @@ exit trap from an older ABI 42 kernel, then applies the same authoritative
 `Exited` state check. The compatibility path does not treat a trap alone as
 successful exit.
 Signal dequeue, child-wait polling, write-limit preparation, and guest SysV
-shared-memory attachment also carry the exact live caller TID explicitly;
-lifecycle cleanup uses separately named process-level SysV exports.
+shared-memory attachment also carry the exact live caller TID explicitly.
+Rust owns each attachment's address, segment id, size, and lifetime; the shared
+host retains versioned snapshots only to reconcile bytes between distinct
+process memories. Fork-child materialization and lifecycle cleanup use
+separately named process-level SysV exports.
 Fork and spawn carry the channel's caller TID to the kernel, which validates it
 as a live task belonging to the parent. That value selects caller-specific
 state; it is never a candidate child identity. Clone validates the bound caller
@@ -1169,9 +1194,10 @@ remaining POSIX gap is tracked in [posix-status.md](posix-status.md) and
    behind surviving descriptors are never fork-cloned or reconstructed: socket
    queues, eventfd/epoll/timerfd/signalfd state, memfd contents, procfs
    snapshots, terminal input, and OFD identity therefore survive without
-   refcount churn. After that commit the host forgets the old mapping trackers
-   and detaches SysV segments. The calling pthread's signal mask and directed
-   queue become the process state; sibling workers terminate.
+   refcount churn. At that same commit Rust detaches the old address space's
+   SysV segments; the host then forgets its non-authoritative byte mirrors and
+   the other old mapping trackers. The calling pthread's signal mask and
+   directed queue become the process state; sibling workers terminate.
    `alarm()`/`ITIMER_REAL` survives, while `timer_create()` timers are deleted.
    The conformance gaps in [posix-status.md](posix-status.md) still apply,
    notably numeric-fd epoll tracking and main-thread-directed signal
@@ -1510,6 +1536,15 @@ The kernel's hardcoded `INITIAL_BRK` (16MB) is a fallback for binaries that don'
 `VirtualPlatformIO` (`host/src/vfs/vfs.ts`) is the kernel's filesystem router on both hosts. It is configured with a list of `MountConfig { mountPoint, backend, readonly? }` entries and dispatches every path-based syscall to the backend whose mount prefix is the longest match. Cross-mount operations (`rename`, `link`) are rejected with `EXDEV`. A path that matches no mount returns `ENOENT`. `MountConfig.readonly` is currently advisory — write enforcement and full POSIX permission checks are deferred to a follow-up PR.
 
 `FileSystemBackend` (`host/src/vfs/types.ts`) is the per-mount interface (open/read/write/stat/readdir/symlink/...). Two backends are in use today:
+
+Guest-visible VFS numbers come from `crates/shared` and are recorded under
+`vfs_metadata` in `abi/snapshot.json`. The generated
+`host/src/generated/abi.ts` bindings supply open and `*at` flags, descriptor
+and `fcntl` values, access modes, file modes, directory-entry types, and seek
+constants to shared Node/browser host adapters. This records Kandelo's existing
+guest ABI; it does not establish a general Linux-compatibility contract. The
+standalone OPFS worker and the vendored SharedFS implementation retain local
+copies at their explicit entry-point and vendor boundaries.
 
 - **`MemoryFileSystem`** (`vfs/memory-fs.ts`) — SAB-backed in-memory FS. Used for the rootfs image mount and for browser scratch mounts. Honours uid/gid/mode stored on each inode.
 - **`HostFileSystem`** (`vfs/host-fs.ts`) — proxies a Node host directory. Used for Node scratch mounts. Normalises stat uid/gid to `0/0` so the user's macOS/Linux uid does not leak into the kernel. Native creation receives the requested file/directory mode, but later guest `chmod`/`chown` updates are held in VFS metadata only; the Node host never applies native ownership changes.

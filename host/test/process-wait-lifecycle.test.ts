@@ -11,6 +11,7 @@ import {
   CH_SIG_SIGNUM,
   CH_STATUS,
   CH_SYSCALL,
+  CH_TOTAL_SIZE,
   CHANNEL_STATUS_COMPLETE,
   CHANNEL_STATUS_PENDING,
   CHANNEL_REQUEST_FLAG_CANCELLATION_POINT,
@@ -274,6 +275,43 @@ describe("Rust-owned process wait lifecycle", () => {
       expect(relistenChannel).toHaveBeenCalledWith(channel);
     },
   );
+
+  it.each([
+    ["the bounded Rust handoff returns ERANGE", -34],
+    ["Rust has reaped the zombie", -3],
+  ] as const)("retires exact host timer handles when %s", (_reason, result) => {
+    const pid = 42;
+    const memory = createSharedMemory();
+    const channel = createChannel(pid, memory);
+    const takeTimerCleanup = vi.fn(() => result);
+    const worker = createWorkerHarness({
+      kernel_take_process_timer_cleanup: takeTimerCleanup,
+    });
+    worker.waitingForChild = [];
+    worker.activeChannels = [channel];
+    worker.processes = new Map([[pid, { channels: [channel], memory }]]);
+    worker.execHandoffPids = new Set();
+    worker.stdinFinite = new Set();
+    worker.stdinBuffers = new Map();
+    worker.hostReaped = new Set([pid]);
+    const alarm = setTimeout(() => {}, 60_000);
+    const posixTimeout = setTimeout(() => {}, 60_000);
+    worker.alarmTimers = new Map([[pid, alarm]]);
+    worker.posixTimers = new Map([
+      [`${pid}:7`, { timeout: posixTimeout, signo: 10 }],
+    ]);
+
+    try {
+      expect(worker.deactivateProcess(pid)).toBe(true);
+
+      expect(takeTimerCleanup).toHaveBeenCalledOnce();
+      expect(worker.alarmTimers.has(pid)).toBe(false);
+      expect(worker.posixTimers.has(`${pid}:7`)).toBe(false);
+    } finally {
+      clearTimeout(alarm);
+      clearTimeout(posixTimeout);
+    }
+  });
 
   it.each([
     ["wasm32", 4],
@@ -854,8 +892,10 @@ describe("Rust-owned process wait lifecycle", () => {
       );
       return 1;
     });
+    const generateHostSignal = vi.fn(() => 0);
     const worker = createWorkerHarness({
       kernel_drain_wakeup_events: drain,
+      kernel_generate_host_signal: generateHostSignal,
       kernel_get_parent_pid: vi.fn((pid: number) => pid === 42 ? 7 : 0),
       kernel_get_process_state: vi.fn(() => PROCESS_STATE_RUNNING),
       kernel_handle_channel: handleChannel,
@@ -895,7 +935,8 @@ describe("Rust-owned process wait lifecycle", () => {
     });
     expect(worker.stoppedPids.has(42)).toBe(false);
     expect(relistenChannel).toHaveBeenCalledWith(parentChannel);
-    expect(handleChannel).toHaveBeenCalledTimes(2);
+    expect(handleChannel).toHaveBeenCalledOnce();
+    expect(generateHostSignal).toHaveBeenCalledWith(7, SIGCHLD);
   });
 
   it("does not report CONTINUED when resume preflight stops the process again", () => {
@@ -2416,10 +2457,6 @@ describe("Rust-owned process wait lifecycle", () => {
       [`${pid}:0`, { fnPtr: 1, argPtr: 2 }],
       [`${otherPid}:0`, { fnPtr: 3, argPtr: 4 }],
     ]);
-    worker.threadCtidPtrs = new Map([
-      [`${pid}:1001`, 3000],
-      [`${otherPid}:2001`, 4000],
-    ]);
     worker.processes = new Map([
       [pid, { channels: [channel], memory }],
       [otherPid, { channels: [otherChannel], memory: otherMemory }],
@@ -2436,9 +2473,6 @@ describe("Rust-owned process wait lifecycle", () => {
     ]);
     expect(Array.from(worker.threadForkContexts.entries())).toEqual([
       [`${otherPid}:0`, { fnPtr: 3, argPtr: 4 }],
-    ]);
-    expect(Array.from(worker.threadCtidPtrs.entries())).toEqual([
-      [`${otherPid}:2001`, 4000],
     ]);
     expect(worker.processes.has(pid)).toBe(false);
     expect(worker.activeChannels).toEqual([otherChannel]);
@@ -2689,6 +2723,146 @@ describe("Rust-owned process wait lifecycle", () => {
       10,
     );
   });
+
+  it("thread exit uses Rust-owned ctid metadata for clear-tid wakeup", () => {
+    const memory = createSharedMemory();
+    const ctidPtr = 2048;
+    new DataView(memory.buffer).setInt32(ctidPtr, 123, true);
+
+    const mainChannel = createChannel(10, memory, 0);
+    const threadChannel = createChannel(10, memory, 1024);
+    const kernelThreadExit = vi.fn(() => BigInt(ctidPtr));
+    const worker = createWorkerHarness({
+      kernel_thread_exit: kernelThreadExit,
+    });
+    worker.processes = new Map([
+      [10, {
+        pid: 10,
+        memory,
+        channels: [mainChannel, threadChannel],
+        ptrWidth: 4,
+      }],
+    ]);
+    worker.activeChannels = [mainChannel, threadChannel];
+    worker.channelTids = new Map([["10:1024", 77]]);
+    worker.threadForkContexts = new Map([["10:1024", { fnPtr: 1, argPtr: 2 }]]);
+    worker.finalizeThreadExit(10, 77, threadChannel.channelOffset);
+
+    expect(kernelThreadExit).toHaveBeenCalledWith(10, 77);
+    expect(new DataView(memory.buffer).getInt32(ctidPtr, true)).toBe(0);
+    expect(worker.processes.get(10).channels).toEqual([mainChannel]);
+    expect(worker.activeChannels).toEqual([mainChannel]);
+    expect(worker.channelTids.has("10:1024")).toBe(false);
+    expect(worker.threadForkContexts.has("10:1024")).toBe(false);
+  });
+
+  it.each([
+    ["wasm32", 4],
+    ["wasm64", 8],
+  ] as const)(
+    "%s captures Rust-owned timer cleanup before parent notification",
+    (_name, kernelPtrWidth) => {
+      const pid = 42;
+      const kernelMemory = createSharedMemory();
+      const calls: string[] = [];
+      const takeTimerCleanup = vi.fn((
+        _pid: number,
+        outPtr: number | bigint,
+        outCapacity: number,
+      ) => {
+        calls.push("take-timers");
+        const view = new DataView(kernelMemory.buffer);
+        view.setUint32(Number(outPtr), 1, true);
+        view.setUint32(Number(outPtr) + 4, 2, true);
+        view.setUint32(Number(outPtr) + 8, 4, true);
+        view.setUint32(Number(outPtr) + 12, 9, true);
+        return outCapacity >= 16 ? 2 : -22;
+      });
+      const worker = createWorkerHarness({
+        kernel_get_parent_pid: vi.fn(() => 7),
+        kernel_has_sa_nocldwait: vi.fn(() => 0),
+        kernel_mark_process_signaled: vi.fn(() => 0),
+        kernel_take_process_timer_cleanup: takeTimerCleanup,
+      }, kernelPtrWidth, kernelMemory);
+      worker.hostReaped = new Set();
+      worker.sharedMappings = new Map();
+      const alarm = setTimeout(() => {}, 60_000);
+      const firstTimeout = setTimeout(() => {}, 60_000);
+      const secondTimeout = setTimeout(() => {}, 60_000);
+      const secondInterval = setInterval(() => {}, 60_000);
+      const otherTimeout = setTimeout(() => {}, 60_000);
+      worker.alarmTimers = new Map([[pid, alarm]]);
+      worker.posixTimers = new Map([
+        [`${pid}:4`, { timeout: firstTimeout, signo: 10 }],
+        [`${pid}:9`, {
+          timeout: secondTimeout,
+          interval: secondInterval,
+          signo: 12,
+        }],
+        ["99:4", { timeout: otherTimeout, signo: 10 }],
+      ]);
+      configureBoundaryHooks(worker, {
+        sendSignalToProcess: vi.fn(() => calls.push("notify-parent")),
+      });
+
+      try {
+        worker.notifyHostProcessCrashed(pid, 11);
+
+        expect(calls).toEqual(["take-timers", "notify-parent"]);
+        expect(takeTimerCleanup).toHaveBeenCalledWith(
+          pid,
+          kernelPtrWidth === 8 ? 128n : 128,
+          CH_TOTAL_SIZE,
+        );
+        expect(worker.alarmTimers.has(pid)).toBe(false);
+        expect(worker.posixTimers.has(`${pid}:4`)).toBe(false);
+        expect(worker.posixTimers.has(`${pid}:9`)).toBe(false);
+        expect(worker.posixTimers.has("99:4")).toBe(true);
+      } finally {
+        clearTimeout(alarm);
+        clearTimeout(firstTimeout);
+        clearTimeout(secondTimeout);
+        clearInterval(secondInterval);
+        clearTimeout(otherTimeout);
+      }
+    },
+  );
+
+  it.each([
+    ["wasm32", 4],
+    ["wasm64", 8],
+  ] as const)(
+    "%s TCP listener target selection uses Rust-owned process policy",
+    (_name, kernelPtrWidth) => {
+      const kernelMemory = createSharedMemory();
+      const pickTarget = vi.fn((
+        _port: number,
+        _excludePid: number,
+        outPtr: number | bigint,
+        outCapacity: number,
+      ) => {
+        if (outCapacity !== 8) return -22;
+        const view = new DataView(kernelMemory.buffer);
+        view.setUint32(Number(outPtr), 44, true);
+        view.setInt32(Number(outPtr) + 4, 7, true);
+        return 1;
+      });
+      const worker = createWorkerHarness({
+        kernel_pick_tcp_listener_target: pickTarget,
+      }, kernelPtrWidth, kernelMemory);
+      // The host mirror is deliberately contradictory. Process/fd selection
+      // comes from Rust; JS retains this map only for bridge resources.
+      worker.tcpListenerTargets = new Map([[8080, [{ pid: 1, fd: 3 }]]]);
+
+      expect(worker.pickListenerTarget(8080)).toEqual({ pid: 44, fd: 7 });
+      expect(pickTarget).toHaveBeenCalledWith(
+        8080,
+        0,
+        kernelPtrWidth === 8 ? 128n : 128,
+        8,
+      );
+    },
+  );
 });
 
 function createWorkerHarness(
@@ -2702,10 +2876,22 @@ function createWorkerHarness(
     kernel_dequeue_signal: vi.fn(() => 0),
     kernel_drain_wakeup_events: vi.fn(() => 0),
     kernel_get_parent_pid: vi.fn(() => 0),
+    kernel_generate_host_signal: vi.fn(() => 0),
     kernel_get_process_exit_signal: vi.fn(() => -1),
     kernel_get_process_state: vi.fn(() => PROCESS_STATE_RUNNING),
     kernel_mark_process_signaled: vi.fn(() => 0),
     kernel_set_current_tid: vi.fn(() => 0),
+    kernel_take_process_timer_cleanup: vi.fn((
+      _pid: number,
+      outPtr: number | bigint,
+      outCapacity: number,
+    ) => {
+      if (outCapacity < 12) return -22;
+      const view = new DataView(kernelMemory.buffer);
+      view.setUint32(Number(outPtr), 0, true);
+      view.setUint32(Number(outPtr) + 4, 0, true);
+      return 0;
+    }),
     ...exports,
   };
   const rawInstance = createKernelScratchTestInstance(

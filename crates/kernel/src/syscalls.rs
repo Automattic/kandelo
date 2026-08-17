@@ -38,7 +38,6 @@ const CREATION_FLAGS: u32 =
 
 // Linux fstatat/statx flags mirrored by the guest's <fcntl.h>.
 const AT_NO_AUTOMOUNT: u32 = 0x800;
-const AT_EMPTY_PATH: u32 = 0x1000;
 const AT_STATX_SYNC_TYPE: u32 = 0x6000;
 const FSTATAT_VALID_FLAGS: u32 = AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH;
 
@@ -865,6 +864,14 @@ fn commit_exec_state_impl(
     }
 
     release_exec_image_state(proc, host);
+    // SysV attachments describe the old address space, not the persistent
+    // process identity. The host preflight has already published dirty bytes;
+    // drain Rust's authoritative attachment records at the exec commit so a
+    // failed preflight keeps them and a successful exec cannot leak nattch.
+    let ipc = unsafe { crate::ipc::global_ipc_table() };
+    for mapping in proc.take_shm_mappings() {
+        let _ = ipc.shmdt(mapping.shmid, proc.pid);
+    }
     proc.signals.reset_dispositions_for_exec();
 
     // Kernel-backed process-shared primitives outlive the process address
@@ -3879,26 +3886,30 @@ pub(crate) fn release_blocking_retry_bindings_for_tid(
     }
 }
 
-/// Consume every resource owned by one exiting task before removing its
-/// process-table record.
+/// Consume one exiting task and return its kernel-owned non-identity state.
 ///
 /// WHY: the host may still hold an immutable retry snapshot for this TID.
 /// Removing the thread first would make that snapshot unreachable while its
-/// stable OFD/MQ/IPC target remained pinned for the process lifetime.
-pub(crate) fn cleanup_exiting_thread(
+/// stable OFD/MQ/IPC target remained pinned for the process lifetime. The host
+/// must also clear and wake `CLONE_CHILD_CLEARTID` in process memory, but the
+/// pointer itself belongs to the Rust ThreadInfo lifecycle. Returning the
+/// consumed state keeps one authoritative owner without moving process-memory
+/// mutation into kernel memory.
+pub(crate) fn cleanup_exiting_thread_with_state(
     proc: &mut Process,
     locks: &mut AdvisoryLockManager,
     host: &mut dyn HostIO,
     tid: u32,
-) -> Result<(), Errno> {
+) -> Result<crate::process::ThreadState, Errno> {
     if proc.get_thread(tid).is_none() {
         return Err(Errno::ESRCH);
     }
     let release_result = release_blocking_retry_bindings_for_tid(proc, locks, host, tid);
     let owner = ((proc.pid as u64) << 32) | tid as u64;
     cancel_fifo_open_for_owner(proc, owner);
-    proc.remove_thread(tid).ok_or(Errno::ESRCH)?;
-    release_result
+    let thread = proc.remove_thread(tid).ok_or(Errno::ESRCH)?;
+    release_result?;
+    Ok(thread)
 }
 
 pub(crate) fn release_all_blocking_retry_bindings(
@@ -8009,8 +8020,6 @@ pub fn sys_execveat(
     path: &[u8],
     flags: u32,
 ) -> Result<(), Errno> {
-    const AT_EMPTY_PATH: u32 = 0x1000;
-
     if flags & AT_EMPTY_PATH != 0 && path.is_empty() {
         // fexecve path: exec the file referenced by dirfd
         let entry = proc.fd_table.get(dirfd)?;
@@ -14786,10 +14795,7 @@ pub fn sys_epoll_pwait(
     }
 
     // Map EPOLL events to poll events
-    const EPOLLIN: u32 = 0x001;
-    const EPOLLOUT: u32 = 0x004;
-    const EPOLLERR: u32 = 0x008;
-    const EPOLLHUP: u32 = 0x010;
+    use wasm_posix_shared::epoll::{EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT};
     #[allow(dead_code)]
     const EPOLLRDHUP: u32 = 0x2000;
 
@@ -19018,7 +19024,8 @@ mod tests {
             Err(Errno::EAGAIN),
         );
         set_test_current_tid(0);
-        cleanup_exiting_thread(&mut opener, &mut locks, &mut host, worker_tid).unwrap();
+        cleanup_exiting_thread_with_state(&mut opener, &mut locks, &mut host, worker_tid)
+            .unwrap();
 
         let released_fd = opener.fd_table.reserve().unwrap();
         assert_eq!(released_fd, 3);
@@ -25404,6 +25411,22 @@ mod tests {
         assert_eq!(&buf, b"queued before exec");
         sys_close(&mut proc, &mut host, writer).unwrap();
         sys_close(&mut proc, &mut host, reader).unwrap();
+    }
+
+    #[test]
+    fn exec_discards_sysv_attachment_identity_at_the_commit() {
+        let mut proc = Process::new(0x6eec_0043);
+        let mut host = MockHostIO::new();
+        // No real segment can reach this id in the test run. The commit still
+        // proves that image-owned metadata is drained when detach reports a
+        // segment already removed by IPC_RMID.
+        proc.record_shm_mapping(0x20000, i32::MAX, 4096)
+            .unwrap();
+        let pid = proc.pid;
+
+        commit_exec_state(&mut proc, &mut host, pid).unwrap();
+
+        assert!(proc.shm_mappings.is_empty());
     }
 
     #[test]
@@ -41887,7 +41910,8 @@ mod tests {
     fn thread_exit_consumes_its_blocked_retry_target() {
         let mut proc = Process::new(74);
         let tid = 75;
-        proc.add_thread(crate::process::ThreadInfo::new(tid, 0, 0, 0));
+        let ctid_ptr = 0x2000;
+        proc.add_thread(crate::process::ThreadInfo::new(tid, ctid_ptr, 0, 0));
         let mut host = MockHostIO::new();
         let mut locks = AdvisoryLockManager::new();
         let fd = sys_open(&mut proc, &mut host, b"/thread-blocked", O_RDONLY, 0).unwrap();
@@ -41898,13 +41922,15 @@ mod tests {
         assert!(proc.ofd_table.get(ofd_idx).is_some());
         assert_eq!(proc.blocked_retries.binding_count(), 1);
 
-        cleanup_exiting_thread(&mut proc, &mut locks, &mut host, tid).unwrap();
+        let thread =
+            cleanup_exiting_thread_with_state(&mut proc, &mut locks, &mut host, tid).unwrap();
+        assert_eq!(thread.ctid_ptr, ctid_ptr);
         assert!(proc.ofd_table.get(ofd_idx).is_none());
         assert_eq!(proc.blocked_retries.binding_count(), 0);
         assert!(proc.get_thread(tid).is_none());
-        assert_eq!(
-            cleanup_exiting_thread(&mut proc, &mut locks, &mut host, tid),
+        assert!(matches!(
+            cleanup_exiting_thread_with_state(&mut proc, &mut locks, &mut host, tid),
             Err(Errno::ESRCH)
-        );
+        ));
     }
 }

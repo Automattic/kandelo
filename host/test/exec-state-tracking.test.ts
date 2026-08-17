@@ -169,10 +169,6 @@ describe("exec host-state transition", () => {
           ["7:256", { fnPtr: 1, argPtr: 2 }],
           ["8:0", { fnPtr: 3, argPtr: 4 }],
         ]),
-        threadCtidPtrs: new Map([
-          ["7:11", 0x1000],
-          ["8:8", 0x2000],
-        ]),
       });
       const notify = vi.spyOn(Atomics, "notify");
       const parkedMain = worker.parkedChannelCompletions.get(mainChannel);
@@ -219,8 +215,6 @@ describe("exec host-state transition", () => {
       expect(worker.channelTids.get("8:0")).toBe(8);
       expect(worker.threadForkContexts.has("7:256")).toBe(false);
       expect(worker.threadForkContexts.has("8:0")).toBe(true);
-      expect(worker.threadCtidPtrs.has("7:11")).toBe(false);
-      expect(worker.threadCtidPtrs.get("8:8")).toBe(0x2000);
       expect(notify).toHaveBeenCalledWith(
         expect.any(Int32Array),
         4,
@@ -608,13 +602,14 @@ describe("exec host-state transition", () => {
       port: 8080,
       connections: new Set(),
     };
+    const kernelMemory = new WebAssembly.Memory({ initial: 2 });
     const worker = createWorker({
       processes: new Map([[7, { channels: [channel], memory }]]),
       callbacks: {
         onResolveSpawn: vi.fn(async () => resolvedProgram()),
         onSpawn: vi.fn(() => spawned),
       },
-      kernelMemory: new WebAssembly.Memory({ initial: 2 }),
+      kernelMemory,
       kernelInstance: {
         exports: {
           kernel_spawn_process: () => 100,
@@ -623,6 +618,18 @@ describe("exec host-state transition", () => {
             fd === 4 ? 41 : -1,
           kernel_find_listener_fd_by_accept_wake:
             (_pid: number, wakeIdx: number) => wakeIdx === 41 ? 4 : -1,
+          kernel_pick_tcp_listener_target: (
+            _port: number,
+            _excludePid: number,
+            outPtr: number,
+            outCapacity: number,
+          ) => {
+            if (outCapacity !== 8) return -22;
+            const view = new DataView(kernelMemory.buffer, outPtr, outCapacity);
+            view.setUint32(0, 100, true);
+            view.setInt32(4, 4, true);
+            return 1;
+          },
         },
       },
       tcpListenerTargets: new Map([[8080, [{
@@ -654,7 +661,7 @@ describe("exec host-state transition", () => {
     });
     worker.cleanupTcpListeners(7);
     expect(close).not.toHaveBeenCalled();
-    expect(worker.pickListenerTarget(8080)).toBeNull();
+    expect(worker.pickListenerTarget(8080)).toEqual({ pid: 100, fd: 4 });
 
     const childMemory = new WebAssembly.Memory({
       initial: 1,
@@ -1080,7 +1087,7 @@ describe("exec host-state transition", () => {
     expect(worker.currentHandlePid).toBe(0);
   });
 
-  it("copies SysV mappings before commit and detaches them afterward", () => {
+  it("copies SysV mappings before commit and forgets mirrors after Rust detaches", () => {
     const memory = new WebAssembly.Memory({ initial: 1 });
     new Uint8Array(memory.buffer, 0x1000, 4).set([1, 2, 3, 4]);
     const kernelMemory = new WebAssembly.Memory({ initial: 2 });
@@ -1126,7 +1133,7 @@ describe("exec host-state transition", () => {
     expect(worker.shmMappings.has(7)).toBe(true);
 
     expect(worker.finalizeAddressSpaceForExec(7)).toBe(0);
-    expect(detach).toHaveBeenCalledWith(7, 3);
+    expect(detach).not.toHaveBeenCalled();
     expect(worker.shmMappings.has(7)).toBe(false);
   });
 

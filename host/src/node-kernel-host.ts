@@ -44,6 +44,7 @@ import {
   WASM_PAGE_SIZE,
 } from "./constants";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
+import { FILE_MODES } from "./generated/abi";
 import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
 
 export type { HttpRequest, HttpResponse };
@@ -891,7 +892,7 @@ export class NodeKernelHost {
         requestId,
         path,
         data: owned,
-        mode: mode & 0o7777,
+        mode: mode & FILE_MODES.S_MODE_BITS,
       },
       [owned.buffer],
     );

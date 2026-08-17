@@ -265,6 +265,62 @@ rollback, and teardown use the separate explicit-process
 `kernel_ipc_shmat_for_process` and `kernel_ipc_shmdt_for_process` exports.
 The former `kernel_set_current_pid` export is removed.
 
+ABI 43 also moves host-bridged TCP listener selection into the process table.
+`kernel_pick_tcp_listener_target(port, exclude_pid, out_ptr, out_capacity)`
+writes one little-endian `{ u32 pid, i32 fd }` record into eight bytes of kernel
+scratch when `out_capacity` is exactly eight and returns `1`, returns `0` when
+no live listener exists, or returns a negative errno. Rust filters
+authoritative process, descriptor, open-file-description, and socket state and
+owns the per-port round-robin cursor. The
+shared Node/browser host retains only the platform listener objects, stable
+accept-wakeup identities, and their lifecycle mirrors.
+
+Process teardown in ABI 43 also consumes platform-timer cleanup from Rust via
+`kernel_take_process_timer_cleanup(pid, out_ptr, out_capacity)`. Each bounded
+little-endian list begins with `{ u32 cancel_alarm, u32 posix_count }` and is
+followed by `posix_count` timer IDs. Rust clears exactly those process-owned
+identities before a parent can reap the zombie; the shared Node/browser host
+uses the detached list only to cancel its `setTimeout`/`setInterval` handles.
+An oversized list returns `ERANGE` without consuming any Rust state. The host
+may use its remaining handle maps only at that bounded-output fallback or after
+Rust reports `ESRCH`, which is the explicit post-reap worker-detachment
+boundary.
+
+ABI 43 publishes the existing kernel wake stream as the generated
+`wakeup_event_wire` contract. Each packed record is five bytes: a
+little-endian `u32` identity followed by a one-byte reason bitset. Rust owns
+the offsets and the readable, writable, accept, datagram-writable,
+process-stopped, process-continued, and advisory-lock bits. The shared
+Node/browser host decodes the stream only through generated constants before
+rescheduling its platform-owned retry queues. This metadata adds no extra
+host-to-kernel call; it makes the already-observable stream explicit in the
+ABI snapshot.
+
+The pending ABI 43 contract additionally makes the Rust `Process` authoritative
+for each System V shared-memory attachment's process address, segment id, and
+size. After the host has materialized an attachment and its byte-coherence
+mirror, it commits that identity through
+`kernel_ipc_shm_record_mapping_for_task(pid, tid, addr, shmid, size)`. Fork
+materialization uses the corresponding `for_process` form because the child
+does not have a running guest task yet. `shmdt` first calls
+`kernel_ipc_shm_lookup_mapping_for_task(pid, tid, addr)`, whose nonnegative
+`i64` result packs the size in the upper 32 bits and shmid in the lower 32
+bits; negative values are negated errno values. After publishing dirty bytes,
+the host calls `kernel_ipc_shmdt_addr_for_task`; lifecycle rollback and teardown
+use `kernel_ipc_shmdt_addr_for_process`. The older segment-id detach export is
+used only to roll back a `shmat` that acquired `nattch` but failed before an
+address record could be committed.
+
+These address records are not serialized in the ordinary fork wire image.
+The existing host inheritance transaction records each child attachment only
+after `shmat` succeeds and rolls back by exact address before publishing child
+bytes. Successful exec drains the records and decrements `nattch` in Rust at
+the irreversible image commit; failed exec leaves both records and host byte
+mirrors intact. Process removal provides the final Rust-owned cleanup path.
+The host mirror remains necessary because separate WebAssembly memories do not
+share physical bytes, but it no longer determines attachment identity or
+lifetime.
+
 The Rust kernel Wasm's obsolete direct `kernel_fork` export and its
 host-supplied `host_fork` and `host_clone` imports are also removed. Guest libc
 still imports `kernel_fork` from its process-worker adapter; that adapter routes

@@ -144,6 +144,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_pipe2",
   "kernel_pipe_read",
   "kernel_pipe_write",
+  "kernel_pick_tcp_listener_target",
   "kernel_poll",
   "kernel_process_metadata_stage",
   "kernel_pty_master_read",
@@ -156,6 +157,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_setsockopt",
   "kernel_socketpair",
   "kernel_spawn_process",
+  "kernel_take_process_timer_cleanup",
   "kernel_tcgetattr",
   "kernel_tcsetattr",
   "kernel_transfer_channel_execute",
@@ -231,6 +233,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_recv":
     case "kernel_send":
     case "kernel_set_cwd":
+    case "kernel_take_process_timer_cleanup":
     case "kernel_tcgetattr":
       return REQUIRED_POINTER_1;
     case "kernel_dequeue_signal":
@@ -241,6 +244,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_ipc_shm_write_chunk":
     case "kernel_pipe_read":
     case "kernel_pipe_write":
+    case "kernel_pick_tcp_listener_target":
     case "kernel_spawn_process":
     case "kernel_tcsetattr":
       return REQUIRED_POINTER_2;
@@ -274,8 +278,10 @@ function kernelScratchPointerAlignment(
 ): number {
   if (
     (name === "kernel_pipe2" && pointerIndex === 1)
+    || (name === "kernel_pick_tcp_listener_target" && pointerIndex === 2)
     || (name === "kernel_poll" && pointerIndex === 0)
     || (name === "kernel_socketpair" && pointerIndex === 3)
+    || (name === "kernel_take_process_timer_cleanup" && pointerIndex === 1)
   ) {
     return 4;
   }
@@ -304,6 +310,7 @@ function isKernelScratchExportName(
     case "kernel_pipe2":
     case "kernel_pipe_read":
     case "kernel_pipe_write":
+    case "kernel_pick_tcp_listener_target":
     case "kernel_poll":
     case "kernel_process_metadata_stage":
     case "kernel_pty_master_read":
@@ -316,6 +323,7 @@ function isKernelScratchExportName(
     case "kernel_setsockopt":
     case "kernel_socketpair":
     case "kernel_spawn_process":
+    case "kernel_take_process_timer_cleanup":
     case "kernel_tcgetattr":
     case "kernel_tcsetattr":
     case "kernel_transfer_channel_execute":

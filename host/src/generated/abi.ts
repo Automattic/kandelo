@@ -356,6 +356,137 @@ export const PROCESS_SNAPSHOT_STATE_OFFSET = 24 as const;
 export const PROCESS_SNAPSHOT_COMM_LEN_OFFSET = 28 as const;
 export const PROCESS_SNAPSHOT_CMDLINE_LEN_OFFSET = 32 as const;
 
+export const WAKEUP_EVENT_RECORD_BYTES = 5 as const;
+export const WAKEUP_EVENT_TYPES = {
+  readable: 1,
+  writable: 2,
+  accept: 4,
+  datagramWritable: 8,
+  processStopped: 16,
+  processContinued: 32,
+  advisoryLock: 64,
+} as const;
+export const WAKEUP_EVENT_FIELDS = {
+  idx: { offset: 0, size: 4, type: "u32" },
+  wakeType: { offset: 4, size: 1, type: "u8" },
+} as const;
+
+export const POLL_EVENTS = {
+  POLLIN: 1,
+  POLLPRI: 2,
+  POLLOUT: 4,
+  POLLERR: 8,
+  POLLHUP: 16,
+  POLLNVAL: 32,
+} as const;
+
+export const EPOLL_EVENTS = {
+  EPOLLIN: 1,
+  EPOLLOUT: 4,
+  EPOLLERR: 8,
+  EPOLLHUP: 16,
+} as const;
+
+export const OPEN_FLAGS = {
+  O_RDONLY: 0,
+  O_WRONLY: 1,
+  O_RDWR: 2,
+  O_ACCMODE: 3,
+  O_CREAT: 64,
+  O_EXCL: 128,
+  O_NOCTTY: 256,
+  O_TRUNC: 512,
+  O_APPEND: 1024,
+  O_NONBLOCK: 2048,
+  O_ASYNC: 8192,
+  O_DIRECTORY: 65536,
+  O_NOFOLLOW: 131072,
+  O_CLOEXEC: 524288,
+  O_PATH: 2097152,
+  O_CLOFORK: 8388608,
+} as const;
+
+export const AT_FLAGS = {
+  AT_FDCWD: -100,
+  AT_SYMLINK_NOFOLLOW: 256,
+  AT_REMOVEDIR: 512,
+  AT_EMPTY_PATH: 4096,
+} as const;
+
+export const FD_FLAGS = {
+  FD_CLOEXEC: 1,
+  FD_CLOFORK: 2,
+} as const;
+
+export const FCNTL_COMMANDS = {
+  F_DUPFD: 0,
+  F_GETFD: 1,
+  F_SETFD: 2,
+  F_GETFL: 3,
+  F_SETFL: 4,
+  F_GETLK: 12,
+  F_SETLK: 13,
+  F_SETLKW: 14,
+  F_SETOWN: 8,
+  F_GETOWN: 9,
+  F_DUPFD_CLOEXEC: 1030,
+  F_DUPFD_CLOFORK: 1028,
+  F_OFD_GETLK: 36,
+  F_OFD_SETLK: 37,
+  F_OFD_SETLKW: 38,
+} as const;
+
+export const ACCESS_MODES = {
+  F_OK: 0,
+  R_OK: 4,
+  W_OK: 2,
+  X_OK: 1,
+} as const;
+
+export const FILE_MODES = {
+  S_IFMT: 61440,
+  S_IFSOCK: 49152,
+  S_IFLNK: 40960,
+  S_IFREG: 32768,
+  S_IFBLK: 24576,
+  S_IFDIR: 16384,
+  S_IFCHR: 8192,
+  S_IFIFO: 4096,
+  S_ISUID: 2048,
+  S_ISGID: 1024,
+  S_ISVTX: 512,
+  S_IRWXU: 448,
+  S_IRUSR: 256,
+  S_IWUSR: 128,
+  S_IXUSR: 64,
+  S_IRWXG: 56,
+  S_IRGRP: 32,
+  S_IWGRP: 16,
+  S_IXGRP: 8,
+  S_IRWXO: 7,
+  S_IROTH: 4,
+  S_IWOTH: 2,
+  S_IXOTH: 1,
+  S_MODE_BITS: 4095,
+} as const;
+
+export const DIRENT_TYPES = {
+  DT_UNKNOWN: 0,
+  DT_FIFO: 1,
+  DT_CHR: 2,
+  DT_DIR: 4,
+  DT_BLK: 6,
+  DT_REG: 8,
+  DT_LNK: 10,
+  DT_SOCK: 12,
+} as const;
+
+export const SEEK_WHENCE = {
+  SEEK_SET: 0,
+  SEEK_CUR: 1,
+  SEEK_END: 2,
+} as const;
+
 export const KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES = 56 as const;
 export const KERNEL_SCRATCH_FD_PAIR_BYTES = 8 as const;
 export const KERNEL_SCRATCH_MQUEUE_NOTIFICATION_BYTES = 8 as const;
@@ -519,14 +650,20 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_has_sa_nocldstop",
   "kernel_host_adapter_manifest_len",
   "kernel_host_adapter_manifest_ptr",
+  "kernel_ipc_shm_lookup_mapping_for_task",
+  "kernel_ipc_shm_record_mapping_for_process",
+  "kernel_ipc_shm_record_mapping_for_task",
   "kernel_ipc_shmat_for_process",
   "kernel_ipc_shmat_for_task",
+  "kernel_ipc_shmdt_addr_for_process",
+  "kernel_ipc_shmdt_addr_for_task",
   "kernel_ipc_shmdt_for_process",
   "kernel_ipc_shmdt_for_task",
   "kernel_is_fd_nonblock",
   "kernel_mark_process_signaled",
   "kernel_mq_descriptor_msgsize",
   "kernel_msqid_ds_bytes",
+  "kernel_pick_tcp_listener_target",
   "kernel_pick_signal_target_tid",
   "kernel_pipe_has_readers",
   "kernel_posix_timer_fire",
@@ -548,6 +685,7 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_spawn_scratch_capacity",
   "kernel_spawn_scratch_pointer",
   "kernel_spawn_scratch_retained_capacity",
+  "kernel_take_process_timer_cleanup",
   "kernel_thread_exit",
   "kernel_thread_has_deliverable",
   "kernel_transfer_channel_execute",
