@@ -116,13 +116,18 @@ dependency_artifact = {
     "target_abi": 8,
 }))
 metadata = canonical({
-    "mini-tool": {
+    "kandelo-dev/tap-core/mini-tool": {
         "bottle": {
+            "cellar": "any_skip_relocation",
             "rebuild": 0,
-            "root_url": "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-8-candidates/mini-tool",
+            "root_url": "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-8-candidates",
             "tags": {"wasm32_kandelo": {"sha256": digest(bottle)}},
         },
-        "formula": {"name": "mini-tool", "pkg_version": "1.0"},
+        "formula": {
+            "name": "mini-tool",
+            "path": "Library/Taps/kandelo-dev/homebrew-tap-core/Formula/mini-tool.rb",
+            "pkg_version": "1.0",
+        },
     }
 })
 (root / "bottle-metadata.json").write_bytes(metadata)
@@ -387,12 +392,14 @@ printf '\n' >>"$FAKE_NORMAL_LOG"
 [ -d "$HOME" ] && [ -z "$(find "$HOME" -mindepth 1 -print -quit)" ]
 [ -d "$HOMEBREW_CACHE" ] && [ -z "$(find "$HOMEBREW_CACHE" -mindepth 1 -print -quit)" ]
 [ -d "$HOMEBREW_TEMP" ] && [ -z "$(find "$HOMEBREW_TEMP" -mindepth 1 -print -quit)" ]
-out=""; abi=""; arch=""; root=""; staging_abi=""; staged_dependencies=()
+out=""; abi=""; arch=""; root=""; bottle_json=""; staging_abi=""
+staged_dependencies=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --out) out="$2"; shift 2 ;;
     --abi) abi="$2"; shift 2 ;;
     --arch) arch="$2"; shift 2 ;;
+    --bottle-json) bottle_json="$2"; shift 2 ;;
     --bottle-root-url) root="$2"; shift 2 ;;
     --staging-candidate-abi) staging_abi="$2"; shift 2 ;;
     --staged-dependency-formula) staged_dependencies+=("$2"); shift 2 ;;
@@ -403,6 +410,22 @@ done
 [ "$staging_abi" = 8 ]
 [ "$root" = "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-8-candidates" ]
 [ "${staged_dependencies[*]}" = "mini-base" ]
+jq -e --arg sha256 "${FAKE_BOTTLE_SHA256:?}" '
+  keys == ["kandelo-dev/tap-core/mini-tool"] and
+  .["kandelo-dev/tap-core/mini-tool"] == {
+    bottle: {
+      cellar: "any_skip_relocation",
+      rebuild: 0,
+      root_url: "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-8-candidates/mini-tool",
+      tags: {wasm32_kandelo: {sha256: $sha256}}
+    },
+    formula: {
+      name: "mini-tool",
+      path: "Library/Taps/kandelo-dev/homebrew-tap-core/Formula/mini-tool.rb",
+      pkg_version: "1.0"
+    }
+  }
+' "$bottle_json" >/dev/null
 if [ "${FAKE_NORMAL_STATUS:-0}" != 0 ]; then
   echo 'deterministic verification failure'
   exit "$FAKE_NORMAL_STATUS"
@@ -535,7 +558,7 @@ grep -F 'downloaded bottle differs from exact layer' "$TMP_ROOT/changed.stderr" 
   fail "changed bottle rejection was not explicit"
 
 cp "$FIXTURE/bottle-metadata.json" "$FIXTURE/exact-metadata.json"
-jq -cS '.["mini-tool"].formula.pkg_version = "9.9"' \
+jq -cS '.["kandelo-dev/tap-core/mini-tool"].formula.pkg_version = "9.9"' \
   "$FIXTURE/exact-metadata.json" >"$FIXTURE/bottle-metadata.json"
 if run_verifier "$TMP_ROOT/metadata" >"$TMP_ROOT/metadata.stdout" \
   2>"$TMP_ROOT/metadata.stderr"; then

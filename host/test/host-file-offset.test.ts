@@ -149,6 +149,27 @@ describe("native positioned-write route ownership", () => {
   });
 });
 
+describe("exclusive host-backed append", () => {
+  it("returns the exact append end for a caller-owned directory", () => {
+    const root = tempRoot("kandelo-exclusive-host-append-");
+    const nativePath = join(root, "file");
+    writeFileSync(nativePath, "abcdef");
+    const io = new HostFileSystem(root, "/", {
+      exclusiveNativeWriters: true,
+    });
+    const handle = io.open("/file", O_RDWR | O_APPEND, 0);
+    try {
+      expect(io.append(handle, new Uint8Array([0x21]), 1, null)).toEqual({
+        written: 1,
+        end: 7,
+      });
+      expect(readFileSync(nativePath, "utf8")).toBe("abcdef!");
+    } finally {
+      io.close(handle);
+    }
+  });
+});
+
 describe.each([
   [
     "NodePlatformIO",
