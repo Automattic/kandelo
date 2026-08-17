@@ -1597,6 +1597,7 @@ describe("exec host-state transition", () => {
     let committedTarget = 0;
     const openFds = new Set([6, 8]);
     const worker = createWorker({
+      processes: pendingExecProcesses(),
       currentHandlePid: 0,
       kernelInstance: {
         exports: {
@@ -1656,6 +1657,7 @@ describe("exec host-state transition", () => {
       connections: new Set(),
     };
     const worker = createWorker({
+      processes: pendingExecProcesses(),
       currentHandlePid: 0,
       kernelInstance: {
         exports: {
@@ -1692,6 +1694,7 @@ describe("exec host-state transition", () => {
       connections: new Set(),
     };
     const worker = createWorker({
+      processes: pendingExecProcesses(),
       currentHandlePid: 0,
       kernelInstance: {
         exports: {
@@ -1832,6 +1835,26 @@ const workerKernelMemories = new WeakMap<
   WebAssembly.Memory
 >();
 const workerScratchPointers = new WeakMap<CentralizedKernelWorker, number>();
+
+function pendingExecProcesses(pid = 7): Map<number, unknown> {
+  const memory = new WebAssembly.Memory({
+    initial: 2,
+    maximum: 2,
+    shared: true,
+  });
+  const channelOffset = 0;
+  const view = new DataView(memory.buffer, channelOffset);
+  view.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
+  view.setUint32(CH_SYSCALL, HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE, true);
+  const channel = {
+    pid,
+    memory,
+    channelOffset,
+    i32View: new Int32Array(memory.buffer, channelOffset),
+    consecutiveSyscalls: 0,
+  };
+  return new Map([[pid, { pid, memory, channels: [channel] }]]);
+}
 
 function createWorker(overrides: Record<string, unknown>): any {
   const callbacks = (overrides.callbacks ?? {}) as ConstructorParameters<

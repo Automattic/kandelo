@@ -181,18 +181,20 @@ describe("spawn host parity", () => {
     }
   });
 
-  it("both exec adapters consume commit-captured secure-exec state", () => {
+  it("both exec adapters consume the complete commit-captured transition", () => {
     for (const entry of [nodeEntry, browserEntry]) {
       const handler = execHandlerSource(readFileSync(entry, "utf8"));
       const postCommit = handler.slice(handler.indexOf("const startAfterCommit"));
       expect(
         postCommit,
-        `${entry} must consume the secure-exec state captured by commit`,
-      ).toContain("kernelWorker.takeCommittedExecSecureExec(pid)");
+        `${entry} must consume the complete transition captured by commit`,
+      ).toContain("kernelWorker.takeCommittedExecTransition(");
       expect(
         postCommit,
-        `${entry} must not re-enter the kernel after the exec commit`,
-      ).not.toContain("kernelWorker.processSecureExec(pid)");
+        `${entry} must not issue result-bearing kernel calls before quiescence`,
+      ).not.toMatch(
+        /kernelWorker\.(?:processSecureExec|wakeProcessWorkersForExecRetirement|finalizeAddressSpaceForExec)\(/,
+      );
     }
   });
 

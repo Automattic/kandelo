@@ -2329,7 +2329,6 @@ async function handleExec(
     }
     launchPlanState = "started";
     try {
-      const secureExec = kernelWorker.takeCommittedExecSecureExec(pid);
       vmInterruptTimers.clear(pid, initiatingInfo);
 
       // Wake the exact old execution generation through the internal exec
@@ -2344,12 +2343,15 @@ async function handleExec(
       for (const thread of threadWorkers.get(pid) ?? []) {
         intentionallyTerminated.add(thread.worker as object);
       }
-      const retiredOffsets =
-        kernelWorker.wakeProcessWorkersForExecRetirement(
-          pid,
-          initiatingInfo.memory,
-        );
-      const mainRetirementStarted = retiredOffsets.has(
+      // Commit wakes the old mailboxes while it already owns the kernel entry.
+      // No Worker message can dispatch until this synchronous continuation
+      // marks every old Worker intentional and consumes the host-owned result.
+      const transition = kernelWorker.takeCommittedExecTransition(
+        pid,
+        initiatingInfo.memory,
+      );
+      const secureExec = transition.secureExec;
+      const mainRetirementStarted = transition.retiredChannelOffsets.has(
         initiatingInfo.channelOffset,
       );
       if (!kernelWorker.prepareProcessForExec(pid, initiatingInfo.memory)) {
@@ -2359,8 +2361,7 @@ async function handleExec(
         initiatingInfo.externrefGeneration,
       );
 
-      const finalizeResult = kernelWorker.finalizeAddressSpaceForExec(pid);
-      if (finalizeResult < 0) {
+      if (transition.addressSpaceResult < 0) {
         throw new Error("failed to detach the discarded address space");
       }
 
