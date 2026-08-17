@@ -2641,7 +2641,6 @@ async function handleExec(
     }
     launchPlanState = "started";
     try {
-      const secureExec = kernelWorker.processSecureExec(pid);
       vmInterruptTimers.clear(pid, initiatingInfo);
 
       // Wake the exact old execution generation through the existing internal
@@ -2657,12 +2656,15 @@ async function handleExec(
       for (const thread of threadWorkers.get(pid) ?? []) {
         intentionallyTerminated.add(thread.worker as object);
       }
-      const retiredOffsets =
-        kernelWorker.wakeProcessWorkersForExecRetirement(
-          pid,
-          initiatingInfo.memory,
-        );
-      const mainRetirementStarted = retiredOffsets.has(
+      // Commit wakes the old mailboxes while it already owns the kernel entry.
+      // No Worker message can dispatch until this synchronous continuation
+      // marks every old Worker intentional and consumes the host-owned result.
+      const transition = kernelWorker.takeCommittedExecTransition(
+        pid,
+        initiatingInfo.memory,
+      );
+      const secureExec = transition.secureExec;
+      const mainRetirementStarted = transition.retiredChannelOffsets.has(
         initiatingInfo.channelOffset,
       );
       threadedProcessPids.delete(pid);
@@ -2673,8 +2675,7 @@ async function handleExec(
         initiatingInfo.externrefGeneration,
       );
 
-      const finalizeResult = kernelWorker.finalizeAddressSpaceForExec(pid);
-      if (finalizeResult < 0) {
+      if (transition.addressSpaceResult < 0) {
         throw new Error("failed to detach the discarded address space");
       }
 
@@ -3052,7 +3053,7 @@ async function handlePosixSpawn(
   program: ResolvedSpawnProgram,
   envp: string[],
 ): Promise<number> {
-  const secureExec = kernelWorker.processSecureExec(childPid);
+  const secureExec = kernelWorker.takeCommittedExecSecureExec(childPid);
   await waitForProcessTeardowns();
 
   // Unrelated teardown waits yield to the event loop. Keep a successfully

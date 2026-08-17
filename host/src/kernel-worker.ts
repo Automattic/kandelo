@@ -2800,6 +2800,15 @@ export class CentralizedKernelWorker {
   >();
   /** Pids whose old image committed exec but whose replacement has no channel yet. */
   private execHandoffPids = new Set<number>();
+  /** Complete old-image transition captured by the successful exec entry. */
+  private committedExecTransitions = new Map<number, {
+    readonly secureExec: boolean;
+    readonly retirementMemory: WebAssembly.Memory;
+    readonly retiredChannelOffsets: Set<number>;
+    readonly addressSpaceResult: number;
+  }>();
+  /** Secure-exec state for a newly-created spawn child with no old image. */
+  private committedExecSecureExec = new Map<number, boolean>();
   /** Capacity travels with the allocator-owned pointer. */
   #scratchRegion: KernelScratchRegion | null = null;
   #pcmTransportDescriptor: PcmTransportDescriptor | null = null;
@@ -7855,6 +7864,7 @@ export class CentralizedKernelWorker {
 
     this.processes.delete(pid);
     this.execHandoffPids?.delete(pid);
+    this.committedExecSecureExec.delete(pid);
     this.stdinFinite.delete(pid);
     this.stdinBuffers.delete(pid);
 
@@ -8134,6 +8144,7 @@ export class CentralizedKernelWorker {
     this.clearProcessThreadTransportState(pid);
     this.processes.delete(pid);
     this.execHandoffPids?.delete(pid);
+    this.committedExecSecureExec.delete(pid);
     this.stdinFinite.delete(pid);
     this.stdinBuffers.delete(pid);
     // Cancel pending sleeps for every thread in this process.
@@ -8415,7 +8426,15 @@ export class CentralizedKernelWorker {
       // behind the caller that needs to decide whether the old image survives.
       throw new KernelReentrantEntryError("kernel exec commit");
     }
+    this.committedExecTransitions.delete(pid);
+    this.committedExecSecureExec.delete(pid);
     let result = 0;
+    let transition: {
+      readonly secureExec: boolean;
+      readonly retirementMemory: WebAssembly.Memory;
+      readonly retiredChannelOffsets: Set<number>;
+      readonly addressSpaceResult: number;
+    } | undefined;
     let completed = false;
     let missingExportError: Error | undefined;
     const deferred = this.#runOrDeferKernelEntry(
@@ -8472,6 +8491,26 @@ export class CentralizedKernelWorker {
             result = commit(pid, callerTid, target);
             completed = true;
             if (result === 0) {
+              const registration = this.processes.get(pid);
+              if (!registration) {
+                throw new Error(
+                  `exec commit has no registered old image for pid=${pid}`,
+                );
+              }
+              const retirementMemory = registration.memory;
+              const retiredChannelOffsets =
+                this.#wakeProcessWorkersForExecRetirementWithinKernelEntry(
+                  pid,
+                  retirementMemory,
+                  entry,
+                );
+              transition = {
+                secureExec: this.#processSecureExecWithinKernelEntry(pid, entry),
+                retirementMemory,
+                retiredChannelOffsets,
+                addressSpaceResult:
+                  this.#finalizeAddressSpaceForExecWithinKernelEntry(pid, entry),
+              };
               prunePlan = this.#prepareExecFdMirrorPruneWithinKernelEntry(
                 pid,
                 listenerWakeSnapshot,
@@ -8502,6 +8541,12 @@ export class CentralizedKernelWorker {
     if (deferred || !completed) {
       throw new KernelReentrantEntryError("kernel exec commit");
     }
+    if (result === 0) {
+      if (transition === undefined) {
+        throw new Error(`exec commit omitted transition state for pid=${pid}`);
+      }
+      this.committedExecTransitions.set(pid, transition);
+    }
     return result;
   }
 
@@ -8517,7 +8562,10 @@ export class CentralizedKernelWorker {
     if (this.#kernelEntryGate.shouldDeferVoidIngress) {
       throw new KernelReentrantEntryError("kernel spawn exec commit");
     }
+    this.committedExecTransitions.delete(childPid);
+    this.committedExecSecureExec.delete(childPid);
     let result = 0;
+    let secureExec: boolean | undefined;
     let completed = false;
     let missingExportError: Error | undefined;
     const deferred = this.#runOrDeferKernelEntry(
@@ -8578,6 +8626,10 @@ export class CentralizedKernelWorker {
             result = commit(parentPid, childPid, target);
             completed = true;
             if (result === 0) {
+              secureExec = this.#processSecureExecWithinKernelEntry(
+                childPid,
+                entry,
+              );
               prunePlan = this.#prepareExecFdMirrorPruneWithinKernelEntry(
                 childPid,
                 listenerWakeSnapshot,
@@ -8602,7 +8654,49 @@ export class CentralizedKernelWorker {
     if (deferred || !completed) {
       throw new KernelReentrantEntryError("kernel spawn exec commit");
     }
+    if (result === 0) {
+      if (secureExec === undefined) {
+        throw new Error(
+          `spawn exec commit omitted secure-exec state for pid=${childPid}`,
+        );
+      }
+      this.committedExecSecureExec.set(childPid, secureExec);
+    }
     return result;
+  }
+
+  /** Consume the post-commit state without opening another kernel entry. */
+  takeCommittedExecTransition(
+    pid: number,
+    expectedMemory: WebAssembly.Memory,
+  ): {
+    readonly secureExec: boolean;
+    readonly retiredChannelOffsets: ReadonlySet<number>;
+    readonly addressSpaceResult: number;
+  } {
+    const transition = this.committedExecTransitions.get(pid);
+    if (transition === undefined) {
+      throw new Error(`no committed exec transition for pid=${pid}`);
+    }
+    if (transition.retirementMemory !== expectedMemory) {
+      throw new Error(`committed exec transition changed generation for pid=${pid}`);
+    }
+    this.committedExecTransitions.delete(pid);
+    return {
+      secureExec: transition.secureExec,
+      retiredChannelOffsets: new Set(transition.retiredChannelOffsets),
+      addressSpaceResult: transition.addressSpaceResult,
+    };
+  }
+
+  /** Consume one spawn child's post-commit state without a kernel query. */
+  takeCommittedExecSecureExec(pid: number): boolean {
+    const secureExec = this.committedExecSecureExec.get(pid);
+    if (secureExec === undefined) {
+      throw new Error(`no committed secure-exec state for pid=${pid}`);
+    }
+    this.committedExecSecureExec.delete(pid);
+    return secureExec;
   }
 
   /** Snapshot stable accept-queue identities before CLOEXEC closes aliases. */
@@ -29877,18 +29971,7 @@ export class CentralizedKernelWorker {
     const deferred = this.#runOrDeferKernelEntry(
       `secure-exec query pid=${pid}`,
       (entry) => {
-        const query = this.#kernelInstanceForEntry(entry).exports
-          .kernel_process_secure_exec as ((pid: number) => number) | undefined;
-        if (typeof query !== "function") {
-          throw new Error("kernel_process_secure_exec export is unavailable");
-        }
-        const raw = query(pid);
-        if (raw !== 0 && raw !== 1) {
-          throw new Error(
-            `kernel_process_secure_exec rejected pid=${pid}: ${raw}`,
-          );
-        }
-        marker = raw === 1;
+        marker = this.#processSecureExecWithinKernelEntry(pid, entry);
         return undefined;
       },
     );
@@ -29898,6 +29981,24 @@ export class CentralizedKernelWorker {
       );
     }
     return marker;
+  }
+
+  #processSecureExecWithinKernelEntry(
+    pid: number,
+    entry: KernelWorkerEntryContext,
+  ): boolean {
+    const query = this.#kernelInstanceForEntry(entry).exports
+      .kernel_process_secure_exec as ((pid: number) => number) | undefined;
+    if (typeof query !== "function") {
+      throw new Error("kernel_process_secure_exec export is unavailable");
+    }
+    const raw = query(pid);
+    if (raw !== 0 && raw !== 1) {
+      throw new Error(
+        `kernel_process_secure_exec rejected pid=${pid}: ${raw}`,
+      );
+    }
+    return raw === 1;
   }
 
   /**
