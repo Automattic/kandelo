@@ -11,7 +11,6 @@
 import { MemoryFileSystem } from "@host/vfs/memory-fs";
 import { overlayEtcFromRootfs } from "@host/vfs/rootfs-overlay";
 import { isWebKitLikeBrowser } from "./browser-engine";
-// @ts-expect-error — vite ?url virtual module (resolved by the kernel-artifacts plugin)
 import rootfsVfsUrl from "@rootfs-vfs?url";
 
 export { overlayEtcFromRootfs };
@@ -82,7 +81,7 @@ export async function finalizeKernelOwnedImage(buildFs: MemoryFileSystem): Promi
 }
 
 /** Create a fresh, empty build-time MemoryFileSystem for assembling an image
- *  that the kernel worker will own. Scratch mounts (/tmp, /var, /home/maker, …)
+ *  that the kernel worker will own. Scratch mounts (/tmp, /var, /home/user, …)
  *  are provided worker-side, so only the image's `/` content (e.g. /etc, /bin)
  *  needs to live here. */
 export function createEmptyBuildFs(maxByteLength = 64 * 1024 * 1024): MemoryFileSystem {

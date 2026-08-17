@@ -803,7 +803,7 @@ function assertFlatLazyMetadataBinding(
     throw new Error("flat lazy metadata binding differs from its report");
   }
   if (
-    report.selection.name !== "main-shell-abi42-wasm32" ||
+    report.selection.name !== `main-shell-abi${ABI}-wasm32` ||
     report.selection.arch !== "wasm32" ||
     report.selection.kandeloAbi !== ABI ||
     report.selection.requestedVfsFilename !== "shell.vfs.zst" ||
@@ -1261,7 +1261,7 @@ function assertCanonicalProduct(
   partition: FlatLazyCompositionPartition,
 ): void {
   if (
-    plan.name !== "main-shell-abi42-wasm32" ||
+    plan.name !== `main-shell-abi${ABI}-wasm32` ||
     plan.arch !== "wasm32" ||
     plan.kandeloAbi !== ABI ||
     plan.requestedVfsFilename !== "shell.vfs.zst" ||

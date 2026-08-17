@@ -12473,8 +12473,7 @@
           "python@3"
         ],
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "65459b177976d613314ccaa2ba4f16e9c119f901ed5cbd72172ffc1b6fef1745",
-        "bottle_rebuild": 1,
+        "bottle_checksum": "c1094d173aaae36f305c229bec64f43a23c77148f3c95244d1d3d0d4d28e8275",
         "caveats": "Python is installed as\n  $HOMEBREW_PREFIX/bin/python3\n\nUnversioned symlinks `python`, `python-config`, `pip` etc. pointing to\n`python3`, `python3-config`, `pip3` etc., respectively, are installed into\n  $HOMEBREW_PREFIX/opt/python@3.14/libexec/bin\n\n`idle3.14` requires tkinter, which is available separately:\n  brew install python-tk@3.14\n\n`dbm.gnu` and `dbm.ndbm` are available separately:\n  brew install python-gdbm@3.14\n\nFor more information about Homebrew and Python, see: https://docs.brew.sh/Homebrew-and-Python\n",
         "deprecate_args": {
           ":because": ":deprecated_upstream",
@@ -12589,8 +12588,8 @@
             "type": "set_permissions"
           }
         ],
-        "ruby_source_checksum": "3c8e08cd45c7ff01c5c6a1541244b6aa50c4f0ce9845fe53c1561238acd74938",
-        "stable_checksum": "74d0d71d0600e477651a077101d6e62d1e2e69b8e992ba18c993dd643b7ba222",
+        "ruby_source_checksum": "e7e3a023de8b88f5a7e2e09c861e9e15fb0d0a2d78b6bb619a1b27e7da155b9a",
+        "stable_checksum": "62859805f6fdf25e2bcbf3fa3217801e1996887ca33e6a2af80674bdfa2dbe07",
         "stable_dependencies": [
           "mpdecimal",
           "openssl@3",
@@ -12616,7 +12615,7 @@
           }
         ],
         "stable_url_args": [
-          "https://www.python.org/ftp/python/3.14.6/Python-3.14.6.tgz"
+          "https://www.python.org/ftp/python/3.14.7/Python-3.14.7.tgz"
         ],
         "stable_uses_from_macos": [
           [
@@ -12638,7 +12637,7 @@
             "ncurses"
           ]
         ],
-        "stable_version": "3.14.6",
+        "stable_version": "3.14.7",
         "versioned_formulae": [
           "python@3.13",
           "python@3.12",
@@ -12654,8 +12653,7 @@
           "python@3"
         ],
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "65459b177976d613314ccaa2ba4f16e9c119f901ed5cbd72172ffc1b6fef1745",
-        "bottle_rebuild": 1,
+        "bottle_checksum": "c1094d173aaae36f305c229bec64f43a23c77148f3c95244d1d3d0d4d28e8275",
         "deprecate_args": {
           ":because": ":deprecated_upstream",
           ":date": "2030-11-01"
@@ -12769,8 +12767,8 @@
             "type": "set_permissions"
           }
         ],
-        "ruby_source_checksum": "3c8e08cd45c7ff01c5c6a1541244b6aa50c4f0ce9845fe53c1561238acd74938",
-        "stable_checksum": "74d0d71d0600e477651a077101d6e62d1e2e69b8e992ba18c993dd643b7ba222",
+        "ruby_source_checksum": "e7e3a023de8b88f5a7e2e09c861e9e15fb0d0a2d78b6bb619a1b27e7da155b9a",
+        "stable_checksum": "62859805f6fdf25e2bcbf3fa3217801e1996887ca33e6a2af80674bdfa2dbe07",
         "stable_dependencies": [
           "mpdecimal",
           "openssl@3",
@@ -12796,7 +12794,7 @@
           }
         ],
         "stable_url_args": [
-          "https://www.python.org/ftp/python/3.14.6/Python-3.14.6.tgz"
+          "https://www.python.org/ftp/python/3.14.7/Python-3.14.7.tgz"
         ],
         "stable_uses_from_macos": [
           [
@@ -12818,7 +12816,7 @@
             "ncurses"
           ]
         ],
-        "stable_version": "3.14.6",
+        "stable_version": "3.14.7",
         "versioned_formulae": [
           "python@3.13",
           "python@3.12",

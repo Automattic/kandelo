@@ -950,7 +950,9 @@ jobs:
             echo "skip-staging-tests label is present; $SUITE is deferred to prepare-merge."
             exit 0
           fi
-          if [ "$KERNEL_ONLY" = "true" ] && [ "$KERNEL_CHANGED" != "true" ]; then
+          if [ "$KERNEL_ONLY" = "true" ] && \
+             [ "$KERNEL_CHANGED" != "true" ] && \
+             [ "$EXACT_ABI_STAGING_APPLICABLE" != "true" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "$SUITE is kernel-only and this diff does not require kernel suites."
             exit 0

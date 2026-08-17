@@ -36,6 +36,7 @@ SHELL_PACKAGE_PATH = "packages/registry/shell/package.toml"
 BOOTSTRAP_PACKAGE_PATH = "packages/registry/homebrew-bootstrap/package.toml"
 DOC_PATH = "docs/homebrew-publishing.md"
 BREWFILE_PATH = "homebrew/main-shell.Brewfile"
+PRODUCT_CATALOG_PATH = "images/vfs/products/generated/catalog.json"
 BOUND_INPUTS = {
     "bootstrap_tree_spec_sha256": "homebrew/main-shell-brew-package-tree.json",
     "brewfile_sha256": BREWFILE_PATH,

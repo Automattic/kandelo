@@ -122,6 +122,10 @@ import {
   resolveOptionalDemoVfsUrl,
   type OptionalDemoVfsImage,
 } from "./optional-demo-vfs";
+import {
+  createPagesVfsProductLoader,
+  type PagesVfsProductEntry,
+} from "./pages-vfs-product-loader";
 import { DEMO_TERMINAL_SESSION_POLICY } from "./demo-terminal-sessions";
 import { stageConfiguredAssets } from "./configured-assets";
 import { initializeDemoLoginKernel } from "./demo-login-loader";
@@ -540,7 +544,7 @@ const APP_PREFIX = import.meta.env.BASE_URL + "app/";
 const APP_PATH = import.meta.env.BASE_URL + "app";
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
-const BROWSER_CORS_PROXY_URL = resolveBrowserCorsProxyUrl({
+const BROWSER_CORS_PROXY = resolveBrowserCorsProxyConfig({
   configuredUrl: import.meta.env.VITE_CORS_PROXY_URL,
   development: import.meta.env.DEV,
   baseUrl: import.meta.env.BASE_URL,

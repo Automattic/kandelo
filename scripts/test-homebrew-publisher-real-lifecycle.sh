@@ -147,6 +147,7 @@ BREW_ENV=(
   HOMEBREW_NO_INSTALL_FROM_API=1
   HOMEBREW_KANDELO_HERMETIC_LIFECYCLE_TEST=1
   HOMEBREW_KANDELO_XTASK_BIN="$SEALED_XTASK"
+  HOMEBREW_GIT_PATH=/usr/bin/git
   HOMEBREW_TEMP="$BREW_ROOT/.tmp"
   WASM_POSIX_XTASK_BIN=caller-poison
   XDG_CONFIG_HOME="$BREW_ROOT/.config"
@@ -430,6 +431,8 @@ jq -e '
 cp "$HOST_DEPENDENCY_PLAN" \
   "$BREW_ROOT/.kandelo-publisher-build-dependencies.json"
 chmod 0444 "$BREW_ROOT/.kandelo-publisher-build-dependencies.json"
+chmod -R a-w "$TAP_ROOT"
+BREW_ENV+=(HOMEBREW_KANDELO_PRIMARY_TAP_ROOT="$TAP_ROOT")
 
 run_offline_brew install install --build-bottle \
   --ignore-dependencies kandelo-dev/tap-core/fixture

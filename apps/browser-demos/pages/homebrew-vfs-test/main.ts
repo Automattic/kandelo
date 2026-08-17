@@ -231,7 +231,7 @@ async function runHomebrewLoginProductLifecycle(
   const kernel = new BrowserKernel({
     maxWorkers: 8,
     env: ["TERM=xterm-kandelo", "PATH=/opt/kandelo/homebrew/bin:/usr/bin:/bin"],
-    corsProxyUrl,
+    corsProxy,
     onHostDiagnostic: (diagnostic) => diagnostics.push(diagnostic.message),
   });
   const markers: string[] = [];
@@ -737,7 +737,7 @@ async function init(): Promise<void> {
     runHomebrewGuestCoreShippingProofInBrowser({
       fixture,
       kernelWasm: kernelBytes,
-      corsProxyUrl,
+      corsProxy,
       ...(closedLifecycleAssetRoot === undefined
         ? {}
         : { closedAssetRootUrl: closedLifecycleAssetRoot }),
@@ -938,7 +938,7 @@ async function init(): Promise<void> {
     let stderr = "";
     const kernel = new BrowserKernel({
       kernelOwnedFs: true,
-      ...(request.corsProxyExternalLazyUrls ? { corsProxyUrl } : {}),
+      ...(request.corsProxyExternalLazyUrls ? { corsProxy } : {}),
       onStdout: (bytes) => {
         stdout = appendOutput(stdout, bytes, "stdout");
       },

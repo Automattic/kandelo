@@ -78,7 +78,7 @@ test("loads the checked catalog and exposes exact Homebrew roots", () => {
   assert.equal(catalog.productById("browser-main-shell").output, "shell.vfs.zst");
   assert.deepEqual(
     catalog.homebrewRoots("browser-main-shell").filter(({ formula }) =>
-      ["bash", "ruby"].includes(formula)
+      ["bash", "login", "sudo-lite", "sudo", "ruby"].includes(formula)
     ),
     [
       {
@@ -88,8 +88,23 @@ test("loads the checked catalog and exposes exact Homebrew roots", () => {
       },
       {
         tap: "kandelo-dev/homebrew-tap-core",
+        formula: "login",
+        materialization: "embedded",
+      },
+      {
+        tap: "kandelo-dev/homebrew-tap-core",
+        formula: "sudo-lite",
+        materialization: "embedded",
+      },
+      {
+        tap: "kandelo-dev/homebrew-tap-core",
+        formula: "sudo",
+        materialization: "embedded",
+      },
+      {
+        tap: "kandelo-dev/homebrew-tap-core",
         formula: "ruby",
-        materialization: "lazy",
+        materialization: "embedded",
       },
     ],
   );
