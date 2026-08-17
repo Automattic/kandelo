@@ -24,6 +24,11 @@ inputs = [
   "packages/registry/wayland-protocols/xml/fractional-scale-v1.xml",
   "packages/registry/wayland-protocols/xml/tablet-unstable-v2.xml",
   "packages/registry/wayland-protocols/xml/cursor-shape-v1.xml",
+  "packages/registry/wayland-protocols/xml/pointer-gestures-unstable-v1.xml",
+  "packages/registry/wayland-protocols/xml/xdg-shell-unstable-v6.xml",
+  "packages/registry/wayland-protocols/xml/xdg-foreign-unstable-v1.xml",
+  "packages/registry/wayland-protocols/xml/keyboard-shortcuts-inhibit-unstable-v1.xml",
+  "packages/registry/wayland-protocols/xml/idle-inhibit-unstable-v1.xml",
 ]
 
 # Required by the build.toml schema even for a source package (which is

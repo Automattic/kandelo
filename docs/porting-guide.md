@@ -940,13 +940,26 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 | fcft | `packages/registry/fcft/build-fcft.sh` | meson bypass | Two TUs + three generated headers, no harfbuzz/SVG |
 | foot | `packages/registry/foot/build-foot.sh` | meson bypass | First stock upstream Wayland client; two patches: gbm prime-fd shm pools, serial font loading |
 | libffi | `packages/registry/libffi/build-libffi.sh` | in-tree | Full port, no upstream source: gen-dispatch.sh generates the ffi_call call_indirect switch + the static closure trampoline pool (wasm32 cannot JIT) |
-| glib | `packages/registry/glib/build-glib.sh` | meson bypass | 2.84.4: glib/gmodule/gobject/gio incl. the gdbus client core, hand-curated config.h + glibconfig.h, three patches (no dbus built-ins, wasm callback signatures, wasm credentials backend) |
+| glib | `packages/registry/glib/build-glib.sh` | meson bypass | 2.84.4: glib/gmodule/gobject/gio incl. the gdbus client core and the GApplication/GAction/GMenu family (GtkApplication's parent types), hand-curated config.h + glibconfig.h, three patches (no dbus built-ins, wasm callback signatures, wasm credentials backend); GRegex is in, compiled against the pcre2 package — glibmm's `Glib::Error::register_init()` calls `g_regex_error_quark` at startup, so every glibmm consumer needs it |
+| pcre2 | `packages/registry/pcre2/build-pcre2.sh` | cmake | 10.44, 8-bit code unit width only, static, no JIT (wasm cannot generate code at runtime), no pcre2grep/pcre2test; backs glib's GRegex. Separate from the `pcre2-source` package, which stages the unbuilt tree MariaDB configures itself |
 | expat | `packages/registry/expat/build-expat.sh` | autoconf | dbus config-parser dependency; entropy from kernel getrandom() |
 | dbus | `packages/registry/dbus/build-dbus.sh` | autoconf | 1.14.10 (last autotools series): dbus-daemon/dbus-send/dbus-monitor, session bus only, EXTERNAL auth over SO_PEERCRED, `ac_cv_func_*` overrides for --allow-undefined false positives |
 | harfbuzz | `packages/registry/harfbuzz/build-harfbuzz.sh` | meson bypass | Single-TU amalgam (src/harfbuzz.cc) with the freetype + glib backends; hand-installed headers and .pc; C++, links libc++ |
 | fribidi | `packages/registry/fribidi/build-fribidi.sh` | autoconf | pango's bidi dependency, plain cross-compile |
-| cairo | `packages/registry/cairo/build-cairo.sh` | autoconf | 1.16.0 (last autotools release): image surfaces + ft/fc fonts + png only; the png probe needs `png_REQUIRES` + PKG_CONFIG_PATH |
-| pango | `packages/registry/pango/build-pango.sh` | autoconf | 1.42.4 (last autotools release): pango/pangoft2/pangocairo; deps probed via PKG_CONFIG_PATH over the resolved prefixes; needs glib's gthread-2.0.pc shim + glib-mkenums |
+| cairo | `packages/registry/cairo/build-cairo.sh` | autoconf | 1.16.0 (last autotools release): image surfaces + ft/fc fonts + png only; the png probe needs `png_REQUIRES` + PKG_CONFIG_PATH; `src/wasm-callback-arity.patch` wraps 2-argument line_to functions cast to the 3-argument `cairo_spline_add_point_func_t` in the fill/stroke/in-fill spline decomposition paths (see the arity section below) |
+| pango | `packages/registry/pango/build-pango.sh` | autoconf | 1.42.4 (last autotools release): pango/pangoft2/pangocairo; deps probed via PKG_CONFIG_PATH over the resolved prefixes; needs glib's gthread-2.0.pc shim + glib-mkenums; `src/wasm-callback-arity.patch` wraps 1-argument free functions cast to `GFunc` in `g_list_foreach` / `g_slist_foreach` (see the arity section below) |
+| gdk-pixbuf | `packages/registry/gdk-pixbuf/build-gdk-pixbuf.sh` | autoconf | 2.36.12 (last autotools release): png loader compiled in statically, no dynamic loader modules; `gio_can_sniff=no` forces builtin signature sniffing — the default `GDK_PIXBUF_USE_GIO_MIME` path selects loaders via `g_content_type_guess`, which returns `application/octet-stream` without a shared-mime-info database and rejects every image as "Unrecognized image file format" |
+| atk | `packages/registry/atk/build-atk.sh` | meson bypass | 2.36.0 (final release; GTK 3.24.34 needs >= 2.32, last autotools 2.28 is too old): hand config.h, glib-mkenums + glib-genmarshal generation, upstream TU list; `src/wasm-callback-arity.patch` adds `gpointer class_data` to 1-argument `class_init` functions and routes atkhyperlink's action interface through `g_wasm_iface_init_thunk` |
+| libepoxy | `packages/registry/libepoxy/build-libepoxy.sh` | autoconf | 1.5.4 via autoreconf (tarball ships no configure; xorg-macros from flake.nix): EGL dispatch only, vendored EGL/KHR platform headers + headers-only egl.pc stub; GL symbols resolve by dlopen at first call, so no GL library exists until a context is created |
+| gtk3 | `packages/registry/gtk3/build-gtk3.sh` | autoconf | 3.24.34 (last GTK 3): Wayland backend only, no X11/cups/cloudprint; host `glib-compile-resources` via env override (the wasm gio-2.0.pc carries no `glib_compile_resources` variable); libffi/zlib LDFLAGS for the build's own executables (glib's pc files say bare `-lffi`/`-lz`); `src/wasm-callback-arity.patch` fixes arity-changing callback casts (see the arity section below); `src/wayland-shm-gbm-pool.patch` allocates gdk-wayland's `wl_shm` pools as gbm prime-fd dumb bos (foot's shm contract — a memfd is private to the process that made it, so the compositor's `gbm_bo_import` rejects it and the window shows no pixels) |
+| basu | `packages/registry/basu/build-basu.sh` | meson bypass | 0.2.1 (standalone sd-bus, extracted from systemd by mako's author): hand config.h, errno gperf tables generated with the wasm cpp, no libcap/audit; built with `-D__linux__` — the kernel emulates the Linux ABI (SO_PEERCRED, SCM_CREDENTIALS) and without it bus-socket.c hits "#error auth not implemented for this OS" |
+| mako | `packages/registry/mako/build-mako.sh` | meson bypass | 1.10.0: mako + makoctl on basu's sd-bus (mako speaks `sd_bus_*`, not gdbus); two patches: gbm prime-fd pool buffers (foot's shm contract), and a `parse_boolean` rename — basu exports a same-named 1-argument function and both land in one wasm symbol namespace, so basu-internal calls would bind to mako's 2-argument definition and trap; no icons (add gdk-pixbuf + `HAVE_ICONS` when a demo needs images) |
+| libsigcxx | `packages/registry/libsigcxx/build-libsigcxx.sh` | autoconf | 2.10.3 (last release shipping configure): the gtkmm stack's signal library. Package name avoids `+` — the resolver's per-dep env var (`WASM_POSIX_DEP_<NAME>_DIR`) must be a valid shell identifier |
+| glibmm / cairomm / pangomm / atkmm / gtkmm3 | `packages/registry/{glibmm,cairomm,pangomm,atkmm,gtkmm3}/build-*.sh` | autoconf | The last autotools release of each `-2.4`/`-1.0`/`-1.4`/`-1.6`/`-3.0` ABI series (2.62.0, 1.12.2, 2.42.0, 2.28.0, 3.24.2); every later point release is meson-only. All C++ TUs need `-fwasm-exceptions`. Each builds only its library subdir and installs via the top-level `install-data-am` (umbrella headers + generated config headers + .pc, without recursing into tools/tests/examples). glibmm carries one patch: libc++ dropped the non-standard `char_traits<unsigned char>`, so `contenttype.cc`'s orphaned `basic_string<guchar>` overload is deleted. cairomm/pangomm/gtkmm3 pass the freetype/fontconfig includes explicitly — the host pkg-config does not reliably traverse `cairo.pc`'s `Requires.private` for `--cflags` |
+| gtk-layer-shell | `packages/registry/gtk-layer-shell/build-gtk-layer-shell.sh` | meson bypass | 0.9.2: layer-shell for GTK3 windows; wayland-scanner glue for wlr-layer-shell + xdg-shell, version macros passed as `-D` (no version-header template in this release) |
+| libxkbregistry | `packages/registry/libxkbregistry/build-libxkbregistry.sh` | meson bypass | The `rxkb_*` half of libxkbcommon 1.7.0 (one TU against libxml2), split into its own package so adding it does not re-key libxkbcommon and cascade a rebuild through gtk3 and every compositor consumer. Waybar's `hyprland/language` module links it |
+| fmt / spdlog / jsoncpp | `packages/registry/{fmt,spdlog,jsoncpp}/build-*.sh` | cmake | Waybar's C++ base: fmt 11.2.0, spdlog 1.15.3 (`SPDLOG_FMT_EXTERNAL`), jsoncpp 1.9.6. No toolchain file — each passes `-DCMAKE_SYSTEM_NAME=Linux`, the `wasm32posix-{cc,c++}` wrappers, `-fwasm-exceptions`, and `CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY` so cmake's compiler probe never links an executable. fmt carries one patch: `format.h` calls `malloc`/`free` without including `<cstdlib>`, which glibc provides transitively and libc++-on-musl does not |
+| waybar | `packages/registry/waybar/build-waybar.sh` | meson bypass | 0.14.0, the O2 gate's bar: core + the dependency-free compositor module families (hyprland, sway, river, dwl, niri, wayfire, wlr-taskbar) + `simpleclock`. The `is_linux` modules (battery, cpu, memory, systemd units) stay out — their headers are guarded on `__linux__`, which wasm32-unknown-unknown does not define, and nothing here serves `/proc`, `/sys` or logind. `src/glib-static-init.c` forces glib's initializer ahead of gobject's with a priority-101 constructor: upstream relies on shared-library load order for that, which a static link does not have |
 
 ## Callback casts that change arity trap on wasm
 
@@ -973,7 +986,70 @@ routes every arity-changing cast through a typed thunk:
   uses the macros (all of gio, GTK later) is fixed at compile time.
 - `G_IMPLEMENT_INTERFACE` routes the conventional 1-argument interface
   init through `g_wasm_iface_init_thunk`, carried in
-  `GInterfaceInfo.interface_data`.
+  `GInterfaceInfo.interface_data`. The thunk skips a NULL init, so the
+  common `G_IMPLEMENT_INTERFACE (TYPE, NULL)` idiom (GtkBox's
+  GtkOrientable, GtkTextView's GtkScrollable) stays valid.
+- `g_object_add_weak_pointer` / `g_object_remove_weak_pointer` cast
+  the 1-argument `g_nullify_pointer` to `GWeakNotify` (2 arguments) —
+  routed through a matching 2-argument wrapper. Every
+  `GtkEventController` registers a weak pointer on its widget, so any
+  widget with a gesture trapped on dispose.
+- Class and interface vtable handlers: for an n-parameter signal the
+  per-type marshal calls `callback (instance, p1..pn, user_data)`, but
+  a class closure's callback is the vtable slot,
+  `handler (instance, p1..pn)` — one argument short on every
+  class-closure emission (GTK's `display::opened`, `widget::destroy`,
+  every default handler). The patched
+  `g_type_class_meta_marshal{,v}` / `g_type_iface_meta_marshal{,v}` in
+  `gobject/gclosure.c` skip the per-type marshal and invoke the vtable
+  slot through libffi at exact arity
+  (`g_wasm_vtable_meta_marshal{,_va}`, modeled on
+  `g_cclosure_marshal_generic` minus the trailing data argument).
+  Still unpatched by design: user handlers connected with fewer
+  arguments than the signal (`g_signal_connect (win, "destroy",
+  G_CALLBACK (gtk_main_quit), NULL)`) ride the per-type c-closure
+  marshal and still trap — connect with a wrapper of exact arity.
+
+GTK 3 carries the same idiom in its own code. The port's
+`packages/registry/gtk3/src/wasm-callback-arity.patch` fixes the
+instances the smoke test hits, in seven shapes:
+
+- Handlers connected with fewer arguments than the signal
+  (`default_display_notify_cb`, `display_opened_cb`,
+  `display_closed_cb`) get the full marshal arity.
+- Hand-written `get_type` functions that cast a 1-argument
+  `class_init` to `GClassInitFunc` (2 arguments) or a 1-argument
+  instance init to `GInstanceInitFunc` (2 arguments) — the
+  `G_DEFINE_TYPE` macro thunks from the glib patch do not cover
+  `g_type_register_static` call sites (GtkWidget, GtkContainer,
+  GtkCellRenderer, GtkToolButton, GtkStyleProvider,
+  GtkFileChooserEmbed).
+- Hand-written `GInterfaceInfo` literals that cast a 1-argument
+  interface init to `GInterfaceInitFunc` — rerouted through glib's
+  `g_wasm_iface_init_thunk` with the init function in
+  `interface_data`.
+- `g_signal_connect_swapped` of a 1-argument function to a signal
+  whose swapped closure calls at 2 arguments
+  (`_gtk_style_provider_private_changed` in `gtkstylecascade.c`) —
+  replaced by a 2-argument wrapper at connect and disconnect.
+- `(GtkCallback)` casts of 1-argument functions
+  (`gtk_widget_destroy`, `gtk_widget_show_all`, and static helpers)
+  passed to `gtk_container_foreach` / `forall`, which call at
+  2 arguments — each cast site gets a `*_wasm_cb` wrapper of exact
+  arity.
+- `(GWeakNotify)` casts of 1-argument functions
+  (`gail_focus_object_destroyed` in `gtk/a11y/gtkaccessibility.c`) —
+  the function gains the `GObject *where_the_object_was` argument.
+  The atk patch fixes the same shape in `atkgobjectaccessible.c`.
+- Function-pointer registration casts: `gtk_main_do_event` (1
+  argument) cast to `GdkEventFunc` (2 arguments) at
+  `gdk_event_handler_set` in `gtkmain.c` — every event dispatch goes
+  through `_gdk_event_emit`, so this traps on the first event.
+  Replaced by a 2-argument `gtk_main_do_event_wasm_cb` wrapper.
+
+When a new GTK code path traps with this signature, symbolize the
+stack (rebuild with a no-op `wasm-opt` shim on PATH so the name
+section survives) and extend the patch with the same shapes.
 
 When porting a GObject-based library, watch for the same pattern in
 the library's own code: any `(SomeFunc)` cast where the target has a
@@ -1046,6 +1122,8 @@ the complete `wpk_fork_*` set. Legacy Asyncify artifacts are intentionally not
 accepted. See [fork-instrumentation.md](fork-instrumentation.md).
 
 **"Maximum call stack size exceeded" in browser**: The program's fork-path closure (as discovered by `wasm-fork-instrument --discover-only`) is large. This is rare — the tool instruments only fork-reachable functions, not the whole module. If it happens, check whether `call_indirect` is pulling in a much broader closure than expected. Literal table indexes are checked against active element slots, but dynamic indexes, passive `table.init`, and dynamic table writes remain conservative.
+
+**Deterministic heap corruption / `memory access out of bounds` in malloc**: Check the linked stack size before suspecting the allocator. The wasm shadow stack sits directly above the data segment, so a frame larger than the remaining stack silently overwrites globals — libc's malloc state is the first victim. The SDK links every executable with `-Wl,-z,stack-size=8388608` (8MB, the Linux main-thread default); a build script that calls clang directly with its own linker flags must pass the same flag or it gets lld's 64KB default. `wasm-objdump -x prog.wasm | grep __stack_pointer` shows the stack top; the stack bottom is that value minus the stack size.
 
 **Process hangs on read**: The fd might be in blocking mode waiting for data. Check that writers are properly closing their end of the pipe.
 

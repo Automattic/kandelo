@@ -11,10 +11,10 @@
 # We bypass upstream's meson build (its feature probes target the build
 # host, not the wasm sysroot) and compile the upstream TU lists directly
 # against a hand-curated config.h + glibconfig.h, the same pattern as
-# libxkbcommon and alsa-lib. gregex.c is excluded: it hard-requires
-# pcre2 and nothing in the PR21..PR24 scope uses GRegex. gdbus and its
-# dependents are excluded from gio until PR22 lands a session dbus
-# daemon.
+# libxkbcommon and alsa-lib. gregex.c is built against the pcre2
+# package: glibmm registers the GRegex error domain at init, so every
+# glibmm consumer needs g_regex_error_quark. gdbus and its dependents
+# are excluded from gio until PR22 lands a session dbus daemon.
 #
 # GSpawn uses fork/exec — programs linking gio/glib that spawn children
 # MUST be fork-instrumented (scripts/run-wasm-fork-instrument.sh),
@@ -25,7 +25,7 @@ kind = "library"
 name = "glib"
 version = "2.84.4"
 kernel_abi = 17
-depends_on = ["libffi@0.1.0", "zlib@1.3.1"]
+depends_on = ["libffi@0.1.0", "zlib@1.3.1", "pcre2@10.44"]
 
 [[host_tools]]
 # gen-visibility-macros.py, glib-mkenums (both ship in the dist tarball)

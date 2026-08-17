@@ -4,8 +4,11 @@
 #
 # 1.16.0 is the last autotools release (1.18 moved to meson), so the
 # port rides the standard configure cross-compile pattern. Image
-# surfaces only per plan §4 (PR23): freetype/fontconfig fonts and png
-# I/O; no GL, no X, no quartz/win32, no vector backends.
+# surfaces per plan §4 (PR23): freetype/fontconfig fonts and png I/O;
+# no GL, no X, no quartz/win32. The pdf/ps/svg vector surfaces are on
+# because GTK3 hard-requires cairo-pdf.h (print-to-file paths compile
+# unconditionally); they write through zlib, which consumers already
+# link.
 #
 # Honors the dep-resolver build-script contract (see
 # docs/package-management.md). When invoked via
@@ -20,6 +23,7 @@
 #     WASM_POSIX_DEP_FREETYPE_DIR     # resolved freetype prefix
 #     WASM_POSIX_DEP_FONTCONFIG_DIR   # resolved fontconfig prefix
 #     WASM_POSIX_DEP_LIBPNG_DIR       # resolved libpng prefix
+#     WASM_POSIX_DEP_GLIB_DIR         # resolved glib prefix
 
 set -euo pipefail
 
@@ -42,6 +46,8 @@ PIXMAN_PREFIX="${WASM_POSIX_DEP_PIXMAN_DIR:?WASM_POSIX_DEP_PIXMAN_DIR not set (m
 FREETYPE_PREFIX="${WASM_POSIX_DEP_FREETYPE_DIR:?WASM_POSIX_DEP_FREETYPE_DIR not set}"
 FONTCONFIG_PREFIX="${WASM_POSIX_DEP_FONTCONFIG_DIR:?WASM_POSIX_DEP_FONTCONFIG_DIR not set}"
 LIBPNG_PREFIX="${WASM_POSIX_DEP_LIBPNG_DIR:?WASM_POSIX_DEP_LIBPNG_DIR not set}"
+GLIB_PREFIX="${WASM_POSIX_DEP_GLIB_DIR:?WASM_POSIX_DEP_GLIB_DIR not set}"
+ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:?WASM_POSIX_DEP_ZLIB_DIR not set}"
 
 # --- Fetch + verify source ---
 if [ ! -d "$SRC_DIR" ]; then
@@ -57,6 +63,11 @@ if [ ! -d "$SRC_DIR" ]; then
     mkdir -p "$SRC_DIR"
     tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "$TARBALL"
+    # Route arity-changing (cairo_spline_add_point_func_t) casts of
+    # 2-argument line_to functions through 3-argument wrappers. Native
+    # ABIs tolerate the extra argument; wasm's typed call_indirect
+    # traps on it.
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-callback-arity.patch"
 fi
 
 # Fresh build dir each run — autoconf bakes --prefix into Makefiles.
@@ -69,8 +80,9 @@ echo "==> Configuring cairo for wasm32 (pixman at $PIXMAN_PREFIX)..."
     # The png feature probe ignores png_CFLAGS/png_LIBS and asks
     # pkg-config; png_REQUIRES pins the module name and
     # PKG_CONFIG_PATH points at the resolved libpng prefix.
-    CFLAGS="-O2" \
-    PKG_CONFIG_PATH="$LIBPNG_PREFIX/lib/pkgconfig" \
+    CFLAGS="-O2 -I$ZLIB_PREFIX/include" \
+    LDFLAGS="-L$ZLIB_PREFIX/lib" \
+    PKG_CONFIG_PATH="$LIBPNG_PREFIX/lib/pkgconfig:$GLIB_PREFIX/lib/pkgconfig" \
     png_REQUIRES="libpng16" \
     "$SRC_DIR/configure" \
         --host=wasm32-unknown-none \
@@ -92,12 +104,12 @@ echo "==> Configuring cairo for wasm32 (pixman at $PIXMAN_PREFIX)..."
         --disable-quartz-image \
         --disable-win32 \
         --disable-win32-font \
-        --disable-pdf \
-        --disable-ps \
-        --disable-svg \
+        --enable-pdf \
+        --enable-ps \
+        --enable-svg \
         --disable-script \
         --disable-interpreter \
-        --disable-gobject \
+        --enable-gobject \
         --disable-trace \
         --disable-symbol-lookup \
         --disable-valgrind \
@@ -116,15 +128,17 @@ echo "==> Configuring cairo for wasm32 (pixman at $PIXMAN_PREFIX)..."
 
     echo "==> Building cairo..."
     make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" -C src
+    make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" -C util
 
     echo "==> Installing to $INSTALL_DIR..."
     make -C src install
+    make -C util install
 )
 
-if [ -f "$INSTALL_DIR/lib/libcairo.a" ]; then
+if [ -f "$INSTALL_DIR/lib/libcairo.a" ] && [ -f "$INSTALL_DIR/lib/libcairo-gobject.a" ]; then
     echo "==> cairo build complete!"
     ls -lh "$INSTALL_DIR/lib/"libcairo*.a
 else
-    echo "ERROR: Build failed — library not found at $INSTALL_DIR/lib/libcairo.a" >&2
+    echo "ERROR: Build failed — libraries not found at $INSTALL_DIR/lib/libcairo{,-gobject}.a" >&2
     exit 1
 fi

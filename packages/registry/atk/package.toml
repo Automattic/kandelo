@@ -1,0 +1,35 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+# Accessibility toolkit (libatk-1.0.a). Ported for GTK3 (plan
+# docs/plans/2026-07-14-build-hyprland-class-compositor-plan.md §4,
+# PR24) — GTK 3.24.34 requires atk >= 2.32 and links it
+# unconditionally. 2.36.0 is the final atk release; it is meson-only,
+# so the build follows the glib meson-bypass pattern (hand-written
+# config.h, generated enum types + marshallers, direct compile of the
+# upstream TU list). No AT-SPI bridge; the library only provides the
+# GObject interfaces GTK implements.
+name = "atk"
+version = "2.36.0"
+kernel_abi = 17
+depends_on = [
+  "glib@2.84.4",
+]
+
+[source]
+url = "https://download.gnome.org/sources/atk/2.36/atk-2.36.0.tar.xz"
+sha256 = "fb76247e369402be23f1f5c65d38a9639c1164d934e40f6a9cf3c9e96b652788"
+
+[license]
+spdx = "LGPL-2.1-or-later"
+url = "https://gitlab.gnome.org/GNOME/atk/-/blob/2.36.0/COPYING"
+
+[build]
+script_path = "packages/registry/atk/build-atk.sh"
+
+[outputs]
+libs = ["lib/libatk-1.0.a"]
+headers = ["include/atk-1.0"]
+pkgconfig = ["lib/pkgconfig/atk.pc"]

@@ -197,6 +197,22 @@
             # paths only, so installing libncurses-dev on the host
             # doesn't help — the lib has to come from nixpkgs.
             pkgs.ncurses
+            # xorg util-macros — m4 macros (XORG_MACROS_VERSION) that
+            # libepoxy's configure.ac pulls in; its GitHub release
+            # tarball ships no pre-generated configure, so
+            # build-libepoxy.sh runs autoreconf and aclocal needs the
+            # macro definitions. Host-side m4 only, no X libraries.
+            pkgs.xorg.utilmacros
+            # Host glib dev tools — glib-compile-resources and
+            # glib-compile-schemas are compiled C programs (not
+            # scripts), so the wasm32 glib port cannot provide them.
+            # gdk-pixbuf and GTK3 builds invoke them at build time to
+            # bundle GResource data and compile GSettings schemas. The
+            # python tools (glib-mkenums, glib-genmarshal) come from
+            # the target glib install's bin/ via pkg-config variables,
+            # not from here. The GVDB formats both tools emit are
+            # stable across glib versions.
+            pkgs.glib.dev
             # sqlite3 CLI — host-side test helper. The WordPress
             # site-editor test (`packages/registry/wordpress/test/wordpress-
             # site-editor.test.ts`) polls the WP install's SQLite DB

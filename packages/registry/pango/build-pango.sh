@@ -62,6 +62,10 @@ if [ ! -d "$SRC_DIR" ]; then
     mkdir -p "$SRC_DIR"
     tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "$TARBALL"
+    # Route arity-changing (GFunc) casts of 1-argument free functions
+    # through 2-argument wrappers. Native ABIs tolerate the extra
+    # argument; wasm's typed call_indirect traps on it.
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-callback-arity.patch"
 fi
 
 # Fresh build dir each run — autoconf bakes --prefix into Makefiles.

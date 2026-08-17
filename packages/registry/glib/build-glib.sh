@@ -7,15 +7,18 @@
 # that misreport against the wasm sysroot. We compile the upstream TU
 # lists directly with a hand-curated config.h + glibconfig.h
 # (src/config.h, src/glibconfig.h), the same pattern as libxkbcommon /
-# alsa-lib / libwayland. gregex.c is excluded (needs pcre2; nothing in
-# the PR21 scope uses GRegex). gdbus and its dependents are excluded
-# from gio (PR22 ports a dbus daemon first). See
+# alsa-lib / libwayland. gregex.c compiles against the pcre2 package
+# (glibmm's Glib::Error::register_init() calls g_regex_error_quark at
+# startup, and Waybar's window-rewrite rules use Glib::Regex). gdbus
+# and its dependents are excluded from gio (PR22 ports a dbus daemon
+# first). See
 # docs/plans/2026-07-14-build-hyprland-class-compositor-plan.md §4.
 #
 # Honors the dep-resolver build-script contract (docs/package-management.md):
 # when invoked via `cargo xtask build-deps resolve glib` the resolver
 # sets WASM_POSIX_DEP_OUT_DIR / _VERSION / _SOURCE_URL / _SOURCE_SHA256
-# and WASM_POSIX_DEP_LIBFFI_DIR / WASM_POSIX_DEP_ZLIB_DIR for deps.
+# and WASM_POSIX_DEP_LIBFFI_DIR / WASM_POSIX_DEP_ZLIB_DIR /
+# WASM_POSIX_DEP_PCRE2_DIR for deps.
 
 set -euo pipefail
 
@@ -29,6 +32,7 @@ SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 
 LIBFFI_PREFIX="${WASM_POSIX_DEP_LIBFFI_DIR:?WASM_POSIX_DEP_LIBFFI_DIR not set (must be invoked via cargo xtask build-deps resolve glib)}"
 ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:?WASM_POSIX_DEP_ZLIB_DIR not set}"
+PCRE2_PREFIX="${WASM_POSIX_DEP_PCRE2_DIR:?WASM_POSIX_DEP_PCRE2_DIR not set}"
 
 # --- Toolchain ----------------------------------------------------------
 for tool in wasm32posix-cc wasm32posix-ar python3; do
@@ -179,6 +183,7 @@ CFLAGS=(
     -O2 -fPIC -fvisibility=hidden -std=gnu11
     "-I$SRC_DIR"          # config.h at source root, "glib/..." includes
     "-I$SRC_DIR/glib"     # glibconfig.h + internal headers
+    "-I$PCRE2_PREFIX/include"  # pcre2.h, included by gregex.c
     -Wno-unused-parameter
     -Wno-unused-function
     -Wno-unused-variable
@@ -207,7 +212,7 @@ GLIB_TUS=(
     glib/gmarkup.c glib/gmem.c glib/gmessages.c glib/gnode.c
     glib/goption.c glib/gpathbuf.c glib/gpattern.c glib/gpoll.c
     glib/gprimes.c glib/gqsort.c glib/gquark.c glib/gqueue.c
-    glib/grand.c glib/grcbox.c glib/grefcount.c glib/grefstring.c
+    glib/grand.c glib/grcbox.c glib/gregex.c glib/grefcount.c glib/grefstring.c
     glib/gscanner.c glib/gsequence.c glib/gshell.c glib/gslice.c
     glib/gslist.c glib/gspawn.c glib/gstdio.c glib/gstrfuncs.c
     glib/gstring.c glib/gstringchunk.c glib/gstrvbuilder.c
@@ -236,6 +241,8 @@ GLIB_OBJS+=("$(compile glib/libcharset/localcharset.c \
 echo "==> Compiling gmodule..."
 GMODULE_OBJS=(
     "$(compile gmodule/gmodule.c \
+        -DGMODULE_COMPILATION '-DG_LOG_DOMAIN="GModule"' "-I$SRC_DIR/gmodule")"
+    "$(compile gmodule/gmodule-deprecated.c \
         -DGMODULE_COMPILATION '-DG_LOG_DOMAIN="GModule"' "-I$SRC_DIR/gmodule")"
 )
 
@@ -342,6 +349,13 @@ GIO_TUS=(
     gio/gdbusobjectskeleton.c gio/gdbusobjectproxy.c
     gio/gdbusobjectmanager.c gio/gdbusobjectmanagerclient.c
     gio/gdbusobjectmanagerserver.c gio/gtestdbus.c
+    gio/gapplication.c gio/gapplicationcommandline.c
+    gio/gapplicationimpl-dbus.c gio/gactiongroup.c gio/gactionmap.c
+    gio/gsimpleactiongroup.c gio/gremoteactiongroup.c
+    gio/gactiongroupexporter.c gio/gdbusactiongroup.c gio/gaction.c
+    gio/gpropertyaction.c gio/gsimpleaction.c gio/gmenumodel.c
+    gio/gmenu.c gio/gmenuexporter.c gio/gdbusmenumodel.c
+    gio/gnotification.c gio/gnotificationbackend.c
     gio/gioenumtypes.c
 )
 GIO_CFLAGS=(
@@ -387,33 +401,50 @@ cp "$SRC_DIR/gmodule/gmodule-visibility.h" "$SRC_DIR/gmodule/gmoduleconf.h" \
 cp "$SRC_DIR/gio/"*.h "$INC/gio/"
 
 # --- host tools ----------------------------------------------------------
-# glib-mkenums is a host-side python script; dependent autotools ports
-# (pango) locate it through the glib-2.0.pc glib_mkenums variable.
-echo "==> Installing glib-mkenums..."
+# glib-mkenums and glib-genmarshal are host-side python scripts;
+# dependent autotools ports (pango, gdk-pixbuf, GTK3) locate them
+# through the glib-2.0.pc glib_mkenums / glib_genmarshal variables.
+# glib-compile-resources and glib-compile-schemas are compiled C host
+# tools and come from the nix host glib in flake.nix instead.
+echo "==> Installing glib-mkenums + glib-genmarshal..."
 mkdir -p "$INSTALL_DIR/bin"
 sed 's|@PYTHON@|/usr/bin/env python3|' \
     "$SRC_DIR/gobject/glib-mkenums.in" > "$INSTALL_DIR/bin/glib-mkenums"
 chmod +x "$INSTALL_DIR/bin/glib-mkenums"
+sed 's|@PYTHON@|/usr/bin/env python3|' \
+    "$SRC_DIR/gobject/glib-genmarshal.in" > "$INSTALL_DIR/bin/glib-genmarshal"
+chmod +x "$INSTALL_DIR/bin/glib-genmarshal"
 
 # --- pkg-config ----------------------------------------------------------
 echo "==> Writing pkg-config files..."
 PC_DIR="$INSTALL_DIR/lib/pkgconfig"
 mkdir -p "$PC_DIR"
-for lib in glib gmodule gobject gio gthread; do
+for lib in glib gmodule gmodule-no-export gobject gio gio-unix gthread; do
     case "$lib" in
         glib)    libs="-lglib-2.0" ;;
-        gmodule) libs="-lgmodule-2.0 -lglib-2.0" ;;
+        # Static build — gmodule and gmodule-no-export are the same
+        # archive; gdk-pixbuf and GTK3 probe the no-export variant.
+        gmodule | gmodule-no-export) libs="-lgmodule-2.0 -lglib-2.0" ;;
         gobject) libs="-lgobject-2.0 -lglib-2.0 -lffi" ;;
-        gio)     libs="-lgio-2.0 -lgobject-2.0 -lgmodule-2.0 -lglib-2.0 -lffi -lz" ;;
+        # The unix symbols (gunixfdlist, gunixsocketaddress, …) are
+        # compiled into libgio; gio-unix-2.0 is a probe-name shim for
+        # consumers that require it (GTK3, dbus tools).
+        gio | gio-unix) libs="-lgio-2.0 -lgobject-2.0 -lgmodule-2.0 -lglib-2.0 -lffi -lz" ;;
         # Threading lives in libglib since 2.32; upstream still ships
         # a gthread-2.0.pc for consumers that probe it (pango 1.42).
         gthread) libs="-lglib-2.0" ;;
     esac
+    # gregex.c lives in libglib-2.0, which every variant above links,
+    # so each one needs pcre2. The search path is absolute: consumer
+    # build scripts compose PKG_CONFIG_PATH from their own declared
+    # prefixes and would not find a bare -lpcre2-8.
+    libs="$libs -L$PCRE2_PREFIX/lib -lpcre2-8"
     cat > "$PC_DIR/$lib-2.0.pc" <<EOF
 prefix=$INSTALL_DIR
 libdir=\${prefix}/lib
 includedir=\${prefix}/include
 glib_mkenums=\${prefix}/bin/glib-mkenums
+glib_genmarshal=\${prefix}/bin/glib-genmarshal
 
 Name: $lib
 Description: $lib for wasm32-posix-kernel (static)
