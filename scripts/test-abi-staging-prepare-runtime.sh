@@ -18,6 +18,10 @@ fail() {
 if grep -Fq 'production runtime source must be this exact checkout' "$PREPARER"; then
   fail "protected runtime tooling requires the candidate source to own the script"
 fi
+if ! grep -Fq 'run_without_credentials --with-exact-source-root \' "$PREPARER" ||
+   grep -Fq 'run_without_credentials env \' "$PREPARER"; then
+  fail "protected Vite must receive its exact source root without a second PATH launcher"
+fi
 grep -Fq -- '--mode abi-staging-browser-evidence' "$PREPARER" ||
   fail "runtime preparation does not select the closed browser evidence build"
 

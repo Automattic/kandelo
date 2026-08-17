@@ -214,6 +214,11 @@ if [ -n "$TEST_TOOLCHAIN_BUILDER" ] &&
 fi
 
 run_without_credentials() {
+  local with_exact_source_root=0
+  if [ "${1:-}" = "--with-exact-source-root" ]; then
+    with_exact_source_root=1
+    shift
+  fi
   local candidate_path="$KANDELO_DEV_SHELL_TOOL_PATH"
   if [ "$TESTING" = 1 ]; then
     # The fake local fixture uses platform mkdir/cp; production commands enter
@@ -227,6 +232,11 @@ run_without_credentials() {
     "KANDELO_DEV_SHELL_TOOL_PATH=$KANDELO_DEV_SHELL_TOOL_PATH"
     "WASM_POSIX_BINARY_CACHE_ROOT=$BINARY_CACHE_ROOT"
   )
+  if [ "$with_exact_source_root" = 1 ]; then
+    clean_environment+=(
+      "KANDELO_ABI_STAGING_EXACT_SOURCE_ROOT=$SOURCE_ROOT"
+    )
+  fi
   local safe_name
   for safe_name in \
     CI LANG LC_ALL LC_CTYPE LOGNAME NO_COLOR SOURCE_DATE_EPOCH TERM TZ USER \
@@ -427,8 +437,7 @@ else
     echo "abi-staging-prepare-runtime.sh: protected browser host bundler is unavailable" >&2
     exit 1
   fi
-  run_without_credentials env \
-    KANDELO_ABI_STAGING_EXACT_SOURCE_ROOT="$SOURCE_ROOT" \
+  run_without_credentials --with-exact-source-root \
     "$PROTECTED_VITE" build \
       --config "$REPO_ROOT/apps/browser-demos/abi-staging-browser-host.config.ts" \
       --outDir "$RUNTIME_ROOT/browser/dist/abi-staging" \
