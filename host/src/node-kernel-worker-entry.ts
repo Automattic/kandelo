@@ -2710,9 +2710,10 @@ async function handlePosixSpawn(
   envp: string[],
 ): Promise<number> {
   const secureExec = kernelWorker.takeCommittedExecSecureExec(childPid);
-  // Preserve a child that became a zombie before launch, but do not resurrect
-  // it by registering a new execution generation.
-  if (!kernelWorker.shouldLaunchPendingChild(childPid)) return 0;
+  // The shared launcher invokes this callback only after Rust committed the
+  // exact pending child. Do not re-enter the kernel while that postcommit
+  // transaction is still draining; the first legal liveness fence follows
+  // the asynchronous memory allocation below.
   post({ type: "proc_event", kind: "spawn", pid: childPid, ppid: parentPid });
 
   const { programBytes, programModule, argv } = program;
