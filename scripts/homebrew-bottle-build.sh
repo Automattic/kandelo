@@ -491,28 +491,6 @@ if ! jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" \
   echo "homebrew-bottle-build.sh: Tier-2 bridge attestation has an invalid schema" >&2
   exit 2
 fi
-if jq -e '.schema == 3' "$TIER2_ATTESTATION" >/dev/null; then
-  # WHY: closed tap recipes receive executable platform tools, never the Cargo
-  # workspace that could rebuild resolver/checker code. Build both helpers
-  # while the trusted workflow still owns the exact Kandelo checkout.
-  for tool in wasm-fork-instrument wasm-local-root-spill; do
-    tool_path="$KANDELO_ROOT/tools/bin/$tool"
-    if [ ! -f "$tool_path" ] || [ -L "$tool_path" ] || [ ! -x "$tool_path" ]; then
-      case "$tool" in
-        wasm-fork-instrument)
-          bash "$KANDELO_ROOT/scripts/build-fork-instrument-tool.sh"
-          ;;
-        wasm-local-root-spill)
-          bash "$KANDELO_ROOT/scripts/build-local-root-spill-tool.sh"
-          ;;
-      esac
-    fi
-    [ -f "$tool_path" ] && [ ! -L "$tool_path" ] && [ -x "$tool_path" ] || {
-      echo "homebrew-bottle-build.sh: required closed-recipe platform tool is unavailable: $tool" >&2
-      exit 2
-    }
-  done
-fi
 ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
   "$TAP_ROOT" "$TAP_NAME" "$FORMULA" --bottle-identity-json \
   >"$TARGET_BOTTLE_IDENTITY"
@@ -687,6 +665,33 @@ homebrew_native_contract_stage_marker tier2-attestation-staging starting
 homebrew_patched_launcher_stage_tier2_attestation \
   "$TIER2_EXECUTION_ATTESTATION"
 homebrew_native_contract_stage_marker tier2-attestation-staging completed
+
+if jq -e '.schema == 3' "$TIER2_ATTESTATION" >/dev/null; then
+  # WHY: closed tap recipes receive executable platform tools, never the Cargo
+  # workspace that could rebuild resolver/checker code. Build both helpers
+  # only after the tapped execution plan matches the reviewed plan, then bind
+  # candidate builds to the same sealed paths that the production launcher
+  # projects into its secondary Formula identity.
+  for tool in wasm-fork-instrument wasm-local-root-spill; do
+    tool_path="$KANDELO_ROOT/tools/bin/$tool"
+    if [ ! -f "$tool_path" ] || [ -L "$tool_path" ] || [ ! -x "$tool_path" ]; then
+      case "$tool" in
+        wasm-fork-instrument)
+          bash "$KANDELO_ROOT/scripts/build-fork-instrument-tool.sh"
+          ;;
+        wasm-local-root-spill)
+          bash "$KANDELO_ROOT/scripts/build-local-root-spill-tool.sh"
+          ;;
+      esac
+    fi
+    [ -f "$tool_path" ] && [ ! -L "$tool_path" ] && [ -x "$tool_path" ] || {
+      echo "homebrew-bottle-build.sh: required closed-recipe platform tool is unavailable: $tool" >&2
+      exit 2
+    }
+  done
+  export HOMEBREW_KANDELO_FORK_INSTRUMENT="$KANDELO_ROOT/tools/bin/wasm-fork-instrument"
+  export HOMEBREW_KANDELO_LOCAL_ROOT_SPILL="$KANDELO_ROOT/tools/bin/wasm-local-root-spill"
+fi
 
 if [ -z "$BUILD_USER" ]; then
   # Candidate jobs are deliberately uncredentialed and do not provision the
@@ -959,7 +964,10 @@ brew_install_build_bottle() {
   homebrew_patched_launcher_snapshot_target_cellar_layout \
     >"$TARGET_CELLAR_BEFORE_TEST"
   "$BREW_BIN" test "$FORMULA_REF"
-  bottle_args=(--json --keep-old --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF")
+  bottle_args=(--json --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF")
+  if [ -z "$STAGING_CANDIDATE_ABI" ]; then
+    bottle_args=(--json --keep-old --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF")
+  fi
   run_brew_for_kandelo_bottles "$BREW_BIN" bottle "${bottle_args[@]}"
   homebrew_patched_launcher_snapshot_target_cellar_layout \
     >"$TARGET_CELLAR_AFTER_TEST"
@@ -1197,6 +1205,50 @@ if jq -e '.schema == 3' "$TIER2_ATTESTATION" >/dev/null &&
   exit 1
 fi
 BOTTLE_REBUILD="$(jq -r --arg key "$FORMULA_KEY" '.[$key].bottle.rebuild' "$BOTTLE_SOURCE_JSON")"
+if [ -n "$STAGING_CANDIDATE_ABI" ] &&
+   [ "$BOTTLE_REBUILD" = "0" ] &&
+   [ "$EXPECTED_BOTTLE_REBUILD" != "0" ]; then
+  # WHY: candidate roots intentionally omit --keep-old so Homebrew cannot
+  # copy canonical-root metadata into the candidate JSON. Homebrew therefore
+  # emits rebuild zero even when the sealed Formula owns a positive rebuild.
+  # Bind the raw zero-rebuild archive first, then apply only that Formula-owned
+  # rebuild identity without changing the bottle bytes.
+  RAW_BOTTLE_FILENAME="${FORMULA}--${PKG_VERSION}.${BOTTLE_TAG}.bottle.tar.gz"
+  if ! jq -e \
+    --arg key "$FORMULA_KEY" \
+    --arg tag "$BOTTLE_TAG" \
+    --arg expected "$RAW_BOTTLE_FILENAME" \
+    '.[$key].bottle.tags[$tag].local_filename == $expected' \
+    "$BOTTLE_SOURCE_JSON" >/dev/null; then
+    echo "homebrew-bottle-build.sh: candidate rebuild-zero JSON does not identify $RAW_BOTTLE_FILENAME" >&2
+    exit 1
+  fi
+  mapfile -t raw_candidate_archives < <(
+    find "$WORK_DIR" -maxdepth 1 -type f -name '*.bottle*.tar.gz' -print | sort
+  )
+  if [ "${#raw_candidate_archives[@]}" -ne 1 ] ||
+     [ "$(basename "${raw_candidate_archives[0]}")" != "$RAW_BOTTLE_FILENAME" ]; then
+    echo "homebrew-bottle-build.sh: candidate rebuild-zero archive does not match its exact JSON identity" >&2
+    exit 1
+  fi
+  NORMALIZED_BOTTLE_FILENAME="${FORMULA}--${PKG_VERSION}.${BOTTLE_TAG}.bottle.${EXPECTED_BOTTLE_REBUILD}.tar.gz"
+  NORMALIZED_BOTTLE_URL_FILENAME="${FORMULA}-${PKG_VERSION}.${BOTTLE_TAG}.bottle.${EXPECTED_BOTTLE_REBUILD}.tar.gz"
+  NORMALIZED_BOTTLE_JSON="$(mktemp "$WORK_DIR/.candidate-bottle-json.XXXXXX")"
+  jq \
+    --arg key "$FORMULA_KEY" \
+    --arg tag "$BOTTLE_TAG" \
+    --argjson rebuild "$EXPECTED_BOTTLE_REBUILD" \
+    --arg local_filename "$NORMALIZED_BOTTLE_FILENAME" \
+    --arg filename "$NORMALIZED_BOTTLE_URL_FILENAME" '
+      .[$key].bottle.rebuild = $rebuild |
+      .[$key].bottle.tags[$tag].local_filename = $local_filename |
+      .[$key].bottle.tags[$tag].filename = $filename
+    ' "$BOTTLE_SOURCE_JSON" >"$NORMALIZED_BOTTLE_JSON"
+  mv -- "$NORMALIZED_BOTTLE_JSON" "$BOTTLE_SOURCE_JSON"
+  mv -- "${raw_candidate_archives[0]}" \
+    "$(dirname "${raw_candidate_archives[0]}")/$NORMALIZED_BOTTLE_FILENAME"
+  BOTTLE_REBUILD="$EXPECTED_BOTTLE_REBUILD"
+fi
 if [ "$BOTTLE_REBUILD" != "$EXPECTED_BOTTLE_REBUILD" ]; then
   echo "homebrew-bottle-build.sh: Homebrew bottle rebuild $BOTTLE_REBUILD differs from planned Formula rebuild $EXPECTED_BOTTLE_REBUILD" >&2
   exit 1

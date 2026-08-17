@@ -1805,13 +1805,39 @@ jq -e '
   .full_name == "kandelo-dev/tap-core/retired-bottle" and
   .native_requirements == []
 ' "$TMP_ROOT/retired-host-plan.json" >/dev/null
-if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core retired-bottle \
-    --bottle-identity-json >"$TMP_ROOT/retired-ordinary.out" \
-    2>"$TMP_ROOT/retired-ordinary.err"; then
-  echo "test-homebrew-formula-runtime-closure.sh: accepted the retired Cellar after cutover" >&2
+ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core retired-bottle \
+  --bottle-identity-json >"$TMP_ROOT/retired-ordinary.out"
+jq -e '
+  .schema == 1 and
+  .full_name == "kandelo-dev/tap-core/retired-bottle" and
+  .bottle.root_url == "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core" and
+  .bottle.rebuild == 0
+' "$TMP_ROOT/retired-ordinary.out" >/dev/null
+KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$PRIMARY_RESOLVED_TAPS" \
+  ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core retired-bottle wasm32 \
+    >"$TMP_ROOT/retired-target-runtime.json"
+jq -e 'type == "object"' "$TMP_ROOT/retired-target-runtime.json" >/dev/null
+cat >"$TAP_ROOT/Formula/retired-consumer.rb" <<'RUBY'
+class RetiredConsumer < Formula
+  depends_on "kandelo-dev/tap-core/retired-bottle"
+
+  bottle do
+    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  end
+end
+RUBY
+if KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$PRIMARY_RESOLVED_TAPS" \
+  ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core retired-consumer wasm32 \
+    >"$TMP_ROOT/retired-dependency.out" \
+    2>"$TMP_ROOT/retired-dependency.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: accepted a consumed retired-Cellar bottle" >&2
   exit 1
 fi
-grep -F 'Formula bottle block uses an unsupported cellar' \
-  "$TMP_ROOT/retired-ordinary.err" >/dev/null
+if ! grep -F 'Formula bottle block uses an unsupported cellar' \
+  "$TMP_ROOT/retired-dependency.err" >/dev/null; then
+  cat "$TMP_ROOT/retired-dependency.err" >&2
+  exit 1
+fi
 
 echo "test-homebrew-formula-runtime-closure.sh: passed"

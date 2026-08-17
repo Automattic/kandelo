@@ -68,7 +68,30 @@ cd "$SRC_DIR"
 # GNU Netcat 0.7.1 predates Wasm and musl target tuples. Use the canonical
 # helpers from the declared Automake build input so configure can validate the
 # SDK's truthful wasm*-unknown-linux-musl host identity on every POSIX builder.
-AUTOMAKE_AUX_DIR="$(automake --print-libdir)"
+# Candidate bottle builds project the sealed native Automake keg into the
+# target prefix, but the relocated Automake wrapper retains its native-prefix
+# Perl module path. Netcat only needs the keg's immutable support data, so
+# derive that directory from the declared executable without running it.
+AUTOMAKE_BIN="$(command -v automake)"
+case "$AUTOMAKE_BIN" in
+    /*) ;;
+    *)
+        echo "ERROR: Automake executable is not an absolute path: $AUTOMAKE_BIN" >&2
+        exit 1
+        ;;
+esac
+AUTOMAKE_PREFIX="$(cd "$(dirname "$AUTOMAKE_BIN")/.." && pwd -P)"
+automake_aux_dirs=()
+for candidate in "$AUTOMAKE_PREFIX"/share/automake-*; do
+    if [ -d "$candidate" ] && [ ! -L "$candidate" ]; then
+        automake_aux_dirs+=("$candidate")
+    fi
+done
+if [ "${#automake_aux_dirs[@]}" -ne 1 ]; then
+    echo "ERROR: expected one Automake support-data directory below $AUTOMAKE_PREFIX, found ${#automake_aux_dirs[@]}" >&2
+    exit 1
+fi
+AUTOMAKE_AUX_DIR="${automake_aux_dirs[0]}"
 for auxiliary in config.sub config.guess; do
     source_auxiliary="$AUTOMAKE_AUX_DIR/$auxiliary"
     if [ ! -f "$source_auxiliary" ] || [ -L "$source_auxiliary" ]; then

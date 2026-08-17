@@ -2545,8 +2545,40 @@ function readGlobalInitAddr(src: Uint8Array, pos: number): bigint | null {
 function skipGlobalEntry(src: Uint8Array, pos: number): number {
   pos = readWasmValueType(src, pos, "global type").next;
   pos++; // mutability
-  while (src[pos] !== 0x0B) pos++;
-  return pos + 1; // skip the end opcode
+  for (;;) {
+    if (pos >= src.length) throw new Error("global init expression is truncated");
+    const opcode = src[pos++]!;
+    switch (opcode) {
+      case 0x0b: // end
+        return pos;
+      case 0x41: // i32.const
+        pos = skipSignedLeb128(src, pos, 5, "i32 global initializer");
+        break;
+      case 0x42: // i64.const
+        pos = skipSignedLeb128(src, pos, 10, "i64 global initializer");
+        break;
+      case 0x43: // f32.const
+        pos += 4;
+        break;
+      case 0x44: // f64.const
+        pos += 8;
+        break;
+      case 0x23: // global.get
+      case 0xd2: { // ref.func
+        const [, bytes] = readULEB128(src, pos);
+        pos += bytes;
+        break;
+      }
+      case 0xd0: // ref.null heaptype
+        pos = skipSignedLeb128(src, pos, 5, "ref.null global initializer");
+        break;
+      default:
+        throw new Error(
+          `global init expression has unsupported opcode 0x${opcode.toString(16)}`,
+        );
+    }
+    if (pos > src.length) throw new Error("global init expression is truncated");
+  }
 }
 
 /**

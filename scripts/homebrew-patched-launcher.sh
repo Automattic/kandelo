@@ -426,6 +426,7 @@ homebrew_patched_launcher_formula_test_runtime_manifest() {
   local -a required_files=(
     Cargo.toml
     package.json
+    examples/run-example-builtins.ts
     examples/run-example.ts
     examples/run-example-output.ts
     examples/run-example-paths.ts

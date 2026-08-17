@@ -18,6 +18,10 @@ import { resolve, dirname, isAbsolute } from "path";
 import { NodeKernelHost } from "../host/src/node-kernel-host";
 import { tryResolveBinaries } from "../host/src/binary-resolver";
 import { writeAllSync } from "./run-example-output";
+import {
+    resolveRunExampleBuiltinPrograms,
+    type ResolvedBuiltinPrograms,
+} from "./run-example-builtins";
 import { isWithinRealDirectory } from "./run-example-paths";
 import {
     buildRunExampleGuestEnvironment,
@@ -303,11 +307,6 @@ for (const name of coreutilsNames) {
     builtinProgramSources[`/usr/bin/${name}`] = coreutilsWasm;
 }
 
-interface ResolvedBuiltinPrograms {
-    programs: Record<string, string | null>;
-    snapshotNames: ReadonlySet<string>;
-}
-
 function resolveBuiltinPrograms(): ResolvedBuiltinPrograms {
     const references = Array.from(new Set(
         Object.values(builtinProgramSources).filter(
@@ -415,7 +414,10 @@ async function main() {
         process.env,
         process.cwd(),
     );
-    const resolvedBuiltins = resolveBuiltinPrograms();
+    const resolvedBuiltins = resolveRunExampleBuiltinPrograms(
+        process.env,
+        resolveBuiltinPrograms,
+    );
     const builtinPrograms = resolvedBuiltins.programs;
     let isolatedExecPrograms: Record<string, string> | undefined;
     let isolatedExecProgramBytes: Record<string, ArrayBuffer> | undefined;
