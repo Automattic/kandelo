@@ -63,6 +63,71 @@ headers from an arbitrary host LLVM install; the libcxx package generates and
 ships a version-matched header tree with its `libc++.a` and `libc++abi.a`.
 See `packages/registry/mariadb/build-mariadb.sh` for a complete example.
 
+### OSS playback with `/dev/dsp`
+
+Kandelo's standard low-level audio API is OSS `/dev/dsp`, backed by the generic
+PCM stream core. Do not enable ALSA or copy Linux `/dev/snd` headers into a
+port. Direct users include `<sys/soundcard.h>`, open `/dev/dsp` with
+`O_WRONLY`, negotiate an advertised format/rate/channel count, and use
+blocking `write()` or `poll(POLLOUT)` plus nonblocking writes. See the exact
+[ioctl matrix](posix-status.md#oss-playback-compatibility).
+Writes are a continuous byte stream, so an application may split a PCM frame
+across calls. `SNDCTL_DSP_SYNC` and final close pad a terminal partial frame
+with format silence and wait for it to reach the audio clock.
+
+Upstream SDL needs no DSP-backend source changes. The registry packages build
+the official releases with only their OSS audio backend:
+
+```bash
+cargo xtask build-deps resolve sdl2
+cargo xtask build-deps resolve sdl3
+```
+
+For an external SDL2 build, retain the equivalent of:
+
+```bash
+./configure --host=wasm32-unknown-none \
+  --enable-static --disable-shared \
+  --enable-audio --enable-oss \
+  --disable-alsa --disable-pulseaudio --disable-pipewire \
+  --disable-jack --disable-sndio
+```
+
+SDL2 2.32.x does not classify `wasm32-unknown-none` as a Unix target upstream,
+so the Kandelo package carries a minimal platform-classification patch to its
+generated configure logic. It does not change `src/audio/dsp/`.
+
+For SDL3, configure a truthful Kandelo CMake toolchain and retain:
+
+```bash
+cmake -S SDL -B build \
+  -DCMAKE_TOOLCHAIN_FILE=/path/to/kandelo-toolchain.cmake \
+  -DSDL_STATIC=ON -DSDL_SHARED=OFF \
+  -DSDL_UNIX_CONSOLE_BUILD=ON \
+  -DSDL_AUDIO=ON -DSDL_OSS=ON \
+  -DSDL_ALSA=OFF -DSDL_PULSEAUDIO=OFF -DSDL_PIPEWIRE=OFF \
+  -DSDL_JACK=OFF -DSDL_SNDIO=OFF
+```
+
+The registry's SDL3 patch only teaches its platform detector that Kandelo is
+Unix; its OSS backend is also unmodified. Do not claim Linux or Emscripten as
+the target to make feature detection pass.
+
+At runtime the default path is already `/dev/dsp`. Set
+`SDL_AUDIODRIVER=dsp` when a deterministic backend choice is needed (tests,
+headless runners, or images that may gain another driver later). SDL also
+honors its upstream device-path overrides (`AUDIODEV`, and `SDL_PATH_DSP` in
+SDL2). Playback supports U8/S16_LE/S16_BE, mono/stereo, and 8–192 kHz. SDL2's
+backend is paced primarily by blocking `write()`; SDL3 additionally waits on
+truthful `SNDCTL_DSP_GETOSPACE` results. Capture/duplex opens fail with
+`ENOTSUP`, so do not advertise recording support in application UI.
+
+The host audio integration suite also builds SDL_mixer 2.8.2's upstream
+`playwave` example unchanged and runs it with `SDL_AUDIODRIVER=dsp`. It checks
+44.1 kHz signed-16 stereo and 22.05 kHz unsigned-8 mono WAVs byte-for-byte at
+the paced Node sink, including negotiated fragment geometry, the SDL2 OSS
+ioctl sequence, complete drain, and zero discarded data.
+
 ### Step 3: Test it
 
 ```bash

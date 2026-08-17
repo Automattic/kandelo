@@ -1728,10 +1728,6 @@ fn finish_removed_process(pid: u32, result: crate::process_table::RemoveProcessR
     // successor open starts clean. No host-side unbind — the device is
     // host→kernel only.
     crate::syscalls::maybe_release_mice(pid);
-    // /dev/dsp cleanup: drop ownership and flush the PCM ring. The host-side
-    // AudioContext keeps playing whatever is already scheduled; we just stop
-    // feeding it new samples from this dead pid.
-    crate::syscalls::maybe_release_dsp(pid);
 }
 
 fn remove_process_and_cleanup(pid: u32) -> i32 {
@@ -2756,7 +2752,12 @@ fn prepare_exec_state(pid: u32, caller_tid: u32) -> Result<(), Errno> {
                 syscalls::sys_dup2_with_locks(proc, advisory_locks, &mut host, old_fd, new_fd)?;
             }
             FdAction::Close { fd } => {
-                syscalls::sys_close_with_locks(proc, advisory_locks, &mut host, fd)?;
+                syscalls::sys_close_implicit_with_locks(
+                    proc,
+                    advisory_locks,
+                    &mut host,
+                    fd,
+                )?;
             }
             FdAction::Open {
                 fd,
@@ -2768,8 +2769,12 @@ fn prepare_exec_state(pid: u32, caller_tid: u32) -> Result<(), Errno> {
                     syscalls::sys_open(proc, &mut host, path, flags as u32, mode as u32)?;
                 if opened_fd != fd {
                     syscalls::sys_dup2_with_locks(proc, advisory_locks, &mut host, opened_fd, fd)?;
-                    let _ =
-                        syscalls::sys_close_with_locks(proc, advisory_locks, &mut host, opened_fd);
+                    let _ = syscalls::sys_close_implicit_with_locks(
+                        proc,
+                        advisory_locks,
+                        &mut host,
+                        opened_fd,
+                    );
                 }
             }
         }
@@ -6537,7 +6542,8 @@ fn kernel_mknod(path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
     let flags = O_CREAT | O_EXCL | O_WRONLY;
     match syscalls::sys_open(proc, &mut host, path, flags, mode) {
         Ok(fd) => {
-            let _ = syscalls::sys_close_with_locks(proc, advisory_locks, &mut host, fd);
+            let _ =
+                syscalls::sys_close_implicit_with_locks(proc, advisory_locks, &mut host, fd);
             0
         }
         Err(e) => -(e as i32),
@@ -6575,7 +6581,8 @@ fn kernel_mknodat(dirfd: i32, path_ptr: *const u8, path_len: u32, mode: u32) -> 
     let flags = O_CREAT | O_EXCL | O_WRONLY;
     match syscalls::sys_openat(proc, &mut host, dirfd, path, flags, mode) {
         Ok(fd) => {
-            let _ = syscalls::sys_close_with_locks(proc, advisory_locks, &mut host, fd);
+            let _ =
+                syscalls::sys_close_implicit_with_locks(proc, advisory_locks, &mut host, fd);
             0
         }
         Err(e) => -(e as i32),
@@ -11956,8 +11963,12 @@ pub extern "C" fn kernel_apply_fork_fd_actions() -> i32 {
                 }
             }
             crate::process::FdAction::Close { fd } => {
-                if let Err(e) = syscalls::sys_close_with_locks(proc, advisory_locks, &mut host, fd)
-                {
+                if let Err(e) = syscalls::sys_close_implicit_with_locks(
+                    proc,
+                    advisory_locks,
+                    &mut host,
+                    fd,
+                ) {
                     return -(e as i32);
                 }
             }
@@ -11978,7 +11989,7 @@ pub extern "C" fn kernel_apply_fork_fd_actions() -> i32 {
                         ) {
                             return -(e as i32);
                         }
-                        let _ = syscalls::sys_close_with_locks(
+                        let _ = syscalls::sys_close_implicit_with_locks(
                             proc,
                             advisory_locks,
                             &mut host,
@@ -13368,6 +13379,13 @@ pub extern "C" fn kernel_is_fd_nonblock(pid: u32, fd: i32) -> i32 {
         Some(o) => o,
         None => return -1,
     };
+    if ofd.file_type == crate::ofd::FileType::PcmPlayback {
+        return match crate::audio::is_nonblock(ofd.host_handle) {
+            Ok(true) => 1,
+            Ok(false) => 0,
+            Err(_) => -1,
+        };
+    }
     if ofd.status_flags & wasm_posix_shared::flags::O_NONBLOCK != 0 {
         1
     } else {
@@ -13418,8 +13436,9 @@ pub extern "C" fn kernel_get_socket_timeout_ms(pid: u32, fd: i32, is_recv: i32) 
 
 /// Look up the send pipe/buffer index for a fd (for writing).
 /// For pipe fds: returns the pipe index.
-/// For socket fds: returns send_buf_idx.
-/// Returns -1 if the fd is not a pipe or connected socket.
+/// For socket fds: returns send_buf_idx. For PCM playback: returns the
+/// stream's writable-capacity wake token.
+/// Returns -1 if the fd has no targeted writable wake token.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_fd_send_pipe_idx(pid: u32, fd: i32) -> i32 {
     use crate::ofd::FileType;
@@ -13449,6 +13468,9 @@ pub extern "C" fn kernel_get_fd_send_pipe_idx(pid: u32, fd: i32) -> i32 {
                 None => -1,
             }
         }
+        FileType::PcmPlayback => crate::audio::wake_token_for_handle(ofd.host_handle)
+            .map(|token| token as i32)
+            .unwrap_or(-1),
         _ => -1,
     }
 }
@@ -13684,10 +13706,11 @@ pub extern "C" fn kernel_inject_mouse_event(dx: i32, dy: i32, buttons: u32) {
 /// Drain up to `out_len` bytes of PCM audio from the kernel-side ring
 /// into the host-provided buffer. Returns the number of bytes copied.
 ///
-/// The host calls this from its audio scheduler (typically once per
-/// audio block at ~11–48 ms cadence) and feeds the result to a Web
-/// Audio AudioContext. Reads stop on whole-frame boundaries (2 bytes
-/// for mono, 4 for stereo) so the host never receives a torn L/R pair.
+/// This compatibility pull path is retained for hosts that do not claim the
+/// shared-clock transport. Browser AudioWorklets and the Node clocked sink
+/// consume the shared ring directly, and an exclusive transport claim prevents
+/// this export from racing them. Reads stop on whole-frame boundaries so a
+/// caller never receives a torn PCM frame.
 ///
 /// `out_ptr` points into kernel-wasm memory — same pattern as
 /// `kernel_drain_wakeup_events`. The host's scratch allocation is the
@@ -13699,7 +13722,7 @@ pub extern "C" fn kernel_drain_audio(out_ptr: *mut u8, out_len: u32) -> u32 {
 }
 
 /// Read the currently configured `/dev/dsp` sample rate (Hz). Defaults
-/// to 11025 Hz before the user program calls `SNDCTL_DSP_SPEED`.
+/// to 48000 Hz before the user program calls `SNDCTL_DSP_SPEED`.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_audio_sample_rate() -> u32 {
     crate::audio::current_config().0
@@ -13718,6 +13741,38 @@ pub extern "C" fn kernel_audio_channels() -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_audio_pending() -> u32 {
     crate::audio::pending_bytes() as u32
+}
+
+/// Base pointer and length of the versioned PCM shared transport.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pcm_transport_ptr() -> u32 {
+    crate::audio::transport_ptr() as usize as u32
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pcm_transport_len() -> u32 {
+    crate::audio::transport_len()
+}
+
+/// Claim the single PCM consumer mode (legacy pull or shared audio clock).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pcm_claim_transport(mode: u32) -> i32 {
+    match crate::audio::claim_transport(mode) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Reconcile a host-written consumer cursor and publish writer wakeups.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pcm_reconcile() -> i32 {
+    crate::audio::reconcile()
+}
+
+/// Advance the Node/headless sink by an audio-clock frame budget.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pcm_clock_update(frames: u32) -> u32 {
+    crate::audio::clock_update(frames)
 }
 
 // ---------------------------------------------------------------------------

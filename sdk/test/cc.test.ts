@@ -32,6 +32,8 @@ describe('buildClangArgs', () => {
   it('compile-only: adds compile flags, no link flags', () => {
     const args = build(['-c', 'foo.c', '-o', 'foo.o']);
     expect(args).toContain('--target=wasm32-unknown-unknown');
+    expect(args).toContain('-D__unix__=1');
+    expect(args).toContain('-D__unix=1');
     expect(args).toContain('--sysroot=/tmp/sysroot');
     expect(args).toContain('-c');
     expect(args).toContain('foo.c');

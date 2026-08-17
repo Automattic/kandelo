@@ -367,7 +367,6 @@ const CAPS: ReadonlyArray<readonly [
   ["persistence", "OPFS persistence", "Store writable mounts in the Origin Private File System."],
   ["clipboard", "Clipboard", "Allow programs to read and write the system clipboard."],
   ["camera", "Camera", "Expose /dev/video0 backed by getUserMedia."],
-  ["microphone", "Microphone", "Expose /dev/audio backed by getUserMedia."],
   ["filesystem", "Local files", "Mount the user's File System Access handle into the VFS."],
 ];
 

@@ -664,6 +664,11 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_mq_descriptor_msgsize",
   "kernel_msqid_ds_bytes",
   "kernel_pick_tcp_listener_target",
+  "kernel_pcm_claim_transport",
+  "kernel_pcm_clock_update",
+  "kernel_pcm_reconcile",
+  "kernel_pcm_transport_len",
+  "kernel_pcm_transport_ptr",
   "kernel_pick_signal_target_tid",
   "kernel_pipe_has_readers",
   "kernel_posix_timer_fire",
@@ -704,6 +709,55 @@ export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
   "kernel_set_max_addr",
   "kernel_set_mmap_base",
 ] as const;
+
+export const PCM_TRANSPORT_MAGIC = 827147088 as const;
+export const PCM_TRANSPORT_VERSION = 1 as const;
+export const PCM_TRANSPORT_HEADER_BYTES = 128 as const;
+export const PCM_TRANSPORT_RING_BYTES = 65536 as const;
+export const PCM_TRANSPORT_BYTES = 65664 as const;
+export const PCM_STATE_CLOSED = 0 as const;
+export const PCM_STATE_STOPPED = 1 as const;
+export const PCM_STATE_RUNNING = 2 as const;
+export const PCM_STATE_DRAINING = 3 as const;
+export const PCM_FORMAT_UNKNOWN = 0 as const;
+export const PCM_FORMAT_U8 = 1 as const;
+export const PCM_FORMAT_S16_LE = 2 as const;
+export const PCM_FORMAT_S16_BE = 3 as const;
+export const PCM_TRANSPORT_UNCLAIMED = 0 as const;
+export const PCM_TRANSPORT_LEGACY_PULL = 1 as const;
+export const PCM_TRANSPORT_SHARED_CLOCK = 2 as const;
+export const PCM_FLAG_CONFIGURING = 1 as const;
+export const PCM_FLAG_UNDERRUN_ACTIVE = 2 as const;
+export const PCM_FLAG_FATAL_ERROR = 4 as const;
+
+export const PCM_SHARED_CONTROL_FIELDS = {
+  magic: { offset: 0, size: 4 },
+  version: { offset: 4, size: 4 },
+  headerBytes: { offset: 8, size: 4 },
+  physicalCapacityBytes: { offset: 12, size: 4 },
+  activeCapacityBytes: { offset: 16, size: 4 },
+  format: { offset: 20, size: 4 },
+  sampleRate: { offset: 24, size: 4 },
+  channels: { offset: 28, size: 4 },
+  frameBytes: { offset: 32, size: 4 },
+  fragmentBytes: { offset: 36, size: 4 },
+  fragments: { offset: 40, size: 4 },
+  state: { offset: 44, size: 4 },
+  generation: { offset: 48, size: 4 },
+  flags: { offset: 52, size: 4 },
+  transportMode: { offset: 56, size: 4 },
+  producerSeq: { offset: 60, size: 4 },
+  producerLo: { offset: 64, size: 4 },
+  producerHi: { offset: 68, size: 4 },
+  consumerSeq: { offset: 72, size: 4 },
+  consumerLo: { offset: 76, size: 4 },
+  consumerHi: { offset: 80, size: 4 },
+  discardSeq: { offset: 84, size: 4 },
+  discardLo: { offset: 88, size: 4 },
+  discardHi: { offset: 92, size: 4 },
+  underruns: { offset: 96, size: 4 },
+  wakeSeq: { offset: 100, size: 4 },
+} as const;
 
 export const HOST_ADAPTER_MANIFEST_FIELDS = {
   magic: { offset: 0, size: 4 },
@@ -1491,6 +1545,10 @@ export const IOCTL_REQUESTS: Record<number, IoctlRequestContract> = {
   19269: { argKind: "scalar-i32", direction: "none", wasm32Size: 0, wasm64Size: 0 },
   20480: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
   20481: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
+  20488: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
+  20494: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
+  20501: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
+  20502: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
   21505: { argKind: "pointer", direction: "out", wasm32Size: 60, wasm64Size: 60 },
   21506: { argKind: "pointer", direction: "in", wasm32Size: 60, wasm64Size: 60 },
   21507: { argKind: "pointer", direction: "in", wasm32Size: 60, wasm64Size: 60 },
@@ -1513,14 +1571,32 @@ export const IOCTL_REQUESTS: Record<number, IoctlRequestContract> = {
   25630: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
   25631: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
   35077: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
+  1074024452: { argKind: "pointer", direction: "in", wasm32Size: 4, wasm64Size: 4 },
+  1074024464: { argKind: "pointer", direction: "in", wasm32Size: 4, wasm64Size: 4 },
   1074025521: { argKind: "pointer", direction: "in", wasm32Size: 4, wasm64Size: 4 },
   1074291721: { argKind: "pointer", direction: "in", wasm32Size: 8, wasm64Size: 8 },
+  2147766274: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
+  2147766277: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
+  2147766278: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
+  2147766279: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
   2147766283: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
+  2147766287: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
+  2147766288: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
+  2147766295: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
   2147767344: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
+  2148028435: { argKind: "pointer", direction: "out", wasm32Size: 8, wasm64Size: 8 },
+  2148028436: { argKind: "pointer", direction: "out", wasm32Size: 8, wasm64Size: 8 },
+  2148290577: { argKind: "pointer", direction: "out", wasm32Size: 12, wasm64Size: 12 },
+  2148290578: { argKind: "pointer", direction: "out", wasm32Size: 12, wasm64Size: 12 },
+  2148552716: { argKind: "pointer", direction: "out", wasm32Size: 16, wasm64Size: 16 },
+  2148552717: { argKind: "pointer", direction: "out", wasm32Size: 16, wasm64Size: 16 },
   3221508098: { argKind: "pointer", direction: "inout", wasm32Size: 4, wasm64Size: 4 },
   3221508099: { argKind: "pointer", direction: "inout", wasm32Size: 4, wasm64Size: 4 },
+  3221508100: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
   3221508101: { argKind: "pointer", direction: "inout", wasm32Size: 4, wasm64Size: 4 },
   3221508102: { argKind: "pointer", direction: "inout", wasm32Size: 4, wasm64Size: 4 },
+  3221508103: { argKind: "pointer", direction: "inout", wasm32Size: 4, wasm64Size: 4 },
+  3221508105: { argKind: "pointer", direction: "inout", wasm32Size: 4, wasm64Size: 4 },
   3221508106: { argKind: "pointer", direction: "inout", wasm32Size: 4, wasm64Size: 4 },
   3221513391: { argKind: "pointer", direction: "in", wasm32Size: 4, wasm64Size: 4 },
   3221513396: { argKind: "pointer", direction: "in", wasm32Size: 4, wasm64Size: 4 },
