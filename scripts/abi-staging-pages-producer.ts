@@ -1698,9 +1698,20 @@ function createAnonymousOciAuthority(): ProductionOciAuthority {
     fetchBlob,
     fetchManifest,
     async listImmutableReferences(repository) {
-      const output = await runOras([
-        "repo", "tags", "--format", "json", repository,
-      ], MAX_DOCUMENT_BYTES, "OCI tag inventory");
+      let output: Uint8Array;
+      try {
+        output = await runOras([
+          "repo", "tags", "--format", "json", repository,
+        ], MAX_DOCUMENT_BYTES, "OCI tag inventory");
+      } catch (error) {
+        // GHCR reports an as-yet-uncreated public nested package as `denied`,
+        // not as an empty tag inventory. For an exact admission repository,
+        // anonymous inaccessibility means there is no publicly consumable
+        // admission. Preserve that as the normal hold-only state; manifest
+        // and blob reads remain exact and fail closed.
+        if (isAbsentPublicAdmissionTagInventory(repository, error)) return [];
+        throw error;
+      }
       const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(output));
       const tags = array(record(value, "OCI tag inventory").tags, "OCI tags");
       if (tags.length > MAX_OCI_TAGS) throw new Error("OCI tag inventory exceeds its bound");
@@ -1775,6 +1786,19 @@ function createAnonymousOciAuthority(): ProductionOciAuthority {
       };
     },
   };
+}
+
+export function isAbsentPublicAdmissionTagInventory(
+  repository: string,
+  error: unknown,
+): boolean {
+  return (
+    /^ghcr\.io\/kandelo-dev\/homebrew-tap-core-abi-[1-9][0-9]*\/[a-z0-9._-]+\/admissions$/u
+      .test(repository) &&
+    error instanceof Error &&
+    /^OCI tag inventory anonymous read failed: Error response from registry: denied: requested access to the resource is denied\s*$/u
+      .test(error.message)
+  );
 }
 
 export function immutableRecordReferencesFromTags(
