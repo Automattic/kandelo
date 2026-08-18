@@ -1,6 +1,6 @@
 schema = 1
 kind = "kandelo-abi-staging-request-policy"
-version = 28
+version = 29
 issuer_repository = "Automattic/kandelo"
 issuer_workflow = ".github/workflows/abi-staging-request-feed.yml"
 automatic_same_repository = true
