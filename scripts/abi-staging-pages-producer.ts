@@ -624,6 +624,7 @@ export async function producePagesArtifacts(
   outputRoot: string,
   oci: ProductionOciAuthority = createAnonymousOciAuthority(),
   testDependencies?: PagesProducerTestDependenciesV1,
+  mode: "admitted" | "direct-shipping" = "admitted",
 ): Promise<void> {
   assertUncredentialedEnvironment(process.env);
   const handoff = validatePagesProductionHandoff(
@@ -708,6 +709,24 @@ export async function producePagesArtifacts(
   const inputBodies = new Map<string, { body: Uint8Array; identity: PagesFileIdentityV1 }>();
   const localLazyBodies = new Map<string, LocalLazyBody>();
   try {
+    if (mode === "direct-shipping") {
+      await produceDirectShippingTree({
+        fixed,
+        handoff,
+        inputBodies,
+        localLazyBodies,
+        lockSha256,
+        oci,
+        output,
+        reobserveSource,
+        reobserveTap,
+        runtimeBundle,
+        sourceRoot,
+        staging,
+        testDependencies,
+      });
+      return;
+    }
     const products: PagesReadinessInputV1["products"] = [];
     const collectionBlockers: Array<{
       detail: string;
@@ -993,6 +1012,553 @@ export async function producePagesArtifacts(
     rmSync(staging, { force: true, recursive: true });
     throw error;
   }
+}
+
+export async function shipPagesArtifacts(
+  handoffPath: string,
+  outputRoot: string,
+  oci: ProductionOciAuthority = createAnonymousOciAuthority(),
+  testDependencies?: PagesProducerTestDependenciesV1,
+): Promise<void> {
+  await producePagesArtifacts(
+    handoffPath,
+    outputRoot,
+    oci,
+    testDependencies,
+    "direct-shipping",
+  );
+}
+
+interface DirectBottleInputV1 {
+  descriptor: { body: Uint8Array; bytes: number; reference: string; sha256: string };
+  layer: { body: Uint8Array; bytes: number; reference: string; sha256: string };
+}
+
+async function produceDirectShippingTree(options: {
+  fixed: ProtectedPagesAuthoritiesV1;
+  handoff: PagesProductionHandoffV1;
+  inputBodies: Map<string, { body: Uint8Array; identity: PagesFileIdentityV1 }>;
+  localLazyBodies: Map<string, LocalLazyBody>;
+  lockSha256: string;
+  oci: ProductionOciAuthority;
+  output: string;
+  reobserveSource: () => void;
+  reobserveTap: () => void;
+  runtimeBundle: JsonObject;
+  sourceRoot: string;
+  staging: string;
+  testDependencies?: PagesProducerTestDependenciesV1;
+}): Promise<void> {
+  // This is the deliberately narrow shipping path. Canonical public bottles
+  // and the current product manifests are sufficient authority here; richer
+  // candidate/admission evidence remains on the asynchronous producer path.
+  const catalogEntries = new Map(
+    array(options.fixed.catalog.value.products, "direct product catalog")
+      .map((value) => {
+        const entry = record(value, "direct product catalog entry");
+        return [stableId(entry.manifest?.id, "direct product ID"), entry] as const;
+      }),
+  );
+  const pageEntries = array(options.fixed.pages.value.products, "direct Pages products")
+    .map((value) => {
+      const entry = record(value, "direct Pages product");
+      return {
+        id: stableId(entry.id, "direct Pages product ID"),
+        load: entry.load as "eager" | "lazy",
+      };
+    });
+  const expectedIds = new Set(pageEntries.map(({ id }) => id));
+  const inventories = new Map<string, JsonObject>();
+  const productRoots = new Map<string, string>();
+  for (const handoffProduct of options.handoff.products) {
+    const entry = catalogEntries.get(handoffProduct.id);
+    if (entry === undefined) throw new Error(`${handoffProduct.id} lacks a current product manifest`);
+    const currentInputRoot = join(options.staging, "current-inputs", handoffProduct.id);
+    const collect = options.testDependencies?.collectCurrentInputs ??
+      collectProductInputObjectsFromResolvedSources;
+    const inventory = collect({
+      archiveFiles: readStringMap(
+        handoffProduct.current_inputs.archive_files,
+        `${handoffProduct.id} source archives`,
+      ),
+      buildEnvironment: {
+        devShellLockSha256: options.lockSha256,
+        policySha256: text(options.runtimeBundle.build_policy_sha256, "runtime build policy"),
+      },
+      catalogPath: join(options.sourceRoot, options.fixed.catalog.path),
+      outRoot: currentInputRoot,
+      packageRoots: readStringMap(
+        handoffProduct.current_inputs.package_roots,
+        `${handoffProduct.id} package roots`,
+      ),
+      productId: handoffProduct.id,
+      programIndexPath: absolutePath(
+        handoffProduct.current_inputs.program_index,
+        `${handoffProduct.id} program index`,
+      ),
+      runtimeRoot: options.handoff.runtime_root,
+      source: options.handoff.source,
+      sourceRoot: options.sourceRoot,
+      targetAbi: {
+        snapshotSha256: options.handoff.target_abi.snapshot_sha256,
+        version: options.handoff.target_abi.version,
+      },
+    }) as unknown as JsonObject;
+    inventories.set(handoffProduct.id, inventory);
+    productRoots.set(handoffProduct.id, currentInputRoot);
+  }
+
+  const embedded = new Set<string>();
+  for (const [id, inventory] of inventories) {
+    for (const value of array(inventory.objects, `${id} direct input objects`)) {
+      const input = record(value, `${id} direct input object`);
+      if (input.role === "runtime" && input.declared_materialization === "embedded") {
+        embedded.add(directObjectKey(input));
+      }
+    }
+    const manifest = record(catalogEntries.get(id)!.manifest, `${id} manifest`);
+    for (const claimValue of array(manifest.software?.homebrew ?? [], `${id} Homebrew claims`)) {
+      const claim = record(claimValue, `${id} Homebrew claim`);
+      if (claim.materialization !== "embedded") continue;
+      for (const formula of array(claim.formulae, `${id} Homebrew Formulae`)) {
+        embedded.add(`homebrew:${stableId(formula, `${id} Homebrew Formula`)}`);
+      }
+    }
+  }
+
+  const builtProducts = new Map<string, {
+    bytes: number;
+    id: string;
+    reference: string;
+    sha256: string;
+    vfs: Uint8Array;
+  }>();
+  const sealedProducts: Array<{
+    bytes: number;
+    id: string;
+    load: "eager" | "lazy";
+    path: string;
+    private_path: string;
+    sha256: string;
+  }> = [];
+  const bottleCache = new Map<string, DirectBottleInputV1>();
+  const order = directProductOrder(pageEntries.map(({ id }) => id), catalogEntries);
+  for (const id of order) {
+    const entry = catalogEntries.get(id)!;
+    const manifest = record(entry.manifest, `${id} direct manifest`);
+    const inventory = inventories.get(id)!;
+    const inputRoot = productRoots.get(id)!;
+    const inputs: JsonObject[] = [];
+    for (const value of array(inventory.objects, `${id} direct input objects`)) {
+      const object = record(value, `${id} direct input object`);
+      const effective = directEffectivePlacement(object, embedded.has(directObjectKey(object)));
+      const input: JsonObject = {
+        architecture: object.architecture,
+        bytes: object.bytes,
+        declared_materialization: object.declared_materialization,
+        effective_materialization: effective,
+        id: object.id,
+        kind: object.kind,
+        role: object.role,
+        sha256: object.sha256,
+        ...(effective === "lazy-reference"
+          ? { reference: canonicalPagesInputReference(object.id, object.sha256, object.bytes) }
+          : { path: object.path }),
+      };
+      inputs.push(input);
+      if (effective === "lazy-reference") {
+        const body = readBoundedFile(
+          join(inputRoot, object.path),
+          `${object.id} direct lazy input`,
+          MAX_LAZY_INPUT_BYTES,
+          object.bytes,
+        );
+        if (sha256(body) !== object.sha256) {
+          throw new Error(`${object.id} direct lazy input differs from its identity`);
+        }
+        const path = canonicalPagesInputSitePath(object.id, object.sha256);
+        const identity = { bytes: object.bytes, path, sha256: object.sha256 };
+        const prior = options.inputBodies.get(path);
+        if (prior !== undefined && !jsonEqual(prior.identity, identity)) {
+          throw new Error(`direct Pages input path ${path} has conflicting identities`);
+        }
+        options.inputBodies.set(path, { body, identity });
+        registerLocalLazyBody(options.localLazyBodies, input.reference, {
+          body,
+          bytes: object.bytes,
+          sha256: object.sha256,
+        });
+      }
+    }
+
+    const canonicalHomebrewLayers: CanonicalProductBuildRequestV1["canonical_homebrew_layers"] = [];
+    const canonicalHomebrewDescriptors:
+      CanonicalProductBuildRequestV1["canonical_homebrew_descriptors"] = [];
+    for (const claimValue of array(manifest.software?.homebrew ?? [], `${id} Homebrew claims`)) {
+      const claim = record(claimValue, `${id} Homebrew claim`);
+      for (const formulaValue of array(claim.formulae, `${id} Homebrew Formulae`)) {
+        const formula = stableId(formulaValue, `${id} Homebrew Formula`);
+        let bottle = bottleCache.get(formula);
+        if (bottle === undefined) {
+          bottle = await readDirectCanonicalBottle(
+            formula,
+            options.handoff.target_abi.version,
+            options.oci,
+          );
+          bottleCache.set(formula, bottle);
+        }
+        const inputId = `homebrew-${formula}`;
+        const declared = claim.materialization;
+        const effective = directEffectivePlacement(
+          { declared_materialization: declared, role: "runtime" },
+          embedded.has(`homebrew:${formula}`),
+        );
+        inputs.push({
+          architecture: manifest.architecture,
+          bytes: bottle.layer.bytes,
+          declared_materialization: declared,
+          descriptor: {
+            bytes: bottle.descriptor.bytes,
+            path: `inputs/objects/${inputId}-metadata-sha256-${bottle.descriptor.sha256}`,
+            reference: bottle.descriptor.reference,
+            sha256: bottle.descriptor.sha256,
+          },
+          effective_materialization: effective,
+          id: inputId,
+          kind: "homebrew-bottle",
+          ...(effective === "lazy-reference"
+            ? { reference: bottle.layer.reference }
+            : {
+              path: `inputs/objects/${inputId}-sha256-${bottle.layer.sha256}`,
+              reference: bottle.layer.reference,
+            }),
+          role: "runtime",
+          sha256: bottle.layer.sha256,
+        });
+        canonicalHomebrewLayers.push({
+          body: bottle.layer.body,
+          bytes: bottle.layer.bytes,
+          input_id: inputId,
+          sha256: bottle.layer.sha256,
+        });
+        canonicalHomebrewDescriptors.push({
+          body: bottle.descriptor.body,
+          bytes: bottle.descriptor.bytes,
+          input_id: inputId,
+          reference: bottle.descriptor.reference,
+          sha256: bottle.descriptor.sha256,
+        });
+      }
+    }
+
+    const canonicalProductInputs: CanonicalProductBuildRequestV1["canonical_product_inputs"] = [];
+    for (const claimValue of array(manifest.composition?.product ?? [], `${id} product claims`)) {
+      const claim = record(claimValue, `${id} product claim`);
+      const dependency = stableId(claim.id, `${id} product dependency`);
+      const built = builtProducts.get(dependency);
+      if (built === undefined) throw new Error(`${id} depends on unavailable direct product ${dependency}`);
+      const effective = directEffectivePlacement(
+        { declared_materialization: claim.materialization, role: "runtime" },
+        claim.materialization === "embedded",
+      );
+      inputs.push({
+        architecture: manifest.architecture,
+        bytes: built.bytes,
+        declared_materialization: claim.materialization,
+        effective_materialization: effective,
+        id: `product-${dependency}`,
+        kind: "product-image",
+        ...(effective === "lazy-reference"
+          ? { reference: built.reference }
+          : {
+            path: `inputs/objects/product-${dependency}-sha256-${built.sha256}`,
+            reference: built.reference,
+          }),
+        role: "runtime",
+        sha256: built.sha256,
+      });
+      canonicalProductInputs.push(built);
+    }
+    inputs.sort((left, right) => ordinal(left.id, right.id));
+    const product = {
+      architecture: manifest.architecture,
+      id,
+      manifest,
+      manifest_path: entry.path,
+      manifest_sha256: entry.sha256,
+      output: manifest.output,
+    };
+    const resolvedInputs = {
+      build_environment: structuredClone(inventory.build_environment),
+      inputs,
+      kind: "kandelo-resolved-vfs-product-inputs",
+      product: {
+        architecture: product.architecture,
+        id,
+        manifest_path: product.manifest_path,
+        manifest_sha256: product.manifest_sha256,
+        output: product.output,
+      },
+      reference_class: "canonical",
+      schema: 1,
+      source: structuredClone(options.handoff.source),
+      target_abi: structuredClone(options.handoff.target_abi),
+    } as unknown as PagesReadinessInputV1["products"][number]["current_resolved_inputs"];
+    const built = await (
+      options.testDependencies?.buildProduct?.({
+        canonical_homebrew_descriptors: canonicalHomebrewDescriptors,
+        canonical_homebrew_layers: canonicalHomebrewLayers,
+        canonical_product_inputs: canonicalProductInputs,
+        product,
+        resolved_inputs: resolvedInputs,
+      }) ?? buildCanonicalProduct(
+        {
+          canonical_homebrew_descriptors: canonicalHomebrewDescriptors,
+          canonical_homebrew_layers: canonicalHomebrewLayers,
+          canonical_product_inputs: canonicalProductInputs,
+          product,
+          resolved_inputs: resolvedInputs,
+        },
+        options.sourceRoot,
+        inputRoot,
+        options.staging,
+        options.localLazyBodies,
+      )
+    );
+    validateDirectBuild(product, resolvedInputs, built);
+    const vfs = new Uint8Array(built.vfs);
+    const vfsSha256 = sha256(vfs);
+    const reference = directProductReference(
+      options.handoff.target_abi.version,
+      id,
+      vfsSha256,
+      vfs.byteLength,
+    );
+    const exact = { bytes: vfs.byteLength, id, reference, sha256: vfsSha256, vfs };
+    builtProducts.set(id, exact);
+    const privatePath = join(options.staging, "sealed-products", `${id}.vfs.zst`);
+    mkdirSync(dirname(privatePath), { recursive: true, mode: 0o700 });
+    writeFileSync(privatePath, vfs, { flag: "wx", mode: 0o600 });
+    const page = pageEntries.find((value) => value.id === id)!;
+    sealedProducts.push({
+      bytes: vfs.byteLength,
+      id,
+      load: page.load,
+      path: directProductSitePath(id, vfsSha256, options.handoff.target_abi.version),
+      private_path: privatePath,
+      sha256: vfsSha256,
+    });
+  }
+  sealedProducts.sort((left, right) => ordinal(left.id, right.id));
+  if (!jsonEqual(sealedProducts.map(({ id }) => id), [...expectedIds].sort(ordinal))) {
+    throw new Error("direct shipping did not build the exact Pages product set");
+  }
+  const productMapPath = writeCanonical(join(options.staging, "private-product-map.json"), {
+    kind: "kandelo-pages-private-product-map",
+    products: sealedProducts,
+    schema: 1,
+  });
+  const sourceTree = join(options.staging, "source-tree");
+  const siteMetadata = options.testDependencies?.buildSite?.({
+    additionalFiles: [...options.inputBodies.values()].map(({ body, identity }) => ({
+      ...identity,
+      body,
+    })),
+    outputRoot: sourceTree,
+    productMapPath,
+    sourceRoot: options.sourceRoot,
+  }) ?? buildFinalPagesSite({
+    additionalFiles: [...options.inputBodies.values()].map(({ body, identity }) => ({
+      ...identity,
+      body,
+    })),
+    outputRoot: sourceTree,
+    productMapPath,
+    sourceRoot: options.sourceRoot,
+  });
+  const deployment = {
+    files: siteMetadata.files,
+    kind: "kandelo-pages-site-manifest",
+    products: sealedProducts.map(({ id, load, path, bytes, sha256: digestValue }) => ({
+      id,
+      load,
+      path,
+      vfs_bytes: bytes,
+      vfs_sha256: digestValue,
+    })),
+    schema: 1,
+    shipping_mode: "direct-canonical-bottles",
+    source: structuredClone(options.handoff.source),
+    target_abi: structuredClone(options.handoff.target_abi),
+  };
+  mkdirSync(join(sourceTree, ".well-known/kandelo"), { recursive: true, mode: 0o755 });
+  writeCanonical(join(sourceTree, ".well-known/kandelo/pages-deployment.json"), deployment);
+  for (const name of readdirSync(options.staging)) {
+    if (name !== "source-tree") {
+      rmSync(join(options.staging, name), { force: true, recursive: true });
+    }
+  }
+  options.reobserveSource();
+  options.reobserveTap();
+  renameSync(options.staging, options.output);
+}
+
+function directObjectKey(input: JsonObject): string {
+  return `${String(input.kind)}:${String(input.sha256)}:${String(input.bytes)}`;
+}
+
+function directEffectivePlacement(
+  input: JsonObject,
+  globallyEmbedded: boolean,
+): "build-only" | "embedded" | "lazy-reference" {
+  if (input.role === "build") return "build-only";
+  if (input.role !== "runtime") throw new Error("direct input has unsupported role");
+  if (input.declared_materialization === "embedded" || globallyEmbedded) return "embedded";
+  if (input.declared_materialization === "lazy") return "lazy-reference";
+  throw new Error("direct input has unsupported materialization");
+}
+
+function directProductOrder(ids: string[], catalog: Map<string, JsonObject>): string[] {
+  const selected = new Set(ids);
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const order: string[] = [];
+  const visit = (id: string) => {
+    if (visited.has(id)) return;
+    if (visiting.has(id)) throw new Error("direct Pages product graph contains a cycle");
+    const entry = catalog.get(id);
+    if (entry === undefined) throw new Error(`${id} lacks a direct product manifest`);
+    visiting.add(id);
+    for (const value of array(entry.manifest?.composition?.product ?? [], `${id} dependencies`)) {
+      const dependency = stableId(record(value, `${id} dependency`).id, `${id} dependency ID`);
+      if (!selected.has(dependency)) {
+        throw new Error(`${id} depends on non-Pages product ${dependency}`);
+      }
+      visit(dependency);
+    }
+    visiting.delete(id);
+    visited.add(id);
+    order.push(id);
+  };
+  [...ids].sort(ordinal).forEach(visit);
+  return order;
+}
+
+async function readDirectCanonicalBottle(
+  formula: string,
+  abi: number,
+  oci: ProductionOciAuthority,
+): Promise<DirectBottleInputV1> {
+  const admissionRepository =
+    `ghcr.io/kandelo-dev/homebrew-tap-core-abi-${abi}/${formula}/admissions`;
+  const references = (await oci.listImmutableReferences(admissionRepository)).sort(ordinal);
+  const matches: Array<{ record: JsonObject; reference: string }> = [];
+  for (const reference of references) {
+    const value = await oci.readAdmissionRecord(reference);
+    if (
+      value.admission?.formula_metadata_update?.formula === formula &&
+      value.admission?.formula_metadata_update?.target_abi === abi
+    ) matches.push({ record: value, reference });
+  }
+  if (matches.length === 0) throw new Error(`${formula} lacks a canonical ABI ${abi} bottle`);
+  const firstIdentity = admissionProductIdentity(matches[0]!.record);
+  if (matches.some(({ record: value }) => !jsonEqual(admissionProductIdentity(value), firstIdentity))) {
+    throw new Error(`${formula} has conflicting canonical ABI ${abi} bottles`);
+  }
+  const recordValue = matches[0]!.record;
+  const canonical = record(recordValue.admission?.canonical, `${formula} canonical bottle`);
+  const canonicalReference = text(canonical.immutable_reference, `${formula} canonical reference`);
+  const readback = await oci.fetchCanonicalOci(canonicalReference);
+  if (
+    sha256(readback.manifest) !== canonical.sha256 ||
+    readback.manifest.byteLength !== canonical.bytes
+  ) throw new Error(`${formula} canonical manifest differs from its public record`);
+  const manifest = record(canonicalDocument(readback.manifest, `${formula} canonical manifest`),
+    `${formula} canonical manifest`);
+  const layers = array(manifest.layers, `${formula} canonical layers`)
+    .map((value) => record(value, `${formula} canonical layer`));
+  const layer = directOciLayer(layers, "bottle-layer", `${formula} bottle layer`);
+  const descriptor = directOciLayer(
+    layers,
+    "vfs-composition-descriptor",
+    `${formula} VFS composition descriptor`,
+  );
+  const promoted = record(recordValue.admission?.promoted_layer, `${formula} promoted layer`);
+  if (
+    layer.sha256 !== promoted.sha256 || layer.bytes !== promoted.bytes ||
+    readback.bottle_layer.byteLength !== layer.bytes ||
+    sha256(readback.bottle_layer) !== layer.sha256 ||
+    readback.vfs_composition_descriptor.byteLength !== descriptor.bytes ||
+    sha256(readback.vfs_composition_descriptor) !== descriptor.sha256
+  ) throw new Error(`${formula} canonical bottle bodies differ from their public identities`);
+  const repository = canonicalReference.replace(/@sha256:[0-9a-f]{64}$/u, "");
+  if (repository === canonicalReference) throw new Error(`${formula} canonical reference is mutable`);
+  return {
+    descriptor: {
+      body: new Uint8Array(readback.vfs_composition_descriptor),
+      bytes: descriptor.bytes,
+      reference: `${repository}@sha256:${descriptor.sha256}`,
+      sha256: descriptor.sha256,
+    },
+    layer: {
+      body: new Uint8Array(readback.bottle_layer),
+      bytes: layer.bytes,
+      reference: `${repository}@sha256:${layer.sha256}`,
+      sha256: layer.sha256,
+    },
+  };
+}
+
+function directOciLayer(
+  layers: JsonObject[],
+  role: string,
+  label: string,
+): { bytes: number; sha256: string } {
+  const matches = layers.filter((value) =>
+    record(value.annotations, `${label} annotations`)["dev.kandelo.abi-staging.role"] === role);
+  if (matches.length !== 1) throw new Error(`${label} is not unique`);
+  const selected = matches[0]!;
+  const digestValue = text(selected.digest, `${label} digest`);
+  if (!/^sha256:[0-9a-f]{64}$/u.test(digestValue)) throw new Error(`${label} digest is invalid`);
+  if (!Number.isSafeInteger(selected.size) || selected.size < 1) {
+    throw new Error(`${label} byte size is invalid`);
+  }
+  return { bytes: selected.size, sha256: digestValue.slice(7) };
+}
+
+function directProductSitePath(id: string, digestValue: string, abi: number): string {
+  return `products/${id}/sha256-${digestValue}/${id}-${abi}.vfs.zst`;
+}
+
+function directProductReference(
+  abi: number,
+  id: string,
+  digestValue: string,
+  bytes: number,
+): string {
+  return `https://automattic.github.io/kandelo/${directProductSitePath(id, digestValue, abi)}` +
+    `?sha256=${digestValue}&bytes=${bytes}`;
+}
+
+function validateDirectBuild(
+  product: JsonObject,
+  resolved: JsonObject,
+  built: { builder_report: JsonObject; vfs: Uint8Array },
+): void {
+  if (!(built.vfs instanceof Uint8Array) || built.vfs.byteLength < 1) {
+    throw new Error(`${product.id} direct builder returned no VFS bytes`);
+  }
+  const output = record(built.builder_report.output, `${product.id} direct builder output`);
+  if (
+    built.builder_report.kind !== "kandelo-vfs-builder-report" ||
+    built.builder_report.schema !== 1 ||
+    built.builder_report.capture?.complete !== true ||
+    !jsonEqual(built.builder_report.capture?.unreported_reads, []) ||
+    built.builder_report.resolved_inputs_sha256 !== sha256(canonicalJsonBytes(resolved)) ||
+    !jsonEqual(built.builder_report.product, resolved.product) ||
+    output.bytes !== built.vfs.byteLength || output.sha256 !== sha256(built.vfs) ||
+    output.name !== product.output || output.path !== product.output
+  ) throw new Error(`${product.id} direct builder report differs from its output`);
 }
 
 type ProtectedAuthorities = ProtectedPagesAuthoritiesV1;
@@ -2496,15 +3062,16 @@ function ordinal(left: string, right: string): number {
 
 async function cli(args: readonly string[]): Promise<void> {
   if (
-    args.length !== 5 || args[0] !== "produce" || args[1] !== "--input" ||
+    args.length !== 5 || !["produce", "ship"].includes(args[0] ?? "") || args[1] !== "--input" ||
     args[3] !== "--output-root"
   ) {
     throw new Error(
-      "usage: abi-staging-pages-producer.ts produce --input <production-handoff.json> " +
+      "usage: abi-staging-pages-producer.ts <produce|ship> --input <production-handoff.json> " +
       "--output-root <absent-output-directory>",
     );
   }
-  await producePagesArtifacts(args[2]!, args[4]!);
+  if (args[0] === "ship") await shipPagesArtifacts(args[2]!, args[4]!);
+  else await producePagesArtifacts(args[2]!, args[4]!);
 }
 
 if (

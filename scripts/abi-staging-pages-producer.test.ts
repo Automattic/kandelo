@@ -36,6 +36,7 @@ import {
   producePagesArtifacts,
   readCandidateProductAuthority,
   rebuildCurrentResolvedInputs,
+  shipPagesArtifacts,
   validateCandidateProductReference,
   validatePagesProductionHandoff,
   writeAtomicHoldOnlyOutput,
@@ -1412,6 +1413,81 @@ test(
   },
 );
 
+test("ships the seven-product tree without candidate records or product evidence", async () => {
+  const root = mkdtempSync(join(tmpdir(), "kandelo-pages-direct-shipping-"));
+  const outputRoot = join(root, "output");
+  const fixtureProgram = join(root, "direct-fixture.wasm");
+  writeFileSync(fixtureProgram, new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+  const fixtureKernel = join(root, "direct-kernel.wasm");
+  writeFileSync(fixtureKernel, new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+  const fixture = await createSevenProductAssembledFixture(
+    root,
+    outputRoot,
+    fixtureProgram,
+    fixtureKernel,
+  );
+  let evidenceCalls = 0;
+  fixture.dependencies.runEvidence = async () => {
+    evidenceCalls += 1;
+    throw new Error("direct shipping must not run product evidence");
+  };
+  const handoff = JSON.parse(readFileSync(fixture.handoffPath, "utf8"));
+  fixture.dependencies.buildSite = (options) => {
+    cpSync(handoff.site_source_root, options.outputRoot, { recursive: true });
+    for (const file of options.additionalFiles ?? []) {
+      const path = join(options.outputRoot, file.path);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, file.body);
+    }
+    const productMap = JSON.parse(readFileSync(options.productMapPath, "utf8"));
+    for (const product of productMap.products) {
+      const path = join(options.outputRoot, product.path);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, readFileSync(product.private_path));
+    }
+    const repoRoot = resolve(new URL("..", import.meta.url).pathname);
+    return derivePagesSiteMetadata(
+      options.outputRoot,
+      { kind: "kandelo-pages-vfs-products", products: assembledPagesProducts, schema: 1 },
+      JSON.parse(readFileSync(join(
+        repoRoot,
+        "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-gallery.json",
+      ), "utf8")),
+      readFileSync(join(repoRoot, "apps/browser-demos/pages/kandelo/presets.ts"), "utf8"),
+      readFileSync(join(
+        repoRoot,
+        "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts",
+      ), "utf8"),
+    ) as any;
+  };
+  try {
+    await shipPagesArtifacts(
+      fixture.handoffPath,
+      fixture.outputRoot,
+      fixture.oci,
+      fixture.dependencies,
+    );
+    assert.equal(evidenceCalls, 0);
+    const deployment = JSON.parse(
+      readFileSync(
+        join(outputRoot, "source-tree/.well-known/kandelo/pages-deployment.json"),
+        "utf8",
+      ),
+    );
+    assert.deepEqual(
+      deployment.products.map(({ id, load }: any) => ({ id, load })),
+      assembledPagesProducts,
+    );
+    assert.equal(deployment.shipping_mode, "direct-canonical-bottles");
+    assert.deepEqual(readdirSync(outputRoot), ["source-tree"]);
+  } finally {
+    for (const path of (fixture as any).assembledCleanupPaths ?? []) {
+      rmSync(path, { force: true, recursive: true });
+    }
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
 function assertExactProducedPrivateMapAuthority(
   root: string,
   sourceTree: string,
@@ -1494,9 +1570,11 @@ const assembledPagesProducts = [
 async function createSevenProductAssembledFixture(
   root: string,
   outputRoot: string,
+  fixtureProgramOverride?: string,
+  fixtureKernelOverride?: string,
 ): Promise<Awaited<ReturnType<typeof createMiniaturePagesProducerFixture>>> {
   const repoRoot = resolve(new URL("..", import.meta.url).pathname);
-  const fixtureProgram = createAssembledFixtureProgram(root);
+  const fixtureProgram = fixtureProgramOverride ?? createAssembledFixtureProgram(root);
   const fixture = await createMiniaturePagesProducerFixture(root, "ready");
   const handoff = JSON.parse(readFileSync(fixture.handoffPath, "utf8"));
   handoff.products = assembledPagesProducts.map(({ id }) => ({
@@ -1740,6 +1818,7 @@ async function createSevenProductAssembledFixture(
     root,
     repoRoot,
     fixtureProgram,
+    fixtureKernelOverride,
   );
   (fixture as any).assembledCleanupPaths = programAuthority.cleanupPaths;
   (fixture as any).assembledKernelBinding = programAuthority.kernelBinding;
@@ -2056,6 +2135,7 @@ function createAssembledBrowserProgramAuthority(
   root: string,
   repoRoot: string,
   fixtureProgram: string,
+  fixtureKernelOverride?: string,
 ) {
   const authorityRoot = join(root, "browser-program-authority");
   const mirrorRoot = join(authorityRoot, "local-binaries");
@@ -2072,7 +2152,7 @@ function createAssembledBrowserProgramAuthority(
       join(authorityRoot, "package.json"),
       '{"name":"kandelo","private":true}\n',
     );
-    const kernelSource = ["local-binaries", "binaries"]
+    const kernelSource = fixtureKernelOverride ?? ["local-binaries", "binaries"]
       .map((directory) => join(repoRoot, directory, "kernel.wasm"))
       .find((path) => existsSync(path));
     assert.ok(kernelSource, "assembled browser authority requires the prepared kernel");
