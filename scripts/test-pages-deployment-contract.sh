@@ -944,6 +944,11 @@ expect_canary_mutation_rejected \
   's/PLAYWRIGHT_BROWSERS_PATH="\$playwright_browsers" npx playwright install/npx playwright install/'
 
 expect_canary_mutation_rejected \
+  "hosted Playwright apt mutation" \
+  "canary must install and run Chromium from one explicit browser root" \
+  's/            chromium\n/            chromium --with-deps\n/'
+
+expect_canary_mutation_rejected \
   "Playwright root lost inside dev-shell" \
   "canary must install and run Chromium from one explicit browser root" \
   's/"PLAYWRIGHT_BROWSERS_PATH=\$PLAYWRIGHT_BROWSERS_PATH"/"PLAYWRIGHT_BROWSERS_PATH_IGNORED=\$PLAYWRIGHT_BROWSERS_PATH"/'
