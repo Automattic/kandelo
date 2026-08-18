@@ -580,6 +580,11 @@ expect_mutation_rejected \
   's/(          set -euo pipefail\n)/$1          echo ghcr.io\/kandelo-dev\/homebrew-tap-core-abi-43-candidates\/bash\n/'
 
 expect_mutation_rejected \
+  "missing MariaDB system-table role" \
+  "production Pages must supply the pinned MariaDB system-table role" \
+  's/mysql_system_tables_data\.sql/mysql_system_tables_data.missing/'
+
+expect_mutation_rejected \
   "missing direct shipping producer" \
   "production Pages must run the direct seven-product shipping producer" \
   's/scripts\/abi-staging-pages-producer\.ts ship/scripts\/abi-staging-pages-producer.ts inspect/'
