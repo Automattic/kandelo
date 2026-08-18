@@ -32,6 +32,9 @@ new_fixture() {
   fixture="$(mktemp -d "$SUITE_ROOT/case.XXXXXX")"
   mkdir -p "$fixture/.github"
   cp -R "$REPO_ROOT/.github/workflows" "$fixture/.github/workflows"
+  mkdir -p "$fixture/abi/staging"
+  cp "$REPO_ROOT/abi/staging/pages-activation.toml" \
+    "$fixture/abi/staging/pages-activation.toml"
   mkdir -p "$fixture/docs/superpowers/plans"
   mkdir -p "$fixture/scripts"
   cp "$ATOMIC_GATE" "$fixture/$ATOMIC_GATE_REL"
@@ -125,6 +128,28 @@ expect_canary_mutation_rejected() {
   grep -Fq "$expected_error" <<<"$output" ||
     fail "checker rejected canary '$label' for an unexpected reason: $output"
   echo "test-pages-deployment-contract: rejected canary $label"
+}
+
+expect_activation_mutation_rejected() {
+  local label="$1"
+  local expected_error="$2"
+  local expression="$3"
+  local fixture
+  local target
+  local output
+
+  fixture="$(new_fixture)"
+  target="$fixture/abi/staging/pages-activation.toml"
+  perl -0pi -e "$expression" "$target"
+  cmp -s "$REPO_ROOT/abi/staging/pages-activation.toml" "$target" &&
+    fail "fixture mutation did not change Pages activation: $label"
+
+  if output="$(bash "$CHECKER" "$fixture" 2>&1)"; then
+    fail "checker accepted invalid Pages activation: $label"
+  fi
+  grep -Fq "$expected_error" <<<"$output" ||
+    fail "checker rejected Pages activation '$label' unexpectedly: $output"
+  echo "test-pages-deployment-contract: rejected Pages activation $label"
 }
 
 expect_plan_mutation_rejected() {
@@ -363,6 +388,73 @@ expect_required_main_package_selection() {
     's#bash scripts/stage-homebrew-bootstrap-browser-asset\.sh#./run.sh --already-materialized prepare-browser\n          bash scripts/stage-homebrew-bootstrap-browser-asset.sh#'
 }
 
+job_block() {
+  local workflow="$1"
+  local job="$2"
+  awk -v job="$job" '
+    $0 == "  " job ":" { inside = 1 }
+    inside && $0 ~ /^  [A-Za-z0-9_.-]+:$/ &&
+      $0 != "  " job ":" { exit }
+    inside { print }
+  ' "$workflow"
+}
+
+expect_native_production_shape() {
+  local activation="$REPO_ROOT/abi/staging/pages-activation.toml"
+  local workflow_header
+  local job_names
+  local build_block
+  local deploy_block
+
+  [ "$(cat "$activation")" = $'schema = 1\nkind = "kandelo-pages-activation"\nmode = "observe"' ] ||
+    fail "inactive native Pages preparation must use observe mode"
+  workflow_header="$(sed -n '1,/^jobs:$/p' "$PAGES_WORKFLOW")"
+  grep -Fxq 'permissions: {}' <<<"$workflow_header" ||
+    fail "native Pages workflow permissions must be empty"
+  job_names="$(
+    awk '
+      /^jobs:$/ { inside = 1; next }
+      inside && /^  [A-Za-z0-9_.-]+:$/ {
+        job = $1
+        sub(/:$/, "", job)
+        print job
+      }
+    ' "$PAGES_WORKFLOW"
+  )"
+  [ "$job_names" = $'build-complete-site\ndeploy-complete-site' ] ||
+    fail "native Pages workflow must have exactly build and deploy jobs"
+
+  build_block="$(job_block "$PAGES_WORKFLOW" "build-complete-site")"
+  deploy_block="$(job_block "$PAGES_WORKFLOW" "deploy-complete-site")"
+  grep -Fxq '      actions: read' <<<"$build_block" &&
+    grep -Fxq '      contents: read' <<<"$build_block" ||
+    fail "native Pages build permissions must be Actions and contents read"
+  grep -Fxq '      pages: write' <<<"$deploy_block" &&
+    grep -Fxq '      id-token: write' <<<"$deploy_block" ||
+    fail "native Pages deploy permissions must be Pages and identity-token write"
+  grep -Fxq '    needs: build-complete-site' <<<"$deploy_block" ||
+    fail "native Pages deploy must depend on the complete build"
+  grep -Fq 'needs.build-complete-site.outputs.deploy == '\''true'\''' \
+    <<<"$deploy_block" ||
+    fail "native Pages deploy must require active complete output"
+  grep -Fq 'scripts/abi-staging-pages-producer.ts produce' <<<"$build_block" &&
+    grep -Fq 'abi-staging pages-readiness validate-readiness' <<<"$build_block" &&
+    grep -Fq 'abi-staging pages-readiness validate-site' <<<"$build_block" ||
+    fail "native Pages build must produce and validate admitted products"
+  grep -Fq 'actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0' \
+    <<<"$build_block" ||
+    fail "native Pages build must upload one pinned complete artifact"
+  grep -Fq 'actions/deploy-pages@f29b9056696d8d80070d321737a6805413dbdea1 # v4.0.5' \
+    <<<"$deploy_block" ||
+    fail "native Pages deploy must use the pinned native deploy action"
+  if grep -Eq 'actions/checkout@|^[[:space:]]+run:' <<<"$deploy_block"; then
+    fail "native Pages deploy must consume only the inert Pages artifact"
+  fi
+  if grep -Eq 'peaceiris/actions-gh-pages@|contents: write' "$PAGES_WORKFLOW"; then
+    fail "native Pages workflow must not retain the legacy branch writer"
+  fi
+}
+
 case "${PAGES_CONTRACT_FOCUS:-all}" in
   atomic-chromium)
     expect_atomic_chromium_gate_required
@@ -403,6 +495,10 @@ case "${PAGES_CONTRACT_FOCUS:-all}" in
     expect_required_main_package_selection
     exit 0
     ;;
+  task10-native)
+    expect_native_production_shape
+    exit 0
+    ;;
   all)
     ;;
   *)
@@ -415,6 +511,7 @@ expect_invalid_readiness_rejected_before_semantics symlink
 expect_invalid_readiness_rejected_before_semantics fifo
 expect_invalid_readiness_rejected_before_semantics oversize
 expect_required_main_package_selection
+expect_native_production_shape
 
 bash "$CHECKER" "$REPO_ROOT"
 expect_atomic_chromium_gate_required
@@ -433,354 +530,109 @@ YAML
 if output="$(bash "$CHECKER" "$fixture" 2>&1)"; then
   fail "checker accepted a second gh-pages writer"
 fi
-grep -Fq 'exactly one workflow may mention or publish gh-pages' <<<"$output" ||
+grep -Fq 'exactly one workflow may publish GitHub Pages' <<<"$output" ||
   fail "checker rejected the second writer for an unexpected reason: $output"
 echo "test-pages-deployment-contract: rejected a second workflow writer"
 
-expect_mutation_rejected \
-  "non-canceling concurrency" \
-  "new Pages runs must cancel in-progress work" \
-  's/cancel-in-progress: true/cancel-in-progress: false/'
+expect_activation_mutation_rejected \
+  "premature active deployment" \
+  "inactive production Pages preparation must remain in observe mode" \
+  's/mode = "observe"/mode = "active"/'
 
 expect_mutation_rejected \
-  "self-hosted Pages runner" \
-  "must use the reviewed GitHub-hosted Ubuntu runner" \
-  's/runs-on: ubuntu-latest/runs-on: self-hosted/'
+  "non-canceling production" \
+  "production Pages must supersede older incomplete deployments" \
+  's/group: kandelo-pages-production\n  cancel-in-progress: true/group: kandelo-pages-production\n  cancel-in-progress: false/'
 
 expect_mutation_rejected \
-  "decoy hosted runner with self-hosted deploy job" \
-  "must use the reviewed GitHub-hosted Ubuntu runner" \
-  's/jobs:\n  deploy:\n    runs-on: ubuntu-latest/jobs:\n  decoy:\n    runs-on: ubuntu-latest\n  deploy:\n    runs-on: self-hosted/'
+  "workflow-wide write permission" \
+  "production Pages workflow permissions must be empty" \
+  's/permissions: \{\}/permissions:\n  contents: write/'
 
 expect_mutation_rejected \
-  "failure-tolerant browser preparation" \
-  "must remain failure-intolerant" \
-  's/(      - name: Prepare browser demo assets\n)/$1        continue-on-error: true\n/'
+  "build job write permission" \
+  "production Pages build permissions must be read-only" \
+  's/(  build-complete-site:[\s\S]*?      contents:) read/$1 write/'
 
 expect_mutation_rejected \
-  "failure override after browser preparation" \
-  "pre-deployment Pages work must remain success-gated" \
-  's/(      - name: Build browser demos for GitHub Pages\n)/$1        if: always()\n/'
+  "deploy job contents permission" \
+  "native Pages deployment permissions must contain only pages and id-token writes" \
+  's/(  deploy-complete-site:[\s\S]*?    permissions:\n)/$1      contents: write\n/'
 
 expect_mutation_rejected \
-  "main-push Pages deployment" \
-  "must run only after activation dispatch" \
-  's/(  workflow_dispatch:\n)/  push:\n    branches: [main]\n$1/'
+  "extra candidate dispatch selector" \
+  "workflow dispatch must bind only the exact protected source" \
+  's/(      source_sha:[\s\S]*?        type: string)/$1\n      candidate_tag:\n        required: true\n        type: string/'
 
 expect_mutation_rejected \
-  "pull-request Pages deployment" \
-  "must run only after activation dispatch" \
-  's/(  workflow_dispatch:\n)/  pull_request:\n$1/'
-
-expect_mutation_rejected \
-  "missing exact dispatch source" \
-  "workflow dispatch must bind the exact source, candidate, and canonical index" \
-  's/      source_sha:/      source_ref:/'
-
-expect_mutation_rejected \
-  "unchecked dispatch generation inputs" \
-  "must validate every exact generation input before checkout" \
-  's/REQUESTED_CANONICAL_INDEX_SHA256: \$\{\{ inputs\.canonical_index_sha256 \}\}/REQUESTED_CANONICAL_INDEX_SHA256: unchecked/'
-
-expect_mutation_rejected \
-  "bypassed package projection check" \
-  "must verify the generated package projection" \
-  's/build-deps program-index-check/build-deps parse/'
-
-expect_mutation_rejected \
-  "bypassed canonical generation snapshot" \
-  "must authenticate the requested canonical package generation" \
-  's/scripts\/release-index-state\.sh snapshot/scripts\/release-index-state.sh read/'
-
-expect_mutation_rejected \
-  "missing musl input for repository-owned support programs" \
-  "must fetch musl for its repository-owned support programs" \
-  's/submodules: libc\/musl/submodules: libc\/missing/'
-
-expect_mutation_rejected \
-  "missing canonical package cache root" \
-  "must establish one fresh canonical package cache" \
-  's/^          echo "WASM_POSIX_BINARY_CACHE_ROOT=\$product_cache" >> "\$GITHUB_ENV"\n//m'
-
-expect_mutation_rejected \
-  "cache root lost inside dev-shell" \
-  "browser preparation must retain the canonical cache inside dev-shell" \
-  's/^            "WASM_POSIX_BINARY_CACHE_ROOT=\$WASM_POSIX_BINARY_CACHE_ROOT" \\\n//m'
-
-expect_mutation_rejected \
-  "source-fallback browser preparation" \
-  "must consume canonical packages without fallback" \
-  's#\./run\.sh --fetch-only prepare-browser#./run.sh prepare-browser#'
-
-expect_mutation_rejected \
-  "retired lazy-shell preparation" \
-  "must consume canonical packages without fallback" \
-  's#\./run\.sh --fetch-only prepare-browser#./run.sh --fetch-only --require-sealed-homebrew-selection prepare-browser#'
-
-expect_mutation_rejected \
-  "swallowed canonical preparation failure" \
-  "must consume canonical packages without fallback" \
-  's#(\./run\.sh --fetch-only prepare-browser)#$1 || true#'
-
-expect_mutation_rejected \
-  "work after canonical preparation command" \
-  "must be the final failure-propagating command" \
-  's#(\./run\.sh --fetch-only prepare-browser\n)#$1          echo continued\n#'
-
-expect_mutation_rejected \
-  "missing canonical shell resolution" \
-  "must bind the resolver-selected canonical shell, Node, and bootstrap products" \
-  's/programs\/shell\.vfs\.zst/programs\/missing-shell.vfs.zst/'
-
-expect_mutation_rejected \
-  "missing canonical Node resolution" \
-  "must bind the resolver-selected canonical shell, Node, and bootstrap products" \
-  's/programs\/node-vfs\.vfs\.zst/programs\/missing-node.vfs.zst/'
-
-expect_mutation_rejected \
-  "shell-only Pages build" \
-  "must build the complete browser entry set" \
-  's/(      - name: Build browser demos for GitHub Pages\n        working-directory: apps\/browser-demos\n)/$1        env:\n          KANDELO_BROWSER_DEMO_INPUTS: main\n/'
-
-expect_mutation_rejected \
-  "missing canonical bootstrap resolution" \
-  "must bind the resolver-selected canonical shell, Node, and bootstrap products" \
-  's/programs\/homebrew-bootstrap\/homebrew-bootstrap\.zip/programs\/missing-bootstrap.zip/'
-
-expect_mutation_rejected \
-  "missing lazy public-product inspector" \
-  "must run the lazy public-product inspector and its rejection tests" \
-  's/scripts\/inspect-homebrew-main-shell-public-product\.ts/scripts\/skipped-public-product.ts/'
-
-expect_mutation_rejected \
-  "missing lazy public-product inspector rejection tests" \
-  "must run the lazy public-product inspector and its rejection tests" \
-  's/scripts\/inspect-homebrew-main-shell-public-product\.test\.ts/scripts\/skipped-public-product.test.ts/'
-
-expect_mutation_rejected \
-  "inspector bound to another selection" \
-  "must run the lazy public-product inspector and its rejection tests" \
-  's/homebrew\/main-shell-flat-selection\.json/homebrew\/other-selection.json/'
-
-expect_mutation_rejected \
-  "unbound canonical Node digest" \
-  "must record the exact canonical shell, Node, bootstrap, and mirror identities" \
-  's/node_sha256=\$\(sha256sum/node_sha256=\$(printf/'
-
-expect_mutation_rejected \
-  "missing anonymous public mirror verification" \
-  "must anonymously verify the checked-in public mirror before building" \
-  's/scripts\/verify-public-homebrew-bottle-mirror\.mjs/scripts\/skip-public-homebrew-bottle-mirror.mjs/'
-
-expect_mutation_rejected \
-  "credentialed public mirror verification" \
-  "must anonymously verify the checked-in public mirror before building" \
-  's/env -u GH_TOKEN -u GITHUB_TOKEN node/node/'
-
-expect_mutation_rejected \
-  "retired shell artifact lock" \
-  "retired lazy-shell input: main-shell-lazy-artifact-lock" \
-  's#(          test ! -e "\$report"\n)#$1          test -f homebrew/main-shell-lazy-artifact-lock.json\n#'
-
-expect_mutation_rejected \
-  "retired bottle mirror recovery" \
-  "retired lazy-shell input: recover-homebrew-bottle-mirror" \
-  's#(          test ! -e "\$report"\n)#$1          npx tsx scripts/recover-homebrew-bottle-mirror.ts\n#'
-
-expect_mutation_rejected \
-  "missing hashed shell asset verifier" \
-  "must verify its exact shell, Node, and bootstrap assets" \
-  's/scripts\/verify-browser-shell-vfs-asset\.sh/scripts\/skipped-browser-shell-vfs-asset.sh/'
-
-expect_mutation_rejected \
-  "hashed shell verifier bound to another image" \
-  "must verify its exact shell, Node, and bootstrap assets" \
-  's/steps\.package_products\.outputs\.shell_image/steps.package_products.outputs.node_image/'
-
-expect_mutation_rejected \
-  "hashed Node verifier omits its exact stem" \
-  "must verify its exact shell, Node, and bootstrap assets" \
-  's/(steps\.package_products\.outputs\.node_image \}\}") node-vfs\.vfs/$1/'
-
-expect_mutation_rejected \
-  "unhashed public shell comparison" \
-  "must not trust optional unhashed public package images" \
-  's/(          npm run build\n)/$1          cmp dist\/shell.vfs.zst expected.vfs.zst\n/'
-
-expect_mutation_rejected \
-  "unhashed public Node comparison" \
-  "must not trust optional unhashed public package images" \
-  's/(          npm run build\n)/$1          cmp dist\/node-vfs.vfs.zst expected.vfs.zst\n/'
-
-expect_mutation_rejected \
-  "guide build without strict failure handling" \
-  "must run strict source checks, build, then output checks" \
-  's/(      - name: Build user guide for the complete Pages tree[\s\S]*?        run: \|\n)          set -euo pipefail\n/$1/m'
-
-expect_mutation_rejected \
-  "missing Homebrew guide source-link check" \
-  "must run strict source checks, build, then output checks" \
-  's/^          node --test docs-site\/\.vitepress\/homebrew-doc-links\.test\.mjs\n//m'
-
-expect_mutation_rejected \
-  "ignored Homebrew guide source-link failure" \
-  "must run strict source checks, build, then output checks" \
-  's#(node --test docs-site/\.vitepress/homebrew-doc-links\.test\.mjs)#$1 || true#'
-
-expect_mutation_rejected \
-  "late Homebrew guide source-link check" \
-  "must run strict source checks, build, then output checks" \
-  's#(          node --test docs-site/\.vitepress/homebrew-doc-links\.test\.mjs\n)(          npm run docs:build\n)#$2$1#'
-
-expect_mutation_rejected \
-  "missing generated Homebrew guide check" \
-  "must run strict source checks, build, then output checks" \
-  's/^          node --test docs-site\/\.vitepress\/homebrew-doc-output\.test\.mjs\n//m'
-
-expect_mutation_rejected \
-  "ignored generated Homebrew guide failure" \
-  "must run strict source checks, build, then output checks" \
-  's#(node --test docs-site/\.vitepress/homebrew-doc-output\.test\.mjs)#$1 || true#'
-
-expect_mutation_rejected \
-  "early generated Homebrew guide check" \
-  "must run strict source checks, build, then output checks" \
-  's#(          npm run docs:build\n)(          node --test docs-site/\.vitepress/homebrew-doc-output\.test\.mjs\n)#$2$1#'
-
-expect_mutation_rejected \
-  "lazy preview broadens its demo inputs" \
-  "must prove the canonical lazy shell at the published base" \
-  's/KANDELO_BROWSER_DEMO_INPUTS: main/KANDELO_BROWSER_DEMO_INPUTS: all/'
-
-expect_mutation_rejected \
-  "lazy preview without Pages base" \
-  "must prove the canonical lazy shell at the published base" \
-  's/(      - name: Boot the canonical lazy Pages shell in Chromium\n        working-directory: apps\/browser-demos\n        env:\n)          VITE_BASE: \/kandelo\/\n/$1/'
-
-expect_mutation_rejected \
-  "lazy preview loses strict image identity" \
-  "must prove the canonical lazy shell at the published base" \
-  's/^          KANDELO_HOMEBREW_MAIN_SHELL_SHA256:.*\n//m'
-
-expect_mutation_rejected \
-  "lazy preview drops strict identity at the dev-shell boundary" \
-  "lazy-shell preview must carry its exact inputs through dev-shell" \
-  's/(      - name: Boot the canonical lazy Pages shell in Chromium[\s\S]*?)^            "KANDELO_HOMEBREW_MAIN_SHELL_SHA256=\$KANDELO_HOMEBREW_MAIN_SHELL_SHA256" \\\n/$1/m'
-
-expect_mutation_rejected \
-  "lazy preview uses the eager flat-shell test" \
-  "must prove the canonical lazy shell at the published base" \
-  's/test\/kandelo-homebrew-main-shell\.spec\.ts/test\/kandelo-canonical-flat-shell.spec.ts/'
-
-expect_mutation_rejected \
-  "Pages omits exact npm acceptance" \
-  "must install and execute cowsay from the canonical Node image" \
-  's/test\/kandelo-node\.spec\.ts/test\/kandelo-merge-gate.spec.ts/'
-
-expect_mutation_rejected \
-  "Pages broadens npm acceptance" \
-  "must install and execute cowsay from the canonical Node image" \
-  "s/--grep '\@node-npm-acceptance'/--grep 'Node'/"
-
-expect_mutation_rejected \
-  "Node preview selects a nonexistent page input" \
-  "must install and execute cowsay from the canonical Node image" \
-  's/(      - name: Run exact Pages Node npm acceptance[\s\S]*?)KANDELO_BROWSER_DEMO_INPUTS: main/$1KANDELO_BROWSER_DEMO_INPUTS: node/'
-
-expect_mutation_rejected \
-  "Node preview drops production mode at the dev-shell boundary" \
-  "Node preview must carry its exact inputs through dev-shell" \
-  's/(      - name: Run exact Pages Node npm acceptance[\s\S]*?)^            "KANDELO_PLAYWRIGHT_SERVE_DIST=\$KANDELO_PLAYWRIGHT_SERVE_DIST" \\\n/$1/m'
-
-expect_mutation_rejected \
-  "Node preview drops exact VFS digest" \
-  "must install and execute cowsay from the canonical Node image" \
-  's/^          KANDELO_NODE_VFS_SHA256:.*\n//m'
-
-expect_mutation_rejected \
-  "checkout of a different ref" \
-  "checkout must use one exact source selector" \
-  's/(        uses: actions\/checkout@[^\n]+\n)/$1        with:\n          ref: main\n/'
-
-expect_mutation_rejected \
-  "unverified checked-out source" \
-  "must verify the exact requested source is the current default tip" \
-  's/actual_source_sha=\$\(git rev-parse HEAD\)/actual_source_sha=unchecked/'
-
-expect_mutation_rejected \
-  "checkout with persisted write credentials" \
-  "product-building Pages checkout must not persist write credentials" \
+  "checkout with persisted credentials" \
+  "production Pages must check out one exact uncredentialed source" \
   's/^          persist-credentials: false\n//m'
 
 expect_mutation_rejected \
   "second source checkout" \
-  "all Pages outputs must be built from one checkout" \
-  's/(      - name: Build user guide for the complete Pages tree)/      - name: Replace the source tree\n        uses: actions\/checkout\@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0\n\n$1/'
+  "production Pages must build every output from one checkout" \
+  's/(      - name: Produce admitted canonical Pages products)/      - name: Replace protected source\n        uses: actions\/checkout\@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0\n\n$1/'
 
 expect_mutation_rejected \
-  "missing Actions read permission" \
-  "needs read access to verify workflow run order" \
-  's/^  actions: read\n//m'
+  "candidate namespace injection" \
+  "production Pages must not consume candidate artifact authority" \
+  's/(          set -euo pipefail\n)/$1          echo ghcr.io\/kandelo-dev\/homebrew-tap-core-abi-43-candidates\/bash\n/'
 
 expect_mutation_rejected \
-  "unauthenticated newest-run check" \
-  "must authenticate with the workflow token" \
-  's/(      - name: Confirm this is the newest Pages run[\s\S]*?)GH_TOKEN: \$\{\{ github\.token \}\}/$1GH_TOKEN: ""/'
+  "missing admitted-product producer" \
+  "production Pages must run the protected admitted-product producer" \
+  's/scripts\/abi-staging-pages-producer\.ts produce/scripts\/abi-staging-pages-producer.ts inspect/'
 
 expect_mutation_rejected \
-  "bypassed newest-run checker" \
-  "authority must come from the tested newest-run checker" \
-  's#run: bash scripts/check-pages-run-freshness\.sh#run: echo "publish=true" >> "$GITHUB_OUTPUT"#'
+  "missing readiness validation" \
+  "production Pages holds must contain only validated readiness" \
+  's/abi-staging pages-readiness validate-readiness/abi-staging pages-readiness inspect-readiness/'
 
 expect_mutation_rejected \
-  "foreign production freshness workflow" \
-  "production newest-run guard must query only the production workflow" \
-  's/(env:\n)/$1  PAGES_WORKFLOW_FILE: unrelated-pages.yml\n/'
+  "broad hold artifact" \
+  "production Pages must retain an inert hold when products are incomplete" \
+  's#abi-staging-pages-output/readiness\.json#abi-staging-pages-output/#'
 
 expect_mutation_rejected \
-  "unconditional deployment" \
-  "deployment must be conditional" \
-  "s/if: steps\\.publish_freshness\\.outputs\\.publish == 'true'/if: always()/"
+  "missing complete-tree validation" \
+  "production Pages must validate the complete exact tree before upload" \
+  's/abi-staging pages-readiness validate-site/abi-staging pages-readiness inspect-site/'
 
 expect_mutation_rejected \
-  "work inserted after freshness check" \
-  "newest-run freshness check must be immediately before deployment" \
-  's/(      - name: Deploy to gh-pages)/      - name: Delay publication\n        run: sleep 1\n\n$1/'
+  "foreign production freshness selector" \
+  "production Pages must use the tested production freshness guard" \
+  's/PAGES_WORKFLOW_FILE: browser-demos-pages\.yml/PAGES_WORKFLOW_FILE: abi-staging-pages-canary.yml/'
 
 expect_mutation_rejected \
-  "retained root files" \
-  "must not retain obsolete Pages files" \
-  's/(          force_orphan: true)/$1\n          keep_files: true/'
+  "generic artifact replaces native Pages artifact" \
+  "production Pages must upload exactly one complete native Pages artifact" \
+  's/actions\/upload-pages-artifact\@fc324d3547104276b827a68afc52ff2a11cc49c9/actions\/upload-artifact\@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/'
 
 expect_mutation_rejected \
-  "non-orphan root publication" \
-  "must replace gh-pages with a fresh orphan commit" \
-  's/^          force_orphan: true\n//m'
+  "partial Pages artifact path" \
+  "production Pages must upload exactly one complete native Pages artifact" \
+  's#abi-staging-pages-output/source-tree#abi-staging-pages-output/source-tree/kandelo#'
 
 expect_mutation_rejected \
-  "missing guide assembly" \
-  "complete Pages tree does not include the user guide" \
-  's/^          cp -R docs-site\/\.vitepress\/dist apps\/browser-demos\/dist\/guide\n//m'
+  "deploy without activation" \
+  "production Pages deploy output must bind activation, readiness, and freshness" \
+  's/steps\.activation\.outputs\.active == '\''true'\'' && //'
 
 expect_mutation_rejected \
-  "missing API assembly" \
-  "complete Pages tree does not include the API docs" \
-  's/^          cp -R host\/docs apps\/browser-demos\/dist\/api\n//m'
+  "unconditional deploy job" \
+  "native Pages deployment must consume only the successful build output" \
+  "s/if: needs\\.build-complete-site\\.outputs\\.deploy == 'true'/if: always()/"
 
 expect_mutation_rejected \
-  "missing deployed generation evidence" \
-  "must publish its exact source and package generation evidence" \
-  's/apps\/browser-demos\/dist\/kandelo-deployment\.json/apps\/browser-demos\/dist\/missing-generation.json/'
+  "deploy job rebuild" \
+  "native Pages deploy job must not rebuild or replace the proven artifact" \
+  's/(  deploy-complete-site:[\s\S]*?    steps:\n)/$1      - run: npm run build\n/'
 
 expect_mutation_rejected \
-  "missing assembled-tree size gate" \
-  "must assemble and size-check the complete tree" \
-  's/      - name: Enforce the GitHub Pages published-site size limit/      - name: Report the assembled tree size/'
-
-expect_mutation_rejected \
-  "raised Pages size limit" \
-  "must enforce GitHub's 1,000,000,000-byte site limit" \
-  's/apps\/browser-demos\/dist 1000000000/apps\/browser-demos\/dist 2000000000/'
+  "legacy branch publisher" \
+  "native Pages deployment must use the pinned GitHub deployment action" \
+  's#actions/deploy-pages\@f29b9056696d8d80070d321737a6805413dbdea1#peaceiris/actions-gh-pages\@c473a7a5e2f63b7b48ad4439c0b58ebdc2c2f57a#'
 
 [ -f "$CANARY_WORKFLOW" ] ||
   fail "native Pages canary is absent: $CANARY_WORKFLOW_REL"
