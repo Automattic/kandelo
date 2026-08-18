@@ -179,48 +179,6 @@ jobs:
           # only this one reviewed package from the protected current source.
           bash scripts/fetch-binaries.sh --package homebrew-bootstrap
 
-          # WHY: ABI-staging runtime mode builds only the real root page. Derive
-          # its non-optional package imports from that exact source graph and
-          # materialize those roots through the resolver, which also stages
-          # declared build dependencies for packages missing from the release.
-          # The old prepare-browser loop rebuilt every retained lab and invoked
-          # package scripts directly, bypassing that dependency environment.
-          browser_package_list="$input_root/browser-package-list.txt"
-          node scripts/browser-binary-package-roots.mjs \
-            --arch wasm32 \
-            --html-entry index.html \
-            --local-capability kernel-wasm \
-            --local-capability pages-vfs-products \
-            --local-capability rootfs-vfs \
-            --exclude-package shell \
-            >"$browser_package_list"
-          mapfile -t browser_packages <"$browser_package_list"
-          ((${#browser_packages[@]} > 0))
-          browser_fetch_args=()
-          for package in "${browser_packages[@]}"; do
-            [[ $package =~ ^[a-z0-9][a-z0-9+._-]*$ ]]
-            if ! grep -Fxq -- "$package" "$package_list"; then
-              browser_fetch_args+=(--package "$package")
-            fi
-          done
-          if ((${#browser_fetch_args[@]} > 0)); then
-            # WHY: selected product archives are fetched, but the remaining
-            # root-page support programs are built from current source. Build
-            # one shared libc/sysroot before resolving that bounded set.
-            bash scripts/build-musl.sh
-            bash scripts/fetch-binaries.sh "${browser_fetch_args[@]}"
-            # Runtime preparation builds a separate isolated toolchain and
-            # rejects ambient source-tree sysroots. The selected package bytes
-            # are already sealed in the isolated package cache at this point.
-            test -d "$source_root/sysroot" && test ! -L "$source_root/sysroot"
-            rm -rf -- "$source_root/sysroot"
-            test ! -e "$source_root/sysroot" && test ! -L "$source_root/sysroot"
-            # The sysroot is outside the submodule. Restore only the fetched
-            # source checkout so the later current-main handoff remains exact.
-            git -C libc/musl reset --hard HEAD
-            git -C libc/musl clean -fdx
-          fi
-
           bootstrap_path=$(bash scripts/resolve-binary.sh \
             programs/homebrew-bootstrap/homebrew-bootstrap.zip)
           [ -f "$bootstrap_path" ] && [ ! -L "$bootstrap_path" ]
@@ -315,10 +273,10 @@ jobs:
           done < <(jq -r '.products[].id' "$registry")
           BASH
 
-      # WHY: Vite resolves the canonical product placeholders and required
-      # root-page programs while it builds the runtime. Materialize and seal
-      # those exact inputs first, then carry the same isolated cache through
-      # both dev-shell boundaries.
+      # WHY: canonical Pages resolves software from the seven product images,
+      # not Vite's legacy browser-program fallbacks. Materialize only the
+      # product-owned package inputs here; runtime preparation separately
+      # produces the exact kernel and host assets.
       - name: Prepare exact uncredentialed runtime
         run: |
           set -euo pipefail

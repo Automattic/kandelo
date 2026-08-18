@@ -37,6 +37,7 @@ import {
 import { DEFAULT_BROWSER_CORS_PROXY_CONFIG } from "./lib/browser-cors-proxy";
 import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
 import {
+  createCanonicalPagesLegacyBinaryBoundary,
   createCanonicalPagesVfsProductsPlugin,
   loadCanonicalPagesProductMap,
 } from "../../scripts/abi-staging-pages-site-builder.ts";
@@ -756,6 +757,7 @@ export default defineConfig(({ mode }) => {
   );
 
   const base = process.env.VITE_BASE || "/";
+  const canonicalPages = process.env.KANDELO_PAGES_PRODUCT_MAP !== undefined;
   const pagesVfsProducts = canonicalPagesVfsProducts(base);
 
   return {
@@ -765,6 +767,7 @@ export default defineConfig(({ mode }) => {
     },
     plugins: [
       abiStagingBrowserEvidenceArtifactBoundary(mode),
+      createCanonicalPagesLegacyBinaryBoundary(canonicalPages),
       pagesVfsProducts,
       react(),
       resolveKernelArtifactsAlias(binaryDevAccess),
@@ -814,6 +817,7 @@ export default defineConfig(({ mode }) => {
       format: "es",
       plugins: () => [
         abiStagingBrowserEvidenceArtifactBoundary(mode),
+        createCanonicalPagesLegacyBinaryBoundary(canonicalPages),
         canonicalPagesVfsProducts(base),
         resolveKernelArtifactsAlias(binaryDevAccess),
         resolveBinariesAlias(binaryDevAccess, browserBinaryResolution),

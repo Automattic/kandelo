@@ -1,9 +1,12 @@
 import {
   lstatSync,
+  mkdtempSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  rmSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, relative, resolve, sep } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -60,8 +63,8 @@ export async function runVfsProductBuilder(
   ensureParentDirectories(normalized.workDir, normalized.outputPath);
   ensureParentDirectories(normalized.workDir, normalized.reportPath);
   createPrivateDirectory(resolve(normalized.workDir, "home"));
-  createPrivateDirectory(resolve(normalized.workDir, "tmp"));
-  const environment = isolatedEnvironment(normalized.workDir);
+  const socketTemp = createSocketTempDirectory();
+  const environment = isolatedEnvironment(normalized.workDir, socketTemp);
   const args = Object.freeze([
     "--vfs-product-manifest",
     normalized.manifestPath,
@@ -72,29 +75,33 @@ export async function runVfsProductBuilder(
     "--vfs-product-output",
     normalized.outputPath,
   ]);
-  const result = await dependencies.launch(
-    builderPath,
-    args,
-    environment,
-    normalized.workDir,
-  );
-  if (!Number.isInteger(result.exitCode) || result.exitCode !== 0) {
-    throw new Error(
-      `VFS product builder exited with status ${String(result.exitCode)}`,
+  try {
+    const result = await dependencies.launch(
+      builderPath,
+      args,
+      environment,
+      normalized.workDir,
     );
-  }
+    if (!Number.isInteger(result.exitCode) || result.exitCode !== 0) {
+      throw new Error(
+        `VFS product builder exited with status ${String(result.exitCode)}`,
+      );
+    }
 
-  assertRegularNonsymlinkBelow(
-    normalized.workDir,
-    normalized.outputPath,
-    "builder output",
-  );
-  assertRegularNonsymlinkBelow(
-    normalized.workDir,
-    normalized.reportPath,
-    "builder report",
-  );
-  await dependencies.compareReport(normalized.inputsPath, normalized.reportPath);
+    assertRegularNonsymlinkBelow(
+      normalized.workDir,
+      normalized.outputPath,
+      "builder output",
+    );
+    assertRegularNonsymlinkBelow(
+      normalized.workDir,
+      normalized.reportPath,
+      "builder report",
+    );
+    await dependencies.compareReport(normalized.inputsPath, normalized.reportPath);
+  } finally {
+    rmSync(socketTemp, { force: true, recursive: true });
+  }
 }
 
 export async function runVfsProductBuilderCli(
@@ -281,7 +288,10 @@ function readBuilderPath(manifestPath: string): string {
   return builderPath;
 }
 
-function isolatedEnvironment(workDir: string): Readonly<Record<string, string>> {
+function isolatedEnvironment(
+  workDir: string,
+  socketTemp: string,
+): Readonly<Record<string, string>> {
   const environment: Record<string, string> = {};
   for (const name of SAFE_AMBIENT_ENVIRONMENT) {
     const value = process.env[name];
@@ -291,9 +301,20 @@ function isolatedEnvironment(workDir: string): Readonly<Record<string, string>> 
     throw new Error("VFS product builder requires PATH from the repository dev shell");
   }
   environment.HOME = resolve(workDir, "home");
-  environment.TMPDIR = resolve(workDir, "tmp");
+  environment.TMPDIR = socketTemp;
   environment.CI = "true";
   return Object.freeze(environment);
+}
+
+function createSocketTempDirectory(): string {
+  const base = process.platform === "win32" ? tmpdir() : "/tmp";
+  const path = mkdtempSync(resolve(base, "kpb-"));
+  assertDirectoryNonsymlink(path, "private builder socket temp directory");
+  if (Buffer.byteLength(path) > 80) {
+    rmSync(path, { force: true, recursive: true });
+    throw new Error("private builder socket temp path exceeds its 80-byte bound");
+  }
+  return path;
 }
 
 function createPrivateDirectory(path: string): void {

@@ -37,6 +37,7 @@ const PRIVATE_MAP_KIND = "kandelo-pages-private-product-map";
 const VIRTUAL_PRODUCTS = "virtual:kandelo-pages-vfs-products";
 const RESOLVED_VIRTUAL_PRODUCTS = `\0${VIRTUAL_PRODUCTS}`;
 const RESOLVED_PRODUCT_URL = "\0kandelo-pages-vfs-product-url:";
+const RESOLVED_UNAVAILABLE_BINARY = "\0kandelo-pages-unavailable-binary:";
 
 export interface CanonicalPagesProductMapEntryV1 {
   bytes: number;
@@ -51,6 +52,37 @@ export interface CanonicalPagesProductMapV1 {
   kind: "kandelo-pages-private-product-map";
   products: CanonicalPagesProductMapEntryV1[];
   schema: 1;
+}
+
+export function createCanonicalPagesLegacyBinaryBoundary(
+  enabled: boolean,
+) {
+  return {
+    name: "canonical-pages-legacy-binary-boundary",
+    enforce: "pre" as const,
+    resolveId(source: string) {
+      if (!enabled || !source.startsWith("@binaries/")) return null;
+      const pathPart = source.slice("@binaries/".length).split("?", 1)[0]!;
+      const parts = pathPart.split("/");
+      const relativePath = parts[0] === "programs" &&
+          parts[1] !== "wasm32" && parts[1] !== "wasm64"
+        ? ["programs", "wasm32", ...parts.slice(1)].join("/")
+        : pathPart;
+      if (!isRepositoryPath(relativePath)) {
+        throw new Error("canonical Pages legacy binary import is invalid");
+      }
+      return RESOLVED_UNAVAILABLE_BINARY + encodeURIComponent(relativePath);
+    },
+    load(id: string) {
+      if (!id.startsWith(RESOLVED_UNAVAILABLE_BINARY)) return null;
+      const relativePath = decodeURIComponent(
+        id.slice(RESOLVED_UNAVAILABLE_BINARY.length),
+      );
+      return `export default ${JSON.stringify(
+        `/__kandelo_pages_unavailable__/${relativePath}`,
+      )};`;
+    },
+  };
 }
 
 export interface PagesFileIdentityV1 {

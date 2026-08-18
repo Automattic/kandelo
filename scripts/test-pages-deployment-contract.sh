@@ -355,36 +355,20 @@ expect_direct_package_selection_required() {
     "stale selected package fetch" \
     "canary must fail immediately when a selected package root is missing" \
     's/fetch_args=\(--fetch-only\)/fetch_args=(--fetch-only --allow-stale)/'
-  expect_canary_mutation_rejected \
-    "repeated broad package fetch" \
-    "canary must materialize only the required main-page package roots" \
-    's#bash scripts/fetch-binaries\.sh "\$\{browser_fetch_args\[@\]\}"#bash scripts/fetch-binaries.sh#'
 }
 
 expect_required_main_package_selection() {
   expect_canary_mutation_rejected \
-    "missing browser source sysroot build" \
-    "canary must build one current-source sysroot before browser support packages" \
-    's#bash scripts/build-musl\.sh#test -d sysroot#'
+    "restored browser source sysroot build" \
+    "canonical Pages must not source-build legacy browser programs" \
+    's#(          bootstrap_path=)#          bash scripts/build-musl.sh\n$1#'
   expect_canary_mutation_rejected \
-    "dirty musl source after browser builds" \
-    "canary must restore the exact musl source after browser support builds" \
-    's#git -C libc/musl clean -fdx#true#'
-  expect_canary_mutation_rejected \
-    "retained browser build sysroot" \
-    "canary must remove the build sysroot before exact runtime preparation" \
-    's#rm -rf -- "\$source_root/sysroot"#true#'
-  expect_canary_mutation_rejected \
-    "missing required browser input graph" \
-    "canary must materialize only the required main-page package roots" \
-    's#node scripts/browser-binary-package-roots\.mjs \\#node scripts/missing-browser-package-roots.mjs \\#'
-  expect_canary_mutation_rejected \
-    "broad browser package fallback" \
-    "canary must materialize only the required main-page package roots" \
-    's#bash scripts/fetch-binaries\.sh "\$\{browser_fetch_args\[@\]\}"#bash scripts/fetch-binaries.sh#'
+    "restored browser package graph" \
+    "canonical Pages must not source-build legacy browser programs" \
+    's#(          bootstrap_path=)#          node scripts/browser-binary-package-roots.mjs --arch wasm32\n$1#'
   expect_canary_mutation_rejected \
     "restored legacy browser preparation" \
-    "canary must not rebuild the legacy browser package matrix" \
+    "canonical Pages must not source-build legacy browser programs" \
     's#bash scripts/stage-homebrew-bootstrap-browser-asset\.sh#./run.sh --already-materialized prepare-browser\n          bash scripts/stage-homebrew-bootstrap-browser-asset.sh#'
 }
 
