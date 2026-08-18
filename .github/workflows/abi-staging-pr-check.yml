@@ -141,7 +141,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout captured protected Kandelo authority
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.enumerate-open-prs.outputs.protected-sha }}
           fetch-depth: 1
@@ -149,7 +149,7 @@ jobs:
           path: authority
 
       - name: Checkout captured protected tap authority
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: kandelo-dev/homebrew-tap-core
           ref: ${{ needs.enumerate-open-prs.outputs.tap-sha }}
@@ -158,7 +158,7 @@ jobs:
           path: tap
 
       - name: Checkout inert exact PR head
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ matrix.subject.head_repository }}
           ref: ${{ matrix.subject.head }}
@@ -323,7 +323,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout captured protected Kandelo authority
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.enumerate-open-prs.outputs.protected-sha }}
           fetch-depth: 1

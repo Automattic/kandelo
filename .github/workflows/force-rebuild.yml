@@ -199,7 +199,7 @@ jobs:
       target_tag: ${{ steps.compute.outputs.target_tag }}
       expected_ledger_artifact: ${{ steps.compute.outputs.expected_ledger_artifact }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.gate.outputs.source_sha }}
 
@@ -228,7 +228,7 @@ jobs:
         run: bash scripts/dev-shell.sh true
 
       - name: Cache xtask build
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -340,7 +340,7 @@ jobs:
     needs: [gate]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.gate.outputs.source_sha }}
 
@@ -372,7 +372,7 @@ jobs:
           echo "toolchain-cache key: $KEY"
 
       - name: Cache musl sysroot + libc++
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: cache
         with:
           path: |
@@ -439,7 +439,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.preflight.outputs.level_0_matrix) }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.gate.outputs.source_sha }}
       - uses: ./.github/actions/exact-main-package-rebuild
@@ -470,7 +470,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.preflight.outputs.level_1_matrix) }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.gate.outputs.source_sha }}
       - uses: ./.github/actions/exact-main-package-rebuild
@@ -501,7 +501,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.preflight.outputs.level_2_matrix) }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.gate.outputs.source_sha }}
       - uses: ./.github/actions/exact-main-package-rebuild
@@ -532,7 +532,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.preflight.outputs.level_3_matrix) }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.gate.outputs.source_sha }}
       - uses: ./.github/actions/exact-main-package-rebuild
@@ -563,7 +563,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.preflight.outputs.level_4_matrix) }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.gate.outputs.source_sha }}
       - uses: ./.github/actions/exact-main-package-rebuild
@@ -594,7 +594,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.preflight.outputs.level_5_matrix) }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.gate.outputs.source_sha }}
       - uses: ./.github/actions/exact-main-package-rebuild
@@ -625,7 +625,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.preflight.outputs.level_6_matrix) }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.gate.outputs.source_sha }}
       - uses: ./.github/actions/exact-main-package-rebuild
@@ -656,7 +656,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.preflight.outputs.level_7_matrix) }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.gate.outputs.source_sha }}
       - uses: ./.github/actions/exact-main-package-rebuild
@@ -698,7 +698,7 @@ jobs:
     env:
       WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.gate.outputs.source_sha }}
 
@@ -892,7 +892,7 @@ jobs:
       SUITE: ${{ matrix.suite }}
       TEST_GROUP: ${{ matrix.group }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.gate.outputs.source_sha }}
 
@@ -987,7 +987,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.gate.outputs.source_sha }}
 
