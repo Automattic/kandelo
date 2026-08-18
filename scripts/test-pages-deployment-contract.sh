@@ -342,6 +342,10 @@ expect_required_main_package_selection() {
     "canary must build one current-source sysroot before browser support packages" \
     's#bash scripts/build-musl\.sh#test -d sysroot#'
   expect_canary_mutation_rejected \
+    "dirty musl source after browser builds" \
+    "canary must restore the exact musl source after browser support builds" \
+    's#git -C libc/musl clean -fdx#true#'
+  expect_canary_mutation_rejected \
     "missing required browser input graph" \
     "canary must materialize only the required main-page package roots" \
     's#node scripts/browser-binary-package-roots\.mjs \\#node scripts/missing-browser-package-roots.mjs \\#'

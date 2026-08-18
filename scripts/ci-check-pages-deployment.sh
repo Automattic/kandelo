@@ -456,6 +456,18 @@ browser_fetch_line="$(
 [ -n "$browser_sysroot_line" ] && [ -n "$browser_fetch_line" ] &&
   [ "$browser_sysroot_line" -lt "$browser_fetch_line" ] ||
   fail "canary must build one current-source sysroot before browser support packages"
+browser_musl_reset_line="$(
+  grep -nF 'git -C libc/musl reset --hard HEAD' <<<"$inputs_block" |
+    cut -d: -f1 || true
+)"
+browser_musl_clean_line="$(
+  grep -nF 'git -C libc/musl clean -fdx' <<<"$inputs_block" |
+    cut -d: -f1 || true
+)"
+[ -n "$browser_musl_reset_line" ] && [ -n "$browser_musl_clean_line" ] &&
+  [ "$browser_fetch_line" -lt "$browser_musl_reset_line" ] &&
+  [ "$browser_musl_reset_line" -lt "$browser_musl_clean_line" ] ||
+  fail "canary must restore the exact musl source after browser support builds"
 if grep -Fq './run.sh' <<<"$inputs_block"; then
   fail "canary must not rebuild the legacy browser package matrix"
 fi

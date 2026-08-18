@@ -207,6 +207,10 @@ jobs:
             # one shared libc/sysroot before resolving that bounded set.
             bash scripts/build-musl.sh
             bash scripts/fetch-binaries.sh "${browser_fetch_args[@]}"
+            # The sysroot is outside the submodule. Restore only the fetched
+            # source checkout so the later current-main handoff remains exact.
+            git -C libc/musl reset --hard HEAD
+            git -C libc/musl clean -fdx
           fi
 
           bootstrap_path=$(bash scripts/resolve-binary.sh \
