@@ -207,6 +207,12 @@ jobs:
             # one shared libc/sysroot before resolving that bounded set.
             bash scripts/build-musl.sh
             bash scripts/fetch-binaries.sh "${browser_fetch_args[@]}"
+            # Runtime preparation builds a separate isolated toolchain and
+            # rejects ambient source-tree sysroots. The selected package bytes
+            # are already sealed in the isolated package cache at this point.
+            test -d "$source_root/sysroot" && test ! -L "$source_root/sysroot"
+            rm -rf -- "$source_root/sysroot"
+            test ! -e "$source_root/sysroot" && test ! -L "$source_root/sysroot"
             # The sysroot is outside the submodule. Restore only the fetched
             # source checkout so the later current-main handoff remains exact.
             git -C libc/musl reset --hard HEAD
