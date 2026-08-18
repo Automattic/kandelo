@@ -912,10 +912,9 @@ grep -Fxq '      actions: read' <<<"$production_build_permissions" &&
   [ "$(awk '/^      [A-Za-z-]+:/ { count += 1 } END { print count + 0 }' \
       <<<"$production_build_permissions")" -eq 2 ] ||
   fail "production Pages build permissions must be read-only"
-grep -Fq 'steps.activation.outputs.active' <<<"$production_build_block" &&
-  grep -Fq 'steps.readiness.outputs.ready' <<<"$production_build_block" &&
+grep -Fq 'steps.shipping.outputs.ready' <<<"$production_build_block" &&
   grep -Fq 'steps.publish_freshness.outputs.publish' <<<"$production_build_block" ||
-  fail "production Pages deploy output must bind activation, readiness, and freshness"
+  fail "production Pages deploy output must bind direct shipping and freshness"
 
 activation_document="$(cat "$REPO_ROOT/abi/staging/pages-activation.toml")"
 [ "$activation_document" = $'schema = 1\nkind = "kandelo-pages-activation"\nmode = "observe"' ] ||
@@ -954,46 +953,44 @@ if grep -Eq 'candidate_tag|canonical_index_sha256|ghcr\.io/[^[:space:]]*-candida
   fail "production Pages must not consume candidate artifact authority"
 fi
 
-producer_line="$(step_line "Produce admitted canonical Pages products")"
-readiness_line="$(step_line "Validate Pages readiness and select ready or hold")"
-tree_line="$(step_line "Validate the complete canonical Pages tree")"
+producer_line="$(step_line "Build the seven ABI products directly for shipping")"
+tree_line="$(step_line "Validate the direct shipping tree")"
+chromium_line="$(step_line "Smoke-test the exact assembled ABI 43 site in Chromium")"
 freshness_line="$(step_line "Confirm this is the newest Pages run")"
-hold_line="$(step_line "Upload the incomplete production Pages hold")"
-pages_upload_line="$(step_line "Upload the complete Pages deployment artifact")"
-[ -n "$producer_line" ] && [ -n "$readiness_line" ] &&
-  [ -n "$tree_line" ] && [ -n "$freshness_line" ] &&
-  [ -n "$hold_line" ] && [ -n "$pages_upload_line" ] &&
-  [ "$producer_line" -lt "$readiness_line" ] &&
-  [ "$readiness_line" -lt "$tree_line" ] &&
-  [ "$tree_line" -lt "$freshness_line" ] &&
-  [ "$freshness_line" -lt "$hold_line" ] &&
-  [ "$hold_line" -lt "$pages_upload_line" ] ||
-  fail "production Pages must produce, validate, freshness-check, then upload one tree"
-producer_block="$(step_block "$PAGES_WORKFLOW" "Produce admitted canonical Pages products")"
-grep -Fq 'scripts/abi-staging-pages-producer.ts produce' <<<"$producer_block" &&
+pages_upload_line="$(step_line "Upload the smoke-tested Pages deployment artifact")"
+[ -n "$producer_line" ] && [ -n "$tree_line" ] &&
+  [ -n "$chromium_line" ] && [ -n "$freshness_line" ] &&
+  [ -n "$pages_upload_line" ] &&
+  [ "$producer_line" -lt "$tree_line" ] &&
+  [ "$tree_line" -lt "$chromium_line" ] &&
+  [ "$chromium_line" -lt "$freshness_line" ] &&
+  [ "$freshness_line" -lt "$pages_upload_line" ] ||
+  fail "production Pages must build, validate, smoke-test, freshness-check, then upload one tree"
+producer_block="$(step_block "$PAGES_WORKFLOW" "Build the seven ABI products directly for shipping")"
+grep -Fq 'id: shipping' <<<"$producer_block" &&
+  grep -Fq 'scripts/abi-staging-pages-producer.ts ship' <<<"$producer_block" &&
   grep -Fq 'pages_output="$RUNNER_TEMP/abi-staging-pages-output"' \
     <<<"$producer_block" &&
   grep -Fq -- '--output-root "$pages_output"' \
-    <<<"$producer_block" ||
-  fail "production Pages must run the protected admitted-product producer"
-readiness_block="$(
-  step_block "$PAGES_WORKFLOW" "Validate Pages readiness and select ready or hold"
-)"
-grep -Fq 'abi-staging pages-readiness validate-readiness' \
-  <<<"$readiness_block" &&
-  grep -Fq 'hold_inventory' <<<"$readiness_block" &&
-  grep -Fq '[ "$hold_inventory" = '\''["readiness.json"]'\'' ]' \
-    <<<"$readiness_block" ||
-  fail "production Pages holds must contain only validated readiness"
-tree_block="$(step_block "$PAGES_WORKFLOW" "Validate the complete canonical Pages tree")"
-grep -Fxq "        if: steps.readiness.outputs.ready == 'true'" \
-  <<<"$tree_block" &&
-  grep -Fq 'abi-staging pages-readiness validate-site' <<<"$tree_block" &&
+    <<<"$producer_block" &&
+  grep -Fq 'echo "ready=true" >>"$GITHUB_OUTPUT"' <<<"$producer_block" ||
+  fail "production Pages must run the direct seven-product shipping producer"
+tree_block="$(step_block "$PAGES_WORKFLOW" "Validate the direct shipping tree")"
+grep -Fq '.shipping_mode == "direct-canonical-bottles"' <<<"$tree_block" &&
   grep -Fq 'Pages artifact differs from its exact site inventory' \
     <<<"$tree_block" &&
   grep -Fq 'check-pages-publish-size.mjs "$site_root" 1000000000' \
     <<<"$tree_block" ||
-  fail "production Pages must validate the complete exact tree before upload"
+  fail "production Pages must validate the direct exact tree before upload"
+chromium_block="$(
+  step_block "$PAGES_WORKFLOW" "Smoke-test the exact assembled ABI 43 site in Chromium"
+)"
+grep -Fq 'KANDELO_ABI_STAGING_ASSEMBLED_SITE_ROOT="$RUNNER_TEMP/abi-staging-pages-output/source-tree"' \
+    <<<"$chromium_block" &&
+  grep -Fq 'apps/browser-demos/test/abi-staging-pages-assembled-site.spec.ts' \
+    <<<"$chromium_block" &&
+  grep -Fq -- '--project=chromium' <<<"$chromium_block" ||
+  fail "production Pages must smoke-test the exact returned tree in Chromium"
 
 freshness_block="$(step_block "$PAGES_WORKFLOW" "Confirm this is the newest Pages run")"
 grep -Fq 'id: publish_freshness' <<<"$freshness_block" &&
@@ -1003,19 +1000,11 @@ grep -Fq 'id: publish_freshness' <<<"$freshness_block" &&
     <<<"$freshness_block" ||
   fail "production Pages must use the tested production freshness guard"
 
-hold_block="$(step_block "$PAGES_WORKFLOW" "Upload the incomplete production Pages hold")"
-grep -Fxq \
-  "        if: steps.readiness.outputs.ready == 'false' && steps.publish_freshness.outputs.publish == 'true'" \
-  <<<"$hold_block" &&
-  grep -Fq 'uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1' \
-    <<<"$hold_block" &&
-  grep -Fq 'abi-staging-pages-output/readiness.json' <<<"$hold_block" ||
-  fail "production Pages must retain an inert hold when products are incomplete"
 pages_upload_block="$(
-  step_block "$PAGES_WORKFLOW" "Upload the complete Pages deployment artifact"
+  step_block "$PAGES_WORKFLOW" "Upload the smoke-tested Pages deployment artifact"
 )"
 grep -Fxq \
-  "        if: steps.readiness.outputs.ready == 'true' && steps.publish_freshness.outputs.publish == 'true'" \
+  "        if: steps.publish_freshness.outputs.publish == 'true'" \
   <<<"$pages_upload_block" &&
   grep -Fq 'uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0' \
     <<<"$pages_upload_block" &&

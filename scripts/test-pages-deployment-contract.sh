@@ -437,10 +437,10 @@ expect_native_production_shape() {
   grep -Fq 'needs.build-complete-site.outputs.deploy == '\''true'\''' \
     <<<"$deploy_block" ||
     fail "native Pages deploy must require active complete output"
-  grep -Fq 'scripts/abi-staging-pages-producer.ts produce' <<<"$build_block" &&
-    grep -Fq 'abi-staging pages-readiness validate-readiness' <<<"$build_block" &&
-    grep -Fq 'abi-staging pages-readiness validate-site' <<<"$build_block" ||
-    fail "native Pages build must produce and validate admitted products"
+  grep -Fq 'scripts/abi-staging-pages-producer.ts ship' <<<"$build_block" &&
+    grep -Fq '.shipping_mode == "direct-canonical-bottles"' <<<"$build_block" &&
+    grep -Fq 'abi-staging-pages-assembled-site.spec.ts' <<<"$build_block" ||
+    fail "native Pages build must produce and smoke-test the direct seven-product site"
   grep -Fq 'actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0' \
     <<<"$build_block" ||
     fail "native Pages build must upload one pinned complete artifact"
@@ -572,7 +572,7 @@ expect_mutation_rejected \
 expect_mutation_rejected \
   "second source checkout" \
   "production Pages must build every output from one checkout" \
-  's/(      - name: Produce admitted canonical Pages products)/      - name: Replace protected source\n        uses: actions\/checkout\@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0\n\n$1/'
+  's/(      - name: Build the seven ABI products directly for shipping)/      - name: Replace protected source\n        uses: actions\/checkout\@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0\n\n$1/'
 
 expect_mutation_rejected \
   "candidate namespace injection" \
@@ -580,24 +580,24 @@ expect_mutation_rejected \
   's/(          set -euo pipefail\n)/$1          echo ghcr.io\/kandelo-dev\/homebrew-tap-core-abi-43-candidates\/bash\n/'
 
 expect_mutation_rejected \
-  "missing admitted-product producer" \
-  "production Pages must run the protected admitted-product producer" \
-  's/scripts\/abi-staging-pages-producer\.ts produce/scripts\/abi-staging-pages-producer.ts inspect/'
+  "missing direct shipping producer" \
+  "production Pages must run the direct seven-product shipping producer" \
+  's/scripts\/abi-staging-pages-producer\.ts ship/scripts\/abi-staging-pages-producer.ts inspect/'
 
 expect_mutation_rejected \
-  "missing readiness validation" \
-  "production Pages holds must contain only validated readiness" \
-  's/abi-staging pages-readiness validate-readiness/abi-staging pages-readiness inspect-readiness/'
+  "missing direct shipping marker" \
+  "production Pages must validate the direct exact tree before upload" \
+  's/direct-canonical-bottles/direct-unbound-inputs/'
 
 expect_mutation_rejected \
-  "broad hold artifact" \
-  "production Pages must retain an inert hold when products are incomplete" \
-  's#abi-staging-pages-output/readiness\.json#abi-staging-pages-output/#'
+  "missing assembled Chromium smoke" \
+  "production Pages must smoke-test the exact returned tree in Chromium" \
+  's/abi-staging-pages-assembled-site\.spec\.ts/not-the-assembled-site.spec.ts/'
 
 expect_mutation_rejected \
   "missing complete-tree validation" \
-  "production Pages must validate the complete exact tree before upload" \
-  's/abi-staging pages-readiness validate-site/abi-staging pages-readiness inspect-site/'
+  "production Pages must validate the direct exact tree before upload" \
+  's/Pages artifact differs from its exact site inventory/Pages artifact was not checked/'
 
 expect_mutation_rejected \
   "foreign production freshness selector" \
@@ -612,12 +612,12 @@ expect_mutation_rejected \
 expect_mutation_rejected \
   "partial Pages artifact path" \
   "production Pages must upload exactly one complete native Pages artifact" \
-  's#abi-staging-pages-output/source-tree#abi-staging-pages-output/source-tree/kandelo#'
+  's#(          path: \$\{\{ runner\.temp \}\}/abi-staging-pages-output/source-tree)#$1/kandelo#'
 
 expect_mutation_rejected \
-  "deploy without activation" \
-  "production Pages deploy output must bind activation, readiness, and freshness" \
-  's/steps\.activation\.outputs\.active == '\''true'\'' && //'
+  "deploy without direct shipping" \
+  "production Pages deploy output must bind direct shipping and freshness" \
+  's/steps\.shipping\.outputs\.ready == '\''true'\'' && //'
 
 expect_mutation_rejected \
   "unconditional deploy job" \

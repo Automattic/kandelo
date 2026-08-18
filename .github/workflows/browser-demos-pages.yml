@@ -25,7 +25,7 @@ jobs:
       actions: read
       contents: read
     outputs:
-      deploy: ${{ steps.activation.outputs.active == 'true' && steps.readiness.outputs.ready == 'true' && steps.publish_freshness.outputs.publish == 'true' }}
+      deploy: ${{ steps.shipping.outputs.ready == 'true' && steps.publish_freshness.outputs.publish == 'true' }}
     steps:
       - name: Check out the exact protected source commit
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -479,7 +479,8 @@ jobs:
               }
             ' >"$handoff"
 
-      - name: Produce admitted canonical Pages products
+      - name: Build the seven ABI products directly for shipping
+        id: shipping
         run: |
           set -euo pipefail
           handoff="$RUNNER_TEMP/abi-staging-pages-handoff.json"
@@ -496,155 +497,41 @@ jobs:
               "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
               "PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH" \
               npx tsx \
-              scripts/abi-staging-pages-producer.ts produce \
+              scripts/abi-staging-pages-producer.ts ship \
                 --input "$handoff" \
                 --output-root "$pages_output"
+          echo "ready=true" >>"$GITHUB_OUTPUT"
 
-      - name: Validate Pages readiness and select ready or hold
-        id: readiness
+      - name: Validate the direct shipping tree
         run: |
           set -euo pipefail
           pages_output="$RUNNER_TEMP/abi-staging-pages-output"
-          readiness="$pages_output/readiness.json"
-          python3 - "$readiness" <<'PY'
-          import os
-          import stat
-          import sys
-
-          metadata = os.lstat(sys.argv[1])
-          if not stat.S_ISREG(metadata.st_mode):
-              raise SystemExit("Pages readiness is not a regular file")
-          if metadata.st_size <= 0 or metadata.st_size > 16777216:
-              raise SystemExit("Pages readiness exceeds its byte bound")
-          PY
+          site_root="$pages_output/source-tree"
+          deployment="$site_root/.well-known/kandelo/pages-deployment.json"
           registry="apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.generated.json"
-          source_tree=$(git rev-parse 'HEAD^{tree}')
           target_abi=$(sed -nE \
             's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
             crates/shared/src/lib.rs)
           snapshot_sha=$(sha256sum abi/snapshot.json | awk '{print $1}')
-          registry_sha=$(sha256sum "$registry" | awk '{print $1}')
-          tap_commit=$(git -C "$KANDELO_PAGES_TAP_ROOT" rev-parse HEAD)
-          tap_tree=$(git -C "$KANDELO_PAGES_TAP_ROOT" rev-parse 'HEAD^{tree}')
-          tap_source=$(jq -cn \
-            --arg commit "$tap_commit" \
-            --arg tree "$tap_tree" \
-            '{commit:$commit,repository:"kandelo-dev/homebrew-tap-core",tree:$tree}')
-          host_target=$(bash scripts/dev-shell.sh rustc -vV |
-            awk '/^host: / { print $2 }')
-          [[ "$host_target" =~ ^[A-Za-z0-9_.-]+$ ]]
-          bash scripts/dev-shell.sh cargo run -p xtask \
-            --target "$host_target" --quiet -- \
-            abi-staging pages-readiness validate-readiness "$readiness"
-          ready=$(jq -r '
-            if .ready == true then "true"
-            elif .ready == false then "false"
-            else error("readiness result is not Boolean")
-            end
-          ' "$readiness")
           jq -e \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg commit "$GITHUB_SHA" \
-            --arg tree "$source_tree" \
             --arg snapshot "$snapshot_sha" \
-            --arg registry_sha "$registry_sha" \
-            --arg registry_path "$registry" \
-            --argjson tap_source "$tap_source" \
             --argjson abi "$target_abi" \
-            --argjson ready "$ready" \
             --slurpfile registry "$registry" '
-              .ready == $ready and
-              .source == {
-                commit: $commit,
-                repository: $repository,
-                tree: $tree
-              } and
-              .tap_source == $tap_source and
+              .kind == "kandelo-pages-site-manifest" and
+              .schema == 1 and
+              .shipping_mode == "direct-canonical-bottles" and
+              .source.repository == $repository and
+              .source.commit == $commit and
               .target_abi == {
                 snapshot_sha256: $snapshot,
                 version: $abi
               } and
-              .pages_registry.path == $registry_path and
-              .pages_registry.sha256 == $registry_sha and
-              (.pages_registry.products | map(.id)) ==
-                ($registry[0].products | map(.id)) and
+              (.products | map({id,load})) == $registry[0].products and
               (tostring | contains("-candidates/") | not)
-            ' "$readiness" >/dev/null
-          if [ "$ready" = false ]; then
-            hold_inventory=$(python3 - "$pages_output" <<'PY'
-          import json
-          from pathlib import Path
-          import sys
-
-          root = Path(sys.argv[1])
-          entries = sorted(
-              path.relative_to(root).as_posix()
-              for path in root.rglob("*")
-          )
-          print(json.dumps(entries, separators=(",", ":")))
-          PY
-            )
-            [ "$hold_inventory" = '["readiness.json"]' ]
-            readiness_sha=$(sha256sum "$readiness" | awk '{print $1}')
-            blockers=$(jq -cS '.blockers' "$readiness")
-            {
-              echo "### Pages production hold"
-              echo
-              echo "- readiness SHA-256: \`$readiness_sha\`"
-              echo "- blockers: \`$blockers\`"
-            } >>"$GITHUB_STEP_SUMMARY"
-          fi
-          echo "ready=$ready" >>"$GITHUB_OUTPUT"
-
-      - name: Validate the complete canonical Pages tree
-        if: steps.readiness.outputs.ready == 'true'
-        run: |
-          set -euo pipefail
-          pages_output="$RUNNER_TEMP/abi-staging-pages-output"
-          readiness="$pages_output/readiness.json"
-          site_manifest="$pages_output/site-manifest.json"
-          site_root="$pages_output/source-tree"
-          registry="apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.generated.json"
-          readiness_sha=$(sha256sum "$readiness" | awk '{print $1}')
-          tap_commit=$(git -C "$KANDELO_PAGES_TAP_ROOT" rev-parse HEAD)
-          tap_tree=$(git -C "$KANDELO_PAGES_TAP_ROOT" rev-parse 'HEAD^{tree}')
-          tap_source=$(jq -cn \
-            --arg commit "$tap_commit" \
-            --arg tree "$tap_tree" \
-            '{commit:$commit,repository:"kandelo-dev/homebrew-tap-core",tree:$tree}')
-          host_target=$(bash scripts/dev-shell.sh rustc -vV |
-            awk '/^host: / { print $2 }')
-          [[ "$host_target" =~ ^[A-Za-z0-9_.-]+$ ]]
-          bash scripts/dev-shell.sh cargo run -p xtask \
-            --target "$host_target" --quiet -- \
-            abi-staging pages-readiness validate-site "$site_manifest"
-          jq -e \
-            --argjson tap_source "$tap_source" \
-            --slurpfile registry "$registry" '
-              .ready == true and
-              .blockers == [] and
-              (.products | map(.id)) ==
-                ($registry[0].products | map(.id)) and
-              all(.products[];
-                (.node_receipts | length > 0) and
-                (.browser_receipts | length > 0) and
-                all(.admissions[];
-                  .projection.admission_record_sha256 == .record_sha256 and
-                  .projection.tap_source == $tap_source)) and
-              (tostring | contains("-candidates/") | not)
-            ' "$readiness" >/dev/null
-          jq -e --arg readiness_sha "$readiness_sha" \
-            --slurpfile readiness "$readiness" '
-              .readiness_record_sha256 == $readiness_sha and
-              .source == $readiness[0].source and
-              .tap_source == $readiness[0].tap_source and
-              .target_abi == $readiness[0].target_abi and
-              .pages_registry == $readiness[0].pages_registry and
-              (.products | map(.id)) ==
-                ($readiness[0].products | map(.id)) and
-              (tostring | contains("-candidates/") | not)
-            ' "$site_manifest" >/dev/null
-          python3 - "$site_root" "$site_manifest" <<'PY'
+            ' "$deployment" >/dev/null
+          python3 - "$site_root" "$deployment" <<'PY'
           import hashlib
           import json
           import os
@@ -653,9 +540,9 @@ jobs:
           import sys
 
           root = Path(sys.argv[1])
-          manifest_path = Path(sys.argv[2])
-          manifest_bytes = manifest_path.read_bytes()
-          manifest = json.loads(manifest_bytes)
+          deployment_path = Path(sys.argv[2])
+          deployment_bytes = deployment_path.read_bytes()
+          manifest = json.loads(deployment_bytes)
           actual = []
           total = 0
           for directory, directories, files in os.walk(root, followlinks=False):
@@ -683,15 +570,28 @@ jobs:
           actual.sort(key=lambda entry: entry["path"])
           if total > 1_000_000_000:
               raise SystemExit("Pages tree exceeds its byte bound")
-          deployment_path = ".well-known/kandelo/pages-deployment.json"
-          deployment = [entry for entry in actual if entry["path"] == deployment_path]
-          if len(deployment) != 1 or (root / deployment_path).read_bytes() != manifest_bytes:
+          ledger_path = ".well-known/kandelo/pages-deployment.json"
+          deployment = [entry for entry in actual if entry["path"] == ledger_path]
+          if len(deployment) != 1 or (root / ledger_path).read_bytes() != deployment_bytes:
               raise SystemExit("Pages artifact lacks the exact deployment manifest")
-          inventory = [entry for entry in actual if entry["path"] != deployment_path]
+          inventory = [entry for entry in actual if entry["path"] != ledger_path]
           if inventory != manifest["files"]:
               raise SystemExit("Pages artifact differs from its exact site inventory")
           PY
           node scripts/check-pages-publish-size.mjs "$site_root" 1000000000
+
+      - name: Smoke-test the exact assembled ABI 43 site in Chromium
+        run: |
+          set -euo pipefail
+          env \
+            PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH" \
+            KANDELO_PLAYWRIGHT_PORT=5526 \
+            KANDELO_ABI_STAGING_ASSEMBLED_SITE_ROOT="$RUNNER_TEMP/abi-staging-pages-output/source-tree" \
+            KANDELO_PLAYWRIGHT_SERVE_DIST=1 \
+            npx --prefix apps/browser-demos playwright test \
+              --config=apps/browser-demos/playwright.config.ts \
+              apps/browser-demos/test/abi-staging-pages-assembled-site.spec.ts \
+              --project=chromium
 
       - name: Confirm this is the newest Pages run
         id: publish_freshness
@@ -700,17 +600,8 @@ jobs:
           PAGES_WORKFLOW_FILE: browser-demos-pages.yml
         run: bash scripts/check-pages-run-freshness.sh
 
-      - name: Upload the incomplete production Pages hold
-        if: steps.readiness.outputs.ready == 'false' && steps.publish_freshness.outputs.publish == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: abi-staging-pages-production-hold-${{ github.run_id }}
-          path: ${{ runner.temp }}/abi-staging-pages-output/readiness.json
-          retention-days: 7
-          if-no-files-found: error
-
-      - name: Upload the complete Pages deployment artifact
-        if: steps.readiness.outputs.ready == 'true' && steps.publish_freshness.outputs.publish == 'true'
+      - name: Upload the smoke-tested Pages deployment artifact
+        if: steps.publish_freshness.outputs.publish == 'true'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           name: github-pages
@@ -729,6 +620,6 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Deploy the complete admitted-product Pages site
+      - name: Deploy the direct ABI 43 Pages site
         id: deployment
         uses: actions/deploy-pages@f29b9056696d8d80070d321737a6805413dbdea1 # v4.0.5
