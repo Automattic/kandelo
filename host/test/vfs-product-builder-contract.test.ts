@@ -175,6 +175,33 @@ describe("VFS product builder contract", () => {
     ).rejects.toThrow(/managed input does not use a versioned namespace/);
   });
 
+  it("accepts an exact canonical Pages URL for a lazy package input", async () => {
+    const fixture = await createFixture();
+    const inputs = JSON.parse(readFileSync(fixture.inputsPath, "utf8"));
+    const packageInput = inputs.inputs.find(
+      (input: { id: string }) => input.id === "package-runtime",
+    );
+    inputs.reference_class = "canonical";
+    packageInput.declared_materialization = "lazy";
+    packageInput.effective_materialization = "lazy-reference";
+    delete packageInput.path;
+    packageInput.reference =
+      `https://automattic.github.io/kandelo/products/inputs/${packageInput.id}/` +
+      `sha256-${packageInput.sha256}/${packageInput.id}` +
+      `?sha256=${packageInput.sha256}&bytes=${packageInput.bytes}`;
+    inputs.inputs = [packageInput];
+    writeFileSync(fixture.inputsPath, canonicalJson(inputs));
+
+    const build = await openVfsProductBuild(fixture.inputsPath, fixture.reportPath);
+    expect(build.requirePackageOutput("package-runtime")).toEqual({
+      bytes: packageInput.bytes,
+      id: "package-runtime",
+      placement: "lazy-reference",
+      reference: packageInput.reference,
+      sha256: packageInput.sha256,
+    });
+  });
+
   it("does not read lazy bytes and refuses undeclared toolchain outputs", async () => {
     const fixture = await createFixture();
     const build = await openVfsProductBuild(

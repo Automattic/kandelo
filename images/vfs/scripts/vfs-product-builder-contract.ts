@@ -22,6 +22,8 @@ const CANDIDATE_NAMESPACE = /homebrew-tap-core-abi-[0-9]+-candidates\//;
 const CANONICAL_NAMESPACE = /homebrew-tap-core-abi-[0-9]+\//;
 const CANONICAL_PAGES_PRODUCT =
   /^https:\/\/automattic\.github\.io\/kandelo\/products\/([a-z0-9][a-z0-9._-]{0,127})\/sha256-([0-9a-f]{64})\/([a-z0-9][a-z0-9._-]{0,127})-([0-9]+)\.vfs\.zst\?sha256=([0-9a-f]{64})&bytes=([1-9][0-9]*)$/;
+const CANONICAL_PAGES_INPUT =
+  /^https:\/\/automattic\.github\.io\/kandelo\/products\/inputs\/([a-z0-9][a-z0-9._-]{0,127})\/sha256-([0-9a-f]{64})\/([a-z0-9][a-z0-9._-]{0,127})\?sha256=([0-9a-f]{64})&bytes=([1-9][0-9]*)$/;
 const INPUT_KINDS = [
   "product-image",
   "homebrew-bottle",
@@ -534,6 +536,7 @@ function parseResolvedInput(
           inputSha256,
           bytes,
           kind,
+          id,
           referenceClass,
           effective,
           targetAbiVersion,
@@ -545,6 +548,7 @@ function parseResolvedInput(
       : normalizedRelativePath(record.path, `${label} path`);
   const descriptor = parseInputDescriptor(
     record.descriptor,
+    id,
     kind,
     referenceClass,
     effective,
@@ -598,6 +602,7 @@ function parseResolvedInput(
 
 function parseInputDescriptor(
   value: unknown,
+  inputId: string,
   kind: VfsProductInputKind,
   referenceClass: ReferenceClass,
   placement: InputPlacement,
@@ -635,6 +640,7 @@ function parseInputDescriptor(
     descriptorSha256,
     bytes,
     kind,
+    inputId,
     referenceClass,
     placement,
     targetAbiVersion,
@@ -675,6 +681,7 @@ function immutableReference(
   inputSha256: string,
   inputBytes: number,
   kind: VfsProductInputKind,
+  inputId: string,
   referenceClass: ReferenceClass,
   placement: InputPlacement,
   targetAbiVersion: number,
@@ -691,6 +698,7 @@ function immutableReference(
   }
   const candidate = CANDIDATE_NAMESPACE.test(reference);
   const canonical = CANONICAL_NAMESPACE.test(reference);
+  const pagesInput = CANONICAL_PAGES_INPUT.exec(reference);
   const pagesProduct = CANONICAL_PAGES_PRODUCT.exec(reference);
   const local = reference.match(
     /^local-fixture:sha256:([0-9a-f]{64})\?namespace=(candidate|canonical|source)&bytes=([1-9][0-9]*)$/,
@@ -700,6 +708,19 @@ function immutableReference(
   }
   if (referenceClass === "canonical" && candidate) {
     fail(`${label} canonical input references the candidate namespace`);
+  }
+  if (reference.startsWith("https://automattic.github.io/kandelo/products/inputs/")) {
+    if (
+      referenceClass !== "canonical" || pagesInput === null ||
+      pagesInput[1] !== inputId || pagesInput[1] !== pagesInput[3] ||
+      pagesInput[2] !== inputSha256 || pagesInput[4] !== inputSha256 ||
+      Number(pagesInput[5]) !== inputBytes ||
+      kind === "homebrew-bottle" || kind === "product-image" ||
+      placement !== "lazy-reference"
+    ) {
+      fail(`${label} Pages input reference does not bind exact identity`);
+    }
+    return reference;
   }
   if (reference.startsWith("https://automattic.github.io/kandelo/products/")) {
     if (
