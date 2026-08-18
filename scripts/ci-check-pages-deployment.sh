@@ -446,6 +446,16 @@ grep -Fq 'node scripts/browser-binary-package-roots.mjs \' \
   grep -Fq 'bash scripts/fetch-binaries.sh "${browser_fetch_args[@]}"' \
     <<<"$inputs_block" ||
   fail "canary must materialize only the required main-page package roots"
+browser_sysroot_line="$(
+  grep -nF 'bash scripts/build-musl.sh' <<<"$inputs_block" | cut -d: -f1 || true
+)"
+browser_fetch_line="$(
+  grep -nF 'bash scripts/fetch-binaries.sh "${browser_fetch_args[@]}"' \
+    <<<"$inputs_block" | cut -d: -f1 || true
+)"
+[ -n "$browser_sysroot_line" ] && [ -n "$browser_fetch_line" ] &&
+  [ "$browser_sysroot_line" -lt "$browser_fetch_line" ] ||
+  fail "canary must build one current-source sysroot before browser support packages"
 if grep -Fq './run.sh' <<<"$inputs_block"; then
   fail "canary must not rebuild the legacy browser package matrix"
 fi
