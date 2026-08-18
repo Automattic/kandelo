@@ -320,7 +320,7 @@ expect_current_bootstrap_input_required() {
   expect_canary_mutation_rejected \
     "restored legacy sealed selection" \
     "canary must not depend on the retired sealed shell selection" \
-    's#\./run\.sh --already-materialized prepare-browser#./run.sh --already-materialized --require-sealed-homebrew-selection prepare-browser#'
+    's#(          bash scripts/stage-homebrew-bootstrap-browser-asset\.sh \\\n)#$1          ./run.sh --already-materialized --require-sealed-homebrew-selection prepare-browser\n#'
 }
 
 expect_direct_package_selection_required() {
@@ -332,8 +332,23 @@ expect_direct_package_selection_required() {
     's/fetch_args=\(--fetch-only\)/fetch_args=(--fetch-only --allow-stale)/'
   expect_canary_mutation_rejected \
     "repeated broad package fetch" \
-    "canary must prepare the browser from only the already-materialized roots" \
-    's#\./run\.sh --already-materialized prepare-browser#./run.sh --fetch-only prepare-browser#'
+    "canary must materialize only the required main-page package roots" \
+    's#bash scripts/fetch-binaries\.sh "\$\{browser_fetch_args\[@\]\}"#bash scripts/fetch-binaries.sh#'
+}
+
+expect_required_main_package_selection() {
+  expect_canary_mutation_rejected \
+    "missing required browser input graph" \
+    "canary must materialize only the required main-page package roots" \
+    's#node scripts/browser-binary-package-roots\.mjs \\#node scripts/missing-browser-package-roots.mjs \\#'
+  expect_canary_mutation_rejected \
+    "broad browser package fallback" \
+    "canary must materialize only the required main-page package roots" \
+    's#bash scripts/fetch-binaries\.sh "\$\{browser_fetch_args\[@\]\}"#bash scripts/fetch-binaries.sh#'
+  expect_canary_mutation_rejected \
+    "restored legacy browser preparation" \
+    "canary must not rebuild the legacy browser package matrix" \
+    's#bash scripts/stage-homebrew-bootstrap-browser-asset\.sh#./run.sh --already-materialized prepare-browser\n          bash scripts/stage-homebrew-bootstrap-browser-asset.sh#'
 }
 
 case "${PAGES_CONTRACT_FOCUS:-all}" in
@@ -372,6 +387,10 @@ case "${PAGES_CONTRACT_FOCUS:-all}" in
     expect_direct_package_selection_required
     exit 0
     ;;
+  required-main-inputs)
+    expect_required_main_package_selection
+    exit 0
+    ;;
   all)
     ;;
   *)
@@ -383,6 +402,7 @@ expect_ready_filter_executes
 expect_invalid_readiness_rejected_before_semantics symlink
 expect_invalid_readiness_rejected_before_semantics fifo
 expect_invalid_readiness_rejected_before_semantics oversize
+expect_required_main_package_selection
 
 bash "$CHECKER" "$REPO_ROOT"
 expect_atomic_chromium_gate_required

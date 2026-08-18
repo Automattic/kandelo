@@ -177,7 +177,40 @@ jobs:
           # only this one reviewed package from the protected current source.
           bash scripts/fetch-binaries.sh --package homebrew-bootstrap
 
-          ./run.sh --already-materialized prepare-browser
+          # WHY: ABI-staging runtime mode builds only the real root page. Derive
+          # its non-optional package imports from that exact source graph and
+          # materialize those roots through the resolver, which also stages
+          # declared build dependencies for packages missing from the release.
+          # The old prepare-browser loop rebuilt every retained lab and invoked
+          # package scripts directly, bypassing that dependency environment.
+          browser_package_list="$input_root/browser-package-list.txt"
+          node scripts/browser-binary-package-roots.mjs \
+            --arch wasm32 \
+            --html-entry index.html \
+            --local-capability kernel-wasm \
+            --local-capability pages-vfs-products \
+            --local-capability rootfs-vfs \
+            --exclude-package shell \
+            >"$browser_package_list"
+          mapfile -t browser_packages <"$browser_package_list"
+          ((${#browser_packages[@]} > 0))
+          browser_fetch_args=()
+          for package in "${browser_packages[@]}"; do
+            [[ $package =~ ^[a-z0-9][a-z0-9+._-]*$ ]]
+            if ! grep -Fxq -- "$package" "$package_list"; then
+              browser_fetch_args+=(--package "$package")
+            fi
+          done
+          if ((${#browser_fetch_args[@]} > 0)); then
+            bash scripts/fetch-binaries.sh "${browser_fetch_args[@]}"
+          fi
+
+          bootstrap_path=$(bash scripts/resolve-binary.sh \
+            programs/homebrew-bootstrap/homebrew-bootstrap.zip)
+          [ -f "$bootstrap_path" ] && [ ! -L "$bootstrap_path" ]
+          bash scripts/stage-homebrew-bootstrap-browser-asset.sh \
+            "$bootstrap_path" \
+            apps/browser-demos/public/homebrew-bootstrap.zip
 
           host_target=$(rustc -vV | awk '/^host/ {print $2}')
           cargo build --release -p xtask --target "$host_target"
@@ -266,9 +299,10 @@ jobs:
           done < <(jq -r '.products[].id' "$registry")
           BASH
 
-      # WHY: Vite resolves the canonical shell and support programs while it
-      # builds the runtime. Materialize and seal those inputs first, then carry
-      # the same isolated cache through both dev-shell boundaries.
+      # WHY: Vite resolves the canonical product placeholders and required
+      # root-page programs while it builds the runtime. Materialize and seal
+      # those exact inputs first, then carry the same isolated cache through
+      # both dev-shell boundaries.
       - name: Prepare exact uncredentialed runtime
         run: |
           set -euo pipefail

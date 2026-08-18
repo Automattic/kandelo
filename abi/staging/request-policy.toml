@@ -1,6 +1,6 @@
 schema = 1
 kind = "kandelo-abi-staging-request-policy"
-version = 22
+version = 23
 issuer_repository = "Automattic/kandelo"
 issuer_workflow = ".github/workflows/abi-staging-request-feed.yml"
 automatic_same_repository = true
@@ -81,6 +81,7 @@ implementation_paths = [
   "scripts/abi-staging-product-input-sources.ts",
   "scripts/abi-staging-product-node-evidence.ts",
   "scripts/abi-staging-protected-browser-operation.ts",
+  "scripts/browser-binary-package-roots.mjs",
   "scripts/check-dev-shell-tools.sh",
   "scripts/check-pages-vfs-product-registry.mjs",
   "scripts/dev-shell.sh",

@@ -413,7 +413,7 @@ if grep -Fq 'prepare-homebrew-browser-bootstrap.sh' <<<"$inputs_block" ||
 fi
 if grep -Fq -- '--force-source-build' <<<"$inputs_block" ||
    grep -Fq -- '--source-rootfs-shell' <<<"$inputs_block"; then
-  fail "canary input materialization may source-build only homebrew-bootstrap"
+  fail "canary input materialization must use resolver-owned package roots"
 fi
 
 grep -Fq 'fetch_args=(--fetch-only)' <<<"$inputs_block" &&
@@ -426,15 +426,36 @@ grep -Fq 'fetch_args+=(--package "$package")' <<<"$inputs_block" &&
     <<<"$inputs_block" &&
   grep -Fq 'bash scripts/fetch-binaries.sh --package homebrew-bootstrap' \
     <<<"$inputs_block" &&
-  [ "$(grep -Fc 'bash scripts/fetch-binaries.sh' <<<"$inputs_block")" -eq 2 ] &&
+  [ "$(grep -Fc 'bash scripts/fetch-binaries.sh' <<<"$inputs_block")" -eq 3 ] &&
   grep -Fq '"$xtask" build-deps --arch wasm32 path "$package"' \
     <<<"$inputs_block" &&
   grep -Fq '[ -d "$package_root" ] && [ ! -L "$package_root" ]' \
     <<<"$inputs_block" ||
   fail "canary must materialize homebrew-bootstrap from current protected source"
-grep -Fq './run.sh --already-materialized prepare-browser' \
-  <<<"$inputs_block" ||
-  fail "canary must prepare the browser from only the already-materialized roots"
+grep -Fq 'node scripts/browser-binary-package-roots.mjs \' \
+  <<<"$inputs_block" &&
+  grep -Fq -- '--arch wasm32 \' <<<"$inputs_block" &&
+  grep -Fq -- '--html-entry index.html \' <<<"$inputs_block" &&
+  grep -Fq -- '--local-capability kernel-wasm \' <<<"$inputs_block" &&
+  grep -Fq -- '--local-capability pages-vfs-products \' \
+    <<<"$inputs_block" &&
+  grep -Fq -- '--local-capability rootfs-vfs \' <<<"$inputs_block" &&
+  grep -Fq -- '--exclude-package shell \' <<<"$inputs_block" &&
+  grep -Fq 'browser_fetch_args+=(--package "$package")' \
+    <<<"$inputs_block" &&
+  grep -Fq 'bash scripts/fetch-binaries.sh "${browser_fetch_args[@]}"' \
+    <<<"$inputs_block" ||
+  fail "canary must materialize only the required main-page package roots"
+if grep -Fq './run.sh' <<<"$inputs_block"; then
+  fail "canary must not rebuild the legacy browser package matrix"
+fi
+grep -Fq 'bootstrap_path=$(bash scripts/resolve-binary.sh \' \
+  <<<"$inputs_block" &&
+  grep -Fq 'programs/homebrew-bootstrap/homebrew-bootstrap.zip)' \
+    <<<"$inputs_block" &&
+  grep -Fq 'bash scripts/stage-homebrew-bootstrap-browser-asset.sh \' \
+    <<<"$inputs_block" ||
+  fail "canary must stage the exact current Homebrew bootstrap directly"
 grep -Fq 'bash scripts/dev-shell.sh env \' <<<"$inputs_block" &&
   grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
     <<<"$inputs_block" ||
