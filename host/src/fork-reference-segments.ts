@@ -48,13 +48,15 @@ const MAX_U32 = 0xffff_ffff;
 const MAX_U32_DIRECTORY_LENGTH = 0x1_0000_0000;
 const VECTOR_PAGE_ENTRIES = 4096;
 
-const enum ReferenceSection {
-  Nodes = WPK_FORK_REFERENCE_SECTION_NODES,
-  Edges = WPK_FORK_REFERENCE_SECTION_EDGES,
-  Scalars = WPK_FORK_REFERENCE_SECTION_SCALARS,
-  VectorIndex = WPK_FORK_REFERENCE_SECTION_VECTOR_INDEX,
-  VectorEntries = WPK_FORK_REFERENCE_SECTION_VECTOR_ENTRIES,
-}
+const ReferenceSection = {
+  Nodes: WPK_FORK_REFERENCE_SECTION_NODES,
+  Edges: WPK_FORK_REFERENCE_SECTION_EDGES,
+  Scalars: WPK_FORK_REFERENCE_SECTION_SCALARS,
+  VectorIndex: WPK_FORK_REFERENCE_SECTION_VECTOR_INDEX,
+  VectorEntries: WPK_FORK_REFERENCE_SECTION_VECTOR_ENTRIES,
+} as const;
+type ReferenceSection =
+  (typeof ReferenceSection)[keyof typeof ReferenceSection];
 
 const SECTION_COUNT = 5;
 
