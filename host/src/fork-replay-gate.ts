@@ -204,11 +204,8 @@ export function observeForkReplayWorker(
           `Worker failed before replay readiness: ${message.message ?? "unknown error"}`,
         );
       } else {
-        const exitMessage = message as Partial<
-          Extract<WorkerToHostMessage, { type: "exit" }>
-        >;
         protocolFailure(
-          `Worker exited before replay readiness (status=${String(exitMessage.status)})`,
+          `Worker exited before replay readiness (status=${String(message.status)})`,
         );
       }
     }
