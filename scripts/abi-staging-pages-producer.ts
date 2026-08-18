@@ -1705,11 +1705,11 @@ function createAnonymousOciAuthority(): ProductionOciAuthority {
         ], MAX_DOCUMENT_BYTES, "OCI tag inventory");
       } catch (error) {
         // GHCR reports an as-yet-uncreated public nested package as `denied`,
-        // not as an empty tag inventory. For an exact admission repository,
+        // not as an empty tag inventory. For an exact Pages record repository,
         // anonymous inaccessibility means there is no publicly consumable
-        // admission. Preserve that as the normal hold-only state; manifest
-        // and blob reads remain exact and fail closed.
-        if (isAbsentPublicAdmissionTagInventory(repository, error)) return [];
+        // candidate or admission. Preserve that as the normal hold-only state;
+        // manifest and blob reads remain exact and fail closed.
+        if (isAbsentPublicPagesRecordTagInventory(repository, error)) return [];
         throw error;
       }
       const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(output));
@@ -1788,13 +1788,17 @@ function createAnonymousOciAuthority(): ProductionOciAuthority {
   };
 }
 
-export function isAbsentPublicAdmissionTagInventory(
+export function isAbsentPublicPagesRecordTagInventory(
   repository: string,
   error: unknown,
 ): boolean {
   return (
-    /^ghcr\.io\/kandelo-dev\/homebrew-tap-core-abi-[1-9][0-9]*\/[a-z0-9._-]+\/admissions$/u
-      .test(repository) &&
+    (
+      /^ghcr\.io\/kandelo-dev\/homebrew-tap-core-abi-[1-9][0-9]*\/[a-z0-9._-]+\/admissions$/u
+        .test(repository) ||
+      /^ghcr\.io\/kandelo-dev\/homebrew-tap-core-abi-[1-9][0-9]*-candidates\/products\/[a-z0-9._-]+$/u
+        .test(repository)
+    ) &&
     error instanceof Error &&
     /^OCI tag inventory anonymous read failed: Error response from registry: denied: requested access to the resource is denied\s*$/u
       .test(error.message)

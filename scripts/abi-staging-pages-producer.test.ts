@@ -31,7 +31,7 @@ import {
   discoverCandidateProductAuthority,
   heldPagesReadinessRecord,
   immutableRecordReferencesFromTags,
-  isAbsentPublicAdmissionTagInventory,
+  isAbsentPublicPagesRecordTagInventory,
   isExpectedCurrentInputUnavailable,
   producePagesArtifacts,
   readCandidateProductAuthority,
@@ -55,11 +55,11 @@ const source = {
 };
 const targetAbi = { version: 18, snapshot_sha256: "3".repeat(64) };
 
-test("treats only an anonymously absent canonical admission repository as empty", () => {
+test("treats only anonymously absent Pages record repositories as empty", () => {
   const repository =
     "ghcr.io/kandelo-dev/homebrew-tap-core-abi-43/dash/admissions";
   assert.equal(
-    isAbsentPublicAdmissionTagInventory(
+    isAbsentPublicPagesRecordTagInventory(
       repository,
       new Error(
         "OCI tag inventory anonymous read failed: Error response from registry: " +
@@ -69,7 +69,17 @@ test("treats only an anonymously absent canonical admission repository as empty"
     true,
   );
   assert.equal(
-    isAbsentPublicAdmissionTagInventory(
+    isAbsentPublicPagesRecordTagInventory(
+      "ghcr.io/kandelo-dev/homebrew-tap-core-abi-43-candidates/products/browser-main-shell",
+      new Error(
+        "OCI tag inventory anonymous read failed: Error response from registry: " +
+        "denied: requested access to the resource is denied\n",
+      ),
+    ),
+    true,
+  );
+  assert.equal(
+    isAbsentPublicPagesRecordTagInventory(
       "ghcr.io/kandelo-dev/homebrew-tap-core-abi-43-candidates/dash",
       new Error(
         "OCI tag inventory anonymous read failed: Error response from registry: " +
@@ -79,7 +89,7 @@ test("treats only an anonymously absent canonical admission repository as empty"
     false,
   );
   assert.equal(
-    isAbsentPublicAdmissionTagInventory(
+    isAbsentPublicPagesRecordTagInventory(
       repository,
       new Error("OCI tag inventory anonymous read failed: request timed out"),
     ),
