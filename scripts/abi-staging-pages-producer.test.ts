@@ -1426,6 +1426,15 @@ test("ships the seven-product tree without candidate records or product evidence
     fixtureProgram,
     fixtureKernel,
   );
+  const collectCurrentInputs = fixture.dependencies.collectCurrentInputs!;
+  fixture.dependencies.collectCurrentInputs = (options) => {
+    assert.equal(
+      existsSync(dirname(options.outRoot)),
+      true,
+      "direct shipping must prepare the shared current-input parent",
+    );
+    return collectCurrentInputs(options);
+  };
   let evidenceCalls = 0;
   fixture.dependencies.runEvidence = async () => {
     evidenceCalls += 1;

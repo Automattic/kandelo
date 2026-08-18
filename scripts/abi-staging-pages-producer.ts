@@ -1070,6 +1070,9 @@ async function produceDirectShippingTree(options: {
   const expectedIds = new Set(pageEntries.map(({ id }) => id));
   const inventories = new Map<string, JsonObject>();
   const productRoots = new Map<string, string>();
+  mkdirSync(join(options.staging, "current-inputs"), {
+    mode: 0o700,
+  });
   for (const handoffProduct of options.handoff.products) {
     const entry = catalogEntries.get(handoffProduct.id);
     if (entry === undefined) throw new Error(`${handoffProduct.id} lacks a current product manifest`);
