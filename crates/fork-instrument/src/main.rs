@@ -56,6 +56,14 @@ struct Cli {
     #[arg(long)]
     instrument_all: bool,
 
+    /// The fully-qualified name of a second seed import, added to the closure
+    /// beside `--entry` rather than replacing it. Format: `module.field`.
+    /// Pass `kernel.kernel_checkpoint` to cover every function that can be live
+    /// at a syscall return. That is the only seed available in a program that
+    /// never forks.
+    #[arg(long)]
+    checkpoint_entry: Option<String>,
+
     /// Analyze the module and print the discovered fork-path function
     /// set as JSON to stdout. Skips instrumentation and output emission.
     /// Useful for validating call-graph discovery against
@@ -176,6 +184,7 @@ fn main() -> Result<()> {
     let opts = Options {
         entry_import: cli.entry,
         instrument_all: cli.instrument_all,
+        checkpoint_import: cli.checkpoint_entry,
     };
 
     if cli.discover_only {
