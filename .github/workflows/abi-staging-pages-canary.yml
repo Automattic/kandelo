@@ -67,8 +67,10 @@ jobs:
           playwright_browsers="$RUNNER_TEMP/abi-staging-pages-playwright"
           test ! -e "$playwright_browsers"
           echo "PLAYWRIGHT_BROWSERS_PATH=$playwright_browsers" >>"$GITHUB_ENV"
+          # ubuntu-latest already carries Chromium's shared-library closure.
+          # Do not mutate hosted apt state: mirror stalls block the whole canary.
           PLAYWRIGHT_BROWSERS_PATH="$playwright_browsers" npx playwright install \
-            chromium --with-deps
+            chromium
 
       - name: Set up Nix
         uses: ./.github/actions/setup-nix

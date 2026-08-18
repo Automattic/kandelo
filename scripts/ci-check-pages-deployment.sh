@@ -371,7 +371,8 @@ grep -Fq \
     <<<"$playwright_install_block" &&
   grep -Fq \
     'PLAYWRIGHT_BROWSERS_PATH="$playwright_browsers" npx playwright install \' \
-    <<<"$playwright_install_block" ||
+    <<<"$playwright_install_block" &&
+  ! grep -Fq -- '--with-deps' <<<"$playwright_install_block" ||
   fail "canary must install and run Chromium from one explicit browser root"
 
 runtime_block="$(
