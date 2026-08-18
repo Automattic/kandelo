@@ -14,11 +14,15 @@ describe("checkpoint hook", () => {
     expect(kernelFunctionImports).toContain("kernel_checkpoint");
   });
 
-  it("refuses a checkpoint the host cannot capture", () => {
+  it("refuses a checkpoint that arrives before the process can unwind", () => {
     const memory = new WebAssembly.Memory({ initial: 2 });
     const imports = buildKernelImportsForTest(memory, 0, 4);
     const checkpoint = imports.kernel_checkpoint as () => number;
 
-    expect(() => checkpoint()).toThrow(/checkpoint capture is not implemented/);
+    // The capturing implementation replaces this one once the process
+    // instance and its continuation exist, exactly as kernel_fork does.
+    expect(() => checkpoint()).toThrow(
+      /checkpoint reached before the process continuation exists/,
+    );
   });
 });
