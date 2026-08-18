@@ -19,6 +19,7 @@ import { build as viteBuild, type Plugin } from "vite";
 import { ABI_VERSION } from "../host/src/generated/abi.ts";
 import {
   buildFinalPagesSite,
+  createCanonicalPagesLegacyBinaryBoundary,
   createCanonicalPagesVfsProductsPlugin,
   loadCanonicalPagesProductMap,
   type CanonicalPagesProductMapV1,
@@ -141,6 +142,37 @@ test("accepts only the exact current seven-product closed map", () => {
         name,
       );
     }
+  });
+});
+
+test("canonical Pages replaces legacy browser binaries without consulting a cache", async () => {
+  await withTempDirAsync(async (root) => {
+    const project = join(root, "vite-project");
+    mkdirSync(project);
+    writeFileSync(join(project, "entry.ts"), `
+      import dash from "@binaries/programs/wasm32/dash.wasm?url";
+      export function observed() { return dash; }
+    `);
+    const output = join(root, "vite-output");
+    await viteBuild({
+      build: {
+        emptyOutDir: true,
+        lib: { entry: join(project, "entry.ts"), formats: ["es"] },
+        minify: false,
+        outDir: output,
+        rollupOptions: { output: { entryFileNames: "entry.mjs" } },
+      },
+      configFile: false,
+      plugins: [createCanonicalPagesLegacyBinaryBoundary(true)],
+      root: project,
+    });
+    const module = await import(
+      `${pathToFileURL(join(output, "entry.mjs")).href}?t=${Date.now()}`
+    );
+    assert.equal(
+      module.observed(),
+      "/__kandelo_pages_unavailable__/programs/wasm32/dash.wasm",
+    );
   });
 });
 

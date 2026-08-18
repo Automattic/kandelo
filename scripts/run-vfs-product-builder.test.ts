@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -19,7 +20,7 @@ import {
 
 const repositoryRoot = resolve(import.meta.dirname, "..");
 
-test("runs the manifest builder in a fresh work directory with no credentials", async () => {
+test("runs the manifest builder with no credentials and one short private socket temp", async () => {
   await withFixture(async ({ options, calls }) => {
     const credentials = {
       GITHUB_TOKEN: "github-secret",
@@ -60,7 +61,13 @@ test("runs the manifest builder in a fresh work directory with no credentials", 
       assert.equal(calls.env?.[key], undefined, `${key} reached builder`);
     }
     assert.equal(calls.env?.HOME, join(options.workDir, "home"));
-    assert.equal(calls.env?.TMPDIR, join(options.workDir, "tmp"));
+    assert.equal(calls.tempExistedDuringLaunch, true);
+    assert.ok(calls.env?.TMPDIR);
+    assert.ok(
+      Buffer.byteLength(calls.env.TMPDIR) <= 80,
+      `builder socket temp path is too long: ${calls.env.TMPDIR}`,
+    );
+    assert.equal(existsSync(calls.env.TMPDIR), false);
     assert.equal(calls.env?.CI, "true");
   });
 });
@@ -195,6 +202,7 @@ interface Calls {
   args?: readonly string[];
   env?: Readonly<Record<string, string>>;
   cwd?: string;
+  tempExistedDuringLaunch?: boolean;
 }
 
 function emptyCalls(): Calls {
@@ -216,6 +224,7 @@ function successfulDependencies(
       calls.args = args;
       calls.env = env;
       calls.cwd = cwd;
+      calls.tempExistedDuringLaunch = existsSync(env.TMPDIR);
       writeFileSync(options.outputPath, "output");
       writeFileSync(options.reportPath, "report");
       return { exitCode: 0 };

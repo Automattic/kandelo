@@ -1,6 +1,6 @@
 schema = 1
 kind = "kandelo-abi-staging-request-policy"
-version = 32
+version = 33
 issuer_repository = "Automattic/kandelo"
 issuer_workflow = ".github/workflows/abi-staging-request-feed.yml"
 automatic_same_repository = true
@@ -22,6 +22,7 @@ implementation_paths = [
   ".github/workflows/abi-staging-pages-canary.yml",
   ".github/workflows/abi-staging-pr-check.yml",
   ".github/workflows/abi-staging-request-feed.yml",
+  ".github/workflows/browser-demos-pages.yml",
   "Cargo.lock",
   "Cargo.toml",
   "abi/staging/evidence-definitions.generated.json",

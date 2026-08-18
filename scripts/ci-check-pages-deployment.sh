@@ -434,70 +434,17 @@ grep -Fq 'fetch_args+=(--package "$package")' <<<"$inputs_block" &&
     <<<"$inputs_block" &&
   grep -Fq 'bash scripts/fetch-binaries.sh --package homebrew-bootstrap' \
     <<<"$inputs_block" &&
-  [ "$(grep -Fc 'bash scripts/fetch-binaries.sh' <<<"$inputs_block")" -eq 3 ] &&
+  [ "$(grep -Fc 'bash scripts/fetch-binaries.sh' <<<"$inputs_block")" -eq 2 ] &&
   grep -Fq '"$xtask" build-deps --arch wasm32 path "$package"' \
     <<<"$inputs_block" &&
   grep -Fq '[ -d "$package_root" ] && [ ! -L "$package_root" ]' \
     <<<"$inputs_block" ||
   fail "canary must materialize homebrew-bootstrap from current protected source"
-grep -Fq 'node scripts/browser-binary-package-roots.mjs \' \
-  <<<"$inputs_block" &&
-  grep -Fq -- '--arch wasm32 \' <<<"$inputs_block" &&
-  grep -Fq -- '--html-entry index.html \' <<<"$inputs_block" &&
-  grep -Fq -- '--local-capability kernel-wasm \' <<<"$inputs_block" &&
-  grep -Fq -- '--local-capability pages-vfs-products \' \
-    <<<"$inputs_block" &&
-  grep -Fq -- '--local-capability rootfs-vfs \' <<<"$inputs_block" &&
-  grep -Fq -- '--exclude-package shell \' <<<"$inputs_block" &&
-  grep -Fq 'browser_fetch_args+=(--package "$package")' \
-    <<<"$inputs_block" &&
-  grep -Fq 'bash scripts/fetch-binaries.sh "${browser_fetch_args[@]}"' \
-    <<<"$inputs_block" ||
-  fail "canary must materialize only the required main-page package roots"
-browser_sysroot_line="$(
-  grep -nF 'bash scripts/build-musl.sh' <<<"$inputs_block" | cut -d: -f1 || true
-)"
-browser_fetch_line="$(
-  grep -nF 'bash scripts/fetch-binaries.sh "${browser_fetch_args[@]}"' \
-    <<<"$inputs_block" | cut -d: -f1 || true
-)"
-[ -n "$browser_sysroot_line" ] && [ -n "$browser_fetch_line" ] &&
-  [ "$browser_sysroot_line" -lt "$browser_fetch_line" ] ||
-  fail "canary must build one current-source sysroot before browser support packages"
-browser_sysroot_guard_line="$(
-  grep -nF 'test -d "$source_root/sysroot" && test ! -L "$source_root/sysroot"' \
-    <<<"$inputs_block" | cut -d: -f1 || true
-)"
-browser_sysroot_remove_line="$(
-  grep -nF 'rm -rf -- "$source_root/sysroot"' <<<"$inputs_block" |
-    cut -d: -f1 || true
-)"
-browser_sysroot_absent_line="$(
-  grep -nF 'test ! -e "$source_root/sysroot" && test ! -L "$source_root/sysroot"' \
-    <<<"$inputs_block" | cut -d: -f1 || true
-)"
-browser_musl_reset_line="$(
-  grep -nF 'git -C libc/musl reset --hard HEAD' <<<"$inputs_block" |
-    cut -d: -f1 || true
-)"
-browser_musl_clean_line="$(
-  grep -nF 'git -C libc/musl clean -fdx' <<<"$inputs_block" |
-    cut -d: -f1 || true
-)"
-[ -n "$browser_sysroot_guard_line" ] &&
-  [ -n "$browser_sysroot_remove_line" ] &&
-  [ -n "$browser_sysroot_absent_line" ] &&
-  [ "$browser_fetch_line" -lt "$browser_sysroot_guard_line" ] &&
-  [ "$browser_sysroot_guard_line" -lt "$browser_sysroot_remove_line" ] &&
-  [ "$browser_sysroot_remove_line" -lt "$browser_sysroot_absent_line" ] &&
-  [ "$browser_sysroot_absent_line" -lt "$browser_musl_reset_line" ] ||
-  fail "canary must remove the build sysroot before exact runtime preparation"
-[ -n "$browser_musl_reset_line" ] && [ -n "$browser_musl_clean_line" ] &&
-  [ "$browser_fetch_line" -lt "$browser_musl_reset_line" ] &&
-  [ "$browser_musl_reset_line" -lt "$browser_musl_clean_line" ] ||
-  fail "canary must restore the exact musl source after browser support builds"
-if grep -Fq './run.sh' <<<"$inputs_block"; then
-  fail "canary must not rebuild the legacy browser package matrix"
+if grep -Fq 'browser-binary-package-roots.mjs' <<<"$inputs_block" ||
+   grep -Fq 'browser_fetch_args' <<<"$inputs_block" ||
+   grep -Fq 'bash scripts/build-musl.sh' <<<"$inputs_block" ||
+   grep -Fq './run.sh' <<<"$inputs_block"; then
+  fail "canonical Pages must not source-build legacy browser programs"
 fi
 grep -Fq 'bootstrap_path=$(bash scripts/resolve-binary.sh \' \
   <<<"$inputs_block" &&

@@ -16,7 +16,6 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
-import { browserBinariesImports } from "../apps/browser-demos/browser-binary-imports.mjs";
 import { ABI_VERSION } from "../host/src/generated/abi.ts";
 import { MemoryFileSystem } from "../host/src/vfs/memory-fs.ts";
 import { createRepositoryPathBundle } from "../images/vfs/scripts/repository-path-bundle.ts";
@@ -2169,21 +2168,11 @@ function createAssembledBrowserProgramAuthority(
     const privateKernel = join(generation, "kernel.wasm");
     writeFileSync(privateKernel, kernel);
     symlinkSync(privateKernel, join(mirrorRoot, "kernel.wasm"));
-    const wasm = readFileSync(fixtureProgram);
-    const emptyZip = new Uint8Array([
-      0x50, 0x4b, 0x05, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-      0, 0, 0, 0,
-    ]);
-    for (const relativePath of browserBinariesImports(repoRoot).filter(
-      (path) => !/\.vfs(?:\.zst)?$/u.test(path),
-    )) {
-      const target = join(generation, relativePath);
-      const mirror = join(mirrorRoot, relativePath);
-      mkdirSync(dirname(target), { recursive: true });
-      mkdirSync(dirname(mirror), { recursive: true });
-      writeFileSync(target, relativePath.endsWith(".wasm") ? wasm : emptyZip);
-      symlinkSync(target, mirror);
-    }
+    assert.deepEqual(
+      readdirSync(mirrorRoot),
+      ["kernel.wasm"],
+      "canonical Pages fixture must not materialize legacy browser programs",
+    );
     return {
       cleanupPaths: [generation],
       kernelBinding: {
