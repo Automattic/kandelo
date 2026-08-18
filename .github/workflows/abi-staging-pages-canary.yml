@@ -202,6 +202,10 @@ jobs:
             fi
           done
           if ((${#browser_fetch_args[@]} > 0)); then
+            # WHY: selected product archives are fetched, but the remaining
+            # root-page support programs are built from current source. Build
+            # one shared libc/sysroot before resolving that bounded set.
+            bash scripts/build-musl.sh
             bash scripts/fetch-binaries.sh "${browser_fetch_args[@]}"
           fi
 
