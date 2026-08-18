@@ -952,6 +952,16 @@ if grep -Eq 'candidate_tag|canonical_index_sha256|ghcr\.io/[^[:space:]]*-candida
     "$PAGES_WORKFLOW"; then
   fail "production Pages must not consume candidate artifact authority"
 fi
+production_inputs_block="$(
+  step_block "$PAGES_WORKFLOW" "Materialize exact current product inputs"
+)"
+grep -Fq 'packages/registry/mariadb/package.toml' <<<"$production_inputs_block" &&
+  grep -Fq '.kandelo-vfs-source-roles/system-tables' <<<"$production_inputs_block" &&
+  grep -Fq 'mysql_system_tables.sql' <<<"$production_inputs_block" &&
+  grep -Fq 'mysql_system_tables_data.sql' <<<"$production_inputs_block" &&
+  grep -Fq 'echo "$mariadb_sha  $mariadb_archive" | sha256sum --check --status' \
+    <<<"$production_inputs_block" ||
+  fail "production Pages must supply the pinned MariaDB system-table role"
 
 producer_line="$(step_line "Build the seven ABI products directly for shipping")"
 tree_line="$(step_line "Validate the direct shipping tree")"

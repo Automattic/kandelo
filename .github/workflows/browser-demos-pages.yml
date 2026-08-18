@@ -269,6 +269,80 @@ jobs:
               "$xtask" build-deps --arch wasm32 path "$package"
             )
             [ -d "$package_root" ] && [ ! -L "$package_root" ]
+            # WHY: the transitional ABI 43 MariaDB package archive predates
+            # package source-role publication. Supply its two immutable SQL
+            # bootstrap files from the package manifest's pinned source
+            # archive instead of rebuilding MariaDB or accepting ambient data.
+            if [ "$package" = mariadb ] &&
+                [ ! -d "$package_root/.kandelo-vfs-source-roles/system-tables" ]; then
+              mariadb_root="$input_root/augmented-package-roots/mariadb"
+              test ! -e "$mariadb_root" && test ! -L "$mariadb_root"
+              mkdir -p "$(dirname "$mariadb_root")" "$mariadb_root"
+              cp -a "$package_root/." "$mariadb_root/"
+              source_json="$input_root/mariadb-source.json"
+              python3 - packages/registry/mariadb/package.toml >"$source_json" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          import tomllib
+
+          value = tomllib.loads(Path(sys.argv[1]).read_text())
+          source = value.get("source")
+          if not isinstance(source, dict):
+              raise SystemExit("MariaDB package manifest lacks source authority")
+          url = source.get("url")
+          digest = source.get("sha256")
+          if not isinstance(url, str) or not url.startswith("https://"):
+              raise SystemExit("MariaDB source URL is invalid")
+          if not isinstance(digest, str) or len(digest) != 64 or any(
+              character not in "0123456789abcdef" for character in digest
+          ):
+              raise SystemExit("MariaDB source digest is invalid")
+          print(json.dumps({"sha256": digest, "url": url}, separators=(",", ":")))
+          PY
+              mariadb_archive="$input_root/mariadb-source.tar.gz"
+              mariadb_url=$(jq -er '.url' "$source_json")
+              mariadb_sha=$(jq -er '.sha256' "$source_json")
+              curl --fail --location --proto '=https' --proto-redir '=https' \
+                --tlsv1.2 --max-filesize 536870912 \
+                --output "$mariadb_archive" "$mariadb_url"
+              echo "$mariadb_sha  $mariadb_archive" | sha256sum --check --status
+              role_root="$mariadb_root/.kandelo-vfs-source-roles/system-tables"
+              mkdir -p "$role_root"
+              python3 - "$mariadb_archive" "$role_root" <<'PY'
+          from pathlib import Path, PurePosixPath
+          import sys
+          import tarfile
+
+          archive = Path(sys.argv[1])
+          output = Path(sys.argv[2])
+          expected = {
+              "mysql_system_tables.sql",
+              "mysql_system_tables_data.sql",
+          }
+          selected = {}
+          with tarfile.open(archive, "r:*") as source:
+              for member in source.getmembers():
+                  path = PurePosixPath(member.name)
+                  if len(path.parts) < 3 or path.parts[-2] != "scripts":
+                      continue
+                  if path.name not in expected:
+                      continue
+                  if not member.isfile() or member.size < 1 or member.size > 16 * 1024 * 1024:
+                      raise SystemExit("MariaDB system-table source is not one bounded file")
+                  if path.name in selected:
+                      raise SystemExit("MariaDB system-table source is ambiguous")
+                  body = source.extractfile(member)
+                  if body is None:
+                      raise SystemExit("MariaDB system-table source cannot be read")
+                  selected[path.name] = body.read(member.size + 1)
+          if set(selected) != expected or any(len(body) > 16 * 1024 * 1024 for body in selected.values()):
+              raise SystemExit("MariaDB source lacks its exact system-table inputs")
+          for name, body in selected.items():
+              (output / name).write_bytes(body)
+          PY
+              package_root="$mariadb_root"
+            fi
             next="$input_root/.all-package-roots.next"
             jq -cS --arg package "$package" --arg path "$package_root" \
               '. + {($package): $path}' "$all_package_roots" >"$next"
