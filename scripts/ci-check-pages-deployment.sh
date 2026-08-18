@@ -456,6 +456,18 @@ browser_fetch_line="$(
 [ -n "$browser_sysroot_line" ] && [ -n "$browser_fetch_line" ] &&
   [ "$browser_sysroot_line" -lt "$browser_fetch_line" ] ||
   fail "canary must build one current-source sysroot before browser support packages"
+browser_sysroot_guard_line="$(
+  grep -nF 'test -d "$source_root/sysroot" && test ! -L "$source_root/sysroot"' \
+    <<<"$inputs_block" | cut -d: -f1 || true
+)"
+browser_sysroot_remove_line="$(
+  grep -nF 'rm -rf -- "$source_root/sysroot"' <<<"$inputs_block" |
+    cut -d: -f1 || true
+)"
+browser_sysroot_absent_line="$(
+  grep -nF 'test ! -e "$source_root/sysroot" && test ! -L "$source_root/sysroot"' \
+    <<<"$inputs_block" | cut -d: -f1 || true
+)"
 browser_musl_reset_line="$(
   grep -nF 'git -C libc/musl reset --hard HEAD' <<<"$inputs_block" |
     cut -d: -f1 || true
@@ -464,6 +476,14 @@ browser_musl_clean_line="$(
   grep -nF 'git -C libc/musl clean -fdx' <<<"$inputs_block" |
     cut -d: -f1 || true
 )"
+[ -n "$browser_sysroot_guard_line" ] &&
+  [ -n "$browser_sysroot_remove_line" ] &&
+  [ -n "$browser_sysroot_absent_line" ] &&
+  [ "$browser_fetch_line" -lt "$browser_sysroot_guard_line" ] &&
+  [ "$browser_sysroot_guard_line" -lt "$browser_sysroot_remove_line" ] &&
+  [ "$browser_sysroot_remove_line" -lt "$browser_sysroot_absent_line" ] &&
+  [ "$browser_sysroot_absent_line" -lt "$browser_musl_reset_line" ] ||
+  fail "canary must remove the build sysroot before exact runtime preparation"
 [ -n "$browser_musl_reset_line" ] && [ -n "$browser_musl_clean_line" ] &&
   [ "$browser_fetch_line" -lt "$browser_musl_reset_line" ] &&
   [ "$browser_musl_reset_line" -lt "$browser_musl_clean_line" ] ||
