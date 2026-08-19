@@ -156,6 +156,12 @@ export interface CentralizedThreadInitMessage {
   ptrWidth?: 4 | 8;
   /** See [`CentralizedWorkerInitMessage#kernelAbiVersion`]. */
   kernelAbiVersion?: number;
+  /**
+   * This thread's own checkpoint freeze gate, minted by
+   * `CheckpointFreezeGateCoordinator.registerThread`. A resume is consumed by
+   * the worker it wakes, so no two workers can share one gate.
+   */
+  checkpointFreezeGate?: SharedArrayBuffer;
 }
 
 export interface WorkerTerminateMessage {
@@ -190,12 +196,17 @@ export interface ForkReplayReadyMessage {
 }
 
 /**
- * The process has sealed its continuation capture and is parked on its
+ * The worker has sealed its continuation capture and is parked on its
  * checkpoint freeze gate with its frames still in linear memory.
+ *
+ * A process reports every one of its threads, so the keeper reads the memory
+ * only once all of them are parked.
  */
 export interface CheckpointUnwoundMessage {
   type: "checkpoint_unwound";
   pid: number;
+  /** Absent for the process's main thread. */
+  tid?: number;
 }
 
 export interface WorkerExitMessage {

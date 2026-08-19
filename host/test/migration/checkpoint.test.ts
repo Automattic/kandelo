@@ -62,7 +62,6 @@ interface TestMachine {
   readonly disarmed: { count: number };
   settleVforks: () => Promise<void>;
   unreleasable: number[];
-  threaded: number[];
 }
 
 function testMachine(sources: CheckpointProcessSource[]): TestMachine {
@@ -82,9 +81,7 @@ function testMachine(sources: CheckpointProcessSource[]): TestMachine {
     disarmed,
     settleVforks: () => Promise.resolve(),
     unreleasable: [],
-    threaded: [],
     machine: {
-      threadedProcesses: () => state.threaded,
       runWithoutWorkerCreation: (operation, exclusive) =>
         creators.runExclusive(operation, exclusive),
       runWithoutRootfsMutation: (operation) => rootfs.runSnapshot(operation),
@@ -233,20 +230,6 @@ describe("machine checkpoint freeze", () => {
     state.sources[0]!.checkpointFreeze.unwound();
     expect(Atomics.load(new Int32Array(state.sources[0]!.checkpointFreeze.gate), 0))
       .toBe(1);
-  });
-
-  it("refuses a threaded process instead of reading half its stacks", async () => {
-    const state = testMachine([processSource(4, 1), processSource(9, 2)]);
-    state.threaded = [9];
-    const result = await captureMachineCheckpoint(state.machine, options);
-
-    expect(result).toEqual({
-      status: "failed",
-      reason:
-        "checkpointing a process with more than one thread is not implemented; pids 9",
-    });
-    expect(state.armed).toEqual([]);
-    expect(state.sources[0]!.checkpointFreeze.currentPhase).toBe("idle");
   });
 
   it("fails before arming when a vfork borrow does not resolve", async () => {

@@ -134,21 +134,6 @@ describe("checkpoint dispatch hold", () => {
   });
 });
 
-describe("threaded process refusal", () => {
-  it("names a process that owns more than one channel", () => {
-    const harness = createHarness(() => PROCESS_STATE_RUNNING, [
-      0,
-      CH_TOTAL_SIZE,
-    ]);
-    expect(harness.worker.threadedProcessPids()).toEqual([PID]);
-  });
-
-  it("names nothing when every process owns one channel", () => {
-    const harness = createHarness(() => PROCESS_STATE_RUNNING);
-    expect(harness.worker.threadedProcessPids()).toEqual([]);
-  });
-});
-
 describe("kernel bucket copy", () => {
   it("reads the whole kernel memory and detaches it from the live backing", () => {
     const harness = createHarness(() => PROCESS_STATE_RUNNING);

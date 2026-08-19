@@ -49,8 +49,6 @@ export interface CheckpointMachine {
   /** Leg 1: the stopped-process dispatch gate. */
   readonly holdProcessDispatch: () => number[];
   readonly releaseProcessDispatch: () => number[];
-  /** Pids whose non-main threads have no capture path yet. */
-  readonly threadedProcesses: () => number[];
   readonly armUnwindRequests: () => number[];
   readonly disarmUnwindRequests: () => void;
   readonly copyKernelMemory: () => Uint8Array;
@@ -216,19 +214,6 @@ async function freezeAndRead(
   machine: CheckpointMachine,
   options: CheckpointFreezeOptions,
 ): Promise<CheckpointFreezeResult> {
-  // Refuse before touching anything. Only a process's main thread can unwind
-  // today, so reading a threaded process would produce a checkpoint whose
-  // other threads restore at the wrong instruction.
-  const threaded = machine.threadedProcesses();
-  if (threaded.length > 0) {
-    return {
-      status: "failed",
-      reason:
-        "checkpointing a process with more than one thread is not implemented; pids "
-        + threaded.join(", "),
-    };
-  }
-
   await withTimeout(
     machine.settleActiveVforkBorrows(),
     options.vforkTimeoutMs,

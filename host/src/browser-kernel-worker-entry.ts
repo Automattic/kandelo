@@ -179,7 +179,6 @@ const checkpointMachine: CheckpointMachine = {
   settleActiveVforkBorrows: () => vforkLifetimes.settleActiveBorrows(),
   holdProcessDispatch: () => kernelWorker.holdProcessDispatchForCheckpoint(),
   releaseProcessDispatch: () => kernelWorker.releaseProcessDispatchForCheckpoint(),
-  threadedProcesses: () => kernelWorker.threadedProcessPids(),
   armUnwindRequests: () => kernelWorker.armCheckpointUnwind(),
   disarmUnwindRequests: () => kernelWorker.disarmCheckpointUnwind(),
   copyKernelMemory: () => kernelWorker.copyKernelMemoryForCheckpoint(),
@@ -1777,7 +1776,11 @@ function installProcessWorkerListeners(
     if (m.type === "exec_retired" && m.tid === undefined) {
       process.execRetirement.settle();
     }
-    if (m.type === "checkpoint_unwound" && m.pid === pid) {
+    if (
+      m.type === "checkpoint_unwound"
+      && m.pid === pid
+      && m.tid === undefined
+    ) {
       // The frames exist only until the gate reopens, so the report and the
       // read that follows it are the whole capture window.
       process.checkpointFreeze.unwound();
@@ -3475,6 +3478,7 @@ async function handleClone(
     tlsAllocAddr: alloc.tlsAllocAddr,
     ptrWidth: processInfo.ptrWidth,
     kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+    checkpointFreezeGate: processInfo.checkpointFreeze.registerThread(tid),
   };
 
   threadWorker = new DeferredWorkerHandle(
@@ -3519,6 +3523,9 @@ async function handleClone(
       // and ultimately prevents safe retirement of the process backing.
       processInfo.memoryRetirementSafe = false;
     }
+    // A freeze still waiting on this thread would wait until its timeout, so
+    // release its participant slot as the thread goes away.
+    processInfo.checkpointFreeze.unregisterThread(tid);
     if (belongsToCurrentProcessImage()) {
       threadExits.release(pid, alloc.channelOffset);
     }
@@ -3563,6 +3570,10 @@ async function handleClone(
     const m = msg as WorkerToHostMessage;
     if (m.type === "exec_retired" && m.tid === tid) {
       threadEntry.execRetirement.settle();
+    } else if (m.type === "checkpoint_unwound" && m.tid === tid) {
+      // The frames exist only until the gate reopens, so the report and the
+      // read that follows it are the whole capture window.
+      processInfo.checkpointFreeze.unwound(tid);
     } else if (m.type === "thread_exit") {
       if (!isCurrentThreadGeneration()) {
         void terminateThreadEntry();

@@ -7813,22 +7813,6 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Pids that own more than one syscall channel, so more than one thread.
-   *
-   * Only the main thread has a checkpoint capture path today, so a threaded
-   * process would be read with its other threads' frames still on their own
-   * stacks. The freeze refuses such a machine rather than produce a checkpoint
-   * that restores those threads at the wrong instruction.
-   */
-  threadedProcessPids(): number[] {
-    const threaded: number[] = [];
-    for (const [pid, registration] of this.processes) {
-      if (registration.channels.length > 1) threaded.push(pid);
-    }
-    return threaded;
-  }
-
-  /**
    * Ask every registered process to unwind at its next syscall boundary.
    *
    * Returns the pids that were armed. Arming publishes nothing on its own: the

@@ -124,4 +124,87 @@ describe("checkpoint freeze gate", () => {
     expect(stateOf(coordinator.gate)).toBe(1);
   });
 
+  it("gives each thread its own gate", () => {
+    const coordinator = new CheckpointFreezeGateCoordinator("pid=20");
+    const first = coordinator.registerThread(2);
+    const second = coordinator.registerThread(3);
+
+    expect(first).not.toBe(second);
+    expect(first).not.toBe(coordinator.gate);
+    expect(() => coordinator.registerThread(2)).toThrow(
+      "pid=20: tid=2 already has a freeze gate",
+    );
+  });
+
+  it("stays armed until every thread has reported", async () => {
+    const coordinator = new CheckpointFreezeGateCoordinator("pid=21");
+    coordinator.registerThread(2);
+    coordinator.registerThread(3);
+    coordinator.arm();
+    let settled = false;
+    void coordinator.waitUntilUnwound().then(() => { settled = true; });
+
+    coordinator.unwound();
+    coordinator.unwound(2);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(coordinator.currentPhase).toBe("armed");
+
+    coordinator.unwound(3);
+    await coordinator.waitUntilUnwound();
+    expect(coordinator.currentPhase).toBe("unwound");
+  });
+
+  it("resumes every parked thread, not only the first", () => {
+    const coordinator = new CheckpointFreezeGateCoordinator("pid=22");
+    const thread = coordinator.registerThread(2);
+    coordinator.arm();
+    coordinator.unwound();
+    coordinator.unwound(2);
+    coordinator.resume();
+
+    expect(stateOf(coordinator.gate)).toBe(1);
+    expect(stateOf(thread)).toBe(1);
+  });
+
+  it("counts a repeated report from one thread only once", async () => {
+    const coordinator = new CheckpointFreezeGateCoordinator("pid=23");
+    coordinator.registerThread(2);
+    coordinator.arm();
+    coordinator.unwound(2);
+    coordinator.unwound(2);
+    let settled = false;
+    void coordinator.waitUntilUnwound().then(() => { settled = true; });
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
+    coordinator.unwound();
+    await coordinator.waitUntilUnwound();
+    expect(coordinator.currentPhase).toBe("unwound");
+  });
+
+  it("releases a freeze waiting on a thread that exits", async () => {
+    const coordinator = new CheckpointFreezeGateCoordinator("pid=24");
+    coordinator.registerThread(2);
+    coordinator.arm();
+    coordinator.unwound();
+    coordinator.unregisterThread(2);
+
+    await coordinator.waitUntilUnwound();
+    expect(coordinator.currentPhase).toBe("unwound");
+  });
+
+  it("abandoning rewinds every parked thread", () => {
+    const coordinator = new CheckpointFreezeGateCoordinator("pid=25");
+    const thread = coordinator.registerThread(2);
+    coordinator.arm();
+    coordinator.unwound(2);
+    coordinator.abandon();
+
+    expect(stateOf(thread)).toBe(1);
+    // The main thread never parked, so its late report self-rewinds.
+    coordinator.unwound();
+    expect(stateOf(coordinator.gate)).toBe(1);
+  });
+
 });
