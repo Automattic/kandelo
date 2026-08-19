@@ -5,10 +5,6 @@ import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridg
 import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
 import { bindImageOwnedRuntimeUrls } from "../../../lib/init/image-owned-runtime-urls";
 import { BrowserInputSource } from "../../../../../host/src/input/browser-input-source";
-import {
-  ensureServiceWorkerReady,
-  initServiceWorkerBridge,
-} from "../../../lib/init/service-worker-bridge";
 import { HttpBridgeHost } from "../../../lib/http-bridge";
 import { rewriteShellLazyFileUrls } from "../../../lib/init/shell-lazy-files";
 import { resolveShellLazyArchiveUrl } from "../../../lib/init/lazy-archives";
@@ -28,6 +24,10 @@ import {
   WORDPRESS_MARIADB_SOCKET_PATH,
 } from "../../../lib/init/wordpress-mariadb-readiness";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
+import {
+  extractZipEntry,
+  parseZipCentralDirectory,
+} from "../../../../../host/src/vfs/zip";
 import { loadHomebrewBottleMirrorClosedAssets } from "../../../../../host/src/homebrew-bottle-mirror-browser";
 import { HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH } from "../../../../../host/src/homebrew-bottle-mirror-plan";
 import {
@@ -201,6 +201,20 @@ const OPTIONAL_BINARY_URLS = {
   ...import.meta.glob("../../../../../binaries/programs/wasm32/evdev_demo.wasm", {
     query: "?url", import: "default",
   }),
+  // espeak-ng publishes a wasm output plus a runtime file, so the resolver
+  // mirrors its whole closure under the package directory.
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/espeak-ng/espeak-ng.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/espeak-ng/espeak-ng.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/espeak-ng/espeak-ng-data.zip", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/espeak-ng/espeak-ng-data.zip", {
+    query: "?url", import: "default",
+  }),
 } as Record<string, () => Promise<string>>;
 
 async function optionalBinaryUrl(
@@ -211,7 +225,11 @@ async function optionalBinaryUrl(
     const loader = OPTIONAL_BINARY_URLS[relPath];
     if (loader) return loader();
   }
-  throw new Error(`${label} is not built. Run: ./run.sh build programs`);
+  throw new Error(
+    `${label} is not built. Run: ./run.sh build programs, ` +
+      `or for package-owned binaries: ` +
+      `cargo xtask build-deps resolve <package>`,
+  );
 }
 
 type GalleryPackageRequirement = {
@@ -563,11 +581,11 @@ interface LiveProfile {
   evdevDemo: boolean;
   /**
    * Spawn `espeak-ng "..."` from the booted shell. espeak-ng links
-   * against our patched pcaudiolib whose `create_audio_device_object`
-   * is wired to the kandelo backend, so a single binary invocation
-   * produces audible synthesised speech through `/dev/dsp` without
-   * any host-side pipeline. The binary + data dir are baked into
-   * the shell VFS image via `populateEspeakRuntime`.
+   * upstream pcaudiolib built with only its OSS backend, so
+   * `create_audio_device_object` falls through to `/dev/dsp` and a
+   * single binary invocation produces audible synthesised speech
+   * without any host-side pipeline. The binary + data dir are baked
+   * into the image via `stageEspeakRuntime`.
    */
   espeakDemo: boolean;
 }
@@ -1550,6 +1568,18 @@ async function bootProfile(
       ensureDirRecursive(buildFs, dirname(profile.init.argv[0]));
       writeVfsBinary(buildFs, profile.init.argv[0], new Uint8Array(bytes), 0o755);
     }
+    // Both demos run their binary from a path, so the bytes have to be in the
+    // image before the worker takes exclusive ownership of the VFS.
+    if (profile.espeakDemo) {
+      tick("staging espeak-ng...");
+      await stageEspeakRuntime(buildFs);
+      assertCurrent();
+    }
+    if (profile.evdevDemo) {
+      tick("staging evdev_demo...");
+      await stageEvdevDemo(buildFs);
+      assertCurrent();
+    }
     ensureDemoHomes(buildFs);
   }
   // Bake the shell + gallery-software binaries into the image before the
@@ -1876,10 +1906,9 @@ async function bootProfile(
         assertCurrent,
       );
     } else if (profile.espeakDemo) {
-      // espeak-ng + its data dir are baked into the shell VFS image
-      // (see populateEspeakRuntime in build-shell-vfs-image.ts), so
-      // no runtime binary staging is needed. Playback rides the same
-      // /dev/dsp path every other sound demo uses.
+      // The binary and its voice data are already in the image; see
+      // stageEspeakRuntime. Playback rides the /dev/dsp path every other
+      // sound demo uses.
       void (async () => {
         try {
           tick("running espeak-ng...");
@@ -1893,27 +1922,12 @@ async function bootProfile(
         }
       })();
     } else if (profile.evdevDemo) {
-      // autoCommand can't run this: the InputSource must be attached
-      // before the binary starts polling /dev/input/event{0,1}, and
-      // the binary itself has to be staged into the VFS first.
+      // autoCommand can't run this: the InputSource must be attached before
+      // the binary starts polling /dev/input/event{0,1}. The binary itself is
+      // already in the image; see stageEvdevDemo.
       const kernelForEvdev = kernel;
       void (async () => {
         try {
-          const evdevDemoWasmUrl = await optionalBinaryUrl([
-            "../../../../../local-binaries/programs/wasm32/evdev_demo.wasm",
-            "../../../../../binaries/programs/wasm32/evdev_demo.wasm",
-          ], "evdev_demo.wasm");
-          tick("staging evdev_demo binary...");
-          const bytes = await fetch(evdevDemoWasmUrl)
-            .then(failOn("evdev_demo.wasm"))
-            .then((r) => r.arrayBuffer());
-          ensureDirRecursive(kernelForEvdev.fs, "/usr/local/bin");
-          writeVfsBinary(
-            kernelForEvdev.fs,
-            "/usr/local/bin/evdev_demo",
-            new Uint8Array(bytes),
-            0o755,
-          );
           tick("attaching input source...");
           kernelForEvdev.attachInputSource(new BrowserInputSource(window), {
             width: window.innerWidth,
@@ -2006,6 +2020,54 @@ function stageShellUtilities(
   } catch {
     /* exists */
   }
+}
+
+/**
+ * Bake espeak-ng and its voice data into the image.
+ *
+ * Both come from the espeak-ng package closure, so the demo consumes the same
+ * bytes the resolver published. libespeak-ng's PATH_ESPEAK_DATA is fixed to
+ * /usr/share at build time, so the data tree has to land unpacked there.
+ */
+async function stageEspeakRuntime(fs: MemoryFileSystem): Promise<void> {
+  const binaryUrl = await optionalBinaryUrl([
+    "../../../../../local-binaries/programs/wasm32/espeak-ng/espeak-ng.wasm",
+    "../../../../../binaries/programs/wasm32/espeak-ng/espeak-ng.wasm",
+  ], "espeak-ng.wasm");
+  const binary = await fetch(binaryUrl)
+    .then(failOn("espeak-ng.wasm"))
+    .then((r) => r.arrayBuffer());
+  ensureDirRecursive(fs, "/usr/bin");
+  writeVfsBinary(fs, "/usr/bin/espeak-ng", new Uint8Array(binary), 0o755);
+
+  const dataUrl = await optionalBinaryUrl([
+    "../../../../../local-binaries/programs/wasm32/espeak-ng/espeak-ng-data.zip",
+    "../../../../../binaries/programs/wasm32/espeak-ng/espeak-ng-data.zip",
+  ], "espeak-ng-data.zip");
+  const data = await fetch(dataUrl)
+    .then(failOn("espeak-ng-data.zip"))
+    .then((r) => r.arrayBuffer());
+  const zipBytes = new Uint8Array(data);
+  const root = "/usr/share/espeak-ng-data";
+  ensureDirRecursive(fs, root);
+  for (const entry of parseZipCentralDirectory(zipBytes)) {
+    if (entry.isDirectory) continue;
+    const target = `${root}/${entry.fileName}`;
+    ensureDirRecursive(fs, target.slice(0, target.lastIndexOf("/")));
+    writeVfsBinary(fs, target, extractZipEntry(zipBytes, entry), 0o644);
+  }
+}
+
+async function stageEvdevDemo(fs: MemoryFileSystem): Promise<void> {
+  const url = await optionalBinaryUrl([
+    "../../../../../local-binaries/programs/wasm32/evdev_demo.wasm",
+    "../../../../../binaries/programs/wasm32/evdev_demo.wasm",
+  ], "evdev_demo.wasm");
+  const bytes = await fetch(url)
+    .then(failOn("evdev_demo.wasm"))
+    .then((r) => r.arrayBuffer());
+  ensureDirRecursive(fs, "/usr/local/bin");
+  writeVfsBinary(fs, "/usr/local/bin/evdev_demo", new Uint8Array(bytes), 0o755);
 }
 
 function ensureDemoHomes(fs: MemoryFileSystem): void {

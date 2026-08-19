@@ -141,8 +141,8 @@ export const PRESET_LIBRARY: Preset[] = [
   },
   {
     id: "espeak",
-    title: "ALSA - Espeak-NG",
-    summary: "The kernel speaks: espeak-ng synthesises text directly through libpcaudio's kandelo backend.",
+    title: "OSS - Espeak-NG",
+    summary: "The kernel speaks: espeak-ng synthesises text directly through libpcaudio's OSS backend.",
     base: SHELL_BASE,
     packages: ["bash@local", "coreutils@local"],
     accent: "#f48fb1",
