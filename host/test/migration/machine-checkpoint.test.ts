@@ -8,23 +8,32 @@
  */
 import { describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeKernelHost } from "../../src/node-kernel-host";
-import { findRepoRoot } from "../../src/binary-resolver";
+import {
+  binaryCacheRoot,
+  findRepoRoot,
+  resolveBinary,
+} from "../../src/binary-resolver";
 
 const TIMEOUTS = { unwindTimeoutMs: 10_000, vforkTimeoutMs: 5_000 };
 
 /** Where the guest finds the side module the freeze fixture loads. */
 const SIDE_MODULE_GUEST_PATH = "/tmp/checkpoint-dlopen-lib.so";
 
-function programBytes(name: string): ArrayBuffer {
-  const bytes = readFileSync(join(findRepoRoot(), "examples", name));
+function fileArrayBuffer(path: string): ArrayBuffer {
+  const bytes = readFileSync(path);
   return bytes.buffer.slice(
     bytes.byteOffset,
     bytes.byteOffset + bytes.byteLength,
   ) as ArrayBuffer;
+}
+
+function programBytes(name: string): ArrayBuffer {
+  return fileArrayBuffer(join(findRepoRoot(), "examples", name));
 }
 
 /**
@@ -105,6 +114,51 @@ function buildSideModule(): Uint8Array {
   return new Uint8Array(readFileSync(soPath));
 }
 
+/**
+ * The Doom shareware IWAD the fbDOOM checkpoint test runs against.
+ *
+ * Same pinned source as `images/vfs/products/browser-main-shell.toml`: the
+ * browser demo fetches this file at page load, so the test exercises the same
+ * asset the product ships. Fetched once, verified against the pinned sha256,
+ * and cached beside the resolver's package generations.
+ */
+const DOOM_WAD_URL =
+  "https://cdn.jsdelivr.net/gh/gaborbata/vanilla-mocha-doom@15825a07a48806bcfb242a42afd5ee7cb3c9a3a4/wads/doom1.wad";
+const DOOM_WAD_SHA256 =
+  "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771";
+
+async function doomSharewareWad(): Promise<Uint8Array> {
+  const cachePath = join(
+    binaryCacheRoot(),
+    "archives",
+    `doom-shareware-${DOOM_WAD_SHA256.slice(0, 8)}.wad`,
+  );
+  const sha256 = (bytes: Uint8Array) =>
+    createHash("sha256").update(bytes).digest("hex");
+  try {
+    // A fresh copy, because writeFileToVfs transfers the backing buffer and
+    // a readFileSync Buffer sits in a pool it does not own.
+    const cached = new Uint8Array(readFileSync(cachePath));
+    if (sha256(cached) === DOOM_WAD_SHA256) return cached;
+  } catch {
+    // Not cached yet.
+  }
+  const response = await fetch(DOOM_WAD_URL);
+  if (!response.ok) {
+    throw new Error(`fetching ${DOOM_WAD_URL} failed: ${response.status}`);
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  const digest = sha256(bytes);
+  if (digest !== DOOM_WAD_SHA256) {
+    throw new Error(
+      `${DOOM_WAD_URL} hashed to ${digest}, expected ${DOOM_WAD_SHA256}`,
+    );
+  }
+  mkdirSync(join(binaryCacheRoot(), "archives"), { recursive: true });
+  writeFileSync(cachePath, bytes);
+  return bytes;
+}
+
 describe("machine checkpoint of a running guest", () => {
   it(
     "reads a single-threaded process that keeps reaching a syscall boundary",
@@ -127,6 +181,77 @@ describe("machine checkpoint of a running guest", () => {
 
         // The freeze is reversible, so the guest is still running and can be
         // read a second time.
+        const second = await host.captureCheckpoint(TIMEOUTS);
+        expect(second.status).toBe("captured");
+      } finally {
+        await host.destroy();
+      }
+    },
+  );
+
+  it(
+    "reads a running fbDOOM",
+    { timeout: 120_000 },
+    async () => {
+      // A real application rather than a fixture written for the freeze: it
+      // loads a 4 MB IWAD, renders through /dev/fb0 and crosses a syscall
+      // boundary every game tic.
+      const fbdoom = fileArrayBuffer(resolveBinary("programs/fbdoom.wasm"));
+      const wad = await doomSharewareWad();
+      let ptyOutput = "";
+      const host = new NodeKernelHost({
+        rootfsImage: "default",
+        onPtyOutput: (_pid, data) => {
+          ptyOutput += new TextDecoder().decode(data);
+        },
+      });
+      await host.init();
+      try {
+        await host.writeFileToVfs("/doom1.wad", wad);
+        let pid = -1;
+        const started = new Promise<void>((resolve) => {
+          void host.spawn(fbdoom, ["fbdoom", "-iwad", "/doom1.wad"], {
+            // fbDOOM's keyboard input needs a controlling terminal or it
+            // exits during startup.
+            pty: true,
+            // NodeKernelHost has no audio consumer, so a working /dev/dsp
+            // would fill the kernel's ring and park fbDOOM in a write the
+            // kernel never completes — the timed-out case below, not this
+            // one. An unopenable AUDIODEV disables sound through fbDOOM's
+            // own fallback.
+            env: ["AUDIODEV=/nonexistent-dsp"],
+            onStarted: (p) => {
+              pid = p;
+              resolve();
+            },
+          });
+        });
+        await started;
+
+        // ST_Init is the last startup line before fbDOOM enters its game
+        // loop; the settle lets it reach the demo loop proper so the freeze
+        // meets a game in flight rather than a program still initializing.
+        await expect
+          .poll(() => ptyOutput.includes("ST_Init"), { timeout: 60_000 })
+          .toBe(true);
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+
+        const response = await host.captureCheckpoint(TIMEOUTS);
+
+        expect(response.status).toBe("captured");
+        if (response.status !== "captured") return;
+        const { summary } = response;
+        expect(summary.kernelMemoryBytes).toBeGreaterThan(0);
+        expect(summary.filesystemBytes).toBeGreaterThan(wad.byteLength);
+        const captured = summary.processes.find((p) => p.pid === pid);
+        expect(captured).toBeDefined();
+        // The guest loaded the IWAD, so its image holds more than the wad.
+        expect(captured!.memoryBytes).toBeGreaterThan(wad.byteLength);
+        expect(captured!.argv).toEqual(["fbdoom", "-iwad", "/doom1.wad"]);
+        expect(captured!.executionGeneration).toBeGreaterThan(0);
+
+        // The freeze reversed: the game still runs and can be read again.
+        expect(await host.signalProcess(pid, 0)).toBe(true);
         const second = await host.captureCheckpoint(TIMEOUTS);
         expect(second.status).toBe("captured");
       } finally {
