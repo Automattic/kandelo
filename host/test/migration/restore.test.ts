@@ -10,7 +10,8 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { NodeKernelHost } from "../../src/node-kernel-host";
-import { findRepoRoot } from "../../src/binary-resolver";
+import { findRepoRoot, resolveBinary } from "../../src/binary-resolver";
+import { doomSharewareWad } from "../support/doom-shareware";
 import { ABI_VERSION } from "../../src/generated/abi";
 import { FORK_SAVE_BUFFER_SIZE } from "../../src/process-memory";
 import type { MachineCheckpoint } from "../../src/migration/checkpoint";
@@ -30,7 +31,9 @@ function programBytes(name: string): ArrayBuffer {
   ) as ArrayBuffer;
 }
 
-async function captureRealCheckpoint(): Promise<MachineCheckpoint> {
+async function captureRealCheckpoint(
+  program = "checkpoint-loop.wasm",
+): Promise<MachineCheckpoint> {
   let ready = () => {};
   const isReady = new Promise<void>((resolve) => { ready = resolve; });
   let output = "";
@@ -44,8 +47,8 @@ async function captureRealCheckpoint(): Promise<MachineCheckpoint> {
   await host.init();
   try {
     await new Promise<void>((resolve) => {
-      void host.spawn(programBytes("checkpoint-loop.wasm"), [
-        "checkpoint-loop",
+      void host.spawn(programBytes(program), [
+        program.replace(/\.wasm$/, ""),
       ], { onStarted: () => resolve() });
     });
     await isReady;
@@ -281,20 +284,147 @@ describe("checkpoint validation", () => {
         await refused.destroy().catch(() => undefined);
       }
 
-      // A checkpoint with process buckets is valid input, but its consumer
-      // does not exist yet; the boot says so instead of dropping the buckets.
-      const withProcess = await captureRealCheckpoint();
-      expect(withProcess.processes.length).toBeGreaterThan(0);
-      const unimplemented = new NodeKernelHost({
+    },
+  );
+
+  it(
+    "restores a checkpointed process that keeps running",
+    { timeout: 120_000 },
+    async () => {
+      const checkpoint = await captureRealCheckpoint();
+      expect(checkpoint.processes.length).toBe(1);
+      const pid = checkpoint.processes[0]!.pid;
+
+      const receiver = new NodeKernelHost({
         rootfsImage: "default",
-        restoreCheckpoint: withProcess,
+        restoreCheckpoint: checkpoint,
+      });
+      await receiver.init();
+      try {
+        expect(await receiver.signalProcess(pid, 0)).toBe(true);
+
+        // The strongest liveness proof a checkpoint-loop guest offers: a
+        // capture completes only when the process crosses a syscall boundary
+        // and unwinds, so a captured recapture means the restored process
+        // genuinely resumed its loop in the fresh instance.
+        const recapture = await receiver.captureCheckpointBytes(TIMEOUTS);
+        if (recapture.status !== "captured") {
+          throw new Error(`recapture: ${JSON.stringify(recapture)}`);
+        }
+        expect(
+          recapture.checkpoint.processes.map((bucket) => bucket.pid),
+        ).toEqual([pid]);
+      } finally {
+        await receiver.destroy();
+      }
+
+      // A host whose memory configuration differs computes a different
+      // process layout, and a captured image copied into the wrong layout
+      // would put the channel and thread arena at the wrong addresses.
+      const mismatched = new NodeKernelHost({
+        rootfsImage: "default",
+        maxPages: 4096,
+        restoreCheckpoint: checkpoint,
       });
       try {
-        await expect(unimplemented.init()).rejects.toThrow(
-          "restoring a checkpoint with processes is not implemented yet",
+        await expect(mismatched.init()).rejects.toThrow(
+          "does not match this host's computed",
         );
       } finally {
-        await unimplemented.destroy().catch(() => undefined);
+        await mismatched.destroy().catch(() => undefined);
+      }
+    },
+  );
+
+  it(
+    "restores a running fbDOOM that keeps playing",
+    { timeout: 180_000 },
+    async () => {
+      const fbdoomBytes = readFileSync(resolveBinary("programs/fbdoom.wasm"));
+      const fbdoom = fbdoomBytes.buffer.slice(
+        fbdoomBytes.byteOffset,
+        fbdoomBytes.byteOffset + fbdoomBytes.byteLength,
+      ) as ArrayBuffer;
+      const wad = await doomSharewareWad();
+
+      let ptyOutput = "";
+      const keeper = new NodeKernelHost({
+        rootfsImage: "default",
+        onPtyOutput: (_pid, data) => {
+          ptyOutput += new TextDecoder().decode(data);
+        },
+      });
+      await keeper.init();
+      let checkpoint: MachineCheckpoint;
+      try {
+        await keeper.writeFileToVfs("/doom1.wad", wad);
+        await new Promise<void>((resolve) => {
+          void keeper.spawn(fbdoom, ["fbdoom", "-iwad", "/doom1.wad"], {
+            pty: true,
+            env: ["AUDIODEV=/nonexistent-dsp"],
+            onStarted: () => resolve(),
+          });
+        });
+        await expect
+          .poll(() => ptyOutput.includes("ST_Init"), { timeout: 60_000 })
+          .toBe(true);
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+        const response = await keeper.captureCheckpointBytes(TIMEOUTS);
+        if (response.status !== "captured") {
+          throw new Error(`capture failed: ${JSON.stringify(response)}`);
+        }
+        checkpoint = response.checkpoint;
+      } finally {
+        await keeper.destroy();
+      }
+      expect(checkpoint.processes.length).toBe(1);
+      const pid = checkpoint.processes[0]!.pid;
+
+      const receiver = new NodeKernelHost({
+        rootfsImage: "default",
+        restoreCheckpoint: checkpoint,
+      });
+      await receiver.init();
+      try {
+        expect(await receiver.signalProcess(pid, 0)).toBe(true);
+
+        // The game keeps playing only if it keeps crossing syscall
+        // boundaries every tic; a capture completes only then, so a
+        // captured recapture is the proof the demo loop resumed.
+        const recapture = await receiver.captureCheckpointBytes(TIMEOUTS);
+        if (recapture.status !== "captured") {
+          throw new Error(`recapture: ${JSON.stringify(recapture)}`);
+        }
+        expect(
+          recapture.checkpoint.processes.map((bucket) => bucket.pid),
+        ).toEqual([pid]);
+      } finally {
+        await receiver.destroy();
+      }
+    },
+  );
+
+  it(
+    "refuses to restore a process with live threads",
+    { timeout: 120_000 },
+    async () => {
+      const checkpoint = await captureRealCheckpoint("checkpoint-threads.wasm");
+      expect(
+        checkpoint.processes[0]!.threadAllocator.activeCount,
+      ).toBeGreaterThan(0);
+
+      const receiver = new NodeKernelHost({
+        rootfsImage: "default",
+        restoreCheckpoint: checkpoint,
+      });
+      try {
+        // Relaunching the pthread's worker is not built; a restore that woke
+        // only the main thread would leave threads silently parked forever.
+        await expect(receiver.init()).rejects.toThrow(
+          "with live threads is not implemented yet",
+        );
+      } finally {
+        await receiver.destroy().catch(() => undefined);
       }
     },
   );

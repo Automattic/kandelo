@@ -85,8 +85,10 @@ import {
   captureMachineCheckpointSummary,
   machineCheckpointTransferList,
   type CheckpointMachine,
+  type CheckpointProcessBucket,
 } from "./migration/checkpoint";
 import { validateMachineCheckpoint } from "./migration/restore";
+import { readForkContinuationAnchor } from "./fork-continuation";
 import { ForkExternrefProcessOwner } from "./fork-externref-process-owner";
 import type { ForkExternrefGeneration } from "./fork-reference-broker";
 import {
@@ -104,6 +106,7 @@ import {
   ABI_VERSION,
   FILE_MODES,
   OPEN_FLAGS,
+  PROCESS_FORK_MODE_FORK,
   PROCESS_FORK_MODE_VFORK,
   type ProcessForkMode,
 } from "./generated/abi";
@@ -1105,15 +1108,14 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // apply DEFAULT_MOUNT_SPEC (/ from the image + scratch mounts for /tmp,
   // /var/*, /home/maker, /root, /srv). /etc is part of the image, baked in by
   // the demo (see apps/browser-demos/lib/kernel-owned-boot.ts).
+  let restoredProgramModules:
+    | ReadonlyMap<number, WebAssembly.Module>
+    | undefined;
   if (msg.restoreCheckpoint) {
-    await validateMachineCheckpoint(msg.restoreCheckpoint, {
-      kernelAbiVersion: ABI_VERSION,
-    });
-    if (msg.restoreCheckpoint.processes.length > 0) {
-      throw new Error(
-        "restoring a checkpoint with processes is not implemented yet",
-      );
-    }
+    restoredProgramModules = await validateMachineCheckpoint(
+      msg.restoreCheckpoint,
+      { kernelAbiVersion: ABI_VERSION },
+    );
   }
   const specMounts = await restoreBrowserKernelInitMounts(
     msg.vfsImage,
@@ -1351,6 +1353,18 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       : { adoptKernelMemoryImage: msg.restoreCheckpoint.kernelMemory },
   );
 
+  if (msg.restoreCheckpoint && restoredProgramModules) {
+    for (const bucket of msg.restoreCheckpoint.processes) {
+      const programModule = restoredProgramModules.get(bucket.pid);
+      if (!programModule) {
+        throw new Error(
+          `no validated program module for restored pid ${bucket.pid}`,
+        );
+      }
+      await restoreProcessFromBucket(bucket, programModule);
+    }
+  }
+
   // /dev/fb0 forwarding: the registry lives in this worker, but the canvas
   // lives on the main thread. WHY: today's zero-copy fbdev contract therefore
   // exposes raw process Memory and must pair every bind with the exact release
@@ -1469,6 +1483,145 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
 }
 
 // ── Spawn ──
+
+/**
+ * Relaunch one checkpointed process inside this freshly restored machine.
+ *
+ * The restored kernel memory already holds the process: its pid, fds, cwd,
+ * credentials, and metadata. This launch therefore creates no kernel process;
+ * it rebuilds the host side — a memory holding the captured bytes, the host
+ * registration, and a worker — and enters the worker down the fork-child
+ * replay path. The captured frames end at the `kernel_checkpoint` import
+ * rather than the fork import, so the replay resumes the process at its
+ * parked syscall boundary; the fork replay commit gate is never reached and
+ * is deliberately not supplied. Mirrors the Node entry's
+ * `restoreProcessFromBucket`.
+ */
+async function restoreProcessFromBucket(
+  bucket: CheckpointProcessBucket,
+  programModule: WebAssembly.Module,
+): Promise<void> {
+  const { pid, ptrWidth, channelOffset } = bucket;
+  if (bucket.threadAllocator.activeCount > 0) {
+    // A live pthread parked its own frames in this memory, and relaunching
+    // its worker is not built yet. Refuse rather than resume a process whose
+    // threads silently never wake.
+    throw new Error(
+      `restoring pid ${pid} with live threads is not implemented yet`,
+    );
+  }
+  const programBytes = bucket.programBytes;
+  const { memory, memoryLease, layout, threadAllocator } =
+    await createFreshProcessMemory(pid, programBytes, ptrWidth, maxPages, {
+      operation: "spawn",
+      path: bucket.argv[0] ?? `restored-pid-${pid}`,
+      argv: [...bucket.argv],
+    });
+  try {
+    for (const key of Object.keys(layout) as (keyof ProcessMemoryLayout)[]) {
+      if (layout[key] !== bucket.layout[key]) {
+        throw new Error(
+          `restored pid ${pid}'s captured layout ${key}=`
+          + `${bucket.layout[key]} does not match this host's computed `
+          + `${key}=${layout[key]}; boot with the captured machine's `
+          + `memory configuration`,
+        );
+      }
+    }
+    const freshBytes = memory.buffer.byteLength;
+    if (bucket.memory.byteLength < freshBytes) {
+      throw new Error(
+        `restored pid ${pid}'s ${bucket.memory.byteLength}-byte image is `
+        + `smaller than its ${freshBytes}-byte initial layout`,
+      );
+    }
+    const deltaPages =
+      (bucket.memory.byteLength - freshBytes) / PAGE_SIZE;
+    if (deltaPages > 0) memory.grow(deltaPages);
+    new Uint8Array(memory.buffer).set(bucket.memory);
+    threadAllocator.adoptState(bucket.threadAllocator);
+
+    kernelWorker.registerProcess(pid, memory, [channelOffset], {
+      ptrWidth,
+      brkBase: layout.brkBase,
+      mmapBase: layout.mmapBase,
+      maxAddr: layout.maxAddr,
+    });
+    const secureExec = kernelWorker.processSecureExec(pid);
+    const externrefGeneration = externrefProcessOwner.startGeneration(pid);
+    let launchedWorker: ProcessInfo["worker"];
+    const forkHostImports = forkHostImportOwnerRuntime.createWorker({
+      pid,
+      generationId: externrefGeneration.id,
+      authorizeSender: () => {
+        const current = processes.get(pid);
+        if (
+          !current
+          || current.worker !== launchedWorker
+          || current.externrefGeneration !== externrefGeneration
+        ) {
+          throw new Error(`stale fork host-import sender for pid=${pid}`);
+        }
+      },
+    });
+    const checkpointFreeze = new CheckpointFreezeGateCoordinator(`pid=${pid}`);
+    const forkBufAddr = readForkContinuationAnchor(
+      memory,
+      channelOffset - FORK_SAVE_BUFFER_SIZE,
+      ptrWidth,
+    );
+    const initData: CentralizedWorkerInitMessage = {
+      type: "centralized_init",
+      pid,
+      programBytes,
+      programModule,
+      memory,
+      channelOffset,
+      secureExec,
+      externrefGenerationId: externrefGeneration.id,
+      forkHostImports: forkHostImports.init,
+      checkpointFreezeGate: checkpointFreeze.gate,
+      isForkChild: true,
+      forkMode: PROCESS_FORK_MODE_FORK,
+      forkBufAddr,
+      forkChildThreadFnPtr: bucket.forkReplayContext?.fnPtr,
+      forkChildThreadArgPtr: bucket.forkReplayContext?.argPtr,
+      ptrWidth,
+      kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+    };
+    const worker = workerAdapter.createWorker(initData);
+    launchedWorker = worker;
+    bindForkHostImports(worker, forkHostImports);
+    processes.set(pid, {
+      generation: allocateProcessGeneration(),
+      executionGeneration: processExecutionGenerations.allocate(),
+      memory,
+      memoryLease,
+      workerQuiescence: createWorkerQuiescence(),
+      execRetirement: createWorkerQuiescence(),
+      memoryRetirementSafe: true,
+      framebufferExposed: false,
+      programBytes,
+      programModule,
+      worker,
+      argv: [...bucket.argv],
+      channelOffset,
+      ptrWidth,
+      secureExec,
+      layout,
+      threadAllocator,
+      ...(bucket.forkReplayContext
+        ? { forkReplayContext: { ...bucket.forkReplayContext } }
+        : {}),
+      externrefGeneration,
+      checkpointFreeze,
+    });
+    installProcessWorkerListeners(worker, pid);
+  } catch (error) {
+    memoryLease.release();
+    throw error;
+  }
+}
 
 async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>) {
   let releaseMutation: (() => void) | undefined;
