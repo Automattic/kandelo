@@ -1,0 +1,34 @@
+kind = "program"
+# Runtime backing for `/?demo=sdl2`. The browser app imports the output
+# through `@binaries`, so it needs a registry owner like every other
+# product artifact — see scripts/browser-binary-package-roots.mjs. The
+# sources stay in programs/sdl2/ so scripts/build-programs.sh keeps
+# building the local test fixture, the same split modeset uses.
+name = "sdl2-demo"
+version = "0.1.0"
+kernel_abi = 43
+depends_on = ["sdl2@2.32.10"]
+arches = ["wasm32"]
+
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/sdl2-demo/build-sdl2-demo.sh"
+
+# scripts/build-programs.sh regenerates the same TTF→C byte-array header
+# this build generates into its work dir.
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.8"
+probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[outputs]]
+name = "sdl2"
+wasm = "sdl2.wasm"

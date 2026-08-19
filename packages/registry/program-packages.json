@@ -85,13 +85,6 @@
         "wasm64": "2714a5788bada9994dc0917c9174d6fff59fb0ae98a33040ec0cf7742323a5a9"
       }
     },
-    "evdev-demo": {
-      "manifestSha256": "0943919404dcb8592ecc32f7171fdea68047d3c850a46f6fc88a06b65668ad2f",
-      "cacheKeys": {
-        "wasm32": "f4f1431d4c9ff35affa386c709320c93a4d16724b76cc35ea53bf51ea8554f7e",
-        "wasm64": "512bb1b51ba4db8ac11794c2b2036033b533c6efed5e5881e7f100fd07624e96"
-      }
-    },
     "fbdoom": {
       "manifestSha256": "7ff2127ca940e41be90ba45204c89089a7a2093567b9bff581a9549b57138626",
       "cacheKeys": {
@@ -172,8 +165,8 @@
     "lamp": {
       "manifestSha256": "250b64635d64f8537178188fb5488dbfd2980d79a1c2ffbf346af67008088ba0",
       "cacheKeys": {
-        "wasm32": "75e24bb93b54ead340d9cd7eeef0d89b3c97cd1073eedfccee225f97bcdb7a71",
-        "wasm64": "dec93a3272b9f709f10f22911fdf1b5d4341616dbfd8efe3559f399476a822ee"
+        "wasm32": "f96af71f3f17c64757191a10e27ab193a0014c16144abfac068f55796e318731",
+        "wasm64": "d37b4f085a04a9b7fb7aa496e4ec909bd57782b70c6915200027d19e7a0fbf20"
       }
     },
     "less": {
@@ -333,8 +326,8 @@
     "nginx-php-vfs": {
       "manifestSha256": "97976410cb02f8ba710d856b4ac904bcf976d677b50eefdee39fb64176070d4b",
       "cacheKeys": {
-        "wasm32": "686b05596fadfba686aa1ea7de360f6ffbb4305b0a0f8a09bc9a09886c331c50",
-        "wasm64": "1a96f8b4798b2442c9427e97fd70c145842a240ecac273336e1aba5aa6fc6baa"
+        "wasm32": "f3a355525fd17f19e3f6974c95253b10a65ccd5817b29e2cc5187b0145ff69af",
+        "wasm64": "30db21858b649c25df28bf8062b3ebb5081b6c633daf0900624b06337e0988c7"
       }
     },
     "nginx-vfs": {
@@ -447,6 +440,13 @@
       "cacheKeys": {
         "wasm32": "634a4d034ca00056c1f57efabe3105afb660917c1d0ba13c312ebb1c02cf3bdd",
         "wasm64": "fb4ab03dd1f22802d5acc4170c9d13b9e3d2e103e736125b128baf159c2fe228"
+      }
+    },
+    "sdl2-demo": {
+      "manifestSha256": "555e5b48c4f7d6bd74a3f06eb36f4e167b7d10ba2748bb07e1ae065aed1bcaa4",
+      "cacheKeys": {
+        "wasm32": "7971cc73165c7377dacad7a73272ab66830888af65511a8e3c05e5c0a7ea8fef",
+        "wasm64": "9664eca8afe5e52004c66440b52f7105728ac0d4a635917942cf937aa6e268bd"
       }
     },
     "sdl2-mixer-playwave": {
@@ -564,8 +564,8 @@
     "wordpress": {
       "manifestSha256": "36465e0596a06e855a8524eecfd87da98643bc13b37ee12939f5aab44bf33418",
       "cacheKeys": {
-        "wasm32": "5196468b8edc736b47e8ff051bc9fcdc2a9ac0cb9ea4817f011f91449a91e5f0",
-        "wasm64": "d879ca4fe1ee7dea267a10b770d3ad1a068ba915214cf1c4320be7edee8af966"
+        "wasm32": "5f5fbbfe675ad48465b7f5a26496031219e26b49fb21cf7387f36421ecd38b48",
+        "wasm64": "6a22d3a5374f8339b373334085a4560397cc4cdb68483a7b685dc200f66a795c"
       }
     },
     "xz": {
@@ -947,27 +947,6 @@
         }
       ]
     },
-    "evdev-demo": {
-      "manifestSha256": "0943919404dcb8592ecc32f7171fdea68047d3c850a46f6fc88a06b65668ad2f",
-      "arches": [
-        "wasm32"
-      ],
-      "cacheKeys": {
-        "wasm32": "f4f1431d4c9ff35affa386c709320c93a4d16724b76cc35ea53bf51ea8554f7e"
-      },
-      "dependencyClosures": {
-        "wasm32": []
-      },
-      "members": [
-        {
-          "kind": "output",
-          "sourceArtifact": "evdev_demo.wasm",
-          "mirrorPath": "evdev_demo.wasm",
-          "outputName": "evdev_demo",
-          "forkInstrumentation": "auto"
-        }
-      ]
-    },
     "fbdoom": {
       "manifestSha256": "7ff2127ca940e41be90ba45204c89089a7a2093567b9bff581a9549b57138626",
       "arches": [
@@ -1197,7 +1176,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "75e24bb93b54ead340d9cd7eeef0d89b3c97cd1073eedfccee225f97bcdb7a71"
+        "wasm32": "f96af71f3f17c64757191a10e27ab193a0014c16144abfac068f55796e318731"
       },
       "dependencyClosures": {
         "wasm32": [
@@ -1827,7 +1806,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "686b05596fadfba686aa1ea7de360f6ffbb4305b0a0f8a09bc9a09886c331c50"
+        "wasm32": "f3a355525fd17f19e3f6974c95253b10a65ccd5817b29e2cc5187b0145ff69af"
       },
       "dependencyClosures": {
         "wasm32": [
@@ -2775,6 +2754,38 @@
         }
       ]
     },
+    "sdl2-demo": {
+      "manifestSha256": "555e5b48c4f7d6bd74a3f06eb36f4e167b7d10ba2748bb07e1ae065aed1bcaa4",
+      "arches": [
+        "wasm32"
+      ],
+      "cacheKeys": {
+        "wasm32": "7971cc73165c7377dacad7a73272ab66830888af65511a8e3c05e5c0a7ea8fef"
+      },
+      "dependencyClosures": {
+        "wasm32": [
+          {
+            "packageName": "libdrm",
+            "manifestSha256": "8e0b6e1188889a5ef7db5ac1b579bb3d8bbf05d74ff262a9eb97def942c1b256",
+            "cacheKey": "9fb43f69fa4a7a8500301f38c465ca9b6b471d4c6be692ff4264532e28251432"
+          },
+          {
+            "packageName": "sdl2",
+            "manifestSha256": "2b0e3564e41b01607fb1e99270e90e2a8a0014ff5fec2beb0fdce680ce56c2d6",
+            "cacheKey": "634a4d034ca00056c1f57efabe3105afb660917c1d0ba13c312ebb1c02cf3bdd"
+          }
+        ]
+      },
+      "members": [
+        {
+          "kind": "output",
+          "sourceArtifact": "sdl2.wasm",
+          "mirrorPath": "sdl2.wasm",
+          "outputName": "sdl2",
+          "forkInstrumentation": "auto"
+        }
+      ]
+    },
     "sdl2-mixer-playwave": {
       "manifestSha256": "5ff3863e9f83cb9ad62931e067ee6e417826e06391862d9d0a58d6cc6b4dc570",
       "arches": [
@@ -3132,7 +3143,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "5196468b8edc736b47e8ff051bc9fcdc2a9ac0cb9ea4817f011f91449a91e5f0"
+        "wasm32": "5f5fbbfe675ad48465b7f5a26496031219e26b49fb21cf7387f36421ecd38b48"
       },
       "dependencyClosures": {
         "wasm32": [

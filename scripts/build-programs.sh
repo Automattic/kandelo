@@ -433,16 +433,26 @@ PY
     fi
     sdl2_sources=("$REPO_ROOT"/programs/sdl2/*.c)
     sdl2_wasm="$OUT_DIR_32/sdl2.wasm"
-    echo "  Compiling sdl2 (multi-source: ${#sdl2_sources[@]} file(s))..."
-    "$CC" "${CFLAGS[@]}" "${sdl2_sources[@]}" \
-        "${LINK_PRE_LIBS[@]}" \
-        "$SYSROOT/lib/libSDL2.a" \
-        "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
-        "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a" \
-        "${LINK_POST_LIBS[@]}" \
-        -o "$sdl2_wasm"
-    "$FORK_INSTRUMENT" "$sdl2_wasm" -o "$sdl2_wasm.instr"
-    mv "$sdl2_wasm.instr" "$sdl2_wasm"
+    if package_owns_direct_program_path wasm32 sdl2.wasm; then
+        # Same contract as build_program's ownership check: the sdl2-demo
+        # recipe publishes this path through build-deps.
+        if [ -e "$sdl2_wasm" ] && [ ! -L "$sdl2_wasm" ]; then
+            echo "Error: package-owned resolver mirror is already occupied: $sdl2_wasm" >&2
+            exit 1
+        fi
+        echo "  Skipping sdl2: package resolver owns wasm32/sdl2.wasm"
+    else
+        echo "  Compiling sdl2 (multi-source: ${#sdl2_sources[@]} file(s))..."
+        "$CC" "${CFLAGS[@]}" "${sdl2_sources[@]}" \
+            "${LINK_PRE_LIBS[@]}" \
+            "$SYSROOT/lib/libSDL2.a" \
+            "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+            "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a" \
+            "${LINK_POST_LIBS[@]}" \
+            -o "$sdl2_wasm"
+        "$FORK_INSTRUMENT" "$sdl2_wasm" -o "$sdl2_wasm.instr"
+        mv "$sdl2_wasm.instr" "$sdl2_wasm"
+    fi
 fi
 
 echo "Building example programs..."
