@@ -190,6 +190,32 @@ describe("machine checkpoint of a running guest", () => {
   );
 
   it(
+    "keeps the guest running after the freeze resumes it",
+    { timeout: 60_000 },
+    async () => {
+      const { host } = await startReadyGuest("checkpoint-loop.wasm");
+      try {
+        expect((await host.captureCheckpoint(TIMEOUTS)).status).toBe(
+          "captured",
+        );
+
+        // Well past the resume, not immediately after it. A leftover unwind
+        // request word — republished by the completions of the capture's own
+        // arena mmaps — would make the guest's next syscall begin a second
+        // capture with no freeze active and park it forever. An immediate
+        // second capture cannot see that: it adopts the spurious unwind as
+        // its own.
+        await new Promise((resolve) => setTimeout(resolve, 500));
+
+        const second = await host.captureCheckpoint(TIMEOUTS);
+        expect(second.status).toBe("captured");
+      } finally {
+        await host.destroy();
+      }
+    },
+  );
+
+  it(
     "reads a running fbDOOM",
     { timeout: 120_000 },
     async () => {
