@@ -1266,7 +1266,7 @@ fn handle_dri_ioctl(
             let prime_ofd = proc.ofd_table.create(
                 crate::ofd::FileType::CharDevice,
                 wasm_posix_shared::flags::O_RDWR,
-                -200,
+                crate::ofd::PRIME_FD_HOST_HANDLE,
                 path,
             );
             if let Some(new_ofd) = proc.ofd_table.get_mut(prime_ofd) {
@@ -3524,6 +3524,12 @@ pub(crate) fn validate_scm_rights_transfer_metadata(
         )
         .then_some(())
         .ok_or(Errno::EOPNOTSUPP),
+        FileType::CharDevice if host_handle == crate::ofd::PRIME_FD_HOST_HANDLE => {
+            // Prime-bo fds are reconstructible: the sidecar carries the
+            // machine-wide (bo_id, cookie) pair. Sidecar presence is enforced
+            // by validate_scm_rights_in_flight_fd.
+            Ok(())
+        }
         FileType::CharDevice if host_handle < 0 => {
             match VirtualDevice::from_host_handle(host_handle) {
                 Some(
@@ -3581,10 +3587,14 @@ pub(crate) fn snapshot_scm_rights_fd(
     let ofd = proc.ofd_table.get(fd_entry.ofd_ref.0).ok_or(Errno::EBADF)?;
 
     // DRI open-file descriptions carry GEM/KMS namespaces in a sidecar that
-    // InFlightFd cannot reproduce.
-    if ofd.dri_state.is_some() {
-        return Err(Errno::EOPNOTSUPP);
-    }
+    // InFlightFd cannot reproduce. The one transferable kind is a prime-bo
+    // fd: its sidecar is the (bo_id, cookie) pair itself, carried below so a
+    // cross-process wl_shm buffer composites correctly.
+    let prime_bo = match ofd.dri_state.as_deref() {
+        None => None,
+        Some(crate::ofd::DriOfdState::PrimeBo(pb)) => Some(pb.clone()),
+        Some(_) => return Err(Errno::EOPNOTSUPP),
+    };
     validate_scm_rights_transfer_metadata(ofd.file_type, ofd.host_handle)?;
 
     let mut path = Vec::new();
@@ -3610,6 +3620,7 @@ pub(crate) fn snapshot_scm_rights_fd(
             return Err(Errno::EOPNOTSUPP);
         }
     }
+    in_flight.prime_bo = prime_bo;
 
     Ok(in_flight)
 }
@@ -3643,6 +3654,11 @@ pub(crate) fn validate_scm_rights_in_flight_fd(
                 return Err(Errno::EOPNOTSUPP);
             }
         }
+    }
+    let is_prime = entry.file_type == FileType::CharDevice
+        && entry.host_handle == crate::ofd::PRIME_FD_HOST_HANDLE;
+    if is_prime != entry.prime_bo.is_some() {
+        return Err(Errno::EOPNOTSUPP);
     }
     Ok(())
 }
@@ -3697,6 +3713,17 @@ pub(crate) fn install_scm_rights_fds_with_flags(
         );
         match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
             Ok(new_fd) => {
+                // Take a bo refcount for the receiver's new fd; its close
+                // drops it (dri_release_ofd_state). The sender's own
+                // reference keeps the bo alive across the hop.
+                if let Some(pb) = entry.prime_bo.clone() {
+                    crate::dri::with_registry(|r| r.incref(pb.bo_id));
+                    if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                        ofd.dri_state = Some(alloc::boxed::Box::new(
+                            crate::ofd::DriOfdState::PrimeBo(pb),
+                        ));
+                    }
+                }
                 entry.transfer_reference();
                 new_fds.push(new_fd);
             }
@@ -13709,6 +13736,24 @@ pub fn sys_poll(
 
 /// Single non-blocking pass checking fd readiness. Used by sys_poll's loop.
 fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd]) -> i32 {
+    poll_check_depth(proc, host, fds, 0)
+}
+
+/// Maximum epoll-on-epoll recursion depth for readiness checks. Real
+/// nesting (a compositor registering libinput's epoll fd inside
+/// `wl_event_loop`'s epoll) is one level; this caps pathological cycles
+/// where an epoll transitively monitors itself through a different fd.
+const POLL_CHECK_MAX_DEPTH: u32 = 4;
+
+/// Single non-blocking pass checking fd readiness, tracking nested-epoll
+/// recursion depth. Used by `sys_poll`'s loop and by the `FileType::Epoll`
+/// arm when a nested epoll must report readiness of its own interests.
+fn poll_check_depth(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fds: &mut [WasmPollFd],
+    depth: u32,
+) -> i32 {
     use wasm_posix_shared::poll::*;
 
     let mut ready_count = 0i32;
@@ -13784,7 +13829,46 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                 }
             }
             FileType::Epoll => {
-                // Epoll fds are not typically polled; report not ready
+                // A nested epoll fd is readable when any fd in its own interest
+                // list is ready; recurse a non-blocking pass over that list.
+                if pollfd.events & POLLIN != 0 && depth < POLL_CHECK_MAX_DEPTH {
+                    const EPOLLIN: u32 = 0x001;
+                    const EPOLLOUT: u32 = 0x004;
+
+                    let ep_idx = (-(ofd.host_handle + 1)) as usize;
+                    // Clone to drop the proc.epolls borrow before recursing on &mut proc.
+                    let interests = proc
+                        .epolls
+                        .get(ep_idx)
+                        .and_then(|s| s.as_ref())
+                        .map(|ep| ep.interests.clone());
+                    if let Some(interests) = interests {
+                        let mut tmp: Vec<WasmPollFd> = interests
+                            .iter()
+                            // Guard against a direct self-monitoring cycle.
+                            .filter(|i| i.fd != pollfd.fd)
+                            .map(|i| {
+                                let mut ev: i16 = 0;
+                                if i.events & EPOLLIN != 0 {
+                                    ev |= POLLIN;
+                                }
+                                if i.events & EPOLLOUT != 0 {
+                                    ev |= POLLOUT;
+                                }
+                                WasmPollFd {
+                                    fd: i.fd,
+                                    events: ev,
+                                    revents: 0,
+                                }
+                            })
+                            .collect();
+                        if !tmp.is_empty()
+                            && poll_check_depth(proc, host, &mut tmp, depth + 1) > 0
+                        {
+                            revents |= POLLIN;
+                        }
+                    }
+                }
             }
             FileType::TimerFd => {
                 let tfd_idx = (-(ofd.host_handle + 1)) as usize;
@@ -37733,6 +37817,68 @@ mod tests {
         assert_eq!(count, 1);
         assert_ne!(events[0].0 & epollin, 0);
         assert_eq!(events[0].1, 99); // data preserved
+    }
+
+    #[test]
+    fn test_epoll_nested_readiness() {
+        // An outer epoll monitoring an inner epoll fd must report it readable
+        // when any of the inner epoll's own interests is ready (epoll-on-epoll).
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let epollin: u32 = 0x001;
+
+        // Inner epoll watches a readable pipe.
+        let (read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+        sys_write(&mut proc, &mut host, write_fd, b"x").unwrap();
+        let inner = sys_epoll_create1(&mut proc, 0).unwrap();
+        sys_epoll_ctl(&mut proc, inner, 1, read_fd, epollin, 7).unwrap();
+
+        // Outer epoll watches the inner epoll fd itself.
+        let outer = sys_epoll_create1(&mut proc, 0).unwrap();
+        sys_epoll_ctl(&mut proc, outer, 1, inner, epollin, 42).unwrap();
+
+        // Outer epoll_wait must see the inner epoll fd as ready.
+        let (count, events) = sys_epoll_pwait(&mut proc, &mut host, outer, 10, 0, None).unwrap();
+        assert_eq!(count, 1, "nested epoll should report the inner fd ready");
+        assert_ne!(events[0].0 & epollin, 0);
+        assert_eq!(events[0].1, 42);
+
+        // Control: when the inner interest is NOT ready, the outer must not fire.
+        let mut proc2 = Process::new(2);
+        let (r2, _w2) = sys_pipe(&mut proc2).unwrap();
+        let inner2 = sys_epoll_create1(&mut proc2, 0).unwrap();
+        sys_epoll_ctl(&mut proc2, inner2, 1, r2, epollin, 7).unwrap();
+        let outer2 = sys_epoll_create1(&mut proc2, 0).unwrap();
+        sys_epoll_ctl(&mut proc2, outer2, 1, inner2, epollin, 42).unwrap();
+        let (count2, _) = sys_epoll_pwait(&mut proc2, &mut host, outer2, 10, 0, None).unwrap();
+        assert_eq!(count2, 0, "nested epoll must stay quiet when inner is idle");
+    }
+
+    #[test]
+    fn test_epoll_pwait_multiple_events_data() {
+        // With several interests ready at once, each event must carry its OWN
+        // data and none may be zero — a stride desync here returned a NULL
+        // source to libinput's multi-fd epoll loop (the PR6 crash).
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let epollin: u32 = 0x001;
+
+        let (r1, w1) = sys_pipe(&mut proc).unwrap();
+        let (r2, w2) = sys_pipe(&mut proc).unwrap();
+        sys_write(&mut proc, &mut host, w1, b"a").unwrap();
+        sys_write(&mut proc, &mut host, w2, b"b").unwrap();
+
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        sys_epoll_ctl(&mut proc, epfd, 1, r1, epollin, 0x1111_2222).unwrap();
+        sys_epoll_ctl(&mut proc, epfd, 1, r2, epollin, 0x3333_4444).unwrap();
+
+        let (count, events) = sys_epoll_pwait(&mut proc, &mut host, epfd, 10, 0, None).unwrap();
+        assert_eq!(count, 2, "both readable pipes should be reported");
+        let mut datas: Vec<u64> = events.iter().map(|e| e.1).collect();
+        datas.sort_unstable();
+        assert_eq!(datas, vec![0x1111_2222, 0x3333_4444]);
+        // No event may carry a zero/NULL data payload.
+        assert!(events.iter().all(|e| e.1 != 0));
     }
 
     #[test]

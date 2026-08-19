@@ -65,6 +65,9 @@ pub struct InFlightFd {
     /// For kernel-backed pipe FDs: the exact reference transferred to the
     /// receiver. Non-pipe descriptors leave this as `None`.
     pub pipe_ref_kind: Option<InFlightPipeRefKind>,
+    /// For DRM prime-bo FDs: the bo sidecar, without which the fd arrives as a
+    /// plain CharDevice and the receiver's `PRIME_FD_TO_HANDLE` import fails.
+    pub prime_bo: Option<crate::ofd::PrimeBoState>,
     /// True after this queued payload has acquired its one machine-wide
     /// backing and OfdId reference. Ownership transfers to the receiver or is
     /// released through the deferred queue on drop.
@@ -114,6 +117,7 @@ impl InFlightFd {
             shared_state,
             path,
             pipe_ref_kind: None,
+            prime_bo: None,
             owns_reference: false,
         }
     }
@@ -185,6 +189,7 @@ impl InFlightFd {
             shared_state: self.shared_state.clone(),
             path,
             pipe_ref_kind: self.pipe_ref_kind,
+            prime_bo: self.prime_bo.clone(),
             owns_reference: false,
         };
         if self.owns_reference {
