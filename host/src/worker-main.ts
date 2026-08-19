@@ -3720,12 +3720,17 @@ export async function centralizedWorkerMain(
         if (!processDlopenSupport || !processTableReplication) {
           throw new Error(`pid=${pid}: fork archive owner is not initialized`);
         }
+        // A checkpoint freeze has every thread of the process holding one of
+        // these readers until the freeze resumes, and reconcileNow needs the
+        // writer, which cannot be taken while a peer holds a reader.
+        // Reconciling only when the replica is actually behind keeps that
+        // writer out of the common path.
         for (;;) {
-          processTableReplication.reconcileNow();
           processDlopenSupport.acquireArchiveReader();
           processForkArchiveReaderHeld = true;
           if (processTableReplication.isCurrentUnderLock()) return;
           releaseProcessForkArchiveReader();
+          processTableReplication.reconcileNow();
         }
       };
 
@@ -5724,12 +5729,12 @@ export async function centralizedThreadWorkerMain(
         threadCaptureReason = "fork";
 
         try {
-          // Reconciliation may instantiate a missing side module and execute
-          // its start function, so it requires writer ownership. Afterward,
-          // acquire the long-lived fork reader and verify no publication won
-          // the handoff race before capturing activation state.
+          // Take the long-lived fork reader and verify no publication won the
+          // handoff race before capturing activation state. Reconciliation may
+          // instantiate a missing side module and execute its start function,
+          // so it requires writer ownership, which no peer's reader may be
+          // outstanding for; ask for it only when the replica is behind.
           for (;;) {
-            threadTableReplication?.reconcileNow();
             acquirePthreadForkLock();
             if (
               !threadTableReplication ||
@@ -5738,6 +5743,7 @@ export async function centralizedThreadWorkerMain(
               break;
             }
             releasePthreadForkLock();
+            threadTableReplication.reconcileNow();
           }
         } catch (error) {
           releasePthreadForkLock();
@@ -5788,7 +5794,6 @@ export async function centralizedThreadWorkerMain(
 
         try {
           for (;;) {
-            threadTableReplication?.reconcileNow();
             acquirePthreadForkLock();
             if (
               !threadTableReplication ||
@@ -5797,6 +5802,7 @@ export async function centralizedThreadWorkerMain(
               break;
             }
             releasePthreadForkLock();
+            threadTableReplication.reconcileNow();
           }
         } catch (error) {
           releasePthreadForkLock();
@@ -6035,7 +6041,19 @@ export async function centralizedThreadWorkerMain(
           "the pthread instance has no shared table/stack binding",
       );
     }
-    threadTableReplication?.reconcileNow();
+    // A thread can start while its peers are parked in a checkpoint freeze
+    // holding archive readers, and reconcileNow needs the writer. Check the
+    // replica under a reader first so a thread with nothing to adopt reaches
+    // its first syscall, sees the pending unwind request, and reports.
+    if (threadTableReplication) {
+      for (;;) {
+        acquirePthreadForkLock();
+        const behind = !threadTableReplication.isCurrentUnderLock();
+        releasePthreadForkLock();
+        if (!behind) break;
+        threadTableReplication.reconcileNow();
+      }
+    }
 
     // Initialize Wasm TLS for this thread in the slot's explicit TLS/control page.
     const wasmInitTls = instance.exports.__wasm_init_tls as

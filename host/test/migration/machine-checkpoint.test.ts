@@ -84,13 +84,7 @@ describe("machine checkpoint of a running guest", () => {
     },
   );
 
-  // The pthread capture path reaches UNWINDING in about 20 ms or never: five
-  // runs against a 30 s deadline gave 14 ms, 22 ms, and three timeouts, so it
-  // is a lost wakeup rather than a slow one. Every thread parks holding its
-  // pthread fork reader token, taken in `kernel_checkpoint` and released only
-  // in the replay, and a thread that must reconcile the process table while
-  // another holds one cannot make progress. Unskip this with the fix.
-  it.skip(
+  it(
     "reads a process whose pthread must unwind too",
     { timeout: 60_000 },
     async () => {
