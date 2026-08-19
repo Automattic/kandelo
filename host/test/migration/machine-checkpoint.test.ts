@@ -320,6 +320,41 @@ describe("machine checkpoint of a running guest", () => {
   );
 
   it(
+    "fails rather than hangs when the main thread cannot adopt a newer archive",
+    { timeout: 60_000 },
+    async () => {
+      // The fixture's "thread" mode makes the pthread load the side module,
+      // so the thread whose replica is behind — and whose bounded writer wait
+      // refuses the capture — is the main thread. This drives the process
+      // kernel_checkpoint site the way the test above drives the pthread one.
+      const sideModule = buildSideModule();
+      const { host, pid } = await startReadyGuest("checkpoint-dlopen.wasm", {
+        args: [SIDE_MODULE_GUEST_PATH, "thread"],
+        prepare: (started) =>
+          started.writeFileToVfs(SIDE_MODULE_GUEST_PATH, sideModule),
+      });
+      try {
+        const started = Date.now();
+        const response = await host.captureCheckpoint(TIMEOUTS);
+        const elapsed = Date.now() - started;
+
+        expect(response.status).toBe("failed");
+        if (response.status !== "failed") return;
+        expect(response.reason).toContain(
+          "the dynamic-loader archive writer stayed held",
+        );
+        // The refusal is what ended the freeze, not the 10 s unwind deadline.
+        expect(elapsed).toBeLessThan(TIMEOUTS.unwindTimeoutMs);
+
+        // The machine is whole: the freeze reversed and the guest still runs.
+        expect(await host.signalProcess(pid, 0)).toBe(true);
+      } finally {
+        await host.destroy();
+      }
+    },
+  );
+
+  it(
     "admits no process launch and no rootfs write into the state it reads",
     { timeout: 60_000 },
     async () => {
