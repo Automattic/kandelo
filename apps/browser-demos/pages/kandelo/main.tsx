@@ -7,6 +7,9 @@ import { App } from "./app/App";
 import { KernelHostProvider } from "./kernel-host/react";
 import type { KernelHost } from "./kernel-host";
 import { readKandeloBootQuery } from "./url-state";
+import type { LocalLoginProductManifest } from "../../lib/local-login-product-build";
+// @ts-expect-error Vite owns this private build-input module in all modes.
+import localLoginProductManifest from "virtual:kandelo-local-login-product";
 
 const container = document.getElementById("kandelo-root");
 if (!container) {
@@ -30,14 +33,34 @@ const mount = (host: KernelHost) => {
 
 void (async () => {
   try {
+    const compiledLocalProduct = localLoginProductManifest as
+      LocalLoginProductManifest | null;
+    const localProduct =
+      compiledLocalProduct !== null && demo === null &&
+        bootQuery.vfsImageUrl === null
+        ? await import("./kernel-host/local-login-product")
+          .then(({ loadLocalLoginProduct }) =>
+            loadLocalLoginProduct(compiledLocalProduct)
+          )
+        : undefined;
     // WHY: the restored image owns its shell and optional runtime entries.
     // Keeping every demo on one assembler prevents a demo-specific overlay
     // from replacing immutable bottle-backed lazy files before serialization.
     const host = await import("./kernel-host/live-setup")
       .then(({ createLiveHost }) => createLiveHost({
         demo,
-        vfsUrl: bootQuery.vfsImageUrl,
+        vfsUrl: localProduct?.vfsUrl ?? bootQuery.vfsImageUrl,
         fb: fbDemo === "test" ? "test" : "none",
+        ...(localProduct === undefined
+          ? {}
+          : {
+              localLoginProduct: {
+                vfsUrl: localProduct.vfsUrl,
+                vfsImageBytes: localProduct.vfsImageBytes,
+                closedLazyAssets: localProduct.closedLazyAssets,
+                privilegedProduct: localProduct.privilegedProduct,
+              },
+            }),
       }));
     mount(host);
   } catch (err) {
