@@ -25,13 +25,7 @@ import { pathToFileURL } from "node:url";
 import { zstdDecompressSync } from "node:zlib";
 import { loadVfsProductCatalog } from "../../../scripts/vfs-product-catalog.mjs";
 import {
-  parseHomebrewOriginalBottleTreeDescriptor,
-  registerHomebrewDeferredTreeCollection,
-  type HomebrewOriginalBottleTreeDescriptorV1,
-} from "../../../host/src/homebrew-runtime-layer-consumer";
-import {
   MemoryFileSystem,
-  type DeferredTreeMaterializationHandle,
 } from "../../../host/src/vfs/memory-fs";
 import {
   parsePackageDeferredZipTreeDescriptor,
@@ -87,6 +81,10 @@ import { buildKandeloSdkVfsImage } from "./build-kandelo-sdk-vfs-image";
 import { buildMariadbTestVfsImage } from "./build-mariadb-test-vfs-image";
 import { buildPhpTestVfsImage } from "./build-php-test-vfs-image";
 import { buildSqliteTestVfsImage } from "./build-sqlite-test-vfs-image";
+import {
+  applyHomebrewProductInputs,
+  type AppliedHomebrewProductInput,
+} from "./homebrew-product-inputs";
 export { createRepositoryPathBundle } from "./repository-path-bundle";
 
 const REPOSITORY_ROOT = resolve(import.meta.dirname, "../../..");
@@ -295,14 +293,7 @@ interface MainShellCompatibilityPolicy {
   }>;
 }
 
-interface StagedBottleTree {
-  inputId: string;
-  formula: string;
-  placement: "embedded" | "lazy-reference";
-  bytes?: Uint8Array;
-  descriptor: HomebrewOriginalBottleTreeDescriptorV1;
-  handle?: DeferredTreeMaterializationHandle;
-}
+type StagedBottleTree = AppliedHomebrewProductInput;
 
 export async function buildStagedBrowserMainShell(
   invocation: StagedProductInvocation,
@@ -412,90 +403,15 @@ export async function buildStagedBrowserMainShell(
       readCanonicalJson(configPath("main-shell-compatibility.json"), "main-shell compatibility"),
     );
 
-    const bottleTrees: StagedBottleTree[] = [];
-    for (const inputId of build.inputIds("homebrew-bottle")) {
-      if (!inputId.startsWith("homebrew-") || inputId.length === "homebrew-".length) {
-        throw new Error(`browser-main-shell Homebrew input ID is invalid: ${inputId}`);
-      }
-      const formula = inputId.slice("homebrew-".length);
-      const input = build.requireHomebrewBottle(inputId);
-      if (input.placement !== "embedded" && input.placement !== "lazy-reference") {
-        throw new Error(`browser-main-shell ${inputId} has build-only placement`);
-      }
-      if (input.descriptor === undefined) {
-        throw new Error(`browser-main-shell ${inputId} has no composition descriptor`);
-      }
-      if (!input.descriptor.reference.includes(managedNamespace)) {
-        throw new Error(
-          `browser-main-shell ${inputId} descriptor is not in its exact target ABI namespace`,
-        );
-      }
-      const descriptor = parseHomebrewOriginalBottleTreeDescriptor(
-        readCanonicalJson(input.descriptor.path, `${inputId} composition descriptor`),
-        {
-          architecture: build.product.architecture,
-          tap: "kandelo-dev/homebrew-tap-core",
-          formula,
-          package: `kandelo-dev/tap-core/${formula}`,
-          bottle: { sha256: input.sha256, bytes: input.bytes },
-          allowedRoots: directRoots,
-        },
-      );
-      const transport = descriptor.tree.transports[0]?.url;
-      if (
-        transport === undefined ||
-        !transport.includes(managedNamespace)
-      ) {
-        throw new Error(
-          `browser-main-shell ${inputId} lazy transport leaves its exact target ABI namespace`,
-        );
-      }
-      bottleTrees.push({
-        inputId,
-        formula,
-        placement: input.placement,
-        ...(input.placement === "embedded"
-          ? { bytes: new Uint8Array(readFileSync(input.path)) }
-          : {}),
-        descriptor,
-      });
-    }
-    for (const root of directRoots) {
-      if (!bottleTrees.some((item) => item.formula === root)) {
-        throw new Error(`browser-main-shell omits declared Homebrew root ${root}`);
-      }
-    }
+    ensureHomebrewPrefixAncestors(fs);
+    const bottleTrees = [...(
+      await applyHomebrewProductInputs(fs, build, directRoots)
+    ).values()];
     if (
       bottleTrees.filter((item) => item.formula === "bash").length !== 1 ||
       bottleTrees.find((item) => item.formula === "bash")?.placement !== "embedded"
     ) {
       throw new Error("browser-main-shell requires one embedded Bash bottle");
-    }
-
-    ensureHomebrewPrefixAncestors(fs);
-    const registered = registerHomebrewDeferredTreeCollection({
-      fs,
-      id: "browser-main-shell",
-      schema: 6,
-      trees: bottleTrees.map((item) => item.descriptor.tree),
-    });
-    const handleByPackage = new Map(
-      registered.map((item) => [item.package, item.materialization]),
-    );
-    for (const item of bottleTrees) {
-      item.handle = handleByPackage.get(item.descriptor.tree.package!);
-      if (item.handle === undefined) {
-        throw new Error(`browser-main-shell did not register ${item.formula}`);
-      }
-      if (item.placement === "embedded") {
-        const changed = await fs.materializeRegisteredDeferredTree(
-          item.handle,
-          item.bytes!,
-        );
-        if (!changed) {
-          throw new Error(`browser-main-shell ${item.formula} was already materialized`);
-        }
-      }
     }
 
     const compatibilityEvidence = applyMainShellCompatibility(
