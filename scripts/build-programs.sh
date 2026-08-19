@@ -326,6 +326,25 @@ if ls "$REPO_ROOT/programs/"*.cpp >/dev/null 2>&1; then
     ensure_libcxx_in_sysroot wasm32 "$SYSROOT"
 fi
 
+# Resolve SDL2 and stage it in the sysroot when there are SDL2 programs to
+# build. Re-resolved on every run rather than guarded on libSDL2.a: SDL2
+# depends on libdrm, whose cache directory moves when its build.toml
+# revision bumps, and a guarded fast path would leave the staged headers
+# and archive pointing at the pre-bump cache. The resolver is cached, so
+# repeating it is cheap.
+if ls "$REPO_ROOT"/programs/sdl2_*.c >/dev/null 2>&1 \
+        || ls "$REPO_ROOT"/programs/sdl2/*.c >/dev/null 2>&1; then
+    echo "==> Resolving sdl2 for SDL2 programs..."
+    HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- \
+        build-deps resolve sdl2 >/dev/null)
+    SDL2_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask \
+        --target "$HOST_TRIPLE" --quiet -- build-deps path sdl2)"
+    cp "$SDL2_PREFIX/lib/libSDL2.a" "$SYSROOT/lib/libSDL2.a"
+    rm -rf "$SYSROOT/include/SDL2"
+    cp -R "$SDL2_PREFIX/include/SDL2" "$SYSROOT/include/SDL2"
+fi
+
 echo "Building user programs..."
 for src in "$REPO_ROOT/programs/"*.c; do
     [ -f "$src" ] || continue
@@ -348,6 +367,13 @@ for src in "$REPO_ROOT/programs/"*.c; do
         libdrm-kms-smoke.c)
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libdrm.a"
+            ;;
+        sdl2_*.c)
+            # SDL2's KMSDRM backend calls into gbm and libdrm, so both
+            # follow libSDL2.a in the link order.
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libSDL2.a" \
+                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
             ;;
         posix-timer-thread.c)
             # Keep the fixture's pthread capacity small so its timer-helper
