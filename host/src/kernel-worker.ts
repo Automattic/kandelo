@@ -5024,8 +5024,21 @@ export class CentralizedKernelWorker {
   /**
    * Initialize the kernel.
    * Loads kernel Wasm and validates the host adapter ABI.
+   *
+   * With `adoptKernelMemoryImage`, the freshly instantiated kernel's memory
+   * is overwritten with a captured image before the first kernel call.
+   * Instantiation must come first: it applies the module's data segments,
+   * and copying afterwards leaves no range holding initial values that the
+   * captured kernel had already mutated. The scratch regions below are then
+   * allocated from the restored dlmalloc heap, so their pointers are
+   * consistent with the adopted state; the captured boot's own scratch
+   * regions stay allocated inside it, a bounded leak of two regions per
+   * restore.
    */
-  async init(kernelWasmBytes: BufferSource): Promise<void> {
+  async init(
+    kernelWasmBytes: BufferSource,
+    options?: { readonly adoptKernelMemoryImage?: Uint8Array },
+  ): Promise<void> {
     if (this.#kernelFatalError !== null) {
       throw new Error("cannot reinitialize a failed kernel worker");
     }
@@ -5039,6 +5052,9 @@ export class CentralizedKernelWorker {
       throw new Error("kernel initialization did not publish its runtime");
     }
     this.#kernelPointerWidth = this.#kernel.getKernelPtrWidth();
+    if (options?.adoptKernelMemoryImage !== undefined) {
+      this.#adoptKernelMemoryImage(options.adoptKernelMemoryImage);
+    }
 
     if (this.#kernelEntryGate.shouldDeferVoidIngress) {
       throw new KernelReentrantEntryError("kernel initialization completion");
@@ -7797,6 +7813,43 @@ export class CentralizedKernelWorker {
    * Memory handed out: a checkpoint is a value, and a live alias would keep
    * mutating after the freeze released.
    */
+  /**
+   * Overwrite the kernel's memory with a captured image, before any kernel
+   * call has run against this generation.
+   *
+   * Growing host-side is safe only because the whole buffer is overwritten
+   * next: the pages become exactly the pages the captured kernel grew
+   * itself, so the restored dlmalloc state describes every one of them.
+   */
+  #adoptKernelMemoryImage(image: Uint8Array): void {
+    if (this.#kernelMemory === null) {
+      throw new Error("kernel memory is not instantiated");
+    }
+    const buffer = kernelEntryIntrinsicApply(
+      kernelEntryIntrinsicMemoryBuffer,
+      this.#kernelMemory,
+      [],
+    ) as ArrayBufferLike;
+    if (
+      image.byteLength < buffer.byteLength
+      || image.byteLength % WASM_PAGE_SIZE !== 0
+    ) {
+      throw new Error(
+        `cannot adopt a ${image.byteLength}-byte kernel image into a kernel `
+        + `whose fresh memory is already ${buffer.byteLength} bytes`,
+      );
+    }
+    const deltaPages =
+      (image.byteLength - buffer.byteLength) / WASM_PAGE_SIZE;
+    if (deltaPages > 0) this.#kernelMemory.grow(deltaPages);
+    const grown = kernelEntryIntrinsicApply(
+      kernelEntryIntrinsicMemoryBuffer,
+      this.#kernelMemory,
+      [],
+    ) as ArrayBufferLike;
+    new Uint8Array(grown).set(image);
+  }
+
   copyKernelMemoryForCheckpoint(): Uint8Array {
     if (this.#kernelMemory === null) {
       throw new Error("kernel memory is not instantiated");

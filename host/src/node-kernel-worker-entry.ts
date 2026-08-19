@@ -74,6 +74,7 @@ import {
 } from "./constants";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import {
+  ABI_VERSION,
   FILE_MODES,
   OPEN_FLAGS,
   PROCESS_FORK_MODE_VFORK,
@@ -110,6 +111,7 @@ import {
   machineCheckpointTransferList,
   type CheckpointMachine,
 } from "./migration/checkpoint";
+import { validateMachineCheckpoint } from "./migration/restore";
 import { ForkExternrefProcessOwner } from "./fork-externref-process-owner";
 import type { ForkExternrefGeneration } from "./fork-reference-broker";
 import {
@@ -1005,6 +1007,7 @@ async function buildVirtualPlatformIO(
   rootfsLazyUrlBase?: InitMessage["rootfsLazyUrlBase"],
   rootfsLazyAssets?: InitMessage["rootfsLazyAssets"],
   rootfsLazyAssetSources?: InitMessage["rootfsLazyAssetSources"],
+  restoredRootfs?: Uint8Array,
 ): Promise<VirtualPlatformIO> {
   const bootSessionDir = mkdtempSync(join(tmpdir(), "wasm-posix-session-"));
   sessionDir = bootSessionDir;
@@ -1042,6 +1045,26 @@ async function buildVirtualPlatformIO(
     ...specMounts,
     ...extras,
   ];
+  if (restoredRootfs !== undefined) {
+    // The image built the mount layout; the checkpoint supplies the state.
+    // The restored bytes are a live SharedFS, not a serialized image, so the
+    // root backend attaches to them rather than deserializing.
+    const rootIndex = mounts.findIndex((m) => m.mountPoint === "/");
+    if (
+      rootIndex < 0
+      || !(mounts[rootIndex]!.backend instanceof MemoryFileSystem)
+    ) {
+      throw new Error(
+        "a checkpoint restore needs a MemoryFileSystem rootfs at /",
+      );
+    }
+    const sab = new SharedArrayBuffer(restoredRootfs.byteLength);
+    new Uint8Array(sab).set(restoredRootfs);
+    mounts[rootIndex] = {
+      ...mounts[rootIndex]!,
+      backend: MemoryFileSystem.fromExisting(sab),
+    };
+  }
   const rootMount = mounts.find((m) => m.mountPoint === "/");
   rootfsMemfs = rootMount?.backend instanceof MemoryFileSystem
     ? rootMount.backend
@@ -1115,6 +1138,19 @@ async function handleInit(msg: InitMessage) {
   if (!msg.rootfsImage && (msg.sessionSeedTrees?.length ?? 0) > 0) {
     throw new Error("sessionSeedTrees requires rootfsImage");
   }
+  if (msg.restoreCheckpoint) {
+    if (!msg.rootfsImage) {
+      throw new Error("restoreCheckpoint requires rootfsImage");
+    }
+    await validateMachineCheckpoint(msg.restoreCheckpoint, {
+      kernelAbiVersion: ABI_VERSION,
+    });
+    if (msg.restoreCheckpoint.processes.length > 0) {
+      throw new Error(
+        "restoring a checkpoint with processes is not implemented yet",
+      );
+    }
+  }
 
   const io: PlatformIO = msg.rootfsImage
     ? await buildVirtualPlatformIO(
@@ -1125,6 +1161,7 @@ async function handleInit(msg: InitMessage) {
       msg.rootfsLazyUrlBase,
       msg.rootfsLazyAssets,
       msg.rootfsLazyAssetSources,
+      msg.restoreCheckpoint?.filesystem,
     )
     : new NodePlatformIO();
   vfsExecIO = msg.rootfsImage ? io : null;
@@ -1295,7 +1332,12 @@ async function handleInit(msg: InitMessage) {
     },
   });
 
-  await kernelWorker.init(msg.kernelWasmBytes);
+  await kernelWorker.init(
+    msg.kernelWasmBytes,
+    msg.restoreCheckpoint === undefined
+      ? undefined
+      : { adoptKernelMemoryImage: msg.restoreCheckpoint.kernelMemory },
+  );
 
   const pcmTransport = kernelWorker.claimPcmTransport(false);
   pcmDriver = new NodePcmDriver({

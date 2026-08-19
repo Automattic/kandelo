@@ -86,6 +86,7 @@ import {
   machineCheckpointTransferList,
   type CheckpointMachine,
 } from "./migration/checkpoint";
+import { validateMachineCheckpoint } from "./migration/restore";
 import { ForkExternrefProcessOwner } from "./fork-externref-process-owner";
 import type { ForkExternrefGeneration } from "./fork-reference-broker";
 import {
@@ -100,6 +101,7 @@ import type {
 import { ThreadPageAllocator } from "./thread-allocator";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD } from "./constants";
 import {
+  ABI_VERSION,
   FILE_MODES,
   OPEN_FLAGS,
   PROCESS_FORK_MODE_VFORK,
@@ -1103,12 +1105,31 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // apply DEFAULT_MOUNT_SPEC (/ from the image + scratch mounts for /tmp,
   // /var/*, /home/maker, /root, /srv). /etc is part of the image, baked in by
   // the demo (see apps/browser-demos/lib/kernel-owned-boot.ts).
+  if (msg.restoreCheckpoint) {
+    await validateMachineCheckpoint(msg.restoreCheckpoint, {
+      kernelAbiVersion: ABI_VERSION,
+    });
+    if (msg.restoreCheckpoint.processes.length > 0) {
+      throw new Error(
+        "restoring a checkpoint with processes is not implemented yet",
+      );
+    }
+  }
   const specMounts = await restoreBrowserKernelInitMounts(
     msg.vfsImage,
     msg.rootfsMountSpec,
   );
   const rootMount = specMounts.find((m) => m.mountPoint === "/");
   if (!rootMount) throw new Error("rootfs mount spec missing / mount");
+  if (msg.restoreCheckpoint) {
+    // The image built the mount layout; the checkpoint supplies the state.
+    // The restored bytes are a live SharedFS, not a serialized image, so the
+    // root backend attaches to them rather than deserializing.
+    const restored = msg.restoreCheckpoint.filesystem;
+    const sab = new SharedArrayBuffer(restored.byteLength);
+    new Uint8Array(sab).set(restored);
+    rootMount.backend = MemoryFileSystem.fromExisting(sab);
+  }
   memfs = rootMount.backend as MemoryFileSystem;
   if (msg.lazyUrlBase) {
     memfs.rewriteLazyFileUrls((url) => resolveLazyUrl(msg.lazyUrlBase!, url));
@@ -1323,7 +1344,12 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     post({ type: "listen_tcp", pid, fd, port });
   });
 
-  await kernelWorker.init(msg.kernelWasmBytes);
+  await kernelWorker.init(
+    msg.kernelWasmBytes,
+    msg.restoreCheckpoint === undefined
+      ? undefined
+      : { adoptKernelMemoryImage: msg.restoreCheckpoint.kernelMemory },
+  );
 
   // /dev/fb0 forwarding: the registry lives in this worker, but the canvas
   // lives on the main thread. WHY: today's zero-copy fbdev contract therefore
