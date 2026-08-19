@@ -266,68 +266,76 @@ ln -sfn "$LIBCXX_PREFIX/include/c++/v1" "$SYSROOT/include/c++/v1"
 
 echo "==> libcxx resolved at $LIBCXX_PREFIX (symlinked into $SYSROOT)"
 
-# Source-kind direct deps export under _SRC_DIR (Chunk C decision 12).
-PCRE2_SOURCE_DIR="${WASM_POSIX_DEP_PCRE2_SOURCE_SRC_DIR:-}"
-if [ -z "$PCRE2_SOURCE_DIR" ]; then
-    echo "==> Resolving pcre2-source via cargo xtask build-deps..."
-    PCRE2_SOURCE_DIR="$(resolve_dep pcre2-source)"
-fi
-[ -d "$PCRE2_SOURCE_DIR" ] || { echo "ERROR: pcre2-source resolve returned '$PCRE2_SOURCE_DIR' but dir missing" >&2; exit 1; }
-[ -f "$PCRE2_SOURCE_DIR/CMakeLists.txt" ] || { echo "ERROR: pcre2-source missing CMakeLists.txt at '$PCRE2_SOURCE_DIR'" >&2; exit 1; }
-
-# Build PCRE2 static libs once per cache entry. Output stays in a
-# build-side tree under SCRIPT_DIR (not cached as a library — kind=source
-# is just the unbuilt tree; the build is mariadb-specific by configuration).
-# Per-arch dir so wasm32 and wasm64 builds don't share artifacts — without
-# this, whichever arch ran first would leave its libpcre2-8.a in place and
-# the second arch would skip the rebuild (the `if [ ! -f ... ]` guard
-# below) and try to link a wasm32 archive into a wasm64 binary, dying
-# with: "wasm32 object file can't be linked in wasm64 mode".
-if [ "$WASM_ARCH" = "wasm64" ]; then
-    PCRE2_BUILD="$BUILD_STATE_ROOT/pcre2-wasm-build-64"
+PCRE2_PREFIX="${WASM_POSIX_DEP_PCRE2_DIR:-}"
+if [ -n "$PCRE2_PREFIX" ]; then
+    for path in \
+        "$PCRE2_PREFIX/lib/libpcre2-8.a" \
+        "$PCRE2_PREFIX/lib/libpcre2-posix.a" \
+        "$PCRE2_PREFIX/include/pcre2.h" \
+        "$PCRE2_PREFIX/include/pcre2posix.h"; do
+        [ -f "$path" ] || {
+            echo "ERROR: pcre2 bottle prefix is missing $path" >&2
+            exit 1
+        }
+    done
+    cp "$PCRE2_PREFIX/lib/libpcre2-8.a" "$SYSROOT/lib/"
+    cp "$PCRE2_PREFIX/lib/libpcre2-posix.a" "$SYSROOT/lib/"
+    cp "$PCRE2_PREFIX/include/pcre2.h" "$SYSROOT/include/"
+    cp "$PCRE2_PREFIX/include/pcre2posix.h" "$SYSROOT/include/"
+    echo "==> PCRE2 installed to sysroot from bottle prefix $PCRE2_PREFIX"
 else
-    PCRE2_BUILD="$BUILD_STATE_ROOT/pcre2-wasm-build"
+    # Source-kind direct deps export under _SRC_DIR (Chunk C decision 12).
+    PCRE2_SOURCE_DIR="${WASM_POSIX_DEP_PCRE2_SOURCE_SRC_DIR:-}"
+    if [ -z "$PCRE2_SOURCE_DIR" ]; then
+        echo "==> Resolving pcre2-source via cargo xtask build-deps..."
+        PCRE2_SOURCE_DIR="$(resolve_dep pcre2-source)"
+    fi
+    [ -d "$PCRE2_SOURCE_DIR" ] || { echo "ERROR: pcre2-source resolve returned '$PCRE2_SOURCE_DIR' but dir missing" >&2; exit 1; }
+    [ -f "$PCRE2_SOURCE_DIR/CMakeLists.txt" ] || { echo "ERROR: pcre2-source missing CMakeLists.txt at '$PCRE2_SOURCE_DIR'" >&2; exit 1; }
+
+    # Direct package builds retain the source dependency. Formula builds pass
+    # the exact pcre2 keg above so they do not rebuild an already bottled edge.
+    if [ "$WASM_ARCH" = "wasm64" ]; then
+        PCRE2_BUILD="$BUILD_STATE_ROOT/pcre2-wasm-build-64"
+    else
+        PCRE2_BUILD="$BUILD_STATE_ROOT/pcre2-wasm-build"
+    fi
+    if [ ! -f "$PCRE2_BUILD/libpcre2-8.a" ]; then
+        echo "==> Building PCRE2 for $WASM_ARCH from source at $PCRE2_SOURCE_DIR..."
+        PCRE2_SIZEOF_VOID_P=4
+        [ "$WASM_ARCH" = "wasm64" ] && PCRE2_SIZEOF_VOID_P=8
+
+        rm -rf "$PCRE2_BUILD"
+        mkdir -p "$PCRE2_BUILD"
+        cd "$PCRE2_BUILD"
+
+        cmake "$PCRE2_SOURCE_DIR" \
+            -DCMAKE_C_COMPILER="$LLVM_CLANG" \
+            -DCMAKE_C_FLAGS="--target=$WASM_TARGET -matomics -mbulk-memory -mexception-handling -fno-exceptions -fno-trapping-math --sysroot=$SYSROOT -O2 -DNDEBUG" \
+            -DCMAKE_AR="$LLVM_PREFIX/bin/llvm-ar" \
+            -DCMAKE_RANLIB="$LLVM_PREFIX/bin/llvm-ranlib" \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR="$WASM_ARCH" \
+            -DCMAKE_CROSSCOMPILING=TRUE \
+            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+            -DCMAKE_SIZEOF_VOID_P=$PCRE2_SIZEOF_VOID_P \
+            -DPCRE2_BUILD_TESTS=OFF \
+            -DPCRE2_BUILD_PCRE2GREP=OFF \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DPCRE2_SUPPORT_JIT=OFF \
+            -DPCRE2_SUPPORT_UNICODE=ON \
+            2>&1 | tail -3
+
+        make -j"$NPROC" pcre2-8-static pcre2-posix-static 2>&1 | tail -3
+    fi
+
+    cp "$PCRE2_BUILD/libpcre2-8.a" "$SYSROOT/lib/"
+    cp "$PCRE2_BUILD/libpcre2-posix.a" "$SYSROOT/lib/"
+    cp "$PCRE2_BUILD/pcre2.h" "$SYSROOT/include/"
+    cp "$PCRE2_SOURCE_DIR/src/pcre2posix.h" "$SYSROOT/include/"
+    cd "$SCRIPT_DIR"
+    echo "==> PCRE2 installed to sysroot from cached source"
 fi
-if [ ! -f "$PCRE2_BUILD/libpcre2-8.a" ]; then
-    echo "==> Building PCRE2 for $WASM_ARCH from source at $PCRE2_SOURCE_DIR..."
-    PCRE2_SIZEOF_VOID_P=4
-    [ "$WASM_ARCH" = "wasm64" ] && PCRE2_SIZEOF_VOID_P=8
-
-    rm -rf "$PCRE2_BUILD"
-    mkdir -p "$PCRE2_BUILD"
-    cd "$PCRE2_BUILD"
-
-    cmake "$PCRE2_SOURCE_DIR" \
-        -DCMAKE_C_COMPILER="$LLVM_CLANG" \
-        -DCMAKE_C_FLAGS="--target=$WASM_TARGET -matomics -mbulk-memory -mexception-handling -fno-exceptions -fno-trapping-math --sysroot=$SYSROOT -O2 -DNDEBUG" \
-        -DCMAKE_AR="$LLVM_PREFIX/bin/llvm-ar" \
-        -DCMAKE_RANLIB="$LLVM_PREFIX/bin/llvm-ranlib" \
-        -DCMAKE_SYSTEM_NAME=Linux \
-        -DCMAKE_SYSTEM_PROCESSOR="$WASM_ARCH" \
-        -DCMAKE_CROSSCOMPILING=TRUE \
-        -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
-        -DCMAKE_SIZEOF_VOID_P=$PCRE2_SIZEOF_VOID_P \
-        -DPCRE2_BUILD_TESTS=OFF \
-        -DPCRE2_BUILD_PCRE2GREP=OFF \
-        -DBUILD_SHARED_LIBS=OFF \
-        -DPCRE2_SUPPORT_JIT=OFF \
-        -DPCRE2_SUPPORT_UNICODE=ON \
-        2>&1 | tail -3
-
-    make -j"$NPROC" pcre2-8-static pcre2-posix-static 2>&1 | tail -3
-fi
-
-# Install PCRE2 into the sysroot (mariadb's main cmake expects them there).
-# This is a localized install: the cache holds the SOURCE tree (arch-agnostic);
-# the BUILT static libs are tied to wasm32/wasm64 cross-compile and stay in
-# pcre2-wasm-build/ + sysroot for mariadb's main build to link against.
-cp "$PCRE2_BUILD/libpcre2-8.a" "$SYSROOT/lib/"
-cp "$PCRE2_BUILD/libpcre2-posix.a" "$SYSROOT/lib/"
-cp "$PCRE2_BUILD/pcre2.h" "$SYSROOT/include/"
-cp "$PCRE2_SOURCE_DIR/src/pcre2posix.h" "$SYSROOT/include/"
-
-cd "$SCRIPT_DIR"
-echo "==> PCRE2 installed to sysroot from cached source"
 
 # --- Pre-compile glue objects ---
 WASM_COMPILE_FLAGS="--target=$WASM_TARGET -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -fno-trapping-math --sysroot=$SYSROOT"
@@ -526,6 +534,20 @@ else
 fi
 
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    if [ -n "${KANDELO_VFS_PRODUCT_SOURCE_ROLES:-}" ]; then
+        echo "ERROR: sealed MariaDB builds must select source roles through MARIADB_VFS_SOURCE_ROLES" >&2
+        exit 2
+    fi
+    case "${MARIADB_VFS_SOURCE_ROLES:-}" in
+        "") ;;
+        system-tables,test-suite)
+            export KANDELO_VFS_PRODUCT_SOURCE_ROLES="$MARIADB_VFS_SOURCE_ROLES"
+            ;;
+        *)
+            echo "ERROR: unsupported MariaDB VFS source-role selection: ${MARIADB_VFS_SOURCE_ROLES}" >&2
+            exit 2
+            ;;
+    esac
     kandelo_package_project_requested_vfs_source_role system-tables \
         "$INSTALL_DIR/share/mysql"
     kandelo_package_project_requested_vfs_source_role test-suite \

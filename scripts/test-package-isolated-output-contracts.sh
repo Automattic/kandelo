@@ -37,6 +37,18 @@ grep -F '"$SCRIPT_DIR/fork-side-module-abi.c"' "$php" >/dev/null ||
 grep -F '"$FORK_SIDE_MODULE_ABI_OBJECT"' "$php" >/dev/null ||
     fail "PHP opcache link omits its fork side-module ABI identity object"
 
+spidermonkey="$REPO_ROOT/packages/registry/spidermonkey/build-spidermonkey.sh"
+grep -F 'if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then' \
+    "$spidermonkey" >/dev/null ||
+    fail "SpiderMonkey does not publish its Node runtime to resolver output"
+grep -F 'install_local_binary spidermonkey-node "$BIN_DIR/node.wasm" node.wasm' \
+    "$spidermonkey" >/dev/null ||
+    fail "SpiderMonkey resolver output omits node.wasm"
+grep -F 'WASM_POSIX_DEP_WORK_DIR' "$spidermonkey" >/dev/null ||
+    fail "SpiderMonkey sealed builds do not use the resolver work root"
+grep -F 'WASM_POSIX_DEP_SOURCE_DIR' "$spidermonkey" >/dev/null ||
+    fail "SpiderMonkey sealed builds do not use the Formula-owned source"
+
 msmtpd="$REPO_ROOT/packages/registry/msmtpd/build-msmtpd.sh"
 msmtpd_source='https://snapshot.debian.org/archive/debian/20251129T142942Z/pool/main/m/msmtp/msmtp_1.8.32.orig.tar.xz'
 grep -F 'SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-'"$msmtpd_source"'}"' \
@@ -95,6 +107,14 @@ mariadb="$REPO_ROOT/packages/registry/mariadb/build-mariadb.sh"
 awk '/if \[ -n "\$\{WASM_POSIX_DEP_OUT_DIR:-\}" \]; then/,/else/' \
     "$mariadb" | grep -F 'WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto' \
     >/dev/null || fail "MariaDB sealed install lacks explicit fork policy"
+grep -F 'PCRE2_PREFIX="${WASM_POSIX_DEP_PCRE2_DIR:-}"' "$mariadb" >/dev/null ||
+    fail "MariaDB cannot consume the exact pcre2 bottle prefix"
+grep -F '"$PCRE2_PREFIX/lib/libpcre2-8.a"' "$mariadb" >/dev/null ||
+    fail "MariaDB does not validate the pcre2 bottle library"
+grep -F '"$PCRE2_PREFIX/include/pcre2posix.h"' "$mariadb" >/dev/null ||
+    fail "MariaDB does not validate the pcre2 bottle headers"
+grep -F 'MARIADB_VFS_SOURCE_ROLES' "$mariadb" >/dev/null ||
+    fail "MariaDB does not expose source roles to a sealed Formula build"
 
 try_compile_source="$TEST_ROOT/mariadb-glue-try-compile"
 try_compile_sysroot="$TEST_ROOT/mariadb-glue-sysroot"
