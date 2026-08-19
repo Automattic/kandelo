@@ -28,6 +28,8 @@ import {
   MemoryFileSystem,
 } from "../../../host/src/vfs/memory-fs";
 import {
+  derivePackageDeferredZipTree,
+  materializePackageDeferredZipTree,
   parsePackageDeferredZipTreeDescriptor,
   registerPackageDeferredZipTree,
 } from "../../../host/src/vfs/package-deferred-tree";
@@ -81,6 +83,12 @@ import { buildKandeloSdkVfsImage } from "./build-kandelo-sdk-vfs-image";
 import { buildMariadbTestVfsImage } from "./build-mariadb-test-vfs-image";
 import { buildPhpTestVfsImage } from "./build-php-test-vfs-image";
 import { buildSqliteTestVfsImage } from "./build-sqlite-test-vfs-image";
+import {
+  loadShellBaseFileSystemFromImage,
+} from "./shell-vfs-build";
+import {
+  SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+} from "../../../web-libs/kandelo-session/src/vfs-capacity";
 import {
   applyHomebrewProductInputs,
   type AppliedHomebrewProductInput,
@@ -158,25 +166,14 @@ export async function buildStagedPlatformRootfs(
   ) {
     throw new Error("platform rootfs staging selected a different product or builder");
   }
-  const repositoryIds = build.inputIds("repository-path");
-  if (
-    repositoryIds.length !== 1 ||
-    repositoryIds[0] !== "repository-rootfs-source"
-  ) {
-    throw new Error(
-      "platform-rootfs requires exactly repository-rootfs-source",
-    );
+  const expected = expectedManifestInputs(manifest);
+  assertExactInputInventory(build, expected, "platform-rootfs");
+  if (build.inputIds("package-output").length !== 0) {
+    throw new Error("platform-rootfs cannot consume legacy package outputs");
   }
-  for (const kind of [
-    "product-image",
-    "homebrew-bottle",
-    "source-archive",
-    "toolchain-output",
-  ] as const) {
-    if (build.inputIds(kind).length !== 0) {
-      throw new Error(`platform-rootfs does not declare ${kind} inputs`);
-    }
-  }
+  const directRoots = new Set(
+    manifest.software.homebrew.flatMap((group) => group.formulae),
+  );
 
   const repository = build.requireRepositoryPath("repository-rootfs-source");
   if (repository.placement !== "embedded") {
@@ -199,36 +196,14 @@ export async function buildStagedPlatformRootfs(
   try {
     const sourceRoot = join(work, "source");
     materializeRepositoryPathBundle(bundle, sourceRoot);
-    const outputs = build.inputIds("package-output").map((id) => {
-      const input = build.requirePackageOutput(id);
-      return input.placement === "lazy-reference"
-        ? {
-            bytes: input.bytes,
-            id,
-            materialization: input.placement,
-            reference: input.reference,
-            sha256: input.sha256,
-          }
-        : {
-            bytes: input.bytes,
-            id,
-            materialization: "embedded" as const,
-            path: input.path,
-            sha256: input.sha256,
-          };
-    });
-    const outputMapPath = join(work, "resolved-package-outputs.json");
+    const emptyPackagesPath = join(work, "rootfs-packages.toml");
     writeFileSync(
-      outputMapPath,
-      canonicalJson({
-        kind: "kandelo-rootfs-resolved-package-outputs",
-        outputs,
-        schema: 1,
-      }),
+      emptyPackagesPath,
+      'default_install = "lazy"\nlazy_url_prefix = ""\n',
       { flag: "wx", mode: 0o600 },
     );
-
     const packageManifestPath = join(work, "rootfs-packages.MANIFEST");
+    const repositoryRootfsPath = join(work, "repository-rootfs.vfs");
     const result = spawnSync(
       "bash",
       [join(REPOSITORY_ROOT, "scripts/build-rootfs.sh")],
@@ -240,11 +215,10 @@ export async function buildStagedPlatformRootfs(
           ROOTFS_ABI_SNAPSHOT_SHA256: build.targetAbi.snapshot_sha256,
           ROOTFS_ABI_VERSION: String(build.targetAbi.version),
           ROOTFS_MANIFEST: join(sourceRoot, "MANIFEST"),
-          ROOTFS_OUT: invocation.outputPath,
+          ROOTFS_OUT: repositoryRootfsPath,
           ROOTFS_PACKAGE_MANIFEST: packageManifestPath,
-          ROOTFS_PACKAGES_CONFIG: join(sourceRoot, "images/rootfs/PACKAGES.toml"),
+          ROOTFS_PACKAGES_CONFIG: emptyPackagesPath,
           ROOTFS_REPO_ROOT: sourceRoot,
-          ROOTFS_RESOLVED_OUTPUT_MAP: outputMapPath,
           ROOTFS_SEALED_BUILD: "1",
           ROOTFS_SKIP_PACKAGE_RESOLVE: "1",
           ROOTFS_SOURCE_TREE: join(sourceRoot, "images/rootfs"),
@@ -259,6 +233,28 @@ export async function buildStagedPlatformRootfs(
           boundedDiagnostics(result.stdout, result.stderr),
       );
     }
+    const fs = MemoryFileSystem.fromImagePreservingCapacity(
+      new Uint8Array(readFileSync(repositoryRootfsPath)),
+    );
+    ensureHomebrewPrefixAncestors(fs);
+    const bottles = [...(
+      await applyHomebrewProductInputs(fs, build, directRoots)
+    ).values()];
+    applyPlatformHomebrewLinks(fs, bottles);
+    const metadata = fs.getImageMetadata();
+    const output = await fs.saveImage({
+      normalizeTimestampsMs: sourceDateEpochMilliseconds(
+        process.env.SOURCE_DATE_EPOCH,
+      ),
+      metadata: {
+        ...(metadata ?? { version: 1 }),
+        version: 1,
+        kernelAbi: build.targetAbi.version,
+        abiSnapshotSha256: build.targetAbi.snapshot_sha256,
+        createdBy: "images/vfs/scripts/staged-product-inputs.ts",
+      },
+    });
+    writeFileSync(invocation.outputPath, output);
     await build.finish(invocation.outputPath);
   } finally {
     rmSync(work, { force: true, recursive: true });
@@ -316,8 +312,10 @@ export async function buildStagedBrowserMainShell(
   const managedNamespace = build.referenceClass === "candidate"
     ? `homebrew-tap-core-abi-${build.targetAbi.version}-candidates/`
     : `homebrew-tap-core-abi-${build.targetAbi.version}/`;
-  if (directRoots.size === 0 || !directRoots.has("bash")) {
-    throw new Error("browser-main-shell must declare its Homebrew roots including bash");
+  if (directRoots.size === 0 || !directRoots.has("homebrew-bootstrap")) {
+    throw new Error(
+      "browser-main-shell must declare its Homebrew bootstrap Formula",
+    );
   }
   if (
     build.inputIds("source-archive").length !== 1 ||
@@ -341,15 +339,10 @@ export async function buildStagedBrowserMainShell(
     throw new Error("browser-main-shell requires exactly repository-main-shell-config");
   }
 
-  const expectedPackageIds = new Set([
-    "package-homebrew-bootstrap-output-homebrew-bootstrap",
-    "package-homebrew-bootstrap-output-homebrew-brew",
-  ]);
-  if (
-    build.inputIds("package-output").length !== expectedPackageIds.size ||
-    build.inputIds("package-output").some((id) => !expectedPackageIds.has(id))
-  ) {
-    throw new Error("browser-main-shell package inputs differ from Homebrew bootstrap outputs");
+  const expected = expectedManifestInputs(manifest);
+  assertExactInputInventory(build, expected, "browser-main-shell");
+  if (build.inputIds("package-output").length !== 0) {
+    throw new Error("browser-main-shell cannot consume legacy package outputs");
   }
 
   const base = build.requireProductImage("product-platform-rootfs");
@@ -408,10 +401,14 @@ export async function buildStagedBrowserMainShell(
       await applyHomebrewProductInputs(fs, build, directRoots)
     ).values()];
     if (
-      bottleTrees.filter((item) => item.formula === "bash").length !== 1 ||
-      bottleTrees.find((item) => item.formula === "bash")?.placement !== "embedded"
+      bottleTrees.filter((item) => item.formula === "homebrew-bootstrap").length !== 1 ||
+      bottleTrees.find((item) => item.formula === "homebrew-bootstrap")?.placement !==
+        "embedded" ||
+      fs.isPathDeferred(`${HOMEBREW_PREFIX}/bin/bash`)
     ) {
-      throw new Error("browser-main-shell requires one embedded Bash bottle");
+      throw new Error(
+        "browser-main-shell requires embedded Homebrew bootstrap and Bash",
+      );
     }
 
     const compatibilityEvidence = applyMainShellCompatibility(
@@ -420,44 +417,36 @@ export async function buildStagedBrowserMainShell(
       bottleTrees,
     );
 
-    const bootstrapArchive = build.requirePackageOutput(
-      "package-homebrew-bootstrap-output-homebrew-bootstrap",
+    const bootstrap = bottleTrees.find(
+      (item) => item.formula === "homebrew-bootstrap",
+    )!;
+    const bootstrapArchiveBytes = readVfsBytes(
+      fs,
+      bootstrap.path("libexec/homebrew-bootstrap.zip"),
     );
-    if (
-      bootstrapArchive.placement !== "lazy-reference" ||
-      bootstrapArchive.descriptor === undefined
-    ) {
-      throw new Error("Homebrew bootstrap source tree must be descriptor-backed lazy input");
-    }
-    const bootstrapTree = parsePackageDeferredZipTreeDescriptor(
-      readCanonicalJson(
-        bootstrapArchive.descriptor.path,
-        "Homebrew bootstrap tree descriptor",
-      ),
-      {
-        id: "homebrew-bootstrap/source-tree",
-        package: {
-          name: "homebrew-bootstrap",
-          output: "homebrew-bootstrap.zip",
-        },
-        archive: {
-          sha256: bootstrapArchive.sha256,
-          bytes: bootstrapArchive.bytes,
-          reference: bootstrapArchive.reference,
-        },
-      },
+    const bootstrapSpec = readCanonicalJson(
+      configPath("main-shell-brew-package-tree.json"),
+      "Homebrew bootstrap tree specification",
+    );
+    const bootstrapTree = derivePackageDeferredZipTree(
+      eagerPackageTreeSpec(bootstrapSpec),
+      bootstrapArchiveBytes,
     );
     prepareHomebrewBootstrapConsumerNamespace(fs, bootstrapTree);
-    registerPackageDeferredZipTree(fs, bootstrapTree);
-
-    const bootstrapEnvironment = build.requirePackageOutput(
-      "package-homebrew-bootstrap-output-homebrew-brew",
+    const registeredBootstrap = registerPackageDeferredZipTree(fs, bootstrapTree);
+    await materializePackageDeferredZipTree(
+      fs,
+      registeredBootstrap,
+      bootstrapArchiveBytes,
     );
-    if (bootstrapEnvironment.placement !== "embedded") {
-      throw new Error("Homebrew bootstrap environment must be embedded");
-    }
+    const environmentPath = join(work, "homebrew-brew.env");
+    writeFileSync(
+      environmentPath,
+      readVfsBytes(fs, bootstrap.path("libexec/homebrew-brew.env")),
+      { flag: "wx", mode: 0o600 },
+    );
     const environment = readHomebrewBootstrapEnvironment(
-      bootstrapEnvironment.path,
+      environmentPath,
       build.product.architecture,
     );
     const bootstrapState = installHomebrewBootstrapConsumerState(
@@ -515,7 +504,7 @@ export async function buildStagedBrowserMainShell(
           kernelAbi: build.targetAbi.version,
         },
         packageDeferredTrees: [
-          stagedPackageTreeBinding(bootstrapTree, "deferred"),
+          stagedPackageTreeBinding(bootstrapTree, "materialized"),
         ],
         homebrewBootstrap: bootstrapState,
         homebrew: {
@@ -545,6 +534,22 @@ export async function buildStagedBrowserMainShell(
   } finally {
     rmSync(work, { force: true, recursive: true });
   }
+}
+
+function eagerPackageTreeSpec(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Homebrew bootstrap tree specification is not an object");
+  }
+  const spec = structuredClone(value) as Record<string, unknown>;
+  const activation = spec.activation;
+  if (
+    typeof activation === "object" &&
+    activation !== null &&
+    !Array.isArray(activation)
+  ) {
+    delete (activation as Record<string, unknown>).atomic_group;
+  }
+  return spec;
 }
 
 function stagedPackageTreeBinding(
@@ -618,11 +623,11 @@ export async function buildStagedBrowserService(
       `${productId} staging selected a different product or builder`,
     );
   }
-  if (manifest.software.homebrew.length !== 0) {
-    throw new Error(`${productId} service staging cannot consume Homebrew roots`);
-  }
   const expected = expectedManifestInputs(manifest);
   assertExactInputInventory(build, expected, productId);
+  if (build.inputIds("package-output").length !== 0) {
+    throw new Error(`${productId} cannot consume legacy package outputs`);
+  }
 
   const temporaryRoot = realDirectory(
     process.env.TMPDIR ?? "",
@@ -639,26 +644,6 @@ export async function buildStagedBrowserService(
       ),
       `${productId} shell base`,
     );
-    const packageBytes = (name: string, selector: string): Uint8Array =>
-      exactInputBytes(
-        requireExpectedInput(
-          build,
-          expected,
-          resolvedInputId("package-output", name, "output", selector),
-          "package-output",
-        ),
-        `${productId} ${name}/${selector}`,
-      );
-    const sourceRole = (name: string, role: string): Uint8Array =>
-      exactInputBytes(
-        requireExpectedInput(
-          build,
-          expected,
-          resolvedInputId("package-output", name, "source-role", role),
-          "package-output",
-        ),
-        `${productId} ${name} source role ${role}`,
-      );
     const sourceArchive = (id: string): Uint8Array =>
       exactInputBytes(
         requireExpectedInput(
@@ -669,10 +654,61 @@ export async function buildStagedBrowserService(
         ),
         `${productId} archive ${id}`,
       );
-    const dinit = () => ({
-      dinit: packageBytes("dinit", "dinit"),
-      dinitctl: packageBytes("dinit", "dinitctl"),
+    const serviceFs = await loadShellBaseFileSystemFromImage(
+      shellImage,
+      SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+    );
+    ensureHomebrewPrefixAncestors(serviceFs);
+    const directRoots = new Set(
+      manifest.software.homebrew.flatMap((group) => group.formulae),
+    );
+    const homebrew = await applyHomebrewProductInputs(
+      serviceFs,
+      build,
+      directRoots,
+    );
+    const stagedShellImage = await serviceFs.saveImage({
+      normalizeTimestampsMs: sourceDateEpochMilliseconds(
+        process.env.SOURCE_DATE_EPOCH,
+      ),
+      metadata: serviceFs.getImageMetadata(),
     });
+    const formula = (name: string): AppliedHomebrewProductInput => {
+      const value = homebrew.get(name);
+      if (value === undefined || value.placement !== "embedded") {
+        throw new Error(`${productId} requires embedded Homebrew Formula ${name}`);
+      }
+      return value;
+    };
+    const bottleBytes = (path: string): Uint8Array => readVfsBytes(serviceFs, path);
+    const dinitFormula = directRoots.has("dinit") ? formula("dinit") : undefined;
+    const dinit = () => {
+      if (dinitFormula === undefined) {
+        throw new Error(`${productId} does not declare Dinit`);
+      }
+      return {
+        dinit: bottleBytes(dinitFormula.sbin("dinit")),
+        dinitctl: bottleBytes(dinitFormula.sbin("dinitctl")),
+      };
+    };
+    const kernel = (): Uint8Array => {
+      const input = exactInputBytes(
+        requireExpectedInput(
+          build,
+          expected,
+          "toolchain-kernel-wasm",
+          "toolchain-output",
+        ),
+        `${productId} prepared kernel`,
+      );
+      const directory = join(work, "kernel-toolchain");
+      materializeSingleRootArchive(
+        input,
+        directory,
+        `${productId} prepared kernel`,
+      );
+      return new Uint8Array(readFileSync(join(directory, "kernel.wasm")));
+    };
 
     switch (productId) {
       case "browser-node": {
@@ -683,8 +719,8 @@ export async function buildStagedBrowserService(
           "browser-node npm runtime",
         );
         await buildNodeVfsImage({
-          shellImage,
-          node: packageBytes("node", "node"),
+          shellImage: stagedShellImage,
+          node: bottleBytes(formula("node").bin("node")),
           npmDirectory,
           outputPath: invocation.outputPath,
         });
@@ -692,22 +728,22 @@ export async function buildStagedBrowserService(
       }
       case "browser-nginx":
         await buildNginxVfsImage({
-          shellImage,
-          nginx: packageBytes("nginx", "nginx"),
+          shellImage: stagedShellImage,
+          nginx: bottleBytes(formula("nginx").bin("nginx")),
           dinit: dinit(),
           outputPath: invocation.outputPath,
         });
         break;
       case "browser-nginx-php":
         await buildNginxPhpVfsImage({
-          shellImage,
-          nginx: packageBytes("nginx", "nginx"),
-          phpFpm: packageBytes("php", "php-fpm"),
-          opcache: packageBytes("php", "opcache"),
+          shellImage: stagedShellImage,
+          nginx: bottleBytes(formula("nginx").bin("nginx")),
+          phpFpm: bottleBytes(formula("php").sbin("php-fpm")),
+          opcache: bottleBytes(formula("php").path("lib/php/extensions/opcache.so")),
           dinit: dinit(),
           buildPrograms: {
-            php: packageBytes("php", "php"),
-            kernel: packageBytes("kernel", "kernel"),
+            php: bottleBytes(formula("php").bin("php")),
+            kernel: kernel(),
           },
           outputPath: invocation.outputPath,
         });
@@ -726,17 +762,17 @@ export async function buildStagedBrowserService(
           "browser-wordpress SQLite integration",
         );
         await buildWordPressVfsImage({
-          shellImage,
+          shellImage: stagedShellImage,
           wordpressDirectory,
           sqliteDirectory,
-          nginx: packageBytes("nginx", "nginx"),
-          phpFpm: packageBytes("php", "php-fpm"),
-          opcache: packageBytes("php", "opcache"),
-          msmtpd: packageBytes("msmtpd", "msmtpd"),
+          nginx: bottleBytes(formula("nginx").bin("nginx")),
+          phpFpm: bottleBytes(formula("php").sbin("php-fpm")),
+          opcache: bottleBytes(formula("php").path("lib/php/extensions/opcache.so")),
+          msmtpd: bottleBytes(formula("msmtpd").bin("msmtpd")),
           dinit: dinit(),
           buildPrograms: {
-            php: packageBytes("php", "php"),
-            kernel: packageBytes("kernel", "kernel"),
+            php: bottleBytes(formula("php").bin("php")),
+            kernel: kernel(),
           },
           outputPath: invocation.outputPath,
         });
@@ -750,25 +786,32 @@ export async function buildStagedBrowserService(
           wordpressDirectory,
           "browser-lamp WordPress core",
         );
-        materializeSingleRootArchive(
-          sourceRole("mariadb", "system-tables"),
-          mariadbSystemTablesDirectory,
-          "browser-lamp MariaDB system tables",
-        );
-        const mariadbd = packageBytes("mariadb", "mariadbd");
+        mkdirSync(mariadbSystemTablesDirectory, { mode: 0o700 });
+        const mariadb = formula("mariadb");
+        for (const name of [
+          "mysql_system_tables.sql",
+          "mysql_system_tables_data.sql",
+        ]) {
+          writeFileSync(
+            join(mariadbSystemTablesDirectory, name),
+            bottleBytes(mariadb.path(`share/mariadb/system-tables/${name}`)),
+            { flag: "wx", mode: 0o600 },
+          );
+        }
+        const mariadbd = bottleBytes(mariadb.bin("mariadbd"));
         await buildLampVfsImage({
-          shellImage,
+          shellImage: stagedShellImage,
           wordpressDirectory,
           mariadbSystemTablesDirectory,
           mariadbd,
-          nginx: packageBytes("nginx", "nginx"),
-          phpFpm: packageBytes("php", "php-fpm"),
-          opcache: packageBytes("php", "opcache"),
-          msmtpd: packageBytes("msmtpd", "msmtpd"),
+          nginx: bottleBytes(formula("nginx").bin("nginx")),
+          phpFpm: bottleBytes(formula("php").sbin("php-fpm")),
+          opcache: bottleBytes(formula("php").path("lib/php/extensions/opcache.so")),
+          msmtpd: bottleBytes(formula("msmtpd").bin("msmtpd")),
           dinit: dinit(),
           buildPrograms: {
-            php: packageBytes("php", "php"),
-            kernel: packageBytes("kernel", "kernel"),
+            php: bottleBytes(formula("php").bin("php")),
+            kernel: kernel(),
             mariadb: mariadbd,
           },
           outputPath: invocation.outputPath,
@@ -776,6 +819,10 @@ export async function buildStagedBrowserService(
         break;
       }
     }
+    await rewriteServiceProductToHomebrew(
+      invocation.outputPath,
+      homebrew,
+    );
     await build.finish(invocation.outputPath);
   } finally {
     rmSync(work, { force: true, recursive: true });
@@ -1354,6 +1401,15 @@ function expectedManifestInputs(
       );
     }
   }
+  for (const group of manifest.software.homebrew) {
+    for (const formula of group.formulae) {
+      add(
+        resolvedInputId("homebrew-bottle", formula),
+        "homebrew-bottle",
+        runtimePlacement(group.materialization),
+      );
+    }
+  }
   for (const archive of manifest.software.archive) {
     add(
       resolvedInputId("source-archive", archive.id),
@@ -1411,8 +1467,14 @@ function assertExactInputInventory(
   expected: ReadonlyMap<string, ExpectedServiceInput>,
   productId: string,
 ): void {
-  const actual = [...build.inputIds()].sort(compareText);
-  const wanted = [...expected.keys()].sort(compareText);
+  const homebrewIds = new Set(build.inputIds("homebrew-bottle"));
+  const actual = [...build.inputIds()]
+    .filter((id) => !homebrewIds.has(id))
+    .sort(compareText);
+  const wanted = [...expected.entries()]
+    .filter(([, item]) => item.kind !== "homebrew-bottle")
+    .map(([id]) => id)
+    .sort(compareText);
   if (canonicalJson(actual) !== canonicalJson(wanted)) {
     throw new Error(
       `${productId} resolved input IDs differ from its canonical manifest: ` +
@@ -1465,6 +1527,30 @@ function exactInputBytes(
   }
   const bytes = new Uint8Array(readFileSync(handle.path));
   if (bytes.byteLength === 0) throw new Error(`${label} is empty`);
+  return bytes;
+}
+
+function readVfsBytes(fs: MemoryFileSystem, path: string): Uint8Array {
+  const size = fs.stat(path).size;
+  const bytes = new Uint8Array(size);
+  const fd = fs.open(path, 0, 0);
+  try {
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const count = fs.read(
+        fd,
+        bytes.subarray(offset),
+        null,
+        bytes.byteLength - offset,
+      );
+      if (!Number.isSafeInteger(count) || count <= 0) {
+        throw new Error(`short VFS read for ${path}`);
+      }
+      offset += count;
+    }
+  } finally {
+    fs.close(fd);
+  }
   return bytes;
 }
 
@@ -2131,6 +2217,11 @@ function applyMainShellCompatibility(
   const byPackage = new Map(
     bottles.map((item) => [item.descriptor.tree.package!, item]),
   );
+  const packageAvailable = (packageName: string): boolean => {
+    if (byPackage.has(packageName)) return true;
+    const formula = packageName.slice(packageName.lastIndexOf("/") + 1);
+    return tryVfsLstat(fs, `${HOMEBREW_PREFIX}/opt/${formula}`) !== null;
+  };
   const links: Array<{ path: string; target: string; package: string }> = [];
   const destinations = new Set<string>();
   const install = (source: string, target: string, pkg: string): void => {
@@ -2161,10 +2252,15 @@ function applyMainShellCompatibility(
 
   for (const alias of policy.aliases) {
     const bottle = byPackage.get(alias.package);
-    if (bottle === undefined) continue;
+    if (!packageAvailable(alias.package)) continue;
+    if (alias.source_kind === "keg" && bottle === undefined) {
+      throw new Error(
+        `main-shell inherited package ${alias.package} lacks its keg identity`,
+      );
+    }
     const source = alias.source_kind === "link"
       ? `${HOMEBREW_PREFIX}/${alias.source}`
-      : `${bottle.descriptor.tree.activation.roots[0]}/${alias.source}`;
+      : `${bottle!.descriptor.tree.activation.roots[0]}/${alias.source}`;
     for (const target of alias.targets) install(source, target, alias.package);
   }
 
@@ -2183,7 +2279,7 @@ function applyMainShellCompatibility(
 
   const runtimeState: Array<Record<string, unknown>> = [];
   for (const declaration of policy.runtime_state) {
-    if (!byPackage.has(declaration.requires_package)) continue;
+    if (!packageAvailable(declaration.requires_package)) continue;
     const existing = tryVfsLstat(fs, declaration.path);
     if (existing !== null) {
       if (
@@ -2218,6 +2314,132 @@ function applyMainShellCompatibility(
     runtimeState.push({ ...declaration });
   }
   return { links, runtime_state: runtimeState };
+}
+
+function applyPlatformHomebrewLinks(
+  fs: MemoryFileSystem,
+  bottles: readonly StagedBottleTree[],
+): void {
+  const destinations = new Set<string>();
+  for (const bottle of bottles) {
+    const prefix = `${HOMEBREW_PREFIX.slice(1)}/bin/`;
+    for (const entry of bottle.descriptor.tree.inventory.entries) {
+      if (
+        !entry.path.startsWith(prefix) ||
+        entry.path.slice(prefix.length).includes("/") ||
+        entry.type === "directory"
+      ) continue;
+      const command = entry.path.slice(prefix.length);
+      for (const directory of ["/usr/bin", "/bin"]) {
+        const target = `${directory}/${command}`;
+        if (destinations.has(target)) {
+          throw new Error(`platform-rootfs Homebrew links repeat ${target}`);
+        }
+        destinations.add(target);
+        installHomebrewCompatibilityLink(fs, `/${entry.path}`, target);
+      }
+    }
+  }
+  for (const target of ["/usr/bin/sh", "/bin/sh"]) {
+    installHomebrewCompatibilityLink(
+      fs,
+      `${HOMEBREW_PREFIX}/bin/dash`,
+      target,
+    );
+  }
+  for (const [source, names] of [
+    [`${HOMEBREW_PREFIX}/bin/gawk`, ["awk"]],
+    [`${HOMEBREW_PREFIX}/bin/grep`, ["egrep", "fgrep"]],
+  ] as const) {
+    for (const name of names) {
+      for (const directory of ["/usr/bin", "/bin"]) {
+        installHomebrewCompatibilityLink(fs, source, `${directory}/${name}`);
+      }
+    }
+  }
+}
+
+async function rewriteServiceProductToHomebrew(
+  outputPath: string,
+  homebrew: ReadonlyMap<string, AppliedHomebrewProductInput>,
+): Promise<void> {
+  const fs = MemoryFileSystem.fromImagePreservingCapacity(
+    new Uint8Array(readFileSync(outputPath)),
+  );
+  const aliases: Array<[string, string]> = [];
+  const add = (
+    formula: string,
+    legacy: string,
+    source: (input: AppliedHomebrewProductInput) => string,
+  ) => {
+    const input = homebrew.get(formula);
+    if (input !== undefined) aliases.push([legacy, source(input)]);
+  };
+  add("node", "/usr/bin/node", (input) => input.bin("node"));
+  add("nginx", "/usr/sbin/nginx", (input) => input.bin("nginx"));
+  add("php", "/usr/sbin/php-fpm", (input) => input.sbin("php-fpm"));
+  add("php", "/usr/bin/php", (input) => input.bin("php"));
+  add(
+    "php",
+    "/usr/lib/php/extensions/opcache.so",
+    (input) => input.path("lib/php/extensions/opcache.so"),
+  );
+  add("dinit", "/sbin/dinit", (input) => input.sbin("dinit"));
+  add("dinit", "/sbin/dinitctl", (input) => input.sbin("dinitctl"));
+  add("mariadb", "/usr/sbin/mariadbd", (input) => input.bin("mariadbd"));
+  add("msmtpd", "/usr/sbin/msmtpd", (input) => input.bin("msmtpd"));
+
+  for (const [legacy, canonical] of aliases) {
+    if (tryVfsLstat(fs, legacy) !== null) fs.unlink(legacy);
+    ensureDirRecursive(fs, dirname(legacy));
+    fs.symlinkWithOwner(canonical, legacy, 0, 0);
+  }
+  const replacements = new Map(aliases);
+  for (const path of serviceConfigurationFiles(fs)) {
+    const bytes = readVfsBytes(fs, path);
+    let source: string;
+    try {
+      source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw new Error(`service configuration is not UTF-8: ${path}`);
+    }
+    let updated = source;
+    for (const [legacy, canonical] of replacements) {
+      updated = updated.replaceAll(legacy, canonical);
+    }
+    if (updated !== source) {
+      writeVfsBinary(fs, path, new TextEncoder().encode(updated), fs.stat(path).mode & 0o7777);
+    }
+  }
+  await saveImage(fs, outputPath, {
+    normalizeTimestampsMs: sourceDateEpochMilliseconds(
+      process.env.SOURCE_DATE_EPOCH,
+    ),
+    metadata: fs.getImageMetadata() ?? undefined,
+  });
+}
+
+function serviceConfigurationFiles(fs: MemoryFileSystem): string[] {
+  const result = [
+    "/etc/mariadb/bootstrap.sh",
+    "/etc/php.ini",
+    "/usr/local/bin/start-msmtpd",
+  ].filter((path) => tryVfsLstat(fs, path) !== null);
+  if (tryVfsLstat(fs, "/etc/dinit.d") !== null) {
+    const directory = fs.opendir("/etc/dinit.d");
+    try {
+      for (;;) {
+        const entry = fs.readdir(directory);
+        if (entry === null) break;
+        if (entry.name !== "." && entry.name !== "..") {
+          result.push(`/etc/dinit.d/${entry.name}`);
+        }
+      }
+    } finally {
+      fs.closedir(directory);
+    }
+  }
+  return result.sort(compareText);
 }
 
 function installHomebrewCompatibilityLink(

@@ -8,51 +8,15 @@ builder = "images/vfs/scripts/build-lamp-vfs-image.sh"
 id = "browser-main-shell"
 materialization = "embedded"
 
-[[software.package]]
-name = "mariadb"
-outputs = ["mariadbd"]
-source_roles = ["system-tables"]
-role = "runtime"
+[[software.homebrew]]
+tap = "kandelo-dev/homebrew-tap-core"
+formulae = ["nginx", "php", "mariadb", "dinit", "msmtpd"]
 materialization = "embedded"
 
-[[software.package]]
-name = "nginx"
-outputs = ["nginx"]
-source_roles = []
-role = "runtime"
-materialization = "embedded"
-
-[[software.package]]
-name = "php"
-outputs = ["php-fpm", "opcache"]
-source_roles = []
-role = "runtime"
-materialization = "embedded"
-
-[[software.package]]
-name = "php"
-outputs = ["php"]
-source_roles = []
-role = "build"
-
-[[software.package]]
-name = "dinit"
-outputs = ["dinit", "dinitctl"]
-source_roles = []
-role = "runtime"
-materialization = "embedded"
-
-[[software.package]]
-name = "msmtpd"
-outputs = ["msmtpd"]
-source_roles = []
-role = "runtime"
-materialization = "embedded"
-
-[[software.package]]
-name = "kernel"
-outputs = ["kernel"]
-source_roles = []
+[[software.toolchain]]
+id = "kernel-wasm"
+provider = "prepared-runtime"
+component = "kernel-wasm"
 role = "build"
 
 [[software.archive]]
@@ -76,7 +40,7 @@ gid = 0
 ephemeral = true
 
 [boot]
-argv = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"]
+argv = ["/opt/kandelo/homebrew/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"]
 cwd = "/root"
 uid = 0
 gid = 0

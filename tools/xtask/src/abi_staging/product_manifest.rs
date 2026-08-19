@@ -1036,6 +1036,74 @@ readonly = false
     }
 
     #[test]
+    fn pages_products_are_homebrew_only() {
+        let repository = crate::repo_root();
+        let catalog = load_product_catalog(
+            &repository,
+            &repository.join("images/vfs/products"),
+        )
+        .unwrap();
+        let products = catalog
+            .products
+            .iter()
+            .map(|entry| (entry.manifest.id.as_str(), &entry.manifest))
+            .collect::<BTreeMap<_, _>>();
+        let expected = BTreeMap::from([
+            ("platform-rootfs", set(&[
+                "bash|embedded", "bc|lazy", "coreutils|lazy", "dash|lazy",
+                "diffutils|lazy", "file-formula|lazy", "findutils|lazy",
+                "gawk|lazy", "grep|lazy", "m4|lazy", "make|lazy",
+                "ncurses|lazy", "posix-utils-lite|lazy", "sed|lazy",
+            ])),
+            ("browser-main-shell", set(&[
+                "bzip2|lazy", "curl|lazy", "fbdoom|lazy", "git|lazy",
+                "gzip|lazy", "homebrew-bootstrap|embedded", "less|lazy",
+                "login|lazy", "lsof|lazy", "modeset|lazy", "nano|lazy",
+                "netcat|lazy", "nethack|lazy", "ruby|lazy", "sudo-lite|lazy",
+                "sudo|lazy", "tar|lazy", "unzip|lazy", "vim|lazy",
+                "wget|lazy", "xz|lazy", "zip|lazy", "zstd|lazy",
+            ])),
+            ("browser-node", set(&["node|embedded"])),
+            ("browser-nginx", set(&["dinit|embedded", "nginx|embedded"])),
+            ("browser-nginx-php", set(&[
+                "dinit|embedded", "nginx|embedded", "php|embedded",
+            ])),
+            ("browser-lamp", set(&[
+                "dinit|embedded", "mariadb|embedded", "msmtpd|embedded",
+                "nginx|embedded", "php|embedded",
+            ])),
+            ("browser-wordpress", set(&[
+                "dinit|embedded", "msmtpd|embedded", "nginx|embedded",
+                "php|embedded",
+            ])),
+        ]);
+        for (id, expected_formulae) in expected {
+            let manifest = products[id];
+            assert!(manifest.software.package.is_empty(), "{id}");
+            let actual = manifest
+                .software
+                .homebrew
+                .iter()
+                .flat_map(|group| group.formulae.iter().map(|formula| {
+                    format!(
+                        "{}|{}",
+                        formula,
+                        materialization_name(Some(group.materialization)),
+                    )
+                }))
+                .collect::<BTreeSet<_>>();
+            assert_eq!(actual, expected_formulae, "{id}");
+        }
+        for id in ["browser-nginx-php", "browser-lamp", "browser-wordpress"] {
+            assert_eq!(
+                toolchain_signatures(products[id]),
+                set(&["kernel-wasm|PreparedRuntime|kernel-wasm|Build|none"]),
+                "{id}",
+            );
+        }
+    }
+
+    #[test]
     fn repository_inventory() {
         let repository = crate::repo_root();
         let catalog = load_product_catalog(
@@ -1096,56 +1164,13 @@ readonly = false
         }
 
         let expected_package_roots = BTreeMap::from([
-            ("platform-rootfs", set(&[
-                "bash|bash||Runtime|lazy", "bc|bc||Runtime|lazy",
-                "coreutils|coreutils||Runtime|lazy", "dash|dash||Runtime|lazy",
-                "diffutils|cmp,diff,diff3,sdiff||Runtime|lazy",
-                "file|file-magic||Runtime|embedded", "file|file||Runtime|lazy",
-                "findutils|find,xargs||Runtime|lazy", "gawk|gawk||Runtime|lazy",
-                "grep|grep||Runtime|lazy", "m4|m4||Runtime|lazy",
-                "make|make||Runtime|lazy",
-                "ncurses|captoinfo,clear,infocmp,infotocap,reset,tabs,tic,toe,tput,tset||Runtime|lazy",
-                concat!(
-                    "posix-utils-lite|ar,asa,cal,cflow,compress,ctags,cxref,ed,ex,",
-                    "fuser,gencat,getconf,gettext,iconv,ipcrm,ipcs,lex,locale,logger,",
-                    "man,more,msgfmt,ngettext,nm,patch,pax,pgrep,ps,renice,strings,",
-                    "strip,uncompress,uudecode,uuencode,what,xgettext,yacc||Runtime|lazy",
-                ),
-                "sed|sed||Runtime|lazy",
-            ])),
-            ("browser-main-shell", set(&[
-                "homebrew-bootstrap|homebrew-bootstrap||Runtime|lazy",
-                "homebrew-bootstrap|homebrew-brew||Runtime|embedded",
-            ])),
-            ("browser-node", set(&["node|node||Runtime|embedded"])),
-            ("browser-nginx", set(&[
-                "dinit|dinit,dinitctl||Runtime|embedded",
-                "nginx|nginx||Runtime|embedded",
-            ])),
-            ("browser-nginx-php", set(&[
-                "dinit|dinit,dinitctl||Runtime|embedded",
-                "kernel|kernel||Build|none",
-                "nginx|nginx||Runtime|embedded",
-                "php|opcache,php-fpm||Runtime|embedded",
-                "php|php||Build|none",
-            ])),
-            ("browser-wordpress", set(&[
-                "dinit|dinit,dinitctl||Runtime|embedded",
-                "kernel|kernel||Build|none",
-                "msmtpd|msmtpd||Runtime|embedded",
-                "nginx|nginx||Runtime|embedded",
-                "php|opcache,php-fpm||Runtime|embedded",
-                "php|php||Build|none",
-            ])),
-            ("browser-lamp", set(&[
-                "dinit|dinit,dinitctl||Runtime|embedded",
-                "kernel|kernel||Build|none",
-                "mariadb|mariadbd|system-tables|Runtime|embedded",
-                "msmtpd|msmtpd||Runtime|embedded",
-                "nginx|nginx||Runtime|embedded",
-                "php|opcache,php-fpm||Runtime|embedded",
-                "php|php||Build|none",
-            ])),
+            ("platform-rootfs", set(&[])),
+            ("browser-main-shell", set(&[])),
+            ("browser-node", set(&[])),
+            ("browser-nginx", set(&[])),
+            ("browser-nginx-php", set(&[])),
+            ("browser-wordpress", set(&[])),
+            ("browser-lamp", set(&[])),
             ("browser-mariadb-wasm32", set(&[
                 "coreutils|coreutils||Runtime|embedded",
                 "dash|dash||Runtime|embedded",
@@ -1316,7 +1341,13 @@ readonly = false
         }
 
         for id in products.keys() {
-            let expected = if *id == "developer-kandelo-sdk" {
+            let expected = if ["browser-nginx-php", "browser-lamp", "browser-wordpress"]
+                .contains(id)
+            {
+                set(&[
+                    "kernel-wasm|PreparedRuntime|kernel-wasm|Build|none",
+                ])
+            } else if *id == "developer-kandelo-sdk" {
                 set(&[
                     "clang-resource-headers|RepositoryDevShell|clang-resource-headers|Runtime|embedded",
                     "wasm32-sysroot|RepositoryDevShell|wasm32-sysroot|Runtime|embedded",
@@ -1343,16 +1374,11 @@ readonly = false
             })
             .collect::<BTreeSet<_>>();
         assert_eq!(formulae, set(&[
-            "bash|embedded", "bc|lazy", "bzip2|lazy", "coreutils|lazy",
-            "curl|lazy", "dash|lazy", "diffutils|lazy", "fbdoom|lazy",
-            "file-formula|lazy", "findutils|lazy", "gawk|lazy", "git|lazy",
-            "grep|lazy", "gzip|lazy", "less|lazy", "login|lazy",
-            "lsof|lazy", "m4|lazy",
-            "make|lazy", "modeset|lazy", "nano|lazy", "ncurses|lazy",
-            "netcat|lazy", "nethack|lazy", "posix-utils-lite|lazy",
-            "ruby|lazy", "sed|lazy", "sudo-lite|lazy",
-            "sudo|lazy", "tar|lazy", "unzip|lazy", "vim|lazy",
-            "wget|lazy",
+            "bzip2|lazy", "curl|lazy", "fbdoom|lazy", "git|lazy",
+            "gzip|lazy", "homebrew-bootstrap|embedded", "less|lazy",
+            "login|lazy", "lsof|lazy", "modeset|lazy", "nano|lazy",
+            "netcat|lazy", "nethack|lazy", "ruby|lazy", "sudo-lite|lazy",
+            "sudo|lazy", "tar|lazy", "unzip|lazy", "vim|lazy", "wget|lazy",
             "xz|lazy", "zip|lazy", "zstd|lazy",
         ]));
 

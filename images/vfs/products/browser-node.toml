@@ -8,11 +8,9 @@ builder = "images/vfs/scripts/build-node-vfs-image.sh"
 id = "browser-main-shell"
 materialization = "embedded"
 
-[[software.package]]
-name = "node"
-outputs = ["node"]
-source_roles = []
-role = "runtime"
+[[software.homebrew]]
+tap = "kandelo-dev/homebrew-tap-core"
+formulae = ["node"]
 materialization = "embedded"
 
 [[software.archive]]

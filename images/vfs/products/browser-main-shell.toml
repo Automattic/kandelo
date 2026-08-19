@@ -19,32 +19,16 @@ paths = [
 role = "runtime"
 materialization = "embedded"
 
-[[software.package]]
-name = "homebrew-bootstrap"
-outputs = ["homebrew-bootstrap"]
-source_roles = []
-role = "runtime"
-materialization = "lazy"
-
-[[software.package]]
-name = "homebrew-bootstrap"
-outputs = ["homebrew-brew"]
-source_roles = []
-role = "runtime"
-materialization = "embedded"
-
 [[software.homebrew]]
 tap = "kandelo-dev/homebrew-tap-core"
-formulae = ["bash"]
+formulae = ["homebrew-bootstrap"]
 materialization = "embedded"
 
 [[software.homebrew]]
 tap = "kandelo-dev/homebrew-tap-core"
 formulae = [
-  "dash", "ncurses", "coreutils", "gawk", "grep", "sed", "bc",
-  "file-formula", "m4", "make", "findutils", "diffutils",
-  "posix-utils-lite", "fbdoom", "modeset", "less", "tar", "curl",
-  "netcat", "wget", "git", "gzip", "bzip2", "xz", "zstd", "zip",
+  "fbdoom", "modeset", "less", "tar", "curl", "netcat", "wget", "git",
+  "gzip", "bzip2", "xz", "zstd", "zip",
   "unzip", "lsof", "nano", "vim", "nethack", "login", "sudo-lite",
   "sudo", "ruby",
 ]

@@ -8,18 +8,9 @@ builder = "images/vfs/scripts/build-nginx-vfs-image.sh"
 id = "browser-main-shell"
 materialization = "embedded"
 
-[[software.package]]
-name = "nginx"
-outputs = ["nginx"]
-source_roles = []
-role = "runtime"
-materialization = "embedded"
-
-[[software.package]]
-name = "dinit"
-outputs = ["dinit", "dinitctl"]
-source_roles = []
-role = "runtime"
+[[software.homebrew]]
+tap = "kandelo-dev/homebrew-tap-core"
+formulae = ["nginx", "dinit"]
 materialization = "embedded"
 
 [[mounts]]
@@ -36,7 +27,7 @@ gid = 0
 ephemeral = true
 
 [boot]
-argv = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"]
+argv = ["/opt/kandelo/homebrew/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"]
 cwd = "/root"
 uid = 0
 gid = 0
