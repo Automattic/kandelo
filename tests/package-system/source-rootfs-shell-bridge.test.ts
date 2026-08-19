@@ -22,9 +22,7 @@ import {
   composeSourceRootfsDemoConfig,
   SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCIES,
 } from "../../images/vfs/scripts/build-source-rootfs-shell-image";
-import {
-  SHELL_LAZY_BINARY_SPECS,
-} from "../../images/vfs/lib/init/shell-binaries";
+import { SHELL_LAZY_BINARY_SPECS } from "../../images/vfs/lib/init/shell-binaries";
 import {
   SHELL_LAZY_ARCHIVE_SPECS,
   type ShellLazyArchiveResolver,
@@ -44,27 +42,22 @@ import {
   KANDELO_SHELL_CONFIG_PATH,
   parseKandeloShellConfig,
 } from "../../web-libs/kandelo-session/src/shell-config";
-import {
-  shouldReuseExistingPlaywrightServer,
-} from "../../apps/browser-demos/playwright-server-policy";
+import { shouldReuseExistingPlaywrightServer } from "../../apps/browser-demos/playwright-server-policy";
 import {
   readSourceRootfsShellDependencyContract,
   validateSourceRootfsShellPackageManifest,
-} from "../../scripts/source-rootfs-shell-dependency-contract.mjs";
+} from "../../packages/registry/shell/source-rootfs-shell-dependency-contract.mjs";
 import {
   assertSourceRootfsShellImage,
   assertSourceRootfsShellMetadata,
 } from "../../scripts/assert-source-rootfs-shell-composition";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..");
-const bridgePackageRoot = join(
+const canonicalPackageRoot = join(repoRoot, "packages/registry/shell");
+const canonicalPackageManifest = join(canonicalPackageRoot, "package.toml");
+const canonicalDependencyContract = join(
   repoRoot,
-  "homebrew/source-rootfs-shell-package",
-);
-const bridgePackageManifest = join(bridgePackageRoot, "package.toml");
-const bridgeDependencyContract = join(
-  repoRoot,
-  "homebrew/source-rootfs-shell-dependencies.json",
+  "packages/registry/shell/source-rootfs-shell-dependencies.json",
 );
 const roots: string[] = [];
 const MiB = 1024 * 1024;
@@ -128,9 +121,7 @@ async function writeRootfs(path: string, kernelAbi = ABI_VERSION) {
   }
   const lazyTreeEntry: ZipEntry = {
     fileName: "opt/base/preserved.txt",
-    fileNameBytes: new TextEncoder().encode(
-      "opt/base/preserved.txt",
-    ),
+    fileNameBytes: new TextEncoder().encode("opt/base/preserved.txt"),
     compressedSize: 100,
     uncompressedSize: 4096,
     compressionMethod: 8,
@@ -191,12 +182,12 @@ function fixturePaths(root: string) {
   const modesetPath = join(root, "modeset.wasm");
   const shellConfigPath = join(
     repoRoot,
-    "homebrew/source-rootfs-shell-default.json",
+    "packages/registry/shell/source-rootfs-shell-default.json",
   );
   const demoConfigPath = join(repoRoot, "homebrew/main-shell-demo.json");
   const demoProfileOverlayPath = join(
     repoRoot,
-    "homebrew/source-rootfs-shell-demo-profiles.json",
+    "packages/registry/shell/source-rootfs-shell-demo-profiles.json",
   );
   writeFileSync(
     bashPath,
@@ -214,7 +205,10 @@ function fixturePaths(root: string) {
     if (ROOTFS_LAZY_IDS.has(spec.id)) continue;
     const dependency = spec.id === "git-remote-http" ? "git" : spec.id;
     writeFileSync(
-      join(dependencyRoots.get(dependency)!, spec.resolverPath.split("/").at(-1)!),
+      join(
+        dependencyRoots.get(dependency)!,
+        spec.resolverPath.split("/").at(-1)!,
+      ),
       `${spec.id} fixture`,
     );
   }
@@ -232,9 +226,8 @@ function fixturePaths(root: string) {
     resolverPath,
     requestedDependency,
   ) => {
-    const dependency = requestedDependency === "git-remote-http"
-      ? "git"
-      : requestedDependency;
+    const dependency =
+      requestedDependency === "git-remote-http" ? "git" : requestedDependency;
     const dir = dependencyRoots.get(dependency);
     if (!dir) throw new Error(`fixture omitted dependency ${dependency}`);
     const artifact = join(dir, resolverPath.split("/").at(-1)!);
@@ -256,7 +249,7 @@ function fixturePaths(root: string) {
   };
 }
 
-describe("source-rootfs shell bridge", () => {
+describe("canonical source-rootfs shell", () => {
   it("classifies only the exact source-owned image metadata", () => {
     const sourceMetadata = {
       version: 1 as const,
@@ -267,7 +260,10 @@ describe("source-rootfs shell bridge", () => {
     expect(() => assertSourceRootfsShellMetadata(sourceMetadata)).not.toThrow();
     for (const invalid of [
       null,
-      { ...sourceMetadata, shellComposition: { schema: 2, kind: "source-rootfs" } },
+      {
+        ...sourceMetadata,
+        shellComposition: { schema: 2, kind: "source-rootfs" },
+      },
       {
         ...sourceMetadata,
         shellComposition: { schema: 1, kind: "source-rootfs", extra: true },
@@ -283,25 +279,26 @@ describe("source-rootfs shell bridge", () => {
   it("owns its browser server for every exact-artifact proof", () => {
     expect(shouldReuseExistingPlaywrightServer({})).toBe(true);
     expect(shouldReuseExistingPlaywrightServer({ CI: "1" })).toBe(false);
-    expect(shouldReuseExistingPlaywrightServer({
-      KANDELO_HOMEBREW_MAIN_SHELL_STRICT: "1",
-    })).toBe(false);
-    expect(shouldReuseExistingPlaywrightServer({
-      KANDELO_SOURCE_ROOTFS_SHELL_STRICT: "1",
-    })).toBe(false);
+    expect(
+      shouldReuseExistingPlaywrightServer({
+        KANDELO_HOMEBREW_MAIN_SHELL_STRICT: "1",
+      }),
+    ).toBe(false);
+    expect(
+      shouldReuseExistingPlaywrightServer({
+        KANDELO_SOURCE_ROOTFS_SHELL_STRICT: "1",
+      }),
+    ).toBe(false);
   });
 
   it("declares a closed source-package build graph with no bottle or network input", () => {
-    const manifest = readFileSync(
-      bridgePackageManifest,
-      "utf8",
-    );
+    const manifest = readFileSync(canonicalPackageManifest, "utf8");
     const buildToml = readFileSync(
-      join(bridgePackageRoot, "build.toml"),
+      join(canonicalPackageRoot, "build.toml"),
       "utf8",
     );
     const wrapper = readFileSync(
-      join(bridgePackageRoot, "build-source-rootfs-shell.sh"),
+      join(canonicalPackageRoot, "build-shell.sh"),
       "utf8",
     );
     const composer = readFileSync(
@@ -310,28 +307,28 @@ describe("source-rootfs shell bridge", () => {
     );
 
     const contract = readSourceRootfsShellDependencyContract(
-      bridgeDependencyContract,
+      canonicalDependencyContract,
     );
     expect(
       validateSourceRootfsShellPackageManifest(
         contract,
-        bridgePackageManifest,
+        canonicalPackageManifest,
       ),
     ).toEqual(
       contract.dependencies.map(({ name, version }) => ({ name, version })),
     );
     expect(manifest.match(/^name = "[^"]+"$/gm)).toEqual([
-      'name = "source-rootfs-shell"',
+      'name = "shell"',
       'name = "shell"',
       'name = "node"',
     ]);
     expect(buildToml).toMatch(/^commit\s*=\s*"UNPUBLISHED"$/m);
-    expect(buildToml).toMatch(/^revision\s*=\s*3$/m);
+    expect(buildToml).toMatch(/^revision\s*=\s*27$/m);
     expect(buildToml).not.toContain("[[git_inputs]]");
     for (const input of [
-      "homebrew/source-rootfs-shell-default.json",
+      "packages/registry/shell/source-rootfs-shell-default.json",
       "homebrew/main-shell-demo.json",
-      "homebrew/source-rootfs-shell-demo-profiles.json",
+      "packages/registry/shell/source-rootfs-shell-demo-profiles.json",
       "images/vfs/scripts/build-source-rootfs-shell-image.ts",
       "images/vfs/scripts/shell-vfs-build.ts",
       "images/vfs/scripts/shell-lazy-archives.ts",
@@ -345,7 +342,7 @@ describe("source-rootfs shell bridge", () => {
     for (const name of ["ROOTFS", "BASH", "FBDOOM", "MODESET"]) {
       expect(wrapper).toContain(`WASM_POSIX_DEP_${name}_DIR`);
     }
-    expect(wrapper).toContain('EXTENDED_DEPENDENCIES=(');
+    expect(wrapper).toContain("EXTENDED_DEPENDENCIES=(");
     expect(composer).toContain("populateShellEnvironment(fs, {");
     expect(composer).toContain("resolveArtifact: inputs.resolveArtifact");
     for (const forbidden of [
@@ -365,9 +362,9 @@ describe("source-rootfs shell bridge", () => {
 
   it("fails closed when the bridge manifest drifts from its JSON dependency authority", () => {
     const root = tempRoot();
-    const source = readFileSync(bridgePackageManifest, "utf8");
+    const source = readFileSync(canonicalPackageManifest, "utf8");
     const contract = readSourceRootfsShellDependencyContract(
-      bridgeDependencyContract,
+      canonicalDependencyContract,
     );
     const cases = [
       {
@@ -459,7 +456,9 @@ describe("source-rootfs shell bridge", () => {
     }
     for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {
       expect(
-        fs.exportLazyArchiveEntries().some((entry) => entry.url === spec.archiveUrl),
+        fs
+          .exportLazyArchiveEntries()
+          .some((entry) => entry.url === spec.archiveUrl),
         spec.id,
       ).toBe(true);
     }
@@ -487,7 +486,9 @@ describe("source-rootfs shell bridge", () => {
     );
     expect(fs.stat("/usr/local/bin/fbdoom").mode & 0o777).toBe(0o755);
     expect(fs.stat("/usr/local/bin/modeset").mode & 0o777).toBe(0o755);
-    expect(text(readVfsFile(fs, "/etc/gitconfig"))).toContain("defaultBranch = main");
+    expect(text(readVfsFile(fs, "/etc/gitconfig"))).toContain(
+      "defaultBranch = main",
+    );
     expect(text(readVfsFile(fs, "/etc/profile"))).toContain("NETHACKOPTIONS");
     expect(fs.stat("/home/.nethack")).toMatchObject({
       uid: 1000,
@@ -544,7 +545,10 @@ describe("source-rootfs shell bridge", () => {
     const base = JSON.parse(readFileSync(basePath, "utf8"));
     const overlay = JSON.parse(
       readFileSync(
-        join(repoRoot, "homebrew/source-rootfs-shell-demo-profiles.json"),
+        join(
+          repoRoot,
+          "packages/registry/shell/source-rootfs-shell-demo-profiles.json",
+        ),
         "utf8",
       ),
     );
@@ -583,7 +587,7 @@ describe("source-rootfs shell bridge", () => {
     writeFileSync(basePath, JSON.stringify(base));
     const overlayPath = join(
       repoRoot,
-      "homebrew/source-rootfs-shell-demo-profiles.json",
+      "packages/registry/shell/source-rootfs-shell-demo-profiles.json",
     );
 
     const composed = parseKandeloDemoConfig(
@@ -620,14 +624,19 @@ describe("source-rootfs shell bridge", () => {
 
   it.each(profileDriftCases)(
     "rejects $label drift in an overlapping profile",
-    ({ mutate }: {
+    ({
+      mutate,
+    }: {
       label: string;
       mutate: (overlay: SourceRootfsDemoOverlayFixture) => void;
     }) => {
       const root = tempRoot();
       const overlay = JSON.parse(
         readFileSync(
-          join(repoRoot, "homebrew/source-rootfs-shell-demo-profiles.json"),
+          join(
+            repoRoot,
+            "packages/registry/shell/source-rootfs-shell-demo-profiles.json",
+          ),
           "utf8",
         ),
       ) as SourceRootfsDemoOverlayFixture;
@@ -781,15 +790,13 @@ set -euo pipefail
 for name in GH_TOKEN GITHUB_TOKEN NODE_OPTIONS NODE_PATH HTTP_PROXY HTTPS_PROXY; do
   [ "\${!name+x}" != x ] || { echo "ambient variable leaked: $name" >&2; exit 81; }
 done
-if [[ "\${1:-}" == */scripts/source-rootfs-shell-dependency-contract.mjs ]]; then
+if [[ "\${1:-}" == */packages/registry/shell/source-rootfs-shell-dependency-contract.mjs ]]; then
   [ "\${2:-}" = --print-resolver-owned ]
-  [ "\${3:-}" = ${JSON.stringify(bridgeDependencyContract)} ]
-  [ "\${4:-}" = ${JSON.stringify(bridgePackageManifest)} ]
-  printf '%s\\n' ${
-    SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCIES
-      .map((dependency) => `'${dependency}'`)
-      .join(" ")
-  }
+  [ "\${3:-}" = ${JSON.stringify(canonicalDependencyContract)} ]
+  [ "\${4:-}" = ${JSON.stringify(canonicalPackageManifest)} ]
+  printf '%s\\n' ${SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCIES.map(
+    (dependency) => `'${dependency}'`,
+  ).join(" ")}
   exit 0
 fi
 [ "\${SOURCE_DATE_EPOCH:-}" = 0 ]
@@ -814,33 +821,29 @@ printf '%s\\n' "source-rootfs-shell" >"$out"
         dir,
       ]),
     );
-    execFileSync(
-      "/bin/bash",
-      [join(bridgePackageRoot, "build-source-rootfs-shell.sh")],
-      {
-        cwd: repoRoot,
-        env: {
-          ...process.env,
-          FAKE_SHELL_LOG: logPath,
-          GH_TOKEN: "forbidden",
-          GITHUB_TOKEN: "forbidden",
-          NODE_OPTIONS: "--trace-warnings",
-          NODE_PATH: "/forbidden",
-          HTTP_PROXY: "https://proxy.invalid",
-          HTTPS_PROXY: "https://proxy.invalid",
-          KANDELO_DEV_SHELL_TOOL_PATH: toolDir,
-          WASM_POSIX_DEP_TARGET_ARCH: "wasm32",
-          WASM_POSIX_DEP_OUT_DIR: outDir,
-          WASM_POSIX_DEP_WORK_DIR: workDir,
-          WASM_POSIX_DEP_ROOTFS_DIR: rootfsDir,
-          WASM_POSIX_DEP_BASH_DIR: bashDir,
-          WASM_POSIX_DEP_FBDOOM_DIR: fbdoomDir,
-          WASM_POSIX_DEP_MODESET_DIR: modesetDir,
-          ...dependencyEnv,
-        },
-        stdio: "pipe",
+    execFileSync("/bin/bash", [join(canonicalPackageRoot, "build-shell.sh")], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        FAKE_SHELL_LOG: logPath,
+        GH_TOKEN: "forbidden",
+        GITHUB_TOKEN: "forbidden",
+        NODE_OPTIONS: "--trace-warnings",
+        NODE_PATH: "/forbidden",
+        HTTP_PROXY: "https://proxy.invalid",
+        HTTPS_PROXY: "https://proxy.invalid",
+        KANDELO_DEV_SHELL_TOOL_PATH: toolDir,
+        WASM_POSIX_DEP_TARGET_ARCH: "wasm32",
+        WASM_POSIX_DEP_OUT_DIR: outDir,
+        WASM_POSIX_DEP_WORK_DIR: workDir,
+        WASM_POSIX_DEP_ROOTFS_DIR: rootfsDir,
+        WASM_POSIX_DEP_BASH_DIR: bashDir,
+        WASM_POSIX_DEP_FBDOOM_DIR: fbdoomDir,
+        WASM_POSIX_DEP_MODESET_DIR: modesetDir,
+        ...dependencyEnv,
       },
-    );
+      stdio: "pipe",
+    });
 
     expect(readFileSync(join(outDir, "shell.vfs.zst"), "utf8")).toBe(
       "source-rootfs-shell\n",
@@ -852,7 +855,7 @@ printf '%s\\n' "source-rootfs-shell" >"$out"
     expect(invocation).toContain(`--fbdoom ${fbdoomDir}/fbdoom.wasm`);
     expect(invocation).toContain(`--modeset ${modesetDir}/modeset.wasm`);
     expect(invocation).toContain(
-      `--demo-profile-overlay ${join(repoRoot, "homebrew/source-rootfs-shell-demo-profiles.json")}`,
+      `--demo-profile-overlay ${join(repoRoot, "packages/registry/shell/source-rootfs-shell-demo-profiles.json")}`,
     );
     expect(invocation).not.toContain("homebrew-tap");
   });

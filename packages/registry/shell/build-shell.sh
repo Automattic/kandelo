@@ -1,145 +1,153 @@
 #!/usr/bin/env bash
-# Canonical package-system build for today's browser shell. This recipe builds
-# a platform-only base, embeds the selected Bash closure, and retains the
-# remaining admitted Homebrew trees behind a sealed lazy mirror plan.
+# Canonical package-system recipe for the browser shell. Every program and
+# archive comes from a declared resolver dependency; this wrapper performs no
+# package lookup, binary fallback, or network access.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# shellcheck source=build-tool-path.sh
-source "$SCRIPT_DIR/build-tool-path.sh"
-# Package recipes remain portable outside the repository, but authoritative
-# Kandelo builds enter through Nix. Strip runner paths once here so every
-# composer subprocess consumes the same declared Nix-owned tool closure.
-kandelo_shell_activate_build_tool_path
-
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 OUT_DIR="${WASM_POSIX_DEP_OUT_DIR:-}"
-BOOTSTRAP="${WASM_POSIX_DEP_HOMEBREW_BOOTSTRAP_DIR:-}"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-}"
+ROOTFS_DIR="${WASM_POSIX_DEP_ROOTFS_DIR:-}"
+BASH_DIR="${WASM_POSIX_DEP_BASH_DIR:-}"
+FBDOOM_DIR="${WASM_POSIX_DEP_FBDOOM_DIR:-}"
+MODESET_DIR="${WASM_POSIX_DEP_MODESET_DIR:-}"
+TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-}"
+DECLARED_TOOL_PATH="${KANDELO_DEV_SHELL_TOOL_PATH:-}"
+DEPENDENCY_CONTRACT="$SCRIPT_DIR/source-rootfs-shell-dependencies.json"
+DEPENDENCY_CONTRACT_READER="$SCRIPT_DIR/source-rootfs-shell-dependency-contract.mjs"
+PACKAGE_MANIFEST="$SCRIPT_DIR/package.toml"
 
-if [ -z "$OUT_DIR" ]; then
-    echo "ERROR: shell is a resolver-owned package build; WASM_POSIX_DEP_OUT_DIR is required" >&2
+fail() {
+    echo "build-shell: $*" >&2
     exit 2
-fi
-if [ "${WASM_POSIX_DEP_TARGET_ARCH:-}" != "wasm32" ]; then
-    echo "ERROR: shell Homebrew closure currently supports only wasm32" >&2
-    exit 2
-fi
-if [ -z "$BOOTSTRAP" ] || [ ! -d "$BOOTSTRAP" ] || [ -L "$BOOTSTRAP" ]; then
-    echo "ERROR: shell requires WASM_POSIX_DEP_HOMEBREW_BOOTSTRAP_DIR" >&2
-    exit 2
-fi
-shopt -s nullglob dotglob
-bootstrap_outputs=("$BOOTSTRAP"/*)
-shopt -u nullglob dotglob
-if [ "${#bootstrap_outputs[@]}" -ne 2 ]; then
-    echo "ERROR: selected homebrew-bootstrap dependency must contain exactly two outputs" >&2
-    exit 2
-fi
-for output in homebrew-bootstrap.zip homebrew-brew.env; do
-    if [ ! -f "$BOOTSTRAP/$output" ] || [ -L "$BOOTSTRAP/$output" ]; then
-        echo "ERROR: selected homebrew-bootstrap output must be a regular non-symlink file: $output" >&2
-        exit 2
+}
+
+require_real_directory() {
+    local label="$1"
+    local path="$2"
+    case "$path" in
+        /*) ;;
+        *) fail "$label must be an absolute resolver-owned directory: $path" ;;
+    esac
+    if [[ "/${path#/}/" == *'/../'* || "/${path#/}/" == *'/./'* || \
+          "/${path#/}/" == *'//'* ]]; then
+        fail "$label must be normalized: $path"
     fi
-done
+    if [ ! -d "$path" ] || [ -L "$path" ]; then
+        fail "$label must be a real directory: $path"
+    fi
+}
 
-# Public npm inputs, bottles, and the public tap are package inputs, never
-# credentialed ambient state. NODE_OPTIONS and NODE_PATH are also excluded:
-# otherwise a developer or runner could inject unreviewed JavaScript into the
-# locked composer even though the npm installation itself is isolated.
+require_regular_file() {
+    local label="$1"
+    local path="$2"
+    if [ ! -f "$path" ] || [ -L "$path" ]; then
+        fail "$label must be a regular non-symlink file: $path"
+    fi
+}
+
+[ -n "$OUT_DIR" ] || fail "WASM_POSIX_DEP_OUT_DIR is required"
+[ -n "$WORK_DIR" ] || fail "WASM_POSIX_DEP_WORK_DIR is required"
+[ -n "$ROOTFS_DIR" ] || fail "WASM_POSIX_DEP_ROOTFS_DIR is required"
+[ -n "$BASH_DIR" ] || fail "WASM_POSIX_DEP_BASH_DIR is required"
+[ -n "$FBDOOM_DIR" ] || fail "WASM_POSIX_DEP_FBDOOM_DIR is required"
+[ -n "$MODESET_DIR" ] || fail "WASM_POSIX_DEP_MODESET_DIR is required"
+[ "$TARGET_ARCH" = "wasm32" ] ||
+    fail "source-rootfs shell composition supports only wasm32"
+[ -n "$DECLARED_TOOL_PATH" ] ||
+    fail "KANDELO_DEV_SHELL_TOOL_PATH is required; run through scripts/dev-shell.sh"
+
+# WHY: resolver inputs are the whole executable authority. Ambient credentials,
+# proxies, and module/package-manager injection could otherwise add an
+# undeclared source or network path before the composer starts.
 unset GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
     HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN \
     NPM_TOKEN NODE_AUTH_TOKEN NODE_OPTIONS NODE_PATH \
     NPM_CONFIG_USERCONFIG NPM_CONFIG_GLOBALCONFIG NPM_CONFIG_REGISTRY \
-    npm_config_userconfig npm_config_globalconfig npm_config_registry
+    npm_config_userconfig npm_config_globalconfig npm_config_registry \
+    ALL_PROXY HTTPS_PROXY HTTP_PROXY NO_PROXY \
+    all_proxy https_proxy http_proxy no_proxy
 
-# Fixed locale/time inputs make mkrootfs bytes independent of the invoking
-# developer or CI runner.
+require_regular_file "source-rootfs dependency contract" "$DEPENDENCY_CONTRACT"
+require_regular_file \
+    "source-rootfs dependency contract reader" "$DEPENDENCY_CONTRACT_READER"
+require_regular_file "source-rootfs package manifest" "$PACKAGE_MANIFEST"
+NODE_BIN="$(PATH="$DECLARED_TOOL_PATH" type -P node || true)"
+[ -n "$NODE_BIN" ] || fail "node is not available from KANDELO_DEV_SHELL_TOOL_PATH"
+dependency_lines="$(
+    PATH="$DECLARED_TOOL_PATH" "$NODE_BIN" "$DEPENDENCY_CONTRACT_READER" \
+        --print-resolver-owned "$DEPENDENCY_CONTRACT" "$PACKAGE_MANIFEST"
+)" || fail "could not read the source-rootfs dependency contract"
+EXTENDED_DEPENDENCIES=()
+while IFS= read -r dependency; do
+    [ -n "$dependency" ] || continue
+    EXTENDED_DEPENDENCIES+=("$dependency")
+done <<<"$dependency_lines"
+[ "${#EXTENDED_DEPENDENCIES[@]}" -gt 0 ] ||
+    fail "source-rootfs dependency contract has no resolver-owned dependencies"
+
+require_real_directory WASM_POSIX_DEP_OUT_DIR "$OUT_DIR"
+require_real_directory WASM_POSIX_DEP_WORK_DIR "$WORK_DIR"
+require_real_directory WASM_POSIX_DEP_ROOTFS_DIR "$ROOTFS_DIR"
+require_real_directory WASM_POSIX_DEP_BASH_DIR "$BASH_DIR"
+require_real_directory WASM_POSIX_DEP_FBDOOM_DIR "$FBDOOM_DIR"
+require_real_directory WASM_POSIX_DEP_MODESET_DIR "$MODESET_DIR"
+for dependency in "${EXTENDED_DEPENDENCIES[@]}"; do
+    dependency_key="$(printf '%s' "$dependency" | tr '[:lower:]-' '[:upper:]_')"
+    env_key="WASM_POSIX_DEP_${dependency_key}_DIR"
+    dependency_dir="${!env_key:-}"
+    [ -n "$dependency_dir" ] || fail "$env_key is required"
+    require_real_directory "$env_key" "$dependency_dir"
+done
+
+ROOTFS="$ROOTFS_DIR/rootfs.vfs"
+BASH="$BASH_DIR/bash.wasm"
+FBDOOM="$FBDOOM_DIR/fbdoom.wasm"
+MODESET="$MODESET_DIR/modeset.wasm"
+SHELL_CONFIG="$SCRIPT_DIR/source-rootfs-shell-default.json"
+# The shared demo document is presentation metadata only. Its historical path
+# does not grant the canonical recipe any Homebrew package authority.
+DEMO_CONFIG="$REPO_ROOT/homebrew/main-shell-demo.json"
+DEMO_PROFILE_OVERLAY="$SCRIPT_DIR/source-rootfs-shell-demo-profiles.json"
+COMPOSER="$REPO_ROOT/images/vfs/scripts/build-source-rootfs-shell-image.ts"
+TSX_CLI="$REPO_ROOT/node_modules/tsx/dist/cli.mjs"
+
+require_regular_file "rootfs dependency output" "$ROOTFS"
+require_regular_file "bash dependency output" "$BASH"
+require_regular_file "fbdoom dependency output" "$FBDOOM"
+require_regular_file "modeset dependency output" "$MODESET"
+require_regular_file "source-rootfs shell config" "$SHELL_CONFIG"
+require_regular_file "main-shell demo config" "$DEMO_CONFIG"
+require_regular_file "source-rootfs demo profile overlay" "$DEMO_PROFILE_OVERLAY"
+require_regular_file "source-rootfs shell composer" "$COMPOSER"
+require_regular_file "locked tsx CLI" "$TSX_CLI"
+
 export SOURCE_DATE_EPOCH=0
 export TZ=UTC
 export LC_ALL=C
 export LANG=C
 
-BUILD_DIR="$OUT_DIR/.homebrew-shell-build"
-SOURCE_ROOT="$BUILD_DIR/source"
-VFS="$BUILD_DIR/shell.vfs.zst"
-PLATFORM_BASE="$BUILD_DIR/platform-base.vfs.zst"
-REPORT="$BUILD_DIR/main-shell-report.json"
-BOTTLE_CACHE="$BUILD_DIR/bottle-cache"
-MIRROR_OUT="$BUILD_DIR/mirror"
-if [ -e "$BUILD_DIR" ] || [ -L "$BUILD_DIR" ]; then
-    echo "ERROR: resolver-owned shell workspace already exists: $BUILD_DIR" >&2
-    exit 1
-fi
-mkdir "$BUILD_DIR"
+BUILD_DIR="$(mktemp -d "$WORK_DIR/shell.XXXXXX")"
 cleanup() {
     rm -rf -- "$BUILD_DIR"
 }
 trap cleanup EXIT
 
-# The recipe owns its host-side composer tools just as it owns every other
-# source-build input. This must run inside the recipe—not in selected callers—
-# because the resolver can fall back after any archive fails validation. The
-# preparer copies Git-owned inputs into this resolver-exclusive workspace, so
-# npm and the composer never mutate or execute from the shared checkout.
-bash "$SCRIPT_DIR/prepare-build-tools.sh" "$SOURCE_ROOT"
+VFS="$BUILD_DIR/shell.vfs.zst"
+PATH="$DECLARED_TOOL_PATH" "$NODE_BIN" "$TSX_CLI" "$COMPOSER" \
+    --rootfs "$ROOTFS" \
+    --bash "$BASH" \
+    --fbdoom "$FBDOOM" \
+    --modeset "$MODESET" \
+    --shell-config "$SHELL_CONFIG" \
+    --demo-config "$DEMO_CONFIG" \
+    --demo-profile-overlay "$DEMO_PROFILE_OVERLAY" \
+    --dependency-contract "$DEPENDENCY_CONTRACT" \
+    --out "$VFS"
 
-# Read the ABI from the authoritative Rust declaration without introducing an
-# undeclared text-processing tool into the package recipe.
-ABI_VERSION=""
-while IFS= read -r line; do
-    if [[ "$line" =~ ^pub[[:space:]]+const[[:space:]]+ABI_VERSION:[[:space:]]+u32[[:space:]]*=[[:space:]]*([0-9]+)\;[[:space:]]*$ ]]; then
-        if [ -n "$ABI_VERSION" ]; then
-            echo "ERROR: crates/shared/src/lib.rs declares ABI_VERSION more than once" >&2
-            exit 1
-        fi
-        ABI_VERSION="${BASH_REMATCH[1]}"
-    fi
-done <"$SOURCE_ROOT/crates/shared/src/lib.rs"
-if [ -z "$ABI_VERSION" ]; then
-    echo "ERROR: could not read ABI_VERSION from crates/shared/src/lib.rs" >&2
-    exit 1
-fi
-
-# WHY: the generic rootfs package currently carries the retired lazy-shell
-# lineage. Build the platform-only source tree directly so the admitted flat
-# product cannot inherit deferred archives or a second Homebrew authority.
-node "$SOURCE_ROOT/tools/mkrootfs/bin/mkrootfs.mjs" build \
-    "$SOURCE_ROOT/MANIFEST" "$SOURCE_ROOT/images/rootfs" \
-    --repo-root "$SOURCE_ROOT" \
-    --sab-size 536870912 \
-    --max-size 536870912 \
-    --kernel-abi "$ABI_VERSION" \
-    -o "$PLATFORM_BASE"
-[ -f "$PLATFORM_BASE" ] || {
-    echo "ERROR: $PLATFORM_BASE not produced by mkrootfs" >&2
-    exit 1
-}
-
-mkdir -m 700 "$BOTTLE_CACHE"
-"$SOURCE_ROOT/node_modules/.bin/tsx" \
-    "$SOURCE_ROOT/images/vfs/scripts/build-homebrew-flat-lazy-vfs-image.ts" \
-    --selection "$SOURCE_ROOT/homebrew/main-shell-flat-selection.json" \
-    --materialization-policy \
-        "$SOURCE_ROOT/homebrew/main-shell-materialization-policy.json" \
-    --runtime-support-policy \
-        "$SOURCE_ROOT/homebrew/main-shell-runtime-support-policy.json" \
-    --base-image "$PLATFORM_BASE" \
-    --bootstrap-zip "$BOOTSTRAP/homebrew-bootstrap.zip" \
-    --bootstrap-env "$BOOTSTRAP/homebrew-brew.env" \
-    --bottle-cache "$BOTTLE_CACHE" \
-    --mirror-repository "kandelo-dev/homebrew-tap-core" \
-    --mirror-out "$MIRROR_OUT" \
-    --shell-config "$SOURCE_ROOT/homebrew/main-shell-default.json" \
-    --demo-config "$SOURCE_ROOT/homebrew/main-shell-flat-demo.json" \
-    --out "$VFS" --report "$REPORT"
-
-[ -f "$VFS" ] || { echo "ERROR: $VFS not produced by builder" >&2; exit 1; }
-[ -f "$REPORT" ] || { echo "ERROR: $REPORT not produced by builder" >&2; exit 1; }
-if [ ! -d "$MIRROR_OUT" ] || [ -L "$MIRROR_OUT" ]; then
-    echo "ERROR: sealed lazy mirror handoff not produced by builder" >&2
-    exit 1
-fi
-if [ "$(wc -c < "$VFS")" -ge 10485760 ]; then
-    echo "ERROR: canonical lazy shell must be smaller than 10 MiB" >&2
-    exit 1
+require_regular_file "composed shell VFS" "$VFS"
+if [ -e "$OUT_DIR/shell.vfs.zst" ] || [ -L "$OUT_DIR/shell.vfs.zst" ]; then
+    fail "resolver output already exists: $OUT_DIR/shell.vfs.zst"
 fi
 cp "$VFS" "$OUT_DIR/shell.vfs.zst"
