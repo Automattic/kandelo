@@ -401,6 +401,16 @@ function installProcessWorkerListeners(
       process.checkpointFreeze.unwound();
       return;
     }
+    if (
+      message.type === "checkpoint_refused"
+      && message.pid === pid
+      && message.tid === undefined
+    ) {
+      // This thread read the request and could not reach its capture. Fail the
+      // freeze on the real reason rather than let it expire on its deadline.
+      process.checkpointFreeze.abandon(message.reason);
+      return;
+    }
     if (message.type === "error" && message.pid === pid) {
       finalizeProcessWorkerError(pid, worker, message.message);
     } else if (message.type === "exit" && message.pid === pid) {
@@ -3200,6 +3210,8 @@ async function handleClone(
       // The frames exist only until the gate reopens, so the report and the
       // read that follows it are the whole capture window.
       processInfo.checkpointFreeze.unwound(tid);
+    } else if (m.type === "checkpoint_refused" && m.tid === tid) {
+      processInfo.checkpointFreeze.abandon(m.reason);
     } else if (m.type === "thread_exit") {
       if (!isCurrentThreadGeneration()) {
         void terminateThreadEntry();

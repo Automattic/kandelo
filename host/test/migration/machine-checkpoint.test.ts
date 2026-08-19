@@ -7,12 +7,17 @@
  * hook, parks with its frames in linear memory, and is read and resumed.
  */
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeKernelHost } from "../../src/node-kernel-host";
 import { findRepoRoot } from "../../src/binary-resolver";
 
 const TIMEOUTS = { unwindTimeoutMs: 10_000, vforkTimeoutMs: 5_000 };
+
+/** Where the guest finds the side module the freeze fixture loads. */
+const SIDE_MODULE_GUEST_PATH = "/tmp/checkpoint-dlopen-lib.so";
 
 function programBytes(name: string): ArrayBuffer {
   const bytes = readFileSync(join(findRepoRoot(), "examples", name));
@@ -31,6 +36,10 @@ function programBytes(name: string): ArrayBuffer {
  */
 async function startReadyGuest(
   program: string,
+  options: {
+    readonly args?: readonly string[];
+    readonly prepare?: (host: NodeKernelHost) => Promise<void>;
+  } = {},
 ): Promise<{ host: NodeKernelHost; pid: number }> {
   let ready = () => {};
   const isReady = new Promise<void>((resolve) => { ready = resolve; });
@@ -43,15 +52,57 @@ async function startReadyGuest(
     },
   });
   await host.init();
+  await options.prepare?.(host);
   let pid = -1;
   const started = new Promise<void>((resolve) => {
-    void host.spawn(programBytes(program), [program], {
+    void host.spawn(programBytes(program), [program, ...(options.args ?? [])], {
       onStarted: (started) => { pid = started; resolve(); },
     });
   });
   await started;
   await isReady;
   return { host, pid };
+}
+
+/**
+ * Build the side module the checkpoint fixture loads.
+ *
+ * It goes through the SDK the same way any other shared library does, so the
+ * archive generation the guest publishes is a real one. It is instrumented
+ * like every loadable Kandelo artifact: a capture saves module state for each
+ * live module, and a module without the instrumentation is absent from the
+ * process module catalogs.
+ */
+function buildSideModule(): Uint8Array {
+  const buildDir = join(tmpdir(), "wasm-checkpoint-dlopen");
+  mkdirSync(buildDir, { recursive: true });
+  const soPath = join(buildDir, "checkpoint-dlopen-lib.so");
+  execFileSync(
+    "wasm32posix-cc",
+    [
+      "-shared",
+      "-fPIC",
+      "-O2",
+      `-I${join(findRepoRoot(), "libc/glue")}`,
+      join(findRepoRoot(), "host/test/fixtures/checkpoint-dlopen-lib.c"),
+      "-o",
+      soPath,
+    ],
+    { stdio: "pipe" },
+  );
+  execFileSync(
+    "bash",
+    [
+      join(findRepoRoot(), "scripts/run-wasm-fork-instrument.sh"),
+      soPath,
+      "-o",
+      soPath,
+    ],
+    { stdio: "pipe" },
+  );
+  // A fresh copy, because writeFileToVfs transfers the backing buffer and a
+  // readFileSync Buffer sits in a pool it does not own.
+  return new Uint8Array(readFileSync(soPath));
 }
 
 describe("machine checkpoint of a running guest", () => {
@@ -104,6 +155,39 @@ describe("machine checkpoint of a running guest", () => {
         // parked on a gate the resume did not reach.
         const second = await host.captureCheckpoint(TIMEOUTS);
         expect(second.status).toBe("captured");
+      } finally {
+        await host.destroy();
+      }
+    },
+  );
+
+  it(
+    "fails rather than hangs when a thread cannot adopt a newer archive",
+    { timeout: 60_000 },
+    async () => {
+      const sideModule = buildSideModule();
+      const { host, pid } = await startReadyGuest("checkpoint-dlopen.wasm", {
+        args: [SIDE_MODULE_GUEST_PATH],
+        prepare: (started) =>
+          started.writeFileToVfs(SIDE_MODULE_GUEST_PATH, sideModule),
+      });
+      try {
+        const started = Date.now();
+        const response = await host.captureCheckpoint(TIMEOUTS);
+        const elapsed = Date.now() - started;
+
+        // The pthread's replica is one generation behind, so it must take the
+        // archive writer, which the parked main thread's reader holds shut.
+        expect(response.status).toBe("failed");
+        if (response.status !== "failed") return;
+        expect(response.reason).toContain(
+          "the dynamic-loader archive writer stayed held",
+        );
+        // The refusal is what ended the freeze, not the 10 s unwind deadline.
+        expect(elapsed).toBeLessThan(TIMEOUTS.unwindTimeoutMs);
+
+        // The machine is whole: the freeze reversed and the guest still runs.
+        expect(await host.signalProcess(pid, 0)).toBe(true);
       } finally {
         await host.destroy();
       }
