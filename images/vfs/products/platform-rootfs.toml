@@ -10,115 +10,17 @@ paths = ["MANIFEST", "images/rootfs"]
 role = "runtime"
 materialization = "embedded"
 
-[[software.package]]
-name = "dash"
-outputs = ["dash"]
-source_roles = []
-role = "runtime"
-materialization = "lazy"
-
-[[software.package]]
-name = "bash"
-outputs = ["bash"]
-source_roles = []
-role = "runtime"
-materialization = "lazy"
-
-[[software.package]]
-name = "ncurses"
-outputs = ["clear", "reset", "tset", "tput", "tabs", "tic", "infocmp", "toe", "captoinfo", "infotocap"]
-source_roles = []
-role = "runtime"
-materialization = "lazy"
-
-[[software.package]]
-name = "coreutils"
-outputs = ["coreutils"]
-source_roles = []
-role = "runtime"
-materialization = "lazy"
-
-[[software.package]]
-name = "gawk"
-outputs = ["gawk"]
-source_roles = []
-role = "runtime"
-materialization = "lazy"
-
-[[software.package]]
-name = "grep"
-outputs = ["grep"]
-source_roles = []
-role = "runtime"
-materialization = "lazy"
-
-[[software.package]]
-name = "sed"
-outputs = ["sed"]
-source_roles = []
-role = "runtime"
-materialization = "lazy"
-
-[[software.package]]
-name = "bc"
-outputs = ["bc"]
-source_roles = []
-role = "runtime"
-materialization = "lazy"
-
-[[software.package]]
-name = "file"
-outputs = ["file"]
-source_roles = []
-role = "runtime"
-materialization = "lazy"
-
-[[software.package]]
-name = "file"
-outputs = ["file-magic"]
-source_roles = []
-role = "runtime"
+[[software.homebrew]]
+tap = "kandelo-dev/homebrew-tap-core"
+formulae = ["bash"]
 materialization = "embedded"
 
-[[software.package]]
-name = "m4"
-outputs = ["m4"]
-source_roles = []
-role = "runtime"
-materialization = "lazy"
-
-[[software.package]]
-name = "make"
-outputs = ["make"]
-source_roles = []
-role = "runtime"
-materialization = "lazy"
-
-[[software.package]]
-name = "findutils"
-outputs = ["find", "xargs"]
-source_roles = []
-role = "runtime"
-materialization = "lazy"
-
-[[software.package]]
-name = "diffutils"
-outputs = ["diff", "cmp", "diff3", "sdiff"]
-source_roles = []
-role = "runtime"
-materialization = "lazy"
-
-[[software.package]]
-name = "posix-utils-lite"
-outputs = [
-  "ar", "asa", "cal", "cflow", "compress", "ctags", "cxref", "ed", "ex",
-  "fuser", "gencat", "getconf", "gettext", "iconv", "ipcrm", "ipcs", "lex",
-  "locale", "logger", "man", "more", "msgfmt", "ngettext", "nm", "patch",
-  "pax", "pgrep", "ps", "renice", "strings", "strip", "uncompress",
-  "uudecode", "uuencode", "what", "xgettext", "yacc",
+[[software.homebrew]]
+tap = "kandelo-dev/homebrew-tap-core"
+formulae = [
+  "dash", "ncurses", "coreutils", "gawk", "grep", "sed", "bc",
+  "file-formula", "m4", "make", "findutils", "diffutils", "posix-utils-lite",
 ]
-source_roles = []
-role = "runtime"
 materialization = "lazy"
 
 [[mounts]]

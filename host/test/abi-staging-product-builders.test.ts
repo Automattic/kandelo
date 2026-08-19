@@ -19,7 +19,6 @@ import {
   createRepositoryPathBundle,
 } from "../../images/vfs/scripts/staged-product-inputs";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
-import { derivePackageDeferredZipTree } from "../src/vfs/package-deferred-tree";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const catalogPath = join(repoRoot, "images/vfs/products/generated/catalog.json");
@@ -42,7 +41,7 @@ afterEach(() => {
 });
 
 describe("ABI staging product builders", () => {
-  it("builds platform-rootfs only from its exact declared source and package inputs", () => {
+  it("builds platform-rootfs only from its exact source and Homebrew bottles", () => {
     const fixture = platformRootfsFixture();
     const result = runBuilder(
       "packages/registry/rootfs/build-rootfs-package.sh",
@@ -66,12 +65,19 @@ describe("ABI staging product builders", () => {
     });
     const fs = MemoryFileSystem.fromImage(bytes);
     expect(fs.isPathDeferred("/usr/bin/dash")).toBe(true);
-    expect(fs.getLazyEntry("/usr/bin/dash")?.url).toMatch(
+    const dashTree = fs.exportLazyArchiveEntries().find((entry) =>
+      entry.activation?.roots.some((root) =>
+        root.startsWith("/opt/kandelo/homebrew/Cellar/dash/")
+      )
+    );
+    expect(dashTree?.content?.transports[0]).toMatch(
       /^https:\/\/artifacts\.example\.test\/.+sha256=[0-9a-f]{64}$/,
     );
-    expect(readVfsFile(fs, "/usr/share/misc/magic.mgc")).toBe(
-      "embedded file-magic\n",
+    expect(fs.readlink("/usr/bin/dash")).toBe(
+      "/opt/kandelo/homebrew/bin/dash",
     );
+    expect(fs.isPathDeferred("/opt/kandelo/homebrew/bin/bash")).toBe(false);
+    expect(fs.isPathDeferred("/opt/kandelo/homebrew/bin/coreutils")).toBe(true);
     expect(readVfsFile(fs, "/etc/os-release")).toContain('NAME="kandelo"');
   }, 30_000);
 
@@ -118,7 +124,7 @@ describe("ABI staging product builders", () => {
       extra,
     );
     expect(extraResult.status).not.toBe(0);
-    expect(extraResult.stderr).toContain("unconsumed resolved package output");
+    expect(extraResult.stderr).toContain("resolved input IDs differ");
     expect(existsSync(extra.outputPath)).toBe(false);
     expect(existsSync(extra.reportPath)).toBe(false);
   }, 30_000);
@@ -161,7 +167,7 @@ describe("ABI staging product builders", () => {
     expect(fs.readlink("/usr/bin/brew")).toBe(
       "/opt/kandelo/homebrew/bin/brew",
     );
-    expect(fs.isPathDeferred("/opt/kandelo/homebrew/bin/brew")).toBe(true);
+    expect(fs.isPathDeferred("/opt/kandelo/homebrew/bin/brew")).toBe(false);
     expect(readVfsFile(fs, "/etc/homebrew/brew.env")).toContain(
       "HOMEBREW_KANDELO_BOTTLE_TAG=wasm32_kandelo",
     );
@@ -172,8 +178,7 @@ describe("ABI staging product builders", () => {
     expect(
       fs.exportLazyArchiveEntries().every((entry) =>
         entry.content?.transports.every((url) =>
-          url.includes(`homebrew-tap-core-abi-${TARGET_ABI.version}-candidates/`) ||
-          url.includes("package-candidates/")
+          url.includes(`homebrew-tap-core-abi-${TARGET_ABI.version}-candidates/`)
         ) ?? true
       ),
     ).toBe(true);
@@ -300,11 +305,14 @@ describe("ABI staging product builders", () => {
         new Uint8Array(readFileSync(fixture.outputPath)),
       );
       const principal = productId === "browser-node"
-        ? "/usr/bin/node"
-        : "/usr/sbin/nginx";
+        ? "/opt/kandelo/homebrew/bin/node"
+        : "/opt/kandelo/homebrew/bin/nginx";
       expect(fs.stat(principal).size).toBeGreaterThan(0);
       if (productId !== "browser-node") {
-        expect(fs.stat("/sbin/dinit").size).toBeGreaterThan(0);
+        expect(fs.stat("/opt/kandelo/homebrew/sbin/dinit").size).toBeGreaterThan(0);
+        expect(fs.readlink("/sbin/dinit")).toBe(
+          "/opt/kandelo/homebrew/sbin/dinit",
+        );
         expect(readVfsFile(fs, "/etc/services")).toMatch(/http\s+80\/tcp/);
       }
     }
@@ -349,7 +357,7 @@ describe("ABI staging product builders", () => {
     expect(existsSync(fixture.reportPath)).toBe(false);
   }, 30_000);
 
-  it("rejects a missing exact PHP build program before ambient resolution", () => {
+  it("rejects a missing prepared kernel before ambient resolution", () => {
     const fixture = serviceProductFixture(
       "browser-nginx-php",
       new TextEncoder().encode("unread invalid shell fixture"),
@@ -357,21 +365,30 @@ describe("ABI staging product builders", () => {
     const document = JSON.parse(readFileSync(fixture.inputsPath, "utf8"));
     document.inputs = document.inputs.filter(
       (input: { id: string }) =>
-        input.id !== "package-php-output-php",
+        input.id !== "toolchain-kernel-wasm",
     );
     writeFileSync(fixture.inputsPath, canonicalJson(document));
 
     const result = runBuilder(productBuilder("browser-nginx-php"), fixture);
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("package-php-output-php");
+    expect(result.stderr).toContain("toolchain-kernel-wasm");
     expect(existsSync(fixture.outputPath)).toBe(false);
     expect(existsSync(fixture.reportPath)).toBe(false);
   });
 
-  it("rejects an exact source archive that escapes its single root", () => {
+  it("rejects an exact source archive that escapes its single root", async () => {
+    const shellFixture = await browserMainShellFixture();
+    const shellResult = runBuilder(
+      "scripts/build-homebrew-main-shell-product.sh",
+      shellFixture,
+    );
+    expect(
+      shellResult.status,
+      `${shellResult.stdout}\n${shellResult.stderr}`,
+    ).toBe(0);
     const fixture = serviceProductFixture(
       "browser-node",
-      new TextEncoder().encode("unread invalid shell fixture"),
+      new Uint8Array(readFileSync(shellFixture.outputPath)),
     );
     const document = JSON.parse(readFileSync(fixture.inputsPath, "utf8"));
     const input = document.inputs.find(
@@ -746,7 +763,9 @@ interface BuilderFixture {
   sourceRoot?: string;
 }
 
-function platformRootfsFixture(): BuilderFixture {
+function platformRootfsFixture(
+  referenceClass: "candidate" | "canonical" = "candidate",
+): BuilderFixture {
   const directory = mkdtempSync(join(tmpdir(), "kandelo-platform-rootfs-stage-"));
   cleanupDirectories.add(directory);
   const files = join(directory, "files");
@@ -783,39 +802,7 @@ function platformRootfsFixture(): BuilderFixture {
     },
   ];
 
-  for (const claim of product.manifest.software.package) {
-    for (const output of claim.outputs) {
-      const id = `package-${claim.name}-output-${output}`;
-      const contents = output === "file-magic"
-        ? "embedded file-magic\n"
-        : `lazy bytes for ${id}\n`;
-      const digest = sha256(contents);
-      const common = {
-        architecture: "wasm32",
-        bytes: Buffer.byteLength(contents),
-        declared_materialization: claim.materialization,
-        id,
-        kind: "package-output",
-        role: "runtime",
-        sha256: digest,
-      };
-      if (claim.materialization === "embedded") {
-        const path = join(files, id);
-        writeFileSync(path, contents);
-        inputs.push({
-          ...common,
-          effective_materialization: "embedded",
-          path: relative(directory, path),
-        });
-      } else {
-        inputs.push({
-          ...common,
-          effective_materialization: "lazy-reference",
-          reference: `https://artifacts.example.test/${id}?sha256=${digest}`,
-        });
-      }
-    }
-  }
+  appendHomebrewBottleInputs(inputs, product, files, directory, referenceClass);
   inputs.sort((left, right) =>
     String(left.id).localeCompare(String(right.id))
   );
@@ -836,7 +823,7 @@ function platformRootfsFixture(): BuilderFixture {
         manifest_sha256: product.sha256,
         output: product.manifest.output,
       },
-      reference_class: "candidate",
+      reference_class: referenceClass,
       schema: 1,
       source: SOURCE,
       target_abi: TARGET_ABI,
@@ -869,48 +856,17 @@ async function browserMainShellFixture(
   );
   if (!product) throw new Error("browser-main-shell is missing from the product catalog");
 
-  const baseFs = MemoryFileSystem.create(
-    new SharedArrayBuffer(64 * 1024 * 1024),
+  const baseFixture = platformRootfsFixture(referenceClass);
+  const baseResult = runBuilder(
+    "packages/registry/rootfs/build-rootfs-package.sh",
+    baseFixture,
   );
-  for (const path of [
-    "/bin",
-    "/usr",
-    "/usr/bin",
-    "/usr/local",
-    "/usr/local/bin",
-    "/etc",
-    "/etc/profile.d",
-    "/home",
-    "/home/user",
-    "/tmp",
-    "/opt",
-    "/opt/kandelo",
-  ]) {
-    baseFs.mkdir(path, path === "/tmp" ? 0o1777 : 0o755);
+  if (baseResult.status !== 0) {
+    throw new Error(
+      `fixture platform-rootfs failed:\n${baseResult.stdout}\n${baseResult.stderr}`,
+    );
   }
-  baseFs.registerLazyFile(
-    "/usr/bin/dash",
-    "https://artifacts.example.test/platform-rootfs/dash?sha256=" +
-      "f".repeat(64),
-    8,
-    0o755,
-  );
-  baseFs.createFileWithOwner(
-    "/etc/services",
-    0o644,
-    0,
-    0,
-    new TextEncoder().encode("http 80/tcp\nhttps 443/tcp\n"),
-  );
-  const baseBytes = await baseFs.saveImage({
-    normalizeTimestampsMs: 0,
-    metadata: {
-      version: 1,
-      kernelAbi: TARGET_ABI.version,
-      abiSnapshotSha256: TARGET_ABI.snapshot_sha256,
-      createdBy: "abi-staging-product-builders.test.ts",
-    },
-  });
+  const baseBytes = new Uint8Array(readFileSync(baseFixture.outputPath));
   const basePath = join(files, "platform-rootfs.vfs");
   writeFileSync(basePath, baseBytes);
 
@@ -968,115 +924,13 @@ async function browserMainShellFixture(
     }));
   }
 
-  const formulaMaterialization = new Map<string, "embedded" | "lazy">();
-  for (const group of product.manifest.software.homebrew) {
-    for (const formula of group.formulae) {
-      formulaMaterialization.set(formula, group.materialization);
-    }
-  }
-  for (const formula of [...formulaMaterialization.keys()].sort()) {
-    const materialization = formulaMaterialization.get(formula)!;
-    const bottle = formula === "bash"
-      ? testBottleArchive(formula)
-      : {
-          bytes: undefined,
-          archiveBytes: 123,
-          archiveSha256: sha256(`lazy bottle ${formula}\n`),
-          expandedBytes: 8,
-        };
-    const namespace = referenceClass === "candidate"
-      ? `homebrew-tap-core-abi-${TARGET_ABI.version}-candidates`
-      : `homebrew-tap-core-abi-${TARGET_ABI.version}`;
-    const reference =
-      `https://artifacts.example.test/${namespace}/${formula}?sha256=${bottle.archiveSha256}`;
-    const descriptor = originalBottleDescriptor({
-      formula,
-      archiveSha256: bottle.archiveSha256,
-      archiveBytes: bottle.archiveBytes,
-      expandedBytes: bottle.expandedBytes,
-      reference,
-    });
-    const descriptorText = canonicalJson(descriptor);
-    const descriptorSha = sha256(descriptorText);
-    const descriptorPath = join(files, `homebrew-${formula}-metadata.json`);
-    writeFileSync(descriptorPath, descriptorText);
-    const value: Record<string, any> = {
-      architecture: "wasm32",
-      bytes: bottle.archiveBytes,
-      declared_materialization: materialization,
-      descriptor: {
-        bytes: Buffer.byteLength(descriptorText),
-        path: relative(directory, descriptorPath),
-        reference:
-          `https://artifacts.example.test/${namespace}/${formula}-metadata?sha256=${descriptorSha}`,
-        sha256: descriptorSha,
-      },
-      effective_materialization:
-        materialization === "embedded" ? "embedded" : "lazy-reference",
-      id: `homebrew-${formula}`,
-      kind: "homebrew-bottle",
-      reference,
-      role: "runtime",
-      sha256: bottle.archiveSha256,
-    };
-    if (materialization === "embedded") {
-      const bottlePath = join(files, `homebrew-${formula}.tar.gz`);
-      writeFileSync(bottlePath, bottle.bytes!);
-      value.path = relative(directory, bottlePath);
-    }
-    inputs.push(value);
-  }
-
-  const bootstrapArchive = testBootstrapArchive();
-  const bootstrapSpec = JSON.parse(
-    readFileSync(join(repoRoot, "homebrew/main-shell-brew-package-tree.json"), "utf8"),
-  );
-  const bootstrapTree = derivePackageDeferredZipTree(
-    bootstrapSpec,
-    bootstrapArchive,
-  );
-  const bootstrapDescriptorPath = join(files, "homebrew-bootstrap-tree.json");
-  writeFileSync(bootstrapDescriptorPath, bootstrapTree.descriptorBytes);
-  const bootstrapReference =
-    `https://artifacts.example.test/package-candidates/homebrew-bootstrap.zip?sha256=${bootstrapTree.content.sha256}`;
-  inputs.push({
-    architecture: "wasm32",
-    bytes: bootstrapArchive.byteLength,
-    declared_materialization: "lazy",
-    descriptor: {
-      bytes: bootstrapTree.descriptorBytes.byteLength,
-      path: relative(directory, bootstrapDescriptorPath),
-      reference:
-        `https://artifacts.example.test/package-candidates/homebrew-bootstrap-tree?sha256=${bootstrapTree.descriptorSha256}`,
-      sha256: bootstrapTree.descriptorSha256,
-    },
-    effective_materialization: "lazy-reference",
-    id: "package-homebrew-bootstrap-output-homebrew-bootstrap",
-    kind: "package-output",
-    reference: bootstrapReference,
-    role: "runtime",
-    sha256: bootstrapTree.content.sha256,
-  });
-
-  const environment = [
-    "HOMEBREW_NO_ANALYTICS=1",
-    "HOMEBREW_NO_AUTO_UPDATE=1",
-    "HOMEBREW_NO_INSTALL_FROM_API=1",
-    "HOMEBREW_AUTOMATICALLY_SET_NO_INSTALL_FROM_API=1",
-    "HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY=1",
-    "HOMEBREW_KANDELO_BOTTLE_TAG=wasm32_kandelo",
-    "",
-  ].join("\n");
-  const environmentPath = join(files, "homebrew-brew.env");
-  writeFileSync(environmentPath, environment);
-  inputs.push(embeddedInput(
-    "package-homebrew-bootstrap-output-homebrew-brew",
-    "package-output",
-    environmentPath,
+  appendHomebrewBottleInputs(
+    inputs,
+    product,
+    files,
     directory,
-    "embedded",
-    `https://artifacts.example.test/package-candidates/homebrew-brew.env?sha256=${sha256(environment)}`,
-  ));
+    referenceClass,
+  );
 
   inputs.sort((left, right) => String(left.id).localeCompare(String(right.id)));
   const inputsPath = join(directory, "resolved-inputs.json");
@@ -1141,40 +995,7 @@ function serviceProductFixture(
       architecture: product.manifest.architecture,
     }));
   }
-  for (const claim of product.manifest.software.package) {
-    for (const output of claim.outputs) {
-      const id = `package-${claim.name}-output-${output}`;
-      const path = join(files, id);
-      writeFileSync(path, minimalWasm());
-      inputs.push(resolvedFileInput({
-        id,
-        kind: "package-output",
-        path,
-        root: directory,
-        role: claim.role,
-        declared: claim.role === "build"
-          ? "build-only"
-          : claim.materialization,
-        architecture: product.manifest.architecture,
-      }));
-    }
-    for (const sourceRole of claim.source_roles) {
-      const id = `package-${claim.name}-source-role-${sourceRole}`;
-      const path = join(files, `${id}.tar.gz`);
-      writeFileSync(path, sourceRoleArchive(claim.name, sourceRole));
-      inputs.push(resolvedFileInput({
-        id,
-        kind: "package-output",
-        path,
-        root: directory,
-        role: claim.role,
-        declared: claim.role === "build"
-          ? "build-only"
-          : claim.materialization,
-        architecture: product.manifest.architecture,
-      }));
-    }
-  }
+  appendHomebrewBottleInputs(inputs, product, files, directory, "candidate");
   for (const archive of product.manifest.software.archive) {
     const id = `archive-${archive.id}`;
     const path = join(files, `${id}.archive`);
@@ -1188,6 +1009,22 @@ function serviceProductFixture(
       declared: archive.role === "build"
         ? "build-only"
         : archive.materialization,
+      architecture: product.manifest.architecture,
+    }));
+  }
+  for (const toolchain of product.manifest.software.toolchain) {
+    const id = `toolchain-${toolchain.id}`;
+    const path = join(files, `${id}.zip`);
+    writeFileSync(path, zipSync({
+      [`${toolchain.component}/kernel.wasm`]: minimalWasm(),
+    }, { level: 9 }));
+    inputs.push(resolvedFileInput({
+      id,
+      kind: "toolchain-output",
+      path,
+      root: directory,
+      role: toolchain.role,
+      declared: "build-only",
       architecture: product.manifest.architecture,
     }));
   }
@@ -1868,22 +1705,77 @@ function embeddedInput(
   };
 }
 
+function appendHomebrewBottleInputs(
+  inputs: Array<Record<string, any>>,
+  product: any,
+  files: string,
+  directory: string,
+  referenceClass: "candidate" | "canonical",
+): void {
+  const formulaMaterialization = new Map<string, "embedded" | "lazy">();
+  for (const group of product.manifest.software.homebrew) {
+    for (const formula of group.formulae) {
+      formulaMaterialization.set(formula, group.materialization);
+    }
+  }
+  const namespace = referenceClass === "candidate"
+    ? `homebrew-tap-core-abi-${TARGET_ABI.version}-candidates`
+    : `homebrew-tap-core-abi-${TARGET_ABI.version}`;
+  for (const formula of [...formulaMaterialization.keys()].sort()) {
+    const materialization = formulaMaterialization.get(formula)!;
+    const bottle = testBottleArchive(formula);
+    const reference =
+      `https://artifacts.example.test/${namespace}/${formula}?sha256=${bottle.archiveSha256}`;
+    const descriptor = originalBottleDescriptor({
+      formula,
+      archiveSha256: bottle.archiveSha256,
+      archiveBytes: bottle.archiveBytes,
+      expandedBytes: bottle.expandedBytes,
+      reference,
+      files: bottle.files,
+    });
+    const descriptorText = canonicalJson(descriptor);
+    const descriptorSha = sha256(descriptorText);
+    const descriptorPath = join(files, `homebrew-${formula}-metadata.json`);
+    writeFileSync(descriptorPath, descriptorText);
+    const value: Record<string, any> = {
+      architecture: product.manifest.architecture,
+      bytes: bottle.archiveBytes,
+      declared_materialization: materialization,
+      descriptor: {
+        bytes: Buffer.byteLength(descriptorText),
+        path: relative(directory, descriptorPath),
+        reference:
+          `https://artifacts.example.test/${namespace}/${formula}-metadata?sha256=${descriptorSha}`,
+        sha256: descriptorSha,
+      },
+      effective_materialization:
+        materialization === "embedded" ? "embedded" : "lazy-reference",
+      id: `homebrew-${formula}`,
+      kind: "homebrew-bottle",
+      reference,
+      role: "runtime",
+      sha256: bottle.archiveSha256,
+    };
+    if (materialization === "embedded") {
+      const bottlePath = join(files, `homebrew-${formula}.tar.gz`);
+      writeFileSync(bottlePath, bottle.bytes);
+      value.path = relative(directory, bottlePath);
+    }
+    inputs.push(value);
+  }
+}
+
 function originalBottleDescriptor(options: {
   formula: string;
   archiveSha256: string;
   archiveBytes: number;
   expandedBytes: number;
   reference: string;
+  files: readonly TestBottleFile[];
 }): any {
   const formula = options.formula;
-  const command = formula === "file-formula"
-    ? "file"
-    : formula === "netcat"
-    ? "nc"
-    : formula;
   const keg = `opt/kandelo/homebrew/Cellar/${formula}/1.0`;
-  const sourcePath = `${formula}/1.0/bin/${command}`;
-  const executableBytes = new TextEncoder().encode("#!/bin/x\n").byteLength;
   const entries: any[] = [
     bottleDirectory("opt/kandelo/homebrew", `${formula}-prefix`, "mergeable-directory"),
     bottleDirectory("opt/kandelo/homebrew/Cellar", `${formula}-cellar`, "mergeable-directory"),
@@ -1893,23 +1785,6 @@ function originalBottleDescriptor(options: {
       "mergeable-directory",
     ),
     bottleDirectory(keg, `${formula}-keg`, "layer"),
-    bottleDirectory(`${keg}/bin`, `${formula}-keg-bin`, "layer"),
-    {
-      path: `${keg}/bin/${command}`,
-      source_path: sourcePath,
-      materialization: "archive",
-      type: "file",
-      ownership: "layer",
-      mode: 0o755,
-      size: executableBytes,
-      inode_group: `${formula}-command`,
-    },
-    bottleDirectory("opt/kandelo/homebrew/bin", `${formula}-prefix-bin`, "mergeable-directory"),
-    bottleSymlink(
-      `opt/kandelo/homebrew/bin/${command}`,
-      `${formula}-public-command`,
-      `../Cellar/${formula}/1.0/bin/${command}`,
-    ),
     bottleDirectory("opt/kandelo/homebrew/opt", `${formula}-opt`, "mergeable-directory"),
     bottleSymlink(
       `opt/kandelo/homebrew/opt/${formula}`,
@@ -1917,15 +1792,58 @@ function originalBottleDescriptor(options: {
       `../Cellar/${formula}/1.0`,
     ),
   ];
+  const directories = new Set<string>();
+  for (const file of options.files) {
+    const components = file.path.split("/");
+    for (let length = 1; length < components.length; length += 1) {
+      directories.add(components.slice(0, length).join("/"));
+    }
+  }
+  for (const directory of [...directories].sort()) {
+    entries.push(bottleDirectory(
+      `${keg}/${directory}`,
+      `${formula}-keg-${directory.replaceAll("/", "-")}`,
+      "layer",
+    ));
+  }
+  for (const file of options.files) {
+    const sourcePath = `${formula}/1.0/${file.path}`;
+    entries.push({
+      path: `${keg}/${file.path}`,
+      source_path: sourcePath,
+      materialization: "archive",
+      type: "file",
+      ownership: "layer",
+      mode: file.mode,
+      size: file.contents.byteLength,
+      inode_group: `${formula}-${file.path.replaceAll("/", "-")}`,
+    });
+    const [directory, command] = file.path.split("/");
+    if ((directory === "bin" || directory === "sbin") && command !== undefined) {
+      entries.push(bottleDirectory(
+        `opt/kandelo/homebrew/${directory}`,
+        `${formula}-prefix-${directory}`,
+        "mergeable-directory",
+      ));
+      entries.push(bottleSymlink(
+        `opt/kandelo/homebrew/${directory}/${command}`,
+        `${formula}-public-${directory}-${command}`,
+        `../Cellar/${formula}/1.0/${directory}/${command}`,
+      ));
+    }
+  }
   const publicAliases: Record<string, string[]> = {
     less: ["more"],
     vim: ["ex"],
   };
+  const primaryCommand = options.files.find((file) => file.path.startsWith("bin/"))
+    ?.path.slice("bin/".length);
   for (const alias of publicAliases[formula] ?? []) {
+    if (primaryCommand === undefined) continue;
     entries.push(bottleSymlink(
       `opt/kandelo/homebrew/bin/${alias}`,
       `${formula}-public-${alias}`,
-      `../Cellar/${formula}/1.0/bin/${command}`,
+      `../Cellar/${formula}/1.0/bin/${primaryCommand}`,
     ));
   }
   if (formula === "git") {
@@ -1939,8 +1857,15 @@ function originalBottleDescriptor(options: {
       ),
     );
   }
+  const uniqueEntries = new Map(entries.map((entry) => [entry.path, entry]));
+  entries.length = 0;
+  entries.push(...uniqueEntries.values());
   entries.sort((left, right) =>
     left.path < right.path ? -1 : left.path > right.path ? 1 : 0
+  );
+  const payloadBytes = options.files.reduce(
+    (total, file) => total + file.contents.byteLength,
+    0,
   );
   return {
     schema: 1,
@@ -1966,23 +1891,25 @@ function originalBottleDescriptor(options: {
       transports: [{ kind: "external-https", url: options.reference }],
       inventory: {
         entry_count: entries.length,
-        source_entry_count: 1,
-        regular_inode_count: 1,
+        source_entry_count: options.files.length,
+        regular_inode_count: options.files.length,
         layer_entry_count: entries.filter((entry) => entry.ownership === "layer").length,
         mergeable_directory_count: entries.filter(
           (entry) => entry.ownership === "mergeable-directory",
         ).length,
         expanded_bytes: options.expandedBytes,
-        payload_bytes: executableBytes,
+        payload_bytes: payloadBytes,
         source: {
           schema: 1,
           kind: "homebrew-bottle-tar-gzip-v1",
-          entries: [{
-            path: sourcePath,
+          entries: [...options.files]
+            .sort((left, right) => left.path.localeCompare(right.path))
+            .map((file) => ({
+            path: `${formula}/1.0/${file.path}`,
             type: "file",
-            mode: 0o755,
-            size: executableBytes,
-          }],
+            mode: file.mode,
+            size: file.contents.byteLength,
+            })),
         },
         entries,
       },
@@ -2019,17 +1946,90 @@ function bottleSymlink(path: string, sourcePath: string, target: string) {
   };
 }
 
+interface TestBottleFile {
+  path: string;
+  contents: Uint8Array;
+  mode: number;
+}
+
 function testBottleArchive(formula: string) {
-  const contents = new TextEncoder().encode("#!/bin/x\n");
-  const path = `${formula}/1.0/bin/${formula}`;
-  const tar = tarBytes([{ path, contents, mode: 0o755 }]);
+  const files = testBottleFiles(formula)
+    .sort((left, right) => left.path.localeCompare(right.path));
+  const tar = tarBytes(files.map((file) => ({
+    path: `${formula}/1.0/${file.path}`,
+    contents: file.contents,
+    mode: file.mode,
+  })));
   const bytes = gzipSync(tar, { level: 9 });
   return {
     bytes,
     archiveBytes: bytes.byteLength,
     archiveSha256: sha256(bytes),
     expandedBytes: tar.byteLength,
+    files,
   };
+}
+
+function testBottleFiles(formula: string): TestBottleFile[] {
+  const executable = minimalWasm();
+  if (formula === "homebrew-bootstrap") {
+    const environment = [
+      "HOMEBREW_NO_ANALYTICS=1",
+      "HOMEBREW_NO_AUTO_UPDATE=1",
+      "HOMEBREW_NO_INSTALL_FROM_API=1",
+      "HOMEBREW_AUTOMATICALLY_SET_NO_INSTALL_FROM_API=1",
+      "HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY=1",
+      "HOMEBREW_KANDELO_BOTTLE_TAG=wasm32_kandelo",
+      "",
+    ].join("\n");
+    return [
+      {
+        path: "libexec/homebrew-bootstrap.zip",
+        contents: testBootstrapArchive(),
+        mode: 0o644,
+      },
+      {
+        path: "libexec/homebrew-brew.env",
+        contents: new TextEncoder().encode(environment),
+        mode: 0o644,
+      },
+    ];
+  }
+  if (formula === "dinit") {
+    return ["dinit", "dinitctl"].map((command) => ({
+      path: `sbin/${command}`,
+      contents: executable,
+      mode: 0o755,
+    }));
+  }
+  if (formula === "php") {
+    return [
+      { path: "bin/php", contents: executable, mode: 0o755 },
+      { path: "sbin/php-fpm", contents: executable, mode: 0o755 },
+      { path: "lib/php/extensions/opcache.so", contents: executable, mode: 0o755 },
+    ];
+  }
+  if (formula === "mariadb") {
+    return [
+      { path: "bin/mariadbd", contents: executable, mode: 0o755 },
+      {
+        path: "share/mariadb/system-tables/mysql_system_tables.sql",
+        contents: new TextEncoder().encode("CREATE TABLE fixture;\n"),
+        mode: 0o644,
+      },
+      {
+        path: "share/mariadb/system-tables/mysql_system_tables_data.sql",
+        contents: new TextEncoder().encode("INSERT INTO fixture VALUES (1);\n"),
+        mode: 0o644,
+      },
+    ];
+  }
+  const command = formula === "file-formula"
+    ? "file"
+    : formula === "netcat"
+    ? "nc"
+    : formula;
+  return [{ path: `bin/${command}`, contents: executable, mode: 0o755 }];
 }
 
 function testBootstrapArchive(): Uint8Array {
