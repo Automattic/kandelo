@@ -4,6 +4,8 @@ import {
   WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXNREF,
   WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXTERNREF,
   WPK_FORK_MODULE_STATE_GLOBAL_TYPE_FUNCREF,
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I32,
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I64,
   WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX,
 } from "./generated/abi";
 import {
@@ -766,7 +768,7 @@ export class ForkImportedGlobalPlanner {
     new Map<string, ForkImportedTableBinding>();
 
   constructor(
-    records: readonly ForkModuleStateRecord[],
+    private readonly records: readonly ForkModuleStateRecord[],
     modules: ReadonlyMap<number, WebAssembly.Module>,
     private readonly references: ForkImportedReferenceProvider,
     private readonly label: string,
@@ -955,6 +957,81 @@ export class ForkImportedGlobalPlanner {
       dependencies.add(dependency);
     }
     return [...dependencies].sort((left, right) => left - right);
+  }
+
+  /**
+   * Recover the authoritative saved value for a mutable scalar whose identity
+   * is rebuilt by the final child import provider.
+   *
+   * Dylink GOT cells are BaseImport bindings: the loader must allocate the
+   * fresh Global wrapper, while KFMS remains authoritative for its saved
+   * contents. Duplicate `(module, name)` imports alias that same loader cell,
+   * so their independent owner snapshots must agree before instantiation.
+   */
+  savedMutableGlobalImport(
+    activationId: number,
+    moduleName: string,
+    importName: string,
+  ): number | bigint | undefined {
+    const activation = this.requireActivation(activationId);
+    const matches = activation.globalDescriptors.flatMap((descriptor, index) => {
+      const binding = activation.globalBindings[index]!;
+      return descriptor.module === moduleName
+          && descriptor.name === importName
+          && binding.kind === ForkImportedGlobalBindingKind.BaseImport
+        ? [{ descriptor, binding }]
+        : [];
+    });
+    if (matches.length === 0) return undefined;
+
+    let saved: number | bigint | undefined;
+    for (const { descriptor, binding } of matches) {
+      if (!descriptor.mutable || descriptor.shared) {
+        throw new Error(
+          `${this.label}: saved base import ${activationId}:`
+          + `${descriptor.ownerId} is not an unshared mutable scalar`,
+        );
+      }
+      if (
+        descriptor.typeCode !== WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I32
+        && descriptor.typeCode !== WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I64
+      ) {
+        throw new Error(
+          `${this.label}: saved base import ${activationId}:`
+          + `${descriptor.ownerId} is not an integer scalar`,
+        );
+      }
+      const snapshot = findForkGlobalSnapshot(
+        this.records,
+        activationId,
+        descriptor.ownerId,
+      );
+      if (
+        snapshot.typeCode !== descriptor.typeCode
+        || snapshot.typeCode !== binding.typeCode
+      ) {
+        throw new Error(
+          `${this.label}: saved base import ${activationId}:`
+          + `${descriptor.ownerId} snapshot type does not match KFIG`,
+        );
+      }
+      const view = new DataView(
+        snapshot.value.buffer,
+        snapshot.value.byteOffset,
+        snapshot.value.byteLength,
+      );
+      const value = descriptor.typeCode === WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I64
+        ? view.getBigUint64(0, true)
+        : view.getUint32(0, true);
+      if (saved !== undefined && saved !== value) {
+        throw new Error(
+          `${this.label}: duplicate base imports ${JSON.stringify(moduleName)}.`
+          + `${JSON.stringify(importName)} have conflicting saved values`,
+        );
+      }
+      saved = value;
+    }
+    return saved;
   }
 
   importsForActivation(

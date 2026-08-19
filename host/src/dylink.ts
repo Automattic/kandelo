@@ -609,6 +609,14 @@ export interface PreparedDylinkForkActivation {
   readonly activationId: number;
   readonly env: Readonly<Record<string, WebAssembly.ImportValue>>;
   /**
+   * Exact KFMS value for a mutable scalar whose fresh Global wrapper remains
+   * owned by the loader's BaseImport provider.
+   */
+  savedMutableGlobalImport?(
+    moduleName: string,
+    importName: string,
+  ): number | bigint | undefined;
+  /**
    * Wrap the loader's final lazy import object immediately before
    * instantiation. Imported-global/table ownership observes the engine's exact
    * property reads, including duplicate `(module, name)` declarations.
@@ -1461,6 +1469,14 @@ function* instantiateSharedLibrarySteps(
           + `but replay requires ${replayActivationId}`,
         );
       }
+      if (
+        replay !== undefined
+        && typeof preparedActivation.savedMutableGlobalImport !== "function"
+      ) {
+        throw new TypeError(
+          `${name}: fork replay activation cannot resolve saved mutable imports`,
+        );
+      }
     }
 
     // Allocate memory region
@@ -1630,10 +1646,29 @@ function* instantiateSharedLibrarySteps(
           `${name}: GOT.${kind} symbol ${symName} has the wrong kind`,
         );
       }
-      const resolvedFunctionIndex =
-        kind === "func" && typeof resolved?.value === "function"
-          ? tableIndexFor(resolved.value)
-          : undefined;
+      let resolvedFunctionAddress: WasmAddress | undefined;
+      if (kind === "func" && replay && preparedActivation) {
+        const saved = preparedActivation.savedMutableGlobalImport!(
+          "GOT.func",
+          symName,
+        );
+        if (saved === undefined) {
+          throw new Error(
+            `${name}: fork replay has no saved GOT.func.${symName} value`,
+          );
+        }
+        resolvedFunctionAddress = requireWasmAddress(
+          saved,
+          ptrWidth,
+          `${name}: saved GOT.func.${symName}`,
+        );
+      } else if (kind === "func" && typeof resolved?.value === "function") {
+        resolvedFunctionAddress = wasmAddress(
+          tableIndexFor(resolved.value),
+          ptrWidth,
+          `${name}: GOT.func.${symName}`,
+        );
+      }
       const globallyResolved =
         resolved !== undefined
         && options.globalSymbols.get(symName) === resolved.value;
@@ -1657,24 +1692,28 @@ function* instantiateSharedLibrarySteps(
             ptrWidth,
             `${name}: local GOT.${kind}.${symName}`,
           );
-          if (resolved) {
-            initial = kind === "mem"
-              ? requireWasmAddress(
-                  (resolved.value as WebAssembly.Global).value as WasmAddress,
-                  ptrWidth,
-                  `${name}: local GOT.mem.${symName}`,
-                )
-              : wasmAddress(
-                  resolvedFunctionIndex!,
-                  ptrWidth,
-                  `${name}: local GOT.func.${symName}`,
-                );
+          if (kind === "func" && resolvedFunctionAddress !== undefined) {
+            initial = resolvedFunctionAddress;
+          } else if (resolved) {
+            initial = requireWasmAddress(
+              (resolved.value as WebAssembly.Global).value as WasmAddress,
+              ptrWidth,
+              `${name}: local GOT.mem.${symName}`,
+            );
           }
           localEntry = new WebAssembly.Global(
             { value: pointerGlobalType, mutable: true },
             initial,
           );
           localGot.set(localKey, localEntry);
+        } else if (
+          resolvedFunctionAddress !== undefined
+          && localEntry.value !== resolvedFunctionAddress
+        ) {
+          throw new Error(
+            `${name}: duplicate local GOT.func.${symName} imports have `
+            + "conflicting saved values",
+          );
         }
         return localEntry;
       }
@@ -1696,12 +1735,8 @@ function* instantiateSharedLibrarySteps(
             ptrWidth,
             `${name}: GOT.mem.${symName}`,
           );
-        } else if (resolvedFunctionIndex !== undefined) {
-          initial = wasmAddress(
-            resolvedFunctionIndex,
-            ptrWidth,
-            `${name}: GOT.func.${symName}`,
-          );
+        } else if (resolvedFunctionAddress !== undefined) {
+          initial = resolvedFunctionAddress;
         }
         entry = new WebAssembly.Global(
           { value: pointerGlobalType, mutable: true },
@@ -1720,12 +1755,17 @@ function* instantiateSharedLibrarySteps(
             ptrWidth,
             `${name}: GOT.mem.${symName}`,
           );
-        } else if (resolvedFunctionIndex !== undefined) {
-          entry.value = wasmAddress(
-            resolvedFunctionIndex,
-            ptrWidth,
-            `${name}: GOT.func.${symName}`,
-          );
+        } else if (resolvedFunctionAddress !== undefined) {
+          if (
+            replay
+            && preparedActivation
+            && entry.value !== resolvedFunctionAddress
+          ) {
+            throw new Error(
+              `${name}: shared GOT.func.${symName} has a conflicting saved value`,
+            );
+          }
+          entry.value = resolvedFunctionAddress;
         }
       }
       return entry;
@@ -2061,6 +2101,29 @@ function* instantiateSharedLibrarySteps(
     provisionalLibrary.exports = relocatedExports;
     provisionalLibrary.tlsBase = tlsBase;
 
+    const publishFunctionGotIndex = (
+      entry: WebAssembly.Global,
+      exportName: string,
+      tableIdx: number,
+    ): void => {
+      const replayedIndex = wasmAddress(
+        tableIdx,
+        ptrWidth,
+        `${name}: GOT.func.${exportName}`,
+      );
+      if (
+        replay
+        && preparedActivation
+        && entry.value !== replayedIndex
+      ) {
+        throw new Error(
+          `${name}: saved GOT.func.${exportName} value ${String(entry.value)} `
+          + `does not match replayed table index ${String(replayedIndex)}`,
+        );
+      }
+      entry.value = replayedIndex;
+    };
+
     // Update GOT with this library's exports
     for (const [exportName, exportValue] of Object.entries(relocatedExports)) {
       if (exportName.startsWith("__") || isForkRuntimeExport(exportName)) {
@@ -2073,7 +2136,36 @@ function* instantiateSharedLibrarySteps(
       const alreadyDefined = options.globalSymbols.has(exportName);
 
       if (typeof exportValue === "function") {
-        const tableIdx = tableLength(options.table);
+        let tableIdx = tableLength(options.table);
+        const localEntry = localGot.get(`func:${exportName}`);
+        const gotEntry = options.got.get(exportName);
+        const replayEntry = localEntry
+          ?? (globalVisibility && !alreadyDefined ? gotEntry : undefined);
+        if (replay && preparedActivation && replayEntry) {
+          const savedIndex = requireWasmAddress(
+            replayEntry.value as WasmAddress,
+            ptrWidth,
+            `${name}: saved GOT.func.${exportName}`,
+          );
+          const savedTableIdx = Number(savedIndex);
+          if (
+            !Number.isSafeInteger(savedTableIdx)
+            || savedTableIdx < 0
+            || wasmAddress(
+              savedTableIdx,
+              ptrWidth,
+              `${name}: saved GOT.func.${exportName}`,
+            ) !== savedIndex
+          ) {
+            throw new RangeError(
+              `${name}: saved GOT.func.${exportName} exceeds the exact table range`,
+            );
+          }
+          if (savedTableIdx > tableIdx) {
+            growTable(options.table, savedTableIdx - tableIdx);
+            tableIdx = savedTableIdx;
+          }
+        }
         growTable(options.table, 1);
         setTableEntry(options.table, tableIdx, exportValue as unknown as Function);
         ownedTableEntries.add(tableIdx);
@@ -2082,15 +2174,9 @@ function* instantiateSharedLibrarySteps(
         // fork captures the side function as an activation+ordinal recipe.
         options.onTableMutation?.(options.table, tableIdx, 1);
 
-        const localEntry = localGot.get(`func:${exportName}`);
         if (localEntry) {
-          localEntry.value = wasmAddress(
-            tableIdx,
-            ptrWidth,
-            `${name}: local GOT.func.${exportName}`,
-          );
+          publishFunctionGotIndex(localEntry, exportName, tableIdx);
         }
-        const gotEntry = options.got.get(exportName);
         if (globalVisibility && gotEntry) {
           const gotKind = gotKinds.get(exportName);
           if (gotKind !== undefined && gotKind !== "func") {
@@ -2098,11 +2184,7 @@ function* instantiateSharedLibrarySteps(
           }
           gotKinds.set(exportName, "func");
           if (!alreadyDefined) {
-            gotEntry.value = wasmAddress(
-              tableIdx,
-              ptrWidth,
-              `${name}: GOT.func.${exportName}`,
-            );
+            publishFunctionGotIndex(gotEntry, exportName, tableIdx);
           }
         }
         if (globalVisibility && !alreadyDefined) {

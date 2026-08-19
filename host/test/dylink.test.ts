@@ -302,6 +302,7 @@ function createTestForkActivationOwner(
       return {
         activationId,
         env,
+        savedMutableGlobalImport: () => undefined,
         wrapImports(imports) {
           wrappedImports.push(imports);
           return imports;
@@ -1616,6 +1617,121 @@ describe("side-module fork contract", () => {
       { activationId: 31, instance: loaded.instance },
     ]);
     expect((loaded.exports.counter_sum as () => number)()).toBe(12);
+  });
+
+  it("reuses the saved GOT.func index during replay without growing the table", () => {
+    const callbackModule = new WebAssembly.Module(buildDylinkWat(`
+      (module
+        (func (export "callback") (result i32) i32.const 73))
+    `, "saved-got-callback"));
+    const callback = new WebAssembly.Instance(callbackModule).exports.callback as Function;
+    const wasmBytes = buildInstrumentedDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "GOT.func" "main_callback" (global (mut i32))))
+    `, "side-fork-saved-got-function");
+    const testOwner = createTestForkActivationOwner(61);
+    const options = createSideForkLoadOptions();
+    options.table.grow(1);
+    options.globalSymbols.set("main_callback", callback);
+    options.forkActivationOwner = {
+      prepare(request) {
+        const prepared = testOwner.owner.prepare(request);
+        return {
+          ...prepared,
+          savedMutableGlobalImport(moduleName, importName) {
+            expect([moduleName, importName]).toEqual([
+              "GOT.func",
+              "main_callback",
+            ]);
+            return 1;
+          },
+        };
+      },
+    };
+    const baselineLength = options.table.length;
+
+    loadSharedLibrarySync(
+      "libfork-saved-got-function.so",
+      wasmBytes,
+      options,
+      {
+        memoryBase: 0,
+        tableBase: baselineLength,
+        activationId: 61,
+      },
+    );
+
+    expect(options.table.length).toBe(baselineLength);
+    expect(options.got.get("main_callback")?.value).toBe(1);
+  });
+
+  it("reconstructs a pre-export table gap from a saved self GOT.func index", () => {
+    const wasmBytes = buildInstrumentedDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "GOT.func" "side_callback" (global (mut i32)))
+        (func (export "side_callback") (result i32) i32.const 73))
+    `, "side-fork-saved-self-got-function");
+    const testOwner = createTestForkActivationOwner(62);
+    const options = createSideForkLoadOptions();
+    options.forkActivationOwner = {
+      prepare(request) {
+        const prepared = testOwner.owner.prepare(request);
+        return {
+          ...prepared,
+          savedMutableGlobalImport: () => 3,
+        };
+      },
+    };
+
+    const loaded = loadSharedLibrarySync(
+      "libfork-saved-self-got-function.so",
+      wasmBytes,
+      options,
+      {
+        memoryBase: 0,
+        tableBase: options.table.length,
+        activationId: 62,
+      },
+    );
+
+    expect(options.table.length).toBe(4);
+    expect(options.table.get(1)).toBeNull();
+    expect(options.table.get(2)).toBeNull();
+    expect(options.table.get(3)).toBe(loaded.exports.side_callback);
+  });
+
+  it("rejects a replayed self GOT.func index that disagrees with its table slot", () => {
+    const wasmBytes = buildInstrumentedDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "GOT.func" "side_callback" (global (mut i32)))
+        (func (export "side_callback") (result i32) i32.const 73))
+    `, "side-fork-conflicting-self-got-function");
+    const testOwner = createTestForkActivationOwner(62);
+    const options = createSideForkLoadOptions();
+    options.table.grow(1);
+    options.forkActivationOwner = {
+      prepare(request) {
+        const prepared = testOwner.owner.prepare(request);
+        return {
+          ...prepared,
+          savedMutableGlobalImport: () => 0,
+        };
+      },
+    };
+
+    expect(() => loadSharedLibrarySync(
+      "libfork-conflicting-self-got-function.so",
+      wasmBytes,
+      options,
+      {
+        memoryBase: 0,
+        tableBase: options.table.length,
+        activationId: 62,
+      },
+    )).toThrow(/saved GOT\.func\.side_callback.*replayed table index/);
   });
 
   it("replays dependency-first with the parent's exact activation ids", () => {
