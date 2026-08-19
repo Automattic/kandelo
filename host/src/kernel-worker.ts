@@ -31,6 +31,7 @@ import {
   WasmPosixKernel,
   type KernelPointer,
 } from "./kernel";
+import { resolveIoctlContract } from "./ioctl-contract";
 import {
   createKernelEntryScopedInstance,
   invokeKernelEntrySerializedHostOperation,
@@ -115,7 +116,6 @@ import {
   FCNTL_FLOCK_BYTES,
   FILE_MODES,
   HOST_INTERCEPTED_SYSCALLS,
-  IOCTL_REQUESTS,
   OPEN_FLAGS,
   PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
   PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
@@ -11904,7 +11904,7 @@ export class CentralizedKernelWorker {
     }
     if (syscallNr === SYS_IOCTL) {
       const request = Number(BigInt.asUintN(32, rawArgs[1]!));
-      const contract = IOCTL_REQUESTS[request];
+      const contract = resolveIoctlContract(request);
       adjustedArgs[1] = request;
       adjustedArgs[3] = 0;
       adjustedArgs[PROCESS_POINTER_WIDTH_ARG_INDEX] = pointerWidth;

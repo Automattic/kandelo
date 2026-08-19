@@ -1224,6 +1224,12 @@
     }
   },
   "ioctl_request_contracts": {
+    "1074021776": {
+      "argKind": "scalar-i32",
+      "direction": "none",
+      "wasm32Size": 0,
+      "wasm64Size": 0
+    },
     "1074024452": {
       "argKind": "pointer",
       "direction": "in",
@@ -1326,6 +1332,12 @@
       "wasm32Size": 0,
       "wasm64Size": 0
     },
+    "2147763457": {
+      "argKind": "pointer",
+      "direction": "out",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
     "2147766274": {
       "argKind": "pointer",
       "direction": "out",
@@ -1379,6 +1391,12 @@
       "direction": "out",
       "wasm32Size": 4,
       "wasm64Size": 4
+    },
+    "2148025602": {
+      "argKind": "pointer",
+      "direction": "out",
+      "wasm32Size": 8,
+      "wasm64Size": 8
     },
     "2148028435": {
       "argKind": "pointer",
@@ -1759,6 +1777,35 @@
       "wasm64Size": null
     }
   },
+  "ioctl_request_families": [
+    {
+      "dir": 2,
+      "direction": "out",
+      "fixedSize": null,
+      "magic": 69,
+      "maxCallerSize": 256,
+      "nrFirst": 6,
+      "nrLast": 6
+    },
+    {
+      "dir": 2,
+      "direction": "out",
+      "fixedSize": null,
+      "magic": 69,
+      "maxCallerSize": 256,
+      "nrFirst": 32,
+      "nrLast": 63
+    },
+    {
+      "dir": 2,
+      "direction": "out",
+      "fixedSize": 24,
+      "magic": 69,
+      "maxCallerSize": null,
+      "nrFirst": 64,
+      "nrLast": 127
+    }
+  ],
   "kernel_exports": [
     {
       "kind": "func",
@@ -1802,23 +1849,8 @@
     },
     {
       "kind": "func",
-      "name": "kernel_audio_get_appl_ptr",
-      "signature": "(i32) -> (i64)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_audio_init_sab",
-      "signature": "(i32,i64,i32) -> ()"
-    },
-    {
-      "kind": "func",
       "name": "kernel_audio_pending",
       "signature": "() -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_audio_period_tick",
-      "signature": "(i32,i32) -> ()"
     },
     {
       "kind": "func",
