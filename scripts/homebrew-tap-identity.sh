@@ -126,7 +126,7 @@ homebrew_formula_bottle_root_matches_build_authority() {
     return 0
   fi
   [ "${#source_abi}" -eq "${#target_abi}" ] &&
-    [[ "$source_abi" < "$target_abi" ]]
+    { [ "$source_abi" = "$target_abi" ] || [[ "$source_abi" < "$target_abi" ]]; }
 }
 
 homebrew_local_tap_clone_url() {
