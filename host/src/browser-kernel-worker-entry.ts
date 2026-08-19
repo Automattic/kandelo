@@ -81,7 +81,9 @@ import {
 import { CheckpointFreezeGateCoordinator } from "./checkpoint-freeze-gate";
 import { ProcessExecutionGenerationAllocator } from "./process-execution-generation";
 import {
+  captureMachineCheckpoint,
   captureMachineCheckpointSummary,
+  machineCheckpointTransferList,
   type CheckpointMachine,
 } from "./migration/checkpoint";
 import { ForkExternrefProcessOwner } from "./fork-externref-process-owner";
@@ -188,6 +190,7 @@ const checkpointMachine: CheckpointMachine = {
     }
     return memfs.sharedBuffer;
   },
+  kernelAbiVersion: () => kernelWorker.getKernelAbiVersion(),
   liveProcesses: () =>
     [...processes.entries()].map(([pid, info]) => ({
       pid,
@@ -197,6 +200,7 @@ const checkpointMachine: CheckpointMachine = {
       layout: info.layout,
       argv: info.argv,
       memory: info.memory,
+      programBytes: () => info.programBytes,
       threadAllocatorState: () => info.threadAllocator.snapshotState(),
       forkReplayContext: info.forkReplayContext,
       checkpointFreeze: info.checkpointFreeze,
@@ -4546,6 +4550,21 @@ sw.onmessage = (e: MessageEvent) => {
     }
     case "capture_checkpoint": {
       const { requestId, unwindTimeoutMs, vforkTimeoutMs } = msg;
+      if (msg.includeBytes) {
+        void captureMachineCheckpoint(checkpointMachine, {
+          unwindTimeoutMs,
+          vforkTimeoutMs,
+        }).then(
+          (result) => post(
+            { type: "response", requestId, result },
+            result.status === "captured"
+              ? machineCheckpointTransferList(result.checkpoint)
+              : [],
+          ),
+          (err) => respondError(requestId, (err as Error)?.message ?? String(err)),
+        );
+        break;
+      }
       void captureMachineCheckpointSummary(checkpointMachine, {
         unwindTimeoutMs,
         vforkTimeoutMs,

@@ -13,6 +13,8 @@ import type { ProcessMemoryLayout } from "../../src/process-memory";
 const KERNEL_MEMORY_BYTES = 64;
 const FILESYSTEM_BYTES = 128;
 const PROCESS_MEMORY_BYTES = 256;
+const PROGRAM_BYTES = 32;
+const KERNEL_ABI = 977;
 
 const layout = (channelOffset: number): ProcessMemoryLayout => ({
   initialPages: 1,
@@ -42,6 +44,7 @@ function processSource(pid: number, generation: number): CheckpointProcessSource
     layout: layout(pid * 1024),
     argv: [`/bin/program-${pid}`],
     memory,
+    programBytes: () => new Uint8Array(PROGRAM_BYTES).fill(pid).buffer,
     threadAllocatorState: () =>
       new ThreadPageAllocator({
         firstSlotStartPage: 4,
@@ -105,6 +108,7 @@ function testMachine(sources: CheckpointProcessSource[]): TestMachine {
       },
       copyKernelMemory: () => new Uint8Array(KERNEL_MEMORY_BYTES).fill(7),
       filesystemBuffer: () => new SharedArrayBuffer(FILESYSTEM_BYTES),
+      kernelAbiVersion: () => KERNEL_ABI,
       liveProcesses: () => sources,
     },
   };
@@ -135,6 +139,11 @@ describe("machine checkpoint freeze", () => {
     expect(result.checkpoint.processes[0]!.memory.byteLength)
       .toBe(PROCESS_MEMORY_BYTES);
     expect(result.checkpoint.processes[0]!.argv).toEqual(["/bin/program-4"]);
+    expect(result.checkpoint.format).toBe(1);
+    expect(result.checkpoint.kernelAbiVersion).toBe(KERNEL_ABI);
+    expect(
+      new Uint8Array(result.checkpoint.processes[0]!.programBytes),
+    ).toEqual(new Uint8Array(PROGRAM_BYTES).fill(4));
     expect(result.checkpoint.processes[0]!.threadAllocator).toEqual({
       nextPage: 4,
       freePages: [],

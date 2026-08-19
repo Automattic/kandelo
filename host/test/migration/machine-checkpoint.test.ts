@@ -13,6 +13,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeKernelHost } from "../../src/node-kernel-host";
+import { ABI_VERSION } from "../../src/generated/abi";
 import {
   binaryCacheRoot,
   findRepoRoot,
@@ -209,6 +210,42 @@ describe("machine checkpoint of a running guest", () => {
 
         const second = await host.captureCheckpoint(TIMEOUTS);
         expect(second.status).toBe("captured");
+      } finally {
+        await host.destroy();
+      }
+    },
+  );
+
+  it(
+    "hands the whole checkpoint to the caller",
+    { timeout: 60_000 },
+    async () => {
+      const program = programBytes("checkpoint-loop.wasm");
+      const { host, pid } = await startReadyGuest("checkpoint-loop.wasm");
+      try {
+        const response = await host.captureCheckpointBytes(TIMEOUTS);
+
+        expect(response.status).toBe("captured");
+        if (response.status !== "captured") return;
+        const { checkpoint } = response;
+        expect(checkpoint.format).toBe(1);
+        expect(checkpoint.kernelAbiVersion).toBe(ABI_VERSION);
+        expect(checkpoint.kernelMemory.byteLength).toBeGreaterThan(0);
+        expect(checkpoint.filesystem.byteLength).toBeGreaterThan(0);
+        const bucket = checkpoint.processes.find((p) => p.pid === pid);
+        expect(bucket).toBeDefined();
+        expect(bucket!.memory.byteLength).toBeGreaterThan(0);
+        // The exact program image rode along, so a restore can relaunch it.
+        expect(new Uint8Array(bucket!.programBytes)).toEqual(
+          new Uint8Array(program),
+        );
+
+        // The transfer moved copies, not live state: the guest still runs
+        // and the machine can be read again.
+        expect(await host.signalProcess(pid, 0)).toBe(true);
+        expect((await host.captureCheckpoint(TIMEOUTS)).status).toBe(
+          "captured",
+        );
       } finally {
         await host.destroy();
       }
