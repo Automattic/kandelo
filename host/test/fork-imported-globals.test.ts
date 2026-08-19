@@ -24,6 +24,7 @@ import {
 } from "../src/fork-module-state";
 import {
   WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE,
+  WPK_FORK_IMPORTED_GLOBALS_FLAG_MUTABLE,
   WPK_FORK_IMPORTED_GLOBALS_MAGIC,
   WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE,
   WPK_FORK_IMPORTED_GLOBALS_SECTION,
@@ -38,6 +39,7 @@ import {
   WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXTERNREF,
   WPK_FORK_MODULE_STATE_GLOBAL_TYPE_FUNCREF,
   WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I32,
+  WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I64,
 } from "../src/generated/abi";
 
 const PAGE_SIZE = 65_536;
@@ -60,6 +62,7 @@ function importedGlobalsSection(
     importOrdinal?: number;
     ownerId: number;
     typeCode: number;
+    mutable?: boolean;
   }>,
 ): Uint8Array {
   const encoder = new TextEncoder();
@@ -89,6 +92,10 @@ function importedGlobalsSection(
     view.setUint32(offset, recordSize, true);
     view.setUint32(offset + 4, record.ownerId, true);
     view.setUint8(offset + 8, record.typeCode);
+    view.setUint8(
+      offset + 9,
+      record.mutable ? WPK_FORK_IMPORTED_GLOBALS_FLAG_MUTABLE : 0,
+    );
     view.setUint32(offset + 12, record.moduleBytes.byteLength, true);
     view.setUint32(offset + 16, record.nameBytes.byteLength, true);
     view.setUint32(offset + 20, record.importOrdinal, true);
@@ -245,7 +252,195 @@ function referenceGlobal(typeCode: number, recipeId: number): Uint8Array {
   return payload;
 }
 
+function integerGlobal(typeCode: number, value: number | bigint): Uint8Array {
+  const width = typeCode === WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I64 ? 8 : 4;
+  const payload = new Uint8Array(WPK_FORK_MODULE_STATE_GLOBAL_HEADER_SIZE + width);
+  const view = new DataView(payload.buffer);
+  view.setUint8(0, typeCode);
+  view.setUint8(1, width);
+  if (width === 8) {
+    view.setBigUint64(
+      WPK_FORK_MODULE_STATE_GLOBAL_HEADER_SIZE,
+      BigInt(value),
+      true,
+    );
+  } else {
+    view.setUint32(
+      WPK_FORK_MODULE_STATE_GLOBAL_HEADER_SIZE,
+      Number(value),
+      true,
+    );
+  }
+  return payload;
+}
+
 describe("fork imported-global provider planning", () => {
+  it("recovers one saved mutable base-import scalar for duplicate aliases", () => {
+    const module = compileModule(
+      `(module
+        (import "GOT.func" "callback" (global (mut i32)))
+        (import "GOT.func" "callback" (global (mut i32)))
+        (import "GOT.func" "wide_callback" (global (mut i64))))`,
+      importedGlobalsSection([
+        {
+          module: "GOT.func",
+          name: "callback",
+          ownerId: 1,
+          typeCode: WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I32,
+          mutable: true,
+        },
+        {
+          module: "GOT.func",
+          name: "callback",
+          ownerId: 2,
+          typeCode: WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I32,
+          mutable: true,
+        },
+        {
+          module: "GOT.func",
+          name: "wide_callback",
+          ownerId: 3,
+          typeCode: WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I64,
+          mutable: true,
+        },
+      ]),
+    );
+    const memory = new WebAssembly.Memory({ initial: 3 });
+    const allocations = allocator(memory);
+    const arena = new ForkModuleStateArena(
+      memory,
+      4,
+      allocations.allocate,
+      allocations.deallocate,
+      "saved base-import scalars",
+    );
+    arena.begin();
+    arena.appendModule({ activationId: 1, templateId: new Uint8Array(32).fill(1) });
+    for (const [ownerId, typeCode, value] of [
+      [1, WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I32, 7],
+      [2, WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I32, 7],
+      [3, WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I64, 9n],
+    ] as const) {
+      arena.appendRecord({
+        kind: ForkModuleStateRecordKind.MutableGlobal,
+        activationId: 1,
+        ownerId,
+        payload: integerGlobal(typeCode, value),
+      });
+    }
+    arena.appendImportedGlobalBindings([
+      ...[1, 2].map((consumerOwner) => ({
+        consumerActivation: 1,
+        consumerOwner,
+        sourceActivation: 0,
+        sourceOwner: 0,
+        reserved: 0,
+        recipeId: 0,
+        rawBits: 0n,
+        kind: ForkImportedGlobalBindingKind.BaseImport,
+        mutable: true,
+        shared: false,
+        typeCode: WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I32,
+      })),
+      {
+        consumerActivation: 1,
+        consumerOwner: 3,
+        sourceActivation: 0,
+        sourceOwner: 0,
+        reserved: 0,
+        recipeId: 0,
+        rawBits: 0n,
+        kind: ForkImportedGlobalBindingKind.BaseImport,
+        mutable: true,
+        shared: false,
+        typeCode: WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I64,
+      },
+    ]);
+    arena.appendImportedTableBindings([]);
+    arena.seal();
+
+    const planner = new ForkImportedGlobalPlanner(
+      arena.records(),
+      new Map([[1, module]]),
+      { ownerActivation: () => null, materialize: () => null },
+      "saved base-import scalars",
+    );
+
+    expect(planner.savedMutableGlobalImport(1, "GOT.func", "callback"))
+      .toBe(7);
+    expect(planner.savedMutableGlobalImport(1, "GOT.func", "wide_callback"))
+      .toBe(9n);
+    expect(planner.savedMutableGlobalImport(1, "GOT.func", "missing"))
+      .toBeUndefined();
+  });
+
+  it("rejects conflicting saved values for duplicate base-import aliases", () => {
+    const module = compileModule(
+      `(module
+        (import "GOT.func" "callback" (global (mut i32)))
+        (import "GOT.func" "callback" (global (mut i32))))`,
+      importedGlobalsSection([
+        {
+          module: "GOT.func",
+          name: "callback",
+          ownerId: 1,
+          typeCode: WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I32,
+          mutable: true,
+        },
+        {
+          module: "GOT.func",
+          name: "callback",
+          ownerId: 2,
+          typeCode: WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I32,
+          mutable: true,
+        },
+      ]),
+    );
+    const memory = new WebAssembly.Memory({ initial: 3 });
+    const allocations = allocator(memory);
+    const arena = new ForkModuleStateArena(
+      memory,
+      4,
+      allocations.allocate,
+      allocations.deallocate,
+      "conflicting base-import scalars",
+    );
+    arena.begin();
+    arena.appendModule({ activationId: 1, templateId: new Uint8Array(32).fill(1) });
+    for (const [ownerId, value] of [[1, 7], [2, 8]] as const) {
+      arena.appendRecord({
+        kind: ForkModuleStateRecordKind.MutableGlobal,
+        activationId: 1,
+        ownerId,
+        payload: integerGlobal(WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I32, value),
+      });
+    }
+    arena.appendImportedGlobalBindings([1, 2].map((consumerOwner) => ({
+      consumerActivation: 1,
+      consumerOwner,
+      sourceActivation: 0,
+      sourceOwner: 0,
+      reserved: 0,
+      recipeId: 0,
+      rawBits: 0n,
+      kind: ForkImportedGlobalBindingKind.BaseImport,
+      mutable: true,
+      shared: false,
+      typeCode: WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I32,
+    })));
+    arena.appendImportedTableBindings([]);
+    arena.seal();
+    const planner = new ForkImportedGlobalPlanner(
+      arena.records(),
+      new Map([[1, module]]),
+      { ownerActivation: () => null, materialize: () => null },
+      "conflicting base-import scalars",
+    );
+
+    expect(() => planner.savedMutableGlobalImport(1, "GOT.func", "callback"))
+      .toThrow(/conflicting saved values/);
+  });
+
   it("rebinds fresh funcref/externref/exnref providers before const initialization", () => {
     const providerModule = compileModule(
       `(module

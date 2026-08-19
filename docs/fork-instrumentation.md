@@ -367,6 +367,20 @@ order, pads to and validates their exact bases, registers their function and
 exception catalogs, and only then applies the process table journal and
 activation replay.
 
+Mutable Dylink `GOT.func` imports are part of that saved module state.
+During fresh-child instantiation, the imported-global planner reads their
+existing KFMS mutable-global snapshots and initializes each loader-owned
+GOT cell with the exact parent table index. It does not search the
+not-yet-restored main table and append a duplicate function. Duplicate
+imports of one GOT symbol must carry identical saved values, and later
+side-export publication must recreate the same index. A saved self-export
+index also identifies any table gap created before the parent's export
+publication; replay pads to that slot before installing the fresh export,
+then the normal sparse table restore replaces the temporary graph. Missing,
+wrong-width, or conflicting state fails before continuation replay. This is
+a host reconstruction correction within ABI 43: it does not change the KFMS
+wire format or require rebuilt guest artifacts.
+
 Pthread workers have distinct Wasm instances, tables, tags, and Stores; no
 JavaScript reference is copied between them. Each pthread therefore owns a
 local dynamic-linker replica driven by the process archive's generation
