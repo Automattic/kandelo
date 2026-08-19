@@ -19,6 +19,7 @@ import test from "node:test";
 import { ABI_VERSION } from "../host/src/generated/abi.ts";
 import { MemoryFileSystem } from "../host/src/vfs/memory-fs.ts";
 import { createRepositoryPathBundle } from "../images/vfs/scripts/repository-path-bundle.ts";
+import * as pagesProducer from "./abi-staging-pages-producer.ts";
 
 import {
   bindAdmissionProjections,
@@ -438,7 +439,6 @@ test("accepts only a bounded automatically collectable production handoff", () =
       {
       current_inputs: {
         archive_files: "/tmp/archive-files.json",
-        package_roots: "/tmp/package-roots.json",
         program_index: "/tmp/program-index.json",
       },
       id: "mini",
@@ -462,6 +462,20 @@ test("accepts only a bounded automatically collectable production handoff", () =
   };
 
   assert.deepEqual(validatePagesProductionHandoff(handoff), handoff);
+  assert.throws(
+    () =>
+      validatePagesProductionHandoff({
+        ...handoff,
+        products: [{
+          ...handoff.products[0],
+          current_inputs: {
+            ...handoff.products[0].current_inputs,
+            package_roots: "/tmp/package-roots.json",
+          },
+        }],
+      }),
+    /fields differ/u,
+  );
   assert.throws(
     () =>
       validatePagesProductionHandoff({
@@ -500,6 +514,161 @@ test("accepts only a bounded automatically collectable production handoff", () =
     }),
     /fields differ/,
   );
+});
+
+test("reads a direct canonical bottle without admission records", async () => {
+  const root = mkdtempSync(join(tmpdir(), "kandelo-pages-direct-bottle-"));
+  const formula = "nginx";
+  const abi = 43;
+  const bottle = new TextEncoder().encode("direct canonical bottle\n");
+  const metadata = new TextEncoder().encode("{}\n");
+  const composition = new TextEncoder().encode('{"schema":1}\n');
+  const bottleSha = sha256(bottle);
+  const metadataSha = sha256(metadata);
+  const compositionSha = sha256(composition);
+  const repository = `ghcr.io/kandelo-dev/homebrew-tap-core-abi-${abi}/${formula}`;
+  const layer = (role: string, body: Uint8Array) => ({
+    annotations: { "dev.kandelo.abi-staging.role": role },
+    digest: `sha256:${sha256(body)}`,
+    mediaType: "application/octet-stream",
+    size: body.byteLength,
+  });
+  const config = canonicalJsonBytes({
+    bottle_layer: { bytes: bottle.byteLength, sha256: bottleSha },
+    bottle_metadata: { bytes: metadata.byteLength, sha256: metadataSha },
+    candidate_record_sha256: "c".repeat(64),
+    classification: "canonical-direct",
+    formula: {
+      architecture: "wasm32",
+      name: formula,
+      tap: "kandelo-dev/homebrew-tap-core",
+      target_abi: abi,
+    },
+    kind: "kandelo-homebrew-canonical-bottle",
+    request_sha256: "e".repeat(64),
+    schema: 1,
+    source: {
+      commit: "f".repeat(40),
+      repository: "Automattic/kandelo",
+      tree: "a".repeat(40),
+    },
+    vfs_composition_descriptor: {
+      bytes: composition.byteLength,
+      sha256: compositionSha,
+    },
+  });
+  const manifest = canonicalJsonBytes({
+    annotations: {
+      "dev.kandelo.abi-staging.formula": formula,
+      "dev.kandelo.abi-staging.target-abi": String(abi),
+    },
+    artifactType: "application/vnd.kandelo.homebrew.canonical-bottle.v1+json",
+    config: {
+      annotations: {
+        "dev.kandelo.abi-staging.role": "canonical-bottle-metadata",
+        "org.opencontainers.image.title": "canonical-bottle.json",
+      },
+      digest: `sha256:${sha256(config)}`,
+      mediaType: "application/vnd.kandelo.homebrew.canonical-bottle.v1+json",
+      size: config.byteLength,
+    },
+    layers: [
+      layer("bottle-layer", bottle),
+      layer("bottle-metadata", metadata),
+      layer("vfs-composition-descriptor", composition),
+    ],
+    mediaType: "application/vnd.oci.image.manifest.v1+json",
+    schemaVersion: 2,
+  });
+  const manifestSha = sha256(manifest);
+  const reference = `${repository}@sha256:${manifestSha}`;
+  try {
+    mkdirSync(join(root, "Formula"));
+    mkdirSync(join(root, "Kandelo/formula"), { recursive: true });
+    writeFileSync(join(root, `Formula/${formula}.rb`), [
+      "class Nginx < Formula",
+      "  bottle do",
+      `    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-${abi}/${formula}"`,
+      `    sha256 cellar: "/opt/kandelo/homebrew/Cellar", wasm32_kandelo: "${bottleSha}"`,
+      "  end",
+      "end",
+      "",
+    ].join("\n"));
+    writeFileSync(join(root, `Kandelo/formula/${formula}.json`), canonicalJsonBytes({
+      bottle_rebuild: 0,
+      bottles: [{
+        arch: "wasm32",
+        bottle_tag: "wasm32_kandelo",
+        bytes: bottle.byteLength,
+        cache_key_sha: bottleSha,
+        cellar: "/opt/kandelo/homebrew/Cellar",
+        kandelo_abi: abi,
+        prefix: "/opt/kandelo/homebrew",
+        sha256: bottleSha,
+        status: "success",
+        url: `https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-${abi}/${formula}/blobs/sha256:${bottleSha}`,
+      }],
+      formula_path: `Formula/${formula}.rb`,
+      full_name: `kandelo-dev/tap-core/${formula}`,
+      kandelo_abi: abi,
+      name: formula,
+      schema: 1,
+    }));
+    const authority = {
+        async fetchBlob(selected: string, digest: string, bytes: number) {
+          assert.equal(selected, repository);
+          assert.equal(digest, `sha256:${sha256(config)}`);
+          assert.equal(bytes, config.byteLength);
+          return config;
+        },
+        async fetchCanonicalOci(selected: string) {
+          assert.equal(selected, reference);
+          return {
+            bottle_layer: bottle,
+            bottle_metadata: metadata,
+            config,
+            manifest,
+            vfs_composition_descriptor: composition,
+          };
+        },
+        async fetchManifest(selected: string) {
+          assert.equal(selected, reference);
+          return manifest;
+        },
+        async listImmutableReferences() {
+          throw new Error("direct bottle must not list admission records");
+        },
+        async listTags(selected: string) {
+          assert.equal(selected, repository);
+          return [`canonical-sha256-${manifestSha}`];
+        },
+        async readAdmissionRecord() {
+          throw new Error("direct bottle must not read admission records");
+        },
+      };
+    const result = await pagesProducer.readDirectCanonicalBottle(
+      formula,
+      abi,
+      root,
+      authority,
+    );
+    assert.equal(result.layer.sha256, bottleSha);
+    assert.equal(result.layer.bytes, bottle.byteLength);
+    assert.equal(result.descriptor.sha256, compositionSha);
+    assert.equal(result.descriptor.bytes, composition.byteLength);
+    assert.notEqual(metadataSha, compositionSha);
+    const formulaList = join(root, "formula-list.txt");
+    writeFileSync(formulaList, `${formula}\n`);
+    const closure = await (pagesProducer as any).preflightPagesBottleClosure(
+      root,
+      abi,
+      formulaList,
+      authority,
+    );
+    assert.deepEqual(closure.map((entry: any) => entry.formula), [formula]);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
 });
 
 test("discovers one immutable current-tree candidate without caller locators", async () => {
@@ -1561,7 +1730,7 @@ function assertExactProducedPrivateMapAuthority(
   for (const [name, mutate] of mutations) {
     const value = structuredClone(exactMap);
     mutate(value);
-    assert.throws(() => load(name, value), undefined, name);
+    assert.throws(() => load(name, value), name);
   }
 }
 
@@ -1698,7 +1867,7 @@ async function createSevenProductAssembledFixture(
     targetAbi: assembledTargetAbi,
   });
 
-  const candidates = new Map(
+  const candidates = new Map<string, ReturnType<typeof assembledCandidate>>(
     manifests.map(({ manifest, sha256: manifestSha256 }) => {
       const currentBody = new TextEncoder().encode(
         `assembled current input ${manifest.id}\n`,

@@ -58,6 +58,10 @@ import {
   type BuildFinalPagesSiteOptions,
   type PagesSiteMetadataV1,
 } from "./abi-staging-pages-site-builder.ts";
+import {
+  resolveCanonicalPagesBottle,
+  resolveCanonicalPagesBottleClosure,
+} from "./abi-staging-pages-bottle-closure.ts";
 
 type JsonObject = Record<string, any>;
 
@@ -306,7 +310,6 @@ export interface PagesProductionHandoffV1 {
     id: string;
     current_inputs: {
       archive_files: string;
-      package_roots: string;
       program_index: string;
     };
   }>;
@@ -365,14 +368,13 @@ export function validatePagesProductionHandoff(
     if (id <= previous) throw new Error("Pages production products are not sorted and unique");
     previous = id;
     const current = record(product.current_inputs, `${id} current input authorities`);
-    exactKeys(current, ["archive_files", "package_roots", "program_index"],
+    exactKeys(current, ["archive_files", "program_index"],
       `${id} current input authorities`);
-    paths.push(current.archive_files, current.package_roots, current.program_index);
+    paths.push(current.archive_files, current.program_index);
     return {
       id,
       current_inputs: {
         archive_files: absolutePath(current.archive_files, `${id} archive map`),
-        package_roots: absolutePath(current.package_roots, `${id} package roots`),
         program_index: absolutePath(current.program_index, `${id} program index`),
       },
     };
@@ -572,6 +574,7 @@ export function derivePagesSiteMetadata(
 
 export interface ProductionOciAuthority extends CandidateProductDiscovery {
   fetchCanonicalOci(reference: string): Promise<CanonicalOciReadbackV1>;
+  listTags?(repository: string): Promise<string[]>;
   readAdmissionRecord(reference: string): Promise<JsonObject>;
 }
 
@@ -768,10 +771,7 @@ export async function producePagesArtifacts(
           },
           catalogPath: join(sourceRoot, fixed.catalog.path),
           outRoot: currentInputRoot,
-          packageRoots: readStringMap(
-            handoffProduct.current_inputs.package_roots,
-            `${handoffProduct.id} package roots`,
-          ),
+          packageRoots: {},
           productId: handoffProduct.id,
           programIndexPath: absolutePath(
             handoffProduct.current_inputs.program_index,
@@ -1029,6 +1029,36 @@ export async function shipPagesArtifacts(
   );
 }
 
+export async function preflightPagesBottleClosure(
+  tapRoot: string,
+  abi: number,
+  formulaListPath: string,
+  oci: ProductionOciAuthority = createAnonymousOciAuthority(),
+) {
+  if (oci.listTags === undefined) throw new Error("bottle preflight cannot list canonical tags");
+  const source = new TextDecoder("utf-8", { fatal: true }).decode(
+    readBoundedFile(formulaListPath, "Pages Formula list", 64 * 1024),
+  );
+  if (!source.endsWith("\n") || source.includes("\r")) {
+    throw new Error("Pages Formula list is not canonical line text");
+  }
+  const formulas = source.slice(0, -1).split("\n");
+  if (
+    formulas.some((formula) => formula.length === 0) ||
+    !jsonEqual(formulas, [...new Set(formulas)].sort(ordinal))
+  ) throw new Error("Pages Formula list is not sorted and unique");
+  return resolveCanonicalPagesBottleClosure({
+    abi,
+    formulas,
+    tapRoot,
+    transport: {
+      fetchBlob: (repository, digest, bytes) => oci.fetchBlob(repository, digest, bytes),
+      fetchManifest: (reference) => oci.fetchManifest(reference),
+      listTags: (repository) => oci.listTags!(repository),
+    },
+  });
+}
+
 interface DirectBottleInputV1 {
   descriptor: { body: Uint8Array; bytes: number; reference: string; sha256: string };
   layer: { body: Uint8Array; bytes: number; reference: string; sha256: string };
@@ -1090,10 +1120,7 @@ async function produceDirectShippingTree(options: {
       },
       catalogPath: join(options.sourceRoot, options.fixed.catalog.path),
       outRoot: currentInputRoot,
-      packageRoots: readStringMap(
-        handoffProduct.current_inputs.package_roots,
-        `${handoffProduct.id} package roots`,
-      ),
+      packageRoots: {},
       productId: handoffProduct.id,
       programIndexPath: absolutePath(
         handoffProduct.current_inputs.program_index,
@@ -1206,6 +1233,7 @@ async function produceDirectShippingTree(options: {
           bottle = await readDirectCanonicalBottle(
             formula,
             options.handoff.target_abi.version,
+            options.handoff.tap_root,
             options.oci,
           );
           bottleCache.set(formula, bottle);
@@ -1447,35 +1475,25 @@ function directProductOrder(ids: string[], catalog: Map<string, JsonObject>): st
   return order;
 }
 
-async function readDirectCanonicalBottle(
+export async function readDirectCanonicalBottle(
   formula: string,
   abi: number,
+  tapRoot: string,
   oci: ProductionOciAuthority,
 ): Promise<DirectBottleInputV1> {
-  const admissionRepository =
-    `ghcr.io/kandelo-dev/homebrew-tap-core-abi-${abi}/${formula}/admissions`;
-  const references = (await oci.listImmutableReferences(admissionRepository)).sort(ordinal);
-  const matches: Array<{ record: JsonObject; reference: string }> = [];
-  for (const reference of references) {
-    const value = await oci.readAdmissionRecord(reference);
-    if (
-      value.admission?.formula_metadata_update?.formula === formula &&
-      value.admission?.formula_metadata_update?.target_abi === abi
-    ) matches.push({ record: value, reference });
-  }
-  if (matches.length === 0) throw new Error(`${formula} lacks a canonical ABI ${abi} bottle`);
-  const firstIdentity = admissionProductIdentity(matches[0]!.record);
-  if (matches.some(({ record: value }) => !jsonEqual(admissionProductIdentity(value), firstIdentity))) {
-    throw new Error(`${formula} has conflicting canonical ABI ${abi} bottles`);
-  }
-  const recordValue = matches[0]!.record;
-  const canonical = record(recordValue.admission?.canonical, `${formula} canonical bottle`);
-  const canonicalReference = text(canonical.immutable_reference, `${formula} canonical reference`);
+  if (oci.listTags === undefined) throw new Error("direct bottle authority cannot list canonical tags");
+  const selected = await resolveCanonicalPagesBottle({
+    abi,
+    formula,
+    tapRoot,
+    transport: {
+      fetchBlob: (repository, digest, bytes) => oci.fetchBlob(repository, digest, bytes),
+      fetchManifest: (reference) => oci.fetchManifest(reference),
+      listTags: (repository) => oci.listTags!(repository),
+    },
+  });
+  const canonicalReference = selected.canonical_reference;
   const readback = await oci.fetchCanonicalOci(canonicalReference);
-  if (
-    sha256(readback.manifest) !== canonical.sha256 ||
-    readback.manifest.byteLength !== canonical.bytes
-  ) throw new Error(`${formula} canonical manifest differs from its public record`);
   const manifest = record(canonicalDocument(readback.manifest, `${formula} canonical manifest`),
     `${formula} canonical manifest`);
   const layers = array(manifest.layers, `${formula} canonical layers`)
@@ -1486,9 +1504,10 @@ async function readDirectCanonicalBottle(
     "vfs-composition-descriptor",
     `${formula} VFS composition descriptor`,
   );
-  const promoted = record(recordValue.admission?.promoted_layer, `${formula} promoted layer`);
   if (
-    layer.sha256 !== promoted.sha256 || layer.bytes !== promoted.bytes ||
+    layer.sha256 !== selected.bottle_sha256 || layer.bytes !== selected.bottle_bytes ||
+    descriptor.sha256 !== selected.descriptor_sha256 ||
+    descriptor.bytes !== selected.descriptor_bytes ||
     readback.bottle_layer.byteLength !== layer.bytes ||
     sha256(readback.bottle_layer) !== layer.sha256 ||
     readback.vfs_composition_descriptor.byteLength !== descriptor.bytes ||
@@ -2263,28 +2282,28 @@ function createAnonymousOciAuthority(): ProductionOciAuthority {
       "blob", "fetch", "--output", "-", `${repository}@${digestValue}`,
     ], bytes, "OCI blob", bytes);
   };
+  const listTags = async (repository: string): Promise<string[]> => {
+    let output: Uint8Array;
+    try {
+      output = await runOras([
+        "repo", "tags", "--format", "json", repository,
+      ], MAX_DOCUMENT_BYTES, "OCI tag inventory");
+    } catch (error) {
+      if (isAbsentPublicPagesRecordTagInventory(repository, error)) return [];
+      throw error;
+    }
+    const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(output));
+    const tags = array(record(value, "OCI tag inventory").tags, "OCI tags")
+      .map((value, index) => text(value, `OCI tag ${index}`));
+    if (tags.length > MAX_OCI_TAGS) throw new Error("OCI tag inventory exceeds its bound");
+    return tags;
+  };
   return {
     fetchBlob,
     fetchManifest,
+    listTags,
     async listImmutableReferences(repository) {
-      let output: Uint8Array;
-      try {
-        output = await runOras([
-          "repo", "tags", "--format", "json", repository,
-        ], MAX_DOCUMENT_BYTES, "OCI tag inventory");
-      } catch (error) {
-        // GHCR reports an as-yet-uncreated public nested package as `denied`,
-        // not as an empty tag inventory. For an exact Pages record repository,
-        // anonymous inaccessibility means there is no publicly consumable
-        // candidate or admission. Preserve that as the normal hold-only state;
-        // manifest and blob reads remain exact and fail closed.
-        if (isAbsentPublicPagesRecordTagInventory(repository, error)) return [];
-        throw error;
-      }
-      const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(output));
-      const tags = array(record(value, "OCI tag inventory").tags, "OCI tags");
-      if (tags.length > MAX_OCI_TAGS) throw new Error("OCI tag inventory exceeds its bound");
-      return immutableRecordReferencesFromTags(repository, tags);
+      return immutableRecordReferencesFromTags(repository, await listTags(repository));
     },
     async readAdmissionRecord(reference) {
       const { repository, digest: manifestDigest } = immutableOciReference(
@@ -2364,6 +2383,8 @@ export function isAbsentPublicPagesRecordTagInventory(
   return (
     (
       /^ghcr\.io\/kandelo-dev\/homebrew-tap-core-abi-[1-9][0-9]*\/[a-z0-9._-]+\/admissions$/u
+        .test(repository) ||
+      /^ghcr\.io\/kandelo-dev\/homebrew-tap-core-abi-[1-9][0-9]*\/[a-z0-9._-]+$/u
         .test(repository) ||
       /^ghcr\.io\/kandelo-dev\/homebrew-tap-core-abi-[1-9][0-9]*-candidates\/products\/[a-z0-9._-]+$/u
         .test(repository)
@@ -3065,12 +3086,31 @@ function ordinal(left: string, right: string): number {
 
 async function cli(args: readonly string[]): Promise<void> {
   if (
+    args.length === 7 && args[0] === "preflight" && args[1] === "--tap-root" &&
+    args[3] === "--abi" && args[5] === "--formula-list" && /^[1-9][0-9]*$/u.test(args[4]!)
+  ) {
+    assertUncredentialedEnvironment(process.env);
+    const closure = await preflightPagesBottleClosure(
+      args[2]!,
+      Number(args[4]),
+      args[6]!,
+    );
+    process.stdout.write(`${JSON.stringify({
+      abi: Number(args[4]),
+      formulas: closure.map(({ formula }) => formula),
+      kind: "kandelo-pages-canonical-bottle-closure",
+      schema: 1,
+    })}\n`);
+    return;
+  }
+  if (
     args.length !== 5 || !["produce", "ship"].includes(args[0] ?? "") || args[1] !== "--input" ||
     args[3] !== "--output-root"
   ) {
     throw new Error(
       "usage: abi-staging-pages-producer.ts <produce|ship> --input <production-handoff.json> " +
-      "--output-root <absent-output-directory>",
+      "--output-root <absent-output-directory> | preflight --tap-root <tap> --abi <N> " +
+      "--formula-list <path>",
     );
   }
   if (args[0] === "ship") await shipPagesArtifacts(args[2]!, args[4]!);

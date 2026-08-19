@@ -1,6 +1,6 @@
 schema = 1
 kind = "kandelo-abi-staging-request-policy"
-version = 33
+version = 34
 issuer_repository = "Automattic/kandelo"
 issuer_workflow = ".github/workflows/abi-staging-request-feed.yml"
 automatic_same_repository = true
@@ -74,6 +74,7 @@ implementation_paths = [
   "packages/registry/program-packages.json",
   "scripts/abi-staging-build-toolchain.sh",
   "scripts/abi-staging-collect-product-inputs.ts",
+  "scripts/abi-staging-pages-bottle-closure.ts",
   "scripts/abi-staging-pages-producer.ts",
   "scripts/abi-staging-pages-readiness.ts",
   "scripts/abi-staging-pages-site-builder.ts",
