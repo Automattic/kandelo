@@ -166,8 +166,7 @@ export async function createMiniaturePagesProducerFixture(
       { dependency: "base" },
     )],
   ]);
-  const mapPaths = ["archive-files.json", "package-roots.json"];
-  for (const name of mapPaths) writeFileSync(join(root, name), canonicalJsonBytes({}));
+  writeFileSync(join(root, "archive-files.json"), canonicalJsonBytes({}));
   const programIndex = join(root, "program-index.json");
   writeFileSync(programIndex, canonicalJsonBytes({ kind: "fixture-program-index", schema: 1 }));
   const handoffPath = join(root, "handoff.json");
@@ -195,7 +194,6 @@ export async function createMiniaturePagesProducerFixture(
     products: ["base", "mini"].map((id) => ({
       current_inputs: {
         archive_files: join(root, "archive-files.json"),
-        package_roots: join(root, "package-roots.json"),
         program_index: programIndex,
       },
       id,

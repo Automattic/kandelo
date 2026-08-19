@@ -156,6 +156,43 @@ jobs:
           mkdir -m 0700 "$package_cache"
           echo "WASM_POSIX_BINARY_CACHE_ROOT=$package_cache" >>"$GITHUB_ENV"
 
+      - name: Preflight the complete canonical bottle closure
+        run: |
+          set -euo pipefail
+          registry="apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.generated.json"
+          catalog="images/vfs/products/generated/catalog.json"
+          formula_list="$RUNNER_TEMP/abi-staging-pages-formulae.txt"
+          target_abi=$(sed -nE \
+            's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
+            crates/shared/src/lib.rs)
+          jq -e --slurpfile pages "$registry" '
+            [.products[].manifest |
+              select(.id as $id |
+                ($pages[0].products | map(.id) | index($id)) != null) |
+              (.software["package"] // []) | length] |
+            all(. == 0)
+          ' "$catalog"
+          jq -r --slurpfile pages "$registry" '
+            [.products[].manifest |
+              select(.id as $id |
+                ($pages[0].products | map(.id) | index($id)) != null) |
+              .software.homebrew[].formulae[]] |
+            unique[]
+          ' "$catalog" >"$formula_list"
+          test -s "$formula_list"
+          env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_RUNTIME_TOKEN \
+            -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+            -u ACTIONS_ID_TOKEN_REQUEST_URL \
+            -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY \
+            -u GOOGLE_APPLICATION_CREDENTIALS \
+            -u KANDELO_STAGING_BOT_TOKEN -u NPM_TOKEN \
+            -u NODE_AUTH_TOKEN -u SSH_AUTH_SOCK \
+            bash scripts/dev-shell.sh npx tsx \
+              scripts/abi-staging-pages-producer.ts preflight \
+                --tap-root "$KANDELO_PAGES_TAP_ROOT" \
+                --abi "$target_abi" \
+                --formula-list "$formula_list"
+
       - name: Materialize exact current product inputs
         run: |
           set -euo pipefail
@@ -164,149 +201,6 @@ jobs:
           catalog="images/vfs/products/generated/catalog.json"
           test ! -e "$input_root"
           mkdir -m 0700 "$input_root"
-          env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_RUNTIME_TOKEN \
-            -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
-            -u ACTIONS_ID_TOKEN_REQUEST_URL \
-            -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY \
-            -u GOOGLE_APPLICATION_CREDENTIALS -u NPM_TOKEN \
-            -u NODE_AUTH_TOKEN -u SSH_AUTH_SOCK \
-            bash scripts/dev-shell.sh env \
-              "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
-              bash -s -- "$input_root" "$registry" "$catalog" <<'BASH'
-          set -euo pipefail
-          input_root=$1
-          registry=$2
-          catalog=$3
-          source_root=$(pwd -P)
-          package_list="$input_root/package-list.txt"
-          jq -r --slurpfile pages "$registry" '
-            [.products[].manifest |
-              select(.id as $id |
-                ($pages[0].products | map(.id) | index($id)) != null) |
-              .software.package[].name] |
-            unique[]
-          ' "$catalog" >"$package_list"
-          mapfile -t packages <"$package_list"
-          ((${#packages[@]} > 0))
-          [[ $(printf '%s\n' "${packages[@]}" | sort -u | wc -l) \
-            -eq ${#packages[@]} ]]
-
-          # WHY: the selected product roots are the authority here. Their
-          # published archives are complete independently of unrelated
-          # registry packages. Fetch only these roots without source fallback;
-          # a missing selected root is a real production-input failure.
-          fetch_args=(--fetch-only)
-          for package in "${packages[@]}"; do
-            [[ $package =~ ^[a-z0-9][a-z0-9+._-]*$ ]]
-            if [ "$package" != homebrew-bootstrap ]; then
-              fetch_args+=(--package "$package")
-            fi
-          done
-          bash scripts/fetch-binaries.sh "${fetch_args[@]}"
-          # WHY: the old ABI 42 shell-selection release was a migration lane,
-          # not an input to current Pages products. The ABI 43 package release
-          # deliberately does not carry this support-data package, so build
-          # only this one reviewed package from the protected current source.
-          bash scripts/fetch-binaries.sh --package homebrew-bootstrap
-
-          bootstrap_path=$(bash scripts/resolve-binary.sh \
-            programs/homebrew-bootstrap/homebrew-bootstrap.zip)
-          [ -f "$bootstrap_path" ] && [ ! -L "$bootstrap_path" ]
-          bash scripts/stage-homebrew-bootstrap-browser-asset.sh \
-            "$bootstrap_path" \
-            apps/browser-demos/public/homebrew-bootstrap.zip
-
-          host_target=$(rustc -vV | awk '/^host/ {print $2}')
-          cargo build --release -p xtask --target "$host_target"
-          xtask="$source_root/target/$host_target/release/xtask"
-          [ -x "$xtask" ]
-          all_package_roots="$input_root/all-package-roots.json"
-          printf '{}\n' >"$all_package_roots"
-          for package in "${packages[@]}"; do
-            package_root=$(
-              "$xtask" build-deps --arch wasm32 path "$package"
-            )
-            [ -d "$package_root" ] && [ ! -L "$package_root" ]
-            # WHY: the transitional ABI 43 MariaDB package archive predates
-            # package source-role publication. Supply its two immutable SQL
-            # bootstrap files from the package manifest's pinned source
-            # archive instead of rebuilding MariaDB or accepting ambient data.
-            if [ "$package" = mariadb ] &&
-                [ ! -d "$package_root/.kandelo-vfs-source-roles/system-tables" ]; then
-              mariadb_root="$input_root/augmented-package-roots/mariadb"
-              test ! -e "$mariadb_root" && test ! -L "$mariadb_root"
-              mkdir -p "$(dirname "$mariadb_root")" "$mariadb_root"
-              cp -a "$package_root/." "$mariadb_root/"
-              source_json="$input_root/mariadb-source.json"
-              python3 - packages/registry/mariadb/package.toml >"$source_json" <<'PY'
-          import json
-          from pathlib import Path
-          import sys
-          import tomllib
-
-          value = tomllib.loads(Path(sys.argv[1]).read_text())
-          source = value.get("source")
-          if not isinstance(source, dict):
-              raise SystemExit("MariaDB package manifest lacks source authority")
-          url = source.get("url")
-          digest = source.get("sha256")
-          if not isinstance(url, str) or not url.startswith("https://"):
-              raise SystemExit("MariaDB source URL is invalid")
-          if not isinstance(digest, str) or len(digest) != 64 or any(
-              character not in "0123456789abcdef" for character in digest
-          ):
-              raise SystemExit("MariaDB source digest is invalid")
-          print(json.dumps({"sha256": digest, "url": url}, separators=(",", ":")))
-          PY
-              mariadb_archive="$input_root/mariadb-source.tar.gz"
-              mariadb_url=$(jq -er '.url' "$source_json")
-              mariadb_sha=$(jq -er '.sha256' "$source_json")
-              curl --fail --location --proto '=https' --proto-redir '=https' \
-                --tlsv1.2 --max-filesize 536870912 \
-                --output "$mariadb_archive" "$mariadb_url"
-              echo "$mariadb_sha  $mariadb_archive" | sha256sum --check --status
-              role_root="$mariadb_root/.kandelo-vfs-source-roles/system-tables"
-              mkdir -p "$role_root"
-              python3 - "$mariadb_archive" "$role_root" <<'PY'
-          from pathlib import Path, PurePosixPath
-          import sys
-          import tarfile
-
-          archive = Path(sys.argv[1])
-          output = Path(sys.argv[2])
-          expected = {
-              "mysql_system_tables.sql",
-              "mysql_system_tables_data.sql",
-          }
-          selected = {}
-          with tarfile.open(archive, "r:*") as source:
-              for member in source.getmembers():
-                  path = PurePosixPath(member.name)
-                  if len(path.parts) < 3 or path.parts[-2] != "scripts":
-                      continue
-                  if path.name not in expected:
-                      continue
-                  if not member.isfile() or member.size < 1 or member.size > 16 * 1024 * 1024:
-                      raise SystemExit("MariaDB system-table source is not one bounded file")
-                  if path.name in selected:
-                      raise SystemExit("MariaDB system-table source is ambiguous")
-                  body = source.extractfile(member)
-                  if body is None:
-                      raise SystemExit("MariaDB system-table source cannot be read")
-                  selected[path.name] = body.read(member.size + 1)
-          if set(selected) != expected or any(len(body) > 16 * 1024 * 1024 for body in selected.values()):
-              raise SystemExit("MariaDB source lacks its exact system-table inputs")
-          for name, body in selected.items():
-              (output / name).write_bytes(body)
-          PY
-              package_root="$mariadb_root"
-            fi
-            next="$input_root/.all-package-roots.next"
-            jq -cS --arg package "$package" --arg path "$package_root" \
-              '. + {($package): $path}' "$all_package_roots" >"$next"
-            mv "$next" "$all_package_roots"
-          done
-
           archive_authority="$input_root/archive-authority.json"
           jq -cS --slurpfile pages "$registry" '
             [.products[].manifest |
@@ -355,16 +249,6 @@ jobs:
             product_root="$products_root/$product"
             mkdir "$product_root"
             jq -cS --arg id "$product" \
-              --slurpfile roots "$all_package_roots" '
-                [.products[].manifest | select(.id == $id) |
-                  .software.package[].name] | unique as $names |
-                if any($names[]; $roots[0][.] == null)
-                then error("missing exact package root")
-                else reduce $names[] as $name ({};
-                  . + {($name): $roots[0][$name]})
-                end
-              ' "$catalog" >"$product_root/package-roots.json"
-            jq -cS --arg id "$product" \
               --slurpfile archives "$all_archive_files" '
                 [.products[].manifest | select(.id == $id) |
                   .software.archive[].id] | unique as $ids |
@@ -375,12 +259,10 @@ jobs:
                 end
               ' "$catalog" >"$product_root/archive-files.json"
           done < <(jq -r '.products[].id' "$registry")
-          BASH
 
       # WHY: canonical Pages resolves software from the seven product images,
-      # not Vite's legacy browser-program fallbacks. Materialize only the
-      # product-owned package inputs here; runtime preparation separately
-      # produces the exact kernel and host assets.
+      # not Vite's legacy browser-program fallbacks. Runtime preparation
+      # separately produces the exact kernel and host assets.
       - name: Prepare exact uncredentialed runtime
         run: |
           set -euo pipefail
@@ -479,8 +361,6 @@ jobs:
                   current_inputs: {
                     archive_files: ($products_root + "/" + .id +
                       "/archive-files.json"),
-                    package_roots: ($products_root + "/" + .id +
-                      "/package-roots.json"),
                     program_index: $program_index
                   },
                   id: .id

@@ -68,7 +68,7 @@ jobs:
           test ! -e "$playwright_browsers"
           echo "PLAYWRIGHT_BROWSERS_PATH=$playwright_browsers" >>"$GITHUB_ENV"
           # ubuntu-latest already carries Chromium's shared-library closure.
-          # Do not mutate hosted apt state: mirror stalls block the whole canary.
+          # Do not mutate hosted apt state: mirror stalls block the deployment build.
           PLAYWRIGHT_BROWSERS_PATH="$playwright_browsers" npx playwright install \
             chromium
 
@@ -126,6 +126,43 @@ jobs:
           mkdir -m 0700 "$package_cache"
           echo "WASM_POSIX_BINARY_CACHE_ROOT=$package_cache" >>"$GITHUB_ENV"
 
+      - name: Preflight the complete canonical bottle closure
+        run: |
+          set -euo pipefail
+          registry="apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.generated.json"
+          catalog="images/vfs/products/generated/catalog.json"
+          formula_list="$RUNNER_TEMP/abi-staging-pages-formulae.txt"
+          target_abi=$(sed -nE \
+            's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
+            crates/shared/src/lib.rs)
+          jq -e --slurpfile pages "$registry" '
+            [.products[].manifest |
+              select(.id as $id |
+                ($pages[0].products | map(.id) | index($id)) != null) |
+              (.software["package"] // []) | length] |
+            all(. == 0)
+          ' "$catalog"
+          jq -r --slurpfile pages "$registry" '
+            [.products[].manifest |
+              select(.id as $id |
+                ($pages[0].products | map(.id) | index($id)) != null) |
+              .software.homebrew[].formulae[]] |
+            unique[]
+          ' "$catalog" >"$formula_list"
+          test -s "$formula_list"
+          env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_RUNTIME_TOKEN \
+            -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+            -u ACTIONS_ID_TOKEN_REQUEST_URL \
+            -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY \
+            -u GOOGLE_APPLICATION_CREDENTIALS \
+            -u KANDELO_STAGING_BOT_TOKEN -u NPM_TOKEN \
+            -u NODE_AUTH_TOKEN -u SSH_AUTH_SOCK \
+            bash scripts/dev-shell.sh npx tsx \
+              scripts/abi-staging-pages-producer.ts preflight \
+                --tap-root "$KANDELO_PAGES_TAP_ROOT" \
+                --abi "$target_abi" \
+                --formula-list "$formula_list"
+
       - name: Materialize exact current product inputs
         run: |
           set -euo pipefail
@@ -134,75 +171,6 @@ jobs:
           catalog="images/vfs/products/generated/catalog.json"
           test ! -e "$input_root"
           mkdir -m 0700 "$input_root"
-          env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_RUNTIME_TOKEN \
-            -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
-            -u ACTIONS_ID_TOKEN_REQUEST_URL \
-            -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY \
-            -u GOOGLE_APPLICATION_CREDENTIALS -u NPM_TOKEN \
-            -u NODE_AUTH_TOKEN -u SSH_AUTH_SOCK \
-            bash scripts/dev-shell.sh env \
-              "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
-              bash -s -- "$input_root" "$registry" "$catalog" <<'BASH'
-          set -euo pipefail
-          input_root=$1
-          registry=$2
-          catalog=$3
-          source_root=$(pwd -P)
-          package_list="$input_root/package-list.txt"
-          jq -r --slurpfile pages "$registry" '
-            [.products[].manifest |
-              select(.id as $id |
-                ($pages[0].products | map(.id) | index($id)) != null) |
-              .software.package[].name] |
-            unique[]
-          ' "$catalog" >"$package_list"
-          mapfile -t packages <"$package_list"
-          ((${#packages[@]} > 0))
-          [[ $(printf '%s\n' "${packages[@]}" | sort -u | wc -l) \
-            -eq ${#packages[@]} ]]
-
-          # WHY: the selected product roots are the authority here. Their
-          # published archives are complete independently of unrelated
-          # registry packages. Fetch only these roots without source fallback;
-          # a missing selected root is a real production-input failure.
-          fetch_args=(--fetch-only)
-          for package in "${packages[@]}"; do
-            [[ $package =~ ^[a-z0-9][a-z0-9+._-]*$ ]]
-            if [ "$package" != homebrew-bootstrap ]; then
-              fetch_args+=(--package "$package")
-            fi
-          done
-          bash scripts/fetch-binaries.sh "${fetch_args[@]}"
-          # WHY: the old ABI 42 shell-selection release was a migration lane,
-          # not an input to current Pages products. The ABI 43 package release
-          # deliberately does not carry this support-data package, so build
-          # only this one reviewed package from the protected current source.
-          bash scripts/fetch-binaries.sh --package homebrew-bootstrap
-
-          bootstrap_path=$(bash scripts/resolve-binary.sh \
-            programs/homebrew-bootstrap/homebrew-bootstrap.zip)
-          [ -f "$bootstrap_path" ] && [ ! -L "$bootstrap_path" ]
-          bash scripts/stage-homebrew-bootstrap-browser-asset.sh \
-            "$bootstrap_path" \
-            apps/browser-demos/public/homebrew-bootstrap.zip
-
-          host_target=$(rustc -vV | awk '/^host/ {print $2}')
-          cargo build --release -p xtask --target "$host_target"
-          xtask="$source_root/target/$host_target/release/xtask"
-          [ -x "$xtask" ]
-          all_package_roots="$input_root/all-package-roots.json"
-          printf '{}\n' >"$all_package_roots"
-          for package in "${packages[@]}"; do
-            package_root=$(
-              "$xtask" build-deps --arch wasm32 path "$package"
-            )
-            [ -d "$package_root" ] && [ ! -L "$package_root" ]
-            next="$input_root/.all-package-roots.next"
-            jq -cS --arg package "$package" --arg path "$package_root" \
-              '. + {($package): $path}' "$all_package_roots" >"$next"
-            mv "$next" "$all_package_roots"
-          done
-
           archive_authority="$input_root/archive-authority.json"
           jq -cS --slurpfile pages "$registry" '
             [.products[].manifest |
@@ -251,16 +219,6 @@ jobs:
             product_root="$products_root/$product"
             mkdir "$product_root"
             jq -cS --arg id "$product" \
-              --slurpfile roots "$all_package_roots" '
-                [.products[].manifest | select(.id == $id) |
-                  .software.package[].name] | unique as $names |
-                if any($names[]; $roots[0][.] == null)
-                then error("missing exact package root")
-                else reduce $names[] as $name ({};
-                  . + {($name): $roots[0][$name]})
-                end
-              ' "$catalog" >"$product_root/package-roots.json"
-            jq -cS --arg id "$product" \
               --slurpfile archives "$all_archive_files" '
                 [.products[].manifest | select(.id == $id) |
                   .software.archive[].id] | unique as $ids |
@@ -271,12 +229,10 @@ jobs:
                 end
               ' "$catalog" >"$product_root/archive-files.json"
           done < <(jq -r '.products[].id' "$registry")
-          BASH
 
       # WHY: canonical Pages resolves software from the seven product images,
-      # not Vite's legacy browser-program fallbacks. Materialize only the
-      # product-owned package inputs here; runtime preparation separately
-      # produces the exact kernel and host assets.
+      # not Vite's legacy browser-program fallbacks. Runtime preparation
+      # separately produces the exact kernel and host assets.
       - name: Prepare exact uncredentialed runtime
         run: |
           set -euo pipefail
@@ -375,8 +331,6 @@ jobs:
                   current_inputs: {
                     archive_files: ($products_root + "/" + .id +
                       "/archive-files.json"),
-                    package_roots: ($products_root + "/" + .id +
-                      "/package-roots.json"),
                     program_index: $program_index
                   },
                   id: .id
@@ -407,7 +361,8 @@ jobs:
               }
             ' >"$handoff"
 
-      - name: Produce admitted canonical Pages products
+      - name: Build the seven ABI products directly for shipping
+        id: shipping
         run: |
           set -euo pipefail
           handoff="$RUNNER_TEMP/abi-staging-pages-handoff.json"
@@ -424,155 +379,41 @@ jobs:
               "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
               "PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH" \
               npx tsx \
-              scripts/abi-staging-pages-producer.ts produce \
+              scripts/abi-staging-pages-producer.ts ship \
                 --input "$handoff" \
                 --output-root "$pages_output"
+          echo "ready=true" >>"$GITHUB_OUTPUT"
 
-      - name: Validate Pages readiness and select ready or hold
-        id: readiness
+      - name: Validate the direct shipping tree
         run: |
           set -euo pipefail
           pages_output="$RUNNER_TEMP/abi-staging-pages-output"
-          readiness="$pages_output/readiness.json"
-          python3 - "$readiness" <<'PY'
-          import os
-          import stat
-          import sys
-
-          metadata = os.lstat(sys.argv[1])
-          if not stat.S_ISREG(metadata.st_mode):
-              raise SystemExit("Pages readiness is not a regular file")
-          if metadata.st_size <= 0 or metadata.st_size > 16777216:
-              raise SystemExit("Pages readiness exceeds its byte bound")
-          PY
+          site_root="$pages_output/source-tree"
+          deployment="$site_root/.well-known/kandelo/pages-deployment.json"
           registry="apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.generated.json"
-          source_tree=$(git rev-parse 'HEAD^{tree}')
           target_abi=$(sed -nE \
             's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
             crates/shared/src/lib.rs)
           snapshot_sha=$(sha256sum abi/snapshot.json | awk '{print $1}')
-          registry_sha=$(sha256sum "$registry" | awk '{print $1}')
-          tap_commit=$(git -C "$KANDELO_PAGES_TAP_ROOT" rev-parse HEAD)
-          tap_tree=$(git -C "$KANDELO_PAGES_TAP_ROOT" rev-parse 'HEAD^{tree}')
-          tap_source=$(jq -cn \
-            --arg commit "$tap_commit" \
-            --arg tree "$tap_tree" \
-            '{commit:$commit,repository:"kandelo-dev/homebrew-tap-core",tree:$tree}')
-          host_target=$(bash scripts/dev-shell.sh rustc -vV |
-            awk '/^host: / { print $2 }')
-          [[ "$host_target" =~ ^[A-Za-z0-9_.-]+$ ]]
-          bash scripts/dev-shell.sh cargo run -p xtask \
-            --target "$host_target" --quiet -- \
-            abi-staging pages-readiness validate-readiness "$readiness"
-          ready=$(jq -r '
-            if .ready == true then "true"
-            elif .ready == false then "false"
-            else error("readiness result is not Boolean")
-            end
-          ' "$readiness")
           jq -e \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg commit "$GITHUB_SHA" \
-            --arg tree "$source_tree" \
             --arg snapshot "$snapshot_sha" \
-            --arg registry_sha "$registry_sha" \
-            --arg registry_path "$registry" \
-            --argjson tap_source "$tap_source" \
             --argjson abi "$target_abi" \
-            --argjson ready "$ready" \
             --slurpfile registry "$registry" '
-              .ready == $ready and
-              .source == {
-                commit: $commit,
-                repository: $repository,
-                tree: $tree
-              } and
-              .tap_source == $tap_source and
+              .kind == "kandelo-pages-site-manifest" and
+              .schema == 1 and
+              .shipping_mode == "direct-canonical-bottles" and
+              .source.repository == $repository and
+              .source.commit == $commit and
               .target_abi == {
                 snapshot_sha256: $snapshot,
                 version: $abi
               } and
-              .pages_registry.path == $registry_path and
-              .pages_registry.sha256 == $registry_sha and
-              (.pages_registry.products | map(.id)) ==
-                ($registry[0].products | map(.id)) and
+              (.products | map({id,load})) == $registry[0].products and
               (tostring | contains("-candidates/") | not)
-            ' "$readiness" >/dev/null
-          if [ "$ready" = false ]; then
-            hold_inventory=$(python3 - "$pages_output" <<'PY'
-          import json
-          from pathlib import Path
-          import sys
-
-          root = Path(sys.argv[1])
-          entries = sorted(
-              path.relative_to(root).as_posix()
-              for path in root.rglob("*")
-          )
-          print(json.dumps(entries, separators=(",", ":")))
-          PY
-            )
-            [ "$hold_inventory" = '["readiness.json"]' ]
-            readiness_sha=$(sha256sum "$readiness" | awk '{print $1}')
-            blockers=$(jq -cS '.blockers' "$readiness")
-            {
-              echo "### Pages canary hold"
-              echo
-              echo "- readiness SHA-256: \`$readiness_sha\`"
-              echo "- blockers: \`$blockers\`"
-            } >>"$GITHUB_STEP_SUMMARY"
-          fi
-          echo "ready=$ready" >>"$GITHUB_OUTPUT"
-
-      - name: Validate the complete canonical Pages tree
-        if: steps.readiness.outputs.ready == 'true'
-        run: |
-          set -euo pipefail
-          pages_output="$RUNNER_TEMP/abi-staging-pages-output"
-          readiness="$pages_output/readiness.json"
-          site_manifest="$pages_output/site-manifest.json"
-          site_root="$pages_output/source-tree"
-          registry="apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.generated.json"
-          readiness_sha=$(sha256sum "$readiness" | awk '{print $1}')
-          tap_commit=$(git -C "$KANDELO_PAGES_TAP_ROOT" rev-parse HEAD)
-          tap_tree=$(git -C "$KANDELO_PAGES_TAP_ROOT" rev-parse 'HEAD^{tree}')
-          tap_source=$(jq -cn \
-            --arg commit "$tap_commit" \
-            --arg tree "$tap_tree" \
-            '{commit:$commit,repository:"kandelo-dev/homebrew-tap-core",tree:$tree}')
-          host_target=$(bash scripts/dev-shell.sh rustc -vV |
-            awk '/^host: / { print $2 }')
-          [[ "$host_target" =~ ^[A-Za-z0-9_.-]+$ ]]
-          bash scripts/dev-shell.sh cargo run -p xtask \
-            --target "$host_target" --quiet -- \
-            abi-staging pages-readiness validate-site "$site_manifest"
-          jq -e \
-            --argjson tap_source "$tap_source" \
-            --slurpfile registry "$registry" '
-              .ready == true and
-              .blockers == [] and
-              (.products | map(.id)) ==
-                ($registry[0].products | map(.id)) and
-              all(.products[];
-                (.node_receipts | length > 0) and
-                (.browser_receipts | length > 0) and
-                all(.admissions[];
-                  .projection.admission_record_sha256 == .record_sha256 and
-                  .projection.tap_source == $tap_source)) and
-              (tostring | contains("-candidates/") | not)
-            ' "$readiness" >/dev/null
-          jq -e --arg readiness_sha "$readiness_sha" \
-            --slurpfile readiness "$readiness" '
-              .readiness_record_sha256 == $readiness_sha and
-              .source == $readiness[0].source and
-              .tap_source == $readiness[0].tap_source and
-              .target_abi == $readiness[0].target_abi and
-              .pages_registry == $readiness[0].pages_registry and
-              (.products | map(.id)) ==
-                ($readiness[0].products | map(.id)) and
-              (tostring | contains("-candidates/") | not)
-            ' "$site_manifest" >/dev/null
-          python3 - "$site_root" "$site_manifest" <<'PY'
+            ' "$deployment" >/dev/null
+          python3 - "$site_root" "$deployment" <<'PY'
           import hashlib
           import json
           import os
@@ -581,9 +422,9 @@ jobs:
           import sys
 
           root = Path(sys.argv[1])
-          manifest_path = Path(sys.argv[2])
-          manifest_bytes = manifest_path.read_bytes()
-          manifest = json.loads(manifest_bytes)
+          deployment_path = Path(sys.argv[2])
+          deployment_bytes = deployment_path.read_bytes()
+          manifest = json.loads(deployment_bytes)
           actual = []
           total = 0
           for directory, directories, files in os.walk(root, followlinks=False):
@@ -611,15 +452,28 @@ jobs:
           actual.sort(key=lambda entry: entry["path"])
           if total > 1_000_000_000:
               raise SystemExit("Pages tree exceeds its byte bound")
-          deployment_path = ".well-known/kandelo/pages-deployment.json"
-          deployment = [entry for entry in actual if entry["path"] == deployment_path]
-          if len(deployment) != 1 or (root / deployment_path).read_bytes() != manifest_bytes:
+          ledger_path = ".well-known/kandelo/pages-deployment.json"
+          deployment = [entry for entry in actual if entry["path"] == ledger_path]
+          if len(deployment) != 1 or (root / ledger_path).read_bytes() != deployment_bytes:
               raise SystemExit("Pages artifact lacks the exact deployment manifest")
-          inventory = [entry for entry in actual if entry["path"] != deployment_path]
+          inventory = [entry for entry in actual if entry["path"] != ledger_path]
           if inventory != manifest["files"]:
               raise SystemExit("Pages artifact differs from its exact site inventory")
           PY
           node scripts/check-pages-publish-size.mjs "$site_root" 1000000000
+
+      - name: Smoke-test the exact assembled ABI 43 site in Chromium
+        run: |
+          set -euo pipefail
+          env \
+            PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH" \
+            KANDELO_PLAYWRIGHT_PORT=5526 \
+            KANDELO_ABI_STAGING_ASSEMBLED_SITE_ROOT="$RUNNER_TEMP/abi-staging-pages-output/source-tree" \
+            KANDELO_PLAYWRIGHT_SERVE_DIST=1 \
+            npx --prefix apps/browser-demos playwright test \
+              --config=apps/browser-demos/playwright.config.ts \
+              apps/browser-demos/test/abi-staging-pages-assembled-site.spec.ts \
+              --project=chromium
 
       - name: Confirm this is the newest Pages canary run
         id: retention_freshness
@@ -628,17 +482,8 @@ jobs:
           PAGES_WORKFLOW_FILE: abi-staging-pages-canary.yml
         run: bash scripts/check-pages-run-freshness.sh
 
-      - name: Upload the incomplete Pages hold
-        if: steps.readiness.outputs.ready == 'false' && steps.retention_freshness.outputs.retain == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: abi-staging-pages-hold-${{ github.run_id }}
-          path: ${{ runner.temp }}/abi-staging-pages-output/readiness.json
-          retention-days: 7
-          if-no-files-found: error
-
       - name: Upload the complete inert Pages canary
-        if: steps.readiness.outputs.ready == 'true' && steps.retention_freshness.outputs.retain == 'true'
+        if: steps.retention_freshness.outputs.retain == 'true'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           name: abi-staging-pages-canary-${{ github.run_id }}
