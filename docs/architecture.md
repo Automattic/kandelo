@@ -2431,6 +2431,14 @@ the default 256-frame (5.333 ms) fragment cadence against the same 21.333 ms
 bounded queue. These are footprint and configured-buffer measurements, not a
 throughput or performance claim.
 
+## Wayland compositor (`wlcompositor`, `wlterm`)
+
+On top of the DRM/KMS + evdev surfaces above sits a real Wayland stack that runs entirely in-kernel — no host-side Wayland. `programs/wlcompositor/` is a PID-2 server built against a wasm32 port of `libwayland-server`: it owns the `card0` scanout (via the same KMSDRM/`libgbm` path SDL2 uses), reads input from `/dev/input/event0` (keyboard) and `event1` (pointer) through a real `libinput` 1.25.0 port, and exports the core protocol plus `wl_shm`, `xdg_shell`, `wl_seat`, and `wl_output`. Clients connect over a Unix socket at `/tmp/wayland-0` (`/` is a read-only rootfs and `/var/run` is `EACCES` for non-root, so the well-known runtime dir is `/tmp`). Buffer sharing is zero-copy: clients allocate `wl_shm` pools backed by `gbm` dumb BOs and pass the prime-fd to the compositor via `SCM_RIGHTS`, which imports it with `gbm_bo_import` and composites into the scanout buffer. Keymaps are compiled with a wasm32 `libxkbcommon` port and handed to clients as an mmap'd fd over `wl_keyboard.keymap`.
+
+Kandelo-authored clients build on `libkwl` (`examples/libs/libkwl/`), a small toolkit over `libwayland-client` that wraps registry bind, an `xdg` CSD toplevel, double-buffered `wl_shm` back buffers, xkb keysym/UTF-8 translation, and a `kwl_dispatch` event loop; it exposes `kwl_display_fd()` so an app can `poll` the Wayland connection alongside its own fds. Drawing goes through `libwpkdraw` (`examples/libs/wpkdraw/`), a CPU rasterizer (alpha-blended clear/pixel/rect + an `stb_truetype` font engine over a bundled Inconsolata) that renders into a caller-owned ARGB buffer. `programs/wlterm/` is the first real client: a terminal that `forkpty()`s a shell (`dash`), runs an in-tree VT100 core (`vt100.c`), and multiplexes the Wayland display fd and the PTY master fd in one `poll` loop — Wayland key events become PTY writes, PTY output feeds the VT100 grid and is rendered back into the libkwl window. Because `wlterm` forks, its wasm is mandatorily processed by `wasm-fork-instrument` (see the fork-instrumentation policy in `CLAUDE.md`).
+
+The stack is dual-host: the Node smoke gates (`host/test/{wpkdraw,libkwl,wlcompositor,wlterm}-smoke.test.ts`) drive a two-process compositor+client harness, and the browser demo (`/?demo=wayland`, staged by `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts` and gated by `apps/browser-demos/test/kandelo-wayland.spec.ts`) boots the compositor + `wlterm` against `card0` mirrored to an `OffscreenCanvas`, with DOM keyboard input injected as evdev events. This is the same KMS-to-canvas + `BrowserInputSource` path the `modeset` and `sdl2` demos use.
+
 ## Signal Subsystem
 
 Signals are delivered at syscall boundaries. When a process has a pending signal:

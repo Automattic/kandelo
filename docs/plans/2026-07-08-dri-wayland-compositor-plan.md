@@ -1,7 +1,7 @@
 # DRI v2 — Wayland-first compositor plan (SUPERSEDES the custom-protocol compositor)
 
 Date: 2026-07-08
-Branch: `explore-dri-sdl2`
+Branch: `explore-dri-wayland`
 Worktree: `/Users/mho/emdash/worktrees/kandelo/wasm-posix-kernel/emdash/explore-direct-rendering-infrastructure-9vbaz`
 
 > **Status:** This document supersedes `2026-07-13-wpkcompositor-plan.md`
@@ -260,7 +260,7 @@ Client and compositor land as a stack of small PRs. v1 target is milestone
 | PR4 | real `libxkbcommon` port (keymap translation; compositor + clients link it). **DONE.** |
 | PR5 | real `libinput` port (gestures, palm rejection, multi-device). Lands as a bottom-up sub-stack — **PR5a `libevdev` (DONE)**, **PR5b `mtdev` stub + `libudev`/`input_id` shim (DONE)**, **PR5c `libinput` 1.25.0 core (DONE)** — since real libinput builds on all three (the original one-line scope omitted libevdev + mtdev). The real `libinput` serves the compositor; SDL2 keeps `libinput-lite` (it references no libinput symbols). |
 | PR6 | `programs/wlcompositor/` — PID-2 server: core + `wl_shm` + `xdg_shell` + `wl_seat` + `wl_output`. **DONE.** Two-process smoke gate (`host/test/wlcompositor-smoke.test.ts`) drives a real client through connect → bind-all-globals → keymap fd-pass → xdg configure → shared-buffer composite (red pixel proof) → KMS flip → injected key+button delivery. Uncovered + fixed two kernel bugs: nested epoll readiness (epoll-on-epoll) and the `epoll_event` wasm32 layout (see §8.3). |
-| **PR7** | `examples/libs/libkwl/` toolkit + `wlterm` — **BROWSER GATE, milestone D′** |
+| **PR7** | `examples/libs/wpkdraw/` CPU rasterizer + `examples/libs/libkwl/` toolkit + `programs/wlterm/` (forkpty'd `dash` over a VT100 core) — **BROWSER GATE, milestone D′. DONE.** Node smoke gates (`host/test/{wpkdraw,libkwl,wlterm}-smoke.test.ts`) + browser gate (`apps/browser-demos/test/kandelo-wayland.spec.ts`, `/?demo=wayland`). Uncovered + fixed one kernel bug: PTY master `read()` dropped buffered output when the slave closed with the buffer non-empty (drain-before-EOF, behavioral only, no ABI bump); and replaced the compositor's minimal xkb keymap with a full US-QWERTY map so `wlterm` receives Return/printables. |
 | PR8 | `wlfm` (file manager) + `xdg_popup` |
 | PR9 | `wlpanel` + `wlbeep` |
 | — | **Post-v1 GL (F′):** PR10 GPU-tier ioctls → PR11 `zwp_linux_dmabuf_v1` → PR12 sdl2 wayland backend → PR13 `wlcube` |

@@ -1,0 +1,2 @@
+# Build scratch (object files + the archive staged into the sysroot).
+build/

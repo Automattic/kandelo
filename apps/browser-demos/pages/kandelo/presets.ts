@@ -139,4 +139,15 @@ export const PRESET_LIBRARY: Preset[] = [
     bootCommand: ["bash", "-l", "-i"],
     estimatedUrlBytes: 612,
   },
+  {
+    id: "wayland",
+    title: "Wayland terminal",
+    summary: "A real Wayland stack on /dev/dri/card0: wlcompositor (a wl_shm/xdg_shell server driving KMS) composites wlterm — a VT100 terminal built on the in-tree libkwl toolkit — running a forkpty'd dash shell. Type to drive the shell; output renders through the compositor.",
+    base: SHELL_BASE,
+    packages: ["bash@local", "coreutils@local"],
+    accent: "#3a7d7b",
+    glyph: "W",
+    bootCommand: ["bash", "-l", "-i"],
+    estimatedUrlBytes: 612,
+  },
 ];
