@@ -928,6 +928,15 @@ function profileForDescriptor(desc: BootDescriptor, fb?: FbDemo): LiveProfile {
     vfsUrl,
     software: undefined,
     descriptor: desc,
+    init: profile.init === undefined
+      ? undefined
+      : {
+        ...profile.init,
+        // WHY: an explicit VFS image is a complete product closure. Fetching
+        // the built-in init binary would hide an incomplete image and makes
+        // canonical Pages depend on the forbidden legacy binary graph.
+        programUrl: undefined,
+      },
   };
 }
 
@@ -1023,7 +1032,12 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       argv: spec.init.argv.slice(),
       env: initEnv(spec.init.env),
       cwd: spec.init.cwd,
-      programUrl: spec.init.programUrl,
+      // Canonical Pages products own their complete executable closure just
+      // like an explicit VFS descriptor does. The legacy URL is available
+      // only when the ordinary checked-out binary graph owns the image.
+      programUrl: CANONICAL_PAGES_VFS_LOADER === undefined
+        ? spec.init.programUrl
+        : undefined,
       uid: spec.init.uid,
       gid: spec.init.gid,
       maxWorkers: spec.init.maxWorkers,
