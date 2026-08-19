@@ -341,7 +341,7 @@ for src in "$REPO_ROOT/programs/"*.c; do
             # guest sources before those immutable products are available.
             build_program "$src" "$TEST_FIXTURE_DIR/wasm32"
             ;;
-        modeset.c|dri-modeset.c|dumb_roundtrip.c)
+        modeset.c|dri-modeset.c|dumb_roundtrip.c|gbm_surface_smoke.c)
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
             ;;
