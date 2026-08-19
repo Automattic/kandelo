@@ -131,6 +131,11 @@ homebrew_formula_bottle_root_matches_build_authority \
   https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-43-candidates/lsof \
   https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-42/lsof ||
   fail "candidate build rejected the preceding ABI's canonical Formula root"
+homebrew_formula_bottle_root_matches_build_authority \
+  kandelo-dev/homebrew-tap-core kandelo-dev/tap-core lsof 43 \
+  https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-43-candidates/lsof \
+  https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-43/lsof ||
+  fail "candidate build rejected the current ABI's canonical Formula root"
 if homebrew_formula_bottle_root_matches_build_authority \
   kandelo-dev/homebrew-tap-core kandelo-dev/tap-core lsof 43 \
   https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-43-candidates/lsof \
