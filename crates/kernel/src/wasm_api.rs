@@ -10427,6 +10427,34 @@ pub extern "C" fn kernel_getsockopt(
         return result;
     }
 
+    // Handle struct ucred { pid_t pid; uid_t uid; gid_t gid; } (SO_PEERCRED).
+    // 12 bytes, three little-endian u32s. libwayland's wl_client_create fails
+    // outright if this errors, so every accepted Wayland client depends on it.
+    if level == SOL_SOCKET && optname == SO_PEERCRED {
+        let result = match syscalls::sys_getsockopt_peercred(proc, fd) {
+            Ok((pid, uid, gid)) => {
+                let mut tmp = [0u8; 12];
+                tmp[0..4].copy_from_slice(&pid.to_le_bytes());
+                tmp[4..8].copy_from_slice(&uid.to_le_bytes());
+                tmp[8..12].copy_from_slice(&gid.to_le_bytes());
+                match write_getsockopt_bytes(
+                    optval_ptr,
+                    optval_capacity,
+                    optlen_ptr,
+                    optlen_capacity,
+                    &tmp,
+                ) {
+                    Ok(()) => 0,
+                    Err(e) => -(e as i32),
+                }
+            }
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+        return result;
+    }
+
     // Handle string-valued SO_BINDTODEVICE.
     if level == SOL_SOCKET && optname == SO_BINDTODEVICE {
         let result = match syscalls::sys_getsockopt_bindtodevice(proc, fd) {

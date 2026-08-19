@@ -345,6 +345,30 @@ if ls "$REPO_ROOT"/programs/sdl2_*.c >/dev/null 2>&1 \
     cp -R "$SDL2_PREFIX/include/SDL2" "$SYSROOT/include/SDL2"
 fi
 
+# Resolve libwayland (+ its deps libffi + wayland-protocols) and symlink
+# its client/server archives, the libffi shim archive, and the public
+# headers into the sysroot when there are any wl_*.c programs to build.
+# libwayland's protocol glue is generated at resolve time from the
+# vendored wayland.xml by the flake's wayland-scanner, so this step needs
+# the dev shell (scripts/dev-shell.sh) on PATH. Re-resolved every run —
+# the resolver is cached, so it's cheap when nothing changed. See
+# docs/plans/2026-07-08-dri-wayland-compositor-plan.md (PR3).
+if ls "$REPO_ROOT"/programs/wl_*.c >/dev/null 2>&1; then
+    echo "==> Resolving libwayland (and deps) for Wayland programs..."
+    HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libwayland >/dev/null)
+    LIBWL_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libwayland)"
+    LIBFFI_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libffi)"
+
+    ln -sfn "$LIBWL_PREFIX/lib/libwayland-client.a" "$SYSROOT/lib/libwayland-client.a"
+    ln -sfn "$LIBWL_PREFIX/lib/libwayland-server.a" "$SYSROOT/lib/libwayland-server.a"
+    ln -sfn "$LIBFFI_PREFIX/lib/libffi.a"           "$SYSROOT/lib/libffi.a"
+
+    for h in "$LIBWL_PREFIX/include"/wayland-*.h; do
+        ln -sfn "$h" "$SYSROOT/include/$(basename "$h")"
+    done
+fi
+
 echo "Building user programs..."
 for src in "$REPO_ROOT/programs/"*.c; do
     [ -f "$src" ] || continue
@@ -367,6 +391,17 @@ for src in "$REPO_ROOT/programs/"*.c; do
         libdrm-kms-smoke.c)
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libdrm.a"
+            ;;
+        wl_smoke.c)
+            # In-process client+server proof. Both archives share the
+            # util/connection/protocol objects; on-demand archive
+            # resolution pulls each once (server.a first), so linking
+            # both is duplicate-free. libffi (the wl_closure_invoke
+            # shim) must come AFTER so ffi_call/ffi_prep_cif resolve.
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libwayland-server.a" \
+                "$SYSROOT/lib/libwayland-client.a" \
+                "$SYSROOT/lib/libffi.a"
             ;;
         sdl2_*.c)
             # SDL2's KMSDRM backend calls into gbm and libdrm, so both
