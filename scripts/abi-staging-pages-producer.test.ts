@@ -1948,6 +1948,7 @@ async function createSevenProductAssembledFixture(
       "/bin",
       "/etc",
       "/etc/dinit.d",
+      "/etc/kandelo",
       "/home",
       "/home/user",
       "/sbin",
@@ -1972,6 +1973,16 @@ async function createSevenProductAssembledFixture(
       fs.write(fd, program, 0, program.byteLength);
       fs.close(fd);
     }
+    const shellConfig = new TextEncoder().encode(
+      '{"argv":["bash","-l","-i"],"path":"/bin/bash","version":1}\n',
+    );
+    const shellConfigFd = fs.open(
+      "/etc/kandelo/shell.json",
+      0x40 | 0x1 | 0x200,
+      0o644,
+    );
+    fs.write(shellConfigFd, shellConfig, 0, shellConfig.byteLength);
+    fs.close(shellConfigFd);
     const nginxService = new TextEncoder().encode(
       "type = process\ncommand = /bin/sh\n",
     );
