@@ -140,3 +140,8 @@ packages/registry/*/package.pr.toml
 # replacement across cooperating xtask processes. It is intentionally retained
 # so waiters never split onto different lock inodes.
 .*.kandelo-index.lock
+
+# SDL2 playground: auto-generated TTF→C-byte-array header.
+# Regenerated from programs/sdl2/third_party/Inconsolata-Regular.ttf by
+# scripts/build-programs.sh on every build.
+programs/sdl2/third_party/inconsolata_ttf.h

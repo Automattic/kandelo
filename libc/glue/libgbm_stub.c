@@ -347,6 +347,30 @@ union gbm_bo_handle gbm_bo_get_handle(struct gbm_bo *bo) {
     return h;
 }
 
+/* Every BO the kernel's CREATE_DUMB path produces is a single linear
+ * plane, so the per-plane accessors collapse onto the whole-BO ones.
+ * SDL2's KMSDRM backend walks planes to build its drmModeAddFB2 call. */
+
+int gbm_bo_get_plane_count(struct gbm_bo *bo) {
+    (void) bo;
+    return 1;
+}
+
+union gbm_bo_handle gbm_bo_get_handle_for_plane(struct gbm_bo *bo, int plane) {
+    union gbm_bo_handle h;
+    h.u32 = plane == 0 ? bo->handle : 0;
+    return h;
+}
+
+uint32_t gbm_bo_get_stride_for_plane(struct gbm_bo *bo, int plane) {
+    return plane == 0 ? bo->stride : 0;
+}
+
+uint32_t gbm_bo_get_offset(struct gbm_bo *bo, int plane) {
+    (void) bo; (void) plane;
+    return 0;
+}
+
 int gbm_device_is_format_supported(struct gbm_device *gbm,
                                    uint32_t format, uint32_t flags) {
     (void) gbm; (void) flags;
