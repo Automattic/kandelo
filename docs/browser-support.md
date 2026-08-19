@@ -514,8 +514,8 @@ Browser demos use pre-built **VFS images** — binary snapshots of a `MemoryFile
    it does not raise the filesystem maximum beyond the image's superblock
    limit.
 
-The canonical Homebrew shell has a 512 MiB filesystem ceiling. Products that
-copy that shell and add their own application tree use a separate 768 MiB
+The canonical package-backed shell has a 512 MiB filesystem ceiling. Products
+that copy that shell and add their own application tree use a separate 768 MiB
 profile: SharedFS derives its fixed inode-table size from the declared byte
 ceiling, so merely having free data blocks does not guarantee that another
 file can be created. `saveShellDerivedVfsImage()` rejects a product build
@@ -531,9 +531,10 @@ the serialized artifact's encoded growth ceiling and capacity metadata to equal
 the 768 MiB product profile. A future product that intentionally needs a larger
 reviewed profile must pass that exact ceiling explicitly rather than silently
 drifting from its browser consumer; an override cannot select a smaller
-profile. The Homebrew main-shell composer applies the same serialized-ceiling
-check against its selected `--max-bytes` contract before it creates the output
-artifact. Host-tree copies fail the build on any read or VFS write error.
+profile. The preserved Homebrew compatibility composer applies the same
+serialized-ceiling check against its selected `--max-bytes` contract before it
+creates an output artifact. Host-tree copies fail the build on any read or VFS
+write error.
 Intentional omissions are declared through the copy helper's `exclude` option,
 and every unexcluded symlink must be preserved explicitly or the build fails.
 
@@ -644,8 +645,9 @@ file no larger than 256 KiB, contain valid UTF-8 and JSON, and use a supported
 version. The loader validates every profile before using any of them, so a
 malformed unselected profile cannot hide behind the current URL. Producers
 that already have a reviewed canonical JSON file may copy those exact bytes;
-the bottle-built main shell uses `homebrew/main-shell-demo.json` as the single
-source shared with the legacy image builder.
+the package-backed main shell copies the presentation-only
+`homebrew/main-shell-demo.json`. That shared file grants no bottle or package
+authority.
 
 VFS images do not need to serialize placeholder device nodes. Both Node and
 browser boot replace `/dev` with the authoritative `DeviceFileSystem` and mount
@@ -770,7 +772,7 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | Python (legacy opt-in) | `python-vfs.vfs.zst` | `bash packages/registry/python-vfs/build-python-vfs.sh` | ABI-bound CPython interpreter, complete stdlib, license, aliases, and demo metadata |
 | Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
-| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the sealed flat-lazy bottle closure selected by `homebrew/main-shell-flat-selection.json`; Bash is embedded, the bootstrap/libyaml/Ruby cohort is prepared at boot, and 35 ordinary bottle trees remain first-use |
+| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | package-resolved rootfs with exact Bash, fbDOOM, and modeset inputs plus declared lazy utility and application-bundle outputs |
 | Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | exact lazy shell image plus the package-resolved Node executable, npm 10.9.2 distribution, writable `/work`, and Node demo metadata |
 | WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
@@ -978,10 +980,10 @@ No Perl, Python, or Erlang layer URL is built into the browser. Concrete
 entries require immutable published descriptor/content identities derived from
 their finalized bottle sidecars; missing or mismatched identities fail boot
 instead of falling back to a standalone language VFS. Historical lazy shell
-images used the same substrate directly. The current canonical flat shell does
-not register bottle-backed deferred trees: it eagerly materializes its complete
-reviewed selection, and the image-owned default-shell contract selects that
-embedded Bash.
+images used the same substrate directly. The current package-backed shell does
+not register bottle-backed deferred trees. It materializes the declared Bash
+output at the image-owned default-shell paths and retains checked lazy
+identities for the other declared package outputs.
 
 That direct release proves only its configured acceptance image; it does not
 set generic package browser flags. The separate gallery path first boots a
@@ -996,32 +998,19 @@ is wasm32 success, has an `archive_url`, and sets
 `browser_compatible = true`. Launch-time archive failures are surfaced in the
 UI instead of silently hiding the rest of the gallery.
 
-### Current ABI-42 shell publication (2026-08-13)
+### Package-backed main shell (ABI 43)
 
-The normal shell page resolves the package archive built from
-`homebrew/main-shell-flat-selection.json`. The image embeds Bash and its two
-base libraries, while 37 admitted bottle trees and the package-owned bootstrap
-tree retain sealed authenticated transports. Host boot prepares
-`/usr/bin/brew` by atomically fetching bootstrap, libyaml, and Ruby. The other
-35 bottle trees remain pending until their commands are first used.
+The normal shell target resolves `packages/registry/shell` revision 27. Its
+source recipe composes a declared `rootfs` package, materializes the exact Bash
+output, adds fbDOOM and modeset eagerly, and retains declared utilities and
+application bundles as checked lazy package outputs. The recipe does not
+consume Homebrew bootstrap, bottle-selection, or mirror-plan inputs.
 
-Shell revision 25 and `node-vfs` revision 18 share this exact base-image
-identity. The other shell-derived images are `nginx-vfs` revision 5,
-`nginx-php-vfs` revision 5, `lamp` revision 14, and `wordpress` revision 15.
-All preserve the shell's pending transports, bootstrap binding, atomic seals,
-capacity, and mirror identity. They are part of the canonical package release,
-and Pages resolves them with `./run.sh --fetch-only prepare-browser` from a
-fresh cache.
-
-The shell Chromium proof loads the ordinary production page, verifies the
-served shell digest, runs `brew`, Ruby, and the selected Bash, and verifies the
-boot cohort is fetched once. A second Chromium proof runs the exact
-`npm install --verbose cowsay` flow in the Node image and executes the
-installed binary. The post-activation Pages dispatch starts these checks only
-after it selects an authenticated activation receipt for the exact current
-canonical index. The dispatch carries the source SHA, candidate tag, and index
-digest. Pages independently verifies all three, and the Node proof hashes the
-served VFS response before running npm/cowsay.
+Revision 27 is pending publication. Source-build tests demonstrate the recipe
+and VFS contracts, but a production browser deployment must resolve an admitted
+archive before it can claim this shell product. Historical ABI-42 flat-lazy
+shell releases remain readable under their existing compatibility contracts;
+they are not the source inputs for revision 27.
 
 ### Building VFS images
 
@@ -1040,33 +1029,31 @@ orchestrates explicit resolver builds:
 
 The main shell target resolves the canonical `packages/registry/shell` package
 into `local-binaries`; it does not invoke the image recipe or fbDOOM build
-directly. The package recipe restores the exact platform base, verifies the
-flat selection and its resource policy, embeds the boot-critical base, records
-the sealed lazy bottle trees and mirror plan, writes the shell and demo configs,
-and serializes one image without fetching deferred bottle trees.
+directly. The package recipe restores the exact package-owned rootfs,
+materializes its declared eager program outputs, attaches the declared lazy
+package outputs, writes the shell and demo configs, and serializes one image
+without package lookup or network access.
 `./run.sh --fetch-only build shell-vfs` refuses source fallback.
 
 Shell-derived packages consume that resolved image as a declared dependency.
 Their builders preserve capacity, ABI, lazy transports and seals, bootstrap and
-mirror bindings, and record the exact shell digest and byte count in their own
-metadata. A revision bump on the shell therefore changes the cache key of
+mirror bindings when those fields exist on a historical base, and record the
+exact shell digest and byte count in their own metadata. A revision bump on the
+shell therefore changes the cache key of
 `node-vfs`, `nginx-vfs`, `nginx-php-vfs`, `lamp`, and `wordpress` through the
 normal dependency graph.
 
-GitHub Pages is a package consumer, not a producer. It has no `main`-push or
-pull-request trigger. Activation dispatches the single complete-tree workflow
-only after the canonical index moves and the public bottle mirror is readable.
-The deployment resolves `shell`, `node-vfs`, and `homebrew-bootstrap` in one
-fresh fetch-only cache, atomically stages the exact bootstrap ZIP, and verifies
-the public 37-asset mirror before building. The deployed tree records its source
-and index generation; scheduled activation compares that public record and
-retries a missed or failed dispatch without reopening the terminal candidate.
+GitHub Pages is a package consumer, not a producer. Revision 27 is not yet an
+admitted Pages input. The preserved deployment workflow still validates the
+historical Homebrew bootstrap and bottle mirror for the last published shell;
+it must be migrated or retired before Pages can publish revision 27. The
+pending source recipe does not claim that deployment work is complete.
 
-The dormant source-rootfs and eager closed-selection implementations remain
-diagnostic and historical recovery plumbing. The normal `run.sh`
-browser path, package staging, and Pages workflow do not invoke them. Persisted
-canonical flat-lazy images retain their authenticated pending transports when
-reopened; retired lazy formats do not gain compatibility shims.
+The source-rootfs composer is the canonical revision-27 source recipe. The
+flat-lazy and eager closed-selection implementations remain compatibility and
+historical recovery plumbing. Persisted flat-lazy images retain their
+authenticated pending transports when reopened; retired lazy formats do not
+gain compatibility shims.
 
 ### Adding a new VFS image
 

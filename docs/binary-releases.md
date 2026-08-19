@@ -763,7 +763,20 @@ Sortix is divided into include, basic, and remaining-runtime jobs. These are
 the same natural partitions used by staging-build and prepare-merge; their
 matrix result is still aggregated by the single `test-gate` job.
 
-## Current ABI-42 shell publication (2026-08-13)
+## Package-backed main shell (ABI 43)
+
+Shell revision 27 is built from declared package-registry outputs. Its recipe
+consumes `rootfs`, eager Bash, fbDOOM, and modeset programs, and checked lazy
+utility and application-bundle outputs through resolver-owned directories. It
+does not consume the Homebrew bootstrap, bottle-selection, or mirror-plan
+inputs described by the historical release below.
+
+Revision 27 remains `publication_state = "pending"`. Binary consumers must not
+treat the source recipe or its focused tests as an admitted archive. Once the
+revision is published, its changed identity propagates through shell-derived
+packages by the ordinary dependency graph.
+
+## Historical ABI-42 shell publication (2026-08-13)
 
 `homebrew/main-shell-flat-selection.json` is a package input for shell
 revision 25. Its archive embeds the selected Bash closure and package-owned
