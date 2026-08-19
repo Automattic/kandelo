@@ -260,6 +260,26 @@ async function freezeAndRead(
     }
   }
 
+  // A participant can be abandoned between its unwind report and the end of the
+  // read — a thread that dies there is the known case. Nothing rejects in that
+  // window, so the torn attempt is only visible as a coordinator that never
+  // reached `resumed`.
+  const torn = armed.filter(
+    (source) => source.checkpointFreeze.currentPhase !== "resumed",
+  );
+  if (torn.length > 0) {
+    return {
+      status: "failed",
+      reason:
+        "checkpoint freeze read a machine that stopped being whole: "
+        + torn
+          .map((source) =>
+            source.checkpointFreeze.abandonReason?.message
+            ?? `pid=${source.pid} was abandoned during the read`)
+          .join("; "),
+    };
+  }
+
   if (unreleased.length > 0) {
     // The bytes are real, but the machine they came from is not whole. Report
     // the boundary rather than hand back a checkpoint and a stuck keeper.
