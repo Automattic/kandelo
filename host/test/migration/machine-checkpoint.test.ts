@@ -111,6 +111,47 @@ describe("machine checkpoint of a running guest", () => {
   );
 
   it(
+    "admits no process launch and no rootfs write into the state it reads",
+    { timeout: 60_000 },
+    async () => {
+      const { host, pid } = await startReadyGuest("checkpoint-loop.wasm");
+      const qux = new TextEncoder().encode("qux\n");
+      try {
+        // Both gates close synchronously inside the capture_checkpoint
+        // handler, and the worker port delivers these three messages in the
+        // order they are posted, so the two admissions below meet a closed
+        // gate rather than racing the freeze.
+        const capture = host.captureCheckpoint(TIMEOUTS);
+        const launch = host.spawn(programBytes("test-pthread.wasm"), [
+          "test-pthread",
+        ]);
+        const write = host.writeFileToVfs("/tmp/qux", qux);
+
+        await expect(launch).rejects.toThrow(
+          "checkpoint freeze is in progress",
+        );
+        await expect(write).rejects.toThrow("cannot write a rootfs file");
+
+        const response = await capture;
+        expect(response.status).toBe("captured");
+        if (response.status !== "captured") return;
+        // The refused launch left no bucket behind.
+        expect(response.summary.processes.map((p) => p.pid)).toEqual([pid]);
+
+        // Both admissions come back, so the refusals were the freeze holding
+        // them out rather than the machine losing the capability.
+        await expect(
+          host.spawn(programBytes("test-pthread.wasm"), ["test-pthread"]),
+        ).resolves.toBe(0);
+        await host.writeFileToVfs("/tmp/qux", qux);
+        expect(await host.readFileFromVfs("/tmp/qux")).toEqual(qux);
+      } finally {
+        await host.destroy();
+      }
+    },
+  );
+
+  it(
     "times out on a process parked in a syscall the kernel has not completed",
     { timeout: 60_000 },
     async () => {
