@@ -316,9 +316,9 @@ static void ptr_motion(void *data, struct wl_pointer *p, uint32_t time,
 static void ptr_button(void *data, struct wl_pointer *p, uint32_t serial,
                        uint32_t time, uint32_t button, uint32_t state) {
     struct kwl_window *w = data;
-    if (w->ptr_y < KWL_TITLEBAR_H) {
+    if (state == WL_POINTER_BUTTON_STATE_PRESSED &&
+        w->ptr_y < KWL_TITLEBAR_H) {
         /* Titlebar interactions are the toolkit's, not the app's. */
-        if (state != WL_POINTER_BUTTON_STATE_PRESSED) return;
         if (in_close_box(w, w->ptr_x, w->ptr_y)) {
             struct kwl_event e = { .type = KWL_CLOSE };
             kwl_push(w, &e);
@@ -330,6 +330,10 @@ static void ptr_button(void *data, struct wl_pointer *p, uint32_t serial,
         }
         return;
     }
+    /* Content presses — and EVERY release, wherever the pointer sits: a
+     * press-in-content drag that ends over the titlebar must still see
+     * its release (y goes negative in content coords), or the app's
+     * drag state sticks down. */
     struct kwl_event e = {
         .type = KWL_POINTER_BUTTON,
         .button = button,

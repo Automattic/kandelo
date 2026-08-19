@@ -13,7 +13,9 @@
  *     allocates its double-buffered wl_shm buffer over a gbm prime-fd;
  *   - the app clears the back buffer to a non-black bg, draws a button with
  *     libwpkdraw, and commits — the compositor imports + composites it, and
- *     its COMPOSITE_SAMPLE at (10,10) is the app's bg (asserted non-black);
+ *     its COMPOSITE_SAMPLE at surface-local (10,10) lands in libkwl's CSD
+ *     titlebar (rows 0–27, bg 0x2a3040), asserted non-black — proving the
+ *     client's buffer crossed the process boundary;
  *   - a host-injected absolute pointer motion moves the cursor to a point
  *     inside the window, and a button press there is routed through libkwl
  *     to KWL_POINTER_BUTTON → ON_CLICK;
@@ -109,8 +111,9 @@ describe("libkwl — toolkit window maps, composites, and routes input", () => {
         // frame, and the compositor presented it before printing KWLDEMO_READY.
         await waitFor(out, "KWLDEMO_READY", 20_000, dump);
 
-        // The compositor imported the app's prime-fd and composited its bg;
-        // the sampled pixel must be non-black (the app's WPK_RGB(30,30,40)).
+        // The compositor imported the app's prime-fd and composited the
+        // window; the sample at surface-local (10,10) is in the CSD
+        // titlebar (rows 0-27, bg 0x2a3040) and must be non-black.
         await waitFor(out, "COMPOSITE_SAMPLE", 5_000, dump);
         const sample = out.value.match(/COMPOSITE_SAMPLE x=\d+ y=\d+ px=0x([0-9a-f]{8})/);
         expect(sample, `no composite sample.\n${dump()}`).not.toBeNull();

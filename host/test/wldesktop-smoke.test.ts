@@ -16,6 +16,16 @@
  *     cross-client input isolation: the v1 compositor broadcast events to
  *     every client's resources, which libwayland aborts on at enter time
  *     ("compositor bug: … for a different client");
+ *   - toolbar clicks land content-local: a click on palette swatch 1 →
+ *     WLPAINT_COLOR i=1, a click on the clear button → WLPAINT_CLEAR;
+ *   - the implicit pointer grab holds for a whole stroke: a press inside
+ *     wlpaint's canvas followed by a release with the cursor OUTSIDE the
+ *     window (over the wallpaper) still delivers the release to wlpaint
+ *     (WLPAINT_STROKE_END). Pre-fix the compositor re-focused the surface
+ *     under the cursor on every motion, so the release was swallowed and
+ *     the stroke stayed stuck "drawing". A second variant releases over
+ *     wlpaint's OWN CSD titlebar — libkwl must forward that release to
+ *     the app (content y < 0) instead of consuming it as a titlebar click;
  *   - a press on wlclock's CSD titlebar makes libkwl request
  *     xdg_toplevel.move; the compositor grabs (MOVE_GRAB "wlclock"),
  *     drags the window with the cursor, and drops the grab on release
@@ -71,17 +81,21 @@ function loadBytes(path: string): ArrayBuffer {
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
+/** Waits for `pattern` in ref.value at/after offset `from` — repeated
+ *  markers (WLPAINT_STROKE, WLPAINT_STROKE_END) would otherwise match a
+ *  previous gate's output instantly. */
 async function waitFor(
   ref: { value: string },
   pattern: string | RegExp,
   timeoutMs: number,
   context: () => string,
+  from = 0,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (typeof pattern === "string"
-      ? ref.value.includes(pattern)
-      : pattern.test(ref.value)) return;
+    const s = ref.value.slice(from);
+    if (typeof pattern === "string" ? s.includes(pattern) : pattern.test(s))
+      return;
     await new Promise((r) => setTimeout(r, 5));
   }
   throw new Error(`Timed out waiting for ${String(pattern)}.\n${context()}`);
@@ -159,6 +173,51 @@ describe("wayland desktop — multi-client compositing, routing, move grabs", ()
         expect(Number(stroke[1])).toBeLessThan(430);
         expect(Number(stroke[2])).toBeGreaterThan(102);
         expect(Number(stroke[2])).toBeLessThan(122);
+
+        // --- toolbar clicks: swatch select + clear ----------------------
+        // wlpaint's toolbar is content rows 0..35; content-local x/y =
+        // screen − (PAINT_X, PAINT_Y + TITLEBAR_H). Swatch 1 spans content
+        // x 40..64 (SWATCH_X0 + 1·SWATCH_STEP, 24 px wide) — aim for its
+        // center so libinput's few-px abs drift stays inside.
+        let mark = out.value.length;
+        moveTo(PAINT_X + 52, PAINT_Y + TITLEBAR_H + 18);
+        await button(1);
+        await waitFor(out, "WLPAINT_COLOR i=1", 10_000, dump, mark);
+        await button(0);
+
+        // Clear button spans content x 244..300 (CLEAR_X .. +CLEAR_W).
+        mark = out.value.length;
+        moveTo(PAINT_X + 272, PAINT_Y + TITLEBAR_H + 18);
+        await button(1);
+        await waitFor(out, "WLPAINT_CLEAR", 10_000, dump, mark);
+        await button(0);
+
+        // --- implicit pointer grab: release off-window ------------------
+        // Press inside wlpaint's canvas, drag onto the wallpaper, release.
+        // The release must still reach wlpaint (WLPAINT_STROKE_END): the
+        // compositor's implicit grab pins delivery to the pressed surface
+        // while any button is down. Pre-fix, motion re-focused whatever
+        // was under the cursor and the release was swallowed.
+        mark = out.value.length;
+        moveTo(PAINT_X + 420, PAINT_Y + TITLEBAR_H + PAINT_TOOLBAR_H + 76);
+        await button(1);
+        await waitFor(out, /WLPAINT_STROKE x=\d+ y=\d+/, 10_000, dump, mark);
+        moveTo(400, 300);   // wallpaper — outside every window
+        await button(0);
+        await waitFor(out, "WLPAINT_STROKE_END", 10_000, dump, mark);
+
+        // --- implicit grab, release over wlpaint's OWN titlebar ---------
+        // Same grab, but the release lands on the CSD bar (clear of the
+        // close box). libkwl consumes only PRESSES there; a RELEASE is
+        // forwarded to the app with content y < 0 — pre-fix it was eaten
+        // and the stroke stayed stuck "drawing".
+        mark = out.value.length;
+        moveTo(PAINT_X + 420, PAINT_Y + TITLEBAR_H + PAINT_TOOLBAR_H + 76);
+        await button(1);
+        await waitFor(out, /WLPAINT_STROKE x=\d+ y=\d+/, 10_000, dump, mark);
+        moveTo(PAINT_X + 300, PAINT_Y + 14);   // wlpaint's titlebar
+        await button(0);
+        await waitFor(out, "WLPAINT_STROKE_END", 10_000, dump, mark);
 
         // --- interactive move: drag wlclock's titlebar left+down --------
         moveTo(CLOCK_X + 60, CLOCK_Y + 14);   // titlebar, clear of close box

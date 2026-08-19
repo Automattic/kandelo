@@ -116,7 +116,7 @@ describe("wayland desktop liveness — flips keep flowing across drag strokes", 
         await host.init();
         host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
-        const statsSab = new SharedArrayBuffer(7 * 4);
+        const statsSab = new SharedArrayBuffer(8 * 4);
         const stats = new Int32Array(statsSab);
         host.kmsAttachStats(1, statsSab);
         const commits = () => Atomics.load(stats, 5);

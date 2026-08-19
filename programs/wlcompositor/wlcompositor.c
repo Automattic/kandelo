@@ -50,9 +50,9 @@
  *     textured quads. The frame is encoded in one cmdbuf flush, so the
  *     display canvas transitions atomically between complete frames.
  *     KMS PAGE_FLIPs still pace the frame clock (frame callbacks, flip
- *     counters); only pixel production moves to the GPU. Set WLC_NO_GPU=1
- *     to force the CPU path (e.g. to exercise the webgl2-scanout
- *     presenter's flicker gates).
+ *     counters); only pixel production moves to the GPU. WLC_NO_GPU=1
+ *     forces the CPU path (a manual debug escape hatch, documented in
+ *     docs/browser-support.md).
  *
  *   - CPU path (Node smokes, hosts without WebGL2, or GPU init/runtime
  *     failure): the committed buffers are CPU-blitted into a scanout
@@ -201,6 +201,12 @@ struct compositor {
     /* Window management. */
     struct surface *zorder[MAX_SURFACES];  /* bottom → top */
     int n_surfaces;
+    /* Every live surface, mapped or not. buffer_resource_destroy must
+     * clear buffer references on surfaces that never mapped (attach →
+     * wl_buffer.destroy → commit is protocol-legal) and those are absent
+     * from zorder. */
+    struct surface *all_surfaces[MAX_SURFACES];
+    int n_all_surfaces;
     struct surface *kbd_focus;
     struct surface *ptr_focus;
 
@@ -420,6 +426,11 @@ static const struct wl_surface_interface surface_impl = {
 
 static void surface_resource_destroy(struct wl_resource *r) {
     struct surface *s = wl_resource_get_user_data(r);
+    for (int i = 0; i < g.n_all_surfaces; i++) {
+        if (g.all_surfaces[i] != s) continue;
+        g.all_surfaces[i] = g.all_surfaces[--g.n_all_surfaces];
+        break;
+    }
     zorder_remove(s);
     if (g.kbd_focus == s) {
         g.kbd_focus = NULL;
@@ -483,11 +494,14 @@ static const struct wl_buffer_interface buffer_impl = {
 static void buffer_resource_destroy(struct wl_resource *r) {
     struct shm_buffer *b = wl_resource_get_user_data(r);
     if (!b) return;
-    /* Surfaces retain committed buffers; drop any reference to this one so
-     * a repaint never touches a destroyed resource. */
-    for (int i = 0; i < g.n_surfaces; i++) {
-        if (g.zorder[i]->buffer == r) g.zorder[i]->buffer = NULL;
-        if (g.zorder[i]->pending_buffer == r) g.zorder[i]->pending_buffer = NULL;
+    /* Surfaces retain attached/committed buffers; drop every reference to
+     * this one — including on never-mapped surfaces, which aren't in
+     * zorder — so no later commit or repaint touches a destroyed
+     * resource. */
+    for (int i = 0; i < g.n_all_surfaces; i++) {
+        if (g.all_surfaces[i]->buffer == r) g.all_surfaces[i]->buffer = NULL;
+        if (g.all_surfaces[i]->pending_buffer == r)
+            g.all_surfaces[i]->pending_buffer = NULL;
     }
     if (b->bo) {
         if (b->map_data) gbm_bo_unmap(b->bo, b->map_data);
@@ -583,6 +597,12 @@ static void shm_bind(struct wl_client *client, void *data, uint32_t version,
 static void compositor_create_surface(struct wl_client *client,
                                       struct wl_resource *resource,
                                       uint32_t id) {
+    /* Refuse rather than track partially: an untracked surface would be
+     * invisible to buffer_resource_destroy's reference sweep. */
+    if (g.n_all_surfaces >= MAX_SURFACES) {
+        wl_client_post_no_memory(client);
+        return;
+    }
     struct surface *s = calloc(1, sizeof(*s));
     if (!s) { wl_client_post_no_memory(client); return; }
     s->client = client;
@@ -591,6 +611,7 @@ static void compositor_create_surface(struct wl_client *client,
     if (!s->resource) { free(s); wl_client_post_no_memory(client); return; }
     wl_resource_set_implementation(s->resource, &surface_impl, s,
                                    surface_resource_destroy);
+    g.all_surfaces[g.n_all_surfaces++] = s;
 }
 
 /* wl_region is accepted but has no compositing effect (surfaces are
@@ -798,6 +819,13 @@ static const struct wl_keyboard_interface keyboard_impl = {
 };
 static void keyboard_resource_destroy(struct wl_resource *r) {
     slot_remove(g.keyboards, r);
+    /* Close the keymap fd this keyboard's send_keymap left open (stored
+     * +1 so an unset user_data reads as -1). Safe now: the fd's
+     * open-file description is private to this keyboard bind, and the
+     * client consumed (or abandoned) the keymap long before releasing
+     * the resource. */
+    int fd = (int)(intptr_t)wl_resource_get_user_data(r) - 1;
+    if (fd >= 0) close(fd);
 }
 
 static void pointer_set_cursor(struct wl_client *c, struct wl_resource *r,
@@ -824,14 +852,16 @@ static void pointer_resource_destroy(struct wl_resource *r) {
  * every other holder (kernel limitation of file-backed fds passed over
  * SCM_RIGHTS; prime-bo fds carry a sidecar and are unaffected). A per-send
  * fd whose only long-term holder is the receiving client keeps each
- * client's copy independent. The sender-side fd is intentionally left open (one fd per
- * keyboard bind, bounded by MAX_INPUT_RES) because closing it after the
- * flush would race the client's read through the same shared handle. */
+ * client's copy independent. The sender-side fd must stay open until the
+ * client has read the keymap (closing right after the flush would race
+ * that read through the same shared handle), so it rides the keyboard
+ * resource's user data and is closed in keyboard_resource_destroy. */
 static void send_keymap(struct wl_resource *kbd) {
     int fd = open(WL_KEYMAP_PATH, O_RDONLY);
     if (fd < 0) { perror("open keymap"); return; }
     wl_keyboard_send_keymap(kbd, WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1,
                             fd, g.xkb_keymap_size);
+    wl_resource_set_user_data(kbd, (void *)(intptr_t)(fd + 1));
 }
 
 /* Current xkb modifier state, as wl_keyboard.modifiers arguments. */
@@ -1304,7 +1334,11 @@ static int repaint_gl(void) {
         glc_draw_tex(texs[i], s->x, s->y, b->width, b->height);
         top = s;
     }
-    eglSwapBuffers(glc.dpy, glc.srf);
+    /* A failed present (context loss) must degrade like a failed texture
+     * bind — returning 1 here would keep glc.active set and freeze the
+     * canvas on the last GL frame, the exact failure the CPU fallback
+     * exists to prevent. */
+    if (eglSwapBuffers(glc.dpy, glc.srf) != EGL_TRUE) return 0;
 
     /* One-shot proof that client pixels crossed the process boundary,
      * same contract as the CPU path's sample — but read back from the
@@ -1363,8 +1397,7 @@ static void repaint(void) {
             gbm_bo_map(bo, 0, 0, g.width, g.height, 0, &stride, &map_data);
         if (!dst) {
             /* A persistent map failure would freeze the desktop with no
-             * visible error (this caught the kernel's munmap length-rounding
-             * leak, which surfaced as ENOMEM here after ~124 frames). */
+             * visible error — say so loudly. */
             fprintf(stderr, "wlcompositor: gbm_bo_map failed: %s\n",
                     strerror(errno));
             gbm_surface_release_buffer(g.gbm_surface, bo);
@@ -1435,12 +1468,10 @@ static void repaint(void) {
 
 static void schedule_repaint(void) {
     /* If a flip is in flight, defer; the flip-complete handler repaints.
-     * Also defer while draining a libinput event batch: the browser's
-     * absolute-pointer bridge emulates each pointer move as an EV_REL
-     * peg-to-(0,0) frame followed by a jump frame, and repainting
-     * synchronously between the two renders a frame with a move-grabbed
-     * window teleported to the top-left corner. One repaint per batch,
-     * at the final cursor position, after the drain loop. */
+     * Also defer while draining a libinput event batch — repainting
+     * between the bridge's peg and jump frames (see
+     * handle_pointer_motion_rel) renders a move-grabbed window at the
+     * pegged corner. One repaint per batch, after the drain loop. */
     if (g.pending_bo || g.in_input_batch) { g.repaint_needed = 1; return; }
     repaint();
 }
@@ -1522,7 +1553,14 @@ static void pointer_moved(void) {
         schedule_repaint();
         return;
     }
-    ptr_refresh_focus();
+    /* Implicit grab: while a button is down, pointer focus stays pinned
+     * to the surface that saw the press (Wayland semantics) — a drag
+     * crossing the window edge keeps delivering motion (surface-local
+     * coords may go out of bounds, which the protocol allows mid-grab),
+     * and the eventual release reaches the pressed surface instead of
+     * whatever the cursor is over. */
+    if (g.buttons_down == 0)
+        ptr_refresh_focus();
     if (g.ptr_focus) {
         uint32_t t = now_ms();
         wl_fixed_t lx = wl_fixed_from_double(g.cursor_x - g.ptr_focus->x);
@@ -1569,6 +1607,7 @@ static void handle_pointer_button(struct libinput_event_pointer *p) {
                   LIBINPUT_BUTTON_STATE_PRESSED;
     uint32_t state = pressed ? WL_POINTER_BUTTON_STATE_PRESSED
                              : WL_POINTER_BUTTON_STATE_RELEASED;
+    int was_down = g.buttons_down;
     g.buttons_down += pressed ? 1 : -1;
     if (g.buttons_down < 0) g.buttons_down = 0;
 
@@ -1584,9 +1623,11 @@ static void handle_pointer_button(struct libinput_event_pointer *p) {
         return;
     }
 
-    if (pressed) {
+    if (pressed && was_down == 0) {
         /* Click-to-focus: raise the window under the cursor and give it
-         * keyboard focus before delivering the press. */
+         * keyboard focus before delivering the press. Further presses
+         * while a button is already down join the implicit grab — focus
+         * stays pinned to the pressed surface. */
         struct surface *s = surface_at(g.cursor_x, g.cursor_y);
         if (s) {
             zorder_raise(s);
@@ -1595,13 +1636,19 @@ static void handle_pointer_button(struct libinput_event_pointer *p) {
         ptr_refresh_focus();
     }
 
-    if (!g.ptr_focus) return;
-    uint32_t serial = wl_display_next_serial(g.display);
-    uint32_t t = now_ms();
-    for (int i = 0; i < MAX_INPUT_RES; i++)
-        if (g.pointers[i] &&
-            wl_resource_get_client(g.pointers[i]) == g.ptr_focus->client)
-            wl_pointer_send_button(g.pointers[i], serial, t, button, state);
+    if (g.ptr_focus) {
+        uint32_t serial = wl_display_next_serial(g.display);
+        uint32_t t = now_ms();
+        for (int i = 0; i < MAX_INPUT_RES; i++)
+            if (g.pointers[i] &&
+                wl_resource_get_client(g.pointers[i]) == g.ptr_focus->client)
+                wl_pointer_send_button(g.pointers[i], serial, t, button, state);
+    }
+
+    /* The implicit grab ends with the last release: only now may focus
+     * follow the cursor again. */
+    if (!pressed && g.buttons_down == 0)
+        ptr_refresh_focus();
 }
 
 static int libinput_readable(int fd, uint32_t mask, void *data) {

@@ -5,7 +5,7 @@
  * Spawns TWO programs under one NodeKernelHost — the compositor
  * (programs/wlcompositor/wlcompositor.c) and a raw libwayland-client test
  * client (programs/wlcompositor/wlclient-test.c) — that talk over a real
- * AF_UNIX socket at /run/wayland-0. This is the first end-to-end exercise
+ * AF_UNIX socket at /tmp/wayland-0. This is the first end-to-end exercise
  * of the whole top-of-stack:
  *
  *   - cross-process AF_UNIX pathname socket (bind/listen/accept ↔ connect)

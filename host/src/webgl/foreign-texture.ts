@@ -57,6 +57,9 @@ export function bindForeignTexture(
   const prevActive = gl.getParameter(gl.ACTIVE_TEXTURE) as number;
   gl.activeTexture(gl.TEXTURE0);
   const prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;
+  // Row length isn't shadow-tracked (the muxer forwards OP_PIXEL_STOREI
+  // raw), so query the live value to restore instead of assuming 0.
+  const prevRowLen = gl.getParameter(GL_UNPACK_ROW_LENGTH) as number;
   gl.pixelStorei(GL_UNPACK_ROW_LENGTH, dims.stride >> 2);
   gl.pixelStorei(GL_UNPACK_ALIGNMENT, 4);
   gl.bindTexture(GL_TEXTURE_2D, entry.tex);
@@ -78,7 +81,7 @@ export function bindForeignTexture(
     );
   }
   gl.bindTexture(GL_TEXTURE_2D, prevTex);
-  gl.pixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+  gl.pixelStorei(GL_UNPACK_ROW_LENGTH, prevRowLen);
   gl.pixelStorei(GL_UNPACK_ALIGNMENT, b.shadow.unpackAlignment);
   gl.activeTexture(prevActive);
   return entry.texId;
