@@ -13,7 +13,15 @@
  *   - xkb keymap compile on wl_keyboard.keymap → keysym + UTF-8
  *   - pointer enter/motion/button
  * events land in a fixed ring the app pops via kwl_dispatch().
- */
+ *
+ * Client-side decoration (CSD): every window carries a KWL_TITLEBAR_H-px
+ * titlebar libkwl draws once into each buffer — title text plus a close
+ * box. The buffer the compositor sees is (w × h+titlebar); the app's
+ * kwl_window_surface() is a sub-view starting below the titlebar, and all
+ * pointer events the app receives are content-local. A press on the
+ * titlebar is not forwarded: it either emits KWL_CLOSE (on the close box)
+ * or asks the compositor to start an interactive move via
+ * xdg_toplevel.move — the standard Wayland CSD drag contract. */
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -34,10 +42,16 @@
 #include <xkbcommon/xkbcommon-names.h>
 
 #include <kwl.h>
+#include <wpkdraw/wpkfont.h>
 
 #define KWL_SOCKET_PATH "/tmp/wayland-0"
 #define KWL_NUM_BUFFERS 2
 #define KWL_EVQ_SIZE    64
+
+/* CSD titlebar geometry (surface pixels). */
+#define KWL_TB_FONT_PX  14
+#define KWL_TB_CLOSE_SZ 16
+#define KWL_TB_CLOSE_MARGIN 8
 
 struct kwl_buffer {
     struct gbm_bo *bo;
@@ -62,7 +76,8 @@ struct kwl_window {
     struct wl_keyboard *keyboard;
     struct wl_pointer *pointer;
 
-    int w, h;
+    int w, h;        /* app-visible CONTENT size */
+    int total_h;     /* h + KWL_TITLEBAR_H — the wl_surface size */
     int configured;
 
     /* gbm allocation for the shared wl_shm buffers. */
@@ -78,7 +93,7 @@ struct kwl_window {
     struct xkb_state *xkb_state;
     uint32_t mods;
 
-    /* pointer position (surface-local). */
+    /* pointer position (surface-local, i.e. including the titlebar). */
     int ptr_x, ptr_y;
 
     /* event ring: push at tail, pop at head; overflow drops the newest. */
@@ -269,6 +284,14 @@ static const struct wl_keyboard_listener keyboard_listener = {
 
 /* ---- pointer ----------------------------------------------------------- */
 
+/* The close box rect, in surface coordinates. */
+static int in_close_box(struct kwl_window *w, int x, int y) {
+    int bx = w->w - KWL_TB_CLOSE_MARGIN - KWL_TB_CLOSE_SZ;
+    int by = (KWL_TITLEBAR_H - KWL_TB_CLOSE_SZ) / 2;
+    return x >= bx && x < bx + KWL_TB_CLOSE_SZ &&
+           y >= by && y < by + KWL_TB_CLOSE_SZ;
+}
+
 static void ptr_enter(void *data, struct wl_pointer *p, uint32_t serial,
                       struct wl_surface *surf, wl_fixed_t x, wl_fixed_t y) {
     struct kwl_window *w = data;
@@ -282,20 +305,37 @@ static void ptr_motion(void *data, struct wl_pointer *p, uint32_t time,
     struct kwl_window *w = data;
     w->ptr_x = wl_fixed_to_int(x);
     w->ptr_y = wl_fixed_to_int(y);
+    if (w->ptr_y < KWL_TITLEBAR_H) return;   /* decoration, not app content */
     struct kwl_event e = {
-        .type = KWL_POINTER_MOTION, .x = w->ptr_x, .y = w->ptr_y,
+        .type = KWL_POINTER_MOTION,
+        .x = w->ptr_x,
+        .y = w->ptr_y - KWL_TITLEBAR_H,
     };
     kwl_push(w, &e);
 }
 static void ptr_button(void *data, struct wl_pointer *p, uint32_t serial,
                        uint32_t time, uint32_t button, uint32_t state) {
     struct kwl_window *w = data;
+    if (w->ptr_y < KWL_TITLEBAR_H) {
+        /* Titlebar interactions are the toolkit's, not the app's. */
+        if (state != WL_POINTER_BUTTON_STATE_PRESSED) return;
+        if (in_close_box(w, w->ptr_x, w->ptr_y)) {
+            struct kwl_event e = { .type = KWL_CLOSE };
+            kwl_push(w, &e);
+        } else if (w->toplevel && w->seat) {
+            /* CSD drag: hand the interaction to the compositor. It keeps
+             * the pointer for the duration of the move grab. */
+            xdg_toplevel_move(w->toplevel, w->seat, serial);
+            wl_display_flush(w->display);
+        }
+        return;
+    }
     struct kwl_event e = {
         .type = KWL_POINTER_BUTTON,
         .button = button,
         .state = state,
         .x = w->ptr_x,
-        .y = w->ptr_y,
+        .y = w->ptr_y - KWL_TITLEBAR_H,
     };
     kwl_push(w, &e);
 }
@@ -330,24 +370,27 @@ static int connect_socket(void) {
 
 /* Allocate one renderD128 bo, keep it CPU-mapped for the window's life, and
  * share it to the compositor as a wl_shm buffer backed by its prime-fd —
- * the gbm_bo_import path the compositor understands (see wlclient-test.c). */
+ * the gbm_bo_import path the compositor understands (see wlclient-test.c).
+ * The bo covers the full surface: titlebar + content. */
 static int kwl_buffer_init(struct kwl_window *w, struct kwl_buffer *b) {
-    struct gbm_bo *bo = gbm_bo_create(w->gbm, w->w, w->h, GBM_FORMAT_XRGB8888,
+    struct gbm_bo *bo = gbm_bo_create(w->gbm, w->w, w->total_h,
+                                      GBM_FORMAT_XRGB8888,
                                       GBM_BO_USE_LINEAR | GBM_BO_USE_SCANOUT);
     if (!bo) return -1;
 
     uint32_t stride = 0;
     void *map_data = NULL;
-    uint32_t *px = gbm_bo_map(bo, 0, 0, w->w, w->h, 0, &stride, &map_data);
+    uint32_t *px =
+        gbm_bo_map(bo, 0, 0, w->w, w->total_h, 0, &stride, &map_data);
     if (!px) { gbm_bo_destroy(bo); return -1; }
 
     int prime = gbm_bo_get_fd(bo);
     if (prime < 0) { gbm_bo_unmap(bo, map_data); gbm_bo_destroy(bo); return -1; }
 
     struct wl_shm_pool *pool =
-        wl_shm_create_pool(w->shm, prime, (int32_t)(stride * w->h));
+        wl_shm_create_pool(w->shm, prime, (int32_t)(stride * w->total_h));
     struct wl_buffer *wl_buf = wl_shm_pool_create_buffer(
-        pool, 0, w->w, w->h, (int32_t)stride, WL_SHM_FORMAT_XRGB8888);
+        pool, 0, w->w, w->total_h, (int32_t)stride, WL_SHM_FORMAT_XRGB8888);
     wl_shm_pool_destroy(pool);   /* the buffer keeps the pool alive */
     close(prime);                /* wl_shm dup'd it into the pool */
 
@@ -359,6 +402,42 @@ static int kwl_buffer_init(struct kwl_window *w, struct kwl_buffer *b) {
     return 0;
 }
 
+/* The app's drawable: the buffer rows below the titlebar. */
+static struct wpk_surface content_view(struct kwl_window *w,
+                                       struct kwl_buffer *b) {
+    return wpk_surface_wrap(
+        b->pixels + (size_t)KWL_TITLEBAR_H * (b->stride / 4), w->w, w->h,
+        b->stride);
+}
+
+/* Draw the CSD titlebar into one buffer. Called once per buffer at window
+ * creation; the app never touches those rows, so no redraws are needed. */
+static void draw_titlebar(struct kwl_window *w, struct kwl_buffer *b,
+                          const char *title, struct wpk_font *font) {
+    struct wpk_surface bar =
+        wpk_surface_wrap(b->pixels, w->w, KWL_TITLEBAR_H, b->stride);
+    wpk_clear(&bar, WPK_RGB(0x2a, 0x30, 0x40));
+    /* 1px seam between titlebar and content. */
+    wpk_rect(&bar, 0, KWL_TITLEBAR_H - 1, w->w, 1, WPK_RGB(0x1c, 0x20, 0x2c));
+
+    if (font && title) {
+        int baseline =
+            (KWL_TITLEBAR_H + wpk_font_ascent_px(font)) / 2 - 1;
+        wpk_text(&bar, font, 10, baseline, title, WPK_RGB(0xd8, 0xdd, 0xe8));
+    }
+
+    /* Close box: a subtle plate with an X. */
+    int bx = w->w - KWL_TB_CLOSE_MARGIN - KWL_TB_CLOSE_SZ;
+    int by = (KWL_TITLEBAR_H - KWL_TB_CLOSE_SZ) / 2;
+    wpk_rect(&bar, bx, by, KWL_TB_CLOSE_SZ, KWL_TB_CLOSE_SZ,
+             WPK_RGB(0x3d, 0x34, 0x3c));
+    for (int i = 4; i < KWL_TB_CLOSE_SZ - 4; i++) {
+        wpk_pixel(&bar, bx + i, by + i, WPK_RGB(0xe8, 0xb0, 0xb8));
+        wpk_pixel(&bar, bx + KWL_TB_CLOSE_SZ - 1 - i, by + i,
+                  WPK_RGB(0xe8, 0xb0, 0xb8));
+    }
+}
+
 /* ---- public API -------------------------------------------------------- */
 
 struct kwl_window *kwl_window_create(const char *title, int w, int h) {
@@ -367,6 +446,7 @@ struct kwl_window *kwl_window_create(const char *title, int w, int h) {
     if (!win) { errno = ENOMEM; return NULL; }
     win->w = w;
     win->h = h;
+    win->total_h = h + KWL_TITLEBAR_H;
 
     int fd = connect_socket();
     if (fd < 0) goto fail;
@@ -397,7 +477,11 @@ struct kwl_window *kwl_window_create(const char *title, int w, int h) {
     xdg_surface_add_listener(win->xdg_surface, &xdg_surface_listener, win);
     win->toplevel = xdg_surface_get_toplevel(win->xdg_surface);
     xdg_toplevel_add_listener(win->toplevel, &toplevel_listener, win);
-    if (title) xdg_toplevel_set_title(win->toplevel, title);
+    if (title) {
+        xdg_toplevel_set_title(win->toplevel, title);
+        /* The compositor's placement rules key on app_id. */
+        xdg_toplevel_set_app_id(win->toplevel, title);
+    }
     wl_surface_commit(win->surface);
 
     /* Wait for the initial configure before attaching a buffer. */
@@ -412,9 +496,14 @@ struct kwl_window *kwl_window_create(const char *title, int w, int h) {
     for (int i = 0; i < KWL_NUM_BUFFERS; i++)
         if (kwl_buffer_init(win, &win->bufs[i]) != 0) goto fail;
 
+    /* Decorate both buffers once; the app only ever draws the content. */
+    struct wpk_font *tb_font = wpk_font_load_default(KWL_TB_FONT_PX);
+    for (int i = 0; i < KWL_NUM_BUFFERS; i++)
+        draw_titlebar(win, &win->bufs[i], title, tb_font);
+    if (tb_font) wpk_font_destroy(tb_font);
+
     win->back_index = 0;
-    win->back = wpk_surface_wrap(win->bufs[0].pixels, win->w, win->h,
-                                 win->bufs[0].stride);
+    win->back = content_view(win, &win->bufs[0]);
     return win;
 
 fail:
@@ -451,7 +540,7 @@ struct wpk_surface *kwl_window_surface(struct kwl_window *win) {
 void kwl_window_commit(struct kwl_window *win) {
     struct kwl_buffer *b = &win->bufs[win->back_index];
     wl_surface_attach(win->surface, b->wl_buf, 0, 0);
-    wl_surface_damage(win->surface, 0, 0, win->w, win->h);
+    wl_surface_damage(win->surface, 0, 0, win->w, win->total_h);
     struct wl_callback *cb = wl_surface_frame(win->surface);
     wl_callback_add_listener(cb, &frame_listener, win);
     wl_surface_commit(win->surface);
@@ -460,10 +549,7 @@ void kwl_window_commit(struct kwl_window *win) {
      * pacing the alternate has always been presented by then. */
     int next = (win->back_index + 1) % KWL_NUM_BUFFERS;
     win->back_index = next;
-    win->back.pixels = win->bufs[next].pixels;
-    win->back.stride = win->bufs[next].stride;
-    win->back.w = win->w;
-    win->back.h = win->h;
+    win->back = content_view(win, &win->bufs[next]);
 }
 
 int kwl_dispatch(struct kwl_window *win, struct kwl_event *out, int timeout_ms) {

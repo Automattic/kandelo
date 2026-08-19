@@ -76,6 +76,29 @@ export type GlBinding = GlBindingInput & {
   /** Monotonic counter for `uniformLocations`; never decremented. */
   nextUniformLoc: number;
 
+  /** Foreign textures bound from DRI bos (`WPK_BIND_FOREIGN_TEXTURE`),
+   *  keyed by bo_id. Each entry mirrors into `textures` under `texId`
+   *  so cmdbuf `OP_BIND_TEXTURE` resolves it like any guest-generated
+   *  name. `scratch` caches the non-shared upload staging buffer
+   *  (WebGL rejects SAB-backed views). */
+  foreignTextures: Map<
+    number,
+    { tex: WebGLTexture; texId: number; w: number; h: number; scratch: Uint8Array | null }
+  >;
+  /** Id allocator for foreign textures. Starts far above any name the
+   *  guest-side monotonic counters (libglesv2_stub.c, from 1) can
+   *  reach, so host- and guest-assigned ids share `textures` without
+   *  collision. */
+  nextForeignTexId: number;
+
+  /** CRTC whose scanout canvas this binding auto-claimed at context
+   *  creation (`markKmsCanvasGlOwned`). Tracked so context destruction
+   *  / session teardown can hand the canvas BACK to the vblank pump —
+   *  a GPU compositor that degrades to its CPU path mid-run terminates
+   *  EGL, and the pump presenter must resume or the canvas freezes on
+   *  the last GL frame. */
+  claimedKmsCrtc: number | null;
+
   /** Last `glUseProgram` target, kept for handlers that need the
    *  current program (e.g. uniform setters). */
   currentProgram: WebGLProgram | null;
@@ -122,6 +145,9 @@ export class GlContextRegistry {
       rbos: new Map(),
       uniformLocations: new Map(),
       nextUniformLoc: 0,
+      foreignTextures: new Map(),
+      nextForeignTexId: 0x4000_0000,
+      claimedKmsCrtc: null,
       currentProgram: null,
       shadow: defaultShadow(),
       forward,
@@ -205,6 +231,20 @@ export class GlContextRegistry {
     this.pendingForwards.delete(pid);
     const b = this.bindings.get(pid);
     if (b) b.forward = null;
+  }
+
+  /** Delete every binding's foreign texture for a destroyed bo (the bo
+   *  is the texture's canonical owner — see shared's
+   *  `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` doc). Called from the host's
+   *  `gbm_bo_destroy` hook when the bo refcount hits zero. */
+  dropForeignTexturesForBo(bo_id: number): void {
+    for (const b of this.bindings.values()) {
+      const entry = b.foreignTextures.get(bo_id);
+      if (!entry) continue;
+      b.foreignTextures.delete(bo_id);
+      b.textures.delete(entry.texId);
+      b.gl?.deleteTexture(entry.tex);
+    }
   }
 
   onChange(fn: GlChangeListener): () => void {

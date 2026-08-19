@@ -2776,6 +2776,136 @@ export function createCentralizedKernelWorkerTestDouble(
   ) as CentralizedKernelWorkerTestDouble;
 }
 
+/** WebGL2 state the vblank pump keeps per `mode: "webgl2-scanout"` CRTC:
+ *  a fullscreen-triangle program that samples the scanout texture with a
+ *  shader-side BGR→RGB swizzle, plus the texture's current geometry so
+ *  steady-state frames go through `texSubImage2D`. */
+interface KmsGlPresenter {
+  gl: WebGL2RenderingContext;
+  tex: WebGLTexture;
+  texW: number;
+  texH: number;
+  /** fb_id + kernel commit count at the last present. The presenter
+   *  re-presents only when one of them (or the target size) changes —
+   *  flip-driven renderers change content exclusively through
+   *  SETCRTC/PAGE_FLIP, so an unchanged count usually means an
+   *  identical frame and the 8 MB sync + upload + draw can be
+   *  skipped. The content probe below backstops the exceptions. */
+  lastFbId: number;
+  lastCommits: number;
+  /** Tick phase + strided checksum for the low-rate content probe.
+   *  Every 4th otherwise-skipped tick the presenter samples the
+   *  scanout bytes; a checksum change forces a present. This catches
+   *  scanout mutations that never tick the commit count — a renderer
+   *  painting its single bound bo without flipping, or a broken
+   *  kernel leaving `currentFb` pinned to a bo the client is
+   *  repainting (the PAGE_FLIP-latch regression the wayland spec's
+   *  flicker gate exists to catch: flip-synced presents alone always
+   *  sample the pinned bo *before* its repaint and hide the bug). */
+  probePhase: number;
+  lastProbeSum: number;
+  /** Presents completed (drives the one-warmup-frame degrade grace). */
+  presentCount: number;
+  /** Set once a steady-state present overruns the frame budget —
+   *  software GL (headless Chromium's SwiftShader) takes tens of ms
+   *  for the mipmap chain + trilinear fullscreen draw, which would
+   *  starve the kernel worker. Degraded presenters use plain bilinear
+   *  and skip generateMipmap; hardware GL never trips this. */
+  degraded: boolean;
+}
+
+// Fullscreen triangle from gl_VertexID — no vertex buffers. v is flipped
+// so texture row 0 (the framebuffer's top scanline) lands at the top of
+// the viewport.
+const KMS_SCANOUT_VS = `#version 300 es
+out vec2 v_uv;
+void main() {
+  vec2 pos = vec2(float((gl_VertexID & 1) << 2) - 1.0,
+                  float((gl_VertexID & 2) << 1) - 1.0);
+  v_uv = vec2(pos.x * 0.5 + 0.5, 0.5 - pos.y * 0.5);
+  gl_Position = vec4(pos, 0.0, 1.0);
+}
+`;
+
+// DRM XRGB8888 little-endian bytes are [B,G,R,X]; uploaded as RGBA they
+// read back as (r=B, g=G, b=R). Swizzle in the sampler and force alpha
+// opaque — this replaces the 2d path's per-pixel CPU swizzle loop.
+const KMS_SCANOUT_FS = `#version 300 es
+precision mediump float;
+uniform sampler2D u_scanout;
+in vec2 v_uv;
+out vec4 o_color;
+void main() {
+  o_color = vec4(texture(u_scanout, v_uv).bgr, 1.0);
+}
+`;
+
+/** Compile the scanout presenter program + texture on a fresh WebGL2
+ *  context. Returns null when anything fails (context lost, compile
+ *  error) so the pump can degrade to stats-only. The program stays
+ *  bound for the context's lifetime — the pump is its sole user. */
+function buildKmsGlPresenter(gl: WebGL2RenderingContext): KmsGlPresenter | null {
+  const compile = (type: number, src: string): WebGLShader | null => {
+    const sh = gl.createShader(type);
+    if (!sh) return null;
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+      gl.deleteShader(sh);
+      return null;
+    }
+    return sh;
+  };
+  const vs = compile(gl.VERTEX_SHADER, KMS_SCANOUT_VS);
+  const fs = compile(gl.FRAGMENT_SHADER, KMS_SCANOUT_FS);
+  if (!vs || !fs) return null;
+  const prog = gl.createProgram();
+  if (!prog) return null;
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return null;
+  gl.useProgram(prog);
+  const loc = gl.getUniformLocation(prog, "u_scanout");
+  if (loc) gl.uniform1i(loc, 0);
+  const tex = gl.createTexture();
+  if (!tex) return null;
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  // LINEAR_MIPMAP_LINEAR: the desktop framebuffer is a fixed 1920×1080
+  // and panes usually show it smaller — plain bilinear minification
+  // undersamples 1-px window borders and glyph strokes into shimmer
+  // ("everything is pixelated"). Trilinear over a per-frame mip chain
+  // integrates every source pixel.
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return {
+    gl, tex, texW: 0, texH: 0,
+    lastFbId: -1, lastCommits: -1,
+    presentCount: 0, degraded: false,
+    probePhase: 0, lastProbeSum: 0,
+  };
+}
+
+/** Strided checksum over the scanout pixels (u32 samples, ~4k reads at
+ *  1080p). Cheap enough for the 15 Hz content probe; a mid-composite or
+ *  otherwise-mutated frame differs across many pixels, so a simple
+ *  multiplicative hash over a sparse stride is plenty. */
+function kmsProbeChecksum(pixels: Uint8Array): number {
+  const words = new Uint32Array(
+    pixels.buffer,
+    pixels.byteOffset,
+    pixels.byteLength >> 2,
+  );
+  const stride = Math.max(1, words.length >> 12);
+  let h = 0;
+  for (let i = 0; i < words.length; i += stride) {
+    h = (Math.imul(h, 31) + words[i]) | 0;
+  }
+  return h;
+}
+
 export class CentralizedKernelWorker {
   #kernel: WasmPosixKernel;
   #kernelEntryGate: KernelEntryGate;
@@ -3263,22 +3393,41 @@ export class CentralizedKernelWorker {
   private kmsContexts = new Map<number, OffscreenCanvasRenderingContext2D>();
   /** Which context type each CRTC's canvas has been claimed for. Set
    *  by `attachKmsCanvas` when the embedder declares the mode up-front
-   *  (`"2d"` for legacy CPU-blit demos, `"webgl2"` for libdrm/libgbm/EGL
-   *  apps like modeset.c). Auto-mode leaves this unset so the pump
+   *  (`"2d"` for legacy CPU-blit demos, `"webgl2-scanout"` for the
+   *  pump-owned WebGL2 scanout presenter, `"webgl2"` for libdrm/libgbm/
+   *  EGL apps like modeset.c). Auto-mode leaves this unset so the pump
    *  never touches the canvas — `host_gl_create_context` later flips
    *  it to `"webgl2"` via `markKmsCanvasGlOwned` once the GL session
    *  claims the canvas. Once set, the value is sticky: an OffscreenCanvas
    *  can only ever hold one context type for its lifetime. */
-  private kmsContextMode = new Map<number, "2d" | "webgl2">();
+  private kmsContextMode = new Map<number, "2d" | "webgl2" | "webgl2-scanout">();
+  /** Presenter mode a CRTC had before a program GL context claimed its
+   *  canvas (`markKmsCanvasGlOwned`), so `markKmsCanvasGlReleased` can
+   *  resume it. Key present = canvas currently GL-claimed. */
+  private kmsModeBeforeGlOwn = new Map<
+    number, "2d" | "webgl2" | "webgl2-scanout" | undefined
+  >();
   /** KMS stats SAB per CRTC. Slots [0..4] populated by the pump (frame
    *  count, timestamp, width, height, blit µs); slots [5,6] populated
    *  from kernel-side `kernel_kms_commit_count` / `kernel_kms_last_frame_us`. */
   private kmsStatsViews = new Map<number, Int32Array>();
-  /** Cached per-CRTC `Uint8ClampedArray` for `putImageData` so the pump
-   *  doesn't allocate 8 MB/frame at 1080p. Resized on bo geometry change.
-   *  Backed by a plain `ArrayBuffer` so `new ImageData(scratch, …)`
-   *  accepts it (an `ImageDataArray` rejects SAB-backed views). */
+  /** Cached per-CRTC scratch for both presenters (putImageData /
+   *  texImage2D) so the pump doesn't allocate 8 MB/frame at 1080p.
+   *  Resized on bo geometry change. Backed by a plain `ArrayBuffer` so
+   *  `new ImageData(scratch, …)` accepts it (an `ImageDataArray` rejects
+   *  SAB-backed views). */
   private kmsScratchBytes = new Map<number, Uint8ClampedArray<ArrayBuffer>>();
+  /** Per-CRTC WebGL2 presenter state for `mode: "webgl2-scanout"`.
+   *  `null` marks a canvas where WebGL2 acquisition failed (e.g. a Node
+   *  host without an OffscreenCanvas polyfill) so the pump doesn't retry
+   *  `getContext` at 60 Hz. */
+  private kmsGlPresenters = new Map<number, KmsGlPresenter | null>();
+  /** Embedder-reported display size (device pixels) per CRTC, fed by
+   *  `setKmsDisplaySize`. The webgl2-scanout presenter sizes the canvas
+   *  drawing buffer to this and lets the GPU scale the framebuffer
+   *  texture, instead of scaling an fb-sized bitmap in CSS. Absent →
+   *  the canvas tracks the framebuffer size. */
+  private kmsDisplaySizes = new Map<number, { width: number; height: number }>();
   private vblankTimer: ReturnType<typeof setInterval> | null = null;
   /** Construction-time schedulers include the browser worker's installed
    * polyfill but cannot be replaced by a later guest/host callback. */
@@ -3333,7 +3482,45 @@ export class CentralizedKernelWorker {
       // is the single source of truth for `crtc_id → OffscreenCanvas`.
       getKmsCanvas: (crtcId: number) => this.kmsCanvases.get(crtcId),
       markKmsCanvasGlOwned: (crtcId: number) => {
+        // A program GL context now owns the canvas (fires only after the
+        // context actually exists). If the pump's webgl2-scanout
+        // presenter was active on this CRTC, it holds state on the SAME
+        // WebGL2 context the program just inherited — stand it down and
+        // free its scanout texture; the muxer's shadow replay sanitizes
+        // the rest of the context state on the program's first submit.
+        const presenter = this.kmsGlPresenters.get(crtcId);
+        if (presenter) presenter.gl.deleteTexture(presenter.tex);
+        this.kmsGlPresenters.delete(crtcId);
+        if (!this.kmsModeBeforeGlOwn.has(crtcId)) {
+          this.kmsModeBeforeGlOwn.set(crtcId, this.kmsContextMode.get(crtcId));
+        }
         this.kmsContextMode.set(crtcId, "webgl2");
+        // Slot 7 = 3: program-owned WebGL2 (direct GL rendering; no pump
+        // presenter). Distinct from 2 (pump webgl2-scanout) so gates can
+        // tell GPU compositing from CPU-composite-then-GPU-present.
+        const stats = this.kmsStatsViews.get(crtcId);
+        if (stats && stats.length > 7) Atomics.store(stats, 7, 3);
+      },
+      markKmsCanvasGlReleased: (crtcId: number) => {
+        // The claiming GL session is gone (context destroyed / EGL
+        // terminated — e.g. a GPU compositor degrading to its CPU
+        // path). Resume the pre-claim presenter mode; the next tick
+        // rebuilds a webgl2-scanout presenter on the same context and
+        // repopulates slot 7.
+        if (!this.kmsModeBeforeGlOwn.has(crtcId)) return;
+        const prev = this.kmsModeBeforeGlOwn.get(crtcId);
+        this.kmsModeBeforeGlOwn.delete(crtcId);
+        if (prev) this.kmsContextMode.set(crtcId, prev);
+        else this.kmsContextMode.delete(crtcId);
+        const stats = this.kmsStatsViews.get(crtcId);
+        if (stats && stats.length > 7) Atomics.store(stats, 7, 0);
+      },
+      // Display size for connector-mode derivation (host_kms_mode_info).
+      // Single-head today: any registered CRTC's size stands in for the
+      // one virtual connector.
+      getKmsDisplaySize: () => {
+        for (const size of this.kmsDisplaySizes.values()) return size;
+        return undefined;
       },
       onStdin: (maxLen: number): Uint8Array | null => {
         const pid = this.currentHandlePid;
@@ -13236,6 +13423,29 @@ export class CentralizedKernelWorker {
         );
       }
 
+      // --- Imported-bo coherence on poll return ---
+      // The GbmBoRegistry is bind-boundary-synced (see host/src/dri/
+      // registry.ts): an importer's long-lived mmap of another process's
+      // bo only gets the snapshot taken at mmap time. A wl_shm compositor
+      // keeps that mapping for the buffer's lifetime and re-reads it on
+      // every commit, so without a refresh it composites the client's
+      // first frame forever. A poll-family return is exactly the moment
+      // such an importer is about to process a commit and read the
+      // buffer, so refresh its imported mappings here. `hasStaleableImports`
+      // is a cheap metadata check; processes without cross-process bo
+      // imports (everything except a compositor) skip in O(live bos).
+      if (
+        (syscallNr === SYS_POLL ||
+          syscallNr === SYS_PPOLL ||
+          syscallNr === SYS_EPOLL_WAIT ||
+          syscallNr === SYS_EPOLL_PWAIT ||
+          syscallNr === SYS_SELECT ||
+          syscallNr === SYS_PSELECT6) &&
+        this.#kernel.bos.hasStaleableImports(channel.pid)
+      ) {
+        this.#kernel.bos.syncImportsForPid(channel.pid, channel.memory);
+      }
+
       if ((this.sharedMmapBackings?.size ?? 0) > 0) {
         this.handleSharedMappingsAfterFileSyscall(
           channel,
@@ -15522,6 +15732,12 @@ export class CentralizedKernelWorker {
       if (entry.needsSignalSafeWake) return true;
     }
     return false;
+  }
+
+  /** Key for the blocked-retry maps. Scoped by pid because channelOffset
+   *  values repeat across processes (same layout in each process memory). */
+  private retryKey(channel: ChannelInfo): string {
+    return `${channel.pid}:${channel.channelOffset}`;
   }
 
   /** Same as scheduleWakeBlockedRetries but delays by a few ms to allow
@@ -19422,6 +19638,14 @@ export class CentralizedKernelWorker {
 
     // If we got events, return them
     if (readyCount > 0) {
+      // Imported-bo coherence: an epoll_wait return is the moment a
+      // compositor-style importer wakes to process a client's commit and
+      // re-read its long-lived imported wl_shm mappings. Refresh them from
+      // the creator's memory first (mirror of the poll/ppoll hook in the
+      // generic post-syscall path — epoll is intercepted before that tail).
+      if (this.#kernel.bos.hasStaleableImports(channel.pid)) {
+        this.#kernel.bos.syncImportsForPid(channel.pid, channel.memory);
+      }
       this.completeChannelRawAndRelisten(channel, readyCount, 0, entry);
       return;
     }
@@ -33405,6 +33629,12 @@ export class CentralizedKernelWorker {
    *  - `"2d"`: legacy CPU-blit path. The pump eagerly grabs 2D here
    *    and copies the kernel's scanout BO into the canvas each frame.
    *    Used by demos that render into the FB via memcpy rather than GL.
+   *  - `"webgl2-scanout"`: pump-owned WebGL2 presenter. The pump uploads
+   *    the scanout BO to a texture each frame and draws it as a
+   *    mipmapped, letterboxed quad — the XRGB→RGB swizzle happens in
+   *    the fragment shader and the scale/filter on the GPU. Combine
+   *    with `setKmsDisplaySize` to render at display resolution.
+   *    Used by CPU compositors (wlcompositor's dumb-bo + PAGE_FLIP).
    *  - `"webgl2"`: marks the canvas as GL-owned up front. Pump never
    *    blits. Same effect as auto + a later `markKmsCanvasGlOwned`,
    *    but spares the GL bridge from racing the pump's 2D acquisition. */
@@ -33412,7 +33642,7 @@ export class CentralizedKernelWorker {
     crtc_id: number,
     canvas: OffscreenCanvas,
     statsSab?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
   ): void {
     const statsView = statsSab === undefined
       ? undefined
@@ -33430,10 +33660,30 @@ export class CentralizedKernelWorker {
         this.kmsContexts.set(crtc_id, ctx);
         this.kmsContextMode.set(crtc_id, "2d");
       }
-    } else if (mode === "webgl2") {
-      this.kmsContextMode.set(crtc_id, "webgl2");
+    } else if (mode === "webgl2" || mode === "webgl2-scanout") {
+      // webgl2-scanout defers context creation to the first tick so a
+      // host without WebGL2 (Node) degrades to stats-only instead of
+      // failing the attach.
+      this.kmsContextMode.set(crtc_id, mode);
     }
     this.startVblankPump();
+  }
+
+  /** Report the embedder-side display size (device pixels) for a CRTC's
+   *  canvas. Only the `"webgl2-scanout"` presenter consumes it: the
+   *  drawing buffer is resized to match and the scanout texture is
+   *  GPU-scaled into it, so the page compositor never rescales an
+   *  fb-sized bitmap. Callers typically feed this from a ResizeObserver
+   *  with `devicePixelContentBoxSize`. Zero/negative dims are ignored
+   *  (a hidden pane reports 0×0 — keep the last real size). */
+  setKmsDisplaySize(crtc_id: number, width: number, height: number): void {
+    if (!(width >= 1) || !(height >= 1)) return;
+    // Sanity cap: a bogus resize report must not allocate an absurd
+    // drawing buffer.
+    this.kmsDisplaySizes.set(crtc_id, {
+      width: Math.min(Math.round(width), 4096),
+      height: Math.min(Math.round(height), 4096),
+    });
   }
 
   /** Attach a stats SAB for a CRTC without registering a scanout canvas.
@@ -33489,6 +33739,40 @@ export class CentralizedKernelWorker {
         const vblankFn = entry.instance.exports.kernel_vblank as
           (() => void) | undefined;
         vblankFn?.();
+        // kernel_vblank just drained any pending page-flips into each open
+        // card0 fd's `event_ring`. Wake blocked DRM poll() callers now
+        // instead of letting them spin on the generic safety-net retry —
+        // without this hook the C-side frame loop is capped well below the
+        // 60 Hz tick unless something else (mouse input, etc.) triggers a
+        // wake. Coalesced and no-op when no retries are pending.
+        this.scheduleWakeBlockedRetries(entry);
+
+        // Snapshot webgl2-scanout presenter inputs while entry authority is
+        // live. The detached canvas phase below runs the GL upload + draw
+        // against host-owned SAB pixel copies only; the commit counter is a
+        // kernel export, so it must be read here.
+        const commitCountFn = entry.instance.exports
+          .kernel_kms_commit_count as
+          ((id: number) => bigint) | undefined;
+        const glPresents: Array<{
+          crtcId: number;
+          canvas: OffscreenCanvas;
+          fb: { fb_id: number; width: number; height: number };
+          commits: number;
+        }> = [];
+        for (const [crtcId, canvas] of this.kmsCanvases) {
+          if (this.kmsContextMode.get(crtcId) !== "webgl2-scanout") continue;
+          const fb = this.#kernel.kms.currentFb(crtcId);
+          if (!fb) continue;
+          glPresents.push({
+            crtcId,
+            canvas,
+            fb: { fb_id: fb.fb_id, width: fb.width, height: fb.height },
+            commits: commitCountFn
+              ? Number(commitCountFn(crtcId) & 0x7fffffffn)
+              : -1,
+          });
+        }
 
         // WHY: process/BO memory may change on the next ingress. Copy every
         // scanout now; the detached canvas phase retains no Wasm view.
@@ -33622,6 +33906,29 @@ export class CentralizedKernelWorker {
               Atomics.add(blit.stats, 0, 1);
               Atomics.store(blit.stats, 1, performance.now() | 0);
               Atomics.store(blit.stats, 4, blitUs);
+              // Slot 7: which presenter painted (1 = 2d blit, 2 = webgl2
+              // scanout). Lets embedder UIs and browser gates assert the
+              // render path without reaching into the worker.
+              if (blit.stats.length > 7) Atomics.store(blit.stats, 7, 1);
+            }
+          }
+          for (const present of glPresents) {
+            const presentStart = performance.now();
+            const painted = this.presentKmsGlScanout(
+              present.crtcId,
+              present.canvas,
+              present.fb,
+              present.commits,
+            );
+            if (!painted) continue;
+            const presentUs =
+              ((performance.now() - presentStart) * 1000) | 0;
+            const stats = this.kmsStatsViews.get(present.crtcId);
+            if (stats) {
+              Atomics.add(stats, 0, 1);
+              Atomics.store(stats, 1, performance.now() | 0);
+              Atomics.store(stats, 4, presentUs);
+              if (stats.length > 7) Atomics.store(stats, 7, 2);
             }
           }
           for (const snapshot of statsSnapshots) {
@@ -33638,6 +33945,151 @@ export class CentralizedKernelWorker {
         });
       },
     );
+  }
+
+  /** Copy the SAB-backed scanout view into a cached plain-ArrayBuffer
+   *  scratch. Both presenters need it: `ImageData` rejects SAB-backed
+   *  views and WebGL refuses to upload from them. Resized on bo
+   *  geometry change so the pump doesn't allocate 8 MB/frame at 1080p. */
+  private kmsScratchFor(crtc_id: number, pixels: Uint8Array, need: number): Uint8ClampedArray<ArrayBuffer> {
+    let scratch = this.kmsScratchBytes.get(crtc_id);
+    if (!scratch || scratch.byteLength !== need) {
+      scratch = new Uint8ClampedArray(new ArrayBuffer(need)) as Uint8ClampedArray<ArrayBuffer>;
+      this.kmsScratchBytes.set(crtc_id, scratch);
+    }
+    scratch.set(pixels);
+    return scratch;
+  }
+
+  /** `mode: "webgl2-scanout"`: upload the scanout bo to a texture and
+   *  draw it as a letterboxed fullscreen triangle. The R/B swizzle
+   *  happens in the fragment shader; scaling + trilinear filtering on
+   *  the GPU at the embedder-reported display resolution. Presents only
+   *  when the frame actually changed (see the change gate below). */
+  private presentKmsGlScanout(
+    crtc_id: number,
+    canvas: OffscreenCanvas,
+    fb: { fb_id: number; width: number; height: number },
+    commits: number,
+  ): boolean {
+    const presenter = this.ensureKmsGlPresenter(crtc_id, canvas);
+    if (!presenter) return false;
+    const { gl, tex } = presenter;
+    // Drawing buffer tracks the display size when the embedder reports
+    // one (setKmsDisplaySize), else the framebuffer size. Rendering at
+    // display resolution means the page compositor maps the canvas 1:1
+    // instead of rescaling an fb-sized bitmap a second time.
+    const disp = this.kmsDisplaySizes.get(crtc_id);
+    const cw = disp?.width ?? fb.width;
+    const ch = disp?.height ?? fb.height;
+    // Present-on-change gate. Flip-driven renderers change the scanout
+    // through SETCRTC (fb_id changes) or PAGE_FLIP (commit count
+    // advances), so an unchanged pair usually means a byte-identical
+    // frame — skip the 8 MB scanout sync, texture upload and draw
+    // entirely instead of redoing them at 60 Hz. Geometry/display-size
+    // changes re-present the same content at the new size. Scanout
+    // mutations that never tick the commit count are backstopped by
+    // the ~15 Hz content probe (see KmsGlPresenter.probePhase).
+    const changed =
+      presenter.lastFbId !== fb.fb_id ||
+      presenter.lastCommits !== commits ||
+      presenter.texW !== fb.width ||
+      presenter.texH !== fb.height ||
+      canvas.width !== cw ||
+      canvas.height !== ch;
+    if (!changed) {
+      presenter.probePhase = (presenter.probePhase + 1) & 3;
+      if (presenter.probePhase !== 0) return false;
+    }
+    const pixels = this.#kernel.kms.scanoutBytes(crtc_id);
+    if (!pixels) return false;
+    const probeSum = kmsProbeChecksum(pixels);
+    if (!changed && probeSum === presenter.lastProbeSum) return false;
+    const presentStart = performance.now();
+    if (canvas.width !== cw || canvas.height !== ch) {
+      canvas.width = cw;
+      canvas.height = ch;
+    }
+    const need = fb.width * fb.height * 4;
+    const scratch = this.kmsScratchFor(crtc_id, pixels, need);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    if (presenter.texW !== fb.width || presenter.texH !== fb.height) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, fb.width, fb.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, scratch);
+      presenter.texW = fb.width;
+      presenter.texH = fb.height;
+    } else {
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, fb.width, fb.height, gl.RGBA, gl.UNSIGNED_BYTE, scratch);
+    }
+    if (!presenter.degraded) gl.generateMipmap(gl.TEXTURE_2D);
+    // Contain-fit letterbox, same math as the Modeset pane's
+    // toCanvasCoords / the wayland spec's desktopPoint (which assume
+    // the fb sits centered and aspect-true inside the canvas). Bars
+    // are cleared to black; the viewport clips the triangle to the
+    // content rect.
+    const scale = Math.min(cw / fb.width, ch / fb.height);
+    const vw = Math.max(1, Math.round(fb.width * scale));
+    const vh = Math.max(1, Math.round(fb.height * scale));
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.viewport((cw - vw) >> 1, (ch - vh) >> 1, vw, vh);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    presenter.lastFbId = fb.fb_id;
+    presenter.lastCommits = commits;
+    presenter.lastProbeSum = probeSum;
+    // Adaptive quality: a steady-state present that blows the 60 Hz
+    // frame budget means GL is running in software (headless Chromium's
+    // SwiftShader) where the mip chain + trilinear fullscreen draw cost
+    // tens of ms and would starve the kernel worker between presents.
+    // Fall back to plain bilinear once, permanently. Hardware GL
+    // presents in well under a millisecond and never trips this. The
+    // first present is exempt — it pays one-off allocation costs.
+    if (!presenter.degraded && presenter.presentCount > 0 &&
+        performance.now() - presentStart > 16) {
+      presenter.degraded = true;
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    }
+    presenter.presentCount++;
+    return true;
+  }
+
+  /** Lazily acquire the WebGL2 presenter for a `webgl2-scanout` CRTC.
+   *  A failed acquisition (no WebGL2 on this host, context refused) is
+   *  cached as `null` so the pump doesn't retry getContext at 60 Hz —
+   *  the CRTC then degrades to stats-only, which is exactly what the
+   *  Node host wants. */
+  private ensureKmsGlPresenter(crtc_id: number, canvas: OffscreenCanvas): KmsGlPresenter | null {
+    const cached = this.kmsGlPresenters.get(crtc_id);
+    if (cached !== undefined) return cached;
+    let presenter: KmsGlPresenter | null = null;
+    try {
+      const gl = canvas.getContext("webgl2", {
+        antialias: false,
+        premultipliedAlpha: false,
+        depth: false,
+        stencil: false,
+        // The context outlives the presenter: a program GL session that
+        // later claims this canvas (markKmsCanvasGlOwned — the GPU
+        // compositor path) inherits THIS context, and its cross-task
+        // readbacks (COMPOSITE_SAMPLE) need the drawing buffer to
+        // survive the browser's present.
+        preserveDrawingBuffer: true,
+      }) as WebGL2RenderingContext | null;
+      if (gl && typeof gl.createTexture === "function") {
+        presenter = buildKmsGlPresenter(gl);
+      }
+    } catch {
+      presenter = null;
+    }
+    if (!presenter) {
+      // Loud one-shot: a silently-cached failure looks like a black
+      // canvas with advancing flip counters and is miserable to debug.
+      console.warn(
+        `kms: webgl2-scanout presenter unavailable for crtc ${crtc_id} ` +
+        `(WebGL2 context refused or shader build failed); CRTC degrades to stats-only`,
+      );
+    }
+    this.kmsGlPresenters.set(crtc_id, presenter);
+    return presenter;
   }
 }
 

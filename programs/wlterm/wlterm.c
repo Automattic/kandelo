@@ -36,8 +36,8 @@
 
 #include "vt100.h"
 
-#define WIN_W 640
-#define WIN_H 384
+#define WIN_W 960
+#define WIN_H 540
 #define FONT_PX 16
 
 /* A grid needle the test asks wlterm to watch for and report once seen. */

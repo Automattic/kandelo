@@ -34,13 +34,18 @@ const hasBinaries = !!compositorBin && !!kwldemoBin;
 // The input canvas matches the compositor's card0 output (1920x1080) so an
 // injected absolute pointer coordinate maps 1:1 to the compositor's cursor
 // position (ABS_X.maximum = canvasW-1, scaled to g.width). We then move the
-// cursor to a point inside the kwldemo window (at origin, 320x240) before
-// pressing — the compositor's default cursor centre (960,540) is outside it.
+// cursor to a point inside the kwldemo window before pressing — the
+// compositor's default cursor centre (960,540) is outside it. The v2
+// compositor places an unmatched app_id at the first cascade slot
+// (160,120), and libkwl adds a KWL_TITLEBAR_H (28px) CSD bar above the
+// 320x240 content, so the content occupies (160,148)–(480,388) on the
+// output.
 const CANVAS_W = 1920;
 const CANVAS_H = 1080;
-// A point comfortably inside the kwldemo button rect (8,8)–(312,232).
-const POINT_X = 100;
-const POINT_Y = 100;
+// Output-space point mapping to content-local (160,152) — comfortably
+// inside the kwldemo button rect (8,8)–(312,232).
+const POINT_X = 320;
+const POINT_Y = 300;
 
 // linux/input-event-codes.h
 const EV_SYN = 0x00;
@@ -50,6 +55,7 @@ const SYN_REPORT = 0x00;
 const ABS_X = 0x00;
 const ABS_Y = 0x01;
 const KEY_A = 30;
+const KEY_LEFTSHIFT = 42;
 const BTN_LEFT = 0x110;
 
 function loadBytes(path: string): ArrayBuffer {
@@ -112,6 +118,27 @@ describe("libkwl — toolkit window maps, composites, and routes input", () => {
         expect(px & 0xffffff, `composited pixel is black (0x${px.toString(16)})\n${dump()}`)
           .not.toBe(0);
 
+        // Keyboard first — kwldemo's loop exits once it has seen both a
+        // click and a text event, so all key assertions must precede the
+        // click. Shifted key: the compositor must deliver
+        // wl_keyboard.modifiers (its xkb state changed) before the key,
+        // and libkwl's xkb state must apply it — 'a' arrives uppercase.
+        host.injectInputEvent(0, EV_KEY, KEY_LEFTSHIFT, 1);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(0, EV_KEY, KEY_A, 1);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        await waitFor(out, 'GOT_TEXT "A"', 10_000, dump);
+        host.injectInputEvent(0, EV_KEY, KEY_A, 0);
+        host.injectInputEvent(0, EV_KEY, KEY_LEFTSHIFT, 0);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+
+        // With shift released the same key reads lowercase again.
+        host.injectInputEvent(0, EV_KEY, KEY_A, 1);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        await waitFor(out, 'GOT_TEXT "a"', 10_000, dump);
+        host.injectInputEvent(0, EV_KEY, KEY_A, 0);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+
         // Move the cursor into the window (absolute motion on event1), then
         // press the left button there. libkwl reports the button at the
         // motion-updated position, inside the button rect.
@@ -121,10 +148,6 @@ describe("libkwl — toolkit window maps, composites, and routes input", () => {
         host.injectInputEvent(1, EV_KEY, BTN_LEFT, 1);
         host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
         await waitFor(out, "ON_CLICK", 10_000, dump);
-
-        host.injectInputEvent(0, EV_KEY, KEY_A, 1);
-        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
-        await waitFor(out, 'GOT_TEXT "a"', 10_000, dump);
 
         // The app saw both events and exits cleanly.
         const demoCode = await Promise.race([

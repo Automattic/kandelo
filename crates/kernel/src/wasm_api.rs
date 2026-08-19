@@ -219,6 +219,7 @@ unsafe extern "C" {
         out_ptr: *mut u8,
         out_len: usize,
     ) -> i32;
+    fn host_gl_bind_foreign_texture(pid: i32, ctx_id: u32, bo_id: u32, gl_target: u32) -> i32;
     fn host_kms_set_master(pid: i32);
     fn host_kms_drop_master(pid: i32);
     fn host_proc_write_bytes(pid: i32, addr: u32, src_ptr: *const u8, len: u32) -> i32;
@@ -1037,6 +1038,16 @@ impl HostIO for WasmHostIO {
                 out.len(),
             )
         }
+    }
+
+    fn gl_bind_foreign_texture(
+        &mut self,
+        pid: i32,
+        ctx_id: u32,
+        bo_id: u32,
+        gl_target: u32,
+    ) -> i32 {
+        unsafe { host_gl_bind_foreign_texture(pid, ctx_id, bo_id, gl_target) }
     }
 
     fn kms_set_master(&mut self, pid: i32) {
@@ -13968,7 +13979,15 @@ pub extern "C" fn kernel_drain_wakeup_events(
 /// observe the new sequence on the next syscall round-trip.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_vblank() -> u32 {
-    crate::dri::vblank_tick()
+    let seq = crate::dri::vblank_tick();
+    let mut host = WasmHostIO;
+    let (tv_sec, tv_usec) =
+        match host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_MONOTONIC) {
+            Ok((sec, nsec)) => (sec as u32, (nsec / 1000) as u32),
+            Err(_) => (0u32, 0u32),
+        };
+    crate::dri::drain_pending_flips(seq, tv_sec, tv_usec);
+    seq
 }
 
 /// Fan one translated DOM input event out to every open OFD bound to

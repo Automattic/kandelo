@@ -321,6 +321,57 @@ to the focused client, **not** special-cased by the compositor.
 - **F′ — GPU tier:** dispatch `DRM_IOCTL_WPK_CREATE_GPU_BO` /
   `WPK_BIND_FOREIGN_TEXTURE`; add `zwp_linux_dmabuf_v1`; SDL2 Wayland
   backend; `wlcube` GL client (PR10–PR13).
+  **PARTIALLY LANDED (see §8.10):** `WPK_BIND_FOREIGN_TEXTURE` is
+  implemented for CPU-tier bos and wlcompositor GPU-composites with it.
+  Remaining: `WPK_CREATE_GPU_BO`, `zwp_linux_dmabuf_v1`, PR12/PR13.
+
+### §7.1 Evaluation — GPU-rendering the CLIENTS (post-GPU-compositing)
+
+Assessed 2026-07-13, after GPU compositing landed. Verdict: **do not
+port the wpkdraw clients (wlclock/wlterm/wlpaint) to GL; finish the
+GPU tier for apps that are already GL** (SDL2/`wlcube`, PR12–13).
+
+Why not the wpkdraw clients:
+- Their windows are small (340×360 … 960×540) and CPU rasterization
+  with the new AA primitives is visually clean and cheap; a GL port
+  buys no user-visible quality and adds a context per client.
+- The compositing bottleneck they used to feed (full-desktop CPU blit
+  + 8 MB presenter upload per frame) is already gone — texture
+  re-uploads are per-commit and window-sized now.
+
+What the real client-GL path needs (PR10–PR13 shape, refined by what
+we learned):
+1. **PR10 — `WPK_CREATE_GPU_BO`:** a GPU-tier bo backed by a
+   `WebGLTexture` (no SAB, unmappable). Host-side the natural design
+   is to back ALL renderD128 GL sessions with ONE real WebGL2 context
+   multiplexed by `GlMuxer` (this is what it was built for —
+   `switchTo` replays per-binding shadow state), because non-master
+   clients have no display canvas to build a context on; each client
+   renders into an FBO whose color attachment IS the GPU bo's texture.
+   `WPK_BIND_FOREIGN_TEXTURE` on a GPU-tier bo then degenerates to
+   "return the texture id" — zero copies, true zero-copy dmabuf
+   semantics inside the shared context.
+2. **EGL surface targeting:** clients need `eglCreateWindowSurface`
+   (or a pbuffer) to target the bo-backed FBO instead of a canvas, and
+   `eglSwapBuffers` must become the buffer-ready fence that precedes
+   `wl_surface.commit`. Command order through the shared context (all
+   sessions drain through one submit queue) gives render-before-sample
+   ordering for free — no explicit sync object needed in v1.
+3. **PR11 — `zwp_linux_dmabuf_v1`:** protocol-side, a thin addition
+   now that the compositor's texture path exists — the dmabuf params'
+   prime fd feeds the same `wpkEglImportDmabufHandle` +
+   `wpkEglBindBoTexture` flow (GPU-tier bind = texture id lookup, no
+   upload, no per-commit dirty re-upload needed).
+4. **PR12/PR13:** flip SDL2 to `--enable-video-wayland` and add
+   `wlcube` — the consumers that actually exercise the path.
+
+Open risks carried to PR10: process exit must release GPU bos and
+their FBOs across the shared context (the CPU-tier release path via
+`gbm_bo_destroy` → `dropForeignTexturesForBo` is the template);
+SwiftShader (headless CI) must be exercised early since every client
+would now be GL; and the shared-context design assumes clients tolerate
+`preserveDrawingBuffer`-style semantics on FBOs (they do — FBO content
+persists by definition).
 - **Full libffi:** doubles, by-value structs, `ffi_closure` — needed by
   glib/gobject.
 - **Unmodified GTK/Qt apps:** the app-compat milestone; pulls in glib, cairo,
@@ -391,6 +442,145 @@ libwayland is the first consumer to hit:
    a drained fd set (the `[PARK]` case) retried forever. Added a per-channel
    deadline (`epollWaitDeadlines`) that persists across wakeup-driven retries
    so the wait returns 0 after ~timeout instead of resetting on every poke.
+
+### Gaps discovered + fixed during the desktop demo hardening (post-PR7)
+
+Running the full three-client desktop (`/?demo=wayland`) as a real user —
+typing, dragging windows, drag-painting, leaving it idle — surfaced five
+more defects that no marker-based gate caught. All are fixed on this branch;
+the first three live in shared kernel/host code, so both hosts get them.
+
+1. **Blocking-poll timeouts never expired** (`host/src/kernel-worker.ts`).
+   The EAGAIN retry loop re-entered `handleBlockingRetry` / `handleSelect` /
+   `handlePselect6` from scratch on every broad wake and recomputed
+   `deadline = now + timeout` each time, so a finite `poll` timeout on a
+   quiet fd set never fired while the system was busy — wlclock (paced by
+   `poll(fds, 1, 40)`) ran at ~0.5 fps and stopped entirely at idle. Fixed
+   with `blockingWaitDeadlines`, a per-`retryKey` deadline map that persists
+   the first-block deadline across retries (the same pattern
+   `epollWaitDeadlines` already used; see §8.4).
+2. **`munmap` leaked the rounding tail** (`crates/kernel/src/memory.rs`).
+   `mmap` rounds the mapping length up to the 64 KB wasm page but `munmap`
+   freed only the literal length, stranding an unusable tail remnant per
+   cycle. The compositor maps/unmaps its scanout bo every frame
+   (`gbm_bo_map`/`unmap`), so ~8.3 MB of address space leaked per flip →
+   ENOMEM and a silent permanent freeze at ~124 frames. `munmap` now rounds
+   up to the page (Linux semantics); two unit tests cover it.
+3. **`PAGE_FLIP` never latched the host scanout fb**
+   (`crates/kernel/src/syscalls.rs`). Only `SETCRTC` called
+   `host.kms_set_fb`, so the host-side blit pump scanned out the first bo
+   forever — the compositor's *back* buffer every other frame — and the
+   60 Hz pump caught frames mid-composite: the desktop flickered randomly
+   with windows missing. `PAGE_FLIP` now latches the new fb at ioctl time
+   (the fb is fully painted before the flip, and the client only reuses the
+   old bo after the flip-complete event, so the latch is race-free).
+   Covered by a kernel unit test (`kms_page_flip_latches_host_scanout_fb`)
+   and a browser flicker gate (canvas PNG-size distribution, verified to
+   fail on the pre-fix kernel).
+4. **2D KMS blit rendered R↔B swapped** (`kernel-worker.ts` vblank pump).
+   DRM XRGB8888 is little-endian `0xXXRRGGBB` (bytes B,G,R,X) while
+   `ImageData` wants R,G,B,A; the blit now swizzles in place. Only affects
+   `mode: "2d"` consumers — the CPU-rendered compositor path. (Superseded
+   for the wayland demo by item 8: the pane now uses `mode:
+   "webgl2-scanout"` and the swizzle happens in the fragment shader; the
+   CPU swizzle remains correct for legacy `"2d"` consumers. GL demos keep
+   the WebGL2 bridge and the pump never touches their canvas.)
+5. **Software cursor removed** (`wlcompositor.c`). The browser shows the
+   host pointer and the input bridge maps it absolutely (EV_REL
+   peg-and-jump emulation into `event1` — not the EV_ABS path §5 originally
+   assumed), so the compositor's sprite sat exactly under it as a double
+   cursor. Bare pointer motion no longer schedules a repaint.
+6. **Move-grabbed windows teleported to the top-left corner during drags**
+   (`wlcompositor.c`). The peg-and-jump emulation sends each pointer move
+   as TWO motion events (peg to (0,0), then jump to the target), and the
+   compositor repainted synchronously per event — so every drag update
+   rendered one frame with the grabbed window at the top-left. Two fixes:
+   repaints are now deferred until the libinput drain loop finishes
+   (`in_input_batch`, one repaint per input batch at the final cursor
+   position), and a peg event (REL ≤ −2048 on both axes — impossible from
+   a real device) updates the cursor without delivering motion, so even a
+   batch split between peg and jump can't render or leak the pegged
+   position to clients. Gate: the browser drag gate samples the desktop's
+   top-left corner per drag step and requires pixel-stability.
+7. **The desktop rendered stretched** (`Modeset.tsx`). The pane's canvas
+   used `width:100%; height:auto; max-height:100%`, which distorts a 16:9
+   framebuffer in a wider pane — every 1-px glyph/line smeared
+   non-uniformly and the demo read as "pixelated". The canvas now renders
+   with `object-fit: contain` (letterboxed, aspect-true) and the pointer
+   mapping + the spec's `desktopPoint` helper map through the fitted
+   content box.
+8. **Wayland demo flipped from the 2D blit to a WebGL2 scanout presenter**
+   (`kernel-worker.ts` + both host protocols + `kernel-host.ts` +
+   `Modeset.tsx`). New pump mode `"webgl2-scanout"` (the §7 F′ GPU path
+   remains the roadmap; this is option (a) — present the CPU-composited
+   scanout through GL): the pump owns a WebGL2 context on the CRTC canvas
+   and draws the scanout as a texture — fragment-shader XRGB→RGB swizzle,
+   GL letterbox, trilinear-over-mipmap GPU scaling at the pane's
+   device-pixel resolution (a main-thread ResizeObserver feeds
+   `kms_set_display_size`, dual-host message). Presents are change-driven:
+   kernel commit count + a ~15 Hz strided-checksum content probe. The
+   probe is load-bearing for gate 5's detection power — flip-synced
+   presents alone sample a latch-pinned bo *before* its repaint and hide
+   the PAGE_FLIP-latch regression (negative control re-verified: latch
+   removed → 2/120 flicker dropouts, median 19.2 KB; fixed → 0/120).
+   Software-GL hosts (headless Chromium) auto-degrade to bilinear when a
+   steady-state present exceeds the 16 ms frame budget. Two gotchas
+   captured in code comments: WebGL refuses SAB-backed views (the scanout
+   copy stays), and Chrome reflects the committed OffscreenCanvas bitmap
+   size back into the placeholder's `width`/`height` attributes, so the
+   pane's pointer math now maps through kernel-reported scanout dims
+   (stats slots 2/3) instead of `canvas.width`. Stats slot 7 reports the
+   active presenter and the Modeset chip + spec gate 1c assert `webgl2`.
+9. **The desktop letterboxed instead of filling the pane** (user report:
+   "we don't use the whole width of the canvas"). The connector's
+   preferred mode is now derived from the embedder-reported display size
+   (`buildVirtualConnectorMode`: `round(1080 × aspect) × 1080`, width
+   clamped [1440, 3840], even-aligned; 1920×1080 fallback for Node /
+   headless). The wayland boot flow feeds the pane's device-pixel size
+   to the kernel BEFORE spawning wlcompositor (`live-setup.ts` waits up
+   to 1.5 s for the pane's ResizeObserver, measuring the canvas directly
+   as a fallback), and wlcompositor's placement rules became
+   edge-anchored (negative x = offset from the right edge; resolved
+   coordinates are byte-identical to the old fixed layout at 1920). The
+   wayland spec parses the live mode from the Modeset chip
+   (`readDesktopDims`) and derives all window geometry from it. The
+   mode is fixed at boot; post-boot pane resizes letterbox rather than
+   re-mode (dynamic mode switching = future work).
+
+New permanent gates from this pass: `host/test/wldesktop-liveness-smoke.test.ts`
+(node: PAGE_FLIP commits keep advancing across drag-paint strokes) and
+`kandelo-wayland.spec.ts` gates 1c (webgl2 renderer active), 3 (per-step
+corner stability during the window drag), 4 (drag-paint liveness), and 5
+(flicker stability).
+
+10. **GPU compositing landed in wlcompositor (first slice of §7 F′).**
+   `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` is now dispatched for CPU-tier
+   bos: the kernel resolves the caller's fd-local handle to the global
+   bo id and the host (re)uploads the bo's SAB pixels into a
+   `WebGLTexture` in the caller's context (`host/src/webgl/
+   foreign-texture.ts`; texture id stable per bo, lifetime tied to the
+   bo, `UNPACK_ROW_LENGTH` honors the bo stride, creator's live mmap is
+   flushed to the SAB first). libEGL exposes the flow as
+   `wpkEglImportDmabufHandle` / `wpkEglBindBoTexture` /
+   `wpkEglCloseBoHandle` (a stand-in for EGL_EXT_image_dma_buf_import),
+   plus `EGL_WIDTH`/`EGL_HEIGHT` window-surface attribs so a compositor
+   can size the drawing buffer before its first ADDFB. wlcompositor
+   probes GL at boot by compiling its quad shader (sync queries fail
+   cleanly headless → CPU path; `WLC_NO_GPU=1` forces it; one-shot
+   `WLC_RENDERER gpu|cpu` marker, asserted by spec gate 1d) and renders
+   wallpaper texture + z-ordered window quads + focus border in ONE
+   cmdbuf flush per frame (atomic canvas transition — gate 5 stays
+   meaningful), with per-commit dirty tracking so only changed buffers
+   re-upload. Canvas ownership: the compositor's context claims the CRTC
+   canvas (`markKmsCanvasGlOwned` now fires only after `getContext`
+   succeeds, disposes the pump's webgl2-scanout presenter, and sets
+   stats slot 7 = 3 → chip `webgl2-gl`); a runtime GL failure terminates
+   EGL, which fires the new `markKmsCanvasGlReleased` and the pump
+   presenter resumes in its pre-claim mode, so degrade never freezes the
+   canvas. PAGE_FLIPs continue as the frame clock either way, and the
+   one-shot COMPOSITE_SAMPLE comes from a 1×1 `glReadPixels` on the GL
+   path (context created with `preserveDrawingBuffer` so the cross-task
+   readback survives the browser's present).
 
 ---
 
