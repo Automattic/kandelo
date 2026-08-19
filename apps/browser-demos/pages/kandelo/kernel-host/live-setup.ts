@@ -595,6 +595,15 @@ const INIT_ENV_PROFILES: Record<InitEnvProfile, () => string[]> = {
 
 export type FbDemo = "none" | "test";
 
+export interface VerifiedLocalLoginProductBoot {
+  /** Exact VFS URL whose fixture authenticated the assets and product. */
+  vfsUrl: string;
+  /** The already authenticated bytes; boot must not re-fetch mutable URL state. */
+  vfsImageBytes: Uint8Array;
+  closedLazyAssets: readonly ClosedLazyAsset[];
+  privilegedProduct: PublishedPrivilegedProgramProduct;
+}
+
 export interface CreateLiveHostOptions {
   demo?: string | null;
   vfsUrl?: string | null;
@@ -603,6 +612,8 @@ export interface CreateLiveHostOptions {
   reviewedPrivilegedProgramPolicy?: ReviewedPrivilegedProgramPolicy;
   /** Separately published authority; image/config/descriptor data cannot mint it. */
   publishedPrivilegedProgramProduct?: PublishedPrivilegedProgramProduct;
+  /** Build-owned local product, applied only to its exact root VFS descriptor. */
+  localLoginProduct?: VerifiedLocalLoginProductBoot;
 }
 
 export async function createLiveHost(
@@ -758,6 +769,10 @@ export async function createLiveHost(
     const bootStartedAt = performance.now();
 
     try {
+      const localLoginProduct = localLoginProductForDescriptor(
+        descriptor,
+        opts.localLoginProduct,
+      );
       const kernel = await bootProfile(
         h,
         profile,
@@ -766,7 +781,10 @@ export async function createLiveHost(
         () => seq === bootSeq,
         requireServiceWorker,
         opts.reviewedPrivilegedProgramPolicy,
-        opts.publishedPrivilegedProgramProduct,
+        localLoginProduct?.privilegedProduct ??
+          opts.publishedPrivilegedProgramProduct,
+        localLoginProduct?.closedLazyAssets,
+        localLoginProduct?.vfsImageBytes,
       );
       if (seq !== bootSeq) {
         await kernel.destroy().catch(() => {});
@@ -796,6 +814,16 @@ function assertProtectedCandidateDescriptor(
       "protected browser candidate evidence cannot switch boot descriptors",
     );
   }
+}
+
+function localLoginProductForDescriptor(
+  descriptor: BootDescriptor,
+  product: VerifiedLocalLoginProductBoot | undefined,
+): VerifiedLocalLoginProductBoot | undefined {
+  if (product === undefined) return undefined;
+  const expected = normalizeVfsImageUrl(product.vfsUrl);
+  const actual = vfsImageUrlFromDescriptor(descriptor);
+  return expected !== null && actual === expected ? product : undefined;
 }
 
 function showBootError(
@@ -1103,6 +1131,8 @@ async function bootProfile(
   ) => Promise<ServiceWorker>,
   reviewedPrivilegedProgramPolicy?: ReviewedPrivilegedProgramPolicy,
   publishedPrivilegedProgramProduct?: PublishedPrivilegedProgramProduct,
+  verifiedClosedLazyAssets?: readonly ClosedLazyAsset[],
+  verifiedVfsImageBytes?: Uint8Array,
 ): Promise<BrowserKernel> {
   const assertCurrent = () => {
     if (!isCurrent()) throw new BootSuperseded();
@@ -1187,6 +1217,7 @@ async function bootProfile(
       .then(failOn("kernel.wasm"))
       .then((r) => r.arrayBuffer()),
     loadVfsImage(profile),
+    loadSoftwareBinaries(profile.software),
   ]);
   assertCurrent();
 
@@ -1348,11 +1379,8 @@ async function bootProfile(
     assertCurrent();
   }
 
-  const closedLazyAssets = await loadProfileClosedLazyAssets(
-    buildFs,
-    tick,
-    assertCurrent,
-  );
+  const closedLazyAssets = verifiedClosedLazyAssets ??
+    await loadProfileClosedLazyAssets(buildFs, tick, assertCurrent);
   assertCurrent();
 
   let privilegedProduct = publishedPrivilegedProgramProduct;

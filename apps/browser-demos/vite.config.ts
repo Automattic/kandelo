@@ -40,6 +40,10 @@ import {
   homebrewClosedAcceptanceAssetRoot,
   homebrewClosedAcceptanceInputNames,
 } from "./lib/homebrew-closed-acceptance";
+import {
+  createLocalLoginProductPlugin,
+  LOCAL_LOGIN_PRODUCT_INPUT_ENV,
+} from "./lib/local-login-product-build";
 import { DEFAULT_BROWSER_CORS_PROXY_CONFIG } from "./lib/browser-cors-proxy";
 import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
 import {
@@ -935,6 +939,10 @@ export default defineConfig(({ mode }) => {
   const base = normalizeDeploymentBase(process.env.VITE_BASE ?? "/");
   const canonicalPages = process.env.KANDELO_PAGES_PRODUCT_MAP !== undefined;
   const pagesVfsProducts = canonicalPagesVfsProducts(base);
+  const localLoginProduct = createLocalLoginProductPlugin({
+    base,
+    configuredRoot: process.env[LOCAL_LOGIN_PRODUCT_INPUT_ENV],
+  });
 
   return {
     base,
@@ -946,6 +954,7 @@ export default defineConfig(({ mode }) => {
       abiStagingBrowserEvidenceArtifactBoundary(mode),
       createCanonicalPagesLegacyBinaryBoundary(canonicalPages),
       pagesVfsProducts,
+      localLoginProduct,
       react(),
       ...(sourceOnlyViteAssets === null
         ? []

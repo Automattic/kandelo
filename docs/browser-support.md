@@ -745,6 +745,25 @@ the exact final state remains eligible when paired with a separately admitted
 product. This documents current repository behavior only; the broader trust
 model for deliberately user-selected images remains unresolved.
 
+An ordinary browser build carries no privileged login authority. The local
+ABI 43 product harness writes one closed, non-promotable browser build input to
+`<work-root>/browser-login-product`. A maintainer may name that exact absolute
+directory with `KANDELO_LOCAL_LOGIN_PRODUCT_ROOT` while building. Vite verifies
+the fixture's complete regular-file set, byte counts, SHA-256 identities,
+three-member projection schema, composition report, and serialized privileged
+product before it emits the assets under `homebrew-login-product/` and compiles
+the reviewed projection values into the root application. At runtime the root
+application re-authenticates those programs from the exact shell image and
+requires the newly published product bytes to equal the serialized artifact.
+The product is selected only for an unqualified `/` boot; `demo` and custom
+`vfs` queries retain their ordinary product-free behavior.
+
+For a root-hosted complete local deployment, use the exact directory reported
+by `scripts/run-login-stack-local.sh` together with `VITE_BASE=/` and the
+desired `KANDELO_BROWSER_DEMO_INPUTS`. The build-owned environment selection is
+not serialized into a boot descriptor or shared URL, and no fetched JSON or
+VFS image can enable it in a normal build.
+
 For an eligible image/product pair, each newly allocated logical terminal
 starts root-authorized `login -p -f maker` once.
 When that login shell exits, the same terminal starts ordinary `login -p` with

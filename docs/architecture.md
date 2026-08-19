@@ -1797,6 +1797,16 @@ capability. This describes the repository's present safety boundary; the
 larger trust model for deliberately user-selected images remains an open
 architecture question rather than a policy settled by terminal sessions.
 
+The deployable local-test browser product preserves that boundary through an
+explicit build input. Its closed fixture and composition report are data only;
+the build configuration must name an absolute private product directory, and
+product-owned browser code compiles the exact reviewed projections before it
+can call the private policy factory. Runtime loading verifies all closed asset
+identities, republishes from the authenticated Homebrew Cellar sources, and
+compares the result with the separately serialized privileged image. The
+branded result and closed lazy bytes are associated with one exact root VFS
+URL, so later gallery or custom-image boots cannot inherit them.
+
 For an eligible image/product pair, the first process is root-authorized
 `login -p -f maker`; every later process is ordinary `login -p`. UI handles
 only attach listeners to that record, while the terminal tab's explicit close
