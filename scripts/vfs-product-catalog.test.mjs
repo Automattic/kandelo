@@ -89,22 +89,22 @@ test("loads the checked catalog and exposes exact Homebrew roots", () => {
       {
         tap: "kandelo-dev/homebrew-tap-core",
         formula: "login",
-        materialization: "embedded",
+        materialization: "lazy",
       },
       {
         tap: "kandelo-dev/homebrew-tap-core",
         formula: "sudo-lite",
-        materialization: "embedded",
+        materialization: "lazy",
       },
       {
         tap: "kandelo-dev/homebrew-tap-core",
         formula: "sudo",
-        materialization: "embedded",
+        materialization: "lazy",
       },
       {
         tap: "kandelo-dev/homebrew-tap-core",
         formula: "ruby",
-        materialization: "embedded",
+        materialization: "lazy",
       },
     ],
   );
@@ -144,6 +144,32 @@ test("rejects unknown fields, duplicate IDs, and a tampered manifest digest", ()
         writeCanonical(join(directory, "product-pages.json"), productOwnedPages),
       ),
       /unknown field.*pages/i,
+    );
+  });
+});
+
+test("accepts bounded prepared-runtime toolchain components", () => {
+  withTempDir((directory) => {
+    const catalog = readCatalog();
+    const product = catalog.products[0];
+    product.manifest.software.toolchain.push({
+      component: "kernel-wasm",
+      id: "kernel-wasm",
+      provider: "prepared-runtime",
+      role: "build",
+    });
+    product.sha256 = manifestDigest(product.manifest);
+    assert.doesNotThrow(() => loadVfsProductCatalog(
+      writeCanonical(join(directory, "prepared-runtime.json"), catalog),
+    ));
+
+    product.manifest.software.toolchain.at(-1).provider = "ambient-path";
+    product.sha256 = manifestDigest(product.manifest);
+    assert.throws(
+      () => loadVfsProductCatalog(
+        writeCanonical(join(directory, "ambient-path.json"), catalog),
+      ),
+      /provider is invalid/i,
     );
   });
 });

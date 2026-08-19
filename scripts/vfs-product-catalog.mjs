@@ -245,7 +245,7 @@ function validateManifest(value, label) {
     );
     requireString(input.id, `${itemLabel}.id`);
     requireString(input.component, `${itemLabel}.component`);
-    if (input.provider !== "repository-dev-shell") {
+    if (!new Set(["prepared-runtime", "repository-dev-shell"]).has(input.provider)) {
       throw new Error(`${itemLabel}.provider is invalid`);
     }
     requireRole(input.role, `${itemLabel}.role`);
