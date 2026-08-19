@@ -22,11 +22,22 @@ if [ "$ARCH" != "wasm32" ]; then
 fi
 
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
-BIN_DIR="$SCRIPT_DIR/bin"
-DOWNLOAD_DIR="$SCRIPT_DIR/downloads"
-SRC_PARENT="$SCRIPT_DIR/source"
-OBJ_DIR="$SCRIPT_DIR/obj-wasm32"
-MOZCONFIG_PATH="$SCRIPT_DIR/mozconfig-wasm32"
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
+    WORK_DIR="$WASM_POSIX_DEP_WORK_DIR"
+    BIN_DIR="$WORK_DIR/bin"
+    DOWNLOAD_DIR="$WORK_DIR/downloads"
+    SRC_PARENT="$WORK_DIR/source"
+    OBJ_DIR="$WORK_DIR/obj-wasm32"
+    MOZCONFIG_PATH="$WORK_DIR/mozconfig-wasm32"
+    MOZBUILD_STATE_PATH="$WORK_DIR/.mozbuild"
+else
+    BIN_DIR="$SCRIPT_DIR/bin"
+    DOWNLOAD_DIR="$SCRIPT_DIR/downloads"
+    SRC_PARENT="$SCRIPT_DIR/source"
+    OBJ_DIR="$SCRIPT_DIR/obj-wasm32"
+    MOZCONFIG_PATH="$SCRIPT_DIR/mozconfig-wasm32"
+    MOZBUILD_STATE_PATH="$SCRIPT_DIR/.mozbuild"
+fi
 HOST_OS="$(uname -s)"
 MACOS_SDK_DIR="${WASM_POSIX_MACOS_SDK_DIR:-}"
 
@@ -138,7 +149,11 @@ find_mach_dir() {
     fi
 }
 
-SRC_DIR="${SPIDERMONKEY_SRC_DIR:-}"
+SRC_DIR="${SPIDERMONKEY_SRC_DIR:-${WASM_POSIX_DEP_SOURCE_DIR:-}}"
+if [ -n "${WASM_POSIX_DEP_SOURCE_DIR:-}" ] && [ ! -f "$SRC_DIR/mach" ]; then
+    echo "ERROR: Formula-owned SpiderMonkey source has no mach entry point: $SRC_DIR" >&2
+    exit 1
+fi
 if [ -z "$SRC_DIR" ] || [ ! -f "$SRC_DIR/mach" ]; then
     SRC_DIR="$(find_mach_dir || true)"
 fi
@@ -277,7 +292,7 @@ if [ -n "$MACOS_SDK_DIR" ]; then
 fi
 
 export MOZCONFIG="$MOZCONFIG_PATH"
-export MOZBUILD_STATE_PATH="$SCRIPT_DIR/.mozbuild"
+export MOZBUILD_STATE_PATH
 export MACH_BUILD_PYTHON_NATIVE_PACKAGE_SOURCE=system
 
 TARGET_OS_DEFINES="${WASM_POSIX_TARGET_OS_DEFINES:--D__linux__=1 -D__unix__=1}"
@@ -359,6 +374,18 @@ echo "==> SpiderMonkey Node-compatible runtime staged: $BIN_DIR/node.wasm ($NODE
 
 # shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled install_local_binary spidermonkey "$BIN_DIR/js.wasm" js.wasm
-WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled install_local_binary spidermonkey-node "$BIN_DIR/node.wasm" node.wasm
-WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled install_local_binary node "$BIN_DIR/node.wasm" node.wasm
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
+        WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled \
+        install_local_binary spidermonkey "$BIN_DIR/js.wasm" js.wasm
+    WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
+        WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled \
+        install_local_binary spidermonkey-node "$BIN_DIR/node.wasm" node.wasm
+else
+    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled \
+        install_local_binary spidermonkey "$BIN_DIR/js.wasm" js.wasm
+    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled \
+        install_local_binary spidermonkey-node "$BIN_DIR/node.wasm" node.wasm
+    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled \
+        install_local_binary node "$BIN_DIR/node.wasm" node.wasm
+fi
