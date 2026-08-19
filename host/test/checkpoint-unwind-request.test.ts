@@ -17,6 +17,7 @@ const KERNEL_MEMORY_PAGES = 2;
 function createHarness(
   getProcessState: () => number,
   channelOffsets: readonly number[] = [0],
+  usePolling = false,
 ) {
   const memory = new WebAssembly.Memory({
     initial: 2 * channelOffsets.length,
@@ -27,7 +28,9 @@ function createHarness(
     initial: KERNEL_MEMORY_PAGES,
     maximum: KERNEL_MEMORY_PAGES,
   });
-  const worker = createCentralizedKernelWorkerTestDouble({});
+  const worker = Object.assign(createCentralizedKernelWorkerTestDouble({}), {
+    usePolling,
+  });
   installKernelWorkerTestScratch(
     worker,
     kernelMemory,
@@ -102,6 +105,16 @@ describe("checkpoint unwind request", () => {
       publishOneCompletion(harness, CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY),
     ).resolves.toBe(0);
     // The request is still armed, so the enclosing ppoll carries it instead.
+    await expect(publishOneCompletion(harness, 0))
+      .resolves.toBe(CH_CHECKPOINT_REQUEST_UNWIND);
+  });
+
+  // Leg 1 of the freeze guards eight dispatch sites, and the legacy polling
+  // mode reaches them through a MessageChannel rather than Atomics.waitAsync.
+  // The request word must ride out on the same completion under both.
+  it("rides out under the polling dispatch mode too", async () => {
+    const harness = createHarness(() => PROCESS_STATE_RUNNING, [0], true);
+    expect(harness.worker.armCheckpointUnwind()).toEqual([PID]);
     await expect(publishOneCompletion(harness, 0))
       .resolves.toBe(CH_CHECKPOINT_REQUEST_UNWIND);
   });
