@@ -30132,8 +30132,22 @@ export class CentralizedKernelWorker {
     code: number,
     value: number,
   ): void {
-    this.kernel.injectInputEvent(device, ev_type, code, value);
-    this.scheduleWakeBlockedRetries();
+    this.#runOrDeferKernelEntry(
+      "evdev input and wake",
+      (entry) => {
+        const inject = entry.instance.exports.kernel_input_event as
+          | ((
+              device: number,
+              ev_type: number,
+              code: number,
+              value: number,
+            ) => void)
+          | undefined;
+        if (!inject) return;
+        inject(device, ev_type, code, value);
+        this.scheduleWakeBlockedRetries(entry);
+      },
+    );
   }
 
   /**
@@ -30142,7 +30156,16 @@ export class CentralizedKernelWorker {
    * `ABS_Y.maximum`. Idempotent; call again on canvas resize.
    */
   setInputCanvasDims(width: number, height: number): void {
-    this.kernel.setInputCanvasDims(width, height);
+    this.#runOrDeferKernelEntry(
+      "evdev canvas dimensions",
+      (entry) => {
+        const set = entry.instance.exports.kernel_set_input_canvas_dims as
+          | ((width: number, height: number) => void)
+          | undefined;
+        if (!set) return;
+        set(width, height);
+      },
+    );
   }
 
   /**
