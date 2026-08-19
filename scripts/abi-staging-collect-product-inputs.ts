@@ -100,7 +100,7 @@ export interface CollectedProductInputObject {
   archive_id?: string;
   url?: string;
   toolchain_id?: string;
-  provider?: "repository-dev-shell";
+  provider?: "prepared-runtime" | "repository-dev-shell";
   component?: string;
   repository_id?: string;
   paths?: string[];
@@ -138,7 +138,7 @@ interface ExpectedObject {
   url?: string;
   sha256?: string;
   toolchainId?: string;
-  provider?: "repository-dev-shell";
+  provider?: "prepared-runtime" | "repository-dev-shell";
   component?: string;
   repositoryId?: string;
   paths?: string[];

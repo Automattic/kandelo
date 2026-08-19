@@ -221,7 +221,7 @@ rmdir "$SOURCE/cache-inside-source"
   fail "runtime bundle did not bind the exact source head"
 [ "$(jq -r '.target_abi.version' "$OUT/runtime-bundle.json")" = 8 ] ||
   fail "runtime bundle did not bind the target ABI"
-[ "$(jq -r '.inventory | length' "$OUT/runtime-bundle.json")" = 16 ] ||
+[ "$(jq -r '.inventory | length' "$OUT/runtime-bundle.json")" = 17 ] ||
   fail "runtime bundle inventory is incomplete"
 [ "$(jq -r '.inventory[] | select(.path == "flake.lock") | .sha256' \
     "$OUT/runtime-bundle.json")" = \
@@ -248,6 +248,16 @@ cmp -s "$SOURCE/flake.lock" "$OUT/runtime/flake.lock" ||
   fail "runtime bundle lacks its exact wasm64 sysroot"
 [ -s "$OUT/runtime/toolchain/clang-resource-headers/include/stddef.h" ] ||
   fail "runtime bundle lacks its exact Clang resource headers"
+[ -s "$OUT/runtime/toolchain/kernel-wasm/kernel.wasm" ] ||
+  fail "runtime bundle lacks its prepared kernel toolchain component"
+cmp -s "$OUT/runtime/kernel.wasm" \
+  "$OUT/runtime/toolchain/kernel-wasm/kernel.wasm" ||
+  fail "prepared kernel toolchain bytes differ from the exact runtime kernel"
+[ "$(jq -r '.inventory[] | select(.path == "kernel.wasm") | .sha256' \
+    "$OUT/runtime-bundle.json")" = \
+  "$(jq -r '.inventory[] | select(.path == "toolchain/kernel-wasm/kernel.wasm") | .sha256' \
+    "$OUT/runtime-bundle.json")" ] ||
+  fail "prepared kernel toolchain digest differs from the exact runtime kernel"
 [ -f "$OUT/runtime/toolchain/wasm32-sysroot/include/bits/ioctl_fix.h" ] ||
   fail "runtime bundle dropped an intentional empty musl header"
 

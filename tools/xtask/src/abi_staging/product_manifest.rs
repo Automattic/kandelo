@@ -116,6 +116,7 @@ pub struct ArchiveSoftwareV1 {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ToolchainProviderV1 {
+    PreparedRuntime,
     RepositoryDevShell,
 }
 
@@ -1562,6 +1563,25 @@ builder = "builder.sh"
 
     #[test]
     fn toolchain_inputs_reject_commands_and_unknown_providers() {
+        let repository = create_test_repository();
+        let prepared_runtime = minimal_manifest(
+            "product",
+            "wasm32",
+            "product.vfs",
+            r#"[[software.toolchain]]
+id = "kernel-wasm"
+provider = "prepared-runtime"
+component = "kernel-wasm"
+role = "build"
+"#,
+        );
+        parse_product_manifest(
+            repository.path(),
+            &repository.path().join("products/product.toml"),
+            prepared_runtime.as_bytes(),
+        )
+        .expect("prepared runtime toolchain should be accepted");
+
         for invalid in [
             r#"[[software.toolchain]]
 id = "clang-headers"

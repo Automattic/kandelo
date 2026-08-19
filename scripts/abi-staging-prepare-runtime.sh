@@ -455,6 +455,22 @@ if [ "$TOOLCHAIN_INVENTORY_AFTER" != "$TOOLCHAIN_INVENTORY_BEFORE" ]; then
   exit 1
 fi
 
+# Product composition consumes the already-built exact kernel through the same
+# bounded toolchain-input adapter as the immutable dev-shell components. Keep
+# this derived component outside the before/after toolchain comparison above:
+# candidate build code never receives or writes this protected copy.
+PREPARED_KERNEL_ROOT="$TOOLCHAIN_ROOT/kernel-wasm"
+PREPARED_KERNEL="$PREPARED_KERNEL_ROOT/kernel.wasm"
+install -d -m 0700 "$PREPARED_KERNEL_ROOT"
+install -m 0600 "$RUNTIME_ROOT/kernel.wasm" "$PREPARED_KERNEL"
+if [ "$(sha256sum "$RUNTIME_ROOT/kernel.wasm" | awk '{print $1}')" != \
+     "$(sha256sum "$PREPARED_KERNEL" | awk '{print $1}')" ] || \
+   [ "$(wc -c <"$RUNTIME_ROOT/kernel.wasm" | tr -d ' ')" != \
+     "$(wc -c <"$PREPARED_KERNEL" | tr -d ' ')" ]; then
+  echo "abi-staging-prepare-runtime.sh: prepared kernel toolchain identity differs" >&2
+  exit 1
+fi
+
 # The tap resolves every build/toolchain claim against the exact head's
 # declared dev shell. Carry that lock as an ordinary inventory-bound artifact
 # so protected consumers never infer toolchain identity from ambient tools.
@@ -564,7 +580,7 @@ for directory, directories, files in os.walk(runtime, followlinks=False):
             "host/dist/node-kernel-worker-entry.js",
         }:
             file_limit = 64 * 1024 * 1024
-        elif relative == "kernel.wasm":
+        elif relative in {"kernel.wasm", "toolchain/kernel-wasm/kernel.wasm"}:
             file_limit = 512 * 1024 * 1024
         else:
             file_limit = 256 * 1024 * 1024

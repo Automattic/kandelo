@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
+import { unzipSync } from "fflate";
 import {
   deriveProductInputObjectSources,
 } from "./abi-staging-product-input-sources";
@@ -50,6 +51,7 @@ test("derives physical inputs only from one selected product manifest", () => {
       "libmini:output:libmini",
       "source-archive:mini-source",
       "toolchain-output:sdk-sysroot",
+      "toolchain-output:kernel-wasm",
     ],
   );
   assert.equal(
@@ -96,6 +98,30 @@ test("fails closed when a manifest-selected physical input is unavailable", () =
   );
 });
 
+test("rejects either kernel copy when its identity differs", () => {
+  for (const relativePath of [
+    "kernel.wasm",
+    "toolchain/kernel-wasm/kernel.wasm",
+  ]) {
+    const fixture = createFixture();
+    writeFileSync(join(fixture.runtimeRoot, relativePath), "substituted kernel\n");
+    assert.throws(
+      () => deriveProductInputObjectSources({
+        archiveFiles: { "mini-source": fixture.archive },
+        catalogPath: fixture.catalog,
+        packageRoots: {
+          libmini: fixture.libraryRoot,
+          mini: fixture.packageRoot,
+        },
+        productId: "mini-product",
+        programIndexPath: fixture.programIndex,
+        runtimeRoot: fixture.runtimeRoot,
+      }),
+      /prepared kernel.*differs from.*runtime kernel/i,
+    );
+  }
+});
+
 test("production collection derives and captures the selected manifest closure", () => {
   const fixture = createFixture();
   const inventory = collectProductInputObjectsFromResolvedSources({
@@ -133,6 +159,7 @@ test("production collection derives and captures the selected manifest closure",
       "package-mini-output-cli",
       "package-mini-output-runtime-data",
       "package-mini-source-role-test-suite",
+      "toolchain-kernel-wasm",
       "toolchain-sdk-sysroot",
     ],
   );
@@ -142,6 +169,22 @@ test("production collection derives and captures the selected manifest closure",
       ...inventory,
       inventory_sha256: undefined,
     }), (_key, value) => value === undefined ? undefined : value)}\n`,
+  );
+  const kernelObject = inventory.objects.find(
+    (object) => object.id === "toolchain-kernel-wasm",
+  );
+  assert(kernelObject);
+  assert.equal(kernelObject.provider, "prepared-runtime");
+  const kernelArchive = unzipSync(new Uint8Array(readFileSync(
+    join(fixture.root, "collected", kernelObject.path),
+  )));
+  assert.deepEqual(
+    Object.keys(kernelArchive).sort(),
+    ["kernel-wasm/", "kernel-wasm/kernel.wasm"],
+  );
+  assert.deepEqual(
+    kernelArchive["kernel-wasm/kernel.wasm"],
+    new Uint8Array(readFileSync(join(fixture.runtimeRoot, "kernel.wasm"))),
   );
 });
 
@@ -162,6 +205,7 @@ function createFixture() {
   mkdirSync(join(runtimeRoot, "toolchain/wasm32-sysroot/include"), {
     recursive: true,
   });
+  mkdirSync(join(runtimeRoot, "toolchain/kernel-wasm"), { recursive: true });
   mkdirSync(sourceRoot);
   writeFileSync(join(packageRoot, "mini.wasm"), "mini\n");
   writeFileSync(
@@ -177,6 +221,11 @@ function createFixture() {
   writeFileSync(
     join(runtimeRoot, "toolchain/wasm32-sysroot/include/stdio.h"),
     "header\n",
+  );
+  writeFileSync(join(runtimeRoot, "kernel.wasm"), "exact kernel\n");
+  writeFileSync(
+    join(runtimeRoot, "toolchain/kernel-wasm/kernel.wasm"),
+    "exact kernel\n",
   );
   const archive = join(root, "mini-source.tar.gz");
   writeFileSync(archive, "archive\n");
@@ -221,6 +270,12 @@ function createFixture() {
         materialization: "embedded",
         provider: "repository-dev-shell",
         role: "runtime",
+      }, {
+        component: "kernel-wasm",
+        id: "kernel-wasm",
+        materialization: "embedded",
+        provider: "prepared-runtime",
+        role: "build",
       }],
     },
   };

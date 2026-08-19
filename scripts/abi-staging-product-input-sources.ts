@@ -110,6 +110,30 @@ export function deriveProductInputObjectSources(
   }
   for (const toolchain of manifest.software.toolchain) {
     const path = join(runtimeRoot, "toolchain", toolchain.component);
+    if (
+      toolchain.provider === "prepared-runtime" &&
+      toolchain.component === "kernel-wasm"
+    ) {
+      const runtimeKernel = exactContent(
+        runtimeRoot,
+        join(runtimeRoot, "kernel.wasm"),
+        "file",
+        "exact runtime kernel",
+      );
+      const preparedKernel = exactContent(
+        runtimeRoot,
+        join(path, "kernel.wasm"),
+        "file",
+        "prepared kernel toolchain component",
+      );
+      const runtimeKernelBytes = readFileSync(runtimeKernel.path);
+      const preparedKernelBytes = readFileSync(preparedKernel.path);
+      if (!runtimeKernelBytes.equals(preparedKernelBytes)) {
+        throw new Error(
+          "prepared kernel toolchain component differs from the exact runtime kernel",
+        );
+      }
+    }
     result.push({
       kind: "toolchain-output",
       id: toolchain.id,
