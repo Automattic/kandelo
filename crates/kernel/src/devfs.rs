@@ -69,6 +69,7 @@ pub fn match_devfs_stat(path: &[u8], uid: u32, gid: u32) -> Option<WasmStat> {
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         });
     }
     None
@@ -94,6 +95,7 @@ pub fn devfs_symlink_stat(path: &[u8], target_len: usize, uid: u32, gid: u32) ->
         st_ctime_sec: 0,
         st_ctime_nsec: 0,
         _pad: 0,
+        st_rdev: 0,
     }
 }
 

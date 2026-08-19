@@ -1,11 +1,13 @@
 /* kstat.h — kernel stat format for wasm64posix.
  *
  * This is the complete 112-byte native syscall result. The kernel's internal
- * WasmStat metadata record supplies the prefix through st_ctime_nsec; its
- * native serializer initializes the rdev/blksize/blocks suffix to zero.
+ * WasmStat metadata record supplies the prefix through st_rdev (offset 88) —
+ * a Linux-encoded dev_t for device nodes (e.g. /dev/input/event0 = 13:64),
+ * 0 otherwise; its native serializer initializes the blksize/blocks suffix
+ * to zero.
  *
  * Keeping the complete allocation explicit prevents a host copy-back sized
- * for struct kstat from exposing reused scratch bytes after the 88-byte
+ * for struct kstat from exposing reused scratch bytes after the 96-byte
  * internal prefix. See #928 for truthful filesystem-provided suffix values.
  */
 struct kstat {
@@ -25,8 +27,8 @@ struct kstat {
 	long long          st_ctime_sec;    /* offset 72, 8 bytes */
 	unsigned int       st_ctime_nsec;   /* offset 80, 4 bytes */
 	unsigned int       __ctime_pad;     /* offset 84, 4 bytes */
-	/* --- end of the internal 88-byte WasmStat prefix --- */
-	unsigned long long st_rdev;         /* offset 88, zero until reported */
+	unsigned long long st_rdev;         /* offset 88, from kernel WasmStat.st_rdev */
+	/* --- end of the internal 96-byte WasmStat prefix --- */
 	int                st_blksize;      /* offset 96, zero until reported */
 	int                __blocks_pad;    /* offset 100, initialized padding */
 	long long          st_blocks;       /* offset 104, zero until reported */

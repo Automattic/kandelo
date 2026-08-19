@@ -1,0 +1,19 @@
+script_path = "packages/registry/libinput/build-libinput.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "126f07f12"
+revision    = 1
+
+# The hand-curated config.h + linux-types shim are part of the cache key:
+# editing either (e.g. flipping a feature flag to track a sysroot change)
+# must invalidate cached archives so consumers rebuild against the
+# corrected set. The build script + both headers are tracked in git (the
+# fetched `libinput-src/` tree is gitignored), so the resolver can hash
+# them on a clean checkout.
+inputs = [
+  "packages/registry/libinput/build-libinput.sh",
+  "packages/registry/libinput/src/config.h",
+  "packages/registry/libinput/src/linux-types.h",
+]
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

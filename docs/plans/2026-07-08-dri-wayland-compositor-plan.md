@@ -109,6 +109,100 @@ parser. Gate: `host/test/libxkbcommon-smoke.test.ts` runs
 `xkb_keymap_new_from_string` and translates keycodes+modifiers to
 keysyms/UTF-8 (base `a`, Shift→`A`, EuroSign round-trip) under the kernel.
 
+**PR5a result (2026-07-08).** `libevdev` 1.13.3 is ported to wasm32
+(`packages/registry/libevdev/`, `libevdev.a` — two core TUs, uinput
+skipped). It is the mandatory foundation of the real libinput port
+(libinput's evdev backend is built entirely on `libevdev_new_from_fd` /
+`libevdev_next_event`); the original PR5 one-liner had omitted it. Built
+with the libxkbcommon pattern (bypass meson; hand-curated `config.h`),
+with python3 (flake.nix) generating the event-name table from libevdev's
+bundled full linux UAPI headers — the sysroot's `<linux/input-event-codes.h>`
+is a deliberately minimal, ABI-locked subset (no `*_MAX` sentinels) that
+libevdev's `*_MAX`-sized tables cannot compile against; a tiny
+`<linux/types.h>` shim covers the one header the sysroot omits. Gate:
+`host/test/libevdev-smoke.test.ts` runs `programs/libevdev_smoke.c` —
+builds a libevdev from each virtual evdev node and decodes host-injected
+key + pointer events (name lookups included) under the kernel.
+
+Kernel gap fixed (additive, no ABI bump): `libevdev_set_fd` issues
+`EVIOCGPHYS`/`EVIOCGUNIQ`/`EVIOCGPROP` and `EVIOCGKEY`/`EVIOCGLED`/`EVIOCGSW`
+during construction and fatals on an unexpected errno; the kernel had
+returned `ENOTTY` for all (tuned for SDL2, which tolerates it). Now
+phys/uniq return `ENOENT` ("unset") and the state bitmaps return
+zero-filled success — the honest state of a virtual device with nothing
+latched. See `crates/kernel/src/syscalls.rs` `handle_input_ioctl` +
+`shared::input` NR constants. Contrary to the initial PR5 assumption that
+no kernel work was needed, libevdev was the first consumer to exercise
+this surface.
+
+**PR5b result (2026-07-08).** The two link/classification layers real
+libinput builds on are in place:
+
+- `mtdev` (`packages/registry/mtdev/`, `libmtdev.a`) — a link-only stub
+  reproducing mtdev's public ABI. libinput references five `mtdev_*`
+  symbols but calls them only for legacy protocol-A multitouch
+  (`evdev_need_mtdev()` — has `ABS_MT_POSITION_X/Y` but no
+  `ABS_MT_SLOT`). The kernel's virtual pointer reports plain
+  `ABS_X/ABS_Y`, so that predicate is always false and the stub is never
+  entered; each entry point aborts if it ever is. Gate:
+  `host/test/mtdev-smoke.test.ts`.
+- `libudev` (`packages/registry/libudev/`, `libudev.a`) — a PATH-mode
+  shim whose load-bearing part reimplements udev's `input_id`
+  classification (`test_pointers` + `test_key` + the EV_SW / scrollwheel
+  fallbacks, faithful to systemd v255) over `EVIOCGBIT`/`EVIOCGPROP`
+  probes, synthesizing the `ID_INPUT*` tags libinput's evdev core
+  requires to accept a device. The other 13 udev entry points are thin
+  no-ops. Gate: `host/test/libudev-input-id-smoke.test.ts` (event0 →
+  `ID_INPUT_KEYBOARD`, event1 → `ID_INPUT_MOUSE` through the real API).
+
+ABI bump to **v17** (the single deliberate bump this stack anticipated).
+`WasmStat` grows 88→96 with a trailing `st_rdev`, and virtual evdev
+nodes now stat as Linux char major 13, minor 64+N (`/dev/input/event0`
+= 13:64). This is load-bearing for libinput's PATH backend, which drops
+the devnode path and hands `udev_device_new_from_devnum` only the
+`st_rdev` — the shim recovers the node by scanning `/dev/input/event*`
+for the matching devnum. The v17 bump also folds in the DRI-branch ABI
+changes accumulated since v16. Publishing v17 package binaries (php,
+spidermonkey, wordpress, …) is the release-tag/matrix step; until then
+those package tests fail against the v17 kernel by design.
+
+**PR5c result (2026-07-09).** The real **libinput 1.25.0 core** is ported
+(`packages/registry/libinput/`, `libinput.a`, 437 KB), replacing the
+`libinput-lite` stub as the compositor's input library. Scope: the 35
+path-backend TUs (`src_libfilter` + `src_libinput` core + util + quirks),
+compiled directly against a hand-curated `config.h` + sed-substituted
+version headers (upstream meson bypassed, same pattern as libxkbcommon /
+libevdev). `src/udev-seat.c` is **dropped** — the udev enumerate/monitor
+seat backend; the compositor drives the path backend only, and a symbol
+audit confirmed no in-set TU references anything udev-seat.c defines. All
+35 TUs compiled clean on the first pass: musl provides `static_assert`,
+`versionsort`, and `newlocale`; the sysroot has `sys/epoll.h` +
+`sys/timerfd.h`; the bundled full linux UAPI headers win over the
+sysroot's minimal `<linux/input.h>` via `-Iinclude/linux` + a
+`<linux/types.h>` shim (identical to the libevdev port). Links against
+libevdev (PR5a) + the libudev + mtdev shims (PR5b).
+
+Gate: `programs/libinput_smoke.c` +
+`host/test/libinput-smoke.test.ts` — the first full-chain proof.
+`libinput_path_add_device("/dev/input/event0")` runs the entire accept
+path (stat → `st_rdev` recovery → `udev_device_new_from_devnum` →
+`input_id` classification → `evdev_device_new` → libevdev capability
+probe → device accepted, DEVICE_ADDED queued), then a host-injected
+`EV_KEY` is read off the kernel evdev ring by libinput's epoll loop
+(`sys_epoll_pwait` → `sys_poll` → the evdev ring-readiness gate) and
+decoded into a `LIBINPUT_EVENT_KEYBOARD_KEY`.
+
+**Dual-consumer decision:** SDL2 keeps depending on `libinput-lite`, not
+the real port. SDL2 2.30 references **zero** libinput symbols (verified
+by grep over the extracted source + configure) — it uses libinput purely
+as an optional-detection stub — so pointing it at the 35-TU real library
+would only bloat its dep graph and link surface for no functional gain.
+The real `libinput` is a distinct consumer (this smoke + the PR6/PR7
+compositor); its archive is linked from the resolver cache prefix by
+full path, never through `$SYSROOT/lib/libinput.a` (which stays the lite
+stub), so the two never collide. No ABI change (PR5c is additive:
+package + program + test + docs only).
+
 ---
 
 ## §4. The libffi de-risk (crux of the whole pivot)
@@ -164,7 +258,7 @@ Client and compositor land as a stack of small PRs. v1 target is milestone
 | PR2 | `wayland-scanner` (host tool) + `wayland-protocols` (XML data) packages |
 | PR3 | `libwayland` (client + server) wasm32 port, linked against the PR1 shim |
 | PR4 | real `libxkbcommon` port (keymap translation; compositor + clients link it). **DONE.** |
-| PR5 | real `libinput` port (replaces `libinput-lite` stub: gestures, palm rejection, multi-device) |
+| PR5 | real `libinput` port (gestures, palm rejection, multi-device). Lands as a bottom-up sub-stack — **PR5a `libevdev` (DONE)**, **PR5b `mtdev` stub + `libudev`/`input_id` shim (DONE)**, **PR5c `libinput` 1.25.0 core (DONE)** — since real libinput builds on all three (the original one-line scope omitted libevdev + mtdev). The real `libinput` serves the compositor; SDL2 keeps `libinput-lite` (it references no libinput symbols). |
 | PR6 | `examples/programs/wlcompositor/` — PID-2 server: core + `wl_shm` + `xdg_shell` + `wl_seat` + `wl_output` |
 | **PR7** | `examples/libs/libkwl/` toolkit + `wlterm` — **BROWSER GATE, milestone D′** |
 | PR8 | `wlfm` (file manager) + `xdg_popup` |

@@ -2283,6 +2283,7 @@ mod tests {
                     st_ctime_sec: 0,
                     st_ctime_nsec: 0,
                     _pad: 0,
+                    st_rdev: 0,
                 },
                 WasmStatfs {
                     f_type: 1,
