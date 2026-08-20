@@ -15,7 +15,7 @@
  * Skips if the binaries aren't built.
  */
 import { describe, expect, it } from "vitest";
-import { readFileSync, writeFileSync, mkdtempSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdtempSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeKernelHost } from "../src/node-kernel-host";
@@ -276,10 +276,11 @@ describe("wlcompositor — config-file keybind engine", () => {
   // its key is pressed (CTRL+K=clock, CTRL+P=paint, CTRL+Return=terminal). This
   // gates that a CTRL exec bind actually spawns a NEW client — the keybind
   // engine dispatches ACT_EXEC → posix_spawnp, and the spawned client connects
-  // (count bumps). The exec target must exist in the kernel VFS, so it is
-  // mapped through execPrograms exactly as the demo stages the binaries into
-  // /usr/local/bin (the compositor's kwlctl_exec passes libc an absolute path,
-  // so no VFS PATH search is needed).
+  // (count bumps). Under raw NodePlatformIO a spawn needs both legs:
+  // execProgramBytes feeds the preflight its program bytes, and the kernel's
+  // authoritative target stat reaches the same real host path. The bind's
+  // exec command lives in the compositor's 64-byte `param` buffer, so the
+  // target is a short /tmp symlink to the resolver-cached client wasm.
   it.skipIf(!hasBinaries)(
     "a CTRL exec bind launches a new client (the demo's new-pane keybind)",
     async () => {
@@ -288,19 +289,19 @@ describe("wlcompositor — config-file keybind engine", () => {
 
       const dir = mkdtempSync(join(tmpdir(), "wlc-conf-"));
       const confPath = join(dir, "wlcompositor.conf");
-      // Mirror HYPRLAND_WLCOMPOSITOR_CONF's launch bind shape (exec an absolute
-      // /usr/local/bin path); point CTRL+K (the clock bind) at wlclient-test.
+      const execTarget = join(mkdtempSync("/tmp/wlc-bind-"), "client.wasm");
+      symlinkSync(clientBin!, execTarget);
+      // Mirror HYPRLAND_WLCOMPOSITOR_CONF's launch bind shape (exec an
+      // absolute path); point CTRL+K (the clock bind) at wlclient-test.
       writeFileSync(confPath,
-        "bind = CTRL, K, exec, /usr/local/bin/wlclient-test\n");
+        `bind = CTRL, K, exec, ${execTarget}\n`);
 
       const out = { value: "" };
       const err = { value: "" };
       const host = new NodeKernelHost({
         onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
         onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
-        // Resolve the exec target from path -> wasm file (as the browser demo
-        // stages wlclock/wlpaint/wlterm into /usr/local/bin before spawning).
-        execPrograms: { "/usr/local/bin/wlclient-test": clientBin! },
+        execProgramBytes: { [execTarget]: clientBytes },
       });
       const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
 
@@ -333,7 +334,7 @@ describe("wlcompositor — config-file keybind engine", () => {
         // CTRL+K fires the exec bind; the compositor spawns the app and the new
         // client connects (count=2), proving the launch keybind path.
         tapCtrl(KEY_K);
-        await waitFor(out, 'KWLCTL_EXEC "/usr/local/bin/wlclient-test"', 10_000, dump);
+        await waitFor(out, `KWLCTL_EXEC "${execTarget}"`, 10_000, dump);
         await waitFor(out, "CLIENT_CONNECTED count=2", 20_000, dump);
 
         void compExit;

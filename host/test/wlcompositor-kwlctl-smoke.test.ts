@@ -98,11 +98,11 @@ describe("wlcompositor — kwlctl control + event IPC", () => {
       const host = new NodeKernelHost({
         onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
         onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
-        // `dispatch exec` runs posix_spawnp inside the compositor; the kernel
-        // resolves the spawn target from execPrograms (path -> wasm file). We
-        // dispatch an absolute path so libc skips its VFS-stat PATH search
-        // (the binary only exists in this map, not as a real VFS file).
-        execPrograms: { "/usr/local/bin/wlclient-test": clientBin! },
+        // `dispatch exec` runs posix_spawnp inside the compositor. Under raw
+        // NodePlatformIO a spawn needs both legs: this map feeds the
+        // side-effect-free preflight its program bytes, and the kernel's
+        // authoritative target stat reaches the same real host path.
+        execProgramBytes: { [clientBin!]: clientBytes },
       });
       const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
 
@@ -164,7 +164,7 @@ describe("wlcompositor — kwlctl control + event IPC", () => {
 
         // --- dispatch exec spawns a fourth client through the compositor.
         const execCode = await runKwlctl(
-          ["dispatch", "exec", "/usr/local/bin/wlclient-test"]);
+          ["dispatch", "exec", clientBin!]);
         expect(execCode, `dispatch exec exit.\n${dump()}`).toBe(0);
         await waitFor(out, "CLIENT_CONNECTED count=4", 20_000, dump);
 
