@@ -26761,9 +26761,15 @@ export class CentralizedKernelWorker {
     }
     if (stat.hostHandle === null) {
       // MemFd and synthetic regular files complete fstat inside the kernel,
-      // so there is no persistent host capability to retain. They need a
-      // kernel-owned mapping bridge; MAP_PRIVATE keeps its fd-pread path.
-      return { kind: "error", errno: ENOTSUP };
+      // so there is no persistent host capability to retain for writeback.
+      // Take the same populate-only fallback as MAP_SHARED on non-regular
+      // files: pread fills the pages at map time and writes stay local.
+      // libwayland-cursor's theme pool is the load-bearing consumer — its
+      // memfd pool must map, and nothing ever reads the pool back (the
+      // compositor accepts and ignores wl_pointer.set_cursor). Live
+      // coherence needs a kernel-owned mapping bridge that does not exist
+      // yet.
+      return { kind: "unsupported" };
     }
     const accessResult = this.getFdAccessModeForSharedMapping(
       channel,
