@@ -8,7 +8,7 @@ kind = "library"
 name = "jsoncpp"
 version = "1.9.6"
 kernel_abi = 17
-depends_on = ["libcxx@21"]
+depends_on = ["libcxx@21.1.7"]
 
 [source]
 url = "https://github.com/open-source-parsers/jsoncpp/archive/refs/tags/1.9.6.tar.gz"

@@ -10,7 +10,7 @@ depends_on = [
   "fontconfig@2.15.0",
   "freetype@2.13.3",
   "libpng@1.6.43",
-  "libcxx@21",
+  "libcxx@21.1.7",
 ]
 
 [source]

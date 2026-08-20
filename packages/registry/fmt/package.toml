@@ -8,7 +8,7 @@ kind = "library"
 name = "fmt"
 version = "11.2.0"
 kernel_abi = 17
-depends_on = ["libcxx@21"]
+depends_on = ["libcxx@21.1.7"]
 
 [source]
 url = "https://github.com/fmtlib/fmt/archive/refs/tags/11.2.0.tar.gz"

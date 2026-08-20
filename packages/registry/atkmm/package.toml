@@ -7,7 +7,7 @@ depends_on = [
   "glibmm@2.62.0",
   "glib@2.84.4",
   "libsigcxx@2.10.3",
-  "libcxx@21",
+  "libcxx@21.1.7",
 ]
 
 [source]

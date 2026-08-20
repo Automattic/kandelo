@@ -9,7 +9,7 @@ kind = "library"
 name = "spdlog"
 version = "1.15.3"
 kernel_abi = 17
-depends_on = ["fmt@11.2.0", "libcxx@21"]
+depends_on = ["fmt@11.2.0", "libcxx@21.1.7"]
 
 [source]
 url = "https://github.com/gabime/spdlog/archive/refs/tags/v1.15.3.tar.gz"

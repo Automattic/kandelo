@@ -46,7 +46,7 @@ depends_on = [
   "wayland-protocols@1.45",
   "libffi@0.1.0",
   "pcre2@10.44",
-  "libcxx@21",
+  "libcxx@21.1.7",
 ]
 
 [[host_tools]]

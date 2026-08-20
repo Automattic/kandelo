@@ -11,7 +11,7 @@ kind = "library"
 name = "libsigcxx"
 version = "2.10.3"
 kernel_abi = 17
-depends_on = ["libcxx@21"]
+depends_on = ["libcxx@21.1.7"]
 
 [source]
 url = "https://download.gnome.org/sources/libsigc++/2.10/libsigc++-2.10.3.tar.xz"
