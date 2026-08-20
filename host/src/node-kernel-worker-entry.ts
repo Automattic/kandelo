@@ -305,6 +305,23 @@ const checkpointMachine: CheckpointMachine = {
     }
     return rootfsMemfs.sharedBuffer;
   },
+  framebuffers: () =>
+    kernelWorker.framebuffers.list().map((binding) => ({
+      pid: binding.pid,
+      addr: binding.addr,
+      len: binding.len,
+      w: binding.w,
+      h: binding.h,
+      stride: binding.stride,
+      fmt: binding.fmt,
+      hostBuffer: binding.hostBuffer === null
+        ? null
+        : new Uint8Array(
+          binding.hostBuffer.buffer,
+          binding.hostBuffer.byteOffset,
+          binding.hostBuffer.byteLength,
+        ),
+    })),
   kernelAbiVersion: () => kernelWorker.getKernelAbiVersion(),
   liveProcesses: () =>
     [...processes.entries()].map(([pid, info]) => ({
@@ -1358,6 +1375,27 @@ async function handleInit(msg: InitMessage) {
         );
       }
       await restoreProcessFromBucket(bucket, programModule);
+    }
+    for (const framebuffer of msg.restoreCheckpoint.framebuffers) {
+      // Seeding through fbWrite replays the captured frame down the same
+      // path live pixels take, so a registry consumer sees the checkpoint's
+      // current frame before the restored guest writes its next one.
+      kernelWorker.framebuffers.bind({
+        pid: framebuffer.pid,
+        addr: framebuffer.addr,
+        len: framebuffer.len,
+        w: framebuffer.w,
+        h: framebuffer.h,
+        stride: framebuffer.stride,
+        fmt: framebuffer.fmt,
+      });
+      if (framebuffer.hostBuffer !== null) {
+        kernelWorker.framebuffers.fbWrite(
+          framebuffer.pid,
+          0,
+          framebuffer.hostBuffer,
+        );
+      }
     }
   }
 

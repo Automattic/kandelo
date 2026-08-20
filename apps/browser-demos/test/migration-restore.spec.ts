@@ -18,6 +18,7 @@ interface MigrationRestoreResult {
   outputAtCapture: string;
   signaled?: boolean;
   recaptured?: MachineCheckpointThreadsSummary;
+  framebuffers?: { pid: number; w: number; h: number; hostBufferNonZero: boolean }[];
   output: string;
   hostDiagnostics: string[];
 }
@@ -174,4 +175,14 @@ test("restores a running fbDOOM that keeps playing", async ({
   // every tic; a capture completes only then, so a captured recapture is
   // the proof the demo loop resumed.
   expect(result.recaptured!.pids).toEqual(result.captured.pids);
+  // The receiver's main-thread framebuffer mirror — the seam the canvas
+  // renderer draws from — carries the rebound binding with real pixels.
+  expect(result.framebuffers).toEqual([
+    {
+      pid: result.captured.pids[0],
+      w: expect.any(Number),
+      h: expect.any(Number),
+      hostBufferNonZero: true,
+    },
+  ]);
 });

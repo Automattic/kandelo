@@ -59,11 +59,19 @@ interface MachineCheckpointThreadsSummary {
   threads: { pid: number; tids: number[]; activeCount: number }[];
 }
 
+interface MigrationFramebufferEvidence {
+  pid: number;
+  w: number;
+  h: number;
+  hostBufferNonZero: boolean;
+}
+
 interface MigrationRestoreResult {
   captured: MachineCheckpointThreadsSummary;
   outputAtCapture: string;
   signaled?: boolean;
   recaptured?: MachineCheckpointThreadsSummary;
+  framebuffers?: MigrationFramebufferEvidence[];
   output: string;
   hostDiagnostics: string[];
 }
@@ -698,11 +706,30 @@ async function init() {
       if (recapture.status !== "captured") {
         throw new Error(`recapture failed: ${JSON.stringify(recapture)}`);
       }
+      if (checkpoint.framebuffers.length > 0) {
+        // The rebind forwards the binding and the seeded frame to this
+        // main-thread mirror asynchronously; wait for it before reading.
+        const deadline = performance.now() + 10_000;
+        while (
+          receiver.framebuffers.list().length < checkpoint.framebuffers.length
+        ) {
+          if (performance.now() > deadline) break;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+      }
+      const framebuffers = receiver.framebuffers.list().map((binding) => ({
+        pid: binding.pid,
+        w: binding.w,
+        h: binding.h,
+        hostBufferNonZero: binding.hostBuffer !== null
+          && binding.hostBuffer.some((byte) => byte !== 0),
+      }));
       return {
         captured: summarize(checkpoint),
         outputAtCapture,
         signaled,
         recaptured: summarize(recapture.checkpoint),
+        framebuffers,
         output,
         hostDiagnostics,
       };

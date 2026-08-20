@@ -196,6 +196,23 @@ const checkpointMachine: CheckpointMachine = {
     }
     return memfs.sharedBuffer;
   },
+  framebuffers: () =>
+    kernelWorker.framebuffers.list().map((binding) => ({
+      pid: binding.pid,
+      addr: binding.addr,
+      len: binding.len,
+      w: binding.w,
+      h: binding.h,
+      stride: binding.stride,
+      fmt: binding.fmt,
+      hostBuffer: binding.hostBuffer === null
+        ? null
+        : new Uint8Array(
+          binding.hostBuffer.buffer,
+          binding.hostBuffer.byteOffset,
+          binding.hostBuffer.byteLength,
+        ),
+    })),
   kernelAbiVersion: () => kernelWorker.getKernelAbiVersion(),
   liveProcesses: () =>
     [...processes.entries()].map(([pid, info]) => ({
@@ -1474,6 +1491,31 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       [buf],
     );
   });
+
+  if (msg.restoreCheckpoint) {
+    for (const framebuffer of msg.restoreCheckpoint.framebuffers) {
+      // Rebinding runs after the forwarding above is installed so the bind
+      // and the seeded frame reach the main-thread mirror. Seeding through
+      // fbWrite replays the captured frame down the same path live pixels
+      // take, so every mirror shows the checkpoint's current frame.
+      kernelWorker.framebuffers.bind({
+        pid: framebuffer.pid,
+        addr: framebuffer.addr,
+        len: framebuffer.len,
+        w: framebuffer.w,
+        h: framebuffer.h,
+        stride: framebuffer.stride,
+        fmt: framebuffer.fmt,
+      });
+      if (framebuffer.hostBuffer !== null) {
+        kernelWorker.framebuffers.fbWrite(
+          framebuffer.pid,
+          0,
+          framebuffer.hostBuffer,
+        );
+      }
+    }
+  }
 
   // Accept bridge port for HTTP request handling
   if (msg.bridgePort) {

@@ -171,6 +171,35 @@ describe("checkpoint validation", () => {
         );
       }, /continuation root is unusable/);
 
+      await refusal((checkpoint) => {
+        (checkpoint as { framebuffers: unknown[] }).framebuffers = [
+          { pid: 424242, addr: 0, len: 0, w: 8, h: 8, stride: 32,
+            fmt: "BGRA32", hostBuffer: new Uint8Array(256) },
+        ];
+      }, /names pid 424242, which has no process bucket/);
+
+      await refusal((checkpoint) => {
+        (checkpoint as { framebuffers: unknown[] }).framebuffers = [
+          { pid: checkpoint.processes[0]!.pid, addr: 0, len: 0, w: 8, h: 8,
+            stride: 32, fmt: "BGRA32", hostBuffer: new Uint8Array(7) },
+        ];
+      }, /carries 7 pixel bytes for a 256-byte frame/);
+
+      await refusal((checkpoint) => {
+        (checkpoint as { framebuffers: unknown[] }).framebuffers = [
+          { pid: checkpoint.processes[0]!.pid, addr: 4096, len: 256, w: 8,
+            h: 8, stride: 32, fmt: "BGRA32", hostBuffer: new Uint8Array(256) },
+        ];
+      }, /carries host pixels/);
+
+      await refusal((checkpoint) => {
+        const bucket = checkpoint.processes[0]!;
+        (checkpoint as { framebuffers: unknown[] }).framebuffers = [
+          { pid: bucket.pid, addr: bucket.memory.byteLength, len: 256, w: 8,
+            h: 8, stride: 32, fmt: "BGRA32", hostBuffer: null },
+        ];
+      }, /framebuffer range does not fit inside/);
+
       // The corruptions above never touched the captured object itself.
       await expect(
         validateMachineCheckpoint(cloneCheckpoint(captured), EXPECTED),
@@ -380,6 +409,17 @@ describe("checkpoint validation", () => {
       }
       expect(checkpoint.processes.length).toBe(1);
       const pid = checkpoint.processes[0]!.pid;
+      // fbDOOM renders write-based, so the checkpoint carries the current
+      // frame in a host-owned pixel buffer.
+      expect(checkpoint.framebuffers.length).toBe(1);
+      const capturedFb = checkpoint.framebuffers[0]!;
+      expect(capturedFb.pid).toBe(pid);
+      expect(capturedFb.addr).toBe(0);
+      expect(capturedFb.hostBuffer).not.toBeNull();
+      expect(capturedFb.hostBuffer!.byteLength).toBe(
+        capturedFb.h * capturedFb.stride,
+      );
+      expect(capturedFb.hostBuffer!.some((byte) => byte !== 0)).toBe(true);
 
       const receiver = new NodeKernelHost({
         rootfsImage: "default",
@@ -399,6 +439,15 @@ describe("checkpoint validation", () => {
         expect(
           recapture.checkpoint.processes.map((bucket) => bucket.pid),
         ).toEqual([pid]);
+        // The receiver rebound the framebuffer: its own capture carries the
+        // same binding, seeded and still receiving the game's writes.
+        expect(recapture.checkpoint.framebuffers.length).toBe(1);
+        const reboundFb = recapture.checkpoint.framebuffers[0]!;
+        expect(reboundFb.pid).toBe(pid);
+        expect(reboundFb.w).toBe(capturedFb.w);
+        expect(reboundFb.h).toBe(capturedFb.h);
+        expect(reboundFb.stride).toBe(capturedFb.stride);
+        expect(reboundFb.hostBuffer!.some((byte) => byte !== 0)).toBe(true);
       } finally {
         await receiver.destroy();
       }
