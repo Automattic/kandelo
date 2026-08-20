@@ -1347,6 +1347,9 @@ async function handleInit(msg: InitMessage) {
   );
 
   if (msg.restoreCheckpoint && restoredProgramModules) {
+    kernelWorker.rebindRestoredHostHandles(
+      msg.restoreCheckpoint.processes.map((bucket) => ({ pid: bucket.pid })),
+    );
     for (const bucket of msg.restoreCheckpoint.processes) {
       const programModule = restoredProgramModules.get(bucket.pid);
       if (!programModule) {

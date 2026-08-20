@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { NodeKernelHost } from "../../src/node-kernel-host";
+import type { MountSpec } from "../../src/vfs/default-mounts";
 import { findRepoRoot, resolveBinary } from "../../src/binary-resolver";
 import { doomSharewareWad } from "../support/doom-shareware";
 import { ABI_VERSION } from "../../src/generated/abi";
@@ -502,6 +503,77 @@ describe("checkpoint validation", () => {
         expect(recaptured!.threads.map((thread) => thread.tid)).toEqual(
           bucket.threads.map((thread) => thread.tid),
         );
+      } finally {
+        await receiver.destroy();
+      }
+    },
+  );
+
+  it(
+    "restores a file mid-write, a directory mid-iteration, and a pending alarm",
+    { timeout: 120_000 },
+    async () => {
+      // The fixture needs a writable root: a checkpoint carries the
+      // image-backed root filesystem, and scratch mounts do not travel.
+      const spec: MountSpec[] = [
+        { path: "/", source: "image", readonly: false },
+      ];
+      let keeperOut = "";
+      let ready = () => {};
+      const isReady = new Promise<void>((resolve) => { ready = resolve; });
+      const keeper = new NodeKernelHost({
+        rootfsImage: "default",
+        rootfsMountSpec: spec,
+        onStdout: (_pid, data) => {
+          keeperOut += new TextDecoder().decode(data);
+          if (keeperOut.includes("READY")) ready();
+        },
+        onStderr: (_pid, data) => {
+          keeperOut += new TextDecoder().decode(data);
+        },
+      });
+      await keeper.init();
+      let checkpoint: MachineCheckpoint;
+      try {
+        await new Promise<void>((resolve) => {
+          void keeper.spawn(
+            programBytes("checkpoint-handles.wasm"),
+            ["checkpoint-handles"],
+            { onStarted: () => resolve() },
+          );
+        });
+        await isReady;
+        const response = await keeper.captureCheckpointBytes(TIMEOUTS);
+        if (response.status !== "captured") {
+          throw new Error(`capture failed: ${JSON.stringify(response)}`);
+        }
+        checkpoint = response.checkpoint;
+        // The alarm is pending, the file half-written, the directory
+        // mid-iteration: none of the completion markers may exist yet.
+        expect(keeperOut).not.toContain("OK");
+      } finally {
+        await keeper.destroy();
+      }
+
+      let receiverOut = "";
+      const receiver = new NodeKernelHost({
+        rootfsImage: "default",
+        rootfsMountSpec: spec,
+        restoreCheckpoint: checkpoint,
+        onStdout: (_pid, data) => {
+          receiverOut += new TextDecoder().decode(data);
+        },
+        onStderr: (_pid, data) => {
+          receiverOut += new TextDecoder().decode(data);
+        },
+      });
+      await receiver.init();
+      try {
+        await expect
+          .poll(() => receiverOut.includes("ALARM OK"), { timeout: 30_000 })
+          .toBe(true);
+        expect(receiverOut).toContain("FILE OK");
+        expect(receiverOut).toContain("DIR OK");
       } finally {
         await receiver.destroy();
       }

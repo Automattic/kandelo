@@ -203,6 +203,11 @@ export class VirtualPlatformIO implements PlatformIO {
     return backend.preparePath?.(relativePath) ?? false;
   }
 
+  reserveHandleFloors(fileFloor: number, dirFloor: number): void {
+    if (this.nextFileHandle < fileFloor) this.nextFileHandle = fileFloor;
+    if (this.nextDirHandle < dirFloor) this.nextDirHandle = dirFloor;
+  }
+
   open(path: string, flags: number, mode: number): number {
     const { backend, backendId, relativePath, nosuid } = this.resolve(path);
     // O_CREAT may name a missing final component. Its already-resolved backend
