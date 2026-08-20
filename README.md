@@ -2,7 +2,7 @@
 
 Kandelo is a POSIX-compatible multi-process kernel for WebAssembly that runs command-line tools, server stacks, and early graphical demos in the browser or Node.js with syscall-level compatibility.
 
-**Live demo**: [Open Kandelo in the browser](https://automattic.github.io/kandelo/)
+**Live demo**: [Open Kandelo in the browser](https://kandelo.dev/)
 
 **User guide**: [Read the browser and VFS guide](https://automattic.github.io/kandelo/guide/)
 
