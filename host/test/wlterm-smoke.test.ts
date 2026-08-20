@@ -10,7 +10,9 @@
  *
  *   - wlterm maps its toplevel via libkwl and commits a first frame, then
  *     prints WLTERM_READY — the compositor imported + presented it;
- *   - wlterm forkpty()'s a dash `-c` script (mapped through onResolveExec)
+ *   - wlterm forkpty()'s a dash `-c` script (the wasm dash, exec'd by its
+ *     absolute host path — exec reads its target from the kernel VFS, and
+ *     the raw NodePlatformIO VFS reaches the resolver cache directly)
  *     that prints "READY", reads a line, then echoes it back as "GOT[<x>]";
  *   - dash's "READY" reaches the PTY master → vt100_feed() → the cell grid,
  *     and wlterm's --watch reports WLTERM_GRID "READY" once it is visible;
@@ -72,17 +74,12 @@ describe("wlterm — libkwl terminal renders shell output and routes typed input
     async () => {
       const compositorBytes = loadBytes(compositorBin!);
       const wltermBytes = loadBytes(wltermBin!);
-      const dashBytes = loadBytes(dashBin!);
 
       const out = { value: "" };
       const err = { value: "" };
       const host = new NodeKernelHost({
         onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
         onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
-        // The forkpty'd child execvp("dash")s. musl walks PATH, so the kernel
-        // asks us to resolve /usr/bin/dash, /bin/dash, … — match any /dash.
-        onResolveExec: (path) =>
-          path === "dash" || path.endsWith("/dash") ? dashBytes : null,
       });
 
       const dump = () =>
@@ -99,13 +96,17 @@ describe("wlterm — libkwl terminal renders shell output and routes typed input
         // --- wlterm (libkwl terminal) + forkpty'd dash script ---
         // dash prints READY, reads one line, echoes it back as GOT[<line>].
         // wlterm watches the grid for both markers and reports each once seen.
+        // The forkpty'd child execs the wasm dash by its absolute host path:
+        // exec reads its target from the kernel VFS, and the raw
+        // NodePlatformIO VFS reaches the resolver cache directly. A bare
+        // "dash" would PATH-walk into the host's native /bin/dash (ENOEXEC).
         const wltermExit = host.spawn(
           wltermBytes,
           [
             "wlterm",
             "--watch", "READY",
             "--watch", "GOT[a]",
-            "dash", "-c",
+            dashBin!, "-c",
             "printf 'READY\\n'; read x; printf 'GOT[%s]\\n' \"$x\"",
           ],
           { env: ["PATH=/usr/bin:/bin", "HOME=/root", "TERM=vt100"] },
