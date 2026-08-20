@@ -629,7 +629,7 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::kernel-export-direct-use::exports.kernel_set_current_tid(pid, pid)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#attachThreadChannelWithinKernelEntry::kernel-export-direct-use::setMaxAddr(pid, this.toKernelPtr(tlsPageAddr))",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#installThreadChannelTransportWithinKernelEntry::kernel-export-direct-use::setMaxAddr(pid, this.toKernelPtr(tlsPageAddr))",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#bindKernelTid::kernel-export-direct-use::setTid(pid, tid)",

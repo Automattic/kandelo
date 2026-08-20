@@ -9596,6 +9596,93 @@ export class CentralizedKernelWorker {
     if (registration.memory !== memory) {
       throw new Error(`Process ${pid} changed memory generation`);
     }
+    this.#installThreadChannelTransportWithinKernelEntry(
+      pid,
+      tid,
+      fnPtr,
+      argPtr,
+      channelOffset,
+      registration,
+      entry,
+    );
+    pending.attachedChannelOffset = channelOffset;
+  }
+
+  /**
+   * Reattach a checkpointed pthread's channel in a restored machine.
+   *
+   * The restored kernel memory already owns this task identity: the clone
+   * that minted it ran on the captured machine, so there is no one-shot
+   * attachment capability to consume. The kernel keeps the last word on the
+   * TID through `kernel_validate_task`; the host only rebuilds transport for
+   * a task Rust already has.
+   */
+  attachRestoredThreadChannel(
+    pid: number,
+    tid: number,
+    fnPtr: number,
+    argPtr: number,
+    channelOffset: number,
+  ): void {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
+      throw new KernelReentrantEntryError("restored thread channel attachment");
+    }
+    const deferred = this.#runOrDeferKernelEntry(
+      "restored thread channel attachment",
+      (entry) => {
+        this.#attachRestoredThreadChannelWithinKernelEntry(
+          pid,
+          tid,
+          fnPtr,
+          argPtr,
+          channelOffset,
+          entry,
+        );
+        return undefined;
+      },
+    );
+    if (deferred) {
+      throw new KernelReentrantEntryError("restored thread channel attachment");
+    }
+  }
+
+  #attachRestoredThreadChannelWithinKernelEntry(
+    pid: number,
+    tid: number,
+    fnPtr: number,
+    argPtr: number,
+    channelOffset: number,
+    entry: KernelWorkerEntryContext,
+  ): void {
+    if (this.execHandoffPids?.has(pid)) {
+      throw new Error(`Process ${pid} is replacing its image`);
+    }
+    if (!this.#isProcessExecutionActiveWithinKernelEntry(pid, entry)) {
+      throw new Error(`Process ${pid} is not running`);
+    }
+    const registration = this.processes.get(pid);
+    if (!registration) throw new Error(`Process ${pid} not registered`);
+    this.#installThreadChannelTransportWithinKernelEntry(
+      pid,
+      tid,
+      fnPtr,
+      argPtr,
+      channelOffset,
+      registration,
+      entry,
+    );
+  }
+
+  #installThreadChannelTransportWithinKernelEntry(
+    pid: number,
+    tid: number,
+    fnPtr: number,
+    argPtr: number,
+    channelOffset: number,
+    registration: ProcessRegistration,
+    entry: KernelWorkerEntryContext,
+  ): void {
     if (
       !Number.isSafeInteger(tid)
       || tid <= 0
@@ -9672,7 +9759,6 @@ export class CentralizedKernelWorker {
       if (!this.usePolling) {
         this.listenOnChannel(channel);
       }
-      pending.attachedChannelOffset = channelOffset;
     } catch (error) {
       this.#rethrowKernelEntryFatal(error);
       registration.channels = registration.channels.filter(

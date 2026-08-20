@@ -405,26 +405,105 @@ describe("checkpoint validation", () => {
   );
 
   it(
-    "refuses to restore a process with live threads",
+    "restores a checkpointed process whose pthread keeps running",
     { timeout: 120_000 },
     async () => {
       const checkpoint = await captureRealCheckpoint("checkpoint-threads.wasm");
-      expect(
-        checkpoint.processes[0]!.threadAllocator.activeCount,
-      ).toBeGreaterThan(0);
+      expect(checkpoint.processes.length).toBe(1);
+      const bucket = checkpoint.processes[0]!;
+      const pid = bucket.pid;
+      expect(bucket.threadAllocator.activeCount).toBeGreaterThan(0);
+      expect(bucket.threads.length).toBe(bucket.threadAllocator.activeCount);
+
+      // A bucket whose thread records disagree with its allocator is refused
+      // before anything is instantiated: a missing record would leave a live
+      // thread's frames parked forever.
+      const missingThread = cloneCheckpoint(checkpoint);
+      (missingThread.processes[0]! as { threads: unknown[] }).threads = [];
+      const missingAttempt = validateMachineCheckpoint(missingThread, EXPECTED);
+      await expect(missingAttempt).rejects.toThrow(CheckpointRefusedError);
+      await expect(missingAttempt).rejects.toThrow(/thread record\(s\)/);
+
+      const brokenAnchor = cloneCheckpoint(checkpoint);
+      const brokenThread = brokenAnchor.processes[0]!.threads[0]!;
+      new DataView(brokenAnchor.processes[0]!.memory.buffer).setUint32(
+        brokenThread.channelOffset - FORK_SAVE_BUFFER_SIZE,
+        7,
+        true,
+      );
+      const brokenAttempt = validateMachineCheckpoint(brokenAnchor, EXPECTED);
+      await expect(brokenAttempt).rejects.toThrow(CheckpointRefusedError);
+      await expect(brokenAttempt).rejects.toThrow(
+        /tid \d+'s continuation root is unusable/,
+      );
+
+      const threadRefusal = async (
+        corrupt: (thread: Record<string, unknown>) => void,
+        reason: string | RegExp,
+      ) => {
+        const corrupted = cloneCheckpoint(checkpoint);
+        corrupt(
+          corrupted.processes[0]!.threads[0]! as
+            unknown as Record<string, unknown>,
+        );
+        const attempt = validateMachineCheckpoint(corrupted, EXPECTED);
+        await expect(attempt).rejects.toThrow(CheckpointRefusedError);
+        await expect(attempt).rejects.toThrow(reason);
+      };
+      await threadRefusal((thread) => {
+        thread.tid = pid;
+      }, `carries a thread with kernel TID ${pid}`);
+      await threadRefusal((thread) => {
+        thread.channelOffset = checkpoint.processes[0]!.memory.byteLength;
+      }, /syscall channel at \d+ does not fit inside/);
+
+      const duplicateTid = cloneCheckpoint(checkpoint);
+      const duplicated = duplicateTid.processes[0]! as unknown as {
+        threads: unknown[];
+        threadAllocator: { activeCount: number };
+      };
+      duplicated.threads = [
+        duplicateTid.processes[0]!.threads[0]!,
+        { ...duplicateTid.processes[0]!.threads[0]! },
+      ];
+      duplicated.threadAllocator = {
+        ...duplicateTid.processes[0]!.threadAllocator,
+        activeCount: 2,
+      };
+      const duplicateAttempt = validateMachineCheckpoint(
+        duplicateTid,
+        EXPECTED,
+      );
+      await expect(duplicateAttempt).rejects.toThrow(CheckpointRefusedError);
+      await expect(duplicateAttempt).rejects.toThrow(
+        /carries kernel TID \d+ twice/,
+      );
 
       const receiver = new NodeKernelHost({
         rootfsImage: "default",
         restoreCheckpoint: checkpoint,
       });
+      await receiver.init();
       try {
-        // Relaunching the pthread's worker is not built; a restore that woke
-        // only the main thread would leave threads silently parked forever.
-        await expect(receiver.init()).rejects.toThrow(
-          "with live threads is not implemented yet",
+        expect(await receiver.signalProcess(pid, 0)).toBe(true);
+
+        // A capture completes only when every task of the process crosses a
+        // syscall boundary and unwinds, so a captured recapture proves the
+        // restored pthread genuinely resumed its nap loop alongside the main
+        // thread rather than staying parked in its captured frames.
+        const recapture = await receiver.captureCheckpointBytes(TIMEOUTS);
+        if (recapture.status !== "captured") {
+          throw new Error(`recapture: ${JSON.stringify(recapture)}`);
+        }
+        const recaptured = recapture.checkpoint.processes.find(
+          (candidate) => candidate.pid === pid,
+        );
+        expect(recaptured).toBeDefined();
+        expect(recaptured!.threads.map((thread) => thread.tid)).toEqual(
+          bucket.threads.map((thread) => thread.tid),
         );
       } finally {
-        await receiver.destroy().catch(() => undefined);
+        await receiver.destroy();
       }
     },
   );
