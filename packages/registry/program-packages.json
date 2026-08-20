@@ -158,8 +158,8 @@
     "lamp": {
       "manifestSha256": "250b64635d64f8537178188fb5488dbfd2980d79a1c2ffbf346af67008088ba0",
       "cacheKeys": {
-        "wasm32": "27eaa889a06ada57a0297af7c08b7ca7917a0c1bf7220faa94db1aba7ea77f2f",
-        "wasm64": "deccb6d846eb9dc61be101a95899b8c7c3c967ae1b60f9475db4a1922f5a40f6"
+        "wasm32": "e97db1a109170c2e8c43fe3fc8f789d90c0a6c5d5da8c674a880c6d831059b62",
+        "wasm64": "319db9b3689be652bc4607d53beb60287f3935d7c09dc3b71ecf259fc676daaa"
       }
     },
     "less": {
@@ -312,15 +312,15 @@
     "nginx-php-vfs": {
       "manifestSha256": "97976410cb02f8ba710d856b4ac904bcf976d677b50eefdee39fb64176070d4b",
       "cacheKeys": {
-        "wasm32": "051823a3007192df66b6d0f42529f0e4b3c17d5226a80591d235ad842853c862",
-        "wasm64": "26e1638db2436d3c0f516f8e476cdb1a1e487f0b194a99c94998e9a6a9f7ee21"
+        "wasm32": "b3f930b8c36b9abe5accd94fcbc3d38d23ae7b1e9850aae05b7b6c89daa83143",
+        "wasm64": "8dde9d801e2949f529be635c4ea52c2bc056eaaa47c582d705da62e4b6cdfef2"
       }
     },
     "nginx-vfs": {
       "manifestSha256": "46aa2d3250ac5cd0f102a85c3a36a086c7a50ba1f9e05fa1c2aae3d07ad16f10",
       "cacheKeys": {
-        "wasm32": "759a1a3c2ea6efd050c2b3e7ea3de578f9f40e5d588922d3b08f9ce3bf5b779a",
-        "wasm64": "afac3bbcf355b061cfc72bb98b6bad30243b00f0dcea79a56cf7956a79f5f142"
+        "wasm32": "7049ab3f63c9d0414044331f881f464abae8ea61cdeae63250a44ab8c5247370",
+        "wasm64": "05ec8cbb559b3226dcc5f0e42038406eba7035f92ec36e2e8053c6b7741034f4"
       }
     },
     "node": {
@@ -333,8 +333,8 @@
     "node-vfs": {
       "manifestSha256": "971eb2e91367c60745a3ed536eb90de1f6fc4d0c82ae6f5fd9d27c535711d5da",
       "cacheKeys": {
-        "wasm32": "3909faee189719320244b962ec992fe93e47bd2eb1bbfe655d6adc4fce8d8433",
-        "wasm64": "5c54d6a1095ef95f41471fca187afdd08e4689cbc88b6ed6a62ce0b75138c796"
+        "wasm32": "63e1959e1244ee7e4998017ec78f481319fca2f81ff520375db1eaab97cb6b5c",
+        "wasm64": "10c8b38ac9c73b91728337c4a231f7c509e0ded8e3b00330c65aef0e7522043d"
       }
     },
     "openssl": {
@@ -450,10 +450,10 @@
       }
     },
     "shell": {
-      "manifestSha256": "9f33aafbf2a96a74c41938460bca83189c221fd9721d58d6b9e7e5902d848c65",
+      "manifestSha256": "a4382fbdb71e3946f9ccd1da46edd89e3b28e119b9133e51f7eb33c486dc140a",
       "cacheKeys": {
-        "wasm32": "c2943277f07bea400d6c1d97c7544e573289defa3b845662f76efb4ed0c1c203",
-        "wasm64": "3dcd7c4e0b5b97feafb94b817849f34981ff3f18b45bbcc95e506992f266b7da"
+        "wasm32": "6231ff03ab676c194af0567cd3af30ec87d3654ec45e9abe31c357f32b74dd54",
+        "wasm64": "0e1987581598730a3c7282b94579f9af0e8017e5eae24219fe4e10360d24159b"
       }
     },
     "spidermonkey": {
@@ -543,8 +543,8 @@
     "wordpress": {
       "manifestSha256": "36465e0596a06e855a8524eecfd87da98643bc13b37ee12939f5aab44bf33418",
       "cacheKeys": {
-        "wasm32": "e97e12283c5b9c258a51f876f0204a4c7e9487869ff9a354a18a50671a2e267c",
-        "wasm64": "e0b05cbf52f713504a2511b1ded8972a655f7358e0e71738a6191823b75a9d3a"
+        "wasm32": "ccde5cc082cd71410dc9bb6700d2f49a7e95cd51e049f1cf2d91033e62b81e3e",
+        "wasm64": "0b80f908f11d632e2fb3caefc3cbffc5405f4815bdd1ccd059803dc37bebeeab"
       }
     },
     "xz": {
@@ -1121,24 +1121,94 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "27eaa889a06ada57a0297af7c08b7ca7917a0c1bf7220faa94db1aba7ea77f2f"
+        "wasm32": "e97db1a109170c2e8c43fe3fc8f789d90c0a6c5d5da8c674a880c6d831059b62"
       },
       "dependencyClosures": {
         "wasm32": [
+          {
+            "packageName": "bash",
+            "manifestSha256": "5dc4d97dc4f154f265ff57e9d972e7d5a64a2e15fadedfa246733b830dda3497",
+            "cacheKey": "3e857f19e224c39a6945087085f977366ab521e7c102a25e3106e5d39e4b0546"
+          },
+          {
+            "packageName": "bc",
+            "manifestSha256": "a65661463bb7047b91ff00153bd99fd962c96e571934ab4e923f5215fb6ecfbd",
+            "cacheKey": "3b5614c840e7c0bbadbd17c682a273ec32fd096bf083281ea0e0a40e612b7a63"
+          },
+          {
+            "packageName": "bzip2",
+            "manifestSha256": "59e1e53f5675e7c9148634933ed0f4c7192743727025cae4e843b6924c489abf",
+            "cacheKey": "77af34fe432957e6804e98ab53d3e01a797af33f67cf8f53cf6300b72af5960e"
+          },
+          {
+            "packageName": "coreutils",
+            "manifestSha256": "72fc9c3818fb11cebaa047a623743252395dc729163fa804a7272d59f87fe82d",
+            "cacheKey": "b084e2abc668603a763554a48a68a80d025b037cf3b199e8f2b86ebfcdadec60"
+          },
+          {
+            "packageName": "curl",
+            "manifestSha256": "55523d50261f46dc4aaaff458d1cd87c6f96eaecd687a7540ead35c96906366e",
+            "cacheKey": "06b17b120c30cf0d00cb184619a88cc1968febe536b903807b9a249826cf5794"
+          },
+          {
+            "packageName": "dash",
+            "manifestSha256": "10ce1bb611fefd78a6c9ec9038f6113e29a7062b1a73e08eccf9b33004cea9a8",
+            "cacheKey": "c5340ff71e335f0a2c6aa81cba2d6656b09136c6a46810c675004bb6d0b04250"
+          },
+          {
+            "packageName": "diffutils",
+            "manifestSha256": "2286203eb762eca487939963e38ea1b901ac2dc9a830d3260c2fb291757df208",
+            "cacheKey": "6b8a2ba832fdf0504de1b5243555fed4f87b505a99d445bbd2530c78c878f205"
+          },
           {
             "packageName": "dinit",
             "manifestSha256": "44e125e1337503e27f8cff531cdbd79c4f406fd2d282b916a7746cf3a14057bf",
             "cacheKey": "0f08a3b20a86e554e235e4a2d430134c1e82e6a03305d5a66a77cbb95a18013d"
           },
           {
-            "packageName": "homebrew-bootstrap",
-            "manifestSha256": "c4ed5ba78c33909ac70410c86a80bb877f86fa6ac786c8f11025410a8df1fd24",
-            "cacheKey": "271b631cccb43693cccc7340c7e08548cc4210bdc5e98e3efe5b342aeb9b0029"
+            "packageName": "fbdoom",
+            "manifestSha256": "7ff2127ca940e41be90ba45204c89089a7a2093567b9bff581a9549b57138626",
+            "cacheKey": "21136e03e41c51a2dcf96141159ac59caf4af380168289174dac01b20474403f"
+          },
+          {
+            "packageName": "file",
+            "manifestSha256": "7874c1affcbbf2c8ab8c8d4beb087f275af57b5caae6a8947bf5a63a181552b2",
+            "cacheKey": "20b14c66fd881e5b893e9beae6c5864c591db743f326e9cdf9db4f2c2b81436f"
+          },
+          {
+            "packageName": "findutils",
+            "manifestSha256": "a9969cb102403cef105e758ef602692500fddd75ec96e4e3f168c50094b6c931",
+            "cacheKey": "4339b708370cb2b07ee38f9f72c6c3a0e12afd768468c31093895c25a9c3df02"
+          },
+          {
+            "packageName": "gawk",
+            "manifestSha256": "b788f3de724cd363ea68d08826586ddf544a75fb5dd9df1369ffafe06d8681b7",
+            "cacheKey": "f6a11f5e62a72a7b02424def140dae54ec5d4a05b23ed35839589aab063ea4cb"
+          },
+          {
+            "packageName": "git",
+            "manifestSha256": "c2bc79e62c9a4e840ae94a16af0f41070460eaf3976a990dc60d2db977bee952",
+            "cacheKey": "cc5b90e512f95d7a4d0aff9013214decd4f970be2984b4e2ee50027a18d0f40c"
+          },
+          {
+            "packageName": "grep",
+            "manifestSha256": "7c61b894807b831c7e8816cb1f39c78e3a69a4ced2fa3d18f0abdf00bf18334b",
+            "cacheKey": "133244e8e3a77ecb4cf833d447dc6dce4030b5428e04a492252d842085e589cc"
+          },
+          {
+            "packageName": "gzip",
+            "manifestSha256": "1485add843bbcd744244e707c353208fe11192b7b248feed1550875d3b75a917",
+            "cacheKey": "4dbdb1a9ae0931adea537c67241fae597809f5ed0a508514179be6d98e30e5e9"
           },
           {
             "packageName": "icu",
             "manifestSha256": "f5b1f02d169ec1108fc32d9da55be53c3efb96e3a7aeba6a03aec62e0175f0dc",
             "cacheKey": "3b2f817955b9048e8e4986314174a5854280b4745ae79baafce5cbcb143fe257"
+          },
+          {
+            "packageName": "less",
+            "manifestSha256": "996d61545cfe83dcb663a33e8763e0edbd4db4a605fd69a91b243cf79b1f9b17",
+            "cacheKey": "28c60d3865f6f75fbd4e91a1b1229b45a45e7215afa56ce6e8277bb4d394022f"
           },
           {
             "packageName": "libcurl",
@@ -1166,14 +1236,59 @@
             "cacheKey": "c89cf63e8347c3f7b8d43315bd05a958a966f177962289d18b918e999f18cf88"
           },
           {
+            "packageName": "lsof",
+            "manifestSha256": "cfd199bbe082435f7a2e703e2738a368af1eeb5b76b6e93c376054f21ce94419",
+            "cacheKey": "8928664a82cf6f58e09a793237b66946ace026765f7f0be4d1e2c367c4e2e839"
+          },
+          {
+            "packageName": "m4",
+            "manifestSha256": "9b5838bdde8531079f23a89e135aa3832bbbbb7ad6099dd1503db877d52afcad",
+            "cacheKey": "a1f76618807d370954e7674a3a6efb772ef1bc14760b5dd167b4127d016ef8eb"
+          },
+          {
+            "packageName": "make",
+            "manifestSha256": "62e8b36a6df7e981d191061a5bb7f2db85b2deaf365352a7d590a6c6c06f2b1e",
+            "cacheKey": "9696a5372ca2ea20a79c1059c22afff0517d6be321f68ce1e02ebe803e323240"
+          },
+          {
             "packageName": "mariadb",
             "manifestSha256": "aeb221be233e4b57bccb4b3375020f94c3ec593dac2734631f00e3b1aec9f48c",
             "cacheKey": "f29b56616771d6c128aaf0057a082c19c972c4bd68bb1cfc6fdbf5e257b0e63b"
           },
           {
+            "packageName": "modeset",
+            "manifestSha256": "36a8683c1c7309701d361c5f77e543a6c1531397b26c72dbb864528c59c42954",
+            "cacheKey": "1fe0c41eb53186643364cfce017461d320d49f5e9ad315bcbd9d70609d82b061"
+          },
+          {
             "packageName": "msmtpd",
             "manifestSha256": "686ff665b5e7907e67618790b1a3eddce2ff47ed665595d17209bdcda1e0b274",
             "cacheKey": "21a586d6c325b8e28b878b7a1055e03adcba28b9188d7fdcb0e8433c6513fea2"
+          },
+          {
+            "packageName": "nano",
+            "manifestSha256": "c5a52f0c37e08b475bb815367b1f0d63d0d2b06649d99fe9f461b72d0b9cff51",
+            "cacheKey": "ff225167c1b6735ee8396aca121ea1c6e0d4eae57ef82306d4ab9123f2b9121b"
+          },
+          {
+            "packageName": "ncurses",
+            "manifestSha256": "30d07b8914e93d0e38c48770aed2ac2938f6076b03e9d7f65dea597b04efd908",
+            "cacheKey": "d5968c9802fe3cf84c551925a530c1f1274e5ccdeb930daa26ca79d6ff08c611"
+          },
+          {
+            "packageName": "netcat",
+            "manifestSha256": "4cf33cd1ab768b3ad0108da8b68c2ff72e98469cd86a0bf2d0da54a7d4f6fa16",
+            "cacheKey": "7cde175799a4dbd3543b207864c12eedac7402eb7d34fb33bbb19616d9a3148b"
+          },
+          {
+            "packageName": "nethack",
+            "manifestSha256": "1a2f12ec2770bd8d40006d6c878a3493b97c71c2bb63ad08c7f6ad99bfd53504",
+            "cacheKey": "b5ad46acd1977b6c59e80b5d7fd7cf536010d426dc933eb39f8c26a006f9fcd8"
+          },
+          {
+            "packageName": "nethack-browser-bundle",
+            "manifestSha256": "b8294981da7ce4299dfb271d4aecb90ababa97a4d1acc9b716ae05bbe52beb53",
+            "cacheKey": "d7da126b1f8104385bab67a4a0c41d4446c1fb911cc0c6cc6c32a41a5b26544b"
           },
           {
             "packageName": "nginx",
@@ -1196,9 +1311,24 @@
             "cacheKey": "22bac4b39197a08afdf997f1d374964e7db28152deddafa73e15caf16c0d9915"
           },
           {
+            "packageName": "posix-utils-lite",
+            "manifestSha256": "8fd7190b2848ef80143adc7b9268c79e13cd4db3430f7105faf49a4b4407a06f",
+            "cacheKey": "1623e6649c8ec5c6bee11607954248f87f644bd38f8ec7b334dce8e0c1b73be1"
+          },
+          {
+            "packageName": "rootfs",
+            "manifestSha256": "0420201025170f48c32949ac62707d4577cdc13a53ad1f01f59d318ec07c8d6e",
+            "cacheKey": "d9e64cefed7db97dfe8c4a24a24de1cdadfa16472a021fa97be7436139cfe6af"
+          },
+          {
+            "packageName": "sed",
+            "manifestSha256": "0c0d82d53907c19825941501f833252cf9adf35ebcebf6786baae28e5eb6958b",
+            "cacheKey": "ced16abefba1a9d707be66e73c48021e251fa8a878d59d7a584017b238d9e91f"
+          },
+          {
             "packageName": "shell",
-            "manifestSha256": "9f33aafbf2a96a74c41938460bca83189c221fd9721d58d6b9e7e5902d848c65",
-            "cacheKey": "c2943277f07bea400d6c1d97c7544e573289defa3b845662f76efb4ed0c1c203"
+            "manifestSha256": "a4382fbdb71e3946f9ccd1da46edd89e3b28e119b9133e51f7eb33c486dc140a",
+            "cacheKey": "6231ff03ab676c194af0567cd3af30ec87d3654ec45e9abe31c357f32b74dd54"
           },
           {
             "packageName": "sqlite",
@@ -1206,9 +1336,49 @@
             "cacheKey": "cc4895f244bb5589e79da0ef2111869b5a67a60426a62dbf788c1ef086e505ec"
           },
           {
+            "packageName": "tar",
+            "manifestSha256": "4502355c246362a2035e52aa7b35d274882fad4b4404c03470458baee723ae68",
+            "cacheKey": "5536051698e3dc23aa02e0c3da4338541def2c66a6ae5f48c0b201f60369af0a"
+          },
+          {
+            "packageName": "unzip",
+            "manifestSha256": "ef4e5e34258827ab3cbc1930da3fd9514f08f2d7d56c7c3e0d5c495a4d3a20e9",
+            "cacheKey": "ec17029833d8a2c141d0142d91f496566807243988274fd52df5aec05b8df68f"
+          },
+          {
+            "packageName": "vim",
+            "manifestSha256": "c211660ef41d01f95f3fbdf675b74891e897e3f304e04f1bf5586f326007382c",
+            "cacheKey": "c9383269596819f296d84fb75936ab419a192aff37a16752e1ac0c86483d9347"
+          },
+          {
+            "packageName": "vim-browser-bundle",
+            "manifestSha256": "e31d84057db49c3534381604d0c8f3c7d765e33ede560a7ea7b01a5a8f1aa0d3",
+            "cacheKey": "94c6c1f65740daf1a0fa2015cff1582ca272601b6bf5243274b58a32de8062a6"
+          },
+          {
+            "packageName": "wget",
+            "manifestSha256": "61420b6cb1be12471f425b0aebf5aec58c49d0b43d939dd54508b305accbf54e",
+            "cacheKey": "03853580b7cdb935135ce0dac409b99f647b4120d3c389a8fcff12f63a3b4c1d"
+          },
+          {
+            "packageName": "xz",
+            "manifestSha256": "8707d35b8647b1af8fa165dcb6ce7b2a6a007e19ab2daca2680c39395864a737",
+            "cacheKey": "87aa6edea9b231797f2fc70200e992ddddb3f15e419187f56ae8799d117919e9"
+          },
+          {
+            "packageName": "zip",
+            "manifestSha256": "9c9cfa8220aaeaea26736b55f7cd0a7517b8853c07f9f0d241ad67dd43592e36",
+            "cacheKey": "757b8d1396567507950327e2afb475ad6c893e7d881d783f24be1f5ceb2ca69c"
+          },
+          {
             "packageName": "zlib",
             "manifestSha256": "d4f4701c0c30dc843ebe2111ed3e2284836cdfc4bc05a130c8fab4f31b8e6357",
             "cacheKey": "22353ecda2381e5b2906a167c0c0ce0555f965bcd29cbe4d555ccb558a4e3d83"
+          },
+          {
+            "packageName": "zstd",
+            "manifestSha256": "89f266938c2c253700a838e6352c9de66c976c84883325aaa979f72b732357e4",
+            "cacheKey": "6c02283eaa4edfe47d8543db1a30b036df9388dfd9ab45951b0d1cbc60e62c73"
           }
         ]
       },
@@ -1751,19 +1921,84 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "051823a3007192df66b6d0f42529f0e4b3c17d5226a80591d235ad842853c862"
+        "wasm32": "b3f930b8c36b9abe5accd94fcbc3d38d23ae7b1e9850aae05b7b6c89daa83143"
       },
       "dependencyClosures": {
         "wasm32": [
+          {
+            "packageName": "bash",
+            "manifestSha256": "5dc4d97dc4f154f265ff57e9d972e7d5a64a2e15fadedfa246733b830dda3497",
+            "cacheKey": "3e857f19e224c39a6945087085f977366ab521e7c102a25e3106e5d39e4b0546"
+          },
+          {
+            "packageName": "bc",
+            "manifestSha256": "a65661463bb7047b91ff00153bd99fd962c96e571934ab4e923f5215fb6ecfbd",
+            "cacheKey": "3b5614c840e7c0bbadbd17c682a273ec32fd096bf083281ea0e0a40e612b7a63"
+          },
+          {
+            "packageName": "bzip2",
+            "manifestSha256": "59e1e53f5675e7c9148634933ed0f4c7192743727025cae4e843b6924c489abf",
+            "cacheKey": "77af34fe432957e6804e98ab53d3e01a797af33f67cf8f53cf6300b72af5960e"
+          },
+          {
+            "packageName": "coreutils",
+            "manifestSha256": "72fc9c3818fb11cebaa047a623743252395dc729163fa804a7272d59f87fe82d",
+            "cacheKey": "b084e2abc668603a763554a48a68a80d025b037cf3b199e8f2b86ebfcdadec60"
+          },
+          {
+            "packageName": "curl",
+            "manifestSha256": "55523d50261f46dc4aaaff458d1cd87c6f96eaecd687a7540ead35c96906366e",
+            "cacheKey": "06b17b120c30cf0d00cb184619a88cc1968febe536b903807b9a249826cf5794"
+          },
+          {
+            "packageName": "dash",
+            "manifestSha256": "10ce1bb611fefd78a6c9ec9038f6113e29a7062b1a73e08eccf9b33004cea9a8",
+            "cacheKey": "c5340ff71e335f0a2c6aa81cba2d6656b09136c6a46810c675004bb6d0b04250"
+          },
+          {
+            "packageName": "diffutils",
+            "manifestSha256": "2286203eb762eca487939963e38ea1b901ac2dc9a830d3260c2fb291757df208",
+            "cacheKey": "6b8a2ba832fdf0504de1b5243555fed4f87b505a99d445bbd2530c78c878f205"
+          },
           {
             "packageName": "dinit",
             "manifestSha256": "44e125e1337503e27f8cff531cdbd79c4f406fd2d282b916a7746cf3a14057bf",
             "cacheKey": "0f08a3b20a86e554e235e4a2d430134c1e82e6a03305d5a66a77cbb95a18013d"
           },
           {
-            "packageName": "homebrew-bootstrap",
-            "manifestSha256": "c4ed5ba78c33909ac70410c86a80bb877f86fa6ac786c8f11025410a8df1fd24",
-            "cacheKey": "271b631cccb43693cccc7340c7e08548cc4210bdc5e98e3efe5b342aeb9b0029"
+            "packageName": "fbdoom",
+            "manifestSha256": "7ff2127ca940e41be90ba45204c89089a7a2093567b9bff581a9549b57138626",
+            "cacheKey": "21136e03e41c51a2dcf96141159ac59caf4af380168289174dac01b20474403f"
+          },
+          {
+            "packageName": "file",
+            "manifestSha256": "7874c1affcbbf2c8ab8c8d4beb087f275af57b5caae6a8947bf5a63a181552b2",
+            "cacheKey": "20b14c66fd881e5b893e9beae6c5864c591db743f326e9cdf9db4f2c2b81436f"
+          },
+          {
+            "packageName": "findutils",
+            "manifestSha256": "a9969cb102403cef105e758ef602692500fddd75ec96e4e3f168c50094b6c931",
+            "cacheKey": "4339b708370cb2b07ee38f9f72c6c3a0e12afd768468c31093895c25a9c3df02"
+          },
+          {
+            "packageName": "gawk",
+            "manifestSha256": "b788f3de724cd363ea68d08826586ddf544a75fb5dd9df1369ffafe06d8681b7",
+            "cacheKey": "f6a11f5e62a72a7b02424def140dae54ec5d4a05b23ed35839589aab063ea4cb"
+          },
+          {
+            "packageName": "git",
+            "manifestSha256": "c2bc79e62c9a4e840ae94a16af0f41070460eaf3976a990dc60d2db977bee952",
+            "cacheKey": "cc5b90e512f95d7a4d0aff9013214decd4f970be2984b4e2ee50027a18d0f40c"
+          },
+          {
+            "packageName": "grep",
+            "manifestSha256": "7c61b894807b831c7e8816cb1f39c78e3a69a4ced2fa3d18f0abdf00bf18334b",
+            "cacheKey": "133244e8e3a77ecb4cf833d447dc6dce4030b5428e04a492252d842085e589cc"
+          },
+          {
+            "packageName": "gzip",
+            "manifestSha256": "1485add843bbcd744244e707c353208fe11192b7b248feed1550875d3b75a917",
+            "cacheKey": "4dbdb1a9ae0931adea537c67241fae597809f5ed0a508514179be6d98e30e5e9"
           },
           {
             "packageName": "icu",
@@ -1774,6 +2009,11 @@
             "packageName": "kernel",
             "manifestSha256": "db1d66db8575562ac7b3e720dbaa06d7dd5eef577d80220ea4167dc2d69b863b",
             "cacheKey": "fdb78152aa557bdaadf93899447577e82e39c52c6563203a60aba0fa2dd16cfe"
+          },
+          {
+            "packageName": "less",
+            "manifestSha256": "996d61545cfe83dcb663a33e8763e0edbd4db4a605fd69a91b243cf79b1f9b17",
+            "cacheKey": "28c60d3865f6f75fbd4e91a1b1229b45a45e7215afa56ce6e8277bb4d394022f"
           },
           {
             "packageName": "libcurl",
@@ -1801,6 +2041,51 @@
             "cacheKey": "c89cf63e8347c3f7b8d43315bd05a958a966f177962289d18b918e999f18cf88"
           },
           {
+            "packageName": "lsof",
+            "manifestSha256": "cfd199bbe082435f7a2e703e2738a368af1eeb5b76b6e93c376054f21ce94419",
+            "cacheKey": "8928664a82cf6f58e09a793237b66946ace026765f7f0be4d1e2c367c4e2e839"
+          },
+          {
+            "packageName": "m4",
+            "manifestSha256": "9b5838bdde8531079f23a89e135aa3832bbbbb7ad6099dd1503db877d52afcad",
+            "cacheKey": "a1f76618807d370954e7674a3a6efb772ef1bc14760b5dd167b4127d016ef8eb"
+          },
+          {
+            "packageName": "make",
+            "manifestSha256": "62e8b36a6df7e981d191061a5bb7f2db85b2deaf365352a7d590a6c6c06f2b1e",
+            "cacheKey": "9696a5372ca2ea20a79c1059c22afff0517d6be321f68ce1e02ebe803e323240"
+          },
+          {
+            "packageName": "modeset",
+            "manifestSha256": "36a8683c1c7309701d361c5f77e543a6c1531397b26c72dbb864528c59c42954",
+            "cacheKey": "1fe0c41eb53186643364cfce017461d320d49f5e9ad315bcbd9d70609d82b061"
+          },
+          {
+            "packageName": "nano",
+            "manifestSha256": "c5a52f0c37e08b475bb815367b1f0d63d0d2b06649d99fe9f461b72d0b9cff51",
+            "cacheKey": "ff225167c1b6735ee8396aca121ea1c6e0d4eae57ef82306d4ab9123f2b9121b"
+          },
+          {
+            "packageName": "ncurses",
+            "manifestSha256": "30d07b8914e93d0e38c48770aed2ac2938f6076b03e9d7f65dea597b04efd908",
+            "cacheKey": "d5968c9802fe3cf84c551925a530c1f1274e5ccdeb930daa26ca79d6ff08c611"
+          },
+          {
+            "packageName": "netcat",
+            "manifestSha256": "4cf33cd1ab768b3ad0108da8b68c2ff72e98469cd86a0bf2d0da54a7d4f6fa16",
+            "cacheKey": "7cde175799a4dbd3543b207864c12eedac7402eb7d34fb33bbb19616d9a3148b"
+          },
+          {
+            "packageName": "nethack",
+            "manifestSha256": "1a2f12ec2770bd8d40006d6c878a3493b97c71c2bb63ad08c7f6ad99bfd53504",
+            "cacheKey": "b5ad46acd1977b6c59e80b5d7fd7cf536010d426dc933eb39f8c26a006f9fcd8"
+          },
+          {
+            "packageName": "nethack-browser-bundle",
+            "manifestSha256": "b8294981da7ce4299dfb271d4aecb90ababa97a4d1acc9b716ae05bbe52beb53",
+            "cacheKey": "d7da126b1f8104385bab67a4a0c41d4446c1fb911cc0c6cc6c32a41a5b26544b"
+          },
+          {
             "packageName": "nginx",
             "manifestSha256": "41b0aaf05fdd0d8da42642703f9e60fd7b9545d8029896918b87c771c359147b",
             "cacheKey": "b163e61a42338e983252eb6a633bdc719c04148642a9f1f40cb688ac1ebc811a"
@@ -1816,9 +2101,24 @@
             "cacheKey": "22bac4b39197a08afdf997f1d374964e7db28152deddafa73e15caf16c0d9915"
           },
           {
+            "packageName": "posix-utils-lite",
+            "manifestSha256": "8fd7190b2848ef80143adc7b9268c79e13cd4db3430f7105faf49a4b4407a06f",
+            "cacheKey": "1623e6649c8ec5c6bee11607954248f87f644bd38f8ec7b334dce8e0c1b73be1"
+          },
+          {
+            "packageName": "rootfs",
+            "manifestSha256": "0420201025170f48c32949ac62707d4577cdc13a53ad1f01f59d318ec07c8d6e",
+            "cacheKey": "d9e64cefed7db97dfe8c4a24a24de1cdadfa16472a021fa97be7436139cfe6af"
+          },
+          {
+            "packageName": "sed",
+            "manifestSha256": "0c0d82d53907c19825941501f833252cf9adf35ebcebf6786baae28e5eb6958b",
+            "cacheKey": "ced16abefba1a9d707be66e73c48021e251fa8a878d59d7a584017b238d9e91f"
+          },
+          {
             "packageName": "shell",
-            "manifestSha256": "9f33aafbf2a96a74c41938460bca83189c221fd9721d58d6b9e7e5902d848c65",
-            "cacheKey": "c2943277f07bea400d6c1d97c7544e573289defa3b845662f76efb4ed0c1c203"
+            "manifestSha256": "a4382fbdb71e3946f9ccd1da46edd89e3b28e119b9133e51f7eb33c486dc140a",
+            "cacheKey": "6231ff03ab676c194af0567cd3af30ec87d3654ec45e9abe31c357f32b74dd54"
           },
           {
             "packageName": "sqlite",
@@ -1826,9 +2126,49 @@
             "cacheKey": "cc4895f244bb5589e79da0ef2111869b5a67a60426a62dbf788c1ef086e505ec"
           },
           {
+            "packageName": "tar",
+            "manifestSha256": "4502355c246362a2035e52aa7b35d274882fad4b4404c03470458baee723ae68",
+            "cacheKey": "5536051698e3dc23aa02e0c3da4338541def2c66a6ae5f48c0b201f60369af0a"
+          },
+          {
+            "packageName": "unzip",
+            "manifestSha256": "ef4e5e34258827ab3cbc1930da3fd9514f08f2d7d56c7c3e0d5c495a4d3a20e9",
+            "cacheKey": "ec17029833d8a2c141d0142d91f496566807243988274fd52df5aec05b8df68f"
+          },
+          {
+            "packageName": "vim",
+            "manifestSha256": "c211660ef41d01f95f3fbdf675b74891e897e3f304e04f1bf5586f326007382c",
+            "cacheKey": "c9383269596819f296d84fb75936ab419a192aff37a16752e1ac0c86483d9347"
+          },
+          {
+            "packageName": "vim-browser-bundle",
+            "manifestSha256": "e31d84057db49c3534381604d0c8f3c7d765e33ede560a7ea7b01a5a8f1aa0d3",
+            "cacheKey": "94c6c1f65740daf1a0fa2015cff1582ca272601b6bf5243274b58a32de8062a6"
+          },
+          {
+            "packageName": "wget",
+            "manifestSha256": "61420b6cb1be12471f425b0aebf5aec58c49d0b43d939dd54508b305accbf54e",
+            "cacheKey": "03853580b7cdb935135ce0dac409b99f647b4120d3c389a8fcff12f63a3b4c1d"
+          },
+          {
+            "packageName": "xz",
+            "manifestSha256": "8707d35b8647b1af8fa165dcb6ce7b2a6a007e19ab2daca2680c39395864a737",
+            "cacheKey": "87aa6edea9b231797f2fc70200e992ddddb3f15e419187f56ae8799d117919e9"
+          },
+          {
+            "packageName": "zip",
+            "manifestSha256": "9c9cfa8220aaeaea26736b55f7cd0a7517b8853c07f9f0d241ad67dd43592e36",
+            "cacheKey": "757b8d1396567507950327e2afb475ad6c893e7d881d783f24be1f5ceb2ca69c"
+          },
+          {
             "packageName": "zlib",
             "manifestSha256": "d4f4701c0c30dc843ebe2111ed3e2284836cdfc4bc05a130c8fab4f31b8e6357",
             "cacheKey": "22353ecda2381e5b2906a167c0c0ce0555f965bcd29cbe4d555ccb558a4e3d83"
+          },
+          {
+            "packageName": "zstd",
+            "manifestSha256": "89f266938c2c253700a838e6352c9de66c976c84883325aaa979f72b732357e4",
+            "cacheKey": "6c02283eaa4edfe47d8543db1a30b036df9388dfd9ab45951b0d1cbc60e62c73"
           }
         ]
       },
@@ -1848,19 +2188,89 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "759a1a3c2ea6efd050c2b3e7ea3de578f9f40e5d588922d3b08f9ce3bf5b779a"
+        "wasm32": "7049ab3f63c9d0414044331f881f464abae8ea61cdeae63250a44ab8c5247370"
       },
       "dependencyClosures": {
         "wasm32": [
+          {
+            "packageName": "bash",
+            "manifestSha256": "5dc4d97dc4f154f265ff57e9d972e7d5a64a2e15fadedfa246733b830dda3497",
+            "cacheKey": "3e857f19e224c39a6945087085f977366ab521e7c102a25e3106e5d39e4b0546"
+          },
+          {
+            "packageName": "bc",
+            "manifestSha256": "a65661463bb7047b91ff00153bd99fd962c96e571934ab4e923f5215fb6ecfbd",
+            "cacheKey": "3b5614c840e7c0bbadbd17c682a273ec32fd096bf083281ea0e0a40e612b7a63"
+          },
+          {
+            "packageName": "bzip2",
+            "manifestSha256": "59e1e53f5675e7c9148634933ed0f4c7192743727025cae4e843b6924c489abf",
+            "cacheKey": "77af34fe432957e6804e98ab53d3e01a797af33f67cf8f53cf6300b72af5960e"
+          },
+          {
+            "packageName": "coreutils",
+            "manifestSha256": "72fc9c3818fb11cebaa047a623743252395dc729163fa804a7272d59f87fe82d",
+            "cacheKey": "b084e2abc668603a763554a48a68a80d025b037cf3b199e8f2b86ebfcdadec60"
+          },
+          {
+            "packageName": "curl",
+            "manifestSha256": "55523d50261f46dc4aaaff458d1cd87c6f96eaecd687a7540ead35c96906366e",
+            "cacheKey": "06b17b120c30cf0d00cb184619a88cc1968febe536b903807b9a249826cf5794"
+          },
+          {
+            "packageName": "dash",
+            "manifestSha256": "10ce1bb611fefd78a6c9ec9038f6113e29a7062b1a73e08eccf9b33004cea9a8",
+            "cacheKey": "c5340ff71e335f0a2c6aa81cba2d6656b09136c6a46810c675004bb6d0b04250"
+          },
+          {
+            "packageName": "diffutils",
+            "manifestSha256": "2286203eb762eca487939963e38ea1b901ac2dc9a830d3260c2fb291757df208",
+            "cacheKey": "6b8a2ba832fdf0504de1b5243555fed4f87b505a99d445bbd2530c78c878f205"
+          },
           {
             "packageName": "dinit",
             "manifestSha256": "44e125e1337503e27f8cff531cdbd79c4f406fd2d282b916a7746cf3a14057bf",
             "cacheKey": "0f08a3b20a86e554e235e4a2d430134c1e82e6a03305d5a66a77cbb95a18013d"
           },
           {
-            "packageName": "homebrew-bootstrap",
-            "manifestSha256": "c4ed5ba78c33909ac70410c86a80bb877f86fa6ac786c8f11025410a8df1fd24",
-            "cacheKey": "271b631cccb43693cccc7340c7e08548cc4210bdc5e98e3efe5b342aeb9b0029"
+            "packageName": "fbdoom",
+            "manifestSha256": "7ff2127ca940e41be90ba45204c89089a7a2093567b9bff581a9549b57138626",
+            "cacheKey": "21136e03e41c51a2dcf96141159ac59caf4af380168289174dac01b20474403f"
+          },
+          {
+            "packageName": "file",
+            "manifestSha256": "7874c1affcbbf2c8ab8c8d4beb087f275af57b5caae6a8947bf5a63a181552b2",
+            "cacheKey": "20b14c66fd881e5b893e9beae6c5864c591db743f326e9cdf9db4f2c2b81436f"
+          },
+          {
+            "packageName": "findutils",
+            "manifestSha256": "a9969cb102403cef105e758ef602692500fddd75ec96e4e3f168c50094b6c931",
+            "cacheKey": "4339b708370cb2b07ee38f9f72c6c3a0e12afd768468c31093895c25a9c3df02"
+          },
+          {
+            "packageName": "gawk",
+            "manifestSha256": "b788f3de724cd363ea68d08826586ddf544a75fb5dd9df1369ffafe06d8681b7",
+            "cacheKey": "f6a11f5e62a72a7b02424def140dae54ec5d4a05b23ed35839589aab063ea4cb"
+          },
+          {
+            "packageName": "git",
+            "manifestSha256": "c2bc79e62c9a4e840ae94a16af0f41070460eaf3976a990dc60d2db977bee952",
+            "cacheKey": "cc5b90e512f95d7a4d0aff9013214decd4f970be2984b4e2ee50027a18d0f40c"
+          },
+          {
+            "packageName": "grep",
+            "manifestSha256": "7c61b894807b831c7e8816cb1f39c78e3a69a4ced2fa3d18f0abdf00bf18334b",
+            "cacheKey": "133244e8e3a77ecb4cf833d447dc6dce4030b5428e04a492252d842085e589cc"
+          },
+          {
+            "packageName": "gzip",
+            "manifestSha256": "1485add843bbcd744244e707c353208fe11192b7b248feed1550875d3b75a917",
+            "cacheKey": "4dbdb1a9ae0931adea537c67241fae597809f5ed0a508514179be6d98e30e5e9"
+          },
+          {
+            "packageName": "less",
+            "manifestSha256": "996d61545cfe83dcb663a33e8763e0edbd4db4a605fd69a91b243cf79b1f9b17",
+            "cacheKey": "28c60d3865f6f75fbd4e91a1b1229b45a45e7215afa56ce6e8277bb4d394022f"
           },
           {
             "packageName": "libcxx",
@@ -1868,14 +2278,124 @@
             "cacheKey": "164bf3bb85994bfa254b7bff704fa321e23957e5f0b10b75be948b4cd3d39c20"
           },
           {
+            "packageName": "lsof",
+            "manifestSha256": "cfd199bbe082435f7a2e703e2738a368af1eeb5b76b6e93c376054f21ce94419",
+            "cacheKey": "8928664a82cf6f58e09a793237b66946ace026765f7f0be4d1e2c367c4e2e839"
+          },
+          {
+            "packageName": "m4",
+            "manifestSha256": "9b5838bdde8531079f23a89e135aa3832bbbbb7ad6099dd1503db877d52afcad",
+            "cacheKey": "a1f76618807d370954e7674a3a6efb772ef1bc14760b5dd167b4127d016ef8eb"
+          },
+          {
+            "packageName": "make",
+            "manifestSha256": "62e8b36a6df7e981d191061a5bb7f2db85b2deaf365352a7d590a6c6c06f2b1e",
+            "cacheKey": "9696a5372ca2ea20a79c1059c22afff0517d6be321f68ce1e02ebe803e323240"
+          },
+          {
+            "packageName": "modeset",
+            "manifestSha256": "36a8683c1c7309701d361c5f77e543a6c1531397b26c72dbb864528c59c42954",
+            "cacheKey": "1fe0c41eb53186643364cfce017461d320d49f5e9ad315bcbd9d70609d82b061"
+          },
+          {
+            "packageName": "nano",
+            "manifestSha256": "c5a52f0c37e08b475bb815367b1f0d63d0d2b06649d99fe9f461b72d0b9cff51",
+            "cacheKey": "ff225167c1b6735ee8396aca121ea1c6e0d4eae57ef82306d4ab9123f2b9121b"
+          },
+          {
+            "packageName": "ncurses",
+            "manifestSha256": "30d07b8914e93d0e38c48770aed2ac2938f6076b03e9d7f65dea597b04efd908",
+            "cacheKey": "d5968c9802fe3cf84c551925a530c1f1274e5ccdeb930daa26ca79d6ff08c611"
+          },
+          {
+            "packageName": "netcat",
+            "manifestSha256": "4cf33cd1ab768b3ad0108da8b68c2ff72e98469cd86a0bf2d0da54a7d4f6fa16",
+            "cacheKey": "7cde175799a4dbd3543b207864c12eedac7402eb7d34fb33bbb19616d9a3148b"
+          },
+          {
+            "packageName": "nethack",
+            "manifestSha256": "1a2f12ec2770bd8d40006d6c878a3493b97c71c2bb63ad08c7f6ad99bfd53504",
+            "cacheKey": "b5ad46acd1977b6c59e80b5d7fd7cf536010d426dc933eb39f8c26a006f9fcd8"
+          },
+          {
+            "packageName": "nethack-browser-bundle",
+            "manifestSha256": "b8294981da7ce4299dfb271d4aecb90ababa97a4d1acc9b716ae05bbe52beb53",
+            "cacheKey": "d7da126b1f8104385bab67a4a0c41d4446c1fb911cc0c6cc6c32a41a5b26544b"
+          },
+          {
             "packageName": "nginx",
             "manifestSha256": "41b0aaf05fdd0d8da42642703f9e60fd7b9545d8029896918b87c771c359147b",
             "cacheKey": "b163e61a42338e983252eb6a633bdc719c04148642a9f1f40cb688ac1ebc811a"
           },
           {
+            "packageName": "openssl",
+            "manifestSha256": "374f5dce6b2691b630b55cb82955b33d2305384e4bd64746c581621bb0793993",
+            "cacheKey": "d6d3c160d4e6d3ef9121633057b29ad64bd5d1f02d8313421302c26837946c8c"
+          },
+          {
+            "packageName": "posix-utils-lite",
+            "manifestSha256": "8fd7190b2848ef80143adc7b9268c79e13cd4db3430f7105faf49a4b4407a06f",
+            "cacheKey": "1623e6649c8ec5c6bee11607954248f87f644bd38f8ec7b334dce8e0c1b73be1"
+          },
+          {
+            "packageName": "rootfs",
+            "manifestSha256": "0420201025170f48c32949ac62707d4577cdc13a53ad1f01f59d318ec07c8d6e",
+            "cacheKey": "d9e64cefed7db97dfe8c4a24a24de1cdadfa16472a021fa97be7436139cfe6af"
+          },
+          {
+            "packageName": "sed",
+            "manifestSha256": "0c0d82d53907c19825941501f833252cf9adf35ebcebf6786baae28e5eb6958b",
+            "cacheKey": "ced16abefba1a9d707be66e73c48021e251fa8a878d59d7a584017b238d9e91f"
+          },
+          {
             "packageName": "shell",
-            "manifestSha256": "9f33aafbf2a96a74c41938460bca83189c221fd9721d58d6b9e7e5902d848c65",
-            "cacheKey": "c2943277f07bea400d6c1d97c7544e573289defa3b845662f76efb4ed0c1c203"
+            "manifestSha256": "a4382fbdb71e3946f9ccd1da46edd89e3b28e119b9133e51f7eb33c486dc140a",
+            "cacheKey": "6231ff03ab676c194af0567cd3af30ec87d3654ec45e9abe31c357f32b74dd54"
+          },
+          {
+            "packageName": "tar",
+            "manifestSha256": "4502355c246362a2035e52aa7b35d274882fad4b4404c03470458baee723ae68",
+            "cacheKey": "5536051698e3dc23aa02e0c3da4338541def2c66a6ae5f48c0b201f60369af0a"
+          },
+          {
+            "packageName": "unzip",
+            "manifestSha256": "ef4e5e34258827ab3cbc1930da3fd9514f08f2d7d56c7c3e0d5c495a4d3a20e9",
+            "cacheKey": "ec17029833d8a2c141d0142d91f496566807243988274fd52df5aec05b8df68f"
+          },
+          {
+            "packageName": "vim",
+            "manifestSha256": "c211660ef41d01f95f3fbdf675b74891e897e3f304e04f1bf5586f326007382c",
+            "cacheKey": "c9383269596819f296d84fb75936ab419a192aff37a16752e1ac0c86483d9347"
+          },
+          {
+            "packageName": "vim-browser-bundle",
+            "manifestSha256": "e31d84057db49c3534381604d0c8f3c7d765e33ede560a7ea7b01a5a8f1aa0d3",
+            "cacheKey": "94c6c1f65740daf1a0fa2015cff1582ca272601b6bf5243274b58a32de8062a6"
+          },
+          {
+            "packageName": "wget",
+            "manifestSha256": "61420b6cb1be12471f425b0aebf5aec58c49d0b43d939dd54508b305accbf54e",
+            "cacheKey": "03853580b7cdb935135ce0dac409b99f647b4120d3c389a8fcff12f63a3b4c1d"
+          },
+          {
+            "packageName": "xz",
+            "manifestSha256": "8707d35b8647b1af8fa165dcb6ce7b2a6a007e19ab2daca2680c39395864a737",
+            "cacheKey": "87aa6edea9b231797f2fc70200e992ddddb3f15e419187f56ae8799d117919e9"
+          },
+          {
+            "packageName": "zip",
+            "manifestSha256": "9c9cfa8220aaeaea26736b55f7cd0a7517b8853c07f9f0d241ad67dd43592e36",
+            "cacheKey": "757b8d1396567507950327e2afb475ad6c893e7d881d783f24be1f5ceb2ca69c"
+          },
+          {
+            "packageName": "zlib",
+            "manifestSha256": "d4f4701c0c30dc843ebe2111ed3e2284836cdfc4bc05a130c8fab4f31b8e6357",
+            "cacheKey": "22353ecda2381e5b2906a167c0c0ce0555f965bcd29cbe4d555ccb558a4e3d83"
+          },
+          {
+            "packageName": "zstd",
+            "manifestSha256": "89f266938c2c253700a838e6352c9de66c976c84883325aaa979f72b732357e4",
+            "cacheKey": "6c02283eaa4edfe47d8543db1a30b036df9388dfd9ab45951b0d1cbc60e62c73"
           }
         ]
       },
@@ -1937,19 +2457,134 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "3909faee189719320244b962ec992fe93e47bd2eb1bbfe655d6adc4fce8d8433"
+        "wasm32": "63e1959e1244ee7e4998017ec78f481319fca2f81ff520375db1eaab97cb6b5c"
       },
       "dependencyClosures": {
         "wasm32": [
           {
-            "packageName": "homebrew-bootstrap",
-            "manifestSha256": "c4ed5ba78c33909ac70410c86a80bb877f86fa6ac786c8f11025410a8df1fd24",
-            "cacheKey": "271b631cccb43693cccc7340c7e08548cc4210bdc5e98e3efe5b342aeb9b0029"
+            "packageName": "bash",
+            "manifestSha256": "5dc4d97dc4f154f265ff57e9d972e7d5a64a2e15fadedfa246733b830dda3497",
+            "cacheKey": "3e857f19e224c39a6945087085f977366ab521e7c102a25e3106e5d39e4b0546"
+          },
+          {
+            "packageName": "bc",
+            "manifestSha256": "a65661463bb7047b91ff00153bd99fd962c96e571934ab4e923f5215fb6ecfbd",
+            "cacheKey": "3b5614c840e7c0bbadbd17c682a273ec32fd096bf083281ea0e0a40e612b7a63"
+          },
+          {
+            "packageName": "bzip2",
+            "manifestSha256": "59e1e53f5675e7c9148634933ed0f4c7192743727025cae4e843b6924c489abf",
+            "cacheKey": "77af34fe432957e6804e98ab53d3e01a797af33f67cf8f53cf6300b72af5960e"
+          },
+          {
+            "packageName": "coreutils",
+            "manifestSha256": "72fc9c3818fb11cebaa047a623743252395dc729163fa804a7272d59f87fe82d",
+            "cacheKey": "b084e2abc668603a763554a48a68a80d025b037cf3b199e8f2b86ebfcdadec60"
+          },
+          {
+            "packageName": "curl",
+            "manifestSha256": "55523d50261f46dc4aaaff458d1cd87c6f96eaecd687a7540ead35c96906366e",
+            "cacheKey": "06b17b120c30cf0d00cb184619a88cc1968febe536b903807b9a249826cf5794"
+          },
+          {
+            "packageName": "dash",
+            "manifestSha256": "10ce1bb611fefd78a6c9ec9038f6113e29a7062b1a73e08eccf9b33004cea9a8",
+            "cacheKey": "c5340ff71e335f0a2c6aa81cba2d6656b09136c6a46810c675004bb6d0b04250"
+          },
+          {
+            "packageName": "diffutils",
+            "manifestSha256": "2286203eb762eca487939963e38ea1b901ac2dc9a830d3260c2fb291757df208",
+            "cacheKey": "6b8a2ba832fdf0504de1b5243555fed4f87b505a99d445bbd2530c78c878f205"
+          },
+          {
+            "packageName": "fbdoom",
+            "manifestSha256": "7ff2127ca940e41be90ba45204c89089a7a2093567b9bff581a9549b57138626",
+            "cacheKey": "21136e03e41c51a2dcf96141159ac59caf4af380168289174dac01b20474403f"
+          },
+          {
+            "packageName": "file",
+            "manifestSha256": "7874c1affcbbf2c8ab8c8d4beb087f275af57b5caae6a8947bf5a63a181552b2",
+            "cacheKey": "20b14c66fd881e5b893e9beae6c5864c591db743f326e9cdf9db4f2c2b81436f"
+          },
+          {
+            "packageName": "findutils",
+            "manifestSha256": "a9969cb102403cef105e758ef602692500fddd75ec96e4e3f168c50094b6c931",
+            "cacheKey": "4339b708370cb2b07ee38f9f72c6c3a0e12afd768468c31093895c25a9c3df02"
+          },
+          {
+            "packageName": "gawk",
+            "manifestSha256": "b788f3de724cd363ea68d08826586ddf544a75fb5dd9df1369ffafe06d8681b7",
+            "cacheKey": "f6a11f5e62a72a7b02424def140dae54ec5d4a05b23ed35839589aab063ea4cb"
+          },
+          {
+            "packageName": "git",
+            "manifestSha256": "c2bc79e62c9a4e840ae94a16af0f41070460eaf3976a990dc60d2db977bee952",
+            "cacheKey": "cc5b90e512f95d7a4d0aff9013214decd4f970be2984b4e2ee50027a18d0f40c"
+          },
+          {
+            "packageName": "grep",
+            "manifestSha256": "7c61b894807b831c7e8816cb1f39c78e3a69a4ced2fa3d18f0abdf00bf18334b",
+            "cacheKey": "133244e8e3a77ecb4cf833d447dc6dce4030b5428e04a492252d842085e589cc"
+          },
+          {
+            "packageName": "gzip",
+            "manifestSha256": "1485add843bbcd744244e707c353208fe11192b7b248feed1550875d3b75a917",
+            "cacheKey": "4dbdb1a9ae0931adea537c67241fae597809f5ed0a508514179be6d98e30e5e9"
+          },
+          {
+            "packageName": "less",
+            "manifestSha256": "996d61545cfe83dcb663a33e8763e0edbd4db4a605fd69a91b243cf79b1f9b17",
+            "cacheKey": "28c60d3865f6f75fbd4e91a1b1229b45a45e7215afa56ce6e8277bb4d394022f"
           },
           {
             "packageName": "libcxx",
             "manifestSha256": "6e1ebfa6914043770eae2a6c156b915acf6a56fe763f07d215ffe6f6f2305007",
             "cacheKey": "164bf3bb85994bfa254b7bff704fa321e23957e5f0b10b75be948b4cd3d39c20"
+          },
+          {
+            "packageName": "lsof",
+            "manifestSha256": "cfd199bbe082435f7a2e703e2738a368af1eeb5b76b6e93c376054f21ce94419",
+            "cacheKey": "8928664a82cf6f58e09a793237b66946ace026765f7f0be4d1e2c367c4e2e839"
+          },
+          {
+            "packageName": "m4",
+            "manifestSha256": "9b5838bdde8531079f23a89e135aa3832bbbbb7ad6099dd1503db877d52afcad",
+            "cacheKey": "a1f76618807d370954e7674a3a6efb772ef1bc14760b5dd167b4127d016ef8eb"
+          },
+          {
+            "packageName": "make",
+            "manifestSha256": "62e8b36a6df7e981d191061a5bb7f2db85b2deaf365352a7d590a6c6c06f2b1e",
+            "cacheKey": "9696a5372ca2ea20a79c1059c22afff0517d6be321f68ce1e02ebe803e323240"
+          },
+          {
+            "packageName": "modeset",
+            "manifestSha256": "36a8683c1c7309701d361c5f77e543a6c1531397b26c72dbb864528c59c42954",
+            "cacheKey": "1fe0c41eb53186643364cfce017461d320d49f5e9ad315bcbd9d70609d82b061"
+          },
+          {
+            "packageName": "nano",
+            "manifestSha256": "c5a52f0c37e08b475bb815367b1f0d63d0d2b06649d99fe9f461b72d0b9cff51",
+            "cacheKey": "ff225167c1b6735ee8396aca121ea1c6e0d4eae57ef82306d4ab9123f2b9121b"
+          },
+          {
+            "packageName": "ncurses",
+            "manifestSha256": "30d07b8914e93d0e38c48770aed2ac2938f6076b03e9d7f65dea597b04efd908",
+            "cacheKey": "d5968c9802fe3cf84c551925a530c1f1274e5ccdeb930daa26ca79d6ff08c611"
+          },
+          {
+            "packageName": "netcat",
+            "manifestSha256": "4cf33cd1ab768b3ad0108da8b68c2ff72e98469cd86a0bf2d0da54a7d4f6fa16",
+            "cacheKey": "7cde175799a4dbd3543b207864c12eedac7402eb7d34fb33bbb19616d9a3148b"
+          },
+          {
+            "packageName": "nethack",
+            "manifestSha256": "1a2f12ec2770bd8d40006d6c878a3493b97c71c2bb63ad08c7f6ad99bfd53504",
+            "cacheKey": "b5ad46acd1977b6c59e80b5d7fd7cf536010d426dc933eb39f8c26a006f9fcd8"
+          },
+          {
+            "packageName": "nethack-browser-bundle",
+            "manifestSha256": "b8294981da7ce4299dfb271d4aecb90ababa97a4d1acc9b716ae05bbe52beb53",
+            "cacheKey": "d7da126b1f8104385bab67a4a0c41d4446c1fb911cc0c6cc6c32a41a5b26544b"
           },
           {
             "packageName": "node",
@@ -1962,9 +2597,24 @@
             "cacheKey": "d6d3c160d4e6d3ef9121633057b29ad64bd5d1f02d8313421302c26837946c8c"
           },
           {
+            "packageName": "posix-utils-lite",
+            "manifestSha256": "8fd7190b2848ef80143adc7b9268c79e13cd4db3430f7105faf49a4b4407a06f",
+            "cacheKey": "1623e6649c8ec5c6bee11607954248f87f644bd38f8ec7b334dce8e0c1b73be1"
+          },
+          {
+            "packageName": "rootfs",
+            "manifestSha256": "0420201025170f48c32949ac62707d4577cdc13a53ad1f01f59d318ec07c8d6e",
+            "cacheKey": "d9e64cefed7db97dfe8c4a24a24de1cdadfa16472a021fa97be7436139cfe6af"
+          },
+          {
+            "packageName": "sed",
+            "manifestSha256": "0c0d82d53907c19825941501f833252cf9adf35ebcebf6786baae28e5eb6958b",
+            "cacheKey": "ced16abefba1a9d707be66e73c48021e251fa8a878d59d7a584017b238d9e91f"
+          },
+          {
             "packageName": "shell",
-            "manifestSha256": "9f33aafbf2a96a74c41938460bca83189c221fd9721d58d6b9e7e5902d848c65",
-            "cacheKey": "c2943277f07bea400d6c1d97c7544e573289defa3b845662f76efb4ed0c1c203"
+            "manifestSha256": "a4382fbdb71e3946f9ccd1da46edd89e3b28e119b9133e51f7eb33c486dc140a",
+            "cacheKey": "6231ff03ab676c194af0567cd3af30ec87d3654ec45e9abe31c357f32b74dd54"
           },
           {
             "packageName": "spidermonkey",
@@ -1972,9 +2622,49 @@
             "cacheKey": "300111f1ee37e15284aefe7304d3eb794125e922d850af8a2fc213cae15ea3c6"
           },
           {
+            "packageName": "tar",
+            "manifestSha256": "4502355c246362a2035e52aa7b35d274882fad4b4404c03470458baee723ae68",
+            "cacheKey": "5536051698e3dc23aa02e0c3da4338541def2c66a6ae5f48c0b201f60369af0a"
+          },
+          {
+            "packageName": "unzip",
+            "manifestSha256": "ef4e5e34258827ab3cbc1930da3fd9514f08f2d7d56c7c3e0d5c495a4d3a20e9",
+            "cacheKey": "ec17029833d8a2c141d0142d91f496566807243988274fd52df5aec05b8df68f"
+          },
+          {
+            "packageName": "vim",
+            "manifestSha256": "c211660ef41d01f95f3fbdf675b74891e897e3f304e04f1bf5586f326007382c",
+            "cacheKey": "c9383269596819f296d84fb75936ab419a192aff37a16752e1ac0c86483d9347"
+          },
+          {
+            "packageName": "vim-browser-bundle",
+            "manifestSha256": "e31d84057db49c3534381604d0c8f3c7d765e33ede560a7ea7b01a5a8f1aa0d3",
+            "cacheKey": "94c6c1f65740daf1a0fa2015cff1582ca272601b6bf5243274b58a32de8062a6"
+          },
+          {
+            "packageName": "wget",
+            "manifestSha256": "61420b6cb1be12471f425b0aebf5aec58c49d0b43d939dd54508b305accbf54e",
+            "cacheKey": "03853580b7cdb935135ce0dac409b99f647b4120d3c389a8fcff12f63a3b4c1d"
+          },
+          {
+            "packageName": "xz",
+            "manifestSha256": "8707d35b8647b1af8fa165dcb6ce7b2a6a007e19ab2daca2680c39395864a737",
+            "cacheKey": "87aa6edea9b231797f2fc70200e992ddddb3f15e419187f56ae8799d117919e9"
+          },
+          {
+            "packageName": "zip",
+            "manifestSha256": "9c9cfa8220aaeaea26736b55f7cd0a7517b8853c07f9f0d241ad67dd43592e36",
+            "cacheKey": "757b8d1396567507950327e2afb475ad6c893e7d881d783f24be1f5ceb2ca69c"
+          },
+          {
             "packageName": "zlib",
             "manifestSha256": "d4f4701c0c30dc843ebe2111ed3e2284836cdfc4bc05a130c8fab4f31b8e6357",
             "cacheKey": "22353ecda2381e5b2906a167c0c0ce0555f965bcd29cbe4d555ccb558a4e3d83"
+          },
+          {
+            "packageName": "zstd",
+            "manifestSha256": "89f266938c2c253700a838e6352c9de66c976c84883325aaa979f72b732357e4",
+            "cacheKey": "6c02283eaa4edfe47d8543db1a30b036df9388dfd9ab45951b0d1cbc60e62c73"
           }
         ]
       },
@@ -2743,19 +3433,199 @@
       ]
     },
     "shell": {
-      "manifestSha256": "9f33aafbf2a96a74c41938460bca83189c221fd9721d58d6b9e7e5902d848c65",
+      "manifestSha256": "a4382fbdb71e3946f9ccd1da46edd89e3b28e119b9133e51f7eb33c486dc140a",
       "arches": [
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "c2943277f07bea400d6c1d97c7544e573289defa3b845662f76efb4ed0c1c203"
+        "wasm32": "6231ff03ab676c194af0567cd3af30ec87d3654ec45e9abe31c357f32b74dd54"
       },
       "dependencyClosures": {
         "wasm32": [
           {
-            "packageName": "homebrew-bootstrap",
-            "manifestSha256": "c4ed5ba78c33909ac70410c86a80bb877f86fa6ac786c8f11025410a8df1fd24",
-            "cacheKey": "271b631cccb43693cccc7340c7e08548cc4210bdc5e98e3efe5b342aeb9b0029"
+            "packageName": "bash",
+            "manifestSha256": "5dc4d97dc4f154f265ff57e9d972e7d5a64a2e15fadedfa246733b830dda3497",
+            "cacheKey": "3e857f19e224c39a6945087085f977366ab521e7c102a25e3106e5d39e4b0546"
+          },
+          {
+            "packageName": "bc",
+            "manifestSha256": "a65661463bb7047b91ff00153bd99fd962c96e571934ab4e923f5215fb6ecfbd",
+            "cacheKey": "3b5614c840e7c0bbadbd17c682a273ec32fd096bf083281ea0e0a40e612b7a63"
+          },
+          {
+            "packageName": "bzip2",
+            "manifestSha256": "59e1e53f5675e7c9148634933ed0f4c7192743727025cae4e843b6924c489abf",
+            "cacheKey": "77af34fe432957e6804e98ab53d3e01a797af33f67cf8f53cf6300b72af5960e"
+          },
+          {
+            "packageName": "coreutils",
+            "manifestSha256": "72fc9c3818fb11cebaa047a623743252395dc729163fa804a7272d59f87fe82d",
+            "cacheKey": "b084e2abc668603a763554a48a68a80d025b037cf3b199e8f2b86ebfcdadec60"
+          },
+          {
+            "packageName": "curl",
+            "manifestSha256": "55523d50261f46dc4aaaff458d1cd87c6f96eaecd687a7540ead35c96906366e",
+            "cacheKey": "06b17b120c30cf0d00cb184619a88cc1968febe536b903807b9a249826cf5794"
+          },
+          {
+            "packageName": "dash",
+            "manifestSha256": "10ce1bb611fefd78a6c9ec9038f6113e29a7062b1a73e08eccf9b33004cea9a8",
+            "cacheKey": "c5340ff71e335f0a2c6aa81cba2d6656b09136c6a46810c675004bb6d0b04250"
+          },
+          {
+            "packageName": "diffutils",
+            "manifestSha256": "2286203eb762eca487939963e38ea1b901ac2dc9a830d3260c2fb291757df208",
+            "cacheKey": "6b8a2ba832fdf0504de1b5243555fed4f87b505a99d445bbd2530c78c878f205"
+          },
+          {
+            "packageName": "fbdoom",
+            "manifestSha256": "7ff2127ca940e41be90ba45204c89089a7a2093567b9bff581a9549b57138626",
+            "cacheKey": "21136e03e41c51a2dcf96141159ac59caf4af380168289174dac01b20474403f"
+          },
+          {
+            "packageName": "file",
+            "manifestSha256": "7874c1affcbbf2c8ab8c8d4beb087f275af57b5caae6a8947bf5a63a181552b2",
+            "cacheKey": "20b14c66fd881e5b893e9beae6c5864c591db743f326e9cdf9db4f2c2b81436f"
+          },
+          {
+            "packageName": "findutils",
+            "manifestSha256": "a9969cb102403cef105e758ef602692500fddd75ec96e4e3f168c50094b6c931",
+            "cacheKey": "4339b708370cb2b07ee38f9f72c6c3a0e12afd768468c31093895c25a9c3df02"
+          },
+          {
+            "packageName": "gawk",
+            "manifestSha256": "b788f3de724cd363ea68d08826586ddf544a75fb5dd9df1369ffafe06d8681b7",
+            "cacheKey": "f6a11f5e62a72a7b02424def140dae54ec5d4a05b23ed35839589aab063ea4cb"
+          },
+          {
+            "packageName": "git",
+            "manifestSha256": "c2bc79e62c9a4e840ae94a16af0f41070460eaf3976a990dc60d2db977bee952",
+            "cacheKey": "cc5b90e512f95d7a4d0aff9013214decd4f970be2984b4e2ee50027a18d0f40c"
+          },
+          {
+            "packageName": "grep",
+            "manifestSha256": "7c61b894807b831c7e8816cb1f39c78e3a69a4ced2fa3d18f0abdf00bf18334b",
+            "cacheKey": "133244e8e3a77ecb4cf833d447dc6dce4030b5428e04a492252d842085e589cc"
+          },
+          {
+            "packageName": "gzip",
+            "manifestSha256": "1485add843bbcd744244e707c353208fe11192b7b248feed1550875d3b75a917",
+            "cacheKey": "4dbdb1a9ae0931adea537c67241fae597809f5ed0a508514179be6d98e30e5e9"
+          },
+          {
+            "packageName": "less",
+            "manifestSha256": "996d61545cfe83dcb663a33e8763e0edbd4db4a605fd69a91b243cf79b1f9b17",
+            "cacheKey": "28c60d3865f6f75fbd4e91a1b1229b45a45e7215afa56ce6e8277bb4d394022f"
+          },
+          {
+            "packageName": "lsof",
+            "manifestSha256": "cfd199bbe082435f7a2e703e2738a368af1eeb5b76b6e93c376054f21ce94419",
+            "cacheKey": "8928664a82cf6f58e09a793237b66946ace026765f7f0be4d1e2c367c4e2e839"
+          },
+          {
+            "packageName": "m4",
+            "manifestSha256": "9b5838bdde8531079f23a89e135aa3832bbbbb7ad6099dd1503db877d52afcad",
+            "cacheKey": "a1f76618807d370954e7674a3a6efb772ef1bc14760b5dd167b4127d016ef8eb"
+          },
+          {
+            "packageName": "make",
+            "manifestSha256": "62e8b36a6df7e981d191061a5bb7f2db85b2deaf365352a7d590a6c6c06f2b1e",
+            "cacheKey": "9696a5372ca2ea20a79c1059c22afff0517d6be321f68ce1e02ebe803e323240"
+          },
+          {
+            "packageName": "modeset",
+            "manifestSha256": "36a8683c1c7309701d361c5f77e543a6c1531397b26c72dbb864528c59c42954",
+            "cacheKey": "1fe0c41eb53186643364cfce017461d320d49f5e9ad315bcbd9d70609d82b061"
+          },
+          {
+            "packageName": "nano",
+            "manifestSha256": "c5a52f0c37e08b475bb815367b1f0d63d0d2b06649d99fe9f461b72d0b9cff51",
+            "cacheKey": "ff225167c1b6735ee8396aca121ea1c6e0d4eae57ef82306d4ab9123f2b9121b"
+          },
+          {
+            "packageName": "ncurses",
+            "manifestSha256": "30d07b8914e93d0e38c48770aed2ac2938f6076b03e9d7f65dea597b04efd908",
+            "cacheKey": "d5968c9802fe3cf84c551925a530c1f1274e5ccdeb930daa26ca79d6ff08c611"
+          },
+          {
+            "packageName": "netcat",
+            "manifestSha256": "4cf33cd1ab768b3ad0108da8b68c2ff72e98469cd86a0bf2d0da54a7d4f6fa16",
+            "cacheKey": "7cde175799a4dbd3543b207864c12eedac7402eb7d34fb33bbb19616d9a3148b"
+          },
+          {
+            "packageName": "nethack",
+            "manifestSha256": "1a2f12ec2770bd8d40006d6c878a3493b97c71c2bb63ad08c7f6ad99bfd53504",
+            "cacheKey": "b5ad46acd1977b6c59e80b5d7fd7cf536010d426dc933eb39f8c26a006f9fcd8"
+          },
+          {
+            "packageName": "nethack-browser-bundle",
+            "manifestSha256": "b8294981da7ce4299dfb271d4aecb90ababa97a4d1acc9b716ae05bbe52beb53",
+            "cacheKey": "d7da126b1f8104385bab67a4a0c41d4446c1fb911cc0c6cc6c32a41a5b26544b"
+          },
+          {
+            "packageName": "openssl",
+            "manifestSha256": "374f5dce6b2691b630b55cb82955b33d2305384e4bd64746c581621bb0793993",
+            "cacheKey": "d6d3c160d4e6d3ef9121633057b29ad64bd5d1f02d8313421302c26837946c8c"
+          },
+          {
+            "packageName": "posix-utils-lite",
+            "manifestSha256": "8fd7190b2848ef80143adc7b9268c79e13cd4db3430f7105faf49a4b4407a06f",
+            "cacheKey": "1623e6649c8ec5c6bee11607954248f87f644bd38f8ec7b334dce8e0c1b73be1"
+          },
+          {
+            "packageName": "rootfs",
+            "manifestSha256": "0420201025170f48c32949ac62707d4577cdc13a53ad1f01f59d318ec07c8d6e",
+            "cacheKey": "d9e64cefed7db97dfe8c4a24a24de1cdadfa16472a021fa97be7436139cfe6af"
+          },
+          {
+            "packageName": "sed",
+            "manifestSha256": "0c0d82d53907c19825941501f833252cf9adf35ebcebf6786baae28e5eb6958b",
+            "cacheKey": "ced16abefba1a9d707be66e73c48021e251fa8a878d59d7a584017b238d9e91f"
+          },
+          {
+            "packageName": "tar",
+            "manifestSha256": "4502355c246362a2035e52aa7b35d274882fad4b4404c03470458baee723ae68",
+            "cacheKey": "5536051698e3dc23aa02e0c3da4338541def2c66a6ae5f48c0b201f60369af0a"
+          },
+          {
+            "packageName": "unzip",
+            "manifestSha256": "ef4e5e34258827ab3cbc1930da3fd9514f08f2d7d56c7c3e0d5c495a4d3a20e9",
+            "cacheKey": "ec17029833d8a2c141d0142d91f496566807243988274fd52df5aec05b8df68f"
+          },
+          {
+            "packageName": "vim",
+            "manifestSha256": "c211660ef41d01f95f3fbdf675b74891e897e3f304e04f1bf5586f326007382c",
+            "cacheKey": "c9383269596819f296d84fb75936ab419a192aff37a16752e1ac0c86483d9347"
+          },
+          {
+            "packageName": "vim-browser-bundle",
+            "manifestSha256": "e31d84057db49c3534381604d0c8f3c7d765e33ede560a7ea7b01a5a8f1aa0d3",
+            "cacheKey": "94c6c1f65740daf1a0fa2015cff1582ca272601b6bf5243274b58a32de8062a6"
+          },
+          {
+            "packageName": "wget",
+            "manifestSha256": "61420b6cb1be12471f425b0aebf5aec58c49d0b43d939dd54508b305accbf54e",
+            "cacheKey": "03853580b7cdb935135ce0dac409b99f647b4120d3c389a8fcff12f63a3b4c1d"
+          },
+          {
+            "packageName": "xz",
+            "manifestSha256": "8707d35b8647b1af8fa165dcb6ce7b2a6a007e19ab2daca2680c39395864a737",
+            "cacheKey": "87aa6edea9b231797f2fc70200e992ddddb3f15e419187f56ae8799d117919e9"
+          },
+          {
+            "packageName": "zip",
+            "manifestSha256": "9c9cfa8220aaeaea26736b55f7cd0a7517b8853c07f9f0d241ad67dd43592e36",
+            "cacheKey": "757b8d1396567507950327e2afb475ad6c893e7d881d783f24be1f5ceb2ca69c"
+          },
+          {
+            "packageName": "zlib",
+            "manifestSha256": "d4f4701c0c30dc843ebe2111ed3e2284836cdfc4bc05a130c8fab4f31b8e6357",
+            "cacheKey": "22353ecda2381e5b2906a167c0c0ce0555f965bcd29cbe4d555ccb558a4e3d83"
+          },
+          {
+            "packageName": "zstd",
+            "manifestSha256": "89f266938c2c253700a838e6352c9de66c976c84883325aaa979f72b732357e4",
+            "cacheKey": "6c02283eaa4edfe47d8543db1a30b036df9388dfd9ab45951b0d1cbc60e62c73"
           }
         ]
       },
@@ -3046,24 +3916,94 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "e97e12283c5b9c258a51f876f0204a4c7e9487869ff9a354a18a50671a2e267c"
+        "wasm32": "ccde5cc082cd71410dc9bb6700d2f49a7e95cd51e049f1cf2d91033e62b81e3e"
       },
       "dependencyClosures": {
         "wasm32": [
+          {
+            "packageName": "bash",
+            "manifestSha256": "5dc4d97dc4f154f265ff57e9d972e7d5a64a2e15fadedfa246733b830dda3497",
+            "cacheKey": "3e857f19e224c39a6945087085f977366ab521e7c102a25e3106e5d39e4b0546"
+          },
+          {
+            "packageName": "bc",
+            "manifestSha256": "a65661463bb7047b91ff00153bd99fd962c96e571934ab4e923f5215fb6ecfbd",
+            "cacheKey": "3b5614c840e7c0bbadbd17c682a273ec32fd096bf083281ea0e0a40e612b7a63"
+          },
+          {
+            "packageName": "bzip2",
+            "manifestSha256": "59e1e53f5675e7c9148634933ed0f4c7192743727025cae4e843b6924c489abf",
+            "cacheKey": "77af34fe432957e6804e98ab53d3e01a797af33f67cf8f53cf6300b72af5960e"
+          },
+          {
+            "packageName": "coreutils",
+            "manifestSha256": "72fc9c3818fb11cebaa047a623743252395dc729163fa804a7272d59f87fe82d",
+            "cacheKey": "b084e2abc668603a763554a48a68a80d025b037cf3b199e8f2b86ebfcdadec60"
+          },
+          {
+            "packageName": "curl",
+            "manifestSha256": "55523d50261f46dc4aaaff458d1cd87c6f96eaecd687a7540ead35c96906366e",
+            "cacheKey": "06b17b120c30cf0d00cb184619a88cc1968febe536b903807b9a249826cf5794"
+          },
+          {
+            "packageName": "dash",
+            "manifestSha256": "10ce1bb611fefd78a6c9ec9038f6113e29a7062b1a73e08eccf9b33004cea9a8",
+            "cacheKey": "c5340ff71e335f0a2c6aa81cba2d6656b09136c6a46810c675004bb6d0b04250"
+          },
+          {
+            "packageName": "diffutils",
+            "manifestSha256": "2286203eb762eca487939963e38ea1b901ac2dc9a830d3260c2fb291757df208",
+            "cacheKey": "6b8a2ba832fdf0504de1b5243555fed4f87b505a99d445bbd2530c78c878f205"
+          },
           {
             "packageName": "dinit",
             "manifestSha256": "44e125e1337503e27f8cff531cdbd79c4f406fd2d282b916a7746cf3a14057bf",
             "cacheKey": "0f08a3b20a86e554e235e4a2d430134c1e82e6a03305d5a66a77cbb95a18013d"
           },
           {
-            "packageName": "homebrew-bootstrap",
-            "manifestSha256": "c4ed5ba78c33909ac70410c86a80bb877f86fa6ac786c8f11025410a8df1fd24",
-            "cacheKey": "271b631cccb43693cccc7340c7e08548cc4210bdc5e98e3efe5b342aeb9b0029"
+            "packageName": "fbdoom",
+            "manifestSha256": "7ff2127ca940e41be90ba45204c89089a7a2093567b9bff581a9549b57138626",
+            "cacheKey": "21136e03e41c51a2dcf96141159ac59caf4af380168289174dac01b20474403f"
+          },
+          {
+            "packageName": "file",
+            "manifestSha256": "7874c1affcbbf2c8ab8c8d4beb087f275af57b5caae6a8947bf5a63a181552b2",
+            "cacheKey": "20b14c66fd881e5b893e9beae6c5864c591db743f326e9cdf9db4f2c2b81436f"
+          },
+          {
+            "packageName": "findutils",
+            "manifestSha256": "a9969cb102403cef105e758ef602692500fddd75ec96e4e3f168c50094b6c931",
+            "cacheKey": "4339b708370cb2b07ee38f9f72c6c3a0e12afd768468c31093895c25a9c3df02"
+          },
+          {
+            "packageName": "gawk",
+            "manifestSha256": "b788f3de724cd363ea68d08826586ddf544a75fb5dd9df1369ffafe06d8681b7",
+            "cacheKey": "f6a11f5e62a72a7b02424def140dae54ec5d4a05b23ed35839589aab063ea4cb"
+          },
+          {
+            "packageName": "git",
+            "manifestSha256": "c2bc79e62c9a4e840ae94a16af0f41070460eaf3976a990dc60d2db977bee952",
+            "cacheKey": "cc5b90e512f95d7a4d0aff9013214decd4f970be2984b4e2ee50027a18d0f40c"
+          },
+          {
+            "packageName": "grep",
+            "manifestSha256": "7c61b894807b831c7e8816cb1f39c78e3a69a4ced2fa3d18f0abdf00bf18334b",
+            "cacheKey": "133244e8e3a77ecb4cf833d447dc6dce4030b5428e04a492252d842085e589cc"
+          },
+          {
+            "packageName": "gzip",
+            "manifestSha256": "1485add843bbcd744244e707c353208fe11192b7b248feed1550875d3b75a917",
+            "cacheKey": "4dbdb1a9ae0931adea537c67241fae597809f5ed0a508514179be6d98e30e5e9"
           },
           {
             "packageName": "icu",
             "manifestSha256": "f5b1f02d169ec1108fc32d9da55be53c3efb96e3a7aeba6a03aec62e0175f0dc",
             "cacheKey": "3b2f817955b9048e8e4986314174a5854280b4745ae79baafce5cbcb143fe257"
+          },
+          {
+            "packageName": "less",
+            "manifestSha256": "996d61545cfe83dcb663a33e8763e0edbd4db4a605fd69a91b243cf79b1f9b17",
+            "cacheKey": "28c60d3865f6f75fbd4e91a1b1229b45a45e7215afa56ce6e8277bb4d394022f"
           },
           {
             "packageName": "libcurl",
@@ -3091,9 +4031,54 @@
             "cacheKey": "c89cf63e8347c3f7b8d43315bd05a958a966f177962289d18b918e999f18cf88"
           },
           {
+            "packageName": "lsof",
+            "manifestSha256": "cfd199bbe082435f7a2e703e2738a368af1eeb5b76b6e93c376054f21ce94419",
+            "cacheKey": "8928664a82cf6f58e09a793237b66946ace026765f7f0be4d1e2c367c4e2e839"
+          },
+          {
+            "packageName": "m4",
+            "manifestSha256": "9b5838bdde8531079f23a89e135aa3832bbbbb7ad6099dd1503db877d52afcad",
+            "cacheKey": "a1f76618807d370954e7674a3a6efb772ef1bc14760b5dd167b4127d016ef8eb"
+          },
+          {
+            "packageName": "make",
+            "manifestSha256": "62e8b36a6df7e981d191061a5bb7f2db85b2deaf365352a7d590a6c6c06f2b1e",
+            "cacheKey": "9696a5372ca2ea20a79c1059c22afff0517d6be321f68ce1e02ebe803e323240"
+          },
+          {
+            "packageName": "modeset",
+            "manifestSha256": "36a8683c1c7309701d361c5f77e543a6c1531397b26c72dbb864528c59c42954",
+            "cacheKey": "1fe0c41eb53186643364cfce017461d320d49f5e9ad315bcbd9d70609d82b061"
+          },
+          {
             "packageName": "msmtpd",
             "manifestSha256": "686ff665b5e7907e67618790b1a3eddce2ff47ed665595d17209bdcda1e0b274",
             "cacheKey": "21a586d6c325b8e28b878b7a1055e03adcba28b9188d7fdcb0e8433c6513fea2"
+          },
+          {
+            "packageName": "nano",
+            "manifestSha256": "c5a52f0c37e08b475bb815367b1f0d63d0d2b06649d99fe9f461b72d0b9cff51",
+            "cacheKey": "ff225167c1b6735ee8396aca121ea1c6e0d4eae57ef82306d4ab9123f2b9121b"
+          },
+          {
+            "packageName": "ncurses",
+            "manifestSha256": "30d07b8914e93d0e38c48770aed2ac2938f6076b03e9d7f65dea597b04efd908",
+            "cacheKey": "d5968c9802fe3cf84c551925a530c1f1274e5ccdeb930daa26ca79d6ff08c611"
+          },
+          {
+            "packageName": "netcat",
+            "manifestSha256": "4cf33cd1ab768b3ad0108da8b68c2ff72e98469cd86a0bf2d0da54a7d4f6fa16",
+            "cacheKey": "7cde175799a4dbd3543b207864c12eedac7402eb7d34fb33bbb19616d9a3148b"
+          },
+          {
+            "packageName": "nethack",
+            "manifestSha256": "1a2f12ec2770bd8d40006d6c878a3493b97c71c2bb63ad08c7f6ad99bfd53504",
+            "cacheKey": "b5ad46acd1977b6c59e80b5d7fd7cf536010d426dc933eb39f8c26a006f9fcd8"
+          },
+          {
+            "packageName": "nethack-browser-bundle",
+            "manifestSha256": "b8294981da7ce4299dfb271d4aecb90ababa97a4d1acc9b716ae05bbe52beb53",
+            "cacheKey": "d7da126b1f8104385bab67a4a0c41d4446c1fb911cc0c6cc6c32a41a5b26544b"
           },
           {
             "packageName": "nginx",
@@ -3111,9 +4096,24 @@
             "cacheKey": "22bac4b39197a08afdf997f1d374964e7db28152deddafa73e15caf16c0d9915"
           },
           {
+            "packageName": "posix-utils-lite",
+            "manifestSha256": "8fd7190b2848ef80143adc7b9268c79e13cd4db3430f7105faf49a4b4407a06f",
+            "cacheKey": "1623e6649c8ec5c6bee11607954248f87f644bd38f8ec7b334dce8e0c1b73be1"
+          },
+          {
+            "packageName": "rootfs",
+            "manifestSha256": "0420201025170f48c32949ac62707d4577cdc13a53ad1f01f59d318ec07c8d6e",
+            "cacheKey": "d9e64cefed7db97dfe8c4a24a24de1cdadfa16472a021fa97be7436139cfe6af"
+          },
+          {
+            "packageName": "sed",
+            "manifestSha256": "0c0d82d53907c19825941501f833252cf9adf35ebcebf6786baae28e5eb6958b",
+            "cacheKey": "ced16abefba1a9d707be66e73c48021e251fa8a878d59d7a584017b238d9e91f"
+          },
+          {
             "packageName": "shell",
-            "manifestSha256": "9f33aafbf2a96a74c41938460bca83189c221fd9721d58d6b9e7e5902d848c65",
-            "cacheKey": "c2943277f07bea400d6c1d97c7544e573289defa3b845662f76efb4ed0c1c203"
+            "manifestSha256": "a4382fbdb71e3946f9ccd1da46edd89e3b28e119b9133e51f7eb33c486dc140a",
+            "cacheKey": "6231ff03ab676c194af0567cd3af30ec87d3654ec45e9abe31c357f32b74dd54"
           },
           {
             "packageName": "sqlite",
@@ -3121,9 +4121,49 @@
             "cacheKey": "cc4895f244bb5589e79da0ef2111869b5a67a60426a62dbf788c1ef086e505ec"
           },
           {
+            "packageName": "tar",
+            "manifestSha256": "4502355c246362a2035e52aa7b35d274882fad4b4404c03470458baee723ae68",
+            "cacheKey": "5536051698e3dc23aa02e0c3da4338541def2c66a6ae5f48c0b201f60369af0a"
+          },
+          {
+            "packageName": "unzip",
+            "manifestSha256": "ef4e5e34258827ab3cbc1930da3fd9514f08f2d7d56c7c3e0d5c495a4d3a20e9",
+            "cacheKey": "ec17029833d8a2c141d0142d91f496566807243988274fd52df5aec05b8df68f"
+          },
+          {
+            "packageName": "vim",
+            "manifestSha256": "c211660ef41d01f95f3fbdf675b74891e897e3f304e04f1bf5586f326007382c",
+            "cacheKey": "c9383269596819f296d84fb75936ab419a192aff37a16752e1ac0c86483d9347"
+          },
+          {
+            "packageName": "vim-browser-bundle",
+            "manifestSha256": "e31d84057db49c3534381604d0c8f3c7d765e33ede560a7ea7b01a5a8f1aa0d3",
+            "cacheKey": "94c6c1f65740daf1a0fa2015cff1582ca272601b6bf5243274b58a32de8062a6"
+          },
+          {
+            "packageName": "wget",
+            "manifestSha256": "61420b6cb1be12471f425b0aebf5aec58c49d0b43d939dd54508b305accbf54e",
+            "cacheKey": "03853580b7cdb935135ce0dac409b99f647b4120d3c389a8fcff12f63a3b4c1d"
+          },
+          {
+            "packageName": "xz",
+            "manifestSha256": "8707d35b8647b1af8fa165dcb6ce7b2a6a007e19ab2daca2680c39395864a737",
+            "cacheKey": "87aa6edea9b231797f2fc70200e992ddddb3f15e419187f56ae8799d117919e9"
+          },
+          {
+            "packageName": "zip",
+            "manifestSha256": "9c9cfa8220aaeaea26736b55f7cd0a7517b8853c07f9f0d241ad67dd43592e36",
+            "cacheKey": "757b8d1396567507950327e2afb475ad6c893e7d881d783f24be1f5ceb2ca69c"
+          },
+          {
             "packageName": "zlib",
             "manifestSha256": "d4f4701c0c30dc843ebe2111ed3e2284836cdfc4bc05a130c8fab4f31b8e6357",
             "cacheKey": "22353ecda2381e5b2906a167c0c0ce0555f965bcd29cbe4d555ccb558a4e3d83"
+          },
+          {
+            "packageName": "zstd",
+            "manifestSha256": "89f266938c2c253700a838e6352c9de66c976c84883325aaa979f72b732357e4",
+            "cacheKey": "6c02283eaa4edfe47d8543db1a30b036df9388dfd9ab45951b0d1cbc60e62c73"
           }
         ]
       },

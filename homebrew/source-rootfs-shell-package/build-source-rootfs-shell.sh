@@ -144,6 +144,7 @@ PATH="$DECLARED_TOOL_PATH" "$NODE_BIN" "$TSX_CLI" "$COMPOSER" \
     --shell-config "$SHELL_CONFIG" \
     --demo-config "$DEMO_CONFIG" \
     --demo-profile-overlay "$DEMO_PROFILE_OVERLAY" \
+    --dependency-contract "$DEPENDENCY_CONTRACT" \
     --out "$VFS"
 
 require_regular_file "composed shell VFS" "$VFS"

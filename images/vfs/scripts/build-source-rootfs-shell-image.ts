@@ -1,8 +1,6 @@
 /**
- * Compose the temporary ABI-activation shell from resolver-owned source
- * package outputs. This bridge is deliberately independent of Homebrew
- * publication: final bottle artifacts are rebuilt only after their producer
- * code is the exact default-branch main checkout.
+ * Compose the canonical browser shell from resolver-owned source package
+ * outputs. The preserved Homebrew bridge keeps independent authority files.
  */
 import { lstatSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
@@ -30,9 +28,7 @@ import {
   sourceDateEpochMilliseconds,
   writeVfsBinary,
 } from "./vfs-image-helpers";
-import {
-  SHELL_LAZY_BINARY_SPECS,
-} from "../lib/init/shell-binaries";
+import { SHELL_LAZY_BINARY_SPECS } from "../lib/init/shell-binaries";
 import {
   SHELL_LAZY_ARCHIVE_SPECS,
   type ShellLazyArchiveResolver,
@@ -77,13 +73,14 @@ interface SourceRootfsShellDependencyContract {
   }>;
 }
 
-function readSourceRootfsShellResolverDependencies(): string[] {
-  const path = fileURLToPath(
+function readSourceRootfsShellResolverDependencies(
+  path = fileURLToPath(
     new URL(
-      "../../../homebrew/source-rootfs-shell-dependencies.json",
+      "../../../packages/registry/shell/source-rootfs-shell-dependencies.json",
       import.meta.url,
     ),
-  );
+  ),
+): string[] {
   const value: unknown = JSON.parse(readFileSync(path, "utf8"));
   if (
     typeof value !== "object" ||
@@ -212,10 +209,7 @@ export function composeSourceRootfsDemoConfig(
       // assertion. Accept only an exact structural match so the overlay can
       // neither override nor silently drift from the shared product contract.
       if (
-        !isDeepStrictEqual(
-          baseProfiles[profileId],
-          overlayProfiles[profileId],
-        )
+        !isDeepStrictEqual(baseProfiles[profileId], overlayProfiles[profileId])
       ) {
         throw new Error(
           `source-rootfs demo profile overlay drifts from base profile ${profileId}`,
@@ -370,8 +364,12 @@ function requirePreservedLazyState(
   label: string,
 ): void {
   const actual = lazyRecords(fs);
-  const actualFiles = new Set(actual.files.map((entry) => JSON.stringify(entry)));
-  const actualTrees = new Set(actual.trees.map((entry) => JSON.stringify(entry)));
+  const actualFiles = new Set(
+    actual.files.map((entry) => JSON.stringify(entry)),
+  );
+  const actualTrees = new Set(
+    actual.trees.map((entry) => JSON.stringify(entry)),
+  );
   for (const entry of expected.files) {
     if (!actualFiles.has(JSON.stringify(entry))) {
       throw new Error(`${label} changed a rootfs lazy file identity`);
@@ -426,12 +424,12 @@ function dependencyEnvKey(name: string): string {
 
 function strictResolverFromDependencyEnvironment(
   env: NodeJS.ProcessEnv,
+  declaredDependencies = SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCY_SET,
 ): ShellLazyArchiveResolver {
   return (resolverPath, requestedDependency) => {
-    const dependency = requestedDependency === "git-remote-http"
-      ? "git"
-      : requestedDependency;
-    if (!SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCY_SET.has(dependency)) {
+    const dependency =
+      requestedDependency === "git-remote-http" ? "git" : requestedDependency;
+    if (!declaredDependencies.has(dependency)) {
       throw new Error(
         `source-rootfs shell requested undeclared dependency ${dependency}`,
       );
@@ -443,7 +441,9 @@ function strictResolverFromDependencyEnvironment(
     }
     const rootStat = lstatSync(root);
     if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
-      throw new Error(`${key} must be a real resolver-owned directory: ${root}`);
+      throw new Error(
+        `${key} must be a real resolver-owned directory: ${root}`,
+      );
     }
     const artifact = join(root, basename(resolverPath));
     readRegularInput(artifact, `${dependency} dependency output`);
@@ -512,7 +512,9 @@ function requireLazyBashIdentity(
     const fileType = linkStat.mode & FILE_TYPE_MASK;
     if (fileType === REGULAR_FILE_MODE) {
       if (!hardlinkPaths.includes(alias)) {
-        throw new Error(`${alias} is absent from the lazy Bash hardlink ledger`);
+        throw new Error(
+          `${alias} is absent from the lazy Bash hardlink ledger`,
+        );
       }
       aliases.push({ path: alias, kind: "hardlink" });
     } else if (fileType === SYMBOLIC_LINK_MODE) {
@@ -561,10 +563,7 @@ function requireMaterializedBashIdentity(
     if ((linkStat.mode & FILE_TYPE_MASK) !== expectedType) {
       throw new Error(`${alias.path} changed Bash alias type`);
     }
-    if (
-      alias.kind === "symlink" &&
-      fs.readlink(alias.path) !== alias.target
-    ) {
+    if (alias.kind === "symlink" && fs.readlink(alias.path) !== alias.target) {
       throw new Error(`${alias.path} changed Bash symlink target`);
     }
     const stat = fs.stat(alias.path);
@@ -572,7 +571,9 @@ function requireMaterializedBashIdentity(
       throw new Error(`${alias.path} does not resolve to materialized Bash`);
     }
     if (!bytesEqual(readVfsBytes(fs, alias.path), expectedBytes)) {
-      throw new Error(`${alias.path} differs from the resolved Bash dependency`);
+      throw new Error(
+        `${alias.path} differs from the resolved Bash dependency`,
+      );
     }
   }
 }
@@ -623,11 +624,7 @@ export async function buildSourceRootfsShellImage(
   // hard-link ledger and the rootfs's symlink topology.
   writeVfsBinary(fs, shell.config.path, bash, 0o755);
   requireMaterializedBashIdentity(fs, sourceBash, bash);
-  requirePreservedLazyState(
-    unrelatedLazyBefore,
-    fs,
-    "Bash materialization",
-  );
+  requirePreservedLazyState(unrelatedLazyBefore, fs, "Bash materialization");
 
   // WHY: the temporary source bridge must remain the same product shell, not
   // a smaller test-only image. Reuse the shared overlay contract and supply a
@@ -711,6 +708,7 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     "--shell-config",
     "--demo-config",
     "--demo-profile-overlay",
+    "--dependency-contract",
     "--out",
   ]);
   for (let index = 0; index < argv.length; index += 2) {
@@ -728,6 +726,7 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
           "--rootfs <rootfs.vfs> --bash <bash.wasm> --fbdoom <fbdoom.wasm> " +
           "--modeset <modeset.wasm> --shell-config <shell.json> " +
           "--demo-config <demo.json> --demo-profile-overlay <profiles.json> " +
+          "--dependency-contract <dependencies.json> " +
           "--out <shell.vfs.zst>",
       );
     }
@@ -745,7 +744,14 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     demoConfigPath: values.get("--demo-config")!,
     demoProfileOverlayPath: values.get("--demo-profile-overlay")!,
     outFile: values.get("--out")!,
-    resolveArtifact: strictResolverFromDependencyEnvironment(process.env),
+    resolveArtifact: strictResolverFromDependencyEnvironment(
+      process.env,
+      new Set(
+        readSourceRootfsShellResolverDependencies(
+          values.get("--dependency-contract")!,
+        ),
+      ),
+    ),
   };
 }
 

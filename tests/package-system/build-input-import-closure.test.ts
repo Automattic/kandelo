@@ -43,28 +43,29 @@ describe("package build input import closure", () => {
 
     expect(packagesAffectedBy("host/src/vfs/memory-fs.ts")).toEqual(packages);
 
+    expect(
+      packagesAffectedBy("host/src/homebrew-bottle-relocation.ts"),
+    ).toEqual(packages);
     for (const changedPath of [
-      "host/src/homebrew-bottle-relocation.ts",
       "host/src/homebrew-guest-layout.ts",
       "homebrew/kandelo-guest-layout.json",
     ]) {
-      expect(packagesAffectedBy(changedPath)).toEqual(packages);
+      expect(packagesAffectedBy(changedPath)).toEqual(
+        packages.filter((packageName) => packageName !== "shell"),
+      );
     }
 
     for (const changedPath of [
       "host/src/homebrew-runtime-layer-policy.ts",
       "host/src/homebrew-lazy-layer-descriptor.ts",
     ]) {
-      // The canonical shell is bottle-backed and must invalidate when its
-      // runtime-layer inputs change. The temporary source-rootfs bridge is a
-      // separate non-published package inspected by its focused contract.
-      expect(packagesAffectedBy(changedPath)).toContain("shell");
+      expect(packagesAffectedBy(changedPath)).not.toContain("shell");
     }
     expect(
       packagesAffectedBy(
         "images/vfs/scripts/build-source-rootfs-shell-image.ts",
       ),
-    ).not.toContain("shell");
+    ).toContain("shell");
     expect(packagesAffectedBy("host/src/vfs/tar.ts")).toContain("shell");
   });
 
@@ -160,9 +161,7 @@ describe("package build input import closure", () => {
     expect(localRunScript).toContain(
       'scripts/resolve-binary.sh" programs/wordpress.vfs.zst',
     );
-    expect(localRunScript).toContain(
-      'bash "$REPO_ROOT/run.sh" build wp-vfs',
-    );
+    expect(localRunScript).toContain('bash "$REPO_ROOT/run.sh" build wp-vfs');
   });
 
   for (const packageName of packages) {

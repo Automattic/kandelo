@@ -123,7 +123,27 @@ non-doc paths should also run the non-package test gate as a fail-safe,
 but should not trigger the package matrix unless they are package
 archive inputs.
 
-### Current ABI-42 shell publication (2026-08-13)
+### Package-backed main shell (ABI 43)
+
+The canonical browser shell is `packages/registry/shell`. Revision 27
+composes the `rootfs`, `bash`, `fbdoom`, and `modeset` package outputs with
+declared lazy utility and application-bundle dependencies. The role-specific
+contract in `source-rootfs-shell-dependencies.json` must exactly match the
+locked `depends_on` entries in `package.toml`.
+
+The recipe receives every artifact through a resolver-owned
+`WASM_POSIX_DEP_<NAME>_DIR`. It performs no package lookup, network access,
+binary fallback, or Homebrew bottle selection. It preserves the imported
+rootfs capacity and unrelated lazy identities, materializes Bash at the
+image-owned default-shell paths, and adds the remaining declared outputs
+through the shared strict resolver.
+
+Shell revision 27 is pending publication. Until an archive from this recipe
+is admitted, a fetched canonical shell does not demonstrate this source-build
+path. The Homebrew flat-lazy shell described below remains historical release
+and compatibility context; it is not an input to revision 27.
+
+### Historical ABI-42 shell publication (2026-08-13)
 
 The package registry now owns the browser shell product. The checked-in
 `homebrew/main-shell-flat-selection.json` selects the exact admitted wasm32
@@ -442,13 +462,11 @@ The standalone `wasm-posix-host` package ships the same projection under
 `wasm/`, so installed consumers retain closure and fork policy without carrying
 source manifests.
 
-The shell package declares
-`scripts/homebrew-prefix-campaign-executor.py` as a build input. Changing that
-executor therefore requires regenerating the committed program index: shell's
-contextual cache key changes, as do the keys of programs whose dependency
-closure includes shell. This identity propagation is required even when the
-executor change affects only Homebrew campaign control and does not alter
-already-published bottle bytes.
+The shell package declares its package manifest, role-specific dependency
+contract, source-rootfs composer, and imported host modules as build inputs.
+Changing any of those inputs requires regenerating the committed program
+index: shell's contextual cache key changes, as do the keys of programs whose
+dependency closure includes shell.
 
 `scripts/resolve-binary.sh` runs a checked-in standalone Node bundle generated
 from the same TypeScript resolver, so clean checkouts do not need
@@ -822,14 +840,15 @@ every declared tree has an exact admitted ABI/digest/size identity, all
 support bytes come from that declaration, and the independent-tap Formula is
 installed live rather than smuggled into the image.
 
-The current shell resolves the `homebrew-bootstrap` registry package as its
-one direct dependency. `homebrew/homebrew-bootstrap-source-lock.json` binds
-that package's prepared source, deterministic ZIP, environment policy, and
-exact output bytes. The separate tap-native support-data Formula and
+The historical flat-lazy shell resolved the `homebrew-bootstrap` registry
+package as its one direct dependency.
+`homebrew/homebrew-bootstrap-source-lock.json` binds that package's prepared
+source, deterministic ZIP, environment policy, and exact output bytes. The
+separate tap-native support-data Formula and
 `Kandelo/recipes/homebrew-bootstrap/source-lock.json` retain their own bottle
 and historical lifecycle-input authority; those coordinates must not be
-substituted for the package dependency selected by the current shell build.
-Ordinary browser preparation resolves that same canonical package and
+substituted for the package dependency selected by that historical shell
+build. The historical browser preparation path resolves that same package and
 atomically stages its exact `homebrew-bootstrap.zip` output at the stable
 same-origin browser URL. A stale regular destination is replaced atomically;
 missing, symlinked, or non-regular package input fails without publishing
