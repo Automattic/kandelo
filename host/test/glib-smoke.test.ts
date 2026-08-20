@@ -10,7 +10,6 @@
  */
 import { describe, expect, it } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
-import { NodePlatformIO } from "../src/platform/node";
 import { tryResolveBinary } from "../src/binary-resolver";
 
 const wasmBinary = tryResolveBinary("programs/glib_smoke_test.wasm");
@@ -23,7 +22,6 @@ describe("glib port — mainloop, gobject signals, gspawn", () => {
         programPath: wasmBinary!,
         argv: ["glib_smoke_test"],
         env: [],
-        io: new NodePlatformIO(),
         timeout: 60_000,
         execPrograms: new Map([["/bin/glib_smoke_test", wasmBinary!]]),
       });
