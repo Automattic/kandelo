@@ -172,6 +172,10 @@ describe("checkpoint validation", () => {
       }, /continuation root is unusable/);
 
       await refusal((checkpoint) => {
+        (checkpoint as { monotonicNs: number }).monotonicNs = -1;
+      }, /captured monotonic clock -1 is unusable/);
+
+      await refusal((checkpoint) => {
         (checkpoint as { framebuffers: unknown[] }).framebuffers = [
           { pid: 424242, addr: 0, len: 0, w: 8, h: 8, stride: 32,
             fmt: "BGRA32", hostBuffer: new Uint8Array(256) },
@@ -621,6 +625,7 @@ describe("checkpoint validation", () => {
         await expect
           .poll(() => receiverOut.includes("ALARM OK"), { timeout: 30_000 })
           .toBe(true);
+        expect(receiverOut).toContain("MONO OK");
         expect(receiverOut).toContain("FILE OK");
         expect(receiverOut).toContain("DIR OK");
       } finally {

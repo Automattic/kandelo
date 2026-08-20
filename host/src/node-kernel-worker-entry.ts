@@ -305,6 +305,13 @@ const checkpointMachine: CheckpointMachine = {
     }
     return rootfsMemfs.sharedBuffer;
   },
+  monotonicNowNs: () => {
+    if (!vfsExecIO) {
+      throw new Error("this machine has no PlatformIO clock to checkpoint");
+    }
+    const now = vfsExecIO.clockGettime(1);
+    return now.sec * 1_000_000_000 + now.nsec;
+  },
   framebuffers: () =>
     kernelWorker.framebuffers.list().map((binding) => ({
       pid: binding.pid,
@@ -1191,6 +1198,17 @@ async function handleInit(msg: InitMessage) {
   vfsExecIO = msg.rootfsImage ? io : null;
   if (msg.enableTcpNetwork) {
     io.network = new TcpNetworkBackend();
+  }
+  if (msg.restoreCheckpoint) {
+    if (!io.advanceMonotonicFloor) {
+      throw new Error(
+        "restoring a checkpoint requires a PlatformIO with a monotonic floor",
+      );
+    }
+    // The adopted kernel memory carries monotonic deadlines measured on the
+    // captured machine's clock, and a guest's monotonic clock must never run
+    // backwards. Advance before anything reads this machine's clock.
+    io.advanceMonotonicFloor(msg.restoreCheckpoint.monotonicNs);
   }
 
   kernelWorker = new CentralizedKernelWorker(

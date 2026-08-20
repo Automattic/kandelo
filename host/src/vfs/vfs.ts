@@ -208,6 +208,10 @@ export class VirtualPlatformIO implements PlatformIO {
     if (this.nextDirHandle < dirFloor) this.nextDirHandle = dirFloor;
   }
 
+  advanceMonotonicFloor(floorNs: number): void {
+    this.time.advanceMonotonicFloor?.(floorNs);
+  }
+
   open(path: string, flags: number, mode: number): number {
     const { backend, backendId, relativePath, nosuid } = this.resolve(path);
     // O_CREAT may name a missing final component. Its already-resolved backend

@@ -78,6 +78,12 @@ export interface PlatformIO {
    * rewrites them. Only hosts that restore checkpoints need this hook.
    */
   reserveHandleFloors?(fileFloor: number, dirFloor: number): void;
+  /**
+   * Keep every future CLOCK_MONOTONIC reading at or above `floorNs`. See
+   * `TimeProvider.advanceMonotonicFloor`; hosts that restore checkpoints
+   * need this hook.
+   */
+  advanceMonotonicFloor?(floorNs: number): void;
   open(path: string, flags: number, mode: number): number;
   close(handle: number): number;
   read(

@@ -132,6 +132,7 @@ test("restores a file mid-write, a directory mid-iteration, and a pending alarm"
   );
 
   expect(result.outputAtCapture, result.output).not.toContain("OK");
+  expect(result.output).toContain("MONO OK");
   expect(result.output).toContain("FILE OK");
   expect(result.output).toContain("DIR OK");
   expect(result.output).toContain("ALARM OK");

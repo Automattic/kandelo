@@ -102,6 +102,8 @@ export interface CheckpointMachine {
   readonly filesystemBuffer: () => SharedArrayBuffer;
   /** Read under the freeze: bindings and write-based pixels are quiescent. */
   readonly framebuffers: () => readonly CheckpointFramebuffer[];
+  /** This machine's CLOCK_MONOTONIC in nanoseconds. */
+  readonly monotonicNowNs: () => number;
   readonly kernelAbiVersion: () => number;
   readonly liveProcesses: () => readonly CheckpointProcessSource[];
 }
@@ -137,6 +139,15 @@ export interface MachineCheckpoint {
   readonly kernelMemory: Uint8Array;
   readonly filesystem: Uint8Array;
   readonly framebuffers: readonly CheckpointFramebuffer[];
+  /**
+   * The captured machine's CLOCK_MONOTONIC at the freeze, in nanoseconds.
+   *
+   * Kernel state carries monotonic deadlines (an armed interval timer), and
+   * POSIX forbids a guest's monotonic clock from running backwards. The
+   * receiver advances its own monotonic clock to at least this value before
+   * adopting the kernel memory.
+   */
+  readonly monotonicNs: number;
   readonly processes: readonly CheckpointProcessBucket[];
 }
 
@@ -405,6 +416,7 @@ function readMachine(
     kernelAbiVersion: machine.kernelAbiVersion(),
     kernelMemory: machine.copyKernelMemory(),
     filesystem: new Uint8Array(machine.filesystemBuffer()).slice(),
+    monotonicNs: machine.monotonicNowNs(),
     framebuffers: machine.framebuffers().map((framebuffer) => ({
       ...framebuffer,
       hostBuffer: framebuffer.hostBuffer === null

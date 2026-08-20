@@ -23,6 +23,13 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+static long long monotonic_ns(void)
+{
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return (long long)now.tv_sec * 1000000000LL + now.tv_nsec;
+}
+
 #define ENTRY_COUNT 300
 
 static volatile sig_atomic_t alarm_fired = 0;
@@ -105,11 +112,27 @@ int main(void) {
 	}
 	alarm(5);
 
+	/* Every nap iteration re-reads CLOCK_MONOTONIC, so the restore boundary
+	 * itself is checked: a receiver whose clock started behind the captured
+	 * machine's would regress on the first iteration after the restore. */
+	long long monotonic_last = monotonic_ns();
 	printf("READY\n");
 	while (!alarm_fired) {
 		struct timespec nap = { .tv_sec = 0, .tv_nsec = 1000000 };
 		nanosleep(&nap, NULL);
+		long long now = monotonic_ns();
+		if (now < monotonic_last) {
+			fprintf(
+				stderr,
+				"monotonic clock regressed: %lld -> %lld\n",
+				monotonic_last,
+				now
+			);
+			return 1;
+		}
+		monotonic_last = now;
 	}
+	printf("MONO OK\n");
 
 	if (write(fd, "second-half", 11) != 11) {
 		perror("second write");

@@ -196,6 +196,10 @@ const checkpointMachine: CheckpointMachine = {
     }
     return memfs.sharedBuffer;
   },
+  monotonicNowNs: () => {
+    const now = io.clockGettime(1);
+    return now.sec * 1_000_000_000 + now.nsec;
+  },
   framebuffers: () =>
     kernelWorker.framebuffers.list().map((binding) => ({
       pid: binding.pid,
@@ -1176,6 +1180,12 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     post({ type: "lazy_download", event });
   });
   io = new VirtualPlatformIO(mounts, new BrowserTimeProvider());
+  if (msg.restoreCheckpoint) {
+    // The adopted kernel memory carries monotonic deadlines measured on the
+    // captured machine's clock, and a guest's monotonic clock must never run
+    // backwards. Advance before anything reads this machine's clock.
+    io.advanceMonotonicFloor(msg.restoreCheckpoint.monotonicNs);
+  }
 
   // Create TLS-MITM network backend. Programs do real TLS handshakes via
   // their compiled-in OpenSSL; the backend terminates TLS locally, makes

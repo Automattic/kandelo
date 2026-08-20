@@ -66,6 +66,15 @@ export async function validateMachineCheckpoint(
   if (checkpoint.filesystem.byteLength === 0) {
     refuse("the filesystem buffer is empty");
   }
+  if (
+    !Number.isSafeInteger(checkpoint.monotonicNs)
+    || checkpoint.monotonicNs < 0
+  ) {
+    refuse(
+      `the captured monotonic clock ${String(checkpoint.monotonicNs)} `
+      + "is unusable",
+    );
+  }
 
   const modules = new Map<number, WebAssembly.Module>();
   for (const bucket of checkpoint.processes) {
