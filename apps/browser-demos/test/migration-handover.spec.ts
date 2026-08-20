@@ -7,12 +7,34 @@ declare global {
     __migrationDemo: {
       state: () => string;
       framePixelSum: () => number;
+      snapshotFrame: () => number;
+      frameDiffCount: () => number;
     };
   }
 }
 
 function pixelSum(page: Page): Promise<number> {
   return page.evaluate(() => window.__migrationDemo.framePixelSum());
+}
+
+/**
+ * Prove a keypress reached the game: snapshot the frame, turn, and count
+ * differing samples. A turn rewrites the whole viewport (thousands of
+ * samples), while idle animation touches only the status-bar face (tens),
+ * so the threshold separates "the game acted on the key" from "the game
+ * merely kept rendering".
+ */
+async function expectTurnChangesView(page: Page, who: string): Promise<void> {
+  await page.evaluate(() => window.__migrationDemo.snapshotFrame());
+  await page.keyboard.down("ArrowLeft");
+  await page.waitForTimeout(600);
+  await page.keyboard.up("ArrowLeft");
+  await expect
+    .poll(
+      () => page.evaluate(() => window.__migrationDemo.frameDiffCount()),
+      { timeout: 10_000, message: `${who}: ArrowLeft turns the view` },
+    )
+    .toBeGreaterThan(500);
 }
 
 test("hands a running fbDOOM machine from one tab to another", async ({
@@ -47,6 +69,17 @@ test("hands a running fbDOOM machine from one tab to another", async ({
     .poll(() => pixelSum(page), { timeout: 30_000 })
     .not.toBe(keeperFrame);
 
+  // Start a real game — menu, New Game, skill confirm — so the scene is
+  // static without input and a turn is attributable to the keyboard alone.
+  // No canvas click: starting a machine must hand the keyboard over by
+  // itself.
+  for (const key of ["Escape", "Enter", "Enter", "Enter"]) {
+    await page.keyboard.press(key);
+    await page.waitForTimeout(400);
+  }
+  await page.waitForTimeout(2_000);
+  await expectTurnChangesView(page, "keeper");
+
   const taker = await context.newPage();
   await taker.goto(new URL("/pages/migration/", baseURL!).href);
   await taker.click("#take");
@@ -70,4 +103,9 @@ test("hands a running fbDOOM machine from one tab to another", async ({
   await expect
     .poll(() => pixelSum(taker), { timeout: 30_000 })
     .not.toBe(restoredFrame);
+
+  // The restored machine must also hear the keyboard: the captured
+  // machine's pid → PTY routing died with it, and taking over must hand
+  // the keyboard over without a canvas click.
+  await expectTurnChangesView(taker, "taker");
 });

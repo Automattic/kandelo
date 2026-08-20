@@ -30,6 +30,8 @@ declare global {
     __migrationDemo: {
       state: () => string;
       framePixelSum: () => number;
+      snapshotFrame: () => number;
+      frameDiffCount: () => number;
     };
   }
 }
@@ -70,6 +72,7 @@ function attachScreen(machine: BrowserKernel, screenPid: number): void {
     { getEnabled: () => kernel === machine },
   );
   detachKeyboard = () => keyboard.close();
+  canvas.focus();
 }
 
 function offerThisMachine(): void {
@@ -182,18 +185,46 @@ async function take(): Promise<void> {
 startButton.addEventListener("click", () => void start());
 takeButton.addEventListener("click", () => void take());
 
+function sampleFrame(): Uint8Array | null {
+  if (!kernel) return null;
+  const binding = kernel.framebuffers.get(pid);
+  if (!binding?.hostBuffer) return null;
+  // Sampling every 97th byte keeps the probes cheap while any animation
+  // still changes them.
+  const samples = new Uint8Array(Math.ceil(binding.hostBuffer.length / 97));
+  for (let i = 0; i < binding.hostBuffer.length; i += 97) {
+    samples[i / 97 | 0] = binding.hostBuffer[i]!;
+  }
+  return samples;
+}
+
+let frameSnapshot: Uint8Array | null = null;
+
 window.__migrationDemo = {
   state: () => statusLine.textContent ?? "",
   framePixelSum: () => {
-    if (!kernel) return -1;
-    const binding = kernel.framebuffers.get(pid);
-    if (!binding?.hostBuffer) return -1;
+    const samples = sampleFrame();
+    if (!samples) return -1;
     let sum = 0;
-    // Sampling every 97th byte keeps the probe cheap while any animation
-    // still changes it.
-    for (let i = 0; i < binding.hostBuffer.length; i += 97) {
-      sum += binding.hostBuffer[i]!;
-    }
+    for (const byte of samples) sum += byte;
     return sum;
+  },
+  // The pixel sum cannot tell a small idle animation from a real scene
+  // change, so input tests snapshot a frame and count differing samples:
+  // a keypress the game acted on rewrites the whole viewport.
+  snapshotFrame: () => {
+    frameSnapshot = sampleFrame();
+    return frameSnapshot?.length ?? -1;
+  },
+  frameDiffCount: () => {
+    const samples = sampleFrame();
+    if (!samples || !frameSnapshot || samples.length !== frameSnapshot.length) {
+      return -1;
+    }
+    let differing = 0;
+    for (let i = 0; i < samples.length; i++) {
+      if (samples[i] !== frameSnapshot[i]) differing += 1;
+    }
+    return differing;
   },
 };
