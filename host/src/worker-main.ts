@@ -842,6 +842,20 @@ function createProcessDylinkActivationOwner(
       return {
         activationId,
         env,
+        savedMutableGlobalImport(moduleName, importName) {
+          if (!options.isForkChild) return undefined;
+          if (!childImportedStatePlanner) {
+            throw new Error(
+              `${request.name}: activation ${activationId} requested saved `
+              + "import state before wrapping its final imports",
+            );
+          }
+          return childImportedStatePlanner.savedMutableGlobalImport(
+            activationId,
+            moduleName,
+            importName,
+          );
+        },
         wrapImports: (imports) => {
           if (importsWrapped) {
             throw new Error(
