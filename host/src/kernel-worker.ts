@@ -3785,9 +3785,7 @@ export class CentralizedKernelWorker {
         this.#largeTransferScratchInUse = false;
         this.#kernelFatalError = null;
         this.#initialized = true;
-        if (this.kmsCanvases.size > 0 || this.kmsStatsViews.size > 0) {
-          this.startVblankPump();
-        }
+        this.startVblankPump();
       },
       configureScratchBoundaryHooksForTest: (options): void => {
         const previous = this.#scratchBoundaryTestHooks;
@@ -5323,9 +5321,9 @@ export class CentralizedKernelWorker {
     }
 
     this.#initialized = true;
-    if (this.kmsCanvases.size > 0 || this.kmsStatsViews.size > 0) {
-      this.startVblankPump();
-    }
+    // The pump starts unconditionally: kernel_vblank retires queued
+    // page-flips even when no canvas or stats view is attached.
+    this.startVblankPump();
   }
 
   #requireMainScratchRegion(): KernelScratchRegion {
@@ -33692,7 +33690,6 @@ export class CentralizedKernelWorker {
       // failing the attach.
       this.kmsContextMode.set(crtc_id, mode);
     }
-    this.startVblankPump();
   }
 
   /** Report the embedder-side display size (device pixels) for a CRTC's
@@ -33722,7 +33719,6 @@ export class CentralizedKernelWorker {
       crtc_id,
       new Int32Array(statsSab),
     );
-    this.startVblankPump();
   }
 
   private startVblankPump(): void {
