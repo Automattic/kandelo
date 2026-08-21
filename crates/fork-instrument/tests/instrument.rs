@@ -4093,9 +4093,9 @@ fn reference_payload_emits_complete_exception_dispatch() {
 fn a_checkpoint_seed_instruments_a_module_that_never_forks() {
     let wat = r#"
         (module
-          (import "kernel" "kernel_checkpoint" (func $checkpoint (result i32)))
+          (import "kernel" "kernel_checkpoint" (func $checkpoint))
           (memory 1)
-          (func (export "_start") (result i32)
+          (func (export "_start")
             call $checkpoint))
     "#;
     let bytes = parse_wat(wat);

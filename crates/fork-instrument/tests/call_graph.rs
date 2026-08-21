@@ -287,11 +287,11 @@ fn a_checkpoint_seed_adds_to_the_entry_seed_rather_than_replacing_it() {
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (param i32) (result i32)))
-          (import "kernel" "kernel_checkpoint" (func $checkpoint (result i32)))
+          (import "kernel" "kernel_checkpoint" (func $checkpoint))
           (func $forker (export "forker") (result i32)
             i32.const 0
             call $fork)
-          (func $syscaller (export "syscaller") (result i32)
+          (func $syscaller (export "syscaller")
             call $checkpoint))
     "#;
     let bytes = wat::parse_str(wat).expect("wat parse");
@@ -310,8 +310,8 @@ fn a_checkpoint_seed_adds_to_the_entry_seed_rather_than_replacing_it() {
 fn a_checkpoint_seed_is_the_only_seed_a_program_that_never_forks_has() {
     let wat = r#"
         (module
-          (import "kernel" "kernel_checkpoint" (func $checkpoint (result i32)))
-          (func $syscaller (export "syscaller") (result i32)
+          (import "kernel" "kernel_checkpoint" (func $checkpoint))
+          (func $syscaller (export "syscaller")
             call $checkpoint))
     "#;
     let bytes = wat::parse_str(wat).expect("wat parse");
