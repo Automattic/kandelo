@@ -1590,10 +1590,12 @@ export const IOCTL_REQUESTS: Record<number, IoctlRequestContract> = {
   25630: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
   25631: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
   35077: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
+  1074021776: { argKind: "scalar-i32", direction: "none", wasm32Size: 0, wasm64Size: 0 },
   1074024452: { argKind: "pointer", direction: "in", wasm32Size: 4, wasm64Size: 4 },
   1074024464: { argKind: "pointer", direction: "in", wasm32Size: 4, wasm64Size: 4 },
   1074025521: { argKind: "pointer", direction: "in", wasm32Size: 4, wasm64Size: 4 },
   1074291721: { argKind: "pointer", direction: "in", wasm32Size: 8, wasm64Size: 8 },
+  2147763457: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
   2147766274: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
   2147766277: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
   2147766278: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
@@ -1603,6 +1605,7 @@ export const IOCTL_REQUESTS: Record<number, IoctlRequestContract> = {
   2147766288: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
   2147766295: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
   2147767344: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
+  2148025602: { argKind: "pointer", direction: "out", wasm32Size: 8, wasm64Size: 8 },
   2148028435: { argKind: "pointer", direction: "out", wasm32Size: 8, wasm64Size: 8 },
   2148028436: { argKind: "pointer", direction: "out", wasm32Size: 8, wasm64Size: 8 },
   2148290577: { argKind: "pointer", direction: "out", wasm32Size: 12, wasm64Size: 12 },
@@ -1635,6 +1638,22 @@ export const IOCTL_REQUESTS: Record<number, IoctlRequestContract> = {
   3228066978: { argKind: "pointer", direction: "in", wasm32Size: 104, wasm64Size: 104 },
   3228067000: { argKind: "pointer", direction: "inout", wasm32Size: 104, wasm64Size: 104 },
 };
+
+export interface IoctlRequestFamily {
+  dir: number;
+  magic: number;
+  nrFirst: number;
+  nrLast: number;
+  direction: IoctlDirection;
+  fixedSize: number | null;
+  maxCallerSize: number | null;
+}
+
+export const IOCTL_REQUEST_FAMILIES: IoctlRequestFamily[] = [
+  { dir: 2, magic: 69, nrFirst: 6, nrLast: 6, direction: "out", fixedSize: null, maxCallerSize: 256 },
+  { dir: 2, magic: 69, nrFirst: 32, nrLast: 63, direction: "out", fixedSize: null, maxCallerSize: 256 },
+  { dir: 2, magic: 69, nrFirst: 64, nrLast: 127, direction: "out", fixedSize: 24, maxCallerSize: null },
+];
 
 export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   1: [
