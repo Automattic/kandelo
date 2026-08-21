@@ -1,0 +1,17 @@
+script_path = "packages/registry/libwayland/build-libwayland.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "1dc10fcc1761475964c0108628a800c3c5e468e5"
+revision    = 1
+
+# The hand-curated config.h is part of the cache key: editing it (e.g.
+# flipping a HAVE_* to track a sysroot change) must invalidate cached
+# archives so consumers rebuild against the corrected feature set. The
+# build script + config.h are tracked in git (the fetched `*-src/` tree
+# is gitignored), so the resolver can hash them on a clean checkout.
+inputs = [
+  "packages/registry/libwayland/build-libwayland.sh",
+  "packages/registry/libwayland/src/config.h",
+]
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

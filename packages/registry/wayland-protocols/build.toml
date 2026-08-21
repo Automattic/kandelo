@@ -1,0 +1,22 @@
+script_path = "packages/registry/wayland-protocols/build-wayland-protocols.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "1dc10fcc1761475964c0108628a800c3c5e468e5"
+revision    = 1
+
+# Vendored protocol XML is part of the cache key: editing either file
+# (e.g. bumping the pinned protocol version) must invalidate the staged
+# source so consumers regenerate glue. These paths are tracked in git
+# (not under the gitignored `*-src/` glob), so the resolver can hash them
+# on a clean checkout.
+inputs = [
+  "packages/registry/wayland-protocols/build-wayland-protocols.sh",
+  "packages/registry/wayland-protocols/xml/wayland.xml",
+  "packages/registry/wayland-protocols/xml/xdg-shell.xml",
+]
+
+# Required by the build.toml schema even for a source package (which is
+# staged, not published as a binary archive). The resolver stages the
+# vendored XML locally; this block just satisfies the parser and lets a
+# future release publish the staged source under the standard index.
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

@@ -1,0 +1,18 @@
+script_path = "packages/registry/libudev/build-libudev.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "126f07f12"
+revision    = 1
+
+# The bundled shim source + header ARE the package (no upstream fetch),
+# so both are part of the cache key: editing either — especially the
+# input_id classification in the source — must invalidate cached
+# archives so consumers rebuild against the new bytes. They are tracked
+# in git, so the resolver can hash them on a clean checkout.
+inputs = [
+  "packages/registry/libudev/build-libudev.sh",
+  "packages/registry/libudev/src/libudev_shim.c",
+  "packages/registry/libudev/include/libudev.h",
+]
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

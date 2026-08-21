@@ -1,0 +1,33 @@
+# libkwl — a tiny Wayland toolkit over libwayland-client for Kandelo apps.
+#
+# Recipe-shape metadata for consistency with packages/registry/*, but
+# libkwl is NOT resolved by `cargo xtask build-deps` — it is in-tree
+# source with no upstream tarball and no CI-published binary. It is built
+# inline by scripts/build-programs.sh via ./build.sh, which installs
+# lib/libkwl.a + include/kwl.h into the wasm32 sysroot.
+#
+# Consumers: wlterm (programs/wlterm) and later seed apps. libkwl wraps the
+# wlclient-test boilerplate — registry bind, xdg toplevel, double-buffered
+# wl_shm over gbm prime-fds, seat/xkb input — into one create/draw/commit/
+# dispatch API. Renders through wpkdraw into the shared back buffer; the
+# compositor owns the screen.
+
+kind = "library"
+
+name = "libkwl"
+version = "0.1.0"
+kernel_abi = 17
+depends_on = ["wpkdraw", "libwayland", "libxkbcommon", "libgbm"]
+
+[source]
+type = "local" # in-tree; no upstream
+
+[license]
+spdx = "MIT"
+
+[build]
+script_path = "examples/libs/libkwl/build.sh"
+
+[outputs]
+libs = ["lib/libkwl.a"]
+headers = ["include/kwl.h"]
