@@ -97,7 +97,8 @@ function offerThisMachine(): void {
       detachCanvas = null;
       detachKeyboard?.();
       detachKeyboard = null;
-      setStatus("Handed over — the machine continues in the other tab.");
+      setStatus("Handed over — the machine continues in the other tab. Take it back any time.");
+      takeButton.disabled = false;
       void handedOver?.destroy().then(() => settleWebKitReclaim());
     },
   );

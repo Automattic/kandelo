@@ -37,6 +37,37 @@ async function expectTurnChangesView(page: Page, who: string): Promise<void> {
     .toBeGreaterThan(500);
 }
 
+/**
+ * One handover hop: the taking tab asks, the yielding tab freezes and
+ * reports it, and the restored machine must render fresh frames and hear
+ * the keyboard in its new tab.
+ */
+async function expectTakeover(
+  taking: Page,
+  yielding: Page,
+  who: string,
+): Promise<void> {
+  await taking.click("#take");
+  await taking.waitForFunction(
+    () => window.__migrationDemo?.state().includes("taken over"),
+    undefined,
+    { timeout: 120_000 },
+  );
+  await yielding.waitForFunction(
+    () => window.__migrationDemo?.state().startsWith("Handed over"),
+    undefined,
+    { timeout: 30_000 },
+  );
+  await expect
+    .poll(() => pixelSum(taking), { timeout: 30_000 })
+    .toBeGreaterThan(0);
+  const restoredFrame = await pixelSum(taking);
+  await expect
+    .poll(() => pixelSum(taking), { timeout: 30_000 })
+    .not.toBe(restoredFrame);
+  await expectTurnChangesView(taking, who);
+}
+
 test("hands a running fbDOOM machine from one tab to another", async ({
   page,
   context,
@@ -82,30 +113,11 @@ test("hands a running fbDOOM machine from one tab to another", async ({
 
   const taker = await context.newPage();
   await taker.goto(new URL("/pages/migration/", baseURL!).href);
-  await taker.click("#take");
-  await taker.waitForFunction(
-    () => window.__migrationDemo?.state().includes("taken over"),
-    undefined,
-    { timeout: 120_000 },
-  );
-  await page.waitForFunction(
-    () => window.__migrationDemo?.state().startsWith("Handed over"),
-    undefined,
-    { timeout: 30_000 },
-  );
 
-  // The receiver's frame arrived seeded from the checkpoint and the game
-  // keeps rendering new frames in the taking tab.
-  await expect
-    .poll(() => pixelSum(taker), { timeout: 30_000 })
-    .toBeGreaterThan(0);
-  const restoredFrame = await pixelSum(taker);
-  await expect
-    .poll(() => pixelSum(taker), { timeout: 30_000 })
-    .not.toBe(restoredFrame);
-
-  // The restored machine must also hear the keyboard: the captured
-  // machine's pid → PTY routing died with it, and taking over must hand
-  // the keyboard over without a canvas click.
-  await expectTurnChangesView(taker, "taker");
+  // The machine moves between the tabs as often as asked: over, back, and
+  // over again. Every taker re-offers, and a tab that handed over re-arms
+  // its take button, so the third hop proves one page can take repeatedly.
+  await expectTakeover(taker, page, "taker");
+  await expectTakeover(page, taker, "keeper taking back");
+  await expectTakeover(taker, page, "taker taking again");
 });
