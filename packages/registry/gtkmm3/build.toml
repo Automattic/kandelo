@@ -1,0 +1,11 @@
+script_path = "packages/registry/gtkmm3/build-gtkmm3.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "cf81d0f7c"
+revision = 1
+
+inputs = [
+  "packages/registry/gtkmm3/build-gtkmm3.sh",
+]
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

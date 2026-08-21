@@ -143,6 +143,27 @@ const CODE_TO_KEY: Record<string, number> = {
 /** Translate a `KeyboardEvent.code` string to its Linux `KEY_*` value.
  * Returns `null` for codes we don't translate (locale-specific keys
  * outside Linux UAPI, browser-specific extensions). */
+/**
+ * `KeyboardEvent.key` → Linux `KEY_*` for typed letters. The kernel-side
+ * xkb keymap is a fixed US layout, so the positional `code` path delivers
+ * the letter printed at the US position of the pressed key: on AZERTY the
+ * key labeled W sits at the QWERTY-Z position, and Ctrl+W would arrive as
+ * Ctrl+Z. Mapping the typed letter back to its US-layout keycode makes the
+ * wire carry what the key says. Letters only — digits and punctuation stay
+ * positional, because their `key` value depends on Shift and the layout's
+ * unshifted symbols.
+ */
+const CHAR_TO_KEY: Record<string, number> = {
+  a: 30, b: 48, c: 46, d: 32, e: 18, f: 33, g: 34, h: 35, i: 23,
+  j: 36, k: 37, l: 38, m: 50, n: 49, o: 24, p: 25, q: 16, r: 19,
+  s: 31, t: 20, u: 22, v: 47, w: 17, x: 45, y: 21, z: 44,
+};
+
+export function charToKey(key: unknown): number | null {
+  if (typeof key !== "string" || key.length !== 1) return null;
+  return CHAR_TO_KEY[key.toLowerCase()] ?? null;
+}
+
 export function codeToKey(code: string): number | null {
   const k = CODE_TO_KEY[code];
   return k === undefined ? null : k;

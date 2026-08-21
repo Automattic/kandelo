@@ -1,0 +1,27 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+# {fmt} formatting library (libfmt.a). C++ base dep for the Waybar
+# port; spdlog links against it (SPDLOG_FMT_EXTERNAL).
+name = "fmt"
+version = "11.2.0"
+kernel_abi = 17
+depends_on = ["libcxx@21.1.7"]
+
+[source]
+url = "https://github.com/fmtlib/fmt/archive/refs/tags/11.2.0.tar.gz"
+sha256 = "bc23066d87ab3168f27cef3e97d545fa63314f5c79df5ea444d41d56f962c6af"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/fmtlib/fmt/blob/11.2.0/LICENSE"
+
+[build]
+script_path = "packages/registry/fmt/build-fmt.sh"
+
+[outputs]
+libs = ["lib/libfmt.a"]
+headers = ["include/fmt"]
+pkgconfig = ["lib/pkgconfig/fmt.pc"]

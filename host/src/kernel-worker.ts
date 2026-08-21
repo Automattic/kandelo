@@ -1649,6 +1649,8 @@ interface ChannelInfo {
   readinessDeadline?: number;
   /** Force the next readiness dispatch to perform a zero-time final check. */
   readinessFinalCheck?: boolean;
+  /** A temporary epoll_pwait sigmask swap is active for this parked wait. */
+  pollSigmaskSwapped?: boolean;
 }
 
 /**
@@ -2863,6 +2865,17 @@ function buildKmsGlPresenter(gl: WebGL2RenderingContext): KmsGlPresenter | null 
   gl.disable(gl.CULL_FACE);
   gl.disable(gl.RASTERIZER_DISCARD);
   gl.colorMask(true, true, true, true);
+  // A leftover row length, skip count or bound PIXEL_UNPACK_BUFFER makes
+  // every scanout upload GL_INVALID_OPERATION with no JS exception — the
+  // pump reports presents onto a black canvas. A leftover flip or
+  // premultiply uploads cleanly and corrupts the image instead.
+  gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+  gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+  gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+  gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
   const compile = (type: number, src: string): WebGLShader | null => {
     const sh = gl.createShader(type);
     if (!sh) return null;
@@ -6567,6 +6580,15 @@ export class CentralizedKernelWorker {
     // ABI padding. Reading either as size_t would treat unrelated padding as
     // the high half of a count and reject or mis-size a valid message.
     const iovecCount = view.getUint32(layout.iovecCountOffset, true);
+    // Linux rejects msg_iovlen above IOV_MAX with EMSGSIZE — net/socket.c's
+    // __copy_msghdr serves both sendmsg and recvmsg — while readv/writev
+    // keep POSIX's EINVAL for the same overflow.
+    if (iovecCount > POSIX_IOV_MAX) {
+      throw new KernelScratchError(
+        `msg_iovlen must be at most ${POSIX_IOV_MAX}`,
+        EMSGSIZE,
+      );
+    }
     const rawControlPointer = pointerWidth === 8
       ? view.getBigUint64(layout.controlOffset, true)
       : view.getUint32(layout.controlOffset, true);
@@ -15974,6 +15996,17 @@ export class CentralizedKernelWorker {
     channel.readinessDeadline = undefined;
     channel.readinessFinalCheck = undefined;
 
+    if (channel.pollSigmaskSwapped) {
+      channel.pollSigmaskSwapped = undefined;
+      // Guarded kernel-side: a no-op when a signal became deliverable under
+      // the temporary mask — kernel_dequeue_signal owns the restore then.
+      const restoreMask = this.#kernelInstanceIfAvailableForEntry()?.exports
+        .kernel_restore_poll_sigmask as
+        | ((pid: number, tid: number) => number)
+        | undefined;
+      restoreMask?.(channel.pid, this.guestTidForChannel(channel));
+    }
+
     const pollEntry = this.pendingPollRetries.get(channel);
     if (pollEntry) {
       if (pollEntry.timer !== null) this.#cancelRegisteredTimeout(pollEntry.timer);
@@ -19430,12 +19463,31 @@ export class CentralizedKernelWorker {
               EINVAL,
             );
           }
-          this.checkedProcessRange(
+          const maskPointer = this.checkedProcessRange(
             channel,
             rawMaskPointer,
             SIGNAL_MASK_BYTES,
             "epoll_pwait signal mask",
-          );
+          ).pointer;
+          // epoll_pwait's atomic mask swap. The host runs this wait as
+          // timeout=0 poll retries, so the kernel cannot scope the mask to
+          // one blocking syscall — swap it through the sigsuspend
+          // saved-mask slot (idempotent across retry re-entries) and keep
+          // it swapped while parked, so a signal arriving mid-wait (foot's
+          // SIGCHLD reaper) passes sendSignalToProcess's blocked check and
+          // wakes the retry. kernel_dequeue_signal restores the saved mask
+          // after delivering the signal that ended the wait;
+          // clearReadinessWait restores it on every other completion.
+          const swapMask = this.#kernelInstanceForEntry(entry).exports
+            .kernel_swap_poll_sigmask as
+            | ((pid: number, tid: number, mask: bigint) => number)
+            | undefined;
+          if (swapMask) {
+            const mask = new DataView(channel.memory.buffer)
+              .getBigUint64(maskPointer, true);
+            swapMask(channel.pid, this.guestTidForChannel(channel), mask);
+            channel.pollSigmaskSwapped = true;
+          }
         }
       }
       eventsPtr = this.checkedProcessRange(
@@ -26709,9 +26761,15 @@ export class CentralizedKernelWorker {
     }
     if (stat.hostHandle === null) {
       // MemFd and synthetic regular files complete fstat inside the kernel,
-      // so there is no persistent host capability to retain. They need a
-      // kernel-owned mapping bridge; MAP_PRIVATE keeps its fd-pread path.
-      return { kind: "error", errno: ENOTSUP };
+      // so there is no persistent host capability to retain for writeback.
+      // Take the same populate-only fallback as MAP_SHARED on non-regular
+      // files: pread fills the pages at map time and writes stay local.
+      // libwayland-cursor's theme pool is the load-bearing consumer — its
+      // memfd pool must map, and nothing ever reads the pool back (the
+      // compositor accepts and ignores wl_pointer.set_cursor). Live
+      // coherence needs a kernel-owned mapping bridge that does not exist
+      // yet.
+      return { kind: "unsupported" };
     }
     const accessResult = this.getFdAccessModeForSharedMapping(
       channel,

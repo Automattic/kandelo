@@ -322,6 +322,7 @@ Located in `apps/browser-demos/pages/`:
 | modeset | modeset.c | `kernel.boot` + spawn | Minimal KMS client: opens `/dev/dri/card0`, becomes DRM master, allocates dumb buffers, draws an animated gradient, and commits real `drmModePageFlip` ioctls. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
 | wayland | wlcompositor + wlclock + wlpaint + wlterm | `kernel.boot` + spawn | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. |
 | hyprland | wlcompositor (dwindle) + wlclock + 2× wlterm (+ wlpaint via keybind) | `kernel.boot` + spawn | Hyprland-class tiling desktop; `Ctrl+Return`/`Ctrl+K`/`Ctrl+P` open new terminal/clock/paint panes — see [Hyprland tiling demo](#hyprland-tiling-demo) below. |
+| omarchy | wlcompositor (dwindle) + Waybar + mako + klauncher + themes | `kernel.boot` + spawn | The tiling desktop with its shell: unmodified Waybar on layer shell, `Ctrl+Space` launcher, `Ctrl+Shift+Space` theme cycling. Boots to wallpaper + bar with no windows open — see [Omarchy desktop demo](#omarchy-desktop-demo) below. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first user process.
@@ -377,7 +378,14 @@ swizzle happens in the fragment shader and the scaling on the GPU
 (trilinear over a per-frame mip chain, so a downscaled desktop doesn't
 shimmer). A runtime GPU-compositing failure tears the compositor's EGL
 session down, which hands the canvas back to the pump presenter
-(`markKmsCanvasGlReleased`) so the desktop keeps painting. A
+(`markKmsCanvasGlReleased`) so the desktop keeps painting. The rebuilt
+presenter inherits the dead session's WebGL2 context — `getContext`
+returns the existing one — so it restores the state its draw depends on
+rather than assuming fresh-context defaults. Pixel-store state matters
+most: a leftover `UNPACK_ROW_LENGTH` or a still-bound
+`PIXEL_UNPACK_BUFFER` makes every scanout upload `GL_INVALID_OPERATION`,
+which raises no JS exception, so the pump would report presents onto a
+black canvas. A
 main-thread ResizeObserver reports the pane's device-pixel size so the
 presenter renders at display resolution instead of letting the page
 compositor rescale an fb-sized bitmap; any letterbox is drawn in GL
@@ -485,6 +493,88 @@ See
 The tiling paths are gated node-side by
 `host/test/wlcompositor-{tiling,resize,kwlctl,keybind,decoration}-smoke.test.ts`
 and in the browser by `apps/browser-demos/test/kandelo-hyprland.spec.ts`.
+
+### Omarchy desktop demo
+
+`/?demo=omarchy` is the tiling desktop above plus the shell that makes it a
+desktop: a status bar, a launcher, and themes. Omarchy is not a program but a
+set of files layered over Hyprland, so this demo is the same `wlcompositor`
+binary with its own `/etc/kandelo/wlcompositor.conf`, an app registry under
+`/usr/share/kandelo/apps`, and six themes under `/usr/share/kandelo/themes`
+— all staged into the VFS at boot from
+`apps/browser-demos/pages/kandelo/kernel-host/omarchy-desktop.ts`.
+
+The desktop comes up bare: wallpaper and bar, no windows. Every client is one
+the user opens, through the binds below or the launcher. The demo stays alive
+on the compositor's own process rather than on a foreground terminal.
+
+- **The bar.** Unmodified upstream **Waybar 0.14.0** — the real GTK3 bar, on
+  the ported gtkmm/gtk-layer-shell stack, reading a translated version of
+  Omarchy's own `config.jsonc` and `style.css` from
+  `~/.config/waybar`. `gtk_layer_shell` anchors it across the top with an
+  exclusive zone, so the windows tile *under* it rather than behind it. Its
+  `hyprland/workspaces` and `hyprland/window` modules speak Hyprland IPC to
+  the compositor's socket pair at `/tmp/hypr/wlcompositor/` — `j/`-prefixed
+  JSON queries plus the `event>>data` stream — exactly as they would to
+  hyprctl. Modules that need hardware or daemons this kernel does not serve
+  (battery, cpu, memory, network, pulseaudio, tray) are not part of the
+  build, and the clock is Waybar's `simpleclock` (no timezone database).
+  GDK backs the bar's `wl_shm` pools with `gbm` prime-fd dumb bos (the
+  gtk3 package's `wayland-shm-gbm-pool.patch`, foot's contract), which is
+  what carries its pixels across to the compositor. The bar runs at
+  `-l debug`, so every Hyprland IPC event it consumes shows up in the
+  Internals syslog next to the compositor's own marker.
+- **Notifications.** The demo boots a `dbus-daemon` session bus and
+  unmodified upstream mako on it. A theme switch reaches `notify-send`
+  through the config's `notify =` hook (the theme script above execs it) — a real
+  `org.freedesktop.Notifications.Notify` call over the bus, which mako
+  renders as a layer-shell toast in the top-right corner that dismisses
+  itself after five seconds. The bus address
+  (`DBUS_SESSION_BUS_ADDRESS`) is in every desktop process's
+  environment, so `notify-send` also works from any terminal.
+- **The launcher.** `Ctrl+Space` opens `klauncher`, an overlay-layer surface
+  that takes the keyboard exclusively — so what you type filters its list
+  instead of reaching the terminal underneath. Type to narrow, `Up`/`Down` to
+  move, `Enter` to launch (the compositor spawns it and it tiles in), `Esc` to
+  dismiss. Entries come from `/usr/share/kandelo/apps`, one file per app. The
+  registry offers real software from the shell image alongside the demo
+  clients: Vim, NetHack and Nano run unmodified inside a `wlterm` (their
+  binaries lazy-fetch from the image's archives on first launch), plus a Bash
+  terminal. The Foot entry is different in kind: stock upstream foot 1.17.2
+  as its own Wayland client on the ported font stack —
+  freetype/fontconfig/fcft rasterizing the staged Inconsolata through
+  `/etc/fonts/fonts.conf` — not a `wlterm` wrapper (see
+  [architecture.md](architecture.md#stock-upstream-clients-foot--the-font-stack)).
+- **The menu.** `Ctrl+Alt+Space` opens the Omarchy menu — the same launcher
+  at its root level (Apps, Theme). `Enter` descends; the Theme submenu lists
+  the installed themes and `Enter` switches live. `Esc` in a submenu goes
+  back to the root; `Esc` at the root dismisses.
+- **Themes.** `Ctrl+Shift+Space` cycles Tokyo Night, Catppuccin, Gruvbox,
+  Nord, Everforest and Rosé Pine. One palette file drives the whole desktop at
+  once: the compositor's window borders, gaps and wallpaper, the
+  launcher's own colours, which it reloads when the compositor broadcasts the
+  switch, and the bar's. Waybar reads its stylesheet once per load, as
+  upstream does, so the switch takes the path a real Omarchy session takes:
+  the compositor's `notify =` hook (`/usr/local/bin/omarchy-theme-changed`)
+  writes `~/.config/waybar/style.css` from the new `theme.conf` and sends
+  Waybar `SIGUSR2`, which reloads it. The hook then execs `notify-send`, so
+  the toast is the same one. Each theme ships its real Omarchy background, which the page
+  decodes and renders to raw pixels at staging time
+  (`renderImageWallpaperKwlp`, with an aurora fallback via
+  `renderWallpaperKwlp` if the decode fails); the compositor scales it to the
+  output and falls back to a gradient for themes without one.
+- **The rest of the keybinds** are the Hyprland demo's: `Ctrl+Return` a
+  terminal, `Ctrl+K` a clock, `Ctrl+P` a paint canvas, `Ctrl+W` closes the
+  focused window, `Ctrl+1..9` switch workspaces, `Ctrl+J` cycles focus. Every
+  bind is mirrored on `SUPER` for a real Hyprland session; use `CTRL` in the
+  browser, which reserves `SUPER` (see the caveat above).
+
+See
+[architecture.md](architecture.md#desktop-shell-zwlr_layer_shell_v1-kbar-klauncher-themes).
+Gated node-side by
+`host/test/wlcompositor-{layer-shell,theme}-smoke.test.ts`,
+`host/test/{waybar,mako}-smoke.test.ts` and in the browser by
+`apps/browser-demos/test/kandelo-omarchy.spec.ts`.
 
 Run the browser app: `cd apps/browser-demos && npm run dev`, then open
 `http://127.0.0.1:5401/`.

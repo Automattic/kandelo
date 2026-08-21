@@ -1,0 +1,13 @@
+script_path = "packages/registry/libsigcxx/build-libsigcxx.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "cf81d0f7c"
+revision    = 1
+
+# The fetched `libsigcxx-src/` tree is gitignored; the resolver hashes
+# these tracked inputs on a clean checkout.
+inputs = [
+  "packages/registry/libsigcxx/build-libsigcxx.sh",
+]
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

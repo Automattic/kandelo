@@ -11,6 +11,11 @@ revision    = 2
 inputs = [
   "packages/registry/libwayland/build-libwayland.sh",
   "packages/registry/libwayland/src/config.h",
+  "libc/glue/libwayland-egl.c",
+  "libc/glue/gl_abi.h",
+  "libc/glue/wayland-egl-include/wayland-egl.h",
+  "libc/glue/wayland-egl-include/wayland-egl-core.h",
+  "libc/glue/wayland-egl-include/wayland-egl-backend.h",
 ]
 
 [binary]

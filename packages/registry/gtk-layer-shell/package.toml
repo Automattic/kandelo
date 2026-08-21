@@ -1,0 +1,53 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+# gtk-layer-shell (libgtk-layer-shell.a) — puts GTK3 windows on
+# wlr-layer-shell surfaces. Waybar links it (gtk-layer-shell-0.pc).
+# 0.9.2 is meson-only upstream, so the build follows the mako/atk
+# meson bypass: wayland-scanner generates the protocol glue and the
+# upstream src/meson.build TU list compiles directly. It reaches into
+# GTK internals through the vendored gtk-priv struct-layout headers
+# and the gdk_wayland_* APIs of gtk3's wayland backend.
+name = "gtk-layer-shell"
+version = "0.9.2"
+kernel_abi = 17
+depends_on = [
+  "gtk3@3.24.34",
+  "glib@2.84.4",
+  "atk@2.36.0",
+  "pango@1.42.4",
+  "cairo@1.16.0",
+  "gdk-pixbuf@2.36.12",
+  "libwayland@1.24.0",
+  "wayland-protocols@1.45",
+]
+
+[[host_tools]]
+# Generates the client glue for the two protocol XMLs the library
+# compiles against (wlr-layer-shell from the tarball's protocol/,
+# xdg-shell from the vendored wayland-protocols set).
+name = "wayland-scanner"
+version_constraint = ">=1.20"
+probe = { args = ["--version"], version_regex = "wayland-scanner (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.wayland-scanner); or apt install wayland-utils" }
+
+[source]
+url = "https://github.com/wmww/gtk-layer-shell/archive/refs/tags/v0.9.2.tar.gz"
+sha256 = "526dd95c083e2a73eafd8baa1f5d676a36cb80fc8e7b304cbe3efebd62f0600c"
+
+[license]
+# Upstream licenses the project as a whole LGPL-3.0-or-later because
+# the gtk-priv struct-layout headers are extracted from GTK; src/ and
+# the public header are MIT (LICENSE_MIT.txt).
+spdx = "LGPL-3.0-or-later"
+url = "https://github.com/wmww/gtk-layer-shell/blob/v0.9.2/LICENSE_LGPL.txt"
+
+[build]
+script_path = "packages/registry/gtk-layer-shell/build-gtk-layer-shell.sh"
+
+[outputs]
+libs = ["lib/libgtk-layer-shell.a"]
+headers = ["include/gtk-layer-shell"]
+pkgconfig = ["lib/pkgconfig/gtk-layer-shell-0.pc"]

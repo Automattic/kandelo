@@ -1,0 +1,43 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+# basu is sd-bus extracted from systemd (by mako's author) — the sd-bus
+# provider mako's dbus glue compiles against (mako speaks sd_bus_*, not
+# gdbus). It talks to the PR22 dbus-daemon session bus over the same
+# unix-socket + EXTERNAL(SO_PEERCRED) wire path gdbus uses.
+name = "basu"
+version = "0.2.1"
+kernel_abi = 17
+depends_on = []
+
+[[host_tools]]
+# The errno lookup tables ship as .gperf inputs, not outputs.
+name = "gperf"
+version_constraint = ">=3.1"
+probe = { args = ["--version"], version_regex = "GNU gperf (\\d+\\.\\d+)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.gperf); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.gperf); or apt install gperf" }
+
+[[host_tools]]
+# generate-gperfs.py turns the errno list into the .gperf input.
+name = "python3"
+version_constraint = ">=3.8"
+probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.python3); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.python3); or apt install python3" }
+
+[source]
+url = "https://git.sr.ht/~emersion/basu/archive/v0.2.1.tar.gz"
+sha256 = "43b327073d1ac7bc6cbc0d3dfff729348fc970dfff0551ad40e366332e990204"
+
+[license]
+spdx = "LGPL-2.1-or-later"
+url = "https://git.sr.ht/~emersion/basu/tree/v0.2.1/item/LICENSE.LGPL2.1"
+
+[build]
+script_path = "packages/registry/basu/build-basu.sh"
+
+[outputs]
+libs = ["lib/libbasu.a"]
+headers = ["include/basu/sd-bus.h"]
+pkgconfig = ["lib/pkgconfig/basu.pc"]

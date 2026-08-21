@@ -1,0 +1,31 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+# Text shaper (libharfbuzz.a). Ported for pango (plan
+# docs/plans/2026-07-14-build-hyprland-class-compositor-plan.md §4,
+# PR23). Built from the upstream single-TU amalgam (src/harfbuzz.cc)
+# with the freetype font backend and the glib unicode callbacks
+# (pango shapes through hb_glib_get_unicode_funcs); upstream's meson
+# build is bypassed.
+name = "harfbuzz"
+version = "10.1.0"
+kernel_abi = 17
+depends_on = ["freetype@2.13.3", "glib@2.84.4"]
+
+[source]
+url = "https://github.com/harfbuzz/harfbuzz/releases/download/10.1.0/harfbuzz-10.1.0.tar.xz"
+sha256 = "6ce3520f2d089a33cef0fc48321334b8e0b72141f6a763719aaaecd2779ecb82"
+
+[license]
+spdx = "MIT-Modern-Variant"
+url = "https://github.com/harfbuzz/harfbuzz/blob/10.1.0/COPYING"
+
+[build]
+script_path = "packages/registry/harfbuzz/build-harfbuzz.sh"
+
+[outputs]
+libs = ["lib/libharfbuzz.a"]
+headers = ["include/harfbuzz"]
+pkgconfig = ["lib/pkgconfig/harfbuzz.pc"]

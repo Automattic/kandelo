@@ -115,6 +115,13 @@ describe("wlcompositor — server composites + routes input to a client", () => 
           .toBe(0xff0000);
         expect(out.value).toMatch(/FLIP fb=\d+ first=1/);
 
+        // wp_presentation: the advertised clock is CLOCK_MONOTONIC (1) and
+        // the feedback resolved as `presented` on the flip that mapped the
+        // client — never `discarded` for a visible window.
+        expect(out.value).toContain("PRESENTATION_CLOCK id=1");
+        expect(out.value).toMatch(/PRESENTED sec=\d+ nsec=\d+ refresh=\d+ seq=\d+/);
+        expect(out.value).not.toContain("PRESENTATION_DISCARDED");
+
         // Inject a keyboard key on event0 (routed to the keyboard-focused
         // window) and — after moving the cursor over the window — a pointer
         // button on event1 (routed to the surface under the cursor).
@@ -133,7 +140,9 @@ describe("wlcompositor — server composites + routes input to a client", () => 
         ]);
         expect(clientCode, `client exit.\n${dump()}`).toBe(0);
 
-        // The client parsed the compositor's xkb keymap and saw both events.
+        // The client compiled the compositor's xkb keymap, found the
+        // full-terminal keys (F1, Delete), and saw both events.
+        expect(out.value).toContain("KEYMAP_SYMS f1=1 delete=1");
         expect(out.value).toMatch(/KEYMAP format=1 size=\d+ ok=1/);
         expect(out.value).toMatch(new RegExp(`GOT_KEY key=${KEY_A} state=1`));
         expect(out.value).toMatch(new RegExp(`GOT_BTN button=${BTN_LEFT} state=1`));

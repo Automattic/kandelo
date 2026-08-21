@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>KMS presenter rebuild fixture</title>
+    <style>
+      body { margin: 0; background: #888; }
+      canvas { display: block; width: 256px; height: 256px; image-rendering: pixelated; }
+    </style>
+  </head>
+  <body>
+    <canvas id="scanout" width="256" height="256"></canvas>
+    <pre id="status">pending</pre>
+    <script type="module">
+      const canvas = document.getElementById("scanout");
+      const status = document.getElementById("status");
+      const worker = new Worker(
+        new URL("./kms-presenter-worker.ts", import.meta.url),
+        { type: "module" },
+      );
+      worker.onmessage = (e) => {
+        status.textContent = JSON.stringify(e.data);
+        window.__kmsPhase = e.data;
+      };
+      worker.onerror = (e) => {
+        status.textContent = JSON.stringify({ error: String(e.message) });
+        window.__kmsPhase = { error: String(e.message) };
+      };
+      const offscreen = canvas.transferControlToOffscreen();
+      window.__kmsStep = (step) => worker.postMessage({ step });
+      worker.postMessage({ step: "init", canvas: offscreen }, [offscreen]);
+    </script>
+  </body>
+</html>

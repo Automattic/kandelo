@@ -40,6 +40,7 @@
 #include <wayland-client-protocol.h>
 #include "xdg-shell-client-protocol.h"
 #include "xdg-decoration-v1-client-protocol.h"
+#include "wlr-layer-shell-v1-client-protocol.h"
 
 #include <gbm.h>
 #include <xkbcommon/xkbcommon.h>
@@ -74,9 +75,12 @@ struct kwl_window {
     struct wl_seat *seat;
     struct wl_output *output;
 
+    struct zwlr_layer_shell_v1 *layer_shell;
+
     struct wl_surface *surface;
     struct xdg_surface *xdg_surface;
     struct xdg_toplevel *toplevel;
+    struct zwlr_layer_surface_v1 *layer_surface;
     struct wl_keyboard *keyboard;
     struct wl_pointer *pointer;
     struct zxdg_decoration_manager_v1 *decor_mgr;
@@ -150,6 +154,11 @@ static void registry_global(void *data, struct wl_registry *reg, uint32_t name,
     else if (strcmp(iface, "zxdg_decoration_manager_v1") == 0)
         w->decor_mgr = wl_registry_bind(
             reg, name, &zxdg_decoration_manager_v1_interface, 1);
+    else if (strcmp(iface, "zwlr_layer_shell_v1") == 0)
+        /* v3 added zwlr_layer_shell_v1.destroy, which kwl_window_destroy
+         * calls, so bind as high as the compositor offers. */
+        w->layer_shell = wl_registry_bind(
+            reg, name, &zwlr_layer_shell_v1_interface, version < 4 ? version : 4);
 }
 static void registry_global_remove(void *data, struct wl_registry *r,
                                    uint32_t name) {}
@@ -219,6 +228,37 @@ static void toplevel_close(void *data, struct xdg_toplevel *t) {
 static const struct xdg_toplevel_listener toplevel_listener = {
     .configure = toplevel_configure,
     .close = toplevel_close,
+};
+
+/* ---- wlr-layer-shell ---------------------------------------------------- */
+
+/* A layer surface has no size of its own: the compositor anchors it and this
+ * configure states the box it must fill. Before the first commit it just sets
+ * the size the buffers are built at; afterwards it is a resize, exactly like
+ * the tiling path. */
+static void layer_surface_configure(void *data,
+                                    struct zwlr_layer_surface_v1 *ls,
+                                    uint32_t serial, uint32_t w, uint32_t h) {
+    struct kwl_window *win = data;
+    zwlr_layer_surface_v1_ack_configure(ls, serial);
+    win->configured = 1;
+    if (w == 0 || h == 0) return;
+    if (!win->mapped) {
+        win->w = (int)w;
+        win->h = (int)h;
+    } else if ((int)w != win->w || (int)h != win->h) {
+        kwl_apply_resize(win, (int)w, (int)h);
+    }
+}
+static void layer_surface_closed(void *data,
+                                 struct zwlr_layer_surface_v1 *ls) {
+    struct kwl_window *win = data;
+    struct kwl_event e = { .type = KWL_CLOSE };
+    kwl_push(win, &e);
+}
+static const struct zwlr_layer_surface_v1_listener layer_surface_listener = {
+    .configure = layer_surface_configure,
+    .closed = layer_surface_closed,
 };
 
 /* ---- frame callback ---------------------------------------------------- */
@@ -499,16 +539,14 @@ static void draw_titlebar(struct kwl_window *w, struct kwl_buffer *b,
     }
 }
 
-/* ---- public API -------------------------------------------------------- */
+/* ---- shared setup ------------------------------------------------------- */
 
-struct kwl_window *kwl_window_create(const char *title, int w, int h) {
-    if (w <= 0 || h <= 0) { errno = EINVAL; return NULL; }
+/* Connect, bind the globals, hook the seat up, and create the bare
+ * wl_surface both roles build on. Returns NULL (with the partial window
+ * already destroyed) on failure. */
+static struct kwl_window *kwl_open(void) {
     struct kwl_window *win = calloc(1, sizeof(*win));
     if (!win) { errno = ENOMEM; return NULL; }
-    win->w = w;
-    win->h = h;
-    win->tb_h = KWL_TITLEBAR_H;   /* CSD default; SSD negotiation zeroes it */
-    if (title) win->title = strdup(title);
 
     int fd = connect_socket();
     if (fd < 0) goto fail;
@@ -520,10 +558,9 @@ struct kwl_window *kwl_window_create(const char *title, int w, int h) {
     wl_display_roundtrip(win->display);   /* receive globals */
     wl_display_roundtrip(win->display);   /* receive their initial events */
 
-    if (!win->compositor || !win->shm || !win->wm_base || !win->seat)
-        goto fail;
-
-    xdg_wm_base_add_listener(win->wm_base, &wm_base_listener, win);
+    if (!win->compositor || !win->shm || !win->seat) goto fail;
+    if (win->wm_base)
+        xdg_wm_base_add_listener(win->wm_base, &wm_base_listener, win);
 
     /* Seat inputs first, so the compositor's map-time focus reaches them. */
     win->keyboard = wl_seat_get_keyboard(win->seat);
@@ -533,8 +570,40 @@ struct kwl_window *kwl_window_create(const char *title, int w, int h) {
     if (win->pointer)
         wl_pointer_add_listener(win->pointer, &pointer_listener, win);
 
-    /* Toplevel. */
     win->surface = wl_compositor_create_surface(win->compositor);
+    if (!win->surface) goto fail;
+    return win;
+
+fail:
+    kwl_window_destroy(win);
+    return NULL;
+}
+
+/* Allocate the shared double buffer once the final content size is known. */
+static int kwl_open_buffers(struct kwl_window *win) {
+    win->total_h = win->h + win->tb_h;
+    win->render_fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
+    if (win->render_fd < 0) return -1;
+    win->gbm = gbm_create_device(win->render_fd);
+    if (!win->gbm) return -1;
+    for (int i = 0; i < KWL_NUM_BUFFERS; i++)
+        if (kwl_buffer_init(win, &win->bufs[i]) != 0) return -1;
+    win->back_index = 0;
+    win->back = content_view(win, &win->bufs[0]);
+    return 0;
+}
+
+/* ---- public API -------------------------------------------------------- */
+
+struct kwl_window *kwl_window_create(const char *title, int w, int h) {
+    if (w <= 0 || h <= 0) { errno = EINVAL; return NULL; }
+    struct kwl_window *win = kwl_open();
+    if (!win) return NULL;
+    win->w = w;
+    win->h = h;
+    win->tb_h = KWL_TITLEBAR_H;   /* CSD default; SSD negotiation zeroes it */
+    if (title) win->title = strdup(title);
+    if (!win->wm_base) goto fail;
     win->xdg_surface = xdg_wm_base_get_xdg_surface(win->wm_base, win->surface);
     xdg_surface_add_listener(win->xdg_surface, &xdg_surface_listener, win);
     win->toplevel = xdg_surface_get_toplevel(win->xdg_surface);
@@ -562,15 +631,7 @@ struct kwl_window *kwl_window_create(const char *title, int w, int h) {
     while (!win->configured)
         if (wl_display_dispatch(win->display) < 0) goto fail;
 
-    win->total_h = h + win->tb_h;
-
-    /* gbm-backed double buffer. */
-    win->render_fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
-    if (win->render_fd < 0) goto fail;
-    win->gbm = gbm_create_device(win->render_fd);
-    if (!win->gbm) goto fail;
-    for (int i = 0; i < KWL_NUM_BUFFERS; i++)
-        if (kwl_buffer_init(win, &win->bufs[i]) != 0) goto fail;
+    if (kwl_open_buffers(win) != 0) goto fail;
 
     /* Decorate both buffers once (skipped under SSD, tb_h 0); the app only
      * ever draws the content. */
@@ -580,9 +641,52 @@ struct kwl_window *kwl_window_create(const char *title, int w, int h) {
             draw_titlebar(win, &win->bufs[i], title, tb_font);
         if (tb_font) wpk_font_destroy(tb_font);
     }
+    return win;
 
-    win->back_index = 0;
-    win->back = content_view(win, &win->bufs[0]);
+fail:
+    kwl_window_destroy(win);
+    return NULL;
+}
+
+struct kwl_window *kwl_layer_create(const char *ns,
+                                    const struct kwl_layer_opts *opts) {
+    if (!opts) { errno = EINVAL; return NULL; }
+    struct kwl_window *win = kwl_open();
+    if (!win) return NULL;
+    if (!win->layer_shell) goto fail;   /* compositor has no layer shell */
+    /* A shell component is never decorated: the compositor owns its box. */
+    win->tb_h = 0;
+    win->w = opts->w;
+    win->h = opts->h;
+    if (ns) win->title = strdup(ns);
+
+    win->layer_surface = zwlr_layer_shell_v1_get_layer_surface(
+        win->layer_shell, win->surface, NULL, (uint32_t)opts->layer,
+        ns ? ns : "layer");
+    if (!win->layer_surface) goto fail;
+    zwlr_layer_surface_v1_add_listener(win->layer_surface,
+                                       &layer_surface_listener, win);
+    zwlr_layer_surface_v1_set_size(win->layer_surface, (uint32_t)opts->w,
+                                   (uint32_t)opts->h);
+    zwlr_layer_surface_v1_set_anchor(win->layer_surface, opts->anchor);
+    zwlr_layer_surface_v1_set_exclusive_zone(win->layer_surface,
+                                             opts->exclusive_zone);
+    zwlr_layer_surface_v1_set_margin(win->layer_surface, opts->margin_top,
+                                     opts->margin_right, opts->margin_bottom,
+                                     opts->margin_left);
+    zwlr_layer_surface_v1_set_keyboard_interactivity(
+        win->layer_surface,
+        opts->keyboard ? ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE
+                       : ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
+    /* The protocol's initial commit: no buffer, just the state above. The
+     * compositor answers with the box to render into. */
+    wl_surface_commit(win->surface);
+
+    while (!win->configured)
+        if (wl_display_dispatch(win->display) < 0) goto fail;
+    if (win->w <= 0 || win->h <= 0) goto fail;
+
+    if (kwl_open_buffers(win) != 0) goto fail;
     return win;
 
 fail:
@@ -602,6 +706,11 @@ void kwl_window_destroy(struct kwl_window *win) {
     if (win->decor) zxdg_toplevel_decoration_v1_destroy(win->decor);
     if (win->decor_mgr) zxdg_decoration_manager_v1_destroy(win->decor_mgr);
     free(win->title);
+    if (win->layer_surface) zwlr_layer_surface_v1_destroy(win->layer_surface);
+    if (win->layer_shell &&
+        wl_proxy_get_version((struct wl_proxy *)win->layer_shell) >=
+            ZWLR_LAYER_SHELL_V1_DESTROY_SINCE_VERSION)
+        zwlr_layer_shell_v1_destroy(win->layer_shell);
     if (win->toplevel) xdg_toplevel_destroy(win->toplevel);
     if (win->xdg_surface) xdg_surface_destroy(win->xdg_surface);
     if (win->surface) wl_surface_destroy(win->surface);

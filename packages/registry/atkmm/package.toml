@@ -1,0 +1,27 @@
+kind = "library"
+name = "atkmm"
+version = "2.28.0"
+kernel_abi = 17
+depends_on = [
+  "atk@2.36.0",
+  "glibmm@2.62.0",
+  "glib@2.84.4",
+  "libsigcxx@2.10.3",
+  "libcxx@21.1.7",
+]
+
+[source]
+url = "https://download.gnome.org/sources/atkmm/2.28/atkmm-2.28.0.tar.xz"
+sha256 = "4c4cfc917fd42d3879ce997b463428d6982affa0fb660cafcc0bc2d9afcedd3a"
+
+[license]
+spdx = "LGPL-2.1-or-later"
+url = "https://gitlab.gnome.org/GNOME/atkmm/-/blob/2.28.0/COPYING"
+
+[build]
+script_path = "packages/registry/atkmm/build-atkmm.sh"
+
+[outputs]
+libs = ["lib/libatkmm-1.6.a"]
+headers = ["include/atkmm-1.6"]
+pkgconfig = ["lib/pkgconfig/atkmm-1.6.pc"]

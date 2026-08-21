@@ -1,0 +1,7 @@
+script_path = "packages/registry/pixman/build-pixman.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "d1c57b6b5"
+revision    = 1
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

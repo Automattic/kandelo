@@ -1,0 +1,31 @@
+kind = "library"
+name = "pangomm"
+version = "2.42.0"
+kernel_abi = 17
+depends_on = [
+  "pango@1.42.4",
+  "glibmm@2.62.0",
+  "cairomm@1.12.2",
+  "glib@2.84.4",
+  "cairo@1.16.0",
+  "fontconfig@2.15.0",
+  "freetype@2.13.3",
+  "libsigcxx@2.10.3",
+  "libcxx@21.1.7",
+]
+
+[source]
+url = "https://download.gnome.org/sources/pangomm/2.42/pangomm-2.42.0.tar.xz"
+sha256 = "ca6da067ff93a6445780c0b4b226eb84f484ab104b8391fb744a45cbc7edbf56"
+
+[license]
+spdx = "LGPL-2.1-or-later"
+url = "https://gitlab.gnome.org/GNOME/pangomm/-/blob/2.42.0/COPYING"
+
+[build]
+script_path = "packages/registry/pangomm/build-pangomm.sh"
+
+[outputs]
+libs = ["lib/libpangomm-1.4.a"]
+headers = ["include/pangomm-1.4"]
+pkgconfig = ["lib/pkgconfig/pangomm-1.4.pc"]

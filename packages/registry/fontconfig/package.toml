@@ -1,0 +1,33 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+name = "fontconfig"
+version = "2.15.0"
+kernel_abi = 17
+depends_on = ["freetype@2.13.3", "libxml2@2.13.8"]
+
+[[host_tools]]
+# fcobjshash.h is generated at build time — the release tarball ships
+# only the .gperf input.
+name = "gperf"
+version_constraint = ">=3.0"
+probe = { args = ["--version"], version_regex = "GNU gperf (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.gperf); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.gperf); or apt install gperf" }
+
+[source]
+url = "https://www.freedesktop.org/software/fontconfig/release/fontconfig-2.15.0.tar.xz"
+sha256 = "63a0658d0e06e0fa886106452b58ef04f21f58202ea02a94c39de0d3335d7c0e"
+
+[license]
+spdx = "MIT"
+url = "https://gitlab.freedesktop.org/fontconfig/fontconfig/-/blob/2.15.0/COPYING"
+
+[build]
+script_path = "packages/registry/fontconfig/build-fontconfig.sh"
+
+[outputs]
+libs = ["lib/libfontconfig.a"]
+headers = ["include/fontconfig"]
+pkgconfig = ["lib/pkgconfig/fontconfig.pc"]

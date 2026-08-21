@@ -10,7 +10,10 @@
  *   - `kwlctl --listen` streams the `event>>data` line emitted when
  *     `kwlctl dispatch workspace 2` switches workspace (proves the event bus);
  *   - `kwlctl dispatch exec wlclient-test` forks+execs a fourth client through
- *     the compositor (proves dispatch exec; the exec resolves via onResolveExec).
+ *     the compositor (proves dispatch exec; the exec resolves via onResolveExec);
+ *   - the Hyprland IPC pair (/tmp/hypr/wlcompositor/.socket.sock + .socket2.sock)
+ *     answers `j/`-prefixed queries in hyprctl -j shapes and streams the same
+ *     events with no handshake — the surface Waybar's hyprland modules consume.
  *
  * kwlctl talks to the compositor entirely inside the kernel (a client<->server
  * UNIX socket), so there is no host/src change — the dual-host parity rule is
@@ -152,7 +155,37 @@ describe("wlcompositor — kwlctl control + event IPC", () => {
         const workspaces = JSON.parse(wsMatch![1]) as Array<{
           id: number; windows: number; active: boolean;
         }>;
-        expect(workspaces).toContainEqual({ id: 1, windows: 3, active: true });
+        expect(workspaces).toContainEqual(
+          expect.objectContaining({ id: 1, windows: 3, active: true }));
+
+        // --- Hyprland socket1: hyprctl -j shapes behind the j/ prefix. ---
+        const hyprEnv = ["KWLCTL_SOCKET=/tmp/hypr/wlcompositor/.socket.sock"];
+        const awCode = await host.spawn(
+          kwlctlBytes, ["kwlctl", "j/activeworkspace"], { env: hyprEnv });
+        expect(awCode, `j/activeworkspace exit.\n${dump()}`).toBe(0);
+        const awMatch = out.value.match(/\n(\{"id":1,"name":"1"[^\n]*\})\n/);
+        expect(awMatch, `no activeworkspace JSON.\n${dump()}`).not.toBeNull();
+        const activeWs = JSON.parse(awMatch![1]) as {
+          monitor: string; windows: number; active: boolean;
+        };
+        expect(activeWs.monitor).toBe("virtual-0");
+        expect(activeWs.windows).toBe(3);
+        const monCode = await host.spawn(
+          kwlctlBytes, ["kwlctl", "j/monitors"], { env: hyprEnv });
+        expect(monCode, `j/monitors exit.\n${dump()}`).toBe(0);
+        const monMatch = out.value.match(/(\[\{"id":0,"name":"virtual-0"[^\n]*\])/);
+        expect(monMatch, `no monitors JSON.\n${dump()}`).not.toBeNull();
+        const monitors = JSON.parse(monMatch![1]) as Array<{
+          focused: boolean; activeWorkspace: { id: number };
+        }>;
+        expect(monitors[0].focused).toBe(true);
+        expect(monitors[0].activeWorkspace.id).toBe(1);
+
+        // --- Hyprland socket2 streams events from the first byte on. ---
+        host.spawn(kwlctlBytes, ["kwlctl", "--listen"], {
+          env: ["KWLCTL_SOCKET=/tmp/hypr/wlcompositor/.socket2.sock"],
+        });
+        await waitFor(out, "HYPR_LISTENER", 10_000, dump);
 
         // --- --listen streams the workspace event fired by a dispatch. ---
         runKwlctl(["--listen"]); // background; drains until compositor exits
@@ -161,6 +194,7 @@ describe("wlcompositor — kwlctl control + event IPC", () => {
         const dispCode = await runKwlctl(["dispatch", "workspace", "2"]);
         expect(dispCode, `dispatch workspace exit.\n${dump()}`).toBe(0);
         await waitFor(out, "workspace>>2", 10_000, dump);
+        await waitFor(out, "workspacev2>>2,2", 10_000, dump);
 
         // --- dispatch exec spawns a fourth client through the compositor.
         const execCode = await runKwlctl(

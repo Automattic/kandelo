@@ -1,0 +1,34 @@
+# Per-library manifest for pcre2. See docs/package-management.md.
+#
+# Ports PCRE2 10.44's 8-bit library (libpcre2-8.a) to wasm32-posix-kernel.
+# glib's gregex.c compiles against it, so GRegex — and the
+# g_regex_error_quark that glibmm's Glib::Error::register_init() calls
+# at startup — resolve inside libglib-2.0.a instead of staying imports.
+#
+# Same source pin as the pcre2-source package (kind = "source", the
+# unbuilt tree mariadb configures itself). This package builds and
+# caches an archive; the two are independent entries.
+#
+# No JIT: wasm has no runtime code generation.
+
+kind = "library"
+
+name = "pcre2"
+version = "10.44"
+kernel_abi = 17
+
+[source]
+url = "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.44/pcre2-10.44.tar.gz"
+sha256 = "86b9cb0aa3bcb7994faa88018292bc704cdbb708e785f7c74352ff6ea7d3175b"
+
+[license]
+spdx = "BSD-3-Clause"
+url = "https://github.com/PCRE2Project/pcre2/blob/master/LICENCE"
+
+[build]
+script_path = "packages/registry/pcre2/build-pcre2.sh"
+
+[outputs]
+libs = ["lib/libpcre2-8.a"]
+headers = ["include/pcre2.h"]
+pkgconfig = ["lib/pkgconfig/libpcre2-8.pc"]

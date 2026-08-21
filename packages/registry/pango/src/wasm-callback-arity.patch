@@ -1,0 +1,96 @@
+--- a/pango/pangocairo-font.c
++++ b/pango/pangocairo-font.c
+@@ -628,7 +628,8 @@
+ }
+ 
+ static void
+-free_metrics_info (PangoCairoFontMetricsInfo *info)
++free_metrics_info (PangoCairoFontMetricsInfo *info,
++                   gpointer                   user_data)
+ {
+   pango_font_metrics_unref (info->metrics);
+   g_slice_free (PangoCairoFontMetricsInfo, info);
+--- a/pango/pangofc-font.c
++++ b/pango/pangofc-font.c
+@@ -142,7 +142,8 @@
+ }
+ 
+ static void
+-free_metrics_info (PangoFcMetricsInfo *info)
++free_metrics_info (PangoFcMetricsInfo *info,
++                   gpointer            user_data)
+ {
+   pango_font_metrics_unref (info->metrics);
+   g_slice_free (PangoFcMetricsInfo, info);
+--- a/pango/pango-context.c
++++ b/pango/pango-context.c
+@@ -39,6 +39,12 @@
+ #include "pango-engine-private.h"
+ #include "pango-script-private.h"
+ #include "pango-emoji-private.h"
++
++static void
++pango_item_free_wasm_cb (gpointer item, gpointer user_data)
++{
++  pango_item_free (item);
++}
+ 
+ /**
+  * PangoContext:
+@@ -1794,7 +1800,7 @@
+ 
+   update_metrics_from_items (metrics, language, sample_str, text_len, items);
+ 
+-  g_list_foreach (items, (GFunc)pango_item_free, NULL);
++  g_list_foreach (items, pango_item_free_wasm_cb, NULL);
+   g_list_free (items);
+ 
+   g_object_unref (current_fonts);
+--- a/pango/pango-item.c
++++ b/pango/pango-item.c
+@@ -24,6 +24,12 @@
+ #include "pango-item.h"
+ #include "pango-impl-utils.h"
+ 
++static void
++pango_attribute_destroy_wasm_cb (gpointer attr, gpointer user_data)
++{
++  pango_attribute_destroy (attr);
++}
++
+ /**
+  * pango_item_new:
+  *
+@@ -96,7 +102,7 @@
+ 
+   if (item->analysis.extra_attrs)
+     {
+-      g_slist_foreach (item->analysis.extra_attrs, (GFunc)pango_attribute_destroy, NULL);
++      g_slist_foreach (item->analysis.extra_attrs, pango_attribute_destroy_wasm_cb, NULL);
+       g_slist_free (item->analysis.extra_attrs);
+     }
+ 
+--- a/pango/pango-markup.c
++++ b/pango/pango-markup.c
+@@ -29,6 +29,12 @@
+ #include "pango-enum-types.h"
+ #include "pango-impl-utils.h"
+ #include "pango-utils-internal.h"
++
++static void
++pango_attribute_destroy_wasm_cb (gpointer attr, gpointer user_data)
++{
++  pango_attribute_destroy (attr);
++}
+ 
+ /* FIXME */
+ #define _(x) x
+@@ -191,7 +197,7 @@
+ static void
+ open_tag_free (OpenTag *ot)
+ {
+-  g_slist_foreach (ot->attrs, (GFunc) pango_attribute_destroy, NULL);
++  g_slist_foreach (ot->attrs, pango_attribute_destroy_wasm_cb, NULL);
+   g_slist_free (ot->attrs);
+   g_slice_free (OpenTag, ot);
+ }

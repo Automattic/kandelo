@@ -1,0 +1,14 @@
+script_path = "packages/registry/cairo/build-cairo.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "b87f313b3"
+revision    = 3
+
+# The fetched `cairo-src/` tree is gitignored; the resolver hashes these
+# tracked inputs on a clean checkout.
+inputs = [
+  "packages/registry/cairo/build-cairo.sh",
+  "packages/registry/cairo/src/wasm-callback-arity.patch",
+]
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

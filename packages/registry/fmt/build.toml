@@ -1,0 +1,14 @@
+script_path = "packages/registry/fmt/build-fmt.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "cf81d0f7c"
+revision    = 1
+
+# The fetched `fmt-src/` tree is gitignored; the resolver hashes these
+# tracked inputs on a clean checkout.
+inputs = [
+  "packages/registry/fmt/build-fmt.sh",
+  "packages/registry/fmt/src/include-cstdlib.patch",
+]
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
