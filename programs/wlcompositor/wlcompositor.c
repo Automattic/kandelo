@@ -69,10 +69,14 @@
  */
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
+#include <spawn.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -82,8 +86,12 @@
 #include <wayland-server.h>
 #include <wayland-server-protocol.h>
 #include "xdg-shell-server-protocol.h"
+#include "linux-dmabuf-v1-server-protocol.h"
+#include "xdg-decoration-v1-server-protocol.h"
 
 #include <xkbcommon/xkbcommon.h>
+#include <xkbcommon/xkbcommon-names.h>
+#include <xkbcommon/xkbcommon-keysyms.h>
 #include <libinput.h>
 
 #include <gbm.h>
@@ -110,11 +118,42 @@ extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
  * root-owned 0755 scratch mount, so under this kernel the only dir writable
  * by any uid is /tmp (mode 1777) — it plays the XDG_RUNTIME_DIR role here. */
 #define WL_SOCKET_PATH "/tmp/wayland-0"
+/* The hyprctl analog: a control + event socket alongside the wayland one.
+ * kwlctl (programs/wlcompositor/kwlctl.c) and the Tier-1 bar speak to it. */
+#define KWLCTL_SOCKET_PATH "/tmp/kwlctl-0"
+#define MAX_KWLCTL_CONNS 16
 #define WL_KEYMAP_PATH "/tmp/wlcompositor-keymap.xkb"
 #define MAX_INPUT_RES  16     /* keyboard/pointer resources we track */
 #define MAX_FRAME_CB   32     /* pending frame callbacks per surface */
 #define MAX_SURFACES   16     /* mapped toplevels in the z-order list */
 #define FOCUS_COLOR    0xff4f8fdfu  /* accent ring, GPU and CPU paths */
+#define N_WORKSPACES   9      /* SUPER+1..9, Hyprland's 1-based workspaces */
+
+/* The config path, hyprland.conf-shaped subset. Absent = generic defaults
+ * (install_default_binds); WLC_CONFIG overrides for tests. */
+#define WLC_CONFIG_PATH "/etc/kandelo/wlcompositor.conf"
+#define MAX_BINDS 64
+
+/* Modifier bits used by the keybind engine (mapped from xkb mod state). */
+#define MOD_SUPER 1
+#define MOD_SHIFT 2
+#define MOD_CTRL  4   /* the browser reserves SUPER (Cmd/Win), so CTRL is the
+                         usable modifier for the in-browser demo */
+
+enum bind_action {
+    ACT_EXEC, ACT_WORKSPACE, ACT_MOVE_TO_WS, ACT_KILL,
+    ACT_CYCLE_NEXT, ACT_CYCLE_PREV,
+};
+
+/* One `bind = MODS, KEY, DISPATCHER, ARGS` rule. sym is the BASE-level keysym
+ * (shift-independent) so `SUPER SHIFT, 1` matches the same key as `SUPER, 1`. */
+struct keybind {
+    uint32_t mods;         /* MOD_* bitmask; matched exactly */
+    xkb_keysym_t sym;
+    int action;
+    int arg;               /* workspace number for workspace/movetoworkspace */
+    char param[64];        /* command line for exec */
+};
 
 /* ---- surface state ----------------------------------------------------- */
 
@@ -132,6 +171,7 @@ struct surface {
     char app_id[32];
     int32_t x, y;                       /* top-left on the output */
     int32_t w, h;                       /* committed buffer dims */
+    int workspace;                      /* 1..N_WORKSPACES; 0 until first map */
     int mapped;                         /* has a committed buffer been shown */
     int placed;                         /* position assigned at first map */
     struct wl_resource *frame_cbs[MAX_FRAME_CB];
@@ -169,6 +209,8 @@ struct shm_buffer {
 };
 
 /* ---- compositor singleton ---------------------------------------------- */
+
+struct kwlctl_conn;   /* one control-socket connection (defined with the IPC) */
 
 struct compositor {
     struct wl_display *display;
@@ -213,6 +255,21 @@ struct compositor {
     /* Interactive move grab (xdg_toplevel.move). */
     struct surface *grab;
     double grab_dx, grab_dy;
+
+    /* Layout policy (enum layout_mode); FLOATING unless WLC_LAYOUT overrides. */
+    int layout;
+
+    /* The visible workspace (1..N_WORKSPACES). Surfaces on other workspaces
+     * stay mapped but are excluded from compositing, input, and tiling. */
+    int active_ws;
+
+    /* kwlctl control clients that issued --listen; they receive the
+     * `event>>data` stream (Hyprland socket2 format). NULL = free slot. */
+    struct kwlctl_conn *listeners[MAX_KWLCTL_CONNS];
+
+    /* Config-driven keybinds (install_default_binds or WLC_CONFIG_PATH). */
+    struct keybind binds[MAX_BINDS];
+    int n_binds;
 
     /* Bound seat resources (across all clients; routed per-client). */
     struct wl_resource *keyboards[MAX_INPUT_RES];
@@ -261,6 +318,23 @@ static void slot_remove(struct wl_resource **slots, struct wl_resource *r) {
 static void schedule_repaint(void);
 static void kbd_set_focus(struct surface *s);
 static void ptr_refresh_focus(void);
+static void kwlctl_emit(const char *fmt, ...);
+static void kwlctl_exec(char *args);
+
+/* A surface participates in compositing, input, and tiling only when it is
+ * mapped AND on the active workspace. */
+static int surface_visible(const struct surface *s) {
+    return s->mapped && s->workspace == g.active_ws;
+}
+
+/* Topmost mapped surface on workspace `ws` (its remembered focus, since
+ * focusing raises), or NULL. */
+static struct surface *topmost_on_ws(int ws) {
+    for (int i = g.n_surfaces - 1; i >= 0; i--)
+        if (g.zorder[i]->mapped && g.zorder[i]->workspace == ws)
+            return g.zorder[i];
+    return NULL;
+}
 
 /* ---- z-order helpers ---------------------------------------------------- */
 
@@ -286,7 +360,7 @@ static void zorder_raise(struct surface *s) {
 static struct surface *surface_at(double x, double y) {
     for (int i = g.n_surfaces - 1; i >= 0; i--) {
         struct surface *s = g.zorder[i];
-        if (!s->mapped) continue;
+        if (!surface_visible(s)) continue;
         if (x >= s->x && x < s->x + s->w && y >= s->y && y < s->y + s->h)
             return s;
     }
@@ -337,6 +411,98 @@ static void place_surface(struct surface *s) {
     s->x = x;
     s->y = y;
     s->placed = 1;
+}
+
+/* ---- tiling layout ------------------------------------------------------ */
+
+/* FLOATING (default, zero-initialised) keeps the app_id placement rules that
+ * /?demo=wayland depends on. DWINDLE dictates geometry to clients: the desktop
+ * becomes the tiling mode of the same compositor. Selected by WLC_LAYOUT. */
+enum layout_mode { LAYOUT_FLOATING = 0, LAYOUT_DWINDLE };
+
+struct geom { int x, y, w, h; };
+
+/* Gaps in output pixels. OUTER insets the whole tiling area from the screen
+ * edge; INNER separates adjacent windows. Hardcoded for v1 — PR17 makes them
+ * theme-driven. */
+#define TILE_GAP_OUTER 12
+#define TILE_GAP_INNER 8
+
+/* Pure dwindle tiler: at each step split the remaining region along its LONGER
+ * side (Hyprland's default). Pure — reads only its arguments — so the smoke
+ * gate predicts the exact partition and checks it against the emitted geometry. */
+static void compute_tiling(struct geom area, int n, struct geom *out) {
+    if (n <= 0) return;
+    area.x += TILE_GAP_OUTER;
+    area.y += TILE_GAP_OUTER;
+    area.w -= 2 * TILE_GAP_OUTER;
+    area.h -= 2 * TILE_GAP_OUTER;
+    if (area.w < 1) area.w = 1;
+    if (area.h < 1) area.h = 1;
+
+    struct geom region = area;
+    for (int i = 0; i < n; i++) {
+        if (i == n - 1) { out[i] = region; break; }
+        struct geom near = region, rest = region;
+        if (region.w >= region.h) {          /* wider than tall: split L|R */
+            int half = (region.w - TILE_GAP_INNER) / 2;
+            if (half < 1) half = 1;
+            near.w = half;
+            rest.x = region.x + half + TILE_GAP_INNER;
+            rest.w = region.w - half - TILE_GAP_INNER;
+        } else {                             /* taller than wide: split T/B */
+            int half = (region.h - TILE_GAP_INNER) / 2;
+            if (half < 1) half = 1;
+            near.h = half;
+            rest.y = region.y + half + TILE_GAP_INNER;
+            rest.h = region.h - half - TILE_GAP_INNER;
+        }
+        out[i] = near;
+        region = rest;
+    }
+}
+
+/* Recompute geometry for every mapped toplevel (in map order = z-order) and
+ * push it to each client through the xdg configure path. A no-op in FLOATING
+ * mode, so the app_id placement path is untouched. Emits one TILE marker per
+ * window for the smoke gate to verify the partition. */
+static void retile(void) {
+    if (g.layout == LAYOUT_FLOATING) return;
+
+    struct surface *tiled[MAX_SURFACES];
+    int n = 0;
+    for (int i = 0; i < g.n_surfaces; i++)
+        if (surface_visible(g.zorder[i])) tiled[n++] = g.zorder[i];
+    if (n == 0) return;
+
+    struct geom geoms[MAX_SURFACES];
+    struct geom area = { 0, 0, (int)g.width, (int)g.height };
+    compute_tiling(area, n, geoms);
+
+    for (int i = 0; i < n; i++) {
+        struct surface *s = tiled[i];
+        s->x = geoms[i].x;
+        s->y = geoms[i].y;
+        s->w = geoms[i].w;
+        s->h = geoms[i].h;
+        s->placed = 1;
+        /* The states array carries only ACTIVATED for now; TILED_* awaits an
+         * xdg-shell v2 bump. */
+        if (s->xdg_toplevel && s->xdg_surface) {
+            struct wl_array states;
+            wl_array_init(&states);
+            uint32_t *st = wl_array_add(&states, sizeof(uint32_t));
+            if (st) *st = XDG_TOPLEVEL_STATE_ACTIVATED;
+            xdg_toplevel_send_configure(s->xdg_toplevel, s->w, s->h, &states);
+            wl_array_release(&states);
+            xdg_surface_send_configure(s->xdg_surface,
+                                       wl_display_next_serial(g.display));
+        }
+        printf("TILE n=%d i=%d x=%d y=%d w=%d h=%d\n",
+               n, i, s->x, s->y, s->w, s->h);
+    }
+    fflush(stdout);
+    schedule_repaint();
 }
 
 /* ====================================================================== */
@@ -392,12 +558,16 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
 
     if (!s->mapped) {
         s->mapped = 1;
-        if (!s->placed) place_surface(s);
+        if (!s->workspace) s->workspace = g.active_ws;   /* opens on the visible ws */
+        /* Tiling dictates geometry for every window in retile(); only the
+         * floating desktop places individually by app_id. */
+        if (g.layout == LAYOUT_FLOATING && !s->placed) place_surface(s);
         zorder_raise(s);
         /* A newly mapped window takes keyboard focus (and pointer focus if
          * the cursor happens to be over it). */
         kbd_set_focus(s);
         ptr_refresh_focus();
+        retile();   /* no-op when floating */
     }
     schedule_repaint();
 }
@@ -434,9 +604,8 @@ static void surface_resource_destroy(struct wl_resource *r) {
     zorder_remove(s);
     if (g.kbd_focus == s) {
         g.kbd_focus = NULL;
-        /* Hand focus to the new top window, if any. */
-        if (g.n_surfaces)
-            kbd_set_focus(g.zorder[g.n_surfaces - 1]);
+        /* Hand focus to the new top window on the visible workspace, if any. */
+        kbd_set_focus(topmost_on_ws(g.active_ws));
     }
     if (g.ptr_focus == s) g.ptr_focus = NULL;
     if (g.grab == s) g.grab = NULL;
@@ -444,6 +613,8 @@ static void surface_resource_destroy(struct wl_resource *r) {
      * callbacks themselves are owned by the client and freed with it. */
     s->n_frame_cbs = 0;
     free(s);
+    /* A closed window frees its slice back to the remaining tiles. */
+    retile();   /* no-op when floating */
     schedule_repaint();
 }
 
@@ -588,6 +759,254 @@ static void shm_bind(struct wl_client *client, void *data, uint32_t version,
     wl_resource_set_implementation(r, &shm_impl, NULL, NULL);
     wl_shm_send_format(r, WL_SHM_FORMAT_XRGB8888);
     wl_shm_send_format(r, WL_SHM_FORMAT_ARGB8888);
+}
+
+/* ====================================================================== */
+/* zwp_linux_dmabuf_v1 (PR11)                                             */
+/* ====================================================================== */
+
+/* A client that renders with GL hands us its frame as a dmabuf (a prime-fd
+ * on a renderD128 bo) instead of a wl_shm pool. Sampling is identical to
+ * the shm path — both wrap a prime-fd + dims — so a dmabuf wl_buffer reuses
+ * struct shm_buffer, backed by a single-plane pool over the dmabuf fd. For
+ * a GPU-tier bo the downstream BIND_FOREIGN_TEXTURE is zero-copy (PR10).
+ *
+ * We advertise version 3 (format + modifier events), LINEAR only — the one
+ * layout the GPU tier and our gbm_bo_import path handle. Feedback (v4+) is
+ * intentionally not offered. */
+
+struct dmabuf_params {
+    int fd;               /* plane-0 fd, dup'd from the client; -1 until add */
+    int32_t offset, stride;
+    int has_plane;        /* add() recorded plane 0 */
+    int used;             /* create/create_immed consumes the params once */
+};
+
+/* Turn finished params into a wl_buffer-backing shm_buffer, transferring
+ * ownership of the plane fd to a fresh single-ref pool. On success *err=0;
+ * on a params error returns NULL with *err set to the code to report; on OOM
+ * returns NULL with *err=0 after posting no_memory. */
+static struct shm_buffer *dmabuf_make_buffer(struct wl_client *c,
+                                             struct dmabuf_params *p,
+                                             int32_t width, int32_t height,
+                                             uint32_t format, uint32_t *err) {
+    *err = 0;
+    if (!p->has_plane) {
+        *err = ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INCOMPLETE;
+        return NULL;
+    }
+    if (width <= 0 || height <= 0) {
+        *err = ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_DIMENSIONS;
+        return NULL;
+    }
+    if (format != DRM_FORMAT_XRGB8888 && format != DRM_FORMAT_ARGB8888) {
+        *err = ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_FORMAT;
+        return NULL;
+    }
+    struct shm_pool *pool = calloc(1, sizeof(*pool));
+    struct shm_buffer *b = calloc(1, sizeof(*b));
+    if (!pool || !b) {
+        free(pool);
+        free(b);
+        wl_client_post_no_memory(c);
+        return NULL;
+    }
+    pool->fd = p->fd;
+    pool->size = p->stride * height;
+    pool->refcount = 1;
+    b->pool = pool;
+    b->offset = p->offset;
+    b->width = width;
+    b->height = height;
+    b->stride = p->stride;
+    b->format = format;
+    p->fd = -1;   /* the pool owns the fd now */
+    return b;
+}
+
+/* Free a built-but-unpublished buffer (wl_resource_create failed after the
+ * fd was already transferred into the pool). */
+static void dmabuf_discard_buffer(struct shm_buffer *b) {
+    if (--b->pool->refcount == 0) shm_pool_free(b->pool);
+    free(b);
+}
+
+static void dmabuf_params_add(struct wl_client *c, struct wl_resource *r,
+                              int32_t fd, uint32_t plane_idx, uint32_t offset,
+                              uint32_t stride, uint32_t modifier_hi,
+                              uint32_t modifier_lo) {
+    struct dmabuf_params *p = wl_resource_get_user_data(r);
+    if (p->used) {
+        wl_resource_post_error(r, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_ALREADY_USED,
+                               "params already used");
+        close(fd);
+        return;
+    }
+    if (plane_idx != 0) {
+        wl_resource_post_error(r, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_PLANE_IDX,
+                               "only plane 0 is supported");
+        close(fd);
+        return;
+    }
+    if (p->has_plane) {
+        wl_resource_post_error(r, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_PLANE_SET,
+                               "plane 0 already set");
+        close(fd);
+        return;
+    }
+    /* LINEAR only: the GPU tier keeps a LINEAR-equivalent layout and the CPU
+     * fallback maps the fd as linear bytes. */
+    if ((((uint64_t)modifier_hi << 32) | modifier_lo) != DRM_FORMAT_MOD_LINEAR) {
+        wl_resource_post_error(r, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_FORMAT,
+                               "only DRM_FORMAT_MOD_LINEAR is supported");
+        close(fd);
+        return;
+    }
+    p->fd = fd;
+    p->offset = (int32_t)offset;
+    p->stride = (int32_t)stride;
+    p->has_plane = 1;
+}
+
+static void dmabuf_params_create(struct wl_client *c, struct wl_resource *r,
+                                 int32_t width, int32_t height, uint32_t format,
+                                 uint32_t flags) {
+    /* flags (y_invert/interlaced/bottom_first) don't apply: our producers
+     * render top-left-origin into a progressive bo. */
+    struct dmabuf_params *p = wl_resource_get_user_data(r);
+    if (p->used) {
+        wl_resource_post_error(r, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_ALREADY_USED,
+                               "params already used");
+        return;
+    }
+    p->used = 1;
+    uint32_t err = 0;
+    struct shm_buffer *b = dmabuf_make_buffer(c, p, width, height, format, &err);
+    if (!b) {
+        if (err) zwp_linux_buffer_params_v1_send_failed(r);
+        return;
+    }
+    struct wl_resource *br = wl_resource_create(c, &wl_buffer_interface, 1, 0);
+    if (!br) {
+        dmabuf_discard_buffer(b);
+        wl_client_post_no_memory(c);
+        return;
+    }
+    wl_resource_set_implementation(br, &buffer_impl, b, buffer_resource_destroy);
+    zwp_linux_buffer_params_v1_send_created(r, br);
+}
+
+static void dmabuf_params_create_immed(struct wl_client *c,
+                                       struct wl_resource *r, uint32_t buffer_id,
+                                       int32_t width, int32_t height,
+                                       uint32_t format, uint32_t flags) {
+    struct dmabuf_params *p = wl_resource_get_user_data(r);
+    if (p->used) {
+        wl_resource_post_error(r, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_ALREADY_USED,
+                               "params already used");
+        return;
+    }
+    p->used = 1;
+    uint32_t err = 0;
+    struct shm_buffer *b = dmabuf_make_buffer(c, p, width, height, format, &err);
+    if (!b) {
+        /* create_immed reports failure as a fatal protocol error (it has no
+         * 'failed' event — the client committed to the new_id). */
+        if (err) wl_resource_post_error(r, err, "invalid dmabuf params");
+        return;
+    }
+    struct wl_resource *br =
+        wl_resource_create(c, &wl_buffer_interface, 1, buffer_id);
+    if (!br) {
+        dmabuf_discard_buffer(b);
+        wl_client_post_no_memory(c);
+        return;
+    }
+    wl_resource_set_implementation(br, &buffer_impl, b, buffer_resource_destroy);
+}
+
+static void dmabuf_params_destroy_req(struct wl_client *c,
+                                      struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static const struct zwp_linux_buffer_params_v1_interface dmabuf_params_impl = {
+    .destroy = dmabuf_params_destroy_req,
+    .add = dmabuf_params_add,
+    .create = dmabuf_params_create,
+    .create_immed = dmabuf_params_create_immed,
+};
+static void dmabuf_params_resource_destroy(struct wl_resource *r) {
+    struct dmabuf_params *p = wl_resource_get_user_data(r);
+    if (!p) return;
+    if (p->fd >= 0) close(p->fd);   /* a plane added but never consumed */
+    free(p);
+}
+
+static void dmabuf_create_params(struct wl_client *c, struct wl_resource *r,
+                                 uint32_t params_id) {
+    struct dmabuf_params *p = calloc(1, sizeof(*p));
+    if (!p) { wl_client_post_no_memory(c); return; }
+    p->fd = -1;
+    struct wl_resource *pr = wl_resource_create(
+        c, &zwp_linux_buffer_params_v1_interface, wl_resource_get_version(r),
+        params_id);
+    if (!pr) { free(p); wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(pr, &dmabuf_params_impl, p,
+                                   dmabuf_params_resource_destroy);
+}
+static void dmabuf_destroy_req(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+
+/* Feedback (v4+) is not advertised, so a conforming client never reaches
+ * these. Hand back an inert resource rather than leaving a NULL dispatch
+ * slot a malformed client could crash the compositor through. */
+static void dmabuf_feedback_destroy_req(struct wl_client *c,
+                                        struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static const struct zwp_linux_dmabuf_feedback_v1_interface dmabuf_feedback_impl = {
+    .destroy = dmabuf_feedback_destroy_req,
+};
+static void dmabuf_get_feedback(struct wl_client *c, struct wl_resource *r,
+                                uint32_t id) {
+    struct wl_resource *fb = wl_resource_create(
+        c, &zwp_linux_dmabuf_feedback_v1_interface, wl_resource_get_version(r),
+        id);
+    if (!fb) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(fb, &dmabuf_feedback_impl, NULL, NULL);
+}
+static void dmabuf_get_default_feedback(struct wl_client *c,
+                                        struct wl_resource *r, uint32_t id) {
+    dmabuf_get_feedback(c, r, id);
+}
+static void dmabuf_get_surface_feedback(struct wl_client *c,
+                                        struct wl_resource *r, uint32_t id,
+                                        struct wl_resource *surface) {
+    dmabuf_get_feedback(c, r, id);
+}
+static const struct zwp_linux_dmabuf_v1_interface dmabuf_impl = {
+    .destroy = dmabuf_destroy_req,
+    .create_params = dmabuf_create_params,
+    .get_default_feedback = dmabuf_get_default_feedback,
+    .get_surface_feedback = dmabuf_get_surface_feedback,
+};
+static void dmabuf_bind(struct wl_client *c, void *data, uint32_t version,
+                        uint32_t id) {
+    struct wl_resource *r =
+        wl_resource_create(c, &zwp_linux_dmabuf_v1_interface, version, id);
+    if (!r) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(r, &dmabuf_impl, NULL, NULL);
+    /* Advertise the formats the GPU tier + gbm import path handle, LINEAR
+     * only. The modifier event exists since interface version 3. */
+    static const uint32_t fmts[] = { DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888 };
+    for (unsigned i = 0; i < sizeof(fmts) / sizeof(fmts[0]); i++) {
+        zwp_linux_dmabuf_v1_send_format(r, fmts[i]);
+        if (version >= ZWP_LINUX_DMABUF_V1_MODIFIER_SINCE_VERSION)
+            zwp_linux_dmabuf_v1_send_modifier(
+                r, fmts[i], (uint32_t)(DRM_FORMAT_MOD_LINEAR >> 32),
+                (uint32_t)(DRM_FORMAT_MOD_LINEAR & 0xffffffffu));
+    }
 }
 
 /* ====================================================================== */
@@ -808,6 +1227,61 @@ static void wm_base_bind(struct wl_client *client, void *data, uint32_t version,
 }
 
 /* ====================================================================== */
+/* zxdg_decoration_manager_v1 — force server-side decorations (PR14e)     */
+/* ====================================================================== */
+
+/* Negotiate the decoration mode by layout: a tiled window has no titlebar, so
+ * DWINDLE forces SERVER_SIDE (the compositor draws the border/focus ring and
+ * the client drops its CSD); FLOATING grants CLIENT_SIDE so a draggable
+ * titlebar stays. The client's preferred mode is acknowledged but ignored. */
+static void decoration_send_mode(struct wl_resource *r) {
+    uint32_t mode = g.layout == LAYOUT_DWINDLE
+                        ? ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
+                        : ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
+    zxdg_toplevel_decoration_v1_send_configure(r, mode);
+}
+static void decoration_destroy(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static void decoration_set_mode(struct wl_client *c, struct wl_resource *r,
+                                uint32_t mode) {
+    decoration_send_mode(r);
+}
+static void decoration_unset_mode(struct wl_client *c, struct wl_resource *r) {
+    decoration_send_mode(r);
+}
+static const struct zxdg_toplevel_decoration_v1_interface decoration_impl = {
+    .destroy = decoration_destroy,
+    .set_mode = decoration_set_mode,
+    .unset_mode = decoration_unset_mode,
+};
+
+static void decoration_mgr_destroy(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static void decoration_mgr_get_toplevel_decoration(
+        struct wl_client *client, struct wl_resource *resource, uint32_t id,
+        struct wl_resource *toplevel) {
+    struct wl_resource *d = wl_resource_create(
+        client, &zxdg_toplevel_decoration_v1_interface,
+        wl_resource_get_version(resource), id);
+    if (!d) { wl_client_post_no_memory(client); return; }
+    wl_resource_set_implementation(d, &decoration_impl, NULL, NULL);
+    decoration_send_mode(d);   /* initial configure */
+}
+static const struct zxdg_decoration_manager_v1_interface decoration_mgr_impl = {
+    .destroy = decoration_mgr_destroy,
+    .get_toplevel_decoration = decoration_mgr_get_toplevel_decoration,
+};
+static void decoration_mgr_bind(struct wl_client *client, void *data,
+                                uint32_t version, uint32_t id) {
+    struct wl_resource *r = wl_resource_create(
+        client, &zxdg_decoration_manager_v1_interface, version, id);
+    if (!r) { wl_client_post_no_memory(client); return; }
+    wl_resource_set_implementation(r, &decoration_mgr_impl, NULL, NULL);
+}
+
+/* ====================================================================== */
 /* wl_seat / wl_keyboard / wl_pointer                                     */
 /* ====================================================================== */
 
@@ -909,6 +1383,14 @@ static void kbd_set_focus(struct surface *s) {
     }
     wl_array_release(&keys);
     schedule_repaint();   /* focus border moved */
+    kwlctl_emit("activewindow>>%s", s->app_id);
+    /* Observable focus marker: keyboard focus only moves to a window once its
+     * first commit maps it (surface_commit), so this is the authoritative
+     * "the window is now closeable by killactive" signal — distinct from a
+     * client's own READY print, which fires when it *queues* its first commit,
+     * before the compositor has processed the map and moved focus here. */
+    printf("KBD_FOCUS app_id=%s\n", s->app_id);
+    fflush(stdout);
 }
 
 /* Pointer focus follows the surface under the cursor. */
@@ -935,6 +1417,39 @@ static void ptr_set_focus(struct surface *s) {
 static void ptr_refresh_focus(void) {
     if (g.grab) return;   /* no pointer focus during a move grab */
     ptr_set_focus(surface_at(g.cursor_x, g.cursor_y));
+}
+
+/* ---- workspaces --------------------------------------------------------- */
+
+/* Show workspace `ws`: its surfaces become visible + tiled, the rest hide.
+ * Focus restores to that workspace's topmost window (empty → no focus). */
+static void switch_workspace(int ws) {
+    if (ws < 1 || ws > N_WORKSPACES || ws == g.active_ws) return;
+    g.active_ws = ws;
+    kbd_set_focus(topmost_on_ws(ws));
+    ptr_refresh_focus();
+    retile();
+    schedule_repaint();
+    printf("WORKSPACE active=%d\n", ws);
+    fflush(stdout);
+    kwlctl_emit("workspace>>%d", ws);
+}
+
+/* Send the focused window to workspace `ws`; it vanishes from the current
+ * view, which re-tiles around its absence, and focus falls to the next
+ * window here. */
+static void move_focus_to_workspace(int ws) {
+    if (ws < 1 || ws > N_WORKSPACES || !g.kbd_focus) return;
+    struct surface *s = g.kbd_focus;
+    if (s->workspace == ws) return;
+    s->workspace = ws;
+    g.kbd_focus = NULL;
+    kbd_set_focus(topmost_on_ws(g.active_ws));
+    ptr_refresh_focus();
+    retile();
+    schedule_repaint();
+    printf("MOVE_TO_WS \"%s\" ws=%d\n", s->app_id, ws);
+    fflush(stdout);
 }
 
 static void seat_get_pointer(struct wl_client *client,
@@ -1313,7 +1828,7 @@ static int repaint_gl(void) {
     struct surface *top = NULL;
     for (int i = 0; i < g.n_surfaces; i++) {
         struct surface *s = g.zorder[i];
-        if (!s->mapped || !s->buffer) continue;
+        if (!surface_visible(s) || !s->buffer) continue;
         struct shm_buffer *b = wl_resource_get_user_data(s->buffer);
         if (!b) continue;
         texs[i] = shm_buffer_gl_texture(b);
@@ -1325,7 +1840,7 @@ static int repaint_gl(void) {
     glc_draw_tex(glc.wallpaper_tex, 0, 0, (int32_t)g.width, (int32_t)g.height);
     for (int i = 0; i < g.n_surfaces; i++) {
         struct surface *s = g.zorder[i];
-        if (!s->mapped || !s->buffer || !texs[i]) continue;
+        if (!surface_visible(s) || !s->buffer || !texs[i]) continue;
         struct shm_buffer *b = wl_resource_get_user_data(s->buffer);
         if (!b) continue;
         if (g.kbd_focus == s)   /* 2px accent ring behind the window */
@@ -1412,7 +1927,7 @@ static void repaint(void) {
         struct surface *top = NULL;
         for (int i = 0; i < g.n_surfaces; i++) {
             struct surface *s = g.zorder[i];
-            if (!s->mapped) continue;
+            if (!surface_visible(s)) continue;
             if (g.kbd_focus == s) draw_focus_border(s, dst, stride_px);
             blit_surface(s, dst, stride_px);
             top = s;
@@ -1506,6 +2021,185 @@ static int card_readable(int fd, uint32_t mask, void *data) {
 /* Input: libinput → wl_keyboard / wl_pointer                             */
 /* ====================================================================== */
 
+/* ---- keybind engine (config-driven) ------------------------------------ */
+
+/* The base-level (shift-independent) keysym for an evdev keycode, so a bind
+ * written as `1` matches whether or not Shift is held. */
+static xkb_keysym_t base_keysym(uint32_t key) {
+    struct xkb_keymap *km = xkb_state_get_keymap(g.xkb_state);
+    xkb_layout_index_t layout = xkb_state_key_get_layout(g.xkb_state, key + 8);
+    const xkb_keysym_t *syms;
+    int n = xkb_keymap_key_get_syms_by_level(km, key + 8, layout, 0, &syms);
+    return n > 0 ? syms[0] : XKB_KEY_NoSymbol;
+}
+
+/* The MOD_* bits currently active (only the mods our keymap defines). */
+static uint32_t active_mod_mask(void) {
+    uint32_t m = 0;
+    if (xkb_state_mod_name_is_active(g.xkb_state, XKB_MOD_NAME_LOGO,
+                                     XKB_STATE_MODS_EFFECTIVE) > 0) m |= MOD_SUPER;
+    if (xkb_state_mod_name_is_active(g.xkb_state, XKB_MOD_NAME_SHIFT,
+                                     XKB_STATE_MODS_EFFECTIVE) > 0) m |= MOD_SHIFT;
+    if (xkb_state_mod_name_is_active(g.xkb_state, XKB_MOD_NAME_CTRL,
+                                     XKB_STATE_MODS_EFFECTIVE) > 0) m |= MOD_CTRL;
+    return m;
+}
+
+/* Move keyboard focus to the next/prev visible window in z-order WITHOUT
+ * reordering (so a tiled layout keeps its geometry as focus cycles). */
+static void focus_cycle(int dir) {
+    struct surface *vis[MAX_SURFACES];
+    int n = 0, cur = -1;
+    for (int i = 0; i < g.n_surfaces; i++)
+        if (surface_visible(g.zorder[i])) {
+            if (g.zorder[i] == g.kbd_focus) cur = n;
+            vis[n++] = g.zorder[i];
+        }
+    if (n == 0) return;
+    int next = cur < 0 ? 0 : (cur + dir + n) % n;
+    kbd_set_focus(vis[next]);
+    ptr_refresh_focus();
+}
+
+static void run_dispatch(const struct keybind *b) {
+    switch (b->action) {
+    case ACT_EXEC: {
+        char tmp[64];
+        snprintf(tmp, sizeof(tmp), "%s", b->param);   /* kwlctl_exec strtoks */
+        kwlctl_exec(tmp);
+        break;
+    }
+    case ACT_WORKSPACE:    switch_workspace(b->arg); break;
+    case ACT_MOVE_TO_WS:   move_focus_to_workspace(b->arg); break;
+    case ACT_KILL:
+        if (g.kbd_focus && g.kbd_focus->xdg_toplevel)
+            xdg_toplevel_send_close(g.kbd_focus->xdg_toplevel);
+        break;
+    case ACT_CYCLE_NEXT:   focus_cycle(+1); break;
+    case ACT_CYCLE_PREV:   focus_cycle(-1); break;
+    }
+}
+
+/* Config-driven keybind interception. Returns 1 when the pressed combo matches
+ * a bind and must NOT reach the focused client; the release of a matched combo
+ * is swallowed too. xkb_state already reflects this key. */
+static int try_keybind(uint32_t key, uint32_t state) {
+    uint32_t mods = active_mod_mask();
+    if (!mods) return 0;   /* fast path: unmodified keys go to the client */
+    xkb_keysym_t sym = base_keysym(key);
+    for (int i = 0; i < g.n_binds; i++) {
+        if (g.binds[i].mods != mods || g.binds[i].sym != sym) continue;
+        if (state == WL_KEYBOARD_KEY_STATE_PRESSED) run_dispatch(&g.binds[i]);
+        return 1;
+    }
+    return 0;
+}
+
+/* ---- config parsing ----------------------------------------------------- */
+
+static void add_bind(uint32_t mods, xkb_keysym_t sym, int action, int arg,
+                     const char *param) {
+    if (g.n_binds >= MAX_BINDS) return;
+    struct keybind *b = &g.binds[g.n_binds++];
+    b->mods = mods;
+    b->sym = sym;
+    b->action = action;
+    b->arg = arg;
+    snprintf(b->param, sizeof(b->param), "%s", param ? param : "");
+}
+
+/* Generic defaults when no config file is present (NOT demo-specific): the
+ * standard SUPER-based tiling bindings. */
+static void install_default_binds(void) {
+    add_bind(MOD_SUPER, XKB_KEY_Return, ACT_EXEC, 0, "wlterm");
+    add_bind(MOD_SUPER, XKB_KEY_w, ACT_KILL, 0, NULL);
+    add_bind(MOD_SUPER, XKB_KEY_j, ACT_CYCLE_NEXT, 0, NULL);
+    add_bind(MOD_SUPER, XKB_KEY_k, ACT_CYCLE_PREV, 0, NULL);
+    for (int i = 1; i <= N_WORKSPACES; i++) {
+        add_bind(MOD_SUPER, XKB_KEY_0 + i, ACT_WORKSPACE, i, NULL);
+        add_bind(MOD_SUPER | MOD_SHIFT, XKB_KEY_0 + i, ACT_MOVE_TO_WS, i, NULL);
+    }
+}
+
+/* Trim leading/trailing ASCII whitespace in place, returning the start. */
+static char *trim(char *s) {
+    while (*s == ' ' || *s == '\t') s++;
+    char *end = s + strlen(s);
+    while (end > s && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' ||
+                       end[-1] == '\n'))
+        *--end = '\0';
+    return s;
+}
+
+/* Parse a MODS token ("SUPER SHIFT" or "SUPER+SHIFT") into a MOD_* mask.
+ * Returns -1 on an unknown modifier name. */
+static int parse_mods(char *s, uint32_t *out) {
+    uint32_t m = 0;
+    for (char *tok = strtok(s, " +"); tok; tok = strtok(NULL, " +")) {
+        if (!strcasecmp(tok, "SUPER") || !strcasecmp(tok, "MOD4")) m |= MOD_SUPER;
+        else if (!strcasecmp(tok, "SHIFT")) m |= MOD_SHIFT;
+        else if (!strcasecmp(tok, "CTRL") || !strcasecmp(tok, "CONTROL"))
+            m |= MOD_CTRL;
+        else return -1;
+    }
+    *out = m;
+    return 0;
+}
+
+/* Parse one `bind = MODS, KEY, DISPATCHER[, ARGS]` line into the table. */
+static void parse_bind_line(char *rhs) {
+    char *fields[4] = {0};
+    int nf = 0;
+    for (char *tok = strtok(rhs, ","); tok && nf < 4; tok = strtok(NULL, ","))
+        fields[nf++] = trim(tok);
+    if (nf < 3) return;
+
+    uint32_t mods;
+    if (parse_mods(fields[0], &mods) < 0) return;
+    /* Match against the base-level keysym, which is lowercase for letters
+     * ("w", not "W"). xkb_keysym_from_name("W") resolves to the uppercase
+     * keysym, so fold to lower or a config `bind = CTRL, W` never fires. */
+    xkb_keysym_t sym = xkb_keysym_to_lower(
+        xkb_keysym_from_name(fields[1], XKB_KEYSYM_CASE_INSENSITIVE));
+    if (sym == XKB_KEY_NoSymbol) return;
+
+    const char *disp = fields[2];
+    const char *arg = nf > 3 ? fields[3] : "";
+    if (!strcmp(disp, "exec"))            add_bind(mods, sym, ACT_EXEC, 0, arg);
+    else if (!strcmp(disp, "workspace"))  add_bind(mods, sym, ACT_WORKSPACE, atoi(arg), NULL);
+    else if (!strcmp(disp, "movetoworkspace")) add_bind(mods, sym, ACT_MOVE_TO_WS, atoi(arg), NULL);
+    else if (!strcmp(disp, "killactive")) add_bind(mods, sym, ACT_KILL, 0, NULL);
+    else if (!strcmp(disp, "cyclenext"))  add_bind(mods, sym, ACT_CYCLE_NEXT, 0, NULL);
+    else if (!strcmp(disp, "cycleprev"))  add_bind(mods, sym, ACT_CYCLE_PREV, 0, NULL);
+}
+
+/* Load keybinds: parse WLC_CONFIG / WLC_CONFIG_PATH if present, else install
+ * generic defaults. */
+static void load_config(void) {
+    const char *env = getenv("WLC_CONFIG");
+    const char *path = env ? env : WLC_CONFIG_PATH;
+    FILE *f = fopen(path, "r");
+    const char *src;
+    if (!f) {
+        install_default_binds();
+        src = "default";
+    } else {
+        char line[256];
+        while (fgets(line, sizeof(line), f)) {
+            char *s = trim(line);
+            if (*s == '\0' || *s == '#') continue;
+            if (strncmp(s, "bind", 4) == 0) {
+                char *eq = strchr(s, '=');
+                if (eq) parse_bind_line(trim(eq + 1));
+            }
+        }
+        fclose(f);
+        src = path;
+    }
+    printf("BINDS_LOADED n=%d source=%s\n", g.n_binds, src);
+    fflush(stdout);
+}
+
 static void handle_keyboard(struct libinput_event_keyboard *k) {
     uint32_t key = libinput_event_keyboard_get_key(k);
     uint32_t state = libinput_event_keyboard_get_key_state(k) ==
@@ -1531,6 +2225,9 @@ static void handle_keyboard(struct libinput_event_keyboard *k) {
         g.sent_mods_locked = lock;
         g.sent_group = grp;
     }
+
+    /* Compositor keybinds intercept the key before the focused client. */
+    if (try_keybind(key, state)) return;
 
     if (!g.kbd_focus) return;
     for (int i = 0; i < MAX_INPUT_RES; i++) {
@@ -1754,6 +2451,7 @@ static int setup_keymap(void) {
         "    <AB01> = 52;  <AB02> = 53;  <AB03> = 54;  <AB04> = 55;\n"
         "    <AB05> = 56;  <AB06> = 57;  <AB07> = 58;  <AB08> = 59;\n"
         "    <AB09> = 60;  <AB10> = 61;  <RTSH> = 62;  <SPCE> = 65;\n"
+        "    <LWIN> = 133;\n"   /* evdev KEY_LEFTMETA (125) + 8: the SUPER key */
         "  };\n"
         "  xkb_types \"kandelo\" {\n"
         "    virtual_modifiers NumLock;\n"
@@ -1778,6 +2476,9 @@ static int setup_keymap(void) {
         "    interpret Control_L+AnyOfOrNone(all) {\n"
         "      action = SetMods(modifiers=Control);\n"
         "    };\n"
+        "    interpret Super_L+AnyOfOrNone(all) {\n"
+        "      action = SetMods(modifiers=Mod4);\n"
+        "    };\n"
         "  };\n"
         "  xkb_symbols \"kandelo\" {\n"
         "    key <ESC>  { [ Escape ] };\n"
@@ -1788,6 +2489,7 @@ static int setup_keymap(void) {
         "    key <LCTL> { [ Control_L ] };\n"
         "    key <LFSH> { [ Shift_L ] };\n"
         "    key <RTSH> { [ Shift_R ] };\n"
+        "    key <LWIN> { [ Super_L ] };\n"
         "    key <AE01> { type=\"TWO_LEVEL\", [ 1, exclam ] };\n"
         "    key <AE02> { type=\"TWO_LEVEL\", [ 2, at ] };\n"
         "    key <AE03> { type=\"TWO_LEVEL\", [ 3, numbersign ] };\n"
@@ -1837,6 +2539,7 @@ static int setup_keymap(void) {
         "    key <AB10> { type=\"TWO_LEVEL\", [ slash, question ] };\n"
         "    modifier_map Shift { <LFSH>, <RTSH> };\n"
         "    modifier_map Control { <LCTL> };\n"
+        "    modifier_map Mod4 { <LWIN> };\n"
         "  };\n"
         "};\n";
 
@@ -1983,6 +2686,215 @@ static int setup_input(void) {
  * libwayland. We manage the socket ourselves (rather than
  * wl_display_add_socket, which derives the path from XDG_RUNTIME_DIR) so
  * the path is deterministic for the client. */
+/* ====================================================================== */
+/* kwlctl control + event IPC (the hyprctl analog)                        */
+/* ====================================================================== */
+
+/* One control-socket connection. A plain request/reply connection is closed
+ * after its reply; a --listen connection stays open and joins g.listeners to
+ * receive the event stream. */
+struct kwlctl_conn {
+    int fd;
+    struct wl_event_source *src;
+    int listening;
+};
+
+static void kwlctl_send(int fd, const char *buf, int len) {
+    for (int off = 0; off < len; ) {
+        ssize_t w = write(fd, buf + off, (size_t)(len - off));
+        if (w <= 0) break;   /* dead peer: reaped on its next readable/EOF */
+        off += (int)w;
+    }
+}
+
+/* Push one `event>>data` line (Hyprland socket2 format) to every listener. */
+static void kwlctl_emit(const char *fmt, ...) {
+    char buf[256];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof(buf) - 1, fmt, ap);
+    va_end(ap);
+    if (n < 0) return;
+    if (n > (int)sizeof(buf) - 1) n = (int)sizeof(buf) - 1;
+    buf[n++] = '\n';
+    for (int i = 0; i < MAX_KWLCTL_CONNS; i++)
+        if (g.listeners[i]) kwlctl_send(g.listeners[i]->fd, buf, n);
+}
+
+/* JSON describing one surface, Hyprland `clients -j`-shaped subset. */
+static int kwlctl_window_json(char *buf, size_t cap, struct surface *s) {
+    return snprintf(buf, cap,
+        "{\"address\":\"%p\",\"class\":\"%s\",\"workspace\":{\"id\":%d},"
+        "\"at\":[%d,%d],\"size\":[%d,%d],\"focused\":%s}",
+        (void *)s, s->app_id, s->workspace, s->x, s->y, s->w, s->h,
+        g.kbd_focus == s ? "true" : "false");
+}
+
+static int kwlctl_clients_json(char *buf, size_t cap) {
+    int n = snprintf(buf, cap, "[");
+    int first = 1;
+    for (int i = 0; i < g.n_surfaces && n < (int)cap; i++) {
+        struct surface *s = g.zorder[i];
+        if (!s->mapped) continue;
+        if (!first) n += snprintf(buf + n, cap - n, ",");
+        n += kwlctl_window_json(buf + n, cap - n, s);
+        first = 0;
+    }
+    n += snprintf(buf + n, cap - n, "]\n");
+    return n;
+}
+
+static int kwlctl_workspaces_json(char *buf, size_t cap) {
+    int counts[N_WORKSPACES + 1] = {0};
+    for (int i = 0; i < g.n_surfaces; i++)
+        if (g.zorder[i]->mapped) counts[g.zorder[i]->workspace]++;
+    int n = snprintf(buf, cap, "[");
+    int first = 1;
+    for (int ws = 1; ws <= N_WORKSPACES && n < (int)cap; ws++) {
+        if (!counts[ws] && ws != g.active_ws) continue;
+        n += snprintf(buf + n, cap - n,
+                      "%s{\"id\":%d,\"windows\":%d,\"active\":%s}",
+                      first ? "" : ",", ws, counts[ws],
+                      ws == g.active_ws ? "true" : "false");
+        first = 0;
+    }
+    n += snprintf(buf + n, cap - n, "]\n");
+    return n;
+}
+
+static int kwlctl_activewindow_json(char *buf, size_t cap) {
+    if (!g.kbd_focus) return snprintf(buf, cap, "{}\n");
+    int n = kwlctl_window_json(buf, cap, g.kbd_focus);
+    n += snprintf(buf + n, cap - n, "\n");
+    return n;
+}
+
+/* dispatch exec: launch a client with the NON-forking posix_spawnp
+ * (SYS_SPAWN, see docs/plans/2026-05-04-non-forking-posix-spawn-design.md).
+ * fork() from inside a wl_event_loop callback would wedge the server; the
+ * direct spawn syscall sidesteps it entirely and needs no fork instrumentation.
+ * posix_spawnp walks PATH in libc and passes the kernel one resolved path. */
+static void kwlctl_exec(char *args) {
+    char *argv[16];
+    int argc = 0;
+    for (char *tok = strtok(args, " "); tok && argc < 15;
+         tok = strtok(NULL, " "))
+        argv[argc++] = tok;
+    argv[argc] = NULL;
+    if (argc == 0) return;
+    extern char **environ;
+    pid_t pid = 0;
+    int rc = posix_spawnp(&pid, argv[0], NULL, NULL, argv, environ);
+    if (rc != 0) {
+        fprintf(stderr, "posix_spawnp %s: %s\n", argv[0], strerror(rc));
+        return;
+    }
+    printf("KWLCTL_EXEC \"%s\" pid=%d\n", argv[0], (int)pid);
+    fflush(stdout);
+}
+
+static void kwlctl_conn_close(struct kwlctl_conn *c) {
+    if (c->listening)
+        for (int i = 0; i < MAX_KWLCTL_CONNS; i++)
+            if (g.listeners[i] == c) { g.listeners[i] = NULL; break; }
+    if (c->src) wl_event_source_remove(c->src);
+    close(c->fd);
+    free(c);
+}
+
+/* Execute one command line. Returns 1 to keep the connection open (--listen),
+ * 0 to close after the reply. */
+static int kwlctl_handle(struct kwlctl_conn *c, char *line) {
+    char buf[4096];
+    if (strcmp(line, "clients") == 0) {
+        kwlctl_send(c->fd, buf, kwlctl_clients_json(buf, sizeof(buf)));
+        return 0;
+    }
+    if (strcmp(line, "workspaces") == 0) {
+        kwlctl_send(c->fd, buf, kwlctl_workspaces_json(buf, sizeof(buf)));
+        return 0;
+    }
+    if (strcmp(line, "activewindow") == 0) {
+        kwlctl_send(c->fd, buf, kwlctl_activewindow_json(buf, sizeof(buf)));
+        return 0;
+    }
+    if (strncmp(line, "dispatch ", 9) == 0) {
+        char *op = line + 9;
+        if (strncmp(op, "workspace ", 10) == 0)
+            switch_workspace(atoi(op + 10));
+        else if (strncmp(op, "movetoworkspace ", 16) == 0)
+            move_focus_to_workspace(atoi(op + 16));
+        else if (strcmp(op, "close") == 0) {
+            if (g.kbd_focus && g.kbd_focus->xdg_toplevel)
+                xdg_toplevel_send_close(g.kbd_focus->xdg_toplevel);
+        } else if (strncmp(op, "exec ", 5) == 0)
+            kwlctl_exec(op + 5);
+        else {
+            kwlctl_send(c->fd, "err unknown dispatch\n", 21);
+            return 0;
+        }
+        kwlctl_send(c->fd, "ok\n", 3);
+        return 0;
+    }
+    if (strcmp(line, "--listen") == 0) {
+        for (int i = 0; i < MAX_KWLCTL_CONNS; i++)
+            if (!g.listeners[i]) {
+                g.listeners[i] = c;
+                c->listening = 1;
+                kwlctl_send(c->fd, "listening\n", 10);
+                return 1;
+            }
+        kwlctl_send(c->fd, "err too many listeners\n", 23);
+        return 0;
+    }
+    kwlctl_send(c->fd, "err unknown command\n", 20);
+    return 0;
+}
+
+static int kwlctl_conn_readable(int fd, uint32_t mask, void *data) {
+    (void)mask;
+    struct kwlctl_conn *c = data;
+    char line[1024];
+    ssize_t r = read(fd, line, sizeof(line) - 1);
+    if (r <= 0) { kwlctl_conn_close(c); return 0; }
+    while (r > 0 && (line[r - 1] == '\n' || line[r - 1] == '\r')) r--;
+    line[r] = '\0';
+    if (!kwlctl_handle(c, line)) kwlctl_conn_close(c);
+    return 0;
+}
+
+static int kwlctl_listen_readable(int fd, uint32_t mask, void *data) {
+    (void)mask; (void)data;
+    int cfd = accept(fd, NULL, NULL);
+    if (cfd < 0) return 0;
+    /* Don't leak this control fd into `dispatch exec` children: an inherited
+     * copy keeps the socket half-open so the kwlctl client never sees EOF. */
+    fcntl(cfd, F_SETFD, FD_CLOEXEC);
+    struct kwlctl_conn *c = calloc(1, sizeof(*c));
+    if (!c) { close(cfd); return 0; }
+    c->fd = cfd;
+    c->src = wl_event_loop_add_fd(g.loop, cfd, WL_EVENT_READABLE,
+                                  kwlctl_conn_readable, c);
+    return 0;
+}
+
+static int setup_kwlctl(void) {
+    unlink(KWLCTL_SOCKET_PATH);
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) { perror("socket kwlctl"); return -1; }
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, KWLCTL_SOCKET_PATH, sizeof(addr.sun_path) - 1);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("bind kwlctl"); close(fd); return -1;
+    }
+    if (listen(fd, 8) < 0) { perror("listen kwlctl"); close(fd); return -1; }
+    wl_event_loop_add_fd(g.loop, fd, WL_EVENT_READABLE, kwlctl_listen_readable,
+                         NULL);
+    return 0;
+}
+
 static int setup_socket(void) {
     unlink(WL_SOCKET_PATH);              /* clear a stale socket */
 
@@ -2007,6 +2919,17 @@ int main(void) {
     if (!g.display) { fprintf(stderr, "wl_display_create\n"); return 1; }
     g.loop = wl_display_get_event_loop(g.display);
 
+    /* Layout policy. Absent/unknown WLC_LAYOUT keeps the floating desktop so
+     * /?demo=wayland is unchanged; WLC_LAYOUT=dwindle selects the tiler. */
+    g.active_ws = 1;
+    const char *want_layout = getenv("WLC_LAYOUT");
+    if (want_layout && strcmp(want_layout, "dwindle") == 0)
+        g.layout = LAYOUT_DWINDLE;
+    printf("WLC_LAYOUT %s\n",
+           g.layout == LAYOUT_DWINDLE ? "dwindle" : "floating");
+    fflush(stdout);
+    load_config();
+
     if (setup_drm() != 0) return 1;
     if (setup_wallpaper() != 0) return 1;
     /* GPU compositing is best-effort: on hosts without WebGL2 (Node
@@ -2021,8 +2944,12 @@ int main(void) {
     if (!wl_global_create(g.display, &wl_compositor_interface, 4, NULL,
                           compositor_bind) ||
         !wl_global_create(g.display, &wl_shm_interface, 1, NULL, shm_bind) ||
+        !wl_global_create(g.display, &zwp_linux_dmabuf_v1_interface, 3, NULL,
+                          dmabuf_bind) ||
         !wl_global_create(g.display, &xdg_wm_base_interface, 1, NULL,
                           wm_base_bind) ||
+        !wl_global_create(g.display, &zxdg_decoration_manager_v1_interface, 1,
+                          NULL, decoration_mgr_bind) ||
         !wl_global_create(g.display, &wl_seat_interface, 1, NULL, seat_bind) ||
         !wl_global_create(g.display, &wl_output_interface, 2, NULL,
                           output_bind)) {
@@ -2043,6 +2970,10 @@ int main(void) {
     wl_display_add_client_created_listener(g.display, &new_client);
 
     if (setup_socket() != 0) return 1;
+
+    /* Auto-reap `dispatch exec` children so they don't linger as zombies. */
+    signal(SIGCHLD, SIG_IGN);
+    if (setup_kwlctl() != 0) return 1;
 
     printf("COMPOSITOR_UP w=%u h=%u\n", g.width, g.height);
     fflush(stdout);
