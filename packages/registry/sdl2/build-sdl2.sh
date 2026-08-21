@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build upstream SDL 2 with its unmodified OSS dsp backend for Kandelo.
+# Build upstream SDL 2 for Kandelo with its unmodified OSS dsp audio
+# backend, its KMSDRM video backend, and its direct evdev input path.
 
 set -euo pipefail
 
@@ -23,6 +24,12 @@ if [ "$TARGET_ARCH" != "wasm32" ]; then
 fi
 
 export WASM_POSIX_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
+
+# The KMSDRM backend links libdrm and libgbm. libdrm is a package the
+# resolver stages for us; libgbm is a sysroot library scripts/
+# build-dri-stubs.sh builds, so it is read from the sysroot directly.
+LIBDRM_PREFIX="${WASM_POSIX_DEP_LIBDRM_DIR:?WASM_POSIX_DEP_LIBDRM_DIR must name the staged libdrm prefix (resolve sdl2 through cargo xtask build-deps)}"
+
 CC=wasm32posix-cc
 CXX=wasm32posix-c++
 AR=wasm32posix-ar
@@ -52,14 +59,30 @@ tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
 echo "==> Applying the Kandelo platform-classification patch..."
 patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0001-recognize-kandelo-as-unix.patch"
 
-echo "==> Configuring SDL2 with only the OSS playback backend..."
+echo "==> Configuring SDL2 with the OSS, KMSDRM and evdev backends..."
 # Kandelo exposes neither the non-POSIX sysctl header nor its matching API.
 # Pin the cross-compile probe so SDL uses its portable sysconf path.
 # Executable links intentionally permit unresolved host imports, so link-only
 # Autoconf probes cannot prove optional functions. Pin only helpers absent from
 # the Kandelo musl headers/library; SDL provides portable fallbacks for them.
+#
+# libdrm and gbm ship no .pc files in the Kandelo sysroot. SDL consults
+# pkg-config only to populate CFLAGS/LIBS, so presetting the four
+# variables short-circuits the lookup (acinclude/pkg.m4, _PKG_CONFIG's
+# first branch).
+#
+# SDL_VIDEO_STATIC_ANGLE forces src/video/SDL_egl.c's LOAD_FUNC macro
+# down its static-link branch, so `_this->egl_data->eglFoo` binds to the
+# libEGL.a symbol instead of going through SDL_LoadFunction. With
+# --disable-loadso that loader returns NULL and EGL init fails before a
+# window can exist. The ANGLE in the name means "EGL symbols are linked
+# in, not dlopened" — the same path the Vita and WinRT builds take.
 (
     cd "$BUILD_DIR"
+    LIBDRM_CFLAGS="-I$LIBDRM_PREFIX/include -I$LIBDRM_PREFIX/include/libdrm -I$LIBDRM_PREFIX/include/drm" \
+    LIBDRM_LIBS="-L$LIBDRM_PREFIX/lib -ldrm" \
+    LIBGBM_CFLAGS="-I$WASM_POSIX_SYSROOT/include" \
+    LIBGBM_LIBS="-L$WASM_POSIX_SYSROOT/lib -lgbm" \
     "$SRC_DIR/configure" \
         --host=wasm32-unknown-none \
         --prefix="$INSTALL_DIR" \
@@ -79,7 +102,20 @@ echo "==> Configuring SDL2 with only the OSS playback backend..."
         --disable-libsamplerate \
         --disable-diskaudio \
         --disable-dummyaudio \
-        --disable-video \
+        --enable-video \
+        --enable-video-kmsdrm \
+        --disable-kmsdrm-shared \
+        --disable-video-x11 \
+        --disable-video-wayland \
+        --disable-video-vivante \
+        --disable-video-cocoa \
+        --disable-video-directfb \
+        --disable-video-offscreen \
+        --disable-video-dummy \
+        --disable-video-opengl \
+        --enable-video-opengl-es2 \
+        --enable-events \
+        --enable-input-events \
         --disable-render \
         --disable-joystick \
         --disable-haptic \
@@ -95,7 +131,9 @@ echo "==> Configuring SDL2 with only the OSS playback backend..."
         --disable-assembly \
         CC="$CC" CXX="$CXX" AR="$AR" RANLIB="$RANLIB" \
         NM="$NM" STRIP="$STRIP" \
-        CFLAGS="-O2 $REPRO_FLAGS" \
+        CFLAGS="-O2 $REPRO_FLAGS -DSDL_VIDEO_STATIC_ANGLE=1" \
+        CPPFLAGS="-I$LIBDRM_PREFIX/include -I$LIBDRM_PREFIX/include/libdrm -I$LIBDRM_PREFIX/include/drm" \
+        LDFLAGS="-L$LIBDRM_PREFIX/lib -L$WASM_POSIX_SYSROOT/lib" \
         ac_cv_func_dlopen=no \
         ac_cv_func_sysctlbyname=no \
         ac_cv_func_elf_aux_info=no \
@@ -130,4 +168,14 @@ rm -f "$INSTALL_DIR/lib/"*.la
 test -f "$INSTALL_DIR/lib/libSDL2.a"
 test -f "$INSTALL_DIR/include/SDL2/SDL.h"
 test -f "$INSTALL_DIR/lib/pkgconfig/sdl2.pc"
-echo "==> SDL2 OSS-only static package complete"
+
+# Autoconf silently drops a backend whose probe fails, which would leave a
+# library that links but cannot open a window. Fail the build instead.
+for feature in SDL_VIDEO_DRIVER_KMSDRM SDL_VIDEO_OPENGL_ES2 \
+    SDL_VIDEO_OPENGL_EGL SDL_INPUT_LINUXEV SDL_AUDIO_DRIVER_OSS; do
+    grep -q "^#define $feature 1" "$INSTALL_DIR/include/SDL2/SDL_config.h" || {
+        echo "ERROR: configure did not enable $feature" >&2
+        exit 1
+    }
+done
+echo "==> SDL2 static package complete (KMSDRM video, evdev input, OSS audio)"

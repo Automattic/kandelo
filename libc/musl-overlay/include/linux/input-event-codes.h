@@ -8,7 +8,9 @@
  * `KeyboardEvent.code`; values >248 (KEY_BUTTONCONFIG, KEY_VENDOR
  * range, etc.) are not browser-reachable and aren't vendored.
  *
- * Any change here is part of the kernel ABI — bump ABI_VERSION.
+ * Any change here is part of the kernel ABI. Adding a code is additive
+ * and needs no ABI_VERSION bump; changing or removing one does. See
+ * docs/abi-versioning.md.
  */
 #ifndef _LINUX_INPUT_EVENT_CODES_H
 #define _LINUX_INPUT_EVENT_CODES_H 1
@@ -20,6 +22,12 @@
 #define EV_REL              0x02
 #define EV_ABS              0x03
 #define EV_MSC              0x04
+
+/* The `*_MAX` values size the capability bitsets an evdev client reads
+ * with EVIOCGBIT. They describe the code space, not what this kernel
+ * synthesises, so they carry upstream's numbers even where the range
+ * above them is not vendored. */
+#define EV_MAX              0x1f
 
 /* --- SYN codes (struct input_event.code when type == EV_SYN) --------- */
 
@@ -194,13 +202,35 @@
 #define KEY_BRIGHTNESSUP    225
 #define KEY_MICMUTE         248
 
+/* Above the browser-reachable range. SDL2 matches against these when it
+ * classifies a device's key bitset. */
+#define KEY_OK              0x160
+#define KEY_ALS_TOGGLE      0x230
+#define KEY_MAX             0x2ff
+
 /* --- BTN_* codes (button class; reuse the EV_KEY event type) --------- */
 
+/* `BTN_MISC` and `BTN_MOUSE` are upstream's names for the first code in
+ * their class, so they share a value with the button that follows. */
+#define BTN_MISC            0x100
+#define BTN_1               0x101
+#define BTN_MOUSE           0x110
 #define BTN_LEFT            0x110
 #define BTN_RIGHT           0x111
 #define BTN_MIDDLE          0x112
 #define BTN_SIDE            0x113
 #define BTN_EXTRA           0x114
+#define BTN_FORWARD         0x115
+#define BTN_BACK            0x116
+#define BTN_TASK            0x117
+#define BTN_TRIGGER         0x120
+#define BTN_A               0x130
+#define BTN_TOOL_PEN        0x140
+#define BTN_TOOL_FINGER     0x145
+#define BTN_TOUCH           0x14a
+#define BTN_STYLUS          0x14b
+#define BTN_DPAD_UP         0x220
+#define BTN_TRIGGER_HAPPY   0x2c0
 
 /* --- REL_* codes (relative axes; EV_REL records carry these) --------- */
 
@@ -208,11 +238,29 @@
 #define REL_Y               0x01
 #define REL_HWHEEL          0x06
 #define REL_WHEEL           0x08
+#define REL_WHEEL_HI_RES    0x0b
+#define REL_HWHEEL_HI_RES   0x0c
+#define REL_MAX             0x0f
 
 /* --- ABS_* codes (absolute axes; EV_ABS records carry these) --------- */
 
 #define ABS_X               0x00
 #define ABS_Y               0x01
+#define ABS_Z               0x02
+#define ABS_RX              0x03
+#define ABS_RY              0x04
+#define ABS_RZ              0x05
+#define ABS_THROTTLE        0x06
+#define ABS_RUDDER          0x07
+#define ABS_WHEEL           0x08
+#define ABS_GAS             0x09
+#define ABS_BRAKE           0x0a
+#define ABS_MT_SLOT         0x2f
+#define ABS_MT_POSITION_X   0x35
+#define ABS_MT_POSITION_Y   0x36
+#define ABS_MT_TRACKING_ID  0x39
+#define ABS_MT_PRESSURE     0x3a
+#define ABS_MAX             0x3f
 
 /* --- BUS_* constants (subset) ---------------------------------------- */
 

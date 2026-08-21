@@ -1102,10 +1102,12 @@ source.
 ### Sysroot libraries are not packages
 
 Some APIs are part of the Kandelo sysroot rather than the package graph. The
-DRI/EGL/GLES shims (`libdrm.a`, `libgbm.a`, `libEGL.a`, `libGLESv2.a`) are
-built by `scripts/build-musl.sh` and exposed through
-`wasm32posix-pkg-config`; they are not outputs of the `kernel` package and
-should not be modeled as standalone package dependencies.
+GBM/EGL/GLES shims (`libgbm.a`, `libEGL.a`, `libGLESv2.a`) are built by
+`scripts/build-musl.sh` and exposed through `wasm32posix-pkg-config`; they are
+not outputs of the `kernel` package and should not be modeled as standalone
+package dependencies. `libdrm.a` sits beside them in the sysroot and is
+reached the same way, but it *is* a package — `scripts/build-dri-stubs.sh`
+resolves `packages/registry/libdrm` and symlinks the result in.
 
 A package that depends on those libraries should:
 
@@ -1115,7 +1117,8 @@ A package that depends on those libraries should:
    `egl`, and/or `glesv2`.
 3. Declare only the consumer artifact in `[[outputs]]`.
 4. Add the relevant sysroot/glue inputs (`libc/glue/lib*_stub.c`,
-   `libc/glue/gl_abi.h`, `scripts/build-musl.sh`, `scripts/build-dri-stubs.sh`,
+   `libc/glue/gl_abi.h`, `packages/registry/libdrm/*`,
+   `scripts/build-musl.sh`, `scripts/build-dri-stubs.sh`,
    `scripts/build-gles-stubs.sh`) to `build.toml.inputs` so cache keys move
    when the sysroot implementation changes.
 
