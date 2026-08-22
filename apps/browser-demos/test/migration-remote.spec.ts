@@ -46,8 +46,8 @@ test("hands a running fbDOOM machine between two isolated contexts over WebRTC",
   try {
     await keeper.goto(new URL("/pages/migration/", baseURL!).href);
     await watcher.goto(new URL("/pages/migration/", baseURL!).href);
-    await keeper.click("summary");
-    await watcher.click("summary");
+    await keeper.click("#connect > summary");
+    await watcher.click("#connect > summary");
     await startMachineWithGame(keeper);
 
     // The watching computer initiates: create the invite, carry it to the
