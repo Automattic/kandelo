@@ -404,6 +404,13 @@ body-bearing requests, and non-GET requests fail before dispatch if projection
 would be lossy. Direct Fetch attempts remain unprojected. The development
 same-origin relay enforces the same profile as production.
 
+Bridge initialization now rejects typed CacheStorage and transition failures.
+A worker disappearance or lost acknowledgement after `postMessage` remains a
+known boundary: the worker may already have committed irreversible
+CacheStorage authority, so a client-only timeout could reject while leaving a
+discarded bridge authoritative. Closing this gap requires a coordinated
+transaction, cancellation acknowledgement, and restart reconciliation.
+
 ### Blob-URL iframes (service-worker boundary)
 
 The service worker can only bridge requests from documents it **controls**. A
@@ -1010,8 +1017,8 @@ identity. The other shell-derived images are `nginx-vfs` revision 5,
 `nginx-php-vfs` revision 5, `lamp` revision 14, and `wordpress` revision 15.
 All preserve the shell's pending transports, bootstrap binding, atomic seals,
 capacity, and mirror identity. They are part of the canonical package release,
-and Pages resolves them with `./run.sh --fetch-only prepare-browser` from a
-fresh cache.
+and Pages consumes them through the declared product and package resolver
+graph from a fresh cache.
 
 The shell Chromium proof loads the ordinary production page, verifies the
 served shell digest, runs `brew`, Ruby, and the selected Bash, and verifies the
@@ -1029,13 +1036,15 @@ Package-backed image recipes resolve their declared dependencies rather than
 reading another package's source/build side effects. The disabled legacy
 `python-vfs` recipe, for example, consumes CPython's `python.wasm` and
 `python-runtime.zip` closure. These compatibility recipes are excluded from
-staging and are not the Homebrew distribution unit. The `run.sh` script
-orchestrates explicit resolver builds:
+staging and are not the Homebrew distribution unit. For the active browser
+products, use the local DAG command in
+[Package Management](package-management.md#local-dag-build); it selects the
+product manifests and every transitive package input before invoking a
+builder. Individual legacy image targets remain available for focused work:
 
 ```bash
 ./run.sh build python-vfs    # Build Python VFS image
 ./run.sh build shell-vfs     # Build Shell VFS image
-./run.sh build all            # Build everything including all VFS images
 ```
 
 The main shell target resolves the canonical `packages/registry/shell` package
@@ -1099,6 +1108,87 @@ export default {
 };
 ```
 
+### Local SourceOnly development
+
+`./run.sh browser` is the normal development entry point. It runs or resumes
+the complete local SourceOnly DAG, exports its validated
+`local-binaries/source-only-v1` projection to Vite, and starts the development
+server. It does not fetch a browser binary index or stage a Homebrew bootstrap.
+Unchanged package and product nodes are reused from the content-addressed
+cache.
+
+The development server reads VFS products directly from that projection. The
+authenticated VFS group below belongs to production output and is generated
+only when building a deployable directory-scoped distribution.
+
+### Directory-scoped production hosting
+
+A production build owns one normalized absolute deployment prefix. Build and
+host the output with the same value: output built with `VITE_BASE=/a/` must be
+served at `/a/`, and output built with `VITE_BASE=/candidate-b/` must be served
+at `/candidate-b/`. A completed build is not freely relocatable, and
+`base: "./"` is not a supported substitute for choosing its public path.
+
+The SourceOnly local DAG described in
+[Package Management](package-management.md#local-dag-build) is the canonical
+way to build the seven active VFS products. Produce
+`local-binaries/vfs-group` and its private product map, then pass both explicit
+paths to each production build:
+
+```bash
+export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
+export WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1"
+npx tsx scripts/build-local-vfs-asset-group.ts \
+  "$PWD/local-binaries/vfs-group" \
+  "$PWD/local-binaries/pages-vfs-products.private.json"
+export KANDELO_PAGES_PRODUCT_MAP="$PWD/local-binaries/pages-vfs-products.private.json"
+export KANDELO_PAGES_VFS_ASSET_GROUP_DIR="$PWD/local-binaries/vfs-group"
+
+VITE_BASE=/a/ npm --prefix apps/browser-demos run build -- \
+  --outDir "$PWD/build/a" --emptyOutDir
+VITE_BASE=/candidate-b/ npm --prefix apps/browser-demos run build -- \
+  --outDir "$PWD/build/candidate-b" --emptyOutDir
+```
+
+Vite authenticates and copies the complete group beneath the owning output as
+`vfs-groups/release-1/`: manifest, seven unchanged images, and all 80 lazy
+assets. The private map is not published. Changing the public group path
+requires regenerating the complete manifest/images/assets handoff, updating
+the private map to its new manifest path, and rebuilding the distribution.
+Never move a group within an already completed build. Its complete group must
+remain beneath the owning prefix; moving only an image or asset also breaks
+the authenticated inventory.
+
+Each output places `service-worker.js` at its prefix root. The bootstrap
+registers that exact script with its own script-directory scope (`/a/` or
+`/candidate-b/`). Servers must not grant a broader scope with
+`Service-Worker-Allowed`: one worker must never control `/` or a sibling
+deployment. Bridge authority, cookie jar, cross-origin-isolation retry marker,
+and lazy VFS cache are separately namespaced by registration scope. Restarting
+one worker restores only that prefix's durable state. The Kandelo theme is the
+intentional origin-wide exception because it is ordinary `localStorage` UI
+preference state, not machine, bridge, cookie, retry, or VFS state.
+
+The production coexistence scenario has been measured in Chromium with `/a/`
+and `/candidate-b/`: both shells booted, Vim materialized from each prefix's
+own lazy cache, and restarting/updating `/a/` left `/candidate-b/` usable and
+unchanged. This is evidence for that scenario, not a claim that every browser,
+host configuration, or arbitrary prefix pair was exercised.
+
+If one prefix retains a stale worker, unregister only that exact registration
+from a page on the same origin, then reload that prefix:
+
+```javascript
+const selectedScope = new URL("/a/", location.origin).href;
+for (const registration of await navigator.serviceWorker.getRegistrations()) {
+  if (registration.scope === selectedScope) await registration.unregister();
+}
+location.assign(selectedScope);
+```
+
+Do not clear all origin storage: that would erase sibling deployment state and
+the origin-wide theme preference instead of repairing the selected owner.
+
 During development, `@binaries/...` imports can resolve to canonical package
 members outside the checkout. Vite's directory allow list is only transport
 plumbing: a pre-serving guard permits the exact regular files approved by the
@@ -1107,6 +1197,49 @@ cache entries, source-cache files, symlink escapes, malformed filesystem URLs,
 and descendants created by replacing an approved file with a directory receive
 HTTP 403. Production builds emit ordinary bundled assets and do not expose the
 local package cache.
+
+With `WASM_POSIX_RESOLUTION_POLICY=source-only-v1`, the browser build also
+requires `WASM_POSIX_SOURCE_ONLY_BINARY_ROOT` to be a normalized canonical
+absolute directory. Its fixed
+`.kandelo/source-only-program-projection-v1.json` authority is capped at
+16 MiB and embeds the selected `kandelo-program-packages-v2` projection plus
+sorted package nodes and their materialized member mode, size, and SHA-256.
+The resolver validates exact node ownership and the complete owning package
+closure. It does not fall back to `local-binaries`, fetched/indexed binaries,
+the ordinary compiled cache, or an installed host package.
+
+SourceOnly materializations are regular files and may be replaced by a later
+producer run. Vite therefore parses one aggregate authority for its lifetime,
+captures its authored kernel, rootfs, and program request batch against that
+generation, and copies the verified bytes into a private immutable temporary
+directory. The complete retained set is limited to 512 MiB before allocation.
+Development streams those snapshots from a content-addressed virtual endpoint;
+production emits the same snapshots as normal Rollup assets. Exact optional
+mirror globs are rewritten through that boundary, while package-output and
+public artifact globs are forced absent instead of becoming fallback tiers.
+Array-valued globs are rejected before Vite because the browser binary scanner
+admits only one exact scalar path per request. SourceOnly also gives Vite a
+private snapshot of the commit-bound authored static-file allowlist in
+`public/`; every other ambient file is denied in development and omitted from
+production regardless of its suffix.
+
+Verified lazy ZIP and gzip/TAR decoding is linked into each browser worker by
+inlining that worker build's dynamic imports. Source-level dynamic imports stay
+lazy in the shared and Node.js paths, while browser workers trade some initial
+parse and download size for a terminal emitted bundle that cannot depend on an
+entry after Vite removes its synthetic exports. The production graph guard
+rejects every static or dynamic edge back to a stripped entry, including a
+binding-free static edge that would still evaluate the stripped entry.
+
+Optional php, SQLite, and benchmark inputs still depend on ambient build
+outputs and are therefore rejected under SourceOnly; the supported root build
+inputs are `main`, `kandelo`, and `network`.
+The configured SourceOnly root remains the only external filesystem root in
+Vite's allow list, and direct `/@fs/` requests for its members remain forbidden.
+Other pathname resolver APIs validate the named file and artifact policy
+against one stable descriptor read, but the returned path remains a
+point-in-time result; callers that retain a path across producer runs must
+resolve it again.
 
 ## Known Limitations
 

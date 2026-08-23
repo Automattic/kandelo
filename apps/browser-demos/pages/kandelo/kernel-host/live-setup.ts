@@ -3,7 +3,10 @@
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
 import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
-import { bindImageOwnedRuntimeUrls } from "../../../lib/init/image-owned-runtime-urls";
+import {
+  bindImageOwnedRuntimeUrls,
+  type ImageOwnedRuntimeLazyAssets,
+} from "../../../lib/init/image-owned-runtime-urls";
 import { resolveShellLazyArchiveUrl } from "../../../lib/init/lazy-archives";
 import {
   WORDPRESS_CONFIG_INIT_SCRIPT,
@@ -129,6 +132,10 @@ import {
 import { DEMO_TERMINAL_SESSION_POLICY } from "./demo-terminal-sessions";
 import { stageConfiguredAssets } from "./configured-assets";
 import { initializeDemoLoginKernel } from "./demo-login-loader";
+import {
+  deploymentScopeFromServiceWorkerUrl,
+} from "../../../../../web-libs/kandelo-session/src/deployment-scope";
+import { createCoiReloadSessionState } from "./coi-reload-session-state";
 
 import kernelWasmUrl from "@kernel-wasm?url";
 import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
@@ -544,13 +551,20 @@ const APP_PREFIX = import.meta.env.BASE_URL + "app/";
 const APP_PATH = import.meta.env.BASE_URL + "app";
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
+const SW_SCOPE = deploymentScopeFromServiceWorkerUrl(
+  new URL(SW_URL, window.location.href).href,
+  window.location.href,
+);
 const BROWSER_CORS_PROXY = resolveBrowserCorsProxyConfig({
   configuredUrl: import.meta.env.VITE_CORS_PROXY_URL,
   development: import.meta.env.DEV,
   baseUrl: import.meta.env.BASE_URL,
   pageUrl: window.location.href,
 });
-const COI_RELOAD_SESSION_KEY = "kandelo:coi-reload-attempted";
+const COI_RELOAD_SESSION_STATE = createCoiReloadSessionState(
+  SW_SCOPE,
+  sessionStorage,
+);
 const PHP_FPM_WORKERS = 6;
 const PATCHED_PHP_FPM_CONF = `[global]
 daemonize = no
@@ -717,22 +731,22 @@ export async function createLiveHost(
   ): Promise<ServiceWorker> => {
     if (!serviceWorkerReady) {
       tick?.("preparing service worker...");
-      serviceWorkerReady = ensureServiceWorkerReady(SW_URL)
+      serviceWorkerReady = ensureServiceWorkerReady(SW_URL, SW_SCOPE)
         .then(async (controller): Promise<ServiceWorker> => {
           if (window.crossOriginIsolated) {
-            sessionStorage.removeItem(COI_RELOAD_SESSION_KEY);
+            COI_RELOAD_SESSION_STATE.clear();
             return controller;
           }
 
-          if (sessionStorage.getItem(COI_RELOAD_SESSION_KEY) === "1") {
-            sessionStorage.removeItem(COI_RELOAD_SESSION_KEY);
+          if (COI_RELOAD_SESSION_STATE.wasAttempted()) {
+            COI_RELOAD_SESSION_STATE.clear();
             throw new Error(
               "Kandelo could not enable cross-origin isolation after the service worker became active. " +
                 "Reload the page; if this persists, clear site data for this site and check whether a browser extension is blocking service workers or COOP/COEP headers.",
             );
           }
 
-          sessionStorage.setItem(COI_RELOAD_SESSION_KEY, "1");
+          COI_RELOAD_SESSION_STATE.markAttempted();
           tick?.(
             "service worker active; reloading to enable cross-origin isolation...",
           );
@@ -1406,19 +1420,19 @@ async function bootProfile(
 
   tick("service worker active and cross-origin isolated");
   tick(`loading ${profile.id} profile...`);
-  const [kernelBytes, vfsBytes, softwareBinaries] = await Promise.all([
+  const [kernelBytes, loadedVfs, softwareBinaries] = await Promise.all([
     fetch(kernelWasmUrl)
       .then(failOn("kernel.wasm"))
       .then((r) => r.arrayBuffer()),
-    loadVfsImageBytes(profile),
+    loadVfsImage(profile),
     loadSoftwareBinaries(profile.software),
   ]);
   assertCurrent();
 
   tick(
-    `kernel: ${kib(kernelBytes.byteLength)} · vfs: ${kib(vfsBytes.byteLength)}`,
+    `kernel: ${kib(kernelBytes.byteLength)} · vfs: ${kib(loadedVfs.imageBytes.byteLength)}`,
   );
-  const fetchedVfsImageBytes = new Uint8Array(vfsBytes);
+  const fetchedVfsImageBytes = new Uint8Array(loadedVfs.imageBytes);
   const vfsMetadata = MemoryFileSystem.readImageMetadata(fetchedVfsImageBytes);
   assertVfsImageFitsProfile(
     MemoryFileSystem.readImageCapacity(fetchedVfsImageBytes),
@@ -1497,7 +1511,6 @@ async function bootProfile(
       patchMariaDbUnixSocketConfig(buildFs);
       patchWordPressRuntimeConfig(buildFs, "mariadb");
     }
-    bindImageOwnedRuntimeUrls(buildFs);
     if (profile.init?.programUrl) {
       tick(`staging ${profile.init.argv[0]}...`);
       const bytes = await fetch(profile.init.programUrl)
@@ -1604,6 +1617,10 @@ async function bootProfile(
   // Serialize the assembled image to transferable bytes, then let `buildFs`
   // go out of scope. `saveImage()` emits raw (uncompressed) bytes that
   // `MemoryFileSystem.fromImage` restores directly in the worker.
+  // WHY: this is the final synchronous image mutation. Binding before any
+  // later staging could leave newly-added lazy metadata outside the manifest
+  // authority copied from the authenticated product activation.
+  bindImageOwnedRuntimeUrls(buildFs, loadedVfs.lazyAssets);
   tick("assembling kernel-owned VFS image...");
   // Serialize to transferable bytes + register the transient build buffer for
   // reclamation tracking, then let `buildFs` fall out of scope when bootProfile
@@ -1728,6 +1745,7 @@ async function bootProfile(
         const sessionId = crypto.randomUUID();
         await setupServiceWorkerFetchBridge(
           SW_URL,
+          SW_SCOPE,
           APP_PREFIX,
           kernel,
           HTTP_PORT,
@@ -2076,21 +2094,37 @@ function patchWordPressPersistentMysqli(fs: MemoryFileSystem): void {
   }
 }
 
-async function loadVfsImageBytes(profile: LiveProfile): Promise<ArrayBuffer> {
+interface LoadedVfsImage {
+  imageBytes: ArrayBuffer;
+  lazyAssets?: ImageOwnedRuntimeLazyAssets;
+}
+
+async function loadVfsImage(profile: LiveProfile): Promise<LoadedVfsImage> {
   if (profile.candidateEvidence !== undefined) {
     if (profile.candidateVfsPlacement === undefined) {
       throw new Error("candidate evidence VFS lacks its Pages placement boundary");
     }
-    return profile.candidateVfsPlacement.bytes();
+    return { imageBytes: await profile.candidateVfsPlacement.bytes() };
   }
   if (profile.vfsSource !== undefined && CANONICAL_PAGES_VFS_LOADER !== undefined) {
-    return CANONICAL_PAGES_VFS_LOADER.bytes(profile.vfsSource.productId);
+    const activation = await CANONICAL_PAGES_VFS_LOADER.activate(
+      profile.vfsSource.productId,
+    );
+    return {
+      imageBytes: activation.imageBytes.slice(0),
+      lazyAssets:
+        activation.lazyAssets === undefined
+          ? undefined
+          : Object.freeze({ ...activation.lazyAssets }),
+    };
   }
   if (!profile.software) {
     const vfsUrl = await resolveProfileVfsUrl(profile);
-    return fetch(vfsUrl)
+    return {
+      imageBytes: await fetch(vfsUrl)
       .then(failOn(`${profile.id}.vfs.zst`))
-      .then((r) => r.arrayBuffer());
+      .then((r) => r.arrayBuffer()),
+    };
   }
   const vfsImage = await loadArchiveArtifact(
     profile.software.vfsArchiveUrl,
@@ -2098,7 +2132,7 @@ async function loadVfsImageBytes(profile: LiveProfile): Promise<ArrayBuffer> {
   );
   const copy = new Uint8Array(vfsImage.byteLength);
   copy.set(vfsImage);
-  return copy.buffer;
+  return { imageBytes: copy.buffer };
 }
 
 async function resolveProfileVfsUrl(profile: LiveProfile): Promise<string> {
@@ -2555,7 +2589,8 @@ async function liveDemoIdForVfsImageUrl(
 
 async function resolveLiveVfsSourceUrl(source: LiveVfsSource): Promise<string> {
   if (source.kind === "url") {
-    return CANONICAL_PAGES_VFS_LOADER?.activate(source.productId) ?? source.url;
+    if (CANONICAL_PAGES_VFS_LOADER === undefined) return source.url;
+    return (await CANONICAL_PAGES_VFS_LOADER.activate(source.productId)).imageUrl;
   }
   if (source.kind === "optional-demo") {
     return resolveOptionalDemoVfsUrl(
@@ -2564,18 +2599,18 @@ async function resolveLiveVfsSourceUrl(source: LiveVfsSource): Promise<string> {
       undefined,
       CANONICAL_PAGES_VFS_LOADER === undefined
         ? undefined
-        : () => CANONICAL_PAGES_VFS_LOADER.activate(source.productId),
+        : async () => (await CANONICAL_PAGES_VFS_LOADER.activate(source.productId)).imageUrl,
     );
   }
   if (CANONICAL_PAGES_VFS_LOADER !== undefined) {
-    return CANONICAL_PAGES_VFS_LOADER.activate(source.productId);
+    return (await CANONICAL_PAGES_VFS_LOADER.activate(source.productId)).imageUrl;
   }
   return optionalBinaryUrl(source.relPaths, source.label);
 }
 
 async function resolveTrustedLiveVfsSourceUrl(source: LiveVfsSource): Promise<string> {
   if (CANONICAL_PAGES_VFS_LOADER !== undefined) {
-    return CANONICAL_PAGES_VFS_LOADER.path(source.productId);
+    return (await CANONICAL_PAGES_VFS_LOADER.activate(source.productId)).imageUrl;
   }
   return resolveLiveVfsSourceUrl(source);
 }

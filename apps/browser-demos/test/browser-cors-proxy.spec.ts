@@ -153,7 +153,6 @@ test("service worker projects both configured proxy boundaries", async ({
     if (request.url === "/service-worker.js") {
       response.writeHead(200, {
         "Content-Type": "application/javascript",
-        "Service-Worker-Allowed": "/",
       });
       response.end(serviceWorker);
       return;
@@ -162,7 +161,10 @@ test("service worker projects both configured proxy boundaries", async ({
     response.end(`<!doctype html><script>
       window.ready = navigator.serviceWorker.controller !== null;
       if (!window.ready) {
-        navigator.serviceWorker.register('/service-worker.js').then(() =>
+        navigator.serviceWorker.register('/service-worker.js', {
+          scope: '/',
+          updateViaCache: 'none',
+        }).then(() =>
           navigator.serviceWorker.ready.then(() => location.reload()));
       }
     </script>`);

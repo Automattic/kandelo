@@ -246,6 +246,32 @@ reuse unchanged nodes.
 
 Open `http://127.0.0.1:5401` to use the Kandelo UI. The network lab at `http://127.0.0.1:5401/pages/network/` boots multiple local Kandelo machines in one browser session and exercises POSIX UDP/TCP with GNU Netcat (`nc`) and `curl`.
 
+Production output is bound to the absolute prefix selected at build time. Once
+the SourceOnly projection above exists, produce its authenticated VFS group and
+build separate distributions for `/a/` and `/candidate-b/`:
+
+```bash
+scripts/dev-shell.sh bash -lc '
+  set -euo pipefail
+  export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
+  export WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1"
+  npx tsx scripts/build-local-vfs-asset-group.ts \
+    "$PWD/local-binaries/vfs-group" \
+    "$PWD/local-binaries/pages-vfs-products.private.json"
+  export KANDELO_PAGES_PRODUCT_MAP="$PWD/local-binaries/pages-vfs-products.private.json"
+  export KANDELO_PAGES_VFS_ASSET_GROUP_DIR="$PWD/local-binaries/vfs-group"
+  VITE_BASE=/a/ npm --prefix apps/browser-demos run build -- \
+    --outDir "$PWD/build/a" --emptyOutDir
+  VITE_BASE=/candidate-b/ npm --prefix apps/browser-demos run build -- \
+    --outDir "$PWD/build/candidate-b" --emptyOutDir
+'
+```
+
+Host those output directories at exactly `/a/` and `/candidate-b/`; do not
+move a completed build to a different prefix. See
+[Directory-scoped production hosting](docs/browser-support.md#directory-scoped-production-hosting)
+for worker ownership, VFS relocation, and troubleshooting.
+
 The browser app routes cross-origin fetches through the service worker and
 defaults to the main WordPress Playground CORS proxy:
 `https://wordpress-playground-cors-proxy.net/?`. To test an alternate proxy in

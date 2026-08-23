@@ -12,6 +12,8 @@ import {
 import react from "@vitejs/plugin-react";
 import {
   binaryProgramCacheRoot,
+  createSourceOnlyBinarySnapshotSession,
+  sourceOnlyBinaryRoot,
   tryResolveBinary,
   tryResolveBinaries,
 } from "../../host/src/binary-resolver";
@@ -27,6 +29,10 @@ import {
   type BinaryDevAccess,
 } from "./binary-dev-access";
 import {
+  createSourceOnlyPublicSnapshot,
+  createSourceOnlyViteAssets,
+} from "./source-only-vite-assets";
+import {
   createBatchedBrowserBinaryResolution,
   type BrowserBinaryResolution,
 } from "./vite-binary-resolution";
@@ -41,9 +47,11 @@ import {
   createCanonicalPagesVfsProductsPlugin,
   loadCanonicalPagesProductMap,
 } from "../../scripts/abi-staging-pages-site-builder.ts";
+import { normalizeDeploymentBase } from "../../web-libs/kandelo-session/src/deployment-scope";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
+const authoredBrowserBinaryRelPaths = browserBinariesImports(repoRoot);
 const ABI_STAGING_BROWSER_EVIDENCE_VITE_MODE =
   "abi-staging-browser-evidence";
 
@@ -60,8 +68,30 @@ function canonicalizeFromExistingAncestor(file: string): string {
 }
 
 const configuredProgramCacheRoot = binaryProgramCacheRoot();
-const browserProgramCacheRoot = canonicalizeFromExistingAncestor(
-  configuredProgramCacheRoot,
+const configuredSourceOnlyRoot = sourceOnlyBinaryRoot();
+const sourceOnlyPublicSnapshot = configuredSourceOnlyRoot === null
+  ? null
+  : createSourceOnlyPublicSnapshot(path.resolve(__dirname, "public"));
+const sourceOnlyViteAssets = configuredSourceOnlyRoot === null
+  ? null
+  : createSourceOnlyViteAssets(
+    createSourceOnlyBinarySnapshotSession(),
+    [
+      "kernel.wasm",
+      "programs/wasm32/rootfs.vfs",
+      ...authoredBrowserBinaryRelPaths,
+    ],
+    {
+      resolveMirrorImport: (specifier, importer) =>
+        relativeBinaryMirrorImport(specifier, importer)?.relPath ?? null,
+      denyFallbackGlob: sourceOnlyFallbackArtifactGlob,
+      denyPublicPath: (relPath) =>
+        sourceOnlyPublicSnapshot!.deniesRequestPath(relPath),
+      disposeWith: () => sourceOnlyPublicSnapshot!.dispose(),
+    },
+  );
+const browserExternalArtifactRoot = canonicalizeFromExistingAncestor(
+  configuredSourceOnlyRoot ?? configuredProgramCacheRoot,
 );
 const caseInsensitivePaths = fs.existsSync(
   path.join(__dirname, "VITE.CONFIG.TS"),
@@ -74,16 +104,25 @@ function pathIsWithin(root: string, file: string): boolean {
 
 const binaryDevAccess = createBinaryDevAccess({
   repoRoot,
-  programCacheRoot: browserProgramCacheRoot,
+  programCacheRoot: browserExternalArtifactRoot,
   caseInsensitivePaths,
 });
-const binaryMirrorRoots = [
+const authoredBinaryMirrorRoots = [
   path.resolve(repoRoot, "local-binaries"),
   path.resolve(repoRoot, "binaries"),
 ];
+const binaryMirrorRoots = configuredSourceOnlyRoot === null
+  ? authoredBinaryMirrorRoots
+  : [configuredSourceOnlyRoot];
 
 function canonicalPagesVfsProducts(base: string): Plugin {
   const configuredMap = process.env.KANDELO_PAGES_PRODUCT_MAP;
+  const configuredAssetGroup = process.env.KANDELO_PAGES_VFS_ASSET_GROUP_DIR;
+  if (configuredMap === undefined && configuredAssetGroup !== undefined) {
+    throw new Error(
+      "KANDELO_PAGES_VFS_ASSET_GROUP_DIR requires KANDELO_PAGES_PRODUCT_MAP",
+    );
+  }
   if (configuredMap === undefined) {
     return createCanonicalPagesVfsProductsPlugin({
       base,
@@ -96,12 +135,30 @@ function canonicalPagesVfsProducts(base: string): Plugin {
       "KANDELO_PAGES_PRODUCT_MAP must be an absolute private map path",
     );
   }
+  const map = loadCanonicalPagesProductMap({
+    mapPath: configuredMap,
+    sourceRoot: repoRoot,
+  });
+  const declaresAssetGroup = map.products[0]?.asset_group !== undefined;
+  if (declaresAssetGroup !== (configuredAssetGroup !== undefined)) {
+    throw new Error(
+      declaresAssetGroup
+        ? "grouped KANDELO_PAGES_PRODUCT_MAP requires KANDELO_PAGES_VFS_ASSET_GROUP_DIR"
+        : "legacy KANDELO_PAGES_PRODUCT_MAP must omit KANDELO_PAGES_VFS_ASSET_GROUP_DIR",
+    );
+  }
+  if (
+    configuredAssetGroup !== undefined &&
+    !path.isAbsolute(configuredAssetGroup)
+  ) {
+    throw new Error(
+      "KANDELO_PAGES_VFS_ASSET_GROUP_DIR must be an absolute directory path",
+    );
+  }
   return createCanonicalPagesVfsProductsPlugin({
+    assetGroupDirectory: configuredAssetGroup,
     base,
-    map: loadCanonicalPagesProductMap({
-      mapPath: configuredMap,
-      sourceRoot: repoRoot,
-    }),
+    map,
     mirrorRoots: binaryMirrorRoots,
   });
 }
@@ -115,9 +172,19 @@ function applyDefaultProgramArch(relPath: string): string {
 }
 
 function candidateEntryExists(relPath: string): boolean {
-  return binaryMirrorRoots.some((root) => {
+  // Under SourceOnly the aggregate, not an individual pathname, is the
+  // candidate tier. Entering the batch whenever that authority exists makes a
+  // declared-but-missing member fail its receipt closure instead of looking
+  // like an optional unowned path.
+  const candidates = configuredSourceOnlyRoot === null
+    ? authoredBinaryMirrorRoots.map((root) => path.resolve(root, relPath))
+    : [path.resolve(
+        configuredSourceOnlyRoot,
+        ".kandelo/source-only-program-projection-v1.json",
+      )];
+  return candidates.some((candidate) => {
     try {
-      fs.lstatSync(path.resolve(root, relPath));
+      fs.lstatSync(candidate);
       return true;
     } catch (error) {
       if (
@@ -135,7 +202,7 @@ function candidateEntryExists(relPath: string): boolean {
 function createBrowserBinaryResolution(
   access: BinaryDevAccess,
 ): BrowserBinaryResolution {
-  const declaredRelPaths = browserBinariesImports(repoRoot);
+  const declaredRelPaths = authoredBrowserBinaryRelPaths;
   return createBatchedBrowserBinaryResolution(declaredRelPaths, {
     normalizeRelPath: applyDefaultProgramArch,
     resolveBatch: tryResolveBinaries,
@@ -155,7 +222,6 @@ const crossOriginIsolationHeaders = {
   // page. Mark every dev/preview response same-origin so that cached worker
   // responses remain admissible under COEP, including a 304 revalidation.
   "Cross-Origin-Resource-Policy": "same-origin",
-  "Service-Worker-Allowed": "/",
 };
 
 function configuredCorsProxyUrl(): string | undefined {
@@ -179,13 +245,11 @@ function buildCorsProxyConfig() {
 }
 
 function serviceWorkerPathForBase(base: string): string {
-  const normalized = base.startsWith("/") ? base : `/${base}`;
-  return `${normalized.endsWith("/") ? normalized : `${normalized}/`}service-worker.js`;
+  return `${normalizeDeploymentBase(base)}service-worker.js`;
 }
 
 function devCorsProxyPathForBase(base: string): string {
-  const normalized = base.startsWith("/") ? base : `/${base}`;
-  return `${normalized.endsWith("/") ? normalized : `${normalized}/`}__kandelo_cors_proxy`;
+  return `${normalizeDeploymentBase(base)}__kandelo_cors_proxy`;
 }
 
 function devCorsProxyFetchUrlForBase(base: string): string {
@@ -253,8 +317,17 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
       const query = queryIdx === -1 ? "" : source.slice(queryIdx);
 
       if (pathPart === KERNEL) {
+        if (sourceOnlyViteAssets !== null) {
+          return sourceOnlyViteAssets.resolve("kernel.wasm");
+        }
         const resolved = tryResolveBinary("kernel.wasm");
         if (resolved) return access.approve(resolved) + query;
+        if (configuredSourceOnlyRoot !== null) {
+          this.error(
+            "kernel.wasm is not owned by the SourceOnly projection at " +
+              configuredSourceOnlyRoot,
+          );
+        }
         const local = path.resolve(repoRoot, "local-binaries/kernel.wasm");
         const fetched = path.resolve(repoRoot, "binaries/kernel.wasm");
         this.error(
@@ -263,6 +336,11 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
         );
       }
       if (pathPart === ROOTFS) {
+        if (configuredSourceOnlyRoot !== null) {
+          return sourceOnlyViteAssets!.resolve(
+            "programs/wasm32/rootfs.vfs",
+          );
+        }
         const candidates = [
           path.resolve(repoRoot, "host/wasm/rootfs.vfs"),
           path.resolve(repoRoot, "local-binaries/rootfs.vfs"),
@@ -309,13 +387,68 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
  * option.
  */
 function dropWorkerEntryExports(): Plugin {
+  const strippedEntryFacades = new Set<string>();
   return {
     name: "drop-worker-entry-exports",
     enforce: "post",
     renderChunk(code, chunk) {
       if (!chunk.isEntry) return null;
       const stripped = code.replace(/\bexport\s*\{[^}]*\}\s*;?\s*$/, "");
-      return stripped === code ? null : { code: stripped, map: null };
+      if (stripped === code) return null;
+      if (chunk.facadeModuleId === null) {
+        this.error(
+          `stripped worker entry ${chunk.fileName} lacks a stable facade identity`,
+        );
+      }
+      strippedEntryFacades.add(chunk.facadeModuleId);
+      return { code: stripped, map: null };
+    },
+    generateBundle(_options, bundle) {
+      const strippedEntries = new Set<string>();
+      const emittedEntryByFacade = new Map<string, string>();
+      for (const output of Object.values(bundle)) {
+        if (
+          output.type !== "chunk" || !output.isEntry ||
+          output.facadeModuleId === null ||
+          !strippedEntryFacades.has(output.facadeModuleId)
+        ) continue;
+        const prior = emittedEntryByFacade.get(output.facadeModuleId);
+        if (prior !== undefined && prior !== output.fileName) {
+          this.error(
+            `stripped worker entry ${output.facadeModuleId} resolves to multiple emitted chunks: ${prior}, ${output.fileName}`,
+          );
+        }
+        emittedEntryByFacade.set(output.facadeModuleId, output.fileName);
+        strippedEntries.add(output.fileName);
+      }
+      for (const facade of strippedEntryFacades) {
+        if (!emittedEntryByFacade.has(facade)) {
+          this.error(
+            `stripped worker entry ${facade} has no emitted entry chunk`,
+          );
+        }
+      }
+      for (const output of Object.values(bundle)) {
+        if (output.type !== "chunk") continue;
+        for (const imported of output.dynamicImports) {
+          if (strippedEntries.has(imported)) {
+            this.error(
+              `worker chunk ${output.fileName} imports worker entry ${imported} whose exports are stripped`,
+            );
+          }
+        }
+        for (const imported of output.imports) {
+          if (!strippedEntries.has(imported)) continue;
+          if (output.importedBindings === undefined) {
+            this.error(
+              `worker chunk ${output.fileName} does not report imported bindings for stripped worker entry ${imported}`,
+            );
+          }
+          this.error(
+            `worker chunk ${output.fileName} imports worker entry ${imported} whose exports are stripped`,
+          );
+        }
+      }
     },
   };
 }
@@ -363,7 +496,7 @@ function relativeBinaryMirrorImport(
     ? path.resolve(pathPart)
     : path.resolve(path.dirname(importerPath), pathPart);
 
-  for (const mirrorRoot of binaryMirrorRoots) {
+  for (const mirrorRoot of authoredBinaryMirrorRoots) {
     if (!pathIsWithin(mirrorRoot, candidate)) continue;
     const relPath = normalizePath(path.relative(mirrorRoot, candidate));
     if (
@@ -377,6 +510,22 @@ function relativeBinaryMirrorImport(
     return { relPath: applyDefaultProgramArch(relPath), query };
   }
   return null;
+}
+
+function sourceOnlyFallbackArtifactGlob(
+  specifier: string,
+  importer: string,
+): boolean {
+  const pathPart = specifier.split(/[?#]/, 1)[0];
+  if (!pathPart.startsWith(".") || !path.isAbsolute(importer)) return false;
+  const candidate = path.resolve(
+    path.dirname(importer.split("?", 1)[0]),
+    pathPart,
+  );
+  return [
+    path.resolve(repoRoot, "packages/registry"),
+    path.resolve(__dirname, "public"),
+  ].some((fallbackRoot) => pathIsWithin(fallbackRoot, candidate));
 }
 
 function abiStagingBrowserEvidenceArtifactBoundary(mode: string): Plugin {
@@ -438,15 +587,26 @@ function resolveBinariesAlias(
       if (request === null) return null;
       if (options.scan) {
         // Vite's dependency scanner only classifies the import graph; it does
-        // not load these assets. Let Vite mark asset/query imports external so
-        // HTML-only smoke sessions do not need the Rust package checker.
+        // not load these assets. Explicitly mark the authored specifier
+        // external: returning null makes Vite classify the @binaries prefix as
+        // a missing bare dependency before it recognizes the ?url query.
         // The real transform request returns here without `scan` and performs
         // the complete resolver/capability check before any bytes are served.
-        return null;
+        return { id: source, external: true };
+      }
+
+      if (sourceOnlyViteAssets !== null) {
+        return sourceOnlyViteAssets.resolve(request.relPath);
       }
 
       const resolved = resolution.resolve(request.relPath);
       if (resolved) return resolved + request.query;
+      if (configuredSourceOnlyRoot !== null) {
+        this.error(
+          `Browser binary ${request.relPath} is not owned by the SourceOnly ` +
+            `projection at ${configuredSourceOnlyRoot}`,
+        );
+      }
       const local = path.resolve(repoRoot, "local-binaries", request.relPath);
       const fetched = path.resolve(repoRoot, "binaries", request.relPath);
       this.error(
@@ -711,6 +871,22 @@ const demoInputs = {
   // without adding page inputs.
 };
 
+function sourceOnlyDemoInputs<T extends Record<string, string>>(
+  selected: T,
+): T {
+  if (configuredSourceOnlyRoot === null) return selected;
+  const unsupported = Object.keys(selected).filter(
+    (name) => !(name in defaultDemoInputs),
+  );
+  if (unsupported.length > 0) {
+    throw new Error(
+      "SourceOnly browser builds admit only the root main, kandelo, and network inputs; " +
+        `these inputs still depend on ambient build outputs: ${unsupported.join(", ")}`,
+    );
+  }
+  return selected;
+}
+
 function selectedDemoInputs(
   mode: string,
 ): typeof demoInputs | Record<string, string> {
@@ -718,7 +894,7 @@ function selectedDemoInputs(
     // WHY: candidate evidence injects the complete product image and lazy
     // inputs. Bundling ordinary demo fallbacks here would make exact runtime
     // preparation depend on unrelated package archives before composition.
-    return { main: demoInputs.main };
+    return sourceOnlyDemoInputs({ main: demoInputs.main });
   }
   const acceptanceInputs = homebrewClosedAcceptanceInputNames(mode);
   if (acceptanceInputs !== undefined) {
@@ -726,14 +902,16 @@ function selectedDemoInputs(
     // beside its private test page. Selecting only the fixture would make `/`
     // fall back to the wrong application; unrelated gallery entries remain in
     // the separately protected Pages build.
-    return Object.fromEntries(
+    return sourceOnlyDemoInputs(Object.fromEntries(
       acceptanceInputs.map((name) => [name, demoInputs[name]]),
-    );
+    ));
   }
   const requested = process.env.KANDELO_BROWSER_DEMO_INPUTS?.split(",")
     .map((name) => name.trim())
     .filter(Boolean);
-  if (!requested || requested.length === 0) return defaultDemoInputs;
+  if (!requested || requested.length === 0) {
+    return sourceOnlyDemoInputs(defaultDemoInputs);
+  }
 
   const selected: Record<string, string> = {};
   for (const name of requested) {
@@ -742,7 +920,7 @@ function selectedDemoInputs(
     }
     selected[name] = demoInputs[name as keyof typeof demoInputs];
   }
-  return selected;
+  return sourceOnlyDemoInputs(selected);
 }
 
 const disableBrowserTestHmr = process.env.KANDELO_BROWSER_TEST_NO_HMR === "1";
@@ -756,12 +934,13 @@ export default defineConfig(({ mode }) => {
     process.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT,
   );
 
-  const base = process.env.VITE_BASE || "/";
+  const base = normalizeDeploymentBase(process.env.VITE_BASE ?? "/");
   const canonicalPages = process.env.KANDELO_PAGES_PRODUCT_MAP !== undefined;
   const pagesVfsProducts = canonicalPagesVfsProducts(base);
 
   return {
     base,
+    publicDir: sourceOnlyPublicSnapshot?.path ?? "public",
     resolve: {
       alias: browserRepositoryAliases(repoRoot),
     },
@@ -770,6 +949,9 @@ export default defineConfig(({ mode }) => {
       createCanonicalPagesLegacyBinaryBoundary(canonicalPages),
       pagesVfsProducts,
       react(),
+      ...(sourceOnlyViteAssets === null
+        ? []
+        : [sourceOnlyViteAssets.plugin()]),
       resolveKernelArtifactsAlias(binaryDevAccess),
       resolveBinariesAlias(binaryDevAccess, browserBinaryResolution),
       rewriteNavLinks(),
@@ -794,7 +976,7 @@ export default defineConfig(({ mode }) => {
         // a live mirror swap cannot change the bytes after validation. Resolver
         // plugins approve exact files, and the pre-serving guard rejects every
         // other cache path (including symlinks and approved-path descendants).
-        allow: [repoRoot, browserProgramCacheRoot],
+        allow: [repoRoot, browserExternalArtifactRoot],
       },
     },
     preview: {
@@ -815,10 +997,18 @@ export default defineConfig(({ mode }) => {
     },
     worker: {
       format: "es",
+      rollupOptions: {
+        output: {
+          inlineDynamicImports: true,
+        },
+      },
       plugins: () => [
         abiStagingBrowserEvidenceArtifactBoundary(mode),
         createCanonicalPagesLegacyBinaryBoundary(canonicalPages),
         canonicalPagesVfsProducts(base),
+        ...(sourceOnlyViteAssets === null
+          ? []
+          : [sourceOnlyViteAssets.plugin()]),
         resolveKernelArtifactsAlias(binaryDevAccess),
         resolveBinariesAlias(binaryDevAccess, browserBinaryResolution),
         dropWorkerEntryExports(),

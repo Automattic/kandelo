@@ -543,12 +543,21 @@ For demos that serve HTTP (nginx, PHP-FPM, WordPress), a service worker intercep
 ```typescript
 import { HttpBridgeHost } from "../../lib/http-bridge";
 
-const APP_PREFIX = import.meta.env.BASE_URL + "app/";
+const DEPLOYMENT_PREFIX = import.meta.env.BASE_URL;
+const APP_PREFIX = DEPLOYMENT_PREFIX + "app/";
+const SW_URL = DEPLOYMENT_PREFIX + "service-worker.js";
 const bridge = new HttpBridgeHost();
 
 // Register service worker and init bridge
-await navigator.serviceWorker.register(import.meta.env.BASE_URL + "service-worker.js");
+const registered = await navigator.serviceWorker.register(SW_URL, {
+  scope: DEPLOYMENT_PREFIX,
+  updateViaCache: "none",
+});
 const reg = await navigator.serviceWorker.ready;
+const expectedScope = new URL(DEPLOYMENT_PREFIX, location.href).href;
+if (registered.scope !== expectedScope || reg.scope !== expectedScope) {
+  throw new Error("service worker scope differs from deployment prefix");
+}
 const reply = new MessageChannel();
 await new Promise<void>((resolve) => {
   reply.port1.onmessage = () => resolve();
@@ -571,6 +580,15 @@ The service worker (`public/service-worker.js`) handles:
 - Adding COOP/COEP headers for cross-origin isolation
 - Routing requests matching `appPrefix` to the kernel via MessagePort
 - Cookie jar for session persistence (WordPress)
+
+Put the worker script at the root of the deployment prefix and use its exact
+script-directory scope. Do not use `Service-Worker-Allowed` to broaden a
+worker to `/` or a sibling deployment. Bridge authority, cookies,
+cross-origin-isolation retry state, and the lazy VFS cache belong to that one
+scope. The origin-wide Kandelo theme preference is separate UI state and is
+not part of the bridge or machine. See
+[Directory-scoped production hosting](browser-support.md#directory-scoped-production-hosting)
+for the complete hosting and troubleshooting contract.
 
 ### Thread support in browser UI and labs
 
@@ -648,8 +666,7 @@ the cached-build + URL-addressable archive flow described in
 packages/registry/<name>/
     package.toml        # required — recipe (project-agnostic)
     build.toml          # required (unless source-only) — project view + binary source
-    build-<name>.sh     # required — produces the outputs
-    bin/                # created by build script; never committed
+    build-<name>.sh     # required — writes only resolver-owned work/output roots
 ```
 
 ### 2. Write `package.toml`
@@ -736,6 +753,11 @@ index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-ab
   checkout from `WASM_POSIX_BUILD_GIT_<NAME>_DIR` and verify/use the paired
   `..._COMMIT`; its identity is already part of the cache key and archived
   compatibility provenance.
+- Gitlinks are rejected by default. If a pinned upstream tree requires its
+  gitlinks to exist as uninitialized directories, declare the exact `tree` and
+  set `allow_uninitialized_gitlinks = true` on that input. The resolver still
+  requires each gitlink to be an empty real directory and every ordinary
+  tracked file to be present.
 - For a one-off legacy archive that doesn't live in an index,
   replace the `[binary]` block with the direct form:
   `url = "https://..."` + `sha256 = "..."`. The resolver fetches that
@@ -743,9 +765,10 @@ index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-ab
 
 ### 3. Write `build-<name>.sh`
 
-The build script's job: produce the declared outputs and call
-`install_local_binary` (sourced from `scripts/install-local-binary.sh`)
-to register them.
+The build script's job is to keep all scratch state below the resolver-owned
+work root and install exactly its declared outputs below the resolver-owned
+output root. It must not write generated files into the package checkout or
+publish a second local mirror itself.
 
 ```bash
 #!/usr/bin/env bash
@@ -754,38 +777,117 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 source "$REPO_ROOT/sdk/activate.sh"
 
-# Resolve any transitive deps via env vars the resolver injects.
-# WASM_POSIX_DEP_ZLIB_DIR is set if zlib is in depends_on; if not,
-# resolve on demand.
-ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:-$(cargo run -p xtask --quiet -- build-deps resolve zlib)}"
+# These private roots are created and cleaned up by the resolver.
+: "${WASM_POSIX_DEP_WORK_DIR:?resolver-owned work directory is required}"
+: "${WASM_POSIX_DEP_OUT_DIR:?resolver-owned output directory is required}"
+WORK_DIR="$WASM_POSIX_DEP_WORK_DIR"
+OUT_DIR="$WASM_POSIX_DEP_OUT_DIR"
 
-# … typical autoconf / cmake / make flow, using -I$ZLIB_PREFIX/include
-# and -L$ZLIB_PREFIX/lib for compile/link flags. See
+# Consume only dependencies declared in package.toml. The DAG resolver
+# authenticates and injects their exact output roots before this script runs.
+: "${WASM_POSIX_DEP_ZLIB_DIR:?declare zlib in depends_on}"
+ZLIB_PREFIX="$WASM_POSIX_DEP_ZLIB_DIR"
+
+# Keep configure, compilation, and every other scratch file under WORK_DIR.
+BUILD_DIR="$WORK_DIR/build"
+mkdir -p "$BUILD_DIR"
+# … typical autoconf / cmake / make flow producing
+# "$BUILD_DIR/myprog.wasm", using -I$ZLIB_PREFIX/include and
+# -L$ZLIB_PREFIX/lib for compile/link flags. See
 # docs/package-management.md §Migrating a consumer to the cache for
 # the full CPPFLAGS/LDFLAGS contract.
 
-# Stage outputs into bin/
-mkdir -p "$SCRIPT_DIR/bin"
-cp <built-path>/myprog "$SCRIPT_DIR/bin/myprog.wasm"
-
-# Register in local-binaries/ so the resolver + run.sh pick up the
-# fresh build over any previously-fetched archive.
-source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary myprog "$SCRIPT_DIR/bin/myprog.wasm"
+# The default executable policy is fork instrumentation. Install only the
+# exact declared artifact; the resolver validates it before publication.
+"$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \
+  "$BUILD_DIR/myprog.wasm" -o "$OUT_DIR/myprog.wasm"
 ```
 
 ### 4. Verify locally
 
 ```bash
-# Should source-build (no archive yet), populate cache, place
-# binaries/programs/<arch>/myprog.wasm.
-cargo run -p xtask -- build-deps resolve myprog \
+scripts/dev-shell.sh bash -lc '
+  set -euo pipefail
+  host_target=$(rustc -vV | sed -n "s/^host: //p")
+
+  # The resolver creates private WORK/OUT roots, verifies the sole declared
+  # myprog.wasm output, then publishes it into the cache and resolver view.
+  cargo run -p xtask --target "$host_target" -- build-deps resolve myprog \
     --arch wasm32 --binaries-dir "$(pwd)/binaries"
 
-# Verify the layout matches what run.sh / consumers expect.
-cargo run -p xtask --quiet -- build-deps output-path myprog myprog.wasm
-# → myprog.wasm   (single-output, flat)
+  # Query the published layout; do not inspect a package-checkout bin/ directory.
+  cargo run -p xtask --target "$host_target" --quiet -- \
+    build-deps output-path myprog myprog.wasm
+  # → myprog.wasm   (single-output, flat)
+'
 ```
+
+If a browser VFS product consumes the package, declare that edge in the
+product manifest rather than reading `packages/registry/myprog/bin` or another
+builder's work directory:
+
+```toml
+[[software.package]]
+name = "myprog"
+outputs = ["myprog"]
+role = "runtime"
+materialization = "embedded"
+source_roles = []
+```
+
+That dependency entry does not itself make a product selectable. A product
+also needs a VFS-producing package whose declared output filename equals the
+product manifest's `output`, plus a `[[products]]` binding in
+`packages/sets/local-supported.toml`. The checked-in Node product is the
+executable example:
+
+```toml
+# images/vfs/products/browser-node.toml
+id = "browser-node"
+output = "node-vfs.vfs.zst"
+```
+
+```toml
+# packages/registry/node-vfs/package.toml
+name = "node-vfs"
+
+[[outputs]]
+name = "node-vfs"
+wasm = "node-vfs.vfs.zst"
+fork_instrumentation = "disabled"
+```
+
+```toml
+# packages/sets/local-supported.toml
+[[products]]
+id = "browser-node"
+package = "node-vfs"
+manifest = "images/vfs/products/browser-node.toml"
+```
+
+Exercise that registered product through the same local DAG used by other
+consumers:
+
+```bash
+scripts/dev-shell.sh bash -lc '
+  set -euo pipefail
+  host_target=$(rustc -vV | sed -n "s/^host: //p")
+  cargo run -p xtask --target "$host_target" -- local-build run \
+    --set packages/sets/local-supported.toml \
+    --source-cache-root "$HOME/.cache/kandelo/source-only" \
+    --output-root "$PWD/local-binaries/source-only-v1" \
+    --product browser-node \
+    --jobs 16
+'
+```
+
+Before calling the browser integration complete, select the product through
+the consumer registry and build the production app with a non-root prefix such
+as `VITE_BASE=/candidate-b/`. Serve that output at `/candidate-b/` and verify
+its product URL, service-worker scope, bridge route, and authenticated VFS
+group remain beneath that prefix. The exact production commands and complete
+group handoff are documented in
+[Browser Support](browser-support.md#directory-scoped-production-hosting).
 
 ### 5. Open a PR
 

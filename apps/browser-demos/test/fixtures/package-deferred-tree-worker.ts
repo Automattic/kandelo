@@ -8,6 +8,7 @@ interface InspectPackageTreeRequest {
     first: string;
     second: string;
   };
+  corruptionPath?: string;
 }
 
 interface WorkerScope {
@@ -43,6 +44,23 @@ workerScope.onmessage = async (event) => {
     fs.rewriteLazyArchiveUrls((url) =>
       resolveLazyUrl(event.data.lazyUrlBase, url)
     );
+    if (event.data.corruptionPath !== undefined) {
+      let integrityRejected = false;
+      try {
+        await fs.preparePath(event.data.corruptionPath);
+      } catch (error) {
+        integrityRejected = error instanceof Error && /SHA-256/.test(error.message);
+      }
+      workerScope.postMessage({
+        ok: true,
+        result: {
+          integrityRejected,
+          deferred: fs.isPathDeferred(event.data.corruptionPath),
+          pendingArchives: fs.exportLazyArchiveEntries().length,
+        },
+      });
+      return;
+    }
     if (event.data.atomicPaths !== undefined) {
       const { first, second } = event.data.atomicPaths;
       let exportBlockedBeforeVerification = false;

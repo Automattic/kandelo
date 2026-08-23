@@ -23,6 +23,8 @@ if (protectedBrowserBaseUrl !== undefined && assembledSiteRoot !== undefined) {
   );
 }
 const serveSealedDist = process.env.KANDELO_PLAYWRIGHT_SERVE_DIST === "1";
+const scopedDeploymentsRun =
+  process.env.KANDELO_SCOPED_DEPLOYMENT_SOURCE_ONLY_ROOT !== undefined;
 const configuredViteMode = process.env.KANDELO_PLAYWRIGHT_VITE_MODE?.trim();
 if (
   configuredViteMode !== undefined &&
@@ -134,7 +136,7 @@ export default defineConfig({
       : "off",
   },
   webServer:
-    protectedBrowserBaseUrl === undefined
+    protectedBrowserBaseUrl === undefined && !scopedDeploymentsRun
     ? {
           command:
             serveSealedDist || assembledSiteRoot !== undefined
@@ -231,7 +233,6 @@ await preview({
       "Cross-Origin-Embedder-Policy": "require-corp",
       "Cross-Origin-Opener-Policy": "same-origin",
       "Cross-Origin-Resource-Policy": "same-origin",
-      "Service-Worker-Allowed": "/",
     },
     host: "127.0.0.1",
     port: ${previewPort},
