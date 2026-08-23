@@ -15,6 +15,10 @@ const DISABLED_NODE_POLICY = {
   path: NODE_PATH,
   forkInstrumentation: "disabled",
 } as const satisfies VfsWasmArtifactPolicy;
+const AUTO_NODE_POLICY = {
+  path: NODE_PATH,
+  forkInstrumentation: "auto",
+} as const satisfies VfsWasmArtifactPolicy;
 const cleanupDirectories = new Set<string>();
 
 afterEach(() => {
@@ -25,6 +29,19 @@ afterEach(() => {
 });
 
 describe("VFS image path-scoped Wasm artifact policy", () => {
+  it("applies the normal fork contract to auto policy declarations", async () => {
+    const fs = imageFs();
+    writeVfsBinary(fs, NODE_PATH, wasmImportingKernelFork(), 0o755);
+
+    await expect(
+      saveImage(fs, outputPath("auto"), {
+        wasmArtifactPolicies: [AUTO_NODE_POLICY],
+      }),
+    ).rejects.toThrow(
+      /\/usr\/bin\/node:[\s\S]*incomplete wasm-fork-instrument exports/,
+    );
+  });
+
   it("accepts one declared non-forking executable without weakening the image walk", async () => {
     const accepted = imageFs();
     writeVfsBinary(accepted, NODE_PATH, wasmImportingKernelFork(), 0o755);

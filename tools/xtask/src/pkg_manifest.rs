@@ -51,6 +51,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::source_extract::ArchiveFormat;
+
 /// Discriminator for the kind of artifact a manifest produces.
 ///
 /// Required at the top level of every `package.toml` (`kind = "library"`,
@@ -93,12 +95,10 @@ impl TargetArch {
 
 /// Per-program-output fork instrumentation policy.
 ///
-/// Most binaries use `auto`: importing `kernel.kernel_fork` means the artifact
-/// must carry the complete `wasm-fork-instrument` export set. Some runtimes,
-/// notably SpiderMonkey, link a libc that exposes `fork` but cannot safely be
-/// rewritten because the extra control-flow depth breaks browser worker startup.
-/// Those outputs declare `disabled`, which accepts the raw import but rejects
-/// any stale artifact that already carries `wpk_fork_*` exports.
+/// Executable Wasm outputs use `auto`: importing `kernel.kernel_fork` means the
+/// artifact must carry the complete `wasm-fork-instrument` export set. Non-Wasm
+/// package members such as VFS images and archives declare `disabled`, which
+/// rejects bytes that accidentally carry `wpk_fork_*` exports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ForkInstrumentationPolicy {
@@ -504,9 +504,41 @@ pub struct DepsManifest {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSource {
+    pub url: String,
+    pub sha256: String,
+    #[serde(default)]
+    pub provider: Option<SourceProvider>,
+    #[serde(default)]
+    pub extract_exclude_members: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SourceProvider {
+    Archive,
+    Repository,
+    DevShell,
+}
+
+impl SourceProvider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Archive => "archive",
+            Self::Repository => "repository",
+            Self::DevShell => "dev-shell",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Source {
     pub url: String,
     pub sha256: String,
+    pub provider: SourceProvider,
+    pub provider_was_explicit: bool,
+    pub extract_exclude_members: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -690,6 +722,14 @@ pub struct GitBuildInput {
     pub name: String,
     pub repository: String,
     pub commit: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tree: Option<String>,
+    #[serde(default, skip_serializing_if = "git_input_permission_is_false")]
+    pub allow_uninitialized_gitlinks: bool,
+}
+
+fn git_input_permission_is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Resolver-owned metadata stored beside (never inside) a materialized cache
@@ -697,7 +737,7 @@ pub struct GitBuildInput {
 /// bytes, while local cache hits can still compare immutable external-source
 /// provenance directly and verify it agrees with the full cache-key directory.
 const CACHE_PROVENANCE_SCHEMA: u32 = 1;
-const MAX_CACHE_PROVENANCE_BYTES: u64 = 1024 * 1024;
+pub(crate) const MAX_CACHE_PROVENANCE_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -804,6 +844,23 @@ fn expected_cache_provenance(
     }))
 }
 
+pub(crate) fn expected_cache_provenance_bytes(
+    target: &DepsManifest,
+    arch: TargetArch,
+    abi_version: u32,
+    cache_key_sha: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    expected_cache_provenance(target, arch, abi_version, cache_key_sha)?
+        .map(|marker| {
+            toml::to_string(&marker)
+                .map(String::into_bytes)
+                .map_err(|error| {
+                    format!("encode cache provenance for {}: {error}", target.spec())
+                })
+        })
+        .transpose()
+}
+
 /// Atomically publish the adjacent provenance marker before publishing a new
 /// artifact directory. A crash can leave a harmless marker without artifacts;
 /// a later writer for the same full identity validates and reuses it.
@@ -814,12 +871,15 @@ pub(crate) fn write_cache_provenance(
     abi_version: u32,
     cache_key_sha: &str,
 ) -> Result<(), String> {
-    let Some(marker) = expected_cache_provenance(target, arch, abi_version, cache_key_sha)? else {
+    let Some(bytes) = expected_cache_provenance_bytes(
+        target,
+        arch,
+        abi_version,
+        cache_key_sha,
+    )? else {
         return Ok(());
     };
     let path = cache_provenance_path(canonical, cache_key_sha)?;
-    let text = toml::to_string(&marker)
-        .map_err(|e| format!("encode cache provenance for {}: {e}", target.spec()))?;
     let parent = path.parent().expect("cache provenance path has parent");
     std::fs::create_dir_all(parent)
         .map_err(|e| format!("create cache provenance parent {}: {e}", parent.display()))?;
@@ -843,7 +903,7 @@ pub(crate) fn write_cache_provenance(
             }
         };
         if let Err(e) = file
-            .write_all(text.as_bytes())
+            .write_all(&bytes)
             .and_then(|()| file.sync_all())
         {
             let _ = std::fs::remove_file(&temp);
@@ -1106,6 +1166,22 @@ pub(crate) fn validate_git_build_inputs(
                 input.commit
             ));
         }
+        if let Some(tree) = &input.tree
+            && (tree.len() != 40
+                || !tree
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+        {
+            return Err(format!(
+                "{context} tree must be an exact 40-character lowercase Git object ID, got {tree:?}"
+            ));
+        }
+        if input.allow_uninitialized_gitlinks && input.tree.is_none() {
+            return Err(format!(
+                "{context} {:?} must declare its exact parent tree when allow_uninitialized_gitlinks = true",
+                input.name
+            ));
+        }
     }
     Ok(())
 }
@@ -1135,6 +1211,38 @@ fn validate_build_script_path(path: &str, document: &str) -> Result<(), String> 
         return Err(format!(
             "{document} script_path must contain only normal repo-relative components, got {path:?}"
         ));
+    }
+    Ok(())
+}
+
+fn validate_extract_exclude_members(members: &[String]) -> Result<(), String> {
+    for member in members {
+        if member.is_empty()
+            || member.len() > 4_096
+            || member
+                .chars()
+                .any(|character| matches!(character, '\0' | '\n' | '\r' | '\\'))
+            || member.split('/').any(|component| {
+                component.is_empty()
+                    || component.len() > 255
+                    || component == "."
+                    || component == ".."
+            })
+            || Path::new(member).is_absolute()
+            || Path::new(member)
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(format!(
+                "source.extract_exclude_members entries must be bounded portable archive-relative paths, got {member:?}"
+            ));
+        }
+    }
+    if members.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(
+            "source.extract_exclude_members must be bytewise sorted and contain no duplicates"
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -1332,7 +1440,7 @@ struct Raw {
     /// migrate readers to the index.
     #[serde(default)]
     revision: Option<u32>,
-    source: Source,
+    source: RawSource,
     license: License,
     #[serde(default)]
     depends_on: Vec<String>,
@@ -1874,6 +1982,53 @@ impl DepsManifest {
                 raw.source.sha256
             ));
         }
+        let provider_was_explicit = raw.source.provider.is_some();
+        let source_provider = raw.source.provider.unwrap_or_else(|| {
+            if raw.source.sha256.bytes().all(|byte| byte == b'0') {
+                SourceProvider::Repository
+            } else {
+                SourceProvider::Archive
+            }
+        });
+        validate_extract_exclude_members(&raw.source.extract_exclude_members)?;
+        if source_provider != SourceProvider::Archive
+            && !raw.source.extract_exclude_members.is_empty()
+        {
+            return Err(
+                "source.extract_exclude_members is supported only for source.provider = \"archive\""
+                    .to_string(),
+            );
+        }
+        match source_provider {
+            SourceProvider::Archive => {
+                if raw.source.sha256.bytes().all(|byte| byte == b'0') {
+                    return Err(
+                        "source.provider = \"archive\" requires a nonzero source.sha256"
+                            .to_string(),
+                    );
+                }
+                ArchiveFormat::from_url(&raw.source.url).map_err(|error| {
+                    format!(
+                        "source.provider = \"archive\" requires a supported archive URL: {error}"
+                    )
+                })?;
+            }
+            SourceProvider::Repository | SourceProvider::DevShell => {
+                if !raw.source.sha256.bytes().all(|byte| byte == b'0') {
+                    return Err(format!(
+                        "source.provider = {:?} requires source.sha256 to be exactly 64 zeroes",
+                        source_provider.as_str(),
+                    ));
+                }
+            }
+        }
+        let source = Source {
+            url: raw.source.url,
+            sha256: raw.source.sha256,
+            provider: source_provider,
+            provider_was_explicit,
+            extract_exclude_members: raw.source.extract_exclude_members,
+        };
         if raw.license.spdx.is_empty() {
             return Err("license.spdx must not be empty".into());
         }
@@ -2197,7 +2352,7 @@ impl DepsManifest {
             name: raw.name,
             version: raw.version,
             revision,
-            source: raw.source,
+            source,
             license: raw.license,
             depends_on,
             build: raw.build,
@@ -2302,11 +2457,15 @@ mod tests {
                 name: "tap".into(),
                 repository: "https://example.test/tap.git".into(),
                 commit: "1".repeat(40),
+                tree: Some("3".repeat(40)),
+                allow_uninitialized_gitlinks: true,
             },
             GitBuildInput {
                 name: "support".into(),
                 repository: "https://example.test/support.git".into(),
                 commit: "2".repeat(40),
+                tree: None,
+                allow_uninitialized_gitlinks: false,
             },
         ]
     }
@@ -2314,12 +2473,7 @@ mod tests {
     fn write_provenance_build_toml(dir: &Path, git_inputs: &[GitBuildInput]) {
         let blocks = git_inputs
             .iter()
-            .map(|input| {
-                format!(
-                    "[[git_inputs]]\nname = {:?}\nrepository = {:?}\ncommit = {:?}\n",
-                    input.name, input.repository, input.commit,
-                )
-            })
+            .map(|input| format!("[[git_inputs]]\n{}", toml::to_string(input).unwrap()))
             .collect::<Vec<_>>()
             .join("\n");
         std::fs::write(
@@ -2645,6 +2799,181 @@ cache_key_sha = "111111111111111111111111111111111111111111111111111111111111111
             m.build_script_path(Path::new("/repo")),
             PathBuf::from("/x/build-zlib.sh")
         );
+    }
+
+    #[test]
+    fn source_provider_parses_every_explicit_spelling_and_tracks_explicitness() {
+        for (spelling, expected, sha256, url) in [
+            (
+                "archive",
+                SourceProvider::Archive,
+                "1".repeat(64),
+                "https://example.test/source.tar.gz?download=1#fragment",
+            ),
+            (
+                "repository",
+                SourceProvider::Repository,
+                "0".repeat(64),
+                "https://example.test/project",
+            ),
+            (
+                "dev-shell",
+                SourceProvider::DevShell,
+                "0".repeat(64),
+                "https://example.test/toolchain",
+            ),
+        ] {
+            let text = EXAMPLE
+                .replace(
+                    "url = \"https://example.test/zlib-1.3.1.tar.gz\"",
+                    &format!("url = {url:?}\nprovider = {spelling:?}"),
+                )
+                .replace(&"0".repeat(64), &sha256);
+            let manifest = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap();
+            assert_eq!(manifest.source.provider, expected);
+            assert!(manifest.source.provider_was_explicit);
+        }
+    }
+
+    #[test]
+    fn archive_source_exclusions_are_explicit_portable_and_archive_only() {
+        let archive = EXAMPLE
+            .replace(&"0".repeat(64), &"1".repeat(64))
+            .replace(
+                "sha256 = \"1111111111111111111111111111111111111111111111111111111111111111\"",
+                "sha256 = \"1111111111111111111111111111111111111111111111111111111111111111\"\nextract_exclude_members = [\"zlib-1.3.1/BUILD\"]",
+            );
+        let parsed = DepsManifest::parse(&archive, PathBuf::from("/x")).unwrap();
+        assert_eq!(
+            parsed.source.extract_exclude_members,
+            vec!["zlib-1.3.1/BUILD"]
+        );
+
+        for invalid in [
+            archive.replace("zlib-1.3.1/BUILD", "../BUILD"),
+            archive.replace(
+                "[\"zlib-1.3.1/BUILD\"]",
+                "[\"zlib-1.3.1/build\", \"zlib-1.3.1/BUILD\"]",
+            ),
+            EXAMPLE.replace(
+                "sha256 =",
+                "extract_exclude_members = [\"zlib-1.3.1/BUILD\"]\nsha256 =",
+            ),
+        ] {
+            assert!(
+                DepsManifest::parse(&invalid, PathBuf::from("/x")).is_err(),
+                "accepted unsafe or non-archive extraction exclusion"
+            );
+        }
+    }
+
+    #[test]
+    fn source_provider_rejects_unknown_fields_values_and_provider_sha_mismatches() {
+        let cases = [
+            (
+                "unknown provider",
+                EXAMPLE.replace("sha256 =", "provider = \"workspace\"\nsha256 ="),
+            ),
+            (
+                "unknown source field",
+                EXAMPLE.replace("sha256 =", "checkout = \"HEAD\"\nsha256 ="),
+            ),
+            (
+                "archive zero digest",
+                EXAMPLE.replace("sha256 =", "provider = \"archive\"\nsha256 ="),
+            ),
+            (
+                "repository nonzero digest",
+                EXAMPLE
+                    .replace("sha256 =", "provider = \"repository\"\nsha256 =")
+                    .replace(&"0".repeat(64), &"1".repeat(64)),
+            ),
+            (
+                "dev-shell nonzero digest",
+                EXAMPLE
+                    .replace("sha256 =", "provider = \"dev-shell\"\nsha256 =")
+                    .replace(&"0".repeat(64), &"1".repeat(64)),
+            ),
+            (
+                "unsupported archive suffix",
+                EXAMPLE
+                    .replace(
+                        "url = \"https://example.test/zlib-1.3.1.tar.gz\"",
+                        "url = \"https://example.test/zlib-1.3.1.rar\"\nprovider = \"archive\"",
+                    )
+                    .replace(&"0".repeat(64), &"1".repeat(64)),
+            ),
+        ];
+        for (label, text) in cases {
+            let error = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
+            assert!(!error.is_empty(), "{label} unexpectedly parsed");
+        }
+    }
+
+    #[test]
+    fn source_provider_inference_is_archived_compatible_and_semantically_explicitness_neutral() {
+        let implicit_repository =
+            DepsManifest::parse(EXAMPLE, PathBuf::from("/implicit-repository")).unwrap();
+        let explicit_repository = DepsManifest::parse(
+            &EXAMPLE.replace("sha256 =", "provider = \"repository\"\nsha256 ="),
+            PathBuf::from("/explicit-repository"),
+        )
+        .unwrap();
+        assert_eq!(
+            implicit_repository.source.provider,
+            SourceProvider::Repository
+        );
+        assert!(!implicit_repository.source.provider_was_explicit);
+        assert_eq!(
+            explicit_repository.source.provider,
+            SourceProvider::Repository
+        );
+        assert!(explicit_repository.source.provider_was_explicit);
+
+        let nonzero = EXAMPLE.replace(&"0".repeat(64), &"1".repeat(64));
+        let implicit_archive =
+            DepsManifest::parse(&nonzero, PathBuf::from("/implicit-archive")).unwrap();
+        let explicit_archive = DepsManifest::parse(
+            &nonzero.replace("sha256 =", "provider = \"archive\"\nsha256 ="),
+            PathBuf::from("/explicit-archive"),
+        )
+        .unwrap();
+        assert_eq!(implicit_archive.source.provider, SourceProvider::Archive);
+        assert!(!implicit_archive.source.provider_was_explicit);
+        assert_eq!(explicit_archive.source.provider, SourceProvider::Archive);
+        assert!(explicit_archive.source.provider_was_explicit);
+
+        let archived =
+            DepsManifest::parse_archived(EXAMPLE_ARCHIVED, PathBuf::from("/archived")).unwrap();
+        assert_eq!(archived.source.provider, SourceProvider::Repository);
+        assert!(!archived.source.provider_was_explicit);
+
+        let archived_nonzero = EXAMPLE_ARCHIVED.replacen(&"0".repeat(64), &"1".repeat(64), 1);
+        let archived_archive =
+            DepsManifest::parse_archived(&archived_nonzero, PathBuf::from("/archived-archive"))
+                .unwrap();
+        assert_eq!(archived_archive.source.provider, SourceProvider::Archive);
+        assert!(!archived_archive.source.provider_was_explicit);
+
+        let archived_explicit =
+            EXAMPLE_ARCHIVED.replace("sha256 =", "provider = \"repository\"\nsha256 =");
+        let archived_explicit =
+            DepsManifest::parse_archived(&archived_explicit, PathBuf::from("/archived-explicit"))
+                .unwrap();
+        assert_eq!(
+            archived_explicit.source.provider,
+            SourceProvider::Repository
+        );
+        assert!(archived_explicit.source.provider_was_explicit);
+
+        for invalid in [
+            EXAMPLE_ARCHIVED.replace("sha256 =", "provider = \"unknown\"\nsha256 ="),
+            EXAMPLE_ARCHIVED.replace("sha256 =", "unknown = true\nsha256 ="),
+        ] {
+            assert!(
+                DepsManifest::parse_archived(&invalid, PathBuf::from("/archived-invalid")).is_err()
+            );
+        }
     }
 
     #[test]
@@ -3946,13 +4275,13 @@ guest_path = "/usr/share/kernel-data"
     }
 
     #[test]
-    fn output_fork_instrumentation_can_be_disabled() {
+    fn output_fork_instrumentation_can_be_disabled_for_non_wasm_members() {
         let m = program_manifest(
-            "spidermonkey",
-            "[[outputs]]\nname = \"js\"\nwasm = \"js.wasm\"\nfork_instrumentation = \"disabled\"\n",
+            "rootfs",
+            "[[outputs]]\nname = \"rootfs\"\nwasm = \"rootfs.vfs\"\nfork_instrumentation = \"disabled\"\n",
         );
         assert_eq!(
-            m.output_fork_instrumentation("js.wasm").unwrap(),
+            m.output_fork_instrumentation("rootfs.vfs").unwrap(),
             ForkInstrumentationPolicy::Disabled
         );
     }
@@ -4281,6 +4610,8 @@ index_url = "https://example.com/releases/download/binaries-abi-v{abi}/index.tom
                 name: "homebrew_tap_core".to_string(),
                 repository: "https://github.com/Kandelo-dev/homebrew-tap-core.git".to_string(),
                 commit: "b40a764d47f4f4408790de2c211ccb8efb8e4c46".to_string(),
+                tree: None,
+                allow_uninitialized_gitlinks: false,
             }]
         );
         assert!(matches!(
@@ -4288,6 +4619,56 @@ index_url = "https://example.com/releases/download/binaries-abi-v{abi}/index.tom
             BinarySource::Indexed { ref index_url }
                 if index_url == "https://example.com/releases/download/binaries-abi-v{abi}/index.toml"
         ));
+    }
+
+    #[test]
+    fn fbdoom_declares_its_exact_chocolate_doom_build_input() {
+        let package_dir = crate::repo_root().join("packages/registry/fbdoom");
+        let build = BuildToml::load(&package_dir).expect("load fbdoom build.toml");
+
+        assert_eq!(
+            serde_json::to_value(&build.git_inputs).unwrap(),
+            serde_json::json!([{
+                "name": "chocolate_doom",
+                "repository": "https://github.com/chocolate-doom/chocolate-doom.git",
+                "commit": "35fb1372d10756ca27eca05665bd8a7cebc71c05",
+                "tree": "f6f232e0ea11d817cb9079c05fe9a81bfa785171",
+                "allow_uninitialized_gitlinks": true,
+            }]),
+        );
+    }
+
+    #[test]
+    fn parses_explicit_tree_bound_uninitialized_gitlink_permission() {
+        let build = BuildToml::parse(
+            r#"
+script_path = "packages/registry/example/build-example.sh"
+repo_url = "https://example.test/kandelo.git"
+commit = "UNPUBLISHED"
+
+[[git_inputs]]
+name = "source"
+repository = "https://example.test/source.git"
+commit = "1111111111111111111111111111111111111111"
+tree = "2222222222222222222222222222222222222222"
+allow_uninitialized_gitlinks = true
+
+[binary]
+index_url = "https://example.test/index.toml"
+"#,
+        )
+        .expect("tree-bound uninitialized Git links should be explicit metadata");
+
+        assert_eq!(
+            serde_json::to_value(&build.git_inputs).unwrap(),
+            serde_json::json!([{
+                "name": "source",
+                "repository": "https://example.test/source.git",
+                "commit": "1111111111111111111111111111111111111111",
+                "tree": "2222222222222222222222222222222222222222",
+                "allow_uninitialized_gitlinks": true,
+            }]),
+        );
     }
 
     #[test]
@@ -4346,6 +4727,10 @@ index_url = "https://example.com/releases/download/binaries-abi-v{abi}/index.tom
             (
                 "name = \"tap\"\nrepository = \"https://example.test/tap.git\"\ncommit = \"1111111\"",
                 "40-character",
+            ),
+            (
+                "name = \"tap\"\nrepository = \"https://example.test/tap.git\"\ncommit = \"1111111111111111111111111111111111111111\"\nallow_uninitialized_gitlinks = true",
+                "exact parent tree",
             ),
         ];
         for (git_input, expected) in cases {

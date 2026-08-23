@@ -9,6 +9,21 @@ Some items are blocked on real demand (e.g., semver ranges, multi-arch
 fat archives); some are purely additive polish (`--gc`, `--format=json`).
 None is on a committed schedule — pick up when the use case arrives.
 
+## Execution
+
+### Retry a failed node during an active aggregate
+
+Today a failed local DAG build keeps running other independent nodes, then
+exits after the graph drains. After fixing the recipe, rerunning the same
+`local-build run` command reuses successful content-addressed nodes and runs
+the missing work.
+
+A future additive command could retry a failed node while that original
+aggregate is still active. It would need to coordinate with the active run so
+it neither duplicates a node that is still building nor changes the behavior
+of the existing single-run scheduler. This is explicitly deferred until the
+workflow has enough real demand to justify that coordination.
+
 ## Schema / artifact
 
 ### Ship kernel.wasm + userspace.wasm in the release

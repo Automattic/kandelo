@@ -93,7 +93,6 @@ make -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)" build_generated libssl.a libc
 
 echo "==> Staging OpenSSL development files..."
 make install_dev DESTDIR="$STAGE_DIR"
-rm -rf "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR/lib/pkgconfig" "$INSTALL_DIR/include"
 cp "$STAGE_DIR/usr/lib/libssl.a" "$INSTALL_DIR/lib/"
 cp "$STAGE_DIR/usr/lib/libcrypto.a" "$INSTALL_DIR/lib/"

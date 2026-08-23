@@ -109,8 +109,8 @@ export interface SaveImageOptions {
   kernelAbi?: number;
   skipWasmArtifactCheck?: boolean;
   /**
-   * Exact materialized VFS paths whose package policy intentionally disables
-   * fork instrumentation. Declarations narrow one check; every other Wasm
+   * Exact materialized VFS paths and their package fork policy. Declarations
+   * bind the selected package policy to its image path; every other Wasm
    * artifact check and the whole-image walk still run.
    */
   wasmArtifactPolicies?: readonly VfsWasmArtifactPolicy[];
@@ -136,7 +136,7 @@ export interface VfsImageHeadroom {
 
 export interface VfsWasmArtifactPolicy {
   path: string;
-  forkInstrumentation: "disabled";
+  forkInstrumentation: "auto" | "disabled";
 }
 
 export interface ExactVfsImageAbi {
@@ -345,7 +345,10 @@ function declaredWasmArtifactPolicies(
           `absolute file path: ${JSON.stringify(path)}`,
       );
     }
-    if (forkInstrumentation !== "disabled") {
+    if (
+      forkInstrumentation !== "auto" &&
+      forkInstrumentation !== "disabled"
+    ) {
       throw new Error(
         `VFS Wasm artifact policy for ${path} has unsupported fork ` +
           `instrumentation policy ${JSON.stringify(forkInstrumentation)}`,

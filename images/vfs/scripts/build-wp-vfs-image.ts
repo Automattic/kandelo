@@ -443,18 +443,47 @@ export async function buildWordPressVfsImage(
 }
 
 async function main(): Promise<void> {
+  const shellRoot = process.env.WASM_POSIX_DEP_SHELL_DIR;
+  const nginxRoot = process.env.WASM_POSIX_DEP_NGINX_DIR;
+  const phpRoot = process.env.WASM_POSIX_DEP_PHP_DIR;
+  const dinitRoot = process.env.WASM_POSIX_DEP_DINIT_DIR;
+  const msmtpdRoot = process.env.WASM_POSIX_DEP_MSMTPD_DIR;
+  const kernelRoot = process.env.WASM_POSIX_DEP_KERNEL_DIR;
   await buildWordPressVfsImage({
+    shellImage: shellRoot === undefined
+      ? undefined
+      : new Uint8Array(readFileSync(join(shellRoot, "shell.vfs.zst"))),
     wordpressDirectory: resolveWordPressCoreSource(REPO_ROOT),
-    sqliteDirectory: resolveWordPressSqlitePluginSource(),
-    nginx: new Uint8Array(readFileSync(resolveBinary("programs/nginx.wasm"))),
-    phpFpm: new Uint8Array(
-      readFileSync(resolveBinary("programs/php/php-fpm.wasm")),
-    ),
-    opcache: new Uint8Array(
-      readFileSync(resolveBinary("programs/php/opcache.so")),
-    ),
-    msmtpd: new Uint8Array(readFileSync(resolveBinary("programs/msmtpd.wasm"))),
-    outputPath: OUT_FILE,
+    sqliteDirectory: resolveWordPressSqlitePluginSource(REPO_ROOT),
+    nginx: new Uint8Array(readFileSync(nginxRoot === undefined
+      ? resolveBinary("programs/nginx.wasm")
+      : join(nginxRoot, "nginx.wasm"))),
+    phpFpm: new Uint8Array(readFileSync(phpRoot === undefined
+      ? resolveBinary("programs/php/php-fpm.wasm")
+      : join(phpRoot, "php-fpm.wasm"))),
+    opcache: new Uint8Array(readFileSync(phpRoot === undefined
+      ? resolveBinary("programs/php/opcache.so")
+      : join(phpRoot, "opcache.so"))),
+    msmtpd: new Uint8Array(readFileSync(msmtpdRoot === undefined
+      ? resolveBinary("programs/msmtpd.wasm")
+      : join(msmtpdRoot, "msmtpd.wasm"))),
+    dinit: dinitRoot === undefined
+      ? undefined
+      : {
+          dinit: new Uint8Array(readFileSync(join(dinitRoot, "dinit.wasm"))),
+          dinitctl: new Uint8Array(
+            readFileSync(join(dinitRoot, "dinitctl.wasm")),
+          ),
+        },
+    buildPrograms: phpRoot === undefined || kernelRoot === undefined
+      ? undefined
+      : {
+          php: new Uint8Array(readFileSync(join(phpRoot, "php.wasm"))),
+          kernel: new Uint8Array(
+            readFileSync(join(kernelRoot, "kandelo-kernel.wasm")),
+          ),
+        },
+    outputPath: process.argv[2] ?? OUT_FILE,
   });
 }
 

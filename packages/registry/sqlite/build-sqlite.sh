@@ -102,7 +102,6 @@ mkdir -p "$BUILD_DIR"
 
 # --- Install library into INSTALL_DIR ---
 echo "==> Installing to $INSTALL_DIR..."
-rm -rf "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/include" "$INSTALL_DIR/lib/pkgconfig"
 
 cp "$SRC_DIR/sqlite3.h" "$SRC_DIR/sqlite3ext.h" "$INSTALL_DIR/include/"

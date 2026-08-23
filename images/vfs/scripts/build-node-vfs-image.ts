@@ -46,10 +46,10 @@ import {
   writeKandeloDemoConfig,
 } from "./kandelo-demo-config";
 import { nodeGuide } from "./kandelo-demo-guides";
+import { ensureSourceExtract } from "./source-extract-helper";
 
 const SCRIPT_DIR = new URL(".", import.meta.url).pathname;
 const REPO_ROOT = join(SCRIPT_DIR, "..", "..", "..");
-const NPM_DIST = join(REPO_ROOT, "packages", "registry", "npm", "dist");
 const OUT_FILE = join(REPO_ROOT, "apps", "browser-demos", "public", "node-vfs.vfs.zst");
 
 const NPM_MOUNT = "/usr/local/lib/npm";
@@ -58,7 +58,7 @@ const NPM_MOUNT = "/usr/local/lib/npm";
 const NODE_IMAGE_MAX_BYTES = SHELL_DERIVED_VFS_PROFILE_MAX_BYTES;
 const NODE_WASM_ARTIFACT_POLICY = {
   path: NODE_BINARY_SPEC.vfsPath,
-  forkInstrumentation: "disabled",
+  forkInstrumentation: "auto",
 } as const satisfies VfsWasmArtifactPolicy;
 
 export interface NodeVfsImageBuildInputs {
@@ -66,6 +66,16 @@ export interface NodeVfsImageBuildInputs {
   node: Uint8Array;
   npmDirectory: string;
   outputPath: string;
+}
+
+type SourceExtract = typeof ensureSourceExtract;
+
+export function resolveNodeNpmSource(
+  primarySource: string | undefined,
+  repoRoot: string,
+  resolveSource: SourceExtract = ensureSourceExtract,
+): string {
+  return primarySource ?? resolveSource("node-vfs", repoRoot);
 }
 
 export async function buildNodeVfsImage(
@@ -132,22 +142,30 @@ function populateNodeBinary(fs: MemoryFileSystem, node: Uint8Array): void {
 }
 
 async function main(): Promise<void> {
-  if (!existsSync(join(NPM_DIST, "bin", "npm-cli.js"))) {
-    console.error(`npm dist not found at ${NPM_DIST}/bin/npm-cli.js`);
-    console.error("Run: bash packages/registry/npm/build-npm.sh (or whatever populates packages/registry/npm/dist)");
-    process.exit(1);
-  }
-  const resolved = resolvePolicyBoundVfsWasmArtifact(
-    NODE_BINARY_SPEC.resolverPath,
-    NODE_BINARY_SPEC.id,
-    NODE_WASM_ARTIFACT_POLICY.forkInstrumentation,
+  const npmDirectory = resolveNodeNpmSource(
+    process.env.WASM_POSIX_DEP_SOURCE_DIR,
+    REPO_ROOT,
   );
-  const shellImagePath = resolveVfsArtifact("programs/shell.vfs.zst", "shell");
+  if (!existsSync(join(npmDirectory, "bin", "npm-cli.js"))) {
+    throw new Error(`npm dist not found at ${npmDirectory}/bin/npm-cli.js`);
+  }
+  const nodeRoot = process.env.WASM_POSIX_DEP_NODE_DIR;
+  const resolved = nodeRoot
+    ? join(nodeRoot, "node.wasm")
+    : resolvePolicyBoundVfsWasmArtifact(
+      NODE_BINARY_SPEC.resolverPath,
+      NODE_BINARY_SPEC.id,
+      NODE_WASM_ARTIFACT_POLICY.forkInstrumentation,
+    );
+  const shellRoot = process.env.WASM_POSIX_DEP_SHELL_DIR;
+  const shellImagePath = shellRoot
+    ? join(shellRoot, "shell.vfs.zst")
+    : resolveVfsArtifact("programs/shell.vfs.zst", "shell");
   await buildNodeVfsImage({
     shellImage: new Uint8Array(readFileSync(shellImagePath)),
     node: new Uint8Array(readFileSync(resolved)),
-    npmDirectory: NPM_DIST,
-    outputPath: OUT_FILE,
+    npmDirectory,
+    outputPath: process.argv[2] ?? OUT_FILE,
   });
 }
 

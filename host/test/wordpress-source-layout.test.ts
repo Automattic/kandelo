@@ -18,11 +18,9 @@ import {
   WORDPRESS_CORE_GUEST_PATH,
   WORDPRESS_SETUP_SQLITE_PLUGIN_ALIAS,
   WORDPRESS_SQLITE_PLUGIN_GUEST_PATH,
-  WORDPRESS_SQLITE_PLUGIN_SHA256,
-  WORDPRESS_SQLITE_PLUGIN_URL,
-  WORDPRESS_SQLITE_PLUGIN_VERSION,
 } from "../../images/vfs/scripts/wordpress-source-layout";
-import type { ExtractOptions } from "../../images/vfs/scripts/source-extract-helper";
+import { resolveNodeNpmSource } from "../../images/vfs/scripts/build-node-vfs-image";
+import { resolveLampSystemTablesDirectory } from "../../images/vfs/scripts/build-lamp-vfs-image";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 
 const O_RDONLY = 0;
@@ -40,32 +38,58 @@ function readFile(fs: MemoryFileSystem, path: string): string {
 }
 
 describe("WordPress product source layout", () => {
-  it("resolves core and SQLite plugin through their pinned source contracts", () => {
+  it("prefers injected Node and WordPress sources without calling fallbacks", () => {
     const repoRoot = "/reviewed/kandelo";
-    const coreResolver = vi.fn((
-      _packageName: string,
-      _repoRoot: string,
-      _legacyLocalPath?: string,
-    ) => "/cache/wordpress");
-    const pluginResolver = vi.fn((_options: ExtractOptions) =>
-      "/cache/sqlite-plugin"
-    );
+    const fallback = vi.fn(() => "/network-fallback-must-not-run");
 
-    expect(resolveWordPressCoreSource(repoRoot, coreResolver)).toBe(
+    expect(resolveNodeNpmSource("/resolver/npm", repoRoot, fallback)).toBe(
+      "/resolver/npm",
+    );
+    expect(
+      resolveWordPressCoreSource(repoRoot, fallback, "/resolver/wordpress"),
+    ).toBe(
+      "/resolver/wordpress",
+    );
+    expect(
+      resolveWordPressSqlitePluginSource(
+        repoRoot,
+        fallback,
+        "/resolver/wordpress-sqlite",
+      ),
+    ).toBe("/resolver/wordpress-sqlite");
+    expect(fallback).not.toHaveBeenCalled();
+  });
+
+  it("uses manifest-backed verified fallbacks outside resolver mode", () => {
+    const fallback = vi.fn((packageName: string) => `/cache/${packageName}`);
+
+    expect(resolveNodeNpmSource(undefined, "/repo", fallback)).toBe(
+      "/cache/node-vfs",
+    );
+    expect(resolveWordPressCoreSource("/repo", fallback)).toBe(
       "/cache/wordpress",
     );
-    expect(coreResolver).toHaveBeenCalledWith("wordpress", repoRoot);
-
-    expect(resolveWordPressSqlitePluginSource(pluginResolver)).toBe(
-      "/cache/sqlite-plugin",
+    expect(resolveWordPressSqlitePluginSource("/repo", fallback)).toBe(
+      "/cache/wordpress-sqlite-integration-source",
     );
-    expect(pluginResolver).toHaveBeenCalledWith({
-      url: WORDPRESS_SQLITE_PLUGIN_URL,
-      sha256: WORDPRESS_SQLITE_PLUGIN_SHA256,
-      cacheKey:
-        `sqlite-database-integration-${WORDPRESS_SQLITE_PLUGIN_VERSION}`,
-    });
-    expect(WORDPRESS_SQLITE_PLUGIN_SHA256).toMatch(/^[a-f0-9]{64}$/);
+    expect(fallback.mock.calls).toEqual([
+      ["node-vfs", "/repo"],
+      ["wordpress", "/repo"],
+      ["wordpress-sqlite-integration-source", "/repo"],
+    ]);
+  });
+
+  it("uses MariaDB's declared runtime root before the direct-build fallback", () => {
+    const fallback = vi.fn(() => "/legacy/mysql");
+
+    expect(
+      resolveLampSystemTablesDirectory("/resolver/mariadb", fallback),
+    ).toBe("/resolver/mariadb/share/mysql");
+    expect(fallback).not.toHaveBeenCalled();
+    expect(resolveLampSystemTablesDirectory(undefined, fallback)).toBe(
+      "/legacy/mysql",
+    );
+    expect(fallback).toHaveBeenCalledOnce();
   });
 
   it("copies core while explicitly omitting only reviewed generated entries", () => {

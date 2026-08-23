@@ -61,16 +61,20 @@ use crate::pkg_manifest::{
 };
 use crate::util::hex;
 
-/// Maximum response size we will accept from `fetch_url` and archive
-/// downloads. A registry answering with a runaway body would otherwise
-/// OOM the resolver or fill the cache filesystem. 256 MB comfortably
-/// exceeds anything we expect to publish (even a kitchen-sink LAMP
-/// bundle is well under this) but bounds resource use.
+/// Maximum response size we accept for published package archives and small
+/// resolver responses. A registry answering with a runaway body would
+/// otherwise OOM the resolver or fill the cache filesystem. 256 MiB
+/// comfortably exceeds the package artifacts Kandelo publishes.
 ///
 /// Truncated responses are caught downstream by the SHA-256 check —
 /// `read_to_end(take(LIMIT))` returns OK on hit, and the digest will
 /// not match the publisher's expected `archive_sha256`.
-const MAX_RESPONSE_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const MAX_RESPONSE_BYTES: u64 = 256 * 1024 * 1024;
+/// Upstream source archives are independently bounded. Firefox/SpiderMonkey's
+/// declared source release is currently about 608 MiB, so the source path
+/// needs a larger cap than Kandelo's published binary archives while still
+/// rejecting unbounded responses.
+pub(crate) const MAX_SOURCE_ARCHIVE_BYTES: u64 = 1024 * 1024 * 1024;
 const DOWNLOAD_BUFFER_BYTES: usize = 64 * 1024;
 const DOWNLOAD_PROGRESS_INTERVAL: Duration = Duration::from_secs(5);
 const DOWNLOAD_PROGRESS_BYTES: u64 = 8 * 1024 * 1024;
@@ -87,6 +91,9 @@ const HTTP_FETCH_BACKOFF: Duration = Duration::from_secs(5);
 const HTTP_ARCHIVE_FETCH_ATTEMPTS: usize = 8;
 const HTTP_ARCHIVE_FETCH_INITIAL_BACKOFF: Duration = Duration::from_secs(5);
 const HTTP_ARCHIVE_FETCH_MAX_BACKOFF: Duration = Duration::from_secs(30);
+
+#[cfg(test)]
+pub(crate) static OFFLINE_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Reasons a remote fetch can fail. Caller logs and falls through to
 /// source build — none of these is fatal to the resolver.
@@ -479,22 +486,7 @@ fn fetch_archive_to_temp_file(
     label: &str,
 ) -> Result<TempArchiveFile, FetchError> {
     let (tmp, mut file) = create_temp_archive_file(temp_dir, label)?;
-    let fetch_result = if let Some(rest) = url.strip_prefix("file://") {
-        copy_file_url_to_temp(rest, &mut file)
-    } else if url.starts_with("http://") || url.starts_with("https://") {
-        if std::env::var_os("WASM_POSIX_OFFLINE").is_some_and(|v| !v.is_empty() && v != "0") {
-            Err(FetchError::Http(format!(
-                "WASM_POSIX_OFFLINE is set; refusing to fetch {url}. \
-                 Run without --offline or pre-populate the cache."
-            )))
-        } else {
-            fetch_http_archive_to_file(url, &mut file, label)
-        }
-    } else {
-        Err(FetchError::Http(format!(
-            "unsupported url scheme: {url:?} (expected file://, http://, https://)"
-        )))
-    };
+    let fetch_result = stream_archive_to_file(url, &mut file, label);
 
     if let Err(e) = fetch_result {
         drop(file);
@@ -511,6 +503,60 @@ fn fetch_archive_to_temp_file(
             drop(tmp);
             Err(e)
         }
+    }
+}
+
+/// Stream one bounded source archive into a caller-owned, already-open file.
+///
+/// This transport deliberately has no cache-path or publication knowledge.
+/// The caller owns durability, digest verification, and atomic publication.
+pub(crate) fn stream_archive_to_file(
+    url: &str,
+    file: &mut File,
+    label: &str,
+) -> Result<(), FetchError> {
+    stream_archive_to_file_with_limit(url, file, label, MAX_RESPONSE_BYTES)
+}
+
+pub(crate) fn stream_source_archive_to_file(
+    url: &str,
+    file: &mut File,
+    label: &str,
+) -> Result<(), FetchError> {
+    stream_archive_to_file_with_limit(url, file, label, MAX_SOURCE_ARCHIVE_BYTES)
+}
+
+fn stream_archive_to_file_with_limit(
+    url: &str,
+    file: &mut File,
+    label: &str,
+    max_bytes: u64,
+) -> Result<(), FetchError> {
+    validate_archive_url(url)?;
+    if let Some(rest) = url.strip_prefix("file://") {
+        return copy_file_url_to_temp_with_limit(rest, file, max_bytes);
+    }
+    if url.starts_with("http://") || url.starts_with("https://") {
+        if std::env::var_os("WASM_POSIX_OFFLINE").is_some_and(|v| !v.is_empty() && v != "0") {
+            return Err(FetchError::Http(format!(
+                "WASM_POSIX_OFFLINE is set; refusing to fetch {url}. \
+                 Run without --offline or pre-populate the cache."
+            )));
+        }
+        return fetch_http_archive_to_file_with_limit(url, file, label, max_bytes);
+    }
+    Err(FetchError::Http(format!(
+        "unsupported url scheme: {url:?} (expected file://, http://, https://)"
+    )))
+}
+
+pub(crate) fn validate_archive_url(url: &str) -> Result<(), FetchError> {
+    if url.starts_with("file://") || url.starts_with("http://") || url.starts_with("https://") {
+        Ok(())
+    } else {
+        Err(FetchError::Http(format!(
+            "unsupported url scheme: {url:?} (expected file://, http://, https://)"
+        )))
     }
 }
 
@@ -564,9 +610,69 @@ fn sanitize_temp_label(label: &str) -> String {
     out
 }
 
-fn copy_file_url_to_temp(rest: &str, dest: &mut File) -> Result<(), FetchError> {
-    let mut source =
-        File::open(rest).map_err(|e| FetchError::Http(format!("file://{rest}: {e}")))?;
+fn copy_file_url_to_temp_with_limit(
+    rest: &str,
+    dest: &mut File,
+    max_bytes: u64,
+) -> Result<(), FetchError> {
+    copy_file_url_to_temp_with_before_open_and_limit(rest, dest, max_bytes, || {})
+}
+
+#[cfg(test)]
+fn copy_file_url_to_temp_with_before_open<F>(
+    rest: &str,
+    dest: &mut File,
+    before_open: F,
+) -> Result<(), FetchError>
+where
+    F: FnOnce(),
+{
+    copy_file_url_to_temp_with_before_open_and_limit(
+        rest,
+        dest,
+        MAX_RESPONSE_BYTES,
+        before_open,
+    )
+}
+
+fn copy_file_url_to_temp_with_before_open_and_limit<F>(
+    rest: &str,
+    dest: &mut File,
+    max_bytes: u64,
+    before_open: F,
+) -> Result<(), FetchError>
+where
+    F: FnOnce(),
+{
+    let metadata =
+        fs::symlink_metadata(rest).map_err(|e| FetchError::Http(format!("file://{rest}: {e}")))?;
+    if !metadata.file_type().is_file() {
+        return Err(FetchError::Http(format!(
+            "file://{rest}: source is not a regular nonsymlink file"
+        )));
+    }
+    if metadata.len() > max_bytes {
+        return Err(FetchError::Http(format!(
+            "archive exceeds maximum size {}",
+            format_bytes(max_bytes)
+        )));
+    }
+    before_open();
+    let mut source = open_file_url_origin(rest)?;
+    let opened = source
+        .metadata()
+        .map_err(|e| FetchError::Http(format!("file://{rest}: stat opened origin: {e}")))?;
+    if !opened.is_file() {
+        return Err(FetchError::Http(format!(
+            "file://{rest}: opened source is not a regular file"
+        )));
+    }
+    if opened.len() > max_bytes {
+        return Err(FetchError::Http(format!(
+            "archive exceeds maximum size {}",
+            format_bytes(max_bytes)
+        )));
+    }
     let mut copied = 0u64;
     let mut buf = [0u8; DOWNLOAD_BUFFER_BYTES];
     loop {
@@ -576,16 +682,78 @@ fn copy_file_url_to_temp(rest: &str, dest: &mut File) -> Result<(), FetchError> 
         if n == 0 {
             break;
         }
-        copied = checked_download_size(copied, n as u64)?;
+        copied = checked_download_size_with_limit(copied, n as u64, max_bytes)?;
         dest.write_all(&buf[..n])
             .map_err(|e| FetchError::IoError(format!("write temp archive: {e}")))?;
     }
     Ok(())
 }
 
-fn fetch_http_archive_to_file(url: &str, file: &mut File, label: &str) -> Result<(), FetchError> {
+#[cfg(unix)]
+fn open_file_url_origin(path: &str) -> Result<File, FetchError> {
+    let descriptor = rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::NONBLOCK,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|error| FetchError::Http(format!("file://{path}: {error}")))?;
+    Ok(File::from(descriptor))
+}
+
+#[cfg(windows)]
+fn open_file_url_origin(path: &str) -> Result<File, FetchError> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .map_err(|error| FetchError::Http(format!("file://{path}: {error}")))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_file_url_origin(path: &str) -> Result<File, FetchError> {
+    File::open(path).map_err(|error| FetchError::Http(format!("file://{path}: {error}")))
+}
+
+fn fetch_http_archive_to_file_with_limit(
+    url: &str,
+    file: &mut File,
+    label: &str,
+    max_bytes: u64,
+) -> Result<(), FetchError> {
+    let agent = build_http_archive_agent();
+    fetch_http_archive_to_file_with_agent_and_limit(url, file, label, &agent, max_bytes)
+}
+
+#[cfg(test)]
+fn fetch_http_archive_to_file_with_agent(
+    url: &str,
+    file: &mut File,
+    label: &str,
+    agent: &ureq::Agent,
+) -> Result<(), FetchError> {
+    fetch_http_archive_to_file_with_agent_and_limit(
+        url,
+        file,
+        label,
+        agent,
+        MAX_RESPONSE_BYTES,
+    )
+}
+
+fn fetch_http_archive_to_file_with_agent_and_limit(
+    url: &str,
+    file: &mut File,
+    label: &str,
+    agent: &ureq::Agent,
+    max_bytes: u64,
+) -> Result<(), FetchError> {
     let attempts = HTTP_ARCHIVE_FETCH_ATTEMPTS.max(1);
-    let agent = build_http_agent();
     let started = Instant::now();
     let deadline = started
         .checked_add(HTTP_ARCHIVE_DOWNLOAD_DEADLINE)
@@ -595,6 +763,8 @@ fn fetch_http_archive_to_file(url: &str, file: &mut File, label: &str) -> Result
     let mut total = None;
     let mut last_error: Option<HttpArchiveAttemptError> = None;
     let mut attempts_used = 0usize;
+    let mut current_url = url.to_string();
+    let mut redirect_hops = 0usize;
 
     eprintln!("remote_fetch: downloading archive for {label} from {url}");
 
@@ -618,43 +788,62 @@ fn fetch_http_archive_to_file(url: &str, file: &mut File, label: &str) -> Result
             );
         }
 
-        let remaining = deadline
-            .checked_duration_since(Instant::now())
-            .unwrap_or(Duration::ZERO);
-        if remaining.is_zero() {
-            return Err(FetchError::Timeout(format!(
-                "{label} from {url} exceeded {} download deadline",
-                format_duration(HTTP_ARCHIVE_DOWNLOAD_DEADLINE)
-            )));
-        }
-
-        let mut req = agent.get(url).timeout(remaining);
-        let range_header;
-        if resume {
-            range_header = format!("bytes={downloaded}-");
-            req = req.set("Range", &range_header);
-        }
-
-        let response = match req.call() {
-            Ok(resp) => resp,
-            Err(err) => {
-                let attempt_error = HttpArchiveAttemptError::from_ureq(err);
-                last_error = Some(attempt_error);
-                if !last_error.as_ref().unwrap().retryable || attempt == attempts {
-                    break;
+        let response = loop {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .unwrap_or(Duration::ZERO);
+            if remaining.is_zero() {
+                return Err(FetchError::Timeout(format!(
+                    "{label} from {url} exceeded {} download deadline",
+                    format_duration(HTTP_ARCHIVE_DOWNLOAD_DEADLINE)
+                )));
+            }
+            let mut req = agent.get(&current_url).timeout(remaining);
+            let range_header;
+            if resume {
+                range_header = format!("bytes={downloaded}-");
+                req = req.set("Range", &range_header);
+            }
+            let response = match req.call() {
+                Ok(response) => response,
+                Err(err) => {
+                    last_error = Some(HttpArchiveAttemptError::from_ureq(err));
+                    break None;
                 }
-                let backoff = archive_retry_backoff(attempt);
-                warn_retry(
-                    label,
-                    url,
-                    last_error.as_ref().unwrap(),
-                    attempt,
-                    attempts,
-                    backoff,
-                );
-                sleep_for_retry(deadline, backoff);
+            };
+            if matches!(response.status(), 301 | 302 | 303 | 307 | 308) {
+                if redirect_hops == 5 {
+                    return Err(FetchError::Http(format!(
+                        "{url}: redirect limit of five hops exceeded"
+                    )));
+                }
+                let location = response.header("Location").ok_or_else(|| {
+                    FetchError::Http(format!(
+                        "{current_url}: HTTP {} redirect is missing Location",
+                        response.status()
+                    ))
+                })?;
+                current_url = resolve_redirect_location(&current_url, location)?;
+                redirect_hops += 1;
                 continue;
             }
+            break Some(response);
+        };
+        let Some(response) = response else {
+            if !last_error.as_ref().unwrap().retryable || attempt == attempts {
+                break;
+            }
+            let backoff = archive_retry_backoff(attempt);
+            warn_retry(
+                label,
+                &current_url,
+                last_error.as_ref().unwrap(),
+                attempt,
+                attempts,
+                backoff,
+            );
+            sleep_for_retry(deadline, backoff);
+            continue;
         };
 
         match handle_http_archive_response(
@@ -666,6 +855,7 @@ fn fetch_http_archive_to_file(url: &str, file: &mut File, label: &str) -> Result
             &mut total,
             resume,
             deadline,
+            max_bytes,
         ) {
             Ok(()) => return Ok(()),
             Err(ArchiveTransferError::Fatal(e)) => return Err(e),
@@ -712,6 +902,7 @@ fn handle_http_archive_response(
     total: &mut Option<u64>,
     resume_requested: bool,
     deadline: Instant,
+    max_bytes: u64,
 ) -> Result<(), ArchiveTransferError> {
     let status = resp.status();
     let content_length = parse_content_length(resp.header("Content-Length"))?;
@@ -788,6 +979,7 @@ fn handle_http_archive_response(
         *total,
         progress,
         deadline,
+        max_bytes,
     )?;
 
     if let Some(expected) = expected_response_bytes
@@ -834,6 +1026,7 @@ fn stream_http_body_to_file<R: Read>(
     total: Option<u64>,
     progress: &mut DownloadProgress,
     deadline: Instant,
+    max_bytes: u64,
 ) -> Result<u64, ArchiveTransferError> {
     let start = *downloaded;
     let mut buf = [0u8; DOWNLOAD_BUFFER_BYTES];
@@ -859,7 +1052,8 @@ fn stream_http_body_to_file<R: Read>(
                 });
             }
         };
-        let new_downloaded = checked_download_size(*downloaded, n as u64)?;
+        let new_downloaded =
+            checked_download_size_with_limit(*downloaded, n as u64, max_bytes)?;
         if let Some(expected_total) = total
             && new_downloaded > expected_total
         {
@@ -892,16 +1086,25 @@ fn restart_temp_file(
     Ok(())
 }
 
+#[cfg(test)]
 fn checked_download_size(current: u64, added: u64) -> Result<u64, FetchError> {
+    checked_download_size_with_limit(current, added, MAX_RESPONSE_BYTES)
+}
+
+fn checked_download_size_with_limit(
+    current: u64,
+    added: u64,
+    max_bytes: u64,
+) -> Result<u64, FetchError> {
     let Some(next) = current.checked_add(added) else {
         return Err(FetchError::Http(
             "archive download byte count overflowed u64".to_string(),
         ));
     };
-    if next > MAX_RESPONSE_BYTES {
+    if next > max_bytes {
         return Err(FetchError::Http(format!(
             "archive exceeds maximum size {}",
-            format_bytes(MAX_RESPONSE_BYTES)
+            format_bytes(max_bytes)
         )));
     }
     Ok(next)
@@ -1162,6 +1365,38 @@ fn build_http_agent() -> ureq::Agent {
         .build()
 }
 
+fn build_http_archive_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .redirects(0)
+        .timeout_connect(Duration::from_secs(30))
+        .timeout_read(Duration::from_secs(60))
+        .user_agent(concat!("kandelo-tools/xtask/", env!("CARGO_PKG_VERSION")))
+        .build()
+}
+
+fn resolve_redirect_location(current: &str, location: &str) -> Result<String, FetchError> {
+    if location.is_empty() {
+        return Err(FetchError::Http(format!(
+            "malformed redirect Location {location:?}"
+        )));
+    }
+    let base = ureq::get(current)
+        .request_url()
+        .map_err(|error| FetchError::Http(format!("malformed HTTP URL {current:?}: {error}")))?;
+    let resolved = base.as_url().join(location).map_err(|error| {
+        FetchError::Http(format!(
+            "malformed redirect Location {location:?} from {current}: {error}"
+        ))
+    })?;
+    if !matches!(resolved.scheme(), "http" | "https") {
+        return Err(FetchError::Http(format!(
+            "unsupported redirect scheme {:?} in Location {location:?}",
+            resolved.scheme()
+        )));
+    }
+    Ok(resolved.to_string())
+}
+
 fn looks_like_timeout(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     lower.contains("timeout")
@@ -1392,9 +1627,43 @@ pub(crate) fn build_test_archive(manifest_text: &str, artifact_files: &[(&str, &
 mod tests {
     use super::*;
     use std::io::{Read, Write};
-    use std::net::{TcpListener, TcpStream};
+    use std::net::TcpListener;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
+
+    // Fixed test-only authority and leaf key. Production agents continue to
+    // use ureq's normal public root store.
+    const LOOPBACK_CA_CERTIFICATE_PEM: &str = r#"-----BEGIN CERTIFICATE-----
+MIIBrDCCAVGgAwIBAgIUGdRPxkm5nXlMJfuIvz6R3p5l5kYwCgYIKoZIzj0EAwIw
+IjEgMB4GA1UEAwwXS2FuZGVsbyBUYXNrIDNBIFRlc3QgQ0EwIBcNMjYwODIwMDEw
+MDM1WhgPMjEyNjA3MjcwMTAwMzVaMCIxIDAeBgNVBAMMF0thbmRlbG8gVGFzayAz
+QSBUZXN0IENBMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE5F58TTS/BqJ0k6M9
+q/+lDNAis3P1pPZxPMIgfL70NMVyiT/kRZ1dyQaFHmqaHo+ZnwGoeVxzOfVBZGgx
+ikt3OaNjMGEwHQYDVR0OBBYEFEhPVKcmx7wMEFgnrxHcZdijLk+0MB8GA1UdIwQY
+MBaAFEhPVKcmx7wMEFgnrxHcZdijLk+0MA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0P
+AQH/BAQDAgEGMAoGCCqGSM49BAMCA0kAMEYCIQDrjmneA1aPe0ea7LddHhCyrJmo
+ZntJMN0vKomyi++zNQIhAPl322fzcMZwn8mDLteCHTD+7o5/4aq54mDTcq+LjTNC
+-----END CERTIFICATE-----
+"#;
+    const LOOPBACK_SERVER_CERTIFICATE_PEM: &str = r#"-----BEGIN CERTIFICATE-----
+MIIBuzCCAWKgAwIBAgIUNYbunSzxF822UugunTpNC7L6OwYwCgYIKoZIzj0EAwIw
+IjEgMB4GA1UEAwwXS2FuZGVsbyBUYXNrIDNBIFRlc3QgQ0EwIBcNMjYwODIwMDEw
+MDM1WhgPMjEyNjA3MjcwMTAwMzVaMBQxEjAQBgNVBAMMCWxvY2FsaG9zdDBZMBMG
+ByqGSM49AgEGCCqGSM49AwEHA0IABF+Ii0U0R8VYvlhPD3Mg5zWzMMZ8jaSX9dCz
+YmqKLl+3uIhsDeTlx4y702SfDNMWEt1sx9RkN7IE3f+aYFLLHQqjgYEwfzAaBgNV
+HREEEzARgglsb2NhbGhvc3SHBH8AAAEwDAYDVR0TAQH/BAIwADATBgNVHSUEDDAK
+BggrBgEFBQcDATAdBgNVHQ4EFgQUjygluFHDmzE3oL8w9QRDA4jAH1kwHwYDVR0j
+BBgwFoAUSE9UpybHvAwQWCevEdxl2KMuT7QwCgYIKoZIzj0EAwIDRwAwRAIgB6oP
+BjyEr2M6BS+V0r6478ZfaFM0Zhzke/8lk2p/kWcCIGavf8Iypy55nU2MUL50/68M
+g6ow42psCnnjKnWKWK57
+-----END CERTIFICATE-----
+"#;
+    const LOOPBACK_PRIVATE_KEY_PEM: &str = r#"-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgHHg7JEwoFmwyHvxz
+wVWTfjGoZQ9h4PSCbkHgEBZ6ENehRANCAARfiItFNEfFWL5YTw9zIOc1szDGfI2k
+l/XQs2Jqii5ft7iIbA3k5ceMu9NknwzTFhLdbMfUZDeyBN3/mmBSyx0K
+-----END PRIVATE KEY-----
+"#;
 
     fn tempdir(label: &str) -> PathBuf {
         let p = std::env::temp_dir()
@@ -1716,6 +1985,277 @@ commit = "2222222222222222222222222222222222222222"
     }
 
     #[test]
+    fn source_archive_cache_redirect_resolution_is_relative_and_http_only() {
+        for url in [
+            "file:///tmp/source.tar",
+            "http://example.test/source.tar",
+            "https://example.test/source.tar",
+        ] {
+            validate_archive_url(url).unwrap();
+        }
+        assert_eq!(
+            resolve_redirect_location(
+                "http://example.test/releases/v1/source.tar.gz",
+                "../v2/source.tar.gz"
+            )
+            .unwrap(),
+            "http://example.test/releases/v2/source.tar.gz"
+        );
+        assert_eq!(
+            resolve_redirect_location("https://example.test/a/source.tar", "/assets/source.tar")
+                .unwrap(),
+            "https://example.test/assets/source.tar"
+        );
+        assert!(
+            resolve_redirect_location("https://example.test/a", "file:///tmp/source.tar")
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported redirect scheme")
+        );
+        assert!(resolve_redirect_location("https://example.test/a", "").is_err());
+        assert!(resolve_redirect_location("https://example.test/a", "https://").is_err());
+        assert!(resolve_redirect_location("https://example.test/a", "data:text/plain,x").is_err());
+        assert_eq!(
+            resolve_redirect_location("http://example.test/a", "https://secure.test/b").unwrap(),
+            "https://secure.test/b"
+        );
+        assert_eq!(
+            resolve_redirect_location("https://secure.test/a", "http://example.test/b").unwrap(),
+            "http://example.test/b"
+        );
+        assert_eq!(
+            resolve_redirect_location("https://example.test/a/source.tar", "?token=next").unwrap(),
+            "https://example.test/a/source.tar?token=next"
+        );
+        assert_eq!(
+            resolve_redirect_location(
+                "https://example.test/a/source.tar",
+                "?next=https://mirror.test/archive.tar"
+            )
+            .unwrap(),
+            "https://example.test/a/source.tar?next=https://mirror.test/archive.tar"
+        );
+        assert_eq!(
+            resolve_redirect_location(
+                "https://example.test/a//b/source.tar",
+                "../next//archive.tar"
+            )
+            .unwrap(),
+            "https://example.test/a//next//archive.tar"
+        );
+    }
+
+    #[test]
+    fn source_archive_cache_follows_exactly_five_relative_redirects() {
+        let payload = b"redirected archive".to_vec();
+        let served = payload.clone();
+        let url = serve_http_handler(6, move |index, _| {
+            if index < 5 {
+                TestHttpResponse::new(302).header("Location", format!("/hop-{}", index + 1))
+            } else {
+                TestHttpResponse::new(200)
+                    .header("Content-Length", served.len())
+                    .body(served.clone())
+            }
+        });
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("payload");
+        let mut output = File::create(&path).unwrap();
+
+        stream_archive_to_file(&url, &mut output, "redirect fixture").unwrap();
+
+        drop(output);
+        assert_eq!(fs::read(path).unwrap(), payload);
+    }
+
+    #[test]
+    fn source_archive_cache_rejects_sixth_redirect_and_missing_location() {
+        let six = serve_http_handler(6, move |index, _| {
+            TestHttpResponse::new(302).header("Location", format!("/hop-{}", index + 1))
+        });
+        let root = tempfile::tempdir().unwrap();
+        let mut output = File::create(root.path().join("six")).unwrap();
+        let error = stream_archive_to_file(&six, &mut output, "redirect fixture").unwrap_err();
+        assert!(error.to_string().contains("five hops"), "{error}");
+
+        let missing = serve_http_handler(1, move |_, _| TestHttpResponse::new(302));
+        let mut output = File::create(root.path().join("missing")).unwrap();
+        let error = stream_archive_to_file(&missing, &mut output, "redirect fixture").unwrap_err();
+        assert!(error.to_string().contains("missing Location"), "{error}");
+
+        let unsupported = serve_http_handler(1, move |_, _| {
+            TestHttpResponse::new(302).header("Location", "file:///tmp/source.tar")
+        });
+        let mut output = File::create(root.path().join("unsupported")).unwrap();
+        let error =
+            stream_archive_to_file(&unsupported, &mut output, "redirect fixture").unwrap_err();
+        assert!(
+            error.to_string().contains("unsupported redirect scheme"),
+            "{error}"
+        );
+
+        assert!(checked_download_size(MAX_RESPONSE_BYTES, 1).is_err());
+    }
+
+    #[test]
+    fn source_archive_transfer_has_a_separate_bounded_limit() {
+        assert!(MAX_SOURCE_ARCHIVE_BYTES > MAX_RESPONSE_BYTES);
+        assert_eq!(MAX_SOURCE_ARCHIVE_BYTES, 1024 * 1024 * 1024);
+        assert_eq!(
+            checked_download_size_with_limit(MAX_RESPONSE_BYTES, 1, MAX_SOURCE_ARCHIVE_BYTES)
+                .unwrap(),
+            MAX_RESPONSE_BYTES + 1
+        );
+        assert!(
+            checked_download_size_with_limit(MAX_SOURCE_ARCHIVE_BYTES, 1, MAX_SOURCE_ARCHIVE_BYTES)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn source_archive_cache_https_and_cross_scheme_redirects_succeed() {
+        let agent = trusted_loopback_archive_agent();
+        let payload = b"trusted TLS archive".to_vec();
+
+        let direct_payload = payload.clone();
+        let direct_https = serve_https_handler(1, move |_, _| {
+            TestHttpResponse::new(200)
+                .header("Content-Length", direct_payload.len())
+                .body(direct_payload.clone())
+        });
+        let root = tempfile::tempdir().unwrap();
+        let mut direct = File::create(root.path().join("direct")).unwrap();
+        fetch_http_archive_to_file_with_agent(
+            &direct_https,
+            &mut direct,
+            "direct HTTPS fixture",
+            &agent,
+        )
+        .unwrap();
+        drop(direct);
+        assert_eq!(fs::read(root.path().join("direct")).unwrap(), payload);
+
+        let https_payload = payload.clone();
+        let https_target = serve_https_handler(1, move |_, _| {
+            TestHttpResponse::new(200)
+                .header("Content-Length", https_payload.len())
+                .body(https_payload.clone())
+        });
+        let redirect_target = https_target.clone();
+        let http_source = serve_http_handler(1, move |_, _| {
+            TestHttpResponse::new(302).header("Location", &redirect_target)
+        });
+        let mut upgraded = File::create(root.path().join("upgraded")).unwrap();
+        fetch_http_archive_to_file_with_agent(
+            &http_source,
+            &mut upgraded,
+            "HTTP to HTTPS fixture",
+            &agent,
+        )
+        .unwrap();
+        drop(upgraded);
+        assert_eq!(fs::read(root.path().join("upgraded")).unwrap(), payload);
+
+        let http_payload = payload.clone();
+        let http_target = serve_http_handler(1, move |_, _| {
+            TestHttpResponse::new(200)
+                .header("Content-Length", http_payload.len())
+                .body(http_payload.clone())
+        });
+        let redirect_target = http_target.clone();
+        let https_source = serve_https_handler(1, move |_, _| {
+            TestHttpResponse::new(302).header("Location", &redirect_target)
+        });
+        let mut downgraded = File::create(root.path().join("downgraded")).unwrap();
+        fetch_http_archive_to_file_with_agent(
+            &https_source,
+            &mut downgraded,
+            "HTTPS to HTTP fixture",
+            &agent,
+        )
+        .unwrap();
+        drop(downgraded);
+        assert_eq!(fs::read(root.path().join("downgraded")).unwrap(), payload);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_archive_cache_file_origin_swap_to_symlink_before_open_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let origin = root.path().join("origin.tar");
+        let outside = root.path().join("outside.tar");
+        fs::write(&origin, b"expected origin").unwrap();
+        fs::write(&outside, b"replacement through symlink").unwrap();
+        let output = root.path().join("payload");
+        let mut output = File::create(&output).unwrap();
+
+        let error =
+            copy_file_url_to_temp_with_before_open(origin.to_str().unwrap(), &mut output, || {
+                fs::remove_file(&origin).unwrap();
+                symlink(&outside, &origin).unwrap();
+            })
+            .expect_err("the origin must be opened without following a replacement symlink");
+
+        assert!(error.to_string().contains("file://"), "{error}");
+        drop(output);
+        assert!(fs::read(root.path().join("payload")).unwrap().is_empty());
+        assert_eq!(fs::read(outside).unwrap(), b"replacement through symlink");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_archive_cache_file_origin_swap_to_fifo_never_blocks() {
+        const CHILD_MARKER: &str = "KANDELO_TEST_ARCHIVE_FIFO_SWAP";
+        if std::env::var_os(CHILD_MARKER).is_none() {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "remote_fetch::tests::source_archive_cache_file_origin_swap_to_fifo_never_blocks",
+                    "--nocapture",
+                ])
+                .env(CHILD_MARKER, "1")
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    assert!(status.success(), "isolated FIFO-swap test failed");
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("archive origin open blocked on a FIFO replacement");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let origin = root.path().join("origin.tar");
+        fs::write(&origin, b"regular before validation").unwrap();
+        let output = root.path().join("payload");
+        let mut output = File::create(&output).unwrap();
+
+        let error =
+            copy_file_url_to_temp_with_before_open(origin.to_str().unwrap(), &mut output, || {
+                fs::remove_file(&origin).unwrap();
+                let status = std::process::Command::new("mkfifo")
+                    .arg(&origin)
+                    .status()
+                    .unwrap();
+                assert!(status.success(), "mkfifo fixture failed");
+            })
+            .expect_err("FIFO replacement must be rejected before reading");
+
+        assert!(error.to_string().contains("regular file"), "{error}");
+        drop(output);
+        assert!(fs::read(root.path().join("payload")).unwrap().is_empty());
+    }
+
+    #[test]
     fn fetch_url_returns_error_for_missing_file() {
         let url = "file:///definitely/not/here-xyz123.bin";
         let err = fetch_url(url).unwrap_err();
@@ -1790,6 +2330,9 @@ commit = "2222222222222222222222222222222222222222"
         std::thread::spawn(move || {
             for idx in 0..requests {
                 let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
                 let request = read_http_request(&mut stream);
                 let response = handler(idx, request);
                 write_test_response(&mut stream, response);
@@ -1798,10 +2341,70 @@ commit = "2222222222222222222222222222222222222222"
         format!("http://{addr}/archive.tar.zst")
     }
 
-    fn read_http_request(stream: &mut TcpStream) -> String {
-        stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
+    fn serve_https_handler<F>(requests: usize, mut handler: F) -> String
+    where
+        F: FnMut(usize, String) -> TestHttpResponse + Send + 'static,
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_config = trusted_loopback_server_config();
+        std::thread::spawn(move || {
+            for idx in 0..requests {
+                let (stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let connection =
+                    ureq::rustls::ServerConnection::new(Arc::clone(&server_config)).unwrap();
+                let mut stream = ureq::rustls::StreamOwned::new(connection, stream);
+                let request = read_http_request(&mut stream);
+                let response = handler(idx, request);
+                write_test_response(&mut stream, response);
+            }
+        });
+        format!("https://localhost:{}/archive.tar.zst", addr.port())
+    }
+
+    fn parse_loopback_certificate(pem: &str) -> ureq::rustls::pki_types::CertificateDer<'static> {
+        use ureq::rustls::pki_types::pem::PemObject;
+        ureq::rustls::pki_types::CertificateDer::from_pem_slice(pem.as_bytes()).unwrap()
+    }
+
+    fn trusted_loopback_server_config() -> Arc<ureq::rustls::ServerConfig> {
+        use ureq::rustls::pki_types::pem::PemObject;
+        let key = ureq::rustls::pki_types::PrivateKeyDer::from_pem_slice(
+            LOOPBACK_PRIVATE_KEY_PEM.as_bytes(),
+        )
+        .unwrap();
+        Arc::new(
+            ureq::rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![parse_loopback_certificate(LOOPBACK_SERVER_CERTIFICATE_PEM)],
+                    key,
+                )
+                .unwrap(),
+        )
+    }
+
+    fn trusted_loopback_archive_agent() -> ureq::Agent {
+        let mut roots = ureq::rustls::RootCertStore::empty();
+        roots
+            .add(parse_loopback_certificate(LOOPBACK_CA_CERTIFICATE_PEM))
             .unwrap();
+        let tls = ureq::rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        ureq::AgentBuilder::new()
+            .redirects(0)
+            .timeout_connect(Duration::from_secs(30))
+            .timeout_read(Duration::from_secs(60))
+            .user_agent(concat!("kandelo-tools/xtask/", env!("CARGO_PKG_VERSION")))
+            .tls_config(Arc::new(tls))
+            .build()
+    }
+
+    fn read_http_request<R: Read>(stream: &mut R) -> String {
         let mut request = Vec::new();
         let mut buf = [0u8; 1024];
         loop {
@@ -1836,7 +2439,7 @@ commit = "2222222222222222222222222222222222222222"
         })
     }
 
-    fn write_test_response(stream: &mut TcpStream, response: TestHttpResponse) {
+    fn write_test_response<W: Write>(stream: &mut W, response: TestHttpResponse) {
         let reason = match response.status {
             200 => "OK",
             206 => "Partial Content",
@@ -1864,7 +2467,6 @@ commit = "2222222222222222222222222222222222222222"
         // `set_var` is process-global; serialize with the env-mutex
         // pattern established in host_tool_probe so parallel tests
         // don't observe a leaked WASM_POSIX_OFFLINE.
-        static OFFLINE_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _g = OFFLINE_MUTEX.lock().unwrap();
 
         struct OfflineGuard {

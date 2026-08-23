@@ -409,7 +409,7 @@ impl Drop for StagedOutput {
 }
 
 #[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
-fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     rustix::fs::renameat_with(
         rustix::fs::CWD,
         from,
@@ -421,7 +421,7 @@ fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
 
     #[link(name = "Kernel32")]
@@ -446,7 +446,7 @@ fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     target_os = "android",
     windows
 )))]
-fn rename_no_replace(_from: &Path, _to: &Path) -> io::Result<()> {
+pub(crate) fn rename_no_replace(_from: &Path, _to: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "this host does not provide atomic no-replace rename",

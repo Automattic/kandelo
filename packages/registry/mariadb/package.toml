@@ -9,6 +9,7 @@ arches = ["wasm32", "wasm64"]
 [source]
 url = "https://archive.mariadb.org/mariadb-10.5.28/source/mariadb-10.5.28.tar.gz"
 sha256 = "0b5070208da0116640f20bd085f1136527f998cc23268715bcbf352e7b7f3cc1"
+provider = "archive"
 
 [license]
 spdx = "GPL-2.0-only"
@@ -24,3 +25,13 @@ wasm = "mariadbd.wasm"
 [[outputs]]
 name = "mysqltest"
 wasm = "mysqltest.wasm"
+
+[[runtime_files]]
+artifact = "share/mysql/mysql_system_tables.sql"
+guest_path = "/usr/share/mysql/mysql_system_tables.sql"
+mode = 420
+
+[[runtime_files]]
+artifact = "share/mysql/mysql_system_tables_data.sql"
+guest_path = "/usr/share/mysql/mysql_system_tables_data.sql"
+mode = 420

@@ -1,0 +1,5124 @@
+use crate::abi_staging::canonical_json::{canonical_json_bytes, canonical_sha256};
+use crate::abi_staging::product_manifest::{
+    VfsArchitectureV1, VfsProductCatalogEntryV1, VfsProductManifestV1,
+    parse_product_manifest_bytes, validate_product_catalog_entries,
+};
+use crate::archive_extract_member::rename_no_replace;
+use crate::build_deps::{
+    LocalBuildDisposition, MaterializedProgramMemberV1, PackageNodeReceiptV1,
+    ProgramPackageIndex, Registry, ResolvedDependencyGraph, ResolvedDependencyNode,
+    SourceOnlyCacheRoots, canonical_package_target_arch,
+    materialize_planned_source_only_cache_roots, plan_canonical_source_only_cache_roots,
+    resolve_local_build_package_node, resolved_dependency_graph_from_manifests,
+    source_only_program_package_index_for_nodes, with_source_only_program_projection_lock,
+};
+use crate::local_build_executor::{
+    NodeCompletionV1, SchedulerEventV1, ValidatedChildResultV1, execute_graph_with_events,
+    validate_child_result,
+};
+use crate::pkg_manifest::{BuildToml, DepsManifest, ManifestKind, SourceProvider, TargetArch};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Write};
+use std::path::{Component, Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+const LOCAL_SUPPORTED_SCHEMA: u32 = 1;
+const LOCAL_SUPPORTED_POLICY: &str = "source-only-v1";
+const MAX_SET_BYTES: usize = 1024 * 1024;
+const MAX_GRAPH_MANIFEST_BYTES: usize = 1024 * 1024;
+const GRAPH_AUTHORITY_DOMAIN: &[u8] = b"kandelo-local-build-graph-authority-v1\0";
+const SOURCE_ONLY_PROGRAM_PROJECTION_FORMAT: &str =
+    "kandelo-source-only-program-projection-v1";
+const SOURCE_ONLY_PROGRAM_PROJECTION_LIMIT: usize = 16 * 1024 * 1024;
+const SOURCE_ONLY_PROGRAM_MEMBER_LIMIT: u64 = 512 * 1024 * 1024;
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalSupportedSetV1 {
+    schema: u32,
+    policy: String,
+    packages: Vec<SupportedPackageV1>,
+    products: Vec<SupportedProductV1>,
+    exclusions: Vec<ExcludedRootV1>,
+    dependency_only: Vec<String>,
+    registry_non_roots: Vec<ExcludedRootV1>,
+    dormant_products: Vec<ExcludedRootV1>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SupportedPackageV1 {
+    name: String,
+    class: LocalRootClass,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum LocalRootClass {
+    BrowserProduct,
+    TestSupport,
+    Platform,
+    UserSoftware,
+}
+
+impl LocalRootClass {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::BrowserProduct => "browser-product",
+            Self::TestSupport => "test-support",
+            Self::Platform => "platform",
+            Self::UserSoftware => "user-software",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SupportedProductV1 {
+    id: String,
+    package: String,
+    manifest: String,
+    #[serde(default)]
+    package_dependencies: Vec<String>,
+    #[serde(default)]
+    root_mirror_packages: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExcludedRootV1 {
+    name: String,
+    reason: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct LocalBuildPlanV1 {
+    schema: u32,
+    policy: String,
+    packages: Vec<PlannedPackageV1>,
+    products: Vec<PlannedProductV1>,
+    levels: Vec<Vec<PlanNodeV1>>,
+    exclusions: Vec<PlanExclusionV1>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PlannedGraphV1 {
+    plan: LocalBuildPlanV1,
+    dependencies: BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
+    authority: GraphAuthorityV1,
+    authority_sha256: String,
+    product_execution: BTreeMap<String, ProductExecutionAuthorityV1>,
+}
+
+impl std::ops::Deref for PlannedGraphV1 {
+    type Target = LocalBuildPlanV1;
+
+    fn deref(&self) -> &Self::Target {
+        &self.plan
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct PlannedPackageV1 {
+    name: String,
+    class: String,
+    reason: String,
+    architectures: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct PlannedProductV1 {
+    id: String,
+    package: String,
+    manifest: String,
+    architecture: String,
+    reason: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub(crate) enum PlanNodeV1 {
+    Package { name: String, target_arch: String },
+    Product { id: String },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LocalBuildRunResultV1 {
+    pub(crate) schema: u32,
+    pub(crate) policy: String,
+    pub(crate) outcome: AggregateOutcomeV1,
+    pub(crate) nodes: Vec<NodeRunResultV1>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum AggregateOutcomeV1 {
+    Succeeded,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum SuccessDispositionV1 {
+    Cached,
+    Published,
+    RebuiltEquivalent,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "state", rename_all = "kebab-case", deny_unknown_fields)]
+pub(crate) enum NodeRunResultV1 {
+    Succeeded {
+        node: PlanNodeV1,
+        disposition: SuccessDispositionV1,
+    },
+    Failed {
+        node: PlanNodeV1,
+        exit_code: Option<i32>,
+    },
+    Blocked {
+        node: PlanNodeV1,
+        failed_ancestors: Vec<PlanNodeV1>,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct NodeExecutionResultV1 {
+    pub(crate) schema: u32,
+    pub(crate) policy: String,
+    pub(crate) result: NodeRunResultV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) package_receipt: Option<PackageNodeReceiptV1>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SourceOnlyProgramProjectionV1 {
+    format: &'static str,
+    projection: ProgramPackageIndex,
+    graph_authority_sha256: String,
+    nodes: Vec<SourceOnlyProgramNodeV1>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SourceOnlyProgramNodeV1 {
+    node: SourceOnlyProgramNodeIdentityV1,
+    manifest_sha256: String,
+    cache_key_sha256: String,
+    cache_receipt_sha256: String,
+    members: Vec<MaterializedProgramMemberV1>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SourceOnlyProgramNodeIdentityV1 {
+    kind: &'static str,
+    name: String,
+    target_arch: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LifecycleTokenV1 {
+    Ready,
+    Queued,
+    Running,
+    Continuing,
+    Cached,
+    Reused,
+    Succeeded,
+    Blocked,
+    Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum LocalBuildCommandV1 {
+    Plan { set: PathBuf },
+    Run(LocalBuildRunArgsV1),
+    RunNode(LocalBuildRunNodeArgsV1),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LocalBuildRunArgsV1 {
+    set: PathBuf,
+    source_cache_root: PathBuf,
+    output_root: PathBuf,
+    products: Vec<String>,
+    jobs: usize,
+    rebuild: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LocalBuildRunNodeArgsV1 {
+    repo_root: PathBuf,
+    set: PathBuf,
+    graph_authority_sha256: String,
+    source_cache_root: PathBuf,
+    compiled_cache_root: PathBuf,
+    output_root: PathBuf,
+    node: PlanNodeV1,
+    result_json: PathBuf,
+    rebuild: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct GraphAuthorityV1 {
+    schema: u32,
+    policy: String,
+    supported_set_sha256: String,
+    registry_package_toml: Vec<RegistryPackageTomlAuthorityV1>,
+    nodes: Vec<PlanNodeV1>,
+    direct_edges: Vec<GraphDirectEdgeV1>,
+    product_bindings: Vec<ProductBindingV1>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+struct RegistryPackageTomlAuthorityV1 {
+    repo_relative_path: String,
+    raw_sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+struct GraphDirectEdgeV1 {
+    dependency: PlanNodeV1,
+    dependent: PlanNodeV1,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+struct ProductBindingV1 {
+    id: String,
+    mapped_package: String,
+    target_arch: String,
+    repo_relative_manifest_path: String,
+    manifest_sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ProductExecutionAuthorityV1 {
+    binding: ProductBindingV1,
+    manifest: VfsProductManifestV1,
+}
+
+impl PlanNodeV1 {
+    pub(crate) fn package(name: &str, target_arch: &str) -> Self {
+        Self::Package {
+            name: name.to_string(),
+            target_arch: target_arch.to_string(),
+        }
+    }
+
+    pub(crate) fn product(id: &str) -> Self {
+        Self::Product { id: id.to_string() }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct PlanExclusionV1 {
+    name: String,
+    disposition: String,
+    reason: String,
+}
+
+pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
+    let explicit_jobs = args
+        .iter()
+        .any(|value| value == "--jobs" || value.starts_with("--jobs="));
+    let environment_jobs = if explicit_jobs {
+        None
+    } else {
+        std::env::var_os("WASM_POSIX_LOCAL_BUILD_JOBS")
+            .map(|value| {
+                value
+                    .into_string()
+                    .map_err(|_| "WASM_POSIX_LOCAL_BUILD_JOBS must be valid UTF-8".to_string())
+            })
+            .transpose()?
+    };
+    let command = parse_local_build_args_with_jobs(
+        &args,
+        environment_jobs.as_deref(),
+        std::thread::available_parallelism().ok(),
+    )?;
+    match command {
+        LocalBuildCommandV1::Plan { set } => run_plan(set),
+        LocalBuildCommandV1::Run(args) => run_aggregate(args),
+        LocalBuildCommandV1::RunNode(args) => run_node(args),
+    }
+}
+
+fn run_plan(set: PathBuf) -> Result<(), String> {
+    let repo = crate::repo_root();
+    let set = resolve_repo_file(&repo, &set, "supported set")?;
+    let registry = fixed_registry(&repo);
+    let graph = load_and_plan(&repo, &set, &registry)?;
+    let bytes = canonical_plan_bytes(&graph.plan)?;
+    std::io::Write::write_all(&mut std::io::stdout().lock(), &bytes)
+        .map_err(|error| format!("write local-build plan: {error}"))
+}
+
+fn fixed_registry(repo: &Path) -> Registry {
+    Registry {
+        roots: vec![repo.join("packages/registry")],
+    }
+}
+
+static LOCAL_BUILD_RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
+static LOCAL_BUILD_RESULT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn package_projection_is_eligible(
+    selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
+    results: &[NodeRunResultV1],
+) -> bool {
+    let terminal = results
+        .iter()
+        .map(|result| match result {
+            NodeRunResultV1::Succeeded { node, .. } => (node, true),
+            NodeRunResultV1::Failed { node, .. } | NodeRunResultV1::Blocked { node, .. } => {
+                (node, false)
+            }
+        })
+        .collect::<BTreeMap<_, _>>();
+    selected.keys().all(|node| {
+        !matches!(node, PlanNodeV1::Package { .. }) || terminal.get(node) == Some(&true)
+    })
+}
+
+fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
+    let repo = canonical_real_directory(&crate::repo_root(), "local-build repository root")?;
+    let set = resolve_repo_file(&repo, &args.set, "supported set")?;
+    let set = fs::canonicalize(&set)
+        .map_err(|error| format!("canonicalize supported set {}: {error}", set.display()))?;
+    let registry = fixed_registry(&repo);
+    let graph = load_and_plan(&repo, &set, &registry)?;
+    let selected = select_graph_dependencies(&graph, &args.products)?;
+
+    let planned_cache = plan_canonical_source_only_cache_roots(&args.source_cache_root, None)?;
+    let output_intended = canonicalize_with_missing_tail(&args.output_root)?;
+    validate_run_roots(&repo, &set, &planned_cache.base, &output_intended)?;
+    let cache_roots = materialize_planned_source_only_cache_roots(&planned_cache)?;
+    fs::create_dir_all(&output_intended).map_err(|error| {
+        format!(
+            "create local-build output root {}: {error}",
+            output_intended.display()
+        )
+    })?;
+    let output_root = exact_canonical_directory(&output_intended, "local-build output root")?;
+    validate_run_roots(&repo, &set, &cache_roots.base, &output_root)?;
+
+    let run_directory = create_run_directory(&output_root)?;
+    let mut result_paths = BTreeMap::new();
+    for (index, node) in selected.keys().enumerate() {
+        result_paths.insert(
+            node.clone(),
+            run_directory.join(format!("node-{index}.json")),
+        );
+    }
+    let receipt_requirements = selected
+        .keys()
+        .filter_map(|node| match node {
+            PlanNodeV1::Package { name, .. } => Some(
+                registry
+                    .load(name)
+                    .map(|manifest| (node.clone(), manifest.kind != ManifestKind::Source)),
+            ),
+            PlanNodeV1::Product { .. } => None,
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let expected_receipt_nodes = receipt_requirements
+        .iter()
+        .filter_map(|(node, required)| required.then_some(node.clone()))
+        .collect::<BTreeSet<_>>();
+    let retained_receipts = Arc::new(Mutex::new(BTreeMap::<
+        PlanNodeV1,
+        PackageNodeReceiptV1,
+    >::new()));
+
+    let color = ansi_enabled(
+        std::io::IsTerminal::is_terminal(&std::io::stderr()),
+        std::env::var_os("NO_COLOR").is_some(),
+    );
+    let mut aggregate_failed = false;
+    let launcher_result_paths = result_paths.clone();
+    let launcher_receipt_requirements = receipt_requirements.clone();
+    let launcher_receipts = Arc::clone(&retained_receipts);
+    let rebuild = args.rebuild;
+    let results = execute_graph_with_events(
+        &selected,
+        args.jobs,
+        {
+            let repo = repo.clone();
+            let set = set.clone();
+            let source_cache_root = cache_roots.base.clone();
+            let compiled_cache_root = cache_roots.compiled.clone();
+            let output_root = output_root.clone();
+            let authority_sha256 = graph.authority_sha256.clone();
+            let retained_receipts = Arc::clone(&launcher_receipts);
+            move |node, completions| {
+                let result_json = launcher_result_paths[&node].clone();
+                let receipt_required = launcher_receipt_requirements
+                    .get(&node)
+                    .copied()
+                    .unwrap_or(false);
+                let repo = repo.clone();
+                let set = set.clone();
+                let source_cache_root = source_cache_root.clone();
+                let compiled_cache_root = compiled_cache_root.clone();
+                let output_root = output_root.clone();
+                let authority_sha256 = authority_sha256.clone();
+                let retained_receipts = Arc::clone(&retained_receipts);
+                std::thread::spawn(move || {
+                    let validated = run_child_process(
+                        &repo,
+                        &set,
+                        &authority_sha256,
+                        &source_cache_root,
+                        &compiled_cache_root,
+                        &output_root,
+                        &node,
+                        &result_json,
+                        rebuild,
+                        receipt_required,
+                    );
+                    let completion = match validated {
+                        Ok(validated) => {
+                            let completion = validated.completion;
+                            if let Some(receipt) = validated.package_receipt {
+                                let retained = retained_receipts.lock().map_err(|_| {
+                                    "retained package-receipt store was poisoned".to_string()
+                                });
+                                match retained {
+                                    Ok(mut retained) => {
+                                        if retained.insert(node.clone(), receipt).is_some() {
+                                            eprintln!(
+                                                "[{}] child protocol failure: duplicate retained package receipt",
+                                                node_label(&node),
+                                            );
+                                            NodeCompletionV1::failed(node.clone(), None)
+                                        } else {
+                                            completion
+                                        }
+                                    }
+                                    Err(error) => {
+                                        eprintln!(
+                                            "[{}] child protocol failure: {error}",
+                                            node_label(&node),
+                                        );
+                                        NodeCompletionV1::failed(node.clone(), None)
+                                    }
+                                }
+                            } else {
+                                completion
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("[{}] child protocol failure: {error}", node_label(&node));
+                            NodeCompletionV1::failed(node.clone(), None)
+                        }
+                    };
+                    let _ = completions.send(completion);
+                });
+                Ok(())
+            }
+        },
+        |event| render_scheduler_event(event, color, &mut aggregate_failed),
+    )?;
+
+    let retained_receipts = retained_receipts
+        .lock()
+        .map_err(|_| "retained package-receipt store was poisoned".to_string())?
+        .clone();
+    let projection_finalization_error = if package_projection_is_eligible(&selected, &results) {
+        finalize_source_only_program_projection(
+            &repo,
+            &set,
+            &registry,
+            &args.products,
+            &selected,
+            &graph.authority_sha256,
+            &cache_roots,
+            &output_root,
+            &expected_receipt_nodes,
+            &retained_receipts,
+        )
+        .err()
+    } else {
+        None
+    };
+    if let Some(error) = &projection_finalization_error {
+        if !aggregate_failed {
+            eprintln!("{}", render_projection_failure_banner(color));
+        }
+        eprintln!("source-only program authority finalization failed: {error}");
+    }
+
+    for path in result_paths.values() {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => eprintln!(
+                "local-build warning: preserve result evidence {}: {error}",
+                path.display()
+            ),
+        }
+    }
+    if let Err(error) = fs::remove_dir(&run_directory) {
+        eprintln!(
+            "local-build warning: preserve run directory {}: {error}",
+            run_directory.display()
+        );
+    }
+
+    let outcome = if projection_finalization_error.is_none()
+        && results
+            .iter()
+            .all(|result| matches!(result, NodeRunResultV1::Succeeded { .. }))
+    {
+        AggregateOutcomeV1::Succeeded
+    } else {
+        AggregateOutcomeV1::Failed
+    };
+    let result = LocalBuildRunResultV1 {
+        schema: 1,
+        policy: LOCAL_SUPPORTED_POLICY.to_string(),
+        outcome,
+        nodes: results,
+    };
+    let bytes = canonical_machine_json(&result)?;
+    std::io::Write::write_all(&mut std::io::stdout().lock(), &bytes)
+        .map_err(|error| format!("write local-build run result: {error}"))?;
+    if outcome == AggregateOutcomeV1::Failed {
+        Err("aggregate build failed after independent work drained".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn run_node(args: LocalBuildRunNodeArgsV1) -> Result<(), String> {
+    validate_absent_result_target(&args.result_json)?;
+    let node = args.node.clone();
+    let execution = execute_admitted_node(&args);
+    let envelope = match execution {
+        Ok((disposition, package_receipt)) => NodeExecutionResultV1 {
+            schema: 1,
+            policy: LOCAL_SUPPORTED_POLICY.to_string(),
+            result: NodeRunResultV1::Succeeded { node, disposition },
+            package_receipt,
+        },
+        Err(error) => {
+            let envelope = NodeExecutionResultV1 {
+                schema: 1,
+                policy: LOCAL_SUPPORTED_POLICY.to_string(),
+                result: NodeRunResultV1::Failed {
+                    node,
+                    exit_code: Some(1),
+                },
+                package_receipt: None,
+            };
+            if let Err(write_error) = write_node_result_no_replace(&args.result_json, &envelope) {
+                return Err(format!(
+                    "{error}; additionally failed to publish child result: {write_error}"
+                ));
+            }
+            return Err(error);
+        }
+    };
+    write_node_result_no_replace(&args.result_json, &envelope)
+}
+
+fn execute_admitted_node(
+    args: &LocalBuildRunNodeArgsV1,
+) -> Result<(SuccessDispositionV1, Option<PackageNodeReceiptV1>), String> {
+    let repo = exact_canonical_directory(&args.repo_root, "local-build repository root")?;
+    let set = exact_canonical_regular_file(&args.set, "supported set")?;
+    let source_cache_root =
+        exact_canonical_directory(&args.source_cache_root, "source-only cache root")?;
+    let compiled_cache_root =
+        exact_canonical_directory(&args.compiled_cache_root, "source-only compiled cache root")?;
+    let output_root = exact_canonical_directory(&args.output_root, "local-build output root")?;
+    let planned_cache =
+        plan_canonical_source_only_cache_roots(&source_cache_root, Some(&compiled_cache_root))?;
+    if planned_cache.base != source_cache_root || planned_cache.compiled != compiled_cache_root {
+        return Err(format!(
+            "source-only cache pair changed during child admission: expected {{{}, {}}}, got {{{}, {}}}",
+            source_cache_root.display(),
+            compiled_cache_root.display(),
+            planned_cache.base.display(),
+            planned_cache.compiled.display(),
+        ));
+    }
+    validate_run_roots(&repo, &set, &source_cache_root, &output_root)?;
+
+    let _repo_root_override = crate::install_repo_root_override(repo.clone())?;
+    let registry = fixed_registry(&repo);
+    let graph = load_and_plan(&repo, &set, &registry)?;
+    require_expected_graph_authority(&graph, &args.graph_authority_sha256)?;
+    if !graph.dependencies.contains_key(&args.node) {
+        return Err(format!(
+            "requested node {} is absent from the admitted local-build graph",
+            node_label(&args.node)
+        ));
+    }
+
+    match &args.node {
+        PlanNodeV1::Package { name, target_arch } => {
+            let arch = match target_arch.as_str() {
+                "wasm32" => TargetArch::Wasm32,
+                "wasm64" => TargetArch::Wasm64,
+                _ => {
+                    return Err(format!(
+                        "requested package node has unsupported architecture {target_arch:?}"
+                    ));
+                }
+            };
+            let manifest = registry.load(name)?;
+            if !manifest.target_arches.contains(&arch) {
+                return Err(format!(
+                    "requested node {name}/{target_arch} is not declared by its package manifest"
+                ));
+            }
+            let roots = SourceOnlyCacheRoots {
+                base: source_cache_root,
+                compiled: compiled_cache_root,
+            };
+            let expected_authority = args.graph_authority_sha256.clone();
+            let mut before_projection =
+                || require_current_graph_authority(&repo, &set, &expected_authority);
+            let output = resolve_local_build_package_node(
+                &manifest,
+                &registry,
+                arch,
+                wasm_posix_shared::ABI_VERSION,
+                &roots,
+                &repo,
+                &output_root,
+                args.rebuild,
+                &mut before_projection,
+            )?;
+            require_current_graph_authority(&repo, &set, &args.graph_authority_sha256)?;
+            let receipt_required = manifest.kind != ManifestKind::Source;
+            if receipt_required != output.package_receipt.is_some() {
+                return Err(if receipt_required {
+                    format!("{name}/{target_arch}: compiled node omitted its package receipt")
+                } else {
+                    format!(
+                        "{name}/{target_arch}: source node returned a forbidden package receipt"
+                    )
+                });
+            }
+            Ok((
+                success_disposition(output.disposition),
+                output.package_receipt,
+            ))
+        }
+        PlanNodeV1::Product { id } => {
+            let retained = graph
+                .product_execution
+                .get(id)
+                .ok_or_else(|| format!("product {id:?} has no retained execution authority"))?;
+            if retained.binding.id != *id {
+                return Err(format!(
+                    "product {id:?} retained a mismatched execution binding {:?}",
+                    retained.binding.id
+                ));
+            }
+            let arch = match retained.binding.target_arch.as_str() {
+                "wasm32" => TargetArch::Wasm32,
+                "wasm64" => TargetArch::Wasm64,
+                target_arch => {
+                    return Err(format!(
+                        "product {id:?} retained unsupported architecture {target_arch:?}"
+                    ));
+                }
+            };
+            if product_target_arch(retained.manifest.architecture) != arch {
+                return Err(format!(
+                    "product {id:?} retained architecture {:?} that differs from its manifest",
+                    retained.binding.target_arch
+                ));
+            }
+            let manifest = registry.load(&retained.binding.mapped_package)?;
+            if manifest.kind != ManifestKind::Program {
+                return Err(format!(
+                    "product {id:?} maps to non-program package {:?}",
+                    retained.binding.mapped_package
+                ));
+            }
+            if !manifest.target_arches.contains(&arch) {
+                return Err(format!(
+                    "product {id:?} maps to package {:?} without architecture {:?}",
+                    retained.binding.mapped_package, retained.binding.target_arch
+                ));
+            }
+            let [mapped_output] = manifest.program_outputs.as_slice() else {
+                return Err(format!(
+                    "product {id:?} mapped package {:?} must declare exactly one output",
+                    retained.binding.mapped_package
+                ));
+            };
+            if mapped_output.wasm != retained.manifest.output {
+                return Err(format!(
+                    "product {id:?} output {:?} differs from mapped package output {:?}",
+                    retained.manifest.output, mapped_output.wasm
+                ));
+            }
+            let roots = SourceOnlyCacheRoots {
+                base: source_cache_root,
+                compiled: compiled_cache_root,
+            };
+            let expected_authority = args.graph_authority_sha256.clone();
+            let mut before_projection =
+                || require_current_graph_authority(&repo, &set, &expected_authority);
+            let output = resolve_local_build_package_node(
+                &manifest,
+                &registry,
+                arch,
+                wasm_posix_shared::ABI_VERSION,
+                &roots,
+                &repo,
+                &output_root,
+                false,
+                &mut before_projection,
+            )?;
+            require_current_graph_authority(&repo, &set, &args.graph_authority_sha256)?;
+            if output.package_receipt.is_none() {
+                return Err(format!(
+                    "product {id:?} mapped package {:?} omitted its package receipt",
+                    retained.binding.mapped_package
+                ));
+            }
+            Ok((success_disposition(output.disposition), None))
+        }
+    }
+}
+
+fn success_disposition(disposition: LocalBuildDisposition) -> SuccessDispositionV1 {
+    match disposition {
+        LocalBuildDisposition::Cached => SuccessDispositionV1::Cached,
+        LocalBuildDisposition::Published => SuccessDispositionV1::Published,
+        LocalBuildDisposition::RebuiltEquivalent => SuccessDispositionV1::RebuiltEquivalent,
+    }
+}
+
+fn require_expected_graph_authority(graph: &PlannedGraphV1, expected: &str) -> Result<(), String> {
+    if graph.authority_sha256 != expected {
+        return Err(format!(
+            "local-build graph authority mismatch: expected {expected}, computed {}",
+            graph.authority_sha256
+        ));
+    }
+    Ok(())
+}
+
+fn require_current_graph_authority(repo: &Path, set: &Path, expected: &str) -> Result<(), String> {
+    let registry = fixed_registry(repo);
+    let current = load_and_plan(repo, set, &registry)?;
+    require_expected_graph_authority(&current, expected)
+}
+
+fn selected_resolved_package_nodes(
+    selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
+) -> Result<BTreeSet<ResolvedDependencyNode>, String> {
+    selected
+        .keys()
+        .filter_map(|node| match node {
+            PlanNodeV1::Package { name, target_arch } => Some(match target_arch.as_str() {
+                "wasm32" => Ok(ResolvedDependencyNode {
+                    package_name: name.clone(),
+                    target_arch: TargetArch::Wasm32,
+                }),
+                "wasm64" => Ok(ResolvedDependencyNode {
+                    package_name: name.clone(),
+                    target_arch: TargetArch::Wasm64,
+                }),
+                _ => Err(format!(
+                    "selected package {name:?} has unsupported architecture {target_arch:?}"
+                )),
+            }),
+            PlanNodeV1::Product { .. } => None,
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn refreshed_source_only_program_projection(
+    repo: &Path,
+    set: &Path,
+    registry: &Registry,
+    product_filters: &[String],
+    expected_selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
+    expected_graph_authority_sha256: &str,
+    receipts: &BTreeMap<PlanNodeV1, PackageNodeReceiptV1>,
+) -> Result<Vec<u8>, String> {
+    let graph = load_and_plan(repo, set, registry)?;
+    require_expected_graph_authority(&graph, expected_graph_authority_sha256)?;
+    let selected = select_graph_dependencies(&graph, product_filters)?;
+    if &selected != expected_selected {
+        return Err(
+            "selected local-build closure changed during program-authority finalization"
+                .to_string(),
+        );
+    }
+    let selected_nodes = selected_resolved_package_nodes(&selected)?;
+    let projection = source_only_program_package_index_for_nodes(
+        &repo.join("packages/registry"),
+        registry,
+        &selected_nodes,
+        wasm_posix_shared::ABI_VERSION,
+    )?;
+    let root_mirror_nodes = selected
+        .keys()
+        .filter_map(|node| match node {
+            PlanNodeV1::Package { name, .. } => Some(
+                registry
+                    .load(name)
+                    .map(|manifest| manifest.uses_root_binary_mirror().then_some(node.clone())),
+            ),
+            PlanNodeV1::Product { .. } => None,
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect::<BTreeSet<_>>();
+    let authority = source_only_program_projection_candidate(
+        projection,
+        expected_graph_authority_sha256,
+        receipts,
+        &root_mirror_nodes,
+    )?;
+    source_only_program_projection_bytes(&authority)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finalize_source_only_program_projection(
+    repo: &Path,
+    set: &Path,
+    registry: &Registry,
+    product_filters: &[String],
+    selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
+    graph_authority_sha256: &str,
+    cache_roots: &SourceOnlyCacheRoots,
+    output_root: &Path,
+    expected_receipt_nodes: &BTreeSet<PlanNodeV1>,
+    receipts: &BTreeMap<PlanNodeV1, PackageNodeReceiptV1>,
+) -> Result<(), String> {
+    if receipts.keys().cloned().collect::<BTreeSet<_>>() != *expected_receipt_nodes {
+        return Err(
+            "retained package receipts do not exactly cover the successful compiled closure"
+                .to_string(),
+        );
+    }
+
+    let candidate = refreshed_source_only_program_projection(
+        repo,
+        set,
+        registry,
+        product_filters,
+        selected,
+        graph_authority_sha256,
+        receipts,
+    )?;
+    with_source_only_program_projection_lock(output_root, |authority| {
+        for node in expected_receipt_nodes {
+            let PlanNodeV1::Package { name, target_arch } = node else {
+                return Err("internal receipt set contains a product node".to_string());
+            };
+            let arch = match target_arch.as_str() {
+                "wasm32" => TargetArch::Wasm32,
+                "wasm64" => TargetArch::Wasm64,
+                _ => {
+                    return Err(format!(
+                        "retained package {name:?} has unsupported architecture {target_arch:?}"
+                    ));
+                }
+            };
+            let manifest = registry.load(name)?;
+            if manifest.kind == ManifestKind::Source {
+                return Err(format!(
+                    "source package {name:?} was incorrectly admitted to the compiled receipt set"
+                ));
+            }
+            let receipt = receipts.get(node).ok_or_else(|| {
+                format!("compiled package {name:?}/{target_arch} omitted its retained receipt")
+            })?;
+            authority.validate_package_receipt(
+                &manifest,
+                registry,
+                cache_roots,
+                arch,
+                wasm_posix_shared::ABI_VERSION,
+                receipt,
+            )?;
+        }
+
+        let refreshed = refreshed_source_only_program_projection(
+            repo,
+            set,
+            registry,
+            product_filters,
+            selected,
+            graph_authority_sha256,
+            receipts,
+        )?;
+        if refreshed != candidate {
+            return Err(
+                "source-only program authority changed at the publication boundary".to_string(),
+            );
+        }
+        authority.replace_projection_authority(&refreshed)
+    })
+}
+
+fn exact_canonical_regular_file(path: &Path, label: &str) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err(format!("{label} must be absolute: {}", path.display()));
+    }
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("inspect {label} {}: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "{label} must be a regular nonsymlink file: {}",
+            path.display()
+        ));
+    }
+    let canonical = fs::canonicalize(path)
+        .map_err(|error| format!("canonicalize {label} {}: {error}", path.display()))?;
+    if canonical != path {
+        return Err(format!(
+            "{label} must use exact canonical spelling {}; got {}",
+            canonical.display(),
+            path.display()
+        ));
+    }
+    Ok(canonical)
+}
+
+fn validate_absent_result_target(path: &Path) -> Result<(), String> {
+    if !path.is_absolute() {
+        return Err(format!(
+            "local-build child result path must be absolute: {}",
+            path.display()
+        ));
+    }
+    let parent = path.parent().ok_or_else(|| {
+        format!(
+            "local-build child result path has no parent: {}",
+            path.display()
+        )
+    })?;
+    exact_canonical_directory(parent, "local-build child result parent")?;
+    path.file_name().ok_or_else(|| {
+        format!(
+            "local-build child result path has no filename: {}",
+            path.display()
+        )
+    })?;
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err(format!(
+            "local-build child result path must be absent: {}",
+            path.display()
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "inspect local-build child result path {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+fn write_node_result_no_replace(path: &Path, result: &NodeExecutionResultV1) -> Result<(), String> {
+    validate_absent_result_target(path)?;
+    let bytes = canonical_machine_json(result)?;
+    if bytes.len() > 64 * 1024 {
+        return Err(format!(
+            "local-build child result is {} bytes, exceeding the 64 KiB protocol limit",
+            bytes.len()
+        ));
+    }
+    let parent = path.parent().expect("validated child result parent");
+    let mut stage = None;
+    for _ in 0..10_000 {
+        let sequence = LOCAL_BUILD_RESULT_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(
+            ".local-build-result-{}-{sequence}.tmp",
+            std::process::id()
+        ));
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&candidate) {
+            Ok(file) => {
+                stage = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "create private local-build child result stage {}: {error}",
+                    candidate.display()
+                ));
+            }
+        }
+    }
+    let (stage_path, mut stage_file) =
+        stage.ok_or_else(|| "could not allocate a child result stage".to_string())?;
+    let publication = (|| {
+        stage_file.write_all(&bytes).map_err(|error| {
+            format!("write child result stage {}: {error}", stage_path.display())
+        })?;
+        stage_file.sync_all().map_err(|error| {
+            format!("sync child result stage {}: {error}", stage_path.display())
+        })?;
+        drop(stage_file);
+        let staged =
+            read_stable_regular_file(&stage_path, 64 * 1024, "staged local-build child result")?;
+        if staged != bytes {
+            return Err(
+                "staged local-build child result bytes changed before publication".to_string(),
+            );
+        }
+        rename_no_replace(&stage_path, path).map_err(|error| {
+            format!(
+                "publish local-build child result {} without replacement: {error}",
+                path.display()
+            )
+        })?;
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| {
+                format!(
+                    "sync local-build child result parent {}: {error}",
+                    parent.display()
+                )
+            })?;
+        let published =
+            read_stable_regular_file(path, 64 * 1024, "published local-build child result")?;
+        if published != bytes {
+            return Err("published local-build child result bytes changed".to_string());
+        }
+        Ok(())
+    })();
+    if publication.is_err() {
+        let _ = fs::remove_file(&stage_path);
+    }
+    publication
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_child_process(
+    repo: &Path,
+    set: &Path,
+    authority_sha256: &str,
+    source_cache_root: &Path,
+    compiled_cache_root: &Path,
+    output_root: &Path,
+    node: &PlanNodeV1,
+    result_json: &Path,
+    rebuild: bool,
+    receipt_required: bool,
+) -> Result<ValidatedChildResultV1, String> {
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("resolve current xtask executable: {error}"))?;
+    let mut command = Command::new(executable);
+    command
+        .arg("local-build")
+        .arg("run-node")
+        .arg("--repo-root")
+        .arg(repo)
+        .arg("--set")
+        .arg(set)
+        .arg("--graph-authority-sha256")
+        .arg(authority_sha256)
+        .arg("--source-cache-root")
+        .arg(source_cache_root)
+        .arg("--compiled-cache-root")
+        .arg(compiled_cache_root)
+        .arg("--output-root")
+        .arg(output_root)
+        .arg("--result-json")
+        .arg(result_json)
+        .env("WASM_POSIX_DEPS_REGISTRY", repo.join("packages/registry"))
+        .env("WASM_POSIX_BINARY_RESOLVER_REPO_ROOT", repo);
+    match node {
+        PlanNodeV1::Package { name, target_arch } => {
+            command
+                .args(["--node-kind", "package", "--package"])
+                .arg(name)
+                .arg("--target-arch")
+                .arg(target_arch);
+        }
+        PlanNodeV1::Product { id } => {
+            command
+                .args(["--node-kind", "product", "--product"])
+                .arg(id);
+        }
+    }
+    if rebuild {
+        command.arg("--rebuild");
+    }
+    let output = command
+        .output()
+        .map_err(|error| format!("spawn local-build child {}: {error}", node_label(node)))?;
+    forward_child_output(node, &output.stdout);
+    forward_child_output(node, &output.stderr);
+    let bytes = read_stable_regular_file(result_json, 64 * 1024, "local-build child result")?;
+    let exit_code = output.status.code();
+    validate_child_result(node, receipt_required, exit_code, &bytes)
+}
+
+fn forward_child_output(node: &PlanNodeV1, bytes: &[u8]) {
+    for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+        eprint!("[{}] {}", node_label(node), String::from_utf8_lossy(line));
+        if !line.ends_with(b"\n") {
+            eprintln!();
+        }
+    }
+}
+
+fn render_scheduler_event(event: SchedulerEventV1, color: bool, aggregate_failed: &mut bool) {
+    let continuing = *aggregate_failed;
+    match event {
+        SchedulerEventV1::Ready { node } => eprintln!(
+            "{}{} {}",
+            continuing_prefix(continuing, color),
+            render_lifecycle_token(LifecycleTokenV1::Ready, color),
+            node_label(&node),
+        ),
+        SchedulerEventV1::Running { node } => eprintln!(
+            "{}{} {}",
+            continuing_prefix(continuing, color),
+            render_lifecycle_token(LifecycleTokenV1::Running, color),
+            node_label(&node),
+        ),
+        SchedulerEventV1::Terminal { result } => match result {
+            NodeRunResultV1::Succeeded { node, disposition } => {
+                let token = match disposition {
+                    SuccessDispositionV1::Cached => LifecycleTokenV1::Cached,
+                    SuccessDispositionV1::Published => LifecycleTokenV1::Succeeded,
+                    SuccessDispositionV1::RebuiltEquivalent => LifecycleTokenV1::Reused,
+                };
+                eprintln!(
+                    "{}{} {}",
+                    continuing_prefix(continuing, color),
+                    render_lifecycle_token(token, color),
+                    node_label(&node),
+                );
+            }
+            NodeRunResultV1::Failed { node, .. } => {
+                if !*aggregate_failed {
+                    eprintln!("{}", render_failure_banner(color));
+                    *aggregate_failed = true;
+                }
+                eprintln!(
+                    "{}{} {}",
+                    continuing_prefix(true, color),
+                    render_lifecycle_token(LifecycleTokenV1::Failed, color),
+                    node_label(&node),
+                );
+            }
+            NodeRunResultV1::Blocked { node, .. } => eprintln!(
+                "{}{} {}",
+                continuing_prefix(*aggregate_failed, color),
+                render_lifecycle_token(LifecycleTokenV1::Blocked, color),
+                node_label(&node),
+            ),
+        },
+    }
+}
+
+fn render_failure_banner(color: bool) -> String {
+    const BANNER: &str = "LOCAL BUILD FAILED — continuing independent work";
+    if color {
+        format!("\u{1b}[31m{BANNER}\u{1b}[0m")
+    } else {
+        BANNER.to_string()
+    }
+}
+
+fn render_projection_failure_banner(color: bool) -> String {
+    const BANNER: &str =
+        "LOCAL BUILD FAILED — source-only program authority was not published";
+    if color {
+        format!("\u{1b}[31m{BANNER}\u{1b}[0m")
+    } else {
+        BANNER.to_string()
+    }
+}
+
+fn continuing_prefix(enabled: bool, color: bool) -> String {
+    if enabled {
+        format!(
+            "{} · {} | ",
+            render_lifecycle_token(LifecycleTokenV1::Failed, color),
+            render_lifecycle_token(LifecycleTokenV1::Continuing, color),
+        )
+    } else {
+        String::new()
+    }
+}
+
+fn node_label(node: &PlanNodeV1) -> String {
+    match node {
+        PlanNodeV1::Package { name, target_arch } => format!("{name}/{target_arch}"),
+        PlanNodeV1::Product { id } => format!("product/{id}"),
+    }
+}
+
+fn create_run_directory(output_root: &Path) -> Result<PathBuf, String> {
+    let parent = output_root.join(".kandelo");
+    fs::create_dir_all(&parent).map_err(|error| {
+        format!(
+            "create local-build control directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    exact_canonical_directory(&parent, "local-build control directory")?;
+    for _ in 0..10_000 {
+        let sequence = LOCAL_BUILD_RUN_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = parent.join(format!(
+            ".local-build-run-{}-{sequence}",
+            std::process::id()
+        ));
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "create private local-build run directory {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Err("could not allocate a private local-build run directory".to_string())
+}
+
+fn validate_run_roots(
+    repo: &Path,
+    set: &Path,
+    source_cache_root: &Path,
+    output_root: &Path,
+) -> Result<(), String> {
+    if paths_intersect(source_cache_root, output_root) {
+        return Err("source cache and output roots must be disjoint".to_string());
+    }
+    for (label, root) in [("source cache", source_cache_root), ("output", output_root)] {
+        if root == repo || repo.starts_with(root) {
+            return Err(format!(
+                "{label} root must not equal or contain the repository"
+            ));
+        }
+        for authority_root in [
+            repo.join("packages/registry"),
+            repo.join("images/vfs/products"),
+        ] {
+            if paths_intersect(root, &authority_root) {
+                return Err(format!(
+                    "{label} root intersects graph authority {}",
+                    authority_root.display()
+                ));
+            }
+        }
+        if set.starts_with(root) {
+            return Err(format!("{label} root must not contain the supported set"));
+        }
+    }
+    Ok(())
+}
+
+fn paths_intersect(left: &Path, right: &Path) -> bool {
+    left == right || left.starts_with(right) || right.starts_with(left)
+}
+
+fn canonicalize_with_missing_tail(path: &Path) -> Result<PathBuf, String> {
+    let mut cursor = path;
+    let mut missing = Vec::new();
+    loop {
+        match fs::canonicalize(cursor) {
+            Ok(mut canonical) => {
+                for component in missing.iter().rev() {
+                    canonical.push(component);
+                }
+                return Ok(canonical);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                missing.push(cursor.file_name().ok_or_else(|| {
+                    format!(
+                        "path has no existing canonical ancestor: {}",
+                        path.display()
+                    )
+                })?);
+                cursor = cursor.parent().ok_or_else(|| {
+                    format!(
+                        "path has no existing canonical ancestor: {}",
+                        path.display()
+                    )
+                })?;
+            }
+            Err(error) => {
+                return Err(format!("canonicalize path {}: {error}", path.display()));
+            }
+        }
+    }
+}
+
+fn exact_canonical_directory(path: &Path, label: &str) -> Result<PathBuf, String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("inspect {label} {}: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(format!(
+            "{label} must be a real nonsymlink directory: {}",
+            path.display()
+        ));
+    }
+    let canonical = fs::canonicalize(path)
+        .map_err(|error| format!("canonicalize {label} {}: {error}", path.display()))?;
+    if canonical != path {
+        return Err(format!(
+            "{label} must use exact canonical spelling {}; got {}",
+            canonical.display(),
+            path.display()
+        ));
+    }
+    Ok(canonical)
+}
+
+fn parse_supported_set(path: &Path) -> Result<LocalSupportedSetV1, String> {
+    let bytes = read_stable_regular_file(path, MAX_SET_BYTES, "supported set")?;
+    parse_supported_set_bytes(path, &bytes)
+}
+
+fn parse_supported_set_bytes(path: &Path, bytes: &[u8]) -> Result<LocalSupportedSetV1, String> {
+    if bytes.is_empty() || bytes.len() > MAX_SET_BYTES {
+        return Err(format!(
+            "supported set {} must contain 1 through {MAX_SET_BYTES} bytes",
+            path.display()
+        ));
+    }
+    let source = std::str::from_utf8(bytes)
+        .map_err(|error| format!("supported set {} is not UTF-8: {error}", path.display()))?;
+    let set: LocalSupportedSetV1 = toml::from_str(&source)
+        .map_err(|error| format!("supported set {} is invalid: {error}", path.display()))?;
+    if set.schema != LOCAL_SUPPORTED_SCHEMA {
+        return Err(format!(
+            "supported set must use schema 1, got {}",
+            set.schema
+        ));
+    }
+    if set.policy != LOCAL_SUPPORTED_POLICY {
+        return Err(format!(
+            "supported set policy must be {LOCAL_SUPPORTED_POLICY:?}, got {:?}",
+            set.policy
+        ));
+    }
+    validate_authority_names(&set)?;
+    Ok(set)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct GraphFileSnapshot {
+    repo_relative_path: String,
+    bytes: Vec<u8>,
+    raw_sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct GraphInputSnapshot {
+    supported_set: GraphFileSnapshot,
+    registry_package_toml: BTreeMap<String, GraphFileSnapshot>,
+    product_toml: BTreeMap<String, GraphFileSnapshot>,
+    directory_identities: BTreeMap<String, StableDirectoryIdentity>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StableDirectoryIdentity {
+    device: u64,
+    inode: u64,
+}
+
+fn snapshot_graph_inputs(repo: &Path, set_path: &Path) -> Result<GraphInputSnapshot, String> {
+    let repo = canonical_real_directory(repo, "local-build repository root")?;
+    let registry_root = repo.join("packages/registry");
+    let product_root = repo.join("images/vfs/products");
+    require_real_directory_beneath(&repo, &registry_root, "fixed package registry")?;
+    require_real_directory_beneath(&repo, &product_root, "fixed product catalog")?;
+    require_regular_path_beneath(&repo, set_path, "supported set")?;
+
+    let supported_set = snapshot_graph_file(&repo, set_path, MAX_SET_BYTES, "supported set")?;
+    let mut directory_identities = BTreeMap::new();
+    directory_identities.insert(
+        repo_relative_path(&repo, &registry_root)?,
+        stable_directory_identity(&registry_root, "fixed package registry")?,
+    );
+    directory_identities.insert(
+        repo_relative_path(&repo, &product_root)?,
+        stable_directory_identity(&product_root, "fixed product catalog")?,
+    );
+
+    let mut registry_package_toml = BTreeMap::new();
+    for entry in sorted_directory_entries(&registry_root, "fixed package registry")? {
+        let name = normalized_entry_name(&entry, "fixed package registry")?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            format!(
+                "cannot inspect fixed registry entry {}: {error}",
+                path.display()
+            )
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "fixed registry entry must not be a symlink: {}",
+                path.display()
+            ));
+        }
+        if !metadata.is_dir() {
+            continue;
+        }
+        directory_identities.insert(
+            repo_relative_path(&repo, &path)?,
+            stable_directory_identity(&path, "registry package directory")?,
+        );
+        let manifest_path = path.join("package.toml");
+        match fs::symlink_metadata(&manifest_path) {
+            Ok(_) => {
+                let snapshot = snapshot_graph_file(
+                    &repo,
+                    &manifest_path,
+                    MAX_GRAPH_MANIFEST_BYTES,
+                    "registry package.toml",
+                )?;
+                registry_package_toml.insert(name, snapshot);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "cannot inspect registry manifest {}: {error}",
+                    manifest_path.display()
+                ));
+            }
+        }
+    }
+
+    let mut product_toml = BTreeMap::new();
+    for entry in sorted_directory_entries(&product_root, "fixed product catalog")? {
+        let name = normalized_entry_name(&entry, "fixed product catalog")?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            format!(
+                "cannot inspect product catalog entry {}: {error}",
+                path.display()
+            )
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "product catalog entry must be a regular nonsymlink file or real directory: {}",
+                path.display()
+            ));
+        }
+        if metadata.is_dir() {
+            directory_identities.insert(
+                repo_relative_path(&repo, &path)?,
+                stable_directory_identity(&path, "product catalog directory")?,
+            );
+            continue;
+        }
+        if metadata.is_file() && name.ends_with(".toml") && !name.starts_with('.') {
+            let snapshot =
+                snapshot_graph_file(&repo, &path, MAX_GRAPH_MANIFEST_BYTES, "product manifest")?;
+            product_toml.insert(snapshot.repo_relative_path.clone(), snapshot);
+        }
+    }
+    if product_toml.is_empty() {
+        return Err(format!(
+            "product directory {} is empty",
+            product_root.display()
+        ));
+    }
+
+    Ok(GraphInputSnapshot {
+        supported_set,
+        registry_package_toml,
+        product_toml,
+        directory_identities,
+    })
+}
+
+fn snapshot_graph_file(
+    repo: &Path,
+    path: &Path,
+    limit: usize,
+    label: &str,
+) -> Result<GraphFileSnapshot, String> {
+    let bytes = read_stable_regular_file(path, limit, label)?;
+    Ok(GraphFileSnapshot {
+        repo_relative_path: repo_relative_path(repo, path)?,
+        raw_sha256: sha256_bytes(&bytes),
+        bytes,
+    })
+}
+
+fn sorted_directory_entries(path: &Path, label: &str) -> Result<Vec<fs::DirEntry>, String> {
+    let mut entries = fs::read_dir(path)
+        .map_err(|error| format!("cannot read {label} {}: {error}", path.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("cannot read entry in {label} {}: {error}", path.display()))?;
+    entries.sort_by_key(fs::DirEntry::file_name);
+    Ok(entries)
+}
+
+fn normalized_entry_name(entry: &fs::DirEntry, label: &str) -> Result<String, String> {
+    let name = entry
+        .file_name()
+        .into_string()
+        .map_err(|_| format!("{label} entry name is not valid UTF-8"))?;
+    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', '\0']) {
+        return Err(format!("{label} entry name is not normalized: {name:?}"));
+    }
+    Ok(name)
+}
+
+fn canonical_real_directory(path: &Path, label: &str) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err(format!("{label} must be absolute: {}", path.display()));
+    }
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot inspect {label} {}: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(format!(
+            "{label} must be a real nonsymlink directory: {}",
+            path.display()
+        ));
+    }
+    let canonical = fs::canonicalize(path)
+        .map_err(|error| format!("cannot canonicalize {label} {}: {error}", path.display()))?;
+    Ok(canonical)
+}
+
+fn require_real_directory_beneath(repo: &Path, path: &Path, label: &str) -> Result<(), String> {
+    require_path_components_beneath(repo, path, label, true)
+}
+
+fn require_regular_path_beneath(repo: &Path, path: &Path, label: &str) -> Result<(), String> {
+    require_path_components_beneath(repo, path, label, false)
+}
+
+fn require_path_components_beneath(
+    repo: &Path,
+    path: &Path,
+    label: &str,
+    leaf_is_directory: bool,
+) -> Result<(), String> {
+    let relative = path
+        .strip_prefix(repo)
+        .map_err(|_| format!("{label} escapes repository root: {}", path.display()))?;
+    let mut cursor = repo.to_path_buf();
+    for (index, component) in relative.components().enumerate() {
+        let Component::Normal(component) = component else {
+            return Err(format!(
+                "{label} path is not normalized: {}",
+                path.display()
+            ));
+        };
+        cursor.push(component);
+        let metadata = fs::symlink_metadata(&cursor)
+            .map_err(|error| format!("cannot inspect {label} {}: {error}", cursor.display()))?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "{label} must not traverse a symlink: {}",
+                cursor.display()
+            ));
+        }
+        let is_leaf = index + 1 == relative.components().count();
+        if !is_leaf && !metadata.is_dir() {
+            return Err(format!(
+                "{label} parent must be a real directory: {}",
+                cursor.display()
+            ));
+        }
+        if is_leaf
+            && ((leaf_is_directory && !metadata.is_dir())
+                || (!leaf_is_directory && !metadata.is_file()))
+        {
+            return Err(format!(
+                "{label} must be a regular nonsymlink {}: {}",
+                if leaf_is_directory {
+                    "directory"
+                } else {
+                    "file"
+                },
+                cursor.display(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn repo_relative_path(repo: &Path, path: &Path) -> Result<String, String> {
+    let relative = path
+        .strip_prefix(repo)
+        .map_err(|_| format!("path escapes repository root: {}", path.display()))?;
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            return Err(format!(
+                "repository path is not normalized: {}",
+                path.display()
+            ));
+        };
+        parts.push(
+            component
+                .to_str()
+                .ok_or_else(|| format!("repository path is not UTF-8: {}", path.display()))?,
+        );
+    }
+    if parts.is_empty() {
+        return Err("repository-relative graph input path must not be empty".to_string());
+    }
+    Ok(parts.join("/"))
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StableFileIdentity {
+    device: u64,
+    inode: u64,
+    mode: u32,
+    links: u64,
+    length: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+}
+
+#[cfg(unix)]
+fn stable_file_identity(metadata: &fs::Metadata) -> StableFileIdentity {
+    use std::os::unix::fs::MetadataExt;
+    StableFileIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        mode: metadata.mode(),
+        links: metadata.nlink(),
+        length: metadata.len(),
+        modified_seconds: metadata.mtime(),
+        modified_nanoseconds: metadata.mtime_nsec(),
+        changed_seconds: metadata.ctime(),
+        changed_nanoseconds: metadata.ctime_nsec(),
+    }
+}
+
+fn stable_directory_identity(path: &Path, label: &str) -> Result<StableDirectoryIdentity, String> {
+    #[cfg(not(unix))]
+    {
+        let _ = (path, label);
+        Err("stable graph authority requires Unix filesystem identity semantics".to_string())
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = fs::symlink_metadata(path)
+            .map_err(|error| format!("cannot inspect {label} {}: {error}", path.display()))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(format!(
+                "{label} must be a real nonsymlink directory: {}",
+                path.display()
+            ));
+        }
+        Ok(StableDirectoryIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+}
+
+fn read_stable_regular_file(path: &Path, limit: usize, label: &str) -> Result<Vec<u8>, String> {
+    #[cfg(not(unix))]
+    {
+        let _ = (path, limit, label);
+        Err("stable graph authority reads require Unix no-follow semantics".to_string())
+    }
+    #[cfg(unix)]
+    {
+        let pathname_metadata = fs::symlink_metadata(path)
+            .map_err(|error| format!("cannot inspect {label} {}: {error}", path.display()))?;
+        if pathname_metadata.file_type().is_symlink() || !pathname_metadata.is_file() {
+            return Err(format!(
+                "{label} must be a regular nonsymlink file: {}",
+                path.display()
+            ));
+        }
+        let open = || {
+            rustix::fs::open(
+                path,
+                rustix::fs::OFlags::RDONLY
+                    | rustix::fs::OFlags::CLOEXEC
+                    | rustix::fs::OFlags::NOFOLLOW
+                    | rustix::fs::OFlags::NONBLOCK,
+                rustix::fs::Mode::empty(),
+            )
+            .map(fs::File::from)
+            .map_err(|error| {
+                format!(
+                    "cannot open {label} {} without following: {error}",
+                    path.display()
+                )
+            })
+        };
+        let mut file = open()?;
+        let initial_metadata = file.metadata().map_err(|error| {
+            format!("cannot inspect opened {label} {}: {error}", path.display())
+        })?;
+        if !initial_metadata.is_file() {
+            return Err(format!(
+                "{label} must be a regular nonsymlink file: {}",
+                path.display()
+            ));
+        }
+        if initial_metadata.len() == 0 || initial_metadata.len() > limit as u64 {
+            return Err(format!(
+                "{label} {} must contain 1 through {limit} bytes",
+                path.display()
+            ));
+        }
+        let initial = stable_file_identity(&initial_metadata);
+        let mut bytes = Vec::with_capacity(initial.length as usize);
+        file.read_to_end(&mut bytes)
+            .map_err(|error| format!("cannot read {label} {}: {error}", path.display()))?;
+        let after = stable_file_identity(&file.metadata().map_err(|error| {
+            format!(
+                "cannot reinspect opened {label} {}: {error}",
+                path.display()
+            )
+        })?);
+        let reopened = open()?;
+        let reopened_metadata = reopened.metadata().map_err(|error| {
+            format!(
+                "cannot inspect reopened {label} {}: {error}",
+                path.display()
+            )
+        })?;
+        if !reopened_metadata.is_file()
+            || bytes.len() as u64 != initial.length
+            || after != initial
+            || stable_file_identity(&reopened_metadata) != initial
+        {
+            return Err(format!(
+                "{label} changed while snapshotted: {}",
+                path.display()
+            ));
+        }
+        Ok(bytes)
+    }
+}
+
+fn validate_authority_names(set: &LocalSupportedSetV1) -> Result<(), String> {
+    let mut package_dispositions = BTreeMap::<&str, &str>::new();
+    for package in &set.packages {
+        validate_name(&package.name, "package name")?;
+        insert_unique(&mut package_dispositions, &package.name, "selected")?;
+    }
+    for exclusion in &set.exclusions {
+        validate_exclusion(exclusion, "excluded root")?;
+        insert_unique(&mut package_dispositions, &exclusion.name, "excluded")?;
+    }
+    for name in &set.dependency_only {
+        validate_name(name, "dependency-only package name")?;
+        insert_unique(&mut package_dispositions, name, "dependency-only")?;
+    }
+    for non_root in &set.registry_non_roots {
+        validate_exclusion(non_root, "registry non-root")?;
+        insert_unique(&mut package_dispositions, &non_root.name, "non-root")?;
+    }
+
+    let mut product_ids = BTreeSet::new();
+    for product in &set.products {
+        validate_name(&product.id, "product id")?;
+        validate_name(&product.package, "product package name")?;
+        if !product_ids.insert(product.id.as_str()) {
+            return Err(format!("duplicate selected product {:?}", product.id));
+        }
+        validate_relative_path(&product.manifest, "product manifest")?;
+        let mut package_dependencies = BTreeSet::new();
+        for package in &product.package_dependencies {
+            validate_name(package, "product package dependency name")?;
+            if !package_dependencies.insert(package.as_str()) {
+                return Err(format!(
+                    "product {:?} repeats package dependency {:?}",
+                    product.id, package
+                ));
+            }
+        }
+        let mut root_mirror_packages = BTreeSet::new();
+        for package in &product.root_mirror_packages {
+            validate_name(package, "product root-mirror package name")?;
+            if !root_mirror_packages.insert(package.as_str()) {
+                return Err(format!(
+                    "product {:?} repeats root-mirror package {:?}",
+                    product.id, package
+                ));
+            }
+            if package_dependencies.contains(package.as_str()) {
+                return Err(format!(
+                    "product {:?} claims package {:?} as both an ordinary dependency and a root mirror",
+                    product.id, package
+                ));
+            }
+        }
+    }
+    for dormant in &set.dormant_products {
+        validate_exclusion(dormant, "dormant product")?;
+        if !product_ids.insert(dormant.name.as_str()) {
+            return Err(format!(
+                "product {:?} is both selected and dormant",
+                dormant.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_exclusion(exclusion: &ExcludedRootV1, label: &str) -> Result<(), String> {
+    validate_name(&exclusion.name, label)?;
+    if exclusion.reason.trim().is_empty() || exclusion.reason != exclusion.reason.trim() {
+        return Err(format!(
+            "{label} {:?} must have a normalized reason",
+            exclusion.name
+        ));
+    }
+    Ok(())
+}
+
+fn insert_unique<'a>(
+    dispositions: &mut BTreeMap<&'a str, &'a str>,
+    name: &'a str,
+    disposition: &'a str,
+) -> Result<(), String> {
+    if let Some(previous) = dispositions.insert(name, disposition) {
+        return Err(format!(
+            "package {name:?} has duplicate dispositions {previous:?} and {disposition:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_name(value: &str, label: &str) -> Result<(), String> {
+    let valid = !value.is_empty()
+        && value.len() <= 128
+        && value.as_bytes()[0].is_ascii_lowercase()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte)
+        });
+    if !valid {
+        return Err(format!("{label} is not normalized: {value:?}"));
+    }
+    Ok(())
+}
+
+fn validate_relative_path(value: &str, label: &str) -> Result<(), String> {
+    let path = Path::new(value);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(format!(
+            "{label} must be a normalized repository-relative path: {value:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_repo_file(repo: &Path, path: &Path, label: &str) -> Result<PathBuf, String> {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        repo.join(path)
+    };
+    let metadata = fs::symlink_metadata(&path)
+        .map_err(|error| format!("cannot inspect {label} {}: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "{label} {} must be a regular nonsymlink file",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
+fn load_and_plan(
+    repo: &Path,
+    set_path: &Path,
+    _registry: &Registry,
+) -> Result<PlannedGraphV1, String> {
+    let repo = canonical_real_directory(repo, "local-build repository root")?;
+    let set_metadata = fs::symlink_metadata(set_path).map_err(|error| {
+        format!(
+            "cannot inspect supported set {}: {error}",
+            set_path.display()
+        )
+    })?;
+    if set_metadata.file_type().is_symlink() || !set_metadata.is_file() {
+        return Err(format!(
+            "supported set {} must be a regular nonsymlink file",
+            set_path.display()
+        ));
+    }
+    let set_path = fs::canonicalize(set_path).map_err(|error| {
+        format!(
+            "cannot canonicalize supported set {}: {error}",
+            set_path.display()
+        )
+    })?;
+    let input_snapshot = snapshot_graph_inputs(&repo, &set_path)?;
+    let set = parse_supported_set_bytes(&set_path, &input_snapshot.supported_set.bytes)?;
+    let manifests = parse_registry_snapshot(&repo, &input_snapshot.registry_package_toml)?;
+    validate_registry_partition(&set, &manifests, &repo)?;
+
+    let catalog = parse_product_snapshot(&repo, &input_snapshot.product_toml)?;
+    let catalog_by_id = catalog
+        .iter()
+        .map(|entry| (entry.manifest.id.as_str(), entry))
+        .collect::<BTreeMap<_, _>>();
+    validate_products(&set, &catalog_by_id, &manifests)?;
+
+    let selected = set
+        .packages
+        .iter()
+        .map(|package| package.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let excluded = set
+        .exclusions
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let dependency_only = set
+        .dependency_only
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+
+    let mut dependencies = BTreeMap::<PlanNodeV1, BTreeSet<PlanNodeV1>>::new();
+    let mut public_dependencies = BTreeMap::<PlanNodeV1, BTreeSet<PlanNodeV1>>::new();
+    for package in &set.packages {
+        let manifest = &manifests[&package.name];
+        for arch in &manifest.target_arches {
+            let graph = resolved_dependency_graph_from_manifests(manifest, &manifests, *arch)?;
+            add_resolved_package_graph(
+                &package.name,
+                &graph,
+                &selected,
+                &excluded,
+                &dependency_only,
+                &mut dependencies,
+                &mut public_dependencies,
+            )?;
+        }
+    }
+
+    for product in &set.products {
+        let entry = catalog_by_id[product.id.as_str()];
+        let product_node = PlanNodeV1::product(&product.id);
+        dependencies.entry(product_node.clone()).or_default();
+        public_dependencies.entry(product_node.clone()).or_default();
+        let target_arch = product_target_arch(entry.manifest.architecture);
+        let mapped_manifest = &manifests[&product.package];
+        if !mapped_manifest.target_arches.contains(&target_arch) {
+            return Err(format!(
+                "product {:?} maps to {} without architecture {}",
+                product.id,
+                product.package,
+                target_arch.as_str()
+            ));
+        }
+        let mapped_package = PlanNodeV1::package(&product.package, target_arch.as_str());
+        add_edge(
+            &mut dependencies,
+            mapped_package.clone(),
+            product_node.clone(),
+        );
+        add_edge(
+            &mut public_dependencies,
+            mapped_package,
+            product_node.clone(),
+        );
+        for package_claim in &entry.manifest.software.package {
+            let package_manifest = manifests.get(&package_claim.name).ok_or_else(|| {
+                format!(
+                    "product {:?} claims unknown package {:?}",
+                    product.id, package_claim.name
+                )
+            })?;
+            if excluded.contains(package_claim.name.as_str()) {
+                return Err(format!(
+                    "product {:?} claims excluded package {:?}",
+                    product.id, package_claim.name
+                ));
+            }
+            if dependency_only.contains(package_claim.name.as_str()) {
+                return Err(format!(
+                    "product {:?} claims dependency-only package {:?}",
+                    product.id, package_claim.name
+                ));
+            }
+            if !selected.contains(package_claim.name.as_str())
+                || !is_buildable(package_manifest.kind)
+            {
+                return Err(format!(
+                    "product {:?} claims package {:?} that is not a selected buildable root",
+                    product.id, package_claim.name
+                ));
+            }
+            let package_arch = canonical_package_target_arch(package_manifest, target_arch)
+                .ok_or_else(|| {
+                    format!(
+                        "product {:?} claims package {:?} without architecture {} or wasm32",
+                        product.id,
+                        package_claim.name,
+                        target_arch.as_str()
+                    )
+                })?;
+            let package_node = PlanNodeV1::package(&package_claim.name, package_arch.as_str());
+            add_edge(
+                &mut dependencies,
+                package_node.clone(),
+                product_node.clone(),
+            );
+            add_edge(&mut public_dependencies, package_node, product_node.clone());
+        }
+        for package_name in &product.package_dependencies {
+            let package_manifest = manifests.get(package_name).ok_or_else(|| {
+                format!(
+                    "product {:?} claims unknown package dependency {:?}",
+                    product.id, package_name
+                )
+            })?;
+            if !selected.contains(package_name.as_str()) || !is_buildable(package_manifest.kind) {
+                return Err(format!(
+                    "product {:?} claims package dependency {:?} that is not a selected buildable root",
+                    product.id, package_name
+                ));
+            }
+            if package_manifest.uses_root_binary_mirror() {
+                return Err(format!(
+                    "product {:?} claims root-mirror package {:?} as an ordinary dependency",
+                    product.id, package_name
+                ));
+            }
+            if package_name == &product.package
+                || entry
+                    .manifest
+                    .software
+                    .package
+                    .iter()
+                    .any(|claim| claim.name == package_name.as_str())
+            {
+                return Err(format!(
+                    "product {:?} repeats package dependency {:?} in its mapped or production manifest packages",
+                    product.id, package_name
+                ));
+            }
+            let package_arch = canonical_package_target_arch(package_manifest, target_arch)
+                .ok_or_else(|| {
+                    format!(
+                        "product {:?} claims package dependency {:?} without architecture {} or wasm32",
+                        product.id,
+                        package_name,
+                        target_arch.as_str()
+                    )
+                })?;
+            let package_node = PlanNodeV1::package(package_name, package_arch.as_str());
+            add_edge(
+                &mut dependencies,
+                package_node.clone(),
+                product_node.clone(),
+            );
+            add_edge(&mut public_dependencies, package_node, product_node.clone());
+        }
+        for package_name in &product.root_mirror_packages {
+            let package_manifest = manifests.get(package_name).ok_or_else(|| {
+                format!(
+                    "product {:?} claims unknown root-mirror package {:?}",
+                    product.id, package_name
+                )
+            })?;
+            if !selected.contains(package_name.as_str()) || !is_buildable(package_manifest.kind) {
+                return Err(format!(
+                    "product {:?} claims root-mirror package {:?} that is not a selected buildable root",
+                    product.id, package_name
+                ));
+            }
+            if !package_manifest.uses_root_binary_mirror() {
+                return Err(format!(
+                    "product {:?} claims package {:?} as a root mirror, but its manifest does not publish a root-mirror artifact",
+                    product.id, package_name
+                ));
+            }
+            let package_arch = canonical_package_target_arch(package_manifest, target_arch)
+                .ok_or_else(|| {
+                    format!(
+                        "product {:?} claims root-mirror package {:?} without architecture {} or wasm32",
+                        product.id,
+                        package_name,
+                        target_arch.as_str()
+                    )
+                })?;
+            let package_node = PlanNodeV1::package(package_name, package_arch.as_str());
+            add_edge(
+                &mut dependencies,
+                package_node.clone(),
+                product_node.clone(),
+            );
+            add_edge(&mut public_dependencies, package_node, product_node.clone());
+        }
+        for dependency in &entry.manifest.composition.product {
+            if !set
+                .products
+                .iter()
+                .any(|candidate| candidate.id == dependency.id)
+            {
+                return Err(format!(
+                    "selected product {:?} composes unsupported product {:?}",
+                    product.id, dependency.id
+                ));
+            }
+            let dependency_product = PlanNodeV1::product(&dependency.id);
+            add_edge(
+                &mut dependencies,
+                dependency_product.clone(),
+                product_node.clone(),
+            );
+            add_edge(
+                &mut public_dependencies,
+                dependency_product,
+                product_node.clone(),
+            );
+        }
+    }
+
+    let mut packages = set
+        .packages
+        .iter()
+        .map(|package| {
+            let mut architectures = manifests[&package.name]
+                .target_arches
+                .iter()
+                .map(|arch| arch.as_str().to_string())
+                .collect::<Vec<_>>();
+            architectures.sort();
+            PlannedPackageV1 {
+                name: package.name.clone(),
+                class: package.class.as_str().to_string(),
+                reason: format!("supported {} root", package.class.as_str()),
+                architectures,
+            }
+        })
+        .collect::<Vec<_>>();
+    packages.sort_by(|left, right| left.name.cmp(&right.name));
+
+    let mut products = set
+        .products
+        .iter()
+        .map(|product| {
+            let manifest = &catalog_by_id[product.id.as_str()].manifest;
+            PlannedProductV1 {
+                id: product.id.clone(),
+                package: product.package.clone(),
+                manifest: product.manifest.clone(),
+                architecture: product_target_arch(manifest.architecture)
+                    .as_str()
+                    .to_string(),
+                reason: format!(
+                    "supported VFS product mapped to package {}",
+                    product.package
+                ),
+            }
+        })
+        .collect::<Vec<_>>();
+    products.sort_by(|left, right| left.id.cmp(&right.id));
+
+    let mut exclusions = Vec::new();
+    extend_exclusions(&mut exclusions, &set.exclusions, "excluded-root");
+    exclusions.extend(set.dependency_only.iter().map(|name| PlanExclusionV1 {
+        name: name.clone(),
+        disposition: "dependency-only".to_string(),
+        reason: "immutable source input; not a schedulable build root".to_string(),
+    }));
+    extend_exclusions(
+        &mut exclusions,
+        &set.registry_non_roots,
+        "registry-non-root",
+    );
+    extend_exclusions(&mut exclusions, &set.dormant_products, "dormant-product");
+    exclusions.sort_by(|left, right| {
+        (&left.disposition, &left.name).cmp(&(&right.disposition, &right.name))
+    });
+
+    let mut product_bindings = set
+        .products
+        .iter()
+        .map(|product| {
+            let entry = catalog_by_id[product.id.as_str()];
+            ProductBindingV1 {
+                id: product.id.clone(),
+                mapped_package: product.package.clone(),
+                target_arch: product_target_arch(entry.manifest.architecture)
+                    .as_str()
+                    .to_string(),
+                repo_relative_manifest_path: entry.path.clone(),
+                manifest_sha256: entry.sha256.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+    product_bindings.sort();
+    let product_execution = product_bindings
+        .iter()
+        .map(|binding| {
+            let entry = catalog_by_id[binding.id.as_str()];
+            (
+                binding.id.clone(),
+                ProductExecutionAuthorityV1 {
+                    binding: binding.clone(),
+                    manifest: entry.manifest.clone(),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut direct_edges = dependencies
+        .iter()
+        .flat_map(|(dependent, required)| {
+            required.iter().map(|dependency| GraphDirectEdgeV1 {
+                dependency: dependency.clone(),
+                dependent: dependent.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    direct_edges.sort();
+    let mut registry_package_toml = input_snapshot
+        .registry_package_toml
+        .values()
+        .map(|snapshot| RegistryPackageTomlAuthorityV1 {
+            repo_relative_path: snapshot.repo_relative_path.clone(),
+            raw_sha256: snapshot.raw_sha256.clone(),
+        })
+        .collect::<Vec<_>>();
+    registry_package_toml.sort();
+    let authority = GraphAuthorityV1 {
+        schema: 1,
+        policy: LOCAL_SUPPORTED_POLICY.to_string(),
+        supported_set_sha256: input_snapshot.supported_set.raw_sha256.clone(),
+        registry_package_toml,
+        nodes: dependencies.keys().cloned().collect(),
+        direct_edges,
+        product_bindings,
+    };
+    let authority_bytes = graph_authority_bytes(&authority)?;
+    let mut authority_hash = Sha256::new();
+    authority_hash.update(GRAPH_AUTHORITY_DOMAIN);
+    authority_hash.update(&authority_bytes);
+    let authority_sha256 = format!("{:x}", authority_hash.finalize());
+
+    let refreshed_snapshot = snapshot_graph_inputs(&repo, &set_path)?;
+    if refreshed_snapshot != input_snapshot {
+        return Err("local-build graph authority inputs changed while planning".to_string());
+    }
+
+    Ok(PlannedGraphV1 {
+        plan: LocalBuildPlanV1 {
+            schema: LOCAL_SUPPORTED_SCHEMA,
+            policy: LOCAL_SUPPORTED_POLICY.to_string(),
+            packages,
+            products,
+            levels: topological_levels(public_dependencies)?,
+            exclusions,
+        },
+        dependencies,
+        authority,
+        authority_sha256,
+        product_execution,
+    })
+}
+
+fn parse_registry_snapshot(
+    repo: &Path,
+    snapshots: &BTreeMap<String, GraphFileSnapshot>,
+) -> Result<BTreeMap<String, DepsManifest>, String> {
+    let mut manifests = BTreeMap::new();
+    for (directory_name, snapshot) in snapshots {
+        let text = std::str::from_utf8(&snapshot.bytes).map_err(|error| {
+            format!(
+                "registry manifest {} is not UTF-8: {error}",
+                snapshot.repo_relative_path
+            )
+        })?;
+        let path = repo.join(&snapshot.repo_relative_path);
+        let dir = path.parent().ok_or_else(|| {
+            format!(
+                "registry manifest has no package directory: {}",
+                path.display()
+            )
+        })?;
+        let manifest = DepsManifest::parse(text, dir.to_path_buf())
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        if manifest.name != *directory_name {
+            return Err(format!(
+                "{}: package name {:?} does not match registry directory {:?}",
+                path.display(),
+                manifest.name,
+                directory_name,
+            ));
+        }
+        manifests.insert(manifest.name.clone(), manifest);
+    }
+    Ok(manifests)
+}
+
+fn parse_product_snapshot(
+    repo: &Path,
+    snapshots: &BTreeMap<String, GraphFileSnapshot>,
+) -> Result<Vec<VfsProductCatalogEntryV1>, String> {
+    if snapshots.len() > 256 {
+        return Err(format!(
+            "product directory contains {} manifests; maximum is 256",
+            snapshots.len()
+        ));
+    }
+    let mut products = snapshots
+        .values()
+        .map(|snapshot| {
+            let path = repo.join(&snapshot.repo_relative_path);
+            let manifest = parse_product_manifest_bytes(repo, &path, &snapshot.bytes)?;
+            Ok(VfsProductCatalogEntryV1 {
+                path: snapshot.repo_relative_path.clone(),
+                sha256: canonical_sha256(&manifest)?,
+                manifest,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    validate_product_catalog_entries(&products)?;
+    products.sort_by(|left, right| left.manifest.id.cmp(&right.manifest.id));
+    Ok(products)
+}
+
+fn validate_registry_partition(
+    set: &LocalSupportedSetV1,
+    manifests: &BTreeMap<String, DepsManifest>,
+    repo: &Path,
+) -> Result<(), String> {
+    let mut dispositions = BTreeSet::new();
+    for name in set
+        .packages
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .chain(set.exclusions.iter().map(|entry| entry.name.as_str()))
+        .chain(set.dependency_only.iter().map(String::as_str))
+        .chain(
+            set.registry_non_roots
+                .iter()
+                .map(|entry| entry.name.as_str()),
+        )
+    {
+        if !manifests.contains_key(name) {
+            return Err(format!("authority references unknown package {name:?}"));
+        }
+        dispositions.insert(name);
+    }
+    for name in manifests.keys() {
+        if !dispositions.contains(name.as_str()) {
+            return Err(format!("unclassified registry root {name:?}"));
+        }
+    }
+    for name in set
+        .packages
+        .iter()
+        .map(|package| package.name.as_str())
+        .chain(set.dependency_only.iter().map(String::as_str))
+    {
+        if !manifests[name].source.provider_was_explicit {
+            return Err(format!(
+                "local source authority package {name:?} must declare [source].provider explicitly"
+            ));
+        }
+        if matches!(
+            manifests[name].source.provider,
+            SourceProvider::Repository | SourceProvider::DevShell
+        ) {
+            let build = BuildToml::load(&manifests[name].dir).map_err(|error| {
+                format!(
+                    "local source authority package {name:?} with provider {:?} requires valid build.toml: {error}",
+                    manifests[name].source.provider.as_str()
+                )
+            })?;
+            if build.inputs.is_empty() {
+                return Err(format!(
+                    "local source authority package {name:?} with provider {:?} requires non-empty build.toml.inputs",
+                    manifests[name].source.provider.as_str()
+                ));
+            }
+        }
+    }
+    for package in &set.packages {
+        let manifest = &manifests[&package.name];
+        if matches!(manifest.kind, ManifestKind::Source) {
+            return Err(format!(
+                "selected package {:?} is source-only",
+                package.name
+            ));
+        }
+        let script = manifest.build_script_path(repo);
+        let metadata = fs::symlink_metadata(&script).map_err(|error| {
+            format!(
+                "selected package {:?} has no effective build hook {}: {error}",
+                package.name,
+                script.display()
+            )
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(format!(
+                "selected package {:?} effective build hook must be a regular nonsymlink file: {}",
+                package.name,
+                script.display()
+            ));
+        }
+    }
+    for name in &set.dependency_only {
+        if !matches!(manifests[name].kind, ManifestKind::Source) {
+            return Err(format!(
+                "dependency-only package {name:?} must be kind source"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_products<'a>(
+    set: &LocalSupportedSetV1,
+    catalog: &BTreeMap<&'a str, &'a crate::abi_staging::product_manifest::VfsProductCatalogEntryV1>,
+    manifests: &BTreeMap<String, DepsManifest>,
+) -> Result<(), String> {
+    let selected_packages = set
+        .packages
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect::<BTreeSet<_>>();
+    for product in &set.products {
+        if !selected_packages.contains(product.package.as_str()) {
+            return Err(format!(
+                "product {:?} maps to non-selected package {:?}",
+                product.id, product.package
+            ));
+        }
+        if !manifests.contains_key(&product.package) {
+            return Err(format!("product {:?} maps to unknown package", product.id));
+        }
+        let entry = catalog
+            .get(product.id.as_str())
+            .ok_or_else(|| format!("unknown product {:?}", product.id))?;
+        if entry.path != product.manifest {
+            return Err(format!(
+                "product {:?} manifest mismatch: authority has {:?}, catalog has {:?}",
+                product.id, product.manifest, entry.path
+            ));
+        }
+    }
+    for dormant in &set.dormant_products {
+        if !catalog.contains_key(dormant.name.as_str()) {
+            return Err(format!("unknown dormant product {:?}", dormant.name));
+        }
+    }
+    Ok(())
+}
+
+fn add_resolved_package_graph(
+    root: &str,
+    graph: &ResolvedDependencyGraph,
+    selected: &BTreeSet<&str>,
+    excluded: &BTreeSet<&str>,
+    dependency_only: &BTreeSet<&str>,
+    dependencies: &mut BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
+    public_dependencies: &mut BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
+) -> Result<(), String> {
+    for node in graph.nodes.keys() {
+        if excluded.contains(node.package_name.as_str()) {
+            return Err(format!(
+                "selected closure for {root} reaches excluded package {}",
+                node.package_name,
+            ));
+        }
+    }
+    for (node, kind) in &graph.nodes {
+        match kind {
+            ManifestKind::Source => {
+                if !dependency_only.contains(node.package_name.as_str()) {
+                    return Err(format!(
+                        "selected closure for {root} reaches source package {} that is not declared as dependency-only",
+                        node.package_name,
+                    ));
+                }
+            }
+            ManifestKind::Library | ManifestKind::Program => {
+                if !selected.contains(node.package_name.as_str()) {
+                    return Err(format!(
+                        "selected closure for {root} reaches non-selected buildable package {}",
+                        node.package_name,
+                    ));
+                }
+            }
+        }
+    }
+    for node in graph.nodes.keys() {
+        dependencies.entry(plan_package_node(node)).or_default();
+    }
+    for (node, kind) in &graph.nodes {
+        if is_buildable(*kind) {
+            public_dependencies
+                .entry(plan_package_node(node))
+                .or_default();
+        }
+    }
+    for (dependency, dependent) in &graph.direct_edges {
+        let dependency_kind = graph.nodes.get(dependency).ok_or_else(|| {
+            format!(
+                "resolved dependency graph omits node {}/{}",
+                dependency.package_name,
+                dependency.target_arch.as_str(),
+            )
+        })?;
+        let dependent_kind = graph.nodes.get(dependent).ok_or_else(|| {
+            format!(
+                "resolved dependency graph omits node {}/{}",
+                dependent.package_name,
+                dependent.target_arch.as_str(),
+            )
+        })?;
+        add_edge(
+            dependencies,
+            plan_package_node(dependency),
+            plan_package_node(dependent),
+        );
+        if is_buildable(*dependency_kind) && is_buildable(*dependent_kind) {
+            add_edge(
+                public_dependencies,
+                plan_package_node(dependency),
+                plan_package_node(dependent),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn is_buildable(kind: ManifestKind) -> bool {
+    matches!(kind, ManifestKind::Library | ManifestKind::Program)
+}
+
+fn plan_package_node(node: &ResolvedDependencyNode) -> PlanNodeV1 {
+    PlanNodeV1::package(&node.package_name, node.target_arch.as_str())
+}
+
+fn add_edge(
+    edges: &mut BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
+    dependency: PlanNodeV1,
+    dependent: PlanNodeV1,
+) {
+    edges.entry(dependency.clone()).or_default();
+    edges.entry(dependent).or_default().insert(dependency);
+}
+
+fn topological_levels(
+    mut dependencies: BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
+) -> Result<Vec<Vec<PlanNodeV1>>, String> {
+    let mut levels = Vec::new();
+    while !dependencies.is_empty() {
+        let level = dependencies
+            .iter()
+            .filter(|(_, required)| required.is_empty())
+            .map(|(node, _)| node.clone())
+            .collect::<Vec<_>>();
+        if level.is_empty() {
+            return Err("local build graph contains a cycle".to_string());
+        }
+        for node in &level {
+            dependencies.remove(node);
+        }
+        for required in dependencies.values_mut() {
+            for node in &level {
+                required.remove(node);
+            }
+        }
+        levels.push(level);
+    }
+    Ok(levels)
+}
+
+fn select_graph_dependencies(
+    graph: &PlannedGraphV1,
+    product_filters: &[String],
+) -> Result<BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>, String> {
+    let mut unique = BTreeSet::new();
+    for product in product_filters {
+        if !unique.insert(product.as_str()) {
+            return Err(format!("repeated product filter {product:?}"));
+        }
+    }
+    if unique.contains("all") && unique.len() != 1 {
+        return Err("product filter 'all' may not be mixed with product IDs".to_string());
+    }
+    if product_filters.is_empty() || unique.contains("all") {
+        return Ok(graph.dependencies.clone());
+    }
+
+    let active_products = graph
+        .dependencies
+        .keys()
+        .filter_map(|node| match node {
+            PlanNodeV1::Product { id } => Some(id.as_str()),
+            PlanNodeV1::Package { .. } => None,
+        })
+        .collect::<BTreeSet<_>>();
+    let dormant_products = graph
+        .plan
+        .exclusions
+        .iter()
+        .filter(|entry| entry.disposition == "dormant-product")
+        .map(|entry| entry.name.as_str())
+        .collect::<BTreeSet<_>>();
+
+    let mut selected = BTreeSet::new();
+    let mut pending = Vec::new();
+    for product in product_filters {
+        if !active_products.contains(product.as_str()) {
+            return if dormant_products.contains(product.as_str()) {
+                Err(format!("product {product:?} is dormant"))
+            } else {
+                Err(format!("unknown product {product:?}"))
+            };
+        }
+        pending.push(PlanNodeV1::product(product));
+    }
+    while let Some(node) = pending.pop() {
+        if !selected.insert(node.clone()) {
+            continue;
+        }
+        let dependencies = graph
+            .dependencies
+            .get(&node)
+            .ok_or_else(|| format!("internal local-build graph omitted selected node {node:?}"))?;
+        pending.extend(dependencies.iter().cloned());
+    }
+
+    graph
+        .dependencies
+        .iter()
+        .filter(|(node, _)| selected.contains(*node))
+        .map(|(node, dependencies)| {
+            if dependencies
+                .iter()
+                .all(|dependency| selected.contains(dependency))
+            {
+                Ok((node.clone(), dependencies.clone()))
+            } else {
+                Err(format!(
+                    "internal local-build selection omitted a prerequisite of {node:?}"
+                ))
+            }
+        })
+        .collect()
+}
+
+fn product_target_arch(architecture: VfsArchitectureV1) -> TargetArch {
+    match architecture {
+        VfsArchitectureV1::Wasm32 => TargetArch::Wasm32,
+        VfsArchitectureV1::Wasm64 => TargetArch::Wasm64,
+    }
+}
+
+fn extend_exclusions(
+    target: &mut Vec<PlanExclusionV1>,
+    source: &[ExcludedRootV1],
+    disposition: &str,
+) {
+    target.extend(source.iter().map(|entry| PlanExclusionV1 {
+        name: entry.name.clone(),
+        disposition: disposition.to_string(),
+        reason: entry.reason.clone(),
+    }));
+}
+
+fn canonical_plan_bytes(plan: &LocalBuildPlanV1) -> Result<Vec<u8>, String> {
+    let mut bytes = serde_json::to_vec_pretty(plan)
+        .map_err(|error| format!("serialize local build plan: {error}"))?;
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
+fn graph_authority_bytes(authority: &GraphAuthorityV1) -> Result<Vec<u8>, String> {
+    canonical_json_bytes(authority)
+        .map_err(|error| format!("serialize local-build graph authority: {error}"))
+}
+
+fn source_only_program_projection_candidate(
+    projection: ProgramPackageIndex,
+    graph_authority_sha256: &str,
+    receipts: &BTreeMap<PlanNodeV1, PackageNodeReceiptV1>,
+    root_mirror_nodes: &BTreeSet<PlanNodeV1>,
+) -> Result<SourceOnlyProgramProjectionV1, String> {
+    require_lowercase_sha256(graph_authority_sha256, "graph authority")?;
+    if projection.format != "kandelo-program-packages-v2" {
+        return Err(format!(
+            "source-only program projection has unexpected v2 format {:?}",
+            projection.format
+        ));
+    }
+    let mut required_identities = projection.packages.keys().cloned().collect::<BTreeSet<_>>();
+    for package in projection.packages.values() {
+        for dependency in package.dependency_closures.values().flatten() {
+            required_identities.insert(dependency.package_name.clone());
+        }
+    }
+    if projection.identities.keys().cloned().collect::<BTreeSet<_>>() != required_identities {
+        return Err(
+            "source-only v2 identities must be the exact package/dependency identity set"
+                .to_string(),
+        );
+    }
+
+    let mut nodes = Vec::new();
+    let mut ordinary_program_nodes = BTreeSet::new();
+    for (name, package) in &projection.packages {
+        let identity = projection.identities.get(name).ok_or_else(|| {
+            format!("source-only v2 program {name:?} has no package identity")
+        })?;
+        if identity.manifest_sha256 != package.manifest_sha256 {
+            return Err(format!(
+                "source-only v2 program {name:?} manifest identity does not match its package projection"
+            ));
+        }
+        let mut sorted_arches = package.arches.clone();
+        sorted_arches.sort();
+        sorted_arches.dedup();
+        if sorted_arches != package.arches {
+            return Err(format!(
+                "source-only v2 program {name:?} architectures are not sorted and unique"
+            ));
+        }
+        let expected_arches = package.arches.iter().cloned().collect::<BTreeSet<_>>();
+        if package.cache_keys.keys().cloned().collect::<BTreeSet<_>>() != expected_arches
+            || package
+                .dependency_closures
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                != expected_arches
+        {
+            return Err(format!(
+                "source-only v2 program {name:?} architecture maps do not match its selected architectures"
+            ));
+        }
+
+        for target_arch in &package.arches {
+            if !matches!(target_arch.as_str(), "wasm32" | "wasm64") {
+                return Err(format!(
+                    "source-only v2 program {name:?} has unsupported architecture {target_arch:?}"
+                ));
+            }
+            let cache_key_sha256 = package.cache_keys.get(target_arch).ok_or_else(|| {
+                format!(
+                    "source-only v2 program {name:?} omitted cache key for {target_arch}"
+                )
+            })?;
+            require_lowercase_sha256(cache_key_sha256, "source-only v2 cache key")?;
+            if identity.cache_keys.get(target_arch) != Some(cache_key_sha256) {
+                return Err(format!(
+                    "source-only v2 program {name:?}/{target_arch} package and identity cache keys differ"
+                ));
+            }
+            let plan_node = PlanNodeV1::package(name, target_arch);
+            ordinary_program_nodes.insert(plan_node.clone());
+            let receipt = receipts.get(&plan_node).ok_or_else(|| {
+                format!(
+                    "successful source-only program {name:?}/{target_arch} omitted its retained package receipt"
+                )
+            })?;
+            require_lowercase_sha256(&receipt.manifest_sha256, "package manifest receipt")?;
+            require_lowercase_sha256(&receipt.cache_key_sha256, "package cache-key receipt")?;
+            require_lowercase_sha256(
+                &receipt.cache_receipt_sha256,
+                "package cache-tree receipt",
+            )?;
+            if receipt.manifest_sha256 != package.manifest_sha256 {
+                return Err(format!(
+                    "source-only program {name:?}/{target_arch} manifest receipt does not match v2 projection"
+                ));
+            }
+            if &receipt.cache_key_sha256 != cache_key_sha256 {
+                return Err(format!(
+                    "source-only program {name:?}/{target_arch} cache key receipt does not match v2 projection"
+                ));
+            }
+
+            let mut sorted_members = receipt.materialized_members.clone();
+            sorted_members.sort_by(|left, right| {
+                (&left.mirror_path, &left.source_artifact)
+                    .cmp(&(&right.mirror_path, &right.source_artifact))
+            });
+            if sorted_members != receipt.materialized_members {
+                return Err(format!(
+                    "source-only program {name:?}/{target_arch} member receipt is not canonically sorted"
+                ));
+            }
+            if sorted_members.len() != package.members.len() {
+                return Err(format!(
+                    "source-only program {name:?}/{target_arch} member receipt count does not match v2 projection"
+                ));
+            }
+            let mut receipt_members = BTreeMap::new();
+            for member in &sorted_members {
+                require_lowercase_sha256(&member.sha256, "materialized member digest")?;
+                if member.size > SOURCE_ONLY_PROGRAM_MEMBER_LIMIT {
+                    return Err(format!(
+                        "source-only program {name:?}/{target_arch} exceeds the 512 MiB member limit at {:?}",
+                        member.mirror_path
+                    ));
+                }
+                let key = (&member.mirror_path, &member.source_artifact);
+                if receipt_members.insert(key, member).is_some() {
+                    return Err(format!(
+                        "source-only program {name:?}/{target_arch} repeats a materialized member receipt"
+                    ));
+                }
+            }
+            for member in &package.members {
+                let expected_mirror_path =
+                    format!("programs/{target_arch}/{}", member.mirror_path);
+                let actual = receipt_members
+                    .get(&(&expected_mirror_path, &member.source_artifact))
+                    .ok_or_else(|| {
+                        format!(
+                            "source-only program {name:?}/{target_arch} receipt omitted declared member {:?} at {:?}",
+                            member.source_artifact, expected_mirror_path
+                        )
+                    })?;
+                if member.mode.is_some_and(|mode| actual.mode != mode) {
+                    return Err(format!(
+                        "source-only program {name:?}/{target_arch} materialized mode for {:?} does not match v2 declaration",
+                        member.source_artifact
+                    ));
+                }
+            }
+
+            nodes.push(SourceOnlyProgramNodeV1 {
+                node: SourceOnlyProgramNodeIdentityV1 {
+                    kind: "package",
+                    name: name.clone(),
+                    target_arch: target_arch.clone(),
+                },
+                manifest_sha256: receipt.manifest_sha256.clone(),
+                cache_key_sha256: receipt.cache_key_sha256.clone(),
+                cache_receipt_sha256: receipt.cache_receipt_sha256.clone(),
+                members: sorted_members,
+            });
+        }
+    }
+
+    for root_node in root_mirror_nodes {
+        let PlanNodeV1::Package { name, target_arch } = root_node else {
+            return Err("source-only root-mirror set contains a product node".to_string());
+        };
+        if !matches!(name.as_str(), "kernel" | "userspace") {
+            return Err(format!(
+                "source-only root-mirror package must be only kernel or userspace, got {name:?}/{target_arch}"
+            ));
+        }
+        if projection.packages.contains_key(name) || ordinary_program_nodes.contains(root_node) {
+            return Err(format!(
+                "source-only root-mirror package {name:?}/{target_arch} is also present in the ordinary v2 program projection"
+            ));
+        }
+        if !matches!(target_arch.as_str(), "wasm32" | "wasm64") {
+            return Err(format!(
+                "source-only root-mirror package {name:?} has unsupported architecture {target_arch:?}"
+            ));
+        }
+        let receipt = receipts.get(root_node).ok_or_else(|| {
+            format!(
+                "successful source-only root-mirror package {name:?}/{target_arch} omitted its retained package receipt"
+            )
+        })?;
+        require_lowercase_sha256(&receipt.manifest_sha256, "root-mirror manifest receipt")?;
+        require_lowercase_sha256(&receipt.cache_key_sha256, "root-mirror cache-key receipt")?;
+        require_lowercase_sha256(
+            &receipt.cache_receipt_sha256,
+            "root-mirror cache-tree receipt",
+        )?;
+        if let Some(identity) = projection.identities.get(name) {
+            if identity.manifest_sha256 != receipt.manifest_sha256
+                || identity.cache_keys.get(target_arch) != Some(&receipt.cache_key_sha256)
+            {
+                return Err(format!(
+                    "source-only root-mirror package {name:?}/{target_arch} does not match its optional v2 identity"
+                ));
+            }
+        }
+        let mut members = receipt.materialized_members.clone();
+        members.sort_by(|left, right| {
+            (&left.mirror_path, &left.source_artifact)
+                .cmp(&(&right.mirror_path, &right.source_artifact))
+        });
+        if members != receipt.materialized_members {
+            return Err(format!(
+                "source-only root-mirror package {name:?}/{target_arch} member receipt must be canonically sorted"
+            ));
+        }
+        if members.len() != 1
+            || members[0].mirror_path.contains('/')
+            || members[0].mirror_path.contains('\\')
+        {
+            return Err(format!(
+                "source-only root-mirror package {name:?}/{target_arch} must have exactly one root-level member"
+            ));
+        }
+        let mut identities = BTreeSet::new();
+        for member in &members {
+            validate_relative_path(
+                &member.mirror_path,
+                "source-only root-mirror materialized path",
+            )?;
+            validate_relative_path(
+                &member.source_artifact,
+                "source-only root-mirror source artifact",
+            )?;
+            require_lowercase_sha256(&member.sha256, "root-mirror materialized digest")?;
+            if member.size > SOURCE_ONLY_PROGRAM_MEMBER_LIMIT {
+                return Err(format!(
+                    "source-only root-mirror package {name:?}/{target_arch} exceeds the 512 MiB member limit at {:?}",
+                    member.mirror_path
+                ));
+            }
+            if !identities.insert((&member.mirror_path, &member.source_artifact)) {
+                return Err(format!(
+                    "source-only root-mirror package {name:?}/{target_arch} repeats a materialized member receipt"
+                ));
+            }
+        }
+        nodes.push(SourceOnlyProgramNodeV1 {
+            node: SourceOnlyProgramNodeIdentityV1 {
+                kind: "package",
+                name: name.clone(),
+                target_arch: target_arch.clone(),
+            },
+            manifest_sha256: receipt.manifest_sha256.clone(),
+            cache_key_sha256: receipt.cache_key_sha256.clone(),
+            cache_receipt_sha256: receipt.cache_receipt_sha256.clone(),
+            members,
+        });
+    }
+    nodes.sort_by(|left, right| {
+        (&left.node.name, &left.node.target_arch).cmp(&(
+            &right.node.name,
+            &right.node.target_arch,
+        ))
+    });
+
+    Ok(SourceOnlyProgramProjectionV1 {
+        format: SOURCE_ONLY_PROGRAM_PROJECTION_FORMAT,
+        projection,
+        graph_authority_sha256: graph_authority_sha256.to_string(),
+        nodes,
+    })
+}
+
+fn source_only_program_projection_bytes(
+    authority: &SourceOnlyProgramProjectionV1,
+) -> Result<Vec<u8>, String> {
+    let mut bytes = serde_json::to_vec_pretty(authority)
+        .map_err(|error| format!("serialize source-only program projection authority: {error}"))?;
+    bytes.push(b'\n');
+    if bytes.len() > SOURCE_ONLY_PROGRAM_PROJECTION_LIMIT {
+        return Err(format!(
+            "source-only program projection authority is {} bytes, exceeding the {}-byte limit",
+            bytes.len(),
+            SOURCE_ONLY_PROGRAM_PROJECTION_LIMIT,
+        ));
+    }
+    Ok(bytes)
+}
+
+fn require_lowercase_sha256(value: &str, label: &str) -> Result<(), String> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(format!(
+            "{label} must be exactly 64 lowercase hexadecimal characters"
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn canonical_machine_json<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
+    canonical_json_bytes(value)
+        .map_err(|error| format!("serialize local-build machine result: {error}"))
+}
+
+#[derive(Default)]
+struct ParsedFlagsV1 {
+    values: BTreeMap<String, String>,
+    repeated: BTreeMap<String, Vec<String>>,
+    switches: BTreeSet<String>,
+}
+
+fn parse_local_build_args_with_jobs(
+    args: &[String],
+    environment_jobs: Option<&str>,
+    available_jobs: Option<std::num::NonZeroUsize>,
+) -> Result<LocalBuildCommandV1, String> {
+    let (command, rest) = args
+        .split_first()
+        .ok_or_else(|| "usage: xtask local-build <plan|run|run-node> ...".to_string())?;
+    match command.as_str() {
+        "plan" => {
+            let mut flags = parse_named_flags(rest, &["--set"], &[], &[])?;
+            Ok(LocalBuildCommandV1::Plan {
+                set: PathBuf::from(take_required_flag(&mut flags, "--set")?),
+            })
+        }
+        "run" => {
+            let mut flags = parse_named_flags(
+                rest,
+                &["--set", "--source-cache-root", "--output-root", "--jobs"],
+                &["--product"],
+                &["--rebuild"],
+            )?;
+            let set = PathBuf::from(take_required_flag(&mut flags, "--set")?);
+            let source_cache_root = absolute_authored_path(
+                take_required_flag(&mut flags, "--source-cache-root")?,
+                "--source-cache-root",
+            )?;
+            let output_root = absolute_authored_path(
+                take_required_flag(&mut flags, "--output-root")?,
+                "--output-root",
+            )?;
+            let products = flags.repeated.remove("--product").unwrap_or_default();
+            let mut unique = BTreeSet::new();
+            for product in &products {
+                if product != "all" {
+                    validate_name(product, "product filter")?;
+                }
+                if !unique.insert(product.as_str()) {
+                    return Err(format!("repeated --product value {product:?}"));
+                }
+            }
+            if unique.contains("all") && unique.len() != 1 {
+                return Err("--product all may not be mixed with product IDs".to_string());
+            }
+            let explicit_jobs = flags.values.remove("--jobs");
+            let jobs =
+                select_job_count(explicit_jobs.as_deref(), environment_jobs, available_jobs)?;
+            Ok(LocalBuildCommandV1::Run(LocalBuildRunArgsV1 {
+                set,
+                source_cache_root,
+                output_root,
+                products,
+                jobs,
+                rebuild: flags.switches.remove("--rebuild"),
+            }))
+        }
+        "run-node" => {
+            let mut flags = parse_named_flags(
+                rest,
+                &[
+                    "--repo-root",
+                    "--set",
+                    "--graph-authority-sha256",
+                    "--source-cache-root",
+                    "--compiled-cache-root",
+                    "--output-root",
+                    "--node-kind",
+                    "--package",
+                    "--target-arch",
+                    "--product",
+                    "--result-json",
+                ],
+                &[],
+                &["--rebuild"],
+            )?;
+            let repo_root = absolute_authored_path(
+                take_required_flag(&mut flags, "--repo-root")?,
+                "--repo-root",
+            )?;
+            let set = absolute_authored_path(take_required_flag(&mut flags, "--set")?, "--set")?;
+            let graph_authority_sha256 =
+                take_required_flag(&mut flags, "--graph-authority-sha256")?;
+            if graph_authority_sha256.len() != 64
+                || !graph_authority_sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(
+                    "--graph-authority-sha256 must be exactly 64 lowercase hexadecimal characters"
+                        .to_string(),
+                );
+            }
+            let source_cache_root = absolute_authored_path(
+                take_required_flag(&mut flags, "--source-cache-root")?,
+                "--source-cache-root",
+            )?;
+            let compiled_cache_root = absolute_authored_path(
+                take_required_flag(&mut flags, "--compiled-cache-root")?,
+                "--compiled-cache-root",
+            )?;
+            let output_root = absolute_authored_path(
+                take_required_flag(&mut flags, "--output-root")?,
+                "--output-root",
+            )?;
+            let result_json = absolute_authored_path(
+                take_required_flag(&mut flags, "--result-json")?,
+                "--result-json",
+            )?;
+            let node_kind = take_required_flag(&mut flags, "--node-kind")?;
+            let node = match node_kind.as_str() {
+                "package" => {
+                    if flags.values.contains_key("--product") {
+                        return Err("package run-node forbids --product".to_string());
+                    }
+                    let package = take_required_flag(&mut flags, "--package")?;
+                    validate_name(&package, "package node")?;
+                    let target_arch = take_required_flag(&mut flags, "--target-arch")?;
+                    if !matches!(target_arch.as_str(), "wasm32" | "wasm64") {
+                        return Err(format!(
+                            "--target-arch must be wasm32 or wasm64, got {target_arch:?}"
+                        ));
+                    }
+                    PlanNodeV1::package(&package, &target_arch)
+                }
+                "product" => {
+                    if flags.values.contains_key("--package")
+                        || flags.values.contains_key("--target-arch")
+                    {
+                        return Err(
+                            "product run-node forbids --package and --target-arch".to_string()
+                        );
+                    }
+                    let product = take_required_flag(&mut flags, "--product")?;
+                    validate_name(&product, "product node")?;
+                    PlanNodeV1::product(&product)
+                }
+                _ => {
+                    return Err(format!(
+                        "--node-kind must be package or product, got {node_kind:?}"
+                    ));
+                }
+            };
+            Ok(LocalBuildCommandV1::RunNode(LocalBuildRunNodeArgsV1 {
+                repo_root,
+                set,
+                graph_authority_sha256,
+                source_cache_root,
+                compiled_cache_root,
+                output_root,
+                node,
+                result_json,
+                rebuild: flags.switches.remove("--rebuild"),
+            }))
+        }
+        _ => Err(format!("unknown local-build subcommand {command:?}")),
+    }
+}
+
+fn parse_named_flags(
+    args: &[String],
+    singleton_values: &[&str],
+    repeated_values: &[&str],
+    switches: &[&str],
+) -> Result<ParsedFlagsV1, String> {
+    let singleton_values = singleton_values.iter().copied().collect::<BTreeSet<_>>();
+    let repeated_values = repeated_values.iter().copied().collect::<BTreeSet<_>>();
+    let switches = switches.iter().copied().collect::<BTreeSet<_>>();
+    let mut parsed = ParsedFlagsV1::default();
+    let mut index = 0usize;
+    while index < args.len() {
+        let token = &args[index];
+        if !token.starts_with("--") {
+            return Err(format!(
+                "unexpected positional local-build argument {token:?}"
+            ));
+        }
+        let (flag, inline_value) = match token.split_once('=') {
+            Some((flag, value)) => (flag, Some(value)),
+            None => (token.as_str(), None),
+        };
+        if switches.contains(flag) {
+            if inline_value.is_some() {
+                return Err(format!("switch {flag} does not accept a value"));
+            }
+            if !parsed.switches.insert(flag.to_string()) {
+                return Err(format!("duplicate switch {flag}"));
+            }
+            index += 1;
+            continue;
+        }
+        if !singleton_values.contains(flag) && !repeated_values.contains(flag) {
+            return Err(format!("unknown local-build flag {flag:?}"));
+        }
+        let value = if let Some(value) = inline_value {
+            value.to_string()
+        } else {
+            index += 1;
+            let value = args
+                .get(index)
+                .filter(|value| !value.starts_with("--"))
+                .ok_or_else(|| format!("flag {flag} requires a value"))?;
+            value.clone()
+        };
+        if value.is_empty() {
+            return Err(format!("flag {flag} requires a nonempty value"));
+        }
+        if singleton_values.contains(flag) {
+            if parsed.values.insert(flag.to_string(), value).is_some() {
+                return Err(format!("duplicate singleton flag {flag}"));
+            }
+        } else {
+            parsed
+                .repeated
+                .entry(flag.to_string())
+                .or_default()
+                .push(value);
+        }
+        index += 1;
+    }
+    Ok(parsed)
+}
+
+fn take_required_flag(flags: &mut ParsedFlagsV1, flag: &str) -> Result<String, String> {
+    flags
+        .values
+        .remove(flag)
+        .ok_or_else(|| format!("missing required local-build flag {flag}"))
+}
+
+fn absolute_authored_path(value: String, flag: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(&value);
+    if !path.is_absolute() {
+        return Err(format!("{flag} must be absolute, got {value:?}"));
+    }
+    Ok(path)
+}
+
+fn select_job_count(
+    explicit: Option<&str>,
+    environment: Option<&str>,
+    available: Option<std::num::NonZeroUsize>,
+) -> Result<usize, String> {
+    if let Some(value) = explicit {
+        return parse_positive_job_count(value, "--jobs");
+    }
+    if let Some(value) = environment {
+        return parse_positive_job_count(value, "WASM_POSIX_LOCAL_BUILD_JOBS");
+    }
+    Ok(available.map(std::num::NonZeroUsize::get).unwrap_or(1))
+}
+
+fn parse_positive_job_count(value: &str, source: &str) -> Result<usize, String> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(format!(
+            "{source} must be an exact positive integer, got {value:?}"
+        ));
+    }
+    let jobs = value
+        .parse::<usize>()
+        .map_err(|_| format!("{source} positive integer overflows usize: {value:?}"))?;
+    if jobs == 0 {
+        return Err(format!("{source} must be greater than zero"));
+    }
+    Ok(jobs)
+}
+
+pub(crate) fn ansi_enabled(stderr_is_terminal: bool, no_color_is_present: bool) -> bool {
+    stderr_is_terminal && !no_color_is_present
+}
+
+pub(crate) fn render_lifecycle_token(token: LifecycleTokenV1, color: bool) -> String {
+    let (word, ansi) = match token {
+        LifecycleTokenV1::Ready => ("READY", 34),
+        LifecycleTokenV1::Queued => ("QUEUED", 34),
+        LifecycleTokenV1::Running => ("RUNNING", 36),
+        LifecycleTokenV1::Continuing => ("CONTINUING", 36),
+        LifecycleTokenV1::Cached => ("CACHED", 32),
+        LifecycleTokenV1::Reused => ("REUSED", 32),
+        LifecycleTokenV1::Succeeded => ("SUCCEEDED", 32),
+        LifecycleTokenV1::Blocked => ("BLOCKED", 33),
+        LifecycleTokenV1::Failed => ("FAILED", 31),
+    };
+    if color {
+        format!("\u{1b}[{ansi}m{word}\u{1b}[0m")
+    } else {
+        word.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::build_deps::Registry;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    fn write(path: &Path, contents: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, contents).unwrap();
+    }
+
+    fn package(root: &Path, name: &str, arches: &[&str], dependencies: &[(&str, &str)]) {
+        let arches = if arches.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "arches = [{}]\n",
+                arches
+                    .iter()
+                    .map(|arch| format!("\"{arch}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        let depends_on = dependencies
+            .iter()
+            .map(|(dependency, version)| format!("\"{dependency}@{version}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        write(
+            &root
+                .join("packages/registry")
+                .join(name)
+                .join("package.toml"),
+            &format!(
+                "kind = \"program\"\nname = \"{name}\"\nversion = \"1.0.0\"\nkernel_abi = 7\n{arches}depends_on = [{depends_on}]\n\n[source]\nurl = \"https://example.invalid/{name}\"\nsha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"\nprovider = \"repository\"\n\n[license]\nspdx = \"MIT\"\n\n[build]\nscript_path = \"packages/registry/{name}/build-{name}.sh\"\n\n[[outputs]]\nname = \"{name}\"\nwasm = \"{name}.wasm\"\n"
+            ),
+        );
+        write(
+            &root
+                .join("packages/registry")
+                .join(name)
+                .join(format!("build-{name}.sh")),
+            "#!/bin/sh\n",
+        );
+        write(
+            &root.join("packages/registry").join(name).join("build.toml"),
+            &format!(
+                "script_path = \"packages/registry/{name}/build-{name}.sh\"\ninputs = [\"packages/registry/{name}/build-{name}.sh\"]\nrepo_url = \"https://example.invalid/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n\n[binary]\nindex_url = \"https://example.invalid/binaries-abi-v{{abi}}/index.toml\"\n"
+            ),
+        );
+    }
+
+    fn source_package(root: &Path, name: &str) {
+        write(
+            &root
+                .join("packages/registry")
+                .join(name)
+                .join("package.toml"),
+            &format!(
+                "kind = \"source\"\nname = \"{name}\"\nversion = \"1.0.0\"\n\n[source]\nurl = \"https://example.invalid/{name}.tar.gz\"\nsha256 = \"1111111111111111111111111111111111111111111111111111111111111111\"\nprovider = \"archive\"\n\n[license]\nspdx = \"MIT\"\n"
+            ),
+        );
+    }
+
+    fn product(root: &Path, id: &str, composed: &[&str]) -> PathBuf {
+        product_with(root, id, "wasm32", composed, "")
+    }
+
+    fn product_with(
+        root: &Path,
+        id: &str,
+        architecture: &str,
+        composed: &[&str],
+        additions: &str,
+    ) -> PathBuf {
+        let builder = format!("images/vfs/build-{id}.sh");
+        write(&root.join(&builder), "#!/bin/sh\n");
+        let composition = composed
+            .iter()
+            .map(|dependency| {
+                format!(
+                    "[[composition.product]]\nid = \"{dependency}\"\nmaterialization = \"embedded\"\n\n"
+                )
+            })
+            .collect::<String>();
+        let relative = PathBuf::from(format!("images/vfs/products/{id}.toml"));
+        write(
+            &root.join(&relative),
+            &format!(
+                "schema = 1\nid = \"{id}\"\narchitecture = \"{architecture}\"\noutput = \"{id}.vfs\"\nbuilder = \"{builder}\"\n\n{composition}{additions}[[mounts]]\npath = \"/\"\nsource = \"built-image\"\nreadonly = false\n"
+            ),
+        );
+        relative
+    }
+
+    fn authority(
+        root: &Path,
+        packages: &[(&str, &str)],
+        products: &[(&str, &str, &Path)],
+        exclusions: &[(&str, &str)],
+        dependency_only: &[&str],
+    ) -> PathBuf {
+        let mut source = String::from("schema = 1\npolicy = \"source-only-v1\"\n");
+        for name in dependency_only {
+            source.push_str(&format!("dependency_only = [\"{name}\"]\n"));
+        }
+        if dependency_only.is_empty() {
+            source.push_str("dependency_only = []\n");
+        }
+        source.push_str("registry_non_roots = []\ndormant_products = []\n\n");
+        if products.is_empty() {
+            source.push_str("products = []\n");
+        }
+        if exclusions.is_empty() {
+            source.push_str("exclusions = []\n");
+        }
+        if packages.is_empty() {
+            source.push_str("packages = []\n");
+        }
+        for (name, class) in packages {
+            source.push_str(&format!(
+                "[[packages]]\nname = \"{name}\"\nclass = \"{class}\"\n\n"
+            ));
+        }
+        for (id, package, manifest) in products {
+            source.push_str(&format!(
+                "[[products]]\nid = \"{id}\"\npackage = \"{package}\"\nmanifest = \"{}\"\n\n",
+                manifest.display()
+            ));
+        }
+        for (name, reason) in exclusions {
+            source.push_str(&format!(
+                "[[exclusions]]\nname = \"{name}\"\nreason = \"{reason}\"\n\n"
+            ));
+        }
+        let path = root.join("packages/sets/local-supported.toml");
+        write(&path, &source);
+        path
+    }
+
+    fn declare_product_root_mirror_packages(
+        set: &Path,
+        id: &str,
+        package: &str,
+        manifest: &Path,
+        root_mirror_packages: &[&str],
+    ) {
+        let original = fs::read_to_string(set).unwrap();
+        let binding = format!(
+            "id = \"{id}\"\npackage = \"{package}\"\nmanifest = \"{}\"\n",
+            manifest.display(),
+        );
+        let packages = root_mirror_packages
+            .iter()
+            .map(|name| format!("\"{name}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let replacement = format!("{binding}root_mirror_packages = [{packages}]\n");
+        assert!(original.contains(&binding));
+        write(set, &original.replacen(&binding, &replacement, 1));
+    }
+
+    fn registry(root: &Path) -> Registry {
+        Registry {
+            roots: vec![root.join("packages/registry")],
+        }
+    }
+
+    #[test]
+    fn checked_in_authority_has_exact_stable_projection() {
+        let repo = crate::repo_root();
+        let set = repo.join("packages/sets/local-supported.toml");
+        let registry = Registry::from_env(&repo);
+        let first = load_and_plan(&repo, &set, &registry).unwrap();
+        let second = load_and_plan(&repo, &set, &registry).unwrap();
+        assert_eq!(
+            canonical_plan_bytes(&first).unwrap(),
+            canonical_plan_bytes(&second).unwrap()
+        );
+        assert_eq!(first.schema, 1);
+        assert_eq!(first.policy, "source-only-v1");
+        assert_eq!(first.packages.len(), 72);
+        assert_eq!(first.products.len(), 7);
+        assert_eq!(
+            first
+                .packages
+                .iter()
+                .map(|package| package.name.as_str())
+                .collect::<Vec<_>>(),
+            "bash bc bzip2 coreutils cpython curl dash diffutils dinit fbdoom file \
+             findutils gawk git grep gzip icu kandelo-sdk kernel lamp less libcurl libcxx \
+             libiconv libpng libxml2 libzip lsof m4 make mariadb mariadb-test modeset \
+             msmtpd nano ncurses netcat nethack nethack-browser-bundle nginx nginx-php-vfs \
+             nginx-vfs node node-vfs openssl perl php posix-utils-lite redis rootfs ruby \
+             sdl-dsp-test sdl2 sdl2-mixer-playwave sdl3 sed shell spidermonkey \
+             spidermonkey-node sqlite tar tcl unzip userspace vim vim-browser-bundle wget \
+             wordpress xz zip zlib zstd"
+                .split_whitespace()
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            first
+                .packages
+                .iter()
+                .fold(BTreeMap::<&str, usize>::new(), |mut counts, package| {
+                    *counts.entry(package.class.as_str()).or_default() += 1;
+                    counts
+                },),
+            BTreeMap::from([
+                ("browser-product", 8),
+                ("platform", 16),
+                ("test-support", 3),
+                ("user-software", 45),
+            ]),
+        );
+        for (class, expected) in [
+            (
+                "browser-product",
+                "lamp nethack-browser-bundle nginx-php-vfs nginx-vfs node-vfs shell \
+                 vim-browser-bundle wordpress",
+            ),
+            ("test-support", "kandelo-sdk mariadb-test sdl-dsp-test"),
+            (
+                "platform",
+                "icu kernel libcurl libcxx libiconv libpng libxml2 libzip ncurses openssl \
+                 rootfs sdl2 sdl3 sqlite userspace zlib",
+            ),
+        ] {
+            assert_eq!(
+                first
+                    .packages
+                    .iter()
+                    .filter(|package| package.class == class)
+                    .map(|package| package.name.as_str())
+                    .collect::<Vec<_>>(),
+                expected.split_whitespace().collect::<Vec<_>>(),
+            );
+        }
+        assert_eq!(
+            first
+                .packages
+                .iter()
+                .filter(|package| package.architectures == ["wasm32", "wasm64"])
+                .map(|package| package.name.as_str())
+                .collect::<Vec<_>>(),
+            ["libcxx", "mariadb", "openssl", "sqlite", "zlib"],
+        );
+        assert_eq!(
+            first
+                .products
+                .iter()
+                .map(|product| {
+                    (
+                        product.id.as_str(),
+                        product.package.as_str(),
+                        product.manifest.as_str(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "browser-lamp",
+                    "lamp",
+                    "images/vfs/products/browser-lamp.toml",
+                ),
+                (
+                    "browser-main-shell",
+                    "shell",
+                    "images/vfs/products/browser-main-shell.toml",
+                ),
+                (
+                    "browser-nginx",
+                    "nginx-vfs",
+                    "images/vfs/products/browser-nginx.toml",
+                ),
+                (
+                    "browser-nginx-php",
+                    "nginx-php-vfs",
+                    "images/vfs/products/browser-nginx-php.toml",
+                ),
+                (
+                    "browser-node",
+                    "node-vfs",
+                    "images/vfs/products/browser-node.toml",
+                ),
+                (
+                    "browser-wordpress",
+                    "wordpress",
+                    "images/vfs/products/browser-wordpress.toml",
+                ),
+                (
+                    "platform-rootfs",
+                    "rootfs",
+                    "images/vfs/products/platform-rootfs.toml",
+                ),
+            ],
+        );
+        let browser_main_shell = PlanNodeV1::product("browser-main-shell");
+        let dinit = PlanNodeV1::package("dinit", "wasm32");
+        assert!(
+            first.dependencies[&browser_main_shell].contains(&dinit),
+            "browser-main-shell must select the dinit Wasm imported by its live setup",
+        );
+        assert!(first.authority.direct_edges.contains(&GraphDirectEdgeV1 {
+            dependency: dinit,
+            dependent: browser_main_shell,
+        }));
+        assert_eq!(
+            first
+                .exclusions
+                .iter()
+                .filter(|entry| entry.disposition == "excluded-root")
+                .map(|entry| entry.name.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "erlang",
+                "erlang-vfs",
+                "homebrew-bootstrap",
+                "mariadb-vfs",
+                "perl-vfs",
+                "python-vfs",
+                "redis-vfs",
+                "texlive",
+            ]),
+        );
+        assert_eq!(
+            first
+                .exclusions
+                .iter()
+                .filter(|entry| entry.disposition == "dependency-only")
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            ["pcre2-source", "wordpress-sqlite-integration-source"],
+        );
+        assert_eq!(
+            first
+                .exclusions
+                .iter()
+                .filter(|entry| entry.disposition == "registry-non-root")
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            ["sqlite-cli"],
+        );
+        assert_eq!(
+            first
+                .exclusions
+                .iter()
+                .filter(|entry| entry.disposition == "dormant-product")
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "browser-erlang",
+                "browser-mariadb-wasm32",
+                "browser-mariadb-wasm64",
+                "browser-perl",
+                "browser-python",
+                "browser-redis",
+            ],
+        );
+    }
+
+    #[test]
+    fn local_rebuild_graph_private_source_nodes_preserve_public_plan_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "app", &[], &[("archive-src", "1.0.0")]);
+        source_package(root, "archive-src");
+        product(root, "catalog-only", &[]);
+        let set = authority(
+            root,
+            &[("app", "user-software")],
+            &[],
+            &[],
+            &["archive-src"],
+        );
+
+        let graph = load_and_plan(root, &set, &registry(root)).unwrap();
+        let app = PlanNodeV1::package("app", "wasm32");
+        let source = PlanNodeV1::package("archive-src", "wasm32");
+        assert_eq!(
+            graph.dependencies,
+            BTreeMap::from([
+                (app.clone(), BTreeSet::from([source.clone()])),
+                (source, BTreeSet::new()),
+            ]),
+        );
+
+        let expected_public_plan = br#"{
+  "schema": 1,
+  "policy": "source-only-v1",
+  "packages": [
+    {
+      "name": "app",
+      "class": "user-software",
+      "reason": "supported user-software root",
+      "architectures": [
+        "wasm32"
+      ]
+    }
+  ],
+  "products": [],
+  "levels": [
+    [
+      {
+        "kind": "package",
+        "name": "app",
+        "target_arch": "wasm32"
+      }
+    ]
+  ],
+  "exclusions": [
+    {
+      "name": "archive-src",
+      "disposition": "dependency-only",
+      "reason": "immutable source input; not a schedulable build root"
+    }
+  ]
+}
+"#;
+        assert_eq!(
+            canonical_plan_bytes(&graph.plan).unwrap(),
+            expected_public_plan,
+        );
+    }
+
+    #[test]
+    fn local_rebuild_graph_product_package_claims_use_canonical_architecture_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "mapped", &["wasm64"], &[]);
+        package(root, "exact", &["wasm64"], &[]);
+        package(root, "fallback", &["wasm32"], &[]);
+        let manifest = product_with(
+            root,
+            "app-product",
+            "wasm64",
+            &[],
+            r#"[[software.package]]
+name = "exact"
+outputs = ["exact"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "fallback"
+outputs = ["fallback"]
+source_roles = []
+role = "runtime"
+materialization = "lazy"
+
+[[software.homebrew]]
+tap = "example/tools"
+formulae = ["not-a-package-edge"]
+materialization = "lazy"
+
+"#,
+        );
+        let set = authority(
+            root,
+            &[
+                ("mapped", "browser-product"),
+                ("exact", "user-software"),
+                ("fallback", "user-software"),
+            ],
+            &[("app-product", "mapped", manifest.as_path())],
+            &[],
+            &[],
+        );
+
+        let graph = load_and_plan(root, &set, &registry(root)).unwrap();
+        assert_eq!(
+            graph.dependencies[&PlanNodeV1::product("app-product")],
+            BTreeSet::from([
+                PlanNodeV1::package("exact", "wasm64"),
+                PlanNodeV1::package("fallback", "wasm32"),
+                PlanNodeV1::package("mapped", "wasm64"),
+            ]),
+        );
+        assert!(graph.dependencies.keys().all(
+            |node| !matches!(node, PlanNodeV1::Package { name, .. } if name == "not-a-package-edge")
+        ),);
+    }
+
+    #[test]
+    fn local_rebuild_graph_root_mirror_packages_select_kernel_for_filtered_product() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "mapped", &["wasm64"], &[]);
+        package(root, "kernel", &["wasm32"], &[]);
+        let manifest = product_with(root, "browser-app", "wasm64", &[], "");
+        let set = authority(
+            root,
+            &[
+                ("mapped", "browser-product"),
+                ("kernel", "platform"),
+            ],
+            &[("browser-app", "mapped", manifest.as_path())],
+            &[],
+            &[],
+        );
+        declare_product_root_mirror_packages(
+            &set,
+            "browser-app",
+            "mapped",
+            &manifest,
+            &["kernel"],
+        );
+
+        let graph = load_and_plan(root, &set, &registry(root)).unwrap();
+        let product = PlanNodeV1::product("browser-app");
+        let kernel = PlanNodeV1::package("kernel", "wasm32");
+        assert_eq!(
+            graph.dependencies[&product],
+            BTreeSet::from([
+                kernel.clone(),
+                PlanNodeV1::package("mapped", "wasm64"),
+            ]),
+        );
+        assert!(graph.authority.direct_edges.contains(&GraphDirectEdgeV1 {
+            dependency: kernel.clone(),
+            dependent: product.clone(),
+        }));
+        assert_eq!(
+            select_graph_dependencies(&graph, &["browser-app".to_string()])
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                kernel,
+                PlanNodeV1::package("mapped", "wasm64"),
+                product,
+            ]),
+        );
+    }
+
+    #[test]
+    fn local_rebuild_graph_rejects_invalid_root_mirror_package_declarations() {
+        let excluded = tempfile::tempdir().unwrap();
+        let excluded_root = excluded.path();
+        package(excluded_root, "mapped", &[], &[]);
+        package(excluded_root, "kernel", &[], &[]);
+        let excluded_manifest = product(excluded_root, "excluded-product", &[]);
+        let excluded_set = authority(
+            excluded_root,
+            &[("mapped", "browser-product")],
+            &[("excluded-product", "mapped", excluded_manifest.as_path())],
+            &[("kernel", "not selected")],
+            &[],
+        );
+        declare_product_root_mirror_packages(
+            &excluded_set,
+            "excluded-product",
+            "mapped",
+            &excluded_manifest,
+            &["kernel"],
+        );
+        let error = load_and_plan(excluded_root, &excluded_set, &registry(excluded_root))
+            .unwrap_err();
+        assert!(error.contains("selected buildable root"), "got: {error}");
+
+        let ordinary = tempfile::tempdir().unwrap();
+        let ordinary_root = ordinary.path();
+        package(ordinary_root, "mapped", &[], &[]);
+        package(ordinary_root, "helper", &[], &[]);
+        let ordinary_manifest = product(ordinary_root, "ordinary-product", &[]);
+        let ordinary_set = authority(
+            ordinary_root,
+            &[
+                ("mapped", "browser-product"),
+                ("helper", "platform"),
+            ],
+            &[("ordinary-product", "mapped", ordinary_manifest.as_path())],
+            &[],
+            &[],
+        );
+        declare_product_root_mirror_packages(
+            &ordinary_set,
+            "ordinary-product",
+            "mapped",
+            &ordinary_manifest,
+            &["helper"],
+        );
+        let error = load_and_plan(ordinary_root, &ordinary_set, &registry(ordinary_root))
+            .unwrap_err();
+        assert!(error.contains("does not publish a root-mirror artifact"), "got: {error}");
+
+        let duplicate = tempfile::tempdir().unwrap();
+        let duplicate_root = duplicate.path();
+        package(duplicate_root, "mapped", &[], &[]);
+        package(duplicate_root, "kernel", &[], &[]);
+        let duplicate_manifest = product(duplicate_root, "duplicate-product", &[]);
+        let duplicate_set = authority(
+            duplicate_root,
+            &[
+                ("mapped", "browser-product"),
+                ("kernel", "platform"),
+            ],
+            &[("duplicate-product", "mapped", duplicate_manifest.as_path())],
+            &[],
+            &[],
+        );
+        declare_product_root_mirror_packages(
+            &duplicate_set,
+            "duplicate-product",
+            "mapped",
+            &duplicate_manifest,
+            &["kernel", "kernel"],
+        );
+        let error = load_and_plan(duplicate_root, &duplicate_set, &registry(duplicate_root))
+            .unwrap_err();
+        assert!(error.contains("repeats root-mirror package"), "got: {error}");
+    }
+
+    #[test]
+    fn local_rebuild_graph_filters_select_transitive_unions_and_reject_ambiguous_ids() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "base-a", &[], &[]);
+        package(root, "base-b", &[], &[]);
+        let first = product(root, "first", &[]);
+        let second = product(root, "second", &["first"]);
+        product(root, "dormant", &[]);
+        let set = authority(
+            root,
+            &[("base-a", "platform"), ("base-b", "platform")],
+            &[
+                ("first", "base-a", first.as_path()),
+                ("second", "base-b", second.as_path()),
+            ],
+            &[],
+            &[],
+        );
+        let mut source = fs::read_to_string(&set)
+            .unwrap()
+            .replace("dormant_products = []\n", "");
+        source.push_str("[[dormant_products]]\nname = \"dormant\"\nreason = \"not selected\"\n");
+        write(&set, &source);
+        let graph = load_and_plan(root, &set, &registry(root)).unwrap();
+
+        let complete = select_graph_dependencies(&graph, &[]).unwrap();
+        assert_eq!(
+            complete,
+            select_graph_dependencies(&graph, &["all".to_string()]).unwrap(),
+        );
+        assert_eq!(
+            select_graph_dependencies(&graph, &["first".to_string()])
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                PlanNodeV1::package("base-a", "wasm32"),
+                PlanNodeV1::product("first"),
+            ]),
+        );
+        assert_eq!(
+            select_graph_dependencies(&graph, &["first".to_string(), "second".to_string()],)
+                .unwrap(),
+            complete,
+        );
+
+        for (filters, expected) in [
+            (vec!["first", "first"], "repeated"),
+            (vec!["all", "first"], "mixed"),
+            (vec!["all", "all"], "repeated"),
+            (vec!["missing"], "unknown"),
+            (vec!["dormant"], "dormant"),
+        ] {
+            let filters = filters.into_iter().map(str::to_string).collect::<Vec<_>>();
+            let error = select_graph_dependencies(&graph, &filters).unwrap_err();
+            assert!(error.contains(expected), "{filters:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn local_rebuild_graph_authority_binds_exact_inputs_and_private_edges() {
+        use sha2::{Digest, Sha256};
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "app", &[], &[("source-input", "1.0.0")]);
+        source_package(root, "source-input");
+        let manifest = product(root, "browser-app", &[]);
+        let set = authority(
+            root,
+            &[("app", "browser-product")],
+            &[("browser-app", "app", manifest.as_path())],
+            &[],
+            &["source-input"],
+        );
+
+        let graph = load_and_plan(root, &set, &registry(root)).unwrap();
+        let authority_bytes = graph_authority_bytes(&graph.authority).unwrap();
+        assert_eq!(
+            graph.authority.supported_set_sha256,
+            format!("{:x}", Sha256::digest(fs::read(&set).unwrap())),
+        );
+        assert_eq!(
+            graph.authority.nodes,
+            graph.dependencies.keys().cloned().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            graph.authority.direct_edges,
+            vec![
+                GraphDirectEdgeV1 {
+                    dependency: PlanNodeV1::package("app", "wasm32"),
+                    dependent: PlanNodeV1::product("browser-app"),
+                },
+                GraphDirectEdgeV1 {
+                    dependency: PlanNodeV1::package("source-input", "wasm32"),
+                    dependent: PlanNodeV1::package("app", "wasm32"),
+                },
+            ],
+        );
+        assert_eq!(graph.authority.registry_package_toml.len(), 2);
+        assert_eq!(graph.authority.product_bindings.len(), 1);
+        assert_eq!(graph.product_execution.len(), 1);
+        assert!(!String::from_utf8_lossy(&authority_bytes).contains(&root.display().to_string()));
+
+        let mut hash = Sha256::new();
+        hash.update(b"kandelo-local-build-graph-authority-v1\0");
+        hash.update(&authority_bytes);
+        assert_eq!(graph.authority_sha256, format!("{:x}", hash.finalize()));
+
+        let before = graph.authority_sha256;
+        let package_path = root.join("packages/registry/app/package.toml");
+        let mut package_bytes = fs::read(&package_path).unwrap();
+        package_bytes.extend_from_slice(b"\n");
+        fs::write(&package_path, package_bytes).unwrap();
+        let changed = load_and_plan(root, &set, &registry(root)).unwrap();
+        assert_ne!(changed.authority_sha256, before);
+    }
+
+    #[test]
+    fn local_rebuild_args_job_precedence_and_invalid_values_are_exact() {
+        use std::num::NonZeroUsize;
+
+        assert_eq!(
+            select_job_count(
+                Some("2"),
+                Some("not-a-number"),
+                Some(NonZeroUsize::new(8).unwrap()),
+            )
+            .unwrap(),
+            2,
+        );
+        assert_eq!(
+            select_job_count(None, Some("3"), Some(NonZeroUsize::new(8).unwrap())).unwrap(),
+            3,
+        );
+        assert_eq!(
+            select_job_count(None, None, Some(NonZeroUsize::new(4).unwrap())).unwrap(),
+            4,
+        );
+        assert_eq!(select_job_count(None, None, None).unwrap(), 1);
+        for value in [
+            "",
+            "0",
+            "-1",
+            "+1",
+            " 1",
+            "1 ",
+            "no",
+            "184467440737095516160",
+        ] {
+            let error = select_job_count(None, Some(value), None).unwrap_err();
+            assert!(
+                error.contains("WASM_POSIX_LOCAL_BUILD_JOBS"),
+                "{value:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_rebuild_args_parse_both_spellings_and_reject_duplicate_or_cross_kind_flags() {
+        use std::num::NonZeroUsize;
+
+        let parsed = parse_local_build_args_with_jobs(
+            &[
+                "run".into(),
+                "--set=packages/sets/local-supported.toml".into(),
+                "--source-cache-root".into(),
+                "/tmp/source-cache".into(),
+                "--output-root=/tmp/output".into(),
+                "--product=browser-main-shell".into(),
+                "--jobs".into(),
+                "2".into(),
+                "--rebuild".into(),
+            ],
+            Some("broken"),
+            Some(NonZeroUsize::new(8).unwrap()),
+        )
+        .unwrap();
+        assert_eq!(
+            parsed,
+            LocalBuildCommandV1::Run(LocalBuildRunArgsV1 {
+                set: PathBuf::from("packages/sets/local-supported.toml"),
+                source_cache_root: PathBuf::from("/tmp/source-cache"),
+                output_root: PathBuf::from("/tmp/output"),
+                products: vec!["browser-main-shell".to_string()],
+                jobs: 2,
+                rebuild: true,
+            })
+        );
+
+        let digest = "1".repeat(64);
+        let child = parse_local_build_args_with_jobs(
+            &[
+                "run-node".into(),
+                "--repo-root=/tmp/repo".into(),
+                "--set".into(),
+                "/tmp/repo/packages/sets/local-supported.toml".into(),
+                format!("--graph-authority-sha256={digest}"),
+                "--source-cache-root=/tmp/cache".into(),
+                "--compiled-cache-root=/tmp/cache/source-only-v1/compiled".into(),
+                "--output-root=/tmp/output".into(),
+                "--node-kind=package".into(),
+                "--package=app".into(),
+                "--target-arch=wasm32".into(),
+                "--result-json=/tmp/results/app.json".into(),
+            ],
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            child,
+            LocalBuildCommandV1::RunNode(LocalBuildRunNodeArgsV1 {
+                node: PlanNodeV1::Package { ref name, ref target_arch },
+                ..
+            }) if name == "app" && target_arch == "wasm32"
+        ));
+
+        for args in [
+            vec![
+                "run",
+                "--set=a",
+                "--set=b",
+                "--source-cache-root=/tmp/cache",
+                "--output-root=/tmp/out",
+            ],
+            vec![
+                "run",
+                "--set=a",
+                "--source-cache-root=/tmp/cache",
+                "--output-root=/tmp/out",
+                "--product=all",
+                "--product=browser-main-shell",
+            ],
+            vec![
+                "run-node",
+                "--repo-root=/tmp/repo",
+                "--set=/tmp/set",
+                "--graph-authority-sha256=1111111111111111111111111111111111111111111111111111111111111111",
+                "--source-cache-root=/tmp/cache",
+                "--compiled-cache-root=/tmp/cache/source-only-v1/compiled",
+                "--output-root=/tmp/out",
+                "--node-kind=product",
+                "--product=app",
+                "--package=wrong-kind",
+                "--result-json=/tmp/result",
+            ],
+        ] {
+            let args = args.into_iter().map(str::to_string).collect::<Vec<_>>();
+            assert!(parse_local_build_args_with_jobs(&args, None, None).is_err());
+        }
+    }
+
+    #[test]
+    fn local_rebuild_protocol_run_node_admission_failure_writes_exact_failed_result_without_node_work()
+     {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        fs::create_dir(&root).unwrap();
+        package(&root, "app", &[], &[]);
+        product(&root, "catalog-only", &[]);
+        let set = authority(&root, &[("app", "user-software")], &[], &[], &[]);
+        let source_cache_root = temp.path().join("source-cache");
+        let compiled_cache_root = source_cache_root.join("source-only-v1/compiled");
+        let output_root = temp.path().join("output");
+        let result_root = temp.path().join("results");
+        fs::create_dir_all(&compiled_cache_root).unwrap();
+        fs::create_dir(&output_root).unwrap();
+        fs::create_dir(&result_root).unwrap();
+        let result_json = fs::canonicalize(&result_root).unwrap().join("app.json");
+        let node = PlanNodeV1::package("app", "wasm32");
+
+        let error = run_node(LocalBuildRunNodeArgsV1 {
+            repo_root: fs::canonicalize(&root).unwrap(),
+            set: fs::canonicalize(&set).unwrap(),
+            graph_authority_sha256: "0".repeat(64),
+            source_cache_root: fs::canonicalize(&source_cache_root).unwrap(),
+            compiled_cache_root: fs::canonicalize(&compiled_cache_root).unwrap(),
+            output_root: fs::canonicalize(&output_root).unwrap(),
+            node: node.clone(),
+            result_json: result_json.clone(),
+            rebuild: false,
+        })
+        .unwrap_err();
+
+        assert!(error.contains("graph authority"), "{error}");
+        let result: NodeExecutionResultV1 =
+            serde_json::from_slice(&fs::read(&result_json).unwrap()).unwrap();
+        assert_eq!(
+            result,
+            NodeExecutionResultV1 {
+                schema: 1,
+                policy: LOCAL_SUPPORTED_POLICY.to_string(),
+                result: NodeRunResultV1::Failed {
+                    node,
+                    exit_code: Some(1),
+                },
+                package_receipt: None,
+            }
+        );
+        assert!(fs::read_dir(&compiled_cache_root).unwrap().next().is_none());
+        assert!(fs::read_dir(&output_root).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn local_rebuild_render_uses_exact_palette_and_machine_json_has_no_ansi() {
+        for (token, plain, color) in [
+            (LifecycleTokenV1::Ready, "READY", "\u{1b}[34mREADY\u{1b}[0m"),
+            (
+                LifecycleTokenV1::Queued,
+                "QUEUED",
+                "\u{1b}[34mQUEUED\u{1b}[0m",
+            ),
+            (
+                LifecycleTokenV1::Running,
+                "RUNNING",
+                "\u{1b}[36mRUNNING\u{1b}[0m",
+            ),
+            (
+                LifecycleTokenV1::Continuing,
+                "CONTINUING",
+                "\u{1b}[36mCONTINUING\u{1b}[0m",
+            ),
+            (
+                LifecycleTokenV1::Cached,
+                "CACHED",
+                "\u{1b}[32mCACHED\u{1b}[0m",
+            ),
+            (
+                LifecycleTokenV1::Reused,
+                "REUSED",
+                "\u{1b}[32mREUSED\u{1b}[0m",
+            ),
+            (
+                LifecycleTokenV1::Succeeded,
+                "SUCCEEDED",
+                "\u{1b}[32mSUCCEEDED\u{1b}[0m",
+            ),
+            (
+                LifecycleTokenV1::Blocked,
+                "BLOCKED",
+                "\u{1b}[33mBLOCKED\u{1b}[0m",
+            ),
+            (
+                LifecycleTokenV1::Failed,
+                "FAILED",
+                "\u{1b}[31mFAILED\u{1b}[0m",
+            ),
+        ] {
+            assert_eq!(render_lifecycle_token(token, false), plain);
+            assert_eq!(render_lifecycle_token(token, true), color);
+        }
+        assert!(!ansi_enabled(false, false));
+        assert!(!ansi_enabled(true, true));
+        assert!(ansi_enabled(true, false));
+        assert_eq!(
+            render_failure_banner(false),
+            "LOCAL BUILD FAILED — continuing independent work"
+        );
+        assert_eq!(
+            render_failure_banner(true),
+            "\u{1b}[31mLOCAL BUILD FAILED — continuing independent work\u{1b}[0m"
+        );
+        assert_eq!(
+            render_projection_failure_banner(false),
+            "LOCAL BUILD FAILED — source-only program authority was not published"
+        );
+        assert_eq!(
+            render_projection_failure_banner(true),
+            "\u{1b}[31mLOCAL BUILD FAILED — source-only program authority was not published\u{1b}[0m"
+        );
+
+        let result = LocalBuildRunResultV1 {
+            schema: 1,
+            policy: LOCAL_SUPPORTED_POLICY.to_string(),
+            outcome: AggregateOutcomeV1::Failed,
+            nodes: vec![NodeRunResultV1::Blocked {
+                node: PlanNodeV1::product("browser-app"),
+                failed_ancestors: vec![PlanNodeV1::package("app", "wasm32")],
+            }],
+        };
+        let bytes = canonical_machine_json(&result).unwrap();
+        assert_eq!(
+            bytes,
+            b"{\"nodes\":[{\"failed_ancestors\":[{\"kind\":\"package\",\"name\":\"app\",\"target_arch\":\"wasm32\"}],\"node\":{\"id\":\"browser-app\",\"kind\":\"product\"},\"state\":\"blocked\"}],\"outcome\":\"failed\",\"policy\":\"source-only-v1\",\"schema\":1}\n"
+        );
+        assert!(!bytes.contains(&0x1b));
+        let decoded: LocalBuildRunResultV1 = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(decoded, result);
+
+        let mut hostile = serde_json::to_value(&result).unwrap();
+        hostile["nodes"][0]["extra"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<LocalBuildRunResultV1>(hostile).is_err());
+    }
+
+    #[test]
+    fn local_rebuild_protocol_supervisor_projection_has_exact_selected_v2_nodes() {
+        use crate::build_deps::{
+            MaterializedProgramMemberV1, PackageNodeReceiptV1, ProgramPackageIdentity,
+            ProgramDependencyIdentity, ProgramPackageIndex, ProgramPackageProjection,
+            ProgramPackageProjectionMember,
+        };
+
+        let manifest_sha256 = "11".repeat(32);
+        let cache_key_sha256 = "22".repeat(32);
+        let contextual_wasm64_key = "33".repeat(32);
+        let cache_receipt_sha256 = "44".repeat(32);
+        let member_sha256 = "55".repeat(32);
+        let projection = ProgramPackageIndex {
+            format: "kandelo-program-packages-v2",
+            identities: BTreeMap::from([
+                (
+                    "app".to_string(),
+                    ProgramPackageIdentity {
+                        manifest_sha256: manifest_sha256.clone(),
+                        cache_keys: BTreeMap::from([
+                            ("wasm32".to_string(), cache_key_sha256.clone()),
+                            ("wasm64".to_string(), contextual_wasm64_key),
+                        ]),
+                    },
+                ),
+                (
+                    "dependency-only-identity".to_string(),
+                    ProgramPackageIdentity {
+                        manifest_sha256: "bb".repeat(32),
+                        cache_keys: BTreeMap::from([
+                            ("wasm32".to_string(), "cc".repeat(32)),
+                            ("wasm64".to_string(), "dd".repeat(32)),
+                        ]),
+                    },
+                ),
+            ]),
+            packages: BTreeMap::from([(
+                "app".to_string(),
+                ProgramPackageProjection {
+                    manifest_sha256: manifest_sha256.clone(),
+                    arches: vec!["wasm32".to_string()],
+                    cache_keys: BTreeMap::from([(
+                        "wasm32".to_string(),
+                        cache_key_sha256.clone(),
+                    )]),
+                    dependency_closures: BTreeMap::from([(
+                        "wasm32".to_string(),
+                        vec![ProgramDependencyIdentity {
+                            package_name: "dependency-only-identity".to_string(),
+                            manifest_sha256: "bb".repeat(32),
+                            cache_key: "cc".repeat(32),
+                        }],
+                    )]),
+                    members: vec![ProgramPackageProjectionMember {
+                        kind: "output",
+                        source_artifact: "app.wasm".to_string(),
+                        mirror_path: "app.wasm".to_string(),
+                        output_name: Some("app".to_string()),
+                        fork_instrumentation: Some("auto".to_string()),
+                        guest_path: None,
+                        mode: None,
+                    }],
+                },
+            )]),
+        };
+        let node = PlanNodeV1::package("app", "wasm32");
+        let kernel_node = PlanNodeV1::package("kernel", "wasm32");
+        let receipt = PackageNodeReceiptV1 {
+            manifest_sha256: manifest_sha256.clone(),
+            cache_key_sha256: cache_key_sha256.clone(),
+            cache_receipt_sha256: cache_receipt_sha256.clone(),
+            materialized_members: vec![MaterializedProgramMemberV1 {
+                source_artifact: "app.wasm".to_string(),
+                mirror_path: "programs/wasm32/app.wasm".to_string(),
+                mode: 0o755,
+                size: 3,
+                sha256: member_sha256.clone(),
+            }],
+        };
+        let kernel_receipt = PackageNodeReceiptV1 {
+            manifest_sha256: "77".repeat(32),
+            cache_key_sha256: "88".repeat(32),
+            cache_receipt_sha256: "99".repeat(32),
+            materialized_members: vec![MaterializedProgramMemberV1 {
+                source_artifact: "kandelo-kernel.wasm".to_string(),
+                mirror_path: "kernel.wasm".to_string(),
+                mode: 0o755,
+                size: 4,
+                sha256: "aa".repeat(32),
+            }],
+        };
+        let receipts = BTreeMap::from([
+            (node, receipt.clone()),
+            (kernel_node.clone(), kernel_receipt.clone()),
+        ]);
+        let authority = source_only_program_projection_candidate(
+            projection,
+            &"66".repeat(32),
+            &receipts,
+            &BTreeSet::from([kernel_node.clone()]),
+        )
+        .unwrap();
+        let bytes = source_only_program_projection_bytes(&authority).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(
+            parsed,
+            serde_json::json!({
+                "format": "kandelo-source-only-program-projection-v1",
+                "projection": {
+                    "format": "kandelo-program-packages-v2",
+                    "identities": {
+                        "app": {
+                            "manifestSha256": manifest_sha256,
+                            "cacheKeys": {
+                                "wasm32": cache_key_sha256,
+                                "wasm64": "33".repeat(32),
+                            },
+                        },
+                        "dependency-only-identity": {
+                            "manifestSha256": "bb".repeat(32),
+                            "cacheKeys": {
+                                "wasm32": "cc".repeat(32),
+                                "wasm64": "dd".repeat(32),
+                            },
+                        },
+                    },
+                    "packages": {
+                        "app": {
+                            "manifestSha256": "11".repeat(32),
+                            "arches": ["wasm32"],
+                            "cacheKeys": { "wasm32": "22".repeat(32) },
+                            "dependencyClosures": {
+                                "wasm32": [{
+                                    "packageName": "dependency-only-identity",
+                                    "manifestSha256": "bb".repeat(32),
+                                    "cacheKey": "cc".repeat(32),
+                                }],
+                            },
+                            "members": [{
+                                "kind": "output",
+                                "sourceArtifact": "app.wasm",
+                                "mirrorPath": "app.wasm",
+                                "outputName": "app",
+                                "forkInstrumentation": "auto",
+                            }],
+                        },
+                    },
+                },
+                "graphAuthoritySha256": "66".repeat(32),
+                "nodes": [
+                    {
+                        "node": {
+                            "kind": "package",
+                            "name": "app",
+                            "targetArch": "wasm32",
+                        },
+                        "manifestSha256": "11".repeat(32),
+                        "cacheKeySha256": "22".repeat(32),
+                        "cacheReceiptSha256": cache_receipt_sha256,
+                        "members": [{
+                            "sourceArtifact": "app.wasm",
+                            "mirrorPath": "programs/wasm32/app.wasm",
+                            "mode": 493,
+                            "size": 3,
+                            "sha256": member_sha256,
+                        }],
+                    },
+                    {
+                        "node": {
+                            "kind": "package",
+                            "name": "kernel",
+                            "targetArch": "wasm32",
+                        },
+                        "manifestSha256": "77".repeat(32),
+                        "cacheKeySha256": "88".repeat(32),
+                        "cacheReceiptSha256": "99".repeat(32),
+                        "members": [{
+                            "sourceArtifact": "kandelo-kernel.wasm",
+                            "mirrorPath": "kernel.wasm",
+                            "mode": 493,
+                            "size": 4,
+                            "sha256": "aa".repeat(32),
+                        }],
+                    },
+                ],
+            }),
+        );
+        assert_eq!(bytes.last(), Some(&b'\n'));
+        assert!(bytes.starts_with(b"{\n  \"format\""));
+
+        let rogue_node = PlanNodeV1::package("rogue", "wasm32");
+        let error = source_only_program_projection_candidate(
+            authority.projection.clone(),
+            &"66".repeat(32),
+            &BTreeMap::from([
+                (PlanNodeV1::package("app", "wasm32"), receipt.clone()),
+                (rogue_node.clone(), kernel_receipt.clone()),
+            ]),
+            &BTreeSet::from([rogue_node]),
+        )
+        .unwrap_err();
+        assert!(error.contains("only kernel or userspace"), "{error}");
+
+        let mut kernel_in_v2 = authority.projection.clone();
+        let kernel_package = kernel_in_v2.packages.remove("app").unwrap();
+        let kernel_identity = kernel_in_v2.identities.remove("app").unwrap();
+        kernel_in_v2
+            .packages
+            .insert("kernel".to_string(), kernel_package);
+        kernel_in_v2
+            .identities
+            .insert("kernel".to_string(), kernel_identity);
+        let error = source_only_program_projection_candidate(
+            kernel_in_v2,
+            &"66".repeat(32),
+            &BTreeMap::from([(kernel_node.clone(), receipt.clone())]),
+            &BTreeSet::from([kernel_node.clone()]),
+        )
+        .unwrap_err();
+        assert!(error.contains("ordinary v2 program projection"), "{error}");
+
+        let mut multiple_root_members = kernel_receipt.clone();
+        multiple_root_members
+            .materialized_members
+            .push(MaterializedProgramMemberV1 {
+                source_artifact: "second.wasm".to_string(),
+                mirror_path: "second.wasm".to_string(),
+                mode: 0o755,
+                size: 1,
+                sha256: "ab".repeat(32),
+            });
+        let error = source_only_program_projection_candidate(
+            authority.projection.clone(),
+            &"66".repeat(32),
+            &BTreeMap::from([
+                (PlanNodeV1::package("app", "wasm32"), receipt.clone()),
+                (kernel_node.clone(), multiple_root_members),
+            ]),
+            &BTreeSet::from([kernel_node.clone()]),
+        )
+        .unwrap_err();
+        assert!(error.contains("exactly one root-level member"), "{error}");
+
+        let mut oversized_receipt = receipt.clone();
+        oversized_receipt.materialized_members[0].size =
+            SOURCE_ONLY_PROGRAM_MEMBER_LIMIT + 1;
+        let error = source_only_program_projection_candidate(
+            authority.projection.clone(),
+            &"66".repeat(32),
+            &BTreeMap::from([(
+                PlanNodeV1::package("app", "wasm32"),
+                oversized_receipt,
+            )]),
+            &BTreeSet::new(),
+        )
+        .unwrap_err();
+        assert!(error.contains("512 MiB member limit"), "{error}");
+
+        let mut oversized_kernel_receipt = kernel_receipt.clone();
+        oversized_kernel_receipt.materialized_members[0].size =
+            SOURCE_ONLY_PROGRAM_MEMBER_LIMIT + 1;
+        let error = source_only_program_projection_candidate(
+            authority.projection.clone(),
+            &"66".repeat(32),
+            &BTreeMap::from([
+                (PlanNodeV1::package("app", "wasm32"), receipt.clone()),
+                (kernel_node.clone(), oversized_kernel_receipt),
+            ]),
+            &BTreeSet::from([kernel_node.clone()]),
+        )
+        .unwrap_err();
+        assert!(error.contains("512 MiB member limit"), "{error}");
+
+        let mut extra_identity_projection = authority.projection.clone();
+        extra_identity_projection.identities.insert(
+            "unreferenced".to_string(),
+            ProgramPackageIdentity {
+                manifest_sha256: "ee".repeat(32),
+                cache_keys: BTreeMap::from([
+                    ("wasm32".to_string(), "ef".repeat(32)),
+                    ("wasm64".to_string(), "f0".repeat(32)),
+                ]),
+            },
+        );
+        let error = source_only_program_projection_candidate(
+            extra_identity_projection,
+            &"66".repeat(32),
+            &receipts,
+            &BTreeSet::from([kernel_node]),
+        )
+        .unwrap_err();
+        assert!(error.contains("exact package/dependency identity set"), "{error}");
+
+        let mut wrong_receipt = receipt;
+        wrong_receipt.cache_key_sha256 = "77".repeat(32);
+        let error = source_only_program_projection_candidate(
+            authority.projection,
+            &"66".repeat(32),
+            &BTreeMap::from([(PlanNodeV1::package("app", "wasm32"), wrong_receipt)]),
+            &BTreeSet::new(),
+        )
+        .unwrap_err();
+        assert!(error.contains("cache key"), "{error}");
+    }
+
+    #[test]
+    fn local_rebuild_protocol_product_placeholders_do_not_suppress_package_authority() {
+        let package = PlanNodeV1::package("app", "wasm32");
+        let product = PlanNodeV1::product("browser-app");
+        let selected = BTreeMap::from([
+            (package.clone(), BTreeSet::new()),
+            (product.clone(), BTreeSet::from([package.clone()])),
+        ]);
+        let package_success_product_failure = vec![
+            NodeRunResultV1::Succeeded {
+                node: package.clone(),
+                disposition: SuccessDispositionV1::Cached,
+            },
+            NodeRunResultV1::Failed {
+                node: product,
+                exit_code: Some(1),
+            },
+        ];
+        assert!(package_projection_is_eligible(
+            &selected,
+            &package_success_product_failure,
+        ));
+
+        let package_failure = vec![NodeRunResultV1::Failed {
+            node: package,
+            exit_code: Some(1),
+        }];
+        assert!(!package_projection_is_eligible(
+            &selected,
+            &package_failure,
+        ));
+    }
+
+    #[test]
+    fn strict_authority_rejects_schema_policy_names_duplicates_and_unknown_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("set.toml");
+        for (source, expected) in [
+            (
+                "schema = 2\npolicy = \"source-only-v1\"\npackages=[]\nproducts=[]\nexclusions=[]\ndependency_only=[]\nregistry_non_roots=[]\ndormant_products=[]\n",
+                "schema 1",
+            ),
+            (
+                "schema = 1\npolicy = \"binary-ok\"\npackages=[]\nproducts=[]\nexclusions=[]\ndependency_only=[]\nregistry_non_roots=[]\ndormant_products=[]\n",
+                "source-only-v1",
+            ),
+            (
+                "schema = 1\npolicy = \"source-only-v1\"\npackages=[]\nproducts=[]\nexclusions=[]\ndependency_only=[]\nregistry_non_roots=[]\ndormant_products=[]\nextra=true\n",
+                "unknown field",
+            ),
+            (
+                "schema = 1\npolicy = \"source-only-v1\"\nproducts=[]\nexclusions=[]\ndependency_only=[]\nregistry_non_roots=[]\ndormant_products=[]\n[[packages]]\nname=\"Bad\"\nclass=\"platform\"\n",
+                "not normalized",
+            ),
+            (
+                "schema = 1\npolicy = \"source-only-v1\"\nproducts=[]\nexclusions=[]\ndependency_only=[]\nregistry_non_roots=[]\ndormant_products=[]\n[[packages]]\nname=\"same\"\nclass=\"platform\"\n[[packages]]\nname=\"same\"\nclass=\"platform\"\n",
+                "duplicate dispositions",
+            ),
+        ] {
+            write(&path, source);
+            assert!(parse_supported_set(&path).unwrap_err().contains(expected));
+        }
+    }
+
+    #[test]
+    fn plans_arch_fallback_and_products_after_mapped_and_composed_inputs() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "base", &[], &[]);
+        package(root, "dual", &["wasm32", "wasm64"], &[("base", "1.0.0")]);
+        let base_product = product(root, "base-product", &[]);
+        let app_product = product(root, "app-product", &["base-product"]);
+        let set = authority(
+            root,
+            &[("base", "platform"), ("dual", "browser-product")],
+            &[
+                ("base-product", "base", base_product.as_path()),
+                ("app-product", "dual", app_product.as_path()),
+            ],
+            &[],
+            &[],
+        );
+        let plan = load_and_plan(root, &set, &registry(root)).unwrap();
+        assert_eq!(
+            plan.levels,
+            vec![
+                vec![PlanNodeV1::package("base", "wasm32")],
+                vec![
+                    PlanNodeV1::package("dual", "wasm32"),
+                    PlanNodeV1::package("dual", "wasm64"),
+                    PlanNodeV1::product("base-product"),
+                ],
+                vec![PlanNodeV1::product("app-product")],
+            ],
+        );
+    }
+
+    #[test]
+    fn rejects_excluded_closure_unclassified_roots_cycles_and_missing_hooks() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "selected", &[], &[("forbidden", "1.0.0")]);
+        package(root, "forbidden", &[], &[]);
+        let selected_product = product(root, "selected-product", &[]);
+        let set = authority(
+            root,
+            &[("selected", "user-software")],
+            &[("selected-product", "selected", selected_product.as_path())],
+            &[("forbidden", "forbidden prebuilt input")],
+            &[],
+        );
+        assert!(
+            load_and_plan(root, &set, &registry(root))
+                .unwrap_err()
+                .contains("reaches excluded package")
+        );
+
+        package(root, "unclassified", &[], &[]);
+        assert!(
+            load_and_plan(root, &set, &registry(root))
+                .unwrap_err()
+                .contains("unclassified registry root")
+        );
+    }
+
+    #[test]
+    fn rejects_excluded_source_dependency_before_kind_specific_scheduling() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "selected", &[], &[("source-input", "1.0.0")]);
+        source_package(root, "source-input");
+        let selected_product = product(root, "selected-product", &[]);
+        let set = authority(
+            root,
+            &[("selected", "user-software")],
+            &[("selected-product", "selected", selected_product.as_path())],
+            &[("source-input", "forbidden source input")],
+            &[],
+        );
+
+        let error = load_and_plan(root, &set, &registry(root)).unwrap_err();
+        assert!(
+            error.contains("reaches excluded package source-input"),
+            "got: {error}",
+        );
+    }
+
+    #[test]
+    fn rejects_source_dependency_not_declared_dependency_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "selected", &[], &[("source-input", "1.0.0")]);
+        source_package(root, "source-input");
+        let selected_product = product(root, "selected-product", &[]);
+        let set = authority(
+            root,
+            &[("selected", "user-software")],
+            &[("selected-product", "selected", selected_product.as_path())],
+            &[],
+            &[],
+        );
+        let mut source = fs::read_to_string(&set)
+            .unwrap()
+            .replace("registry_non_roots = []\n", "");
+        source.push_str(
+            "\n[[registry_non_roots]]\nname = \"source-input\"\nreason = \"not a build root\"\n",
+        );
+        write(&set, &source);
+
+        let error = load_and_plan(root, &set, &registry(root)).unwrap_err();
+        assert!(
+            error.contains("source package source-input that is not declared as dependency-only"),
+            "got: {error}",
+        );
+    }
+
+    #[test]
+    fn rejects_selected_excluded_collision_unknown_package_and_missing_hook() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "selected", &[], &[]);
+        let selected_product = product(root, "selected-product", &[]);
+        let collision = authority(
+            root,
+            &[("selected", "user-software")],
+            &[("selected-product", "selected", selected_product.as_path())],
+            &[("selected", "cannot also be excluded")],
+            &[],
+        );
+        assert!(
+            load_and_plan(root, &collision, &registry(root))
+                .unwrap_err()
+                .contains("duplicate dispositions")
+        );
+
+        let unknown = authority(
+            root,
+            &[("missing", "user-software")],
+            &[],
+            &[("selected", "known but excluded")],
+            &[],
+        );
+        assert!(
+            load_and_plan(root, &unknown, &registry(root))
+                .unwrap_err()
+                .contains("unknown package")
+        );
+
+        let hook = root
+            .join("packages/registry/selected")
+            .join("build-selected.sh");
+        fs::remove_file(hook).unwrap();
+        let missing_hook = authority(
+            root,
+            &[("selected", "user-software")],
+            &[("selected-product", "selected", selected_product.as_path())],
+            &[],
+            &[],
+        );
+        assert!(
+            load_and_plan(root, &missing_hook, &registry(root))
+                .unwrap_err()
+                .contains("no effective build hook")
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_products_and_package_or_product_cycles() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "a", &[], &[("b", "1.0.0")]);
+        package(root, "b", &[], &[("a", "1.0.0")]);
+        let known = product(root, "known", &[]);
+        let package_cycle = authority(
+            root,
+            &[("a", "platform"), ("b", "platform")],
+            &[("known", "a", known.as_path())],
+            &[],
+            &[],
+        );
+        assert!(
+            load_and_plan(root, &package_cycle, &registry(root))
+                .unwrap_err()
+                .contains("cycle")
+        );
+
+        package(root, "a", &[], &[]);
+        package(root, "b", &[], &[]);
+        let first = product(root, "first", &["second"]);
+        let second = product(root, "second", &["first"]);
+        let product_cycle = authority(
+            root,
+            &[("a", "platform"), ("b", "platform")],
+            &[
+                ("first", "a", first.as_path()),
+                ("second", "b", second.as_path()),
+            ],
+            &[],
+            &[],
+        );
+        assert!(
+            load_and_plan(root, &product_cycle, &registry(root))
+                .unwrap_err()
+                .contains("product composition cycle")
+        );
+
+        let known = product(root, "known", &[]);
+        fs::remove_file(root.join(&first)).unwrap();
+        fs::remove_file(root.join(&second)).unwrap();
+        let unknown = authority(
+            root,
+            &[("a", "platform"), ("b", "platform")],
+            &[("unknown", "a", known.as_path())],
+            &[],
+            &[],
+        );
+        assert!(
+            load_and_plan(root, &unknown, &registry(root))
+                .unwrap_err()
+                .contains("unknown product")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_authority_and_product_manifest() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let target = root.join("target.toml");
+        write(
+            &target,
+            "schema = 1\npolicy = \"source-only-v1\"\npackages=[]\nproducts=[]\nexclusions=[]\ndependency_only=[]\nregistry_non_roots=[]\ndormant_products=[]\n",
+        );
+        let authority_link = root.join("authority.toml");
+        symlink(&target, &authority_link).unwrap();
+        assert!(
+            parse_supported_set(&authority_link)
+                .unwrap_err()
+                .contains("regular nonsymlink file")
+        );
+
+        package(root, "selected", &[], &[]);
+        let product_target = product(root, "selected-product", &[]);
+        let product_link = root.join("images/vfs/products/linked-product.toml");
+        symlink(root.join(&product_target), &product_link).unwrap();
+        let set = authority(
+            root,
+            &[("selected", "platform")],
+            &[("selected-product", "selected", product_target.as_path())],
+            &[],
+            &[],
+        );
+        assert!(
+            load_and_plan(root, &set, &registry(root))
+                .unwrap_err()
+                .contains("regular nonsymlink file")
+        );
+    }
+
+    #[test]
+    fn command_line_requires_exact_plan_and_set_pair() {
+        for args in [
+            vec![],
+            vec!["plan".into()],
+            vec!["plan".into(), "--set".into()],
+            vec!["plan".into(), "--set".into(), "a".into(), "extra".into()],
+            vec!["other".into(), "--set".into(), "a".into()],
+        ] {
+            assert!(run(args).is_err());
+        }
+    }
+
+    #[test]
+    fn local_source_provider_checked_in_authority_is_exact_and_explicit() {
+        let repo = crate::repo_root();
+        let set = parse_supported_set(&repo.join("packages/sets/local-supported.toml")).unwrap();
+        let registry = Registry {
+            roots: vec![repo.join("packages/registry")],
+        };
+        let manifests = registry.walk_all().unwrap().into_iter().collect();
+        validate_registry_partition(&set, &manifests, &repo).unwrap();
+
+        let mut providers = BTreeMap::<&str, usize>::new();
+        for name in set
+            .packages
+            .iter()
+            .map(|package| package.name.as_str())
+            .chain(set.dependency_only.iter().map(String::as_str))
+        {
+            let source = &manifests[name].source;
+            assert!(source.provider_was_explicit, "{name} must be explicit");
+            *providers.entry(source.provider.as_str()).or_default() += 1;
+        }
+        assert_eq!(set.packages.len(), 72);
+        assert_eq!(
+            set.dependency_only,
+            ["pcre2-source", "wordpress-sqlite-integration-source"],
+        );
+        assert_eq!(
+            providers,
+            BTreeMap::from([("archive", 57), ("dev-shell", 1), ("repository", 16)]),
+        );
+    }
+
+    #[test]
+    fn local_source_provider_requires_explicit_selected_and_dependency_only_manifests() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "selected", &[], &[]);
+        source_package(root, "source-input");
+        let set_path = authority(
+            root,
+            &[("selected", "platform")],
+            &[],
+            &[],
+            &["source-input"],
+        );
+        let set = parse_supported_set(&set_path).unwrap();
+
+        let selected_path = root.join("packages/registry/selected/package.toml");
+        let selected = fs::read_to_string(&selected_path).unwrap();
+        fs::write(
+            &selected_path,
+            selected.replace("provider = \"repository\"\n", ""),
+        )
+        .unwrap();
+        let manifests = registry(root).walk_all().unwrap().into_iter().collect();
+        let error = validate_registry_partition(&set, &manifests, root).unwrap_err();
+        assert!(
+            error.contains("selected") && error.contains("explicit"),
+            "{error}"
+        );
+
+        fs::write(&selected_path, selected).unwrap();
+        let source_path = root.join("packages/registry/source-input/package.toml");
+        let source = fs::read_to_string(&source_path).unwrap();
+        fs::write(&source_path, source.replace("provider = \"archive\"\n", "")).unwrap();
+        let manifests = registry(root).walk_all().unwrap().into_iter().collect();
+        let error = validate_registry_partition(&set, &manifests, root).unwrap_err();
+        assert!(
+            error.contains("source-input") && error.contains("explicit"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn local_source_provider_leaves_excluded_legacy_inference_parseable() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "legacy", &[], &[]);
+        let manifest_path = root.join("packages/registry/legacy/package.toml");
+        let source = fs::read_to_string(&manifest_path)
+            .unwrap()
+            .replace("provider = \"repository\"\n", "");
+        fs::write(&manifest_path, source).unwrap();
+        let set_path = authority(root, &[], &[], &[("legacy", "legacy boundary")], &[]);
+        let set = parse_supported_set(&set_path).unwrap();
+        let manifests: BTreeMap<_, _> = registry(root).walk_all().unwrap().into_iter().collect();
+
+        assert_eq!(
+            manifests["legacy"].source.provider,
+            SourceProvider::Repository
+        );
+        assert!(!manifests["legacy"].source.provider_was_explicit);
+        validate_registry_partition(&set, &manifests, root).unwrap();
+    }
+}

@@ -8,6 +8,7 @@ if [ "$#" -ne 0 ] && [ "${1:-}" = "--vfs-product-manifest" ]; then
     "$SCRIPT_DIR/staged-product-inputs.ts" browser-lamp "$@"
 fi
 echo "==> Building LAMP VFS image..."
-npx tsx "$SCRIPT_DIR/build-lamp-vfs-image.ts"
+VFS_OUTPUT="${1:-$REPO_ROOT/apps/browser-demos/public/lamp.vfs.zst}"
+npx tsx "$SCRIPT_DIR/build-lamp-vfs-image.ts" "$VFS_OUTPUT"
 echo "==> Done."
-ls -lh apps/browser-demos/public/lamp.vfs.zst
+ls -lh "$VFS_OUTPUT"

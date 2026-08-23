@@ -62,7 +62,7 @@ if [ "$WASM_ARCH" = "wasm64" ]; then
     CROSS_BUILD_DIR="${CROSS_BUILD_BASE}-64"
     INSTALL_DIR="${INSTALL_BASE}-64"
     TOOLCHAIN_FILE="$SCRIPT_DIR/wasm64-posix-toolchain.cmake"
-    SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot64}"
+    SDK_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot64}"
     WASM_TARGET="wasm64-unknown-unknown"
     # LLVM 21 wasm64 backend has -O2 miscompilation bugs (sign-extension of i32 to i64
     # in table lookups). Use -O1 until the LLVM wasm64 backend matures.
@@ -71,12 +71,33 @@ else
     CROSS_BUILD_DIR="$CROSS_BUILD_BASE"
     INSTALL_DIR="$INSTALL_BASE"
     TOOLCHAIN_FILE="$SCRIPT_DIR/wasm32-posix-toolchain.cmake"
-    SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
+    SDK_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
     WASM_TARGET="wasm32-unknown-unknown"
 fi
-export WASM_POSIX_SYSROOT="$SYSROOT"
+export WASM_POSIX_SYSROOT="$SDK_SYSROOT"
 
 NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+HOST_CC_COMMAND="${HOST_CC:-}"
+HOST_CXX_COMMAND="${HOST_CXX:-}"
+if [ -n "${NIX_CC_FOR_BUILD:-}" ]; then
+    if [ -z "$HOST_CC_COMMAND" ]; then
+        [ -x "$NIX_CC_FOR_BUILD/bin/cc" ] || {
+            echo "ERROR: NIX_CC_FOR_BUILD does not provide bin/cc: $NIX_CC_FOR_BUILD" >&2
+            exit 1
+        }
+        HOST_CC_COMMAND="$NIX_CC_FOR_BUILD/bin/cc"
+    fi
+    if [ -z "$HOST_CXX_COMMAND" ]; then
+        [ -x "$NIX_CC_FOR_BUILD/bin/c++" ] || {
+            echo "ERROR: NIX_CC_FOR_BUILD does not provide bin/c++: $NIX_CC_FOR_BUILD" >&2
+            exit 1
+        }
+        HOST_CXX_COMMAND="$NIX_CC_FOR_BUILD/bin/c++"
+    fi
+fi
+HOST_CC_COMMAND="${HOST_CC_COMMAND:-${CC_FOR_BUILD:-cc}}"
+HOST_CXX_COMMAND="${HOST_CXX_COMMAND:-${CXX_FOR_BUILD:-c++}}"
+
 HOST_HELPERS=(
     "$HOST_BUILD_DIR/extra/comp_err"
     "$HOST_BUILD_DIR/scripts/comp_sql"
@@ -94,11 +115,11 @@ host_helpers_ready() {
 }
 
 # --- Verify prerequisites ---
-if [ ! -f "$SYSROOT/lib/libc.a" ]; then
+if [ ! -f "$SDK_SYSROOT/lib/libc.a" ]; then
     if [ "$WASM_ARCH" = "wasm64" ]; then
-        echo "ERROR: sysroot64 not found at $SYSROOT. Run: bash scripts/build-musl.sh --arch wasm64posix" >&2
+        echo "ERROR: sysroot64 not found at $SDK_SYSROOT. Run: bash scripts/build-musl.sh --arch wasm64posix" >&2
     else
-        echo "ERROR: sysroot not found at $SYSROOT. Run: bash scripts/build-musl.sh" >&2
+        echo "ERROR: sysroot not found at $SDK_SYSROOT. Run: bash scripts/build-musl.sh" >&2
     fi
     exit 1
 fi
@@ -178,6 +199,8 @@ if ! host_helpers_ready; then
     # ≥3.4.2 installed (Nix dev shell, fresh CI runner, etc.).
     cmake "$SRC_DIR" \
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+        -DCMAKE_C_COMPILER="$HOST_CC_COMMAND" \
+        -DCMAKE_CXX_COMPILER="$HOST_CXX_COMMAND" \
         -DWITH_UNIT_TESTS=OFF \
         -DWITH_MARIABACKUP=OFF \
         -DPLUGIN_CONNECT=NO \
@@ -219,14 +242,14 @@ if ! host_helpers_ready; then
     echo "==> Host build complete."
 fi
 
-# --- Resolver helper (used for libcxx + pcre2-source below) ---
+# --- Resolver helper (used for compiled dependencies outside SourceOnly) ---
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 resolve_dep() {
     local name="$1"
     (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps --arch="$WASM_ARCH" resolve "$name")
 }
 
-# --- Resolve libcxx via the dep cache, then index into the sysroot ---
+# --- Resolve libcxx via the dep cache, then project a private sysroot ---
 LLVM_PREFIX="${LLVM_PREFIX:?LLVM_PREFIX not set. Run through scripts/dev-shell.sh.}"
 LLVM_CLANG="$LLVM_PREFIX/bin/clang"
 if [ ! -x "$LLVM_CLANG" ]; then
@@ -252,19 +275,17 @@ fi
     exit 1
 }
 
-# MariaDB's CMake / link steps expect libc++.a, libc++abi.a, and the
-# C++ header tree under $SYSROOT. Symlink the resolved cache contents
-# in (absolute targets — survive a sysroot move) instead of copying;
-# keeps the sysroot a thin index of cache-managed artifacts.
-mkdir -p "$SYSROOT/lib" "$SYSROOT/include/c++"
-ln -sf "$LIBCXX_PREFIX/lib/libc++.a"    "$SYSROOT/lib/libc++.a"
-ln -sf "$LIBCXX_PREFIX/lib/libc++abi.a" "$SYSROOT/lib/libc++abi.a"
-# Replace any existing v1 dir/symlink so a stale tree from the old
-# in-tree build script does not shadow the resolved headers.
-rm -rf "$SYSROOT/include/c++/v1"
-ln -sfn "$LIBCXX_PREFIX/include/c++/v1" "$SYSROOT/include/c++/v1"
+# The resolver normally provides these variables. Export the same authority for
+# direct invocation after resolving its fallback so the shared helper can build
+# one mutable projection without changing the worktree SDK sysroot or cache.
+export WASM_POSIX_DEP_WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+export WASM_POSIX_DEP_LIBCXX_DIR="$LIBCXX_PREFIX"
+SYSROOT="$(
+    kandelo_package_prepare_private_sysroot mariadb "$SDK_SYSROOT" libcxx
+)"
+export WASM_POSIX_SYSROOT="$SYSROOT"
 
-echo "==> libcxx resolved at $LIBCXX_PREFIX (symlinked into $SYSROOT)"
+echo "==> libcxx resolved at $LIBCXX_PREFIX (projected into $SYSROOT)"
 
 PCRE2_PREFIX="${WASM_POSIX_DEP_PCRE2_DIR:-}"
 if [ -n "$PCRE2_PREFIX" ]; then
@@ -284,9 +305,15 @@ if [ -n "$PCRE2_PREFIX" ]; then
     cp "$PCRE2_PREFIX/include/pcre2posix.h" "$SYSROOT/include/"
     echo "==> PCRE2 installed to sysroot from bottle prefix $PCRE2_PREFIX"
 else
-    # Source-kind direct deps export under _SRC_DIR (Chunk C decision 12).
-    PCRE2_SOURCE_DIR="${WASM_POSIX_DEP_PCRE2_SOURCE_SRC_DIR:-}"
-    if [ -z "$PCRE2_SOURCE_DIR" ]; then
+    if [ "${WASM_POSIX_RESOLUTION_POLICY:-}" = "source-only-v1" ]; then
+        PCRE2_SOURCE_DIR="$(kandelo_package_source_dependency_dir pcre2-source)"
+    else
+        # Preserve the legacy direct-build dependency spelling outside
+        # SourceOnly; only the resolver-owned SourceOnly path is injective.
+        PCRE2_SOURCE_DIR="${WASM_POSIX_DEP_PCRE2_SOURCE_SRC_DIR:-}"
+    fi
+    if [ -z "$PCRE2_SOURCE_DIR" ] &&
+        [ "${WASM_POSIX_RESOLUTION_POLICY:-}" != "source-only-v1" ]; then
         echo "==> Resolving pcre2-source via cargo xtask build-deps..."
         PCRE2_SOURCE_DIR="$(resolve_dep pcre2-source)"
     fi
@@ -363,6 +390,7 @@ fi
 
 # --- Step 2: Cross build ---
 echo "==> Step 2: Cross build for $WASM_ARCH..."
+rm -rf -- "$CROSS_BUILD_DIR"
 mkdir -p "$CROSS_BUILD_DIR"
 cd "$CROSS_BUILD_DIR"
 
@@ -475,11 +503,17 @@ if [ -f "$MYSQLD_BIN" ]; then
     cp "$MYSQLD_BIN" "$INSTALL_DIR/bin/mariadbd.wasm"
     cp "$MYSQLD_BIN" "$INSTALL_DIR/bin/mariadbd"
 
-    # Copy system tables SQL for bootstrap
-    if [ -d "$SRC_DIR/scripts" ]; then
-        cp "$SRC_DIR/scripts/mysql_system_tables.sql" "$INSTALL_DIR/share/mysql/" 2>/dev/null || true
-        cp "$SRC_DIR/scripts/mysql_system_tables_data.sql" "$INSTALL_DIR/share/mysql/" 2>/dev/null || true
-    fi
+    # Copy the declared bootstrap SQL runtime members. These files are part of
+    # MariaDB's package contract, so missing upstream source is a build error.
+    for system_table in \
+        mysql_system_tables.sql \
+        mysql_system_tables_data.sql; do
+        [ -f "$SRC_DIR/scripts/$system_table" ] || {
+            echo "ERROR: MariaDB source is missing scripts/$system_table" >&2
+            exit 1
+        }
+        cp "$SRC_DIR/scripts/$system_table" "$INSTALL_DIR/share/mysql/"
+    done
 
     # Copy error message files (generated by comp_err during build)
     SHARE_BUILD="$CROSS_BUILD_DIR/sql/share"
@@ -570,10 +604,27 @@ if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
             WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
             WASM_POSIX_DEP_TARGET_ARCH="$WASM_ARCH" \
             install_local_binary mariadb "$INSTALL_DIR/bin/mysqltest.wasm" mysqltest.wasm || true
+    for system_table in \
+        mysql_system_tables.sql \
+        mysql_system_tables_data.sql; do
+        WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
+            WASM_POSIX_DEP_TARGET_ARCH="$WASM_ARCH" \
+            install_local_runtime_file mariadb \
+                "$INSTALL_DIR/share/mysql/$system_table" \
+                "share/mysql/$system_table"
+    done
 else
     WASM_POSIX_DEP_TARGET_ARCH="$WASM_ARCH" \
         install_local_binary mariadb "$INSTALL_DIR/bin/mariadbd.wasm" mariadbd.wasm
     [ -f "$INSTALL_DIR/bin/mysqltest.wasm" ] && \
         WASM_POSIX_DEP_TARGET_ARCH="$WASM_ARCH" \
             install_local_binary mariadb "$INSTALL_DIR/bin/mysqltest.wasm" mysqltest.wasm || true
+    for system_table in \
+        mysql_system_tables.sql \
+        mysql_system_tables_data.sql; do
+        WASM_POSIX_DEP_TARGET_ARCH="$WASM_ARCH" \
+            install_local_runtime_file mariadb \
+                "$INSTALL_DIR/share/mysql/$system_table" \
+                "share/mysql/$system_table"
+    done
 fi

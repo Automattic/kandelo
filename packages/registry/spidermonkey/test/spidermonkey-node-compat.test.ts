@@ -356,12 +356,12 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     expect(result.stdout.trim()).toBe("v22.0.0");
   }, DEFAULT_TEST_TIMEOUT);
 
-  it("is not fork-instrumented so it can start in browser workers", () => {
+  it("carries the complete fork instrumentation required by package policy", () => {
     const exportNames = new Set(
       WebAssembly.Module.exports(nodeModule!).map((entry) => entry.name),
     );
 
-    expect(exportNames.has("wpk_fork_state")).toBe(false);
+    expect(exportNames.has("wpk_fork_state")).toBe(true);
   });
 
   it("provides Buffer, path, util, assert, and node: builtins", async () => {

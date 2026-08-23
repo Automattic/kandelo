@@ -5,10 +5,14 @@ inputs = [
   "packages/registry/spidermonkey/node-compat/suffix.js",
   "packages/registry/spidermonkey/patches",
   "packages/registry/node-compat/bootstrap.js",
+  "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+  "scripts/wasm-artifact-guards.sh",
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
-commit      = "d50f54f16bf242c0897e48b71bb519b386407fa8"
-revision    = 12
+commit      = "UNPUBLISHED"
+revision    = 14
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

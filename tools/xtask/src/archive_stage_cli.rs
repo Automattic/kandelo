@@ -16,7 +16,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::archive_stage::{self, StageOptions};
-use crate::build_deps::{self, Registry, ResolveOpts, default_cache_root, parse_target_arch};
+use crate::build_deps::{
+    self, default_cache_root, parse_target_arch, Registry, ResolveOpts, ResolvePolicy,
+};
 use crate::pkg_manifest::{BuildToml, DepsManifest, ManifestKind, TargetArch};
 use crate::publication_policy::PublicationPolicy;
 use crate::repo_root;
@@ -92,6 +94,15 @@ struct Args {
 ///   * arch not in the manifest's `target_arches`
 ///   * build script failure / empty cache entry
 pub fn run(args: Vec<String>) -> Result<(), String> {
+    let policy = build_deps::ambient_resolution_policy()?;
+    run_with_policy(args, policy, None)
+}
+
+fn run_with_policy(
+    args: Vec<String>,
+    policy: ResolvePolicy,
+    source_only_roots_override: Option<build_deps::SourceOnlyCacheRoots>,
+) -> Result<(), String> {
     let parsed = parse_args(args)?;
 
     // Load the manifest. Errors here name the failing path so a typo
@@ -127,6 +138,23 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         ));
     }
 
+    let source_only_selection = if policy == ResolvePolicy::SourceOnlyV1 {
+        let planned = match source_only_roots_override {
+            Some(roots) => build_deps::plan_canonical_source_only_cache_roots(
+                &roots.base,
+                Some(&roots.compiled),
+            )?,
+            None => build_deps::plan_source_only_cache_roots()?,
+        };
+        if let Some(explicit) = parsed.cache_root.as_ref() {
+            build_deps::validate_planned_source_only_compiled_root(&planned, explicit)
+                .map_err(|error| format!("archive-stage: {error}"))?;
+        }
+        Some(planned)
+    } else {
+        None
+    };
+
     let registry = if let Some(r) = parsed.registry_root.clone() {
         Registry { roots: vec![r] }
     } else {
@@ -154,7 +182,42 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     };
 
     let abi = parsed.abi.unwrap_or(shared::ABI_VERSION);
-    let cache_root = parsed.cache_root.clone().unwrap_or_else(default_cache_root);
+    let (source_only_roots, cache_root) = match source_only_selection {
+        Some(planned) => {
+            let roots = build_deps::materialize_planned_source_only_cache_roots(&planned)
+                .map_err(|error| format!("archive-stage: {error}"))?;
+            let cache_root = roots.compiled.clone();
+            let cache_pair_opts = ResolveOpts {
+                policy,
+                source_cache_root: Some(&roots.base),
+                cache_root: &cache_root,
+                local_libs: None,
+                force_source_build: None,
+                fetch_only: false,
+                repo_root: None,
+                binaries_dir: None,
+            };
+            build_deps::validate_resolve_cache_pair(&cache_pair_opts)
+                .map_err(|error| format!("archive-stage: {error}"))?;
+            (Some(roots), cache_root)
+        }
+        None => {
+            let cache_root = parsed.cache_root.clone().unwrap_or_else(default_cache_root);
+            let cache_pair_opts = ResolveOpts {
+                policy,
+                source_cache_root: None,
+                cache_root: &cache_root,
+                local_libs: None,
+                force_source_build: None,
+                fetch_only: false,
+                repo_root: None,
+                binaries_dir: None,
+            };
+            build_deps::validate_resolve_cache_pair(&cache_pair_opts)
+                .map_err(|error| format!("archive-stage: {error}"))?;
+            (None, cache_root)
+        }
+    };
     fs::create_dir_all(&parsed.out_dir)
         .map_err(|e| format!("mkdir {}: {e}", parsed.out_dir.display()))?;
 
@@ -163,7 +226,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     // The `<short8>` suffix is the first 8 hex chars of the cache_key
     // sha so a freshly-published archive is content-addressable from
     // its filename alone.
-    let sha_hex = compute_sha_hex(&manifest, &registry, parsed.arch, abi)?;
+    let sha_hex = if policy == ResolvePolicy::Default {
+        compute_sha_hex(&manifest, &registry, parsed.arch, abi)?
+    } else {
+        compute_sha_hex_for_policy(&manifest, &registry, parsed.arch, abi, policy)?
+    };
     if let Some(expected) = &parsed.expected_cache_key_sha {
         if &sha_hex != expected {
             return Err(format!(
@@ -192,6 +259,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             .then(|| BTreeSet::from([manifest.name.clone()]))
     };
     let resolve_opts = ResolveOpts {
+        policy,
+        source_cache_root: source_only_roots.as_ref().map(|roots| roots.base.as_path()),
         cache_root: &cache_root,
         local_libs: None,
         force_source_build: force_source_build.as_ref(),
@@ -206,7 +275,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     // Source builds must not mutate any declared cache-key input. If
     // the key changes between filename selection and manifest writing,
     // publishing either value would create a split-brain archive.
-    let post_build_sha_hex = compute_sha_hex(&manifest, &registry, parsed.arch, abi)?;
+    let post_build_sha_hex = if policy == ResolvePolicy::Default {
+        compute_sha_hex(&manifest, &registry, parsed.arch, abi)?
+    } else {
+        compute_sha_hex_for_policy(&manifest, &registry, parsed.arch, abi, policy)?
+    };
     if post_build_sha_hex != sha_hex {
         return Err(format!(
             "archive-stage: cache_key_sha changed while building {} ({}): before {sha_hex}, \
@@ -268,10 +341,22 @@ fn compute_sha_hex(
     arch: TargetArch,
     abi: u32,
 ) -> Result<String, String> {
+    compute_sha_hex_for_policy(manifest, registry, arch, abi, ResolvePolicy::Default)
+}
+
+fn compute_sha_hex_for_policy(
+    manifest: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi: u32,
+    policy: ResolvePolicy,
+) -> Result<String, String> {
     let mut memo = std::collections::BTreeMap::new();
     let mut chain = Vec::new();
-    let sha = build_deps::compute_sha(manifest, registry, arch, abi, &mut memo, &mut chain)
-        .map_err(|e| format!("compute_sha: {e}"))?;
+    let sha = build_deps::compute_sha_for_policy(
+        manifest, registry, arch, abi, policy, &mut memo, &mut chain,
+    )
+    .map_err(|e| format!("compute_sha: {e}"))?;
     Ok(hex(&sha))
 }
 
@@ -507,7 +592,7 @@ mod tests {
             .join(format!("{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
-        p
+        fs::canonicalize(p).unwrap()
     }
 
     /// Drop a self-contained library fixture into `registry/<name>/`.
@@ -849,6 +934,425 @@ built_by = "test"
             "--registry".into(),
             registry.display().to_string(),
         ]
+    }
+
+    #[test]
+    fn source_only_archive_stage_uses_ambient_policy_identity_and_cache_pair() {
+        const CHILD_ENV: &str = "KANDELO_TEST_SOURCE_ONLY_ARCHIVE_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let registry = PathBuf::from(std::env::var("KANDELO_TEST_ARCHIVE_REGISTRY").unwrap());
+            let compiled =
+                PathBuf::from(std::env::var("KANDELO_TEST_ARCHIVE_COMPILED").unwrap());
+            let out = PathBuf::from(std::env::var("KANDELO_TEST_ARCHIVE_OUT").unwrap());
+            super::run(archive_stage_args(
+                &registry,
+                &compiled,
+                &out,
+                "sourceStage",
+            ))
+            .unwrap();
+            return;
+        }
+
+        let dir = tempdir("source-only-archive-stage");
+        let registry = dir.join("registry");
+        let base = dir.join("source-cache");
+        let compiled = base.join("source-only-v1/compiled");
+        let out = dir.join("out");
+        fs::create_dir_all(&registry).unwrap();
+        write_lib_fixture(
+            &registry,
+            "sourceStage",
+            r#"
+test "${WASM_POSIX_RESOLUTION_POLICY:-}" = "source-only-v1"
+test "$WASM_POSIX_BINARY_CACHE_ROOT" = "$WASM_POSIX_SOURCE_ONLY_CACHE_ROOT/source-only-v1/compiled"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+printf SOURCE-STAGE > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
+"#,
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        write_build_toml_inputs(
+            &registry,
+            "sourceStage",
+            &["sourceStage/build-sourceStage.sh"],
+        );
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "archive_stage_cli::tests::source_only_archive_stage_uses_ambient_policy_identity_and_cache_pair",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .env("KANDELO_TEST_ARCHIVE_REGISTRY", &registry)
+            .env("KANDELO_TEST_ARCHIVE_COMPILED", &compiled)
+            .env("KANDELO_TEST_ARCHIVE_OUT", &out)
+            .env("WASM_POSIX_RESOLUTION_POLICY", "source-only-v1")
+            .env("WASM_POSIX_SOURCE_ONLY_CACHE_ROOT", &base)
+            .env_remove("WASM_POSIX_BINARY_CACHE_ROOT")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "public ambient archive-stage failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+
+        let manifest = DepsManifest::load_with_overlay(&registry.join("sourceStage")).unwrap();
+        let registry_view = Registry {
+            roots: vec![registry],
+        };
+        let source_key = compute_sha_hex_for_policy(
+            &manifest,
+            &registry_view,
+            TargetArch::Wasm32,
+            shared::ABI_VERSION,
+            ResolvePolicy::SourceOnlyV1,
+        )
+        .unwrap();
+        let default_key = compute_sha_hex(
+            &manifest,
+            &registry_view,
+            TargetArch::Wasm32,
+            shared::ABI_VERSION,
+        )
+        .unwrap();
+        assert_ne!(source_key, default_key);
+        assert!(archive_path_for_sha(
+            &out,
+            &manifest,
+            TargetArch::Wasm32,
+            shared::ABI_VERSION,
+            &source_key,
+        )
+        .is_file());
+    }
+
+    #[test]
+    fn source_only_archive_stage_public_invalid_pair_never_creates_absent_base() {
+        const CHILD_ENV: &str = "KANDELO_TEST_SOURCE_ONLY_PAIR_PREFLIGHT_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let registry = PathBuf::from(std::env::var("KANDELO_TEST_ARCHIVE_REGISTRY").unwrap());
+            let invalid_compiled =
+                PathBuf::from(std::env::var("KANDELO_TEST_ARCHIVE_COMPILED").unwrap());
+            let base = PathBuf::from(std::env::var("KANDELO_TEST_ARCHIVE_BASE").unwrap());
+            let out = PathBuf::from(std::env::var("KANDELO_TEST_ARCHIVE_OUT").unwrap());
+            let expected_error = std::env::var("KANDELO_TEST_ARCHIVE_ERROR").unwrap();
+            let error = super::run(archive_stage_args(
+                &registry,
+                &invalid_compiled,
+                &out,
+                "pairPreflightStage",
+            ))
+            .unwrap_err();
+            assert!(error.contains(&expected_error), "got: {error}");
+            assert!(
+                !base.exists(),
+                "invalid public cache pair created the absent source-cache base"
+            );
+            assert!(!out.exists(), "invalid public cache pair created output work");
+            return;
+        }
+
+        let dir = tempdir("source-only-archive-stage-public-pair-preflight");
+        let registry = dir.join("registry");
+        fs::create_dir_all(&registry).unwrap();
+        write_program_fixture(
+            &registry,
+            "pairPreflightStage",
+            &["dependencyTrap@1.0.0"],
+            "pair-preflight-stage",
+            "pair-preflight-stage.wasm",
+        );
+        let trap = registry.join("dependencyTrap");
+        fs::create_dir_all(&trap).unwrap();
+
+        for (mode, trap_kind, inherited_is_expected, explicit_is_expected, expected_error) in [
+            (
+                "invalid-explicit-malformed",
+                "malformed",
+                true,
+                false,
+                "source-only --cache-root",
+            ),
+            (
+                "invalid-inherited-pending",
+                "pending",
+                false,
+                true,
+                "inherited WASM_POSIX_BINARY_CACHE_ROOT",
+            ),
+            (
+                "valid-pair-malformed",
+                "malformed",
+                true,
+                true,
+                "package.toml",
+            ),
+            (
+                "valid-pair-pending",
+                "pending",
+                true,
+                true,
+                "publication is blocked",
+            ),
+        ] {
+            if trap_kind == "malformed" {
+                fs::write(
+                    trap.join("package.toml"),
+                    "this is not valid package metadata [",
+                )
+                .unwrap();
+                fs::write(
+                    trap.join("build.toml"),
+                    "publication_state = \"pending\"\n",
+                )
+                .unwrap();
+            } else {
+                write_wasm32_only_fixture(&registry, "dependencyTrap");
+                write_build_toml_publication_state(&registry, "dependencyTrap", "pending");
+            }
+
+            let base = dir.join(format!("{mode}-source-cache"));
+            let expected_compiled = base.join("source-only-v1/compiled");
+            let hostile_compiled = dir.join(format!("{mode}-hostile-compiled"));
+            let out = dir.join(format!("{mode}-out"));
+            fs::create_dir(&hostile_compiled).unwrap();
+            let inherited_compiled = if inherited_is_expected {
+                &expected_compiled
+            } else {
+                &hostile_compiled
+            };
+            let explicit_compiled = if explicit_is_expected {
+                &expected_compiled
+            } else {
+                &hostile_compiled
+            };
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "archive_stage_cli::tests::source_only_archive_stage_public_invalid_pair_never_creates_absent_base",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, "1")
+                .env("KANDELO_TEST_ARCHIVE_REGISTRY", &registry)
+                .env("KANDELO_TEST_ARCHIVE_COMPILED", explicit_compiled)
+                .env("KANDELO_TEST_ARCHIVE_BASE", &base)
+                .env("KANDELO_TEST_ARCHIVE_OUT", &out)
+                .env("KANDELO_TEST_ARCHIVE_ERROR", expected_error)
+                .env("WASM_POSIX_RESOLUTION_POLICY", "source-only-v1")
+                .env("WASM_POSIX_SOURCE_ONLY_CACHE_ROOT", &base)
+                .env("WASM_POSIX_BINARY_CACHE_ROOT", inherited_compiled)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{mode} public pair preflight failed:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            assert!(!base.exists());
+            assert!(!out.exists());
+        }
+    }
+
+    #[test]
+    fn source_only_archive_stage_allows_safe_force_but_rejects_wrong_cache_and_abi_override() {
+        let dir = tempdir("source-only-archive-stage-rejections");
+        let registry = dir.join("registry");
+        let base = dir.join("source-cache");
+        let compiled = base.join("source-only-v1/compiled");
+        let wrong_cache = dir.join("ordinary-cache");
+        fs::create_dir_all(&registry).unwrap();
+        fs::create_dir_all(&compiled).unwrap();
+        fs::create_dir_all(&wrong_cache).unwrap();
+        let base = fs::canonicalize(base).unwrap();
+        let compiled = fs::canonicalize(compiled).unwrap();
+        let wrong_cache = fs::canonicalize(wrong_cache).unwrap();
+        write_wasm32_only_fixture(&registry, "rejectStage");
+        write_build_toml_inputs(
+            &registry,
+            "rejectStage",
+            &["rejectStage/build-rejectStage.sh"],
+        );
+        let roots = build_deps::SourceOnlyCacheRoots {
+            base,
+            compiled: compiled.clone(),
+        };
+
+        let force_out = dir.join("force-out");
+        let mut force = archive_stage_args(&registry, &compiled, &force_out, "rejectStage");
+        force.push("--force-source-build".into());
+        super::run_with_policy(force, ResolvePolicy::SourceOnlyV1, Some(roots.clone())).unwrap();
+        assert_eq!(fs::read_dir(&force_out).unwrap().count(), 1);
+
+        let wrong_out = dir.join("wrong-cache-out");
+        let error = super::run_with_policy(
+            archive_stage_args(&registry, &wrong_cache, &wrong_out, "rejectStage"),
+            ResolvePolicy::SourceOnlyV1,
+            Some(roots.clone()),
+        )
+        .unwrap_err();
+        assert!(error.contains("source-only --cache-root"), "got: {error}");
+        assert!(!wrong_out.exists());
+
+        let abi_out = dir.join("abi-out");
+        let mut abi_args = archive_stage_args(&registry, &compiled, &abi_out, "rejectStage");
+        let abi_position = abi_args.iter().position(|arg| arg == "--abi").unwrap() + 1;
+        abi_args[abi_position] = (shared::ABI_VERSION + 1).to_string();
+        let error =
+            super::run_with_policy(abi_args, ResolvePolicy::SourceOnlyV1, Some(roots)).unwrap_err();
+        assert!(
+            error.contains(&format!("expected {}", shared::ABI_VERSION + 1)),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn source_only_archive_stage_cache_pair_rejects_mismatch_before_output_work() {
+        let dir = tempdir("source-only-archive-stage-cache-pair");
+        let registry = dir.join("registry");
+        let base = dir.join("source-cache");
+        let compiled = base.join("source-only-v1/compiled");
+        let mismatched = dir.join("mismatched-compiled");
+        let out = dir.join("out");
+        fs::create_dir_all(&registry).unwrap();
+        fs::create_dir_all(&compiled).unwrap();
+        fs::create_dir_all(&mismatched).unwrap();
+        write_wasm32_only_fixture(&registry, "pairStage");
+        write_build_toml_inputs(&registry, "pairStage", &["pairStage/build-pairStage.sh"]);
+        let roots = build_deps::SourceOnlyCacheRoots {
+            base: fs::canonicalize(base).unwrap(),
+            compiled: fs::canonicalize(&mismatched).unwrap(),
+        };
+
+        let error = super::run_with_policy(
+            archive_stage_args(&registry, &mismatched, &out, "pairStage"),
+            ResolvePolicy::SourceOnlyV1,
+            Some(roots),
+        )
+        .unwrap_err();
+        assert!(error.contains("source-only-v1/compiled"), "got: {error}");
+        assert!(
+            !out.exists(),
+            "invalid cache pair created archive output work"
+        );
+    }
+
+    #[test]
+    fn source_only_archive_stage_cache_pair_precedes_dependency_and_publication_traversal() {
+        let dir = tempdir("source-only-archive-stage-cache-pair-order");
+        let registry = dir.join("registry");
+        let base = dir.join("source-cache");
+        let mismatched = dir.join("mismatched-compiled");
+        let malformed_out = dir.join("malformed-out");
+        let pending_out = dir.join("pending-out");
+        fs::create_dir_all(&registry).unwrap();
+        fs::create_dir_all(&base).unwrap();
+        fs::create_dir_all(&mismatched).unwrap();
+        write_program_fixture(
+            &registry,
+            "pairOrderStage",
+            &["dependencyTrap@1.0.0"],
+            "pair-order-stage",
+            "pair-order-stage.wasm",
+        );
+        let trap = registry.join("dependencyTrap");
+        fs::create_dir_all(&trap).unwrap();
+        fs::write(trap.join("package.toml"), "this is not valid package metadata [").unwrap();
+        fs::write(
+            trap.join("build.toml"),
+            "publication_state = \"pending\"\n",
+        )
+        .unwrap();
+        let roots = build_deps::SourceOnlyCacheRoots {
+            base: fs::canonicalize(&base).unwrap(),
+            compiled: fs::canonicalize(&mismatched).unwrap(),
+        };
+
+        let error = super::run_with_policy(
+            archive_stage_args(
+                &registry,
+                &mismatched,
+                &malformed_out,
+                "pairOrderStage",
+            ),
+            ResolvePolicy::SourceOnlyV1,
+            Some(roots.clone()),
+        )
+        .unwrap_err();
+        assert!(error.contains("source-only-v1/compiled"), "got: {error}");
+        assert!(!malformed_out.exists());
+        assert!(fs::read_dir(&base).unwrap().next().is_none());
+        assert!(fs::read_dir(&mismatched).unwrap().next().is_none());
+
+        write_wasm32_only_fixture(&registry, "dependencyTrap");
+        write_build_toml_publication_state(&registry, "dependencyTrap", "pending");
+        let error = super::run_with_policy(
+            archive_stage_args(
+                &registry,
+                &mismatched,
+                &pending_out,
+                "pairOrderStage",
+            ),
+            ResolvePolicy::SourceOnlyV1,
+            Some(roots),
+        )
+        .unwrap_err();
+        assert!(error.contains("source-only-v1/compiled"), "got: {error}");
+        assert!(!error.contains("publication is blocked"), "got: {error}");
+        assert!(!pending_out.exists());
+        assert!(fs::read_dir(&base).unwrap().next().is_none());
+        assert!(fs::read_dir(&mismatched).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn source_only_archive_stage_cache_pair_rejects_authored_alias_before_output_work() {
+        let dir = tempdir("source-only-archive-stage-cache-alias");
+        let registry = dir.join("registry");
+        let base = dir.join("source-cache");
+        let compiled = base.join("source-only-v1/compiled");
+        let out = dir.join("out");
+        fs::create_dir_all(&registry).unwrap();
+        fs::create_dir_all(&compiled).unwrap();
+        write_wasm32_only_fixture(&registry, "aliasStage");
+        write_build_toml_inputs(&registry, "aliasStage", &["aliasStage/build-aliasStage.sh"]);
+        let canonical_base = fs::canonicalize(&base).unwrap();
+        let canonical_compiled = fs::canonicalize(&compiled).unwrap();
+        let roots = build_deps::SourceOnlyCacheRoots {
+            base: canonical_base,
+            compiled: canonical_compiled.clone(),
+        };
+        let authored_alias = PathBuf::from(format!("{}/", canonical_compiled.display()));
+
+        let error = super::run_with_policy(
+            archive_stage_args(&registry, &authored_alias, &out, "aliasStage"),
+            ResolvePolicy::SourceOnlyV1,
+            Some(roots.clone()),
+        )
+        .unwrap_err();
+        assert!(error.contains("canonical spelling"), "got: {error}");
+        assert!(!out.exists(), "cache alias created archive output work");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let compiled_link = dir.join("compiled-link");
+            let linked_out = dir.join("linked-out");
+            symlink(&canonical_compiled, &compiled_link).unwrap();
+            let error = super::run_with_policy(
+                archive_stage_args(&registry, &compiled_link, &linked_out, "aliasStage"),
+                ResolvePolicy::SourceOnlyV1,
+                Some(roots),
+            )
+            .unwrap_err();
+            assert!(error.contains("canonical spelling"), "got: {error}");
+            assert!(
+                !linked_out.exists(),
+                "symlinked cache root created archive output work"
+            );
+        }
     }
 
     /// End-to-end smoke: a clean run of the CLI produces a real

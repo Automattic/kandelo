@@ -1,4 +1,9 @@
 script_path = "packages/registry/libcxx/build-libcxx.sh"
+inputs = [
+    "packages/registry/libcxx/build-libcxx.sh",
+    "flake.nix",
+    "flake.lock",
+]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
 # Revision 4: libcxx + libcxxabi + libunwind rebuilt with

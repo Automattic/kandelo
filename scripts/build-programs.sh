@@ -290,12 +290,6 @@ build_cpp_program() {
 ensure_libcxx_in_sysroot() {
     local arch="$1"
     local sysroot="$2"
-    if [ -f "$sysroot/lib/libc++.a" ] && \
-        [ -f "$sysroot/lib/libc++abi.a" ] && \
-        [ -d "$sysroot/include/c++/v1" ]; then
-        return
-    fi
-
     echo "==> Resolving libcxx for $arch C++ programs..."
     local host_triple
     local libcxx_prefix
@@ -304,16 +298,17 @@ ensure_libcxx_in_sysroot() {
         build-deps --arch "$arch" resolve libcxx >/dev/null)
     libcxx_prefix="$(cd "$REPO_ROOT" && cargo run -p xtask \
         --target "$host_triple" --quiet -- build-deps --arch "$arch" path libcxx)"
-    ln -sf "$libcxx_prefix/lib/libc++.a" "$sysroot/lib/libc++.a"
-    ln -sf "$libcxx_prefix/lib/libc++abi.a" "$sysroot/lib/libc++abi.a"
-    mkdir -p "$sysroot/include/c++"
+    mkdir -p "$sysroot/lib" "$sysroot/include/c++"
+    rm -f "$sysroot/lib/libc++.a" "$sysroot/lib/libc++abi.a"
+    cp "$libcxx_prefix/lib/libc++.a" "$sysroot/lib/libc++.a"
+    cp "$libcxx_prefix/lib/libc++abi.a" "$sysroot/lib/libc++abi.a"
     rm -rf "$sysroot/include/c++/v1"
-    ln -sfn "$libcxx_prefix/include/c++/v1" "$sysroot/include/c++/v1"
+    cp -RL "$libcxx_prefix/include/c++/v1" "$sysroot/include/c++/v1"
 }
 
-# Resolve libcxx and symlink its outputs into the sysroot if there are
-# any .cpp programs to build. Skip the resolver entirely when libc++.a
-# is already present so repeat runs are fast.
+# Resolve libcxx and copy its outputs into the sysroot if there are any .cpp
+# programs to build. Refresh every run so an interrupted prior copy cannot be
+# mistaken for a complete regular-file projection.
 if ls "$REPO_ROOT/programs/"*.cpp >/dev/null 2>&1; then
     ensure_libcxx_in_sysroot wasm32 "$SYSROOT"
 fi

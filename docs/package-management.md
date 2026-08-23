@@ -33,6 +33,7 @@ Most readers want one of these. Detailed sections follow further down.
 | Pull pre-built binaries without compiling     | [`scripts/fetch-binaries.sh`](#release-archives) — walks every `package.toml`, calls the resolver. Run with `--allow-stale` in CI.                                                                                                                                 |
 | Add a new package to the registry             | [Schema: `package.toml`](#schema-packagetoml) + [docs/porting-guide.md](porting-guide.md#adding-a-new-package-to-the-registry) for the end-to-end workflow.                                                                                                        |
 | Resolve one package on demand                 | `cargo xtask build-deps resolve <name>` — handles fetch/source-build, populates the cache.                                                                                                                                                                         |
+| Build every local VFS product                 | [Local DAG build](#local-dag-build) — one parallel, resumable command for all seven products and their package dependencies.                                                                                                                                       |
 | Find where an output lands                    | `cargo xtask build-deps output-path <name> <declared-artifact>` — single source of truth for the layout convention (flat for a one-member output/runtime closure, nested under `<pkg>/` for two or more members). A basename is accepted only when unique.         |
 | Migrate a build script to consume cached deps | [Migrating a consumer to the cache](#migrating-a-consumer-to-the-cache) — the `WASM_POSIX_DEP_*_DIR` contract + CPPFLAGS/LDFLAGS pattern.                                                                                                                          |
 | Override a published archive locally          | Drop the file at `local-binaries/programs/<arch>/<rel>` or `local-libs/<pkg>/build/`. The resolver prefers these.                                                                                                                                                  |
@@ -68,6 +69,46 @@ programs, we need:
   and unpacked into a shared cache on fetch;
 - rebuild-in-progress in one worktree not to corrupt a sibling
   worktree's read of the same cached lib.
+
+## Local DAG build
+
+From the repository root, build all seven local VFS products and their
+transitive package dependencies with:
+
+```bash
+./run.sh local-build
+```
+
+The wrapper uses an active direnv/Nix development shell when available and
+enters the repository dev shell only when necessary. It selects every active
+product, uses 16 concurrent jobs, stores verified sources below
+`$HOME/.cache/kandelo/source-only`, and publishes the validated projection to
+`local-binaries/source-only-v1`.
+
+The default output ends with a concise node, cache, build, and product
+summary. Pass `--json` to print the canonical machine-readable result instead:
+
+```bash
+./run.sh local-build --json
+```
+
+For custom product selections or paths, invoke the xtask `local-build run`
+command directly. `--product all` selects every active product; omitting
+`--product` has the same effect. Multiple `--product <id>` options select only
+those products and their transitive package dependencies. `--jobs` bounds
+concurrently running nodes; ready nodes start as soon as their own dependencies
+finish.
+
+The machine-readable result contains every selected node and whether it was
+newly published or reused from cache. If a node fails, independent work drains
+and the command exits nonzero after printing failed and blocked counts. Fix the
+failure and run the same command again: successful content-addressed nodes are
+reused, while the missing failed node runs again. `--rebuild` deliberately
+forces the selected nodes and is not needed for ordinary recovery.
+
+Retrying a failed node while the original aggregate process remains active is
+not supported today; that additive workflow is recorded in
+[package-management future work](package-management-future-work.md#retry-a-failed-node-during-an-active-aggregate).
 
 ## Artifact invalidation model
 
@@ -264,6 +305,7 @@ depends_on = []            # ["zlib@1.3.1", ...] — exact versions, no ranges
 [source]
 url = "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz"
 sha256 = "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"
+provider = "archive"
 
 [license]
 spdx = "Zlib"              # SPDX identifier
@@ -286,13 +328,53 @@ pkgconfig = ["lib/pkgconfig/zlib.pc"]
 files = ["share/runtime-data.bin"]                   # other runtime data
 ```
 
-The three in-tree Homebrew bridge recipes (`lsof`, `modeset`, and
-`posix-utils-lite`) use a deliberately narrow `in-repository-source`
-exception: `[source].url` is the authoritative Kandelo repository and an
-all-zero SHA-256 is a mode sentinel, not a checksum. Homebrew publication
-must bind such a recipe to a nonzero-checksum Formula URL of the exact form
-`<source.url>/archive/<40-lowercase-hex-commit>.tar.gz`. Other recipes use a
-normal source URL and checksum that must match the Formula exactly.
+`[source].provider` declares how source bytes enter a local build:
+
+- `archive` requires a nonzero 64-character lowercase SHA-256 and a supported
+  archive suffix. Query strings and fragments do not affect suffix detection.
+- `repository` requires the all-zero SHA sentinel. Its source-only identity is
+  the declared `build.toml.inputs` closure from the current repository, not a
+  Git branch, `HEAD`, or `build.toml.commit`.
+- `dev-shell` requires the all-zero SHA sentinel. It is currently used only by
+  `libcxx`, whose identity binds the exact LLVM 21.1.7 compiler and Nix source
+  paths supplied by the repository dev shell.
+
+The checked-in local-supported authority must spell the provider explicitly.
+For compatibility, source and archived manifests that predate this field still
+parse: a nonzero SHA infers `archive`, while the all-zero sentinel infers
+`repository`. Explicitness is migration metadata and never changes semantic
+cache identity.
+
+Source-only Repository and DevShell declared-input hashing currently requires
+Unix descriptor-relative filesystem validation. Native Unix hosts, the Nix
+development shell on Unix, and Linux under Windows Subsystem for Linux (WSL)
+use that supported path. Native non-Unix hosts fail before cache lookup with a
+stable unsupported-platform error; native Windows support requires a future,
+separately reviewed reparse-safe handle traversal. This boundary does not
+restrict Archive providers or the Default resolution policy.
+
+`source.extract_exclude_members` is an exceptional Archive-only compatibility
+boundary for a verified upstream archive whose members cannot coexist on the
+host filesystem, such as a root `BUILD` file alongside a `build/` directory on
+case-insensitive macOS volumes. Each value is the exact normalized portable
+member path before single-wrapper-directory flattening. Values must be sorted,
+unique, and may name only regular files. Extraction fails if an authorized
+member is absent, duplicated, or has another type; no unlisted member is
+omitted. The verified archive bytes remain unchanged in the shared source
+cache, while the nonempty exclusion list participates in the SourceOnly cache
+identity. Do not use this field to remove ordinary unwanted upstream content.
+
+Archive bytes use only their verified SHA-256 as the immutable shared-source
+identity. Provider, package, Application Binary Interface (ABI), and compiled
+artifact policy do not enter that archive-cache address. Source-only compiled
+keys separately bind provider semantics and declared build inputs.
+
+The in-tree repository-backed recipes, including the Homebrew bridge recipes
+`lsof`, `modeset`, and `posix-utils-lite`, use `[source].url` as the
+authoritative Kandelo repository and the all-zero SHA as a mode sentinel.
+Homebrew publication must still bind such a recipe to a nonzero-checksum
+Formula URL of the exact form
+`<source.url>/archive/<40-lowercase-hex-commit>.tar.gz`.
 
 Source `package.toml` and project `build.toml` apply the same
 `[build].script_path` contract: a nonempty ASCII repository-relative path of
@@ -634,6 +716,18 @@ index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-ab
   first-party non-package helper trees below `packages/registry` remain
   main-checkout inputs. Existing registry-relative input spellings apply the
   same package-level rule for third-party sources.
+  A `repository` or `dev-shell` provider makes this list mandatory and
+  nonempty for source-only builds. Before a source-only cache key is computed,
+  every authored label must already be its canonical portable
+  repository-relative spelling. On Unix, one descriptor-relative traversal
+  rejects missing or unreadable paths, symlink roots, ancestors, or
+  descendants, filesystem escapes, and special nodes while hashing the exact
+  opened regular files and directories. It revalidates the full descriptor
+  chain before returning the digest, so validation cannot be followed by a
+  pathname reopen of a substituted object. Native non-Unix hosts fail closed
+  before cache lookup as described above. These stricter checks are limited to
+  source-only Repository/DevShell inputs, so Archive, Default, and published
+  cache-key bytes retain their historical behavior and identity.
 - `repo_url` + `commit` record the project's recipe provenance.
 - `revision` is the publish-time counter the resolver hashes into
   the cache-key. Bump when output bytes legitimately change (build
@@ -657,8 +751,7 @@ index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-ab
   of the build recipe. Names start with a lowercase letter and contain only
   lowercase letters, digits, and underscores; repository URLs are anonymous
   HTTPS URLs; commits are full 40-character lowercase object IDs. The ordered
-  `(name, repository, commit)` tuples are hashed into the package cache key
-  before network access.
+  declarations are hashed into the package cache key before network access.
 - `[binary]` declares where binaries are published. Two forms,
   exactly one of which must be present:
 
@@ -674,7 +767,13 @@ For each declared Git input, the source-build resolver performs an anonymous
 exact-commit fetch with inherited Git credentials, configuration, and hooks
 disabled. It rejects submodule gitlinks and symlinks that escape the checkout,
 verifies a clean detached HEAD, seals the whole checkout read-only for the
-build, and verifies it again afterward. A declaration named
+build, and verifies it again afterward. A narrowly scoped input that needs
+Git-tracked but intentionally uninitialized submodule directories may declare
+the exact commit tree as `tree` and set `allow_uninitialized_gitlinks = true`.
+The permission defaults to false; both fields enter cache identity and archive
+provenance. Every permitted gitlink must materialize as an empty real directory
+without symlinked path components, while all ordinary tracked files remain
+required. A declaration named
 `homebrew_tap_core` is exposed as:
 
 - `WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_DIR`
@@ -925,6 +1024,23 @@ shas)`, where `revision` is read from `build.toml` (overlaid onto the
 parsed `DepsManifest` at load time) and defaults to 1 when
 `build.toml` omits it or is absent.
 
+Source-only cache keys add the stable semantic marker
+`kandelo-source-provider-v1\0` followed by `archive\0`, `repository\0`, or
+`dev-shell\0`. They never hash whether the provider spelling was explicit.
+For Archive providers, a nonempty `extract_exclude_members` list is
+length-delimited into the same SourceOnly identity; the legacy Default key is
+unchanged.
+Repository identities therefore follow declared bytes across Git checkouts and
+ignore project refs and informational commits. The `libcxx` dev-shell identity
+binds the locked `flake.nix` and `flake.lock` bytes through declared build
+inputs. It also length-binds the exact LLVM 21.1.7 version, canonical compiler
+prefix, complete bounded `clang --version` output, and canonical
+libcxx/libcxxabi/libunwind Nix source roots. Missing, mismatched, symlinked,
+non-store, non-UTF-8, oversized, or failing compiler/source inputs fail before
+cache lookup. The declared Repository/DevShell byte traversal is currently a
+Unix-only capability: native non-Unix hosts return the documented
+unsupported-platform error rather than using a weaker pathname-based digest.
+
 Program packages that use fork instrumentation also hash the
 fork-instrument host tool inputs (`crates/fork-instrument`, the
 target-unfiltered non-dev Cargo dependency closure selected from the
@@ -1045,15 +1161,19 @@ that doesn't respect them cannot be cached safely.
 | `WASM_POSIX_DEP_VERSION`             | `version` from package.toml, or the base Formula version for a tap-native Homebrew recipe.                                                                                                                                                                                                                                                       |
 | `WASM_POSIX_DEP_PKG_VERSION`         | Exact Homebrew `pkg_version` for a tap-native recipe, including a positive Formula `revision` suffix such as `_1`. It is absent from registry package builds.                                                                                                                                                                                    |
 | `WASM_POSIX_DEP_REVISION`            | Effective package revision after `build.toml` is overlaid.                                                                                                                                                                                                                                                                                       |
-| `WASM_POSIX_DEP_SOURCE_URL`          | Upstream tarball URL (`source.url` from package.toml).                                                                                                                                                                                                                                                                                           |
-| `WASM_POSIX_DEP_SOURCE_SHA256`       | Expected sha256 of the downloaded tarball. Scripts **must** verify after download — the resolver does not fetch.                                                                                                                                                                                                                                 |
+| `WASM_POSIX_DEP_SOURCE_ARCHIVE`      | SourceOnlyV1 Archive providers only: canonical regular-file path to the resolver's immutable, digest-verified archive payload. It is absent for Repository and DevShell providers and from Default resolver builds.                                                                                                                                 |
+| `WASM_POSIX_DEP_SOURCE_DIR`          | SourceOnlyV1 Archive providers only: fresh sealed extraction below a resolver-owned source-input root disjoint from this invocation's work and output roots. It is distinct from the immutable archive and is removed on every return path. Recipes must copy it below `WASM_POSIX_DEP_WORK_DIR` before modifying it.                              |
+| `WASM_POSIX_DEP_SOURCE_URL`          | Archive acquisition metadata (`source.url` from package.toml). SourceOnlyV1 and Default Archive builds receive it; Repository and DevShell builds do not. It is not permission for a SourceOnlyV1 recipe to fetch.                                                                                                                                   |
+| `WASM_POSIX_DEP_SOURCE_SHA256`       | Lowercase expected SHA-256 acquisition metadata for an Archive provider. SourceOnlyV1 receives it after resolver verification; Default recipes that download remain responsible for verification. Repository and DevShell builds do not receive it.                                                                                                |
 | `WASM_POSIX_DEP_TARGET_ARCH`         | Requested package architecture (`wasm32` or `wasm64`). A package that supports only one must reject the other before invoking its toolchain.                                                                                                                                                                                                     |
 | `WASM_POSIX_BINARY_CACHE_ROOT`       | Canonical absolute cache root selected by the current resolver invocation. It overrides inherited ambient state and keeps nested resolvers aligned with direct dependency paths, including an explicit `archive-stage --cache-root`.                                                                                                             |
+| `WASM_POSIX_SOURCE_ONLY_CACHE_ROOT`  | SourceOnlyV1 only: canonical cache base that owns the exact `source-only-v1/compiled` binary-cache child and immutable verified archive payloads. It is absent under Default resolution.                                                                                                                                                           |
+| `WASM_POSIX_SOURCE_ONLY_BINARY_ROOT` | SourceOnlyV1 non-Rust consumers only: normalized canonical absolute directory containing regular-file materializations and `.kandelo/source-only-program-projection-v1.json`. The TypeScript/shell resolver accepts this one aggregate-owned tier and never searches Default mirrors, the ordinary compiled cache, or an installed package. Each authority member is limited to 512 MiB; Vite also limits its complete pinned snapshot batch to 512 MiB. |
 | `WASM_POSIX_DEP_WORK_DIR`            | Caller-owned, single-writer scratch root disjoint from `OUT_DIR`. The resolver creates a fresh private directory for every source build and removes it on success or failure. The sealed Homebrew Formula bridge provides the equivalent boundary from Homebrew's buildpath. Direct ad-hoc script invocation may retain a package-local default. |
 | `WASM_POSIX_DEP_RECIPE_DIR`          | Formula-owned, read-only closed recipe input root for a tap-native Homebrew build. It is absent from registry package builds. Every member is attested by path, size, mode, and SHA-256; scripts must not mutate it.                                                                                                                            |
 | `WASM_POSIX_SDK_CONFIG_SITE`         | Runner-owned path to the sealed Kandelo `sdk/config.site` for a tap-native Homebrew build. A package-specific `CONFIG_SITE` may source it to inherit shared target facts. Formula code and recipe requests cannot override this path; it is absent from registry package builds.                                                               |
-| `WASM_POSIX_DEP_SOURCE_DIR`          | Optional caller-verified, already-extracted source root. When present it takes precedence over downloading `SOURCE_URL`; the URL and SHA remain provenance/cache identity.                                                                                                                                                                       |
 | `WASM_POSIX_DEP_<UPPER>_DIR`         | For each _direct_ dep, the resolved path to that dep's build output. `<UPPER>` is the dep name upper-cased, with `-` → `_` (e.g. `zlib-ng` → `ZLIB_NG`). Transitive deps are not surfaced — scripts that need them should declare them in `depends_on`.                                                                                          |
+| `WASM_POSIX_DEP_<KEY>_SRC_DIR`       | SourceOnlyV1 direct source dependencies only: a fresh sealed per-consumer extraction below the same resolver-owned source-input root, disjoint from recipe work and output. `<KEY>` is exactly `K_` followed by the uppercase hexadecimal encoding of the package name's UTF-8 bytes (`foo-bar` → `K_666F6F2D626172`). Default source-kind dependencies retain the legacy uppercased-name spelling. |
 | `WASM_POSIX_BUILD_GIT_<NAME>_DIR`    | Read-only detached checkout for a `build.toml` `[[git_inputs]]` declaration. `<NAME>` is the injective uppercase form of the validated lowercase name.                                                                                                                                                                                           |
 | `WASM_POSIX_BUILD_GIT_<NAME>_COMMIT` | Exact declared commit corresponding to that checkout.                                                                                                                                                                                                                                                                                            |
 
@@ -1065,6 +1185,33 @@ configure steps, code generation, or compilation. Work products stay below the
 work root, and only declared artifacts are installed into the output root. This
 keeps the normal source-build path usable by Homebrew without granting write
 access to either the reviewed Kandelo checkout or verified source tree.
+
+`kandelo_package_stage_verified_source` has two distinct acquisition
+boundaries. Under SourceOnlyV1 it requires both resolver-owned source paths,
+revalidates the archive and source paths, requires an exact optional
+positional-source match, and copies the tree only to a new destination below
+the caller's work root. That branch never invokes `curl`, even when URL
+arguments are present; only the private copy becomes owner-writable. Under the
+Default policy, the helper retains its existing caller-verified-directory
+precedence and URL/SHA download-and-verify fallback.
+
+Known migration gap: 29 Archive-provider recipes in the current local build
+set still use their legacy recipe-owned download path instead of the
+SourceOnlyV1 source handoff. The directed acyclic graph (DAG) and compiled
+artifact cache still apply—a cache hit does not run the recipe—but a cold miss
+for one of these nodes does not reuse the resolver source cache and must not be
+described as a hermetic SourceOnly build. Fifteen of the legacy recipes also
+retain mutable checkout-local source or build state. Migrating these recipes
+to `kandelo_package_stage_verified_source` and resolver-owned work directories
+is explicit future work after the initial local-build restoration lands.
+
+The affected recipes are `bzip2`, `cpython`, `curl`, `git`, `gzip`, `icu`,
+`less`, `libcurl`, `libiconv`, `libpng`, `libxml2`, `libzip`, `msmtpd`,
+`netcat`, `nginx`, `openssl`, `redis`, `ruby`, `sdl2`,
+`sdl2-mixer-playwave`, `sdl3`, `tar`, `unzip`, `vim`, `wget`, `xz`, `zip`,
+`zlib`, and `zstd`. Five legacy script defaults currently disagree with their
+package manifests (`gzip`, `redis`, `wget`, `xz`, and `zstd`); those cold paths
+also require version alignment during the migration.
 
 The libcxx package is intentionally stricter than ordinary source-fetching
 packages. It builds the C++ standard library from the exact LLVM source
@@ -1655,11 +1802,14 @@ branch, let `staging-build.yml` rebuild the touched packages, and
 each matrix entry's `scripts/index-update.sh` invocation writes its archive and
 index entry to the workflow attempt's draft
 `pr-<NNN>-staging-run-<RUN>-attempt-<ATTEMPT>` release. The test gate seals and
-publishes that exact draft once. To consume those artifacts locally, run
-`./run.sh --pr-staging browser` or set `WASM_POSIX_USE_PR_STAGING=1`.
+publishes that exact draft once. To inspect those artifacts locally, run
+`./run.sh --pr-staging fetch` or set `WASM_POSIX_USE_PR_STAGING=1` before a
+fetch command.
 `run.sh` detects the PR and exact head with `gh`, selects the newest immutable
 attempt, points `WASM_POSIX_BINARY_INDEX_URL` at its run-specific index, and
 leaves a manually set `WASM_POSIX_BINARY_INDEX_URL` unchanged.
+The browser command intentionally does not consume this index; it builds or
+reuses the local SourceOnly graph.
 That works for any `package.toml` or `build.toml` change pushed to a
 PR with CI write access. Prepare merge uses a separate run-specific
 candidate initialized from canonical state; it never promotes the PR staging
@@ -1727,11 +1877,9 @@ same-tree relationship, PR identity, or tag identity is never compatibility
 evidence.
 
 For pre-push iteration on packages whose source build is fast,
-just rely on the resolver's fall-through: edit `package.toml`,
-run `./run.sh browser`, and accept a one-time source build for
-the touched package. Outputs land under
-`local-binaries/programs/<arch>/`, which the Vite resolver and
-`scripts/resolve-binary.sh` already prefer over `binaries/`.
+edit `package.toml` and run `./run.sh browser`. The local DAG rebuilds the
+affected node and its dependent products, then Vite consumes the validated
+`local-binaries/source-only-v1` projection. Unchanged nodes remain cached.
 
 Both resolvers apply policy according to the requested artifact kind. A
 `.wasm` executable must have an inspectable, current ABI and the required
@@ -1995,6 +2143,8 @@ Required:
 - `kind = "source"`
 - `name`, `version`
 - `[source].url`, `[source].sha256`
+- `[source].provider` for checked-in local-supported manifests (`archive` for
+  fetched source archives)
 - `[license].spdx`
 
 Optional:

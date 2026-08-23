@@ -224,7 +224,6 @@ cmake --build "$BUILD_DIR" --target install --parallel "$JOBS"
 
 # Publish only manifest-declared outputs. Upstream also installs CMake package
 # metadata; it is intentionally excluded from this resolver package.
-rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR/lib/pkgconfig" "$OUT_DIR/include"
 cp "$STAGE_DIR/lib/libzip.a" "$OUT_DIR/lib/libzip.a"
 cp "$STAGE_DIR/include/zip.h" "$OUT_DIR/include/zip.h"

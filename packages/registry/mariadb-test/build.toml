@@ -9,6 +9,8 @@ inputs = [
   "images/vfs/scripts/mariadb-test-source-copy.ts",
   "images/vfs/scripts/source-extract-helper.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
+  "package.json",
+  "package-lock.json",
   "host/src/binary-resolver.ts",
   "host/src/constants.ts",
   "host/src/file-offset.ts",
@@ -32,7 +34,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 5
+revision    = 7
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

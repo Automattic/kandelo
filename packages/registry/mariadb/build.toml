@@ -1,15 +1,19 @@
 script_path = "packages/registry/mariadb/build-mariadb.sh"
 inputs = [
   "packages/registry/mariadb/build-mariadb.sh",
+  "packages/registry/mariadb/package.toml",
   "packages/registry/mariadb/mariadb-glue-object-contract.cmake",
   "packages/registry/mariadb/wasm32-posix-toolchain.cmake",
   "packages/registry/mariadb/wasm64-posix-toolchain.cmake",
   "packages/registry/mariadb/patches",
   "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
-commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 1
+commit      = "UNPUBLISHED"
+# Revision 3 declares and publishes the two MariaDB bootstrap SQL runtime
+# members alongside the compiled programs.
+revision    = 3
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

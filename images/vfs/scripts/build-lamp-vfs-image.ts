@@ -518,23 +518,65 @@ function resolveLegacySystemTablesDirectory(): string {
   return join(ensureSourceExtract("mariadb", REPO_ROOT), "scripts");
 }
 
+export function resolveLampSystemTablesDirectory(
+  mariadbRoot: string | undefined = process.env.WASM_POSIX_DEP_MARIADB_DIR,
+  directFallback: () => string = resolveLegacySystemTablesDirectory,
+): string {
+  return mariadbRoot === undefined
+    ? directFallback()
+    : join(mariadbRoot, "share", "mysql");
+}
+
 async function main(): Promise<void> {
+  const shellRoot = process.env.WASM_POSIX_DEP_SHELL_DIR;
+  const mariadbRoot = process.env.WASM_POSIX_DEP_MARIADB_DIR;
+  const nginxRoot = process.env.WASM_POSIX_DEP_NGINX_DIR;
+  const phpRoot = process.env.WASM_POSIX_DEP_PHP_DIR;
+  const dinitRoot = process.env.WASM_POSIX_DEP_DINIT_DIR;
+  const msmtpdRoot = process.env.WASM_POSIX_DEP_MSMTPD_DIR;
+  const kernelRoot = process.env.WASM_POSIX_DEP_KERNEL_DIR;
   const mariadbd = new Uint8Array(
-    readFileSync(resolveBinary("programs/mariadb/mariadbd.wasm")),
+    readFileSync(mariadbRoot === undefined
+      ? resolveBinary("programs/mariadb/mariadbd.wasm")
+      : join(mariadbRoot, "mariadbd.wasm")),
   );
   await buildLampVfsImage({
+    shellImage: shellRoot === undefined
+      ? undefined
+      : new Uint8Array(readFileSync(join(shellRoot, "shell.vfs.zst"))),
     wordpressDirectory: resolveWordPressCoreSource(REPO_ROOT),
-    mariadbSystemTablesDirectory: resolveLegacySystemTablesDirectory(),
+    mariadbSystemTablesDirectory: resolveLampSystemTablesDirectory(mariadbRoot),
     mariadbd,
-    nginx: new Uint8Array(readFileSync(resolveBinary("programs/nginx.wasm"))),
-    phpFpm: new Uint8Array(
-      readFileSync(resolveBinary("programs/php/php-fpm.wasm")),
-    ),
-    opcache: new Uint8Array(
-      readFileSync(resolveBinary("programs/php/opcache.so")),
-    ),
-    msmtpd: new Uint8Array(readFileSync(resolveBinary("programs/msmtpd.wasm"))),
-    outputPath: OUT_FILE,
+    nginx: new Uint8Array(readFileSync(nginxRoot === undefined
+      ? resolveBinary("programs/nginx.wasm")
+      : join(nginxRoot, "nginx.wasm"))),
+    phpFpm: new Uint8Array(readFileSync(phpRoot === undefined
+      ? resolveBinary("programs/php/php-fpm.wasm")
+      : join(phpRoot, "php-fpm.wasm"))),
+    opcache: new Uint8Array(readFileSync(phpRoot === undefined
+      ? resolveBinary("programs/php/opcache.so")
+      : join(phpRoot, "opcache.so"))),
+    msmtpd: new Uint8Array(readFileSync(msmtpdRoot === undefined
+      ? resolveBinary("programs/msmtpd.wasm")
+      : join(msmtpdRoot, "msmtpd.wasm"))),
+    dinit: dinitRoot === undefined
+      ? undefined
+      : {
+          dinit: new Uint8Array(readFileSync(join(dinitRoot, "dinit.wasm"))),
+          dinitctl: new Uint8Array(
+            readFileSync(join(dinitRoot, "dinitctl.wasm")),
+          ),
+        },
+    buildPrograms: phpRoot === undefined || kernelRoot === undefined
+      ? undefined
+      : {
+          php: new Uint8Array(readFileSync(join(phpRoot, "php.wasm"))),
+          kernel: new Uint8Array(
+            readFileSync(join(kernelRoot, "kandelo-kernel.wasm")),
+          ),
+          mariadb: mariadbd,
+        },
+    outputPath: process.argv[2] ?? OUT_FILE,
   });
 }
 

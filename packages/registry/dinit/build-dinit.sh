@@ -5,95 +5,64 @@
 # (per-service config files, dependency resolution, fail-fast on
 # upstream failures) rather than JS-side orchestration.
 #
-# Output: packages/registry/dinit/bin/dinit (and dinitctl, dinitcheck)
+# Output: the resolver-owned package output root (or bin/ for a direct build).
 set -euo pipefail
 
-DINIT_VERSION="${DINIT_VERSION:-v0.19.4}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SYSROOT="$REPO_ROOT/sysroot"
-SRC_DIR="$SCRIPT_DIR/dinit-src"
-BIN_DIR="$SCRIPT_DIR/bin"
-
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
 source "$REPO_ROOT/scripts/wasm-artifact-guards.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/dinit-src"
+BIN_DIR="$WORK_DIR/bin"
+DINIT_VERSION="${WASM_POSIX_DEP_VERSION:-${DINIT_VERSION:-0.19.4}}"
+DINIT_VERSION="${DINIT_VERSION#v}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/davmac314/dinit/archive/refs/tags/v${DINIT_VERSION}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-3c0f624eb958f8e884631be4ef687da1e475ebaa6241e7ee330b864e6cd9e30b}"
+VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 
-current_kernel_abi() {
-    sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);/\1/p' \
-        "$REPO_ROOT/crates/shared/src/lib.rs" | head -1
-}
-
-wasm_abi() {
-    local wasm="$1"
-    (
-        cd "$REPO_ROOT"
-        npx --no-install tsx --eval \
-            "const { extractAbiVersion } = require('./host/src/constants.ts'); const { readFileSync } = require('node:fs'); const path = process.argv[1]; const b = readFileSync(path); const abi = extractAbiVersion(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)); if (abi != null) console.log(abi);" \
-            -- "$wasm"
-    )
-}
-
-# --- Idempotent fast path ---
-# If all three artifacts already exist (e.g. left over from a prior
-# build, or downloaded by scripts/fetch-binaries.sh into bin/), just
-# install them and return. This lets `xtask archive-stage` succeed in
-# environments that don't have libc++ available — needed because the
-# resolver invokes this script to ensure_built before staging.
-if [ -f "$BIN_DIR/dinit.wasm" ] && [ -f "$BIN_DIR/dinitctl.wasm" ] && [ -f "$BIN_DIR/dinitcheck.wasm" ]; then
-    current_abi="$(current_kernel_abi || true)"
-    artifact_abi="$(wasm_abi "$BIN_DIR/dinit.wasm" 2>/dev/null || true)"
-    legacy_artifacts=()
-    for artifact in "$BIN_DIR/dinit.wasm" "$BIN_DIR/dinitctl.wasm" "$BIN_DIR/dinitcheck.wasm"; do
-        if wasm_has_legacy_asyncify "$artifact"; then
-            legacy_artifacts+=("$artifact")
-        fi
-    done
-    if [ -n "$current_abi" ] && [ "$artifact_abi" = "$current_abi" ] && [ "${#legacy_artifacts[@]}" -eq 0 ]; then
-        echo "==> Reusing existing dinit artifacts in $BIN_DIR (ABI $artifact_abi; skip rebuild)."
-        source "$REPO_ROOT/scripts/install-local-binary.sh"
-        install_local_binary dinit "$BIN_DIR/dinit.wasm" dinit.wasm
-        install_local_binary dinit "$BIN_DIR/dinitctl.wasm" dinitctl.wasm
-        install_local_binary dinit "$BIN_DIR/dinitcheck.wasm" dinitcheck.wasm
-        exit 0
-    fi
-    if [ "${#legacy_artifacts[@]}" -gt 0 ]; then
-        echo "==> Existing dinit artifacts contain legacy Asyncify symbols; rebuilding."
-    else
-        echo "==> Existing dinit artifacts are stale (artifact ABI ${artifact_abi:-unknown}, current ABI ${current_abi:-unknown}); rebuilding."
-    fi
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
 fi
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-c++ &>/dev/null; then
-    echo "ERROR: wasm32posix-c++ not found. Run 'npm link' in sdk/ first." >&2
+    echo "ERROR: wasm32posix-c++ not found after activating the worktree SDK." >&2
     exit 1
 fi
 
-LIBCXX_DIR="${WASM_POSIX_DEP_LIBCXX_DIR:-}"
-if [ -n "$LIBCXX_DIR" ]; then
-    copy_dep_file() {
-        local src="$1"
-        local dst="$2"
-
-        if [ -e "$dst" ] && [ ! -L "$dst" ] && cmp -s "$src" "$dst"; then
-            return
-        fi
-
-        rm -f "$dst"
-        cp "$src" "$dst"
-    }
-
-    mkdir -p "$SYSROOT/lib" "$SYSROOT/include/c++"
-    copy_dep_file "$LIBCXX_DIR/lib/libc++.a" "$SYSROOT/lib/libc++.a"
-    copy_dep_file "$LIBCXX_DIR/lib/libc++abi.a" "$SYSROOT/lib/libc++abi.a"
-
-    LIBCXX_INCLUDE_SRC="$LIBCXX_DIR/include/c++/v1"
-    LIBCXX_INCLUDE_DST="$SYSROOT/include/c++/v1"
-    if [ ! -d "$LIBCXX_INCLUDE_DST" ] \
-        || [ "$(cd "$LIBCXX_INCLUDE_SRC" && pwd -P)" != "$(cd "$LIBCXX_INCLUDE_DST" && pwd -P)" ]; then
-        rm -rf "$LIBCXX_INCLUDE_DST"
-        cp -RL "$LIBCXX_INCLUDE_SRC" "$LIBCXX_INCLUDE_DST"
-    fi
+export WASM_POSIX_DEP_WORK_DIR="$WORK_DIR"
+LIBCXX_PREFIX="${WASM_POSIX_DEP_LIBCXX_DIR:-}"
+if [ -z "$LIBCXX_PREFIX" ]; then
+    echo "==> Resolving libcxx via cargo xtask build-deps..."
+    HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+    LIBCXX_PREFIX="$(
+        cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" \
+            --quiet -- build-deps --arch wasm32 resolve libcxx
+    )"
 fi
+[ -f "$LIBCXX_PREFIX/lib/libc++.a" ] || {
+    echo "ERROR: libcxx resolve missing libc++.a at $LIBCXX_PREFIX" >&2
+    exit 1
+}
+[ -f "$LIBCXX_PREFIX/lib/libc++abi.a" ] || {
+    echo "ERROR: libcxx resolve missing libc++abi.a at $LIBCXX_PREFIX" >&2
+    exit 1
+}
+[ -d "$LIBCXX_PREFIX/include/c++/v1" ] || {
+    echo "ERROR: libcxx resolve missing include/c++/v1 at $LIBCXX_PREFIX" >&2
+    exit 1
+}
+export WASM_POSIX_DEP_LIBCXX_DIR="$LIBCXX_PREFIX"
+SYSROOT="$(
+    kandelo_package_prepare_private_sysroot dinit "$REPO_ROOT/sysroot" libcxx
+)"
+export WASM_POSIX_SYSROOT="$SYSROOT"
 
 if [ ! -f "$SYSROOT/lib/libc++.a" ]; then
     echo "ERROR: libc++.a not found in $SYSROOT/lib/" >&2
@@ -101,11 +70,11 @@ if [ ! -f "$SYSROOT/lib/libc++.a" ]; then
     exit 1
 fi
 
-# --- Download source ---
+# --- Stage resolver-verified source into mutable work ---
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading dinit $DINIT_VERSION..."
-    git clone --depth 1 --branch "$DINIT_VERSION" \
-        https://github.com/davmac314/dinit.git "$SRC_DIR"
+    echo "==> Staging verified dinit $DINIT_VERSION source..."
+    kandelo_package_stage_verified_source dinit "$SRC_DIR" \
+        "$VERIFIED_SOURCE_DIR" "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
 fi
 
 cd "$SRC_DIR"
@@ -232,10 +201,7 @@ echo "==> Applying wasm-fork-instrument to dinit.wasm..."
 mv "$BIN_DIR/dinit.wasm.instr" "$BIN_DIR/dinit.wasm"
 ls -la "$BIN_DIR/dinit.wasm"
 
-# Install into local-binaries/ so the resolver (host/src/binary-resolver.ts)
-# picks these up over anything fetched by scripts/fetch-binaries.sh.
-# Also makes the artifacts visible to `xtask archive-stage` when a
-# package archive is being produced.
+# Install the three declared members into the caller-owned package output.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary dinit "$BIN_DIR/dinit.wasm" dinit.wasm
 install_local_binary dinit "$BIN_DIR/dinitctl.wasm" dinitctl.wasm

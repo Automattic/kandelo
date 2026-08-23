@@ -51,7 +51,6 @@ mkdir -p "$SRC_DIR"
 tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
 
 cd "$SRC_DIR"
-rm -rf "$INSTALL_DIR"
 
 echo "==> Configuring GNU libiconv for Wasm..."
 wasm32posix-configure \
@@ -66,7 +65,6 @@ make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 
 echo "==> Staging declared package outputs..."
 make install DESTDIR="$STAGE_DIR"
-rm -rf "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/include"
 cp "$STAGE_DIR/usr/lib/libiconv.a" "$INSTALL_DIR/lib/"
 cp "$STAGE_DIR/usr/lib/libcharset.a" "$INSTALL_DIR/lib/"

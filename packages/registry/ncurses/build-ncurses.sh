@@ -108,11 +108,24 @@ if [ ! -f "$TERMINFO_DIR/x/xterm-256color" ]; then
 fi
 
 # --- Cross-compile ncurses for wasm32 ---
-# Always rebuild from a clean slate: INSTALL_DIR can differ between
-# cache-miss invocations, and autoconf bakes the prefix into the
-# Makefile, so reusing a stale wasm-build dir would `make install`
-# into the wrong path.
-rm -rf "$WASM_BUILD_DIR" "$INSTALL_DIR"
+# Always rebuild the configure tree from a clean slate: INSTALL_DIR can differ
+# between cache-miss invocations, and autoconf bakes the prefix into the
+# Makefile. The resolver-created output directory is itself publication
+# authority, however, so a recipe must populate that inode rather than delete
+# and recreate it.
+rm -rf "$WASM_BUILD_DIR"
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    if [ "$INSTALL_DIR" != "$WASM_POSIX_DEP_OUT_DIR" ]; then
+        echo "ERROR: ncurses install root differs from resolver output authority" >&2
+        exit 1
+    fi
+    if [ -n "$(find "$INSTALL_DIR" -mindepth 1 -print -quit)" ]; then
+        echo "ERROR: ncurses resolver output directory must start empty" >&2
+        exit 1
+    fi
+else
+    rm -rf "$INSTALL_DIR"
+fi
 mkdir -p "$WASM_BUILD_DIR"
 
 echo "==> Configuring ncurses for wasm32..."
@@ -159,6 +172,7 @@ export ac_cv_sizeof_void_p=4
         --with-default-terminfo-dir=/usr/share/terminfo \
         --with-terminfo-dirs=/usr/share/terminfo \
         --with-fallbacks=xterm-256color,xterm,vt100,dumb \
+        --with-build-cc="${CC_FOR_BUILD:-cc}" \
         --with-tic-path="$HOST_TIC" \
         --with-infocmp-path="$HOST_INFOCMP" \
         --enable-pc-files=no \

@@ -30,12 +30,41 @@ CDOOM_COMMIT="35fb1372d10756ca27eca05665bd8a7cebc71c05"
 CDOOM_SOURCE_URL="${FBDOOM_CHOCOLATE_DOOM_SOURCE_URL:-https://github.com/chocolate-doom/chocolate-doom/archive/${CDOOM_COMMIT}.tar.gz}"
 CDOOM_SOURCE_SHA256="${FBDOOM_CHOCOLATE_DOOM_SOURCE_SHA256:-dc62c13cab469e19e0ad295b2dd7e460263c637a39c51d3771e96dabb08ecab2}"
 CDOOM_VERIFIED_SOURCE_DIR="${FBDOOM_CHOCOLATE_DOOM_SOURCE_DIR:-}"
+CDOOM_GIT_SOURCE_DIR="${WASM_POSIX_BUILD_GIT_CHOCOLATE_DOOM_DIR:-}"
+CDOOM_GIT_SOURCE_COMMIT="${WASM_POSIX_BUILD_GIT_CHOCOLATE_DOOM_COMMIT:-}"
 
 # A resolver/Formula caller owns the declared work and output roots. Keep the
 # reviewed checkout read-only and suppress the developer-only local mirror.
 if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
     export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled
+fi
+
+# SourceOnly never substitutes the primary package source for this independent
+# upstream tree. The resolver provides the exact detached checkout declared in
+# build.toml; direct developer builds retain the verified archive fallback.
+if [ -n "$CDOOM_GIT_SOURCE_DIR" ] || [ -n "$CDOOM_GIT_SOURCE_COMMIT" ]; then
+    if [ -z "$CDOOM_GIT_SOURCE_DIR" ] || [ -z "$CDOOM_GIT_SOURCE_COMMIT" ]; then
+        echo "ERROR: fbdoom requires build.toml git input chocolate_doom (DIR and COMMIT)" >&2
+        exit 2
+    fi
+    if [ "$CDOOM_GIT_SOURCE_COMMIT" != "$CDOOM_COMMIT" ]; then
+        echo "ERROR: fbdoom chocolate_doom Git input commit must be $CDOOM_COMMIT, got $CDOOM_GIT_SOURCE_COMMIT" >&2
+        exit 2
+    fi
+    CDOOM_GIT_SOURCE_DIR="$(kandelo_package_require_existing_real_dir \
+        "fbdoom chocolate_doom Git input" "$CDOOM_GIT_SOURCE_DIR")"
+    kandelo_package_require_disjoint_paths \
+        "fbdoom chocolate_doom Git input" "$CDOOM_GIT_SOURCE_DIR" \
+        WASM_POSIX_DEP_WORK_DIR "$KANDELO_PACKAGE_WORK_DIR"
+    if [ -n "$KANDELO_PACKAGE_OUT_DIR" ]; then
+        kandelo_package_require_disjoint_paths \
+            "fbdoom chocolate_doom Git input" "$CDOOM_GIT_SOURCE_DIR" \
+            WASM_POSIX_DEP_OUT_DIR "$KANDELO_PACKAGE_OUT_DIR"
+    fi
+elif [ "${WASM_POSIX_RESOLUTION_POLICY:-}" = "source-only-v1" ]; then
+    echo "ERROR: fbdoom requires build.toml git input chocolate_doom (DIR and COMMIT) under SourceOnly" >&2
+    exit 2
 fi
 
 patch_set_sha256="$(shasum -a 256 "$HERE"/patches/*.patch | shasum -a 256 | awk '{print $1}')"
@@ -54,16 +83,32 @@ if [ ! -d "$SRC" ]; then
 fi
 
 cdoom_marker="$CDOOM_SRC/.kandelo-chocolate-doom-source"
-expected_cdoom_marker="$(printf '%s\n%s\n%s' \
-    "$CDOOM_COMMIT" "$CDOOM_SOURCE_URL" "$CDOOM_SOURCE_SHA256")"
+if [ -n "$CDOOM_GIT_SOURCE_DIR" ]; then
+    cdoom_source_identity="git:$CDOOM_GIT_SOURCE_COMMIT"
+else
+    cdoom_source_identity="archive:$CDOOM_SOURCE_URL:$CDOOM_SOURCE_SHA256"
+fi
+expected_cdoom_marker="$(printf '%s\n%s' \
+    "$CDOOM_COMMIT" "$cdoom_source_identity")"
 if [ -d "$CDOOM_SRC" ] && [ "$(cat "$cdoom_marker" 2>/dev/null || true)" != "$expected_cdoom_marker" ]; then
     rm -rf "$CDOOM_SRC"
 fi
 if [ ! -d "$CDOOM_SRC" ]; then
-    echo "==> Staging pinned chocolate-doom music source..."
-    kandelo_package_stage_verified_source chocolate-doom "$CDOOM_SRC" \
-        "$CDOOM_VERIFIED_SOURCE_DIR" "$CDOOM_SOURCE_URL" \
-        "$CDOOM_SOURCE_SHA256" "$WORK_DIR"
+    if [ -n "$CDOOM_GIT_SOURCE_DIR" ]; then
+        echo "==> Copying resolver-sealed chocolate-doom music source..."
+        mkdir "$CDOOM_SRC"
+        if ! tar --exclude=.git -cf - -C "$CDOOM_GIT_SOURCE_DIR" . | \
+            tar xf - -C "$CDOOM_SRC"; then
+            rm -rf "$CDOOM_SRC"
+            exit 1
+        fi
+        find "$CDOOM_SRC" ! -type l -exec chmod u+rwX,go-w {} +
+    else
+        echo "==> Staging pinned chocolate-doom music source..."
+        kandelo_package_stage_verified_source chocolate-doom "$CDOOM_SRC" \
+            "$CDOOM_VERIFIED_SOURCE_DIR" "$CDOOM_SOURCE_URL" \
+            "$CDOOM_SOURCE_SHA256" "$WORK_DIR"
+    fi
     printf '%s\n' "$expected_cdoom_marker" > "$cdoom_marker"
 fi
 

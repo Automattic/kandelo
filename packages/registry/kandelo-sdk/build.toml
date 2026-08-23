@@ -6,6 +6,7 @@ inputs = [
   "images/vfs/scripts/vfs-image-helpers.ts",
   "libc/glue",
   "scripts/install-local-binary.sh",
+  "scripts/package-build-roots.sh",
   "sdk/activate.sh",
   "sdk/bin",
   "sdk/config.site",
@@ -37,7 +38,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 4
+revision    = 5
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

@@ -177,10 +177,30 @@ describe("Vite browser binary capabilities", () => {
       ),
     ).toHaveLength(2);
     expect(
-      config.match(/programCacheRoot: browserProgramCacheRoot/g),
+      config.match(/programCacheRoot: browserExternalArtifactRoot/g),
     ).toHaveLength(1);
     expect(
-      config.match(/allow: \[repoRoot, browserProgramCacheRoot\]/g),
+      config.match(/allow: \[repoRoot, browserExternalArtifactRoot\]/g),
     ).toHaveLength(1);
+    expect(config).toContain("sourceOnlyBinaryRoot");
+    expect(config).toContain(
+      ".kandelo/source-only-program-projection-v1.json",
+    );
+    expect(config).toContain(
+      'sourceOnlyViteAssets.resolve("kernel.wasm")',
+    );
+    expect(config).toContain(
+      'sourceOnlyViteAssets!.resolve(\n            "programs/wasm32/rootfs.vfs",',
+    );
+    expect(config).toContain(
+      "sourceOnlyViteAssets.resolve(request.relPath)",
+    );
+    expect(config.match(/sourceOnlyViteAssets\.plugin\(\)/g)).toHaveLength(2);
+    expect(config).toContain(
+      "SourceOnly browser builds admit only the root main, kandelo, and network inputs",
+    );
+    expect(config).toContain(
+      'publicDir: sourceOnlyPublicSnapshot?.path ?? "public"',
+    );
   });
 });

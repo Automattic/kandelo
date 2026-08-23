@@ -329,15 +329,31 @@ async function main(): Promise<void> {
   const testSuiteDirectory = existsSync(join(legacyInstall, "mysql-test"))
     ? join(legacyInstall, "mysql-test")
     : join(source, "mysql-test");
-  const dinitPath = tryResolveBinary("programs/dinit/dinit.wasm") ??
-    join(REPO_ROOT, "packages/registry/dinit/bin/dinit.wasm");
-  const dinitctlPath = tryResolveBinary("programs/dinit/dinitctl.wasm") ??
-    join(REPO_ROOT, "packages/registry/dinit/bin/dinitctl.wasm");
+  const mariadbRoot = process.env.WASM_POSIX_DEP_MARIADB_DIR;
+  const dashRoot = process.env.WASM_POSIX_DEP_DASH_DIR;
+  const coreutilsRoot = process.env.WASM_POSIX_DEP_COREUTILS_DIR;
+  const dinitRoot = process.env.WASM_POSIX_DEP_DINIT_DIR;
+  const dinitPath = dinitRoot
+    ? join(dinitRoot, "dinit.wasm")
+    : tryResolveBinary("programs/dinit/dinit.wasm") ??
+      join(REPO_ROOT, "packages/registry/dinit/bin/dinit.wasm");
+  const dinitctlPath = dinitRoot
+    ? join(dinitRoot, "dinitctl.wasm")
+    : tryResolveBinary("programs/dinit/dinitctl.wasm") ??
+      join(REPO_ROOT, "packages/registry/dinit/bin/dinitctl.wasm");
   await buildMariadbTestVfsImage({
-    mariadbd: new Uint8Array(readFileSync(resolveBinary("programs/mariadb/mariadbd.wasm"))),
-    mysqltest: new Uint8Array(readFileSync(resolveBinary("programs/mariadb/mysqltest.wasm"))),
-    dash: new Uint8Array(readFileSync(resolveBinary("programs/dash.wasm"))),
-    coreutils: new Uint8Array(readFileSync(resolveBinary("programs/coreutils.wasm"))),
+    mariadbd: new Uint8Array(readFileSync(mariadbRoot
+      ? join(mariadbRoot, "mariadbd.wasm")
+      : resolveBinary("programs/mariadb/mariadbd.wasm"))),
+    mysqltest: new Uint8Array(readFileSync(mariadbRoot
+      ? join(mariadbRoot, "mysqltest.wasm")
+      : resolveBinary("programs/mariadb/mysqltest.wasm"))),
+    dash: new Uint8Array(readFileSync(dashRoot
+      ? join(dashRoot, "dash.wasm")
+      : resolveBinary("programs/dash.wasm"))),
+    coreutils: new Uint8Array(readFileSync(coreutilsRoot
+      ? join(coreutilsRoot, "coreutils.wasm")
+      : resolveBinary("programs/coreutils.wasm"))),
     dinit: {
       dinit: new Uint8Array(readFileSync(dinitPath)),
       dinitctl: new Uint8Array(readFileSync(dinitctlPath)),

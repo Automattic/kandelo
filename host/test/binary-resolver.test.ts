@@ -1227,6 +1227,37 @@ describe("binary resolver package closures", () => {
     expect(resolveBinary(relPath)).toBe(localPath);
   });
 
+  it("accepts a complete default identity context", () => {
+    const name = fixturePackageName();
+    const sourceArtifact = `${name}.wasm`;
+    const relPath = `programs/wasm32/${sourceArtifact}`;
+    const manifest = `kind = "program"
+name = "${name}"
+version = "1.0.0"
+`;
+    writeFixturePackageManifest(name, manifest);
+    writeFixturePackageProjection(name, [{
+      kind: "output",
+      sourceArtifact,
+      mirrorPath: sourceArtifact,
+      outputName: name,
+      forkInstrumentation: "disabled",
+    }]);
+
+    // The checked-in Default projection carries a complete first-hit registry
+    // context, including root boot artifacts that are not guest programs.
+    fixtureRegistryIdentities.userspace = {
+      manifestSha256: "a".repeat(64),
+      cacheKeys: {
+        wasm32: "b".repeat(64),
+        wasm64: "c".repeat(64),
+      },
+    };
+    writeFixtureRegistryIndex();
+
+    expect(programOutputClosureRelPaths(relPath)).toEqual([relPath]);
+  });
+
   it("matches Rust first-hit semantics by ignoring a directory without package.toml", () => {
     const name = fixturePackageName();
     mkdirSync(fixturePackageDirectory(name), { recursive: true });

@@ -13,6 +13,7 @@ arches = ["wasm32"]
 [source]
 url = "https://www.php.net/distributions/php-8.3.15.tar.gz"
 sha256 = "67073c3c9c56c86461e0715d9e1806af5ddffe8e6e2eb9781f7923bbb5bd67fa"
+provider = "archive"
 
 [license]
 spdx = "PHP-3.01"

@@ -339,6 +339,18 @@ fn parse_product_manifest(
     Ok(manifest)
 }
 
+/// Parse and validate one product manifest from caller-owned stable bytes.
+///
+/// Graph admission uses this seam so the bytes it hashes are the bytes it
+/// parses, rather than reopening the pathname through the catalog loader.
+pub(crate) fn parse_product_manifest_bytes(
+    repository_root: &Path,
+    source_path: &Path,
+    bytes: &[u8],
+) -> Result<VfsProductManifestV1, String> {
+    parse_product_manifest(repository_root, source_path, bytes)
+}
+
 fn validate_manifest(
     repository_root: &Path,
     source_path: &Path,
@@ -544,6 +556,13 @@ fn validate_catalog(products: &[VfsProductCatalogEntryV1]) -> Result<(), String>
         visit_product(id, &ids, &mut states)?;
     }
     Ok(())
+}
+
+/// Validate a complete catalog assembled from caller-owned stable bytes.
+pub(crate) fn validate_product_catalog_entries(
+    products: &[VfsProductCatalogEntryV1],
+) -> Result<(), String> {
+    validate_catalog(products)
 }
 
 fn visit_product<'a>(

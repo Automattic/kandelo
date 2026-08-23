@@ -1458,11 +1458,11 @@ fixed same-origin ZIP with an atomic rename, so Vite can see either the
 preceding verified asset or the new one, never a partial copy.
 
 Only explicit historical lifecycle recovery uses this support-data-bottle
-preparer. Ordinary `./run.sh prepare-browser`, package staging, and Pages
-resolve the canonical `homebrew-bootstrap` registry package and atomically
-stage its exact ZIP at `apps/browser-demos/public/homebrew-bootstrap.zip`.
-The shell source build consumes the same package output, so the browser asset
-and image metadata share one package authority.
+preparer. Package staging and the retained Pages publication path resolve the
+canonical `homebrew-bootstrap` registry package and atomically stage its exact
+ZIP at `apps/browser-demos/public/homebrew-bootstrap.zip`. Local
+`./run.sh prepare-browser` and `./run.sh browser` use the SourceOnly product
+graph instead and do not stage this retired browser input.
 
 Only the publication job receives `contents: write`. Both of its write paths
 are guarded by the admitted publication mode. `create-mirror` calls

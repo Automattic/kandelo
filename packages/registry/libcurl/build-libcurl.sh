@@ -232,7 +232,6 @@ wasm32posix-configure \
 echo "==> Building curl..."
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 
-rm -rf "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 
 audit_wasm_imports() {

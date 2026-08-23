@@ -27,7 +27,8 @@ cd "$repo_root"
 # host packages and deliberately minimal resolver fixtures have no xtask source
 # tree and continue to use their pack-time-verified bundled projection.
 checker_root="${WASM_POSIX_BINARY_RESOLVER_REPO_ROOT:-$repo_root}"
-if [[ "$1" == programs/* ]] &&
+if [ "${WASM_POSIX_RESOLUTION_POLICY:-}" != "source-only-v1" ] &&
+    [[ "$1" == programs/* ]] &&
     [ -z "${WASM_POSIX_XTASK_BIN:-}" ] &&
     [ -f "$checker_root/tools/xtask/Cargo.toml" ] &&
     [ -f "$checker_root/scripts/dev-shell.sh" ]; then

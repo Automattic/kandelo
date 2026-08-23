@@ -813,9 +813,9 @@ CI runs `staging-build.yml` on the PR, which:
    package metadata.
 
 After the staging workflow has published `index.toml`, use
-`./run.sh --pr-staging browser` or
-`WASM_POSIX_USE_PR_STAGING=1 ./run.sh browser` to test the PR's
-staging release locally without waiting for the durable ABI release.
+`./run.sh --pr-staging fetch` to inspect the PR's staging release locally
+without waiting for the durable ABI release. `./run.sh browser` instead tests
+the package through the local SourceOnly graph and its dependent VFS products.
 
 ### 6. Register in `run.sh` (optional)
 
