@@ -1716,20 +1716,20 @@ describe("wasm artifact policy helpers", () => {
   });
 });
 
-const builtNodeBinary = join(process.cwd(), "..", "packages/registry/spidermonkey-node/bin/node.wasm");
+const builtNodeBinary =
+  tryResolveBinary("programs/spidermonkey-node.wasm") ??
+  join(process.cwd(), "..", "packages/registry/spidermonkey-node/bin/node.wasm");
 
 describe.skipIf(!existsSync(builtNodeBinary))("built node.wasm artifact policy", () => {
-  it("uses the SpiderMonkey no-fork-instrumentation policy", () => {
+  it("uses the complete SpiderMonkey fork-instrumentation policy", () => {
     const bytes = readFileSync(builtNodeBinary);
     const wasm = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 
     expect(describeWasmArtifactPolicyFailures(wasm, {
       expectedAbi: ABI_VERSION,
-      requireForkInstrumentation: false,
-      forbidForkInstrumentation: true,
     })).toEqual([]);
     expect(wasmContainsLegacyAsyncify(wasm)).toBe(false);
-    expect(readWasmExportNames(wasm).filter((name) => name.startsWith("wpk_fork_"))).toEqual([]);
+    expect(readWasmExportNames(wasm).filter((name) => name.startsWith("wpk_fork_"))).not.toEqual([]);
   });
 });
 

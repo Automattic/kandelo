@@ -3,7 +3,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-OUT="$REPO_ROOT/target/wasm32-unknown-unknown/release/wasm_posix_userspace.wasm"
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
+export CARGO_TARGET_DIR
+OUT="$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/wasm_posix_userspace.wasm"
 
 cd "$REPO_ROOT"
 cargo build --release -p wasm-posix-userspace -Z build-std=core,alloc

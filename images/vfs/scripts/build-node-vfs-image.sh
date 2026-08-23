@@ -8,6 +8,10 @@ if [ "$#" -ne 0 ] && [ "${1:-}" = "--vfs-product-manifest" ]; then
     "$SCRIPT_DIR/staged-product-inputs.ts" browser-node "$@"
 fi
 echo "==> Building Node VFS image..."
-npx tsx "$SCRIPT_DIR/build-node-vfs-image.ts"
+VFS_OUTPUT="${1:-$REPO_ROOT/apps/browser-demos/public/node-vfs.vfs.zst}"
+node_vfs_tmpdir="$(mktemp -d /tmp/kandelo-node-vfs.XXXXXX)"
+trap 'rm -rf "$node_vfs_tmpdir"' EXIT
+TMPDIR="$node_vfs_tmpdir" npx tsx "$SCRIPT_DIR/build-node-vfs-image.ts" \
+  "$VFS_OUTPUT"
 echo "==> Done."
-ls -lh apps/browser-demos/public/node-vfs.vfs.zst
+ls -lh "$VFS_OUTPUT"

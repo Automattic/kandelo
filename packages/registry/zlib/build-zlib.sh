@@ -69,7 +69,6 @@ echo "==> Building zlib..."
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" libz.a
 
 echo "==> Staging declared package outputs..."
-rm -rf "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR/lib/pkgconfig" "$INSTALL_DIR/include"
 cp libz.a "$INSTALL_DIR/lib/"
 cp zlib.h zconf.h "$INSTALL_DIR/include/"

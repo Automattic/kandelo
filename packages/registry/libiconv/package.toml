@@ -13,6 +13,7 @@ arches = ["wasm32"]
 [source]
 url = "https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.17.tar.gz"
 sha256 = "8f74213b56238c85a50a5329f77e06198771e70dd9a739779f4c02f65d971313"
+provider = "archive"
 
 [license]
 spdx = "LGPL-2.1-or-later AND GPL-3.0-or-later"

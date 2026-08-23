@@ -45,6 +45,7 @@
 //!                          package's cache/index entry.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::{OsStr, OsString};
 use std::os::fd::AsFd;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -58,12 +59,122 @@ use crate::host_tool_probe::{self, ProbeFailure};
 use crate::index_toml::{self, EntryStatus};
 use crate::pkg_manifest::{
     BinarySource, BuildToml, DepRef, DepsManifest, ForkInstrumentationPolicy, GitBuildInput,
-    HostTool, ManifestKind, TargetArch, file_paths_conflict, remove_cache_provenance,
-    validate_cache_provenance, write_cache_provenance,
+    HostTool, MAX_CACHE_PROVENANCE_BYTES, ManifestKind, SourceProvider, TargetArch,
+    cache_provenance_path, expected_cache_provenance_bytes, file_paths_conflict,
+    remove_cache_provenance, validate_cache_provenance, write_cache_provenance,
 };
 use crate::remote_fetch;
 use crate::repo_root;
+use crate::source_archive_cache;
 use crate::source_extract;
+
+const SOURCE_ONLY_POLICY_ENV: &str = "WASM_POSIX_RESOLUTION_POLICY";
+const SOURCE_ONLY_POLICY_VALUE: &str = "source-only-v1";
+
+// SourceOnly recipes inherit the repo-declared Nix tool environment, but not
+// caller secrets or settings that can silently redirect resolution/builds.
+// Resolver-owned WASM_POSIX_DEP_* values are removed by prefix below and then
+// reintroduced from the resolved node immediately before launch.
+const SOURCE_ONLY_RECIPE_AMBIENT_ENVIRONMENT: &[&str] = &[
+    // CI/package-manager credentials and credential-bearing helpers.
+    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+    "ACTIONS_ID_TOKEN_REQUEST_URL",
+    "ACTIONS_RUNTIME_TOKEN",
+    "CARGO_REGISTRIES_CRATES_IO_TOKEN",
+    "CARGO_REGISTRY_TOKEN",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GIT_ASKPASS",
+    "HOMEBREW_DOCKER_REGISTRY_TOKEN",
+    "HOMEBREW_GITHUB_API_TOKEN",
+    "HOMEBREW_GITHUB_PACKAGES_TOKEN",
+    "NODE_AUTH_TOKEN",
+    "NPM_TOKEN",
+    "SSH_ASKPASS",
+    "SSH_AUTH_SOCK",
+    // Proxy selection belongs to resolver-owned acquisition, not a recipe.
+    "ALL_PROXY",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "all_proxy",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "CARGO_HTTP_PROXY",
+    // Non-interactive shell hooks and Rust/Cargo process substitution.
+    "BASH_ENV",
+    "ENV",
+    "CARGO_BUILD_RUSTC",
+    "CARGO_BUILD_RUSTC_WRAPPER",
+    "CARGO_ENCODED_RUSTFLAGS",
+    "RUSTC",
+    "RUSTC_WRAPPER",
+    "RUSTC_WORKSPACE_WRAPPER",
+    "RUSTDOC",
+    "RUSTDOCFLAGS",
+    "RUSTFLAGS",
+    // Resolver policy is reapplied from ResolveOpts below.
+    "WASM_POSIX_BINARY_CACHE_ROOT",
+    "WASM_POSIX_BINARY_INDEX_URL",
+    "WASM_POSIX_BINARY_RESOLVER_REPO_ROOT",
+    "WASM_POSIX_DEFAULT_ARCH",
+    "WASM_POSIX_DEPS_REGISTRY",
+    "WASM_POSIX_SOURCE_ONLY_CACHE_ROOT",
+    "WASM_POSIX_USE_PR_STAGING",
+    SOURCE_ONLY_POLICY_ENV,
+];
+
+fn scrub_source_only_recipe_environment(command: &mut Command) {
+    for name in SOURCE_ONLY_RECIPE_AMBIENT_ENVIRONMENT {
+        command.env_remove(name);
+    }
+    for (name, _) in std::env::vars_os() {
+        if name
+            .to_str()
+            .is_some_and(|name| {
+                name.starts_with("WASM_POSIX_BUILD_GIT_")
+                    || name.starts_with("WASM_POSIX_DEP_")
+            })
+        {
+            command.env_remove(name);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ResolvePolicy {
+    Default,
+    SourceOnlyV1,
+}
+
+impl ResolvePolicy {
+    fn domain_separator(self) -> Option<&'static [u8]> {
+        match self {
+            Self::Default => None,
+            Self::SourceOnlyV1 => Some(b"kandelo-resolve-policy\0source-only-v1\0"),
+        }
+    }
+}
+
+fn parse_resolution_policy(value: Option<&std::ffi::OsStr>) -> Result<ResolvePolicy, String> {
+    let Some(value) = value else {
+        return Ok(ResolvePolicy::Default);
+    };
+    let value = value.to_str().ok_or_else(|| {
+        format!("{SOURCE_ONLY_POLICY_ENV} must be valid UTF-8 and equal {SOURCE_ONLY_POLICY_VALUE:?}")
+    })?;
+    match value {
+        SOURCE_ONLY_POLICY_VALUE => Ok(ResolvePolicy::SourceOnlyV1),
+        _ => Err(format!(
+            "{SOURCE_ONLY_POLICY_ENV} must be absent or exactly {SOURCE_ONLY_POLICY_VALUE:?}; got {value:?}"
+        )),
+    }
+}
+
+pub(crate) fn ambient_resolution_policy() -> Result<ResolvePolicy, String> {
+    parse_resolution_policy(std::env::var_os(SOURCE_ONLY_POLICY_ENV).as_deref())
+}
 
 /// Root directory of the package cache. `WASM_POSIX_BINARY_CACHE_ROOT` is the
 /// explicit cross-language override shared with the TypeScript resolver.
@@ -87,6 +198,225 @@ pub fn default_cache_root() -> PathBuf {
     }
 }
 
+/// Base root for policy- and input-keyed locally compiled artifacts.
+/// The ordinary binary cache environment is deliberately not consulted.
+pub fn default_source_only_cache_root() -> PathBuf {
+    select_source_only_cache_root(
+        std::env::var_os("WASM_POSIX_SOURCE_ONLY_CACHE_ROOT").as_deref(),
+        std::env::var_os("XDG_CACHE_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+        &repo_root(),
+    )
+}
+
+fn select_source_only_cache_root(
+    explicit: Option<&std::ffi::OsStr>,
+    xdg: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+    repo: &Path,
+) -> PathBuf {
+    if let Some(explicit) = explicit {
+        let explicit = PathBuf::from(explicit);
+        if explicit.is_absolute() {
+            explicit
+        } else {
+            repo.join(explicit)
+        }
+    } else if let Some(xdg) = xdg {
+        PathBuf::from(xdg).join("kandelo/source-only")
+    } else if let Some(home) = home {
+        PathBuf::from(home).join(".cache/kandelo/source-only")
+    } else {
+        PathBuf::from("/tmp/kandelo-source-only")
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SourceOnlyCacheRoots {
+    pub(crate) base: PathBuf,
+    pub(crate) compiled: PathBuf,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PlannedSourceOnlyCacheRoots {
+    pub(crate) base: PathBuf,
+    pub(crate) compiled: PathBuf,
+    inherited_compiled: Option<PathBuf>,
+}
+
+pub(crate) fn plan_source_only_cache_roots() -> Result<PlannedSourceOnlyCacheRoots, String> {
+    let selected_base = default_source_only_cache_root();
+    let inherited_compiled = if std::env::var_os("WASM_POSIX_SOURCE_ONLY_CACHE_ROOT").is_some() {
+        std::env::var_os("WASM_POSIX_BINARY_CACHE_ROOT").map(PathBuf::from)
+    } else {
+        None
+    };
+    plan_canonical_source_only_cache_roots(&selected_base, inherited_compiled.as_deref())
+}
+
+pub(crate) fn source_only_cache_roots() -> Result<SourceOnlyCacheRoots, String> {
+    let planned = plan_source_only_cache_roots()?;
+    materialize_planned_source_only_cache_roots(&planned)
+}
+
+pub(crate) fn plan_canonical_source_only_cache_roots(
+    selected_base: &Path,
+    inherited_compiled: Option<&Path>,
+) -> Result<PlannedSourceOnlyCacheRoots, String> {
+    let base = canonicalize_with_missing_tail(selected_base)?;
+    let compiled = base.join("source-only-v1/compiled");
+    if let Some(inherited_compiled) = inherited_compiled {
+        let inherited_compiled_without_creation =
+            canonicalize_with_missing_tail(inherited_compiled)?;
+        if inherited_compiled_without_creation != compiled {
+            return Err(format!(
+                "inherited WASM_POSIX_BINARY_CACHE_ROOT must be the selected source-only compiled cache {}; got {}",
+                compiled.display(),
+                inherited_compiled_without_creation.display()
+            ));
+        }
+    }
+
+    Ok(PlannedSourceOnlyCacheRoots {
+        base,
+        compiled,
+        inherited_compiled: inherited_compiled.map(Path::to_path_buf),
+    })
+}
+
+pub(crate) fn validate_planned_source_only_compiled_root(
+    planned: &PlannedSourceOnlyCacheRoots,
+    authored: &Path,
+) -> Result<(), String> {
+    let normalized = canonicalize_with_missing_tail(authored)?;
+    if normalized.as_os_str() != authored.as_os_str() {
+        return Err(format!(
+            "source-only --cache-root must use its exact canonical spelling {}; got {}",
+            normalized.display(),
+            authored.display(),
+        ));
+    }
+    if normalized != planned.compiled {
+        return Err(format!(
+            "source-only --cache-root must be {}; got {}",
+            planned.compiled.display(),
+            normalized.display(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn materialize_planned_source_only_cache_roots(
+    planned: &PlannedSourceOnlyCacheRoots,
+) -> Result<SourceOnlyCacheRoots, String> {
+    std::fs::create_dir_all(&planned.compiled).map_err(|error| {
+        format!(
+            "create source-only compiled cache {}: {error}",
+            planned.compiled.display()
+        )
+    })?;
+    let base = std::fs::canonicalize(&planned.base).map_err(|error| {
+        format!(
+            "canonicalize source-only cache base {}: {error}",
+            planned.base.display()
+        )
+    })?;
+    let compiled = std::fs::canonicalize(&planned.compiled).map_err(|error| {
+        format!(
+            "canonicalize source-only compiled cache {}: {error}",
+            planned.compiled.display()
+        )
+    })?;
+    let expected_compiled = base.join("source-only-v1/compiled");
+    if compiled != expected_compiled {
+        return Err(format!(
+            "source-only compiled cache must be exactly {}; got {}",
+            expected_compiled.display(),
+            compiled.display()
+        ));
+    }
+    if base.as_os_str() != planned.base.as_os_str()
+        || compiled.as_os_str() != planned.compiled.as_os_str()
+    {
+        return Err(format!(
+            "source-only cache pair changed after preflight; planned {{{}, {}}}, materialized {{{}, {}}}",
+            planned.base.display(),
+            planned.compiled.display(),
+            base.display(),
+            compiled.display(),
+        ));
+    }
+
+    if let Some(inherited_compiled) = planned.inherited_compiled.as_deref() {
+        let inherited_compiled = std::fs::canonicalize(inherited_compiled).map_err(|error| {
+            format!(
+                "canonicalize inherited source-only compiled cache {}: {error}",
+                inherited_compiled.display()
+            )
+        })?;
+        if inherited_compiled != compiled {
+            return Err(format!(
+                "inherited WASM_POSIX_BINARY_CACHE_ROOT must be the selected source-only compiled cache {}; got {}",
+                compiled.display(),
+                inherited_compiled.display()
+            ));
+        }
+    }
+    Ok(SourceOnlyCacheRoots { base, compiled })
+}
+
+#[cfg(test)]
+fn canonical_source_only_cache_roots(
+    selected_base: &Path,
+    inherited_compiled: Option<&Path>,
+) -> Result<SourceOnlyCacheRoots, String> {
+    let planned = plan_canonical_source_only_cache_roots(selected_base, inherited_compiled)?;
+    materialize_planned_source_only_cache_roots(&planned)
+}
+
+fn canonicalize_with_missing_tail(path: &Path) -> Result<PathBuf, String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| format!("read current directory: {error}"))?
+            .join(path)
+    };
+    let mut cursor = absolute.as_path();
+    let mut missing = Vec::new();
+    loop {
+        match std::fs::canonicalize(cursor) {
+            Ok(mut canonical) => {
+                for component in missing.iter().rev() {
+                    canonical.push(component);
+                }
+                return Ok(canonical);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let component = cursor.file_name().ok_or_else(|| {
+                    format!(
+                        "source-only cache path has no existing canonical prefix: {}",
+                        path.display()
+                    )
+                })?;
+                missing.push(component.to_os_string());
+                cursor = cursor.parent().ok_or_else(|| {
+                    format!(
+                        "source-only cache path has no parent while resolving {}",
+                        path.display()
+                    )
+                })?;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "canonicalize existing source-only cache prefix {}: {error}",
+                    cursor.display()
+                ));
+            }
+        }
+    }
+}
+
 #[cfg(unix)]
 fn create_private_transaction_directory(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::DirBuilderExt;
@@ -98,6 +428,1652 @@ fn create_private_transaction_directory(path: &Path) -> std::io::Result<()> {
 #[cfg(not(unix))]
 fn create_private_transaction_directory(path: &Path) -> std::io::Result<()> {
     std::fs::create_dir(path)
+}
+
+/// A real directory held open across every SourceOnlyV1 child operation.
+///
+/// The display path is diagnostic and is revalidated before a successful
+/// transaction returns, but it is never used as the authority for creating or
+/// renaming children. That authority is the opened directory descriptor, so a
+/// concurrent pathname substitution cannot redirect resolver-owned writes.
+#[cfg(unix)]
+#[derive(Debug)]
+struct AnchoredDirectory {
+    file: std::fs::File,
+    path: PathBuf,
+    identity: PackageMirrorIdentity,
+}
+
+#[cfg(unix)]
+impl AnchoredDirectory {
+    fn try_clone(&self, label: &str) -> Result<Self, String> {
+        let file = self.file.try_clone().map_err(|error| {
+            format!("duplicate opened {label} {}: {error}", self.path.display())
+        })?;
+        Ok(Self {
+            file,
+            path: self.path.clone(),
+            identity: self.identity.clone(),
+        })
+    }
+
+    fn open_existing(path: &Path, label: &str) -> Result<Self, String> {
+        let before = std::fs::symlink_metadata(path)
+            .map_err(|error| format!("inspect {label} {}: {error}", path.display()))?;
+        if before.file_type().is_symlink() || !before.is_dir() {
+            return Err(format!("{label} must be a real nonsymlink directory: {}", path.display()));
+        }
+        let expected = package_mirror_identity(&before)?;
+        let file = rustix::fs::open(
+            path,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::CLOEXEC
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK,
+            rustix::fs::Mode::empty(),
+        )
+        .map(std::fs::File::from)
+        .map_err(|error| format!("open {label} {} without following: {error}", path.display()))?;
+        let opened = file
+            .metadata()
+            .map_err(|error| format!("inspect opened {label} {}: {error}", path.display()))?;
+        let after = std::fs::symlink_metadata(path)
+            .map_err(|error| format!("reinspect {label} {}: {error}", path.display()))?;
+        if !opened.is_dir()
+            || opened.file_type().is_symlink()
+            || after.file_type().is_symlink()
+            || !after.is_dir()
+            || package_mirror_identity(&opened)? != expected
+            || package_mirror_identity(&after)? != expected
+        {
+            return Err(format!("{label} changed while it was opened: {}", path.display()));
+        }
+        Ok(Self {
+            file,
+            path: path.to_path_buf(),
+            identity: expected,
+        })
+    }
+
+    fn validate_path(&self) -> Result<(), String> {
+        let metadata = std::fs::symlink_metadata(&self.path).map_err(|error| {
+            format!("reinspect anchored directory {}: {error}", self.path.display())
+        })?;
+        if metadata.file_type().is_symlink()
+            || !metadata.is_dir()
+            || package_mirror_identity(&metadata)? != self.identity
+        {
+            return Err(format!(
+                "anchored directory pathname changed and was preserved: {}",
+                self.path.display()
+            ));
+        }
+        let opened = self.file.metadata().map_err(|error| {
+            format!("reinspect opened anchored directory {}: {error}", self.path.display())
+        })?;
+        if !opened.is_dir() || package_mirror_identity(&opened)? != self.identity {
+            return Err(format!(
+                "opened anchored directory changed identity: {}",
+                self.path.display()
+            ));
+        }
+        Ok(())
+    }
+
+    fn open_child_directory(
+        &self,
+        name: &OsStr,
+        label: &str,
+    ) -> Result<Self, String> {
+        validate_single_path_component(name, label)?;
+        let path = self.path.join(name);
+        let file = rustix::fs::openat(
+            &self.file,
+            name,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::CLOEXEC
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK,
+            rustix::fs::Mode::empty(),
+        )
+        .map(std::fs::File::from)
+        .map_err(|error| format!("open {label} {} without following: {error}", path.display()))?;
+        let opened = file
+            .metadata()
+            .map_err(|error| format!("inspect opened {label} {}: {error}", path.display()))?;
+        if !opened.is_dir() || opened.file_type().is_symlink() {
+            return Err(format!("{label} must be a real nonsymlink directory: {}", path.display()));
+        }
+        let expected = package_mirror_identity(&opened)?;
+        let at = receipt_at_metadata_snapshot(&self.file, name, &path)?;
+        if at.kind != 2 || at.identity != expected {
+            return Err(format!("{label} changed while it was opened: {}", path.display()));
+        }
+        Ok(Self {
+            file,
+            path,
+            identity: expected,
+        })
+    }
+
+    fn create_unique_child_directory(
+        &self,
+        prefix: &str,
+        mode: u32,
+        label: &str,
+    ) -> Result<(OsString, Self), String> {
+        self.create_unique_child_directory_with_after_create(
+            prefix,
+            mode,
+            label,
+            &mut |_| {},
+        )
+    }
+
+    fn create_unique_child_directory_with_after_create<F>(
+        &self,
+        prefix: &str,
+        mode: u32,
+        label: &str,
+        after_create: &mut F,
+    ) -> Result<(OsString, Self), String>
+    where
+        F: FnMut(&Path),
+    {
+        self.create_unique_child_directory_with_hooks(
+            prefix,
+            mode,
+            label,
+            after_create,
+            &mut |_| {},
+        )
+    }
+
+    fn create_unique_child_directory_with_hooks<AfterCreate, BeforeHandoff>(
+        &self,
+        prefix: &str,
+        mode: u32,
+        label: &str,
+        after_create: &mut AfterCreate,
+        before_handoff: &mut BeforeHandoff,
+    ) -> Result<(OsString, Self), String>
+    where
+        AfterCreate: FnMut(&Path),
+        BeforeHandoff: FnMut(&Path),
+    {
+        for _ in 0..10_000 {
+            let sequence = MIRROR_TRANSACTION_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let name = OsString::from(format!(
+                ".{prefix}-{}-{sequence}",
+                std::process::id()
+            ));
+            match rustix::fs::mkdirat(
+                &self.file,
+                &name,
+                rustix::fs::Mode::from_bits_retain(mode as _),
+            ) {
+                Ok(()) => {
+                    let created_path = self.path.join(&name);
+                    let created = receipt_at_metadata_snapshot(&self.file, &name, &created_path)?;
+                    if created.kind != 2 {
+                        return Err(format!(
+                            "created {label} is not a real directory and was preserved: {}",
+                            created_path.display()
+                        ));
+                    }
+                    after_create(&created_path);
+                    let child = self.finish_created_child_directory(
+                        &name,
+                        mode,
+                        label,
+                        &created,
+                        before_handoff,
+                    )?;
+                    return Ok((name, child));
+                }
+                Err(rustix::io::Errno::EXIST) => continue,
+                Err(error) => {
+                    return Err(format!(
+                        "create {label} below {}: {error}",
+                        self.path.display()
+                    ));
+                }
+            }
+        }
+        Err(format!(
+            "could not allocate {label} below {}",
+            self.path.display()
+        ))
+    }
+
+    fn create_named_child_directory_with_after_create<F>(
+        &self,
+        name: &OsStr,
+        mode: u32,
+        label: &str,
+        after_create: &mut F,
+    ) -> Result<Self, String>
+    where
+        F: FnMut(&Path),
+    {
+        validate_single_path_component(name, label)?;
+        rustix::fs::mkdirat(
+            &self.file,
+            name,
+            rustix::fs::Mode::from_bits_retain(mode as _),
+        )
+        .map_err(|error| {
+            format!(
+                "create exclusive {label} {}: {error}",
+                self.path.join(name).display()
+            )
+        })?;
+        let path = self.path.join(name);
+        let created = receipt_at_metadata_snapshot(&self.file, name, &path)?;
+        if created.kind != 2 {
+            return Err(format!(
+                "created {label} is not a real directory and was preserved: {}",
+                path.display()
+            ));
+        }
+        after_create(&path);
+        self.finish_created_child_directory(
+            name,
+            mode,
+            label,
+            &created,
+            &mut |_| {},
+        )
+    }
+
+    fn finish_created_child_directory<F>(
+        &self,
+        name: &OsStr,
+        mode: u32,
+        label: &str,
+        created: &ReceiptAtMetadataSnapshot,
+        before_handoff: &mut F,
+    ) -> Result<Self, String>
+    where
+        F: FnMut(&Path),
+    {
+        let child = self.open_child_directory(name, label)?;
+        if child.identity != created.identity {
+            return Err(format!(
+                "created {label} changed before its opened identity was captured and was preserved: {}",
+                child.path.display()
+            ));
+        }
+        let initially_empty = stable_receipt_directory_names(&child.file, &child.path)?;
+        if !initially_empty.is_empty() {
+            return Err(format!(
+                "created {label} was not empty before first use and was preserved: {}",
+                child.path.display()
+            ));
+        }
+        use std::os::unix::fs::PermissionsExt;
+        child
+            .file
+            .set_permissions(std::fs::Permissions::from_mode(mode))
+            .map_err(|error| {
+                format!("set {label} mode {}: {error}", child.path.display())
+            })?;
+        before_handoff(&child.path);
+        let names_before = stable_receipt_directory_names(&child.file, &child.path)?;
+        let exact = receipt_at_metadata_snapshot(&self.file, name, &child.path)?;
+        let names_after = stable_receipt_directory_names(&child.file, &child.path)?;
+        if !names_before.is_empty()
+            || names_after != names_before
+            || exact.kind != 2
+            || exact.identity != created.identity
+            || exact.mode != mode
+        {
+            return Err(format!(
+                "created {label} changed or was not empty before handoff and was preserved: {}",
+                child.path.display()
+            ));
+        }
+        Ok(child)
+    }
+
+    fn ensure_child_directory(
+        &self,
+        name: &OsStr,
+        created_mode: u32,
+        label: &str,
+    ) -> Result<Self, String> {
+        validate_single_path_component(name, label)?;
+        match self.open_child_directory(name, label) {
+            Ok(child) => Ok(child),
+            Err(open_error) => match rustix::fs::mkdirat(
+                &self.file,
+                name,
+                rustix::fs::Mode::from_bits_retain(created_mode as _),
+            ) {
+                Ok(()) => {
+                    let child = self.open_child_directory(name, label)?;
+                    use std::os::unix::fs::PermissionsExt;
+                    child
+                        .file
+                        .set_permissions(std::fs::Permissions::from_mode(created_mode))
+                        .map_err(|error| {
+                            format!("set {label} mode {}: {error}", child.path.display())
+                        })?;
+                    Ok(child)
+                }
+                Err(rustix::io::Errno::EXIST) => self.open_child_directory(name, label),
+                Err(rustix::io::Errno::NOENT) => Err(format!(
+                    "create {label} below vanished anchored parent {}: {open_error}",
+                    self.path.display()
+                )),
+                Err(error) => Err(format!(
+                    "create {label} {}: {error}; initial open failed: {open_error}",
+                    self.path.join(name).display()
+                )),
+            },
+        }
+    }
+
+    fn create_child_file_new(
+        &self,
+        name: &OsStr,
+        mode: u32,
+        label: &str,
+    ) -> Result<std::fs::File, String> {
+        validate_single_path_component(name, label)?;
+        let file = rustix::fs::openat(
+            &self.file,
+            name,
+            rustix::fs::OFlags::WRONLY
+                | rustix::fs::OFlags::CLOEXEC
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK
+                | rustix::fs::OFlags::CREATE
+                | rustix::fs::OFlags::EXCL,
+            rustix::fs::Mode::from_bits_retain(mode as _),
+        )
+        .map(std::fs::File::from)
+        .map_err(|error| {
+            format!(
+                "create {label} {} without following: {error}",
+                self.path.join(name).display()
+            )
+        })?;
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(mode))
+            .map_err(|error| {
+                format!("set {label} mode {}: {error}", self.path.join(name).display())
+            })?;
+        Ok(file)
+    }
+
+    fn child_exists(&self, name: &OsStr, label: &str) -> Result<bool, String> {
+        validate_single_path_component(name, label)?;
+        match rustix::fs::statat(&self.file, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(_) => Ok(true),
+            Err(rustix::io::Errno::NOENT) => Ok(false),
+            Err(error) => Err(format!(
+                "inspect {label} {} without following: {error}",
+                self.path.join(name).display()
+            )),
+        }
+    }
+
+    fn rename_child_no_replace(
+        &self,
+        from: &OsStr,
+        destination: &AnchoredDirectory,
+        to: &OsStr,
+        label: &str,
+    ) -> Result<(), String> {
+        validate_single_path_component(from, label)?;
+        validate_single_path_component(to, label)?;
+        rustix::fs::renameat_with(
+            &self.file,
+            from,
+            &destination.file,
+            to,
+            rustix::fs::RenameFlags::NOREPLACE,
+        )
+        .map_err(|error| {
+            format!(
+                "rename {label} {} -> {} without replacement: {error}",
+                self.path.join(from).display(),
+                destination.path.join(to).display()
+            )
+        })
+    }
+
+    fn exchange_child(
+        &self,
+        from: &OsStr,
+        destination: &AnchoredDirectory,
+        to: &OsStr,
+        label: &str,
+    ) -> Result<(), String> {
+        validate_single_path_component(from, label)?;
+        validate_single_path_component(to, label)?;
+        #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
+        {
+            return rustix::fs::renameat_with(
+                &self.file,
+                from,
+                &destination.file,
+                to,
+                rustix::fs::RenameFlags::EXCHANGE,
+            )
+            .map_err(|error| {
+                format!(
+                    "exchange {label} {} <-> {} atomically: {error}",
+                    self.path.join(from).display(),
+                    destination.path.join(to).display()
+                )
+            });
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
+        {
+            let _ = destination;
+            Err(format!(
+                "atomic exchange is unavailable for {label} on this Unix platform"
+            ))
+        }
+    }
+
+    fn unlink_child(&self, name: &OsStr, remove_directory: bool, label: &str) -> Result<(), String> {
+        validate_single_path_component(name, label)?;
+        rustix::fs::unlinkat(
+            &self.file,
+            name,
+            if remove_directory {
+                rustix::fs::AtFlags::REMOVEDIR
+            } else {
+                rustix::fs::AtFlags::empty()
+            },
+        )
+        .map_err(|error| format!("remove {label} {}: {error}", self.path.join(name).display()))
+    }
+
+    fn sync(&self, label: &str) -> Result<(), String> {
+        self.file
+            .sync_all()
+            .map_err(|error| format!("sync {label} {}: {error}", self.path.display()))
+    }
+}
+
+#[cfg(not(unix))]
+#[derive(Debug)]
+struct AnchoredDirectory;
+
+#[cfg(not(unix))]
+impl AnchoredDirectory {
+    fn open_existing(_path: &Path, _label: &str) -> Result<Self, String> {
+        Err("source-only anchored filesystem transactions require Unix dirfd semantics".to_string())
+    }
+}
+
+#[cfg(unix)]
+fn validate_single_path_component(name: &OsStr, label: &str) -> Result<(), String> {
+    let mut components = Path::new(name).components();
+    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+        return Err(format!("{label} name is not one normal path component: {name:?}"));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AnchoredCleanupTreeSnapshot {
+    entries: BTreeMap<PathBuf, ReceiptAtMetadataSnapshot>,
+}
+
+#[cfg(unix)]
+fn capture_anchored_cleanup_tree(
+    directory: &AnchoredDirectory,
+    label: &str,
+) -> Result<AnchoredCleanupTreeSnapshot, String> {
+    let mut entries = BTreeMap::new();
+    capture_anchored_cleanup_tree_contents(
+        directory,
+        Path::new(""),
+        label,
+        &mut entries,
+    )?;
+    Ok(AnchoredCleanupTreeSnapshot { entries })
+}
+
+#[cfg(unix)]
+fn capture_anchored_cleanup_tree_contents(
+    directory: &AnchoredDirectory,
+    relative: &Path,
+    label: &str,
+    entries: &mut BTreeMap<PathBuf, ReceiptAtMetadataSnapshot>,
+) -> Result<(), String> {
+    let names = stable_receipt_directory_names(&directory.file, &directory.path)?;
+    for name in &names {
+        let path = directory.path.join(name);
+        let relative_path = relative.join(name);
+        let entry = receipt_at_metadata_snapshot(&directory.file, name, &path)?;
+        match entry.kind {
+            1 | 3 => {}
+            2 => {
+                let child = directory.open_child_directory(name, label)?;
+                if child.identity != entry.identity {
+                    return Err(format!("{label} changed while inspected: {}", path.display()));
+                }
+                capture_anchored_cleanup_tree_contents(
+                    &child,
+                    &relative_path,
+                    label,
+                    entries,
+                )?;
+            }
+            _ => {
+                return Err(format!(
+                    "{label} contains an unsupported special entry and was preserved: {}",
+                    path.display()
+                ));
+            }
+        }
+        let after = receipt_at_metadata_snapshot(&directory.file, name, &path)?;
+        if after != entry {
+            return Err(format!("{label} changed while inspected: {}", path.display()));
+        }
+        entries.insert(relative_path, entry);
+    }
+    if stable_receipt_directory_names(&directory.file, &directory.path)? != names {
+        return Err(format!("{label} changed while inspected: {}", directory.path.display()));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn remove_anchored_cleanup_tree_contents(
+    directory: &AnchoredDirectory,
+    relative: &Path,
+    snapshot: &AnchoredCleanupTreeSnapshot,
+    hardlink_generations: &mut BTreeMap<PackageMirrorIdentity, CleanupHardlinkGeneration>,
+    hardlink_quarantine: Option<&AnchoredDirectory>,
+    before_hardlink_unlink: &mut impl FnMut(&Path) -> Result<(), String>,
+    after_unlink: &mut impl FnMut(&Path) -> Result<(), String>,
+    label: &str,
+) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let expected_names = snapshot
+        .entries
+        .keys()
+        .filter(|path| path.parent().unwrap_or_else(|| Path::new("")) == relative)
+        .map(|path| path.file_name().expect("snapshot child has a name").to_os_string())
+        .collect::<Vec<_>>();
+    let actual_names = stable_receipt_directory_names(&directory.file, &directory.path)?;
+    if actual_names != expected_names {
+        return Err(format!(
+            "{label} gained, lost, or replaced an entry after its cleanup snapshot and was preserved: {}",
+            directory.path.display()
+        ));
+    }
+    let current_mode = directory
+        .file
+        .metadata()
+        .map_err(|error| format!("inspect opened {label} {}: {error}", directory.path.display()))?
+        .permissions()
+        .mode();
+    directory
+        .file
+        .set_permissions(std::fs::Permissions::from_mode(current_mode | 0o700))
+        .map_err(|error| format!("unseal owned {label} directory {}: {error}", directory.path.display()))?;
+    for name in expected_names {
+        let path = directory.path.join(&name);
+        let relative_path = relative.join(&name);
+        let expected = snapshot
+            .entries
+            .get(&relative_path)
+            .expect("expected cleanup child came from the snapshot");
+        let expected_generation = hardlink_generations
+            .get(&expected.identity)
+            .map(|generation| generation.snapshot.clone())
+            .unwrap_or_else(|| expected.clone());
+        let actual = receipt_at_metadata_snapshot(&directory.file, &name, &path)?;
+        if actual != expected_generation {
+            return Err(format!(
+                "{label} entry changed after its cleanup snapshot and was preserved: {}",
+                path.display()
+            ));
+        }
+        match expected.kind {
+            1 if expected.hard_links > 1 => {
+                let quarantine = hardlink_quarantine.ok_or_else(|| {
+                    format!(
+                        "{label} hardlink cleanup has no private quarantine and was preserved: {}",
+                        path.display()
+                    )
+                })?;
+                unlink_owned_cleanup_hardlink(
+                    directory,
+                    &name,
+                    &path,
+                    &expected_generation,
+                    hardlink_generations,
+                    quarantine,
+                    before_hardlink_unlink,
+                    label,
+                )?;
+                after_unlink(&path)?;
+            }
+            1 | 3 => {
+                let immediately_before =
+                    receipt_at_metadata_snapshot(&directory.file, &name, &path)?;
+                if immediately_before != expected_generation {
+                    return Err(format!(
+                        "{label} entry changed before unlink and was preserved: {}",
+                        path.display()
+                    ));
+                }
+                directory.unlink_child(&name, false, label)?;
+                after_unlink(&path)?;
+            }
+            2 => {
+                let child = directory.open_child_directory(&name, label)?;
+                if child.identity != expected.identity {
+                    return Err(format!("{label} changed before cleanup: {}", path.display()));
+                }
+                remove_anchored_cleanup_tree_contents(
+                    &child,
+                    &relative_path,
+                    snapshot,
+                    hardlink_generations,
+                    hardlink_quarantine,
+                    before_hardlink_unlink,
+                    after_unlink,
+                    label,
+                )?;
+                let after = receipt_at_metadata_snapshot(&directory.file, &name, &path)?;
+                if after.kind != 2 || after.identity != expected.identity {
+                    return Err(format!(
+                        "{label} directory changed before removal and was preserved: {}",
+                        path.display()
+                    ));
+                }
+                directory.unlink_child(&name, true, label)?;
+            }
+            _ => {
+                return Err(format!(
+                    "{label} contains an unsupported special entry and was preserved: {}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn remove_anchored_scratch_tree_contents(
+    directory: &AnchoredDirectory,
+    label: &str,
+    expected_children: Option<&[(OsString, PackageMirrorIdentity)]>,
+) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let current_mode = directory
+        .file
+        .metadata()
+        .map_err(|error| format!("inspect opened {label} {}: {error}", directory.path.display()))?
+        .permissions()
+        .mode();
+    directory
+        .file
+        .set_permissions(std::fs::Permissions::from_mode(current_mode | 0o700))
+        .map_err(|error| format!("unseal owned {label} directory {}: {error}", directory.path.display()))?;
+
+    let names = stable_receipt_directory_names(&directory.file, &directory.path)?;
+    if let Some(expected_children) = expected_children {
+        let expected_names = expected_children
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>();
+        if names != expected_names {
+            return Err(format!(
+                "{label} top-level ownership changed during removal and was preserved: {}",
+                directory.path.display()
+            ));
+        }
+    }
+
+    for name in names {
+        let path = directory.path.join(&name);
+        let entry = receipt_at_metadata_snapshot(&directory.file, &name, &path)?;
+        if let Some(expected_children) = expected_children {
+            let expected = expected_children
+                .iter()
+                .find(|(expected_name, _)| expected_name == &name)
+                .expect("expected scratch child came from the checked name set");
+            if entry.kind != 2 || entry.identity != expected.1 {
+                return Err(format!(
+                    "{label} {} identity changed during removal and was preserved: {}",
+                    name.to_string_lossy(),
+                    path.display()
+                ));
+            }
+        }
+        if entry.kind == 2 {
+            let child = directory.open_child_directory(&name, label)?;
+            if child.identity != entry.identity {
+                return Err(format!("{label} changed while it was opened: {}", path.display()));
+            }
+            remove_anchored_scratch_tree_contents(&child, label, None)?;
+            let after = receipt_at_metadata_snapshot(&directory.file, &name, &path)?;
+            if after.kind != 2 || after.identity != child.identity {
+                return Err(format!(
+                    "{label} directory changed before removal and was preserved: {}",
+                    path.display()
+                ));
+            }
+            directory.unlink_child(&name, true, label)?;
+        } else {
+            // Unlinking a regular file, symlink, FIFO, or other non-directory
+            // removes only this name below the opened scratch root. It does
+            // not follow a symlink or alter an external hardlink peer.
+            directory.unlink_child(&name, false, label)?;
+        }
+    }
+    if !stable_receipt_directory_names(&directory.file, &directory.path)?.is_empty() {
+        return Err(format!(
+            "{label} changed during recursive cleanup and was preserved: {}",
+            directory.path.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[derive(Clone, Debug)]
+struct CleanupHardlinkGeneration {
+    snapshot: ReceiptAtMetadataSnapshot,
+    sha256: [u8; 32],
+}
+
+#[cfg(unix)]
+fn unlink_owned_cleanup_hardlink(
+    directory: &AnchoredDirectory,
+    name: &OsStr,
+    path: &Path,
+    expected: &ReceiptAtMetadataSnapshot,
+    generations: &mut BTreeMap<PackageMirrorIdentity, CleanupHardlinkGeneration>,
+    quarantine: &AnchoredDirectory,
+    before_unlink: &mut impl FnMut(&Path) -> Result<(), String>,
+    label: &str,
+) -> Result<(), String> {
+    let quarantine_name = OsStr::new("entry");
+    let quarantine_path = quarantine.path.join(quarantine_name);
+    let file = open_receipt_entry_at(&directory.file, name, path, false)?;
+    let opened = receipt_at_snapshot_from_opened(&file, path)?;
+    if &opened != expected {
+        return Err(format!(
+            "{label} hardlink changed while opening and was preserved: {}",
+            path.display()
+        ));
+    }
+    let before_digest = hash_opened_cleanup_file(&file, path, label)?;
+    if generations
+        .get(&expected.identity)
+        .is_some_and(|generation| generation.sha256 != before_digest)
+        || receipt_at_snapshot_from_opened(&file, path)? != opened
+        || receipt_at_metadata_snapshot(&directory.file, name, path)? != opened
+    {
+        return Err(format!(
+            "{label} hardlink changed before unlink and was preserved: {}",
+            path.display()
+        ));
+    }
+
+    // Exercise the old final-check-to-unlink boundary. The checks below must
+    // reject anything changed by a retained recipe handle before the exposed
+    // pathname is moved into resolver-private authority.
+    before_unlink(path)?;
+    let final_digest = hash_opened_cleanup_file(&file, path, label)?;
+    if generations
+        .get(&expected.identity)
+        .is_some_and(|generation| generation.sha256 != final_digest)
+        || final_digest != before_digest
+        || receipt_at_snapshot_from_opened(&file, path)? != opened
+        || receipt_at_metadata_snapshot(&directory.file, name, path)? != opened
+    {
+        return Err(format!(
+            "{label} hardlink changed at its final unlink boundary and was preserved: {}",
+            path.display()
+        ));
+    }
+
+    directory.rename_child_no_replace(name, quarantine, quarantine_name, label)?;
+
+    let quarantined = receipt_at_snapshot_from_opened(&file, &quarantine_path)?;
+    let quarantined_digest = hash_opened_cleanup_file(&file, &quarantine_path, label)?;
+    let quarantined_at = receipt_at_metadata_snapshot(
+        &quarantine.file,
+        quarantine_name,
+        &quarantine_path,
+    );
+    let quarantine_is_exact = quarantined.identity == opened.identity
+        && quarantined.kind == opened.kind
+        && quarantined.mode == opened.mode
+        && quarantined.len == opened.len
+        && quarantined.hard_links == opened.hard_links
+        && quarantined.modified_seconds == opened.modified_seconds
+        && quarantined.modified_nanoseconds == opened.modified_nanoseconds
+        && quarantined_digest == before_digest
+        && receipt_at_snapshot_from_opened(&file, &quarantine_path)? == quarantined
+        && quarantined_at.as_ref().is_ok_and(|at| at == &quarantined);
+    if !quarantine_is_exact {
+        let disposition = match quarantined_at {
+            Ok(current)
+                if current.kind == 1 && current.identity == opened.identity =>
+            {
+                match quarantine.rename_child_no_replace(
+                    quarantine_name,
+                    directory,
+                    name,
+                    label,
+                ) {
+                    Ok(()) => "the quarantined name was restored".to_string(),
+                    Err(error) => format!(
+                        "the quarantined name was preserved after restore failed: {error}"
+                    ),
+                }
+            }
+            Ok(_) => "the ambiguous quarantine entry was preserved".to_string(),
+            Err(error) => format!(
+                "the quarantine entry was preserved because it could not be reinspected: {error}"
+            ),
+        };
+        return Err(format!(
+            "{label} hardlink changed while entering private quarantine; {disposition}: {}",
+            path.display()
+        ));
+    }
+
+    quarantine.unlink_child(quarantine_name, false, label)?;
+
+    let after = receipt_at_snapshot_from_opened(&file, path)?;
+    let after_digest = hash_opened_cleanup_file(&file, path, label)?;
+    if after.identity != quarantined.identity
+        || after.kind != quarantined.kind
+        || after.mode != quarantined.mode
+        || after.len != quarantined.len
+        || after.modified_seconds != quarantined.modified_seconds
+        || after.modified_nanoseconds != quarantined.modified_nanoseconds
+        || quarantined.hard_links.checked_sub(1) != Some(after.hard_links)
+        || after_digest != before_digest
+        || receipt_at_snapshot_from_opened(&file, path)? != after
+    {
+        return Err(format!(
+            "{label} hardlink generation changed during owned unlink and was preserved: {}",
+            path.display()
+        ));
+    }
+    generations.insert(
+        expected.identity.clone(),
+        CleanupHardlinkGeneration {
+            snapshot: after,
+            sha256: after_digest,
+        },
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn receipt_at_snapshot_from_opened(
+    file: &std::fs::File,
+    path: &Path,
+) -> Result<ReceiptAtMetadataSnapshot, String> {
+    let snapshot = receipt_metadata_snapshot(&file.metadata().map_err(|error| {
+        format!("inspect opened cleanup hardlink {}: {error}", path.display())
+    })?)?;
+    Ok(ReceiptAtMetadataSnapshot {
+        identity: snapshot.identity,
+        kind: snapshot.kind,
+        mode: snapshot.mode,
+        len: snapshot.len,
+        hard_links: snapshot.hard_links,
+        modified_seconds: snapshot.modified_seconds,
+        modified_nanoseconds: snapshot.modified_nanoseconds,
+        changed_seconds: snapshot.changed_seconds,
+        changed_nanoseconds: snapshot.changed_nanoseconds,
+    })
+}
+
+#[cfg(unix)]
+fn hash_opened_cleanup_file(
+    file: &std::fs::File,
+    path: &Path,
+    label: &str,
+) -> Result<[u8; 32], String> {
+    let mut reader = file
+        .try_clone()
+        .map_err(|error| format!("clone opened {label} hardlink {}: {error}", path.display()))?;
+    std::io::Seek::rewind(&mut reader)
+        .map_err(|error| format!("rewind opened {label} hardlink {}: {error}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = std::io::Read::read(&mut reader, &mut buffer)
+            .map_err(|error| format!("hash opened {label} hardlink {}: {error}", path.display()))?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(hasher.finalize().into())
+}
+
+#[cfg(unix)]
+fn remove_anchored_child_tree(
+    parent: &AnchoredDirectory,
+    name: &OsStr,
+    expected_identity: &PackageMirrorIdentity,
+    label: &str,
+) -> Result<(), String> {
+    remove_anchored_child_tree_with_after_snapshot(
+        parent,
+        name,
+        expected_identity,
+        label,
+        &mut |_| Ok(()),
+    )
+}
+
+#[cfg(unix)]
+fn remove_anchored_child_tree_with_after_snapshot<F>(
+    parent: &AnchoredDirectory,
+    name: &OsStr,
+    expected_identity: &PackageMirrorIdentity,
+    label: &str,
+    after_snapshot: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(&Path) -> Result<(), String>,
+{
+    let child = parent.open_child_directory(name, label)?;
+    if &child.identity != expected_identity {
+        return Err(format!(
+            "{label} root changed identity and was preserved: {}",
+            child.path.display()
+        ));
+    }
+    let root_before = receipt_at_metadata_snapshot(&parent.file, name, &child.path)?;
+    if root_before.kind != 2 || &root_before.identity != expected_identity {
+        return Err(format!(
+            "{label} root changed before its cleanup snapshot and was preserved: {}",
+            child.path.display()
+        ));
+    }
+    let snapshot = capture_anchored_cleanup_tree(&child, label)?;
+    remove_anchored_child_tree_exact_with_after_snapshot(
+        parent,
+        name,
+        expected_identity,
+        &snapshot,
+        label,
+        after_snapshot,
+    )
+}
+
+#[cfg(unix)]
+fn remove_anchored_child_tree_exact_with_after_snapshot<F>(
+    parent: &AnchoredDirectory,
+    name: &OsStr,
+    expected_identity: &PackageMirrorIdentity,
+    snapshot: &AnchoredCleanupTreeSnapshot,
+    label: &str,
+    after_snapshot: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(&Path) -> Result<(), String>,
+{
+    remove_anchored_child_tree_exact_with_hooks(
+        parent,
+        name,
+        expected_identity,
+        snapshot,
+        label,
+        after_snapshot,
+        &mut |_| Ok(()),
+        &mut |_| Ok(()),
+    )
+}
+
+#[cfg(unix)]
+fn remove_anchored_child_tree_exact_with_hooks<F, G>(
+    parent: &AnchoredDirectory,
+    name: &OsStr,
+    expected_identity: &PackageMirrorIdentity,
+    snapshot: &AnchoredCleanupTreeSnapshot,
+    label: &str,
+    after_snapshot: &mut F,
+    before_hardlink_unlink: &mut G,
+    after_unlink: &mut impl FnMut(&Path) -> Result<(), String>,
+) -> Result<(), String>
+where
+    F: FnMut(&Path) -> Result<(), String>,
+    G: FnMut(&Path) -> Result<(), String>,
+{
+    let child = parent.open_child_directory(name, label)?;
+    if &child.identity != expected_identity {
+        return Err(format!(
+            "{label} root changed identity and was preserved: {}",
+            child.path.display()
+        ));
+    }
+    let root_before = receipt_at_metadata_snapshot(&parent.file, name, &child.path)?;
+    if root_before.kind != 2 || &root_before.identity != expected_identity {
+        return Err(format!(
+            "{label} root changed before its cleanup snapshot and was preserved: {}",
+            child.path.display()
+        ));
+    }
+    let current = capture_anchored_cleanup_tree(&child, label)?;
+    if &current != snapshot {
+        return Err(format!(
+            "{label} differs from its owned cleanup snapshot and was preserved: {}",
+            child.path.display()
+        ));
+    }
+    let root_after = receipt_at_metadata_snapshot(&parent.file, name, &child.path)?;
+    let current = capture_anchored_cleanup_tree(&child, label)?;
+    if root_after != root_before || &current != snapshot {
+        return Err(format!(
+            "{label} changed after its cleanup snapshot and was preserved: {}",
+            child.path.display()
+        ));
+    }
+    // The caller's final authority check belongs after the last potentially
+    // expensive tree walk and immediately before recursive unlinking.
+    after_snapshot(&child.path)?;
+    let mut symlink_identities = BTreeSet::new();
+    for entry in snapshot.entries.values().filter(|entry| entry.kind == 3) {
+        if !symlink_identities.insert(entry.identity.clone()) {
+            return Err(format!(
+                "{label} contains multiple hard-linked symlink names and was preserved: {}",
+                child.path.display()
+            ));
+        }
+    }
+    // The build-script contract grants recipes one single-writer scratch root.
+    // This fresh sibling is resolver-private, is never exported in env/argv,
+    // and is never enumerated or adopted by concurrent resolver peers. Moving
+    // a checked name here is therefore the authority boundary for cleanup of a
+    // recipe that retained a handle to its exposed work directory. This is not
+    // an OS sandbox and does not claim protection from an arbitrary same-UID
+    // process that enumerates resolver-private cache siblings.
+    let hardlink_quarantine = snapshot
+        .entries
+        .values()
+        .any(|entry| entry.kind == 1 && entry.hard_links > 1)
+        .then(|| {
+            parent.create_unique_child_directory(
+                "source-only-hardlink-cleanup",
+                0o700,
+                &format!("{label} hardlink quarantine"),
+            )
+        })
+        .transpose()?;
+    let mut hardlink_generations = BTreeMap::new();
+    remove_anchored_cleanup_tree_contents(
+        &child,
+        Path::new(""),
+        snapshot,
+        &mut hardlink_generations,
+        hardlink_quarantine
+            .as_ref()
+            .map(|(_, quarantine)| quarantine),
+        before_hardlink_unlink,
+        after_unlink,
+        label,
+    )?;
+    let after = receipt_at_metadata_snapshot(&parent.file, name, &child.path)?;
+    if after.kind != 2 || &after.identity != expected_identity {
+        return Err(format!(
+            "{label} root changed before removal and was preserved: {}",
+            child.path.display()
+        ));
+    }
+    parent.unlink_child(name, true, label)?;
+    if let Some((quarantine_name, quarantine)) = hardlink_quarantine {
+        let names = stable_receipt_directory_names(&quarantine.file, &quarantine.path)?;
+        let exact = receipt_at_metadata_snapshot(
+            &parent.file,
+            &quarantine_name,
+            &quarantine.path,
+        )?;
+        if !names.is_empty() || exact.kind != 2 || exact.identity != quarantine.identity {
+            return Err(format!(
+                "{label} hardlink quarantine changed after cleanup and was preserved: {}",
+                quarantine.path.display()
+            ));
+        }
+        parent.unlink_child(
+            &quarantine_name,
+            true,
+            &format!("{label} hardlink quarantine"),
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct OwnedPrivateDirectory {
+    parent: AnchoredDirectory,
+    name: OsString,
+    root: AnchoredDirectory,
+    label: String,
+    finished: bool,
+    preserve: bool,
+}
+
+#[cfg(unix)]
+impl OwnedPrivateDirectory {
+    fn reserve(parent: &Path, prefix: &str, label: &str) -> Result<Self, String> {
+        let parent = AnchoredDirectory::open_existing(parent, &format!("{label} parent"))?;
+        Self::reserve_below(parent, prefix, label)
+    }
+
+    fn reserve_below(
+        parent: AnchoredDirectory,
+        prefix: &str,
+        label: &str,
+    ) -> Result<Self, String> {
+        let (name, root) = parent.create_unique_child_directory(prefix, 0o700, label)?;
+        let owned = Self {
+            parent,
+            name,
+            root,
+            label: label.to_string(),
+            finished: false,
+            preserve: false,
+        };
+        owned.validate_named_root()?;
+        Ok(owned)
+    }
+
+    fn path(&self) -> &Path {
+        &self.root.path
+    }
+
+    fn identity(&self) -> &PackageMirrorIdentity {
+        &self.root.identity
+    }
+
+    fn validate_named_root(&self) -> Result<(), String> {
+        let at = receipt_at_metadata_snapshot(&self.parent.file, &self.name, self.path())?;
+        if at.kind != 2 || at.identity != self.root.identity {
+            return Err(format!(
+                "owned {} changed identity and was preserved: {}",
+                self.label,
+                self.path().display()
+            ));
+        }
+        let opened = self.root.file.metadata().map_err(|error| {
+            format!("inspect opened {} {}: {error}", self.label, self.path().display())
+        })?;
+        if !opened.is_dir() || package_mirror_identity(&opened)? != self.root.identity {
+            return Err(format!(
+                "opened {} changed identity and was preserved: {}",
+                self.label,
+                self.path().display()
+            ));
+        }
+        Ok(())
+    }
+
+    fn quarantine_for_cleanup(&mut self) -> Result<(OsString, AnchoredDirectory), String> {
+        let tombstone = (0..10_000)
+            .find_map(|_| {
+                let sequence = MIRROR_TRANSACTION_COUNTER.fetch_add(1, Ordering::Relaxed);
+                let name = OsString::from(format!(
+                    ".source-only-dispose-{}-{sequence}",
+                    std::process::id()
+                ));
+                match self.parent.rename_child_no_replace(
+                    &self.name,
+                    &self.parent,
+                    &name,
+                    &format!("{} disposal quarantine", self.label),
+                ) {
+                    Ok(()) => Some(Ok(name)),
+                    Err(_error)
+                        if self
+                            .parent
+                            .child_exists(&name, &self.label)
+                            .unwrap_or(false) =>
+                    {
+                        None
+                    }
+                    Err(error) => Some(Err(error)),
+                }
+            })
+            .transpose()?
+            .ok_or_else(|| {
+                format!(
+                    "could not allocate {} disposal quarantine below {}",
+                    self.label,
+                    self.parent.path.display()
+                )
+            })?;
+        let quarantined = match self.parent.open_child_directory(
+            &tombstone,
+            &format!("{} disposal quarantine", self.label),
+        ) {
+            Ok(quarantined) => quarantined,
+            Err(error) => {
+                self.preserve = true;
+                return Err(error);
+            }
+        };
+        if quarantined.identity != self.root.identity {
+            self.preserve = true;
+            return Err(format!(
+                "{} changed while quarantined and was preserved: {}",
+                self.label,
+                quarantined.path.display()
+            ));
+        }
+        Ok((tombstone, quarantined))
+    }
+
+    fn cleanup(&mut self) -> Result<(), String> {
+        self.cleanup_with_after_snapshot(&mut |_| Ok(()))
+    }
+
+    fn cleanup_exact(&mut self, snapshot: &AnchoredCleanupTreeSnapshot) -> Result<(), String> {
+        self.cleanup_exact_with_after_snapshot(snapshot, &mut |_| Ok(()))
+    }
+
+    fn cleanup_with_after_snapshot<F>(&mut self, after_snapshot: &mut F) -> Result<(), String>
+    where
+        F: FnMut(&Path) -> Result<(), String>,
+    {
+        if self.finished || self.preserve {
+            return Ok(());
+        }
+        self.validate_named_root()?;
+        let snapshot = capture_anchored_cleanup_tree(&self.root, &self.label)?;
+        self.cleanup_exact_with_after_snapshot(&snapshot, after_snapshot)
+    }
+
+    fn cleanup_exact_with_after_snapshot<F>(
+        &mut self,
+        snapshot: &AnchoredCleanupTreeSnapshot,
+        after_snapshot: &mut F,
+    ) -> Result<(), String>
+    where
+        F: FnMut(&Path) -> Result<(), String>,
+    {
+        if self.finished || self.preserve {
+            return Ok(());
+        }
+        self.validate_named_root()?;
+        let current = capture_anchored_cleanup_tree(&self.root, &self.label)?;
+        if &current != snapshot {
+            self.preserve = true;
+            return Err(format!(
+                "owned {} differs from its expected cleanup snapshot and was preserved: {}",
+                self.label,
+                self.path().display()
+            ));
+        }
+        let (tombstone, _quarantined) = self.quarantine_for_cleanup()?;
+        if let Err(error) = remove_anchored_child_tree_exact_with_after_snapshot(
+            &self.parent,
+            &tombstone,
+            &self.root.identity,
+            snapshot,
+            &self.label,
+            after_snapshot,
+        ) {
+            let restored = if !self.parent.child_exists(&self.name, &self.label)? {
+                self.parent
+                    .rename_child_no_replace(
+                        &tombstone,
+                        &self.parent,
+                        &self.name,
+                        &format!("{} cleanup rollback", self.label),
+                    )
+                    .is_ok()
+            } else {
+                false
+            };
+            self.preserve = true;
+            return Err(format!(
+                "{error}; changed {} was {}",
+                self.label,
+                if restored { "restored" } else { "preserved in quarantine" }
+            ));
+        }
+        self.finished = true;
+        self.parent.sync(&format!("{} parent", self.label))?;
+        Ok(())
+    }
+
+    fn cleanup_scratch_recursively(
+        &mut self,
+        expected_children: &[(OsString, PackageMirrorIdentity)],
+    ) -> Result<(), String> {
+        self.cleanup_scratch_recursively_with_before_remove(
+            expected_children,
+            &mut |_| Ok(()),
+        )
+    }
+
+    fn cleanup_scratch_recursively_with_before_remove(
+        &mut self,
+        expected_children: &[(OsString, PackageMirrorIdentity)],
+        before_remove: &mut impl FnMut(&Path) -> Result<(), String>,
+    ) -> Result<(), String> {
+        if self.finished || self.preserve {
+            return Ok(());
+        }
+        self.validate_named_root()?;
+        let (tombstone, quarantined) = self.quarantine_for_cleanup()?;
+        if let Err(error) = before_remove(&quarantined.path) {
+            self.preserve = true;
+            return Err(error);
+        }
+        if let Err(error) = remove_anchored_scratch_tree_contents(
+            &quarantined,
+            &self.label,
+            Some(expected_children),
+        ) {
+            self.preserve = true;
+            return Err(format!(
+                "{error}; partially cleaned {} was preserved in quarantine: {}",
+                self.label,
+                quarantined.path.display()
+            ));
+        }
+        let after = receipt_at_metadata_snapshot(
+            &self.parent.file,
+            &tombstone,
+            &quarantined.path,
+        )?;
+        if after.kind != 2 || after.identity != self.root.identity {
+            self.preserve = true;
+            return Err(format!(
+                "{} changed before root removal and was preserved: {}",
+                self.label,
+                quarantined.path.display()
+            ));
+        }
+        self.parent.unlink_child(&tombstone, true, &self.label)?;
+        self.finished = true;
+        self.parent.sync(&format!("{} parent", self.label))?;
+        Ok(())
+    }
+
+    fn disarm_after_publish(&mut self) {
+        self.finished = true;
+    }
+}
+
+#[cfg(unix)]
+impl Drop for OwnedPrivateDirectory {
+    fn drop(&mut self) {
+        if !self.finished {
+            // Cleanup authority must be established explicitly by the owner
+            // before any mutation window. Drop cannot safely snapshot whatever
+            // happens to occupy an exposed private path and call it owned.
+            self.preserve = true;
+        }
+    }
+}
+
+#[cfg(unix)]
+fn publish_exact_regular_child_no_replace(
+    parent: &AnchoredDirectory,
+    final_name: &OsStr,
+    bytes: &[u8],
+    limit: u64,
+    label: &str,
+) -> Result<bool, String> {
+    publish_exact_regular_child_no_replace_with_after_write(
+        parent,
+        final_name,
+        bytes,
+        limit,
+        label,
+        &mut |_| {},
+    )
+}
+
+#[cfg(unix)]
+fn publish_exact_regular_child_no_replace_with_after_write<F>(
+    parent: &AnchoredDirectory,
+    final_name: &OsStr,
+    bytes: &[u8],
+    limit: u64,
+    label: &str,
+    after_write: &mut F,
+) -> Result<bool, String>
+where
+    F: FnMut(&Path),
+{
+    use std::io::Write as _;
+
+    validate_single_path_component(final_name, label)?;
+    if bytes.len() as u64 > limit {
+        return Err(format!(
+            "{label} exceeds the {limit}-byte publication limit"
+        ));
+    }
+    let mut transaction = OwnedPrivateDirectory::reserve_below(
+        parent.try_clone(&format!("{label} parent"))?,
+        "source-only-scalar-transaction",
+        &format!("{label} transaction"),
+    )?;
+    let stage_name = OsStr::new("stage");
+    let stage_path = transaction.path().join(stage_name);
+    let mut stage_file = transaction
+        .root
+        .create_child_file_new(stage_name, 0o600, &format!("{label} stage"))?;
+    if let Err(error) = stage_file
+        .write_all(bytes)
+        .and_then(|()| stage_file.sync_all())
+    {
+        let primary = format!("write {label} stage {}: {error}", stage_path.display());
+        let opened = stage_file.metadata().ok().and_then(|metadata| {
+            receipt_metadata_snapshot(&metadata).ok()
+        });
+        let current = receipt_at_metadata_snapshot(
+            &transaction.root.file,
+            stage_name,
+            &stage_path,
+        );
+        if !matches!((opened, current), (Some(opened), Ok(current)) if current.kind == 1 && current.identity == opened.identity)
+        {
+            transaction.preserve = true;
+            return Err(format!(
+                "{primary}; the {label} stage changed during the failed write and was preserved"
+            ));
+        }
+        let snapshot = capture_anchored_cleanup_tree(&transaction.root, label)?;
+        return Err(append_cleanup_error(primary, transaction.cleanup_exact(&snapshot)));
+    }
+    let opened = match stage_file.metadata() {
+        Ok(metadata) => receipt_metadata_snapshot(&metadata)?,
+        Err(error) => {
+            transaction.preserve = true;
+            return Err(format!(
+                "inspect opened {label} stage {}: {error}; stage was preserved",
+                stage_path.display()
+            ));
+        }
+    };
+    let digest: [u8; 32] = Sha256::digest(bytes).into();
+    if opened.kind != 1 || opened.mode != 0o600 || opened.len != bytes.len() as u64 {
+        transaction.preserve = true;
+        return Err(format!(
+            "opened {label} stage differs from its expected regular-file shape: {}",
+            stage_path.display()
+        ));
+    }
+    after_write(&stage_path);
+    let path_snapshot = match inspect_regular_projection_file_at(
+        &transaction.root.file,
+        stage_name,
+        &stage_path,
+    ) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            transaction.preserve = true;
+            return Err(format!(
+                "{error}; changed {label} stage was preserved: {}",
+                stage_path.display()
+            ));
+        }
+    };
+    let expected_kind = LocalMirrorEntryKind::Regular {
+        len: bytes.len() as u64,
+        sha256: digest,
+    };
+    if path_snapshot.identity != opened.identity
+        || path_snapshot.mode != 0o600
+        || path_snapshot.kind != expected_kind
+    {
+        transaction.preserve = true;
+        return Err(format!(
+            "{label} stage changed or differs from the opened bytes and was preserved: {}",
+            stage_path.display()
+        ));
+    }
+    drop(stage_file);
+    let staged_transaction_snapshot = match capture_anchored_cleanup_tree(&transaction.root, label) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            transaction.preserve = true;
+            return Err(format!(
+                "{error}; changed {label} transaction was preserved: {}",
+                transaction.path().display()
+            ));
+        }
+    };
+    if let Err(error) = transaction.validate_named_root() {
+        transaction.preserve = true;
+        return Err(error);
+    }
+    match transaction.root.rename_child_no_replace(
+        stage_name,
+        parent,
+        final_name,
+        label,
+    ) {
+        Ok(()) => {
+            let installed = match inspect_regular_projection_file_at(
+                &parent.file,
+                final_name,
+                &parent.path.join(final_name),
+            ) {
+                Ok(installed) => installed,
+                Err(error) => {
+                    transaction.preserve = true;
+                    return Err(format!(
+                        "{error}; published {label} was preserved for diagnosis"
+                    ));
+                }
+            };
+            if installed.kind != expected_kind || installed.mode != 0o600 {
+                transaction.preserve = true;
+                return Err(format!(
+                    "published {label} changed and was preserved: {}",
+                    parent.path.join(final_name).display()
+                ));
+            }
+            let empty = AnchoredCleanupTreeSnapshot {
+                entries: BTreeMap::new(),
+            };
+            transaction.cleanup_exact(&empty)?;
+            parent.sync(&format!("{label} parent"))?;
+            let final_installed = inspect_regular_projection_file_at(
+                &parent.file,
+                final_name,
+                &parent.path.join(final_name),
+            )?;
+            if final_installed != installed {
+                return Err(format!(
+                    "published {label} changed after transaction cleanup and was preserved: {}",
+                    parent.path.join(final_name).display()
+                ));
+            }
+            Ok(true)
+        }
+        Err(rename_error) => {
+            let still_staged = match inspect_regular_projection_file_at(
+                &transaction.root.file,
+                stage_name,
+                &stage_path,
+            ) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    transaction.preserve = true;
+                    return Err(format!(
+                        "publish {label} failed ({rename_error}); {error}; stage was preserved"
+                    ));
+                }
+            };
+            if still_staged != path_snapshot {
+                transaction.preserve = true;
+                return Err(format!(
+                    "publish {label} failed ({rename_error}); its stage changed and was preserved"
+                ));
+            }
+            match parent.child_exists(final_name, label) {
+                Ok(true) => {}
+                Ok(false) => {
+                    transaction.preserve = true;
+                    return Err(rename_error);
+                }
+                Err(error) => {
+                    transaction.preserve = true;
+                    return Err(format!(
+                        "publish {label} failed ({rename_error}); destination inspection failed ({error}); stage was preserved"
+                    ));
+                }
+            }
+            let winner = match inspect_regular_projection_file_at(
+                &parent.file,
+                final_name,
+                &parent.path.join(final_name),
+            ) {
+                Ok(winner) => winner,
+                Err(error) => {
+                    transaction.preserve = true;
+                    return Err(format!(
+                        "publish {label} failed ({rename_error}); {error}; stage was preserved"
+                    ));
+                }
+            };
+            if winner.kind != expected_kind || winner.mode != 0o600 {
+                transaction.preserve = true;
+                return Err(format!(
+                    "publish {label} failed ({rename_error}); existing destination differs and was preserved: {}",
+                    parent.path.join(final_name).display()
+                ));
+            }
+            transaction.cleanup_exact(&staged_transaction_snapshot)?;
+            parent.sync(&format!("{label} parent"))?;
+            let final_winner = inspect_regular_projection_file_at(
+                &parent.file,
+                final_name,
+                &parent.path.join(final_name),
+            )?;
+            if final_winner != winner {
+                return Err(format!(
+                    "existing {label} changed after loser cleanup and was preserved: {}",
+                    parent.path.join(final_name).display()
+                ));
+            }
+            Ok(false)
+        }
+    }
 }
 
 /// Registry search path. Later entries have lower priority.
@@ -219,53 +2195,2812 @@ const PROGRAM_PACKAGE_CONTEXT_ARCHES: [TargetArch; 2] = [TargetArch::Wasm32, Tar
 /// tooling, shell scripts, external registry roots, and the standalone host
 /// package all consume exactly the same closure and artifact policy without
 /// growing independent TOML parsers.
-#[derive(Debug, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ProgramPackageIndex {
-    format: &'static str,
-    identities: BTreeMap<String, ProgramPackageIdentity>,
-    packages: BTreeMap<String, ProgramPackageProjection>,
+pub(crate) struct ProgramPackageIndex {
+    pub(crate) format: &'static str,
+    pub(crate) identities: BTreeMap<String, ProgramPackageIdentity>,
+    pub(crate) packages: BTreeMap<String, ProgramPackageProjection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ProgramPackageIdentity {
-    manifest_sha256: String,
-    cache_keys: BTreeMap<String, String>,
+pub(crate) struct ProgramPackageIdentity {
+    pub(crate) manifest_sha256: String,
+    pub(crate) cache_keys: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ProgramPackageProjection {
-    manifest_sha256: String,
-    arches: Vec<String>,
-    cache_keys: BTreeMap<String, String>,
-    dependency_closures: BTreeMap<String, Vec<ProgramDependencyIdentity>>,
-    members: Vec<ProgramPackageProjectionMember>,
+pub(crate) struct ProgramPackageProjection {
+    pub(crate) manifest_sha256: String,
+    pub(crate) arches: Vec<String>,
+    pub(crate) cache_keys: BTreeMap<String, String>,
+    pub(crate) dependency_closures: BTreeMap<String, Vec<ProgramDependencyIdentity>>,
+    pub(crate) members: Vec<ProgramPackageProjectionMember>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ProgramDependencyIdentity {
-    package_name: String,
-    manifest_sha256: String,
-    cache_key: String,
+pub(crate) struct ProgramDependencyIdentity {
+    pub(crate) package_name: String,
+    pub(crate) manifest_sha256: String,
+    pub(crate) cache_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ProgramPackageProjectionMember {
-    kind: &'static str,
-    source_artifact: String,
-    mirror_path: String,
+pub(crate) struct ProgramPackageProjectionMember {
+    pub(crate) kind: &'static str,
+    pub(crate) source_artifact: String,
+    pub(crate) mirror_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    output_name: Option<String>,
+    pub(crate) output_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    fork_instrumentation: Option<String>,
+    pub(crate) fork_instrumentation: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    guest_path: Option<String>,
+    pub(crate) guest_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    mode: Option<u32>,
+    pub(crate) mode: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct MaterializedProgramMemberV1 {
+    pub(crate) source_artifact: String,
+    pub(crate) mirror_path: String,
+    pub(crate) mode: u32,
+    pub(crate) size: u64,
+    pub(crate) sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PackageNodeReceiptV1 {
+    pub(crate) manifest_sha256: String,
+    pub(crate) cache_key_sha256: String,
+    pub(crate) cache_receipt_sha256: String,
+    pub(crate) materialized_members: Vec<MaterializedProgramMemberV1>,
+}
+
+#[cfg(unix)]
+struct PreparedProgramProjectionMember {
+    receipt: MaterializedProgramMemberV1,
+    stage_relative: PathBuf,
+    stage_snapshot: LocalMirrorEntrySnapshot,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RegularProjectionDirectoryEntry {
+    identity: PackageMirrorIdentity,
+    mode: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RegularProjectionTreeSnapshot {
+    root: RegularProjectionDirectoryEntry,
+    directories: BTreeMap<PathBuf, RegularProjectionDirectoryEntry>,
+    files: BTreeMap<PathBuf, LocalMirrorEntrySnapshot>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum PreparedProjectionSnapshot {
+    Scalar(LocalMirrorEntrySnapshot),
+    PackageDirectory(RegularProjectionTreeSnapshot),
+}
+
+#[cfg(unix)]
+struct PreparedProgramProjection {
+    transaction: OwnedEntryTransaction,
+    members: Vec<PreparedProgramProjectionMember>,
+}
+
+#[cfg(unix)]
+struct OwnedEntryTransaction {
+    live: PathBuf,
+    parent_guard: SourceOnlyProjectionParentGuard,
+    private_root: OwnedPrivateDirectory,
+    transaction_root: PathBuf,
+    transaction_root_snapshot: RegularProjectionDirectoryEntry,
+    stage: PathBuf,
+    stage_anchor: Option<AnchoredDirectory>,
+    backup: PathBuf,
+    package_directory: bool,
+    scalar_read_limit: Option<u64>,
+    allowed_stage_files: BTreeSet<PathBuf>,
+    stage_snapshot: Option<PreparedProjectionSnapshot>,
+    backup_snapshot: Option<PreparedProjectionSnapshot>,
+    restore_after_published_failure: bool,
+    old_moved: bool,
+    stage_published: bool,
+    preserve: bool,
+    finished: bool,
+}
+
+#[cfg(unix)]
+struct SourceOnlyProjectionParentGuard {
+    root: PathBuf,
+    root_anchor: AnchoredDirectory,
+    parent: PathBuf,
+    parent_anchor: AnchoredDirectory,
+    live_name: OsString,
+}
+
+#[cfg(unix)]
+impl SourceOnlyProjectionParentGuard {
+    fn prepare(root: &Path, live: &Path) -> Result<Self, String> {
+        let relative = live.strip_prefix(root).map_err(|_| {
+            format!(
+                "source-only projection destination escapes output root: {}",
+                live.display()
+            )
+        })?;
+        let live_name = relative
+            .file_name()
+            .ok_or_else(|| {
+                format!(
+                    "source-only projection destination has no filename: {}",
+                    live.display()
+                )
+            })?
+            .to_os_string();
+        validate_single_path_component(&live_name, "source-only projection destination")?;
+        let root_anchor = AnchoredDirectory::open_existing(
+            root,
+            "source-only projection output root",
+        )?;
+        let mut parent_anchor = root_anchor.try_clone("source-only projection output root")?;
+        for component in relative
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .components()
+        {
+            let Component::Normal(name) = component else {
+                return Err(format!(
+                    "source-only projection path is not portable: {}",
+                    relative.display()
+                ));
+            };
+            parent_anchor = parent_anchor.ensure_child_directory(
+                name,
+                0o755,
+                "source-only projection directory",
+            )?;
+        }
+        let parent = parent_anchor.path.clone();
+        let guard = Self {
+            root: root.to_path_buf(),
+            root_anchor,
+            parent,
+            parent_anchor,
+            live_name,
+        };
+        guard.validate()?;
+        Ok(guard)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        self.root_anchor.validate_path()?;
+        self.parent_anchor.validate_path()?;
+        if self.parent_anchor.path != self.parent
+            || !self.parent_anchor.path.starts_with(&self.root)
+        {
+            return Err(format!(
+                "source-only projection parent escaped its validated root: {}",
+                self.parent.display()
+            ));
+        }
+        Ok(())
+    }
+
+    fn try_clone(&self) -> Result<Self, String> {
+        Ok(Self {
+            root: self.root.clone(),
+            root_anchor: self
+                .root_anchor
+                .try_clone("source-only projection output root")?,
+            parent: self.parent.clone(),
+            parent_anchor: self
+                .parent_anchor
+                .try_clone("source-only projection parent")?,
+            live_name: self.live_name.clone(),
+        })
+    }
+
+    fn from_anchored(
+        root_anchor: AnchoredDirectory,
+        parent_anchor: AnchoredDirectory,
+        live_name: OsString,
+    ) -> Result<Self, String> {
+        validate_single_path_component(&live_name, "source-only projection destination")?;
+        let guard = Self {
+            root: root_anchor.path.clone(),
+            parent: parent_anchor.path.clone(),
+            root_anchor,
+            parent_anchor,
+            live_name,
+        };
+        guard.validate()?;
+        Ok(guard)
+    }
+}
+
+#[cfg(unix)]
+impl OwnedEntryTransaction {
+    fn reserve(
+        parent_guard: SourceOnlyProjectionParentGuard,
+        live: PathBuf,
+        package_directory: bool,
+        package_name: &str,
+        allowed_stage_files: BTreeSet<PathBuf>,
+    ) -> Result<Self, String> {
+        parent_guard.validate()?;
+        let private_root = OwnedPrivateDirectory::reserve_below(
+            parent_guard
+                .parent_anchor
+                .try_clone("source-only projection parent")?,
+            &format!("{package_name}.source-only-transaction"),
+            "source-only projection transaction",
+        )?;
+        let transaction_root = private_root.path().to_path_buf();
+        let transaction_root_snapshot = regular_projection_directory_entry(
+            &private_root.root.file.metadata().map_err(|error| {
+                format!(
+                    "inspect opened source-only transaction {}: {error}",
+                    transaction_root.display()
+                )
+            })?,
+        )?;
+        let stage = transaction_root.join("stage");
+        let backup = transaction_root.join("backup");
+        let mut transaction = Self {
+            live,
+            parent_guard,
+            private_root,
+            transaction_root,
+            transaction_root_snapshot,
+            stage,
+            stage_anchor: None,
+            backup,
+            package_directory,
+            scalar_read_limit: None,
+            allowed_stage_files,
+            stage_snapshot: None,
+            backup_snapshot: None,
+            restore_after_published_failure: true,
+            old_moved: false,
+            stage_published: false,
+            preserve: false,
+            finished: false,
+        };
+        if package_directory {
+            let stage_anchor = match transaction.private_root.root.create_named_child_directory_with_after_create(
+                OsStr::new("stage"),
+                0o755,
+                "source-only package projection stage",
+                &mut |_| {},
+            ) {
+                Ok(stage) => stage,
+                Err(error) => {
+                    let cleanup = transaction.dispose_private_root_with(&mut |_| Ok(()));
+                    return Err(append_cleanup_error(error, cleanup));
+                }
+            };
+            transaction.stage_anchor = Some(stage_anchor);
+        }
+        Ok(transaction)
+    }
+
+    fn stage_snapshot(&self) -> Result<&PreparedProjectionSnapshot, String> {
+        self.stage_snapshot.as_ref().ok_or_else(|| {
+            format!(
+                "source-only projection transaction has no complete stage snapshot: {}",
+                self.transaction_root.display()
+            )
+        })
+    }
+
+    fn inspect_private_child(
+        &self,
+        name: &OsStr,
+        path: &Path,
+        expected: &PreparedProjectionSnapshot,
+    ) -> Result<PreparedProjectionSnapshot, String> {
+        inspect_projection_child_with_limit(
+            &self.private_root.root,
+            name,
+            path,
+            expected,
+            self.scalar_read_limit,
+        )
+    }
+
+    fn inspect_stage(&self) -> Result<PreparedProjectionSnapshot, String> {
+        self.inspect_private_child(OsStr::new("stage"), &self.stage, self.stage_snapshot()?)
+    }
+
+    fn inspect_backup(
+        &self,
+        expected: &PreparedProjectionSnapshot,
+    ) -> Result<PreparedProjectionSnapshot, String> {
+        self.inspect_private_child(OsStr::new("backup"), &self.backup, expected)
+    }
+
+    fn inspect_live(
+        &self,
+        expected: &PreparedProjectionSnapshot,
+    ) -> Result<PreparedProjectionSnapshot, String> {
+        inspect_projection_child_with_limit(
+            &self.parent_guard.parent_anchor,
+            &self.parent_guard.live_name,
+            &self.live,
+            expected,
+            self.scalar_read_limit,
+        )
+    }
+
+    fn set_stage_snapshot(&mut self, snapshot: PreparedProjectionSnapshot) -> Result<(), String> {
+        if self.stage_snapshot.is_some() {
+            return Err("source-only projection stage snapshot was already sealed".to_string());
+        }
+        let actual = self.inspect_private_child(OsStr::new("stage"), &self.stage, &snapshot)?;
+        if actual != snapshot {
+            return Err(format!(
+                "source-only projection stage changed while it was sealed: {}",
+                self.stage.display()
+            ));
+        }
+        self.stage_snapshot = Some(snapshot);
+        Ok(())
+    }
+
+    fn capture_partial_stage(&mut self) -> Result<(), String> {
+        if self.stage_snapshot.is_some()
+            || !self.private_root.root.child_exists(
+                OsStr::new("stage"),
+                "source-only projection stage",
+            )?
+        {
+            return Ok(());
+        }
+        let snapshot = if self.package_directory {
+            let tree = inspect_regular_projection_tree_at(
+                &self.private_root.root,
+                OsStr::new("stage"),
+                &self.stage,
+            )?;
+            let allowed_directories = projection_member_ancestor_directories(&self.allowed_stage_files);
+            if !tree.files.keys().all(|path| self.allowed_stage_files.contains(path))
+                || !tree
+                    .directories
+                    .keys()
+                    .all(|path| allowed_directories.contains(path))
+            {
+                return Err(format!(
+                    "private projection stage contains an unowned path and was preserved: {}",
+                    self.stage.display()
+                ));
+            }
+            PreparedProjectionSnapshot::PackageDirectory(tree)
+        } else {
+            PreparedProjectionSnapshot::Scalar(inspect_regular_projection_file_at(
+                &self.private_root.root.file,
+                OsStr::new("stage"),
+                &self.stage,
+            )?)
+        };
+        self.stage_snapshot = Some(snapshot);
+        Ok(())
+    }
+
+    fn expected_private_tree(&self) -> Result<RegularProjectionTreeSnapshot, String> {
+        let mut directories = BTreeMap::new();
+        let mut files = BTreeMap::new();
+        let stage_snapshot = (!self.stage_published)
+            .then_some(self.stage_snapshot.as_ref())
+            .flatten();
+        for (prefix, snapshot) in [
+            (Path::new("stage"), stage_snapshot),
+            (Path::new("backup"), self.backup_snapshot.as_ref()),
+        ] {
+            let Some(snapshot) = snapshot else {
+                continue;
+            };
+            match snapshot {
+                PreparedProjectionSnapshot::Scalar(file) => {
+                    files.insert(prefix.to_path_buf(), file.clone());
+                }
+                PreparedProjectionSnapshot::PackageDirectory(tree) => {
+                    directories.insert(prefix.to_path_buf(), tree.root.clone());
+                    directories.extend(
+                        tree.directories
+                            .iter()
+                            .map(|(path, entry)| (prefix.join(path), entry.clone())),
+                    );
+                    files.extend(
+                        tree.files
+                            .iter()
+                            .map(|(path, entry)| (prefix.join(path), entry.clone())),
+                    );
+                }
+            }
+        }
+        Ok(RegularProjectionTreeSnapshot {
+            root: self.transaction_root_snapshot.clone(),
+            directories,
+            files,
+        })
+    }
+
+    fn validate_private_tree(&self, path: &Path) -> Result<(), String> {
+        let expected = self.expected_private_tree()?;
+        if path != self.transaction_root {
+            return Err(format!(
+                "private source-only transaction validation escaped its owned root: {}",
+                path.display()
+            ));
+        }
+        let actual = inspect_regular_projection_tree_at(
+            &self.private_root.parent,
+            &self.private_root.name,
+            path,
+        )?;
+        if actual != expected {
+            return Err(format!(
+                "private source-only transaction contents changed and were preserved: {}",
+                path.display()
+            ));
+        }
+        Ok(())
+    }
+
+    fn dispose_private_root_with<F>(&mut self, after_snapshot: &mut F) -> Result<(), String>
+    where
+        F: FnMut(&Path) -> Result<(), String>,
+    {
+        if self.finished {
+            return Ok(());
+        }
+        let result = (|| {
+            self.parent_guard.validate()?;
+            self.capture_partial_stage()?;
+            self.validate_private_tree(&self.transaction_root)?;
+            let cleanup_snapshot = capture_anchored_cleanup_tree(
+                &self.private_root.root,
+                "source-only projection transaction",
+            )?;
+            self.validate_private_tree(&self.transaction_root)?;
+            self.private_root.preserve = false;
+            self.private_root
+                .cleanup_exact_with_after_snapshot(&cleanup_snapshot, after_snapshot)
+                .map_err(|error| {
+                    format!(
+                        "private source-only transaction changed during disposal and was preserved: {error}"
+                    )
+                })?;
+            self.finished = true;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.preserve = true;
+            self.private_root.preserve = true;
+        }
+        result
+    }
+
+    fn dispose_private_root(&mut self) -> Result<(), String> {
+        self.dispose_private_root_with(&mut |_| Ok(()))
+    }
+
+    fn restore_backup(&mut self, lock: &SourceOnlyProjectionLock) -> Result<(), String> {
+        if !self.old_moved {
+            return Ok(());
+        }
+        let backup = self.backup_snapshot.clone().ok_or_else(|| {
+            format!("source-only transaction has an unvalidated backup: {}", self.backup.display())
+        })?;
+        let actual = self.inspect_backup(&backup)?;
+        if actual != backup {
+            self.preserve = true;
+            return Err(format!(
+                "source-only transaction backup changed and was preserved: {}",
+                self.backup.display()
+            ));
+        }
+        if self.stage_published {
+            let staged = self.stage_snapshot()?.clone();
+            if self.inspect_live(&staged)? != staged {
+                self.preserve = true;
+                return Err(format!(
+                    "published source-only projection changed, so its validated prior generation was preserved: {}",
+                    self.live.display()
+                ));
+            }
+            self.parent_guard.validate()?;
+            lock.validate()?;
+            self.private_root.root.exchange_child(
+                OsStr::new("backup"),
+                &self.parent_guard.parent_anchor,
+                &self.parent_guard.live_name,
+                "source-only projection atomic rollback",
+            )?;
+            if self.inspect_live(&backup)? != backup {
+                self.preserve = true;
+                return Err(format!(
+                    "restored source-only projection changed and was preserved: {}",
+                    self.live.display()
+                ));
+            }
+            if self.inspect_backup(&staged)? != staged {
+                self.preserve = true;
+                return Err(format!(
+                    "rolled-back staged projection changed and was preserved: {}",
+                    self.backup.display()
+                ));
+            }
+            self.old_moved = false;
+            self.backup_snapshot = Some(staged);
+            self.private_root.preserve = false;
+            return Ok(());
+        }
+        // Restoring a quarantined generation mutates the live namespace just
+        // like ordinary publication. Do not perform it through detached
+        // output-parent or lock authority.
+        self.parent_guard.validate()?;
+        lock.validate()?;
+        self.private_root
+            .root
+            .rename_child_no_replace(
+                OsStr::new("backup"),
+                &self.parent_guard.parent_anchor,
+                &self.parent_guard.live_name,
+                "source-only projection backup restore",
+            )
+            .map_err(|error| {
+            self.preserve = true;
+            format!(
+                "restore source-only projection backup {} -> {} without replacement: {error}",
+                self.backup.display(),
+                self.live.display()
+            )
+        })?;
+        let restored = self.inspect_live(&backup)?;
+        if restored != backup {
+            self.preserve = true;
+            return Err(format!(
+                "restored source-only projection changed and was preserved: {}",
+                self.live.display()
+            ));
+        }
+        self.old_moved = false;
+        self.backup_snapshot = None;
+        self.private_root.preserve = false;
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+impl Drop for OwnedEntryTransaction {
+    fn drop(&mut self) {
+        if self.finished || self.preserve {
+            return;
+        }
+        if self.old_moved {
+            // Once a validated prior generation has been quarantined, an
+            // ambiguous unwind must preserve it. Only the explicit transaction
+            // finalizer may restore or dispose that backup.
+            self.preserve = true;
+            self.private_root.preserve = true;
+            return;
+        }
+        if !self.preserve {
+            if self.dispose_private_root().is_err() {
+                self.preserve = true;
+                self.private_root.preserve = true;
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn projection_member_ancestor_directories(files: &BTreeSet<PathBuf>) -> BTreeSet<PathBuf> {
+    let mut directories = BTreeSet::new();
+    for file in files {
+        let mut parent = file.parent();
+        while let Some(path) = parent {
+            if path.as_os_str().is_empty() {
+                break;
+            }
+            directories.insert(path.to_path_buf());
+            parent = path.parent();
+        }
+    }
+    directories
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct SourceOnlyProjectionLock {
+    file: std::fs::File,
+    path: PathBuf,
+    identity: PackageMirrorIdentity,
+    output_root: AnchoredDirectory,
+    metadata_parent: AnchoredDirectory,
+    name: OsString,
+}
+
+#[cfg(unix)]
+impl SourceOnlyProjectionLock {
+    fn acquire(output_root: &Path) -> Result<Self, String> {
+        let output_root = AnchoredDirectory::open_existing(
+            output_root,
+            "source-only projection output root",
+        )?;
+        Self::acquire_from_anchored_root(output_root)
+    }
+
+    fn acquire_from_anchored_root(output_root: AnchoredDirectory) -> Result<Self, String> {
+        let metadata_parent = output_root.ensure_child_directory(
+            OsStr::new(".kandelo"),
+            0o755,
+            "source-only projection metadata root",
+        )?;
+        let name = OsString::from(".source-only-program-projection-v1.json.kandelo-lock");
+        let path = metadata_parent.path.join(&name);
+        let create_flags = rustix::fs::OFlags::RDWR
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::NONBLOCK
+            | rustix::fs::OFlags::CREATE
+            | rustix::fs::OFlags::EXCL;
+        let (file, created) = match rustix::fs::openat(
+            &metadata_parent.file,
+            &name,
+            create_flags,
+            rustix::fs::Mode::from_bits_retain(0o600),
+        ) {
+            Ok(file) => (std::fs::File::from(file), true),
+            Err(rustix::io::Errno::EXIST) => (
+                rustix::fs::openat(
+                    &metadata_parent.file,
+                    &name,
+                    rustix::fs::OFlags::RDWR
+                        | rustix::fs::OFlags::CLOEXEC
+                        | rustix::fs::OFlags::NOFOLLOW
+                        | rustix::fs::OFlags::NONBLOCK,
+                    rustix::fs::Mode::empty(),
+                )
+                .map(std::fs::File::from)
+                .map_err(|error| {
+                    format!(
+                        "open source-only projection lock {} without following: {error}",
+                        path.display()
+                    )
+                })?,
+                false,
+            ),
+            Err(error) => {
+                return Err(format!(
+                    "create source-only projection lock {} without following: {error}",
+                    path.display()
+                ));
+            }
+        };
+        if created {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(|error| {
+                    format!(
+                        "set newly created source-only projection lock mode {}: {error}",
+                        path.display()
+                    )
+                })?;
+        }
+        let path_metadata = receipt_at_metadata_snapshot(
+            &metadata_parent.file,
+            &name,
+            &path,
+        )?;
+        let opened_metadata = file
+            .metadata()
+            .map_err(|error| format!("inspect opened source-only projection lock {}: {error}", path.display()))?;
+        if path_metadata.kind != 1
+            || path_metadata.len != 0
+            || !opened_metadata.is_file()
+            || opened_metadata.len() != 0
+            || path_metadata.mode != 0o600
+            || !projection_lock_has_exact_mode(&opened_metadata)
+        {
+            return Err(format!(
+                "source-only projection lock must be a regular empty nonsymlink file: {}",
+                path.display()
+            ));
+        }
+        let identity = path_metadata.identity.clone();
+        if package_mirror_identity(&opened_metadata)? != identity {
+            return Err(format!(
+                "source-only projection lock changed while opening: {}",
+                path.display()
+            ));
+        }
+        rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)
+            .map_err(|error| format!("lock source-only projection output {}: {error}", path.display()))?;
+        let locked_path = receipt_at_metadata_snapshot(
+            &metadata_parent.file,
+            &name,
+            &path,
+        )?;
+        let locked_file = file
+            .metadata()
+            .map_err(|error| format!("reinspect opened source-only projection lock {}: {error}", path.display()))?;
+        if locked_path.kind != 1
+            || locked_path.len != 0
+            || locked_file.len() != 0
+            || locked_path.mode != 0o600
+            || !projection_lock_has_exact_mode(&locked_file)
+            || locked_path.identity != identity
+            || package_mirror_identity(&locked_file)? != identity
+        {
+            return Err(format!(
+                "source-only projection lock changed while acquiring it: {}",
+                path.display()
+            ));
+        }
+        Ok(Self {
+            file,
+            path,
+            identity,
+            output_root,
+            metadata_parent,
+            name,
+        })
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        self.output_root.validate_path()?;
+        self.metadata_parent.validate_path()?;
+        let path_metadata = receipt_at_metadata_snapshot(
+            &self.metadata_parent.file,
+            &self.name,
+            &self.path,
+        )?;
+        let opened_metadata = self
+            .file
+            .metadata()
+            .map_err(|error| format!("inspect held source-only projection lock fd: {error}"))?;
+        if path_metadata.kind != 1
+            || path_metadata.len != 0
+            || opened_metadata.len() != 0
+            || path_metadata.mode != 0o600
+            || !projection_lock_has_exact_mode(&opened_metadata)
+            || path_metadata.identity != self.identity
+            || package_mirror_identity(&opened_metadata)? != self.identity
+        {
+            return Err(format!(
+                "source-only projection lock identity changed while held: {}",
+                self.path.display()
+            ));
+        }
+        Ok(())
+    }
+}
+
+const SOURCE_ONLY_PROJECTION_AUTHORITY_LIMIT: usize = 16 * 1024 * 1024;
+
+/// Opaque, descriptor-bound capability held by the supervising local-build
+/// controller while it revalidates projected members and replaces the one
+/// aggregate authority. Callers never receive raw descriptors or reopen the
+/// output root by pathname.
+#[cfg(unix)]
+pub(crate) struct SourceOnlyProgramProjectionAuthority<'a> {
+    lock: &'a SourceOnlyProjectionLock,
+}
+
+#[cfg(unix)]
+impl SourceOnlyProgramProjectionAuthority<'_> {
+    pub(crate) fn validate_package_receipt(
+        &self,
+        target: &DepsManifest,
+        registry: &Registry,
+        roots: &SourceOnlyCacheRoots,
+        arch: TargetArch,
+        abi_version: u32,
+        receipt: &PackageNodeReceiptV1,
+    ) -> Result<(), String> {
+        self.lock.validate()?;
+        if target.kind == ManifestKind::Source {
+            return Err(format!(
+                "{}: source node may not carry a compiled package receipt",
+                target.spec()
+            ));
+        }
+        let cache_key = compute_sha_for_policy(
+            target,
+            registry,
+            arch,
+            abi_version,
+            ResolvePolicy::SourceOnlyV1,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )?;
+        let canonical = canonical_path(&roots.compiled, target, arch, &cache_key);
+        let before = capture_source_only_package_authority(
+            target,
+            registry,
+            &canonical,
+            roots,
+            arch,
+            abi_version,
+        )?;
+        let actual_cache_receipt = cache_receipt_sha256(&before.cache_snapshot.receipt)?;
+        if receipt.manifest_sha256 != before.manifest_sha256
+            || receipt.cache_key_sha256 != before.cache_key_sha256
+            || receipt.cache_receipt_sha256 != actual_cache_receipt
+        {
+            return Err(format!(
+                "{}: retained package receipt does not match the current source-only cache authority",
+                target.spec()
+            ));
+        }
+
+        let mut sorted_members = receipt.materialized_members.clone();
+        sorted_members.sort_by(|left, right| {
+            (&left.mirror_path, &left.source_artifact)
+                .cmp(&(&right.mirror_path, &right.source_artifact))
+        });
+        if sorted_members != receipt.materialized_members {
+            return Err(format!(
+                "{}: retained materialized-member receipt is not canonically sorted",
+                target.spec()
+            ));
+        }
+        let expected_members = if before.manifest.kind == ManifestKind::Program {
+            program_projection_members(&before.manifest)?
+                .into_iter()
+                .map(|member| {
+                    let destination = program_projection_destination_relative(
+                        &before.manifest,
+                        arch,
+                        Path::new(&member.mirror_path),
+                    );
+                    let destination = destination.to_str().ok_or_else(|| {
+                        format!(
+                            "{}: projected destination is not valid UTF-8: {}",
+                            target.spec(),
+                            destination.display()
+                        )
+                    })?;
+                    Ok((
+                        (destination.to_string(), member.source_artifact),
+                        member.mode,
+                    ))
+                })
+                .collect::<Result<BTreeMap<_, _>, String>>()?
+        } else {
+            BTreeMap::new()
+        };
+        if sorted_members.len() != expected_members.len() {
+            return Err(format!(
+                "{}: retained materialized-member count does not match the declared program closure",
+                target.spec()
+            ));
+        }
+        let mut observed_members = BTreeSet::new();
+        for member in &sorted_members {
+            let key = (member.mirror_path.clone(), member.source_artifact.clone());
+            if !observed_members.insert(key.clone()) {
+                return Err(format!(
+                    "{}: retained package receipt repeats a materialized member",
+                    target.spec()
+                ));
+            }
+            let declared_mode = expected_members.get(&key).ok_or_else(|| {
+                format!(
+                    "{}: retained package receipt contains undeclared materialized member {:?}",
+                    target.spec(),
+                    member.mirror_path
+                )
+            })?;
+            if declared_mode.is_some_and(|mode| member.mode != mode) {
+                return Err(format!(
+                    "{}: retained materialized mode for {:?} does not match the declaration",
+                    target.spec(),
+                    member.mirror_path
+                ));
+            }
+            self.validate_materialized_member(member)?;
+        }
+        self.lock.validate()?;
+        let after = capture_source_only_package_authority(
+            target,
+            registry,
+            &canonical,
+            roots,
+            arch,
+            abi_version,
+        )?;
+        require_same_source_only_package_authority(
+            target,
+            &before,
+            &after,
+            "during supervisor finalization",
+        )?;
+        self.lock.validate()
+    }
+
+    pub(crate) fn validate_materialized_member(
+        &self,
+        member: &MaterializedProgramMemberV1,
+    ) -> Result<(), String> {
+        self.lock.validate()?;
+        let relative = Path::new(&member.mirror_path);
+        let mut components = relative.components().peekable();
+        let mut parent = self
+            .lock
+            .output_root
+            .try_clone("source-only projection output root")?;
+        let mut file_name = None;
+        while let Some(component) = components.next() {
+            let Component::Normal(name) = component else {
+                return Err(format!(
+                    "source-only materialized member path is not normalized and relative: {:?}",
+                    member.mirror_path
+                ));
+            };
+            if components.peek().is_some() {
+                parent = parent.open_child_directory(
+                    name,
+                    "source-only materialized member parent",
+                )?;
+            } else {
+                file_name = Some(name.to_os_string());
+            }
+        }
+        let file_name = file_name.ok_or_else(|| {
+            "source-only materialized member path may not be empty".to_string()
+        })?;
+        let path = parent.path.join(&file_name);
+        let snapshot = inspect_regular_projection_file_at(
+            &parent.file,
+            &file_name,
+            &path,
+        )?;
+        let exact = matches!(
+            snapshot.kind,
+            LocalMirrorEntryKind::Regular { len, sha256 }
+                if len == member.size && hex(&sha256) == member.sha256
+        ) && snapshot.mode == member.mode;
+        self.lock.validate()?;
+        if !exact {
+            return Err(format!(
+                "source-only materialized member changed from its package receipt: {}",
+                path.display()
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn replace_projection_authority(&self, bytes: &[u8]) -> Result<(), String> {
+        self.replace_projection_authority_with_phase_hook(bytes, &mut |_, _| Ok(()))
+    }
+
+    fn replace_projection_authority_with_phase_hook<H>(
+        &self,
+        bytes: &[u8],
+        phase_hook: &mut H,
+    ) -> Result<(), String>
+    where
+        H: FnMut(OwnedEntryPublishPhase, &Path) -> Result<(), String>,
+    {
+        use std::io::Write as _;
+
+        if bytes.len() > SOURCE_ONLY_PROJECTION_AUTHORITY_LIMIT {
+            return Err(format!(
+                "source-only projection authority is {} bytes, exceeding the {}-byte limit",
+                bytes.len(),
+                SOURCE_ONLY_PROJECTION_AUTHORITY_LIMIT,
+            ));
+        }
+        self.lock.validate()?;
+        let live_name = OsString::from("source-only-program-projection-v1.json");
+        let parent_guard = SourceOnlyProjectionParentGuard::from_anchored(
+            self.lock
+                .output_root
+                .try_clone("source-only projection output root")?,
+            self.lock
+                .metadata_parent
+                .try_clone("source-only projection metadata root")?,
+            live_name.clone(),
+        )?;
+        let live = self.lock.metadata_parent.path.join(&live_name);
+        let mut transaction = OwnedEntryTransaction::reserve(
+            parent_guard,
+            live,
+            false,
+            "program-projection-authority",
+            BTreeSet::new(),
+        )?;
+        transaction.scalar_read_limit = Some(SOURCE_ONLY_PROJECTION_AUTHORITY_LIMIT as u64);
+        // Once the aggregate authority has atomically committed, any later
+        // sync/identity/cleanup failure preserves both generations. The
+        // supervisor must fail rather than roll back a committed authority.
+        transaction.restore_after_published_failure = false;
+        let prepared = (|| {
+            let stage_name = OsStr::new("stage");
+            let mut stage = transaction.private_root.root.create_child_file_new(
+                stage_name,
+                0o644,
+                "source-only projection authority stage",
+            )?;
+            stage.write_all(bytes).map_err(|error| {
+                format!("write source-only projection authority stage: {error}")
+            })?;
+            stage.sync_all().map_err(|error| {
+                format!("sync source-only projection authority stage: {error}")
+            })?;
+            let opened = receipt_metadata_snapshot(&stage.metadata().map_err(|error| {
+                format!("inspect opened source-only projection authority stage: {error}")
+            })?)?;
+            drop(stage);
+            let snapshot = inspect_regular_projection_file_at(
+                &transaction.private_root.root.file,
+                stage_name,
+                &transaction.stage,
+            )?;
+            let expected = LocalMirrorEntryKind::Regular {
+                len: bytes.len() as u64,
+                sha256: Sha256::digest(bytes).into(),
+            };
+            if opened.identity != snapshot.identity
+                || opened.mode != 0o644
+                || snapshot.mode != 0o644
+                || snapshot.kind != expected
+            {
+                return Err(
+                    "source-only projection authority stage changed before sealing".to_string(),
+                );
+            }
+            transaction.set_stage_snapshot(PreparedProjectionSnapshot::Scalar(snapshot))
+        })();
+        if let Err(error) = prepared {
+            transaction.preserve = true;
+            transaction.private_root.preserve = true;
+            return Err(format!(
+                "{error}; ambiguous private authority stage was preserved"
+            ));
+        }
+        publish_owned_entry_transaction_with_hook(
+            "source-only program projection authority",
+            &self.lock.output_root.path,
+            &mut transaction,
+            self.lock,
+            &mut |_| Ok(()),
+            phase_hook,
+        )?;
+        self.lock.validate()
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) struct SourceOnlyProgramProjectionAuthority<'a> {
+    _marker: std::marker::PhantomData<&'a ()>,
+}
+
+#[cfg(not(unix))]
+impl SourceOnlyProgramProjectionAuthority<'_> {
+    pub(crate) fn validate_package_receipt(
+        &self,
+        _target: &DepsManifest,
+        _registry: &Registry,
+        _roots: &SourceOnlyCacheRoots,
+        _arch: TargetArch,
+        _abi_version: u32,
+        _receipt: &PackageNodeReceiptV1,
+    ) -> Result<(), String> {
+        Err("source-only projection authority requires Unix no-follow filesystem semantics".into())
+    }
+
+    pub(crate) fn validate_materialized_member(
+        &self,
+        _member: &MaterializedProgramMemberV1,
+    ) -> Result<(), String> {
+        Err("source-only projection authority requires Unix no-follow filesystem semantics".into())
+    }
+
+    pub(crate) fn replace_projection_authority(&self, _bytes: &[u8]) -> Result<(), String> {
+        Err("source-only projection authority requires Unix no-follow filesystem semantics".into())
+    }
+}
+
+#[cfg(unix)]
+fn with_source_only_projection_lock_guard<T, F>(
+    output_root: &Path,
+    work: F,
+) -> Result<T, String>
+where
+    F: FnOnce(&SourceOnlyProjectionLock) -> Result<T, String>,
+{
+    let lock = SourceOnlyProjectionLock::acquire(output_root)?;
+    with_acquired_source_only_projection_lock(lock, work)
+}
+
+#[cfg(unix)]
+fn with_source_only_projection_lock_guard_from_root<T, F>(
+    output_root: AnchoredDirectory,
+    work: F,
+) -> Result<T, String>
+where
+    F: FnOnce(&SourceOnlyProjectionLock) -> Result<T, String>,
+{
+    let lock = SourceOnlyProjectionLock::acquire_from_anchored_root(output_root)?;
+    with_acquired_source_only_projection_lock(lock, work)
+}
+
+#[cfg(unix)]
+fn with_acquired_source_only_projection_lock<T, F>(
+    lock: SourceOnlyProjectionLock,
+    work: F,
+) -> Result<T, String>
+where
+    F: FnOnce(&SourceOnlyProjectionLock) -> Result<T, String>,
+{
+    let result = work(&lock);
+    let final_validation = lock.validate();
+    drop(lock);
+    match (result, final_validation) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn with_source_only_program_projection_lock<T, F>(
+    output_root: &Path,
+    work: F,
+) -> Result<T, String>
+where
+    F: FnOnce(&SourceOnlyProgramProjectionAuthority<'_>) -> Result<T, String>,
+{
+    let output_root = canonical_real_directory(
+        output_root,
+        "source-only projection output root",
+    )?;
+    with_source_only_projection_lock_guard(&output_root, |lock| {
+        let authority = SourceOnlyProgramProjectionAuthority { lock };
+        work(&authority)
+    })
+}
+
+#[cfg(not(unix))]
+pub(crate) fn with_source_only_program_projection_lock<T, F>(
+    _output_root: &Path,
+    _work: F,
+) -> Result<T, String>
+where
+    F: FnOnce(&SourceOnlyProgramProjectionAuthority<'_>) -> Result<T, String>,
+{
+    Err("source-only projection locks require Unix no-follow filesystem semantics".to_string())
+}
+
+#[cfg(unix)]
+impl Drop for SourceOnlyProjectionLock {
+    fn drop(&mut self) {
+        let _ = rustix::fs::flock(&self.file, rustix::fs::FlockOperation::Unlock);
+    }
+}
+
+#[cfg(not(unix))]
+struct SourceOnlyProjectionLock;
+
+#[cfg(not(unix))]
+impl SourceOnlyProjectionLock {
+    fn acquire(_output_root: &Path) -> Result<Self, String> {
+        Err("source-only projection locks require Unix no-follow filesystem semantics".to_string())
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        Err("source-only projection locks require Unix no-follow filesystem semantics".to_string())
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn materialize_source_only_program_target(
+    manifest: &DepsManifest,
+    canonical: &Path,
+    output_root: &Path,
+    arch: TargetArch,
+) -> Result<Vec<MaterializedProgramMemberV1>, String> {
+    materialize_source_only_program_target_with(
+        manifest,
+        canonical,
+        output_root,
+        arch,
+        &mut |_| {},
+        &mut |_| Ok(()),
+    )
+}
+
+#[cfg(unix)]
+fn materialize_source_only_program_target_with<AfterCopy, BeforePublish>(
+    manifest: &DepsManifest,
+    canonical: &Path,
+    output_root: &Path,
+    arch: TargetArch,
+    after_copy: &mut AfterCopy,
+    before_publish: &mut BeforePublish,
+) -> Result<Vec<MaterializedProgramMemberV1>, String>
+where
+    AfterCopy: FnMut(&Path),
+    BeforePublish: FnMut(&Path) -> Result<(), String>,
+{
+    materialize_source_only_program_target_with_cache_root(
+        manifest,
+        canonical,
+        None,
+        output_root,
+        arch,
+        after_copy,
+        before_publish,
+    )
+}
+
+#[cfg(unix)]
+fn materialize_source_only_program_target_with_cache_root<AfterCopy, BeforePublish>(
+    manifest: &DepsManifest,
+    canonical: &Path,
+    canonical_root: Option<&AnchoredDirectory>,
+    output_root: &Path,
+    arch: TargetArch,
+    after_copy: &mut AfterCopy,
+    before_publish: &mut BeforePublish,
+) -> Result<Vec<MaterializedProgramMemberV1>, String>
+where
+    AfterCopy: FnMut(&Path),
+    BeforePublish: FnMut(&Path) -> Result<(), String>,
+{
+    if manifest.kind != ManifestKind::Program {
+        return Ok(Vec::new());
+    }
+    let output_root = canonical_real_directory(output_root, "source-only projection output root")?;
+    let canonical = canonical_real_directory(canonical, "source-only package cache entry")?;
+    let mut prepared = prepare_program_projection(
+        manifest,
+        &canonical,
+        canonical_root,
+        &output_root,
+        arch,
+        after_copy,
+    )?;
+    let shared_output_root = prepared
+        .transaction
+        .parent_guard
+        .root_anchor
+        .try_clone("source-only projection output root")?;
+    let subject = manifest.spec();
+    let result = with_source_only_projection_lock_guard_from_root(shared_output_root, |lock| {
+        publish_owned_entry_transaction(
+            &subject,
+            &output_root,
+            &mut prepared.transaction,
+            lock,
+            before_publish,
+        )
+    });
+    match result {
+        Ok(()) => {
+            let mut receipts = prepared
+                .members
+                .into_iter()
+                .map(|member| member.receipt)
+                .collect::<Vec<_>>();
+            receipts.sort_by(|left, right| {
+                (&left.mirror_path, &left.source_artifact)
+                    .cmp(&(&right.mirror_path, &right.source_artifact))
+            });
+            Ok(receipts)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn materialize_source_only_program_target(
+    _manifest: &DepsManifest,
+    _canonical: &Path,
+    _output_root: &Path,
+    _arch: TargetArch,
+) -> Result<Vec<MaterializedProgramMemberV1>, String> {
+    Err("source-only program materialization requires Unix no-follow filesystem semantics".to_string())
+}
+
+fn program_projection_destination_relative(
+    manifest: &DepsManifest,
+    arch: TargetArch,
+    mirror_relative: &Path,
+) -> PathBuf {
+    if manifest.uses_root_binary_mirror() {
+        mirror_relative.to_path_buf()
+    } else {
+        PathBuf::from("programs")
+            .join(arch.as_str())
+            .join(mirror_relative)
+    }
+}
+
+#[cfg(unix)]
+struct StableProjectionSource {
+    root_path: PathBuf,
+    path: PathBuf,
+    component_names: Vec<OsString>,
+    directories: Vec<std::fs::File>,
+    directory_snapshots: Vec<ReceiptMetadataSnapshot>,
+    file: std::fs::File,
+    file_snapshot: ReceiptMetadataSnapshot,
+}
+
+#[cfg(unix)]
+impl StableProjectionSource {
+    #[cfg(unix)]
+    fn open(root: &Path, artifact: &str) -> Result<Self, String> {
+        let root = AnchoredDirectory::open_existing(root, "projection source root")?;
+        Self::open_from_anchored_root(&root, artifact)
+    }
+
+    #[cfg(unix)]
+    fn open_from_anchored_root(
+        root: &AnchoredDirectory,
+        artifact: &str,
+    ) -> Result<Self, String> {
+        let relative = Path::new(artifact);
+        let component_names = relative
+            .components()
+            .map(|component| match component {
+                Component::Normal(name) => Ok(name.to_os_string()),
+                _ => Err(format!(
+                    "projected source artifact must be a portable relative path: {artifact:?}"
+                )),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if component_names.is_empty() {
+            return Err("projected source artifact must not be empty".to_string());
+        }
+
+        let root_file = root.file.try_clone().map_err(|error| {
+            format!(
+                "duplicate opened projection source root {}: {error}",
+                root.path.display()
+            )
+        })?;
+        let root_snapshot = receipt_metadata_snapshot(&root_file.metadata().map_err(|error| {
+            format!("inspect opened projection source root {}: {error}", root.path.display())
+        })?)?;
+        if root_snapshot.kind != 2 {
+            return Err(format!(
+                "projection source root must be a real directory: {}",
+                root.path.display()
+            ));
+        }
+        let mut directories = vec![root_file];
+        let mut directory_snapshots = vec![root_snapshot];
+        let mut path = root.path.clone();
+        for name in &component_names[..component_names.len() - 1] {
+            path.push(name);
+            let opened = open_receipt_entry_at(
+                directories.last().expect("projection source root descriptor"),
+                name,
+                &path,
+                false,
+            )?;
+            let snapshot = receipt_metadata_snapshot(&opened.metadata().map_err(|error| {
+                format!("inspect opened projection source ancestor {}: {error}", path.display())
+            })?)?;
+            if snapshot.kind != 2 {
+                return Err(format!(
+                    "projected source ancestor must be a real nonsymlink directory: {}",
+                    path.display()
+                ));
+            }
+            directories.push(opened);
+            directory_snapshots.push(snapshot);
+        }
+        let leaf_name = component_names.last().expect("nonempty component list");
+        let leaf_path = root.path.join(relative);
+        let file = open_receipt_entry_at(
+            directories.last().expect("projection source parent descriptor"),
+            leaf_name,
+            &leaf_path,
+            false,
+        )?;
+        let file_snapshot = receipt_metadata_snapshot(&file.metadata().map_err(|error| {
+            format!("inspect opened projected source {}: {error}", leaf_path.display())
+        })?)?;
+        if file_snapshot.kind != 1 {
+            return Err(format!(
+                "projected source must be a regular nonsymlink file: {}",
+                leaf_path.display()
+            ));
+        }
+        Ok(Self {
+            root_path: root.path.clone(),
+            path: leaf_path,
+            component_names,
+            directories,
+            directory_snapshots,
+            file,
+            file_snapshot,
+        })
+    }
+
+    #[cfg(not(unix))]
+    fn open(_root: &Path, _artifact: &str) -> Result<Self, String> {
+        Err("source-only regular projection requires Unix no-follow filesystem semantics".to_string())
+    }
+
+    #[cfg(unix)]
+    fn validate(&self) -> Result<(), String> {
+        if receipt_metadata_snapshot(&self.file.metadata().map_err(|error| {
+            format!("reinspect opened projected source {}: {error}", self.path.display())
+        })?)? != self.file_snapshot
+        {
+            return Err(format!(
+                "projected source changed while copied: {}",
+                self.path.display()
+            ));
+        }
+        let leaf_name = self.component_names.last().expect("nonempty component list");
+        let reopened = open_receipt_entry_at(
+            self.directories.last().expect("projection source parent descriptor"),
+            leaf_name,
+            &self.path,
+            false,
+        )?;
+        if receipt_metadata_snapshot(&reopened.metadata().map_err(|error| {
+            format!("inspect reopened projected source {}: {error}", self.path.display())
+        })?)? != self.file_snapshot
+        {
+            return Err(format!(
+                "projected source pathname changed while copied: {}",
+                self.path.display()
+            ));
+        }
+        for index in (1..self.directories.len()).rev() {
+            let held = receipt_metadata_snapshot(&self.directories[index].metadata().map_err(|error| {
+                format!("reinspect held projection source ancestor {}: {error}", self.path.display())
+            })?)?;
+            if held != self.directory_snapshots[index] {
+                return Err(format!(
+                    "projected source ancestor changed while copied: {}",
+                    self.path.display()
+                ));
+            }
+            let ancestor_path = self
+                .root_path
+                .join(self.component_names[..index].iter().collect::<PathBuf>());
+            let reopened = open_receipt_entry_at(
+                &self.directories[index - 1],
+                &self.component_names[index - 1],
+                &ancestor_path,
+                false,
+            )?;
+            if receipt_metadata_snapshot(&reopened.metadata().map_err(|error| {
+                format!("reinspect projection source ancestor {}: {error}", ancestor_path.display())
+            })?)? != self.directory_snapshots[index]
+            {
+                return Err(format!(
+                    "projected source ancestor pathname changed while copied: {}",
+                    ancestor_path.display()
+                ));
+            }
+        }
+        let reopened_root = open_receipt_root(&self.root_path)?;
+        if receipt_metadata_snapshot(&reopened_root.metadata().map_err(|error| {
+            format!("reinspect projection source root {}: {error}", self.root_path.display())
+        })?)? != self.directory_snapshots[0]
+        {
+            return Err(format!(
+                "projected source root changed while copied: {}",
+                self.root_path.display()
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    fn validate(&self) -> Result<(), String> {
+        Err("source-only regular projection requires Unix no-follow filesystem semantics".to_string())
+    }
+}
+
+#[cfg(unix)]
+fn projection_stage_file_parent(
+    transaction: &OwnedEntryTransaction,
+    stage_relative: &Path,
+) -> Result<(AnchoredDirectory, OsString, PathBuf), String> {
+    if !transaction.package_directory {
+        return Ok((
+            transaction
+                .private_root
+                .root
+                .try_clone("scalar projection transaction")?,
+            OsString::from("stage"),
+            transaction.stage.clone(),
+        ));
+    }
+    let file_name = stage_relative
+        .file_name()
+        .ok_or_else(|| {
+            format!(
+                "package projection stage member has no filename: {}",
+                stage_relative.display()
+            )
+        })?
+        .to_os_string();
+    validate_single_path_component(&file_name, "package projection stage member")?;
+    let mut parent = transaction
+        .stage_anchor
+        .as_ref()
+        .ok_or_else(|| "package projection transaction has no stage directory".to_string())?
+        .try_clone("package projection stage")?;
+    for component in stage_relative
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .components()
+    {
+        let Component::Normal(name) = component else {
+            return Err(format!(
+                "package projection stage path is not portable: {}",
+                stage_relative.display()
+            ));
+        };
+        parent = parent.ensure_child_directory(
+            name,
+            0o755,
+            "package projection stage directory",
+        )?;
+    }
+    let path = transaction.stage.join(stage_relative);
+    Ok((parent, file_name, path))
+}
+
+#[cfg(unix)]
+fn prepare_program_projection<F>(
+    manifest: &DepsManifest,
+    canonical: &Path,
+    canonical_root: Option<&AnchoredDirectory>,
+    output_root: &Path,
+    arch: TargetArch,
+    after_copy: &mut F,
+) -> Result<PreparedProgramProjection, String>
+where
+    F: FnMut(&Path),
+{
+    #[cfg(not(unix))]
+    {
+        let _ = (manifest, canonical, canonical_root, output_root, arch, after_copy);
+        return Err("source-only regular projection requires Unix permission metadata".to_string());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut declarations = Vec::<(String, PathBuf, Option<u32>)>::new();
+        for output in &manifest.program_outputs {
+            declarations.push((
+                output.wasm.clone(),
+                manifest.output_dest_rel_for(output),
+                None,
+            ));
+        }
+        declarations.extend(manifest.runtime_files.iter().map(|runtime_file| {
+            (
+                runtime_file.artifact.clone(),
+                manifest.runtime_file_dest_rel_for(runtime_file),
+                Some(runtime_file.mode),
+            )
+        }));
+        if declarations.is_empty() {
+            return Err(format!(
+                "{}: program has no declared output/runtime closure to materialize",
+                manifest.spec()
+            ));
+        }
+
+        let is_package = manifest.uses_package_mirror_directory();
+        let live_relative = if is_package {
+            PathBuf::from("programs")
+                .join(arch.as_str())
+                .join(&manifest.name)
+        } else {
+            program_projection_destination_relative(manifest, arch, &declarations[0].1)
+        };
+        let live = output_root.join(&live_relative);
+        let parent_guard = SourceOnlyProjectionParentGuard::prepare(output_root, &live)?;
+        let allowed_stage_files = declarations
+            .iter()
+            .map(|(_, mirror_relative, _)| {
+                if is_package {
+                    package_owned_relative_path(manifest, mirror_relative).map_err(|error| {
+                        format!("{}: invalid package projection path: {error}", manifest.spec())
+                    })
+                } else {
+                    Ok(PathBuf::new())
+                }
+            })
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        let mut transaction = OwnedEntryTransaction::reserve(
+            parent_guard,
+            live,
+            is_package,
+            &manifest.name,
+            allowed_stage_files,
+        )?;
+        let stage = transaction.stage.clone();
+
+        let mut prepared = Vec::new();
+        for (source_artifact, mirror_relative, declared_mode) in declarations {
+            let mut source = match canonical_root {
+                Some(root) => StableProjectionSource::open_from_anchored_root(
+                    root,
+                    &source_artifact,
+                ),
+                None => StableProjectionSource::open(canonical, &source_artifact),
+            }
+            .map_err(|error| format!("{}: {error}", manifest.spec()))?;
+            let mode = declared_mode.unwrap_or(source.file_snapshot.mode);
+            let destination_relative =
+                program_projection_destination_relative(manifest, arch, &mirror_relative);
+            let stage_relative = if is_package {
+                package_owned_relative_path(manifest, &mirror_relative).map_err(|error| {
+                    format!("{}: invalid package projection path: {error}", manifest.spec())
+                })?
+            } else {
+                PathBuf::new()
+            };
+            let (stage_parent, stage_name, stage_member) =
+                projection_stage_file_parent(&transaction, &stage_relative)?;
+            let mut stage_file = stage_parent.create_child_file_new(
+                &stage_name,
+                0o600,
+                "source-only projected stage member",
+            )?;
+            let created_snapshot = receipt_metadata_snapshot(&stage_file.metadata().map_err(|error| {
+                format!("inspect opened projected stage {}: {error}", stage_member.display())
+            })?)?;
+            if created_snapshot.kind != 1 {
+                return Err(format!("projected stage is not a regular file: {}", stage_member.display()));
+            }
+            let mut hash = Sha256::new();
+            let mut size = 0u64;
+            let mut buffer = [0u8; 64 * 1024];
+            loop {
+                let count = std::io::Read::read(&mut source.file, &mut buffer)
+                    .map_err(|error| format!("read projected member {}: {error}", source.path.display()))?;
+                if count == 0 {
+                    break;
+                }
+                std::io::Write::write_all(&mut stage_file, &buffer[..count])
+                    .map_err(|error| format!("write projected stage {}: {error}", stage_member.display()))?;
+                hash.update(&buffer[..count]);
+                size += count as u64;
+            }
+            stage_file
+                .set_permissions(std::fs::Permissions::from_mode(mode))
+                .map_err(|error| format!("set projected stage mode {}: {error}", stage_member.display()))?;
+            stage_file
+                .sync_all()
+                .map_err(|error| format!("sync projected stage {}: {error}", stage_member.display()))?;
+            let staged_fd_snapshot = receipt_metadata_snapshot(&stage_file.metadata().map_err(|error| {
+                format!("reinspect opened projected stage {}: {error}", stage_member.display())
+            })?)?;
+            drop(stage_file);
+            let digest: [u8; 32] = hash.finalize().into();
+            after_copy(&source.path);
+            source.validate()?;
+            let stage_snapshot = inspect_regular_projection_file_at(
+                &stage_parent.file,
+                &stage_name,
+                &stage_member,
+            )?;
+            let expected_kind = LocalMirrorEntryKind::Regular {
+                len: size,
+                sha256: digest,
+            };
+            if staged_fd_snapshot.identity != stage_snapshot.identity
+                || staged_fd_snapshot.mode != mode
+                || stage_snapshot.mode != mode
+                || stage_snapshot.kind != expected_kind
+            {
+                return Err(format!(
+                    "projected stage changed or differs from copied bytes/mode: {}",
+                    stage_member.display()
+                ));
+            }
+            prepared.push(PreparedProgramProjectionMember {
+                receipt: MaterializedProgramMemberV1 {
+                    source_artifact,
+                    mirror_path: portable_projection_path(
+                        manifest,
+                        &destination_relative,
+                        "source-only output-root mirror path",
+                    )?,
+                    mode,
+                    size,
+                    sha256: hex(&digest),
+                },
+                stage_relative,
+                stage_snapshot,
+            });
+        }
+        prepared.sort_by(|left, right| {
+            (&left.receipt.mirror_path, &left.receipt.source_artifact)
+                .cmp(&(&right.receipt.mirror_path, &right.receipt.source_artifact))
+        });
+        let stage_snapshot = if is_package {
+            let tree = inspect_regular_projection_tree_at(
+                &transaction.private_root.root,
+                OsStr::new("stage"),
+                &stage,
+            )?;
+            if tree.files.len() != prepared.len()
+                || prepared.iter().any(|member| {
+                    tree.files.get(&member.stage_relative) != Some(&member.stage_snapshot)
+                })
+            {
+                return Err(format!(
+                    "staged package projection does not exactly match its declared closure: {}",
+                    stage.display()
+                ));
+            }
+            PreparedProjectionSnapshot::PackageDirectory(tree)
+        } else {
+            PreparedProjectionSnapshot::Scalar(
+                prepared
+                    .first()
+                    .expect("nonempty scalar projection")
+                    .stage_snapshot
+                    .clone(),
+            )
+        };
+        transaction.set_stage_snapshot(stage_snapshot)?;
+        Ok(PreparedProgramProjection {
+            transaction,
+            members: prepared,
+        })
+    }
+}
+
+#[cfg(unix)]
+fn reserve_source_only_projection_transaction(
+    parent: &Path,
+    package_name: &str,
+) -> Result<(PathBuf, PackageMirrorIdentity), String> {
+    let parent = canonical_real_directory(parent, "source-only projection transaction parent")?;
+    for _ in 0..1024 {
+        let sequence = MIRROR_TRANSACTION_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let transaction_root = parent.join(format!(
+            ".{package_name}.source-only-transaction-{}-{sequence}",
+            std::process::id()
+        ));
+        match create_private_transaction_directory(&transaction_root) {
+            Ok(()) => {
+                let metadata = std::fs::symlink_metadata(&transaction_root).map_err(|error| {
+                    format!(
+                        "inspect created source-only projection transaction {}: {error}",
+                        transaction_root.display()
+                    )
+                })?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(format!(
+                        "created source-only projection transaction is not a real directory: {}",
+                        transaction_root.display()
+                    ));
+                }
+                let identity = package_mirror_identity(&metadata)?;
+                let canonical = std::fs::canonicalize(&transaction_root).map_err(|error| {
+                    format!(
+                        "canonicalize source-only projection transaction {}: {error}",
+                        transaction_root.display()
+                    )
+                })?;
+                if canonical.parent() != Some(parent.as_path()) || canonical != transaction_root {
+                    return Err(format!(
+                        "source-only projection transaction escaped its validated parent: {}",
+                        transaction_root.display()
+                    ));
+                }
+                return Ok((transaction_root, identity));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "create private source-only projection transaction {}: {error}",
+                    transaction_root.display()
+                ));
+            }
+        }
+    }
+    Err(format!(
+        "could not allocate a private source-only projection transaction below {}",
+        parent.display()
+    ))
+}
+
+#[cfg(unix)]
+fn validate_source_only_projection_transaction(
+    path: &Path,
+    expected: &PackageMirrorIdentity,
+) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        format!("inspect source-only projection transaction {}: {error}", path.display())
+    })?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_dir()
+        || package_mirror_identity(&metadata)? != *expected
+    {
+        return Err(format!(
+            "source-only projection transaction identity changed and was preserved: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn regular_projection_directory_entry(
+    metadata: &std::fs::Metadata,
+) -> Result<RegularProjectionDirectoryEntry, String> {
+    use std::os::unix::fs::PermissionsExt;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err("regular projection directory must be a real nonsymlink directory".to_string());
+    }
+    Ok(RegularProjectionDirectoryEntry {
+        identity: package_mirror_identity(metadata)?,
+        mode: metadata.permissions().mode() & 0o7777,
+    })
+}
+
+#[cfg(not(unix))]
+fn regular_projection_directory_entry(
+    _metadata: &std::fs::Metadata,
+) -> Result<RegularProjectionDirectoryEntry, String> {
+    Err("source-only regular projection requires Unix permission metadata".to_string())
+}
+
+#[cfg(unix)]
+fn inspect_regular_projection_file_at(
+    parent: &std::fs::File,
+    name: &std::ffi::OsStr,
+    path: &Path,
+) -> Result<LocalMirrorEntrySnapshot, String> {
+    inspect_regular_projection_file_at_with_limit(parent, name, path, None)
+}
+
+#[cfg(unix)]
+fn inspect_regular_projection_file_at_with_limit(
+    parent: &std::fs::File,
+    name: &std::ffi::OsStr,
+    path: &Path,
+    limit: Option<u64>,
+) -> Result<LocalMirrorEntrySnapshot, String> {
+    use std::io::Read as _;
+
+    let before = receipt_at_metadata_snapshot(parent, name, path)?;
+    if before.kind != 1 {
+        return Err(format!(
+            "source-only package projection leaf must be a regular nonsymlink file: {}",
+            path.display()
+        ));
+    }
+    if limit.is_some_and(|limit| before.len > limit) {
+        return Err(format!(
+            "source-only projection file exceeds the {}-byte limit: {}",
+            limit.unwrap(),
+            path.display()
+        ));
+    }
+    let mut file = open_receipt_entry_at(parent, name, path, false)?;
+    let opened_metadata = file.metadata().map_err(|error| {
+        format!("inspect opened source-only projection file {}: {error}", path.display())
+    })?;
+    let opened = receipt_metadata_snapshot(&opened_metadata)?;
+    if opened.kind != 1 || !receipt_at_matches_opened(&before, &opened_metadata)? {
+        return Err(format!(
+            "source-only projection file changed while opening: {}",
+            path.display()
+        ));
+    }
+    let mut hasher = Sha256::new();
+    let copied = match limit {
+        Some(limit) => std::io::copy(&mut file.by_ref().take(limit.saturating_add(1)), &mut hasher),
+        None => std::io::copy(&mut file, &mut hasher),
+    }
+    .map_err(|error| format!("hash source-only projection file {}: {error}", path.display()))?;
+    if limit.is_some_and(|limit| copied > limit) {
+        return Err(format!(
+            "source-only projection file exceeds the {}-byte limit: {}",
+            limit.unwrap(),
+            path.display()
+        ));
+    }
+    let after = receipt_metadata_snapshot(&file.metadata().map_err(|error| {
+        format!("reinspect opened source-only projection file {}: {error}", path.display())
+    })?)?;
+    let reopened = open_receipt_entry_at(parent, name, path, false)?;
+    let reopened_snapshot = receipt_metadata_snapshot(&reopened.metadata().map_err(|error| {
+        format!("inspect reopened source-only projection file {}: {error}", path.display())
+    })?)?;
+    if after != opened || reopened_snapshot != opened {
+        return Err(format!(
+            "source-only projection file changed while hashed: {}",
+            path.display()
+        ));
+    }
+    Ok(LocalMirrorEntrySnapshot {
+        identity: opened.identity,
+        kind: LocalMirrorEntryKind::Regular {
+            len: opened.len,
+            sha256: hasher.finalize().into(),
+        },
+        mode: opened.mode,
+    })
+}
+
+#[cfg(unix)]
+fn read_exact_regular_child_at(
+    parent: &AnchoredDirectory,
+    name: &OsStr,
+    path: &Path,
+    limit: u64,
+    label: &str,
+) -> Result<(Vec<u8>, LocalMirrorEntrySnapshot), String> {
+    use std::io::Read as _;
+
+    let expected = inspect_regular_projection_file_at(&parent.file, name, path)?;
+    let mut file = open_receipt_entry_at(&parent.file, name, path, false)?;
+    let opened = receipt_metadata_snapshot(&file.metadata().map_err(|error| {
+        format!("inspect opened {label} {}: {error}", path.display())
+    })?)?;
+    if opened.identity != expected.identity
+        || opened.mode != expected.mode
+        || !matches!(
+            expected.kind,
+            LocalMirrorEntryKind::Regular { len, .. } if len == opened.len
+        )
+    {
+        return Err(format!("{label} changed while opening: {}", path.display()));
+    }
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("read {label} {}: {error}", path.display()))?;
+    if bytes.len() as u64 > limit {
+        return Err(format!("{label} exceeds {limit} bytes: {}", path.display()));
+    }
+    if receipt_metadata_snapshot(&file.metadata().map_err(|error| {
+        format!("reinspect opened {label} {}: {error}", path.display())
+    })?)? != opened
+    {
+        return Err(format!("{label} changed while reading: {}", path.display()));
+    }
+    let final_snapshot = inspect_regular_projection_file_at(&parent.file, name, path)?;
+    if final_snapshot != expected {
+        return Err(format!("{label} changed while reading: {}", path.display()));
+    }
+    let digest: [u8; 32] = Sha256::digest(&bytes).into();
+    if expected.kind
+        != (LocalMirrorEntryKind::Regular {
+            len: bytes.len() as u64,
+            sha256: digest,
+        })
+    {
+        return Err(format!("{label} bytes changed while reading: {}", path.display()));
+    }
+    Ok((bytes, expected))
+}
+
+fn inspect_regular_projection_tree(path: &Path) -> Result<RegularProjectionTreeSnapshot, String> {
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        return Err("source-only regular projection requires Unix no-follow filesystem semantics".to_string());
+    }
+    #[cfg(unix)]
+    {
+        let root_file = open_receipt_root(path)?;
+        let root_metadata = root_file.metadata().map_err(|error| {
+            format!("inspect opened source-only package projection {}: {error}", path.display())
+        })?;
+        let root = regular_projection_directory_entry(&root_metadata)?;
+        let mut directories = BTreeMap::new();
+        let mut files = BTreeMap::new();
+        inspect_regular_projection_directory_contents(
+            &root_file,
+            path,
+            Path::new(""),
+            &mut directories,
+            &mut files,
+        )?;
+        let reopened = open_receipt_root(path)?;
+        if regular_projection_directory_entry(&reopened.metadata().map_err(|error| {
+            format!("reinspect opened source-only package projection {}: {error}", path.display())
+        })?)? != root
+        {
+            return Err(format!(
+                "source-only package projection root changed while inspected: {}",
+                path.display()
+            ));
+        }
+        Ok(RegularProjectionTreeSnapshot {
+            root,
+            directories,
+            files,
+        })
+    }
+}
+
+#[cfg(unix)]
+fn inspect_regular_projection_tree_at(
+    parent: &AnchoredDirectory,
+    name: &OsStr,
+    path: &Path,
+) -> Result<RegularProjectionTreeSnapshot, String> {
+    let before = receipt_at_metadata_snapshot(&parent.file, name, path)?;
+    if before.kind != 2 {
+        return Err(format!(
+            "source-only package projection must be a real nonsymlink directory: {}",
+            path.display()
+        ));
+    }
+    let root_anchor = parent.open_child_directory(
+        name,
+        "source-only package projection",
+    )?;
+    if root_anchor.identity != before.identity {
+        return Err(format!(
+            "source-only package projection changed while opening: {}",
+            path.display()
+        ));
+    }
+    let root = regular_projection_directory_entry(
+        &root_anchor.file.metadata().map_err(|error| {
+            format!(
+                "inspect opened source-only package projection {}: {error}",
+                path.display()
+            )
+        })?,
+    )?;
+    let mut directories = BTreeMap::new();
+    let mut files = BTreeMap::new();
+    inspect_regular_projection_directory_contents(
+        &root_anchor.file,
+        path,
+        Path::new(""),
+        &mut directories,
+        &mut files,
+    )?;
+    let after = receipt_at_metadata_snapshot(&parent.file, name, path)?;
+    if after != before {
+        return Err(format!(
+            "source-only package projection changed while inspected: {}",
+            path.display()
+        ));
+    }
+    Ok(RegularProjectionTreeSnapshot {
+        root,
+        directories,
+        files,
+    })
+}
+
+#[cfg(unix)]
+fn inspect_projection_child(
+    parent: &AnchoredDirectory,
+    name: &OsStr,
+    path: &Path,
+    expected: &PreparedProjectionSnapshot,
+) -> Result<PreparedProjectionSnapshot, String> {
+    inspect_projection_child_with_limit(parent, name, path, expected, None)
+}
+
+#[cfg(unix)]
+fn inspect_projection_child_with_limit(
+    parent: &AnchoredDirectory,
+    name: &OsStr,
+    path: &Path,
+    expected: &PreparedProjectionSnapshot,
+    scalar_read_limit: Option<u64>,
+) -> Result<PreparedProjectionSnapshot, String> {
+    match expected {
+        PreparedProjectionSnapshot::Scalar(_) => inspect_regular_projection_file_at_with_limit(
+            &parent.file,
+            name,
+            path,
+            scalar_read_limit,
+        )
+        .map(PreparedProjectionSnapshot::Scalar),
+        PreparedProjectionSnapshot::PackageDirectory(_) => {
+            inspect_regular_projection_tree_at(parent, name, path)
+                .map(PreparedProjectionSnapshot::PackageDirectory)
+        }
+    }
+}
+
+#[cfg(unix)]
+fn inspect_regular_projection_directory_contents(
+    directory: &std::fs::File,
+    path: &Path,
+    relative: &Path,
+    directories: &mut BTreeMap<PathBuf, RegularProjectionDirectoryEntry>,
+    files: &mut BTreeMap<PathBuf, LocalMirrorEntrySnapshot>,
+) -> Result<(), String> {
+    let names = stable_receipt_directory_names(directory, path)?;
+    for name in &names {
+        let child_path = path.join(name);
+        let child_relative = relative.join(name);
+        let metadata = receipt_at_metadata_snapshot(directory, name, &child_path)?;
+        match metadata.kind {
+            1 => {
+                let snapshot = inspect_regular_projection_file_at(directory, name, &child_path)?;
+                files.insert(child_relative, snapshot);
+            }
+            2 => {
+                let child = open_receipt_entry_at(directory, name, &child_path, false)?;
+                let child_entry = regular_projection_directory_entry(
+                    &child.metadata().map_err(|error| {
+                        format!("inspect opened projection directory {}: {error}", child_path.display())
+                    })?,
+                )?;
+                if child_entry.identity != metadata.identity || child_entry.mode != metadata.mode {
+                    return Err(format!(
+                        "source-only projection directory changed while opening: {}",
+                        child_path.display()
+                    ));
+                }
+                directories.insert(child_relative.clone(), child_entry.clone());
+                inspect_regular_projection_directory_contents(
+                    &child,
+                    &child_path,
+                    &child_relative,
+                    directories,
+                    files,
+                )?;
+                let reopened = open_receipt_entry_at(directory, name, &child_path, false)?;
+                if regular_projection_directory_entry(&reopened.metadata().map_err(|error| {
+                    format!("reinspect projection directory {}: {error}", child_path.display())
+                })?)? != child_entry
+                {
+                    return Err(format!(
+                        "source-only projection directory changed while traversed: {}",
+                        child_path.display()
+                    ));
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "source-only package projection contains a symlink or special entry: {}",
+                    child_path.display()
+                ));
+            }
+        }
+    }
+    let reopened_names = {
+        let reopened = rustix::fs::openat(
+            directory,
+            ".",
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::CLOEXEC
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK,
+            rustix::fs::Mode::empty(),
+        )
+        .map(std::fs::File::from)
+        .map_err(|error| format!("reopen projection directory {}: {error}", path.display()))?;
+        stable_receipt_directory_names(&reopened, path)?
+    };
+    if reopened_names != names {
+        return Err(format!(
+            "source-only projection directory changed while traversed: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn projection_snapshots_semantically_equal(
+    left: &PreparedProjectionSnapshot,
+    right: &PreparedProjectionSnapshot,
+) -> bool {
+    match (left, right) {
+        (PreparedProjectionSnapshot::Scalar(left), PreparedProjectionSnapshot::Scalar(right)) => {
+            left.kind == right.kind && left.mode == right.mode
+        }
+        (
+            PreparedProjectionSnapshot::PackageDirectory(left),
+            PreparedProjectionSnapshot::PackageDirectory(right),
+        ) => {
+            left.root.mode == right.root.mode
+                && left.directories.len() == right.directories.len()
+                && left.files.len() == right.files.len()
+                && left.directories.iter().all(|(path, entry)| {
+                    right.directories.get(path).is_some_and(|other| other.mode == entry.mode)
+                })
+                && left.files.iter().all(|(path, entry)| {
+                    right.files.get(path).is_some_and(|other| {
+                        other.kind == entry.kind && other.mode == entry.mode
+                    })
+                })
+        }
+        _ => false,
+    }
+}
+
+fn inspect_projection_like(
+    path: &Path,
+    expected: &PreparedProjectionSnapshot,
+) -> Result<PreparedProjectionSnapshot, String> {
+    match expected {
+        PreparedProjectionSnapshot::Scalar(_) => {
+            let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+                format!("inspect scalar source-only projection {}: {error}", path.display())
+            })?;
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(format!(
+                    "source-only projection destination must be a regular nonsymlink file: {}",
+                    path.display()
+                ));
+            }
+            inspect_local_mirror_entry(path).map(PreparedProjectionSnapshot::Scalar)
+        }
+        PreparedProjectionSnapshot::PackageDirectory(_) => {
+            inspect_regular_projection_tree(path).map(PreparedProjectionSnapshot::PackageDirectory)
+        }
+    }
+}
+
+fn append_cleanup_error(error: String, cleanup: Result<(), String>) -> String {
+    match cleanup {
+        Ok(()) => error,
+        Err(cleanup) => format!("{error}; private projection cleanup preserved evidence: {cleanup}"),
+    }
+}
+
+fn ensure_projection_descendant_parents(root: &Path, descendant: &Path) -> Result<(), String> {
+    let relative = descendant.strip_prefix(root).map_err(|_| {
+        format!("source-only projection path escapes stage/output root: {}", descendant.display())
+    })?;
+    let mut current = root.to_path_buf();
+    for component in relative.parent().unwrap_or_else(|| Path::new("")).components() {
+        let Component::Normal(component) = component else {
+            return Err(format!("source-only projection path is not portable: {}", relative.display()));
+        };
+        let next = current.join(component);
+        ensure_real_child_directory(&current, &next, "source-only projection directory")?;
+        current = next;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn projection_live_snapshot(
+    transaction: &OwnedEntryTransaction,
+) -> Result<Option<PreparedProjectionSnapshot>, String> {
+    let stage_snapshot = transaction.stage_snapshot()?;
+    if !transaction.parent_guard.parent_anchor.child_exists(
+        &transaction.parent_guard.live_name,
+        "source-only projection destination",
+    )? {
+        return Ok(None);
+    }
+    transaction.inspect_live(stage_snapshot).map(Some)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(unix)]
+enum OwnedEntryPublishPhase {
+    BeforeQuarantineRename,
+    Quarantined,
+    BeforePublishRename,
+    Published,
+    BeforePrivateDisposal,
+    BeforePrivateContentRemoval,
+}
+
+#[cfg(unix)]
+fn fail_owned_entry_transaction(
+    transaction: &mut OwnedEntryTransaction,
+    lock: &SourceOnlyProjectionLock,
+    error: String,
+) -> Result<(), String> {
+    if transaction.stage_published
+        && transaction.old_moved
+        && !transaction.restore_after_published_failure
+    {
+        transaction.preserve = true;
+        transaction.private_root.preserve = true;
+        return Err(format!(
+            "{error}; the committed live generation and validated prior generation at {} were preserved",
+            transaction.backup.display()
+        ));
+    }
+    if transaction.stage_published && !transaction.old_moved {
+        return Err(append_cleanup_error(error, transaction.dispose_private_root()));
+    }
+    if transaction.old_moved {
+        if let Err(authority_error) = transaction
+            .parent_guard
+            .validate()
+            .and_then(|()| lock.validate())
+        {
+            transaction.preserve = true;
+            transaction.private_root.preserve = true;
+            return Err(format!(
+                "{error}; live-mutation authority was lost ({authority_error}), so the validated prior generation was preserved at {}",
+                transaction.backup.display()
+            ));
+        }
+        if !transaction.stage_published
+            && transaction.parent_guard.parent_anchor.child_exists(
+                &transaction.parent_guard.live_name,
+                "source-only projection destination",
+            )?
+        {
+            transaction.preserve = true;
+            transaction.private_root.preserve = true;
+            return Err(format!(
+                "{error}; a live entry and the validated prior generation at {} were both preserved",
+                transaction.backup.display()
+            ));
+        }
+        if let Err(restore_error) = transaction.restore_backup(lock) {
+            transaction.preserve = true;
+            transaction.private_root.preserve = true;
+            return Err(format!(
+                "{error}; restoring the validated prior generation also failed: {restore_error}"
+            ));
+        }
+    }
+    Err(append_cleanup_error(error, transaction.dispose_private_root()))
+}
+
+#[cfg(unix)]
+fn validate_owned_entry_mutation_authority<F>(
+    transaction: &OwnedEntryTransaction,
+    lock: &SourceOnlyProjectionLock,
+    external_authority: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(&Path) -> Result<(), String>,
+{
+    transaction.validate_private_tree(&transaction.transaction_root)?;
+    external_authority(&transaction.live)?;
+    transaction.parent_guard.validate()?;
+    // Lock identity is intentionally the final check after all potentially
+    // expensive tree hashing. The following caller performs only its anchored
+    // rename before checking again at the next mutation boundary.
+    lock.validate()
+}
+
+#[cfg(unix)]
+fn validate_owned_entry_exchange_authority<F>(
+    transaction: &OwnedEntryTransaction,
+    lock: &SourceOnlyProjectionLock,
+    external_authority: &mut F,
+    expected_live: &PreparedProjectionSnapshot,
+) -> Result<(), String>
+where
+    F: FnMut(&Path) -> Result<(), String>,
+{
+    transaction.validate_private_tree(&transaction.transaction_root)?;
+    external_authority(&transaction.live)?;
+    if transaction.inspect_live(expected_live)? != *expected_live {
+        return Err(format!(
+            "source-only projection destination changed at its atomic exchange boundary: {}",
+            transaction.live.display()
+        ));
+    }
+    transaction.parent_guard.validate()?;
+    // No expensive reads occur between this final lock validation and the
+    // immediately following descriptor-relative atomic exchange.
+    lock.validate()
+}
+
+#[cfg(unix)]
+fn publish_owned_entry_transaction<F>(
+    subject: &str,
+    output_root: &Path,
+    transaction: &mut OwnedEntryTransaction,
+    lock: &SourceOnlyProjectionLock,
+    before_publish: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(&Path) -> Result<(), String>,
+{
+    publish_owned_entry_transaction_with_hook(
+        subject,
+        output_root,
+        transaction,
+        lock,
+        before_publish,
+        &mut |_, _| Ok(()),
+    )
+}
+
+#[cfg(unix)]
+fn publish_owned_entry_transaction_with_hook<F, H>(
+    subject: &str,
+    output_root: &Path,
+    transaction: &mut OwnedEntryTransaction,
+    lock: &SourceOnlyProjectionLock,
+    before_publish: &mut F,
+    phase_hook: &mut H,
+) -> Result<(), String>
+where
+    F: FnMut(&Path) -> Result<(), String>,
+    H: FnMut(OwnedEntryPublishPhase, &Path) -> Result<(), String>,
+{
+    if lock.output_root.identity != transaction.parent_guard.root_anchor.identity
+        || lock.output_root.path != transaction.parent_guard.root_anchor.path
+        || lock.output_root.path != output_root
+    {
+        transaction.preserve = true;
+        transaction.private_root.preserve = true;
+        return Err(format!(
+            "{}: projection lock and transaction do not share one opened output-root generation",
+            subject
+        ));
+    }
+    let disposal_parent_guard = transaction.parent_guard.try_clone()?;
+    transaction.parent_guard.validate()?;
+    transaction.validate_private_tree(&transaction.transaction_root)?;
+    let stage_snapshot = transaction.stage_snapshot()?.clone();
+    if transaction.inspect_stage()? != stage_snapshot {
+        return Err(format!(
+            "{}: source-only projection stage changed before publication: {}",
+            subject,
+            transaction.stage.display()
+        ));
+    }
+    lock.validate()?;
+    let initial_live = projection_live_snapshot(transaction)?;
+    if let Err(error) = before_publish(&transaction.live) {
+        return fail_owned_entry_transaction(transaction, lock, error);
+    }
+    lock.validate()?;
+    transaction.parent_guard.validate()?;
+    transaction.validate_private_tree(&transaction.transaction_root)?;
+    if transaction.inspect_stage()? != stage_snapshot {
+        return Err(format!(
+            "{}: source-only projection stage changed while awaiting publication: {}",
+            subject,
+            transaction.stage.display()
+        ));
+    }
+    if projection_live_snapshot(transaction)? != initial_live {
+        return Err(format!(
+            "{}: source-only projection destination changed before its transaction: {}",
+            subject,
+            transaction.live.display()
+        ));
+    }
+    if initial_live
+        .as_ref()
+        .is_some_and(|live| projection_snapshots_semantically_equal(live, &stage_snapshot))
+    {
+        if let Err(error) = phase_hook(
+            OwnedEntryPublishPhase::BeforePrivateDisposal,
+            &transaction.transaction_root,
+        ) {
+            return fail_owned_entry_transaction(transaction, lock, error);
+        }
+        if let Err(error) =
+            validate_owned_entry_mutation_authority(transaction, lock, before_publish)
+        {
+            return fail_owned_entry_transaction(transaction, lock, error);
+        }
+        transaction.dispose_private_root_with(&mut |path| {
+            phase_hook(OwnedEntryPublishPhase::BeforePrivateContentRemoval, path)?;
+            before_publish(path)?;
+            disposal_parent_guard.validate()?;
+            lock.validate()
+        })?;
+        transaction.parent_guard.parent_anchor.sync(
+            "source-only projection parent",
+        )?;
+        if projection_live_snapshot(transaction)?.as_ref() != initial_live.as_ref() {
+            return Err(format!(
+                "{}: equal source-only projection changed after private cleanup",
+                subject
+            ));
+        }
+        return Ok(());
+    }
+
+    let publication = if let Some(live) = initial_live {
+        if let Err(error) = phase_hook(
+            OwnedEntryPublishPhase::BeforeQuarantineRename,
+            &transaction.live,
+        ) {
+            return fail_owned_entry_transaction(transaction, lock, error);
+        }
+        if let Err(error) = validate_owned_entry_exchange_authority(
+            transaction,
+            lock,
+            before_publish,
+            &live,
+        )
+        {
+            return fail_owned_entry_transaction(transaction, lock, error);
+        }
+        if let Err(error) = phase_hook(
+            OwnedEntryPublishPhase::BeforePublishRename,
+            &transaction.live,
+        ) {
+            return fail_owned_entry_transaction(transaction, lock, error);
+        }
+        if let Err(error) = validate_owned_entry_exchange_authority(
+            transaction,
+            lock,
+            before_publish,
+            &live,
+        )
+        {
+            return fail_owned_entry_transaction(transaction, lock, error);
+        }
+        match transaction.private_root.root.exchange_child(
+            OsStr::new("stage"),
+            &transaction.parent_guard.parent_anchor,
+            &transaction.parent_guard.live_name,
+            "source-only projection publication",
+        ) {
+            Err(error) => Err(error),
+            Ok(()) => {
+                // The public namespace changed in one atomic exchange:
+                // readers observe either the complete old package directory
+                // or the complete new one. The following rename is private.
+                transaction.old_moved = true;
+                transaction.stage_published = true;
+                transaction.preserve = true;
+                transaction.private_root.preserve = true;
+                if let Err(error) = transaction.private_root.root.rename_child_no_replace(
+                    OsStr::new("stage"),
+                    &transaction.private_root.root,
+                    OsStr::new("backup"),
+                    "source-only projection exchanged backup",
+                ) {
+                    return Err(format!(
+                        "{}: the new source-only projection was atomically installed, but its validated prior generation remains preserved at {} after private backup placement failed: {error}",
+                        subject,
+                        transaction.stage.display(),
+                    ));
+                }
+                transaction.backup_snapshot = Some(live.clone());
+                let quarantined = transaction.inspect_backup(&live);
+                if quarantined.as_ref() != Ok(&live) {
+                    let detail = quarantined.err().unwrap_or_else(|| {
+                        "exchanged prior generation changed identity/content/mode".to_string()
+                    });
+                    return fail_owned_entry_transaction(
+                        transaction,
+                        lock,
+                        format!(
+                            "{}: source-only projection changed after atomic exchange: {detail}",
+                            subject
+                        ),
+                    );
+                }
+                if transaction.inspect_live(&stage_snapshot).as_ref() != Ok(&stage_snapshot) {
+                    return fail_owned_entry_transaction(
+                        transaction,
+                        lock,
+                        format!(
+                            "{}: atomically published source-only projection differs from its stage",
+                            subject
+                        ),
+                    );
+                }
+                if let Err(error) = phase_hook(
+                    OwnedEntryPublishPhase::Quarantined,
+                    &transaction.backup,
+                ) {
+                    return fail_owned_entry_transaction(transaction, lock, error);
+                }
+                Ok(())
+            }
+        }
+    } else {
+        if let Err(error) = phase_hook(
+            OwnedEntryPublishPhase::BeforePublishRename,
+            &transaction.live,
+        ) {
+            return fail_owned_entry_transaction(transaction, lock, error);
+        }
+        if let Err(error) =
+            validate_owned_entry_mutation_authority(transaction, lock, before_publish)
+        {
+            return fail_owned_entry_transaction(transaction, lock, error);
+        }
+        transaction.private_root.root.rename_child_no_replace(
+            OsStr::new("stage"),
+            &transaction.parent_guard.parent_anchor,
+            &transaction.parent_guard.live_name,
+            "source-only projection publication",
+        )
+    };
+
+    match publication {
+        Ok(()) => {
+            transaction.stage_published = true;
+            let installed = transaction.inspect_live(&stage_snapshot);
+            if installed.as_ref() != Ok(&stage_snapshot) {
+                return fail_owned_entry_transaction(
+                    transaction,
+                    lock,
+                    format!(
+                        "{}: published source-only projection differs from its exact staged identity/content/mode and was preserved: {}",
+                        subject,
+                        transaction.live.display()
+                    ),
+                );
+            }
+            if let Err(error) = phase_hook(
+                OwnedEntryPublishPhase::Published,
+                &transaction.live,
+            ) {
+                return fail_owned_entry_transaction(transaction, lock, error);
+            }
+            if let Err(error) = lock
+                .validate()
+                .and_then(|()| transaction.parent_guard.validate())
+                .and_then(|()| transaction.validate_private_tree(&transaction.transaction_root))
+            {
+                return fail_owned_entry_transaction(transaction, lock, error);
+            }
+            let final_installed = transaction.inspect_live(&stage_snapshot);
+            if final_installed.as_ref() != Ok(&stage_snapshot) {
+                return fail_owned_entry_transaction(
+                    transaction,
+                    lock,
+                    format!(
+                        "{}: published source-only projection changed before validated prior-generation disposal and was preserved: {}",
+                        subject,
+                        transaction.live.display()
+                    ),
+                );
+            }
+            if let Err(error) = phase_hook(
+                OwnedEntryPublishPhase::BeforePrivateDisposal,
+                &transaction.transaction_root,
+            ) {
+                return fail_owned_entry_transaction(transaction, lock, error);
+            }
+            if let Err(error) =
+                validate_owned_entry_mutation_authority(transaction, lock, before_publish)
+            {
+                return fail_owned_entry_transaction(transaction, lock, error);
+            }
+            match transaction.inspect_live(&stage_snapshot) {
+                Ok(current) if current == stage_snapshot => {}
+                Ok(_) => {
+                    return fail_owned_entry_transaction(
+                        transaction,
+                        lock,
+                        format!(
+                            "{}: published source-only projection changed immediately before transaction disposal: {}",
+                            subject,
+                            transaction.live.display()
+                        ),
+                    );
+                }
+                Err(error) => return fail_owned_entry_transaction(transaction, lock, error),
+            }
+            transaction.preserve = false;
+            transaction.dispose_private_root_with(&mut |path| {
+                phase_hook(OwnedEntryPublishPhase::BeforePrivateContentRemoval, path)?;
+                before_publish(path)?;
+                disposal_parent_guard.validate()?;
+                lock.validate()
+            })?;
+            transaction.parent_guard.parent_anchor.sync(
+                "source-only projection parent",
+            )?;
+            if transaction.inspect_live(&stage_snapshot)? != stage_snapshot
+            {
+                return Err(format!(
+                    "{}: published source-only projection changed after transaction cleanup: {}",
+                    subject,
+                    transaction.live.display()
+                ));
+            }
+            Ok(())
+        }
+        Err(publish_error) => {
+            let winner = match projection_live_snapshot(transaction) {
+                Ok(winner) => winner,
+                Err(error) => return fail_owned_entry_transaction(transaction, lock, error),
+            };
+            if let Some(winner) = winner {
+                if !transaction.old_moved
+                    && projection_snapshots_semantically_equal(&winner, &stage_snapshot)
+                {
+                    if transaction.inspect_stage()? != stage_snapshot {
+                        transaction.preserve = transaction.old_moved;
+                        return Err(format!(
+                            "{}: equal concurrent source-only projection winner was observed, but the private stage changed and was preserved: {}",
+                            subject,
+                            transaction.stage.display()
+                        ));
+                    }
+                    if let Err(error) = phase_hook(
+                        OwnedEntryPublishPhase::BeforePrivateDisposal,
+                        &transaction.transaction_root,
+                    ) {
+                        return fail_owned_entry_transaction(transaction, lock, error);
+                    }
+                    if let Err(error) =
+                        validate_owned_entry_mutation_authority(transaction, lock, before_publish)
+                    {
+                        return fail_owned_entry_transaction(transaction, lock, error);
+                    }
+                    if projection_live_snapshot(transaction)?.as_ref() != Some(&winner) {
+                        transaction.preserve = transaction.old_moved;
+                        return Err(format!(
+                            "{}: equal source-only projection winner changed before prior-generation disposal",
+                            subject
+                        ));
+                    }
+                    transaction.dispose_private_root_with(&mut |path| {
+                        phase_hook(OwnedEntryPublishPhase::BeforePrivateContentRemoval, path)?;
+                        before_publish(path)?;
+                        disposal_parent_guard.validate()?;
+                        lock.validate()
+                    })?;
+                    transaction.parent_guard.parent_anchor.sync(
+                        "source-only projection parent",
+                    )?;
+                    if projection_live_snapshot(transaction)?.as_ref() != Some(&winner) {
+                        return Err(format!(
+                            "{}: equal source-only projection winner changed after private cleanup",
+                            subject
+                        ));
+                    }
+                    return Ok(());
+                }
+                transaction.preserve = transaction.old_moved;
+                transaction.private_root.preserve = transaction.old_moved;
+                let cleanup = if transaction.old_moved {
+                    Ok(())
+                } else {
+                    transaction.dispose_private_root()
+                };
+                return Err(append_cleanup_error(
+                    format!(
+                        "{}: publish source-only projection {} failed ({publish_error}); a differing concurrent winner was preserved{}",
+                        subject,
+                        transaction.live.display(),
+                        if transaction.old_moved {
+                            format!(
+                                " and the validated prior generation remains quarantined at {}",
+                                transaction.backup.display()
+                            )
+                        } else {
+                            String::new()
+                        }
+                    ),
+                    cleanup,
+                ));
+            }
+            fail_owned_entry_transaction(
+                transaction,
+                lock,
+                format!(
+                    "{}: publish source-only projection {} without replacement failed: {publish_error}",
+                    subject,
+                    transaction.live.display()
+                ),
+            )
+        }
+    }
 }
 
 fn package_manifest_sha256(manifest_path: &Path) -> Result<String, String> {
@@ -278,11 +5013,70 @@ fn package_manifest_sha256(manifest_path: &Path) -> Result<String, String> {
     Ok(hex(&Sha256::digest(bytes)))
 }
 
+fn stable_package_manifest_sha256(manifest_path: &Path) -> Result<String, String> {
+    stable_package_manifest_sha256_with_after_reopen(manifest_path, &mut |_| {})
+}
+
+fn stable_package_manifest_sha256_with_after_reopen<F>(
+    manifest_path: &Path,
+    after_reopen: &mut F,
+) -> Result<String, String>
+where
+    F: FnMut(&Path),
+{
+    let snapshot = inspect_local_mirror_entry_with_hooks(
+        manifest_path,
+        &mut |_| {},
+        after_reopen,
+    )?;
+    match snapshot.kind {
+        LocalMirrorEntryKind::Regular { len, sha256 } if len <= 16 * 1024 * 1024 => {
+            Ok(hex(&sha256))
+        }
+        LocalMirrorEntryKind::Regular { len, .. } => Err(format!(
+            "package manifest is {len} bytes, exceeding the 16 MiB stable-read bound: {}",
+            manifest_path.display()
+        )),
+        LocalMirrorEntryKind::Symlink { .. } => Err(format!(
+            "package manifest must be a regular nonsymlink file: {}",
+            manifest_path.display()
+        )),
+    }
+}
+
 fn package_context_cache_keys(
     manifest: &DepsManifest,
     registry: &Registry,
 ) -> Result<BTreeMap<String, String>, String> {
-    package_context_cache_keys_with_global_toolchain_inputs(manifest, registry, None)
+    package_context_cache_keys_for_policy(
+        manifest,
+        registry,
+        current_abi_version(),
+        ResolvePolicy::Default,
+    )
+}
+
+fn package_context_cache_keys_for_policy(
+    manifest: &DepsManifest,
+    registry: &Registry,
+    abi_version: u32,
+    policy: ResolvePolicy,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut cache_keys = BTreeMap::new();
+    let mut memo = BTreeMap::new();
+    for arch in PROGRAM_PACKAGE_CONTEXT_ARCHES {
+        let cache_key = compute_sha_for_policy(
+            manifest,
+            registry,
+            arch,
+            abi_version,
+            policy,
+            &mut memo,
+            &mut Vec::new(),
+        )?;
+        cache_keys.insert(arch.as_str().to_string(), hex(&cache_key));
+    }
+    Ok(cache_keys)
 }
 
 fn package_context_cache_keys_with_global_toolchain_inputs(
@@ -347,6 +5141,7 @@ pub(crate) fn source_cache_identities(
                 registry,
                 arch,
                 abi_version,
+                ResolvePolicy::Default,
                 &mut memo,
                 &mut Vec::new(),
                 Some(&global_toolchain_inputs),
@@ -426,7 +5221,12 @@ pub(crate) fn source_build_input_components(
         require_regular_nonsymlink_file(&build_path, "selected package build metadata")?;
         let build = BuildToml::load(&manifest.dir)?;
         let revision = build.revision.unwrap_or(manifest.revision);
-        let build_inputs = build_input_digests_from_repo(&manifest, registry, source_root)?;
+        let build_inputs = build_input_digests_from_repo(
+            &manifest,
+            registry,
+            source_root,
+            ResolvePolicy::Default,
+        )?;
         let cache_key_sha = cache_identities
             .get(name)
             .and_then(|identities| identities.get(arch.as_str()))
@@ -570,6 +5370,8 @@ fn collect_program_dependency_identities(
     identities: &mut BTreeMap<String, ProgramDependencyIdentity>,
     visiting: &mut Vec<String>,
     memo: &mut BTreeMap<String, [u8; 32]>,
+    abi_version: u32,
+    policy: ResolvePolicy,
 ) -> Result<(), String> {
     if visiting.iter().any(|name| name == &target.name) {
         return Err(format!(
@@ -606,17 +5408,27 @@ fn collect_program_dependency_identities(
                 dependency.spec()
             ));
         }
-        let cache_key = hex(&compute_sha(
+        // Program-package v2 identities are contextual to the selected
+        // program architecture. They describe the dependency identity under
+        // that context; they do not claim the architecture of the concrete
+        // scheduler/materialization node after fallback.
+        let cache_key = hex(&compute_sha_for_policy(
             &dependency,
             registry,
             arch,
-            current_abi_version(),
+            abi_version,
+            policy,
             memo,
             &mut Vec::new(),
         )?);
         let identity = ProgramDependencyIdentity {
             package_name: dependency.name.clone(),
-            manifest_sha256: package_manifest_sha256(&manifest_path)?,
+            manifest_sha256: match policy {
+                ResolvePolicy::Default => package_manifest_sha256(&manifest_path)?,
+                ResolvePolicy::SourceOnlyV1 => {
+                    stable_package_manifest_sha256(&manifest_path)?
+                }
+            },
             cache_key,
         };
         let should_recurse = match identities.get(&dependency.name) {
@@ -642,6 +5454,8 @@ fn collect_program_dependency_identities(
                 identities,
                 visiting,
                 memo,
+                abi_version,
+                policy,
             )?;
         }
     }
@@ -655,6 +5469,22 @@ fn program_dependency_closure(
     registry: &Registry,
     arch: TargetArch,
 ) -> Result<Vec<ProgramDependencyIdentity>, String> {
+    program_dependency_closure_for_policy(
+        target,
+        registry,
+        arch,
+        current_abi_version(),
+        ResolvePolicy::Default,
+    )
+}
+
+fn program_dependency_closure_for_policy(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+    policy: ResolvePolicy,
+) -> Result<Vec<ProgramDependencyIdentity>, String> {
     let mut identities = BTreeMap::new();
     collect_program_dependency_identities(
         target,
@@ -663,6 +5493,8 @@ fn program_dependency_closure(
         &mut identities,
         &mut Vec::new(),
         &mut BTreeMap::new(),
+        abi_version,
+        policy,
     )?;
     Ok(identities.into_values().collect())
 }
@@ -926,6 +5758,220 @@ fn program_package_index_for_root(
 ) -> Result<ProgramPackageIndex, String> {
     let mut after_first = || {};
     program_package_index_for_root_with(root, registry, &mut after_first)
+}
+
+/// Build the bounded v2 policy projection for the exact program nodes that a
+/// source-only run materialized. This is intentionally separate from the
+/// checked-in Default projection: callers supply both the node set and ABI,
+/// and every cache identity is computed under SourceOnlyV1.
+pub(crate) fn source_only_program_package_index_for_nodes(
+    root: &Path,
+    registry: &Registry,
+    selected_nodes: &BTreeSet<ResolvedDependencyNode>,
+    abi_version: u32,
+) -> Result<ProgramPackageIndex, String> {
+    let canonical_root = std::fs::canonicalize(root)
+        .map_err(|error| format!("resolve selected program registry root {}: {error}", root.display()))?;
+    let first_existing = registry
+        .roots
+        .iter()
+        .find(|candidate| candidate.exists())
+        .ok_or_else(|| format!("{}: no configured program registry root exists", root.display()))?;
+    if std::fs::canonicalize(first_existing).map_err(|error| {
+        format!("resolve configured program registry root {}: {error}", first_existing.display())
+    })? != canonical_root
+    {
+        return Err(format!(
+            "{} is not the highest-priority existing configured registry root {}",
+            root.display(),
+            first_existing.display()
+        ));
+    }
+
+    let mut packages = BTreeMap::<String, ProgramPackageProjection>::new();
+    let mut required_identities = BTreeSet::new();
+    let mut resolver_paths = Vec::<(String, String, String)>::new();
+    for node in selected_nodes {
+        let manifest = registry.load(&node.package_name)?;
+        if !manifest.target_arches.contains(&node.target_arch) {
+            return Err(format!(
+                "selected source-only node {} ({}) is not declared by {}",
+                node.package_name,
+                node.target_arch.as_str(),
+                manifest.spec()
+            ));
+        }
+        if manifest.kind != ManifestKind::Program || manifest.uses_root_binary_mirror() {
+            continue;
+        }
+        required_identities.insert(manifest.name.clone());
+        let dependency_closure = program_dependency_closure_for_policy(
+            &manifest,
+            registry,
+            node.target_arch,
+            abi_version,
+            ResolvePolicy::SourceOnlyV1,
+        )?;
+        required_identities.extend(
+            dependency_closure
+                .iter()
+                .map(|identity| identity.package_name.clone()),
+        );
+        let identity_keys = package_context_cache_keys_for_policy(
+            &manifest,
+            registry,
+            abi_version,
+            ResolvePolicy::SourceOnlyV1,
+        )?;
+        let selected_key = identity_keys
+            .get(node.target_arch.as_str())
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "{}: source-only v2 identity omitted {}",
+                    manifest.spec(),
+                    node.target_arch.as_str()
+                )
+            })?;
+        let members = program_projection_members(&manifest)?;
+        for member in &members {
+            for (previous_arch, previous_path, previous_package) in &resolver_paths {
+                if previous_arch == node.target_arch.as_str()
+                    && file_paths_conflict(previous_path, &member.mirror_path)
+                    && previous_package != &manifest.name
+                {
+                    return Err(format!(
+                        "{}: selected resolver paths programs/{}/{} conflict between packages {:?} and {:?}",
+                        root.display(),
+                        previous_arch,
+                        member.mirror_path,
+                        previous_package,
+                        manifest.name
+                    ));
+                }
+            }
+            resolver_paths.push((
+                node.target_arch.as_str().to_string(),
+                member.mirror_path.clone(),
+                manifest.name.clone(),
+            ));
+        }
+        let manifest_sha256 = stable_package_manifest_sha256(&manifest.dir.join("package.toml"))?;
+        let projection = packages
+            .entry(manifest.name.clone())
+            .or_insert_with(|| ProgramPackageProjection {
+                manifest_sha256,
+                arches: Vec::new(),
+                cache_keys: BTreeMap::new(),
+                dependency_closures: BTreeMap::new(),
+                members: members.clone(),
+            });
+        if projection.members != members {
+            return Err(format!(
+                "{}: selected source-only program members changed across architecture rows",
+                manifest.spec()
+            ));
+        }
+        let arch_name = node.target_arch.as_str().to_string();
+        if projection.cache_keys.insert(arch_name.clone(), selected_key).is_some()
+            || projection
+                .dependency_closures
+                .insert(arch_name.clone(), dependency_closure)
+                .is_some()
+        {
+            return Err(format!(
+                "selected source-only node appears more than once: {} ({})",
+                manifest.name, arch_name
+            ));
+        }
+        projection.arches.push(arch_name);
+        projection.arches.sort();
+    }
+
+    let mut identities = BTreeMap::new();
+    for package_name in required_identities {
+        let manifest = registry.load(&package_name)?;
+        identities.insert(
+            package_name,
+            ProgramPackageIdentity {
+                manifest_sha256: stable_package_manifest_sha256(
+                    &manifest.dir.join("package.toml"),
+                )?,
+                cache_keys: package_context_cache_keys_for_policy(
+                    &manifest,
+                    registry,
+                    abi_version,
+                    ResolvePolicy::SourceOnlyV1,
+                )?,
+            },
+        );
+    }
+    Ok(ProgramPackageIndex {
+        format: PROGRAM_PACKAGE_INDEX_FORMAT,
+        identities,
+        packages,
+    })
+}
+
+fn program_projection_members(
+    manifest: &DepsManifest,
+) -> Result<Vec<ProgramPackageProjectionMember>, String> {
+    let mut members = Vec::new();
+    let mut source_artifacts = BTreeSet::new();
+    let mut mirror_paths = BTreeSet::new();
+    for output in &manifest.program_outputs {
+        let mirror_path = portable_projection_path(
+            manifest,
+            &manifest.output_dest_rel_for(output),
+            "output mirror path",
+        )?;
+        insert_projection_identity(
+            manifest,
+            &output.wasm,
+            &mirror_path,
+            &mut source_artifacts,
+            &mut mirror_paths,
+        )?;
+        members.push(ProgramPackageProjectionMember {
+            kind: "output",
+            source_artifact: output.wasm.clone(),
+            mirror_path,
+            output_name: Some(output.name.clone()),
+            fork_instrumentation: Some(output.fork_instrumentation.as_str().to_string()),
+            guest_path: None,
+            mode: None,
+        });
+    }
+    for runtime_file in &manifest.runtime_files {
+        let mirror_path = portable_projection_path(
+            manifest,
+            &manifest.runtime_file_dest_rel_for(runtime_file),
+            "runtime-file mirror path",
+        )?;
+        insert_projection_identity(
+            manifest,
+            &runtime_file.artifact,
+            &mirror_path,
+            &mut source_artifacts,
+            &mut mirror_paths,
+        )?;
+        members.push(ProgramPackageProjectionMember {
+            kind: "runtime-file",
+            source_artifact: runtime_file.artifact.clone(),
+            mirror_path,
+            output_name: None,
+            fork_instrumentation: None,
+            guest_path: Some(runtime_file.guest_path.clone()),
+            mode: Some(runtime_file.mode),
+        });
+    }
+    if members.is_empty() {
+        return Err(format!(
+            "{}: program package has no projected members",
+            manifest.spec()
+        ));
+    }
+    Ok(members)
 }
 
 fn program_package_index_for_root_with<F>(
@@ -1244,6 +6290,17 @@ fn lock_program_package_index_publication(
         ));
     }
     Ok(lock)
+}
+
+#[cfg(unix)]
+fn projection_lock_has_exact_mode(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    metadata.permissions().mode() & 0o7777 == 0o600
+}
+
+#[cfg(not(unix))]
+fn projection_lock_has_exact_mode(_metadata: &std::fs::Metadata) -> bool {
+    false
 }
 
 struct ProgramPackageIndexTargetSnapshot {
@@ -1669,7 +6726,36 @@ pub fn compute_sha(
     memo: &mut BTreeMap<String, [u8; 32]>,
     chain: &mut Vec<String>,
 ) -> Result<[u8; 32], String> {
-    compute_sha_with_global_toolchain_inputs(target, registry, arch, abi_version, memo, chain, None)
+    compute_sha_for_policy(
+        target,
+        registry,
+        arch,
+        abi_version,
+        ResolvePolicy::Default,
+        memo,
+        chain,
+    )
+}
+
+pub(crate) fn compute_sha_for_policy(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+    policy: ResolvePolicy,
+    memo: &mut BTreeMap<String, [u8; 32]>,
+    chain: &mut Vec<String>,
+) -> Result<[u8; 32], String> {
+    compute_sha_with_global_toolchain_inputs_for_policy(
+        target,
+        registry,
+        arch,
+        abi_version,
+        policy,
+        memo,
+        chain,
+        None,
+    )
 }
 
 fn compute_sha_with_global_toolchain_inputs(
@@ -1681,12 +6767,35 @@ fn compute_sha_with_global_toolchain_inputs(
     chain: &mut Vec<String>,
     global_toolchain_inputs_override: Option<&[BuildInputDigest]>,
 ) -> Result<[u8; 32], String> {
+    compute_sha_with_global_toolchain_inputs_for_policy(
+        target,
+        registry,
+        arch,
+        abi_version,
+        ResolvePolicy::Default,
+        memo,
+        chain,
+        global_toolchain_inputs_override,
+    )
+}
+
+fn compute_sha_with_global_toolchain_inputs_for_policy(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+    policy: ResolvePolicy,
+    memo: &mut BTreeMap<String, [u8; 32]>,
+    chain: &mut Vec<String>,
+    global_toolchain_inputs_override: Option<&[BuildInputDigest]>,
+) -> Result<[u8; 32], String> {
     let main_repo_root = repo_root();
     compute_sha_with_identity_context(
         target,
         registry,
         arch,
         abi_version,
+        policy,
         memo,
         chain,
         global_toolchain_inputs_override,
@@ -1700,12 +6809,43 @@ fn compute_sha_with_identity_context(
     registry: &Registry,
     arch: TargetArch,
     abi_version: u32,
+    policy: ResolvePolicy,
     memo: &mut BTreeMap<String, [u8; 32]>,
     chain: &mut Vec<String>,
     global_toolchain_inputs_override: Option<&[BuildInputDigest]>,
     main_repo_root: &Path,
     fork_instrument_tool_inputs_override: Option<&[BuildInputDigest]>,
 ) -> Result<[u8; 32], String> {
+    compute_sha_with_identity_context_for_platform(
+        target,
+        registry,
+        arch,
+        abi_version,
+        policy,
+        memo,
+        chain,
+        global_toolchain_inputs_override,
+        main_repo_root,
+        fork_instrument_tool_inputs_override,
+        cfg!(unix),
+    )
+}
+
+fn compute_sha_with_identity_context_for_platform(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+    policy: ResolvePolicy,
+    memo: &mut BTreeMap<String, [u8; 32]>,
+    chain: &mut Vec<String>,
+    global_toolchain_inputs_override: Option<&[BuildInputDigest]>,
+    main_repo_root: &Path,
+    fork_instrument_tool_inputs_override: Option<&[BuildInputDigest]>,
+    is_unix: bool,
+) -> Result<[u8; 32], String> {
+    source_only_strict_input_platform(policy, target.source.provider, is_unix)?;
+
     if chain.iter().any(|s| s == &target.name) {
         return Err(format!(
             "cycle in dep graph: {} -> {}",
@@ -1722,7 +6862,13 @@ fn compute_sha_with_identity_context(
     // a canonical cache path with wasm32 in the dir but the wasm64
     // sha in the suffix — which then can't possibly be satisfied by
     // either archive.
-    let memo_key = format!("{}|{}|{}", target.spec(), arch.as_str(), abi_version);
+    let memo_key = format!(
+        "{}|{}|{}|{:?}",
+        target.spec(),
+        arch.as_str(),
+        abi_version,
+        policy
+    );
     if let Some(cached) = memo.get(&memo_key) {
         return Ok(*cached);
     }
@@ -1742,16 +6888,18 @@ fn compute_sha_with_identity_context(
                 child.spec()
             ));
         }
-        let child_sha = compute_sha_with_identity_context(
+        let child_sha = compute_sha_with_identity_context_for_platform(
             &child,
             registry,
             arch,
             abi_version,
+            policy,
             memo,
             chain,
             global_toolchain_inputs_override,
             main_repo_root,
             fork_instrument_tool_inputs_override,
+            is_unix,
         )?;
         dep_shas.push((dref.clone(), child_sha));
     }
@@ -1759,7 +6907,7 @@ fn compute_sha_with_identity_context(
 
     chain.pop();
 
-    let build_inputs = build_input_digests_from_repo(target, registry, main_repo_root)?;
+    let build_inputs = build_input_digests_from_repo(target, registry, main_repo_root, policy)?;
     let global_toolchain_inputs = match target.kind {
         ManifestKind::Library | ManifestKind::Program => match global_toolchain_inputs_override {
             Some(inputs) => inputs.to_vec(),
@@ -1777,6 +6925,35 @@ fn compute_sha_with_identity_context(
     };
 
     let mut h = Sha256::new();
+    if let Some(domain_separator) = policy.domain_separator() {
+        h.update(domain_separator);
+    }
+    if policy == ResolvePolicy::SourceOnlyV1 {
+        h.update(b"kandelo-source-provider-v1\0");
+        h.update(target.source.provider.as_str().as_bytes());
+        h.update(b"\0");
+        if target.source.provider == SourceProvider::DevShell {
+            h.update(dev_shell_source_identity(target)?);
+        }
+        if target.source.provider == SourceProvider::Archive
+            && !target.source.extract_exclude_members.is_empty()
+        {
+            h.update(b"kandelo-source-extract-exclusions-v1\0");
+            h.update(
+                u64::try_from(target.source.extract_exclude_members.len())
+                    .map_err(|_| "too many source extraction exclusions".to_string())?
+                    .to_le_bytes(),
+            );
+            for member in &target.source.extract_exclude_members {
+                h.update(
+                    u64::try_from(member.len())
+                        .map_err(|_| "source extraction exclusion is too long".to_string())?
+                        .to_le_bytes(),
+                );
+                h.update(member.as_bytes());
+            }
+        }
+    }
     match target.kind {
         ManifestKind::Source => {
             h.update(b"wasm-posix-pkg-source\n");
@@ -1908,6 +7085,16 @@ fn compute_sha_with_identity_context(
             h.update(input.digest);
             h.update(b"\n");
         }
+    }
+    if policy == ResolvePolicy::SourceOnlyV1
+        && matches!(target.kind, ManifestKind::Library | ManifestKind::Program)
+    {
+        let abi_contract = crate::local_abi_identity::local_abi_contract_digest(
+            main_repo_root,
+            abi_version,
+        )?;
+        h.update(b"local-abi-contract:v1\0");
+        h.update(abi_contract);
     }
     for (dref, dsha) in &dep_shas {
         h.update(dref.name.as_bytes());
@@ -2481,7 +7668,7 @@ fn hash_global_package_build_input(
     hash_build_input(path)
 }
 
-fn gitlink_ls_tree_command(root: &Path, input: &str) -> Command {
+fn gitlink_index_command(root: &Path, input: &str) -> Command {
     let mut safe_directory = std::ffi::OsString::from("safe.directory=");
     safe_directory.push(root.as_os_str());
 
@@ -2491,18 +7678,19 @@ fn gitlink_ls_tree_command(root: &Path, input: &str) -> Command {
         .arg(safe_directory)
         .arg("-C")
         .arg(root)
-        .arg("ls-tree")
-        .arg("HEAD")
+        .arg("ls-files")
+        .arg("--stage")
         .arg("--")
         .arg(input);
     command
 }
 
 fn hash_gitlink_input(root: &Path, input: &str) -> Result<Option<[u8; 32]>, String> {
-    // Package identity follows the exact source checkout's committed gitlink,
-    // even when a protected build user reads a checkout owned by the workflow
-    // user. Keep the trust exception scoped to this one command and directory.
-    let output = match gitlink_ls_tree_command(root, input).output() {
+    // The index is the checkout's content selector: it represents the gitlink
+    // actually selected for this build without importing the current branch or
+    // HEAD into artifact identity. Keep the trust exception scoped to this one
+    // command and directory for protected cross-user source aliases.
+    let output = match gitlink_index_command(root, input).output() {
         Ok(output) => output,
         Err(_) => return Ok(None),
     };
@@ -2513,12 +7701,18 @@ fn hash_gitlink_input(root: &Path, input: &str) -> Result<Option<[u8; 32]>, Stri
     let Some(line) = stdout.lines().next() else {
         return Ok(None);
     };
-    let Some(rest) = line.strip_prefix("160000 commit ") else {
+    let Some(rest) = line.strip_prefix("160000 ") else {
         return Ok(None);
     };
-    let Some((object_id, _path)) = rest.split_once('\t') else {
+    let Some((object_id, stage_and_path)) = rest.split_once(' ') else {
         return Err(format!("unexpected gitlink entry for {input:?}: {line:?}"));
     };
+    let Some((stage, indexed_path)) = stage_and_path.split_once('\t') else {
+        return Err(format!("unexpected gitlink entry for {input:?}: {line:?}"));
+    };
+    if stage != "0" || indexed_path != input {
+        return Err(format!("unexpected gitlink entry for {input:?}: {line:?}"));
+    }
 
     let mut h = Sha256::new();
     h.update(b"gitlink\0");
@@ -2534,24 +7728,69 @@ fn build_input_digests(
     target: &DepsManifest,
     registry: &Registry,
 ) -> Result<Vec<BuildInputDigest>, String> {
-    build_input_digests_from_repo(target, registry, &repo_root())
+    build_input_digests_from_repo(target, registry, &repo_root(), ResolvePolicy::Default)
 }
 
 fn build_input_digests_from_repo(
     target: &DepsManifest,
     registry: &Registry,
     main_repo_root: &Path,
+    policy: ResolvePolicy,
 ) -> Result<Vec<BuildInputDigest>, String> {
+    // Defense in depth for direct helper callers. This pure selector runs
+    // before this helper reads build metadata; identity construction already
+    // selects the same error before memo or dependency traversal.
+    source_only_strict_input_platform(policy, target.source.provider, cfg!(unix))?;
+    let requires_declared_source_inputs = policy == ResolvePolicy::SourceOnlyV1
+        && matches!(
+            target.source.provider,
+            SourceProvider::Repository | SourceProvider::DevShell
+        );
     if !target.dir.join("build.toml").exists() {
+        if requires_declared_source_inputs {
+            return Err(format!(
+                "{}: source.provider = {:?} requires build.toml with non-empty inputs",
+                target.spec(),
+                target.source.provider.as_str(),
+            ));
+        }
         return Ok(Vec::new());
     }
     let build = BuildToml::load(&target.dir)?;
+    let validate_declared_source_inputs = policy == ResolvePolicy::SourceOnlyV1
+        && matches!(
+            target.source.provider,
+            SourceProvider::Repository | SourceProvider::DevShell
+        );
+    if requires_declared_source_inputs && build.inputs.is_empty() {
+        return Err(format!(
+            "{}: source.provider = {:?} requires non-empty build.toml.inputs",
+            target.spec(),
+            target.source.provider.as_str(),
+        ));
+    }
     let mut out = Vec::with_capacity(build.inputs.len() + build.git_inputs.len());
+    let mut source_input_labels = BTreeSet::new();
     for input in &build.inputs {
+        if validate_declared_source_inputs {
+            validate_repository_build_input_label(input)?;
+            if !source_input_labels.insert(input.as_str()) {
+                return Err(format!(
+                    "{}: source-only build input labels must be unique; duplicate {input:?}",
+                    target.spec()
+                ));
+            }
+        }
         let path = resolve_build_input_path_from_repo(target, registry, input, main_repo_root)?;
+        let digest = if validate_declared_source_inputs {
+            let authority_root = repository_source_authority_root(&path, registry, main_repo_root)?;
+            strict_source_build_input_digest(&authority_root, &path)?
+        } else {
+            hash_build_input(&path)?
+        };
         out.push(BuildInputDigest {
             label: input.clone(),
-            digest: hash_build_input(&path)?,
+            digest,
         });
     }
     // External Git inputs are content-addressed before any network access.
@@ -2561,7 +7800,12 @@ fn build_input_digests_from_repo(
     // existing cache keys.
     for (index, input) in build.git_inputs.iter().enumerate() {
         let mut h = Sha256::new();
-        h.update(b"wasm-posix-build-git-input-v1\0");
+        let extended_identity = input.tree.is_some() || input.allow_uninitialized_gitlinks;
+        h.update(if extended_identity {
+            b"wasm-posix-build-git-input-v2\0" as &[u8]
+        } else {
+            b"wasm-posix-build-git-input-v1\0" as &[u8]
+        });
         for field in [
             input.name.as_bytes(),
             input.repository.as_bytes(),
@@ -2570,12 +7814,726 @@ fn build_input_digests_from_repo(
             h.update((field.len() as u64).to_le_bytes());
             h.update(field);
         }
+        if extended_identity {
+            let tree = input.tree.as_deref().unwrap_or_default().as_bytes();
+            h.update((tree.len() as u64).to_le_bytes());
+            h.update(tree);
+            h.update([u8::from(input.allow_uninitialized_gitlinks)]);
+        }
         out.push(BuildInputDigest {
             label: format!("git-input:{index}:{}", input.name),
             digest: h.finalize().into(),
         });
     }
     Ok(out)
+}
+
+const SOURCE_ONLY_NATIVE_NON_UNIX_INPUT_ERROR: &str = "source-only Repository/DevShell build inputs require Unix descriptor-relative validation; native non-Unix hosts are unsupported in this release (Nix or WSL Unix environments remain supported)";
+
+fn source_only_strict_input_platform(
+    policy: ResolvePolicy,
+    provider: SourceProvider,
+    is_unix: bool,
+) -> Result<(), String> {
+    if policy == ResolvePolicy::SourceOnlyV1
+        && matches!(
+            provider,
+            SourceProvider::Repository | SourceProvider::DevShell
+        )
+        && !is_unix
+    {
+        return Err(SOURCE_ONLY_NATIVE_NON_UNIX_INPUT_ERROR.to_string());
+    }
+    Ok(())
+}
+
+fn validate_repository_build_input_label(input: &str) -> Result<(), String> {
+    let invalid_prefix_alias = input.starts_with("//")
+        || input
+            .as_bytes()
+            .get(1)
+            .is_some_and(|byte| *byte == b':' && input.as_bytes()[0].is_ascii_alphabetic());
+    if input.is_empty()
+        || input.contains('\0')
+        || input.contains('\\')
+        || input.starts_with('/')
+        || invalid_prefix_alias
+        || input
+            .split('/')
+            .any(|component| component.is_empty() || matches!(component, "." | ".."))
+        || Path::new(input).is_absolute()
+        || Path::new(input)
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(format!(
+            "repository build input must use its canonical repository-relative '/'-separated spelling: {input:?}"
+        ));
+    }
+    let canonical_label = Path::new(input)
+        .components()
+        .map(|component| match component {
+            Component::Normal(value) => value.to_string_lossy().into_owned(),
+            _ => unreachable!("non-normal component rejected above"),
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    if canonical_label != input {
+        return Err(format!(
+            "repository build input must use its canonical repository-relative spelling: {input:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn repository_source_authority_root(
+    input: &Path,
+    registry: &Registry,
+    main_repo_root: &Path,
+) -> Result<PathBuf, String> {
+    let mut candidates = registry
+        .roots
+        .iter()
+        .map(PathBuf::as_path)
+        .chain(std::iter::once(main_repo_root))
+        .filter(|root| input.starts_with(root))
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|root| std::cmp::Reverse(root.components().count()));
+    let root = candidates.first().ok_or_else(|| {
+        format!(
+            "repository build input {} is outside every configured repository authority",
+            input.display()
+        )
+    })?;
+    std::fs::canonicalize(root).map_err(|error| {
+        format!(
+            "canonicalize repository source authority {}: {error}",
+            root.display()
+        )
+    })
+}
+
+#[cfg(unix)]
+fn strict_source_build_input_digest(root: &Path, input: &Path) -> Result<[u8; 32], String> {
+    strict_source_build_input_digest_with(root, input, &mut |_| {})
+}
+
+#[cfg(not(unix))]
+fn strict_source_build_input_digest(_root: &Path, _input: &Path) -> Result<[u8; 32], String> {
+    Err(SOURCE_ONLY_NATIVE_NON_UNIX_INPUT_ERROR.to_string())
+}
+
+#[cfg(unix)]
+fn strict_source_build_input_digest_with<BeforeRead>(
+    root: &Path,
+    input: &Path,
+    before_read: &mut BeforeRead,
+) -> Result<[u8; 32], String>
+where
+    BeforeRead: FnMut(&Path),
+{
+    let root_metadata = std::fs::symlink_metadata(root)
+        .map_err(|error| format!("inspect repository source root {}: {error}", root.display()))?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err(format!(
+            "repository source root must be a real nonsymlink directory: {}",
+            root.display()
+        ));
+    }
+    let canonical_root = std::fs::canonicalize(root).map_err(|error| {
+        format!(
+            "canonicalize repository source root {}: {error}",
+            root.display()
+        )
+    })?;
+    if canonical_root != root {
+        return Err(format!(
+            "repository source root must use its canonical spelling: {} (canonical {})",
+            root.display(),
+            canonical_root.display()
+        ));
+    }
+    let relative = input.strip_prefix(root).map_err(|_| {
+        format!(
+            "repository build input {} escapes source root {}",
+            input.display(),
+            root.display()
+        )
+    })?;
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(format!(
+            "repository build input must name a descendant of {}: {}",
+            root.display(),
+            input.display()
+        ));
+    }
+
+    strict_source_build_input_digest_unix(
+        &canonical_root,
+        relative,
+        input,
+        &root_metadata,
+        before_read,
+    )
+}
+
+#[cfg(unix)]
+fn source_input_metadata_matches(
+    expected: &std::fs::Metadata,
+    actual: &std::fs::Metadata,
+) -> Result<bool, String> {
+    Ok(package_mirror_identity(expected)? == package_mirror_identity(actual)?
+        && expected.is_file() == actual.is_file()
+        && expected.is_dir() == actual.is_dir()
+        && expected.len() == actual.len()
+        && expected.modified().ok() == actual.modified().ok())
+}
+
+#[cfg(unix)]
+fn require_unchanged_source_input(
+    expected: &std::fs::Metadata,
+    actual: &std::fs::Metadata,
+    path: &Path,
+) -> Result<(), String> {
+    if !source_input_metadata_matches(expected, actual)? {
+        return Err(format!(
+            "source-only build input changed while it was validated and digested: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn strict_source_open_at(
+    parent: &std::fs::File,
+    name: &std::ffi::OsStr,
+    path: &Path,
+    phase: &str,
+) -> Result<std::fs::File, String> {
+    let descriptor = rustix::fs::openat(
+        parent,
+        name,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::NONBLOCK,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|error| {
+        format!(
+            "{phase} source-only build input (missing, unreadable, or symlink) {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(std::fs::File::from(descriptor))
+}
+
+#[cfg(unix)]
+fn strict_source_reopen_unchanged(
+    parent: &std::fs::File,
+    name: &std::ffi::OsStr,
+    expected: &std::fs::Metadata,
+    path: &Path,
+) -> Result<(), String> {
+    let reopened = strict_source_open_at(parent, name, path, "reopen changed")?;
+    let metadata = reopened
+        .metadata()
+        .map_err(|error| format!("inspect reopened source input {}: {error}", path.display()))?;
+    require_unchanged_source_input(expected, &metadata, path)
+}
+
+#[cfg(unix)]
+fn strict_source_build_input_digest_unix<BeforeRead>(
+    root: &Path,
+    relative: &Path,
+    input: &Path,
+    root_metadata: &std::fs::Metadata,
+    before_read: &mut BeforeRead,
+) -> Result<[u8; 32], String>
+where
+    BeforeRead: FnMut(&Path),
+{
+    let root_descriptor = rustix::fs::open(
+        root,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::NONBLOCK,
+        rustix::fs::Mode::empty(),
+    )
+    .map(std::fs::File::from)
+    .map_err(|error| format!("open repository source root {}: {error}", root.display()))?;
+    let opened_root_metadata = root_descriptor
+        .metadata()
+        .map_err(|error| format!("inspect opened source root {}: {error}", root.display()))?;
+    require_unchanged_source_input(root_metadata, &opened_root_metadata, root)?;
+
+    let components = relative
+        .components()
+        .map(|component| match component {
+            Component::Normal(name) => Ok(name),
+            _ => Err(format!(
+                "repository build input has a non-normal component: {}",
+                input.display()
+            )),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let (name, ancestors) = components
+        .split_last()
+        .ok_or_else(|| format!("repository build input is empty: {}", input.display()))?;
+    let mut descriptors = vec![root_descriptor];
+    let mut ancestor_names = Vec::with_capacity(ancestors.len());
+    let mut ancestor_metadata = Vec::with_capacity(ancestors.len());
+    let mut ancestor_paths = Vec::with_capacity(ancestors.len());
+    let mut current_path = root.to_path_buf();
+    for ancestor in ancestors {
+        current_path.push(ancestor);
+        let parent = descriptors
+            .last()
+            .expect("source root descriptor starts the ancestor chain");
+        let opened = strict_source_open_at(parent, ancestor, &current_path, "open ancestor")?;
+        let metadata = opened.metadata().map_err(|error| {
+            format!("inspect source input ancestor {}: {error}", current_path.display())
+        })?;
+        if !metadata.is_dir() {
+            return Err(format!(
+                "source-only build input ancestor must be a real directory: {}",
+                current_path.display()
+            ));
+        }
+        before_read(&current_path);
+        strict_source_reopen_unchanged(parent, ancestor, &metadata, &current_path)?;
+        descriptors.push(opened);
+        ancestor_names.push(ancestor.to_os_string());
+        ancestor_metadata.push(metadata);
+        ancestor_paths.push(current_path.clone());
+    }
+
+    let mut hasher = Sha256::new();
+    strict_source_hash_entry_unix(
+        &mut hasher,
+        descriptors
+            .last()
+            .expect("source root descriptor starts the ancestor chain"),
+        name,
+        input,
+        Path::new(""),
+        before_read,
+    )?;
+    for index in 0..ancestor_names.len() {
+        let held_metadata = descriptors[index + 1].metadata().map_err(|error| {
+            format!(
+                "reinspect opened source input ancestor {}: {error}",
+                ancestor_paths[index].display()
+            )
+        })?;
+        require_unchanged_source_input(
+            &ancestor_metadata[index],
+            &held_metadata,
+            &ancestor_paths[index],
+        )?;
+        strict_source_reopen_unchanged(
+            &descriptors[index],
+            &ancestor_names[index],
+            &ancestor_metadata[index],
+            &ancestor_paths[index],
+        )?;
+    }
+    require_unchanged_source_input(
+        root_metadata,
+        &descriptors[0]
+            .metadata()
+            .map_err(|error| format!("reinspect opened source root {}: {error}", root.display()))?,
+        root,
+    )?;
+    let reopened_root = rustix::fs::open(
+        root,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::NONBLOCK,
+        rustix::fs::Mode::empty(),
+    )
+    .map(std::fs::File::from)
+    .map_err(|error| format!("reopen changed repository source root {}: {error}", root.display()))?;
+    require_unchanged_source_input(
+        root_metadata,
+        &reopened_root
+            .metadata()
+            .map_err(|error| format!("reinspect source root {}: {error}", root.display()))?,
+        root,
+    )?;
+    Ok(hasher.finalize().into())
+}
+
+#[cfg(unix)]
+fn strict_source_hash_entry_unix<BeforeRead>(
+    hasher: &mut Sha256,
+    parent: &std::fs::File,
+    name: &std::ffi::OsStr,
+    path: &Path,
+    relative: &Path,
+    before_read: &mut BeforeRead,
+) -> Result<(), String>
+where
+    BeforeRead: FnMut(&Path),
+{
+    use std::os::unix::ffi::OsStringExt;
+
+    let mut opened = strict_source_open_at(parent, name, path, "open")?;
+    let initial = opened
+        .metadata()
+        .map_err(|error| format!("inspect opened source input {}: {error}", path.display()))?;
+    if !initial.is_file() && !initial.is_dir() {
+        return Err(format!(
+            "source-only build input must be a regular file or real directory: {}",
+            path.display()
+        ));
+    }
+    before_read(path);
+    strict_source_reopen_unchanged(parent, name, &initial, path)?;
+    let relative_text = relative.to_string_lossy();
+    if initial.is_file() {
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut opened, &mut bytes)
+            .map_err(|error| format!("read source-only build input {}: {error}", path.display()))?;
+        hasher.update(b"file\0");
+        hasher.update(relative_text.as_bytes());
+        hasher.update(b"\0");
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(b"\0");
+        hasher.update(bytes);
+        hasher.update(b"\0");
+    } else {
+        hasher.update(b"dir\0");
+        hasher.update(relative_text.as_bytes());
+        hasher.update(b"\0");
+        let mut directory = rustix::fs::Dir::read_from(&opened).map_err(|error| {
+            format!("read source-only build input directory {}: {error}", path.display())
+        })?;
+        let mut entries = Vec::new();
+        for entry in &mut directory {
+            let entry = entry.map_err(|error| {
+                format!("read source-only build input entry below {}: {error}", path.display())
+            })?;
+            let bytes = entry.file_name().to_bytes();
+            if matches!(bytes, b"." | b"..") {
+                continue;
+            }
+            entries.push(OsString::from_vec(bytes.to_vec()));
+        }
+        entries.sort();
+        for child in entries {
+            strict_source_hash_entry_unix(
+                hasher,
+                &opened,
+                &child,
+                &path.join(&child),
+                &relative.join(&child),
+                before_read,
+            )?;
+        }
+    }
+    let opened_after = opened
+        .metadata()
+        .map_err(|error| format!("reinspect opened source input {}: {error}", path.display()))?;
+    require_unchanged_source_input(&initial, &opened_after, path)?;
+    strict_source_reopen_unchanged(parent, name, &initial, path)
+}
+
+const DEV_SHELL_COMPILER_OUTPUT_LIMIT: usize = 64 * 1024;
+
+struct CompilerVersionProbe {
+    success: bool,
+    status: String,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+fn dev_shell_source_identity(target: &DepsManifest) -> Result<[u8; 32], String> {
+    let environment = [
+        "LLVM_VERSION",
+        "LLVM_PREFIX",
+        "WASM_POSIX_LLVM_LIBCXX_SOURCE",
+        "WASM_POSIX_LLVM_LIBUNWIND_SOURCE",
+    ]
+    .into_iter()
+    .filter_map(|name| std::env::var_os(name).map(|value| (name.to_string(), value)))
+    .collect::<BTreeMap<String, OsString>>();
+    dev_shell_source_identity_with_environment(target, &environment, Path::new("/nix/store"))
+}
+
+fn dev_shell_source_identity_with_environment(
+    target: &DepsManifest,
+    environment: &BTreeMap<String, OsString>,
+    nix_store_root: &Path,
+) -> Result<[u8; 32], String> {
+    dev_shell_source_identity_with_inputs(target, environment, nix_store_root, |compiler| {
+        bounded_compiler_version_probe(compiler)
+    })
+}
+
+fn dev_shell_source_identity_with_inputs<Probe>(
+    target: &DepsManifest,
+    environment: &BTreeMap<String, OsString>,
+    nix_store_root: &Path,
+    probe: Probe,
+) -> Result<[u8; 32], String>
+where
+    Probe: FnOnce(&Path) -> Result<CompilerVersionProbe, String>,
+{
+    if target.source.provider != SourceProvider::DevShell {
+        return Err(format!(
+            "{}: dev-shell source identity requires source.provider = \"dev-shell\"",
+            target.spec()
+        ));
+    }
+    if target.version != "21.1.7" {
+        return Err(format!(
+            "{}: dev-shell libcxx identity supports exact LLVM version 21.1.7",
+            target.spec()
+        ));
+    }
+    let value = |name: &str| -> Result<&str, String> {
+        environment
+            .get(name)
+            .ok_or_else(|| {
+                format!(
+                    "{}: required dev-shell variable {name} is unset",
+                    target.spec()
+                )
+            })?
+            .to_str()
+            .ok_or_else(|| format!("{}: dev-shell variable {name} must be UTF-8", target.spec()))
+    };
+    let llvm_version = value("LLVM_VERSION")?;
+    if llvm_version != target.version {
+        return Err(format!(
+            "{}: LLVM_VERSION {llvm_version:?} must exactly match package version {:?}",
+            target.spec(),
+            target.version
+        ));
+    }
+
+    let llvm_prefix =
+        validate_canonical_dev_shell_directory(Path::new(value("LLVM_PREFIX")?), "LLVM_PREFIX")?;
+    let nix_store_root = validate_canonical_dev_shell_directory(nix_store_root, "Nix store root")?;
+    let libcxx_source = validate_nix_source_root(
+        Path::new(value("WASM_POSIX_LLVM_LIBCXX_SOURCE")?),
+        &nix_store_root,
+        "WASM_POSIX_LLVM_LIBCXX_SOURCE",
+    )?;
+    let libunwind_source = validate_nix_source_root(
+        Path::new(value("WASM_POSIX_LLVM_LIBUNWIND_SOURCE")?),
+        &nix_store_root,
+        "WASM_POSIX_LLVM_LIBUNWIND_SOURCE",
+    )?;
+    require_dev_shell_regular_file(
+        &libcxx_source.join("runtimes/CMakeLists.txt"),
+        "libcxx runtimes/CMakeLists.txt",
+    )?;
+    require_dev_shell_real_directory(&libcxx_source.join("libcxx"), "libcxx source directory")?;
+    require_dev_shell_real_directory(
+        &libcxx_source.join("libcxxabi"),
+        "libcxxabi source directory",
+    )?;
+    require_dev_shell_real_directory(
+        &libunwind_source.join("libunwind"),
+        "libunwind source directory",
+    )?;
+
+    let compiler = llvm_prefix.join("bin/clang");
+    let output = probe(&compiler)?;
+    if output.stdout.len().saturating_add(output.stderr.len()) > DEV_SHELL_COMPILER_OUTPUT_LIMIT {
+        return Err(format!(
+            "compiler probe {} --version output exceeds the combined 64 KiB limit",
+            compiler.display()
+        ));
+    }
+    let stdout = String::from_utf8(output.stdout).map_err(|_| {
+        format!(
+            "compiler probe stdout from {} must be UTF-8",
+            compiler.display()
+        )
+    })?;
+    let stderr = String::from_utf8(output.stderr).map_err(|_| {
+        format!(
+            "compiler probe stderr from {} must be UTF-8",
+            compiler.display()
+        )
+    })?;
+    if !output.success {
+        return Err(format!(
+            "compiler probe {} --version failed with {}: {}",
+            compiler.display(),
+            output.status,
+            stderr.trim()
+        ));
+    }
+    if !compiler_output_contains_exact_version(&stdout, &stderr, llvm_version) {
+        return Err(format!(
+            "compiler probe {} --version output does not contain exact version token {llvm_version:?}",
+            compiler.display()
+        ));
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"kandelo-dev-shell-source-v1\0");
+    for field in [
+        llvm_version.as_bytes(),
+        llvm_prefix.as_os_str().as_encoded_bytes(),
+        stdout.as_bytes(),
+        stderr.as_bytes(),
+        libcxx_source.as_os_str().as_encoded_bytes(),
+        libunwind_source.as_os_str().as_encoded_bytes(),
+    ] {
+        hasher.update((field.len() as u64).to_le_bytes());
+        hasher.update(field);
+    }
+    Ok(hasher.finalize().into())
+}
+
+fn validate_canonical_dev_shell_directory(path: &Path, label: &str) -> Result<PathBuf, String> {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err(format!(
+            "{label} must be an absolute lexically normalized path: {}",
+            path.display()
+        ));
+    }
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("inspect {label} {}: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(format!(
+            "{label} must be a real nonsymlink directory: {}",
+            path.display()
+        ));
+    }
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|error| format!("canonicalize {label} {}: {error}", path.display()))?;
+    if canonical.as_os_str() != path.as_os_str() {
+        return Err(format!(
+            "{label} must use its canonical absolute spelling: {} (canonical {})",
+            path.display(),
+            canonical.display()
+        ));
+    }
+    Ok(canonical)
+}
+
+fn validate_nix_source_root(path: &Path, store: &Path, label: &str) -> Result<PathBuf, String> {
+    let canonical = validate_canonical_dev_shell_directory(path, label)?;
+    if canonical == store || !canonical.starts_with(store) {
+        return Err(format!(
+            "{label} must be a Nix store path below {}: {}",
+            store.display(),
+            canonical.display()
+        ));
+    }
+    Ok(canonical)
+}
+
+fn require_dev_shell_real_directory(path: &Path, label: &str) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("inspect {label} {}: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(format!(
+            "{label} must be a real nonsymlink directory: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn require_dev_shell_regular_file(path: &Path, label: &str) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("inspect {label} {}: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "{label} must be a regular nonsymlink file: {}",
+            path.display()
+        ));
+    }
+    std::fs::File::open(path)
+        .map_err(|error| format!("open {label} {}: {error}", path.display()))?;
+    Ok(())
+}
+
+fn bounded_compiler_version_probe(compiler: &Path) -> Result<CompilerVersionProbe, String> {
+    let mut child = Command::new(compiler)
+        .arg("--version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            format!(
+                "run compiler probe {} --version: {error}",
+                compiler.display()
+            )
+        })?;
+    let stdout = child.stdout.take().expect("piped compiler stdout");
+    let stderr = child.stderr.take().expect("piped compiler stderr");
+    let reader = |mut stream: Box<dyn std::io::Read + Send>| {
+        std::thread::spawn(move || -> Result<(Vec<u8>, usize), String> {
+            let mut saved = Vec::new();
+            let mut total = 0usize;
+            let mut buffer = [0u8; 8192];
+            loop {
+                let count = stream
+                    .read(&mut buffer)
+                    .map_err(|error| format!("read compiler probe output: {error}"))?;
+                if count == 0 {
+                    break;
+                }
+                total = total.saturating_add(count);
+                let remaining = (DEV_SHELL_COMPILER_OUTPUT_LIMIT + 1).saturating_sub(saved.len());
+                saved.extend_from_slice(&buffer[..count.min(remaining)]);
+            }
+            Ok((saved, total))
+        })
+    };
+    let stdout_reader = reader(Box::new(stdout));
+    let stderr_reader = reader(Box::new(stderr));
+    let status = child
+        .wait()
+        .map_err(|error| format!("wait for compiler probe {}: {error}", compiler.display()))?;
+    let (stdout, stdout_total) = stdout_reader
+        .join()
+        .map_err(|_| "compiler stdout reader panicked".to_string())??;
+    let (stderr, stderr_total) = stderr_reader
+        .join()
+        .map_err(|_| "compiler stderr reader panicked".to_string())??;
+    if stdout_total.saturating_add(stderr_total) > DEV_SHELL_COMPILER_OUTPUT_LIMIT {
+        return Err(format!(
+            "compiler probe {} --version output exceeds the combined 64 KiB limit",
+            compiler.display()
+        ));
+    }
+    Ok(CompilerVersionProbe {
+        success: status.success(),
+        status: status.to_string(),
+        stdout,
+        stderr,
+    })
+}
+
+fn compiler_output_contains_exact_version(stdout: &str, stderr: &str, version: &str) -> bool {
+    stdout
+        .split(|character: char| {
+            !(character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_'))
+        })
+        .chain(stderr.split(|character: char| {
+            !(character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_'))
+        }))
+        .any(|token| token == version)
 }
 
 fn resolve_build_input_path_from_repo(
@@ -2839,6 +8797,12 @@ use crate::util::hex;
 /// Kept as a struct so tests can pass tempdirs without reaching into
 /// `$HOME` / `$XDG_CACHE_HOME`.
 pub struct ResolveOpts<'a> {
+    /// Resolution policy is part of both branch eligibility and cache identity.
+    pub policy: ResolvePolicy,
+    /// Canonical SourceOnlyV1 cache base. Default resolution requires this to
+    /// remain absent; SourceOnlyV1 validates it as the exact owner of
+    /// `cache_root` before doing any graph or cache work.
+    pub source_cache_root: Option<&'a Path>,
     /// Authoritative root for this resolution. Source-build children receive
     /// its canonical absolute spelling as `WASM_POSIX_BINARY_CACHE_ROOT`, so
     /// nested resolvers cannot drift back to an unrelated ambient default.
@@ -2876,6 +8840,433 @@ pub struct ResolveOpts<'a> {
     pub binaries_dir: Option<&'a Path>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LocalBuildDisposition {
+    Cached,
+    Published,
+    RebuiltEquivalent,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LocalBuildNodeOutput {
+    pub(crate) canonical: Option<PathBuf>,
+    pub(crate) disposition: LocalBuildDisposition,
+    pub(crate) package_receipt: Option<PackageNodeReceiptV1>,
+}
+
+fn exact_canonical_real_directory(path: &Path, label: &str) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err(format!(
+            "{label} must be an absolute path: {}",
+            path.display()
+        ));
+    }
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("inspect {label} {}: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+        return Err(format!(
+            "{label} must be an existing real directory: {}",
+            path.display()
+        ));
+    }
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|error| format!("canonicalize {label} {}: {error}", path.display()))?;
+    if canonical.as_os_str() != path.as_os_str() {
+        return Err(format!(
+            "{label} must use its exact canonical spelling {}; got {}",
+            canonical.display(),
+            path.display(),
+        ));
+    }
+    Ok(canonical)
+}
+
+pub(crate) fn validate_resolve_cache_pair(
+    opts: &ResolveOpts<'_>,
+) -> Result<Option<SourceOnlyCacheRoots>, String> {
+    match opts.policy {
+        ResolvePolicy::Default => {
+            if opts.source_cache_root.is_some() {
+                return Err("default resolution must not receive a source-cache base".to_string());
+            }
+            Ok(None)
+        }
+        ResolvePolicy::SourceOnlyV1 => {
+            let base = opts.source_cache_root.ok_or_else(|| {
+                "source-only resolution requires an explicit canonical source-cache base"
+                    .to_string()
+            })?;
+            let base = exact_canonical_real_directory(base, "source-only source-cache base")?;
+            let compiled =
+                exact_canonical_real_directory(opts.cache_root, "source-only compiled cache root")?;
+            let expected = base.join("source-only-v1/compiled");
+            if compiled != expected {
+                return Err(format!(
+                    "source-only compiled cache must be exactly {}; got {}",
+                    expected.display(),
+                    compiled.display(),
+                ));
+            }
+            Ok(Some(SourceOnlyCacheRoots { base, compiled }))
+        }
+    }
+}
+
+#[cfg(unix)]
+struct SourceOnlyPackageAuthority {
+    manifest: DepsManifest,
+    manifest_sha256: String,
+    cache_key_sha256: String,
+    cache_snapshot: CacheEntrySnapshot,
+    cache_root: AnchoredDirectory,
+}
+
+#[cfg(unix)]
+fn capture_source_only_package_authority(
+    target: &DepsManifest,
+    registry: &Registry,
+    canonical: &Path,
+    roots: &SourceOnlyCacheRoots,
+    arch: TargetArch,
+    abi_version: u32,
+) -> Result<SourceOnlyPackageAuthority, String> {
+    let manifest_path = target.dir.join("package.toml");
+    let manifest_before = stable_package_manifest_sha256(&manifest_path)?;
+    let manifest = registry.load(&target.name).map_err(|error| {
+        format!("{}: reload source-only package authority: {error}", target.spec())
+    })?;
+    if manifest.dir != target.dir {
+        return Err(format!(
+            "{}: registry authority moved from {} to {} while resolving the selected node",
+            target.spec(),
+            target.dir.display(),
+            manifest.dir.display()
+        ));
+    }
+    let cache_key = compute_sha_for_policy(
+        &manifest,
+        registry,
+        arch,
+        abi_version,
+        ResolvePolicy::SourceOnlyV1,
+        &mut BTreeMap::new(),
+        &mut Vec::new(),
+    )?;
+    let cache_key_sha256 = hex(&cache_key);
+    let expected_canonical = canonical_path(&roots.compiled, &manifest, arch, &cache_key);
+    if canonical != expected_canonical {
+        return Err(format!(
+            "{}: resolved source-only cache path {} does not equal expected canonical {}",
+            target.spec(),
+            canonical.display(),
+            expected_canonical.display(),
+        ));
+    }
+    let parent_guard = SourceOnlyCacheParentGuard::prepare(&roots.compiled, canonical)?;
+    parent_guard.validate()?;
+    let cache_snapshot = capture_source_only_cache_entry_snapshot(
+        &manifest,
+        &parent_guard,
+        canonical,
+        arch,
+        abi_version,
+        &cache_key_sha256,
+    )
+    .map_err(|error| {
+        format!(
+            "{}: resolved source-only cache entry failed stable admission and was preserved at {}: {error}",
+            target.spec(),
+            canonical.display(),
+        )
+    })?;
+    parent_guard.validate()?;
+    let (_, cache_root, root_at) = parent_guard.open_canonical_entry(canonical)?;
+    if cache_root.identity != cache_snapshot.identity || root_at.identity != cache_snapshot.identity {
+        return Err(format!(
+            "{}: canonical cache generation changed after stable admission",
+            target.spec()
+        ));
+    }
+    let manifest_after = stable_package_manifest_sha256(&manifest_path)?;
+    let reloaded = registry.load(&target.name).map_err(|error| {
+        format!("{}: recheck source-only package authority: {error}", target.spec())
+    })?;
+    let key_after = compute_sha_for_policy(
+        &reloaded,
+        registry,
+        arch,
+        abi_version,
+        ResolvePolicy::SourceOnlyV1,
+        &mut BTreeMap::new(),
+        &mut Vec::new(),
+    )?;
+    if manifest_before != manifest_after
+        || reloaded.dir != manifest.dir
+        || key_after != cache_key
+    {
+        return Err(format!(
+            "{}: package manifest/cache identity changed while source-only authority was captured",
+            target.spec()
+        ));
+    }
+    Ok(SourceOnlyPackageAuthority {
+        manifest,
+        manifest_sha256: manifest_before,
+        cache_key_sha256,
+        cache_snapshot,
+        cache_root,
+    })
+}
+
+#[cfg(unix)]
+fn require_same_source_only_package_authority(
+    target: &DepsManifest,
+    expected: &SourceOnlyPackageAuthority,
+    actual: &SourceOnlyPackageAuthority,
+    phase: &str,
+) -> Result<(), String> {
+    if actual.manifest_sha256 != expected.manifest_sha256
+        || actual.cache_key_sha256 != expected.cache_key_sha256
+        || actual.cache_snapshot != expected.cache_snapshot
+        || actual.cache_root.identity != expected.cache_root.identity
+        || actual.cache_root.path != expected.cache_root.path
+    {
+        return Err(format!(
+            "{}: source-only package/cache generation changed {phase}; refusing an incoherent package receipt",
+            target.spec()
+        ));
+    }
+    Ok(())
+}
+
+/// Resolve exactly one scheduler-selected node under SourceOnlyV1. Compiled
+/// dependencies are admission checks only: a missing prerequisite is a
+/// scheduler invariant violation, never permission to recursively build it.
+#[cfg(unix)]
+pub(crate) fn resolve_local_build_package_node(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+    roots: &SourceOnlyCacheRoots,
+    repo_root: &Path,
+    output_root: &Path,
+    rebuild: bool,
+    before_projection: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<LocalBuildNodeOutput, String> {
+    resolve_local_build_package_node_with_projection_hooks(
+        target,
+        registry,
+        arch,
+        abi_version,
+        roots,
+        repo_root,
+        output_root,
+        rebuild,
+        before_projection,
+        &mut |_| {},
+    )
+}
+
+#[cfg(unix)]
+fn resolve_local_build_package_node_with_projection_hooks<AfterCopy>(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+    roots: &SourceOnlyCacheRoots,
+    repo_root: &Path,
+    output_root: &Path,
+    rebuild: bool,
+    before_projection: &mut dyn FnMut() -> Result<(), String>,
+    after_copy: &mut AfterCopy,
+) -> Result<LocalBuildNodeOutput, String>
+where
+    AfterCopy: FnMut(&Path),
+{
+    // Source nodes materialize verified upstream archives rather than compiled
+    // package generations. `rebuild` therefore has no eligibility or
+    // disposition meaning for them: a second lookup of the same verified
+    // archive is a cache hit even when the aggregate invocation requested a
+    // compiled rebuild.
+    let forced = (rebuild && target.kind != ManifestKind::Source)
+        .then(|| BTreeSet::from([target.name.clone()]));
+    let opts = ResolveOpts {
+        policy: ResolvePolicy::SourceOnlyV1,
+        source_cache_root: Some(&roots.base),
+        cache_root: &roots.compiled,
+        local_libs: None,
+        force_source_build: forced.as_ref(),
+        fetch_only: false,
+        repo_root: Some(repo_root),
+        binaries_dir: None,
+    };
+    validate_resolve_cache_pair(&opts)?;
+    let canonical_repo = exact_canonical_real_directory(repo_root, "local-build repository root")?;
+    let _repo_root_override = if crate::repo_root() == canonical_repo {
+        None
+    } else {
+        Some(crate::install_repo_root_override(canonical_repo.clone())?)
+    };
+
+    let permission = BuildPermission::TargetOnly {
+        package_name: target.name.clone(),
+        target_arch: arch,
+    };
+    let resolved = ensure_built_inner(
+        target,
+        registry,
+        arch,
+        abi_version,
+        &opts,
+        &mut BTreeMap::new(),
+        &mut Vec::new(),
+        &permission,
+    )?;
+    let canonical = match &resolved.materialization {
+        NodeMaterialization::VerifiedSourceArchive {
+            archive,
+            source_url,
+            sha256,
+            ..
+        } => {
+            before_projection().map_err(|error| {
+                format!(
+                    "{}: post-source-work admission failed before reporting success: {error}",
+                    target.spec()
+                )
+            })?;
+            let reverified = source_archive_cache::require_verified_archive_hit(
+                &roots.base,
+                source_url,
+                sha256,
+                archive,
+            )
+            .map_err(|error| {
+                format!(
+                    "{}: verified source archive changed after post-work admission: {error}",
+                    target.spec()
+                )
+            })?;
+            if &reverified != archive {
+                return Err(format!(
+                    "{}: verified source archive changed canonical payload after post-work admission: {} != {}",
+                    target.spec(),
+                    archive.display(),
+                    reverified.display()
+                ));
+            }
+            return Ok(LocalBuildNodeOutput {
+                canonical: None,
+                disposition: resolved.disposition,
+                package_receipt: None,
+            });
+        }
+        NodeMaterialization::CompiledDir(path) => path.clone(),
+    };
+    let authority = capture_source_only_package_authority(
+        target,
+        registry,
+        &canonical,
+        roots,
+        arch,
+        abi_version,
+    )?;
+    before_projection().map_err(|error| {
+        format!(
+            "{}: post-build admission failed before source-only projection: {error}",
+            target.spec()
+        )
+    })?;
+    let after_callback = capture_source_only_package_authority(
+        target,
+        registry,
+        &canonical,
+        roots,
+        arch,
+        abi_version,
+    )?;
+    require_same_source_only_package_authority(
+        target,
+        &authority,
+        &after_callback,
+        "before projection",
+    )?;
+    let materialized_members = materialize_source_only_program_target_with_cache_root(
+        &after_callback.manifest,
+        &canonical,
+        Some(&after_callback.cache_root),
+        output_root,
+        arch,
+        after_copy,
+        &mut |_| {
+            let current = capture_source_only_package_authority(
+                target,
+                registry,
+                &canonical,
+                roots,
+                arch,
+                abi_version,
+            )?;
+            require_same_source_only_package_authority(
+                target,
+                &authority,
+                &current,
+                "at the live projection boundary",
+            )
+        },
+    )?;
+    let after_projection = capture_source_only_package_authority(
+        target,
+        registry,
+        &canonical,
+        roots,
+        arch,
+        abi_version,
+    )?;
+    require_same_source_only_package_authority(
+        target,
+        &authority,
+        &after_projection,
+        "during projection",
+    )?;
+    let package_receipt = PackageNodeReceiptV1 {
+        manifest_sha256: authority.manifest_sha256,
+        cache_key_sha256: authority.cache_key_sha256,
+        cache_receipt_sha256: cache_receipt_sha256(&authority.cache_snapshot.receipt)?,
+        materialized_members,
+    };
+    let receipt_size = serde_json::to_vec(&package_receipt)
+        .map_err(|error| format!("serialize package node receipt: {error}"))?
+        .len();
+    if receipt_size >= 64 * 1024 {
+        return Err(format!(
+            "{}: package node receipt is {receipt_size} bytes, exceeding the 64 KiB child-result budget",
+            target.spec()
+        ));
+    }
+    Ok(LocalBuildNodeOutput {
+        canonical: Some(canonical),
+        disposition: resolved.disposition,
+        package_receipt: Some(package_receipt),
+    })
+}
+
+#[cfg(not(unix))]
+pub(crate) fn resolve_local_build_package_node(
+    _target: &DepsManifest,
+    _registry: &Registry,
+    _arch: TargetArch,
+    _abi_version: u32,
+    _roots: &SourceOnlyCacheRoots,
+    _repo_root: &Path,
+    _output_root: &Path,
+    _rebuild: bool,
+    _before_projection: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<LocalBuildNodeOutput, String> {
+    Err("source-only local package execution requires Unix no-follow filesystem semantics".to_string())
+}
+
 /// Resolve a library to a concrete on-disk path with the artifacts
 /// declared in its `package.toml`. Ensures dependencies are resolved
 /// first (depth-first), then runs the build script if neither a
@@ -2890,9 +9281,21 @@ pub fn ensure_built(
     abi_version: u32,
     opts: &ResolveOpts<'_>,
 ) -> Result<PathBuf, String> {
+    validate_resolve_cache_pair(opts)?;
+    if opts.policy == ResolvePolicy::SourceOnlyV1 && target.kind == ManifestKind::Source {
+        return Err(format!(
+            "{}: source nodes are dependency inputs and have no durable extracted output",
+            target.spec(),
+        ));
+    }
+    if opts.policy == ResolvePolicy::SourceOnlyV1 {
+        if opts.fetch_only {
+            return Err("source-only resolution cannot be combined with fetch-only".to_string());
+        }
+    }
     let mut memo: BTreeMap<String, [u8; 32]> = BTreeMap::new();
     let mut building: Vec<String> = Vec::new();
-    let (path, _transitive) = ensure_built_inner(
+    let resolved = ensure_built_inner(
         target,
         registry,
         arch,
@@ -2900,8 +9303,126 @@ pub fn ensure_built(
         opts,
         &mut memo,
         &mut building,
+        &BuildPermission::Recursive,
     )?;
-    Ok(path)
+    require_compiled_dir(&resolved, &target.name, "public resolver output").map(Path::to_path_buf)
+}
+
+/// One package in a dependency graph after architecture fallback is applied.
+///
+/// Package name plus resolved target architecture is the canonical node
+/// identity. Manifest kind is graph metadata rather than part of identity.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct ResolvedDependencyNode {
+    pub(crate) package_name: String,
+    pub(crate) target_arch: TargetArch,
+}
+
+/// The complete resolved dependency graph for one package/architecture root.
+///
+/// Direct edges are stored as `(dependency, dependent)` so consumers can feed
+/// them directly into dependency-first topological scheduling. Source-kind
+/// nodes remain present even though they are not compiled package nodes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedDependencyGraph {
+    pub(crate) nodes: BTreeMap<ResolvedDependencyNode, ManifestKind>,
+    pub(crate) direct_edges: BTreeSet<(ResolvedDependencyNode, ResolvedDependencyNode)>,
+}
+
+pub(crate) fn resolved_dependency_graph(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+) -> Result<ResolvedDependencyGraph, String> {
+    resolved_dependency_graph_with_loader(target, arch, &mut |name| registry.load(name))
+}
+
+/// Resolve through an already parsed fixed-registry snapshot. This keeps graph
+/// planning on the exact bytes admitted by its caller while sharing the same
+/// version, architecture, cycle, node, and edge traversal as the resolver.
+pub(crate) fn resolved_dependency_graph_from_manifests(
+    target: &DepsManifest,
+    manifests: &BTreeMap<String, DepsManifest>,
+    arch: TargetArch,
+) -> Result<ResolvedDependencyGraph, String> {
+    resolved_dependency_graph_with_loader(target, arch, &mut |name| {
+        manifests
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("dep {name:?}: no package.toml found in fixed registry snapshot"))
+    })
+}
+
+fn resolved_dependency_graph_with_loader<F>(
+    target: &DepsManifest,
+    arch: TargetArch,
+    loader: &mut F,
+) -> Result<ResolvedDependencyGraph, String>
+where
+    F: FnMut(&str) -> Result<DepsManifest, String>,
+{
+    fn visit<F>(
+        target: &DepsManifest,
+        arch: TargetArch,
+        loader: &mut F,
+        graph: &mut ResolvedDependencyGraph,
+        visited: &mut BTreeSet<(String, TargetArch)>,
+        chain: &mut Vec<String>,
+    ) -> Result<(), String>
+    where
+        F: FnMut(&str) -> Result<DepsManifest, String>,
+    {
+        let identity = (target.name.clone(), arch);
+        if visited.contains(&identity) {
+            return Ok(());
+        }
+        if chain.iter().any(|name| name == &target.name) {
+            return Err(format!(
+                "cycle while collecting source closure: {} -> {}",
+                chain.join(" -> "),
+                target.name,
+            ));
+        }
+        chain.push(target.name.clone());
+        let target_node = ResolvedDependencyNode {
+            package_name: target.name.clone(),
+            target_arch: arch,
+        };
+        graph.nodes.insert(target_node.clone(), target.kind);
+        for dependency in &target.depends_on {
+            let manifest = loader(&dependency.name)?;
+            if manifest.version != dependency.version {
+                return Err(format!(
+                    "{} depends on {}@{}, but registry has {}",
+                    target.spec(),
+                    dependency.name,
+                    dependency.version,
+                    manifest.spec(),
+                ));
+            }
+            let dependency_arch = dependency_target_arch(target, &manifest, arch)?;
+            let dependency_node = ResolvedDependencyNode {
+                package_name: manifest.name.clone(),
+                target_arch: dependency_arch,
+            };
+            graph
+                .direct_edges
+                .insert((dependency_node, target_node.clone()));
+            visit(&manifest, dependency_arch, loader, graph, visited, chain)?;
+        }
+        chain.pop();
+        visited.insert(identity);
+        Ok(())
+    }
+
+    let mut graph = ResolvedDependencyGraph {
+        nodes: BTreeMap::new(),
+        direct_edges: BTreeSet::new(),
+    };
+    let mut visited = BTreeSet::new();
+    let mut chain = Vec::new();
+    visit(target, arch, loader, &mut graph, &mut visited, &mut chain)?;
+    Ok(graph)
 }
 
 /// Return every library/program manifest in `target`'s complete dependency
@@ -2917,67 +9438,14 @@ pub fn buildable_transitive_closure(
     registry: &Registry,
     arch: TargetArch,
 ) -> Result<BTreeSet<String>, String> {
-    fn visit(
-        target: &DepsManifest,
-        registry: &Registry,
-        arch: TargetArch,
-        forced: &mut BTreeSet<String>,
-        visited: &mut BTreeSet<(String, TargetArch)>,
-        chain: &mut Vec<String>,
-    ) -> Result<(), String> {
-        let identity = (target.name.clone(), arch);
-        if visited.contains(&identity) {
-            return Ok(());
-        }
-        if chain.iter().any(|name| name == &target.name) {
-            return Err(format!(
-                "cycle while collecting source closure: {} -> {}",
-                chain.join(" -> "),
-                target.name,
-            ));
-        }
-        chain.push(target.name.clone());
-        if matches!(target.kind, ManifestKind::Library | ManifestKind::Program) {
-            forced.insert(target.name.clone());
-        }
-        for dependency in &target.depends_on {
-            let manifest = registry.load(&dependency.name)?;
-            if manifest.version != dependency.version {
-                return Err(format!(
-                    "{} depends on {}@{}, but registry has {}",
-                    target.spec(),
-                    dependency.name,
-                    dependency.version,
-                    manifest.spec(),
-                ));
-            }
-            let dependency_arch = dependency_target_arch(target, &manifest, arch)?;
-            visit(
-                &manifest,
-                registry,
-                dependency_arch,
-                forced,
-                visited,
-                chain,
-            )?;
-        }
-        chain.pop();
-        visited.insert(identity);
-        Ok(())
-    }
-
-    let mut forced = BTreeSet::new();
-    let mut visited = BTreeSet::new();
-    let mut chain = Vec::new();
-    visit(
-        target,
-        registry,
-        arch,
-        &mut forced,
-        &mut visited,
-        &mut chain,
-    )?;
-    Ok(forced)
+    Ok(resolved_dependency_graph(target, registry, arch)?
+        .nodes
+        .into_iter()
+        .filter_map(|(node, kind)| {
+            matches!(kind, ManifestKind::Library | ManifestKind::Program)
+                .then_some(node.package_name)
+        })
+        .collect())
 }
 
 fn dependency_target_arch(
@@ -2985,12 +9453,8 @@ fn dependency_target_arch(
     dependency: &DepsManifest,
     requested: TargetArch,
 ) -> Result<TargetArch, String> {
-    if dependency.target_arches.contains(&requested) {
-        Ok(requested)
-    } else if dependency.target_arches.contains(&TargetArch::Wasm32) {
-        Ok(TargetArch::Wasm32)
-    } else {
-        Err(format!(
+    canonical_package_target_arch(dependency, requested).ok_or_else(|| {
+        format!(
             "{} depends on {} (arch {}), but {} declares neither {} nor wasm32 in target_arches (declared: {:?})",
             parent.spec(),
             dependency.spec(),
@@ -3002,7 +9466,23 @@ fn dependency_target_arch(
                 .iter()
                 .map(|arch| arch.as_str())
                 .collect::<Vec<_>>(),
-        ))
+        )
+    })
+}
+
+/// Apply the resolver's canonical architecture selection rule to one package:
+/// prefer the exact request, otherwise use its declared wasm32 compatibility
+/// target. Callers retain ownership of their contextual error.
+pub(crate) fn canonical_package_target_arch(
+    package: &DepsManifest,
+    requested: TargetArch,
+) -> Option<TargetArch> {
+    if package.target_arches.contains(&requested) {
+        Some(requested)
+    } else if package.target_arches.contains(&TargetArch::Wasm32) {
+        Some(TargetArch::Wasm32)
+    } else {
+        None
     }
 }
 
@@ -3013,8 +9493,82 @@ fn dependency_target_arch(
 /// under `WASM_POSIX_DEP_<NAME>_DIR` (a built-artifact root), source
 /// deps under `WASM_POSIX_DEP_<NAME>_SRC_DIR` (an unbuilt source tree).
 struct DirectDep {
-    path: PathBuf,
+    materialization: NodeMaterialization,
     kind: ManifestKind,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum NodeMaterialization {
+    CompiledDir(PathBuf),
+    VerifiedSourceArchive {
+        archive: PathBuf,
+        source_url: String,
+        sha256: String,
+        extract_exclude_members: Vec<String>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ResolvedNode {
+    materialization: NodeMaterialization,
+    transitive_compiled_dirs: BTreeSet<PathBuf>,
+    disposition: LocalBuildDisposition,
+}
+
+impl ResolvedNode {
+    fn compiled(path: PathBuf, transitive_compiled_dirs: BTreeSet<PathBuf>) -> Self {
+        Self::compiled_with_disposition(
+            path,
+            transitive_compiled_dirs,
+            LocalBuildDisposition::Cached,
+        )
+    }
+
+    fn compiled_with_disposition(
+        path: PathBuf,
+        transitive_compiled_dirs: BTreeSet<PathBuf>,
+        disposition: LocalBuildDisposition,
+    ) -> Self {
+        Self {
+            materialization: NodeMaterialization::CompiledDir(path),
+            transitive_compiled_dirs,
+            disposition,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum BuildPermission {
+    Recursive,
+    TargetOnly {
+        package_name: String,
+        target_arch: TargetArch,
+    },
+}
+
+impl BuildPermission {
+    fn permits_compiled_recipe(&self, target: &DepsManifest, arch: TargetArch) -> bool {
+        match self {
+            Self::Recursive => true,
+            Self::TargetOnly {
+                package_name,
+                target_arch,
+            } => package_name == &target.name && *target_arch == arch,
+        }
+    }
+}
+
+fn require_compiled_dir<'a>(
+    resolved: &'a ResolvedNode,
+    package_name: &str,
+    operation: &str,
+) -> Result<&'a Path, String> {
+    match &resolved.materialization {
+        NodeMaterialization::CompiledDir(path) => Ok(path),
+        NodeMaterialization::VerifiedSourceArchive { .. } => Err(format!(
+            "internal resolver error: package {package_name:?} has a verified source archive, not a compiled directory, for {operation}",
+        )),
+    }
 }
 
 /// Render a multi-tool probe-failure message for `ensure_built_inner`.
@@ -3119,8 +9673,17 @@ fn render_probe_failures(target: &DepsManifest, failures: &[ProbeFailure]) -> St
 ///   actual optimization we wanted.
 /// * `fetch_only` — fetch-only failures must not poison later normal
 ///   resolves, which are allowed to build from source.
-type BuildMemoKey = (PathBuf, String, TargetArch, [u8; 32], bool, bool);
-type BuildMemoValue = Result<(PathBuf, BTreeSet<PathBuf>), String>;
+type BuildMemoKey = (
+    PathBuf,
+    String,
+    TargetArch,
+    ResolvePolicy,
+    [u8; 32],
+    bool,
+    bool,
+    BuildPermission,
+);
+type BuildMemoValue = Result<ResolvedNode, String>;
 
 fn build_memo() -> &'static Mutex<BTreeMap<BuildMemoKey, BuildMemoValue>> {
     static MEMO: OnceLock<Mutex<BTreeMap<BuildMemoKey, BuildMemoValue>>> = OnceLock::new();
@@ -3155,6 +9718,9 @@ fn try_fetch_without_deps(
     opts: &ResolveOpts<'_>,
     memo: &mut BTreeMap<String, [u8; 32]>,
 ) -> Result<Option<PathBuf>, String> {
+    if opts.policy == ResolvePolicy::SourceOnlyV1 {
+        return Ok(None);
+    }
     let binary_materialization_fast_path = opts.binaries_dir.is_some()
         && matches!(target.kind, ManifestKind::Program)
         && !target.program_outputs.is_empty();
@@ -3189,10 +9755,17 @@ fn try_fetch_without_deps(
     }
 
     let mut chain: Vec<String> = Vec::new();
-    let sha = compute_sha(target, registry, arch, abi_version, memo, &mut chain)?;
+    let sha = compute_sha_for_policy(
+        target,
+        registry,
+        arch,
+        abi_version,
+        opts.policy,
+        memo,
+        &mut chain,
+    )?;
     let canonical = canonical_path(opts.cache_root, target, arch, &sha);
     let cache_key_sha_hex = hex(&sha);
-
     if canonical.is_dir() {
         match validate_cache_entry(target, &canonical, arch, abi_version, &cache_key_sha_hex) {
             Ok(()) => return Ok(Some(canonical)),
@@ -3298,7 +9871,8 @@ fn ensure_built_inner(
     opts: &ResolveOpts<'_>,
     memo: &mut BTreeMap<String, [u8; 32]>,
     building: &mut Vec<String>,
-) -> Result<(PathBuf, BTreeSet<PathBuf>), String> {
+    build_permission: &BuildPermission,
+) -> Result<ResolvedNode, String> {
     // Process-lifetime memo: the same (name, arch) often gets
     // requested multiple times within one resolver run via different
     // dep chains. Without this, mariadb wasm32 source-builds 4 times
@@ -3310,11 +9884,12 @@ fn ensure_built_inner(
     // an in-process build.toml edit cannot inherit the prior call's digest;
     // recursive lookups in one unchanged graph remain cheap memo hits.
     let mut identity_chain = Vec::new();
-    let cache_identity = compute_sha(
+    let cache_identity = compute_sha_for_policy(
         target,
         registry,
         arch,
         abi_version,
+        opts.policy,
         memo,
         &mut identity_chain,
     )?;
@@ -3326,26 +9901,44 @@ fn ensure_built_inner(
         opts.cache_root.to_path_buf(),
         target.name.clone(),
         arch,
+        opts.policy,
         cache_identity,
         was_force_rebuild,
         opts.fetch_only,
+        build_permission.clone(),
     );
-    {
+    if !matches!(build_permission, BuildPermission::TargetOnly { .. }) {
         let cache = build_memo().lock().unwrap();
         if let Some(cached) = cache.get(&memo_key) {
-            return cached.clone();
+            let mut cached = cached.clone();
+            if !was_force_rebuild || target.kind == ManifestKind::Source {
+                if let Ok(resolved) = &mut cached {
+                    resolved.disposition = LocalBuildDisposition::Cached;
+                }
+            }
+            return cached;
         }
     }
 
-    let result = ensure_built_uncached(target, registry, arch, abi_version, opts, memo, building);
+    let result = ensure_built_uncached(
+        target,
+        registry,
+        arch,
+        abi_version,
+        opts,
+        memo,
+        building,
+        build_permission,
+    );
 
     // Don't poison the cache with cycle errors — those reflect the
     // call stack at the moment of detection, not a stable property
     // of the manifest. Everything else (Ok path + non-cycle Err)
     // gets memoized.
     let should_memo = match &result {
+        _ if matches!(build_permission, BuildPermission::TargetOnly { .. }) => false,
         Ok(_) => true,
-        Err(e) => !is_cycle_error(e),
+        Err(e) => !is_cycle_error(e) && !e.starts_with("local-build scheduler invariant:"),
     };
     if should_memo {
         build_memo()
@@ -3364,7 +9957,8 @@ fn ensure_built_uncached(
     opts: &ResolveOpts<'_>,
     memo: &mut BTreeMap<String, [u8; 32]>,
     building: &mut Vec<String>,
-) -> Result<(PathBuf, BTreeSet<PathBuf>), String> {
+    build_permission: &BuildPermission,
+) -> Result<ResolvedNode, String> {
     if building.iter().any(|s| s == &target.name) {
         return Err(format!(
             "cycle while building: {} -> {}",
@@ -3376,7 +9970,7 @@ fn ensure_built_uncached(
 
     if let Some(path) = try_fetch_without_deps(target, registry, arch, abi_version, opts, memo)? {
         building.pop();
-        return Ok((path, BTreeSet::new()));
+        return Ok(ResolvedNode::compiled(path, BTreeSet::new()));
     }
 
     // Recursively resolve direct deps first; remember their paths so
@@ -3414,7 +10008,7 @@ fn ensure_built_uncached(
         // arch-agnostic tryResolveBinary("programs/<x>.wasm") finds
         // them. The kernel runs mixed-arch programs.
         let dep_arch = dependency_target_arch(target, &dep_m, arch)?;
-        let (dep_path, dep_transitive) = ensure_built_inner(
+        let dep_resolved = ensure_built_inner(
             &dep_m,
             registry,
             dep_arch,
@@ -3422,6 +10016,7 @@ fn ensure_built_uncached(
             opts,
             memo,
             building,
+            build_permission,
         )?;
         // Place binaries/programs/<arch>/<output> symlinks for each
         // program dep so consumer build scripts can find them via
@@ -3432,38 +10027,112 @@ fn ensure_built_uncached(
         // WASM_POSIX_DEP_* env vars and don't need a binaries/ entry.
         if let Some(bdir) = opts.binaries_dir {
             if matches!(dep_m.kind, ManifestKind::Program) && !dep_m.program_outputs.is_empty() {
-                let cache_key_sha =
-                    manifest_cache_key_sha(&dep_m, registry, dep_arch, abi_version)?;
-                place_binaries_symlinks(&dep_m, &dep_path, bdir, dep_arch, &cache_key_sha)?;
+                let cache_key_sha = manifest_cache_key_sha_for_policy(
+                    &dep_m,
+                    registry,
+                    dep_arch,
+                    abi_version,
+                    opts.policy,
+                )?;
+                let dep_path =
+                    require_compiled_dir(&dep_resolved, &dep_m.name, "program binary projection")?;
+                let repo_root = opts
+                    .repo_root
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(crate::repo_root);
+                publish_resolved_program_artifacts(
+                    &dep_m,
+                    dep_path,
+                    &repo_root,
+                    bdir,
+                    dep_arch,
+                    &cache_key_sha,
+                    false,
+                )?;
             }
         }
+        if let NodeMaterialization::CompiledDir(dep_path) = &dep_resolved.materialization {
+            transitive.insert(dep_path.clone());
+        }
+        transitive.extend(dep_resolved.transitive_compiled_dirs.iter().cloned());
         dep_dirs.insert(
             dep_m.name.clone(),
             DirectDep {
-                path: dep_path.clone(),
+                materialization: dep_resolved.materialization,
                 kind: dep_m.kind,
             },
         );
-        transitive.insert(dep_path);
-        transitive.extend(dep_transitive);
     }
 
     building.pop();
 
+    if opts.policy == ResolvePolicy::SourceOnlyV1 && target.kind == ManifestKind::Source {
+        if target.source.provider != SourceProvider::Archive {
+            return Err(format!(
+                "{}: source-only source dependency requires source.provider = \"archive\"",
+                target.spec(),
+            ));
+        }
+        let source_cache_root = opts
+            .source_cache_root
+            .ok_or_else(|| format!("{}: validated source-cache base is missing", target.spec()))?;
+        let archive = source_archive_cache::fetch_verified_archive_with_disposition(
+            source_cache_root,
+            &target.source.url,
+            &target.source.sha256,
+        )
+        .map_err(|error| {
+            format!(
+                "{}: acquire verified source archive: {error}",
+                target.spec()
+            )
+        })?;
+        return Ok(ResolvedNode {
+            materialization: NodeMaterialization::VerifiedSourceArchive {
+                archive: archive.path,
+                source_url: target.source.url.clone(),
+                sha256: target.source.sha256.clone(),
+                extract_exclude_members: target.source.extract_exclude_members.clone(),
+            },
+            transitive_compiled_dirs: transitive,
+            disposition: match archive.disposition {
+                source_archive_cache::SourceArchiveDisposition::Cached => {
+                    LocalBuildDisposition::Cached
+                }
+                source_archive_cache::SourceArchiveDisposition::Published => {
+                    LocalBuildDisposition::Published
+                }
+            },
+        });
+    }
+
     // Local-libs override: hand-patched source wins. The override dir
     // still contributes to `transitive` for any consumer above us.
-    if let Some(lr) = opts.local_libs {
-        let override_dir = lr.join(&target.name).join("build");
-        if override_dir.is_dir() {
-            return Ok((override_dir, transitive));
+    if opts.policy == ResolvePolicy::Default {
+        if let Some(lr) = opts.local_libs {
+            let override_dir = lr.join(&target.name).join("build");
+            if override_dir.is_dir() {
+                return Ok(ResolvedNode::compiled(override_dir, transitive));
+            }
         }
     }
 
     // Compute canonical cache path.
     let mut chain: Vec<String> = Vec::new();
-    let sha = compute_sha(target, registry, arch, abi_version, memo, &mut chain)?;
+    let sha = compute_sha_for_policy(
+        target,
+        registry,
+        arch,
+        abi_version,
+        opts.policy,
+        memo,
+        &mut chain,
+    )?;
     let canonical = canonical_path(opts.cache_root, target, arch, &sha);
     let cache_key_sha_hex = hex(&sha);
+    let source_only_cache_parent = (opts.policy == ResolvePolicy::SourceOnlyV1)
+        .then(|| SourceOnlyCacheParentGuard::prepare(opts.cache_root, &canonical))
+        .transpose()?;
 
     let force_rebuild = opts
         .force_source_build
@@ -3475,9 +10144,36 @@ fn ensure_built_uncached(
     // previously produced stale artifacts with a matching ABI number
     // (legacy Asyncify exports instead of wpk_fork_*). Reject those so
     // the resolver can fetch a current remote artifact or source-build.
-    if !force_rebuild && canonical.is_dir() {
+    let canonical_is_cache_hit = match opts.policy {
+        // Preserve the exact public Default predicate. `Path::is_dir` follows
+        // symlinks and treats regular/dangling entries as misses; changing it
+        // would alter long-standing repair/error behavior outside SourceOnly.
+        ResolvePolicy::Default => canonical.is_dir(),
+        ResolvePolicy::SourceOnlyV1 => path_entry_exists(&canonical)?,
+    };
+    if !force_rebuild && canonical_is_cache_hit {
+        if let Some(parent) = &source_only_cache_parent {
+            capture_source_only_cache_entry_snapshot(
+                target,
+                parent,
+                &canonical,
+                arch,
+                abi_version,
+                &cache_key_sha_hex,
+            )
+            .map_err(|error| {
+                format!(
+                    "{}: invalid source-only canonical cache entry was preserved at {}: {error}",
+                    target.spec(),
+                    canonical.display()
+                )
+            })?;
+            return Ok(ResolvedNode::compiled(canonical, transitive));
+        }
         match validate_cache_entry(target, &canonical, arch, abi_version, &cache_key_sha_hex) {
-            Ok(()) => return Ok((canonical, transitive)),
+            Ok(()) => {
+                return Ok(ResolvedNode::compiled(canonical, transitive));
+            }
             Err(e) => {
                 eprintln!(
                     "warning: ignoring stale cached artifact for {} at {} ({})",
@@ -3494,9 +10190,22 @@ fn ensure_built_uncached(
             }
         }
     }
-    if force_rebuild && canonical.is_dir() {
+    if force_rebuild
+        && opts.policy == ResolvePolicy::Default
+        && canonical.is_dir()
+    {
         remove_cache_entry(&canonical, &cache_key_sha_hex)
             .map_err(|e| format!("force-rebuild: clear {}: {e}", canonical.display()))?;
+    }
+    if opts.policy == ResolvePolicy::SourceOnlyV1
+        && !build_permission.permits_compiled_recipe(target, arch)
+    {
+        return Err(format!(
+            "local-build scheduler invariant: prerequisite {} ({}) is not a completed source-only cache hit at {}",
+            target.name,
+            arch.as_str(),
+            canonical.display()
+        ));
     }
 
     // Run host-tool probes before any work that might invoke a build
@@ -3582,11 +10291,11 @@ fn ensure_built_uncached(
             if canonical.exists() {
                 let _ = std::fs::remove_dir_all(&tmp);
                 validate_cache_entry(target, &canonical, arch, abi_version, &cache_key_sha_hex)?;
-                return Ok((canonical, transitive));
+                return Ok(ResolvedNode::compiled(canonical, transitive));
             }
             std::fs::rename(&tmp, &canonical)
                 .map_err(|e| format!("rename {} -> {}: {e}", tmp.display(), canonical.display()))?;
-            Ok((canonical, transitive))
+            Ok(ResolvedNode::compiled(canonical, transitive))
         }
         (ManifestKind::Source, true) => {
             if opts.fetch_only {
@@ -3604,18 +10313,26 @@ fn ensure_built_uncached(
                 .repo_root
                 .map(Path::to_path_buf)
                 .unwrap_or_else(crate::repo_root);
-            build_into_cache(
+            let disposition = build_into_cache(
                 target,
+                registry,
                 arch,
                 abi_version,
                 &cache_key_sha_hex,
                 opts.cache_root,
+                opts.source_cache_root,
                 &canonical,
                 &dep_dirs,
                 &pkgconfig_path,
                 &repo_root,
+                opts.policy,
+                force_rebuild,
             )?;
-            Ok((canonical, transitive))
+            Ok(ResolvedNode::compiled_with_disposition(
+                canonical,
+                transitive,
+                disposition,
+            ))
         }
         (ManifestKind::Library | ManifestKind::Program, _) => {
             // Resolution priority 3a: direct archive fetch from the
@@ -3639,7 +10356,7 @@ fn ensure_built_uncached(
             // the resolver to refuse to produce an artifact.
             //
             // `force_rebuild` short-circuits remote fetch entirely.
-            if !force_rebuild {
+            if !force_rebuild && opts.policy == ResolvePolicy::Default {
                 if let Some(binary) = target.binary.get(&arch) {
                     match remote_fetch::fetch_and_install(
                         binary,
@@ -3656,7 +10373,7 @@ fn ensure_built_uncached(
                             abi_version,
                             &cache_key_sha_hex,
                         ) {
-                            Ok(()) => return Ok((canonical, transitive)),
+                            Ok(()) => return Ok(ResolvedNode::compiled(canonical, transitive)),
                             Err(e) => {
                                 eprintln!(
                                     "warning: direct binary fetch for {} from {} produced \
@@ -3689,7 +10406,7 @@ fn ensure_built_uncached(
                     &cache_key_sha_hex,
                     opts.fetch_only,
                 ) {
-                    return Ok((canonical, transitive));
+                    return Ok(ResolvedNode::compiled(canonical, transitive));
                 }
             }
 
@@ -3707,18 +10424,26 @@ fn ensure_built_uncached(
                 .repo_root
                 .map(Path::to_path_buf)
                 .unwrap_or_else(crate::repo_root);
-            build_into_cache(
+            let disposition = build_into_cache(
                 target,
+                registry,
                 arch,
                 abi_version,
                 &cache_key_sha_hex,
                 opts.cache_root,
+                opts.source_cache_root,
                 &canonical,
                 &dep_dirs,
                 &pkgconfig_path,
                 &repo_root,
+                opts.policy,
+                force_rebuild,
             )?;
-            Ok((canonical, transitive))
+            Ok(ResolvedNode::compiled_with_disposition(
+                canonical,
+                transitive,
+                disposition,
+            ))
         }
     }
 }
@@ -3961,6 +10686,8 @@ struct GitCommandIsolation {
 #[derive(Debug, Default)]
 struct ProvisionedGitInputs {
     root: Option<PathBuf>,
+    #[cfg(unix)]
+    owned_root: Option<OwnedPrivateDirectory>,
     isolation: Option<GitCommandIsolation>,
     inputs: Vec<ProvisionedGitInput>,
 }
@@ -3979,12 +10706,34 @@ impl ProvisionedGitInputs {
         Self::provision_declarations(&target.spec(), canonical, declarations)
     }
 
+    #[cfg(unix)]
+    fn provision_source_only(
+        target: &DepsManifest,
+        source_inputs: &AnchoredDirectory,
+    ) -> Result<Self, String> {
+        let build_path = target.dir.join("build.toml");
+        if !build_path.exists() {
+            return Ok(Self::default());
+        }
+        let declarations = BuildToml::load(&target.dir)?.git_inputs;
+        if declarations.is_empty() {
+            return Ok(Self::default());
+        }
+        Self::provision_declarations_inner(
+            &target.spec(),
+            Path::new("source-only-owned-git-inputs"),
+            declarations,
+            &[],
+            Some(source_inputs.try_clone("source-only input root")?),
+        )
+    }
+
     fn provision_declarations(
         package_spec: &str,
         canonical: &Path,
         declarations: Vec<GitBuildInput>,
     ) -> Result<Self, String> {
-        Self::provision_declarations_inner(package_spec, canonical, declarations, &[])
+        Self::provision_declarations_inner(package_spec, canonical, declarations, &[], None)
     }
 
     #[cfg(test)]
@@ -3994,7 +10743,13 @@ impl ProvisionedGitInputs {
         declarations: Vec<GitBuildInput>,
         ambient_env: &[(std::ffi::OsString, std::ffi::OsString)],
     ) -> Result<Self, String> {
-        Self::provision_declarations_inner(package_spec, canonical, declarations, ambient_env)
+        Self::provision_declarations_inner(
+            package_spec,
+            canonical,
+            declarations,
+            ambient_env,
+            None,
+        )
     }
 
     fn provision_declarations_inner(
@@ -4002,27 +10757,61 @@ impl ProvisionedGitInputs {
         canonical: &Path,
         declarations: Vec<GitBuildInput>,
         ambient_env: &[(std::ffi::OsString, std::ffi::OsString)],
+        #[cfg(unix)] source_only_parent: Option<AnchoredDirectory>,
+        #[cfg(not(unix))] _source_only_parent: Option<AnchoredDirectory>,
     ) -> Result<Self, String> {
-        let parent = canonical.parent().ok_or_else(|| {
-            format!(
-                "{}: canonical cache path has no parent for git inputs: {}",
-                package_spec,
-                canonical.display()
-            )
-        })?;
-        let basename = canonical
-            .file_name()
-            .ok_or_else(|| {
+        #[cfg(unix)]
+        let (root, owned_root) = if let Some(parent) = source_only_parent {
+            let owned = OwnedPrivateDirectory::reserve_below(
+                parent,
+                "git-inputs",
+                "source-only immutable git-input root",
+            )?;
+            (owned.path().to_path_buf(), Some(owned))
+        } else {
+            let parent = canonical.parent().ok_or_else(|| {
                 format!(
-                    "canonical cache path has no filename: {}",
+                    "{}: canonical cache path has no parent for git inputs: {}",
+                    package_spec,
                     canonical.display()
                 )
-            })?
-            .to_string_lossy();
-        let root = create_git_input_root(parent, &basename)?;
+            })?;
+            let basename = canonical
+                .file_name()
+                .ok_or_else(|| {
+                    format!(
+                        "canonical cache path has no filename: {}",
+                        canonical.display()
+                    )
+                })?
+                .to_string_lossy();
+            (create_git_input_root(parent, &basename)?, None)
+        };
+        #[cfg(not(unix))]
+        let root = {
+            let parent = canonical.parent().ok_or_else(|| {
+                format!(
+                    "{}: canonical cache path has no parent for git inputs: {}",
+                    package_spec,
+                    canonical.display()
+                )
+            })?;
+            let basename = canonical
+                .file_name()
+                .ok_or_else(|| {
+                    format!(
+                        "canonical cache path has no filename: {}",
+                        canonical.display()
+                    )
+                })?
+                .to_string_lossy();
+            create_git_input_root(parent, &basename)?
+        };
 
         let mut provisioned = Self {
             root: Some(root.clone()),
+            #[cfg(unix)]
+            owned_root,
             isolation: None,
             inputs: Vec::with_capacity(declarations.len()),
         };
@@ -4086,6 +10875,10 @@ impl ProvisionedGitInputs {
         // build that cannot edit files could still rename or replace the path
         // exported in WASM_POSIX_BUILD_GIT_*_DIR.
         set_git_input_tree_read_only(&root, true)?;
+        #[cfg(unix)]
+        if let Some(owned) = &provisioned.owned_root {
+            owned.validate_named_root()?;
+        }
         Ok(provisioned)
     }
 
@@ -4121,10 +10914,33 @@ impl ProvisionedGitInputs {
         }
         Ok(())
     }
+
+    fn cleanup_source_only(&mut self) -> Result<(), String> {
+        #[cfg(not(unix))]
+        return Err("source-only immutable git-input cleanup requires Unix dirfd semantics".to_string());
+        #[cfg(unix)]
+        {
+            let Some(owned) = self.owned_root.as_mut() else {
+                return Ok(());
+            };
+            owned.cleanup()?;
+            self.owned_root = None;
+            self.root = None;
+            self.isolation = None;
+            self.inputs.clear();
+            Ok(())
+        }
+    }
 }
 
 impl Drop for ProvisionedGitInputs {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(mut owned) = self.owned_root.take() {
+            let _ = owned.cleanup();
+            self.root = None;
+            return;
+        }
         if let Some(root) = self.root.take() {
             let _ = set_git_input_tree_read_only(&root, false);
             let _ = std::fs::remove_dir_all(root);
@@ -4386,6 +11202,31 @@ fn verify_git_input(
         ));
     }
 
+    if let Some(expected_tree) = &input.tree {
+        let tree = git_output(
+            checkout,
+            &["rev-parse", "HEAD^{tree}"],
+            &input.repository,
+            isolation,
+            ambient_env,
+        )?;
+        if !tree.status.success() {
+            return Err(format!(
+                "git input {:?}: cannot resolve parent tree in {}: {}",
+                input.name,
+                checkout.display(),
+                String::from_utf8_lossy(&tree.stderr).trim()
+            ));
+        }
+        let actual_tree = String::from_utf8_lossy(&tree.stdout).trim().to_string();
+        if actual_tree != *expected_tree {
+            return Err(format!(
+                "git input {:?}: expected tree {}, checkout has {}",
+                input.name, expected_tree, actual_tree
+            ));
+        }
+    }
+
     let branch = git_output(
         checkout,
         &["rev-parse", "--abbrev-ref", "HEAD"],
@@ -4450,21 +11291,49 @@ fn validate_git_input_tree(
             String::from_utf8_lossy(&index.stderr).trim()
         ));
     }
+    let mut gitlinks = Vec::new();
     for record in index
         .stdout
         .split(|byte| *byte == 0)
         .filter(|record| !record.is_empty())
     {
-        let metadata = record.split(|byte| *byte == b'\t').next().unwrap_or(record);
+        let tab = record.iter().position(|byte| *byte == b'\t').ok_or_else(|| {
+            format!(
+                "git input {:?}: malformed index record while checking gitlinks",
+                input.name
+            )
+        })?;
+        let metadata = &record[..tab];
         let mode = metadata
             .split(|byte| *byte == b' ')
             .next()
             .unwrap_or(metadata);
         if mode == b"160000" {
-            return Err(format!(
-                "git input {:?}: submodule gitlinks are not allowed in immutable build inputs",
-                input.name
-            ));
+            if !input.allow_uninitialized_gitlinks {
+                return Err(format!(
+                    "git input {:?}: submodule gitlinks are not allowed in immutable build inputs",
+                    input.name
+                ));
+            }
+            let path = std::str::from_utf8(&record[tab + 1..]).map_err(|_| {
+                format!(
+                    "git input {:?}: gitlink path is not valid UTF-8",
+                    input.name
+                )
+            })?;
+            let relative = Path::new(path);
+            if path.is_empty()
+                || path.contains('\\')
+                || !relative
+                    .components()
+                    .all(|component| matches!(component, std::path::Component::Normal(_)))
+            {
+                return Err(format!(
+                    "git input {:?}: gitlink path must be a normalized relative path, got {path:?}",
+                    input.name
+                ));
+            }
+            gitlinks.push(relative.to_path_buf());
         }
     }
 
@@ -4495,6 +11364,54 @@ fn validate_git_input_tree(
             input.name,
             checkout.display()
         ));
+    }
+    for relative in gitlinks {
+        let path = checkout.join(&relative);
+        let metadata = std::fs::symlink_metadata(&path).map_err(|e| {
+            format!(
+                "git input {:?}: inspect uninitialized gitlink {}: {e}",
+                input.name,
+                path.display()
+            )
+        })?;
+        let resolved = std::fs::canonicalize(&path).map_err(|e| {
+            format!(
+                "git input {:?}: resolve uninitialized gitlink {}: {e}",
+                input.name,
+                path.display()
+            )
+        })?;
+        let expected = canonical.join(&relative);
+        let empty = if metadata.is_dir() && !metadata.file_type().is_symlink() && resolved == expected
+        {
+            std::fs::read_dir(&path)
+                .map_err(|e| {
+                    format!(
+                        "git input {:?}: read uninitialized gitlink {}: {e}",
+                        input.name,
+                        path.display()
+                    )
+                })?
+                .next()
+                .transpose()
+                .map_err(|e| {
+                    format!(
+                        "git input {:?}: read uninitialized gitlink entry below {}: {e}",
+                        input.name,
+                        path.display()
+                    )
+                })?
+                .is_none()
+        } else {
+            false
+        };
+        if !empty {
+            return Err(format!(
+                "git input {:?}: allowed uninitialized gitlink {} must be an empty real directory with no symlinked path components",
+                input.name,
+                path.display()
+            ));
+        }
     }
     validate_git_input_tree_entries(input, checkout, checkout, &canonical, &git_metadata)
 }
@@ -4657,6 +11574,12 @@ fn set_git_input_tree_read_only(path: &Path, read_only: bool) -> Result<(), Stri
     }
     let metadata = std::fs::symlink_metadata(path)
         .map_err(|e| format!("restat immutable git input {}: {e}", path.display()))?;
+    // Removing a tree only requires writable/searchable directories. Never
+    // chmod regular leaves while unsealing scratch: a recipe may have created
+    // a hardlink to an inode outside the resolver-owned work root.
+    if !read_only && !metadata.is_dir() {
+        return Ok(());
+    }
     let mut permissions = metadata.permissions();
     if read_only {
         permissions.set_mode(permissions.mode() & !0o222);
@@ -4708,25 +11631,196 @@ fn set_git_input_tree_read_only(path: &Path, read_only: bool) -> Result<(), Stri
 
 struct BuildWorkRoot {
     path: PathBuf,
+    recipe_work: PathBuf,
+    source_inputs: PathBuf,
+    identity: PackageMirrorIdentity,
+    #[cfg(unix)]
+    owned: Option<OwnedPrivateDirectory>,
+    #[cfg(unix)]
+    recipe_work_anchor: Option<AnchoredDirectory>,
+    #[cfg(unix)]
+    source_inputs_anchor: Option<AnchoredDirectory>,
+}
+
+impl BuildWorkRoot {
+    fn cleanup_source_only(&mut self) -> Result<(), String> {
+        #[cfg(not(unix))]
+        return Err("source-only build work cleanup requires Unix dirfd semantics".to_string());
+        #[cfg(unix)]
+        {
+            if self.owned.is_none() {
+                return Ok(());
+            }
+            let owned = self.owned.as_mut().ok_or_else(|| {
+                "source-only build work root lacks its owned directory guard".to_string()
+            })?;
+            owned.validate_named_root()?;
+            let recipe = self.recipe_work_anchor.as_ref().ok_or_else(|| {
+                "source-only build work root lacks its recipe-work identity".to_string()
+            })?;
+            let source_inputs = self.source_inputs_anchor.as_ref().ok_or_else(|| {
+                "source-only build work root lacks its source-inputs identity".to_string()
+            })?;
+            let names = stable_receipt_directory_names(&owned.root.file, owned.path())?;
+            if names != [OsString::from("recipe-work"), OsString::from("source-inputs")] {
+                owned.preserve = true;
+                return Err(format!(
+                    "source-only build work root top-level ownership changed and was preserved: {}",
+                    owned.path().display()
+                ));
+            }
+            for (name, anchor, label) in [
+                (OsStr::new("recipe-work"), recipe, "recipe-work"),
+                (OsStr::new("source-inputs"), source_inputs, "source-inputs"),
+            ] {
+                let current = receipt_at_metadata_snapshot(
+                    &owned.root.file,
+                    name,
+                    &owned.path().join(name),
+                )?;
+                if current.kind != 2 || current.identity != anchor.identity {
+                    owned.preserve = true;
+                    return Err(format!(
+                        "source-only build {label} identity changed and was preserved: {}",
+                        owned.path().join(name).display()
+                    ));
+                }
+            }
+            let expected_children = [
+                (OsString::from("recipe-work"), recipe.identity.clone()),
+                (OsString::from("source-inputs"), source_inputs.identity.clone()),
+            ];
+            owned.cleanup_scratch_recursively(&expected_children)?;
+            self.recipe_work_anchor = None;
+            self.source_inputs_anchor = None;
+            self.owned = None;
+            Ok(())
+        }
+    }
 }
 
 impl Drop for BuildWorkRoot {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        if self.owned.is_some() {
+            let _ = self.cleanup_source_only();
+            return;
+        }
+        let unchanged = std::fs::symlink_metadata(&self.path)
+            .ok()
+            .filter(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+            .and_then(|metadata| package_mirror_identity(&metadata).ok())
+            .is_some_and(|identity| identity == self.identity);
+        if !unchanged {
+            return;
+        }
+        let _ = set_git_input_tree_read_only(&self.path, false);
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }
 
 static BUILD_WORK_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn create_build_work_root(parent: &Path, basename: &str) -> Result<BuildWorkRoot, String> {
+fn create_build_work_root(
+    parent: &Path,
+    basename: &str,
+    policy: ResolvePolicy,
+    source_only_parent: Option<&SourceOnlyCacheParentGuard>,
+) -> Result<BuildWorkRoot, String> {
+    if policy == ResolvePolicy::SourceOnlyV1 {
+        #[cfg(not(unix))]
+        return Err(
+            "source-only build work roots require Unix dirfd filesystem semantics".to_string(),
+        );
+        #[cfg(unix)]
+        {
+            let prefix = format!("{basename}.work");
+            let guard = source_only_parent.ok_or_else(|| {
+                "source-only package work root is missing its anchored cache parent".to_string()
+            })?;
+            if guard.parent != parent {
+                return Err(format!(
+                    "source-only work-root parent differs from its anchored cache parent: {} != {}",
+                    parent.display(),
+                    guard.parent.display()
+                ));
+            }
+            guard.validate()?;
+            let mut owned = OwnedPrivateDirectory::reserve_below(
+                guard.parent_anchor.try_clone("source-only cache kind parent")?,
+                &prefix,
+                "source-only package work root",
+            )?;
+            let recipe_work_anchor = match owned.root.create_named_child_directory_with_after_create(
+                OsStr::new("recipe-work"),
+                0o700,
+                "private recipe work root",
+                &mut |_| {},
+            ) {
+                Ok(anchor) => anchor,
+                Err(error) => {
+                    owned.preserve = true;
+                    return Err(error);
+                }
+            };
+            let source_inputs_anchor = match owned.root.create_named_child_directory_with_after_create(
+                OsStr::new("source-inputs"),
+                0o700,
+                "private source-input root",
+                &mut |_| {},
+            ) {
+                Ok(anchor) => anchor,
+                Err(error) => {
+                    owned.preserve = true;
+                    return Err(error);
+                }
+            };
+            owned.parent.validate_path()?;
+            owned.validate_named_root()?;
+            return Ok(BuildWorkRoot {
+                path: owned.path().to_path_buf(),
+                recipe_work: recipe_work_anchor.path.clone(),
+                source_inputs: source_inputs_anchor.path.clone(),
+                identity: owned.identity().clone(),
+                owned: Some(owned),
+                recipe_work_anchor: Some(recipe_work_anchor),
+                source_inputs_anchor: Some(source_inputs_anchor),
+            });
+        }
+    }
     for _ in 0..10_000 {
         let counter = BUILD_WORK_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = parent.join(format!(
             ".{basename}.work-{}-{counter}",
             std::process::id()
         ));
-        match create_private_transaction_directory(&path) {
-            Ok(()) => return Ok(BuildWorkRoot { path }),
+            match create_private_transaction_directory(&path) {
+            Ok(()) => {
+                let identity = package_mirror_identity(
+                    &std::fs::symlink_metadata(&path).map_err(|error| {
+                        format!("inspect private package work root {}: {error}", path.display())
+                    })?,
+                )?;
+                let (recipe_work, source_inputs) = match policy {
+                    ResolvePolicy::Default => (path.clone(), path.clone()),
+                    ResolvePolicy::SourceOnlyV1 => {
+                        (path.join("recipe-work"), path.join("source-inputs"))
+                    }
+                };
+                let work = BuildWorkRoot {
+                    path,
+                    recipe_work,
+                    source_inputs,
+                    identity,
+                    #[cfg(unix)]
+                    owned: None,
+                    #[cfg(unix)]
+                    recipe_work_anchor: None,
+                    #[cfg(unix)]
+                    source_inputs_anchor: None,
+                };
+                return Ok(work);
+            }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => {
                 return Err(format!(
@@ -4742,6 +11836,403 @@ fn create_build_work_root(parent: &Path, basename: &str) -> Result<BuildWorkRoot
     ))
 }
 
+#[derive(Debug)]
+struct PrimarySourceHandoff {
+    archive: PathBuf,
+    source_dir: PathBuf,
+}
+
+fn configure_primary_source_environment(
+    command: &mut Command,
+    target: &DepsManifest,
+    policy: ResolvePolicy,
+    handoff: Option<&PrimarySourceHandoff>,
+) -> Result<(), String> {
+    for variable in [
+        "WASM_POSIX_DEP_SOURCE_ARCHIVE",
+        "WASM_POSIX_DEP_SOURCE_DIR",
+        "WASM_POSIX_DEP_SOURCE_URL",
+        "WASM_POSIX_DEP_SOURCE_SHA256",
+    ] {
+        command.env_remove(variable);
+    }
+
+    match (policy, target.source.provider) {
+        (ResolvePolicy::SourceOnlyV1, SourceProvider::Archive) => {
+            let handoff = handoff.ok_or_else(|| {
+                format!(
+                    "{}: source-only Archive provider is missing its verified source handoff",
+                    target.spec(),
+                )
+            })?;
+            command.env("WASM_POSIX_DEP_SOURCE_ARCHIVE", &handoff.archive);
+            command.env("WASM_POSIX_DEP_SOURCE_DIR", &handoff.source_dir);
+            command.env("WASM_POSIX_DEP_SOURCE_URL", &target.source.url);
+            command.env("WASM_POSIX_DEP_SOURCE_SHA256", &target.source.sha256);
+        }
+        (ResolvePolicy::SourceOnlyV1, SourceProvider::Repository | SourceProvider::DevShell) => {
+            if handoff.is_some() {
+                return Err(format!(
+                    "{}: {} provider must not receive an archive source handoff",
+                    target.spec(),
+                    target.source.provider.as_str(),
+                ));
+            }
+        }
+        (ResolvePolicy::Default, SourceProvider::Archive) => {
+            if handoff.is_some() {
+                return Err(format!(
+                    "{}: default Archive provider does not accept resolver-owned source paths",
+                    target.spec(),
+                ));
+            }
+            command.env("WASM_POSIX_DEP_SOURCE_URL", &target.source.url);
+            command.env("WASM_POSIX_DEP_SOURCE_SHA256", &target.source.sha256);
+        }
+        (ResolvePolicy::Default, SourceProvider::Repository | SourceProvider::DevShell) => {
+            if handoff.is_some() {
+                return Err(format!(
+                    "{}: default {} provider must not receive an archive source handoff",
+                    target.spec(),
+                    target.source.provider.as_str(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn source_dependency_key(name: &str) -> String {
+    let mut key = String::with_capacity(2 + name.len() * 2);
+    key.push_str("K_");
+    for byte in name.as_bytes() {
+        use std::fmt::Write as _;
+        write!(&mut key, "{byte:02X}").expect("writing to a String cannot fail");
+    }
+    key
+}
+
+fn direct_dependency_variable_names(
+    dependencies: &BTreeMap<String, DirectDep>,
+    policy: ResolvePolicy,
+) -> Result<BTreeMap<String, String>, String> {
+    const RESERVED_RESOLVER_VARIABLES: &[&str] = &[
+        "WASM_POSIX_DEP_NAME",
+        "WASM_POSIX_DEP_OUT_DIR",
+        "WASM_POSIX_DEP_PKG_CONFIG_PATH",
+        "WASM_POSIX_DEP_PKG_VERSION",
+        "WASM_POSIX_DEP_RECIPE_DIR",
+        "WASM_POSIX_DEP_REVISION",
+        "WASM_POSIX_DEP_SOURCE_ARCHIVE",
+        "WASM_POSIX_DEP_SOURCE_DIR",
+        "WASM_POSIX_DEP_SOURCE_SHA256",
+        "WASM_POSIX_DEP_SOURCE_URL",
+        "WASM_POSIX_DEP_TARGET_ARCH",
+        "WASM_POSIX_DEP_VERSION",
+        "WASM_POSIX_DEP_WORK_DIR",
+    ];
+    let mut variables = BTreeMap::new();
+    let mut owners: BTreeMap<String, String> = BTreeMap::new();
+    for (name, dependency) in dependencies {
+        let (key, suffix) = match (policy, dependency.kind) {
+            (ResolvePolicy::SourceOnlyV1, ManifestKind::Source) => {
+                (source_dependency_key(name), "SRC_DIR")
+            }
+            (_, ManifestKind::Source) => (env_key(name), "SRC_DIR"),
+            (_, ManifestKind::Library | ManifestKind::Program) => (env_key(name), "DIR"),
+        };
+        let variable = format!("WASM_POSIX_DEP_{key}_{suffix}");
+        if RESERVED_RESOLVER_VARIABLES.contains(&variable.as_str()) {
+            return Err(format!(
+                "direct dependency {name:?} maps to reserved resolver variable {variable}; refusing to mutate the build command environment",
+            ));
+        }
+        if let Some(previous) = owners.insert(variable.clone(), name.clone()) {
+            return Err(format!(
+                "direct dependencies {previous:?} and {name:?} both map to {variable}; refusing to mutate the build command environment",
+            ));
+        }
+        variables.insert(name.clone(), variable);
+    }
+    Ok(variables)
+}
+
+fn validate_source_link(root: &Path, link: &Path, target: &Path) -> Result<(), String> {
+    if target.is_absolute() {
+        return Err(format!(
+            "source tree symlink {} has absolute target {}",
+            link.display(),
+            target.display(),
+        ));
+    }
+    let relative = link.strip_prefix(root).map_err(|_| {
+        format!(
+            "source tree entry {} escaped {}",
+            link.display(),
+            root.display()
+        )
+    })?;
+    let mut depth = relative
+        .parent()
+        .map(|parent| {
+            parent
+                .components()
+                .filter(|component| matches!(component, Component::Normal(_)))
+                .count()
+        })
+        .unwrap_or(0);
+    for component in target.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir if depth > 0 => depth -= 1,
+            Component::ParentDir => {
+                return Err(format!(
+                    "source tree symlink {} escapes its root with target {}",
+                    link.display(),
+                    target.display(),
+                ));
+            }
+            Component::Normal(_) => depth += 1,
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "source tree symlink {} has unsupported target {}",
+                    link.display(),
+                    target.display(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_source_tree(root: &Path, directory: &Path) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(directory)
+        .map_err(|error| format!("inspect source directory {}: {error}", directory.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+        return Err(format!(
+            "source tree directory must be a real directory: {}",
+            directory.display(),
+        ));
+    }
+    for entry in std::fs::read_dir(directory)
+        .map_err(|error| format!("read source directory {}: {error}", directory.display()))?
+    {
+        let entry = entry.map_err(|error| format!("read source tree entry: {error}"))?;
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path)
+            .map_err(|error| format!("inspect source tree entry {}: {error}", path.display()))?;
+        if metadata.file_type().is_dir() {
+            validate_source_tree(root, &path)?;
+        } else if metadata.file_type().is_symlink() {
+            let target = std::fs::read_link(&path)
+                .map_err(|error| format!("read source tree symlink {}: {error}", path.display()))?;
+            validate_source_link(root, &path, &target)?;
+        } else if !metadata.file_type().is_file() {
+            return Err(format!(
+                "source tree entry {} has unsupported special type",
+                path.display(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn seal_source_tree_entry(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("inspect source tree entry {}: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+    if metadata.file_type().is_dir() {
+        for entry in std::fs::read_dir(path)
+            .map_err(|error| format!("read source directory {}: {error}", path.display()))?
+        {
+            let entry = entry.map_err(|error| format!("read source tree entry: {error}"))?;
+            seal_source_tree_entry(&entry.path())?;
+        }
+    } else if !metadata.file_type().is_file() {
+        return Err(format!(
+            "source tree entry {} has unsupported special type",
+            path.display(),
+        ));
+    }
+    let mut permissions = metadata.permissions();
+    permissions.set_mode(permissions.mode() & !0o222);
+    std::fs::set_permissions(path, permissions)
+        .map_err(|error| format!("seal source tree entry {}: {error}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn seal_source_tree_entry(path: &Path) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("inspect source tree entry {}: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+    if metadata.file_type().is_dir() {
+        for entry in std::fs::read_dir(path)
+            .map_err(|error| format!("read source directory {}: {error}", path.display()))?
+        {
+            let entry = entry.map_err(|error| format!("read source tree entry: {error}"))?;
+            seal_source_tree_entry(&entry.path())?;
+        }
+    } else if !metadata.file_type().is_file() {
+        return Err(format!(
+            "source tree entry {} has unsupported special type",
+            path.display(),
+        ));
+    }
+    let mut permissions = metadata.permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(path, permissions)
+        .map_err(|error| format!("seal source tree entry {}: {error}", path.display()))
+}
+
+fn validate_and_seal_source_tree(root: &Path) -> Result<(), String> {
+    validate_source_tree(root, root)?;
+    seal_source_tree_entry(root)?;
+    validate_source_tree(root, root)
+}
+
+fn prepare_primary_source_handoff(
+    target: &DepsManifest,
+    policy: ResolvePolicy,
+    source_cache_root: Option<&Path>,
+    work_root: &Path,
+) -> Result<Option<PrimarySourceHandoff>, String> {
+    match (policy, target.source.provider) {
+        (ResolvePolicy::SourceOnlyV1, SourceProvider::Archive) => {
+            let source_cache_root = source_cache_root.ok_or_else(|| {
+                format!("{}: validated source-cache base is missing", target.spec())
+            })?;
+            let archive = source_archive_cache::fetch_verified_archive(
+                source_cache_root,
+                &target.source.url,
+                &target.source.sha256,
+            )
+            .map_err(|error| {
+                format!(
+                    "{}: acquire verified primary source: {error}",
+                    target.spec()
+                )
+            })?;
+            let source_dir = work_root.join("primary-source");
+            source_extract::extract_verified_archive_with_excluded_members(
+                &archive,
+                &target.source.url,
+                &source_dir,
+                &target.source.extract_exclude_members,
+            )
+            .map_err(|error| {
+                format!(
+                    "{}: extract verified primary source: {error}",
+                    target.spec()
+                )
+            })?;
+            validate_and_seal_source_tree(&source_dir).map_err(|error| {
+                format!("{}: seal verified primary source: {error}", target.spec())
+            })?;
+            Ok(Some(PrimarySourceHandoff {
+                archive,
+                source_dir,
+            }))
+        }
+        (ResolvePolicy::SourceOnlyV1, SourceProvider::Repository | SourceProvider::DevShell)
+        | (ResolvePolicy::Default, _) => Ok(None),
+    }
+}
+
+fn materialize_direct_dependencies(
+    target: &DepsManifest,
+    dependencies: &BTreeMap<String, DirectDep>,
+    policy: ResolvePolicy,
+    source_cache_root: Option<&Path>,
+    work_root: &Path,
+) -> Result<BTreeMap<String, PathBuf>, String> {
+    let mut paths = BTreeMap::new();
+    let mut source_root_created = false;
+    let source_root = work_root.join("source-deps");
+    for (name, dependency) in dependencies {
+        let path = match (&dependency.materialization, dependency.kind, policy) {
+            (NodeMaterialization::CompiledDir(path), _, _) => path.clone(),
+            (
+                NodeMaterialization::VerifiedSourceArchive {
+                    archive,
+                    source_url,
+                    sha256,
+                    extract_exclude_members,
+                },
+                ManifestKind::Source,
+                ResolvePolicy::SourceOnlyV1,
+            ) => {
+                let source_cache_root = source_cache_root.ok_or_else(|| {
+                    format!("{}: validated source-cache base is missing", target.spec())
+                })?;
+                let verified_archive = source_archive_cache::fetch_verified_archive(
+                    source_cache_root,
+                    source_url,
+                    sha256,
+                )
+                .map_err(|error| {
+                    format!(
+                        "{}: reverify source dependency {name:?} archive before extraction: {error}",
+                        target.spec(),
+                    )
+                })?;
+                if &verified_archive != archive {
+                    return Err(format!(
+                        "internal resolver error: source dependency {name:?} for {} changed canonical archive payload from {} to {}",
+                        target.spec(),
+                        archive.display(),
+                        verified_archive.display(),
+                    ));
+                }
+                if !source_root_created {
+                    create_private_transaction_directory(&source_root).map_err(|error| {
+                        format!(
+                            "{}: create private source-dependency root {}: {error}",
+                            target.spec(),
+                            source_root.display(),
+                        )
+                    })?;
+                    source_root_created = true;
+                }
+                let destination = source_root.join(source_dependency_key(name));
+                source_extract::extract_verified_archive_with_excluded_members(
+                    &verified_archive,
+                    source_url,
+                    &destination,
+                    extract_exclude_members,
+                )
+                .map_err(|error| {
+                    format!(
+                        "{}: extract verified source dependency {name:?}: {error}",
+                        target.spec(),
+                    )
+                })?;
+                validate_and_seal_source_tree(&destination).map_err(|error| {
+                    format!(
+                        "{}: seal verified source dependency {name:?}: {error}",
+                        target.spec(),
+                    )
+                })?;
+                destination
+            }
+            (NodeMaterialization::VerifiedSourceArchive { .. }, kind, _) => {
+                return Err(format!(
+                    "internal resolver error: dependency {name:?} for {} has a verified source archive with kind {kind:?} under policy {policy:?}",
+                    target.spec(),
+                ));
+            }
+        };
+        paths.insert(name.clone(), path);
+    }
+    Ok(paths)
+}
+
 /// Run the build script with `WASM_POSIX_DEP_*` env vars set, validate
 /// outputs under the temp directory, then `rename(2)` into place.
 ///
@@ -4749,22 +12240,1239 @@ fn create_build_work_root(parent: &Path, basename: &str) -> Result<BuildWorkRoot
 /// `WASM_POSIX_DEP_PKG_CONFIG_PATH` — a colon-joined list of every
 /// transitive lib's `lib/pkgconfig/` dir. Always set, even when empty,
 /// so the contract for build scripts stays uniform.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CacheProvenanceSnapshot {
+    Absent,
+    Present(LocalMirrorEntrySnapshot),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CacheEntrySnapshot {
+    identity: PackageMirrorIdentity,
+    receipt: CompleteCacheReceiptV1,
+    provenance: CacheProvenanceSnapshot,
+}
+
+#[derive(Debug)]
+struct SourceOnlyCacheParentGuard {
+    root: PathBuf,
+    root_identity: PackageMirrorIdentity,
+    parent: PathBuf,
+    parent_identity: PackageMirrorIdentity,
+    #[cfg(unix)]
+    root_anchor: AnchoredDirectory,
+    #[cfg(unix)]
+    parent_anchor: AnchoredDirectory,
+    #[cfg(unix)]
+    parent_name: OsString,
+}
+
+impl SourceOnlyCacheParentGuard {
+    fn prepare(cache_root: &Path, canonical: &Path) -> Result<Self, String> {
+        #[cfg(not(unix))]
+        return Err(
+            "source-only compiled-cache transactions require Unix dirfd semantics".to_string(),
+        );
+        #[cfg(unix)]
+        {
+        let exact_root = std::fs::canonicalize(cache_root).map_err(|error| {
+            format!(
+                "canonicalize source-only compiled cache root {}: {error}",
+                cache_root.display()
+            )
+        })?;
+        if exact_root != cache_root {
+            return Err(format!(
+                "source-only compiled cache root must use its exact canonical spelling {}; got {}",
+                exact_root.display(),
+                cache_root.display()
+            ));
+        }
+        let parent = canonical.parent().ok_or_else(|| {
+            format!("source-only canonical cache path has no parent: {}", canonical.display())
+        })?;
+        if parent.parent() != Some(cache_root) {
+            return Err(format!(
+                "source-only canonical cache parent {} is not an immediate child of {}",
+                parent.display(),
+                cache_root.display()
+            ));
+        }
+        let parent_name = parent
+            .file_name()
+            .ok_or_else(|| format!("source-only cache kind parent has no name: {}", parent.display()))?
+            .to_os_string();
+        let root_anchor = AnchoredDirectory::open_existing(
+            cache_root,
+            "source-only compiled cache root",
+        )?;
+        let parent_anchor = root_anchor.ensure_child_directory(
+            &parent_name,
+            0o755,
+            "source-only cache kind parent",
+        ).map_err(|error| {
+            format!(
+                "source-only cache kind parent must be a real nonsymlink directory: {}; {error}",
+                parent.display()
+            )
+        })?;
+        let canonical_parent = std::fs::canonicalize(parent).map_err(|error| {
+            format!(
+                "canonicalize source-only cache kind parent {}: {error}",
+                parent.display()
+            )
+        })?;
+        if canonical_parent != parent || !canonical_parent.starts_with(cache_root) {
+            return Err(format!(
+                "source-only cache kind parent escaped its compiled root: {}",
+                parent.display()
+            ));
+        }
+        let guard = Self {
+            root: cache_root.to_path_buf(),
+            root_identity: root_anchor.identity.clone(),
+            parent: parent.to_path_buf(),
+            parent_identity: parent_anchor.identity.clone(),
+            root_anchor,
+            parent_anchor,
+            parent_name,
+        };
+        guard.validate()?;
+        Ok(guard)
+        }
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        #[cfg(not(unix))]
+        return Err(
+            "source-only compiled-cache transactions require Unix dirfd semantics".to_string(),
+        );
+        #[cfg(unix)]
+        {
+        self.root_anchor.validate_path()?;
+        self.parent_anchor.validate_path()?;
+        let parent_at = receipt_at_metadata_snapshot(
+            &self.root_anchor.file,
+            &self.parent_name,
+            &self.parent,
+        )?;
+        if parent_at.kind != 2 || parent_at.identity != self.parent_identity {
+            return Err(format!(
+                "source-only cache kind parent changed below its opened root: {}",
+                self.parent.display()
+            ));
+        }
+        for (path, expected, label) in [
+            (&self.root, &self.root_identity, "compiled cache root"),
+            (&self.parent, &self.parent_identity, "cache kind parent"),
+        ] {
+            let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+                format!("inspect source-only {label} {}: {error}", path.display())
+            })?;
+            if metadata.file_type().is_symlink()
+                || !metadata.is_dir()
+                || &package_mirror_identity(&metadata)? != expected
+            {
+                return Err(format!(
+                    "source-only {label} changed identity or stopped being a real nonsymlink directory: {}",
+                    path.display()
+                ));
+            }
+        }
+        let canonical_parent = std::fs::canonicalize(&self.parent).map_err(|error| {
+            format!(
+                "canonicalize source-only cache kind parent {}: {error}",
+                self.parent.display()
+            )
+        })?;
+        if canonical_parent != self.parent || !canonical_parent.starts_with(&self.root) {
+            return Err(format!(
+                "source-only cache kind parent escaped its compiled root: {}",
+                self.parent.display()
+            ));
+        }
+        Ok(())
+        }
+    }
+
+    #[cfg(unix)]
+    fn canonical_name(&self, canonical: &Path) -> Result<OsString, String> {
+        if canonical.parent() != Some(self.parent.as_path()) {
+            return Err(format!(
+                "source-only canonical cache entry is not below its anchored kind parent: {}",
+                canonical.display()
+            ));
+        }
+        let name = canonical
+            .file_name()
+            .ok_or_else(|| {
+                format!(
+                    "source-only canonical cache entry has no filename: {}",
+                    canonical.display()
+                )
+            })?
+            .to_os_string();
+        validate_single_path_component(&name, "source-only canonical cache entry")?;
+        Ok(name)
+    }
+
+    #[cfg(unix)]
+    fn open_canonical_entry(
+        &self,
+        canonical: &Path,
+    ) -> Result<(OsString, AnchoredDirectory, ReceiptAtMetadataSnapshot), String> {
+        let name = self.canonical_name(canonical)?;
+        let before = receipt_at_metadata_snapshot(&self.parent_anchor.file, &name, canonical)?;
+        if before.kind != 2 {
+            return Err(format!(
+                "canonical cache entry must be a real nonsymlink directory: {}",
+                canonical.display()
+            ));
+        }
+        let entry = self
+            .parent_anchor
+            .open_child_directory(&name, "source-only canonical cache entry")?;
+        if entry.identity != before.identity {
+            return Err(format!(
+                "canonical cache entry changed while opening: {}",
+                canonical.display()
+            ));
+        }
+        Ok((name, entry, before))
+    }
+}
+
+#[cfg(unix)]
+fn require_source_only_receipt_entry<'a>(
+    target: &DepsManifest,
+    receipt: &'a CompleteCacheReceiptV1,
+    relative: &str,
+    label: &str,
+    require_regular: bool,
+) -> Result<&'a CompleteCacheReceiptEntryV1, String> {
+    let path = receipt_relative_path(Path::new(relative))?;
+    let entry = receipt
+        .entries
+        .iter()
+        .find(|entry| entry.path == path)
+        .ok_or_else(|| {
+            format!(
+                "{}: declared {label} output {relative:?} missing from cache entry",
+                target.spec()
+            )
+        })?;
+    if entry.kind == "symlink" {
+        return Err(format!(
+            "{}: declared {label} output {relative:?} must not be a symlink",
+            target.spec()
+        ));
+    }
+    if require_regular && entry.kind != "file" {
+        return Err(format!(
+            "{}: declared {label} output {relative:?} must be a regular file",
+            target.spec()
+        ));
+    }
+    if !require_regular && entry.kind == "directory" {
+        let prefix = format!("{path}/");
+        if !receipt.entries.iter().any(|candidate| candidate.path.starts_with(&prefix)) {
+            return Err(format!(
+                "{}: declared {label} output {relative:?} is an empty directory and cannot round-trip through an artifact archive",
+                target.spec()
+            ));
+        }
+    } else if !require_regular && entry.kind != "file" {
+        return Err(format!(
+            "{}: declared {label} output {relative:?} must be a regular file or directory",
+            target.spec()
+        ));
+    }
+    Ok(entry)
+}
+
+#[cfg(unix)]
+fn validate_source_only_cache_artifacts_from_receipt(
+    target: &DepsManifest,
+    root: &AnchoredDirectory,
+    receipt: &CompleteCacheReceiptV1,
+) -> Result<(), String> {
+    match target.kind {
+        ManifestKind::Library => {
+            for relative in &target.outputs.libs {
+                require_source_only_receipt_entry(target, receipt, relative, "libs", true)?;
+            }
+            for relative in &target.outputs.headers {
+                require_source_only_receipt_entry(target, receipt, relative, "headers", false)?;
+            }
+            for relative in &target.outputs.pkgconfig {
+                require_source_only_receipt_entry(target, receipt, relative, "pkgconfig", true)?;
+            }
+            for relative in &target.outputs.files {
+                require_source_only_receipt_entry(target, receipt, relative, "files", true)?;
+            }
+        }
+        ManifestKind::Program => {
+            for output in &target.program_outputs {
+                let entry = require_source_only_receipt_entry(
+                    target,
+                    receipt,
+                    &output.wasm,
+                    "wasm",
+                    true,
+                )?;
+                let mut source = StableProjectionSource::open_from_anchored_root(
+                    root,
+                    &output.wasm,
+                )?;
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut source.file, &mut bytes).map_err(|error| {
+                    format!(
+                        "read declared wasm output {}: {error}",
+                        source.path.display()
+                    )
+                })?;
+                source.validate()?;
+                let digest: [u8; 32] = Sha256::digest(&bytes).into();
+                if entry.size != Some(bytes.len() as u64)
+                    || entry.sha256.as_deref() != Some(hex(&digest).as_str())
+                {
+                    return Err(format!(
+                        "{}: declared wasm output changed after its complete receipt: {:?}",
+                        target.spec(),
+                        output.wasm
+                    ));
+                }
+                let failures = wasm_artifact_policy_failures_for(
+                    &bytes,
+                    output.fork_instrumentation,
+                    required_exports_for_program_output(target, output),
+                );
+                if !failures.is_empty() {
+                    return Err(format!(
+                        "{}: {}",
+                        source.path.display(),
+                        failures.join("; ")
+                    ));
+                }
+            }
+            for runtime_file in &target.runtime_files {
+                require_source_only_receipt_entry(
+                    target,
+                    receipt,
+                    &runtime_file.artifact,
+                    "runtime file",
+                    true,
+                )?;
+            }
+        }
+        ManifestKind::Source => {}
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn capture_source_only_provenance_anchored(
+    target: &DepsManifest,
+    guard: &SourceOnlyCacheParentGuard,
+    canonical: &Path,
+    arch: TargetArch,
+    abi_version: u32,
+    cache_key_sha: &str,
+) -> Result<CacheProvenanceSnapshot, String> {
+    let expected = expected_cache_provenance_bytes(target, arch, abi_version, cache_key_sha)?;
+    let provenance_path = cache_provenance_path(canonical, cache_key_sha)?;
+    if provenance_path.parent() != Some(guard.parent.as_path()) {
+        return Err(format!(
+            "cache provenance escaped its anchored parent: {}",
+            provenance_path.display()
+        ));
+    }
+    let name = provenance_path
+        .file_name()
+        .ok_or_else(|| format!("cache provenance has no filename: {}", provenance_path.display()))?;
+    validate_single_path_component(name, "cache provenance")?;
+    let exists = guard.parent_anchor.child_exists(name, "cache provenance")?;
+    match (expected, exists) {
+        (None, false) => Ok(CacheProvenanceSnapshot::Absent),
+        (None, true) => Err(format!(
+            "{}: cache entry has unexpected immutable Git provenance marker {}",
+            target.spec(),
+            provenance_path.display()
+        )),
+        (Some(_), false) => Err(format!(
+            "{}: cache entry lacks immutable Git provenance marker {}",
+            target.spec(),
+            provenance_path.display()
+        )),
+        (Some(expected), true) => {
+            let (actual, snapshot) = read_exact_regular_child_at(
+                &guard.parent_anchor,
+                name,
+                &provenance_path,
+                MAX_CACHE_PROVENANCE_BYTES,
+                "cache provenance",
+            )?;
+            if actual != expected {
+                return Err(format!(
+                    "{}: cached immutable Git provenance differs from current identity",
+                    target.spec()
+                ));
+            }
+            Ok(CacheProvenanceSnapshot::Present(snapshot))
+        }
+    }
+}
+
+#[cfg(unix)]
+fn capture_source_only_cache_entry_snapshot(
+    target: &DepsManifest,
+    guard: &SourceOnlyCacheParentGuard,
+    canonical: &Path,
+    arch: TargetArch,
+    abi_version: u32,
+    cache_key_sha: &str,
+) -> Result<CacheEntrySnapshot, String> {
+    capture_source_only_cache_entry_snapshot_with_after_validate(
+        target,
+        guard,
+        canonical,
+        arch,
+        abi_version,
+        cache_key_sha,
+        &mut || {},
+    )
+}
+
+#[cfg(not(unix))]
+fn capture_source_only_cache_entry_snapshot(
+    _target: &DepsManifest,
+    _guard: &SourceOnlyCacheParentGuard,
+    _canonical: &Path,
+    _arch: TargetArch,
+    _abi_version: u32,
+    _cache_key_sha: &str,
+) -> Result<CacheEntrySnapshot, String> {
+    Err("source-only cache admission requires Unix no-follow filesystem semantics".to_string())
+}
+
+#[cfg(unix)]
+fn capture_source_only_cache_entry_snapshot_with_after_validate<F>(
+    target: &DepsManifest,
+    guard: &SourceOnlyCacheParentGuard,
+    canonical: &Path,
+    arch: TargetArch,
+    abi_version: u32,
+    cache_key_sha: &str,
+    after_validate: &mut F,
+) -> Result<CacheEntrySnapshot, String>
+where
+    F: FnMut(),
+{
+    guard.validate()?;
+    let (name, root, root_at) = guard.open_canonical_entry(canonical)?;
+    let before_receipt = complete_cache_receipt_v1_from_anchored_root(
+        &root,
+        ResolvePolicy::SourceOnlyV1,
+        &target.name,
+        arch,
+        cache_key_sha,
+    )?;
+    let before_provenance = capture_source_only_provenance_anchored(
+        target,
+        guard,
+        canonical,
+        arch,
+        abi_version,
+        cache_key_sha,
+    )?;
+    validate_source_only_cache_artifacts_from_receipt(target, &root, &before_receipt)?;
+    after_validate();
+    let after_receipt = complete_cache_receipt_v1_from_anchored_root(
+        &root,
+        ResolvePolicy::SourceOnlyV1,
+        &target.name,
+        arch,
+        cache_key_sha,
+    )?;
+    let after_provenance = capture_source_only_provenance_anchored(
+        target,
+        guard,
+        canonical,
+        arch,
+        abi_version,
+        cache_key_sha,
+    )?;
+    let final_at = receipt_at_metadata_snapshot(&guard.parent_anchor.file, &name, canonical)?;
+    if final_at != root_at
+        || root.identity != root_at.identity
+        || after_receipt != before_receipt
+        || after_provenance != before_provenance
+    {
+        return Err(format!(
+            "canonical cache entry or provenance changed across semantic validation: {}",
+            canonical.display()
+        ));
+    }
+    guard.validate()?;
+    Ok(CacheEntrySnapshot {
+        identity: root.identity,
+        receipt: before_receipt,
+        provenance: before_provenance,
+    })
+}
+
+#[cfg(unix)]
+fn validate_source_only_cache_entry_snapshot(
+    target: &DepsManifest,
+    guard: &SourceOnlyCacheParentGuard,
+    canonical: &Path,
+    arch: TargetArch,
+    abi_version: u32,
+    cache_key_sha: &str,
+    expected: &CacheEntrySnapshot,
+) -> Result<(), String> {
+    let actual = capture_source_only_cache_entry_snapshot(
+        target,
+        guard,
+        canonical,
+        arch,
+        abi_version,
+        cache_key_sha,
+    )?;
+    if &actual != expected {
+        return Err(format!(
+            "canonical cache entry or provenance changed during rebuild: {}",
+            canonical.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_source_only_cache_entry_snapshot(
+    _target: &DepsManifest,
+    _guard: &SourceOnlyCacheParentGuard,
+    _canonical: &Path,
+    _arch: TargetArch,
+    _abi_version: u32,
+    _cache_key_sha: &str,
+    _expected: &CacheEntrySnapshot,
+) -> Result<(), String> {
+    Err("source-only cache admission requires Unix no-follow filesystem semantics".to_string())
+}
+
+fn capture_cache_entry_snapshot(
+    target: &DepsManifest,
+    canonical: &Path,
+    arch: TargetArch,
+    abi_version: u32,
+    cache_key_sha: &str,
+    policy: ResolvePolicy,
+) -> Result<CacheEntrySnapshot, String> {
+    capture_cache_entry_snapshot_with_after_validate(
+        target,
+        canonical,
+        arch,
+        abi_version,
+        cache_key_sha,
+        policy,
+        &mut || {},
+    )
+}
+
+fn capture_cache_entry_generation(
+    target: &DepsManifest,
+    canonical: &Path,
+    arch: TargetArch,
+    cache_key_sha: &str,
+    policy: ResolvePolicy,
+) -> Result<CacheEntrySnapshot, String> {
+    let metadata = std::fs::symlink_metadata(canonical)
+        .map_err(|error| format!("inspect canonical cache entry {}: {error}", canonical.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(format!(
+            "canonical cache entry must be a real nonsymlink directory: {}",
+            canonical.display()
+        ));
+    }
+    let identity = package_mirror_identity(&metadata)?;
+    let receipt = complete_cache_receipt_v1(
+        canonical,
+        policy,
+        &target.name,
+        arch,
+        cache_key_sha,
+    )?;
+    let provenance_path = cache_provenance_path(canonical, cache_key_sha)?;
+    let provenance = match std::fs::symlink_metadata(&provenance_path) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+            CacheProvenanceSnapshot::Present(inspect_local_mirror_entry(&provenance_path)?)
+        }
+        Ok(_) => {
+            return Err(format!(
+                "cache provenance must be a regular nonsymlink file: {}",
+                provenance_path.display()
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            CacheProvenanceSnapshot::Absent
+        }
+        Err(error) => {
+            return Err(format!(
+                "inspect cache provenance {}: {error}",
+                provenance_path.display()
+            ));
+        }
+    };
+    let after = std::fs::symlink_metadata(canonical).map_err(|error| {
+        format!("reinspect canonical cache entry {}: {error}", canonical.display())
+    })?;
+    if after.file_type().is_symlink()
+        || !after.is_dir()
+        || package_mirror_identity(&after)? != identity
+    {
+        return Err(format!(
+            "canonical cache entry changed while it was receipted: {}",
+            canonical.display()
+        ));
+    }
+    Ok(CacheEntrySnapshot {
+        identity,
+        receipt,
+        provenance,
+    })
+}
+
+fn capture_cache_entry_snapshot_with_after_validate<F>(
+    target: &DepsManifest,
+    canonical: &Path,
+    arch: TargetArch,
+    abi_version: u32,
+    cache_key_sha: &str,
+    policy: ResolvePolicy,
+    after_validate: &mut F,
+) -> Result<CacheEntrySnapshot, String>
+where
+    F: FnMut(),
+{
+    let before = capture_cache_entry_generation(
+        target,
+        canonical,
+        arch,
+        cache_key_sha,
+        policy,
+    )?;
+    validate_cache_entry(target, canonical, arch, abi_version, cache_key_sha)?;
+    after_validate();
+    let after = capture_cache_entry_generation(
+        target,
+        canonical,
+        arch,
+        cache_key_sha,
+        policy,
+    )?;
+    if after != before {
+        return Err(format!(
+            "canonical cache entry or provenance changed across semantic validation: {}",
+            canonical.display()
+        ));
+    }
+    Ok(before)
+}
+
+fn validate_cache_entry_snapshot(
+    target: &DepsManifest,
+    canonical: &Path,
+    arch: TargetArch,
+    abi_version: u32,
+    cache_key_sha: &str,
+    policy: ResolvePolicy,
+    expected: &CacheEntrySnapshot,
+) -> Result<(), String> {
+    let actual = capture_cache_entry_snapshot(
+        target,
+        canonical,
+        arch,
+        abi_version,
+        cache_key_sha,
+        policy,
+    )?;
+    if actual.identity != expected.identity {
+        return Err(format!(
+            "canonical cache entry changed filesystem identity during rebuild: {}",
+            canonical.display()
+        ));
+    }
+    if actual.receipt != expected.receipt {
+        return Err(format!(
+            "canonical cache entry changed contents during rebuild: {}",
+            canonical.display()
+        ));
+    }
+    if actual.provenance != expected.provenance {
+        return Err(format!(
+            "canonical cache provenance changed during rebuild: {}",
+            canonical.display()
+        ));
+    }
+    Ok(())
+}
+
+static PACKAGE_BUILD_STAGE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+struct OwnedPackageBuildStage {
+    path: PathBuf,
+    identity: PackageMirrorIdentity,
+    published: bool,
+    #[cfg(unix)]
+    owned: Option<OwnedPrivateDirectory>,
+}
+
+impl OwnedPackageBuildStage {
+    fn create(
+        parent: &Path,
+        basename: &str,
+        policy: ResolvePolicy,
+        source_only_parent: Option<&SourceOnlyCacheParentGuard>,
+    ) -> Result<Self, String> {
+        if policy == ResolvePolicy::SourceOnlyV1 {
+            #[cfg(not(unix))]
+            return Err(
+                "source-only package stages require Unix dirfd filesystem semantics".to_string(),
+            );
+            #[cfg(unix)]
+            {
+                let prefix = format!("{basename}.build-stage");
+                let guard = source_only_parent.ok_or_else(|| {
+                    "source-only package stage is missing its anchored cache parent".to_string()
+                })?;
+                if guard.parent != parent {
+                    return Err(format!(
+                        "source-only package stage parent differs from its anchored cache parent: {} != {}",
+                        parent.display(),
+                        guard.parent.display()
+                    ));
+                }
+                let owned = OwnedPrivateDirectory::reserve_below(
+                    guard.parent_anchor.try_clone("source-only cache kind parent")?,
+                    &prefix,
+                    "source-only package build stage",
+                )?;
+                owned.parent.validate_path()?;
+                owned.validate_named_root()?;
+                return Ok(Self {
+                    path: owned.path().to_path_buf(),
+                    identity: owned.identity().clone(),
+                    published: false,
+                    owned: Some(owned),
+                });
+            }
+        }
+        for _ in 0..10_000 {
+            let sequence = PACKAGE_BUILD_STAGE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = parent.join(format!(
+                ".{basename}.build-stage-{}-{sequence}",
+                std::process::id()
+            ));
+            match create_private_transaction_directory(&path) {
+                Ok(()) => {
+                    let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
+                        format!("inspect private package build stage {}: {error}", path.display())
+                    })?;
+                    return Ok(Self {
+                        path,
+                        identity: package_mirror_identity(&metadata)?,
+                        published: false,
+                        #[cfg(unix)]
+                        owned: None,
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(format!(
+                        "create private package build stage {}: {error}",
+                        path.display()
+                    ));
+                }
+            }
+        }
+        Err(format!(
+            "could not allocate private package build stage below {}",
+            parent.display()
+        ))
+    }
+
+    fn cleanup(&mut self) -> Result<(), String> {
+        if self.published {
+            return Ok(());
+        }
+        #[cfg(unix)]
+        if let Some(owned) = &mut self.owned {
+            owned.cleanup()?;
+            self.published = true;
+            return Ok(());
+        }
+        match std::fs::symlink_metadata(&self.path) {
+            Ok(metadata)
+                if metadata.is_dir()
+                    && !metadata.file_type().is_symlink()
+                    && package_mirror_identity(&metadata)? == self.identity =>
+            {
+                std::fs::remove_dir_all(&self.path).map_err(|error| {
+                    format!("remove owned package build stage {}: {error}", self.path.display())
+                })?;
+            }
+            Ok(_) => {
+                return Err(format!(
+                    "refusing to remove package build stage after its identity changed: {}",
+                    self.path.display()
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "inspect owned package build stage {}: {error}",
+                    self.path.display()
+                ));
+            }
+        }
+        self.published = true;
+        Ok(())
+    }
+
+    fn cleanup_source_only_exact(
+        &mut self,
+        target_name: &str,
+        arch: TargetArch,
+        cache_key_sha: &str,
+        expected_receipt: &CompleteCacheReceiptV1,
+    ) -> Result<(), String> {
+        if self.published {
+            return Ok(());
+        }
+        #[cfg(not(unix))]
+        return Err("source-only package stage cleanup requires Unix dirfd semantics".to_string());
+        #[cfg(unix)]
+        {
+            let owned = self.owned.as_mut().ok_or_else(|| {
+                "source-only package stage lacks its owned directory guard".to_string()
+            })?;
+            owned.validate_named_root()?;
+            let before = complete_cache_receipt_v1(
+                &self.path,
+                ResolvePolicy::SourceOnlyV1,
+                target_name,
+                arch,
+                cache_key_sha,
+            )?;
+            if &before != expected_receipt {
+                owned.preserve = true;
+                return Err(format!(
+                    "source-only package stage changed before cleanup and was preserved: {}",
+                    self.path.display()
+                ));
+            }
+            let cleanup_snapshot = capture_anchored_cleanup_tree(
+                &owned.root,
+                "source-only package build stage",
+            )?;
+            let after = complete_cache_receipt_v1(
+                &self.path,
+                ResolvePolicy::SourceOnlyV1,
+                target_name,
+                arch,
+                cache_key_sha,
+            )?;
+            if after != before {
+                owned.preserve = true;
+                return Err(format!(
+                    "source-only package stage changed while cleanup authority was captured and was preserved: {}",
+                    self.path.display()
+                ));
+            }
+            owned.cleanup_exact(&cleanup_snapshot)?;
+            self.published = true;
+            Ok(())
+        }
+    }
+
+    fn publish_source_only_no_replace(
+        &mut self,
+        cache_parent: &SourceOnlyCacheParentGuard,
+        canonical: &Path,
+    ) -> Result<(), String> {
+        self.publish_source_only_no_replace_with_before_rename(
+            cache_parent,
+            canonical,
+            &mut || Ok(()),
+        )
+    }
+
+    fn publish_source_only_no_replace_with_before_rename<F>(
+        &mut self,
+        cache_parent: &SourceOnlyCacheParentGuard,
+        canonical: &Path,
+        before_rename: &mut F,
+    ) -> Result<(), String>
+    where
+        F: FnMut() -> Result<(), String>,
+    {
+        #[cfg(not(unix))]
+        return Err("source-only package publication requires Unix dirfd semantics".to_string());
+        #[cfg(unix)]
+        {
+            let destination_name = canonical.file_name().ok_or_else(|| {
+                format!("canonical cache path has no filename: {}", canonical.display())
+            })?;
+            if canonical.parent() != Some(cache_parent.parent.as_path()) {
+                return Err(format!(
+                    "source-only canonical cache parent differs from its opened parent: {}",
+                    canonical.display()
+                ));
+            }
+            cache_parent.validate()?;
+            let owned = self.owned.as_mut().ok_or_else(|| {
+                "source-only package stage lacks its owned directory guard".to_string()
+            })?;
+            owned.validate_named_root()?;
+            before_rename()?;
+            owned.parent.rename_child_no_replace(
+                &owned.name,
+                &cache_parent.parent_anchor,
+                destination_name,
+                "source-only package cache publication",
+            )?;
+            self.published = true;
+            owned.disarm_after_publish();
+            Ok(())
+        }
+    }
+
+    fn preserve(&mut self) {
+        #[cfg(unix)]
+        if let Some(owned) = &mut self.owned {
+            owned.preserve = true;
+        }
+    }
+
+    fn mark_published(&mut self) {
+        self.published = true;
+        #[cfg(unix)]
+        if let Some(owned) = &mut self.owned {
+            owned.disarm_after_publish();
+        }
+    }
+}
+
+impl Drop for OwnedPackageBuildStage {
+    fn drop(&mut self) {
+        let _ = self.cleanup();
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RebuildMismatchNodeV1<'a> {
+    kind: &'static str,
+    name: &'a str,
+    target_arch: &'static str,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RebuildMismatchDiagnosticV1<'a> {
+    schema: u32,
+    policy: &'static str,
+    node: RebuildMismatchNodeV1<'a>,
+    cache_key_sha: &'a str,
+    canonical_receipt: &'a CompleteCacheReceiptV1,
+    staging_receipt: &'a CompleteCacheReceiptV1,
+}
+
+const REBUILD_MISMATCH_DIAGNOSTIC_LIMIT: u64 = 16 * 1024 * 1024;
+
+fn write_source_only_cache_provenance_anchored(
+    target: &DepsManifest,
+    canonical: &Path,
+    cache_parent: &SourceOnlyCacheParentGuard,
+    arch: TargetArch,
+    abi_version: u32,
+    cache_key_sha: &str,
+) -> Result<(), String> {
+    write_source_only_cache_provenance_anchored_with_after_validate(
+        target,
+        canonical,
+        cache_parent,
+        arch,
+        abi_version,
+        cache_key_sha,
+        &mut || {},
+    )
+}
+
+fn write_source_only_cache_provenance_anchored_with_after_validate<F>(
+    target: &DepsManifest,
+    canonical: &Path,
+    cache_parent: &SourceOnlyCacheParentGuard,
+    arch: TargetArch,
+    abi_version: u32,
+    cache_key_sha: &str,
+    after_validate: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(),
+{
+    let expected_bytes = expected_cache_provenance_bytes(
+        target,
+        arch,
+        abi_version,
+        cache_key_sha,
+    )?;
+    let path = cache_provenance_path(canonical, cache_key_sha)?;
+    let parent = path.parent().ok_or_else(|| {
+        format!("cache provenance path has no parent: {}", path.display())
+    })?;
+    if parent != cache_parent.parent {
+        return Err(format!(
+            "cache provenance parent differs from its anchored cache parent: {} != {}",
+            parent.display(),
+            cache_parent.parent.display()
+        ));
+    }
+    let final_name = path.file_name().ok_or_else(|| {
+        format!("cache provenance path has no filename: {}", path.display())
+    })?;
+    cache_parent.validate()?;
+    after_validate();
+    let Some(bytes) = expected_bytes else {
+        #[cfg(not(unix))]
+        return Err("source-only cache provenance requires Unix dirfd semantics".to_string());
+        #[cfg(unix)]
+        if cache_parent
+            .parent_anchor
+            .child_exists(final_name, "source-only cache provenance")?
+        {
+            return Err(format!(
+                "{}: unexpected cache provenance evidence was preserved: {}",
+                target.spec(),
+                path.display()
+            ));
+        }
+        cache_parent.validate()?;
+        return Ok(());
+    };
+    #[cfg(not(unix))]
+    return Err("source-only cache provenance requires Unix dirfd semantics".to_string());
+    #[cfg(unix)]
+    publish_exact_regular_child_no_replace(
+        &cache_parent.parent_anchor,
+        final_name,
+        &bytes,
+        MAX_CACHE_PROVENANCE_BYTES,
+        "source-only cache provenance",
+    )?;
+    cache_parent.validate()?;
+    Ok(())
+}
+
+fn read_exact_regular_nofollow_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+    #[cfg(not(unix))]
+    {
+        let _ = (path, limit);
+        return Err("stable no-follow mismatch evidence requires Unix filesystem semantics".to_string());
+    }
+    #[cfg(unix)]
+    {
+        let mut file = rustix::fs::open(
+            path,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::CLOEXEC
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK,
+            rustix::fs::Mode::empty(),
+        )
+        .map(std::fs::File::from)
+        .map_err(|error| format!("open mismatch evidence {} without following: {error}", path.display()))?;
+        let initial = receipt_metadata_snapshot(&file.metadata().map_err(|error| {
+            format!("inspect opened mismatch evidence {}: {error}", path.display())
+        })?)?;
+        if initial.kind != 1 || initial.len > limit {
+            return Err(format!(
+                "mismatch evidence must be a regular nonsymlink file no larger than {limit} bytes: {}",
+                path.display()
+            ));
+        }
+        let mut bytes = Vec::with_capacity(initial.len as usize);
+        std::io::Read::read_to_end(&mut file, &mut bytes)
+            .map_err(|error| format!("read mismatch evidence {}: {error}", path.display()))?;
+        if bytes.len() as u64 != initial.len {
+            return Err(format!("mismatch evidence changed while read: {}", path.display()));
+        }
+        let opened_after = receipt_metadata_snapshot(&file.metadata().map_err(|error| {
+            format!("reinspect opened mismatch evidence {}: {error}", path.display())
+        })?)?;
+        let reopened = rustix::fs::open(
+            path,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::CLOEXEC
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK,
+            rustix::fs::Mode::empty(),
+        )
+        .map(std::fs::File::from)
+        .map_err(|error| format!("reopen mismatch evidence {} without following: {error}", path.display()))?;
+        let reopened_snapshot = receipt_metadata_snapshot(&reopened.metadata().map_err(|error| {
+            format!("inspect reopened mismatch evidence {}: {error}", path.display())
+        })?)?;
+        if opened_after != initial || reopened_snapshot != initial {
+            return Err(format!("mismatch evidence changed while read: {}", path.display()));
+        }
+        Ok(bytes)
+    }
+}
+
+fn sync_directory(path: &Path) -> Result<(), String> {
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        return Err("durable directory publication requires Unix filesystem semantics".to_string());
+    }
+    #[cfg(unix)]
+    {
+        let directory = rustix::fs::open(
+            path,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::CLOEXEC
+                | rustix::fs::OFlags::NOFOLLOW,
+            rustix::fs::Mode::empty(),
+        )
+        .map(std::fs::File::from)
+        .map_err(|error| format!("open directory {} for durable publication: {error}", path.display()))?;
+        directory
+            .sync_all()
+            .map_err(|error| format!("sync publication directory {}: {error}", path.display()))
+    }
+}
+
+fn publish_rebuild_mismatch_diagnostic(
+    target: &DepsManifest,
+    canonical: &Path,
+    cache_parent: &SourceOnlyCacheParentGuard,
+    arch: TargetArch,
+    cache_key_sha: &str,
+    policy: ResolvePolicy,
+    canonical_receipt: &CompleteCacheReceiptV1,
+    staging_receipt: &CompleteCacheReceiptV1,
+) -> Result<PathBuf, String> {
+    let canonical_digest = cache_receipt_sha256(canonical_receipt)?;
+    let staging_digest = cache_receipt_sha256(staging_receipt)?;
+    let parent = canonical.parent().ok_or_else(|| {
+        format!("canonical cache path has no mismatch-diagnostic parent: {}", canonical.display())
+    })?;
+    let path = parent.join(format!(
+        ".{cache_key_sha}.kandelo-rebuild-mismatch.{}.{}.json",
+        canonical_digest,
+        staging_digest
+    ));
+    let diagnostic = RebuildMismatchDiagnosticV1 {
+        schema: 1,
+        policy: receipt_policy_name(policy),
+        node: RebuildMismatchNodeV1 {
+            kind: "package",
+            name: &target.name,
+            target_arch: arch.as_str(),
+        },
+        cache_key_sha: cache_key_sha,
+        canonical_receipt,
+        staging_receipt,
+    };
+    let mut bytes = serde_json::to_vec(&diagnostic)
+        .map_err(|error| format!("serialize rebuild mismatch diagnostic: {error}"))?;
+    bytes.push(b'\n');
+    if cache_parent.parent != parent {
+        return Err(format!(
+            "mismatch evidence parent differs from its anchored cache parent: {} != {}",
+            parent.display(),
+            cache_parent.parent.display()
+        ));
+    }
+    cache_parent.validate()?;
+    let final_name = path.file_name().ok_or_else(|| {
+        format!("rebuild mismatch diagnostic has no filename: {}", path.display())
+    })?;
+    #[cfg(not(unix))]
+    return Err("source-only mismatch evidence requires Unix dirfd semantics".to_string());
+    #[cfg(unix)]
+    publish_exact_regular_child_no_replace(
+        &cache_parent.parent_anchor,
+        final_name,
+        &bytes,
+        REBUILD_MISMATCH_DIAGNOSTIC_LIMIT,
+        "rebuild mismatch diagnostic",
+    )?;
+    cache_parent.validate()?;
+    Ok(path)
+}
+
+fn require_current_source_only_cache_key(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+    expected_cache_key_sha: &str,
+    boundary: &str,
+) -> Result<(), String> {
+    let refreshed_target = registry.load(&target.name).map_err(|error| {
+        format!(
+            "{}: reload package at {boundary}: {error}",
+            target.spec()
+        )
+    })?;
+    let actual = manifest_cache_key_sha_for_policy(
+        &refreshed_target,
+        registry,
+        arch,
+        abi_version,
+        ResolvePolicy::SourceOnlyV1,
+    )?;
+    if actual != expected_cache_key_sha {
+        return Err(format!(
+            "{}: cache key changed at {boundary} for {} ({}): expected {expected_cache_key_sha}, got {actual}; refusing publication under the stale key",
+            target.spec(),
+            target.name,
+            arch.as_str()
+        ));
+    }
+    Ok(())
+}
+
 fn build_into_cache(
     target: &DepsManifest,
+    registry: &Registry,
     arch: TargetArch,
     abi_version: u32,
     cache_key_sha: &str,
     cache_root: &Path,
+    source_cache_root: Option<&Path>,
     canonical: &Path,
     dep_dirs: &BTreeMap<String, DirectDep>,
     pkgconfig_path: &str,
     repo_root: &Path,
-) -> Result<(), String> {
+    policy: ResolvePolicy,
+    force_rebuild: bool,
+) -> Result<LocalBuildDisposition, String> {
+    let dependency_variables = direct_dependency_variable_names(dep_dirs, policy)
+        .map_err(|error| format!("{}: {error}", target.spec()))?;
     let parent = canonical
         .parent()
         .ok_or_else(|| format!("canonical path has no parent: {}", canonical.display()))?;
-    std::fs::create_dir_all(parent)
-        .map_err(|e| format!("create cache parent {}: {e}", parent.display()))?;
+    let source_only_cache_parent = if policy == ResolvePolicy::SourceOnlyV1 {
+        Some(SourceOnlyCacheParentGuard::prepare(cache_root, canonical)?)
+    } else {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create cache parent {}: {e}", parent.display()))?;
+        None
+    };
     let selected_cache_root = std::fs::canonicalize(cache_root).map_err(|e| {
         format!(
             "{}: resolve selected package cache root {}: {e}",
@@ -4772,24 +13480,64 @@ fn build_into_cache(
             cache_root.display(),
         )
     })?;
-
-    let tmp = parent.join(format!(
-        "{}.tmp-{}",
-        canonical
-            .file_name()
-            .expect("canonical path has a filename")
-            .to_string_lossy(),
-        std::process::id()
-    ));
-    // Fresh temp dir. If a leftover from a crashed build exists, wipe it.
-    if tmp.exists() {
-        std::fs::remove_dir_all(&tmp).map_err(|e| format!("clean stale {}: {e}", tmp.display()))?;
+    if let Some(parent) = &source_only_cache_parent {
+        parent.validate()?;
     }
-    std::fs::create_dir_all(&tmp).map_err(|e| format!("create temp {}: {e}", tmp.display()))?;
+    // Complete-tree receipts and non-destructive rebuild comparison are the
+    // SourceOnlyV1 contract. Default deliberately retains its historical
+    // declared-output validation and permissive tree behavior (including
+    // undeclared extras that a package recipe may legitimately install).
+    let initial_snapshot = if policy == ResolvePolicy::SourceOnlyV1 {
+        match std::fs::symlink_metadata(canonical) {
+            Ok(_) => Some(
+                capture_source_only_cache_entry_snapshot(
+                    target,
+                    source_only_cache_parent
+                        .as_ref()
+                        .expect("SourceOnlyV1 has an anchored cache parent"),
+                    canonical,
+                    arch,
+                    abi_version,
+                    cache_key_sha,
+                )
+                .map_err(|error| {
+                    format!(
+                        "{}: existing canonical cache entry was preserved because it is invalid: {error}",
+                        target.spec()
+                    )
+                })?,
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(format!(
+                    "inspect canonical cache entry {}: {error}",
+                    canonical.display()
+                ));
+            }
+        }
+    } else {
+        None
+    };
+    if initial_snapshot.is_some() && !force_rebuild {
+        // The outer resolver observed a miss and a peer completed before this
+        // transaction allocated its stage. It is still a miss-side Published
+        // transition, not an initial cache hit.
+        return Ok(LocalBuildDisposition::Published);
+    }
+    let basename = canonical
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("canonical cache path has no UTF-8 filename: {}", canonical.display()))?;
+    let mut stage = OwnedPackageBuildStage::create(
+        parent,
+        basename,
+        policy,
+        source_only_cache_parent.as_ref(),
+    )?;
+    let tmp = stage.path.clone();
 
     let script = target.build_script_path(repo_root);
     if !script.is_file() {
-        let _ = std::fs::remove_dir_all(&tmp);
         return Err(format!(
             "{}: build script {} not found",
             target.spec(),
@@ -4802,25 +13550,64 @@ fn build_into_cache(
     // compile without mutating either the reviewed checkout or staged output.
     // The guard removes scratch on every return path, including spawn and
     // post-build validation failures.
-    let work = match create_build_work_root(
+    let mut work = match create_build_work_root(
         parent,
         canonical
             .file_name()
             .expect("canonical path has a filename")
             .to_string_lossy()
             .as_ref(),
+        policy,
+        source_only_cache_parent.as_ref(),
     ) {
         Ok(work) => work,
         Err(e) => {
-            let _ = std::fs::remove_dir_all(&tmp);
             return Err(format!("{}: allocate build work root: {e}", target.spec()));
         }
     };
 
-    let git_inputs = match ProvisionedGitInputs::provision(target, canonical) {
+    let build_result = (|| -> Result<LocalBuildDisposition, String> {
+    let primary_source = match prepare_primary_source_handoff(
+        target,
+        policy,
+        source_cache_root,
+        &work.source_inputs,
+    ) {
+        Ok(handoff) => handoff,
+        Err(error) => return Err(error),
+    };
+    let dependency_paths = match materialize_direct_dependencies(
+        target,
+        dep_dirs,
+        policy,
+        source_cache_root,
+        &work.source_inputs,
+    ) {
+        Ok(paths) => paths,
+        Err(error) => return Err(error),
+    };
+
+    let git_inputs_result = match policy {
+        ResolvePolicy::Default => ProvisionedGitInputs::provision(target, canonical),
+        ResolvePolicy::SourceOnlyV1 => {
+            #[cfg(not(unix))]
+            {
+                Err("source-only immutable git inputs require Unix dirfd semantics".to_string())
+            }
+            #[cfg(unix)]
+            {
+                ProvisionedGitInputs::provision_source_only(
+                    target,
+                    work.source_inputs_anchor.as_ref().ok_or_else(|| {
+                        "source-only work root lacks its opened source-input directory".to_string()
+                    })?,
+                )
+            }
+        }
+    };
+    let mut git_inputs = match git_inputs_result {
         Ok(inputs) => inputs,
         Err(e) => {
-            let _ = std::fs::remove_dir_all(&tmp);
             return Err(format!(
                 "{}: provision immutable git inputs: {e}",
                 target.spec()
@@ -4828,9 +13615,14 @@ fn build_into_cache(
         }
     };
 
+    let post_git_result = (|| -> Result<LocalBuildDisposition, String> {
     let status = {
         let mut cmd = Command::new("bash");
+        if policy == ResolvePolicy::SourceOnlyV1 {
+            scrub_source_only_recipe_environment(&mut cmd);
+        }
         cmd.arg(&script);
+        configure_primary_source_environment(&mut cmd, target, policy, primary_source.as_ref())?;
         // Worktree-local SDK invocation. Prepend `<repo>/sdk/bin` to PATH
         // so build scripts that call `wasm32posix-cc` (and friends)
         // resolve to THIS worktree's SDK source — not whatever a global
@@ -4851,12 +13643,10 @@ fn build_into_cache(
         };
         cmd.env("PATH", path_var);
         cmd.env("WASM_POSIX_DEP_OUT_DIR", &tmp);
-        cmd.env("WASM_POSIX_DEP_WORK_DIR", &work.path);
+        cmd.env("WASM_POSIX_DEP_WORK_DIR", &work.recipe_work);
         cmd.env("WASM_POSIX_DEP_NAME", &target.name);
         cmd.env("WASM_POSIX_DEP_VERSION", &target.version);
         cmd.env("WASM_POSIX_DEP_REVISION", target.revision.to_string());
-        cmd.env("WASM_POSIX_DEP_SOURCE_URL", &target.source.url);
-        cmd.env("WASM_POSIX_DEP_SOURCE_SHA256", &target.source.sha256);
         cmd.env("WASM_POSIX_DEP_TARGET_ARCH", arch.as_str());
         cmd.env("WASM_POSIX_DEP_PKG_CONFIG_PATH", pkgconfig_path);
         // WHY: child recipes can invoke the TypeScript/standalone resolver.
@@ -4864,20 +13654,77 @@ fn build_into_cache(
         // same cache even when archive-stage selected --cache-root and the
         // parent process inherited a different ambient value.
         cmd.env("WASM_POSIX_BINARY_CACHE_ROOT", &selected_cache_root);
+        match policy {
+            ResolvePolicy::Default => {
+                cmd.env_remove(SOURCE_ONLY_POLICY_ENV);
+                cmd.env_remove("WASM_POSIX_SOURCE_ONLY_CACHE_ROOT");
+            }
+            ResolvePolicy::SourceOnlyV1 => {
+                let base = source_cache_root.ok_or_else(|| {
+                    format!("{}: validated source-cache base is missing", target.spec())
+                })?;
+                cmd.env(SOURCE_ONLY_POLICY_ENV, SOURCE_ONLY_POLICY_VALUE);
+                cmd.env("WASM_POSIX_SOURCE_ONLY_CACHE_ROOT", base);
+                let registry_root = registry
+                    .roots
+                    .iter()
+                    .find_map(|root| {
+                        let canonical = std::fs::canonicalize(root).ok()?;
+                        (target.dir.parent() == Some(canonical.as_path())).then_some(canonical)
+                    })
+                    .ok_or_else(|| {
+                        format!(
+                            "{}: package is not owned by an exact configured registry root",
+                            target.spec()
+                        )
+                    })?;
+                cmd.env("WASM_POSIX_DEPS_REGISTRY", registry_root);
+                cmd.env("WASM_POSIX_BINARY_RESOLVER_REPO_ROOT", repo_root);
+                let home = work.recipe_work.join("home");
+                let temporary = work.recipe_work.join("tmp");
+                let cargo_home = work.recipe_work.join("cargo-home");
+                let cargo_target = work.recipe_work.join("cargo-target");
+                let xdg_cache = work.recipe_work.join("xdg-cache");
+                let xdg_config = work.recipe_work.join("xdg-config");
+                let xdg_data = work.recipe_work.join("xdg-data");
+                for directory in [
+                    &home,
+                    &temporary,
+                    &cargo_home,
+                    &cargo_target,
+                    &xdg_cache,
+                    &xdg_config,
+                    &xdg_data,
+                ] {
+                    std::fs::create_dir(directory).map_err(|error| {
+                        format!(
+                            "{}: create private recipe directory {}: {error}",
+                            target.spec(),
+                            directory.display(),
+                        )
+                    })?;
+                }
+                cmd.current_dir(&work.recipe_work)
+                    .env("PWD", &work.recipe_work)
+                    .env("HOME", home)
+                    .env("TMPDIR", &temporary)
+                    .env("TMP", &temporary)
+                    .env("TEMP", temporary)
+                    .env("CARGO_HOME", cargo_home)
+                    .env("CARGO_TARGET_DIR", cargo_target)
+                    .env("XDG_CACHE_HOME", xdg_cache)
+                    .env("XDG_CONFIG_HOME", xdg_config)
+                    .env("XDG_DATA_HOME", xdg_data);
+            }
+        }
         git_inputs.export_to(&mut cmd);
-        for (name, dep) in dep_dirs {
-            // Per design 12: library/program deps export under
-            // `*_DIR` (built-artifact root), source deps under
-            // `*_SRC_DIR` (unbuilt source tree). The suffix tells a
-            // build script unambiguously what shape it's consuming.
-            let suffix = match dep.kind {
-                ManifestKind::Library | ManifestKind::Program => "DIR",
-                ManifestKind::Source => "SRC_DIR",
-            };
-            cmd.env(
-                format!("WASM_POSIX_DEP_{}_{}", env_key(name), suffix),
-                &dep.path,
-            );
+        for (name, variable) in &dependency_variables {
+            let path = dependency_paths.get(name).ok_or_else(|| {
+                format!(
+                    "internal resolver error: dependency {name:?} has no materialized child path"
+                )
+            })?;
+            cmd.env(variable, path);
         }
         // INVARIANT: build-script stdout MUST NOT leak to xtask's stdout.
         //
@@ -4905,7 +13752,6 @@ fn build_into_cache(
     };
 
     if let Err(e) = git_inputs.verify_unchanged() {
-        let _ = std::fs::remove_dir_all(&tmp);
         return Err(format!(
             "{}: immutable git input verification failed after build: {e}",
             target.spec()
@@ -4913,7 +13759,6 @@ fn build_into_cache(
     }
 
     if !status.success() {
-        let _ = std::fs::remove_dir_all(&tmp);
         return Err(format!(
             "{}: build script {} exited with {}",
             target.spec(),
@@ -4933,7 +13778,6 @@ fn build_into_cache(
         ManifestKind::Source => validate_source_dir_nonempty(&tmp),
     };
     if let Err(e) = validate_result {
-        let _ = std::fs::remove_dir_all(&tmp);
         return Err(e);
     }
 
@@ -4951,36 +13795,388 @@ fn build_into_cache(
     // documents intent and avoids one read_dir.
     if !matches!(target.kind, ManifestKind::Source) {
         if let Err(e) = rewrite_install_prefix_paths(&tmp, canonical) {
-            let _ = std::fs::remove_dir_all(&tmp);
             return Err(e);
         }
+    }
+    if policy == ResolvePolicy::SourceOnlyV1 {
+        let refreshed_target = registry.load(&target.name).map_err(|error| {
+            format!(
+                "{}: reload package after recipe before publication: {error}",
+                target.spec()
+            )
+        })?;
+        let post_build_key = manifest_cache_key_sha_for_policy(
+            &refreshed_target,
+            registry,
+            arch,
+            abi_version,
+            policy,
+        )?;
+        if post_build_key != cache_key_sha {
+            return Err(format!(
+                "{}: cache key changed while building {} ({}): before {cache_key_sha}, after {post_build_key}; refusing publication under the pre-build key",
+                target.spec(),
+                target.name,
+                arch.as_str()
+            ));
+        }
+        git_inputs.cleanup_source_only().map_err(|error| {
+            format!("{}: clean immutable git-input scratch before publication: {error}", target.spec())
+        })?;
+        work.cleanup_source_only().map_err(|error| {
+            format!("{}: clean package work scratch before publication: {error}", target.spec())
+        })?;
+    }
+
+    if policy == ResolvePolicy::Default {
+        // Preserve the public/default resolver's established publication
+        // semantics. The strict receipt transaction below is intentionally
+        // SourceOnlyV1-only so Default accepts the same package tree shapes
+        // and bytes it accepted before the local-build policy existed.
+        write_cache_provenance(target, canonical, arch, abi_version, cache_key_sha)?;
+        // Keep the legacy Default predicate exactly: a dangling symlink does
+        // not satisfy `Path::exists`, so the ordinary rename below retains
+        // Default's established repair behavior. SourceOnlyV1 never takes
+        // this branch and remains fail-closed/no-follow.
+        if canonical.exists() {
+            stage.cleanup()?;
+            validate_cache_entry(target, canonical, arch, abi_version, cache_key_sha).map_err(
+                |error| {
+                    format!(
+                        "concurrent cache winner {} failed exact validation: {error}",
+                        canonical.display()
+                    )
+                },
+            )?;
+            return Ok(LocalBuildDisposition::Published);
+        }
+        std::fs::rename(&tmp, canonical)
+            .map_err(|error| format!("rename {} -> {}: {error}", tmp.display(), canonical.display()))?;
+        stage.mark_published();
+        return Ok(LocalBuildDisposition::Published);
+    }
+
+    let staging_receipt = complete_cache_receipt_v1(
+        &tmp,
+        policy,
+        &target.name,
+        arch,
+        cache_key_sha,
+    )?;
+    if let Some(parent) = &source_only_cache_parent {
+        parent.validate()?;
+    }
+
+    if let Some(initial) = &initial_snapshot {
+        if let Some(parent) = &source_only_cache_parent {
+            parent.validate()?;
+        }
+        validate_source_only_cache_entry_snapshot(
+            target,
+            source_only_cache_parent
+                .as_ref()
+                .expect("SourceOnlyV1 has an anchored cache parent"),
+            canonical,
+            arch,
+            abi_version,
+            cache_key_sha,
+            initial,
+        )?;
+        if initial.receipt == staging_receipt {
+            stage.cleanup_source_only_exact(
+                &target.name,
+                arch,
+                cache_key_sha,
+                &staging_receipt,
+            )?;
+            require_current_source_only_cache_key(
+                target,
+                registry,
+                arch,
+                abi_version,
+                cache_key_sha,
+                "forced-equivalent final admission",
+            )?;
+            source_only_cache_parent
+                .as_ref()
+                .expect("SourceOnlyV1 has an anchored cache parent")
+                .validate()?;
+            validate_source_only_cache_entry_snapshot(
+                target,
+                source_only_cache_parent
+                    .as_ref()
+                    .expect("SourceOnlyV1 has an anchored cache parent"),
+                canonical,
+                arch,
+                abi_version,
+                cache_key_sha,
+                initial,
+            )?;
+            return Ok(LocalBuildDisposition::RebuiltEquivalent);
+        }
+        require_current_source_only_cache_key(
+            target,
+            registry,
+            arch,
+            abi_version,
+            cache_key_sha,
+            "rebuild-mismatch evidence admission",
+        )?;
+        let diagnostic = publish_rebuild_mismatch_diagnostic(
+            target,
+            canonical,
+            source_only_cache_parent
+                .as_ref()
+                .expect("SourceOnlyV1 has an anchored cache parent"),
+            arch,
+            cache_key_sha,
+            policy,
+            &initial.receipt,
+            &staging_receipt,
+        )?;
+        stage.cleanup_source_only_exact(
+            &target.name,
+            arch,
+            cache_key_sha,
+            &staging_receipt,
+        )?;
+        require_current_source_only_cache_key(
+            target,
+            registry,
+            arch,
+            abi_version,
+            cache_key_sha,
+            "rebuild-mismatch final admission",
+        )?;
+        validate_source_only_cache_entry_snapshot(
+            target,
+            source_only_cache_parent
+                .as_ref()
+                .expect("SourceOnlyV1 has an anchored cache parent"),
+            canonical,
+            arch,
+            abi_version,
+            cache_key_sha,
+            initial,
+        )?;
+        return Err(format!(
+            "{}: rebuild mismatch preserved the valid canonical generation; receipts recorded at {}",
+            target.spec(),
+            diagnostic.display()
+        ));
     }
 
     // Publish resolver metadata beside, never inside, the package tree. The
     // marker lands first: a crash leaves harmless metadata without an artifact,
     // while no reader can observe an artifact lacking its required provenance.
-    if let Err(e) = write_cache_provenance(target, canonical, arch, abi_version, cache_key_sha) {
-        let _ = std::fs::remove_dir_all(&tmp);
-        return Err(e);
-    }
-
-    // Atomic install. If someone else finished first, keep theirs,
-    // discard ours — identical inputs produce identical outputs, and
-    // trying to overwrite a non-empty directory isn't portable.
-    if canonical.exists() {
-        let _ = std::fs::remove_dir_all(&tmp);
-        return validate_cache_entry(target, canonical, arch, abi_version, cache_key_sha).map_err(
-            |e| {
-                format!(
-                    "concurrent cache winner {} failed exact validation: {e}",
+    write_source_only_cache_provenance_anchored(
+        target,
+        canonical,
+        source_only_cache_parent
+            .as_ref()
+            .expect("SourceOnlyV1 has an anchored cache parent"),
+        arch,
+        abi_version,
+        cache_key_sha,
+    )?;
+    let cache_parent = source_only_cache_parent
+        .as_ref()
+        .expect("SourceOnlyV1 has an anchored cache parent");
+    match stage.publish_source_only_no_replace_with_before_rename(
+        cache_parent,
+        canonical,
+        &mut || {
+            require_current_source_only_cache_key(
+                target,
+                registry,
+                arch,
+                abi_version,
+                cache_key_sha,
+                "canonical no-replace publication boundary",
+            )?;
+            write_source_only_cache_provenance_anchored(
+                target,
+                canonical,
+                cache_parent,
+                arch,
+                abi_version,
+                cache_key_sha,
+            )
+        },
+    ) {
+        Ok(()) => {
+            let installed = capture_source_only_cache_entry_snapshot(
+                target,
+                cache_parent,
+                canonical,
+                arch,
+                abi_version,
+                cache_key_sha,
+            )?;
+            if installed.identity != stage.identity || installed.receipt != staging_receipt {
+                return Err(format!(
+                    "{}: post-publication cache validation failed; installed evidence was preserved at {}",
+                    target.spec(),
                     canonical.display()
+                ));
+            }
+            cache_parent.validate()?;
+            #[cfg(unix)]
+            cache_parent
+                .parent_anchor
+                .sync("source-only cache kind parent")?;
+            let final_installed = capture_source_only_cache_entry_snapshot(
+                target,
+                cache_parent,
+                canonical,
+                arch,
+                abi_version,
+                cache_key_sha,
+            )?;
+            if final_installed != installed {
+                return Err(format!(
+                    "{}: published canonical cache generation changed after parent sync and was preserved: {}",
+                    target.spec(),
+                    canonical.display()
+                ));
+            }
+            Ok(LocalBuildDisposition::Published)
+        }
+        Err(rename_error) => match cache_parent
+            .parent_anchor
+            .child_exists(canonical.file_name().expect("canonical has filename"), "cache publication destination")
+        {
+            Ok(true) => {
+                let winner = capture_source_only_cache_entry_snapshot(
+                    target,
+                    cache_parent,
+                    canonical,
+                    arch,
+                    abi_version,
+                    cache_key_sha,
                 )
-            },
-        );
+                .map_err(|error| {
+                    format!(
+                        "concurrent cache winner {} failed exact validation and was preserved: {error}",
+                        canonical.display()
+                    )
+                })?;
+                if winner.receipt == staging_receipt {
+                    stage.cleanup_source_only_exact(
+                        &target.name,
+                        arch,
+                        cache_key_sha,
+                        &staging_receipt,
+                    )?;
+                    require_current_source_only_cache_key(
+                        target,
+                        registry,
+                        arch,
+                        abi_version,
+                        cache_key_sha,
+                        "equal-winner final admission",
+                    )?;
+                    cache_parent.validate()?;
+                    validate_source_only_cache_entry_snapshot(
+                        target,
+                        cache_parent,
+                        canonical,
+                        arch,
+                        abi_version,
+                        cache_key_sha,
+                        &winner,
+                    )?;
+                    Ok(LocalBuildDisposition::Published)
+                } else {
+                    require_current_source_only_cache_key(
+                        target,
+                        registry,
+                        arch,
+                        abi_version,
+                        cache_key_sha,
+                        "different-winner mismatch evidence admission",
+                    )?;
+                    let diagnostic = publish_rebuild_mismatch_diagnostic(
+                        target,
+                        canonical,
+                        source_only_cache_parent
+                            .as_ref()
+                            .expect("SourceOnlyV1 has an anchored cache parent"),
+                        arch,
+                        cache_key_sha,
+                        policy,
+                        &winner.receipt,
+                        &staging_receipt,
+                    )?;
+                    stage.cleanup_source_only_exact(
+                        &target.name,
+                        arch,
+                        cache_key_sha,
+                        &staging_receipt,
+                    )?;
+                    validate_source_only_cache_entry_snapshot(
+                        target,
+                        cache_parent,
+                        canonical,
+                        arch,
+                        abi_version,
+                        cache_key_sha,
+                        &winner,
+                    )?;
+                    Err(format!(
+                        "{}: concurrent cache winner differs from staged build; winner preserved and receipts recorded at {}",
+                        target.spec(),
+                        diagnostic.display()
+                    ))
+                }
+            }
+            Ok(false) => Err(format!(
+                "publish package cache {} -> {} without replacement: {rename_error}",
+                tmp.display(),
+                canonical.display()
+            )),
+            Err(error) => Err(format!(
+                "inspect cache publication destination {} after no-replace failure: {error}",
+                canonical.display()
+            )),
+        },
     }
-    std::fs::rename(&tmp, canonical)
-        .map_err(|e| format!("rename {} -> {}: {e}", tmp.display(), canonical.display()))?;
-    Ok(())
+    })();
+    let git_cleanup = if policy == ResolvePolicy::SourceOnlyV1 {
+        git_inputs.cleanup_source_only().map_err(|error| {
+            format!("{}: clean immutable git-input scratch: {error}", target.spec())
+        })
+    } else {
+        Ok(())
+    };
+    match post_git_result {
+        Ok(value) => git_cleanup.map(|()| value),
+        Err(error) => Err(append_cleanup_error(error, git_cleanup)),
+    }
+    })();
+
+    let work_cleanup = if policy == ResolvePolicy::SourceOnlyV1 {
+        work.cleanup_source_only().map_err(|error| {
+            format!("{}: clean package work scratch: {error}", target.spec())
+        })
+    } else {
+        Ok(())
+    };
+    let build_result = match build_result {
+        Ok(value) => work_cleanup.map(|()| value),
+        Err(error) => Err(append_cleanup_error(error, work_cleanup)),
+    };
+    let stage_cleanup = if policy == ResolvePolicy::SourceOnlyV1 {
+        stage.cleanup().map_err(|error| {
+            format!("{}: clean package build stage: {error}", target.spec())
+        })
+    } else {
+        Ok(())
+    };
+    match build_result {
+        Ok(value) => stage_cleanup.map(|()| value),
+        Err(error) => Err(append_cleanup_error(error, stage_cleanup)),
+    }
 }
 
 /// Replace every occurrence of `tmp` with `canonical` inside
@@ -5888,6 +15084,722 @@ fn validate_artifact_tree(
     Ok(leaves)
 }
 
+const LOCAL_BUILD_CACHE_RECEIPT_FORMAT: &str = "kandelo-local-build-cache-receipt-v1";
+const LOCAL_BUILD_CACHE_RECEIPT_DOMAIN: &[u8] = b"kandelo-local-build-cache-receipt-v1\0";
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CompleteCacheReceiptV1 {
+    format: String,
+    policy: String,
+    package_name: String,
+    target_arch: String,
+    cache_key_sha256: String,
+    entries: Vec<CompleteCacheReceiptEntryV1>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CompleteCacheReceiptEntryV1 {
+    path: String,
+    kind: String,
+    mode: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
+}
+
+fn receipt_policy_name(policy: ResolvePolicy) -> &'static str {
+    match policy {
+        ResolvePolicy::Default => "default",
+        ResolvePolicy::SourceOnlyV1 => SOURCE_ONLY_POLICY_VALUE,
+    }
+}
+
+pub(crate) fn canonical_cache_receipt_json(
+    receipt: &CompleteCacheReceiptV1,
+) -> Result<Vec<u8>, String> {
+    serde_json::to_vec(receipt).map_err(|error| format!("serialize package cache receipt: {error}"))
+}
+
+pub(crate) fn cache_receipt_sha256(
+    receipt: &CompleteCacheReceiptV1,
+) -> Result<String, String> {
+    let mut hash = Sha256::new();
+    hash.update(LOCAL_BUILD_CACHE_RECEIPT_DOMAIN);
+    hash.update(canonical_cache_receipt_json(receipt)?);
+    let digest: [u8; 32] = hash.finalize().into();
+    Ok(hex(&digest))
+}
+
+pub(crate) fn complete_cache_receipt_v1(
+    root: &Path,
+    policy: ResolvePolicy,
+    package_name: &str,
+    target_arch: TargetArch,
+    cache_key_sha256: &str,
+) -> Result<CompleteCacheReceiptV1, String> {
+    complete_cache_receipt_v1_with_observer(
+        root,
+        policy,
+        package_name,
+        target_arch,
+        cache_key_sha256,
+        &mut |_| {},
+    )
+}
+
+#[cfg(unix)]
+fn complete_cache_receipt_v1_from_anchored_root(
+    root: &AnchoredDirectory,
+    policy: ResolvePolicy,
+    package_name: &str,
+    target_arch: TargetArch,
+    cache_key_sha256: &str,
+) -> Result<CompleteCacheReceiptV1, String> {
+    if cache_key_sha256.len() != 64
+        || !cache_key_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("package cache receipt key must be 64 lowercase hexadecimal characters".into());
+    }
+    let root_snapshot = receipt_metadata_snapshot(&root.file.metadata().map_err(|error| {
+        format!(
+            "inspect opened package cache receipt root {}: {error}",
+            root.path.display()
+        )
+    })?)?;
+    if root_snapshot.kind != 2 {
+        return Err(format!(
+            "package cache receipt root must be a real directory: {}",
+            root.path.display()
+        ));
+    }
+    let canonical_root = std::fs::canonicalize(&root.path).map_err(|error| {
+        format!(
+            "canonicalize package cache receipt root {}: {error}",
+            root.path.display()
+        )
+    })?;
+    let names = stable_receipt_directory_names(&root.file, &root.path)?;
+    let mut entries = Vec::new();
+    for name in &names {
+        collect_complete_cache_receipt_entries(
+            &canonical_root,
+            &root.file,
+            name,
+            &Path::new("").join(name),
+            &root.path.join(name),
+            &mut entries,
+            &mut |_| {},
+            &mut |_| {},
+            &mut |_| {},
+            &mut |_| {},
+        )?;
+    }
+    if receipt_metadata_snapshot(&root.file.metadata().map_err(|error| {
+        format!(
+            "reinspect opened package cache receipt root {}: {error}",
+            root.path.display()
+        )
+    })?)? != root_snapshot
+        || stable_receipt_directory_names(&root.file, &root.path)? != names
+    {
+        return Err(format!(
+            "package cache receipt root changed while traversed: {}",
+            root.path.display()
+        ));
+    }
+    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(CompleteCacheReceiptV1 {
+        format: LOCAL_BUILD_CACHE_RECEIPT_FORMAT.to_string(),
+        policy: receipt_policy_name(policy).to_string(),
+        package_name: package_name.to_string(),
+        target_arch: target_arch.as_str().to_string(),
+        cache_key_sha256: cache_key_sha256.to_string(),
+        entries,
+    })
+}
+
+fn complete_cache_receipt_v1_with_observer<F>(
+    root: &Path,
+    policy: ResolvePolicy,
+    package_name: &str,
+    target_arch: TargetArch,
+    cache_key_sha256: &str,
+    observer: &mut F,
+) -> Result<CompleteCacheReceiptV1, String>
+where
+    F: FnMut(&Path),
+{
+    complete_cache_receipt_v1_with_hooks(
+        root,
+        policy,
+        package_name,
+        target_arch,
+        cache_key_sha256,
+        observer,
+        &mut |_| {},
+        &mut |_| {},
+        &mut |_| {},
+    )
+}
+
+fn complete_cache_receipt_v1_with_hooks<Observe, BeforeOpen, AfterHash, AfterReopen>(
+    root: &Path,
+    policy: ResolvePolicy,
+    package_name: &str,
+    target_arch: TargetArch,
+    cache_key_sha256: &str,
+    observer: &mut Observe,
+    before_open: &mut BeforeOpen,
+    after_hash: &mut AfterHash,
+    after_reopen: &mut AfterReopen,
+) -> Result<CompleteCacheReceiptV1, String>
+where
+    Observe: FnMut(&Path),
+    BeforeOpen: FnMut(&Path),
+    AfterHash: FnMut(&Path),
+    AfterReopen: FnMut(&Path),
+{
+    if cache_key_sha256.len() != 64
+        || !cache_key_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("package cache receipt key must be 64 lowercase hexadecimal characters".into());
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (root, policy, package_name, target_arch, observer);
+        return Err(
+            "package cache receipts require Unix no-follow metadata and permission bits"
+                .to_string(),
+        );
+    }
+    #[cfg(unix)]
+    {
+        let root_metadata = std::fs::symlink_metadata(root)
+            .map_err(|error| format!("inspect package cache receipt root {}: {error}", root.display()))?;
+        if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+            return Err(format!(
+                "package cache receipt root must be a real nonsymlink directory: {}",
+                root.display()
+            ));
+        }
+        let canonical_root = std::fs::canonicalize(root).map_err(|error| {
+            format!("canonicalize package cache receipt root {}: {error}", root.display())
+        })?;
+        let root_snapshot = receipt_metadata_snapshot(&root_metadata)?;
+        let opened_root = open_receipt_root(root)?;
+        let opened_root_metadata = opened_root.metadata().map_err(|error| {
+            format!("inspect opened package cache receipt root {}: {error}", root.display())
+        })?;
+        if receipt_metadata_snapshot(&opened_root_metadata)? != root_snapshot {
+            return Err(format!(
+                "package cache receipt root changed while opening: {}",
+                root.display()
+            ));
+        }
+        observer(root);
+        let names = stable_receipt_directory_names(&opened_root, root)?;
+        let mut entries = Vec::new();
+        for name in &names {
+            collect_complete_cache_receipt_entries(
+                &canonical_root,
+                &opened_root,
+                name,
+                &Path::new("").join(name),
+                &root.join(name),
+                &mut entries,
+                observer,
+                before_open,
+                after_hash,
+                after_reopen,
+            )?;
+        }
+        let reopened_root = open_receipt_root(root)?;
+        let reopened_root_metadata = reopened_root.metadata().map_err(|error| {
+            format!("reinspect opened package cache receipt root {}: {error}", root.display())
+        })?;
+        if receipt_metadata_snapshot(&reopened_root_metadata)? != root_snapshot
+            || stable_receipt_directory_names(&reopened_root, root)? != names
+        {
+            return Err(format!(
+                "package cache receipt root changed while traversed: {}",
+                root.display()
+            ));
+        }
+        entries.sort_by(|left, right| left.path.cmp(&right.path));
+        Ok(CompleteCacheReceiptV1 {
+            format: LOCAL_BUILD_CACHE_RECEIPT_FORMAT.to_string(),
+            policy: receipt_policy_name(policy).to_string(),
+            package_name: package_name.to_string(),
+            target_arch: target_arch.as_str().to_string(),
+            cache_key_sha256: cache_key_sha256.to_string(),
+            entries,
+        })
+    }
+}
+
+#[cfg(unix)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ReceiptMetadataSnapshot {
+    identity: PackageMirrorIdentity,
+    kind: u8,
+    mode: u32,
+    len: u64,
+    hard_links: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+}
+
+#[cfg(unix)]
+fn receipt_metadata_snapshot(
+    metadata: &std::fs::Metadata,
+) -> Result<ReceiptMetadataSnapshot, String> {
+    use std::os::unix::fs::MetadataExt;
+    let kind = if metadata.file_type().is_symlink() {
+        3
+    } else if metadata.is_dir() {
+        2
+    } else if metadata.is_file() {
+        1
+    } else {
+        0
+    };
+    Ok(ReceiptMetadataSnapshot {
+        identity: package_mirror_identity(metadata)?,
+        kind,
+        mode: metadata.mode() & 0o7777,
+        len: metadata.len(),
+        hard_links: metadata.nlink(),
+        modified_seconds: metadata.mtime(),
+        modified_nanoseconds: metadata.mtime_nsec(),
+        changed_seconds: metadata.ctime(),
+        changed_nanoseconds: metadata.ctime_nsec(),
+    })
+}
+
+#[cfg(unix)]
+fn receipt_relative_path(relative: &Path) -> Result<String, String> {
+    if relative.as_os_str().is_empty() {
+        return Ok(".".to_string());
+    }
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            return Err(format!(
+                "package cache receipt path is not a normal relative path: {}",
+                relative.display()
+            ));
+        };
+        let component = component.to_str().ok_or_else(|| {
+            format!(
+                "package cache receipt path is not valid UTF-8: {}",
+                relative.display()
+            )
+        })?;
+        if component.contains('\\') {
+            return Err(format!(
+                "package cache receipt path contains a non-portable backslash: {}",
+                relative.display()
+            ));
+        }
+        parts.push(component);
+    }
+    Ok(parts.join("/"))
+}
+
+#[cfg(unix)]
+fn stable_receipt_directory_names(
+    directory: &std::fs::File,
+    path: &Path,
+) -> Result<Vec<OsString>, String> {
+    use std::os::unix::ffi::OsStringExt;
+
+    let mut directory = rustix::fs::Dir::read_from(directory).map_err(|error| {
+        format!("read opened package cache receipt directory {}: {error}", path.display())
+    })?;
+    let mut names = Vec::new();
+    for entry in &mut directory {
+        let entry = entry.map_err(|error| {
+            format!("read package cache receipt entry below {}: {error}", path.display())
+        })?;
+        let bytes = entry.file_name().to_bytes();
+        if matches!(bytes, b"." | b"..") {
+            continue;
+        }
+        names.push(OsString::from_vec(bytes.to_vec()));
+    }
+    for name in &names {
+        let Some(name) = name.to_str() else {
+            return Err(format!(
+                "package cache receipt entry name is not valid UTF-8 below {}",
+                path.display()
+            ));
+        };
+        if name.contains('\\') {
+            return Err(format!(
+                "package cache receipt entry name contains a non-portable backslash below {}",
+                path.display()
+            ));
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+#[cfg(unix)]
+fn open_receipt_root(path: &Path) -> Result<std::fs::File, String> {
+    rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::NONBLOCK,
+        rustix::fs::Mode::empty(),
+    )
+    .map(std::fs::File::from)
+    .map_err(|error| format!("open package cache receipt root {} without following: {error}", path.display()))
+}
+
+#[cfg(unix)]
+fn open_receipt_entry_at(
+    parent: &std::fs::File,
+    name: &std::ffi::OsStr,
+    path: &Path,
+    follow_leaf: bool,
+) -> Result<std::fs::File, String> {
+    let mut flags = rustix::fs::OFlags::RDONLY
+        | rustix::fs::OFlags::CLOEXEC
+        | rustix::fs::OFlags::NONBLOCK;
+    if !follow_leaf {
+        flags |= rustix::fs::OFlags::NOFOLLOW;
+    }
+    rustix::fs::openat(parent, name, flags, rustix::fs::Mode::empty())
+        .map(std::fs::File::from)
+        .map_err(|error| {
+            format!(
+                "open package cache receipt entry {}{}: {error}",
+                path.display(),
+                if follow_leaf { " through its symlink target" } else { " without following" },
+            )
+        })
+}
+
+#[cfg(unix)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ReceiptAtMetadataSnapshot {
+    identity: PackageMirrorIdentity,
+    kind: u8,
+    mode: u32,
+    len: u64,
+    hard_links: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+}
+
+#[cfg(unix)]
+fn receipt_at_metadata_snapshot(
+    parent: &std::fs::File,
+    name: &std::ffi::OsStr,
+    path: &Path,
+) -> Result<ReceiptAtMetadataSnapshot, String> {
+    let stat = rustix::fs::statat(parent, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
+        .map_err(|error| format!("inspect package cache receipt entry {} without following: {error}", path.display()))?;
+    let kind = match rustix::fs::FileType::from_raw_mode(stat.st_mode) {
+        rustix::fs::FileType::RegularFile => 1,
+        rustix::fs::FileType::Directory => 2,
+        rustix::fs::FileType::Symlink => 3,
+        _ => 0,
+    };
+    Ok(ReceiptAtMetadataSnapshot {
+        identity: PackageMirrorIdentity {
+            first: stat.st_dev as u64,
+            second: stat.st_ino as u64,
+        },
+        kind,
+        mode: (stat.st_mode as u32) & 0o7777,
+        len: stat.st_size as u64,
+        hard_links: stat.st_nlink as u64,
+        modified_seconds: stat.st_mtime as i64,
+        modified_nanoseconds: stat.st_mtime_nsec as i64,
+        changed_seconds: stat.st_ctime as i64,
+        changed_nanoseconds: stat.st_ctime_nsec as i64,
+    })
+}
+
+#[cfg(unix)]
+fn receipt_at_matches_opened(
+    expected: &ReceiptAtMetadataSnapshot,
+    actual: &std::fs::Metadata,
+) -> Result<bool, String> {
+    let actual = receipt_metadata_snapshot(actual)?;
+    Ok(expected.identity == actual.identity
+        && expected.kind == actual.kind
+        && expected.mode == actual.mode
+        && expected.len == actual.len
+        && expected.hard_links == actual.hard_links
+        && expected.modified_seconds == actual.modified_seconds
+        && expected.modified_nanoseconds == actual.modified_nanoseconds
+        && expected.changed_seconds == actual.changed_seconds
+        && expected.changed_nanoseconds == actual.changed_nanoseconds)
+}
+
+#[cfg(unix)]
+fn validate_relative_receipt_symlink(
+    canonical_root: &Path,
+    relative: &Path,
+    path: &Path,
+    target: &Path,
+) -> Result<(), String> {
+    if target.is_absolute() {
+        return Err(format!(
+            "package cache receipt rejects absolute symlink {} -> {}",
+            path.display(),
+            target.display()
+        ));
+    }
+    let mut depth = relative.parent().map_or(0usize, |parent| parent.components().count());
+    for component in target.components() {
+        match component {
+            Component::Normal(component) => {
+                let component = component.to_str().ok_or_else(|| {
+                    format!(
+                        "package cache receipt symlink target is not valid UTF-8: {}",
+                        path.display()
+                    )
+                })?;
+                if component.contains('\\') {
+                    return Err(format!(
+                        "package cache receipt symlink target contains a non-portable backslash: {} -> {}",
+                        path.display(),
+                        target.display()
+                    ));
+                }
+                depth += 1;
+            }
+            Component::CurDir => {}
+            Component::ParentDir if depth > 0 => depth -= 1,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "package cache receipt symlink escapes its root: {} -> {}",
+                    path.display(),
+                    target.display()
+                ));
+            }
+        }
+    }
+    let resolved = std::fs::canonicalize(path).map_err(|error| {
+        format!(
+            "resolve package cache receipt symlink {} -> {}: {error}",
+            path.display(),
+            target.display()
+        )
+    })?;
+    if !resolved.starts_with(canonical_root) {
+        return Err(format!(
+            "package cache receipt symlink resolves outside its root: {} -> {}",
+            path.display(),
+            target.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn collect_complete_cache_receipt_entries<F>(
+    canonical_root: &Path,
+    parent: &std::fs::File,
+    name: &std::ffi::OsStr,
+    relative: &Path,
+    path: &Path,
+    entries: &mut Vec<CompleteCacheReceiptEntryV1>,
+    observer: &mut F,
+    before_open: &mut impl FnMut(&Path),
+    after_hash: &mut impl FnMut(&Path),
+    after_reopen: &mut impl FnMut(&Path),
+) -> Result<(), String>
+where
+    F: FnMut(&Path),
+{
+    let before = receipt_at_metadata_snapshot(parent, name, path)?;
+    if before.kind == 0 {
+        return Err(format!(
+            "package cache receipt rejects special filesystem entry {}",
+            path.display()
+        ));
+    }
+    observer(path);
+    if receipt_at_metadata_snapshot(parent, name, path)? != before {
+        return Err(format!(
+            "package cache receipt entry changed while inspected: {}",
+            path.display()
+        ));
+    }
+    before_open(path);
+    let receipt_path = receipt_relative_path(relative)?;
+    let entry = match before.kind {
+        1 => {
+            let mut file = open_receipt_entry_at(parent, name, path, false)?;
+            let opened_metadata = file.metadata().map_err(|error| {
+                format!("inspect opened package cache receipt file {}: {error}", path.display())
+            })?;
+            let opened_snapshot = receipt_metadata_snapshot(&opened_metadata)?;
+            if !receipt_at_matches_opened(&before, &opened_metadata)?
+            {
+                return Err(format!(
+                    "package cache receipt file changed while opening: {}",
+                    path.display()
+                ));
+            }
+            let mut hash = Sha256::new();
+            let mut buffer = [0u8; 64 * 1024];
+            loop {
+                let count = std::io::Read::read(&mut file, &mut buffer)
+                    .map_err(|error| format!("hash package cache receipt file {}: {error}", path.display()))?;
+                if count == 0 {
+                    break;
+                }
+                hash.update(&buffer[..count]);
+            }
+            after_hash(path);
+            let hashed_snapshot = receipt_metadata_snapshot(&file.metadata().map_err(|error| {
+                format!("reinspect opened package cache receipt file {}: {error}", path.display())
+            })?)?;
+            let reopened = open_receipt_entry_at(parent, name, path, false)?;
+            let reopened_snapshot = receipt_metadata_snapshot(&reopened.metadata().map_err(|error| {
+                format!("inspect reopened package cache receipt file {}: {error}", path.display())
+            })?)?;
+            after_reopen(path);
+            if hashed_snapshot != opened_snapshot
+                || reopened_snapshot != opened_snapshot
+                || receipt_at_metadata_snapshot(parent, name, path)? != before
+            {
+                return Err(format!(
+                    "package cache receipt file changed while read: {}",
+                    path.display()
+                ));
+            }
+            let digest: [u8; 32] = hash.finalize().into();
+            CompleteCacheReceiptEntryV1 {
+                path: receipt_path,
+                kind: "file".to_string(),
+                mode: before.mode,
+                size: Some(before.len),
+                sha256: Some(hex(&digest)),
+                target: None,
+            }
+        }
+        2 => {
+            let directory = open_receipt_entry_at(parent, name, path, false)?;
+            let directory_metadata = directory.metadata().map_err(|error| {
+                format!("inspect opened package cache receipt directory {}: {error}", path.display())
+            })?;
+            let directory_snapshot = receipt_metadata_snapshot(&directory_metadata)?;
+            if !receipt_at_matches_opened(&before, &directory_metadata)? {
+                return Err(format!(
+                    "package cache receipt directory changed while opening: {}",
+                    path.display()
+                ));
+            }
+            let names = stable_receipt_directory_names(&directory, path)?;
+            for name in &names {
+                collect_complete_cache_receipt_entries(
+                    canonical_root,
+                    &directory,
+                    name,
+                    &relative.join(name),
+                    &path.join(name),
+                    entries,
+                    observer,
+                    before_open,
+                    after_hash,
+                    after_reopen,
+                )?;
+            }
+            let reopened = open_receipt_entry_at(parent, name, path, false)?;
+            if receipt_metadata_snapshot(&reopened.metadata().map_err(|error| {
+                format!("reinspect opened package cache receipt directory {}: {error}", path.display())
+            })?)? != directory_snapshot
+                || stable_receipt_directory_names(&reopened, path)? != names
+                || receipt_at_metadata_snapshot(parent, name, path)? != before
+            {
+                return Err(format!(
+                    "package cache receipt directory changed while traversed: {}",
+                    path.display()
+                ));
+            }
+            CompleteCacheReceiptEntryV1 {
+                path: receipt_path,
+                kind: "directory".to_string(),
+                mode: before.mode,
+                size: None,
+                sha256: None,
+                target: None,
+            }
+        }
+        3 => {
+            use std::os::unix::ffi::OsStringExt;
+            let target = rustix::fs::readlinkat(parent, name, Vec::new())
+                .map(|target| PathBuf::from(OsString::from_vec(target.to_bytes().to_vec())))
+                .map_err(|error| format!("read package cache receipt symlink {}: {error}", path.display()))?;
+            validate_relative_receipt_symlink(canonical_root, relative, path, &target)?;
+            let target_text = target.to_str().ok_or_else(|| {
+                format!("package cache receipt symlink target is not valid UTF-8: {}", path.display())
+            })?;
+            let target_handle = open_receipt_entry_at(parent, name, path, true)?;
+            let target_metadata = target_handle.metadata().map_err(|error| {
+                format!("inspect package cache receipt symlink target {}: {error}", path.display())
+            })?;
+            if !target_metadata.is_file() && !target_metadata.is_dir() {
+                return Err(format!(
+                    "package cache receipt symlink target is not a regular file or directory: {} -> {}",
+                    path.display(),
+                    target.display()
+                ));
+            }
+            let target_again = rustix::fs::readlinkat(parent, name, Vec::new())
+                .map(|target| PathBuf::from(OsString::from_vec(target.to_bytes().to_vec())))
+                .map_err(|error| format!("reread package cache receipt symlink {}: {error}", path.display()))?;
+            if target_again != target || receipt_at_metadata_snapshot(parent, name, path)? != before {
+                return Err(format!(
+                    "package cache receipt symlink changed while inspected: {}",
+                    path.display()
+                ));
+            }
+            CompleteCacheReceiptEntryV1 {
+                path: receipt_path,
+                kind: "symlink".to_string(),
+                mode: before.mode,
+                size: None,
+                sha256: None,
+                target: Some(target_text.to_string()),
+            }
+        }
+        _ => unreachable!(),
+    };
+    if receipt_at_metadata_snapshot(parent, name, path)? != before {
+        return Err(format!(
+            "package cache receipt entry changed while traversed: {}",
+            path.display()
+        ));
+    }
+    if !relative.as_os_str().is_empty() {
+        entries.push(entry);
+    }
+    Ok(())
+}
+
 fn validate_cache_entry(
     target: &DepsManifest,
     dir: &Path,
@@ -6237,6 +16149,45 @@ fn extract_fetch_only_flag(args: Vec<String>) -> (bool, Vec<String>) {
     (fetch_only, rest)
 }
 
+fn extract_source_only_flag(args: Vec<String>) -> Result<(bool, Vec<String>), String> {
+    let mut source_only = false;
+    let mut rest = Vec::with_capacity(args.len());
+    for arg in args {
+        if arg == "--source-only" {
+            if source_only {
+                return Err("--source-only given more than once".to_string());
+            }
+            source_only = true;
+        } else {
+            rest.push(arg);
+        }
+    }
+    Ok((source_only, rest))
+}
+
+fn validate_resolution_policy_usage(
+    subcommand: &str,
+    explicit_source_only: bool,
+    effective_policy: ResolvePolicy,
+    fetch_only: bool,
+    force_source_build: bool,
+) -> Result<(), String> {
+    if explicit_source_only && subcommand != "resolve" {
+        return Err(format!(
+            "build-deps {subcommand}: --source-only is only valid for `resolve`"
+        ));
+    }
+    if subcommand == "resolve" && effective_policy == ResolvePolicy::SourceOnlyV1 {
+        if fetch_only {
+            return Err(
+                "build-deps resolve: source-only and --fetch-only are mutually exclusive".into(),
+            );
+        }
+        let _ = force_source_build;
+    }
+    Ok(())
+}
+
 /// Extract the explicit source-build override used by exact-source producer
 /// workflows. It is intentionally scoped to the selected `resolve` target;
 /// dependencies still need an explicit same-run overlay or their own
@@ -6439,6 +16390,8 @@ fn resolve_source_repo_root(
 }
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
+    let ambient_policy = ambient_resolution_policy()?;
+    let (explicit_source_only, args) = extract_source_only_flag(args)?;
     let (source_repo_root, rest) = extract_source_repo_root_flag(args)?;
     let (arch_flag, rest) = extract_arch_flag(rest)?;
     let arch = match arch_flag {
@@ -6453,7 +16406,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 
     let mut it = rest.into_iter();
     let sub = it.next().ok_or(
-        "usage: xtask build-deps [--arch=wasm32|wasm64] [--binaries-dir <path>] [--fetch-only] [--force-source-build] \
+        "usage: xtask build-deps [--arch=wasm32|wasm64] [--binaries-dir <path>] [--source-only] [--fetch-only] [--force-source-build] \
          [--source-repo-root <absolute-canonical-path>] \
          <parse|sha|path|resolve|check|cache-root|program-index|program-index-check|program-index-context-check|program-index-selected|install-local-artifact|output-metadata|output-path|runtime-file-path|runtime-file-metadata|output-fork-instrumentation|output-fork-instrumentation-for-rel> \
          [<name|path> [<wasm-basename>]]",
@@ -6497,6 +16450,18 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             "build-deps {sub}: --force-source-build is only valid for `resolve`"
         ));
     }
+    let resolve_policy = if explicit_source_only || ambient_policy == ResolvePolicy::SourceOnlyV1 {
+        ResolvePolicy::SourceOnlyV1
+    } else {
+        ResolvePolicy::Default
+    };
+    validate_resolution_policy_usage(
+        &sub,
+        explicit_source_only,
+        resolve_policy,
+        fetch_only,
+        force_source_build,
+    )?;
     if fetch_only && force_source_build {
         return Err(
             "build-deps resolve: --fetch-only and --force-source-build are mutually exclusive"
@@ -6593,6 +16558,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                         binaries_dir.as_deref(),
                         fetch_only,
                         force_source_build,
+                        resolve_policy,
                     )
                 }
                 "install-local-artifact" => {
@@ -6894,11 +16860,28 @@ fn cmd_resolve(
     binaries_dir: Option<&Path>,
     fetch_only: bool,
     force_source_build: bool,
+    policy: ResolvePolicy,
 ) -> Result<(), String> {
-    let cache_root = default_cache_root();
+    if policy == ResolvePolicy::SourceOnlyV1 && m.kind == ManifestKind::Source {
+        return Err(format!(
+            "{}: source nodes are dependency inputs and have no durable extracted output",
+            m.spec(),
+        ));
+    }
+    let source_only_roots = if policy == ResolvePolicy::SourceOnlyV1 {
+        Some(source_only_cache_roots()?)
+    } else {
+        None
+    };
+    let cache_root = source_only_roots
+        .as_ref()
+        .map(|roots| roots.compiled.clone())
+        .unwrap_or_else(default_cache_root);
     let local_libs = repo.join("local-libs");
     let forced = BTreeSet::from([m.name.clone()]);
     let opts = ResolveOpts {
+        policy,
+        source_cache_root: source_only_roots.as_ref().map(|roots| roots.base.as_path()),
         cache_root: &cache_root,
         local_libs: Some(&local_libs),
         force_source_build: force_source_build.then_some(&forced),
@@ -6921,7 +16904,13 @@ fn cmd_resolve(
     // where placing target symlinks isn't desired).
     if let Some(bdir) = binaries_dir {
         if matches!(m.kind, ManifestKind::Program) && !m.program_outputs.is_empty() {
-            let cache_key_sha = manifest_cache_key_sha(m, registry, arch, current_abi_version())?;
+            let cache_key_sha = manifest_cache_key_sha_for_policy(
+                m,
+                registry,
+                arch,
+                current_abi_version(),
+                policy,
+            )?;
             publish_resolved_program_artifacts(
                 m,
                 &path,
@@ -6941,14 +16930,12 @@ fn cmd_resolve(
 /// Publish one resolved program through the identity contract of its target
 /// mirror.
 ///
-/// `--binaries-dir` normally materializes fetched-cache links. The repository's
+/// `--binaries-dir` normally materializes cache links. The repository's
 /// `local-binaries` directory is different: the host treats it as the
 /// higher-priority direct-build tier and accepts package-owned links only when
-/// they select a claimed immutable local generation. A forced source proof
-/// therefore copies the selected target package into that namespace instead
-/// of creating cache links that the host must reject. Dependencies retain the
-/// ordinary resolver path; `--force-source-build` deliberately applies only to
-/// the selected package.
+/// they select a claimed immutable local generation. Copy each resolved
+/// program into that namespace instead of creating cache links that the host
+/// must reject.
 fn publish_resolved_program_artifacts(
     manifest: &DepsManifest,
     canonical: &Path,
@@ -6971,8 +16958,16 @@ fn publish_resolved_program_artifacts(
         }
     };
 
-    if force_source_build && publishes_to_local_tier {
-        return publish_forced_source_local_generation(
+    if publishes_to_local_tier {
+        if !force_source_build && resolved_local_generation_is_current(
+            manifest,
+            &publication_root,
+            arch,
+            cache_key_sha,
+        )? {
+            return Ok(());
+        }
+        return publish_resolved_local_generation(
             manifest,
             canonical,
             &publication_root,
@@ -6990,7 +16985,45 @@ fn publish_resolved_program_artifacts(
     )
 }
 
-fn publish_forced_source_local_generation(
+fn resolved_local_generation_is_current(
+    manifest: &DepsManifest,
+    binaries_dir: &Path,
+    arch: TargetArch,
+    cache_key_sha: &str,
+) -> Result<bool, String> {
+    let arch_root = binaries_dir.join("programs").join(arch.as_str());
+    if manifest.uses_package_mirror_directory() {
+        return package_mirror_selects_local_generation(
+            manifest,
+            binaries_dir,
+            arch,
+            cache_key_sha,
+            &arch_root.join(&manifest.name),
+        );
+    }
+
+    let output = manifest.program_outputs.first().ok_or_else(|| {
+        format!(
+            "{}: resolved local generation has no declared output",
+            manifest.spec(),
+        )
+    })?;
+    let destination = if manifest.uses_root_binary_mirror() {
+        binaries_dir.join(format!("{}.wasm", output.name))
+    } else {
+        arch_root.join(manifest.output_dest_rel_for(output))
+    };
+    scalar_mirror_selects_local_generation(
+        manifest,
+        output,
+        binaries_dir,
+        arch,
+        cache_key_sha,
+        &destination,
+    )
+}
+
+fn publish_resolved_local_generation(
     manifest: &DepsManifest,
     canonical: &Path,
     binaries_dir: &Path,
@@ -7000,7 +17033,7 @@ fn publish_forced_source_local_generation(
     validate_cache_artifacts(manifest, canonical)?;
     let epoch_nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|error| format!("create forced-source local generation identity: {error}"))?
+        .map_err(|error| format!("create resolved local generation identity: {error}"))?
         .as_nanos();
     let sequence = MIRROR_TRANSACTION_COUNTER.fetch_add(1, Ordering::Relaxed);
     let session = format!(
@@ -7041,16 +17074,16 @@ fn publish_forced_source_local_generation(
             generation,
             remaining,
         }) => Err(format!(
-            "{}: forced-source local generation {} remained incomplete after collecting the declared closure ({remaining} missing)",
+            "{}: resolved local generation {} remained incomplete after collecting the declared closure ({remaining} missing)",
             manifest.spec(),
             generation.display(),
         )),
         Some(_) => Err(format!(
-            "{}: forced-source local generation produced an unexpected publication outcome",
+            "{}: resolved local generation produced an unexpected publication outcome",
             manifest.spec(),
         )),
         None => Err(format!(
-            "{}: forced-source local generation has no declared artifacts",
+            "{}: resolved local generation has no declared artifacts",
             manifest.spec(),
         )),
     }
@@ -7064,9 +17097,34 @@ fn manifest_cache_key_sha(
     arch: TargetArch,
     abi_version: u32,
 ) -> Result<String, String> {
+    manifest_cache_key_sha_for_policy(
+        manifest,
+        registry,
+        arch,
+        abi_version,
+        ResolvePolicy::Default,
+    )
+}
+
+fn manifest_cache_key_sha_for_policy(
+    manifest: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+    policy: ResolvePolicy,
+) -> Result<String, String> {
     let mut memo = BTreeMap::new();
     let mut chain = Vec::new();
-    compute_sha(manifest, registry, arch, abi_version, &mut memo, &mut chain).map(|sha| hex(&sha))
+    compute_sha_for_policy(
+        manifest,
+        registry,
+        arch,
+        abi_version,
+        policy,
+        &mut memo,
+        &mut chain,
+    )
+    .map(|sha| hex(&sha))
 }
 
 #[derive(Clone, Debug)]
@@ -8636,6 +18694,7 @@ enum LocalMirrorEntryKind {
 struct LocalMirrorEntrySnapshot {
     identity: PackageMirrorIdentity,
     kind: LocalMirrorEntryKind,
+    mode: u32,
 }
 
 struct LocalFileTransaction {
@@ -9274,21 +19333,69 @@ fn reserve_local_file_transaction(
 }
 
 fn inspect_local_mirror_entry(path: &Path) -> Result<LocalMirrorEntrySnapshot, String> {
+    inspect_local_mirror_entry_with_hooks(path, &mut |_| {}, &mut |_| {})
+}
+
+fn inspect_local_mirror_entry_with_after_hash<F>(
+    path: &Path,
+    after_hash: &mut F,
+) -> Result<LocalMirrorEntrySnapshot, String>
+where
+    F: FnMut(&Path),
+{
+    inspect_local_mirror_entry_with_hooks(path, after_hash, &mut |_| {})
+}
+
+fn inspect_local_mirror_entry_with_hooks<AfterHash, AfterReopen>(
+    path: &Path,
+    after_hash: &mut AfterHash,
+    after_reopen: &mut AfterReopen,
+) -> Result<LocalMirrorEntrySnapshot, String>
+where
+    AfterHash: FnMut(&Path),
+    AfterReopen: FnMut(&Path),
+{
     let before = std::fs::symlink_metadata(path)
         .map_err(|e| format!("inspect local mirror entry {}: {e}", path.display()))?;
     let identity = package_mirror_identity(&before)?;
     let kind = if before.file_type().is_symlink() {
-        LocalMirrorEntryKind::Symlink {
-            target: std::fs::read_link(path)
-                .map_err(|e| format!("read local mirror symlink {}: {e}", path.display()))?,
+        let target = std::fs::read_link(path)
+            .map_err(|e| format!("read local mirror symlink {}: {e}", path.display()))?;
+        let after_link = std::fs::symlink_metadata(path)
+            .map_err(|e| format!("reinspect local mirror symlink {}: {e}", path.display()))?;
+        if !after_link.file_type().is_symlink()
+            || package_mirror_identity(&after_link)? != identity
+            || std::fs::read_link(path).ok().as_deref() != Some(target.as_path())
+        {
+            return Err(format!(
+                "local mirror symlink changed while it was inspected: {}",
+                path.display()
+            ));
         }
+        LocalMirrorEntryKind::Symlink { target }
     } else if before.is_file() {
+        #[cfg(not(unix))]
         let mut file = std::fs::File::open(path)
             .map_err(|e| format!("open local mirror entry {}: {e}", path.display()))?;
+        #[cfg(unix)]
+        let mut file = rustix::fs::open(
+            path,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::CLOEXEC
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK,
+            rustix::fs::Mode::empty(),
+        )
+        .map(std::fs::File::from)
+        .map_err(|e| format!("open local mirror entry {} without following: {e}", path.display()))?;
         let opened = file
             .metadata()
             .map_err(|e| format!("inspect opened local mirror entry {}: {e}", path.display()))?;
-        if !opened.is_file() || package_mirror_identity(&opened)? != identity {
+        if !opened.is_file()
+            || package_mirror_identity(&opened)? != identity
+            || receipt_metadata_snapshot_portable(&opened)?
+                != receipt_metadata_snapshot_portable(&before)?
+        {
             return Err(format!(
                 "local mirror entry changed before its contents were read: {}",
                 path.display()
@@ -9297,18 +19404,47 @@ fn inspect_local_mirror_entry(path: &Path) -> Result<LocalMirrorEntrySnapshot, S
         let mut hasher = Sha256::new();
         std::io::copy(&mut file, &mut hasher)
             .map_err(|e| format!("hash local mirror entry {}: {e}", path.display()))?;
+        after_hash(path);
         let hashed = file.metadata().map_err(|e| {
             format!(
                 "reinspect opened local mirror entry {}: {e}",
                 path.display()
             )
         })?;
-        if package_mirror_identity(&hashed)? != identity || hashed.len() != opened.len() {
+        #[cfg(unix)]
+        let reopened = rustix::fs::open(
+            path,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::CLOEXEC
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK,
+            rustix::fs::Mode::empty(),
+        )
+        .map(std::fs::File::from)
+        .map_err(|e| format!("reopen local mirror entry {} without following: {e}", path.display()))?;
+        #[cfg(not(unix))]
+        let reopened = std::fs::File::open(path)
+            .map_err(|e| format!("reopen local mirror entry {}: {e}", path.display()))?;
+        let reopened_metadata = reopened.metadata().map_err(|e| {
+            format!("inspect reopened local mirror entry {}: {e}", path.display())
+        })?;
+        #[cfg(unix)]
+        let metadata_changed = receipt_metadata_snapshot(&hashed)?
+            != receipt_metadata_snapshot(&opened)?
+            || receipt_metadata_snapshot(&reopened_metadata)?
+                != receipt_metadata_snapshot(&opened)?;
+        #[cfg(not(unix))]
+        let metadata_changed = receipt_metadata_snapshot_portable(&hashed)?
+            != receipt_metadata_snapshot_portable(&opened)?
+            || receipt_metadata_snapshot_portable(&reopened_metadata)?
+                != receipt_metadata_snapshot_portable(&opened)?;
+        if package_mirror_identity(&hashed)? != identity || metadata_changed {
             return Err(format!(
                 "local mirror entry changed while its contents were read: {}",
                 path.display()
             ));
         }
+        after_reopen(path);
         LocalMirrorEntryKind::Regular {
             len: opened.len(),
             sha256: hasher.finalize().into(),
@@ -9321,7 +19457,12 @@ fn inspect_local_mirror_entry(path: &Path) -> Result<LocalMirrorEntrySnapshot, S
     };
     let after = std::fs::symlink_metadata(path)
         .map_err(|e| format!("reinspect local mirror entry {}: {e}", path.display()))?;
-    if package_mirror_identity(&after)? != identity {
+    #[cfg(unix)]
+    let metadata_changed = receipt_metadata_snapshot(&after)? != receipt_metadata_snapshot(&before)?;
+    #[cfg(not(unix))]
+    let metadata_changed = receipt_metadata_snapshot_portable(&after)?
+        != receipt_metadata_snapshot_portable(&before)?;
+    if package_mirror_identity(&after)? != identity || metadata_changed {
         return Err(format!(
             "local mirror entry identity changed while it was inspected: {}",
             path.display()
@@ -9347,7 +19488,53 @@ fn inspect_local_mirror_entry(path: &Path) -> Result<LocalMirrorEntrySnapshot, S
             path.display()
         ));
     }
-    Ok(LocalMirrorEntrySnapshot { identity, kind })
+    #[cfg(unix)]
+    let mode = {
+        use std::os::unix::fs::PermissionsExt;
+        before.permissions().mode() & 0o7777
+    };
+    #[cfg(not(unix))]
+    let mode = 0;
+    Ok(LocalMirrorEntrySnapshot {
+        identity,
+        kind,
+        mode,
+    })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PortableEntryMetadataSnapshot {
+    identity: PackageMirrorIdentity,
+    kind: u8,
+    mode: u32,
+    len: u64,
+}
+
+fn receipt_metadata_snapshot_portable(
+    metadata: &std::fs::Metadata,
+) -> Result<PortableEntryMetadataSnapshot, String> {
+    let kind = if metadata.file_type().is_symlink() {
+        3
+    } else if metadata.is_dir() {
+        2
+    } else if metadata.is_file() {
+        1
+    } else {
+        0
+    };
+    #[cfg(unix)]
+    let mode = {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o7777
+    };
+    #[cfg(not(unix))]
+    let mode = 0;
+    Ok(PortableEntryMetadataSnapshot {
+        identity: package_mirror_identity(metadata)?,
+        kind,
+        mode,
+        len: metadata.len(),
+    })
 }
 
 fn validate_local_mirror_entry(
@@ -9804,7 +19991,7 @@ struct PackageMirrorSnapshot {
     links: BTreeMap<PathBuf, PathBuf>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct PackageMirrorIdentity {
     first: u64,
     second: u64,
@@ -10680,6 +20867,29 @@ libs = ["lib/lib{name}.a"]
         fs::write(lib_dir.join("package.toml"), text).unwrap();
     }
 
+    fn write_source_only_repository_inputs(root: &Path, name: &str) {
+        let package = root.join(name);
+        fs::write(package.join("source-only-input.txt"), "declared source input\n").unwrap();
+        let build_path = package.join("build.toml");
+        let input = format!("{name}/source-only-input.txt");
+        if build_path.exists() {
+            let mut build = fs::read_to_string(&build_path).unwrap();
+            assert!(!build.contains("inputs ="), "fixture already declares inputs");
+            let script_start = build.find("script_path").unwrap();
+            let script_end = build[script_start..].find('\n').unwrap() + script_start + 1;
+            build.insert_str(script_end, &format!("inputs = [{input:?}]\n"));
+            fs::write(build_path, build).unwrap();
+        } else {
+            fs::write(
+                build_path,
+                format!(
+                    "script_path = \"{name}/build-{name}.sh\"\ninputs = [{input:?}]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n\n[binary]\nindex_url = \"https://example.test/binaries-abi-v{{abi}}/index.toml\"\n"
+                ),
+            )
+            .unwrap();
+        }
+    }
+
     fn write_build_revision(dir: &Path, name: &str, revision: u32) {
         fs::write(
             dir.join(name).join("build.toml"),
@@ -10726,7 +20936,7 @@ index_url = "https://example.test/releases/download/binaries-abi-v{{abi}}/index.
             .join(format!("{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
-        p
+        fs::canonicalize(p).unwrap()
     }
 
     #[test]
@@ -10739,6 +20949,47 @@ index_url = "https://example.test/releases/download/binaries-abi-v{{abi}}/index.
         assert_eq!(
             resolve_registry_root(repo, "/shared/registry"),
             PathBuf::from("/shared/registry"),
+        );
+    }
+
+    #[test]
+    fn buildable_transitive_closure_graph_emits_resolved_dependency_first_edges() {
+        let root = tempdir("resolved-dependency-graph-arches");
+        write(&root, "base", "1.0.0", &[]);
+        write(&root, "app", "1.0.0", &["base@1.0.0"]);
+        let app_path = root.join("app/package.toml");
+        let app_source = fs::read_to_string(&app_path).unwrap().replace(
+            "version = \"1.0.0\"",
+            "version = \"1.0.0\"\narches = [\"wasm32\", \"wasm64\"]",
+        );
+        fs::write(app_path, app_source).unwrap();
+        let registry = Registry { roots: vec![root] };
+        let app = registry.load("app").unwrap();
+
+        let graph = resolved_dependency_graph(&app, &registry, TargetArch::Wasm64).unwrap();
+        let base_node = ResolvedDependencyNode {
+            package_name: "base".to_string(),
+            target_arch: TargetArch::Wasm32,
+        };
+        let app_node = ResolvedDependencyNode {
+            package_name: "app".to_string(),
+            target_arch: TargetArch::Wasm64,
+        };
+        assert_eq!(
+            graph.nodes,
+            BTreeMap::from([
+                (base_node.clone(), ManifestKind::Library),
+                (app_node.clone(), ManifestKind::Library),
+            ]),
+        );
+        assert_eq!(
+            graph.direct_edges,
+            BTreeSet::from([(base_node, app_node)]),
+            "direct edges must point from a resolved dependency to its dependent",
+        );
+        assert_eq!(
+            buildable_transitive_closure(&app, &registry, TargetArch::Wasm64).unwrap(),
+            BTreeSet::from(["app".to_string(), "base".to_string()]),
         );
     }
 
@@ -12506,6 +22757,86 @@ index_url = "https://example.test/releases/binaries-abi-v{abi}/index.toml"
     }
 
     #[test]
+    fn compute_cache_key_sha_binds_git_input_tree_and_gitlink_permission() {
+        let root = tempdir("ckcs-git-input-tree-capability");
+        write(&root, "libGit", "1.0.0", &[]);
+        let registry = Registry {
+            roots: vec![root.clone()],
+        };
+        let package = root.join("libGit");
+        let build_path = package.join("build.toml");
+        std::fs::write(
+            &build_path,
+            r#"
+script_path = "packages/registry/libGit/build-libGit.sh"
+repo_url = "https://example.test/kandelo.git"
+commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision = 1
+
+[[git_inputs]]
+name = "source"
+repository = "https://example.test/source.git"
+commit = "1111111111111111111111111111111111111111"
+tree = "2222222222222222222222222222222222222222"
+allow_uninitialized_gitlinks = true
+
+[binary]
+index_url = "https://example.test/releases/binaries-abi-v{abi}/index.toml"
+"#,
+        )
+        .unwrap();
+        let manifest = registry.load("libGit").unwrap();
+        let initial = compute_sha(
+            &manifest,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        let authored = std::fs::read_to_string(&build_path).unwrap();
+        std::fs::write(
+            &build_path,
+            authored.replace(
+                "tree = \"2222222222222222222222222222222222222222\"",
+                "tree = \"3333333333333333333333333333333333333333\"",
+            ),
+        )
+        .unwrap();
+        let changed_tree = compute_sha(
+            &manifest,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_ne!(initial, changed_tree, "the exact parent tree is identity");
+
+        std::fs::write(
+            &build_path,
+            authored.replace("allow_uninitialized_gitlinks = true\n", ""),
+        )
+        .unwrap();
+        let denied_gitlinks = compute_sha(
+            &manifest,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_ne!(
+            initial, denied_gitlinks,
+            "the narrow uninitialized-gitlink permission is identity"
+        );
+    }
+
+    #[test]
     fn global_package_build_input_digests_change_with_content() {
         let root = tempdir("global-build-inputs");
         std::fs::write(root.join("toolchain.txt"), "one\n").unwrap();
@@ -12521,28 +22852,44 @@ index_url = "https://example.test/releases/binaries-abi-v{abi}/index.toml"
     }
 
     #[test]
-    fn gitlink_identity_admits_the_exact_source_checkout_across_build_users() {
-        let root = Path::new("/tmp/kandelo source");
-        let command = gitlink_ls_tree_command(root, "libc/musl");
-        let args = command
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            args,
-            vec![
-                "-c",
-                "safe.directory=/tmp/kandelo source",
-                "-C",
-                "/tmp/kandelo source",
-                "ls-tree",
-                "HEAD",
-                "--",
-                "libc/musl",
+    fn gitlink_identity_uses_the_index_entry_instead_of_head() {
+        let root = tempdir("gitlink-index-selector");
+        fixture_git(&root, &["init", "--quiet"]);
+        fixture_git(&root, &["config", "user.name", "Kandelo Test"]);
+        fixture_git(&root, &["config", "user.email", "test@kandelo.invalid"]);
+        let head_oid = "1111111111111111111111111111111111111111";
+        let index_oid = "2222222222222222222222222222222222222222";
+        fixture_git(
+            &root,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{head_oid},libc/musl"),
             ],
-            "the protected checker must admit only its exact read-only source alias instead of falling back to mutable submodule contents",
         );
+        fixture_git(&root, &["commit", "--quiet", "-m", "head gitlink"]);
+        fixture_git(
+            &root,
+            &[
+                "update-index",
+                "--cacheinfo",
+                &format!("160000,{index_oid},libc/musl"),
+            ],
+        );
+
+        let digest_for = |object_id: &str| {
+            let mut hasher = Sha256::new();
+            hasher.update(b"gitlink\0");
+            hasher.update(b"libc/musl\0");
+            hasher.update(object_id.as_bytes());
+            hasher.update(b"\0");
+            let digest: [u8; 32] = hasher.finalize().into();
+            digest
+        };
+        let actual = hash_gitlink_input(&root, "libc/musl").unwrap().unwrap();
+        assert_eq!(actual, digest_for(index_oid));
+        assert_ne!(actual, digest_for(head_oid));
     }
 
     #[test]
@@ -13758,6 +24105,8 @@ spdx = "TestLicense"
 
     fn resolve_opts<'a>(cache: &'a Path, local: Option<&'a Path>) -> ResolveOpts<'a> {
         ResolveOpts {
+            policy: ResolvePolicy::Default,
+            source_cache_root: None,
             cache_root: cache,
             local_libs: local,
             force_source_build: None,
@@ -13777,6 +24126,8 @@ spdx = "TestLicense"
         repo_root: &'a Path,
     ) -> ResolveOpts<'a> {
         ResolveOpts {
+            policy: ResolvePolicy::Default,
+            source_cache_root: None,
             cache_root: cache,
             local_libs: local,
             force_source_build: None,
@@ -13784,6 +24135,177 @@ spdx = "TestLicense"
             repo_root: Some(repo_root),
             binaries_dir: None,
         }
+    }
+
+    fn source_only_test_roots(label: &str) -> (PathBuf, PathBuf) {
+        let base = tempdir(label);
+        let compiled = base.join("source-only-v1/compiled");
+        fs::create_dir_all(&compiled).unwrap();
+        (base, fs::canonicalize(compiled).unwrap())
+    }
+
+    fn source_only_test_opts<'a>(base: &'a Path, compiled: &'a Path) -> ResolveOpts<'a> {
+        ResolveOpts {
+            policy: ResolvePolicy::SourceOnlyV1,
+            source_cache_root: Some(base),
+            cache_root: compiled,
+            local_libs: None,
+            force_source_build: None,
+            fetch_only: false,
+            repo_root: None,
+            binaries_dir: None,
+        }
+    }
+
+    fn write_source_archive_fixture(registry: &Path, name: &str, archive: &Path, digest: &str) {
+        let package = registry.join(name);
+        fs::create_dir_all(&package).unwrap();
+        fs::write(
+            package.join("package.toml"),
+            format!(
+                r#"kind = "source"
+name = "{name}"
+version = "1.0.0"
+
+[source]
+url = "file://{archive}"
+sha256 = "{digest}"
+provider = "archive"
+
+[license]
+spdx = "TestLicense"
+"#,
+                archive = archive.display(),
+            ),
+        )
+        .unwrap();
+    }
+
+    fn write_archive_provider_lib(
+        registry: &Path,
+        name: &str,
+        archive: &Path,
+        digest: &str,
+        build_body: &str,
+    ) {
+        write_lib(
+            registry,
+            name,
+            "1.0.0",
+            &[],
+            build_body,
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        let manifest_path = registry.join(name).join("package.toml");
+        let manifest = fs::read_to_string(&manifest_path).unwrap().replace(
+            &format!("https://example.test/{name}-1.0.0.tar.gz"),
+            &format!("file://{}", archive.display()),
+        );
+        let manifest = manifest.replace(
+            "sha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"",
+            &format!("sha256 = \"{digest}\"\nprovider = \"archive\""),
+        );
+        fs::write(manifest_path, manifest).unwrap();
+    }
+
+    fn fixture_source_archive_with_payload(
+        root: &Path,
+        filename: &str,
+        payload: &[u8],
+    ) -> (PathBuf, String) {
+        use std::io::Write;
+
+        let archive = root.join(filename);
+        let mut bytes = Vec::new();
+        {
+            let encoder = flate2::write::GzEncoder::new(&mut bytes, flate2::Compression::default());
+            let mut builder = tar::Builder::new(encoder);
+            let members: [(&str, &[u8]); 2] = [
+                ("fixture-1.0/payload.txt", payload),
+                (
+                    "fixture-1.0/lib/pkgconfig/archive-must-not-leak.pc",
+                    b"Name: source-only trap\n",
+                ),
+            ];
+            for (path, contents) in members {
+                let mut header = tar::Header::new_gnu();
+                header.set_path(path).unwrap();
+                header.set_size(contents.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                builder.append(&header, contents).unwrap();
+            }
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+        fs::File::create(&archive)
+            .unwrap()
+            .write_all(&bytes)
+            .unwrap();
+        let digest_bytes: [u8; 32] = Sha256::digest(&bytes).into();
+        (archive, hex(&digest_bytes))
+    }
+
+    fn fixture_source_archive(root: &Path) -> (PathBuf, String) {
+        fixture_source_archive_with_payload(
+            root,
+            "fixture-source.tar.gz",
+            b"resolver-owned source\n",
+        )
+    }
+
+    fn write_counted_lib_fixture(
+        registry: &Path,
+        name: &str,
+        depends_on: &[&str],
+        counter: &Path,
+    ) {
+        write_lib(
+            registry,
+            name,
+            "1.0.0",
+            depends_on,
+            &format!(
+                "printf 'ran\\n' >> {:?}\nmkdir -p \"$WASM_POSIX_DEP_OUT_DIR/lib\"\nprintf '%s\\n' {:?} > \"$WASM_POSIX_DEP_OUT_DIR/lib/out.a\"",
+                counter, name,
+            ),
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+    }
+
+    fn write_global_toolchain_fixture(root: &Path) {
+        let directory_inputs = [
+            ".github/actions/package-archive-build",
+            ".github/actions/package-toolchain",
+            ".github/actions/fetch-submodules",
+            ".github/actions/download-run-artifacts",
+            "libc/glue",
+            "libc/musl-overlay",
+            "sdk/bin",
+            "sdk/src",
+        ];
+        for input in GLOBAL_PACKAGE_TOOLCHAIN_INPUTS {
+            if *input == "libc/musl" {
+                continue;
+            }
+            let path = root.join(input);
+            if directory_inputs.contains(input) {
+                std::fs::create_dir_all(&path).unwrap();
+                std::fs::write(path.join("fixture"), format!("{input}\n")).unwrap();
+            } else {
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, format!("{input}\n")).unwrap();
+            }
+        }
+    }
+
+    fn set_fixture_gitlink(repo: &Path, object_id: &str, add: bool) {
+        let mut args = vec!["update-index"];
+        if add {
+            args.push("--add");
+        }
+        let cacheinfo = format!("160000,{object_id},libc/musl");
+        args.extend(["--cacheinfo", cacheinfo.as_str()]);
+        fixture_git(repo, &args);
     }
 
     #[test]
@@ -13807,6 +24329,12 @@ echo "$WASM_POSIX_DEP_NAME $WASM_POSIX_DEP_VERSION rev$WASM_POSIX_DEP_REVISION" 
 libs = ["lib/libA.a"]
 "#,
         );
+        let manifest_path = root.join("libA/package.toml");
+        let manifest = fs::read_to_string(&manifest_path).unwrap().replace(
+            "sha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"",
+            &format!("sha256 = \"{}\"\nprovider = \"archive\"", "1".repeat(64)),
+        );
+        fs::write(manifest_path, manifest).unwrap();
         let reg = Registry { roots: vec![root] };
         let m = reg.load("libA").unwrap();
 
@@ -14114,6 +24642,8 @@ mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && touch $WASM_POSIX_DEP_OUT_DIR/lib/libT.a
             name: "homebrew_tap_core".to_string(),
             repository: format!("file://{}", source.display()),
             commit: commit.clone(),
+            tree: None,
+            allow_uninitialized_gitlinks: false,
         };
 
         let provisioned = ProvisionedGitInputs::provision_declarations(
@@ -14258,6 +24788,8 @@ mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && touch $WASM_POSIX_DEP_OUT_DIR/lib/libT.a
             name: "tap".into(),
             repository: format!("file://{}", source.display()),
             commit,
+            tree: None,
+            allow_uninitialized_gitlinks: false,
         };
         let provisioned = ProvisionedGitInputs::provision_declarations_with_ambient_env(
             "shell@0.1.0",
@@ -14333,6 +24865,8 @@ mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && touch $WASM_POSIX_DEP_OUT_DIR/lib/libT.a
                 name: "tap".into(),
                 repository: format!("file://{}", source.display()),
                 commit,
+                tree: None,
+                allow_uninitialized_gitlinks: false,
             }],
         )
         .unwrap_err();
@@ -14356,6 +24890,8 @@ mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && touch $WASM_POSIX_DEP_OUT_DIR/lib/libT.a
                 name: "tap".into(),
                 repository: format!("file://{}", source.display()),
                 commit,
+                tree: None,
+                allow_uninitialized_gitlinks: false,
             }],
         )
         .unwrap();
@@ -14387,6 +24923,8 @@ mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && touch $WASM_POSIX_DEP_OUT_DIR/lib/libT.a
                 name: "tap".into(),
                 repository: format!("file://{}", source.display()),
                 commit,
+                tree: None,
+                allow_uninitialized_gitlinks: false,
             }],
         )
         .unwrap();
@@ -14396,6 +24934,7 @@ mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && touch $WASM_POSIX_DEP_OUT_DIR/lib/libT.a
             &checkout,
             &["update-index", "--assume-unchanged", "payload.txt"],
         );
+        fs::remove_file(checkout.join("payload.txt")).unwrap();
         fs::write(checkout.join("payload.txt"), "hidden mutation\n").unwrap();
         assert!(fixture_git(&checkout, &["status", "--porcelain=v1"]).is_empty());
         set_git_input_tree_read_only(provisioned.root.as_ref().unwrap(), true).unwrap();
@@ -14420,6 +24959,8 @@ mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && touch $WASM_POSIX_DEP_OUT_DIR/lib/libT.a
                 name: "homebrew_tap_core".to_string(),
                 repository: format!("file://{}", source.display()),
                 commit: "1111111111111111111111111111111111111111".to_string(),
+                tree: None,
+                allow_uninitialized_gitlinks: false,
             }],
         )
         .unwrap_err();
@@ -14458,6 +24999,8 @@ mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && touch $WASM_POSIX_DEP_OUT_DIR/lib/libT.a
                 name: "tap".to_string(),
                 repository: format!("file://{}", source.display()),
                 commit,
+                tree: None,
+                allow_uninitialized_gitlinks: false,
             }],
         )
         .unwrap_err();
@@ -14491,10 +25034,105 @@ mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && touch $WASM_POSIX_DEP_OUT_DIR/lib/libT.a
                 name: "tap".to_string(),
                 repository: format!("file://{}", source.display()),
                 commit,
+                tree: None,
+                allow_uninitialized_gitlinks: false,
             }],
         )
         .unwrap_err();
         assert!(err.contains("submodule gitlinks"), "got: {err}");
+    }
+
+    #[test]
+    fn immutable_git_input_requires_its_declared_parent_tree() {
+        let root = tempdir("git-input-wrong-tree");
+        let (source, commit) = immutable_git_fixture("git-input-wrong-tree-source");
+        let canonical = root.join("cache/programs/shell");
+        fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+
+        let err = ProvisionedGitInputs::provision_declarations(
+            "shell@0.1.0",
+            &canonical,
+            vec![GitBuildInput {
+                name: "tap".to_string(),
+                repository: format!("file://{}", source.display()),
+                commit,
+                tree: Some("1111111111111111111111111111111111111111".to_string()),
+                allow_uninitialized_gitlinks: false,
+            }],
+        )
+        .unwrap_err();
+
+        assert!(
+            err.contains("expected tree") && err.contains("checkout has"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn immutable_git_input_allows_only_empty_uninitialized_gitlinks() {
+        let root = tempdir("git-input-allowed-gitlink");
+        let (source, first_commit) = immutable_git_fixture("git-input-allowed-gitlink-source");
+        fixture_git(
+            &source,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{first_commit},vendor/submodule"),
+            ],
+        );
+        fixture_git(&source, &["commit", "--quiet", "-m", "gitlink"]);
+        let commit = fixture_git(&source, &["rev-parse", "HEAD"]);
+        let tree = fixture_git(&source, &["rev-parse", "HEAD^{tree}"]);
+        let canonical = root.join("cache/programs/shell");
+        fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+        let declaration = GitBuildInput {
+            name: "tap".to_string(),
+            repository: format!("file://{}", source.display()),
+            commit,
+            tree: Some(tree),
+            allow_uninitialized_gitlinks: true,
+        };
+
+        let provisioned = ProvisionedGitInputs::provision_declarations(
+            "shell@0.1.0",
+            &canonical,
+            vec![declaration.clone()],
+        )
+        .unwrap();
+        let checkout = &provisioned.inputs[0].checkout;
+        assert_eq!(
+            fs::read_to_string(checkout.join("payload.txt")).unwrap(),
+            "immutable payload\n",
+            "ordinary tracked files must remain materialized"
+        );
+        let gitlink = checkout.join("vendor/submodule");
+        let metadata = fs::symlink_metadata(&gitlink).unwrap();
+        assert!(metadata.is_dir() && !metadata.file_type().is_symlink());
+        assert!(fs::read_dir(&gitlink).unwrap().next().is_none());
+
+        set_git_input_tree_read_only(provisioned.root.as_ref().unwrap(), false).unwrap();
+        fs::write(gitlink.join("unexpected"), "not uninitialized\n").unwrap();
+        set_git_input_tree_read_only(provisioned.root.as_ref().unwrap(), true).unwrap();
+        let err = provisioned.verify_unchanged().unwrap_err();
+        assert!(err.contains("must be an empty real directory"), "got: {err}");
+        drop(provisioned);
+
+        let provisioned = ProvisionedGitInputs::provision_declarations(
+            "shell@0.1.0",
+            &canonical,
+            vec![declaration],
+        )
+        .unwrap();
+        let checkout = &provisioned.inputs[0].checkout;
+        set_git_input_tree_read_only(provisioned.root.as_ref().unwrap(), false).unwrap();
+        fs::remove_file(checkout.join("payload.txt")).unwrap();
+        set_git_input_tree_read_only(provisioned.root.as_ref().unwrap(), true).unwrap();
+        let err = provisioned.verify_unchanged().unwrap_err();
+        assert!(
+            err.contains("mutated immutable checkout") && err.contains("payload.txt"),
+            "ordinary tracked files must never be omitted: {err}"
+        );
     }
 
     #[test]
@@ -15989,6 +26627,8 @@ cache_key_sha = "{cache_key_hex}"
         );
 
         let opts = ResolveOpts {
+            policy: ResolvePolicy::Default,
+            source_cache_root: None,
             cache_root: &cache,
             local_libs: None,
             force_source_build: None,
@@ -16063,6 +26703,8 @@ cache_key_sha = "{cache_key_hex}"
         );
 
         let remote_opts = ResolveOpts {
+            policy: ResolvePolicy::Default,
+            source_cache_root: None,
             cache_root: &remote_cache,
             local_libs: None,
             force_source_build: None,
@@ -16083,6 +26725,8 @@ cache_key_sha = "{cache_key_hex}"
 
         let force = BTreeSet::from([name.to_string()]);
         let source_opts = ResolveOpts {
+            policy: ResolvePolicy::Default,
+            source_cache_root: None,
             cache_root: &source_cache,
             local_libs: None,
             force_source_build: Some(&force),
@@ -16175,6 +26819,8 @@ cache_key_sha = "{cache_key_hex}"
         );
 
         let fetch_only_opts = ResolveOpts {
+            policy: ResolvePolicy::Default,
+            source_cache_root: None,
             cache_root: &fetch_only_cache,
             local_libs: None,
             force_source_build: None,
@@ -16425,6 +27071,8 @@ generator = "test"
         .unwrap();
         let canonical = canonical_path(&cache, &m, TEST_ARCH, &sha);
         let opts = ResolveOpts {
+            policy: ResolvePolicy::Default,
+            source_cache_root: None,
             cache_root: &cache,
             local_libs: None,
             force_source_build: None,
@@ -19813,6 +30461,8 @@ spdx = "BSD-3-Clause"
 
         let registry = Registry { roots: vec![] };
         let opts = ResolveOpts {
+            policy: ResolvePolicy::Default,
+            source_cache_root: None,
             cache_root: &cache,
             local_libs: None,
             force_source_build: None,
@@ -20356,6 +31006,8 @@ libs = ["lib/libF1.a"]
         let mut force = BTreeSet::new();
         force.insert("libF1".to_string());
         let opts = ResolveOpts {
+            policy: ResolvePolicy::Default,
+            source_cache_root: None,
             cache_root: &cache,
             local_libs: None,
             force_source_build: Some(&force),
@@ -20443,6 +31095,8 @@ libs = ["lib/libF1.a"]
         let mut force = BTreeSet::new();
         force.insert("libF2".to_string());
         let opts = ResolveOpts {
+            policy: ResolvePolicy::Default,
+            source_cache_root: None,
             cache_root: &cache,
             local_libs: None,
             force_source_build: Some(&force),
@@ -20531,6 +31185,8 @@ libs = ["lib/libF3b.a"]
         let mut force = BTreeSet::new();
         force.insert("libF3a".to_string());
         let opts = ResolveOpts {
+            policy: ResolvePolicy::Default,
+            source_cache_root: None,
             cache_root: &cache,
             local_libs: None,
             force_source_build: Some(&force),
@@ -20731,6 +31387,3870 @@ libs = ["lib/libF3b.a"]
     }
 
     #[test]
+    fn source_only_policy_parser_fails_closed() {
+        use std::ffi::{OsStr, OsString};
+        assert_eq!(parse_resolution_policy(None).unwrap(), ResolvePolicy::Default);
+        assert_eq!(
+            parse_resolution_policy(Some(OsStr::new("source-only-v1"))).unwrap(),
+            ResolvePolicy::SourceOnlyV1
+        );
+        for invalid in ["", "default", "source-only", "source-only-v2"] {
+            let error = parse_resolution_policy(Some(OsStr::new(invalid))).unwrap_err();
+            assert!(error.contains("WASM_POSIX_RESOLUTION_POLICY"), "got: {error}");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let invalid = OsString::from_vec(vec![0xff]);
+            let error = parse_resolution_policy(Some(&invalid)).unwrap_err();
+            assert!(error.contains("UTF-8"), "got: {error}");
+        }
+    }
+
+    #[test]
+    fn source_only_flag_is_single_and_location_independent() {
+        let (enabled, rest) = extract_source_only_flag(vec![
+            "resolve".into(),
+            "bash".into(),
+            "--source-only".into(),
+        ])
+        .unwrap();
+        assert!(enabled);
+        assert_eq!(rest, vec!["resolve".to_string(), "bash".to_string()]);
+
+        let error = extract_source_only_flag(vec![
+            "--source-only".into(),
+            "resolve".into(),
+            "--source-only".into(),
+            "bash".into(),
+        ])
+        .unwrap_err();
+        assert!(error.contains("more than once"), "got: {error}");
+    }
+
+    #[test]
+    fn source_only_cli_policy_rejects_incompatible_commands_and_modes() {
+        let error = validate_resolution_policy_usage(
+            "install-local-artifact",
+            true,
+            ResolvePolicy::SourceOnlyV1,
+            false,
+            false,
+        )
+        .unwrap_err();
+        assert!(error.contains("only valid for `resolve`"), "got: {error}");
+
+        let explicit_fetch = validate_resolution_policy_usage(
+            "resolve",
+            true,
+            ResolvePolicy::SourceOnlyV1,
+            true,
+            false,
+        )
+        .unwrap_err();
+        assert!(explicit_fetch.contains("fetch-only"), "got: {explicit_fetch}");
+
+        let ambient_fetch = validate_resolution_policy_usage(
+            "resolve",
+            false,
+            ResolvePolicy::SourceOnlyV1,
+            true,
+            false,
+        )
+        .unwrap_err();
+        assert!(ambient_fetch.contains("fetch-only"), "got: {ambient_fetch}");
+
+        validate_resolution_policy_usage(
+            "resolve",
+            false,
+            ResolvePolicy::SourceOnlyV1,
+            false,
+            true,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn source_only_cache_root_priority_ignores_ordinary_binary_cache() {
+        let repo = Path::new("/repo");
+        assert_eq!(
+            select_source_only_cache_root(
+                Some(std::ffi::OsStr::new("dedicated")),
+                Some(std::ffi::OsStr::new("/xdg")),
+                Some(std::ffi::OsStr::new("/home")),
+                repo,
+            ),
+            repo.join("dedicated")
+        );
+        assert_eq!(
+            select_source_only_cache_root(
+                None,
+                Some(std::ffi::OsStr::new("/xdg")),
+                Some(std::ffi::OsStr::new("/home")),
+                repo,
+            ),
+            PathBuf::from("/xdg/kandelo/source-only")
+        );
+        assert_eq!(
+            select_source_only_cache_root(
+                None,
+                None,
+                Some(std::ffi::OsStr::new("/home")),
+                repo,
+            ),
+            PathBuf::from("/home/.cache/kandelo/source-only")
+        );
+        assert_eq!(
+            select_source_only_cache_root(None, None, None, repo),
+            PathBuf::from("/tmp/kandelo-source-only")
+        );
+    }
+
+    #[test]
+    fn source_only_cache_roots_are_canonical_and_validate_inherited_pair() {
+        let base = tempdir("source-only-root-pair");
+        let pair = canonical_source_only_cache_roots(&base, None).unwrap();
+        assert_eq!(pair.base, std::fs::canonicalize(&base).unwrap());
+        assert_eq!(pair.compiled, pair.base.join("source-only-v1/compiled"));
+
+        let same_pair = canonical_source_only_cache_roots(&base, Some(&pair.compiled)).unwrap();
+        assert_eq!(same_pair, pair);
+
+        let ordinary = tempdir("source-only-unrelated-ordinary-cache");
+        let error = canonical_source_only_cache_roots(&base, Some(&ordinary)).unwrap_err();
+        assert!(error.contains("must be the selected"), "got: {error}");
+
+        let ignored = canonical_source_only_cache_roots(&base, None).unwrap();
+        assert_ne!(ignored.compiled, std::fs::canonicalize(ordinary).unwrap());
+    }
+
+    #[test]
+    fn source_only_cache_root_rejects_mismatched_pair_without_creating_base() {
+        let parent = tempdir("source-only-root-pair-no-side-effect");
+        let absent_base = parent.join("absent-base");
+        let ordinary = parent.join("ordinary-cache");
+        std::fs::create_dir(&ordinary).unwrap();
+
+        let error =
+            canonical_source_only_cache_roots(&absent_base, Some(&ordinary)).unwrap_err();
+        assert!(error.contains("must be the selected"), "got: {error}");
+        assert!(
+            !absent_base.exists(),
+            "invalid inherited pairing must fail before creating the selected base"
+        );
+    }
+
+    #[test]
+    fn source_only_cache_root_plan_is_read_only_and_materializes_the_same_pair() {
+        let parent = tempdir("source-only-root-plan");
+        let absent_base = parent.join("absent-base");
+        let expected_compiled = absent_base.join("source-only-v1/compiled");
+
+        let planned = plan_canonical_source_only_cache_roots(
+            &absent_base,
+            Some(&expected_compiled),
+        )
+        .unwrap();
+        assert_eq!(planned.base, absent_base);
+        assert_eq!(planned.compiled, expected_compiled);
+        assert!(
+            !planned.base.exists(),
+            "planning a valid pair must not create its absent base"
+        );
+
+        let materialized = materialize_planned_source_only_cache_roots(&planned).unwrap();
+        assert_eq!(materialized.base, planned.base);
+        assert_eq!(materialized.compiled, planned.compiled);
+        assert!(materialized.compiled.is_dir());
+    }
+
+    #[test]
+    fn source_only_cache_keys_are_versioned_without_changing_default_identity() {
+        let root = tempdir("source-only-key-policy");
+        std::fs::create_dir_all(root.join("abi")).unwrap();
+        std::fs::write(root.join("abi/snapshot.json"), r#"{"abi_version":4}"#).unwrap();
+        write(&root, "libPolicy", "1.0.0", &[]);
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let manifest = reg.load("libPolicy").unwrap();
+
+        let default = compute_sha_with_identity_context(
+            &manifest,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            ResolvePolicy::Default,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+            Some(&[]),
+            &root,
+            Some(&[]),
+        )
+        .unwrap();
+        write_source_only_repository_inputs(&root, "libPolicy");
+        let manifest = reg.load("libPolicy").unwrap();
+        let source_only = compute_sha_with_identity_context(
+            &manifest,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            ResolvePolicy::SourceOnlyV1,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+            Some(&[]),
+            &root,
+            Some(&[]),
+        )
+        .unwrap();
+
+        assert_ne!(default, source_only);
+        assert_eq!(
+            hex(&default),
+            "827c412d8a21cd830e120fde25f2eabd8b0ffb7ca9385b4fc31b83054fcfdae1",
+            "Default policy remains byte-identical"
+        );
+        assert_eq!(
+            hex(&source_only),
+            "9954d4bfe2c4fd86789b9201dab865c7d3ed2c3cf7c9276a06fd11df3c88f48a",
+            "this golden binds the exact source-only-v1 provider-domain bytes"
+        );
+    }
+
+    #[test]
+    fn source_only_provider_identity_binds_semantics_but_not_explicitness() {
+        let root = std::fs::canonicalize(tempdir("source-only-provider-identity")).unwrap();
+        std::fs::create_dir_all(root.join("abi")).unwrap();
+        std::fs::write(root.join("abi/snapshot.json"), r#"{"abi_version":4}"#).unwrap();
+        write(&root, "libProvider", "1.0.0", &[]);
+        let registry = Registry {
+            roots: vec![root.clone()],
+        };
+        std::fs::write(root.join("libProvider/declared.txt"), "same\n").unwrap();
+        std::fs::write(
+            root.join("libProvider/build.toml"),
+            "script_path = \"build.sh\"\ninputs = [\"libProvider/declared.txt\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n\n[binary]\nindex_url = \"https://example.test/binaries-abi-v{abi}/index.toml\"\n",
+        )
+        .unwrap();
+        let implicit = registry.load("libProvider").unwrap();
+        assert_eq!(implicit.source.provider, SourceProvider::Repository);
+        assert!(!implicit.source.provider_was_explicit);
+        let mut explicit = implicit.clone();
+        explicit.source.provider_was_explicit = true;
+        let mut archive_semantics = implicit.clone();
+        // Isolate the semantic marker from source URL/digest differences. Raw
+        // parser validation is covered separately; this test exercises the
+        // already-validated representation accepted by key construction.
+        archive_semantics.source.provider = SourceProvider::Archive;
+
+        let identity = |manifest: &DepsManifest| {
+            compute_sha_with_identity_context(
+                manifest,
+                &registry,
+                TEST_ARCH,
+                TEST_ABI,
+                ResolvePolicy::SourceOnlyV1,
+                &mut BTreeMap::new(),
+                &mut Vec::new(),
+                Some(&[]),
+                &root,
+                Some(&[]),
+            )
+            .unwrap()
+        };
+        assert_eq!(identity(&implicit), identity(&explicit));
+        assert_ne!(identity(&explicit), identity(&archive_semantics));
+    }
+
+    #[test]
+    fn source_only_archive_exclusions_are_cache_inputs_without_changing_default_identity() {
+        let root = std::fs::canonicalize(tempdir("source-only-archive-exclusion-key")).unwrap();
+        std::fs::create_dir_all(root.join("abi")).unwrap();
+        std::fs::write(root.join("abi/snapshot.json"), r#"{"abi_version":4}"#).unwrap();
+        write(&root, "libArchiveExclusion", "1.0.0", &[]);
+        write_source_only_repository_inputs(&root, "libArchiveExclusion");
+        let registry = Registry {
+            roots: vec![root.clone()],
+        };
+        let mut without_exclusion = registry.load("libArchiveExclusion").unwrap();
+        without_exclusion.source.provider = SourceProvider::Archive;
+        without_exclusion.source.sha256 = "1".repeat(64);
+        let mut with_exclusion = without_exclusion.clone();
+        with_exclusion.source.extract_exclude_members =
+            vec!["libArchiveExclusion-1.0.0/BUILD".to_string()];
+
+        let identity = |manifest: &DepsManifest, policy| {
+            compute_sha_with_identity_context(
+                manifest,
+                &registry,
+                TEST_ARCH,
+                TEST_ABI,
+                policy,
+                &mut BTreeMap::new(),
+                &mut Vec::new(),
+                Some(&[]),
+                &root,
+                Some(&[]),
+            )
+            .unwrap()
+        };
+
+        assert_eq!(
+            identity(&without_exclusion, ResolvePolicy::Default),
+            identity(&with_exclusion, ResolvePolicy::Default),
+            "the legacy Default key must not gain SourceOnly extraction-policy bytes"
+        );
+        assert_ne!(
+            identity(&without_exclusion, ResolvePolicy::SourceOnlyV1),
+            identity(&with_exclusion, ResolvePolicy::SourceOnlyV1),
+            "changing host-filesystem extraction semantics must change the SourceOnly key"
+        );
+    }
+
+    #[test]
+    fn source_only_provider_repository_input_labels_are_canonical() {
+        for valid in [
+            "Cargo.toml",
+            "packages/registry/kernel/build-kernel.sh",
+            "crates/shared",
+        ] {
+            validate_repository_build_input_label(valid).unwrap();
+        }
+        for invalid in [
+            "",
+            ".",
+            "./Cargo.toml",
+            "crates//shared",
+            "crates/./shared",
+            "crates/../shared",
+            "../Cargo.toml",
+            "/Cargo.toml",
+            r"crates\shared",
+            "C:Cargo.toml",
+            "C:/Cargo.toml",
+            "//server/share",
+        ] {
+            let error = validate_repository_build_input_label(invalid).unwrap_err();
+            assert!(
+                error.contains("canonical repository-relative"),
+                "{invalid:?}: {error}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_only_provider_repository_input_tree_rejects_symlinks_and_special_nodes() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let root = std::fs::canonicalize(tempdir("source-only-provider-repository-tree")).unwrap();
+        let canonical_root = root.clone();
+        std::fs::create_dir_all(root.join("real/subdir")).unwrap();
+        std::fs::write(root.join("real/subdir/input.txt"), "bytes").unwrap();
+        let input_file = root.join("real/subdir/input.txt");
+        assert_eq!(
+            strict_source_build_input_digest(&canonical_root, &input_file).unwrap(),
+            hash_build_input(&input_file).unwrap(),
+            "strict regular-file digest must preserve legacy valid-input bytes"
+        );
+        assert_eq!(
+            strict_source_build_input_digest(&canonical_root, &root.join("real")).unwrap(),
+            hash_build_input(&root.join("real")).unwrap(),
+            "strict directory digest must preserve legacy valid-input bytes"
+        );
+        assert!(
+            strict_source_build_input_digest(&canonical_root, &root.join("missing"))
+                .unwrap_err()
+                .contains("missing")
+        );
+        assert!(
+            strict_source_build_input_digest(&canonical_root, root.parent().unwrap())
+                .unwrap_err()
+                .contains("escapes")
+        );
+
+        symlink(root.join("real/subdir/input.txt"), root.join("input-link")).unwrap();
+        assert!(
+            strict_source_build_input_digest(&canonical_root, &root.join("input-link"))
+                .unwrap_err()
+                .contains("symlink")
+        );
+        symlink(root.join("real"), root.join("ancestor-link")).unwrap();
+        assert!(strict_source_build_input_digest(
+            &canonical_root,
+            &root.join("ancestor-link/subdir/input.txt"),
+        )
+        .unwrap_err()
+        .contains("symlink"));
+        symlink(
+            root.join("real/subdir/input.txt"),
+            root.join("real/descendant-link"),
+        )
+        .unwrap();
+        assert!(
+            strict_source_build_input_digest(&canonical_root, &root.join("real"))
+                .unwrap_err()
+                .contains("symlink")
+        );
+
+        let root_link = root.join("root-link");
+        symlink(root.join("real"), &root_link).unwrap();
+        assert!(strict_source_build_input_digest(
+            &root_link,
+            &root_link.join("subdir/input.txt")
+        )
+        .unwrap_err()
+        .contains("source root must be a real nonsymlink directory"));
+
+        let fifo = root.join("fifo");
+        let status = Command::new("mkfifo").arg(&fifo).status().unwrap();
+        assert!(status.success());
+        assert!(
+            strict_source_build_input_digest(&canonical_root, &fifo)
+                .unwrap_err()
+                .contains("regular file or real directory")
+        );
+
+        let descendant_fifo = root.join("real/descendant-fifo");
+        let status = Command::new("mkfifo")
+            .arg(&descendant_fifo)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(
+            strict_source_build_input_digest(&canonical_root, &root.join("real"))
+                .unwrap_err()
+                .contains("regular file or real directory")
+        );
+        std::fs::remove_file(descendant_fifo).unwrap();
+
+        let unreadable = root.join("unreadable.txt");
+        std::fs::write(&unreadable, "secret").unwrap();
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let unreadable_error =
+            strict_source_build_input_digest(&canonical_root, &unreadable).unwrap_err();
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(unreadable_error.contains("open"), "{unreadable_error}");
+    }
+
+    #[test]
+    fn source_only_provider_strict_input_capability_fails_closed_off_unix() {
+        const EXPECTED: &str = "source-only Repository/DevShell build inputs require Unix descriptor-relative validation; native non-Unix hosts are unsupported in this release (Nix or WSL Unix environments remain supported)";
+
+        for provider in [SourceProvider::Repository, SourceProvider::DevShell] {
+            assert_eq!(
+                source_only_strict_input_platform(
+                    ResolvePolicy::SourceOnlyV1,
+                    provider,
+                    false,
+                )
+                .unwrap_err(),
+                EXPECTED
+            );
+            source_only_strict_input_platform(ResolvePolicy::SourceOnlyV1, provider, true)
+                .unwrap();
+            source_only_strict_input_platform(ResolvePolicy::Default, provider, false).unwrap();
+        }
+        source_only_strict_input_platform(
+            ResolvePolicy::SourceOnlyV1,
+            SourceProvider::Archive,
+            false,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn source_only_provider_platform_gate_precedes_memo_and_dependency_traversal() {
+        const EXPECTED: &str = "source-only Repository/DevShell build inputs require Unix descriptor-relative validation; native non-Unix hosts are unsupported in this release (Nix or WSL Unix environments remain supported)";
+
+        let root = tempdir("source-only-provider-platform-gate-order");
+        write(&root, "root", "1.0.0", &["metadata-trap@1.0.0"]);
+        let trap_dir = root.join("metadata-trap");
+        fs::create_dir(&trap_dir).unwrap();
+        fs::write(
+            trap_dir.join("package.toml"),
+            "dependency_metadata_trap = [",
+        )
+        .unwrap();
+        let registry = Registry {
+            roots: vec![root.clone()],
+        };
+        let repository = registry.load("root").unwrap();
+        assert_eq!(repository.source.provider, SourceProvider::Repository);
+
+        for provider in [SourceProvider::Repository, SourceProvider::DevShell] {
+            let mut target = repository.clone();
+            target.source.provider = provider;
+
+            let mut memo = BTreeMap::new();
+            let mut chain = Vec::new();
+            let error = compute_sha_with_identity_context_for_platform(
+                &target,
+                &registry,
+                TEST_ARCH,
+                TEST_ABI,
+                ResolvePolicy::SourceOnlyV1,
+                &mut memo,
+                &mut chain,
+                Some(&[]),
+                &root,
+                Some(&[]),
+                false,
+            )
+            .unwrap_err();
+            assert_eq!(error, EXPECTED);
+            assert!(
+                memo.is_empty() && chain.is_empty(),
+                "the capability error must precede memo and dependency traversal"
+            );
+
+            let memo_key = format!(
+                "{}|{}|{}|{:?}",
+                target.spec(),
+                TEST_ARCH.as_str(),
+                TEST_ABI,
+                ResolvePolicy::SourceOnlyV1,
+            );
+            let mut prefilled_memo = BTreeMap::from([(memo_key, [0x5a; 32])]);
+            let memo_before = prefilled_memo.clone();
+            let error = compute_sha_with_identity_context_for_platform(
+                &target,
+                &registry,
+                TEST_ARCH,
+                TEST_ABI,
+                ResolvePolicy::SourceOnlyV1,
+                &mut prefilled_memo,
+                &mut Vec::new(),
+                Some(&[]),
+                &root,
+                Some(&[]),
+                false,
+            )
+            .unwrap_err();
+            assert_eq!(error, EXPECTED);
+            assert_eq!(prefilled_memo, memo_before);
+        }
+
+        let mut archive = repository.clone();
+        archive.source.provider = SourceProvider::Archive;
+        archive.source.sha256 = "1".repeat(64);
+        let archive_error = compute_sha_with_identity_context_for_platform(
+            &archive,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            ResolvePolicy::SourceOnlyV1,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+            Some(&[]),
+            &root,
+            Some(&[]),
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            archive_error.contains("metadata-trap/package.toml"),
+            "Archive must traverse dependency metadata normally: {archive_error}"
+        );
+
+        for provider in [SourceProvider::Repository, SourceProvider::DevShell] {
+            let mut target = repository.clone();
+            target.source.provider = provider;
+            let default_error = compute_sha_with_identity_context_for_platform(
+                &target,
+                &registry,
+                TEST_ARCH,
+                TEST_ABI,
+                ResolvePolicy::Default,
+                &mut BTreeMap::new(),
+                &mut Vec::new(),
+                Some(&[]),
+                &root,
+                Some(&[]),
+                false,
+            )
+            .unwrap_err();
+            assert!(
+                default_error.contains("metadata-trap/package.toml"),
+                "Default must traverse dependency metadata normally: {default_error}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_only_provider_strict_digest_rejects_validation_hash_swaps() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::fs::canonicalize(tempdir("source-only-provider-input-swap")).unwrap();
+        let declared_file = root.join("declared.txt");
+        let outside_file = root.join("outside.txt");
+        std::fs::write(&declared_file, "declared\n").unwrap();
+        std::fs::write(&outside_file, "outside\n").unwrap();
+        let mut swapped_file = false;
+        let file_error = strict_source_build_input_digest_with(
+            &root,
+            &declared_file,
+            &mut |validated| {
+                if validated == declared_file && !swapped_file {
+                    std::fs::rename(&declared_file, root.join("declared.saved")).unwrap();
+                    symlink(&outside_file, &declared_file).unwrap();
+                    swapped_file = true;
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(swapped_file);
+        assert!(
+            file_error.contains("changed") || file_error.contains("symlink"),
+            "{file_error}"
+        );
+
+        let declared_directory = root.join("declared-directory");
+        let replacement_directory = root.join("replacement-directory");
+        std::fs::create_dir(&declared_directory).unwrap();
+        std::fs::write(declared_directory.join("declared.txt"), "declared\n").unwrap();
+        std::fs::create_dir(&replacement_directory).unwrap();
+        std::fs::write(replacement_directory.join("replacement.txt"), "replacement\n").unwrap();
+        let mut swapped_directory = false;
+        let directory_error = strict_source_build_input_digest_with(
+            &root,
+            &declared_directory,
+            &mut |validated| {
+                if validated == declared_directory && !swapped_directory {
+                    std::fs::rename(&declared_directory, root.join("directory.saved")).unwrap();
+                    std::fs::rename(&replacement_directory, &declared_directory).unwrap();
+                    swapped_directory = true;
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(swapped_directory);
+        assert!(directory_error.contains("changed"), "{directory_error}");
+
+        let ancestor = root.join("ancestor");
+        let declared_subdirectory = ancestor.join("declared-subdirectory");
+        let replacement_subdirectory = ancestor.join("replacement-subdirectory");
+        let nested_file = declared_subdirectory.join("nested.txt");
+        std::fs::create_dir(&ancestor).unwrap();
+        std::fs::create_dir(&declared_subdirectory).unwrap();
+        std::fs::write(&nested_file, "nested\n").unwrap();
+        std::fs::create_dir(&replacement_subdirectory).unwrap();
+        std::fs::write(replacement_subdirectory.join("other.txt"), "other\n").unwrap();
+        let mut swapped_ancestor = false;
+        let ancestor_error = strict_source_build_input_digest_with(
+            &root,
+            &nested_file,
+            &mut |validated| {
+                if validated == nested_file && !swapped_ancestor {
+                    std::fs::rename(
+                        &declared_subdirectory,
+                        ancestor.join("declared-subdirectory.saved"),
+                    )
+                    .unwrap();
+                    std::fs::rename(&replacement_subdirectory, &declared_subdirectory).unwrap();
+                    swapped_ancestor = true;
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(swapped_ancestor);
+        assert!(ancestor_error.contains("changed"), "{ancestor_error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_only_provider_repository_declared_content_fails_before_key_construction() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::fs::canonicalize(tempdir("source-only-provider-repository-key")).unwrap();
+        std::fs::create_dir_all(root.join("abi")).unwrap();
+        std::fs::write(root.join("abi/snapshot.json"), r#"{"abi_version":4}"#).unwrap();
+        write(&root, "libRepository", "1.0.0", &[]);
+        let manifest_path = root.join("libRepository/package.toml");
+        let source = std::fs::read_to_string(&manifest_path).unwrap();
+        std::fs::write(
+            &manifest_path,
+            source.replace("sha256 =", "provider = \"repository\"\nsha256 ="),
+        )
+        .unwrap();
+        let registry = Registry {
+            roots: vec![root.clone()],
+        };
+        let identity = || {
+            let manifest = registry.load("libRepository").unwrap();
+            compute_sha_with_identity_context(
+                &manifest,
+                &registry,
+                TEST_ARCH,
+                TEST_ABI,
+                ResolvePolicy::SourceOnlyV1,
+                &mut BTreeMap::new(),
+                &mut Vec::new(),
+                Some(&[]),
+                &root,
+                Some(&[]),
+            )
+        };
+
+        let missing_build = identity().unwrap_err();
+        assert!(
+            missing_build.contains("requires build.toml"),
+            "{missing_build}"
+        );
+        let mut implicit = registry.load("libRepository").unwrap();
+        implicit.source.provider_was_explicit = false;
+        let implicit_missing_build = compute_sha_with_identity_context(
+            &implicit,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            ResolvePolicy::SourceOnlyV1,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+            Some(&[]),
+            &root,
+            Some(&[]),
+        )
+        .unwrap_err();
+        assert_eq!(missing_build, implicit_missing_build);
+        let build_path = root.join("libRepository/build.toml");
+        std::fs::write(
+            &build_path,
+            "script_path = \"build.sh\"\ninputs = []\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n\n[binary]\nindex_url = \"https://example.test/binaries-abi-v{abi}/index.toml\"\n",
+        )
+        .unwrap();
+        let empty_inputs = identity().unwrap_err();
+        assert!(empty_inputs.contains("non-empty"), "{empty_inputs}");
+
+        std::fs::write(
+            &build_path,
+            "script_path = \"build.sh\"\ninputs = [\"./libRepository/declared.txt\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n\n[binary]\nindex_url = \"https://example.test/binaries-abi-v{abi}/index.toml\"\n",
+        )
+        .unwrap();
+        let noncanonical = identity().unwrap_err();
+        assert!(
+            noncanonical.contains("canonical repository-relative"),
+            "{noncanonical}"
+        );
+
+        std::fs::write(root.join("libRepository/declared.txt"), "declared bytes\n").unwrap();
+        std::fs::write(
+            &build_path,
+            "script_path = \"build.sh\"\ninputs = [\"libRepository/declared.txt\", \"libRepository/declared.txt\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n\n[binary]\nindex_url = \"https://example.test/binaries-abi-v{abi}/index.toml\"\n",
+        )
+        .unwrap();
+        let duplicate = identity().unwrap_err();
+        assert!(duplicate.contains("must be unique"), "{duplicate}");
+        std::fs::remove_file(root.join("libRepository/declared.txt")).unwrap();
+
+        std::fs::write(
+            &build_path,
+            "script_path = \"build.sh\"\ninputs = [\"libRepository/missing.txt\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n\n[binary]\nindex_url = \"https://example.test/binaries-abi-v{abi}/index.toml\"\n",
+        )
+        .unwrap();
+        let missing_input = identity().unwrap_err();
+        assert!(missing_input.contains("missing"), "{missing_input}");
+
+        let declared = root.join("libRepository/declared.txt");
+        std::fs::write(&declared, "declared bytes\n").unwrap();
+        std::fs::write(
+            &build_path,
+            "script_path = \"build.sh\"\ninputs = [\"libRepository/declared.txt\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n\n[binary]\nindex_url = \"https://example.test/binaries-abi-v{abi}/index.toml\"\n",
+        )
+        .unwrap();
+        identity().unwrap();
+
+        std::fs::remove_file(&declared).unwrap();
+        symlink(root.join("outside.txt"), &declared).unwrap();
+        std::fs::write(root.join("outside.txt"), "outside\n").unwrap();
+        let symlink_input = identity().unwrap_err();
+        assert!(symlink_input.contains("symlink"), "{symlink_input}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_only_provider_dev_shell_identity_is_bounded_and_binds_every_input() {
+        use std::os::unix::ffi::OsStringExt;
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let root = std::fs::canonicalize(tempdir("source-only-provider-dev-shell")).unwrap();
+        let package = root.join("package");
+        std::fs::create_dir(&package).unwrap();
+        std::fs::write(
+            package.join("package.toml"),
+            r#"kind = "library"
+name = "libcxx"
+version = "21.1.7"
+depends_on = []
+[source]
+url = "https://github.com/llvm/llvm-project"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "dev-shell"
+[license]
+spdx = "Apache-2.0 WITH LLVM-exception"
+[outputs]
+libs = ["lib/libc++.a"]
+"#,
+        )
+        .unwrap();
+        let manifest = DepsManifest::load(&package.join("package.toml")).unwrap();
+        let store = root.join("nix/store");
+        let prefix = root.join("llvm-prefix");
+        let libcxx = store.join("libcxx-source");
+        let libunwind = store.join("libunwind-source");
+        std::fs::create_dir_all(prefix.join("bin")).unwrap();
+        std::fs::create_dir_all(libcxx.join("runtimes")).unwrap();
+        std::fs::create_dir_all(libcxx.join("libcxx")).unwrap();
+        std::fs::create_dir_all(libcxx.join("libcxxabi")).unwrap();
+        std::fs::create_dir_all(libunwind.join("libunwind")).unwrap();
+        std::fs::write(libcxx.join("runtimes/CMakeLists.txt"), "cmake").unwrap();
+        let clang = prefix.join("bin/clang");
+        std::fs::write(&clang, "#!/bin/sh\nprintf 'clang version 21.1.7 base\\n'\n").unwrap();
+        std::fs::set_permissions(&clang, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let environment = BTreeMap::from([
+            ("LLVM_VERSION".to_string(), "21.1.7".into()),
+            ("LLVM_PREFIX".to_string(), prefix.as_os_str().to_owned()),
+            (
+                "WASM_POSIX_LLVM_LIBCXX_SOURCE".to_string(),
+                libcxx.as_os_str().to_owned(),
+            ),
+            (
+                "WASM_POSIX_LLVM_LIBUNWIND_SOURCE".to_string(),
+                libunwind.as_os_str().to_owned(),
+            ),
+        ]);
+        let baseline =
+            dev_shell_source_identity_with_environment(&manifest, &environment, &store).unwrap();
+
+        std::fs::write(package.join("build.sh"), "#!/bin/sh\n").unwrap();
+        std::fs::write(package.join("flake.nix"), "flake one\n").unwrap();
+        std::fs::write(package.join("flake.lock"), "lock one\n").unwrap();
+        let registry = Registry {
+            roots: vec![root.clone()],
+        };
+        let missing_declared_inputs =
+            build_input_digests_from_repo(&manifest, &registry, &root, ResolvePolicy::SourceOnlyV1)
+                .unwrap_err();
+        assert!(
+            missing_declared_inputs.contains("requires build.toml"),
+            "{missing_declared_inputs}"
+        );
+        std::fs::write(
+            package.join("build.toml"),
+            "script_path = \"build.sh\"\ninputs = []\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n\n[binary]\nindex_url = \"https://example.test/binaries-abi-v{abi}/index.toml\"\n",
+        )
+        .unwrap();
+        let empty_declared_inputs =
+            build_input_digests_from_repo(&manifest, &registry, &root, ResolvePolicy::SourceOnlyV1)
+                .unwrap_err();
+        assert!(
+            empty_declared_inputs.contains("non-empty"),
+            "{empty_declared_inputs}"
+        );
+        std::fs::write(
+            package.join("build.toml"),
+            "script_path = \"build.sh\"\ninputs = [\"package/build.sh\", \"package/flake.nix\", \"package/flake.lock\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n\n[binary]\nindex_url = \"https://example.test/binaries-abi-v{abi}/index.toml\"\n",
+        )
+        .unwrap();
+        let declared_identity = || {
+            build_input_digests_from_repo(
+                &manifest,
+                &registry,
+                &root,
+                ResolvePolicy::SourceOnlyV1,
+            )
+        };
+        let declared_baseline = declared_identity().unwrap();
+        for input in ["build.sh", "flake.nix", "flake.lock"] {
+            let path = package.join(input);
+            let original = std::fs::read(&path).unwrap();
+            let mut changed = original.clone();
+            changed.extend_from_slice(b"changed\n");
+            std::fs::write(&path, changed).unwrap();
+            let changed_identity = declared_identity().unwrap();
+            assert!(
+                declared_baseline
+                    .iter()
+                    .zip(&changed_identity)
+                    .any(|(before, after)| before.digest != after.digest),
+                "declared {input} bytes are identity"
+            );
+            std::fs::write(&path, &original).unwrap();
+
+            let outside = package.join(format!("outside-{}", input.replace('.', "-")));
+            std::fs::write(&outside, &original).unwrap();
+            std::fs::remove_file(&path).unwrap();
+            symlink(&outside, &path).unwrap();
+            let symlink_error = declared_identity().unwrap_err();
+            assert!(symlink_error.contains("symlink"), "{input}: {symlink_error}");
+            std::fs::remove_file(&path).unwrap();
+            std::fs::write(&path, original).unwrap();
+            std::fs::remove_file(outside).unwrap();
+        }
+
+        std::fs::write(
+            &clang,
+            "#!/bin/sh\nprintf 'clang version 21.1.7 changed\\n'\n",
+        )
+        .unwrap();
+        let compiler_changed =
+            dev_shell_source_identity_with_environment(&manifest, &environment, &store).unwrap();
+        assert_ne!(baseline, compiler_changed);
+
+        std::fs::write(
+            &clang,
+            "#!/bin/sh\nprintf 'clang version 21.1.7 changed\\n'; printf 'stderr one\\n' >&2\n",
+        )
+        .unwrap();
+        let stderr_one =
+            dev_shell_source_identity_with_environment(&manifest, &environment, &store).unwrap();
+        std::fs::write(
+            &clang,
+            "#!/bin/sh\nprintf 'clang version 21.1.7 changed\\n'; printf 'stderr two\\n' >&2\n",
+        )
+        .unwrap();
+        let stderr_two =
+            dev_shell_source_identity_with_environment(&manifest, &environment, &store).unwrap();
+        assert_ne!(stderr_one, stderr_two, "compiler stderr is identity");
+        std::fs::write(
+            &clang,
+            "#!/bin/sh\nprintf 'clang version 21.1.7 changed\\n'\n",
+        )
+        .unwrap();
+
+        let second_libcxx = store.join("libcxx-source-second");
+        std::fs::create_dir_all(second_libcxx.join("runtimes")).unwrap();
+        std::fs::create_dir_all(second_libcxx.join("libcxx")).unwrap();
+        std::fs::create_dir_all(second_libcxx.join("libcxxabi")).unwrap();
+        std::fs::write(second_libcxx.join("runtimes/CMakeLists.txt"), "cmake").unwrap();
+        let mut changed_environment = environment.clone();
+        changed_environment.insert(
+            "WASM_POSIX_LLVM_LIBCXX_SOURCE".to_string(),
+            second_libcxx.as_os_str().to_owned(),
+        );
+        assert_ne!(
+            compiler_changed,
+            dev_shell_source_identity_with_environment(&manifest, &changed_environment, &store,)
+                .unwrap()
+        );
+
+        let second_libunwind = store.join("libunwind-source-second");
+        std::fs::create_dir_all(second_libunwind.join("libunwind")).unwrap();
+        changed_environment = environment.clone();
+        changed_environment.insert(
+            "WASM_POSIX_LLVM_LIBUNWIND_SOURCE".to_string(),
+            second_libunwind.as_os_str().to_owned(),
+        );
+        assert_ne!(
+            compiler_changed,
+            dev_shell_source_identity_with_environment(&manifest, &changed_environment, &store,)
+                .unwrap()
+        );
+
+        let second_prefix = root.join("llvm-prefix-second");
+        std::fs::create_dir_all(second_prefix.join("bin")).unwrap();
+        std::fs::copy(&clang, second_prefix.join("bin/clang")).unwrap();
+        changed_environment = environment.clone();
+        changed_environment.insert(
+            "LLVM_PREFIX".to_string(),
+            second_prefix.as_os_str().to_owned(),
+        );
+        assert_ne!(
+            compiler_changed,
+            dev_shell_source_identity_with_environment(&manifest, &changed_environment, &store,)
+                .unwrap()
+        );
+
+        for name in environment.keys() {
+            let mut missing_environment = environment.clone();
+            missing_environment.remove(name);
+            assert!(
+                dev_shell_source_identity_with_environment(
+                    &manifest,
+                    &missing_environment,
+                    &store,
+                )
+                .unwrap_err()
+                .contains("unset"),
+                "missing {name}"
+            );
+        }
+        let mut invalid_environment = environment.clone();
+        invalid_environment.insert("LLVM_VERSION".to_string(), "21.1.8".into());
+        assert!(dev_shell_source_identity_with_environment(
+            &manifest,
+            &invalid_environment,
+            &store
+        )
+        .unwrap_err()
+        .contains("exactly match"));
+        invalid_environment = environment.clone();
+        invalid_environment.insert("LLVM_PREFIX".to_string(), "relative/llvm".into());
+        assert!(dev_shell_source_identity_with_environment(
+            &manifest,
+            &invalid_environment,
+            &store
+        )
+        .unwrap_err()
+        .contains("absolute"));
+        invalid_environment = environment.clone();
+        invalid_environment.insert(
+            "WASM_POSIX_LLVM_LIBCXX_SOURCE".to_string(),
+            prefix.as_os_str().to_owned(),
+        );
+        assert!(dev_shell_source_identity_with_environment(
+            &manifest,
+            &invalid_environment,
+            &store
+        )
+        .unwrap_err()
+        .contains("Nix store"));
+
+        invalid_environment = environment.clone();
+        invalid_environment.insert(
+            "LLVM_PREFIX".to_string(),
+            OsString::from_vec(vec![0xff, 0xfe]),
+        );
+        assert!(dev_shell_source_identity_with_environment(
+            &manifest,
+            &invalid_environment,
+            &store
+        )
+        .unwrap_err()
+        .contains("UTF-8"));
+
+        invalid_environment = environment.clone();
+        invalid_environment.insert(
+            "WASM_POSIX_LLVM_LIBCXX_SOURCE".to_string(),
+            store.join("missing-source").as_os_str().to_owned(),
+        );
+        assert!(dev_shell_source_identity_with_environment(
+            &manifest,
+            &invalid_environment,
+            &store
+        )
+        .unwrap_err()
+        .contains("inspect"));
+
+        let libcxx_link = store.join("libcxx-source-link");
+        symlink(&libcxx, &libcxx_link).unwrap();
+        invalid_environment = environment.clone();
+        invalid_environment.insert(
+            "WASM_POSIX_LLVM_LIBCXX_SOURCE".to_string(),
+            libcxx_link.as_os_str().to_owned(),
+        );
+        assert!(dev_shell_source_identity_with_environment(
+            &manifest,
+            &invalid_environment,
+            &store
+        )
+        .unwrap_err()
+        .contains("nonsymlink"));
+
+        let cmake = libcxx.join("runtimes/CMakeLists.txt");
+        let saved_cmake = libcxx.join("runtimes/CMakeLists.saved");
+        std::fs::rename(&cmake, &saved_cmake).unwrap();
+        let incomplete =
+            dev_shell_source_identity_with_environment(&manifest, &environment, &store)
+                .unwrap_err();
+        assert!(incomplete.contains("CMakeLists.txt"), "{incomplete}");
+        std::fs::rename(&saved_cmake, &cmake).unwrap();
+
+        let libcxx_dir = libcxx.join("libcxx");
+        let saved_libcxx_dir = libcxx.join("libcxx.saved");
+        std::fs::rename(&libcxx_dir, &saved_libcxx_dir).unwrap();
+        let incomplete =
+            dev_shell_source_identity_with_environment(&manifest, &environment, &store)
+                .unwrap_err();
+        assert!(
+            incomplete.contains("libcxx source directory"),
+            "{incomplete}"
+        );
+        std::fs::rename(&saved_libcxx_dir, &libcxx_dir).unwrap();
+
+        let libcxxabi_dir = libcxx.join("libcxxabi");
+        let saved_libcxxabi_dir = libcxx.join("libcxxabi.saved");
+        std::fs::rename(&libcxxabi_dir, &saved_libcxxabi_dir).unwrap();
+        let incomplete =
+            dev_shell_source_identity_with_environment(&manifest, &environment, &store)
+                .unwrap_err();
+        assert!(
+            incomplete.contains("libcxxabi source directory"),
+            "{incomplete}"
+        );
+        std::fs::rename(&saved_libcxxabi_dir, &libcxxabi_dir).unwrap();
+
+        let libunwind_dir = libunwind.join("libunwind");
+        let saved_libunwind_dir = libunwind.join("libunwind.saved");
+        std::fs::rename(&libunwind_dir, &saved_libunwind_dir).unwrap();
+        let incomplete =
+            dev_shell_source_identity_with_environment(&manifest, &environment, &store)
+                .unwrap_err();
+        assert!(
+            incomplete.contains("libunwind source directory"),
+            "{incomplete}"
+        );
+        std::fs::rename(&saved_libunwind_dir, &libunwind_dir).unwrap();
+
+        let saved_cmake = libcxx.join("runtimes/CMakeLists.real");
+        std::fs::rename(&cmake, &saved_cmake).unwrap();
+        symlink(&saved_cmake, &cmake).unwrap();
+        let symlinked_file =
+            dev_shell_source_identity_with_environment(&manifest, &environment, &store)
+                .unwrap_err();
+        assert!(symlinked_file.contains("nonsymlink"), "{symlinked_file}");
+        std::fs::remove_file(&cmake).unwrap();
+        std::fs::rename(&saved_cmake, &cmake).unwrap();
+
+        let invalid_output =
+            dev_shell_source_identity_with_inputs(&manifest, &environment, &store, |_| {
+                Ok(CompilerVersionProbe {
+                    success: true,
+                    status: "injected success".into(),
+                    stdout: vec![0xff],
+                    stderr: Vec::new(),
+                })
+            })
+            .unwrap_err();
+        assert!(invalid_output.contains("UTF-8"), "{invalid_output}");
+
+        let oversized_output =
+            dev_shell_source_identity_with_inputs(&manifest, &environment, &store, |_| {
+                Ok(CompilerVersionProbe {
+                    success: true,
+                    status: "injected success".into(),
+                    stdout: vec![b'x'; DEV_SHELL_COMPILER_OUTPUT_LIMIT + 1],
+                    stderr: Vec::new(),
+                })
+            })
+            .unwrap_err();
+        assert!(oversized_output.contains("64 KiB"), "{oversized_output}");
+
+        let missing_clang = prefix.join("bin/clang.saved");
+        std::fs::rename(&clang, &missing_clang).unwrap();
+        let missing_compiler =
+            dev_shell_source_identity_with_environment(&manifest, &environment, &store)
+                .unwrap_err();
+        assert!(
+            missing_compiler.contains("run compiler probe"),
+            "{missing_compiler}"
+        );
+        std::fs::rename(&missing_clang, &clang).unwrap();
+
+        std::fs::write(&clang, "#!/bin/sh\nprintf 'clang version 21.1.8\\n'\n").unwrap();
+        assert!(
+            dev_shell_source_identity_with_environment(&manifest, &environment, &store)
+                .unwrap_err()
+                .contains("exact version token")
+        );
+        std::fs::write(
+            &clang,
+            "#!/bin/sh\nprintf 'clang version 21.1.7\\n' >&2\nexit 7\n",
+        )
+        .unwrap();
+        assert!(
+            dev_shell_source_identity_with_environment(&manifest, &environment, &store)
+                .unwrap_err()
+                .contains("failed")
+        );
+
+        std::fs::write(
+            &clang,
+            "#!/bin/sh\ni=0; while [ $i -lt 70000 ]; do printf x; printf y >&2; i=$((i + 1)); done\n",
+        )
+        .unwrap();
+        let error = dev_shell_source_identity_with_environment(&manifest, &environment, &store)
+            .unwrap_err();
+        assert!(error.contains("64 KiB"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_only_provider_dev_shell_rejects_noncanonical_directory_spellings() {
+        let canonical = std::fs::canonicalize(tempdir("dev-shell-canonical-spelling")).unwrap();
+        let parent = canonical.parent().unwrap();
+        let name = canonical.file_name().unwrap().to_string_lossy();
+        for alias in [
+            PathBuf::from(format!("{}//{name}", parent.display())),
+            PathBuf::from(format!("{}/./{name}", parent.display())),
+            PathBuf::from(format!("{}/", canonical.display())),
+        ] {
+            let error = validate_canonical_dev_shell_directory(&alias, "DevShell fixture")
+                .unwrap_err();
+            assert!(
+                error.contains("lexically normalized")
+                    || error.contains("canonical absolute spelling"),
+                "{}: {error}",
+                alias.display(),
+            );
+        }
+    }
+
+    #[test]
+    fn source_kind_cache_key_is_policy_separated() {
+        let root = tempdir("source-only-source-kind-key");
+        let package = root.join("upstream");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(
+            package.join("package.toml"),
+            format!(
+                r#"kind = "source"
+name = "upstream"
+version = "1.0.0"
+
+[source]
+url = "https://example.test/upstream.tar.gz"
+sha256 = "{:1>64}"
+provider = "archive"
+
+[license]
+spdx = "TestLicense"
+"#,
+                ""
+            ),
+        )
+        .unwrap();
+        let reg = Registry { roots: vec![root] };
+        let manifest = reg.load("upstream").unwrap();
+        let default = compute_sha(
+            &manifest,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let source_only = compute_sha_for_policy(
+            &manifest,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            ResolvePolicy::SourceOnlyV1,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_ne!(default, source_only);
+    }
+
+    fn source_only_identity_with_overrides(
+        manifest: &DepsManifest,
+        registry: &Registry,
+        repo: &Path,
+        abi: u32,
+        fork_inputs: &[BuildInputDigest],
+    ) -> Result<[u8; 32], String> {
+        compute_sha_with_identity_context(
+            manifest,
+            registry,
+            TEST_ARCH,
+            abi,
+            ResolvePolicy::SourceOnlyV1,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+            Some(&[]),
+            repo,
+            Some(fork_inputs),
+        )
+    }
+
+    #[test]
+    fn source_only_compiled_key_uses_canonical_abi_contract() {
+        let root = tempdir("source-only-abi-contract");
+        std::fs::create_dir_all(root.join("abi")).unwrap();
+        std::fs::write(
+            root.join("abi/snapshot.json"),
+            r#"{"abi_version":4,"layout":{"b":2,"a":1}}"#,
+        )
+        .unwrap();
+        write(&root, "libAbi", "1.0.0", &[]);
+        write_source_only_repository_inputs(&root, "libAbi");
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let manifest = reg.load("libAbi").unwrap();
+        let baseline = source_only_identity_with_overrides(&manifest, &reg, &root, 4, &[])
+            .unwrap();
+
+        std::fs::write(
+            root.join("abi/snapshot.json"),
+            "{\n  \"layout\": {\"a\": 1, \"b\": 2},\n  \"abi_version\": 4\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            baseline,
+            source_only_identity_with_overrides(&manifest, &reg, &root, 4, &[]).unwrap(),
+            "formatting and object-key order must not split local caches"
+        );
+
+        std::fs::write(
+            root.join("abi/snapshot.json"),
+            r#"{"abi_version":4,"layout":{"a":1,"b":3}}"#,
+        )
+        .unwrap();
+        assert_ne!(
+            baseline,
+            source_only_identity_with_overrides(&manifest, &reg, &root, 4, &[]).unwrap(),
+            "structural ABI changes must invalidate compiled artifacts"
+        );
+    }
+
+    #[test]
+    fn source_only_source_kind_never_reads_abi_contract() {
+        let root = tempdir("source-only-source-kind-no-abi");
+        let package = root.join("upstream");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(
+            package.join("package.toml"),
+            format!(
+                r#"kind = "source"
+name = "upstream"
+version = "1.0.0"
+
+[source]
+url = "https://example.test/upstream.tar.gz"
+sha256 = "{:1>64}"
+provider = "archive"
+
+[license]
+spdx = "TestLicense"
+"#,
+                ""
+            ),
+        )
+        .unwrap();
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let manifest = reg.load("upstream").unwrap();
+        assert_eq!(
+            source_only_identity_with_overrides(&manifest, &reg, &root, 4, &[]).unwrap(),
+            source_only_identity_with_overrides(&manifest, &reg, &root, 99, &[]).unwrap(),
+            "source-kind identity remains ABI-independent and must not require a snapshot"
+        );
+
+        std::fs::create_dir_all(root.join("abi")).unwrap();
+        std::fs::write(root.join("abi/snapshot.json"), "not-json").unwrap();
+        source_only_identity_with_overrides(&manifest, &reg, &root, 4, &[]).unwrap();
+
+        write(&root, "defaultLib", "1.0.0", &[]);
+        let default_manifest = reg.load("defaultLib").unwrap();
+        compute_sha_with_identity_context(
+            &default_manifest,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            ResolvePolicy::Default,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+            Some(&[]),
+            &root,
+            Some(&[]),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn source_only_production_keys_ignore_project_head_but_bind_declared_inputs() {
+        let seed = tempdir("source-only-project-ref-seed");
+        std::fs::create_dir_all(seed.join("abi")).unwrap();
+        std::fs::write(seed.join("abi/snapshot.json"), r#"{"abi_version":4}"#).unwrap();
+        write_global_toolchain_fixture(&seed);
+        write(&seed, "libCommit", "1.0.0", &[]);
+        let repository_manifest = seed.join("libCommit/package.toml");
+        let repository_source = std::fs::read_to_string(&repository_manifest).unwrap();
+        std::fs::write(
+            &repository_manifest,
+            repository_source.replace("sha256 =", "provider = \"repository\"\nsha256 ="),
+        )
+        .unwrap();
+        std::fs::write(seed.join("libCommit/declared.txt"), "same\n").unwrap();
+        std::fs::write(
+            seed.join("libCommit/build.toml"),
+            r#"script_path = "libCommit/build-libCommit.sh"
+inputs = ["libCommit/declared.txt"]
+repo_url = "https://example.test/repo.git"
+commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision = 1
+
+[binary]
+index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.toml"
+"#,
+        )
+        .unwrap();
+
+        let git = |cwd: &Path, args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {:?}: {:?}", args, output);
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        };
+        git(&seed, &["init", "-q"]);
+        git(&seed, &["config", "user.email", "test@example.test"]);
+        git(&seed, &["config", "user.name", "Test"]);
+        git(&seed, &["add", "."]);
+        set_fixture_gitlink(
+            &seed,
+            "1111111111111111111111111111111111111111",
+            true,
+        );
+        git(&seed, &["commit", "-qm", "first"]);
+        let first_commit = git(&seed, &["rev-parse", "HEAD"]);
+
+        let first_checkout = tempdir("source-only-project-ref-first-checkout");
+        std::fs::remove_dir_all(&first_checkout).unwrap();
+        git(
+            first_checkout.parent().unwrap(),
+            &[
+                "clone",
+                "-q",
+                seed.to_str().unwrap(),
+                first_checkout.to_str().unwrap(),
+            ],
+        );
+        let first_checkout = std::fs::canonicalize(first_checkout).unwrap();
+
+        set_fixture_gitlink(
+            &seed,
+            "2222222222222222222222222222222222222222",
+            false,
+        );
+        git(&seed, &["commit", "-qm", "second"]);
+        let second_commit = git(&seed, &["rev-parse", "HEAD"]);
+        assert_ne!(first_commit, second_commit);
+        let second_checkout = tempdir("source-only-project-ref-second-checkout");
+        std::fs::remove_dir_all(&second_checkout).unwrap();
+        git(
+            second_checkout.parent().unwrap(),
+            &[
+                "clone",
+                "-q",
+                seed.to_str().unwrap(),
+                second_checkout.to_str().unwrap(),
+            ],
+        );
+        let second_checkout = std::fs::canonicalize(second_checkout).unwrap();
+
+        for checkout in [&first_checkout, &second_checkout] {
+            std::fs::create_dir_all(checkout.join("libc/musl")).unwrap();
+            set_fixture_gitlink(
+                checkout,
+                "3333333333333333333333333333333333333333",
+                false,
+            );
+        }
+
+        let first_reg = Registry {
+            roots: vec![first_checkout.clone()],
+        };
+        let first_manifest = first_reg.load("libCommit").unwrap();
+        let first_key = {
+            let _repo_root = crate::install_repo_root_override(first_checkout.clone()).unwrap();
+            compute_sha_with_identity_context(
+                &first_manifest,
+                &first_reg,
+                TEST_ARCH,
+                4,
+                ResolvePolicy::SourceOnlyV1,
+                &mut BTreeMap::new(),
+                &mut Vec::new(),
+                None,
+                &first_checkout,
+                Some(&[]),
+            )
+            .unwrap()
+        };
+        let second_reg = Registry {
+            roots: vec![second_checkout.clone()],
+        };
+        let second_manifest = second_reg.load("libCommit").unwrap();
+        let production_key = |manifest: &DepsManifest| {
+            let _repo_root =
+                crate::install_repo_root_override(second_checkout.clone()).unwrap();
+            compute_sha_with_identity_context(
+                manifest,
+                &second_reg,
+                TEST_ARCH,
+                4,
+                ResolvePolicy::SourceOnlyV1,
+                &mut BTreeMap::new(),
+                &mut Vec::new(),
+                None,
+                &second_checkout,
+                Some(&[]),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            first_key,
+            production_key(&second_manifest),
+            "the Kandelo project commit is diagnostic, not cache identity"
+        );
+
+        let build_toml_path = second_checkout.join("libCommit/build.toml");
+        let build_toml = std::fs::read_to_string(&build_toml_path).unwrap();
+        std::fs::write(
+            &build_toml_path,
+            build_toml.replace(
+                "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+                "feedfacefeedfacefeedfacefeedfacefeedface",
+            ),
+        )
+        .unwrap();
+        let commit_only_manifest = second_reg.load("libCommit").unwrap();
+        assert_eq!(
+            first_key,
+            production_key(&commit_only_manifest),
+            "informational build.toml.commit is not cache identity"
+        );
+
+        std::fs::write(
+            second_checkout.join("libCommit/declared.txt"),
+            "changed\n",
+        )
+        .unwrap();
+        assert_ne!(
+            first_key,
+            production_key(&commit_only_manifest),
+            "declared recipe inputs remain cache identity"
+        );
+    }
+
+    #[test]
+    fn source_only_fork_tool_identity_is_conditional_and_transitive() {
+        let root = tempdir("source-only-fork-tool-identity");
+        std::fs::create_dir_all(root.join("abi")).unwrap();
+        std::fs::write(root.join("abi/snapshot.json"), r#"{"abi_version":4}"#).unwrap();
+        write_program_manifest(
+            &root,
+            "auto",
+            "1.0.0",
+            "[[outputs]]\nname = \"auto\"\nwasm = \"auto.wasm\"\n",
+        );
+        write_program_manifest(
+            &root,
+            "disabled",
+            "1.0.0",
+            "[[outputs]]\nname = \"disabled\"\nwasm = \"disabled.wasm\"\nfork_instrumentation = \"disabled\"\n",
+        );
+        write_program_manifest(
+            &root,
+            "mixed",
+            "1.0.0",
+            "[[outputs]]\nname = \"plain\"\nwasm = \"plain.wasm\"\nfork_instrumentation = \"disabled\"\n\n[[outputs]]\nname = \"instrumented\"\nwasm = \"instrumented.wasm\"\n",
+        );
+        write(
+            &root,
+            "autoConsumer",
+            "1.0.0",
+            &["auto@1.0.0"],
+        );
+        write(
+            &root,
+            "disabledConsumer",
+            "1.0.0",
+            &["disabled@1.0.0"],
+        );
+        for name in ["auto", "disabled", "mixed", "autoConsumer", "disabledConsumer"] {
+            write_source_only_repository_inputs(&root, name);
+        }
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let first_tool = [BuildInputDigest {
+            label: "fork-tool".to_string(),
+            digest: [1; 32],
+        }];
+        let second_tool = [BuildInputDigest {
+            label: "fork-tool".to_string(),
+            digest: [2; 32],
+        }];
+        let key = |name: &str, tool: &[BuildInputDigest]| {
+            let manifest = reg.load(name).unwrap();
+            source_only_identity_with_overrides(&manifest, &reg, &root, 4, tool).unwrap()
+        };
+
+        assert_ne!(key("auto", &first_tool), key("auto", &second_tool));
+        assert_ne!(key("mixed", &first_tool), key("mixed", &second_tool));
+        assert_ne!(
+            key("autoConsumer", &first_tool),
+            key("autoConsumer", &second_tool)
+        );
+        assert_eq!(
+            key("disabled", &first_tool),
+            key("disabled", &second_tool)
+        );
+        assert_eq!(
+            key("disabledConsumer", &first_tool),
+            key("disabledConsumer", &second_tool)
+        );
+    }
+
+    #[test]
+    fn source_only_public_resolve_reuses_disk_cache_across_processes() {
+        const CHILD_ENV: &str = "KANDELO_TEST_SOURCE_ONLY_REUSE_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            run(vec![
+                "--source-only".into(),
+                "resolve".into(),
+                "libSourceOnly".into(),
+            ])
+            .unwrap();
+            return;
+        }
+
+        let root = tempdir("source-only-reuse-registry");
+        let cache_base = tempdir("source-only-reuse-cache");
+        let counter = root.join("counter");
+        write_counted_lib_fixture(&root, "libSourceOnly", &[], &counter);
+        write_source_only_repository_inputs(&root, "libSourceOnly");
+        for invocation in 1..=2 {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "build_deps::tests::source_only_public_resolve_reuses_disk_cache_across_processes",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, "1")
+                .env("WASM_POSIX_DEPS_REGISTRY", &root)
+                .env("WASM_POSIX_SOURCE_ONLY_CACHE_ROOT", &cache_base)
+                .env_remove("WASM_POSIX_BINARY_CACHE_ROOT")
+                .env_remove(SOURCE_ONLY_POLICY_ENV)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "public source-only resolve {invocation} failed:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+        assert_eq!(std::fs::read_to_string(counter).unwrap(), "ran\n");
+    }
+
+    #[test]
+    fn source_only_walks_dependencies_before_accepting_target_cache_hit() {
+        let root = tempdir("source-only-dependency-fast-path-registry");
+        let cache_base = tempdir("source-only-dependency-fast-path-cache");
+        let cache = cache_base.join("source-only-v1/compiled");
+        std::fs::create_dir_all(&cache).unwrap();
+        let binaries = tempdir("source-only-dependency-fast-path-binaries");
+        let dep_counter = root.join("dep-counter");
+        let target_counter = root.join("target-counter");
+        write_counted_lib_fixture(&root, "dep", &[], &dep_counter);
+        write_counted_lib_fixture(&root, "target", &["dep@1.0.0"], &target_counter);
+        write_source_only_repository_inputs(&root, "dep");
+        write_source_only_repository_inputs(&root, "target");
+        let reg = Registry { roots: vec![root] };
+        let target = reg.load("target").unwrap();
+        let opts = ResolveOpts {
+            policy: ResolvePolicy::SourceOnlyV1,
+            source_cache_root: Some(&cache_base),
+            cache_root: &cache,
+            local_libs: None,
+            force_source_build: None,
+            fetch_only: false,
+            repo_root: None,
+            binaries_dir: Some(&binaries),
+        };
+        ensure_built(
+            &target,
+            &reg,
+            TEST_ARCH,
+            current_abi_version(),
+            &opts,
+        )
+        .unwrap();
+
+        let dep = reg.load("dep").unwrap();
+        let dep_sha = compute_sha_for_policy(
+            &dep,
+            &reg,
+            TEST_ARCH,
+            current_abi_version(),
+            ResolvePolicy::SourceOnlyV1,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        std::fs::remove_dir_all(canonical_path(&cache, &dep, TEST_ARCH, &dep_sha)).unwrap();
+        build_memo().lock().unwrap().clear();
+
+        ensure_built(
+            &target,
+            &reg,
+            TEST_ARCH,
+            current_abi_version(),
+            &opts,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(dep_counter).unwrap(), "ran\nran\n");
+        assert_eq!(std::fs::read_to_string(target_counter).unwrap(), "ran\n");
+    }
+
+    #[test]
+    fn source_only_ignores_local_override_direct_archive_and_ordinary_mirrors() {
+        let root = tempdir("source-only-tier-registry");
+        let cache_base = tempdir("source-only-tier-cache");
+        let cache = cache_base.join("source-only-v1/compiled");
+        std::fs::create_dir_all(&cache).unwrap();
+        let local = tempdir("source-only-tier-local");
+        let binaries = tempdir("source-only-tier-binaries");
+        let local_binaries = tempdir("source-only-tier-local-binaries");
+        write_lib(
+            &root,
+            "libTier",
+            "1.0.0",
+            &[],
+            "mkdir -p \"$WASM_POSIX_DEP_OUT_DIR/lib\"; printf SOURCE > \"$WASM_POSIX_DEP_OUT_DIR/lib/out.a\"",
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        write_source_only_repository_inputs(&root, "libTier");
+        let initial_registry = Registry {
+            roots: vec![root.clone()],
+        };
+        let initial_manifest = initial_registry.load("libTier").unwrap();
+        let cache_key = hex(
+            &compute_sha_for_policy(
+                &initial_manifest,
+                &initial_registry,
+                TEST_ARCH,
+                current_abi_version(),
+                ResolvePolicy::SourceOnlyV1,
+                &mut BTreeMap::new(),
+                &mut Vec::new(),
+            )
+            .unwrap(),
+        );
+        let archive_manifest = archived_manifest_text(
+            "libTier",
+            TEST_ARCH.as_str(),
+            &[current_abi_version()],
+            &cache_key,
+        );
+        let archive = crate::remote_fetch::build_test_archive(
+            &archive_manifest,
+            &[("lib/out.a", b"DIRECT")],
+        );
+        let archive_path = root.join("direct.tar.zst");
+        std::fs::write(&archive_path, &archive).unwrap();
+        std::fs::write(
+            root.join("libTier/package.pr.toml"),
+            format!(
+                "[binary.wasm32]\narchive_url = \"file://{}\"\narchive_sha256 = \"{}\"\n",
+                archive_path.display(),
+                sha256_hex(&archive),
+            ),
+        )
+        .unwrap();
+        let override_dir = local.join("libTier/build/lib");
+        std::fs::create_dir_all(&override_dir).unwrap();
+        std::fs::write(override_dir.join("out.a"), "LOCAL").unwrap();
+        std::fs::create_dir_all(binaries.join("programs/wasm32")).unwrap();
+        std::fs::write(binaries.join("programs/wasm32/libTier.wasm"), "BINARY").unwrap();
+        std::fs::create_dir_all(local_binaries.join("programs/wasm32")).unwrap();
+        std::fs::write(
+            local_binaries.join("programs/wasm32/libTier.wasm"),
+            "LOCAL-BINARY",
+        )
+        .unwrap();
+
+        let registry = Registry { roots: vec![root] };
+        let manifest = registry.load("libTier").unwrap();
+        let opts = ResolveOpts {
+            policy: ResolvePolicy::SourceOnlyV1,
+            source_cache_root: Some(&cache_base),
+            cache_root: &cache,
+            local_libs: Some(&local),
+            force_source_build: None,
+            fetch_only: false,
+            repo_root: None,
+            binaries_dir: Some(&binaries),
+        };
+        let resolved = ensure_built(
+            &manifest,
+            &registry,
+            TEST_ARCH,
+            current_abi_version(),
+            &opts,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(resolved.join("lib/out.a")).unwrap(), b"SOURCE");
+        assert_eq!(
+            std::fs::read(binaries.join("programs/wasm32/libTier.wasm")).unwrap(),
+            b"BINARY"
+        );
+        assert_eq!(
+            std::fs::read(local_binaries.join("programs/wasm32/libTier.wasm")).unwrap(),
+            b"LOCAL-BINARY"
+        );
+    }
+
+    #[test]
+    fn source_only_ignores_valid_binary_index_and_requires_recipe() {
+        let repo = tempdir("source-only-index-repo");
+        let registry_root = repo.join("packages/registry");
+        std::fs::create_dir_all(&registry_root).unwrap();
+        let cache_base = tempdir("source-only-index-cache");
+        let cache = cache_base.join("source-only-v1/compiled");
+        std::fs::create_dir_all(&cache).unwrap();
+        let index_path = repo.join("index.toml");
+        write_lib_with_build_toml(
+            &registry_root,
+            "libIndexOnly",
+            &format!("file://{}", index_path.display()),
+        );
+        write_source_only_repository_inputs(&registry_root, "libIndexOnly");
+        let registry = Registry {
+            roots: vec![registry_root.clone()],
+        };
+        let manifest = registry.load("libIndexOnly").unwrap();
+        let cache_key = hex(
+            &compute_sha_for_policy(
+                &manifest,
+                &registry,
+                TEST_ARCH,
+                current_abi_version(),
+                ResolvePolicy::SourceOnlyV1,
+                &mut BTreeMap::new(),
+                &mut Vec::new(),
+            )
+            .unwrap(),
+        );
+        let archive_manifest = archived_manifest_text(
+            "libIndexOnly",
+            TEST_ARCH.as_str(),
+            &[current_abi_version()],
+            &cache_key,
+        );
+        let archive = crate::remote_fetch::build_test_archive(
+            &archive_manifest,
+            &[("lib/out.a", b"INDEX")],
+        );
+        let archive_path = repo.join("index.tar.zst");
+        std::fs::write(&archive_path, &archive).unwrap();
+        std::fs::write(
+            &index_path,
+            format!(
+                r#"abi_version = {abi}
+generated_at = "2026-08-19T00:00:00Z"
+generator = "source-only-test"
+
+[[packages]]
+name = "libIndexOnly"
+version = "1.0.0"
+revision = 1
+
+[packages.binary.wasm32]
+status = "success"
+archive_url = "file://{archive_path}"
+archive_sha256 = "{archive_sha}"
+cache_key_sha = "{cache_key}"
+"#,
+                abi = current_abi_version(),
+                archive_path = archive_path.display(),
+                archive_sha = sha256_hex(&archive),
+            ),
+        )
+        .unwrap();
+        let opts = ResolveOpts {
+            policy: ResolvePolicy::SourceOnlyV1,
+            source_cache_root: Some(&cache_base),
+            cache_root: &cache,
+            local_libs: None,
+            force_source_build: None,
+            fetch_only: false,
+            repo_root: Some(&repo),
+            binaries_dir: None,
+        };
+        let resolved = ensure_built(
+            &manifest,
+            &registry,
+            TEST_ARCH,
+            current_abi_version(),
+            &opts,
+        )
+        .unwrap();
+        assert!(resolved.join("via-build").is_file());
+        assert_eq!(std::fs::read(resolved.join("lib/out.a")).unwrap(), b"BUILD\n");
+
+        std::fs::remove_dir_all(&resolved).unwrap();
+        build_memo().lock().unwrap().clear();
+        std::fs::remove_file(registry_root.join("libIndexOnly/build-libIndexOnly.sh")).unwrap();
+        let error = ensure_built(
+            &manifest,
+            &registry,
+            TEST_ARCH,
+            current_abi_version(),
+            &opts,
+        )
+        .unwrap_err();
+        assert!(error.contains("build script") && error.contains("not found"), "got: {error}");
+    }
+
+    #[test]
+    fn source_only_public_cli_publishes_target_to_binaries_dir() {
+        const CHILD_ENV: &str = "KANDELO_TEST_SOURCE_ONLY_BINARIES_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let binaries = std::env::var("KANDELO_TEST_BINARIES_DIR").unwrap();
+            run(vec![
+                "--source-only".into(),
+                "--binaries-dir".into(),
+                binaries,
+                "resolve".into(),
+                "localtool".into(),
+            ])
+            .unwrap();
+            return;
+        }
+
+        let root = tempdir("source-only-program-publication-registry");
+        let cache_base = tempdir("source-only-program-publication-cache");
+        let binaries = tempdir("source-only-program-publication-binaries");
+        write_program(
+            &root,
+            "localtool",
+            "1.0.0",
+            &[],
+            &emit_wasm_build_script("localtool.wasm", &minimal_executable_wasm()),
+            &[("localtool", "localtool.wasm")],
+        );
+        write_source_only_repository_inputs(&root, "localtool");
+        let manifest_path = root.join("localtool/package.toml");
+        let manifest = std::fs::read_to_string(&manifest_path).unwrap();
+        std::fs::write(
+            &manifest_path,
+            manifest.replace(
+                "wasm = \"localtool.wasm\"",
+                "wasm = \"localtool.wasm\"\nfork_instrumentation = \"disabled\"",
+            ),
+        )
+        .unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "build_deps::tests::source_only_public_cli_publishes_target_to_binaries_dir",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .env("KANDELO_TEST_BINARIES_DIR", &binaries)
+            .env("WASM_POSIX_DEPS_REGISTRY", &root)
+            .env("WASM_POSIX_SOURCE_ONLY_CACHE_ROOT", &cache_base)
+            .env_remove("WASM_POSIX_BINARY_CACHE_ROOT")
+            .env_remove(SOURCE_ONLY_POLICY_ENV)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "public source-only binaries resolve failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        let published = binaries.join("programs/wasm32/localtool.wasm");
+        assert!(published.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(
+            std::fs::read(&published).unwrap(),
+            minimal_executable_wasm()
+        );
+        assert!(
+            std::fs::canonicalize(&published)
+                .unwrap()
+                .starts_with(
+                    std::fs::canonicalize(&cache_base)
+                        .unwrap()
+                        .join("source-only-v1/compiled"),
+                ),
+            "public target publication must point into the selected source-only cache"
+        );
+    }
+
+    #[test]
+    fn source_only_cache_miss_uses_common_bash_launcher_and_normal_host_path() {
+        let repo = tempdir("source-only-common-launcher-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        let helper_root = tempdir("source-only-common-launcher-helper");
+        let helper = helper_root.join("benign-host-helper.sh");
+        fs::write(&helper, "printf 'NORMAL-HOST-HELPER\\n'\n").unwrap();
+        write_lib(
+            &repo,
+            "common-launcher",
+            "1.0.0",
+            &[],
+            &format!(
+                "mkdir -p \"$WASM_POSIX_DEP_OUT_DIR/lib\"\nbash {helper:?} > \"$WASM_POSIX_DEP_OUT_DIR/lib/out.a\""
+            ),
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        write_source_only_repository_inputs(&repo, "common-launcher");
+        let registry = Registry {
+            roots: vec![repo.clone()],
+        };
+        let target = registry.load("common-launcher").unwrap();
+        let (cache_base, cache) = source_only_test_roots("source-only-common-launcher-cache");
+        let _repo_root = crate::install_repo_root_override(repo).unwrap();
+
+        let built = ensure_built(
+            &target,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &source_only_test_opts(&cache_base, &cache),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(built.join("lib/out.a")).unwrap(),
+            b"NORMAL-HOST-HELPER\n"
+        );
+        let cache_key = manifest_cache_key_sha_for_policy(
+            &target,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            ResolvePolicy::SourceOnlyV1,
+        )
+        .unwrap();
+        let receipt = complete_cache_receipt_v1(
+            &built,
+            ResolvePolicy::SourceOnlyV1,
+            "common-launcher",
+            TEST_ARCH,
+            &cache_key,
+        )
+        .unwrap();
+        assert!(
+            receipt.entries.iter().any(|entry| entry.path == "lib/out.a"),
+            "validated receipt omitted the declared output"
+        );
+    }
+
+    #[test]
+    fn source_only_recipe_scrubs_ambient_build_policy_and_uses_private_work_dirs() {
+        const CHILD_ENV: &str = "KANDELO_TEST_SOURCE_ONLY_ENV_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let repo = PathBuf::from(std::env::var_os("KANDELO_TEST_SOURCE_ONLY_ENV_REPO").unwrap());
+            let cache_base =
+                PathBuf::from(std::env::var_os("KANDELO_TEST_SOURCE_ONLY_ENV_CACHE").unwrap());
+            let cache = cache_base.join("source-only-v1/compiled");
+            let registry = Registry {
+                roots: vec![repo.clone()],
+            };
+            let target = registry.load("clean-env").unwrap();
+            let _repo_root = crate::install_repo_root_override(repo).unwrap();
+            ensure_built(
+                &target,
+                &registry,
+                TEST_ARCH,
+                TEST_ABI,
+                &source_only_test_opts(&cache_base, &cache),
+            )
+            .unwrap();
+            return;
+        }
+
+        let repo = tempdir("source-only-private-env-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        let (cache_base, cache) = source_only_test_roots("source-only-private-env-cache");
+        let (declared_git, declared_git_commit) =
+            immutable_git_fixture("source-only-private-env-declared-git");
+        let real_git = Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap();
+        assert!(real_git.status.success());
+        let real_git = String::from_utf8(real_git.stdout).unwrap().trim().to_string();
+        let git_wrapper_dir = repo.join("fixture-bin");
+        fs::create_dir(&git_wrapper_dir).unwrap();
+        let git_wrapper = git_wrapper_dir.join("git");
+        fs::write(
+            &git_wrapper,
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+args=()
+for arg in "$@"; do
+  if [ "$arg" = "https://example.test/declared-tool.git" ]; then
+    args+=("file://$KANDELO_TEST_DECLARED_GIT_SOURCE")
+  else
+    args+=("$arg")
+  fi
+done
+export GIT_ALLOW_PROTOCOL=https:file
+exec "$KANDELO_TEST_REAL_GIT" "${args[@]}"
+"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&git_wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let fixture_path = std::env::join_paths(
+            std::iter::once(git_wrapper_dir.clone())
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
+        )
+        .unwrap();
+        write_lib(
+            &repo,
+            "clean-env",
+            "1.0.0",
+            &[],
+            &format!(
+                r#"
+test "$PWD" = "$WASM_POSIX_DEP_WORK_DIR"
+test "$(pwd -P)" = "$WASM_POSIX_DEP_WORK_DIR"
+test "$HOME" = "$WASM_POSIX_DEP_WORK_DIR/home"
+test "$TMPDIR" = "$WASM_POSIX_DEP_WORK_DIR/tmp"
+test "$TMP" = "$WASM_POSIX_DEP_WORK_DIR/tmp"
+test "$TEMP" = "$WASM_POSIX_DEP_WORK_DIR/tmp"
+test "$CARGO_HOME" = "$WASM_POSIX_DEP_WORK_DIR/cargo-home"
+test "$CARGO_TARGET_DIR" = "$WASM_POSIX_DEP_WORK_DIR/cargo-target"
+test "$XDG_CACHE_HOME" = "$WASM_POSIX_DEP_WORK_DIR/xdg-cache"
+test "$XDG_CONFIG_HOME" = "$WASM_POSIX_DEP_WORK_DIR/xdg-config"
+test "$XDG_DATA_HOME" = "$WASM_POSIX_DEP_WORK_DIR/xdg-data"
+for directory in "$HOME" "$TMPDIR" "$CARGO_HOME" "$CARGO_TARGET_DIR" \
+  "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"; do
+  test -d "$directory"
+done
+test "${{KANDELO_TEST_BENIGN_ENV:-}}" = "preserved"
+test "${{WASM_POSIX_RESOLUTION_POLICY:-}}" = "source-only-v1"
+test "$WASM_POSIX_SOURCE_ONLY_CACHE_ROOT" = {cache_base:?}
+test "$WASM_POSIX_BINARY_CACHE_ROOT" = {cache:?}
+test "$WASM_POSIX_DEPS_REGISTRY" = {repo:?}
+test "$WASM_POSIX_BINARY_RESOLVER_REPO_ROOT" = {repo:?}
+test "$WASM_POSIX_DEP_NAME" = "clean-env"
+test "$WASM_POSIX_DEP_VERSION" = "1.0.0"
+test "$WASM_POSIX_DEP_REVISION" = "1"
+test "$WASM_POSIX_DEP_TARGET_ARCH" = "wasm32"
+test "${{WASM_POSIX_DEP_PKG_CONFIG_PATH+x}}" = "x"
+test "$WASM_POSIX_BUILD_GIT_DECLARED_TOOL_COMMIT" = {declared_git_commit:?}
+test "$(git -C "$WASM_POSIX_BUILD_GIT_DECLARED_TOOL_DIR" rev-parse HEAD)" = {declared_git_commit:?}
+test "$(cat "$WASM_POSIX_BUILD_GIT_DECLARED_TOOL_DIR/payload.txt")" = "immutable payload"
+leaked=0
+for variable in \
+  ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_RUNTIME_TOKEN GH_TOKEN GITHUB_TOKEN \
+  HOMEBREW_GITHUB_API_TOKEN CARGO_REGISTRY_TOKEN CARGO_HTTP_PROXY \
+  HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy \
+  BASH_ENV ENV RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER RUSTFLAGS \
+  CARGO_ENCODED_RUSTFLAGS WASM_POSIX_BINARY_INDEX_URL \
+  WASM_POSIX_USE_PR_STAGING WASM_POSIX_DEP_HOSTILE_DIR \
+  WASM_POSIX_DEFAULT_ARCH WASM_POSIX_BUILD_GIT_UNDECLARED_DIR \
+  WASM_POSIX_BUILD_GIT_UNDECLARED_COMMIT; do
+  if env | grep -q "^${{variable}}="; then
+    echo "hostile ambient variable survived: $variable" >&2
+    leaked=1
+  fi
+done
+test "$leaked" = 0
+test -z "${{KANDELO_TEST_BASH_ENV_RAN:-}}"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+printf 'CLEAN-ENV\n' > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
+"#,
+            ),
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        write_source_only_repository_inputs(&repo, "clean-env");
+        let build_path = repo.join("clean-env/build.toml");
+        let build = fs::read_to_string(&build_path).unwrap();
+        fs::write(
+            &build_path,
+            build.replace(
+                "[binary]",
+                &format!(
+                    r#"[[git_inputs]]
+name = "declared_tool"
+repository = "https://example.test/declared-tool.git"
+commit = "{}"
+
+[binary]"#,
+                    declared_git_commit,
+                ),
+            ),
+        )
+        .unwrap();
+        let bash_env = repo.join("hostile-bash-env");
+        fs::write(&bash_env, "export KANDELO_TEST_BASH_ENV_RAN=1\n").unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "build_deps::tests::source_only_recipe_scrubs_ambient_build_policy_and_uses_private_work_dirs",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .env("KANDELO_TEST_SOURCE_ONLY_ENV_REPO", &repo)
+            .env("KANDELO_TEST_SOURCE_ONLY_ENV_CACHE", &cache_base)
+            .env("KANDELO_TEST_BENIGN_ENV", "preserved")
+            .env("KANDELO_TEST_REAL_GIT", real_git)
+            .env("KANDELO_TEST_DECLARED_GIT_SOURCE", declared_git)
+            .env("PATH", fixture_path)
+            .env("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "hostile-ambient-marker")
+            .env("ACTIONS_RUNTIME_TOKEN", "hostile-ambient-marker")
+            .env("GH_TOKEN", "hostile-ambient-marker")
+            .env("GITHUB_TOKEN", "hostile-ambient-marker")
+            .env("HOMEBREW_GITHUB_API_TOKEN", "hostile-ambient-marker")
+            .env("HTTP_PROXY", "http://127.0.0.1:9")
+            .env("HTTPS_PROXY", "http://127.0.0.1:9")
+            .env("ALL_PROXY", "socks5://127.0.0.1:9")
+            .env("http_proxy", "http://127.0.0.1:9")
+            .env("https_proxy", "http://127.0.0.1:9")
+            .env("all_proxy", "socks5://127.0.0.1:9")
+            .env("CARGO_REGISTRY_TOKEN", "hostile-ambient-marker")
+            .env("CARGO_HTTP_PROXY", "http://127.0.0.1:9")
+            .env("RUSTC_WRAPPER", "/hostile/rustc-wrapper")
+            .env("RUSTC_WORKSPACE_WRAPPER", "/hostile/workspace-wrapper")
+            .env("RUSTFLAGS", "--cfg hostile_ambient")
+            .env("CARGO_ENCODED_RUSTFLAGS", "--cfg\u{1f}hostile_ambient")
+            .env("BASH_ENV", &bash_env)
+            .env("ENV", "/hostile/shell-env")
+            .env("WASM_POSIX_BINARY_INDEX_URL", "https://hostile.invalid/index.toml")
+            .env("WASM_POSIX_USE_PR_STAGING", "1")
+            .env("WASM_POSIX_DEP_HOSTILE_DIR", "/hostile/dependency")
+            .env("WASM_POSIX_DEFAULT_ARCH", "wasm64")
+            .env(
+                "WASM_POSIX_BUILD_GIT_UNDECLARED_DIR",
+                "/hostile/undeclared-git",
+            )
+            .env(
+                "WASM_POSIX_BUILD_GIT_UNDECLARED_COMMIT",
+                "hostile-ambient-marker",
+            )
+            .env(
+                "WASM_POSIX_BUILD_GIT_DECLARED_TOOL_DIR",
+                "/hostile/declared-git",
+            )
+            .env(
+                "WASM_POSIX_BUILD_GIT_DECLARED_TOOL_COMMIT",
+                "hostile-ambient-marker",
+            )
+            .env("WASM_POSIX_BINARY_CACHE_ROOT", "hostile-ambient-marker")
+            .env("WASM_POSIX_SOURCE_ONLY_CACHE_ROOT", "hostile-ambient-marker")
+            .env("WASM_POSIX_DEPS_REGISTRY", "hostile-ambient-marker")
+            .env("WASM_POSIX_BINARY_RESOLVER_REPO_ROOT", "hostile-ambient-marker")
+            .env(SOURCE_ONLY_POLICY_ENV, "hostile-ambient-marker")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "SourceOnly environment child failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+
+        let registry = Registry {
+            roots: vec![repo.clone()],
+        };
+        let target = registry.load("clean-env").unwrap();
+        let _repo_root = crate::install_repo_root_override(repo).unwrap();
+        let cache_key = compute_sha_for_policy(
+            &target,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            ResolvePolicy::SourceOnlyV1,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let canonical = canonical_path(&cache, &target, TEST_ARCH, &cache_key);
+        assert_eq!(fs::read(canonical.join("lib/out.a")).unwrap(), b"CLEAN-ENV\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_only_kernel_and_userspace_recipes_write_cargo_outputs_below_work() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for (package, artifact) in [
+            ("kernel", "kandelo-kernel.wasm"),
+            ("userspace", "wasm_posix_userspace.wasm"),
+        ] {
+            let fixture = tempdir(&format!("source-only-{package}-cargo-target"));
+            let package_dir = fixture.join(format!("packages/registry/{package}"));
+            let scripts_dir = fixture.join("scripts");
+            let tool_bin = fixture.join("tools/bin");
+            let work = fixture.join("resolver-work");
+            let output = fixture.join("resolver-output");
+            fs::create_dir_all(&package_dir).unwrap();
+            fs::create_dir_all(&scripts_dir).unwrap();
+            fs::create_dir_all(&tool_bin).unwrap();
+            fs::create_dir_all(&work).unwrap();
+            fs::create_dir_all(&output).unwrap();
+            let script_name = format!("build-{package}.sh");
+            fs::copy(
+                crate::repo_root()
+                    .join("packages/registry")
+                    .join(package)
+                    .join(&script_name),
+                package_dir.join(&script_name),
+            )
+            .unwrap();
+            fs::write(
+                scripts_dir.join("wasm-artifact-guards.sh"),
+                "wasm_require_exports() { :; }\nwasm_require_target_aware_exec_authority() { :; }\n",
+            )
+            .unwrap();
+            let fake_cargo = tool_bin.join("cargo");
+            fs::write(
+                &fake_cargo,
+                r#"#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "-V" ]; then
+  echo 'cargo 1.97.0-nightly fixture'
+  exit 0
+fi
+case " $* " in
+  *" -p kandelo "*) artifact=kandelo_kernel.wasm ;;
+  *" -p wasm-posix-userspace "*) artifact=wasm_posix_userspace.wasm ;;
+  *) exit 91 ;;
+esac
+mkdir -p "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release"
+printf '\0asm\1\0\0\0fixture' > "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/$artifact"
+"#,
+            )
+            .unwrap();
+            fs::set_permissions(&fake_cargo, fs::Permissions::from_mode(0o755)).unwrap();
+            let mut path = std::ffi::OsString::from(&tool_bin);
+            path.push(":");
+            path.push(std::env::var_os("PATH").unwrap_or_default());
+
+            let command_output = Command::new("bash")
+                .arg(package_dir.join(&script_name))
+                .env("PATH", path)
+                .env("WASM_POSIX_DEP_WORK_DIR", &work)
+                .env("WASM_POSIX_DEP_OUT_DIR", &output)
+                .env("CARGO_TARGET_DIR", work.join("cargo-target"))
+                .output()
+                .unwrap();
+            assert!(
+                command_output.status.success(),
+                "{package} resolver recipe failed:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&command_output.stdout),
+                String::from_utf8_lossy(&command_output.stderr),
+            );
+            assert!(output.join(artifact).is_file());
+            assert!(
+                !fixture.join("target").exists(),
+                "{package} wrote Cargo output into the checkout",
+            );
+            assert!(
+                !fixture.join("local-binaries").exists() && !fixture.join("host/wasm").exists(),
+                "{package} resolver recipe installed checkout mirrors",
+            );
+        }
+    }
+
+    #[test]
+    fn source_only_recipe_receives_one_canonical_policy_cache_pair() {
+        let root = tempdir("source-only-nested-env-registry");
+        let cache_base = tempdir("source-only-nested-env-cache");
+        let cache = cache_base.join("source-only-v1/compiled");
+        std::fs::create_dir_all(&cache).unwrap();
+        write_lib(
+            &root,
+            "libNested",
+            "1.0.0",
+            &[],
+            r#"
+test "${WASM_POSIX_RESOLUTION_POLICY:-}" = "source-only-v1"
+test -n "${WASM_POSIX_SOURCE_ONLY_CACHE_ROOT:-}"
+test -n "${WASM_POSIX_BINARY_CACHE_ROOT:-}"
+test "$WASM_POSIX_BINARY_CACHE_ROOT" = "$WASM_POSIX_SOURCE_ONLY_CACHE_ROOT/source-only-v1/compiled"
+test "$(cd "$WASM_POSIX_BINARY_CACHE_ROOT" && pwd -P)" = "$WASM_POSIX_BINARY_CACHE_ROOT"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+printf NESTED > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
+"#,
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        write_source_only_repository_inputs(&root, "libNested");
+        let registry = Registry { roots: vec![root] };
+        let manifest = registry.load("libNested").unwrap();
+        let opts = ResolveOpts {
+            policy: ResolvePolicy::SourceOnlyV1,
+            source_cache_root: Some(&cache_base),
+            cache_root: &cache,
+            local_libs: None,
+            force_source_build: None,
+            fetch_only: false,
+            repo_root: None,
+            binaries_dir: None,
+        };
+        let resolved = ensure_built(
+            &manifest,
+            &registry,
+            TEST_ARCH,
+            current_abi_version(),
+            &opts,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(resolved.join("lib/out.a")).unwrap(), b"NESTED");
+    }
+
+    #[test]
+    fn source_archive_handoff_rejects_every_noncanonical_cache_pair_before_resolution() {
+        let (base, compiled) = source_only_test_roots("source-archive-handoff-pair");
+        let registry_root = tempdir("source-archive-handoff-registry");
+        write_lib(
+            &registry_root,
+            "pairTarget",
+            "1.0.0",
+            &[],
+            "exit 99",
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        let manifest_path = registry_root.join("pairTarget/package.toml");
+        let manifest = fs::read_to_string(&manifest_path).unwrap().replace(
+            "sha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"",
+            "provider = \"archive\"\nsha256 = \"1111111111111111111111111111111111111111111111111111111111111111\"",
+        );
+        fs::write(manifest_path, manifest).unwrap();
+        let registry = Registry {
+            roots: vec![registry_root],
+        };
+        let target = registry.load("pairTarget").unwrap();
+
+        validate_resolve_cache_pair(&source_only_test_opts(&base, &compiled)).unwrap();
+
+        let missing = ResolveOpts {
+            source_cache_root: None,
+            ..source_only_test_opts(&base, &compiled)
+        };
+        let error = ensure_built(&target, &registry, TEST_ARCH, TEST_ABI, &missing).unwrap_err();
+        assert!(error.contains("source-cache base"), "got: {error}");
+
+        let nonexistent_base = base.parent().unwrap().join("missing-source-cache-base");
+        let nonexistent = source_only_test_opts(&nonexistent_base, &compiled);
+        let error = ensure_built(&target, &registry, TEST_ARCH, TEST_ABI, &nonexistent).unwrap_err();
+        assert!(error.contains("inspect source-only source-cache base"), "got: {error}");
+
+        let wrong = tempdir("source-archive-handoff-wrong");
+        let mismatch = source_only_test_opts(&base, &wrong);
+        let error = ensure_built(&target, &registry, TEST_ARCH, TEST_ABI, &mismatch).unwrap_err();
+        assert!(error.contains("source-only-v1/compiled"), "got: {error}");
+        assert!(fs::read_dir(&wrong).unwrap().next().is_none());
+
+        let relative_base = Path::new("relative-source-cache");
+        let relative = source_only_test_opts(relative_base, &compiled);
+        let error = ensure_built(&target, &registry, TEST_ARCH, TEST_ABI, &relative).unwrap_err();
+        assert!(error.contains("absolute"), "got: {error}");
+
+        let alternate = base.join("source-only-v1/../.");
+        let noncanonical = source_only_test_opts(&alternate, &compiled);
+        let error =
+            ensure_built(&target, &registry, TEST_ARCH, TEST_ABI, &noncanonical).unwrap_err();
+        assert!(error.contains("canonical spelling"), "got: {error}");
+
+        let base_name = base.file_name().unwrap().to_string_lossy();
+        let base_parent = base.parent().unwrap().display();
+        for alias in [
+            PathBuf::from(format!("{base_parent}//{base_name}")),
+            PathBuf::from(format!("{base_parent}/./{base_name}")),
+            PathBuf::from(format!("{}/", base.display())),
+        ] {
+            let aliased = source_only_test_opts(&alias, &compiled);
+            let error =
+                ensure_built(&target, &registry, TEST_ARCH, TEST_ABI, &aliased).unwrap_err();
+            assert!(error.contains("canonical spelling"), "{}: {error}", alias.display());
+        }
+        for alias in [
+            PathBuf::from(format!(
+                "{}/source-only-v1//compiled",
+                base.display()
+            )),
+            PathBuf::from(format!(
+                "{}/source-only-v1/./compiled",
+                base.display()
+            )),
+            PathBuf::from(format!("{}/", compiled.display())),
+        ] {
+            let aliased = source_only_test_opts(&base, &alias);
+            let error =
+                ensure_built(&target, &registry, TEST_ARCH, TEST_ABI, &aliased).unwrap_err();
+            assert!(error.contains("canonical spelling"), "{}: {error}", alias.display());
+        }
+
+        let file = base.join("not-a-directory");
+        fs::write(&file, "not a directory\n").unwrap();
+        let wrong_kind = source_only_test_opts(&file, &compiled);
+        let error = ensure_built(&target, &registry, TEST_ARCH, TEST_ABI, &wrong_kind).unwrap_err();
+        assert!(error.contains("real directory"), "got: {error}");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let link = base.parent().unwrap().join(format!(
+                "{}-link",
+                base.file_name().unwrap().to_string_lossy()
+            ));
+            let _ = fs::remove_file(&link);
+            symlink(&base, &link).unwrap();
+            let linked_compiled = link.join("source-only-v1/compiled");
+            let linked = source_only_test_opts(&link, &linked_compiled);
+            let error = ensure_built(&target, &registry, TEST_ARCH, TEST_ABI, &linked).unwrap_err();
+            assert!(error.contains("source-cache base"), "got: {error}");
+            fs::remove_file(link).unwrap();
+        }
+        assert!(
+            fs::read_dir(&compiled).unwrap().next().is_none(),
+            "invalid public cache pairs mutated the compiled cache",
+        );
+    }
+
+    #[test]
+    fn source_kind_materialization_is_an_archive_without_a_compiled_cache_entry() {
+        use std::io::Write;
+
+        let fixture = tempfile::tempdir().unwrap();
+        let archive = fixture.path().join("source.tar.gz");
+        let mut bytes = Vec::new();
+        {
+            let encoder = flate2::write::GzEncoder::new(&mut bytes, flate2::Compression::default());
+            let mut builder = tar::Builder::new(encoder);
+            let mut header = tar::Header::new_gnu();
+            header.set_path("source-1.0/payload.txt").unwrap();
+            header.set_size(8);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append(&header, &b"payload\n"[..]).unwrap();
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+        fs::File::create(&archive)
+            .unwrap()
+            .write_all(&bytes)
+            .unwrap();
+        let digest_bytes: [u8; 32] = Sha256::digest(&bytes).into();
+        let digest = hex(&digest_bytes);
+        let manifest = DepsManifest::parse(
+            &format!(
+                r#"kind = "source"
+name = "fixture-source"
+version = "1.0.0"
+
+[source]
+url = "file://{}"
+sha256 = "{}"
+provider = "archive"
+
+[license]
+spdx = "TestLicense"
+"#,
+                archive.display(),
+                digest,
+            ),
+            fixture.path().to_path_buf(),
+        )
+        .unwrap();
+        let registry = Registry { roots: vec![] };
+        let (base, compiled) = source_only_test_roots("source-kind-materialization");
+        let opts = source_only_test_opts(&base, &compiled);
+        let resolved = ensure_built_inner(
+            &manifest,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &opts,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+            &BuildPermission::Recursive,
+        )
+        .unwrap();
+        let expected_payload = base
+            .join("source-archives/sha256")
+            .join(&digest)
+            .join("payload");
+        assert_eq!(
+            resolved,
+            ResolvedNode {
+                materialization: NodeMaterialization::VerifiedSourceArchive {
+                    archive: expected_payload.clone(),
+                    source_url: format!("file://{}", archive.display()),
+                    sha256: digest,
+                    extract_exclude_members: Vec::new(),
+                },
+                transitive_compiled_dirs: BTreeSet::new(),
+                disposition: LocalBuildDisposition::Published,
+            }
+        );
+        assert!(expected_payload.is_file());
+        assert!(!compiled.join("sources").exists());
+
+        let error = ensure_built(&manifest, &registry, TEST_ARCH, TEST_ABI, &opts).unwrap_err();
+        assert!(
+            error.contains("source nodes are dependency inputs")
+                && error.contains("fixture-source"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn source_archive_handoff_public_cli_uses_only_the_selected_base_and_rejects_top_level_source_early()
+     {
+        const CHILD_ENV: &str = "KANDELO_TEST_SOURCE_HANDOFF_PUBLIC_CLI_CHILD";
+        if let Some(mode) = std::env::var_os(CHILD_ENV) {
+            match mode.to_str().unwrap() {
+                "consumer" => run(vec![
+                    "--source-only".into(),
+                    "resolve".into(),
+                    "sourceConsumer".into(),
+                ])
+                .unwrap(),
+                "top-level" => {
+                    let error = run(vec![
+                        "--source-only".into(),
+                        "resolve".into(),
+                        "top-level-source".into(),
+                    ])
+                    .unwrap_err();
+                    assert!(
+                        error.contains("source nodes are dependency inputs")
+                            && error.contains("top-level-source"),
+                        "got: {error}",
+                    );
+                }
+                other => panic!("unexpected child mode {other:?}"),
+            }
+            return;
+        }
+
+        let registry_root = tempdir("source-handoff-public-cli-registry");
+        let (archive, digest) = fixture_source_archive(&registry_root);
+        write_source_archive_fixture(&registry_root, "consumer-source", &archive, &digest);
+        let selected_base = tempdir("source-handoff-public-cli-cache");
+        let selected_compiled = selected_base.join("source-only-v1/compiled");
+        let dependency_variable = format!(
+            "WASM_POSIX_DEP_{}_SRC_DIR",
+            source_dependency_key("consumer-source")
+        );
+        write_lib(
+            &registry_root,
+            "sourceConsumer",
+            "1.0.0",
+            &["consumer-source@1.0.0"],
+            &format!(
+                r#"
+test "$WASM_POSIX_RESOLUTION_POLICY" = "source-only-v1"
+test "$WASM_POSIX_SOURCE_ONLY_CACHE_ROOT" = "{}"
+test "$WASM_POSIX_BINARY_CACHE_ROOT" = "{}"
+test "$(cat "${{{dependency_variable}}}/payload.txt")" = "resolver-owned source"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+printf 'PUBLIC\n' > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
+"#,
+                selected_base.display(),
+                selected_compiled.display(),
+            ),
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        write_source_only_repository_inputs(&registry_root, "sourceConsumer");
+
+        let ordinary_cache_home = registry_root.join("ordinary-cache-home");
+        let ordinary_home = registry_root.join("ordinary-home");
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "build_deps::tests::source_archive_handoff_public_cli_uses_only_the_selected_base_and_rejects_top_level_source_early",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "consumer")
+            .env("WASM_POSIX_DEPS_REGISTRY", &registry_root)
+            .env("WASM_POSIX_SOURCE_ONLY_CACHE_ROOT", &selected_base)
+            .env("XDG_CACHE_HOME", &ordinary_cache_home)
+            .env("HOME", &ordinary_home)
+            .env_remove("WASM_POSIX_BINARY_CACHE_ROOT")
+            .env_remove(SOURCE_ONLY_POLICY_ENV)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "public source consumer failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert!(selected_compiled.is_dir());
+        assert!(selected_base.join("source-archives/sha256").is_dir());
+        assert!(
+            !ordinary_cache_home.exists() && !ordinary_home.exists(),
+            "source-only CLI consulted an ordinary cache default",
+        );
+
+        let origin_trap = registry_root.join("top-level-origin-must-not-open.tar.gz");
+        write_source_archive_fixture(
+            &registry_root,
+            "top-level-source",
+            &origin_trap,
+            &"1".repeat(64),
+        );
+        let rejected_base = registry_root.join("top-level-cache-must-not-exist");
+        let rejected_ordinary = registry_root.join("top-level-ordinary-must-not-exist");
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "build_deps::tests::source_archive_handoff_public_cli_uses_only_the_selected_base_and_rejects_top_level_source_early",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "top-level")
+            .env("WASM_POSIX_DEPS_REGISTRY", &registry_root)
+            .env("WASM_POSIX_SOURCE_ONLY_CACHE_ROOT", &rejected_base)
+            .env("WASM_POSIX_BINARY_CACHE_ROOT", &rejected_ordinary)
+            .env_remove(SOURCE_ONLY_POLICY_ENV)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "top-level source rejection child failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        for path in [origin_trap, rejected_base, rejected_ordinary] {
+            assert!(
+                !path.exists(),
+                "top-level source rejection touched {}",
+                path.display(),
+            );
+        }
+    }
+
+    #[test]
+    fn source_provider_handoff_supplies_fresh_primary_archive_inputs_and_clears_hostile_values() {
+        let registry_root = tempdir("source-provider-handoff-registry");
+        let (archive, digest) = fixture_source_archive(&registry_root);
+        let (base, compiled) = source_only_test_roots("source-provider-handoff-cache");
+        let success_body = format!(
+            r#"
+test -f "$WASM_POSIX_DEP_SOURCE_ARCHIVE"
+test -d "$WASM_POSIX_DEP_SOURCE_DIR"
+test "$WASM_POSIX_DEP_SOURCE_ARCHIVE" != "$WASM_POSIX_DEP_SOURCE_DIR"
+case "$WASM_POSIX_DEP_SOURCE_DIR/" in "$WASM_POSIX_DEP_WORK_DIR/"*) exit 71 ;; esac
+case "$WASM_POSIX_DEP_WORK_DIR/" in "$WASM_POSIX_DEP_SOURCE_DIR/"*) exit 72 ;; esac
+test "$(cat "$WASM_POSIX_DEP_SOURCE_DIR/payload.txt")" = "resolver-owned source"
+test ! -w "$WASM_POSIX_DEP_SOURCE_DIR"
+test ! -w "$WASM_POSIX_DEP_SOURCE_DIR/payload.txt"
+test "$WASM_POSIX_DEP_SOURCE_URL" = "file://{}"
+test "$WASM_POSIX_DEP_SOURCE_SHA256" = "{}"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+printf 'ARCHIVE\n' > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
+printf '%s\n%s\n%s\n' "$WASM_POSIX_DEP_SOURCE_ARCHIVE" "$WASM_POSIX_DEP_SOURCE_DIR" \
+  "$WASM_POSIX_DEP_WORK_DIR" \
+  > "$WASM_POSIX_DEP_OUT_DIR/source-paths"
+"#,
+            archive.display(),
+            digest,
+        );
+        write_archive_provider_lib(
+            &registry_root,
+            "archivePrimary",
+            &archive,
+            &digest,
+            &success_body,
+        );
+        let registry = Registry {
+            roots: vec![registry_root.clone()],
+        };
+        let target = registry.load("archivePrimary").unwrap();
+        let opts = source_only_test_opts(&base, &compiled);
+        let resolved =
+            ensure_built(&target, &registry, TEST_ARCH, current_abi_version(), &opts).unwrap();
+        let paths = fs::read_to_string(resolved.join("source-paths")).unwrap();
+        let mut paths = paths.lines().map(PathBuf::from);
+        let payload = paths.next().unwrap();
+        let source_tree = paths.next().unwrap();
+        let recipe_work = paths.next().unwrap();
+        assert!(paths.next().is_none());
+        assert!(payload.is_file());
+        assert_eq!(fs::canonicalize(&payload).unwrap(), payload);
+        assert!(payload.starts_with(base.join("source-archives/sha256")));
+        assert!(
+            !source_tree.exists(),
+            "successful build retained primary source tree"
+        );
+        assert!(!recipe_work.exists(), "successful build retained recipe work");
+        assert!(!source_tree.starts_with(&recipe_work));
+        assert!(!recipe_work.starts_with(&source_tree));
+
+        let package_helper = crate::repo_root().join("scripts/package-build-roots.sh");
+        let helper_body = format!(
+            r#"
+source {package_helper:?}
+curl() {{
+  : > "$WASM_POSIX_DEP_WORK_DIR/curl-called"
+  return 97
+}}
+kandelo_package_prepare_build_roots "$WASM_POSIX_DEP_WORK_DIR" wasm32
+kandelo_package_select_source_root "$WASM_POSIX_DEP_SOURCE_DIR"
+stage="$WASM_POSIX_DEP_WORK_DIR/staged-source"
+kandelo_package_stage_verified_source archive-helper "$stage" \
+  "$WASM_POSIX_DEP_SOURCE_DIR" "$WASM_POSIX_DEP_SOURCE_URL" \
+  "$WASM_POSIX_DEP_SOURCE_SHA256" "$WASM_POSIX_DEP_WORK_DIR"
+test ! -e "$WASM_POSIX_DEP_WORK_DIR/curl-called"
+test "$(cat "$stage/payload.txt")" = "resolver-owned source"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+printf 'HELPER\n' > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
+printf '%s\n%s\n%s\n' "$WASM_POSIX_DEP_SOURCE_DIR" \
+  "$WASM_POSIX_DEP_WORK_DIR" "$stage" > "$WASM_POSIX_DEP_OUT_DIR/helper-paths"
+"#,
+        );
+        write_archive_provider_lib(
+            &registry_root,
+            "archiveHelper",
+            &archive,
+            &digest,
+            &helper_body,
+        );
+        let helper = ensure_built(
+            &registry.load("archiveHelper").unwrap(),
+            &registry,
+            TEST_ARCH,
+            current_abi_version(),
+            &opts,
+        )
+        .unwrap();
+        assert_eq!(fs::read(helper.join("lib/out.a")).unwrap(), b"HELPER\n");
+        let helper_paths = fs::read_to_string(helper.join("helper-paths")).unwrap();
+        let helper_paths = helper_paths.lines().map(PathBuf::from).collect::<Vec<_>>();
+        assert_eq!(helper_paths.len(), 3);
+        assert!(!helper_paths[0].starts_with(&helper_paths[1]));
+        assert!(!helper_paths[1].starts_with(&helper_paths[0]));
+        assert!(helper_paths[2].starts_with(&helper_paths[1]));
+        assert!(helper_paths.iter().all(|path| !path.exists()));
+
+        let failure_record = registry_root.join("failed-primary-source-path");
+        write_archive_provider_lib(
+            &registry_root,
+            "archivePrimaryFail",
+            &archive,
+            &digest,
+            &format!(
+                "printf '%s\\n' \"$WASM_POSIX_DEP_SOURCE_DIR\" > {:?}\nexit 19",
+                failure_record,
+            ),
+        );
+        let failed = registry.load("archivePrimaryFail").unwrap();
+        let error =
+            ensure_built(&failed, &registry, TEST_ARCH, current_abi_version(), &opts).unwrap_err();
+        assert!(error.contains("exit status: 19"), "got: {error}");
+        let failed_tree = PathBuf::from(fs::read_to_string(failure_record).unwrap().trim());
+        assert!(
+            !failed_tree.exists(),
+            "failed build retained primary source tree"
+        );
+        assert!(
+            payload.is_file(),
+            "consumer failure removed immutable payload"
+        );
+
+        let mut archive_environment = Command::new("env");
+        for variable in [
+            "WASM_POSIX_DEP_SOURCE_ARCHIVE",
+            "WASM_POSIX_DEP_SOURCE_DIR",
+            "WASM_POSIX_DEP_SOURCE_URL",
+            "WASM_POSIX_DEP_SOURCE_SHA256",
+        ] {
+            archive_environment.env(variable, "hostile-ambient-value");
+        }
+        let handoff = PrimarySourceHandoff {
+            archive: payload.clone(),
+            source_dir: PathBuf::from("/resolver-owned/fresh-source-tree"),
+        };
+        configure_primary_source_environment(
+            &mut archive_environment,
+            &target,
+            ResolvePolicy::SourceOnlyV1,
+            Some(&handoff),
+        )
+        .unwrap();
+        let output = archive_environment.output().unwrap();
+        assert!(output.status.success());
+        let environment = String::from_utf8(output.stdout).unwrap();
+        assert!(environment.contains(&format!(
+            "WASM_POSIX_DEP_SOURCE_ARCHIVE={}",
+            payload.display()
+        )));
+        assert!(
+            environment.contains("WASM_POSIX_DEP_SOURCE_DIR=/resolver-owned/fresh-source-tree")
+        );
+        assert!(!environment.contains("hostile-ambient-value"));
+
+        let primary_trap = registry_root.join("must-not-open-repository-primary");
+        let mut repository = target.clone();
+        repository.source.provider = SourceProvider::Repository;
+        repository.source.sha256 = "0".repeat(64);
+        repository.source.url = format!("file://{}", primary_trap.display());
+        let mut dev_shell = repository.clone();
+        dev_shell.source.provider = SourceProvider::DevShell;
+        for provider_target in [&repository, &dev_shell] {
+            let work_root = tempdir("source-provider-no-acquisition-work");
+            assert!(
+                prepare_primary_source_handoff(
+                    provider_target,
+                    ResolvePolicy::SourceOnlyV1,
+                    Some(&base),
+                    &work_root,
+                )
+                .unwrap()
+                .is_none(),
+            );
+            assert!(
+                !primary_trap.exists(),
+                "{} provider opened its trap source",
+                provider_target.source.provider.as_str(),
+            );
+            let mut command = Command::new("env");
+            for variable in [
+                "WASM_POSIX_DEP_SOURCE_ARCHIVE",
+                "WASM_POSIX_DEP_SOURCE_DIR",
+                "WASM_POSIX_DEP_SOURCE_URL",
+                "WASM_POSIX_DEP_SOURCE_SHA256",
+            ] {
+                command.env(variable, "hostile-ambient-value");
+            }
+            configure_primary_source_environment(
+                &mut command,
+                provider_target,
+                ResolvePolicy::SourceOnlyV1,
+                None,
+            )
+            .unwrap();
+            let output = command.output().unwrap();
+            assert!(output.status.success());
+            let environment = String::from_utf8(output.stdout).unwrap();
+            assert!(
+                !environment.contains("WASM_POSIX_DEP_SOURCE_"),
+                "{} inherited generic source values:\n{environment}",
+                provider_target.source.provider.as_str(),
+            );
+        }
+
+        let mut default_archive = Command::new("env");
+        for variable in [
+            "WASM_POSIX_DEP_SOURCE_ARCHIVE",
+            "WASM_POSIX_DEP_SOURCE_DIR",
+            "WASM_POSIX_DEP_SOURCE_URL",
+            "WASM_POSIX_DEP_SOURCE_SHA256",
+        ] {
+            default_archive.env(variable, "hostile-ambient-value");
+        }
+        configure_primary_source_environment(
+            &mut default_archive,
+            &target,
+            ResolvePolicy::Default,
+            None,
+        )
+        .unwrap();
+        let environment = String::from_utf8(default_archive.output().unwrap().stdout).unwrap();
+        assert!(environment.contains(&format!(
+            "WASM_POSIX_DEP_SOURCE_URL=file://{}",
+            archive.display()
+        )));
+        assert!(environment.contains(&format!("WASM_POSIX_DEP_SOURCE_SHA256={digest}")));
+        assert!(!environment.contains("WASM_POSIX_DEP_SOURCE_ARCHIVE="));
+        assert!(!environment.contains("WASM_POSIX_DEP_SOURCE_DIR="));
+        assert!(!environment.contains("hostile-ambient-value"));
+
+        let mut default_repository = Command::new("env");
+        for variable in [
+            "WASM_POSIX_DEP_SOURCE_ARCHIVE",
+            "WASM_POSIX_DEP_SOURCE_DIR",
+            "WASM_POSIX_DEP_SOURCE_URL",
+            "WASM_POSIX_DEP_SOURCE_SHA256",
+        ] {
+            default_repository.env(variable, "hostile-ambient-value");
+        }
+        configure_primary_source_environment(
+            &mut default_repository,
+            &repository,
+            ResolvePolicy::Default,
+            None,
+        )
+        .unwrap();
+        let environment = String::from_utf8(default_repository.output().unwrap().stdout).unwrap();
+        assert!(!environment.contains("WASM_POSIX_DEP_SOURCE_"));
+
+        build_memo().lock().unwrap().clear();
+        fs::remove_file(&archive).unwrap();
+        fs::remove_dir_all(payload.parent().unwrap()).unwrap();
+        let cached =
+            ensure_built(&target, &registry, TEST_ARCH, current_abi_version(), &opts).unwrap();
+        assert_eq!(
+            cached, resolved,
+            "compiled cache hit attempted primary acquisition"
+        );
+    }
+
+    #[test]
+    fn source_provider_handoff_default_preserves_original_work_root_shape() {
+        let registry_root = tempdir("default-work-shape-registry");
+        write_lib(
+            &registry_root,
+            "defaultWorkShape",
+            "1.0.0",
+            &[],
+            r#"
+test "$(basename "$WASM_POSIX_DEP_WORK_DIR")" != recipe-work
+case "$(basename "$WASM_POSIX_DEP_WORK_DIR")" in *.work-*) ;; *) exit 81 ;; esac
+test -z "$(find "$WASM_POSIX_DEP_WORK_DIR" -mindepth 1 -print -quit)"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+printf 'DEFAULT\n' > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
+printf '%s\n' "$WASM_POSIX_DEP_WORK_DIR" > "$WASM_POSIX_DEP_OUT_DIR/work-path"
+"#,
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        let registry = Registry {
+            roots: vec![registry_root],
+        };
+        let cache = tempdir("default-work-shape-cache");
+        let resolved = ensure_built(
+            &registry.load("defaultWorkShape").unwrap(),
+            &registry,
+            TEST_ARCH,
+            current_abi_version(),
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
+        let work_path =
+            PathBuf::from(fs::read_to_string(resolved.join("work-path")).unwrap().trim());
+        assert!(work_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .contains(".work-"));
+        assert!(!work_path.exists(), "Default recipe work root survived success");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_build_work_cleanup_never_chmods_an_outside_hardlink() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = tempdir("local-rebuild-work-cleanup-hardlink-parent");
+        let outside = parent.join("outside-sentinel");
+        fs::write(&outside, b"outside-bytes").unwrap();
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o400)).unwrap();
+        let cache_root = parent.join("compiled");
+        fs::create_dir(&cache_root).unwrap();
+        let canonical = cache_root.join("libs/hardlink-cleanup-cache-entry");
+        let cache_parent = SourceOnlyCacheParentGuard::prepare(&cache_root, &canonical).unwrap();
+
+        let work = create_build_work_root(
+            canonical.parent().unwrap(),
+            "hardlink-cleanup",
+            ResolvePolicy::SourceOnlyV1,
+            Some(&cache_parent),
+        )
+        .unwrap();
+        let work_path = work.path.clone();
+        fs::hard_link(&outside, work.recipe_work.join("outside-hardlink")).unwrap();
+        drop(work);
+
+        assert!(!work_path.exists(), "owned work root survived ordinary cleanup");
+        assert_eq!(fs::read(&outside).unwrap(), b"outside-bytes");
+        assert_eq!(
+            fs::symlink_metadata(&outside)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o400,
+            "cleanup changed permissions through a recipe-created hardlink",
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_build_work_cleanup_accepts_owned_hardlink_aliases() {
+        let parent = tempdir("local-rebuild-work-cleanup-hardlink-alias-parent");
+        let cache_root = parent.join("compiled");
+        fs::create_dir(&cache_root).unwrap();
+        let canonical = cache_root.join("libs/hardlink-alias-cleanup-cache-entry");
+        let cache_parent = SourceOnlyCacheParentGuard::prepare(&cache_root, &canonical).unwrap();
+
+        let mut work = create_build_work_root(
+            canonical.parent().unwrap(),
+            "hardlink-alias-cleanup",
+            ResolvePolicy::SourceOnlyV1,
+            Some(&cache_parent),
+        )
+        .unwrap();
+        let work_path = work.path.clone();
+        let first = work.recipe_work.join("owned-a");
+        let nested = work.recipe_work.join("nested");
+        fs::create_dir(&nested).unwrap();
+        fs::write(&first, b"owned bytes").unwrap();
+        fs::hard_link(&first, nested.join("owned-b")).unwrap();
+
+        work.cleanup_source_only().unwrap();
+
+        assert!(
+            !work_path.exists(),
+            "an entirely resolver-owned hardlink group must not make cleanup fail"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_hardlink_cleanup_rejects_a_relinked_final_name() {
+        let parent_path = tempdir("local-rebuild-hardlink-relinked-final-name-parent");
+        let parent = AnchoredDirectory::open_existing(&parent_path, "hardlink test parent")
+            .unwrap();
+        let mut owned = OwnedPrivateDirectory::reserve_below(
+            parent,
+            "hardlink-test",
+            "hardlink relink test",
+        )
+        .unwrap();
+        let remaining = owned.path().join("owned-a");
+        let nested = owned.path().join("nested");
+        let external = parent_path.join("external-alias");
+        fs::create_dir(&nested).unwrap();
+        fs::write(&remaining, b"owned-bytes").unwrap();
+        fs::hard_link(&remaining, nested.join("owned-b")).unwrap();
+        fs::hard_link(&remaining, &external).unwrap();
+        let snapshot = capture_anchored_cleanup_tree(&owned.root, "hardlink relink test")
+            .unwrap();
+        let expected_identity = owned.identity().clone();
+        let mut before_unlink_calls = 0;
+
+        let error = remove_anchored_child_tree_exact_with_hooks(
+            &owned.parent,
+            &owned.name,
+            &expected_identity,
+            &snapshot,
+            "hardlink relink test",
+            &mut |_| Ok(()),
+            &mut |_| {
+                before_unlink_calls += 1;
+                if before_unlink_calls == 2 {
+                    fs::remove_file(&remaining).unwrap();
+                    fs::hard_link(&external, &remaining).unwrap();
+                }
+                Ok(())
+            },
+            &mut |_| Ok(()),
+        )
+        .unwrap_err();
+
+        assert_eq!(before_unlink_calls, 2);
+        assert!(error.contains("changed") || error.contains("preserved"), "{error}");
+        assert_eq!(fs::read(&remaining).unwrap(), b"owned-bytes");
+        assert_eq!(fs::read(&external).unwrap(), b"owned-bytes");
+        owned.preserve = true;
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_hardlink_cleanup_preserves_the_last_name_if_a_peer_disappears() {
+        let parent_path = tempdir("local-rebuild-hardlink-peer-disappears-parent");
+        let parent = AnchoredDirectory::open_existing(&parent_path, "hardlink test parent")
+            .unwrap();
+        let mut owned = OwnedPrivateDirectory::reserve_below(
+            parent,
+            "hardlink-test",
+            "hardlink peer-removal test",
+        )
+        .unwrap();
+        let remaining = owned.path().join("owned-a");
+        let nested = owned.path().join("nested");
+        let external = parent_path.join("external-alias");
+        fs::create_dir(&nested).unwrap();
+        fs::write(&remaining, b"owned-bytes").unwrap();
+        fs::hard_link(&remaining, nested.join("owned-b")).unwrap();
+        fs::hard_link(&remaining, &external).unwrap();
+        let snapshot = capture_anchored_cleanup_tree(&owned.root, "hardlink peer-removal test")
+            .unwrap();
+        let expected_identity = owned.identity().clone();
+        let mut before_unlink_calls = 0;
+
+        let error = remove_anchored_child_tree_exact_with_hooks(
+            &owned.parent,
+            &owned.name,
+            &expected_identity,
+            &snapshot,
+            "hardlink peer-removal test",
+            &mut |_| Ok(()),
+            &mut |_| {
+                before_unlink_calls += 1;
+                if before_unlink_calls == 2 {
+                    fs::remove_file(&external).unwrap();
+                }
+                Ok(())
+            },
+            &mut |_| Ok(()),
+        )
+        .unwrap_err();
+
+        assert_eq!(before_unlink_calls, 2);
+        assert!(error.contains("changed") || error.contains("preserved"), "{error}");
+        assert_eq!(
+            fs::read(&remaining).unwrap(),
+            b"owned-bytes",
+            "cleanup deleted the last linked name before reporting failure"
+        );
+        owned.preserve = true;
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_hardlink_cleanup_preserves_post_unlink_mutations() {
+        for mutation in ["rewrite", "relink"] {
+            let parent_path = tempdir(&format!(
+                "local-rebuild-hardlink-post-unlink-{mutation}-parent"
+            ));
+            let parent = AnchoredDirectory::open_existing(&parent_path, "hardlink test parent")
+                .unwrap();
+            let mut owned = OwnedPrivateDirectory::reserve_below(
+                parent,
+                "hardlink-test",
+                "hardlink mutation test",
+            )
+            .unwrap();
+            let remaining = owned.path().join("owned-a");
+            let nested = owned.path().join("nested");
+            let external = parent_path.join("external-alias");
+            fs::create_dir(&nested).unwrap();
+            fs::write(&remaining, b"owned-bytes").unwrap();
+            fs::hard_link(&remaining, nested.join("owned-b")).unwrap();
+            if mutation == "relink" {
+                fs::hard_link(&remaining, &external).unwrap();
+            }
+            let original_modified = fs::metadata(&remaining).unwrap().modified().unwrap();
+            let snapshot = capture_anchored_cleanup_tree(&owned.root, "hardlink mutation test")
+                .unwrap();
+            let expected_identity = owned.identity().clone();
+            let mut mutation_ran = false;
+
+            let error = remove_anchored_child_tree_exact_with_hooks(
+                &owned.parent,
+                &owned.name,
+                &expected_identity,
+                &snapshot,
+                "hardlink mutation test",
+                &mut |_| Ok(()),
+                &mut |_| Ok(()),
+                &mut |_| {
+                    if mutation_ran {
+                        return Ok(());
+                    }
+                    mutation_ran = true;
+                    if mutation == "rewrite" {
+                        fs::write(&remaining, b"peer!-bytes").unwrap();
+                        std::fs::OpenOptions::new()
+                            .write(true)
+                            .open(&remaining)
+                            .unwrap()
+                            .set_times(
+                                std::fs::FileTimes::new().set_modified(original_modified),
+                            )
+                            .unwrap();
+                    } else {
+                        fs::remove_file(&remaining).unwrap();
+                        fs::hard_link(&external, &remaining).unwrap();
+                    }
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+
+            assert!(mutation_ran, "{mutation} fixture never reached the unlink boundary");
+            assert!(
+                error.contains("changed") || error.contains("preserved"),
+                "{mutation}: {error}"
+            );
+            assert!(remaining.exists(), "{mutation} evidence was deleted");
+            if mutation == "rewrite" {
+                assert_eq!(fs::read(&remaining).unwrap(), b"peer!-bytes");
+            }
+            owned.preserve = true;
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_build_work_cleanup_preserves_a_replaced_fixed_child() {
+        let parent = tempdir("local-rebuild-work-cleanup-fixed-child-parent");
+        let cache_root = parent.join("compiled");
+        fs::create_dir(&cache_root).unwrap();
+        let canonical = cache_root.join("libs/fixed-child-cache-entry");
+        let cache_parent = SourceOnlyCacheParentGuard::prepare(&cache_root, &canonical).unwrap();
+        let mut work = create_build_work_root(
+            canonical.parent().unwrap(),
+            "fixed-child-cleanup",
+            ResolvePolicy::SourceOnlyV1,
+            Some(&cache_parent),
+        )
+        .unwrap();
+        let original = parent.join("original-recipe-work-evidence");
+        fs::rename(&work.recipe_work, &original).unwrap();
+        fs::create_dir(&work.recipe_work).unwrap();
+        fs::write(work.recipe_work.join("peer-sentinel"), b"preserve peer").unwrap();
+
+        let error = work.cleanup_source_only().unwrap_err();
+        assert!(error.contains("recipe-work identity changed"), "got: {error}");
+        assert_eq!(
+            fs::read(work.recipe_work.join("peer-sentinel")).unwrap(),
+            b"preserve peer"
+        );
+        assert!(original.exists(), "the original opened child must remain as evidence");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_build_work_cleanup_binds_fixed_children_during_removal() {
+        let parent_path = tempdir("local-rebuild-work-cleanup-removal-race-parent");
+        let parent = AnchoredDirectory::open_existing(&parent_path, "work cleanup race parent")
+            .unwrap();
+        let mut owned = OwnedPrivateDirectory::reserve_below(
+            parent,
+            "work-cleanup-race",
+            "source-only package work root",
+        )
+        .unwrap();
+        for name in ["recipe-work", "source-inputs"] {
+            fs::create_dir(owned.path().join(name)).unwrap();
+        }
+        let expected_children = ["recipe-work", "source-inputs"].map(|name| {
+            let name = OsString::from(name);
+            let path = owned.path().join(&name);
+            let identity = receipt_at_metadata_snapshot(&owned.root.file, &name, &path)
+                .unwrap()
+                .identity;
+            (name, identity)
+        });
+        let original = parent_path.join("original-removal-race-recipe-work");
+        let mut quarantined_path = None;
+
+        let error = owned
+            .cleanup_scratch_recursively_with_before_remove(
+                &expected_children,
+                &mut |quarantined| {
+                    quarantined_path = Some(quarantined.to_path_buf());
+                    fs::rename(quarantined.join("recipe-work"), &original).unwrap();
+                    fs::create_dir(quarantined.join("recipe-work")).unwrap();
+                    fs::write(
+                        quarantined.join("recipe-work/peer-sentinel"),
+                        b"preserve peer",
+                    )
+                    .unwrap();
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+
+        assert!(
+            error.contains("recipe-work identity changed during removal"),
+            "got: {error}"
+        );
+        assert!(original.exists(), "the original opened child must remain as evidence");
+        assert_eq!(
+            fs::read(
+                quarantined_path
+                    .unwrap()
+                    .join("recipe-work/peer-sentinel")
+            )
+            .unwrap(),
+            b"preserve peer"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_work_cleanup_unlinks_large_special_tree_before_publication() {
+        let repo = tempdir("local-rebuild-work-cleanup-visible-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        write_lib(
+            &repo,
+            "cleanup-visible",
+            "1.0.0",
+            &[],
+            r#"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib" "$WASM_POSIX_DEP_WORK_DIR/large"
+printf archive > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
+index=0
+while [ "$index" -lt 1024 ]; do
+    mkdir -p "$WASM_POSIX_DEP_WORK_DIR/large/$index"
+    printf '%s\n' "$index" > "$WASM_POSIX_DEP_WORK_DIR/large/$index/value"
+    index=$((index + 1))
+done
+mkfifo "$WASM_POSIX_DEP_WORK_DIR/zz-cleanup-fifo"
+"#,
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        write_source_only_repository_inputs(&repo, "cleanup-visible");
+        let registry = Registry { roots: vec![repo.clone()] };
+        let manifest = registry.load("cleanup-visible").unwrap();
+        let (base, compiled) = source_only_test_roots("local-rebuild-work-cleanup-visible-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled: compiled.clone() };
+        let output = tempdir("local-rebuild-work-cleanup-visible-output");
+
+        let built = run_local_rebuild_fixture(
+            &manifest,
+            &registry,
+            &roots,
+            &repo,
+            &output,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(built.disposition, LocalBuildDisposition::Published);
+        assert_eq!(
+            fs::read(built.canonical.unwrap().join("lib/out.a")).unwrap(),
+            b"archive"
+        );
+        assert!(
+            fs::read_dir(compiled.join("libs"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| !entry.file_name().to_string_lossy().starts_with('.')),
+            "successful cleanup did not allow canonical publication"
+        );
+    }
+
+    #[test]
+    fn source_kind_consumer_gets_private_sealed_trees_with_reversible_keys() {
+        let registry_root = tempdir("source-kind-consumer-registry");
+        let (archive, digest) = fixture_source_archive(&registry_root);
+        write_source_archive_fixture(&registry_root, "foo-bar", &archive, &digest);
+        write_source_archive_fixture(&registry_root, "foo_bar", &archive, &digest);
+        let first_key = "K_666F6F2D626172";
+        let second_key = "K_666F6F5F626172";
+        let first_var = format!("WASM_POSIX_DEP_{first_key}_SRC_DIR");
+        let second_var = format!("WASM_POSIX_DEP_{second_key}_SRC_DIR");
+        write_lib(
+            &registry_root,
+            "sourceConsumerOne",
+            "1.0.0",
+            &["foo-bar@1.0.0", "foo_bar@1.0.0"],
+            &format!(
+                r#"
+first="${{{first_var}}}"
+second="${{{second_var}}}"
+test "$first" != "$second"
+test "$(basename "$first")" = "{first_key}"
+test "$(basename "$second")" = "{second_key}"
+test "$(cat "$first/payload.txt")" = "resolver-owned source"
+test "$(cat "$second/payload.txt")" = "resolver-owned source"
+test ! -w "$first"
+test ! -w "$second"
+test ! -w "$first/payload.txt"
+test ! -w "$second/payload.txt"
+case "$first/" in "$WASM_POSIX_DEP_WORK_DIR/"*) exit 73 ;; esac
+case "$WASM_POSIX_DEP_WORK_DIR/" in "$first/"*) exit 74 ;; esac
+case "$second/" in "$WASM_POSIX_DEP_WORK_DIR/"*) exit 75 ;; esac
+case "$WASM_POSIX_DEP_WORK_DIR/" in "$second/"*) exit 76 ;; esac
+case "$WASM_POSIX_DEP_PKG_CONFIG_PATH" in *source-archives*|*source-deps*) exit 72 ;; esac
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+printf 'ONE\n' > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
+printf '%s\n%s\n' "$first" "$second" > "$WASM_POSIX_DEP_OUT_DIR/source-paths"
+"#,
+            ),
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        write_source_only_repository_inputs(&registry_root, "sourceConsumerOne");
+        write_lib(
+            &registry_root,
+            "sourceConsumerTwo",
+            "1.0.0",
+            &["foo-bar@1.0.0"],
+            &format!(
+                r#"
+source="${{{first_var}}}"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+printf 'TWO\n' > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
+printf '%s\n' "$source" > "$WASM_POSIX_DEP_OUT_DIR/source-path"
+"#,
+            ),
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        write_source_only_repository_inputs(&registry_root, "sourceConsumerTwo");
+        let registry = Registry {
+            roots: vec![registry_root],
+        };
+        let (base, compiled) = source_only_test_roots("source-kind-consumer-cache");
+        let opts = source_only_test_opts(&base, &compiled);
+        let first = ensure_built(
+            &registry.load("sourceConsumerOne").unwrap(),
+            &registry,
+            TEST_ARCH,
+            current_abi_version(),
+            &opts,
+        )
+        .unwrap();
+        let second = ensure_built(
+            &registry.load("sourceConsumerTwo").unwrap(),
+            &registry,
+            TEST_ARCH,
+            current_abi_version(),
+            &opts,
+        )
+        .unwrap();
+        let first_paths = fs::read_to_string(first.join("source-paths")).unwrap();
+        let first_paths = first_paths.lines().map(PathBuf::from).collect::<Vec<_>>();
+        let second_path = PathBuf::from(
+            fs::read_to_string(second.join("source-path"))
+                .unwrap()
+                .trim(),
+        );
+        assert_ne!(first_paths[0], second_path);
+        assert!(first_paths.iter().all(|path| !path.exists()));
+        assert!(!second_path.exists());
+
+        let failure_record = second.parent().unwrap().join("failed-source-path");
+        write_lib(
+            &registry.roots[0],
+            "sourceConsumerFail",
+            "1.0.0",
+            &["foo-bar@1.0.0"],
+            &format!(
+                r#"
+source="${{{first_var}}}"
+test ! -w "$source/payload.txt"
+printf '%s\n' "$source" > "{}"
+exit 29
+"#,
+                failure_record.display(),
+            ),
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        write_source_only_repository_inputs(&registry.roots[0], "sourceConsumerFail");
+        let error = ensure_built(
+            &registry.load("sourceConsumerFail").unwrap(),
+            &registry,
+            TEST_ARCH,
+            current_abi_version(),
+            &opts,
+        )
+        .unwrap_err();
+        assert!(error.contains("exit status: 29"), "got: {error}");
+        let failed_path = PathBuf::from(fs::read_to_string(&failure_record).unwrap().trim());
+        assert!(
+            !failed_path.exists(),
+            "failed consumer retained its source tree"
+        );
+        let payloads = fs::read_dir(base.join("source-archives/sha256")).unwrap();
+        assert_eq!(
+            payloads.count(),
+            1,
+            "equal digests did not share one payload"
+        );
+        assert!(!compiled.join("sources").exists());
+    }
+
+    #[test]
+    fn source_kind_consumer_reverifies_memoized_payload_before_each_extraction() {
+        fn contains_transaction_tree(path: &Path) -> bool {
+            let entries = match fs::read_dir(path) {
+                Ok(entries) => entries,
+                Err(_) => return false,
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.contains(".work-") || name.contains(".tmp-"))
+                {
+                    return true;
+                }
+                if path.is_dir() && contains_transaction_tree(&path) {
+                    return true;
+                }
+            }
+            false
+        }
+
+        let registry_root = tempdir("source-consumer-reverify-registry");
+        let (archive, digest) = fixture_source_archive(&registry_root);
+        write_source_archive_fixture(&registry_root, "reverified-source", &archive, &digest);
+        let key = source_dependency_key("reverified-source");
+        for consumer in ["reverifyConsumerOne", "reverifyConsumerTwo"] {
+            write_lib(
+                &registry_root,
+                consumer,
+                "1.0.0",
+                &["reverified-source@1.0.0"],
+                &format!(
+                    r#"
+test -f "$WASM_POSIX_DEP_{key}_SRC_DIR/payload.txt"
+printf ran > "$WASM_POSIX_DEP_WORK_DIR/child-ran"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+printf '%s\n' "{consumer}" > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
+"#,
+                ),
+                "[outputs]\nlibs = [\"lib/out.a\"]\n",
+            );
+            write_source_only_repository_inputs(&registry_root, consumer);
+        }
+        let registry = Registry {
+            roots: vec![registry_root.clone()],
+        };
+        let (base, compiled) = source_only_test_roots("source-consumer-reverify-cache");
+        let opts = source_only_test_opts(&base, &compiled);
+        ensure_built(
+            &registry.load("reverifyConsumerOne").unwrap(),
+            &registry,
+            TEST_ARCH,
+            current_abi_version(),
+            &opts,
+        )
+        .unwrap();
+
+        let payload = source_archive_cache::fetch_verified_archive(
+            &base,
+            &format!("file://{}", archive.display()),
+            &digest,
+        )
+        .unwrap();
+        let (replacement, replacement_digest) = fixture_source_archive_with_payload(
+            &registry_root,
+            "replacement-source.tar.gz",
+            b"different but valid source archive\n",
+        );
+        assert_ne!(digest, replacement_digest);
+        let mut permissions = fs::metadata(&payload).unwrap().permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(&payload, permissions).unwrap();
+        fs::copy(replacement, &payload).unwrap();
+
+        let error = ensure_built(
+            &registry.load("reverifyConsumerTwo").unwrap(),
+            &registry,
+            TEST_ARCH,
+            current_abi_version(),
+            &opts,
+        )
+        .unwrap_err();
+        assert!(error.contains("digest mismatch"), "got: {error}");
+        assert!(
+            !contains_transaction_tree(&compiled),
+            "digest rejection retained a private work or output transaction",
+        );
+        assert!(
+            !compiled
+                .join("libs")
+                .read_dir()
+                .into_iter()
+                .flatten()
+                .flatten()
+                .any(|entry| entry.file_name().to_string_lossy().contains("reverifyConsumerTwo")),
+            "digest rejection published the second consumer",
+        );
+    }
+
+    #[test]
+    fn source_kind_consumer_spawn_failure_cleans_its_private_source_tree() {
+        const CHILD_ENV: &str = "KANDELO_TEST_SOURCE_CONSUMER_SPAWN_CHILD";
+
+        fn contains_work_root(path: &Path) -> bool {
+            let entries = match fs::read_dir(path) {
+                Ok(entries) => entries,
+                Err(_) => return false,
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.contains(".work-"))
+                {
+                    return true;
+                }
+                if path.is_dir() && contains_work_root(&path) {
+                    return true;
+                }
+            }
+            false
+        }
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let registry_root =
+                PathBuf::from(std::env::var_os("KANDELO_TEST_SOURCE_CONSUMER_REGISTRY").unwrap());
+            let base =
+                PathBuf::from(std::env::var_os("KANDELO_TEST_SOURCE_CONSUMER_CACHE").unwrap());
+            let compiled = base.join("source-only-v1/compiled");
+            let registry = Registry {
+                roots: vec![registry_root],
+            };
+            let target = registry.load("spawnConsumer").unwrap();
+            let opts = source_only_test_opts(&base, &compiled);
+            let error = ensure_built(&target, &registry, TEST_ARCH, current_abi_version(), &opts)
+                .unwrap_err();
+            assert!(error.contains("spawn bash"), "got: {error}");
+            assert!(
+                !contains_work_root(&compiled),
+                "spawn failure retained a private source work tree below {}",
+                compiled.display(),
+            );
+            assert!(base.join("source-archives/sha256").is_dir());
+            return;
+        }
+
+        let registry_root = tempdir("source-consumer-spawn-registry");
+        let (archive, digest) = fixture_source_archive(&registry_root);
+        write_source_archive_fixture(&registry_root, "spawn-source", &archive, &digest);
+        write_lib(
+            &registry_root,
+            "spawnConsumer",
+            "1.0.0",
+            &["spawn-source@1.0.0"],
+            "exit 91",
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        write_source_only_repository_inputs(&registry_root, "spawnConsumer");
+        let (base, _compiled) = source_only_test_roots("source-consumer-spawn-cache");
+        let empty_path = tempdir("source-consumer-spawn-empty-path");
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "build_deps::tests::source_kind_consumer_spawn_failure_cleans_its_private_source_tree",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .env("KANDELO_TEST_SOURCE_CONSUMER_REGISTRY", &registry_root)
+            .env("KANDELO_TEST_SOURCE_CONSUMER_CACHE", &base)
+            .env("PATH", &empty_path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "spawn-failure child failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[test]
+    fn source_kind_consumer_rejects_computed_environment_collision_before_command_mutation() {
+        assert_eq!(source_dependency_key("foo-bar"), "K_666F6F2D626172");
+        assert_eq!(source_dependency_key("foo_bar"), "K_666F6F5F626172");
+
+        let deps = BTreeMap::from([
+            (
+                "foo".to_string(),
+                DirectDep {
+                    materialization: NodeMaterialization::VerifiedSourceArchive {
+                        archive: PathBuf::from("/archive"),
+                        source_url: "https://example.test/source.tar.gz".to_string(),
+                        sha256: "1".repeat(64),
+                        extract_exclude_members: Vec::new(),
+                    },
+                    kind: ManifestKind::Source,
+                },
+            ),
+            (
+                "k_666f6f_src".to_string(),
+                DirectDep {
+                    materialization: NodeMaterialization::CompiledDir(PathBuf::from("/compiled")),
+                    kind: ManifestKind::Library,
+                },
+            ),
+        ]);
+        let error =
+            direct_dependency_variable_names(&deps, ResolvePolicy::SourceOnlyV1).unwrap_err();
+        assert!(
+            error.contains("WASM_POSIX_DEP_K_666F6F_SRC_DIR")
+                && error.contains("foo")
+                && error.contains("k_666f6f_src"),
+            "got: {error}"
+        );
+
+        let registry_root = tempdir("source-variable-collision-registry");
+        let child_sentinel = registry_root.join("child-must-not-run");
+        write_lib(
+            &registry_root,
+            "collisionConsumer",
+            "1.0.0",
+            &[],
+            &format!("printf ran > {:?}", child_sentinel),
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        let registry = Registry {
+            roots: vec![registry_root],
+        };
+        let target = registry.load("collisionConsumer").unwrap();
+        let cache = tempdir("source-variable-collision-cache");
+        let canonical = cache.join("libs/collision-consumer");
+        let error = build_into_cache(
+            &target,
+            &registry,
+            TEST_ARCH,
+            current_abi_version(),
+            &"1".repeat(64),
+            &cache,
+            None,
+            &canonical,
+            &deps,
+            "",
+            Path::new("/unused-repository-root"),
+            ResolvePolicy::SourceOnlyV1,
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("WASM_POSIX_DEP_K_666F6F_SRC_DIR"),
+            "got: {error}"
+        );
+        assert!(!child_sentinel.exists());
+        assert!(
+            fs::read_dir(&cache).unwrap().next().is_none(),
+            "collision rejection created cache or command side effects",
+        );
+
+        for (dependency_name, variable) in [
+            ("out", "WASM_POSIX_DEP_OUT_DIR"),
+            ("work", "WASM_POSIX_DEP_WORK_DIR"),
+            ("source", "WASM_POSIX_DEP_SOURCE_DIR"),
+            ("recipe", "WASM_POSIX_DEP_RECIPE_DIR"),
+        ] {
+            let reserved = BTreeMap::from([(
+                dependency_name.to_string(),
+                DirectDep {
+                    materialization: NodeMaterialization::CompiledDir(PathBuf::from("/compiled")),
+                    kind: ManifestKind::Library,
+                },
+            )]);
+            let error = direct_dependency_variable_names(&reserved, ResolvePolicy::SourceOnlyV1)
+                .unwrap_err();
+            assert!(error.contains(variable), "got: {error}");
+            let error = build_into_cache(
+                &target,
+                &registry,
+                TEST_ARCH,
+                current_abi_version(),
+                &"1".repeat(64),
+                &cache,
+                None,
+                &canonical,
+                &reserved,
+                "",
+                Path::new("/unused-repository-root"),
+                ResolvePolicy::SourceOnlyV1,
+                false,
+            )
+            .unwrap_err();
+            assert!(error.contains(variable), "got: {error}");
+            assert!(!child_sentinel.exists());
+            assert!(
+                fs::read_dir(&cache).unwrap().next().is_none(),
+                "reserved collision {dependency_name:?} created cache/work/output state",
+            );
+        }
+
+        let archive_node = ResolvedNode {
+            materialization: NodeMaterialization::VerifiedSourceArchive {
+                archive: PathBuf::from("/archive"),
+                source_url: "https://example.test/source.tar.gz".to_string(),
+                sha256: "1".repeat(64),
+                extract_exclude_members: Vec::new(),
+            },
+            transitive_compiled_dirs: BTreeSet::new(),
+            disposition: LocalBuildDisposition::Cached,
+        };
+        let error =
+            require_compiled_dir(&archive_node, "foo", "program binary projection").unwrap_err();
+        assert!(error.contains("foo") && error.contains("program binary projection"));
+    }
+
+    #[test]
     fn extract_force_source_build_flag_is_explicit_and_single() {
         let (got, rest) = extract_force_source_build_flag(vec![
             "resolve".into(),
@@ -20817,6 +35337,8 @@ libs = ["lib/libF3b.a"]
         let manifest = registry.load("localproof").unwrap();
         let forced = BTreeSet::from([manifest.name.clone()]);
         let opts = ResolveOpts {
+            policy: ResolvePolicy::Default,
+            source_cache_root: None,
             cache_root: &cache,
             local_libs: None,
             force_source_build: Some(&forced),
@@ -20861,6 +35383,148 @@ libs = ["lib/libF3b.a"]
         assert!(
             !target.starts_with(&cache),
             "local mirror must not point directly into the fetched cache",
+        );
+
+        let mut rebuilt = minimal_executable_wasm();
+        rebuilt.extend(wasm_section(0, wasm_name("forced-source-rebuild")));
+        std::fs::write(canonical.join("localproof.wasm"), &rebuilt).unwrap();
+        publish_resolved_program_artifacts(
+            &manifest,
+            &canonical,
+            &root,
+            &bin_dir,
+            TEST_ARCH,
+            &cache_key_sha,
+            true,
+        )
+        .unwrap();
+        let rebuilt_target = std::fs::read_link(&mirror).unwrap();
+        assert_ne!(
+            rebuilt_target, target,
+            "a forced source build must publish its rebuilt generation",
+        );
+        assert_eq!(std::fs::read(&mirror).unwrap(), rebuilt);
+    }
+
+    #[test]
+    fn ordinary_source_fallback_into_repo_local_binaries_claims_local_generation() {
+        let root = tempdir("resolve-local-generation-ordinary-reg");
+        let cache = tempdir("resolve-local-generation-ordinary-cache");
+        let bin_dir = root.join("local-binaries");
+        std::fs::create_dir(&bin_dir).unwrap();
+        write_program(
+            &root,
+            "localdep",
+            "0.1.0",
+            &[],
+            &emit_wasm_build_script("localdep.wasm", &minimal_executable_wasm()),
+            &[("localdep", "localdep.wasm")],
+        );
+        write_program(
+            &root,
+            "localfallback",
+            "0.1.0",
+            &["localdep@0.1.0"],
+            &emit_wasm_build_script("localfallback.wasm", &minimal_executable_wasm()),
+            &[("localfallback", "localfallback.wasm")],
+        );
+        let registry = Registry {
+            roots: vec![root.clone()],
+        };
+        let manifest = registry.load("localfallback").unwrap();
+        let cache_key_sha =
+            manifest_cache_key_sha(&manifest, &registry, TEST_ARCH, TEST_ABI).unwrap();
+        let mirror = bin_dir.join("programs/wasm32/localfallback.wasm");
+        cmd_resolve_with_test_cache(
+            &manifest,
+            &registry,
+            &root,
+            TEST_ARCH,
+            &cache,
+            Some(&bin_dir),
+        )
+        .unwrap();
+
+        let opts = ResolveOpts {
+            policy: ResolvePolicy::Default,
+            source_cache_root: None,
+            cache_root: &cache,
+            local_libs: None,
+            force_source_build: None,
+            fetch_only: false,
+            repo_root: Some(&root),
+            binaries_dir: None,
+        };
+        let cached = ensure_built(
+            &manifest,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &opts,
+        )
+        .unwrap();
+        std::fs::remove_file(&mirror).unwrap();
+        symlink_file(&cached.join("localfallback.wasm"), &mirror).unwrap();
+
+        cmd_resolve_with_test_cache(
+            &manifest,
+            &registry,
+            &root,
+            TEST_ARCH,
+            &cache,
+            Some(&bin_dir),
+        )
+        .unwrap();
+
+        let target = std::fs::read_link(&mirror).unwrap();
+        let identity_root = std::fs::canonicalize(
+            bin_dir
+                .join(LOCAL_GENERATIONS_DIR)
+                .join("wasm32/localfallback")
+                .join(&cache_key_sha),
+        )
+        .unwrap();
+        assert!(target.starts_with(&identity_root), "got: {}", target.display());
+        assert!(
+            !target.starts_with(&cache),
+            "ordinary source fallback must not point the local mirror directly into the cache",
+        );
+        let dependency_manifest = registry.load("localdep").unwrap();
+        let dependency_cache_key = manifest_cache_key_sha(
+            &dependency_manifest,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+        )
+        .unwrap();
+        let dependency_mirror = bin_dir.join("programs/wasm32/localdep.wasm");
+        let dependency_target = std::fs::read_link(&dependency_mirror).unwrap();
+        let dependency_identity_root = std::fs::canonicalize(
+            bin_dir
+                .join(LOCAL_GENERATIONS_DIR)
+                .join("wasm32/localdep")
+                .join(dependency_cache_key),
+        )
+        .unwrap();
+        assert!(
+            dependency_target.starts_with(&dependency_identity_root),
+            "transitive program mirror escaped its local generation: {}",
+            dependency_target.display(),
+        );
+
+        cmd_resolve_with_test_cache(
+            &manifest,
+            &registry,
+            &root,
+            TEST_ARCH,
+            &cache,
+            Some(&bin_dir),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_link(&mirror).unwrap(),
+            target,
+            "a cache hit must preserve the current claimed local generation",
         );
     }
 
@@ -21052,20 +35716,2203 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
         binaries_dir: Option<&Path>,
     ) -> Result<(), String> {
         let opts = ResolveOpts {
+            policy: ResolvePolicy::Default,
+            source_cache_root: None,
             cache_root,
             local_libs: None,
             force_source_build: None,
             fetch_only: false,
             repo_root: Some(repo),
-            binaries_dir: None,
+            binaries_dir,
         };
         let path = ensure_built(m, registry, arch, TEST_ABI, &opts)?;
         if let Some(bdir) = binaries_dir {
             if matches!(m.kind, ManifestKind::Program) && !m.program_outputs.is_empty() {
                 let cache_key_sha = manifest_cache_key_sha(m, registry, arch, TEST_ABI)?;
-                place_binaries_symlinks(m, &path, bdir, arch, &cache_key_sha)?;
+                publish_resolved_program_artifacts(
+                    m,
+                    &path,
+                    repo,
+                    bdir,
+                    arch,
+                    &cache_key_sha,
+                    false,
+                )?;
             }
         }
         Ok(())
+    }
+
+    #[test]
+    fn local_rebuild_receipt_is_stable_path_neutral_and_mode_sensitive() {
+        let first_root = tempdir("local-rebuild-receipt-first");
+        let second_root = tempdir("local-rebuild-receipt-second");
+        for root in [&first_root, &second_root] {
+            fs::create_dir_all(root.join("lib/nested")).unwrap();
+            fs::write(root.join("lib/nested/out.a"), b"same bytes").unwrap();
+            #[cfg(unix)]
+            std::os::unix::fs::symlink("nested/out.a", root.join("lib/alias.a")).unwrap();
+        }
+        let key = "1".repeat(64);
+        let first = complete_cache_receipt_v1(
+            &first_root,
+            ResolvePolicy::SourceOnlyV1,
+            "receipt-package",
+            TEST_ARCH,
+            &key,
+        )
+        .unwrap();
+        let second = complete_cache_receipt_v1(
+            &second_root,
+            ResolvePolicy::SourceOnlyV1,
+            "receipt-package",
+            TEST_ARCH,
+            &key,
+        )
+        .unwrap();
+        let first_bytes = canonical_cache_receipt_json(&first).unwrap();
+        assert_eq!(first_bytes, canonical_cache_receipt_json(&second).unwrap());
+        assert!(!String::from_utf8(first_bytes.clone()).unwrap().contains(first_root.to_str().unwrap()));
+        let expected = {
+            let mut hash = Sha256::new();
+            hash.update(b"kandelo-local-build-cache-receipt-v1\0");
+            hash.update(&first_bytes);
+            let digest: [u8; 32] = hash.finalize().into();
+            hex(&digest)
+        };
+        assert_eq!(cache_receipt_sha256(&first).unwrap(), expected);
+
+        fs::write(second_root.join("lib/nested/out.a"), b"different").unwrap();
+        assert_ne!(
+            first,
+            complete_cache_receipt_v1(
+                &second_root,
+                ResolvePolicy::SourceOnlyV1,
+                "receipt-package",
+                TEST_ARCH,
+                &key,
+            )
+            .unwrap()
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::write(second_root.join("lib/nested/out.a"), b"same bytes").unwrap();
+            fs::set_permissions(
+                second_root.join("lib/nested/out.a"),
+                fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+            assert_ne!(
+                first,
+                complete_cache_receipt_v1(
+                    &second_root,
+                    ResolvePolicy::SourceOnlyV1,
+                    "receipt-package",
+                    TEST_ARCH,
+                    &key,
+                )
+                .unwrap()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_rejects_absolute_links_and_snapshot_substitution() {
+        let root = tempdir("local-rebuild-receipt-hostile-tree");
+        fs::write(root.join("member"), b"first").unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", root.join("absolute")).unwrap();
+        let error = complete_cache_receipt_v1(
+            &root,
+            ResolvePolicy::SourceOnlyV1,
+            "hostile",
+            TEST_ARCH,
+            &"2".repeat(64),
+        )
+        .unwrap_err();
+        assert!(error.contains("absolute symlink"), "got: {error}");
+        fs::remove_file(root.join("absolute")).unwrap();
+
+        let member = root.join("member");
+        let mut substituted = false;
+        let error = complete_cache_receipt_v1_with_observer(
+            &root,
+            ResolvePolicy::SourceOnlyV1,
+            "hostile",
+            TEST_ARCH,
+            &"2".repeat(64),
+            &mut |path| {
+                if path == member && !substituted {
+                    fs::remove_file(path).unwrap();
+                    fs::create_dir(path).unwrap();
+                    substituted = true;
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("changed while"), "got: {error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_nofollow_open_and_final_generation_checks_are_real() {
+        let root = tempdir("local-rebuild-receipt-nofollow-gaps");
+        let member = root.join("member");
+        let outside = root.parent().unwrap().join("receipt-outside-sentinel");
+        fs::write(&member, b"first").unwrap();
+        fs::write(&outside, b"outside-secret").unwrap();
+        let mut swapped = false;
+        let error = complete_cache_receipt_v1_with_hooks(
+            &root,
+            ResolvePolicy::SourceOnlyV1,
+            "hostile",
+            TEST_ARCH,
+            &"2".repeat(64),
+            &mut |_| {},
+            &mut |path| {
+                if path == member && !swapped {
+                    fs::remove_file(path).unwrap();
+                    std::os::unix::fs::symlink(&outside, path).unwrap();
+                    swapped = true;
+                }
+            },
+            &mut |_| {},
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert!(error.contains("without following") || error.contains("changed while"), "got: {error}");
+        assert_eq!(fs::read(&outside).unwrap(), b"outside-secret");
+
+        fs::remove_file(&member).unwrap();
+        fs::write(&member, b"first").unwrap();
+        let mut rewritten = false;
+        let error = complete_cache_receipt_v1_with_hooks(
+            &root,
+            ResolvePolicy::SourceOnlyV1,
+            "hostile",
+            TEST_ARCH,
+            &"2".repeat(64),
+            &mut |_| {},
+            &mut |_| {},
+            &mut |_| {},
+            &mut |path| {
+                if path == member && !rewritten {
+                    fs::write(path, b"other").unwrap();
+                    rewritten = true;
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("changed while"), "got: {error}");
+
+        fs::write(&member, b"first").unwrap();
+        let mut mirror_rewritten = false;
+        let error = inspect_local_mirror_entry_with_hooks(
+            &member,
+            &mut |_| {},
+            &mut |path| {
+                if !mirror_rewritten {
+                    fs::write(path, b"other").unwrap();
+                    mirror_rewritten = true;
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("changed while"), "got: {error}");
+    }
+
+    #[test]
+    fn local_rebuild_receipt_target_projection_is_regular_complete_and_atomic() {
+        let root = tempdir("local-rebuild-target-projection");
+        write_program(
+            &root,
+            "projected",
+            "1.0.0",
+            &[],
+            ":",
+            &[("left", "left.wasm"), ("right", "right.wasm")],
+        );
+        append_program_runtime_file(&root, "projected", "runtime.dat", "/runtime.dat");
+        let registry = Registry { roots: vec![root.clone()] };
+        let manifest = registry.load("projected").unwrap();
+        let canonical = root.join("canonical");
+        fs::create_dir(&canonical).unwrap();
+        for (path, bytes) in [
+            ("left.wasm", b"left".as_slice()),
+            ("right.wasm", b"right".as_slice()),
+            ("runtime.dat", b"runtime".as_slice()),
+        ] {
+            fs::write(canonical.join(path), bytes).unwrap();
+        }
+        let output = root.join("output");
+        fs::create_dir(&output).unwrap();
+        let members = materialize_source_only_program_target(
+            &manifest,
+            &canonical,
+            &output,
+            TEST_ARCH,
+        )
+        .unwrap();
+        assert_eq!(members.len(), 3);
+        for member in &members {
+            let path = output.join(&member.mirror_path);
+            let metadata = fs::symlink_metadata(path).unwrap();
+            assert!(metadata.is_file() && !metadata.file_type().is_symlink());
+            assert!(member.mirror_path.starts_with("programs/wasm32/"));
+        }
+
+        fs::remove_file(canonical.join("right.wasm")).unwrap();
+        fs::write(canonical.join("left.wasm"), b"new-left").unwrap();
+        let before = fs::read(output.join(&members[0].mirror_path)).unwrap();
+        materialize_source_only_program_target(&manifest, &canonical, &output, TEST_ARCH)
+            .expect_err("missing closure member");
+        assert_eq!(fs::read(output.join(&members[0].mirror_path)).unwrap(), before);
+    }
+
+    #[test]
+    fn local_rebuild_receipt_multi_member_projection_never_exposes_a_mixed_live_closure() {
+        let root = tempdir("local-rebuild-target-projection-reader-states");
+        write_program(
+            &root,
+            "atomic-program",
+            "1.0.0",
+            &[],
+            ":",
+            &[("left", "left.wasm"), ("right", "right.wasm")],
+        );
+        let registry = Registry { roots: vec![root.clone()] };
+        let manifest = registry.load("atomic-program").unwrap();
+        let canonical = root.join("canonical");
+        fs::create_dir(&canonical).unwrap();
+        fs::write(canonical.join("left.wasm"), b"old-left").unwrap();
+        fs::write(canonical.join("right.wasm"), b"old-right").unwrap();
+        let output = root.join("output");
+        fs::create_dir(&output).unwrap();
+        materialize_source_only_program_target(&manifest, &canonical, &output, TEST_ARCH)
+            .unwrap();
+
+        fs::write(canonical.join("left.wasm"), b"new-left").unwrap();
+        fs::write(canonical.join("right.wasm"), b"new-right").unwrap();
+        let left = output.join("programs/wasm32/atomic-program/left.wasm");
+        let right = output.join("programs/wasm32/atomic-program/right.wasm");
+        let mut observed = Vec::new();
+        materialize_source_only_program_target_with(
+            &manifest,
+            &canonical,
+            &output,
+            TEST_ARCH,
+            &mut |_| {},
+            &mut |_| {
+                observed.push((fs::read(&left).ok(), fs::read(&right).ok()));
+                Ok(())
+            },
+        )
+        .unwrap();
+        observed.push((fs::read(&left).ok(), fs::read(&right).ok()));
+
+        assert!(
+            observed.iter().all(|state| {
+                state
+                    == &(
+                        Some(b"old-left".to_vec()),
+                        Some(b"old-right".to_vec()),
+                    )
+                    || state
+                        == &(
+                            Some(b"new-left".to_vec()),
+                            Some(b"new-right".to_vec()),
+                        )
+            }),
+            "a reader observed a mixed or partial package closure: {observed:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_atomic_exchange_refuses_live_substitution_at_boundary() {
+        let root = tempdir("local-rebuild-atomic-exchange-live-substitution");
+        write_program(
+            &root,
+            "exchange-boundary",
+            "1.0.0",
+            &[],
+            ":",
+            &[("exchange-boundary", "exchange-boundary.wasm")],
+        );
+        let registry = Registry { roots: vec![root.clone()] };
+        let manifest = registry.load("exchange-boundary").unwrap();
+        let canonical = root.join("canonical");
+        fs::create_dir(&canonical).unwrap();
+        fs::write(canonical.join("exchange-boundary.wasm"), b"old").unwrap();
+        let output = root.join("output");
+        fs::create_dir(&output).unwrap();
+        materialize_source_only_program_target(&manifest, &canonical, &output, TEST_ARCH)
+            .unwrap();
+        fs::write(canonical.join("exchange-boundary.wasm"), b"new").unwrap();
+
+        let mut prepared = prepare_program_projection(
+            &manifest,
+            &canonical,
+            None,
+            &output,
+            TEST_ARCH,
+            &mut |_| {},
+        )
+        .unwrap();
+        let live = prepared.transaction.live.clone();
+        let old_evidence = root.join("old-live-evidence");
+        let mut substituted = false;
+        let error = with_source_only_projection_lock_guard(&output, |lock| {
+            publish_owned_entry_transaction_with_hook(
+                &manifest.spec(),
+                &output,
+                &mut prepared.transaction,
+                lock,
+                &mut |_| Ok(()),
+                &mut |phase, _| {
+                    if phase == OwnedEntryPublishPhase::BeforePublishRename && !substituted {
+                        fs::rename(&live, &old_evidence).unwrap();
+                        fs::write(&live, b"peer").unwrap();
+                        substituted = true;
+                    }
+                    Ok(())
+                },
+            )
+        })
+        .unwrap_err();
+        assert!(error.contains("changed") || error.contains("destination"), "got: {error}");
+        assert_eq!(
+            fs::read(&live).unwrap(),
+            b"peer",
+            "atomic exchange replaced a peer generation introduced at its admission boundary",
+        );
+        assert_eq!(fs::read(old_evidence).unwrap(), b"old");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_target_projection_refuses_symlink_collisions() {
+        let root = tempdir("local-rebuild-target-projection-collision");
+        write_program(
+            &root,
+            "projected",
+            "1.0.0",
+            &[],
+            ":",
+            &[("projected", "projected.wasm")],
+        );
+        let registry = Registry { roots: vec![root.clone()] };
+        let manifest = registry.load("projected").unwrap();
+        let canonical = root.join("canonical");
+        fs::create_dir(&canonical).unwrap();
+        fs::write(canonical.join("projected.wasm"), b"program").unwrap();
+        let output = root.join("output");
+        fs::create_dir_all(output.join("programs/wasm32")).unwrap();
+        let outside = root.join("outside");
+        fs::write(&outside, b"sentinel").unwrap();
+        std::os::unix::fs::symlink(
+            &outside,
+            output.join("programs/wasm32/projected.wasm"),
+        )
+        .unwrap();
+        materialize_source_only_program_target(&manifest, &canonical, &output, TEST_ARCH)
+            .expect_err("symlink collision");
+        assert_eq!(fs::read(outside).unwrap(), b"sentinel");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_projection_cleanup_preserves_a_replaced_private_transaction() {
+        let root = tempdir("local-rebuild-target-projection-cleanup-identity");
+        write_program(
+            &root,
+            "cleanup-program",
+            "1.0.0",
+            &[],
+            ":",
+            &[("cleanup-program", "cleanup.wasm")],
+        );
+        let registry = Registry { roots: vec![root.clone()] };
+        let manifest = registry.load("cleanup-program").unwrap();
+        let canonical = root.join("canonical");
+        fs::create_dir(&canonical).unwrap();
+        fs::write(canonical.join("cleanup.wasm"), b"program").unwrap();
+        let output = root.join("output");
+        fs::create_dir(&output).unwrap();
+        let evidence = root.join("original-transaction-evidence");
+        let replacement_path = std::cell::RefCell::new(None::<PathBuf>);
+        let mut replaced = false;
+
+        let error = materialize_source_only_program_target_with(
+            &manifest,
+            &canonical,
+            &output,
+            TEST_ARCH,
+            &mut |_| {
+                if replaced {
+                    return;
+                }
+                let transaction_parent = output.join("programs/wasm32");
+                let transaction = fs::read_dir(&transaction_parent)
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path())
+                    .find(|path| {
+                        path.file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                            .starts_with(".cleanup-program.source-only-transaction-")
+                    })
+                    .unwrap();
+                fs::rename(&transaction, &evidence).unwrap();
+                fs::create_dir(&transaction).unwrap();
+                fs::write(transaction.join("peer-evidence"), b"preserve me").unwrap();
+                *replacement_path.borrow_mut() = Some(transaction);
+                replaced = true;
+            },
+            &mut |_| Ok(()),
+        )
+        .unwrap_err();
+        assert!(error.contains("stage") || error.contains("changed"), "got: {error}");
+        let replacement = replacement_path.into_inner().unwrap();
+        assert_eq!(
+            fs::read(replacement.join("peer-evidence")).unwrap(),
+            b"preserve me",
+            "cleanup deleted a replacement it did not own"
+        );
+        assert!(evidence.exists(), "the original changed evidence must remain");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_owned_projection_transaction_restores_or_preserves_every_phase() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempdir("local-rebuild-owned-projection-phases");
+        write_program(
+            &root,
+            "phase-program",
+            "1.0.0",
+            &[],
+            ":",
+            &[("phase-program", "phase.wasm")],
+        );
+        let registry = Registry { roots: vec![root.clone()] };
+        let manifest = registry.load("phase-program").unwrap();
+        let canonical = root.join("canonical");
+        fs::create_dir(&canonical).unwrap();
+        fs::write(canonical.join("phase.wasm"), b"old-generation").unwrap();
+        let output = root.join("output");
+        fs::create_dir(&output).unwrap();
+        materialize_source_only_program_target(
+            &manifest,
+            &canonical,
+            &output,
+            TEST_ARCH,
+        )
+        .unwrap();
+        let live = output.join("programs/wasm32/phase-program.wasm");
+        fs::write(canonical.join("phase.wasm"), b"new-generation").unwrap();
+
+        let mut prepared = prepare_program_projection(
+            &manifest,
+            &canonical,
+            None,
+            &output,
+            TEST_ARCH,
+            &mut |_| {},
+        )
+        .unwrap();
+        let transaction_root = prepared.transaction.transaction_root.clone();
+        let error = with_source_only_projection_lock_guard(&output, |lock| {
+            publish_owned_entry_transaction_with_hook(
+                &manifest.spec(),
+                &output,
+                &mut prepared.transaction,
+                lock,
+                &mut |_| Ok(()),
+                &mut |phase, _| {
+                    if phase == OwnedEntryPublishPhase::Quarantined {
+                        Err("injected failure immediately after quarantine".to_string())
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+        })
+        .unwrap_err();
+        assert!(error.contains("injected failure"), "got: {error}");
+        assert_eq!(fs::read(&live).unwrap(), b"old-generation");
+        assert!(!transaction_root.exists(), "restored transaction leaked private state");
+
+        let mut prepared = prepare_program_projection(
+            &manifest,
+            &canonical,
+            None,
+            &output,
+            TEST_ARCH,
+            &mut |_| {},
+        )
+        .unwrap();
+        let transaction_root = prepared.transaction.transaction_root.clone();
+        let backup = prepared.transaction.backup.clone();
+        let error = with_source_only_projection_lock_guard(&output, |lock| {
+            publish_owned_entry_transaction_with_hook(
+                &manifest.spec(),
+                &output,
+                &mut prepared.transaction,
+                lock,
+                &mut |_| Ok(()),
+                &mut |phase, path| {
+                    if phase == OwnedEntryPublishPhase::Published {
+                        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+                    }
+                    Ok(())
+                },
+            )
+        })
+        .unwrap_err();
+        assert!(error.contains("changed") || error.contains("differs"), "got: {error}");
+        assert_eq!(fs::read(&backup).unwrap(), b"old-generation");
+        assert!(transaction_root.exists(), "postpublish mismatch destroyed prior evidence");
+        drop(prepared);
+        assert!(transaction_root.exists(), "RAII removed deliberately preserved evidence");
+
+        let cleanup_output = root.join("cleanup-output");
+        fs::create_dir(&cleanup_output).unwrap();
+        let mut prepared = prepare_program_projection(
+            &manifest,
+            &canonical,
+            None,
+            &cleanup_output,
+            TEST_ARCH,
+            &mut |_| {},
+        )
+        .unwrap();
+        let original_transaction = prepared.transaction.transaction_root.clone();
+        let original_evidence = root.join("original-private-transaction");
+        let error = prepared
+            .transaction
+            .dispose_private_root_with(&mut |path| {
+                fs::rename(path, &original_evidence).unwrap();
+                fs::create_dir(path).unwrap();
+                fs::write(path.join("peer-evidence"), b"preserve peer").unwrap();
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(error.contains("changed during disposal"), "got: {error}");
+        assert_eq!(
+            fs::read(original_transaction.join("peer-evidence")).unwrap(),
+            b"preserve peer"
+        );
+        assert!(original_evidence.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_replaced_projection_lock_blocks_each_live_rename() {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+        fn replace_lock(output: &Path, evidence: &Path) {
+            let lock = output
+                .join(".kandelo/.source-only-program-projection-v1.json.kandelo-lock");
+            fs::rename(&lock, evidence).unwrap();
+            let replacement = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&lock)
+                .unwrap();
+            replacement
+                .set_permissions(fs::Permissions::from_mode(0o600))
+                .unwrap();
+        }
+
+        let root = tempdir("local-rebuild-projection-lock-live-boundaries");
+        write_program(
+            &root,
+            "lock-boundary",
+            "1.0.0",
+            &[],
+            ":",
+            &[("lock-boundary", "lock-boundary.wasm")],
+        );
+        let registry = Registry { roots: vec![root.clone()] };
+        let manifest = registry.load("lock-boundary").unwrap();
+        let canonical = root.join("canonical");
+        fs::create_dir(&canonical).unwrap();
+        fs::write(canonical.join("lock-boundary.wasm"), b"old").unwrap();
+
+        let replace_output = root.join("replace-output");
+        fs::create_dir(&replace_output).unwrap();
+        materialize_source_only_program_target(
+            &manifest,
+            &canonical,
+            &replace_output,
+            TEST_ARCH,
+        )
+        .unwrap();
+        let replace_live = replace_output.join("programs/wasm32/lock-boundary.wasm");
+        fs::write(canonical.join("lock-boundary.wasm"), b"new").unwrap();
+        let mut prepared = prepare_program_projection(
+            &manifest,
+            &canonical,
+            None,
+            &replace_output,
+            TEST_ARCH,
+            &mut |_| {},
+        )
+        .unwrap();
+        let replaced_lock = root.join("replace-old-lock-evidence");
+        let error = with_source_only_projection_lock_guard(&replace_output, |lock| {
+            publish_owned_entry_transaction_with_hook(
+                &manifest.spec(),
+                &replace_output,
+                &mut prepared.transaction,
+                lock,
+                &mut |_| Ok(()),
+                &mut |phase, _| {
+                    if phase == OwnedEntryPublishPhase::BeforeQuarantineRename {
+                        replace_lock(&replace_output, &replaced_lock);
+                    }
+                    Ok(())
+                },
+            )
+        })
+        .unwrap_err();
+        assert!(error.contains("lock"), "got: {error}");
+        assert_eq!(fs::read(&replace_live).unwrap(), b"old");
+        assert!(replaced_lock.exists());
+
+        let absent_output = root.join("absent-output");
+        fs::create_dir(&absent_output).unwrap();
+        let mut prepared = prepare_program_projection(
+            &manifest,
+            &canonical,
+            None,
+            &absent_output,
+            TEST_ARCH,
+            &mut |_| {},
+        )
+        .unwrap();
+        let absent_live = absent_output.join("programs/wasm32/lock-boundary.wasm");
+        let absent_lock_evidence = root.join("absent-old-lock-evidence");
+        let error = with_source_only_projection_lock_guard(&absent_output, |lock| {
+            publish_owned_entry_transaction_with_hook(
+                &manifest.spec(),
+                &absent_output,
+                &mut prepared.transaction,
+                lock,
+                &mut |_| Ok(()),
+                &mut |phase, _| {
+                    if phase == OwnedEntryPublishPhase::BeforePublishRename {
+                        replace_lock(&absent_output, &absent_lock_evidence);
+                    }
+                    Ok(())
+                },
+            )
+        })
+        .unwrap_err();
+        assert!(error.contains("lock"), "got: {error}");
+        assert!(!absent_live.exists(), "replaced lock allowed a live publication");
+        assert!(absent_lock_evidence.exists());
+
+        let disposal_output = root.join("disposal-output");
+        fs::create_dir(&disposal_output).unwrap();
+        fs::write(canonical.join("lock-boundary.wasm"), b"old-disposal").unwrap();
+        materialize_source_only_program_target(
+            &manifest,
+            &canonical,
+            &disposal_output,
+            TEST_ARCH,
+        )
+        .unwrap();
+        fs::write(canonical.join("lock-boundary.wasm"), b"new-disposal").unwrap();
+        let mut prepared = prepare_program_projection(
+            &manifest,
+            &canonical,
+            None,
+            &disposal_output,
+            TEST_ARCH,
+            &mut |_| {},
+        )
+        .unwrap();
+        let backup = prepared.transaction.backup.clone();
+        let disposal_lock_evidence = root.join("disposal-old-lock-evidence");
+        let error = with_source_only_projection_lock_guard(&disposal_output, |lock| {
+            publish_owned_entry_transaction_with_hook(
+                &manifest.spec(),
+                &disposal_output,
+                &mut prepared.transaction,
+                lock,
+                &mut |_| Ok(()),
+                &mut |phase, _| {
+                    if phase == OwnedEntryPublishPhase::BeforePrivateContentRemoval {
+                        replace_lock(&disposal_output, &disposal_lock_evidence);
+                    }
+                    Ok(())
+                },
+            )
+        })
+        .unwrap_err();
+        assert!(error.contains("lock"), "got: {error}");
+        assert_eq!(
+            fs::read(&backup).unwrap(),
+            b"old-disposal",
+            "replaced lock allowed the only validated prior generation to be deleted",
+        );
+        assert!(disposal_lock_evidence.exists());
+
+        let rollback_output = root.join("rollback-output");
+        fs::create_dir(&rollback_output).unwrap();
+        fs::write(canonical.join("lock-boundary.wasm"), b"old-rollback").unwrap();
+        materialize_source_only_program_target(
+            &manifest,
+            &canonical,
+            &rollback_output,
+            TEST_ARCH,
+        )
+        .unwrap();
+        fs::write(canonical.join("lock-boundary.wasm"), b"new-rollback").unwrap();
+        let mut prepared = prepare_program_projection(
+            &manifest,
+            &canonical,
+            None,
+            &rollback_output,
+            TEST_ARCH,
+            &mut |_| {},
+        )
+        .unwrap();
+        let rollback_live = prepared.transaction.live.clone();
+        let rollback_backup = prepared.transaction.backup.clone();
+        let rollback_lock_evidence = root.join("rollback-old-lock-evidence");
+        let mut replaced = false;
+        let error = with_source_only_projection_lock_guard(&rollback_output, |lock| {
+            publish_owned_entry_transaction_with_hook(
+                &manifest.spec(),
+                &rollback_output,
+                &mut prepared.transaction,
+                lock,
+                &mut |_| Ok(()),
+                &mut |phase, _| {
+                    if phase == OwnedEntryPublishPhase::Quarantined && !replaced {
+                        replace_lock(&rollback_output, &rollback_lock_evidence);
+                        replaced = true;
+                    }
+                    Ok(())
+                },
+            )
+        })
+        .unwrap_err();
+        assert!(error.contains("lock"), "got: {error}");
+        assert_eq!(
+            fs::read(&rollback_live).unwrap(),
+            b"new-rollback",
+            "the already-atomic publication changed after lock authority was lost",
+        );
+        assert_eq!(
+            fs::read(&rollback_backup).unwrap(),
+            b"old-rollback",
+            "lost lock authority failed to preserve the prior generation as evidence",
+        );
+        assert!(rollback_lock_evidence.exists());
+
+        let parent_output = root.join("parent-disposal-output");
+        fs::create_dir(&parent_output).unwrap();
+        fs::write(canonical.join("lock-boundary.wasm"), b"old-parent").unwrap();
+        materialize_source_only_program_target(
+            &manifest,
+            &canonical,
+            &parent_output,
+            TEST_ARCH,
+        )
+        .unwrap();
+        fs::write(canonical.join("lock-boundary.wasm"), b"new-parent").unwrap();
+        let mut prepared = prepare_program_projection(
+            &manifest,
+            &canonical,
+            None,
+            &parent_output,
+            TEST_ARCH,
+            &mut |_| {},
+        )
+        .unwrap();
+        let transaction_name = prepared
+            .transaction
+            .transaction_root
+            .file_name()
+            .unwrap()
+            .to_os_string();
+        let parent_evidence = root.join("detached-wasm32-parent");
+        let replacement_parent = parent_output.join("programs/wasm32");
+        let mut replaced = false;
+        let error = with_source_only_projection_lock_guard(&parent_output, |lock| {
+            publish_owned_entry_transaction_with_hook(
+                &manifest.spec(),
+                &parent_output,
+                &mut prepared.transaction,
+                lock,
+                &mut |_| Ok(()),
+                &mut |phase, _| {
+                    if phase == OwnedEntryPublishPhase::BeforePrivateContentRemoval && !replaced {
+                        fs::rename(&replacement_parent, &parent_evidence).unwrap();
+                        fs::create_dir(&replacement_parent).unwrap();
+                        fs::write(replacement_parent.join("peer-sentinel"), b"preserve peer")
+                            .unwrap();
+                        replaced = true;
+                    }
+                    Ok(())
+                },
+            )
+        })
+        .unwrap_err();
+        assert!(error.contains("changed") || error.contains("identity"), "got: {error}");
+        assert_eq!(
+            fs::read(
+                parent_evidence
+                    .join(transaction_name)
+                    .join("backup"),
+            )
+            .unwrap(),
+            b"old-parent",
+            "detached parent authority allowed prior backup deletion",
+        );
+        assert_eq!(
+            fs::read(replacement_parent.join("peer-sentinel")).unwrap(),
+            b"preserve peer",
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_projection_lock_is_exact_persistent_and_shared() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        for mode in [0o644, 0o400] {
+            let output = tempdir(&format!("local-rebuild-lock-mode-{mode:o}"));
+            let metadata = output.join(".kandelo");
+            fs::create_dir(&metadata).unwrap();
+            let lock = metadata.join(".source-only-program-projection-v1.json.kandelo-lock");
+            fs::write(&lock, b"").unwrap();
+            fs::set_permissions(&lock, fs::Permissions::from_mode(mode)).unwrap();
+            SourceOnlyProjectionLock::acquire(&output).unwrap_err();
+            assert_eq!(fs::metadata(&lock).unwrap().permissions().mode() & 0o777, mode);
+        }
+
+        let output = tempdir("local-rebuild-shared-projection-lock");
+        let worker_output = output.clone();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        with_source_only_program_projection_lock(&output, |_| {
+            let thread = std::thread::spawn(move || {
+                with_source_only_program_projection_lock(&worker_output, |_| {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(())
+                })
+                .unwrap();
+            });
+            assert!(entered_rx.recv_timeout(Duration::from_millis(100)).is_err());
+            release_tx.send(()).unwrap();
+            drop(thread);
+            Ok(())
+        })
+        .unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let lock = output.join(".kandelo/.source-only-program-projection-v1.json.kandelo-lock");
+        let metadata = fs::symlink_metadata(lock).unwrap();
+        assert!(metadata.is_file() && !metadata.file_type().is_symlink());
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+
+        let member_path = output.join("programs/wasm32/capability.wasm");
+        fs::create_dir_all(member_path.parent().unwrap()).unwrap();
+        fs::write(&member_path, b"capability-member").unwrap();
+        let member = MaterializedProgramMemberV1 {
+            source_artifact: "capability.wasm".to_string(),
+            mirror_path: "programs/wasm32/capability.wasm".to_string(),
+            mode: fs::metadata(&member_path).unwrap().permissions().mode() & 0o777,
+            size: b"capability-member".len() as u64,
+            sha256: hex(&Sha256::digest(b"capability-member")),
+        };
+        with_source_only_program_projection_lock(&output, |authority| {
+            authority.validate_materialized_member(&member)?;
+            authority.replace_projection_authority(b"first-authority\n")
+        })
+        .unwrap();
+        with_source_only_program_projection_lock(&output, |authority| {
+            authority.validate_materialized_member(&member)?;
+            authority.replace_projection_authority(b"second-authority\n")
+        })
+        .unwrap();
+        let aggregate = output.join(".kandelo/source-only-program-projection-v1.json");
+        assert_eq!(
+            fs::read(&aggregate).unwrap(),
+            b"second-authority\n",
+        );
+        assert_eq!(
+            fs::metadata(&aggregate).unwrap().permissions().mode() & 0o777,
+            0o644,
+            "the published projection authority must be world-readable static content",
+        );
+
+        let error = with_source_only_program_projection_lock(&output, |authority| {
+            authority.replace_projection_authority_with_phase_hook(
+                b"committed-authority\n",
+                &mut |phase, _| {
+                    if phase == OwnedEntryPublishPhase::Published {
+                        Err("injected post-commit aggregate fault".to_string())
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+        })
+        .unwrap_err();
+        assert!(error.contains("injected post-commit"), "got: {error}");
+        assert_eq!(
+            fs::read(&aggregate).unwrap(),
+            b"committed-authority\n",
+            "aggregate failure rolled back the already committed generation",
+        );
+        let preserved_backup = fs::read_dir(aggregate.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path().join("backup"))
+            .find(|backup| backup.is_file())
+            .expect("post-commit failure must preserve the prior aggregate generation");
+        assert_eq!(fs::read(preserved_backup).unwrap(), b"second-authority\n");
+
+        let oversized_len = SOURCE_ONLY_PROJECTION_AUTHORITY_LIMIT as u64 + 1;
+        fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&aggregate)
+            .unwrap()
+            .set_len(oversized_len)
+            .unwrap();
+        let error = with_source_only_program_projection_lock(&output, |authority| {
+            authority.replace_projection_authority(b"must-not-replace-oversized-authority\n")
+        })
+        .unwrap_err();
+        assert!(error.contains("exceed") || error.contains("limit"), "got: {error}");
+        assert_eq!(
+            fs::metadata(&aggregate).unwrap().len(),
+            oversized_len,
+            "an oversized preexisting authority must be preserved",
+        );
+
+        let swap_output = tempdir("local-rebuild-public-projection-capability-swap");
+        let detached = swap_output.with_extension("detached");
+        let error = with_source_only_program_projection_lock(&swap_output, |authority| {
+            fs::rename(&swap_output, &detached).unwrap();
+            fs::create_dir(&swap_output).unwrap();
+            fs::write(swap_output.join("peer-sentinel"), b"preserve peer").unwrap();
+            authority.replace_projection_authority(b"{\"format\":\"fixture\"}\n")
+        })
+        .unwrap_err();
+        assert!(error.contains("changed") || error.contains("identity"), "got: {error}");
+        assert_eq!(
+            fs::read(swap_output.join("peer-sentinel")).unwrap(),
+            b"preserve peer",
+        );
+        assert!(
+            !swap_output
+                .join(".kandelo/source-only-program-projection-v1.json")
+                .exists(),
+            "public capability redirected aggregate publication into a replacement root",
+        );
+        assert!(
+            !detached
+                .join(".kandelo/source-only-program-projection-v1.json")
+                .exists(),
+            "lost pathname authority still mutated the detached root",
+        );
+    }
+
+    #[test]
+    fn local_rebuild_receipt_selected_source_only_projection_preserves_default_bytes() {
+        let root = tempdir("local-rebuild-selected-projection");
+        fs::create_dir_all(root.join("abi")).unwrap();
+        fs::write(root.join("abi/snapshot.json"), format!("{{\"abi_version\":{}}}", TEST_ABI)).unwrap();
+        write_global_toolchain_fixture(&root);
+        fs::create_dir_all(root.join("libc/musl")).unwrap();
+        fs::write(root.join("libc/musl/fixture"), b"musl").unwrap();
+        write(&root, "dep", "1.0.0", &[]);
+        write_source_only_repository_inputs(&root, "dep");
+        write_program(
+            &root,
+            "selected",
+            "1.0.0",
+            &["dep@1.0.0"],
+            ":",
+            &[("selected", "selected.wasm")],
+        );
+        write_source_only_repository_inputs(&root, "selected");
+        write_program(
+            &root,
+            "unrelated",
+            "1.0.0",
+            &[],
+            ":",
+            &[("unrelated", "unrelated.wasm")],
+        );
+        write_source_only_repository_inputs(&root, "unrelated");
+        for package in ["selected", "unrelated"] {
+            let path = root.join(package).join("package.toml");
+            let text = fs::read_to_string(&path).unwrap().replace(
+                &format!("wasm = \"{package}.wasm\""),
+                &format!("wasm = \"{package}.wasm\"\nfork_instrumentation = \"disabled\""),
+            );
+            fs::write(path, text).unwrap();
+        }
+        let registry = Registry { roots: vec![root.clone()] };
+        let _repo_root = crate::install_repo_root_override(root.clone()).unwrap();
+        let default_before = serialize_program_package_index(&root, &registry).unwrap();
+        let selected_nodes = BTreeSet::from([ResolvedDependencyNode {
+            package_name: "selected".to_string(),
+            target_arch: TEST_ARCH,
+        }]);
+        let projection = source_only_program_package_index_for_nodes(
+            &root,
+            &registry,
+            &selected_nodes,
+            TEST_ABI,
+        )
+        .unwrap();
+        assert_eq!(projection.packages.keys().cloned().collect::<Vec<_>>(), ["selected"]);
+        assert_eq!(
+            projection.identities.keys().cloned().collect::<Vec<_>>(),
+            ["dep", "selected"]
+        );
+        assert_eq!(projection.packages["selected"].arches, ["wasm32"]);
+        assert_eq!(projection.identities["selected"].cache_keys.len(), 2);
+        let default_after = serialize_program_package_index(&root, &registry).unwrap();
+        assert_eq!(default_after, default_before);
+    }
+
+    fn prepare_local_rebuild_fixture_repo(root: &Path) {
+        fs::create_dir_all(root.join("abi")).unwrap();
+        fs::write(
+            root.join("abi/snapshot.json"),
+            format!("{{\"abi_version\":{TEST_ABI}}}"),
+        )
+        .unwrap();
+        write_global_toolchain_fixture(root);
+        fs::create_dir_all(root.join("libc/musl")).unwrap();
+        fs::write(root.join("libc/musl/fixture"), b"fixed musl input").unwrap();
+    }
+
+    fn run_local_rebuild_fixture(
+        manifest: &DepsManifest,
+        registry: &Registry,
+        roots: &SourceOnlyCacheRoots,
+        repo_root: &Path,
+        output_root: &Path,
+        rebuild: bool,
+    ) -> Result<LocalBuildNodeOutput, String> {
+        resolve_local_build_package_node(
+            manifest,
+            registry,
+            TEST_ARCH,
+            TEST_ABI,
+            roots,
+            repo_root,
+            output_root,
+            rebuild,
+            &mut || Ok(()),
+        )
+    }
+
+    #[test]
+    fn local_rebuild_receipt_normal_hit_and_equal_force_report_exact_dispositions() {
+        let repo = tempdir("local-rebuild-equal-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        let counter = repo.join("counter");
+        write_counted_lib_fixture(&repo, "equal", &[], &counter);
+        write_source_only_repository_inputs(&repo, "equal");
+        let registry = Registry { roots: vec![repo.clone()] };
+        let manifest = registry.load("equal").unwrap();
+        let (base, compiled) = source_only_test_roots("local-rebuild-equal-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir("local-rebuild-equal-output");
+
+        let first = run_local_rebuild_fixture(
+            &manifest, &registry, &roots, &repo, &output, false,
+        )
+        .unwrap();
+        assert_eq!(first.disposition, LocalBuildDisposition::Published);
+        let canonical = first.canonical.clone().unwrap();
+        let identity = package_mirror_identity(&fs::symlink_metadata(&canonical).unwrap()).unwrap();
+        let second = run_local_rebuild_fixture(
+            &manifest, &registry, &roots, &repo, &output, false,
+        )
+        .unwrap();
+        assert_eq!(second.disposition, LocalBuildDisposition::Cached);
+        let rebuilt = run_local_rebuild_fixture(
+            &manifest, &registry, &roots, &repo, &output, true,
+        )
+        .unwrap();
+        assert_eq!(rebuilt.disposition, LocalBuildDisposition::RebuiltEquivalent);
+        assert_eq!(
+            package_mirror_identity(&fs::symlink_metadata(&canonical).unwrap()).unwrap(),
+            identity,
+            "equal rebuild replaced the canonical generation"
+        );
+        assert_eq!(fs::read_to_string(counter).unwrap(), "ran\nran\n");
+        let receipt = rebuilt.package_receipt.unwrap();
+        assert_eq!(receipt.manifest_sha256, package_manifest_sha256(&repo.join("equal/package.toml")).unwrap());
+        assert_eq!(receipt.cache_key_sha256.len(), 64);
+        assert_eq!(receipt.cache_receipt_sha256.len(), 64);
+        assert!(receipt.materialized_members.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_supervisor_revalidates_cache_and_materialized_members_under_lock() {
+        let repo = tempdir("local-rebuild-supervisor-authority-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        write_program(
+            &repo,
+            "supervised",
+            "1.0.0",
+            &[],
+            &emit_wasm_build_script("supervised.wasm", &minimal_executable_wasm()),
+            &[("supervised", "supervised.wasm")],
+        );
+        write_source_only_repository_inputs(&repo, "supervised");
+        let manifest_path = repo.join("supervised/package.toml");
+        fs::write(
+            &manifest_path,
+            fs::read_to_string(&manifest_path)
+                .unwrap()
+                .replace(
+                    "wasm = \"supervised.wasm\"",
+                    "wasm = \"supervised.wasm\"\nfork_instrumentation = \"disabled\"",
+                ),
+        )
+        .unwrap();
+        let registry = Registry { roots: vec![repo.clone()] };
+        let _repo_root = crate::install_repo_root_override(repo.clone()).unwrap();
+        let target = registry.load("supervised").unwrap();
+        let (base, compiled) = source_only_test_roots("local-rebuild-supervisor-authority-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir("local-rebuild-supervisor-authority-output");
+        let built = run_local_rebuild_fixture(
+            &target,
+            &registry,
+            &roots,
+            &repo,
+            &output,
+            false,
+        )
+        .unwrap();
+        let canonical = built.canonical.unwrap();
+        let receipt = built.package_receipt.unwrap();
+
+        with_source_only_program_projection_lock(&output, |authority| {
+            authority.validate_package_receipt(
+                &target,
+                &registry,
+                &roots,
+                TEST_ARCH,
+                TEST_ABI,
+                &receipt,
+            )
+        })
+        .unwrap();
+
+        fs::write(canonical.join("unrecorded-change"), b"changed").unwrap();
+        let error = with_source_only_program_projection_lock(&output, |authority| {
+            authority.validate_package_receipt(
+                &target,
+                &registry,
+                &roots,
+                TEST_ARCH,
+                TEST_ABI,
+                &receipt,
+            )
+        })
+        .unwrap_err();
+        assert!(error.contains("cache") || error.contains("receipt"), "{error}");
+        fs::remove_file(canonical.join("unrecorded-change")).unwrap();
+
+        fs::write(
+            output.join("programs/wasm32/supervised.wasm"),
+            b"changed live bytes",
+        )
+        .unwrap();
+        let error = with_source_only_program_projection_lock(&output, |authority| {
+            authority.validate_package_receipt(
+                &target,
+                &registry,
+                &roots,
+                TEST_ARCH,
+                TEST_ABI,
+                &receipt,
+            )
+        })
+        .unwrap_err();
+        assert!(error.contains("materialized") || error.contains("member"), "{error}");
+    }
+
+    #[test]
+    fn local_rebuild_receipt_failed_or_different_force_preserves_canonical_evidence() {
+        let repo = tempdir("local-rebuild-preserve-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        let trigger = repo.join("fail-trigger");
+        let counter = repo.join("counter");
+        write_lib(
+            &repo,
+            "preserve",
+            "1.0.0",
+            &[],
+            &format!(
+                "if test -e {trigger:?}; then exit 29; fi\nprintf x >> {counter:?}\nmkdir -p \"$WASM_POSIX_DEP_OUT_DIR/lib\"\nprintf \"$(wc -c < {counter:?})\" > \"$WASM_POSIX_DEP_OUT_DIR/lib/out.a\""
+            ),
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        write_source_only_repository_inputs(&repo, "preserve");
+        let registry = Registry { roots: vec![repo.clone()] };
+        let manifest = registry.load("preserve").unwrap();
+        let (base, compiled) = source_only_test_roots("local-rebuild-preserve-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir("local-rebuild-preserve-output");
+        let first = run_local_rebuild_fixture(
+            &manifest, &registry, &roots, &repo, &output, false,
+        )
+        .unwrap();
+        let canonical = first.canonical.unwrap();
+        let original = complete_cache_receipt_v1(
+            &canonical,
+            ResolvePolicy::SourceOnlyV1,
+            "preserve",
+            TEST_ARCH,
+            &first.package_receipt.unwrap().cache_key_sha256,
+        )
+        .unwrap();
+
+        fs::write(&trigger, b"fail").unwrap();
+        let error = run_local_rebuild_fixture(
+            &manifest, &registry, &roots, &repo, &output, true,
+        )
+        .unwrap_err();
+        assert!(error.contains("exit status: 29"), "got: {error}");
+        fs::remove_file(trigger).unwrap();
+        assert_eq!(
+            complete_cache_receipt_v1(
+                &canonical,
+                ResolvePolicy::SourceOnlyV1,
+                "preserve",
+                TEST_ARCH,
+                &original.cache_key_sha256,
+            )
+            .unwrap(),
+            original
+        );
+
+        let error = run_local_rebuild_fixture(
+            &manifest, &registry, &roots, &repo, &output, true,
+        )
+        .unwrap_err();
+        assert!(error.contains("rebuild mismatch"), "got: {error}");
+        assert_eq!(
+            fs::read_to_string(canonical.join("lib/out.a"))
+                .unwrap()
+                .trim(),
+            "1"
+        );
+        let diagnostics = fs::read_dir(canonical.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains("kandelo-rebuild-mismatch"))
+            .collect::<Vec<_>>();
+        assert_eq!(diagnostics.len(), 1);
+        let diagnostic = fs::read(&diagnostics[0].path()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&diagnostic).unwrap();
+        assert_eq!(parsed.get("schema"), Some(&serde_json::json!(1)));
+        assert_eq!(parsed["policy"], serde_json::json!("source-only-v1"));
+        assert_eq!(parsed["node"]["kind"], serde_json::json!("package"));
+        assert_eq!(parsed["node"]["name"], serde_json::json!("preserve"));
+        assert_eq!(parsed["node"]["targetArch"], serde_json::json!("wasm32"));
+        assert_eq!(parsed["cacheKeySha"], serde_json::json!(original.cache_key_sha256));
+        assert!(parsed.get("canonicalReceipt").is_some());
+        assert!(parsed.get("stagingReceipt").is_some());
+        let filename = diagnostics[0].file_name().to_string_lossy().into_owned();
+        let digest_suffix = filename
+            .strip_prefix(&format!(
+                ".{}.kandelo-rebuild-mismatch.",
+                original.cache_key_sha256
+            ))
+            .unwrap()
+            .strip_suffix(".json")
+            .unwrap();
+        let digest_parts = digest_suffix.split('.').collect::<Vec<_>>();
+        assert_eq!(digest_parts.len(), 2);
+        assert!(digest_parts.iter().all(|digest| digest.len() == 64));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_rejects_symlinked_compiled_kind_parent_without_escape() {
+        let repo = tempdir("local-rebuild-cache-parent-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        write_counted_lib_fixture(&repo, "parent-escape", &[], &repo.join("counter"));
+        write_source_only_repository_inputs(&repo, "parent-escape");
+        let registry = Registry { roots: vec![repo.clone()] };
+        let manifest = registry.load("parent-escape").unwrap();
+        let (base, compiled) = source_only_test_roots("local-rebuild-cache-parent-cache");
+        let outside = tempdir("local-rebuild-cache-parent-outside");
+        std::os::unix::fs::symlink(&outside, compiled.join("libs")).unwrap();
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir("local-rebuild-cache-parent-output");
+
+        let error = run_local_rebuild_fixture(
+            &manifest, &registry, &roots, &repo, &output, false,
+        )
+        .unwrap_err();
+        assert!(error.contains("real nonsymlink directory"), "got: {error}");
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+        assert!(!repo.join("counter").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_provenance_publication_cannot_follow_a_swapped_kind_parent() {
+        let repo = tempdir("local-rebuild-provenance-anchor-repo");
+        write(&repo, "anchored-provenance", "1.0.0", &[]);
+        fs::write(
+            repo.join("anchored-provenance/build.toml"),
+            r#"
+script_path = "anchored-provenance/build-anchored-provenance.sh"
+repo_url = "https://example.test/kandelo.git"
+commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision = 1
+
+[[git_inputs]]
+name = "tool"
+repository = "https://example.test/tool.git"
+commit = "1111111111111111111111111111111111111111"
+
+[binary]
+index_url = "https://example.test/releases/binaries-abi-v{abi}/index.toml"
+"#,
+        )
+        .unwrap();
+        let registry = Registry { roots: vec![repo] };
+        let manifest = registry.load("anchored-provenance").unwrap();
+        let cache_root = tempdir("local-rebuild-provenance-anchor-cache");
+        let key = "a".repeat(64);
+        let canonical = cache_root.join("libs").join(format!(
+            "anchored-provenance-1.0.0-rev1-wasm32-{key}"
+        ));
+        let guard = SourceOnlyCacheParentGuard::prepare(&cache_root, &canonical).unwrap();
+        let original = cache_root.join("original-libs");
+        let outside = tempdir("local-rebuild-provenance-anchor-outside");
+        let mut swapped = false;
+        let error = write_source_only_cache_provenance_anchored_with_after_validate(
+            &manifest,
+            &canonical,
+            &guard,
+            TargetArch::Wasm32,
+            TEST_ABI,
+            &key,
+            &mut || {
+                if !swapped {
+                    fs::rename(cache_root.join("libs"), &original).unwrap();
+                    std::os::unix::fs::symlink(&outside, cache_root.join("libs")).unwrap();
+                    swapped = true;
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("changed") || error.contains("anchored"), "got: {error}");
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+        let provenance = cache_provenance_path(
+            &original.join(canonical.file_name().unwrap()),
+            &key,
+        )
+        .unwrap();
+        assert!(provenance.is_file(), "anchored evidence should remain below the opened original parent");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_miss_requires_anchored_absence_of_unexpected_provenance() {
+        let repo = tempdir("local-rebuild-unexpected-provenance-repo");
+        write(&repo, "no-provenance", "1.0.0", &[]);
+        let registry = Registry { roots: vec![repo] };
+        let manifest = registry.load("no-provenance").unwrap();
+        let cache_root = tempdir("local-rebuild-unexpected-provenance-cache");
+        let outside = tempdir("local-rebuild-unexpected-provenance-outside");
+        let outside_file = outside.join("sentinel");
+        fs::write(&outside_file, b"outside").unwrap();
+
+        for (index, kind) in ["regular", "symlink", "fifo"].into_iter().enumerate() {
+            let digit = char::from(b'a' + index as u8);
+            let key = digit.to_string().repeat(64);
+            let canonical = cache_root.join("libs").join(format!(
+                "no-provenance-1.0.0-rev1-wasm32-{key}"
+            ));
+            let guard = SourceOnlyCacheParentGuard::prepare(&cache_root, &canonical).unwrap();
+            let marker = cache_provenance_path(&canonical, &key).unwrap();
+            match kind {
+                "regular" => fs::write(&marker, b"unexpected marker").unwrap(),
+                "symlink" => std::os::unix::fs::symlink(&outside_file, &marker).unwrap(),
+                "fifo" => {
+                    assert!(Command::new("mkfifo").arg(&marker).status().unwrap().success());
+                }
+                _ => unreachable!(),
+            }
+            let before = fs::symlink_metadata(&marker).unwrap();
+
+            let error = write_source_only_cache_provenance_anchored(
+                &manifest,
+                &canonical,
+                &guard,
+                TargetArch::Wasm32,
+                TEST_ABI,
+                &key,
+            )
+            .unwrap_err();
+
+            assert!(error.contains("unexpected cache provenance"), "{kind}: {error}");
+            assert!(!canonical.exists(), "{kind}: canonical artifact was published");
+            let after = fs::symlink_metadata(&marker).unwrap();
+            assert_eq!(package_mirror_identity(&after).unwrap(), package_mirror_identity(&before).unwrap());
+            fs::remove_file(&marker).unwrap();
+        }
+        assert_eq!(fs::read(&outside_file).unwrap(), b"outside");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_anchored_directory_create_cannot_follow_a_swapped_parent_path() {
+        let root = tempdir("local-rebuild-anchored-create-parent");
+        let parent = root.join("parent");
+        let original = root.join("original-parent");
+        let outside = root.join("outside-parent");
+        fs::create_dir(&parent).unwrap();
+        fs::create_dir(&outside).unwrap();
+        let anchored = AnchoredDirectory::open_existing(&parent, "anchored test parent").unwrap();
+
+        fs::rename(&parent, &original).unwrap();
+        std::os::unix::fs::symlink(&outside, &parent).unwrap();
+        let (_name, child) = anchored
+            .create_unique_child_directory("owned-stage", 0o700, "anchored test child")
+            .unwrap();
+
+        assert!(child.file.metadata().unwrap().is_dir());
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(&original).unwrap().count(), 1);
+        assert!(anchored.validate_path().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_owned_directory_capture_rejects_a_create_to_open_substitution() {
+        let root = tempdir("local-rebuild-owned-create-capture");
+        let parent = root.join("parent");
+        let outside = root.join("outside");
+        let evidence = root.join("created-evidence");
+        fs::create_dir(&parent).unwrap();
+        fs::create_dir(&outside).unwrap();
+        let anchored = AnchoredDirectory::open_existing(&parent, "capture test parent").unwrap();
+        let mut substituted = false;
+
+        let error = anchored
+            .create_unique_child_directory_with_after_create(
+                "owned-stage",
+                0o700,
+                "capture test child",
+                &mut |path| {
+                    if !substituted {
+                        fs::rename(path, &evidence).unwrap();
+                        std::os::unix::fs::symlink(&outside, path).unwrap();
+                        substituted = true;
+                    }
+                },
+            )
+            .unwrap_err();
+
+        assert!(error.contains("without following") || error.contains("real nonsymlink"), "got: {error}");
+        assert!(evidence.is_dir());
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+
+        let real_parent = root.join("real-parent");
+        let real_evidence = root.join("real-created-evidence");
+        fs::create_dir(&real_parent).unwrap();
+        let anchored =
+            AnchoredDirectory::open_existing(&real_parent, "real capture test parent").unwrap();
+        let mut substituted = false;
+        let error = anchored
+            .create_unique_child_directory_with_after_create(
+                "owned-stage",
+                0o700,
+                "real capture test child",
+                &mut |path| {
+                    if !substituted {
+                        fs::rename(path, &real_evidence).unwrap();
+                        fs::create_dir(path).unwrap();
+                        fs::write(path.join("peer-sentinel"), b"preserve peer").unwrap();
+                        substituted = true;
+                    }
+                },
+            )
+            .unwrap_err();
+        assert!(error.contains("changed") || error.contains("not empty"), "got: {error}");
+        let replacement = fs::read_dir(&real_parent)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert_eq!(fs::read(replacement.join("peer-sentinel")).unwrap(), b"preserve peer");
+        assert!(real_evidence.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_owned_directory_handoff_requires_a_final_stable_empty_snapshot() {
+        let parent = tempdir("local-rebuild-owned-final-empty-parent");
+        let anchored = AnchoredDirectory::open_existing(&parent, "final-empty test parent").unwrap();
+        let mut injected = false;
+
+        let error = anchored
+            .create_unique_child_directory_with_hooks(
+                "owned-stage",
+                0o700,
+                "final-empty test child",
+                &mut |_| {},
+                &mut |path| {
+                    if !injected {
+                        fs::write(path.join("peer-sentinel"), b"preserve peer").unwrap();
+                        injected = true;
+                    }
+                },
+            )
+            .unwrap_err();
+
+        assert!(error.contains("not empty") || error.contains("changed"), "got: {error}");
+        let replacement = fs::read_dir(&parent)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert_eq!(fs::read(replacement.join("peer-sentinel")).unwrap(), b"preserve peer");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_named_work_child_rejects_create_to_open_replacement() {
+        let parent = tempdir("local-rebuild-named-work-child-parent");
+        let evidence = parent.join("created-evidence");
+        let anchored = AnchoredDirectory::open_existing(&parent, "named work child parent").unwrap();
+        let mut substituted = false;
+
+        let error = anchored
+            .create_named_child_directory_with_after_create(
+                OsStr::new("recipe-work"),
+                0o700,
+                "private recipe work root",
+                &mut |path| {
+                    if !substituted {
+                        fs::rename(path, &evidence).unwrap();
+                        fs::create_dir(path).unwrap();
+                        fs::write(path.join("peer-sentinel"), b"preserve peer").unwrap();
+                        substituted = true;
+                    }
+                },
+            )
+            .unwrap_err();
+
+        assert!(error.contains("changed") || error.contains("not empty"), "got: {error}");
+        assert!(evidence.is_dir());
+        assert_eq!(fs::read(parent.join("recipe-work/peer-sentinel")).unwrap(), b"preserve peer");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_owned_cleanup_never_adopts_entries_added_after_its_snapshot() {
+        let parent = tempdir("local-rebuild-owned-cleanup-bounded-parent");
+        let mut owned = OwnedPrivateDirectory::reserve(
+            &parent,
+            "bounded-cleanup",
+            "bounded cleanup fixture",
+        )
+        .unwrap();
+        fs::write(owned.path().join("owned-file"), b"owned").unwrap();
+        let root = owned.path().to_path_buf();
+        let mut injected = false;
+
+        let error = owned
+            .cleanup_with_after_snapshot(&mut |path| {
+                if !injected {
+                    fs::create_dir(path.join("peer-subtree")).unwrap();
+                    fs::write(path.join("peer-subtree/sentinel"), b"preserve peer").unwrap();
+                    injected = true;
+                }
+                Ok(())
+            })
+            .unwrap_err();
+
+        assert!(error.contains("changed") || error.contains("extra"), "got: {error}");
+        assert_eq!(fs::read(root.join("owned-file")).unwrap(), b"owned");
+        assert_eq!(
+            fs::read(root.join("peer-subtree/sentinel")).unwrap(),
+            b"preserve peer"
+        );
+        owned.preserve = true;
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_anchored_scalar_publication_binds_and_cleans_its_stage() {
+        let parent = tempdir("local-rebuild-anchored-scalar-parent");
+        let anchored = AnchoredDirectory::open_existing(&parent, "scalar test parent").unwrap();
+        let evidence = parent.join("original-stage-evidence");
+        let replacement = std::cell::RefCell::new(None::<PathBuf>);
+        let mut substituted = false;
+
+        let error = publish_exact_regular_child_no_replace_with_after_write(
+            &anchored,
+            OsStr::new("final.json"),
+            b"expected bytes",
+            1024,
+            "scalar fixture",
+            &mut |stage| {
+                if !substituted {
+                    fs::rename(stage, &evidence).unwrap();
+                    fs::write(stage, b"peer replacement").unwrap();
+                    *replacement.borrow_mut() = Some(stage.to_path_buf());
+                    substituted = true;
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("changed") || error.contains("differs"), "got: {error}");
+        assert!(!parent.join("final.json").exists());
+        assert_eq!(fs::read(evidence).unwrap(), b"expected bytes");
+        assert_eq!(
+            fs::read(replacement.into_inner().unwrap()).unwrap(),
+            b"peer replacement"
+        );
+
+        let before = fs::read_dir(&parent).unwrap().count();
+        let error = publish_exact_regular_child_no_replace(
+            &anchored,
+            OsStr::new("oversized.json"),
+            b"12345",
+            4,
+            "oversized scalar fixture",
+        )
+        .unwrap_err();
+        assert!(error.contains("exceeds"), "got: {error}");
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), before);
+    }
+
+    #[test]
+    fn local_rebuild_receipt_source_only_recipe_receives_exact_registry_and_repo_roots() {
+        let repo = tempdir("local-rebuild-recipe-authority-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        write_lib(
+            &repo,
+            "authority-env",
+            "1.0.0",
+            &[],
+            "mkdir -p \"$WASM_POSIX_DEP_OUT_DIR/lib\"\nprintf '%s\\n%s\\n' \"${WASM_POSIX_DEPS_REGISTRY-unset}\" \"${WASM_POSIX_BINARY_RESOLVER_REPO_ROOT-unset}\" > \"$WASM_POSIX_DEP_OUT_DIR/lib/out.a\"",
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        write_source_only_repository_inputs(&repo, "authority-env");
+        let registry = Registry { roots: vec![repo.clone()] };
+        let manifest = registry.load("authority-env").unwrap();
+        let (base, compiled) = source_only_test_roots("local-rebuild-recipe-authority-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir("local-rebuild-recipe-authority-output");
+
+        let result = run_local_rebuild_fixture(
+            &manifest, &registry, &roots, &repo, &output, false,
+        )
+        .unwrap();
+        let canonical = result.canonical.unwrap();
+        assert_eq!(
+            fs::read_to_string(canonical.join("lib/out.a")).unwrap(),
+            format!("{}\n{}\n", repo.display(), repo.display())
+        );
+    }
+
+    #[test]
+    fn local_rebuild_receipt_post_recipe_input_change_blocks_old_key_publication() {
+        let repo = tempdir("local-rebuild-input-race-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        write_lib(
+            &repo,
+            "input-race",
+            "1.0.0",
+            &[],
+            &format!(
+                "mkdir -p \"$WASM_POSIX_DEP_OUT_DIR/lib\"\nprintf bytes > \"$WASM_POSIX_DEP_OUT_DIR/lib/out.a\"\nprintf changed > {:?}",
+                repo.join("input-race/declared.txt")
+            ),
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        fs::write(repo.join("input-race/declared.txt"), b"before").unwrap();
+        fs::write(
+            repo.join("input-race/build.toml"),
+            "script_path = \"input-race/build-input-race.sh\"\ninputs = [\"input-race/declared.txt\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n\n[binary]\nindex_url = \"https://example.test/binaries-abi-v{abi}/index.toml\"\n",
+        )
+        .unwrap();
+        let registry = Registry { roots: vec![repo.clone()] };
+        let manifest = registry.load("input-race").unwrap();
+        let (base, compiled) = source_only_test_roots("local-rebuild-input-race-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir("local-rebuild-input-race-output");
+        let old_sha = {
+            let _repo_root = crate::install_repo_root_override(repo.clone()).unwrap();
+            compute_sha_for_policy(
+                &manifest,
+                &registry,
+                TEST_ARCH,
+                TEST_ABI,
+                ResolvePolicy::SourceOnlyV1,
+                &mut BTreeMap::new(),
+                &mut Vec::new(),
+            )
+            .unwrap()
+        };
+        let old_canonical = canonical_path(
+            &roots.compiled,
+            &manifest,
+            TEST_ARCH,
+            &old_sha,
+        );
+        let error = run_local_rebuild_fixture(
+            &manifest, &registry, &roots, &repo, &output, false,
+        )
+        .unwrap_err();
+        assert!(error.contains("cache key changed while building"), "got: {error}");
+        assert!(!old_canonical.exists());
+    }
+
+    #[test]
+    fn local_rebuild_receipt_missing_dependency_is_scheduler_invariant_not_recursive_build() {
+        let repo = tempdir("local-rebuild-dependency-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        let dep_counter = repo.join("dep-counter");
+        let target_counter = repo.join("target-counter");
+        write_counted_lib_fixture(&repo, "dep", &[], &dep_counter);
+        write_source_only_repository_inputs(&repo, "dep");
+        write_counted_lib_fixture(&repo, "target", &["dep@1.0.0"], &target_counter);
+        write_source_only_repository_inputs(&repo, "target");
+        let registry = Registry { roots: vec![repo.clone()] };
+        let (base, compiled) = source_only_test_roots("local-rebuild-dependency-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir("local-rebuild-dependency-output");
+        let target = registry.load("target").unwrap();
+        let error = run_local_rebuild_fixture(
+            &target, &registry, &roots, &repo, &output, false,
+        )
+        .unwrap_err();
+        assert!(error.contains("scheduler invariant"), "got: {error}");
+        assert!(!dep_counter.exists() && !target_counter.exists());
+        let dependency = run_local_rebuild_fixture(
+            &registry.load("dep").unwrap(),
+            &registry,
+            &roots,
+            &repo,
+            &output,
+            false,
+        )
+        .unwrap();
+        run_local_rebuild_fixture(
+            &target, &registry, &roots, &repo, &output, false,
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(dep_counter).unwrap(), "ran\n");
+        assert_eq!(fs::read_to_string(&target_counter).unwrap(), "ran\n");
+
+        fs::remove_dir_all(dependency.canonical.unwrap()).unwrap();
+        let error = run_local_rebuild_fixture(
+            &target, &registry, &roots, &repo, &output, false,
+        )
+        .unwrap_err();
+        assert!(error.contains("scheduler invariant"), "got: {error}");
+        assert_eq!(
+            fs::read_to_string(target_counter).unwrap(),
+            "ran\n",
+            "a stale TargetOnly memo bypassed dependency admission and reran/succeeded",
+        );
+    }
+
+    #[test]
+    fn local_rebuild_receipt_source_hits_reverify_and_run_post_work_admission() {
+        let repo = tempdir("local-rebuild-source-node-reverify");
+        prepare_local_rebuild_fixture_repo(&repo);
+        let (archive, digest) = fixture_source_archive(&repo);
+        write_source_archive_fixture(&repo, "source-node", &archive, &digest);
+        let registry = Registry { roots: vec![repo.clone()] };
+        let target = registry.load("source-node").unwrap();
+        let (base, compiled) = source_only_test_roots("local-rebuild-source-node-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir("local-rebuild-source-node-output");
+        let mut callbacks = 0;
+
+        let first = resolve_local_build_package_node(
+            &target,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &roots,
+            &repo,
+            &output,
+            true,
+            &mut || {
+                callbacks += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(first.disposition, LocalBuildDisposition::Published);
+        let second = resolve_local_build_package_node(
+            &target,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &roots,
+            &repo,
+            &output,
+            true,
+            &mut || {
+                callbacks += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(second.disposition, LocalBuildDisposition::Cached);
+        assert_eq!(callbacks, 2);
+
+        let error = resolve_local_build_package_node(
+            &target,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &roots,
+            &repo,
+            &output,
+            false,
+            &mut || Err("graph changed after source work".to_string()),
+        )
+        .unwrap_err();
+        assert!(error.contains("graph changed after source work"), "got: {error}");
+
+        let payload = roots
+            .base
+            .join("source-archives/sha256")
+            .join(&digest)
+            .join("payload");
+        let mut permissions = fs::metadata(&payload).unwrap().permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(&payload, permissions).unwrap();
+        fs::write(&payload, b"corrupt cached source").unwrap();
+        let mut callback_ran = false;
+        let error = resolve_local_build_package_node(
+            &target,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &roots,
+            &repo,
+            &output,
+            false,
+            &mut || {
+                callback_ran = true;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("digest mismatch"), "got: {error}");
+        assert!(!callback_ran, "corrupt source payload reached success admission");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_source_callback_cannot_change_the_verified_payload_generation() {
+        let repo = tempdir("local-rebuild-source-callback-generation");
+        prepare_local_rebuild_fixture_repo(&repo);
+        let (archive, digest) = fixture_source_archive(&repo);
+        write_source_archive_fixture(&repo, "source-callback", &archive, &digest);
+        let registry = Registry { roots: vec![repo.clone()] };
+        let target = registry.load("source-callback").unwrap();
+        let output = tempdir("local-rebuild-source-callback-output");
+        let outside = output.join("outside-payload");
+        fs::write(&outside, b"outside").unwrap();
+
+        for mode in ["corrupt", "remove", "symlink"] {
+            let (base, compiled) = source_only_test_roots(&format!(
+                "local-rebuild-source-callback-{mode}-cache"
+            ));
+            let roots = SourceOnlyCacheRoots { base, compiled };
+            resolve_local_build_package_node(
+                &target,
+                &registry,
+                TEST_ARCH,
+                TEST_ABI,
+                &roots,
+                &repo,
+                &output,
+                false,
+                &mut || Ok(()),
+            )
+            .unwrap();
+            let payload = roots
+                .base
+                .join("source-archives/sha256")
+                .join(&digest)
+                .join("payload");
+            let mut callback_ran = false;
+            let error = resolve_local_build_package_node(
+                &target,
+                &registry,
+                TEST_ARCH,
+                TEST_ABI,
+                &roots,
+                &repo,
+                &output,
+                false,
+                &mut || {
+                    callback_ran = true;
+                    let mut permissions = fs::metadata(&payload).unwrap().permissions();
+                    permissions.set_readonly(false);
+                    fs::set_permissions(&payload, permissions).unwrap();
+                    match mode {
+                        "corrupt" => fs::write(&payload, b"corrupt").unwrap(),
+                        "remove" => fs::remove_file(&payload).unwrap(),
+                        "symlink" => {
+                            fs::remove_file(&payload).unwrap();
+                            std::os::unix::fs::symlink(&outside, &payload).unwrap();
+                        }
+                        _ => unreachable!(),
+                    }
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+            assert!(callback_ran, "{mode}: callback did not run");
+            assert!(
+                error.contains("changed after post-work")
+                    || error.contains("digest mismatch")
+                    || error.contains("not exactly one regular")
+                    || error.contains("inspect archive payload"),
+                "{mode}: {error}"
+            );
+        }
+        assert_eq!(fs::read(&outside).unwrap(), b"outside");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_binds_manifest_cache_and_projection_generations() {
+        let repo = tempdir("local-rebuild-coherent-authority");
+        prepare_local_rebuild_fixture_repo(&repo);
+        write_program(
+            &repo,
+            "coherent",
+            "1.0.0",
+            &[],
+            &emit_wasm_build_script("coherent.wasm", &minimal_executable_wasm()),
+            &[("coherent", "coherent.wasm")],
+        );
+        write_source_only_repository_inputs(&repo, "coherent");
+        let manifest_path = repo.join("coherent/package.toml");
+        let original_manifest = fs::read_to_string(&manifest_path)
+            .unwrap()
+            .replace(
+                "wasm = \"coherent.wasm\"",
+                "wasm = \"coherent.wasm\"\nfork_instrumentation = \"disabled\"",
+            );
+        fs::write(&manifest_path, &original_manifest).unwrap();
+        let registry = Registry { roots: vec![repo.clone()] };
+        let target = registry.load("coherent").unwrap();
+        let (base, compiled) = source_only_test_roots("local-rebuild-coherent-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let first_output = tempdir("local-rebuild-coherent-output-first");
+        let first = run_local_rebuild_fixture(
+            &target,
+            &registry,
+            &roots,
+            &repo,
+            &first_output,
+            false,
+        )
+        .unwrap();
+        let canonical = first.canonical.unwrap();
+        let wasm = canonical.join("coherent.wasm");
+        let original_wasm = fs::read(&wasm).unwrap();
+        let mut alternate_wasm = original_wasm.clone();
+        let body_constant = alternate_wasm
+            .windows(3)
+            .position(|window| window == [0x41, 0x00, 0x0b])
+            .expect("minimal executable has an i32.const 0 body");
+        alternate_wasm[body_constant + 1] = 1;
+
+        let changed_output = tempdir("local-rebuild-coherent-output-changed-cache");
+        let error = resolve_local_build_package_node(
+            &target,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &roots,
+            &repo,
+            &changed_output,
+            false,
+            &mut || {
+                fs::write(&wasm, &alternate_wasm).unwrap();
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("generation changed"), "got: {error}");
+        assert!(!changed_output.join("programs/wasm32/coherent.wasm").exists());
+        fs::write(&wasm, &original_wasm).unwrap();
+
+        let changed_manifest_output = tempdir("local-rebuild-coherent-output-changed-manifest");
+        let error = resolve_local_build_package_node(
+            &target,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &roots,
+            &repo,
+            &changed_manifest_output,
+            false,
+            &mut || {
+                fs::write(&manifest_path, format!("{original_manifest}\n# changed generation\n"))
+                    .unwrap();
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("generation changed") || error.contains("identity changed"), "got: {error}");
+        assert!(!changed_manifest_output.join("programs/wasm32/coherent.wasm").exists());
+        fs::write(&manifest_path, &original_manifest).unwrap();
+
+        let key = first
+            .package_receipt
+            .unwrap()
+            .cache_key_sha256;
+        let error = capture_cache_entry_snapshot_with_after_validate(
+            &target,
+            &canonical,
+            TEST_ARCH,
+            TEST_ABI,
+            &key,
+            ResolvePolicy::SourceOnlyV1,
+            &mut || {
+                fs::write(&wasm, vec![0u8; original_wasm.len()]).unwrap();
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("changed across semantic validation"), "got: {error}");
+        fs::write(&wasm, &original_wasm).unwrap();
+
+        let outside_manifest = repo.join("outside-package.toml");
+        fs::write(&outside_manifest, &original_manifest).unwrap();
+        let symlink_manifest = repo.join("symlink-package.toml");
+        std::os::unix::fs::symlink(&outside_manifest, &symlink_manifest).unwrap();
+        stable_package_manifest_sha256(&symlink_manifest).unwrap_err();
+        let mut mutated = false;
+        let error = stable_package_manifest_sha256_with_after_reopen(
+            &manifest_path,
+            &mut |path| {
+                if !mutated {
+                    let mut bytes = fs::read(path).unwrap();
+                    bytes[0] = if bytes[0] == b'k' { b'K' } else { b'k' };
+                    fs::write(path, bytes).unwrap();
+                    mutated = true;
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("changed while"), "got: {error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_rebuild_receipt_revalidates_the_full_cache_authority_before_live_projection() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = tempdir("local-rebuild-prelive-cache-authority");
+        prepare_local_rebuild_fixture_repo(&repo);
+        write_program(
+            &repo,
+            "prelive-authority",
+            "1.0.0",
+            &[],
+            &emit_wasm_build_script("prelive.wasm", &minimal_executable_wasm()),
+            &[("prelive-authority", "prelive.wasm")],
+        );
+        write_source_only_repository_inputs(&repo, "prelive-authority");
+        let manifest_path = repo.join("prelive-authority/package.toml");
+        let manifest_text = fs::read_to_string(&manifest_path)
+            .unwrap()
+            .replace(
+                "wasm = \"prelive.wasm\"",
+                "wasm = \"prelive.wasm\"\nfork_instrumentation = \"disabled\"",
+            );
+        fs::write(&manifest_path, manifest_text).unwrap();
+        let registry = Registry { roots: vec![repo.clone()] };
+        let target = registry.load("prelive-authority").unwrap();
+        let (base, compiled) = source_only_test_roots("local-rebuild-prelive-authority-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir("local-rebuild-prelive-authority-output");
+
+        let first = run_local_rebuild_fixture(
+            &target,
+            &registry,
+            &roots,
+            &repo,
+            &output,
+            false,
+        )
+        .unwrap();
+        let canonical = first.canonical.unwrap();
+        let live = output.join("programs/wasm32/prelive-authority.wasm");
+        let live_before = fs::read(&live).unwrap();
+        fs::set_permissions(&canonical, fs::Permissions::from_mode(0o755)).unwrap();
+        let unprojected = canonical.join("undeclared-receipted-extra");
+        fs::write(&unprojected, b"generation-a").unwrap();
+
+        let mut mutated = false;
+        let error = resolve_local_build_package_node_with_projection_hooks(
+            &target,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &roots,
+            &repo,
+            &output,
+            false,
+            &mut || Ok(()),
+            &mut |_| {
+                if !mutated {
+                    fs::write(&unprojected, b"generation-b").unwrap();
+                    mutated = true;
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert!(mutated, "the after-copy mutation seam did not run");
+        assert!(error.contains("generation changed"), "got: {error}");
+        assert_eq!(
+            fs::read(&live).unwrap(),
+            live_before,
+            "cache authority changed after staging but the live projection was mutated",
+        );
     }
 }

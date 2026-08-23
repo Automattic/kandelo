@@ -19,8 +19,8 @@ SPIDERMONKEY_PREFIX="${WASM_POSIX_DEP_SPIDERMONKEY_DIR:-}"
 NODE_WASM=""
 
 for candidate in \
-    "$REPO_ROOT/packages/registry/spidermonkey/bin/node.wasm" \
     "${SPIDERMONKEY_PREFIX:+$SPIDERMONKEY_PREFIX/node.wasm}" \
+    "$REPO_ROOT/packages/registry/spidermonkey/bin/node.wasm" \
     "$REPO_ROOT/local-binaries/programs/$ARCH/spidermonkey-node.wasm"; do
     if [ -z "$NODE_WASM" ] && [ -f "$candidate" ]; then
         NODE_WASM="$candidate"
@@ -50,7 +50,11 @@ if [ -z "$NODE_WASM" ]; then
     fi
 fi
 
-BIN_DIR="$SCRIPT_DIR/bin"
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    BIN_DIR="$WASM_POSIX_DEP_WORK_DIR/bin"
+else
+    BIN_DIR="$SCRIPT_DIR/bin"
+fi
 mkdir -p "$BIN_DIR"
 cp "$NODE_WASM" "$BIN_DIR/node.wasm"
 
@@ -60,8 +64,11 @@ echo "==> SpiderMonkey Node-compatible runtime staged: $BIN_DIR/node.wasm ($NODE
 # shellcheck source=/dev/null
 if command -v rustc >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
     source "$REPO_ROOT/scripts/install-local-binary.sh"
-    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled install_local_binary spidermonkey-node "$BIN_DIR/node.wasm"
-    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled install_local_binary node "$BIN_DIR/node.wasm"
+    if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+        export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    fi
+    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto install_local_binary spidermonkey-node "$BIN_DIR/node.wasm"
+    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto install_local_binary node "$BIN_DIR/node.wasm"
 else
     for name in spidermonkey-node node; do
         dest="$REPO_ROOT/local-binaries/programs/$ARCH/$name.wasm"

@@ -1,0 +1,12 @@
+kind = "source"
+name = "wordpress-sqlite-integration-source"
+version = "2.1.16"
+
+[source]
+url = "https://downloads.wordpress.org/plugin/sqlite-database-integration.2.1.16.zip"
+sha256 = "ccc69cada05983e6c2dac8c0962b548c437b4c96c00ea41b0e130fc128671391"
+provider = "archive"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://wordpress.org/plugins/sqlite-database-integration/"

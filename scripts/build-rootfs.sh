@@ -141,7 +141,9 @@ if [ "${ROOTFS_SEALED_BUILD:-0}" = "1" ]; then
     # WHY: the wrapper uses npx, which is allowed to install missing tools.
     # Package builds instead execute the already-installed lockfile version so
     # an undeclared network fetch can never become build authority.
-    mkrootfs=(node node_modules/tsx/dist/cli.mjs tools/mkrootfs/src/index.ts)
+    ROOTFS_TSX_TMP="$(mktemp -d /tmp/kandelo-rootfs.XXXXXX)"
+    trap 'rm -rf -- "$ROOTFS_TSX_TMP"' EXIT
+    mkrootfs=(env TMPDIR="$ROOTFS_TSX_TMP" node node_modules/tsx/dist/cli.mjs tools/mkrootfs/src/index.ts)
 else
     mkrootfs=(node tools/mkrootfs/bin/mkrootfs.mjs)
 fi

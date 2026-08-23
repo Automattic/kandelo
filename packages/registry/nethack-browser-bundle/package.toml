@@ -7,6 +7,7 @@ depends_on = ["nethack@3.6.7"]
 [source]
 url = "https://github.com/brandonpayton/kandelo"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
 
 [license]
 spdx = "NGPL"

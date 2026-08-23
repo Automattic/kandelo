@@ -3,6 +3,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HOST_TARGET="${HOST_TARGET:-$(rustc -vV | awk '/^host/ {print $2}')}"
+TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 OUT_DIR="$REPO_ROOT/tools/bin"
 BIN="$OUT_DIR/wasm-fork-instrument"
 
@@ -15,7 +16,7 @@ cargo build \
 
 mkdir -p "$OUT_DIR"
 install -m 0755 \
-    "$REPO_ROOT/target/$HOST_TARGET/release/wasm-fork-instrument" \
+    "$TARGET_DIR/$HOST_TARGET/release/wasm-fork-instrument" \
     "$BIN"
 
 "$BIN" --help >/dev/null

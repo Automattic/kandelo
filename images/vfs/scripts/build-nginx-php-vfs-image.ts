@@ -319,15 +319,41 @@ export async function buildNginxPhpVfsImage(
 }
 
 async function main(): Promise<void> {
+  const shellRoot = process.env.WASM_POSIX_DEP_SHELL_DIR;
+  const nginxRoot = process.env.WASM_POSIX_DEP_NGINX_DIR;
+  const phpRoot = process.env.WASM_POSIX_DEP_PHP_DIR;
+  const dinitRoot = process.env.WASM_POSIX_DEP_DINIT_DIR;
+  const kernelRoot = process.env.WASM_POSIX_DEP_KERNEL_DIR;
   await buildNginxPhpVfsImage({
-    nginx: new Uint8Array(readFileSync(resolveBinary("programs/nginx.wasm"))),
-    phpFpm: new Uint8Array(
-      readFileSync(resolveBinary("programs/php/php-fpm.wasm")),
-    ),
-    opcache: new Uint8Array(
-      readFileSync(resolveBinary("programs/php/opcache.so")),
-    ),
-    outputPath: OUT_FILE,
+    shellImage: shellRoot === undefined
+      ? undefined
+      : new Uint8Array(readFileSync(join(shellRoot, "shell.vfs.zst"))),
+    nginx: new Uint8Array(readFileSync(nginxRoot === undefined
+      ? resolveBinary("programs/nginx.wasm")
+      : join(nginxRoot, "nginx.wasm"))),
+    phpFpm: new Uint8Array(readFileSync(phpRoot === undefined
+      ? resolveBinary("programs/php/php-fpm.wasm")
+      : join(phpRoot, "php-fpm.wasm"))),
+    opcache: new Uint8Array(readFileSync(phpRoot === undefined
+      ? resolveBinary("programs/php/opcache.so")
+      : join(phpRoot, "opcache.so"))),
+    dinit: dinitRoot === undefined
+      ? undefined
+      : {
+          dinit: new Uint8Array(readFileSync(join(dinitRoot, "dinit.wasm"))),
+          dinitctl: new Uint8Array(
+            readFileSync(join(dinitRoot, "dinitctl.wasm")),
+          ),
+        },
+    buildPrograms: phpRoot === undefined || kernelRoot === undefined
+      ? undefined
+      : {
+          php: new Uint8Array(readFileSync(join(phpRoot, "php.wasm"))),
+          kernel: new Uint8Array(
+            readFileSync(join(kernelRoot, "kandelo-kernel.wasm")),
+          ),
+        },
+    outputPath: process.argv[2] ?? OUT_FILE,
   });
 }
 

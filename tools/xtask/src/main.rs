@@ -88,6 +88,9 @@ mod host_tool_probe;
 mod index_candidate;
 mod index_toml;
 mod index_update;
+mod local_abi_identity;
+mod local_build;
+mod local_build_executor;
 mod package_archive_limits;
 mod package_archive_name;
 mod package_matrix;
@@ -95,6 +98,7 @@ mod package_output_receipt;
 mod pkg_manifest;
 mod publication_policy;
 mod remote_fetch;
+mod source_archive_cache;
 mod source_extract;
 mod staging_reuse;
 mod update_pkg_manifest;
@@ -133,6 +137,7 @@ fn main() -> ExitCode {
         "set-package-binary" => update_pkg_manifest::run_set_package_binary(rest),
         "index-update" => index_update::run_index_update(&rest),
         "index-candidate" => index_candidate::run(rest),
+        "local-build" => local_build::run(rest),
         "homebrew-sidecars" => homebrew_sidecars::run(rest),
         "homebrew-tier2-preflight" => homebrew_tier2_preflight::run(rest),
         "homebrew-validate" => homebrew_validate::run(rest),

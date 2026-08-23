@@ -7,15 +7,39 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # shellcheck source=/dev/null
 source "$REPO_ROOT/sdk/activate.sh"
 
+RESOLVER_BUILD=0
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] || \
+   [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+  RESOLVER_BUILD=1
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/scripts/package-build-roots.sh"
+  kandelo_package_prepare_build_roots "$SCRIPT_DIR/kandelo-sdk-work" wasm32
+fi
+
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 GLUE_DIR="${WASM_POSIX_GLUE_DIR:-$REPO_ROOT/libc/glue}"
-GLUE_OBJ_DIR="${KANDELO_SDK_GLUE_OBJ_DIR:-$SCRIPT_DIR/kandelo-sdk-glue-objs}"
 if [[ ! -f "$SYSROOT/lib/libc.a" ]]; then
   echo "ERROR: sysroot not found at $SYSROOT. Run: bash scripts/build-musl.sh" >&2
   exit 1
 fi
 
 LIBCXX_DIR="${WASM_POSIX_DEP_LIBCXX_DIR:-}"
+if [ "$RESOLVER_BUILD" -eq 1 ]; then
+  export WASM_POSIX_DEP_WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+  if [ -z "$KANDELO_PACKAGE_OUT_DIR" ]; then
+    echo "ERROR: kandelo-sdk resolver build requires WASM_POSIX_DEP_OUT_DIR" >&2
+    exit 1
+  fi
+  SYSROOT="$(
+    kandelo_package_prepare_private_sysroot kandelo-sdk "$SYSROOT"
+  )"
+  export WASM_POSIX_SYSROOT="$SYSROOT"
+  GLUE_OBJ_DIR="$KANDELO_PACKAGE_WORK_DIR/kandelo-sdk-glue-objs"
+  VFS="$KANDELO_PACKAGE_OUT_DIR/kandelo-sdk.vfs.zst"
+else
+  GLUE_OBJ_DIR="${KANDELO_SDK_GLUE_OBJ_DIR:-$SCRIPT_DIR/kandelo-sdk-glue-objs}"
+  VFS="$SCRIPT_DIR/kandelo-sdk.vfs.zst"
+fi
 if [[ -n "$LIBCXX_DIR" ]]; then
   copy_if_changed() {
     local src="$1"
@@ -48,11 +72,12 @@ for src in channel_syscall compiler_rt cxxrt dlopen; do
 done
 
 export KANDELO_SDK_GLUE_OBJ_DIR="$GLUE_OBJ_DIR"
-export KANDELO_SDK_VFS_OUT="$SCRIPT_DIR/kandelo-sdk.vfs.zst"
+export KANDELO_SDK_VFS_OUT="$VFS"
 bash "$REPO_ROOT/images/vfs/scripts/build-kandelo-sdk-vfs-image.sh"
 
-VFS="$SCRIPT_DIR/kandelo-sdk.vfs.zst"
 [[ -f "$VFS" ]] || { echo "ERROR: $VFS not produced by builder" >&2; exit 1; }
 
-source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary kandelo-sdk "$VFS"
+if [ "$RESOLVER_BUILD" -eq 0 ]; then
+  source "$REPO_ROOT/scripts/install-local-binary.sh"
+  install_local_binary kandelo-sdk "$VFS"
+fi

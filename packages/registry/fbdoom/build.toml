@@ -8,5 +8,12 @@ repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
 revision    = 6
 
+[[git_inputs]]
+name       = "chocolate_doom"
+repository = "https://github.com/chocolate-doom/chocolate-doom.git"
+commit     = "35fb1372d10756ca27eca05665bd8a7cebc71c05"
+tree       = "f6f232e0ea11d817cb9079c05fe9a81bfa785171"
+allow_uninitialized_gitlinks = true
+
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

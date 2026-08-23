@@ -176,11 +176,27 @@ pre-built artifact at once, run `bash scripts/fetch-binaries.sh` after
 with a `[binary.<arch>]` block and resolves the archives into the
 content-addressed cache plus `binaries/programs/<arch>/` symlinks.
 
+To source-build the current seven browser VFS products and their declared
+dependency graph, use the local DAG builder from the repository root:
+
+```bash
+./run.sh local-build
+```
+
+The command uses an active direnv/Nix development shell when one is already
+loaded; otherwise it enters the repository dev shell for you. It selects
+package and product inputs from their checked-in manifests, builds with up to
+16 concurrent jobs, reuses completed content-addressed nodes, and writes the
+validated SourceOnly projection to `local-binaries/source-only-v1`.
+
+The default output ends with a concise node, cache, build, and product
+summary. Use `./run.sh local-build --json` when automation needs the canonical
+machine-readable result.
+
 On PR branches, CI publishes temporary binaries to
-`pr-<PR_NUMBER>-staging`. Use `./run.sh --pr-staging browser` or
-`WASM_POSIX_USE_PR_STAGING=1 ./run.sh browser` to consume that staging
-index locally without editing `build.toml`. A manually set
-`WASM_POSIX_BINARY_INDEX_URL` still takes precedence.
+`pr-<PR_NUMBER>-staging`. Those archives remain available for release
+inspection through `./run.sh --pr-staging fetch`. The browser command does
+not consume them: it always builds or reuses the local SourceOnly graph.
 
 If you are editing a package's `package.toml` to iterate locally, the
 resolver detects the cache-key mismatch, logs a warning, and falls
@@ -219,14 +235,14 @@ npx tsx examples/run-example.ts hello
 ### 4. Try Kandelo in the browser
 
 ```bash
-# Build VFS images + start dev server (run.sh handles dependencies)
+# Build/reuse the local SourceOnly products, then start the dev server
 ./run.sh browser
-
-# Or manually:
-cd apps/browser-demos
-npm install
-npm run dev
 ```
+
+`./run.sh browser` runs the same cached DAG as `./run.sh local-build`, points
+Vite at the validated `local-binaries/source-only-v1` projection, and never
+fetches the retired Homebrew/browser binary selection. Subsequent launches
+reuse unchanged nodes.
 
 Open `http://127.0.0.1:5401` to use the Kandelo UI. The network lab at `http://127.0.0.1:5401/pages/network/` boots multiple local Kandelo machines in one browser session and exercises POSIX UDP/TCP with GNU Netcat (`nc`) and `curl`.
 

@@ -7,6 +7,7 @@ depends_on = []
 [source]
 url = "https://downloads.sourceforge.net/project/netcat/netcat/0.7.1/netcat-0.7.1.tar.gz"
 sha256 = "30719c9a4ffbcf15676b8f528233ccc54ee6cba96cb4590975f5fd60c68a066f"
+provider = "archive"
 
 [license]
 spdx = "GPL-2.0-or-later"

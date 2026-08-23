@@ -1,9 +1,9 @@
 script_path = "packages/registry/node-vfs/build-node-vfs.sh"
 inputs = [
   "packages/registry/node-vfs/build-node-vfs.sh",
-  "packages/registry/npm/fetch-npm.sh",
   "images/vfs/scripts/build-node-vfs-image.sh",
   "images/vfs/scripts/build-node-vfs-image.ts",
+  "images/vfs/scripts/source-extract-helper.ts",
   "images/vfs/scripts/derived-vfs-symlink.ts",
   "images/vfs/scripts/shell-lazy-archives.ts",
   "images/vfs/scripts/shell-vfs-build.ts",
@@ -33,7 +33,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 18
+revision    = 21
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

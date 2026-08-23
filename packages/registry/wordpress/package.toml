@@ -12,11 +12,14 @@ depends_on = [
     "php@8.3.15",
     "dinit@0.19.4",
     "msmtpd@1.8.32",
+    "kernel@0.1.0",
+    "wordpress-sqlite-integration-source@2.1.16",
 ]
 
 [source]
 url = "https://wordpress.org/wordpress-7.0.tar.gz"
 sha256 = "530c8fdeb16fb0affdb53eb727b6a04bb8d166621c20029e389cabb01a0fa921"
+provider = "archive"
 
 [license]
 spdx = "GPL-2.0-or-later"

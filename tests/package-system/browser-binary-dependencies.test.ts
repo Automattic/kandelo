@@ -25,6 +25,7 @@ import {
   packageOutputOwners,
   registryPackagesWithoutBuildToml,
 } from "../../scripts/browser-binary-package-roots.mjs";
+import { browserAssetImportsForPolicy } from "../../scripts/ci-check-browser-assets";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const registryRoot = join(repoRoot, "packages", "registry");
@@ -197,6 +198,60 @@ describe("browser binary dependencies", () => {
     expect(unfetchableOwners).toEqual([]);
   });
 
+  it("keeps SourceOnly browser checks graph-scoped while the default checker includes optional gallery paths", () => {
+    const optionalGalleryPaths = [
+      "programs/wasm32/erlang-vfs.vfs.zst",
+      "programs/wasm32/fbtest.wasm",
+      "programs/wasm32/mariadb-vfs.vfs.zst",
+      "programs/wasm64/mariadb-vfs.vfs.zst",
+    ];
+    const sourceOnlySpecs = browserAssetImportsForPolicy(
+      repoRoot,
+      "source-only-v1",
+    );
+    const defaultSpecs = browserAssetImportsForPolicy(repoRoot, undefined);
+
+    expect(sourceOnlySpecs).toContain(
+      "@binaries/programs/wasm32/bash.wasm",
+    );
+    expect(sourceOnlySpecs).toContain(
+      "@binaries/programs/wasm32/nc.wasm",
+    );
+    expect(sourceOnlySpecs).not.toEqual(
+      expect.arrayContaining(
+        optionalGalleryPaths.map((path) => `@binaries/${path}`),
+      ),
+    );
+    expect(defaultSpecs).toEqual(
+      expect.arrayContaining(
+        optionalGalleryPaths.map((path) => `@binaries/${path}`),
+      ),
+    );
+  });
+
+  it("uses dinit's canonical multi-output projection path in live setup", () => {
+    const expected = "programs/wasm32/dinit/dinit.wasm";
+    expect(browserBinariesImports(repoRoot)).toContain(expected);
+
+    const index = JSON.parse(
+      readFileSync(join(registryRoot, "program-packages.json"), "utf8"),
+    );
+    const members = index.packages.dinit.members as Array<{
+      sourceArtifact: string;
+      mirrorPath: string;
+      outputName: string;
+    }>;
+    expect(members).toHaveLength(3);
+    const dinit = members.find((member) => member.outputName === "dinit");
+    expect(dinit).toEqual(
+      expect.objectContaining({
+        sourceArtifact: "dinit.wasm",
+        mirrorPath: "dinit/dinit.wasm",
+      }),
+    );
+    expect(`programs/wasm32/${dinit!.mirrorPath}`).toBe(expected);
+  });
+
   it("discovers syntax-level imports without treating generated source strings as imports", () => {
     const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-browser-imports-"));
     try {
@@ -209,17 +264,32 @@ describe("browser binary dependencies", () => {
           "import actual from \"@binaries/programs/actual.wasm?url\";",
           "const dynamic = import(\"@binaries/programs/dynamic.wasm?url\");",
           "const optional = import.meta.glob(\"../../binaries/programs/optional.vfs.zst\", { query: \"?url\", import: \"default\" });",
-          "const local = import.meta.glob([\"../../local-binaries/programs/local.vfs.zst\"], { query: \"?url\", import: \"default\" });",
           "const unrelated = import.meta.glob(\"./ordinary-module.ts\");",
-          "void generated; void actual; void dynamic; void optional; void local; void unrelated;",
+          "void generated; void actual; void dynamic; void optional; void unrelated;",
         ].join("\n"),
       );
       expect(browserBinariesImports(fixtureRoot)).toEqual([
         "programs/wasm32/actual.wasm",
         "programs/wasm32/dynamic.wasm",
-        "programs/wasm32/local.vfs.zst",
         "programs/wasm32/optional.vfs.zst",
       ]);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects array-valued globs instead of admitting syntax Vite cannot mirror exactly", () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-browser-imports-"));
+    try {
+      const browserRoot = join(fixtureRoot, "apps", "browser-demos");
+      mkdirSync(browserRoot, { recursive: true });
+      writeFileSync(
+        join(browserRoot, "imports.ts"),
+        "const local = import.meta.glob([\"../../local-binaries/programs/local.vfs.zst\"], { query: \"?url\", import: \"default\" });\n",
+      );
+      expect(() => browserBinariesImports(fixtureRoot)).toThrow(
+        "array-valued import.meta.glob is not admitted",
+      );
     } finally {
       rmSync(fixtureRoot, { recursive: true, force: true });
     }

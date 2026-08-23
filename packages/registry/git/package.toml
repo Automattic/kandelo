@@ -2,11 +2,12 @@ kind = "program"
 name = "git"
 version = "2.47.1"
 kernel_abi = 7
-depends_on = []
+depends_on = ["zlib@1.3.1", "openssl@3.3.2", "libcurl@8.11.1"]
 
 [source]
 url = "https://github.com/git/git/archive/refs/tags/v2.47.1.tar.gz"
 sha256 = "30654cc6c0142fa68050cc7b0ee6a2a65944288b907821781112efaf24293b23"
+provider = "archive"
 
 [license]
 spdx = "GPL-2.0-only"

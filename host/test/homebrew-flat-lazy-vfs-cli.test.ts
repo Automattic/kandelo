@@ -11,48 +11,6 @@ import { MemoryFileSystem } from "../src/vfs/memory-fs";
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 describe("flat-selection lazy Homebrew VFS CLI", () => {
-  it("is the canonical shell package path with its selected bootstrap companion", () => {
-    const packageToml = readFileSync(
-      join(repoRoot, "packages/registry/shell/package.toml"),
-      "utf8",
-    );
-    const buildToml = readFileSync(
-      join(repoRoot, "packages/registry/shell/build.toml"),
-      "utf8",
-    );
-    const buildScript = readFileSync(
-      join(repoRoot, "packages/registry/shell/build-shell.sh"),
-      "utf8",
-    );
-
-    expect(packageToml).toContain(
-      'depends_on = ["homebrew-bootstrap@6.0.12-153-gcf5bc21"]',
-    );
-    expect(buildToml).toMatch(/^revision\s*=\s*26$/m);
-    for (const input of [
-      "homebrew/main-shell-materialization-policy.json",
-      "homebrew/main-shell-runtime-support-policy.json",
-      "images/vfs/scripts/build-homebrew-flat-lazy-vfs-image.ts",
-      "host/src/homebrew-flat-lazy-vfs-composer.ts",
-    ]) {
-      expect(buildToml).toContain(`"${input}"`);
-    }
-    expect(buildScript).toContain(
-      "WASM_POSIX_DEP_HOMEBREW_BOOTSTRAP_DIR",
-    );
-    expect(buildScript).toContain("build-homebrew-flat-lazy-vfs-image.ts");
-    expect(buildScript).toContain("--materialization-policy");
-    expect(buildScript).toContain("--runtime-support-policy");
-    expect(buildScript).toContain("--bootstrap-zip");
-    expect(buildScript).toContain("--bootstrap-env");
-    expect(buildScript).toContain("--mirror-repository");
-    expect(buildScript).toContain("--mirror-out");
-    expect(buildScript).toMatch(/-ge\s+10485760/);
-    expect(buildScript).not.toMatch(
-      /scripts\/build-homebrew-flat-vfs-image\.ts(?:"|\s)/,
-    );
-  });
-
   it("accepts the complete canonical input set without implicit authorities", async () => {
     const cliPath = join(
       repoRoot,

@@ -71,7 +71,7 @@ fi
 
 # Fresh build + install dir each run. The cache path varies per key
 # and autoconf-generated Makefiles are not portable across prefixes.
-rm -rf "$BUILD_DIR" "$INSTALL_DIR"
+rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
 echo "==> Configuring libpng for wasm32 (zlib at $ZLIB_PREFIX)..."

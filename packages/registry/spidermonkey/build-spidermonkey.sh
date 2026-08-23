@@ -10,6 +10,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # shellcheck source=/dev/null
 source "$REPO_ROOT/sdk/activate.sh"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
 
 VERSION="${WASM_POSIX_DEP_VERSION:-$(tr -d '[:space:]' < "$SCRIPT_DIR/VERSION")}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftp.mozilla.org/pub/firefox/releases/$VERSION/source/firefox-$VERSION.source.tar.xz}"
@@ -21,6 +23,10 @@ if [ "$ARCH" != "wasm32" ]; then
     exit 1
 fi
 
+RESOLVER_BUILD=0
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
+    RESOLVER_BUILD=1
+fi
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
     WORK_DIR="$WASM_POSIX_DEP_WORK_DIR"
@@ -37,6 +43,26 @@ else
     OBJ_DIR="$SCRIPT_DIR/obj-wasm32"
     MOZCONFIG_PATH="$SCRIPT_DIR/mozconfig-wasm32"
     MOZBUILD_STATE_PATH="$SCRIPT_DIR/.mozbuild"
+fi
+SRC_DIR="${SPIDERMONKEY_SRC_DIR:-${WASM_POSIX_DEP_SOURCE_DIR:-}}"
+if [ "${WASM_POSIX_RESOLUTION_POLICY:-}" = "source-only-v1" ]; then
+    if [ -z "${WASM_POSIX_DEP_SOURCE_DIR:-}" ]; then
+        echo "ERROR: SpiderMonkey SourceOnly resolver source is empty" >&2
+        exit 2
+    fi
+    if [ -z "${WASM_POSIX_DEP_SOURCE_ARCHIVE:-}" ]; then
+        echo "ERROR: SpiderMonkey SourceOnly resolver archive is empty" >&2
+        exit 2
+    fi
+    if [ ! -f "$WASM_POSIX_DEP_SOURCE_DIR/mach" ]; then
+        echo "ERROR: Formula-owned SpiderMonkey source has no mach entry point: $WASM_POSIX_DEP_SOURCE_DIR" >&2
+        exit 2
+    fi
+    VERIFIED_SRC_DIR="$WASM_POSIX_DEP_SOURCE_DIR"
+    SRC_DIR="$WORK_DIR/spidermonkey-source"
+    echo "==> Staging verified SpiderMonkey source into the build work root..."
+    kandelo_package_stage_verified_source spidermonkey "$SRC_DIR" \
+        "$VERIFIED_SRC_DIR" "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
 fi
 HOST_OS="$(uname -s)"
 MACOS_SDK_DIR="${WASM_POSIX_MACOS_SDK_DIR:-}"
@@ -127,6 +153,18 @@ fi
     exit 1
 }
 
+if [ "$RESOLVER_BUILD" -eq 1 ]; then
+    export WASM_POSIX_DEP_WORK_DIR="$WORK_DIR"
+    export WASM_POSIX_DEP_LIBCXX_DIR="$LIBCXX_PREFIX"
+    export WASM_POSIX_DEP_OPENSSL_DIR="$OPENSSL_PREFIX"
+    export WASM_POSIX_DEP_ZLIB_DIR="$ZLIB_PREFIX"
+    SYSROOT="$(
+        kandelo_package_prepare_private_sysroot spidermonkey "$SYSROOT" \
+            libcxx openssl zlib
+    )"
+    export WASM_POSIX_SYSROOT="$SYSROOT"
+fi
+
 # Mozilla's build uses the compiler driver directly and expects libc++ to be
 # visible from the target sysroot. Keep the sysroot as an index of cache-managed
 # libcxx artifacts, matching the MariaDB and C++ program build paths.
@@ -149,23 +187,23 @@ find_mach_dir() {
     fi
 }
 
-SRC_DIR="${SPIDERMONKEY_SRC_DIR:-${WASM_POSIX_DEP_SOURCE_DIR:-}}"
-if [ -n "${WASM_POSIX_DEP_SOURCE_DIR:-}" ] && [ ! -f "$SRC_DIR/mach" ]; then
-    echo "ERROR: Formula-owned SpiderMonkey source has no mach entry point: $SRC_DIR" >&2
-    exit 1
-fi
-if [ -z "$SRC_DIR" ] || [ ! -f "$SRC_DIR/mach" ]; then
-    SRC_DIR="$(find_mach_dir || true)"
-fi
-
-if [ -z "$SRC_DIR" ] || [ ! -f "$SRC_DIR/mach" ]; then
-    archive="$DOWNLOAD_DIR/firefox-$VERSION.source.tar.xz"
-    if [ ! -f "$archive" ]; then
-        echo "==> Downloading Firefox ESR $VERSION source..."
-        curl -fL "$SOURCE_URL" -o "$archive"
+if [ "${WASM_POSIX_RESOLUTION_POLICY:-}" != "source-only-v1" ]; then
+    if [ -n "${WASM_POSIX_DEP_SOURCE_DIR:-}" ] && [ ! -f "$SRC_DIR/mach" ]; then
+        echo "ERROR: Formula-owned SpiderMonkey source has no mach entry point: $SRC_DIR" >&2
+        exit 1
     fi
-    if [ -n "$SOURCE_SHA256" ]; then
-        actual_sha="$(python3 - "$archive" <<'PY'
+    if [ -z "$SRC_DIR" ] || [ ! -f "$SRC_DIR/mach" ]; then
+        SRC_DIR="$(find_mach_dir || true)"
+    fi
+
+    if [ -z "$SRC_DIR" ] || [ ! -f "$SRC_DIR/mach" ]; then
+        archive="$DOWNLOAD_DIR/firefox-$VERSION.source.tar.xz"
+        if [ ! -f "$archive" ]; then
+            echo "==> Downloading Firefox ESR $VERSION source..."
+            curl -fL "$SOURCE_URL" -o "$archive"
+        fi
+        if [ -n "$SOURCE_SHA256" ]; then
+            actual_sha="$(python3 - "$archive" <<'PY'
 import hashlib
 import sys
 
@@ -176,18 +214,18 @@ with open(sys.argv[1], "rb") as f:
 print(h.hexdigest())
 PY
 )"
-        if [ "$actual_sha" != "$SOURCE_SHA256" ]; then
-            echo "ERROR: source SHA256 mismatch for $archive" >&2
-            echo "  expected: $SOURCE_SHA256" >&2
-            echo "  actual:   $actual_sha" >&2
-            exit 1
+            if [ "$actual_sha" != "$SOURCE_SHA256" ]; then
+                echo "ERROR: source SHA256 mismatch for $archive" >&2
+                echo "  expected: $SOURCE_SHA256" >&2
+                echo "  actual:   $actual_sha" >&2
+                exit 1
+            fi
         fi
-    fi
 
-    echo "==> Extracting Firefox ESR $VERSION source..."
-    rm -rf "$SRC_PARENT"
-    mkdir -p "$SRC_PARENT"
-    python3 - "$archive" "$SRC_PARENT" <<'PY'
+        echo "==> Extracting Firefox ESR $VERSION source..."
+        rm -rf "$SRC_PARENT"
+        mkdir -p "$SRC_PARENT"
+        python3 - "$archive" "$SRC_PARENT" <<'PY'
 from pathlib import Path
 import os
 import sys
@@ -202,7 +240,8 @@ with tarfile.open(archive, "r:xz") as tf:
             raise SystemExit(f"archive member escapes destination: {member.name}")
     tf.extractall(dest)
 PY
-    SRC_DIR="$(find_mach_dir || true)"
+        SRC_DIR="$(find_mach_dir || true)"
+    fi
 fi
 
 if [ -z "$SRC_DIR" ] || [ ! -f "$SRC_DIR/mach" ]; then
@@ -359,11 +398,10 @@ else
     echo "WARNING: wasm-opt not found; leaving unoptimized js.wasm." >&2
 fi
 
-# Do not run SpiderMonkey through wasm-fork-instrument. The rewrite expands
-# SpiderMonkey's already-large C++ control flow enough that Chromium workers
-# exhaust their Wasm call stack before the shell reaches user JavaScript.
-# SpiderMonkey worker_threads use clone/pthreads, which remain supported
-# without POSIX fork-stack instrumentation.
+FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
+echo "==> Applying fork instrumentation to js.wasm..."
+"$FORK_INSTRUMENT" "$BIN_DIR/js.wasm" -o "$BIN_DIR/js.wasm.instr"
+mv "$BIN_DIR/js.wasm.instr" "$BIN_DIR/js.wasm"
 
 JS_SIZE="$(wc -c < "$BIN_DIR/js.wasm" | tr -d ' ')"
 echo "==> SpiderMonkey built successfully: $BIN_DIR/js.wasm ($JS_SIZE bytes)"
@@ -376,16 +414,16 @@ echo "==> SpiderMonkey Node-compatible runtime staged: $BIN_DIR/node.wasm ($NODE
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
-        WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled \
+        WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
         install_local_binary spidermonkey "$BIN_DIR/js.wasm" js.wasm
     WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
-        WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled \
+        WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
         install_local_binary spidermonkey-node "$BIN_DIR/node.wasm" node.wasm
 else
-    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled \
+    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
         install_local_binary spidermonkey "$BIN_DIR/js.wasm" js.wasm
-    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled \
+    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
         install_local_binary spidermonkey-node "$BIN_DIR/node.wasm" node.wasm
-    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled \
+    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
         install_local_binary node "$BIN_DIR/node.wasm" node.wasm
 fi

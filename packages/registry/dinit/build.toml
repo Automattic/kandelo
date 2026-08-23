@@ -1,4 +1,13 @@
 script_path = "packages/registry/dinit/build-dinit.sh"
+inputs = [
+  "packages/registry/dinit/build-dinit.sh",
+  "packages/registry/dinit/patches/0001-wasm-sjlj-pselect-noexcept.patch",
+  "sdk/activate.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/package-build-roots.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+  "scripts/wasm-artifact-guards.sh",
+]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
 revision    = 5

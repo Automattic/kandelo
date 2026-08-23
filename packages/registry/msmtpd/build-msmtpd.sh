@@ -86,11 +86,7 @@ wasm32posix-cc \
     netrc.c \
     -o "$OUT"
 
-FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
-if [ ! -x "$FORK_INSTRUMENT" ]; then
-    echo "ERROR: wasm-fork-instrument not found at $FORK_INSTRUMENT." >&2
-    exit 1
-fi
+FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
 echo "==> Applying wasm-fork-instrument to msmtpd.wasm..."
 "$FORK_INSTRUMENT" "$OUT" -o "$OUT.instr"

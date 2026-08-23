@@ -33,6 +33,7 @@ export const localOnlyBrowserImports = new Set([
 export const registryPackagesWithoutBuildToml = new Set([
   "pcre2-source",
   "sqlite-cli",
+  "wordpress-sqlite-integration-source",
 ]);
 
 function hasExactObjectKeys(value, expectedKeys) {

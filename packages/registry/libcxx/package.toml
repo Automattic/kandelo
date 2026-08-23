@@ -33,6 +33,7 @@ arches = ["wasm32", "wasm64"]
 [source]
 url = "https://github.com/llvm/llvm-project.git"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "dev-shell"
 
 [license]
 spdx = "Apache-2.0 WITH LLVM-exception"

@@ -7,6 +7,7 @@ depends_on = ["libcxx@21.1.7", "openssl@3.3.2", "zlib@1.3.1"]
 [source]
 url = "https://ftp.mozilla.org/pub/firefox/releases/140.11.0esr/source/firefox-140.11.0esr.source.tar.xz"
 sha256 = "1b034d2117356fda24807a151055132315c6ba58ad2bdf7ec71ee707fac5e028"
+provider = "archive"
 
 [license]
 spdx = "MPL-2.0"
@@ -60,4 +61,4 @@ install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run thro
 [[outputs]]
 name = "js"
 wasm = "js.wasm"
-fork_instrumentation = "disabled"
+fork_instrumentation = "auto"

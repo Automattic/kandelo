@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "profiles": {
+    "doom": {
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["framebuffer", "terminal", "syslog"],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer",
+        "autoCommand": "/usr/local/bin/fbdoom -iwad /doom1.wad"
+      },
+      "assets": [
+        {
+          "path": "/doom1.wad",
+          "url": "https://cdn.jsdelivr.net/gh/gaborbata/vanilla-mocha-doom@15825a07a48806bcfb242a42afd5ee7cb3c9a3a4/wads/doom1.wad",
+          "sha256": "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771",
+          "mode": 420,
+          "devCorsProxy": true
+        }
+      ],
+      "ingest": {
+        "accept": [".wad"],
+        "targetPath": "/user.wad",
+        "maxBytes": 33554432,
+        "label": "Load WAD",
+        "onLoad": {
+          "restart": "/usr/local/bin/fbdoom -iwad /user.wad"
+        }
+      }
+    },
+    "modeset": {
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["kms", "terminal", "syslog"],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer",
+        "autoCommand": "/usr/local/bin/modeset"
+      }
+    }
+  }
+}

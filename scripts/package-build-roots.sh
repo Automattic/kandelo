@@ -56,6 +56,47 @@ kandelo_package_require_existing_real_dir() {
     (cd "$candidate" && pwd -P)
 }
 
+# Print the verified source root for one declared source dependency. Source-only
+# builds use the resolver's injective UTF-8 byte encoding; the legacy spelling
+# remains available only to the default resolver policy for compatibility.
+kandelo_package_source_dependency_dir() {
+    local package_name="${1:-}"
+    local dependency_key variable value resolved
+    if [ -z "$package_name" ]; then
+        echo "ERROR: source dependency package name must not be empty" >&2
+        return 2
+    fi
+
+    if [ "${WASM_POSIX_RESOLUTION_POLICY:-}" = "source-only-v1" ]; then
+        dependency_key="K_$(
+            LC_ALL=C printf '%s' "$package_name" |
+                od -An -v -tx1 |
+                tr -d '[:space:]' |
+                tr '[:lower:]' '[:upper:]'
+        )"
+    else
+        dependency_key="${package_name//-/_}"
+        dependency_key="$(
+            LC_ALL=C printf '%s' "$dependency_key" |
+                tr '[:lower:]' '[:upper:]'
+        )"
+    fi
+    variable="WASM_POSIX_DEP_${dependency_key}_SRC_DIR"
+
+    value="$(printenv "$variable" 2>/dev/null || true)"
+    if [ -z "$value" ]; then
+        echo "ERROR: source dependency variable $variable is empty or unset" >&2
+        return 2
+    fi
+    resolved="$(kandelo_package_require_existing_real_dir "$variable" "$value")" ||
+        return
+    if [ "$resolved" != "$value" ]; then
+        echo "ERROR: source dependency variable $variable must use its canonical path: $value" >&2
+        return 2
+    fi
+    printf '%s\n' "$resolved"
+}
+
 kandelo_package_require_disjoint_paths() {
     local first_label="$1"
     local first_path="$2"
@@ -82,6 +123,193 @@ kandelo_package_require_stable_projection_id() {
         echo "ERROR: $label must be a stable identifier: $value" >&2
         return 2
     fi
+}
+
+kandelo_package_require_regular_input_tree() {
+    local label="$1"
+    local root="$2"
+    local invalid
+    invalid="$(find "$root" -type l -print -quit)"
+    if [ -n "$invalid" ]; then
+        echo "ERROR: $label contains a symlink: $invalid" >&2
+        return 2
+    fi
+    invalid="$(find "$root" -mindepth 1 ! -type d ! -type f -print -quit)"
+    if [ -n "$invalid" ]; then
+        echo "ERROR: $label contains a special entry: $invalid" >&2
+        return 2
+    fi
+}
+
+kandelo_package_remove_private_tree() {
+    local root="$1"
+    if [ -d "$root" ] && [ ! -L "$root" ]; then
+        find "$root" -type d -exec chmod u+rwx {} + 2>/dev/null || true
+    fi
+    rm -rf -- "$root"
+}
+
+kandelo_package_make_private_tree_writable() {
+    local root="$1"
+    kandelo_package_require_regular_input_tree "private sysroot" "$root" || return
+    find "$root" -type d -exec chmod u+rwx {} + || return
+    find "$root" -type f -exec chmod u+rw {} + || return
+}
+
+# Create an isolated mutable sysroot beneath the resolver-owned work root. The
+# remaining arguments are declared compiled-package dependency names; their
+# resolver-provided output roots are overlaid in order after the SDK seed.
+kandelo_package_prepare_private_sysroot() {
+    local label="${1:-}"
+    local sdk_candidate="${2:-}"
+    shift 2 2>/dev/null || {
+        echo "ERROR: private sysroot requires a label and SDK seed" >&2
+        return 2
+    }
+
+    local work_candidate work_root sdk_root source_root output_root dependency_name
+    local dependency_key dependency_variable dependency_root previous_root
+    local private_root
+    local -a dependency_roots=()
+    local -a dependency_names=()
+
+    kandelo_package_require_stable_projection_id \
+        "private sysroot label" "$label" || return
+    work_candidate="${WASM_POSIX_DEP_WORK_DIR:-}"
+    work_root="$(kandelo_package_require_existing_real_dir \
+        WASM_POSIX_DEP_WORK_DIR "$work_candidate")" || return
+    if [ "$work_root" != "$work_candidate" ]; then
+        echo "ERROR: WASM_POSIX_DEP_WORK_DIR must use its canonical path: $work_candidate" >&2
+        return 2
+    fi
+    sdk_root="$(kandelo_package_require_existing_real_dir \
+        "private sysroot SDK seed" "$sdk_candidate")" || return
+    if [ "$sdk_root" != "$sdk_candidate" ]; then
+        echo "ERROR: private sysroot SDK seed must use its canonical path: $sdk_candidate" >&2
+        return 2
+    fi
+    kandelo_package_require_regular_input_tree \
+        "private sysroot SDK seed" "$sdk_root" || return
+    kandelo_package_require_disjoint_paths \
+        "private sysroot SDK seed" "$sdk_root" \
+        WASM_POSIX_DEP_WORK_DIR "$work_root" || return
+
+    source_root=""
+    if [ -n "${WASM_POSIX_DEP_SOURCE_DIR:-}" ]; then
+        source_root="$(kandelo_package_require_existing_real_dir \
+            WASM_POSIX_DEP_SOURCE_DIR "$WASM_POSIX_DEP_SOURCE_DIR")" || return
+        if [ "$source_root" != "$WASM_POSIX_DEP_SOURCE_DIR" ]; then
+            echo "ERROR: WASM_POSIX_DEP_SOURCE_DIR must use its canonical path: $WASM_POSIX_DEP_SOURCE_DIR" >&2
+            return 2
+        fi
+        kandelo_package_require_disjoint_paths \
+            WASM_POSIX_DEP_WORK_DIR "$work_root" \
+            WASM_POSIX_DEP_SOURCE_DIR "$source_root" || return
+        kandelo_package_require_disjoint_paths \
+            "private sysroot SDK seed" "$sdk_root" \
+            WASM_POSIX_DEP_SOURCE_DIR "$source_root" || return
+    fi
+    output_root=""
+    if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+        output_root="$(kandelo_package_require_existing_real_dir \
+            WASM_POSIX_DEP_OUT_DIR "$WASM_POSIX_DEP_OUT_DIR")" || return
+        if [ "$output_root" != "$WASM_POSIX_DEP_OUT_DIR" ]; then
+            echo "ERROR: WASM_POSIX_DEP_OUT_DIR must use its canonical path: $WASM_POSIX_DEP_OUT_DIR" >&2
+            return 2
+        fi
+        kandelo_package_require_disjoint_paths \
+            WASM_POSIX_DEP_WORK_DIR "$work_root" \
+            WASM_POSIX_DEP_OUT_DIR "$output_root" || return
+        if [ -n "$source_root" ]; then
+            kandelo_package_require_disjoint_paths \
+                WASM_POSIX_DEP_SOURCE_DIR "$source_root" \
+                WASM_POSIX_DEP_OUT_DIR "$output_root" || return
+        fi
+        kandelo_package_require_disjoint_paths \
+            "private sysroot SDK seed" "$sdk_root" \
+            WASM_POSIX_DEP_OUT_DIR "$output_root" || return
+    fi
+
+    for dependency_name in "$@"; do
+        kandelo_package_require_stable_projection_id \
+            "private sysroot dependency" "$dependency_name" || return
+        if printf '%s\n' "${dependency_names[@]}" | grep -Fx "$dependency_name" >/dev/null; then
+            echo "ERROR: private sysroot dependency is duplicated: $dependency_name" >&2
+            return 2
+        fi
+        dependency_names+=("$dependency_name")
+        dependency_key="${dependency_name//-/_}"
+        dependency_key="$(
+            LC_ALL=C printf '%s' "$dependency_key" |
+                tr '[:lower:]' '[:upper:]'
+        )"
+        dependency_variable="WASM_POSIX_DEP_${dependency_key}_DIR"
+        dependency_root="$(printenv "$dependency_variable" 2>/dev/null || true)"
+        if [ -z "$dependency_root" ]; then
+            echo "ERROR: private sysroot dependency variable $dependency_variable is empty or unset" >&2
+            return 2
+        fi
+        dependency_root="$(kandelo_package_require_existing_real_dir \
+            "$dependency_variable" "$dependency_root")" || return
+        if [ "$dependency_root" != "$(printenv "$dependency_variable")" ]; then
+            echo "ERROR: private sysroot dependency variable $dependency_variable must use its canonical path" >&2
+            return 2
+        fi
+        kandelo_package_require_regular_input_tree \
+            "private sysroot dependency $dependency_name" "$dependency_root" || return
+        kandelo_package_require_disjoint_paths \
+            "private sysroot dependency $dependency_name" "$dependency_root" \
+            WASM_POSIX_DEP_WORK_DIR "$work_root" || return
+        kandelo_package_require_disjoint_paths \
+            "private sysroot dependency $dependency_name" "$dependency_root" \
+            "private sysroot SDK seed" "$sdk_root" || return
+        if [ -n "$source_root" ]; then
+            kandelo_package_require_disjoint_paths \
+                "private sysroot dependency $dependency_name" "$dependency_root" \
+                WASM_POSIX_DEP_SOURCE_DIR "$source_root" || return
+        fi
+        if [ -n "$output_root" ]; then
+            kandelo_package_require_disjoint_paths \
+                "private sysroot dependency $dependency_name" "$dependency_root" \
+                WASM_POSIX_DEP_OUT_DIR "$output_root" || return
+        fi
+        for previous_root in "${dependency_roots[@]}"; do
+            kandelo_package_require_disjoint_paths \
+                "private sysroot dependency $dependency_name" "$dependency_root" \
+                "another private sysroot dependency" "$previous_root" || return
+        done
+        dependency_roots+=("$dependency_root")
+    done
+
+    private_root="$(mktemp -d "$work_root/.kandelo-${label}-sysroot.XXXXXX")" || {
+        echo "ERROR: could not reserve a private sysroot beneath $work_root" >&2
+        return 2
+    }
+    if ! cp -a "$sdk_root/." "$private_root/"; then
+        kandelo_package_remove_private_tree "$private_root"
+        echo "ERROR: could not seed private sysroot from $sdk_root" >&2
+        return 2
+    fi
+    if ! kandelo_package_make_private_tree_writable "$private_root"; then
+        kandelo_package_remove_private_tree "$private_root"
+        return 2
+    fi
+    for dependency_root in "${dependency_roots[@]}"; do
+        if ! cp -a "$dependency_root/." "$private_root/"; then
+            kandelo_package_remove_private_tree "$private_root"
+            echo "ERROR: could not overlay private sysroot dependency $dependency_root" >&2
+            return 2
+        fi
+        if ! kandelo_package_make_private_tree_writable "$private_root"; then
+            kandelo_package_remove_private_tree "$private_root"
+            return 2
+        fi
+    done
+    kandelo_package_require_regular_input_tree "private sysroot" "$private_root" || {
+        kandelo_package_remove_private_tree "$private_root"
+        return 2
+    }
+    printf '%s\n' "$private_root"
 }
 
 kandelo_package_vfs_projection_requested() {
@@ -343,6 +571,37 @@ kandelo_package_select_source_root() {
     fi
 }
 
+kandelo_package_require_existing_regular_file() {
+    local label="$1"
+    local candidate="$2"
+    local parent parent_real canonical
+    case "$candidate" in
+        /*) ;;
+        *)
+            echo "ERROR: $label must be an absolute path: $candidate" >&2
+            return 2
+            ;;
+    esac
+    if [[ "/${candidate#/}/" == *'/../'* || "/${candidate#/}/" == *'/./'* || \
+          "/${candidate#/}/" == *'//'* ]]; then
+        echo "ERROR: $label must be normalized: $candidate" >&2
+        return 2
+    fi
+    if [ ! -f "$candidate" ] || [ -L "$candidate" ]; then
+        echo "ERROR: $label must be a regular non-symlink file: $candidate" >&2
+        return 2
+    fi
+    parent="$(dirname "$candidate")"
+    parent_real="$(kandelo_package_require_existing_real_dir \
+        "$label parent" "$parent")" || return
+    canonical="$parent_real/$(basename "$candidate")"
+    if [ "$candidate" != "$canonical" ]; then
+        echo "ERROR: $label must use its canonical path: $candidate" >&2
+        return 2
+    fi
+    printf '%s\n' "$canonical"
+}
+
 kandelo_package_stage_verified_source() {
     local label="$1"
     local dest="$2"
@@ -352,7 +611,82 @@ kandelo_package_stage_verified_source() {
     local work_dir="$6"
     local archive_magic download_dir entry invalid tarball zip_listing
     local zip_listing_long zip_root zip_top zip_top_name
+    local resolver_archive resolver_source work_root output_root positional_source dest_path
     local -a zip_entries
+
+    if [ "${WASM_POSIX_RESOLUTION_POLICY:-}" = "source-only-v1" ]; then
+        if [ -z "${WASM_POSIX_DEP_SOURCE_ARCHIVE:-}" ]; then
+            echo "ERROR: $label source-only resolver archive is empty" >&2
+            return 2
+        fi
+        if [ -z "${WASM_POSIX_DEP_SOURCE_DIR:-}" ]; then
+            echo "ERROR: $label source-only resolver source directory is empty" >&2
+            return 2
+        fi
+        resolver_archive="$(kandelo_package_require_existing_regular_file \
+            "source-only $label archive" "$WASM_POSIX_DEP_SOURCE_ARCHIVE")" || return
+        resolver_source="$(kandelo_package_require_existing_real_dir \
+            "source-only $label source" "$WASM_POSIX_DEP_SOURCE_DIR")" || return
+        if [ "$resolver_source" != "$WASM_POSIX_DEP_SOURCE_DIR" ]; then
+            echo "ERROR: source-only $label source must use its canonical path" >&2
+            return 2
+        fi
+        work_root="$(kandelo_package_require_existing_real_dir \
+            "source-only $label work root" "$work_dir")" || return
+        if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
+            local environment_work_root
+            environment_work_root="$(kandelo_package_require_existing_real_dir \
+                WASM_POSIX_DEP_WORK_DIR "$WASM_POSIX_DEP_WORK_DIR")" || return
+            if [ "$environment_work_root" != "$work_root" ]; then
+                echo "ERROR: source-only $label work root does not match WASM_POSIX_DEP_WORK_DIR" >&2
+                return 2
+            fi
+        fi
+        kandelo_package_require_disjoint_paths "source-only $label source" \
+            "$resolver_source" "source-only $label work root" "$work_root" || return
+        output_root=""
+        if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+            output_root="$(kandelo_package_require_existing_real_dir \
+                WASM_POSIX_DEP_OUT_DIR "$WASM_POSIX_DEP_OUT_DIR")" || return
+            kandelo_package_require_disjoint_paths "source-only $label source" \
+                "$resolver_source" WASM_POSIX_DEP_OUT_DIR "$output_root" || return
+            kandelo_package_require_disjoint_paths "source-only $label work root" \
+                "$work_root" WASM_POSIX_DEP_OUT_DIR "$output_root" || return
+        fi
+        positional_source="$resolver_source"
+        if [ -n "$verified_dir" ]; then
+            positional_source="$(kandelo_package_require_existing_real_dir \
+                "verified $label source" "$verified_dir")" || return
+            if [ "$positional_source" != "$resolver_source" ]; then
+                echo "ERROR: verified $label source does not match the source-only resolver source" >&2
+                return 2
+            fi
+        fi
+
+        if [ -e "$dest" ] || [ -L "$dest" ]; then
+            echo "ERROR: $label destination already exists: $dest" >&2
+            return 2
+        fi
+        dest_path="$(kandelo_package_require_real_dir \
+            "source-only $label destination" "$dest")" || return
+        case "$dest_path/" in
+            "$work_root/"*) ;;
+            *)
+                echo "ERROR: source-only $label destination must be below the caller work root" >&2
+                return 2
+                ;;
+        esac
+        mkdir "$dest_path" || return
+        if ! cp -a "$positional_source/." "$dest_path/"; then
+            rm -rf "$dest_path"
+            return 1
+        fi
+        if ! find "$dest_path" ! -type l -exec chmod u+rwX,go-w {} +; then
+            rm -rf "$dest_path"
+            return 1
+        fi
+        return 0
+    fi
 
     if [ -e "$dest" ] || [ -L "$dest" ]; then
         echo "ERROR: $label destination already exists: $dest" >&2

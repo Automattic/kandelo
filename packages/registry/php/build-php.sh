@@ -31,6 +31,7 @@ else
     WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-php.XXXXXX")"
     OWNS_WORK_DIR=1
 fi
+WORK_DIR="$(cd "$WORK_DIR" && pwd -P)"
 cleanup() {
     status=$?
     trap - EXIT
@@ -118,6 +119,13 @@ echo "==> libzip at $LIBZIP_PREFIX"
 echo "==> libcurl at $LIBCURL_PREFIX"
 echo "==> icu at $ICU_PREFIX"
 echo "==> libcxx at $LIBCXX_PREFIX"
+
+SYSROOT="$(
+    WASM_POSIX_DEP_WORK_DIR="$WORK_DIR" \
+    WASM_POSIX_DEP_LIBCXX_DIR="$LIBCXX_PREFIX" \
+        kandelo_package_prepare_private_sysroot php "$SYSROOT" libcxx
+)"
+export WASM_POSIX_SYSROOT="$SYSROOT"
 
 # The SDK's C++ driver reads libc++ from the worktree-local sysroot. Point that
 # declared toolchain location at the resolver-owned dependency, matching the

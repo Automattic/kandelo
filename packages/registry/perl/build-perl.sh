@@ -32,6 +32,19 @@ else
     SRC_DIR="$SCRIPT_DIR/perl-src"
     BIN_DIR="$SCRIPT_DIR/bin"
 fi
+PERL_CROSS_COMMIT=0cc3a1c5432cab8f121f7a629f61893713e7d27a
+if [ "${WASM_POSIX_RESOLUTION_POLICY:-}" = "source-only-v1" ]; then
+    if [ -z "${WASM_POSIX_BUILD_GIT_PERL_CROSS_DIR:-}" ] || \
+       [ "${WASM_POSIX_BUILD_GIT_PERL_CROSS_COMMIT:-}" != "$PERL_CROSS_COMMIT" ]; then
+        echo "ERROR: Perl SourceOnly requires the exact perl_cross Git input (DIR and COMMIT $PERL_CROSS_COMMIT)" >&2
+        exit 2
+    fi
+    WASM_POSIX_BUILD_GIT_PERL_CROSS_DIR="$(
+        kandelo_package_require_existing_real_dir \
+            "Perl perl_cross Git input" "$WASM_POSIX_BUILD_GIT_PERL_CROSS_DIR"
+    )"
+    export WASM_POSIX_BUILD_GIT_PERL_CROSS_DIR
+fi
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 CONFIGURE_LOG="$KANDELO_PACKAGE_WORK_DIR/configure.log"
 BUILD_LOG="$KANDELO_PACKAGE_WORK_DIR/build.log"
@@ -80,6 +93,9 @@ if [ ! -d "$SRC_DIR" ]; then
     if [ -n "${WASM_POSIX_BUILD_GIT_PERL_CROSS_DIR:-}" ]; then
         tar --exclude=.git -cf - -C "$WASM_POSIX_BUILD_GIT_PERL_CROSS_DIR" . |
             tar xf - -C "$SRC_DIR"
+    elif [ "${WASM_POSIX_RESOLUTION_POLICY:-}" = "source-only-v1" ]; then
+        echo "ERROR: Perl SourceOnly requires the exact perl_cross Git input" >&2
+        exit 2
     else
         CROSS_TARBALL="$KANDELO_PACKAGE_WORK_DIR/perl-cross-${PERL_CROSS_VERSION}.tar.gz"
         CROSS_URL="https://github.com/arsv/perl-cross/releases/download/${PERL_CROSS_VERSION}/perl-cross-${PERL_CROSS_VERSION}.tar.gz"
@@ -90,6 +106,50 @@ if [ ! -d "$SRC_DIR" ]; then
             "$CROSS_TARBALL" | shasum -a 256 -c -
         tar xzf "$CROSS_TARBALL" -C "$SRC_DIR" --strip-components=1
     fi
+
+    # Resolver-owned Git inputs are deliberately sealed read-only. The
+    # overlay above copies those bytes into this caller-owned build tree, so
+    # make only the copy writable before applying the host-compatibility
+    # patches below.
+    find "$SRC_DIR" ! -type l -exec chmod u+rwX,go-w {} +
+
+    # perl-cross uses GNU-sed-only `\s` escapes in version detection, module
+    # list normalization, and its manifest source list. BSD sed treats `\s`
+    # as the literal letter `s`; that silently truncates module paths such as
+    # ExtUtils and produces a malformed Makefile. Patch only the writable
+    # copied overlay to portable ERE character classes.
+    python3 - "$SRC_DIR" << 'PYVERSION'
+import os
+import sys
+
+root = sys.argv[1]
+patches = [
+    (
+        "cnf/configure_version.sh",
+        '\tq=`grep \'#define\' patchlevel.h | grep "$2" | head -1 | sed -r -e "s/#define $2\\s+//" -e "s/\\s.*//"`',
+        '\tq=`grep \'#define\' patchlevel.h | grep "$2" | head -1 | sed -E -e "s/#define $2[[:space:]]+//" -e "s/[[:space:]].*//"`',
+    ),
+    (
+        "cnf/configure_mods.sh",
+        '\tv=`echo "$2" | sed -r -e \'s/\\s+/ /g\' -e \'s/^\\s+//\' -e \'s/\\s+$//\'`',
+        '\tv=`echo "$2" | sed -E -e \'s/[[:space:]]+/ /g\' -e \'s/^[[:space:]]+//\' -e \'s/[[:space:]]+$//\'`',
+    ),
+    (
+        "Makefile",
+        "MANIFEST_CH = $(shell sed -e 's/\\s.*//' MANIFEST | grep '\\.[ch]$$')",
+        "MANIFEST_CH = $(shell sed -E -e 's/[[:space:]].*//' MANIFEST | grep '\\.[ch]$$')",
+    ),
+]
+
+for relative, old, new in patches:
+    path = os.path.join(root, relative)
+    with open(path) as source:
+        content = source.read()
+    if content.count(old) != 1:
+        raise SystemExit(f"perl-cross portability pattern missing exactly once in {relative}")
+    with open(path, "w") as destination:
+        destination.write(content.replace(old, new))
+PYVERSION
 
     echo "==> Source prepared with perl-cross overlay"
 
@@ -556,7 +616,9 @@ echo "Binary: $BIN_DIR/perl.wasm"
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
+        WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
         install_local_binary perl "$BIN_DIR/perl.wasm"
 else
-    install_local_binary perl "$SCRIPT_DIR/bin/perl.wasm"
+    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
+        install_local_binary perl "$SCRIPT_DIR/bin/perl.wasm"
 fi

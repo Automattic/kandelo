@@ -7,8 +7,9 @@
 #   ./run.sh rebuild [target...]  Force-rebuild (clean + build)
 #   ./run.sh clean [target...]    Remove build artifacts
 #   ./run.sh fetch                Fetch binaries pinned by per-package package.toml
+#   ./run.sh local-build [--json] Build all local SourceOnly VFS products
 #   ./run.sh run <example> [args] Run a Node.js example
-#   ./run.sh prepare-browser      Fetch/build browser UI assets
+#   ./run.sh prepare-browser      Build local SourceOnly browser assets
 #   ./run.sh browser [args]       Start the Vite browser dev server
 #   ./run.sh list                 Show available targets and examples
 #   ./run.sh test [suite...]      Run test suites
@@ -19,18 +20,15 @@
 #                                  verification failure. No-op today.
 #   --fetch-only                  Refuse source-build fallback when fetching
 #                                  package binaries.
-#   --already-materialized        Skip browser package fetching because the
-#                                  exact binaries/ tree was prepared earlier.
+#   --already-materialized        Retired browser selection mode; rejected by
+#                                  browser commands.
 #   --require-sealed-homebrew-selection
-#                                 Refuse a pending local Homebrew selection.
-#                                 Historical lazy-shell recovery workflows use
-#                                 this before serving the bootstrap asset.
-#   --source-rootfs-shell         Internal GitHub Pages-only bridge. Requires
-#                                  the exact Pages job identity, provenance,
-#                                  empty file index, fresh cache, and clean
-#                                  package-materialization workspace.
-#   --pr-staging                  Use the current PR's staging binary index
-#                                  unless WASM_POSIX_BINARY_INDEX_URL is set.
+#                                 Retired browser selection mode; rejected by
+#                                  browser commands.
+#   --source-rootfs-shell         Retired browser selection mode; rejected by
+#                                  browser commands.
+#   --pr-staging                  Use the current PR's staging binary index for
+#                                  fetch/package commands. Browser rejects it.
 #
 set -euo pipefail
 
@@ -64,13 +62,9 @@ step()  { echo "${CYAN}${BOLD}=== $* ===${RESET}"; }
 
 # ─── Top-level flag parsing ──────────────────────────────────────────────────
 #
-# Scrub top-level flags from $@ and turn them into env vars so any
-# downstream invocation of fetch-binaries.sh (called directly or
-# nested via build_target) picks them up. Also honor env vars if the
-# user prefers `WASM_POSIX_ALLOW_STALE=1 ./run.sh browser`,
-# `WASM_POSIX_FETCH_ONLY=1 ./run.sh prepare-browser`, or
-# `WASM_POSIX_ALREADY_MATERIALIZED=1 ./run.sh prepare-browser`, or
-# `WASM_POSIX_USE_PR_STAGING=1 ./run.sh browser`.
+# Scrub top-level flags from $@ and turn them into env vars so downstream
+# fetch/build commands inherit them. Browser commands reject retired binary
+# selection modes and always use the local SourceOnly graph.
 ALLOW_STALE_ARGS=()
 FETCH_ONLY_ARGS=()
 ALREADY_MATERIALIZED=0
@@ -131,6 +125,20 @@ if [ "${WASM_POSIX_USE_PR_STAGING:-0}" = "1" ]; then
     USE_PR_STAGING=1
 fi
 export WASM_POSIX_USE_PR_STAGING=$USE_PR_STAGING
+
+case "${1:-}" in
+    browser|prepare-browser)
+        if [ "$ALREADY_MATERIALIZED" -eq 1 ] ||
+            [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ] ||
+            [ "$SOURCE_ROOTFS_SHELL" -eq 1 ] ||
+            [ "$REQUIRE_SEALED_HOMEBREW_SELECTION" -eq 1 ] ||
+            [ "$USE_PR_STAGING" -eq 1 ] ||
+            [ -n "$CI_BROWSER_SOURCE_AUTHORITY" ]; then
+            err "browser commands use local SourceOnly builds; legacy binary-selection modes are not supported."
+            exit 2
+        fi
+        ;;
+esac
 
 if [ "$SOURCE_ROOTFS_SHELL" -eq 1 ]; then
     [ "$#" -eq 1 ] && [ "${1:-}" = "prepare-browser" ] || {
@@ -2013,6 +2021,10 @@ build_curl_cli() {
     fi
     need_kernel
     need_sdk
+    # The direct legacy curl recipe links against sysroot copies of its
+    # declared zlib and OpenSSL dependencies.
+    build_zlib
+    build_openssl
     # libcurl's build script produces both libcurl.a and the curl CLI.
     step "Building curl (CLI)"
     bash "$REPO_ROOT/packages/registry/libcurl/build-libcurl.sh"
@@ -2931,6 +2943,95 @@ cmd_rebuild() {
     info "Rebuild complete"
 }
 
+cmd_local_build() {
+    local emit_json=0
+    if [ "${1:-}" = "--json" ]; then
+        emit_json=1
+        shift
+    fi
+    if [ $# -ne 0 ]; then
+        err "Usage: $0 local-build [--json]"
+        err "Use xtask local-build directly for custom product selections."
+        exit 2
+    fi
+
+    local helper="$REPO_ROOT/scripts/run-local-build.sh"
+    local command=(bash "$helper")
+    if [ -z "${KANDELO_DEV_SHELL_TOOL_PATH:-}" ]; then
+        command=(bash "$REPO_ROOT/scripts/dev-shell.sh" bash "$helper")
+    fi
+    if [ "$emit_json" -eq 1 ]; then
+        exec "${command[@]}"
+    fi
+
+    local result_file
+    result_file="$(mktemp "${TMPDIR:-/tmp}/kandelo-local-build-result.XXXXXX")"
+    LOCAL_BUILD_RESULT_FILE="$result_file"
+    trap 'if [ -n "${LOCAL_BUILD_RESULT_FILE:-}" ]; then rm -f -- "$LOCAL_BUILD_RESULT_FILE"; fi' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    local command_status
+    if "${command[@]}" >"$result_file"; then
+        command_status=0
+    else
+        command_status=$?
+    fi
+
+    local outcome
+    if ! outcome="$(jq -er '
+        if .schema == 1 and
+           .policy == "source-only-v1" and
+           (.outcome == "succeeded" or .outcome == "failed") and
+           (.nodes | type == "array")
+        then .outcome
+        else error("invalid local-build result")
+        end
+    ' "$result_file" 2>/dev/null)"; then
+        err "Local build did not produce a valid final result."
+        rm -f -- "$result_file"
+        LOCAL_BUILD_RESULT_FILE=""
+        trap - EXIT INT TERM
+        if [ "$command_status" -eq 0 ]; then
+            return 1
+        fi
+        return "$command_status"
+    fi
+
+    jq -r --argjson command_status "$command_status" '
+        .nodes as $nodes |
+        ($nodes | length) as $total |
+        ($nodes | map(select(.state == "succeeded")) | length) as $succeeded |
+        ($nodes | map(select(.state == "succeeded" and .disposition == "cached")) | length) as $cached |
+        ($nodes | map(select(.state == "succeeded" and .disposition == "published")) | length) as $published |
+        ($nodes | map(select(.node.kind == "product")) | length) as $product_total |
+        ($nodes | map(select(.node.kind == "product" and .state == "succeeded")) | length) as $product_succeeded |
+        ($nodes | map(select(.state == "failed")) | length) as $failed |
+        ($nodes | map(select(.state == "blocked")) | length) as $blocked |
+        [
+            "Local build \(if .outcome == "succeeded" and $command_status == 0 then "succeeded" else "failed" end)",
+            "  Nodes:      \($succeeded)/\($total)",
+            "  Cache hits: \($cached)",
+            "  Built:      \($published)",
+            "  Products:   \($product_succeeded)/\($product_total)"
+        ] +
+        (if $failed > 0 then ["  Failed:     \($failed)"] else [] end) +
+        (if $blocked > 0 then ["  Blocked:    \($blocked)"] else [] end) +
+        ["  Output:     local-binaries/source-only-v1"] |
+        .[]
+    ' "$result_file"
+
+    rm -f -- "$result_file"
+    LOCAL_BUILD_RESULT_FILE=""
+    trap - EXIT INT TERM
+    if [ "$command_status" -ne 0 ]; then
+        return "$command_status"
+    fi
+    if [ "$outcome" != "succeeded" ]; then
+        return 1
+    fi
+}
+
 cmd_run() {
     if [ $# -eq 0 ]; then
         err "Usage: $0 run <example> [args...]"
@@ -3023,44 +3124,14 @@ cmd_fetch() {
 }
 
 cmd_prepare_browser() {
-    if [ "$SOURCE_ROOTFS_SHELL" -eq 1 ]; then
-        # Select and install the bridge before the general browser fetch. Any
-        # package with a shell dependency then observes these exact local bytes
-        # instead of source-building the canonical bottle recipe.
-        install_source_rootfs_shell_vfs
-    fi
-
-    prepare_browser_homebrew_bootstrap
-
-    # Fetch the per-package binaries for the browser UI and retained labs first.
-    # The resolver-aware has_X
-    # guards below then treat fetched binaries as "already built", so
-    # build_browser's per-target loop is a no-op for anything that's
-    # already published. Only genuinely missing artifacts (local-only
-    # programs, stale VFS images) trigger a build.
-    if [ "$ALREADY_MATERIALIZED" -eq 1 ]; then
-        step "Using already-materialized binaries for Kandelo browser UI"
-    else
-        step "Fetching binaries for Kandelo browser UI"
-        fetch_browser_binaries
-    fi
-
-    if [ "$SOURCE_ROOTFS_SHELL" -eq 1 ]; then
-        clear_source_rootfs_shell_transient_fetched_mirror
-        verify_source_rootfs_shell_runtime_browser_closure
-    fi
-    build_browser
-    if [ "$SOURCE_ROOTFS_SHELL" -eq 1 ]; then
-        # WHY: browser preparation can resolve many transitive packages. Prove
-        # none of those steps replaced the selected bridge before releasing
-        # its staging archive and handing the canonical path to Vite.
-        clear_source_rootfs_shell_transient_fetched_mirror
-        verify_source_rootfs_shell_runtime_browser_closure
-        release_source_rootfs_shell_runtime_override
-        verify_source_rootfs_shell_browser_closure
-        cleanup_source_rootfs_shell_work_root
-        trap - EXIT INT TERM
-    fi
+    cmd_local_build
+    export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
+    export WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$REPO_ROOT/local-binaries/source-only-v1"
+    # The authenticated group is a production-output contract. The Vite dev
+    # server reads the same verified projection directly and must not inherit
+    # an unrelated production map from the caller's environment.
+    unset KANDELO_PAGES_PRODUCT_MAP KANDELO_PAGES_VFS_ASSET_GROUP_DIR
+    info "Local SourceOnly browser assets are ready"
 }
 
 cmd_browser() {
@@ -3188,6 +3259,11 @@ cmd_test() {
 }
 
 cmd_list() {
+    echo "${BOLD}Local SourceOnly build:${RESET}"
+    echo "  ./run.sh local-build                Build all seven local VFS products"
+    echo "                                        and their package dependencies"
+    echo "  ./run.sh local-build --json         Emit the canonical machine result"
+    echo ""
     echo "${BOLD}Build targets:${RESET}"
     echo "  kernel      Rust kernel + userspace Wasm         $(has_kernel && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  sysroot     musl libc sysroot (wasm32)           $(has_sysroot && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
@@ -3264,16 +3340,9 @@ cmd_list() {
     echo "                                        verification failure. No-op today."
     echo "  --fetch-only                         Refuse source-build fallback when"
     echo "                                        fetching package binaries."
-    echo "  --already-materialized               Skip browser package fetching and use"
-    echo "                                        the existing binaries/ tree."
-    echo "  --source-rootfs-shell                INTERNAL: Pages deploy job only. Requires"
-    echo "                                        exact GHA identity/provenance, the"
-    echo "                                        pages-exact-main-v1 attestation, an"
-    echo "                                        empty file index, fresh cache, and"
-    echo "                                        unmaterialized package workspace."
     echo "  --pr-staging                         Use the current PR's staging binary"
-    echo "                                        index unless WASM_POSIX_BINARY_INDEX_URL"
-    echo "                                        is already set."
+    echo "                                        index for fetch/package commands."
+    echo "                                        Browser commands reject this mode."
     echo ""
     echo "${BOLD}Run examples:${RESET}"
     echo "  ./run.sh run shell                   Interactive shell (dash + coreutils + grep + sed)"
@@ -3287,8 +3356,8 @@ cmd_list() {
     echo "  ./run.sh run dlopen                  dlopen shared library demo"
     echo ""
     echo "${BOLD}Browser:${RESET}"
-    echo "  ./run.sh prepare-browser             Fetch/build browser UI assets"
-    echo "  ./run.sh browser                     Start Vite dev server for browser demos"
+    echo "  ./run.sh prepare-browser             Build local SourceOnly browser assets"
+    echo "  ./run.sh browser                     Build locally and start the Vite dev server"
     echo ""
     echo "${BOLD}Test suites:${RESET}"
     echo "  ./run.sh test                        Run default suites (cargo + vitest + libc + posix)"
@@ -3313,6 +3382,7 @@ case "${1:-list}" in
     rebuild)  cmd_rebuild "${@:2}" ;;
     clean)    cmd_clean "${@:2}" ;;
     fetch)    cmd_fetch "${@:2}" ;;
+    local-build) cmd_local_build "${@:2}" ;;
     prepare-browser) cmd_prepare_browser ;;
     run)      cmd_run "${@:2}" ;;
     browser)  cmd_browser "${@:2}" ;;

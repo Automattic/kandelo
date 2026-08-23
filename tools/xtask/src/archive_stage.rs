@@ -722,6 +722,8 @@ mode = 420
             name: "homebrew_tap_core".to_string(),
             repository: "https://github.com/Kandelo-dev/homebrew-tap-core.git".to_string(),
             commit: "b40a764d47f4f4408790de2c211ccb8efb8e4c46".to_string(),
+            tree: Some("1111111111111111111111111111111111111111".to_string()),
+            allow_uninitialized_gitlinks: true,
         });
         fs::write(
             manifest.dir.join("build.toml"),
@@ -734,6 +736,8 @@ revision = 1
 name = "homebrew_tap_core"
 repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"
 commit = "b40a764d47f4f4408790de2c211ccb8efb8e4c46"
+tree = "1111111111111111111111111111111111111111"
+allow_uninitialized_gitlinks = true
 [binary]
 index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
 "#,
@@ -860,6 +864,8 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
             name: "tap".to_string(),
             repository: "https://example.test/different.git".to_string(),
             commit: "1111111111111111111111111111111111111111".to_string(),
+            tree: None,
+            allow_uninitialized_gitlinks: false,
         });
         let err = stage_archive_with_options(
             &manifest,

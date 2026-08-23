@@ -98,14 +98,18 @@ else
     exit 1
 fi
 
-# --- Install library to sysroot ---
-echo "==> Installing liblzma.a and headers to sysroot..."
-if [ -f "$SRC_DIR/src/liblzma/.libs/liblzma.a" ]; then
-    cp "$SRC_DIR/src/liblzma/.libs/liblzma.a" "$SYSROOT/lib/"
-    mkdir -p "$SYSROOT/include/lzma"
-    cp "$SRC_DIR/src/liblzma/api/lzma.h" "$SYSROOT/include/"
-    cp "$SRC_DIR/src/liblzma/api/lzma/"*.h "$SYSROOT/include/lzma/"
-    echo "==> Installed liblzma.a and headers"
+# --- Install library to sysroot for direct developer builds ---
+if [ -z "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    echo "==> Installing liblzma.a and headers to sysroot..."
+    if [ -f "$SRC_DIR/src/liblzma/.libs/liblzma.a" ]; then
+        cp "$SRC_DIR/src/liblzma/.libs/liblzma.a" "$SYSROOT/lib/"
+        mkdir -p "$SYSROOT/include/lzma"
+        cp "$SRC_DIR/src/liblzma/api/lzma.h" "$SYSROOT/include/"
+        cp "$SRC_DIR/src/liblzma/api/lzma/"*.h "$SYSROOT/include/lzma/"
+        echo "==> Installed liblzma.a and headers"
+    fi
+else
+    echo "==> Skipping legacy shared-sysroot library install for resolver build."
 fi
 
 echo ""

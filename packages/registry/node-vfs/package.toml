@@ -13,6 +13,7 @@ depends_on = ["node@0.1.0", "shell@0.1.0"]
 [source]
 url = "https://registry.npmjs.org/npm/-/npm-10.9.2.tgz"
 sha256 = "5cd1e5ab971ea6333f910bc2d50700167c5ef4e66da279b2a3efc874c6b116e4"
+provider = "archive"
 
 [license]
 spdx = "Artistic-2.0"

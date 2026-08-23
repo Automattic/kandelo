@@ -1,0 +1,388 @@
+schema = 1
+policy = "source-only-v1"
+dependency_only = ["pcre2-source", "wordpress-sqlite-integration-source"]
+
+[[registry_non_roots]]
+name = "sqlite-cli"
+reason = "registry non-root with no effective build script"
+
+[[dormant_products]]
+name = "browser-erlang"
+reason = "deferred product"
+
+[[dormant_products]]
+name = "browser-mariadb-wasm32"
+reason = "dormant product"
+
+[[dormant_products]]
+name = "browser-mariadb-wasm64"
+reason = "dormant product"
+
+[[dormant_products]]
+name = "browser-perl"
+reason = "retired standalone browser product"
+
+[[dormant_products]]
+name = "browser-python"
+reason = "retired standalone browser product"
+
+[[dormant_products]]
+name = "browser-redis"
+reason = "dormant product"
+
+[[packages]]
+name = "bash"
+class = "user-software"
+
+[[packages]]
+name = "bc"
+class = "user-software"
+
+[[packages]]
+name = "bzip2"
+class = "user-software"
+
+[[packages]]
+name = "coreutils"
+class = "user-software"
+
+[[packages]]
+name = "cpython"
+class = "user-software"
+
+[[packages]]
+name = "curl"
+class = "user-software"
+
+[[packages]]
+name = "dash"
+class = "user-software"
+
+[[packages]]
+name = "diffutils"
+class = "user-software"
+
+[[packages]]
+name = "dinit"
+class = "user-software"
+
+[[packages]]
+name = "fbdoom"
+class = "user-software"
+
+[[packages]]
+name = "file"
+class = "user-software"
+
+[[packages]]
+name = "findutils"
+class = "user-software"
+
+[[packages]]
+name = "gawk"
+class = "user-software"
+
+[[packages]]
+name = "git"
+class = "user-software"
+
+[[packages]]
+name = "grep"
+class = "user-software"
+
+[[packages]]
+name = "gzip"
+class = "user-software"
+
+[[packages]]
+name = "icu"
+class = "platform"
+
+[[packages]]
+name = "kandelo-sdk"
+class = "test-support"
+
+[[packages]]
+name = "kernel"
+class = "platform"
+
+[[packages]]
+name = "lamp"
+class = "browser-product"
+
+[[packages]]
+name = "less"
+class = "user-software"
+
+[[packages]]
+name = "libcurl"
+class = "platform"
+
+[[packages]]
+name = "libcxx"
+class = "platform"
+
+[[packages]]
+name = "libiconv"
+class = "platform"
+
+[[packages]]
+name = "libpng"
+class = "platform"
+
+[[packages]]
+name = "libxml2"
+class = "platform"
+
+[[packages]]
+name = "libzip"
+class = "platform"
+
+[[packages]]
+name = "lsof"
+class = "user-software"
+
+[[packages]]
+name = "m4"
+class = "user-software"
+
+[[packages]]
+name = "make"
+class = "user-software"
+
+[[packages]]
+name = "mariadb"
+class = "user-software"
+
+[[packages]]
+name = "mariadb-test"
+class = "test-support"
+
+[[packages]]
+name = "modeset"
+class = "user-software"
+
+[[packages]]
+name = "msmtpd"
+class = "user-software"
+
+[[packages]]
+name = "nano"
+class = "user-software"
+
+[[packages]]
+name = "ncurses"
+class = "platform"
+
+[[packages]]
+name = "netcat"
+class = "user-software"
+
+[[packages]]
+name = "nethack"
+class = "user-software"
+
+[[packages]]
+name = "nethack-browser-bundle"
+class = "browser-product"
+
+[[packages]]
+name = "nginx"
+class = "user-software"
+
+[[packages]]
+name = "nginx-php-vfs"
+class = "browser-product"
+
+[[packages]]
+name = "nginx-vfs"
+class = "browser-product"
+
+[[packages]]
+name = "node"
+class = "user-software"
+
+[[packages]]
+name = "node-vfs"
+class = "browser-product"
+
+[[packages]]
+name = "openssl"
+class = "platform"
+
+[[packages]]
+name = "perl"
+class = "user-software"
+
+[[packages]]
+name = "php"
+class = "user-software"
+
+[[packages]]
+name = "posix-utils-lite"
+class = "user-software"
+
+[[packages]]
+name = "redis"
+class = "user-software"
+
+[[packages]]
+name = "rootfs"
+class = "platform"
+
+[[packages]]
+name = "ruby"
+class = "user-software"
+
+[[packages]]
+name = "sdl-dsp-test"
+class = "test-support"
+
+[[packages]]
+name = "sdl2"
+class = "platform"
+
+[[packages]]
+name = "sdl2-mixer-playwave"
+class = "user-software"
+
+[[packages]]
+name = "sdl3"
+class = "platform"
+
+[[packages]]
+name = "sed"
+class = "user-software"
+
+[[packages]]
+name = "shell"
+class = "browser-product"
+
+[[packages]]
+name = "spidermonkey"
+class = "user-software"
+
+[[packages]]
+name = "spidermonkey-node"
+class = "user-software"
+
+[[packages]]
+name = "sqlite"
+class = "platform"
+
+[[packages]]
+name = "tar"
+class = "user-software"
+
+[[packages]]
+name = "tcl"
+class = "user-software"
+
+[[packages]]
+name = "unzip"
+class = "user-software"
+
+[[packages]]
+name = "userspace"
+class = "platform"
+
+[[packages]]
+name = "vim"
+class = "user-software"
+
+[[packages]]
+name = "vim-browser-bundle"
+class = "browser-product"
+
+[[packages]]
+name = "wget"
+class = "user-software"
+
+[[packages]]
+name = "wordpress"
+class = "browser-product"
+
+[[packages]]
+name = "xz"
+class = "user-software"
+
+[[packages]]
+name = "zip"
+class = "user-software"
+
+[[packages]]
+name = "zlib"
+class = "platform"
+
+[[packages]]
+name = "zstd"
+class = "user-software"
+
+[[products]]
+id = "platform-rootfs"
+package = "rootfs"
+manifest = "images/vfs/products/platform-rootfs.toml"
+
+[[products]]
+id = "browser-main-shell"
+package = "shell"
+manifest = "images/vfs/products/browser-main-shell.toml"
+package_dependencies = ["dinit"]
+root_mirror_packages = ["kernel"]
+
+[[products]]
+id = "browser-node"
+package = "node-vfs"
+manifest = "images/vfs/products/browser-node.toml"
+
+[[products]]
+id = "browser-nginx"
+package = "nginx-vfs"
+manifest = "images/vfs/products/browser-nginx.toml"
+
+[[products]]
+id = "browser-nginx-php"
+package = "nginx-php-vfs"
+manifest = "images/vfs/products/browser-nginx-php.toml"
+
+[[products]]
+id = "browser-wordpress"
+package = "wordpress"
+manifest = "images/vfs/products/browser-wordpress.toml"
+
+[[products]]
+id = "browser-lamp"
+package = "lamp"
+manifest = "images/vfs/products/browser-lamp.toml"
+
+[[exclusions]]
+name = "texlive"
+reason = "deferred software"
+
+[[exclusions]]
+name = "erlang"
+reason = "deferred software"
+
+[[exclusions]]
+name = "erlang-vfs"
+reason = "deferred product"
+
+[[exclusions]]
+name = "homebrew-bootstrap"
+reason = "forbidden Homebrew/prebuilt input"
+
+[[exclusions]]
+name = "python-vfs"
+reason = "retired standalone browser product"
+
+[[exclusions]]
+name = "perl-vfs"
+reason = "retired standalone browser product"
+
+[[exclusions]]
+name = "mariadb-vfs"
+reason = "dormant browser product"
+
+[[exclusions]]
+name = "redis-vfs"
+reason = "dormant browser product"

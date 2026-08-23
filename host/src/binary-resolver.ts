@@ -15,8 +15,13 @@
  */
 
 import {
+  closeSync,
+  constants as fsConstants,
   existsSync,
+  fstatSync,
   lstatSync,
+  openSync,
+  readSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -146,6 +151,20 @@ export function binaryProgramCacheRoot(): string {
   return join(binaryCacheRoot(), "programs");
 }
 
+function isWellFormedUnicode(value: string): boolean {
+  for (let index = 0; index < value.length; index++) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+      index++;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
  * Resolver paths are a portable, slash-separated namespace, not host paths.
  * Reject aliases instead of normalizing them: closure discovery and tier
@@ -154,6 +173,11 @@ export function binaryProgramCacheRoot(): string {
  * it back onto a declared member.
  */
 function requirePortableResolverPath(relPath: string): string {
+  if (!isWellFormedUnicode(relPath)) {
+    throw new Error(
+      `Binary resolver path must be well-formed Unicode: ${JSON.stringify(relPath)}`,
+    );
+  }
   if (
     relPath.length === 0
     || relPath.startsWith("/")
@@ -336,6 +360,12 @@ function portableArtifactPath(
   manifestPath: string,
   field: string,
 ): string {
+  if (!isWellFormedUnicode(value)) {
+    throw manifestError(
+      manifestPath,
+      `${field} must be well-formed Unicode`,
+    );
+  }
   if (
     value.length === 0
     || value.startsWith("/")
@@ -357,6 +387,12 @@ function safeSinglePathComponent(
   field: string,
   allowAt = true,
 ): string {
+  if (!isWellFormedUnicode(value)) {
+    throw manifestError(
+      manifestPath,
+      `${field} must be well-formed Unicode`,
+    );
+  }
   if (
     value.length === 0
     || value === "."
@@ -434,6 +470,10 @@ interface LoadedProgramPackageProjection {
   identities: Map<string, PackageProjectionIdentity>;
   packages: Map<string, ProgramPackageProjection>;
   indexPath: string;
+}
+
+interface ProgramPackageProjectionParseOptions {
+  requireExactIdentitySet?: boolean;
 }
 
 interface PhysicalProgramProjectionClaim {
@@ -771,6 +811,14 @@ function readProgramPackageProjection(
       }`,
     );
   }
+  return parseProgramPackageProjection(raw, indexPath);
+}
+
+function parseProgramPackageProjection(
+  raw: unknown,
+  indexPath: string,
+  options: ProgramPackageProjectionParseOptions = {},
+): LoadedProgramPackageProjection {
   if (
     typeof raw !== "object"
     || raw === null
@@ -1037,6 +1085,7 @@ function readProgramPackageProjection(
           );
         } else if (
           typeof member.guestPath !== "string"
+          || !isWellFormedUnicode(member.guestPath)
           || !member.guestPath.startsWith("/")
           || !Number.isInteger(member.mode)
           || (member.mode as number) < 0
@@ -1092,7 +1141,807 @@ function readProgramPackageProjection(
       members,
     });
   }
+  const requiredIdentities = new Set(packages.keys());
+  for (const projection of packages.values()) {
+    for (const closure of Object.values(projection.dependencyClosures)) {
+      for (const dependency of closure) {
+        requiredIdentities.add(dependency.packageName);
+      }
+    }
+  }
+  if (
+    options.requireExactIdentitySet
+    && (
+      identities.size !== requiredIdentities.size
+      || [...identities.keys()].some((name) => !requiredIdentities.has(name))
+    )
+  ) {
+    throw new Error(
+      `Invalid program package index ${indexPath}: identities must be the exact package/dependency identity set`,
+    );
+  }
   return { identities, packages, indexPath };
+}
+
+const SOURCE_ONLY_RESOLUTION_POLICY = "source-only-v1";
+const SOURCE_ONLY_PROJECTION_FORMAT =
+  "kandelo-source-only-program-projection-v1";
+const SOURCE_ONLY_PROJECTION_REL_PATH =
+  ".kandelo/source-only-program-projection-v1.json";
+const SOURCE_ONLY_PROJECTION_MAX_BYTES = 16 * 1024 * 1024;
+// Vite and Node ultimately need one artifact resident in memory. Keep a
+// deterministic ceiling well above today's largest browser rootfs while an
+// aggregate remains untrusted input.
+const SOURCE_ONLY_MEMBER_MAX_BYTES = 512 * 1024 * 1024;
+
+interface SourceOnlyProjectionMember {
+  sourceArtifact: string;
+  mirrorPath: string;
+  mode: number;
+  size: number;
+  sha256: string;
+  forkInstrumentation: "auto" | "disabled" | null;
+}
+
+interface SourceOnlyProjectionNode {
+  packageName: string;
+  targetArch: string;
+  manifestSha256: string;
+  cacheKeySha256: string;
+  cacheReceiptSha256: string;
+  members: SourceOnlyProjectionMember[];
+}
+
+interface LoadedSourceOnlyProjection {
+  root: string;
+  projectionPath: string;
+  projection: LoadedProgramPackageProjection;
+  nodes: SourceOnlyProjectionNode[];
+  ownerByMirrorPath: Map<string, SourceOnlyProjectionNode>;
+}
+
+/** Immutable bytes captured from one fully validated SourceOnly node. */
+export interface SourceOnlyBinarySnapshot {
+  relPath: string;
+  sha256: string;
+  bytes: Uint8Array;
+}
+
+/**
+ * A receipt authority parsed once and pinned for one consumer lifetime.
+ * Every later capture remains bound to that in-memory authority even if a
+ * producer atomically replaces the aggregate pathname.
+ */
+export interface SourceOnlyBinarySnapshotSession {
+  snapshots(
+    relPaths: readonly string[],
+    maxTotalBytes: number,
+  ): Array<SourceOnlyBinarySnapshot | null>;
+}
+
+function sourceOnlyPolicyEnabled(): boolean {
+  return process.env.WASM_POSIX_RESOLUTION_POLICY
+    === SOURCE_ONLY_RESOLUTION_POLICY;
+}
+
+/**
+ * Return the sole browser/Node artifact root under SourceOnlyV1.
+ *
+ * The spelling is deliberately required to already be canonical. Accepting a
+ * lexical alias here would let the producer and consumer describe different
+ * directory capabilities even when they happen to reach the same inode.
+ */
+export function sourceOnlyBinaryRoot(): string | null {
+  if (!sourceOnlyPolicyEnabled()) return null;
+  const configured = process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT;
+  if (configured === undefined || configured.length === 0) {
+    throw new Error(
+      `${SOURCE_ONLY_RESOLUTION_POLICY} requires WASM_POSIX_SOURCE_ONLY_BINARY_ROOT`,
+    );
+  }
+  if (!isAbsolute(configured)) {
+    throw new Error(
+      `WASM_POSIX_SOURCE_ONLY_BINARY_ROOT must be absolute under ${SOURCE_ONLY_RESOLUTION_POLICY}: ${JSON.stringify(configured)}`,
+    );
+  }
+  const lexical = resolve(configured);
+  if (lexical !== configured) {
+    throw new Error(
+      `WASM_POSIX_SOURCE_ONLY_BINARY_ROOT must use its normalized canonical spelling: ${JSON.stringify(configured)}`,
+    );
+  }
+  try {
+    const metadata = lstatSync(lexical);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+      throw new Error("root is not a real directory");
+    }
+    const canonical = realpathSync(lexical);
+    if (canonical !== lexical) {
+      throw new Error(`canonical path is ${canonical}`);
+    }
+    return canonical;
+  } catch (error) {
+    throw new Error(
+      `Invalid WASM_POSIX_SOURCE_ONLY_BINARY_ROOT ${JSON.stringify(configured)}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+type FileMetadata = ReturnType<typeof fstatSync>;
+
+function sameStableFileMetadata(
+  left: FileMetadata,
+  right: FileMetadata,
+): boolean {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.nlink === right.nlink
+    && left.mode === right.mode
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs;
+}
+
+function requireStableNamedFile(
+  path: string,
+  opened: FileMetadata,
+  label: string,
+): void {
+  const named = lstatSync(path);
+  if (
+    !named.isFile()
+    || named.isSymbolicLink()
+    || realpathSync(path) !== resolve(path)
+    || !sameStableFileMetadata(opened, named)
+  ) {
+    throw new Error(`${label} changed or crosses a symlink: ${path}`);
+  }
+}
+
+function readStableProjectionAuthority(path: string): Buffer {
+  let descriptor: number | null = null;
+  try {
+    descriptor = openSync(
+      path,
+      fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
+    );
+    const before = fstatSync(descriptor);
+    if (!before.isFile()) {
+      throw new Error("authority is not a regular file");
+    }
+    if ((before.mode & 0o7777) !== 0o644) {
+      throw new Error(
+        `authority mode is ${(before.mode & 0o7777).toString(8)}, expected 644`,
+      );
+    }
+    if (
+      before.size < 0
+      || !Number.isSafeInteger(before.size)
+      || before.size > SOURCE_ONLY_PROJECTION_MAX_BYTES
+    ) {
+      throw new Error(
+        `authority is ${before.size} bytes, exceeding the ${SOURCE_ONLY_PROJECTION_MAX_BYTES}-byte limit`,
+      );
+    }
+    const bytes = Buffer.alloc(before.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(
+        descriptor,
+        bytes,
+        offset,
+        bytes.length - offset,
+        offset,
+      );
+      if (count === 0) throw new Error("authority ended during its stable read");
+      offset += count;
+    }
+    const after = fstatSync(descriptor);
+    if (!sameStableFileMetadata(before, after)) {
+      throw new Error("authority changed during its stable read");
+    }
+    requireStableNamedFile(path, after, "Source-only projection authority");
+    return bytes;
+  } catch (error) {
+    throw new Error(
+      `Invalid source-only projection authority ${path}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  } finally {
+    if (descriptor !== null) closeSync(descriptor);
+  }
+}
+
+function comparePortableTuple(
+  left: readonly string[],
+  right: readonly string[],
+): number {
+  for (let index = 0; index < Math.max(left.length, right.length); index++) {
+    const leftValue = left[index] ?? "";
+    const rightValue = right[index] ?? "";
+    const comparison = Buffer.compare(
+      Buffer.from(leftValue, "utf8"),
+      Buffer.from(rightValue, "utf8"),
+    );
+    if (comparison !== 0) return comparison;
+  }
+  return 0;
+}
+
+interface SourceOnlyClaimedPathNode {
+  ownerPath: string | null;
+  firstDescendantPath: string | null;
+  children: Map<string, SourceOnlyClaimedPathNode>;
+}
+
+function emptySourceOnlyClaimedPathNode(): SourceOnlyClaimedPathNode {
+  return {
+    ownerPath: null,
+    firstDescendantPath: null,
+    children: new Map(),
+  };
+}
+
+/** Claim one portable path in time linear in its component count. */
+function claimSourceOnlyMirrorPath(
+  root: SourceOnlyClaimedPathNode,
+  mirrorPath: string,
+  projectionPath: string,
+): void {
+  let cursor = root;
+  const lineage = [root];
+  for (const component of mirrorPath.split("/")) {
+    if (cursor.ownerPath !== null) {
+      throw sourceOnlyProjectionError(
+        projectionPath,
+        `materialized member paths conflict: ${JSON.stringify(cursor.ownerPath)} and ${JSON.stringify(mirrorPath)}`,
+      );
+    }
+    let child = cursor.children.get(component);
+    if (child === undefined) {
+      child = emptySourceOnlyClaimedPathNode();
+      cursor.children.set(component, child);
+    }
+    cursor = child;
+    lineage.push(cursor);
+  }
+  const conflict = cursor.ownerPath ?? cursor.firstDescendantPath;
+  if (conflict !== null) {
+    throw sourceOnlyProjectionError(
+      projectionPath,
+      `materialized member paths conflict: ${JSON.stringify(conflict)} and ${JSON.stringify(mirrorPath)}`,
+    );
+  }
+  cursor.ownerPath = mirrorPath;
+  for (const node of lineage) node.firstDescendantPath ??= mirrorPath;
+}
+
+function sourceOnlyProjectionError(path: string, detail: string): Error {
+  return new Error(`Invalid source-only projection authority ${path}: ${detail}`);
+}
+
+function readSourceOnlyProjection(): LoadedSourceOnlyProjection {
+  const root = sourceOnlyBinaryRoot();
+  if (root === null) {
+    throw new Error("Source-only projection requested outside source-only-v1");
+  }
+  const metadataRoot = join(root, ".kandelo");
+  try {
+    const metadata = lstatSync(metadataRoot);
+    if (
+      !metadata.isDirectory()
+      || metadata.isSymbolicLink()
+      || realpathSync(metadataRoot) !== metadataRoot
+    ) {
+      throw new Error("metadata parent is not a canonical real directory");
+    }
+  } catch (error) {
+    throw sourceOnlyProjectionError(
+      join(root, SOURCE_ONLY_PROJECTION_REL_PATH),
+      `invalid .kandelo directory: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  const projectionPath = join(root, SOURCE_ONLY_PROJECTION_REL_PATH);
+  let raw: unknown;
+  try {
+    const bytes = readStableProjectionAuthority(projectionPath);
+    let json: string;
+    try {
+      json = new TextDecoder("utf-8", {
+        fatal: true,
+        ignoreBOM: true,
+      }).decode(bytes);
+    } catch {
+      throw new Error("authority is not valid UTF-8");
+    }
+    raw = JSON.parse(json);
+  } catch (error) {
+    if (
+      error instanceof Error
+      && error.message.startsWith("Invalid source-only projection authority")
+    ) throw error;
+    throw sourceOnlyProjectionError(
+      projectionPath,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  if (
+    typeof raw !== "object"
+    || raw === null
+    || Array.isArray(raw)
+    || !hasExactObjectKeys(raw, [
+      "format",
+      "projection",
+      "graphAuthoritySha256",
+      "nodes",
+    ])
+    || (raw as { format?: unknown }).format !== SOURCE_ONLY_PROJECTION_FORMAT
+    || typeof (raw as { graphAuthoritySha256?: unknown })
+      .graphAuthoritySha256 !== "string"
+    || !/^[a-f0-9]{64}$/.test(
+      (raw as { graphAuthoritySha256: string }).graphAuthoritySha256,
+    )
+    || !Array.isArray((raw as { nodes?: unknown }).nodes)
+  ) {
+    throw sourceOnlyProjectionError(
+      projectionPath,
+      `expected exact ${SOURCE_ONLY_PROJECTION_FORMAT} fields`,
+    );
+  }
+
+  const projection = parseProgramPackageProjection(
+    (raw as { projection: unknown }).projection,
+    `${projectionPath}#projection`,
+    { requireExactIdentitySet: true },
+  );
+  for (const [packageName, packageProjection] of projection.packages) {
+    if (
+      packageProjection.arches.some((arch, index, arches) =>
+        index > 0
+        && comparePortableTuple([arches[index - 1]!], [arch]) >= 0
+      )
+    ) {
+      throw sourceOnlyProjectionError(
+        projectionPath,
+        `program projection ${JSON.stringify(packageName)} architectures are not canonically sorted`,
+      );
+    }
+  }
+  const nodes: SourceOnlyProjectionNode[] = [];
+  const nodeByKey = new Map<string, SourceOnlyProjectionNode>();
+  const ownerByMirrorPath = new Map<string, SourceOnlyProjectionNode>();
+  const claimedMirrorPaths = emptySourceOnlyClaimedPathNode();
+  let previousNodeTuple: readonly string[] | null = null;
+  const rawNodes = (raw as { nodes: unknown[] }).nodes;
+  for (const [nodeIndex, rawNode] of rawNodes.entries()) {
+    if (
+      typeof rawNode !== "object"
+      || rawNode === null
+      || Array.isArray(rawNode)
+      || !hasExactObjectKeys(rawNode, [
+        "node",
+        "manifestSha256",
+        "cacheKeySha256",
+        "cacheReceiptSha256",
+        "members",
+      ])
+      || typeof (rawNode as { node?: unknown }).node !== "object"
+      || (rawNode as { node?: unknown }).node === null
+      || Array.isArray((rawNode as { node?: unknown }).node)
+      || !hasExactObjectKeys(
+        (rawNode as { node: object }).node,
+        ["kind", "name", "targetArch"],
+      )
+      || (rawNode as { node: { kind?: unknown } }).node.kind !== "package"
+      || typeof (rawNode as { node: { name?: unknown } }).node.name !== "string"
+      || typeof (rawNode as { node: { targetArch?: unknown } }).node.targetArch
+        !== "string"
+      || !ARCH_SEGMENTS.has(
+        (rawNode as { node: { targetArch: string } }).node.targetArch,
+      )
+      || !Array.isArray((rawNode as { members?: unknown }).members)
+    ) {
+      throw sourceOnlyProjectionError(
+        projectionPath,
+        `node ${nodeIndex + 1} is malformed`,
+      );
+    }
+    const packageName = (rawNode as { node: { name: string } }).node.name;
+    const targetArch =
+      (rawNode as { node: { targetArch: string } }).node.targetArch;
+    safeSinglePathComponent(
+      packageName,
+      projectionPath,
+      `node ${nodeIndex + 1} package name`,
+      false,
+    );
+    const nodeTuple = [packageName, targetArch] as const;
+    if (
+      previousNodeTuple !== null
+      && comparePortableTuple(previousNodeTuple, nodeTuple) >= 0
+    ) {
+      throw sourceOnlyProjectionError(
+        projectionPath,
+        "nodes must be uniquely sorted by (name, targetArch)",
+      );
+    }
+    previousNodeTuple = nodeTuple;
+    const nodeRecord = rawNode as Record<string, unknown>;
+    for (const digestField of [
+      "manifestSha256",
+      "cacheKeySha256",
+      "cacheReceiptSha256",
+    ] as const) {
+      if (
+        typeof nodeRecord[digestField] !== "string"
+        || !/^[a-f0-9]{64}$/.test(nodeRecord[digestField] as string)
+      ) {
+        throw sourceOnlyProjectionError(
+          projectionPath,
+          `node ${nodeIndex + 1} has invalid ${digestField}`,
+        );
+      }
+    }
+    const identity = projection.identities.get(packageName);
+    if (identity && (
+      identity.manifestSha256 !== nodeRecord.manifestSha256
+      || identity.cacheKeys[targetArch] !== nodeRecord.cacheKeySha256
+    )) {
+      throw sourceOnlyProjectionError(
+        projectionPath,
+        `node ${JSON.stringify(packageName)} (${targetArch}) does not match the projection identity`,
+      );
+    }
+
+    const members: SourceOnlyProjectionMember[] = [];
+    let previousMemberTuple: readonly string[] | null = null;
+    for (
+      const [memberIndex, rawMember] of
+        (nodeRecord.members as unknown[]).entries()
+    ) {
+      if (
+        typeof rawMember !== "object"
+        || rawMember === null
+        || Array.isArray(rawMember)
+        || !hasExactObjectKeys(rawMember, [
+          "sourceArtifact",
+          "mirrorPath",
+          "mode",
+          "size",
+          "sha256",
+        ])
+        || typeof (rawMember as { sourceArtifact?: unknown }).sourceArtifact
+          !== "string"
+        || typeof (rawMember as { mirrorPath?: unknown }).mirrorPath !== "string"
+        || !Number.isInteger((rawMember as { mode?: unknown }).mode)
+        || (rawMember as { mode: number }).mode < 0
+        || (rawMember as { mode: number }).mode > 0o7777
+        || !Number.isSafeInteger((rawMember as { size?: unknown }).size)
+        || (rawMember as { size: number }).size < 0
+        || (rawMember as { size: number }).size
+          > SOURCE_ONLY_MEMBER_MAX_BYTES
+        || typeof (rawMember as { sha256?: unknown }).sha256 !== "string"
+        || !/^[a-f0-9]{64}$/.test(
+          (rawMember as { sha256: string }).sha256,
+        )
+      ) {
+        throw sourceOnlyProjectionError(
+          projectionPath,
+          `node ${JSON.stringify(packageName)} member ${memberIndex + 1} is malformed or exceeds the ${SOURCE_ONLY_MEMBER_MAX_BYTES}-byte artifact limit`,
+        );
+      }
+      const memberRecord = rawMember as {
+        sourceArtifact: string;
+        mirrorPath: string;
+        mode: number;
+        size: number;
+        sha256: string;
+      };
+      portableArtifactPath(
+        memberRecord.sourceArtifact,
+        projectionPath,
+        `${packageName} sourceArtifact`,
+      );
+      requirePortableResolverPath(memberRecord.mirrorPath);
+      const memberTuple = [
+        memberRecord.mirrorPath,
+        memberRecord.sourceArtifact,
+      ] as const;
+      if (
+        previousMemberTuple !== null
+        && comparePortableTuple(previousMemberTuple, memberTuple) >= 0
+      ) {
+        throw sourceOnlyProjectionError(
+          projectionPath,
+          `node ${JSON.stringify(packageName)} members must be uniquely sorted by (mirrorPath, sourceArtifact)`,
+        );
+      }
+      previousMemberTuple = memberTuple;
+      claimSourceOnlyMirrorPath(
+        claimedMirrorPaths,
+        memberRecord.mirrorPath,
+        projectionPath,
+      );
+      const member: SourceOnlyProjectionMember = {
+        ...memberRecord,
+        forkInstrumentation: null,
+      };
+      members.push(member);
+    }
+    const node: SourceOnlyProjectionNode = {
+      packageName,
+      targetArch,
+      manifestSha256: nodeRecord.manifestSha256 as string,
+      cacheKeySha256: nodeRecord.cacheKeySha256 as string,
+      cacheReceiptSha256: nodeRecord.cacheReceiptSha256 as string,
+      members,
+    };
+    const projectedProgram = projection.packages.get(packageName);
+    const isExactProgramNode =
+      projectedProgram?.arches.includes(targetArch) ?? false;
+    const isRootMirrorNode =
+      !projection.packages.has(packageName)
+      && (packageName === "kernel" || packageName === "userspace")
+      && members.length === 1
+      && !members[0]!.mirrorPath.includes("/");
+    if (!isExactProgramNode && !isRootMirrorNode) {
+      throw sourceOnlyProjectionError(
+        projectionPath,
+        `node ${JSON.stringify(packageName)} (${targetArch}) is neither an exact v2 program node nor a root-mirror package`,
+      );
+    }
+    const nodeKey = `${packageName}\0${targetArch}`;
+    nodeByKey.set(nodeKey, node);
+    for (const member of members) ownerByMirrorPath.set(member.mirrorPath, node);
+    nodes.push(node);
+  }
+
+  for (const [packageName, packageProjection] of projection.packages) {
+    for (const arch of packageProjection.arches) {
+      const node = nodeByKey.get(`${packageName}\0${arch}`);
+      if (!node) {
+        throw sourceOnlyProjectionError(
+          projectionPath,
+          `program projection ${JSON.stringify(packageName)} (${arch}) has no aggregate node`,
+        );
+      }
+      const expectedByPath = new Map(
+        packageProjection.members.map((member) => [
+          `programs/${arch}/${member.mirrorPath}`,
+          member,
+        ]),
+      );
+      if (
+        node.members.length !== expectedByPath.size
+        || node.members.some((member) => {
+          const expected = expectedByPath.get(member.mirrorPath);
+          if (!expected || expected.sourceArtifact !== member.sourceArtifact) {
+            return true;
+          }
+          if (expected.kind === "runtime-file" && expected.mode !== member.mode) {
+            return true;
+          }
+          member.forkInstrumentation = expected.kind === "output"
+            ? expected.forkInstrumentation ?? null
+            : null;
+          return false;
+        })
+      ) {
+        throw sourceOnlyProjectionError(
+          projectionPath,
+          `aggregate node ${JSON.stringify(packageName)} (${arch}) is not a 1:1 materialization of its program projection`,
+        );
+      }
+    }
+  }
+
+  return { root, projectionPath, projection, nodes, ownerByMirrorPath };
+}
+
+function validateSourceOnlyMember(
+  loaded: LoadedSourceOnlyProjection,
+  member: SourceOnlyProjectionMember,
+  captureBytes = false,
+): { path: string; bytes: Buffer | null } {
+  const candidate = join(loaded.root, ...member.mirrorPath.split("/"));
+  let descriptor: number | null = null;
+  try {
+    descriptor = openSync(
+      candidate,
+      fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
+    );
+    const before = fstatSync(descriptor);
+    if (!before.isFile()) throw new Error("member is not a regular file");
+    if ((before.mode & 0o7777) !== member.mode) {
+      throw new Error(
+        `member mode is ${(before.mode & 0o7777).toString(8)}, expected ${member.mode.toString(8)}`,
+      );
+    }
+    if (before.size !== member.size) {
+      throw new Error(
+        `member size is ${before.size}, expected ${member.size}`,
+      );
+    }
+    const inspectArtifactBytes =
+      member.mirrorPath.endsWith(".wasm")
+      || member.mirrorPath.endsWith(".vfs")
+      || member.mirrorPath.endsWith(".vfs.zst");
+    const retainedBytes = captureBytes || inspectArtifactBytes
+      ? Buffer.alloc(member.size)
+      : null;
+    const chunk = retainedBytes ??
+      Buffer.alloc(Math.min(1024 * 1024, Math.max(1, member.size)));
+    const digest = createHash("sha256");
+    let offset = 0;
+    while (offset < member.size) {
+      const bufferOffset = retainedBytes === null ? 0 : offset;
+      const count = readSync(
+        descriptor,
+        chunk,
+        bufferOffset,
+        Math.min(chunk.length, member.size - offset),
+        offset,
+      );
+      if (count === 0) throw new Error("member ended during its stable read");
+      digest.update(chunk.subarray(bufferOffset, bufferOffset + count));
+      offset += count;
+    }
+    const after = fstatSync(descriptor);
+    if (!sameStableFileMetadata(before, after)) {
+      throw new Error("member changed during its stable read");
+    }
+    requireStableNamedFile(candidate, after, "Source-only materialized member");
+    const actualSha256 = digest.digest("hex");
+    if (actualSha256 !== member.sha256) {
+      throw new Error(
+        `member sha256 is ${actualSha256}, expected ${member.sha256}`,
+      );
+    }
+    if (
+      retainedBytes !== null
+      && hasBinaryArtifactPolicyFailuresForBytes(
+        retainedBytes,
+        member.mirrorPath,
+        member.forkInstrumentation,
+      )
+    ) {
+      throw new Error("member is rejected by artifact policy");
+    }
+    return {
+      path: candidate,
+      bytes: captureBytes ? retainedBytes : null,
+    };
+  } catch (error) {
+    throw new Error(
+      `Source-only package member ${JSON.stringify(member.mirrorPath)} is invalid: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  } finally {
+    if (descriptor !== null) closeSync(descriptor);
+  }
+}
+
+function resolveSourceOnlyBinary(
+  relPath: string,
+  loaded = readSourceOnlyProjection(),
+): string {
+  const adjusted = applyDefaultArch(relPath);
+  const owner = loaded.ownerByMirrorPath.get(adjusted);
+  if (!owner) {
+    throw new BinaryNotFoundError(
+      `Package artifacts not found in source-only projection: ${adjusted}`,
+    );
+  }
+  const validated = validateSourceOnlyNode(loaded, owner);
+  const resolved = validated.get(adjusted);
+  if (!resolved) {
+    throw new Error(
+      `Source-only package closure for ${JSON.stringify(owner.packageName)} omitted ${JSON.stringify(adjusted)}`,
+    );
+  }
+  return resolved;
+}
+
+function validateSourceOnlyNode(
+  loaded: LoadedSourceOnlyProjection,
+  owner: SourceOnlyProjectionNode,
+): Map<string, string> {
+  const validated = new Map<string, string>();
+  for (const member of owner.members) {
+    validated.set(
+      member.mirrorPath,
+      validateSourceOnlyMember(loaded, member).path,
+    );
+  }
+  return validated;
+}
+
+export function createSourceOnlyBinarySnapshotSession():
+  SourceOnlyBinarySnapshotSession {
+  if (!sourceOnlyPolicyEnabled()) {
+    throw new Error(
+      "Source-only binary snapshots require source-only-v1 resolution",
+    );
+  }
+  const loaded = readSourceOnlyProjection();
+  return {
+    snapshots(relPaths, maxTotalBytes) {
+      if (!Number.isSafeInteger(maxTotalBytes) || maxTotalBytes < 0) {
+        throw new Error(
+          `SourceOnly snapshot total-byte limit must be a non-negative safe integer: ${maxTotalBytes}`,
+        );
+      }
+      const adjustedPaths = relPaths.map(applyDefaultArch);
+      const requestedPaths = new Set(adjustedPaths);
+      let requestedBytes = 0;
+      for (const adjusted of requestedPaths) {
+        const owner = loaded.ownerByMirrorPath.get(adjusted);
+        const member = owner?.members.find(
+          (candidate) => candidate.mirrorPath === adjusted,
+        );
+        if (member === undefined) continue;
+        requestedBytes += member.size;
+        if (requestedBytes > maxTotalBytes) {
+          throw new Error(
+            `SourceOnly snapshot batch exceeds the ${maxTotalBytes}-byte total retained-byte limit`,
+          );
+        }
+      }
+
+      const capturedByPath = new Map<string, SourceOnlyBinarySnapshot>();
+      const requestedOwners = new Set<SourceOnlyProjectionNode>();
+      for (const adjusted of requestedPaths) {
+        const owner = loaded.ownerByMirrorPath.get(adjusted);
+        if (owner !== undefined) requestedOwners.add(owner);
+      }
+      for (const owner of requestedOwners) {
+        for (const member of owner.members) {
+          const capture = requestedPaths.has(member.mirrorPath);
+          const validated = validateSourceOnlyMember(loaded, member, capture);
+          if (!capture) continue;
+          if (validated.bytes === null) {
+            throw new Error(
+              `Source-only snapshot capture omitted ${JSON.stringify(member.mirrorPath)}`,
+            );
+          }
+          capturedByPath.set(member.mirrorPath, {
+            relPath: member.mirrorPath,
+            sha256: member.sha256,
+            bytes: validated.bytes,
+          });
+        }
+      }
+      return adjustedPaths.map((adjusted) =>
+        capturedByPath.get(adjusted) ?? null
+      );
+    },
+  };
+}
+
+/**
+ * Capture one aggregate-owned artifact while validating its complete owning
+ * node. Prefer a session for multiple captures so they share one authority.
+ */
+export function snapshotSourceOnlyBinary(
+  relPath: string,
+): SourceOnlyBinarySnapshot {
+  const adjusted = applyDefaultArch(relPath);
+  const captured = createSourceOnlyBinarySnapshotSession().snapshots(
+    [adjusted],
+    SOURCE_ONLY_MEMBER_MAX_BYTES,
+  )[0];
+  if (captured === null) {
+    throw new BinaryNotFoundError(
+      `Package artifacts not found in source-only projection: ${adjusted}`,
+    );
+  }
+  return captured;
 }
 
 function programPackageProjectionIdentity(
@@ -1696,6 +2545,11 @@ function discoverProgramPackageClosure(
  * rather than permission to fall back to single-output resolution.
  */
 export function programOutputClosureRelPaths(relPath: string): string[] | null {
+  if (sourceOnlyPolicyEnabled()) {
+    const loaded = readSourceOnlyProjection();
+    const owner = loaded.ownerByMirrorPath.get(applyDefaultArch(relPath));
+    return owner?.members.map((member) => member.mirrorPath) ?? null;
+  }
   return withFreshProgramIndexes([relPath], () =>
     discoverProgramPackageClosure(relPath)?.members.map(
       (member) => member.relPath,
@@ -1714,6 +2568,32 @@ export function programOutputClosureRelPaths(relPath: string): string[] | null {
 export function programWasmArtifactPolicy(
   relPath: string,
 ): ProgramWasmArtifactPolicy | null {
+  if (sourceOnlyPolicyEnabled()) {
+    const loaded = readSourceOnlyProjection();
+    const adjusted = applyDefaultArch(relPath);
+    const owner = loaded.ownerByMirrorPath.get(adjusted);
+    const member = owner?.members.find(
+      (candidate) => candidate.mirrorPath === adjusted,
+    );
+    if (!owner || !member || !adjusted.endsWith(".wasm")) return null;
+    if (
+      member.forkInstrumentation === null
+      && adjusted.startsWith("programs/")
+    ) {
+      throw sourceOnlyProjectionError(
+        loaded.projectionPath,
+        `resolver path ${JSON.stringify(adjusted)} is not a declared executable output`,
+      );
+    }
+    if (member.forkInstrumentation === null) return null;
+    return {
+      packageName: owner.packageName,
+      relPath: adjusted,
+      sourceArtifact: member.sourceArtifact,
+      cacheKey: owner.cacheKeySha256,
+      forkInstrumentation: member.forkInstrumentation,
+    };
+  }
   return withFreshProgramIndexes([relPath], () => {
     const adjusted = applyDefaultArch(relPath);
     if (!adjusted.endsWith(".wasm")) return null;
@@ -1933,10 +2813,29 @@ function hasWasmArtifactPolicyFailures(
   relPath: string,
   capturedForkInstrumentation?: "auto" | "disabled" | null,
 ): boolean {
-  if (!path.endsWith(".wasm")) return false;
+  if (!relPath.endsWith(".wasm")) return false;
   try {
-    const bytes = readFileSync(path);
-    const programBytes = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    return hasWasmArtifactPolicyFailuresForBytes(
+      readFileSync(path),
+      relPath,
+      capturedForkInstrumentation,
+    );
+  } catch {
+    // A path declared as executable Wasm must remain fail-closed when its
+    // bytes or policy metadata cannot be inspected.
+    return true;
+  }
+}
+
+function hasWasmArtifactPolicyFailuresForBytes(
+  bytes: Uint8Array,
+  relPath: string,
+  capturedForkInstrumentation?: "auto" | "disabled" | null,
+): boolean {
+  if (!relPath.endsWith(".wasm")) return false;
+  try {
+    const programBytes = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(programBytes).set(bytes);
     const forkDisabled = capturedForkInstrumentation === undefined
       ? disablesForkInstrumentation(relPath)
       : capturedForkInstrumentation === "disabled";
@@ -1948,16 +2847,30 @@ function hasWasmArtifactPolicyFailures(
       forbidForkInstrumentation: forkDisabled,
     }).length > 0;
   } catch {
-    // A path declared as executable Wasm must remain fail-closed when its
-    // bytes or policy metadata cannot be inspected.
     return true;
   }
 }
 
-function hasVfsArtifactPolicyFailures(path: string): boolean {
-  if (!path.endsWith(".vfs") && !path.endsWith(".vfs.zst")) return false;
+function hasVfsArtifactPolicyFailures(path: string, relPath = path): boolean {
+  if (!relPath.endsWith(".vfs") && !relPath.endsWith(".vfs.zst")) {
+    return false;
+  }
   try {
-    const metadata = MemoryFileSystem.readImageMetadata(readFileSync(path));
+    return hasVfsArtifactPolicyFailuresForBytes(readFileSync(path), relPath);
+  } catch {
+    return true;
+  }
+}
+
+function hasVfsArtifactPolicyFailuresForBytes(
+  bytes: Uint8Array,
+  relPath: string,
+): boolean {
+  if (!relPath.endsWith(".vfs") && !relPath.endsWith(".vfs.zst")) {
+    return false;
+  }
+  try {
+    const metadata = MemoryFileSystem.readImageMetadata(bytes);
     const declaredAbi = metadata?.kernelAbi;
     return declaredAbi !== undefined && declaredAbi !== ABI_VERSION;
   } catch {
@@ -1978,7 +2891,19 @@ function hasBinaryArtifactPolicyFailures(
     relPath,
     capturedForkInstrumentation,
   ) ||
-    hasVfsArtifactPolicyFailures(path);
+    hasVfsArtifactPolicyFailures(path, relPath);
+}
+
+function hasBinaryArtifactPolicyFailuresForBytes(
+  bytes: Uint8Array,
+  relPath: string,
+  capturedForkInstrumentation?: "auto" | "disabled" | null,
+): boolean {
+  return hasWasmArtifactPolicyFailuresForBytes(
+    bytes,
+    relPath,
+    capturedForkInstrumentation,
+  ) || hasVfsArtifactPolicyFailuresForBytes(bytes, relPath);
 }
 
 function chooseBinaryCandidate(
@@ -2331,6 +3256,7 @@ function closureMembersForRequestedSet(
 }
 
 export function resolveBinary(relPath: string): string {
+  if (sourceOnlyPolicyEnabled()) return resolveSourceOnlyBinary(relPath);
   return withFreshProgramIndexes([relPath], () =>
     resolveBinaryInFreshProgramContext(relPath)
   );
@@ -2411,6 +3337,23 @@ export function tryResolveBinary(relPath: string): string | null {
 export function tryResolveBinaries(
   relPaths: readonly string[],
 ): Array<string | null> {
+  if (sourceOnlyPolicyEnabled()) {
+    const loaded = readSourceOnlyProjection();
+    const resolvedByPath = new Map<string, string>();
+    const requestedOwners = new Set<SourceOnlyProjectionNode>();
+    for (const relPath of relPaths) {
+      const owner = loaded.ownerByMirrorPath.get(applyDefaultArch(relPath));
+      if (owner) requestedOwners.add(owner);
+    }
+    for (const owner of requestedOwners) {
+      for (const [relPath, path] of validateSourceOnlyNode(loaded, owner)) {
+        resolvedByPath.set(relPath, path);
+      }
+    }
+    return relPaths.map((relPath) =>
+      resolvedByPath.get(applyDefaultArch(relPath)) ?? null
+    );
+  }
   return withFreshProgramIndexes(relPaths, () => {
     const results = new Array<string | null>(relPaths.length).fill(null);
     const independentRequests: Array<{
@@ -2495,6 +3438,33 @@ export function tryResolveBinaries(
  * no concurrent force-rebuild or stale-entry repair of the same cache key.
  */
 export function tryResolveBinarySet(relPaths: readonly string[]): string[] | null {
+  if (sourceOnlyPolicyEnabled()) {
+    if (relPaths.length === 0) return [];
+    const loaded = readSourceOnlyProjection();
+    const owned = relPaths.map((relPath) =>
+      loaded.ownerByMirrorPath.has(applyDefaultArch(relPath))
+    );
+    if (owned.every((value) => !value)) return null;
+    if (owned.some((value) => !value)) {
+      throw new Error(
+        "Package artifact closure is incomplete in the source-only projection",
+      );
+    }
+    const resolvedByPath = new Map<string, string>();
+    const requestedOwners = new Set(
+      relPaths.map((relPath) =>
+        loaded.ownerByMirrorPath.get(applyDefaultArch(relPath))!
+      ),
+    );
+    for (const owner of requestedOwners) {
+      for (const [relPath, path] of validateSourceOnlyNode(loaded, owner)) {
+        resolvedByPath.set(relPath, path);
+      }
+    }
+    return relPaths.map((relPath) =>
+      resolvedByPath.get(applyDefaultArch(relPath))!
+    );
+  }
   return withFreshProgramIndexes(relPaths, () => {
     const closureMembers = closureMembersForRequestedSet(relPaths);
     return tryResolveBinarySetFromTiers(relPaths, closureMembers);

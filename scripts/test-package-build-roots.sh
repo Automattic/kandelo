@@ -8,6 +8,104 @@ fail() {
     exit 1
 }
 
+test_fbdoom_sealed_chocolate_doom_input() (
+    set -euo pipefail
+
+    local test_root primary_source sealed_input source_archive work_root out_root
+    local fake_bin make_sentinel stdout_file stderr_file missing_work missing_out
+    test_root="$(mktemp -d)"
+    test_root="$(cd "$test_root" && pwd -P)"
+    trap 'chmod -R u+w "$test_root" 2>/dev/null || true; rm -rf "$test_root"' EXIT
+    primary_source="$test_root/primary-source"
+    sealed_input="$test_root/chocolate-doom"
+    source_archive="$test_root/fbdoom-source.tar.gz"
+    work_root="$test_root/work"
+    out_root="$test_root/out"
+    fake_bin="$test_root/fake-bin"
+    make_sentinel="$test_root/make-was-called"
+    stdout_file="$test_root/fbdoom.stdout"
+    stderr_file="$test_root/fbdoom.stderr"
+    missing_work="$test_root/missing-work"
+    missing_out="$test_root/missing-out"
+
+    mkdir -p "$primary_source/fbdoom" "$sealed_input/opl" \
+        "$sealed_input/src" "$work_root" "$out_root" "$fake_bin" \
+        "$missing_work" "$missing_out"
+    printf 'resolver-owned primary source\n' >"$primary_source/fbdoom/primary.c"
+    printf 'resolver-owned archive evidence\n' >"$source_archive"
+    local file
+    for file in opl.c opl.h opl3.c opl3.h opl_internal.h opl_queue.c opl_queue.h; do
+        printf 'sealed chocolate-doom %s\n' "$file" >"$sealed_input/opl/$file"
+    done
+    for file in mus2mid.c mus2mid.h midifile.c midifile.h; do
+        printf 'sealed chocolate-doom %s\n' "$file" >"$sealed_input/src/$file"
+    done
+    chmod -R a-w "$primary_source" "$sealed_input"
+
+    # Patch application is below the contract under test. Keep the real build
+    # script and filesystem behavior, but stop at the first compiler boundary.
+    cat >"$fake_bin/git" <<'FBDOOM_FAKE_GIT'
+#!/usr/bin/env bash
+exit 0
+FBDOOM_FAKE_GIT
+    cat >"$fake_bin/make" <<'FBDOOM_FAKE_MAKE'
+#!/usr/bin/env bash
+: >"$FBDOOM_TEST_MAKE_SENTINEL"
+exit 89
+FBDOOM_FAKE_MAKE
+    chmod +x "$fake_bin/git" "$fake_bin/make"
+
+    if env -u WASM_POSIX_BUILD_GIT_CHOCOLATE_DOOM_DIR \
+        -u WASM_POSIX_BUILD_GIT_CHOCOLATE_DOOM_COMMIT \
+        PATH="$fake_bin:$PATH" \
+        WASM_POSIX_RESOLUTION_POLICY=source-only-v1 \
+        WASM_POSIX_DEP_SOURCE_ARCHIVE="$source_archive" \
+        WASM_POSIX_DEP_SOURCE_DIR="$primary_source" \
+        WASM_POSIX_DEP_WORK_DIR="$missing_work" \
+        WASM_POSIX_DEP_OUT_DIR="$missing_out" \
+        WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
+        bash "$REPO_ROOT/packages/registry/fbdoom/build-fbdoom.sh" \
+        >"$stdout_file" 2>"$stderr_file"; then
+        fail "fbdoom accepted a missing SourceOnly chocolate-doom Git input"
+    fi
+    grep -F "requires build.toml git input chocolate_doom" "$stderr_file" >/dev/null ||
+        fail "fbdoom did not explain its missing SourceOnly chocolate-doom Git input"
+    [ ! -e "$missing_work/chocolate-doom-src" ] ||
+        fail "fbdoom mutated work state before rejecting its missing Git input"
+
+    rm -f "$stdout_file" "$stderr_file"
+    if PATH="$fake_bin:$PATH" \
+        FBDOOM_TEST_MAKE_SENTINEL="$make_sentinel" \
+        WASM_POSIX_RESOLUTION_POLICY=source-only-v1 \
+        WASM_POSIX_DEP_SOURCE_ARCHIVE="$source_archive" \
+        WASM_POSIX_DEP_SOURCE_DIR="$primary_source" \
+        WASM_POSIX_DEP_WORK_DIR="$work_root" \
+        WASM_POSIX_DEP_OUT_DIR="$out_root" \
+        WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
+        WASM_POSIX_BUILD_GIT_CHOCOLATE_DOOM_DIR="$sealed_input" \
+        WASM_POSIX_BUILD_GIT_CHOCOLATE_DOOM_COMMIT=35fb1372d10756ca27eca05665bd8a7cebc71c05 \
+        bash "$REPO_ROOT/packages/registry/fbdoom/build-fbdoom.sh" \
+        >"$stdout_file" 2>"$stderr_file"; then
+        fail "fbdoom fixture unexpectedly crossed its fake compiler boundary"
+    fi
+    if [ ! -e "$make_sentinel" ]; then
+        sed -n '1,160p' "$stderr_file" >&2
+        fail "fbdoom did not reach its compiler after importing the sealed Git input"
+    fi
+    cmp "$sealed_input/opl/opl.c" "$work_root/chocolate-doom-src/opl/opl.c" >/dev/null ||
+        fail "fbdoom did not import chocolate-doom from the sealed Git input"
+    [ -z "$(find "$work_root/chocolate-doom-src" ! -type l ! -perm -u=w -print -quit)" ] ||
+        fail "fbdoom's copied chocolate-doom work tree is not owner-writable"
+    [ -z "$(find "$sealed_input" ! -type l -perm -u=w -print -quit)" ] ||
+        fail "fbdoom mutated the sealed chocolate-doom Git input"
+)
+
+if [ "${KANDELO_PACKAGE_BUILD_ROOTS_TEST_FOCUS:-}" = "fbdoom-git-input" ]; then
+    test_fbdoom_sealed_chocolate_doom_input
+    echo "test-package-build-roots.sh: fbdoom sealed Git-input contract ok"
+    exit 0
+fi
+
 netcat_script="$REPO_ROOT/packages/registry/netcat/build-netcat.sh"
 if grep -F 'automake --print-libdir' "$netcat_script" >/dev/null; then
     fail "netcat executes the relocated Automake wrapper to locate support data"
@@ -21,14 +119,20 @@ if [ "${KANDELO_PACKAGE_BUILD_ROOTS_TEST_FOCUS:-}" = "netcat-automake-aux" ]; th
     exit 0
 fi
 
-HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
-cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
-    build-deps program-index-check \
-    --source-repo-root "$REPO_ROOT" \
-    "$REPO_ROOT/packages/registry" \
-    "$REPO_ROOT/packages/registry/program-packages.json"
+case "${KANDELO_PACKAGE_BUILD_ROOTS_TEST_FOCUS:-}" in
+source-dependency|private-sysroot) ;;
+*)
+    HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+    cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
+        build-deps program-index-check \
+        --source-repo-root "$REPO_ROOT" \
+        "$REPO_ROOT/packages/registry" \
+        "$REPO_ROOT/packages/registry/program-packages.json"
+    ;;
+esac
 
 TMP_ROOT="$(mktemp -d)"
+TMP_ROOT="$(cd "$TMP_ROOT" && pwd -P)"
 cleanup() {
     chmod -R u+w "$TMP_ROOT" 2>/dev/null || true
     rm -rf "$TMP_ROOT"
@@ -42,6 +146,241 @@ tree_digest() {
 
 # shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+
+source_dep_dash="$TMP_ROOT/source-dependency-dash"
+source_dep_underscore="$TMP_ROOT/source-dependency-underscore"
+source_dep_punctuation="$TMP_ROOT/source-dependency-punctuation"
+source_dep_unicode="$TMP_ROOT/source-dependency-unicode"
+mkdir -p "$source_dep_dash" "$source_dep_underscore" \
+    "$source_dep_punctuation" "$source_dep_unicode"
+
+source_dep_dash_var=WASM_POSIX_DEP_K_666F6F2D626172_SRC_DIR
+source_dep_underscore_var=WASM_POSIX_DEP_K_666F6F5F626172_SRC_DIR
+source_dep_punctuation_var=WASM_POSIX_DEP_K_706B672E6E616D65_SRC_DIR
+source_dep_unicode_var=WASM_POSIX_DEP_K_C3A9_SRC_DIR
+printf -v "$source_dep_dash_var" '%s' "$source_dep_dash"
+printf -v "$source_dep_underscore_var" '%s' "$source_dep_underscore"
+printf -v "$source_dep_punctuation_var" '%s' "$source_dep_punctuation"
+printf -v "$source_dep_unicode_var" '%s' "$source_dep_unicode"
+export "${source_dep_dash_var?}" "${source_dep_underscore_var?}"
+export "${source_dep_punctuation_var?}" "${source_dep_unicode_var?}"
+
+WASM_POSIX_RESOLUTION_POLICY=source-only-v1
+export WASM_POSIX_RESOLUTION_POLICY
+[ "$(kandelo_package_source_dependency_dir foo-bar)" = "$source_dep_dash" ] ||
+    fail "source-only dependency lookup changed the injective dash name"
+[ "$(kandelo_package_source_dependency_dir foo_bar)" = "$source_dep_underscore" ] ||
+    fail "source-only dependency lookup changed the injective underscore name"
+[ "$(kandelo_package_source_dependency_dir pkg.name)" = "$source_dep_punctuation" ] ||
+    fail "source-only dependency lookup changed punctuation bytes"
+[ "$(kandelo_package_source_dependency_dir 'é')" = "$source_dep_unicode" ] ||
+    fail "source-only dependency lookup changed UTF-8 bytes"
+
+legacy_source_var=WASM_POSIX_DEP_FOO_BAR_SRC_DIR
+printf -v "$legacy_source_var" '%s' "$source_dep_underscore"
+export "${legacy_source_var?}"
+[ "$(kandelo_package_source_dependency_dir foo-bar)" = "$source_dep_dash" ] ||
+    fail "source-only dependency lookup accepted the lossy legacy alias"
+unset "$source_dep_dash_var"
+err="$TMP_ROOT/source-dependency-source-only-legacy.err"
+if kandelo_package_source_dependency_dir foo-bar > /dev/null 2>"$err"; then
+    fail "source-only dependency lookup fell back to its legacy alias"
+fi
+grep -F "$source_dep_dash_var" "$err" >/dev/null ||
+    fail "source-only missing dependency did not name its exact variable"
+
+unset WASM_POSIX_RESOLUTION_POLICY
+printf -v "$source_dep_dash_var" '%s' "$source_dep_dash"
+export "${source_dep_dash_var?}"
+[ "$(kandelo_package_source_dependency_dir foo-bar)" = "$source_dep_underscore" ] ||
+    fail "default dependency lookup did not preserve its legacy alias"
+unset "$legacy_source_var"
+err="$TMP_ROOT/source-dependency-default-injective.err"
+if kandelo_package_source_dependency_dir foo-bar > /dev/null 2>"$err"; then
+    fail "default dependency lookup accepted the source-only injective alias"
+fi
+grep -F "$legacy_source_var" "$err" >/dev/null ||
+    fail "default missing dependency did not name its legacy variable"
+
+assert_source_dependency_rejected() {
+    local label="$1"
+    local package_name="$2"
+    local expected="$3"
+    local err_file="$TMP_ROOT/source-dependency-$label.err"
+    if kandelo_package_source_dependency_dir "$package_name" \
+        > /dev/null 2>"$err_file"; then
+        fail "source dependency lookup accepted $label"
+    fi
+    grep -F "$expected" "$err_file" >/dev/null ||
+        fail "source dependency $label rejection was not explained"
+}
+
+WASM_POSIX_RESOLUTION_POLICY=source-only-v1
+export WASM_POSIX_RESOLUTION_POLICY
+assert_source_dependency_rejected empty-name "" "package name must not be empty"
+missing_source_var=WASM_POSIX_DEP_K_6D697373696E67_SRC_DIR
+assert_source_dependency_rejected missing-value missing "$missing_source_var"
+empty_source_var=WASM_POSIX_DEP_K_656D707479_SRC_DIR
+printf -v "$empty_source_var" '%s' ""
+export "${empty_source_var?}"
+assert_source_dependency_rejected empty-value empty "$empty_source_var"
+file_source_var=WASM_POSIX_DEP_K_66696C65_SRC_DIR
+source_dep_file="$TMP_ROOT/source-dependency-file"
+printf 'not a directory\n' >"$source_dep_file"
+printf -v "$file_source_var" '%s' "$source_dep_file"
+export "${file_source_var?}"
+assert_source_dependency_rejected non-directory file "must be a real directory"
+relative_source_var=WASM_POSIX_DEP_K_72656C6174697665_SRC_DIR
+printf -v "$relative_source_var" '%s' relative
+export "${relative_source_var?}"
+assert_source_dependency_rejected relative relative "must be an absolute path"
+
+source_dep_injection_sentinel="$TMP_ROOT/source-dependency-eval-injection"
+hostile_source_name="x\$(touch $source_dep_injection_sentinel)"
+assert_source_dependency_rejected no-eval "$hostile_source_name" \
+    "source dependency variable"
+[ ! -e "$source_dep_injection_sentinel" ] ||
+    fail "source dependency lookup evaluated hostile package-name text"
+unset WASM_POSIX_RESOLUTION_POLICY
+
+if [ "${KANDELO_PACKAGE_BUILD_ROOTS_TEST_FOCUS:-}" = "source-dependency" ]; then
+    echo "test-package-build-roots.sh: source dependency contract ok"
+    exit 0
+fi
+
+private_work="$TMP_ROOT/private-sysroot-work"
+private_out="$TMP_ROOT/private-sysroot-out"
+private_source="$TMP_ROOT/private-sysroot-source"
+private_sdk="$TMP_ROOT/private-sysroot-sdk"
+private_libcxx="$TMP_ROOT/private-sysroot-libcxx"
+mkdir -p "$private_work" "$private_out" "$private_source" \
+    "$private_sdk/include" "$private_sdk/lib" \
+    "$private_libcxx/include/c++/v1" "$private_libcxx/lib"
+printf 'sdk header\n' >"$private_sdk/include/sdk.h"
+printf 'sdk archive\n' >"$private_sdk/lib/libc.a"
+printf 'libc++ header\n' >"$private_libcxx/include/c++/v1/memory"
+printf 'libc++ archive\n' >"$private_libcxx/lib/libc++.a"
+chmod -R a-w "$private_sdk" "$private_libcxx" "$private_source"
+
+WASM_POSIX_DEP_WORK_DIR="$private_work"
+WASM_POSIX_DEP_OUT_DIR="$private_out"
+WASM_POSIX_DEP_SOURCE_DIR="$private_source"
+WASM_POSIX_DEP_LIBCXX_DIR="$private_libcxx"
+export WASM_POSIX_DEP_WORK_DIR WASM_POSIX_DEP_OUT_DIR \
+    WASM_POSIX_DEP_SOURCE_DIR WASM_POSIX_DEP_LIBCXX_DIR
+
+private_sdk_before="$(tree_digest "$private_sdk")"
+private_libcxx_before="$(tree_digest "$private_libcxx")"
+private_source_before="$(tree_digest "$private_source")"
+private_sysroot="$(kandelo_package_prepare_private_sysroot icu "$private_sdk" libcxx)"
+case "$private_sysroot/" in
+    "$private_work/"*) ;;
+    *) fail "private sysroot escaped the resolver work root" ;;
+esac
+[ -f "$private_sysroot/include/sdk.h" ] ||
+    fail "private sysroot omitted the SDK seed"
+[ -f "$private_sysroot/include/c++/v1/memory" ] ||
+    fail "private sysroot omitted a declared dependency overlay"
+[ -f "$private_sysroot/lib/libc++.a" ] ||
+    fail "private sysroot omitted the declared dependency archive"
+printf 'private replacement\n' >"$private_sysroot/include/sdk.h"
+printf 'private addition\n' >"$private_sysroot/lib/package-local.a"
+[ "$(tree_digest "$private_sdk")" = "$private_sdk_before" ] ||
+    fail "private sysroot preparation mutated the SDK seed"
+[ "$(tree_digest "$private_libcxx")" = "$private_libcxx_before" ] ||
+    fail "private sysroot preparation mutated a dependency output"
+[ "$(tree_digest "$private_source")" = "$private_source_before" ] ||
+    fail "private sysroot preparation mutated the sealed source"
+
+concurrent_one_file="$TMP_ROOT/private-sysroot-concurrent-one"
+concurrent_two_file="$TMP_ROOT/private-sysroot-concurrent-two"
+kandelo_package_prepare_private_sysroot concurrent "$private_sdk" libcxx \
+    >"$concurrent_one_file" &
+concurrent_one_pid=$!
+kandelo_package_prepare_private_sysroot concurrent "$private_sdk" libcxx \
+    >"$concurrent_two_file" &
+concurrent_two_pid=$!
+wait "$concurrent_one_pid"
+wait "$concurrent_two_pid"
+concurrent_one="$(cat "$concurrent_one_file")"
+concurrent_two="$(cat "$concurrent_two_file")"
+[ "$concurrent_one" != "$concurrent_two" ] ||
+    fail "concurrent private sysroots shared one mutable destination"
+printf 'first only\n' >"$concurrent_one/lib/first-only.a"
+[ ! -e "$concurrent_two/lib/first-only.a" ] ||
+    fail "concurrent private sysroots were not isolated"
+
+assert_private_sysroot_rejected() {
+    local label="$1"
+    local expected="$2"
+    shift 2
+    local err_file="$TMP_ROOT/private-sysroot-$label.err"
+    if kandelo_package_prepare_private_sysroot "$@" \
+        > /dev/null 2>"$err_file"; then
+        fail "private sysroot accepted $label"
+    fi
+    grep -F "$expected" "$err_file" >/dev/null ||
+        fail "private sysroot $label rejection was not explained"
+}
+
+assert_private_sysroot_rejected escaping-name "stable identifier" \
+    ../escape "$private_sdk" libcxx
+assert_private_sysroot_rejected missing-dependency \
+    "WASM_POSIX_DEP_ZLIB_DIR" missing "$private_sdk" zlib
+
+private_bad_sdk="$TMP_ROOT/private-sysroot-bad-sdk"
+private_outside="$TMP_ROOT/private-sysroot-outside"
+mkdir -p "$private_bad_sdk" "$private_outside"
+printf 'outside sentinel\n' >"$private_outside/sentinel"
+ln -s "$private_outside" "$private_bad_sdk/escape"
+assert_private_sysroot_rejected sdk-symlink "contains a symlink" \
+    bad-sdk "$private_bad_sdk"
+[ "$(cat "$private_outside/sentinel")" = "outside sentinel" ] ||
+    fail "private sysroot followed an SDK symlink escape"
+
+private_bad_dep="$TMP_ROOT/private-sysroot-bad-dependency"
+mkdir -p "$private_bad_dep"
+ln -s "$private_outside/sentinel" "$private_bad_dep/escape"
+WASM_POSIX_DEP_ZLIB_DIR="$private_bad_dep"
+export WASM_POSIX_DEP_ZLIB_DIR
+assert_private_sysroot_rejected dependency-symlink "contains a symlink" \
+    bad-dependency "$private_sdk" zlib
+[ "$(cat "$private_outside/sentinel")" = "outside sentinel" ] ||
+    fail "private sysroot followed a dependency symlink escape"
+
+private_fifo_dep="$TMP_ROOT/private-sysroot-fifo-dependency"
+mkdir -p "$private_fifo_dep"
+mkfifo "$private_fifo_dep/pipe"
+WASM_POSIX_DEP_ZLIB_DIR="$private_fifo_dep"
+assert_private_sysroot_rejected dependency-special "contains a special entry" \
+    fifo-dependency "$private_sdk" zlib
+
+private_nested_sdk="$private_work/sdk"
+mkdir -p "$private_nested_sdk"
+assert_private_sysroot_rejected overlapping-sdk \
+    "must not overlap WASM_POSIX_DEP_WORK_DIR" \
+    overlapping "$private_nested_sdk"
+
+private_work_alias="$TMP_ROOT/private-sysroot-work-alias"
+ln -s "$private_work" "$private_work_alias"
+WASM_POSIX_DEP_WORK_DIR="$private_work_alias"
+assert_private_sysroot_rejected aliased-work \
+    "WASM_POSIX_DEP_WORK_DIR must be a real directory" \
+    aliased-work "$private_sdk"
+WASM_POSIX_DEP_WORK_DIR="$private_work"
+
+private_nested_source="$private_work/source-overlap"
+mkdir -p "$private_nested_source"
+WASM_POSIX_DEP_SOURCE_DIR="$private_nested_source"
+assert_private_sysroot_rejected overlapping-source \
+    "WASM_POSIX_DEP_WORK_DIR must not overlap WASM_POSIX_DEP_SOURCE_DIR" \
+    overlapping-source "$private_sdk"
+WASM_POSIX_DEP_SOURCE_DIR="$private_source"
+
+if [ "${KANDELO_PACKAGE_BUILD_ROOTS_TEST_FOCUS:-}" = "private-sysroot" ]; then
+    echo "test-package-build-roots.sh: private sysroot contract ok"
+    exit 0
+fi
 
 direct_work="$TMP_ROOT/direct-work"
 unset WASM_POSIX_DEP_WORK_DIR WASM_POSIX_DEP_OUT_DIR \
@@ -207,6 +546,137 @@ printf 'archive-selected source\n' >"$archive_parent/upstream-1.0/archive.txt"
 archive="$TMP_ROOT/source.tar.gz"
 tar czf "$archive" -C "$archive_parent" upstream-1.0
 archive_sha="$(shasum -a 256 "$archive" | awk '{print $1}')"
+
+fake_bin="$TMP_ROOT/fake-network-bin"
+fake_curl_sentinel="$TMP_ROOT/fake-curl-called"
+mkdir -p "$fake_bin"
+cat >"$fake_bin/curl" <<'FAKE_CURL'
+#!/usr/bin/env bash
+: >"$KANDELO_FAKE_CURL_SENTINEL"
+exit 97
+FAKE_CURL
+chmod +x "$fake_bin/curl"
+
+source_only_work="$TMP_ROOT/source-only-work"
+source_only_out="$TMP_ROOT/source-only-out"
+source_only_dest="$source_only_work/staged-source"
+mkdir -p "$source_only_work" "$source_only_out"
+source_only_archive_before="$(shasum -a 256 "$archive" | awk '{print $1}')"
+source_only_source_before="$(tree_digest "$source_root")"
+(
+    PATH="$fake_bin:$PATH"
+    KANDELO_FAKE_CURL_SENTINEL="$fake_curl_sentinel"
+    WASM_POSIX_RESOLUTION_POLICY=source-only-v1
+    WASM_POSIX_DEP_SOURCE_ARCHIVE="$archive"
+    WASM_POSIX_DEP_SOURCE_DIR="$source_root"
+    WASM_POSIX_DEP_WORK_DIR="$source_only_work"
+    WASM_POSIX_DEP_OUT_DIR="$source_only_out"
+    export PATH KANDELO_FAKE_CURL_SENTINEL WASM_POSIX_RESOLUTION_POLICY
+    export WASM_POSIX_DEP_SOURCE_ARCHIVE WASM_POSIX_DEP_SOURCE_DIR
+    export WASM_POSIX_DEP_WORK_DIR WASM_POSIX_DEP_OUT_DIR
+    kandelo_package_stage_verified_source source-only "$source_only_dest" \
+        "$source_root" "https://invalid.example/must-not-download.tar.gz" \
+        "$archive_sha" "$source_only_work"
+)
+[ ! -e "$fake_curl_sentinel" ] ||
+    fail "valid source-only staging invoked curl"
+cmp -s "$source_root/subdir/payload.txt" "$source_only_dest/subdir/payload.txt" ||
+    fail "source-only staging did not copy the resolver-owned tree"
+[ -w "$source_only_dest/subdir/payload.txt" ] ||
+    fail "source-only staged copy is not owner-writable"
+[ -z "$(find "$source_only_dest" ! -type l -perm -022 -print -quit)" ] ||
+    fail "source-only staged copy retained group/other write permissions"
+[ "$(shasum -a 256 "$archive" | awk '{print $1}')" = "$source_only_archive_before" ] ||
+    fail "source-only staging mutated the immutable archive"
+[ "$(tree_digest "$source_root")" = "$source_only_source_before" ] ||
+    fail "source-only staging mutated the sealed source tree"
+
+assert_source_only_stage_rejected() {
+    local label="$1"
+    local archive_value="$2"
+    local source_value="$3"
+    local positional_value="$4"
+    local work_value="$5"
+    local out_value="$6"
+    local dest_value="$7"
+    local err_file="$TMP_ROOT/source-only-$label.err"
+    rm -f "$fake_curl_sentinel"
+    if (
+        PATH="$fake_bin:$PATH"
+        KANDELO_FAKE_CURL_SENTINEL="$fake_curl_sentinel"
+        WASM_POSIX_RESOLUTION_POLICY=source-only-v1
+        WASM_POSIX_DEP_SOURCE_ARCHIVE="$archive_value"
+        WASM_POSIX_DEP_SOURCE_DIR="$source_value"
+        WASM_POSIX_DEP_WORK_DIR="$work_value"
+        WASM_POSIX_DEP_OUT_DIR="$out_value"
+        export PATH KANDELO_FAKE_CURL_SENTINEL WASM_POSIX_RESOLUTION_POLICY
+        export WASM_POSIX_DEP_SOURCE_ARCHIVE WASM_POSIX_DEP_SOURCE_DIR
+        export WASM_POSIX_DEP_WORK_DIR WASM_POSIX_DEP_OUT_DIR
+        kandelo_package_stage_verified_source "$label" "$dest_value" \
+            "$positional_value" "https://invalid.example/no-fallback.tar.gz" \
+            "$archive_sha" "$work_value"
+    ) 2>"$err_file"; then
+        fail "source-only staging accepted $label"
+    fi
+    [ ! -e "$fake_curl_sentinel" ] ||
+        fail "source-only $label rejection invoked curl"
+    [ ! -e "$dest_value" ] && [ ! -L "$dest_value" ] ||
+        fail "source-only $label rejection created its destination"
+}
+
+missing_archive_dest="$source_only_work/missing-archive"
+assert_source_only_stage_rejected missing-archive "" "$source_root" \
+    "$source_root" "$source_only_work" "$source_only_out" "$missing_archive_dest"
+missing_source_dest="$source_only_work/missing-source"
+assert_source_only_stage_rejected missing-source "$archive" "" "" \
+    "$source_only_work" "$source_only_out" "$missing_source_dest"
+archive_link="$TMP_ROOT/source-archive-link"
+ln -s "$archive" "$archive_link"
+archive_link_dest="$source_only_work/archive-link"
+assert_source_only_stage_rejected archive-symlink "$archive_link" "$source_root" \
+    "$source_root" "$source_only_work" "$source_only_out" "$archive_link_dest"
+source_only_link_dest="$source_only_work/source-link"
+assert_source_only_stage_rejected source-symlink "$archive" "$source_link" \
+    "$source_link" "$source_only_work" "$source_only_out" "$source_only_link_dest"
+wrong_archive_dir="$TMP_ROOT/wrong-archive-dir"
+mkdir -p "$wrong_archive_dir"
+wrong_archive_dest="$source_only_work/wrong-archive"
+assert_source_only_stage_rejected wrong-archive-kind "$wrong_archive_dir" "$source_root" \
+    "$source_root" "$source_only_work" "$source_only_out" "$wrong_archive_dest"
+wrong_source_file="$TMP_ROOT/wrong-source-file"
+printf 'not a directory\n' >"$wrong_source_file"
+wrong_source_dest="$source_only_work/wrong-source"
+assert_source_only_stage_rejected wrong-source-kind "$archive" "$wrong_source_file" \
+    "$wrong_source_file" "$source_only_work" "$source_only_out" "$wrong_source_dest"
+mismatch_source="$TMP_ROOT/mismatch-source"
+mkdir -p "$mismatch_source"
+mismatch_dest="$source_only_work/positional-mismatch"
+assert_source_only_stage_rejected positional-mismatch "$archive" "$source_root" \
+    "$mismatch_source" "$source_only_work" "$source_only_out" "$mismatch_dest"
+source_work_overlap_dest="$source_root/overlap-destination"
+assert_source_only_stage_rejected source-work-overlap "$archive" "$source_root" \
+    "$source_root" "$source_root" "$source_only_out" "$source_work_overlap_dest"
+source_out_overlap_dest="$source_only_work/source-out-overlap"
+assert_source_only_stage_rejected source-out-overlap "$archive" "$source_root" \
+    "$source_root" "$source_only_work" "$source_root" "$source_out_overlap_dest"
+work_out_overlap_dest="$source_only_work/work-out-overlap"
+assert_source_only_stage_rejected work-out-overlap "$archive" "$source_root" \
+    "$source_root" "$source_only_work" "$source_only_work" "$work_out_overlap_dest"
+outside_dest="$TMP_ROOT/source-only-outside-destination"
+assert_source_only_stage_rejected destination-outside-work "$archive" "$source_root" \
+    "$source_root" "$source_only_work" "$source_only_out" "$outside_dest"
+work_link="$TMP_ROOT/source-only-work-link"
+ln -s "$source_only_work" "$work_link"
+linked_work_dest="$work_link/linked-work-destination"
+assert_source_only_stage_rejected symlink-work "$archive" "$source_root" \
+    "$source_root" "$work_link" "$source_only_out" "$linked_work_dest"
+outside_parent="$TMP_ROOT/source-only-symlink-parent-target"
+mkdir -p "$outside_parent"
+ln -s "$outside_parent" "$source_only_work/linked-parent"
+linked_parent_dest="$source_only_work/linked-parent/destination"
+assert_source_only_stage_rejected symlink-destination-parent "$archive" "$source_root" \
+    "$source_root" "$source_only_work" "$source_only_out" "$linked_parent_dest"
+
 archive_dest="$TMP_ROOT/archive-dest"
 kandelo_package_stage_verified_source fixture "$archive_dest" "" \
     "file://$archive" "$archive_sha" "$work_root"
@@ -399,7 +869,7 @@ bash "$REPO_ROOT/scripts/test-install-local-generation.sh"
 
 # Every exact-shell registry recipe must enter through this tested root
 # contract. Their real package builds remain separate bottle/dry-run evidence.
-for package in bc posix-utils-lite lsof nethack fbdoom modeset; do
+for package in bc dinit posix-utils-lite lsof nethack fbdoom modeset; do
     script="$REPO_ROOT/packages/registry/$package/build-$package.sh"
     grep -F 'scripts/package-build-roots.sh' "$script" >/dev/null ||
         fail "$package build does not source the caller-root contract"
@@ -417,11 +887,19 @@ for package in posix-utils-lite lsof modeset; do
     grep -F 'kandelo_package_select_source_root' "$script" >/dev/null ||
         fail "$package build does not select the caller's in-tree source root"
 done
-for package in bc nethack fbdoom; do
+for package in bc dinit nethack fbdoom; do
     script="$REPO_ROOT/packages/registry/$package/build-$package.sh"
     grep -F 'kandelo_package_stage_verified_source' "$script" >/dev/null ||
         fail "$package build does not stage caller-verified source"
 done
+
+dinit_script="$REPO_ROOT/packages/registry/dinit/build-dinit.sh"
+grep -F 'kandelo_package_prepare_private_sysroot dinit "$REPO_ROOT/sysroot" libcxx' \
+    "$dinit_script" >/dev/null ||
+    fail "dinit build does not use a resolver-work private libcxx sysroot"
+if grep -F 'git clone' "$dinit_script" >/dev/null; then
+    fail "dinit build still clones instead of consuming resolver-verified source"
+fi
 
 grep -F 'make -j1 CC=cc LD=cc -C util makedefs dgn_comp lev_comp dlb recover' \
     "$REPO_ROOT/packages/registry/nethack/build-nethack.sh" >/dev/null ||
@@ -438,7 +916,10 @@ grep -F 'WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto' \
     "$REPO_ROOT/packages/registry/nethack/build-nethack.sh" >/dev/null ||
     fail "NetHack build does not instrument its fork-capable artifact"
 
-bash "$REPO_ROOT/scripts/test-package-isolated-output-contracts.sh"
+env -u WASM_POSIX_DEP_SOURCE_DIR \
+    -u WASM_POSIX_DEP_SOURCE_ARCHIVE \
+    bash "$REPO_ROOT/scripts/test-package-isolated-output-contracts.sh"
+bash "$REPO_ROOT/scripts/test-curl-legacy-build-dependencies.sh"
 
 # Ruby keeps source filenames in runtime assertions and publishes its generated
 # rbconfig.rb. Its recipe must therefore map caller work paths at compile time

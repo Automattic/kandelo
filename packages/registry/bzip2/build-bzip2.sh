@@ -64,11 +64,15 @@ else
     exit 1
 fi
 
-# --- Install library to sysroot ---
-echo "==> Installing libbz2.a and bzlib.h to sysroot..."
-cp "$SRC_DIR/libbz2.a" "$SYSROOT/lib/"
-cp "$SRC_DIR/bzlib.h" "$SYSROOT/include/"
-echo "==> Installed libbz2.a and bzlib.h"
+# --- Install library to sysroot for direct developer builds ---
+if [ -z "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    echo "==> Installing libbz2.a and bzlib.h to sysroot..."
+    cp "$SRC_DIR/libbz2.a" "$SYSROOT/lib/"
+    cp "$SRC_DIR/bzlib.h" "$SYSROOT/include/"
+    echo "==> Installed libbz2.a and bzlib.h"
+else
+    echo "==> Skipping legacy shared-sysroot library install for resolver build."
+fi
 
 echo ""
 echo "==> bzip2 built successfully!"

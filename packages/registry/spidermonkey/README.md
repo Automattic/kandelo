@@ -10,9 +10,8 @@ Current scope:
 - ECMAScript `Intl` support through Mozilla's in-tree ICU/ICU4X
 - JS shared memory and shell worker support
 - JIT disabled and C++ exceptions enabled
-- no fork instrumentation: SpiderMonkey's C++ control flow is too large for
-  the current fork-stack rewrite in Chromium workers; JS worker_threads use
-  clone/pthreads and still work
+- normal Kandelo fork instrumentation after the final `wasm-opt` pass
+- JS `worker_threads` support through clone/pthreads
 
 Out of scope for this package:
 

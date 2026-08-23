@@ -15,7 +15,8 @@ if [ "$#" -ne 0 ] && [ "${1:-}" = "--vfs-product-manifest" ]; then
 fi
 
 echo "==> Building WordPress VFS image..."
-npx tsx "$SCRIPT_DIR/build-wp-vfs-image.ts"
+VFS_OUTPUT="${1:-$REPO_ROOT/apps/browser-demos/public/wordpress.vfs.zst}"
+npx tsx "$SCRIPT_DIR/build-wp-vfs-image.ts" "$VFS_OUTPUT"
 
 echo "==> Done."
-ls -lh apps/browser-demos/public/wordpress.vfs.zst
+ls -lh "$VFS_OUTPUT"

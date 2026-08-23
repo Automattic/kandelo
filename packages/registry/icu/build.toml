@@ -1,4 +1,8 @@
 script_path = "packages/registry/icu/build-icu.sh"
+inputs = [
+  "packages/registry/icu/build-icu.sh",
+  "scripts/package-build-roots.sh",
+]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
 # Revision 3: ICU static libs rebuilt with -fPIC so they can be absorbed into
@@ -10,7 +14,9 @@ commit      = "UNPUBLISHED"
 # /usr/lib/php instead of the resolver's random temporary install prefix.
 # Revision 6: make the three pkg-config prefixes relative to pcfiledir so a
 # fetched or moved archive resolves its own headers and libraries.
-revision    = 6
+# Revision 7: use the dev shell's wrapped native compiler for Stage 1 so its
+# declared host libc++ and SDK headers participate in the host-tool build.
+revision    = 8
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

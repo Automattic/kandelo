@@ -2803,6 +2803,8 @@ mod tests {
             name: name.into(),
             repository: format!("https://example.test/{name}.git"),
             commit: commit_byte.to_string().repeat(40),
+            tree: None,
+            allow_uninitialized_gitlinks: false,
         }
     }
 

@@ -16,6 +16,7 @@ depends_on = []
 [source]
 url = "https://github.com/maximevince/fbDOOM/archive/17280163bc95e5d954d2efaa0633489b763b4cd1.tar.gz"
 sha256 = "77f57cee68fed438dffdba96f6070b8975c16652a63ddf4fb967994e5585a38a"
+provider = "archive"
 
 [license]
 spdx = "GPL-2.0-or-later"

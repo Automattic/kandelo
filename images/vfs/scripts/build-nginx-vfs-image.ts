@@ -171,9 +171,25 @@ export async function buildNginxVfsImage(
 }
 
 async function main(): Promise<void> {
+  const shellRoot = process.env.WASM_POSIX_DEP_SHELL_DIR;
+  const nginxRoot = process.env.WASM_POSIX_DEP_NGINX_DIR;
+  const dinitRoot = process.env.WASM_POSIX_DEP_DINIT_DIR;
   await buildNginxVfsImage({
-    nginx: new Uint8Array(readFileSync(resolveBinary("programs/nginx.wasm"))),
-    outputPath: OUT_FILE,
+    shellImage: shellRoot === undefined
+      ? undefined
+      : new Uint8Array(readFileSync(join(shellRoot, "shell.vfs.zst"))),
+    nginx: new Uint8Array(readFileSync(nginxRoot === undefined
+      ? resolveBinary("programs/nginx.wasm")
+      : join(nginxRoot, "nginx.wasm"))),
+    dinit: dinitRoot === undefined
+      ? undefined
+      : {
+          dinit: new Uint8Array(readFileSync(join(dinitRoot, "dinit.wasm"))),
+          dinitctl: new Uint8Array(
+            readFileSync(join(dinitRoot, "dinitctl.wasm")),
+          ),
+        },
+    outputPath: process.argv[2] ?? OUT_FILE,
   });
 }
 

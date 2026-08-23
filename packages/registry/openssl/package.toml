@@ -13,6 +13,7 @@ arches = ["wasm32", "wasm64"]
 [source]
 url = "https://github.com/openssl/openssl/releases/download/openssl-3.3.2/openssl-3.3.2.tar.gz"
 sha256 = "2e8a40b01979afe8be0bbfb3de5dc1c6709fedb46d6c89c10da114ab5fc3d281"
+provider = "archive"
 
 [license]
 spdx = "Apache-2.0"

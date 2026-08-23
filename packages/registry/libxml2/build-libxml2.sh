@@ -199,7 +199,6 @@ wasm32posix-ar rcs libxml2.a "${OBJS[@]}"
 
 # --- Install ---
 echo "==> Installing to $INSTALL_DIR..."
-rm -rf "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/include/libxml" "$INSTALL_DIR/lib/pkgconfig"
 
 cp libxml2.a "$INSTALL_DIR/lib/"

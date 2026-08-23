@@ -52,18 +52,33 @@ SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-68db082212a96d6f53e35d60f47d38b96
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
+RESOLVER_BUILD=0
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] || \
+   [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    RESOLVER_BUILD=1
+    # shellcheck source=/dev/null
+    source "$REPO_ROOT/scripts/package-build-roots.sh"
+    kandelo_package_prepare_build_roots "$SCRIPT_DIR/icu-work" wasm32
+fi
+
 if [ "$TARGET_ARCH" != "wasm32" ]; then
     echo "ERROR: ICU currently supports only wasm32, got $TARGET_ARCH" >&2
     exit 1
 fi
 
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-icu.XXXXXX")"
+if [ "$RESOLVER_BUILD" -eq 1 ]; then
+    WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+    OWNS_WORK_DIR=0
+else
+    WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-icu.XXXXXX")"
+    OWNS_WORK_DIR=1
+fi
 cleanup() {
     status=$?
     trap - EXIT
     if [ "${WASM_POSIX_KEEP_BUILD_DIR:-0}" = "1" ]; then
         echo "==> Preserving ICU build directory: $WORK_DIR" >&2
-    else
+    elif [ "$OWNS_WORK_DIR" -eq 1 ]; then
         rm -rf "$WORK_DIR"
     fi
     exit "$status"
@@ -87,6 +102,15 @@ fi
 [ -f "$LIBCXX_PREFIX/lib/libc++.a" ]     || { echo "ERROR: libcxx resolve missing libc++.a at $LIBCXX_PREFIX" >&2; exit 1; }
 [ -f "$LIBCXX_PREFIX/lib/libc++abi.a" ]  || { echo "ERROR: libcxx resolve missing libc++abi.a at $LIBCXX_PREFIX" >&2; exit 1; }
 [ -d "$LIBCXX_PREFIX/include/c++/v1" ]   || { echo "ERROR: libcxx resolve missing include/c++/v1 at $LIBCXX_PREFIX" >&2; exit 1; }
+
+if [ "$RESOLVER_BUILD" -eq 1 ]; then
+    export WASM_POSIX_DEP_WORK_DIR="$WORK_DIR"
+    export WASM_POSIX_DEP_LIBCXX_DIR="$LIBCXX_PREFIX"
+    SYSROOT="$(
+        kandelo_package_prepare_private_sysroot icu "$SYSROOT" libcxx
+    )"
+    export WASM_POSIX_SYSROOT="$SYSROOT"
+fi
 
 echo "==> Linking libcxx into sysroot ($LIBCXX_PREFIX)..."
 mkdir -p "$SYSROOT/lib" "$SYSROOT/include/c++"
@@ -125,9 +149,11 @@ run_logged() {
 # ============================================================
 # Stage 1 — HOST build (native tools + data)
 # ============================================================
-# Uses the host compiler (clang/clang++ from the dev shell), NOT the wasm
-# wrappers. sdk/activate.sh only prepends SDK bin to PATH; it does not export
-# CC/CXX, so an explicit host CC/CXX keeps this stage native.
+# Uses the host compiler from the dev shell, NOT the wasm wrappers.
+# sdk/activate.sh only prepends SDK bin to PATH; it does not export CC/CXX, so
+# an explicit host CC/CXX keeps this stage native. On Nix, use the declared
+# compiler wrapper rather than the unwrapped clang binaries: the wrapper owns
+# the host libc++ and SDK include paths needed by ICU's C++ host tools.
 #
 # On Linux, statically fold the GNU C++/GCC runtime into the data tools: the Nix
 # CI runner has no libstdc++.so.6 on its loader path, so a dynamically linked
@@ -138,12 +164,34 @@ case "$(uname -s)" in
     Linux) HOST_LDFLAGS="-static-libstdc++ -static-libgcc" ;;
     *)     HOST_LDFLAGS="" ;;
 esac
+
+HOST_CC_COMMAND="${HOST_CC:-}"
+HOST_CXX_COMMAND="${HOST_CXX:-}"
+if [ -n "${NIX_CC_FOR_BUILD:-}" ]; then
+    if [ -z "$HOST_CC_COMMAND" ]; then
+        [ -x "$NIX_CC_FOR_BUILD/bin/cc" ] || {
+            echo "ERROR: NIX_CC_FOR_BUILD does not provide bin/cc: $NIX_CC_FOR_BUILD" >&2
+            exit 1
+        }
+        HOST_CC_COMMAND="$NIX_CC_FOR_BUILD/bin/cc"
+    fi
+    if [ -z "$HOST_CXX_COMMAND" ]; then
+        [ -x "$NIX_CC_FOR_BUILD/bin/c++" ] || {
+            echo "ERROR: NIX_CC_FOR_BUILD does not provide bin/c++: $NIX_CC_FOR_BUILD" >&2
+            exit 1
+        }
+        HOST_CXX_COMMAND="$NIX_CC_FOR_BUILD/bin/c++"
+    fi
+fi
+HOST_CC_COMMAND="${HOST_CC_COMMAND:-${CC_FOR_BUILD:-clang}}"
+HOST_CXX_COMMAND="${HOST_CXX_COMMAND:-${CXX_FOR_BUILD:-clang++}}"
+
 if [ ! -x "$HOST_BUILD/bin/icupkg" ] && [ ! -x "$HOST_BUILD/bin/genccode" ]; then
     echo "==> Stage 1: building ICU natively for host tools + data..."
     rm -rf "$HOST_BUILD"
     mkdir -p "$HOST_BUILD"
     ( cd "$HOST_BUILD"
-      CC="${HOST_CC:-clang}" CXX="${HOST_CXX:-clang++}" \
+      CC="$HOST_CC_COMMAND" CXX="$HOST_CXX_COMMAND" \
       LDFLAGS="$HOST_LDFLAGS" \
         "$ICU_SRC/runConfigureICU" MacOSX \
             --enable-static --disable-shared \
@@ -200,7 +248,6 @@ echo "==> Stage 2: building wasm32 libraries..."
 run_logged wasm-make make -j"$NPROC" ICUDATA_DIR=/usr/lib/php
 
 echo "==> Installing to $INSTALL_DIR..."
-rm -rf "$INSTALL_DIR"
 run_logged wasm-install make install
 
 # ICU's generated pkg-config metadata records --prefix verbatim. Resolver

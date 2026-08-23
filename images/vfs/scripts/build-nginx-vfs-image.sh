@@ -8,13 +8,26 @@ if [ "$#" -ne 0 ] && [ "${1:-}" = "--vfs-product-manifest" ]; then
     "$SCRIPT_DIR/staged-product-inputs.ts" browser-nginx "$@"
 fi
 echo "==> Building nginx VFS image..."
-npx tsx "$SCRIPT_DIR/build-nginx-vfs-image.ts"
+VFS_DIR="$REPO_ROOT/apps/browser-demos/public"
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+  : "${WASM_POSIX_DEP_WORK_DIR:?resolver VFS builds require WASM_POSIX_DEP_WORK_DIR}"
+  VFS_DIR="$WASM_POSIX_DEP_WORK_DIR"
+fi
+VFS="$VFS_DIR/nginx.vfs.zst"
+NGINX_VFS_TSX_TMP="$(mktemp -d /tmp/kandelo-nginx-vfs.XXXXXX)"
+trap 'rm -rf -- "$NGINX_VFS_TSX_TMP"' EXIT
+TMPDIR="$NGINX_VFS_TSX_TMP" npx tsx "$SCRIPT_DIR/build-nginx-vfs-image.ts" \
+  "$VFS"
 echo "==> Done."
-ls -lh apps/browser-demos/public/nginx.vfs.zst
+ls -lh "$VFS"
 
 # Mirror into local-binaries/ so the @binaries/ Vite alias resolves for
 # pages/nginx/main.ts. The page imports the file by its program name
 # (nginx-vfs.vfs.zst); a missing file then becomes a Vite resolve error
 # instead of a 0.0 MB SPA-fallback at runtime.
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+  export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+  export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled
+fi
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary nginx-vfs "$REPO_ROOT/apps/browser-demos/public/nginx.vfs.zst"
+install_local_binary nginx-vfs "$VFS_DIR/nginx.vfs.zst"

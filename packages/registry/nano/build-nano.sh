@@ -1,22 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build GNU nano 8.3 for wasm32-posix-kernel.
+# Build GNU nano 8.0 for wasm32-posix-kernel.
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
-# Resolves ncurses via `cargo xtask build-deps resolve ncurses` — the
-# shared library cache (or builds it on miss). See
-# docs/dependency-management.md.
+# Consumes ncurses from the package resolver when invoked as a sealed build.
 #
-# Output: packages/registry/nano/bin/nano.wasm
+# Output: packages/registry/nano/bin/nano.wasm for a direct build, or the
+# resolver-owned WASM_POSIX_DEP_OUT_DIR.
 
-NANO_VERSION="${NANO_VERSION:-8.3}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/nano-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/nano-src"
+BIN_DIR="$WORK_DIR/bin"
 # Explicit env wins; else the in-tree sysroot. Matches build-curl.sh:49.
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
+NANO_VERSION="${WASM_POSIX_DEP_VERSION:-${NANO_VERSION:-8.0}}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/nano/nano-${NANO_VERSION}.tar.xz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-c17f43fc0e37336b33ee50a209c701d5beb808adc2d9f089ca831b40539c9ac4}"
+VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
+SOURCE_MARKER="$SRC_DIR/.kandelo-nano-source"
+
+# Always use this worktree's SDK wrappers. A resolver/Formula caller owns the
+# work and output roots, so suppress the developer-only local mirror and bind
+# Nano's required fork instrumentation policy explicitly.
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -36,6 +53,10 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 # directly without re-invoking cargo.
 NCURSES_PREFIX="${WASM_POSIX_DEP_NCURSES_DIR:-}"
 if [ -z "$NCURSES_PREFIX" ]; then
+    if [ "${WASM_POSIX_RESOLUTION_POLICY:-}" = "source-only-v1" ]; then
+        echo "ERROR: Nano SourceOnly requires resolver-provided ncurses" >&2
+        exit 2
+    fi
     echo "==> Resolving ncurses via cargo xtask build-deps..."
     HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
     NCURSES_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve ncurses)"
@@ -46,16 +67,18 @@ if [ ! -f "$NCURSES_PREFIX/lib/libncursesw.a" ]; then
 fi
 echo "==> ncurses at $NCURSES_PREFIX"
 
-# --- Download nano source ---
+# --- Stage verified nano source ---
+expected_source_marker="$(printf '%s\n%s\n%s' \
+    "$NANO_VERSION" "$SOURCE_URL" "$SOURCE_SHA256")"
+if [ -d "$SRC_DIR" ] && \
+   [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_source_marker" ]; then
+    rm -rf "$SRC_DIR" "$BIN_DIR"
+fi
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading nano $NANO_VERSION..."
-    TARBALL="nano-${NANO_VERSION}.tar.xz"
-    URL="https://www.nano-editor.org/dist/v${NANO_VERSION%%.*}/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
-    mkdir -p "$SRC_DIR"
-    tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
-    echo "==> Source extracted to $SRC_DIR"
+    echo "==> Staging verified nano $NANO_VERSION source..."
+    kandelo_package_stage_verified_source nano "$SRC_DIR" \
+        "$VERIFIED_SOURCE_DIR" "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
+    printf '%s\n' "$expected_source_marker" >"$SOURCE_MARKER"
 fi
 
 cd "$SRC_DIR"
@@ -219,7 +242,7 @@ echo ""
 echo "==> nano built successfully!"
 echo "Binary: $BIN_DIR/nano.wasm"
 
-# Install into local-binaries/ so the resolver picks the freshly-built
-# binary over the fetched release.
+# Apply normal artifact guards and install either to the direct-build mirror or
+# to the caller-owned resolver/Formula output root.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary nano "$SCRIPT_DIR/bin/nano.wasm"
+install_local_binary nano "$BIN_DIR/nano.wasm" nano.wasm
