@@ -70,13 +70,19 @@ export function attachBridgeToKernel(
  */
 export async function setupServiceWorkerFetchBridge(
   swUrl: string,
+  scopePath: string,
   appPrefix: string,
   kernel: BrowserKernel,
   port: number,
   sessionId: string,
   options?: ServiceWorkerFetchBridgeOptions,
 ): Promise<HttpBridgeHost> {
-  const bridge = await initServiceWorkerBridge(swUrl, appPrefix, sessionId);
+  const bridge = await initServiceWorkerBridge(
+    swUrl,
+    scopePath,
+    appPrefix,
+    sessionId,
+  );
   if (!bridge) {
     throw new Error("Service workers unavailable — HTTP bridge not initialized");
   }

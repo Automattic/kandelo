@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -14,7 +17,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { build as viteBuild, type Plugin } from "vite";
+import { build as viteBuild, loadConfigFromFile, type Plugin } from "vite";
 
 import { ABI_VERSION } from "../host/src/generated/abi.ts";
 import {
@@ -71,9 +74,15 @@ async function withTempDirAsync<T>(run: (root: string) => Promise<T>): Promise<T
   }
 }
 
-function productMap(root: string): { map: CanonicalPagesProductMapV1; path: string } {
+function productMap(root: string): {
+  assetGroupDirectory: string;
+  map: CanonicalPagesProductMapV1;
+  path: string;
+} {
   const privateRoot = join(root, "sealed");
   mkdirSync(privateRoot);
+  const assetGroupDirectory = join(root, "asset-group");
+  mkdirSync(assetGroupDirectory);
   const products = registry.products.map((entry: { id: string; load: "eager" | "lazy" }) => {
     const body = Buffer.from(`sealed ${entry.id}\n`);
     const digest = sha256(body);
@@ -88,20 +97,62 @@ function productMap(root: string): { map: CanonicalPagesProductMapV1; path: stri
       sha256: digest,
     };
   });
+  mkdirSync(join(assetGroupDirectory, "images"));
+  const runtime = Buffer.from("group runtime asset\n");
+  mkdirSync(join(assetGroupDirectory, "assets"));
+  writeFileSync(join(assetGroupDirectory, "assets", "runtime.wasm"), runtime);
+  const groupManifest = Buffer.from(JSON.stringify({
+    assets: [{
+      bytes: runtime.byteLength,
+      group: "runtime",
+      path: "assets/runtime.wasm",
+      sha256: sha256(runtime),
+    }],
+    kind: "kandelo-vfs-asset-group",
+    policy: "source-only-v1",
+    products: products.map(({ bytes, id, private_path, sha256: digest }) => {
+      writeFileSync(join(assetGroupDirectory, "images", `${id}.vfs.zst`), readFileSync(private_path));
+      return {
+        eager_groups: [],
+        id,
+        image: { bytes, path: `images/${id}.vfs.zst`, sha256: digest },
+        lazy_groups: [],
+      };
+    }),
+    schema: 1,
+  }));
+  writeFileSync(join(assetGroupDirectory, "manifest.json"), groupManifest);
+  const assetGroup = {
+    bytes: groupManifest.byteLength,
+    path: "vfs-groups/release-1/manifest.json",
+    sha256: sha256(groupManifest),
+  };
   const map = {
     kind: "kandelo-pages-private-product-map" as const,
-    products,
+    products: products.map((product) => ({ ...product, asset_group: assetGroup })),
     schema: 1 as const,
   };
   const path = join(root, "private-map.json");
   writeFileSync(path, canonicalBytes(map), { mode: 0o600 });
-  return { map, path };
+  return { assetGroupDirectory, map, path };
 }
 
 function writeMap(root: string, name: string, map: unknown): string {
   const path = join(root, name);
   writeFileSync(path, canonicalBytes(map));
   return path;
+}
+
+function legacyProductMap(root: string) {
+  const fixture = productMap(root);
+  const map = {
+    ...fixture.map,
+    products: fixture.map.products.map(({ asset_group: _group, ...product }) =>
+      product
+    ),
+  };
+  const path = writeMap(root, "legacy-private-map.json", map);
+  return { ...fixture, map, path };
 }
 
 function authorityOptions(path: string) {
@@ -145,6 +196,228 @@ test("accepts only the exact current seven-product closed map", () => {
   });
 });
 
+test("accepts legacy map-only products but rejects a partially grouped map", () => {
+  withTempDir((root) => {
+    const fixture = legacyProductMap(root);
+    const loaded = loadCanonicalPagesProductMap(authorityOptions(fixture.path));
+    assert.equal(
+      loaded.products.every((product) => product.asset_group === undefined),
+      true,
+    );
+
+    const mixed = structuredClone(fixture.map) as any;
+    const groupedRoot = join(root, "grouped");
+    mkdirSync(groupedRoot);
+    mixed.products[0].asset_group = productMap(groupedRoot).map.products[0]
+      .asset_group;
+    assert.throws(
+      () =>
+        loadCanonicalPagesProductMap({
+          mapPath: writeMap(root, "mixed-private-map.json", mixed),
+          sourceRoot: repoRoot,
+        }),
+      /all declare an asset group or all omit it/,
+    );
+
+  });
+});
+
+test("legacy map-only authority reaches the real Vite configuration without a group", async () => {
+  await withTempDirAsync(async (root) => {
+    const fixture = legacyProductMap(root);
+    const savedEnvironment = process.env;
+    try {
+      process.env = {
+        ...savedEnvironment,
+        KANDELO_PAGES_PRODUCT_MAP: fixture.path,
+        VITE_BASE: "/kandelo/",
+      };
+      delete process.env.KANDELO_PAGES_VFS_ASSET_GROUP_DIR;
+      const loaded = await loadConfigFromFile(
+        { command: "build", mode: "production" },
+        join(repoRoot, "apps/browser-demos/vite.config.ts"),
+        undefined,
+        "silent",
+      );
+      assert.ok(loaded);
+      const plugins = (loaded.config.plugins ?? []).flat(Infinity) as Plugin[];
+      assert.ok(
+        plugins.some(
+          ({ name }) => name === "canonical-pages-vfs-products",
+        ),
+      );
+    } finally {
+      process.env = savedEnvironment;
+    }
+  });
+});
+
+test("real Vite configuration pairs a group directory only with grouped maps", async () => {
+  await withTempDirAsync(async (root) => {
+    const grouped = productMap(root);
+    const legacyRoot = join(root, "legacy");
+    mkdirSync(legacyRoot);
+    const legacy = legacyProductMap(legacyRoot);
+    const cases = [
+      {
+        group: undefined,
+        map: grouped.path,
+        message: /grouped .* requires KANDELO_PAGES_VFS_ASSET_GROUP_DIR/,
+      },
+      {
+        group: legacy.assetGroupDirectory,
+        map: legacy.path,
+        message: /legacy .* must omit KANDELO_PAGES_VFS_ASSET_GROUP_DIR/,
+      },
+    ];
+    const savedEnvironment = process.env;
+    try {
+      for (const entry of cases) {
+        process.env = {
+          ...savedEnvironment,
+          KANDELO_PAGES_PRODUCT_MAP: entry.map,
+          VITE_BASE: "/kandelo/",
+        };
+        if (entry.group === undefined) {
+          delete process.env.KANDELO_PAGES_VFS_ASSET_GROUP_DIR;
+        } else {
+          process.env.KANDELO_PAGES_VFS_ASSET_GROUP_DIR = entry.group;
+        }
+        await assert.rejects(
+          loadConfigFromFile(
+            { command: "build", mode: "production" },
+            join(repoRoot, "apps/browser-demos/vite.config.ts"),
+            undefined,
+            "silent",
+          ),
+          entry.message,
+        );
+      }
+    } finally {
+      process.env = savedEnvironment;
+    }
+  });
+});
+
+test("default executor preserves the legacy ABI Pages map-only path", () => {
+  withTempDir((root) => {
+    const isolatedSource = join(root, "source");
+    copyPagesAuthority(isolatedSource);
+    const fixture = legacyProductMap(root);
+    const cacheRoot = join(root, "binary-cache");
+    mkdirSync(cacheRoot);
+    const savedCacheRoot = process.env.WASM_POSIX_BINARY_CACHE_ROOT;
+    process.env.WASM_POSIX_BINARY_CACHE_ROOT = cacheRoot;
+    try {
+      const metadata = buildFinalPagesSite({
+        outputRoot: join(root, "site"),
+        productMapPath: fixture.path,
+        sourceRoot: isolatedSource,
+      });
+      assert.equal(metadata.products.length, 7);
+      assert.equal(
+        metadata.files.some(({ path }) => path.includes("vfs-groups/")),
+        false,
+      );
+    } finally {
+      if (savedCacheRoot === undefined) {
+        delete process.env.WASM_POSIX_BINARY_CACHE_ROOT;
+      } else {
+        process.env.WASM_POSIX_BINARY_CACHE_ROOT = savedCacheRoot;
+      }
+    }
+  });
+});
+
+test("grouped site maps require their explicit asset-group directory before execution", () => {
+  withTempDir((root) => {
+    const fixture = productMap(root);
+    let executed = false;
+    assert.throws(
+      () =>
+        buildFinalPagesSite({
+          execute() {
+            executed = true;
+          },
+          outputRoot: join(root, "site"),
+          productMapPath: fixture.path,
+          sourceRoot: repoRoot,
+        }),
+      /grouped private Pages product map requires an asset-group directory/,
+    );
+    assert.equal(executed, false);
+  });
+});
+
+function copyPagesAuthority(destination: string): void {
+  const paths = [
+    "abi/staging/legacy-vfs-adapters.toml",
+    "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts",
+    "apps/browser-demos/pages/kandelo/kernel-host/optional-demo-vfs.ts",
+    "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-gallery.json",
+    "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.generated.json",
+    "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.toml",
+    "apps/browser-demos/pages/kandelo/presets.ts",
+    "apps/browser-demos/vite.config.ts",
+    "host/src/browser-kernel-default-artifacts.ts",
+    "images/vfs/products/generated/catalog.json",
+    "run.sh",
+  ];
+  for (const path of paths) {
+    const target = join(destination, path);
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(join(repoRoot, path), target);
+  }
+  const devShell = join(destination, "scripts/dev-shell.sh");
+  mkdirSync(dirname(devShell), { recursive: true });
+  writeFileSync(
+    devShell,
+    `#!/usr/bin/env bash
+set -euo pipefail
+output=""
+previous=""
+legacy_map=0
+group=0
+for argument in "$@"; do
+  if [[ "$argument" == KANDELO_PAGES_PRODUCT_MAP=* ]]; then legacy_map=1; fi
+  if [[ "$argument" == KANDELO_PAGES_VFS_ASSET_GROUP_DIR=* ]]; then group=1; fi
+  if [[ "$previous" == "--outDir" ]]; then output="$argument"; fi
+  previous="$argument"
+done
+if [[ "$*" == *"apps/browser-demos"* ]] &&
+   [[ "$legacy_map" -ne 1 || "$group" -ne 0 ]]; then
+  exit 91
+fi
+if [[ -z "$output" ]]; then output="\${@: -1}"; fi
+mkdir -p "$output"
+printf '%s\\n' "$output" > "$output/index.html"
+`,
+  );
+  chmodSync(devShell, 0o755);
+}
+
+test("rejects private asset-group paths that are unsafe as URL-relative paths", () => {
+  withTempDir((root) => {
+    const fixture = productMap(root);
+    const cases = [
+      "vfs-groups/release-1/manifest.json?cache=1",
+      "vfs-groups/release-1/manifest.json#fragment",
+      "vfs-groups/%2e%2e/release-1/manifest.json",
+      "vfs-groups/release-1%2fescape/manifest.json",
+      "vfs-groups/release-1%5cescape/manifest.json",
+    ];
+    for (const [index, path] of cases.entries()) {
+      const map = structuredClone(fixture.map);
+      for (const product of map.products) product.asset_group.path = path;
+      assert.throws(
+        () => loadCanonicalPagesProductMap(authorityOptions(writeMap(root, `unsafe-group-${index}.json`, map))),
+        /asset group identity/i,
+        path,
+      );
+    }
+  });
+});
+
 test("canonical Pages replaces legacy browser binaries without consulting a cache", async () => {
   await withTempDirAsync(async (root) => {
     const project = join(root, "vite-project");
@@ -176,9 +449,9 @@ test("canonical Pages replaces legacy browser binaries without consulting a cach
   });
 });
 
-test("canonical Vite mode exports exact URLs without emitting or consulting legacy VFS", async () => {
+test("canonical Vite mode exports /a/ product URLs without emitting or consulting legacy VFS", async () => {
   await withTempDirAsync(async (root) => {
-    const fixture = productMap(root);
+    const fixture = legacyProductMap(root);
     const loaded = loadCanonicalPagesProductMap(authorityOptions(fixture.path));
     const project = join(root, "vite-project");
     const mirror = join(project, "binaries");
@@ -222,7 +495,7 @@ test("canonical Vite mode exports exact URLs without emitting or consulting lega
     };
     const output = join(root, "vite-output");
     await viteBuild({
-      base: "/kandelo/",
+      base: "/a/",
       build: {
         emptyOutDir: true,
         lib: { entry: join(project, "entry.ts"), formats: ["es"] },
@@ -235,7 +508,7 @@ test("canonical Vite mode exports exact URLs without emitting or consulting lega
       configFile: false,
       plugins: [
         createCanonicalPagesVfsProductsPlugin({
-          base: "/kandelo/",
+          base: "/a/",
           map: loaded,
           mirrorRoots: [mirror],
         }),
@@ -247,11 +520,16 @@ test("canonical Vite mode exports exact URLs without emitting or consulting lega
     const module = await import(`${pathToFileURL(join(output, "entry.mjs")).href}?t=${Date.now()}`);
     const observed = await module.observed();
     const byId = new Map(loaded.products.map((entry) => [entry.id, entry]));
-    const url = (id: string) => `/kandelo/${byId.get(id)!.path}`;
+    const url = (id: string) => `/a/${byId.get(id)!.path}`;
     assert.deepEqual(observed.products, loaded.products.map(({ private_path: _, ...entry }) => ({
       ...entry,
-      path: `/kandelo/${entry.path}`,
+      path: `/a/${entry.path}`,
     })));
+    assert.equal(
+      observed.products.every((entry: object) =>
+        !Object.hasOwn(entry, "asset_group")),
+      true,
+    );
     assert.deepEqual({
       rootfs: observed.rootfs,
       shell: observed.shell,
@@ -280,9 +558,157 @@ test("canonical Vite mode exports exact URLs without emitting or consulting lega
   });
 });
 
-test("canonical Vite mode fails closed for an unknown VFS request", async () => {
+test("canonical Vite mode claims verified SourceOnly VFS virtual IDs before asset emission", async () => {
+  await withTempDirAsync(async (root) => {
+    const fixture = legacyProductMap(root);
+    const loaded = loadCanonicalPagesProductMap(authorityOptions(fixture.path));
+    const project = join(root, "source-only-virtual-project");
+    mkdirSync(project);
+    writeFileSync(
+      join(project, "entry.ts"),
+      `
+      import nginx from "virtual:kandelo-source-only-asset:programs%2Fwasm32%2Fnginx-vfs.vfs.zst";
+      export default nginx;
+    `,
+    );
+    let sourceOnlyFallbacks = 0;
+    const output = join(root, "source-only-virtual-output");
+    await viteBuild({
+      base: "/a/",
+      build: {
+        emptyOutDir: true,
+        lib: { entry: join(project, "entry.ts"), formats: ["es"] },
+        minify: false,
+        outDir: output,
+        rollupOptions: { output: { entryFileNames: "entry.mjs" } },
+      },
+      configFile: false,
+      plugins: [
+        createCanonicalPagesVfsProductsPlugin({
+          base: "/a/",
+          map: loaded,
+          mirrorRoots: [project],
+        }),
+        {
+          name: "source-only-virtual-fallback",
+          resolveId(source) {
+            if (!source.startsWith("virtual:kandelo-source-only-asset:"))
+              return null;
+            sourceOnlyFallbacks += 1;
+            return "\0source-only-virtual-fallback";
+          },
+          load(id) {
+            return id === "\0source-only-virtual-fallback"
+              ? 'export default "/legacy-nginx.vfs.zst";\n'
+              : null;
+          },
+        },
+      ],
+      root: project,
+    });
+    assert.equal(sourceOnlyFallbacks, 0);
+    const module = await import(
+      `${pathToFileURL(join(output, "entry.mjs")).href}?t=${Date.now()}`
+    );
+    assert.equal(
+      module.default,
+      `/a/${loaded.products.find(({ id }) => id === "browser-nginx")!.path}`,
+    );
+  });
+});
+
+test("canonical Vite writeBundle copies the complete authenticated group beneath both output bases", async () => {
   await withTempDirAsync(async (root) => {
     const fixture = productMap(root);
+    const loaded = loadCanonicalPagesProductMap(authorityOptions(fixture.path));
+    const project = join(root, "group-project");
+    mkdirSync(project);
+    writeFileSync(join(project, "entry.ts"), "export default true;\n");
+    mkdirSync(join(project, "public"));
+    writeFileSync(
+      join(project, "public", "service-worker.js"),
+      'const cacheVersion = null /*__KANDELO_VFS_LAZY_CACHE_VERSION__*/;\n',
+    );
+    for (const base of ["/a/", "/candidate-b/"]) {
+      const output = join(root, `output-${base.split("/")[1]}`);
+      await viteBuild({
+        base,
+        build: {
+          emptyOutDir: true,
+          lib: { entry: join(project, "entry.ts"), formats: ["es"] },
+          outDir: output,
+        },
+        configFile: false,
+        plugins: [
+          createCanonicalPagesVfsProductsPlugin({
+            assetGroupDirectory: fixture.assetGroupDirectory,
+            base,
+            map: loaded,
+            mirrorRoots: [project],
+          }),
+        ],
+        root: project,
+      });
+      assert.deepEqual(
+        inventory(join(output, "vfs-groups/release-1")),
+        inventory(fixture.assetGroupDirectory),
+      );
+      assert.equal(inventory(output).includes("private-map.json"), false);
+      assert.equal(
+        readFileSync(join(output, "service-worker.js"), "utf8"),
+        `const cacheVersion = "${loaded.products[0]!.asset_group!.sha256}";\n`,
+      );
+    }
+  });
+});
+
+test("canonical Vite writeBundle rejects an existing group destination conflict", async () => {
+  await withTempDirAsync(async (root) => {
+    const fixture = productMap(root);
+    const loaded = loadCanonicalPagesProductMap(authorityOptions(fixture.path));
+    const project = join(root, "conflict-project");
+    const output = join(root, "conflict-output");
+    mkdirSync(project);
+    writeFileSync(join(project, "entry.ts"), "export default true;\n");
+    await assert.rejects(
+      viteBuild({
+        base: "/a/",
+        build: {
+          emptyOutDir: true,
+          lib: { entry: join(project, "entry.ts"), formats: ["es"] },
+          outDir: output,
+        },
+        configFile: false,
+        plugins: [
+          {
+            name: "write-group-conflict",
+            writeBundle() {
+              mkdirSync(join(output, "vfs-groups/release-1"), {
+                recursive: true,
+              });
+              writeFileSync(
+                join(output, "vfs-groups/release-1/conflict.txt"),
+                "conflict\n",
+              );
+            },
+          },
+          createCanonicalPagesVfsProductsPlugin({
+            assetGroupDirectory: fixture.assetGroupDirectory,
+            base: "/a/",
+            map: loaded,
+            mirrorRoots: [project],
+          }),
+        ],
+        root: project,
+      }),
+      /output path conflicts/,
+    );
+  });
+});
+
+test("canonical Vite mode fails closed for an unknown VFS request", async () => {
+  await withTempDirAsync(async (root) => {
+    const fixture = legacyProductMap(root);
     const loaded = loadCanonicalPagesProductMap(authorityOptions(fixture.path));
     const project = join(root, "unknown-project");
     mkdirSync(project);
@@ -307,7 +733,7 @@ test("canonical Vite mode fails closed for an unknown VFS request", async () => 
 
 test("canonical Vite mode rejects a fragmented VFS request before fallback", async () => {
   await withTempDirAsync(async (root) => {
-    const fixture = productMap(root);
+    const fixture = legacyProductMap(root);
     const loaded = loadCanonicalPagesProductMap(authorityOptions(fixture.path));
     const project = join(root, "fragment-project");
     mkdirSync(project);
@@ -399,6 +825,10 @@ test("assembles browser, documentation, API, and exactly seven canonical VFS fil
         assert.ok(command.environment.TMPDIR?.startsWith(root));
         if (command.name === "browser") {
           assert.ok(command.arguments.includes(`KANDELO_PAGES_PRODUCT_MAP=${fixture.path}`));
+          assert.equal(
+            command.arguments.filter((argument) => argument.startsWith("VITE_BASE=")).join(","),
+            "VITE_BASE=/kandelo/",
+          );
           mkdirSync(command.output, { recursive: true });
           writeFileSync(join(command.output, "index.html"), "browser\n");
           mkdirSync(join(command.output, "assets"));
@@ -411,26 +841,102 @@ test("assembles browser, documentation, API, and exactly seven canonical VFS fil
           writeFileSync(join(command.output, "index.html"), "api\n");
         }
       },
+      assetGroupDirectory: fixture.assetGroupDirectory,
       outputRoot,
       productMapPath: fixture.path,
       sourceRoot: repoRoot,
     });
     assert.deepEqual(commands.map(({ name }) => name), ["browser", "documentation", "api"]);
-    const vfs = metadata.files.filter(({ path }) => /\.vfs(?:\.zst)?$/u.test(path));
+    const vfs = metadata.files.filter(({ path }) => path.startsWith("products/"));
     assert.deepEqual(
       vfs.map(({ path }) => path),
       fixture.map.products.map(({ path }) => path).sort(),
     );
     assert.equal(vfs.length, 7);
+    const groupVfs = metadata.files.filter(({ path }) => path.startsWith("vfs-groups/release-1/images/"));
+    assert.deepEqual(
+      groupVfs.map(({ path }) => path),
+      fixture.map.products.map(({ id }) => `vfs-groups/release-1/images/${id}.vfs.zst`).sort(),
+    );
+    assert.equal(groupVfs.length, 7);
     assert.equal(metadata.files.length, inventory(outputRoot).length);
     assert.deepEqual(metadata.products, gallery.products);
     assert.equal(metadata.browser.path, "index.html");
     assert.equal(metadata.documentation.path, "guide/index.html");
     assert.equal(metadata.api.path, "api/index.html");
     assert.deepEqual(
+      readFileSync(join(outputRoot, "vfs-groups/release-1/manifest.json"), "utf8"),
+      readFileSync(join(fixture.assetGroupDirectory, "manifest.json"), "utf8"),
+    );
+    assert.deepEqual(
       inventory(join(outputRoot, "assets")).filter((path) => /\.vfs(?:\.zst)?$/u.test(path)),
       [],
     );
+  });
+});
+
+test("rejects missing, corrupt, and unlisted files from the declared asset-group inventory", () => {
+  const cases: Array<[string, (directory: string) => void]> = [
+    ["missing asset", (directory) => rmSync(join(directory, "assets/runtime.wasm"))],
+    ["corrupt asset", (directory) => writeFileSync(join(directory, "assets/runtime.wasm"), "corrupt\n")],
+    ["unlisted VFS", (directory) => writeFileSync(join(directory, "images/unlisted.vfs.zst"), "unlisted\n")],
+    ["linked asset", (directory) => {
+      rmSync(join(directory, "assets/runtime.wasm"));
+      symlinkSync(join(directory, "manifest.json"), join(directory, "assets/runtime.wasm"));
+    }],
+  ];
+  for (const [name, mutate] of cases) {
+    withTempDir((root) => {
+      const fixture = productMap(root);
+      mutate(fixture.assetGroupDirectory);
+      assert.throws(
+        () => buildFinalPagesSite({
+          execute(command) {
+            mkdirSync(command.output, { recursive: true });
+            writeFileSync(join(command.output, "index.html"), `${command.name}\n`);
+          },
+          assetGroupDirectory: fixture.assetGroupDirectory,
+          outputRoot: join(root, `site-${name}`),
+          productMapPath: fixture.path,
+          sourceRoot: repoRoot,
+        }),
+        /asset group.*inventory|symbolic link/i,
+        name,
+      );
+    });
+  }
+});
+
+test("rejects copied asset-group drift before final output publication", () => {
+  withTempDir((root) => {
+    const fixture = productMap(root);
+    const outputRoot = join(root, "site");
+    let browserOutput = "";
+    assert.throws(
+      () =>
+        buildFinalPagesSite({
+          execute(command) {
+            mkdirSync(command.output, { recursive: true });
+            writeFileSync(join(command.output, "index.html"), `${command.name}\n`);
+            if (command.name === "browser") browserOutput = command.output;
+            if (command.name === "documentation") {
+              writeFileSync(
+                join(
+                  browserOutput,
+                  "vfs-groups/release-1/assets/runtime.wasm",
+                ),
+                "changed after copy\n",
+              );
+            }
+          },
+          assetGroupDirectory: fixture.assetGroupDirectory,
+          outputRoot,
+          productMapPath: fixture.path,
+          sourceRoot: repoRoot,
+        }),
+      /copied asset group.*inventory/i,
+    );
+    assert.equal(existsSync(outputRoot), false);
   });
 });
 
@@ -440,8 +946,8 @@ test("propagates one isolated binary cache root through the Phase B dev shell", 
       join(repoRoot, ".github/workflows/abi-staging-pages-canary.yml"),
       "utf8",
     );
-    const produceStart = workflow.indexOf("- name: Produce admitted canonical Pages products");
-    const produceEnd = workflow.indexOf("- name: Validate the complete canonical Pages tree");
+    const produceStart = workflow.indexOf("- name: Prepare exact uncredentialed runtime");
+    const produceEnd = workflow.indexOf("- name: Write the bounded production handoff");
     assert.notEqual(produceStart, -1);
     assert.ok(produceEnd > produceStart);
     assert.match(
@@ -449,7 +955,7 @@ test("propagates one isolated binary cache root through the Phase B dev shell", 
       /bash scripts\/dev-shell\.sh env \\\n+\s+"WASM_POSIX_BINARY_CACHE_ROOT=\$WASM_POSIX_BINARY_CACHE_ROOT"/u,
     );
 
-    const fixture = productMap(root);
+    const fixture = legacyProductMap(root);
     const cacheRoot = join(root, "isolated-program-cache");
     mkdirSync(cacheRoot);
     const savedCacheRoot = process.env.WASM_POSIX_BINARY_CACHE_ROOT;
@@ -491,7 +997,7 @@ test("propagates one isolated binary cache root through the Phase B dev shell", 
 
 test("rejects VFS emitted by Vite and symlinks from every build", () => {
   withTempDir((root) => {
-    const fixture = productMap(root);
+    const fixture = legacyProductMap(root);
     const run = (
       mutation: "vite-vfs" | "vite-hashed-vfs" | "vite-hidden-vfs" | "symlink",
     ) => buildFinalPagesSite({

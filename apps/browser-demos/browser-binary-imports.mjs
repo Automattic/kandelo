@@ -100,11 +100,9 @@ function staticModuleReferences(text, file) {
       if (patterns?.type === "StringLiteral") {
         references.push({ kind: "glob", specifier: patterns.value });
       } else if (patterns?.type === "ArrayExpression") {
-        for (const element of patterns.elements) {
-          if (element?.type === "StringLiteral") {
-            references.push({ kind: "glob", specifier: element.value });
-          }
-        }
+        throw new Error(
+          `array-valued import.meta.glob is not admitted by the browser binary boundary: ${file}`,
+        );
       }
     }
     for (const value of Object.values(node)) {
@@ -371,9 +369,6 @@ function browserHtmlEntryModules(repoRoot, browserRoot, entry) {
       throw new Error(`required browser HTML module is not source code: ${source}`);
     }
     modules.push(resolved);
-  }
-  if (modules.length === 0) {
-    throw new Error(`required browser HTML entry has no module script: ${entry}`);
   }
   return modules;
 }

@@ -10,12 +10,17 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 
 import type { Plugin, ResolvedConfig } from "vite";
 
 import { ABI_VERSION } from "../host/src/generated/abi.ts";
+import { normalizeDeploymentBase } from "../web-libs/kandelo-session/src/deployment-scope.ts";
+import {
+  validateVfsAssetGroupManifest,
+  validateVfsAssetGroupRelativePath,
+} from "../web-libs/kandelo-session/src/vfs-asset-group.ts";
 import { loadVfsProductCatalog } from "./vfs-product-catalog.mjs";
 import {
   checkPagesVfsProductRegistry,
@@ -38,8 +43,14 @@ const VIRTUAL_PRODUCTS = "virtual:kandelo-pages-vfs-products";
 const RESOLVED_VIRTUAL_PRODUCTS = `\0${VIRTUAL_PRODUCTS}`;
 const RESOLVED_PRODUCT_URL = "\0kandelo-pages-vfs-product-url:";
 const RESOLVED_UNAVAILABLE_BINARY = "\0kandelo-pages-unavailable-binary:";
+const SOURCE_ONLY_VIRTUAL_ASSET = "virtual:kandelo-source-only-asset:";
+const VFS_LAZY_CACHE_VERSION_PLACEHOLDER =
+  "__KANDELO_VFS_LAZY_CACHE_VERSION__";
+const VFS_LAZY_CACHE_VERSION_SOURCE =
+  `null /*${VFS_LAZY_CACHE_VERSION_PLACEHOLDER}*/`;
 
 export interface CanonicalPagesProductMapEntryV1 {
+  asset_group?: PagesFileIdentityV1;
   bytes: number;
   id: string;
   load: "eager" | "lazy";
@@ -112,6 +123,8 @@ export interface PagesSiteBuildCommand {
 
 export interface BuildFinalPagesSiteOptions {
   additionalFiles?: ReadonlyArray<PagesFileIdentityV1 & { body: Uint8Array }>;
+  /** Internal handoff: the already-authenticated group tree to publish. */
+  assetGroupDirectory?: string;
   execute?(command: PagesSiteBuildCommand): void;
   outputRoot: string;
   productMapPath: string;
@@ -163,9 +176,15 @@ export function loadCanonicalPagesProductMap(options: {
     throw new Error("private Pages product map differs from the exact Pages product set");
   }
   const products = value.products.map((candidate: unknown, index: number) => {
+    const declaresAssetGroup = candidate !== null &&
+      typeof candidate === "object" && !Array.isArray(candidate) &&
+      Object.hasOwn(candidate, "asset_group");
     exactKeys(
       candidate,
-      ["bytes", "id", "load", "path", "private_path", "sha256"],
+      [
+        ...(declaresAssetGroup ? ["asset_group"] : []),
+        "bytes", "id", "load", "path", "private_path", "sha256",
+      ],
       `private Pages product ${index}`,
     );
     const entry = candidate as CanonicalPagesProductMapEntryV1;
@@ -189,7 +208,22 @@ export function loadCanonicalPagesProductMap(options: {
     ) {
       throw new Error(`private Pages product ${entry.id} has an invalid byte identity`);
     }
-    const expectedPath = canonicalProductPath(entry.id, entry.sha256, ABI_VERSION);
+    let assetGroup: Readonly<PagesFileIdentityV1> | undefined;
+    if (entry.asset_group !== undefined) {
+      exactKeys(entry.asset_group, ["bytes", "path", "sha256"], `private Pages product ${entry.id} asset group`);
+      let assetGroupPath: string;
+      try {
+        assetGroupPath = validateVfsAssetGroupRelativePath(entry.asset_group.path);
+      } catch {
+        throw new Error(`private Pages product ${entry.id} has an invalid asset group identity`);
+      }
+      if (!Number.isSafeInteger(entry.asset_group.bytes) || entry.asset_group.bytes < 1 ||
+          !SHA256.test(entry.asset_group.sha256)) {
+        throw new Error(`private Pages product ${entry.id} has an invalid asset group identity`);
+      }
+      assetGroup = Object.freeze({ ...entry.asset_group, path: assetGroupPath });
+    }
+    const expectedPath = canonicalPagesProductPath(entry.id, entry.sha256, ABI_VERSION);
     if (entry.path !== expectedPath || entry.path.includes("-candidates/")) {
       throw new Error(`private Pages product ${entry.id} lacks its current-ABI canonical product path`);
     }
@@ -203,8 +237,24 @@ export function loadCanonicalPagesProductMap(options: {
     if (body.byteLength !== entry.bytes || sha256(body) !== entry.sha256) {
       throw new Error(`private product ${entry.id} differs from its authenticated identity`);
     }
-    return Object.freeze({ ...entry, private_path: privatePath });
+    return Object.freeze({
+      ...entry,
+      ...(assetGroup === undefined ? {} : { asset_group: assetGroup }),
+      private_path: privatePath,
+    });
   });
+  const assetGroupCount = products.filter((entry) =>
+    entry.asset_group !== undefined).length;
+  if (assetGroupCount !== 0 && assetGroupCount !== products.length) {
+    throw new Error(
+      "private Pages products must all declare an asset group or all omit it",
+    );
+  }
+  const assetGroup = products[0]?.asset_group;
+  if (assetGroup !== undefined &&
+      products.some((entry) => !jsonEqual(entry.asset_group, assetGroup))) {
+    throw new Error("private Pages products must share one asset group identity");
+  }
 
   const productByLegacyFilename = new Map<string, string>();
   const productById = new Map<string, { architecture: string }>();
@@ -238,31 +288,59 @@ export function loadCanonicalPagesProductMap(options: {
 }
 
 export function createCanonicalPagesVfsProductsPlugin(options: {
+  assetGroupDirectory?: string;
   base: string;
   map: CanonicalPagesProductMapV1 | null;
   mirrorRoots: readonly string[];
 }): Plugin {
-  const base = canonicalBase(options.base);
+  const base = normalizeDeploymentBase(options.base);
   const authority = options.map === null ? undefined : mapAuthorities.get(options.map);
   if (options.map !== null && authority === undefined) {
     throw new Error("canonical Pages VFS plugin requires a validated private product map");
   }
+  const declaresAssetGroup = options.map?.products[0]?.asset_group !== undefined;
+  if (options.assetGroupDirectory !== undefined && !declaresAssetGroup) {
+    throw new Error(
+      "canonical Pages VFS asset group requires a grouped private product map",
+    );
+  }
+  if (declaresAssetGroup && options.assetGroupDirectory === undefined) {
+    throw new Error(
+      "grouped private Pages product map requires an asset-group directory",
+    );
+  }
+  const assetGroupDirectory =
+    options.assetGroupDirectory === undefined
+      ? undefined
+      : exactDirectory(
+          options.assetGroupDirectory,
+          "Pages asset group directory",
+        );
+  if (assetGroupDirectory !== undefined) {
+    validateCanonicalPagesAssetGroup(options.map!, assetGroupDirectory);
+  }
   const mirrorRoots = options.mirrorRoots.map(canonicalizeFromExistingAncestor);
-  const publicProducts = options.map?.products.map(({ private_path: _privatePath, ...entry }) => ({
-    ...entry,
-    path: `${base}${entry.path}`,
-  })) ?? null;
+  const publicProducts = options.map?.products.map(
+    ({ private_path: _privatePath, asset_group, ...entry }) => ({
+      ...entry,
+      ...(asset_group === undefined
+        ? {}
+        : { asset_group: { ...asset_group, path: `${base}${asset_group.path}` } }),
+      path: `${base}${entry.path}`,
+    })) ?? null;
   const byId = new Map(options.map?.products.map((entry) => [entry.id, entry]) ?? []);
   let resolvedBase = base;
+  let outputRoot: string | undefined;
 
   return {
     name: "canonical-pages-vfs-products",
     enforce: "pre",
     configResolved(config: ResolvedConfig) {
-      resolvedBase = canonicalBase(config.base);
+      resolvedBase = normalizeDeploymentBase(config.base);
       if (resolvedBase !== base) {
         throw new Error(`canonical Pages VFS base changed from ${base} to ${resolvedBase}`);
       }
+      outputRoot = resolve(config.root, config.build.outDir);
     },
     resolveId(source, importer) {
       if (source === VIRTUAL_PRODUCTS) return RESOLVED_VIRTUAL_PRODUCTS;
@@ -293,6 +371,24 @@ export function createCanonicalPagesVfsProductsPlugin(options: {
       if (product === undefined) this.error(`unknown canonical Pages VFS product ${productId}`);
       return `export default ${JSON.stringify(`${resolvedBase}${product.path}`)};\n`;
     },
+    writeBundle: {
+      order: "post",
+      handler() {
+        if (assetGroupDirectory === undefined) return;
+        if (outputRoot === undefined) {
+          throw new Error(
+            "canonical Pages VFS output directory was not resolved",
+          );
+        }
+        copyCanonicalPagesAssetGroup(
+          options.map!,
+          assetGroupDirectory,
+          outputRoot,
+          false,
+        );
+        injectGroupedLazyCacheVersion(options.map!, outputRoot);
+      },
+    },
   };
 }
 
@@ -307,6 +403,21 @@ export function buildFinalPagesSite(
     MAX_MAP_BYTES,
   );
   const map = loadCanonicalPagesProductMap({ mapPath: productMapPath, sourceRoot });
+  const assetGroupDirectory = options.assetGroupDirectory === undefined
+    ? undefined
+    : exactDirectory(options.assetGroupDirectory, "Pages asset group directory");
+  const declaresAssetGroup = map.products[0]?.asset_group !== undefined;
+  if (declaresAssetGroup && assetGroupDirectory === undefined) {
+    throw new Error(
+      "grouped private Pages product map requires an asset-group directory",
+    );
+  }
+  if (!declaresAssetGroup && assetGroupDirectory !== undefined) {
+    throw new Error(
+      "legacy private Pages product map must omit the asset-group directory",
+    );
+  }
+  let groupVfs = new Map<string, PagesFileIdentityV1>();
   const authority = mapAuthorities.get(map)!;
   const execute = options.execute ?? executeBuildCommand;
   const binaryCacheRoot = isolatedBinaryCacheRoot(options.execute === undefined);
@@ -321,6 +432,7 @@ export function buildFinalPagesSite(
   mkdirSync(temporary, { mode: 0o700 });
   const environment = safeBuildEnvironment(home, temporary);
   const devShell = join(sourceRoot, "scripts/dev-shell.sh");
+  const publicationBase = normalizeDeploymentBase("/kandelo/");
   const childEnvironment = [
     `HOME=${home}`,
     `TMPDIR=${temporary}`,
@@ -339,7 +451,10 @@ export function buildFinalPagesSite(
           ? []
           : [`WASM_POSIX_BINARY_CACHE_ROOT=${binaryCacheRoot}`]),
         `KANDELO_PAGES_PRODUCT_MAP=${productMapPath}`,
-        "VITE_BASE=/kandelo/",
+        ...(assetGroupDirectory === undefined
+          ? []
+          : [`KANDELO_PAGES_VFS_ASSET_GROUP_DIR=${assetGroupDirectory}`]),
+        `VITE_BASE=${publicationBase}`,
         "VITE_CORS_PROXY_URL=https://wordpress-playground-cors-proxy.net/?",
         "npm", "--prefix", "apps/browser-demos", "run", "build", "--",
         "--outDir", browserOutput, "--emptyOutDir",
@@ -351,9 +466,27 @@ export function buildFinalPagesSite(
       workingDirectory: sourceRoot,
     });
     assertExactBuildOutput(browserOutput, "browser build");
-    const viteVfs = inventoryTree(browserOutput, MAX_SITE_BYTES).find(({ path }) => isVfsSpecifier(path));
-    if (viteVfs !== undefined) {
-      throw new Error(`Vite output contains VFS artifact ${viteVfs.path}`);
+    if (assetGroupDirectory !== undefined) {
+      groupVfs = copyCanonicalPagesAssetGroup(
+        map,
+        assetGroupDirectory,
+        browserOutput,
+        true,
+      );
+    }
+    const viteVfs = inventoryTree(browserOutput, MAX_SITE_BYTES)
+      .filter(({ path }) => isVfsSpecifier(path));
+    if (
+      viteVfs.length !== groupVfs.size ||
+      viteVfs.some((file) => {
+        const expected = groupVfs.get(file.path);
+        return expected === undefined || expected.bytes !== file.bytes ||
+          expected.sha256 !== file.sha256;
+      })
+    ) {
+      throw new Error(
+        "Vite output contains VFS artifacts outside the declared asset-group inventory",
+      );
     }
 
     execute({
@@ -384,6 +517,16 @@ export function buildFinalPagesSite(
       workingDirectory: sourceRoot,
     });
     assertExactBuildOutput(apiOutput, "API build");
+    if (assetGroupDirectory !== undefined) {
+      const validated = validateCanonicalPagesAssetGroup(
+        map,
+        assetGroupDirectory,
+      );
+      validateCopiedAssetGroup(
+        join(browserOutput, validated.destinationDirectory),
+        validated.sourceInventory,
+      );
+    }
 
     mkdirSync(outputRoot, { mode: 0o755 });
     copyTreeWithoutLinks(browserOutput, outputRoot);
@@ -406,16 +549,17 @@ export function buildFinalPagesSite(
       writeExactSiteFile(outputRoot, file.path, file.body);
     }
     const files = inventoryTree(outputRoot, MAX_SITE_BYTES);
-    const expectedVfs = new Map(map.products.map((entry) => [entry.path, entry]));
+    const expectedCanonicalVfs = new Map(map.products.map((entry) => [entry.path, entry]));
+    const expectedVfs = new Map([...expectedCanonicalVfs, ...groupVfs]);
     const actualVfs = files.filter(({ path }) => isVfsSpecifier(path));
     if (
-      actualVfs.length !== map.products.length ||
+      actualVfs.length !== expectedVfs.size ||
       actualVfs.some((file) => {
         const expected = expectedVfs.get(file.path);
         return expected === undefined || expected.bytes !== file.bytes || expected.sha256 !== file.sha256;
       })
     ) {
-      throw new Error("final Pages site differs from the exact seven canonical VFS paths");
+      throw new Error("final Pages site differs from its canonical or declared group VFS paths");
     }
     const identity = (path: string, label: string): PagesFileIdentityV1 => {
       const value = files.find((file) => file.path === path);
@@ -439,6 +583,187 @@ export function buildFinalPagesSite(
   }
 }
 
+interface ValidatedCanonicalPagesAssetGroup {
+  destinationDirectory: string;
+  sourceInventory: PagesFileIdentityV1[];
+  vfs: Map<string, PagesFileIdentityV1>;
+}
+
+function validateCanonicalPagesAssetGroup(
+  map: CanonicalPagesProductMapV1,
+  assetGroupDirectory: string,
+): ValidatedCanonicalPagesAssetGroup {
+  if (mapAuthorities.get(map) === undefined) {
+    throw new Error(
+      "Pages asset group requires a validated private product map",
+    );
+  }
+  const identity = map.products[0]!.asset_group!;
+  const sourceManifest = readFileSync(
+    join(assetGroupDirectory, basename(identity.path)),
+  );
+  if (
+    sourceManifest.byteLength !== identity.bytes ||
+    sha256(sourceManifest) !== identity.sha256
+  ) {
+    throw new Error(
+      "Pages asset group directory differs from its authenticated manifest identity",
+    );
+  }
+  let manifest: ReturnType<typeof validateVfsAssetGroupManifest>;
+  try {
+    manifest = validateVfsAssetGroupManifest(
+      JSON.parse(sourceManifest.toString("utf8")),
+    );
+  } catch (error) {
+    throw new Error(`Pages asset group manifest is invalid: ${String(error)}`);
+  }
+  if (manifest.products.length !== map.products.length) {
+    throw new Error("Pages asset group differs from the exact product set");
+  }
+  const sourceFiles = new Map<string, PagesFileIdentityV1>();
+  const addSourceFile = (path: string, file: PagesFileIdentityV1): void => {
+    if (sourceFiles.has(path)) {
+      throw new Error(
+        "Pages asset group manifest repeats its source inventory path",
+      );
+    }
+    sourceFiles.set(path, { ...file, path });
+  };
+  addSourceFile(basename(identity.path), {
+    bytes: identity.bytes,
+    path: basename(identity.path),
+    sha256: identity.sha256,
+  });
+  const vfs = new Map(
+    manifest.products.map((product) => {
+      const mapProduct = map.products.find((entry) => entry.id === product.id);
+      if (
+        mapProduct === undefined ||
+        product.image.bytes !== mapProduct.bytes ||
+        product.image.sha256 !== mapProduct.sha256
+      ) {
+        throw new Error(
+          `Pages asset group image ${product.id} differs from its product identity`,
+        );
+      }
+      addSourceFile(product.image.path, product.image);
+      const path = join(dirname(identity.path), product.image.path)
+        .split(sep)
+        .join("/");
+      return [
+        path,
+        { bytes: product.image.bytes, path, sha256: product.image.sha256 },
+      ];
+    }),
+  );
+  for (const asset of manifest.assets) {
+    if (isVfsSpecifier(asset.path)) {
+      throw new Error("Pages asset group manifest may not declare VFS assets");
+    }
+    addSourceFile(asset.path, asset);
+  }
+  const sourceInventory = inventoryTree(assetGroupDirectory, MAX_SITE_BYTES);
+  if (
+    sourceInventory.length !== sourceFiles.size ||
+    sourceInventory.some((file) => {
+      const expected = sourceFiles.get(file.path);
+      return (
+        expected === undefined ||
+        expected.bytes !== file.bytes ||
+        expected.sha256 !== file.sha256
+      );
+    })
+  ) {
+    throw new Error(
+      "Pages asset group directory inventory differs from its manifest",
+    );
+  }
+  return {
+    destinationDirectory: dirname(identity.path),
+    sourceInventory,
+    vfs,
+  };
+}
+
+function copyCanonicalPagesAssetGroup(
+  map: CanonicalPagesProductMapV1,
+  assetGroupDirectory: string,
+  outputRoot: string,
+  allowIdenticalExisting: boolean,
+): Map<string, PagesFileIdentityV1> {
+  const validated = validateCanonicalPagesAssetGroup(
+    map,
+    exactDirectory(assetGroupDirectory, "Pages asset group directory"),
+  );
+  const canonicalOutput = exactDirectory(outputRoot, "Vite output directory");
+  const destination = resolve(canonicalOutput, validated.destinationDirectory);
+  if (
+    destination !== canonicalOutput &&
+    !pathIsWithin(canonicalOutput, destination)
+  ) {
+    throw new Error(
+      "Pages asset group destination escapes the Vite output directory",
+    );
+  }
+  if (existsSync(destination)) {
+    if (!allowIdenticalExisting) {
+      throw new Error(`Pages build output path conflicts: ${destination}`);
+    }
+    const existing = inventoryTree(destination, MAX_SITE_BYTES);
+    if (!jsonEqual(existing, validated.sourceInventory)) {
+      throw new Error(
+        "Vite output asset group differs from its authenticated source",
+      );
+    }
+  } else {
+    copyTreeWithoutLinks(assetGroupDirectory, destination);
+  }
+  validateCopiedAssetGroup(destination, validated.sourceInventory);
+  const copiedManifest = readFileSync(
+    join(canonicalOutput, map.products[0]!.asset_group!.path),
+  );
+  const identity = map.products[0]!.asset_group!;
+  if (
+    copiedManifest.byteLength !== identity.bytes ||
+    sha256(copiedManifest) !== identity.sha256
+  ) {
+    throw new Error(
+      "Pages asset group directory differs from its authenticated manifest identity",
+    );
+  }
+  return validated.vfs;
+}
+
+function injectGroupedLazyCacheVersion(
+  map: CanonicalPagesProductMapV1,
+  outputRoot: string,
+): void {
+  const version = map.products[0]!.asset_group!.sha256;
+  const workerPath = join(outputRoot, "service-worker.js");
+  const source = readFileSync(workerPath, "utf8");
+  const marker = VFS_LAZY_CACHE_VERSION_SOURCE;
+  const matches = source.split(marker).length - 1;
+  if (matches !== 1) {
+    throw new Error(
+      "Pages grouped build service worker lacks one lazy-cache version marker",
+    );
+  }
+  writeFileSync(workerPath, source.replace(marker, JSON.stringify(version)));
+}
+
+function validateCopiedAssetGroup(
+  destination: string,
+  expected: readonly PagesFileIdentityV1[],
+): void {
+  const copied = inventoryTree(destination, MAX_SITE_BYTES);
+  if (!jsonEqual(copied, expected)) {
+    throw new Error(
+      "copied asset group inventory differs from its authenticated source",
+    );
+  }
+}
+
 function canonicalProductForSpecifier(
   source: string,
   importer: string | undefined,
@@ -446,6 +771,25 @@ function canonicalProductForSpecifier(
   authority: CanonicalMapAuthority,
 ): string | undefined {
   if (source === "@rootfs-vfs") return "platform-rootfs";
+  if (source.startsWith(SOURCE_ONLY_VIRTUAL_ASSET)) {
+    let relativePath: string;
+    try {
+      relativePath = decodeURIComponent(
+        source.slice(SOURCE_ONLY_VIRTUAL_ASSET.length),
+      );
+    } catch {
+      return undefined;
+    }
+    const virtualProduct = /^programs\/([^/]+)\/([^/]+)$/u.exec(relativePath);
+    if (virtualProduct !== null) {
+      return productForLegacyPath(
+        virtualProduct[1]!,
+        virtualProduct[2]!,
+        authority,
+      );
+    }
+    return undefined;
+  }
   const binary = /^@binaries\/programs\/([^/]+)\/([^/]+)$/u.exec(source);
   if (binary !== null) return productForLegacyPath(binary[1]!, binary[2]!, authority);
   if (source.startsWith("@")) return undefined;
@@ -658,17 +1002,12 @@ function exactAbsentAbsolutePath(value: string, label: string): string {
   return value;
 }
 
-function canonicalProductPath(id: string, digest: string, abi: number): string {
+export function canonicalPagesProductPath(
+  id: string,
+  digest: string,
+  abi: number,
+): string {
   return `products/${id}/sha256-${digest}/${id}-${abi}.vfs.zst`;
-}
-
-function canonicalBase(value: string): string {
-  if (
-    !value.startsWith("/") || !value.endsWith("/") || value.includes("\\") ||
-    value.includes("//") || value.split("/").includes("..") || value.includes("?") ||
-    value.includes("#")
-  ) throw new Error(`canonical Pages Vite base is invalid: ${value}`);
-  return value;
 }
 
 function pathIsWithin(root: string, path: string): boolean {

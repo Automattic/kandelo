@@ -121,6 +121,7 @@ host/test/homebrew-guest-layout.test.ts	source-only
 host/test/homebrew-language-runtime-smoke.test.ts	prepared-product
 host/test/homebrew-login-product.test.ts	source-only
 host/test/homebrew-original-bottle-tree.test.ts	source-only
+host/test/homebrew-product-inputs.test.ts	source-only
 host/test/homebrew-public-bottle-verifier.test.ts	source-only
 host/test/homebrew-runtime-layer-policy.test.ts	source-only
 host/test/homebrew-runtime-support-materializer.test.ts	prepared-product
@@ -138,6 +139,7 @@ host/test/host-file-offset.test.ts	source-only
 host/test/host-owned-process-reap.test.ts	prepared-product
 host/test/host-process-pointer-width.test.ts	source-only
 host/test/ifhwaddr.test.ts	prepared-product
+host/test/image-owned-runtime-urls.test.ts	source-only
 host/test/in-kernel-http-bounds.test.ts	source-only
 host/test/in-kernel-http.test.ts	prepared-product
 host/test/interactive-stdin.test.ts	prepared-product
@@ -402,10 +404,13 @@ tests/package-system/rootfs-package-manifest.test.ts	prepared-product
 tests/package-system/rootfs-verified-source-contract.test.ts	prepared-product
 tests/package-system/sdl-dsp-packages.test.ts	source-only
 tests/package-system/shell-lazy-url-resolution.test.ts	prepared-product
+tests/package-system/source-only-vite-assets.test.ts	prepared-product
 tests/package-system/source-rootfs-shell-bridge.test.ts	prepared-product
 tests/package-system/validate-wasm-artifacts.test.ts	prepared-product
 tests/package-system/vite-binary-resolution.test.ts	prepared-product
 tests/package-system/wasm-artifact-guards.test.ts	prepared-product
 web-libs/kandelo-session/test/demo-ingest.test.ts	source-only
+web-libs/kandelo-session/test/deployment-scope.test.ts	source-only
 web-libs/kandelo-session/test/kandelo-session.test.ts	source-only
 web-libs/kandelo-session/test/lazy-download.test.ts	source-only
+web-libs/kandelo-session/test/vfs-asset-group.test.ts	source-only

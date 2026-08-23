@@ -1,44 +1,43 @@
-import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { findRepoRoot, resolveBinary } from "../host/src/binary-resolver";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import {
+  findRepoRoot,
+  resolveBinary,
+  tryResolveBinary,
+} from "../host/src/binary-resolver";
+import {
+  browserBinariesImports,
+  browserRequiredInputs,
+} from "../apps/browser-demos/browser-binary-imports.mjs";
 
-const repoRoot = findRepoRoot();
-const importPattern = /["'](@binaries\/[^"']+|@kernel-wasm[^"']*|@rootfs-vfs[^"']*)["']/g;
-const sourceFilePattern = /\.(?:cjs|html|js|jsx|mjs|ts|tsx)$/;
-
-function trackedBrowserSourceFiles(): string[] {
-  const output = execFileSync("git", ["ls-files", "-z", "apps/browser-demos"], {
-    cwd: repoRoot,
-  });
-  return output
-    .toString("utf8")
-    .split("\0")
-    .filter((file) => sourceFilePattern.test(file));
-}
-
-function browserAssetImports(): string[] {
-  const specs = new Set<string>();
-  for (const file of trackedBrowserSourceFiles()) {
-    const source = readFileSync(join(repoRoot, file), "utf8");
-    for (const match of source.matchAll(importPattern)) {
-      specs.add(match[1]);
-    }
-  }
-  return [...specs].sort();
+export function browserAssetImportsForPolicy(
+  repoRoot: string,
+  resolutionPolicy: string | undefined,
+): string[] {
+  const browserImports = resolutionPolicy === "source-only-v1"
+    ? browserRequiredInputs(repoRoot, {
+      htmlEntryFiles: [
+        "index.html",
+        "pages/kandelo/index.html",
+        "pages/network/index.html",
+      ],
+    }).imports
+    : browserBinariesImports(repoRoot);
+  return [
+    "@kernel-wasm",
+    "@rootfs-vfs",
+    ...browserImports.map((relPath) =>
+      `@binaries/${relPath}`
+    ),
+  ];
 }
 
 function resolveRootfsVfs(): string {
-  const candidates = [
-    join(repoRoot, "host/wasm/rootfs.vfs"),
-    join(repoRoot, "local-binaries/rootfs.vfs"),
-    join(repoRoot, "binaries/rootfs.vfs"),
-    join(repoRoot, "local-binaries/programs/wasm32/rootfs.vfs"),
-    join(repoRoot, "binaries/programs/wasm32/rootfs.vfs"),
-  ];
-  const resolved = candidates.find((candidate) => existsSync(candidate));
-  if (resolved) return resolved;
-  throw new Error(`rootfs.vfs not found\n${candidates.map((path) => `  checked: ${path}`).join("\n")}`);
+  if (process.env.WASM_POSIX_RESOLUTION_POLICY === "source-only-v1") {
+    return resolveBinary("programs/wasm32/rootfs.vfs");
+  }
+  return tryResolveBinary("rootfs.vfs")
+    ?? resolveBinary("programs/wasm32/rootfs.vfs");
 }
 
 function resolveAssetImport(spec: string): string {
@@ -55,26 +54,38 @@ function resolveAssetImport(spec: string): string {
   throw new Error(`unsupported browser asset import: ${spec}`);
 }
 
-const specs = browserAssetImports();
-if (specs.length === 0) {
-  throw new Error("no browser asset imports found");
-}
-
-const failures: string[] = [];
-for (const spec of specs) {
-  try {
-    resolveAssetImport(spec);
-  } catch (error) {
-    failures.push(`${spec}\n${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
-if (failures.length > 0) {
-  console.error(
-    `ci-check-browser-assets: ${failures.length} browser asset import(s) could not be resolved\n\n` +
-      failures.join("\n\n")
+function main(): void {
+  const specs = browserAssetImportsForPolicy(
+    findRepoRoot(),
+    process.env.WASM_POSIX_RESOLUTION_POLICY,
   );
-  process.exit(1);
+  if (specs.length === 0) {
+    throw new Error("no browser asset imports found");
+  }
+
+  const failures: string[] = [];
+  for (const spec of specs) {
+    try {
+      resolveAssetImport(spec);
+    } catch (error) {
+      failures.push(`${spec}\n${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  if (failures.length > 0) {
+    console.error(
+      `ci-check-browser-assets: ${failures.length} browser asset import(s) could not be resolved\n\n` +
+        failures.join("\n\n"),
+    );
+    process.exit(1);
+  }
+
+  console.log(`ci-check-browser-assets: resolved ${specs.length} browser asset import(s)`);
 }
 
-console.log(`ci-check-browser-assets: resolved ${specs.length} browser asset import(s)`);
+if (
+  process.argv[1]
+  && import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+) {
+  main();
+}

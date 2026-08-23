@@ -1,11 +1,13 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 
 import { expect, test, type Page } from "@playwright/test";
 import { zipSync, type Zippable } from "fflate";
 
 import { ABI_VERSION } from "../../../host/src/generated/abi";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { parseZipCentralDirectory } from "../../../host/src/vfs/zip";
 import {
   derivePackageDeferredZipTree,
   materializePackageDeferredZipTree,
@@ -51,6 +53,12 @@ interface BrowserAtomicTreeResult {
     second: boolean;
   };
   pendingTrees: number;
+}
+
+interface BrowserCorruptArchiveResult {
+  integrityRejected: boolean;
+  deferred: boolean;
+  pendingArchives: number;
 }
 
 interface PathSnapshot {
@@ -219,15 +227,46 @@ async function atomicPackageTreeImage(): Promise<{
   };
 }
 
+async function vimArchiveImage(): Promise<{
+  image: Uint8Array;
+  path: string;
+  archiveBytes: number;
+}> {
+  const archive = zipSync({
+    "usr/bin/vim": unixZipEntry(
+      new TextEncoder().encode("VIM - Vi IMproved\n"),
+      0o100755,
+    ),
+  } satisfies Zippable);
+  const fs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
+  fs.setImageMetadata({ version: 1, kernelAbi: ABI_VERSION });
+  fs.registerLazyArchiveFromEntries(
+    "vim.zip",
+    parseZipCentralDirectory(archive),
+    "/",
+    undefined,
+    {
+      sha256: createHash("sha256").update(archive).digest("hex"),
+      bytes: archive.byteLength,
+    },
+  );
+  return {
+    image: await fs.saveImage(),
+    path: "/usr/bin/vim",
+    archiveBytes: archive.byteLength,
+  };
+}
+
 async function runPackageTreeWorker(
   page: Page,
   workerUrl: string,
   image: Uint8Array,
   lazyUrlBase: string,
   atomicPaths?: { first: string; second: string },
+  corruptionPath?: string,
 ): Promise<unknown> {
   return page.evaluate(
-    ({ workerUrl, image, lazyUrlBase, atomicPaths }) => {
+    ({ workerUrl, image, lazyUrlBase, atomicPaths, corruptionPath }) => {
       return new Promise<unknown>((resolve, reject) => {
         const worker = new Worker(workerUrl, { type: "module" });
         worker.onmessage = (event) => {
@@ -242,7 +281,7 @@ async function runPackageTreeWorker(
           worker.terminate();
           reject(new Error(event.message || "package-tree worker crashed"));
         };
-        worker.postMessage({ image, lazyUrlBase, atomicPaths });
+        worker.postMessage({ image, lazyUrlBase, atomicPaths, corruptionPath });
       });
     },
     {
@@ -250,8 +289,26 @@ async function runPackageTreeWorker(
       image: Array.from(image),
       lazyUrlBase,
       atomicPaths,
+      corruptionPath,
     },
   );
+}
+
+async function inspectCorruptArchiveInBrowser(
+  page: Page,
+  workerUrl: string,
+  image: Uint8Array,
+  lazyUrlBase: string,
+  path: string,
+): Promise<BrowserCorruptArchiveResult> {
+  return await runPackageTreeWorker(
+    page,
+    workerUrl,
+    image,
+    lazyUrlBase,
+    undefined,
+    path,
+  ) as BrowserCorruptArchiveResult;
 }
 
 async function inspectPackageTreeInBrowser(
@@ -371,6 +428,85 @@ test("browsers retry transient lazy package trees and consume the exact ZIP", as
   expect(eager.pendingTrees, browserName).toBe(0);
   expect(archiveFetches, browserName).toBe(2);
 });
+
+test("a corrupt cached Vim archive fails SHA validation without materializing", async ({
+  page,
+  baseURL,
+}) => {
+  expect(baseURL).toBeTruthy();
+  if (!baseURL) throw new Error("Playwright baseURL is required");
+  const workerUrl = new URL(`/@fs${workerModulePath}`, baseURL).href;
+  const lazyUrlBase = new URL(
+    "/vfs-groups/release-1/assets/programs/wasm32/",
+    baseURL,
+  ).href;
+  const fixture = await vimArchiveImage();
+  const corruptBytes = new Uint8Array(fixture.archiveBytes);
+  corruptBytes.fill(0x51);
+
+  await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+  await registerRootServiceWorker(page);
+  await seedRootLazyCache(page, new URL("vim.zip", lazyUrlBase).href, corruptBytes);
+
+  expect(await inspectCorruptArchiveInBrowser(
+    page,
+    workerUrl,
+    fixture.image,
+    lazyUrlBase,
+    fixture.path,
+  )).toEqual({
+    integrityRejected: true,
+    deferred: true,
+    pendingArchives: 1,
+  });
+});
+
+async function registerRootServiceWorker(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.register(
+      "/service-worker.js",
+      { scope: "/", updateViaCache: "none" },
+    );
+    if (registration.scope !== new URL("/", location.href).href) {
+      throw new Error(`unexpected root scope ${registration.scope}`);
+    }
+    if (navigator.serviceWorker.controller?.scriptURL === registration.active?.scriptURL) {
+      return;
+    }
+    await new Promise<void>((resolve, reject) => {
+      const timeout = window.setTimeout(
+        () => reject(new Error("timed out waiting for root service worker")),
+        10_000,
+      );
+      const check = () => {
+        if (navigator.serviceWorker.controller?.scriptURL !== registration.active?.scriptURL) {
+          return;
+        }
+        navigator.serviceWorker.removeEventListener("controllerchange", check);
+        window.clearTimeout(timeout);
+        resolve();
+      };
+      navigator.serviceWorker.addEventListener("controllerchange", check);
+      check();
+    });
+  });
+}
+
+async function seedRootLazyCache(
+  page: Page,
+  url: string,
+  bytes: Uint8Array,
+): Promise<void> {
+  await page.evaluate(async ({ assetUrl, body }) => {
+    const cache = await caches.open("kandelo-sw:%2F:lazy-assets-v1");
+    await cache.put(assetUrl, new Response(Uint8Array.from(body), {
+      headers: {
+        "Content-Length": String(body.length),
+        "Content-Type": "application/zip",
+      },
+    }));
+  }, { assetUrl: url, body: Array.from(bytes) });
+}
 
 test("browsers verify imported seals before atomically activating package trees", async ({
   page,

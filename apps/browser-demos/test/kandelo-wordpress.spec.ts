@@ -25,24 +25,38 @@ async function dismissDockPopover(page: Page) {
 }
 
 /**
- * Read the persisted cookie jar for the (single) active session. The SW stores
- * it under a session-scoped key `cookie-jar-<sessionId>` in the sw-bridge-config
- * cache, so find that entry rather than a fixed key.
+ * Read the cookie jar from the complete bridge authority record. The service
+ * worker replaces this single record atomically inside the registration's
+ * scope-derived cache, so restart never combines a prefix, session, and jar
+ * from different transitions.
  */
 async function readPersistedCookieJar(
   page: Page,
 ): Promise<Array<{ name: string; path: string }>> {
   return page.evaluate(async () => {
-    const cache = await caches.open("sw-bridge-config");
+    const registration = await navigator.serviceWorker.getRegistration();
+    if (!registration) {
+      throw new Error("WordPress page has no owning service worker registration");
+    }
+    const scopePath = new URL(registration.scope).pathname;
+    const cacheName =
+      `kandelo-sw:${encodeURIComponent(scopePath)}:bridge-v2`;
+    if (!(await caches.keys()).includes(cacheName)) {
+      throw new Error(`WordPress bridge cache is missing: ${cacheName}`);
+    }
+    const cache = await caches.open(cacheName);
     const keys = await cache.keys();
-    const jarReq = keys.find((r) =>
-      (new URL(r.url).pathname.split("/").pop() ?? "").startsWith("cookie-jar-"),
+    const authorityReq = keys.find((r) =>
+      (new URL(r.url).pathname.split("/").pop() ?? "") ===
+        "bridge-authority-v1",
     );
-    if (!jarReq) return [];
-    const resp = await cache.match(jarReq);
+    if (!authorityReq) return [];
+    const resp = await cache.match(authorityReq);
     if (!resp) return [];
-    const records = JSON.parse(await resp.text());
-    return Array.isArray(records) ? records : [];
+    const authority = JSON.parse(await resp.text());
+    return authority?.version === 1 && Array.isArray(authority.cookies)
+      ? authority.cookies
+      : [];
   });
 }
 
@@ -273,4 +287,3 @@ test("@slow Kandelo WordPress auth cookie is retained for every cookie path", as
     `auth cookie paths: ${JSON.stringify(authCookiePaths)}`,
   ).toBe(true);
 });
-

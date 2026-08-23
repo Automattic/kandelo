@@ -96,7 +96,18 @@ describe("image-owned Node demo runtime", () => {
       ),
       "utf8",
     );
-    expect(liveSetup).toContain("bindImageOwnedRuntimeUrls(buildFs)");
+    expect(liveSetup).toContain(
+      "bindImageOwnedRuntimeUrls(buildFs, loadedVfs.lazyAssets)",
+    );
+    expect(liveSetup).toContain("loadVfsImage(profile)");
+    expect(
+      liveSetup.indexOf("bindImageOwnedRuntimeUrls(buildFs, loadedVfs.lazyAssets)"),
+    ).toBeLessThan(liveSetup.indexOf("finalizeKernelOwnedImage(buildFs)"));
+    expect(liveSetup).toContain(
+      "// authority copied from the authenticated product activation.\n" +
+        "  bindImageOwnedRuntimeUrls(buildFs, loadedVfs.lazyAssets);\n" +
+        '  tick("assembling kernel-owned VFS image...");',
+    );
     expect(liveSetup).not.toContain("assertShellLazyUrlsResolved(buildFs)");
   });
 });

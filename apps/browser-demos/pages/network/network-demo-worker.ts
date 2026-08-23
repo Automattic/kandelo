@@ -16,6 +16,7 @@ import rootfsVfsUrl from "@rootfs-vfs?url";
 import workerEntryUrl from "@host/worker-entry-browser.ts?worker&url";
 import ncWasmUrl from "@binaries/programs/wasm32/nc.wasm?url";
 import curlWasmUrl from "@binaries/programs/wasm32/curl.wasm?url";
+import { bindImageOwnedRuntimeUrls } from "../../lib/init/image-owned-runtime-urls";
 import {
   createPagesVfsProductLoader,
   type PagesVfsProductEntry,
@@ -99,7 +100,7 @@ async function loadArtifacts(): Promise<ArtifactSet> {
   if (!artifactsPromise) {
     const rootfs = CANONICAL_PAGES_VFS_LOADER === undefined
       ? loadArrayBuffer(rootfsVfsUrl)
-      : CANONICAL_PAGES_VFS_LOADER.bytes("platform-rootfs");
+      : loadActivatedRootfs();
     artifactsPromise = Promise.all([
       loadArrayBuffer(kernelWasmUrl),
       rootfs,
@@ -113,6 +114,18 @@ async function loadArtifacts(): Promise<ArtifactSet> {
     }));
   }
   return artifactsPromise;
+}
+
+async function loadActivatedRootfs(): Promise<ArrayBuffer> {
+  const activation = await CANONICAL_PAGES_VFS_LOADER!.activate(
+    "platform-rootfs",
+  );
+  const fs = MemoryFileSystem.fromImage(new Uint8Array(activation.imageBytes));
+  // The network worker mounts image bytes directly, so it must consume the
+  // same authenticated activation authority as the main image assembler.
+  bindImageOwnedRuntimeUrls(fs, activation.lazyAssets);
+  const image = await fs.saveImage();
+  return image.slice().buffer;
 }
 
 function createProcessMemory(ptrWidth: 4 | 8, initialPages = 17): WebAssembly.Memory {

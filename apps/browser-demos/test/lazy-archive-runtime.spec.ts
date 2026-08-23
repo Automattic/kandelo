@@ -59,11 +59,20 @@ const kernel = join(here, "../../../host/wasm/kandelo-kernel.wasm");
 const available = existsSync(environmentProgram) && existsSync(kernel);
 const TAR_BLOCK = 512;
 
+// The production preview itself supplies the cross-origin isolation headers.
+// Keep Playwright's byte routes authoritative for these same-origin fixtures;
+// the dedicated proxy test below separately exercises external transport.
+test.use({ serviceWorkers: "block" });
+
 function identity(bytes: Uint8Array): { sha256: string; bytes: number } {
   return {
     sha256: createHash("sha256").update(bytes).digest("hex"),
     bytes: bytes.byteLength,
   };
+}
+
+function sameOriginFixtureUrl(baseURL: string, name: string): string {
+  return new URL(`__kandelo_lazy_fixture__/${name}`, baseURL).href;
 }
 
 async function lazyImage(groups: Array<{
@@ -187,9 +196,9 @@ test("Chromium boots, reads, and execs through verified lazy archives", async ({
 }) => {
   test.setTimeout(180_000);
   if (!baseURL) throw new Error("Playwright baseURL is required");
-  const execUrl = "https://fixtures.kandelo.invalid/exec.tar.gz";
-  const dataUrl = "https://fixtures.kandelo.invalid/data.zip";
-  const imageUrl = "https://fixtures.kandelo.invalid/lazy.vfs";
+  const execUrl = sameOriginFixtureUrl(baseURL, "exec.tar.gz");
+  const dataUrl = sameOriginFixtureUrl(baseURL, "data.zip");
+  const imageUrl = sameOriginFixtureUrl(baseURL, "lazy.vfs");
   const execBytes = new Uint8Array(readFileSync(environmentProgram));
   const execTar = tarBytes([
     { path: "bin/environment-lifecycle-real", mode: 0o755, data: execBytes },
@@ -287,8 +296,8 @@ test("Chromium retries a transient lazy-tree response before surfacing EIO", asy
   baseURL,
 }) => {
   if (!baseURL) throw new Error("Playwright baseURL is required");
-  const archiveUrl = "https://fixtures.kandelo.invalid/transient.tar.gz";
-  const imageUrl = "https://fixtures.kandelo.invalid/transient.vfs";
+  const archiveUrl = sameOriginFixtureUrl(baseURL, "transient.tar.gz");
+  const imageUrl = sameOriginFixtureUrl(baseURL, "transient.vfs");
   const payload = new TextEncoder().encode("verified-after-transient-502");
   const tar = tarBytes([
     {
@@ -360,8 +369,8 @@ test("browser applies a generic authenticated archive transformation", async ({
   baseURL,
 }) => {
   if (!baseURL) throw new Error("Playwright baseURL is required");
-  const archiveUrl = "https://fixtures.kandelo.invalid/transformed.tar.gz";
-  const imageUrl = "https://fixtures.kandelo.invalid/transformed.vfs";
+  const archiveUrl = sameOriginFixtureUrl(baseURL, "transformed.tar.gz");
+  const imageUrl = sameOriginFixtureUrl(baseURL, "transformed.vfs");
   const sourceBytes = new TextEncoder().encode("prefix=@@ROOT@@\n");
   const outputBytes = new TextEncoder().encode("prefix=/etc\n");
   const tar = tarBytes([{
@@ -530,8 +539,8 @@ test("Chromium reports digest failure without mutation and retries cleanly", asy
   baseURL,
 }) => {
   if (!baseURL) throw new Error("Playwright baseURL is required");
-  const archiveUrl = "https://fixtures.kandelo.invalid/retry.zip";
-  const imageUrl = "https://fixtures.kandelo.invalid/retry.vfs";
+  const archiveUrl = sameOriginFixtureUrl(baseURL, "retry.zip");
+  const imageUrl = sameOriginFixtureUrl(baseURL, "retry.vfs");
   const archive = zipSync({
     "etc/retry-data": new TextEncoder().encode("verified-after-retry"),
   });
@@ -590,8 +599,8 @@ test("Chromium consumes lazy and eager package trees derived from one exact ZIP"
     ),
   } satisfies Zippable);
   const images = await packageTreeImages(archive);
-  const lazyImageUrl = "https://fixtures.kandelo.invalid/package-lazy.vfs";
-  const eagerImageUrl = "https://fixtures.kandelo.invalid/package-eager.vfs";
+  const lazyImageUrl = sameOriginFixtureUrl(baseURL, "package-lazy.vfs");
+  const eagerImageUrl = sameOriginFixtureUrl(baseURL, "package-eager.vfs");
   const archiveUrl = new URL("package-runtime.zip", baseURL).href;
   let archiveFetches = 0;
   await routeBytes(page, lazyImageUrl, images.lazy, "application/octet-stream");

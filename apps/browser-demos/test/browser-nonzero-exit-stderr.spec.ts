@@ -34,6 +34,7 @@ test("normal nonzero exits do not write host diagnostics to stderr", async ({
   await page.evaluate(async () => {
     await navigator.serviceWorker.register("/service-worker.js", {
       scope: "/",
+      updateViaCache: "none",
     });
     await navigator.serviceWorker.ready;
   });

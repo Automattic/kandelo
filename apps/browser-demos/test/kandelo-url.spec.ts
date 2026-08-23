@@ -227,7 +227,10 @@ async function installDummyAppBridge(page: import("@playwright/test").Page): Pro
       throw new Error("Service workers unavailable");
     }
 
-    await navigator.serviceWorker.register("/service-worker.js", { updateViaCache: "none" });
+    await navigator.serviceWorker.register("/service-worker.js", {
+      scope: "/",
+      updateViaCache: "none",
+    });
     await navigator.serviceWorker.ready;
     const controller = navigator.serviceWorker.controller ?? await new Promise<ServiceWorker>((resolve, reject) => {
       const timeout = window.setTimeout(() => {
@@ -262,7 +265,11 @@ async function installDummyAppBridge(page: import("@playwright/test").Page): Pro
     await new Promise<void>((resolve) => {
       reply.port1.onmessage = () => resolve();
       controller.postMessage(
-        { type: "init-bridge", appPrefix: "/app/" },
+        {
+          type: "init-bridge",
+          appPrefix: "/app/",
+          sessionId: crypto.randomUUID(),
+        },
         [bridge.port2, reply.port2],
       );
     });
