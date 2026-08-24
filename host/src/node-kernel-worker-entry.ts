@@ -24,6 +24,10 @@ import {
   isCurrentProcessGeneration,
   TERMINAL_STDIO,
 } from "./kernel-worker";
+import {
+  retryKernelEntryResult,
+  retryKernelEntryResultForGeneration,
+} from "./kernel-entry-retry";
 import type {
   ForkBorrowedReplayWorkspace,
   ForkContinuationContext,
@@ -1184,9 +1188,20 @@ async function handleInit(msg: InitMessage) {
                   startResult === 0
                   && installedWorker
                   && installedWorker !== previousWorker
-                  && kernelWorker.isProcessExecutionActive(pid)
                 ) {
-                  post({ type: "proc_event", kind: "exec", pid });
+                  const executionState =
+                    await retryKernelEntryResultForGeneration(
+                      () =>
+                        processes.get(pid)?.worker === installedWorker
+                        && !kernelWorker.isExecHandoffActive(pid),
+                      () => kernelWorker.isProcessExecutionActive(pid),
+                    );
+                  if (
+                    executionState.status === "current"
+                    && executionState.value
+                  ) {
+                    post({ type: "proc_event", kind: "exec", pid });
+                  }
                 }
                 return startResult;
               } finally {
@@ -1843,40 +1858,42 @@ async function handleVfork(
     );
     installProcessWorkerListeners(childWorker, childPid);
     let startFailure: unknown;
-    const startDisposition = kernelWorker.startProcessWorkerWhenRunnable(
-      childPid,
-      parentMemory,
-      () => {
-        vforkLifetimes.markChildMayAccessMemory(childGeneration!);
-        traceVforkMechanism(
-          "child_may_access_memory",
-          `parent=${parentPid} child=${childPid}`,
-        );
-        try {
-          launchedWorker.start();
-        } catch (error) {
-          // Worker construction can partially publish a realm before throwing.
-          // Once marked borrowing, only whole-address-space containment may
-          // release the parent's parked syscall.
-          startFailure = error;
-          forkReplay.cancel(error);
-          vforkLifetimes.requireAddressSpaceContainment(
-            childGeneration!,
-            error,
-          );
+    const startDisposition = await retryKernelEntryResult(() =>
+      kernelWorker.startProcessWorkerWhenRunnable(
+        childPid,
+        parentMemory,
+        () => {
+          vforkLifetimes.markChildMayAccessMemory(childGeneration!);
           traceVforkMechanism(
-            "worker_start_failed",
+            "child_may_access_memory",
             `parent=${parentPid} child=${childPid}`,
           );
-        }
-      },
-      () => {
-        forkReplay.cancel(
-          new Error(`Vfork child ${childPid} launch was cancelled`),
-        );
-        forkHostImports.close();
-        void launchedWorker.terminate();
-      },
+          try {
+            launchedWorker.start();
+          } catch (error) {
+            // Worker construction can partially publish a realm before throwing.
+            // Once marked borrowing, only whole-address-space containment may
+            // release the parent's parked syscall.
+            startFailure = error;
+            forkReplay.cancel(error);
+            vforkLifetimes.requireAddressSpaceContainment(
+              childGeneration!,
+              error,
+            );
+            traceVforkMechanism(
+              "worker_start_failed",
+              `parent=${parentPid} child=${childPid}`,
+            );
+          }
+        },
+        () => {
+          forkReplay.cancel(
+            new Error(`Vfork child ${childPid} launch was cancelled`),
+          );
+          forkHostImports.close();
+          void launchedWorker.terminate();
+        },
+      ),
     );
     if (startDisposition === "stale") {
       throw new VforkAddressSpaceBusyError(
@@ -1890,7 +1907,9 @@ async function handleVfork(
       forkHostImports.close();
       await terminateTrackedWorker(childWorker);
       childGeneration.workerQuiescence.settle();
-      const signal = kernelWorker.finalizePendingChildTermination(childPid);
+      const signal = await retryKernelEntryResult(
+        () => kernelWorker.finalizePendingChildTermination(childPid),
+      );
       await awaitFinalizedProcessTeardown(
         childPid,
         signal > 0 ? signalExitStatus(signal) : 0,
@@ -1910,7 +1929,9 @@ async function handleVfork(
       const phase = vforkLifetimes.phaseForChild(childGeneration);
       if (phase === "starting") {
         childGeneration.workerQuiescence.settle();
-        const signal = kernelWorker.finalizePendingChildTermination(childPid);
+        const signal = await retryKernelEntryResult(
+          () => kernelWorker.finalizePendingChildTermination(childPid),
+        );
         await awaitFinalizedProcessTeardown(
           childPid,
           signal > 0 ? signalExitStatus(signal) : 0,
@@ -1936,7 +1957,9 @@ async function handleVfork(
         `Vfork child ${childPid} changed generation before replay commit`,
       );
     }
-    if (!kernelWorker.shouldLaunchPendingChild(childPid)) {
+    if (!await retryKernelEntryResult(
+      () => kernelWorker.shouldLaunchPendingChild(childPid),
+    )) {
       throw new Error(`Vfork child ${childPid} exited before replay commit`);
     }
     forkReplay.commit();
@@ -2054,7 +2077,9 @@ async function handleOrdinaryFork(
     if (!parentInfo.programModule) {
       parentInfo.programModule = await WebAssembly.compile(parentProgram);
     }
-    if (!kernelWorker.shouldLaunchPendingChild(childPid)) {
+    if (!await retryKernelEntryResult(
+      () => kernelWorker.shouldLaunchPendingChild(childPid),
+    )) {
       childMemoryLease.release();
       return [];
     }
@@ -2162,22 +2187,24 @@ async function handleOrdinaryFork(
       () => processes.get(childPid)?.worker === launchedWorker,
     );
     installProcessWorkerListeners(worker, childPid);
-    const startDisposition = kernelWorker.startProcessWorkerWhenRunnable(
-      childPid,
-      childMemory,
-      () => {
-        workerStartAttempted = true;
-        worker.start();
-      },
-      () => {
-        forkReplay.cancel(
-          new Error(
-            `Fork child ${childPid} launch was cancelled before replay readiness`,
-          ),
-        );
-        forkHostImports.close();
-        void launchedWorker.terminate();
-      },
+    const startDisposition = await retryKernelEntryResult(() =>
+      kernelWorker.startProcessWorkerWhenRunnable(
+        childPid,
+        childMemory,
+        () => {
+          workerStartAttempted = true;
+          worker.start();
+        },
+        () => {
+          forkReplay.cancel(
+            new Error(
+              `Fork child ${childPid} launch was cancelled before replay readiness`,
+            ),
+          );
+          forkHostImports.close();
+          void launchedWorker.terminate();
+        },
+      ),
     );
     if (startDisposition === "stale") {
       throw new Error(`Fork child ${childPid} changed generation before Worker launch`);
@@ -2189,7 +2216,9 @@ async function handleOrdinaryFork(
       forkHostImports.close();
       await terminateTrackedWorker(worker);
       processes.get(childPid)?.workerQuiescence.settle();
-      const signal = kernelWorker.finalizePendingChildTermination(childPid);
+      const signal = await retryKernelEntryResult(
+        () => kernelWorker.finalizePendingChildTermination(childPid),
+      );
       lifecycleTeardownStarted = true;
       await awaitFinalizedProcessTeardown(
         childPid,
@@ -2204,7 +2233,9 @@ async function handleOrdinaryFork(
         `Fork child ${childPid} changed generation before replay commit`,
       );
     }
-    if (!kernelWorker.shouldLaunchPendingChild(childPid)) {
+    if (!await retryKernelEntryResult(
+      () => kernelWorker.shouldLaunchPendingChild(childPid),
+    )) {
       throw new Error(`Fork child ${childPid} exited before replay commit`);
     }
     // WHY: only this commit wakes the child inside the inherited fork import.
@@ -2290,13 +2321,26 @@ async function handleExec(
   // Resolution/compilation yielded to the event loop. Another exec may have
   // replaced the host execution generation for this persistent PID; a stale
   // continuation must not commit exec state against it.
-  if (processes.get(pid) !== initiatingInfo
-      || kernelWorker.isExecHandoffActive(pid)
-      || !kernelWorker.isProcessExecutionActive(pid)) {
+  const isInitiatingExecGeneration = () =>
+    processes.get(pid) === initiatingInfo
+    && !kernelWorker.isExecHandoffActive(pid);
+  const executionState = await retryKernelEntryResultForGeneration(
+    isInitiatingExecGeneration,
+    () => kernelWorker.isProcessExecutionActive(pid),
+  );
+  if (executionState.status === "stale" || !executionState.value) {
     prepared.memoryLease.release();
     return -3; // ESRCH
   }
-  const addressSpaceResult = kernelWorker.prepareAddressSpaceForExec(pid);
+  const addressSpaceState = await retryKernelEntryResultForGeneration(
+    isInitiatingExecGeneration,
+    () => kernelWorker.prepareAddressSpaceForExec(pid),
+  );
+  if (addressSpaceState.status === "stale") {
+    prepared.memoryLease.release();
+    return -3; // ESRCH
+  }
+  const addressSpaceResult = addressSpaceState.value;
   if (addressSpaceResult < 0) {
     prepared.memoryLease.release();
     return addressSpaceResult;
@@ -2389,8 +2433,9 @@ async function handleExec(
           initiatingInfo.channelOffset,
         );
       }
-      const handoffExitSignal =
-        kernelWorker.finalizeExecHandoffTermination(pid);
+      const handoffExitSignal = await retryKernelEntryResult(
+        () => kernelWorker.finalizeExecHandoffTermination(pid),
+      );
       if (handoffExitSignal > 0) {
         prepared.memoryLease.release();
         preparedLeaseConsumed = true;
@@ -2508,58 +2553,60 @@ async function handleExec(
         pid,
         "exec worker error",
       );
-      const startDisposition = kernelWorker.startProcessWorkerWhenRunnable(
-        pid,
-        newMemory,
-        () => {
-          if (!(replacementWorker as DeferredWorkerHandle).start()) {
-            throw new Error(`Exec replacement Worker for pid ${pid} was cancelled`);
-          }
-          if (
-            vforkBorrower
-            && vforkLifetimes.phaseForChild(initiatingInfo) !== undefined
-          ) {
-            completeVforkGenerationTeardown(
-              initiatingInfo,
-              oldMemoryRetirementSafe && initiatingLeaseConsumed,
-              "exec",
-              new Error(
-                `vfork child ${pid} exec retired without an exact old-memory fence`,
-              ),
+      const startDisposition = await retryKernelEntryResult(() =>
+        kernelWorker.startProcessWorkerWhenRunnable(
+          pid,
+          newMemory,
+          () => {
+            if (!(replacementWorker as DeferredWorkerHandle).start()) {
+              throw new Error(`Exec replacement Worker for pid ${pid} was cancelled`);
+            }
+            if (
+              vforkBorrower
+              && vforkLifetimes.phaseForChild(initiatingInfo) !== undefined
+            ) {
+              completeVforkGenerationTeardown(
+                initiatingInfo,
+                oldMemoryRetirementSafe && initiatingLeaseConsumed,
+                "exec",
+                new Error(
+                  `vfork child ${pid} exec retired without an exact old-memory fence`,
+                ),
+              );
+            }
+          },
+          () => {
+            replacementForkHostImports?.close();
+            void replacementWorker?.terminate();
+          },
+          (error) => {
+            if (
+              vforkBorrower
+              && vforkLifetimes.phaseForChild(initiatingInfo) !== undefined
+            ) {
+              completeVforkGenerationTeardown(
+                initiatingInfo,
+                oldMemoryRetirementSafe && initiatingLeaseConsumed,
+                "trap",
+                error,
+              );
+            }
+            const message = error instanceof Error ? error.message : String(error);
+            reportHostDiagnostic({
+              pid,
+              status: signalExitStatus(SIGSEGV),
+              source: "exec post-commit transition",
+              message: `[exec] post-commit transition failed: ${message}`,
+            });
+            void finalizeProcessWorker(
+              pid,
+              replacementWorker as DeferredWorkerHandle,
+              signalExitStatus(SIGSEGV),
+              SIGSEGV,
             );
-          }
-        },
-        () => {
-          replacementForkHostImports?.close();
-          void replacementWorker?.terminate();
-        },
-        (error) => {
-          if (
-            vforkBorrower
-            && vforkLifetimes.phaseForChild(initiatingInfo) !== undefined
-          ) {
-            completeVforkGenerationTeardown(
-              initiatingInfo,
-              oldMemoryRetirementSafe && initiatingLeaseConsumed,
-              "trap",
-              error,
-            );
-          }
-          const message = error instanceof Error ? error.message : String(error);
-          reportHostDiagnostic({
-            pid,
-            status: signalExitStatus(SIGSEGV),
-            source: "exec post-commit transition",
-            message: `[exec] post-commit transition failed: ${message}`,
-          });
-          void finalizeProcessWorker(
-            pid,
-            replacementWorker as DeferredWorkerHandle,
-            signalExitStatus(SIGSEGV),
-            SIGSEGV,
-          );
-          return true;
-        },
+            return true;
+          },
+        ),
       );
       if (startDisposition === "stale") {
         throw new Error(`Exec pid ${pid} changed generation before Worker launch`);
@@ -2568,7 +2615,9 @@ async function handleExec(
         replacementForkHostImports.close();
         await terminateTrackedWorker(replacementWorker);
         kernelWorker.finishProcessExecHandoff(pid);
-        const signal = kernelWorker.finalizeExecHandoffTermination(pid);
+        const signal = await retryKernelEntryResult(
+          () => kernelWorker.finalizeExecHandoffTermination(pid),
+        );
         if (vforkBorrower) {
           completeVforkGenerationTeardown(
             initiatingInfo,
@@ -2735,7 +2784,9 @@ async function handlePosixSpawn(
   const { memory, memoryLease, layout, threadAllocator } = fresh;
   // Allocation admission yielded. Never attach a Worker to a child that
   // became a zombie while the short retirement admission gate drained.
-  if (!kernelWorker.shouldLaunchPendingChild(childPid)) {
+  if (!await retryKernelEntryResult(
+    () => kernelWorker.shouldLaunchPendingChild(childPid),
+  )) {
     memoryLease.release();
     return 0;
   }
@@ -2820,17 +2871,19 @@ async function handlePosixSpawn(
       childPid,
       "spawn worker error",
     );
-    const startDisposition = kernelWorker.startProcessWorkerWhenRunnable(
-      childPid,
-      memory,
-      () => {
-        workerStartAttempted = true;
-        worker.start();
-      },
-      () => {
-        processForkHostImports.close();
-        void worker.terminate();
-      },
+    const startDisposition = await retryKernelEntryResult(() =>
+      kernelWorker.startProcessWorkerWhenRunnable(
+        childPid,
+        memory,
+        () => {
+          workerStartAttempted = true;
+          worker.start();
+        },
+        () => {
+          processForkHostImports.close();
+          void worker.terminate();
+        },
+      ),
     );
     if (startDisposition === "stale") {
       throw new Error(`Spawn child ${childPid} changed generation before Worker launch`);
@@ -2839,7 +2892,9 @@ async function handlePosixSpawn(
       processForkHostImports.close();
       await terminateTrackedWorker(worker);
       processes.get(childPid)?.workerQuiescence.settle();
-      const signal = kernelWorker.finalizePendingChildTermination(childPid);
+      const signal = await retryKernelEntryResult(
+        () => kernelWorker.finalizePendingChildTermination(childPid),
+      );
       lifecycleTeardownStarted = true;
       await awaitFinalizedProcessTeardown(
         childPid,
@@ -2902,20 +2957,33 @@ async function handleClone(
   // Compilation yields. A sibling pthread may have committed exec while this
   // clone continuation was suspended; never attach the old program/Memory to
   // the replacement exec image for the same process identity.
-  if (!isCurrentProcessGeneration(
-    processes,
-    pid,
-    processInfo,
-    memory,
-    kernelWorker.isExecHandoffActive(pid),
-  ) || !kernelWorker.isProcessExecutionActive(pid)) {
+  const belongsToCompiledProcessImage = () =>
+    isCurrentProcessGeneration(
+      processes,
+      pid,
+      processInfo,
+      memory,
+      kernelWorker.isExecHandoffActive(pid),
+    );
+  const executionState = await retryKernelEntryResultForGeneration(
+    belongsToCompiledProcessImage,
+    () => kernelWorker.isProcessExecutionActive(pid),
+  );
+  if (executionState.status === "stale" || !executionState.value) {
     throw new Error(`Process ${pid} changed generation during clone`);
   }
   if (cacheCompiledModule) threadModuleCache.set(pid, threadModule);
 
   let alloc: ReturnType<ThreadPageAllocator["allocate"]>;
   try {
-    alloc = processInfo.threadAllocator.allocate(memory);
+    const allocationState = await retryKernelEntryResultForGeneration(
+      belongsToCompiledProcessImage,
+      () => processInfo.threadAllocator.allocate(memory),
+    );
+    if (allocationState.status === "stale") {
+      throw new Error(`Process ${pid} changed generation during clone allocation`);
+    }
+    alloc = allocationState.value;
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     reportHostDiagnostic({
@@ -2929,7 +2997,13 @@ async function handleClone(
   // this thread back through its entry point (see ForkContinuationContext
   // in kernel-worker.ts).
   try {
-    kernelWorker.attachThreadChannel(attachment, alloc.channelOffset);
+    const attachmentState = await retryKernelEntryResultForGeneration(
+      belongsToCompiledProcessImage,
+      () => kernelWorker.attachThreadChannel(attachment, alloc.channelOffset),
+    );
+    if (attachmentState.status === "stale") {
+      throw new Error(`Process ${pid} changed generation during clone attachment`);
+    }
   } catch (err) {
     processInfo.threadAllocator.free(alloc.basePage);
     throw err;
@@ -3081,20 +3155,22 @@ async function handleClone(
     CentralizedKernelWorker["startProcessWorkerWhenRunnable"]
   >;
   try {
-    startDisposition = kernelWorker.startProcessWorkerWhenRunnable(
-      pid,
-      memory,
-      () => { threadWorker.start(); },
-      () => {
-        forkHostImports.close();
-        void threadWorker.terminate();
-      },
-      () => {
-        kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset);
-        const failedClone = kernelWorker.failDeferredCloneLaunch(pid, tid, 12);
-        void terminateThreadEntry();
-        return failedClone;
-      },
+    startDisposition = await retryKernelEntryResult(() =>
+      kernelWorker.startProcessWorkerWhenRunnable(
+        pid,
+        memory,
+        () => { threadWorker.start(); },
+        () => {
+          forkHostImports.close();
+          void threadWorker.terminate();
+        },
+        () => {
+          kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset);
+          const failedClone = kernelWorker.failDeferredCloneLaunch(pid, tid, 12);
+          void terminateThreadEntry();
+          return failedClone;
+        },
+      ),
     );
   } catch (error) {
     kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset);

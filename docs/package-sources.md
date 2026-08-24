@@ -3,7 +3,7 @@
 A package source is a GitHub repository that publishes Kandelo packages
 outside the main Kandelo repository. It owns package recipes, VFS image
 recipes, and release state for its packages. Kandelo owns the toolchain,
-resolver, archive format, and browser-gallery consumer.
+resolver, archive format, and built-in browser gallery.
 
 The first package source is
 [`brandonpayton/kandelo-software`](https://github.com/brandonpayton/kandelo-software).
@@ -13,9 +13,8 @@ Use the same shape for additional repositories.
 
 Use a package source when a package is useful to Kandelo users but is too
 large, too slow, too experimental, or too domain-specific to rebuild in
-the main Kandelo CI. Examples include language runtimes, large VFS
-images, and demos that should appear in the Kandelo gallery only when
-their release artifacts are available.
+the main Kandelo CI. Examples include language runtimes and large VFS
+images that users can launch through a direct image URL.
 
 Do not create a package source for small core packages that the browser
 UI or tests require. Those belong in `packages/registry/`.
@@ -25,7 +24,7 @@ UI or tests require. Those belong in `packages/registry/`.
 ```text
 README.md
 packages.txt
-gallery.json                         # optional browser-gallery metadata
+gallery.json                         # optional published gallery metadata
 packages/
   program-packages.json              # Rust-generated runtime projection
   <name>/
@@ -220,11 +219,12 @@ The publish script:
 - records success or failure in release `index.toml`
 - uploads `gallery.json` when the package source provides it
 
-## Browser Gallery Contract
+## Published Gallery Metadata
 
 A package source can publish `gallery.json` beside `index.toml`.
-Kandelo's browser gallery treats `gallery.json` as presentation
-metadata and `index.toml` as availability state.
+The current Kandelo demo app does not request or display this third-party
+metadata. Package sources may continue publishing it for validation and
+for consumers outside the demo app.
 
 ```json
 {
@@ -245,22 +245,19 @@ metadata and `index.toml` as availability state.
 
 Rules:
 
-- `source_id` identifies the package source in Gallery entry IDs. If it
-  is omitted, Kandelo derives one from `repository` or the manifest URL.
+- `source_id` identifies the package source in gallery entry IDs.
 - `entries[].id` and package names use lowercase IDs:
   `^[a-z0-9][a-z0-9._-]*$`
 - `entries[].packages` lists every package required to launch the
   demo.
-- The browser shows an entry only when every listed package has a
+- A consumer should show an entry only when every listed package has a
   `wasm32` `status = "success"` record, an `archive_url`, and
   `browser_compatible = true` in the matching `index.toml`.
 - `browser_compatible = true` is a runtime claim. Set it only after a
-  browser smoke has launched the archive-backed image through the Kandelo UI.
-- If `gallery.json` or `index.toml` is temporarily unavailable, the
-  core Kandelo gallery remains available and third-party entries are
-  skipped.
-- If a listed archive is deleted after the index says it exists, launch
-  fails visibly in the Kandelo syslog and the gallery remains usable.
+  browser smoke has launched the archive-backed image through Kandelo's
+  direct VFS image path.
+- A missing manifest, index, or archive is unavailable. Consumers must not
+  fabricate availability for that source.
 
 Validate a gallery manifest against an index:
 
@@ -339,21 +336,10 @@ panel is shown.
 
 The arguments may also be `https://` URLs.
 
-The browser UI does not invent a default manifest URL for an independently
-published package source. A deployment can opt into one or more sources only
-after their release contains an index and gallery for Kandelo's current ABI.
-For local testing, pass manifest URLs with the `softwareManifest` query
-parameter:
-
-```text
-/?softwareManifest=https://example.com/releases/download/binaries-abi-v11/gallery.json
-```
-
-For a local or deployed build, `VITE_KANDELO_SOFTWARE_MANIFEST_URLS` may
-contain a comma- or whitespace-separated manifest URL list. An unconfigured
-build makes no third-party gallery request. A configured missing or malformed
-manifest remains a visible warning and contributes no entries; Kandelo does
-not fabricate availability for that source.
+The browser demo exposes only repository-defined gallery entries. It does not
+request third-party manifests, including URLs supplied through the former
+`softwareManifest` query parameter or
+`VITE_KANDELO_SOFTWARE_MANIFEST_URLS` build variable.
 
 Direct VFS image links do not need a gallery manifest. The Kandelo UI
 also accepts a `vfs` query parameter whose value is an `http` or `https`

@@ -62,6 +62,14 @@ function execHandlerSource(src: string): string {
   return src.slice(start, end);
 }
 
+function cloneHandlerSource(src: string): string {
+  const start = src.indexOf("async function handleClone(");
+  const end = src.indexOf("\nfunction handleThreadExit(", start);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  return src.slice(start, end);
+}
+
 function centralizedInitMessageSource(handler: string): string {
   const start = handler.indexOf("const initData: CentralizedWorkerInitMessage");
   expect(start).toBeGreaterThanOrEqual(0);
@@ -98,9 +106,9 @@ function expectSpawnCallbacks(src: string, entry: string): void {
 function expectDeadStartUsesOrdinaryTeardown(handler: string, entry: string): void {
   expect(
     handler,
-    `${entry} must transfer a dead child to ordinary lifecycle teardown`,
+    `${entry} must retry contention before ordinary lifecycle teardown`,
   ).toMatch(
-    /const signal = kernelWorker\.finalizePendingChildTermination\(childPid\);\s*lifecycleTeardownStarted = true;\s*await awaitFinalizedProcessTeardown\(/s,
+    /const signal = await retryKernelEntryResult\(\s*\(\) => kernelWorker\.finalizePendingChildTermination\(childPid\),\s*\);\s*lifecycleTeardownStarted = true;\s*await awaitFinalizedProcessTeardown\(/s,
   );
   expect(
     handler,
@@ -217,6 +225,27 @@ describe("spawn host parity", () => {
         `${entry} must not issue result-bearing kernel calls before quiescence`,
       ).not.toMatch(
         /kernelWorker\.(?:processSecureExec|wakeProcessWorkersForExecRetirement|finalizeAddressSpaceForExec)\(/,
+      );
+    }
+  });
+
+  it("both hosts recheck process generations inside delayed kernel retries", () => {
+    for (const entry of [nodeEntry, browserEntry]) {
+      const source = readFileSync(entry, "utf8");
+      const exec = execHandlerSource(source);
+      expect(
+        exec,
+        `${entry} must guard exec liveness and address-space preparation`,
+      ).toMatch(
+        /retryKernelEntryResultForGeneration\(\s*isInitiatingExecGeneration,\s*\(\) => kernelWorker\.isProcessExecutionActive\(pid\),[\s\S]*retryKernelEntryResultForGeneration\(\s*isInitiatingExecGeneration,\s*\(\) => kernelWorker\.prepareAddressSpaceForExec\(pid\),/,
+      );
+
+      const clone = cloneHandlerSource(source);
+      expect(
+        clone,
+        `${entry} must guard clone allocation and thread attachment`,
+      ).toMatch(
+        /retryKernelEntryResultForGeneration\(\s*belongsToCompiledProcessImage,\s*\(\) => processInfo\.threadAllocator\.allocate\(memory\),[\s\S]*retryKernelEntryResultForGeneration\(\s*belongsToCompiledProcessImage,\s*\(\) => kernelWorker\.attachThreadChannel\(/,
       );
     }
   });

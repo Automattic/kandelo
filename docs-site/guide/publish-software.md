@@ -9,7 +9,9 @@ There are two useful ways to publish browser-bootable Kandelo software:
 1. host a direct `.vfs` or `.vfs.zst` image and share a `?vfs=` URL;
 2. publish a package-source repository with `gallery.json`, `index.toml`, and release archives.
 
-Use direct VFS links for one-off images. Use package sources when you want repeatable builds, release history, gallery entries, or multiple related packages.
+Use direct VFS links to launch images in the demo app. Use package sources when
+you want repeatable builds, release history, published metadata, or multiple
+related packages.
 
 ## Direct VFS URL
 
@@ -49,12 +51,15 @@ Use package sources for:
 
 - language runtimes;
 - large VFS images;
-- demos that should appear in the browser gallery only when release artifacts exist;
+- software with published metadata for consumers outside the demo app;
 - software that is too large, slow, experimental, or domain-specific for the main Kandelo CI.
 
 ## Gallery Manifest
 
-`gallery.json` is presentation metadata. `index.toml` is availability state.
+`gallery.json` is optional presentation metadata. `index.toml` is availability
+state. The current Kandelo demo app does not request third-party gallery
+manifests, but package sources can continue to publish and validate them for
+other consumers.
 
 ```json
 {
@@ -78,7 +83,8 @@ Rules:
 - `source_id` becomes the gallery entry namespace.
 - `entries[].id` and package names should use lowercase IDs.
 - `entries[].packages` must include every package required to launch.
-- The UI shows an entry only when every listed package has a successful `wasm32` record in the ABI-matching `index.toml`.
+- A consumer should show an entry only when every listed package has a
+  successful `wasm32` record in the ABI-matching `index.toml`.
 
 Test a manifest against an index:
 
@@ -88,21 +94,10 @@ node scripts/validate-software-gallery.mjs \
   --index /tmp/index.toml
 ```
 
-## Test A Manifest Locally
+## Test A Published Image
 
-Point a local Kandelo UI at your manifest:
-
-```bash
-cd apps/browser-demos
-VITE_KANDELO_SOFTWARE_MANIFEST_URLS='https://example.com/releases/download/binaries-abi-v11/gallery.json' \
-  npm run dev
-```
-
-Or use the public UI:
-
-```text
-https://automattic.github.io/kandelo/?softwareManifest=https://example.com/releases/download/binaries-abi-v11/gallery.json
-```
+Validate the optional gallery metadata with the command above. To test the
+actual image in the demo app, publish it and open its direct `?vfs=` URL.
 
 ## Reusable Publish Workflow
 
@@ -142,4 +137,4 @@ VFS images that contain Kandelo ABI-bound Wasm programs should declare `kernelAb
 2. rebuild packages and VFS images against the new Kandelo ref;
 3. publish a new `binaries-abi-v<N>` release;
 4. verify `gallery.json` against the new `index.toml`;
-5. test a public `softwareManifest` URL in the browser UI.
+5. test the published image through a public direct VFS URL.

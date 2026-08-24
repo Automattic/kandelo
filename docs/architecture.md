@@ -438,6 +438,20 @@ detached callbacks, and discards queued ingress after a fatal latch. This is a
 lifetime guarantee: later work cannot overwrite the reservation or publish a
 channel completion against an uncertain Rust transition.
 
+Process-launch continuations are different from one synchronous kernel entry.
+Compiling a child module, allocating process memory, or constructing a Worker
+can yield to the host event loop. When a fork, `vfork`, `posix_spawn`, `exec`,
+or pthread `clone` continuation resumes, an unrelated HTTP bridge or process
+query may temporarily own the entry gate. Result-bearing lifecycle calls retry
+only `KernelReentrantEntryError` on a later host turn. They do not translate
+temporary serialization contention into a guest-visible launch failure, and
+they do not retry ordinary lifecycle or Worker errors. Browser and Node hosts
+share this rule. Generation-sensitive `exec` and pthread `clone` retries also
+revalidate the exact host process generation before each PID-only kernel
+operation, so an `exec` that reuses the PID cannot receive a stale
+continuation's address-space or thread mutation. Child-launch paths use
+monotonic task IDs or the expected process memory as their equivalent guard.
+
 Positioned host-backed I/O uses required `host_pread` and `host_pwrite`
 imports. Signed 64-bit offsets remain exact across TypeScript routing and are
 split and reconstructed losslessly at the Wasm boundary; one positioned

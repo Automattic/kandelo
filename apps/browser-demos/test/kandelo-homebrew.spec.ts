@@ -21,6 +21,8 @@ import {
 const FIXTURE_BASE_PATH = "/__kandelo-homebrew-test";
 const FIXTURE_ROOT = new URL("../public/__kandelo-homebrew-test/", import.meta.url);
 const GALLERY_FIXTURE_BASE_PATH = "/test/fixtures/homebrew-gallery";
+const THIRD_PARTY_GALLERY_FIXTURE_PATH =
+  `${GALLERY_FIXTURE_BASE_PATH}/browser/gallery.json`;
 
 const appUrl = (path: string): string => {
   const baseUrl = process.env.KANDELO_TEST_BASE_URL;
@@ -77,14 +79,6 @@ async function waitForTerminalContent(
   } else {
     await assertion.toMatch(expected);
   }
-}
-
-function homebrewGalleryFixturePath(name: "browser" | "nonbrowser"): string {
-  // These manifest and index pairs exist before Vite starts. The app's
-  // service worker owns same-origin fetches, so Playwright request routes do
-  // not reliably see them. Creating files after Vite starts is also racy
-  // because the server can discover one sibling before the other.
-  return `${GALLERY_FIXTURE_BASE_PATH}/${name}/gallery.json`;
 }
 
 async function writeHomebrewDefaultShellFixture(): Promise<string> {
@@ -145,7 +139,7 @@ test("strict Homebrew publisher smoke reads Vite shadow-root errors", async ({ p
 });
 
 test.describe("software gallery fixtures", () => {
-  test("does not request an unconfigured software gallery", async ({ page }) => {
+  test("ignores configured third-party software galleries", async ({ page }) => {
     const manifestRequests: string[] = [];
     page.on("request", (request) => {
       if (new URL(request.url()).pathname.endsWith("/gallery.json")) {
@@ -153,37 +147,19 @@ test.describe("software gallery fixtures", () => {
       }
     });
 
-    await gotoOrSkip(page, "/");
+    await gotoOrSkip(
+      page,
+      `/?softwareManifest=${encodeURIComponent(THIRD_PARTY_GALLERY_FIXTURE_PATH)}`,
+    );
     await openNewMachineLauncher(page);
+    await page.waitForTimeout(5_000);
 
     expect(manifestRequests).toEqual([]);
-  });
-
-  test("hides wasm32 entries without browser-compatible metadata", async ({ page }) => {
-    const manifestPath = homebrewGalleryFixturePath("nonbrowser");
-    await gotoOrSkip(page, `/?softwareManifest=${encodeURIComponent(manifestPath)}`);
-    await openNewMachineLauncher(page);
-
-    await expect(galleryRowByTitle(page, /^Sample Browser Sentinel$/)).toBeVisible({
-      timeout: 90_000,
-    });
-    await expect(galleryRowByTitle(page, /^Sample Homebrew VFS$/)).toHaveCount(0);
-  });
-
-  test("makes browser-compatible archive launch failures visible", async ({ page }) => {
-    const manifestPath = homebrewGalleryFixturePath("browser");
-    await gotoOrSkip(page, `/?softwareManifest=${encodeURIComponent(manifestPath)}`);
-    await openNewMachineLauncher(page);
-
-    const row = galleryRowByTitle(page, /^Sample Homebrew VFS$/);
-    await expect(row).toBeVisible({ timeout: 90_000 });
-    await row.getByRole("button", { name: "Launch" }).click();
-
-    await expect(page.getByText("Failed to boot Sample Homebrew VFS")).toBeVisible({
-      timeout: 120_000,
-    });
-    await expect(page.getByText(/404|artifact|archive/i).first()).toBeVisible();
-    await expect(page.getByText(/third-party gallery entry/i)).toBeVisible();
+    await expect(galleryRowByTitle(page, /^Bare shell$/)).toBeVisible();
+    await expect(galleryRowByTitle(page, /^Sample Browser Sentinel$/))
+      .toHaveCount(0);
+    await expect(galleryRowByTitle(page, /^Sample Homebrew VFS$/))
+      .toHaveCount(0);
   });
 });
 
