@@ -121,11 +121,11 @@
     "prepack": "npm run build && bash ../scripts/prepare-host-package.sh"
   },
   "devDependencies": {
-    "@playwright/test": "^1.61.1",
-    "@types/node": "^26.1.1",
-    "esbuild": "^0.27.0",
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^26.2.0",
+    "esbuild": "^0.28.2",
     "tsup": "^8.0.0",
-    "tsx": "^4.23.1",
+    "tsx": "^4.23.12",
     "typedoc": "^0.28.20",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"
