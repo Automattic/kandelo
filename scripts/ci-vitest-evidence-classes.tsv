@@ -380,6 +380,7 @@ packages/registry/spidermonkey/test/spidermonkey-tls-source.test.ts	source-only
 packages/registry/spidermonkey/test/spidermonkey.test.ts	prepared-product
 packages/registry/unzip/test/unzip.test.ts	prepared-product
 packages/registry/wordpress/test/php-sanity.test.ts	prepared-product
+packages/registry/wordpress/test/service-vfs-demo.test.ts	prepared-product
 packages/registry/wordpress/test/wordpress-boot.test.ts	prepared-product
 packages/registry/wordpress/test/wordpress-server.test.ts	prepared-product
 packages/registry/wordpress/test/wordpress-site-editor.test.ts	prepared-product
