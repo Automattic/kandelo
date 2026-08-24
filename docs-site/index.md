@@ -20,7 +20,7 @@ features:
   - title: More than one process
     details: Kandelo can run shells, command-line tools, web servers, databases, and early framebuffer/audio demos as cooperating Wasm processes.
   - title: Bring your own software
-    details: Build VFS images and publish them through direct links or package-source gallery manifests.
+    details: Build VFS images and publish them through direct links or repeatable package-source releases.
 ---
 
 ::: warning API stability
@@ -35,7 +35,7 @@ Use these docs if you want to:
 - host a `.vfs` or `.vfs.zst` image and open it through Kandelo;
 - build a custom browser app that starts Kandelo directly;
 - create, inspect, modify, and publish VFS images;
-- publish a gallery source that appears in the Kandelo UI.
+- publish repeatable package-source releases and share their VFS images.
 
 ## The Dream
 

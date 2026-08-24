@@ -151,6 +151,7 @@ host/test/kernel-clone-exit-entry.test.ts	source-only
 host/test/kernel-detached-effect-protocol.test.ts	source-only
 host/test/kernel-entry-context-audit.test.ts	source-only
 host/test/kernel-entry-gate.test.ts	source-only
+host/test/kernel-entry-retry.test.ts	source-only
 host/test/kernel-errno.test.ts	source-only
 host/test/kernel-exec-entry.test.ts	source-only
 host/test/kernel-export-failure-audit.test.ts	source-only
@@ -397,6 +398,7 @@ tests/package-system/homebrew-bottle-mirror-recovery.test.ts	prepared-product
 tests/package-system/host-package-projection-contract.test.ts	prepared-product
 tests/package-system/installed-host-package.test.ts	prepared-product
 tests/package-system/kernel-test-fixtures.test.ts	prepared-product
+tests/package-system/local-build-wrapper.test.ts	source-only
 tests/package-system/package-source-publish-contract.test.ts	prepared-product
 tests/package-system/playwright-server-policy.test.ts	prepared-product
 tests/package-system/program-resolver-literals.test.ts	prepared-product

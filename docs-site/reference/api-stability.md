@@ -33,6 +33,6 @@ These ideas are core to Kandelo, but individual APIs may still change:
 - the kernel runs in a dedicated worker;
 - browser machines boot from VFS images;
 - package-source repositories publish ABI-scoped artifacts;
-- the browser gallery shows entries only when matching artifacts are available.
+- the demo app's gallery contains only repository-defined entries.
 
 When in doubt, prefer direct VFS image links for simple sharing and package-source repositories for repeatable distribution.

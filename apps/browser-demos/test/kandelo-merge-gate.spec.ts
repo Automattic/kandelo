@@ -105,6 +105,31 @@ function webFrame(page: Page, title: string): FrameLocator {
   return page.frameLocator(`iframe[title="${title}"]`);
 }
 
+async function failOnMachineError(
+  page: Page,
+  timeout: number,
+): Promise<never> {
+  await page
+    .locator('.kdock-status-text[data-status="error"]')
+    .waitFor({ state: "attached", timeout });
+  const syslog = await page.locator(".ksys-line").allTextContents();
+  throw new Error(
+    `Kandelo machine failed while WordPress was loading:\n${syslog.slice(-40).join("\n")}`,
+  );
+}
+
+async function waitForWordPressOrMachineError(
+  page: Page,
+  frame: FrameLocator,
+  timeout: number,
+): Promise<void> {
+  const wordpress = expect(frame.locator("body")).toContainText(
+    /WordPress on Kandelo|Hello world/i,
+    { timeout },
+  );
+  await Promise.race([wordpress, failOnMachineError(page, timeout)]);
+}
+
 async function attachKandeloDiagnostics(page: Page, label: string) {
   const info = test.info();
   const safeLabel = label.replace(/[^a-z0-9_-]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase();
@@ -205,13 +230,40 @@ async function runWordPressPreinstalledLogin(page: Page, demo: string, title: st
       timeout: 60_000,
     });
 
-    await page.waitForSelector(`iframe[title="${title}"]`, { timeout: 240_000 });
+    await Promise.race([
+      page.waitForSelector(`iframe[title="${title}"]`, { timeout: 240_000 }),
+      failOnMachineError(page, 240_000),
+    ]);
     const frame = webFrame(page, title);
 
-    await expect(frame.locator("body")).toContainText(/WordPress on Kandelo|Hello world/i, {
-      timeout: 240_000,
-    });
+    await waitForWordPressOrMachineError(page, frame, 240_000);
     await expect(frame.locator("form#setup, form#language-chooser")).toHaveCount(0);
+
+    if (demo === "wordpress-mariadb") {
+      for (let probe = 0; probe < 4; probe += 1) {
+        const readiness = await frame.locator("body").evaluate(
+          async (_body, sequence) => {
+            const url = new URL("kandelo-ready.php", window.location.href);
+            url.searchParams.set("probe", String(sequence));
+            const response = await fetch(url, { cache: "no-store" });
+            return {
+              status: response.status,
+              body: (await response.text()).trim(),
+            };
+          },
+          probe,
+        );
+        expect(readiness).toEqual({ status: 200, body: "ready" });
+        await page.waitForTimeout(750);
+      }
+
+      await frame.locator("body").evaluate(() => window.location.reload());
+      await waitForWordPressOrMachineError(page, frame, 120_000);
+      await expect(page.locator(".kdock-status-text")).toHaveAttribute(
+        "data-status",
+        "running",
+      );
+    }
 
     await page.getByRole("button", { name: /Log in as admin/i }).click();
 

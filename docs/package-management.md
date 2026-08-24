@@ -43,7 +43,7 @@ Most readers want one of these. Detailed sections follow further down.
 | Understand the release flow                   | [docs/binary-releases.md](binary-releases.md).                                                                                                                                                                                                                     |
 | Understand Kandelo's Homebrew system          | [docs/homebrew-packaging-system.md](homebrew-packaging-system.md) - Formulae, bottles, ABI rollouts, lazy VFS images, guest `brew`, and third-party taps.                                                                                                           |
 | Work on Homebrew bottle publishing            | [docs/homebrew-publishing.md](homebrew-publishing.md) - detailed trusted CI, sidecar, OCI, VFS, and Node/browser contracts.                                                                                                                                       |
-| Publish packages from another repository      | [docs/package-sources.md](package-sources.md) — package-source layout, reusable workflow, and browser-gallery contract.                                                                                                                                            |
+| Publish packages from another repository      | [docs/package-sources.md](package-sources.md) — package-source layout, reusable workflow, and published gallery metadata.                                                                                                                                          |
 | Trace an ABI mismatch                         | [docs/abi-versioning.md](abi-versioning.md).                                                                                                                                                                                                                       |
 | See what's missing                            | [docs/package-management-future-work.md](package-management-future-work.md).                                                                                                                                                                                       |
 
@@ -2108,14 +2108,10 @@ Kandelo checkout for source builds, and publishes an ABI-scoped
 and script contract.
 
 `kandelo-software` also publishes `gallery.json` beside the release
-index. The browser gallery treats that file as presentation metadata
-and the release `index.toml` as the source of truth: a third-party VFS
-entry is shown only when all packages listed for that entry have
-successful wasm32 records in the ABI-matching index. Because an external
-source advances independently, Kandelo does not construct a presumed current
-ABI URL by default. Browser deployments opt into a concrete manifest with
-`VITE_KANDELO_SOFTWARE_MANIFEST_URLS`, and users may supply one with the
-`softwareManifest` query parameter.
+index. The current browser demo does not request or display that third-party
+metadata. External sources advance independently from Kandelo, so users launch
+their published images through an explicit `vfs` URL instead of extending the
+demo gallery at runtime.
 
 ## Source-kind manifests
 

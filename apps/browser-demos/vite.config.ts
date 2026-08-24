@@ -864,11 +864,9 @@ const demoInputs = {
   "sqlite-test": path.resolve(__dirname, "pages/sqlite-test/index.html"),
   benchmark: path.resolve(__dirname, "pages/benchmark/index.html"),
   "php-test": path.resolve(__dirname, "pages/php-test/index.html"),
-  // The perl, python, ruby, erlang, texlive, and redis package entries
-  // are not bundled into this static build while their slow builds
-  // live in kandelo-software. A deployment may configure that source's
-  // gallery.json at build time to expose available third-party VFS builds
-  // without adding page inputs.
+  // The perl, python, ruby, erlang, texlive, and redis demos are not bundled
+  // into this static build while their slow builds live in package sources.
+  // The demo app exposes only repository-defined gallery entries.
 };
 
 function sourceOnlyDemoInputs<T extends Record<string, string>>(

@@ -79,21 +79,11 @@ Accepted image URL schemes are `http` and `https`. The image should be a `.vfs` 
 
 The host serving the image must allow the browser to fetch it from a cross-origin-isolated page. Use CORS or compatible cross-origin resource policy headers.
 
-## External Software Manifests
+## External Software
 
-The UI can load gallery entries from package-source repositories:
-
-```text
-https://automattic.github.io/kandelo/?softwareManifest=https://example.com/releases/download/binaries-abi-v11/gallery.json
-```
-
-Multiple manifest URLs can be supplied with repeated `softwareManifest` parameters or a comma/whitespace-separated value in local builds through:
-
-```text
-VITE_KANDELO_SOFTWARE_MANIFEST_URLS
-```
-
-The gallery shows an external entry only when every package named by that entry has a successful `wasm32` record in the matching `index.toml`.
+The demo app exposes only repository-defined gallery entries. It does not
+request third-party software manifests. To launch an externally published
+image, use a [direct VFS link](#direct-vfs-links).
 
 ## Network Behavior
 

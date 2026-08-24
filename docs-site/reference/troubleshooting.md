@@ -31,19 +31,12 @@ Inspect locally:
 node tools/mkrootfs/bin/mkrootfs.mjs inspect ./my-machine.vfs.zst --metadata
 ```
 
-## Gallery Entry Does Not Appear
+## External Gallery Entry Does Not Appear
 
-The UI hides third-party gallery entries unless every listed package has a successful `wasm32` record in the ABI-matching `index.toml`.
-
-Validate:
-
-```bash
-node scripts/validate-software-gallery.mjs \
-  --gallery ./gallery.json \
-  --index ./index.toml
-```
-
-Also confirm that `gallery.json` and `index.toml` are served from the same release directory unless `gallery.json` sets an explicit `index_url`.
+The demo app does not request third-party gallery manifests. Launch an
+externally published image with a direct `?vfs=` URL instead. Package-source
+publishers can still validate optional gallery metadata with
+`scripts/validate-software-gallery.mjs` for other consumers.
 
 ## Lazy Assets 404
 

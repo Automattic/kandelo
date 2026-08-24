@@ -366,7 +366,9 @@ build: {
 },
 ```
 
-Do not add standalone package demos here by default. New browser-facing software should normally be exposed through a Kandelo UI gallery preset or software manifest.
+Do not add standalone package demos here by default. New browser-facing
+software should normally be exposed through a repository-defined Kandelo UI
+gallery preset or a direct VFS image link.
 
 ### Minimal browser lab
 

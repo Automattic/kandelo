@@ -60,7 +60,6 @@ import {
   writeVfsFile,
 } from "../../../../../host/src/vfs/image-helpers";
 import { ABI_VERSION } from "../../../../../host/src/generated/abi";
-import { decompress as decompressZstd } from "fzstd";
 import {
   LiveKernelHost,
   type BootDescriptor,
@@ -136,6 +135,10 @@ import {
   deploymentScopeFromServiceWorkerUrl,
 } from "../../../../../web-libs/kandelo-session/src/deployment-scope";
 import { createCoiReloadSessionState } from "./coi-reload-session-state";
+import {
+  DinitBootStatusTracker,
+  REQUIRED_DINIT_SERVICES,
+} from "./dinit-boot-status";
 
 import kernelWasmUrl from "@kernel-wasm?url";
 import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
@@ -208,65 +211,6 @@ async function optionalBinaryUrl(
   throw new Error(`${label} is not built. Run: ./run.sh build programs`);
 }
 
-type GalleryPackageRequirement = {
-  name: string;
-  version: string;
-};
-
-type SoftwareGalleryEntry = {
-  id: string;
-  title: string;
-  description: string;
-  packages: GalleryPackageRequirement[];
-  package_url?: string;
-};
-
-type SoftwareGalleryManifest = {
-  source_id?: string;
-  repository?: string;
-  index_url?: string;
-  entries: SoftwareGalleryEntry[];
-};
-
-type TomlValue = string | number | boolean;
-
-type IndexBinaryEntry = Record<string, TomlValue | undefined> & {
-  status?: TomlValue;
-  archive_url?: TomlValue;
-  browser_compatible?: TomlValue;
-};
-
-type IndexPackageEntry = {
-  name?: string;
-  version?: string;
-  binary: Record<string, IndexBinaryEntry>;
-};
-
-type SoftwareIndex = {
-  abiVersion?: number;
-  packages: Map<string, IndexPackageEntry>;
-};
-
-type SoftwareBinary = {
-  archiveUrl: string;
-  artifactPath: string;
-  installPath: string;
-  symlinks?: string[];
-};
-
-type SoftwareProfile = {
-  id: string;
-  vfsArchiveUrl: string;
-  vfsArtifactPath: string;
-  binaries: SoftwareBinary[];
-  shellEnv?: string[];
-  autoCommand?: string;
-  init?: LiveProfile["init"];
-  presentation?: DemoPresentation;
-};
-
-const SOFTWARE_PROFILES = new Map<string, SoftwareProfile>();
-const tarDecoder = new TextDecoder();
 const HTTP_PORT = 8080;
 const PHP_FPM_PORT = 9000;
 const MARIADB_SOCKET_PATH = WORDPRESS_MARIADB_SOCKET_PATH;
@@ -283,12 +227,6 @@ const DEMO_UID = 1000;
 const DEMO_GID = 1000;
 const DEMO_USER = "maker";
 const DEMO_HOME = "/home/maker";
-const DINITCTL_PATH = "/sbin/dinitctl";
-const DINITCTL_SOCKET_PATH = "/tmp/dinitctl";
-const DINIT_STARTING_POLL_INTERVAL_MS = 2_000;
-const DINIT_STARTING_POLL_TIMEOUT_MS = 180_000;
-const DINITCTL_LIST_TIMEOUT_MS = 2_000;
-const DINIT_STARTING_POLL_FAILURE_LIMIT = 3;
 
 class BootSuperseded extends Error {
   constructor() {
@@ -425,7 +363,10 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
       env: "service",
       programUrl: dinitWasmUrl,
       maxWorkers: 6,
-      web: { requiredPorts: [HTTP_PORT] },
+      web: {
+        requiredPorts: [HTTP_PORT],
+        requiredServices: [...REQUIRED_DINIT_SERVICES.nginx],
+      },
     },
   },
   "nginx-php": {
@@ -437,7 +378,10 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
       env: "service",
       programUrl: dinitWasmUrl,
       maxWorkers: 12,
-      web: { requiredPorts: [HTTP_PORT] },
+      web: {
+        requiredPorts: [HTTP_PORT],
+        requiredServices: [...REQUIRED_DINIT_SERVICES["nginx-php"]],
+      },
     },
   },
   "wordpress-sqlite": {
@@ -450,7 +394,10 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
       programUrl: dinitWasmUrl,
       maxWorkers: 12,
       maxMemoryPages: 4096,
-      web: { requiredPorts: [HTTP_PORT] },
+      web: {
+        requiredPorts: [HTTP_PORT],
+        requiredServices: [...REQUIRED_DINIT_SERVICES["wordpress-sqlite"]],
+      },
     },
   },
   "wordpress-mariadb": {
@@ -468,7 +415,7 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
       maxMemoryPages: 16384,
       web: {
         requiredPorts: [HTTP_PORT, PHP_FPM_PORT],
-        requiredServices: ["mariadb-ready", "php-fpm", "nginx"],
+        requiredServices: [...REQUIRED_DINIT_SERVICES["wordpress-mariadb"]],
         probeHttp: true,
         probePath: WORDPRESS_MARIADB_READY_PATH,
       },
@@ -509,13 +456,12 @@ const WEB_BOOT_LOG_DEMO_IDS = new Set<LiveDemoId>([
 
 interface LiveProfile {
   id: string;
-  /** Canonical built-in image family, or null for custom/software images. */
+  /** Canonical built-in image family, or null for custom images. */
   image: LiveVfsImage | null;
   vfsUrl: string;
   vfsSource?: LiveVfsSource;
   candidateEvidence?: InjectedProtectedCandidateVfsV1;
   candidateVfsPlacement?: ProtectedCandidatePagesVfsPlacement;
-  software?: SoftwareProfile;
   descriptor: BootDescriptor;
   shell: ShellProfile;
   maxVfsByteLength: number;
@@ -545,6 +491,7 @@ interface LiveProfile {
 interface WebReadinessState {
   ready: boolean;
   probing: boolean;
+  failed: boolean;
 }
 
 const APP_PREFIX = import.meta.env.BASE_URL + "app/";
@@ -781,12 +728,6 @@ export async function createLiveHost(
       profileForDescriptor(initialDescriptor, opts.fb),
       initialDescriptor,
     );
-    void requireServiceWorker()
-      .then(() => refreshSoftwareGallery(host, localGalleryItems))
-      .catch((err) => {
-        console.warn("Service worker gate failed before gallery refresh:", err);
-        host.setGalleryItems(localGalleryItems);
-      });
   } else if (candidateVfsPlacement!.pagesLoad === null) {
     void activateProtectedProfile();
   } else {
@@ -886,14 +827,6 @@ function showBootError(
     facility: "kandelo",
     msg: message,
   });
-  if (SOFTWARE_PROFILES.has(descriptor.id)) {
-    host.pushDmesg({
-      t: bootElapsedMs(bootStartedAt),
-      level: "warn",
-      facility: "kandelo-software",
-      msg: "The third-party gallery entry may be temporarily unavailable or its release artifact may have been deleted.",
-    });
-  }
   host.setStatus("error");
 }
 
@@ -940,7 +873,6 @@ function profileForDescriptor(desc: BootDescriptor, fb?: FbDemo): LiveProfile {
     ...profile,
     id: knownDemo ?? desc.id,
     vfsUrl,
-    software: undefined,
     descriptor: desc,
     init: profile.init === undefined
       ? undefined
@@ -965,7 +897,6 @@ function profileForCandidateEvidence(
     ...base,
     vfsUrl: evidence.vfs.url,
     vfsSource: undefined,
-    software: undefined,
     descriptor,
     candidateEvidence: evidence,
     candidateVfsPlacement: placement,
@@ -1003,24 +934,6 @@ function customVfsProfile(
 }
 
 function profileFor(id: string, fb?: FbDemo): LiveProfile {
-  const software = SOFTWARE_PROFILES.get(id);
-  if (software) {
-    const desc = descriptorFor(id);
-    return {
-      id: software.id,
-      image: null,
-      vfsUrl: software.vfsArchiveUrl,
-      software,
-      descriptor: desc,
-      shell: "default",
-      maxVfsByteLength: DEFAULT_VFS_PROFILE_MAX_BYTES,
-      autoCommand: software.autoCommand,
-      fallbackPresentation: software.presentation,
-      init: software.init,
-      framebufferTest: false,
-    };
-  }
-
   const normalized = normalizeDemoId(id) ?? "shell";
   const spec = LIVE_DEMO_SPECS[normalized];
   const desc = descriptorFor(normalized);
@@ -1095,16 +1008,6 @@ function shellIdentityForProfile(
     identity = {
       env: shellEnvFor(profile.shell),
       cwd: shellCwdFor(profile.shell),
-      uid: DEMO_UID,
-      gid: DEMO_GID,
-    };
-  } else if (
-    profile.software?.shellEnv &&
-    profile.software.shellEnv !== SERVICE_ENV
-  ) {
-    identity = {
-      env: profile.software.shellEnv,
-      cwd: DEMO_HOME,
       uid: DEMO_UID,
       gid: DEMO_GID,
     };
@@ -1189,169 +1092,6 @@ function reportInitError(
   host.setStatus("error");
 }
 
-class DinitBootStatusTracker {
-  private completedServices = new Set<string>();
-  private startingServices = new Set<string>();
-  private outputTails = new Map<string, string>();
-
-  constructor(
-    private tick: (msg: string) => void,
-    private onServiceCompleted?: (serviceName: string) => void,
-  ) {}
-
-  observeProcessOutput(text: string, stream: string): void {
-    if (!text) return;
-    const normalized = `${this.outputTails.get(stream) ?? ""}${text}`.replace(
-      /\r/g,
-      "",
-    );
-    const lines = normalized.split("\n");
-    this.outputTails.set(
-      stream,
-      text.endsWith("\n") ? "" : (lines.pop() ?? ""),
-    );
-    for (const line of lines) {
-      const serviceName = parseDinitCompletionLine(line);
-      if (!serviceName) continue;
-      if (this.completedServices.has(serviceName)) continue;
-      this.emitStarting(serviceName);
-      this.completedServices.add(serviceName);
-      this.onServiceCompleted?.(serviceName);
-    }
-  }
-
-  emitStartingFromList(output: string): void {
-    for (const serviceName of parseDinitStartingServices(output)) {
-      this.emitStarting(serviceName);
-    }
-  }
-
-  hasCompleted(serviceName: string): boolean {
-    return this.completedServices.has(serviceName);
-  }
-
-  private emitStarting(serviceName: string): void {
-    if (this.completedServices.has(serviceName)) return;
-    if (this.startingServices.has(serviceName)) return;
-    this.startingServices.add(serviceName);
-    this.tick(`Starting ${serviceName}...`);
-  }
-}
-
-function parseDinitCompletionLine(line: string): string | null {
-  const match = stripAnsi(line)
-    .trim()
-    .match(/^\[(?:\s*OK\s*|FAILED)\]\s+(.+)$/);
-  return match?.[1]?.trim() || null;
-}
-
-function parseDinitStartingServices(output: string): string[] {
-  const services: string[] = [];
-  for (const line of stripAnsi(output).replace(/\r/g, "").split("\n")) {
-    const match = line.match(/^\[[^\]]*<<[^\]]*\]\s+(\S+)/);
-    if (match?.[1]) services.push(match[1]);
-  }
-  return services;
-}
-
-function stripAnsi(text: string): string {
-  return text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
-}
-
-function startDinitStartingPoller(options: {
-  kernel: BrowserKernel;
-  hasDinitctl: boolean;
-  tracker: DinitBootStatusTracker;
-  isCurrent: () => boolean;
-  shouldStop?: () => boolean;
-}): () => void {
-  if (!options.hasDinitctl) return () => {};
-
-  let stopped = false;
-  void (async () => {
-    const deadline = Date.now() + DINIT_STARTING_POLL_TIMEOUT_MS;
-    let failures = 0;
-    while (!stopped && options.isCurrent() && Date.now() < deadline) {
-      if (options.shouldStop?.()) break;
-      // The kernel owns the FS now, so the main thread can't stat the dinit
-      // control socket. readDinitctlList probes it via an in-kernel
-      // `dinitctl list`, which returns null until the socket is up.
-      let output: string | null = null;
-      try {
-        output = await readDinitctlList(options.kernel);
-        failures = 0;
-      } catch {
-        failures += 1;
-        if (failures >= DINIT_STARTING_POLL_FAILURE_LIMIT) break;
-      }
-      if (stopped || !options.isCurrent()) break;
-      if (output !== null) options.tracker.emitStartingFromList(output);
-      await delay(DINIT_STARTING_POLL_INTERVAL_MS);
-    }
-  })();
-
-  return () => {
-    stopped = true;
-  };
-}
-
-async function readDinitctlList(kernel: BrowserKernel): Promise<string | null> {
-  const chunks: Uint8Array[] = [];
-  const { pid, exit } = await kernel.spawnFromVfs(
-    DINITCTL_PATH,
-    [DINITCTL_PATH, "-p", DINITCTL_SOCKET_PATH, "list"],
-    {
-      cwd: "/",
-      uid: ROOT_UID,
-      gid: ROOT_GID,
-      pty: true,
-    },
-  );
-  kernel.onPtyOutput(pid, (data) => {
-    chunks.push(data.slice());
-  });
-
-  try {
-    const code = await Promise.race([
-      exit,
-      delay(DINITCTL_LIST_TIMEOUT_MS).then(() => null),
-    ]);
-    if (code === null) {
-      await kernel.terminateProcess(pid).catch(() => {});
-      return null;
-    }
-    await delay(0);
-    if (code !== 0 || chunks.length === 0) return null;
-    return decodeChunks(chunks);
-  } finally {
-    kernel.clearPtyOutput(pid);
-  }
-}
-
-function decodeChunks(chunks: Uint8Array[]): string {
-  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(bytes);
-}
-
-function vfsPathExists(fs: MemoryFileSystem, path: string): boolean {
-  try {
-    fs.stat(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
 async function bootProfile(
   host: LiveKernelHost,
   profile: LiveProfile,
@@ -1405,8 +1145,30 @@ async function bootProfile(
       msg,
     });
   };
+  const webReadiness: WebReadinessState = {
+    ready: false,
+    probing: false,
+    failed: false,
+  };
   let maybeUpdateWebReadiness = () => {};
-  const dinitBootTracker = new DinitBootStatusTracker(tick, () => {
+  const requiredServices = new Set(
+    profile.init?.web?.requiredServices ?? [],
+  );
+  const dinitBootTracker = new DinitBootStatusTracker(tick, (completion) => {
+    if (
+      completion.outcome === "failed" &&
+      requiredServices.has(completion.serviceName)
+    ) {
+      if (webReadiness.failed) return;
+      webReadiness.failed = true;
+      reportInitError(
+        host,
+        profile,
+        `Required service ${completion.serviceName} failed to start`,
+        tick,
+      );
+      return;
+    }
     maybeUpdateWebReadiness();
   });
   const recordProcessOutput = (data: Uint8Array, fallback: string) => {
@@ -1420,12 +1182,11 @@ async function bootProfile(
 
   tick("service worker active and cross-origin isolated");
   tick(`loading ${profile.id} profile...`);
-  const [kernelBytes, loadedVfs, softwareBinaries] = await Promise.all([
+  const [kernelBytes, loadedVfs] = await Promise.all([
     fetch(kernelWasmUrl)
       .then(failOn("kernel.wasm"))
       .then((r) => r.arrayBuffer()),
     loadVfsImage(profile),
-    loadSoftwareBinaries(profile.software),
   ]);
   assertCurrent();
 
@@ -1522,10 +1283,9 @@ async function bootProfile(
     }
     ensureDemoHomes(buildFs);
   }
-  // Bake the shell + gallery-software binaries into the image before the
-  // worker takes ownership. In the legacy path these were written into a
-  // main-thread-shared memfs *after* boot via `kernel.fs`; the kernel-owned FS
-  // has no main-thread handle, so they must be part of the image bytes.
+  // Bake fallback shell binaries into the image before the worker takes
+  // ownership. The kernel-owned filesystem has no main-thread handle, so they
+  // must be part of the image bytes.
   let shellProgramBytes: ArrayBuffer | undefined;
   let candidateShell: { path: string; argv: string[] } | undefined;
   if (
@@ -1562,10 +1322,6 @@ async function bootProfile(
     stageShellUtilities(buildFs, dashBytes, bashBytes);
     shellProgramBytes = bashBytes;
   }
-  if (profile.candidateEvidence === undefined) {
-    stageSoftwareBinaries(buildFs, softwareBinaries);
-  }
-  const hasDinitctl = vfsPathExists(buildFs, DINITCTL_PATH);
   const imageConfig = readImageConfig(buildFs);
   const rawPresentation =
     (imageConfig ? resolveDemoPresentation(imageConfig, profile.id) : null) ??
@@ -1631,7 +1387,6 @@ async function bootProfile(
   tick("instantiating kernel...");
   const seenPorts = new Set<number>();
   let bridgeSent = false;
-  const webReadiness: WebReadinessState = { ready: false, probing: false };
   maybeUpdateWebReadiness = () => {
     maybeMarkWebReady(
       host,
@@ -1645,7 +1400,6 @@ async function bootProfile(
     );
   };
   let kernel: BrowserKernel | null = null;
-  let stopDinitStartingPoller = () => {};
   try {
     kernel = new BrowserKernel({
       kernelOwnedFs: true,
@@ -1795,20 +1549,11 @@ async function bootProfile(
         },
       );
       // WHY: spawning crosses the worker boundary. A newer boot may own the
-      // host by the time the acknowledgement returns, so do not attach its
-      // poller or exit handlers to this superseded activation.
+      // host by the time the acknowledgement returns, so do not attach exit
+      // handlers to this superseded activation.
       assertCurrent();
-      stopDinitStartingPoller = startDinitStartingPoller({
-        kernel,
-        hasDinitctl,
-        tracker: dinitBootTracker,
-        isCurrent,
-        shouldStop: () => webReadiness.ready,
-      });
       void initExit.then(
         (code) => {
-          stopDinitStartingPoller();
-          stopDinitStartingPoller = () => {};
           if (!isCurrent()) return;
           reportInitError(
             host,
@@ -1818,8 +1563,6 @@ async function bootProfile(
           );
         },
         (err) => {
-          stopDinitStartingPoller();
-          stopDinitStartingPoller = () => {};
           if (!isCurrent()) return;
           reportInitError(
             host,
@@ -1866,11 +1609,12 @@ async function bootProfile(
       });
     }
 
-    tick("ready");
-    host.setStatus("running");
+    if (!webReadiness.failed) {
+      tick("ready");
+      host.setStatus("running");
+    }
     return kernel;
   } catch (err) {
-    stopDinitStartingPoller();
     if (kernel) {
       await kernel.destroy().catch(() => {});
     }
@@ -2118,57 +1862,18 @@ async function loadVfsImage(profile: LiveProfile): Promise<LoadedVfsImage> {
           : Object.freeze({ ...activation.lazyAssets }),
     };
   }
-  if (!profile.software) {
-    const vfsUrl = await resolveProfileVfsUrl(profile);
-    return {
-      imageBytes: await fetch(vfsUrl)
+  const vfsUrl = await resolveProfileVfsUrl(profile);
+  return {
+    imageBytes: await fetch(vfsUrl)
       .then(failOn(`${profile.id}.vfs.zst`))
       .then((r) => r.arrayBuffer()),
-    };
-  }
-  const vfsImage = await loadArchiveArtifact(
-    profile.software.vfsArchiveUrl,
-    profile.software.vfsArtifactPath,
-  );
-  const copy = new Uint8Array(vfsImage.byteLength);
-  copy.set(vfsImage);
-  return { imageBytes: copy.buffer };
+  };
 }
 
 async function resolveProfileVfsUrl(profile: LiveProfile): Promise<string> {
   if (profile.vfsSource) return resolveLiveVfsSourceUrl(profile.vfsSource);
   if (profile.vfsUrl) return profile.vfsUrl;
   throw new Error(`No VFS image URL configured for ${profile.id}`);
-}
-
-async function loadSoftwareBinaries(
-  software: SoftwareProfile | undefined,
-): Promise<Array<{ spec: SoftwareBinary; bytes: Uint8Array }>> {
-  if (!software) return [];
-  return Promise.all(
-    software.binaries.map(async (spec) => ({
-      spec,
-      bytes: await loadArchiveArtifact(spec.archiveUrl, spec.artifactPath),
-    })),
-  );
-}
-
-function stageSoftwareBinaries(
-  fs: MemoryFileSystem,
-  binaries: Array<{ spec: SoftwareBinary; bytes: Uint8Array }>,
-): void {
-  for (const { spec, bytes } of binaries) {
-    ensureDirRecursive(fs, dirname(spec.installPath));
-    writeVfsBinary(fs, spec.installPath, bytes, 0o755);
-    for (const symlinkPath of spec.symlinks ?? []) {
-      ensureDirRecursive(fs, dirname(symlinkPath));
-      try {
-        fs.symlink(spec.installPath, symlinkPath);
-      } catch {
-        /* exists */
-      }
-    }
-  }
 }
 
 function dirname(path: string): string {
@@ -2204,51 +1909,6 @@ async function processNameForPid(
 function basename(path: string): string {
   const idx = path.lastIndexOf("/");
   return idx < 0 ? path : path.slice(idx + 1);
-}
-
-async function loadArchiveArtifact(
-  archiveUrl: string,
-  artifactPath: string,
-): Promise<Uint8Array> {
-  const archiveBytes = await fetchBytesNoStore(archiveUrl);
-  const tarBytes = decompressZstd(archiveBytes);
-  const artifact = extractTarFile(tarBytes, artifactPath);
-  if (!artifact) {
-    throw new Error(`${artifactPath} not found in ${archiveUrl}`);
-  }
-  return artifact;
-}
-
-function extractTarFile(
-  tarBytes: Uint8Array,
-  wantedPath: string,
-): Uint8Array | undefined {
-  for (let offset = 0; offset + 512 <= tarBytes.length;) {
-    const header = tarBytes.subarray(offset, offset + 512);
-    if (header.every((byte) => byte === 0)) return undefined;
-
-    const name = tarString(header, 0, 100);
-    const prefix = tarString(header, 345, 155);
-    const path = prefix ? `${prefix}/${name}` : name;
-    const sizeText = tarString(header, 124, 12).trim();
-    const size = parseInt(sizeText || "0", 8);
-    if (!Number.isFinite(size)) {
-      throw new Error(`Invalid tar size for ${path}`);
-    }
-
-    offset += 512;
-    if (path === wantedPath) {
-      return tarBytes.slice(offset, offset + size);
-    }
-    offset += Math.ceil(size / 512) * 512;
-  }
-  return undefined;
-}
-
-function tarString(block: Uint8Array, offset: number, length: number): string {
-  return tarDecoder
-    .decode(block.subarray(offset, offset + length))
-    .replace(/\0.*$/, "");
 }
 
 async function spawnLazy(
@@ -2293,9 +1953,10 @@ function maybeMarkWebReady(
 ): void {
   const web = profile.init?.web;
   if (!web) return;
+  if (readiness.failed) return;
   const portsReady = web.requiredPorts.every((p) => seenPorts.has(p));
   const servicesReady = (web.requiredServices ?? []).every((serviceName) =>
-    dinitBootTracker.hasCompleted(serviceName),
+    dinitBootTracker.hasSucceeded(serviceName),
   );
   if (!portsReady || !servicesReady || !bridgeSent) return;
   const readyMessage = web.probeHttp
@@ -2338,7 +1999,7 @@ function maybeMarkWebReady(
   })
     .then(
       () => {
-        if (!isCurrent()) return;
+        if (!isCurrent() || readiness.failed) return;
         readiness.ready = true;
         tick("HTTP preview ready");
         host.setWebPreview({
@@ -2419,7 +2080,6 @@ function sleep(ms: number): Promise<void> {
 
 function descriptorBootIdentity(
   id: string,
-  software: SoftwareProfile | undefined,
   shell: ShellProfile,
 ): { env: string[]; cwd: string; uid: number; gid: number } {
   const serviceIds = new Set([
@@ -2428,13 +2088,9 @@ function descriptorBootIdentity(
     "wordpress-sqlite",
     "wordpress-mariadb",
   ]);
-  if (
-    software?.init ||
-    serviceIds.has(id) ||
-    software?.shellEnv === SERVICE_ENV
-  ) {
+  if (serviceIds.has(id)) {
     return {
-      env: software?.shellEnv ?? SERVICE_ENV,
+      env: SERVICE_ENV,
       cwd: ROOT_HOME,
       uid: ROOT_UID,
       gid: ROOT_GID,
@@ -2449,7 +2105,7 @@ function descriptorBootIdentity(
     };
   }
   return {
-    env: software?.shellEnv ?? shellEnvFor(shell),
+    env: shellEnvFor(shell),
     cwd: shellCwdFor(shell),
     uid: DEMO_UID,
     gid: DEMO_GID,
@@ -2466,27 +2122,23 @@ function envRecord(env: string[]): Record<string, string> {
 }
 
 function descriptorFor(id: string): BootDescriptor {
-  const software = SOFTWARE_PROFILES.get(id);
-  const normalized = software ? "shell" : (normalizeDemoId(id) ?? "shell");
+  const normalized = normalizeDemoId(id) ?? "shell";
   const spec = LIVE_DEMO_SPECS[normalized];
-  const item = software
-    ? liveGalleryItems().find((p) => p.id === "shell")!
-    : (liveGalleryItems().find((p) => p.id === normalized) ??
-      liveGalleryItems()[0]);
+  const item =
+    liveGalleryItems().find((p) => p.id === normalized) ??
+    liveGalleryItems()[0];
   const shell = spec.shell ?? "default";
-  const network = software ? false : (spec.network ?? false);
-  const bootIdentity = descriptorBootIdentity(normalized, software, shell);
+  const network = spec.network ?? false;
+  const bootIdentity = descriptorBootIdentity(normalized, shell);
   return {
     version: 1,
-    id: software?.id ?? item.id,
-    title: software
-      ? software.id.replace(/^kandelo-software-/, "")
-      : item.title,
-    base: software ? `kandelo:shell@abi${ABI_VERSION}` : item.base,
+    id: item.id,
+    title: item.title,
+    base: item.base,
     runtime: {
       arch: "wasm32",
       kernel: "kernel@local",
-      memoryPages: software ? 4096 : (spec.memoryPages ?? 2048),
+      memoryPages: spec.memoryPages ?? 2048,
       features: [
         "shared-array-buffer",
         "pty",
@@ -2495,22 +2147,18 @@ function descriptorFor(id: string): BootDescriptor {
       ],
       time: "real",
     },
-    packages: software ? [] : item.packages,
+    packages: item.packages,
     mounts: [
       {
         path: "/",
         source: "image",
-        ref: `${software?.id ?? item.id}.vfs@local`,
+        ref: `${item.id}.vfs@local`,
         readonly: false,
       },
       { path: "/tmp", source: "scratch", ephemeral: true },
     ],
     boot: {
-      argv: software?.init
-        ? software.init.argv
-        : software
-          ? ["bash", "-l", "-i"]
-          : item.bootCommand,
+      argv: item.bootCommand,
       cwd: bootIdentity.cwd,
       env: envRecord(bootIdentity.env),
       uid: bootIdentity.uid,
@@ -2613,420 +2261,6 @@ async function resolveTrustedLiveVfsSourceUrl(source: LiveVfsSource): Promise<st
     return (await CANONICAL_PAGES_VFS_LOADER.activate(source.productId)).imageUrl;
   }
   return resolveLiveVfsSourceUrl(source);
-}
-
-async function refreshSoftwareGallery(
-  host: LiveKernelHost,
-  localItems: GalleryItem[],
-): Promise<void> {
-  try {
-    const softwareItems = await loadKandeloSoftwareGalleryItems();
-    host.setGalleryItems([...localItems, ...softwareItems]);
-  } catch (err) {
-    console.warn("Could not load kandelo-software gallery entries:", err);
-    host.setGalleryItems(localItems);
-  }
-}
-
-async function loadKandeloSoftwareGalleryItems(): Promise<GalleryItem[]> {
-  const groups = await Promise.all(
-    softwareManifestUrls().map(async (manifestUrl) => {
-      try {
-        return await loadSoftwareGalleryItemsFromManifest(manifestUrl);
-      } catch (err) {
-        console.warn(
-          `Could not load Kandelo software gallery manifest ${manifestUrl}:`,
-          err,
-        );
-        return [];
-      }
-    }),
-  );
-  return groups.flat();
-}
-
-async function loadSoftwareGalleryItemsFromManifest(
-  manifestUrl: string,
-): Promise<GalleryItem[]> {
-  const resolvedManifestUrl = new URL(manifestUrl, location.href).href;
-  const manifestText = await fetchTextNoStore(resolvedManifestUrl);
-  const manifest = JSON.parse(manifestText) as SoftwareGalleryManifest;
-  const sourceId = sourceIdForManifest(manifest, resolvedManifestUrl);
-  const indexUrl = manifest.index_url
-    ? new URL(manifest.index_url, resolvedManifestUrl).href
-    : new URL("index.toml", resolvedManifestUrl).href;
-  const index = parseIndexToml(await fetchTextNoStore(indexUrl));
-  if (index.abiVersion !== undefined && index.abiVersion !== ABI_VERSION) {
-    console.warn(
-      `Ignoring Kandelo software index ${indexUrl}: ABI ${index.abiVersion}, expected ${ABI_VERSION}`,
-    );
-    return [];
-  }
-  const items: GalleryItem[] = [];
-  for (const entry of manifest.entries) {
-    if (!entry.packages.every((pkg) => packageAvailable(index, pkg))) continue;
-    const item = softwareEntryToGalleryItem(entry, sourceId, index, indexUrl);
-    if (item) items.push(item);
-  }
-  return items;
-}
-
-function softwareManifestUrls(): string[] {
-  const params = new URLSearchParams(location.search);
-  const queryUrls = params
-    .getAll("softwareManifest")
-    .flatMap(splitManifestUrls);
-  const envUrls = splitManifestUrls(
-    (import.meta.env.VITE_KANDELO_SOFTWARE_MANIFEST_URLS as
-      string | undefined) ?? "",
-  );
-  const urls =
-    queryUrls.length > 0
-      ? queryUrls
-      : envUrls.length > 0
-        ? envUrls
-        : [];
-  return [...new Set(urls)];
-}
-
-function splitManifestUrls(value: string): string[] {
-  return value
-    .split(/[,\s]+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
-
-function sourceIdForManifest(
-  manifest: SoftwareGalleryManifest,
-  manifestUrl: string,
-): string {
-  const raw =
-    manifest.source_id ??
-    manifest.repository?.split("/").pop() ??
-    new URL(manifestUrl, location.href).pathname
-      .split("/")
-      .filter(Boolean)[0] ??
-    "software";
-  const normalized = raw
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return normalized || "software";
-}
-
-function softwareEntryToGalleryItem(
-  entry: SoftwareGalleryEntry,
-  sourceId: string,
-  index: SoftwareIndex,
-  indexUrl: string,
-): GalleryItem | null {
-  const primaryPackage = entry.packages[entry.packages.length - 1];
-  const archiveUrl = archiveUrlFor(index, indexUrl, primaryPackage);
-  if (!primaryPackage || !archiveUrl) return null;
-  const id = `${sourceId}-${entry.id}`;
-  const profile = softwareProfileForEntry(
-    id,
-    entry,
-    index,
-    indexUrl,
-    archiveUrl,
-  );
-  if (!profile) return null;
-  SOFTWARE_PROFILES.set(id, profile);
-  return {
-    id,
-    title: entry.title,
-    summary: entry.description,
-    base: `kandelo:shell@abi${ABI_VERSION}`,
-    packages: entry.packages.map(packageKey),
-    bootCommand: ["bash", "-l", "-i"],
-    accent: accentForSoftwareEntry(entry.id),
-    glyph: glyphForSoftwareEntry(entry),
-    estimatedUrlBytes: JSON.stringify(entry).length,
-    author: sourceId,
-  };
-}
-
-function softwareProfileForEntry(
-  id: string,
-  entry: SoftwareGalleryEntry,
-  index: SoftwareIndex,
-  indexUrl: string,
-  vfsArchiveUrl: string,
-): SoftwareProfile | null {
-  const primaryPackage = entry.packages[entry.packages.length - 1];
-  if (!primaryPackage) return null;
-  const vfsArtifactPath = `artifacts/${primaryPackage.name}.vfs.zst`;
-
-  const base: SoftwareProfile = {
-    id,
-    vfsArchiveUrl,
-    vfsArtifactPath,
-    binaries: [],
-    shellEnv: SHELL_ENV,
-  };
-
-  if (entry.id.includes("python")) {
-    const runtimePackage = runtimePackageForEntry(entry, ["cpython", "python"]);
-    const runtimeArchiveUrl = archiveUrlFor(index, indexUrl, runtimePackage);
-    if (!runtimeArchiveUrl) return null;
-    return {
-      ...base,
-      binaries: [
-        {
-          archiveUrl: runtimeArchiveUrl,
-          artifactPath: "artifacts/python.wasm",
-          installPath: "/usr/bin/python",
-          symlinks: [
-            "/usr/bin/python3",
-            "/usr/local/bin/python",
-            "/usr/local/bin/python3",
-          ],
-        },
-      ],
-      shellEnv: [
-        ...SHELL_ENV,
-        "PYTHONHOME=/usr",
-        "PYTHONDONTWRITEBYTECODE=1",
-        "PYTHONNOUSERSITE=1",
-      ],
-      autoCommand:
-        "python3 -c \"import sys, json; print('Python', sys.version.split()[0]); print(json.dumps({'kandelo': 'software'}))\"",
-    };
-  }
-
-  if (entry.id.includes("perl")) {
-    const runtimePackage = runtimePackageForEntry(entry, ["perl"]);
-    const runtimeArchiveUrl = archiveUrlFor(index, indexUrl, runtimePackage);
-    if (!runtimeArchiveUrl) return null;
-    return {
-      ...base,
-      binaries: [
-        {
-          archiveUrl: runtimeArchiveUrl,
-          artifactPath: "artifacts/perl.wasm",
-          installPath: "/usr/bin/perl",
-          symlinks: ["/usr/local/bin/perl"],
-        },
-      ],
-      shellEnv: [...SHELL_ENV, "PERL5LIB=/usr/lib/perl5"],
-      autoCommand: "perl -e 'print \"Perl $^V from kandelo-software\\n\"'",
-    };
-  }
-
-  if (entry.id.includes("erlang")) {
-    const runtimePackage = runtimePackageForEntry(entry, ["erlang"]);
-    const runtimeArchiveUrl = archiveUrlFor(index, indexUrl, runtimePackage);
-    if (!runtimeArchiveUrl) return null;
-    return {
-      ...base,
-      binaries: [
-        {
-          archiveUrl: runtimeArchiveUrl,
-          artifactPath: "artifacts/erlang.wasm",
-          installPath: "/usr/bin/erlang",
-          symlinks: ["/usr/bin/erl", "/usr/local/bin/erl"],
-        },
-      ],
-      shellEnv: [
-        ...SHELL_ENV,
-        "ROOTDIR=/usr/local/lib/erlang",
-        "BINDIR=/usr/local/lib/erlang/erts-16.1.2/bin",
-        "EMU=beam",
-        "PROGNAME=erl",
-      ],
-      autoCommand: [
-        "erlang",
-        "-S 1:1 -A 0 -SDio 1 -SDcpu 1:1 -P 262144 --",
-        "-root /usr/local/lib/erlang",
-        "-bindir /usr/local/lib/erlang/erts-16.1.2/bin",
-        "-progname erl -home /tmp -start_epmd false",
-        "-boot /usr/local/lib/erlang/releases/28/start_clean",
-        "-noshell -eval 'io:format(\"Erlang/OTP from kandelo-software~n\"), halt().'",
-      ].join(" "),
-    };
-  }
-
-  if (entry.id.includes("redis")) {
-    return {
-      ...base,
-      shellEnv: SERVICE_ENV,
-      init: {
-        argv: ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl"],
-        env: SERVICE_ENV,
-        maxWorkers: 6,
-      },
-      presentation: {
-        bootPrimary: "syslog",
-        runningPrimary: ["terminal", "syslog"],
-        terminalAccess: "primary",
-        internalsAccess: "drawer",
-      },
-      autoCommand:
-        "echo 'Redis VFS from kandelo-software'; ls -l /usr/local/bin/redis-server /etc/dinit.d/redis",
-    };
-  }
-
-  return base;
-}
-
-function runtimePackageForEntry(
-  entry: SoftwareGalleryEntry,
-  names: string[],
-): GalleryPackageRequirement | undefined {
-  const wanted = new Set(names);
-  return entry.packages.find((pkg) => wanted.has(pkg.name));
-}
-
-function packageKey(pkg: GalleryPackageRequirement): string {
-  return `${pkg.name}@${pkg.version}`;
-}
-
-function packageAvailable(
-  index: SoftwareIndex,
-  requirement: GalleryPackageRequirement,
-): boolean {
-  const wasm32 = index.packages.get(packageKey(requirement))?.binary.wasm32;
-  return (
-    stringTomlValue(wasm32?.status) === "success" &&
-    Boolean(stringTomlValue(wasm32?.archive_url)) &&
-    booleanTomlValue(wasm32?.browser_compatible) === true
-  );
-}
-
-function archiveUrlFor(
-  index: SoftwareIndex,
-  indexUrl: string,
-  requirement: GalleryPackageRequirement | undefined,
-): string | undefined {
-  if (!requirement) return undefined;
-  const archiveUrl = stringTomlValue(
-    index.packages.get(packageKey(requirement))?.binary.wasm32?.archive_url,
-  );
-  if (!archiveUrl) return undefined;
-  return new URL(archiveUrl, indexUrl).href;
-}
-
-function stripTomlComment(line: string): string {
-  let inString = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"' && line[i - 1] !== "\\") {
-      inString = !inString;
-    } else if (ch === "#" && !inString) {
-      return line.slice(0, i);
-    }
-  }
-  return line;
-}
-
-function parseTomlValue(value: string): TomlValue {
-  const trimmed = value.trim();
-  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
-    try {
-      return JSON.parse(trimmed);
-    } catch {
-      return trimmed.slice(1, -1);
-    }
-  }
-  if (trimmed === "true") return true;
-  if (trimmed === "false") return false;
-  if (/^[0-9]+$/.test(trimmed)) return Number(trimmed);
-  return trimmed;
-}
-
-function stringTomlValue(value: TomlValue | undefined): string | undefined {
-  return typeof value === "string" ? value : undefined;
-}
-
-function booleanTomlValue(value: TomlValue | undefined): boolean | undefined {
-  return typeof value === "boolean" ? value : undefined;
-}
-
-function parseIndexToml(text: string): SoftwareIndex {
-  const packages = new Map<string, IndexPackageEntry>();
-  let abiVersion: number | undefined;
-  let currentPackage: IndexPackageEntry | undefined;
-  let currentBinary: IndexBinaryEntry | undefined;
-
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = stripTomlComment(rawLine).trim();
-    if (!line) continue;
-
-    if (line === "[[packages]]") {
-      currentPackage = { binary: {} };
-      currentBinary = undefined;
-      continue;
-    }
-
-    const binaryMatch = line.match(/^\[packages\.binary\.([A-Za-z0-9_-]+)\]$/);
-    if (binaryMatch && currentPackage) {
-      currentBinary = {};
-      currentPackage.binary[binaryMatch[1]] = currentBinary;
-      continue;
-    }
-
-    const assignment = line.match(/^([A-Za-z0-9_-]+)\s*=\s*(.+)$/);
-    if (!assignment) continue;
-
-    const [, key, rawValue] = assignment;
-    const value = parseTomlValue(rawValue);
-    if (!currentPackage) {
-      if (key === "abi_version") {
-        const parsed =
-          typeof value === "number"
-            ? value
-            : Number.parseInt(String(value), 10);
-        if (Number.isFinite(parsed)) abiVersion = parsed;
-      }
-      continue;
-    }
-    if (currentBinary) {
-      currentBinary[key] = value;
-    } else if (key === "name" || key === "version") {
-      const stringValue = stringTomlValue(value);
-      if (!stringValue) continue;
-      currentPackage[key] = stringValue;
-      if (currentPackage.name && currentPackage.version) {
-        packages.set(
-          `${currentPackage.name}@${currentPackage.version}`,
-          currentPackage,
-        );
-      }
-    }
-  }
-
-  return { abiVersion, packages };
-}
-
-async function fetchTextNoStore(url: string): Promise<string> {
-  const response = await fetch(url, { cache: "no-store" });
-  if (!response.ok)
-    throw new Error(`${response.status} ${response.statusText}`);
-  return await response.text();
-}
-
-async function fetchBytesNoStore(url: string): Promise<Uint8Array> {
-  const response = await fetch(url, { cache: "no-store" });
-  if (!response.ok)
-    throw new Error(`${response.status} ${response.statusText}`);
-  return new Uint8Array(await response.arrayBuffer());
-}
-
-function accentForSoftwareEntry(id: string): string {
-  if (id.includes("python")) return "#3776ab";
-  if (id.includes("perl")) return "#6c6aa8";
-  if (id.includes("erlang")) return "#a90533";
-  if (id.includes("redis")) return "#c52f24";
-  return "#2f6f73";
-}
-
-function glyphForSoftwareEntry(entry: SoftwareGalleryEntry): string {
-  const packageName =
-    entry.packages[entry.packages.length - 1]?.name ?? entry.id;
-  const parts = packageName.split(/[-_]/).filter(Boolean);
-  if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toLowerCase();
-  return packageName.slice(0, 3).toLowerCase();
 }
 
 function normalizeDemoId(id: string | null | undefined): LiveDemoId | null {
