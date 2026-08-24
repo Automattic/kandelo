@@ -200,10 +200,13 @@ export async function waitForHttp(url: string, timeoutMs: number, shouldAbort?: 
     try {
       const resp = await fetch(url, { signal: AbortSignal.timeout(5_000) });
       await resp.body?.cancel();
-      return;
+      // WHY: nginx can accept HTTP while PHP-FPM is still starting and return
+      // 502. A non-server-error response proves the application is ready.
+      if (resp.status < 500) return;
     } catch {
-      await sleep(250);
+      // Connection and request failures are retried until the deadline.
     }
+    await sleep(250);
   }
   throw new Error(`Timed out waiting for HTTP readiness: ${url}`);
 }
