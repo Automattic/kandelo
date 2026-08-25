@@ -31,7 +31,7 @@ import sys
 
 root = pathlib.Path(sys.argv[1])
 manifest_path = pathlib.Path(sys.argv[2])
-names = ["kandelo-homebrew-bottle-mirror-plan.json"] + [
+names = ["kandelo-sample-bottle-mirror-plan.json"] + [
     f"package-{index:02d}.bottle.tar.gz" for index in range(1, 36)
 ]
 assets = []
@@ -45,8 +45,8 @@ for index, name in enumerate(names):
     })
 manifest_path.write_text(json.dumps({
     "schema": 1,
-    "repository": "kandelo-dev/homebrew-tap-core",
-    "tag": "homebrew-shell-bottles-sha256-" + "1" * 64,
+    "repository": "kandelo-dev/sample-tap-core",
+    "tag": "sample-shell-bottles-sha256-" + "1" * 64,
     "target_commitish": "a" * 40,
     "title": "Bottle mirror for the Kandelo shell",
     "body": "Thirty-five exact bottles and their canonical mirror manifest.",
@@ -272,7 +272,7 @@ elif (
     if repository.lower() == "automattic/kandelo":
         expected_source = os.environ["FAKE_KANDELO_CONTAINED_SHA"]
         expected_main = os.environ["FAKE_KANDELO_MAIN_SHA"]
-    elif repository.lower() == "kandelo-dev/homebrew-tap-core":
+    elif repository.lower() == "kandelo-dev/sample-tap-core":
         expected_source = os.environ["FAKE_TARGET_CONTAINED_SHA"]
         expected_main = os.environ["FAKE_TARGET_MAIN_SHA"]
     else:
@@ -288,7 +288,7 @@ elif (
             and os.environ.get("FAKE_CONTAINS_DIVERGE_AFTER_TAG")
         )
         or (
-            repository.lower() == "kandelo-dev/homebrew-tap-core"
+            repository.lower() == "kandelo-dev/sample-tap-core"
             and os.environ.get("FAKE_TARGET_CONTAINS_DIVERGE_AFTER_TAG")
         )
     )
@@ -501,7 +501,7 @@ if len(args) == 7 and args[:5] == prefix and args[6] == "refs/heads/main":
     if repository_url.lower() == "https://github.com/automattic/kandelo.git":
         main = os.environ["FAKE_KANDELO_MAIN_SHA"]
     elif repository_url.lower() == (
-        "https://github.com/kandelo-dev/homebrew-tap-core.git"
+        "https://github.com/kandelo-dev/sample-tap-core.git"
     ):
         main = os.environ["FAKE_TARGET_MAIN_SHA"]
         root = pathlib.Path(os.environ["FAKE_GITHUB_STATE"])
@@ -513,7 +513,7 @@ if len(args) == 7 and args[:5] == prefix and args[6] == "refs/heads/main":
         execution_read = bool(
             prior_calls
             and prior_calls[-1].lower()
-            == "https://github.com/kandelo-dev/homebrew-tap-core.git"
+            == "https://github.com/kandelo-dev/sample-tap-core.git"
         )
         if state_path.exists():
             state = json.loads(state_path.read_text())
@@ -612,7 +612,7 @@ run_publisher_with_authority() {
   STATE_LOCK_SCRIPT="$fake_bin/state-lock" \
   IMMUTABLE_RELEASE_RETRY_DELAY_SECONDS=0 \
   GITHUB_API_RETRY_DELAY_SECONDS=0 \
-  GITHUB_REPOSITORY=Kandelo-dev/homebrew-tap-core \
+  GITHUB_REPOSITORY=Kandelo-dev/sample-tap-core \
   FAKE_KANDELO_MAIN_SHA="${FAKE_KANDELO_MAIN_SHA:-$EXACT_MAIN_SHA}" \
   FAKE_TARGET_MAIN_SHA="${FAKE_TARGET_MAIN_SHA:-$target}" \
   FAKE_KANDELO_CONTAINED_SHA="$EXACT_MAIN_SHA" \
@@ -686,11 +686,11 @@ new_state workflow-target
 ACTIVE_MANIFEST="$contains_manifest"
 FAKE_WORKFLOW_TARGET_REQUIRES_TAG=1 run_publisher >/dev/null
 tag_mutation_line="$(
-  grep -nF '"/repos/kandelo-dev/homebrew-tap-core/git/refs"' \
+  grep -nF '"/repos/kandelo-dev/sample-tap-core/git/refs"' \
     "$ACTIVE_STATE/gh.log" | head -1 | cut -d: -f1
 )"
 release_mutation_line="$(
-  grep -nF '"/repos/kandelo-dev/homebrew-tap-core/releases"' \
+  grep -nF '"/repos/kandelo-dev/sample-tap-core/releases"' \
     "$ACTIVE_STATE/gh.log" | head -1 | cut -d: -f1
 )"
 [ -n "$tag_mutation_line" ] && [ -n "$release_mutation_line" ] &&
@@ -708,7 +708,7 @@ seed_tag_only commit "$target"
 FAKE_WORKFLOW_TARGET_REQUIRES_TAG=1 run_publisher >/dev/null
 if jq -s -e 'any(.[];
     .[0:4] == ["api", "--method", "POST",
-      "/repos/kandelo-dev/homebrew-tap-core/git/refs"])
+      "/repos/kandelo-dev/sample-tap-core/git/refs"])
   ' "$ACTIVE_STATE/gh.log" >/dev/null
 then
   fail "publisher tried to recreate an existing exact tag"
@@ -730,7 +730,7 @@ jq -e '.releases | length == 0' "$ACTIVE_STATE/state.json" >/dev/null ||
   fail "conflicting tag failure created a release"
 if jq -s -e 'any(.[];
     .[0:4] == ["api", "--method", "POST",
-      "/repos/kandelo-dev/homebrew-tap-core/releases"])
+      "/repos/kandelo-dev/sample-tap-core/releases"])
   ' "$ACTIVE_STATE/gh.log" >/dev/null
 then
   fail "conflicting tag was detected only after release creation"
@@ -746,7 +746,7 @@ FAKE_TAG_CREATION_DENIED=1 expect_failure_containing \
   run_publisher
 if jq -s -e 'any(.[];
     .[0:4] == ["api", "--method", "POST",
-      "/repos/kandelo-dev/homebrew-tap-core/releases"])
+      "/repos/kandelo-dev/sample-tap-core/releases"])
   ' "$ACTIVE_STATE/gh.log" >/dev/null
 then
   fail "tag creation failure reached release creation"
@@ -771,7 +771,7 @@ jq -e --arg tag "$tag" --arg target "$target" '
 FAKE_WORKFLOW_TARGET_REQUIRES_TAG=1 run_publisher >/dev/null
 if jq -s -e 'any(.[];
     .[0:4] == ["api", "--method", "POST",
-      "/repos/kandelo-dev/homebrew-tap-core/git/refs"])
+      "/repos/kandelo-dev/sample-tap-core/git/refs"])
   ' "$ACTIVE_STATE/gh.log" >/dev/null
 then
   fail "release-creation resume tried to recreate its exact tag"
@@ -789,7 +789,7 @@ expect_failure_containing \
     FAKE_GITHUB_STATE="$ACTIVE_STATE" \
     FAKE_EXPECTED_LOCK_ROOT="$lock_root" \
     STATE_LOCK_SCRIPT="$fake_bin/state-lock" \
-    GITHUB_REPOSITORY=Kandelo-dev/homebrew-tap-core \
+    GITHUB_REPOSITORY=Kandelo-dev/sample-tap-core \
     GH_TOKEN=fake-token \
     bash "$REPO_ROOT/scripts/publish-immutable-github-release.sh" \
       --manifest "$manifest" \
@@ -886,7 +886,7 @@ kandelo_compare = [
 target_compare = [
     "api",
     (
-        "/repos/kandelo-dev/homebrew-tap-core/compare/"
+        "/repos/kandelo-dev/sample-tap-core/compare/"
         f"{target_source}...{target_main}"
     ),
     "--jq",
@@ -897,7 +897,7 @@ tag_read = [
     "--include",
     "-H",
     "Cache-Control: no-cache",
-    f"/repos/kandelo-dev/homebrew-tap-core/git/ref/tags/{tag}",
+    f"/repos/kandelo-dev/sample-tap-core/git/ref/tags/{tag}",
 ]
 
 
@@ -928,7 +928,7 @@ import sys
 calls = pathlib.Path(sys.argv[1]).read_text().splitlines()
 expected = [
     "https://github.com/Automattic/kandelo.git",
-    "https://github.com/kandelo-dev/homebrew-tap-core.git",
+    "https://github.com/kandelo-dev/sample-tap-core.git",
 ] * 4
 if calls != expected:
     raise SystemExit("anonymous protected-main reads did not precede every mutation")
@@ -977,7 +977,7 @@ kandelo_compare = [
 target_compare = [
     "api",
     (
-        "/repos/kandelo-dev/homebrew-tap-core/compare/"
+        "/repos/kandelo-dev/sample-tap-core/compare/"
         f"{target_content}...{target_execution}"
     ),
     "--jq",
@@ -988,7 +988,7 @@ tag_read = [
     "--include",
     "-H",
     "Cache-Control: no-cache",
-    f"/repos/kandelo-dev/homebrew-tap-core/git/ref/tags/{tag}",
+    f"/repos/kandelo-dev/sample-tap-core/git/ref/tags/{tag}",
 ]
 
 
@@ -1017,8 +1017,8 @@ for index in mutations:
 git_calls = git_path.read_text().splitlines()
 expected_git = [
     "https://github.com/Automattic/kandelo.git",
-    "https://github.com/kandelo-dev/homebrew-tap-core.git",
-    "https://github.com/kandelo-dev/homebrew-tap-core.git",
+    "https://github.com/kandelo-dev/sample-tap-core.git",
+    "https://github.com/kandelo-dev/sample-tap-core.git",
 ] * 4
 if git_calls != expected_git:
     raise SystemExit("dual-authority anonymous main checks differ")

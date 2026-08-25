@@ -950,69 +950,6 @@ hardcoding it.
   their paths via `WASM_POSIX_DEP_<NAME>_DIR` / `_SRC_DIR`. Hidden
   source-tree reads break on clean force-rebuild runs.
 
-## Disabled Homebrew Formula Authoring
-
-Homebrew integration is dormant and is not a current distribution surface.
-Conventional software currently ports through `packages/registry/<name>` and
-the normal Kandelo package resolver. The retained Formula guidance below is a
-historical implementation record for possible later reconsideration; it does
-not authorize an active build, publication, or guest `brew` path.
-
-Before disablement, Formulae and their closed recipe input trees lived in
-`kandelo-dev/homebrew-tap-core`. The main repository's
-`homebrew/homebrew-tap-core/` directory remains a template and fixture for that
-tap shape.
-
-Formulae should use normal Homebrew DSL and the normal Kandelo platform path:
-
-- build through the worktree-local SDK; use idiomatic Formula steps when
-  practical or `kandelo_build_tap_recipe` with a closed
-  `Kandelo/recipes/<formula>/recipe.json` tree;
-- treat `kandelo_build_package` and direct
-  `packages/registry/<name>/build-*.sh` use as transitional migration debt;
-- keep shared sysroot availability facts in `sdk/config.site`; use explicit
-  package `ac_cv_*` values only for package-specific runtime or semantic probes
-  that cross-compilation cannot execute;
-- install the produced Wasm files into the Homebrew keg, not into Kandelo's
-  resolver cache;
-- put `test do` coverage through Kandelo, for example by running the produced
-  Wasm with `examples/run-example.ts`, not by executing it as a host binary;
-- leave VFS link plans, browser compatibility, provenance, and validation
-  evidence to generated `Kandelo/` sidecars.
-
-A tap-native recipe receives Homebrew's checksum-verified source,
-Homebrew-poured direct dependency kegs, explicitly selected and attested
-Formula resources, and separate source/work/output roots. A selected resource
-is a read-only snapshot at `/kandelo/resources/<name>` and is named by
-`WASM_POSIX_DEP_RESOURCE_<NORMALIZED_NAME>_DIR`; the helper never accepts a
-Formula-selected host path. It receives the Kandelo SDK, sysroot, and fork
-instrumenter, but no package registry, resolver checker, transported binary
-cache, local-binary mirror, or `install-local-binary.sh`. Its manifest SHA-256
-is a literal in the Formula, and every recipe file's path, size, mode, and
-SHA-256 is checked before and after execution. See
-[Formula-owned tap recipes](homebrew-publishing.md#formula-owned-tap-recipes)
-for the exact manifest and helper contract.
-
-Formula Ruby should use `HOMEBREW_KANDELO_*` environment variables for values
-that must pass through Homebrew's environment handling:
-
-```text
-HOMEBREW_KANDELO_ROOT
-HOMEBREW_KANDELO_ARCH
-HOMEBREW_KANDELO_NODE
-HOMEBREW_KANDELO_LLVM_BIN
-```
-
-Workflow scripts outside Formula Ruby use `KANDELO_HOMEBREW_*` variables. See
-[docs/homebrew-publishing.md](homebrew-publishing.md) for the trusted publish,
-sidecar, VFS builder, Node smoke, and browser smoke contract.
-
-Do not document user-facing `brew tap` or guest `brew install` steps for a
-formula until that guest install path has been validated through Kandelo. A
-published bottle plus a successful Node VFS smoke proves the bottle can be
-poured into a precomposed image; browser support additionally requires the
-browser smoke and `browser_compatible = true` metadata.
-
 ## Existing Build Scripts
 
 All build scripts are in `packages/registry/`. They serve as reference implementations:
@@ -1040,8 +977,7 @@ work root, layers CPython-specific cross probes on `sdk/config.site`, and emits
 `python.wasm` plus the declared non-Wasm `python-runtime.zip`. The
 disabled legacy `python-vfs` compatibility recipe consumes those two artifacts
 from one resolver dependency root; it does not read CPython's source or build
-directories. Staging does not publish that image; the Homebrew Formula turns
-the same closure into the normal keg and bottle distribution unit.
+directories. Staging does not publish that image.
 
 ## SQLite Official Project Tests
 

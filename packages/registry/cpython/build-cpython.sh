@@ -4,7 +4,7 @@ set -euo pipefail
 # Build CPython for Kandelo through the package/resolver contract.
 #
 # A direct developer build uses this package directory for scratch and mirrors
-# outputs into local-binaries. Resolver and Homebrew callers provide isolated,
+# outputs into local-binaries. Resolver and package callers provide isolated,
 # caller-owned work/output directories; in that mode this script does not write
 # generated state into the reviewed checkout or its local-binaries mirror.
 

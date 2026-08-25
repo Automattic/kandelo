@@ -261,7 +261,7 @@ Runs the Erlang/OTP BEAM VM, spawning 1000 lightweight processes in a ring topol
 Build requirements: Erlang/OTP 28 and the `wasm32posix-cc` SDK supplied through
 the declared development shell. If a required tool is absent there, report the
 block and update the declared environment rather than substituting an
-undeclared Homebrew binary for validation.
+undeclared host binary for validation.
 
 #### wordpress
 

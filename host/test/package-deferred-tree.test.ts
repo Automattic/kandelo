@@ -19,25 +19,25 @@ const decoder = new TextDecoder();
 const SPEC = {
   schema: 1,
   kind: "kandelo-package-deferred-zip-tree",
-  id: "shell/homebrew-bootstrap",
+  id: "shell/pkg-bootstrap",
   content_role: "source-tree",
   package: {
     name: "shell",
-    output: "homebrew-bootstrap.zip",
+    output: "pkg-bootstrap.zip",
   },
   archive: {
-    url: "homebrew-bootstrap.zip",
+    url: "pkg-bootstrap.zip",
     mode_policy: "portable-posix-v1",
   },
-  mount_prefix: "/opt/kandelo/homebrew",
+  mount_prefix: "/opt/kandelo/pkg",
   owner: {
     uid: 1000,
     gid: 1000,
   },
   activation: {
     mode: "first-use",
-    capabilities: ["homebrew:bootstrap"],
-    roots: ["/opt/kandelo/homebrew/bin/brew"],
+    capabilities: ["pkg:bootstrap"],
+    roots: ["/opt/kandelo/pkg/bin/brew"],
   },
 } as const satisfies PackageDeferredZipTreeSpec;
 
@@ -62,32 +62,32 @@ describe("package deferred ZIP trees", () => {
     expect(first.content.modePolicy).toBe("portable-posix-v1");
     expect(first.descriptor.inventory).toEqual([
       expect.objectContaining({
-        vfs_path: "/opt/kandelo/homebrew/bin",
+        vfs_path: "/opt/kandelo/pkg/bin",
         type: "directory",
         mode: 0o755,
       }),
       expect.objectContaining({
-        vfs_path: "/opt/kandelo/homebrew/bin/brew",
+        vfs_path: "/opt/kandelo/pkg/bin/brew",
         type: "file",
         mode: 0o755,
         size: 12,
       }),
       expect.objectContaining({
-        vfs_path: "/opt/kandelo/homebrew/bin/brew-link",
+        vfs_path: "/opt/kandelo/pkg/bin/brew-link",
         type: "symlink",
         mode: 0o777,
         target: "brew",
       }),
       expect.objectContaining({
-        vfs_path: "/opt/kandelo/homebrew/Library",
+        vfs_path: "/opt/kandelo/pkg/Library",
         type: "directory",
       }),
       expect.objectContaining({
-        vfs_path: "/opt/kandelo/homebrew/Library/Homebrew",
+        vfs_path: "/opt/kandelo/pkg/Library/PkgLib",
         type: "directory",
       }),
       expect.objectContaining({
-        vfs_path: "/opt/kandelo/homebrew/Library/Homebrew/global.rb",
+        vfs_path: "/opt/kandelo/pkg/Library/PkgLib/global.rb",
         type: "file",
         mode: 0o644,
       }),
@@ -99,7 +99,7 @@ describe("package deferred ZIP trees", () => {
     const archive = packageArchive();
     const produced = derivePackageDeferredZipTree(SPEC, archive);
     const immutableReference =
-      `https://artifacts.example.test/homebrew-bootstrap.zip?sha256=${produced.content.sha256}`;
+      `https://artifacts.example.test/pkg-bootstrap.zip?sha256=${produced.content.sha256}`;
     const restored = parsePackageDeferredZipTreeDescriptor(
       structuredClone(produced.descriptor),
       {
@@ -133,7 +133,7 @@ describe("package deferred ZIP trees", () => {
       archive: {
         bytes: archive.byteLength,
         reference:
-          `https://artifacts.example.test/homebrew-bootstrap.zip?sha256=${produced.content.sha256}`,
+          `https://artifacts.example.test/pkg-bootstrap.zip?sha256=${produced.content.sha256}`,
         sha256: produced.content.sha256,
       },
       id: SPEC.id,
@@ -157,21 +157,21 @@ describe("package deferred ZIP trees", () => {
   it("preserves producer-assigned atomic membership through registration", async () => {
     const archive = packageArchive();
     const spec = structuredClone(SPEC) as unknown as Record<string, any>;
-    spec.activation.atomic_group = "homebrew-runtime-support";
+    spec.activation.atomic_group = "pkg-runtime-support";
     const derived = derivePackageDeferredZipTree(spec, archive);
     expect(derived.descriptor.activation.atomicGroup).toEqual({
-      id: "homebrew-runtime-support",
+      id: "pkg-runtime-support",
       member: SPEC.id,
     });
     const fs = packageFs();
     registerPackageDeferredZipTree(fs, derived);
-    await fs.sealLazyAtomicGroup("homebrew-runtime-support", [SPEC.id]);
+    await fs.sealLazyAtomicGroup("pkg-runtime-support", [SPEC.id]);
 
     expect(fs.exportLazyArchiveEntries()[0]).toMatchObject({
       kind: "kandelo-deferred-tree-v3",
       activation: {
         atomicGroup: {
-          id: "homebrew-runtime-support",
+          id: "pkg-runtime-support",
           member: SPEC.id,
           expectedCount: 1,
         },
@@ -190,7 +190,7 @@ describe("package deferred ZIP trees", () => {
       expect(fs.lstat(entry.vfsPath)).toMatchObject({ uid: 1000, gid: 1000 });
     }
     const fetcher = vi.fn(async (url: string) => {
-      expect(url).toBe("homebrew-bootstrap.zip");
+      expect(url).toBe("pkg-bootstrap.zip");
       return new Response(archive, {
         headers: { "content-length": String(archive.byteLength) },
       });
@@ -205,7 +205,7 @@ describe("package deferred ZIP trees", () => {
     });
     expect(fs.stat(`${SPEC.mount_prefix}/bin/brew`).size).toBe(12);
     expect(fs.isPathDeferred(`${SPEC.mount_prefix}/bin/brew`)).toBe(true);
-    const directory = fs.opendir(`${SPEC.mount_prefix}/Library/Homebrew`);
+    const directory = fs.opendir(`${SPEC.mount_prefix}/Library/PkgLib`);
     try {
       expect(fs.readdir(directory)).toBeTruthy();
     } finally {
@@ -216,7 +216,7 @@ describe("package deferred ZIP trees", () => {
     await expect(fs.preparePath(`${SPEC.mount_prefix}/bin/brew`)).resolves.toBe(true);
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(readFile(fs, `${SPEC.mount_prefix}/bin/brew`)).toBe("#!/bin/brew\n");
-    expect(readFile(fs, `${SPEC.mount_prefix}/Library/Homebrew/global.rb`)).toBe(
+    expect(readFile(fs, `${SPEC.mount_prefix}/Library/PkgLib/global.rb`)).toBe(
       "GLOBAL = true\n",
     );
     expect(fs.readlink(`${SPEC.mount_prefix}/bin/brew-link`)).toBe("brew");
@@ -224,7 +224,7 @@ describe("package deferred ZIP trees", () => {
     assertPackageDeferredZipTreeState(fs, derived, "materialized");
 
     await expect(
-      fs.preparePath(`${SPEC.mount_prefix}/Library/Homebrew/global.rb`),
+      fs.preparePath(`${SPEC.mount_prefix}/Library/PkgLib/global.rb`),
     ).resolves.toBe(false);
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
@@ -270,19 +270,19 @@ describe("package deferred ZIP trees", () => {
 
     await expect(Promise.all([
       fs.preparePath(`${SPEC.mount_prefix}/bin/brew`),
-      fs.preparePath(`${SPEC.mount_prefix}/Library/Homebrew/global.rb`),
+      fs.preparePath(`${SPEC.mount_prefix}/Library/PkgLib/global.rb`),
     ])).rejects.toThrow(/SHA-256/);
     expect(fetcher).toHaveBeenCalledTimes(1);
     assertPackageDeferredZipTreeState(fs, derived, "deferred");
     expect(fs.isPathDeferred(`${SPEC.mount_prefix}/bin/brew`)).toBe(true);
     expect(fs.isPathDeferred(
-      `${SPEC.mount_prefix}/Library/Homebrew/global.rb`,
+      `${SPEC.mount_prefix}/Library/PkgLib/global.rb`,
     )).toBe(true);
 
     served = archive;
     await expect(Promise.all([
       fs.preparePath(`${SPEC.mount_prefix}/bin/brew`),
-      fs.preparePath(`${SPEC.mount_prefix}/Library/Homebrew/global.rb`),
+      fs.preparePath(`${SPEC.mount_prefix}/Library/PkgLib/global.rb`),
     ])).resolves.toEqual([true, true]);
     expect(fetcher).toHaveBeenCalledTimes(2);
     assertPackageDeferredZipTreeState(fs, derived, "materialized");
@@ -421,8 +421,8 @@ function packageArchive(symlinkTarget = "brew"): Uint8Array {
     "bin/brew": zipEntry(encoder.encode("#!/bin/brew\n"), 0o100711),
     "bin/brew-link": zipEntry(encoder.encode(symlinkTarget), 0o120700),
     "Library/": zipEntry(new Uint8Array(), 0o040750),
-    "Library/Homebrew/": zipEntry(new Uint8Array(), 0o040777),
-    "Library/Homebrew/global.rb": zipEntry(encoder.encode("GLOBAL = true\n"), 0o100600),
+    "Library/PkgLib/": zipEntry(new Uint8Array(), 0o040777),
+    "Library/PkgLib/global.rb": zipEntry(encoder.encode("GLOBAL = true\n"), 0o100600),
   };
   return zipSync(zippable, { level: 9 });
 }

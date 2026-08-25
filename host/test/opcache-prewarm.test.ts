@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { NodeKernelHost } from "../src/node-kernel-host";
@@ -25,36 +25,6 @@ const PHP_RUNTIME_INI_ARGS = [
   "-d", "opcache.file_cache_only=1",
   "-d", "opcache.validate_timestamps=0",
 ];
-
-describe("opcache prewarmer lazy-shell boundary", () => {
-  it.skip("does not boot a flat-lazy image and fetch its pending shell trees", async () => {
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
-    fs.setImageMetadata({
-      version: 1,
-      kernelAbi: 42,
-      createdBy: "opcache-prewarm.test/flat-lazy",
-      homebrewFlatLazy: { kind: "kandelo-homebrew-flat-selection-lazy-v1" },
-    });
-    fs.registerLazyFile(
-      "/opt/kandelo/homebrew/bin/brew",
-      "https://example.invalid/pending-brew",
-      1,
-      0o755,
-    );
-    const init = vi.spyOn(NodeKernelHost.prototype, "init")
-      .mockRejectedValue(new Error("test must not boot the host"));
-    try {
-      await expect(prewarmOpcache(fs, {
-        sourceRoots: ["/var/www"],
-        label: "flat-lazy-no-fetch",
-      })).resolves.toBe(0);
-      expect(init).not.toHaveBeenCalled();
-      expect(fs.isPathDeferred("/opt/kandelo/homebrew/bin/brew")).toBe(true);
-    } finally {
-      init.mockRestore();
-    }
-  });
-});
 
 describe.skipIf(!OPCACHE_AVAILABLE)("opcache prewarmer", () => {
   it("splits compile groups that contain duplicate declarations", async () => {

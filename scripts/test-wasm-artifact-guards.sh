@@ -583,21 +583,11 @@ inflated_details_bytes="$(
     exit 1
 }
 
-cat >"$work/validated-abi.wat" <<'WAT'
-(module
-  (memory (export "memory") 1)
-  (func (export "__abi_version") (result i32)
-    i32.const 18))
-WAT
-wat2wasm "$work/validated-abi.wat" -o "$work/validated-abi.wasm"
-
 python3 - \
     "$REPO_ROOT/scripts/wasm-artifact-guards.sh" \
-    "$REPO_ROOT/scripts/homebrew-validate-wasm-executable.sh" \
     "$work/abi.wasm" \
     "$work/no-abi.wasm" \
     "$work/argument-abi.wasm" \
-    "$work/validated-abi.wasm" \
     "$work/inflated-details-bin" \
     "$real_objdump" <<'PY'
 import os
@@ -607,11 +597,9 @@ import sys
 
 (
     guards,
-    validator,
     valid_abi,
     missing_abi,
     malformed_abi,
-    validated_abi,
     inflated_bin,
     real_objdump,
 ) = sys.argv[1:]
@@ -669,19 +657,6 @@ if malformed.returncode <= 1 or malformed.stdout:
         f"stderr={malformed.stderr!r}"
     )
 
-validated = subprocess.run(
-    ["bash", validator, validated_abi, "18", "wasm32"],
-    check=False,
-    capture_output=True,
-    text=True,
-    env=environment,
-    preexec_fn=set_file_limit,
-)
-if validated.returncode != 0 or validated.stdout.strip() != "not-required":
-    raise SystemExit(
-        f"large streamed Wasm validation failed ({validated.returncode}): "
-        f"{validated.stderr}"
-    )
 PY
 
 cat >"$work/complete-fork.wat" <<'WAT'

@@ -1,7 +1,7 @@
-use crate::abi_staging::canonical_json::{canonical_json_bytes, canonical_sha256};
-use crate::abi_staging::product_manifest::{
-    VfsArchitectureV1, VfsProductCatalogEntryV1, VfsProductManifestV1,
-    parse_product_manifest_bytes, validate_product_catalog_entries,
+use crate::vfs_products::canonical_json::{canonical_json_bytes, canonical_sha256};
+use crate::vfs_products::product_manifest::{
+    CatalogWriteMode, VfsArchitectureV1, VfsProductCatalogEntryV1, VfsProductManifestV1,
+    parse_product_manifest_bytes, validate_product_catalog_entries, write_or_check_product_catalog,
 };
 use crate::archive_extract_member::rename_no_replace;
 use crate::build_deps::{
@@ -390,8 +390,25 @@ fn package_projection_is_eligible(
     })
 }
 
+/// Emit the derived VFS product catalog
+/// (`images/vfs/products/generated/catalog.json`) from the committed product
+/// manifests before any build node runs. The catalog is a generated artifact
+/// (gitignored, like every other build output): browser demos and the VFS
+/// image builder consume it, so every local build regenerates it to keep it
+/// current with the manifests it is derived from.
+fn generate_vfs_product_catalog(repo: &Path) -> Result<(), String> {
+    let product_dir = repo.join("images/vfs/products");
+    write_or_check_product_catalog(
+        CatalogWriteMode::Generate,
+        repo,
+        &product_dir,
+        &product_dir.join("generated/catalog.json"),
+    )
+}
+
 fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     let repo = canonical_real_directory(&crate::repo_root(), "local-build repository root")?;
+    generate_vfs_product_catalog(&repo)?;
     let set = resolve_repo_file(&repo, &args.set, "supported set")?;
     let set = fs::canonicalize(&set)
         .map_err(|error| format!("canonicalize supported set {}: {error}", set.display()))?;
@@ -2506,7 +2523,7 @@ fn validate_registry_partition(
 
 fn validate_products<'a>(
     set: &LocalSupportedSetV1,
-    catalog: &BTreeMap<&'a str, &'a crate::abi_staging::product_manifest::VfsProductCatalogEntryV1>,
+    catalog: &BTreeMap<&'a str, &'a crate::vfs_products::product_manifest::VfsProductCatalogEntryV1>,
     manifests: &BTreeMap<String, DepsManifest>,
 ) -> Result<(), String> {
     let selected_packages = set
@@ -3822,11 +3839,6 @@ name = "fallback"
 outputs = ["fallback"]
 source_roles = []
 role = "runtime"
-materialization = "lazy"
-
-[[software.homebrew]]
-tap = "example/tools"
-formulae = ["not-a-package-edge"]
 materialization = "lazy"
 
 "#,

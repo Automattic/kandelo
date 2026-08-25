@@ -20,7 +20,7 @@ CDOOM_SRC="$WORK_DIR/chocolate-doom-src"
 OUT_BIN="$WORK_DIR/fbdoom.wasm"
 
 # fbDOOM has no release tarball, so pin the exact upstream commit represented
-# by both the package manifest and Homebrew Formula. fbDOOM removed its
+# by the package manifest. fbDOOM removed its
 # OPL/MIDI/MUS sources with SDL; pin chocolate-doom 3.1.0 for those files.
 FBDOOM_COMMIT="17280163bc95e5d954d2efaa0633489b763b4cd1"
 FBDOOM_SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/maximevince/fbDOOM/archive/${FBDOOM_COMMIT}.tar.gz}"

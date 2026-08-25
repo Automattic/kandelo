@@ -25,14 +25,14 @@ import {
   buildLocalVfsAssetGroup,
   publishGeneratedTargets,
 } from "./build-local-vfs-asset-group.ts";
-import { loadCanonicalPagesProductMap } from "./abi-staging-pages-site-builder.ts";
+import { loadVfsProductDeploymentMap } from "./vfs-product-deployment.ts";
 
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PRODUCTS = [
   ["browser-lamp", "lazy", "lamp.vfs.zst", "lamp.vfs.zst"],
   ["browser-main-shell", "eager", "shell.vfs.zst", "shell.vfs.zst"],
-  ["browser-nginx", "lazy", "nginx-vfs.vfs.zst", "nginx.vfs.zst"],
-  ["browser-nginx-php", "lazy", "nginx-php-vfs.vfs.zst", "nginx-php.vfs.zst"],
+  ["browser-nginx", "lazy", "nginx-vfs.vfs.zst", "nginx-vfs.vfs.zst"],
+  ["browser-nginx-php", "lazy", "nginx-php-vfs.vfs.zst", "nginx-php-vfs.vfs.zst"],
   ["browser-node", "lazy", "node-vfs.vfs.zst", "node-vfs.vfs.zst"],
   ["browser-wordpress", "lazy", "wordpress.vfs.zst", "wordpress.vfs.zst"],
   ["platform-rootfs", "eager", "rootfs.vfs", "rootfs.vfs"],
@@ -83,7 +83,7 @@ test("produces the exact seven-image and 80-body closure from all legacy referen
       "assets/programs/wasm32/vim.zip",
     ]);
 
-    const map = loadCanonicalPagesProductMap({
+    const map = loadVfsProductDeploymentMap({
       mapPath: fixture.productMapPath,
       sourceRoot,
     });

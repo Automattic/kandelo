@@ -74,7 +74,7 @@ Expected: `compute_sha` at line ~197 — internal function used by the resolver.
 
 **Why first:** D3 gating skips matrix entries whose `cache_key_sha` is already published. If `cache_key_sha` differs spuriously between CI runs (because of timestamp leaks, locale differences, non-pinned tool versions), the gate misfires — either spuriously rebuilding everything, or skipping packages that should rebuild. Either failure mode breaks the partial-publish guarantees Phase B is meant to deliver.
 
-The known leak is the Homebrew clang vs Nix LLVM 21 producer divergence surfaced in PR #407 (memory: `feedback_always-use-nix-shell-for-builds.md`). There may be others.
+The known leak is the non-Nix system clang vs Nix LLVM 21 producer divergence surfaced in PR #407 (memory: `feedback_always-use-nix-shell-for-builds.md`). There may be others.
 
 **Step 1: Write the audit script.**
 
@@ -117,7 +117,7 @@ This will likely surface multiple leaks. Common suspects:
 
 - **Timestamps embedded in tarball entries.** `tar` by default writes mtime; archives produced milliseconds apart will differ. Check `xtask::archive_stage` for any non-deterministic mtime handling.
 - **Locale-sensitive sort order.** A `find ... | sort` step that respects `LC_COLLATE` will produce different orderings across locales.
-- **Non-pinned tool versions.** Anything in PATH that's not under the Nix flake's purview (e.g., a Homebrew-installed `clang` shadowing the Nix one).
+- **Non-pinned tool versions.** Anything in PATH that's not under the Nix flake's purview (e.g., a system-installed `clang` shadowing the Nix one).
 - **Build-script `__DATE__` / `__TIME__` macros.** C-preprocessor injects build-time constants into the binary.
 - **Random PRNG seeds.** Some build systems include a build-time-random hash for cache-busting.
 
@@ -152,7 +152,7 @@ If a particular package can't be made reproducible after reasonable effort (e.g.
 
 **Step 5: Run the cross-platform audit.**
 
-If you have access to both macOS-Homebrew and Linux-Nix environments, build a representative subset of packages on both and diff. If the audit was done only in Nix shell, document this as a limitation; CI runs on Linux Nix so same-environment reproducibility is the load-bearing case.
+If you have access to both a non-Nix macOS environment and a Linux-Nix environment, build a representative subset of packages on both and diff. If the audit was done only in Nix shell, document this as a limitation; CI runs on Linux Nix so same-environment reproducibility is the load-bearing case.
 
 **Step 6: Write the audit log.**
 
@@ -763,7 +763,7 @@ EOF
 ## Notes for the executor
 
 - **Per CLAUDE.md, all 5 test suites are the gate** for "tests pass." Phase B-1's CI runs those against the new matrix flow on PR push — the suites' results are CI's verification gate, not a local one.
-- **`nix develop --accept-flake-config --command ...` for any wasm/sysroot work.** Don't use Homebrew clang directly (memory: `feedback_always-use-nix-shell-for-builds.md`).
+- **`nix develop --accept-flake-config --command ...` for any wasm/sysroot work.** Don't use a non-Nix system clang directly (memory: `feedback_always-use-nix-shell-for-builds.md`).
 - **The reproducibility audit is the most uncertain task.** If it surfaces a fundamental reproducibility issue (e.g., libc++'s build emits a non-deterministic hash), pause the plan and ask before pushing fixes that span unrelated subsystems.
 - **Don't squash commits between tasks** — each task's commit should land separately so the bot PR review can comment on individual tasks. Squashing is fine *within* a task if multiple steps would otherwise create artifact noise.
 - **`xtask` test count baseline:** 190 (post-Phase-A-bis SHA `fa86b1683`). Each task that adds tests should report the new count in its commit message.

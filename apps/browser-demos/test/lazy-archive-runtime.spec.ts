@@ -36,7 +36,7 @@ interface LazyAcceptanceResult {
 
 declare global {
   interface Window {
-    __homebrewVfsTestReady: boolean;
+    __lazyArchiveVfsTestReady: boolean;
     __runLazyVfsAcceptance: (request: {
       vfsUrl: string;
       readPath: string;
@@ -265,9 +265,9 @@ test("Chromium boots, reads, and execs through verified lazy archives", async ({
     });
   });
 
-  await page.goto(new URL("/pages/homebrew-vfs-test/", baseURL).href);
+  await page.goto(new URL("/pages/lazy-archive-vfs-test/", baseURL).href);
   await expect.poll(
-    () => page.evaluate(() => window.__homebrewVfsTestReady),
+    () => page.evaluate(() => window.__lazyArchiveVfsTestReady),
     { timeout: 120_000 },
   ).toBe(true);
   const result = await page.evaluate(
@@ -345,9 +345,9 @@ test("Chromium retries a transient lazy-tree response before surfacing EIO", asy
     });
   });
 
-  await page.goto(new URL("/pages/homebrew-vfs-test/", baseURL).href);
+  await page.goto(new URL("/pages/lazy-archive-vfs-test/", baseURL).href);
   await expect.poll(
-    () => page.evaluate(() => window.__homebrewVfsTestReady),
+    () => page.evaluate(() => window.__lazyArchiveVfsTestReady),
     { timeout: 120_000 },
   ).toBe(true);
   const result = await page.evaluate(
@@ -448,9 +448,9 @@ test("browser applies a generic authenticated archive transformation", async ({
     });
   });
 
-  await page.goto(new URL("/pages/homebrew-vfs-test/", baseURL).href);
+  await page.goto(new URL("/pages/lazy-archive-vfs-test/", baseURL).href);
   await expect.poll(
-    () => page.evaluate(() => window.__homebrewVfsTestReady),
+    () => page.evaluate(() => window.__lazyArchiveVfsTestReady),
     { timeout: 120_000 },
   ).toBe(true);
   const result = await page.evaluate(
@@ -504,9 +504,9 @@ test("browser workers proxy external lazy archives under cross-origin isolation"
 
   try {
     await routeBytes(page, imageUrl, image, "application/octet-stream");
-    await page.goto(new URL("/pages/homebrew-vfs-test/", baseURL).href);
+    await page.goto(new URL("/pages/lazy-archive-vfs-test/", baseURL).href);
     await expect.poll(
-      () => page.evaluate(() => window.__homebrewVfsTestReady),
+      () => page.evaluate(() => window.__lazyArchiveVfsTestReady),
       { timeout: 120_000 },
     ).toBe(true);
     const result = await page.evaluate(
@@ -562,9 +562,9 @@ test("Chromium reports digest failure without mutation and retries cleanly", asy
     });
   });
 
-  await page.goto(new URL("/pages/homebrew-vfs-test/", baseURL).href);
+  await page.goto(new URL("/pages/lazy-archive-vfs-test/", baseURL).href);
   await expect.poll(
-    () => page.evaluate(() => window.__homebrewVfsTestReady),
+    () => page.evaluate(() => window.__lazyArchiveVfsTestReady),
     { timeout: 120_000 },
   ).toBe(true);
   const result = await page.evaluate(
@@ -617,9 +617,9 @@ test("Chromium consumes lazy and eager package trees derived from one exact ZIP"
     });
   });
 
-  await page.goto(new URL("/pages/homebrew-vfs-test/", baseURL).href);
+  await page.goto(new URL("/pages/lazy-archive-vfs-test/", baseURL).href);
   await expect.poll(
-    () => page.evaluate(() => window.__homebrewVfsTestReady),
+    () => page.evaluate(() => window.__lazyArchiveVfsTestReady),
     { timeout: 120_000 },
   ).toBe(true);
   const request = {

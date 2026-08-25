@@ -81,7 +81,7 @@ fi
 REPOSITORY="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}"
 NORMALIZED_REPOSITORY="$(printf '%s' "$REPOSITORY" | tr '[:upper:]' '[:lower:]')"
 # WHY: this state machine also activates tested merge candidates into the
-# general resolver ledger. Exact-main Homebrew publication supplies a narrower
+# general resolver ledger. Exact-main package publication supplies a narrower
 # authority capability; callers from that separate activation contract do not
 # pretend their candidate archives were built from main.
 if [ -n "$CANONICAL_SOURCE_SHA" ]; then

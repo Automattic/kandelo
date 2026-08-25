@@ -88,8 +88,7 @@ chmod +x "$TMP_ROOT/scripts/materialize-durable-package-generation.sh"
 cat >"$TMP_ROOT/authority-xtask" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-for name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
-  HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN \
+for name in GH_TOKEN GITHUB_TOKEN \
   ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL \
   ACTIONS_RUNTIME_TOKEN WASM_POSIX_DEPS_REGISTRY; do
   [ -z "${!name:-}" ] || {

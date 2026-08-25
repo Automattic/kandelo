@@ -61,8 +61,6 @@ cat > "$TMP_ROOT/bin/xtask" <<'EOF'
 set -euo pipefail
 for credential_name in \
   GH_TOKEN GITHUB_TOKEN \
-  HOMEBREW_GITHUB_API_TOKEN HOMEBREW_GITHUB_PACKAGES_TOKEN \
-  HOMEBREW_DOCKER_REGISTRY_TOKEN \
   ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL \
   ACTIONS_RUNTIME_TOKEN; do
   [ -z "${!credential_name:-}" ] || {
@@ -124,9 +122,6 @@ run_helper() {
   env PATH="$TMP_ROOT/bin:$PATH" \
     GH_TOKEN=test-release-token \
     GITHUB_TOKEN=test-fallback-token \
-    HOMEBREW_GITHUB_API_TOKEN=test-api-token \
-    HOMEBREW_GITHUB_PACKAGES_TOKEN=test-packages-token \
-    HOMEBREW_DOCKER_REGISTRY_TOKEN=test-registry-token \
     ACTIONS_ID_TOKEN_REQUEST_TOKEN=test-oidc-token \
     ACTIONS_ID_TOKEN_REQUEST_URL=https://example.invalid/oidc \
     ACTIONS_RUNTIME_TOKEN=test-runtime-token \

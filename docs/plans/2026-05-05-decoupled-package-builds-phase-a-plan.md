@@ -533,7 +533,7 @@ EOF
 ## Notes for the executor
 
 - **Per CLAUDE.md, all five test suites must pass before claiming work complete.** Don't skip suites 3–5 — they catch ABI/syscall regressions that unit tests miss.
-- **`nix develop --accept-flake-config --command ...`** is the canonical way to run wasm builds (memory: `feedback_always-use-nix-shell-for-builds.md`). Don't use Homebrew clang directly.
+- **`nix develop --accept-flake-config --command ...`** is the canonical way to run wasm builds (memory: `feedback_always-use-nix-shell-for-builds.md`). Don't use a non-Nix system clang directly.
 - **CI cache invalidation is one-time and expected** when workflow `actions/cache@v4` glob inputs change from `**/deps.toml` to `**/package.toml`. Don't try to preserve the old cache.
 - **Frozen historical plan docs** under `docs/plans/2026-04-*-deps-management-*` and `docs/plans/2026-04-29-pr-package-builds-*` are intentionally left untouched. They're historical artefacts; rewriting them would lose archaeological value.
 - **The `deps-cache-v2-f-capstone` branch** is on a separate worktree and is not a dependency of this PR. That branch's `3b5e18a75` commit does *symbol/doc* renames (sha domain `wasm-posix-deps.v2` → `wasm-posix-pkg`, doc titles) but does NOT rename `deps.toml` files. If the user wants to land that branch's work, it can rebase on top of Phase A's rename — the conflict surface is small (mostly doc text).

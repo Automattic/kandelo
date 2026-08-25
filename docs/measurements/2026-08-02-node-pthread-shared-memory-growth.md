@@ -149,7 +149,7 @@ The full browser product path was not reproduced in this isolated
 worktree. It requires the prepared campaign's exact single-tier package
 provenance, which was not present in the diagnostic checkout. The
 product-path check must still run after the fix is integrated with the
-prepared Homebrew branch.
+prepared package-install branch.
 
 This work did not measure a performance change. The new call runs once
 per pthread startup and requests zero additional pages.

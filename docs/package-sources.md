@@ -357,12 +357,6 @@ cross-origin-isolated page. In practice, third-party image hosts should
 serve the file with CORS or compatible cross-origin resource policy
 headers.
 
-The dormant Homebrew browser-gallery implementation used the same
-package-source contract only for its browser-launchable VFS image. Its bottle,
-tap, and publisher behavior is retained as historical source described in
-[docs/homebrew-publishing.md](homebrew-publishing.md); no active package-source
-publisher produces or advertises those assets.
-
 ## Agent Checklist
 
 When creating or maintaining a package source:

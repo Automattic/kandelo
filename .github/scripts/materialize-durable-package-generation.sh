@@ -134,9 +134,6 @@ manifest="$TMP_ROOT/bundle/generation.json"
 # authority parser reads its manifests and checked identity records.
 run_without_credentials() {
   env -u GH_TOKEN -u GITHUB_TOKEN \
-    -u HOMEBREW_GITHUB_API_TOKEN \
-    -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-    -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_URL \
     -u ACTIONS_RUNTIME_TOKEN \
@@ -401,7 +398,7 @@ fi
 # WHY: H is the producer of the resolver/test archives, while M is the source
 # that validated and consumes them. Keep those roles in a separate,
 # digest-bound input receipt; neither may impersonate the actual producer M of
-# a later Homebrew bottle that is recompiled by the consumer workflow.
+# a later bottle that is recompiled by the consumer workflow.
 if [ "$manifest_format" = kandelo-package-generation-v1 ]; then
   input_method="v1-single-source"
   cache_projection=null

@@ -2,7 +2,7 @@ kind = "program"
 name = "erlang"
 version = "28.2"
 # rev3: the caller-owned build ships the erlang.wasm executable plus
-# erlang-otp.tar.zst (the trimmed OTP runtime tree Homebrew and erlang-vfs
+# erlang-otp.tar.zst (the trimmed OTP runtime tree packaged builds and erlang-vfs
 # need). The executable and runtime file form one resolver closure below
 # programs/<arch>/erlang/.
 kernel_abi = 41

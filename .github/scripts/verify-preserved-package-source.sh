@@ -83,9 +83,6 @@ run_authority_python_without_credentials() {
   # WHY: current authority validates already-downloaded evidence; it never
   # needs the token used by this shell to perform read-only GitHub requests.
   env -u GH_TOKEN -u GITHUB_TOKEN \
-    -u HOMEBREW_GITHUB_API_TOKEN \
-    -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-    -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_URL \
     -u ACTIONS_RUNTIME_TOKEN \

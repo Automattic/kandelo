@@ -5,11 +5,8 @@
  * exposes a loader for service demos that layer nginx/php-fpm (+ MariaDB)
  * and application files on top of the already-built shell.vfs.zst image.
  *
- * This module retains the conventional/lazy composer for diagnostic and
- * historical image paths. It is not the canonical shell package builder;
- * `build-homebrew-flat-vfs-image.ts` owns that eager, self-contained product.
- * Builtin service images may still reuse the filesystem helpers below while
- * preserving the transport mode of the already-resolved shell base.
+ * Builtin service images reuse the filesystem helpers below while preserving
+ * the source composition of the already-resolved shell base.
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -48,13 +45,6 @@ import {
   SHELL_DERIVED_VFS_MIN_FREE_INODES,
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
 } from "../../../web-libs/kandelo-session/src/vfs-capacity";
-import {
-  KANDELO_DEMO_CONFIG_PATH,
-} from "../../../web-libs/kandelo-session/src/demo-config";
-import {
-  KANDELO_SHELL_CONFIG_PATH,
-  parseKandeloShellConfig,
-} from "../../../web-libs/kandelo-session/src/shell-config";
 import { populateShellRuntimeLayout } from "./shell-runtime-layout";
 
 const SHELL_DERIVED_CREATED_BY =
@@ -169,18 +159,13 @@ export async function loadShellBaseFileSystem(
 /**
  * Serialize a transient guest used only by derived-image build steps.
  *
- * Node's normal boot adapter materializes the flat-lazy Homebrew runtime
- * cohort before reporting readiness. PHP/MariaDB build guests do not consume
- * Homebrew, so suppress that one boot trigger in their private snapshot while
- * retaining every pending tree and leaving the product filesystem unchanged.
+ * The source shell composition carries no boot trigger to suppress, so the
+ * build guest snapshot is the image's own serialization.
  */
 export function saveShellDerivedBuildGuestSnapshot(
   fs: MemoryFileSystem,
 ): Promise<Uint8Array> {
-  const metadata = fs.getImageMetadata();
-  if (metadata?.homebrewFlatLazy === undefined) return fs.saveImage();
-  const { homebrewFlatLazy: _bootTrigger, ...buildGuestMetadata } = metadata;
-  return fs.saveImage({ metadata: buildGuestMetadata });
+  return fs.saveImage();
 }
 
 /**
@@ -302,253 +287,20 @@ function shellDerivedImageMetadata(
   }
 
   const sourceComposition = inherited.shellComposition;
-  const flatLazyComposition = inherited.homebrewFlatLazy;
-  const legacyHomebrewClaims = [
-    inherited.packageDeferredTrees,
-    inherited.homebrewBootstrap,
-    inherited.homebrew,
-  ];
-  const flatHomebrewClaims = [
-    inherited.homebrewFlat,
-    inherited.shellConfig,
-    inherited.demoConfig,
-  ];
-  if (flatLazyComposition !== undefined) {
-    if (
-      sourceComposition !== undefined ||
-      inherited.homebrewFlat !== undefined ||
-      inherited.homebrew !== undefined
-    ) {
-      throw new Error(
-        "shell-derived VFS mixes flat-lazy and retired shell composition bindings",
-      );
-    }
-    const homebrewFlatLazy = validatedFlatLazyBinding(
-      flatLazyComposition,
-      kernelAbi,
-    );
-    if (
-      !Array.isArray(inherited.packageDeferredTrees) ||
-      inherited.packageDeferredTrees.length === 0 ||
-      fs.exportLazyArchiveEntries().length === 0
-    ) {
-      throw new Error(
-        "shell-derived VFS flat-lazy lineage has no pending package trees",
-      );
-    }
-    const packageDeferredTrees = inherited.packageDeferredTrees.map(
-      (tree, index) => ({
-        ...requiredRecord(tree, `flat-lazy package tree ${index}`),
-      }),
-    );
-    const homebrewBootstrap = validatedFlatLazyBootstrap(
-      inherited.homebrewBootstrap,
-    );
-    const shellConfig = validatedFlatShellConfig(fs, inherited.shellConfig);
-    const inheritedDemoConfig = requiredExactRecord(
-      inherited.demoConfig,
-      "flat-lazy demo config binding",
-      ["bytes", "path", "sha256"],
-    );
-    if (
-      inheritedDemoConfig.path !== KANDELO_DEMO_CONFIG_PATH ||
-      !isSha256(inheritedDemoConfig.sha256) ||
-      !isPositiveSafeInteger(inheritedDemoConfig.bytes)
-    ) {
-      throw new Error(
-        "shell-derived VFS has an invalid flat-lazy demo config binding",
-      );
-    }
-    const demoConfig = readRequiredVfsBytes(fs, KANDELO_DEMO_CONFIG_PATH);
-
-    // WHY: the lazy shell's authenticated transport and partition bindings
-    // remain the authority for every derived product. Reconstruct only the
-    // validated composition fields while rebinding the product-owned demo.
-    return {
-      version: 1,
-      kernelAbi,
-      createdBy: SHELL_DERIVED_CREATED_BY,
-      capacity: { maxByteLength },
-      baseImage: {
-        sha256: baseSha256,
-        bytes: baseBytes,
-        kernelAbi,
-      },
-      packageDeferredTrees,
-      homebrewBootstrap,
-      homebrewFlatLazy,
-      shellConfig,
-      demoConfig: {
-        path: KANDELO_DEMO_CONFIG_PATH,
-        sha256: sha256Hex(demoConfig),
-        bytes: demoConfig.byteLength,
-      },
-    };
-  }
-  if (sourceComposition !== undefined) {
-    if (
-      !isExactSourceRootfsShellComposition(sourceComposition)
-    ) {
-      throw new Error(
-        "shell-derived VFS has an invalid source shell composition binding",
-      );
-    }
-    if (
-      legacyHomebrewClaims.some((claim) => claim !== undefined) ||
-      inherited.homebrewFlat !== undefined
-    ) {
-      throw new Error(
-        "shell-derived VFS mixes source and Homebrew composition bindings",
-      );
-    }
-    // WHY: the internal source shell carries ordinary lazy URLs, not the
-    // package and closed-mirror authority owned by a bottled Homebrew shell.
-    // Preserve its explicit source identity without inventing Homebrew claims.
-    // Its demo file remains in the VFS, but `homebrew.demoConfig` is itself a
-    // Homebrew composition claim and therefore cannot truthfully be copied.
-    return {
-      version: 1,
-      kernelAbi,
-      ...inheritedAbiSnapshot,
-      createdBy: SHELL_DERIVED_CREATED_BY,
-      capacity: { maxByteLength },
-      baseImage: {
-        sha256: baseSha256,
-        bytes: baseBytes,
-        kernelAbi,
-      },
-      shellComposition: SOURCE_ROOTFS_SHELL_COMPOSITION,
-    };
-  }
-
-  if (flatHomebrewClaims.some((claim) => claim !== undefined)) {
-    if (legacyHomebrewClaims.some((claim) => claim !== undefined)) {
-      throw new Error(
-        "shell-derived VFS mixes flat and legacy Homebrew composition bindings",
-      );
-    }
-    const homebrewFlat = requiredExactRecord(
-      inherited.homebrewFlat,
-      "flat Homebrew selection binding",
-      ["requestedVfsFilename", "resourcePolicy", "selectionSha256"],
-    );
-    if (
-      typeof homebrewFlat.selectionSha256 !== "string" ||
-      !/^[0-9a-f]{64}$/.test(homebrewFlat.selectionSha256) ||
-      homebrewFlat.requestedVfsFilename !== "shell.vfs.zst" ||
-      homebrewFlat.resourcePolicy !== "kandelo-homebrew-vfs-main-shell-v1"
-    ) {
-      throw new Error("shell-derived VFS has an invalid flat Homebrew selection binding");
-    }
-
-    const shellConfig = requiredExactRecord(
-      inherited.shellConfig,
-      "flat shell config binding",
-      ["argv", "bytes", "path", "sha256"],
-    );
-    const shellBytes = readRequiredVfsBytes(fs, KANDELO_SHELL_CONFIG_PATH);
-    if (
-      typeof shellConfig.sha256 !== "string" ||
-      !/^[0-9a-f]{64}$/.test(shellConfig.sha256) ||
-      typeof shellConfig.bytes !== "number" ||
-      !Number.isSafeInteger(shellConfig.bytes) ||
-      shellConfig.bytes <= 0 ||
-      shellConfig.bytes !== shellBytes.byteLength ||
-      shellConfig.sha256 !== sha256Hex(shellBytes)
-    ) {
-      throw new Error(
-        "shell-derived VFS flat shell config binding does not match its VFS bytes",
-      );
-    }
-    let parsedShellConfig;
-    try {
-      parsedShellConfig = parseKandeloShellConfig(
-        new TextDecoder("utf-8", { fatal: true }).decode(shellBytes),
-      );
-    } catch {
-      throw new Error("shell-derived VFS has an invalid flat shell config binding");
-    }
-    if (
-      parsedShellConfig === null ||
-      parsedShellConfig.path !== shellConfig.path ||
-      !Array.isArray(shellConfig.argv) ||
-      shellConfig.argv.some((arg) => typeof arg !== "string") ||
-      parsedShellConfig.argv.length !== shellConfig.argv.length ||
-      parsedShellConfig.argv.some((arg, index) => arg !== shellConfig.argv[index])
-    ) {
-      throw new Error("shell-derived VFS has an invalid flat shell config binding");
-    }
-
-    const inheritedDemoConfig = requiredExactRecord(
-      inherited.demoConfig,
-      "flat demo config binding",
-      ["bytes", "path", "sha256"],
-    );
-    if (
-      inheritedDemoConfig.path !== KANDELO_DEMO_CONFIG_PATH ||
-      typeof inheritedDemoConfig.sha256 !== "string" ||
-      !/^[0-9a-f]{64}$/.test(inheritedDemoConfig.sha256) ||
-      typeof inheritedDemoConfig.bytes !== "number" ||
-      !Number.isSafeInteger(inheritedDemoConfig.bytes) ||
-      inheritedDemoConfig.bytes <= 0
-    ) {
-      throw new Error("shell-derived VFS has an invalid flat demo config binding");
-    }
-    const demoConfig = readRequiredVfsBytes(fs, KANDELO_DEMO_CONFIG_PATH);
-
-    // WHY: the direct base is rebound to the exact shell artifact by the
-    // loader. Preserve only the flat product's content bindings; unrelated
-    // source attestations are not claims about this derived image.
-    return {
-      version: 1,
-      kernelAbi,
-      createdBy: SHELL_DERIVED_CREATED_BY,
-      capacity: { maxByteLength },
-      baseImage: {
-        sha256: baseSha256,
-        bytes: baseBytes,
-        kernelAbi,
-      },
-      homebrewFlat: {
-        selectionSha256: homebrewFlat.selectionSha256,
-        requestedVfsFilename: homebrewFlat.requestedVfsFilename,
-        resourcePolicy: homebrewFlat.resourcePolicy,
-      },
-      shellConfig: {
-        path: parsedShellConfig.path,
-        argv: [...parsedShellConfig.argv],
-        sha256: shellConfig.sha256,
-        bytes: shellConfig.bytes,
-      },
-      demoConfig: {
-        path: KANDELO_DEMO_CONFIG_PATH,
-        sha256: sha256Hex(demoConfig),
-        bytes: demoConfig.byteLength,
-      },
-    };
-  }
-
-  if (legacyHomebrewClaims.every((claim) => claim === undefined)) {
+  if (sourceComposition === undefined) {
     throw new Error(
       "shell-derived VFS omits a supported shell composition binding",
     );
   }
-  if (!Array.isArray(inherited.packageDeferredTrees)) {
-    throw new Error("shell-derived VFS omits inherited package tree bindings");
+  if (!isExactSourceRootfsShellComposition(sourceComposition)) {
+    throw new Error(
+      "shell-derived VFS has an invalid source shell composition binding",
+    );
   }
-  const homebrewBootstrap = requiredRecord(
-    inherited.homebrewBootstrap,
-    "Homebrew bootstrap ownership",
-  );
-  const homebrew = requiredRecord(
-    inherited.homebrew,
-    "Homebrew composition metadata",
-  );
-  const demoConfig = readRequiredVfsBytes(fs, KANDELO_DEMO_CONFIG_PATH);
-
-  // WHY: only composition-owned declarations survive derivation. Copying
-  // arbitrary top-level metadata would mislabel the shell composer's direct
-  // base, signatures, or attestations as claims about this new product.
+  // WHY: the internal source shell carries ordinary lazy URLs. Preserve its
+  // explicit source identity. Its demo file remains in the VFS, but the demo
+  // config is a composition claim and therefore is not copied into the
+  // derived image's metadata.
   return {
     version: 1,
     kernelAbi,
@@ -560,257 +312,8 @@ function shellDerivedImageMetadata(
       bytes: baseBytes,
       kernelAbi,
     },
-    packageDeferredTrees: inherited.packageDeferredTrees,
-    homebrewBootstrap,
-    homebrew: {
-      ...homebrew,
-      // Every derived builder replaces the shell gallery profile, so bind
-      // the bytes that are actually present instead of retaining its digest.
-      demoConfig: {
-        path: KANDELO_DEMO_CONFIG_PATH,
-        sha256: sha256Hex(demoConfig),
-        bytes: demoConfig.byteLength,
-      },
-    },
+    shellComposition: SOURCE_ROOTFS_SHELL_COMPOSITION,
   };
-}
-
-function validatedFlatLazyBinding(
-  value: unknown,
-  kernelAbi: number,
-): Record<string, unknown> {
-  const binding = requiredExactRecord(
-    value,
-    "flat-lazy Homebrew binding",
-    [
-      "kind",
-      "materializationPolicySha256",
-      "mirror",
-      "partition",
-      "runtimeSupportPolicySha256",
-      "schema",
-      "selection",
-    ],
-  );
-  const selection = requiredExactRecord(
-    binding.selection,
-    "flat-lazy selection binding",
-    [
-      "arch",
-      "kandeloAbi",
-      "linkPolicy",
-      "name",
-      "requestedVfsFilename",
-      "resourcePolicy",
-      "runtimeSupport",
-      "sha256",
-    ],
-  );
-  const mirror = requiredExactRecord(
-    binding.mirror,
-    "flat-lazy mirror binding",
-    [
-      "assetCount",
-      "collectionSha256",
-      "planBytes",
-      "planSha256",
-      "repository",
-      "tag",
-    ],
-  );
-  const partition = requiredExactRecord(
-    binding.partition,
-    "flat-lazy partition binding",
-    [
-      "bootstrapPackage",
-      "deferredPackageOrder",
-      "embeddedPackageOrder",
-      "runtimeCohortPackageOrder",
-    ],
-  );
-  const embedded = requiredUniqueStrings(
-    partition.embeddedPackageOrder,
-    "flat-lazy embedded partition",
-    3,
-  );
-  const deferred = requiredUniqueStrings(
-    partition.deferredPackageOrder,
-    "flat-lazy deferred partition",
-    37,
-  );
-  const runtime = requiredUniqueStrings(
-    partition.runtimeCohortPackageOrder,
-    "flat-lazy runtime cohort",
-    2,
-  );
-  if (
-    binding.schema !== 1 ||
-    binding.kind !== "kandelo-homebrew-flat-selection-lazy-v1" ||
-    selection.name !== `main-shell-abi${kernelAbi}-wasm32` ||
-    selection.arch !== "wasm32" ||
-    selection.kandeloAbi !== kernelAbi ||
-    selection.requestedVfsFilename !== "shell.vfs.zst" ||
-    selection.resourcePolicy !== "kandelo-homebrew-vfs-main-shell-v1" ||
-    selection.linkPolicy !== "kandelo-homebrew-link-ownership-v1" ||
-    selection.runtimeSupport !== "kandelo-homebrew-bootstrap-v1" ||
-    !isSha256(selection.sha256) ||
-    !isSha256(binding.materializationPolicySha256) ||
-    !isSha256(binding.runtimeSupportPolicySha256) ||
-    typeof mirror.repository !== "string" ||
-    mirror.repository.length === 0 ||
-    typeof mirror.tag !== "string" ||
-    mirror.tag !==
-      `homebrew-shell-bottles-sha256-${String(mirror.collectionSha256)}` ||
-    !isSha256(mirror.collectionSha256) ||
-    !isSha256(mirror.planSha256) ||
-    !isPositiveSafeInteger(mirror.planBytes) ||
-    mirror.assetCount !== 37 ||
-    partition.bootstrapPackage !==
-      "kandelo-dev/tap-core/homebrew-bootstrap" ||
-    runtime.some((packageName) => !deferred.includes(packageName))
-  ) {
-    throw new Error("shell-derived VFS has an invalid flat-lazy Homebrew binding");
-  }
-  return {
-    schema: 1,
-    kind: binding.kind,
-    selection: {
-      sha256: selection.sha256,
-      name: selection.name,
-      arch: selection.arch,
-      kandeloAbi: selection.kandeloAbi,
-      requestedVfsFilename: selection.requestedVfsFilename,
-      resourcePolicy: selection.resourcePolicy,
-      linkPolicy: selection.linkPolicy,
-      runtimeSupport: selection.runtimeSupport,
-    },
-    materializationPolicySha256: binding.materializationPolicySha256,
-    runtimeSupportPolicySha256: binding.runtimeSupportPolicySha256,
-    mirror: {
-      repository: mirror.repository,
-      tag: mirror.tag,
-      collectionSha256: mirror.collectionSha256,
-      planSha256: mirror.planSha256,
-      planBytes: mirror.planBytes,
-      assetCount: mirror.assetCount,
-    },
-    partition: {
-      embeddedPackageOrder: embedded,
-      deferredPackageOrder: deferred,
-      bootstrapPackage: partition.bootstrapPackage,
-      runtimeCohortPackageOrder: runtime,
-    },
-  };
-}
-
-function validatedFlatLazyBootstrap(value: unknown): Record<string, unknown> {
-  const bootstrap = requiredExactRecord(
-    value,
-    "flat-lazy Homebrew bootstrap binding",
-    ["entrypoint", "environment", "ownership"],
-  );
-  const environment = requiredExactRecord(
-    bootstrap.environment,
-    "flat-lazy Homebrew bootstrap environment",
-    ["bytes", "path", "sha256"],
-  );
-  const entrypoint = requiredExactRecord(
-    bootstrap.entrypoint,
-    "flat-lazy Homebrew bootstrap entrypoint",
-    ["path", "target"],
-  );
-  const ownership = requiredExactRecord(
-    bootstrap.ownership,
-    "flat-lazy Homebrew bootstrap ownership",
-    ["gid", "mutable_paths", "prefix", "uid"],
-  );
-  const mutablePaths = requiredUniqueStrings(
-    ownership.mutable_paths,
-    "flat-lazy Homebrew mutable paths",
-  );
-  if (
-    environment.path !== "/etc/homebrew/brew.env" ||
-    !isSha256(environment.sha256) ||
-    !isPositiveSafeInteger(environment.bytes) ||
-    entrypoint.path !== "/usr/bin/brew" ||
-    entrypoint.target !== "/opt/kandelo/homebrew/bin/brew" ||
-    ownership.prefix !== "/opt/kandelo/homebrew" ||
-    ownership.uid !== 1000 ||
-    ownership.gid !== 1000 ||
-    mutablePaths.some((path) => !path.startsWith("/"))
-  ) {
-    throw new Error(
-      "shell-derived VFS has an invalid flat-lazy Homebrew bootstrap binding",
-    );
-  }
-  return {
-    environment: { ...environment },
-    entrypoint: { ...entrypoint },
-    ownership: { ...ownership, mutable_paths: mutablePaths },
-  };
-}
-
-function validatedFlatShellConfig(
-  fs: MemoryFileSystem,
-  value: unknown,
-): Record<string, unknown> {
-  const shellConfig = requiredExactRecord(
-    value,
-    "flat-lazy shell config binding",
-    ["argv", "bytes", "path", "sha256"],
-  );
-  const shellBytes = readRequiredVfsBytes(fs, KANDELO_SHELL_CONFIG_PATH);
-  let parsedShellConfig;
-  try {
-    parsedShellConfig = parseKandeloShellConfig(
-      new TextDecoder("utf-8", { fatal: true }).decode(shellBytes),
-    );
-  } catch {
-    throw new Error("shell-derived VFS has an invalid flat-lazy shell config binding");
-  }
-  if (
-    parsedShellConfig === null ||
-    parsedShellConfig.path !== shellConfig.path ||
-    !Array.isArray(shellConfig.argv) ||
-    shellConfig.argv.some((arg) => typeof arg !== "string") ||
-    parsedShellConfig.argv.length !== shellConfig.argv.length ||
-    parsedShellConfig.argv.some((arg, index) => arg !== shellConfig.argv[index]) ||
-    shellConfig.bytes !== shellBytes.byteLength ||
-    shellConfig.sha256 !== sha256Hex(shellBytes)
-  ) {
-    throw new Error("shell-derived VFS has an invalid flat-lazy shell config binding");
-  }
-  return {
-    path: parsedShellConfig.path,
-    argv: [...parsedShellConfig.argv],
-    sha256: shellConfig.sha256,
-    bytes: shellConfig.bytes,
-  };
-}
-
-function requiredUniqueStrings(
-  value: unknown,
-  label: string,
-  expectedLength?: number,
-): string[] {
-  if (
-    !Array.isArray(value) ||
-    (expectedLength !== undefined && value.length !== expectedLength) ||
-    value.length === 0 ||
-    value.some((item) => typeof item !== "string" || item.length === 0) ||
-    new Set(value).size !== value.length
-  ) {
-    throw new Error(`shell-derived VFS has an invalid ${label}`);
-  }
-  return [...value] as string[];
-}
-
-function isSha256(value: unknown): value is string {
-  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
-}
-
-function isPositiveSafeInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
 function isExactSourceRootfsShellComposition(value: unknown): boolean {
@@ -833,57 +336,6 @@ function requiredRecord(
     throw new Error(`shell-derived VFS omits valid ${label}`);
   }
   return value as Record<string, unknown>;
-}
-
-function requiredExactRecord(
-  value: unknown,
-  label: string,
-  expectedKeys: readonly string[],
-): Record<string, unknown> {
-  const record = requiredRecord(value, label);
-  if (
-    Object.keys(record).sort().join("\0") !==
-    [...expectedKeys].sort().join("\0")
-  ) {
-    throw new Error(`shell-derived VFS has an invalid ${label}`);
-  }
-  return record;
-}
-
-function readRequiredVfsBytes(
-  fs: MemoryFileSystem,
-  path: string,
-): Uint8Array {
-  const size = fs.stat(path).size;
-  if (!Number.isSafeInteger(size) || size < 0) {
-    throw new Error(`shell-derived VFS has an invalid ${path} size`);
-  }
-  const bytes = new Uint8Array(size);
-  const fd = fs.open(path, 0, 0);
-  try {
-    let offset = 0;
-    while (offset < bytes.byteLength) {
-      const count = fs.read(
-        fd,
-        bytes.subarray(offset),
-        null,
-        bytes.byteLength - offset,
-      );
-      if (
-        !Number.isSafeInteger(count) ||
-        count <= 0 ||
-        count > bytes.byteLength - offset
-      ) {
-        throw new Error(
-          `shell-derived VFS could not read complete ${path} bytes`,
-        );
-      }
-      offset += count;
-    }
-  } finally {
-    fs.close(fd);
-  }
-  return bytes;
 }
 
 function sha256Hex(bytes: Uint8Array): string {

@@ -22,21 +22,13 @@ export function checkPagesVfsProductRegistry(options) {
     presentationPath: options.presentationPath,
     liveSetupPath: options.browserSources.find((path) => basename(path) === "live-setup.ts"),
   });
-  const adapters = readAdapterRegistry(options.adapterPath);
-  const adapterByProduct = new Map(adapters.map((adapter) => [adapter.product, adapter]));
   const selected = new Map();
-
   for (const entry of registry.products) {
     const product = catalog.productById(entry.id);
-    const adapter = adapterByProduct.get(entry.id);
-    if (adapter === undefined) {
-      throw new Error(`Pages product ${entry.id} has no mechanical legacy adapter`);
-    }
     selected.set(entry.id, {
       ...entry,
       product,
-      adapter,
-      artifact: projectedArtifact(product, adapter),
+      artifact: projectedArtifact(product),
     });
   }
 
@@ -85,14 +77,11 @@ export function checkPagesVfsProductRegistry(options) {
 
   const allKnownProducts = new Map();
   for (const id of catalog.productIds) {
-    const adapter = adapterByProduct.get(id);
-    if (adapter === undefined) continue;
     const product = catalog.productById(id);
     allKnownProducts.set(id, {
       id,
       product,
-      adapter,
-      artifact: projectedArtifact(product, adapter),
+      artifact: projectedArtifact(product),
     });
   }
   for (const reference of [...imports, ...globs]) {
@@ -117,14 +106,13 @@ export function checkPagesVfsProductRegistry(options) {
   checkBrowserDependencies({
     runPath: options.browserDepsPath,
     catalog,
-    adapters,
     selected,
   });
 }
 
 function checkCanonicalPagesProjection(selected, sources) {
   const viteSource = sourceNamed(sources, "vite.config.ts");
-  const canonicalPlugin = viteSource.indexOf("pagesVfsProducts,");
+  const canonicalPlugin = viteSource.indexOf("vfsProductsPlugin(base),");
   const kernelResolver = viteSource.indexOf("resolveKernelArtifactsAlias(binaryDevAccess)");
   const binaryResolver = viteSource.indexOf(
     "resolveBinariesAlias(binaryDevAccess, browserBinaryResolution)",
@@ -161,29 +149,8 @@ function checkCanonicalPagesProjection(selected, sources) {
   }
 }
 
-export function projectedArtifact(product, adapter) {
-  if (adapter.mirror_filename === undefined) {
-    return { filename: product.output, rawFilename: product.output };
-  }
-  const productExtensionStart = product.output.indexOf(".");
-  const mirrorExtensionStart = adapter.mirror_filename.indexOf(".");
-  if (productExtensionStart < 1 || mirrorExtensionStart < 1) {
-    throw new Error(
-      `${product.id} canonical and transitional outputs must have artifact extensions`,
-    );
-  }
-  const productExtension = product.output.slice(productExtensionStart);
-  const mirrorExtension = adapter.mirror_filename.slice(mirrorExtensionStart);
-  if (productExtension !== mirrorExtension) {
-    throw new Error(
-      `${product.id} adapter output type ${mirrorExtension} differs from ` +
-        `canonical output type ${productExtension}`,
-    );
-  }
-  return {
-    filename: `${adapter.output}${mirrorExtension}`,
-    rawFilename: product.output,
-  };
+export function projectedArtifact(product) {
+  return { filename: product.output, rawFilename: product.output };
 }
 
 function matchesProductSpecifier(specifier, entry) {
@@ -225,7 +192,7 @@ function checkRootfsAliasProjection(selected, sources) {
   }
 }
 
-function checkBrowserDependencies({ runPath, catalog, adapters, selected }) {
+function checkBrowserDependencies({ runPath, catalog, selected }) {
   const source = readFileSync(runPath, "utf8");
   const dependencyMatch = /(?:^|\n)BROWSER_DEPS=\(([^)]*)\)/.exec(source);
   if (dependencyMatch === null) {
@@ -239,27 +206,34 @@ function checkBrowserDependencies({ runPath, catalog, adapters, selected }) {
   const targetsByProduct = new Map();
   const registeredTargets = new Set();
 
-  for (const adapter of adapters) {
-    const product = catalog.productById(adapter.product);
+  // Match every catalog product to the run.sh build-target functions by
+  // content: a function that invokes the product's builder script, or that
+  // references one of the product's candidate package names, materializes it.
+  // BROWSER_DEPS may list non-deployed VFS targets (e.g. mariadb-vfs), so the
+  // full catalog — not just the deployed set — must feed registeredTargets.
+  for (const productId of catalog.productIds) {
+    const product = catalog.productById(productId);
+    const packageNames = productPackageNames(product);
     let matches = [...targetFunctions].filter(([target, functionName]) => {
-      if (adapter.product === "platform-rootfs" && target === "rootfs") return true;
+      if (productId === "platform-rootfs" && target === "rootfs") return true;
       const body = functionBodies.get(functionName) ?? "";
-      if (body.includes(adapter.build_target)) return true;
-      if (adapter.package === undefined) return false;
-      const packagePattern = escapeRegExp(adapter.package);
-      return (
-        body.includes(`packages/registry/${adapter.package}/`) ||
-        new RegExp(`\\bresolve[ \\t]+${packagePattern}\\b`).test(body) ||
-        new RegExp(`\\bpkg_has_output[ \\t]+${packagePattern}\\b`).test(body)
-      );
+      if (product.builder !== undefined && body.includes(product.builder)) return true;
+      return packageNames.some((pkg) => {
+        const pattern = escapeRegExp(pkg);
+        return (
+          body.includes(`packages/registry/${pkg}/`) ||
+          new RegExp(`\\bresolve[ \\t]+${pattern}\\b`).test(body) ||
+          new RegExp(`\\bpkg_has_output[ \\t]+${pattern}\\b`).test(body)
+        );
+      });
     });
-    if (matches.length > 1 && adapter.product.includes("mariadb-wasm")) {
+    if (matches.length > 1 && productId.includes("mariadb-wasm")) {
       matches = matches.filter(([target]) =>
         product.architecture === "wasm64" ? target.includes("64") : !target.includes("64"),
       );
     }
     const targets = matches.map(([target]) => target);
-    targetsByProduct.set(adapter.product, targets);
+    targetsByProduct.set(productId, targets);
     for (const target of targets) registeredTargets.add(target);
   }
 
@@ -273,11 +247,30 @@ function checkBrowserDependencies({ runPath, catalog, adapters, selected }) {
     const present = targets.find((target) => dependencySet.has(target));
     if (present === undefined) {
       throw new Error(
-        `${entry.id} has no selected legacy BROWSER_DEPS target; expected ` +
-          `${targets.join(" or ") || "a registered adapter target"}`,
+        `${entry.id} has no selected VFS build target; expected ` +
+          `${targets.join(" or ") || "a registered build target"}`,
       );
     }
   }
+}
+
+// Candidate run.sh package names for a catalog product, derived from the
+// catalog with no adapter registry: the declared output token (before the
+// first extension separator), the VFS-image package captured from a
+// build-<package>-image.sh builder path, and every declared software package
+// name. The builder-path primary match resolves most products; these names
+// resolve those whose run.sh function delegates to a package-registry wrapper.
+function productPackageNames(product) {
+  const names = new Set();
+  const dot = product.output.indexOf(".");
+  const outputToken = dot > 0 ? product.output.slice(0, dot) : product.output;
+  if (outputToken.length > 0) names.add(outputToken);
+  const builderImage = /(?:^|\/)build-(.+)-image\.sh$/.exec(product.builder ?? "");
+  if (builderImage !== null) names.add(builderImage[1]);
+  for (const pkg of product.software?.package ?? []) {
+    if (typeof pkg?.name === "string" && pkg.name.length > 0) names.add(pkg.name);
+  }
+  return [...names];
 }
 
 function readBuildTargetFunctions(source) {
@@ -426,30 +419,6 @@ function canonicalJson(value) {
   return `${JSON.stringify(normalize(value))}\n`;
 }
 
-export function readAdapterRegistry(path) {
-  const parsed = parseArrayTableToml(path, "adapters");
-  exactObjectKeys(parsed.root, ["kind", "schema"], "legacy adapter registry");
-  if (parsed.root.schema !== 1 || parsed.root.kind !== "kandelo-legacy-vfs-adapters") {
-    throw new Error(`invalid legacy VFS adapter registry: ${path}`);
-  }
-  const adapters = parsed.entries.map((entry, index) => {
-    const label = `legacy adapters[${index}]`;
-    if (Object.hasOwn(entry, "package")) {
-      exactObjectKeys(
-        entry,
-        ["build_target", "mirror_filename", "output", "package", "product"],
-        label,
-      );
-    } else {
-      exactObjectKeys(entry, ["build_target", "product"], label);
-    }
-    for (const [key, value] of Object.entries(entry)) requireTomlString(value, `${label}.${key}`);
-    return entry;
-  });
-  requireUnique(adapters.map(({ product }) => product), "legacy adapter products");
-  return adapters;
-}
-
 function parseArrayTableToml(path, tableName) {
   const root = {};
   const entries = [];
@@ -557,7 +526,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-gallery.json",
     ),
     presentationPath: resolve(repoRoot, "apps/browser-demos/pages/kandelo/presets.ts"),
-    adapterPath: resolve(repoRoot, "abi/staging/legacy-vfs-adapters.toml"),
     browserDepsPath: resolve(repoRoot, "run.sh"),
     browserSources: [
       resolve(repoRoot, "host/src/browser-kernel-default-artifacts.ts"),

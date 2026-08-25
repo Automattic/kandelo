@@ -1,5 +1,0 @@
-{
-  "version": 1,
-  "path": "/opt/kandelo/homebrew/bin/bash",
-  "argv": ["bash", "-l", "-i"]
-}

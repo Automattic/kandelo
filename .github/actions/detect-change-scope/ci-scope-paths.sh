@@ -31,17 +31,13 @@ package_archive_changed_files() {
     || true)
 
   declared_input_matches=$(printf '%s\n' "$files" | package_declared_build_input_changed_files)
-  product_owned_matches=$(printf '%s\n' "$files" |
-    homebrew_product_owned_package_input_changed_files)
 
   # WHY: program-packages.json is generated resolver/materialization policy,
   # not a package recipe. Rebuilding every archive after refreshing only this
   # index wastes the staging matrix without changing any archive cache key.
   printf '%s\n%s\n' "$static_matches" "$declared_input_matches" |
     grep -vFx 'packages/registry/program-packages.json' |
-    sed '/^$/d' | sort -u |
-    comm -23 - <(printf '%s\n' "$product_owned_matches" |
-      sed '/^$/d' | sort -u)
+    sed '/^$/d' | sort -u
 }
 
 package_declared_build_input_changed_files() {
@@ -51,26 +47,6 @@ package_declared_build_input_changed_files() {
   [ -d packages/registry ] || return 0
 
   printf '%s\n' "$files" | python3 "$ci_scope_paths_dir/package-build-input-matches.py" packages/registry
-}
-
-homebrew_product_owned_package_input_changed_files() {
-  # WHY: these inputs still belong only to the retired lazy-shell campaign and
-  # its independent Homebrew product gate. The canonical flat shell declares
-  # its own selection and builder inputs in build.toml; those inputs must not
-  # appear here because changing one must rebuild the ready package and its
-  # derived VFS identities.
-  #
-  # This is deliberately an exact reviewed ownership list, not a Homebrew path
-  # wildcard. Add a path only when the exact product gate proves its complete
-  # effect and focused tests establish that conventional package inputs still
-  # stage normally.
-  grep -Fx \
-    -e 'homebrew/main-shell-homebrew-runtime-support.json' \
-    -e 'homebrew/main-shell-lazy-artifact-lock.json' \
-    -e 'homebrew/main-shell-selection-lock.json' \
-    -e 'scripts/check-homebrew-main-shell-brewfile.mjs' \
-    -e 'scripts/homebrew-prefix-campaign-executor.py' \
-    || true
 }
 
 package_publish_flow_changed_files() {
@@ -83,7 +59,7 @@ package_publish_flow_changed_files() {
     -e '^\.github/scripts/(activate-merge-candidate|classify-pr-staging|cleanup-merge-candidates|clone-rejected-merge-candidate|compose-staging-release-snapshots|delete-writable-release|download-verified-release-asset|fetch-canonical-index|find-release-by-tag|github-api-get|init-merge-candidate|latest-merge-gate-status|mark-merge-candidate-ready|materialize-durable-package-generation|materialize-exact-package-generations|package-release-lifecycle|prepare-current-authority-validator|prepare-durable-package-generation|prepare-preserved-pr-package-generation|publish-durable-package-generation|reconcile-merge-candidates|recover-canonical-indexes|require-exact-head-approval|require-exact-kandelo-main|select-package-archive-source|split-staging-package-ledger|state-lock|test-activate-merge-candidate|test-classify-pr-staging|test-cleanup-merge-candidates|test-clone-rejected-merge-candidate|test-delete-writable-release|test-download-verified-release-asset|test-exact-main-package-publication|test-fetch-canonical-index|test-find-release-by-tag|test-init-merge-candidate|test-latest-merge-gate-status|test-materialize-exact-package-generations|test-merge-candidate-workflows|test-package-generation|test-package-release-lifecycle|test-prepare-current-authority-validator|test-publish-durable-package-generation|test-reconcile-merge-candidates|test-recover-canonical-indexes|test-require-exact-head-approval|test-require-exact-kandelo-main|test-select-package-archive-source|test-split-staging-package-ledger|test-state-lock|test-validate-staging-release|test-verify-merge-candidate|validate-staging-release|verify-merge-candidate|verify-preserved-package-source)\.sh$' \
     -e '^\.github/scripts/package-generation\.py$' \
     -e '^tools/xtask/src/(build_deps|build_index|bundle_program|index_candidate|index_toml|index_update|package_archive_name|package_matrix|pkg_manifest|publication_policy|staging_reuse|update_pkg_manifest)\.rs$' \
-    -e '^scripts/(compose-initial-index|homebrew-rootfs-publication-selection|index-has-current-entry|index-update|prepare-sdk-package|publish-package-source|release-index-state|sync-package-source|test-homebrew-rootfs-publication-selection)\.sh$' \
+    -e '^scripts/(compose-initial-index|index-has-current-entry|index-update|prepare-sdk-package|publish-package-source|release-index-state|sync-package-source)\.sh$' \
     -e '^scripts/(check-abi-staging-pr-check-workflow\.rb|check-abi-staging-request-workflow\.rb|test-abi-staging-request-feed\.sh)$' \
     -e '^abi/staging/required-check-activation\.toml$' \
     -e '^tests/scripts/(index-update|package-publish-flow|release-index-state)\.sh$' \
@@ -95,7 +71,7 @@ binary_materialization_changed_files() {
     -e '^packages/registry/program-packages\.json$' \
     -e '^tools/xtask/src/(index_candidate|index_toml|package_archive_name|remote_fetch|util)\.rs$' \
     -e '^scripts/browser-memory64-example-fixtures\.(sh|txt)$' \
-    -e '^scripts/(activate-local-shell-build-override|ci-homebrew-browser-mirror-state|fetch-binaries|install-local-binary|install-local-shell-artifact|materialize-ci-canonical-package-index|materialize-ci-publication-blockers|materialize-pr-overlays|materialize-resolver-binaries|pack-ci-test-workspace|resolve-binary|stage-portable-resolver-binaries|test-wasm-artifact-guards|validate-publication-blocker-report|wasm-artifact-guards)\.sh$' \
+    -e '^scripts/(activate-local-shell-build-override|fetch-binaries|install-local-binary|install-local-shell-artifact|materialize-ci-canonical-package-index|materialize-ci-publication-blockers|materialize-pr-overlays|materialize-resolver-binaries|pack-ci-test-workspace|resolve-binary|stage-portable-resolver-binaries|test-wasm-artifact-guards|validate-publication-blocker-report|wasm-artifact-guards)\.sh$' \
     -e '^scripts/(build-resolve-binary-bundle|test-resolve-binary-bundle)\.sh$' \
     -e '^scripts/resolve-binary\.(ts|bundle\.mjs|bundle\.LICENSES\.txt)$' \
     -e '^scripts/vfs-has-stale-abi\.mjs$' \
@@ -131,7 +107,7 @@ ci_control_changed_files() {
     -e '^\.github/scripts/(activate-merge-candidate|classify-pr-staging|cleanup-merge-candidates|clone-rejected-merge-candidate|compose-staging-release-snapshots|delete-writable-release|download-verified-release-asset|fetch-canonical-index|find-release-by-tag|github-api-get|init-merge-candidate|latest-merge-gate-status|mark-merge-candidate-ready|materialize-durable-package-generation|materialize-exact-package-generations|package-release-lifecycle|prepare-current-authority-validator|prepare-durable-package-generation|prepare-preserved-pr-package-generation|publish-durable-package-generation|reconcile-merge-candidates|recover-canonical-indexes|require-exact-head-approval|require-exact-kandelo-main|select-package-archive-source|split-staging-package-ledger|state-lock|test-activate-merge-candidate|test-classify-pr-staging|test-cleanup-merge-candidates|test-clone-rejected-merge-candidate|test-delete-writable-release|test-download-verified-release-asset|test-exact-main-package-publication|test-fetch-canonical-index|test-find-release-by-tag|test-init-merge-candidate|test-latest-merge-gate-status|test-materialize-exact-package-generations|test-merge-candidate-workflows|test-package-generation|test-package-release-lifecycle|test-prepare-current-authority-validator|test-publish-durable-package-generation|test-reconcile-merge-candidates|test-recover-canonical-indexes|test-require-exact-head-approval|test-require-exact-kandelo-main|test-select-package-archive-source|test-split-staging-package-ledger|test-state-lock|test-validate-staging-release|test-verify-merge-candidate|validate-staging-release|verify-merge-candidate|verify-preserved-package-source)\.sh$' \
     -e '^\.github/scripts/package-generation\.py$' \
     -e '^tools/xtask/src/(index_candidate|index_toml|package_archive_name|package_matrix)\.rs$' \
-    -e '^scripts/(activate-local-shell-build-override|ci-homebrew-browser-mirror-state|compose-initial-index|index-update|install-local-shell-artifact|materialize-ci-canonical-package-index|materialize-ci-publication-blockers|release-index-state|validate-publication-blocker-report)\.sh$' \
+    -e '^scripts/(activate-local-shell-build-override|compose-initial-index|index-update|install-local-shell-artifact|materialize-ci-canonical-package-index|materialize-ci-publication-blockers|release-index-state|validate-publication-blocker-report)\.sh$' \
     -e '^scripts/(check-abi-staging-pr-check-workflow\.rb|check-abi-staging-request-workflow\.rb|test-abi-staging-request-feed\.sh)$' \
     -e '^abi/staging/required-check-activation\.toml$' \
     -e '^tests/scripts/(index-update|package-publish-flow|release-index-state)\.sh$' \

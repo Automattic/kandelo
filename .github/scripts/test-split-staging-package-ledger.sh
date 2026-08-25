@@ -25,7 +25,7 @@ cat > "$TMP_ROOT/expected.json" <<'JSON'
       "git_inputs": []
     },
     {
-      "package": "homebrew-bootstrap",
+      "package": "redis",
       "kind": "program",
       "arch": "wasm32",
       "version": "6.0.4",
@@ -49,7 +49,7 @@ JSON
 cat > "$TMP_ROOT/matrix.json" <<'JSON'
 [
   {
-    "package": "homebrew-bootstrap",
+    "package": "redis",
     "arch": "wasm32",
     "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "version": "6.0.4",
@@ -66,7 +66,7 @@ bash "$HELPER" \
 
 jq -e '
   .abi_version == 42 and
-  [.entries[].package] == ["homebrew-bootstrap"]
+  [.entries[].package] == ["redis"]
 ' "$TMP_ROOT/selected.json" >/dev/null ||
   fail "selected output does not contain only the exact PR entry"
 jq -e '

@@ -91,7 +91,7 @@ The cc wrapper handles three modes:
 Checked in order:
 1. `WASM_POSIX_LLVM_DIR` env var
 2. `clang` on PATH (verify it supports `--target=wasm32-unknown-unknown`)
-3. `/opt/homebrew/opt/llvm/bin` (macOS Homebrew)
+3. `/usr/local/opt/llvm/bin` (macOS system LLVM)
 4. `/usr/lib/llvm-*/bin` (Debian/Ubuntu, pick highest version)
 
 If none found, error with install instructions.

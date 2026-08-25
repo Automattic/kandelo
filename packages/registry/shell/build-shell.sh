@@ -68,8 +68,7 @@ require_regular_file() {
 # WHY: resolver inputs are the whole executable authority. Ambient credentials,
 # proxies, and module/package-manager injection could otherwise add an
 # undeclared source or network path before the composer starts.
-unset GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
-    HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN \
+unset GH_TOKEN GITHUB_TOKEN \
     NPM_TOKEN NODE_AUTH_TOKEN NODE_OPTIONS NODE_PATH \
     NPM_CONFIG_USERCONFIG NPM_CONFIG_GLOBALCONFIG NPM_CONFIG_REGISTRY \
     npm_config_userconfig npm_config_globalconfig npm_config_registry \

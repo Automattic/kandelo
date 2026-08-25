@@ -29,27 +29,27 @@ machinery for POSIX `fork()`.
 
 ## Why Ruby 4 needs it
 
-The Ruby 4 Homebrew package path exercises GC-sensitive code during startup,
+The Ruby 4 package path exercises GC-sensitive code during startup,
 static extension initialization, and stdlib loads such as `date`, `psych`,
 `uri`, and `rubygems`. In the Kandelo wasm32 build, Ruby's `VALUE` is represented
 as a 32-bit value, and optimized Wasm locals can hold live `VALUE`s that the
 conservative CRuby stack scanner cannot see.
 
 The failure mode was not hypothetical. The normal package artifact without this
-pass failed the Homebrew-facing probes with out-of-bounds traps, type errors, or
+pass failed the package-facing probes with out-of-bounds traps, type errors, or
 hangs in:
 
 - `ruby -rdate`
 - `ruby -rpsych` with `Psych.dump` / `Psych.load`
 - `ruby -ruri`
 - `ruby -rrubygems`
-- Homebrew's `ruby_check_version_script.rb`
+- a Ruby version-check script
 
 After the Ruby package build applies this pass, then applies
 `wasm-fork-instrument`, the same package-level Node and browser probes are
 expected to keep the Ruby stdlib roots visible to CRuby's GC.
 
-Ruby 4 is the immediate target because the upstream Homebrew bootstrap needs
+Ruby 4 is the immediate target because the upstream package bootstrap needs
 Ruby 4 and because Ruby 4's parser, compiler, RubyGems, Psych, URI, encoding,
 and static-extension paths allocate through enough nested calls to expose the
 missing-root problem. Older or smaller Ruby smoke tests can miss the same class

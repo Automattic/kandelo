@@ -162,7 +162,7 @@ to keep running on newer kernels in the same `ABI_VERSION` epoch.
 ABI 41 increases each fork-continuation save buffer from 16 KiB to 60 KiB.
 The reserve occupies the upper part of an existing 64 KiB scratch page and
 leaves a 4 KiB prefix for host-owned control metadata. It covers the measured
-49,232-byte Homebrew Bash continuation with 12,208 bytes of headroom while
+49,232-byte Bash continuation with 12,208 bytes of headroom while
 retaining truthful post-unwind detection for continuations above the fixed
 bound.
 
@@ -421,7 +421,7 @@ coordinate launch and teardown are host-private protocol, not persisted guest
 ABI. No new linked-frame field, marker getter, or public kernel export was
 needed beyond the ABI 43 mode-aware import/export and bounded workspace
 arguments described above. Release still requires the broader conformance,
-upstream CRuby, Homebrew, and resident-memory proofs; those gates do not alter
+upstream CRuby, and resident-memory proofs; those gates do not alter
 the structural ABI decision.
 
 The instrumenter also rejects any input that already carries fork control
@@ -503,14 +503,14 @@ execution.
 
 This is an incompatible artifact epoch even though the linked-frame descriptor
 version is unchanged. All fork-instrumented programs, side modules, package
-bottles, binary indexes, shell closures, and VFS images must be rebuilt from
+archives, binary indexes, shell closures, and VFS images must be rebuilt from
 source. Existing C++ modern-EH outputs that retain exnref locals or use
 `CatchAllRef`, and the Dash `expandstr` cleanup path, are supported rebuild
 inputs through those recipes; they are not candidates for metadata relabeling
 or package-specific bypasses. The ABI 43 development shell/rootfs closure can
-be rebuilt from source. Broad bottle, index, shell, and image publication still
+be rebuilt from source. Broad package, index, shell, and image publication still
 requires explicit release coordination. The exact archive-generation,
-rootfs/image, and Homebrew sequencing and isolation boundary is recorded in
+rootfs/image, and package sequencing and isolation boundary is recorded in
 the [ABI 43 activation-state-safe artifact rebuild
 plan](plans/2026-07-25-abi-43-activation-state-safe-rebuild-plan.md).
 
@@ -1059,15 +1059,6 @@ that the tested producer tree equals the resulting `main` tree and publishes
 the new immutable `binaries-abi-v<N>` release once. The archives keep the
 producer that actually built them; a durable generation records final-main
 validation separately through complete-tree evidence.
-
-Homebrew bottles do not yet have that pre-merge promotion lane. Build them
-after activation through the trusted exact-main publisher. Merely making a PR
-commit an ancestor of `main` does not make candidate bottle bytes canonical.
-
-See
-[Kandelo Homebrew Packaging: ABI changes and candidate pull requests](homebrew-packaging-system.md#abi-changes-and-candidate-pull-requests)
-for the complete operational sequence and the requirements for any future
-pre-merge bottle lane.
 
 ### Additive changes within an ABI epoch
 

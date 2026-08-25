@@ -49,12 +49,6 @@
 //!                         `.github/workflows/prepare-merge.yml` (and the
 //!                         force-rebuild equivalent) to point the in-tree
 //!                         manifest at a freshly-published archive.
-//!   homebrew-sidecars     Generate Kandelo/Homebrew tap sidecars from
-//!                         produced bottle bytes and workflow evidence.
-//!   homebrew-tier2-preflight
-//!                         Bind one statically-scanned Formula bridge to its
-//!                         authoritative in-tree registry recipe.
-//!   homebrew-validate     Validate Kandelo/Homebrew tap sidecar metadata.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -63,7 +57,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
 
-mod abi_staging;
+mod vfs_products;
 mod archive_extract_member;
 mod archive_stage;
 mod archive_stage_cli;
@@ -71,19 +65,6 @@ mod build_deps;
 mod build_index;
 mod bundle_program;
 mod dump_abi;
-mod homebrew_guest_layout;
-#[cfg(test)]
-mod homebrew_schema;
-mod homebrew_sidecars;
-#[cfg(unix)]
-mod homebrew_tier2_preflight;
-#[cfg(not(unix))]
-mod homebrew_tier2_preflight {
-    pub fn run(_args: Vec<String>) -> Result<(), String> {
-        Err("homebrew-tier2-preflight requires a Unix publisher host".to_string())
-    }
-}
-mod homebrew_validate;
 mod host_tool_probe;
 mod index_candidate;
 mod index_toml;
@@ -111,14 +92,14 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: abi-staging, dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, materialize-package-output, staging-reuse, archive-stage, archive-extract-member, build-index, set-build-commit, set-package-binary, index-update, index-candidate, homebrew-sidecars, homebrew-tier2-preflight, homebrew-validate"
+                "subcommands: vfs, dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, materialize-package-output, staging-reuse, archive-stage, archive-extract-member, build-index, set-build-commit, set-package-binary, index-update, index-candidate"
             );
             return ExitCode::from(2);
         }
     };
     let rest: Vec<String> = args.collect();
-    if sub == "abi-staging" {
-        return abi_staging::run(rest);
+    if sub == "vfs" {
+        return vfs_products::run(rest);
     }
     let result = match sub.as_str() {
         "dump-abi" => dump_abi::run(rest),
@@ -138,9 +119,6 @@ fn main() -> ExitCode {
         "index-update" => index_update::run_index_update(&rest),
         "index-candidate" => index_candidate::run(rest),
         "local-build" => local_build::run(rest),
-        "homebrew-sidecars" => homebrew_sidecars::run(rest),
-        "homebrew-tier2-preflight" => homebrew_tier2_preflight::run(rest),
-        "homebrew-validate" => homebrew_validate::run(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");
             return ExitCode::from(2);

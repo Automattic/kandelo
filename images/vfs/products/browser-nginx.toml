@@ -1,7 +1,7 @@
 schema = 1
 id = "browser-nginx"
 architecture = "wasm32"
-output = "nginx.vfs.zst"
+output = "nginx-vfs.vfs.zst"
 builder = "images/vfs/scripts/build-nginx-vfs-image.sh"
 
 [[composition.product]]

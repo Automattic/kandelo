@@ -371,7 +371,7 @@ number of distinct assets retrieved during that kernel lifecycle; it has no
 fixed asset cap. `subscribeLazyDownloadSummaries()` reports both event updates
 and lifecycle resets. The Lazy Load inspector and acceptance tests use the
 summary ledger, so response chunk volume cannot erase evidence that an earlier
-bottle completed. Both views reset when the kernel is replaced; neither is
+download completed. Both views reset when the kernel is replaced; neither is
 persisted as a machine snapshot.
 
 Cross-origin browser fetches are routed through `public/service-worker.js`,
@@ -792,245 +792,13 @@ images can be materialized from a current public package archive; the normal
 resolver falls back to the package's source recipe when needed. The `run.sh`
 script handles this automatically before starting the browser.
 
-### Disabled Homebrew image integration
-
-Homebrew build, test, publication, and browser-image integration is currently
-disabled. The repository retains dormant Homebrew implementation sources for
-possible later reconsideration, but ordinary package resolution does not
-discover `homebrew-bootstrap`, active workflows do not build or publish it,
-and local/CI validation excludes Homebrew tests. The material below describes
-that inactive implementation and is not a supported product path.
-
-The dormant Homebrew publisher poured wasm32 bottles into a
-precomposed `.vfs.zst`, booted those exact bytes in Node and Chromium, and ran
-the tap-selected smoke command. When the caller seals that dependency-bearing
-acceptance as required, the publisher stores the exact image, report, evidence,
-and `kandelo-homebrew-vfs.json` descriptor in the source tap's public,
-content-addressed `homebrew-vfs-sha256-<image-sha256>` release. The descriptor's
-`launch.value` is the anonymous image URL accepted by the normal browser
-`?vfs=<url>` path. The publisher anonymously reads every release asset back and
-verifies its digest and size before reporting success.
-
-The dormant main-shell implementation also accepted selected Homebrew runtime layers
-through version-1 boot-descriptor mounts whose source is `package-layer`.
-These mounts are root overlays described by an unauthenticated HTTPS URL plus
-an exact descriptor byte count and `sha256:<digest>` reference. The shared
-host consumer verifies the descriptor and its binding to the exact loaded
-shell image, ABI, and Homebrew composition before it adds any paths. Selected
-layers must have disjoint non-base packages and filesystem ownership.
-Runtime-layer composition currently requires each layer reference to name one
-requested root equal to its layer ID. The wider 128-name descriptor/parser
-bound is shared with planning and leaves room for collection artifacts, but it
-does not turn this boot mount into a multi-root layer. Phase 3 composes the
-multi-root main shell through the bottle-collection primitive instead.
-Schema-6 direct-bottle `deferred_trees` carry a complete source inventory and guest
-projection: paths, types, modes, links, regular-inode groups, materialization
-provenance, immutable content identity, a closed decoder/media-type pair, and
-one to eight byte-identical immutable HTTPS transports. Exactly one
-transport is the bundle's browser-readable release asset; additional transports
-may name the canonical public bottle or another immutable mirror. The descriptor has its own
-`homebrew-runtime-layer-sha256-<bundle-sha256>` identity, independent from the
-eager `homebrew-vfs-sha256-<image-sha256>` acceptance release. Its canonical
-bundle hash covers the lower shell package-output receipt and composition,
-package and tap provenance, complete tree inventory and payload identity, and
-the exact VFS/report/Node/Chromium evidence identities. The bundle's
-self-derived release URL and the hash itself are excluded to avoid a circular
-identity; external transport records remain bound. The consumer recomputes the
-canonical hash, requires the closed descriptor's canonical-json-v1 byte
-encoding, and verifies the derived release URL before registering paths.
-Deferred content remains lazy inside the serialized kernel-owned VFS.
-Registration, `stat`, and `readdir` do not fetch it. The first ordinary
-open/read, mapping, or executable resolution downloads and verifies the whole
-owning bottle; transports are tried in descriptor order until one passes the
-same digest and size identity, and all members are bounded, decoded, and
-verified before one identity-guarded batch commit. Each transport gets at most
-three total GET attempts. The same URL is retried only for HTTP 408, 429, or
-5xx responses and recognized fetch/body network interruptions, with 250/500 ms
-backoff unless `Retry-After` requests a delay capped at five seconds. A custom
-fetcher may register an `AbortSignal` alongside its existing one-argument
-callback. The host passes that exact signal into every attempt, makes retry
-waits abortable, and rethrows its arbitrary `reason` unchanged before mirror
-fallback or VFS commit. Standard `AbortError`/`ABORT_ERR` failures remain the
-compatibility fallback when no signal is registered. Other 4xx responses and
-size, digest, or decode failures do not consume the same-URL retry budget.
-
-The retained sources include historical privileged-projection composition
-helpers, but they are not connected to `BrowserKernel`, active products, or
-validation. Ordinary and custom images instead use the same POSIX set-ID and
-explicit-`nosuid` rules described above.
-There is no per-file or byte-range retrieval inside the gzip/TAR. A failed
-fetch, digest,
-decode, inventory check, or allocation leaves every regular inode pending and
-retryable. Hard-link inventory members are restored as names of the same inode,
-including across VFS image save/restore. A metadata-only tree remains deferred
-through serialization and is still verified at first-use or boot-prefetch even
-though it has no regular stub to replace. Descriptors with no package-layer
-mounts retain the ordinary shell behavior and fetch no runtime-layer bytes.
-
-Dependent first-use trees may be sealed as one atomic cohort. The producer
-names the exact expected members; VFS metadata binds every member's
-transport-independent descriptor digest plus the cohort count and digest under
-the closed `kandelo-deferred-tree-v3` kind. Restore rejects an omitted tree or
-regular alias. The host captures each sealed member in a private immutable
-activation snapshot; mutable public group objects can make an operation fail
-but cannot replace the integrity, archive member, size, source, inventory, or
-namespace mapping consumed after an await. Imported seals must pass browser or
-Node SHA-256 verification during save, activation, explicit resealing, or
-`verifyImportedLazyAtomicGroupSeals()` before synchronous export,
-pending-resource inspection, or rebase can reproduce them. A browser-side image
-consumer that needs to inspect or extend a restored image must await that
-explicit verifier first: it hashes only the private seal descriptors and does
-not fetch or materialize bottle data, snapshot the VFS, export metadata, or
-rebase storage. Deployment URL rewriting is the intentional exception for
-transport location only: the exact digest, size, decoder bounds, and mapping
-stay sealed. Concurrent browser inspection and first use share one
-per-cohort seal-validation flight. Transport and decode begin only after that
-proof, so a download failure can reject activation without discarding a
-successfully authenticated imported seal.
-
-First use fetches/decodes at most four cohort members concurrently, stops
-scheduling after one failure, and waits for all in-flight work before retry
-becomes possible. The final SharedFS transaction guards all declared
-directories, symlinks, regular names, and hard-link aliases, and capacity
-rollback leaves every stub, sequence, and timestamp retryable. Thus a browser
-or Node guest never observes a successfully activated prefix missing a required
-metadata entry or dependency tree.
-
-Across all selected layers, at most 512 layer-owned packages may be added. The
-base image's already-pending deferred groups and the newly selected bottle
-trees share one 512-group serialization budget. Pending generic deferred trees
-whose resource claims are serialized also share the aggregate compressed-byte,
-expanded-byte, payload-byte, and source-plus-guest-entry budgets with newly
-selected bottles. Each byte budget is 512 MiB for the complete pending
-collection while each independently fetched tree remains bounded to 256 MiB;
-the collection and each tree are also limited to 100,000 inventory entries.
-Legacy ZIP groups such as the current Vim and NetHack groups carry no aggregate
-byte/entry claims in their old metadata, so they consume the shared group
-budget only.
-The consumer restores the base image and composes every selected layer in a
-private filesystem, publishing that filesystem to boot only after registration
-and every required boot-prefetch succeeds. Allocation, collision, validation,
-and transport failures therefore cannot expose a partially composed namespace.
-If this private browser-side transaction fails, the consumer reports its
-discarded `SharedArrayBuffer` to the boot lifecycle before rethrowing the
-original error. Failed and superseded boots then run the same bounded WebKit
-reclamation pass used after kernel teardown, so repeated failures do not leave
-untracked staged images on the persistent main thread.
-
-The Homebrew collection producer emits one tree per selected Formula and keeps
-that Formula's finalized bottle `.tar.gz` byte-for-byte as the tree payload.
-Its closed schema represents the production shell's 36 requested roots under
-the shared 128-request bound, but the canonical shell calls
-`buildHomebrewOriginalBottleCollection` directly; it does not publish or boot
-that collection as one multi-root runtime layer. The shell composer chooses
-the embedded/deferred partition. A
-complete source inventory describes every TAR member. A separate
-guest projection binds those members to the keg, reviewed link-manifest copies,
-the builder-owned `opt` link, ownership, modes, and hard-link inode groups.
-Ordinary archive copies must preserve the source mode; an explicit
-`archive-copy-mode` record is required when a reviewed link manifest overrides
-it. Deterministic `zip-v1` remains accepted for already-published schema-4
-layers and non-Homebrew deferred archives, but is not produced as a substitute
-for an original Homebrew bottle.
-
-The source inventory and materialization provenance are additive deferred-tree
-metadata. Homebrew owns receipt parsing, changed-file and keg policy, prefix
-authentication, and the legacy `homebrew-bottle-tar-gzip-v1` vocabulary. Its
-adapter validates that policy and erases it into the generic `tar-gzip-v1`
-source inventory and byte-transform plan before calling the VFS. Schema-5
-bottles remain readable only when they need no receipt relocation; a schema-5
-receipt-relocation marker or schema-6 plan fails closed. Existing schema-4 ZIP
-descriptors and serialized legacy deferred trees remain valid on the new host.
-An older host rejects a direct-bottle
-descriptor because the closed object contains fields it does not understand;
-it does not reinterpret the bottle as the older one-source-per-guest-entry
-shape. These metadata additions do not change the kernel/process ABI or the
-ABI binding carried by a VFS image; the kernel/process ABI remains 43.
-
-Boot accepts at most eight package layers and 16 MiB of descriptor bytes in
-aggregate. The shared consumer additionally caps aggregate compressed payload
-bytes, expanded bytes, and entry count. Boot-prefetch downloads use at most two
-workers. Each package's declared keg and `opt` link must match its indexed
-paths. Every schema-6 ancestor at or below the authenticated Homebrew prefix must be
-declared in the aggregate guest projection. Equal-mode `mergeable-directory`
-claims can create an absent directory once or reuse an equal-mode lower-image
-directory; undeclared ancestors, unequal modes, and non-directory collisions
-fail closed. The consumer also rejects archive reuse across package ownership
-domains.
-
-```json
-{
-  "path": "/",
-  "source": "package-layer",
-  "name": "python",
-  "url": "https://example.invalid/immutable-python-layer.json",
-  "ref": "sha256:<64 lowercase hexadecimal characters>",
-  "bytes": 12345
-}
-```
-
-The object shape is closed: package-layer mounts do not accept inline data,
-ephemeral flags, credentials in the URL, or non-root target paths.
-
-No Perl, Python, or Erlang layer URL is built into the browser. Concrete
-entries require immutable published descriptor/content identities derived from
-their finalized bottle sidecars; missing or mismatched identities fail boot
-instead of falling back to a standalone language VFS. Historical lazy shell
-images used the same substrate directly. The current canonical flat shell does
-not register bottle-backed deferred trees: it eagerly materializes its complete
-reviewed selection, and the image-owned default-shell contract selects that
-embedded Bash.
-
-That direct release proves only its configured acceptance image; it does not
-set generic package browser flags. The separate gallery path first boots a
-package image in the browser UI and runs its smoke command, such as
-`/opt/kandelo/homebrew/bin/file --version`. Only then may generated
-Homebrew sidecars and gallery `index.toml` set `browser_compatible = true`.
-Generic gallery archives are currently retained as run diagnostics rather than
-published as durable gallery releases.
-
-A Homebrew gallery entry is visible only when its `index.toml` package record
-is wasm32 success, has an `archive_url`, and sets
-`browser_compatible = true`. Launch-time archive failures are surfaced in the
-UI instead of silently hiding the rest of the gallery.
-
-### Dormant ABI-42 Homebrew shell record (2026-08-13)
-
-This subsection is retained only as a record of the disabled integration; it
-does not describe the current shell product.
-
-The normal shell page resolves the package archive built from
-`homebrew/main-shell-flat-selection.json`. The image embeds Bash and its two
-base libraries, while 37 admitted bottle trees and the package-owned bootstrap
-tree retain sealed authenticated transports. Host boot prepares
-`/usr/bin/brew` by atomically fetching bootstrap, libyaml, and Ruby. The other
-35 bottle trees remain pending until their commands are first used.
-
-Shell revision 25 and `node-vfs` revision 18 share this exact base-image
-identity. The other shell-derived images are `nginx-vfs` revision 5,
-`nginx-php-vfs` revision 5, `lamp` revision 14, and `wordpress` revision 15.
-All preserve the shell's pending transports, bootstrap binding, atomic seals,
-capacity, and mirror identity. They are part of the canonical package release,
-and Pages consumes them through the declared product and package resolver
-graph from a fresh cache.
-
-The shell Chromium proof loads the ordinary production page, verifies the
-served shell digest, runs `brew`, Ruby, and the selected Bash, and verifies the
-boot cohort is fetched once. A second Chromium proof runs the exact
-`npm install --verbose cowsay` flow in the Node image and executes the
-installed binary. The post-activation Pages dispatch starts these checks only
-after it selects an authenticated activation receipt for the exact current
-canonical index. The dispatch carries the source SHA, candidate tag, and index
-digest. Pages independently verifies all three, and the Node proof hashes the
-served VFS response before running npm/cowsay.
-
 ### Building VFS images
 
 Package-backed image recipes resolve their declared dependencies rather than
 reading another package's source/build side effects. The disabled legacy
 `python-vfs` recipe, for example, consumes CPython's `python.wasm` and
 `python-runtime.zip` closure. These compatibility recipes are excluded from
-staging and are not the Homebrew distribution unit. For the active browser
+staging. For the active browser
 products, use the local DAG command in
 [Package Management](package-management.md#local-dag-build); it selects the
 product manifests and every transitive package input before invoking a
@@ -1065,7 +833,7 @@ hosted site requires separate review and fresh package-backed deployment
 evidence; an older hosted site is not evidence for the current source or
 package index.
 
-The dormant Homebrew, source-rootfs, and eager closed-selection implementations
+The dormant source-rootfs and eager closed-selection implementations
 remain diagnostic and historical recovery plumbing. Normal browser startup,
 package staging, and active continuous integration do not invoke them. Retired
 lazy formats do not gain compatibility shims.
@@ -1106,8 +874,8 @@ export default {
 `./run.sh browser` is the normal development entry point. It runs or resumes
 the complete local SourceOnly DAG, exports its validated
 `local-binaries/source-only-v1` projection to Vite, and starts the development
-server. It does not fetch a browser binary index or stage a Homebrew bootstrap.
-Unchanged package and product nodes are reused from the content-addressed
+server. It does not fetch a browser binary index. Unchanged package and
+product nodes are reused from the content-addressed
 cache.
 
 The development server reads VFS products directly from that projection. The

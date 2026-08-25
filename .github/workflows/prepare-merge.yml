@@ -685,8 +685,8 @@ jobs:
   # pull-request code later receives only digest-bound files and a receipt.
   staging-shell-snapshot:
     needs: [synthesize-merge, change-scope, gate]
-    # The historical artifact is Homebrew-composed. Keep its verifier dormant
-    # until a package-owned handoff replaces that format.
+    # The historical staging-shell artifact format is retired. Keep its
+    # verifier dormant until a package-owned handoff replaces that format.
     if: ${{ false }}
     runs-on: ubuntu-latest
     permissions:
@@ -743,7 +743,7 @@ jobs:
             "/repos/${GITHUB_REPOSITORY}/actions/runs/${STAGING_RUN_ID}/artifacts?per_page=100" \
             | jq -s '{artifacts: (map(.artifacts) | add)}' > "$artifacts"
           count="$(jq '[.artifacts[] | select(
-            .name == "homebrew-main-shell-closure" and .expired == false
+            .name == "main-shell-closure" and .expired == false
           )] | length' "$artifacts")"
           if [ "$count" -eq 0 ]; then
             echo "::notice::successful staging run did not publish an exact shell closure"
@@ -765,7 +765,7 @@ jobs:
             exit 0
           fi
           artifact="$(jq -c '[.artifacts[] | select(
-            .name == "homebrew-main-shell-closure" and .expired == false
+            .name == "main-shell-closure" and .expired == false
           )][0]' "$artifacts")"
           artifact_id="$(jq -er '.id' <<<"$artifact")"
           artifact_bytes="$(jq -er '.size_in_bytes' <<<"$artifact")"
@@ -869,7 +869,7 @@ jobs:
                 run_id: $run_id,
                 artifact: {
                   id: $artifact_id,
-                  name: "homebrew-main-shell-closure",
+                  name: "main-shell-closure",
                   archive_sha256: $archive_sha256,
                   bytes: $artifact_bytes
                 },
@@ -1694,8 +1694,7 @@ jobs:
           # package-toolchain artifact, so prepare its host tool explicitly.
           bash scripts/dev-shell.sh bash scripts/build-fork-instrument-tool.sh
           bash scripts/dev-shell.sh npx --prefix host vitest run --root . \
-            tests/package-system \
-            '--exclude=**/*homebrew*.test.ts'
+            tests/package-system
 
   test-suite-early:
     name: test-suite (${{ matrix.label }})

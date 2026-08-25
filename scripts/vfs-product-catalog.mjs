@@ -3,14 +3,10 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 
 const catalogKind = "kandelo-vfs-product-catalog";
 const productIdPattern = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 const sha256Pattern = /^[0-9a-f]{64}$/;
-const legacyTapName = "kandelo-dev/tap-core";
-const canonicalTapRepository = "kandelo-dev/homebrew-tap-core";
-const legacyTapPrefix = `${legacyTapName}/`;
 const maximumCatalogBytes = 16 * 1024 * 1024;
 
 export function loadVfsProductCatalog(catalogPath) {
@@ -76,70 +72,8 @@ export function loadVfsProductCatalog(catalogPath) {
       }
       return product;
     },
-    homebrewRoots(id) {
-      const product = products.get(id);
-      if (product === undefined) {
-        throw new Error(`VFS product catalog has no product ${JSON.stringify(id)}`);
-      }
-      return Object.freeze(
-        product.software.homebrew.flatMap((group) =>
-          group.formulae.map((formula) =>
-            Object.freeze({
-              tap: group.tap,
-              formula,
-              materialization: group.materialization,
-            }),
-          ),
-        ),
-      );
-    },
     productIds: Object.freeze([...products.keys()]),
   });
-}
-
-export function checkMainShellProjection(options) {
-  const productId = "browser-main-shell";
-  const catalog = loadVfsProductCatalog(options.catalogPath);
-  const productRoots = catalog.homebrewRoots(productId);
-  const product = catalog.productById(productId);
-  const brewfileRoots = readBrewfileRoots(options.brewfilePath);
-  const runtimeRoots = readRuntimeRoots(options.runtimeSupportPath);
-  const embeddedRoots = readEmbeddedRoots(options.materializationPath);
-
-  const declared = new Map();
-  for (const formula of [...brewfileRoots, ...runtimeRoots]) {
-    const materialization = embeddedRoots.has(formula) ? "embedded" : "lazy";
-    const previous = declared.get(formula);
-    if (previous !== undefined && previous !== materialization) {
-      throw new Error(`${productId} root ${formula} has conflicting materialization`);
-    }
-    declared.set(formula, materialization);
-  }
-  for (const formula of embeddedRoots) {
-    if (!declared.has(formula)) {
-      throw new Error(
-        `${productId} embedded root ${formula} is absent from the legacy selectors`,
-      );
-    }
-  }
-
-  const canonical = new Map();
-  for (const root of productRoots) {
-    if (root.tap !== canonicalTapRepository) {
-      throw new Error(
-        `${productId} Homebrew root ${root.formula} uses unsupported tap ${root.tap}`,
-      );
-    }
-    if (canonical.has(root.formula)) {
-      throw new Error(`${productId} has duplicate Homebrew root ${root.formula}`);
-    }
-    canonical.set(root.formula, root.materialization);
-  }
-  compareRootMaps(productId, declared, canonical);
-
-  if (product.id !== productId) {
-    throw new Error(`${productId} catalog lookup returned ${product.id}`);
-  }
 }
 
 function validateManifest(value, label) {
@@ -197,20 +131,11 @@ function validateManifest(value, label) {
 
   exactKeys(
     value.software,
-    ["archive", "homebrew", "package", "toolchain"],
+    ["archive", "package", "toolchain"],
     `${label}.software`,
   );
-  for (const key of ["archive", "homebrew", "package", "toolchain"]) {
+  for (const key of ["archive", "package", "toolchain"]) {
     requireArray(value.software[key], `${label}.software.${key}`);
-  }
-  for (const [index, group] of value.software.homebrew.entries()) {
-    const itemLabel = `${label}.software.homebrew[${index}]`;
-    exactKeys(group, ["formulae", "materialization", "tap"], itemLabel);
-    if (group.tap !== canonicalTapRepository) {
-      throw new Error(`${itemLabel}.tap is unsupported`);
-    }
-    requireStringArray(group.formulae, `${itemLabel}.formulae`);
-    requireMaterialization(group.materialization, `${itemLabel}.materialization`);
   }
   for (const [index, input] of value.software.package.entries()) {
     const itemLabel = `${label}.software.package[${index}]`;
@@ -301,80 +226,6 @@ function validateOptionalMaterializedRecord(value, requiredKeys, label) {
   }
 }
 
-function readBrewfileRoots(path) {
-  const roots = [];
-  let sawTap = false;
-  for (const [index, rawLine] of readFileSync(path, "utf8").split("\n").entries()) {
-    const line = rawLine.trim();
-    if (line === "" || line.startsWith("#")) continue;
-    if (line === `tap "${legacyTapName}"`) {
-      if (sawTap) throw new Error(`duplicate ${legacyTapName} declaration in ${path}`);
-      sawTap = true;
-      continue;
-    }
-    const match = /^brew "kandelo-dev\/tap-core\/([a-z0-9][a-z0-9._-]*)"$/.exec(line);
-    if (match === null) throw new Error(`unsupported ${path}:${index + 1}: ${rawLine}`);
-    roots.push(match[1]);
-  }
-  if (!sawTap) throw new Error(`missing ${legacyTapName} declaration in ${path}`);
-  requireUnique(roots, `Brewfile ${path}`);
-  return roots;
-}
-
-function readRuntimeRoots(path) {
-  const value = JSON.parse(readFileSync(path, "utf8"));
-  if (!Array.isArray(value?.formula_roots)) {
-    throw new Error(`runtime support formula_roots must be an array: ${path}`);
-  }
-  const roots = value.formula_roots.map((entry, index) =>
-    readLegacyFormulaIdentity(entry?.package, `formula_roots[${index}].package`),
-  );
-  requireUnique(roots, `runtime support ${path}`);
-  return roots;
-}
-
-function readEmbeddedRoots(path) {
-  const value = JSON.parse(readFileSync(path, "utf8"));
-  if (
-    !isRecord(value) ||
-    value.schema !== 1 ||
-    value.kind !== "kandelo-homebrew-vfs-materialization-policy" ||
-    !Array.isArray(value.embedded_roots)
-  ) {
-    throw new Error(`invalid Homebrew materialization policy: ${path}`);
-  }
-  const roots = value.embedded_roots.map((entry, index) =>
-    readLegacyFormulaIdentity(entry, `embedded_roots[${index}]`),
-  );
-  requireUnique(roots, `embedded roots ${path}`);
-  return new Set(roots);
-}
-
-function readLegacyFormulaIdentity(value, label) {
-  if (
-    typeof value !== "string" ||
-    !value.startsWith(legacyTapPrefix) ||
-    !productIdPattern.test(value.slice(legacyTapPrefix.length))
-  ) {
-    throw new Error(`${label} must use ${legacyTapName}/<formula>`);
-  }
-  return value.slice(legacyTapPrefix.length);
-}
-
-function compareRootMaps(productId, legacy, canonical) {
-  const names = [...new Set([...legacy.keys(), ...canonical.keys()])].sort();
-  const differences = names.filter((name) => legacy.get(name) !== canonical.get(name));
-  if (differences.length === 0) return;
-  const detail = differences
-    .map(
-      (name) =>
-        `${name} (legacy=${legacy.get(name) ?? "absent"}, ` +
-        `product=${canonical.get(name) ?? "absent"})`,
-    )
-    .join(", ");
-  throw new Error(`${productId} Homebrew root projection differs: ${detail}`);
-}
-
 function canonicalJsonBytes(value) {
   return Buffer.from(`${JSON.stringify(normalizeJson(value))}\n`);
 }
@@ -463,11 +314,6 @@ function requireNormalizedRepositoryPath(value, label) {
   }
 }
 
-function requireUnique(values, label) {
-  const duplicate = values.find((value, index) => values.indexOf(value) !== index);
-  if (duplicate !== undefined) throw new Error(`${label} contains duplicate ${duplicate}`);
-}
-
 function deepFreeze(value) {
   if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
     Object.freeze(value);
@@ -478,19 +324,4 @@ function deepFreeze(value) {
 
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  if (process.argv[2] !== "check-main-shell" || process.argv.length !== 7) {
-    throw new Error(
-      "usage: vfs-product-catalog.mjs check-main-shell " +
-        "<catalog.json> <Brewfile> <runtime-support.json> <materialization.json>",
-    );
-  }
-  checkMainShellProjection({
-    catalogPath: process.argv[3],
-    brewfilePath: process.argv[4],
-    runtimeSupportPath: process.argv[5],
-    materializationPath: process.argv[6],
-  });
 }

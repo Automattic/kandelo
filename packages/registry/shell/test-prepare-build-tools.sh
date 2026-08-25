@@ -246,7 +246,7 @@ if [ -n "${KANDELO_DEV_SHELL_TOOL_PATH:-}" ]; then
         *) test_fail "npm did not retain the declared Nix tool path first" ;;
     esac
     case ":$npm_path:" in
-        *:/usr/bin:*|*:/bin:*|*:/usr/local/bin:*|*:/opt/homebrew/bin:*)
+        *:/usr/bin:*|*:/bin:*|*:/usr/local/bin:*|*:/opt/local/bin:*)
             test_fail "npm reintroduced an ambient host tool directory"
             ;;
     esac

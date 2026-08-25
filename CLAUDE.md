@@ -286,7 +286,7 @@ pins current.
 `build.sh`, Vitest, or conformance tests.
 
 PR titles and commit subjects must begin with a concise purpose prefix in the
-form `Area: Purpose`, such as `Homebrew:`, `Kernel:`, `POSIX:`, `CI:`,
+form `Area: Purpose`, such as `Packages:`, `Kernel:`, `POSIX:`, `CI:`,
 `Browser:`, or `Docs:`. Choose the area that best identifies the contract or
 capability a reader should notice; the prefix is a routing hint, not a substitute
 for a purpose-led title. PR descriptions and commit messages should then lead

@@ -243,7 +243,7 @@ export class NodeWorkerAdapter implements WorkerAdapter {
 
   /**
    * Source checkouts often run without host/dist/*.js. Avoid spawning a fresh
-   * tsx loader for every guest process; Homebrew can launch hundreds of short
+   * tsx loader for every guest process; a build can launch hundreds of short
    * lived workers and the per-worker loader path can stall under that churn.
    * Browser workers already pass through the browser build's bundling path;
    * this fallback is specific to Node.js running directly from source.

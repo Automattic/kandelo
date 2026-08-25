@@ -1,7 +1,7 @@
 schema = 1
 id = "browser-nginx-php"
 architecture = "wasm32"
-output = "nginx-php.vfs.zst"
+output = "nginx-php-vfs.vfs.zst"
 builder = "images/vfs/scripts/build-nginx-php-vfs-image.sh"
 
 [[composition.product]]

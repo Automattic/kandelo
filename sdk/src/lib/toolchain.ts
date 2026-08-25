@@ -40,7 +40,6 @@ export interface Toolchain {
   glueDir: string;
 }
 
-const HOMEBREW_LLVM = '/opt/homebrew/opt/llvm/bin';
 const REQUIRED_LLVM_TOOLS = ['clang', 'clang++', 'llvm-ar', 'llvm-ranlib', 'llvm-nm', 'wasm-ld'];
 
 function hasRequiredLlvmTools(binDir: string): boolean {
@@ -90,9 +89,6 @@ export async function findLlvmDir(): Promise<string> {
       }
     }
   }
-
-  // macOS Homebrew LLVM
-  if (hasRequiredLlvmTools(HOMEBREW_LLVM)) return HOMEBREW_LLVM;
 
   // Linux: scan /usr/lib/llvm-* for highest version
   try {

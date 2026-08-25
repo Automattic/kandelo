@@ -59,89 +59,12 @@ through a persistent advisory sidecar lock held across source refresh, target
 validation, replacement, and directory sync. The lock file is intentionally
 retained so concurrent writers always coordinate on one inode.
 
-Homebrew publication is currently disabled. The following retained material is
-a historical operational record; present-tense descriptions refer to the
-dormant design, not an active publisher or supported distribution surface.
-
-Before disablement, Homebrew bottles used a separate publication model.
-Bottle tarballs were Homebrew-native artifacts published through the
-`kandelo-dev/homebrew-tap-core`
-tap and GHCR/Homebrew bottle URL shape; Kandelo-specific sidecars and
-provenance publish as tap git state. A required dependency-bearing acceptance
-run also publishes its exact Node-and-Chromium-proven VFS image and evidence in
-the source tap repository under `homebrew-vfs-sha256-<image-sha256>`. Lazy
-runtime content publishes separately under
-`homebrew-runtime-layer-sha256-<bundle-sha256>`; that closed identity binds its
-shell base, payload inventory, bottle provenance, and acceptance evidence.
-The eager release contains its five acceptance assets. A schema-6 direct
-runtime release contains its closed descriptor plus one exact payload per
-deferred bottle; a historical schema-4 one-tree release contains its descriptor
-and single payload. Generic browser gallery output
-remains run-scoped diagnostic evidence. None of these
-artifacts appears in the main repository's `binaries-abi-v<N>` `index.toml`
-ledger. See [docs/homebrew-publishing.md](homebrew-publishing.md) for formula
-authoring, the immutable VFS descriptor contract, and operations.
-
-The guest-prefix campaign uses two additional immutable release kinds.
-One content-addressed campaign release seals the complete campaign
-authority. Each Formula result then publishes as a
-`homebrew-prefix-handoff-sha256-<handoff-sha256>` release after its
-reserved GHCR bottle index passes anonymous readback and runtime
-verification.
-These releases are inert campaign inputs; they do not select a Formula
-or update tap Git state. Only the final complete handoff set may produce
-the atomic tap commit.
-
-The campaign release binds the path and SHA-256 of
-`homebrew/kandelo-guest-layout.json`. That digest selects
-`/opt/kandelo/homebrew` and its Cellar throughout bottle build,
-provenance, handoff, and runtime validation. A missing or different
-digest cannot silently fall back to the still-active guest layout.
-
-Schema-3 recovery normally rejects the same Formula and architecture in
-more than one archived campaign. A committed successor scope may resolve
-only the duplicates covered by its exact task graph and selected
-predecessor archive. The scope, graph, and archive are canonical Git
-blobs with independent SHA-256 bindings; file order and timestamps are
-not authority. Other disjoint handoffs remain available, while every
-unresolved duplicate still fails. The derived campaign preserves the
-exact scope path and digest in `authority.successor_scope`; legacy
-schema-3 releases without that optional record remain readable.
-
-Recovery admission is per architecture even though GHCR exposes one mutable
-version-index tag per Formula. New admission records anonymously validate and
-bind the complete OCI graph observed at derivation. Each occupied child needs
-its own immutable archived handoff; a declared architecture absent from that
-graph remains a build route. During resealing, the admitted child manifest and
-canonical Homebrew child reference and bottle layer must remain exact. A later
-valid sibling publication may change the aggregate top digest, so successor
-evidence retains separate admission and live-observation digests instead of
-treating the mutable top digest as bottle authority. Existing
-admission-schema-1 campaign releases remain readable.
-
 Current `Automattic/kandelo` `refs/heads/main` is the sole live mutation
-authority for Homebrew and durable-package generation. The ordinary
+authority for durable-package generation. The ordinary
 path requires the explicit source to equal current `main` immediately
 before every mutation. It builds archives after their source changes
 land and records
 `https://github.com/Automattic/kandelo` plus that exact main SHA.
-
-The prefix campaign has one narrower rule for its already sealed source.
-Campaign mutations may continue only while current protected `main`
-contains that exact source commit. The publisher repeats the ancestry
-proof immediately before each GHCR or immutable-release mutation.
-Exact-main and main-contains authority are mutually exclusive, and only
-the reviewed campaign caller may select the latter. A detached,
-diverged, descendant, or force-pushed-away source fails closed.
-
-This rule does not make a campaign-local tap checkout public source.
-Bottle provenance retains the raw protected-history `tap_commit`. Build,
-dependency, handoff, and runtime evidence additionally bind the
-deterministic local `tap_checkout_commit`, whose tree contains the
-sealed target source and exact dependency bottle blocks. That prepared
-commit is never pushed or tagged. Campaign handoff releases target the
-raw tap source and require that source to remain in the target
-repository's protected history.
 
 The versioned `kandelo-package-generation-v2` compatibility path can instead
 preserve archives from one immutable producer commit `S` when trusted current
@@ -173,8 +96,9 @@ release-container identity, not archive provenance or executable authority.
 The general `binaries-abi-v<N>` resolver release has a separate responsibility:
 post-merge activation may copy an exact tested-tree candidate into that mutable
 ledger so ordinary consumers retain the package gate's tested bytes. Such an
-archive is not a Homebrew input merely because it entered the resolver ledger;
-it needs either a normal exact-main rebuild or one of the v2 versioned
+archive is not a durable-generation input merely because it entered the
+resolver ledger; it needs either a normal exact-main rebuild or one of the
+v2 versioned
 admission receipts above. `force-rebuild.yml`, dispatched from the live `main`
 workflow SHA, source-builds the selected closure, stamps each
 archive's embedded `[build]` provenance with that exact SHA, and rechecks live
@@ -195,7 +119,7 @@ that cache can be created.
 
 ### Durable package generations for cross-workflow publication
 
-A Homebrew publication may need an exact Kandelo package selection after the
+A cross-workflow consumer may need an exact Kandelo package selection after the
 source change has landed. The manual `promote-package-generation.yml` workflow
 runs at exact current main `M` and snapshots immutable producer bytes into an
 append-only prerelease. Producer tag and commit are explicit dispatch inputs;
@@ -351,7 +275,7 @@ consumer projection, and rechecks both clean checkouts immediately before
 exposing a local resolver index.
 
 Projection-compatible consumers may deliberately use a generation produced by
-another exact-main commit. Canonical Homebrew production is stricter:
+another exact-main commit. Canonical production is stricter:
 `.github/scripts/materialize-exact-package-generations.sh` requires each
 generation to have been admitted against the exact consumer checkout. For a
 legacy v1 generation, its sole `package_source_sha` must equal that checkout.
@@ -361,16 +285,6 @@ The script materializes the independent wasm32 and wasm64 `browser-inputs`
 generations, composes only their verified local indexes, and exposes one
 `file://` resolver index beside the exact downloaded archives. It never uses
 the mutable `binaries-abi-v<N>` index as a base or fallback.
-
-The protected Homebrew publish and maintenance callers must carry both exact
-content tags. The reusable publisher validates their architecture in its first
-trust step, admits the current exact Kandelo `main` SHA, and then materializes
-the wasm32 generation before Formula build/test package resolution. Its browser
-verifier materializes and combines both architectures before any browser
-package resolution. The workflow accepts a resolver activation only when the
-reported URL exactly names the regular, non-symlink local index it just
-materialized. Dry runs may omit generation tags because they cannot mutate
-canonical state; supplied dry-run tags are still validated.
 
 Repository-wide GitHub Release immutability is enabled. Every new package
 release is created as a draft, populated under its existing state lock, sealed
@@ -386,13 +300,13 @@ conventional registry, an exact-main force rebuild may instead initialize one
 from an explicitly selected, dependency-complete consumer closure. In either
 case it cannot receive later same-tag package updates. A writer that reaches a
 public immutable canonical release with new bytes fails loudly; a
-content-addressed generation or Homebrew bottle release must carry those bytes
+content-addressed generation must carry those bytes
 instead of weakening release immutability.
 
 This is the fail-closed rule for the transitional conventional registry, not a
 new long-lived package-distribution design. The broader question of how to
 name evolving conventional package sets within one unchanged ABI is deferred;
-Homebrew bottles and content-addressed generations already avoid that mutable
+content-addressed generations already avoid that mutable
 same-tag requirement.
 
 `.github/scripts/package-release-lifecycle.sh` owns this boundary. Its
@@ -500,7 +414,7 @@ beneath the producer checkout, and `fork-instrument` must resolve from its exact
 expected manifest; no producer binary, build script, test, or repository helper
 is run.
 
-The reusable Homebrew bottle publisher has the same cache-completeness
+A reusable publisher has the same cache-completeness
 boundary when it activates an exact package generation. Its build and
 verification jobs run one shared helper through the declared dev shell. The
 helper fetches the authority workspace's exact locked host dependency
@@ -616,28 +530,8 @@ tag at the generation's declared release target—validated main `M` for
 v2—before publishing. It performs exact anonymous readback before atomically
 emitting a machine-readable receipt and does not rely on repository-wide
 release immutability. Release and asset discovery are paginated, so the same
-protocol covers the production shell mirror's 35 bottle objects and canonical
-plan rather than relying on the small embedded asset list in a release
-response.
-
-The unprivileged Homebrew build job fetch-only materializes the wasm32 Dash,
-Coreutils, Grep, and Sed artifacts from `binaries-abi-v<N>` so Formula tests can
-execute installed shell scripts on Kandelo. These unqualified host-resolver
-paths intentionally remain wasm32 when the bottle matrix target is wasm64.
-Generic Homebrew runtime verification fetches only that base command set and
-the declared rootfs needed to exercise a Formula or dependency-bearing VFS.
-Before the isolated Formula identity runs, the publisher uses the same
-portable-cache staging contract as prepared conformance workspaces: complete
-canonical package generations are copied under `.ci-test-binary-cache/`, and
-the `binaries/` mirrors remain relative symlinks into those generations. The
-read-only source alias and an explicit resolver cache root therefore retain
-package identity without exposing the workflow user's ambient cache.
-The file-formula gallery smoke separately prepares Kandelo's supported interactive
-browser graph. These base tools, kernel, host-runtime, and VFS artifacts are
-platform prerequisites. The
-migrated package being verified is poured from the Homebrew bottle: the local
-bottle in a dry run, or the anonymously read-back GHCR bottle in a write run.
-It is not selected from Kandelo's package registry archive ledger.
+protocol scales to a mirror with many release assets rather than relying on
+the small embedded asset list in a release response.
 
 ## Producer side: the matrix flow
 
@@ -733,8 +627,7 @@ fresh inspection against its package-backed rootfs composition, terminal
 session declaration, materialization policy, and authenticated lazy package
 outputs. Browser cells build local Vite assets from those exact package
 generations and exercise the active Chromium product paths before the package
-release is sealed. They do not compose Homebrew inputs or publish a hosted
-Pages tree.
+release is sealed. They do not publish a hosted Pages tree.
 
 - **merge-gate** posts `merge-gate=success` on the PR's HEAD SHA
   once test-gate passes. No bot-PR amend step exists anymore — the
@@ -762,40 +655,6 @@ coverage. libc-test is divided into functional+regression and math jobs, while
 Sortix is divided into include, basic, and remaining-runtime jobs. These are
 the same natural partitions used by staging-build and prepare-merge; their
 matrix result is still aggregated by the single `test-gate` job.
-
-## Dormant ABI-42 Homebrew shell publication record (2026-08-13)
-
-This section records the disabled Homebrew-backed shell and Pages design. It
-is not the current package release or browser deployment contract.
-
-Before disablement, `homebrew/main-shell-flat-selection.json` was a package
-input for shell
-revision 25. Its archive embeds the selected Bash closure and package-owned
-Homebrew bootstrap over the platform base while retaining 37 authenticated
-bottle trees as deferred flat-lazy groups. Every shell-derived VFS package
-recorded the exact base image digest and size. The shell and its five reverse
-dependents moved through one canonical package release.
-
-The deferred bottle mirror was a separate immutable byte transport, not a
-second shell-image product. Its checked-in exact plan was rollout authority but
-was not a package recipe input. The protected tap caller source-built `main`'s
-direct `homebrew-bootstrap` dependency and `shell` through the normal resolver,
-recovered the plan, and required a byte-for-byte match before immutable
-publication and anonymous readback.
-
-Prepare merge wrote those rows only to its isolated
-`merge-candidate-abi-v42-*` release. Post-merge activation verified the merged
-tree and complete candidate transaction, then overlaid the tested entries into
-`binaries-abi-v42`. Reconciliation retained authenticated activation receipts,
-including receipts from already-terminal candidates. It then selected an exact
-source/index generation for the browser publisher.
-
-The retained browser publisher checked out the requested SHA, required it to
-remain the default-branch tip, authenticated the candidate receipt, and
-re-snapshotted the canonical index before validating Homebrew-backed shell and
-Node assets. That workflow is now outside GitHub's active workflow directory.
-Current package activation does not dispatch it, and current shell releases do
-not contain the Homebrew selection, bootstrap, or bottle mirror.
 
 ## Merge candidates and canonical activation
 
@@ -1087,39 +946,6 @@ Prepare-merge candidates use the run-specific
 drafts until a terminal activation or rejection seals and publishes them, and
 are never configured as the normal resolver endpoint.
 
-Homebrew sidecars use the ABI namespace:
-
-```text
-bottles-abi-v<ABI_VERSION>
-```
-
-The Homebrew publisher commits sidecars and provenance reports to tap git and
-retains generic browser-gallery output as run diagnostics. It does not create
-or mutate a GitHub Release for the `bottles-abi-v<N>` namespace. An explicitly
-required dependency-bearing acceptance run instead creates a separate public,
-content-addressed `homebrew-vfs-sha256-<image-sha256>` release in the source tap
-repository. That release contains one exact VFS image, its machine-readable
-descriptor, report, and Node/browser evidence; public releases are never
-clobbered. Homebrew state remains separate from package archive releases
-because bottle selection is governed by Formula metadata and Homebrew bottle
-tags, not by Kandelo's package resolver.
-
-The atomic guest-prefix migration uses two other content-addressed
-namespaces:
-
-```text
-homebrew-prefix-campaign-sha256-<campaign-sha256>
-homebrew-prefix-handoff-sha256-<handoff-sha256>
-```
-
-The first seals the complete campaign graph and authority. The second
-contains one Formula's verified publication data and exact
-dependency-handoff identities. Their releases are immutable by
-application contract, must pass authenticated and anonymous
-digest-and-size readback, and directly tag the raw public tap source
-commit. A deterministic local `tap_checkout_commit` may be recorded
-inside the evidence, but it never becomes a release target.
-
 The ABI version appears in the namespace because its metadata is tied to a
 specific kernel ABI. Programs from `binaries-abi-v10` cannot run
 against a kernel on ABI 11 — the resolver's compatibility check
@@ -1268,8 +1094,8 @@ revision    = 1
 publication_state = "ready"
 
 [[git_inputs]]
-name       = "homebrew_tap_core"
-repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"
+name       = "extra_source"
+repository = "https://github.com/example/extra-source.git"
 commit     = "<exact 40-character lowercase commit>"
 
 [binary]
@@ -1539,14 +1365,13 @@ draft, copies the complete tested closure, commits its index transaction, and
 publishes it once. If that candidate no longer exists, an exact-main force
 rebuild may publish one explicitly selected, dependency-complete closure as
 the immutable conventional fallback. This is a retirement bridge, not a way
-to reopen the ABI tag: later packages use content-addressed generations or
-Homebrew bottles.
+to reopen the ABI tag: later packages use content-addressed generations.
 
 Because the resolver substitutes `{abi}` in `build.toml`'s
 `index_url`, no in-tree edit is required for the URL pivot — the
 next fetch automatically hits the new release. The v(N) release
 stays as historical immutable state. Later package evolution under the same
-ABI must use content-addressed package generations or Homebrew bottles; the
+ABI must use content-addressed package generations; the
 canonical tag cannot be reopened.
 
 See [`abi-versioning.md`](abi-versioning.md) for the full ABI-bump

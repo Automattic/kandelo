@@ -122,20 +122,9 @@ if grep -Eq -- '--target-tag[[:space:]]+"?binaries-abi-v' "$PREPARE"; then
   fail "Prepare merge still has a pre-merge canonical index writer"
 fi
 
-! grep -Fq 'verify-public-homebrew-bottle-mirror.mjs' \
-  "$ACTIVATE_WORKFLOW" ||
-  fail "scheduled workflow must not duplicate the 48 MiB candidate mirror gate"
 grep -Fq '.github/scripts/activate-merge-candidate.sh' \
   "$ACTIVATE_WORKFLOW" ||
   fail "workflow must route new canonical transactions through activation"
-script_mirror_gate_line="$(grep -nF \
-  'verify-public-homebrew-bottle-mirror.mjs' "$ACTIVATE_SCRIPT" | \
-  tail -1 | cut -d: -f1)"
-script_canonical_mutation_line="$(grep -nF \
-  'ensure_release "$CANONICAL_TAG"' "$ACTIVATE_SCRIPT" | \
-  tail -1 | cut -d: -f1)"
-[ "$script_mirror_gate_line" -lt "$script_canonical_mutation_line" ] ||
-  fail "direct activation must verify the public mirror before canonical mutation"
 grep -Fq "contains(github.event.pull_request.labels.*.name, 'preserve-head-commit') && 'merge'" \
   "$PREPARE" || fail "Prepare merge does not select merge-commit verification for preserve-head-commit"
 grep -Fq 'batched-changes and preserve-head-commit are mutually exclusive' "$PREPARE" || \
@@ -214,7 +203,7 @@ for workflow in "$STAGING_WORKFLOW" "$PREPARE"; do
   for legacy_job in preflight package-staging-not-required \
     staging-shell-snapshot promote-staging lib-matrix-build matrix-build \
     repair-staging-index candidate-snapshot test-gate-prepare test-suite \
-    test-gate homebrew-main-shell-proof f2-status merge-gate-post-noop \
+    test-gate f2-status merge-gate-post-noop \
     merge-gate-post-runtime-only merge-gate-post; do
     block="$(job_block "$workflow" "$legacy_job")"
     [ -z "$block" ] && continue
@@ -240,14 +229,6 @@ assert_job_needs "$PREPARE" exact-abi-prepare-gate test-suite-early
 package_noop_job="$(job_block "$STAGING_WORKFLOW" package-staging-not-required)"
 grep -Fq "needs.change-scope.outputs.exact_abi_staging_applicable != 'true'" \
   <<<"$package_noop_job" || fail "exact ABI staging can post the legacy no-op status"
-shell_proof_job="$(job_block "$STAGING_WORKFLOW" homebrew-main-shell-proof)"
-[ -z "$shell_proof_job" ] ||
-  fail "staging-build resurrected the retired legacy shell proof"
-if grep -Fq 'uses: ./.github/workflows/homebrew-main-shell-ci.yml' \
-  "$STAGING_WORKFLOW"; then
-  fail "staging-build can invoke the retired legacy shell workflow"
-fi
-assert_job_needs "$STAGING_WORKFLOW" homebrew-main-shell-gate exact-abi-test-gate
 
 for staging_lookup_step in \
   'Checkout workflow helpers' \
@@ -380,36 +361,6 @@ grep -Fq 'stages_node_vfs: ${{ steps.compute.outputs.stages_node_vfs }}' \
 grep -Fq 'any(.[]; .package == \"node-vfs\" and .arch == \"wasm32\")' \
   <<<"$staging_compute_step" ||
   fail "staging preflight must derive Node acceptance from the sealed matrix"
-if grep -q '^  homebrew-main-shell-proof:' "$STAGING_WORKFLOW"; then
-  fail "ordinary PR staging must not invoke the retired lazy-shell proof lane"
-fi
-staging_shell_gate="$(job_block "$STAGING_WORKFLOW" homebrew-main-shell-gate)"
-grep -Fq 'name: exact current lazy shell (Node + Chromium)' \
-  <<<"$staging_shell_gate" ||
-  fail "staging must retain the historical required-check display name"
-grep -Fq 'homebrew-main-shell-prerequisites' <<<"$staging_shell_gate" &&
-  grep -Fq 'TEST_GATE_RESULT' <<<"$staging_shell_gate" ||
-  fail "the historical shell aggregate must consume the generic package test gate"
-staged_node_acceptance="$(
-  step_run_block "$STAGING_WORKFLOW" \
-    "Run exact staged Node npm acceptance"
-)"
-grep -Fq "npx playwright test test/kandelo-node.spec.ts" \
-  <<<"$staged_node_acceptance" &&
-  grep -Fq 'activate-ci-test-workspace.sh' \
-    <<<"$staged_node_acceptance" &&
-  grep -Fq 'recover-homebrew-bottle-mirror.ts' \
-    <<<"$staged_node_acceptance" &&
-  grep -Fq 'programs/homebrew-bootstrap/homebrew-bootstrap.zip' \
-    <<<"$staged_node_acceptance" &&
-  grep -Fq 'KANDELO_NODE_LOCAL_BOOT_ASSET_ROOT' \
-    <<<"$staged_node_acceptance" &&
-  grep -Fq 'KANDELO_NODE_LOCAL_PROXY_PORT' \
-    <<<"$staged_node_acceptance" &&
-  grep -Fq -- "--grep '@node-npm-acceptance'" \
-    <<<"$staged_node_acceptance" &&
-  grep -Fq -- '--project=chromium' <<<"$staged_node_acceptance" ||
-  fail "staged node-vfs must run the exact slow npm/cowsay acceptance"
 grep -Fq 'stages_node_vfs: ${{ steps.compute.outputs.stages_node_vfs }}' \
   <<<"$preflight_job" ||
   fail "prepare preflight must expose exact wasm32 node-vfs membership"
@@ -426,30 +377,6 @@ grep -Fq 'needs: [synthesize-merge, change-scope, preflight, test-gate-prepare]'
 grep -Fq 'STAGES_NODE_VFS: ${{ needs.preflight.outputs.stages_node_vfs }}' \
   <<<"$prepare_test_suite" ||
   fail "prepare browser acceptance must receive exact node-vfs membership"
-candidate_node_acceptance="$(
-  step_run_block "$PREPARE" \
-    "Build and run exact candidate Node npm acceptance"
-)"
-for evidence in \
-  'activate-ci-test-workspace.sh' \
-  'recover-homebrew-bottle-mirror.ts' \
-  'programs/homebrew-bootstrap/homebrew-bootstrap.zip' \
-  'npm run build' \
-  'verify-browser-shell-vfs-asset.sh' \
-  'KANDELO_NODE_VFS_STRICT' \
-  'KANDELO_NODE_VFS_SHA256' \
-  'KANDELO_NODE_LOCAL_BOOT_ASSET_ROOT' \
-  'KANDELO_NODE_LOCAL_PROXY_PORT' \
-  'KANDELO_PLAYWRIGHT_SERVE_DIST' \
-  'KANDELO_TEST_BASE_URL' \
-  'npx playwright test test/kandelo-node.spec.ts'
-do
-  grep -Fq "$evidence" <<<"$candidate_node_acceptance" ||
-    fail "candidate Node production acceptance lacks: $evidence"
-done
-grep -Fq -- "--grep '@node-npm-acceptance'" \
-  <<<"$candidate_node_acceptance" ||
-  fail "candidate Node production acceptance lacks the stable selector"
 pages_node_acceptance="$(
   step_run_block "$PAGES_WORKFLOW" "Run exact Pages Node npm acceptance"
 )"
@@ -696,10 +623,6 @@ prepare-merge.yml:merge-gate-post
 prepare-merge.yml:preflight
 prepare-merge.yml:promote-staging
 recover-rejected-merge-candidate.yml:recover
-reusable-homebrew-bottle-maintenance.yml:rebuild
-reusable-homebrew-bottle-maintenance.yml:rollback
-reusable-homebrew-bottle-publish.yml:finalize-tap
-reusable-homebrew-bottle-publish.yml:plan
 reusable-package-source-publish.yml:publish
 staging-build.yml:lib-matrix-build
 staging-build.yml:matrix-build
@@ -725,10 +648,9 @@ actual_lock_callers=$(
       line = $0
       sub(/^[[:space:]]*/, "", line)
       if (line ~ /^#/) next
-      if (line ~ /reusable-homebrew-bottle-publish\.yml/ ||
-          line ~ /exact-main-package-rebuild/ ||
+      if (line ~ /exact-main-package-rebuild/ ||
           (line ~ /bash[[:space:]]/ &&
-           line ~ /(state-lock|index-update|compose-initial-index|publish-package-source|homebrew-publish-sidecars|fetch-canonical-index|init-merge-candidate|mark-merge-candidate-ready|recover-canonical-indexes|cleanup-merge-candidates|activate-merge-candidate|clone-rejected-merge-candidate)\.sh/)) {
+           line ~ /(state-lock|index-update|compose-initial-index|publish-package-source|fetch-canonical-index|init-merge-candidate|mark-merge-candidate-ready|recover-canonical-indexes|cleanup-merge-candidates|activate-merge-candidate|clone-rejected-merge-candidate)\.sh/)) {
         print workflow ":" job
       }
     }
@@ -913,29 +835,6 @@ if [ "$snapshot_line" -ge "$resolver_line" ]; then
 fi
 if grep -Fq -- '- name: Capture tested candidate index' "$PREPARE"; then
   fail "candidate index must not be recaptured from mutable release state after materialization"
-fi
-homebrew_guest_block=$(step_block "$PREPARE" "Prove Homebrew starts from candidate artifacts")
-homebrew_guest_step=$(step_run_block "$PREPARE" "Prove Homebrew starts from candidate artifacts")
-grep -Fq "if: env.PACKAGE_STAGING_REQUIRED == 'true'" <<<"$homebrew_guest_block" || \
-  fail "candidate-backed Homebrew execution must run for package and ABI staging"
-grep -Fq 'build-homebrew-bootstrap.sh --skip-package-resolve' <<<"$homebrew_guest_step" || \
-  fail "candidate-backed Homebrew execution must use only materialized candidate packages"
-grep -Fq -- '--brew-script /opt/kandelo/homebrew/bin/brew' <<<"$homebrew_guest_step" || \
-  fail "candidate-backed Homebrew execution must test the canonical brew entry point"
-grep -Fq -- '--brew-script /usr/bin/brew' <<<"$homebrew_guest_step" || \
-  fail "candidate-backed Homebrew execution must test the /usr/bin/brew alias"
-host_dist_clear_count=$(grep -Fc 'rm -rf host/dist' <<<"$homebrew_guest_step")
-if [ "$host_dist_clear_count" -ne 2 ]; then
-  fail "candidate-backed Homebrew execution must clear host/dist before both probes"
-fi
-first_host_dist_clear_line=$(grep -nF 'rm -rf host/dist' <<<"$homebrew_guest_step" | sed -n '1s/:.*//p')
-second_host_dist_clear_line=$(grep -nF 'rm -rf host/dist' <<<"$homebrew_guest_step" | sed -n '2s/:.*//p')
-canonical_brew_line=$(grep -nF -- '--brew-script /opt/kandelo/homebrew/bin/brew' <<<"$homebrew_guest_step" | cut -d: -f1)
-alias_brew_line=$(grep -nF -- '--brew-script /usr/bin/brew' <<<"$homebrew_guest_step" | cut -d: -f1)
-if [ "$first_host_dist_clear_line" -ge "$canonical_brew_line" ] || \
-   [ "$canonical_brew_line" -ge "$second_host_dist_clear_line" ] || \
-   [ "$second_host_dist_clear_line" -ge "$alias_brew_line" ]; then
-  fail "candidate-backed Homebrew execution must clear host/dist before each ordered entry-point probe"
 fi
 grep -Fq 'current merge-gate authority changed' "$MARK_READY_SCRIPT" || \
   fail "candidate recovery authority replacement must be compare-and-swap"
@@ -1278,25 +1177,12 @@ for workflow in "$STAGING_WORKFLOW" "$PREPARE"; do
     fail "$(basename "$workflow") test-gate does not share preflight exclusions"
   grep -Fq -- '--expected-ledger "$EXPECTED"' <<<"$materialize_step" ||
     fail "$(basename "$workflow") test-gate can still raw-walk packages outside its publication ledger"
-  bootstrap_fetch_line=$(grep -nF -- '--package homebrew-bootstrap' \
-    <<<"$materialize_step" | cut -d: -f1)
-  mirror_state_line=$(grep -nF \
-    'scripts/ci-homebrew-browser-mirror-state.sh' \
-    <<<"$materialize_step" | cut -d: -f1)
-  if ! [[ "$bootstrap_fetch_line" =~ ^[1-9][0-9]*$ ]] ||
-     ! [[ "$mirror_state_line" =~ ^[1-9][0-9]*$ ]] ||
-     [ "$bootstrap_fetch_line" -ge "$mirror_state_line" ]; then
-    fail "$(basename "$workflow") does not fetch the canonical Homebrew bootstrap before lazy-shell inspection"
-  fi
 done
 [ "$(grep -Fc -- '--exclude "$PACKAGE_STAGING_EXCLUSIONS"' "$PREPARE")" -eq 2 ] || \
   fail "prepare preflight and test-gate must share one publication exclusion contract"
 for workflow in "$STAGING_WORKFLOW" "$PREPARE"; do
   grep -Fq 'WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang ' "$workflow" ||
     fail "$(basename "$workflow") lost its heavy-runtime materialization optimization"
-  grep -Fq 'WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs homebrew-bootstrap ' \
-    "$workflow" ||
-    fail "$(basename "$workflow") tries to fetch tap-owned Homebrew bootstrap from the legacy registry"
 done
 grep -Fq "needs.preflight.outputs.reuse_staging == 'false'" "$STAGING_WORKFLOW" || \
   fail "reused staging runs must not download absent matrix artifacts"

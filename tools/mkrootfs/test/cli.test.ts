@@ -196,34 +196,34 @@ describe("mkrootfs build — happy paths", () => {
     }
   });
 
-  it("build + inspect preserves opted-in Homebrew executables and symlinks", () => {
+  it("build + inspect preserves opted-in vendor executables and symlinks", () => {
     const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-archive-link-"));
-    const image = join(tmp, "homebrew.vfs");
+    const image = join(tmp, "pkg.vfs");
     const target = "../../shared/curl";
     try {
       writeFileSync(
-        join(tmp, "homebrew.zip"),
+        join(tmp, "pkg.zip"),
         zipSync({
-          "bin/brew": [
+          "bin/pkgtool": [
             new TextEncoder().encode("#!/usr/bin/env ruby\n"),
             { os: 3, attrs: (0o100755 << 16) >>> 0 },
           ],
-          "Library/Homebrew/shims/shared/curl": [
+          "Library/vendor/shims/shared/curl": [
             new TextEncoder().encode("curl shim\n"),
             { os: 3, attrs: (0o100755 << 16) >>> 0 },
           ],
-          "Library/Homebrew/shims/linux/super/curl": [
+          "Library/vendor/shims/linux/super/curl": [
             new TextEncoder().encode(target),
             { os: 3, attrs: (0o120777 << 16) >>> 0 },
           ],
-          "Library/Homebrew/bin/non-executable": new TextEncoder().encode(
+          "Library/vendor/bin/non-executable": new TextEncoder().encode(
             "configuration\n",
           ),
         }),
       );
       writeFileSync(
         join(tmp, "MANIFEST"),
-        "archive url=homebrew.zip base=/opt/kandelo/homebrew fmode=0644 fmode_policy=preserve-executable uid=1000 gid=1000\n",
+        "archive url=pkg.zip base=/opt/kandelo/pkg fmode=0644 fmode_policy=preserve-executable uid=1000 gid=1000\n",
       );
 
       const build = run(
@@ -247,10 +247,10 @@ describe("mkrootfs build — happy paths", () => {
       }>;
       const link = entries.find(
         (entry) => entry.path ===
-          "/opt/kandelo/homebrew/Library/Homebrew/shims/linux/super/curl",
+          "/opt/kandelo/pkg/Library/vendor/shims/linux/super/curl",
       );
       expect(link).toEqual({
-        path: "/opt/kandelo/homebrew/Library/Homebrew/shims/linux/super/curl",
+        path: "/opt/kandelo/pkg/Library/vendor/shims/linux/super/curl",
         type: "l",
         mode: "0777",
         uid: 1000,
@@ -260,21 +260,21 @@ describe("mkrootfs build — happy paths", () => {
       });
 
       expect(entries.find((entry) => entry.path ===
-        "/opt/kandelo/homebrew/bin/brew")).toMatchObject({
+        "/opt/kandelo/pkg/bin/pkgtool")).toMatchObject({
         type: "f",
         mode: "0755",
         uid: 1000,
         gid: 1000,
       });
       expect(entries.find((entry) => entry.path ===
-        "/opt/kandelo/homebrew/Library/Homebrew/shims/shared/curl")).toMatchObject({
+        "/opt/kandelo/pkg/Library/vendor/shims/shared/curl")).toMatchObject({
         type: "f",
         mode: "0755",
         uid: 1000,
         gid: 1000,
       });
       expect(entries.find((entry) => entry.path ===
-        "/opt/kandelo/homebrew/Library/Homebrew/bin/non-executable")).toMatchObject({
+        "/opt/kandelo/pkg/Library/vendor/bin/non-executable")).toMatchObject({
         type: "f",
         mode: "0644",
         uid: 1000,

@@ -544,8 +544,8 @@ kandelo_package_prepare_build_roots() {
                 "$KANDELO_PACKAGE_OUT_DIR" || return
         fi
         # Work products must not be swept into the package output, and output
-        # installation must not mutate work state. Formula callers use sibling
-        # roots beneath Homebrew's buildpath.
+        # installation must not mutate work state. Isolated build callers use
+        # sibling roots beneath a shared buildpath.
         if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
             kandelo_package_require_disjoint_paths WASM_POSIX_DEP_WORK_DIR \
                 "$KANDELO_PACKAGE_WORK_DIR" WASM_POSIX_DEP_OUT_DIR \

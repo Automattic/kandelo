@@ -55,8 +55,7 @@ The SDK finds LLVM in this order:
 1. `$WASM_POSIX_LLVM_DIR` environment variable (path to LLVM bin directory)
 2. `clang` on `$PATH` (tested for wasm32 support — covers the Nix dev shell,
    which puts the pinned LLVM 21 first on `PATH`)
-3. `/opt/homebrew/opt/llvm/bin` (macOS Homebrew)
-4. `/usr/lib/llvm-*/bin` (Linux, highest version)
+3. `/usr/lib/llvm-*/bin` (Linux, highest version)
 
 ### Glue and Sysroot Discovery
 

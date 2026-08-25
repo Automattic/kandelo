@@ -25,7 +25,6 @@ test("runs the manifest builder with no credentials and one short private socket
     const credentials = {
       GITHUB_TOKEN: "github-secret",
       GH_TOKEN: "gh-secret",
-      HOMEBREW_GITHUB_API_TOKEN: "brew-secret",
       NPM_TOKEN: "npm-secret",
       NODE_AUTH_TOKEN: "node-secret",
       SSH_AUTH_SOCK: "/tmp/agent.sock",

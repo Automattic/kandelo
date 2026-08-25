@@ -1,5 +1,0 @@
-{
-  "version": 1,
-  "path": "/bin/bash",
-  "argv": ["bash", "-l", "-i"]
-}

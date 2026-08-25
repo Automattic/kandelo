@@ -78,7 +78,6 @@ jobs:
       kernel_runtime_changed: ${{ steps.scope.outputs.kernel_runtime_changed }}
       test_gate_required: ${{ steps.route.outputs.test_gate_required }}
       exact_abi_staging_applicable: ${{ steps.exact-abi.outputs.exact_abi_staging_applicable }}
-      homebrew_publisher_only_changed: ${{ steps.scope.outputs.homebrew_publisher_only_changed }}
       docs_only: ${{ steps.scope.outputs.docs_only }}
       package_staging_required: ${{ steps.route.outputs.package_staging_required }}
       package_staging_reason: ${{ steps.route.outputs.package_staging_reason }}
@@ -170,7 +169,6 @@ jobs:
         env:
           PACKAGE_STAGING_REQUIRED: ${{ steps.scope.outputs.package_staging_required }}
           RAW_TEST_GATE_REQUIRED: ${{ steps.scope.outputs.test_gate_required }}
-          HOMEBREW_PUBLISHER_ONLY: ${{ steps.scope.outputs.homebrew_publisher_only_changed }}
           RAW_PACKAGE_STAGING_REASON: ${{ steps.scope.outputs.package_staging_reason }}
           EXACT_ABI_STAGING_APPLICABLE: ${{ steps.exact-abi.outputs.exact_abi_staging_applicable }}
           LEGACY_PACKAGE_STAGING_REQUIRED: ${{ steps.exact-abi.outputs.legacy_package_staging_required }}
@@ -180,7 +178,6 @@ jobs:
           for state in \
             "$PACKAGE_STAGING_REQUIRED" \
             "$RAW_TEST_GATE_REQUIRED" \
-            "$HOMEBREW_PUBLISHER_ONLY" \
             "$EXACT_ABI_STAGING_APPLICABLE" \
             "$LEGACY_PACKAGE_STAGING_REQUIRED"
           do
@@ -198,16 +195,6 @@ jobs:
               echo "package_staging_required=false"
               echo "test_gate_required=true"
               echo "package_staging_reason=$EXACT_ABI_STAGING_REASON"
-            } >> "$GITHUB_OUTPUT"
-          elif [ "$HOMEBREW_PUBLISHER_ONLY" = true ]; then
-            # WHY: Homebrew integration is dormant. Changes confined to its
-            # retained implementation sources must not start package builds or
-            # tests until that integration is intentionally re-enabled.
-            [ "$PACKAGE_STAGING_REQUIRED" = false ]
-            {
-              echo "package_staging_required=false"
-              echo "test_gate_required=false"
-              echo "package_staging_reason=homebrew-disabled"
             } >> "$GITHUB_OUTPUT"
           else
             {
@@ -854,8 +841,7 @@ jobs:
           # package-toolchain artifact, so prepare its host tool explicitly.
           bash scripts/dev-shell.sh bash scripts/build-fork-instrument-tool.sh
           bash scripts/dev-shell.sh npx --prefix host vitest run --root . \
-            tests/package-system \
-            '--exclude=**/*homebrew*.test.ts'
+            tests/package-system
 
   test-suite-early:
     name: test-suite (${{ matrix.label }})

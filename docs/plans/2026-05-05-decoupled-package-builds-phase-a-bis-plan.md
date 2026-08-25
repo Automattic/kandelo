@@ -608,6 +608,6 @@ If any local check fails, STOP and report — Phase A-bis is mechanical, regress
 ## Notes for the executor
 
 - **Per CLAUDE.md, the test gates are per-CLAUDE.md** — but Phase A's user preference (memory: `feedback_defer-to-pr-ci.md`) said to defer userspace suites to CI on push. Phase A-bis follows the same convention.
-- `nix develop --accept-flake-config --command ...` for any wasm/sysroot work. Don't use Homebrew clang directly.
+- `nix develop --accept-flake-config --command ...` for any wasm/sysroot work. Don't use a non-Nix system clang directly.
 - **`[build].commit` empty-state must be allowed.** The CI publish flow fills it. Newly-created packages, packages between rebuilds, and the just-edited backfill state all have `commit` absent. Parser must accept this.
 - **Branch base is `origin/main` at HEAD `399c43689`** (the merge commit of PR #416, which landed the design + Phase A retrospective). Don't try to base on an older main.

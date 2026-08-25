@@ -1990,8 +1990,8 @@ pub mod abi {
     /// ABI 42+ linked-continuation metadata and function surface.
     ///
     /// WHY this lives in `shared::abi`: these names and descriptor fields are
-    /// consumed before a program starts, by the instrumenter, host, package
-    /// publisher, and Homebrew validator. Keeping the publication contract in
+    /// consumed before a program starts, by the instrumenter, host, and package
+    /// publisher. Keeping the publication contract in
     /// Rust-owned ABI metadata makes `dump-abi` record drift instead of
     /// allowing a newly instrumented program to publish successfully and fail
     /// only when its first `fork()` reaches the host.

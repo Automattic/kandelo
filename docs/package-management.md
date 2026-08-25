@@ -41,8 +41,6 @@ Most readers want one of these. Detailed sections follow further down.
 | Republish a stale archive                     | Dispatch `.github/workflows/force-rebuild.yml` with the comma-separated package list (or `all`).                                                                                                                                                                   |
 | Bump a package's revision number              | Edit `revision = N` in its `build.toml` (NOT `package.toml` — revision moved to the project-view file during the binary-resolution-via-index-ledger migration). Invalidates the cache for that package. Only bump when output bytes legitimately change.           |
 | Understand the release flow                   | [docs/binary-releases.md](binary-releases.md).                                                                                                                                                                                                                     |
-| Inspect the disabled Homebrew implementation  | [docs/homebrew-packaging-system.md](homebrew-packaging-system.md) - dormant Formula, bottle, VFS, and guest `brew` design.                                                                                                                                        |
-| Inspect disabled Homebrew publishing          | [docs/homebrew-publishing.md](homebrew-publishing.md) - retained historical publication and validation contracts.                                                                                                                                               |
 | Publish packages from another repository      | [docs/package-sources.md](package-sources.md) — package-source layout, reusable workflow, and browser-gallery contract.                                                                                                                                            |
 | Trace an ABI mismatch                         | [docs/abi-versioning.md](abi-versioning.md).                                                                                                                                                                                                                       |
 | See what's missing                            | [docs/package-management-future-work.md](package-management-future-work.md).                                                                                                                                                                                       |
@@ -143,12 +141,6 @@ The PR change-scope detector should classify paths by effect:
 - **Package publish flow**: can change release/index/source-publish
   mechanics; run the publish-flow checks without rebuilding every
   archive.
-- **Homebrew bottle publish flow**: can change formula bottle
-  generation, GHCR upload, sidecar metadata, or Homebrew-derived VFS
-  materialization. Run the Homebrew publish, validator, VFS builder,
-  and Node/browser smoke checks that match the changed path; do not
-  rebuild every Kandelo package archive unless a package recipe/build
-  input also changed.
 - **Binary materialization**: can change fetching, verifying, overlaying,
   or installing already-published archives; run the materialization
   checks, materialize durable binaries, and run runtime tests, but do
@@ -197,11 +189,6 @@ WordPress payload with an older shell. The shell recipe also owns the complete
 source closure used by its image tools; imported repository modules are
 explicit build inputs.
 
-Homebrew package, image, test, and publication integration is disabled. The
-implementation is retained as dormant source, and the `homebrew-bootstrap`
-manifests use a `.disabled` suffix so registry discovery cannot resolve or
-build that package.
-
 ### Canonical VFS product authority
 
 Canonical VFS product manifests are the lasting product authority. The TOML
@@ -212,8 +199,7 @@ evidence definitions. Their generated catalog is a canonical projection, not
 a second place to edit product intent.
 
 Pages and tests select products through registries owned by those consumers.
-Formula requirements are derived from the selected product manifests and tap
-dependency planning; ABI staging has no parallel Formula root list. Ordinary
+Ordinary
 software recipes in `packages/registry/` continue to own portable source,
 license, dependency, output, and build facts. Obsolete package entries whose
 primary product is a VFS wrapper are checked transitional adapters only: they
@@ -228,8 +214,8 @@ lazy product or package layer may stay lazy; resolving an input does not imply
 embedding it.
 
 This is currently a checked-in authority and local validation foundation. It
-does not yet issue remote requests, run Homebrew builds, publish candidates,
-verify hosted artifacts, or promote canonical bottles.
+does not yet issue remote requests, publish candidates, or verify hosted
+artifacts.
 
 ## Schema: `package.toml` (recipe) + `build.toml` (project view)
 
@@ -331,12 +317,9 @@ identity. Provider, package, Application Binary Interface (ABI), and compiled
 artifact policy do not enter that archive-cache address. Source-only compiled
 keys separately bind provider semantics and declared build inputs.
 
-The in-tree repository-backed recipes, including the Homebrew bridge recipes
-`lsof`, `modeset`, and `posix-utils-lite`, use `[source].url` as the
-authoritative Kandelo repository and the all-zero SHA as a mode sentinel.
-Homebrew publication must still bind such a recipe to a nonzero-checksum
-Formula URL of the exact form
-`<source.url>/archive/<40-lowercase-hex-commit>.tar.gz`.
+The in-tree repository-backed recipes `lsof`, `modeset`, and
+`posix-utils-lite` use `[source].url` as the authoritative Kandelo repository
+and the all-zero SHA as a mode sentinel.
 
 Source `package.toml` and project `build.toml` apply the same
 `[build].script_path` contract: a nonempty ASCII repository-relative path of
@@ -485,14 +468,6 @@ resolution runs that Rust check before consuming generated policy.
 The standalone `wasm-posix-host` package ships the same projection under
 `wasm/`, so installed consumers retain closure and fork policy without carrying
 source manifests.
-
-The shell package declares
-`scripts/homebrew-prefix-campaign-executor.py` as a build input. Changing that
-executor therefore requires regenerating the committed program index: shell's
-contextual cache key changes, as do the keys of programs whose dependency
-closure includes shell. This identity propagation is required even when the
-executor change affects only Homebrew campaign control and does not alter
-already-published bottle bytes.
 
 `scripts/resolve-binary.sh` runs a checked-in standalone Node bundle generated
 from the same TypeScript resolver, so clean checkouts do not need
@@ -654,8 +629,8 @@ revision    = 1
 publication_state = "ready"
 
 [[git_inputs]]
-name       = "homebrew_tap_core"
-repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"
+name       = "vendor_recipes"
+repository = "https://github.com/Kandelo-dev/vendor-recipes.git"
 commit     = "<exact 40-character lowercase commit>"
 
 [binary]
@@ -736,168 +711,16 @@ The permission defaults to false; both fields enter cache identity and archive
 provenance. Every permitted gitlink must materialize as an empty real directory
 without symlinked path components, while all ordinary tracked files remain
 required. A declaration named
-`homebrew_tap_core` is exposed as:
+`vendor_recipes` is exposed as:
 
-- `WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_DIR`
-- `WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_COMMIT`
+- `WASM_POSIX_BUILD_GIT_VENDOR_RECIPES_DIR`
+- `WASM_POSIX_BUILD_GIT_VENDOR_RECIPES_COMMIT`
 
 Published archives record the same ordered declarations as
 `[[compatibility.git_inputs]]`. Archive creation and remote consumption both
 compare that vector exactly with the current `build.toml`; the archive SHA and
 cache key are additional integrity bindings, not substitutes for that direct
 provenance check.
-
-### Homebrew bottles and package cache keys
-
-Homebrew bottles are not Kandelo release archives. A Formula may build through
-idiomatic Formula steps, a closed Formula-owned
-`Kandelo/recipes/<formula>/` input tree, or the transitional
-`packages/registry/<name>/build-*.sh` bridge. The resulting bottle is selected
-by Homebrew's Formula version, Formula `revision`, bottle `rebuild`, bottle
-tag, and `bottle do` block.
-
-Kandelo records `cache_key_sha` in Homebrew sidecar metadata so VFS tooling can
-reject stale bottle bytes. For a Homebrew bottle this key is the verified
-bottle archive SHA-256, independent of whether the Formula still has a legacy
-package-registry entry. Sidecar provenance and matrix reuse also require the
-exact current Formula SHA-256. A tap-recipe manifest digest is a literal in
-that Formula, so its complete checksummed input tree participates in reuse
-identity without making an unrelated Formula rebuild merely because the tap
-commit changed. When package output bytes change, move the appropriate
-Homebrew Formula revision or bottle rebuild so Homebrew fetches new bytes.
-Bump `build.toml` `revision` only when a legacy Kandelo package archive cache
-key should change. Do not bump it for Formula-only docs, tap metadata, or
-browser-gallery wording.
-
-Prefix campaigns distinguish dependencies needed while producing a bottle
-from dependencies needed after pouring it. The campaign's `dependencies` list
-is the full same-tap scheduling closure, including fully qualified build and
-test requirements. Its `runtime_dependencies` list is the exact required and
-recommended subset recorded in the handoff's Formula identity and sidecars.
-The handoff keeps the full build closure as separate provenance evidence. This
-lets CI stage a test-only tool without making every user install that tool.
-Changing that build closure still invalidates byte reuse. Old bytes
-cannot claim they were built or tested with a dependency they never
-observed.
-The runtime list must be a canonical subset with the same versions; an older
-campaign without the scoped field keeps its historical one-list meaning.
-
-Historical campaign recovery rejects duplicate Formula/architecture
-handoffs across supported archives. An explicitly committed successor
-scope may select one exact archive for a bounded task graph. Its path
-and SHA-256 are paired inputs read from the exact recovery Git commit.
-The selected archive must own every declared reuse task; build and reuse
-tasks must partition the graph, and duplicates outside that selection
-still fail. Disjoint handoffs remain usable. Scoped schema-3 campaigns
-retain the path and digest under `authority.successor_scope`, while
-legacy schema-3 campaigns remain readable.
-
-A closed tap recipe runs as a separate unprivileged identity inside a
-root-owned, empty service root. The publisher mounts only its attested recipe,
-verified source, projected SDK/tooling, sysroot, sealed Homebrew dependency
-closure, the exact content-addressed Nix closures of its host tools, ordinary
-system runtime directories, and private work/output roots. It does not expose
-the whole Nix store. Unrelated host paths and service-manager sockets are
-absent. The outer Formula identity can
-submit one authenticated request but cannot choose additional mounts, change
-the root-owned runner configuration, or receive an unsealed output tree.
-The sealed native execution closure includes runner-derived child-tool
-directories and, when present, only the fixed prefix `etc/clang`, `lib`, and
-`share` runtime roots needed by relocated tools and their support data. For
-example, LLVM names its prefix-level system configuration, native Perl can
-name a prefix loader, and Automake names prefix Perl modules. Each runtime
-tree is content-fingerprinted, and every link hop in it, in the native kegs,
-and in copied direct proxies must remain inside the exact
-Cellar/`opt`/runtime/system directory projections. Intermediate mutable-host
-hops are rejected even when their current final target re-enters the closure.
-Neither path set is caller-selected, and the rest of the native Homebrew
-prefix—including every other `etc` child—remains absent.
-
-#### Flat-lazy shell composition and recovery contract
-
-The lazy composition details below are the current ABI-42 shell integrity
-contract. The canonical package build reconstructs the flat-lazy image from
-the admitted selection; the protected mirror publisher independently repeats
-that source build and recovers the exact deferred payload plan before
-publication.
-
-Bottle-backed lazy VFS composition keeps the same archive as its transport
-unit. The descriptor exposes bounded metadata for `stat` and `readdir`, but the
-first content access downloads and verifies the complete Formula bottle and
-atomically materializes its guest projection. It does not fetch individual TAR
-members or use HTTP ranges. Dependency bottles have separate identities and
-remain unfetched until a path owned by that dependency is used.
-
-The underlying deferred-tree contract is package-manager neutral. A package or
-image builder may authenticate a complete ZIP or TAR+gzip source inventory,
-project ordinary files, directories, symbolic links, and hard links to
-canonical VFS destinations, and optionally declare exact bounded byte
-transformations. The lazy and eager paths consume the same source identity,
-inventory, transformation plan, and destination inventory. A non-Homebrew
-archive therefore does not need a Formula, Cellar path, receipt, or bottle
-marker to remain lazy.
-
-Homebrew-specific descriptor code owns the additional receipt, prefix, Cellar,
-keg, and link-manifest checks. Its schema-6 adapter validates those rules and
-translates them into the generic archive contract before MemoryFS registration.
-MemoryFS never infers Homebrew meaning from filenames or destinations. A stale
-schema-5 bottle that requires receipt relocation must be rebuilt through the
-normal bottle publication path because it lacks the authenticated generic
-plan.
-
-The guest `brew` implementation is distributed as the
-`homebrew-bootstrap` support-data Formula bottle. Its tap-native recipe
-declares two `libexec` outputs: `homebrew-bootstrap.zip`, a deterministic
-archive of one exact upstream Homebrew commit plus Kandelo's reviewed
-guest-platform patch, and `homebrew-brew.env`, the architecture tag and system
-environment policy consumed with that exact tree. Consumers extract both from
-the same immutable public bottle; they must not reconstruct the environment
-file or combine it with a ZIP from another build. Neither output is Wasm, so
-the Formula uses the support-data bottle test contract rather than claiming
-Node or browser execution evidence.
-
-The generic support-data extractor verifies the exact checkout, catalog and
-Formula sidecar, tap recipe lock, link manifest, keg, bottle digest and size,
-build receipt, and declared member bytes. Once extracted, the shell composer
-uses the same typed contract to verify the detached files again. The exact tap
-checkout commit, aggregate metadata publication commit, and bottle
-`built_from.tap_commit` are separate provenance coordinates. The current tap
-Formula SHA-256 and Homebrew's `.brew` receipt SHA-256 are separate too,
-because the receipt canonically omits the finalized bottle block.
-
-The bootstrap archive is not a bundled Homebrew runtime. It contains neither
-Ruby nor Git, curl, extraction tools, or their data/dependencies. The base
-shell therefore registers `/usr/bin/brew` as a lazy activation reference
-without claiming the bootstrap source can execute by itself.
-`homebrew/main-shell-homebrew-runtime-support.json` owns the separate atomic
-runtime-support closure. Its seven reviewed roots resolve through the exact
-closed-selection metadata that the shell consumes. Dependencies already in the
-complete shell remain shared; additional dependencies become part of the same
-atomic lazy group. This matters when a Formula changes its real dependency
-graph—for example, Ruby now requires `libyaml`. The selection-aware release
-finalizer derives the new order and base-relative difference, requires an
-admitted public ABI-42 bottle for every member, and seals the selection and
-artifact locks together. The base keeps the active layer deferred; an opt-in
-demo may materialize the same layer. A guest lifecycle is valid only when
-every declared tree has an exact admitted ABI/digest/size identity, all
-support bytes come from that declaration, and the independent-tap Formula is
-installed live rather than smuggled into the image.
-
-The current shell resolves the `homebrew-bootstrap` registry package as its
-one direct dependency. `homebrew/homebrew-bootstrap-source-lock.json` binds
-that package's prepared source, deterministic ZIP, environment policy, and
-exact output bytes. The separate tap-native support-data Formula and
-`Kandelo/recipes/homebrew-bootstrap/source-lock.json` retain their own bottle
-and historical lifecycle-input authority; those coordinates must not be
-substituted for the package dependency selected by the current shell build.
-Ordinary browser preparation resolves that same canonical package and
-atomically stages its exact `homebrew-bootstrap.zip` output at the stable
-same-origin browser URL. A stale regular destination is replaced atomically;
-missing, symlinked, or non-regular package input fails without publishing
-partial bytes.
-
-See [docs/homebrew-publishing.md](homebrew-publishing.md) for the Homebrew
-formula, sidecar, GHCR, VFS, and runtime validation contract.
 
 ### Erlang/OTP target runtime contract
 
@@ -924,7 +747,7 @@ The trimmed core tree is an OTP embedded release. Launch it with
 `-mode embedded`; its packaged modules are loaded from the release boot tree
 instead of interactive code-server autoloading. This is not a claim that a
 complete interactive OTP installation or every optional OTP application is
-supported. A Homebrew Formula must test the exact keg through `erlexec` in
+supported. The package recipe must test the exact runtime through `erlexec` in
 both the generic Node and Chromium runners, and the Node proof must require the
 fork descendant rather than accepting output as a proxy for process exit.
 
@@ -932,9 +755,7 @@ The disabled legacy `erlang-vfs` compatibility recipe consumes `erlang`'s
 declared runtime archive through the resolver; it does not read a
 recipe-directory install tree or user cache. Its opt-in VFS image copies the
 complete archive under `/usr/local/lib/erlang`, preserves executable modes,
-and includes ABI metadata. Staging does not publish that image; the Homebrew
-Formula turns the executable and runtime archive into the normal keg and
-bottle distribution unit.
+and includes ABI metadata. Staging does not publish that image.
 
 ### `arches`
 
@@ -1120,8 +941,7 @@ that doesn't respect them cannot be cached safely.
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `WASM_POSIX_DEP_OUT_DIR`             | Caller-owned, single-writer temp dir the script must install into. The current user owns it and each destination directory traversed within it; none is group/other-writable. Layout matches `outputs.libs` / `outputs.headers` / `outputs.pkgconfig` / `outputs.files` relative paths.                                                          |
 | `WASM_POSIX_DEP_NAME`                | `name` from package.toml.                                                                                                                                                                                                                                                                                                                        |
-| `WASM_POSIX_DEP_VERSION`             | `version` from package.toml, or the base Formula version for a tap-native Homebrew recipe.                                                                                                                                                                                                                                                       |
-| `WASM_POSIX_DEP_PKG_VERSION`         | Exact Homebrew `pkg_version` for a tap-native recipe, including a positive Formula `revision` suffix such as `_1`. It is absent from registry package builds.                                                                                                                                                                                    |
+| `WASM_POSIX_DEP_VERSION`             | `version` from package.toml.                                                                                                                                                                                                                                                                                                                     |
 | `WASM_POSIX_DEP_REVISION`            | Effective package revision after `build.toml` is overlaid.                                                                                                                                                                                                                                                                                       |
 | `WASM_POSIX_DEP_SOURCE_ARCHIVE`      | SourceOnlyV1 Archive providers only: canonical regular-file path to the resolver's immutable, digest-verified archive payload. It is absent for Repository and DevShell providers and from Default resolver builds.                                                                                                                                 |
 | `WASM_POSIX_DEP_SOURCE_DIR`          | SourceOnlyV1 Archive providers only: fresh sealed extraction below a resolver-owned source-input root disjoint from this invocation's work and output roots. It is distinct from the immutable archive and is removed on every return path. Recipes must copy it below `WASM_POSIX_DEP_WORK_DIR` before modifying it.                              |
@@ -1131,9 +951,7 @@ that doesn't respect them cannot be cached safely.
 | `WASM_POSIX_BINARY_CACHE_ROOT`       | Canonical absolute cache root selected by the current resolver invocation. It overrides inherited ambient state and keeps nested resolvers aligned with direct dependency paths, including an explicit `archive-stage --cache-root`.                                                                                                             |
 | `WASM_POSIX_SOURCE_ONLY_CACHE_ROOT`  | SourceOnlyV1 only: canonical cache base that owns the exact `source-only-v1/compiled` binary-cache child and immutable verified archive payloads. It is absent under Default resolution.                                                                                                                                                           |
 | `WASM_POSIX_SOURCE_ONLY_BINARY_ROOT` | SourceOnlyV1 non-Rust consumers only: normalized canonical absolute directory containing regular-file materializations and `.kandelo/source-only-program-projection-v1.json`. The TypeScript/shell resolver accepts this one aggregate-owned tier and never searches Default mirrors, the ordinary compiled cache, or an installed package. Each authority member is limited to 512 MiB; Vite also limits its complete pinned snapshot batch to 512 MiB. |
-| `WASM_POSIX_DEP_WORK_DIR`            | Caller-owned, single-writer scratch root disjoint from `OUT_DIR`. The resolver creates a fresh private directory for every source build and removes it on success or failure. The sealed Homebrew Formula bridge provides the equivalent boundary from Homebrew's buildpath. Direct ad-hoc script invocation may retain a package-local default. |
-| `WASM_POSIX_DEP_RECIPE_DIR`          | Formula-owned, read-only closed recipe input root for a tap-native Homebrew build. It is absent from registry package builds. Every member is attested by path, size, mode, and SHA-256; scripts must not mutate it.                                                                                                                            |
-| `WASM_POSIX_SDK_CONFIG_SITE`         | Runner-owned path to the sealed Kandelo `sdk/config.site` for a tap-native Homebrew build. A package-specific `CONFIG_SITE` may source it to inherit shared target facts. Formula code and recipe requests cannot override this path; it is absent from registry package builds.                                                               |
+| `WASM_POSIX_DEP_WORK_DIR`            | Caller-owned, single-writer scratch root disjoint from `OUT_DIR`. The resolver creates a fresh private directory for every source build and removes it on success or failure. Direct ad-hoc script invocation may retain a package-local default.                                                                                                |
 | `WASM_POSIX_DEP_<UPPER>_DIR`         | For each _direct_ dep, the resolved path to that dep's build output. `<UPPER>` is the dep name upper-cased, with `-` → `_` (e.g. `zlib-ng` → `ZLIB_NG`). Transitive deps are not surfaced — scripts that need them should declare them in `depends_on`.                                                                                          |
 | `WASM_POSIX_DEP_<KEY>_SRC_DIR`       | SourceOnlyV1 direct source dependencies only: a fresh sealed per-consumer extraction below the same resolver-owned source-input root, disjoint from recipe work and output. `<KEY>` is exactly `K_` followed by the uppercase hexadecimal encoding of the package name's UTF-8 bytes (`foo-bar` → `K_666F6F2D626172`). Default source-kind dependencies retain the legacy uppercased-name spelling. |
 | `WASM_POSIX_BUILD_GIT_<NAME>_DIR`    | Read-only detached checkout for a `build.toml` `[[git_inputs]]` declaration. `<NAME>` is the injective uppercase form of the validated lowercase name.                                                                                                                                                                                           |
@@ -1145,8 +963,8 @@ be absolute, normalized, real non-symlink directories with no pairwise overlap.
 The source root is immutable input: copy it below the work root before patches,
 configure steps, code generation, or compilation. Work products stay below the
 work root, and only declared artifacts are installed into the output root. This
-keeps the normal source-build path usable by Homebrew without granting write
-access to either the reviewed Kandelo checkout or verified source tree.
+keeps the normal source-build path usable by package recipes without granting
+write access to either the reviewed Kandelo checkout or verified source tree.
 
 `kandelo_package_stage_verified_source` has two distinct acquisition
 boundaries. Under SourceOnlyV1 it requires both resolver-owned source paths,
@@ -1557,8 +1375,8 @@ cache entry or indexed archive may satisfy the selected package. Exact source
 execution proofs can add `--force-source-build`. That flag bypasses cache and
 binary-index reuse only for the package passed to `--package`; dependencies
 continue through ordinary resolution. For example, the main-shell proof uses
-it to guarantee that the shell composer runs while its reviewed Homebrew
-bottles remain ordinary immutable inputs.
+it to guarantee that the shell composer runs while its reviewed package
+archives remain ordinary immutable inputs.
 
 The canonical producer adds a stricter orchestration contract around that
 deliberately narrow flag. It expands selected roots to their complete buildable
@@ -1804,7 +1622,7 @@ through preservation authority `M0` to current publishing authority `M`. The
 promoter builds a minimal exact index, drops unrelated entries and every
 fallback, and rewrites URLs to the content-addressed generation tag. It
 preserves the archive's truthful producer separately from validated current
-main; later Homebrew bottles are compiled at that validated main commit and
+main; later package archives are compiled at that validated main commit and
 record it as their own producer.
 
 Preservation tags remain non-admitted evidence.
@@ -1999,7 +1817,7 @@ one explicitly selected, dependency-complete consumer closure. It populates a
 draft, runs the requested test gate unless the maintainer explicitly skips it,
 and publishes only after every selected dependency level succeeds. Publication
 freezes that conventional package set; later software for the same ABI belongs
-in a content-addressed generation or a Homebrew bottle, not another mutation of
+in a content-addressed generation, not another mutation of
 the release.
 
 Post-merge `activate-merge-candidate.yml` remains the ordinary path. It verifies

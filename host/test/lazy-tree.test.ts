@@ -526,7 +526,7 @@ describe("format-neutral deferred trees", () => {
     expect(restored.exportLazyArchiveEntries()[0]!.content!.materialization)
       .toEqual(fixture.content.materialization);
     expect(JSON.stringify(restored.exportLazyArchiveEntries())).not.toMatch(
-      /homebrew|bottle|receipt|Cellar|keg|Formula/,
+      /bottle|receipt|Cellar|keg|Formula/,
     );
 
     const rebased = restored.rebaseToNewFileSystem(8 * 1024 * 1024);
@@ -553,7 +553,7 @@ describe("format-neutral deferred trees", () => {
     fs.setLazyFetcher(fetcher);
     await registerAtomicTrees(
       fs,
-      "homebrew:runtime",
+      "pkg:runtime",
       [bootstrap, runtime],
     );
 
@@ -584,7 +584,7 @@ describe("format-neutral deferred trees", () => {
     fs.setLazyFetcher(async (url) => new Response(payloads.get(url)!));
     await registerAtomicTrees(
       fs,
-      "homebrew:runtime-mutated",
+      "pkg:runtime-mutated",
       [bootstrap, runtime],
     );
     fs.unlink("/runtime-mutated/tool");
@@ -611,7 +611,7 @@ describe("format-neutral deferred trees", () => {
     fs.setLazyFetcher(fetcher);
     await registerAtomicTrees(
       fs,
-      "homebrew:runtime-concurrent",
+      "pkg:runtime-concurrent",
       [bootstrap, runtime],
     );
 
@@ -630,7 +630,7 @@ describe("format-neutral deferred trees", () => {
     const source = createFs();
     await registerAtomicTrees(
       source,
-      "homebrew:runtime-roundtrip",
+      "pkg:runtime-roundtrip",
       [bootstrap, runtime],
     );
     const image = await source.saveImage();
@@ -642,7 +642,7 @@ describe("format-neutral deferred trees", () => {
       /not been cryptographically verified after import/,
     );
     await restored.sealLazyAtomicGroup(
-      "homebrew:runtime-roundtrip",
+      "pkg:runtime-roundtrip",
       [
         bootstrap.activation.capabilities[0]!,
         runtime.activation.capabilities[0]!,
@@ -657,7 +657,7 @@ describe("format-neutral deferred trees", () => {
     expect(serialized.every(
       (entry) =>
         entry.kind === "kandelo-deferred-tree-v3" &&
-        entry.activation?.atomicGroup?.id === "homebrew:runtime-roundtrip" &&
+        entry.activation?.atomicGroup?.id === "pkg:runtime-roundtrip" &&
         entry.activation.atomicGroup.expectedCount === 2,
     )).toBe(true);
     const payloads = new Map([
@@ -2067,7 +2067,7 @@ describe("format-neutral deferred trees", () => {
           ...fixture.activation,
           mode: "boot-prefetch",
           atomicGroup: {
-            id: "homebrew:invalid",
+            id: "pkg:invalid",
             member: "invalid",
           },
         },
@@ -2084,7 +2084,7 @@ describe("format-neutral deferred trees", () => {
       {
         ...first.activation,
         atomicGroup: {
-          id: "homebrew:direct-singleton",
+          id: "pkg:direct-singleton",
           member: "direct-a",
         },
       },
@@ -2104,7 +2104,7 @@ describe("format-neutral deferred trees", () => {
       {
         ...first.activation,
         atomicGroup: {
-          id: "homebrew:direct",
+          id: "pkg:direct",
           member: "direct-a",
         },
       },
@@ -2116,7 +2116,7 @@ describe("format-neutral deferred trees", () => {
       {
         ...second.activation,
         atomicGroup: {
-          id: "homebrew:direct",
+          id: "pkg:direct",
           member: "direct-b",
         },
       },

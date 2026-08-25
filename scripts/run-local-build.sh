@@ -8,7 +8,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 
 # An outer launcher may preserve the dev-shell marker while replacing PATH.
 # Use only the exact declared tool set at the final build boundary: appending
-# the ambient path would still let an undeclared host or Homebrew executable
+# the ambient path would still let an undeclared host executable
 # satisfy a package configure probe when the repository omitted that tool.
 export PATH="$KANDELO_DEV_SHELL_TOOL_PATH"
 

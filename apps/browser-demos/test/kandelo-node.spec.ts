@@ -70,14 +70,14 @@ test("@slow @node-npm-acceptance Kandelo Node demo completes HTTPS and installs 
     }
     const mirrorPlan = JSON.parse(
       await readFile(
-        `${localBootAssetRoot}/mirror/kandelo-homebrew-bottle-mirror-plan.json`,
+        `${localBootAssetRoot}/mirror/kandelo-lazy-archive-mirror-plan.json`,
         "utf8",
       ),
     ) as { assets: Array<{ asset: string }> };
     const localAssets = new Map<string, Buffer>();
     localAssets.set(
-      "homebrew-bootstrap.zip",
-      await readFile(`${localBootAssetRoot}/homebrew-bootstrap.zip`),
+      "bootstrap-bundle.zip",
+      await readFile(`${localBootAssetRoot}/bootstrap-bundle.zip`),
     );
     for (const { asset } of mirrorPlan.assets) {
       localAssets.set(
@@ -191,7 +191,7 @@ test("@slow @node-npm-acceptance Kandelo Node demo completes HTTPS and installs 
     });
     context.on("request", (request) => {
       if (
-        /kandelo-homebrew-bottle-|homebrew-shell-bottles/i.test(request.url())
+        /kandelo-lazy-archive-|lazy-shell-archives/i.test(request.url())
       ) {
         bottleRequests.push(request.url());
       }

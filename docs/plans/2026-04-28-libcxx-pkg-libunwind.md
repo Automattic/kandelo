@@ -61,7 +61,7 @@ and continues the spike.
 ## What's NOT in scope
 
 - Migrating libcxx **headers** into `packages/registry/libcxx/include/`
-  source-tree. Headers continue to come from Homebrew LLVM at build
+  source-tree. Headers continue to come from the host LLVM install at build
   time (the libcxx build copies them from `$LLVM_PREFIX/include/c++/v1`
   into `WASM_POSIX_DEP_OUT_DIR/include/c++/v1`). Sourcing headers
   from upstream tarball is a future cleanup.
@@ -879,7 +879,7 @@ the SpiderMonkey worktree can re-run the spike.
   `libunwind` should still keep the source tree to ~50MB. If it
   balloons, adjust the sparse-checkout list.
 - **Header sourcing.** This PR continues to copy libc++ headers from
-  Homebrew LLVM at build time. If a developer doesn't have Homebrew
+  the host LLVM install at build time. If a developer doesn't have
   LLVM 21+ installed, the build fails with a clear message — same
   precondition as before. Flagged in the PR body, not a regression.
 - **Symlinks in mariadb's sysroot setup.** `ln -sfn` is used so the

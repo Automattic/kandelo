@@ -714,7 +714,7 @@ struct BinaryRaw {
 ///
 /// `name` deliberately accepts only lowercase ASCII letters, digits, and
 /// underscores. Its uppercase form is therefore an injective environment-key
-/// mapping (`homebrew_tap_core` -> `HOMEBREW_TAP_CORE`) with no punctuation
+/// mapping (`example_tap_core` -> `EXAMPLE_TAP_CORE`) with no punctuation
 /// aliases or case folding collisions.
 #[derive(Clone, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -4585,8 +4585,8 @@ repo_url = "https://github.com/example/foo.git"
 commit = "abc123"
 
 [[git_inputs]]
-name = "homebrew_tap_core"
-repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"
+name = "example_tap_core"
+repository = "https://github.com/Kandelo-dev/example-tap-core.git"
 commit = "b40a764d47f4f4408790de2c211ccb8efb8e4c46"
 
 [binary]
@@ -4607,8 +4607,8 @@ index_url = "https://example.com/releases/download/binaries-abi-v{abi}/index.tom
         assert_eq!(
             bt.git_inputs,
             vec![GitBuildInput {
-                name: "homebrew_tap_core".to_string(),
-                repository: "https://github.com/Kandelo-dev/homebrew-tap-core.git".to_string(),
+                name: "example_tap_core".to_string(),
+                repository: "https://github.com/Kandelo-dev/example-tap-core.git".to_string(),
                 commit: "b40a764d47f4f4408790de2c211ccb8efb8e4c46".to_string(),
                 tree: None,
                 allow_uninitialized_gitlinks: false,

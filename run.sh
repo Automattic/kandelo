@@ -22,9 +22,6 @@
 #                                  package binaries.
 #   --already-materialized        Retired browser selection mode; rejected by
 #                                  browser commands.
-#   --require-sealed-homebrew-selection
-#                                 Retired browser selection mode; rejected by
-#                                  browser commands.
 #   --source-rootfs-shell         Retired browser selection mode; rejected by
 #                                  browser commands.
 #   --pr-staging                  Use the current PR's staging binary index for
@@ -69,7 +66,6 @@ ALLOW_STALE_ARGS=()
 FETCH_ONLY_ARGS=()
 ALREADY_MATERIALIZED=0
 SOURCE_ROOTFS_SHELL=0
-REQUIRE_SEALED_HOMEBREW_SELECTION=0
 USE_PR_STAGING=0
 NEW_ARGS=()
 for a in "$@"; do
@@ -85,9 +81,6 @@ for a in "$@"; do
             ;;
         --source-rootfs-shell)
             SOURCE_ROOTFS_SHELL=1
-            ;;
-        --require-sealed-homebrew-selection)
-            REQUIRE_SEALED_HOMEBREW_SELECTION=1
             ;;
         --pr-staging)
             USE_PR_STAGING=1
@@ -107,9 +100,6 @@ fi
 if [ "${WASM_POSIX_ALREADY_MATERIALIZED:-0}" = "1" ]; then
     ALREADY_MATERIALIZED=1
 fi
-if [ "${WASM_POSIX_REQUIRE_SEALED_HOMEBREW_SELECTION:-0}" = "1" ]; then
-    REQUIRE_SEALED_HOMEBREW_SELECTION=1
-fi
 CI_BROWSER_SOURCE_AUTHORITY="${WASM_POSIX_CI_BROWSER_SOURCE_AUTHORITY:-}"
 unset WASM_POSIX_CI_BROWSER_SOURCE_AUTHORITY
 if [ "${#ALLOW_STALE_ARGS[@]}" -gt 0 ] && [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then
@@ -120,7 +110,6 @@ export WASM_POSIX_ALLOW_STALE=$([ "${#ALLOW_STALE_ARGS[@]}" -gt 0 ] && echo 1 ||
 export WASM_POSIX_FETCH_ONLY=$([ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ] && echo 1 || echo 0)
 export WASM_POSIX_ALREADY_MATERIALIZED=$ALREADY_MATERIALIZED
 export WASM_POSIX_SOURCE_ROOTFS_SHELL=$SOURCE_ROOTFS_SHELL
-export WASM_POSIX_REQUIRE_SEALED_HOMEBREW_SELECTION=$REQUIRE_SEALED_HOMEBREW_SELECTION
 if [ "${WASM_POSIX_USE_PR_STAGING:-0}" = "1" ]; then
     USE_PR_STAGING=1
 fi
@@ -131,7 +120,6 @@ case "${1:-}" in
         if [ "$ALREADY_MATERIALIZED" -eq 1 ] ||
             [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ] ||
             [ "$SOURCE_ROOTFS_SHELL" -eq 1 ] ||
-            [ "$REQUIRE_SEALED_HOMEBREW_SELECTION" -eq 1 ] ||
             [ "$USE_PR_STAGING" -eq 1 ] ||
             [ -n "$CI_BROWSER_SOURCE_AUTHORITY" ]; then
             err "browser commands use local SourceOnly builds; legacy binary-selection modes are not supported."
@@ -152,12 +140,6 @@ if [ "$SOURCE_ROOTFS_SHELL" -eq 1 ]; then
         exit 2
     fi
 fi
-if [ "$REQUIRE_SEALED_HOMEBREW_SELECTION" -eq 1 ]; then
-    [ "$#" -eq 1 ] && [ "${1:-}" = "prepare-browser" ] || {
-        err "--require-sealed-homebrew-selection is valid only for prepare-browser."
-        exit 2
-    }
-fi
 
 validate_ci_browser_source_authority() {
     [ -n "$CI_BROWSER_SOURCE_AUTHORITY" ] || return 0
@@ -169,7 +151,6 @@ validate_ci_browser_source_authority() {
         [ "$ALREADY_MATERIALIZED" -ne 1 ] ||
         [ "${#FETCH_ONLY_ARGS[@]}" -eq 0 ] ||
         [ "$SOURCE_ROOTFS_SHELL" -ne 0 ] ||
-        [ "$REQUIRE_SEALED_HOMEBREW_SELECTION" -ne 0 ] ||
         [ "$USE_PR_STAGING" -ne 0 ]; then
         err "Internal browser source authority requires isolated CI preparation."
         return 2
@@ -1446,125 +1427,8 @@ stage_source_rootfs_shell_vfs() {
         return 0
     fi
 
-    local source_repository="$WASM_POSIX_SOURCE_ROOTFS_SHELL_REPOSITORY"
-    local source_commit="$WASM_POSIX_SOURCE_ROOTFS_SHELL_COMMIT"
-    [ -n "$SOURCE_ROOTFS_SHELL_WORK_ROOT" ] &&
-        [ -d "$SOURCE_ROOTFS_SHELL_STAGE_BINARIES" ] || {
-        err "Internal error: source-rootfs Pages isolation was not initialized"
-        return 1
-    }
-
-    local xtask
-    xtask="$(pkg_xtask_bin)" || {
-        err "Could not build the package resolver needed for the source-rootfs shell"
-        return 1
-    }
-
-    local archive_root="$SOURCE_ROOTFS_SHELL_WORK_ROOT/archive"
-    local manifest="$SOURCE_ROOTFS_SHELL_WORK_ROOT/manifest.toml"
-    mkdir "$archive_root"
-
-    local archive_args=(
-        archive-stage
-        --package "$REPO_ROOT/homebrew/source-rootfs-shell-package"
-        --registry "$REPO_ROOT/packages/registry"
-        --arch wasm32
-        --binaries-dir "$SOURCE_ROOTFS_SHELL_STAGE_BINARIES"
-        --out "$archive_root"
-        --build-timestamp "1970-01-01T00:00:00Z"
-        --build-host "run.sh-source-rootfs-shell"
-        --source-repository "$source_repository"
-        --source-commit "$source_commit"
-        --force-source-closure
-    )
-    archive_args+=(--cache-root "$WASM_POSIX_BINARY_CACHE_ROOT")
-
-    step "Building the explicit source-rootfs Shell VFS bridge"
-    # WHY: the bridge has a distinct recipe identity. Force-building its
-    # complete source closure means this mode cannot silently execute the
-    # canonical bottle-backed shell recipe when an archive is unavailable.
-    (cd "$REPO_ROOT" && "$xtask" "${archive_args[@]}")
-
-    local archives=()
-    local archive
-    while IFS= read -r archive; do
-        archives+=("$archive")
-    done < <(find "$archive_root" -maxdepth 1 -type f -name '*.tar.zst' -print)
-    if [ "${#archives[@]}" -ne 1 ]; then
-        err "Source-rootfs shell staging produced ${#archives[@]} archives; expected exactly one"
-        return 1
-    fi
-
-    "$xtask" archive-extract-member \
-        --archive "${archives[0]}" \
-        --member manifest.toml \
-        --out "$manifest"
-    [ -f "$manifest" ] && [ ! -L "$manifest" ] || {
-        err "Source-rootfs shell archive did not contain a regular manifest.toml"
-        return 1
-    }
-
-    local package_names=()
-    local repositories=()
-    local commits=()
-    local value
-    while IFS= read -r value; do
-        package_names+=("$value")
-    done < <(
-        awk '
-          /^\[/ { exit }
-          /^name[[:space:]]*=/ {
-            line = $0
-            sub(/^name[[:space:]]*=[[:space:]]*"/, "", line)
-            sub(/"[[:space:]]*$/, "", line)
-            print line
-          }
-        ' "$manifest"
-    )
-    while IFS= read -r value; do
-        repositories+=("$value")
-    done < <(
-        sed -nE 's/^repo_url[[:space:]]*=[[:space:]]*"([^"]+)"$/\1/p' "$manifest"
-    )
-    while IFS= read -r value; do
-        commits+=("$value")
-    done < <(
-        sed -nE 's/^commit[[:space:]]*=[[:space:]]*"([0-9a-f]{40})"$/\1/p' "$manifest"
-    )
-
-    # WHY: command-line intent is not evidence about produced bytes. Inspect
-    # the staged archive and require one exact recipe/repository/commit
-    # identity before installing any artifact under the canonical shell name.
-    [ "${#package_names[@]}" -eq 1 ] &&
-        [ "${package_names[0]}" = "source-rootfs-shell" ] || {
-        err "Source-rootfs shell archive has the wrong or ambiguous package identity"
-        return 1
-    }
-    [ "${#repositories[@]}" -eq 1 ] &&
-        [ "${repositories[0]}" = "$source_repository" ] || {
-        err "Source-rootfs shell archive repository provenance does not match the requested source"
-        return 1
-    }
-    [ "${#commits[@]}" -eq 1 ] &&
-        [ "${commits[0]}" = "$source_commit" ] || {
-        err "Source-rootfs shell archive commit provenance does not match the requested source"
-        return 1
-    }
-    if grep -Fq "UNPUBLISHED" "$manifest"; then
-        err "Source-rootfs shell archive retained an unpublished provenance marker"
-        return 1
-    fi
-
-    SOURCE_ROOTFS_SHELL_CANDIDATE="$SOURCE_ROOTFS_SHELL_WORK_ROOT/shell.vfs.zst"
-    "$xtask" archive-extract-member \
-        --archive "${archives[0]}" \
-        --member artifacts/shell.vfs.zst \
-        --out "$SOURCE_ROOTFS_SHELL_CANDIDATE"
-    [ -f "$SOURCE_ROOTFS_SHELL_CANDIDATE" ] &&
-        [ ! -L "$SOURCE_ROOTFS_SHELL_CANDIDATE" ] || {
-        err "Source-rootfs shell archive omitted its declared shell.vfs.zst artifact"
-        return 1
-    }
+    err "Local source-rootfs shell archive staging was retired; provide a pre-staged candidate via SOURCE_ROOTFS_SHELL_CANDIDATE."
+    return 1
 }
 
 activate_source_rootfs_shell_resolver_override() {
@@ -2471,39 +2335,6 @@ build_browser() {
     done
 }
 
-prepare_browser_homebrew_bootstrap() {
-    # WHY: generic Prepare Merge has already authenticated this materialized
-    # image as the explicit source-rootfs bridge. That bridge truthfully has
-    # no Homebrew selection, so asking it for a bootstrap bottle would turn a
-    # valid source-shell test into a false product-publication requirement.
-    if [ -n "$CI_BROWSER_SOURCE_AUTHORITY" ]; then
-        step "Using authenticated CI source-rootfs shell without Homebrew"
-        return 0
-    fi
-    step "Resolving the canonical Homebrew browser bootstrap"
-    local xtask
-    xtask="$(pkg_xtask_bin)" || return 1
-    local resolve_args=(
-        build-deps --arch wasm32
-        --binaries-dir "$REPO_ROOT/local-binaries"
-    )
-    if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then
-        resolve_args+=("${FETCH_ONLY_ARGS[@]}")
-    fi
-    resolve_args+=(resolve homebrew-bootstrap)
-    mkdir -p "$REPO_ROOT/local-binaries"
-    (cd "$REPO_ROOT" && "$xtask" "${resolve_args[@]}" >/dev/null)
-    local output_rel
-    output_rel="$(pkg_output_rel homebrew-bootstrap homebrew-bootstrap.zip wasm32)" ||
-        return 1
-    local resolved
-    resolved="$(bash "$REPO_ROOT/scripts/resolve-binary.sh" "programs/$output_rel")" ||
-        return 1
-    bash "$REPO_ROOT/scripts/stage-homebrew-bootstrap-browser-asset.sh" \
-        "$resolved" \
-        "$REPO_ROOT/apps/browser-demos/public/homebrew-bootstrap.zip"
-}
-
 fetch_browser_binaries() {
     local disabled_pkgs
     local fetch_args=()
@@ -2733,7 +2564,7 @@ clean_target() {
                   "$REPO_ROOT/local-binaries/programs/wasm32/lamp.vfs.zst"
             warn "Cleaned LAMP VFS image" ;;
         nginx-vfs)
-            rm -f "$REPO_ROOT/apps/browser-demos/public/nginx.vfs.zst" \
+            rm -f "$REPO_ROOT/apps/browser-demos/public/nginx-vfs.vfs.zst" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/nginx-vfs.vfs.zst"
             warn "Cleaned nginx VFS image" ;;
         redis-vfs)
@@ -2741,7 +2572,7 @@ clean_target() {
                   "$REPO_ROOT/local-binaries/programs/wasm32/redis-vfs.vfs.zst"
             warn "Cleaned Redis VFS image" ;;
         nginx-php-vfs)
-            rm -f "$REPO_ROOT/apps/browser-demos/public/nginx-php.vfs.zst" \
+            rm -f "$REPO_ROOT/apps/browser-demos/public/nginx-php-vfs.vfs.zst" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/nginx-php-vfs.vfs.zst"
             warn "Cleaned nginx + PHP-FPM VFS image" ;;
         erlang)

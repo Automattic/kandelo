@@ -10,7 +10,7 @@ without rewriting or force-pushing `main`.
 The repair is one pull request merged with GitHub's **Rebase and merge** method.
 It first reverts the squash, then replays a conceptually complete ABI 43
 sequence, and finally adds the postcommit `posix_spawn` liveness repair needed
-by the `msmtpd` bottle test.
+by the `msmtpd` package test.
 
 ## Repository facts
 
@@ -74,16 +74,16 @@ The following table is the complete grouping authority. Ordinals refer to
 | 59-66 | Consolidate | Make credentials, set-ID execution, and PTY metadata authoritative |
 | 67-72 | Consolidate | Complete interrupted-wait, login, sudo-lite, and vfork integration |
 | 73-75 | Consolidate | Pin build tools and initialize the reentrant Node runtime |
-| 76-83 | Consolidate | Integrate ABI 43 Homebrew descriptors and product projections |
+| 76-83 | Consolidate | Integrate ABI 43 package descriptors and product projections |
 | 84-86 | Consolidate | Repair CI and product contract fixtures for ABI 43 |
-| 87-93 | Consolidate | Make Formulae and candidate provenance authoritative |
-| 94-97 | Consolidate | Preserve candidate Formula tests and program projections |
-| 98-102 | Consolidate | Preserve keg, launcher, rebuild, schema, and public clone identity |
+| 87-93 | Consolidate | Make package and candidate provenance authoritative |
+| 94-97 | Consolidate | Preserve candidate tests and program projections |
+| 98-102 | Consolidate | Preserve install-prefix, launcher, rebuild, schema, and public clone identity |
 | 103-111 | Consolidate | Unblock and validate first-wave candidate publication |
 | 112-117 | Consolidate | Enforce qualified metadata and close first-wave platform drift |
-| 118-120 | Consolidate | Pour authenticated candidates in bounded verification realms |
-| 121-124 | Consolidate | Preserve and project Chromium across Formula tests |
-| 125-127 | Consolidate | Materialize exact candidate dependency bottles |
+| 118-120 | Consolidate | Install authenticated candidates in bounded verification realms |
+| 121-124 | Consolidate | Preserve and project Chromium across candidate tests |
+| 125-127 | Consolidate | Materialize exact candidate dependency artifacts |
 | 128 | Keep individually | Keep publisher integration out of PR staging |
 | 129 | Keep individually | Export PHP side-module ABI identity |
 | 130 | Keep individually | Preserve worker output process identity |
@@ -147,7 +147,7 @@ force-merging stale history.
 
 ## Staging interaction
 
-The active tap workflow may continue validating the immutable original ABI 43
+The active staging workflow may continue validating the immutable original ABI 43
 request while this history repair is prepared. Its candidate bytes remain
 useful. The repaired Kandelo history produces a new source commit identity, so
 after the history pull request lands the staging coordinator must either prove

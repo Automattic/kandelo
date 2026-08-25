@@ -33,9 +33,9 @@ do
 done
 
 TARGET="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-REPOSITORY="kandelo-dev/homebrew-tap-core"
-TAG="homebrew-shell-bottles-sha256-$(printf 'b%.0s' {1..64})"
-TITLE="Kandelo Homebrew shell bottle mirror"
+REPOSITORY="kandelo-dev/sample-tap-core"
+TAG="sample-shell-bottles-sha256-$(printf 'b%.0s' {1..64})"
+TITLE="Kandelo sample shell bottle mirror"
 BODY="Immutable fixture mirror."
 ASSET_ROOT="$TMP_ROOT/assets"
 MANIFEST="$TMP_ROOT/manifest.json"

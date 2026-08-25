@@ -245,7 +245,7 @@ grep -Fq '(.software["package"] // []) | length' <<<"$preflight_block" &&
 inputs_block="$(step_block "$CANARY_WORKFLOW" "Materialize exact current product inputs")"
 grep -Fq 'archive-files.json' <<<"$inputs_block" &&
   ! grep -Eq 'package|fetch-binaries' <<<"$inputs_block" ||
-  fail "canary must materialize only declared non-Homebrew archives"
+  fail "canary must materialize only declared archive files"
 handoff_block="$(step_block "$CANARY_WORKFLOW" "Write the bounded production handoff")"
 grep -Fq 'archive_files:' <<<"$handoff_block" &&
   grep -Fq 'program_index:' <<<"$handoff_block" &&
@@ -372,7 +372,7 @@ fi
 grep -Fq '.software.archive[]' <<<"$production_inputs_block" &&
   grep -Fq 'archive-files.json' <<<"$production_inputs_block" &&
   grep -Fq 'sha256sum --check --status' <<<"$production_inputs_block" ||
-  fail "production Pages must materialize only exact non-Homebrew archives"
+  fail "production Pages must materialize only exact declared archive files"
 
 bottle_preflight_line="$(step_line "Preflight the complete canonical bottle closure")"
 runtime_line="$(step_line "Prepare exact uncredentialed runtime")"

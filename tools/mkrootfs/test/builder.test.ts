@@ -329,32 +329,32 @@ describe("image builder — pass 4: archives", () => {
     const target = new TextEncoder().encode("../../shared/curl");
     const image = await buildArchiveImage(
       {
-        "bin/brew": zipUnixFile("#!/usr/bin/env ruby\n", 0o755),
-        "Library/Homebrew/shims/shared/curl": zipUnixFile(
+        "bin/pkgtool": zipUnixFile("#!/usr/bin/env ruby\n", 0o755),
+        "Library/vendor/shims/shared/curl": zipUnixFile(
           "#!/bin/sh\nexec /usr/bin/curl \"$@\"\n",
           0o4755,
         ),
-        "Library/Homebrew/shims/shared/group-tool": zipUnixFile(
+        "Library/vendor/shims/shared/group-tool": zipUnixFile(
           "#!/bin/sh\n",
           0o710,
         ),
-        "Library/Homebrew/shims/linux/super/curl": zipSymlink(target),
-        "Library/Homebrew/bin/non-executable": new TextEncoder().encode(
+        "Library/vendor/shims/linux/super/curl": zipSymlink(target),
+        "Library/vendor/bin/non-executable": new TextEncoder().encode(
           "configuration\n",
         ),
-        "Library/Homebrew/readme.txt": zipUnixFile("read me\n", 0o600),
+        "Library/vendor/readme.txt": zipUnixFile("read me\n", 0o600),
       },
-      "base=/opt/kandelo/homebrew fmode=0644 fmode_policy=preserve-executable dmode=0755 uid=1000 gid=1000",
+      "base=/opt/kandelo/pkg fmode=0644 fmode_policy=preserve-executable dmode=0755 uid=1000 gid=1000",
     );
     const mfs = MemoryFileSystem.fromImage(image);
-    const prefix = "/opt/kandelo/homebrew";
+    const prefix = "/opt/kandelo/pkg";
 
-    expect(mfs.stat(`${prefix}/bin/brew`).mode & 0o7777).toBe(0o755);
+    expect(mfs.stat(`${prefix}/bin/pkgtool`).mode & 0o7777).toBe(0o755);
     expect(
-      mfs.stat(`${prefix}/Library/Homebrew/shims/shared/curl`).mode & 0o7777,
+      mfs.stat(`${prefix}/Library/vendor/shims/shared/curl`).mode & 0o7777,
     ).toBe(0o755);
     expect(
-      mfs.stat(`${prefix}/Library/Homebrew/shims/shared/group-tool`).mode &
+      mfs.stat(`${prefix}/Library/vendor/shims/shared/group-tool`).mode &
         0o7777,
     ).toBe(0o754);
 
@@ -362,13 +362,13 @@ describe("image builder — pass 4: archives", () => {
     // also stay at fmode even when their path triggers ZipEntry's executable
     // compatibility default.
     expect(
-      mfs.stat(`${prefix}/Library/Homebrew/bin/non-executable`).mode & 0o7777,
+      mfs.stat(`${prefix}/Library/vendor/bin/non-executable`).mode & 0o7777,
     ).toBe(0o644);
     expect(
-      mfs.stat(`${prefix}/Library/Homebrew/readme.txt`).mode & 0o7777,
+      mfs.stat(`${prefix}/Library/vendor/readme.txt`).mode & 0o7777,
     ).toBe(0o644);
 
-    const linkPath = `${prefix}/Library/Homebrew/shims/linux/super/curl`;
+    const linkPath = `${prefix}/Library/vendor/shims/linux/super/curl`;
     expect(mfs.readlink(linkPath)).toBe("../../shared/curl");
     expect(readFromImage(mfs, linkPath)).toContain("exec /usr/bin/curl");
     expect(mfs.stat(linkPath).uid).toBe(1000);
@@ -408,20 +408,20 @@ describe("image builder — pass 4: archives", () => {
     expect(mfs.readlink("/usr/bin/vi")).toBe("vim");
   });
 
-  it("preserves Homebrew-style parent-relative symlink targets byte-for-byte", async () => {
+  it("preserves parent-relative symlink targets byte-for-byte", async () => {
     const targetBytes = new TextEncoder().encode("../../shared/curl");
     const image = await buildArchiveImage(
       {
-        "Library/Homebrew/shims/shared/curl": new TextEncoder().encode(
+        "Library/vendor/shims/shared/curl": new TextEncoder().encode(
           "#!/bin/sh\nexec /usr/bin/curl \"$@\"\n",
         ),
-        "Library/Homebrew/shims/linux/super/curl": zipSymlink(targetBytes),
+        "Library/vendor/shims/linux/super/curl": zipSymlink(targetBytes),
       },
-      "base=/opt/kandelo/homebrew fmode=0640 dmode=0750 uid=1000 gid=1000",
+      "base=/opt/kandelo/pkg fmode=0640 dmode=0750 uid=1000 gid=1000",
     );
     const mfs = MemoryFileSystem.fromImage(image);
     const linkPath =
-      "/opt/kandelo/homebrew/Library/Homebrew/shims/linux/super/curl";
+      "/opt/kandelo/pkg/Library/vendor/shims/linux/super/curl";
 
     const link = mfs.lstat(linkPath);
     expect((link.mode & 0o170000) >>> 0).toBe(0o120000);
@@ -436,13 +436,13 @@ describe("image builder — pass 4: archives", () => {
     // Following the relative target reaches the ordinary archive file.
     expect(readFromImage(mfs, linkPath)).toContain("exec /usr/bin/curl");
     const target = mfs.stat(
-      "/opt/kandelo/homebrew/Library/Homebrew/shims/shared/curl",
+      "/opt/kandelo/pkg/Library/vendor/shims/shared/curl",
     );
     expect(target.mode & 0o777).toBe(0o640);
     expect(target.uid).toBe(1000);
     expect(target.gid).toBe(1000);
     const parent = mfs.stat(
-      "/opt/kandelo/homebrew/Library/Homebrew/shims/linux/super",
+      "/opt/kandelo/pkg/Library/vendor/shims/linux/super",
     );
     expect(parent.mode & 0o777).toBe(0o750);
     expect(parent.uid).toBe(1000);

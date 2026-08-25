@@ -11,7 +11,8 @@ import {
 } from "../../../web-libs/kandelo-session/src/demo-config";
 import { ensureDirRecursive, writeVfsBinary } from "./vfs-image-helpers";
 
-export const MAIN_SHELL_DEMO_CONFIG_SOURCE = "homebrew/main-shell-demo.json";
+export const MAIN_SHELL_DEMO_CONFIG_SOURCE =
+  "packages/registry/shell/source-rootfs-shell-demo.json";
 
 export interface LoadedMainShellDemoConfig {
   config: KandeloDemoConfig;

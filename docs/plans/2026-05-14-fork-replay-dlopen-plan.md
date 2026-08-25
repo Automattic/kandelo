@@ -77,9 +77,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
 const SYSROOT = join(REPO_ROOT, "sysroot");
 const GLUE_DIR = join(REPO_ROOT, "glue");
-const LLVM_BIN = process.env.LLVM_BIN || "/opt/homebrew/opt/llvm@21/bin";
+const LLVM_BIN = process.env.LLVM_BIN || "/usr/local/opt/llvm@21/bin";
 const CLANG = `${LLVM_BIN}/clang`;
-const WASM_LD = process.env.LLVM_BIN ? `${LLVM_BIN}/wasm-ld` : "/opt/homebrew/bin/wasm-ld";
+const WASM_LD = process.env.LLVM_BIN ? `${LLVM_BIN}/wasm-ld` : "/usr/local/bin/wasm-ld";
 
 const hasSysroot = existsSync(join(SYSROOT, "lib", "libc.a"));
 const hasKernel = existsSync(join(REPO_ROOT, "binaries", "kernel.wasm")) ||
@@ -247,7 +247,7 @@ Expected: FAIL. Either:
 - `Kernel worker failed: table index is out of bounds` in stderr (the production bug), OR
 - `child exited badly` in stderr.
 
-If it passes already, the bug is masked. Most likely cause: `wasm-opt` is not on `$PATH`, so the binary lacks asyncify and `fork()` returns ENOSYS instead of taking the asyncify-fork path that exhibits the bug. Confirm with `which wasm-opt` and, if missing, install via the nix dev-shell (`scripts/dev-shell.sh bash`) or `brew install binaryen`. If `wasm-opt` IS present and the test still passes, the bug genuinely doesn't reproduce — investigate which fork branch is being taken before proceeding.
+If it passes already, the bug is masked. Most likely cause: `wasm-opt` is not on `$PATH`, so the binary lacks asyncify and `fork()` returns ENOSYS instead of taking the asyncify-fork path that exhibits the bug. Confirm with `which wasm-opt` and, if missing, install via the nix dev-shell (`scripts/dev-shell.sh bash`). If `wasm-opt` IS present and the test still passes, the bug genuinely doesn't reproduce — investigate which fork branch is being taken before proceeding.
 
 **Step 3: Commit the failing test**
 

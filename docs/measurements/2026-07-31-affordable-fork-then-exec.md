@@ -25,9 +25,10 @@ modules substantially harder to isolate, and make a child `exec()` retire the
 Worker that must later resume the parent.
 
 The integration branch now implements that core architecture. This is not yet
-a broad release or Homebrew completion claim: complete conformance suites,
-published upstream CRuby artifacts, real resident set size (RSS), artifact
-publication, and the exact Homebrew lifecycle remain explicit gates.
+a broad release or package-install completion claim: complete conformance
+suites, published upstream CRuby artifacts, real resident set size (RSS),
+artifact publication, and the exact package-install lifecycle remain explicit
+gates.
 
 The independently reviewable implementation now includes:
 
@@ -67,8 +68,8 @@ The independently reviewable implementation now includes:
   cookie.
 
 Sparse exact cloning reduced resident set size (RSS) in a controlled sparse
-memory case, but increased scan/copy time and has no real Homebrew result. It
-is therefore not selected. Worker and module churn were measurable but small
+memory case, but increased scan/copy time and has no real package-install
+result. It is therefore not selected. Worker and module churn were measurable but small
 next to the address-space copy, so worker rotation or module-specific caching
 is not selected as the primary architecture.
 
@@ -143,7 +144,7 @@ backings return physical memory. Exact Kandelo ownership and eventual engine
 reclamation therefore do not prevent a transient allocation rate from
 exceeding renderer capacity.
 
-The July 30 stock-Homebrew measurements in
+The July 30 stock package-install measurements in
 [`2026-07-30-node-process-worker-init-ownership.md`](2026-07-30-node-process-worker-init-ownership.md)
 separated a Node `workerData` retention issue from this underlying cost. The
 one-shot initialization transport reduced maximum RSS from 14,665,089,024 to
@@ -646,8 +647,8 @@ bash scripts/dev-shell.sh npm run bench -- \
 | pthread clone | 49.47 ms |
 | non-forking posix_spawn | 50.28 ms |
 
-This latency microbenchmark does not reproduce Ruby's memory size or
-Homebrew's process count. It proves only the selected artifact paths and their
+This latency microbenchmark does not reproduce Ruby's memory size or a package
+install's process count. It proves only the selected artifact paths and their
 local medians.
 
 The repository's real Node retirement fixture then ran 48 sequential 8 MiB
@@ -676,7 +677,7 @@ else
 ```
 
 `has_privilege()` rejects effective uid 0, uid/gid mismatches, saved-id
-mismatches, and `issetugid()`. Thus a normal Kandelo Homebrew process running
+mismatches, and `issetugid()`. Thus a normal Kandelo user process running
 as uid 1000 naturally selects upstream vfork for this eligible async-safe
 fork/exec path. Root and other privileged shapes intentionally retain
 ordinary fork. No Ruby-specific command classification is needed.
@@ -757,7 +758,7 @@ Worker retirement across two Process identities.
 ### Sparse exact clone
 
 Deferred. Synthetic RSS improved, but scan time regressed and no real
-Homebrew, Node/browser, or cross-engine application result exists.
+package-install, Node/browser, or cross-engine application result exists.
 
 ### Worker or module rotation
 
@@ -829,8 +830,8 @@ implementation evidence, not authorization to merge or publish the removal.
 7. Rebuild the Ruby package, increment its publish revision/cache key, publish
    it to the ABI-specific binary index, and anonymously resolve the published
    archive. No local unpublished artifact may satisfy the proof.
-8. Rebuild the Homebrew VFS/image inputs against that exact Ruby archive and
-   verify their ABI metadata and source provenance.
+8. Rebuild the package-install VFS/image inputs against that exact Ruby archive
+   and verify their ABI metadata and source provenance.
 9. Repeat the exact first-party lifecycle: boot the stock mostly-lazy main
    shell as uid 1000, tap the immutable public core revision, verify trust and
    revision, remove the directly composed Bzip2 receipt, install Bzip2 through
@@ -846,8 +847,8 @@ implementation evidence, not authorization to merge or publish the removal.
 The recipe removal must not be merged or published until the remaining
 platform, publication, and lifecycle gates support it. Until then, this
 record supports the connected platform implementation and ordinary-fork
-admission guardrail, not the claim that Homebrew's fork-then-exec problem is
-fully resolved.
+admission guardrail, not the claim that the package-install fork-then-exec
+problem is fully resolved.
 
 ## Validation recorded for this change
 
@@ -916,17 +917,17 @@ replay stack as the source of the observed ordinary-fork failures, but the ABI
 43 baseline defect itself remains unresolved. These cases are not completion
 evidence for either path.
 
-Still required before a broad vfork or Homebrew completion claim:
+Still required before a broad vfork or package-install completion claim:
 
 - libc, POSIX, Sortix, kernel, host, fork-instrument, ABI, Node, and browser
   conformance suites selected for the connected implementation;
 - pristine upstream-selection tests at uid 1000 and privileged uid 0;
 - rebuilt and anonymously published Ruby/VFS artifacts; and
-- the exact real in-guest Homebrew lifecycle and RSS proof.
+- the exact real in-guest package-install lifecycle and RSS proof.
 
 ### Selected ABI 43 batch validation — 2026-08-01
 
-The selected non-Homebrew PR batch, PRs #1096 and #1098, the borrowed-replay
+The selected non-package-install PR batch, PRs #1096 and #1098, the borrowed-replay
 foundation, and PR #947 were composed on
 `integration/abi43-batch-20260731`. The frozen sources, history rule, and next
 implementation steps are recorded in
@@ -1010,8 +1011,8 @@ artifact closure. A libc vfork runner timed out, and a direct `/bin/sh` exec
 attempt reported an exec-format error; neither is recorded as a libc pass. The
 development shell did not provide `cargo fmt`, so no formatting-pass claim is
 made. Complete libc, POSIX, Sortix, host, browser, fork-instrument,
-performance/RSS, artifact-publication, and Homebrew lifecycle proofs remain
-outstanding.
+performance/RSS, artifact-publication, and package-install lifecycle proofs
+remain outstanding.
 
 ### Upstream CRuby selection and patch removal — 2026-08-01
 
@@ -1054,8 +1055,8 @@ Firefox, and WebKit. Chromium additionally passed successful exec and the
 root fallback, for four passing Playwright cases and two intentional
 cross-engine skips.
 
-No artifact was published, no Homebrew image was rebuilt, no real tap/install
-lifecycle was run, and no application RSS claim was measured. Those remain
+No artifact was published, no package-install image was rebuilt, no real
+install lifecycle was run, and no application RSS claim was measured. Those remain
 release gates along with the broad suites listed above.
 
 ### Broad validation and current performance — 2026-08-01
@@ -1110,7 +1111,7 @@ sharing an existing 256 MiB Memory adds Worker-scale RSS, while a
 complete clone adds 496.344 MiB in this sparse-parent experiment. Sparse
 cloning saves RSS but still faults and scans the parent and takes
 2.25 to 2.70 times as long. This remains component evidence, not a
-Homebrew application RSS result.
+package-install application RSS result.
 
 All three self-contained benchmark suites ran for three rounds on Node
 and Chromium. The final medians included:
@@ -1161,5 +1162,5 @@ integration train bisectable for a separate startup-size investigation.
 
 Artifact publication remains the release boundary. Until the exact
 ABI 43 Ruby, shell, and application closure is published, neither the
-complete browser benchmark matrix nor the real in-guest Homebrew
-tap/install and RSS lifecycle can be claimed.
+complete browser benchmark matrix nor the real in-guest package install
+and RSS lifecycle can be claimed.

@@ -186,9 +186,6 @@ if [[ "$SOURCE_TAG" =~ ^preserved-package-generation- ]]; then
   )
 fi
 env -u GH_TOKEN -u GITHUB_TOKEN \
-  -u HOMEBREW_GITHUB_API_TOKEN \
-  -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-  -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
   -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
   -u ACTIONS_ID_TOKEN_REQUEST_URL \
   -u ACTIONS_RUNTIME_TOKEN \
@@ -231,9 +228,6 @@ verify_preserved_v2_ancestry() {
 
 verify_preserved_v2_ancestry "$TMP_ROOT/producer-evidence.json"
 env -u GH_TOKEN -u GITHUB_TOKEN \
-  -u HOMEBREW_GITHUB_API_TOKEN \
-  -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-  -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
   -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
   -u ACTIONS_ID_TOKEN_REQUEST_URL \
   -u ACTIONS_RUNTIME_TOKEN \
@@ -260,9 +254,6 @@ run_authority_xtask_without_credentials() {
   # WHY: exact main source is inert input. Only the current authority parser
   # may interpret its manifests and checked identity records.
   env -u GH_TOKEN -u GITHUB_TOKEN \
-    -u HOMEBREW_GITHUB_API_TOKEN \
-    -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-    -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_URL \
     -u ACTIONS_RUNTIME_TOKEN \
@@ -285,9 +276,6 @@ if [ "$BROWSER_INPUTS" = true ]; then
     browser_root_args+=(--include-package rootfs)
   fi
   env -u GH_TOKEN -u GITHUB_TOKEN \
-    -u HOMEBREW_GITHUB_API_TOKEN \
-    -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-    -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_URL \
     -u ACTIONS_RUNTIME_TOKEN \
@@ -297,9 +285,6 @@ if [ "$BROWSER_INPUTS" = true ]; then
       "${browser_root_args[@]}" >"$TMP_ROOT/browser-inputs-roots.txt"
   if [ "$VALIDATION_METHOD" = identical-package-cache-projection-v1 ]; then
     env -u GH_TOKEN -u GITHUB_TOKEN \
-      -u HOMEBREW_GITHUB_API_TOKEN \
-      -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-      -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
       -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
       -u ACTIONS_ID_TOKEN_REQUEST_URL \
       -u ACTIONS_RUNTIME_TOKEN \
@@ -355,9 +340,6 @@ if [ "$VALIDATION_METHOD" = identical-package-cache-projection-v1 ]; then
   gh api "/repos/$REPOSITORY/git/trees/$authority_tree?recursive=1" \
     >"$main_tree_json"
   env -u GH_TOKEN -u GITHUB_TOKEN \
-    -u HOMEBREW_GITHUB_API_TOKEN \
-    -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-    -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_URL \
     -u ACTIONS_RUNTIME_TOKEN \
@@ -414,9 +396,6 @@ if [ "${#producer_evidence_extra_args[@]}" -gt 0 ]; then
   # its complete bundle from the public release proves the application seal,
   # archive inventory, and root-job log bytes before any admission decision.
   env -u GH_TOKEN -u GITHUB_TOKEN \
-    -u HOMEBREW_GITHUB_API_TOKEN \
-    -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-    -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_URL \
     -u ACTIONS_RUNTIME_TOKEN \
@@ -483,9 +462,6 @@ jq 'sort_by(.name) | map({name,state,size,digest})' \
   "$TMP_ROOT/validated/assets.json" \
   >"$TMP_ROOT/source-assets-before.json"
 if ! env -u GH_TOKEN -u GITHUB_TOKEN \
-    -u HOMEBREW_GITHUB_API_TOKEN \
-    -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-    -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_URL \
     -u ACTIONS_RUNTIME_TOKEN \
@@ -499,9 +475,6 @@ if ! env -u GH_TOKEN -u GITHUB_TOKEN \
       "${producer_evidence_after_extra_args[@]}" \
       --output "$TMP_ROOT/producer-evidence-after.json" ||
    ! env -u GH_TOKEN -u GITHUB_TOKEN \
-     -u HOMEBREW_GITHUB_API_TOKEN \
-     -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-     -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
      -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
      -u ACTIONS_ID_TOKEN_REQUEST_URL \
      -u ACTIONS_RUNTIME_TOKEN \
@@ -535,9 +508,6 @@ fi
 verify_preserved_v2_ancestry "$TMP_ROOT/producer-evidence-after.json"
 
 env -u GH_TOKEN -u GITHUB_TOKEN \
-  -u HOMEBREW_GITHUB_API_TOKEN \
-  -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-  -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
   -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
   -u ACTIONS_ID_TOKEN_REQUEST_URL \
   -u ACTIONS_RUNTIME_TOKEN \

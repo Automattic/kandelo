@@ -1,6 +1,6 @@
 /* spawn-bench.c — measure posix_spawn + child exit latency.
  *
- * Measures an ordinary spawn, the first approximately 84 KiB Homebrew-like
+ * Measures an ordinary spawn, the first approximately 84 KiB large
  * environment transfer, and repeated transfers at that high-water mark.
  * The TypeScript suite wrapper picks up the printed metrics. Mirrors
  * `fork-bench.c` (which times fork()) and `exec-bench.c` (which times

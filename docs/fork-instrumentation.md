@@ -200,13 +200,13 @@ Reference-bearing modern C++ exception output and Dash's fork-reachable
 exceptions. The ABI 43 source-build path now accepts those shapes through the
 typed reference and complete-exception recipes. A development rootfs containing
 the configured shell closure can therefore be rebuilt, but it is not a
-published release artifact. Existing ABI 42 packages, bottles, indexes, shell
+published release artifact. Existing ABI 42 packages, indexes, shell
 closures, and VFS images must still be rebuilt through their normal source
 paths and must never be relabeled. Broad publication remains a separately
 coordinated release action. See the [ABI 43 activation-state-safe artifact
 rebuild plan](plans/2026-07-25-abi-43-activation-state-safe-rebuild-plan.md)
 for the exact registry generation count, derived-image order, and ABI 42
-Homebrew-proof isolation boundary.
+package isolation boundary.
 
 `ptr` is `i32` on wasm32 user programs and `i64` on wasm64 user programs. The
 tool picks the pointer width from the module's primary memory — a memory64
@@ -439,7 +439,7 @@ releases that caller only after successful exec commit or exact child
 teardown. The child owns private replay, loader, channel, and continuation
 control state even though its ordinary guest loads and stores address the
 borrowed bytes. Broad conformance, pristine upstream CRuby selection,
-Homebrew lifecycle, and real resident-memory growth remain release gates
+and real resident-memory growth remain release gates
 rather than properties inferred from component tests. A sibling-delivered
 fatal signal against a compute-running borrower is tested separately: because
 no browser Worker API provides an exact quiescence fence in that state, every

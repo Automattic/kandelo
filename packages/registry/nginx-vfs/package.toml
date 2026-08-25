@@ -26,6 +26,6 @@ script_path = "images/vfs/scripts/build-nginx-vfs-image.sh"
 
 [[outputs]]
 name = "nginx-vfs"
-wasm = "nginx.vfs.zst"
+wasm = "nginx-vfs.vfs.zst"
 # This output is a VFS image, not a Wasm executable.
 fork_instrumentation = "disabled"

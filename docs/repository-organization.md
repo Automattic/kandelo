@@ -107,7 +107,7 @@ publication does not authorize candidate package writes or promotion.
 The change-scope classifier implements these categories conservatively. VFS
 authority and staging-contract paths reach the non-package runtime gate;
 product manifests also retain their existing VFS/package-image route. They do
-not opt into an existing credentialed Homebrew publisher by special case.
+not opt into an existing credentialed package publisher by special case.
 
 ## Disabled GitHub Pages Publication
 

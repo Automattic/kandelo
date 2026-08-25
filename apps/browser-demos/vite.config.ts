@@ -38,18 +38,89 @@ import {
 } from "./vite-binary-resolution";
 import { DEFAULT_BROWSER_CORS_PROXY_CONFIG } from "./lib/browser-cors-proxy";
 import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
-import {
-  createCanonicalPagesLegacyBinaryBoundary,
-  createCanonicalPagesVfsProductsPlugin,
-  loadCanonicalPagesProductMap,
-} from "../../scripts/abi-staging-pages-site-builder.ts";
 import { normalizeDeploymentBase } from "../../web-libs/kandelo-session/src/deployment-scope";
+import {
+  createVfsProductDeploymentPlugin,
+  loadVfsProductDeploymentMap,
+} from "../../scripts/vfs-product-deployment.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
 const authoredBrowserBinaryRelPaths = browserBinariesImports(repoRoot);
-const ABI_STAGING_BROWSER_EVIDENCE_VITE_MODE =
-  "abi-staging-browser-evidence";
+
+// The browser demos import the VFS product catalog through this virtual
+// module. It is populated only by the removed Pages-deployment product map;
+// in every normal build it resolves to `null`, and consumers (live-setup,
+// network-demo-worker) already treat `null` as "no scoped product loader".
+const VFS_PRODUCTS_VIRTUAL_MODULE = "virtual:kandelo-pages-vfs-products";
+const RESOLVED_VFS_PRODUCTS_VIRTUAL_MODULE = `\0${VFS_PRODUCTS_VIRTUAL_MODULE}`;
+
+function vfsProductsVirtualModule(): Plugin {
+  return {
+    name: "kandelo-vfs-products-virtual-module",
+    enforce: "pre",
+    resolveId(source) {
+      return source === VFS_PRODUCTS_VIRTUAL_MODULE
+        ? RESOLVED_VFS_PRODUCTS_VIRTUAL_MODULE
+        : null;
+    },
+    load(id) {
+      return id === RESOLVED_VFS_PRODUCTS_VIRTUAL_MODULE
+        ? "export default null;\n"
+        : null;
+    },
+  };
+}
+
+/**
+ * Resolve the VFS product plugin for the current build.
+ *
+ * Without `KANDELO_PAGES_PRODUCT_MAP` this is an ordinary build: the virtual
+ * `virtual:kandelo-pages-vfs-products` module resolves to `null` and consumers
+ * fall back to their default (unscoped) loaders. When a private product map is
+ * supplied, the build is a directory-scoped VFS product deployment: the map is
+ * validated against the catalog and served through the deployment plugin, which
+ * rewrites product URLs under the deployment base and (for grouped maps) copies
+ * the authenticated asset group into the build output.
+ */
+function vfsProductsPlugin(base: string): Plugin {
+  const configuredMap = process.env.KANDELO_PAGES_PRODUCT_MAP;
+  if (configuredMap === undefined) {
+    return vfsProductsVirtualModule();
+  }
+  const configuredAssetGroup = process.env.KANDELO_PAGES_VFS_ASSET_GROUP_DIR;
+  if (!path.isAbsolute(configuredMap)) {
+    throw new Error(
+      "KANDELO_PAGES_PRODUCT_MAP must be an absolute private map path",
+    );
+  }
+  const map = loadVfsProductDeploymentMap({
+    mapPath: configuredMap,
+    sourceRoot: repoRoot,
+  });
+  const declaresAssetGroup = map.products[0]?.asset_group !== undefined;
+  if (declaresAssetGroup !== (configuredAssetGroup !== undefined)) {
+    throw new Error(
+      declaresAssetGroup
+        ? "grouped KANDELO_PAGES_PRODUCT_MAP requires KANDELO_PAGES_VFS_ASSET_GROUP_DIR"
+        : "legacy KANDELO_PAGES_PRODUCT_MAP must omit KANDELO_PAGES_VFS_ASSET_GROUP_DIR",
+    );
+  }
+  if (
+    configuredAssetGroup !== undefined &&
+    !path.isAbsolute(configuredAssetGroup)
+  ) {
+    throw new Error(
+      "KANDELO_PAGES_VFS_ASSET_GROUP_DIR must be an absolute directory path",
+    );
+  }
+  return createVfsProductDeploymentPlugin({
+    assetGroupDirectory: configuredAssetGroup,
+    base,
+    map,
+    mirrorRoots: binaryMirrorRoots,
+  });
+}
 
 function canonicalizeFromExistingAncestor(file: string): string {
   const suffix: string[] = [];
@@ -107,57 +178,12 @@ const authoredBinaryMirrorRoots = [
   path.resolve(repoRoot, "local-binaries"),
   path.resolve(repoRoot, "binaries"),
 ];
+// The scoped-deployment product resolver maps concrete on-disk binary paths
+// back to catalog product IDs. Under a SourceOnly projection the projection
+// root is the sole mirror; otherwise the authored local/release mirrors are.
 const binaryMirrorRoots = configuredSourceOnlyRoot === null
   ? authoredBinaryMirrorRoots
   : [configuredSourceOnlyRoot];
-
-function canonicalPagesVfsProducts(base: string): Plugin {
-  const configuredMap = process.env.KANDELO_PAGES_PRODUCT_MAP;
-  const configuredAssetGroup = process.env.KANDELO_PAGES_VFS_ASSET_GROUP_DIR;
-  if (configuredMap === undefined && configuredAssetGroup !== undefined) {
-    throw new Error(
-      "KANDELO_PAGES_VFS_ASSET_GROUP_DIR requires KANDELO_PAGES_PRODUCT_MAP",
-    );
-  }
-  if (configuredMap === undefined) {
-    return createCanonicalPagesVfsProductsPlugin({
-      base,
-      map: null,
-      mirrorRoots: binaryMirrorRoots,
-    });
-  }
-  if (!path.isAbsolute(configuredMap)) {
-    throw new Error(
-      "KANDELO_PAGES_PRODUCT_MAP must be an absolute private map path",
-    );
-  }
-  const map = loadCanonicalPagesProductMap({
-    mapPath: configuredMap,
-    sourceRoot: repoRoot,
-  });
-  const declaresAssetGroup = map.products[0]?.asset_group !== undefined;
-  if (declaresAssetGroup !== (configuredAssetGroup !== undefined)) {
-    throw new Error(
-      declaresAssetGroup
-        ? "grouped KANDELO_PAGES_PRODUCT_MAP requires KANDELO_PAGES_VFS_ASSET_GROUP_DIR"
-        : "legacy KANDELO_PAGES_PRODUCT_MAP must omit KANDELO_PAGES_VFS_ASSET_GROUP_DIR",
-    );
-  }
-  if (
-    configuredAssetGroup !== undefined &&
-    !path.isAbsolute(configuredAssetGroup)
-  ) {
-    throw new Error(
-      "KANDELO_PAGES_VFS_ASSET_GROUP_DIR must be an absolute directory path",
-    );
-  }
-  return createCanonicalPagesVfsProductsPlugin({
-    assetGroupDirectory: configuredAssetGroup,
-    base,
-    map,
-    mirrorRoots: binaryMirrorRoots,
-  });
-}
 
 function applyDefaultProgramArch(relPath: string): string {
   if (!relPath.startsWith("programs/")) return relPath;
@@ -524,36 +550,6 @@ function sourceOnlyFallbackArtifactGlob(
   ].some((fallbackRoot) => pathIsWithin(fallbackRoot, candidate));
 }
 
-function abiStagingBrowserEvidenceArtifactBoundary(mode: string): Plugin {
-  const virtualPrefix = "\0abi-staging-browser-evidence-unavailable:";
-  return {
-    name: "abi-staging-browser-evidence-artifact-boundary",
-    enforce: "pre",
-    resolveId(source, importer) {
-      if (mode !== ABI_STAGING_BROWSER_EVIDENCE_VITE_MODE) return null;
-      const queryIndex = source.indexOf("?");
-      const pathPart = queryIndex === -1 ? source : source.slice(0, queryIndex);
-      let relPath: string | undefined;
-      if (pathPart === browserRootfsModuleSpecifier) {
-        relPath = "rootfs.vfs";
-      } else if (pathPart.startsWith("@binaries/")) {
-        relPath = applyDefaultProgramArch(pathPart.slice("@binaries/".length));
-      } else {
-        relPath = relativeBinaryMirrorImport(source, importer)?.relPath;
-      }
-      if (relPath === undefined) return null;
-      return virtualPrefix + encodeURIComponent(relPath);
-    },
-    load(id) {
-      if (!id.startsWith(virtualPrefix)) return null;
-      const relPath = decodeURIComponent(id.slice(virtualPrefix.length));
-      return `export default ${JSON.stringify(
-        `/__kandelo_abi_staging_unavailable__/${relPath}`,
-      )};`;
-    },
-  };
-}
-
 function resolveBinariesAlias(
   access: BinaryDevAccess,
   resolution: BrowserBinaryResolution,
@@ -877,15 +873,7 @@ function sourceOnlyDemoInputs<T extends Record<string, string>>(
   return selected;
 }
 
-function selectedDemoInputs(
-  mode: string,
-): typeof demoInputs | Record<string, string> {
-  if (mode === ABI_STAGING_BROWSER_EVIDENCE_VITE_MODE) {
-    // WHY: candidate evidence injects the complete product image and lazy
-    // inputs. Bundling ordinary demo fallbacks here would make exact runtime
-    // preparation depend on unrelated package archives before composition.
-    return sourceOnlyDemoInputs({ main: demoInputs.main });
-  }
+function selectedDemoInputs(): typeof demoInputs | Record<string, string> {
   const requested = process.env.KANDELO_BROWSER_DEMO_INPUTS?.split(",")
     .map((name) => name.trim())
     .filter(Boolean);
@@ -905,10 +893,8 @@ function selectedDemoInputs(
 
 const disableBrowserTestHmr = process.env.KANDELO_BROWSER_TEST_NO_HMR === "1";
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(() => {
   const base = normalizeDeploymentBase(process.env.VITE_BASE ?? "/");
-  const canonicalPages = process.env.KANDELO_PAGES_PRODUCT_MAP !== undefined;
-  const pagesVfsProducts = canonicalPagesVfsProducts(base);
 
   return {
     base,
@@ -917,9 +903,7 @@ export default defineConfig(({ mode }) => {
       alias: browserRepositoryAliases(repoRoot),
     },
     plugins: [
-      abiStagingBrowserEvidenceArtifactBoundary(mode),
-      createCanonicalPagesLegacyBinaryBoundary(canonicalPages),
-      pagesVfsProducts,
+      vfsProductsPlugin(base),
       react(),
       ...(sourceOnlyViteAssets === null
         ? []
@@ -964,7 +948,7 @@ export default defineConfig(({ mode }) => {
       // (Firefox).
       minify: "terser",
       rollupOptions: {
-        input: selectedDemoInputs(mode),
+        input: selectedDemoInputs(),
       },
     },
     worker: {
@@ -975,9 +959,7 @@ export default defineConfig(({ mode }) => {
         },
       },
       plugins: () => [
-        abiStagingBrowserEvidenceArtifactBoundary(mode),
-        createCanonicalPagesLegacyBinaryBoundary(canonicalPages),
-        canonicalPagesVfsProducts(base),
+        vfsProductsPlugin(base),
         ...(sourceOnlyViteAssets === null
           ? []
           : [sourceOnlyViteAssets.plugin()]),

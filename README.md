@@ -241,8 +241,8 @@ npx tsx examples/run-example.ts hello
 
 `./run.sh browser` runs the same cached DAG as `./run.sh local-build`, points
 Vite at the validated `local-binaries/source-only-v1` projection, and never
-fetches the retired Homebrew/browser binary selection. Subsequent launches
-reuse unchanged nodes.
+fetches a prebuilt browser binary selection. Subsequent launches reuse
+unchanged nodes.
 
 Open `http://127.0.0.1:5401` to use the Kandelo UI. The network lab at `http://127.0.0.1:5401/pages/network/` boots multiple local Kandelo machines in one browser session and exercises POSIX UDP/TCP with GNU Netcat (`nc`) and `curl`.
 
@@ -373,9 +373,6 @@ packages/
   registry/          Kandelo package manifests and build scripts
     <name>/test/     Package-owned tests and fixtures
   sets/              Named package sets for CI and product scenarios
-homebrew/
-  homebrew-tap-core/ Reviewable first-party tap template and schemas
-  patches/           Reviewed Homebrew platform and publisher patches
 tests/
   package-system/    Package registry and binary-fetching automation tests
   libc/              musl libc-test suite and overlays
@@ -421,8 +418,6 @@ docs/
 | [Shareable Computer URLs](docs/plans/2026-05-11-shareable-computer-url-design.md) | Boot descriptor design for sharing computer topology, signed bases/packages, mounts, and overlays |
 | [Package Management](docs/package-management.md) | `packages/registry/<name>/package.toml` schema, resolver, release archives |
 | [Package Sources](docs/package-sources.md) | Reusable workflows and scripts for third-party Kandelo package repositories |
-| [Disabled Kandelo Homebrew Packaging](docs/homebrew-packaging-system.md) | Dormant Formula, bottle, VFS image, and guest Homebrew design retained for reference |
-| [Disabled Homebrew Publishing](docs/homebrew-publishing.md) | Historical publication trust, validation, VFS composition, and rollout contracts |
 | [Package Management — Future Work](docs/package-management-future-work.md) | Deferred items: WASI caching, semver, multi-arch `[binary]`, etc. |
 | [Binary Releases](docs/binary-releases.md) | `index.toml` ledger, package-system `.tar.zst` archive layout, fetch + verify flow |
 | [Profiling & Benchmarking](docs/profiling.md) | Syscall profiler, benchmark suite, cross-host comparison |

@@ -243,8 +243,6 @@ cat >"$TMP_ROOT/bin/authority-xtask" <<'EOF'
 set -euo pipefail
 for name in \
   GH_TOKEN GITHUB_TOKEN \
-  HOMEBREW_GITHUB_API_TOKEN HOMEBREW_GITHUB_PACKAGES_TOKEN \
-  HOMEBREW_DOCKER_REGISTRY_TOKEN \
   ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL \
   ACTIONS_RUNTIME_TOKEN WASM_POSIX_DEPS_REGISTRY; do
   [ -z "${!name:-}" ] || {
@@ -964,9 +962,6 @@ run_publisher() {
     REAL_GIT="$(command -v git)" \
     GH_TOKEN=test-token \
     GITHUB_TOKEN=test-fallback-token \
-    HOMEBREW_GITHUB_API_TOKEN=test-api-token \
-    HOMEBREW_GITHUB_PACKAGES_TOKEN=test-packages-token \
-    HOMEBREW_DOCKER_REGISTRY_TOKEN=test-registry-token \
     ACTIONS_ID_TOKEN_REQUEST_TOKEN=test-oidc-token \
     ACTIONS_ID_TOKEN_REQUEST_URL=https://example.invalid/oidc \
     ACTIONS_RUNTIME_TOKEN=test-runtime-token \
@@ -2017,8 +2012,6 @@ cat >"$TMP_ROOT/bin/node" <<'EOF'
 set -euo pipefail
 for name in \
   GH_TOKEN GITHUB_TOKEN \
-  HOMEBREW_GITHUB_API_TOKEN HOMEBREW_GITHUB_PACKAGES_TOKEN \
-  HOMEBREW_DOCKER_REGISTRY_TOKEN \
   ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL \
   ACTIONS_RUNTIME_TOKEN WASM_POSIX_DEPS_REGISTRY; do
   [ -z "${!name:-}" ] || {
@@ -2057,9 +2050,6 @@ env \
   PATH="$TMP_ROOT/bin:$PATH" \
   GH_TOKEN=test-token \
   GITHUB_TOKEN=test-fallback-token \
-  HOMEBREW_GITHUB_API_TOKEN=test-api-token \
-  HOMEBREW_GITHUB_PACKAGES_TOKEN=test-packages-token \
-  HOMEBREW_DOCKER_REGISTRY_TOKEN=test-registry-token \
   ACTIONS_ID_TOKEN_REQUEST_TOKEN=test-oidc-token \
   ACTIONS_ID_TOKEN_REQUEST_URL=https://example.invalid/oidc \
   ACTIONS_RUNTIME_TOKEN=test-runtime-token \
@@ -2147,9 +2137,6 @@ if env \
     PATH="$TMP_ROOT/bin:$PATH" \
     GH_TOKEN=test-token \
     GITHUB_TOKEN=test-fallback-token \
-    HOMEBREW_GITHUB_API_TOKEN=test-api-token \
-    HOMEBREW_GITHUB_PACKAGES_TOKEN=test-packages-token \
-    HOMEBREW_DOCKER_REGISTRY_TOKEN=test-registry-token \
     ACTIONS_ID_TOKEN_REQUEST_TOKEN=test-oidc-token \
     ACTIONS_ID_TOKEN_REQUEST_URL=https://example.invalid/oidc \
     ACTIONS_RUNTIME_TOKEN=test-runtime-token \
@@ -2218,9 +2205,6 @@ if env \
     PATH="$TMP_ROOT/bin:$PATH" \
     GH_TOKEN=test-token \
     GITHUB_TOKEN=test-fallback-token \
-    HOMEBREW_GITHUB_API_TOKEN=test-api-token \
-    HOMEBREW_GITHUB_PACKAGES_TOKEN=test-packages-token \
-    HOMEBREW_DOCKER_REGISTRY_TOKEN=test-registry-token \
     ACTIONS_ID_TOKEN_REQUEST_TOKEN=test-oidc-token \
     ACTIONS_ID_TOKEN_REQUEST_URL=https://example.invalid/oidc \
     ACTIONS_RUNTIME_TOKEN=test-runtime-token \
@@ -2250,9 +2234,6 @@ env \
   PATH="$TMP_ROOT/bin:$PATH" \
   GH_TOKEN=test-token \
   GITHUB_TOKEN=test-fallback-token \
-  HOMEBREW_GITHUB_API_TOKEN=test-api-token \
-  HOMEBREW_GITHUB_PACKAGES_TOKEN=test-packages-token \
-  HOMEBREW_DOCKER_REGISTRY_TOKEN=test-registry-token \
   ACTIONS_ID_TOKEN_REQUEST_TOKEN=test-oidc-token \
   ACTIONS_ID_TOKEN_REQUEST_URL=https://example.invalid/oidc \
   ACTIONS_RUNTIME_TOKEN=test-runtime-token \

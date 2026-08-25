@@ -18,15 +18,12 @@ const MAX_INPUTS = 4_096;
 const SHA256 = /^[0-9a-f]{64}$/;
 const GIT_SHA = /^[0-9a-f]{40}$/;
 const STABLE_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/;
-const CANDIDATE_NAMESPACE = /homebrew-tap-core-abi-[0-9]+-candidates\//;
-const CANONICAL_NAMESPACE = /homebrew-tap-core-abi-[0-9]+\//;
 const CANONICAL_PAGES_PRODUCT =
   /^https:\/\/automattic\.github\.io\/kandelo\/products\/([a-z0-9][a-z0-9._-]{0,127})\/sha256-([0-9a-f]{64})\/([a-z0-9][a-z0-9._-]{0,127})-([0-9]+)\.vfs\.zst\?sha256=([0-9a-f]{64})&bytes=([1-9][0-9]*)$/;
 const CANONICAL_PAGES_INPUT =
   /^https:\/\/automattic\.github\.io\/kandelo\/products\/inputs\/([a-z0-9][a-z0-9._-]{0,127})\/sha256-([0-9a-f]{64})\/([a-z0-9][a-z0-9._-]{0,127})\?sha256=([0-9a-f]{64})&bytes=([1-9][0-9]*)$/;
 const INPUT_KINDS = [
   "product-image",
-  "homebrew-bottle",
   "package-output",
   "source-archive",
   "toolchain-output",
@@ -126,7 +123,6 @@ export interface VfsProductBuild {
   readonly source: Readonly<ExactProductSource>;
   inputIds(kind?: VfsProductInputKind): readonly string[];
   requireProductImage(id: string): VfsProductInputHandle;
-  requireHomebrewBottle(id: string): VfsProductInputHandle;
   requirePackageOutput(id: string): VfsProductInputHandle;
   requireSourceArchive(id: string): VfsProductInputHandle;
   requireToolchainOutput(id: string): VfsProductInputHandle;
@@ -239,7 +235,6 @@ async function openVfsProductBuildWithPolicy(
     inputIds: (kind?: VfsProductInputKind) =>
       kind === undefined ? allInputIds : inputIdsByKind.get(kind)!,
     requireProductImage: (id: string) => requireInput(id, "product-image"),
-    requireHomebrewBottle: (id: string) => requireInput(id, "homebrew-bottle"),
     requirePackageOutput: (id: string) => requireInput(id, "package-output"),
     requireSourceArchive: (id: string) => requireInput(id, "source-archive"),
     requireToolchainOutput: (id: string) => requireInput(id, "toolchain-output"),
@@ -610,16 +605,13 @@ function parseInputDescriptor(
   inputRoot: string,
   label: string,
 ): ResolvedInputDescriptor | undefined {
-  if (kind !== "homebrew-bottle" && kind !== "package-output") {
+  if (kind !== "package-output") {
     if (value !== undefined) {
-      fail(`${label} descriptor is only valid for Homebrew bottles and package outputs`);
+      fail(`${label} descriptor is only valid for package outputs`);
     }
     return undefined;
   }
   if (value === undefined) {
-    if (kind === "homebrew-bottle") {
-      fail(`${label} Homebrew bottle requires authenticated composition metadata`);
-    }
     return undefined;
   }
   const descriptor = exactRecord(
@@ -696,26 +688,18 @@ function immutableReference(
   ) {
     fail(`${label} reference is not immutable or does not bind its SHA-256`);
   }
-  const candidate = CANDIDATE_NAMESPACE.test(reference);
-  const canonical = CANONICAL_NAMESPACE.test(reference);
   const pagesInput = CANONICAL_PAGES_INPUT.exec(reference);
   const pagesProduct = CANONICAL_PAGES_PRODUCT.exec(reference);
   const local = reference.match(
     /^local-fixture:sha256:([0-9a-f]{64})\?namespace=(candidate|canonical|source)&bytes=([1-9][0-9]*)$/,
   );
-  if (referenceClass === "candidate" && canonical) {
-    fail(`${label} candidate input references the canonical namespace`);
-  }
-  if (referenceClass === "canonical" && candidate) {
-    fail(`${label} canonical input references the candidate namespace`);
-  }
   if (reference.startsWith("https://automattic.github.io/kandelo/products/inputs/")) {
     if (
       referenceClass !== "canonical" || pagesInput === null ||
       pagesInput[1] !== inputId || pagesInput[1] !== pagesInput[3] ||
       pagesInput[2] !== inputSha256 || pagesInput[4] !== inputSha256 ||
       Number(pagesInput[5]) !== inputBytes ||
-      kind === "homebrew-bottle" || kind === "product-image" ||
+      kind === "product-image" ||
       placement !== "lazy-reference"
     ) {
       fail(`${label} Pages input reference does not bind exact identity`);
@@ -743,19 +727,12 @@ function immutableReference(
       local[1] !== inputSha256 ||
       Number(local[3]) !== inputBytes ||
       !Number.isSafeInteger(Number(local[3])) ||
-      ((kind === "homebrew-bottle" || kind === "product-image") &&
+      (kind === "product-image" &&
         local[2] === "source")
     ) {
       fail(`${label} local-fixture reference does not bind exact namespace and bytes`);
     }
     return reference;
-  }
-  if (
-    (kind === "homebrew-bottle" || kind === "product-image") &&
-    !candidate &&
-    !canonical
-  ) {
-    fail(`${label} managed input does not use a versioned namespace`);
   }
   return reference;
 }

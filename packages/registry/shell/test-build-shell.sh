@@ -67,7 +67,7 @@ do
 done
 
 for forbidden in \
-    homebrew-bootstrap build-homebrew prepare-build-tools.sh \
+    prepare-build-tools.sh \
     resolve-binary.sh npm\ install bottle-cache mirror-repository
 do
     grep -Fq "$forbidden" "$PACKAGE_TOML" "$BUILD_TOML" "$SHELL_BUILDER" &&
@@ -103,8 +103,7 @@ if [[ "${1:-}" == */source-rootfs-shell-dependency-contract.mjs ]]; then
     exec "$REAL_NODE" "$@"
 fi
 for name in \
-    GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
-    HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN \
+    GH_TOKEN GITHUB_TOKEN \
     NPM_TOKEN NODE_AUTH_TOKEN NODE_OPTIONS NODE_PATH \
     NPM_CONFIG_USERCONFIG NPM_CONFIG_GLOBALCONFIG NPM_CONFIG_REGISTRY \
     npm_config_userconfig npm_config_globalconfig npm_config_registry \

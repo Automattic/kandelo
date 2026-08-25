@@ -9,7 +9,7 @@ const bashBuilder = join(
 );
 
 describe("Bash package contract", () => {
-  it("builds the programmable-completion builtins required by Homebrew", () => {
+  it("builds the programmable-completion builtins required by interactive shells", () => {
     const source = readFileSync(bashBuilder, "utf8");
 
     expect(source).toContain("--enable-progcomp");

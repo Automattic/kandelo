@@ -6,7 +6,7 @@ Recorded: 2026-08-01 (America/Indiana/Indianapolis)
 
 This document records the local ABI 43 integration branch after the selected
 open pull requests were forward-ported and composed. It does not authorize a
-push, merge, ABI release, package publication, Homebrew cutover, or removal of
+push, merge, ABI release, package publication, or removal of
 the temporary CRuby patch in pull request (PR) #1166.
 
 The linear handoff branch is
@@ -119,8 +119,8 @@ dedicated fork worktree:
 Ordinary fork remains independent and copied. The connected vfork path
 has passed the locally runnable broad conformance gates and component
 resident set size (RSS) measurements. It is not yet a release claim:
-published upstream CRuby artifacts, application RSS, the complete
-application benchmark matrix, and the Homebrew lifecycle remain explicit
+published upstream CRuby artifacts, application RSS, and the complete
+application benchmark matrix remain explicit
 gates. A fatal signal against a compute-running borrower is covered on
 every host: absent an exact Worker fence, Kandelo contains the whole
 shared address space rather than resuming the parent unsafely.
@@ -169,14 +169,12 @@ All commands supporting claims below ran through `scripts/dev-shell.sh`.
   proof recorded four passes and two intentional cross-engine skips.
 - After the final linear rebase, the ABI snapshot, native and
   wasm32/wasm64 layouts, generated C and TypeScript bindings, and ABI 42 to
-  43 bump classification passed again. The current-main Homebrew input
+  43 bump classification passed again. The current-main package input
   changes made the program-package projection truthfully stale; it was
   regenerated in separate commit `554bdf542`, and the freshness check and
   standalone resolver-bundle check then passed.
 - The post-rebase CI suite-routing contract passed, including exact staging
-  shell handoff and browser-memory64 workspace fixture paths. The complete
-  Homebrew main-shell closure contract also passed, including its 43 embedded
-  Node tests and revision/state/finalizer checks.
+  shell handoff and browser-memory64 workspace fixture paths.
 
 At the initial batch checkpoint, the full repository build was not a pass. It
 reached external Bash source fallback and stopped on a GNU mirror HTTP 502.
@@ -202,8 +200,8 @@ bisectable; no broad no-regression claim is made.
 
 The full product browser and application benchmark gates still lack a
 complete ABI 43 package closure. The release index returns HTTP 404, and
-no ABI 42 fallback is valid. Those gates, application RSS, and the
-Homebrew lifecycle remain pending publication.
+no ABI 42 fallback is valid. Those gates and application RSS remain
+pending publication.
 
 ## Remaining implementation and release series
 
@@ -225,13 +223,10 @@ purpose-scoped commits. Continue with these remaining gates:
 4. With publication authorization, publish the exact rebuilt ABI 43
    package closure, then run the full product browser and application
    benchmark matrices without stale ABI fallback.
-5. Reconstruct the Homebrew image and repeat the real tap/install
-   lifecycle with process-tree RSS evidence, no renderer loss, and no
-   history-proportional memory growth.
-6. Completed locally: rebase linearly onto `origin/main` at `8a0ed31a5`,
+5. Completed locally: rebase linearly onto `origin/main` at `8a0ed31a5`,
    remove the temporary merge, rerun attribution and ABI audits, and preserve
    the post-rebase projection repair as its own commit.
-7. Open an umbrella PR only when Brandon authorizes that external action.
+6. Open an umbrella PR only when Brandon authorizes that external action.
    Preserve every accepted PR and integration repair as an individual commit;
    do not squash.
 
@@ -239,7 +234,7 @@ purpose-scoped commits. Continue with these remaining gates:
 
 The local recipe deletes PR #1166 without replacing it with another Ruby
 command classifier. Do not merge or publish that removal until the exact
-upstream-process-path artifacts are published and the real in-guest Homebrew
-tap/install lifecycle completes without renderer loss or
+upstream-process-path artifacts are published and the real in-guest package
+install lifecycle completes without renderer loss or
 history-proportional memory growth. The local uid-1000 and privileged proofs
 satisfy the selection gate, but not those release gates.

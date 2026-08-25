@@ -171,7 +171,6 @@ async function buildStagedPackageVfs(
     claim.source_roles.length !== 0 ||
     claim.role !== "runtime" ||
     claim.materialization !== "embedded" ||
-    manifest.software.homebrew.length !== 0 ||
     manifest.software.archive.length !== 0 ||
     manifest.software.toolchain.length !== 0
   ) {
@@ -246,10 +245,6 @@ export async function buildStagedBrowserService(
   }
   const expected = expectedManifestInputs(manifest);
   assertExactInputInventory(build, expected, productId);
-  if (manifest.software.homebrew.length !== 0) {
-    throw new Error(`${productId} cannot consume Homebrew inputs`);
-  }
-
   const temporaryRoot = realDirectory(
     process.env.TMPDIR ?? "",
     "staged product temporary root",
@@ -489,7 +484,6 @@ export async function buildStagedStandaloneProduct(
   }
   if (
     manifest.composition.product.length !== 0 ||
-    manifest.software.homebrew.length !== 0 ||
     manifest.software.archive.length !== 0 ||
     manifest.software.toolchain.length !== 0
   ) {
@@ -690,14 +684,13 @@ export async function buildStagedSdkOrTestProduct(
     throw new Error(`${productId} staging selected a different product or builder`);
   }
   if (
-    manifest.software.homebrew.length !== 0 ||
     (productId !== "test-sqlite" && manifest.software.archive.length !== 0) ||
     (productId === "test-sqlite" && (
       manifest.software.archive.length !== 1 ||
       manifest.software.archive[0]?.id !== "sqlite-full-source"
     ))
   ) {
-    throw new Error(`${productId} staging has unsupported Homebrew or external archives`);
+    throw new Error(`${productId} staging has unsupported external archives`);
   }
   const expected = expectedManifestInputs(manifest);
   assertExactInputInventory(build, expected, productId);
@@ -1000,15 +993,6 @@ function expectedManifestInputs(
       );
     }
   }
-  for (const group of manifest.software.homebrew) {
-    for (const formula of group.formulae) {
-      add(
-        resolvedInputId("homebrew-bottle", formula),
-        "homebrew-bottle",
-        runtimePlacement(group.materialization),
-      );
-    }
-  }
   for (const archive of manifest.software.archive) {
     add(
       resolvedInputId("source-archive", archive.id),
@@ -1049,7 +1033,6 @@ function resolvedInputId(
 ): string {
   const prefix: Record<VfsProductInputKind, string> = {
     "product-image": "product",
-    "homebrew-bottle": "homebrew",
     "package-output": "package",
     "source-archive": "archive",
     "toolchain-output": "toolchain",
@@ -1066,12 +1049,8 @@ function assertExactInputInventory(
   expected: ReadonlyMap<string, ExpectedServiceInput>,
   productId: string,
 ): void {
-  const homebrewIds = new Set(build.inputIds("homebrew-bottle"));
-  const actual = [...build.inputIds()]
-    .filter((id) => !homebrewIds.has(id))
-    .sort(compareText);
+  const actual = [...build.inputIds()].sort(compareText);
   const wanted = [...expected.entries()]
-    .filter(([, item]) => item.kind !== "homebrew-bottle")
     .map(([id]) => id)
     .sort(compareText);
   if (canonicalJson(actual) !== canonicalJson(wanted)) {
@@ -1105,9 +1084,7 @@ function requireExpectedInput(
         ? build.requireSourceArchive(id)
         : kind === "toolchain-output"
           ? build.requireToolchainOutput(id)
-          : kind === "repository-path"
-            ? build.requireRepositoryPath(id)
-            : build.requireHomebrewBottle(id);
+          : build.requireRepositoryPath(id);
   if (handle.placement !== declaration.placement) {
     throw new Error(
       `${build.product.id} input ${id} materialized as ${handle.placement}, ` +
@@ -1890,11 +1867,6 @@ interface SelectedProductManifest {
     }>;
   };
   software: {
-    homebrew: Array<{
-      tap: string;
-      formulae: string[];
-      materialization: "embedded" | "lazy";
-    }>;
     package: Array<{
       name: string;
       outputs: string[];
@@ -1935,9 +1907,6 @@ function validateSelectedProductManifest(
     join(REPOSITORY_ROOT, "images/vfs/products/generated/catalog.json"),
   );
   const manifest = catalog.productById(build.product.id) as SelectedProductManifest;
-  if (manifest.software.homebrew.length !== 0) {
-    throw new Error(`${manifest.id} cannot build while Homebrew is disabled`);
-  }
   if (
     manifest.id !== build.product.id ||
     manifest.architecture !== build.product.architecture ||
