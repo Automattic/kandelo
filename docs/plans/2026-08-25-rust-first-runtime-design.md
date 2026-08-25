@@ -437,6 +437,100 @@ workarounds (the anyref-transit module, `Module.imports()` compatibility).
 If fork's boundary cannot be expressed without JS-engine-specific
 behavior, Wasmtime exposes it loudly, before any freeze.
 
+### Feasibility spike (2026-08-25) — PASSED
+
+A throwaway Wasmtime harness confirmed the native host has no
+engine-feature blockers, measured against the real built kernel
+(`local-binaries/kernel.wasm`, ABI 43). Both parts passed on
+**Wasmtime 35**:
+
+- **Part 1 — instantiate the real artifact.** Wasmtime compiled and
+  instantiated the actual `kernel.wasm` and `__abi_version()` returned
+  `43`. Observed import surface the native host must provide: `env.memory`
+  is an **imported shared memory, initial = 18 pages, max = 16384 pages
+  (1 GiB)**; there are **83 `env.host_*` function imports** (all
+  satisfiable — the spike stubbed them via
+  `Linker::define_unknown_imports_as_traps`, and `__abi_version` touches
+  none). Threads, bulk-memory, and mutable-globals were all accepted.
+- **Part 2 — the syscall-channel blocking primitive.** Two instances on
+  two OS threads shared one `wasmtime::SharedMemory`; a waiter blocked on
+  `memory.atomic.wait32(addr, expected, -1)` and a notifier on the other
+  thread woke it with `memory.atomic.notify(addr, 1)`. The notify woke
+  exactly one waiter and `wait32` returned `0` (woken). This is the exact
+  guest-blocks / kernel-wakes handshake the channel depends on.
+
+Implications for `crates/host-native`: create a `SharedMemory` of type
+`MemoryType::shared(18, 16384)`, define it as `env`/`memory`, implement
+the 83 `host_*` imports as the `HostCapabilities` trait, and run the
+kernel and each guest on their own OS threads over that shared memory. No
+Component Model, no WASI. The kernel-as-Wasm topology (not native rlib) is
+what the freeze gate must exercise.
+
+Reproducible harness (kept out of the tree; recreate under `/tmp` to
+re-run — `cargo run -- <path-to-kernel.wasm>`):
+
+```toml
+# Cargo.toml
+[package]
+name = "kandelo-wasmtime-spike"
+version = "0.0.0"
+edition = "2021"
+[dependencies]
+wasmtime = "35"
+```
+
+```rust
+// src/main.rs
+use std::thread;
+use std::time::Duration;
+use wasmtime::{Config, Engine, Linker, MemoryType, Module, SharedMemory, Store};
+
+fn main() -> wasmtime::Result<()> {
+    let mut config = Config::new();
+    config.wasm_threads(true);
+    let engine = Engine::new(&config)?;
+
+    // Part 1: instantiate the real kernel.wasm.
+    let path = std::env::args().nth(1).expect("usage: spike <kernel.wasm>");
+    let module = Module::from_file(&engine, &path)?;
+    let shared = SharedMemory::new(&engine, MemoryType::shared(18, 16384))?;
+    let mut store = Store::new(&engine, ());
+    let mut linker = Linker::new(&engine);
+    linker.define(&mut store, "env", "memory", shared.clone())?;
+    linker.define_unknown_imports_as_traps(&module)?; // stub the 83 host_*
+    let instance = linker.instantiate(&mut store, &module)?;
+    let abi = instance.get_typed_func::<(), i32>(&mut store, "__abi_version")?;
+    assert_eq!(abi.call(&mut store, ())?, 43);
+
+    // Part 2: cross-thread atomic wait/notify on one SharedMemory.
+    let wat = r#"(module
+        (import "env" "memory" (memory 1 10 shared))
+        (func (export "wait") (param i32 i32) (result i32)
+          (memory.atomic.wait32 (local.get 0) (local.get 1) (i64.const -1)))
+        (func (export "notify") (param i32) (result i32)
+          (memory.atomic.notify (local.get 0) (i32.const 1))))"#;
+    let m2 = Module::new(&engine, wat)?;
+    let shm = SharedMemory::new(&engine, MemoryType::shared(1, 10))?;
+    unsafe { std::ptr::write_volatile(shm.data().as_ptr() as *mut u8, 0u8) };
+    let waiter = { let (e, m, s) = (engine.clone(), m2.clone(), shm.clone());
+        thread::spawn(move || -> wasmtime::Result<i32> {
+            let mut st = Store::new(&e, ()); let mut lk = Linker::new(&e);
+            lk.define(&mut st, "env", "memory", s)?;
+            let i = lk.instantiate(&mut st, &m)?;
+            i.get_typed_func::<(i32, i32), i32>(&mut st, "wait")?.call(&mut st, (0, 0))
+        }) };
+    thread::sleep(Duration::from_millis(300));
+    let mut st = Store::new(&engine, ()); let mut lk = Linker::new(&engine);
+    lk.define(&mut st, "env", "memory", shm.clone())?;
+    let i = lk.instantiate(&mut st, &m2)?;
+    let woke = i.get_typed_func::<i32, i32>(&mut st, "notify")?.call(&mut st, 0)?;
+    assert_eq!(woke, 1);
+    assert_eq!(waiter.join().unwrap()?, 0);
+    println!("spike PASS: kernel.wasm abi=43; cross-thread wait/notify OK");
+    Ok(())
+}
+```
+
 ## Migration roadmap
 
 A single big-bang integration branch, curated into conceptually separate
@@ -594,10 +688,42 @@ Vitest and conformance runs; stale wasm silently runs old code.
 - **Safari memory/boot.** Larger `kernel.wasm`. Mitigation: measure boot
   and memory on WebKit; the FS is already worker-exclusive.
 
+## Decisions settled during design review (2026-08-25)
+
+- **Homebrew is removed, not migrated, as a separate standalone PR.**
+  `./run.sh browser` and `./run.sh local-build` both go through
+  `cmd_local_build` (source-only; `homebrew-bootstrap` is a forbidden
+  input), and `prepare_browser_homebrew_bootstrap` is dead code. A
+  `local-build` baseline built all 7 formerly-homebrew products
+  (`browser-nginx`, `nginx-php`, `wordpress`, `node`, `lamp`,
+  `main-shell`, `platform-rootfs`) source-only, proving the
+  `[[software.homebrew]]` blocks are vestigial. Ruby (and all real
+  packages) are kept. Branch: `brandonpayton/remove-homebrew` off `main`.
+- **Branch sequencing:** land the homebrew-removal PR first, rebase the
+  rust-first branch onto homebrew-free `main`, then start Phase 1. This is
+  the churn-reduction the roadmap's "prune first" step intends.
+- **Transport marshalling shape (refines Frontier A / Q6):** the guest
+  glue marshals each syscall's args INLINE — each libc/musl wrapper
+  statically knows its arg types, generated from `crates/shared`. The
+  `host_abi.rs` `SYSCALL_ARG_DESCRIPTORS` table does NOT move to the guest
+  as a runtime table; it DISSOLVES into per-syscall glue. The host holds
+  zero descriptor knowledge; the kernel decodes the self-describing record
+  by syscall number. (Reconsiderable, but the chosen starting shape.)
+- **Native host feasibility: confirmed** (see the Wasmtime spike above).
+  `crates/host-native` has no engine-feature blockers.
+- **Phase 1 crate split is largely mechanical:** the `HostCapabilities`
+  contract already exists as the `HostIO` trait
+  (`crates/kernel/src/process.rs`), implemented by `WasmHostIO` and test
+  mocks. One pre-refactor is required: relocate 6 cross-process `procfs_*`
+  helpers and two `include_str!("wasm_api.rs")` guard tests out of the
+  core → shell dependency direction. See
+  `docs/superpowers/plans/2026-08-25-rust-first-phase1-crate-split.md`.
+
 ## To resolve during implementation planning
 
 - The concrete self-describing record wire format and its bound relative
-  to the 64 KiB data buffer and the capacity-bound scratch path.
+  to the 64 KiB data buffer and the capacity-bound scratch path (the
+  marshalling *shape* is settled above; the byte layout is not).
 - The exact `HostCapabilities` trait method set after FS-import collapse
   and the sync-vs-async split.
 - The async completion-channel protocol details (submission, completion,
