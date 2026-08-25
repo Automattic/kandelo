@@ -44,63 +44,11 @@ describe("package build input import closure", () => {
     expect(packagesAffectedBy("host/src/vfs/memory-fs.ts")).toEqual(packages);
 
     expect(
-      packagesAffectedBy("host/src/homebrew-bottle-relocation.ts"),
-    ).toEqual(packages);
-    for (const changedPath of [
-      "host/src/homebrew-guest-layout.ts",
-      "homebrew/kandelo-guest-layout.json",
-    ]) {
-      expect(packagesAffectedBy(changedPath)).toEqual(
-        packages.filter((packageName) => packageName !== "shell"),
-      );
-    }
-
-    for (const changedPath of [
-      "host/src/homebrew-runtime-layer-policy.ts",
-      "host/src/homebrew-lazy-layer-descriptor.ts",
-    ]) {
-      expect(packagesAffectedBy(changedPath)).not.toContain("shell");
-    }
-    expect(
       packagesAffectedBy(
         "images/vfs/scripts/build-source-rootfs-shell-image.ts",
       ),
     ).toContain("shell");
     expect(packagesAffectedBy("host/src/vfs/tar.ts")).toContain("shell");
-  });
-
-  it("keeps materialized shell composition behind its candidate entrypoint", () => {
-    const canonicalClosure = new Set(
-      runtimeImportClosure("images/vfs/scripts/build-homebrew-vfs-image.ts"),
-    );
-    const candidateClosure = new Set(
-      runtimeImportClosure(
-        "images/vfs/scripts/build-homebrew-materialized-vfs-image.ts",
-      ),
-    );
-    const composerClosure = runtimeImportClosure(
-      "host/src/homebrew-vfs-composer.ts",
-    );
-    const candidateOwnedModules = [
-      "host/src/homebrew-bottle-mirror-plan.ts",
-      "host/src/homebrew-runtime-layer-consumer.ts",
-      "host/src/homebrew-vfs-composer.ts",
-      "host/src/homebrew-vfs-materialization-policy.ts",
-      "host/src/vfs/closed-lazy-assets.ts",
-    ];
-
-    expect(
-      candidateOwnedModules.filter((path) => canonicalClosure.has(path)),
-    ).toEqual([]);
-    expect(
-      candidateOwnedModules.filter((path) => !candidateClosure.has(path)),
-    ).toEqual([]);
-    expect(
-      composerClosure.filter((path) => !candidateClosure.has(path)),
-    ).toEqual([]);
-    expect(
-      candidateClosure.has("images/vfs/scripts/build-homebrew-vfs-image.ts"),
-    ).toBe(true);
   });
 
   it("keeps local WordPress setup aliases outside product VFS builds", () => {
@@ -328,34 +276,6 @@ function discoverVfsImagePackages(): string[] {
         );
     })
     .sort();
-}
-
-function runtimeImportClosure(entryPath: string): string[] {
-  const queue = [resolve(repoRoot, entryPath)];
-  const inspected = new Set<string>();
-
-  while (queue.length > 0) {
-    const sourcePath = queue.pop()!;
-    if (inspected.has(sourcePath)) continue;
-    if (!isWithin(repoRoot, sourcePath)) {
-      throw new Error(`runtime import escaped the repository: ${sourcePath}`);
-    }
-    inspected.add(sourcePath);
-
-    for (const specifier of relativeImportSpecifiers(
-      readFileSync(sourcePath, "utf8"),
-    )) {
-      const importedPath = resolveImport(sourcePath, specifier);
-      if (importedPath === null) {
-        throw new Error(
-          `${relative(repoRoot, sourcePath)} has unresolved import ${specifier}`,
-        );
-      }
-      if (sourceExtensions.has(extname(importedPath))) queue.push(importedPath);
-    }
-  }
-
-  return [...inspected].map((path) => relative(repoRoot, path)).sort();
 }
 
 function parseBuildInputs(buildToml: string): string[] {

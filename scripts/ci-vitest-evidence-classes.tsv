@@ -1,8 +1,6 @@
 # Exact ABI evidence class registry. Keep sorted by repository-relative path.
 # source-only may run from the sealed source workspace; prepared-product requires admitted artifacts.
 examples/dlopen/test.test.ts	prepared-product
-host/test/abi-staging-mini-vfs.test.ts	prepared-product
-host/test/abi-staging-product-builders.test.ts	prepared-product
 host/test/abi-version.test.ts	prepared-product
 host/test/accept-signal-guest.test.ts	prepared-product
 host/test/advisory-lock-kernel.test.ts	prepared-product
@@ -108,31 +106,6 @@ host/test/getaddrinfo.test.ts	prepared-product
 host/test/getdents-boundary.test.ts	prepared-product
 host/test/getpwent.test.ts	prepared-product
 host/test/hardlink-graph.test.ts	source-only
-host/test/homebrew-bottle-descriptor.test.ts	source-only
-host/test/homebrew-bottle-mirror-browser.test.ts	source-only
-host/test/homebrew-bottle-relocation.test.ts	source-only
-host/test/homebrew-bottle-selection.test.ts	source-only
-host/test/homebrew-flat-lazy-vfs-cli.test.ts	source-only
-host/test/homebrew-flat-lazy-vfs-composer.test.ts	prepared-product
-host/test/homebrew-flat-vfs-builder.test.ts	prepared-product
-host/test/homebrew-flat-vfs-cli.test.ts	prepared-product
-host/test/homebrew-flat-vfs-image.test.ts	prepared-product
-host/test/homebrew-guest-layout.test.ts	source-only
-host/test/homebrew-language-runtime-smoke.test.ts	prepared-product
-host/test/homebrew-login-product.test.ts	source-only
-host/test/homebrew-original-bottle-tree.test.ts	source-only
-host/test/homebrew-product-inputs.test.ts	source-only
-host/test/homebrew-public-bottle-verifier.test.ts	source-only
-host/test/homebrew-runtime-layer-policy.test.ts	source-only
-host/test/homebrew-runtime-support-materializer.test.ts	prepared-product
-host/test/homebrew-runtime-support.test.ts	source-only
-host/test/homebrew-support-data-bottle.test.ts	source-only
-host/test/homebrew-vfs-builder.test.ts	prepared-product
-host/test/homebrew-vfs-fetch.test.ts	source-only
-host/test/homebrew-vfs-formula-layer.test.ts	source-only
-host/test/homebrew-vfs-image-save.test.ts	prepared-product
-host/test/homebrew-vfs-materialization-policy.test.ts	source-only
-host/test/homebrew-vfs-planner.test.ts	source-only
 host/test/host-adapter-manifest.test.ts	source-only
 host/test/host-diagnostic-routing.test.ts	source-only
 host/test/host-file-offset.test.ts	source-only
@@ -231,7 +204,6 @@ host/test/platform/native-metadata.test.ts	source-only
 host/test/popen-daemon-regression.test.ts	prepared-product
 host/test/posix-timer-thread.test.ts	prepared-product
 host/test/prepared-exec-target.test.ts	source-only
-host/test/privileged-projection.test.ts	source-only
 host/test/process-generation-detach-host-parity.test.ts	source-only
 host/test/process-generation-detach.test.ts	source-only
 host/test/process-memory-allocator.test.ts	source-only
@@ -273,7 +245,6 @@ host/test/shared-wasm-memory-growth-isolate.test.ts	source-only
 host/test/shared-wasm-memory-growth.test.ts	source-only
 host/test/sharedfs-safety.test.ts	source-only
 host/test/shell-lazy-archive-inputs.test.ts	prepared-product
-host/test/shell-vfs-build.test.ts	prepared-product
 host/test/signal-accept-livelock.test.ts	source-only
 host/test/signal-process.test.ts	prepared-product
 host/test/sigpending.test.ts	prepared-product
@@ -314,7 +285,6 @@ host/test/vfs-create-route.test.ts	source-only
 host/test/vfs-image-helpers.test.ts	prepared-product
 host/test/vfs-image-wasm-policy.test.ts	prepared-product
 host/test/vfs-image.test.ts	prepared-product
-host/test/vfs-product-builder-contract.test.ts	prepared-product
 host/test/vfs.test.ts	source-only
 host/test/vfs/browser-mount-layering.test.ts	source-only
 host/test/vfs/default-mounts.test.ts	source-only
@@ -393,8 +363,6 @@ tests/package-system/binary-dev-access.test.ts	prepared-product
 tests/package-system/browser-binary-dependencies.test.ts	prepared-product
 tests/package-system/build-input-import-closure.test.ts	prepared-product
 tests/package-system/fetch-binaries-allow-stale.test.ts	prepared-product
-tests/package-system/homebrew-bootstrap-package.test.ts	prepared-product
-tests/package-system/homebrew-bottle-mirror-recovery.test.ts	prepared-product
 tests/package-system/host-package-projection-contract.test.ts	prepared-product
 tests/package-system/installed-host-package.test.ts	prepared-product
 tests/package-system/kernel-test-fixtures.test.ts	prepared-product

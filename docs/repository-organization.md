@@ -109,65 +109,26 @@ authority and staging-contract paths reach the non-package runtime gate;
 product manifests also retain their existing VFS/package-image route. They do
 not opt into an existing credentialed Homebrew publisher by special case.
 
-## GitHub Pages Publication
+## Disabled GitHub Pages Publication
 
-The browser demo, user guide, and generated host API documentation share one
-`gh-pages` branch. The browser demo owns the branch root, the guide owns
-`guide/`, and the API documentation owns `api/`. One workflow,
-`.github/workflows/browser-demos-pages.yml`, is the only workflow allowed to
-write that branch.
+Hosted browser, guide, and generated API publication is currently dormant.
+The retained implementation lives at
+`.github/disabled-workflows/browser-demos-pages.yml`, outside GitHub's workflow
+discovery directory. No active workflow may invoke it, and package-candidate
+activation does not inspect or update a hosted browser deployment.
 
-The workflow checks out one source commit and builds all three trees in one
-job. Main-push runs use the event SHA. Post-activation dispatches carry an
-exact default-branch SHA, merge-candidate tag, and canonical index sha256. The
-workflow verifies that source is still the default-branch tip, authenticates
-the candidate's immutable `ready.json`/`activated.json` pair, and snapshots the
-same canonical index bytes before it prepares the product.
+Pull-request continuous integration still builds and tests the browser app and
+documentation from repository-owned inputs. Those checks validate the current
+source tree; they do not publish it or make an existing `gh-pages` branch a
+current product artifact. Any content already hosted from that branch may be
+historical and must not be treated as an authenticated view of `main`.
 
-The pull-request browser workflow runs the guide's source checks, VitePress
-build, and generated-output checks for documentation and root JavaScript
-dependency changes. The Pages workflow repeats those checks from its selected
-source commit, so deployment does not rely on guide artifacts from another
-job.
-
-Browser preparation uses a fresh package cache and fetch-only resolution;
-Pages cannot source-build a missing canonical archive. The publisher inspects
-the eager self-contained shell, verifies the exact hashed shell and Node VFS
-assets emitted by Vite, and boots both production paths in Chromium. The Node
-proof hashes the served VFS response before it installs and runs cowsay. The
-assembled tree records its source, candidate, and canonical index generation
-in `kandelo-deployment.json`.
-
-The workflow publishes that complete tree as a fresh orphan commit. Replacing
-the branch is intentional: Vite gives browser assets content-addressed names,
-so retaining files from earlier builds would preserve obsolete names and grow
-the published site without bound. Before publication, the workflow sums the
-logical sizes of every regular file in the assembled tree and refuses to
-publish more than 1,000,000,000 bytes. Symbolic links are rejected because the
-publisher would dereference them and their target sizes would otherwise escape
-that accounting.
-
-GitHub recommends that a Pages source repository remain below 1 GB and limits a
-published Pages site to 1 GB. Before this cleanup, the `gh-pages` tree at
-`1d84fd02a383213c1cf9d9266cebdd4d1fdb2b81` contained 11,504,642,167 bytes of
-file content, including 2,502 files and 11,104,024,279 bytes under `assets/`.
-That measurement was taken on 2026-07-23; it records the accumulated-tree
-problem rather than promising that branch size is static.
-
-Newer Pages runs cancel work for superseded commits. Because GitHub does not
-guarantee concurrency-group ordering, cancellation is not the publication
-authority. Immediately before the sole deployment step, the workflow queries
-GitHub Actions and publishes only when its run number is the newest run
-triggered for this workflow on `main`. A delayed older run therefore cannot
-become the final writer. Missing, empty, malformed, or failed API responses
-stop publication rather than guessing that a run is current.
-
-The scheduled activation sweep compares the current default-branch SHA and
-canonical index digest with the public deployment record. If a dispatch failed
-after activation had already made its candidate terminal, the next sweep finds
-the authenticated receipt selecting those index bytes and dispatches the exact
-generation again. Once the public record matches, the sweep does not rebuild
-Pages merely because it ran again.
-
-GitHub's current Pages limits are documented at
-<https://docs.github.com/en/pages/getting-started-with-github-pages/github-pages-limits>.
+Before disablement, the retained workflow assembled the browser demo at the
+branch root, the guide under `guide/`, and API documentation under `api/`. It
+bound a deployment to one source commit and canonical package index, enforced
+a 1,000,000,000-byte logical-size cap, rejected symbolic links, and replaced
+the branch with a fresh orphan commit so content-addressed Vite assets could
+not accumulate indefinitely. Those controls remain dormant reference code,
+not an active publication promise. Re-enabling hosted publication requires a
+separate reviewed change that restores a trigger and current package-backed
+deployment evidence.

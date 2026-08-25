@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -710,6 +711,51 @@ describe("WebAssembly memory write audit", () => {
         (finding) =>
           finding.file === "kernel.ts" && finding.kind === "kernel-write",
       ),
+    ).toBe(true);
+  });
+
+  it("bounds recursive structured propagation without hiding capabilities", () => {
+    const result = auditVirtual(
+      {
+        "recursive.ts": `
+          declare function retain(value: unknown): void;
+
+          function normalize(value: unknown): unknown {
+            if (Array.isArray(value)) return value.map(normalize);
+            if (value !== null && typeof value === "object") {
+              const normalized: Record<string, unknown> = {};
+              for (const [key, item] of Object.entries(value)) {
+                normalized[key] = normalize(item);
+              }
+              return normalized;
+            }
+            return value;
+          }
+
+          class Kernel {
+            memory!: WebAssembly.Memory;
+            escape(): void {
+              const wrapped = {
+                payload: [new Uint8Array(this.memory.buffer)],
+              };
+              retain(normalize(wrapped));
+            }
+          }
+        `,
+      },
+      [kernelMemorySeed("recursive.ts::Kernel.memory")],
+    );
+
+    expect(result).toHaveProperty("propagationPasses");
+    expect(
+      (result as typeof result & { propagationPasses: number })
+        .propagationPasses,
+    ).toBeLessThanOrEqual(64);
+    expect(
+      result.violations.some(
+        (finding) => finding.kind === "kernel-view-escape",
+      ),
+      result.violations.map((finding) => finding.text).join("\n"),
     ).toBe(true);
   });
 
@@ -5299,6 +5345,8 @@ describe("WebAssembly memory write audit", () => {
   it("discovers every JavaScript and TypeScript runtime extension", () => {
     const root = mkdtempSync(path.join(tmpdir(), "kandelo-memory-audit-"));
     try {
+      execFileSync("git", ["init", "--quiet", root]);
+      writeFileSync(path.join(root, ".gitignore"), "runtime/generated/\n");
       const runtime = path.join(root, "runtime");
       mkdirSync(runtime, { recursive: true });
       const expected = [
@@ -5310,8 +5358,10 @@ describe("WebAssembly memory write audit", () => {
         "runtime/f.jsx",
         "runtime/g.mjs",
         "runtime/h.cjs",
+        "scripts/resolve-binary.ts",
       ];
       for (const relative of expected) {
+        mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
         writeFileSync(path.join(root, relative), "export {};\n");
       }
       writeFileSync(path.join(runtime, "ignored.d.ts"), "export {};\n");
@@ -5319,6 +5369,20 @@ describe("WebAssembly memory write audit", () => {
       writeFileSync(path.join(runtime, "ignored.d.cts"), "export {};\n");
       writeFileSync(path.join(runtime, "ignored.test.js"), "export {};\n");
       writeFileSync(path.join(runtime, "ignored.spec.mjs"), "export {};\n");
+      mkdirSync(path.join(runtime, "generated"), { recursive: true });
+      writeFileSync(
+        path.join(runtime, "generated", "ignored.js"),
+        "export {};\n",
+      );
+      mkdirSync(path.join(root, "scripts"), { recursive: true });
+      writeFileSync(
+        path.join(root, "scripts", "resolve-binary.ts"),
+        "export {};\n",
+      );
+      writeFileSync(
+        path.join(root, "scripts", "resolve-binary.bundle.mjs"),
+        "// generated fixture\nexport {};\n",
+      );
       mkdirSync(path.join(root, "dist"), { recursive: true });
       writeFileSync(path.join(root, "dist", "ignored.js"), "export {};\n");
       mkdirSync(path.join(root, "nested-checkout", ".git"), {

@@ -1,0 +1,46 @@
+kind = "program"
+name = "sudo"
+version = "1.9.17p2"
+kernel_abi = 43
+depends_on = []
+arches = ["wasm32"]
+
+[source]
+url = "https://github.com/sudo-project/sudo/archive/refs/tags/v1.9.17p2.tar.gz"
+sha256 = "cabee23359afa698d147478c3a141437dbfecb510382e114eaf4b5087a1f8ca5"
+provider = "archive"
+
+[license]
+spdx = "ISC"
+url = "https://github.com/sudo-project/sudo/blob/v1.9.17p2/LICENSE.md"
+
+[build]
+script_path = "packages/registry/sudo/build-sudo.sh"
+
+[[outputs]]
+name = "sudo"
+wasm = "sudo.wasm"
+
+[[outputs]]
+name = "visudo"
+wasm = "visudo.wasm"
+
+[[outputs]]
+name = "cvtsudoers"
+wasm = "cvtsudoers.wasm"
+
+[[outputs]]
+name = "sudoreplay"
+wasm = "sudoreplay.wasm"
+
+[[host_tools]]
+name = "make"
+version_constraint = ">=3.80"
+probe = { args = ["--version"], version_regex = "GNU Make (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "patch"
+version_constraint = ">=2.7"
+probe = { args = ["--version"], version_regex = "patch (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }

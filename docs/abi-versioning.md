@@ -793,6 +793,17 @@ that same pending ABI-43 contract and snapshot. They do not justify inventing
 ABI 44 merely to preserve an unreleased draft, and they must not be hidden
 under released ABI 42.
 
+The pending epoch also makes ordinary mount state authoritative for set-ID
+execution. A retained executable's owner and `S_ISUID`/`S_ISGID` bits produce
+the effective-credential transition on every mount that does not report
+`ST_NOSUID`, including a writable VFS image. There is no private product
+capability, immutable-image exception, or first-party executable allowlist in
+that decision. The host retains and revalidates the executable handle, bytes,
+metadata, mount flags, and inode identity before the kernel commits the
+transition. Existing ABI-43 binaries must be rebuilt with this final
+unpublished execution contract; preserving the earlier draft would not justify
+creating ABI 44.
+
 The same pending epoch also makes process-startup argv/environment reads
 complete-or-`ERANGE`. A zero destination capacity queries the exact immutable
 entry length; a positive short capacity writes nothing, and an exact-capacity

@@ -62,11 +62,6 @@ export interface InitMessage {
   rootfsImage?: ArrayBuffer;
   /** Exact image/scratch mount contract. Absent preserves the host default. */
   rootfsMountSpec?: MountSpec[];
-  privilegedProgramMount?: {
-    kind: "published-privileged-program-product";
-    mountPoint: "/usr/bin";
-    imageBytes: Uint8Array;
-  };
   /** Base used to resolve relative lazy URLs embedded in rootfsImage. */
   rootfsLazyUrlBase?: string;
   /** Exhaustive exact-byte lazy transport for this rootfs; no network fallback. */

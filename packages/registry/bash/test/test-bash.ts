@@ -77,9 +77,9 @@ const cases: [string, string, string][] = [
       'test "$(type -t complete)" = builtin && ' +
       'test "$(type -t unset)" = builtin && ' +
       'test "$(type -t printf)" = builtin && ' +
-      'printf "homebrew-builtins-ready\\n"',
-    "homebrew-builtins-ready\n",
-    "Homebrew builtin restoration contract",
+      'printf "shell-builtins-ready\\n"',
+    "shell-builtins-ready\n",
+    "dynamic builtin restoration contract",
   ],
   ["echo hello | cat", "hello\n", "simple pipe (cat)"],
   ["echo hello world | wc -c", "12\n", "pipe to wc -c"],

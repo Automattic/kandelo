@@ -1,5 +1,9 @@
 # Kandelo Homebrew Packaging
 
+> **Disabled:** Kandelo does not currently build, test, publish, or ship the
+> Homebrew integration described here. Its implementation and this guide are
+> retained for possible later reconsideration, not as supported behavior.
+
 This guide explains how Kandelo builds, publishes, and uses Homebrew
 packages. It starts with the small number of concepts needed to follow
 the system. The detailed security and file-format contracts remain in

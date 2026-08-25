@@ -353,7 +353,7 @@ export interface TerminalProgram {
 
 export interface TerminalSessionPolicy {
   initial: TerminalProgram;
-  afterExit: TerminalProgram;
+  afterExit?: TerminalProgram;
   shortRunThresholdMs: number;
   initialRestartDelayMs: number;
   maximumRestartDelayMs: number;
@@ -827,10 +827,13 @@ function cloneTerminalProgram(program: TerminalProgram): TerminalProgram {
 }
 
 function validateTerminalSessionPolicy(policy: TerminalSessionPolicy): void {
-  for (const [label, program] of [
+  const programs: Array<readonly [string, TerminalProgram]> = [
     ["initial", policy.initial],
-    ["afterExit", policy.afterExit],
-  ] as const) {
+    ...(policy.afterExit === undefined
+      ? []
+      : [["afterExit", policy.afterExit] as const]),
+  ];
+  for (const [label, program] of programs) {
     if (!program.programPath.startsWith("/")) {
       throw new Error(
         `LiveKernelHost.setTerminalSessionPolicy ${label}.programPath must be absolute`,
@@ -1092,7 +1095,9 @@ export class LiveKernelHost implements KernelHost {
     validateTerminalSessionPolicy(policy);
     this.terminalSessions = {
       initial: cloneTerminalProgram(policy.initial),
-      afterExit: cloneTerminalProgram(policy.afterExit),
+      ...(policy.afterExit === undefined
+        ? {}
+        : { afterExit: cloneTerminalProgram(policy.afterExit) }),
       shortRunThresholdMs: policy.shortRunThresholdMs,
       initialRestartDelayMs: policy.initialRestartDelayMs,
       maximumRestartDelayMs: policy.maximumRestartDelayMs,
@@ -1712,6 +1717,7 @@ export class LiveKernelHost implements KernelHost {
     }
 
     const policy = this.terminalSessions;
+    if (policy.afterExit === undefined) return;
     const runtimeMs = Math.max(0, nowMs() - session.startedAt);
     const delayMs = runtimeMs >= policy.shortRunThresholdMs
       ? policy.initialRestartDelayMs

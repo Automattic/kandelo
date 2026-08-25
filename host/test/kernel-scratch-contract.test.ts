@@ -790,7 +790,7 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.getForkCount::kernel-export-direct-use::fn(pid)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.processSecureExec::kernel-export-direct-use::query(pid)",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#processSecureExecWithinKernelEntry::kernel-export-direct-use::query(pid)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.getKernelMemoryPages::kernel-export-direct-use::fn()",

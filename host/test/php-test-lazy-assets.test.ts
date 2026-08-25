@@ -18,6 +18,8 @@ describe.skipIf(!existsSync(rootfsImage))("PHP browser PHPT lazy assets", () => 
       ["/usr/bin/dash", "binaries/programs/wasm32/dash.wasm"],
       ["/usr/bin/ps", "binaries/programs/wasm32/posix-utils-lite/ps.wasm"],
       ["/usr/bin/pgrep", "binaries/programs/wasm32/posix-utils-lite/pgrep.wasm"],
+      ["/usr/bin/sudo-lite", "binaries/programs/wasm32/sudo-lite.wasm"],
+      ["/usr/bin/sudo", "binaries/programs/wasm32/sudo/sudo.wasm"],
     ]);
 
     for (const [path, url] of expected) {

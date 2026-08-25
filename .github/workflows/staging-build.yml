@@ -200,15 +200,14 @@ jobs:
               echo "package_staging_reason=$EXACT_ABI_STAGING_REASON"
             } >> "$GITHUB_OUTPUT"
           elif [ "$HOMEBREW_PUBLISHER_ONLY" = true ]; then
-            # WHY: preflight already runs the complete bottle-publisher
-            # contract. Building a kernel/rootfs workspace and running Vitest
-            # cannot add evidence for a diff that the shared fail-closed
-            # classifier proves is wholly outside shell consumption/runtime.
+            # WHY: Homebrew integration is dormant. Changes confined to its
+            # retained implementation sources must not start package builds or
+            # tests until that integration is intentionally re-enabled.
             [ "$PACKAGE_STAGING_REQUIRED" = false ]
             {
-              echo "package_staging_required=$LEGACY_PACKAGE_STAGING_REQUIRED"
+              echo "package_staging_required=false"
               echo "test_gate_required=false"
-              echo "package_staging_reason=$RAW_PACKAGE_STAGING_REASON"
+              echo "package_staging_reason=homebrew-disabled"
             } >> "$GITHUB_OUTPUT"
           else
             {
@@ -228,8 +227,7 @@ jobs:
       needs.change-scope.outputs.exact_abi_staging_applicable != 'true' &&
       (
         needs.change-scope.outputs.package_staging_required == 'true' ||
-        needs.change-scope.outputs.test_gate_required == 'true' ||
-        needs.change-scope.outputs.homebrew_publisher_only_changed == 'true'
+        needs.change-scope.outputs.test_gate_required == 'true'
       )
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -571,7 +569,6 @@ jobs:
       needs.change-scope.outputs.exact_abi_staging_applicable != 'true' &&
       needs.change-scope.outputs.package_staging_required == 'false' &&
       needs.change-scope.outputs.test_gate_required == 'false' &&
-      needs.change-scope.outputs.homebrew_publisher_only_changed != 'true' &&
       needs.change-scope.outputs.skip_staging_tests != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -610,15 +607,6 @@ jobs:
 
       - name: Prepare package toolchain
         uses: ./.github/actions/package-toolchain
-
-      - name: Install JavaScript dependencies for tap-native Homebrew validation
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-          '
-
-      - name: Validate tap-native Homebrew sidecars and pour planning
-        run: bash scripts/dev-shell.sh bash scripts/test-homebrew-tap-native-sidecars.sh
 
   # Library wave — kind=library packages build first. Each runner
   # uploads its archive as `<lib>-<arch>` so the program wave below
@@ -850,11 +838,6 @@ jobs:
             cd host && npm run typecheck
           '
 
-      - name: Test CI suite routing
-        run: |
-          bash scripts/dev-shell.sh bash \
-            tests/scripts/ci-run-test-suite-groups.test.sh
-
       - name: Test package build root contract
         run: bash scripts/dev-shell.sh bash scripts/test-package-build-roots.sh
 
@@ -870,7 +853,9 @@ jobs:
           # contract inventory. This source-only job does not download the
           # package-toolchain artifact, so prepare its host tool explicitly.
           bash scripts/dev-shell.sh bash scripts/build-fork-instrument-tool.sh
-          bash scripts/dev-shell.sh npx --prefix host vitest run --root . tests/package-system
+          bash scripts/dev-shell.sh npx --prefix host vitest run --root . \
+            tests/package-system \
+            '--exclude=**/*homebrew*.test.ts'
 
   test-suite-early:
     name: test-suite (${{ matrix.label }})
@@ -1241,9 +1226,7 @@ jobs:
       - name: Materialize binaries
         env:
           GH_TOKEN: ${{ github.token }}
-          # homebrew-bootstrap is built by tap campaigns, not the legacy
-          # Kandelo package registry this step materializes.
-          WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs homebrew-bootstrap perl perl-vfs python-vfs redis texlive
+          WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis texlive
         # A reused staging release is fetched again after every matrix writer
         # finishes, validated as fully current, and frozen into a local
         # file:// snapshot. Otherwise retain the durable release + local
@@ -1330,43 +1313,9 @@ jobs:
             export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${ABI}/index.toml"
           fi
           echo "WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" >> "$GITHUB_ENV"
-          # WHY: bulk staging deliberately skips the tap-owned bootstrap, but
-          # the canonical flat-lazy shell inspection consumes that exact
-          # package output. Resolve it explicitly through the selected index.
-          WASM_POSIX_FETCH_SKIP_PKGS= \
-            bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh \
-              --fetch-only \
-              --package homebrew-bootstrap
           bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh \
             --fetch-only \
             --expected-ledger "$EXPECTED"
-          CANONICAL_INDEX="$RUNNER_TEMP/canonical-browser-shell-index/index.toml"
-          bash scripts/dev-shell.sh \
-            bash scripts/materialize-ci-canonical-package-index.sh \
-              "$PACKAGE_BASELINE_TAG" "$ABI" "$CANONICAL_INDEX"
-          SHELL_IMAGE="$(
-            bash scripts/resolve-binary.sh programs/shell.vfs.zst \
-              2>/dev/null || true
-          )"
-          [ -n "$SHELL_IMAGE" ] || SHELL_IMAGE="-"
-          HOMEBREW_BOOTSTRAP="$(
-            bash scripts/resolve-binary.sh \
-              programs/homebrew-bootstrap/homebrew-bootstrap.zip \
-              2>/dev/null || true
-          )"
-          [ -n "$HOMEBREW_BOOTSTRAP" ] || HOMEBREW_BOOTSTRAP="-"
-          # WHY: the canonical shell is a flat-lazy product. Bind the exact
-          # image and bootstrap bytes to its checked 37-asset mirror before a
-          # browser test workspace can recover those deferred transports.
-          bash scripts/dev-shell.sh \
-            bash scripts/ci-homebrew-browser-mirror-state.sh create \
-            "$EXPECTED" \
-            "$BLOCKED" \
-            "$CANONICAL_INDEX" \
-            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${PACKAGE_BASELINE_TAG}/index.toml" \
-            "$SHELL_IMAGE" \
-            "$HOMEBREW_BOOTSTRAP" \
-            "$RUNNER_TEMP/homebrew-browser-mirror-state.json"
 
       - name: Skip staging test suites
         if: env.SKIP_STAGING_TESTS == 'true'
@@ -1408,7 +1357,6 @@ jobs:
         run: |
           bash scripts/dev-shell.sh bash scripts/pack-ci-test-workspace.sh \
             --publication-blockers "$RUNNER_TEMP/staging-publication-blockers.json" \
-            --homebrew-browser-mirror-state "$RUNNER_TEMP/homebrew-browser-mirror-state.json" \
             "$RUNNER_TEMP/test-workspace.tar.zst"
 
       - name: Upload prepared test workspace
@@ -1586,54 +1534,6 @@ jobs:
             PREPARE_BROWSER_ASSETS="$PREPARE_BROWSER_ASSETS" \
             bash scripts/ci-run-test-suite.sh "$SUITE" "$TEST_GROUP"
 
-      - name: Run exact staged Node npm acceptance
-        if: >-
-          steps.suite.outputs.skip != 'true' &&
-          matrix.suite == 'browser' &&
-          env.STAGES_NODE_VFS == 'true'
-        run: |
-          # WHY: exports made by the preceding suite step do not cross the
-          # GitHub step boundary. Keep resolution, closed fixture recovery,
-          # the production build, and Playwright inside one activated shell.
-          bash scripts/dev-shell.sh \
-            bash scripts/activate-ci-test-workspace.sh \
-              bash <<'NODE_ACCEPTANCE'
-          set -euo pipefail
-          node_image="$(bash scripts/resolve-binary.sh programs/node-vfs.vfs.zst)"
-          node_sha256="$(sha256sum "$node_image" | awk '{print $1}')"
-          fixture_parent="$(mktemp -d "$RUNNER_TEMP/kandelo-node-acceptance.XXXXXX")"
-          trap 'rm -rf -- "$fixture_parent"' EXIT
-          fixture="$fixture_parent/fixture"
-          mkdir "$fixture"
-          bootstrap="$(bash scripts/resolve-binary.sh \
-            programs/homebrew-bootstrap/homebrew-bootstrap.zip)"
-          cp "$bootstrap" "$fixture/homebrew-bootstrap.zip"
-          npx tsx scripts/recover-homebrew-bottle-mirror.ts \
-            --image "$node_image" --out "$fixture/mirror" \
-            --report "$fixture_parent/mirror-recovery.json"
-          node_proxy_port=63339
-          test ! -e apps/browser-demos/dist
-          (
-            cd apps/browser-demos
-            env VITE_BASE=/kandelo/ \
-              VITE_CORS_PROXY_URL="http://127.0.0.1:${node_proxy_port}/?" \
-              npm run build
-            cp "$fixture/homebrew-bootstrap.zip" dist/homebrew-bootstrap.zip
-            bash ../../scripts/verify-browser-shell-vfs-asset.sh \
-              dist "$node_image" node-vfs.vfs
-            env KANDELO_BROWSER_DEMO_INPUTS=main \
-              KANDELO_NODE_VFS_STRICT=1 \
-              KANDELO_NODE_VFS_SHA256="$node_sha256" \
-              KANDELO_NODE_LOCAL_BOOT_ASSET_ROOT="$fixture" \
-              KANDELO_NODE_LOCAL_PROXY_PORT="$node_proxy_port" \
-              KANDELO_PLAYWRIGHT_SERVE_DIST=1 \
-              KANDELO_TEST_BASE_URL=http://127.0.0.1:5401/kandelo/ \
-              VITE_BASE=/kandelo/ \
-              npx playwright test test/kandelo-node.spec.ts \
-                --grep '@node-npm-acceptance' --project=chromium
-          )
-          NODE_ACCEPTANCE
-
       - name: Upload browser test artifacts
         if: failure() && steps.suite.outputs.skip != 'true' && matrix.suite == 'browser'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1740,8 +1640,8 @@ jobs:
             -f description="Runtime/materialization tests passed; package staging skipped." \
             -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
-  homebrew-main-shell-prerequisites:
-    name: order exact Homebrew shell after package staging
+  package-main-shell-prerequisites:
+    name: order exact package shell after package staging
     needs: [change-scope, preflight, test-gate, exact-abi-test-gate]
     if: |
       always() &&
@@ -1833,7 +1733,7 @@ jobs:
             }
           fi
 
-  homebrew-main-shell-gate:
+  package-main-shell-gate:
     # Keep the historical required-check display name so branch protection
     # does not silently lose a gate. The canonical shell is package-owned now;
     # the generic test gate includes the browser cell and conditionally runs
@@ -1842,7 +1742,7 @@ jobs:
     needs:
       - change-scope
       - exact-abi-test-gate
-      - homebrew-main-shell-prerequisites
+      - package-main-shell-prerequisites
       - test-gate
     if: |
       always() &&
@@ -1859,7 +1759,7 @@ jobs:
     steps:
       - name: Require ordered exact-shell validation
         env:
-          PREREQUISITES_RESULT: ${{ needs.homebrew-main-shell-prerequisites.result }}
+          PREREQUISITES_RESULT: ${{ needs.package-main-shell-prerequisites.result }}
           EXACT_ABI_STAGING_APPLICABLE: ${{ needs.change-scope.outputs.exact_abi_staging_applicable }}
           EXACT_ABI_GATE_RESULT: ${{ needs.exact-abi-test-gate.result }}
           TEST_GATE_RESULT: ${{ needs.test-gate.result }}

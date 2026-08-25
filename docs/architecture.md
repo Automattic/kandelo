@@ -1678,7 +1678,21 @@ The kernel's hardcoded `INITIAL_BRK` (16MB) is a fallback for binaries that don'
 
 ### Mount table model
 
-`VirtualPlatformIO` (`host/src/vfs/vfs.ts`) is the kernel's filesystem router on both hosts. It is configured with a list of `MountConfig { mountPoint, backend, readonly?, setIdCapability? }` entries and dispatches every path-based syscall to the backend whose mount prefix is the longest match. Cross-mount operations (`rename`, `link`) are rejected with `EXDEV`. A path that matches no mount returns `ENOENT`. Omitted set-ID capability means `nosuid`. A `trusted-root-product` request is accepted only when the mount is explicitly read-only and its backend carries the module-private immutable-product brand; no public structural field or configuration value can mint that brand. Malformed or unbranded requests fail during mount construction. The internal factory snapshots a quiescent, fully materialized product tree into privately owned storage before branding its null-prototype read-only facade. The private snapshot uses captured, frozen copies of the complete `MemoryFileSystem` and SharedFS operation prototypes; operation helpers and thresholds are module-lexical rather than mutable class properties; and generated open, access, pathconf, file-mode, and directory-type tables are captured as numeric scalars before they can participate in the trusted path. Each caller-supplied open flag or access mode is normalized and validated once, and only that same primitive integer is used for the guard and delegated operation. Retaining the producer tree, reaching its TypeScript-private backing reflectively, replacing either producer-reachable prototype or class property, mutating a generated table, or supplying a stateful coercible flag therefore grants no post-admission authority over trusted bytes, metadata, or read results. `VirtualPlatformIO.statfs` then authoritatively sets `ST_NOSUID` for nosuid mounts or clears it for the admitted trusted mount, regardless of the backend's raw flags. `MountConfig.readonly` remains advisory for ordinary mounts, while the trusted product facade rejects every guest-visible mutation with `EROFS`.
+`VirtualPlatformIO` (`host/src/vfs/vfs.ts`) is the kernel's filesystem router
+on both hosts. It is configured with a list of
+`MountConfig { mountPoint, backend, readonly?, nosuid? }` entries and
+dispatches every path-based syscall to the backend whose mount prefix is the
+longest match. Cross-mount operations (`rename`, `link`) are rejected with
+`EXDEV`. A path that matches no mount returns `ENOENT`.
+
+Set-ID follows the ordinary POSIX mount model. A mount honors set-user-ID and
+set-group-ID mode bits unless `nosuid: true` is explicit. `VirtualPlatformIO`
+authoritatively clears or sets `ST_NOSUID` in `statfs()` and `fstatfs()` from
+that resolved mount option instead of trusting a backend's raw flags. VFS image
+origin, mutability, and first-party status do not grant or remove authority:
+root ownership, inode mode, and the mount flag are authoritative. A custom
+image's guest root can therefore install, replace, or create set-ID programs
+without acquiring any host privilege.
 
 `FileSystemBackend` (`host/src/vfs/types.ts`) is the per-mount interface (open/read/write/stat/readdir/symlink/...). Two backends are in use today:
 
@@ -1726,7 +1740,7 @@ operations require a lifecycle-owned backing, not merely a reachable one.
 
 | Mount point | Source | Browser backend | Node backend |
 |-------------|--------|-----------------|--------------|
-| `/`         | image (advisory readonly) | awaited verified `MemoryFileSystem` restore | awaited verified `MemoryFileSystem` restore |
+| `/`         | writable image | awaited verified `MemoryFileSystem` restore | awaited verified `MemoryFileSystem` restore |
 | `/tmp`      | scratch (ephemeral) | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 | `/var/tmp`  | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 | `/var/log`  | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
@@ -1735,34 +1749,10 @@ operations require a lifecycle-owned backing, not merely a reachable one.
 | `/root`     | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 | `/srv`      | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 
-Every mount in the default layout is `nosuid` on both hosts, including the
-advisory-read-only root image. Reviewed privileged-program policy can copy an
-authenticated regular bottle member into a fresh root-owned inode on a
-separate privately branded immutable product backend. Admission covers the
-complete three-program group, rejects links and writable aliases, and compares
-each `(dev, ino, generation)` identity with every inode in the writable bottle
-tree before publication. The candidate is created on a fresh private
-`SharedArrayBuffer`, and its one-shot construction proof is consumed before
-admission; no second wrapper over writable backing can enter the production
-path even though `structuredClone()` can create distinct wrappers for one
-shared data block. The record value `trusted-root-product` names that policy;
-it is not authority. Product review authority is a non-serializable opaque
-capability minted only at internal product/build boundaries. Mount authority
-still comes only from the private backend brand and resolved read-only mount
-capability. Ordinary image,
-scratch, host, OPFS, device, and user-provided backends cannot acquire that
-capability from public fields, prototypes, or configuration.
-
-The browser peer consumes a published product through
-`BrowserKernel.initFromPublishedPrivilegedProgramProduct`. The publisher keeps
-a private serialized `/usr/bin` projection behind the exact publication
-object; neither mutation of the public build artifact nor a structurally
-similar object can retrieve it. The browser main thread copies that private
-projection into its worker-only init message, where the VFS-owning worker
-verifies the image, snapshots it behind a new immutable-product backend, and
-mounts it read-only at `/usr/bin` over the ordinary `nosuid` root image. Public
-boot descriptors, shared URLs, and `initFromImage` have no field that can
-request this mount or supply its authority.
+The writable root image honors set-ID on both hosts. Default scratch mounts,
+`/dev`, and `/dev/shm` explicitly use `nosuid`; this is an ordinary mount
+choice, not a trust classification for the image. Custom mount specifications
+may make the same choice. The browser and Node hosts apply the same rules.
 
 The browser host layers two additional, host-specific mounts on top: `/dev/shm` (the POSIX-semaphore SAB shared with main-thread surfaces) and `/dev` (`DeviceFileSystem` for `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`, `/dev/pts/N`). Sticky bits, the uid 1000 owner on `/home/maker`, mode `0700` on `/root`, etc. are baked into the rootfs image at build time per the canonical `MANIFEST` and reflected honestly through the `MemoryFileSystem` inode metadata. Scratch mounts on Node start owned by uid/gid 0 because `HostFileSystem` synthesises them.
 
@@ -1779,33 +1769,19 @@ not synthesize static `/etc` policy or trust data.
 The rootfs data defines the canonical interactive image account as
 `maker` at uid/gid 1000 with home `/home/maker`. Its password hash, wheel
 membership, sudoers policy, and login messages are ordinary rootfs files.
-Reviewed `login`, `sudo-lite`, and `sudo` artifacts are published through the
-privileged-program path before that account is product-ready; the rootfs does
-not synthesize those executables or a preauthenticated shell.
+The package-built `login`, `sudo-lite`, and `sudo` executables are ordinary
+root-owned files in that same image. `login` is embedded because terminal boot
+requires it immediately; the two sudo implementations remain lazy and are
+materialized on first execution. Their mode is `04755`, so execution on the
+root image applies the normal set-user-ID transition. Guest root may replace
+those files, just as it may replace any other system executable.
 
 The reusable browser session layer owns one lifecycle record per logical PTY.
-Under the current browser trust boundary, the live loader selects that policy
-only after all configured assets have been staged and both of these checks
-succeed: the final writable image has the one exact canonical `maker` account,
-password, wheel, sudoers, and autologin records; and a separately
-publisher-admitted product supplies the same exact `login` bytes through
-`BrowserKernel.initFromPublishedPrivilegedProgramProduct`. Image origin is not
-part of this decision, so an otherwise third-party image remains eligible when
-its final state is canonical and it is paired with that separate product.
-Image/config/descriptor data alone cannot construct the private product
-capability. This describes the repository's present safety boundary; the
-larger trust model for deliberately user-selected images remains an open
-architecture question rather than a policy settled by terminal sessions.
-
-The deployable local-test browser product preserves that boundary through an
-explicit build input. Its closed fixture and composition report are data only;
-the build configuration must name an absolute private product directory, and
-product-owned browser code compiles the exact reviewed projections before it
-can call the private policy factory. Runtime loading verifies all closed asset
-identities, republishes from the authenticated Homebrew Cellar sources, and
-compares the result with the separately serialized privileged image. The
-branded result and closed lazy bytes are associated with one exact root VFS
-URL, so later gallery or custom-image boots cannot inherit them.
+Its program selection comes from the image's strict experimental
+`/etc/kandelo/experimental-terminal-session.json` declaration. First-party and
+custom images use the same parser and supervisor; the browser does not infer a
+login policy from image origin, account contents, or a compiled product
+profile.
 
 For an eligible image/product pair, the first process is root-authorized
 `login -p -f maker`; every later process is ordinary `login -p`. UI handles

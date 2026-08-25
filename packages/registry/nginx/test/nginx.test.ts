@@ -12,8 +12,14 @@ import { fileURLToPath } from "node:url";
 import { createConnection, createServer } from "node:net";
 import { CAPTURED_STDIO, CentralizedKernelWorker } from "../../../../host/src/kernel-worker";
 import { resolveBinary, tryResolveBinary } from "../../../../host/src/binary-resolver";
+import { detectPtrWidth } from "../../../../host/src/constants";
+import {
+  ForkReplayGateCoordinator,
+  observeForkReplayWorker,
+} from "../../../../host/src/fork-replay-gate";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
 import { NodeWorkerAdapter } from "../../../../host/src/worker-adapter";
+import { TestProcessReferenceOwners } from "../../../../host/test/process-reference-owner-helper";
 import type {
   CentralizedWorkerInitMessage,
   WorkerToHostMessage,
@@ -99,7 +105,10 @@ describe.skipIf(!nginxWasmPath)(
 
       const kernelBytes = loadWasm(resolveBinary("kernel.wasm"));
       const programBytes = loadWasm(nginxWasmPath!);
+      const ptrWidth = detectPtrWidth(programBytes);
+      expect(ptrWidth).toBe(4);
       const workerAdapter = new NodeWorkerAdapter();
+      const referenceOwners = new TestProcessReferenceOwners();
       const io = new NodePlatformIO();
 
       const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
@@ -128,7 +137,9 @@ describe.skipIf(!nginxWasmPath)(
         io,
         {
           onFork: async ({
+            parentPid,
             childPid,
+            mode,
             parentMemory,
             continuation,
           }) => {
@@ -155,7 +166,22 @@ describe.skipIf(!nginxWasmPath)(
             const childChannelOffset = (MAX_PAGES - 2) * 65536;
             new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(0);
 
-            kw.registerProcess(childPid, childMemory, [childChannelOffset]);
+            kw.registerProcess(childPid, childMemory, [childChannelOffset], {
+              ptrWidth,
+            });
+            kw.inheritProcessSharedMappings(parentPid, childPid);
+
+            const forkBufAddr = continuation.forkBufAddr;
+            const childReferenceInit = referenceOwners.fork(
+              parentPid,
+              childPid,
+              parentMemory,
+              ptrWidth,
+              forkBufAddr,
+            );
+            const forkReplay = new ForkReplayGateCoordinator(
+              `nginx fork child pid=${childPid}`,
+            );
 
             const childInitData: CentralizedWorkerInitMessage = {
               type: "centralized_init",
@@ -163,14 +189,21 @@ describe.skipIf(!nginxWasmPath)(
               programBytes,
               memory: childMemory,
               channelOffset: childChannelOffset,
+              secureExec: kw.processSecureExec(childPid),
               isForkChild: true,
-              forkBufAddr: continuation.forkBufAddr,
+              forkMode: mode,
+              forkBufAddr,
+              forkReplayGate: forkReplay.gate,
+              ptrWidth,
+              ...childReferenceInit,
             };
 
             const childWorker = workerAdapter.createWorker(childInitData);
+            referenceOwners.attach(childPid, childWorker);
             workers.set(childPid, childWorker);
             childWorker.on("error", (error) => {
               recordWorkerFailure(childPid, error);
+              referenceOwners.release(childPid);
               kw.unregisterProcess(childPid);
               workers.delete(childPid);
             });
@@ -178,17 +211,44 @@ describe.skipIf(!nginxWasmPath)(
               const event = message as WorkerToHostMessage;
               if (event.type === "error") {
                 recordWorkerFailure(childPid, event.message);
+                referenceOwners.release(childPid);
               }
             });
+            observeForkReplayWorker(
+              forkReplay,
+              childWorker,
+              childPid,
+              () => workers.get(childPid) === childWorker,
+            );
 
-            return [childChannelOffset];
+            try {
+              await forkReplay.waitUntilReady();
+              if (workers.get(childPid) !== childWorker) {
+                throw new Error(
+                  `nginx fork child ${childPid} changed generation before commit`,
+                );
+              }
+              forkReplay.commit();
+              return [childChannelOffset];
+            } catch (error) {
+              forkReplay.cancel(error);
+              if (workers.get(childPid) === childWorker) {
+                workers.delete(childPid);
+                referenceOwners.release(childPid);
+                kw.unregisterProcess(childPid);
+              }
+              childWorker.terminate().catch(() => {});
+              throw error;
+            }
           },
           onExec: async () => -38,
           onExit: (pid, status) => {
             if (pid === masterPid) {
+              referenceOwners.release(pid);
               kw.unregisterProcess(pid);
               resolveExit!(status);
             } else {
+              referenceOwners.release(pid);
               kw.deactivateProcess(pid);
             }
             workers.delete(pid);
@@ -209,8 +269,9 @@ describe.skipIf(!nginxWasmPath)(
       new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
       masterPid = kw.createProcess(CAPTURED_STDIO);
-      kw.registerProcess(masterPid, memory, [channelOffset]);
+      kw.registerProcess(masterPid, memory, [channelOffset], { ptrWidth });
       kw.setCwd(masterPid, nginxPrefix);
+      const masterReferenceInit = referenceOwners.start(masterPid);
 
       const initData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
@@ -218,11 +279,15 @@ describe.skipIf(!nginxWasmPath)(
         programBytes,
         memory,
         channelOffset,
+        secureExec: kw.processSecureExec(masterPid),
         env: ["HOME=/tmp", "PATH=/usr/bin"],
         argv: ["nginx", "-p", nginxPrefix + "/", "-c", testConf],
+        ptrWidth,
+        ...masterReferenceInit,
       };
 
       const masterWorker = workerAdapter.createWorker(initData);
+      referenceOwners.attach(masterPid, masterWorker);
       workers.set(masterPid, masterWorker);
       masterWorker.on("error", (error) => {
         recordWorkerFailure(masterPid, error);
@@ -299,6 +364,7 @@ describe.skipIf(!nginxWasmPath)(
           kw.unregisterProcess(pid);
         }
         workers.clear();
+        referenceOwners.close();
         rmSync(tmpDir, { recursive: true, force: true });
       }
     }, 60_000);

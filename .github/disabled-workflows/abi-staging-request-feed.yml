@@ -1,5 +1,8 @@
 name: ABI staging exact-head request feed
 
+# Dormant: this historical request feed addresses the Homebrew tap and is not
+# part of the package-backed product path.
+
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]

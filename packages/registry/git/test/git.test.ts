@@ -250,19 +250,18 @@ describe.skipIf(!hasGit || !hasGitRemoteHttp)("Git HTTP clone", () => {
       const cloneDir = `/clone-${Date.now()}`;
       const cloneHostDir = join(guestRoot, cloneDir.slice(1));
 
-      // Git's prepare_cmd() resolves helper commands via locate_in_PATH(),
-      // which uses access() against the host filesystem.  We create a
-      // temporary GIT_EXEC_PATH with placeholder executables so that
-      // access() succeeds, then register those paths in execPrograms so
-      // the kernel's exec handler maps them to the correct .wasm binary.
+      // Git's prepare_cmd() resolves helper commands via locate_in_PATH().
+      // Install the actual Wasm programs in the guest VFS so the kernel's
+      // authoritative exec preflight sees the same bytes as the resolver.
       const gitExecPath = "/exec";
       const hostGitExecPath = join(guestRoot, "exec");
       mkdirSync(hostGitExecPath, { recursive: true });
-      writeFileSync(join(hostGitExecPath, "git-remote-http"), "placeholder", {
-        mode: 0o755,
-      });
-      // Also create a "git" placeholder so git can re-exec itself
-      writeFileSync(join(hostGitExecPath, "git"), "placeholder", {
+      writeFileSync(
+        join(hostGitExecPath, "git-remote-http"),
+        readFileSync(gitRemoteHttpBinary!),
+        { mode: 0o755 },
+      );
+      writeFileSync(join(hostGitExecPath, "git"), readFileSync(gitBinary!), {
         mode: 0o755,
       });
 

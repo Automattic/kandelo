@@ -7121,6 +7121,9 @@ const GLOBAL_PACKAGE_TOOLCHAIN_INPUTS: &[&str] = &[
     "flake.lock",
     "rust-toolchain.toml",
     "scripts/dev-shell.sh",
+    "scripts/run-local-build.sh",
+    "scripts/install-local-binary.sh",
+    "scripts/wasm-artifact-guards.sh",
     "scripts/build-musl.sh",
     "scripts/install-overlay-headers.sh",
     ".github/actions/package-archive-build",
@@ -7143,6 +7146,7 @@ const FORK_INSTRUMENT_TOOL_INPUTS: &[&str] = &[
     "crates/fork-instrument/Cargo.toml",
     "crates/fork-instrument/src",
     "scripts/build-fork-instrument-tool.sh",
+    "scripts/fork-instrument-tool-input-hash.sh",
     "scripts/run-wasm-fork-instrument.sh",
 ];
 
@@ -14252,6 +14256,7 @@ fn is_wasm_bytes(bytes: &[u8]) -> bool {
 #[derive(Default)]
 struct WasmArtifactFacts {
     imports_kernel_fork: bool,
+    dylink_section_count: usize,
     exports: BTreeSet<String>,
     function_imports: BTreeMap<(String, String), Vec<wasmparser::FuncType>>,
     function_exports: BTreeMap<String, Vec<wasmparser::FuncType>>,
@@ -14397,7 +14402,9 @@ fn wasm_artifact_facts(bytes: &[u8]) -> Result<WasmArtifactFacts, String> {
                 if name == "linking" || name.starts_with("reloc.") {
                     facts.is_relocatable_object = true;
                 }
-                if name == wasm_posix_shared::abi::WPK_FORK_LINKED_FRAME_FORMAT_SECTION {
+                if name == "dylink.0" {
+                    facts.dylink_section_count += 1;
+                } else if name == wasm_posix_shared::abi::WPK_FORK_LINKED_FRAME_FORMAT_SECTION {
                     facts.linked_frame_descriptors.push(c.data().to_vec());
                 } else if name == wasm_posix_shared::abi::WPK_FORK_CAPABILITIES_SECTION {
                     facts.fork_capabilities.push(c.data().to_vec());
@@ -14507,7 +14514,10 @@ fn validate_linked_frame_descriptor(
     Ok(LinkedFrameDescriptorFacts { pointer_width })
 }
 
-fn validate_fork_capabilities(sections: &[Vec<u8>]) -> Result<(), String> {
+fn validate_fork_capabilities(
+    sections: &[Vec<u8>],
+    required_flags: u8,
+) -> Result<(), String> {
     use wasm_posix_shared::abi;
 
     let [capability] = sections else {
@@ -14543,11 +14553,10 @@ fn validate_fork_capabilities(sections: &[Vec<u8>]) -> Result<(), String> {
             abi::WPK_FORK_CAPABILITIES_SECTION
         ));
     }
-    if flags & abi::WPK_FORK_CAP_REQUIRED_FLAGS != abi::WPK_FORK_CAP_REQUIRED_FLAGS {
+    if flags & required_flags != required_flags {
         return Err(format!(
-            "{} flags 0x{flags:02x} omit required activation-state safety flags 0x{:02x}",
+            "{} flags 0x{flags:02x} omit required flags 0x{required_flags:02x}",
             abi::WPK_FORK_CAPABILITIES_SECTION,
-            abi::WPK_FORK_CAP_REQUIRED_FLAGS
         ));
     }
     Ok(())
@@ -14691,11 +14700,37 @@ fn wasm_artifact_policy_failures_for(
         return failures;
     }
 
-    if !has_fork_artifact_surface && !facts.imports_kernel_fork {
+    let is_side_module = facts.dylink_section_count > 0;
+    if !has_fork_artifact_surface && !facts.imports_kernel_fork && !is_side_module {
         return failures;
     }
 
     let contract_failure_start = failures.len();
+    if is_side_module {
+        use fork_instrument::contract_inventory::ArtifactAbiVersion;
+
+        match fork_instrument::contract_inventory::artifact_identity(bytes) {
+            Ok(identity) => match identity.abi_version {
+                ArtifactAbiVersion::Present(version)
+                    if version == wasm_posix_shared::ABI_VERSION => {}
+                ArtifactAbiVersion::Present(version) => failures.push(format!(
+                    "declares __abi_version {version}, expected current ABI {}",
+                    wasm_posix_shared::ABI_VERSION,
+                )),
+                ArtifactAbiVersion::Missing => failures.push(format!(
+                    "is missing the current __abi_version {} export",
+                    wasm_posix_shared::ABI_VERSION,
+                )),
+                ArtifactAbiVersion::Invalid => failures.push(
+                    "has an invalid __abi_version export instead of a constant current ABI marker"
+                        .to_string(),
+                ),
+            },
+            Err(error) => failures.push(format!(
+                "could not validate the side-module __abi_version export: {error}"
+            )),
+        }
+    }
     if facts.native_start_count != 0 {
         // WHY: staged dlopen instantiates modules inside a host import. ABI 43
         // moves the source start function behind an explicit bootstrap so
@@ -14777,7 +14812,16 @@ fn wasm_artifact_policy_failures_for(
         }
     }
 
-    if let Err(error) = validate_fork_capabilities(&facts.fork_capabilities) {
+    let required_capabilities = if is_side_module {
+        wasm_posix_shared::abi::WPK_FORK_CAP_REQUIRED_FLAGS
+            | wasm_posix_shared::abi::WPK_FORK_CAP_SIDE_ENTRY
+    } else {
+        wasm_posix_shared::abi::WPK_FORK_CAP_REQUIRED_FLAGS
+    };
+    if let Err(error) = validate_fork_capabilities(
+        &facts.fork_capabilities,
+        required_capabilities,
+    ) {
         failures.push(error);
     }
 
@@ -14919,6 +14963,12 @@ fn wasm_artifact_policy_failures_for(
     if facts.imports_kernel_fork && failures.len() != contract_failure_start {
         failures.push(
             "imports kernel.kernel_fork without the complete ABI 43 wasm-fork-instrument contract"
+                .to_string(),
+        );
+    }
+    if is_side_module && failures.len() != contract_failure_start {
+        failures.push(
+            "is a dylink side module without the complete ABI 43 side-boundary instrumentation"
                 .to_string(),
         );
     }
@@ -21894,6 +21944,19 @@ wasm = "second.wasm"
         }
     }
 
+    fn sleb_i32(mut n: i32) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let byte = (n & 0x7f) as u8;
+            n >>= 7;
+            let done = (n == 0 && byte & 0x40 == 0) || (n == -1 && byte & 0x40 != 0);
+            out.push(if done { byte } else { byte | 0x80 });
+            if done {
+                return out;
+            }
+        }
+    }
+
     fn wasm_name(name: &str) -> Vec<u8> {
         let mut out = uleb(name.len() as u32);
         out.extend_from_slice(name.as_bytes());
@@ -22128,13 +22191,18 @@ wasm = "second.wasm"
         }
 
         let mut code_section = uleb(local_functions.len() as u32);
-        for (_, _, results) in local_functions {
+        for (name, _, results) in local_functions {
             let mut body = vec![0x00]; // no local declarations
-            for result in results {
-                match wasm_contract_value_type(*result, signature_pointer_width) {
-                    0x7f => body.extend([0x41, 0x00]), // i32.const 0
-                    0x7e => body.extend([0x42, 0x00]), // i64.const 0
-                    heap_type => body.extend([0xd0, heap_type]), // ref.null
+            if name == "__abi_version" {
+                body.push(0x41); // i32.const
+                body.extend(sleb_i32(wasm_posix_shared::ABI_VERSION as i32));
+            } else {
+                for result in results {
+                    match wasm_contract_value_type(*result, signature_pointer_width) {
+                        0x7f => body.extend([0x41, 0x00]), // i32.const 0
+                        0x7e => body.extend([0x42, 0x00]), // i64.const 0
+                        heap_type => body.extend([0xd0, heap_type]), // ref.null
+                    }
                 }
             }
             body.push(0x0b);
@@ -22191,6 +22259,29 @@ wasm = "second.wasm"
             &exports,
             &[linked_frame_descriptor(pointer_width)],
         )
+    }
+
+    fn dylink_side_module_with_capabilities(flags: u8) -> Vec<u8> {
+        use wasm_posix_shared::abi;
+
+        let exports = abi::WPK_FORK_REQUIRED_EXPORTS
+            .iter()
+            .map(|requirement| requirement.name)
+            .collect::<Vec<_>>();
+        let mut bytes = wasm_fork_artifact_with_capabilities(
+            4,
+            4,
+            4,
+            false,
+            &[],
+            &exports,
+            &[linked_frame_descriptor(4)],
+            &[vec![abi::WPK_FORK_CAPABILITIES_VERSION, flags]],
+            false,
+            false,
+        );
+        bytes.splice(8..8, wasm_custom_section("dylink.0", &[]));
+        bytes
     }
 
     fn wasm_importing_kernel_fork(custom_sections: &[&str]) -> Vec<u8> {
@@ -22946,6 +23037,16 @@ index_url = "https://example.test/releases/binaries-abi-v{abi}/index.toml"
             assert!(
                 GLOBAL_PACKAGE_TOOLCHAIN_INPUTS.contains(&input),
                 "{input} must stay in package cache-key inputs"
+            );
+        }
+        for input in [
+            "scripts/run-local-build.sh",
+            "scripts/install-local-binary.sh",
+            "scripts/wasm-artifact-guards.sh",
+        ] {
+            assert!(
+                GLOBAL_PACKAGE_TOOLCHAIN_INPUTS.contains(&input),
+                "package publication boundary {input} must invalidate every package cache key",
             );
         }
     }
@@ -29687,6 +29788,49 @@ wasm = "bad.wasm"
     }
 
     #[test]
+    fn program_artifact_policy_requires_side_boundary_instrumentation_for_dylink_modules() {
+        use wasm_posix_shared::abi;
+
+        let mut uninstrumented = b"\0asm\x01\0\0\0".to_vec();
+        uninstrumented.extend(wasm_custom_section("dylink.0", &[]));
+        let failures = wasm_artifact_policy_failures(
+            &uninstrumented,
+            ForkInstrumentationPolicy::Auto,
+        );
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("current __abi_version")),
+            "got: {failures:?}",
+        );
+        assert!(
+            failures.iter().any(|failure| failure.contains("side-boundary")),
+            "got: {failures:?}",
+        );
+
+        let activation_only = dylink_side_module_with_capabilities(
+            abi::WPK_FORK_CAP_REQUIRED_FLAGS,
+        );
+        let failures = wasm_artifact_policy_failures(
+            &activation_only,
+            ForkInstrumentationPolicy::Auto,
+        );
+        assert!(
+            failures.iter().any(|failure| failure.contains("omit required flags")),
+            "got: {failures:?}",
+        );
+
+        let complete = dylink_side_module_with_capabilities(
+            abi::WPK_FORK_CAP_REQUIRED_FLAGS | abi::WPK_FORK_CAP_SIDE_ENTRY,
+        );
+        let failures = wasm_artifact_policy_failures(
+            &complete,
+            ForkInstrumentationPolicy::Auto,
+        );
+        assert!(failures.is_empty(), "got: {failures:?}");
+    }
+
+    #[test]
     fn program_artifact_policy_rejects_each_missing_abi43_fork_import() {
         let all_imports = wasm_posix_shared::abi::WPK_FORK_REQUIRED_IMPORTS
             .iter()
@@ -29876,7 +30020,7 @@ wasm = "bad.wasm"
                 ]],
             ),
             (
-                "omit required activation-state safety",
+                "omit required flags",
                 vec![vec![abi::WPK_FORK_CAPABILITIES_VERSION, 0]],
             ),
         ];

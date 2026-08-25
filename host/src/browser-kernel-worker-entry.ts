@@ -37,18 +37,13 @@ import {
   readPreparedPlatformFile,
   VirtualPlatformIO,
 } from "./vfs/vfs";
-import {
-  createImmutableProductBackend,
-  MemoryFileSystem,
-} from "./vfs/memory-fs";
+import { MemoryFileSystem } from "./vfs/memory-fs";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
 import { createBrowserLazyFetcher } from "./vfs/browser-lazy-fetcher";
 import { resolveLazyUrl } from "./vfs/lazy-url";
-import { prepareHomebrewFlatLazyBoot } from "./homebrew-flat-lazy-boot";
 import { DeviceFileSystem } from "./vfs/device-fs";
 import { BrowserTimeProvider } from "./vfs/time";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
-import { restoreVerifiedVfsImage } from "./vfs/load-image";
 import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
 import { patchWasmForThread } from "./worker-main";
@@ -1071,33 +1066,14 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     // CORP alone cannot make an opaque response body readable to JavaScript.
     memfs.setLazyFetcher(corsProxyLazyFetcher);
   }
-  const privilegedProgramMount = msg.privilegedProgramMount?.kind ===
-      "published-privileged-program-product"
-    ? {
-        mountPoint: msg.privilegedProgramMount.mountPoint,
-        backend: createImmutableProductBackend(
-          await restoreVerifiedVfsImage(
-            msg.privilegedProgramMount.imageBytes,
-          ),
-        ),
-        readonly: true,
-        setIdCapability: {
-          kind: "trusted-root-product" as const,
-          guestWritable: false,
-          stableExecutableIdentity: true,
-        },
-      }
-    : undefined;
   const mounts: MountConfig[] = [
-    { mountPoint: "/dev/shm", backend: shmfs },
-    { mountPoint: "/dev", backend: devfs },
-    ...(privilegedProgramMount === undefined ? [] : [privilegedProgramMount]),
+    { mountPoint: "/dev/shm", backend: shmfs, nosuid: true },
+    { mountPoint: "/dev", backend: devfs, nosuid: true },
     ...specMounts,
   ];
   memfs.subscribeLazyDownloads((event) => {
     post({ type: "lazy_download", event });
   });
-  await prepareHomebrewFlatLazyBoot(memfs);
   io = new VirtualPlatformIO(mounts, new BrowserTimeProvider());
 
   // Create TLS-MITM network backend. Programs do real TLS handshakes via

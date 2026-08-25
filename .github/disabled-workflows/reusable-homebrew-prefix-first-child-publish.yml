@@ -1,4 +1,4 @@
-name: Reusable Homebrew prefix first-child publish
+name: DISABLED - Reusable Homebrew prefix first-child publish
 
 on:
   workflow_call:

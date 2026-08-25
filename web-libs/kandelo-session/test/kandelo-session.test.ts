@@ -26,7 +26,10 @@ import {
   builtinDemoPresentation,
   nodeGuide,
 } from "../src/demo-guides";
-import { parseKandeloShellConfig } from "../src/shell-config";
+import {
+  experimentalTerminalSessionPolicy,
+  parseExperimentalTerminalSession,
+} from "../src/experimental-terminal-session";
 import {
   MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
   SHELL_DERIVED_VFS_MIN_FREE_BYTES,
@@ -837,7 +840,7 @@ describe("LiveKernelHost: shell command queue", () => {
       } as any,
     });
     host.setDefaultShell({
-      programPath: "/opt/kandelo/homebrew/bin/dash",
+      programPath: "/usr/bin/dash",
       argv: ["dash", "-l", "-i"],
       env: ["PS1=kandelo$ "],
       cwd: "/home/maker",
@@ -848,7 +851,7 @@ describe("LiveKernelHost: shell command queue", () => {
     await host.attachPty("/dev/pts/0", { cols: 100, rows: 30 });
 
     expect(spawnFromVfs).toHaveBeenCalledWith(
-      "/opt/kandelo/homebrew/bin/dash",
+      "/usr/bin/dash",
       ["dash", "-l", "-i"],
       expect.objectContaining({
         pty: true,
@@ -1199,7 +1202,9 @@ type TerminalSpawn = {
   gid?: number;
 };
 
-function terminalSessionHarness() {
+function terminalSessionHarness(
+  policy: TerminalSessionPolicy = LOGIN_SESSION_POLICY,
+) {
   const encoder = new TextEncoder();
   const spawns: TerminalSpawn[] = [];
   const activePids = new Set<number>();
@@ -1263,7 +1268,7 @@ function terminalSessionHarness() {
     }))),
   };
   const host = new LiveKernelHost({ kernel, status: "running" });
-  host.setTerminalSessionPolicy(LOGIN_SESSION_POLICY);
+  host.setTerminalSessionPolicy(policy);
 
   return {
     activePids,
@@ -1320,6 +1325,22 @@ describe("LiveKernelHost: supervised terminal sessions", () => {
     ]);
     expect(detachedOutput).toBe("");
     expect(harness.activePids.size).toBe(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("ends the logical terminal when afterExit is omitted", async () => {
+    vi.useFakeTimers();
+    const harness = terminalSessionHarness({
+      ...LOGIN_SESSION_POLICY,
+      afterExit: undefined,
+    });
+    await harness.host.attachPty("/dev/pts/0");
+
+    harness.exit(1);
+    await settleTerminalSessionWork();
+
+    expect(harness.spawns).toHaveLength(1);
+    expect(harness.activePids).toEqual(new Set());
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -2118,52 +2139,125 @@ describe("image-owned Kandelo demo config", () => {
   });
 });
 
-describe("Kandelo default shell image configuration", () => {
-  it("accepts one exact VFS executable and interactive argv", () => {
-    expect(parseKandeloShellConfig(JSON.stringify({
+describe("experimental terminal session image configuration", () => {
+  it("accepts exact initial and after-exit programs", () => {
+    const config = parseExperimentalTerminalSession(JSON.stringify({
+      kind: "kandelo-experimental-terminal-session",
       version: 1,
-      path: "/opt/kandelo/homebrew/bin/dash",
-      argv: ["dash", "-l", "-i"],
-    }))).toEqual({
+      initial: {
+        path: "/usr/bin/login",
+        argv: ["login", "-p", "-f", "maker"],
+        uid: 0,
+        gid: 0,
+      },
+      afterExit: {
+        path: "/usr/bin/login",
+        argv: ["login", "-p"],
+        uid: 0,
+        gid: 0,
+      },
+    }));
+
+    expect(config).toEqual({
+      kind: "kandelo-experimental-terminal-session",
       version: 1,
-      path: "/opt/kandelo/homebrew/bin/dash",
-      argv: ["dash", "-l", "-i"],
+      initial: {
+        path: "/usr/bin/login",
+        argv: ["login", "-p", "-f", "maker"],
+        uid: 0,
+        gid: 0,
+      },
+      afterExit: {
+        path: "/usr/bin/login",
+        argv: ["login", "-p"],
+        uid: 0,
+        gid: 0,
+      },
+    });
+    expect(experimentalTerminalSessionPolicy(config)).toMatchObject({
+      initial: {
+        programPath: "/usr/bin/login",
+        argv: ["login", "-p", "-f", "maker"],
+        uid: 0,
+        gid: 0,
+      },
+      afterExit: {
+        programPath: "/usr/bin/login",
+        argv: ["login", "-p"],
+        uid: 0,
+        gid: 0,
+      },
     });
   });
 
+  it("accepts a session with no after-exit program", () => {
+    const config = parseExperimentalTerminalSession(JSON.stringify({
+      kind: "kandelo-experimental-terminal-session",
+      version: 1,
+      initial: { path: "/bin/sh", argv: ["sh", "-i"], uid: 1000, gid: 1000 },
+    }));
+
+    expect(config.afterExit).toBeUndefined();
+    expect(experimentalTerminalSessionPolicy(config).afterExit).toBeUndefined();
+  });
+
   it("rejects executable paths that can escape or drift", () => {
-    expect(() => parseKandeloShellConfig(JSON.stringify({
+    expect(() => parseExperimentalTerminalSession(JSON.stringify({
+      kind: "kandelo-experimental-terminal-session",
       version: 1,
-      path: "/opt/kandelo/../bin/dash",
-      argv: ["dash", "-l", "-i"],
+      initial: {
+        path: "/opt/kandelo/../bin/dash",
+        argv: ["dash", "-i"],
+        uid: 0,
+        gid: 0,
+      },
     }))).toThrow("normalized");
-    expect(() => parseKandeloShellConfig(JSON.stringify({
+    expect(() => parseExperimentalTerminalSession(JSON.stringify({
+      kind: "kandelo-experimental-terminal-session",
       version: 1,
-      path: "opt/kandelo/bin/dash",
-      argv: ["dash", "-l", "-i"],
+      initial: {
+        path: "bin/dash",
+        argv: ["dash", "-i"],
+        uid: 0,
+        gid: 0,
+      },
     }))).toThrow("absolute guest file path");
   });
 
-  it("rejects executable fields and oversized argv", () => {
-    expect(() => parseKandeloShellConfig(JSON.stringify({
+  it("rejects unknown fields, invalid ids, and oversized argv", () => {
+    expect(() => parseExperimentalTerminalSession(JSON.stringify({
+      kind: "kandelo-experimental-terminal-session",
       version: 1,
-      path: "/bin/sh",
-      argv: ["sh", "-i"],
-      env: { PATH: "/tmp" },
-    }))).toThrow("exactly version, path, and argv");
-    expect(() => parseKandeloShellConfig(JSON.stringify({
+      initial: {
+        path: "/bin/sh",
+        argv: ["sh", "-i"],
+        uid: -1,
+        gid: 0,
+      },
+    }))).toThrow("uid");
+    expect(() => parseExperimentalTerminalSession(JSON.stringify({
+      kind: "kandelo-experimental-terminal-session",
       version: 1,
-      path: "/bin/sh",
-      argv: Array.from({ length: 65 }, () => "sh"),
+      initial: {
+        path: "/bin/sh",
+        argv: Array.from({ length: 65 }, () => "sh"),
+        uid: 0,
+        gid: 0,
+      },
     }))).toThrow("exceeds 64 arguments");
   });
 
-  it("returns null for an unsupported version", () => {
-    expect(parseKandeloShellConfig(JSON.stringify({
+  it("rejects unsupported kind and version", () => {
+    expect(() => parseExperimentalTerminalSession(JSON.stringify({
+      kind: "kandelo-experimental-terminal-session",
       version: 2,
-      path: "/bin/sh",
-      argv: ["sh", "-i"],
-    }))).toBeNull();
+      initial: { path: "/bin/sh", argv: ["sh"], uid: 0, gid: 0 },
+    }))).toThrow("unsupported");
+    expect(() => parseExperimentalTerminalSession(JSON.stringify({
+      kind: "kandelo-terminal-session",
+      version: 1,
+      initial: { path: "/bin/sh", argv: ["sh"], uid: 0, gid: 0 },
+    }))).toThrow("unsupported");
   });
 });
 

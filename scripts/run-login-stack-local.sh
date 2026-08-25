@@ -328,16 +328,10 @@ sealed_xtask="$(
 )"
 [ "$sealed_xtask" = "$KANDELO_LOGIN_XTASK_BIN" ] ||
   fail "Formula test checker seal selected another executable"
-# Formula support evaluates before the isolated launcher can copy this checker
-# into its private root-owned projection. Transfer the already detached,
-# authenticated inode to root now so both the outer Formula evaluation and the
-# later isolated test receive the same ownership boundary.
-/usr/bin/sudo -n -- /usr/bin/chown root:root "$KANDELO_LOGIN_XTASK_BIN"
 KANDELO_LOGIN_XTASK_SHA256="$(sha256sum "$KANDELO_LOGIN_XTASK_BIN" | awk '{print $1}')"
 KANDELO_LOGIN_XTASK_UID="$(stat -c '%u' "$KANDELO_LOGIN_XTASK_BIN")"
 [[ "$KANDELO_LOGIN_XTASK_SHA256" =~ ^[0-9a-f]{64}$ ]] &&
-  [ "$KANDELO_LOGIN_XTASK_UID" = 0 ] &&
-  [ "$(stat -c '%a:%h:%u' "$KANDELO_LOGIN_XTASK_BIN")" = "555:1:0" ] ||
+  [ "$KANDELO_LOGIN_XTASK_UID" = "$(id -u)" ] ||
   fail "Formula test checker seal has an invalid identity"
 reseal_formula_test_checker() {
   local context="$1"
@@ -347,15 +341,14 @@ reseal_formula_test_checker() {
     [ ! -L "$KANDELO_LOGIN_XTASK_BIN" ] &&
     [ -x "$KANDELO_LOGIN_XTASK_BIN" ] &&
     [ "$(realpath -- "$KANDELO_LOGIN_XTASK_BIN")" = "$KANDELO_LOGIN_XTASK_BIN" ] &&
-    [ "$(stat -c '%a:%h:%u' "$KANDELO_LOGIN_XTASK_BIN")" = "555:1:0" ] ||
+    [ "$(stat -c '%u' "$KANDELO_LOGIN_XTASK_BIN")" = "$KANDELO_LOGIN_XTASK_UID" ] ||
     fail "Formula test checker identity changed during $context"
   actual_sha256="$(sha256sum "$KANDELO_LOGIN_XTASK_BIN" 2>/dev/null || true)"
   actual_sha256="${actual_sha256%% *}"
   [ "$actual_sha256" = "$KANDELO_LOGIN_XTASK_SHA256" ] ||
     fail "Formula test checker bytes changed during $context"
   if ! resealed_xtask="$(
-    /usr/bin/sudo -n -- bash \
-      "$KANDELO_LOGIN_SOURCE/scripts/seal-homebrew-formula-checker.sh" \
+    bash scripts/seal-homebrew-formula-checker.sh \
       --root "$KANDELO_LOGIN_SOURCE" --checker "$KANDELO_LOGIN_XTASK_BIN"
   )"; then
     fail "Formula test checker reseal failed after $context"
@@ -849,11 +842,8 @@ npx tsx scripts/create-homebrew-guest-lifecycle-fixture.ts \
   --canary-revision "$KANDELO_LOGIN_TAP_COMMIT" \
   --timeout-ms 1800000 --out "$KANDELO_LOGIN_FIXTURE"
 
-KANDELO_LOGIN_DEPLOY_PRODUCT="$KANDELO_LOGIN_WORK_ROOT/browser-login-product"
 KANDELO_LOGIN_BROWSER_ASSETS=apps/browser-demos/public/homebrew-login-product
-mkdir "$KANDELO_LOGIN_DEPLOY_PRODUCT" "$KANDELO_LOGIN_BROWSER_ASSETS"
-cp -p "$KANDELO_LOGIN_FIXTURE" \
-  "$KANDELO_LOGIN_DEPLOY_PRODUCT/$(basename "$KANDELO_LOGIN_FIXTURE")"
+mkdir "$KANDELO_LOGIN_BROWSER_ASSETS"
 for source in \
   "$KANDELO_LOGIN_WORK_ROOT/main-shell.vfs.zst" \
   "$KANDELO_LOGIN_WORK_ROOT/composition-report.json" \
@@ -862,9 +852,7 @@ for source in \
   "$KANDELO_LOGIN_BOOTSTRAP/homebrew-bootstrap.zip" \
   "$KANDELO_LOGIN_BOOTSTRAP/homebrew-brew.env" \
   "$KANDELO_LOGIN_MIRROR"/*; do
-  asset="$(basename "$source")"
-  cp -p "$source" "$KANDELO_LOGIN_DEPLOY_PRODUCT/$asset"
-  cp -p "$source" "$KANDELO_LOGIN_BROWSER_ASSETS/$asset"
+  cp -p "$source" "$KANDELO_LOGIN_BROWSER_ASSETS/$(basename "$source")"
 done
 
 KANDELO_LOGIN_BROWSER_REPORT="$KANDELO_LOGIN_WORK_ROOT/browser-report.json"
@@ -980,16 +968,9 @@ jq -nS \
   printf '\nAll 43 Formula/bottle identities and the Ruby vfork fork-mode record are in `evidence.json`.\n'
 } >"$KANDELO_LOGIN_WORK_ROOT/evidence.md"
 
-# The closed Playwright lane needed these exact bytes under Vite's public
-# directory. The deployable build owns the separate verified input above; do
-# not leave a second output path that would collide with its emitted assets.
-rm -rf -- "$KANDELO_LOGIN_BROWSER_ASSETS"
-
 if [ "$KANDELO_LOGIN_BROWSER_DEMO" = true ]; then
-  printf 'Preserved local-test assets. Manual root-product command (from the detached source):\n'
-  printf 'KANDELO_LOCAL_LOGIN_PRODUCT_ROOT=%q KANDELO_BROWSER_DEMO_INPUTS=main,kandelo,network,homebrew-vfs-test,sqlite-test,benchmark,php-test VITE_BASE=/ npm --prefix apps/browser-demos run build\n' \
-    "$KANDELO_LOGIN_DEPLOY_PRODUCT"
+  printf 'Preserved local-test assets. Manual demo command (from the detached source):\n'
+  printf 'KANDELO_MAIN_SHELL_VFS=%q KANDELO_HOMEBREW_BOTTLE_MIRROR=%q ./run.sh browser\n' \
+    "$KANDELO_LOGIN_WORK_ROOT/main-shell.vfs.zst" "$KANDELO_LOGIN_MIRROR"
 fi
-printf 'run-login-stack-local.sh: exact browser build input: %s\n' \
-  "$KANDELO_LOGIN_DEPLOY_PRODUCT"
 printf 'run-login-stack-local.sh: complete local-test evidence: %s\n' "$KANDELO_LOGIN_WORK_ROOT/evidence.json"

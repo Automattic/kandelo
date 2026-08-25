@@ -47,10 +47,6 @@ import type { MountSpec } from "./vfs/default-mounts";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
 import { FILE_MODES } from "./generated/abi";
 import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
-import {
-  snapshotPublishedPrivilegedProgramBrowserMount,
-  type PublishedPrivilegedProgramProduct,
-} from "./vfs/privileged-projection";
 
 export type { HttpRequest, HttpResponse };
 
@@ -151,8 +147,6 @@ export interface NodeKernelHostOptions {
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
   /** Exact image/scratch mount contract. Requires `rootfsImage`. */
   rootfsMountSpec?: readonly MountSpec[];
-  /** Publisher-admitted peer of BrowserKernel's trusted `/usr/bin` product. */
-  privilegedProduct?: PublishedPrivilegedProgramProduct;
   /**
    * Resolve relative lazy URLs embedded in rootfsImage before transport.
    * This is the Node peer of BrowserKernel's lazyUrlBase contract.
@@ -240,15 +234,6 @@ export class NodeKernelHost {
     if (this.kernelFatalError !== null) throw this.kernelFatalError;
     const wasmBytes = kernelWasmBytes ?? loadKernelWasm();
     const rootfsImage = resolveRootfsImage(this.options.rootfsImage);
-    const privilegedProgramMount =
-      this.options.privilegedProduct === undefined
-        ? undefined
-        : snapshotPublishedPrivilegedProgramBrowserMount(
-            this.options.privilegedProduct,
-          );
-    if (privilegedProgramMount !== undefined && rootfsImage === null) {
-      throw new Error("privilegedProduct requires rootfsImage");
-    }
     if (this.options.rootfsLazyAssets !== undefined && rootfsImage === null) {
       throw new Error("rootfsLazyAssets requires rootfsImage");
     }
@@ -430,15 +415,6 @@ export class NodeKernelHost {
           rootfsMountSpec: this.options.rootfsMountSpec === undefined
             ? undefined
             : this.options.rootfsMountSpec.map((mount) => ({ ...mount })),
-          ...(privilegedProgramMount === undefined
-            ? {}
-            : {
-                privilegedProgramMount: {
-                  kind: "published-privileged-program-product" as const,
-                  mountPoint: privilegedProgramMount.mountPoint,
-                  imageBytes: privilegedProgramMount.imageBytes,
-                },
-              }),
           rootfsLazyUrlBase: this.options.rootfsLazyUrlBase,
           rootfsLazyAssets,
           rootfsLazyAssetSources,
@@ -450,9 +426,6 @@ export class NodeKernelHost {
           ...(rootfsLazyAssets ?? []).map(
             (asset) => asset.bytes.buffer as ArrayBuffer,
           ),
-          ...(privilegedProgramMount === undefined
-            ? []
-            : [privilegedProgramMount.imageBytes.buffer as ArrayBuffer]),
           ...new Set(Object.values(execProgramBytes ?? {})),
         ];
         this.worker.postMessage(initMsg, transfer);

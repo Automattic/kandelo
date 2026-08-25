@@ -2,14 +2,11 @@ script_path = "packages/registry/shell/build-shell.sh"
 inputs = [
   "packages/registry/shell/build-shell.sh",
   "packages/registry/shell/source-rootfs-shell-dependencies.json",
-  "packages/registry/shell/source-rootfs-shell-default.json",
   "packages/registry/shell/source-rootfs-shell-demo-profiles.json",
   "packages/registry/shell/source-rootfs-shell-dependency-contract.mjs",
-  # This presentation document is shared with the preserved Homebrew lane; it
-  # is name-only UI metadata and supplies no package, bottle, or network input.
-  "homebrew/main-shell-demo.json",
+  "packages/registry/shell/source-rootfs-shell-demo.json",
   "images/vfs/scripts/build-source-rootfs-shell-image.ts",
-  "images/vfs/scripts/shell-vfs-build.ts",
+  "images/vfs/scripts/source-rootfs-shell-overlay.ts",
   "images/vfs/scripts/shell-lazy-archives.ts",
   "images/vfs/scripts/shell-runtime-layout.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
@@ -20,7 +17,6 @@ inputs = [
   "host/src/binary-resolver.ts",
   "host/src/file-offset.ts",
   "host/src/generated/abi.ts",
-  "host/src/homebrew-bottle-relocation.ts",
   "host/src/pathconf.ts",
   "host/src/shell-runtime-layout.ts",
   "host/src/statfs.ts",
@@ -35,13 +31,13 @@ inputs = [
   "host/src/vfs/tar.ts",
   "host/src/vfs/types.ts",
   "host/src/vfs/zip.ts",
-  "web-libs/kandelo-session/src/shell-config.ts",
+  "web-libs/kandelo-session/src/experimental-terminal-session.ts",
   "web-libs/kandelo-session/src/demo-config.ts",
   "web-libs/kandelo-session/src/vfs-capacity.ts",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 28
+revision    = 29
 # WHY: source-package composition changes the product bytes. Keep ordinary
 # resolution closed until this exact revision is rebuilt and admitted.
 publication_state = "pending"

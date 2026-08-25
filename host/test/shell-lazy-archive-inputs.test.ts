@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   chmodSync,
+  copyFileSync,
+  existsSync,
   lstatSync,
   lutimesSync,
   mkdtempSync,
@@ -41,6 +43,101 @@ function tempDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "kandelo-shell-lazy-bundle-"));
   tempDirs.push(dir);
   return dir;
+}
+
+interface ResolverBundleFixture {
+  bundlePackage: "vim-browser-bundle" | "nethack-browser-bundle";
+  dependencyDirectoryVariable:
+    | "WASM_POSIX_DEP_VIM_DIR"
+    | "WASM_POSIX_DEP_NETHACK_DIR";
+  executable: "vim.wasm" | "nethack.wasm";
+  helper: "build-vim-zip.sh" | "build-nethack-zip.sh";
+  runtimeFiles: Record<string, string>;
+  zipExecutable: "bin/vim" | "bin/nethack";
+}
+
+function runResolverBundleFixture(fixture: ResolverBundleFixture): void {
+  const fixtureRoot = tempDir();
+  const copyRepositoryFile = (relativePath: string): void => {
+    const destination = join(fixtureRoot, relativePath);
+    mkdirSync(dirname(destination), { recursive: true });
+    copyFileSync(join(repoRoot, relativePath), destination);
+  };
+  const wrapper =
+    `packages/registry/${fixture.bundlePackage}/build-${fixture.bundlePackage}.sh`;
+  for (const relativePath of [
+    wrapper,
+    `images/vfs/scripts/${fixture.helper}`,
+    "images/vfs/scripts/create-deterministic-zip.sh",
+    "scripts/install-local-binary.sh",
+    "scripts/wasm-artifact-guards.sh",
+  ]) {
+    copyRepositoryFile(relativePath);
+  }
+
+  const dependencyRoot = join(fixtureRoot, "declared-dependency");
+  const workRoot = join(fixtureRoot, "work");
+  const outputRoot = join(fixtureRoot, "out");
+  const publicRoot = join(fixtureRoot, "apps/browser-demos/public");
+  const fakeBin = join(fixtureRoot, "fake-bin");
+  mkdirSync(dependencyRoot, { recursive: true });
+  mkdirSync(workRoot);
+  mkdirSync(outputRoot);
+  mkdirSync(publicRoot, { recursive: true });
+  mkdirSync(fakeBin);
+
+  const executableBytes = `${fixture.bundlePackage} declared executable\n`;
+  writeFileSync(join(dependencyRoot, fixture.executable), executableBytes);
+  chmodSync(join(dependencyRoot, fixture.executable), 0o755);
+  for (const [relativePath, contents] of Object.entries(fixture.runtimeFiles)) {
+    const path = join(dependencyRoot, relativePath);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, contents);
+  }
+
+  const publicArchive = join(
+    publicRoot,
+    fixture.bundlePackage === "vim-browser-bundle" ? "vim.zip" : "nethack.zip",
+  );
+  writeFileSync(publicArchive, "browser public sentinel\n");
+  const unexpectedCargo = join(fixtureRoot, "unexpected-cargo");
+  writeFileSync(
+    join(fakeBin, "cargo"),
+    `#!/usr/bin/env bash\n: >${JSON.stringify(unexpectedCargo)}\nexit 97\n`,
+  );
+  chmodSync(join(fakeBin, "cargo"), 0o755);
+
+  const result = spawnSync("bash", [join(fixtureRoot, wrapper)], {
+    cwd: fixtureRoot,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+      WASM_POSIX_DEP_OUT_DIR: outputRoot,
+      WASM_POSIX_DEP_TARGET_ARCH: "wasm32",
+      WASM_POSIX_DEP_WORK_DIR: workRoot,
+      [fixture.dependencyDirectoryVariable]: dependencyRoot,
+    },
+  });
+  expect(
+    result.status,
+    `${fixture.bundlePackage} stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+  ).toBe(0);
+  expect(existsSync(unexpectedCargo)).toBe(false);
+  expect(readFileSync(publicArchive, "utf8")).toBe("browser public sentinel\n");
+
+  const outputArchive = join(
+    outputRoot,
+    fixture.bundlePackage === "vim-browser-bundle" ? "vim.zip" : "nethack.zip",
+  );
+  const bytes = new Uint8Array(readFileSync(outputArchive));
+  const executableEntry = parseZipCentralDirectory(bytes).find(
+    (entry) => entry.fileName === fixture.zipExecutable,
+  );
+  expect(executableEntry).toBeDefined();
+  expect(new TextDecoder().decode(extractZipEntry(bytes, executableEntry!))).toBe(
+    executableBytes,
+  );
 }
 
 function archiveFor(
@@ -485,6 +582,31 @@ describe("declared shell lazy-archive inputs", () => {
     }
   });
 
+  it("builds resolver lazy bundles only from their declared dependency and private roots", () => {
+    runResolverBundleFixture({
+      bundlePackage: "vim-browser-bundle",
+      dependencyDirectoryVariable: "WASM_POSIX_DEP_VIM_DIR",
+      executable: "vim.wasm",
+      helper: "build-vim-zip.sh",
+      runtimeFiles: {
+        "runtime/defaults.vim": "declared Vim runtime\n",
+      },
+      zipExecutable: "bin/vim",
+    });
+    runResolverBundleFixture({
+      bundlePackage: "nethack-browser-bundle",
+      dependencyDirectoryVariable: "WASM_POSIX_DEP_NETHACK_DIR",
+      executable: "nethack.wasm",
+      helper: "build-nethack-zip.sh",
+      runtimeFiles: {
+        "runtime/share/nethack/license": "declared NetHack license\n",
+        "runtime/share/nethack/nhdat": "declared NetHack data\n",
+        "runtime/share/nethack/symbols": "declared NetHack symbols\n",
+      },
+      zipExecutable: "bin/nethack",
+    });
+  });
+
   it("keeps the standalone lazy-bundle recipes self-contained", () => {
     const vimBundleBuildToml = readFileSync(
       join(repoRoot, "packages/registry/vim-browser-bundle/build.toml"),
@@ -512,7 +634,7 @@ describe("declared shell lazy-archive inputs", () => {
     expect(vimBundleBuildToml).toContain(
       '"images/vfs/scripts/create-deterministic-zip.sh"',
     );
-    expect(vimBundleBuildToml).toMatch(/^revision\s*=\s*3$/m);
+    expect(vimBundleBuildToml).toMatch(/^revision\s*=\s*4$/m);
     expect(nethackBundleBuildToml).toContain(
       '"packages/registry/nethack-browser-bundle/build-nethack-browser-bundle.sh"',
     );
@@ -522,7 +644,7 @@ describe("declared shell lazy-archive inputs", () => {
     expect(nethackBundleBuildToml).toContain(
       '"images/vfs/scripts/create-deterministic-zip.sh"',
     );
-    expect(nethackBundleBuildToml).toMatch(/^revision\s*=\s*4$/m);
+    expect(nethackBundleBuildToml).toMatch(/^revision\s*=\s*5$/m);
     expect(vimZipBuildScript).toContain(
       'bash "$SCRIPT_DIR/create-deterministic-zip.sh" "$STAGING" "$OUTPUT_FILE"',
     );

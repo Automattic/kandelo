@@ -14,6 +14,10 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { MemoryFileSystem } from "../../host/src/vfs/memory-fs";
+import {
+  EXPERIMENTAL_TERMINAL_SESSION_PATH,
+  parseExperimentalTerminalSession,
+} from "../../web-libs/kandelo-session/src/experimental-terminal-session";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const generator = join(
@@ -85,6 +89,60 @@ afterEach(() => {
 });
 
 describe("generate-rootfs-package-manifest artifact provenance", () => {
+  it("keeps login eager while sudo implementations remain lazy", () => {
+    const packages = readFileSync(
+      join(repoRoot, "images", "rootfs", "PACKAGES.toml"),
+      "utf8",
+    );
+    const loginBlock = packages.match(
+      /\[\[packages\]\]\s*name = "login"[\s\S]*?(?=\[\[packages\]\]|$)/,
+    )?.[0];
+    const sudoLiteBlock = packages.match(
+      /\[\[packages\]\]\s*name = "sudo-lite"[\s\S]*?(?=\[\[packages\]\]|$)/,
+    )?.[0];
+    const sudoBlock = packages.match(
+      /\[\[packages\]\]\s*name = "sudo"[\s\S]*?(?=\[\[packages\]\]|$)/,
+    )?.[0];
+
+    expect(loginBlock).toContain('install = "eager"');
+    expect(loginBlock).toContain('path = "/usr/bin/login"');
+    expect(loginBlock).toContain('mode = "4755"');
+    expect(sudoLiteBlock).not.toContain('install = "eager"');
+    expect(sudoLiteBlock).toContain('path = "/usr/bin/sudo-lite"');
+    expect(sudoLiteBlock).toContain('mode = "4755"');
+    expect(sudoBlock).not.toContain('install = "eager"');
+    expect(sudoBlock).toContain('path = "/usr/bin/sudo"');
+    expect(sudoBlock).toContain('mode = "4755"');
+  });
+
+  it("owns the experimental auto-login policy in the rootfs image", () => {
+    const configPath = join(
+      repoRoot,
+      "images",
+      "rootfs",
+      EXPERIMENTAL_TERMINAL_SESSION_PATH.slice(1),
+    );
+    const config = parseExperimentalTerminalSession(
+      readFileSync(configPath, "utf8"),
+    );
+
+    expect(config.initial).toEqual({
+      path: "/usr/bin/login",
+      argv: ["login", "-p", "-f", "maker"],
+      uid: 0,
+      gid: 0,
+    });
+    expect(config.afterExit).toEqual({
+      path: "/usr/bin/login",
+      argv: ["login", "-p"],
+      uid: 0,
+      gid: 0,
+    });
+    expect(readFileSync(join(repoRoot, "MANIFEST"), "utf8")).toContain(
+      `${EXPERIMENTAL_TERMINAL_SESSION_PATH} f 0644 0 0`,
+    );
+  });
+
   it("uses an exact resolved-output map without materializing lazy bytes", () => {
     const scratch = makeScratch();
     const embedded = writeArtifact(scratch, "inputs/eager.dat", "eager-bytes");

@@ -32,8 +32,9 @@ import {
   forgeLazyAtomicSeal,
   type LazyAtomicSealForgery,
 } from "../lazy-atomic-seal-fixture";
-import { resolveMountSetIdCapability } from "../../src/vfs/memory-fs";
 import { ST_NOSUID } from "../../src/vfs/types";
+import { VirtualPlatformIO } from "../../src/vfs/vfs";
+import { NodeTimeProvider } from "../../src/vfs/time";
 
 const O_RDONLY = 0x0000;
 const O_WRONLY = 0x0001;
@@ -136,11 +137,21 @@ describe("DEFAULT_MOUNT_SPEC", () => {
     expect(DEFAULT_MOUNT_SPEC).toHaveLength(8);
   });
 
-  it("declares / as a read-only image mount", () => {
+  it("declares / as a writable set-ID-capable image mount", () => {
     const root = DEFAULT_MOUNT_SPEC.find((m) => m.path === "/");
     expect(root).toBeDefined();
     expect(root!.source).toBe("image");
-    expect(root!.readonly).toBe(true);
+    expect(root!.readonly).toBe(false);
+    expect(root!.nosuid).not.toBe(true);
+  });
+
+  it("declares every auto-created scratch mount nosuid", () => {
+    const scratch = DEFAULT_MOUNT_SPEC.filter((mount) =>
+      mount.source === "scratch"
+    );
+
+    expect(scratch.length).toBeGreaterThan(0);
+    expect(scratch.every((mount) => mount.nosuid === true)).toBe(true);
   });
 });
 
@@ -160,11 +171,13 @@ describe("resolveForNode", () => {
   it("produces a MountConfig per spec entry", async () => {
     const mounts = await resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
     expect(mounts).toHaveLength(DEFAULT_MOUNT_SPEC.length);
+    const io = new VirtualPlatformIO(mounts, new NodeTimeProvider());
     for (const m of mounts) {
       expect(typeof m.mountPoint).toBe("string");
       expect(m.backend).toBeDefined();
-      expect(resolveMountSetIdCapability(m)).toEqual({ kind: "nosuid" });
-      expect(m.backend.statfs("/").flags & ST_NOSUID).toBe(ST_NOSUID);
+      expect(io.statfs(m.mountPoint).flags & ST_NOSUID).toBe(
+        m.mountPoint === "/" ? 0 : ST_NOSUID,
+      );
     }
   });
 
@@ -173,7 +186,7 @@ describe("resolveForNode", () => {
     const root = mounts.find((m) => m.mountPoint === "/");
     expect(root).toBeDefined();
     expect(root!.backend).toBeInstanceOf(MemoryFileSystem);
-    expect(root!.readonly).toBe(true);
+    expect(root!.readonly).toBe(false);
 
     const passwd = readMountFile(root!.backend, "/etc/passwd");
     expect(new TextDecoder().decode(passwd)).toContain("root:x:0:0");
@@ -696,11 +709,13 @@ describe("resolveForBrowser", () => {
     });
     expect(mounts).toHaveLength(DEFAULT_MOUNT_SPEC.length);
 
+    const io = new VirtualPlatformIO(mounts, new NodeTimeProvider());
     for (const m of mounts) {
       expect(m.backend).toBeInstanceOf(MemoryFileSystem);
       expect(m.backend).not.toBeInstanceOf(HostFileSystem);
-      expect(resolveMountSetIdCapability(m)).toEqual({ kind: "nosuid" });
-      expect(m.backend.statfs("/").flags & ST_NOSUID).toBe(ST_NOSUID);
+      expect(io.statfs(m.mountPoint).flags & ST_NOSUID).toBe(
+        m.mountPoint === "/" ? 0 : ST_NOSUID,
+      );
     }
   });
 

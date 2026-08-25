@@ -13,8 +13,10 @@
 
 use anyhow::{Context, Result, bail, ensure};
 use walrus::{
-    ElementItems, ElementKind, FunctionId, RawCustomSection, RefType, TableId, ir::Value,
+    ElementItems, ElementKind, FunctionBuilder, FunctionId, RawCustomSection, RefType, TableId,
+    ValType, ir::Value,
 };
+use wasm_posix_shared::ABI_VERSION;
 use wasm_posix_shared::abi::{
     WPK_FORK_CAP_ACTIVATION_STATE_SAFE, WPK_FORK_CAP_DYLINK_MAIN, WPK_FORK_CAP_SIDE_ENTRY,
     WPK_FORK_CAPABILITIES_SECTION, WPK_FORK_CAPABILITIES_VERSION,
@@ -211,6 +213,35 @@ fn uses_side_module_boundaries(module: &walrus::Module, opts: &Options) -> bool 
             .any(|(_, section)| section.name() == "dylink.0")
 }
 
+/// Bind an instrumented dylink artifact to the ABI epoch its capability bits
+/// describe. Ordinary Wasm side modules do not carry Kandelo's executable
+/// marker, but after instrumentation the host must distinguish the current
+/// fork contract from otherwise identical metadata emitted by an older tool.
+fn ensure_side_module_abi_version(module: &mut walrus::Module, input: &[u8]) -> Result<()> {
+    use contract_inventory::ArtifactAbiVersion;
+
+    match contract_inventory::artifact_identity(input)
+        .context("inspect side-module ABI identity before instrumentation")?
+        .abi_version
+    {
+        ArtifactAbiVersion::Present(version) if version == ABI_VERSION => return Ok(()),
+        ArtifactAbiVersion::Present(version) => bail!(
+            "side module declares stale __abi_version {version}; expected current ABI {ABI_VERSION}"
+        ),
+        ArtifactAbiVersion::Invalid => bail!(
+            "side module has an invalid __abi_version export; expected a constant current ABI marker"
+        ),
+        ArtifactAbiVersion::Missing => {}
+    }
+
+    let mut builder = FunctionBuilder::new(&mut module.types, &[], &[ValType::I32]);
+    builder.name("__abi_version".into());
+    builder.func_body().i32_const(ABI_VERSION as i32);
+    let function = builder.finish(Vec::new(), &mut module.funcs);
+    module.exports.add("__abi_version", function);
+    Ok(())
+}
+
 fn fork_boundary_seeds(
     module: &walrus::Module,
     entry_imports: &[walrus::FunctionId],
@@ -274,6 +305,9 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     // fork-path callers. (They can't reach the seed anyway, but the
     // earlier-is-simpler ordering keeps the invariant trivially.)
     let side_boundaries = uses_side_module_boundaries(&module, opts);
+    if side_boundaries {
+        ensure_side_module_abi_version(&mut module, input)?;
+    }
     let entry_imports = call_graph::find_import_funcs(&module, &opts.entry_import);
     let seeds = fork_boundary_seeds(&module, &entry_imports, side_boundaries);
     let has_dynamic_linker_imports = call_graph::has_dynamic_linker_imports(&module);

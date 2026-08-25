@@ -12,21 +12,13 @@ const repoRoot = resolve(import.meta.dirname, "../../..");
 const modulePaths = {
   browserKernel: resolve(repoRoot, "host/src/browser-kernel-host.ts"),
   memoryFs: resolve(repoRoot, "host/src/vfs/memory-fs.ts"),
-  privilegedProjection: resolve(
+  experimentalTerminalSession: resolve(
     repoRoot,
-    "host/src/vfs/privileged-projection.ts",
+    "web-libs/kandelo-session/src/experimental-terminal-session.ts",
   ),
   sessionHost: resolve(
     repoRoot,
     "web-libs/kandelo-session/src/kernel-host.ts",
-  ),
-  terminalPolicy: resolve(
-    repoRoot,
-    "apps/browser-demos/pages/kandelo/kernel-host/demo-terminal-sessions.ts",
-  ),
-  demoLoginLoader: resolve(
-    repoRoot,
-    "apps/browser-demos/pages/kandelo/kernel-host/demo-login-loader.ts",
   ),
 };
 const shellWasm = resolve(
@@ -66,17 +58,16 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
       autologinMotd,
       browserKernelUrl,
       credentialsUrl,
-      demoLoginLoaderUrl,
+      experimentalTerminalSessionUrl,
       kernelUrl,
       loginUrl,
       memoryFsUrl,
       password,
       passwordHash,
-      privilegedProjectionUrl,
       sessionHostUrl,
       shellUrl,
       sudoers,
-      terminalPolicyUrl,
+      terminalSessionJson,
     }) => {
       const { BrowserKernel } = await import(
         /* @vite-ignore */ browserKernelUrl
@@ -85,17 +76,11 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
         /* @vite-ignore */ memoryFsUrl
       );
       const {
-        createReviewedPrivilegedProgramPolicy,
-        publishPrivilegedProgramProduct,
-      } = await import(/* @vite-ignore */ privilegedProjectionUrl);
+        experimentalTerminalSessionPolicy,
+        parseExperimentalTerminalSession,
+      } = await import(/* @vite-ignore */ experimentalTerminalSessionUrl);
       const { LiveKernelHost } = await import(
         /* @vite-ignore */ sessionHostUrl
-      );
-      const { DEMO_TERMINAL_SESSION_POLICY } = await import(
-        /* @vite-ignore */ terminalPolicyUrl
-      );
-      const { initializeDemoLoginKernel } = await import(
-        /* @vite-ignore */ demoLoginLoaderUrl
       );
       const fetchBytes = async (url: string): Promise<Uint8Array> => {
         const response = await fetch(url);
@@ -108,59 +93,6 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
         fetchBytes(loginUrl),
         fetchBytes(credentialsUrl),
       ]);
-      const loginDigest = Array.from(
-        new Uint8Array(await crypto.subtle.digest("SHA-256", login)),
-      ).map((byte) => byte.toString(16).padStart(2, "0")).join("");
-
-      const sourceFs = MemoryFileSystem.create(
-        new SharedArrayBuffer(8 * 1024 * 1024),
-      );
-      const destinations = [
-        ["login", "/usr/bin/login"],
-        ["sudo-lite", "/usr/bin/sudo-lite"],
-        ["sudo", "/usr/bin/sudo"],
-      ] as const;
-      for (const [sourcePath] of destinations) {
-        sourceFs.createFileWithOwner(
-          `/${sourcePath}`,
-          0o755,
-          1000,
-          1000,
-          login,
-        );
-      }
-      const bottleSha256 = "a".repeat(64);
-      const privilegedProduct = await publishPrivilegedProgramProduct({
-        policy: createReviewedPrivilegedProgramPolicy(
-          destinations.map(([sourcePath, destinationPath]) => ({
-            schema: 1,
-            formula: `kandelo-test/${sourcePath}`,
-            bottleSha256,
-            sourcePath,
-            destinationPath,
-            uid: 0,
-            gid: 0,
-            mode: 0o4755,
-            mountPoint: "trusted-root-product",
-            artifactValidationSha256: loginDigest,
-          })),
-        ),
-        sources: destinations.map(([sourcePath]) => ({
-          formula: `kandelo-test/${sourcePath}`,
-          bottleSha256,
-          fs: sourceFs,
-          inventory: {
-            entries: [{
-              sourcePath,
-              type: "file" as const,
-              size: login.byteLength,
-            }],
-          },
-          guestPathForSource: (path: string) => `/${path}`,
-        })),
-        writableBottleFileSystems: [sourceFs],
-      });
-
       const fs = MemoryFileSystem.create(
         new SharedArrayBuffer(16 * 1024 * 1024),
       );
@@ -239,9 +171,8 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
         0,
         credentials,
       );
-      // This represents an otherwise ordinary third-party image. Its local
-      // set-ID metadata is not authority; the separately published product
-      // below must still admit these exact bytes through the private loader.
+      // The ordinary writable image owns both the bytes and the set-ID
+      // metadata. No publisher-only projection or immutable overlay exists.
       fs.createFileWithOwner("/usr/bin/login", 0o4755, 0, 0, login);
       const image = await fs.saveImage();
       const kernelWasm = kernelBytes.buffer.slice(
@@ -296,21 +227,17 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
       };
 
       try {
-        const loginSessionsEnabled = await initializeDemoLoginKernel({
-          kernel,
-          fs,
+        await kernel.initFromImage({
           kernelWasm,
           vfsImage: image,
-          privilegedProduct,
         });
-        if (!loginSessionsEnabled) {
-          throw new Error("production loader rejected the reviewed login product");
-        }
         const host = new LiveKernelHost({
           kernel,
           status: "running",
         });
-        host.setTerminalSessionPolicy(DEMO_TERMINAL_SESSION_POLICY);
+        host.setTerminalSessionPolicy(experimentalTerminalSessionPolicy(
+          parseExperimentalTerminalSession(terminalSessionJson),
+        ));
         const primary = await collect(host, "/dev/pts/0");
         await waitFor(
           () => primary.text().includes("Every new terminal logs in automatically."),
@@ -437,7 +364,6 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
           spawnCountAfterDetachDelay: spawns.length,
           secondarySpawnCount,
           secondarySpawnCountAfterReattach,
-          loginSessionsEnabled,
         };
       } finally {
         await kernel.destroy().catch(() => {});
@@ -447,22 +373,37 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
       autologinMotd: DEMO_AUTOLOGIN_MOTD,
       browserKernelUrl: asViteFsUrl(modulePaths.browserKernel),
       credentialsUrl: asViteFsUrl(credentialsWasm),
-      demoLoginLoaderUrl: asViteFsUrl(modulePaths.demoLoginLoader),
+      experimentalTerminalSessionUrl: asViteFsUrl(
+        modulePaths.experimentalTerminalSession,
+      ),
       kernelUrl: asViteFsUrl(resolveBinary("kernel.wasm")),
       loginUrl: asViteFsUrl(loginWasm),
       memoryFsUrl: asViteFsUrl(modulePaths.memoryFs),
       password: DEMO_LOGIN_PASSWORD,
       passwordHash: DEMO_LOGIN_PASSWORD_HASH,
-      privilegedProjectionUrl: asViteFsUrl(modulePaths.privilegedProjection),
       sessionHostUrl: asViteFsUrl(modulePaths.sessionHost),
       shellUrl: asViteFsUrl(shellWasm),
       sudoers: DEMO_SUDOERS,
-      terminalPolicyUrl: asViteFsUrl(modulePaths.terminalPolicy),
+      terminalSessionJson: JSON.stringify({
+        kind: "kandelo-experimental-terminal-session",
+        version: 1,
+        initial: {
+          path: "/usr/bin/login",
+          argv: ["login", "-p", "-f", "maker"],
+          uid: 0,
+          gid: 0,
+        },
+        afterExit: {
+          path: "/usr/bin/login",
+          argv: ["login", "-p"],
+          uid: 0,
+          gid: 0,
+        },
+      }),
     },
   );
 
   expect(result.argv[0]).toEqual(["login", "-p", "-f", "maker"]);
-  expect(result.loginSessionsEnabled).toBe(true);
   expect(result.argv[1]).toEqual(["login", "-p"]);
   expect(result.argv[2]).toEqual(["login", "-p"]);
   expect(result.programPaths.every((path) => path === "/usr/bin/login"))

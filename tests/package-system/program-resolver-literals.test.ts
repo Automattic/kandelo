@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, extname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -94,6 +95,34 @@ const excludedFiles = new Set([
   "scripts/resolve-binary.bundle.mjs",
 ]);
 
+const ignoredSourcePaths = (() => {
+  const result = spawnSync(
+    "git",
+    [
+      "-C",
+      repoRoot,
+      "ls-files",
+      "-z",
+      "--others",
+      "--ignored",
+      "--exclude-standard",
+      "--directory",
+    ],
+    { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+  );
+  if (result.error || result.status !== 0) {
+    throw new Error(
+      `could not enumerate ignored source paths: ${result.stderr || result.error?.message}`,
+    );
+  }
+  return new Set(
+    result.stdout
+      .split("\0")
+      .filter((path) => path.length > 0)
+      .map((path) => path.endsWith("/") ? path.slice(0, -1) : path),
+  );
+})();
+
 function readJson<T>(path: string): T {
   return JSON.parse(readFileSync(path, "utf8")) as T;
 }
@@ -167,6 +196,7 @@ function staleFlatPackagePaths(
 }
 
 function sourceFilesUnder(relPath: string): string[] {
+  if (ignoredSourcePaths.has(relPath)) return [];
   const absolute = join(repoRoot, relPath);
   if (!existsSync(absolute)) return [];
   return readdirSync(absolute, { withFileTypes: true }).flatMap((entry) => {

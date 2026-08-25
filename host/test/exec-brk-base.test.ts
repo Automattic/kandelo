@@ -19,12 +19,12 @@
  *     (i.e. the binaries-abi-v7 release hasn't been cut + fetched yet)
  */
 import { describe, it, expect } from "vitest";
-import { readFileSync, readdirSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
-import { NodeKernelHost } from "../src/node-kernel-host";
 import { extractAbiVersion } from "../src/constants";
 import { tryResolveBinary, findRepoRoot } from "../src/binary-resolver";
+import { runCentralizedProgram } from "./centralized-test-helper";
 
 // Read the kernel's expected ABI version from `libc/glue/abi_constants.h`,
 // which `scripts/check-abi-version.sh` keeps in sync with
@@ -79,11 +79,6 @@ if (!compatible) {
   );
 }
 
-function loadBytes(path: string): ArrayBuffer {
-  const buf = readFileSync(path);
-  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-}
-
 interface RunResult {
   exitCode: number;
   stderr: string;
@@ -91,46 +86,25 @@ interface RunResult {
 }
 
 async function runDashCommand(cmd: string, timeoutMs = 25_000): Promise<RunResult> {
-  let stderr = "";
-  const exeMap: Record<string, string> = {
-    "/bin/dash": dashBinary!,
-    "/bin/sh": dashBinary!,
-    "dash": dashBinary!,
-    "sh": dashBinary!,
-    "/usr/sbin/mariadbd": mariadbdBinary!,
-    "/usr/bin/mariadbd": mariadbdBinary!,
-    "mariadbd": mariadbdBinary!,
-  };
-
-  const host = new NodeKernelHost({
-    maxWorkers: 8,
-    onStderr: (_pid, data) => { stderr += new TextDecoder().decode(data); },
-    onResolveExec: (path) => {
-      const m = exeMap[path];
-      return m && existsSync(m) ? loadBytes(m) : null;
-    },
-  });
-  await host.init();
-
   const t0 = Date.now();
-  try {
-    const exitPromise = host.spawn(loadBytes(dashBinary!), ["/bin/sh", "-c", cmd], {
-      env: ["PATH=/usr/sbin:/usr/bin:/bin", "HOME=/tmp"],
-      cwd: "/tmp",
-    });
-    const timeoutPromise = new Promise<number>((_, reject) =>
-      setTimeout(() => reject(new Error("timeout")), timeoutMs),
-    );
-    const exitCode = await Promise.race([exitPromise, timeoutPromise]);
-    return { exitCode, stderr, elapsed: Date.now() - t0 };
-  } finally {
-    await host.destroy().catch(() => {});
-  }
+  const result = await runCentralizedProgram({
+    programPath: dashBinary!,
+    argv: ["/bin/sh", "-c", cmd],
+    env: ["PATH=/usr/sbin:/usr/bin:/bin", "HOME=/tmp"],
+    stdin: "SELECT 1;\n",
+    timeout: timeoutMs,
+    useDefaultRootfs: false,
+    execPrograms: new Map([
+      ["/bin/sh", dashBinary!],
+      ["/usr/sbin/mariadbd", mariadbdBinary!],
+    ]),
+  });
+  return {
+    exitCode: result.exitCode,
+    stderr: result.stderr,
+    elapsed: Date.now() - t0,
+  };
 }
-
-const SQL_PATH = join(tmpdir(), "wpk-brk-test", "bootstrap.sql");
-mkdirSync(join(tmpdir(), "wpk-brk-test"), { recursive: true });
-writeFileSync(SQL_PATH, "SELECT 1;\n");
 
 const MARIADB_ARGS =
   "--no-defaults --bootstrap --skip-networking --skip-grant-tables " +
@@ -168,7 +142,7 @@ const MARIADB_ARGS =
 describe.skipIf(!compatible)("brk-base regression: mariadbd bootstrap via dash-exec", () => {
   // Sanity: dash exec's mariadbd directly, no intermediate shell layer.
   it("dash → exec mariadbd: boots InnoDB", async () => {
-    const r = await runDashCommand(`exec /usr/sbin/mariadbd ${MARIADB_ARGS} < ${SQL_PATH}`);
+    const r = await runDashCommand(`exec /usr/sbin/mariadbd ${MARIADB_ARGS}`);
     expect(r.stderr).toContain("InnoDB");
     expect(r.stderr).toContain("started");
   }, 30_000);
@@ -178,7 +152,7 @@ describe.skipIf(!compatible)("brk-base regression: mariadbd bootstrap via dash-e
   // brk into mariadbd's stack region.
   it("dash → exec /bin/sh → exec mariadbd: boots InnoDB", async () => {
     const r = await runDashCommand(
-      `exec /bin/sh -c "exec /usr/sbin/mariadbd ${MARIADB_ARGS} < ${SQL_PATH}"`,
+      `exec /bin/sh -c "exec /usr/sbin/mariadbd ${MARIADB_ARGS}"`,
     );
     expect(r.stderr).toContain("InnoDB");
     expect(r.stderr).toContain("started");
@@ -189,7 +163,7 @@ describe.skipIf(!compatible)("brk-base regression: mariadbd bootstrap via dash-e
   // mariadbd-bootstrap-hangs-in-wasm-port-during-kernel reproducer.
   it("dash → fork /bin/sh → fork mariadbd: boots InnoDB", async () => {
     const r = await runDashCommand(
-      `/bin/sh -c "/usr/sbin/mariadbd ${MARIADB_ARGS} < ${SQL_PATH}"`,
+      `/bin/sh -c "/usr/sbin/mariadbd ${MARIADB_ARGS}"`,
     );
     expect(r.stderr).toContain("InnoDB");
     expect(r.stderr).toContain("started");

@@ -33,8 +33,8 @@ expect_failure() {
     }
 }
 
-grep -Eq '^revision[[:space:]]*=[[:space:]]*28$' "$BUILD_TOML" ||
-    fail "canonical source shell revision must be 28"
+grep -Eq '^revision[[:space:]]*=[[:space:]]*29$' "$BUILD_TOML" ||
+    fail "canonical source shell revision must be 29"
 grep -Eq '^commit[[:space:]]*=[[:space:]]*"UNPUBLISHED"$' "$BUILD_TOML" ||
     fail "canonical source shell must await publication"
 grep -Eq '^publication_state[[:space:]]*=[[:space:]]*"pending"$' \
@@ -43,11 +43,10 @@ grep -Eq '^publication_state[[:space:]]*=[[:space:]]*"pending"$' \
 for canonical_input in \
     packages/registry/shell/build-shell.sh \
     packages/registry/shell/source-rootfs-shell-dependencies.json \
-    packages/registry/shell/source-rootfs-shell-default.json \
     packages/registry/shell/source-rootfs-shell-demo-profiles.json \
     packages/registry/shell/source-rootfs-shell-dependency-contract.mjs \
     images/vfs/scripts/build-source-rootfs-shell-image.ts \
-    images/vfs/scripts/shell-vfs-build.ts \
+    images/vfs/scripts/source-rootfs-shell-overlay.ts \
     images/vfs/scripts/shell-lazy-archives.ts \
     images/vfs/scripts/vfs-image-helpers.ts \
     images/vfs/lib/init/shell-binaries.ts \
@@ -56,7 +55,7 @@ for canonical_input in \
     host/src/vfs/memory-fs.ts \
     host/src/vfs/tar.ts \
     host/src/vfs/zip.ts \
-    web-libs/kandelo-session/src/shell-config.ts \
+    web-libs/kandelo-session/src/experimental-terminal-session.ts \
     web-libs/kandelo-session/src/demo-config.ts \
     web-libs/kandelo-session/src/vfs-capacity.ts \
     package.json package-lock.json
@@ -130,7 +129,7 @@ printf '%s\n' "$*" >>"$FAKE_LOG"
 out=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --rootfs|--bash|--fbdoom|--modeset|--shell-config|--demo-config|\
+        --rootfs|--bash|--fbdoom|--modeset|--demo-config|\
         --demo-profile-overlay|--dependency-contract)
             [ -f "${2:-}" ] || { echo "missing input for $1" >&2; exit 85; }
             shift 2
@@ -217,8 +216,9 @@ for name in parallel-one parallel-two; do
 done
 [ "$(wc -l <"$FAKE_LOG" | tr -d '[:space:]')" -eq 2 ] ||
     fail "concurrent builds did not make two isolated composer invocations"
-grep -Fq -- "--shell-config $SCRIPT_DIR/source-rootfs-shell-default.json" \
-    "$FAKE_LOG" || fail "wrapper omitted canonical shell config"
+if grep -Fq -- "--shell-config" "$FAKE_LOG"; then
+    fail "wrapper still passes the removed shell-config input"
+fi
 grep -Fq -- \
     "--demo-profile-overlay $SCRIPT_DIR/source-rootfs-shell-demo-profiles.json" \
     "$FAKE_LOG" || fail "wrapper omitted canonical demo profile overlay"

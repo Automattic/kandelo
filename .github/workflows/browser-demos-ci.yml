@@ -57,9 +57,7 @@ jobs:
           VITEPRESS_BASE: /kandelo/guide/
         run: |
           set -euo pipefail
-          node --test docs-site/.vitepress/homebrew-doc-links.test.mjs
           npm run docs:build
-          node --test docs-site/.vitepress/homebrew-doc-output.test.mjs
 
       - name: Install browser demo dependencies
         working-directory: apps/browser-demos

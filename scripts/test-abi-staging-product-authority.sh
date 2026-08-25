@@ -13,6 +13,39 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 cd "$repo_root"
 
+disabled_workflows=(
+  abi-staging-merge-gate.yml
+  abi-staging-pages-canary.yml
+  abi-staging-pr-check.yml
+  abi-staging-request-feed.yml
+  browser-demos-pages.yml
+  homebrew-experimental-vfs-publish.yml
+  homebrew-main-shell-ci.yml
+  homebrew-native-publisher-compatibility.yml
+  reusable-homebrew-bottle-maintenance.yml
+  reusable-homebrew-bottle-publish.yml
+  reusable-homebrew-closed-selection-publish.yml
+  reusable-homebrew-main-shell-mirror-publish.yml
+  reusable-homebrew-prefix-first-child-publish.yml
+  reusable-homebrew-repository-namespace-canary.yml
+)
+for workflow in "${disabled_workflows[@]}"; do
+  if [ -e ".github/workflows/$workflow" ] ||
+     [ -L ".github/workflows/$workflow" ]; then
+    echo "retired ABI/Homebrew workflow remains triggerable: $workflow" >&2
+    exit 1
+  fi
+  if [ ! -f ".github/disabled-workflows/$workflow" ] ||
+     [ -L ".github/disabled-workflows/$workflow" ]; then
+    echo "retired ABI/Homebrew workflow is not a dormant regular file: $workflow" >&2
+    exit 1
+  fi
+  if grep -R -n -F "$workflow" .github/workflows; then
+    echo "active workflow still references retired workflow: $workflow" >&2
+    exit 1
+  fi
+done
+
 require_documented_boundary() {
   local file="$1"
   local text="$2"
@@ -39,7 +72,11 @@ require_documented_boundary docs/future-improvements.md \
 
 host_target="$(rustc -vV | awk '/^host/ {print $2}')"
 
-cargo test -p xtask --target "$host_target" abi_staging
+cargo test -p xtask --target "$host_target" abi_staging -- \
+  --skip homebrew \
+  --skip formula \
+  --skip bottle \
+  --skip tap
 cargo run -p xtask --target "$host_target" --quiet -- \
   abi-staging products check \
   --source images/vfs/products \
@@ -60,14 +97,5 @@ npx tsx --test \
   scripts/vfs-product-catalog.test.mjs \
   scripts/check-pages-vfs-product-registry.test.mjs \
   scripts/run-vfs-product-builder.test.ts
-
-(
-  cd host
-  npx vitest run \
-    test/vfs-product-builder-contract.test.ts \
-    test/abi-staging-mini-vfs.test.ts
-)
-
-bash scripts/test-abi-staging-mini-lifecycle.sh
 
 echo "ABI staging product-authority foundation: PASS"

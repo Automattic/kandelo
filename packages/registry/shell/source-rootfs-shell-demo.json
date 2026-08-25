@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "profiles": {
+    "shell": {
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["terminal", "syslog"],
+        "terminalAccess": "primary",
+        "internalsAccess": "drawer"
+      },
+      "guide": {
+        "title": "Shell demo",
+        "summary": "Login and Bash are image-owned; selected package commands arrive lazily on first use.",
+        "groups": [
+          {
+            "title": "Snippets",
+            "actions": [
+              {
+                "id": "hello",
+                "label": "Hello",
+                "description": "Print a short line with the embedded Bash.",
+                "kind": "terminal.run",
+                "payload": "printf '%s\\n' \"hello from Kandelo\""
+              },
+              {
+                "id": "m4",
+                "label": "Lazy M4",
+                "description": "Run M4 from its independently lazy package artifact.",
+                "kind": "terminal.run",
+                "payload": "printf 'define(NAME, Kandelo)Hello, NAME!\\n' | m4"
+              }
+            ]
+          }
+        ],
+        "script": {
+          "title": "Batch script",
+          "language": "bash",
+          "initialText": "printf '%s\\n' \"Hello from a Kandelo guided script\"\nprintf 'cwd: '; pwd"
+        }
+      }
+    }
+  }
+}

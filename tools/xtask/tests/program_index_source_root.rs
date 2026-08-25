@@ -50,9 +50,13 @@ fn source_fixture() -> SourceFixture {
     );
     for path in [
         "scripts/dev-shell.sh",
+        "scripts/run-local-build.sh",
+        "scripts/install-local-binary.sh",
+        "scripts/wasm-artifact-guards.sh",
         "scripts/build-musl.sh",
         "scripts/install-overlay-headers.sh",
         "scripts/build-fork-instrument-tool.sh",
+        "scripts/fork-instrument-tool-input-hash.sh",
         "scripts/run-wasm-fork-instrument.sh",
         "sdk/activate.sh",
         "sdk/config.site",

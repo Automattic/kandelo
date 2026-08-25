@@ -6,6 +6,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+if [ "$#" -ne 0 ]; then
+    exec node "$REPO_ROOT/node_modules/tsx/dist/cli.mjs" \
+        "$REPO_ROOT/images/vfs/scripts/staged-product-inputs.ts" \
+        browser-main-shell "$@"
+fi
+
 OUT_DIR="${WASM_POSIX_DEP_OUT_DIR:-}"
 WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-}"
 ROOTFS_DIR="${WASM_POSIX_DEP_ROOTFS_DIR:-}"
@@ -105,10 +112,7 @@ ROOTFS="$ROOTFS_DIR/rootfs.vfs"
 BASH="$BASH_DIR/bash.wasm"
 FBDOOM="$FBDOOM_DIR/fbdoom.wasm"
 MODESET="$MODESET_DIR/modeset.wasm"
-SHELL_CONFIG="$SCRIPT_DIR/source-rootfs-shell-default.json"
-# The shared demo document is presentation metadata only. Its historical path
-# does not grant the canonical recipe any Homebrew package authority.
-DEMO_CONFIG="$REPO_ROOT/homebrew/main-shell-demo.json"
+DEMO_CONFIG="$SCRIPT_DIR/source-rootfs-shell-demo.json"
 DEMO_PROFILE_OVERLAY="$SCRIPT_DIR/source-rootfs-shell-demo-profiles.json"
 COMPOSER="$REPO_ROOT/images/vfs/scripts/build-source-rootfs-shell-image.ts"
 TSX_CLI="$REPO_ROOT/node_modules/tsx/dist/cli.mjs"
@@ -117,7 +121,6 @@ require_regular_file "rootfs dependency output" "$ROOTFS"
 require_regular_file "bash dependency output" "$BASH"
 require_regular_file "fbdoom dependency output" "$FBDOOM"
 require_regular_file "modeset dependency output" "$MODESET"
-require_regular_file "source-rootfs shell config" "$SHELL_CONFIG"
 require_regular_file "main-shell demo config" "$DEMO_CONFIG"
 require_regular_file "source-rootfs demo profile overlay" "$DEMO_PROFILE_OVERLAY"
 require_regular_file "source-rootfs shell composer" "$COMPOSER"
@@ -142,7 +145,6 @@ TMPDIR="$TSX_TMP" PATH="$DECLARED_TOOL_PATH" \
     --bash "$BASH" \
     --fbdoom "$FBDOOM" \
     --modeset "$MODESET" \
-    --shell-config "$SHELL_CONFIG" \
     --demo-config "$DEMO_CONFIG" \
     --demo-profile-overlay "$DEMO_PROFILE_OVERLAY" \
     --dependency-contract "$DEPENDENCY_CONTRACT" \

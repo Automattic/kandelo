@@ -32,5 +32,6 @@ export function hostMountSpecFromProductMounts(
       uid: mount.uid,
       gid: mount.gid,
       ephemeral: mount.ephemeral,
+      nosuid: true,
     });
 }

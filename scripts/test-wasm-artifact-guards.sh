@@ -190,13 +190,20 @@ chmod +x "$work/bin/structural-identity-tool"
 structural_path="$work/bin/structural-identity-tool"
 cat >"$work/structural-side.wat" <<'WAT'
 (module
-  (@custom "dylink.0" (before type) "")
   (import "env" "memory" (memory 1))
   (func (export "side_value") (result i32)
     i32.const 17))
 WAT
 wat2wasm --enable-annotations "$work/structural-side.wat" \
-    -o "$work/structural-side.wasm"
+    -o "$work/structural-side-base.wasm"
+# wasm-ld puts the dylink.0 MEM_INFO custom section immediately after the
+# header. WABT appends custom annotations even with a placement hint, so build
+# the exact structural role marker around its otherwise normal fixture bytes.
+{
+    dd if="$work/structural-side-base.wasm" bs=8 count=1 2>/dev/null
+    printf '\000\017\010dylink.0\001\004\000\000\000\000'
+    dd if="$work/structural-side-base.wasm" bs=8 skip=1 2>/dev/null
+} >"$work/structural-side.wasm"
 
 # ABI 43 C++ side modules contain proposal encodings that the installed WABT
 # can partially print before returning nonzero. Loader role and import policy
@@ -1024,6 +1031,16 @@ if wasm_require_no_fork_instrumentation "$work/inert-fork.wasm" >/dev/null 2>&1;
     exit 1
 fi
 
+if wasm_require_fork_instrumentation_if_needed \
+    "$work/structural-side.wasm" >/dev/null 2>&1; then
+    echo "ERROR: side module without side-boundary capability was accepted" >&2
+    exit 1
+fi
+
+bash "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \
+    "$work/structural-side.wasm" -o "$work/inert-side.wasm"
+wasm_require_fork_instrumentation_if_needed "$work/inert-side.wasm"
+
 cat >"$work/wasm64-linked-frame-descriptor.wat" <<'WAT'
 (module
   (@custom "kandelo.wpk_fork.linked_frames"
@@ -1078,10 +1095,11 @@ inventory_count_file="$work/wasm-fork-instrument.count"
     [ "$(grep -c '^-s$' "$count_file" || true)" = 0 ] &&
     [ "$(wc -l <"$count_file" | tr -d ' ')" = 0 ] &&
     [ "$(grep -c -- '--contract-inventory' "$inventory_count_file")" = 1 ] &&
+    [ "$(grep -c -- '--artifact-identity' "$inventory_count_file")" = 1 ] &&
     [ "$(grep -c -- '--fork-capability-hex' "$inventory_count_file")" = 1 ] &&
     [ "$(grep -c -- '--linked-frame-descriptor-hex' "$inventory_count_file")" = 1 ] &&
-    [ "$(wc -l <"$inventory_count_file" | tr -d ' ')" = 3 ] || {
-    echo "ERROR: fork validation did not use three binary contract passes" >&2
+    [ "$(wc -l <"$inventory_count_file" | tr -d ' ')" = 4 ] || {
+    echo "ERROR: fork validation did not use four binary contract passes" >&2
     cat "$count_file" >&2
     cat "$inventory_count_file" >&2
     exit 1
@@ -1100,7 +1118,8 @@ inventory_count_file="$work/wasm-fork-instrument.count"
 )
 [ "$(grep -c '^-x$' "$count_file")" = 1 ] &&
     [ "$(grep -c '^-s$' "$count_file")" = 2 ] &&
-    [ "$(wc -l <"$count_file" | tr -d ' ')" = 3 ] || {
+    [ "$(grep -c '^-h$' "$count_file")" = 1 ] &&
+    [ "$(wc -l <"$count_file" | tr -d ' ')" = 4 ] || {
     echo "ERROR: fork validation did not preserve the truthful WABT fallback" >&2
     cat "$count_file" >&2
     exit 1

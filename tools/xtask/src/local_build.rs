@@ -3555,7 +3555,7 @@ mod tests {
         );
         assert_eq!(first.schema, 1);
         assert_eq!(first.policy, "source-only-v1");
-        assert_eq!(first.packages.len(), 72);
+        assert_eq!(first.packages.len(), 75);
         assert_eq!(first.products.len(), 7);
         assert_eq!(
             first
@@ -3565,12 +3565,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             "bash bc bzip2 coreutils cpython curl dash diffutils dinit fbdoom file \
              findutils gawk git grep gzip icu kandelo-sdk kernel lamp less libcurl libcxx \
-             libiconv libpng libxml2 libzip lsof m4 make mariadb mariadb-test modeset \
+             libiconv libpng libxml2 libzip login lsof m4 make mariadb mariadb-test modeset \
              msmtpd nano ncurses netcat nethack nethack-browser-bundle nginx nginx-php-vfs \
              nginx-vfs node node-vfs openssl perl php posix-utils-lite redis rootfs ruby \
              sdl-dsp-test sdl2 sdl2-mixer-playwave sdl3 sed shell spidermonkey \
-             spidermonkey-node sqlite tar tcl unzip userspace vim vim-browser-bundle wget \
-             wordpress xz zip zlib zstd"
+             spidermonkey-node sqlite sudo sudo-lite tar tcl unzip userspace vim \
+             vim-browser-bundle wget wordpress xz zip zlib zstd"
                 .split_whitespace()
                 .collect::<Vec<_>>(),
         );
@@ -3584,7 +3584,7 @@ mod tests {
                 },),
             BTreeMap::from([
                 ("browser-product", 8),
-                ("platform", 16),
+                ("platform", 19),
                 ("test-support", 3),
                 ("user-software", 45),
             ]),
@@ -3598,8 +3598,8 @@ mod tests {
             ("test-support", "kandelo-sdk mariadb-test sdl-dsp-test"),
             (
                 "platform",
-                "icu kernel libcurl libcxx libiconv libpng libxml2 libzip ncurses openssl \
-                 rootfs sdl2 sdl3 sqlite userspace zlib",
+                "icu kernel libcurl libcxx libiconv libpng libxml2 libzip login ncurses \
+                 openssl rootfs sdl2 sdl3 sqlite sudo sudo-lite userspace zlib",
             ),
         ] {
             assert_eq!(
@@ -3691,7 +3691,6 @@ mod tests {
             BTreeSet::from([
                 "erlang",
                 "erlang-vfs",
-                "homebrew-bootstrap",
                 "mariadb-vfs",
                 "perl-vfs",
                 "python-vfs",
@@ -5048,14 +5047,14 @@ materialization = "lazy"
             assert!(source.provider_was_explicit, "{name} must be explicit");
             *providers.entry(source.provider.as_str()).or_default() += 1;
         }
-        assert_eq!(set.packages.len(), 72);
+        assert_eq!(set.packages.len(), 75);
         assert_eq!(
             set.dependency_only,
             ["pcre2-source", "wordpress-sqlite-integration-source"],
         );
         assert_eq!(
             providers,
-            BTreeMap::from([("archive", 57), ("dev-shell", 1), ("repository", 16)]),
+            BTreeMap::from([("archive", 58), ("dev-shell", 1), ("repository", 18)]),
         );
     }
 

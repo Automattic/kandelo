@@ -195,4 +195,44 @@ describe("Lazy VFS files", () => {
     expect(events[2].loadedBytes).toBe(5);
     expect(events[3]).toMatchObject({ loadedBytes: 5, totalBytes: 5 });
   });
+
+  it("preserves root ownership and set-ID mode through materialization", async () => {
+    const originalFetch = globalThis.fetch;
+    const mfs = createMemfs();
+    mfs.registerLazyFile(
+      "/usr/bin/sudo-lite",
+      "https://example.test/sudo-lite.wasm",
+      5,
+      0o4755,
+    );
+    const before = mfs.stat("/usr/bin/sudo-lite");
+    expect(before.uid).toBe(0);
+    expect(before.gid).toBe(0);
+    expect(before.mode & 0o7777).toBe(0o4755);
+
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: new Headers({ "content-length": "5" }),
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array([0, 97, 115, 109, 1]));
+          controller.close();
+        },
+      }),
+    } as unknown as Response);
+
+    try {
+      await expect(mfs.ensureMaterialized("/usr/bin/sudo-lite")).resolves
+        .toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    const after = mfs.stat("/usr/bin/sudo-lite");
+    expect(after.ino).toBe(before.ino);
+    expect(after.uid).toBe(0);
+    expect(after.gid).toBe(0);
+    expect(after.mode & 0o7777).toBe(0o4755);
+    expect(after.size).toBe(5);
+  });
 });

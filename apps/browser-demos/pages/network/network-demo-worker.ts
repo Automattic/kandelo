@@ -164,8 +164,9 @@ async function createMachineIO(
     {
       mountPoint: "/dev/shm",
       backend: MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024)),
+      nosuid: true,
     },
-    { mountPoint: "/dev", backend: new DeviceFileSystem() },
+    { mountPoint: "/dev", backend: new DeviceFileSystem(), nosuid: true },
     ...await resolveForBrowser(DEFAULT_MOUNT_SPEC, rootfs),
   ];
   const io = new VirtualPlatformIO(mounts, new BrowserTimeProvider());

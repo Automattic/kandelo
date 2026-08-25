@@ -6,7 +6,7 @@ export * from "./lazy-download";
 export * from "./demo-config";
 export * from "./demo-config-vfs";
 export * from "./demo-guides";
-export * from "./shell-config";
+export * from "./experimental-terminal-session";
 export * from "./demo-ingest";
 export * from "./deployment-scope";
 export * from "./vfs-asset-group";

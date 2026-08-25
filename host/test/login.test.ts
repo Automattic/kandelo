@@ -10,10 +10,7 @@ import {
 } from "../../images/vfs/lib/demo-login";
 import { DeviceFileSystem } from "../src/vfs/device-fs";
 import { ensureDirRecursive } from "../src/vfs/image-helpers";
-import {
-  createImmutableProductBackend,
-  MemoryFileSystem,
-} from "../src/vfs/memory-fs";
+import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { NodeTimeProvider } from "../src/vfs/time";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
 import { runCentralizedProgram } from "./centralized-test-helper";
@@ -201,24 +198,17 @@ function loginPlatform(
     0,
     bytes(identityWasm),
   );
-  const product = MemoryFileSystem.create(
-    new SharedArrayBuffer(4 * 1024 * 1024),
+  fs.createFileWithOwner(
+    "/usr/bin/login",
+    0o4755,
+    0,
+    0,
+    bytes(loginWasm),
   );
-  product.createFileWithOwner("/login", 0o4755, 0, 0, bytes(loginWasm));
   return new VirtualPlatformIO(
     [
-      {
-        mountPoint: "/usr/bin",
-        backend: createImmutableProductBackend(product),
-        readonly: true,
-        setIdCapability: {
-          kind: "trusted-root-product",
-          guestWritable: false,
-          stableExecutableIdentity: true,
-        },
-      },
-      { mountPoint: "/dev", backend: new DeviceFileSystem() },
       { mountPoint: "/", backend: fs },
+      { mountPoint: "/dev", backend: new DeviceFileSystem(), nosuid: true },
     ],
     new NodeTimeProvider(),
   );

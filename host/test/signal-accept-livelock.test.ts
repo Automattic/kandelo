@@ -530,20 +530,24 @@ describe("signal delivery to a process blocked in accept()", () => {
     }
   });
 
-  it("reaps a default-terminated process without selecting a sleeper", () => {
+  it("stops signal routing after a default-terminated process is reaped", () => {
     const harness = createWorkerHarness();
     const state = mutableState(harness);
     const pid = 52;
     const channel = createChannel(pid);
     registerProcess(harness, pid, [channel]);
-    const pickSignalTarget = vi.fn(() => pid);
+    const pickSignalTarget = vi.fn(() => -ESRCH);
     let exited = false;
     harness.implementations.kernel_generate_host_signal = () => {
       exited = true;
       return 0;
     };
-    harness.implementations.kernel_get_process_exit_signal =
-      () => exited ? SIGTERM : -1;
+    harness.implementations.kernel_get_process_exit_signal = () => {
+      if (!exited) return -1;
+      // A waiting parent may synchronously consume the zombie during host
+      // teardown. Model the kernel's truthful result after that exact reap.
+      return state.hostReaped.has(pid) ? -ESRCH : SIGTERM;
+    };
     harness.implementations.kernel_pick_signal_target_tid = pickSignalTarget;
 
     harness.worker.testAuthority.sendSignalForTest(pid, SIGTERM);

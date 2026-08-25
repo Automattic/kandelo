@@ -10,13 +10,9 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/libc/glue"
 
-# Auto-detect LLVM (matches scripts/build-programs.sh).
+# Auto-detect LLVM from the declared environment or ordinary PATH.
 find_llvm_bin() {
     if [ -n "${LLVM_BIN:-}" ]; then echo "$LLVM_BIN"; return; fi
-    local brew_prefix
-    if brew_prefix=$(brew --prefix llvm 2>/dev/null) && [ -d "$brew_prefix/bin" ]; then
-        echo "$brew_prefix/bin"; return
-    fi
     for v in 21 20 19 18 17 16 15; do
         if [ -x "/usr/bin/clang-$v" ]; then echo "/usr/bin"; return; fi
     done

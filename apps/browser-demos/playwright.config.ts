@@ -6,8 +6,6 @@ import {
   playwrightTestIgnoreForEnvironment,
   shouldReuseExistingPlaywrightServer,
 } from "./playwright-server-policy";
-import { HOMEBREW_CLOSED_ACCEPTANCE_VITE_MODE } from "./lib/homebrew-closed-acceptance";
-import { playwrightWebServerEnvironment } from "./playwright-closed-acceptance";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.KANDELO_PLAYWRIGHT_PORT ?? 5401);
@@ -25,31 +23,19 @@ if (protectedBrowserBaseUrl !== undefined && assembledSiteRoot !== undefined) {
 const serveSealedDist = process.env.KANDELO_PLAYWRIGHT_SERVE_DIST === "1";
 const scopedDeploymentsRun =
   process.env.KANDELO_SCOPED_DEPLOYMENT_SOURCE_ONLY_ROOT !== undefined;
-const configuredViteMode = process.env.KANDELO_PLAYWRIGHT_VITE_MODE?.trim();
-if (
-  configuredViteMode !== undefined &&
-  configuredViteMode !== HOMEBREW_CLOSED_ACCEPTANCE_VITE_MODE
-) {
-  throw new Error(
-    `unsupported KANDELO_PLAYWRIGHT_VITE_MODE: ${configuredViteMode}`,
-  );
-}
 const effectiveViteMode =
-  configuredViteMode ??
-  (serveSealedDist || assembledSiteRoot !== undefined
+  serveSealedDist || assembledSiteRoot !== undefined
     ? "production"
-    : "development");
+    : "development";
 const webServerEnvironment = playwrightWebServerEnvironment(
-  effectiveViteMode,
   process.env,
 );
 if (assembledSiteRoot !== undefined) {
   webServerEnvironment.VITE_BASE = "/kandelo/";
 }
-const viteModeArgument =
-  configuredViteMode === HOMEBREW_CLOSED_ACCEPTANCE_VITE_MODE
-    ? ` --mode ${HOMEBREW_CLOSED_ACCEPTANCE_VITE_MODE}`
-    : "";
+const viteModeArgument = effectiveViteMode === "production"
+  ? " --mode production"
+  : "";
 
 const browserEnvironmentKeys = [
   "CI",
@@ -85,6 +71,19 @@ const browserEnvironmentKeys = [
   "no_proxy",
 ];
 
+function playwrightWebServerEnvironment(
+  parentEnvironment: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
+  const childEnvironment: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parentEnvironment)) {
+    if (value !== undefined && key !== "KANDELO_BROWSER_TEST_NO_HMR") {
+      childEnvironment[key] = value;
+    }
+  }
+  childEnvironment.KANDELO_BROWSER_TEST_NO_HMR = "1";
+  return childEnvironment;
+}
+
 const browserLaunchEnv: Record<string, string> = {};
 for (const key of browserEnvironmentKeys) {
   const value = process.env[key];
@@ -107,9 +106,9 @@ export default defineConfig({
       protectedBrowserBaseUrl === undefined
         ? `http://127.0.0.1:${port}${assembledSiteRoot === undefined ? "" : "/kandelo/"}`
       : protectedBrowserBaseUrl,
-    // The immutable product is already zstd-compressed. Vite preview otherwise
-    // dynamically gzips it and switches to chunked transfer, unlike the
-    // content-length-bearing static Pages object this gate models.
+    // VFS product images are already zstd-compressed. Vite preview otherwise
+    // dynamically gzips them and switches to chunked transfer, unlike the
+    // content-length-bearing static Pages objects this gate models.
     extraHTTPHeaders:
       assembledSiteRoot === undefined
         ? undefined

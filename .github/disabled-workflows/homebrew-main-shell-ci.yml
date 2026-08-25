@@ -1,4 +1,4 @@
-name: Homebrew main shell
+name: DISABLED - Homebrew main shell
 
 on:
   # WHY: An independent PR workflow starts before package bytes exist.

@@ -1,25 +1,22 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { tryResolveBinary } from "../src/binary-resolver";
 import { DeviceFileSystem } from "../src/vfs/device-fs";
-import {
-  createImmutableProductBackend,
-  MemoryFileSystem,
-} from "../src/vfs/memory-fs";
+import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { NodeTimeProvider } from "../src/vfs/time";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
-const probeBinary = tryResolveBinary("programs/secure-exec-probe.wasm");
-const hasProbe = probeBinary !== null;
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
+const probeBinary = join(
+  repoRoot,
+  "local-binaries/programs/wasm32/secure-exec-probe.wasm",
+);
+const hasProbe = true;
 const SECURE_STDOUT_SENTINEL = "secure-stdout-sentinel\n";
 const SECURE_STDERR_SENTINEL = "secure-stderr-sentinel\n";
-const TRUSTED_ROOT_PRODUCT = {
-  kind: "trusted-root-product",
-  guestWritable: false,
-  stableExecutableIdentity: true,
-} as const;
 const localeMo = new Uint8Array([
   0xde, 0x12, 0x04, 0x95, 0, 0, 0, 0,
   1, 0, 0, 0, 28, 0, 0, 0, 36, 0, 0, 0,
@@ -43,7 +40,7 @@ const testZone = new Uint8Array([
   0x54, 0x53, 0x54, 0,
 ]);
 
-function createProbeIo(trusted: boolean): VirtualPlatformIO {
+function createProbeIo(honorsSetId: boolean): VirtualPlatformIO {
   const bytes = new Uint8Array(readFileSync(probeBinary!));
   const root = MemoryFileSystem.create(
     new SharedArrayBuffer(Math.max(4 * 1024 * 1024, bytes.byteLength * 3)),
@@ -60,16 +57,9 @@ function createProbeIo(trusted: boolean): VirtualPlatformIO {
   tmp.createFileWithOwner("/secure-zone", 0o644, 1000, 1000, testZone);
 
   return new VirtualPlatformIO([
-    trusted
-      ? {
-          mountPoint: "/",
-          backend: createImmutableProductBackend(root),
-          readonly: true,
-          setIdCapability: TRUSTED_ROOT_PRODUCT,
-        }
-      : { mountPoint: "/", backend: root },
-    { mountPoint: "/dev", backend: new DeviceFileSystem() },
-    { mountPoint: "/tmp", backend: tmp },
+    { mountPoint: "/", backend: root, nosuid: !honorsSetId },
+    { mountPoint: "/dev", backend: new DeviceFileSystem(), nosuid: true },
+    { mountPoint: "/tmp", backend: tmp, nosuid: true },
   ], new NodeTimeProvider());
 }
 
@@ -156,7 +146,7 @@ describe.skipIf(!hasProbe)("secure exec startup", () => {
     );
   });
 
-  it("enters secure startup only for a trusted set-ID exec", async () => {
+  it("enters secure startup for a set-ID exec on an ordinary writable VFS", async () => {
     const result = await launch(true, "target", true, 0);
 
     expect(result.exitCode).toBe(0);
@@ -168,7 +158,7 @@ describe.skipIf(!hasProbe)("secure exec startup", () => {
     );
   });
 
-  it("does not enter secure startup for a nosuid set-ID file", async () => {
+  it("does not enter secure startup for an explicitly nosuid set-ID file", async () => {
     const result = await launch(false, "target", false, 0);
 
     expect(result.exitCode).toBe(0);

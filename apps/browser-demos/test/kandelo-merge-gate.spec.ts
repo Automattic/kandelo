@@ -316,16 +316,16 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
     "touch /home/.nethack/record\n" +
       "nethack -s all >/tmp/kandelo-nethack.out 2>&1\n" +
       "status=$?\n" +
-      "nethack_out=$(</tmp/kandelo-nethack.out)\n" +
-      "if [[ \"$nethack_out\" == *'Cannot open record file'* ]]; then\n" +
+      "if (( status == 0 )); then\n" +
+      "  printf 'KANDELO_NETHACK_OK:%s\\n' \"$status\"\n" +
+      "else\n" +
       "  printf 'KANDELO_NETHACK_BAD:%s\\n' \"$status\"\n" +
       "  cat /tmp/kandelo-nethack.out\n" +
-      "else\n" +
-      "  printf 'KANDELO_NETHACK_OK:%s\\n' \"$status\"\n" +
       "fi",
-    "KANDELO_NETHACK_OK:0",
+    /KANDELO_NETHACK_(?:OK:0|BAD:[0-9]+)/,
     180_000,
   );
+  expect(await terminalText(page)).toContain("KANDELO_NETHACK_OK:0");
 });
 
 test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page }) => {
@@ -379,14 +379,17 @@ test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page 
   expect(nodeContractResult.output).toContain("KANDELO_NODE_OK:42");
   expect(nodeContractResult.output).toContain("KANDELO_NODE_ALIAS_OK");
   expect(nodeContractResult.output).not.toContain("Segmentation fault");
-  // WHY: bottle-derived Node images own their complete shell runtime and must
-  // never fall back to standalone binaries. The explicitly source-owned CI
-  // bridge instead carries image-owned Bash plus one lazy Coreutils identity;
-  // running `id` must fetch exactly that file, never Bash or Dash. The suite
-  // runner sets this exception only after validating source composition.
+  // WHY: the package-backed Node image boots login eagerly, then resolves the
+  // maker account's /bin/sh and the `id` utility through the image's declared
+  // lazy Dash and Coreutils identities. Bash is not part of this login path.
+  // The suite runner sets this expectation only after validating the exact
+  // source-only composition.
   expect(
-    standaloneShellRuntimeFetches.filter(({ name }) => name !== "coreutils"),
+    standaloneShellRuntimeFetches.filter(({ name }) => name === "bash"),
   ).toEqual([]);
+  expect(
+    standaloneShellRuntimeFetches.filter(({ name }) => name === "dash"),
+  ).toHaveLength(expectSourceRootfsShell ? 1 : 0);
   expect(
     standaloneShellRuntimeFetches.filter(({ name }) => name === "coreutils"),
   ).toHaveLength(expectSourceRootfsShell ? 1 : 0);

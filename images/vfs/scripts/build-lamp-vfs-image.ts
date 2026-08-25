@@ -51,7 +51,7 @@ import {
   loadShellBaseFileSystem,
   loadShellBaseFileSystemFromImage,
   saveShellDerivedVfsImage,
-} from "./shell-vfs-build";
+} from "./package-shell-vfs-build";
 import {
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
 } from "../../../web-libs/kandelo-session/src/vfs-capacity";

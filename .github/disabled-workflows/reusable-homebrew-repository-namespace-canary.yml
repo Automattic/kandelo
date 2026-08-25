@@ -1,4 +1,4 @@
-name: Reusable Homebrew first child publication
+name: DISABLED - Reusable Homebrew first child publication
 
 on:
   workflow_call:

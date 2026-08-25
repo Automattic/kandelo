@@ -1,4 +1,4 @@
-name: Homebrew native publisher compatibility
+name: DISABLED - Homebrew native publisher compatibility
 
 on:
   # This legacy proof rebuilt a complete native Homebrew realm on every

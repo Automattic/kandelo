@@ -12,6 +12,15 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
+import {
+  FORK_MODULE_TABLE_GENERATION_ADDR_IMPORT,
+} from "../../../../host/src/fork-activation-registry";
+import {
+  WPK_FORK_EXCEPTION_IMPORT_ACTIVATION,
+  WPK_FORK_REQUIRED_IMPORTS,
+  WPK_FORK_REQUIRED_TABLE_IMPORTS,
+  WPK_FORK_UNWIND_TAG_IMPORT_NAME,
+} from "../../../../host/src/generated/abi";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -48,6 +57,11 @@ describe.skipIf(!READY)("PHP curl as a runtime-loadable side module", () => {
       "__memory_base",
       "__table_base",
       "__c_longjmp",
+      WPK_FORK_EXCEPTION_IMPORT_ACTIVATION,
+      WPK_FORK_UNWIND_TAG_IMPORT_NAME,
+      FORK_MODULE_TABLE_GENERATION_ADDR_IMPORT,
+      ...WPK_FORK_REQUIRED_IMPORTS.map(({ name }) => name),
+      ...WPK_FORK_REQUIRED_TABLE_IMPORTS.map(({ name }) => name),
     ]);
 
     const missing = WebAssembly.Module.imports(sideModule)

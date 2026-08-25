@@ -3,6 +3,9 @@ name = "rootfs"
 version = "0.1.0"
 kernel_abi = 7
 depends_on = [
+  "login@0.1.0",
+  "sudo-lite@0.1.0",
+  "sudo@1.9.17p2",
   "dash@0.5.12",
   "bash@5.2.37",
   "ncurses@6.5",

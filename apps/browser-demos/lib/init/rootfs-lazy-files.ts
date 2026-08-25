@@ -67,6 +67,8 @@ import posixUuencodeWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/uue
 import posixWhatWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/what.wasm?url";
 import posixXgettextWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/xgettext.wasm?url";
 import posixYaccWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/yacc.wasm?url";
+import sudoLiteWasmUrl from "@binaries/programs/wasm32/sudo-lite.wasm?url";
+import sudoWasmUrl from "@binaries/programs/wasm32/sudo/sudo.wasm?url";
 
 const ROOTFS_LAZY_ASSET_URLS = new Map<string, string>([
   ["binaries/programs/wasm32/dash.wasm", dashWasmUrl],
@@ -132,6 +134,8 @@ const ROOTFS_LAZY_ASSET_URLS = new Map<string, string>([
   ["binaries/programs/wasm32/posix-utils-lite/what.wasm", posixWhatWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/xgettext.wasm", posixXgettextWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/yacc.wasm", posixYaccWasmUrl],
+  ["binaries/programs/wasm32/sudo-lite.wasm", sudoLiteWasmUrl],
+  ["binaries/programs/wasm32/sudo/sudo.wasm", sudoWasmUrl],
 ]);
 
 const ROOTFS_LAZY_SOURCE_URL_SET = new Set(ROOTFS_LAZY_ASSET_URLS.keys());

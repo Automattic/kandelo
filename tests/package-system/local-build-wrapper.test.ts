@@ -66,11 +66,16 @@ afterEach(() => {
   }
 });
 
-function makeFixture(result = successfulResult, cargoStatus = 0) {
+function makeFixture(
+  result = successfulResult,
+  cargoStatus = 0,
+  nixChatter = false,
+) {
   const root = mkdtempSync(join(tmpdir(), "kandelo-local-build-wrapper-"));
   const bin = join(root, "bin");
   const home = join(root, "home");
   const cargoRecord = join(root, "cargo.args");
+  const cargoPathRecord = join(root, "cargo.path");
   const ghRecord = join(root, "gh.calls");
   const nixRecord = join(root, "nix.calls");
   const npxRecord = join(root, "npx.calls");
@@ -96,6 +101,7 @@ EOF
     join(bin, "cargo"),
     `#!/usr/bin/env bash
 printf '%s\\n' "$@" > "$CARGO_RECORD"
+printf '%s\\n' "$PATH" > "$CARGO_PATH_RECORD"
 printf '%s\\n' "$FAKE_LOCAL_BUILD_RESULT"
 exit "$FAKE_CARGO_STATUS"
 `,
@@ -114,6 +120,12 @@ printf 'call\\n' >> "$NIX_RECORD"
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "--command" ]; then
     shift
+    if [ "$FAKE_NIX_CHATTER" = "1" ] && [ "$1" = "true" ]; then
+      printf 'fixture nix preparation warning\n'
+    fi
+    if [ "$FAKE_NIX_CHATTER" = "1" ] && [ "\${KANDELO_DEV_SHELL_QUIET:-}" != "1" ]; then
+      printf 'fixture dev-shell banner\n'
+    fi
     export KANDELO_DEV_SHELL_TOOL_PATH="$FAKE_TOOL_PATH"
     exec "$@"
   fi
@@ -153,16 +165,26 @@ exit 0
     PATH: path,
     HOME: home,
     CARGO_RECORD: cargoRecord,
+    CARGO_PATH_RECORD: cargoPathRecord,
     GH_RECORD: ghRecord,
     NIX_RECORD: nixRecord,
     NPX_RECORD: npxRecord,
     FAKE_TOOL_PATH: path,
     FAKE_LOCAL_BUILD_RESULT: result,
     FAKE_CARGO_STATUS: String(cargoStatus),
+    FAKE_NIX_CHATTER: nixChatter ? "1" : "0",
     KANDELO_NIX_BIN: join(bin, "nix"),
   };
 
-  return { bin, cargoRecord, env, ghRecord, nixRecord, npxRecord };
+  return {
+    bin,
+    cargoPathRecord,
+    cargoRecord,
+    env,
+    ghRecord,
+    nixRecord,
+    npxRecord,
+  };
 }
 
 function successfulSummary(): string {
@@ -201,7 +223,63 @@ function expectedCargoArgs(home: string): string[] {
 }
 
 describe("run.sh local-build", () => {
-  it("uses the active direnv dev shell without invoking Nix", () => {
+  it("keeps dev-shell preparation chatter out of the machine result", () => {
+    const fixture = makeFixture(successfulResult, 0, true);
+    const result = spawnSync(
+      "/bin/bash",
+      [join(repoRoot, "run.sh"), "local-build", "--json"],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: fixture.env,
+      },
+    );
+
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    expect(result.stdout).toBe(`${successfulResult}\n`);
+    expect(result.stderr).toContain("fixture nix preparation warning");
+    expect(result.stdout).not.toContain("fixture dev-shell banner");
+  });
+
+  it("re-enters the current dev shell before trusting an inherited marker", () => {
+    const fixture = makeFixture();
+    const poisonBin = join(fixture.bin, "..", "poison-bin");
+    const poisonRecord = join(fixture.bin, "..", "poison-cargo.calls");
+    mkdirSync(poisonBin);
+    writeFileSync(
+      join(poisonBin, "cargo"),
+      `#!/usr/bin/env bash
+printf 'called\n' >> "$POISON_CARGO_RECORD"
+exit 92
+`,
+    );
+    chmodSync(join(poisonBin, "cargo"), 0o755);
+
+    const result = spawnSync(
+      "/bin/bash",
+      [join(repoRoot, "run.sh"), "local-build"],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: {
+          ...fixture.env,
+          PATH: `${poisonBin}:${fixture.env.PATH}`,
+          KANDELO_DEV_SHELL_TOOL_PATH: `${poisonBin}:${fixture.env.PATH}`,
+          POISON_CARGO_RECORD: poisonRecord,
+        },
+      },
+    );
+
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    expect(result.stdout).toBe(successfulSummary());
+    expect(readFileSync(fixture.nixRecord, "utf8")).toBe("call\ncall\n");
+    expect(() => readFileSync(poisonRecord, "utf8")).toThrow();
+    expect(readFileSync(fixture.cargoPathRecord, "utf8")).toBe(
+      `${fixture.env.PATH}\n`,
+    );
+  });
+
+  it("re-enters the declared dev shell when direnv is active", () => {
     const fixture = makeFixture();
     const result = spawnSync(
       "/bin/bash",
@@ -221,7 +299,7 @@ describe("run.sh local-build", () => {
     expect(
       readFileSync(fixture.cargoRecord, "utf8").trim().split("\n"),
     ).toEqual(expectedCargoArgs(fixture.env.HOME));
-    expect(() => readFileSync(fixture.nixRecord, "utf8")).toThrow();
+    expect(readFileSync(fixture.nixRecord, "utf8")).toBe("call\ncall\n");
   });
 
   it("enters the declared dev shell when direnv is not active", () => {
@@ -332,7 +410,7 @@ describe("run.sh browser", () => {
         "",
       ].join("\n"),
     );
-    expect(() => readFileSync(fixture.nixRecord, "utf8")).toThrow();
+    expect(readFileSync(fixture.nixRecord, "utf8")).toBe("call\ncall\n");
   });
 
   it("rejects the retired PR-staging browser selection before remote access", () => {

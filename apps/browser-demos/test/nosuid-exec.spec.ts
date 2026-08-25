@@ -10,7 +10,7 @@ const typesModulePath = resolve(repoRoot, "host/src/vfs/types.ts");
 const vfsModulePath = resolve(repoRoot, "host/src/vfs/vfs.ts");
 const abiModulePath = resolve(repoRoot, "host/src/generated/abi.ts");
 
-test("browser mount policy defaults mutable execution to nosuid", async ({
+test("browser mount policy honors set-ID unless nosuid is explicit", async ({
   page,
   baseURL,
 }) => {
@@ -56,74 +56,58 @@ test("browser mount policy defaults mutable execution to nosuid", async ({
       [{ mountPoint: "/", backend: mutable }],
       new time.BrowserTimeProvider(),
     );
-    const trustedBackend = memory.createImmutableProductBackend(mutable);
-    const trusted = new vfsModule.VirtualPlatformIO(
+    const nosuid = new vfsModule.VirtualPlatformIO(
       [{
         mountPoint: "/",
-        backend: trustedBackend,
-        readonly: true,
-        setIdCapability: {
-          kind: "trusted-root-product",
-          guestWritable: false,
-          stableExecutableIdentity: true,
-        },
+        backend: mutable,
+        nosuid: true,
       }],
       new time.BrowserTimeProvider(),
     );
     const aliased = new vfsModule.VirtualPlatformIO(
       [
         {
-          mountPoint: "/trusted",
-          backend: trustedBackend,
-          readonly: true,
-          setIdCapability: {
-            kind: "trusted-root-product",
-            guestWritable: false,
-            stableExecutableIdentity: true,
-          },
+          mountPoint: "/normal",
+          backend: mutable,
         },
-        { mountPoint: "/raw", backend: trustedBackend, readonly: true },
+        { mountPoint: "/scratch", backend: mutable, nosuid: true },
       ],
       new time.BrowserTimeProvider(),
     );
-    const trustedHandle = aliased.open(
-      "/trusted/bin/tool",
+    const normalHandle = aliased.open(
+      "/normal/bin/tool",
       abi.OPEN_FLAGS.O_RDONLY,
       0,
     );
-    const rawHandle = aliased.open(
-      "/raw/bin/tool",
+    const nosuidHandle = aliased.open(
+      "/scratch/bin/tool",
       abi.OPEN_FLAGS.O_RDONLY,
       0,
     );
-    const trustedHandleFlags = aliased.fstatfs(trustedHandle).flags;
-    const rawHandleFlags = aliased.fstatfs(rawHandle).flags;
-    aliased.close(trustedHandle);
-    aliased.close(rawHandle);
+    const normalHandleFlags = aliased.fstatfs(normalHandle).flags;
+    const nosuidHandleFlags = aliased.fstatfs(nosuidHandle).flags;
+    aliased.close(normalHandle);
+    aliased.close(nosuidHandle);
 
     return {
       mutableFlags: ordinary.statfs("/bin/tool").flags,
-      mutableCapability: ordinary.getMountSetIdCapability("/bin/tool"),
-      trustedFlags: trusted.statfs("/bin/tool").flags,
-      trustedCapability: trusted.getMountSetIdCapability("/bin/tool"),
-      trustedMode: trusted.stat("/bin/tool").mode,
-      trustedHandleFlags,
-      rawHandleFlags,
+      mutableNosuid: ordinary.getMountNosuid("/bin/tool"),
+      nosuidFlags: nosuid.statfs("/bin/tool").flags,
+      nosuidPolicy: nosuid.getMountNosuid("/bin/tool"),
+      mutableMode: ordinary.stat("/bin/tool").mode,
+      normalHandleFlags,
+      nosuidHandleFlags,
       stNosuid: types.ST_NOSUID,
     };
   }, {
     modules,
   });
 
-  expect(result.mutableFlags & result.stNosuid).toBe(result.stNosuid);
-  expect(result.mutableCapability).toEqual({ kind: "nosuid" });
-  expect(result.trustedFlags & result.stNosuid).toBe(0);
-  expect(result.trustedCapability).toEqual({
-    kind: "trusted-root-product",
-    guestWritable: false,
-    stableExecutableIdentity: true,
-  });
-  expect(result.trustedMode & 0o6000).toBe(0o6000);
-  expect(result.trustedHandleFlags & result.stNosuid).toBe(0);
-  expect(result.rawHandleFlags & result.stNosuid).toBe(result.stNosuid);
+  expect(result.mutableFlags & result.stNosuid).toBe(0);
+  expect(result.mutableNosuid).toBe(false);
+  expect(result.nosuidFlags & result.stNosuid).toBe(result.stNosuid);
+  expect(result.nosuidPolicy).toBe(true);
+  expect(result.mutableMode & 0o6000).toBe(0o6000);
+  expect(result.normalHandleFlags & result.stNosuid).toBe(0);
+  expect(result.nosuidHandleFlags & result.stNosuid).toBe(result.stNosuid);
 });

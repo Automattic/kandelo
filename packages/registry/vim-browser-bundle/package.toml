@@ -19,3 +19,4 @@ script_path = "packages/registry/vim-browser-bundle/build-vim-browser-bundle.sh"
 [[outputs]]
 name = "vim"
 wasm = "vim.zip"
+fork_instrumentation = "disabled"

@@ -1218,8 +1218,10 @@ _wasm_fork_capability_hex() {
     ' wasm-objdump -s -j kandelo.wpk_fork.capabilities "$path"
 }
 
-wasm_has_activation_state_safe_capability() {
+_wasm_has_fork_capability_flag() {
     local path="${1:-}"
+    local required_flag="${2:-}"
+    [[ "$required_flag" =~ ^[0-9]+$ ]] || return 2
     local section_hex capability_hex flags_hex flags
     section_hex="$(_wasm_fork_capability_hex "$path")" || return $?
 
@@ -1234,7 +1236,15 @@ wasm_has_activation_state_safe_capability() {
     flags_hex="${capability_hex:2:2}"
     flags=$((16#$flags_hex))
     [ $((flags & ~7)) -eq 0 ] || return 3
-    [ $((flags & 4)) -eq 4 ]
+    [ $((flags & required_flag)) -eq "$required_flag" ]
+}
+
+wasm_has_activation_state_safe_capability() {
+    _wasm_has_fork_capability_flag "${1:-}" 4
+}
+
+wasm_has_side_entry_capability() {
+    _wasm_has_fork_capability_flag "${1:-}" 1
 }
 
 _wasm_linked_frame_descriptor_hex() {
@@ -1605,9 +1615,18 @@ wasm_require_fork_instrumentation_if_needed() {
 
     local frame_imports="$frame_reserve$frame_commit$frame_next"
     local exports="$abort_begin$abort_end$rewind_begin$rewind_end$state$unwind_begin$unwind_end"
+    local maybe_side_module=0
+    grep -a -q 'dylink\.0' "$path" && maybe_side_module=1
     [ "$imports_fork" = 0 ] && [ "$frame_imports" = 000 ] &&
         [ "$linked_descriptor" = 0 ] && [ "$fork_capability" = 0 ] &&
-        [ "$exports" = 0000000 ] && return 0
+        [ "$exports" = 0000000 ] && [ "$maybe_side_module" = 0 ] && return 0
+
+    local artifact_role role_status=0
+    artifact_role="$(wasm_artifact_role "$path")" || role_status=$?
+    if [ "$role_status" -ne 0 ]; then
+        echo "ERROR: unable to classify wasm artifact role: $path" >&2
+        return 1
+    fi
 
     local missing=()
     local duplicates=()
@@ -1652,6 +1671,9 @@ wasm_require_fork_instrumentation_if_needed() {
         capability_error="found $fork_capability kandelo.wpk_fork.capabilities sections; expected exactly one"
     elif ! wasm_has_activation_state_safe_capability "$path"; then
         capability_error="capability is malformed or omits activation-state safety"
+    elif [ "$artifact_role" = side-module ] &&
+        ! wasm_has_side_entry_capability "$path"; then
+        capability_error="side-module capability omits complete side-boundary coverage"
     fi
 
     local memory_error=""

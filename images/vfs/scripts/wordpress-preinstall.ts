@@ -24,7 +24,7 @@ import {
   ensureDirRecursive,
   writeVfsBinary,
 } from "../../../host/src/vfs/image-helpers";
-import { saveShellDerivedBuildGuestSnapshot } from "./shell-vfs-build";
+import { saveShellDerivedBuildGuestSnapshot } from "./package-shell-vfs-build";
 
 export const WORDPRESS_DEFAULT_SITE_TITLE = "WordPress on Kandelo";
 export const WORDPRESS_DEFAULT_ADMIN_USER = "admin";

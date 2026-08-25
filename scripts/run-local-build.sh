@@ -6,7 +6,18 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 : "${KANDELO_DEV_SHELL_TOOL_PATH:?local build must run in the repository dev shell}"
 
-host_target="$(rustc -vV | sed -n 's/^host: //p')"
+# An outer launcher may preserve the dev-shell marker while replacing PATH.
+# Use only the exact declared tool set at the final build boundary: appending
+# the ambient path would still let an undeclared host or Homebrew executable
+# satisfy a package configure probe when the repository omitted that tool.
+export PATH="$KANDELO_DEV_SHELL_TOOL_PATH"
+
+host_target=""
+while IFS= read -r rustc_version_line; do
+    case "$rustc_version_line" in
+        "host: "*) host_target="${rustc_version_line#host: }" ;;
+    esac
+done < <(rustc -vV)
 if [ -z "$host_target" ]; then
     echo "run-local-build.sh: could not determine the Rust host target" >&2
     exit 1

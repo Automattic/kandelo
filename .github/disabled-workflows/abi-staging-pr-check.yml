@@ -1,4 +1,4 @@
-name: Kandelo ABI staging PR Check
+name: DISABLED - Kandelo ABI staging PR Check
 
 on:
   pull_request_target:

@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,8 +19,9 @@ import {
   registerPackageDeferredZipTree,
   type PackageDeferredZipTreeSpec,
 } from "../src/vfs/package-deferred-tree";
-import { loadShellBaseFileSystemFromImage } from "../../images/vfs/scripts/shell-vfs-build";
+import { loadShellBaseFileSystemFromImage } from "../../images/vfs/scripts/package-shell-vfs-build";
 import { ABI_VERSION } from "../src/generated/abi";
+import { EXPERIMENTAL_TERMINAL_SESSION_PATH } from "../../web-libs/kandelo-session/src/experimental-terminal-session";
 
 const O_RDONLY = 0;
 const encoder = new TextEncoder();
@@ -278,8 +278,24 @@ describe("dinit-derived image binary ownership", () => {
     const shell = createFs();
     ensureDirRecursive(shell, "/sbin");
     ensureDirRecursive(shell, "/etc/kandelo");
-    writeVfsBinary(shell, "/sbin/dinit", encoder.encode("bottled dinit"));
-    writeVfsBinary(shell, "/sbin/dinitctl", encoder.encode("bottled dinitctl"));
+    ensureDirRecursive(shell, "/usr/bin");
+    writeVfsBinary(shell, "/sbin/dinit", encoder.encode("package dinit"));
+    writeVfsBinary(shell, "/sbin/dinitctl", encoder.encode("package dinitctl"));
+    writeVfsBinary(shell, "/usr/bin/login", encoder.encode("package login"), 0o4755);
+    writeVfsFile(
+      shell,
+      EXPERIMENTAL_TERMINAL_SESSION_PATH,
+      JSON.stringify({
+        kind: "kandelo-experimental-terminal-session",
+        version: 1,
+        initial: {
+          path: "/usr/bin/login",
+          argv: ["login", "-p", "-f", "maker"],
+          uid: 0,
+          gid: 0,
+        },
+      }),
+    );
     writeVfsFile(shell, "/etc/kandelo/demo.json", DINIT_DEMO_CONFIG);
     shell.setImageMetadata({
       version: 1,
@@ -293,22 +309,9 @@ describe("dinit-derived image binary ownership", () => {
         bytes: 1,
         kernelAbi: ABI_VERSION,
       },
-      packageDeferredTrees: [],
-      homebrewBootstrap: {
-        entrypoint: "/usr/bin/brew",
-        prefix: "/opt/kandelo/homebrew",
-      },
-      homebrew: {
-        tapRepository: "Kandelo-dev/homebrew-tap-core",
-        tapName: "Kandelo-dev/tap-core",
-        tapCommit: "b".repeat(40),
-        demoConfig: {
-          path: "/etc/kandelo/demo.json",
-          sha256: createHash("sha256")
-            .update(DINIT_DEMO_CONFIG)
-            .digest("hex"),
-          bytes: encoder.encode(DINIT_DEMO_CONFIG).byteLength,
-        },
+      shellComposition: {
+        schema: 1,
+        kind: "package-rootfs-shell",
       },
     });
     const shellImage = await shell.saveImage();
@@ -326,8 +329,8 @@ describe("dinit-derived image binary ownership", () => {
       },
     ]);
 
-    expect(readGuestFile(derived, "/sbin/dinit")).toBe("bottled dinit");
-    expect(readGuestFile(derived, "/sbin/dinitctl")).toBe("bottled dinitctl");
+    expect(readGuestFile(derived, "/sbin/dinit")).toBe("package dinit");
+    expect(readGuestFile(derived, "/sbin/dinitctl")).toBe("package dinitctl");
     expect(readGuestFile(derived, "/etc/dinit.d/service")).toContain(
       "type = internal",
     );
@@ -336,8 +339,8 @@ describe("dinit-derived image binary ownership", () => {
   it("rejects an unversioned shell fixture before derived composition", async () => {
     const shell = createFs();
     ensureDirRecursive(shell, "/sbin");
-    writeVfsBinary(shell, "/sbin/dinit", encoder.encode("bottled dinit"));
-    writeVfsBinary(shell, "/sbin/dinitctl", encoder.encode("bottled dinitctl"));
+    writeVfsBinary(shell, "/sbin/dinit", encoder.encode("package dinit"));
+    writeVfsBinary(shell, "/sbin/dinitctl", encoder.encode("package dinitctl"));
     const shellImage = await shell.saveImage();
 
     await expect(
@@ -345,6 +348,6 @@ describe("dinit-derived image binary ownership", () => {
         shellImage,
         MemoryFileSystem.readImageCapacity(shellImage).maxByteLength,
       ),
-    ).rejects.toThrow("shell base image omits its required kernel ABI");
+    ).rejects.toThrow("package shell base image has invalid metadata");
   });
 });

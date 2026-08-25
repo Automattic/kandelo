@@ -15,6 +15,37 @@ default_install = "lazy"
 lazy_url_prefix = "binaries/"
 
 [[packages]]
+name = "login"
+install = "eager"
+
+[[packages.outputs]]
+binary = "programs/wasm32/login.wasm"
+path = "/usr/bin/login"
+mode = "4755"
+uid = 0
+gid = 0
+
+[[packages]]
+name = "sudo-lite"
+
+[[packages.outputs]]
+binary = "programs/wasm32/sudo-lite.wasm"
+path = "/usr/bin/sudo-lite"
+mode = "4755"
+uid = 0
+gid = 0
+
+[[packages]]
+name = "sudo"
+
+[[packages.outputs]]
+binary = "programs/wasm32/sudo/sudo.wasm"
+path = "/usr/bin/sudo"
+mode = "4755"
+uid = 0
+gid = 0
+
+[[packages]]
 name = "dash"
 
 [[packages.outputs]]

@@ -90,7 +90,7 @@ async function resolveValidatedForNode(
         mountPoint: m.path,
         backend,
         readonly: m.readonly,
-        setIdCapability: m.setIdCapability,
+        nosuid: m.nosuid,
       });
     } else {
       const hostDir = join(sessionDir, m.path);
@@ -105,7 +105,7 @@ async function resolveValidatedForNode(
         mountPoint: m.path,
         backend,
         readonly: m.readonly,
-        setIdCapability: m.setIdCapability,
+        nosuid: m.nosuid,
       });
     }
   }

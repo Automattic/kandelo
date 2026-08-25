@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import ts from "typescript";
@@ -83,6 +84,7 @@ export interface AuditResult {
   unresolvedSeeds: OwnershipSeed[];
   contractErrors: string[];
   sourceFiles: string[];
+  propagationPasses: number;
 }
 
 export interface AuditOptions {
@@ -133,6 +135,7 @@ interface ValueState {
   properties: Map<string, ValueState>;
   hiddenProperties: Map<string, ValueState>;
   elements: ValueState | null;
+  unknownDescendant: boolean;
 }
 
 type StateProjection = { kind: "property"; name: string } | { kind: "element" };
@@ -164,6 +167,7 @@ const EMPTY_STATE: ValueState = Object.freeze({
   properties: new Map(),
   hiddenProperties: new Map(),
   elements: null,
+  unknownDescendant: false,
 });
 
 const OWNER_BITS: Record<MemoryOwner, number> = {
@@ -290,6 +294,7 @@ const SKIPPED_DIRECTORY_NAMES = new Set([
 ]);
 
 const UNKNOWN_KERNEL_EXPORT = "<computed-kernel-export>";
+const MAX_STRUCTURED_STATE_DEPTH = 16;
 
 function frozenStringArray(
   expression: ts.Expression,
@@ -389,6 +394,7 @@ function emptyState(): ValueState {
     properties: new Map(),
     hiddenProperties: new Map(),
     elements: null,
+    unknownDescendant: false,
   };
 }
 
@@ -402,7 +408,95 @@ function ownerState(owner: MemoryOwner, form: OwnershipForm): ValueState {
   return state;
 }
 
-function cloneState(state: ValueState): ValueState {
+function mergeDirectState(into: ValueState, other: ValueState): boolean {
+  const beforeMemory = into.memory;
+  const beforeBuffer = into.buffer;
+  const beforeView = into.view;
+  const beforeInstance = into.instance;
+  const beforeExportNamespace = into.exportNamespace;
+  const beforeKernelExportFunctionCount = into.kernelExportFunctions.size;
+  const beforeAllocator = into.allocator;
+  const beforeReserver = into.reserver;
+  const beforeScratchRegionFactory = into.scratchRegionFactory;
+  const beforeScratchRegion = into.scratchRegion;
+  const beforeViewConstructors = into.viewConstructors;
+  const beforeUnknownDescendant = into.unknownDescendant;
+  into.memory |= other.memory;
+  into.buffer |= other.buffer;
+  into.view |= other.view;
+  into.instance |= other.instance;
+  into.exportNamespace |= other.exportNamespace;
+  for (const name of other.kernelExportFunctions) {
+    into.kernelExportFunctions.add(name);
+  }
+  into.allocator ||= other.allocator;
+  into.reserver ||= other.reserver;
+  into.scratchRegionFactory ||= other.scratchRegionFactory;
+  into.scratchRegion ||= other.scratchRegion;
+  into.viewConstructors |= other.viewConstructors;
+  into.unknownDescendant ||= other.unknownDescendant;
+  return (
+    beforeMemory !== into.memory ||
+    beforeBuffer !== into.buffer ||
+    beforeView !== into.view ||
+    beforeInstance !== into.instance ||
+    beforeExportNamespace !== into.exportNamespace ||
+    beforeKernelExportFunctionCount !== into.kernelExportFunctions.size ||
+    beforeAllocator !== into.allocator ||
+    beforeReserver !== into.reserver ||
+    beforeScratchRegionFactory !== into.scratchRegionFactory ||
+    beforeScratchRegion !== into.scratchRegion ||
+    beforeViewConstructors !== into.viewConstructors ||
+    beforeUnknownDescendant !== into.unknownDescendant
+  );
+}
+
+function hasDirectCapability(state: ValueState): boolean {
+  return (
+    state.memory !== 0 ||
+    state.buffer !== 0 ||
+    state.view !== 0 ||
+    state.instance !== 0 ||
+    state.exportNamespace !== 0 ||
+    state.kernelExportFunctions.size !== 0 ||
+    state.allocator ||
+    state.reserver ||
+    state.scratchRegionFactory ||
+    state.scratchRegion ||
+    state.viewConstructors !== 0
+  );
+}
+
+function mergeDescendantCapabilities(
+  into: ValueState,
+  descendant: ValueState,
+  seen = new Set<ValueState>(),
+): boolean {
+  if (seen.has(descendant)) return false;
+  seen.add(descendant);
+  let changed = mergeDirectState(into, descendant);
+  let found = hasDirectCapability(descendant) || descendant.unknownDescendant;
+  for (const property of descendant.properties.values()) {
+    found ||= hasCapability(property);
+    changed = mergeDescendantCapabilities(into, property, seen) || changed;
+  }
+  for (const property of descendant.hiddenProperties.values()) {
+    found ||= hasCapability(property);
+    changed = mergeDescendantCapabilities(into, property, seen) || changed;
+  }
+  if (descendant.elements) {
+    found ||= hasCapability(descendant.elements);
+    changed =
+      mergeDescendantCapabilities(into, descendant.elements, seen) || changed;
+  }
+  if (found && !into.unknownDescendant) {
+    into.unknownDescendant = true;
+    changed = true;
+  }
+  return changed;
+}
+
+function cloneState(state: ValueState, depth = 0): ValueState {
   const result: ValueState = {
     memory: state.memory,
     buffer: state.buffer,
@@ -417,77 +511,82 @@ function cloneState(state: ValueState): ValueState {
     viewConstructors: state.viewConstructors,
     properties: new Map(),
     hiddenProperties: new Map(),
-    elements: state.elements ? cloneState(state.elements) : null,
+    elements: null,
+    unknownDescendant: state.unknownDescendant,
   };
+  if (depth >= MAX_STRUCTURED_STATE_DEPTH) {
+    for (const property of state.properties.values()) {
+      mergeDescendantCapabilities(result, property);
+    }
+    for (const property of state.hiddenProperties.values()) {
+      mergeDescendantCapabilities(result, property);
+    }
+    if (state.elements) mergeDescendantCapabilities(result, state.elements);
+    return result;
+  }
+  result.elements = state.elements ? cloneState(state.elements, depth + 1) : null;
   for (const [name, property] of state.properties) {
-    result.properties.set(name, cloneState(property));
+    result.properties.set(name, cloneState(property, depth + 1));
   }
   for (const [name, property] of state.hiddenProperties) {
-    result.hiddenProperties.set(name, cloneState(property));
+    result.hiddenProperties.set(name, cloneState(property, depth + 1));
   }
   return result;
 }
 
-function unionState(into: ValueState, other: ValueState): boolean {
-  const beforeMemory = into.memory;
-  const beforeBuffer = into.buffer;
-  const beforeView = into.view;
-  const beforeInstance = into.instance;
-  const beforeExportNamespace = into.exportNamespace;
-  const beforeKernelExportFunctionCount = into.kernelExportFunctions.size;
-  const beforeAllocator = into.allocator;
-  const beforeReserver = into.reserver;
-  const beforeScratchRegionFactory = into.scratchRegionFactory;
-  const beforeScratchRegion = into.scratchRegion;
-  const beforeViewConstructors = into.viewConstructors;
-  into.memory |= other.memory;
-  into.buffer |= other.buffer;
-  into.view |= other.view;
-  into.instance |= other.instance;
-  into.exportNamespace |= other.exportNamespace;
-  for (const name of other.kernelExportFunctions) {
-    into.kernelExportFunctions.add(name);
+function unionState(
+  into: ValueState,
+  other: ValueState,
+  depth = 0,
+): boolean {
+  let changed = mergeDirectState(into, other);
+  if (depth >= MAX_STRUCTURED_STATE_DEPTH) {
+    for (const property of into.properties.values()) {
+      changed = mergeDescendantCapabilities(into, property) || changed;
+    }
+    for (const property of into.hiddenProperties.values()) {
+      changed = mergeDescendantCapabilities(into, property) || changed;
+    }
+    if (into.elements) {
+      changed = mergeDescendantCapabilities(into, into.elements) || changed;
+    }
+    into.properties.clear();
+    into.hiddenProperties.clear();
+    into.elements = null;
+    for (const property of other.properties.values()) {
+      changed = mergeDescendantCapabilities(into, property) || changed;
+    }
+    for (const property of other.hiddenProperties.values()) {
+      changed = mergeDescendantCapabilities(into, property) || changed;
+    }
+    if (other.elements) {
+      changed = mergeDescendantCapabilities(into, other.elements) || changed;
+    }
+    return changed;
   }
-  into.allocator ||= other.allocator;
-  into.reserver ||= other.reserver;
-  into.scratchRegionFactory ||= other.scratchRegionFactory;
-  into.scratchRegion ||= other.scratchRegion;
-  into.viewConstructors |= other.viewConstructors;
-  let changed =
-    beforeMemory !== into.memory ||
-    beforeBuffer !== into.buffer ||
-    beforeView !== into.view ||
-    beforeInstance !== into.instance ||
-    beforeExportNamespace !== into.exportNamespace ||
-    beforeKernelExportFunctionCount !== into.kernelExportFunctions.size ||
-    beforeAllocator !== into.allocator ||
-    beforeReserver !== into.reserver ||
-    beforeScratchRegionFactory !== into.scratchRegionFactory ||
-    beforeScratchRegion !== into.scratchRegion ||
-    beforeViewConstructors !== into.viewConstructors;
   for (const [name, property] of other.properties) {
     const existing = into.properties.get(name);
     if (existing) {
-      changed = unionState(existing, property) || changed;
+      changed = unionState(existing, property, depth + 1) || changed;
     } else {
-      into.properties.set(name, cloneState(property));
+      into.properties.set(name, cloneState(property, depth + 1));
       changed = true;
     }
   }
   for (const [name, property] of other.hiddenProperties) {
     const existing = into.hiddenProperties.get(name);
     if (existing) {
-      changed = unionState(existing, property) || changed;
+      changed = unionState(existing, property, depth + 1) || changed;
     } else {
-      into.hiddenProperties.set(name, cloneState(property));
+      into.hiddenProperties.set(name, cloneState(property, depth + 1));
       changed = true;
     }
   }
   if (other.elements) {
     if (into.elements) {
-      changed = unionState(into.elements, other.elements) || changed;
+      changed = unionState(into.elements, other.elements, depth + 1) || changed;
     } else {
-      into.elements = cloneState(other.elements);
+      into.elements = cloneState(other.elements, depth + 1);
       changed = true;
     }
   }
@@ -506,21 +605,7 @@ function hasCapability(
 ): boolean {
   if (seen.has(state)) return false;
   seen.add(state);
-  if (
-    state.memory !== 0 ||
-    state.buffer !== 0 ||
-    state.view !== 0 ||
-    state.instance !== 0 ||
-    state.exportNamespace !== 0 ||
-    state.kernelExportFunctions.size !== 0 ||
-    state.allocator ||
-    state.reserver ||
-    state.scratchRegionFactory ||
-    state.scratchRegion ||
-    state.viewConstructors !== 0
-  ) {
-    return true;
-  }
+  if (hasDirectCapability(state)) return true;
   for (const property of state.properties.values()) {
     if (hasCapability(property, seen)) return true;
   }
@@ -533,6 +618,12 @@ function hasCapability(
 function propertyState(state: ValueState, name: string): ValueState {
   const result = cloneState(state.properties.get(name) ?? EMPTY_STATE);
   unionState(result, state.hiddenProperties.get(name) ?? EMPTY_STATE);
+  if (state.unknownDescendant) {
+    const unknown = emptyState();
+    mergeDirectState(unknown, state);
+    unknown.unknownDescendant = true;
+    unionState(result, unknown);
+  }
   if (name === "buffer") {
     result.buffer |= state.memory | state.view;
   } else if (name === "exports") {
@@ -556,6 +647,12 @@ function propertyState(state: ValueState, name: string): ValueState {
 
 function elementState(state: ValueState): ValueState {
   const result = cloneState(state.elements ?? EMPTY_STATE);
+  if (state.unknownDescendant) {
+    const unknown = emptyState();
+    mergeDirectState(unknown, state);
+    unknown.unknownDescendant = true;
+    unionState(result, unknown);
+  }
   if ((state.exportNamespace & KERNEL_OWNER) !== 0) {
     result.kernelExportFunctions.add(UNKNOWN_KERNEL_EXPORT);
   }
@@ -1994,10 +2091,15 @@ function mergeIntoKey(
     target = emptyState();
     states.set(key, target);
   }
+  let depth = 0;
   for (const projection of targetProjection) {
+    if (depth >= MAX_STRUCTURED_STATE_DEPTH) {
+      return mergeDescendantCapabilities(target, state);
+    }
     if (projection.kind === "element") {
       if (!target.elements) target.elements = emptyState();
       target = target.elements;
+      depth++;
       continue;
     }
     let property = target.properties.get(projection.name);
@@ -2006,8 +2108,9 @@ function mergeIntoKey(
       target.properties.set(projection.name, property);
     }
     target = property;
+    depth++;
   }
-  return unionState(target, state);
+  return unionState(target, state, depth);
 }
 
 function hydrateTypeProperties(
@@ -4479,8 +4582,11 @@ export function auditWasmMemoryWrites(options: AuditOptions): AuditResult {
   // source set. This is what makes a new helper file or a renamed local alias
   // visible to the ownership contract.
   let changed = true;
-  for (let pass = 0; changed && pass < constraints.length + 32; pass++) {
+  let propagationPasses = 0;
+  const maxPropagationPasses = constraints.length + 32;
+  while (changed && propagationPasses < maxPropagationPasses) {
     changed = false;
+    propagationPasses++;
     for (const constraint of constraints) {
       const state = expressionState(
         constraint.expression,
@@ -8160,7 +8266,13 @@ export function auditWasmMemoryWrites(options: AuditOptions): AuditResult {
           `could not resolve kernel destination factory declaration ${declaration}`,
       ),
       ...authorityClassificationErrors,
+      ...(changed
+        ? [
+            `ownership propagation did not converge after ${propagationPasses} passes`,
+          ]
+        : []),
     ],
+    propagationPasses,
     sourceFiles: sourceFiles
       .map((sourceFile) => relativeFile(options.rootDir, sourceFile))
       .sort(),
@@ -8189,6 +8301,34 @@ function isOrdinaryTestHarness(relativePath: string): boolean {
     relativePath.startsWith("host/test/") ||
     relativePath.includes("/test/") ||
     /\.(?:test|spec)\.(?:[cm]?[jt]s|[jt]sx)$/.test(relativePath)
+  );
+}
+
+function gitIgnoredRuntimeSourceFiles(
+  rootDir: string,
+  files: readonly string[],
+): ReadonlySet<string> {
+  if (files.length === 0) return new Set();
+  const relativeFiles = files.map((file) => path.relative(rootDir, file));
+  const result = spawnSync(
+    "git",
+    ["-C", rootDir, "check-ignore", "--stdin", "-z"],
+    {
+      input: `${relativeFiles.join("\0")}\0`,
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+    },
+  );
+  if (result.error || (result.status !== 0 && result.status !== 1)) {
+    // A virtual fixture or exported source tree need not be a Git checkout.
+    // In that case retain the conservative behavior and audit every source.
+    return new Set();
+  }
+  return new Set(
+    result.stdout
+      .split("\0")
+      .filter((relative) => relative.length > 0)
+      .map((relative) => path.resolve(rootDir, relative)),
   );
 }
 
@@ -8228,11 +8368,23 @@ export function repositoryRuntimeSourceFiles(rootDir: string): string[] {
       }
       if (!entry.isFile() || !isRuntimeSourceFile(entry.name)) continue;
       const relative = toPosix(path.relative(rootDir, absolute));
+      if (relative === "scripts/resolve-binary.bundle.mjs") {
+        // This minified standalone executable is reproduced exactly from
+        // scripts/resolve-binary.ts and host/src/binary-resolver.ts by the
+        // resolver-bundle freshness gate. Auditing both sources preserves the
+        // ownership contract without propagating through generated aliases.
+        continue;
+      }
       if (!isOrdinaryTestHarness(relative)) files.push(absolute);
     }
   };
   visitDirectory(rootDir);
-  return files.sort();
+  // Package builds leave ignored upstream and generated trees beside their
+  // recipes. They are inputs or residue, not Kandelo runtime sources, and
+  // allowing them into the TypeScript ownership graph makes this contract
+  // depend on which packages happened to be built in the working tree.
+  const ignored = gitIgnoredRuntimeSourceFiles(rootDir, files);
+  return files.filter((file) => !ignored.has(path.resolve(file))).sort();
 }
 
 export function virtualAuditOptions(

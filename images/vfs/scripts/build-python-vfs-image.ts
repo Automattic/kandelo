@@ -46,7 +46,7 @@ const LEGACY_PYTHON_WASM = join(
 );
 const PYTHON_STDLIB = "python3.13";
 // Keep enough allocator headroom for downstream images to layer additional
-// Homebrew executables onto the complete interpreter and standard library.
+// executables onto the complete interpreter and standard library.
 const VFS_BYTES = 256 * 1024 * 1024;
 const REPRODUCIBLE_TIMESTAMP_MS = 1_700_000_000_000;
 

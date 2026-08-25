@@ -1,5 +1,13 @@
 # Homebrew Publishing
 
+> **Disabled:** Kandelo does not currently build, test, publish, or ship the
+> Homebrew integration described here. Its implementation and this operational
+> record are retained as dormant source. Re-enabling it requires a separate
+> reviewed change.
+
+The remainder of this document is a historical record. Present-tense language
+below describes the disabled design, not an active build or release promise.
+
 For a plain-language map of the complete system, including ABI-bump
 operations, lazy VFS images, guest `brew`, and third-party taps, start with
 [Kandelo Homebrew Packaging](homebrew-packaging-system.md). This document is
@@ -14,11 +22,11 @@ Migration status, preserved scope, and the remaining execution order are
 tracked in the
 [Homebrew Migration Living Execution Plan](plans/2026-07-21-homebrew-migration-execution-plan.md).
 
-## Current ABI-42 shell publication (2026-08-13)
+## Historical ABI-42 shell publication (2026-08-13)
 
-Trusted CI still builds Kandelo Homebrew bottles, publishes them through the
-GHCR/Homebrew URL shape, and generates Formula `bottle do` blocks and Kandelo
-sidecars together. The current browser shell consumes those already-admitted
+Before disablement, trusted CI built Kandelo Homebrew bottles through the
+GHCR/Homebrew URL shape and generated Formula `bottle do` blocks and Kandelo
+sidecars together. The browser shell consumed those already-admitted
 bottles through `homebrew/main-shell-flat-selection.json`. Shell revision 25
 composes their flat-lazy form over the platform base. It embeds the selected
 Bash closure and package-owned Homebrew bootstrap while retaining 37 bottle
