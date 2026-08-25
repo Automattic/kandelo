@@ -1,4 +1,4 @@
-name: Reusable Kandelo Homebrew bottle maintenance
+name: DISABLED - Reusable Kandelo Homebrew bottle maintenance
 
 on:
   workflow_call:

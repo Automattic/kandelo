@@ -3292,8 +3292,12 @@ index_url = "https://example.test/binaries-abi-v{{abi}}/index.toml"
         assert_eq!(projection["schema"], 1);
         assert_eq!(projection["root_package"], "rootfs");
         assert_eq!(projection["arch"], "wasm32");
-        assert_eq!(projection["entries"].as_array().unwrap().len(), 15);
-        assert_eq!(expected.entries.len(), 15);
+        assert_eq!(projection["entries"].as_array().unwrap().len(), 18);
+        assert_eq!(expected.entries.len(), 18);
+        assert!(["login", "sudo", "sudo-lite"].iter().all(|name| expected
+            .entries
+            .iter()
+            .any(|entry| entry.package == *name)));
         assert_eq!(
             projection["entries"]
                 .as_array()

@@ -4,24 +4,12 @@ architecture = "wasm32"
 output = "rootfs.vfs"
 builder = "packages/registry/rootfs/build-rootfs-package.sh"
 
-[[composition.repository]]
-id = "rootfs-source"
-paths = ["MANIFEST", "images/rootfs"]
+[[software.package]]
+name = "rootfs"
+outputs = ["rootfs"]
+source_roles = []
 role = "runtime"
 materialization = "embedded"
-
-[[software.homebrew]]
-tap = "kandelo-dev/homebrew-tap-core"
-formulae = ["bash"]
-materialization = "embedded"
-
-[[software.homebrew]]
-tap = "kandelo-dev/homebrew-tap-core"
-formulae = [
-  "dash", "ncurses", "coreutils", "gawk", "grep", "sed", "bc",
-  "file-formula", "m4", "make", "findutils", "diffutils", "posix-utils-lite",
-]
-materialization = "lazy"
 
 [[mounts]]
 path = "/"
@@ -37,13 +25,13 @@ gid = 0
 ephemeral = true
 
 [boot]
-argv = ["/bin/sh"]
-cwd = "/root"
+argv = ["/usr/bin/login", "-p", "-f", "maker"]
+cwd = "/home/maker"
 uid = 0
 gid = 0
 
 [boot.env]
-HOME = "/root"
+HOME = "/home/maker"
 PATH = "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
 TMPDIR = "/tmp"
 

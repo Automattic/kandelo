@@ -7,7 +7,6 @@ import {
   bindImageOwnedRuntimeUrls,
   type ImageOwnedRuntimeLazyAssets,
 } from "../../../lib/init/image-owned-runtime-urls";
-import { resolveShellLazyArchiveUrl } from "../../../lib/init/lazy-archives";
 import {
   WORDPRESS_CONFIG_INIT_SCRIPT,
   WORDPRESS_URL_MU_PLUGIN,
@@ -24,28 +23,6 @@ import {
   WORDPRESS_MARIADB_SOCKET_PATH,
 } from "../../../lib/init/wordpress-mariadb-readiness";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
-import { loadHomebrewBottleMirrorClosedAssets } from "../../../../../host/src/homebrew-bottle-mirror-browser";
-import { HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH } from "../../../../../host/src/homebrew-bottle-mirror-plan";
-import {
-  loadClosedLazyAssetSources,
-  type ClosedLazyAsset,
-} from "../../../../../host/src/vfs/closed-lazy-assets";
-import {
-  composeBootDescriptorVfs,
-  homebrewRuntimeLayerReferences,
-} from "../../../lib/init/homebrew-package-layers";
-import {
-  publishRuntimeLayerPrivilegedPrograms,
-  type RegisteredHomebrewRuntimeLayer,
-} from "../../../../../host/src/homebrew-runtime-layer-consumer";
-import type {
-  PublishedPrivilegedProgramProduct,
-  ReviewedPrivilegedProgramPolicy,
-} from "../../../../../host/src/vfs/privileged-projection";
-import {
-  homebrewBootstrapClosedBinding,
-  homebrewClosedAcceptanceAssetRoot,
-} from "../../../lib/homebrew-closed-acceptance";
 import {
   resolveBrowserCorsProxyConfig,
 } from "../../../lib/browser-cors-proxy";
@@ -77,12 +54,13 @@ import {
 } from "../../../../../web-libs/kandelo-session/src/demo-config";
 import { readKandeloDemoConfigFromVfs } from "../../../../../web-libs/kandelo-session/src/demo-config-vfs";
 import {
-  KANDELO_SHELL_CONFIG_PATH,
-  MAX_KANDELO_SHELL_CONFIG_BYTES,
-  MAX_KANDELO_SHELL_EXECUTABLE_BYTES,
-  parseKandeloShellConfig,
-  type KandeloShellConfig,
-} from "../../../../../web-libs/kandelo-session/src/shell-config";
+  EXPERIMENTAL_TERMINAL_SESSION_PATH,
+  MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES,
+  experimentalTerminalSessionPolicy,
+  parseExperimentalTerminalSession,
+  type ExperimentalTerminalProgram,
+  type ExperimentalTerminalSession,
+} from "../../../../../web-libs/kandelo-session/src/experimental-terminal-session";
 import {
   CUSTOM_VFS_PROFILE_MAX_BYTES,
   DEFAULT_VFS_PROFILE_MAX_BYTES,
@@ -96,7 +74,6 @@ import {
   builtinDemoGuide,
   builtinDemoPresentation,
 } from "../../../../../web-libs/kandelo-session/src/demo-guides";
-import { hasConfiguredDemoLogin } from "../../../../../images/vfs/lib/demo-login";
 import { PRESET_LIBRARY } from "../presets";
 import {
   descriptorWithVfsImageUrl,
@@ -113,7 +90,6 @@ import {
   candidateEvidenceLiveDemoId,
   createProtectedCandidatePagesVfsPlacement,
   installProtectedCandidatePagesActivation,
-  resolveCandidateEvidenceBootExecutable,
   fetchProtectedCandidateVfs,
   PROTECTED_BROWSER_EVIDENCE_MAX_PROCESS_MEMORY_BYTES,
   readInjectedProtectedBrowserEvidence,
@@ -128,9 +104,7 @@ import {
   createPagesVfsProductLoader,
   type PagesVfsProductEntry,
 } from "./pages-vfs-product-loader";
-import { DEMO_TERMINAL_SESSION_POLICY } from "./demo-terminal-sessions";
 import { stageConfiguredAssets } from "./configured-assets";
-import { initializeDemoLoginKernel } from "./demo-login-loader";
 import {
   deploymentScopeFromServiceWorkerUrl,
 } from "../../../../../web-libs/kandelo-session/src/deployment-scope";
@@ -143,8 +117,6 @@ import {
 import kernelWasmUrl from "@kernel-wasm?url";
 import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
 import dinitWasmUrl from "@binaries/programs/wasm32/dinit/dinit.wasm?url";
-import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
-import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
 // @ts-expect-error Vite owns this virtual module in both canonical and normal mode.
 import canonicalPagesVfsProducts from "virtual:kandelo-pages-vfs-products";
 
@@ -599,10 +571,6 @@ export interface CreateLiveHostOptions {
   demo?: string | null;
   vfsUrl?: string | null;
   fb?: FbDemo;
-  /** Product-owned reviewed authority; boot descriptors cannot construct it. */
-  reviewedPrivilegedProgramPolicy?: ReviewedPrivilegedProgramPolicy;
-  /** Separately published authority; image/config/descriptor data cannot mint it. */
-  publishedPrivilegedProgramProduct?: PublishedPrivilegedProgramProduct;
 }
 
 export async function createLiveHost(
@@ -765,8 +733,6 @@ export async function createLiveHost(
         bootStartedAt,
         () => seq === bootSeq,
         requireServiceWorker,
-        opts.reviewedPrivilegedProgramPolicy,
-        opts.publishedPrivilegedProgramProduct,
       );
       if (seq !== bootSeq) {
         await kernel.destroy().catch(() => {});
@@ -1101,8 +1067,6 @@ async function bootProfile(
   requireServiceWorker: (
     tick?: (msg: string) => void,
   ) => Promise<ServiceWorker>,
-  reviewedPrivilegedProgramPolicy?: ReviewedPrivilegedProgramPolicy,
-  publishedPrivilegedProgramProduct?: PublishedPrivilegedProgramProduct,
 ): Promise<BrowserKernel> {
   const assertCurrent = () => {
     if (!isCurrent()) throw new BootSuperseded();
@@ -1213,29 +1177,9 @@ async function bootProfile(
   // out of the live-VFS ownership set so WebKit reclaims it on teardown via
   // Worker.terminate() rather than lazy GC — the root fix for the Safari
   // image-switch OOM.
-  const runtimeLayers = homebrewRuntimeLayerReferences(requestedDescriptor);
-  let buildFs: MemoryFileSystem;
-  let registeredRuntimeLayers: RegisteredHomebrewRuntimeLayer[] = [];
-  if (runtimeLayers.length > 0) {
-    tick(
-      `verifying ${runtimeLayers.length} selected runtime layer${
-        runtimeLayers.length === 1 ? "" : "s"
-      }...`,
-    );
-    const composed = await composeBootDescriptorVfs({
-      descriptor: requestedDescriptor,
-      baseImageBytes: fetchedVfsImageBytes,
-      maxByteLength: profile.maxVfsByteLength,
-      kernelAbi: ABI_VERSION,
-      onStagedFileSystemDiscarded: trackTransientImageBuffer,
-    });
-    buildFs = composed.fs;
-    registeredRuntimeLayers = composed.layers;
-  } else {
-    buildFs = MemoryFileSystem.fromImage(fetchedVfsImageBytes, {
-      maxByteLength: profile.maxVfsByteLength,
-    });
-  }
+  const buildFs = MemoryFileSystem.fromImage(fetchedVfsImageBytes, {
+    maxByteLength: profile.maxVfsByteLength,
+  });
   // Track as soon as the caller owns the staged filesystem. This covers every
   // later fetch, staging, supersession, and serialization failure; finalizing
   // the image is intentionally an idempotent second registration.
@@ -1244,11 +1188,6 @@ async function bootProfile(
   // asynchronous layer loads were in flight. Otherwise its completed buffer
   // becomes unreachable without entering the WebKit reclamation ledger.
   assertCurrent();
-  if (runtimeLayers.length > 0) {
-    tick(
-      "runtime layer files registered; archives remain lazy until first use",
-    );
-  }
   // WHY: establish cleanup ownership first, then reject forged imported seals
   // before URL rewriting or asset registration can trust their lazy metadata.
   await verifyImportedSealsForCurrentBoot(buildFs);
@@ -1256,7 +1195,7 @@ async function bootProfile(
   // Moving it into an async helper creates a microtask gap where a newer boot
   // can take ownership before this boot resumes mutating its staged image.
   assertCurrent();
-  const shellConfig = readImageShellConfig(buildFs);
+  const terminalSession = readImageExperimentalTerminalSession(buildFs);
   if (profile.candidateEvidence === undefined) {
     if (
       profile.id === "nginx-php" ||
@@ -1283,44 +1222,9 @@ async function bootProfile(
     }
     ensureDemoHomes(buildFs);
   }
-  // Bake fallback shell binaries into the image before the worker takes
-  // ownership. The kernel-owned filesystem has no main-thread handle, so they
-  // must be part of the image bytes.
-  let shellProgramBytes: ArrayBuffer | undefined;
-  let candidateShell: { path: string; argv: string[] } | undefined;
-  if (
-    profile.candidateEvidence !== undefined &&
-    profile.init === undefined
-  ) {
-    // The candidate evidence VFS does not import fallback binaries. A missing
-    // normal shell is an incomplete product, not permission to stage the
-    // protected checkout's Bash or Dash into candidate bytes.
-    const programPath = resolveCandidateEvidenceBootExecutable(
-      buildFs,
-      profile.candidateEvidence.boot,
-    );
-    candidateShell = {
-      path: programPath,
-      argv: profile.candidateEvidence.boot.argv.slice(),
-    };
-  } else if (shellConfig) {
-    assertImageShellExecutable(buildFs, shellConfig.path);
-  } else if (profile.candidateEvidence !== undefined) {
-    throw new Error(
-      "candidate service product lacks its image-owned shell configuration",
-    );
-  } else {
-    const [bashBytes, dashBytes] = await Promise.all([
-      fetch(bashWasmUrl)
-        .then(failOn("bash.wasm"))
-        .then((r) => r.arrayBuffer()),
-      fetch(dashWasmUrl)
-        .then(failOn("dash.wasm"))
-        .then((r) => r.arrayBuffer()),
-    ]);
-    assertCurrent();
-    stageShellUtilities(buildFs, dashBytes, bashBytes);
-    shellProgramBytes = bashBytes;
+  assertImageTerminalProgram(buildFs, terminalSession.initial);
+  if (terminalSession.afterExit !== undefined) {
+    assertImageTerminalProgram(buildFs, terminalSession.afterExit);
   }
   const imageConfig = readImageConfig(buildFs);
   const rawPresentation =
@@ -1345,28 +1249,6 @@ async function bootProfile(
     imageAssets.length > 0 ? imageAssets : builtinDemoAssets(profile.id);
   if (profile.candidateEvidence === undefined) {
     await stageConfiguredAssets(buildFs, assets, tick, assertCurrent);
-    assertCurrent();
-  }
-
-  const closedLazyAssets = await loadProfileClosedLazyAssets(
-    buildFs,
-    tick,
-    assertCurrent,
-  );
-  assertCurrent();
-
-  let privilegedProduct = publishedPrivilegedProgramProduct;
-  if (
-    privilegedProduct === undefined &&
-    reviewedPrivilegedProgramPolicy !== undefined &&
-    hasConfiguredDemoLogin(buildFs)
-  ) {
-    tick("publishing reviewed privileged programs...");
-    privilegedProduct = await publishRuntimeLayerPrivilegedPrograms(
-      buildFs,
-      registeredRuntimeLayers,
-      reviewedPrivilegedProgramPolicy,
-    );
     assertCurrent();
   }
 
@@ -1447,41 +1329,18 @@ async function bootProfile(
       ? {
         kernelWasm: kernelBytes,
         vfsImage: vfsImageBytes,
-        ...(closedLazyAssets === undefined ? {} : { closedLazyAssets }),
       }
       : candidateEvidenceKernelInitOptions(
         profile.candidateEvidence,
         kernelBytes,
         vfsImageBytes,
-        closedLazyAssets,
       );
-    const loginSessionsEnabled = await initializeDemoLoginKernel({
-      kernel,
-      fs: buildFs,
-      ...kernelInitOptions,
-      ...(privilegedProduct === undefined ? {} : { privilegedProduct }),
-    });
+    await kernel.initFromImage(kernelInitOptions);
     assertCurrent();
     host.attachKernel(kernel);
-    const shellIdentity = shellIdentityForProfile(
-      profile,
-      profile.init ? undefined : effectiveBoot,
+    host.setTerminalSessionPolicy(
+      experimentalTerminalSessionPolicy(terminalSession),
     );
-    if (loginSessionsEnabled) {
-      host.setTerminalSessionPolicy(DEMO_TERMINAL_SESSION_POLICY);
-    } else {
-      // Custom and legacy images without the exact account, policy, message,
-      // and reviewed login entry keep their declared shell identity.
-      host.setDefaultShell({
-        programPath: shellConfig?.path ?? "/bin/bash",
-        ...(shellProgramBytes ? { programBytes: shellProgramBytes } : {}),
-        argv: shellConfig?.argv ?? ["bash", "-l", "-i"],
-        env: shellIdentity.env,
-        cwd: shellIdentity.cwd,
-        uid: shellIdentity.uid,
-        gid: shellIdentity.gid,
-      });
-    }
 
     if (profile.init?.web) {
       tick("initializing HTTP bridge...");
@@ -2273,128 +2132,53 @@ function isLiveDemoId(id: string): id is LiveDemoId {
   return Object.hasOwn(LIVE_DEMO_SPECS, id);
 }
 
-function readImageShellConfig(fs: MemoryFileSystem): KandeloShellConfig | null {
+function readImageExperimentalTerminalSession(
+  fs: MemoryFileSystem,
+): ExperimentalTerminalSession {
   let stat;
   try {
-    stat = fs.lstat(KANDELO_SHELL_CONFIG_PATH);
+    stat = fs.lstat(EXPERIMENTAL_TERMINAL_SESSION_PATH);
   } catch (err) {
-    if (isMissingVfsPath(err)) return null;
+    if (isMissingVfsPath(err)) {
+      throw new Error(
+        `VFS image is missing ${EXPERIMENTAL_TERMINAL_SESSION_PATH}`,
+      );
+    }
     throw err;
   }
   if ((stat.mode & 0xf000) !== 0x8000) {
-    throw new Error(`${KANDELO_SHELL_CONFIG_PATH} must be a regular file`);
-  }
-  if (stat.size > MAX_KANDELO_SHELL_CONFIG_BYTES) {
     throw new Error(
-      `${KANDELO_SHELL_CONFIG_PATH} exceeds ${MAX_KANDELO_SHELL_CONFIG_BYTES} bytes`,
+      `${EXPERIMENTAL_TERMINAL_SESSION_PATH} must be a regular file`,
+    );
+  }
+  if (stat.size > MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES) {
+    throw new Error(
+      `${EXPERIMENTAL_TERMINAL_SESSION_PATH} exceeds ` +
+        `${MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES} bytes`,
     );
   }
   const json = new TextDecoder("utf-8", { fatal: true }).decode(
-    new Uint8Array(readVfsFile(fs, KANDELO_SHELL_CONFIG_PATH)),
+    new Uint8Array(readVfsFile(fs, EXPERIMENTAL_TERMINAL_SESSION_PATH)),
   );
-  const config = parseKandeloShellConfig(json);
-  if (!config) {
-    throw new Error(
-      `VFS image has unsupported ${KANDELO_SHELL_CONFIG_PATH} version`,
-    );
-  }
-  return config;
+  return parseExperimentalTerminalSession(json);
 }
 
-async function loadProfileClosedLazyAssets(
+function assertImageTerminalProgram(
   fs: MemoryFileSystem,
-  tick: (message: string) => void,
-  assertCurrent: () => void,
-) {
-  const bundleRoot = homebrewClosedAcceptanceAssetRoot(
-    import.meta.env.MODE,
-    import.meta.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT as
-      string | undefined,
-  );
-  if (!bundleRoot) return undefined;
-  // WHY: Node and service images are layered on the main shell and inherit
-  // its deferred bottle URLs. The embedded mirror plan—not the gallery
-  // profile label—is the authority that says an image needs the closed
-  // pre-publication mirror.
-  const embeddedPlan = readOptionalVfsFile(
-    fs,
-    HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH,
-  );
-  if (embeddedPlan === null) return undefined;
-  tick("verifying exact local Homebrew bottle mirror...");
-  const embeddedPlanBytes = new Uint8Array(embeddedPlan);
-  const bundle = await loadHomebrewBottleMirrorClosedAssets({
-    embeddedPlanBytes,
-    bundleRoot,
-  });
-  assertCurrent();
-  const packageAssets = await loadHomebrewBootstrapClosedAssets(fs);
-  assertCurrent();
-  tick(
-    `verified ${bundle.assets.length} exact deferred bottle payloads and ` +
-      `${packageAssets.length} package source ` +
-      `${packageAssets.length === 1 ? "tree" : "trees"}`,
-  );
-  return [...bundle.assets, ...packageAssets];
-}
-
-async function loadHomebrewBootstrapClosedAssets(
-  fs: MemoryFileSystem,
-): Promise<ClosedLazyAsset[]> {
-  const binding = homebrewBootstrapClosedBinding(fs.getImageMetadata());
-  const sourceUrl = resolveShellLazyArchiveUrl(binding.url);
-  const closedUrl =
-    `https://closed-lazy.kandelo.invalid/homebrew-bootstrap/` +
-    `${binding.sha256}/${binding.output}`;
-  // WHY: rewriteLazyArchiveUrls is filesystem-wide. Refuse an ambiguous source
-  // URL so binding this one verified package cannot retarget another lazy tree.
-  const pendingForSource = fs
-    .exportLazyArchiveEntries()
-    .filter((tree) =>
-      tree.content?.transports.some((transport) => transport === sourceUrl),
-    );
-  if (
-    pendingForSource.length !== 1 ||
-    pendingForSource[0]!.content?.sha256 !== binding.sha256 ||
-    pendingForSource[0]!.content?.bytes !== binding.bytes ||
-    pendingForSource[0]!.content?.transports.length !== 1
-  ) {
-    throw new Error(
-      "closed Homebrew image does not bind the Homebrew bootstrap source " +
-        "to exactly one matching pending tree",
-    );
-  }
-  // WHY: the worker's closed fetcher intentionally rejects every unbound URL.
-  // Keep the Vite file as an acceptance-only transport source, then bind its
-  // verified bytes to one canonical HTTPS identity before worker ownership.
-  fs.rewriteLazyArchiveUrls((url) => (url === sourceUrl ? closedUrl : url));
-  return loadClosedLazyAssetSources([
-    {
-      url: closedUrl,
-      sourceUrl,
-      sha256: binding.sha256,
-      size: binding.bytes,
-    },
-  ]);
-}
-
-function assertImageShellExecutable(fs: MemoryFileSystem, path: string): void {
+  program: ExperimentalTerminalProgram,
+): void {
+  const path = program.path;
   let stat;
   try {
     stat = fs.stat(path);
   } catch {
-    throw new Error(`VFS image default shell is missing: ${path}`);
+    throw new Error(`VFS image terminal program is missing: ${path}`);
   }
   if ((stat.mode & 0xf000) !== 0x8000) {
-    throw new Error(`VFS image default shell is not a regular file: ${path}`);
+    throw new Error(`VFS image terminal program is not a regular file: ${path}`);
   }
   if ((stat.mode & 0o111) === 0) {
-    throw new Error(`VFS image default shell is not executable: ${path}`);
-  }
-  if (stat.size > MAX_KANDELO_SHELL_EXECUTABLE_BYTES) {
-    throw new Error(
-      `VFS image default shell exceeds ${MAX_KANDELO_SHELL_EXECUTABLE_BYTES} bytes: ${path}`,
-    );
+    throw new Error(`VFS image terminal program is not executable: ${path}`);
   }
 }
 

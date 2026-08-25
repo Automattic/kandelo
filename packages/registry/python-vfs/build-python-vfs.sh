@@ -40,6 +40,9 @@ KANDELO_PYTHON_VFS_OUT="$VFS" \
 
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    # The sealed output is a composite VFS archive, not a Wasm module that the
+    # installer may rewrite with fork instrumentation.
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled
 fi
 # shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/install-local-binary.sh"

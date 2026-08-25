@@ -17,4 +17,22 @@ trap 'rm -rf "$SCRATCH"' EXIT
 )
 
 test -x "$REPO_ROOT/tools/bin/wasm-fork-instrument"
-echo "fork-instrument builder is independent of the caller cwd"
+
+# A pre-existing executable is not authoritative. Its content stamp binds it
+# to the current source tree, and the public wrapper must rebuild a stale copy
+# before executing it.
+printf 'deliberately-stale\n' > \
+    "$REPO_ROOT/tools/bin/wasm-fork-instrument.input-hash"
+(
+    cd "$SCRATCH"
+    "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" --help >/dev/null
+)
+
+# shellcheck source=fork-instrument-tool-input-hash.sh
+source "$REPO_ROOT/scripts/fork-instrument-tool-input-hash.sh"
+expected_hash="$(fork_instrument_tool_input_hash "$REPO_ROOT")"
+IFS= read -r installed_hash < \
+    "$REPO_ROOT/tools/bin/wasm-fork-instrument.input-hash"
+test "$installed_hash" = "$expected_hash"
+
+echo "fork-instrument builder is cwd-independent and rejects stale tools"

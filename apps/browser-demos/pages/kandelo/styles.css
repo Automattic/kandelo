@@ -1350,6 +1350,14 @@
   bottom: calc(var(--kdock-height, 0px) + 14px);
 }
 
+.kpcm-audio-status .kdownload-toast {
+  pointer-events: none;
+}
+
+.kpcm-audio-status .kpcm-audio-enable {
+  pointer-events: auto;
+}
+
 .kpcm-audio-error {
   border-color: color-mix(in oklch, var(--k-err) 52%, var(--k-border));
 }

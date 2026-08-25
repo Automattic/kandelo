@@ -3863,6 +3863,38 @@ fn fork_instrumentation_keeps_dylink_section_first() {
         }
         other => panic!("dylink.0 must remain the first section, got {other:?}"),
     }
+    assert_eq!(
+        fork_instrument::contract_inventory::artifact_identity(&output)
+            .expect("inspect instrumented side-module identity")
+            .abi_version,
+        fork_instrument::contract_inventory::ArtifactAbiVersion::Present(
+            wasm_posix_shared::ABI_VERSION,
+        ),
+        "instrumentation must bind a side module to the current fork ABI epoch",
+    );
+}
+
+#[test]
+fn fork_instrumentation_rejects_stale_side_module_abi_marker() {
+    let stale_abi = wasm_posix_shared::ABI_VERSION - 1;
+    let wat = format!(
+        r#"
+        (module
+          (@custom "dylink.0" (before first) "test metadata")
+          (func (export "__abi_version") (result i32)
+            i32.const {stale_abi})
+          (memory 1))
+    "#,
+    );
+
+    let error = instrument(&parse_wat(&wat), &Options::default())
+        .expect_err("a stale side-module ABI marker must fail instrumentation");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains(&format!("stale __abi_version {stale_abi}"))
+            && message.contains(&format!("current ABI {}", wasm_posix_shared::ABI_VERSION)),
+        "got: {message}",
+    );
 }
 
 // ======================================================================

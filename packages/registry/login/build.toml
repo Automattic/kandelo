@@ -1,0 +1,14 @@
+script_path = "packages/registry/login/build-login.sh"
+inputs = [
+  "packages/registry/login/build-login.sh",
+  "programs/login.c",
+  "scripts/install-local-binary.sh",
+  "scripts/package-build-roots.sh",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+publication_state = "pending"
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

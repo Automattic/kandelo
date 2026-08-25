@@ -82,11 +82,16 @@ async function createExecutableRootfs(
   writeFile(fs, path, program, 0o755);
   writeFile(
     fs,
-    "/etc/kandelo/shell.json",
+    "/etc/kandelo/experimental-terminal-session.json",
     new TextEncoder().encode(JSON.stringify({
+      kind: "kandelo-experimental-terminal-session",
       version: 1,
-      path,
-      argv: ["wasi-hello"],
+      initial: {
+        path,
+        argv: ["wasi-hello"],
+        uid: 0,
+        gid: 0,
+      },
     })),
   );
   return fs.saveImage();
@@ -334,14 +339,19 @@ describe("NodeKernelHost rootfs export contract", () => {
       });
       try {
         await host.init(asArrayBuffer(kernel));
-        const shellConfig = await host.readFileFromVfs(
-          "/etc/kandelo/shell.json",
+        const terminalConfig = await host.readFileFromVfs(
+          "/etc/kandelo/experimental-terminal-session.json",
         );
-        expect(shellConfig).not.toBeNull();
-        expect(JSON.parse(new TextDecoder().decode(shellConfig!))).toEqual({
+        expect(terminalConfig).not.toBeNull();
+        expect(JSON.parse(new TextDecoder().decode(terminalConfig!))).toEqual({
+          kind: "kandelo-experimental-terminal-session",
           version: 1,
-          path: "/bin/wasi-hello",
-          argv: ["wasi-hello"],
+          initial: {
+            path: "/bin/wasi-hello",
+            argv: ["wasi-hello"],
+            uid: 0,
+            gid: 0,
+          },
         });
         await expect(host.readFileFromVfs("/missing")).resolves.toBeNull();
         const { pid, exit } = await host.spawnFromVfs(

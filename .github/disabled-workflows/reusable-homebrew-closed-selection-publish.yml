@@ -1,4 +1,4 @@
-name: Reusable Homebrew closed-selection publish
+name: DISABLED - Reusable Homebrew closed-selection publish
 
 on:
   workflow_call:

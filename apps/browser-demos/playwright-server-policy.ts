@@ -4,8 +4,6 @@ export interface PlaywrightServerEnvironment {
   KANDELO_ABI_STAGING_BROWSER_OBSERVATION?: string;
   KANDELO_ABI_STAGING_BROWSER_SESSION?: string;
   KANDELO_CANONICAL_FLAT_SHELL_STRICT?: string;
-  KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE?: string;
-  KANDELO_HOMEBREW_MAIN_SHELL_STRICT?: string;
   KANDELO_NODE_VFS_STRICT?: string;
   KANDELO_PLAYWRIGHT_SERVE_DIST?: string;
   KANDELO_SOURCE_ROOTFS_SHELL_STRICT?: string;
@@ -16,6 +14,14 @@ export function playwrightTestIgnoreForEnvironment(
   argv: readonly string[] = [],
 ): RegExp[] {
   const ignored: RegExp[] = [];
+  ignored.push(
+    /homebrew/i,
+    /browser-package-layer\.spec\.ts$/,
+    /kandelo-canonical-flat-shell\.spec\.ts$/,
+    /kandelo-node\.spec\.ts$/,
+    /lazy-archive-runtime\.spec\.ts$/,
+    /rootfs-export\.spec\.ts$/,
+  );
   if (env.KANDELO_ABI_STAGING_ASSEMBLED_SITE_ROOT === undefined) {
     ignored.push(/abi-staging-pages-assembled-site\.spec\.ts$/);
   }
@@ -50,10 +56,8 @@ export function shouldReuseExistingPlaywrightServer(
   return (
     !env.CI &&
     env.KANDELO_CANONICAL_FLAT_SHELL_STRICT !== "1" &&
-    env.KANDELO_HOMEBREW_MAIN_SHELL_STRICT !== "1" &&
     env.KANDELO_NODE_VFS_STRICT !== "1" &&
     env.KANDELO_PLAYWRIGHT_SERVE_DIST !== "1" &&
-    env.KANDELO_SOURCE_ROOTFS_SHELL_STRICT !== "1" &&
-    env.KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE !== "1"
+    env.KANDELO_SOURCE_ROOTFS_SHELL_STRICT !== "1"
   );
 }

@@ -17,7 +17,7 @@ export type DevCorsProxyFetch = (
   init: RequestInit,
 ) => Promise<Response>;
 
-// WHY: this local relay proves anonymous public Git and bottle transport.
+// WHY: this local relay proves anonymous public Git and package transport.
 // Forwarding credentials needs a separately reviewed host/proxy protocol;
 // ambient browser Authorization must not become guest authority by accident.
 const ALLOWED_REQUEST_HEADERS = new Set(
@@ -211,8 +211,8 @@ export async function handleDevCorsProxyRequest(
  * Relay one bounded request through Vite's same-origin development proxy.
  *
  * WHY: Git smart HTTP discovers a repository with GET, then transfers its
- * protocol request with POST. A GET-only relay lets `brew tap` start but
- * always fails before Git can fetch any objects.
+ * protocol request with POST. A GET-only relay lets guest Git start discovery
+ * but always fails before it can fetch any objects.
  */
 export async function relayDevCorsProxyRequest(
   request: IncomingMessage,
@@ -289,7 +289,7 @@ export async function relayDevCorsProxyRequest(
       redirect: method === "POST" ? "manual" : "follow",
     });
     if (method === "POST" && upstream.status >= 300 && upstream.status < 400) {
-      // Exact public tap URLs do not need a redirect. Refusing every POST
+      // Exact public repository URLs do not need a redirect. Refusing every POST
       // redirect is safer than exposing Location to the default-following
       // outer fetch, which would leave the same-origin relay entirely.
       await upstream.body?.cancel().catch(() => {});

@@ -1,4 +1,4 @@
-name: Publish experimental ABI-42 Homebrew VFS
+name: DISABLED - Publish experimental ABI-42 Homebrew VFS
 
 on:
   workflow_dispatch:

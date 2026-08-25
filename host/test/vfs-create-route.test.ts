@@ -35,7 +35,7 @@ describe("VirtualPlatformIO create-route metadata", () => {
     try {
       expect(statfs).toHaveBeenCalledWith("/");
       expect(io.stat("/created").mode & 0o7777).toBe(0o6755);
-      expect(io.fstatfs(fd).flags & ST_NOSUID).toBe(ST_NOSUID);
+      expect(io.fstatfs(fd).flags & ST_NOSUID).toBe(0);
     } finally {
       io.close(fd);
     }

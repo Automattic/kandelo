@@ -30,8 +30,8 @@ describe("lazyDownloadAssetLabel", () => {
       kind: "tree",
       mountPrefix: "/",
       url: "https://github.com/example/project/releases/download/v1/" +
-        "kandelo-homebrew-bottle-python-layer.bin?ignored=1",
-    }))).toBe("kandelo-homebrew-bottle-python-layer.bin");
+        "kandelo-package-python-layer.bin?ignored=1",
+    }))).toBe("kandelo-package-python-layer.bin");
   });
 
   it("uses the payload URL for an archive", () => {

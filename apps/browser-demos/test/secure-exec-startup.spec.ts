@@ -12,10 +12,6 @@ const memoryFsModulePath = resolve(
   here,
   "../../../host/src/vfs/memory-fs.ts",
 );
-const privilegedProjectionModulePath = resolve(
-  here,
-  "../../../host/src/vfs/privileged-projection.ts",
-);
 const probePath = resolve(
   here,
   "../../../local-binaries/programs/wasm32/secure-exec-probe.wasm",
@@ -121,7 +117,6 @@ test("browser worker preserves postcommit secure-exec state", async ({
   const result = await page.evaluate(async ({
     browserKernelModuleUrl,
     memoryFsModuleUrl,
-    privilegedProjectionModuleUrl,
     probeBytes,
   }) => {
     const { BrowserKernel } = await import(
@@ -130,81 +125,34 @@ test("browser worker preserves postcommit secure-exec state", async ({
     const { MemoryFileSystem } = await import(
       /* @vite-ignore */ memoryFsModuleUrl
     );
-    const {
-      createReviewedPrivilegedProgramPolicy,
-      publishPrivilegedProgramProduct,
-    } = await import(/* @vite-ignore */ privilegedProjectionModuleUrl);
     const probe = Uint8Array.from(probeBytes);
-    const digest = Array.from(new Uint8Array(
-      await crypto.subtle.digest("SHA-256", probe),
-    )).map((byte) => byte.toString(16).padStart(2, "0")).join("");
-    const destinations = [
-      ["login", "/usr/bin/login"],
-      ["sudo-lite", "/usr/bin/sudo-lite"],
-      ["sudo", "/usr/bin/sudo"],
-    ] as const;
-
-    const sourceFs = MemoryFileSystem.create(
-      new SharedArrayBuffer(Math.max(8 * 1024 * 1024, probe.byteLength * 4)),
-    );
-    for (const [sourcePath] of destinations) {
-      sourceFs.createFileWithOwner(`/${sourcePath}`, 0o755, 1000, 1000, probe);
-    }
-    const bottleSha256 = "a".repeat(64);
-    const policy = createReviewedPrivilegedProgramPolicy(
-      destinations.map(([sourcePath, destinationPath]) => ({
-        schema: 1,
-        formula: `kandelo-test/${sourcePath}`,
-        bottleSha256,
-        sourcePath,
-        destinationPath,
-        uid: 0,
-        gid: 0,
-        mode: 0o4755,
-        mountPoint: "trusted-root-product",
-        artifactValidationSha256: digest,
-      })),
-    );
-    const privilegedProduct = await publishPrivilegedProgramProduct({
-      policy,
-      sources: destinations.map(([sourcePath]) => ({
-        formula: `kandelo-test/${sourcePath}`,
-        bottleSha256,
-        fs: sourceFs,
-        inventory: {
-          entries: [{ sourcePath, type: "file", size: probe.byteLength }],
-        },
-        guestPathForSource: (path: string) => `/${path}`,
-      })),
-      writableBottleFileSystems: [sourceFs],
-    });
-
-    const nosuidFs = MemoryFileSystem.create(
+    const imageFs = MemoryFileSystem.create(
       new SharedArrayBuffer(Math.max(4 * 1024 * 1024, probe.byteLength * 2)),
     );
-    nosuidFs.mkdir("/bin", 0o755);
-    nosuidFs.mkdir("/usr", 0o755);
-    nosuidFs.mkdir("/usr/bin", 0o755);
-    nosuidFs.createFileWithOwner(
+    imageFs.mkdir("/bin", 0o755);
+    imageFs.mkdir("/usr", 0o755);
+    imageFs.mkdir("/usr/bin", 0o755);
+    imageFs.createFileWithOwner(
       "/bin/secure-parent",
       0o4755,
       0,
       0,
       probe,
     );
-    nosuidFs.createFileWithOwner(
+    imageFs.createFileWithOwner(
       "/bin/secure-child",
       0o755,
       0,
       0,
       probe,
     );
-    const nosuidImage = await nosuidFs.saveImage();
+    imageFs.createFileWithOwner("/usr/bin/login", 0o4755, 0, 0, probe);
+    const image = await imageFs.saveImage();
 
     const run = async (
       vfsImage: Uint8Array,
       argv: string[],
-      trusted = false,
+      nosuid = false,
     ) => {
       let stdout = "";
       let stderr = "";
@@ -221,14 +169,19 @@ test("browser worker preserves postcommit secure-exec state", async ({
           hostDiagnostics.push(diagnostic);
         },
       });
-      if (trusted) {
-        await kernel.initFromPublishedPrivilegedProgramProduct({
-          vfsImage,
-          privilegedProduct,
-        });
-      } else {
-        await kernel.initFromImage({ vfsImage });
-      }
+      await kernel.initFromImage({
+        vfsImage,
+        ...(nosuid
+          ? {
+              rootfsMountSpec: [{
+                path: "/",
+                source: "image" as const,
+                readonly: false,
+                nosuid: true,
+              }],
+            }
+          : {}),
+      });
       try {
         const exitCode = await kernel.spawn(
           probe.buffer,
@@ -242,40 +195,39 @@ test("browser worker preserves postcommit secure-exec state", async ({
     };
 
     return {
-      trusted: await run(nosuidImage, [
+      writableImage: await run(image, [
         "secure-exec-probe", "launch", "/usr/bin/login",
         "startup-target", "1", "0",
-      ], true),
-      nosuid: await run(nosuidImage, [
+      ]),
+      nosuid: await run(image, [
         "secure-exec-probe", "launch", "/bin/secure-parent",
         "startup-target", "0", "0",
-      ]),
-      spawnPreserve: await run(nosuidImage, [
+      ], true),
+      spawnPreserve: await run(image, [
         "secure-exec-probe", "launch", "/usr/bin/login",
         "spawn-parent", "1", "0", "/bin/secure-child", "startup-target",
-      ], true),
-      spawnReset: await run(nosuidImage, [
+      ]),
+      spawnReset: await run(image, [
         "secure-exec-probe", "launch", "/usr/bin/login",
         "spawn-parent", "1", "1", "/bin/secure-child", "startup-target",
-      ], true),
-      stdioOpen: await run(nosuidImage, [
+      ]),
+      stdioOpen: await run(image, [
         "secure-exec-probe", "launch", "/usr/bin/login",
         "stdio-target", "1", "0",
-      ], true),
-      stdioClosed: await run(nosuidImage, [
+      ]),
+      stdioClosed: await run(image, [
         "secure-exec-probe", "launch", "/usr/bin/login",
         "stdio-target", "1", "7",
-      ], true),
+      ]),
     };
   }, {
     browserKernelModuleUrl: asViteUrl(browserKernelModulePath),
     memoryFsModuleUrl: asViteUrl(memoryFsModulePath),
-    privilegedProjectionModuleUrl: asViteUrl(privilegedProjectionModulePath),
     probeBytes: Array.from(readFileSync(probePath)),
   });
 
-  expect(result.trusted.exitCode, result.trusted.stderr).toBe(0);
-  expect(result.trusted.stdout).toBe(
+  expect(result.writableImage.exitCode, result.writableImage.stderr).toBe(0);
+  expect(result.writableImage.stdout).toBe(
     "secure=1 ctor_secure=1 untrusted_visible=0 ctor_visible=0\n",
   );
   expect(result.nosuid.exitCode, result.nosuid.stderr).toBe(0);

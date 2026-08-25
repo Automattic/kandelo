@@ -21,29 +21,17 @@ export function assertSourceRootfsShellMetadata(
     composition === null ||
     Array.isArray(composition)
   ) {
-    throw new Error(`${label} has no source-rootfs composition binding`);
+    throw new Error(`${label} has no package-rootfs shell composition binding`);
   }
   const record = composition as Record<string, unknown>;
-  // WHY: this marker grants the one CI lane that may omit a closed bottle
-  // mirror. Treat it as an exact authority token, not an extensible hint, so
-  // an added field cannot silently weaken the lane's validation contract.
   if (
     record.schema !== 1 ||
-    record.kind !== "source-rootfs" ||
+    record.kind !== "package-rootfs-shell" ||
     Object.keys(record).sort().join("\0") !== "kind\0schema"
   ) {
-    throw new Error(`${label} has an invalid source-rootfs composition binding`);
-  }
-  for (const claim of [
-    "packageDeferredTrees",
-    "homebrewBootstrap",
-    "homebrew",
-  ] as const) {
-    if (metadata[claim] !== undefined) {
-      throw new Error(
-        `${label} mixes source-rootfs composition with ${claim}`,
-      );
-    }
+    throw new Error(
+      `${label} has an invalid package-rootfs shell composition binding`,
+    );
   }
 }
 

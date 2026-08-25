@@ -19,6 +19,7 @@
 
 # ── Top-level system directories ───────────────────────────────────
 /etc             d  0755  0  0
+/etc/kandelo     d  0755  0  0
 /tmp             d  1777  0  0
 /home            d  0755  0  0
 /root            d  0700  0  0
@@ -55,6 +56,7 @@
 /etc/motd          f  0644  0  0
 /etc/motd.autologin f 0644  0  0
 /etc/sudoers       f  0440  0  0
+/etc/kandelo/experimental-terminal-session.json f 0644 0 0
 # The rootfs file is the authoritative services database. Rootfs-derived
 # images inherit it rather than rebuilding or synthesizing a second table.
 /etc/services      f  0644  0  0

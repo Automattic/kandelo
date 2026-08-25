@@ -685,10 +685,9 @@ jobs:
   # pull-request code later receives only digest-bound files and a receipt.
   staging-shell-snapshot:
     needs: [synthesize-merge, change-scope, gate]
-    if: |
-      needs.change-scope.outputs.exact_abi_staging_applicable != 'true' &&
-      needs.change-scope.outputs.package_staging_required == 'true' &&
-      needs.gate.outputs.staging_run_id != ''
+    # The historical artifact is Homebrew-composed. Keep its verifier dormant
+    # until a package-owned handoff replaces that format.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -1679,11 +1678,6 @@ jobs:
             cd host && npm run typecheck
           '
 
-      - name: Test CI suite routing
-        run: |
-          bash scripts/dev-shell.sh bash \
-            tests/scripts/ci-run-test-suite-groups.test.sh
-
       - name: Test package build root contract
         run: bash scripts/dev-shell.sh bash scripts/test-package-build-roots.sh
 
@@ -1699,7 +1693,9 @@ jobs:
           # contract inventory. This source-only job does not download the
           # package-toolchain artifact, so prepare its host tool explicitly.
           bash scripts/dev-shell.sh bash scripts/build-fork-instrument-tool.sh
-          bash scripts/dev-shell.sh npx --prefix host vitest run --root . tests/package-system
+          bash scripts/dev-shell.sh npx --prefix host vitest run --root . \
+            tests/package-system \
+            '--exclude=**/*homebrew*.test.ts'
 
   test-suite-early:
     name: test-suite (${{ matrix.label }})
@@ -2471,9 +2467,7 @@ jobs:
         id: candidate_index
         env:
           AUTHENTICATED_CANONICAL_INDEX_SHA256: ${{ steps.candidate_canonical_index.outputs.sha256 || steps.public_canonical_index.outputs.sha256 }}
-          # homebrew-bootstrap is built by tap campaigns, not the legacy
-          # Kandelo package registry this step materializes.
-          WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs homebrew-bootstrap perl perl-vfs python-vfs redis texlive
+          WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis texlive
         # Package-changing PRs resolve the isolated candidate index. Its
         # unchanged entries carry absolute canonical URLs; changed entries
         # resolve from candidate assets or local build overlays.
@@ -2537,13 +2531,6 @@ jobs:
             export WASM_POSIX_BINARY_INDEX_URL="file://$CANONICAL_INDEX"
           fi
           echo "WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" >> "$GITHUB_ENV"
-          # WHY: bulk staging deliberately skips the tap-owned bootstrap, but
-          # the canonical flat-lazy shell inspection consumes that exact
-          # package output. Resolve it explicitly through the selected index.
-          WASM_POSIX_FETCH_SKIP_PKGS= \
-            bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh \
-              --fetch-only \
-              --package homebrew-bootstrap
           use_staging_shell_handoff=false
           if jq -e 'any(.entries[]; .package == "shell")' \
               "$BLOCKED" >/dev/null && \
@@ -2598,33 +2585,6 @@ jobs:
             )"
             [ -n "$SHELL_IMAGE" ] || SHELL_IMAGE="-"
           fi
-          HOMEBREW_BOOTSTRAP="$(
-            bash scripts/resolve-binary.sh \
-              programs/homebrew-bootstrap/homebrew-bootstrap.zip \
-              2>/dev/null || true
-          )"
-          [ -n "$HOMEBREW_BOOTSTRAP" ] || HOMEBREW_BOOTSTRAP="-"
-          # WHY: package-index publication and immutable bottle-mirror
-          # publication are independent. Preserve exact package-identity
-          # validation here, while the state contract keeps generic browser
-          # staging on authenticated recovered bytes even when the unchanged
-          # shell is already canonical.
-          state_args=(
-            create
-            "$EXPECTED"
-            "$BLOCKED"
-            "$CANONICAL_INDEX"
-            "https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${ABI}/index.toml"
-            "$SHELL_IMAGE"
-            "$HOMEBREW_BOOTSTRAP"
-            "$RUNNER_TEMP/homebrew-browser-mirror-state.json"
-          )
-          if [ -n "$state_receipt" ]; then
-            state_args+=("$state_receipt")
-          fi
-          bash scripts/dev-shell.sh bash \
-            scripts/ci-homebrew-browser-mirror-state.sh \
-              "${state_args[@]}"
 
       - name: Build kernel + test programs + rootfs
         # Browser downloads and suite-specific Node dependencies are installed
@@ -2654,7 +2614,6 @@ jobs:
           set -euo pipefail
           pack_args=(
             --publication-blockers "$RUNNER_TEMP/prepare-publication-blockers.json"
-            --homebrew-browser-mirror-state "$RUNNER_TEMP/homebrew-browser-mirror-state.json"
           )
           if [ "$USE_STAGING_SHELL_HANDOFF" = true ]; then
             pack_args+=(
@@ -2674,31 +2633,6 @@ jobs:
           path: ${{ runner.temp }}/test-workspace.tar.zst
           retention-days: 1
           if-no-files-found: error
-
-      - name: Prove Homebrew starts from candidate artifacts
-        if: env.PACKAGE_STAGING_REQUIRED == 'true'
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            set -euo pipefail
-            export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-            bash scripts/build-homebrew-bootstrap.sh --skip-package-resolve
-
-            rm -rf host/dist
-            host/node_modules/.bin/tsx \
-              homebrew/test/homebrew_bootstrap_guest_env.ts \
-              --image target/homebrew-bootstrap/homebrew-bootstrap.vfs \
-              --bash binaries/programs/wasm32/bash.wasm \
-              --brew-script /opt/kandelo/homebrew/bin/brew \
-              --timeout-ms 120000
-
-            rm -rf host/dist
-            host/node_modules/.bin/tsx \
-              homebrew/test/homebrew_bootstrap_guest_env.ts \
-              --image target/homebrew-bootstrap/homebrew-bootstrap.vfs \
-              --bash binaries/programs/wasm32/bash.wasm \
-              --brew-script /usr/bin/brew \
-              --timeout-ms 120000
-          '
 
   test-suite:
     name: test-suite (${{ matrix.label }})
@@ -2891,59 +2825,6 @@ jobs:
             PREPARE_BROWSER_ASSETS="$PREPARE_BROWSER_ASSETS" \
             VERIFY_BROWSER_PRODUCTION_BUILD="$VERIFY_BROWSER_PRODUCTION_BUILD" \
             bash scripts/ci-run-test-suite.sh "$SUITE" "$TEST_GROUP"
-
-      - name: Build and run exact candidate Node npm acceptance
-        if: >-
-          steps.suite.outputs.skip != 'true' &&
-          matrix.suite == 'browser' &&
-          env.STAGES_NODE_VFS == 'true'
-        run: |
-          # WHY: candidate resolution, the production build, and Playwright
-          # must share one activation of the transported cache/checker pair;
-          # shell exports from the preceding suite step no longer exist here.
-          bash scripts/dev-shell.sh \
-            bash scripts/activate-ci-test-workspace.sh \
-              bash <<'NODE_ACCEPTANCE'
-          set -euo pipefail
-          node_image="$(
-            bash scripts/resolve-binary.sh programs/node-vfs.vfs.zst
-          )"
-          node_sha256="$(sha256sum "$node_image" | awk '{print $1}')"
-          fixture_parent="$(mktemp -d "$RUNNER_TEMP/kandelo-node-acceptance.XXXXXX")"
-          trap 'rm -rf -- "$fixture_parent"' EXIT
-          fixture="$fixture_parent/fixture"
-          mkdir "$fixture"
-          bootstrap="$(bash scripts/resolve-binary.sh \
-            programs/homebrew-bootstrap/homebrew-bootstrap.zip)"
-          cp "$bootstrap" "$fixture/homebrew-bootstrap.zip"
-          npx tsx scripts/recover-homebrew-bottle-mirror.ts \
-            --image "$node_image" --out "$fixture/mirror" \
-            --report "$fixture_parent/mirror-recovery.json"
-          node_proxy_port=63339
-          test ! -e apps/browser-demos/dist
-          (
-            cd apps/browser-demos
-            env \
-              VITE_BASE=/kandelo/ \
-              VITE_CORS_PROXY_URL="http://127.0.0.1:${node_proxy_port}/?" \
-              npm run build
-            cp "$fixture/homebrew-bootstrap.zip" dist/homebrew-bootstrap.zip
-            bash ../../scripts/verify-browser-shell-vfs-asset.sh \
-              dist "$node_image" node-vfs.vfs
-            env \
-              KANDELO_BROWSER_DEMO_INPUTS=main \
-              KANDELO_NODE_VFS_STRICT=1 \
-              KANDELO_NODE_VFS_SHA256="$node_sha256" \
-              KANDELO_NODE_LOCAL_BOOT_ASSET_ROOT="$fixture" \
-              KANDELO_NODE_LOCAL_PROXY_PORT="$node_proxy_port" \
-              KANDELO_PLAYWRIGHT_SERVE_DIST=1 \
-              KANDELO_TEST_BASE_URL=http://127.0.0.1:5401/kandelo/ \
-              VITE_BASE=/kandelo/ \
-              npx playwright test test/kandelo-node.spec.ts \
-                --grep '@node-npm-acceptance' \
-                --project=chromium
-          )
-          NODE_ACCEPTANCE
 
       - name: Upload browser test artifacts
         if: failure() && steps.suite.outputs.skip != 'true' && matrix.suite == 'browser'

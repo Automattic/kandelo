@@ -15,7 +15,10 @@ import { zipSync } from "fflate";
 import { afterEach, describe, expect, it } from "vitest";
 import { ABI_VERSION } from "../../host/src/generated/abi";
 import { MemoryFileSystem } from "../../host/src/vfs/memory-fs";
-import { ensureDirRecursive } from "../../host/src/vfs/image-helpers";
+import {
+  ensureDirRecursive,
+  writeVfsBinary,
+} from "../../host/src/vfs/image-helpers";
 import type { ZipEntry } from "../../host/src/vfs/zip";
 import {
   buildSourceRootfsShellImage,
@@ -39,9 +42,9 @@ import {
   DOOM_WAD_URL,
 } from "../../web-libs/kandelo-session/src/demo-guides";
 import {
-  KANDELO_SHELL_CONFIG_PATH,
-  parseKandeloShellConfig,
-} from "../../web-libs/kandelo-session/src/shell-config";
+  EXPERIMENTAL_TERMINAL_SESSION_PATH,
+  parseExperimentalTerminalSession,
+} from "../../web-libs/kandelo-session/src/experimental-terminal-session";
 import { shouldReuseExistingPlaywrightServer } from "../../apps/browser-demos/playwright-server-policy";
 import {
   readSourceRootfsShellDependencyContract,
@@ -96,7 +99,11 @@ function tempRoot(): string {
   return root;
 }
 
-async function writeRootfs(path: string, kernelAbi = ABI_VERSION) {
+async function writeRootfs(
+  path: string,
+  kernelAbi = ABI_VERSION,
+  terminalProgramPath = "/usr/bin/login",
+) {
   const maxByteLength = 16 * MiB;
   const fs = MemoryFileSystem.create(
     new SharedArrayBuffer(4 * MiB, { maxByteLength }),
@@ -109,7 +116,35 @@ async function writeRootfs(path: string, kernelAbi = ABI_VERSION) {
     0o755,
   );
   ensureDirRecursive(fs, "/bin");
+  ensureDirRecursive(fs, "/etc/kandelo");
   fs.symlink("/usr/bin/bash", "/bin/bash");
+  writeVfsBinary(
+    fs,
+    "/usr/bin/login",
+    new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]),
+    0o4755,
+  );
+  writeVfsBinary(
+    fs,
+    EXPERIMENTAL_TERMINAL_SESSION_PATH,
+    new TextEncoder().encode(JSON.stringify({
+      kind: "kandelo-experimental-terminal-session",
+      version: 1,
+      initial: {
+        path: terminalProgramPath,
+        argv: ["login", "-p", "-f", "maker"],
+        uid: 0,
+        gid: 0,
+      },
+      afterExit: {
+        path: "/usr/bin/login",
+        argv: ["login", "-p"],
+        uid: 0,
+        gid: 0,
+      },
+    })),
+    0o644,
+  );
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
     if (!ROOTFS_LAZY_IDS.has(spec.id)) continue;
     fs.registerLazyFile(
@@ -180,11 +215,10 @@ function fixturePaths(root: string) {
   const bashPath = join(root, "bash.wasm");
   const fbdoomPath = join(root, "fbdoom.wasm");
   const modesetPath = join(root, "modeset.wasm");
-  const shellConfigPath = join(
+  const demoConfigPath = join(
     repoRoot,
-    "packages/registry/shell/source-rootfs-shell-default.json",
+    "packages/registry/shell/source-rootfs-shell-demo.json",
   );
-  const demoConfigPath = join(repoRoot, "homebrew/main-shell-demo.json");
   const demoProfileOverlayPath = join(
     repoRoot,
     "packages/registry/shell/source-rootfs-shell-demo-profiles.json",
@@ -241,7 +275,6 @@ function fixturePaths(root: string) {
     bashPath,
     fbdoomPath,
     modesetPath,
-    shellConfigPath,
     demoConfigPath,
     demoProfileOverlayPath,
     dependencyRoots,
@@ -250,11 +283,11 @@ function fixturePaths(root: string) {
 }
 
 describe("canonical source-rootfs shell", () => {
-  it("classifies only the exact source-owned image metadata", () => {
+  it("classifies only the exact package-rootfs composition marker", () => {
     const sourceMetadata = {
       version: 1 as const,
       kernelAbi: ABI_VERSION,
-      shellComposition: { schema: 1, kind: "source-rootfs" },
+      shellComposition: { schema: 1, kind: "package-rootfs-shell" },
     };
 
     expect(() => assertSourceRootfsShellMetadata(sourceMetadata)).not.toThrow();
@@ -262,15 +295,12 @@ describe("canonical source-rootfs shell", () => {
       null,
       {
         ...sourceMetadata,
-        shellComposition: { schema: 2, kind: "source-rootfs" },
+        shellComposition: { schema: 2, kind: "package-rootfs-shell" },
       },
       {
         ...sourceMetadata,
-        shellComposition: { schema: 1, kind: "source-rootfs", extra: true },
+        shellComposition: { schema: 1, kind: "package-rootfs-shell", extra: true },
       },
-      { ...sourceMetadata, packageDeferredTrees: [] },
-      { ...sourceMetadata, homebrewBootstrap: {} },
-      { ...sourceMetadata, homebrew: {} },
     ]) {
       expect(() => assertSourceRootfsShellMetadata(invalid)).toThrow();
     }
@@ -279,11 +309,6 @@ describe("canonical source-rootfs shell", () => {
   it("owns its browser server for every exact-artifact proof", () => {
     expect(shouldReuseExistingPlaywrightServer({})).toBe(true);
     expect(shouldReuseExistingPlaywrightServer({ CI: "1" })).toBe(false);
-    expect(
-      shouldReuseExistingPlaywrightServer({
-        KANDELO_HOMEBREW_MAIN_SHELL_STRICT: "1",
-      }),
-    ).toBe(false);
     expect(
       shouldReuseExistingPlaywrightServer({
         KANDELO_SOURCE_ROOTFS_SHELL_STRICT: "1",
@@ -323,17 +348,16 @@ describe("canonical source-rootfs shell", () => {
       'name = "node"',
     ]);
     expect(buildToml).toMatch(/^commit\s*=\s*"UNPUBLISHED"$/m);
-    expect(buildToml).toMatch(/^revision\s*=\s*28$/m);
+    expect(buildToml).toMatch(/^revision\s*=\s*29$/m);
     expect(buildToml).not.toContain("[[git_inputs]]");
     for (const input of [
-      "packages/registry/shell/source-rootfs-shell-default.json",
-      "homebrew/main-shell-demo.json",
+      "packages/registry/shell/source-rootfs-shell-demo.json",
       "packages/registry/shell/source-rootfs-shell-demo-profiles.json",
       "images/vfs/scripts/build-source-rootfs-shell-image.ts",
-      "images/vfs/scripts/shell-vfs-build.ts",
+      "images/vfs/scripts/source-rootfs-shell-overlay.ts",
       "images/vfs/scripts/shell-lazy-archives.ts",
       "images/vfs/lib/init/shell-binaries.ts",
-      "web-libs/kandelo-session/src/shell-config.ts",
+      "web-libs/kandelo-session/src/experimental-terminal-session.ts",
       "web-libs/kandelo-session/src/demo-config.ts",
     ]) {
       expect(buildToml).toContain(`"${input}"`);
@@ -343,12 +367,12 @@ describe("canonical source-rootfs shell", () => {
       expect(wrapper).toContain(`WASM_POSIX_DEP_${name}_DIR`);
     }
     expect(wrapper).toContain("EXTENDED_DEPENDENCIES=(");
-    expect(composer).toContain("populateShellEnvironment(fs, {");
-    expect(composer).toContain("resolveArtifact: inputs.resolveArtifact");
+    expect(composer).toContain(
+      "populateSourceRootfsShellOverlay(fs, inputs.resolveArtifact)",
+    );
     for (const forbidden of [
       "WASM_POSIX_BUILD_GIT_",
       "prepare-build-tools.sh",
-      "build-homebrew-main-shell-closure.sh",
       "npm ci",
       "curl http",
       "wget http",
@@ -436,7 +460,7 @@ describe("canonical source-rootfs shell", () => {
       createdBy: "build-source-rootfs-shell-image",
       shellComposition: {
         schema: 1,
-        kind: "source-rootfs",
+        kind: "package-rootfs-shell",
       },
     });
     expect(() => assertSourceRootfsShellImage(firstOut)).not.toThrow();
@@ -496,14 +520,13 @@ describe("canonical source-rootfs shell", () => {
     });
     expect(fs.stat("/home/.nethack").mode & 0o777).toBe(0o777);
 
-    const shellBytes = readVfsFile(fs, KANDELO_SHELL_CONFIG_PATH);
-    expect(shellBytes).toEqual(
-      new Uint8Array(readFileSync(paths.shellConfigPath)),
+    const terminalSessionBytes = readVfsFile(
+      fs,
+      EXPERIMENTAL_TERMINAL_SESSION_PATH,
     );
-    expect(parseKandeloShellConfig(text(shellBytes))).toEqual({
-      version: 1,
-      path: "/bin/bash",
-      argv: ["bash", "-l", "-i"],
+    expect(parseExperimentalTerminalSession(text(terminalSessionBytes))).toMatchObject({
+      initial: { path: "/usr/bin/login", uid: 0, gid: 0 },
+      afterExit: { path: "/usr/bin/login", uid: 0, gid: 0 },
     });
     const demoBytes = readVfsFile(fs, KANDELO_DEMO_CONFIG_PATH);
     const demo = parseKandeloDemoConfig(text(demoBytes));
@@ -539,10 +562,12 @@ describe("canonical source-rootfs shell", () => {
     ]);
   });
 
-  it("treats structurally identical base and overlay profiles as one shared contract", () => {
+  it("treats structurally identical package-owned profiles as one shared contract", () => {
     const root = tempRoot();
-    const basePath = join(repoRoot, "homebrew/main-shell-demo.json");
-    const base = JSON.parse(readFileSync(basePath, "utf8"));
+    const packageDemoPath = join(
+      repoRoot,
+      "packages/registry/shell/source-rootfs-shell-demo.json",
+    );
     const overlay = JSON.parse(
       readFileSync(
         join(
@@ -552,6 +577,11 @@ describe("canonical source-rootfs shell", () => {
         "utf8",
       ),
     );
+    const base = JSON.parse(readFileSync(packageDemoPath, "utf8"));
+    base.profiles.doom = overlay.profiles.doom;
+    base.profiles.modeset = overlay.profiles.modeset;
+    const basePath = join(root, "base-with-owned-profiles.json");
+    writeFileSync(basePath, JSON.stringify(base));
     const reverseObjectKeys = (value: unknown): unknown => {
       if (Array.isArray(value)) return value.map(reverseObjectKeys);
       if (typeof value !== "object" || value === null) return value;
@@ -571,18 +601,25 @@ describe("canonical source-rootfs shell", () => {
       composeSourceRootfsDemoConfig(basePath, reorderedOverlayPath),
     );
 
-    // The base entries remain authoritative even when equivalent overlay JSON
-    // uses different formatting and object-key order.
+    // The base entries remain authoritative even when equivalent package
+    // overlay JSON uses different formatting and object-key order.
     expect(composed).toBe(`${JSON.stringify(base, null, 2)}\n`);
   });
 
   it("adds an image-owned overlay profile that is absent from the base", () => {
     const root = tempRoot();
-    const base = JSON.parse(
-      readFileSync(join(repoRoot, "homebrew/main-shell-demo.json"), "utf8"),
-    );
-    const expectedDoom = base.profiles.doom;
-    delete base.profiles.doom;
+    const base = JSON.parse(readFileSync(
+      join(repoRoot, "packages/registry/shell/source-rootfs-shell-demo.json"),
+      "utf8",
+    ));
+    const overlay = JSON.parse(readFileSync(
+      join(
+        repoRoot,
+        "packages/registry/shell/source-rootfs-shell-demo-profiles.json",
+      ),
+      "utf8",
+    ));
+    const expectedDoom = overlay.profiles.doom;
     const basePath = join(root, "base-without-doom.json");
     writeFileSync(basePath, JSON.stringify(base));
     const overlayPath = join(
@@ -596,7 +633,7 @@ describe("canonical source-rootfs shell", () => {
 
     expect(composed).not.toBeNull();
     expect(composed!.profiles?.doom).toEqual(expectedDoom);
-    expect(composed!.profiles?.modeset).toEqual(base.profiles.modeset);
+    expect(composed!.profiles?.modeset).toEqual(overlay.profiles.modeset);
     expect(composed!.profiles?.shell).toEqual(base.profiles.shell);
   });
 
@@ -640,13 +677,21 @@ describe("canonical source-rootfs shell", () => {
           "utf8",
         ),
       ) as SourceRootfsDemoOverlayFixture;
+      const base = JSON.parse(readFileSync(
+        join(repoRoot, "packages/registry/shell/source-rootfs-shell-demo.json"),
+        "utf8",
+      ));
+      base.profiles.doom = structuredClone(overlay.profiles.doom);
+      base.profiles.modeset = structuredClone(overlay.profiles.modeset);
+      const basePath = join(root, "base-with-owned-profiles.json");
+      writeFileSync(basePath, JSON.stringify(base));
       mutate(overlay);
       const overlayPath = join(root, "drifted-overlay.json");
       writeFileSync(overlayPath, JSON.stringify(overlay));
 
       expect(() =>
         composeSourceRootfsDemoConfig(
-          join(repoRoot, "homebrew/main-shell-demo.json"),
+          basePath,
           overlayPath,
         ),
       ).toThrow(
@@ -673,24 +718,14 @@ describe("canonical source-rootfs shell", () => {
     expect(existsSync(outFile)).toBe(false);
   });
 
-  it("rejects shell metadata that does not identify a rootfs executable", async () => {
+  it("rejects terminal metadata that does not identify a rootfs executable", async () => {
     const root = tempRoot();
     const paths = fixturePaths(root);
-    await writeRootfs(paths.rootfsPath);
-    const shellConfigPath = join(root, "missing-shell.json");
-    writeFileSync(
-      shellConfigPath,
-      JSON.stringify({
-        version: 1,
-        path: "/bin/missing",
-        argv: ["missing", "-i"],
-      }),
-    );
+    await writeRootfs(paths.rootfsPath, ABI_VERSION, "/bin/missing");
 
     await expect(
       buildSourceRootfsShellImage({
         ...paths,
-        shellConfigPath,
         outFile: join(root, "missing-shell.vfs.zst"),
         sourceDateEpoch: "0",
       }),
@@ -857,7 +892,6 @@ printf '%s\\n' "source-rootfs-shell" >"$out"
     expect(invocation).toContain(
       `--demo-profile-overlay ${join(repoRoot, "packages/registry/shell/source-rootfs-shell-demo-profiles.json")}`,
     );
-    expect(invocation).not.toContain("homebrew-tap");
   });
 });
 

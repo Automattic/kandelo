@@ -19,6 +19,7 @@ GLUE_DIR="$REPO_ROOT/libc/glue"
 POSIX_TEST="$REPO_ROOT/tests/posix/open-posix-testsuite"
 IFACE_DIR="$POSIX_TEST/conformance/interfaces"
 BUILD_DIR="$POSIX_TEST/build"
+RUNNER_FIXTURE_ROOT="$BUILD_DIR/runner-fixtures"
 
 # ── Expected failures ──────────────────────────────────────
 # Tests that fail due to Wasm limitations or unimplemented features.
@@ -147,12 +148,19 @@ build_test() {
     local test_name="$2"
     local src="$IFACE_DIR/$iface/${test_name}.c"
     local wasm="$BUILD_DIR/$iface/${test_name}.wasm"
+    local fixture_dir="$RUNNER_FIXTURE_ROOT/$iface/$test_name/work"
     mkdir -p "$BUILD_DIR/$iface"
 
     "$CC" "${CFLAGS[@]}" \
         "$src" "${LINK_FLAGS[@]}" \
         -o "$wasm" 2>/tmp/posix-test-build-err.txt
     instrument_wasm "$wasm"
+
+    # Launch every test from the guest VFS so argv[0] names a real executable.
+    # Tests that exec themselves must traverse the same isolated path as the
+    # initial launch instead of depending on an anonymous host byte snapshot.
+    mkdir -p "$fixture_dir"
+    install -m 0755 "$wasm" "$fixture_dir/${test_name}.wasm"
 }
 
 run_test() {
@@ -160,6 +168,9 @@ run_test() {
     local test_name="$2"
     local test_id="$iface/$test_name"
     local wasm="$BUILD_DIR/$iface/${test_name}.wasm"
+    local fixture_root="$RUNNER_FIXTURE_ROOT/$iface/$test_name"
+    local fixture_cwd="work"
+    local fixture_program="$fixture_cwd/${test_name}.wasm"
 
     local is_xfail=false
     if is_expected_fail "$test_id"; then
@@ -190,9 +201,9 @@ run_test() {
     set +e
     output=$(cd "$REPO_ROOT" && \
         KERNEL_CWD= \
-        KANDELO_RUNNER_FIXTURE_ROOT= \
-        KANDELO_RUNNER_FIXTURE_CWD= \
-        KANDELO_RUNNER_GUEST_PROGRAM= \
+        KANDELO_RUNNER_FIXTURE_ROOT="$fixture_root" \
+        KANDELO_RUNNER_FIXTURE_CWD="$fixture_cwd" \
+        KANDELO_RUNNER_GUEST_PROGRAM="$fixture_program" \
         KANDELO_RUNNER_VFS=isolated \
         timeout "$TEST_TIMEOUT" node --experimental-wasm-exnref \
             --import tsx/esm examples/run-example.ts "${wasm}" \

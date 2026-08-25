@@ -13,17 +13,16 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 test("assembled-site proof runs only with its sealed site root", () => {
   const ordinaryIgnore = playwrightTestIgnoreForEnvironment({});
-  assert.equal(ordinaryIgnore.length, 2);
   assert.equal(
-    ordinaryIgnore[0]?.test(
+    ordinaryIgnore.some((pattern) => pattern.test(
       "/checkout/apps/browser-demos/test/abi-staging-pages-assembled-site.spec.ts",
-    ),
+    )),
     true,
   );
   assert.equal(
-    ordinaryIgnore[0]?.test(
+    ordinaryIgnore.some((pattern) => pattern.test(
       "/checkout/apps/browser-demos/test/kandelo-merge-gate.spec.ts",
-    ),
+    )),
     false,
   );
   assert.equal(
@@ -67,15 +66,9 @@ test("product evidence runs only with both protected handoff paths", () => {
   );
 });
 
-test("exact Homebrew browser proofs never reuse another worktree's server", () => {
+test("exact product proofs never reuse another worktree's server", () => {
   assert.equal(shouldReuseExistingPlaywrightServer({}), true);
   assert.equal(shouldReuseExistingPlaywrightServer({ CI: "1" }), false);
-  assert.equal(
-    shouldReuseExistingPlaywrightServer({
-      KANDELO_HOMEBREW_MAIN_SHELL_STRICT: "1",
-    }),
-    false,
-  );
   assert.equal(
     shouldReuseExistingPlaywrightServer({
       KANDELO_CANONICAL_FLAT_SHELL_STRICT: "1",
@@ -96,14 +89,6 @@ test("exact Homebrew browser proofs never reuse another worktree's server", () =
   );
   assert.equal(
     shouldReuseExistingPlaywrightServer({
-      KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE: "1",
-    }),
-    false,
-  );
-  assert.equal(
-    shouldReuseExistingPlaywrightServer({
-      KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE: "0",
-      KANDELO_HOMEBREW_MAIN_SHELL_STRICT: "0",
       KANDELO_PLAYWRIGHT_SERVE_DIST: "0",
     }),
     true,

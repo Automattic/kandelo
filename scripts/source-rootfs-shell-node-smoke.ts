@@ -12,9 +12,9 @@ import {
   KANDELO_DEMO_CONFIG_PATH,
 } from "../web-libs/kandelo-session/src/demo-config";
 import {
-  KANDELO_SHELL_CONFIG_PATH,
-  parseKandeloShellConfig,
-} from "../web-libs/kandelo-session/src/shell-config";
+  EXPERIMENTAL_TERMINAL_SESSION_PATH,
+  parseExperimentalTerminalSession,
+} from "../web-libs/kandelo-session/src/experimental-terminal-session";
 import {
   MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
   assertVfsImageFitsProfile,
@@ -27,14 +27,14 @@ import {
 const {
   imagePath,
   kernelPath,
-  shellConfigPath,
+  terminalSessionConfigPath,
   demoConfigPath,
   demoProfileOverlayPath,
 } = parseArgs(process.argv.slice(2));
 for (const input of [
   imagePath,
   kernelPath,
-  shellConfigPath,
+  terminalSessionConfigPath,
   demoConfigPath,
   demoProfileOverlayPath,
 ]) {
@@ -66,21 +66,26 @@ if (metadata?.kernelAbi !== ABI_VERSION) {
 const fs = MemoryFileSystem.fromImagePreservingCapacity(imageBytes);
 // WHY: the acceptance assertions below trust deferred-tree metadata.
 await fs.verifyImportedLazyAtomicGroupSeals();
-const shellConfigBytes = readVfsFile(fs, KANDELO_SHELL_CONFIG_PATH);
-expectExactBytes(
-  shellConfigBytes,
-  new Uint8Array(readFileSync(shellConfigPath)),
-  KANDELO_SHELL_CONFIG_PATH,
+const terminalSessionConfigBytes = readVfsFile(
+  fs,
+  EXPERIMENTAL_TERMINAL_SESSION_PATH,
 );
-const shellConfig = parseKandeloShellConfig(
-  new TextDecoder("utf-8", { fatal: true }).decode(shellConfigBytes),
+expectExactBytes(
+  terminalSessionConfigBytes,
+  new Uint8Array(readFileSync(terminalSessionConfigPath)),
+  EXPERIMENTAL_TERMINAL_SESSION_PATH,
+);
+const terminalSession = parseExperimentalTerminalSession(
+  new TextDecoder("utf-8", { fatal: true }).decode(terminalSessionConfigBytes),
 );
 if (
-  shellConfig === null ||
-  shellConfig.path !== "/bin/bash" ||
-  shellConfig.argv.join("\0") !== ["bash", "-l", "-i"].join("\0")
+  terminalSession.initial.path !== "/usr/bin/login" ||
+  terminalSession.initial.argv.join("\0") !==
+    ["login", "-p", "-f", "maker"].join("\0") ||
+  terminalSession.afterExit?.path !== "/usr/bin/login" ||
+  terminalSession.afterExit.argv.join("\0") !== ["login", "-p"].join("\0")
 ) {
-  throw new Error("source-rootfs shell config does not select image-owned Bash");
+  throw new Error("source-rootfs shell does not preserve its login session contract");
 }
 expectExactBytes(
   readVfsFile(fs, KANDELO_DEMO_CONFIG_PATH),
@@ -104,7 +109,7 @@ if (!fs.isPathDeferred("/bin/grep")) {
   throw new Error("source-rootfs shell unexpectedly materialized unrelated grep bytes");
 }
 
-const shellBytes = readVfsFile(fs, shellConfig.path);
+const shellBytes = readVfsFile(fs, "/bin/bash");
 let stdout = "";
 let stderr = "";
 const lazyDownloads: LazyDownloadEvent[] = [];
@@ -132,7 +137,7 @@ try {
     "printf 'source-rootfs-shell-node-ok:%s\\n' \"$BASH_VERSION\"",
   ].join("\n");
   const exitCode = await withTimeout(
-    host.spawn(toArrayBuffer(shellBytes), [shellConfig.argv[0], "-c", command], {
+    host.spawn(toArrayBuffer(shellBytes), ["bash", "-c", command], {
       env: [
         "PATH=/usr/bin:/bin",
         "HOME=/home/maker",
@@ -173,7 +178,7 @@ try {
 function parseArgs(args: string[]): {
   imagePath: string;
   kernelPath: string;
-  shellConfigPath: string;
+  terminalSessionConfigPath: string;
   demoConfigPath: string;
   demoProfileOverlayPath: string;
 } {
@@ -181,7 +186,7 @@ function parseArgs(args: string[]): {
   const allowed = new Set([
     "--image",
     "--kernel",
-    "--shell-config",
+    "--experimental-terminal-session",
     "--demo-config",
     "--demo-profile-overlay",
   ]);
@@ -200,13 +205,13 @@ function parseArgs(args: string[]): {
   }
   const image = values.get("--image");
   const kernel = values.get("--kernel");
-  const shellConfig = values.get("--shell-config");
+  const terminalSessionConfig = values.get("--experimental-terminal-session");
   const demoConfig = values.get("--demo-config");
   const demoProfileOverlay = values.get("--demo-profile-overlay");
   if (
     !image ||
     !kernel ||
-    !shellConfig ||
+    !terminalSessionConfig ||
     !demoConfig ||
     !demoProfileOverlay
   ) {
@@ -215,7 +220,7 @@ function parseArgs(args: string[]): {
   return {
     imagePath: resolve(image),
     kernelPath: resolve(kernel),
-    shellConfigPath: resolve(shellConfig),
+    terminalSessionConfigPath: resolve(terminalSessionConfig),
     demoConfigPath: resolve(demoConfig),
     demoProfileOverlayPath: resolve(demoProfileOverlay),
   };
@@ -225,7 +230,7 @@ function usage(): never {
   throw new Error(
     "usage: npx tsx scripts/source-rootfs-shell-node-smoke.ts " +
       "--image <shell.vfs.zst> --kernel <kernel.wasm> " +
-      "--shell-config <shell.json> " +
+      "--experimental-terminal-session <experimental-terminal-session.json> " +
       "--demo-config <demo.json> --demo-profile-overlay <profiles.json>",
   );
 }

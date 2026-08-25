@@ -3,7 +3,7 @@
  * and a writable workspace for the browser Node demos.
  *
  * Layout produced:
- *   Shell VFS base         — fully materialized Homebrew shell and metadata
+ *   Shell VFS base         — package-built shell and image metadata
  *   /usr/bin/node          — exact resolved Node executable bytes
  *   /usr/local/lib/npm/...   — full npm dist (bin/npm-cli.js + lib + node_modules)
  *   /usr/bin/npm          — wrapper that runs npm through the node binary
@@ -33,7 +33,7 @@ import {
   resolveVfsArtifact,
   resolvePolicyBoundVfsWasmArtifact,
   saveShellDerivedVfsImage,
-} from "./shell-vfs-build";
+} from "./package-shell-vfs-build";
 import {
   NODE_BINARY_SPEC,
 } from "../lib/init/shell-binaries";
@@ -134,7 +134,7 @@ function populateNodeBinary(fs: MemoryFileSystem, node: Uint8Array): void {
     0o755,
   );
   for (const link of NODE_BINARY_SPEC.symlinks) {
-    // WHY: the minimal bottle-composed shell deliberately omits optional
+    // WHY: the minimal package shell deliberately omits optional
     // directory skeletons such as /usr/local/bin. This derived image owns the
     // Node aliases, so it must also own their parent directories.
     symlinkWithParentDirectories(fs, NODE_BINARY_SPEC.vfsPath, link);

@@ -3,6 +3,7 @@ import {
   CentralizedKernelWorker,
   createCentralizedKernelWorkerTestDouble,
 } from "../../../../host/src/kernel-worker";
+import { installBrowserSetImmediatePolyfill } from "../../../../host/src/browser-immediate-polyfill";
 import {
   ABI_SYSCALLS,
   CHANNEL_STATUS_COMPLETE,
@@ -24,6 +25,11 @@ import {
 import { OpfsFileSystem } from "../../../../host/src/vfs/opfs";
 import { BrowserTimeProvider } from "../../../../host/src/vfs/time";
 import { VirtualPlatformIO } from "../../../../host/src/vfs/vfs";
+
+// This fixture is its own browser worker entry point, so it must install the
+// same scheduler contract as the production browser kernel worker before it
+// constructs CentralizedKernelWorker.
+installBrowserSetImmediatePolyfill();
 
 const O_RDWR = 0x0002;
 const O_CREAT = 0x0040;

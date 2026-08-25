@@ -179,7 +179,7 @@ describe.skipIf(!hasBash)("bash shell", () => {
     expect(result.stdout.trim()).toBe("y");
   });
 
-  it("can restore and enumerate the builtins used by Homebrew", async () => {
+  it("can restore and enumerate dynamically enabled builtins", async () => {
     const result = await runCentralizedProgram({
       programPath: bashBinary,
       argv: [
@@ -208,14 +208,14 @@ describe.skipIf(!hasBash)("bash shell", () => {
           'test "$(type -t complete)" = builtin',
           'test "$(type -t unset)" = builtin',
           'test "$(type -t printf)" = builtin',
-          'printf "homebrew-builtins-ready\\n"',
+          'printf "shell-builtins-ready\\n"',
         ].join("\n"),
       ],
       env: bashEnv,
       timeout: 20_000,
     });
     expect(result.exitCode).toBe(0);
-    expect(result.stdout.trim()).toBe("homebrew-builtins-ready");
+    expect(result.stdout.trim()).toBe("shell-builtins-ready");
     expect(result.stderr).toBe("");
   });
 

@@ -5,13 +5,12 @@
  * per-environment resolvers — Node materialises scratch backends as host
  * directories under a session dir; the browser uses ephemeral memfs SABs.
  *
- * `readonly` is currently advisory: `VirtualPlatformIO` does not
- * enforce it on writes today (PR 5/5 will wire enforcement). The
- * resolver still propagates the flag so backends and routers can opt
- * in once the policy lands.
+ * `readonly` is currently advisory: `VirtualPlatformIO` does not enforce it
+ * on writes. The resolver still propagates the flag for backends and routers
+ * that choose to enforce it.
  */
 
-import type { MountConfig, MountSetIdCapability } from "./types";
+import type { MountConfig } from "./types";
 import { FILE_MODES, OPEN_FLAGS } from "../generated/abi";
 import { MemoryFileSystem } from "./memory-fs";
 import { restoreVerifiedVfsImage } from "./load-image";
@@ -27,10 +26,10 @@ export interface MountSpec {
    * `scratch` — empty writable backend (host dir on Node, memfs in browser).
    */
   source: "image" | "scratch";
-  /** Advisory until PR 5/5 enforces it on writes through `VirtualPlatformIO`. */
+  /** Advisory mount intent; the ordinary image-backed root remains writable. */
   readonly?: boolean;
-  /** Omitted mounts are nosuid; trusted requests still require backend proof. */
-  setIdCapability?: MountSetIdCapability;
+  /** Ignore set-ID mode bits. Omission preserves normal set-ID semantics. */
+  nosuid?: boolean;
   /** Directory mode for scratch mount roots. Mirrors MANIFEST for defaults. */
   mode?: number;
   /** Virtual owner for scratch mount roots. Defaults to root. */
@@ -42,19 +41,45 @@ export interface MountSpec {
 }
 
 /**
- * Canonical mount layout. Mirrors the top-level system directories
- * declared in `MANIFEST` (Task 3.3): `/` is the read-only rootfs image;
- * `/tmp`, `/var/*`, `/home/maker`, `/root`, `/srv` are scratch.
+ * Canonical mount layout. Mirrors the top-level system directories declared
+ * in `MANIFEST`: `/` is the writable rootfs image; `/tmp`, `/var/*`,
+ * `/home/maker`, `/root`, and `/srv` are scratch mounts.
  */
 export const DEFAULT_MOUNT_SPEC: MountSpec[] = [
-  { path: "/",          source: "image",   readonly: true  },
-  { path: "/tmp",       source: "scratch", mode: 0o1777, ephemeral: true },
-  { path: "/var/tmp",   source: "scratch", mode: 0o1777 },
-  { path: "/var/log",   source: "scratch", mode: 0o755 },
-  { path: "/var/run",   source: "scratch", mode: 0o755, ephemeral: true },
-  { path: "/home/maker", source: "scratch", mode: 0o755, uid: 1000, gid: 1000 },
-  { path: "/root",      source: "scratch", mode: 0o700, uid: 0, gid: 0 },
-  { path: "/srv",       source: "scratch", mode: 0o755 },
+  { path: "/", source: "image", readonly: false },
+  {
+    path: "/tmp",
+    source: "scratch",
+    mode: 0o1777,
+    ephemeral: true,
+    nosuid: true,
+  },
+  { path: "/var/tmp", source: "scratch", mode: 0o1777, nosuid: true },
+  { path: "/var/log", source: "scratch", mode: 0o755, nosuid: true },
+  {
+    path: "/var/run",
+    source: "scratch",
+    mode: 0o755,
+    ephemeral: true,
+    nosuid: true,
+  },
+  {
+    path: "/home/maker",
+    source: "scratch",
+    mode: 0o755,
+    uid: 1000,
+    gid: 1000,
+    nosuid: true,
+  },
+  {
+    path: "/root",
+    source: "scratch",
+    mode: 0o700,
+    uid: 0,
+    gid: 0,
+    nosuid: true,
+  },
+  { path: "/srv", source: "scratch", mode: 0o755, nosuid: true },
 ];
 
 /** Default growth ceiling for the rootfs image-backed memfs (1 GiB). */
@@ -261,7 +286,7 @@ async function resolveValidatedForBrowser(
         mountPoint: m.path,
         backend,
         readonly: m.readonly,
-        setIdCapability: m.setIdCapability,
+        nosuid: m.nosuid,
       });
     } else {
       const bytes = options.scratchSabBytes?.[m.path] ?? BROWSER_SCRATCH_SAB_BYTES;
@@ -275,7 +300,7 @@ async function resolveValidatedForBrowser(
         mountPoint: m.path,
         backend,
         readonly: m.readonly,
-        setIdCapability: m.setIdCapability,
+        nosuid: m.nosuid,
       });
     }
   }

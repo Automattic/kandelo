@@ -1,0 +1,16 @@
+{
+  "kind": "kandelo-experimental-terminal-session",
+  "version": 1,
+  "initial": {
+    "path": "/usr/bin/login",
+    "argv": ["login", "-p", "-f", "maker"],
+    "uid": 0,
+    "gid": 0
+  },
+  "afterExit": {
+    "path": "/usr/bin/login",
+    "argv": ["login", "-p"],
+    "uid": 0,
+    "gid": 0
+  }
+}

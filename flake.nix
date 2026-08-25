@@ -45,6 +45,10 @@
         };
         devShellPackages = [
             rustToolchain
+            # The wrapper supplies host `cc`, `c++`, `ar`, and linker tools
+            # with the pinned Darwin/Linux SDK flags. llvmTree below carries
+            # the complete unwrapped LLVM layout used by the Kandelo SDK.
+            llvmPkg.clang
             llvmTree
             # Node 24, not 22: the host code constructs
             # WebAssembly.Memory with address: "i64" + BigInt
@@ -70,6 +74,18 @@
             pkgs.pkg-config
             pkgs.gnumake
             pkgs.bash
+            # Package recipes are executed with exactly this declared PATH.
+            # Keep the ordinary build-script utilities explicit so Darwin's
+            # /usr/bin and Homebrew cannot become undeclared fallbacks.
+            pkgs.coreutils
+            pkgs.findutils
+            pkgs.gnused
+            pkgs.gnugrep
+            pkgs.gawk
+            pkgs.diffutils
+            pkgs.gzip
+            pkgs.file
+            pkgs.m4
             # GNU tar is a declared publisher input. Kandelo's temporary
             # Homebrew overlay uses Homebrew's upstream reproducible tar flags
             # for bottles that retain an embedded installation receipt.
@@ -191,6 +207,11 @@
             # cross-build under packages/registry/sqlite/ — that's the
             # target binary, this is the host CLI used by tests.
             pkgs.sqlite
+        ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+            # Mozilla's host configure invokes xcrun directly on Darwin to
+            # discover the macOS SDK. Use nixpkgs' implementation so exact
+            # package-build PATHs do not fall back to /usr/bin or Homebrew.
+            pkgs.xcbuild
         ];
       in {
         devShells.default = pkgs.mkShell {

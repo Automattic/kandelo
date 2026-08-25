@@ -16,10 +16,6 @@ const browserKernelModulePath = resolve(
   "host/src/browser-kernel-host.ts",
 );
 const memoryFsModulePath = resolve(repoRoot, "host/src/vfs/memory-fs.ts");
-const privilegedProjectionModulePath = resolve(
-  repoRoot,
-  "host/src/vfs/privileged-projection.ts",
-);
 const shellWasm = resolve(repoRoot, "local-binaries/programs/wasm32/sh.wasm");
 const loginWasm = resolve(
   repoRoot,
@@ -70,7 +66,6 @@ test("browser login and sudo-lite enforce real guest authentication", async ({
     async ({
       browserKernelModuleUrl,
       memoryFsModuleUrl,
-      privilegedProjectionModuleUrl,
       kernelWasmUrl,
       shellWasmUrl,
       loginWasmUrl,
@@ -86,10 +81,6 @@ test("browser login and sudo-lite enforce real guest authentication", async ({
       const { MemoryFileSystem } = await import(
         /* @vite-ignore */ memoryFsModuleUrl
       );
-      const {
-        createReviewedPrivilegedProgramPolicy,
-        publishPrivilegedProgramProduct,
-      } = await import(/* @vite-ignore */ privilegedProjectionModuleUrl);
       const fetchBytes = async (url: string): Promise<Uint8Array> => {
         const response = await fetch(url);
         if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
@@ -102,83 +93,6 @@ test("browser login and sudo-lite enforce real guest authentication", async ({
         fetchBytes(sudoWasmUrl),
         fetchBytes(credentialsWasmUrl),
       ]);
-      const sha256 = async (bytes: Uint8Array): Promise<string> =>
-        Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)))
-          .map((byte) => byte.toString(16).padStart(2, "0"))
-          .join("");
-      const [loginDigest, sudoDigest] = await Promise.all([
-        sha256(login),
-        sha256(sudo),
-      ]);
-
-      // Test fixture bytes use the same closed publication API as bottles.
-      // No fixture is installed in a product resolver or Homebrew path.
-      const sourceFs = MemoryFileSystem.create(
-        new SharedArrayBuffer(16 * 1024 * 1024),
-      );
-      sourceFs.createFileWithOwner("/login", 0o755, 1000, 1000, login);
-      sourceFs.createFileWithOwner("/sudo-lite", 0o755, 1000, 1000, sudo);
-      sourceFs.createFileWithOwner("/sudo", 0o755, 1000, 1000, sudo);
-      const sourceRecords = [
-        {
-          formula: "kandelo-test/login",
-          bottleSha256: "a".repeat(64),
-          sourcePath: "login",
-          destinationPath: "/usr/bin/login",
-          digest: loginDigest,
-          size: login.byteLength,
-        },
-        {
-          formula: "kandelo-test/sudo-lite",
-          bottleSha256: "b".repeat(64),
-          sourcePath: "sudo-lite",
-          destinationPath: "/usr/bin/sudo-lite",
-          digest: sudoDigest,
-          size: sudo.byteLength,
-        },
-        {
-          formula: "kandelo-test/sudo",
-          bottleSha256: "c".repeat(64),
-          sourcePath: "sudo",
-          destinationPath: "/usr/bin/sudo",
-          digest: sudoDigest,
-          size: sudo.byteLength,
-        },
-      ];
-      const policy = createReviewedPrivilegedProgramPolicy(
-        sourceRecords.map((record) => ({
-          schema: 1,
-          formula: record.formula,
-          bottleSha256: record.bottleSha256,
-          sourcePath: record.sourcePath,
-          destinationPath: record.destinationPath,
-          uid: 0,
-          gid: 0,
-          mode: 0o4755,
-          mountPoint: "trusted-root-product",
-          artifactValidationSha256: record.digest,
-        })),
-      );
-      const privilegedProduct = await publishPrivilegedProgramProduct({
-        policy,
-        sources: sourceRecords.map((record) => ({
-          formula: record.formula,
-          bottleSha256: record.bottleSha256,
-          fs: sourceFs,
-          inventory: {
-            entries: [
-              {
-                sourcePath: record.sourcePath,
-                type: "file" as const,
-                size: record.size,
-              },
-            ],
-          },
-          guestPathForSource: (path: string) => `/${path}`,
-        })),
-        writableBottleFileSystems: [sourceFs],
-      });
-
       const fs = MemoryFileSystem.create(
         new SharedArrayBuffer(16 * 1024 * 1024),
       );
@@ -258,6 +172,9 @@ test("browser login and sudo-lite enforce real guest authentication", async ({
         0,
         credentials,
       );
+      fs.createFileWithOwner("/usr/bin/login", 0o4755, 0, 0, login);
+      fs.createFileWithOwner("/usr/bin/sudo-lite", 0o4755, 0, 0, sudo);
+      fs.createFileWithOwner("/usr/bin/sudo", 0o4755, 0, 0, sudo);
       const image = await fs.saveImage();
       const kernelWasm = kernelBytes.buffer.slice(
         kernelBytes.byteOffset,
@@ -286,10 +203,9 @@ test("browser login and sudo-lite enforce real guest authentication", async ({
           },
         });
         try {
-          await kernel.initFromPublishedPrivilegedProgramProduct({
+          await kernel.initFromImage({
             kernelWasm,
             vfsImage: image,
-            privilegedProduct,
           });
           const exitCode = await Promise.race([
             kernel.spawn(
@@ -357,9 +273,6 @@ test("browser login and sudo-lite enforce real guest authentication", async ({
     {
       browserKernelModuleUrl: asViteFsUrl(browserKernelModulePath),
       memoryFsModuleUrl: asViteFsUrl(memoryFsModulePath),
-      privilegedProjectionModuleUrl: asViteFsUrl(
-        privilegedProjectionModulePath,
-      ),
       kernelWasmUrl: asViteFsUrl(resolveBinary("kernel.wasm")),
       shellWasmUrl: asViteFsUrl(shellWasm),
       loginWasmUrl: asViteFsUrl(loginWasm),

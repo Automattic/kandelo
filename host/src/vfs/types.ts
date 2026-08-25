@@ -98,5 +98,8 @@ export interface MountConfig {
   mountPoint: string;
   backend: FileSystemBackend;
   readonly?: boolean;
+  /** Ignore set-user-ID and set-group-ID mode bits on this mount. */
+  nosuid?: boolean;
+  /** @deprecated Private product authority is not used by the VFS router. */
   setIdCapability?: MountSetIdCapability;
 }

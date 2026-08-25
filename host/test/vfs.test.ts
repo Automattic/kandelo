@@ -179,17 +179,14 @@ function createMockBackend(
 // ---------------------------------------------------------------------------
 
 describe("VirtualPlatformIO mount resolution", () => {
-  it("reports omitted mount capabilities as ST_NOSUID", () => {
+  it("honors set-ID mode bits when nosuid is omitted", () => {
     const root = createMockBackend();
     const vfs = new VirtualPlatformIO(
       [{ mountPoint: "/", backend: root }],
       new NodeTimeProvider(),
     );
 
-    expect(vfs.statfs("/bin/tool").flags & ST_NOSUID).toBe(ST_NOSUID);
-    expect(vfs.getMountSetIdCapability("/bin/tool")).toEqual({
-      kind: "nosuid",
-    });
+    expect(vfs.statfs("/bin/tool").flags & ST_NOSUID).toBe(0);
   });
 
   it("routes root-level paths to the / mount", () => {

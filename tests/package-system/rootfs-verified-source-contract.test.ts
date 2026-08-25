@@ -226,7 +226,7 @@ describe("source-rootfs verified archive contract", () => {
     expect(builder).toContain("--stage-resolver-binaries");
     expect(builder).toContain("node_modules/tsx/dist/cli.mjs");
     expect(buildToml).toContain('"package-lock.json"');
-    expect(buildToml).toMatch(/^revision\s*=\s*10$/m);
+    expect(buildToml).toMatch(/^revision\s*=\s*11$/m);
     expect(buildToml).toMatch(/^commit\s*=\s*"UNPUBLISHED"$/m);
   });
 });

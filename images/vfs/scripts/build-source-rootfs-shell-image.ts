@@ -1,7 +1,4 @@
-/**
- * Compose the canonical browser shell from resolver-owned source package
- * outputs. The preserved Homebrew bridge keeps independent authority files.
- */
+/** Compose the canonical browser shell from resolver-owned package outputs. */
 import { lstatSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -17,11 +14,12 @@ import {
   type KandeloDemoConfig,
 } from "../../../web-libs/kandelo-session/src/demo-config";
 import {
-  KANDELO_SHELL_CONFIG_PATH,
-  MAX_KANDELO_SHELL_CONFIG_BYTES,
-  parseKandeloShellConfig,
-  type KandeloShellConfig,
-} from "../../../web-libs/kandelo-session/src/shell-config";
+  EXPERIMENTAL_TERMINAL_SESSION_PATH,
+  MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES,
+  parseExperimentalTerminalSession,
+  type ExperimentalTerminalProgram,
+  type ExperimentalTerminalSession,
+} from "../../../web-libs/kandelo-session/src/experimental-terminal-session";
 import {
   ensureDirRecursive,
   saveImage,
@@ -34,9 +32,9 @@ import {
   type ShellLazyArchiveResolver,
 } from "./shell-lazy-archives";
 import {
-  populateShellEnvironment,
-  SOURCE_ROOTFS_SHELL_COMPOSITION,
-} from "./shell-vfs-build";
+  populateSourceRootfsShellOverlay,
+  PACKAGE_ROOTFS_SHELL_COMPOSITION,
+} from "./source-rootfs-shell-overlay";
 
 const REGULAR_FILE_MODE = 0o100000;
 const SYMBOLIC_LINK_MODE = 0o120000;
@@ -48,7 +46,6 @@ export interface SourceRootfsShellInputs {
   bashPath: string;
   fbdoomPath: string;
   modesetPath: string;
-  shellConfigPath: string;
   demoConfigPath: string;
   demoProfileOverlayPath: string;
   outFile: string;
@@ -124,23 +121,6 @@ function decodeUtf8(bytes: Uint8Array, label: string): string {
   }
 }
 
-function loadShellConfig(path: string): {
-  bytes: Uint8Array;
-  config: KandeloShellConfig;
-} {
-  const bytes = readRegularInput(path, "shell config");
-  if (bytes.byteLength > MAX_KANDELO_SHELL_CONFIG_BYTES) {
-    throw new Error(
-      `shell config exceeds ${MAX_KANDELO_SHELL_CONFIG_BYTES} bytes`,
-    );
-  }
-  const config = parseKandeloShellConfig(decodeUtf8(bytes, "shell config"));
-  if (config === null) {
-    throw new Error("shell config has an unsupported version");
-  }
-  return { bytes, config };
-}
-
 function loadDemoConfig(path: string, label: string): KandeloDemoConfig {
   const bytes = readRegularInput(path, "demo config");
   if (bytes.byteLength > MAX_KANDELO_DEMO_CONFIG_BYTES) {
@@ -204,10 +184,9 @@ export function composeSourceRootfsDemoConfig(
   const composedProfiles = { ...baseProfiles };
   for (const profileId of Object.keys(overlayProfiles)) {
     if (Object.hasOwn(baseProfiles, profileId)) {
-      // WHY: the canonical bottle-backed config now carries these profiles,
-      // while the temporary source bridge still repeats them as an ownership
-      // assertion. Accept only an exact structural match so the overlay can
-      // neither override nor silently drift from the shared product contract.
+      // WHY: a package-owned base may already carry these profiles. Accept
+      // only an exact structural match so the overlay can neither override nor
+      // silently drift from the shared product contract.
       if (
         !isDeepStrictEqual(baseProfiles[profileId], overlayProfiles[profileId])
       ) {
@@ -274,24 +253,53 @@ function requireOwnedDemoCommands(
 
 function requireImageExecutable(
   fs: MemoryFileSystem,
-  config: KandeloShellConfig,
+  config: ExperimentalTerminalProgram,
 ): void {
   const stat = (() => {
     try {
       return fs.stat(config.path);
     } catch (error) {
       throw new Error(
-        `configured shell does not exist in the source rootfs: ${config.path}`,
+        `configured terminal program does not exist in the image: ${config.path}`,
         { cause: error },
       );
     }
   })();
   if ((stat.mode & FILE_TYPE_MASK) !== REGULAR_FILE_MODE) {
-    throw new Error(`configured shell is not a regular file: ${config.path}`);
+    throw new Error(`configured terminal program is not a regular file: ${config.path}`);
   }
   if ((stat.mode & EXECUTE_BITS) === 0) {
-    throw new Error(`configured shell is not executable: ${config.path}`);
+    throw new Error(`configured terminal program is not executable: ${config.path}`);
   }
+}
+
+function readExperimentalTerminalSession(
+  fs: MemoryFileSystem,
+): ExperimentalTerminalSession {
+  let stat;
+  try {
+    stat = fs.lstat(EXPERIMENTAL_TERMINAL_SESSION_PATH);
+  } catch (error) {
+    throw new Error(
+      `source rootfs is missing ${EXPERIMENTAL_TERMINAL_SESSION_PATH}`,
+      { cause: error },
+    );
+  }
+  if ((stat.mode & FILE_TYPE_MASK) !== REGULAR_FILE_MODE) {
+    throw new Error(`${EXPERIMENTAL_TERMINAL_SESSION_PATH} must be a regular file`);
+  }
+  if (stat.size > MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES) {
+    throw new Error(
+      `${EXPERIMENTAL_TERMINAL_SESSION_PATH} exceeds ` +
+        `${MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES} bytes`,
+    );
+  }
+  return parseExperimentalTerminalSession(
+    decodeUtf8(
+      readVfsBytes(fs, EXPERIMENTAL_TERMINAL_SESSION_PATH),
+      EXPERIMENTAL_TERMINAL_SESSION_PATH,
+    ),
+  );
 }
 
 interface LazyIdentity {
@@ -480,16 +488,11 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
 
 function requireLazyBashIdentity(
   fs: MemoryFileSystem,
-  config: KandeloShellConfig,
 ): SourceBashIdentity {
-  if (config.path !== REQUIRED_BASH_ALIASES[0]) {
-    throw new Error(
-      `source-rootfs bridge requires ${REQUIRED_BASH_ALIASES[0]} as its shell`,
-    );
-  }
-  const lazy = fs.getLazyEntry(config.path);
+  const bashPath = REQUIRED_BASH_ALIASES[0];
+  const lazy = fs.getLazyEntry(bashPath);
   if (lazy === null) {
-    throw new Error(`${config.path} must be a lazy source-rootfs entry`);
+    throw new Error(`${bashPath} must be a lazy source-rootfs entry`);
   }
   const identity = { ino: lazy.ino, generation: lazy.generation };
   const hardlinkPaths = Array.from(
@@ -601,40 +604,35 @@ export async function buildSourceRootfsShellImage(
   // WHY: this builder exports and preserves lazy state from an imported image;
   // authenticate atomic seals before the source image gains that authority.
   await fs.verifyImportedLazyAtomicGroupSeals();
-  const shell = loadShellConfig(inputs.shellConfigPath);
+  const terminalSession = readExperimentalTerminalSession(fs);
   const demo = composeSourceRootfsDemoConfig(
     inputs.demoConfigPath,
     inputs.demoProfileOverlayPath,
   );
 
-  // WHY: the shell config is image-owned authority. Validate its executable
+  // WHY: the terminal document is image-owned policy. Validate its programs
   // against the unmodified source rootfs before overlays can accidentally make
-  // a missing base shell appear present.
-  requireImageExecutable(fs, shell.config);
-  const sourceBash = requireLazyBashIdentity(fs, shell.config);
+  // a missing executable appear present.
+  requireImageExecutable(fs, terminalSession.initial);
+  if (terminalSession.afterExit !== undefined) {
+    requireImageExecutable(fs, terminalSession.afterExit);
+  }
+  const sourceBash = requireLazyBashIdentity(fs);
   const unrelatedLazyBefore = lazyRecords(fs, sourceBash.identity);
 
   const bash = readRegularInput(inputs.bashPath, "bash dependency");
   const fbdoom = readRegularInput(inputs.fbdoomPath, "fbdoom dependency");
   const modeset = readRegularInput(inputs.modesetPath, "modeset dependency");
 
-  // WHY: every boot of this image starts Bash before an interactive user can
-  // request any other program. Opening the configured alias follows a symlink
-  // when present, truncating the one lazy inode while preserving both its
+  // WHY: Bash remains the ordinary account shell and is therefore eager after
+  // login. Opening its canonical alias follows a symlink when present,
+  // truncating the one lazy inode while preserving both its
   // hard-link ledger and the rootfs's symlink topology.
-  writeVfsBinary(fs, shell.config.path, bash, 0o755);
+  writeVfsBinary(fs, REQUIRED_BASH_ALIASES[0], bash, 0o755);
   requireMaterializedBashIdentity(fs, sourceBash, bash);
   requirePreservedLazyState(unrelatedLazyBefore, fs, "Bash materialization");
 
-  // WHY: the temporary source bridge must remain the same product shell, not
-  // a smaller test-only image. Reuse the shared overlay contract and supply a
-  // strict resolver so every extended utility and package-owned lazy archive
-  // comes from this package's declared dependency closure.
-  populateShellEnvironment(fs, {
-    eagerBinaries: false,
-    baseProvided: true,
-    resolveArtifact: inputs.resolveArtifact,
-  });
+  populateSourceRootfsShellOverlay(fs, inputs.resolveArtifact);
   requirePreservedLazyState(
     unrelatedLazyBefore,
     fs,
@@ -645,13 +643,11 @@ export async function buildSourceRootfsShellImage(
   ensureDirRecursive(fs, "/usr/local/bin");
   writeVfsBinary(fs, "/usr/local/bin/fbdoom", fbdoom, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/modeset", modeset, 0o755);
-  // WHY: the lean bottle shell must not promise optional programs it does not
-  // own, while this temporary source bridge really does install both programs.
+  // WHY: the package shell must not promise optional programs it does not own.
   // Bind its extra profiles to executable bytes so a metadata-only edit cannot
   // advertise a demo that boots successfully but never launches its workload.
   requireOwnedDemoCommands(fs, demo);
   ensureDirRecursive(fs, "/etc/kandelo");
-  writeVfsBinary(fs, KANDELO_SHELL_CONFIG_PATH, shell.bytes, 0o644);
   writeVfsBinary(fs, KANDELO_DEMO_CONFIG_PATH, demo, 0o644);
 
   // WHY: Bash is the one intentional eager identity. Every other source-rootfs
@@ -665,9 +661,7 @@ export async function buildSourceRootfsShellImage(
       version: 1,
       kernelAbi: ABI_VERSION,
       createdBy: "build-source-rootfs-shell-image",
-      // WHY: downstream products must distinguish this conventional source
-      // closure from a shell whose lazy trees carry Homebrew package authority.
-      shellComposition: SOURCE_ROOTFS_SHELL_COMPOSITION,
+      shellComposition: PACKAGE_ROOTFS_SHELL_COMPOSITION,
     },
     normalizeTimestampsMs: sourceDateEpochMilliseconds(
       inputs.sourceDateEpoch ?? process.env.SOURCE_DATE_EPOCH,
@@ -695,6 +689,7 @@ export async function buildSourceRootfsShellImage(
     "serialized source-rootfs shell",
   );
   requireCompleteProductShellContract(outputFs);
+  readExperimentalTerminalSession(outputFs);
   return image;
 }
 
@@ -705,7 +700,6 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     "--bash",
     "--fbdoom",
     "--modeset",
-    "--shell-config",
     "--demo-config",
     "--demo-profile-overlay",
     "--dependency-contract",
@@ -724,7 +718,7 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
       throw new Error(
         "usage: build-source-rootfs-shell-image.ts " +
           "--rootfs <rootfs.vfs> --bash <bash.wasm> --fbdoom <fbdoom.wasm> " +
-          "--modeset <modeset.wasm> --shell-config <shell.json> " +
+          "--modeset <modeset.wasm> " +
           "--demo-config <demo.json> --demo-profile-overlay <profiles.json> " +
           "--dependency-contract <dependencies.json> " +
           "--out <shell.vfs.zst>",
@@ -740,7 +734,6 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     bashPath: values.get("--bash")!,
     fbdoomPath: values.get("--fbdoom")!,
     modesetPath: values.get("--modeset")!,
-    shellConfigPath: values.get("--shell-config")!,
     demoConfigPath: values.get("--demo-config")!,
     demoProfileOverlayPath: values.get("--demo-profile-overlay")!,
     outFile: values.get("--out")!,

@@ -1,0 +1,22 @@
+kind = "program"
+name = "sudo-lite"
+version = "0.1.0"
+kernel_abi = 43
+depends_on = []
+arches = ["wasm32"]
+
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/sudo-lite/build-sudo-lite.sh"
+
+[[outputs]]
+name = "sudo-lite"
+wasm = "sudo-lite.wasm"

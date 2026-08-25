@@ -11,17 +11,15 @@ import {
   ST_NOSUID,
   type FileSystemBackend,
   type MountConfig,
-  type MountSetIdCapability,
   type TimeProvider,
 } from "./types";
-import { resolveMountSetIdCapability } from "./memory-fs";
 import { OPEN_FLAGS } from "../generated/abi";
 
 interface MountEntry {
   prefix: string;
   backend: FileSystemBackend;
   backendId: number;
-  setIdCapability: MountSetIdCapability;
+  nosuid: boolean;
 }
 
 interface HandleInfo {
@@ -90,7 +88,7 @@ export class VirtualPlatformIO implements PlatformIO {
           prefix: normalizeMountPoint(m.mountPoint),
           backend: m.backend,
           backendId,
-          setIdCapability: resolveMountSetIdCapability(m),
+          nosuid: m.nosuid === true,
         };
       })
       .sort((a, b) => b.prefix.length - a.prefix.length);
@@ -100,16 +98,15 @@ export class VirtualPlatformIO implements PlatformIO {
     }
   }
 
-  /** Effective set-ID policy for the mount that owns an absolute guest path. */
-  getMountSetIdCapability(path: string): MountSetIdCapability {
-    const { setIdCapability } = this.resolve(path);
-    return setIdCapability;
+  /** Whether the mount owning an absolute guest path ignores set-ID bits. */
+  getMountNosuid(path: string): boolean {
+    return this.resolve(path).nosuid;
   }
 
   private resolve(path: string): {
     backend: FileSystemBackend;
     backendId: number;
-    setIdCapability: MountSetIdCapability;
+    nosuid: boolean;
     relativePath: string;
   } {
     for (const m of this.mounts) {
@@ -117,7 +114,7 @@ export class VirtualPlatformIO implements PlatformIO {
         return {
           backend: m.backend,
           backendId: m.backendId,
-          setIdCapability: m.setIdCapability,
+          nosuid: m.nosuid,
           relativePath: path,
         };
       }
@@ -127,7 +124,7 @@ export class VirtualPlatformIO implements PlatformIO {
         return {
           backend: m.backend,
           backendId: m.backendId,
-          setIdCapability: m.setIdCapability,
+          nosuid: m.nosuid,
           relativePath: rel,
         };
       }
@@ -207,7 +204,7 @@ export class VirtualPlatformIO implements PlatformIO {
   }
 
   open(path: string, flags: number, mode: number): number {
-    const { backend, backendId, relativePath, setIdCapability } = this.resolve(path);
+    const { backend, backendId, relativePath, nosuid } = this.resolve(path);
     // O_CREAT may name a missing final component. Its already-resolved backend
     // and existing parent provide the filesystem metadata; the open below
     // remains the sole authority for validating and creating the final path.
@@ -217,7 +214,7 @@ export class VirtualPlatformIO implements PlatformIO {
     const backendStatfs = backend.statfs(statfsPath);
     const statfs = {
       ...backendStatfs,
-      flags: setIdCapability.kind === "nosuid"
+      flags: nosuid
         ? backendStatfs.flags | ST_NOSUID
         : backendStatfs.flags & ~ST_NOSUID,
     };
@@ -329,9 +326,9 @@ export class VirtualPlatformIO implements PlatformIO {
   }
 
   statfs(path: string): StatfsResult {
-    const { backend, relativePath, setIdCapability } = this.resolve(path);
+    const { backend, relativePath, nosuid } = this.resolve(path);
     const statfs = backend.statfs(relativePath);
-    const flags = setIdCapability.kind === "nosuid"
+    const flags = nosuid
       ? statfs.flags | ST_NOSUID
       : statfs.flags & ~ST_NOSUID;
     return { ...statfs, flags };

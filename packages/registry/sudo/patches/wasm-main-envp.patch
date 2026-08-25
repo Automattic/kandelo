@@ -1,0 +1,15 @@
+diff --git a/src/sudo.c b/src/sudo.c
+index 730f147..eb40775 100644
+--- a/src/sudo.c
++++ b/src/sudo.c
+@@ -132 +132 @@ static void approval_show_version(int verbose);
+-sudo_dso_public int main(int argc, char *argv[], char *envp[]);
++sudo_dso_public int main(int argc, char *argv[]);
+@@ -133,0 +134,2 @@ sudo_dso_public int main(int argc, char *argv[]);
++
++extern char **environ;
+@@ -139 +141 @@ static int submit_optind;
+-main(int argc, char *argv[], char *envp[])
++main(int argc, char *argv[])
+@@ -140,0 +143 @@ main(int argc, char *argv[])
++    char **envp = environ;

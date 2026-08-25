@@ -8,9 +8,39 @@ builder = "images/vfs/scripts/build-lamp-vfs-image.sh"
 id = "browser-main-shell"
 materialization = "embedded"
 
-[[software.homebrew]]
-tap = "kandelo-dev/homebrew-tap-core"
-formulae = ["nginx", "php", "mariadb", "dinit", "msmtpd"]
+[[software.package]]
+name = "nginx"
+outputs = ["nginx"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "php"
+outputs = ["php", "php-fpm", "opcache"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "mariadb"
+outputs = ["mariadbd"]
+source_roles = ["system-tables"]
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "dinit"
+outputs = ["dinit", "dinitctl"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "msmtpd"
+outputs = ["msmtpd"]
+source_roles = []
+role = "runtime"
 materialization = "embedded"
 
 [[software.toolchain]]
@@ -40,7 +70,7 @@ gid = 0
 ephemeral = true
 
 [boot]
-argv = ["/opt/kandelo/homebrew/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"]
+argv = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"]
 cwd = "/root"
 uid = 0
 gid = 0

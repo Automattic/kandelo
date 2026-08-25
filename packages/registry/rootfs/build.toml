@@ -14,9 +14,6 @@ inputs = [
   "tools/mkrootfs/src",
   "host/src/file-offset.ts",
   "host/src/generated/abi.ts",
-  "host/src/homebrew-bottle-relocation.ts",
-  "host/src/homebrew-guest-layout.ts",
-  "homebrew/kandelo-guest-layout.json",
   "host/src/pathconf.ts",
   "host/src/statfs.ts",
   "host/src/types.ts",
@@ -32,7 +29,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 10
+revision    = 11
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

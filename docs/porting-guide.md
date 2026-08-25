@@ -950,14 +950,18 @@ hardcoding it.
   their paths via `WASM_POSIX_DEP_<NAME>_DIR` / `_SRC_DIR`. Hidden
   source-tree reads break on clean force-rebuild runs.
 
-## Homebrew Formula Authoring
+## Disabled Homebrew Formula Authoring
 
-Homebrew formulae are Kandelo's primary distribution surface for conventional
-third-party software. Keep the Formula and, when a script is needed, its closed
-recipe input tree in `kandelo-dev/homebrew-tap-core`. The main repository's
-`homebrew/homebrew-tap-core/` directory is a template and fixture for that tap
-shape. A duplicate `packages/registry/<name>/` recipe is not required after
-the Formula has a tap-native build.
+Homebrew integration is dormant and is not a current distribution surface.
+Conventional software currently ports through `packages/registry/<name>` and
+the normal Kandelo package resolver. The retained Formula guidance below is a
+historical implementation record for possible later reconsideration; it does
+not authorize an active build, publication, or guest `brew` path.
+
+Before disablement, Formulae and their closed recipe input trees lived in
+`kandelo-dev/homebrew-tap-core`. The main repository's
+`homebrew/homebrew-tap-core/` directory remains a template and fixture for that
+tap shape.
 
 Formulae should use normal Homebrew DSL and the normal Kandelo platform path:
 

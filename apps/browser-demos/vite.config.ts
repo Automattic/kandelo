@@ -36,10 +36,6 @@ import {
   createBatchedBrowserBinaryResolution,
   type BrowserBinaryResolution,
 } from "./vite-binary-resolution";
-import {
-  homebrewClosedAcceptanceAssetRoot,
-  homebrewClosedAcceptanceInputNames,
-} from "./lib/homebrew-closed-acceptance";
 import { DEFAULT_BROWSER_CORS_PROXY_CONFIG } from "./lib/browser-cors-proxy";
 import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
 import {
@@ -857,10 +853,6 @@ const defaultDemoInputs = {
 
 const demoInputs = {
   ...defaultDemoInputs,
-  "homebrew-vfs-test": path.resolve(
-    __dirname,
-    "pages/homebrew-vfs-test/index.html",
-  ),
   "sqlite-test": path.resolve(__dirname, "pages/sqlite-test/index.html"),
   benchmark: path.resolve(__dirname, "pages/benchmark/index.html"),
   "php-test": path.resolve(__dirname, "pages/php-test/index.html"),
@@ -894,16 +886,6 @@ function selectedDemoInputs(
     // preparation depend on unrelated package archives before composition.
     return sourceOnlyDemoInputs({ main: demoInputs.main });
   }
-  const acceptanceInputs = homebrewClosedAcceptanceInputNames(mode);
-  if (acceptanceInputs !== undefined) {
-    // WHY: the sealed closed-transport proof previews the real root product
-    // beside its private test page. Selecting only the fixture would make `/`
-    // fall back to the wrong application; unrelated gallery entries remain in
-    // the separately protected Pages build.
-    return sourceOnlyDemoInputs(Object.fromEntries(
-      acceptanceInputs.map((name) => [name, demoInputs[name]]),
-    ));
-  }
   const requested = process.env.KANDELO_BROWSER_DEMO_INPUTS?.split(",")
     .map((name) => name.trim())
     .filter(Boolean);
@@ -924,14 +906,6 @@ function selectedDemoInputs(
 const disableBrowserTestHmr = process.env.KANDELO_BROWSER_TEST_NO_HMR === "1";
 
 export default defineConfig(({ mode }) => {
-  // Validate this at configuration time as well as in browser code. A leaked
-  // root must fail the build rather than quietly granting a normal product
-  // build access to CI's local bottle mirror.
-  homebrewClosedAcceptanceAssetRoot(
-    mode,
-    process.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT,
-  );
-
   const base = normalizeDeploymentBase(process.env.VITE_BASE ?? "/");
   const canonicalPages = process.env.KANDELO_PAGES_PRODUCT_MAP !== undefined;
   const pagesVfsProducts = canonicalPagesVfsProducts(base);

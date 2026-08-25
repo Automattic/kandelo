@@ -8,9 +8,11 @@ builder = "images/vfs/scripts/build-node-vfs-image.sh"
 id = "browser-main-shell"
 materialization = "embedded"
 
-[[software.homebrew]]
-tap = "kandelo-dev/homebrew-tap-core"
-formulae = ["node"]
+[[software.package]]
+name = "node"
+outputs = ["node"]
+source_roles = []
+role = "runtime"
 materialization = "embedded"
 
 [[software.archive]]
@@ -34,19 +36,33 @@ gid = 0
 ephemeral = true
 
 [boot]
-argv = ["bash", "-l", "-i"]
-cwd = "/work"
-uid = 1000
-gid = 1000
+argv = ["/usr/bin/login", "-p", "-f", "maker"]
+cwd = "/home/maker"
+uid = 0
+gid = 0
 
 [boot.env]
-HOME = "/work"
-LOGNAME = "user"
+HISTFILE = "/home/maker/.bash_history"
+HOME = "/home/maker"
+LANG = "en_US.UTF-8"
+LOGNAME = "maker"
+NPM_CONFIG_AUDIT = "false"
+NPM_CONFIG_FUND = "false"
+NPM_CONFIG_PROGRESS = "false"
+NPM_CONFIG_UPDATE_NOTIFIER = "false"
 PATH = "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
+PS1 = "spidermonkey-node$ "
+SSL_CERT_DIR = "/etc/ssl/certs"
+SSL_CERT_FILE = "/etc/ssl/certs/ca-certificates.crt"
+TERM = "xterm-256color"
 TMPDIR = "/tmp"
-USER = "user"
+USER = "maker"
+npm_config_audit = "false"
 npm_config_cache = "/tmp/.npm-cache"
-npm_config_registry = "http://proxy.local/"
+npm_config_fund = "false"
+npm_config_progress = "false"
+npm_config_registry = "https://registry.npmjs.org/"
+npm_config_update_notifier = "false"
 
 [evidence.node]
 test = "node-vfs-node-startup"

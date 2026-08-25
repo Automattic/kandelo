@@ -25947,6 +25947,11 @@ export class CentralizedKernelWorker {
     // Retire a newly exited worker before considering any blocking-channel
     // wakeup; guest code must not resume after signal death.
     this.reapKilledProcessesAfterSyscall(entry);
+    // Teardown may synchronously wake a waiting parent, which can consume the
+    // zombie before this signal ingress continues. hostReaped is the exact
+    // host-side proof that routing for this monotonic task ID is complete; do
+    // not ask the now-absent Rust process to select a sleeper.
+    if (this.hostReaped.has(targetPid)) return;
     if (this.#getProcessExitSignal(targetPid, entry) > 0) return;
 
     // wait4/waitid live outside the generic retry maps. Prefer any matching

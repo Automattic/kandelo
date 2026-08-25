@@ -1506,6 +1506,7 @@ function createWorker(
     kernel_get_parent_pid: vi.fn(() => -1),
     kernel_get_process_exit_signal: vi.fn(() => -1),
     kernel_mark_process_signaled: vi.fn(() => 0),
+    kernel_process_secure_exec: vi.fn(() => 0),
     kernel_remove_process: vi.fn(() => 0),
     kernel_publish_spawn_child: vi.fn(() => -1),
     kernel_spawn_exec_commit: vi.fn(() => 0),

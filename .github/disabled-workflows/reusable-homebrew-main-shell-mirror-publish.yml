@@ -1,4 +1,4 @@
-name: Reusable Homebrew main-shell mirror publish
+name: DISABLED - Reusable Homebrew main-shell mirror publish
 
 on:
   workflow_call:

@@ -1,5 +1,8 @@
 name: Kandelo ABI staging protected merge evidence
 
+# Dormant: the active product path is package-backed and has no Homebrew ABI
+# staging request or publication authority.
+
 on:
   pull_request_target:
     types: [labeled]

@@ -7,26 +7,36 @@
 # prefix /usr/, so entries become /usr/bin/vim and /usr/share/vim/vim91/...
 # On first exec of vim, the whole archive is fetched and unpacked in one go.
 #
-# Sources vim.wasm + runtime/ from the resolver cache canonical dir
-# (populated by `cargo xtask build-deps resolve vim`, which either runs
-# build-vim.sh or fetches the release archive). Falls back to the in-tree
-# source layout `packages/registry/vim/{bin,runtime}` when a cache lookup
-# fails — useful while iterating on build-vim.sh without going through
-# the resolver. Mirrors images/vfs/scripts/build-nethack-zip.sh.
+# With `<dependency-dir> <output.zip>`, consumes only that exact declared
+# dependency and writes only the selected output. With no arguments, retains
+# the standalone developer mode: resolve Vim, write the browser public asset,
+# and install the result into the ordinary local mirror.
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
-OUTPUT_DIR="$REPO_ROOT/apps/browser-demos/public"
-OUTPUT_FILE="$OUTPUT_DIR/vim.zip"
-
-# Resolve the vim package via the resolver. Returns the cache canonical
-# directory containing vim.wasm + runtime/<vim runtime tree>.
-HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
-VIM_DIR="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
-    build-deps resolve vim --arch wasm32 2>/dev/null || true)"
+INSTALL_LOCAL_MIRROR=0
+case "$#" in
+    0)
+        OUTPUT_FILE="$REPO_ROOT/apps/browser-demos/public/vim.zip"
+        # Standalone developer mode resolves the package on demand. Canonical
+        # package builds pass their direct dependency explicitly instead.
+        HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+        VIM_DIR="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
+            build-deps resolve vim --arch wasm32 2>/dev/null || true)"
+        INSTALL_LOCAL_MIRROR=1
+        ;;
+    2)
+        VIM_DIR="$1"
+        OUTPUT_FILE="$2"
+        ;;
+    *)
+        echo "usage: $0 [<dependency-dir> <output.zip>]" >&2
+        exit 2
+        ;;
+esac
 
 VIM_WASM=""
 RUNTIME_DIR=""
@@ -46,10 +56,15 @@ else
     exit 1
 fi
 
+OUTPUT_DIR="$(dirname "$OUTPUT_FILE")"
 mkdir -p "$OUTPUT_DIR"
 rm -f "$OUTPUT_FILE"
 
-STAGING=$(mktemp -d)
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
+    STAGING="$(mktemp -d "$WASM_POSIX_DEP_WORK_DIR/vim-zip.XXXXXX")"
+else
+    STAGING="$(mktemp -d)"
+fi
 trap 'rm -rf "$STAGING"' EXIT
 
 echo "==> Staging vim.zip..."
@@ -75,5 +90,7 @@ ls -lh "$OUTPUT_FILE"
 # vim-browser-bundle, not vim: vim owns vim.wasm and its runtime tree.
 # Keeping that ownership exact lets the resolver validate the output against
 # the same package manifest that archive-stage is currently building.
-source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary vim-browser-bundle "$OUTPUT_FILE" vim.zip
+if [ "$INSTALL_LOCAL_MIRROR" -eq 1 ]; then
+    source "$REPO_ROOT/scripts/install-local-binary.sh"
+    install_local_binary vim-browser-bundle "$OUTPUT_FILE" vim.zip
+fi

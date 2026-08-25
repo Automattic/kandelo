@@ -41,9 +41,9 @@ Most readers want one of these. Detailed sections follow further down.
 | Republish a stale archive                     | Dispatch `.github/workflows/force-rebuild.yml` with the comma-separated package list (or `all`).                                                                                                                                                                   |
 | Bump a package's revision number              | Edit `revision = N` in its `build.toml` (NOT `package.toml` — revision moved to the project-view file during the binary-resolution-via-index-ledger migration). Invalidates the cache for that package. Only bump when output bytes legitimately change.           |
 | Understand the release flow                   | [docs/binary-releases.md](binary-releases.md).                                                                                                                                                                                                                     |
-| Understand Kandelo's Homebrew system          | [docs/homebrew-packaging-system.md](homebrew-packaging-system.md) - Formulae, bottles, ABI rollouts, lazy VFS images, guest `brew`, and third-party taps.                                                                                                           |
-| Work on Homebrew bottle publishing            | [docs/homebrew-publishing.md](homebrew-publishing.md) - detailed trusted CI, sidecar, OCI, VFS, and Node/browser contracts.                                                                                                                                       |
-| Publish packages from another repository      | [docs/package-sources.md](package-sources.md) — package-source layout, reusable workflow, and published gallery metadata.                                                                                                                                          |
+| Inspect the disabled Homebrew implementation  | [docs/homebrew-packaging-system.md](homebrew-packaging-system.md) - dormant Formula, bottle, VFS, and guest `brew` design.                                                                                                                                        |
+| Inspect disabled Homebrew publishing          | [docs/homebrew-publishing.md](homebrew-publishing.md) - retained historical publication and validation contracts.                                                                                                                                               |
+| Publish packages from another repository      | [docs/package-sources.md](package-sources.md) — package-source layout, reusable workflow, and browser-gallery contract.                                                                                                                                            |
 | Trace an ABI mismatch                         | [docs/abi-versioning.md](abi-versioning.md).                                                                                                                                                                                                                       |
 | See what's missing                            | [docs/package-management-future-work.md](package-management-future-work.md).                                                                                                                                                                                       |
 
@@ -164,81 +164,43 @@ non-doc paths should also run the non-package test gate as a fail-safe,
 but should not trigger the package matrix unless they are package
 archive inputs.
 
-### Current ABI-42 shell publication (2026-08-13)
+### Current package-backed root and shell images (2026-08-24)
 
-The package registry now owns the browser shell product. The checked-in
-`homebrew/main-shell-flat-selection.json` selects the exact admitted wasm32
-bottles, and shell revision 25 composes their sealed flat-lazy form over the
-platform base. The image embeds Bash, ncurses, and libc++; records 37 deferred
-bottle trees plus the package-owned bootstrap tree; and binds those trees to
-the authenticated mirror plan stored in the image. Before host boot it has 38
-pending groups. The normal `/usr/bin/brew` boot preparation atomically fetches
-only bootstrap, libyaml, and Ruby, leaving the 35 ordinary bottle trees pending
-for first use. Public command links, including `fbdoom` and `modeset`, resolve
-to those deferred bottle paths without materializing them during image
-construction. Repeating boot preparation performs no additional fetch.
+The package registry owns both the base rootfs and browser shell. Rootfs
+revision 11 composes only declared Kandelo package outputs. Shell revision 29
+extends that exact rootfs package artifact with shell demo assets and records
+the base artifact's digest, byte length, and kernel ABI.
 
-This is the normal canonical package release path, not a parallel Homebrew
-product lane. The shell recipe is `publication_state = "ready"`; its
-`commit = "UNPUBLISHED"` placeholder means the release builder must stamp the
-truthful producer commit. It does not mean the product is pending. Changes to
-the flat selection, shell configuration, base image, or composer are ordinary
-package inputs and rebuild the complete reverse-dependent closure:
+The rootfs package embeds `login` because the terminal session needs it at
+boot. `sudo-lite`, upstream `sudo`, and the ordinary command set remain lazy
+package outputs. All three privileged commands are installed as root-owned
+`04755` files; ordinary VFS mode and mount semantics decide their credential
+effect. The image-owned experimental terminal declaration starts
+`login -p -f maker` once and then uses `login -p` after logout.
 
-- `shell` revision 25;
-- `node-vfs` revision 18;
-- `lamp` revision 14;
-- `wordpress` revision 15; and
-- `nginx-vfs` and `nginx-php-vfs` revision 5.
+The shell and new login packages are pending publication while this change is
+under review. Their `commit = "UNPUBLISHED"` placeholders must be stamped with
+the truthful producer commit before release. Changes to the base image, shell
+composition, or terminal declaration rebuild the reverse-dependent image
+closure:
 
-The deferred bottle bytes have a separate transport publication, not a
-separate shell-image authority. The checked-in
-`homebrew/main-shell-flat-lazy-mirror-plan.json` is the exact rollout
-authority for its 37 assets. It is deliberately not a shell recipe input: a
-validation-only plan must not rotate package cache identities when the
-produced image bytes have not changed.
+- `rootfs` revision 11;
+- `shell` revision 29;
+- `node-vfs` revision 22;
+- `lamp` revision 17;
+- `wordpress` revision 18; and
+- `nginx-vfs` and `nginx-php-vfs` revision 7.
 
-After the relevant source is on `Automattic/kandelo` `main`, the protected tap
-caller invokes the reusable `create-mirror` publisher with exact Kandelo and
-tap commits. Its unprivileged preparation job source-builds the canonical
-`homebrew-bootstrap` dependency and `shell` through the normal package
-resolver in one isolated cache, recovers the plan embedded by that shell, and
-requires a byte-for-byte match with the checked-in plan. The existing
-write-capable job then publishes the immutable release and anonymously
-re-reads every asset.
+Each derived image verifies and records the exact package-shell digest and
+bytes. It therefore cannot silently combine a new Node, nginx, PHP, or
+WordPress payload with an older shell. The shell recipe also owns the complete
+source closure used by its image tools; imported repository modules are
+explicit build inputs.
 
-Candidate activation independently and anonymously verifies the published
-plan plus every declared byte count and SHA-256 immediately before it creates
-or changes the canonical package release. Absence or corruption exits without
-a rejection receipt or canonical mutation, so manual and scheduled candidate
-reconciliation can retry after mirror publication. A quiet scheduled sweep
-does not download the complete 48 MiB mirror; only a candidate that has
-reached the activation boundary performs that check.
-
-Each derived image verifies and records the exact base-shell digest and bytes.
-It therefore cannot silently combine a new Node, nginx, PHP, or WordPress
-payload with an older shell. Pull-request staging builds and tests this package
-closure through the generic resolver. Post-merge candidate activation moves
-the same tested entries into `binaries-abi-v42`. The durable activation sweep
-then compares the exact default-branch SHA and canonical index digest with the
-generation recorded by the public site. A missing or stale generation
-dispatches Pages with that SHA, the authenticated candidate tag, and the index
-digest. Pages uses a fresh cache and fetch-only resolution, so an absent or
-different canonical package release fails visibly instead of reconstructing
-the image or accepting a different lazy mirror.
-
-The shell recipe also owns the complete source closure used by its image
-tools. `mkrootfs` has no local `file:` package dependency that can pull an
-undeclared repository subtree into `npm ci`; the specific host modules imported
-by the VFS tools are explicit recipe inputs. Recipe tests reject reintroducing
-such a hidden local dependency. Because the standalone `rootfs` package also
-declares the `mkrootfs` manifests, removing that dependency truthfully rekeys
-`rootfs` as well as the shell-derived publication closure; the same candidate
-must publish all seven changed rows.
-
-Compatibility for downloaded, historical, or persisted lazy VFS images is
-future work. The current product is rebuilt for the current runtime; see
-[Future improvements](future-improvements.md#define-compatibility-for-restored-lazy-vfs-images).
+Homebrew package, image, test, and publication integration is disabled. The
+implementation is retained as dormant source, and the `homebrew-bootstrap`
+manifests use a `.disabled` suffix so registry discovery cannot resolve or
+build that package.
 
 ### Canonical VFS product authority
 

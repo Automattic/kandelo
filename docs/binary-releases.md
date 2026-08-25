@@ -59,8 +59,13 @@ through a persistent advisory sidecar lock held across source refresh, target
 validation, replacement, and directory sync. The lock file is intentionally
 retained so concurrent writers always coordinate on one inode.
 
-Homebrew bottles use a separate publication model. Bottle tarballs are
-Homebrew-native artifacts published through the `kandelo-dev/homebrew-tap-core`
+Homebrew publication is currently disabled. The following retained material is
+a historical operational record; present-tense descriptions refer to the
+dormant design, not an active publisher or supported distribution surface.
+
+Before disablement, Homebrew bottles used a separate publication model.
+Bottle tarballs were Homebrew-native artifacts published through the
+`kandelo-dev/homebrew-tap-core`
 tap and GHCR/Homebrew bottle URL shape; Kandelo-specific sidecars and
 provenance publish as tap git state. A required dependency-bearing acceptance
 run also publishes its exact Node-and-Chromium-proven VFS image and evidence in
@@ -724,17 +729,12 @@ preflight → toolchain-cache → matrix-build → test-gate → merge-gate
 
 After `test-gate` seals a PR release, browser validation consumes the same
 generic package workspace as the other suites. A resolved shell must pass a
-fresh inspection against its checked-in flat selection, materialization and
-runtime policies, bootstrap package output, and 37-asset mirror plan. The
-inspection requires three embedded bottles, the bootstrap plus two-bottle boot
-cohort, and 35 ordinary deferred bottles. When the staged matrix contains
-`node-vfs/wasm32`, the browser cell also runs the exact slow
-`npm install --verbose cowsay` acceptance before the package release is
-sealed. Prepare merge derives the same condition from the union of its exact
-promotion and build matrices. Its browser cell rebuilds the ordinary
-Pages-shaped production output, verifies the emitted hashed Node VFS bytes,
-and runs the same npm/cowsay acceptance through the `/kandelo/` preview before
-the merge gate can pass.
+fresh inspection against its package-backed rootfs composition, terminal
+session declaration, materialization policy, and authenticated lazy package
+outputs. Browser cells build local Vite assets from those exact package
+generations and exercise the active Chromium product paths before the package
+release is sealed. They do not compose Homebrew inputs or publish a hosted
+Pages tree.
 
 - **merge-gate** posts `merge-gate=success` on the PR's HEAD SHA
   once test-gate passes. No bot-PR amend step exists anymore — the
@@ -763,49 +763,39 @@ Sortix is divided into include, basic, and remaining-runtime jobs. These are
 the same natural partitions used by staging-build and prepare-merge; their
 matrix result is still aggregated by the single `test-gate` job.
 
-## Current ABI-42 shell publication (2026-08-13)
+## Dormant ABI-42 Homebrew shell publication record (2026-08-13)
 
-`homebrew/main-shell-flat-selection.json` is a package input for shell
+This section records the disabled Homebrew-backed shell and Pages design. It
+is not the current package release or browser deployment contract.
+
+Before disablement, `homebrew/main-shell-flat-selection.json` was a package
+input for shell
 revision 25. Its archive embeds the selected Bash closure and package-owned
 Homebrew bootstrap over the platform base while retaining 37 authenticated
 bottle trees as deferred flat-lazy groups. Every shell-derived VFS package
-records the exact base image digest and size. The shell and its five reverse
-dependents therefore move through one canonical package release.
+recorded the exact base image digest and size. The shell and its five reverse
+dependents moved through one canonical package release.
 
-The deferred bottle mirror is a separate immutable byte transport, not a
-second shell-image product. Its checked-in exact plan is rollout authority but
-is not a package recipe input. The protected tap caller source-builds current
-`main`'s direct `homebrew-bootstrap` dependency and `shell` through the normal
-resolver, recovers the plan, and requires a byte-for-byte match before the
-existing immutable publisher and anonymous readback run. Candidate activation
-then anonymously verifies the public plan and all 37 size/digest identities
-immediately before any canonical release mutation. Mirror absence or
-corruption leaves the candidate retryable for a later reconciliation.
+The deferred bottle mirror was a separate immutable byte transport, not a
+second shell-image product. Its checked-in exact plan was rollout authority but
+was not a package recipe input. The protected tap caller source-built `main`'s
+direct `homebrew-bootstrap` dependency and `shell` through the normal resolver,
+recovered the plan, and required a byte-for-byte match before immutable
+publication and anonymous readback.
 
-Prepare merge writes those rows only to its isolated
-`merge-candidate-abi-v42-*` release. Post-merge activation verifies the merged
-tree and complete candidate transaction, then overlays the tested entries into
-`binaries-abi-v42`. Reconciliation retains authenticated activation receipts,
-including receipts from already-terminal candidates. After candidate work, it
-snapshots the current canonical index and selects only a receipt naming those
-exact bytes. It compares that source/index generation with the public
-`kandelo-deployment.json`; a missing or stale deployment dispatches
-`browser-demos-pages.yml` with the exact current default-branch SHA, candidate
-tag, and canonical index sha256. A transient dispatch failure is therefore
-recoverable by the next scheduled scan even though the candidate itself is
-already terminal.
+Prepare merge wrote those rows only to its isolated
+`merge-candidate-abi-v42-*` release. Post-merge activation verified the merged
+tree and complete candidate transaction, then overlaid the tested entries into
+`binaries-abi-v42`. Reconciliation retained authenticated activation receipts,
+including receipts from already-terminal candidates. It then selected an exact
+source/index generation for the browser publisher.
 
-That ordering is part of the release contract. Pages has no `main`-push
-trigger; only the post-activation dispatch can start a deployment, so a merge
-cannot race ahead of mirror publication or package activation. Pages checks
-out the requested SHA, requires it to remain the default-branch tip, verifies
-the immutable candidate's `activated.json` as an exact extension of its
-`ready.json`, and re-snapshots the named canonical index digest. It then
-resolves the exact shell, Node VFS, and bootstrap outputs in one fresh cache,
-anonymously verifies the checked-in public mirror, inspects the lazy shell
-partition, and verifies the emitted VFS assets and bootstrap ZIP. The Chromium
-lazy-shell and npm/cowsay acceptances run before the single writer updates
-`gh-pages`.
+The retained browser publisher checked out the requested SHA, required it to
+remain the default-branch tip, authenticated the candidate receipt, and
+re-snapshotted the canonical index before validating Homebrew-backed shell and
+Node assets. That workflow is now outside GitHub's active workflow directory.
+Current package activation does not dispatch it, and current shell releases do
+not contain the Homebrew selection, bootstrap, or bottle mirror.
 
 ## Merge candidates and canonical activation
 

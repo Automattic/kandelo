@@ -7,7 +7,7 @@ import { ensureDirRecursive, writeVfsBinary } from "../src/vfs/image-helpers";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 
 const NODE_BYTES = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
-const BASH_PATH = "/opt/kandelo/homebrew/Cellar/bash/5.2.37/bin/bash";
+const BASH_PATH = "/usr/bin/bash";
 
 describe("image-owned Node demo runtime", () => {
   it("preserves embedded Node bytes and aliases while binding shell transports", async () => {
@@ -118,7 +118,6 @@ function runtimeImage(): MemoryFileSystem {
     "/bin",
     "/usr/bin",
     "/usr/local/bin",
-    "/opt/kandelo/homebrew/Cellar/bash/5.2.37/bin",
   ]) {
     ensureDirRecursive(fs, path);
   }

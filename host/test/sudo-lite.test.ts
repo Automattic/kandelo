@@ -10,10 +10,7 @@ import {
 } from "../../images/vfs/lib/demo-login";
 import { DeviceFileSystem } from "../src/vfs/device-fs";
 import { ensureDirRecursive } from "../src/vfs/image-helpers";
-import {
-  createImmutableProductBackend,
-  MemoryFileSystem,
-} from "../src/vfs/memory-fs";
+import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { NodeTimeProvider } from "../src/vfs/time";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
 import { runCentralizedProgram } from "./centralized-test-helper";
@@ -203,11 +200,8 @@ function sudoPlatform(
     enc.encode(options.sudoers ?? wheelPolicy),
   );
   fs.createFileWithOwner("/bin/sh", 0o755, 0, 0, bytes(shellWasm));
-  const product = MemoryFileSystem.create(
-    new SharedArrayBuffer(4 * 1024 * 1024),
-  );
-  product.createFileWithOwner(
-    "/sudo-lite",
+  fs.createFileWithOwner(
+    "/usr/bin/sudo-lite",
     options.sudoMode ?? 0o4755,
     0,
     0,
@@ -220,23 +214,10 @@ function sudoPlatform(
     0,
     bytes(identityWasm),
   );
-  const trusted = (options.sudoMode ?? 0o4755) === 0o4755;
   return new VirtualPlatformIO(
     [
-      trusted
-        ? {
-            mountPoint: "/usr/bin",
-            backend: createImmutableProductBackend(product),
-            readonly: true,
-            setIdCapability: {
-              kind: "trusted-root-product" as const,
-              guestWritable: false,
-              stableExecutableIdentity: true,
-            },
-          }
-        : { mountPoint: "/usr/bin", backend: product },
-      { mountPoint: "/dev", backend: new DeviceFileSystem() },
       { mountPoint: "/", backend: fs },
+      { mountPoint: "/dev", backend: new DeviceFileSystem(), nosuid: true },
     ],
     new NodeTimeProvider(),
   );

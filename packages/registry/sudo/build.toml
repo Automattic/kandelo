@@ -1,0 +1,15 @@
+script_path = "packages/registry/sudo/build-sudo.sh"
+inputs = [
+  "packages/registry/sudo/build-sudo.sh",
+  "packages/registry/sudo/patches/wasm-main-envp.patch",
+  "scripts/install-local-binary.sh",
+  "scripts/package-build-roots.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+publication_state = "pending"
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

@@ -392,7 +392,11 @@ async function prepareExecTargetTestRootfs(
     for (const hostPath of options.execPrograms.values()) {
       programBytes += readFileSync(hostPath).byteLength;
     }
-    const capacity = Math.max(4 * 1024 * 1024, programBytes + 1024 * 1024);
+    const unalignedCapacity = Math.max(
+      4 * 1024 * 1024,
+      programBytes + 1024 * 1024,
+    );
+    const capacity = Math.ceil(unalignedCapacity / 4) * 4;
     if (!Number.isSafeInteger(capacity)) {
       throw new Error("test exec target rootfs capacity overflows");
     }
@@ -448,6 +452,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   });
 
   const processProgramBytes = new Map<number, ArrayBuffer>();
+  const processMemories = new Map<number, WebAssembly.Memory>();
   const processLayouts = new Map<number, ProcessMemoryLayout>();
   const threadAllocators = new Map<number, ThreadPageAllocator>();
   const processPtrWidths = new Map<number, 4 | 8>();
@@ -561,6 +566,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         externrefGenerations.set(childPid, childGeneration);
         processForkHostImports.set(childPid, childForkHostImports);
         processProgramBytes.set(childPid, program.programBytes);
+        processMemories.set(childPid, childMemory);
         processLayouts.set(childPid, childLayout);
         threadAllocators.set(childPid, childThreadAllocator);
         processPtrWidths.set(childPid, childPtrWidth);
@@ -573,6 +579,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           try { kernelWorker.deactivateProcess(childPid); } catch { /* best-effort */ }
           workers.delete(childPid);
           processProgramBytes.delete(childPid);
+          processMemories.delete(childPid);
           processLayouts.delete(childPid);
           threadAllocators.delete(childPid);
           processPtrWidths.delete(childPid);
@@ -698,6 +705,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         externrefGenerations.set(childPid, childGeneration);
         processForkHostImports.set(childPid, childForkHostImports);
         processProgramBytes.set(childPid, parentProgram);
+        processMemories.set(childPid, childMemory);
         processLayouts.set(childPid, childLayout);
         threadAllocators.set(childPid, threadAllocatorForLayout(
           childLayout,
@@ -722,6 +730,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           try { kernelWorker.deactivateProcess(childPid); } catch { /* best-effort */ }
           workers.delete(childPid);
           processProgramBytes.delete(childPid);
+          processMemories.delete(childPid);
           processLayouts.delete(childPid);
           threadAllocators.delete(childPid);
           processPtrWidths.delete(childPid);
@@ -765,6 +774,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           if (workers.get(childPid) === childWorker) {
             workers.delete(childPid);
             processProgramBytes.delete(childPid);
+            processMemories.delete(childPid);
             processLayouts.delete(childPid);
             threadAllocators.delete(childPid);
             processPtrWidths.delete(childPid);
@@ -805,6 +815,10 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
 
         const addressSpaceResult = kernelWorker.prepareAddressSpaceForExec(execPid);
         if (addressSpaceResult < 0) return addressSpaceResult;
+        const oldMemory = processMemories.get(execPid);
+        if (!oldMemory) {
+          throw new Error(`Unknown process memory for exec pid ${execPid}`);
+        }
         let replacementWorker: ReturnType<NodeWorkerAdapter["createWorker"]> | undefined;
         let replacementGeneration: ForkExternrefGeneration | undefined;
         let replacementForkHostImports: ForkHostImportOwnerWorker | undefined;
@@ -822,8 +836,12 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
             }
             launchPlanState = "started";
             try {
-              const secureExec = kernelWorker.processSecureExec(execPid);
-              kernelWorker.prepareProcessForExec(execPid);
+              const transition = kernelWorker.takeCommittedExecTransition(
+                execPid,
+                oldMemory,
+              );
+              const secureExec = transition.secureExec;
+              kernelWorker.prepareProcessForExec(execPid, oldMemory);
               const previousGeneration = externrefGenerations.get(execPid);
               if (!previousGeneration) {
                 throw new Error(
@@ -834,8 +852,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
                 externrefProcessOwner.replaceGeneration(previousGeneration);
               externrefGenerations.set(execPid, replacementGeneration);
 
-              const finalizeResult = kernelWorker.finalizeAddressSpaceForExec(execPid);
-              if (finalizeResult < 0) {
+              if (transition.addressSpaceResult < 0) {
                 throw new Error("failed to detach the discarded address space");
               }
 
@@ -864,6 +881,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
                 env: envp,
               });
               processProgramBytes.set(execPid, newProgramBytes);
+              processMemories.set(execPid, newMemory);
               processLayouts.set(execPid, newLayout);
               threadAllocators.set(execPid, newThreadAllocator);
               processPtrWidths.set(execPid, newPtrWidth);
@@ -929,6 +947,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
               try { kernelWorker.notifyHostProcessCrashed(execPid, SIGSEGV); } catch { /* best-effort */ }
               try { kernelWorker.deactivateProcess(execPid); } catch { /* best-effort */ }
               processProgramBytes.delete(execPid);
+              processMemories.delete(execPid);
               processLayouts.delete(execPid);
               threadAllocators.delete(execPid);
               processPtrWidths.delete(execPid);
@@ -1044,6 +1063,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
       onExit: (exitPid, exitStatus) => {
         if (exitPid === pid) {
           processProgramBytes.delete(exitPid);
+          processMemories.delete(exitPid);
           processLayouts.delete(exitPid);
           threadAllocators.delete(exitPid);
           processPtrWidths.delete(exitPid);
@@ -1066,6 +1086,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
             try {
               kernelWorker.deactivateProcess(exitPid);
               processProgramBytes.delete(exitPid);
+              processMemories.delete(exitPid);
               processLayouts.delete(exitPid);
               threadAllocators.delete(exitPid);
               processPtrWidths.delete(exitPid);
@@ -1123,6 +1144,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   });
   kernelWorker.setCredentials(pid, { uid: options.uid, gid: options.gid });
   processProgramBytes.set(pid, programBytes);
+  processMemories.set(pid, memory);
   processLayouts.set(pid, layout);
   threadAllocators.set(pid, threadAllocator);
   processPtrWidths.set(pid, ptrWidth);

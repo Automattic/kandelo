@@ -12,7 +12,7 @@ mirror_filename = "rootfs.vfs"
 product = "browser-main-shell"
 package = "shell"
 output = "shell"
-build_target = "scripts/build-homebrew-main-shell-product.sh"
+build_target = "packages/registry/shell/build-shell.sh"
 mirror_filename = "shell.vfs.zst"
 
 [[adapters]]

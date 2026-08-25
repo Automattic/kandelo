@@ -35,6 +35,7 @@ cat >"$work/stale-sysroot.wat" <<'WAT'
 WAT
 wat2wasm "$work/stale-sysroot.wat" -o "$source_dir/stale-sysroot.wasm"
 printf 'complete runtime tree\n' > "$source_dir/python-runtime.zip"
+printf 'declared non-Wasm package data\n' > "$source_dir/magic.lite"
 binary_sha_before="$(shasum -a 256 "$source_dir/python.wasm" | awk '{print $1}')"
 runtime_sha_before="$(shasum -a 256 "$source_dir/python-runtime.zip" | awk '{print $1}')"
 
@@ -81,6 +82,7 @@ chmod -R a-w "$fake_repo" "$source_dir"
     export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
 
     install_local_binary cpython "$source_dir/python.wasm"
+    install_local_binary cpython "$source_dir/magic.lite"
     install_local_runtime_file cpython \
         "$source_dir/python-runtime.zip" \
         runtime/python-runtime.zip
@@ -95,6 +97,7 @@ chmod -R a-w "$fake_repo" "$source_dir"
     exit 1
 }
 cmp "$source_dir/python.wasm" "$out_dir/python.wasm"
+cmp "$source_dir/magic.lite" "$out_dir/magic.lite"
 cmp "$source_dir/python-runtime.zip" "$out_dir/runtime/python-runtime.zip"
 [ "$binary_sha_before" = "$(shasum -a 256 "$source_dir/python.wasm" | awk '{print $1}')" ]
 [ "$runtime_sha_before" = "$(shasum -a 256 "$source_dir/python-runtime.zip" | awk '{print $1}')" ]

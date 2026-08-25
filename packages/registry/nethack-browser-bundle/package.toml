@@ -19,3 +19,4 @@ script_path = "packages/registry/nethack-browser-bundle/build-nethack-browser-bu
 [[outputs]]
 name = "nethack"
 wasm = "nethack.zip"
+fork_instrumentation = "disabled"

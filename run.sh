@@ -2955,15 +2955,6 @@ cmd_local_build() {
         exit 2
     fi
 
-    local helper="$REPO_ROOT/scripts/run-local-build.sh"
-    local command=(bash "$helper")
-    if [ -z "${KANDELO_DEV_SHELL_TOOL_PATH:-}" ]; then
-        command=(bash "$REPO_ROOT/scripts/dev-shell.sh" bash "$helper")
-    fi
-    if [ "$emit_json" -eq 1 ]; then
-        exec "${command[@]}"
-    fi
-
     local result_file
     result_file="$(mktemp "${TMPDIR:-/tmp}/kandelo-local-build-result.XXXXXX")"
     LOCAL_BUILD_RESULT_FILE="$result_file"
@@ -2971,11 +2962,39 @@ cmd_local_build() {
     trap 'exit 130' INT
     trap 'exit 143' TERM
 
+    local helper="$REPO_ROOT/scripts/run-local-build.sh"
+    # A marker inherited from an older or reinitialized shell does not prove
+    # that PATH matches this checkout's current flake. Package builds are the
+    # reproducibility boundary, so always enter the declared shell again.
+    # Write the helper's machine result inside that shell: Nix warnings and
+    # shell-hook banners share the launcher's stdout, so capturing the outer
+    # stream would corrupt the JSON protocol before jq can validate it.
+    local command=(
+        bash "$REPO_ROOT/scripts/dev-shell.sh"
+        bash -c 'exec bash "$1" >"$2"' kandelo-local-build "$helper" "$result_file"
+    )
+
     local command_status
-    if "${command[@]}" >"$result_file"; then
+    if "${command[@]}" >&2; then
         command_status=0
     else
         command_status=$?
+    fi
+
+    if [ "$emit_json" -eq 1 ]; then
+        local output_status
+        if command cat -- "$result_file"; then
+            output_status=0
+        else
+            output_status=$?
+        fi
+        rm -f -- "$result_file"
+        LOCAL_BUILD_RESULT_FILE=""
+        trap - EXIT INT TERM
+        if [ "$command_status" -ne 0 ]; then
+            return "$command_status"
+        fi
+        return "$output_status"
     fi
 
     local outcome

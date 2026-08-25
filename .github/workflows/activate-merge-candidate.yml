@@ -36,9 +36,8 @@ jobs:
        contains(github.event.pull_request.labels.*.name, 'ready-to-ship'))
     runs-on: ubuntu-latest
     permissions:
-      actions: write
+      actions: read
       contents: write
-      pages: read
       pull-requests: write
       statuses: read
     env:
@@ -167,92 +166,7 @@ jobs:
           echo "activated_any=$activated_any" >>"$GITHUB_OUTPUT"
           exit "$failed"
 
-      - name: Resolve the exact Pages generation
-        id: pages_generation
-        env:
-          ACTIVATED_ANY: ${{ steps.activate.outputs.activated_any || 'false' }}
-          ACTIVATED_RECEIPTS: ${{ steps.reconcile.outputs.activated_receipts }}
-        run: |
-          set -euo pipefail
-          abi=$(grep -oE 'ABI_VERSION: u32 = [0-9]+' \
-            crates/shared/src/lib.rs | awk '{print $4}')
-          canonical_tag="binaries-abi-v$abi"
-          generation_dir="$RUNNER_TEMP/pages-generation"
-          canonical_index="$generation_dir/index.toml"
-          canonical_head="$generation_dir/head"
-          mkdir -p "$generation_dir"
-          bash scripts/release-index-state.sh snapshot \
-            --target-tag "$canonical_tag" \
-            --expected-abi "$abi" \
-            --output "$canonical_index" \
-            --head-file "$canonical_head"
-          canonical_index_sha256=$(sha256sum "$canonical_index" | awk '{print $1}')
-          source_sha=$(git rev-parse HEAD)
-
-          selected=""
-          if [ -s "$ACTIVATED_RECEIPTS" ]; then
-            selected=$(jq -sc \
-              --arg canonical_index_sha256 "$canonical_index_sha256" '
-                unique_by(.candidate_tag) |
-                map(select(
-                  .canonical_index_sha256 == $canonical_index_sha256 and
-                  (.candidate_tag | type == "string") and
-                  (.activated_at | type == "string")
-                )) |
-                sort_by(.activated_at) | last // empty
-              ' "$ACTIVATED_RECEIPTS")
-          fi
-          if [ -z "$selected" ]; then
-            if [ "$ACTIVATED_ANY" = true ]; then
-              echo "::error::Activated candidate has no receipt for canonical index $canonical_index_sha256"
-              exit 1
-            fi
-            echo "dispatch=false" >> "$GITHUB_OUTPUT"
-            echo "No authenticated candidate receipt selects the current canonical generation."
-            exit 0
-          fi
-          candidate_tag=$(jq -er '.candidate_tag' <<<"$selected")
-          if ! [[ "$candidate_tag" =~ ^merge-candidate-abi-v${abi}-pr-[0-9]+-run-[0-9]+-attempt-[0-9]+$ ]]; then
-            echo "::error::Selected activation receipt has an invalid candidate tag"
-            exit 1
-          fi
-          {
-            echo "source_sha=$source_sha"
-            echo "candidate_tag=$candidate_tag"
-            echo "canonical_index_sha256=$canonical_index_sha256"
-          } >> "$GITHUB_OUTPUT"
-
-          deployed_manifest="$generation_dir/deployed.json"
-          pages_response="$generation_dir/pages.json"
-          if gh api "/repos/${{ github.repository }}/pages" > "$pages_response" &&
-             jq -e '(.html_url | type == "string" and startswith("https://"))' \
-               "$pages_response" >/dev/null
-          then
-            pages_url=$(jq -r .html_url "$pages_response")
-            manifest_url="${pages_url%/}/kandelo-deployment.json"
-            if curl --fail --silent --show-error \
-                --connect-timeout 10 --max-time 30 \
-                "$manifest_url" > "$deployed_manifest" &&
-               jq -e \
-                 --arg source_sha "$source_sha" \
-                 --arg canonical_index_sha256 "$canonical_index_sha256" '
-                   .schema_version == 1 and
-                   .source_sha == $source_sha and
-                   .canonical_index_sha256 == $canonical_index_sha256
-                 ' "$deployed_manifest" >/dev/null
-            then
-              echo "dispatch=false" >> "$GITHUB_OUTPUT"
-              echo "Pages already serves source $source_sha with canonical index $canonical_index_sha256."
-              exit 0
-            fi
-          fi
-          echo "dispatch=true" >> "$GITHUB_OUTPUT"
-
-      - name: Dispatch the exact Pages generation
-        if: steps.pages_generation.outputs.dispatch == 'true'
-        run: |
-          gh workflow run browser-demos-pages.yml \
-            --ref "$GITHUB_DEFAULT_BRANCH" \
-            -f source_sha="${{ steps.pages_generation.outputs.source_sha }}" \
-            -f candidate_tag="${{ steps.pages_generation.outputs.candidate_tag }}" \
-            -f canonical_index_sha256="${{ steps.pages_generation.outputs.canonical_index_sha256 }}"
+      # Browser site publication is dormant. Candidate activation continues to
+      # reconcile package indexes, but it must not dispatch a retained
+      # deployment implementation until a separate reviewed change re-enables
+      # that product lane.

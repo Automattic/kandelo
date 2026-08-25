@@ -1377,7 +1377,9 @@ fi
 : > "$CARGO_CAPTURE"
 PATH="$FIXTURE/bin:$PATH" \
     bash "$FIXTURE/scripts/ci-run-test-suite.sh" cargo-xtask all
-grep -Fxq "test -p xtask --target fixture-host" "$CARGO_CAPTURE" || {
+grep -Fxq \
+    "test -p xtask --target fixture-host -- --skip homebrew --skip formula --skip bottle --skip tap" \
+    "$CARGO_CAPTURE" || {
     echo "ci-run-test-suite.sh did not dispatch the cargo-xtask suite" >&2
     cat "$CARGO_CAPTURE" >&2
     exit 1

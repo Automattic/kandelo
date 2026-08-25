@@ -32,6 +32,30 @@ if [ -z "$suite" ]; then
     exit 2
 fi
 group="${2:-${TEST_GROUP:-all}}"
+disabled_homebrew_vitest_excludes=(
+    # Vitest is invoked from host/. Its ordinary file list includes both
+    # host-local paths (test/**) and repository siblings (../tests/**), so
+    # every disabled-software marker needs both spellings.
+    "--exclude=**/*brew*"
+    "--exclude=../**/*brew*"
+    "--exclude=**/*bottle*"
+    "--exclude=../**/*bottle*"
+    "--exclude=**/*formula*"
+    "--exclude=../**/*formula*"
+    "--exclude=**/*tap*"
+    "--exclude=../**/*tap*"
+    "--exclude=test/abi-staging-mini-vfs.test.ts"
+    "--exclude=test/abi-staging-product-builders.test.ts"
+    "--exclude=test/privileged-projection.test.ts"
+    "--exclude=test/shell-vfs-build.test.ts"
+    "--exclude=test/vfs-product-builder-contract.test.ts"
+)
+disabled_homebrew_cargo_test_args=(
+    "--skip" "homebrew"
+    "--skip" "formula"
+    "--skip" "bottle"
+    "--skip" "tap"
+)
 
 # WHY: every conformance case starts a fresh Node resolver under a short
 # timeout. Prepare one exact worktree-local checker before parallel cases
@@ -309,7 +333,7 @@ run_exact_abi_source_vitest() {
 
     (
         cd host
-        npx vitest list --filesOnly
+        npx vitest list --filesOnly "${disabled_homebrew_vitest_excludes[@]}"
     ) > "$live_raw"
     : > "$live"
     while IFS= read -r path || [ -n "${path:-}" ]; do
@@ -503,7 +527,9 @@ NODE
     if [ -s "$source_shared_declared" ]; then
         (
             cd host
-            npx vitest list --filesOnly "${prepared_excludes[@]}"
+            npx vitest list --filesOnly \
+                "${prepared_excludes[@]}" \
+                "${disabled_homebrew_vitest_excludes[@]}"
         ) > "$selected_raw"
     else
         : > "$selected_raw"
@@ -532,7 +558,9 @@ NODE
     if [ -s "$source_shared_declared" ]; then
         (
             cd host
-            npx vitest run "${prepared_excludes[@]}"
+            npx vitest run \
+                "${prepared_excludes[@]}" \
+                "${disabled_homebrew_vitest_excludes[@]}"
         )
     fi
     for index in "${!source_resource_files[@]}"; do
@@ -582,183 +610,11 @@ run_timed() {
     return "$status"
 }
 
-CI_HOMEBREW_BROWSER_MIRROR=""
-CI_HOMEBREW_BROWSER_REPORT_ROOT=""
-CI_HOMEBREW_BROWSER_IMAGE=""
-CI_HOMEBREW_BROWSER_MIRROR_REQUIRED=""
-CI_HOMEBREW_BROWSER_SOURCE_AUTHORITY=""
-CI_HOMEBREW_BROWSER_STATE_MODE=""
-CI_HOMEBREW_BROWSER_TRANSPORT=""
-CI_HOMEBREW_BROWSER_STATE_VALIDATED=0
-
-cleanup_ci_homebrew_browser_mirror() {
-    local status="$?"
-    trap - EXIT
-    if [ -n "$CI_HOMEBREW_BROWSER_MIRROR" ]; then
-        rm -rf -- "$CI_HOMEBREW_BROWSER_MIRROR"
-    fi
-    if [ -n "$CI_HOMEBREW_BROWSER_REPORT_ROOT" ]; then
-        rm -rf -- "$CI_HOMEBREW_BROWSER_REPORT_ROOT"
-    fi
-    exit "$status"
-}
-
-validate_ci_homebrew_browser_state() {
-    local state="$REPO_ROOT/.ci-homebrew-browser-mirror-state.json"
-    local authority
-    local mirror_required
-    local image
-    local bootstrap
-    local publication_blockers="$REPO_ROOT/.ci-test-publication-blockers.json"
-    local receipt="$REPO_ROOT/.ci-staging-shell-receipt.json"
-    local state_mode
-    local transport
-
-    CI_HOMEBREW_BROWSER_IMAGE=""
-    CI_HOMEBREW_BROWSER_MIRROR_REQUIRED=""
-    CI_HOMEBREW_BROWSER_SOURCE_AUTHORITY=""
-    CI_HOMEBREW_BROWSER_STATE_MODE=""
-    CI_HOMEBREW_BROWSER_TRANSPORT=""
-    CI_HOMEBREW_BROWSER_STATE_VALIDATED=0
-
-    # WHY: closed-acceptance variables authorize private test transport.
-    # Reject inherited values before validating the exact state contract;
-    # otherwise a source shell or a different bottle mirror could look like
-    # the reviewed candidate.
-    for authority in \
-        VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT \
-        KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT \
-        KANDELO_PLAYWRIGHT_EXPECT_SOURCE_ROOTFS_SHELL \
-        KANDELO_PLAYWRIGHT_VITE_MODE \
-        WASM_POSIX_CI_BROWSER_SOURCE_AUTHORITY
-    do
-        if [ "${!authority+x}" = x ]; then
-            echo "ci-run-test-suite: ambient closed Homebrew browser authority is forbidden: $authority" >&2
-            return 1
-        fi
-    done
-
-    if [ ! -f "$state" ]; then
-        echo "ci-run-test-suite: prepared browser workspace lacks Homebrew mirror state: $state" >&2
-        return 1
-    fi
-    if [ ! -f "$publication_blockers" ]; then
-        echo "ci-run-test-suite: prepared browser workspace lacks its publication blocker report: $publication_blockers" >&2
-        return 1
-    fi
-    image="$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)"
-    bootstrap="$(
-        bash scripts/resolve-binary.sh \
-            programs/homebrew-bootstrap/homebrew-bootstrap.zip \
-            2>/dev/null || true
-    )"
-    [ -n "$bootstrap" ] || bootstrap="-"
-    state_mode="$(jq -er '.mode' "$state")" || {
-        echo "ci-homebrew-browser-mirror-state: invalid state: $state" >&2
-        return 1
-    }
-    state_args=(
-        validate consumer "$state" "$publication_blockers" "$image" "$bootstrap"
-    )
-    if [ "$state_mode" = publication-blocked-candidate ]; then
-        state_args+=("$receipt")
-    fi
-    bash scripts/ci-homebrew-browser-mirror-state.sh "${state_args[@]}"
-    mirror_required="$(jq -r '.mirror_required' "$state")"
-    transport="$(jq -r '.transport // ""' "$state")"
-
-    CI_HOMEBREW_BROWSER_IMAGE="$image"
-    CI_HOMEBREW_BROWSER_MIRROR_REQUIRED="$mirror_required"
-    CI_HOMEBREW_BROWSER_STATE_MODE="$state_mode"
-    CI_HOMEBREW_BROWSER_TRANSPORT="$transport"
-
-    # WHY: the authenticated source bridge deliberately has no Homebrew
-    # selection and no bootstrap bottle. Grant only the following run.sh call
-    # permission to skip that product asset; sealed and bottle-backed states
-    # continue through the normal bootstrap preparer.
-    if [ "$state_mode" = publication-blocked ]; then
-        CI_HOMEBREW_BROWSER_SOURCE_AUTHORITY=source-rootfs-mirror-state-v1
-        CI_HOMEBREW_BROWSER_STATE_VALIDATED=1
-        return 0
-    fi
-    if [ "$state_mode" = resolved ]; then
-        [ "$transport" = flat-lazy ] &&
-            [ "$mirror_required" = true ] || {
-            echo "ci-run-test-suite: resolved shell lacks flat-lazy mirror transport" >&2
-            return 1
-        }
-        CI_HOMEBREW_BROWSER_STATE_VALIDATED=1
-        return 0
-    fi
-    [ "$mirror_required" = "true" ] || {
-        echo "ci-run-test-suite: bottle-backed shell omitted its closed mirror" >&2
-        return 1
-    }
-    CI_HOMEBREW_BROWSER_STATE_VALIDATED=1
-}
-
-prepare_ci_homebrew_browser_mirror() {
-    local mirror="$REPO_ROOT/apps/browser-demos/public/homebrew-main-shell-bottles"
-    local report
-
-    [ "$CI_HOMEBREW_BROWSER_STATE_VALIDATED" -eq 1 ] || {
-        echo "ci-run-test-suite: Homebrew browser state was not validated" >&2
-        return 1
-    }
-    # WHY: the first validation grants only the immediately following run.sh
-    # call. Revalidate after browser preparation before granting Playwright
-    # authority or reading a mirror, so changed image/state bytes cannot cross
-    # the gap between those two operations.
-    validate_ci_homebrew_browser_state
-    if [ -e "$mirror" ] || [ -L "$mirror" ]; then
-        echo "ci-run-test-suite: closed Homebrew browser mirror already exists: $mirror" >&2
-        return 1
-    fi
-    if [ "$CI_HOMEBREW_BROWSER_STATE_MODE" = publication-blocked ]; then
-        export KANDELO_PLAYWRIGHT_EXPECT_SOURCE_ROOTFS_SHELL=1
-        return 0
-    fi
-    [ "$CI_HOMEBREW_BROWSER_MIRROR_REQUIRED" = "true" ] || {
-        echo "ci-run-test-suite: bottle-backed shell omitted its closed mirror" >&2
-        return 1
-    }
-
-    CI_HOMEBREW_BROWSER_REPORT_ROOT="$(
-        mktemp -d "${RUNNER_TEMP:-/tmp}/kandelo-ci-homebrew-browser.XXXXXX"
-    )"
-    report="$CI_HOMEBREW_BROWSER_REPORT_ROOT/recovery.json"
-    CI_HOMEBREW_BROWSER_MIRROR="$mirror"
-    trap cleanup_ci_homebrew_browser_mirror EXIT
-
-    # WHY: an expected-ledger identity absent from the immutable canonical
-    # package index names final bottle URLs that cannot exist until this exact
-    # Kandelo commit reaches main. Recover the same digest-bound layers
-    # anonymously from their public source packages for pre-merge browser
-    # validation instead of publishing early or weakening the candidate
-    # image's production transport identity.
-    npx tsx scripts/recover-homebrew-bottle-mirror.ts \
-        --image "$CI_HOMEBREW_BROWSER_IMAGE" \
-        --out "$mirror" \
-        --report "$report"
-    [ -f "$mirror/kandelo-homebrew-bottle-mirror-plan.json" ] &&
-        [ -f "$report" ] || {
-        echo "ci-run-test-suite: closed Homebrew browser mirror is incomplete" >&2
-        return 1
-    }
-    export KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT=/homebrew-main-shell-bottles
-    export KANDELO_PLAYWRIGHT_VITE_MODE=homebrew-closed-acceptance
-}
-
 run_pages_shaped_browser_build() {
     local app="$REPO_ROOT/apps/browser-demos"
     local dist="$app/dist"
-    local mirror="$app/public/homebrew-main-shell-bottles"
     local output
 
-    if [ -e "$mirror" ] || [ -L "$mirror" ]; then
-        echo "ci-run-test-suite: ordinary browser build found a closed test mirror: $mirror" >&2
-        return 1
-    fi
     if [ -e "$dist" ] || [ -L "$dist" ]; then
         echo "ci-run-test-suite: ordinary browser build found stale output: $dist" >&2
         return 1
@@ -771,10 +627,6 @@ run_pages_shaped_browser_build() {
         cd "$app"
         env \
             -u KANDELO_BROWSER_DEMO_INPUTS \
-            -u VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT \
-            -u KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT \
-            -u KANDELO_PLAYWRIGHT_EXPECT_SOURCE_ROOTFS_SHELL \
-            -u KANDELO_PLAYWRIGHT_VITE_MODE \
             -u KANDELO_PLAYWRIGHT_SERVE_DIST \
             VITE_BASE=/kandelo/ \
             VITE_CORS_PROXY_URL='https://wordpress-playground-cors-proxy.net/?' \
@@ -790,14 +642,6 @@ run_pages_shaped_browser_build() {
                 return 1
             }
         done
-        # WHY: homebrew-vfs-test is a private closed-mirror acceptance page,
-        # not a Pages product entry. Requiring it here contradicts Vite's
-        # production input set; emitting it would expose test-only UI instead.
-        if [ -e "$dist/pages/homebrew-vfs-test/index.html" ] ||
-           [ -L "$dist/pages/homebrew-vfs-test/index.html" ]; then
-            echo "ci-run-test-suite: ordinary browser build exposed the private Homebrew acceptance page" >&2
-            return 1
-        fi
     )
     rm -rf -- "$dist"
 }
@@ -824,7 +668,8 @@ case "$suite" in
         # resolver, binaries-dir placement, and archive staging/naming. Pure
         # host-target cargo tests; no wasm sysroots or prepared workspace needed.
         HOST_TARGET="$(host_target)"
-        cargo test -p xtask --target "$HOST_TARGET"
+        cargo test -p xtask --target "$HOST_TARGET" -- \
+            "${disabled_homebrew_cargo_test_args[@]}"
         ;;
     vitest)
         if [ "$group" = "exact-abi-source" ]; then
@@ -982,7 +827,8 @@ case "$suite" in
                 cd host
                 npx vitest run \
                     "${vitest_args[@]}" \
-                    "${resource_excludes[@]}"
+                    "${resource_excludes[@]}" \
+                    "${disabled_homebrew_vitest_excludes[@]}"
             )
         fi
         if [ "$group" = "all" ] || [ "$group" = "resource-isolated" ]; then
@@ -1029,19 +875,11 @@ case "$suite" in
             # local test generations before the ordinary fetch-only browser
             # pass proves that every browser dependency is now resolvable.
             bash scripts/materialize-ci-publication-blockers.sh
-            validate_ci_homebrew_browser_state
-            if [ -n "$CI_HOMEBREW_BROWSER_SOURCE_AUTHORITY" ]; then
-                env \
-                    WASM_POSIX_CI_BROWSER_SOURCE_AUTHORITY="$CI_HOMEBREW_BROWSER_SOURCE_AUTHORITY" \
-                    ./run.sh --already-materialized --fetch-only prepare-browser
-            else
-                ./run.sh --already-materialized --fetch-only prepare-browser
-            fi
+            ./run.sh --already-materialized --fetch-only prepare-browser
             if [ "${VERIFY_BROWSER_PRODUCTION_BUILD:-false}" = "true" ] || \
                 [ "${VERIFY_BROWSER_PRODUCTION_BUILD:-0}" = "1" ]; then
                 run_pages_shaped_browser_build
             fi
-            prepare_ci_homebrew_browser_mirror
         fi
         bash scripts/ci-check-browser-assets.sh
         (

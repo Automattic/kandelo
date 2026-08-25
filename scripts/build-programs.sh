@@ -323,9 +323,8 @@ for src in "$REPO_ROOT/programs/"*.c; do
     # by build_program's header-based auto-detection.
     case "$(basename "$src")" in
         login.c|sudo-lite.c)
-            # WHY: Task 18's reviewed Homebrew bottles own the product paths.
-            # These local builds exist only so runtime tests can exercise the
-            # guest sources before those immutable products are available.
+            # Package recipes own the image artifacts. Keep ordinary local
+            # copies only as runtime test fixtures.
             build_program "$src" "$TEST_FIXTURE_DIR/wasm32"
             ;;
         modeset.c|dri-modeset.c|dumb_roundtrip.c)

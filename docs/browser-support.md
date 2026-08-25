@@ -169,7 +169,10 @@ pipe pair.
 - In-kernel IPv4/IPv6 loopback datagrams, AF_UNIX datagrams, and IPv4 multicast are process-local; machine-wide datagram routing is still pending
 - `LocalVirtualNetwork` attaches multiple browser Kandelo machines to virtual IPv4 addresses in one browser session
 - Browser networking backends preserve valid decimal one-, two-, three-, and four-component IPv4 forms, reject malformed/overflowing numeric forms, enforce ASCII host-label syntax and DNS length limits, and synthesize IPv4 addresses only for acceptable hostnames; they do not provide AF_INET6 DNS/transport
-- GNU Netcat (`nc`) and `curl` run against those virtual sockets in the network lab at `/pages/network/`
+- The network lab at `/pages/network/` is intended to run GNU Netcat (`nc`)
+  and `curl` against those virtual sockets. Its current browser verification is
+  deferred by the multi-kernel scheduling limitation documented below; the
+  equivalent packaged-netcat virtual-network path remains covered on Node.js.
 - Service worker cookie jar for session persistence (WordPress)
 - nginx serves static files and proxies to PHP-FPM via loopback TCP
 
@@ -450,50 +453,49 @@ Pages presentation membership is a separate reviewed authority at
 It maps every selected Pages product to the preset IDs that present that image.
 The Pages registry check requires exact product-ID parity, requires every
 declared preset to exist in `presets.ts`, and verifies the preset's VFS-image
-mapping in `live-setup.ts`. The production Pages composer derives site metadata
+mapping in `live-setup.ts`. The retained Pages composer derives site metadata
 from those exact current-main authorities and the built site tree, and binds
 each normalized `vfs_image` mapping into the site identity; workflows do not
 supply self-authorizing gallery or file inventories.
 
-Protected main workflows invoke `scripts/abi-staging-pages-producer.ts produce`
+Hosted Pages publication is disabled, but its registry, producer, and local
+fixtures remain reviewable and continue to fail closed. Before disablement,
+protected main workflows invoked `scripts/abi-staging-pages-producer.ts produce`
 with a bounded handoff naming the exact clean checkout, runtime bundle/root,
 built site root, run identity, and current package/archive/program-index roots.
-The producer discovers immutable candidate and admission records anonymously,
-recaptures non-Homebrew inputs, and executes the normal VFS builders plus both
-host evidence supervisors. Every selected product must carry its exact
-current-main recapture. Embedded recaptures remain path-only builder inputs;
-only lazy recaptures receive Pages input URLs. Embedded product dependencies
-use the distinct ABI-, product-, digest-, and byte-bound Pages product URL.
-During pre-deployment evidence, canonical Pages, Homebrew, and prior-product
-lazy URLs remain the image authority while their authenticated current bytes
-are supplied through a closed local transport.
-The exact browser runtime uses a dedicated evidence build of the real root UI.
-That build keeps the exact kernel asset but maps ordinary demo rootfs and
+The producer discovered immutable candidate and admission records anonymously,
+recaptured package inputs, and executed the normal VFS builders plus both host
+evidence supervisors. Every selected product had to carry its exact
+current-main recapture. Embedded recaptures remained path-only builder inputs;
+only lazy recaptures received Pages input URLs. Embedded product dependencies
+used the distinct ABI-, product-, digest-, and byte-bound Pages product URL.
+During pre-deployment evidence, canonical Pages and prior-product lazy URLs
+remained the image authority while authenticated current bytes were supplied
+through a closed local transport.
+The exact browser runtime used a dedicated evidence build of the real root UI.
+That build kept the exact kernel asset but mapped ordinary demo rootfs and
 program fallbacks to unavailable URLs. Candidate VFS and lazy inputs therefore
-come only from the protected evidence handoff; an accidental fallback fetch is
-observed as a failed, unexpected request instead of making runtime preparation
-depend on unrelated package archives before product composition.
-An incomplete product set emits only `readiness.json`; a complete set emits the
-canonical artifacts, site manifest, and inert source tree for the Pages job.
-The canary validates that record before selecting its artifact protocol.
-A hold has exactly that one file, reports its digest and blockers, and
-uses ordinary bounded artifact retention; it never invokes the Pages
-artifact action. Only a ready result validates and uploads the complete
-inert Pages source tree.
+came only from the protected evidence handoff; an accidental fallback fetch
+was observed as a failed, unexpected request instead of making runtime
+preparation depend on unrelated package archives before product composition.
+An incomplete product set emitted only `readiness.json`; a complete set
+emitted the canonical artifacts, site manifest, and inert source tree for the
+Pages job.
+The canary validated that record before selecting its artifact protocol. A
+hold had exactly that one file, reported its digest and blockers, and used
+ordinary bounded artifact retention; it never invoked the Pages artifact
+action. Only a ready result validated and uploaded the complete inert Pages
+source tree.
 
-Hosted rollout follows the same distinction. The expected
-pre-admission run is a hosted hold for inactive Task 10 preparation, not
-a readiness or deployment gate. Operators then complete successor
-promotion and admissions, rerun the canary, and require a ready result.
-Only after that evidence may activation and deployment proceed through
-their separately authorized path.
+That hosted rollout remains dormant. Re-enabling it requires a separate
+reviewed change that revalidates package-backed product inputs and restores an
+explicit deployment trigger; retained readiness files are not authorization.
 
 Selection preserves both lazy boundaries. A consumer may lazily compose a
-whole VFS product, and a selected product may in turn retain lazy bottle or
-package layers. Product-derived Formula roots are not copied into either
-consumer registry. This prevents a product from placing itself on Pages and
-prevents Pages or tests from becoming competing software dependency
-authorities.
+whole VFS product, and a selected product may in turn retain lazy package
+layers. Product-derived package roots are not copied into either consumer
+registry. This prevents a product from placing itself on Pages and prevents
+Pages or tests from becoming competing software dependency authorities.
 
 The atomic local snapshot gate also drives the one producer-returned, assembled
 seven-product tree through the production `/kandelo/` Vite base, service
@@ -521,7 +523,7 @@ Browser demos use pre-built **VFS images** — binary snapshots of a `MemoryFile
    it does not raise the filesystem maximum beyond the image's superblock
    limit.
 
-The canonical Homebrew shell has a 512 MiB filesystem ceiling. Products that
+The canonical package shell has a 512 MiB filesystem ceiling. Products that
 copy that shell and add their own application tree use a separate 768 MiB
 profile: SharedFS derives its fixed inode-table size from the declared byte
 ceiling, so merely having free data blocks does not guarantee that another
@@ -530,17 +532,15 @@ unless at least 64 MiB of data blocks and 8,192 inode slots remain after its
 immutable contents are written. This makes runtime allocation space a checked
 artifact contract instead of allowing an image to build successfully and then
 fail with `ENOSPC` during normal browser initialization. The shared save helper
-also preserves the shell's ABI, Homebrew provenance, deferred package-tree
-bindings, and bootstrap ownership metadata while rebinding the exact shell
-artifact as the derived product's direct base, refreshing the product's demo
-configuration digest, and replacing its builder id and capacity. It requires
+also preserves the shell's ABI and exact package-shell composition while
+rebinding the exact shell artifact as the derived product's direct base and
+replacing its builder id and capacity. It validates the inherited experimental
+terminal-session declaration and requires
 the serialized artifact's encoded growth ceiling and capacity metadata to equal
 the 768 MiB product profile. A future product that intentionally needs a larger
 reviewed profile must pass that exact ceiling explicitly rather than silently
 drifting from its browser consumer; an override cannot select a smaller
-profile. The Homebrew main-shell composer applies the same serialized-ceiling
-check against its selected `--max-bytes` contract before it creates the output
-artifact. Host-tree copies fail the build on any read or VFS write error.
+profile. Host-tree copies fail the build on any read or VFS write error.
 Intentional omissions are declared through the copy helper's `exclude` option,
 and every unexcluded symlink must be preserved explicitly or the build fails.
 
@@ -651,8 +651,9 @@ file no larger than 256 KiB, contain valid UTF-8 and JSON, and use a supported
 version. The loader validates every profile before using any of them, so a
 malformed unselected profile cannot hide behind the current URL. Producers
 that already have a reviewed canonical JSON file may copy those exact bytes;
-the bottle-built main shell uses `homebrew/main-shell-demo.json` as the single
-source shared with the legacy image builder.
+the package-built main shell uses
+`packages/registry/shell/source-rootfs-shell-demo.json` as its single reviewed
+source.
 
 VFS images do not need to serialize placeholder device nodes. Both Node and
 browser boot replace `/dev` with the authoritative `DeviceFileSystem` and mount
@@ -701,64 +702,56 @@ button groups, an editable shell script, and optional companion HTML:
 }
 ```
 
-### Image-owned default shells
+### Experimental image-owned terminal sessions
 
-An image that contains its own interactive shell can select it with
-`/etc/kandelo/shell.json`:
+An image selects its terminal program with the strict experimental file
+`/etc/kandelo/experimental-terminal-session.json`:
 
 ```json
 {
+  "kind": "kandelo-experimental-terminal-session",
   "version": 1,
-  "path": "/opt/kandelo/homebrew/bin/dash",
-  "argv": ["dash", "-l", "-i"]
+  "initial": {
+    "path": "/usr/bin/login",
+    "argv": ["login", "-p", "-f", "maker"],
+    "uid": 0,
+    "gid": 0
+  },
+  "afterExit": {
+    "path": "/usr/bin/login",
+    "argv": ["login", "-p"],
+    "uid": 0,
+    "gid": 0
+  }
 }
 ```
 
-The Kandelo browser loader validates this file before boot, verifies that
-`path` is an executable regular file in the restored VFS, and starts it through
-the kernel's normal VFS `exec` path. It does not download or overwrite the
-legacy Bash and Dash programs when this declaration is present. Images without
-the file retain the existing `/bin/bash` fallback.
+This file completely replaces `/etc/kandelo/shell.json`; the browser neither
+reads the old path nor supplies a fallback shell. The experimental name is an
+intentional warning that this image-facing session-supervision contract is not
+stable. A missing, malformed, oversized, or unsupported declaration fails
+loudly.
 
-The declaration deliberately does not contain environment variables, a
-working directory, or user IDs. Those remain boot-descriptor policy; the image
-owns only the executable it contains and its startup arguments. Paths must be
-absolute and normalized, argument counts and byte sizes are bounded, shell
-executables are limited to 64 MiB, extra fields are rejected, and an
-unsupported version fails loudly.
+The loader parses the declaration from the fully staged VFS image, rejects
+unknown fields, bounds the document, paths, arguments, and guest IDs, requires
+normalized absolute executable paths, and verifies each configured program is
+an executable regular file. It then launches the program through the kernel's
+normal VFS `exec` path. First-party and custom images use exactly the same
+parser and supervisor; image origin does not select terminal behavior.
 
-Login shells read `/etc/profile`. Kandelo's rootfs and shell images source
-readable `/etc/profile.d/*.sh` fragments there, so an image composer can add
-package-manager environment setup without teaching the browser about a
-particular package or prefix.
+Each newly allocated logical terminal starts `initial` once. When that process
+exits, the same terminal starts `afterExit`, when present, with bounded restart
+backoff. Closing and reopening the terminal UI only detaches and reattaches its
+renderer; it neither repeats the initial program nor replaces the guest
+process. Removing the logical terminal, detaching the kernel, rebooting, or
+destroying the host stops its active process and cancels pending restarts.
 
-Under the current browser trust boundary, a supervised demo login requires the
-final fully staged image to contain exactly one canonical `maker` passwd,
-shadow, and wheel record, the exact sudoers policy and autologin message, and
-an exact local `/usr/bin/login` byte match for a separately
-publisher-admitted privileged product. The loader makes this decision after
-configured assets and lazy inputs have been staged, then boots through
-`BrowserKernel.initFromPublishedPrivilegedProgramProduct`. A raw image,
-descriptor, or demo configuration cannot mint that private capability.
-Conversely, image origin is not a gate: an otherwise third-party image with
-the exact final state remains eligible when paired with a separately admitted
-product. This documents current repository behavior only; the broader trust
-model for deliberately user-selected images remains unresolved.
-
-For an eligible image/product pair, each newly allocated logical terminal
-starts root-authorized `login -p -f maker` once.
-When that login shell exits, the same terminal starts ordinary `login -p` with
-a bounded restart delay. Closing and reopening the terminal UI only detaches
-and reattaches its renderer; it neither repeats autologin nor replaces the
-guest process. The explicit close control in the terminal tab removes the
-logical terminal; that action, kernel detach, reboot, and host destruction
-stop the active process and cancel pending restarts.
-
-Images that do not satisfy the complete final predicate, or that have no
-separately admitted product, retain their declared default shell. The browser
-does not infer readiness from an arbitrary unlocked password or implement
-authentication in React; both preauthentication and password verification
-remain in the guest `login` program and VFS state.
+The canonical rootfs uses root-started `login -p -f maker` as `initial`, then
+ordinary `login -p` after logout. Authentication and preauthentication remain
+inside the guest `login` program and ordinary VFS account files, not React.
+`login` is an eager root-owned `04755` package output; `sudo-lite` and `sudo`
+are root-owned `04755` lazy outputs. The writable root image honors those
+set-ID modes unless its mount explicitly requests `nosuid`.
 
 `terminal.run` sends a command through the persistent PTY-backed shell.
 `terminal.write` sends raw text to that PTY, which is useful for entering input
@@ -777,7 +770,7 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | Python (legacy opt-in) | `python-vfs.vfs.zst` | `bash packages/registry/python-vfs/build-python-vfs.sh` | ABI-bound CPython interpreter, complete stdlib, license, aliases, and demo metadata |
 | Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
-| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the sealed flat-lazy bottle closure selected by `homebrew/main-shell-flat-selection.json`; Bash is embedded, the bootstrap/libyaml/Ruby cohort is prepared at boot, and 35 ordinary bottle trees remain first-use |
+| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | package-built platform rootfs plus shell demo assets; Bash and login are embedded, while sudo and the ordinary command set remain first-use package outputs |
 | Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | exact lazy shell image plus the package-resolved Node executable, npm 10.9.2 distribution, writable `/work`, and Node demo metadata |
 | WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
@@ -799,9 +792,17 @@ images can be materialized from a current public package archive; the normal
 resolver falls back to the package's source recipe when needed. The `run.sh`
 script handles this automatically before starting the browser.
 
-Homebrew-derived browser images are external artifacts, not bundled into the
-app. The trusted Homebrew publisher first pours wasm32 bottles into a
-precomposed `.vfs.zst`, boots those exact bytes in Node and Chromium, and runs
+### Disabled Homebrew image integration
+
+Homebrew build, test, publication, and browser-image integration is currently
+disabled. The repository retains dormant Homebrew implementation sources for
+possible later reconsideration, but ordinary package resolution does not
+discover `homebrew-bootstrap`, active workflows do not build or publish it,
+and local/CI validation excludes Homebrew tests. The material below describes
+that inactive implementation and is not a supported product path.
+
+The dormant Homebrew publisher poured wasm32 bottles into a
+precomposed `.vfs.zst`, booted those exact bytes in Node and Chromium, and ran
 the tap-selected smoke command. When the caller seals that dependency-bearing
 acceptance as required, the publisher stores the exact image, report, evidence,
 and `kandelo-homebrew-vfs.json` descriptor in the source tap's public,
@@ -810,7 +811,7 @@ content-addressed `homebrew-vfs-sha256-<image-sha256>` release. The descriptor's
 `?vfs=<url>` path. The publisher anonymously reads every release asset back and
 verifies its digest and size before reporting success.
 
-The main shell can also consume explicitly selected Homebrew runtime layers
+The dormant main-shell implementation also accepted selected Homebrew runtime layers
 through version-1 boot-descriptor mounts whose source is `package-layer`.
 These mounts are root overlays described by an unauthenticated HTTPS URL plus
 an exact descriptor byte count and `sha256:<digest>` reference. The shared
@@ -853,20 +854,10 @@ fallback or VFS commit. Standard `AbortError`/`ABORT_ERR` failures remain the
 compatibility fallback when no signal is registered. Other 4xx responses and
 size, digest, or decode failures do not consume the same-URL retry budget.
 
-A public browser consumer cannot supply privileged projections through compose
-options, boot requests, descriptors, or shared URLs. Product-owned browser code
-may select a compiled reviewed profile whose opaque, non-serializable
-capability never enters those input records. Its projections are rebound to
-the descriptor's exact Formula owner, bottle digest, and complete source
-inventory. The owning bottle is materialized within the private composition
-transaction; unrelated bottles stay lazy. Chromium, Firefox, and WebKit use
-the same copy-and-admit path as Node and receive a separate immutable product
-backend, while the composed Homebrew filesystem remains the writable `nosuid`
-tree. `BrowserKernel.initFromPublishedPrivilegedProgramProduct` accepts only
-that exact published object and overlays its privately retained, immutable
-`/usr/bin` projection in the VFS-owning worker. Ordinary image init and all
-public descriptor/URL inputs remain `nosuid` and cannot populate the private
-worker message.
+The retained sources include historical privileged-projection composition
+helpers, but they are not connected to `BrowserKernel`, active products, or
+validation. Ordinary and custom images instead use the same POSIX set-ID and
+explicit-`nosuid` rules described above.
 There is no per-file or byte-range retrieval inside the gzip/TAR. A failed
 fetch, digest,
 decode, inventory check, or allocation leaves every regular inode pending and
@@ -1003,7 +994,10 @@ is wasm32 success, has an `archive_url`, and sets
 `browser_compatible = true`. Launch-time archive failures are surfaced in the
 UI instead of silently hiding the rest of the gallery.
 
-### Current ABI-42 shell publication (2026-08-13)
+### Dormant ABI-42 Homebrew shell record (2026-08-13)
+
+This subsection is retained only as a record of the disabled integration; it
+does not describe the current shell product.
 
 The normal shell page resolves the package archive built from
 `homebrew/main-shell-flat-selection.json`. The image embeds Bash and its two
@@ -1048,34 +1042,33 @@ builder. Individual legacy image targets remain available for focused work:
 ```
 
 The main shell target resolves the canonical `packages/registry/shell` package
-into `local-binaries`; it does not invoke the image recipe or fbDOOM build
-directly. The package recipe restores the exact platform base, verifies the
-flat selection and its resource policy, embeds the boot-critical base, records
-the sealed lazy bottle trees and mirror plan, writes the shell and demo configs,
-and serializes one image without fetching deferred bottle trees.
+into `local-binaries`; it does not invoke another package's source tree or
+fbDOOM build directly. The package recipe restores the exact package-built
+platform rootfs, adds the package-owned shell demo data, and serializes one
+image. Bash and `login` are embedded boot inputs. `sudo-lite`, upstream `sudo`,
+and the ordinary command set retain authenticated package-backed lazy outputs
+that resolve through the normal VFS path on first use.
 `./run.sh --fetch-only build shell-vfs` refuses source fallback.
 
 Shell-derived packages consume that resolved image as a declared dependency.
-Their builders preserve capacity, ABI, lazy transports and seals, bootstrap and
-mirror bindings, and record the exact shell digest and byte count in their own
+Their builders preserve capacity, ABI identity, package-backed lazy transports
+and seals, and record the exact shell digest and byte count in their own
 metadata. A revision bump on the shell therefore changes the cache key of
 `node-vfs`, `nginx-vfs`, `nginx-php-vfs`, `lamp`, and `wordpress` through the
 normal dependency graph.
 
-GitHub Pages is a package consumer, not a producer. It has no `main`-push or
-pull-request trigger. Activation dispatches the single complete-tree workflow
-only after the canonical index moves and the public bottle mirror is readable.
-The deployment resolves `shell`, `node-vfs`, and `homebrew-bootstrap` in one
-fresh fetch-only cache, atomically stages the exact bootstrap ZIP, and verifies
-the public 37-asset mirror before building. The deployed tree records its source
-and index generation; scheduled activation compares that public record and
-retries a missed or failed dispatch without reopening the terminal candidate.
+Hosted GitHub Pages publication is disabled. Its retained workflow is outside
+the active workflow directory, and package activation no longer dispatches a
+deployment. The normal `run.sh browser` path and pull-request browser suite
+remain active consumers of the same package-built VFS products. Re-enabling a
+hosted site requires separate review and fresh package-backed deployment
+evidence; an older hosted site is not evidence for the current source or
+package index.
 
-The dormant source-rootfs and eager closed-selection implementations remain
-diagnostic and historical recovery plumbing. The normal `run.sh`
-browser path, package staging, and Pages workflow do not invoke them. Persisted
-canonical flat-lazy images retain their authenticated pending transports when
-reopened; retired lazy formats do not gain compatibility shims.
+The dormant Homebrew, source-rootfs, and eager closed-selection implementations
+remain diagnostic and historical recovery plumbing. Normal browser startup,
+package staging, and active continuous integration do not invoke them. Retired
+lazy formats do not gain compatibility shims.
 
 ### Adding a new VFS image
 
@@ -1245,6 +1238,18 @@ resolve it again.
 
 ### SharedArrayBuffer restrictions
 Chrome rejects SharedArrayBuffer-backed views in `TextDecoder.decode()` and `crypto.getRandomValues()`. Always copy to a temporary non-shared buffer first.
+
+### Network lab multi-kernel completion
+
+The `/pages/network/` demo currently has a browser-worker scheduling
+regression when two independent kernel instances run GNU Netcat concurrently.
+The UDP payload is delivered through `LocalVirtualNetwork` and appears in the
+receiver's stdout, but both process workers can stop making progress before
+exit; the subsequent TCP and curl scenarios therefore do not start. The
+Playwright scenario is marked as an explicit expected gap until the browser
+multi-kernel completion path is fixed. Node.js virtual-network tests continue
+to exercise packaged Netcat UDP and TCP traffic, so this limitation does not
+claim that browser completion is working based on Node-only evidence.
 
 ### No external raw sockets
 Browser sandboxing prevents Kandelo from listening on real network ports or opening raw TCP/UDP sockets to arbitrary external peers. Local loopback sockets and `LocalVirtualNetwork` listeners are virtual sockets inside the browser session, so Kandelo machines can still communicate with each other using POSIX UDP/TCP. Browser-facing HTTP server demos use a service worker to intercept HTTP requests and inject them as kernel TCP connections via the connection pump.

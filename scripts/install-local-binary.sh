@@ -468,7 +468,22 @@ install_local_binary() {
     fi
     case "$declared_policy" in
         auto)
-            if wasm_imports_kernel_fork "$src" && ! wasm_has_complete_fork_instrumentation "$src"; then
+            local artifact_role=executable role_status=0 imports_kernel_fork=0
+            wasm_imports_kernel_fork "$src" && imports_kernel_fork=1
+            # `dylink.0` is an exact Wasm custom-section name, so it is present
+            # as plain bytes. Use that only as a cheap prefilter: structural
+            # role classification remains authoritative for every candidate.
+            # Ordinary Wasm and non-Wasm package data must not need the host
+            # artifact-identity tool merely to prove that they are not sides.
+            if wasm_is_binary "$src" && grep -a -q 'dylink\.0' "$src"; then
+                artifact_role="$(wasm_artifact_role "$src")" || role_status=$?
+                if [ "$role_status" -ne 0 ]; then
+                    echo "install_local_binary: unable to classify wasm artifact role for '$src'" >&2
+                    return 1
+                fi
+            fi
+            if { [ "$imports_kernel_fork" = 1 ] || [ "$artifact_role" = side-module ]; } \
+                && ! wasm_has_complete_fork_instrumentation "$src"; then
                 # WHY reject every partial ABI marker before reinstrumenting:
                 # adding a second copy can turn one stale descriptor or frame
                 # hook into an artifact that instantiates but corrupts replay.

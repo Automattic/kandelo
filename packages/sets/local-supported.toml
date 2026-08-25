@@ -139,6 +139,10 @@ name = "libzip"
 class = "platform"
 
 [[packages]]
+name = "login"
+class = "platform"
+
+[[packages]]
 name = "lsof"
 class = "user-software"
 
@@ -271,6 +275,14 @@ name = "sqlite"
 class = "platform"
 
 [[packages]]
+name = "sudo"
+class = "platform"
+
+[[packages]]
+name = "sudo-lite"
+class = "platform"
+
+[[packages]]
 name = "tar"
 class = "user-software"
 
@@ -366,10 +378,6 @@ reason = "deferred software"
 [[exclusions]]
 name = "erlang-vfs"
 reason = "deferred product"
-
-[[exclusions]]
-name = "homebrew-bootstrap"
-reason = "forbidden Homebrew/prebuilt input"
 
 [[exclusions]]
 name = "python-vfs"

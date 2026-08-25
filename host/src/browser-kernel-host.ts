@@ -43,10 +43,6 @@ import { FILE_MODES } from "./generated/abi";
 import { BrowserPcmDriver } from "./audio/browser-pcm-driver";
 import type { PcmOutputState } from "./audio/pcm-driver";
 import type { PcmTransportDescriptor } from "./audio/pcm-transport";
-import {
-  snapshotPublishedPrivilegedProgramBrowserMount,
-  type PublishedPrivilegedProgramProduct,
-} from "./vfs/privileged-projection";
 
 const DESTROY_REQUEST_TIMEOUT_MS = 2_000;
 const MAX_PENDING_PTY_OUTPUT_BYTES = 64 * 1024;
@@ -351,42 +347,6 @@ export class BrowserKernel {
   }
 
   /**
-   * Overlay a publisher-admitted privileged program product at `/usr/bin` on
-   * an ordinary browser root image. The publisher's module-private brand is
-   * checked before any authority crosses into the owning worker; raw images,
-   * boot descriptors, and structurally similar objects use {@link initFromImage}
-   * and remain `nosuid`.
-   */
-  async initFromPublishedPrivilegedProgramProduct(options: {
-    kernelWasm?: ArrayBuffer;
-    vfsImage: Uint8Array | "default";
-    closedLazyAssets?: readonly ClosedLazyAsset[];
-    privilegedProduct: PublishedPrivilegedProgramProduct;
-  }): Promise<void> {
-    const privilegedProgramMount =
-      snapshotPublishedPrivilegedProgramBrowserMount(
-        options.privilegedProduct,
-      );
-    const [wasmBytes, vfsImage] = await Promise.all([
-      options.kernelWasm
-        ? Promise.resolve(options.kernelWasm)
-        : fetchDefaultBrowserKernelArtifact("kernelWasm"),
-      options.vfsImage === "default"
-        ? fetchDefaultBrowserKernelArtifact("rootfsVfs")
-            .then((bytes) => new Uint8Array(bytes))
-        : Promise.resolve(options.vfsImage),
-    ]);
-    await this.bootWorker({
-      kernelWasmBytes: wasmBytes,
-      vfsImage,
-      lazyUrlBase: import.meta.env.BASE_URL,
-      closedLazyAssets: options.closedLazyAssets,
-      takeVfsImageOwnership: false,
-      privilegedProgramMount,
-    });
-  }
-
-  /**
    * Load an image by transferring its one whole ordinary ArrayBuffer to the
    * VFS-owning worker. Unlike {@link initFromImage}, this deliberately
    * detaches the caller's buffer. Keeping the two entry points explicit
@@ -425,10 +385,6 @@ export class BrowserKernel {
     closedLazyAssets?: readonly ClosedLazyAsset[];
     rootfsMountSpec?: readonly MountSpec[];
     takeVfsImageOwnership: boolean;
-    privilegedProgramMount?: {
-      mountPoint: "/usr/bin";
-      imageBytes: Uint8Array;
-    };
   }): Promise<void> {
     if (
       opts.takeVfsImageOwnership &&
@@ -519,15 +475,6 @@ export class BrowserKernel {
           type: "init",
           kernelWasmBytes: transferBuf,
           vfsImage: opts.vfsImage,
-          ...(opts.privilegedProgramMount !== undefined
-            ? {
-                privilegedProgramMount: {
-                  kind: "published-privileged-program-product" as const,
-                  mountPoint: opts.privilegedProgramMount.mountPoint,
-                  imageBytes: opts.privilegedProgramMount.imageBytes,
-                },
-              }
-            : {}),
           lazyUrlBase: opts.lazyUrlBase,
           closedLazyAssets,
           rootfsMountSpec: opts.rootfsMountSpec === undefined
@@ -556,11 +503,6 @@ export class BrowserKernel {
           // prevents a second 512 MiB structured-clone allocation while the
           // worker restores its own kernel-owned filesystem.
           transfer.push(opts.vfsImage.buffer as ArrayBuffer);
-        }
-        if (opts.privilegedProgramMount !== undefined) {
-          transfer.push(
-            opts.privilegedProgramMount.imageBytes.buffer as ArrayBuffer,
-          );
         }
         for (const asset of closedLazyAssets ?? []) {
           // snapshotClosedLazyAssets always allocates one ordinary ArrayBuffer

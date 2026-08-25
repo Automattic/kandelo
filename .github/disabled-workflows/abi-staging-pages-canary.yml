@@ -1,4 +1,4 @@
-name: ABI staging Pages canary
+name: DISABLED - ABI staging Pages canary
 
 on:
   push:
