@@ -913,6 +913,83 @@ unsafe fn lay_msghdr_subbuffer(
     Ok((base as u32, next))
 }
 
+/// Lay a `select`/`pselect6` record's fd_set (and optional pselect6 sigmask)
+/// spans at the FIXED disjoint offsets [`validate_select_layout`] re-proves:
+/// fd_set arg `i` (`1..=3`) at `region.start + (i - 1) * FD_SET_BYTES`, and the
+/// pselect6 sigmask (arg 5) at `region.start + 3 * FD_SET_BYTES`.
+///
+/// The generic contiguous packing in [`prepare_channel_record`] would shift
+/// those offsets whenever a leading fd_set is null (the guest omits the span),
+/// so these two syscalls get an explicit by-arg placement pass instead. fd_sets
+/// are value-result (the kernel narrows them in place), so an `Out`/`InOut`
+/// span records a copy-back to its original record offset exactly like the
+/// generic path; the pselect6 sigmask is input-only.
+///
+/// # Safety
+///
+/// `region` must describe the live kernel-owned allocation, and every span in
+/// `decoded` must borrow the owned snapshot starting at `data_base`.
+unsafe fn prepare_select_record(
+    region: ChannelScratchRegion,
+    region_start: usize,
+    is_pselect6: bool,
+    decoded: &crate::channel_record_decode::DecodedSyscall<'_>,
+    data_base: *const u8,
+) -> Result<PreparedChannelRecord, Errno> {
+    use wasm_posix_shared::channel_record::{SPAN_KIND_IN_OUT_PTR, SPAN_KIND_OUT_PTR};
+
+    let fd_set_bytes = wasm_posix_shared::select::FD_SET_BYTES;
+    let mut args = decoded.scalars;
+    let mut copy_back: alloc::vec::Vec<ChannelRecordCopyBack> = alloc::vec::Vec::new();
+
+    for span in &decoded.spans {
+        // Neither select nor pselect6 carries a nested iovec/msghdr span.
+        if span.nested.is_some() {
+            return Err(Errno::EINVAL);
+        }
+        let arg_index = span.arg_index as usize;
+        // fd_sets occupy slots 0..=2; the pselect6 sigmask follows them at slot
+        // 3. Any other pointer arg for these syscalls is malformed.
+        let slot = if (1..=3).contains(&arg_index) {
+            arg_index - 1
+        } else if is_pselect6 && arg_index == 5 {
+            3
+        } else {
+            return Err(Errno::EINVAL);
+        };
+        let dest = region_start
+            .checked_add(slot.checked_mul(fd_set_bytes).ok_or(Errno::EFAULT)?)
+            .ok_or(Errno::EFAULT)?;
+        let length = span.bytes.len();
+        region.checked_range(dest, length)?;
+        if length > 0 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(span.bytes.as_ptr(), dest as *mut u8, length);
+            }
+        }
+        args[arg_index] = dest as i64;
+
+        if span.kind == SPAN_KIND_OUT_PTR || span.kind == SPAN_KIND_IN_OUT_PTR {
+            let original_offset = (span.bytes.as_ptr() as usize)
+                .checked_sub(data_base as usize)
+                .ok_or(Errno::EFAULT)?;
+            copy_back.push(ChannelRecordCopyBack {
+                channel_dest: region_start
+                    .checked_add(original_offset)
+                    .ok_or(Errno::EFAULT)?,
+                scratch_src: dest,
+                len: length,
+            });
+        }
+    }
+
+    Ok(PreparedChannelRecord {
+        syscall_nr: decoded.syscall as u32,
+        args,
+        copy_back,
+    })
+}
+
 /// Detect and prepare an opaque channel record at the head of a live channel
 /// scratch allocation (additive, dormant Phase 2 transport).
 ///
@@ -972,6 +1049,19 @@ pub unsafe fn prepare_channel_record(
         // A malformed record is a truthful failure, never a silent success.
         Err(_) => return Some(Err(Errno::EINVAL)),
     };
+
+    // select/pselect6 place their fd_sets (and the pselect6 sigmask) at FIXED
+    // disjoint offsets the unchanged `validate_select_layout` re-proves, not the
+    // contiguous packing the generic loop below uses. A leading null fd_set
+    // would shift every following contiguous offset, so give these two syscalls
+    // an explicit placement pass.
+    let is_select = decoded.syscall as u32 == Syscall::Select as u32;
+    let is_pselect6 = decoded.syscall as u32 == extended_syscalls::SYS_PSELECT6;
+    if is_select || is_pselect6 {
+        return Some(unsafe {
+            prepare_select_record(region, region_start, is_pselect6, &decoded, data.as_ptr())
+        });
+    }
 
     // Start from the six scalar words; pointer arg slots are overwritten below
     // with the absolute scratch addresses their spans are laid at, exactly as
@@ -2357,5 +2447,278 @@ mod tests {
         assert_eq!(prep.args[2], 2);
         // writev only reads the buffers -> no copy-back.
         assert!(prep.copy_back.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 5b (Phase 2 opaque transport): special-layout syscall families.
+    //
+    // The bespoke `validate_special_layout` families are NOT in the generated
+    // descriptor header, so today they marshal scalar-only (their pointer args
+    // are lost). These goldens hand-encode the record the guest self-marshaller
+    // emits for one representative syscall per family and assert that
+    // `prepare_channel_record` lays a scratch layout the UNCHANGED legacy
+    // `validate_channel_scratch_arguments` / dispatch accept, including
+    // copy-back for value-result buffers. fcntl-lock, prctl, epoll_ctl,
+    // epoll_pwait/epoll_wait, msgsnd/msgrcv, msgctl/shmctl reuse the generic
+    // flat-span placement (single/ordered spans at the allocation base);
+    // select/pselect6 use the dedicated fixed-offset `prepare_select_record`.
+    // -----------------------------------------------------------------------
+
+    use wasm_posix_shared::channel_record::SPAN_KIND_IN_OUT_PTR;
+
+    /// Build a flat-span record, run `prepare_channel_record`, and require it to
+    /// decode into a prepared record (panics on the legacy/none path or errno).
+    fn prep_record(syscall: u32, scalars: [i64; 6], spans: &[RecSpan]) -> (usize, PreparedChannelRecord, alloc::vec::Vec<u8>) {
+        let mut data = build_record(syscall as u16, RECORD_ABI, scalars, spans, REC_CAP);
+        let start = data.as_mut_ptr() as usize;
+        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
+        let prep = match unsafe { prepare_channel_record(region) } {
+            Some(Ok(prep)) => prep,
+            other => panic!("expected prepared record, got {other:?}"),
+        };
+        (start, prep, data)
+    }
+
+    #[test]
+    fn record_fcntl_getlk_flock_matches_legacy_validator() {
+        // fcntl(fd=3, F_GETLK=5, flock): one INOUT flock span at arg 2. F_GETLK
+        // returns the conflicting lock in place, so the guest marshals INOUT and
+        // the kernel plans a copy-back (F_SETLK would be a plain IN span).
+        const FLOCK: usize = kernel_scratch_wire::FCNTL_FLOCK_BYTES as usize;
+        let mut flock = alloc::vec![0u8; FLOCK];
+        flock[0] = 1; // F_WRLCK marker (content is opaque to the layout)
+        let (start, prep, _data) = prep_record(
+            Syscall::Fcntl as u32,
+            [3, 5, 0, 0, 0, 0],
+            &[RecSpan { kind: SPAN_KIND_IN_OUT_PTR, arg_index: 2, payload: flock }],
+        );
+        assert_eq!(prep.syscall_nr, Syscall::Fcntl as u32);
+        assert_eq!(prep.args[2] as usize, start);
+        // F_GETLK writes the conflicting lock back -> one copy-back.
+        assert_eq!(prep.copy_back.len(), 1);
+        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
+        let validated =
+            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
+                .expect("legacy validator accepts the reconstructed fcntl layout");
+        assert_eq!(validated.pointer(2), Ok(start));
+    }
+
+    #[test]
+    fn record_prctl_set_name_matches_legacy_validator() {
+        const NAME: usize = kernel_scratch_wire::PRCTL_NAME_BYTES as usize;
+        let (start, prep, _data) = prep_record(
+            extended_syscalls::SYS_PRCTL,
+            [i64::from(prctl::PR_SET_NAME), 0, 0, 0, 0, 0],
+            &[RecSpan { kind: SPAN_KIND_IN_OUT_PTR, arg_index: 1, payload: alloc::vec![b'x'; NAME] }],
+        );
+        assert_eq!(prep.args[1] as usize, start);
+        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
+        let validated =
+            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
+                .expect("legacy validator accepts the reconstructed prctl layout");
+        assert_eq!(validated.pointer(1), Ok(start));
+    }
+
+    #[test]
+    fn record_epoll_ctl_event_matches_legacy_validator() {
+        let event = size_of::<WasmEpollEvent>();
+        let (start, prep, _data) = prep_record(
+            extended_syscalls::SYS_EPOLL_CTL,
+            // epoll_ctl(epfd, op=EPOLL_CTL_ADD, fd, event)
+            [4, 1, 7, 0, 0, 0],
+            &[RecSpan { kind: SPAN_KIND_IN_PTR, arg_index: 3, payload: alloc::vec![0u8; event] }],
+        );
+        assert_eq!(prep.args[3] as usize, start);
+        assert!(prep.copy_back.is_empty());
+        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
+        let validated =
+            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
+                .expect("legacy validator accepts the reconstructed epoll_ctl layout");
+        assert_eq!(validated.pointer(3), Ok(start));
+    }
+
+    #[test]
+    fn record_epoll_pwait_array_and_mask_match_legacy_validator() {
+        // epoll_pwait(epfd, events, maxevents=3, timeout, sigmask, sigsetsize=8).
+        let event = size_of::<WasmEpollEvent>();
+        let maxevents = 3usize;
+        let array_len = maxevents * event;
+        let mask_len = kernel_scratch_wire::SIGNAL_MASK_BYTES as usize;
+        let (start, prep, _data) = prep_record(
+            extended_syscalls::SYS_EPOLL_PWAIT,
+            [4, 0, maxevents as i64, 0, 0, mask_len as i64],
+            &[
+                RecSpan { kind: SPAN_KIND_OUT_PTR, arg_index: 1, payload: alloc::vec![0u8; array_len] },
+                RecSpan { kind: SPAN_KIND_IN_PTR, arg_index: 4, payload: alloc::vec![0u8; mask_len] },
+            ],
+        );
+        // Event array at the base; sigmask at align_up(base + array_len, 8),
+        // exactly where `validate_special_layout` recomputes it.
+        assert_eq!(prep.args[1] as usize, start);
+        let expected_mask = (start + array_len + 7) & !7usize;
+        assert_eq!(prep.args[4] as usize, expected_mask);
+        // Only the OUT event array copies back.
+        assert_eq!(prep.copy_back.len(), 1);
+        assert_eq!(prep.copy_back[0].scratch_src, start);
+        assert_eq!(prep.copy_back[0].len, array_len);
+        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
+        let validated =
+            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
+                .expect("legacy validator accepts the reconstructed epoll_pwait layout");
+        assert_eq!(validated.pointer(1), Ok(start));
+        assert_eq!(validated.pointer(4), Ok(expected_mask));
+    }
+
+    #[test]
+    fn record_epoll_wait_array_only_matches_legacy_validator() {
+        let event = size_of::<WasmEpollEvent>();
+        let maxevents = 2usize;
+        let (start, prep, _data) = prep_record(
+            extended_syscalls::SYS_EPOLL_WAIT,
+            [4, 0, maxevents as i64, 0, 0, 0],
+            &[RecSpan { kind: SPAN_KIND_OUT_PTR, arg_index: 1, payload: alloc::vec![0u8; maxevents * event] }],
+        );
+        assert_eq!(prep.args[1] as usize, start);
+        assert_eq!(prep.copy_back.len(), 1);
+        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
+        let validated =
+            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
+                .expect("legacy validator accepts the reconstructed epoll_wait layout");
+        assert_eq!(validated.pointer(1), Ok(start));
+    }
+
+    #[test]
+    fn record_msgsnd_wire_matches_legacy_validator() {
+        // msgsnd(qid, msgp, msgsz, flags): one IN span at arg 1 whose payload is
+        // the width-independent wire { i64 mtype; msgsz payload bytes }.
+        let msgsz = 12usize;
+        let wire_len = size_of::<WasmSysvMessageHeader>() + msgsz;
+        let mut wire = alloc::vec![0u8; wire_len];
+        wire[0..8].copy_from_slice(&7i64.to_le_bytes()); // mtype
+        let (start, prep, _data) = prep_record(
+            extended_syscalls::SYS_MSGSND,
+            [9, 0, msgsz as i64, 0, 0, 4], // qid, msgp(overwritten), msgsz, flags, _, width=4
+            &[RecSpan { kind: SPAN_KIND_IN_PTR, arg_index: 1, payload: wire }],
+        );
+        assert_eq!(prep.args[1] as usize, start);
+        assert!(prep.copy_back.is_empty());
+        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
+        let validated =
+            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
+                .expect("legacy validator accepts the reconstructed msgsnd layout");
+        assert_eq!(validated.pointer(1), Ok(start));
+    }
+
+    #[test]
+    fn record_msgrcv_wire_plans_copyback() {
+        // msgrcv reserves { i64 mtype; msgsz payload } as an OUT buffer.
+        let msgsz = 16usize;
+        let wire_len = size_of::<WasmSysvMessageHeader>() + msgsz;
+        let (start, prep, _data) = prep_record(
+            extended_syscalls::SYS_MSGRCV,
+            [9, 0, msgsz as i64, 0, 0, 4],
+            &[RecSpan { kind: SPAN_KIND_OUT_PTR, arg_index: 1, payload: alloc::vec![0u8; wire_len] }],
+        );
+        assert_eq!(prep.args[1] as usize, start);
+        assert_eq!(prep.copy_back.len(), 1);
+        assert_eq!(prep.copy_back[0].scratch_src, start);
+        assert_eq!(prep.copy_back[0].len, wire_len);
+        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
+        let validated =
+            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
+                .expect("legacy validator accepts the reconstructed msgrcv layout");
+        assert_eq!(validated.pointer(1), Ok(start));
+    }
+
+    #[test]
+    fn record_msgctl_stat_matches_legacy_validator() {
+        // msgctl(qid, IPC_STAT=2, buf): buf sized by msqid_ds width.
+        let size = crate::ipc_wire::msqid_ds_size(4).unwrap();
+        let (start, prep, _data) = prep_record(
+            extended_syscalls::SYS_MSGCTL,
+            [9, 2, 0, 0, 0, 4],
+            &[RecSpan { kind: SPAN_KIND_OUT_PTR, arg_index: 2, payload: alloc::vec![0u8; size] }],
+        );
+        assert_eq!(prep.args[2] as usize, start);
+        assert_eq!(prep.copy_back.len(), 1);
+        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
+        let validated =
+            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
+                .expect("legacy validator accepts the reconstructed msgctl layout");
+        assert_eq!(validated.pointer(2), Ok(start));
+    }
+
+    #[test]
+    fn record_shmctl_stat_matches_legacy_validator() {
+        let size = crate::ipc_wire::shmid_ds_size(4).unwrap();
+        let (start, prep, _data) = prep_record(
+            extended_syscalls::SYS_SHMCTL,
+            [9, 2, 0, 0, 0, 4],
+            &[RecSpan { kind: SPAN_KIND_OUT_PTR, arg_index: 2, payload: alloc::vec![0u8; size] }],
+        );
+        assert_eq!(prep.args[2] as usize, start);
+        assert_eq!(prep.copy_back.len(), 1);
+        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
+        let validated =
+            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
+                .expect("legacy validator accepts the reconstructed shmctl layout");
+        assert_eq!(validated.pointer(2), Ok(start));
+    }
+
+    #[test]
+    fn record_select_places_fdsets_at_fixed_disjoint_slots() {
+        // select with readfds NULL, writefds + exceptfds present exercises the
+        // fixed-offset placement: a leading null must NOT shift the later slots.
+        let fd = wasm_posix_shared::select::FD_SET_BYTES;
+        let (start, prep, _data) = prep_record(
+            Syscall::Select as u32,
+            [16, 0, 0, 0, 0, 0], // nfds, read/write/except(overwritten), timeout, _
+            &[
+                RecSpan { kind: SPAN_KIND_IN_OUT_PTR, arg_index: 2, payload: alloc::vec![0u8; fd] },
+                RecSpan { kind: SPAN_KIND_IN_OUT_PTR, arg_index: 3, payload: alloc::vec![0u8; fd] },
+            ],
+        );
+        // readfds stays null; writefds at base+FD_SET_BYTES; exceptfds at
+        // base+2*FD_SET_BYTES -- the offsets the validator re-proves.
+        assert_eq!(prep.args[1], 0);
+        assert_eq!(prep.args[2] as usize, start + fd);
+        assert_eq!(prep.args[3] as usize, start + 2 * fd);
+        // Both present fd_sets are value-result -> two copy-backs.
+        assert_eq!(prep.copy_back.len(), 2);
+        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
+        let validated =
+            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
+                .expect("legacy validator accepts the reconstructed select layout");
+        assert_eq!(validated.pointer(1), Ok(0));
+        assert_eq!(validated.pointer(2), Ok(start + fd));
+        assert_eq!(validated.pointer(3), Ok(start + 2 * fd));
+    }
+
+    #[test]
+    fn record_pselect6_places_fdsets_and_mask_at_fixed_slots() {
+        let fd = wasm_posix_shared::select::FD_SET_BYTES;
+        let mask = kernel_scratch_wire::SIGNAL_MASK_BYTES as usize;
+        let (start, prep, _data) = prep_record(
+            extended_syscalls::SYS_PSELECT6,
+            [16, 0, 0, 0, 0, 0],
+            &[
+                RecSpan { kind: SPAN_KIND_IN_OUT_PTR, arg_index: 1, payload: alloc::vec![0u8; fd] },
+                RecSpan { kind: SPAN_KIND_IN_OUT_PTR, arg_index: 3, payload: alloc::vec![0u8; fd] },
+                RecSpan { kind: SPAN_KIND_IN_PTR, arg_index: 5, payload: alloc::vec![0u8; mask] },
+            ],
+        );
+        assert_eq!(prep.args[1] as usize, start);
+        assert_eq!(prep.args[2], 0); // writefds null
+        assert_eq!(prep.args[3] as usize, start + 2 * fd);
+        assert_eq!(prep.args[5] as usize, start + 3 * fd); // sigmask after 3 slots
+        // Two value-result fd_sets copy back; the input-only sigmask does not.
+        assert_eq!(prep.copy_back.len(), 2);
+        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
+        let validated =
+            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
+                .expect("legacy validator accepts the reconstructed pselect6 layout");
+        assert_eq!(validated.pointer(1), Ok(start));
+        assert_eq!(validated.pointer(3), Ok(start + 2 * fd));
+        assert_eq!(validated.pointer(5), Ok(start + 3 * fd));
     }
 }

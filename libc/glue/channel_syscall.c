@@ -35,6 +35,9 @@
 #include <sys/soundcard.h>
 #include <sys/uio.h>
 #include <sys/socket.h>
+#include <sys/epoll.h>
+#include <sys/msg.h>
+#include <sys/shm.h>
 #include <bits/kandelo_channel_scalars.h>
 #include <bits/kandelo_process_layouts.h>
 #include <bits/kandelo_syscall_marshal.h>
@@ -843,6 +846,314 @@ static long kandelo_marshal_arg_len(const struct kandelo_marshal_arg *arg,
     }
 }
 
+/* ================================================================== */
+/* Special-layout syscall families (Task 5b).                          */
+/*                                                                     */
+/* These bespoke families are NOT in the generated marshal table, so   */
+/* the flat-descriptor path above would lose their pointer args. Their */
+/* per-syscall size/direction knowledge lives in the guest (it owns the */
+/* fcntl lock cmd, the epoll count, the msg size, the IPC cmd, the      */
+/* pointer width), so the guest self-marshals a generic In/Out/InOut    */
+/* span the kernel's `prepare_channel_record` lays back into the exact  */
+/* scratch layout the UNCHANGED `validate_special_layout`/dispatch      */
+/* accepts. DORMANT: reached only from the (dormant) record encoder.    */
+/* ================================================================== */
+
+#define KANDELO_MARSHAL_NOT_SPECIAL (-2)
+
+/* Kandelo/Linux syscall numbers for the special families. These match the
+ * wasm_posix_shared::Syscall / abi::extended_syscalls values the guest issues
+ * and the kernel dispatch (crates/kernel/src/wasm_api.rs) branches on. */
+#define KANDELO_SYS_IOCTL       72
+#define KANDELO_SYS_SELECT      103
+#define KANDELO_SYS_FCNTL       25
+#define KANDELO_SYS_PRCTL       223
+#define KANDELO_SYS_EPOLL_CTL   240
+#define KANDELO_SYS_EPOLL_PWAIT 241
+#define KANDELO_SYS_PSELECT6    252
+#define KANDELO_SYS_MSGRCV      338
+#define KANDELO_SYS_MSGSND      339
+#define KANDELO_SYS_MSGCTL      340
+#define KANDELO_SYS_SEMCTL      343
+#define KANDELO_SYS_SHMCTL      347
+#define KANDELO_SYS_EPOLL_WAIT  379
+
+/* Fixed record-buffer sizes for the special families. The struct-sized ones
+ * come from the guest's own (caller-width) musl headers, which are the same
+ * ABI the kernel's wasm32/wasm64 wire sizes describe; static_asserts below
+ * pin the wasm32 sizes so any drift is a loud compile failure. PRCTL name /
+ * SysV header / signal-mask sizes mirror wasm_posix_shared::kernel_scratch_wire
+ * (PRCTL_NAME_BYTES, WasmSysvMessageHeader, SIGNAL_MASK_BYTES). */
+#define KANDELO_MARSHAL_PRCTL_NAME_BYTES 16u
+#define KANDELO_MARSHAL_SYSV_MSG_HEADER_BYTES 8u
+
+#if defined(__wasm32__)
+_Static_assert(sizeof(struct flock) == 32, "wasm32 struct flock must match WasmFlock (FCNTL_FLOCK_BYTES)");
+_Static_assert(sizeof(struct epoll_event) == 16, "wasm32 struct epoll_event must match WasmEpollEvent");
+_Static_assert(sizeof(struct msqid_ds) == 96, "wasm32 struct msqid_ds must match msqid_ds_size(4)");
+_Static_assert(sizeof(struct shmid_ds) == 88, "wasm32 struct shmid_ds must match shmid_ds_size(4)");
+#endif
+_Static_assert(KANDELO_MARSHAL_SYSV_MSG_HEADER_BYTES == sizeof(int64_t),
+               "SysV message wire header is one canonical i64");
+
+/* Write the record header (magic/abi/syscall/span_count + the six scalar
+ * words) from a possibly-adjusted scalar array. Mirrors KANDELO_WRITE_HEADER
+ * in __marshal_channel_record; the special families adjust scalar slots the
+ * kernel reads (e.g. the SysV pointer-width word) before emitting. */
+static void kandelo_write_record_header(uint8_t *data, long n,
+                                        uint16_t span_count,
+                                        const long long *sargs) {
+    kandelo_store_u32(data + KANDELO_RECORD_H_MAGIC, KANDELO_RECORD_MAGIC);
+    kandelo_store_u16(data + KANDELO_RECORD_H_RECORD_ABI, KANDELO_RECORD_ABI);
+    kandelo_store_u16(data + KANDELO_RECORD_H_SYSCALL, (uint16_t)n);
+    kandelo_store_u16(data + KANDELO_RECORD_H_SPAN_COUNT, span_count);
+    kandelo_store_u16(data + KANDELO_RECORD_H_FLAGS, 0);
+    kandelo_store_u32(data + 12u, 0); /* _reserved */
+    for (uint32_t si = 0; si < 6; si++) {
+        kandelo_store_i64(data + KANDELO_RECORD_H_SCALARS + si * 8u,
+                          (int64_t)sargs[si]);
+    }
+}
+
+/* Marshal one special-layout syscall's pointer arguments into `data`.
+ *
+ * Returns the encoded record byte length (>= header) when `n` was marshalled
+ * here; KANDELO_MARSHAL_NOT_SPECIAL when `n` is not a special family (the
+ * caller emits a scalar-only record); or KANDELO_MARSHAL_FALLBACK when `n` is
+ * special but cannot be self-marshalled inline yet (the caller falls back to
+ * the raw-arg path). */
+static long kandelo_marshal_special(long n, const long long *args_in,
+                                    uint8_t *data, size_t budget) {
+    long long sargs[6];
+    for (int i = 0; i < 6; i++)
+        sargs[i] = args_in[i];
+
+    /* Flat (kind, arg_index, src, len) plan shared by the families whose
+     * pointer args copy verbatim; msgsnd/msgrcv build their wire directly. */
+    struct {
+        uint8_t kind;
+        uint8_t arg_index;
+        const void *src;
+        uint32_t len;
+    } plan[KANDELO_RECORD_MAX_SPANS];
+    uint32_t nplan = 0;
+
+    switch ((uint32_t)n) {
+    case KANDELO_SYS_FCNTL: {
+        long long cmd = sargs[1];
+        /* Advisory lock commands carry a struct flock at arg 2; every other
+         * fcntl uses arg 2 (arg 3 here) as a scalar -> scalar-only record. */
+        int is_getlk = (cmd == 5 || cmd == 12 || cmd == 36);
+        int is_setlk = (cmd == 6 || cmd == 7 || cmd == 13 || cmd == 14
+                        || cmd == 37 || cmd == 38);
+        if (is_getlk || is_setlk) {
+            uintptr_t p = (uintptr_t)(unsigned long long)sargs[2];
+            if (p == 0)
+                return KANDELO_MARSHAL_FALLBACK;
+            plan[nplan].kind = is_getlk ? KANDELO_MARSHAL_SPAN_IN_OUT_PTR
+                                        : KANDELO_MARSHAL_SPAN_IN_PTR;
+            plan[nplan].arg_index = 2;
+            plan[nplan].src = (const void *)p;
+            plan[nplan].len = (uint32_t)sizeof(struct flock);
+            nplan++;
+        }
+        break;
+    }
+    case KANDELO_SYS_PRCTL: {
+        long long opt = sargs[0];
+        /* PR_SET_NAME (15, in) / PR_GET_NAME (16, out) name a 16-byte buffer at
+         * arg 1; other prctl options use the slot as a scalar. */
+        if (opt == 15 || opt == 16) {
+            uintptr_t p = (uintptr_t)(unsigned long long)sargs[1];
+            if (p == 0)
+                return KANDELO_MARSHAL_FALLBACK;
+            plan[nplan].kind = (opt == 15) ? KANDELO_MARSHAL_SPAN_IN_PTR
+                                           : KANDELO_MARSHAL_SPAN_OUT_PTR;
+            plan[nplan].arg_index = 1;
+            plan[nplan].src = (const void *)p;
+            plan[nplan].len = KANDELO_MARSHAL_PRCTL_NAME_BYTES;
+            nplan++;
+        }
+        break;
+    }
+    case KANDELO_SYS_EPOLL_CTL: {
+        /* One input event struct at arg 3 (null for EPOLL_CTL_DEL). */
+        uintptr_t p = (uintptr_t)(unsigned long long)sargs[3];
+        if (p != 0) {
+            plan[nplan].kind = KANDELO_MARSHAL_SPAN_IN_PTR;
+            plan[nplan].arg_index = 3;
+            plan[nplan].src = (const void *)p;
+            plan[nplan].len = (uint32_t)sizeof(struct epoll_event);
+            nplan++;
+        }
+        break;
+    }
+    case KANDELO_SYS_EPOLL_PWAIT:
+    case KANDELO_SYS_EPOLL_WAIT: {
+        /* Output event array at arg 1 (maxevents entries), then the optional
+         * epoll_pwait sigmask at arg 4. The kernel places the mask immediately
+         * after the array; emitting the array span first preserves that. */
+        long long maxevents = sargs[2];
+        uintptr_t ev = (uintptr_t)(unsigned long long)sargs[1];
+        if (maxevents < 0)
+            return KANDELO_MARSHAL_FALLBACK;
+        if (ev != 0 && maxevents > 0) {
+            unsigned long long len =
+                (unsigned long long)maxevents * sizeof(struct epoll_event);
+            if (len > 0xFFFFFFFFull)
+                return KANDELO_MARSHAL_FALLBACK;
+            plan[nplan].kind = KANDELO_MARSHAL_SPAN_OUT_PTR;
+            plan[nplan].arg_index = 1;
+            plan[nplan].src = (const void *)ev;
+            plan[nplan].len = (uint32_t)len;
+            nplan++;
+        }
+        if ((uint32_t)n == KANDELO_SYS_EPOLL_PWAIT) {
+            uintptr_t mask = (uintptr_t)(unsigned long long)sargs[4];
+            if (mask != 0) {
+                plan[nplan].kind = KANDELO_MARSHAL_SPAN_IN_PTR;
+                plan[nplan].arg_index = 4;
+                plan[nplan].src = (const void *)mask;
+                plan[nplan].len = (uint32_t)sizeof(uint64_t); /* SIGNAL_MASK_BYTES */
+                nplan++;
+            }
+        }
+        break;
+    }
+    case KANDELO_SYS_MSGCTL:
+    case KANDELO_SYS_SHMCTL: {
+        /* IPC control buffer at arg 2, present only for IPC_SET (1, in) and
+         * IPC_STAT (2, out); other commands carry no buffer. The kernel reads
+         * the caller pointer width from scalar slot 5. */
+        sargs[5] = (long long)sizeof(void *);
+        long long cmd = sargs[1] & ~0x100LL; /* strip IPC_64 */
+        if (cmd == 1 || cmd == 2) {
+            uintptr_t p = (uintptr_t)(unsigned long long)sargs[2];
+            if (p == 0)
+                return KANDELO_MARSHAL_FALLBACK;
+            uint32_t sz = ((uint32_t)n == KANDELO_SYS_MSGCTL)
+                              ? (uint32_t)sizeof(struct msqid_ds)
+                              : (uint32_t)sizeof(struct shmid_ds);
+            plan[nplan].kind = (cmd == 1) ? KANDELO_MARSHAL_SPAN_IN_PTR
+                                          : KANDELO_MARSHAL_SPAN_OUT_PTR;
+            plan[nplan].arg_index = 2;
+            plan[nplan].src = (const void *)p;
+            plan[nplan].len = sz;
+            nplan++;
+        }
+        break;
+    }
+    case KANDELO_SYS_MSGSND: {
+        /* Build the width-independent wire { i64 mtype; msgsz payload } from the
+         * caller's `struct msgbuf { long mtype; char mtext[]; }` at arg 1. */
+        sargs[5] = (long long)sizeof(void *);
+        uintptr_t msgp = (uintptr_t)(unsigned long long)sargs[1];
+        long long msgsz = sargs[2];
+        if (msgp == 0 || msgsz < 0)
+            return KANDELO_MARSHAL_FALLBACK;
+        unsigned long long wire =
+            (unsigned long long)KANDELO_MARSHAL_SYSV_MSG_HEADER_BYTES
+            + (unsigned long long)msgsz;
+        if (wire > 0xFFFFFFFFull)
+            return KANDELO_MARSHAL_FALLBACK;
+        uint32_t off = KANDELO_RECORD_HEADER_BYTES
+                       + KANDELO_RECORD_SPAN_DESCRIPTOR_BYTES;
+        if ((size_t)off + (size_t)wire > budget)
+            return KANDELO_MARSHAL_FALLBACK;
+        long mtype;
+        __builtin_memcpy(&mtype, (const void *)msgp, sizeof(long));
+        kandelo_store_i64(data + off, (int64_t)mtype);
+        if (msgsz > 0) {
+            __builtin_memcpy(data + off + KANDELO_MARSHAL_SYSV_MSG_HEADER_BYTES,
+                             (const void *)(msgp + sizeof(long)), (size_t)msgsz);
+        }
+        uint8_t *d = data + KANDELO_RECORD_HEADER_BYTES;
+        d[KANDELO_RECORD_D_KIND] = KANDELO_MARSHAL_SPAN_IN_PTR;
+        d[KANDELO_RECORD_D_ARG_INDEX] = 1;
+        kandelo_store_u16(d + 2u, 0);
+        kandelo_store_u32(d + KANDELO_RECORD_D_OFFSET, off);
+        kandelo_store_u32(d + KANDELO_RECORD_D_LEN, (uint32_t)wire);
+        kandelo_write_record_header(data, n, 1, sargs);
+        return (long)(off + (uint32_t)wire);
+    }
+    case KANDELO_SYS_MSGRCV: {
+        /* Reserve the width-independent wire { i64 mtype; msgsz payload } as an
+         * output buffer at arg 1; the kernel fills it and the copy-back returns
+         * it (the guest converts it back to the caller's msgbuf at flip time). */
+        sargs[5] = (long long)sizeof(void *);
+        uintptr_t msgp = (uintptr_t)(unsigned long long)sargs[1];
+        long long msgsz = sargs[2];
+        if (msgp == 0 || msgsz < 0)
+            return KANDELO_MARSHAL_FALLBACK;
+        unsigned long long wire =
+            (unsigned long long)KANDELO_MARSHAL_SYSV_MSG_HEADER_BYTES
+            + (unsigned long long)msgsz;
+        if (wire > 0xFFFFFFFFull)
+            return KANDELO_MARSHAL_FALLBACK;
+        uint32_t off = KANDELO_RECORD_HEADER_BYTES
+                       + KANDELO_RECORD_SPAN_DESCRIPTOR_BYTES;
+        if ((size_t)off + (size_t)wire > budget)
+            return KANDELO_MARSHAL_FALLBACK;
+        __builtin_memset(data + off, 0, (size_t)wire);
+        uint8_t *d = data + KANDELO_RECORD_HEADER_BYTES;
+        d[KANDELO_RECORD_D_KIND] = KANDELO_MARSHAL_SPAN_OUT_PTR;
+        d[KANDELO_RECORD_D_ARG_INDEX] = 1;
+        kandelo_store_u16(d + 2u, 0);
+        kandelo_store_u32(d + KANDELO_RECORD_D_OFFSET, off);
+        kandelo_store_u32(d + KANDELO_RECORD_D_LEN, (uint32_t)wire);
+        kandelo_write_record_header(data, n, 1, sargs);
+        return (long)(off + (uint32_t)wire);
+    }
+    case KANDELO_SYS_SELECT:
+    case KANDELO_SYS_PSELECT6:
+        /* Kernel-side placement is covered (channel_scratch::prepare_select_-
+         * record lays the fd_sets/mask at fixed offsets), but the guest encoder
+         * also needs to convert the arg-4 timeval/timespec into the scalar
+         * millisecond value the kernel dispatch reads (the host does this today)
+         * -- a scalar transform outside this pass. Defer. */
+        return KANDELO_MARSHAL_FALLBACK;
+    case KANDELO_SYS_IOCTL:
+        /* Needs the request -> (size, direction) contract; legacy request
+         * numbers (e.g. TIOCGWINSZ 0x5413) do not encode their size, so
+         * _IOC_SIZE is insufficient. Requires projecting
+         * wasm_posix_shared::ioctl_contract into a guest table. Defer. */
+        return KANDELO_MARSHAL_FALLBACK;
+    case KANDELO_SYS_SEMCTL:
+        /* GETALL/SETALL buffer size is nsems*sizeof(u16) where nsems is the
+         * semaphore set's cardinality the kernel derives (semctl_array_bytes);
+         * the guest cannot size it from the syscall arguments, and the record
+         * format carries no kernel-computed length. Defer. */
+        return KANDELO_MARSHAL_FALLBACK;
+    default:
+        return KANDELO_MARSHAL_NOT_SPECIAL;
+    }
+
+    /* Emit the planned flat spans contiguously after the descriptor array. */
+    uint32_t desc_end = KANDELO_RECORD_HEADER_BYTES
+                        + nplan * KANDELO_RECORD_SPAN_DESCRIPTOR_BYTES;
+    if (desc_end > budget)
+        return KANDELO_MARSHAL_FALLBACK;
+    uint32_t cursor = desc_end;
+    for (uint32_t i = 0; i < nplan; i++) {
+        uint32_t off = cursor;
+        if (plan[i].len > 0) {
+            if ((size_t)cursor + plan[i].len > budget)
+                return KANDELO_MARSHAL_FALLBACK;
+            __builtin_memcpy(data + cursor, plan[i].src, plan[i].len);
+            cursor += plan[i].len;
+        }
+        uint8_t *d = data + KANDELO_RECORD_HEADER_BYTES
+                     + i * KANDELO_RECORD_SPAN_DESCRIPTOR_BYTES;
+        d[KANDELO_RECORD_D_KIND] = plan[i].kind;
+        d[KANDELO_RECORD_D_ARG_INDEX] = plan[i].arg_index;
+        kandelo_store_u16(d + 2u, 0); /* _pad */
+        kandelo_store_u32(d + KANDELO_RECORD_D_OFFSET, off);
+        kandelo_store_u32(d + KANDELO_RECORD_D_LEN, plan[i].len);
+    }
+    kandelo_write_record_header(data, n, (uint16_t)nplan, sargs);
+    return (long)cursor;
+}
+
 int __marshal_channel_record(long n, long long a1, long long a2, long long a3,
                              long long a4, long long a5, long long a6,
                              void *data_base, size_t data_capacity) {
@@ -875,9 +1186,14 @@ int __marshal_channel_record(long n, long long a1, long long a2, long long a3,
         }                                                                      \
     } while (0)
 
-    /* Scalar-only record: no pointer args to marshal (or an unknown/special
-     * syscall this dormant encoder does not yet cover). */
+    /* Not in the generated descriptor table: try the bespoke special-layout
+     * families (ioctl/select/epoll/prctl/fcntl-lock/SysV IPC). A NOT_SPECIAL
+     * result means there are no pointer args to marshal, so emit a scalar-only
+     * record; a FALLBACK (< 0) propagates so the caller uses the raw-arg path. */
     if (entry == (const struct kandelo_marshal_syscall *)0) {
+        long special = kandelo_marshal_special(n, args, data, budget);
+        if (special != KANDELO_MARSHAL_NOT_SPECIAL)
+            return (int)special;
         KANDELO_WRITE_HEADER(0);
         return (int)KANDELO_RECORD_HEADER_BYTES;
     }
