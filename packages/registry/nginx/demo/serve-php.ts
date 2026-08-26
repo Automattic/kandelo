@@ -27,7 +27,7 @@ async function main() {
   const { host, exitPromise } = await bootDinitServiceVfs({
     image: {
       relPath: "programs/nginx-php-vfs.vfs.zst",
-      publicFile: "nginx-php.vfs.zst",
+      publicFile: "nginx-php-vfs.vfs.zst",
       buildHint: "./run.sh build nginx-php-vfs",
     },
     target: "nginx",

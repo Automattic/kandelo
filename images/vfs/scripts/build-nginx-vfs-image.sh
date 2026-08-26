@@ -13,7 +13,7 @@ if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
   : "${WASM_POSIX_DEP_WORK_DIR:?resolver VFS builds require WASM_POSIX_DEP_WORK_DIR}"
   VFS_DIR="$WASM_POSIX_DEP_WORK_DIR"
 fi
-VFS="$VFS_DIR/nginx.vfs.zst"
+VFS="$VFS_DIR/nginx-vfs.vfs.zst"
 NGINX_VFS_TSX_TMP="$(mktemp -d /tmp/kandelo-nginx-vfs.XXXXXX)"
 trap 'rm -rf -- "$NGINX_VFS_TSX_TMP"' EXIT
 TMPDIR="$NGINX_VFS_TSX_TMP" npx tsx "$SCRIPT_DIR/build-nginx-vfs-image.ts" \
@@ -30,4 +30,4 @@ if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
   export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled
 fi
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary nginx-vfs "$VFS_DIR/nginx.vfs.zst"
+install_local_binary nginx-vfs "$VFS_DIR/nginx-vfs.vfs.zst"

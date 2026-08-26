@@ -121,23 +121,9 @@ function discoveredConsumers(fixture: FixtureEntry): string[] {
     .sort();
 }
 
-function formulaNames(): string[] {
-  const formulaDir = join(repoRoot, "homebrew", "kandelo-homebrew", "Formula");
-  if (!existsSync(formulaDir)) return [];
-  return readdirSync(formulaDir)
-    .filter((name) => name.endsWith(".rb"))
-    .map((name) => name.replace(/\.rb$/, ""));
-}
-
 describe("kernel test fixture ownership", () => {
-  it("keeps kernel-test-programs out of package and Homebrew discovery", () => {
+  it("keeps kernel-test-programs out of package discovery", () => {
     expect(existsSync(join(registryPackagePath, "package.toml"))).toBe(false);
-    expect(formulaNames()).not.toContain("kernel-test-programs");
-    expect(
-      existsSync(
-        join(repoRoot, "homebrew", "kandelo-homebrew", "Kandelo", "formula", "kernel-test-programs.json"),
-      ),
-    ).toBe(false);
 
     expect(registryPackagesWithoutBuildToml).not.toContain("kernel-test-programs");
   });

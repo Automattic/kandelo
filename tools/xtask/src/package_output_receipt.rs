@@ -457,8 +457,8 @@ commit = "0000000000000000000000000000000000000000"
 revision = 14
 
 [[git_inputs]]
-name = "homebrew_tap_core"
-repository = "https://github.com/example/homebrew-tap-core.git"
+name = "example_tap_core"
+repository = "https://github.com/example/example-tap-core.git"
 commit = "1111111111111111111111111111111111111111"
 
 [binary]

@@ -32,7 +32,6 @@ const galleryPath = join(
   "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-gallery.json",
 );
 const presentationPath = join(repoRoot, "apps/browser-demos/pages/kandelo/presets.ts");
-const adapterPath = join(repoRoot, "abi/staging/legacy-vfs-adapters.toml");
 const browserDepsPath = join(repoRoot, "run.sh");
 const browserSources = [
   join(repoRoot, "host/src/browser-kernel-default-artifacts.ts"),
@@ -46,7 +45,6 @@ const paths = {
   generatedRegistryPath,
   galleryPath,
   presentationPath,
-  adapterPath,
   browserDepsPath,
   browserSources,
 };
@@ -259,7 +257,7 @@ test("rejects absent, unregistered, and unselected VFS source paths", () => {
 
     const unselected = copyBrowserSources(directory, (source, contents) => {
       if (!source.endsWith("optional-demo-vfs.ts")) return contents;
-      return `${contents}\nconst python = import.meta.glob("../../../../../binaries/programs/wasm32/python-vfs.vfs.zst");\n`;
+      return `${contents}\nconst python = import.meta.glob("../../../../../binaries/programs/wasm32/python.vfs.zst");\n`;
     });
     assert.throws(
       () => checkPagesVfsProductRegistry({ ...paths, browserSources: unselected }),
@@ -300,8 +298,8 @@ test("keeps canonical resolution ahead of legacy fallback for every Pages produc
     const reordered = copyBrowserSources(directory, (source, contents) => {
       if (!source.endsWith("vite.config.ts")) return contents;
       return contents.replace(
-        "      pagesVfsProducts,\n      react(),",
-        "      react(),\n      resolveKernelArtifactsAlias(binaryDevAccess),\n      pagesVfsProducts,",
+        "      vfsProductsPlugin(base),\n      react(),",
+        "      react(),\n      resolveKernelArtifactsAlias(binaryDevAccess),\n      vfsProductsPlugin(base),",
       ).replace(
         "      resolveKernelArtifactsAlias(binaryDevAccess),\n      resolveBinariesAlias",
         "      resolveBinariesAlias",

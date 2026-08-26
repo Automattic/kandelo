@@ -171,7 +171,7 @@ replay_group 8abe5ef8b 6144a4ea8 \
 replay_group 6e4a37b52 c2b572cc8 \
   "Build: Initialize the reentrant Node runtime"
 replay_group a272497b5 cbd148ebb \
-  "Homebrew: Integrate ABI 43 descriptors and products"
+  "Packages: Integrate ABI 43 descriptors and products"
 ```
 
 - [ ] **Step 6: Replay CI and candidate-authority groups**
@@ -182,11 +182,11 @@ Run:
 replay_group 6254851d6 e61878bcd \
   "CI: Repair ABI 43 product contract fixtures"
 replay_group 7b81eebb7 819882228 \
-  "Homebrew: Make Formula candidate provenance authoritative"
+  "Packages: Make candidate provenance authoritative"
 replay_group 4b4127b35 446749856 \
-  "Homebrew: Preserve candidate Formula tests and program projections"
+  "Packages: Preserve candidate tests and program projections"
 replay_group b81889e01 b4b55a183 \
-  "Homebrew: Preserve candidate bottle identity"
+  "Packages: Preserve candidate artifact identity"
 ```
 
 - [ ] **Step 7: Replay publication and verification groups**
@@ -199,9 +199,9 @@ replay_group b38598451 7a80d1248 \
 replay_group 34112844b fdb8cb04b \
   "ABI: Enforce qualified candidate metadata"
 replay_group e33081997 4dd2ae433 \
-  "Homebrew: Pour authenticated candidates in bounded realms"
+  "Packages: Install authenticated candidates in bounded realms"
 replay_group 9b7844fe7 8f46de6cb \
-  "Homebrew: Preserve Chromium across Formula tests"
+  "Packages: Preserve Chromium across candidate tests"
 ```
 
 - [ ] **Step 8: Replay dependency and final execution groups**
@@ -210,7 +210,7 @@ Run:
 
 ```bash
 replay_group 20b3f97b5 6ac709107 \
-  "ABI: Materialize candidate dependency bottles"
+  "ABI: Materialize candidate dependency artifacts"
 git cherry-pick -x c66ccdb0b
 git cherry-pick -x 66468b600
 git cherry-pick -x d6b381482

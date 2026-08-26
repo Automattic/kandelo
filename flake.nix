@@ -55,7 +55,7 @@
             # initial/max (memory64), which V8 12.4 (Node 22) does
             # not enable by default. V8 12.9 (Node 24) ships with
             # memory64 on, matching the host Macs the team develops
-            # on (homebrew node 24/25).
+            # on (system-installed Node 24/25).
             pkgs.nodejs_24
             # Bun: a JavaScriptCore-based runtime. We ship it so the host's
             # teardown reclamation path can be exercised on JSC (the same engine
@@ -76,7 +76,8 @@
             pkgs.bash
             # Package recipes are executed with exactly this declared PATH.
             # Keep the ordinary build-script utilities explicit so Darwin's
-            # /usr/bin and Homebrew cannot become undeclared fallbacks.
+            # /usr/bin and ambient host package managers cannot become
+            # undeclared fallbacks.
             pkgs.coreutils
             pkgs.findutils
             pkgs.gnused
@@ -86,9 +87,8 @@
             pkgs.gzip
             pkgs.file
             pkgs.m4
-            # GNU tar is a declared publisher input. Kandelo's temporary
-            # Homebrew overlay uses Homebrew's upstream reproducible tar flags
-            # for bottles that retain an embedded installation receipt.
+            # GNU tar is a declared publisher input used for reproducible
+            # archive creation across package build and publish scripts.
             pkgs.gnutar
             pkgs.wget
             pkgs.zstd
@@ -99,7 +99,7 @@
             # path once Rust support is enabled.
             pkgs.rust-cbindgen
             # System tools that build scripts pull from /usr/bin or
-            # /opt/homebrew/bin in non-pure shells. Pinning them via
+            # other ambient host prefixes in non-pure shells. Pinning them via
             # the flake makes `nix develop --ignore-environment` work
             # (so `bash packages/registry/<pkg>/build-*.sh` reproduces CI
             # locally) and removes silent host-version drift between
@@ -119,8 +119,8 @@
             pkgs.curl
             pkgs.perl
             pkgs.python3
-            # Ruby's standard Psych parser is used by the Homebrew publisher
-            # trust test so workflow contracts are checked as YAML data.
+            # Ruby's standard Psych parser is used by workflow trust tests
+            # so workflow contracts are checked as YAML data.
             pkgs.ruby
             pkgs.flex
             pkgs.bison
@@ -135,9 +135,8 @@
             # Plans and repository audits use ripgrep for exact bounded path
             # and placeholder checks; do not fall back to an ambient host rg.
             pkgs.ripgrep
-            # oras - used by the trusted Homebrew bottle publish workflow
-            # to push bottle bytes to GitHub Packages / GHCR while keeping
-            # the actual `brew` executable outside PATH leakage.
+            # oras - used by trusted OCI artifact publish workflows to push
+            # bytes to GitHub Packages / GHCR.
             pkgs.oras
             # rsync — build-vim-zip.sh / build-shell-vfs-image.sh
             #   use it to copy vim's runtime tree.
@@ -210,7 +209,8 @@
         ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             # Mozilla's host configure invokes xcrun directly on Darwin to
             # discover the macOS SDK. Use nixpkgs' implementation so exact
-            # package-build PATHs do not fall back to /usr/bin or Homebrew.
+            # package-build PATHs do not fall back to /usr/bin or ambient
+            # host prefixes.
             pkgs.xcbuild
         ];
       in {
@@ -218,8 +218,8 @@
           packages = devShellPackages;
 
           shellHook = ''
-            # On Darwin, nix develop can leave user profile and
-            # /opt/homebrew entries ahead of mkShell package bins. Reassert
+            # On Darwin, nix develop can leave user profile and ambient
+            # host prefix entries ahead of mkShell package bins. Reassert
             # the complete declared tool set, not only Rust, so package builds
             # cannot silently select host CMake, make, or another ambient
             # binary ahead of the flake-pinned version.

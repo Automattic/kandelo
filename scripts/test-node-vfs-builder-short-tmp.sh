@@ -131,8 +131,8 @@ install_local_binary() {
   local package="$1" source="$2" artifact
   case "$package" in
     node-vfs) artifact=node-vfs.vfs.zst ;;
-    nginx-vfs) artifact=nginx.vfs.zst ;;
-    nginx-php-vfs) artifact=nginx-php.vfs.zst ;;
+    nginx-vfs) artifact=nginx-vfs.vfs.zst ;;
+    nginx-php-vfs) artifact=nginx-php-vfs.vfs.zst ;;
     wordpress) artifact=wordpress.vfs.zst ;;
     lamp) artifact=lamp.vfs.zst ;;
     *) return 72 ;;
@@ -156,15 +156,15 @@ SH
   )
   public_names=(
     node-vfs.vfs.zst
-    nginx.vfs.zst
-    nginx-php.vfs.zst
+    nginx-vfs.vfs.zst
+    nginx-php-vfs.vfs.zst
     wordpress.vfs.zst
     lamp.vfs.zst
   )
   out_names=(
     node-vfs.vfs.zst
-    nginx.vfs.zst
-    nginx-php.vfs.zst
+    nginx-vfs.vfs.zst
+    nginx-php-vfs.vfs.zst
     wordpress.vfs.zst
     lamp.vfs.zst
   )

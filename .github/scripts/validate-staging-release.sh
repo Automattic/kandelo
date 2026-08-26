@@ -53,9 +53,6 @@ run_xtask_without_credentials() {
   # but the index and archive validators operate only on already-downloaded
   # bytes and must not inherit publication credentials.
   env -u GH_TOKEN -u GITHUB_TOKEN \
-    -u HOMEBREW_GITHUB_API_TOKEN \
-    -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-    -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_URL \
     -u ACTIONS_RUNTIME_TOKEN \

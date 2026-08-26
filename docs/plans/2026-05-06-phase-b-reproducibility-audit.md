@@ -42,7 +42,7 @@ For Phase B's CI matrix gating: `mariadb` and its dependents fall back to **D2 (
 
 ## Cross-platform check
 
-Not run. The audit was run only in the local Nix dev shell on macOS aarch64. CI runs Linux Nix, so same-environment reproducibility is the load-bearing case for D3 gating in CI; the cross-shell question (Homebrew clang vs. Nix LLVM) is moot for D3's single-environment use case but still relevant for developer-machine consistency.
+Not run. The audit was run only in the local Nix dev shell on macOS aarch64. CI runs Linux Nix, so same-environment reproducibility is the load-bearing case for D3 gating in CI; the cross-shell question (a non-Nix system clang vs. Nix LLVM) is moot for D3's single-environment use case but still relevant for developer-machine consistency.
 
 ## Recommendation for Phase B-1 Task 2 onward
 

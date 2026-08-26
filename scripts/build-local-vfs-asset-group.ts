@@ -37,13 +37,12 @@ import {
   type VfsAssetGroupManifestV1,
 } from "../web-libs/kandelo-session/src/vfs-asset-group.ts";
 import {
-  canonicalPagesProductPath,
-  loadCanonicalPagesProductMap,
-  type CanonicalPagesProductMapV1,
-} from "./abi-staging-pages-site-builder.ts";
+  loadVfsProductDeploymentMap,
+  vfsProductDeploymentPath,
+  type VfsProductDeploymentMapV1,
+} from "./vfs-product-deployment.ts";
 import {
   projectedArtifact,
-  readAdapterRegistry,
   readGeneratedPagesRegistry,
 } from "./check-pages-vfs-product-registry.mjs";
 import { loadVfsProductCatalog } from "./vfs-product-catalog.mjs";
@@ -121,10 +120,6 @@ export async function buildLocalVfsAssetGroup(
   const paths = authorityPaths(sourceRoot);
   const registry = readGeneratedPagesRegistry(paths.generatedRegistryPath);
   const catalog = loadVfsProductCatalog(paths.catalogPath);
-  const adapters = readAdapterRegistry(paths.adapterPath);
-  const adapterByProduct = new Map<string, any>(
-    adapters.map((adapter: any) => [adapter.product, adapter]),
-  );
   const products: ProductProjection[] = registry.products
     .map((entry: any) => {
       const product = catalog.productById(entry.id) as {
@@ -132,11 +127,7 @@ export async function buildLocalVfsAssetGroup(
         id: string;
         output: string;
       };
-      const adapter = adapterByProduct.get(entry.id);
-      if (adapter === undefined) {
-        throw new Error(`Pages product ${entry.id} has no adapter`);
-      }
-      const artifact = projectedArtifact(product, adapter);
+      const artifact = projectedArtifact(product);
       return {
         id: entry.id,
         load: entry.load,
@@ -281,7 +272,7 @@ export async function buildLocalVfsAssetGroup(
       path: "vfs-groups/release-1/manifest.json",
       sha256: sha256(manifestBytes),
     };
-    const map: CanonicalPagesProductMapV1 = {
+    const map: VfsProductDeploymentMapV1 = {
       kind: "kandelo-pages-private-product-map",
       products: products.map((product) => {
         const snapshot = captured.get(product.sourceMember)!;
@@ -290,7 +281,7 @@ export async function buildLocalVfsAssetGroup(
           bytes: snapshot.bytes.byteLength,
           id: product.id,
           load: product.load,
-          path: canonicalPagesProductPath(
+          path: vfsProductDeploymentPath(
             product.id,
             snapshot.sha256,
             ABI_VERSION,
@@ -323,14 +314,14 @@ export async function buildLocalVfsAssetGroup(
 }
 
 function validateStagedProductMap(options: {
-  finalMap: CanonicalPagesProductMapV1;
+  finalMap: VfsProductDeploymentMapV1;
   products: readonly ProductProjection[];
   sourceRoot: string;
   stageRoot: string;
   stagedGroup: string;
 }): void {
   const validationPath = join(options.stageRoot, "validation-private-map.json");
-  const validationMap: CanonicalPagesProductMapV1 = {
+  const validationMap: VfsProductDeploymentMapV1 = {
     ...options.finalMap,
     products: options.finalMap.products.map((entry, index) => ({
       ...entry,
@@ -342,7 +333,7 @@ function validateStagedProductMap(options: {
     })),
   };
   writeExactFile(validationPath, Buffer.from(canonicalJson(validationMap)));
-  const loaded = loadCanonicalPagesProductMap({
+  const loaded = loadVfsProductDeploymentMap({
     mapPath: validationPath,
     sourceRoot: options.sourceRoot,
   });
@@ -562,7 +553,6 @@ function hasEntryIdentity(
 
 function authorityPaths(sourceRoot: string) {
   return {
-    adapterPath: join(sourceRoot, "abi/staging/legacy-vfs-adapters.toml"),
     catalogPath: join(sourceRoot, "images/vfs/products/generated/catalog.json"),
     generatedRegistryPath: join(
       sourceRoot,

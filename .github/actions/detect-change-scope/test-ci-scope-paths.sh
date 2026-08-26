@@ -76,13 +76,11 @@ assert_matches package_archive_changed_files \
 assert_matches package_archive_changed_files \
   "host/src/vfs/sharedfs-vendor.ts" \
   "host/src/vfs/sharedfs-vendor.ts"
-# The shell package lists the exact host-side Homebrew/VFS source closure in
+# The shell package lists the exact host-side VFS source closure in
 # build.toml. Every member must stage a replacement shell archive.
 for shell_host_input in \
   host/src/constants.ts \
   host/src/generated/abi.ts \
-  host/src/homebrew-vfs-fetch.ts \
-  host/src/homebrew-vfs-planner.ts \
   host/src/pathconf.ts \
   host/src/statfs.ts \
   host/src/types.ts \
@@ -99,65 +97,10 @@ done
 assert_matches package_archive_changed_files \
   "images/rootfs/etc/profile" \
   "images/rootfs/etc/profile"
-# The canonical shell now owns its flat selection and builder through
-# build.toml. Every declared member must stage the package and must not be
-# subtracted as an independent Homebrew-only product input.
-canonical_flat_shell_inputs=(
-  homebrew/main-shell-flat-selection.json
-  homebrew/main-shell-default.json
-  homebrew/main-shell-flat-demo.json
-  host/src/homebrew-runtime-support-materializer.ts
-  host/src/homebrew-runtime-support.ts
-  host/src/homebrew-vfs-builder.ts
-  images/vfs/scripts/build-homebrew-flat-vfs-image.ts
-)
-for canonical_flat_shell_input in "${canonical_flat_shell_inputs[@]}"; do
-  assert_matches package_declared_build_input_changed_files \
-    "$canonical_flat_shell_input" \
-    "$canonical_flat_shell_input"
-  assert_matches package_archive_changed_files \
-    "$canonical_flat_shell_input" \
-    "$canonical_flat_shell_input"
-  assert_not_matches homebrew_product_owned_package_input_changed_files \
-    "$canonical_flat_shell_input" \
-    "$canonical_flat_shell_input"
-done
-# The retired lazy campaign remains an independent Homebrew product. Its exact
-# legacy inputs still run that product gate without rebuilding the canonical
-# flat shell whose declared graph does not consume them.
-retired_homebrew_product_inputs=(
-  homebrew/main-shell-homebrew-runtime-support.json
-  homebrew/main-shell-lazy-artifact-lock.json
-  homebrew/main-shell-selection-lock.json
-  scripts/check-homebrew-main-shell-brewfile.mjs
-  scripts/homebrew-prefix-campaign-executor.py
-)
-for homebrew_product_input in "${retired_homebrew_product_inputs[@]}"; do
-  assert_not_matches package_declared_build_input_changed_files \
-    "$homebrew_product_input" \
-    "$homebrew_product_input"
-  assert_matches homebrew_product_owned_package_input_changed_files \
-    "$homebrew_product_input" \
-    "$homebrew_product_input"
-  assert_not_matches package_archive_changed_files \
-    "$homebrew_product_input" \
-    "$homebrew_product_input"
-done
-assert_not_matches homebrew_product_owned_package_input_changed_files \
-  "scripts/homebrew-main-shell-selection-lock.py" \
-  "scripts/homebrew-main-shell-selection-lock.py"
-# A real conventional recipe change in the same diff must still stage. The
-# ownership route is not a Homebrew prefix wildcard or a whole-diff escape.
+# A conventional recipe change must stage the shell package archive.
 assert_matches package_archive_changed_files \
   "packages/registry/shell/build-shell.sh" \
-  "${retired_homebrew_product_inputs[@]}" \
   "packages/registry/shell/build-shell.sh"
-for homebrew_product_input in "${retired_homebrew_product_inputs[@]}"; do
-  assert_not_matches package_archive_changed_files \
-    "$homebrew_product_input" \
-    "${retired_homebrew_product_inputs[@]}" \
-    "packages/registry/shell/build-shell.sh"
-done
 # This classifier is intentionally aggregated across the package registry.
 # WordPress and LAMP boot the host runtime while building their derived VFS
 # images, so their recursive host/src input makes these changes package inputs
@@ -200,14 +143,6 @@ grep -Fq \
 grep -Fq \
   'emit_bool package_staging_required "$package_archive_changed"' \
   "$ACTION_DIR/action.yml"
-# Retired product-owned inputs must keep the non-package test gate and exact
-# Homebrew proof even though they skip canonical package staging.
-grep -Fq \
-  '[ "$homebrew_product_changed" = '\''true'\'' ]' \
-  "$ACTION_DIR/action.yml"
-grep -Fq \
-  'Homebrew product-owned input escaped the exact product gate' \
-  "$ACTION_DIR/action.yml"
 for package_index_contract in \
   tools/xtask/src/index_candidate.rs \
   tools/xtask/src/index_toml.rs \
@@ -224,7 +159,6 @@ assert_matches binary_materialization_changed_files \
   "scripts/pack-ci-test-workspace.sh"
 for blocker_materialization_script in \
   scripts/activate-local-shell-build-override.sh \
-  scripts/ci-homebrew-browser-mirror-state.sh \
   scripts/install-local-shell-artifact.sh \
   scripts/materialize-ci-canonical-package-index.sh \
   scripts/materialize-ci-publication-blockers.sh \
@@ -451,18 +385,6 @@ assert_matches package_publish_flow_changed_files \
 assert_matches package_publish_flow_changed_files \
   "scripts/release-index-state.sh" \
   "scripts/release-index-state.sh"
-assert_not_matches package_archive_changed_files \
-  "scripts/homebrew-rootfs-publication-selection.sh" \
-  "scripts/homebrew-rootfs-publication-selection.sh"
-assert_matches package_publish_flow_changed_files \
-  "scripts/homebrew-rootfs-publication-selection.sh" \
-  "scripts/homebrew-rootfs-publication-selection.sh"
-assert_not_matches package_archive_changed_files \
-  "scripts/test-homebrew-rootfs-publication-selection.sh" \
-  "scripts/test-homebrew-rootfs-publication-selection.sh"
-assert_matches package_publish_flow_changed_files \
-  "scripts/test-homebrew-rootfs-publication-selection.sh" \
-  "scripts/test-homebrew-rootfs-publication-selection.sh"
 assert_matches package_publish_flow_changed_files \
   "tests/scripts/release-index-state.sh" \
   "tests/scripts/release-index-state.sh"
@@ -560,8 +482,7 @@ assert_not_matches kernel_runtime_changed_files \
 
 # Canonical VFS authority is consumed by ABI, package, and browser validation.
 # Product manifests can change image bytes, while consumer registries and the
-# typed staging implementation require the non-package runtime gate. None of
-# these paths opt into the existing credentialed Homebrew product exception.
+# typed staging implementation require the non-package runtime gate.
 abi_staging_foundation_paths=(
   images/vfs/products/browser-main-shell.toml
   apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.toml
@@ -572,9 +493,6 @@ abi_staging_foundation_paths=(
 )
 for abi_staging_foundation_path in "${abi_staging_foundation_paths[@]}"; do
   assert_matches kernel_runtime_changed_files \
-    "$abi_staging_foundation_path" \
-    "$abi_staging_foundation_path"
-  assert_not_matches homebrew_product_owned_package_input_changed_files \
     "$abi_staging_foundation_path" \
     "$abi_staging_foundation_path"
 done
@@ -588,9 +506,6 @@ pages_production_paths=(
 )
 for pages_production_path in "${pages_production_paths[@]}"; do
   assert_matches kernel_runtime_changed_files \
-    "$pages_production_path" \
-    "$pages_production_path"
-  assert_not_matches homebrew_product_owned_package_input_changed_files \
     "$pages_production_path" \
     "$pages_production_path"
 done
@@ -631,7 +546,6 @@ for package_index_contract in \
 done
 for blocker_materialization_script in \
   scripts/activate-local-shell-build-override.sh \
-  scripts/ci-homebrew-browser-mirror-state.sh \
   scripts/install-local-shell-artifact.sh \
   scripts/materialize-ci-canonical-package-index.sh \
   scripts/materialize-ci-publication-blockers.sh \

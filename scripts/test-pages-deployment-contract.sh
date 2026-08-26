@@ -300,7 +300,7 @@ expect_mutation_rejected \
 expect_mutation_rejected \
   "candidate namespace injection" \
   "production Pages must not consume candidate artifact authority" \
-  's/(          set -euo pipefail\n)/$1          echo ghcr.io\/kandelo-dev\/homebrew-tap-core-abi-43-candidates\/bash\n/'
+  's/(          set -euo pipefail\n)/$1          echo ghcr.io\/kandelo-dev\/sample-tap-core-abi-43-candidates\/bash\n/'
 
 expect_mutation_rejected \
   "restored Kandelo package materialization" \

@@ -109,7 +109,7 @@ if ! jq -e \
         "archive_sha256", "bytes", "id", "name"
       ] | sort) and
       (.artifact.id | type == "number" and . >= 1 and floor == .) and
-      .artifact.name == "homebrew-main-shell-closure" and
+      .artifact.name == "main-shell-closure" and
       (.artifact.archive_sha256 |
         type == "string" and test("^[0-9a-f]{64}$")) and
       (.artifact.bytes | type == "number" and . >= 1 and floor == .) and

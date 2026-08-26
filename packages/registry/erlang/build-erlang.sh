@@ -9,7 +9,7 @@ set -euo pipefail
 # Requires: host Erlang/OTP 28 in PATH (provided by scripts/dev-shell.sh).
 #
 # Outputs: erlang.wasm plus a trimmed, relocatable OTP runtime archive.
-# Resolver and Homebrew callers own both the work and output directories.
+# Resolver and package callers own both the work and output directories.
 
 OTP_VERSION="${WASM_POSIX_DEP_VERSION:-${OTP_VERSION:-28.2}}"
 OTP_TAG="OTP-${OTP_VERSION}"
@@ -418,7 +418,7 @@ LIBS="" \
 # with the verified host OTP. The opt target writes them to erts/ebin; OTP's
 # copy target strips and installs that exact set into erts/preloaded/ebin, where
 # the target emulator build reads them. Keep these as separate make processes:
-# Homebrew supplies parallel MAKEFLAGS, and independent goals in one process
+# Package builds supply parallel MAKEFLAGS, and independent goals in one process
 # would otherwise allow copy to race the module compilation.
 mkdir -p "$SRC_DIR/erts/preloaded/ebin"
 make -C "$SRC_DIR/erts/preloaded/src" \
@@ -733,7 +733,7 @@ for forbidden in "$WORK_DIR" "$REPO_ROOT" "$SYSROOT" /private/tmp/ /Users/ /home
 done
 
 # --- Pack the relocatable OTP runtime tree ---
-# The Homebrew keg and the legacy erlang-vfs image both consume this exact
+# The packaged runtime and the legacy erlang-vfs image both consume this exact
 # output. It carries OTP applications and release boot files; executable ERTS
 # helpers are admitted only when they are valid Kandelo Wasm modules.
 echo "==> Packing OTP runtime tree (erlang-otp.tar.zst)..."
@@ -815,7 +815,7 @@ echo "==> erlang-otp.tar.zst: $(echo "$OTP_SIZE" | numfmt --to=iec 2>/dev/null |
 install_local_runtime_file erlang "$OTP_TARBALL"
 
 # Direct developer builds historically leave convenient copies beside the
-# recipe. Resolver and Homebrew callers instead receive the exact same bytes
+# recipe. Resolver and package callers instead receive the exact same bytes
 # through the executable/runtime-file caller-owned output contract above.
 if [ -z "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     cp "$ARTIFACT_DIR/erlang.wasm" "$OUT_DIR/erlang.wasm"

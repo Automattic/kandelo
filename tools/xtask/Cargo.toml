@@ -26,12 +26,6 @@ wasm-posix-shared = { path = "../../crates/shared" }
 fork-instrument = { path = "../../crates/fork-instrument" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# JSON-Schema validation for Homebrew sidecar metadata. Pinned to 0.18 —
-# tested clean on aarch64-apple-darwin; newer 0.4x versions pull in
-# `aws-lc-rs` via a default feature path that has historically been brittle on
-# macOS hosts. `default-features = false` drops remote resolution and CLI
-# plumbing; Kandelo schemas use only local `#/$defs/...` references.
-jsonschema = { version = "0.18", default-features = false }
 # Pinned to a single minor. wasmparser has churned across minors
 # (CompositeType vs CompositeInnerType, SubType shape, etc). A passive
 # `cargo update` should not silently break the snapshot generator.

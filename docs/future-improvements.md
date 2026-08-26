@@ -4,23 +4,6 @@ Technical debt, deferred enhancements, and explicitly documented conformance
 gaps. Listing an item here does not imply that the current behavior is fully
 supported.
 
-## ABI staging product retirement
-
-### Retire obsolete VFS-wrapper package entries after acceptance
-
-Canonical VFS product manifests will replace package-registry entries whose
-primary purpose is to wrap a rootfs, shell, browser service image, language
-runtime image, SDK image, or VFS test image. Keep those wrappers and the
-main-shell Brewfile operational during rollout, but inventory them in the ABI
-staging retirement ledger and remove them after every consumer uses canonical
-product authority and the required transition, source-custody, repair,
-failure-recovery, and Pages evidence is retained.
-
-This retirement does not apply to ordinary software recipes. Formula and
-package recipes for Bash, PHP, zlib, and other software continue to own their
-portable source, license, dependency, output, and build facts unless a separate
-package-system design replaces that contract.
-
 ## ABI modeling and package provenance
 
 ### Model semantic ABI transitions in Rust-owned machine-readable data
@@ -43,28 +26,6 @@ differential and conformance tests should remain supporting evidence. Moving
 code into Rust makes ownership and typed modeling easier; Rust by itself does
 not provide the proof.
 
-**Related design:**
-`docs/superpowers/specs/2026-08-08-abi-bottle-staging-design.md`
-
-### Preserve all external build sources in deduplicated content-addressed custody
-
-The ABI bottle-staging MVP preserves the exact Kandelo and tap Git trees plus
-required submodules with actual builds. Extend that custody contract to every
-upstream source role consumed by a bottle: primary archives, resources,
-patches, generated inputs, vendored dependency archives, native build inputs,
-and any authenticated metadata needed to reproduce acquisition. Store each
-unique byte object once by digest, keep a canonical role/identity manifest per
-build, and retain objects while referenced by candidate, verification,
-admission, canonical bottle, or historical-repair records.
-
-This is source preservation associated with the actual build, not a detached
-request-time repository mirror. It should allow later reconstruction even when
-an upstream URL disappears without duplicating shared sources across Formulae
-or attempts.
-
-**Related design:**
-`docs/superpowers/specs/2026-08-08-abi-bottle-staging-design.md`
-
 ### Ship ABI-matched POSIX and Kandelo manual pages
 
 Provide user-space manual pages for the POSIX interfaces Kandelo implements,
@@ -72,7 +33,7 @@ the explicit boundaries it does not yet implement, and Kandelo-specific tools
 and runtime configuration. Generate or select the pages through the same
 ABI-qualified product inputs used to build VFS images so documentation cannot
 silently describe a different kernel contract. Package the pages as normal
-Homebrew/VFS software with content-addressed provenance rather than embedding a
+VFS software with content-addressed provenance rather than embedding a
 browser-only help copy.
 
 This is separate from the ABI-staging MVP. The initial work should inventory
@@ -193,7 +154,7 @@ package-source publication workflows, `docs/package-sources.md`
 
 Kandelo currently rebuilds and publishes canonical VFS images for the current
 runtime; it does not persist a machine image for restoration across releases.
-Old lazy Homebrew images can describe deferred files whose authenticated bytes
+Old lazy images can describe deferred files whose authenticated bytes
 depend on the producer's guest prefix and relocation inputs. If a later host
 uses different relocation defaults, allowing the image to boot and consulting
 those defaults on first access can produce bytes that no longer match the
@@ -207,43 +168,6 @@ runtime must not silently reinterpret authenticated image content through
 mutable host defaults and fail only when a deferred file is first opened.
 
 **Files:** `host/src/vfs/`, `images/vfs/`, package image builders and metadata
-
-### Cross-bind each shell candidate to its public bottle mirror
-
-The short-term ABI-42 rollout has two independent checks: the protected tap
-publisher source-builds the current-main shell and requires its recovered
-37-asset plan to match the checked-in plan, while Kandelo candidate activation
-anonymously verifies the public release for that checked-in plan. The candidate
-receipt does not yet prove that the exact candidate shell archive embeds that
-same plan.
-
-Add an authenticated candidate-to-mirror binding before this becomes a general
-publication contract. Candidate preparation should extract or attest the
-shell's exact plan identity, carry it through the sealed candidate and
-activation receipt, and require the public mirror readback receipt to name the
-same plan and collection. This must preserve the package resolver's tested-byte
-authority and must not make a validation-only plan file a package cache-key
-input.
-
-**Files:** merge-candidate metadata and activation scripts, shell VFS evidence,
-public bottle-mirror receipts
-
-### Automate protected bottle-mirror publication across repositories
-
-The current rollout requires an operator to run the protected
-`kandelo-dev/homebrew-tap-core` caller with exact Kandelo and tap commits before
-allowing candidate activation to retry. Kandelo's repository-scoped
-`GITHUB_TOKEN` cannot dispatch that other repository, and this change does not
-introduce a broader personal token or hidden cross-repository credential.
-
-Automate the handoff with a least-privilege installation identity, such as a
-GitHub App, only after the request and receipt schemas bind the exact Kandelo
-main commit, tap main commit, checked-in plan identity, workflow run, and
-idempotent publication result. Failed dispatch or publication must remain
-observable and retryable without advancing canonical package state.
-
-**Files:** protected tap caller, Kandelo post-main publication orchestration,
-mirror publication and readback receipts
 
 ## Performance
 
@@ -315,31 +239,6 @@ run without an API-level invocation, then restore browser acceptance to execute
 
 **Files:** `packages/registry/node-compat/bootstrap.js`,
 `apps/browser-demos/test/kandelo-node.spec.ts`
-
-### Harden flat lazy shell composition trust boundaries
-
-The flat-selection lazy shell composer currently relies on its trusted build
-caller for three boundaries that should be made self-authenticating before the
-API is exposed to less-controlled callers:
-
-- accept the exact serialized base-image bytes, restore them privately, and
-  derive the recorded digest and size instead of accepting a separate identity
-  claim;
-- snapshot or revalidate the base and output filesystems after asynchronous
-  bottle loading so a callback cannot inject unrelated state across the await
-  boundary; and
-- reuse the eager materialization entry validator for embedded evidence so a
-  hardlink must retain its target inode identity, not merely equal bytes.
-- reject distinct `SharedArrayBuffer` wrappers that share one backing store
-  when the composer requires isolated base, scratch, and output filesystems;
-  and
-- give the runtime boot helper a report-independent exact metadata validator
-  before it activates a restored flat-lazy image with unexpected lineage
-  fields.
-
-**Files:** `host/src/homebrew-flat-lazy-vfs-composer.ts`,
-`host/src/homebrew-vfs-composer.ts`,
-`host/test/homebrew-flat-lazy-vfs-composer.test.ts`
 
 ### Runtime tuning for the default pthread limit
 Kernel worker creation currently accepts `defaultThreadSlots`, and processes

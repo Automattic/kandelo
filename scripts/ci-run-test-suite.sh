@@ -32,7 +32,7 @@ if [ -z "$suite" ]; then
     exit 2
 fi
 group="${2:-${TEST_GROUP:-all}}"
-disabled_homebrew_vitest_excludes=(
+disabled_software_vitest_excludes=(
     # Vitest is invoked from host/. Its ordinary file list includes both
     # host-local paths (test/**) and repository siblings (../tests/**), so
     # every disabled-software marker needs both spellings.
@@ -50,8 +50,7 @@ disabled_homebrew_vitest_excludes=(
     "--exclude=test/shell-vfs-build.test.ts"
     "--exclude=test/vfs-product-builder-contract.test.ts"
 )
-disabled_homebrew_cargo_test_args=(
-    "--skip" "homebrew"
+disabled_software_cargo_test_args=(
     "--skip" "formula"
     "--skip" "bottle"
     "--skip" "tap"
@@ -333,7 +332,7 @@ run_exact_abi_source_vitest() {
 
     (
         cd host
-        npx vitest list --filesOnly "${disabled_homebrew_vitest_excludes[@]}"
+        npx vitest list --filesOnly "${disabled_software_vitest_excludes[@]}"
     ) > "$live_raw"
     : > "$live"
     while IFS= read -r path || [ -n "${path:-}" ]; do
@@ -529,7 +528,7 @@ NODE
             cd host
             npx vitest list --filesOnly \
                 "${prepared_excludes[@]}" \
-                "${disabled_homebrew_vitest_excludes[@]}"
+                "${disabled_software_vitest_excludes[@]}"
         ) > "$selected_raw"
     else
         : > "$selected_raw"
@@ -560,7 +559,7 @@ NODE
             cd host
             npx vitest run \
                 "${prepared_excludes[@]}" \
-                "${disabled_homebrew_vitest_excludes[@]}"
+                "${disabled_software_vitest_excludes[@]}"
         )
     fi
     for index in "${!source_resource_files[@]}"; do
@@ -669,7 +668,7 @@ case "$suite" in
         # host-target cargo tests; no wasm sysroots or prepared workspace needed.
         HOST_TARGET="$(host_target)"
         cargo test -p xtask --target "$HOST_TARGET" -- \
-            "${disabled_homebrew_cargo_test_args[@]}"
+            "${disabled_software_cargo_test_args[@]}"
         ;;
     vitest)
         if [ "$group" = "exact-abi-source" ]; then
@@ -828,7 +827,7 @@ case "$suite" in
                 npx vitest run \
                     "${vitest_args[@]}" \
                     "${resource_excludes[@]}" \
-                    "${disabled_homebrew_vitest_excludes[@]}"
+                    "${disabled_software_vitest_excludes[@]}"
             )
         fi
         if [ "$group" = "all" ] || [ "$group" = "resource-isolated" ]; then

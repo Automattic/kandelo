@@ -45,6 +45,7 @@ Environment:
 
 For this narrow workload, the prior path took 3.06 times as long at the
 median. The result demonstrates the source-startup effect only. It does not
-measure a complete Homebrew lifecycle, resident memory, browser performance,
-or the compiled distribution path. The batch-level Node and browser benchmark
-suites and the exact Homebrew lifecycle remain separate completion gates.
+measure a complete package-install lifecycle, resident memory, browser
+performance, or the compiled distribution path. The batch-level Node and
+browser benchmark suites and the exact package-install lifecycle remain
+separate completion gates.

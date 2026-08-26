@@ -80,19 +80,6 @@ crossed and check the change actually applies here. `actions/checkout` v7 blocks
 fork-PR checkout under `pull_request_target` and `workflow_run`; that was safe to
 adopt only because no workflow in this repo uses either trigger.
 
-The two Homebrew publisher workflows are the deliberate exception: they pin
-`actions/checkout` to v6.0.2 while the rest of the repo is on v7.0.0. Their
-build, plan, upload, and index steps are frozen by a content digest in
-`scripts/check-homebrew-publish-workflow-trust.rb`, so any edit to those steps
--- including a version bump or an added `with:` key -- fails the trust check
-until the digest is regenerated in the same reviewed change. Do not converge
-`reusable-homebrew-bottle-publish.yml` or `reusable-homebrew-bottle-maintenance.yml`
-as a side effect of a repo-wide sweep, and do not add inline substituter tuning
-to them the way the other Nix entry points carry it. Version changes to those
-two files belong in a dedicated change that updates the digest and re-runs the
-trust check. The split-audit above still expects one SHA per action; this pair
-is the one documented deviation.
-
 Same-repo references are the one exception. `uses: ./.github/actions/setup-nix`
 and `uses: ./.github/workflows/reusable-*.yml` cannot carry `@sha` — GitHub
 resolves them at the commit the workflow is already running, so they are pinned
@@ -160,7 +147,6 @@ mechanical verb or team name. Common prefixes include:
 - `Browser:` for browser-only product or presentation behavior.
 - `CI:` for repository validation, release, and automation infrastructure.
 - `Docs:` for documentation-only changes.
-- `Homebrew:` for tap, bottle, publisher, and Homebrew VFS work.
 - `Host:` for shared Node.js/browser host-runtime behavior.
 - `Kernel:` for kernel implementation and internal process state.
 - `Libc:` for musl and libc glue.

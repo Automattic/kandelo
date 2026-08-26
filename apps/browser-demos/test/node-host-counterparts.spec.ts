@@ -25,12 +25,12 @@ interface RunningDemo {
 const serviceImages = {
   nginx: {
     relPath: "programs/nginx-vfs.vfs.zst",
-    publicFile: "nginx.vfs.zst",
+    publicFile: "nginx-vfs.vfs.zst",
     buildHint: "./run.sh build nginx-vfs",
   },
   nginxPhp: {
     relPath: "programs/nginx-php-vfs.vfs.zst",
-    publicFile: "nginx-php.vfs.zst",
+    publicFile: "nginx-php-vfs.vfs.zst",
     buildHint: "./run.sh build nginx-php-vfs",
   },
   wordpress: {

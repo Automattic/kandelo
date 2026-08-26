@@ -35,7 +35,7 @@ import {
 } from "./kandelo-demo-config";
 import { nginxPhpGuide } from "./kandelo-demo-guides";
 
-const OUT_FILE = join(findRepoRoot(), "apps", "browser-demos", "public", "nginx-php.vfs.zst");
+const OUT_FILE = join(findRepoRoot(), "apps", "browser-demos", "public", "nginx-php-vfs.vfs.zst");
 const PHP_FPM_WORKERS = 6;
 const NGINX_PHP_IMAGE_MAX_BYTES = SHELL_DERIVED_VFS_PROFILE_MAX_BYTES;
 const DEMO_UID = 1000;

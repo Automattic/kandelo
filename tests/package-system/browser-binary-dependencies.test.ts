@@ -1443,7 +1443,7 @@ guest_path = "/usr/share/data"
       arch: "wasm32",
       htmlEntryFiles: [
         "index.html",
-        "pages/homebrew-vfs-test/index.html",
+        "pages/sample-vfs-test/index.html",
       ],
       localCapabilities: ["kernel-wasm", "pages-vfs-products"],
       packageCapabilities: { "rootfs-vfs": "rootfs" },
@@ -1454,7 +1454,7 @@ guest_path = "/usr/share/data"
     // WHY: bootstrap support is extracted from the selected public bottle.
     // Keeping it out of this conventional registry closure prevents the
     // browser proof from silently restoring the retired package bridge.
-    expect(roots).not.toContain("homebrew-bootstrap");
+    expect(roots).not.toContain("sample-bootstrap");
     expect(roots).toContain("rootfs");
     expect(roots).not.toContain("shell");
     expect(roots).not.toContain("node-vfs");
@@ -1470,7 +1470,7 @@ guest_path = "/usr/share/data"
       arch: "wasm32" as const,
       htmlEntryFiles: [
         "index.html",
-        "pages/homebrew-vfs-test/index.html",
+        "pages/sample-vfs-test/index.html",
       ],
       excludePackages: ["shell"],
     };

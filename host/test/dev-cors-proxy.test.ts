@@ -203,7 +203,7 @@ describe("development CORS proxy", () => {
       expect(head.headers["content-length"]).toBe("17");
 
       const uploadPack =
-        "https://github.com/example/homebrew-tap.git/git-upload-pack";
+        "https://github.com/example/sample-tap.git/git-upload-pack";
       const gitBody = Buffer.from("0014command=ls-refs\n0000");
       const post = await sendRequest({
         url: proxyUrl(relayRoot, uploadPack),
@@ -244,7 +244,7 @@ describe("development CORS proxy", () => {
       );
       expect(observed[0]!.headers["git-protocol"]).toBe("version=2");
       expect(observed[2]!.url).toBe(
-        "/example/homebrew-tap.git/git-upload-pack",
+        "/example/sample-tap.git/git-upload-pack",
       );
       expect(observed[2]!.body).toEqual(gitBody);
       expect(observed[2]!.headers.accept).toBe(

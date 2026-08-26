@@ -11,9 +11,9 @@
  * unwind crossed the reserved continuation boundary. See worker-main.ts and
  * crates/fork-instrument/src/runtime.rs.
  *
- * End-to-end behavior was measured against the Homebrew dispatcher, its
- * /usr/bin/brew alias launcher, the GTK/GLib desktop path, and the exact
- * candidate bootstrap's Bash child. Those measurements preserve the ABI 41
+ * End-to-end behavior was measured against a package-manager dispatcher, its
+ * shell alias launcher, the GTK/GLib desktop path, and a deeply recursive
+ * Bash child. Those measurements preserve the ABI 41
  * regression boundary; ABI 42 no longer treats 60 KiB as continuation
  * capacity. These tests keep the retired contiguous-buffer detector truthful
  * without implying that current linked continuations have the old ceiling.
@@ -71,10 +71,10 @@ describe("forkSaveBufferOverrun", () => {
   });
 
   it.each([
-    ["Homebrew dispatcher", 20_012],
-    ["Homebrew /usr/bin/brew alias launcher", 29_212],
+    ["package-manager dispatcher", 20_012],
+    ["shell alias launcher", 29_212],
     ["GTK/GLib launch", 21_544],
-    ["Homebrew candidate Bash recursive evaluator", 49_232],
+    ["recursive Bash evaluator", 49_232],
   ])("fits the measured %s continuation", (_name, observedFrameBytes) => {
     const memory = new WebAssembly.Memory({ initial: 3 });
     writeCurrentPos(

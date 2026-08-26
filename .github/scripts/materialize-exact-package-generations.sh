@@ -111,9 +111,6 @@ if [ -n "$WASM64_TAG" ]; then
   # indexes; consulting the mutable canonical index here could silently add an
   # archive that was not sealed for this exact main commit.
   env -u GH_TOKEN -u GITHUB_TOKEN \
-    -u HOMEBREW_GITHUB_API_TOKEN \
-    -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-    -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_URL \
     -u ACTIONS_RUNTIME_TOKEN \

@@ -15,9 +15,7 @@ export function playwrightTestIgnoreForEnvironment(
 ): RegExp[] {
   const ignored: RegExp[] = [];
   ignored.push(
-    /homebrew/i,
     /browser-package-layer\.spec\.ts$/,
-    /kandelo-canonical-flat-shell\.spec\.ts$/,
     /kandelo-node\.spec\.ts$/,
     /lazy-archive-runtime\.spec\.ts$/,
     /rootfs-export\.spec\.ts$/,

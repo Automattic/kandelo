@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship ABI 43 with a real login and sudo stack, exact set-ID exec
-authority, secure startup, a Homebrew-independent VFS security boundary, and
+authority, secure startup, a package-independent VFS security boundary, and
 evidence that Kandelo's genuine vfork path is safe and removes the need for
 the temporary CRuby patch.
 
@@ -17,7 +17,7 @@ artifact gates before pristine Ruby is released.
 
 **Tech Stack:** Rust `no_std` kernel and shared ABI crates, C/musl guest
 runtime and programs, TypeScript host runtime and VFS, Node.js workers,
-browser Web Workers, Vitest, Playwright, Cargo, Homebrew Formulae, shell and
+browser Web Workers, Vitest, Playwright, Cargo, shell and
 Python release tooling.
 
 ## Global Constraints
@@ -58,11 +58,6 @@ Python release tooling.
   Brandon's approval.
 - Mounts default to `nosuid`. Only a reviewed, root-owned, non-guest-writable
   product mount with stable executable identity may honor set-ID bits.
-- Local bottles and sidecars have `local-test` provenance. Only reviewed
-  GitHub workflows may create or promote authorized candidates.
-- Do not modify, merge, or rebase
-  `emdash/homebrew-pr-staging-1q1w6`. Consume its reviewed interfaces only
-  after they land and become active.
 - Run every build and validation command through `scripts/dev-shell.sh`.
   After any musl overlay or syscall-glue change, run
   `scripts/dev-shell.sh bash scripts/build-musl.sh` before `build.sh` or tests.
@@ -70,35 +65,6 @@ Python release tooling.
   without Brandon's explicit approval.
 - Commit and PR subjects use `Area: Purpose`. PR prose begins with `## Why`
   and wraps prose at 72 columns.
-
----
-
-## Execution Amendment — 2026-08-12: CI-owned Homebrew bottle staging
-
-Brandon directed that the costly ABI 43 Homebrew bottle build and its product
-evidence move out of this worktree. This amendment supersedes only the
-local-staging portions of the original Task 20 plan; it does not turn unrun
-work into evidence and does not change the publication or promotion boundary.
-
-Task 20 in this worktree now owns the checked-in product declarations,
-selection and authority locks, privileged projection policy, provenance
-rejection rules, CI invocation contract, and focused Node/browser fixture
-contracts. `run-login-stack-local.sh` remains an implementation interface that
-the staging lane may consume, but this worktree must not use it to build the
-43-Formula closure or treat a local report as Task 20 completion evidence.
-
-The staging worktree `emdash/homebrew-pr-staging-1q1w6` and GitHub CI own the
-actual ABI 43 Formula builds, sidecars, composed image, Node/browser lifecycle,
-and RSS evidence. Their CI report is the sole success evidence for those
-operations. Task 20 produces a frozen handoff containing the exact Kandelo and
-tap heads, ABI, Formula closure, and required lifecycle assertions; it does not
-stage, merge, publish, promote, or relabel artifacts.
-
-Accordingly, this amendment supersedes the original local-bottle statements in
-the file/interface map, Task 18's local-harness direction, Task 20 Steps 6–10
-and 12, Task 23's local product run and manual demonstration, and Task 24's
-local-test rerun. Later tasks consume the GitHub CI evidence from the staging
-owner instead. The original text remains below as a historical record.
 
 ## File and Interface Map
 
@@ -111,8 +77,6 @@ owner instead. The original text remains below as a historical record.
   proposals, and exactly-once cancellation or consumption.
 - `host/src/vfs/materialization-plan.ts` owns generic bounded archive byte
   assertions, transforms, and exact byte identities.
-- `host/src/homebrew-deferred-tree-adapter.ts` validates Homebrew receipts and
-  erases Homebrew vocabulary into generic lazy-tree inputs.
 - `host/src/exec-target.ts` defines the shared Node/browser opaque exec launch
   request and target reader; host-specific entry points consume this module.
 - `images/vfs/lib/demo-login.ts` is the one source of demo account constants,
@@ -121,9 +85,6 @@ owner instead. The original text remains below as a historical record.
   maps the demo product to the reusable session policy.
 - `scripts/run-vfork-readiness.sh` makes the mechanism and integration vfork
   gates repeatable and records exact commands and browser engines.
-- `scripts/run-login-stack-local.sh` defines the CI staging invocation and
-  report contract. The staging worktree, not this worktree, runs its
-  43-Formula bottle build and product evidence path.
 - `docs/measurements/2026-08-10-vfork-readiness.md` records exact-head vfork
   mechanism and integration results without turning unrun checks into claims.
 
@@ -293,18 +254,16 @@ approved design, stop implementation and ask Brandon to revise the design.
 
 ---
 
-### Task 1: Preserve the pre-login tip and repair the launcher fixture
+### Task 1: Preserve the pre-login tip
 
 **Files:**
 
-- Modify: `scripts/test-homebrew-patched-launcher.sh`
-- Test: `scripts/test-homebrew-patched-launcher.sh`
+- No source files; branch bookkeeping only
 
 **Interfaces:**
 
 - Consumes: exact pre-login commit `bd8ac83e3`
-- Produces: safety reference `safety/abi43-pre-login-20260810`; isolated
-  launcher fixtures containing every source imported by `run-example.ts`
+- Produces: safety reference `safety/abi43-pre-login-20260810`
 
 - [ ] **Step 1: Create and verify the safety reference**
 
@@ -314,52 +273,12 @@ test "$(git rev-parse safety/abi43-pre-login-20260810)" = \
   "bd8ac83e34f529887b0dd5ff4e1bb9d349bc7aed"
 ```
 
-- [ ] **Step 2: Make the fixture test assert the missing dependency**
-
-Add `examples/run-example-vfs.ts` beside the existing
-`run-example-output.ts` and `run-example-paths.ts` checks in both isolated
-fixture lists. The expected failing condition is module resolution failure
-for `./run-example-vfs`.
-
-- [ ] **Step 3: Run the focused test and observe the pre-fix failure**
-
-Run:
-
-```bash
-scripts/dev-shell.sh bash scripts/test-homebrew-patched-launcher.sh
-```
-
-Expected before the copy-list repair: FAIL naming
-`examples/run-example-vfs.ts` or its unresolved import.
-
-- [ ] **Step 4: Copy the dependency into every isolated runtime**
-
-In both source arrays, keep this complete adjacent set:
-
-```bash
-examples/run-example.ts
-examples/run-example-output.ts
-examples/run-example-paths.ts
-examples/run-example-vfs.ts
-```
-
-- [ ] **Step 5: Rerun and commit**
-
-```bash
-scripts/dev-shell.sh bash scripts/test-homebrew-patched-launcher.sh
-git add scripts/test-homebrew-patched-launcher.sh
-git commit -m "Homebrew: Complete the isolated launcher fixture"
-```
-
-Expected: PASS with no use of the repository's ambient `examples/` tree.
-
 ### Task 2: Give fork-instrument fixtures the explicit ABI 43 mode
 
 **Files:**
 
 - Modify: `scripts/build-fork-instrumented-test-fixture.sh`
-- Test: `scripts/test-homebrew-inspect-bottle.sh`
-- Test: `scripts/test-homebrew-tap-native-sidecars.sh`
+- Test: fork-instrument fixture generation tests
 
 **Interfaces:**
 
@@ -377,15 +296,13 @@ pointer widths:
 (drop (call $kernel_fork (i32.const 0)))
 ```
 
-Keep the deliberately malformed zero-argument negative fixture around line
-448 of `scripts/test-homebrew-inspect-bottle.sh` unchanged.
+Keep the deliberately malformed zero-argument negative fixture in the
+generated-fixture test unchanged.
 
-- [ ] **Step 2: Run the focused consumers and observe the structural failure**
+- [ ] **Step 2: Run the focused fixture-generation tests and observe the
+structural failure**
 
-```bash
-scripts/dev-shell.sh bash scripts/test-homebrew-inspect-bottle.sh
-scripts/dev-shell.sh bash scripts/test-homebrew-tap-native-sidecars.sh
-```
+Run the fork-instrument fixture generation tests.
 
 Expected before the repair: the generated positive fixture fails the ABI 43
 fork import signature check.
@@ -398,17 +315,15 @@ ordinary fork; do not turn this fixture into vfork.
 
 - [ ] **Step 4: Rerun and commit**
 
+Rerun the fork-instrument fixture generation tests, then:
+
 ```bash
-scripts/dev-shell.sh bash scripts/test-homebrew-inspect-bottle.sh
-scripts/dev-shell.sh bash scripts/test-homebrew-tap-native-sidecars.sh
-git add scripts/build-fork-instrumented-test-fixture.sh \
-  scripts/test-homebrew-inspect-bottle.sh \
-  scripts/test-homebrew-tap-native-sidecars.sh
+git add scripts/build-fork-instrumented-test-fixture.sh
 git commit -m "ABI: Give fork fixtures an explicit fork mode"
 ```
 
-Expected: both scripts PASS and the malformed negative fixture is still
-rejected.
+Expected: the fixture-generation tests PASS and the malformed negative fixture
+is still rejected.
 
 ### Task 3: Establish the vfork mechanism-readiness gate
 
@@ -543,91 +458,28 @@ Expected: mechanism gate PASS, or a distinct, tested repair commit exists and
 the rerun passes. The measurement file must still call external browser kill
 partial if it uses containment.
 
-### Task 4: Forward-port authenticated immutable bottle destinations
+### Task 4: Authenticated immutable package destinations (removed)
 
-**Files:**
+This task forward-ported the authenticated immutable bottle-destination and
+relocation pipeline of the external package manager. It was removed together
+with the package-manager port. Generic VFS materialization is now established
+independently in Task 5.
 
-- Modify: `host/src/homebrew-bottle-relocation.ts`
-- Modify: `host/src/homebrew-vfs-builder.ts`
-- Modify: `host/src/homebrew-runtime-layer-consumer.ts`
-- Create: `host/test/homebrew-bottle-relocation.test.ts`
-- Modify: `host/test/homebrew-vfs-builder.test.ts`
-
-**Interfaces:**
-
-- Consumes: authenticated receipt destination and source commit
-- Produces: immutable `destinationPrefix` that is authoritative for bottle
-  relocation and runtime activation
-
-- [ ] **Step 1: Add failing prefix-authority cases**
-
-Test the retired prefix declared by the guest-layout contract and
-`/opt/kandelo/homebrew`, plus a mismatch between receipt destination and an
-ambient runtime default. The mismatch must fail before publication; it must
-not silently relocate to the default.
-
-- [ ] **Step 2: Run the focused tests to prove current behavior is wrong**
-
-```bash
-scripts/dev-shell.sh bash -lc \
-  'cd host && npx vitest run \
-    test/homebrew-bottle-relocation.test.ts \
-    test/homebrew-vfs-builder.test.ts \
-    test/homebrew-runtime-support-materializer.test.ts'
-```
-
-Expected before the forward port: at least the non-default authenticated
-destination case fails.
-
-- [ ] **Step 3: Make authenticated destination data authoritative**
-
-Thread one normalized `destinationPrefix` from verified receipt parsing into
-relocation, activation, sidecar identity, and runtime-layer validation.
-Reject empty, relative, dot-segment, NUL-containing, or inconsistent values.
-Never consult a Homebrew installation default after authentication.
-
-- [ ] **Step 4: Rerun and commit with source authorship**
-
-```bash
-scripts/dev-shell.sh bash -lc \
-  'cd host && npx vitest run \
-    test/homebrew-bottle-relocation.test.ts \
-    test/homebrew-vfs-builder.test.ts \
-    test/homebrew-runtime-support-materializer.test.ts'
-git add host/src/homebrew-bottle-relocation.ts \
-  host/src/homebrew-vfs-builder.ts \
-  host/src/homebrew-runtime-layer-consumer.ts \
-  host/test/homebrew-bottle-relocation.test.ts \
-  host/test/homebrew-vfs-builder.test.ts \
-  host/test/homebrew-runtime-support-materializer.test.ts
-git commit --author='Brandon Payton <brandon@happycode.net>' \
-  -m "Homebrew: Honor authenticated bottle destinations"
-```
-
-Expected: both historical prefixes pass and ambient prefix drift fails closed.
-
-### Task 5: Decouple generic VFS materialization from Homebrew
+### Task 5: Establish generic VFS materialization independent of package policy
 
 **Files:**
 
 - Create: `host/src/vfs/materialization-plan.ts`
-- Create: `host/src/homebrew-deferred-tree-adapter.ts`
 - Modify: `host/src/vfs/memory-fs.ts`
-- Modify: `host/src/homebrew-vfs-builder.ts`
-- Modify: `host/src/homebrew-runtime-layer-consumer.ts`
-- Modify: `host/src/homebrew-vfs-formula-layer.ts`
 - Modify: `host/test/lazy-tree.test.ts`
-- Modify: `host/test/homebrew-vfs-builder.test.ts`
-- Modify: `host/test/homebrew-runtime-support-materializer.test.ts`
 - Modify: `host/test/node-lazy-archive-runtime.test.ts`
 - Modify: `apps/browser-demos/test/lazy-archive-runtime.spec.ts`
 - Modify: `apps/browser-demos/test/browser-package-layer.spec.ts`
 
 **Interfaces:**
 
-- Consumes: authoritative `destinationPrefix` from Task 4
-- Produces: `LazyTreeMaterializationPlan`, `tar-gzip-v1`, and
-  `adaptHomebrewDeferredTree(tree): AdaptedHomebrewDeferredTree`
+- Consumes: a generic archive source inventory
+- Produces: `LazyTreeMaterializationPlan` and `tar-gzip-v1`
 
 - [ ] **Step 1: Add closed-schema parser tests**
 
@@ -637,9 +489,9 @@ exact byte replacement. Reject unknown keys, duplicate recipes, duplicate
 transforms, odd/non-hex byte strings, unbounded replacement counts, missing
 source inventory entries, input/output digest drift, unsafe paths, and a
 transformed output whose actual length or digest differs from its declaration.
-Match and replacement lengths may differ because authenticated Homebrew
-prefixes require bounded expansion; reject arithmetic overflow or expansion
-past the named global VFS limit before allocating the output.
+Match and replacement lengths may differ because prefix rewrites require
+bounded expansion; reject arithmetic overflow or expansion past the named
+global VFS limit before allocating the output.
 
 The success fixture uses this complete shape:
 
@@ -701,54 +553,31 @@ Bound entries, recipes, replacements, assertions, byte-pattern lengths, and
 total decoded plan bytes with named constants. Apply transforms from exact
 source bytes, verify input before replacement and output afterward, and use
 the same function for eager and lazy paths. Keep callbacks, regexes, scripts,
-receipt fields, Formula names, Cellar paths, and keg terms out of this module
-and `MemoryFileSystem`.
+and package-manager metadata such as receipt fields, package names, and
+install-prefix paths out of this module and `MemoryFileSystem`.
 
-- [ ] **Step 4: Implement the Homebrew adapter**
-
-The adapter owns receipt, changed-file, prefix, keg, canonical-hard-link, and
-relocation validation and returns only:
-
-```ts
-export interface AdaptedHomebrewDeferredTree {
-  decoder: LazyTreeDecoder;
-  source?: LazyTreeSourceInventory;
-  materialization?: LazyTreeMaterializationPlan;
-  entries: LazyTreeRegistrationEntry[];
-}
-
-export function adaptHomebrewDeferredTree(
-  tree: HomebrewDeferredTreeDescriptor,
-): AdaptedHomebrewDeferredTree;
-```
-
-Map the former `homebrew-bottle-tar-gzip-v1` decoder to `tar-gzip-v1` only
-after validating the complete Homebrew descriptor.
-
-- [ ] **Step 5: Advance the runtime-layer schema and fail closed**
+- [ ] **Step 4: Advance the runtime-layer schema and fail closed**
 
 Emit schema 6 for the relocation-plan contract. Read schema 4 ZIP artifacts.
 For schema 5, accept only artifacts that need no receipt relocation; reject a
-schema-5 bottle that has relocation data. If current HEAD already uses 6 for a
-different reviewed meaning, select 7 consistently and update this plan's task
+schema-5 artifact that has relocation data. If current HEAD already uses 6 for
+a different reviewed meaning, select 7 consistently and update this plan's task
 notes before editing.
 
-- [ ] **Step 6: Prove cancellation, rollback, and atomic publication**
+- [ ] **Step 5: Prove cancellation, rollback, and atomic publication**
 
 Add tests that abort fetch, replace a lazy generation, exhaust VFS capacity,
 fail one member of an atomic tree, and mutate source identity before commit.
 Assert no destination entry becomes visible and the prior generation remains
 intact. Verify restore/rebase preserves the generic plan and does not restore
-Homebrew vocabulary into MemoryFS.
+package-policy vocabulary into MemoryFS.
 
-- [ ] **Step 7: Run Node and browser coverage**
+- [ ] **Step 6: Run Node and browser coverage**
 
 ```bash
 scripts/dev-shell.sh bash -lc \
   'cd host && npx vitest run \
     test/lazy-tree.test.ts \
-    test/homebrew-vfs-builder.test.ts \
-    test/homebrew-runtime-support-materializer.test.ts \
     test/node-lazy-archive-runtime.test.ts'
 scripts/dev-shell.sh bash -lc \
   'cd apps/browser-demos && npx playwright test \
@@ -757,26 +586,20 @@ scripts/dev-shell.sh bash -lc \
     --project=chromium --project=firefox --project=webkit'
 ```
 
-Expected: generic and adapted Homebrew eager/lazy results are byte-identical,
-and all malformed or partial states fail before publication.
+Expected: generic eager/lazy results are byte-identical, and all malformed or
+partial states fail before publication.
 
-- [ ] **Step 8: Commit with source authorship**
+- [ ] **Step 7: Commit with source authorship**
 
 ```bash
 git add host/src/vfs/materialization-plan.ts \
-  host/src/homebrew-deferred-tree-adapter.ts \
   host/src/vfs/memory-fs.ts \
-  host/src/homebrew-vfs-builder.ts \
-  host/src/homebrew-runtime-layer-consumer.ts \
-  host/src/homebrew-vfs-formula-layer.ts \
   host/test/lazy-tree.test.ts \
-  host/test/homebrew-vfs-builder.test.ts \
-  host/test/homebrew-runtime-support-materializer.test.ts \
   host/test/node-lazy-archive-runtime.test.ts \
   apps/browser-demos/test/lazy-archive-runtime.spec.ts \
   apps/browser-demos/test/browser-package-layer.spec.ts
 git commit --author='Brandon Payton <brandon@happycode.net>' \
-  -m "VFS: Separate archive materialization from Homebrew policy"
+  -m "VFS: Separate archive materialization from package policy"
 ```
 
 ### Task 6: Make set-ID execution an explicit mount capability
@@ -920,12 +743,7 @@ git commit -m "VFS: Default executable mounts to nosuid"
 **Files:**
 
 - Create: `host/src/vfs/privileged-projection.ts`
-- Modify: `host/src/homebrew-vfs-builder.ts`
-- Modify: `host/src/homebrew-vfs-planner.ts`
-- Modify: `host/src/homebrew-runtime-layer-consumer.ts`
-- Modify: `images/vfs/scripts/build-homebrew-vfs-image.ts`
-- Modify: `host/test/homebrew-vfs-builder.test.ts`
-- Modify: `host/test/homebrew-vfs-planner.test.ts`
+- Modify: the VFS image builder and planner
 - Create: `host/test/privileged-projection.test.ts`
 - Modify: `apps/browser-demos/test/browser-package-layer.spec.ts`
 
@@ -971,9 +789,7 @@ absent from the complete inventory.
 ```bash
 scripts/dev-shell.sh bash -lc \
   'cd host && npx vitest run \
-    test/privileged-projection.test.ts \
-    test/homebrew-vfs-builder.test.ts \
-    test/homebrew-vfs-planner.test.ts'
+    test/privileged-projection.test.ts'
 ```
 
 Expected: FAIL because the product cannot yet create a separate privileged
@@ -993,10 +809,7 @@ collision.
 ```bash
 scripts/dev-shell.sh bash -lc \
   'cd host && npx vitest run \
-    test/privileged-projection.test.ts \
-    test/homebrew-vfs-builder.test.ts \
-    test/homebrew-vfs-planner.test.ts \
-    test/homebrew-runtime-support-materializer.test.ts'
+    test/privileged-projection.test.ts'
 scripts/dev-shell.sh bash -lc \
   'cd apps/browser-demos && npx playwright test \
     test/browser-package-layer.spec.ts \
@@ -1004,21 +817,15 @@ scripts/dev-shell.sh bash -lc \
 ```
 
 Expected: product inodes are regular, unique, root-owned, non-writable, and
-stable while the Homebrew prefix remains writable and nosuid.
+stable while the ordinary package prefix remains writable and nosuid.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add host/src/vfs/privileged-projection.ts \
-  host/src/homebrew-vfs-builder.ts \
-  host/src/homebrew-vfs-planner.ts \
-  host/src/homebrew-runtime-layer-consumer.ts \
-  images/vfs/scripts/build-homebrew-vfs-image.ts \
-  host/test/homebrew-vfs-builder.test.ts \
-  host/test/homebrew-vfs-planner.test.ts \
   host/test/privileged-projection.test.ts \
   apps/browser-demos/test/browser-package-layer.spec.ts
-git commit -m "Homebrew: Isolate privileged product programs"
+git commit -m "VFS: Isolate privileged product programs"
 ```
 
 ### Task 8: Replace simulated identities with one POSIX credential record
@@ -2143,7 +1950,7 @@ not a valid assertion because unrelated production constants may share that
 numeric value. Instead, add focused wait-family regression evidence that
 `wait4` rejects `0x40000000` with `EINVAL` before polling or registering a
 waiter. This proves the Linux all-children option cannot enable behavior by
-numeric value. The sudo Formula patch in Task 18 removes its use while
+numeric value. The upstream sudo port removes its use while
 preserving `WUNTRACED` and `WNOHANG`.
 
 - [ ] **Step 4: Commit the focused boundary with source authorship**
@@ -2176,8 +1983,7 @@ Task 16 report or unrelated submodule state.
 **Interfaces:**
 
 - Consumes: credentials, secure exec, PTY, root-owned privileged projection
-- Produces: first-party source programs and truthful demo account/policy data;
-  product binaries still come from Homebrew Formulae
+- Produces: first-party source programs and truthful demo account/policy data
 
 - [ ] **Step 1: Add guest behavior tests before source files**
 
@@ -2229,8 +2035,8 @@ does not contain host-side authentication or a preauthenticated shell.
 - [ ] **Step 5: Keep local builds test-only**
 
 Teach `build-programs.sh` to compile these sources as fixtures without placing
-regular files into Homebrew/product-owned resolver paths. Product assembly
-must consume Task 18 bottles and Task 7 projections.
+regular files into product-owned resolver paths. Product assembly must consume
+the Task 7 privileged projections.
 
 - [ ] **Step 6: Run Node and browser behavior**
 
@@ -2265,128 +2071,14 @@ git commit --author='Brandon Payton <brandon@happycode.net>' \
   -m "POSIX: Add real login and sudo-lite programs"
 ```
 
-### Task 18: Add login and sudo Formulae and preserve pristine Ruby
+### Task 18: Package login, sudo, and pristine Ruby (removed)
 
-**Files in a separate clean `Kandelo-dev/homebrew-tap-core` worktree:**
-
-- Create: `Formula/login.rb`
-- Create: `Formula/sudo-lite.rb`
-- Create: `Formula/sudo.rb`
-- Create: `patches/sudo/0001-kandelo-portability.patch`
-- Audit and modify if needed: `Formula/ruby.rb` and its declared build inputs
-- Test: Formula `test do` blocks and Kandelo tap validation
-
-**Interfaces:**
-
-- Consumes: exact Kandelo Task 17 commit, SDK `kandelo_wasm_build`, ABI 43,
-  and normal Homebrew sidecar contracts
-- Produces: three source-built Formulae; no bottle metadata is promotable
-  until reviewed GitHub candidate workflows build it
-
-- [ ] **Step 1: Create an isolated tap branch without touching staging**
-
-Use the worktree skill at execution time. Base the tap branch on the current
-protected main commit, name it `emdash/abi43-login-sudo`, and verify it is a
-clean checkout before editing:
-
-```bash
-git status --short
-git rev-parse HEAD
-git branch --show-current
-```
-
-Do not use or modify Kandelo branch
-`emdash/homebrew-pr-staging-1q1w6` for this work.
-
-- [ ] **Step 2: Write Formula tests first**
-
-`login` and `sudo-lite` tests execute the installed Wasm through the tap's
-normal Kandelo test helper and verify `--help` or a deterministic invalid-use
-exit. `sudo` tests its installed executable and records that its patched wait
-source contains `WUNTRACED` and `WNOHANG` but not `__WALL`.
-
-- [ ] **Step 3: Define first-party Formulae from the exact Kandelo commit**
-
-Each first-party Formula pins the Automattic/kandelo archive for the exact
-Task 17 commit and its SHA-256, selects only `programs/login.c` or
-`programs/sudo-lite.c`, and invokes `kandelo_wasm_build`. It declares ABI 43,
-normal dependencies, output members, license, and tests through current tap
-conventions. It must not set `KANDELO_REGISTRY_BRIDGE`, invoke a registry
-recipe, or copy `local-binaries`.
-
-- [ ] **Step 4: Port upstream sudo 1.9.17p2 at the narrow boundary**
-
-Pin the upstream archive and checksum. The patch removes `__WALL` from the two
-child-wait option expressions while retaining `WUNTRACED` and `WNOHANG`; it
-does not define `__WALL`, change Kandelo wait ABI, or claim Linux clone-child
-support. Keep all other port changes tied to missing platform or build-system
-boundaries and exercise normal PTY, signal, and wait code.
-
-- [ ] **Step 5: Keep generated bottle metadata out of the source commit**
-
-Declare dependencies, architectures, source identity, outputs, ABI 43, and
-tests in the Formulae using current tap helpers. Do not add bottle stanzas,
-`Kandelo/formula` sidecars, link manifests, provenance reports, or candidate
-identities by hand; Task 20 generates local-test copies outside the tap and
-Task 24's reviewed workflow generates candidate copies.
-
-- [ ] **Step 6: Run tap validation and local Formula builds**
-
-From the Kandelo worktree, with `KANDELO_TAP_ROOT` set to the absolute clean
-tap worktree, first parse all Formulae:
-
-```bash
-scripts/dev-shell.sh bash -lc \
-  'for formula_name in login sudo-lite sudo; do \
-     ruby -c "$KANDELO_TAP_ROOT/Formula/$formula_name.rb"; \
-   done'
-```
-
-Then run Task 20's local harness for actual bottle builds; static validation
-alone is not Formula build evidence.
-
-- [ ] **Step 7: Commit in the tap with preserved source attribution**
-
-```bash
-git add Formula/login.rb Formula/sudo-lite.rb Formula/sudo.rb \
-  patches/sudo/0001-kandelo-portability.patch
-git commit --author='Brandon Payton <brandon@happycode.net>' \
-  -m "POSIX: Package login and sudo for Kandelo"
-```
-
-After committing, validate the exact Formula source closures:
-
-```bash
-KANDELO_TAP_COMMIT="$(git -C "$KANDELO_TAP_ROOT" rev-parse HEAD)"
-for formula_name in login sudo-lite sudo; do
-  scripts/dev-shell.sh bash scripts/homebrew-validate-formula-source-closure.sh \
-    --tap-root "$KANDELO_TAP_ROOT" \
-    --tap-repository kandelo-dev/homebrew-tap-core \
-    --formula "$formula_name" \
-    --base-ref "$KANDELO_TAP_COMMIT"
-done
-```
-
-- [ ] **Step 8: Preserve the existing pristine-Ruby selection**
-
-Audit the migrated Ruby Formula against Brandon's existing Kandelo removal
-commit `87d842814b050ba2c1acbaa880059b3d1aa0e321`. Require the pinned upstream
-archive, no source patch, no `ac_cv_func_vfork=no`, positive
-`HAVE_WORKING_VFORK` assertions, and a build-time check that extracted CRuby
-source matches upstream before configure. If migration already preserved
-these facts, make no commit. If it reintroduced the temporary path, remove
-only that residue and commit the forward port independently:
-
-```bash
-git add Formula/ruby.rb
-git commit --author='Brandon Payton <brandon@happycode.net>' \
-  -m "Ruby: Preserve pristine upstream vfork selection"
-```
-
-Do not stage generated bottle or sidecar metadata. Record the resulting exact
-tap commit for Task 20's migration lock.
-
-Do not open or merge the companion tap PR until Task 22's local matrix passes.
+This task packaged the first-party `login` and `sudo-lite` programs and an
+upstream `sudo` port as external package-manager recipes, and preserved the
+pristine upstream CRuby vfork selection. It was removed together with the
+package-manager port. The first-party `login` and `sudo-lite` programs are
+still added through the normal guest path in Task 17, and vfork evidence for
+pristine Ruby is covered by the vfork readiness gates in Tasks 3 and 22.
 
 ### Task 19: Supervise one login lifecycle per logical browser PTY
 
@@ -2522,253 +2214,13 @@ git commit --author='Brandon Payton <brandon@happycode.net>' \
   -m "Browser: Supervise real login sessions per terminal"
 ```
 
-### Task 20: Compose the CI-ready Homebrew product and staging handoff
+### Task 20: Product composition and staging handoff (removed)
 
-**Files:**
-
-- Modify: `homebrew/main-shell.Brewfile`
-- Modify: `homebrew/main-shell-default.json`
-- Modify: `homebrew/main-shell-demo.json`
-- Modify: `homebrew/main-shell-materialization-policy.json`
-- Modify: `homebrew/main-shell-homebrew-runtime-support.json`
-- Modify: `homebrew/main-shell-brew-package-tree.json`
-- Modify: `homebrew/main-shell-migration-lock.json`
-- Modify: `host/src/homebrew-vfs-builder.ts`
-- Modify: `scripts/build-homebrew-main-shell-closure.sh`
-- Modify: `scripts/homebrew-generate-sidecars-from-env.sh`
-- Create: `scripts/run-login-stack-local.sh`
-- Create: `scripts/measure-homebrew-vfork-rss.ts`
-- Create: `host/test/homebrew-login-product.test.ts`
-- Modify: `scripts/homebrew-main-shell-image-contract.test.ts`
-- Modify: `scripts/homebrew-main-shell-node-smoke.ts`
-- Modify: `scripts/create-homebrew-guest-lifecycle-fixture.ts`
-- Create: `apps/browser-demos/test/homebrew-login-lifecycle.spec.ts`
-
-**Interfaces:**
-
-- Consumes: exact clean tap checkout, local Formulae, generic materialization,
-  privileged projections, login session policy, and existing Homebrew bottle,
-  sidecar, composition, Node smoke, and closed-mirror tools
-- Produces: checked-in product and authority contracts plus a frozen CI staging
-  handoff. `run-login-stack-local.sh --tap-root --work-root [--browser-demo]`
-  is the staging invocation interface; this worktree does not build the
-  43-Formula closure or claim its execution evidence.
-
-> **Superseded execution steps:** Per the 2026-08-12 amendment above, original
-> Steps 6–10 and 12 below are staging-owned. They are retained only as the
-> historical interface specification. The staging worktree and GitHub CI run
-> them and provide the success evidence; Task 20 here stops at reviewed source
-> contracts and a frozen handoff.
-
-- [ ] **Step 1: Add product contract tests**
-
-Require login, sudo-lite, sudo, Ruby, and shell in the product closure; three
-privileged projections with exact paths/owners/modes; ordinary Homebrew prefix
-nosuid; no registry bridge; pristine upstream Ruby with no PR #1166 patch or
-`ac_cv_func_vfork=no`; deferred upstream sudo allowed; and exact bottle,
-sidecar, VFS, kernel, and ABI identities. Reject a local sidecar passed to any
-publication, promotion, selection-lock, or authorized-candidate validator.
-
-- [ ] **Step 2: Add an explicit local provenance class**
-
-Permit this record only behind the local harness and
-`--review-pending-artifact` composition path:
-
-```json
-{
-  "schema": 1,
-  "provenance_kind": "local-test",
-  "promotable": false,
-  "published": false
-}
-```
-
-The local generator binds exact commits, Formula bytes, bottle digests,
-dependency evidence, and runtime evidence, but never emits a GitHub run as
-authority. Every remote publisher/selection validator rejects
-`provenance_kind: local-test` before copying bytes or mutating state.
-
-- [ ] **Step 3: Run product tests and observe missing inputs**
-
-```bash
-scripts/dev-shell.sh bash -lc \
-  'cd host && npx vitest run test/homebrew-login-product.test.ts'
-scripts/dev-shell.sh bash -lc \
-  'npx vitest run scripts/homebrew-main-shell-image-contract.test.ts'
-```
-
-Expected: FAIL because product policy and local-test provenance do not yet
-carry the new Formulae and projections.
-
-- [ ] **Step 4: Add the Formulae and projection policy**
-
-Select the normal Homebrew roots in the Brewfile and product JSON. Project
-only `/usr/bin/login`, `/usr/bin/sudo-lite`, and `/usr/bin/sudo` into the
-trusted product mount. Keep Ruby and shells in ordinary Homebrew placement.
-Bind each projection to exact Formula, bottle, source member, destination,
-artifact validation digest, uid 0, gid 0, and mode `04755`.
-
-- [ ] **Step 5: Implement strict harness argument and checkout validation**
-
-Accept exactly:
-
-```text
-scripts/run-login-stack-local.sh \
-  --tap-root /absolute/clean/homebrew-tap-core \
-  --work-root /absolute/new-exclusive-directory \
-  [--browser-demo]
-```
-
-Require `IN_NIX_SHELL`, absolute real tap directory, clean tracked and
-untracked tap state, 40-character tap and Kandelo commits, ABI 43, and a
-nonexistent work root below a real parent. Require the tap commit to equal
-`catalog.tap_commit` in `homebrew/main-shell-migration-lock.json`; Task 20
-updates that lock to the exact Task 18 tap commit and complete selected
-Formula closure. Before creating output, inspect the committed Ruby Formula,
-its complete declared source closure, and the configured source marker. Reject
-any reference to `kandelo-posix-spawn.patch`, PR #1166's patch digest,
-`ac_cv_func_vfork=no`, or a source tree that differs from the pinned upstream
-Ruby archive. Compute that tree identity immediately after extraction, before
-configure creates build outputs; no Ruby source patch is permitted. Reject
-`/`, symlinks, an existing work root, dirty tap checkout, lock drift, and
-unknown flags before building.
-
-After validation, create the exclusive work root and a detached Kandelo
-worktree at `$KANDELO_LOGIN_WORK_ROOT/kandelo-source` from the exact current
-Kandelo `HEAD`, then initialize its submodules:
-
-```bash
-git worktree add --detach \
-  "$KANDELO_LOGIN_WORK_ROOT/kandelo-source" \
-  "$KANDELO_LOGIN_KANDELO_COMMIT"
-git -C "$KANDELO_LOGIN_WORK_ROOT/kandelo-source" \
-  submodule update --init --recursive
-```
-
-All builds and tests below run from that detached source, not from the
-possibly dirty invoking worktree. Preserve it with the reports as exact-head
-evidence; any later cleanup must use `git worktree remove` on this resolved
-path rather than recursively deleting an unresolved path.
-
-- [ ] **Step 6: Build musl, platform, fixtures, and local bottles**
-
-From the detached source, the harness runs, in order:
-
-```bash
-bash scripts/build-musl.sh
-bash build.sh
-bash scripts/build-programs.sh
-```
-
-For `login sudo-lite sudo ruby` and each resolved dependency, invoke
-`scripts/homebrew-bottle-build.sh` with the exact tap, `--arch wasm32`, a
-formula-specific output directory, and the canonical bottle root URL returned
-by `homebrew_bottle_root_url`. Collect the produced archive, bottle JSON,
-dependency provenance, and runtime evidence. Never set `GITHUB_ACTIONS=true`
-or reuse an ambient Homebrew prefix/cache. For Ruby, retain `config.h`, the
-configure transcript, the extracted upstream `process.c` digest, and the final
-instrumented Wasm digest. Require `HAVE_VFORK`, `HAVE_WORKING_VFORK`, and
-`HAVE_WORKING_FORK`, and reject any PR #1166 source residue before accepting
-the local bottle.
-
-- [ ] **Step 7: Generate local-test sidecars and a closed mirror**
-
-Invoke the sidecar generator once per bottle with exact file identities and
-an explicit `KANDELO_HOMEBREW_PROVENANCE_KIND=local-test`. Validate each
-sidecar in local mode, then construct the bottle mirror with the existing
-closed-mirror helper. The published-sidecar validator must reject the same
-directory.
-
-- [ ] **Step 8: Compose without replacing checked-in assets**
-
-Call:
-
-```bash
-bash scripts/build-homebrew-main-shell-closure.sh \
-  --tap-root "$KANDELO_LOGIN_TAP_ROOT" \
-  --expected-tap-sha "$KANDELO_LOGIN_TAP_COMMIT" \
-  --work-dir "$KANDELO_LOGIN_WORK_ROOT/composition" \
-  --out "$KANDELO_LOGIN_WORK_ROOT/main-shell.vfs.zst" \
-  --report "$KANDELO_LOGIN_WORK_ROOT/composition-report.json" \
-  --bottle-cache "$KANDELO_LOGIN_WORK_ROOT/bottle-cache" \
-  --lazy-shell --review-pending-artifact
-```
-
-Use task-specific variables, never `HOME`, and leave all output under the
-exclusive work root.
-
-- [ ] **Step 9: Run the Node and browser lifecycle**
-
-Run the image contract and Node smoke against the generated image and closed
-mirror. Generate a Playwright fixture with
-`create-homebrew-guest-lifecycle-fixture.ts`, then run Chromium, Firefox, and
-WebKit. The scripted interaction covers:
-
-```text
-automatic maker login
-id
-sudo -l
-sudo id
-failed-password rejection
-ordinary login after logout
-nosuid execution rejection
-Ruby spawning through vfork
-brew tap/install/execute
-```
-
-With `--browser-demo`, print the exact `./run.sh browser` environment/asset
-arguments and preserve the image and mirror for manual use; do not overwrite
-repository assets.
-
-- [ ] **Step 10: Measure and write bound evidence**
-
-`measure-homebrew-vfork-rss.ts` samples the complete Node and Chromium process
-trees before boot, before Ruby, at peak, after child reaping, and after three
-repetitions. The harness writes JSON and Markdown reports containing exact
-Kandelo/tap commits, ABI, Formula and bottle identities, kernel/VFS digests,
-commands/statuses, browser versions/projects, vfork fork-mode evidence, RSS,
-and `local-test` provenance for every artifact.
-
-- [ ] **Step 11: Commit Kandelo product integration**
-
-Commit before the exact-head run so the detached evidence source contains
-the complete harness and implementation:
-
-```bash
-git add homebrew/main-shell.Brewfile homebrew/main-shell-default.json \
-  homebrew/main-shell-demo.json \
-  homebrew/main-shell-materialization-policy.json \
-  homebrew/main-shell-homebrew-runtime-support.json \
-  homebrew/main-shell-brew-package-tree.json \
-  homebrew/main-shell-migration-lock.json \
-  host/src/homebrew-vfs-builder.ts \
-  scripts/build-homebrew-main-shell-closure.sh \
-  scripts/homebrew-generate-sidecars-from-env.sh \
-  scripts/run-login-stack-local.sh scripts/measure-homebrew-vfork-rss.ts \
-  host/test/homebrew-login-product.test.ts \
-  scripts/homebrew-main-shell-image-contract.test.ts \
-  scripts/homebrew-main-shell-node-smoke.ts \
-  scripts/create-homebrew-guest-lifecycle-fixture.ts \
-  apps/browser-demos/test/homebrew-login-lifecycle.spec.ts
-git commit --author='Brandon Payton <brandon@happycode.net>' \
-  -m "Homebrew: Compose the ABI 43 login product"
-```
-
-- [ ] **Step 12: Run the committed harness end to end**
-
-```bash
-KANDELO_LOGIN_WORK_PARENT="$(mktemp -d)"
-scripts/dev-shell.sh bash scripts/run-login-stack-local.sh \
-  --tap-root "$KANDELO_TAP_ROOT" \
-  --work-root "$KANDELO_LOGIN_WORK_PARENT/login-stack" \
-  --browser-demo
-```
-
-Expected: command exits 0, all scripted lifecycle markers are present, all
-three browser projects ran, reports identify local-test provenance, and the
-image, mirror, detached source, and exact-head report remain in the work root.
-If this gate finds a defect, apply the Gate Outcome Rule and rerun it against
-the new committed `HEAD`; never relabel evidence from the earlier commit.
+This task composed the packaged `login`/`sudo`/Ruby product image and produced
+the CI staging handoff for the external package-manager pipeline. It was
+removed together with the package-manager port. The first-party login and sudo
+programs, privileged projections, browser login lifecycle, and vfork evidence
+that this task depended on are covered by Tasks 7, 17, 19, and 22.
 
 ### Task 21: Revalidate ordinary-fork admission, retirement, and alternatives
 
@@ -2832,7 +2284,7 @@ scripts/dev-shell.sh node benchmarks/measure-fork-memory-components.mjs \
 
 Record worker-only, module-worker, shared-memory Worker, full clone, and sparse
 clone elapsed time and RSS. Sparse cloning is selectable only if the real
-Homebrew lifecycle in Task 23 also lowers peak process-tree RSS without an
+login lifecycle in Task 23 also lowers peak process-tree RSS without an
 unacceptable latency/CPU increase on Node and browsers. Component results
 alone do not authorize changing the production clone.
 
@@ -2971,7 +2423,6 @@ exact portable fence has made the partial-state text factually unnecessary.
 - Modify: `docs/architecture.md`
 - Modify: `docs/abi-versioning.md`
 - Modify: `docs/browser-support.md`
-- Modify: `docs/homebrew-publishing.md`
 - Modify: `docs/posix-status.md`
 - Modify if surface changed: `docs/fork-instrumentation.md`
 - Modify: `docs/measurements/2026-08-10-vfork-readiness.md`
@@ -2979,15 +2430,14 @@ exact portable fence has made the partial-state text factually unnecessary.
 
 **Interfaces:**
 
-- Consumes: exact Kandelo and tap heads after Tasks 1-22
+- Consumes: exact Kandelo head after Tasks 1-22
 - Produces: whole-batch local readiness evidence; no hosted publication claim
 
 - [ ] **Step 1: Update authoritative documentation before validation**
 
 Document credentials, groups, secure exec, target transactions, nosuid mount
-default, trusted projections, PTY ownership, browser login lifecycle, local
-versus authorized bottle provenance, vfork status, and ABI 43 exports. Do not
-mark hosted candidates, publication, pristine Ruby release, or full vfork
+default, trusted projections, PTY ownership, browser login lifecycle, vfork
+status, and ABI 43 exports. Do not mark pristine Ruby release or full vfork
 conformance complete unless the later evidence exists.
 
 - [ ] **Step 2: Rebuild every ABI-bound artifact**
@@ -3038,23 +2488,7 @@ Expected: selected tests PASS or match existing documented non-compromising
 xfails. Any new xfail needs root-cause evidence and design review; do not add
 one merely to finish the batch.
 
-- [ ] **Step 6: Run Homebrew and local product evidence**
-
-```bash
-scripts/dev-shell.sh bash scripts/test-homebrew-patched-launcher.sh
-scripts/dev-shell.sh bash scripts/test-homebrew-inspect-bottle.sh
-scripts/dev-shell.sh bash scripts/test-homebrew-tap-native-sidecars.sh
-KANDELO_LOGIN_WORK_PARENT="$(mktemp -d)"
-scripts/dev-shell.sh bash scripts/run-login-stack-local.sh \
-  --tap-root "$KANDELO_TAP_ROOT" \
-  --work-root "$KANDELO_LOGIN_WORK_PARENT/login-stack" \
-  --browser-demo
-```
-
-Expected: Formula builds, sidecars, composition, Node lifecycle, closed
-mirror, login/sudo/Ruby/brew lifecycle, and all local provenance checks PASS.
-
-- [ ] **Step 7: Run focused browsers and the complete browser suite**
+- [ ] **Step 6: Run focused browsers and the complete browser suite**
 
 ```bash
 scripts/dev-shell.sh bash -lc \
@@ -3066,7 +2500,6 @@ scripts/dev-shell.sh bash -lc \
     test/pty-ownership.spec.ts \
     test/login-terminal-session.spec.ts \
     test/sudo-lite.spec.ts \
-    test/homebrew-login-lifecycle.spec.ts \
     --project=chromium --project=firefox --project=webkit'
 scripts/dev-shell.sh bash -lc \
   'cd apps/browser-demos && npx playwright test'
@@ -3075,19 +2508,20 @@ scripts/dev-shell.sh bash -lc \
 Expected: focused and complete browser suites PASS on applicable projects;
 each platform-bound skip is named in the evidence report.
 
-- [ ] **Step 8: Validate browser assets and perform manual demonstration**
+- [ ] **Step 7: Validate browser assets and perform manual demonstration**
 
 ```bash
 scripts/dev-shell.sh bash scripts/ci-check-browser-assets.sh
 ./run.sh browser
 ```
 
-Use the local harness's preserved image and mirror. Manually perform every
-command in Task 20's lifecycle list and record browser engine, console errors,
-renderer survival, and observed output. A code review or Playwright run does
-not replace this manual check.
+Use a preserved local image. Manually perform the automatic maker login, `id`,
+`sudo -l`, `sudo id`, failed-password rejection, ordinary login after logout,
+nosuid execution rejection, and Ruby-through-vfork lifecycle, and record
+browser engine, console errors, renderer survival, and observed output. A code
+review or Playwright run does not replace this manual check.
 
-- [ ] **Step 9: Run all performance suites before and after**
+- [ ] **Step 8: Run all performance suites before and after**
 
 Use the saved pre-login safety tip in an isolated worktree for `before` and the
 current exact head in a second isolated worktree for `after`. Build each
@@ -3184,23 +2618,23 @@ cp "$KANDELO_AFTER_BROWSER_RESULT" \
 The four `test -f` checks make an aborted or skipped runner fail before a
 comparison can be mislabeled. Preserve the evidence directory and record its
 file hashes. Compare only common metrics as before/after evidence; name any
-new or removed metric separately. Record Node and browser results plus Task
-20's Node/Chromium process-tree RSS. Add Firefox/WebKit functional lifecycle
-results; do not claim their RSS when the harness cannot measure a complete
-engine process tree accurately.
+new or removed metric separately. Record Node and browser results plus the
+login lifecycle's Node/Chromium process-tree RSS. Add Firefox/WebKit functional
+lifecycle results; do not claim their RSS when the harness cannot measure a
+complete engine process tree accurately.
 
-- [ ] **Step 10: Write the measured result without broadening claims**
+- [ ] **Step 9: Write the measured result without broadening claims**
 
 The dated measurement includes exact commits, artifacts, commands, statuses,
 known skips, failure repairs, latency, RSS, retirement slopes, vfork no-copy
 evidence, and the sparse-clone decision. Separate component, local product,
 browser functional, and hosted release evidence.
 
-- [ ] **Step 11: Commit documentation and measured evidence**
+- [ ] **Step 10: Commit documentation and measured evidence**
 
 ```bash
 git add docs/architecture.md docs/abi-versioning.md \
-  docs/browser-support.md docs/homebrew-publishing.md \
+  docs/browser-support.md \
   docs/posix-status.md docs/fork-instrumentation.md \
   docs/measurements/2026-08-10-vfork-readiness.md \
   docs/measurements/2026-08-10-abi43-login-stack.md
@@ -3210,105 +2644,18 @@ git commit -m "Docs: Record ABI 43 login and vfork evidence"
 Omit `docs/fork-instrumentation.md` from staging when the verified surface is
 unchanged.
 
-### Task 24: Consume active staging, prove pristine Ruby, and finish PRs
+### Task 24: Verify history, attribution, and finish the batch PR
 
 **Files:**
 
-- Modify only after staging lands: reviewed product/staging declarations named
-  by the landed `emdash/homebrew-pr-staging-1q1w6` interfaces
-- Audit and modify if needed in tap: `Formula/ruby.rb` and its declared build
-  inputs
-- Generated remotely: Ruby candidate metadata required by the landed staging
-  schema; do not edit it locally
 - Modify: PR #1240 title and description
-- Create: companion tap PR title and description
 
 **Interfaces:**
 
-- Consumes: active reviewed GitHub staging, exact final Kandelo/tap heads,
-  protected policy, authorized candidate artifacts, and local readiness
-- Produces: pristine upstream CRuby candidates, final lifecycle/RSS evidence,
-  removal of PR #1166, and two reviewable rebase-merge PRs
+- Consumes: exact final Kandelo head, protected policy, and local readiness
+- Produces: a reviewable rebase-merge PR for the ABI 43 batch
 
-- [ ] **Step 1: Verify staging is landed and enforcing before use**
-
-Read the landed staging implementation and its approved roadmap. Confirm the
-merge-gating workflow, exact-head request, required product manifest, evidence
-schema, authorization, and promotion path are active rather than observe-only.
-Do not copy or modify the old staging worktree. If it is not active, stop this
-task; Tasks 1-23 remain locally complete but hosted/release readiness does not.
-
-- [ ] **Step 2: Add only the landed canonical product declarations**
-
-Declare ordinary login, sudo-lite, sudo, Ruby, and shell roots,
-materialization, privileged projections, Node evidence, and browser evidence
-through the landed schema. Let the tap planner resolve the exact tap snapshot
-and dependency closure; do not add a hand-maintained Formula list or arbitrary
-tap commit to the protocol.
-
-- [ ] **Step 3: Make PR #1166 removal an exact tap-source invariant**
-
-The current Kandelo history already contains Brandon's
-`87d842814b050ba2c1acbaa880059b3d1aa0e321` pristine-CRuby selection. Audit
-the migrated Ruby Formula and its entire declared build closure to ensure the
-Homebrew move preserved that behavior. Reject the PR #1166 patch file or
-digest, a `process.c` patch, `ac_cv_func_vfork=no`, missing working-vfork
-configure assertions, or a source archive other than the pinned upstream
-CRuby release.
-
-If migration already removed every residue, record the exact clean tap commit
-and make no empty or cosmetic commit. Otherwise remove only the temporary
-patch selection, preserve all ordinary build inputs, increment the Formula
-revision, and commit with Brandon as author because this is the Homebrew
-forward port of his existing removal:
-
-```bash
-git add Formula/ruby.rb
-git commit --author='Brandon Payton <brandon@happycode.net>' \
-  -m "Ruby: Remove the temporary Kandelo spawn patch"
-```
-
-Do not hand-edit a bottle stanza, sidecar, candidate record, selection lock,
-or published metadata in this commit.
-
-- [ ] **Step 4: Bind pristine Ruby to the CI staging request**
-
-If Step 3 changed the tap commit, update Kandelo's migration lock and commit
-that exact selection independently:
-
-```bash
-git add homebrew/main-shell-migration-lock.json
-git commit --author='Brandon Payton <brandon@happycode.net>' \
-  -m "Homebrew: Select the pristine Ruby tap revision"
-```
-
-Bind the new tap commit to the GitHub CI staging request. CI must prove that the
-pinned extracted source tree matches upstream before configure, that
-`HAVE_VFORK`, `HAVE_WORKING_VFORK`, and `HAVE_WORKING_FORK` hold afterward,
-and that uid 1000 takes vfork without child process Memory while the
-root/privileged route takes ordinary fork with distinct copied child Memory.
-This worktree does not rerun the 43-Formula local harness or produce
-`local-test` outputs for this check.
-
-- [ ] **Step 5: Request exact-head candidates through reviewed workflows**
-
-The request binds PR #1240 head SHA, ABI 43, protected policy, the exact
-pristine-Ruby tap commit, required products, Formulae, sidecars, Node/browser
-evidence, and authorization identity. Review the resulting candidate metadata
-and verify that every bottle was built by GitHub's isolated Formula builder.
-Do not upload, relabel, or promote any local-test byte.
-
-- [ ] **Step 6: Consume the exact GitHub CI lifecycle and RSS proof**
-
-Review the GitHub CI report for real in-guest tap/install/execute for Ruby and
-the complete closure, repeated at least three times, with Node and Chromium
-process-tree baseline/peak/post-reap RSS, renderer survival, parent suspension,
-and fork mode. The staging owner also supplies Firefox/WebKit functional
-coverage and all required exact-head validation. Compare the CI result with
-the checked-in product contracts and verify anonymous readback. No earlier
-patched or local artifact may satisfy this evidence.
-
-- [ ] **Step 7: Verify linear history and contributor attribution**
+- [ ] **Step 1: Verify linear history and contributor attribution**
 
 ```bash
 git log --merges origin/main..HEAD
@@ -3328,7 +2675,7 @@ errors. The first range names the two VFS source commits and the second names
 the twelve login source commits. Inspect all fourteen directly when evaluating
 the range diffs; divergent topology is expected, lost attribution is not.
 
-- [ ] **Step 8: Update PR #1240 as an explicit batch PR**
+- [ ] **Step 2: Update PR #1240 as an explicit batch PR**
 
 Use a title no broader than:
 
@@ -3345,31 +2692,21 @@ and places this warning near the top and merge instructions:
 MUST be merged with rebase commits. DO NOT squash or create a merge commit.
 ```
 
-Wrap prose to 72 columns. Do not claim that a PR is merge-gated until the
-required staging lane is active.
+Wrap prose to 72 columns.
 
-- [ ] **Step 9: Open the companion tap PR**
+- [ ] **Step 3: Stop before merge for Brandon's approval**
 
-Begin with `## Why`, list login, sudo-lite, upstream sudo, Ruby patch removal,
-Formula sources, narrow `__WALL` portability patch, candidates, and exact
-validation. Explain that local-test bottles were never promoted and that final
-candidates bind the exact Kandelo ABI 43 head. Require rebase commits if the
-tap PR also contains multiple conceptual commits.
-
-- [ ] **Step 10: Stop before merge for Brandon's approval**
-
-Report exact PR URLs, head SHAs, commit list, attribution audit, validation,
-remaining skips, candidate identities, and Ruby patch-removal proof. Do not
-merge the ABI, kernel, libc, host, VFS security, fork-instrument, Kandelo PR,
-or companion tap PR without Brandon's explicit approval.
+Report the exact PR URL, head SHA, commit list, attribution audit, validation,
+and remaining skips. Do not merge the ABI, kernel, libc, host, VFS security, or
+fork-instrument changes without Brandon's explicit approval.
 
 ---
 
 ## Final Completion Checklist
 
 - [ ] Pre-login safety reference resolves to the exact approved tip.
-- [ ] Both baseline fixture defects are repaired independently.
-- [ ] VFS generic materialization contains no Homebrew policy vocabulary.
+- [ ] The fork-instrument fixture carries the explicit ABI 43 fork mode.
+- [ ] VFS generic materialization contains no package-policy vocabulary.
 - [ ] Writable and identity-unstable mounts enforce and report `nosuid`.
 - [ ] Privileged programs are unique root-owned regular inodes with no
   writable aliases.
@@ -3395,13 +2732,8 @@ or companion tap PR without Brandon's explicit approval.
   truthful `EAGAIN`, and retains bounded documented retirement fallback.
 - [ ] Sparse cloning and Worker/module churn conclusions use real RSS and are
   not promoted from component measurements alone.
-- [ ] GitHub CI reports the Homebrew lifecycle and interactive browser product
-  from exact reviewed heads. No private `local-test` run substitutes for it.
 - [ ] Whole Rust, ABI, host, browser, libc, POSIX, Sortix, fork-instrument,
-  Homebrew, performance, RSS, and manual validation evidence is recorded.
-- [ ] Active hosted staging builds final candidates from exact reviewed heads.
+  performance, RSS, and manual validation evidence is recorded.
 - [ ] Pristine upstream Ruby uses vfork as uid 1000 and ordinary fork as root.
-- [ ] PR #1166 is removed only from a rebuilt, republished, re-proven Ruby
-  candidate.
-- [ ] Kandelo and tap PRs preserve conceptual commits and require rebase merge,
-  never squash.
+- [ ] The Kandelo batch PR preserves conceptual commits and requires rebase
+  merge, never squash.

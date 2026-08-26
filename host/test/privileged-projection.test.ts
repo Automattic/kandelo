@@ -20,7 +20,7 @@ import { NodeTimeProvider } from "../src/vfs/time";
 
 const S_IFMT = 0o170000;
 const S_IFREG = 0o100000;
-const SOURCE_ROOT = "/opt/kandelo/homebrew/Cellar";
+const SOURCE_ROOT = "/opt/kandelo/pkg/cellar";
 const SHA_A = "a".repeat(64);
 const PROGRAMS = [
   {
@@ -419,7 +419,7 @@ describe("privileged product publication", () => {
 
     const projectedSymlink = createFs();
     ensureDirRecursive(projectedSymlink, "/usr/bin");
-    projectedSymlink.symlink("/opt/kandelo/homebrew/bin/login", "/usr/bin/login");
+    projectedSymlink.symlink("/opt/kandelo/pkg/bin/login", "/usr/bin/login");
     for (const program of PROGRAMS.slice(1)) {
       writeVfsBinary(projectedSymlink, program.destinationPath, program.bytes, 0o4755);
     }

@@ -58,6 +58,12 @@ node_modules/
 *.vfs.zst
 *.vfs.zst.meta.json
 
+# The VFS product catalog is derived from images/vfs/products/*.toml by
+# `xtask vfs products generate` (run automatically at the start of every
+# `xtask local-build`). Like every other build output it is generated, not
+# tracked; browser demos and the VFS image builder consume the generated copy.
+/images/vfs/products/generated/
+
 # OS noise
 .DS_Store
 

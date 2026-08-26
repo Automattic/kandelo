@@ -343,7 +343,7 @@ rm -rf .git/modules/third_party/binaryen   # stale submodule dir
 
 **Step 2: Search for any remaining `wasm-opt` references.**
 
-`wasm-opt -O2` may still be used as a post-optimizer in some scripts. That is fine — any stock `wasm-opt` works (the user may have it from Homebrew). Only the in-tree build of Binaryen is removed.
+`wasm-opt -O2` may still be used as a post-optimizer in some scripts. That is fine — any stock `wasm-opt` works (the user may have it from a system package manager). Only the in-tree build of Binaryen is removed.
 
 Grep for `third_party/binaryen` and `BINARYEN_DIR` across `build.sh`, `scripts/`, and `examples/`. Remove any reference to the in-tree path. If scripts relied on the in-tree `wasm-opt` built from the submodule, have them fall back to `$(which wasm-opt)` or fail with a clear error.
 

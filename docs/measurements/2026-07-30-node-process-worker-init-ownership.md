@@ -11,8 +11,8 @@ This distinction matters because the initialization object contains a
 and exposes the clone through the worker module's `workerData` value. Kandelo's
 entry imported that module-level value and had no lifecycle step that could
 shorten its lifetime.
-Under the stock Homebrew lifecycle, process RSS stayed high after rapid fork
-and exec churn even after Kandelo had:
+Under the stock package-install lifecycle, process RSS stayed high after rapid
+fork and exec churn even after Kandelo had:
 
 - terminated and awaited the owning process Worker;
 - removed the process from the live process map;
@@ -37,11 +37,11 @@ default adapter selects the message transport.
 
 ## Workload
 
-The real workload was the public, stock-Homebrew first-party shipping proof.
-It booted the exact mostly-lazy main shell, tapped the exact public core tap,
-checked its revision and trust state, removed the directly composed Bzip2
-receipt, installed Bzip2 through stock `brew`, executed it, and rechecked the
-tap and trust contracts.
+The real workload was a public, first-party package-install shipping proof.
+It booted the exact mostly-lazy main shell, resolved the exact public core
+package index, checked its revision and trust state, removed the directly
+composed Bzip2 receipt, installed Bzip2 through the stock package manager,
+executed it, and rechecked the index and trust contracts.
 
 The matched local measurements used:
 
@@ -49,11 +49,11 @@ The matched local measurements used:
 - macOS 26.6 (`Darwin 25.6.0`);
 - Node.js `v24.15.0` from Kandelo's declared development shell;
 - the product default process-worker configuration;
-- core tap revision
+- core package-index revision
   `6ad0e3dbc60e5572c4288c86919238f71c1bc110`;
 - canary revision
   `d8bdda662f6d80cf3dcdbe8451edb12bb33bbafc`; and
-- the immutable public lifecycle inputs admitted by tap run
+- the immutable public lifecycle inputs admitted by package-index run
   `30560172393`.
 
 The baseline and candidates all completed the same first-party lifecycle
@@ -125,8 +125,8 @@ isolate cannot force collection of data still reachable through a different
 process Worker's startup state.
 
 The production change therefore fixes initialization ownership instead of
-adding a GC API, a larger allocation nudge, a preloaded tap, or a
-Homebrew-only process limit.
+adding a GC API, a larger allocation nudge, a preloaded package index, or a
+package-manager-specific process limit.
 
 ## Validation boundary
 
@@ -138,6 +138,6 @@ The deterministic tests protect both sides of the contract:
 - the public built-in entry accepts both direct `workerData` startup and
   one-shot message startup, removing the message listener after delivery.
 
-The real stock-Homebrew lifecycle is the application-level resource proof.
+The real package-install lifecycle is the application-level resource proof.
 Absolute RSS remains engine- and host-dependent, so these values are evidence
 for the ownership decision, not a portable memory ceiling.

@@ -27,7 +27,7 @@ interface RootfsExportAcceptanceResult {
 
 declare global {
   interface Window {
-    __homebrewVfsTestReady: boolean;
+    __lazyArchiveVfsTestReady: boolean;
     __runRootfsExportAcceptance: (request: {
       vfsUrl: string;
       writePath: string;
@@ -129,9 +129,9 @@ test("browser rootfs export rejects unsafe races and reboots its snapshot", asyn
     releaseLazyResponse();
   });
 
-  await page.goto(new URL("/pages/homebrew-vfs-test/", baseURL).href);
+  await page.goto(new URL("/pages/lazy-archive-vfs-test/", baseURL).href);
   await expect
-    .poll(() => page.evaluate(() => window.__homebrewVfsTestReady), {
+    .poll(() => page.evaluate(() => window.__lazyArchiveVfsTestReady), {
       timeout: 120_000,
     })
     .toBe(true);

@@ -140,7 +140,7 @@ if [ ! -f Makefile ]; then
     export CFLAGS="-O2 -gline-tables-only -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types"
     export LDFLAGS="-Wl,-z,stack-size=1048576 ${LDFLAGS_NCURSES:-}"
 
-    # Stock Homebrew uses compgen while resetting Bash's builtin command set
+    # Stock shell startup uses compgen while resetting Bash's builtin command set
     # during every invocation. Keep programmable completion enabled even when
     # the image does not install interactive completion scripts.
     wasm32posix-configure \

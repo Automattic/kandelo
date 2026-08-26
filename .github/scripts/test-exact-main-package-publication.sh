@@ -141,10 +141,6 @@ for workflow in "$STAGING" "$PREPARE" "$FORCE_REBUILD"; do
 done
 grep -Fq -- '--keep WASM_POSIX_FETCH_SKIP_PKGS' "$DEV_SHELL" ||
   fail "dev shell drops the test-gate package fetch exclusions"
-case " $fetch_exclusions " in
-  *" homebrew-bootstrap "*) ;;
-  *) fail "test gates try to fetch tap-owned Homebrew bootstrap from the legacy registry" ;;
-esac
 if grep -Fq -- '--allow-stale' <<<"$test_prepare_block"; then
   fail "force-rebuild test materialization can still source-build stale or unrelated packages"
 fi

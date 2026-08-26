@@ -4,16 +4,16 @@
 
 Approved by Brandon Payton on 2026-08-10. This document specifies the
 forward-port architecture. It does not claim that the login stack, its
-Homebrew bottles, the remaining vfork development, or the final vfork release
+package artifacts, the remaining vfork development, or the final vfork release
 proof have been completed.
 
 The implementation target is the curated, linear ABI 43 integration branch
 `integration/abi43-batch-linear-20260801` and its batch pull request, #1240.
 The login source behavior is the final twelve-commit stack on
 `emdash/support-logins-8yaz3`. The VFS prerequisite comes from the two commits
-on `emdash/vfs-decouple-from-homebrew-mdx5x`. Both branches were built before
-substantial current Homebrew and ABI 43 work and therefore cannot be merged or
-cherry-picked as units.
+that decoupled VFS materialization from package-manager policy. Both branches
+were built before substantial current ABI 43 work and therefore cannot be
+merged or cherry-picked as units.
 
 ## Context
 
@@ -32,19 +32,18 @@ sessions: saved credentials, supplementary groups, set-ID exec, `nosuid`,
 login, a small first-party sudo implementation, upstream sudo, PTY ownership,
 browser autologin, and set-ID invalidation after file mutations. Its original
 implementation predates the ABI 43 vfork transaction, exact memory ownership,
-current exec handoff, current host entry gate, and the completed migration from
-the Kandelo package registry to Homebrew.
+current exec handoff, and current host entry gate.
 
-The current VFS materialization path also still recognizes Homebrew-specific
-decoder, receipt, relocation, Cellar, keg, and prefix concepts inside
+The current VFS materialization path also still recognizes package-manager-specific
+decoder, receipt, relocation, and prefix concepts inside
 `MemoryFileSystem`. That is the wrong foundation for mount security. Generic
 VFS code must own archive truth, projections, transformations, metadata, and
-publication; a Homebrew adapter must own Homebrew policy.
+publication; a package-manager adapter must own package-manager policy.
 
 The current batch also has two unrelated CI fixture failures that must be
 repaired before feature work is used as validation evidence:
 
-1. An isolated Homebrew launcher source fixture copies `run-example.ts` but
+1. An isolated launcher source fixture copies `run-example.ts` but
    omits its newer `run-example-vfs.ts` dependency.
 2. The generated fork-instrumentation fixture imports the pre-ABI-43
    zero-argument `kernel_fork`; ABI 43 requires the explicit fork-mode
@@ -64,16 +63,16 @@ The forward port must:
    pthread callers, wait, and reaping;
 5. finish developing and testing vfork's no-copy memory architecture, parent
    suspension, private control state, rollback, and lifecycle behavior;
-6. remove Homebrew policy from generic VFS materialization before building
+6. remove package-manager policy from generic VFS materialization before building
    permission and mount security on that path;
 7. enforce `nosuid`, ownership, permission, and set-ID invalidation behavior
    through authoritative VFS state;
 8. support real login, sudo-lite, and upstream sudo through normal Kandelo
-   syscalls, PTYs, signals, waits, and Homebrew bottles;
+   syscalls, PTYs, signals, and waits;
 9. give Node.js and browser hosts the same observable platform behavior;
 10. provide a complete local build, test, and interactive demonstration path
    before GitHub publication; and
-11. finish the Homebrew/Ruby vfork release proof on the final integrated tree.
+11. finish the Ruby vfork release proof on the final integrated tree.
 
 ## Non-Goals
 
@@ -82,7 +81,7 @@ This work will not:
 - restore or add Kandelo package-registry recipes;
 - add broad Linux or System V compatibility;
 - add Linux clone-child classes merely to accept sudo's `__WALL` flag;
-- special-case Ruby, Homebrew, login, or sudo in the kernel or host runtime;
+- special-case Ruby, login, or sudo in the kernel or host runtime;
 - modify upstream CRuby or broaden the temporary PR #1166 patch;
 - reinterpret ordinary fork as vfork;
 - replace the genuine vfork child Worker with an unproved same-worker design;
@@ -104,8 +103,8 @@ Three alternatives are rejected:
 2. **Port only kernel credentials.** This would leave no normal distribution
    path or end-user proof for login and sudo, and would not satisfy the request
    to bring the complete source stack into the ABI 43 batch.
-3. **Add permissions to the Homebrew-aware MemoryFS and decouple it later.**
-   This would make receipt and keg policy part of a security boundary, then
+3. **Add permissions to the package-manager-aware MemoryFS and decouple it later.**
+   This would make receipt and relocation policy part of a security boundary, then
    require a second risky rewrite of set-ID ownership and mount decisions.
 
 The current pre-login batch tip must remain recoverable through its existing
@@ -488,16 +487,17 @@ posix_spawn with and without `POSIX_SPAWN_RESETIDS`.
 ## Generic VFS Materialization Prerequisite
 
 The permissions work will first forward-port the two Brandon-authored commits
-from `emdash/vfs-decouple-from-homebrew-mdx5x` into the current architecture:
+that decoupled VFS materialization from package-manager policy into the current
+architecture:
 
 1. `8a66801e6353bed9ff55fa1dc5e3b7e1b0b53e24` makes the authenticated
    receipt destination, rather than a runtime default, authoritative for an
-   immutable bottle's guest prefix.
-2. `ebde506115e7b4bfe26a5eaf0b7d097c3e1ee939` moves Homebrew policy out of
+   immutable archive's guest prefix.
+2. `ebde506115e7b4bfe26a5eaf0b7d097c3e1ee939` moves package-manager policy out of
    generic VFS materialization.
 
 This is a behavioral forward port, not a merge or mechanical cherry-pick. The
-source branch diverged before substantial Homebrew migration work and includes
+source branch diverged before substantial package migration work and includes
 obsolete package-registry files. Only the two conceptual changes, their
 applicable tests, and their documentation will be adapted to current paths.
 The derived commits retain Brandon Payton as author and the forward porter as
@@ -513,14 +513,14 @@ committer.
 - generic integrity, ownership, activation, cancellation, rollback, and
   atomic-publication state.
 
-The generic layer will contain no receipt discovery, `changed_files`, Formula,
-Cellar, keg, bottle-prefix, or Homebrew relocation markers. Transformation
+The generic layer will contain no receipt discovery, `changed_files`, or
+package-manager-specific relocation markers. Transformation
 plans are inert, bounded data rather than callbacks, regular expressions,
 plugins, or scripts.
 
-The Homebrew-owned adapter validates the exact receipt, destination prefix,
-keg mapping, changed-file set, canonical hard-link sources, and relocation
-recipe. Only after validation does it erase Homebrew vocabulary into the
+The package-manager-owned adapter validates the exact receipt, destination prefix,
+changed-file set, canonical hard-link sources, and relocation
+recipe. Only after validation does it erase package-manager vocabulary into the
 generic archive inventory, projection, and transformation plan. Eager and lazy
 materialization use the same recipe and exact source/output identities.
 
@@ -600,7 +600,7 @@ an explicit, reviewed Kandelo compatibility patch that omits that flag while
 retaining `WUNTRACED` and `WNOHANG`. This is a narrow upstream/platform
 boundary, not a general Linux-compatibility promise.
 
-## Program and Homebrew Ownership
+## Program and Package Ownership
 
 The Kandelo repository will own the first-party program sources under the
 normal `programs/` source tree:
@@ -608,54 +608,58 @@ normal `programs/` source tree:
 - `login.c`; and
 - `sudo-lite.c`.
 
-The live `Kandelo-dev/homebrew-tap-core` repository will own their Formulae,
-the upstream sudo Formula, build recipes, compatibility patches, tests,
-sidecars, and bottle metadata. The first-party Formulae will fetch an exact
+A separate external package-distribution repository will own their recipes,
+the upstream sudo recipe, build recipes, compatibility patches, tests,
+sidecars, and archive metadata. The first-party recipes will fetch an exact
 Kandelo source commit and compile those source files directly through
 `kandelo_wasm_build`; they will not set `KANDELO_REGISTRY_BRIDGE` or call a
 registry recipe. Upstream sudo will fetch its pinned upstream archive and use
 the same SDK and artifact validation contracts.
 
-The Kandelo batch and tap change therefore land as coordinated pull requests:
+The Kandelo batch and distribution change therefore land as coordinated pull
+requests:
 
 - PR #1240 owns kernel, ABI, host, VFS, source programs, rootfs, browser,
   product selection, tests, and documentation.
-- A companion tap pull request owns the three Formulae and candidate bottles.
+- A companion distribution pull request owns the three recipes and candidate
+  package archives.
 
-The main-shell Brewfile, migration and selection locks, materialization policy,
-runtime support, bottle mirror, and image will admit the Formulae only through
-the normal Homebrew composition path. The transitional helper that injected
-registry-built platform programs into a Homebrew image will not be ported.
+The main-shell manifest, migration and selection locks, materialization policy,
+runtime support, archive mirror, and image will admit the recipes only through
+the normal package composition path. The transitional helper that injected
+registry-built platform programs into a package image will not be ported.
 
-Set-ID entry points cannot safely execute from the guest-writable Homebrew
+Set-ID entry points cannot safely execute from the guest-writable package
 prefix, which is always `nosuid`. A reviewed system-program projection in the
-image policy will copy the exact Formula-owned members into a set-ID-capable,
+image policy will copy the exact recipe-owned members into a set-ID-capable,
 root-owned product mount at non-user-writable paths:
 
 - `/usr/bin/login`, mode `04755`, uid 0, gid 0;
 - `/usr/bin/sudo-lite`, mode `04755`, uid 0, gid 0; and
 - `/usr/bin/sudo`, mode `04755`, uid 0, gid 0.
 
-The projection is bound to the selected Formula, bottle digest, canonical
+The projection is bound to the selected recipe, archive digest, canonical
 source member, destination, uid, gid, mode, mount policy, and artifact
 validation result. It uses the generic archive-copy contract with a unique
 inode identity. It may preserve lazy immutable backing, but it cannot preserve
-a bottle hard link or create a symlink into the Homebrew prefix. Product
-validation compares the projected inode against every writable bottle inode
+an archive hard link or create a symlink into the package prefix. Product
+validation compares the projected inode against every writable archive inode
 and rejects an alias. A guest user cannot replace its parent directory, link,
-or target. Runtime `brew install` remains available for ordinary user-owned
-software but cannot mint or replace these root-owned privileged entry points.
+or target. Runtime package installation remains available for ordinary
+user-owned software but cannot mint or replace these root-owned privileged
+entry points.
 
-The ordinary bottle tree and privileged projection are separate generic tree
-registrations. The bottle tree retains Homebrew-owned placement and remains on
-a writable `nosuid` mount. The projection tree is owned as a unit by uid 0 and
-gid 0 and contains only reviewed product entries. This uses the existing
-tree-owner boundary instead of adding Homebrew-specific per-entry ownership to
-MemoryFS. Both trees authenticate the same immutable bottle bytes and complete
-source inventory, while their destination inode groups remain disjoint.
+The ordinary archive tree and privileged projection are separate generic tree
+registrations. The archive tree retains package-manager-owned placement and
+remains on a writable `nosuid` mount. The projection tree is owned as a unit by
+uid 0 and gid 0 and contains only reviewed product entries. This uses the
+existing tree-owner boundary instead of adding package-manager-specific
+per-entry ownership to MemoryFS. Both trees authenticate the same immutable
+archive bytes and complete source inventory, while their destination inode
+groups remain disjoint.
 
-Generic candidate ABI bottle staging is being implemented separately on
-`emdash/homebrew-pr-staging-1q1w6`; its approved design names this ABI 43 batch
+Generic candidate ABI archive staging is being implemented separately on a
+dedicated staging branch; its approved design names this ABI 43 batch
 as the first acceptance fixture. The login forward port will not modify,
 merge, rebase, or otherwise take ownership of that branch. It will consume the
 reviewed staging interfaces after they land.
@@ -722,7 +726,7 @@ demo presentation, but it must run the same login and sudo binaries against
 the same kernel, VFS, PTY, and credential semantics.
 
 Upstream sudo binaries may remain deferred until first execution, but the lazy
-tree, Formula identity, receipt, and bottle bytes must be normal Homebrew
+tree, recipe identity, receipt, and archive bytes must be normal package
 artifacts. Lazy activation failure must be reported as the underlying I/O or
 artifact error.
 
@@ -730,18 +734,18 @@ artifact error.
 
 GitHub must not be the first environment in which the integrated behavior is
 exercised. Add `scripts/run-login-stack-local.sh`, a local orchestration entry
-point that accepts an exact tap checkout and an exclusive work directory, runs
-inside `scripts/dev-shell.sh`, and never publishes or mutates authoritative
-selection state. It will:
+point that accepts an exact package-distribution checkout and an exclusive work
+directory, runs inside `scripts/dev-shell.sh`, and never publishes or mutates
+authoritative selection state. It will:
 
 1. build musl, the kernel, host runtime, and required guest fixtures;
-2. build local ABI 43 bottles for login, sudo-lite, upstream sudo, pristine
-   Ruby, and any selected dependencies in a disposable Homebrew prefix;
-3. generate and validate sidecars against the exact local tap commit;
-4. compose a review-pending main-shell VFS from the local tap and verified
-   bottle cache;
+2. build local ABI 43 archives for login, sudo-lite, upstream sudo, pristine
+   Ruby, and any selected dependencies in a disposable package prefix;
+3. generate and validate sidecars against the exact local distribution commit;
+4. compose a review-pending main-shell VFS from the local distribution and
+   verified archive cache;
 5. run the Node image contract and complete guest lifecycle against a closed
-   local bottle mirror;
+   local archive mirror;
 6. run focused Chromium, Firefox, and WebKit tests where the platform path
    applies; and
 7. leave the exact image and mirror available for an interactive
@@ -834,11 +838,11 @@ Validation has four boundaries that must not be collapsed into one claim:
    credential and prepared-target exec work, with child-only credential state
    and every failed or terminal exec path covered;
 3. **whole-batch readiness:** run the complete local matrix for VFS, mounts,
-   credentials, exec, PTYs, login, sudo, Homebrew, ABI, hosts, browsers,
+   credentials, exec, PTYs, login, sudo, ABI, hosts, browsers,
    conformance, and performance; and
 4. **release readiness:** use reviewed GitHub workflows and the exact candidate
-   artifacts for bottle provenance, publication, activation, pristine CRuby,
-   and the real Homebrew memory proof.
+   artifacts for archive provenance, publication, activation, pristine CRuby,
+   and the real Ruby memory proof.
 
 The required local matrix includes:
 
@@ -846,20 +850,20 @@ The required local matrix includes:
 - ABI generation and snapshot checks;
 - fork/exec/vfork serialization, prepared-target, OFD, and lifecycle tests;
 - host Vitest suites, including Node and Wasm64 marshalling;
-- generic non-Homebrew TAR projection and transformation tests, eager/lazy
-  equivalence, all supported entry types, and Homebrew-adapter regression
+- generic TAR projection and transformation tests, eager/lazy
+  equivalence, all supported entry types, and package-manager-adapter regression
   tests for current and legacy authenticated prefixes;
 - libc-test, Open POSIX Test Suite, and Sortix os-test coverage selected for
   credentials, exec, wait, signals, PTYs, VFS, and process lifecycle;
-- Homebrew Formula build/test, sidecar generation, tap validation, image
+- package recipe build/test, sidecar generation, distribution validation, image
   composition, Node smoke, and complete closed-mirror guest lifecycle;
 - Chromium, Firefox, and WebKit focused tests;
 - browser asset validation and manual `./run.sh browser` verification;
 - fork-instrument and side-module regression coverage; and
 - before/after Node and browser performance and process-tree RSS measurements.
 
-The final publication proof additionally requires GitHub's isolated Formula
-builder, exact candidate artifact relay, GHCR publication, anonymous bottle
+The final publication proof additionally requires GitHub's isolated recipe
+builder, exact candidate artifact relay, registry publication, anonymous archive
 readback, immutable selection/VFS release, and protected-main activation.
 Those distribution and provenance facts cannot be claimed from local tests.
 
@@ -871,12 +875,12 @@ work. Its integration gate then moves after the credential and set-ID exec
 changes because those changes alter both process state and the exec lifecycle.
 Only after both gates pass does the final artifact and application proof begin.
 
-After the final ABI 43 Kandelo and tap candidates exist:
+After the final ABI 43 Kandelo and distribution candidates exist:
 
-1. build and publish pristine upstream CRuby and the exact Homebrew closure;
+1. build and publish pristine upstream CRuby and the exact package closure;
 2. prove uid 1000 selects CRuby's existing upstream vfork path;
 3. prove the intentional root/privileged path still uses ordinary fork;
-4. run the real in-guest tap/install/execute lifecycle without renderer loss;
+4. run the real in-guest install/execute lifecycle without renderer loss;
 5. measure Node and Chromium process-tree RSS, repeated-run bounds, and
    renderer survival, with Firefox and WebKit coverage where applicable;
 6. repeat the relevant ABI, libc, POSIX, Sortix, host, browser,
@@ -899,17 +903,17 @@ cherry-pick units. Their behavior maps into purpose-scoped commits:
 
 | Source concern | Source commits | Forward-port boundary |
 |---|---|---|
-| Immutable bottle prefix | `8a66801e6` | Authenticated Homebrew destination and relocation prefix |
-| Generic VFS materialization | `ebde50611` | Closed archive plan, Homebrew adapter, rollback, and host parity |
+| Immutable archive prefix | `8a66801e6` | Authenticated package destination and relocation prefix |
+| Generic VFS materialization | `ebde50611` | Closed archive plan, package-manager adapter, rollback, and host parity |
 | Credential/login foundation | `c44ae8019` | POSIX credentials, exec, login, rootfs, and tests |
-| Upstream sudo | `a85a742d8` | Formula, policy, PTY execution, and tests |
+| Upstream sudo | `a85a742d8` | recipe, policy, PTY execution, and tests |
 | Browser credential UX | `7b012f9fc`, `782c6d4c3`, `6a204573a`, `d197add84` | One coherent browser-session commit |
-| Lazy sudo | `c985ee105` | Homebrew lazy-tree integration |
+| Lazy sudo | `c985ee105` | lazy-tree integration |
 | Metadata correctness | `598459b69`, `3e30a7765` | VFS ownership and set-ID invalidation |
 | ABI credential state | `af58c77b9` | ABI 43 fork/exec state and snapshot |
 | Devpts metadata | `17384b2a5` | Persistent slave ownership, mode, path/fd identity, and access checks |
 | Poll interruption | `17384b2a5` | `ppoll`/`pselect` signal behavior, only if current tests reproduce it |
-| Homebrew shell integration | `418da44dc` | Formula-based product/image integration |
+| Package shell integration | `418da44dc` | recipe-based product/image integration |
 
 All twelve login-source commits and both VFS-source commits were authored by
 Brandon Payton. Derived commits will retain that authorship where the old work
@@ -920,7 +924,7 @@ attribution before push.
 
 Baseline CI repairs, immutable-prefix handling, generic VFS materialization,
 mount security, privileged projections, platform credentials, ABI/exec, VFS
-metadata, PTY/wait, programs, tap Formulae, browser sessions, vfork fixes,
+metadata, PTY/wait, programs, distribution recipes, browser sessions, vfork fixes,
 product composition, documentation, and final evidence remain distinct
 conceptual commits. Separate vfork defects remain separate commits when they
 protect different invariants; mechanical test or generated-artifact changes
@@ -932,8 +936,8 @@ commits and must never be squash-merged.
 The forward port is complete only when:
 
 - both pre-existing CI fixture failures are repaired;
-- generic VFS materialization contains no Homebrew policy, and current
-  Homebrew eager/lazy products pass through the Homebrew adapter;
+- generic VFS materialization contains no package-manager policy, and current
+  eager/lazy products pass through the package-manager adapter;
 - every set-ID-capable product entry is an independent root-owned inode on a
   trusted stable mount, while writable and identity-unstable mounts report and
   enforce `nosuid`;
@@ -956,9 +960,9 @@ The forward port is complete only when:
   descriptors into privileged application code;
 - login, sudo-lite, and upstream sudo pass in Node and browsers;
 - no registry bridge supplies their product binaries;
-- the local end-to-end demonstration completes from exact source and bottle
+- the local end-to-end demonstration completes from exact source and archive
   identities;
-- final candidate Homebrew artifacts complete the real guest lifecycle and
+- final candidate package artifacts complete the real guest lifecycle and
   memory proof; and
-- the batch and companion tap pull requests clearly disclose validation,
+- the batch and companion distribution pull requests clearly disclose validation,
   remaining publication gates, attribution, and rebase-only merge policy.

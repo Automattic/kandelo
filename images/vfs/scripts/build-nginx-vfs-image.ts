@@ -36,7 +36,7 @@ import {
 import { nginxGuide } from "./kandelo-demo-guides";
 
 const REPO_ROOT = findRepoRoot();
-const OUT_FILE = join(REPO_ROOT, "apps", "browser-demos", "public", "nginx.vfs.zst");
+const OUT_FILE = join(REPO_ROOT, "apps", "browser-demos", "public", "nginx-vfs.vfs.zst");
 const NGINX_IMAGE_MAX_BYTES = SHELL_DERIVED_VFS_PROFILE_MAX_BYTES;
 const DEMO_UID = 1000;
 const DEMO_GID = 1000;

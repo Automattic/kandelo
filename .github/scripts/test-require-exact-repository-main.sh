@@ -22,7 +22,7 @@ printf 'called\n' >>"$FAKE_GIT_LOG"
 [ "$3" = -c ]
 [ "$4" = http.https://github.com/.extraheader= ]
 [ "$5" = ls-remote ]
-[ "$6" = "https://github.com/Kandelo-dev/homebrew-tap-core.git" ]
+[ "$6" = "https://github.com/Kandelo-dev/sample-tap-core.git" ]
 [ "$7" = refs/heads/main ]
 case "${FAKE_GIT_MODE:-ok}" in
   ok) printf '%s\trefs/heads/main\n' "2222222222222222222222222222222222222222" ;;
@@ -39,7 +39,7 @@ chmod +x "$TMP_ROOT/bin/git"
 run_check() {
   FAKE_GIT_LOG="$TMP_ROOT/git.log" PATH="$TMP_ROOT/bin:$PATH" \
     bash "$CHECK" \
-      --repository Kandelo-dev/homebrew-tap-core \
+      --repository Kandelo-dev/sample-tap-core \
       --source-sha 2222222222222222222222222222222222222222
 }
 
@@ -73,7 +73,7 @@ do
   fi
 done
 if FAKE_GIT_LOG="$TMP_ROOT/git.log" PATH="$TMP_ROOT/bin:$PATH" bash "$CHECK" \
-    --repository Kandelo-dev/homebrew-tap-core \
+    --repository Kandelo-dev/sample-tap-core \
     --source-sha 3333333333333333333333333333333333333333 \
     >/dev/null 2>&1; then
   echo "test-require-exact-repository-main: accepted stale main" >&2

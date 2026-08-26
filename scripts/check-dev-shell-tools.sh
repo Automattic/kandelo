@@ -2,8 +2,9 @@
 
 # Fail when the canonical Nix dev shell resolves declared build tools from the
 # ambient host. This is especially important on Darwin, where user-profile,
-# /usr/bin, and Homebrew paths can precede mkShell package bins unless the
-# shell hook deliberately restores the declared package order.
+# /usr/bin, and other ambient host package-manager paths can precede mkShell
+# package bins unless the shell hook deliberately restores the declared
+# package order.
 
 set -euo pipefail
 

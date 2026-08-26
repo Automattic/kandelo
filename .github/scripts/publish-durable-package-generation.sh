@@ -160,9 +160,6 @@ trap cleanup EXIT
 
 # Validate inert bundle bytes before reading any field that controls a write.
 env -u GH_TOKEN -u GITHUB_TOKEN \
-  -u HOMEBREW_GITHUB_API_TOKEN \
-  -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-  -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
   -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
   -u ACTIONS_ID_TOKEN_REQUEST_URL \
   -u ACTIONS_RUNTIME_TOKEN \
@@ -324,9 +321,6 @@ if [ "$SELECTION_KIND" = browser-inputs ]; then
     browser_root_args+=(--include-package rootfs)
   fi
   env -u GH_TOKEN -u GITHUB_TOKEN \
-    -u HOMEBREW_GITHUB_API_TOKEN \
-    -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-    -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_URL \
     -u ACTIONS_RUNTIME_TOKEN \
@@ -336,9 +330,6 @@ if [ "$SELECTION_KIND" = browser-inputs ]; then
       "${browser_root_args[@]}" >"$TMP_ROOT/browser-inputs-roots.txt"
   if [ "$VALIDATION_METHOD" = identical-package-cache-projection-v1 ]; then
     env -u GH_TOKEN -u GITHUB_TOKEN \
-      -u HOMEBREW_GITHUB_API_TOKEN \
-      -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-      -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
       -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
       -u ACTIONS_ID_TOKEN_REQUEST_URL \
       -u ACTIONS_RUNTIME_TOKEN \
@@ -361,9 +352,6 @@ else
   source_selection_args=(--root-package "$ROOT_PACKAGE")
 fi
 env -u GH_TOKEN -u GITHUB_TOKEN \
-  -u HOMEBREW_GITHUB_API_TOKEN \
-  -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-  -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
   -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
   -u ACTIONS_ID_TOKEN_REQUEST_URL \
   -u ACTIONS_RUNTIME_TOKEN \
@@ -385,9 +373,6 @@ if ! cmp "$manifest_projection" "$rederived_projection" >/dev/null ||
 fi
 if [ "$VALIDATION_METHOD" = identical-package-cache-projection-v1 ]; then
   env -u GH_TOKEN -u GITHUB_TOKEN \
-    -u HOMEBREW_GITHUB_API_TOKEN \
-    -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-    -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_URL \
     -u ACTIONS_RUNTIME_TOKEN \
@@ -567,9 +552,6 @@ while IFS= read -r asset_name; do
   cp "$BUNDLE/$asset_name" "$ARCHIVE_VALIDATION_BUNDLE/$asset_name"
 done < <(jq -er '.[].name' "$VALIDATOR_ASSETS")
 env -u GH_TOKEN -u GITHUB_TOKEN \
-  -u HOMEBREW_GITHUB_API_TOKEN \
-  -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-  -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
   -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
   -u ACTIONS_ID_TOKEN_REQUEST_URL \
   -u ACTIONS_RUNTIME_TOKEN \
@@ -786,9 +768,6 @@ validate_live_main_source() {
   fi
   if [ "$legacy_dispatch" = true ]; then
     env -u GH_TOKEN -u GITHUB_TOKEN \
-      -u HOMEBREW_GITHUB_API_TOKEN \
-      -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-      -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
       -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
       -u ACTIONS_ID_TOKEN_REQUEST_URL \
       -u ACTIONS_RUNTIME_TOKEN \
@@ -817,9 +796,6 @@ validate_live_main_source() {
     # both receipts with current-main code closes that race before writes and
     # again before the seal and public transition.
     env -u GH_TOKEN -u GITHUB_TOKEN \
-      -u HOMEBREW_GITHUB_API_TOKEN \
-      -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-      -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
       -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
       -u ACTIONS_ID_TOKEN_REQUEST_URL \
       -u ACTIONS_RUNTIME_TOKEN \
@@ -833,9 +809,6 @@ validate_live_main_source() {
         "${source_evidence_extra_args[@]}" \
         --output "$producer_evidence"
     env -u GH_TOKEN -u GITHUB_TOKEN \
-      -u HOMEBREW_GITHUB_API_TOKEN \
-      -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-      -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
       -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
       -u ACTIONS_ID_TOKEN_REQUEST_URL \
       -u ACTIONS_RUNTIME_TOKEN \
@@ -873,9 +846,6 @@ validate_live_main_source() {
       gh api "/repos/$REPOSITORY/git/trees/$authority_tree?recursive=1" \
         >"$main_tree_json"
       env -u GH_TOKEN -u GITHUB_TOKEN \
-        -u HOMEBREW_GITHUB_API_TOKEN \
-        -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-        -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
         -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
         -u ACTIONS_ID_TOKEN_REQUEST_URL \
         -u ACTIONS_RUNTIME_TOKEN \
@@ -1248,9 +1218,6 @@ done < <(jq -r '.[] | select(.seal == false) | .name' "$EXPECTED_ASSETS")
 # Rehash and semantically revalidate the complete local bundle immediately
 # before the application seal can make it public.
 env -u GH_TOKEN -u GITHUB_TOKEN \
-  -u HOMEBREW_GITHUB_API_TOKEN \
-  -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-  -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
   -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
   -u ACTIONS_ID_TOKEN_REQUEST_URL \
   -u ACTIONS_RUNTIME_TOKEN \
@@ -1258,9 +1225,6 @@ env -u GH_TOKEN -u GITHUB_TOKEN \
   python3 "$SCRIPT_DIR/package-generation.py" validate \
     --bundle "$BUNDLE" >/dev/null
 env -u GH_TOKEN -u GITHUB_TOKEN \
-  -u HOMEBREW_GITHUB_API_TOKEN \
-  -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-  -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
   -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
   -u ACTIONS_ID_TOKEN_REQUEST_URL \
   -u ACTIONS_RUNTIME_TOKEN \

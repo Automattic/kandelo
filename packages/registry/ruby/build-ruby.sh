@@ -54,7 +54,7 @@ validate_guest_prefix() {
 }
 
 validate_guest_prefix "$GUEST_PREFIX"
-# Explicit env wins; else the in-tree sysroot. Homebrew exposes the reviewed
+# Explicit env wins; else the in-tree sysroot. Package builds expose the reviewed
 # checkout and sysroot read-only, so a Formula build augments a private copy
 # with Ruby's libyaml and compatibility headers instead of mutating its trusted
 # inputs. Direct developer builds retain the historical in-tree sysroot.
@@ -1215,7 +1215,7 @@ echo "==> Applying wasm-fork-instrument to ruby.wasm..."
 mv "$BIN_DIR/ruby.wasm.instr" "$BIN_DIR/ruby.wasm"
 
 # Install stdlib and default RubyGems/Bundler files under the selected guest
-# prefix. Direct package builds retain /usr; Homebrew builds select their
+# prefix. Direct package builds retain /usr; packaged guest builds select their
 # stable guest opt prefix so Ruby's built-in load path works after pouring.
 echo "==> Installing Ruby runtime..."
 mkdir -p "$INSTALL_DIR"

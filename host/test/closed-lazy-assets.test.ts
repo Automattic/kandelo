@@ -14,7 +14,7 @@ import {
 const URL_A = "https://github.com/example/project/releases/download/v1/a.tar.gz";
 const URL_B = "https://github.com/example/project/releases/download/v1/b.tar.gz";
 const OCI_REFERENCE =
-  `ghcr.io/kandelo-dev/homebrew-tap-core-abi-7-candidates/lazy@sha256:${"a".repeat(64)}`;
+  `ghcr.io/kandelo-dev/kandelo-products-abi-7-candidates/lazy@sha256:${"a".repeat(64)}`;
 const CLOSED_REFERENCE_ERROR =
   "canonical HTTPS URL or immutable OCI reference without userinfo or a fragment";
 
@@ -72,7 +72,7 @@ describe("closed lazy assets", () => {
     const bytes = new Uint8Array([6, 5, 4]);
     const digest = createHash("sha256").update(bytes).digest("hex");
     const repository =
-      "kandelo-dev/homebrew-tap-core-abi-7-candidates/perl";
+      "kandelo-dev/kandelo-products-abi-7-candidates/perl";
     const reference = `ghcr.io/${repository}@sha256:${digest}`;
     const sourceUrl = `https://ghcr.io/v2/${repository}/blobs/sha256:${digest}`;
     const scope = `repository:${repository}:pull`;

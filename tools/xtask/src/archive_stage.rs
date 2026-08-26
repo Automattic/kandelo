@@ -719,8 +719,8 @@ mode = 420
         let (cache_dir, archive_path, manifest, mut opts) =
             fixture_for_round_trip("embed-manifest");
         opts.git_inputs.push(GitBuildInput {
-            name: "homebrew_tap_core".to_string(),
-            repository: "https://github.com/Kandelo-dev/homebrew-tap-core.git".to_string(),
+            name: "example_tap_core".to_string(),
+            repository: "https://github.com/Kandelo-dev/example-tap-core.git".to_string(),
             commit: "b40a764d47f4f4408790de2c211ccb8efb8e4c46".to_string(),
             tree: Some("1111111111111111111111111111111111111111".to_string()),
             allow_uninitialized_gitlinks: true,
@@ -733,8 +733,8 @@ repo_url = "https://example.test/kandelo.git"
 commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 revision = 1
 [[git_inputs]]
-name = "homebrew_tap_core"
-repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"
+name = "example_tap_core"
+repository = "https://github.com/Kandelo-dev/example-tap-core.git"
 commit = "b40a764d47f4f4408790de2c211ccb8efb8e4c46"
 tree = "1111111111111111111111111111111111111111"
 allow_uninitialized_gitlinks = true

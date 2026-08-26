@@ -72,7 +72,7 @@ environment variables into remote manifest requests.
 
 **Files:**
 
-- Modify: `apps/browser-demos/test/kandelo-homebrew.spec.ts`
+- Modify: `apps/browser-demos/test/kandelo-gallery.spec.ts`
 - Modify: `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`
 - Modify: `docs/package-sources.md`
 - Modify: `docs/package-management.md`

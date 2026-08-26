@@ -2,7 +2,8 @@
 
 # Exercise tool resolution through both command shapes used by repository
 # builds. The login-shell case is the Darwin regression: /etc/profile used to
-# put Homebrew CMake and /usr/bin/make ahead of the flake-declared tools.
+# put an ambient host CMake and /usr/bin/make ahead of the flake-declared
+# tools.
 
 set -euo pipefail
 

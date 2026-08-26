@@ -89,7 +89,17 @@ sed -i.bak \
 rm -f Makefile.bak
 
 echo "==> Building OpenSSL..."
-make -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)" build_generated libssl.a libcrypto.a
+# Generate the templated headers (opensslv.h, the STACK_OF/version macros,
+# etc.) as a separate barrier before the parallel library build. OpenSSL's
+# Makefile does not fully order generated headers ahead of object
+# compilation under -j, so folding build_generated into the parallel lib
+# targets lets a .c compile before its headers exist -- the macros then fail
+# to expand and openssl/macros.h trips "OPENSSL_API_COMPAT expresses an
+# impossible API compatibility level" (with implicit-int cascades). Running
+# build_generated first makes the headers exist before any object compiles.
+JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
+make -j"$JOBS" build_generated
+make -j"$JOBS" libssl.a libcrypto.a
 
 echo "==> Staging OpenSSL development files..."
 make install_dev DESTDIR="$STAGE_DIR"

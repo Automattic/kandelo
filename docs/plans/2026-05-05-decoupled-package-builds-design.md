@@ -220,9 +220,9 @@ This gating:
 
 **Reproducibility audit (prerequisite for Phase B).** D3 is only sound if `cache_key_sha` is bit-reproducible across CI runs and developer machines. Known leaks must be hunted before relying on the gate:
 
-- The Homebrew clang vs. Nix LLVM 21 producer divergence surfaced in PR #407 (memory: `feedback_always-use-nix-shell-for-builds.md`) is exactly the failure mode that breaks content-hash gating.
+- The non-Nix system clang vs. Nix LLVM 21 producer divergence surfaced in PR #407 (memory: `feedback_always-use-nix-shell-for-builds.md`) is exactly the failure mode that breaks content-hash gating.
 - Any timestamp, locale-dependent string, or non-pinned tool that ends up in archive bytes will cause spurious mismatches.
-- Audit checklist (rough): rebuild every package twice on the same Nix shell, diff the archives byte-for-byte, fix any non-determinism. Then rebuild on a clean macOS-Homebrew vs. Linux-Nix shell, diff again. Ship the audit log alongside Phase B.
+- Audit checklist (rough): rebuild every package twice on the same Nix shell, diff the archives byte-for-byte, fix any non-determinism. Then rebuild on a clean non-Nix macOS vs. Linux-Nix shell, diff again. Ship the audit log alongside Phase B.
 
 If reproducibility cannot be made tight, fall back to D2 (file-path change detection) for the affected packages and accept the over-rebuild cost.
 
@@ -352,7 +352,7 @@ One PR. Schema-shaped but mechanical: the parser changes + 61 file edits + a sma
 
 Stand up the per-package matrix, content-hash gating, per-file uploads, and `index.toml` generation **alongside** the existing flow. The resolver still reads `binaries.lock`; the new artifacts are published in parallel but unconsumed by `main`.
 
-- Run reproducibility audit; fix any leaks (Homebrew vs. Nix LLVM, etc.) before relying on D3 gating.
+- Run reproducibility audit; fix any leaks (non-Nix system clang vs. Nix LLVM, etc.) before relying on D3 gating.
 - Implement per-package matrix workflow with `needs:` for *-source packages and toolchain cache.
 - Implement D3 content-hash gating (pre-flight + matrix narrowing).
 - Implement per-file uploads.

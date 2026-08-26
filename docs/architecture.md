@@ -1978,10 +1978,7 @@ typed-tree descriptor containing its digest, byte counts, decoder, and complete
 inventory. A lazy image registers that descriptor and keeps the relative
 package-output URL; an eager derivative directly materializes the same
 descriptor from the same bytes. The eager path is therefore a consumption
-choice, not a second package recipe or artifact identity. A `source-tree`
-output, such as a pinned upstream tool implementation, is explicitly not a
-Homebrew bottle; formula bottles remain their original published TAR+gzip
-artifacts.
+choice, not a second package recipe or artifact identity.
 
 Package ZIP trees declare the closed `portable-posix-v1` mode policy. It
 normalizes directories to `0755`, symbolic links to `0777`, and regular files
@@ -2093,18 +2090,18 @@ There are two consumption patterns for VFS images, depending on whether the demo
 | Perl | `perl.vfs.zst` | `build-perl-vfs-image.sh` | `kernel.boot` → `perl` |
 | PHP | `php.vfs.zst` | `build-php-vfs-image.sh` | `kernel.boot` → `php` |
 | Ruby | `ruby.vfs.zst` | `build-ruby-vfs-image.sh` | `kernel.boot` → `ruby` |
-| nginx | `nginx.vfs.zst` | `build-nginx-vfs-image.sh` | `kernel.boot` → dinit → nginx |
-| nginx-php | `nginx-php.vfs.zst` | `build-nginx-php-vfs-image.sh` | `kernel.boot` → dinit → php-fpm + nginx |
+| nginx | `nginx-vfs.vfs.zst` | `build-nginx-vfs-image.sh` | `kernel.boot` → dinit → nginx |
+| nginx-php | `nginx-php-vfs.vfs.zst` | `build-nginx-php-vfs-image.sh` | `kernel.boot` → dinit → php-fpm + nginx |
 | Redis | `redis.vfs.zst` | `build-redis-vfs-image.sh` | `kernel.boot` → dinit → redis-server |
 | MariaDB | `mariadb.vfs.zst` | `build-mariadb-vfs-image.sh` | `kernel.boot` → dinit → mariadb-bootstrap → mariadbd |
 | WordPress | `wordpress.vfs.zst` | `build-wp-vfs-image.sh` | `kernel.boot` → dinit → php-fpm + nginx (SQLite WP) |
 | LAMP | `lamp.vfs.zst` | `build-lamp-vfs-image.sh` | `kernel.boot` → dinit → mariadb + php-fpm + nginx |
 | MariaDB test | `mariadb-test.vfs.zst` | `build-mariadb-test-vfs-image.sh` | `kernel.boot` → dinit → mariadb; mysqltest via `kernel.spawn` |
 | Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `packages/registry/erlang-vfs/build-erlang-vfs.sh` | legacy `kernel.spawn` → BEAM |
-| Shell | `shell.vfs.zst` | resolver-owned `packages/registry/shell/build-shell.sh` from the reviewed public Homebrew bottle closure | `kernel.spawnFromVfs` → image-owned Homebrew Bash |
+| Shell | `shell.vfs.zst` | resolver-owned `packages/registry/shell/build-shell.sh` from the reviewed package closure | `kernel.spawnFromVfs` → image-owned Bash |
 | Benchmark | (multiple) | (per-suite) | legacy `kernel.spawn` |
 
-Build scripts are in `images/vfs/scripts/` and share common helpers (`vfs-image-helpers.ts` for VFS write primitives, `dinit-image-helpers.ts` for the dinit binary + standard rootfs files + service-file rendering). To build all VFS images, use the per-demo scripts above or the convenience targets in `run.sh` (e.g., `./run.sh build python-vfs`). The repaired Python and Erlang recipes remain disabled legacy compatibility paths: staging does not publish them, and they are not Homebrew distribution units.
+Build scripts are in `images/vfs/scripts/` and share common helpers (`vfs-image-helpers.ts` for VFS write primitives, `dinit-image-helpers.ts` for the dinit binary + standard rootfs files + service-file rendering). To build all VFS images, use the per-demo scripts above or the convenience targets in `run.sh` (e.g., `./run.sh build python-vfs`). The repaired Python and Erlang recipes remain disabled legacy compatibility paths: staging does not publish them.
 
 The Node counterparts for the service-supervised demos consume these same
 images. They authenticate imported lazy-tree seals, apply transient runtime

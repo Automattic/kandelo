@@ -26,7 +26,7 @@ test("Chromium verifies and closes native lazy-asset transports", async ({
       viteModuleSource.slice(0, 500),
   ).toBe(true);
 
-  const decodedPayload = Buffer.from("lazy Homebrew bottle bytes\n".repeat(512));
+  const decodedPayload = Buffer.from("lazy archive payload bytes\n".repeat(512));
   const encodedPayload = gzipSync(decodedPayload);
   const state = {
     cookieProbe: "",

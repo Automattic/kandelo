@@ -125,7 +125,6 @@ jq -n \
 STUB_BIN="$TMP_ROOT/bin"
 mkdir -p "$STUB_BIN"
 REAL_JQ=$(command -v jq)
-REAL_NODE=$(command -v node)
 
 cat > "$STUB_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -336,39 +335,6 @@ else
 fi
 EOF
 chmod +x "$STUB_BIN/cargo"
-
-MIRROR_VERIFY_LOG="$TMP_ROOT/mirror-verify.log"
-MIRROR_EXPECTED_PLAN="$(cd "$SCRIPT_DIR/../.." && pwd)/homebrew/main-shell-flat-lazy-mirror-plan.json"
-cat > "$STUB_BIN/node" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-if [ "$(basename "${1:-}")" != verify-public-homebrew-bottle-mirror.mjs ]; then
-  exec "$REAL_NODE" "$@"
-fi
-if [ -n "${GH_TOKEN:-}" ] || [ -n "${GITHUB_TOKEN:-}" ]; then
-  echo "public mirror verifier received GitHub credentials" >&2
-  exit 87
-fi
-shift
-plan=""
-out=""
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --plan) plan="$2"; shift 2 ;;
-    --out) out="$2"; shift 2 ;;
-    *) echo "unexpected public mirror verifier argument: $1" >&2; exit 88 ;;
-  esac
-done
-[ "$plan" = "$MIRROR_EXPECTED_PLAN" ]
-[ -n "$out" ]
-printf '%s\n' "$plan" >> "$MIRROR_VERIFY_LOG"
-if [ "${MIRROR_STUB_FAIL:-0}" = 1 ]; then
-  echo "anonymous public mirror readback failed" >&2
-  exit 86
-fi
-printf '{"visibility":"public-anonymous-readback"}\n' > "$out"
-EOF
-chmod +x "$STUB_BIN/node"
 
 ADVERSARIAL_BIN="$TMP_ROOT/adversarial-bin"
 mkdir -p "$ADVERSARIAL_BIN"
@@ -652,10 +618,6 @@ run_activation() {
     CARGO_STUB_ASSET_PLAN="$ASSET_PLAN" \
     CARGO_STUB_NOOP="${CARGO_STUB_NOOP:-0}" \
     CARGO_STUB_REJECT_REASON="${CARGO_STUB_REJECT_REASON:-}" \
-    MIRROR_STUB_FAIL="${MIRROR_STUB_FAIL:-0}" \
-    MIRROR_VERIFY_LOG="$MIRROR_VERIFY_LOG" \
-    MIRROR_EXPECTED_PLAN="$MIRROR_EXPECTED_PLAN" \
-    REAL_NODE="$REAL_NODE" \
     GH_STUB_DUPLICATE_CANDIDATE_RELEASE="${GH_STUB_DUPLICATE_CANDIDATE_RELEASE:-0}" \
     JQ_STUB_FAIL_ASSET_PLAN_STREAM="${JQ_STUB_FAIL_ASSET_PLAN_STREAM:-0}" \
     REAL_JQ="$REAL_JQ" \
@@ -818,33 +780,6 @@ grep -q 'does not match expected sha256' "$TMP_ROOT/canonical-mismatch.err"
 cmp "$TMP_ROOT/current-index.good" "$CURRENT_INDEX"
 [ ! -f "$RELEASES/$CANDIDATE_TAG/activated.json" ]
 cp "$TMP_ROOT/retained.tar.zst.good" "$CANONICAL_RETAINED"
-
-# Anonymous mirror unavailability is a retryable rollout failure. It must stop
-# before the first canonical release mutation without terminally rejecting the
-# otherwise valid candidate.
-uploads_before=$(wc -l < "$UPLOAD_LOG" | tr -d '[:space:]')
-mirror_checks_before=$(wc -l < "$MIRROR_VERIFY_LOG" | tr -d '[:space:]')
-canonical_candidate_sha_before=$(
-  sha256_file "$RELEASES/$CANONICAL_TAG/foo.tar.zst"
-)
-if MIRROR_STUB_FAIL=1 run_activation \
-    >"$TMP_ROOT/mirror-unavailable.out" \
-    2>"$TMP_ROOT/mirror-unavailable.err"
-then
-  echo "activation accepted an unavailable anonymous bottle mirror" >&2
-  exit 1
-fi
-grep -q 'anonymous public mirror readback failed' \
-  "$TMP_ROOT/mirror-unavailable.err"
-[ "$uploads_before" = "$(wc -l < "$UPLOAD_LOG" | tr -d '[:space:]')" ]
-[ "$((mirror_checks_before + 1))" = \
-  "$(wc -l < "$MIRROR_VERIFY_LOG" | tr -d '[:space:]')" ]
-cmp "$TMP_ROOT/current-index.good" "$CURRENT_INDEX"
-[ "$canonical_candidate_sha_before" = "$(
-  sha256_file "$RELEASES/$CANONICAL_TAG/foo.tar.zst"
-)" ]
-[ ! -f "$RELEASES/$CANDIDATE_TAG/rejected.json" ]
-[ ! -f "$RELEASES/$CANDIDATE_TAG/activated.json" ]
 
 run_activation >/dev/null
 cmp "$CANDIDATE_ASSET" "$RELEASES/$CANONICAL_TAG/foo.tar.zst"

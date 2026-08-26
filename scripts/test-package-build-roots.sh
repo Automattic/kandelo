@@ -813,8 +813,8 @@ grep -Fx "INTEGRATION PAYLOAD" "$integration_out/artifact.wasm" >/dev/null ||
     fail "integrated build mutated its immutable caller source"
 
 # Caller-owned output installation is a copy-only packaging operation. It must
-# not require the repo's Rust/xtask toolchain, which Homebrew intentionally
-# keeps out of the isolated Formula environment after the Wasm build finishes.
+# not require the repo's Rust/xtask toolchain, which an isolated build
+# environment intentionally keeps out after the Wasm build finishes.
 output_only_root="$TMP_ROOT/output-only"
 output_only_wasm="$output_only_root/input/program.wasm"
 output_only_data="$output_only_root/input/runtime.dat"

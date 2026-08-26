@@ -85,9 +85,6 @@ const SOURCE_ONLY_RECIPE_AMBIENT_ENVIRONMENT: &[&str] = &[
     "GH_TOKEN",
     "GITHUB_TOKEN",
     "GIT_ASKPASS",
-    "HOMEBREW_DOCKER_REGISTRY_TOKEN",
-    "HOMEBREW_GITHUB_API_TOKEN",
-    "HOMEBREW_GITHUB_PACKAGES_TOKEN",
     "NODE_AUTH_TOKEN",
     "NPM_TOKEN",
     "SSH_ASKPASS",
@@ -7291,9 +7288,6 @@ fn inert_source_cargo_metadata_command(
         "CARGO_REGISTRY_TOKEN",
         "GH_TOKEN",
         "GITHUB_TOKEN",
-        "HOMEBREW_DOCKER_REGISTRY_TOKEN",
-        "HOMEBREW_GITHUB_API_TOKEN",
-        "HOMEBREW_GITHUB_PACKAGES_TOKEN",
         "HTTP_PROXY",
         "HTTPS_PROXY",
         "RUSTC_WRAPPER",
@@ -11093,9 +11087,6 @@ fn hardened_git_command(
     for key in [
         "GH_TOKEN",
         "GITHUB_TOKEN",
-        "HOMEBREW_GITHUB_PACKAGES_TOKEN",
-        "HOMEBREW_GITHUB_API_TOKEN",
-        "HOMEBREW_DOCKER_REGISTRY_TOKEN",
         "GIT_DIR",
         "GIT_COMMON_DIR",
         "GIT_WORK_TREE",
@@ -24740,7 +24731,7 @@ mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && touch $WASM_POSIX_DEP_OUT_DIR/lib/libT.a
         let canonical = root.join("cache/programs/shell");
         fs::create_dir_all(canonical.parent().unwrap()).unwrap();
         let declaration = GitBuildInput {
-            name: "homebrew_tap_core".to_string(),
+            name: "example_tap_core".to_string(),
             repository: format!("file://{}", source.display()),
             commit: commit.clone(),
             tree: None,
@@ -24776,8 +24767,8 @@ mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && touch $WASM_POSIX_DEP_OUT_DIR/lib/libT.a
 
         let mut command = Command::new("bash");
         command.arg("-c").arg(
-            "printf '%s\\n%s\\n' \"$WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_DIR\" \
-             \"$WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_COMMIT\"",
+            "printf '%s\\n%s\\n' \"$WASM_POSIX_BUILD_GIT_EXAMPLE_TAP_CORE_DIR\" \
+             \"$WASM_POSIX_BUILD_GIT_EXAMPLE_TAP_CORE_COMMIT\"",
         );
         provisioned.export_to(&mut command);
         let output = command.output().unwrap();
@@ -25057,7 +25048,7 @@ mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && touch $WASM_POSIX_DEP_OUT_DIR/lib/libT.a
             "shell@0.1.0",
             &canonical,
             vec![GitBuildInput {
-                name: "homebrew_tap_core".to_string(),
+                name: "example_tap_core".to_string(),
                 repository: format!("file://{}", source.display()),
                 commit: "1111111111111111111111111111111111111111".to_string(),
                 tree: None,
@@ -28732,8 +28723,8 @@ spdx = "MIT"
 name = "shell"
 wasm = "image/shell.vfs.zst"
 [[outputs]]
-name = "homebrew"
-wasm = "archives/homebrew-bootstrap.zip"
+name = "extras"
+wasm = "archives/extras-bootstrap.zip"
 [[runtime_files]]
 artifact = {runtime_artifact:?}
 guest_path = "/usr/share/atomic-shell/runtime/index.dat"
@@ -33676,7 +33667,7 @@ test "$(cat "$WASM_POSIX_BUILD_GIT_DECLARED_TOOL_DIR/payload.txt")" = "immutable
 leaked=0
 for variable in \
   ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_RUNTIME_TOKEN GH_TOKEN GITHUB_TOKEN \
-  HOMEBREW_GITHUB_API_TOKEN CARGO_REGISTRY_TOKEN CARGO_HTTP_PROXY \
+  CARGO_REGISTRY_TOKEN CARGO_HTTP_PROXY \
   HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy \
   BASH_ENV ENV RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER RUSTFLAGS \
   CARGO_ENCODED_RUSTFLAGS WASM_POSIX_BINARY_INDEX_URL \
@@ -33734,7 +33725,6 @@ commit = "{}"
             .env("ACTIONS_RUNTIME_TOKEN", "hostile-ambient-marker")
             .env("GH_TOKEN", "hostile-ambient-marker")
             .env("GITHUB_TOKEN", "hostile-ambient-marker")
-            .env("HOMEBREW_GITHUB_API_TOKEN", "hostile-ambient-marker")
             .env("HTTP_PROXY", "http://127.0.0.1:9")
             .env("HTTPS_PROXY", "http://127.0.0.1:9")
             .env("ALL_PROXY", "socks5://127.0.0.1:9")

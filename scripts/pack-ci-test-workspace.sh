@@ -6,7 +6,6 @@ cd "$REPO_ROOT"
 
 PORTABLE_CACHE_REL=".ci-test-binary-cache"
 PUBLICATION_BLOCKERS_REL=".ci-test-publication-blockers.json"
-HOMEBREW_BROWSER_MIRROR_STATE_REL=".ci-homebrew-browser-mirror-state.json"
 STAGING_SHELL_RECEIPT_REL=".ci-staging-shell-receipt.json"
 STAGING_SHELL_REPORT_REL=".ci-staging-shell-report.json"
 BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$REPO_ROOT"
@@ -15,7 +14,6 @@ BROWSER_MEMORY64_FIXTURES_MANIFEST="$REPO_ROOT/scripts/browser-memory64-example-
 source "$REPO_ROOT/scripts/browser-memory64-example-fixtures.sh"
 
 publication_blockers=""
-homebrew_browser_mirror_state=""
 staging_shell_handoff=""
 out=""
 while [ "$#" -gt 0 ]; do
@@ -26,14 +24,6 @@ while [ "$#" -gt 0 ]; do
                 exit 2
             }
             publication_blockers="$2"
-            shift 2
-            ;;
-        --homebrew-browser-mirror-state)
-            [ "$#" -ge 2 ] || {
-                echo "pack-ci-test-workspace: --homebrew-browser-mirror-state requires a path" >&2
-                exit 2
-            }
-            homebrew_browser_mirror_state="$2"
             shift 2
             ;;
         --staging-shell-handoff)
@@ -59,7 +49,7 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 if [ -z "$out" ]; then
-    echo "usage: $0 [--publication-blockers <report.json>] [--homebrew-browser-mirror-state <state.json>] [--staging-shell-handoff <dir>] <out.tar.zst>" >&2
+    echo "usage: $0 [--publication-blockers <report.json>] [--staging-shell-handoff <dir>] <out.tar.zst>" >&2
     exit 2
 fi
 
@@ -177,10 +167,10 @@ if [ -e binaries ] || [ -L binaries ]; then
             exit 1
             ;;
     esac
-    # WHY: prepared conformance workspaces and isolated Homebrew Formula tests
-    # must transport package generations identically. A shared staging helper
-    # prevents either path from flattening package mirrors into ordinary files
-    # and silently discarding the resolver's single-generation identity.
+    # WHY: prepared conformance workspaces must transport package generations
+    # identically. A shared staging helper prevents flattening package mirrors
+    # into ordinary files and silently discarding the resolver's
+    # single-generation identity.
     bash scripts/stage-portable-resolver-binaries.sh \
         "$REPO_ROOT/binaries" "$source_cache_root" "$stage"
 fi
@@ -434,96 +424,6 @@ if [ -n "$publication_blockers" ]; then
     fi
     cp -p -- "$publication_blockers" "$stage/$PUBLICATION_BLOCKERS_REL"
 fi
-if [ -n "$homebrew_browser_mirror_state" ]; then
-    if [ ! -f "$homebrew_browser_mirror_state" ] ||
-       [ -L "$homebrew_browser_mirror_state" ]; then
-        echo "pack-ci-test-workspace: Homebrew browser mirror state must be a regular non-symlink file: $homebrew_browser_mirror_state" >&2
-        exit 1
-    fi
-    if [ -z "$publication_blockers" ]; then
-        echo "pack-ci-test-workspace: Homebrew browser mirror state requires its publication blocker report" >&2
-        exit 1
-    fi
-    cp -p -- \
-        "$homebrew_browser_mirror_state" \
-        "$stage/$HOMEBREW_BROWSER_MIRROR_STATE_REL"
-    staged_publication_blockers="$stage/$PUBLICATION_BLOCKERS_REL"
-    staged_homebrew_browser_mirror_state="$stage/$HOMEBREW_BROWSER_MIRROR_STATE_REL"
-    # WHY: validate the report, state, and resolved shell snapshots that will
-    # enter the archive. Validating the caller's live paths would leave a
-    # mutation window in which different bytes could be transported unverified.
-    mirror_state_mode="$(jq -er '.mode' "$staged_homebrew_browser_mirror_state")" || {
-        echo "pack-ci-test-workspace: Homebrew browser mirror state lacks its mode" >&2
-        exit 1
-    }
-    state_receipt=""
-    staged_bootstrap="$stage/binaries/programs/wasm32/homebrew-bootstrap/homebrew-bootstrap.zip"
-    bootstrap_archive="$(realpath "$staged_bootstrap" 2>/dev/null || true)"
-    case "$bootstrap_archive" in
-        "$stage"/*) ;;
-        *) bootstrap_archive="-" ;;
-    esac
-    case "$mirror_state_mode" in
-        resolved)
-            staged_shell="$stage/binaries/programs/wasm32/shell.vfs.zst"
-            shell_image="$(realpath "$staged_shell" 2>/dev/null || true)"
-            case "$shell_image" in
-                "$stage"/*) ;;
-                *)
-                    echo "pack-ci-test-workspace: staged resolved shell image escapes its snapshot" >&2
-                    exit 1
-                    ;;
-            esac
-            if [ ! -f "$shell_image" ] || [ -L "$shell_image" ]; then
-                echo "pack-ci-test-workspace: staged resolved shell image is missing" >&2
-                exit 1
-            fi
-            ;;
-        publication-blocked-candidate)
-            [ -n "$staging_shell_handoff" ] || {
-                echo "pack-ci-test-workspace: candidate mirror state lacks its staging handoff" >&2
-                exit 1
-            }
-            staged_shell="$stage/local-binaries/programs/wasm32/shell.vfs.zst"
-            shell_image="$(realpath "$staged_shell" 2>/dev/null || true)"
-            case "$shell_image" in
-                "$stage/local-binaries"/*) ;;
-                *)
-                    echo "pack-ci-test-workspace: staged candidate shell image escapes its snapshot" >&2
-                    exit 1
-                    ;;
-            esac
-            if [ ! -f "$shell_image" ] || [ -L "$shell_image" ]; then
-                echo "pack-ci-test-workspace: staged candidate shell image is missing" >&2
-                exit 1
-            fi
-            state_receipt="$staging_shell_handoff/receipt.json"
-            ;;
-        publication-blocked)
-            # WHY: source-materialized shell bytes do not exist on the producer
-            # runner. Transport only checkout+blocker authority; the browser
-            # consumer must materialize and resolver-select the image before
-            # testing it through ordinary lazy transport. This source-owned
-            # bridge intentionally has no closed Homebrew mirror to recover.
-            shell_image="-"
-            ;;
-        *)
-            echo "pack-ci-test-workspace: unknown Homebrew browser mirror state mode: $mirror_state_mode" >&2
-            exit 1
-            ;;
-    esac
-    state_args=(
-        validate producer
-        "$staged_homebrew_browser_mirror_state"
-        "$staged_publication_blockers"
-        "$shell_image"
-        "$bootstrap_archive"
-    )
-    if [ -n "$state_receipt" ]; then
-        state_args+=("$state_receipt")
-    fi
-    bash scripts/ci-homebrew-browser-mirror-state.sh "${state_args[@]}"
-fi
 
 if [ -n "$staging_shell_handoff" ]; then
     receipt="$staging_shell_handoff/receipt.json"
@@ -533,12 +433,6 @@ if [ -n "$staging_shell_handoff" ]; then
        ! jq -e 'any(.entries[]; .package == "shell")' \
            "$publication_blockers" >/dev/null; then
         echo "pack-ci-test-workspace: staging shell handoff requires one publication-blocked shell" >&2
-        exit 1
-    fi
-    if [ -z "$homebrew_browser_mirror_state" ] ||
-       [ "$(jq -er '.mode' "$homebrew_browser_mirror_state")" != \
-         publication-blocked-candidate ]; then
-        echo "pack-ci-test-workspace: staging handoff requires candidate mirror state" >&2
         exit 1
     fi
     parents="$(git show --no-patch --format=%P HEAD)"
@@ -591,9 +485,6 @@ if [ -d "$stage/local-binaries" ]; then
 fi
 if [ -f "$stage/$PUBLICATION_BLOCKERS_REL" ]; then
     tar_args+=(-C "$stage" "$PUBLICATION_BLOCKERS_REL")
-fi
-if [ -f "$stage/$HOMEBREW_BROWSER_MIRROR_STATE_REL" ]; then
-    tar_args+=(-C "$stage" "$HOMEBREW_BROWSER_MIRROR_STATE_REL")
 fi
 if [ -f "$stage/$STAGING_SHELL_RECEIPT_REL" ]; then
     tar_args+=(

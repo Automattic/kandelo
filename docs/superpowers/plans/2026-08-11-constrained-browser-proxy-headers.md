@@ -383,17 +383,14 @@ marking either task complete.
 - Modify: `host/src/browser-kernel-worker-entry.ts`
 - Modify: `host/src/vfs/browser-lazy-fetcher.ts`
 - Modify: `packages/registry/program-packages.json`
-- Modify: `homebrew/test/homebrew_guest_lifecycle_browser.ts`
 - Modify: `apps/browser-demos/lib/browser-cors-proxy.ts`
 - Modify: `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`
 - Modify: `apps/browser-demos/pages/test-runner/main.ts`
-- Modify: `apps/browser-demos/pages/homebrew-vfs-test/main.ts`
 - Modify: `host/test/browser-kernel.test.ts`
 - Modify: `host/test/browser-lazy-fetcher.test.ts`
 - Modify: `host/test/host-diagnostic-routing.test.ts`
 - Modify: `host/test/browser-demo-cors-proxy.test.ts`
 - Modify: `apps/browser-demos/test/kandelo-merge-gate.spec.ts`
-- Modify: `apps/browser-demos/test/kandelo-homebrew-main-shell.spec.ts`
 
 - [ ] Add failing host tests that inspect the browser worker initialization
   message. Assert `BrowserKernelOptions.corsProxy` contains the URL and full
@@ -468,21 +465,15 @@ scripts/dev-shell.sh bash -c 'cd apps/browser-demos && \
   Accept the resulting contextual cache-key propagation; do not narrow
   declared package inputs merely to avoid truthful invalidation.
 
-- [ ] Update the shared Homebrew browser lifecycle adapter to accept and pass
-  the same complete configuration to `BrowserKernel`. Its direct fixture and
-  source downloads remain headerless, so URL wrapping uses `corsProxy.url`
-  without a separate capability declaration or new header behavior.
-
 - [ ] Export `DEFAULT_BROWSER_CORS_PROXY_CONFIG` and
   `resolveBrowserCorsProxyConfig()` from the application config module. Copy
   and freeze resolved objects through the host validator; do not export a
   second authoritative loose URL. An explicit `VITE_CORS_PROXY_URL` remains a
   URL override for this same profile.
 
-- [ ] Update live setup, test runner, Homebrew VFS test page, the shared
-  Homebrew browser adapter, and their tests to pass complete configuration
-  objects. Restore npm's canonical HTTPS registry and delete sentinel comments
-  and assertions.
+- [ ] Update live setup, the test runner, and their tests to pass complete
+  configuration objects. Restore npm's canonical HTTPS registry and delete
+  sentinel comments and assertions.
 
 - [ ] Require GREEN, type safety, and no obsolete worker option:
 
@@ -507,7 +498,6 @@ if rg -n "corsProxyUrl" \
   host/src/browser-kernel-worker-entry.ts \
   host/src/vfs/browser-lazy-fetcher.ts \
   packages/registry/program-packages.json \
-  homebrew/test/homebrew_guest_lifecycle_browser.ts \
   apps/browser-demos/lib apps/browser-demos/pages; then
   exit 1
 fi
@@ -522,17 +512,14 @@ git add host/src/browser-kernel-host.ts \
   host/src/browser-kernel-worker-entry.ts \
   host/src/vfs/browser-lazy-fetcher.ts \
   packages/registry/program-packages.json \
-  homebrew/test/homebrew_guest_lifecycle_browser.ts \
   apps/browser-demos/lib/browser-cors-proxy.ts \
   apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts \
   apps/browser-demos/pages/test-runner/main.ts \
-  apps/browser-demos/pages/homebrew-vfs-test/main.ts \
   host/test/browser-kernel.test.ts \
   host/test/browser-lazy-fetcher.test.ts \
   host/test/host-diagnostic-routing.test.ts \
   host/test/browser-demo-cors-proxy.test.ts \
-  apps/browser-demos/test/kandelo-merge-gate.spec.ts \
-  apps/browser-demos/test/kandelo-homebrew-main-shell.spec.ts
+  apps/browser-demos/test/kandelo-merge-gate.spec.ts
 git commit -m "Browser: Share one CORS proxy configuration"
 ```
 
@@ -616,7 +603,6 @@ if rg -n "corsProxyUrl|proxy\.local|isNpmRegistry|Packument" \
   host/src/networking/fetch-backend.ts \
   host/src/networking/tls-network-backend.ts \
   host/src/vfs/browser-lazy-fetcher.ts \
-  homebrew/test/homebrew_guest_lifecycle_browser.ts \
   apps/browser-demos/lib apps/browser-demos/pages \
   apps/browser-demos/public; then
   exit 1

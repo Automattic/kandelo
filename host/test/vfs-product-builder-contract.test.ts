@@ -38,8 +38,10 @@ describe("VFS product builder contract", () => {
       "source-code",
       "toolchain-sdk",
     ]);
-    expect(build.inputIds("homebrew-bottle")).toEqual(["shell-bottle"]);
-    expect(build.inputIds("package-output")).toEqual(["package-runtime"]);
+    expect(build.inputIds("package-output")).toEqual([
+      "package-runtime",
+      "shell-bottle",
+    ]);
     expect(build.inputIds("repository-path")).toEqual(["repository-config"]);
     expect(build.inputIds()).toBe(build.inputIds());
     expect(build.source).toEqual({
@@ -59,9 +61,9 @@ describe("VFS product builder contract", () => {
       sha256: fixture.lazySha256,
       bytes: 14,
       placement: "lazy-reference",
-      reference: `ghcr.io/kandelo-dev/homebrew-tap-core-abi-7-candidates/products/base@sha256:${fixture.lazySha256}`,
+      reference: `ghcr.io/kandelo-dev/kandelo-products-abi-7-candidates/products/base@sha256:${fixture.lazySha256}`,
     });
-    expect(build.requireHomebrewBottle("shell-bottle")).toMatchObject({
+    expect(build.requirePackageOutput("shell-bottle")).toMatchObject({
       id: "shell-bottle",
       placement: "embedded",
       path: join(fixture.directory, "files/shell.bottle"),
@@ -164,15 +166,14 @@ describe("VFS product builder contract", () => {
     const hostile = JSON.parse(readFileSync(hostileFixture.inputsPath, "utf8"));
     hostile.reference_class = "canonical";
     hostile.inputs[0].reference =
-      `https://attacker.invalid/kandelo/products/base/sha256-${hostileFixture.lazySha256}/` +
-      `base-7.vfs.zst?sha256=${hostileFixture.lazySha256}&bytes=14`;
+      "https://attacker.invalid/kandelo/products/base/base-7.vfs.zst";
     hostile.inputs.find((input: any) => input.id === "shell-bottle").descriptor.reference =
       hostile.inputs.find((input: any) => input.id === "shell-bottle").descriptor.reference
         .replace("-candidates/", "/");
     writeFileSync(hostileFixture.inputsPath, canonicalJson(hostile));
     await expect(
       openVfsProductBuild(hostileFixture.inputsPath, hostileFixture.reportPath),
-    ).rejects.toThrow(/managed input does not use a versioned namespace/);
+    ).rejects.toThrow(/reference is not immutable or does not bind its SHA-256/);
   });
 
   it("accepts an exact canonical Pages URL for a lazy package input", async () => {
@@ -267,16 +268,19 @@ describe("VFS product builder contract", () => {
     expect(existsSync(fixture.reportPath)).toBe(false);
   });
 
-  it("requires and authenticates bottle composition metadata", async () => {
-    const missing = await createFixture();
-    const missingInputs = JSON.parse(readFileSync(missing.inputsPath, "utf8"));
-    delete missingInputs.inputs.find(
+  it("authenticates package composition metadata and rejects it elsewhere", async () => {
+    const misplaced = await createFixture();
+    const misplacedInputs = JSON.parse(readFileSync(misplaced.inputsPath, "utf8"));
+    const repository = misplacedInputs.inputs.find(
+      (input: { id: string }) => input.id === "repository-config",
+    );
+    repository.descriptor = misplacedInputs.inputs.find(
       (input: { id: string }) => input.id === "shell-bottle",
     ).descriptor;
-    writeFileSync(missing.inputsPath, canonicalJson(missingInputs));
+    writeFileSync(misplaced.inputsPath, canonicalJson(misplacedInputs));
     await expect(
-      openVfsProductBuild(missing.inputsPath, missing.reportPath),
-    ).rejects.toThrow(/requires authenticated composition metadata/);
+      openVfsProductBuild(misplaced.inputsPath, misplaced.reportPath),
+    ).rejects.toThrow(/descriptor is only valid for package outputs/);
 
     const tampered = await createFixture();
     writeFileSync(
@@ -293,7 +297,7 @@ function consumeAll(build: Awaited<ReturnType<typeof openVfsProductBuild>>): voi
   build.requireProductImage("candidate-base");
   build.requirePackageOutput("package-runtime");
   build.requireRepositoryPath("repository-config");
-  build.requireHomebrewBottle("shell-bottle");
+  build.requirePackageOutput("shell-bottle");
   build.requireSourceArchive("source-code");
   build.requireToolchainOutput("toolchain-sdk");
 }
@@ -359,18 +363,18 @@ async function createFixture(
         effective_materialization: "lazy-reference",
         id: "candidate-base",
         kind: "product-image",
-        reference: `ghcr.io/kandelo-dev/homebrew-tap-core-abi-7-candidates/products/base@sha256:${lazySha256}`,
+        reference: `ghcr.io/kandelo-dev/kandelo-products-abi-7-candidates/products/base@sha256:${lazySha256}`,
         role: "runtime",
         sha256: lazySha256,
       },
       makeInput("package-runtime", "package-output", "runtime", "embedded"),
       makeInput("repository-config", "repository-path", "runtime", "embedded"),
       {
-        ...makeInput("shell-bottle", "homebrew-bottle", "runtime", "embedded"),
+        ...makeInput("shell-bottle", "package-output", "runtime", "embedded"),
         descriptor: {
           bytes: Buffer.byteLength(bottleMetadata),
           path: "files/shell-bottle-metadata.json",
-          reference: `ghcr.io/kandelo-dev/homebrew-tap-core-abi-7-candidates/shell@sha256:${sha256(bottleMetadata)}`,
+          reference: `ghcr.io/kandelo-dev/kandelo-products-abi-7-candidates/shell@sha256:${sha256(bottleMetadata)}`,
           sha256: sha256(bottleMetadata),
         },
       },

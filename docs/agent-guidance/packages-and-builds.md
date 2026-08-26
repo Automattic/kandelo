@@ -69,7 +69,7 @@ overlaying, or symlinking existing archives should be tested as materialization
 behavior. Rebuild package archives only when package archive inputs changed.
 
 Current `main` is the only authority that may admit package archives into
-Homebrew production or mutate a durable generation, bottle, index, tap, or
+production or mutate a durable generation, index, or
 release. Recheck its exact lowercase commit SHA immediately before each
 mutation. Normally the archives are rebuilt after their source changes land
 and record that exact `main` SHA.

@@ -59,7 +59,6 @@ const sourceRoots = [
   "docs",
   "docs-site",
   "examples",
-  "homebrew",
   "host",
   "images",
   "packages",
