@@ -278,12 +278,13 @@ if [ -r "$conf" ]; then
     occupied: "$c_occupied",
   })}" > "$css"
 
-  # /proc/<pid>/cmdline ends without a newline, so read reports EOF even
-  # though it filled cmd — its status says nothing here.
+  # /proc/<pid>/cmdline separates the arguments with NUL and ends with one, so
+  # -d '' stops read at argv[0] alone. The bar reaches its own exec through the
+  # socket gate's \`exec /usr/local/bin/waybar\`, which leaves argv[0] absolute.
   for d in /proc/[0-9]*; do
     cmd=
-    read -r cmd < "$d/cmdline"
-    case $cmd in
+    read -r -d '' cmd < "$d/cmdline"
+    case \${cmd##*/} in
       waybar*)
         kill -USR2 "\${d#/proc/}"
         printf 'THEME_HOOK theme=%s bar=%s bar_pid=%s\\n' \\
