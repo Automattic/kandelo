@@ -106,24 +106,32 @@ describe("buildVirtualConnectorMode", () => {
     expect(new DataView(blob.buffer).getUint32(32, true)).toBe((1 << 3) | (1 << 6));
   });
 
-  it("follows the display aspect at fixed 1080 height", () => {
+  it("is the reported device-pixel size, not its aspect", () => {
     // 2412×1080 display (the wide Modeset pane) → 2412x1080 mode.
     expect(modeDims(buildVirtualConnectorMode(1, { width: 2412, height: 1080 })))
       .toEqual({ w: 2412, h: 1080 });
-    // Same aspect at a different scale gives the same mode.
+    // The same ASPECT at half the size is half the mode. An aspect-derived
+    // mode makes these two identical, which renders a HiDPI pane at half its
+    // real resolution.
     expect(modeDims(buildVirtualConnectorMode(1, { width: 1206, height: 540 })))
-      .toEqual({ w: 2412, h: 1080 });
+      .toEqual({ w: 1206, h: 540 });
     expect(modeName(buildVirtualConnectorMode(1, { width: 1206, height: 540 })))
-      .toBe("2412x1080");
+      .toBe("1206x540");
   });
 
-  it("even-aligns and clamps the width to [1440, 3840]", () => {
-    // 1085/1080 aspect → 1085 → odd, and below the floor → 1440.
-    expect(modeDims(buildVirtualConnectorMode(1, { width: 1085, height: 1080 })).w).toBe(1440);
-    // Ultra-wide clamps at 3840.
-    expect(modeDims(buildVirtualConnectorMode(1, { width: 10000, height: 1080 })).w).toBe(3840);
-    // Odd product rounds down to even: 1471/1080 aspect → 1471 → 1470.
-    expect(modeDims(buildVirtualConnectorMode(1, { width: 1471, height: 1080 })).w).toBe(1470);
+  it("tracks a devicePixelRatio 2 pane at full device resolution", () => {
+    // 1088×613 CSS at dpr 2 — the omarchy pane on a Retina display.
+    expect(modeDims(buildVirtualConnectorMode(1, { width: 2176, height: 1226 })))
+      .toEqual({ w: 2176, h: 1226 });
+  });
+
+  it("even-aligns and clamps to [640, 3840] x [480, 2160]", () => {
+    expect(modeDims(buildVirtualConnectorMode(1, { width: 1471, height: 1081 })))
+      .toEqual({ w: 1470, h: 1080 });
+    expect(modeDims(buildVirtualConnectorMode(1, { width: 320, height: 200 })))
+      .toEqual({ w: 640, h: 480 });
+    expect(modeDims(buildVirtualConnectorMode(1, { width: 10000, height: 5000 })))
+      .toEqual({ w: 3840, h: 2160 });
   });
 
   it("ignores degenerate display sizes", () => {

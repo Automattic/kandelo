@@ -310,7 +310,10 @@ describe("wlcompositor — theme system", () => {
           env: [`WLC_CONFIG=${confPath}`, `WLC_THEME_DIR=${root}`],
         });
         await waitFor(out, "COMPOSITOR_UP", 20_000, dump);
-        await waitFor(out, "WALLPAPER image w=16 h=16", 10_000, dump);
+        // The 16x16 source is square and the output is 16:9, so the crop takes
+        // the full width and a centred 9-row band — the stager cannot know the
+        // mode, so the compositor is what makes the image fit it undistorted.
+        await waitFor(out, "WALLPAPER image w=16 h=16 crop=16x9+0+3", 10_000, dump);
 
         out.value = "";
         await host.spawn(kwlctlBytes,

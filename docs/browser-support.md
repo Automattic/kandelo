@@ -425,14 +425,85 @@ with the same contain math the pane's pointer mapping uses.
 
 The desktop itself also fills the pane: the boot flow feeds the pane's
 size to the kernel before spawning the compositor, and
-`host_kms_mode_info` advertises a preferred mode matching the pane's
-aspect ratio (`round(1080 × aspect) × 1080`, width clamped
-[1440, 3840]; 1920×1080 fallback when no size is known). wlcompositor
-sizes its scanout from that mode and its placement rules are
-edge-anchored (wlterm left, wlclock/wlpaint offsets from the right
-edge), so wider panes spread the demo across the full width with no
-black bars. The mode is fixed at boot — resizing the browser window
-afterwards letterboxes rather than re-modes.
+`host_kms_mode_info` advertises that size as the preferred mode, even-
+aligned and clamped to [640, 3840] × [480, 2160] (1920×1080 fallback
+when no size is known). The size is measured on the pane's slot rather
+than its canvas — `useFittedCanvasStyle` sizes the canvas from the
+canvas's own aspect, which the mode itself sets, so measuring the
+canvas would feed the mode back into itself. wlcompositor sizes its
+scanout from that mode and its placement rules are edge-anchored
+(wlterm left, wlclock/wlpaint offsets from the right edge), so wider
+panes spread the demo across the full width with no black bars. The
+mode is fixed at boot — resizing the browser window afterwards
+letterboxes rather than re-modes.
+
+Because the mode is device pixels, a HiDPI pane gets a mode larger than
+its CSS box, and nothing in the mode says which of the two it is. The
+page passes the integer `wl_output` scale separately, as `WLC_SCALE`
+(`round(devicePixelRatio)`, clamped 1–3) in the compositor's
+environment. wlcompositor then keeps two grids: the mode sizes every
+scanout, GBM bo, EGL surface and GL viewport, while the mode divided by
+the scale is the logical grid clients lay out in. `wl_output.mode`
+stays device pixels; `wl_output.scale`, `xdg_output`'s logical size and
+`wp_fractional_scale`'s preference (scale × 120) all follow the scale.
+A client that honours `wl_surface.set_buffer_scale` attaches a buffer
+that covers its window 1:1 and blits without resampling; one that
+ignores it is upscaled — soft, but correctly sized.
+
+The desktop's own clients honour it, and none of them had to change to.
+libwpkdraw carries the scale instead: `wpk_set_scale()` is a
+process-wide setting that `wpk_surface_wrap()` and
+`wpk_font_load_default()` capture at call time, every primitive
+multiplies its logical coordinates by it, and glyphs are rasterized at
+`px * scale` rather than magnified. Metrics — `wpk_text_width()`,
+`wpk_font_ascent_px()` — stay logical, so an app's layout is untouched.
+libkwl reads `wl_output.scale`, calls `wpk_set_scale()` before any
+buffer or font exists, allocates its wl_shm buffers at
+`logical × scale`, and sends `wl_surface.set_buffer_scale`. wlterm,
+wlclock, wlpaint, klauncher and notify-send are sharp on a HiDPI pane
+without a single changed coordinate. wlcompositor never calls
+`wpk_set_scale()` — it composites in device pixels already — so its own
+drawing multiplies by `g.scale` by hand instead. Its gradient wallpaper
+(the fallback when a theme names no image) does that for the grid pitch,
+the two font sizes and every text offset.
+
+A third-party client learns the scale from `wl_surface.enter`, which
+names the output the surface is on, and it makes that decision once —
+before it draws. So the compositor sends the enter when a surface takes
+a role (`xdg_surface.get_toplevel`, or a layer surface's first commit),
+not when the surface maps. Map is a frame too late: the buffer being
+mapped was already drawn at the wrong scale, and for a mako toast one
+frame is the whole life of the surface. A client that binds `wl_output`
+only after its surface has a role still gets the enter at map.
+
+A layer-shell surface also renegotiates its size after that first
+configure — mako recomputes its toast one pixel shorter once it knows
+the scale — so every commit of a layer surface re-applies its
+double-buffered shell state (size, anchor, margins, exclusive zone,
+layer) and answers with a fresh configure when the resolved box moved.
+Applying it only on the first commit left mako waiting forever for a
+configure that never came, and the toast never appeared.
+
+libkwl also caps an initial window at half the output's width and
+three-fifths of its height, scaling both axes by the tighter ratio. A
+toolkit client picks its initial size as a constant, and a constant
+that suited a 2255×1080 desktop covers nearly all of a 1280×613 one;
+the compositor clamps a floating window's position but not its size.
+On a desktop roomy enough for the constant this changes nothing.
+`host/test/wlcompositor-output-scale-smoke.test.ts` gates the protocol
+side and `apps/browser-demos/test/kandelo-hidpi.spec.ts` gates the
+whole chain at `deviceScaleFactor: 2`.
+
+The theme wallpapers cannot follow the mode. Each is baked into the VFS
+image at compose time and the kernel owns the VFS from boot, while the
+mode is only settled later — and the pane's own box is still moving
+while it settles, so a compose-time measurement does not predict it. So
+the page stages every pixel the source JPEG has (capped at 3840 per
+axis) and wlcompositor centre-crops the KWLP to the output's aspect
+before scaling it. That keeps a HiDPI desktop's background sharp and
+undistorted at any pane aspect, at the cost of a larger image: six
+themes staged eagerly at source resolution are ~49 MB of VFS instead of
+the ~12 MB the fixed 960×540 staging cost.
 
 Pump presents are change-driven (kernel commit count, with a ~15 Hz
 strided-checksum content probe as a backstop) rather than

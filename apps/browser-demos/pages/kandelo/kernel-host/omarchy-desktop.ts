@@ -13,7 +13,7 @@
  * keys are ours. Each theme also carries its wallpaper — the real Omarchy
  * background image plus an aurora fallback spec. The page renders it to raw
  * pixels at staging time because nothing in the compositor decodes PNG/JPEG —
- * it reads the KWLP raw format and scales it to the output.
+ * it reads the KWLP raw format and crops and scales it to the output.
  */
 
 import tokyoNightWallpaperUrl from "../assets/tokyo-night-sunset-lake.jpg";
@@ -504,26 +504,42 @@ export function renderWallpaperKwlp(
   return encodeKwlp(ctx, w, h);
 }
 
+/** Per-axis ceiling on a staged wallpaper. Six themes are staged eagerly and
+ *  each costs width x height x 4 bytes of VFS, so an oversized asset would be
+ *  paid for six times over. It matches the connector mode's own width clamp,
+ *  above which no pane can ask for the pixels anyway. Every bundled asset is
+ *  under it and passes through at its native size. */
+const MAX_WALLPAPER_PX = 3840;
+
 /**
- * Render a theme's real background image to KWLP raw pixels, cover-cropped to
- * the same staged size as the aurora. Returns null when the fetch or decode
- * fails so the caller can fall back to renderWallpaperKwlp.
+ * Render a theme's real background image to KWLP raw pixels at the source's
+ * own resolution, capped by MAX_WALLPAPER_PX per axis.
+ *
+ * The staged size cannot follow the mode. The image is baked into the VFS at
+ * compose time and the kernel owns the VFS from boot, while the mode is only
+ * decided once the pane's layout settles — and the pane's own box moves while
+ * it does. So the page stages every pixel the source has and the compositor
+ * cover-crops to whatever mode it ends up with: sharp on a HiDPI pane, and
+ * undistorted at any aspect. Staging past the source would cost four times
+ * the bytes for pixels the source cannot supply.
+ *
+ * Returns null when the fetch or decode fails so the caller can fall back to
+ * renderWallpaperKwlp.
  */
 export async function renderImageWallpaperKwlp(
   url: string,
-  w = 960,
-  h = 540,
 ): Promise<Uint8Array | null> {
   try {
     const response = await fetch(url);
     if (!response.ok) return null;
     const bitmap = await createImageBitmap(await response.blob());
-    const scale = Math.max(w / bitmap.width, h / bitmap.height);
-    const dw = bitmap.width * scale;
-    const dh = bitmap.height * scale;
+    const fit = Math.min(1,
+      MAX_WALLPAPER_PX / bitmap.width, MAX_WALLPAPER_PX / bitmap.height);
+    const w = Math.max(1, Math.round(bitmap.width * fit));
+    const h = Math.max(1, Math.round(bitmap.height * fit));
     const canvas = new OffscreenCanvas(w, h);
     const ctx = canvas.getContext("2d")!;
-    ctx.drawImage(bitmap, (w - dw) / 2, (h - dh) / 2, dw, dh);
+    ctx.drawImage(bitmap, 0, 0, w, h);
     bitmap.close();
     return encodeKwlp(ctx, w, h);
   } catch {

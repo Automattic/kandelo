@@ -145,6 +145,10 @@ extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
 #define MAX_LAYERS     8      /* mapped wlr-layer-shell surfaces (bar, launcher) */
 #define FOCUS_COLOR    0xff4f8fdfu  /* default accent ring; themes override */
 #define N_WORKSPACES   9      /* SUPER+1..9, Hyprland's 1-based workspaces */
+/* wl_output.scale is integer-only; 3 covers every devicePixelRatio a
+ * browser reports without letting a bad WLC_SCALE shrink the logical grid
+ * to nothing. */
+#define MAX_OUTPUT_SCALE 3
 
 /* The config path, hyprland.conf-shaped subset. Absent = generic defaults
  * (install_default_binds); WLC_CONFIG overrides for tests. */
@@ -203,6 +207,8 @@ struct surface {
     uint32_t kb_interactive;            /* ZWLR_LAYER_SURFACE_V1_KEYBOARD_* */
     int32_t req_w, req_h;               /* set_size; 0 = compositor decides */
     int layer_configured;               /* first configure sent */
+    int layer_dirty;                    /* a layer-shell request is waiting for
+                                         * the commit that applies it */
     int layer_announced;                /* LAYER marker printed while mapped */
     char app_id[32];
     char title[96];                     /* xdg_toplevel.set_title, for the bar */
@@ -228,6 +234,17 @@ struct surface {
     wl_fixed_t vp_src_x, vp_src_y, vp_src_w, vp_src_h;
     int32_t vp_dst_w, vp_dst_h;
     struct wl_resource *fractional_scale;
+    /* wl_surface.set_buffer_scale, double-buffered like every other surface
+     * property. 1 until a client says otherwise, so a client that never sends
+     * it keeps buffer pixels == logical pixels. */
+    int32_t buffer_scale, pending_buffer_scale;
+    /* The scale the BUFFER_SCALE marker last reported, 0 before the first
+     * commit. A bar commits a frame a second, so the marker fires on a change,
+     * not on every commit. */
+    int32_t reported_scale;
+    /* Set once wl_surface.enter has named the output to this surface. One
+     * output means one enter, so this keeps the two senders from doubling it. */
+    int entered;
 };
 
 /* ---- wl_shm pool / buffer (custom, gbm-backed) ------------------------- */
@@ -280,14 +297,25 @@ struct compositor {
     uint32_t crtc_id;
     uint32_t connector_id;
     drmModeModeInfo mode;
+    /* Two grids. `pw`/`ph` are the mode: one unit per device pixel, and what
+     * every scanout, GBM bo, EGL surface and GL viewport is sized in.
+     * `width`/`height` are the logical grid clients lay out in — `pw`/`ph`
+     * divided by `scale`. They are equal at scale 1, which is why every
+     * layout site still reads width/height. */
+    uint32_t pw, ph;
     uint32_t width, height;
+    /* wl_output scale: device pixels per logical pixel (WLC_SCALE, 1 when
+     * unset). A client that honours wl_surface.set_buffer_scale attaches a
+     * buffer this many times larger than its logical size and blits 1:1; one
+     * that ignores it is upscaled — soft, but correctly sized. */
+    uint32_t scale;
     struct gbm_device *gbm;
     struct gbm_surface *gbm_surface;
     struct gbm_bo *displayed_bo;   /* on-screen right now */
     struct gbm_bo *pending_bo;     /* flip queued, not yet complete */
     int crtc_configured;           /* SetCrtc done once */
 
-    /* Pre-rendered desktop background (width × height, tightly packed). */
+    /* Pre-rendered desktop background (pw × ph, tightly packed). */
     uint32_t *wallpaper;
 
     /* Input. */
@@ -493,12 +521,12 @@ static struct surface *surface_at(double x, double y) {
  * compositor's job in Wayland (clients cannot position themselves); a rule
  * table keyed on app_id is the same mechanism real WMs use for window
  * rules. x ≥ 0 anchors to the LEFT edge; x < 0 anchors to the RIGHT edge
- * (window's left edge at width + x). The mode width follows the host
- * display's aspect ratio (1440..3840 at 1080 tall), so edge anchoring
- * spreads the demo across the full desktop; at the historical 1920-wide
- * mode the resolved coordinates are exactly the original fixed layout
- * (wlclock 1240, wlpaint 1080). All results are clamped, so narrow modes
- * still get sane spots. */
+ * (window's left edge at the logical width + x), so edge anchoring spreads
+ * the demo across the full desktop whatever the mode is; on a 1920-wide
+ * logical grid the resolved coordinates are exactly the original fixed
+ * layout (wlclock 1240, wlpaint 1080). The logical grid can be narrower
+ * than a rule's offset, so every result is clamped into the work area
+ * below. */
 static const struct { const char *app_id; int x, y; } placement_rules[] = {
     { "wlterm",           90, 120 },
     { "wlclock", 1240 - 1920, 110 },   /* width - 680 */
@@ -507,19 +535,20 @@ static const struct { const char *app_id; int x, y; } placement_rules[] = {
 
 static void place_surface(struct surface *s) {
     static int cascade;
-    int x = -1, y = -1;
+    int x = 0, y = 0, matched = 0;
     for (size_t i = 0; i < sizeof(placement_rules) / sizeof(placement_rules[0]); i++) {
         if (strcmp(s->app_id, placement_rules[i].app_id) == 0) {
             x = placement_rules[i].x;
             y = placement_rules[i].y;
-            /* Right-anchored rule: resolve against the live mode width.
-             * Minimum mode width is 1440, so resolved x stays ≥ 600 and
-             * never falls through to the cascade branch below. */
+            /* Right-anchored rule: resolve against the live logical width.
+             * A grid narrower than the offset resolves left of 0, which the
+             * work-area clamp below pulls back on screen. */
             if (x < 0) x += (int)g.width;
+            matched = 1;
             break;
         }
     }
-    if (x < 0) {
+    if (!matched) {
         x = 160 + (cascade % 5) * 72;
         y = 120 + (cascade % 5) * 56;
         cascade++;
@@ -803,16 +832,29 @@ static void surface_committed_size(struct surface *s, struct shm_buffer *b,
         *h = wl_fixed_to_int(s->vp_src_h);
         return;
     }
-    *w = b->width;
-    *h = b->height;
+    /* Without a viewport the surface is its buffer divided by the scale the
+     * client declared: a scale-2 client attaches twice the pixels for the
+     * same logical box. wp_viewporter's destination is already logical, so
+     * both returns above are scale-independent. */
+    *w = b->width / s->buffer_scale;
+    *h = b->height / s->buffer_scale;
 }
 
 static void surface_commit(struct wl_client *c, struct wl_resource *r) {
     struct surface *s = wl_resource_get_user_data(r);
-    /* A layer surface's first commit carries no buffer: it exists to apply the
-     * anchor/size/zone state the client just set, and asks for the configure
-     * that tells it what size to render. */
-    if (s->layer_surface && !s->layer_configured) { layers_arrange(); return; }
+    /* A layer surface's shell state — size, anchor, margins, exclusive zone —
+     * is double-buffered like every other surface property: the requests are
+     * recorded and take effect here. The first commit carries no buffer and
+     * exists only to fetch the configure that says what size to render, but it
+     * is not the last one that matters: mako sends a second set_size once it
+     * knows the output scale, and it will not draw until the configure for that
+     * one comes back. */
+    if (s->layer_surface && (s->layer_dirty || !s->layer_configured)) {
+        s->layer_dirty = 0;
+        send_surface_enter(s);
+        layers_arrange();
+    }
+    s->buffer_scale = s->pending_buffer_scale;
     if (!s->pending_buffer) { schedule_repaint(); return; }
 
     /* Apply double-buffered state: the pending attach becomes current. The
@@ -826,11 +868,22 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
 
     struct shm_buffer *b = wl_resource_get_user_data(s->buffer);
     if (b) {
+        int32_t w, h;
+        surface_committed_size(s, b, &w, &h);
+        /* A layer surface renders sharp on the same terms as a window, so the
+         * marker names the client and covers both roles. The first commit
+         * always reports (reported_scale starts at 0), because the scale a
+         * client picks for its FIRST frame is the one that decides whether a
+         * short-lived surface is ever sharp. */
+        if (s->buffer_scale != s->reported_scale) {
+            s->reported_scale = s->buffer_scale;
+            printf("BUFFER_SCALE app=%s scale=%d bw=%d bh=%d w=%d h=%d\n",
+                   s->app_id, s->buffer_scale, b->width, b->height, w, h);
+            fflush(stdout);
+        }
         /* The compositor dictates a layer surface's box, so its geometry comes
          * from the arrangement, not from whatever the client attached. */
         if (!s->layer_surface) {
-            int32_t w, h;
-            surface_committed_size(s, b, &w, &h);
             if (s->viewport && (w != s->w || h != s->h)) {
                 printf("VIEWPORT bw=%d bh=%d w=%d h=%d\n",
                        b->width, b->height, w, h);
@@ -898,7 +951,15 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
 static void surface_set_buffer_transform(struct wl_client *c,
                                          struct wl_resource *r, int32_t t) {}
 static void surface_set_buffer_scale(struct wl_client *c, struct wl_resource *r,
-                                     int32_t s) {}
+                                     int32_t scale) {
+    if (scale < 1) {
+        wl_resource_post_error(r, WL_SURFACE_ERROR_INVALID_SCALE,
+                               "buffer scale %d is not positive", scale);
+        return;
+    }
+    struct surface *s = wl_resource_get_user_data(r);
+    if (s) s->pending_buffer_scale = scale;
+}
 static void surface_damage_buffer(struct wl_client *c, struct wl_resource *r,
                                   int32_t x, int32_t y, int32_t w, int32_t h) {}
 static void surface_offset(struct wl_client *c, struct wl_resource *r,
@@ -1400,6 +1461,7 @@ static void compositor_create_surface(struct wl_client *client,
     struct surface *s = calloc(1, sizeof(*s));
     if (!s) { wl_client_post_no_memory(client); return; }
     s->client = client;
+    s->buffer_scale = s->pending_buffer_scale = 1;
     s->resource = wl_resource_create(client, &wl_surface_interface,
                                      wl_resource_get_version(resource), id);
     if (!s->resource) { free(s); wl_client_post_no_memory(client); return; }
@@ -1541,7 +1603,7 @@ static void xdg_surface_get_toplevel(struct wl_client *client,
         client, &xdg_toplevel_interface, wl_resource_get_version(resource), id);
     if (!tl) { wl_client_post_no_memory(client); return; }
     wl_resource_set_implementation(tl, &toplevel_impl, s, NULL);
-    if (s) s->xdg_toplevel = tl;
+    if (s) { s->xdg_toplevel = tl; send_surface_enter(s); }
 
     /* Advertise a suggested size of 0x0 ("you decide") plus the initial
      * configure. The window is not mapped until the client acks and
@@ -1671,25 +1733,30 @@ static void decoration_mgr_bind(struct wl_client *client, void *data,
 
 /* This is the protocol every desktop shell piece speaks: our kbar and
  * klauncher, and upstream Waybar / mako when they land. State set through the
- * requests below is applied on the next wl_surface.commit (surface_commit
- * calls layers_arrange), matching the protocol's double-buffering rule. */
+ * requests below is applied on the next wl_surface.commit, matching the
+ * protocol's double-buffering rule: the ones that move the box mark the
+ * surface dirty and that commit re-runs layers_arrange. Every commit, not only
+ * the first — a client renegotiates its size whenever its content changes. */
 
 static void layer_surface_set_size(struct wl_client *c, struct wl_resource *r,
                                    uint32_t w, uint32_t h) {
     struct surface *s = wl_resource_get_user_data(r);
     s->req_w = (int32_t)w;
     s->req_h = (int32_t)h;
+    s->layer_dirty = 1;
 }
 static void layer_surface_set_anchor(struct wl_client *c, struct wl_resource *r,
                                      uint32_t anchor) {
     struct surface *s = wl_resource_get_user_data(r);
     s->anchor = anchor;
+    s->layer_dirty = 1;
 }
 static void layer_surface_set_exclusive_zone(struct wl_client *c,
                                              struct wl_resource *r,
                                              int32_t zone) {
     struct surface *s = wl_resource_get_user_data(r);
     s->exclusive_zone = zone;
+    s->layer_dirty = 1;
 }
 static void layer_surface_set_margin(struct wl_client *c, struct wl_resource *r,
                                      int32_t top, int32_t right,
@@ -1699,6 +1766,7 @@ static void layer_surface_set_margin(struct wl_client *c, struct wl_resource *r,
     s->margin_right = right;
     s->margin_bottom = bottom;
     s->margin_left = left;
+    s->layer_dirty = 1;
 }
 static void layer_surface_set_keyboard_interactivity(struct wl_client *c,
                                                      struct wl_resource *r,
@@ -1719,6 +1787,7 @@ static void layer_surface_set_layer(struct wl_client *c, struct wl_resource *r,
                                     uint32_t layer) {
     struct surface *s = wl_resource_get_user_data(r);
     s->layer = layer;
+    s->layer_dirty = 1;
 }
 static const struct zwlr_layer_surface_v1_interface layer_surface_impl = {
     .set_size = layer_surface_set_size,
@@ -2100,11 +2169,13 @@ static void output_bind(struct wl_client *client, void *data, uint32_t version,
     wl_output_send_geometry(r, 0, 0, 0, 0,
                             WL_OUTPUT_SUBPIXEL_UNKNOWN, "Kandelo", "virtual-0",
                             WL_OUTPUT_TRANSFORM_NORMAL);
+    /* wl_output.mode is in device pixels; wl_output.scale is how a client
+     * turns it into the logical grid xdg_output reports. */
     wl_output_send_mode(r,
                         WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED,
-                        (int32_t)g.width, (int32_t)g.height, 60000);
+                        (int32_t)g.pw, (int32_t)g.ph, 60000);
     if (version >= WL_OUTPUT_SCALE_SINCE_VERSION)
-        wl_output_send_scale(r, 1);
+        wl_output_send_scale(r, (int32_t)g.scale);
     /* v4: the name a client keys config on (mako binds v4 uncondition-
      * ally); matches the xdg_output name. */
     if (version >= WL_OUTPUT_NAME_SINCE_VERSION)
@@ -2115,21 +2186,29 @@ static void output_bind(struct wl_client *client, void *data, uint32_t version,
         wl_output_send_done(r);
 }
 
-/* Tell a newly mapped surface which output it is on. A DPI-aware client
- * (foot) defers font sizing until the enter arrives. */
+/* Tell a surface which output it is on. A DPI-aware client reads the output's
+ * scale from it: foot defers font sizing until it arrives, and mako picks the
+ * scale of its next buffer from it. So a role sends it as soon as the surface
+ * takes one — the desktop has a single output, and a surface with a role is on
+ * it. Waiting for the map is one frame too late: the buffer being mapped was
+ * already drawn at the wrong scale. Map sends it too, for a client that binds
+ * wl_output only after its surface has a role. */
 static void send_surface_enter(struct surface *s) {
+    if (s->entered) return;
     for (int i = 0; i < MAX_INPUT_RES; i++)
         if (g.outputs[i] &&
-            wl_resource_get_client(g.outputs[i]) == s->client)
+            wl_resource_get_client(g.outputs[i]) == s->client) {
             wl_surface_send_enter(s->resource, g.outputs[i]);
+            s->entered = 1;
+        }
 }
 
 /* ====================================================================== */
 /* zxdg_output_manager_v1: logical output geometry                        */
 /* ====================================================================== */
 
-/* The single virtual output is fullscreen at scale 1, so the logical grid
- * equals the pixel grid: position (0,0), size = the mode. The geometry is
+/* The single virtual output is fullscreen at (0,0), so the logical grid is
+ * the mode divided by the output scale — g.width/g.height. The geometry is
  * fixed for the process lifetime, so each xdg_output is a one-shot burst
  * with no tracking list. */
 static void xdg_output_destroy_req(struct wl_client *c, struct wl_resource *r) {
@@ -2190,7 +2269,7 @@ static uint32_t bo_get_fb(struct gbm_bo *bo) {
     uint32_t handles[4] = { handle, 0, 0, 0 };
     uint32_t pitches[4] = { stride, 0, 0, 0 };
     uint32_t offsets[4] = { 0, 0, 0, 0 };
-    if (drmModeAddFB2(g.card_fd, g.width, g.height, DRM_FORMAT_XRGB8888,
+    if (drmModeAddFB2(g.card_fd, g.pw, g.ph, DRM_FORMAT_XRGB8888,
                       handles, pitches, offsets, &fb_id, 0) < 0) {
         perror("drmModeAddFB2");
         return 0;
@@ -2200,10 +2279,13 @@ static uint32_t bo_get_fb(struct gbm_bo *bo) {
 }
 
 /* Copy one committed wl_shm buffer into the scanout bo at the surface's
- * position, clipped to the output. XRGB/ARGB8888 both blit as 32-bit
- * words (opaque compositing); rows are memcpy'd over the clipped span.
- * A wp_viewport surface instead nearest-samples its source rect across
- * the destination box. */
+ * position, clipped to the output. The surface box is logical and the
+ * scanout is device pixels, so the destination is the box times the output
+ * scale. XRGB/ARGB8888 both blit as 32-bit words (opaque compositing).
+ * A client whose buffer already covers that destination — it honoured
+ * set_buffer_scale — takes the memcpy path; anything else (a scale-1
+ * client on a scaled output, or a wp_viewport surface) nearest-samples its
+ * source rect across the destination box. */
 static void blit_surface(struct surface *s, uint32_t *dst, uint32_t dst_stride_px) {
     if (!s->buffer) return;
     struct shm_buffer *b = wl_resource_get_user_data(s->buffer);
@@ -2212,8 +2294,13 @@ static void blit_surface(struct surface *s, uint32_t *dst, uint32_t dst_stride_p
     uint32_t *src = shm_buffer_pixels(b, &src_stride_px);
     if (!src) return;
 
-    int32_t dw, dh;
-    surface_committed_size(s, b, &dw, &dh);
+    int32_t lw, lh;
+    surface_committed_size(s, b, &lw, &lh);
+    int32_t scale = (int32_t)g.scale;
+    int32_t ox = s->x * scale, oy = s->y * scale;
+    int32_t dw = lw * scale, dh = lh * scale;
+    if (dw <= 0 || dh <= 0) return;
+
     if (s->vp_src_w > 0 || dw != b->width || dh != b->height) {
         float sx0 = 0.0f, sy0 = 0.0f;
         float sw = (float)b->width, sh = (float)b->height;
@@ -2224,14 +2311,14 @@ static void blit_surface(struct surface *s, uint32_t *dst, uint32_t dst_stride_p
             sh = (float)wl_fixed_to_double(s->vp_src_h);
         }
         for (int32_t row = 0; row < dh; row++) {
-            int32_t dy = s->y + row;
-            if (dy < 0 || dy >= (int32_t)g.height) continue;
+            int32_t dy = oy + row;
+            if (dy < 0 || dy >= (int32_t)g.ph) continue;
             int32_t sy = (int32_t)(sy0 + ((float)row + 0.5f) * sh / (float)dh);
             if (sy < 0) sy = 0;
             if (sy >= b->height) sy = b->height - 1;
             for (int32_t col = 0; col < dw; col++) {
-                int32_t dx = s->x + col;
-                if (dx < 0 || dx >= (int32_t)g.width) continue;
+                int32_t dx = ox + col;
+                if (dx < 0 || dx >= (int32_t)g.pw) continue;
                 int32_t sx = (int32_t)(sx0 + ((float)col + 0.5f) * sw / (float)dw);
                 if (sx < 0) sx = 0;
                 if (sx >= b->width) sx = b->width - 1;
@@ -2242,14 +2329,14 @@ static void blit_surface(struct surface *s, uint32_t *dst, uint32_t dst_stride_p
         return;
     }
 
-    int32_t x0 = s->x < 0 ? -s->x : 0;               /* first visible col */
-    int32_t x1 = s->x + b->width > (int32_t)g.width  /* one past last col  */
-                     ? (int32_t)g.width - s->x : b->width;
+    int32_t x0 = ox < 0 ? -ox : 0;                /* first visible col */
+    int32_t x1 = ox + b->width > (int32_t)g.pw    /* one past last col  */
+                     ? (int32_t)g.pw - ox : b->width;
     if (x1 <= x0) return;
     for (int32_t row = 0; row < b->height; row++) {
-        int32_t dy = s->y + row;
-        if (dy < 0 || dy >= (int32_t)g.height) continue;
-        memcpy(dst + (size_t)dy * dst_stride_px + (s->x + x0),
+        int32_t dy = oy + row;
+        if (dy < 0 || dy >= (int32_t)g.ph) continue;
+        memcpy(dst + (size_t)dy * dst_stride_px + (ox + x0),
                src + (size_t)row * src_stride_px + x0,
                (size_t)(x1 - x0) * 4);
     }
@@ -2273,21 +2360,24 @@ static void blit_subsurfaces(struct surface *s, uint32_t *dst,
 static void draw_focus_border(struct surface *s, uint32_t *dst,
                               uint32_t stride_px) {
     const uint32_t color = th.border_active;
-    for (int e = 1; e <= 2; e++) {
-        int32_t x0 = s->x - e, y0 = s->y - e;
-        int32_t x1 = s->x + s->w + e - 1, y1 = s->y + s->h + e - 1;
+    int32_t scale = (int32_t)g.scale;
+    int32_t bx = s->x * scale, by = s->y * scale;
+    int32_t bw = s->w * scale, bh = s->h * scale;
+    for (int e = 1; e <= 2 * scale; e++) {
+        int32_t x0 = bx - e, y0 = by - e;
+        int32_t x1 = bx + bw + e - 1, y1 = by + bh + e - 1;
         for (int32_t x = x0; x <= x1; x++) {
-            if (x < 0 || x >= (int32_t)g.width) continue;
-            if (y0 >= 0 && y0 < (int32_t)g.height)
+            if (x < 0 || x >= (int32_t)g.pw) continue;
+            if (y0 >= 0 && y0 < (int32_t)g.ph)
                 dst[(size_t)y0 * stride_px + x] = color;
-            if (y1 >= 0 && y1 < (int32_t)g.height)
+            if (y1 >= 0 && y1 < (int32_t)g.ph)
                 dst[(size_t)y1 * stride_px + x] = color;
         }
         for (int32_t y = y0; y <= y1; y++) {
-            if (y < 0 || y >= (int32_t)g.height) continue;
-            if (x0 >= 0 && x0 < (int32_t)g.width)
+            if (y < 0 || y >= (int32_t)g.ph) continue;
+            if (x0 >= 0 && x0 < (int32_t)g.pw)
                 dst[(size_t)y * stride_px + x0] = color;
-            if (x1 >= 0 && x1 < (int32_t)g.width)
+            if (x1 >= 0 && x1 < (int32_t)g.pw)
                 dst[(size_t)y * stride_px + x1] = color;
         }
     }
@@ -2582,8 +2672,9 @@ static void fractional_scale_mgr_get(struct wl_client *c, struct wl_resource *r,
     wl_resource_set_implementation(fs, &fractional_scale_impl, s,
                                    fractional_scale_resource_destroy);
     s->fractional_scale = fs;
-    /* The desktop is fixed at scale 1: 120/120ths. */
-    wp_fractional_scale_v1_send_preferred_scale(fs, 120);
+    /* wp_fractional_scale counts in 120ths, so an integer output scale is
+     * scale x 120. The desktop advertises no fractional step of its own. */
+    wp_fractional_scale_v1_send_preferred_scale(fs, (uint32_t)(g.scale * 120));
 }
 static const struct wp_fractional_scale_manager_v1_interface
     fractional_scale_mgr_impl = {
@@ -2714,15 +2805,20 @@ static GLuint glc_compile(GLenum type, const char *src) {
     return sh;
 }
 
-/* Output-space pixels → NDC rect (y0 is the TOP edge; v_uv row 0 maps
- * to it, matching the texture's top scanline). */
+/* Device pixels → NDC rect, relative to the GL viewport (which is the
+ * pixel grid, g.pw x g.ph). y0 is the TOP edge; v_uv row 0 maps to it,
+ * matching the texture's top scanline. Callers holding a logical box
+ * multiply by g.scale through glc_px(). */
 static void glc_rect_ndc(int32_t x, int32_t y, int32_t w, int32_t h,
                          float out[4]) {
-    out[0] = 2.0f * (float)x / (float)g.width - 1.0f;
-    out[1] = 1.0f - 2.0f * (float)y / (float)g.height;
-    out[2] = 2.0f * (float)(x + w) / (float)g.width - 1.0f;
-    out[3] = 1.0f - 2.0f * (float)(y + h) / (float)g.height;
+    out[0] = 2.0f * (float)x / (float)g.pw - 1.0f;
+    out[1] = 1.0f - 2.0f * (float)y / (float)g.ph;
+    out[2] = 2.0f * (float)(x + w) / (float)g.pw - 1.0f;
+    out[3] = 1.0f - 2.0f * (float)(y + h) / (float)g.ph;
 }
+
+/* Logical unit → device pixel. */
+static inline int32_t glc_px(int32_t v) { return v * (int32_t)g.scale; }
 
 static void glc_draw_tex_rect(unsigned tex, int32_t x, int32_t y,
                               int32_t w, int32_t h, const float uv[4]) {
@@ -2806,12 +2902,12 @@ static unsigned wallpaper_bo_handle;
 static int gl_wallpaper_upload(void) {
     uint32_t stride = 0;
     void *map_data = NULL;
-    uint32_t *px = gbm_bo_map(wallpaper_bo, 0, 0, g.width, g.height, 0, &stride,
+    uint32_t *px = gbm_bo_map(wallpaper_bo, 0, 0, g.pw, g.ph, 0, &stride,
                               &map_data);
     if (!px) return -1;
-    for (uint32_t y = 0; y < g.height; y++)
-        memcpy(px + (size_t)y * (stride / 4), g.wallpaper + (size_t)y * g.width,
-               (size_t)g.width * 4);
+    for (uint32_t y = 0; y < g.ph; y++)
+        memcpy(px + (size_t)y * (stride / 4), g.wallpaper + (size_t)y * g.pw,
+               (size_t)g.pw * 4);
     gbm_bo_unmap(wallpaper_bo, map_data);   /* flushes the bytes into host storage */
 
     unsigned tex = wpkEglBindBoTexture(glc.dpy, wallpaper_bo_handle,
@@ -2825,7 +2921,7 @@ static int gl_wallpaper_upload(void) {
  * it as a texture from shared storage — cmdbuf TLV records cap at 64 KB,
  * far below a framebuffer-sized glTexImage2D payload. */
 static int setup_gl_wallpaper(void) {
-    wallpaper_bo = gbm_bo_create(g.gbm, g.width, g.height,
+    wallpaper_bo = gbm_bo_create(g.gbm, g.pw, g.ph,
                                  GBM_FORMAT_XRGB8888, GBM_BO_USE_LINEAR);
     if (!wallpaper_bo) return -1;
     int prime = gbm_bo_get_fd(wallpaper_bo);
@@ -2858,8 +2954,8 @@ static void setup_gl(void) {
     /* The drawing buffer must be mode-sized; we create the surface
      * before the first ADDFB, so the host cannot infer the size — pass
      * it explicitly (wpk libEGL honors EGL_WIDTH/EGL_HEIGHT). */
-    const EGLint srf_attrs[] = { EGL_WIDTH, (EGLint)g.width,
-                                 EGL_HEIGHT, (EGLint)g.height, EGL_NONE };
+    const EGLint srf_attrs[] = { EGL_WIDTH, (EGLint)g.pw,
+                                 EGL_HEIGHT, (EGLint)g.ph, EGL_NONE };
     glc.srf = eglCreateWindowSurface(glc.dpy, NULL, 0, srf_attrs);
     if (glc.srf == EGL_NO_SURFACE) { eglTerminate(glc.dpy); return; }
     if (!eglMakeCurrent(glc.dpy, glc.srf, glc.srf, glc.ctx)) {
@@ -2888,7 +2984,7 @@ static void setup_gl(void) {
     glc.loc_use_tex = glGetUniformLocation(glc.prog, "u_use_tex");
     glc.loc_color = glGetUniformLocation(glc.prog, "u_color");
     glUniform1i(glGetUniformLocation(glc.prog, "u_tex"), 0);
-    glViewport(0, 0, (GLsizei)g.width, (GLsizei)g.height);
+    glViewport(0, 0, (GLsizei)g.pw, (GLsizei)g.ph);
 
     if (setup_gl_wallpaper() != 0) {
         fprintf(stderr, "wlcompositor: GL wallpaper staging failed\n");
@@ -2930,11 +3026,12 @@ static int repaint_gl(void) {
 
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
-    glc_draw_tex(glc.wallpaper_tex, 0, 0, (int32_t)g.width, (int32_t)g.height);
+    glc_draw_tex(glc.wallpaper_tex, 0, 0, (int32_t)g.pw, (int32_t)g.ph);
     for (int i = 0; i < g.n_layers; i++)
         if (layer_texs[i] && layer_in_band(g.layers[i], 0))
-            glc_draw_tex(layer_texs[i], g.layers[i]->x, g.layers[i]->y,
-                         g.layers[i]->w, g.layers[i]->h);
+            glc_draw_tex(layer_texs[i], glc_px(g.layers[i]->x),
+                         glc_px(g.layers[i]->y),
+                         glc_px(g.layers[i]->w), glc_px(g.layers[i]->h));
     for (int i = 0; i < g.n_surfaces; i++) {
         struct surface *s = g.zorder[i];
         if (!surface_visible(s) || !s->buffer || !texs[i]) continue;
@@ -2944,9 +3041,10 @@ static int repaint_gl(void) {
         float uv[4];
         surface_draw_box(s, b, &dw, &dh, uv);
         if (g.kbd_focus == s)   /* 2px accent ring behind the window */
-            glc_draw_solid(th.border_active, s->x - 2, s->y - 2,
-                           dw + 4, dh + 4);
-        glc_draw_tex_rect(texs[i], s->x, s->y, dw, dh, uv);
+            glc_draw_solid(th.border_active, glc_px(s->x - 2), glc_px(s->y - 2),
+                           glc_px(dw + 4), glc_px(dh + 4));
+        glc_draw_tex_rect(texs[i], glc_px(s->x), glc_px(s->y),
+                          glc_px(dw), glc_px(dh), uv);
         for (int j = 0; j < g.n_all_surfaces; j++) {
             struct surface *sub = g.all_surfaces[j];
             if (sub->parent != s || !surface_visible(sub) || !sub->buffer)
@@ -2960,14 +3058,16 @@ static int repaint_gl(void) {
             int32_t sdw, sdh;
             float suv[4];
             surface_draw_box(sub, sb, &sdw, &sdh, suv);
-            glc_draw_tex_rect(t, sub->x, sub->y, sdw, sdh, suv);
+            glc_draw_tex_rect(t, glc_px(sub->x), glc_px(sub->y),
+                              glc_px(sdw), glc_px(sdh), suv);
         }
         top = s;
     }
     for (int i = 0; i < g.n_layers; i++)
         if (layer_texs[i] && layer_in_band(g.layers[i], 1))
-            glc_draw_tex(layer_texs[i], g.layers[i]->x, g.layers[i]->y,
-                         g.layers[i]->w, g.layers[i]->h);
+            glc_draw_tex(layer_texs[i], glc_px(g.layers[i]->x),
+                         glc_px(g.layers[i]->y),
+                         glc_px(g.layers[i]->w), glc_px(g.layers[i]->h));
     /* A failed present (context loss) must degrade like a failed texture
      * bind — returning 1 here would keep glc.active set and freeze the
      * canvas on the last GL frame, the exact failure the CPU fallback
@@ -2978,11 +3078,14 @@ static int repaint_gl(void) {
      * same contract as the CPU path's sample — but read back from the
      * composited GL framebuffer (glReadPixels via the sync query path). */
     if (top && !g.sampled) {
+        /* The sample point is logical (the gates read these coordinates);
+         * the framebuffer it is read from is device pixels. */
         int32_t sx = top->x + 10, sy = top->y + 10;
         if (sx >= 0 && sx < (int32_t)g.width && sy >= 0 &&
             sy < (int32_t)g.height) {
+            int32_t px_x = sx * (int32_t)g.scale, px_y = sy * (int32_t)g.scale;
             uint8_t px[4] = {0};
-            glReadPixels(sx, (int32_t)g.height - 1 - sy, 1, 1, GL_RGBA,
+            glReadPixels(px_x, (int32_t)g.ph - 1 - px_y, 1, 1, GL_RGBA,
                          GL_UNSIGNED_BYTE, px);
             printf("COMPOSITE_SAMPLE x=%d y=%d px=0x%08x\n", sx, sy,
                    0xff000000u | ((uint32_t)px[0] << 16) |
@@ -3028,7 +3131,7 @@ static void repaint(void) {
         uint32_t stride = 0;
         void *map_data = NULL;
         uint32_t *dst =
-            gbm_bo_map(bo, 0, 0, g.width, g.height, 0, &stride, &map_data);
+            gbm_bo_map(bo, 0, 0, g.pw, g.ph, 0, &stride, &map_data);
         if (!dst) {
             /* A persistent map failure would freeze the desktop with no
              * visible error — say so loudly. */
@@ -3039,9 +3142,9 @@ static void repaint(void) {
         }
         uint32_t stride_px = stride / 4;
 
-        for (uint32_t y = 0; y < g.height; y++)
+        for (uint32_t y = 0; y < g.ph; y++)
             memcpy(dst + (size_t)y * stride_px,
-                   g.wallpaper + (size_t)y * g.width, (size_t)g.width * 4);
+                   g.wallpaper + (size_t)y * g.pw, (size_t)g.pw * 4);
 
         struct surface *top = NULL;
         for (int i = 0; i < g.n_layers; i++)
@@ -3068,7 +3171,8 @@ static void repaint(void) {
             if (sx >= 0 && sx < (int32_t)g.width && sy >= 0 &&
                 sy < (int32_t)g.height) {
                 printf("COMPOSITE_SAMPLE x=%d y=%d px=0x%08x\n", sx, sy,
-                       dst[(size_t)sy * stride_px + sx]);
+                       dst[(size_t)(sy * (int32_t)g.scale) * stride_px
+                           + sx * (int32_t)g.scale]);
                 fflush(stdout);
                 g.sampled = 1;
             }
@@ -3545,8 +3649,15 @@ static void handle_pointer_motion_abs(struct libinput_event_pointer *p) {
 }
 
 static void handle_pointer_motion_rel(struct libinput_event_pointer *p) {
-    double dx = libinput_event_pointer_get_dx(p);
-    double dy = libinput_event_pointer_get_dy(p);
+    /* The bridge measures its deltas in the canvas's device pixels — the
+     * mode — while the cursor lives on the logical grid, so they divide by
+     * the output scale. Without that a scale-2 desktop moves the pointer
+     * twice as far as the mouse and a dragged window runs away from it.
+     * The absolute path above needs no division: get_absolute_*_transformed
+     * normalizes into whatever range it is handed, and it is handed the
+     * logical one. */
+    double dx = libinput_event_pointer_get_dx(p) / (double)g.scale;
+    double dy = libinput_event_pointer_get_dy(p) / (double)g.scale;
     g.cursor_x += dx;
     g.cursor_y += dy;
     if (g.cursor_x < 0) g.cursor_x = 0;
@@ -3885,8 +3996,14 @@ static int setup_drm(void) {
     drmModeConnectorPtr conn = drmModeGetConnector(g.card_fd, g.connector_id);
     if (!conn || conn->count_modes < 1) { fprintf(stderr, "no modes\n"); return -1; }
     g.mode = conn->modes[0];
-    g.width = g.mode.hdisplay;
-    g.height = g.mode.vdisplay;
+    g.pw = g.mode.hdisplay;
+    g.ph = g.mode.vdisplay;
+    /* A scale that does not divide the mode would put the logical grid's
+     * right/bottom edge inside the last device pixel, so the layout could
+     * place a window the scanout has no room for. Round the logical grid
+     * down; the remainder stays unpainted background. */
+    g.width = g.pw / g.scale;
+    g.height = g.ph / g.scale;
     drmModeFreeConnector(conn);
     drmModeFreeResources(res);
 
@@ -3895,17 +4012,19 @@ static int setup_drm(void) {
     g.gbm = gbm_create_device(g.card_fd);
     if (!g.gbm) { fprintf(stderr, "gbm_create_device\n"); return -1; }
     g.gbm_surface = gbm_surface_create(
-        g.gbm, g.width, g.height, GBM_FORMAT_XRGB8888,
+        g.gbm, g.pw, g.ph, GBM_FORMAT_XRGB8888,
         GBM_BO_USE_SCANOUT | GBM_BO_USE_LINEAR);
     if (!g.gbm_surface) { fprintf(stderr, "gbm_surface_create\n"); return -1; }
     return 0;
 }
 
 /* A theme's image wallpaper: KWLP raw pixels ("KWLP", u32le width, u32le
- * height, then width*height u32le XRGB pixels), bilinear-scaled to the
- * output. Raw pixels because nothing in the compositor decodes PNG/JPEG:
- * whoever stages the theme (the demo page, a test) renders the image and
- * writes the pixels. */
+ * height, then width*height u32le XRGB pixels), centre-cropped to the
+ * output's aspect and bilinear-scaled to fill it. Raw pixels because nothing
+ * in the compositor decodes PNG/JPEG: whoever stages the theme (the demo
+ * page, a test) renders the image and writes the pixels. The crop is what
+ * frees the stager from knowing the mode — it cannot, because the image is
+ * baked into the VFS before the mode is picked. */
 static int render_wallpaper_image(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return -1;
@@ -3923,13 +4042,26 @@ static int render_wallpaper_image(const char *path) {
     }
     fclose(f);
 
-    for (uint32_t y = 0; y < g.height; y++) {
-        uint32_t fy = g.height > 1 ? (y * 256u * (sh - 1)) / (g.height - 1) : 0;
+    /* The source rect the output samples: the axis the output is relatively
+     * narrower in is used whole, the other is cropped equally on both sides. */
+    uint32_t cw = sw, ch = sh;
+    if ((uint64_t)sw * g.ph > (uint64_t)g.pw * sh)
+        cw = (uint32_t)(((uint64_t)g.pw * sh) / g.ph);
+    else
+        ch = (uint32_t)(((uint64_t)g.ph * sw) / g.pw);
+    if (cw < 1) cw = 1;
+    if (ch < 1) ch = 1;
+    uint32_t ox = (sw - cw) / 2, oy = (sh - ch) / 2;
+
+    for (uint32_t y = 0; y < g.ph; y++) {
+        uint32_t fy = oy * 256u +
+            (g.ph > 1 ? (uint32_t)(((uint64_t)y * 256u * (ch - 1)) / (g.ph - 1)) : 0);
         uint32_t y0 = fy >> 8, wy = fy & 0xff;
         uint32_t y1 = y0 + 1 < sh ? y0 + 1 : y0;
-        uint32_t *row = g.wallpaper + (size_t)y * g.width;
-        for (uint32_t x = 0; x < g.width; x++) {
-            uint32_t fx = g.width > 1 ? (x * 256u * (sw - 1)) / (g.width - 1) : 0;
+        uint32_t *row = g.wallpaper + (size_t)y * g.pw;
+        for (uint32_t x = 0; x < g.pw; x++) {
+            uint32_t fx = ox * 256u +
+                (g.pw > 1 ? (uint32_t)(((uint64_t)x * 256u * (cw - 1)) / (g.pw - 1)) : 0);
             uint32_t x0 = fx >> 8, wx = fx & 0xff;
             uint32_t x1 = x0 + 1 < sw ? x0 + 1 : x0;
             uint32_t p00 = src[(size_t)y0 * sw + x0], p01 = src[(size_t)y0 * sw + x1];
@@ -3946,7 +4078,7 @@ static int render_wallpaper_image(const char *path) {
         }
     }
     free(src);
-    printf("WALLPAPER image w=%u h=%u\n", sw, sh);
+    printf("WALLPAPER image w=%u h=%u crop=%ux%u+%u+%u\n", sw, sh, cw, ch, ox, oy);
     fflush(stdout);
     return 0;
 
@@ -3963,8 +4095,8 @@ static void render_wallpaper(void) {
         render_wallpaper_image(th.wallpaper_path) == 0)
         return;
     const uint32_t top = th.wallpaper_top, bot = th.wallpaper_bottom;
-    for (uint32_t y = 0; y < g.height; y++) {
-        uint32_t t = g.height > 1 ? (y * 256u) / (g.height - 1) : 0;
+    for (uint32_t y = 0; y < g.ph; y++) {
+        uint32_t t = g.ph > 1 ? (y * 256u) / (g.ph - 1) : 0;
         uint32_t rr = ((top >> 16) & 0xff) +
                       ((int)((bot >> 16) & 0xff) - (int)((top >> 16) & 0xff)) * (int)t / 256;
         uint32_t gg = ((top >> 8) & 0xff) +
@@ -3972,31 +4104,40 @@ static void render_wallpaper(void) {
         uint32_t bb = (top & 0xff) +
                       ((int)(bot & 0xff) - (int)(top & 0xff)) * (int)t / 256;
         uint32_t px = 0xff000000u | (rr << 16) | (gg << 8) | bb;
-        uint32_t *row = g.wallpaper + (size_t)y * g.width;
-        for (uint32_t x = 0; x < g.width; x++) row[x] = px;
+        uint32_t *row = g.wallpaper + (size_t)y * g.pw;
+        for (uint32_t x = 0; x < g.pw; x++) row[x] = px;
     }
 
     struct wpk_surface wp =
-        wpk_surface_wrap(g.wallpaper, (int)g.width, (int)g.height, 0);
+        wpk_surface_wrap(g.wallpaper, (int)g.pw, (int)g.ph, 0);
 
-    /* Faint 120px grid. */
+    /* The wallpaper is drawn straight into the scanout, which is device
+     * pixels, so every measurement here is multiplied by the output scale by
+     * hand. wlcompositor must not call wpk_set_scale(): that setting is
+     * process-wide and captured by wpk_surface_wrap / wpk_font_load_default at
+     * call time, and the compositor wraps client buffers with the same
+     * library. The font is loaded at the scaled size, so the glyphs rasterize
+     * sharp rather than being magnified. */
+    const int scale = (int)g.scale;
+
+    /* Faint 120 logical-px grid. */
     const wpk_color grid = 0x0affffffu;   /* ~4% white */
-    for (uint32_t x = 0; x < g.width; x += 120)
-        wpk_rect(&wp, (int)x, 0, 1, (int)g.height, grid);
-    for (uint32_t y = 0; y < g.height; y += 120)
-        wpk_rect(&wp, 0, (int)y, (int)g.width, 1, grid);
+    for (uint32_t x = 0; x < g.pw; x += 120 * (uint32_t)scale)
+        wpk_rect(&wp, (int)x, 0, scale, (int)g.ph, grid);
+    for (uint32_t y = 0; y < g.ph; y += 120 * (uint32_t)scale)
+        wpk_rect(&wp, 0, (int)y, (int)g.pw, scale, grid);
 
-    struct wpk_font *big = wpk_font_load_default(56);
-    struct wpk_font *small = wpk_font_load_default(20);
+    struct wpk_font *big = wpk_font_load_default(56 * scale);
+    struct wpk_font *small = wpk_font_load_default(20 * scale);
     if (big) {
-        wpk_text(&wp, big, 96, (int)g.height - 150, "Kandelo",
+        wpk_text(&wp, big, 96 * scale, (int)g.ph - 150 * scale, "Kandelo",
                  WPK_RGB(0x3e, 0x4a, 0x66));
         wpk_font_destroy(big);
     }
     if (small) {
-        wpk_text(&wp, small, 98, (int)g.height - 112,
+        wpk_text(&wp, small, 98 * scale, (int)g.ph - 112 * scale,
                  "Wayland on a wasm32 POSIX kernel", WPK_RGB(0x36, 0x40, 0x58));
-        wpk_text(&wp, small, 98, (int)g.height - 84,
+        wpk_text(&wp, small, 98 * scale, (int)g.ph - 84 * scale,
                  "click to focus - drag title bars to move windows",
                  WPK_RGB(0x2e, 0x37, 0x4c));
         wpk_font_destroy(small);
@@ -4007,7 +4148,7 @@ static void render_wallpaper(void) {
 
 /* Allocate the background once the mode is known, then paint it. */
 static int setup_wallpaper(void) {
-    g.wallpaper = malloc((size_t)g.width * g.height * 4);
+    g.wallpaper = malloc((size_t)g.pw * g.ph * 4);
     if (!g.wallpaper) return -1;
     render_wallpaper();
     return 0;
@@ -4431,6 +4572,19 @@ int main(void) {
         g.layout = LAYOUT_DWINDLE;
     printf("WLC_LAYOUT %s\n",
            g.layout == LAYOUT_DWINDLE ? "dwindle" : "floating");
+    fflush(stdout);
+
+    /* The embedder sizes the mode in device pixels, so the compositor cannot
+     * recover the scale from it — a 2176x1226 mode is a dpr-2 pane and a
+     * dpr-1 one alike. WLC_SCALE is how the page passes what it knows. */
+    g.scale = 1;
+    const char *want_scale = getenv("WLC_SCALE");
+    if (want_scale) {
+        long v = strtol(want_scale, NULL, 10);
+        if (v >= 1 && v <= MAX_OUTPUT_SCALE) g.scale = (uint32_t)v;
+        else fprintf(stderr, "wlcompositor: ignoring WLC_SCALE=%s\n", want_scale);
+    }
+    printf("WLC_SCALE %u\n", g.scale);
     fflush(stdout);
     theme_scan();
     load_config();

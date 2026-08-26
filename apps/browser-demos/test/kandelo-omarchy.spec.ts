@@ -106,7 +106,7 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   expect(await syslogStream(page), "the configured theme was not loaded")
     .toMatch(/THEME tokyo-night/);
   expect(await syslogStream(page), "the theme's image wallpaper was not rendered")
-    .toMatch(/WALLPAPER image w=960 h=540/);
+    .toMatch(/WALLPAPER image w=2580 h=1080/);
 
   // Gate 2: the bar is unmodified Waybar on a real layer-shell surface —
   // anchored across the top, and its hyprland modules attached to the

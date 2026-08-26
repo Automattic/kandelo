@@ -74,6 +74,9 @@ struct client {
     int got_button;     /* wl_pointer.button arrived */
     uint32_t btn_code, btn_state;
     int closed;         /* compositor sent xdg_toplevel.close (killactive) */
+    int32_t output_scale;   /* wl_output.scale */
+    int32_t entered_scale;  /* the scale of the output wl_surface.enter named,
+                             * 0 until the enter arrives */
 };
 
 /* ---- wp_presentation --------------------------------------------------- */
@@ -94,9 +97,17 @@ static void output_geometry(void *data, struct wl_output *o, int32_t x,
                             int32_t subpixel, const char *make,
                             const char *model, int32_t transform) {}
 static void output_mode(void *data, struct wl_output *o, uint32_t flags,
-                        int32_t w, int32_t h, int32_t refresh) {}
+                        int32_t w, int32_t h, int32_t refresh) {
+    printf("OUTPUT_MODE w=%d h=%d\n", w, h);
+    fflush(stdout);
+}
 static void output_done(void *data, struct wl_output *o) {}
-static void output_scale(void *data, struct wl_output *o, int32_t factor) {}
+static void output_scale(void *data, struct wl_output *o, int32_t factor) {
+    struct client *c = data;
+    c->output_scale = factor;
+    printf("OUTPUT_SCALE factor=%d\n", factor);
+    fflush(stdout);
+}
 static void output_name(void *data, struct wl_output *o, const char *name) {
     printf("OUTPUT_NAME %s\n", name);
     fflush(stdout);
@@ -110,6 +121,25 @@ static const struct wl_output_listener output_listener = {
     .scale = output_scale,
     .name = output_name,
     .description = output_description,
+};
+
+/* ---- wl_surface -------------------------------------------------------- */
+
+/* The output a surface sits on, and with it the scale to render at. A client
+ * that reads its scale here (mako does) must have the event before it draws
+ * its first frame, so the compositor sends it when the surface takes a role. */
+static void surface_enter(void *data, struct wl_surface *s,
+                          struct wl_output *o) {
+    struct client *c = data;
+    c->entered_scale = c->output_scale;
+    printf("SURFACE_ENTER scale=%d\n", c->entered_scale);
+    fflush(stdout);
+}
+static void surface_leave(void *data, struct wl_surface *s,
+                          struct wl_output *o) {}
+static const struct wl_surface_listener surface_listener = {
+    .enter = surface_enter,
+    .leave = surface_leave,
 };
 
 /* ---- registry ---------------------------------------------------------- */
@@ -467,11 +497,14 @@ int main(void) {
 
     /* Toplevel. */
     c.surface = wl_compositor_create_surface(c.compositor);
+    wl_surface_add_listener(c.surface, &surface_listener, &c);
     c.xdg_surface = xdg_wm_base_get_xdg_surface(c.wm_base, c.surface);
     xdg_surface_add_listener(c.xdg_surface, &xdg_surface_listener, &c);
     c.toplevel = xdg_surface_get_toplevel(c.xdg_surface);
     xdg_toplevel_add_listener(c.toplevel, &toplevel_listener, &c);
     xdg_toplevel_set_title(c.toplevel, "wlclient-test");
+    /* The app_id is what names this client in the compositor's markers. */
+    xdg_toplevel_set_app_id(c.toplevel, "wlclient-test");
 
     /* Optional: request server-side decorations (PR14e). The compositor forces
      * SERVER_SIDE for tiling, which the client honors by drawing no titlebar. */
@@ -520,7 +553,26 @@ int main(void) {
     if (!buffer) return 1;
 
     wl_surface_attach(c.surface, buffer, 0, 0);
-    wl_surface_damage(c.surface, 0, 0, WIN_W, WIN_H);
+    /* Optional: declare the buffer as scale-N pixels, so the same WIN_W x WIN_H
+     * bytes cover a window N times smaller. WIN_W and WIN_H are even, which
+     * scale 2 requires. */
+    int buf_scale = 1;
+    const char *want_buf_scale = getenv("WLC_BUFSCALE");
+    /* Or take it from wl_surface.enter, the way mako does. The enter has to
+     * have arrived by now: this is the first frame, and one frame is all a
+     * toast lives for — render it at the wrong scale and it is soft for good. */
+    if (getenv("WLC_ENTERSCALE")) {
+        if (!c.entered_scale) {
+            fprintf(stderr, "no wl_surface.enter before the first frame\n");
+            return 1;
+        }
+        buf_scale = c.entered_scale;
+        wl_surface_set_buffer_scale(c.surface, buf_scale);
+    } else if (want_buf_scale) {
+        buf_scale = atoi(want_buf_scale);
+        wl_surface_set_buffer_scale(c.surface, buf_scale);
+    }
+    wl_surface_damage(c.surface, 0, 0, WIN_W / buf_scale, WIN_H / buf_scale);
     struct wl_callback *frame = wl_surface_frame(c.surface);
     wl_callback_add_listener(frame, &frame_listener, &c);
     if (c.presentation) {

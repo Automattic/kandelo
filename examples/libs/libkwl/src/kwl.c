@@ -57,6 +57,12 @@
 #define KWL_TB_FONT_PX  14
 #define KWL_TB_CLOSE_SZ 16
 #define KWL_TB_CLOSE_MARGIN 8
+/* The largest share of the output an initial window may claim, as a
+ * fraction. Wider than tall because a floating desktop puts its other
+ * windows beside the first one, not under it. */
+#define KWL_INITIAL_W_NUM 5
+#define KWL_INITIAL_H_NUM 6
+#define KWL_INITIAL_DEN   10
 
 struct kwl_buffer {
     struct gbm_bo *bo;
@@ -87,9 +93,15 @@ struct kwl_window {
     struct zxdg_toplevel_decoration_v1 *decor;
 
     char *title;     /* retained: redrawn into the titlebar on resize */
-    int w, h;        /* app-visible CONTENT size */
+    int w, h;        /* app-visible CONTENT size, LOGICAL */
     int tb_h;        /* titlebar height: 0 under server-side decoration */
-    int total_h;     /* h + tb_h — the wl_surface size */
+    int total_h;     /* h + tb_h — the wl_surface size, LOGICAL */
+    /* wl_output.scale: device pixels per logical unit. The buffers are this
+     * many times larger on each axis and wl_surface.set_buffer_scale tells
+     * the compositor so; everything the app sees stays logical, because
+     * libwpkdraw scales each primitive on the way in. */
+    int scale;
+    int out_pw, out_ph;   /* wl_output.mode, device pixels (0 = not reported) */
     int configured;
     int mapped;      /* first buffer committed; a later configure = resize */
     int pending_w, pending_h;   /* last configure's surface size (0 = keep) */
@@ -135,6 +147,34 @@ static int kwl_pop(struct kwl_window *w, struct kwl_event *out) {
     return 1;
 }
 
+/* ---- wl_output --------------------------------------------------------- */
+
+/* The only event libkwl needs: how many device pixels the compositor puts in
+ * a logical one. It arrives in the create roundtrip, before any buffer or
+ * font exists. */
+static void output_geometry(void *data, struct wl_output *o, int32_t x,
+                            int32_t y, int32_t pw, int32_t ph, int32_t subpixel,
+                            const char *make, const char *model,
+                            int32_t transform) {}
+static void output_mode(void *data, struct wl_output *o, uint32_t flags,
+                        int32_t w, int32_t h, int32_t refresh) {
+    struct kwl_window *win = data;
+    if (!(flags & WL_OUTPUT_MODE_CURRENT)) return;
+    win->out_pw = w;
+    win->out_ph = h;
+}
+static void output_done(void *data, struct wl_output *o) {}
+static void output_scale(void *data, struct wl_output *o, int32_t factor) {
+    struct kwl_window *w = data;
+    w->scale = factor > 0 ? factor : 1;
+}
+static const struct wl_output_listener output_listener = {
+    .geometry = output_geometry,
+    .mode = output_mode,
+    .done = output_done,
+    .scale = output_scale,
+};
+
 /* ---- registry ---------------------------------------------------------- */
 
 static void registry_global(void *data, struct wl_registry *reg, uint32_t name,
@@ -149,8 +189,10 @@ static void registry_global(void *data, struct wl_registry *reg, uint32_t name,
         w->wm_base = wl_registry_bind(reg, name, &xdg_wm_base_interface, 1);
     else if (strcmp(iface, "wl_seat") == 0)
         w->seat = wl_registry_bind(reg, name, &wl_seat_interface, 1);
-    else if (strcmp(iface, "wl_output") == 0)
+    else if (strcmp(iface, "wl_output") == 0) {
         w->output = wl_registry_bind(reg, name, &wl_output_interface, 2);
+        wl_output_add_listener(w->output, &output_listener, w);
+    }
     else if (strcmp(iface, "zxdg_decoration_manager_v1") == 0)
         w->decor_mgr = wl_registry_bind(
             reg, name, &zxdg_decoration_manager_v1_interface, 1);
@@ -463,24 +505,24 @@ static int connect_socket(void) {
  * the gbm_bo_import path the compositor understands (see wlclient-test.c).
  * The bo covers the full surface: titlebar + content. */
 static int kwl_buffer_init(struct kwl_window *w, struct kwl_buffer *b) {
-    struct gbm_bo *bo = gbm_bo_create(w->gbm, w->w, w->total_h,
+    int pw = w->w * w->scale, ph = w->total_h * w->scale;
+    struct gbm_bo *bo = gbm_bo_create(w->gbm, pw, ph,
                                       GBM_FORMAT_XRGB8888,
                                       GBM_BO_USE_LINEAR | GBM_BO_USE_SCANOUT);
     if (!bo) return -1;
 
     uint32_t stride = 0;
     void *map_data = NULL;
-    uint32_t *px =
-        gbm_bo_map(bo, 0, 0, w->w, w->total_h, 0, &stride, &map_data);
+    uint32_t *px = gbm_bo_map(bo, 0, 0, pw, ph, 0, &stride, &map_data);
     if (!px) { gbm_bo_destroy(bo); return -1; }
 
     int prime = gbm_bo_get_fd(bo);
     if (prime < 0) { gbm_bo_unmap(bo, map_data); gbm_bo_destroy(bo); return -1; }
 
     struct wl_shm_pool *pool =
-        wl_shm_create_pool(w->shm, prime, (int32_t)(stride * w->total_h));
+        wl_shm_create_pool(w->shm, prime, (int32_t)(stride * ph));
     struct wl_buffer *wl_buf = wl_shm_pool_create_buffer(
-        pool, 0, w->w, w->total_h, (int32_t)stride, WL_SHM_FORMAT_XRGB8888);
+        pool, 0, pw, ph, (int32_t)stride, WL_SHM_FORMAT_XRGB8888);
     wl_shm_pool_destroy(pool);   /* the buffer keeps the pool alive */
     close(prime);                /* wl_shm dup'd it into the pool */
 
@@ -507,8 +549,8 @@ static void kwl_buffer_fini(struct kwl_buffer *b) {
 static struct wpk_surface content_view(struct kwl_window *w,
                                        struct kwl_buffer *b) {
     return wpk_surface_wrap(
-        b->pixels + (size_t)w->tb_h * (b->stride / 4), w->w, w->h,
-        b->stride);
+        b->pixels + (size_t)(w->tb_h * w->scale) * (b->stride / 4),
+        w->w, w->h, b->stride);
 }
 
 /* Draw the CSD titlebar into one buffer. Called once per buffer at window
@@ -547,6 +589,7 @@ static void draw_titlebar(struct kwl_window *w, struct kwl_buffer *b,
 static struct kwl_window *kwl_open(void) {
     struct kwl_window *win = calloc(1, sizeof(*win));
     if (!win) { errno = ENOMEM; return NULL; }
+    win->scale = 1;   /* until wl_output says otherwise */
 
     int fd = connect_socket();
     if (fd < 0) goto fail;
@@ -557,6 +600,10 @@ static struct kwl_window *kwl_open(void) {
     wl_registry_add_listener(win->registry, &registry_listener, win);
     wl_display_roundtrip(win->display);   /* receive globals */
     wl_display_roundtrip(win->display);   /* receive their initial events */
+
+    /* wl_output.scale has arrived. Publish it before the caller creates any
+     * buffer, font or surface, because each captures the scale at creation. */
+    wpk_set_scale(win->scale);
 
     if (!win->compositor || !win->shm || !win->seat) goto fail;
     if (win->wm_base)
@@ -577,6 +624,36 @@ static struct kwl_window *kwl_open(void) {
 fail:
     kwl_window_destroy(win);
     return NULL;
+}
+
+/* Shrink the requested window to at most its share of the output, keeping
+ * its aspect.
+ *
+ * A toolkit client picks its initial size as a constant, and a constant that
+ * suited one desktop is too big for a smaller one — a 960x540 terminal that
+ * took half of a 2255x1080 desktop takes nearly all of a 1280x613 one, and
+ * the floating desktop's other windows have nowhere to go. The compositor
+ * clamps a floating window's POSITION but not its size, so an oversized one
+ * lands on screen and covers everything. Capping the initial size at a share
+ * of the output and scaling both axes by the tighter ratio keeps the
+ * window's proportions, which is what its layout was written for. On a
+ * desktop roomy enough for the constant this changes nothing. */
+static void kwl_fit_to_output(struct kwl_window *win) {
+    if (win->out_pw < 1 || win->out_ph < 1) return;
+    int max_w = win->out_pw / win->scale * KWL_INITIAL_W_NUM / KWL_INITIAL_DEN;
+    int max_h = win->out_ph / win->scale * KWL_INITIAL_H_NUM / KWL_INITIAL_DEN
+                - win->tb_h;
+    if (max_w < 1 || max_h < 1) return;
+    if (win->w <= max_w && win->h <= max_h) return;
+
+    /* The tighter ratio in 16.16 fixed point — no libm in these clients. */
+    long rw = ((long)max_w << 16) / win->w;
+    long rh = ((long)max_h << 16) / win->h;
+    long r = rw < rh ? rw : rh;
+    int w = (int)(((long)win->w * r) >> 16);
+    int h = (int)(((long)win->h * r) >> 16);
+    win->w = w > 1 ? w : 1;
+    win->h = h > 1 ? h : 1;
 }
 
 /* Allocate the shared double buffer once the final content size is known. */
@@ -631,6 +708,9 @@ struct kwl_window *kwl_window_create(const char *title, int w, int h) {
     while (!win->configured)
         if (wl_display_dispatch(win->display) < 0) goto fail;
 
+    /* tb_h is settled by now, so the fit accounts for the titlebar. A tiling
+     * compositor overrides the result with its own configure anyway. */
+    kwl_fit_to_output(win);
     if (kwl_open_buffers(win) != 0) goto fail;
 
     /* Decorate both buffers once (skipped under SSD, tb_h 0); the app only
@@ -752,6 +832,10 @@ void kwl_window_commit(struct kwl_window *win) {
     win->mapped = 1;   /* first commit maps; later configures are resizes */
     struct kwl_buffer *b = &win->bufs[win->back_index];
     wl_surface_attach(win->surface, b->wl_buf, 0, 0);
+    /* The buffer is scale times the window's logical box; this is what tells
+     * the compositor to divide rather than to treat it as a bigger window.
+     * wl_surface.damage is surface-local, so it stays logical. */
+    wl_surface_set_buffer_scale(win->surface, win->scale);
     wl_surface_damage(win->surface, 0, 0, win->w, win->total_h);
     struct wl_callback *cb = wl_surface_frame(win->surface);
     wl_callback_add_listener(cb, &frame_listener, win);

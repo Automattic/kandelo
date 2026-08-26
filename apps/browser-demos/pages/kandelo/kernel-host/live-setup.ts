@@ -1787,25 +1787,10 @@ async function bootProfile(
           // embedder) the mode stays the 1920×1080 default and the
           // presenter letterboxes.
           tick("sizing display mode...");
-          const sizeDeadline = performance.now() + 1500;
-          let displaySize = host.getKmsDisplaySize(1);
-          while (!displaySize && performance.now() < sizeDeadline) {
-            const paneCanvas = document.querySelector<HTMLCanvasElement>(
-              ".kmachine-primary-slot:not(.is-hidden) canvas",
-            );
-            const rect = paneCanvas?.getBoundingClientRect();
-            if (rect && rect.width >= 1 && rect.height >= 1) {
-              const dpr = window.devicePixelRatio || 1;
-              displaySize = { width: rect.width * dpr, height: rect.height * dpr };
-              kernelForWayland.kmsSetDisplaySize(
-                1,
-                displaySize.width,
-                displaySize.height,
-              );
-              break;
-            }
-            await new Promise((resolve) => setTimeout(resolve, 50));
-            displaySize = host.getKmsDisplaySize(1);
+          const outputScale = outputScaleFor(window.devicePixelRatio || 1);
+          if (!host.getKmsDisplaySize(1)) {
+            const pane = await settledPaneDeviceSize();
+            if (pane) kernelForWayland.kmsSetDisplaySize(1, pane.width, pane.height);
           }
 
           // Spawn the compositor in the background. All clients retry
@@ -1813,9 +1798,9 @@ async function bootProfile(
           // compositor not yet having bound the socket — no explicit
           // barrier needed.
           tick("running wlcompositor...");
-          const spawnBg = (name: string) =>
+          const spawnBg = (name: string, extraEnv: string[] = []) =>
             void kernelForWayland.spawnFromVfs(`/usr/local/bin/${name}`, [name], {
-              env: SHELL_ENV,
+              env: extraEnv.length ? [...SHELL_ENV, ...extraEnv] : SHELL_ENV,
               cwd: DEMO_HOME,
               uid: DEMO_UID,
               gid: DEMO_GID,
@@ -1824,7 +1809,7 @@ async function bootProfile(
               (err: unknown) =>
                 tick(`${name} failed: ${err instanceof Error ? err.message : String(err)}`),
             );
-          spawnBg("wlcompositor");
+          spawnBg("wlcompositor", [`WLC_SCALE=${outputScale}`]);
           tick("running wlclock + wlpaint...");
           spawnBg("wlclock");
           spawnBg("wlpaint");
@@ -1883,25 +1868,10 @@ async function bootProfile(
           // Size the desktop from the Modeset pane's canvas exactly like
           // the wayland demo (see that block for the rationale).
           tick("sizing display mode...");
-          const sizeDeadline = performance.now() + 1500;
-          let displaySize = host.getKmsDisplaySize(1);
-          while (!displaySize && performance.now() < sizeDeadline) {
-            const paneCanvas = document.querySelector<HTMLCanvasElement>(
-              ".kmachine-primary-slot:not(.is-hidden) canvas",
-            );
-            const rect = paneCanvas?.getBoundingClientRect();
-            if (rect && rect.width >= 1 && rect.height >= 1) {
-              const dpr = window.devicePixelRatio || 1;
-              displaySize = { width: rect.width * dpr, height: rect.height * dpr };
-              kernelForHyprland.kmsSetDisplaySize(
-                1,
-                displaySize.width,
-                displaySize.height,
-              );
-              break;
-            }
-            await new Promise((resolve) => setTimeout(resolve, 50));
-            displaySize = host.getKmsDisplaySize(1);
+          const outputScale = outputScaleFor(window.devicePixelRatio || 1);
+          if (!host.getKmsDisplaySize(1)) {
+            const pane = await settledPaneDeviceSize();
+            if (pane) kernelForHyprland.kmsSetDisplaySize(1, pane.width, pane.height);
           }
 
           // Clients retry their connect to /tmp/wayland-0, so the compositor
@@ -1953,6 +1923,7 @@ async function bootProfile(
           const compositorExit = spawnBg("/usr/local/bin/wlcompositor", "wlcompositor", [
             "WLC_LAYOUT=dwindle",
             "WLC_CONFIG=/etc/kandelo/wlcompositor.conf",
+            `WLC_SCALE=${outputScale}`,
             ...busEnv,
           ]);
 
@@ -2164,6 +2135,52 @@ async function stageSdl2Runtime(fs: MemoryFileSystem): Promise<void> {
   writeVfsFile(fs, "/usr/share/shaders/sound/fm_bell.frag", sdl2SoundFmBellFragSrc);
   writeVfsFile(fs, "/usr/share/shaders/sound/noise_sweep.frag", sdl2SoundNoiseSweepFragSrc);
   writeVfsFile(fs, "/usr/share/shaders/sound/chord.frag", sdl2SoundChordFragSrc);
+}
+
+/** The integer `wl_output` scale the desktop runs at. The mode is sized in
+ *  device pixels, so without this the compositor would read a dpr-2 pane as a
+ *  dpr-1 one twice the size and lay out windows at half their intended size.
+ *  wl_output.scale has no fractional form, so a fractional dpr rounds. */
+function outputScaleFor(dpr: number): number {
+  return Math.max(1, Math.min(3, Math.round(dpr)));
+}
+
+/** The pane's device-pixel size, once its layout has settled.
+ *
+ *  Measures the pane SLOT, not the canvas inside it. `useFittedCanvasStyle`
+ *  sizes the canvas to the slot at the CANVAS's own aspect, and that aspect
+ *  comes from the backing store the mode sizes — so measuring the canvas feeds
+ *  the mode back into itself and pins it to whatever the first sample caught.
+ *  The slot is laid out by flex alone, so it is a fixed point.
+ *
+ *  Requires two equal consecutive readings, so a mid-layout frame is not what
+ *  the connector mode is built from. Returns null when the pane never settles
+ *  (hidden slot, headless embedder), which leaves the connector on its
+ *  1920x1080 default. */
+async function settledPaneDeviceSize(
+  timeoutMs = 4_000,
+): Promise<{ width: number; height: number } | null> {
+  const deadline = performance.now() + timeoutMs;
+  let previous = "";
+  while (performance.now() < deadline) {
+    const slot = document.querySelector<HTMLElement>(
+      ".kmachine-primary-slot:not(.is-hidden)",
+    );
+    const rect = slot?.getBoundingClientRect();
+    if (rect && rect.width >= 1 && rect.height >= 1) {
+      const key = `${Math.round(rect.width)}x${Math.round(rect.height)}`;
+      if (key === previous) {
+        const dpr = window.devicePixelRatio || 1;
+        return {
+          width: Math.round(rect.width * dpr),
+          height: Math.round(rect.height * dpr),
+        };
+      }
+      previous = key;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return null;
 }
 
 /**
