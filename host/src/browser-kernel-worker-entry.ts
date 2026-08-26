@@ -4462,6 +4462,12 @@ sw.onmessage = (e: MessageEvent) => {
     case "fb_release_generation_ack":
       acknowledgeMainFramebufferRelease(msg.requestId);
       break;
+    case "input_event_inject":
+      kernelWorker.injectInputEvent(msg.device, msg.ev_type, msg.code, msg.value);
+      break;
+    case "set_input_canvas_dims":
+      kernelWorker.setInputCanvasDims(msg.width, msg.height);
+      break;
     default: {
       // Every typed MainToKernelMessage must have a case above. Browser
       // tooling also sends a few deliberately out-of-band control messages,
