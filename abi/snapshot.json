@@ -1,5 +1,5 @@
 {
-  "abi_version": 43,
+  "abi_version": 44,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -976,7 +976,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 43,
+      "abi_version": 44,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -1795,6 +1795,24 @@
       "maxCallerSize": 256,
       "nrFirst": 32,
       "nrLast": 63
+    },
+    {
+      "dir": 2,
+      "direction": "out",
+      "fixedSize": null,
+      "magic": 69,
+      "maxCallerSize": 256,
+      "nrFirst": 7,
+      "nrLast": 9
+    },
+    {
+      "dir": 2,
+      "direction": "out",
+      "fixedSize": null,
+      "magic": 69,
+      "maxCallerSize": 256,
+      "nrFirst": 24,
+      "nrLast": 27
     },
     {
       "dir": 2,
@@ -4370,10 +4388,10 @@
         {
           "name": "_pad",
           "offset": 84,
-          "span": 4
+          "span": 12
         }
       ],
-      "size": 88
+      "size": 96
     },
     "WasmStatfs": {
       "fields": [

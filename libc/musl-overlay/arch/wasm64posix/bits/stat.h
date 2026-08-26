@@ -1,9 +1,11 @@
 /* bits/stat.h — wasm64posix struct stat
  *
  * The kernel writes a complete 112-byte native kstat and musl converts it to
- * this same-sized public record.  The first 88 bytes carry WasmStat's
- * filesystem metadata and the final three fields are initialized explicitly,
- * even when the filesystem does not yet provide them.
+ * this same-sized public record.  The first 96 bytes carry WasmStat's
+ * filesystem metadata through st_rdev — a Linux-encoded dev_t for device
+ * nodes (e.g. /dev/input/event0 = 13:64), 0 otherwise. The final two
+ * fields are initialized explicitly, even when the filesystem does not
+ * yet provide them.
  *
  * The complete layout MUST match crates/shared/src/process_layout.rs.
  */
@@ -19,8 +21,8 @@ struct stat {
 	struct timespec    st_atim;         /* offset 40  (16 bytes on wasm64) */
 	struct timespec    st_mtim;         /* offset 56  (16 bytes) */
 	struct timespec    st_ctim;         /* offset 72  (16 bytes) */
-	/* --- end of the kernel's internal WasmStat prefix (88 bytes) --- */
-	unsigned long long st_rdev;         /* offset 88 */
+	unsigned long long st_rdev;         /* offset 88, from kernel WasmStat */
+	/* --- end of the kernel's WasmStat prefix (96 bytes) --- */
 	int                st_blksize;      /* offset 96 */
 	long long          st_blocks;       /* offset 104 */
 };
