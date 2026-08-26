@@ -3,14 +3,14 @@ use wasm_posix_shared::Errno;
 /// One syscall result as observed through the authoritative channel and the
 /// legacy narrow export return.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ChannelDispatchOutcome {
-    pub(crate) channel_result: i64,
-    pub(crate) channel_errno: u32,
-    pub(crate) export_result: i32,
+pub struct ChannelDispatchOutcome {
+    pub channel_result: i64,
+    pub channel_errno: u32,
+    pub export_result: i32,
 }
 
 impl ChannelDispatchOutcome {
-    pub(crate) fn narrow(result: i32) -> Self {
+    pub fn narrow(result: i32) -> Self {
         let (channel_result, channel_errno) = encode_channel_result(i64::from(result));
         Self {
             channel_result,
@@ -19,7 +19,7 @@ impl ChannelDispatchOutcome {
         }
     }
 
-    pub(crate) fn exact(result: i64) -> Self {
+    pub fn exact(result: i64) -> Self {
         let (channel_result, channel_errno) = encode_channel_result(result);
         Self {
             channel_result,
@@ -31,7 +31,7 @@ impl ChannelDispatchOutcome {
         }
     }
 
-    pub(crate) fn process_address(result: Result<usize, Errno>) -> Self {
+    pub fn process_address(result: Result<usize, Errno>) -> Self {
         match result {
             Ok(address) => {
                 let Ok(bits) = u64::try_from(address) else {
@@ -51,7 +51,7 @@ impl ChannelDispatchOutcome {
     }
 }
 
-pub(crate) fn encode_channel_result(result: i64) -> (i64, u32) {
+pub fn encode_channel_result(result: i64) -> (i64, u32) {
     if result >= 0 {
         return (result, 0);
     }
@@ -62,7 +62,7 @@ pub(crate) fn encode_channel_result(result: i64) -> (i64, u32) {
     (-1, errno)
 }
 
-pub(crate) fn checked_mmap_byte_offset(page_offset: i64) -> Result<i64, Errno> {
+pub fn checked_mmap_byte_offset(page_offset: i64) -> Result<i64, Errno> {
     if page_offset < 0 {
         return Err(Errno::EINVAL);
     }

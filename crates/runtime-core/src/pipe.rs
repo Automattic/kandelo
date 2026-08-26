@@ -72,7 +72,7 @@ pub struct InFlightFd {
 }
 
 impl InFlightFd {
-    pub(crate) fn new(
+    pub fn new(
         ofd_id: OfdId,
         file_id: Option<FileId>,
         file_type: FileType,
@@ -94,7 +94,7 @@ impl InFlightFd {
         )
     }
 
-    pub(crate) fn new_with_shared_state(
+    pub fn new_with_shared_state(
         ofd_id: OfdId,
         file_id: Option<FileId>,
         file_type: FileType,
@@ -129,7 +129,7 @@ impl InFlightFd {
 
     /// Acquire the real resource and OfdId references represented by one
     /// queued SCM_RIGHTS entry.
-    pub(crate) fn retain_reference(&mut self) -> Result<(), Errno> {
+    pub fn retain_reference(&mut self) -> Result<(), Errno> {
         if self.owns_reference {
             return Ok(());
         }
@@ -153,7 +153,7 @@ impl InFlightFd {
 
     /// Transfer the queued reference to a receiver-side OpenFileDesc without a
     /// decrement/re-increment window in the underlying resource ownership.
-    pub(crate) fn transfer_reference(&mut self) {
+    pub fn transfer_reference(&mut self) {
         debug_assert!(self.owns_reference);
         if self.owns_reference {
             transfer_in_flight_resource(self.release_metadata());
@@ -170,7 +170,7 @@ impl InFlightFd {
     /// leaving the original message queued. Keep that allocation fallible so
     /// resource pressure returns an errno instead of panicking after the
     /// caller has observed a partial ancillary result.
-    pub(crate) fn try_clone_retained(&self) -> Result<Self, Errno> {
+    pub fn try_clone_retained(&self) -> Result<Self, Errno> {
         let mut path = Vec::new();
         path.try_reserve_exact(self.path.len())
             .map_err(|_| Errno::ENOMEM)?;
@@ -193,11 +193,11 @@ impl InFlightFd {
         Ok(cloned)
     }
 
-    pub(crate) fn owns_reference(&self) -> bool {
+    pub fn owns_reference(&self) -> bool {
         self.owns_reference
     }
 
-    pub(crate) fn shared_state(&self) -> SharedOfdState {
+    pub fn shared_state(&self) -> SharedOfdState {
         self.shared_state.clone()
     }
 }
@@ -217,7 +217,7 @@ impl Drop for InFlightFd {
 /// the pipe, PTY, or descriptor-backing globals because it may itself be
 /// running while one of those tables is mutably borrowed.
 #[derive(Clone, Copy)]
-pub(crate) struct DeferredInFlightFdRelease {
+pub struct DeferredInFlightFdRelease {
     pub ofd_id: OfdId,
     file_type: FileType,
     host_handle: i64,
@@ -225,7 +225,7 @@ pub(crate) struct DeferredInFlightFdRelease {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ReleasedInFlightFd {
+pub struct ReleasedInFlightFd {
     pub ofd_id: OfdId,
     pub final_ofd_reference: bool,
     pub host_close: Option<i64>,
@@ -242,14 +242,14 @@ struct StreamAncillary {
 }
 
 /// Result of one message-aware stream read.
-pub(crate) struct PipeMessageRead {
+pub struct PipeMessageRead {
     pub bytes_read: usize,
     pub hit_ancillary_barrier: bool,
     pub ancillary_fds: Option<Vec<InFlightFd>>,
 }
 
 /// Result of a stream read that cannot return ancillary data.
-pub(crate) struct PipePlainRead {
+pub struct PipePlainRead {
     pub bytes_read: usize,
     pub hit_ancillary_barrier: bool,
 }
@@ -302,7 +302,7 @@ fn enqueue_deferred_in_flight_release(release: DeferredInFlightFdRelease) {
     queue.records.push(release);
 }
 
-pub(crate) fn pop_deferred_in_flight_release() -> Option<DeferredInFlightFdRelease> {
+pub fn pop_deferred_in_flight_release() -> Option<DeferredInFlightFdRelease> {
     deferred_in_flight_releases().records.pop()
 }
 
@@ -311,12 +311,12 @@ pub(crate) fn pop_deferred_in_flight_release() -> Option<DeferredInFlightFdRelea
 /// Direct host pipe exports use this after ending their pipe-table borrow, so
 /// the ordinary host-TCP path pays only a queue-length check while any future
 /// ancillary-capable caller cannot strand a deferred backing release.
-pub(crate) fn has_deferred_in_flight_releases() -> bool {
+pub fn has_deferred_in_flight_releases() -> bool {
     !deferred_in_flight_releases().records.is_empty()
 }
 
 #[cfg(test)]
-pub(crate) fn deferred_in_flight_release_state() -> (usize, usize, usize) {
+pub fn deferred_in_flight_release_state() -> (usize, usize, usize) {
     let queue = deferred_in_flight_releases();
     (
         queue.records.len(),
@@ -381,7 +381,7 @@ fn transfer_in_flight_resource(release: DeferredInFlightFdRelease) {
 /// Release one deferred queued reference after the table borrow that dropped
 /// it has ended. Any nested ancillary payload discarded by closing a pipe is
 /// queued for a later iteration by the caller.
-pub(crate) fn release_deferred_in_flight_resource(
+pub fn release_deferred_in_flight_resource(
     release: DeferredInFlightFdRelease,
 ) -> ReleasedInFlightFd {
     let mut final_ofd_reference = false;
@@ -894,7 +894,7 @@ impl PipeBuffer {
     /// a successful data write followed by a failed best-effort ancillary
     /// enqueue, which would silently separate the descriptors from their
     /// carrier bytes.
-    pub(crate) fn write_with_ancillary(
+    pub fn write_with_ancillary(
         &mut self,
         data: &[u8],
         fds: Vec<InFlightFd>,
@@ -957,7 +957,7 @@ impl PipeBuffer {
 
     /// Whether the currently available prefix reaches the first descriptor
     /// barrier for a receive of at most `requested` bytes.
-    pub(crate) fn ancillary_barrier_within(&self, requested: usize) -> bool {
+    pub fn ancillary_barrier_within(&self, requested: usize) -> bool {
         let bytes = requested.min(self.len);
         let read_end = self
             .stream_position
@@ -1021,7 +1021,7 @@ impl PipeBuffer {
     /// A non-peek receive moves the queued batch. A peek fallibly clones its
     /// retained references and leaves both bytes and the original batch in
     /// place, matching Linux's repeated-peek descriptor semantics.
-    pub(crate) fn recv_message(
+    pub fn recv_message(
         &mut self,
         buf: &mut [u8],
         peek: bool,
@@ -1074,7 +1074,7 @@ impl PipeBuffer {
     /// Read stream bytes for `read(2)`, `recv(2)`, or `recvfrom(2)`, none of
     /// which can return ancillary data. A consuming call discards a crossed
     /// descriptor batch; a peek leaves the batch queued.
-    pub(crate) fn recv_plain(&mut self, buf: &mut [u8], peek: bool) -> PipePlainRead {
+    pub fn recv_plain(&mut self, buf: &mut [u8], peek: bool) -> PipePlainRead {
         let bytes_read = self.message_read_len(buf.len());
         let read_end = self
             .stream_position
@@ -1355,7 +1355,7 @@ impl PipeTable {
     /// Atomically publish stream data and its already-retained SCM_RIGHTS
     /// descriptors, then discard any carrier queue that has no external
     /// receiver.
-    pub(crate) fn write_retained_ancillary(
+    pub fn write_retained_ancillary(
         &mut self,
         carrier_idx: usize,
         data: &[u8],

@@ -602,6 +602,7 @@ name = "kandelo"
 version = "0.1.0"
 dependencies = [
  "dlmalloc",
+ "runtime-core",
  "spin",
  "wasm-posix-shared",
 ]
@@ -810,6 +811,14 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "runtime-core"
+version = "0.1.0"
+dependencies = [
+ "spin",
+ "wasm-posix-shared",
 ]
 
 [[package]]

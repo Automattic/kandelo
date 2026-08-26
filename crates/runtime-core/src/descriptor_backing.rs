@@ -222,7 +222,7 @@ static PCM_STREAMS: GlobalBackingTable<crate::audio::PcmStream> = GlobalBackingT
 
 // Keep synthetic backing handles disjoint from the small negative sentinels
 // used by pipes, devices, and procfs.
-pub(crate) const SYNTHETIC_REGULAR_HANDLE_BASE: i64 = 1_000_000_000;
+pub const SYNTHETIC_REGULAR_HANDLE_BASE: i64 = 1_000_000_000;
 
 pub fn with_eventfds<R>(
     f: impl for<'a> FnOnce(&'a mut SharedBackingTable<EventFdState>) -> R,
@@ -317,7 +317,7 @@ pub fn manages_ofd(file_type: FileType, host_handle: i64) -> bool {
 /// Shape recognition alone is insufficient at trust boundaries: a stale
 /// negative index has the right bit pattern but cannot reconstruct an open
 /// file description.
-pub(crate) fn is_live_managed_ofd(file_type: FileType, host_handle: i64) -> bool {
+pub fn is_live_managed_ofd(file_type: FileType, host_handle: i64) -> bool {
     match file_type {
         FileType::EventFd => negative_handle_idx(host_handle)
             .is_ok_and(|idx| with_eventfds(|table| table.get(idx).is_some())),

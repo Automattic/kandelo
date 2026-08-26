@@ -19,7 +19,7 @@ use crate::pipe::InFlightFd;
 
 /// One normalized syscall family whose retry target must remain stable.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum BlockingRetryOperation {
+pub enum BlockingRetryOperation {
     Read,
     Write,
     Fcntl,
@@ -47,7 +47,7 @@ pub(crate) enum BlockingRetryOperation {
 impl BlockingRetryOperation {
     /// Normalize vector variants to the one scalar operation Rust executes
     /// after the host has flattened their iovecs.
-    pub(crate) fn from_syscall(syscall: u32) -> Result<Self, Errno> {
+    pub fn from_syscall(syscall: u32) -> Result<Self, Errno> {
         use wasm_posix_shared::abi::extended_syscalls;
 
         match syscall {
@@ -82,7 +82,7 @@ impl BlockingRetryOperation {
         }
     }
 
-    pub(crate) fn is_single_ofd(self) -> bool {
+    pub fn is_single_ofd(self) -> bool {
         matches!(
             self,
             Self::Read
@@ -102,7 +102,7 @@ impl BlockingRetryOperation {
         )
     }
 
-    pub(crate) fn is_pair_ofd(self) -> bool {
+    pub fn is_pair_ofd(self) -> bool {
         matches!(self, Self::Sendfile | Self::CopyFileRange | Self::Splice)
     }
 }
@@ -132,7 +132,7 @@ fn is_explicit_host_only_snapshot_syscall(syscall: u32) -> bool {
 /// Most retryable kernel operations surface EAGAIN. connect(2) deliberately
 /// translates its host handshake sentinel into EINPROGRESS/EALREADY, but a
 /// blocking caller still sleeps and therefore needs the same stable target.
-pub(crate) fn result_needs_target(syscall: u32, errno: u32) -> bool {
+pub fn result_needs_target(syscall: u32, errno: u32) -> bool {
     errno == Errno::EAGAIN as u32
         || (syscall == 54
             && (errno == Errno::EINPROGRESS as u32 || errno == Errno::EALREADY as u32))
@@ -140,17 +140,17 @@ pub(crate) fn result_needs_target(syscall: u32, errno: u32) -> bool {
 
 /// Exact process-local OFD slot plus its non-reusable machine identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct StableOfdTarget {
-    pub(crate) original_fd: i32,
-    pub(crate) ofd_idx: usize,
-    pub(crate) ofd_id: OfdId,
+pub struct StableOfdTarget {
+    pub original_fd: i32,
+    pub ofd_idx: usize,
+    pub ofd_id: OfdId,
 }
 
 /// Resource authority retained by one blocked operation.
 ///
 /// Capabilities are deliberately non-Clone. Exact release consumes the enum,
 /// preventing a second caller from decrementing the same kernel-owned pin.
-pub(crate) enum BlockingRetryTarget {
+pub enum BlockingRetryTarget {
     Ofd(StableOfdTarget),
     OfdPair {
         input: StableOfdTarget,
@@ -186,11 +186,11 @@ impl BlockingRetryTarget {
     }
 }
 
-pub(crate) struct BlockingRetryBinding {
-    pub(crate) token: i64,
-    pub(crate) tid: u32,
-    pub(crate) operation: BlockingRetryOperation,
-    pub(crate) target: BlockingRetryTarget,
+pub struct BlockingRetryBinding {
+    pub token: i64,
+    pub tid: u32,
+    pub operation: BlockingRetryOperation,
+    pub target: BlockingRetryTarget,
 }
 
 /// Per-process binding registry.
@@ -198,7 +198,7 @@ pub(crate) struct BlockingRetryBinding {
 /// A `Vec` keeps the common one-blocked-call-per-task case compact and avoids
 /// a second tree allocation. Tokens never wrap or reuse during a process
 /// lifetime; exhaustion is a truthful terminal error.
-pub(crate) struct BlockingRetryState {
+pub struct BlockingRetryState {
     next_token: u64,
     bindings: Vec<BlockingRetryBinding>,
     active: Option<(u32, i64, BlockingRetryOperation)>,
@@ -207,7 +207,7 @@ pub(crate) struct BlockingRetryState {
 }
 
 impl BlockingRetryState {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             next_token: 1,
             bindings: Vec::new(),
@@ -217,23 +217,23 @@ impl BlockingRetryState {
         }
     }
 
-    pub(crate) fn bind_task(&mut self, tid: u32) {
+    pub fn bind_task(&mut self, tid: u32) {
         self.bound_tid = Some(tid);
     }
 
-    pub(crate) fn clear_bound_task(&mut self, tid: u32) {
+    pub fn clear_bound_task(&mut self, tid: u32) {
         if self.bound_tid == Some(tid) {
             self.bound_tid = None;
         }
     }
 
-    pub(crate) fn bound_tid(&self) -> Option<u32> {
+    pub fn bound_tid(&self) -> Option<u32> {
         self.bound_tid
     }
 
     /// Reserve storage and a nonzero signed-Wasm token before the target is
     /// pinned. This ordering lets callers fail without needing rollback.
-    pub(crate) fn prepare_insert(&mut self) -> Result<i64, Errno> {
+    pub fn prepare_insert(&mut self) -> Result<i64, Errno> {
         if self.next_token > i64::MAX as u64 {
             return Err(Errno::EOVERFLOW);
         }
@@ -243,7 +243,7 @@ impl BlockingRetryState {
         Ok(token)
     }
 
-    pub(crate) fn insert_prepared(
+    pub fn insert_prepared(
         &mut self,
         token: i64,
         tid: u32,
@@ -270,7 +270,7 @@ impl BlockingRetryState {
         Ok(())
     }
 
-    pub(crate) fn token_for(
+    pub fn token_for(
         &self,
         tid: u32,
         operation: BlockingRetryOperation,
@@ -289,7 +289,7 @@ impl BlockingRetryState {
     /// allowlist. A newly mapped operation with no binding still fails ENOENT,
     /// while an unknown operation fails EINVAL, so protocol drift cannot
     /// silently downgrade it to an unpinned retry.
-    pub(crate) fn token_for_syscall(&self, tid: u32, syscall: u32) -> Result<i64, Errno> {
+    pub fn token_for_syscall(&self, tid: u32, syscall: u32) -> Result<i64, Errno> {
         let operation = match BlockingRetryOperation::from_syscall(syscall) {
             Ok(operation) => operation,
             Err(Errno::EINVAL) if is_explicit_host_only_snapshot_syscall(syscall) => {
@@ -300,11 +300,11 @@ impl BlockingRetryState {
         self.token_for(tid, operation)
     }
 
-    pub(crate) fn has_binding_for_tid(&self, tid: u32) -> bool {
+    pub fn has_binding_for_tid(&self, tid: u32) -> bool {
         self.bindings.iter().any(|binding| binding.tid == tid)
     }
 
-    pub(crate) fn activate(
+    pub fn activate(
         &mut self,
         tid: u32,
         token: i64,
@@ -325,7 +325,7 @@ impl BlockingRetryState {
         Ok(())
     }
 
-    pub(crate) fn clear_active(&mut self) {
+    pub fn clear_active(&mut self) {
         self.active = None;
     }
 
@@ -335,7 +335,7 @@ impl BlockingRetryState {
     /// A channel-dispatched call passes token zero after the outer dispatcher
     /// has already activated the exact operation. Foreign task/operation
     /// state is rejected without mutation.
-    pub(crate) fn activate_direct(
+    pub fn activate_direct(
         &mut self,
         tid: u32,
         token: i64,
@@ -365,11 +365,11 @@ impl BlockingRetryState {
         Ok(true)
     }
 
-    pub(crate) fn active_tid(&self) -> Option<u32> {
+    pub fn active_tid(&self) -> Option<u32> {
         self.active.map(|(tid, _, _)| tid)
     }
 
-    pub(crate) fn begin_dispatch(&mut self, tid: u32) -> Result<(), Errno> {
+    pub fn begin_dispatch(&mut self, tid: u32) -> Result<(), Errno> {
         if self.dispatch_tid.is_some() {
             return Err(Errno::EBUSY);
         }
@@ -383,7 +383,7 @@ impl BlockingRetryState {
     /// dispatcher. A nested call must share the already-proven TID without
     /// clearing its caller's dispatch authority, while a different TID must
     /// never replace that authority.
-    pub(crate) fn enter_dispatch(&mut self, tid: u32) -> Result<bool, Errno> {
+    pub fn enter_dispatch(&mut self, tid: u32) -> Result<bool, Errno> {
         match self.dispatch_tid {
             None => {
                 self.dispatch_tid = Some(tid);
@@ -394,15 +394,15 @@ impl BlockingRetryState {
         }
     }
 
-    pub(crate) fn dispatch_tid(&self) -> Option<u32> {
+    pub fn dispatch_tid(&self) -> Option<u32> {
         self.dispatch_tid
     }
 
-    pub(crate) fn clear_dispatch(&mut self) {
+    pub fn clear_dispatch(&mut self) {
         self.dispatch_tid = None;
     }
 
-    pub(crate) fn active_binding(
+    pub fn active_binding(
         &self,
         tid: u32,
         operation: BlockingRetryOperation,
@@ -427,7 +427,7 @@ impl BlockingRetryState {
     /// the current TID would create an aliased reference to the same Process.
     /// Activation happens before that borrow reaches the syscall layer and
     /// records the exact task/operation under serialized kernel entry.
-    pub(crate) fn active_binding_current(
+    pub fn active_binding_current(
         &self,
     ) -> Result<Option<&BlockingRetryBinding>, Errno> {
         let Some((_, token, _)) = self.active else {
@@ -440,7 +440,7 @@ impl BlockingRetryState {
             .ok_or(Errno::ENOENT)
     }
 
-    pub(crate) fn active_mqueue(
+    pub fn active_mqueue(
         &self,
         tid: u32,
         operation: BlockingRetryOperation,
@@ -454,7 +454,7 @@ impl BlockingRetryState {
         }
     }
 
-    pub(crate) fn active_sysv_message(
+    pub fn active_sysv_message(
         &self,
         tid: u32,
         operation: BlockingRetryOperation,
@@ -468,7 +468,7 @@ impl BlockingRetryState {
         }
     }
 
-    pub(crate) fn active_sysv_semaphore(
+    pub fn active_sysv_semaphore(
         &self,
         tid: u32,
     ) -> Result<Option<&PinnedSemSet>, Errno> {
@@ -481,7 +481,7 @@ impl BlockingRetryState {
         }
     }
 
-    pub(crate) fn take_exact(
+    pub fn take_exact(
         &mut self,
         tid: u32,
         token: i64,
@@ -502,7 +502,7 @@ impl BlockingRetryState {
         Ok(self.bindings.swap_remove(index))
     }
 
-    pub(crate) fn take_for_tid(&mut self, tid: u32) -> Option<BlockingRetryBinding> {
+    pub fn take_for_tid(&mut self, tid: u32) -> Option<BlockingRetryBinding> {
         if self.bound_tid == Some(tid) {
             self.bound_tid = None;
         }
@@ -521,7 +521,7 @@ impl BlockingRetryState {
             .map(|index| self.bindings.swap_remove(index))
     }
 
-    pub(crate) fn take_all(&mut self) -> Vec<BlockingRetryBinding> {
+    pub fn take_all(&mut self) -> Vec<BlockingRetryBinding> {
         self.bound_tid = None;
         self.dispatch_tid = None;
         self.active = None;
@@ -529,7 +529,7 @@ impl BlockingRetryState {
     }
 
     #[cfg(test)]
-    pub(crate) fn binding_count(&self) -> usize {
+    pub fn binding_count(&self) -> usize {
         self.bindings.len()
     }
 }

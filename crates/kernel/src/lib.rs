@@ -5,92 +5,14 @@
 extern crate alloc;
 extern crate wasm_posix_shared;
 
-pub mod audio;
-pub(crate) mod blocked_retry;
-pub(crate) mod channel_result;
-pub(crate) mod channel_scratch;
-pub mod credentials;
-pub(crate) mod descriptor_backing;
-pub mod devfs;
-pub mod dri;
-pub(crate) mod exec_target;
-pub mod fd;
-pub mod fifo;
-pub mod fork;
-pub mod ipc;
-pub(crate) mod ipc_wire;
-pub mod lock;
-pub mod memory;
-pub mod mouse;
-pub mod mqueue;
-pub mod ofd;
-pub mod path;
-pub(crate) mod complete_copy;
-pub mod pipe;
-pub mod process;
-pub(crate) mod process_snapshot_wire;
-pub mod process_table;
-pub(crate) mod process_wire;
-pub mod procfs;
-pub mod pshared;
-pub mod pty;
-pub(crate) mod scratch_alloc;
-pub mod signal;
-pub mod socket;
-pub(crate) mod socket_wire;
-pub mod spawn;
-pub mod syscalls;
-pub mod terminal;
-pub(crate) mod transfer;
-pub mod unix_socket;
-pub mod wakeup;
+// This crate is the Wasm FFI shell over the engine-agnostic runtime-core.
+// Re-export the runtime so `wasm_api.rs` and downstream keep flat
+// `crate::<mod>` paths (e.g. `crate::process::HostIO`, `crate::syscalls::…`,
+// `crate::debug_log`, `crate::current_time_secs`).
+pub use runtime_core::*;
 
 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
 pub mod wasm_api;
-
-// ---------------------------------------------------------------------------
-// Debug logging (temporary)
-// ---------------------------------------------------------------------------
-
-#[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-pub fn debug_log(msg: &str) {
-    #[link(wasm_import_module = "env")]
-    unsafe extern "C" {
-        fn host_debug_log(ptr: *const u8, len: u32);
-    }
-    unsafe {
-        host_debug_log(msg.as_ptr(), msg.len() as u32);
-    }
-}
-
-#[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-pub fn debug_log(_msg: &str) {}
-
-// ---------------------------------------------------------------------------
-// Current time helper
-// ---------------------------------------------------------------------------
-
-/// Get current real time in seconds (CLOCK_REALTIME).
-/// On wasm32, calls the host import. On native (tests), returns 0.
-pub fn current_time_secs() -> i64 {
-    #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-    {
-        #[link(wasm_import_module = "env")]
-        unsafe extern "C" {
-            fn host_clock_gettime(clock_id: u32, sec_ptr: *mut i64, nsec_ptr: *mut i64) -> i32;
-        }
-        let mut sec: i64 = 0;
-        let mut nsec: i64 = 0;
-        unsafe {
-            host_clock_gettime(0, &mut sec as *mut i64, &mut nsec as *mut i64);
-        }
-        sec
-    }
-    #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-    {
-        0
-    }
-}
 
 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
 mod wasm {

@@ -9,13 +9,13 @@ use core::convert::TryFrom;
 use wasm_posix_shared::{Errno, WasmStat, WasmStatfs, process_layout};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ProcessDataModel {
+pub enum ProcessDataModel {
     Wasm32,
     Wasm64,
 }
 
 impl ProcessDataModel {
-    pub(crate) fn from_width(width: i64) -> Result<Self, Errno> {
+    pub fn from_width(width: i64) -> Result<Self, Errno> {
         match width {
             value if value == process_layout::WASM32_POINTER_WIDTH as i64 => Ok(Self::Wasm32),
             value if value == process_layout::WASM64_POINTER_WIDTH as i64 => Ok(Self::Wasm64),
@@ -23,14 +23,14 @@ impl ProcessDataModel {
         }
     }
 
-    pub(crate) const fn width(self) -> u32 {
+    pub const fn width(self) -> u32 {
         match self {
             Self::Wasm32 => process_layout::WASM32_POINTER_WIDTH,
             Self::Wasm64 => process_layout::WASM64_POINTER_WIDTH,
         }
     }
 
-    pub(crate) const fn max_pointer(self) -> u64 {
+    pub const fn max_pointer(self) -> u64 {
         match self {
             Self::Wasm32 => u32::MAX as u64,
             Self::Wasm64 => u64::MAX,
@@ -41,49 +41,49 @@ impl ProcessDataModel {
         self.width() as usize
     }
 
-    pub(crate) const fn sigaltstack_size(self) -> usize {
+    pub const fn sigaltstack_size(self) -> usize {
         match self {
             Self::Wasm32 => process_layout::sigaltstack::WASM32_SIZE as usize,
             Self::Wasm64 => process_layout::sigaltstack::WASM64_SIZE as usize,
         }
     }
 
-    pub(crate) const fn itimerval_size(self) -> usize {
+    pub const fn itimerval_size(self) -> usize {
         match self {
             Self::Wasm32 => process_layout::itimerval::WASM32_SIZE as usize,
             Self::Wasm64 => process_layout::itimerval::WASM64_SIZE as usize,
         }
     }
 
-    pub(crate) const fn mq_attr_size(self) -> usize {
+    pub const fn mq_attr_size(self) -> usize {
         match self {
             Self::Wasm32 => process_layout::mq_attr::WASM32_SIZE as usize,
             Self::Wasm64 => process_layout::mq_attr::WASM64_SIZE as usize,
         }
     }
 
-    pub(crate) const fn sigevent_size(self) -> usize {
+    pub const fn sigevent_size(self) -> usize {
         match self {
             Self::Wasm32 => process_layout::sigevent::WASM32_SIZE as usize,
             Self::Wasm64 => process_layout::sigevent::WASM64_SIZE as usize,
         }
     }
 
-    pub(crate) const fn statfs_size(self) -> usize {
+    pub const fn statfs_size(self) -> usize {
         match self {
             Self::Wasm32 => process_layout::statfs::WASM32_SIZE as usize,
             Self::Wasm64 => process_layout::statfs::WASM64_SIZE as usize,
         }
     }
 
-    pub(crate) const fn sysinfo_size(self) -> usize {
+    pub const fn sysinfo_size(self) -> usize {
         match self {
             Self::Wasm32 => process_layout::sysinfo::WASM32_SIZE as usize,
             Self::Wasm64 => process_layout::sysinfo::WASM64_SIZE as usize,
         }
     }
 
-    pub(crate) const fn siginfo_size(self) -> usize {
+    pub const fn siginfo_size(self) -> usize {
         match self {
             Self::Wasm32 => process_layout::rt_sigqueueinfo::WASM32_SIZE as usize,
             Self::Wasm64 => process_layout::rt_sigqueueinfo::WASM64_SIZE as usize,
@@ -92,67 +92,67 @@ impl ProcessDataModel {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct NativeSigaltstack {
-    pub(crate) sp: u64,
-    pub(crate) flags: u32,
-    pub(crate) size: u64,
+pub struct NativeSigaltstack {
+    pub sp: u64,
+    pub flags: u32,
+    pub size: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct NativeMqAttr {
-    pub(crate) flags: u32,
-    pub(crate) maxmsg: u32,
-    pub(crate) msgsize: u32,
-    pub(crate) curmsgs: u32,
+pub struct NativeMqAttr {
+    pub flags: u32,
+    pub maxmsg: u32,
+    pub msgsize: u32,
+    pub curmsgs: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct NativeSigevent {
+pub struct NativeSigevent {
     /// Raw caller-native `union sigval` bits, zero-extended for wasm32.
-    pub(crate) value_bits: u64,
-    pub(crate) signo: u32,
-    pub(crate) notify: u32,
+    pub value_bits: u64,
+    pub signo: u32,
+    pub notify: u32,
     /// `sigev_notify_thread_id` when `notify` is `SIGEV_THREAD_ID`.
-    pub(crate) thread_id: u32,
+    pub thread_id: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct NativeRtSigqueueinfo {
-    pub(crate) pid: i32,
-    pub(crate) uid: u32,
+pub struct NativeRtSigqueueinfo {
+    pub pid: i32,
+    pub uid: u32,
     /// Raw caller-native `union sigval` bits, zero-extended for wasm32.
-    pub(crate) value_bits: u64,
+    pub value_bits: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct NativeSiginfo {
-    pub(crate) signo: i32,
-    pub(crate) code: i32,
-    pub(crate) word_1: i32,
-    pub(crate) word_2_bits: u32,
+pub struct NativeSiginfo {
+    pub signo: i32,
+    pub code: i32,
+    pub word_1: i32,
+    pub word_2_bits: u32,
     /// Raw caller-native `union sigval` bits, zero-extended for wasm32.
-    pub(crate) value_bits: u64,
+    pub value_bits: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct SignalDeliveryRecord {
-    pub(crate) signum: u32,
-    pub(crate) handler: u32,
-    pub(crate) flags: u32,
+pub struct SignalDeliveryRecord {
+    pub signum: u32,
+    pub handler: u32,
+    pub flags: u32,
     /// Raw `union sigval` bits. The delivery wire always uses the widest
     /// supported pointer width so wasm64 values are never narrowed.
-    pub(crate) si_value_bits: u64,
-    pub(crate) old_mask: u64,
-    pub(crate) si_code: i32,
-    pub(crate) siginfo_word_1: i32,
-    pub(crate) siginfo_word_2: i32,
-    pub(crate) alt_sp: u64,
-    pub(crate) alt_size: u64,
+    pub si_value_bits: u64,
+    pub old_mask: u64,
+    pub si_code: i32,
+    pub siginfo_word_1: i32,
+    pub siginfo_word_2: i32,
+    pub alt_sp: u64,
+    pub alt_size: u64,
 }
 
-pub(crate) const SIGALTSTACK_SS_DISABLE: u32 = 2;
+pub const SIGALTSTACK_SS_DISABLE: u32 = 2;
 
-pub(crate) fn validate_sigaltstack_range(
+pub fn validate_sigaltstack_range(
     stack: NativeSigaltstack,
     model: ProcessDataModel,
 ) -> Result<(), Errno> {
@@ -173,7 +173,7 @@ pub(crate) fn validate_sigaltstack_range(
     Ok(())
 }
 
-pub(crate) fn validate_signal_delivery_output(
+pub fn validate_signal_delivery_output(
     out_ptr: *mut u8,
     out_capacity: u32,
 ) -> Result<(), Errno> {
@@ -186,7 +186,7 @@ pub(crate) fn validate_signal_delivery_output(
     Ok(())
 }
 
-pub(crate) fn encode_signal_delivery_record(
+pub fn encode_signal_delivery_record(
     record: SignalDeliveryRecord,
 ) -> [u8; wasm_posix_shared::kernel_scratch_wire::SIGNAL_DELIVERY_BYTES as usize] {
     use wasm_posix_shared::kernel_scratch_wire as wire;
@@ -226,14 +226,14 @@ pub(crate) fn encode_signal_delivery_record(
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct NativeSchedParam {
-    pub(crate) priority: i32,
-    pub(crate) ss_max_repl: i32,
-    pub(crate) ss_repl_period_sec: i64,
-    pub(crate) ss_repl_period_nsec: i64,
-    pub(crate) ss_init_budget_sec: i64,
-    pub(crate) ss_init_budget_nsec: i64,
-    pub(crate) ss_low_priority: i32,
+pub struct NativeSchedParam {
+    pub priority: i32,
+    pub ss_max_repl: i32,
+    pub ss_repl_period_sec: i64,
+    pub ss_repl_period_nsec: i64,
+    pub ss_init_budget_sec: i64,
+    pub ss_init_budget_nsec: i64,
+    pub ss_low_priority: i32,
 }
 
 fn require_len(bytes: &[u8], expected: usize) -> Result<(), Errno> {
@@ -373,7 +373,7 @@ fn write_native_sigval(
     }
 }
 
-pub(crate) fn read_sigaltstack(
+pub fn read_sigaltstack(
     bytes: &[u8],
     model: ProcessDataModel,
 ) -> Result<NativeSigaltstack, Errno> {
@@ -411,7 +411,7 @@ pub(crate) fn read_sigaltstack(
     })
 }
 
-pub(crate) fn write_sigaltstack(
+pub fn write_sigaltstack(
     bytes: &mut [u8],
     stack: NativeSigaltstack,
     model: ProcessDataModel,
@@ -456,7 +456,7 @@ pub(crate) fn write_sigaltstack(
     }
 }
 
-pub(crate) fn read_itimerval(bytes: &[u8], model: ProcessDataModel) -> Result<[i64; 4], Errno> {
+pub fn read_itimerval(bytes: &[u8], model: ProcessDataModel) -> Result<[i64; 4], Errno> {
     require_len(bytes, model.itimerval_size())?;
     let stride = model.native_long_bytes();
     Ok([
@@ -467,7 +467,7 @@ pub(crate) fn read_itimerval(bytes: &[u8], model: ProcessDataModel) -> Result<[i
     ])
 }
 
-pub(crate) fn write_itimerval(
+pub fn write_itimerval(
     bytes: &mut [u8],
     values: [i64; 4],
     model: ProcessDataModel,
@@ -485,7 +485,7 @@ fn nonnegative_u32(value: i64) -> Result<u32, Errno> {
     u32::try_from(value).map_err(|_| Errno::EINVAL)
 }
 
-pub(crate) fn read_mq_attr(bytes: &[u8], model: ProcessDataModel) -> Result<NativeMqAttr, Errno> {
+pub fn read_mq_attr(bytes: &[u8], model: ProcessDataModel) -> Result<NativeMqAttr, Errno> {
     require_len(bytes, model.mq_attr_size())?;
     let stride = model.native_long_bytes();
     Ok(NativeMqAttr {
@@ -496,7 +496,7 @@ pub(crate) fn read_mq_attr(bytes: &[u8], model: ProcessDataModel) -> Result<Nati
     })
 }
 
-pub(crate) fn write_mq_attr(
+pub fn write_mq_attr(
     bytes: &mut [u8],
     attr: NativeMqAttr,
     model: ProcessDataModel,
@@ -513,7 +513,7 @@ pub(crate) fn write_mq_attr(
     Ok(())
 }
 
-pub(crate) fn read_sigevent(
+pub fn read_sigevent(
     bytes: &[u8],
     model: ProcessDataModel,
 ) -> Result<NativeSigevent, Errno> {
@@ -540,7 +540,7 @@ pub(crate) fn read_sigevent(
     })
 }
 
-pub(crate) fn write_statfs(
+pub fn write_statfs(
     bytes: &mut [u8],
     statfs: &WasmStatfs,
     model: ProcessDataModel,
@@ -583,7 +583,7 @@ pub(crate) fn write_statfs(
     }
 }
 
-pub(crate) fn write_sysinfo(
+pub fn write_sysinfo(
     bytes: &mut [u8],
     info: &crate::syscalls::KernelSysinfo,
     model: ProcessDataModel,
@@ -659,7 +659,7 @@ pub(crate) fn write_sysinfo(
     write_u32(bytes, mem_unit as usize, info.mem_unit)
 }
 
-pub(crate) fn read_rt_sigqueueinfo(
+pub fn read_rt_sigqueueinfo(
     bytes: &[u8],
     model: ProcessDataModel,
 ) -> Result<NativeRtSigqueueinfo, Errno> {
@@ -689,7 +689,7 @@ fn siginfo_union_offsets(model: ProcessDataModel) -> (usize, usize, usize) {
 
 /// Serialize a complete caller-native `siginfo_t` without retaining scratch
 /// bytes in padding or inactive union members.
-pub(crate) fn write_siginfo(
+pub fn write_siginfo(
     bytes: &mut [u8],
     info: NativeSiginfo,
     model: ProcessDataModel,
@@ -718,7 +718,7 @@ pub(crate) fn write_siginfo(
 /// `st_ctime_nsec`. A stat syscall instead returns musl's larger native
 /// `struct kstat`; copying only the canonical prefix would publish reused
 /// kernel-scratch bytes as rdev/block metadata.
-pub(crate) fn write_stat(bytes: &mut [u8], stat: &WasmStat) -> Result<(), Errno> {
+pub fn write_stat(bytes: &mut [u8], stat: &WasmStat) -> Result<(), Errno> {
     require_len_mut(bytes, process_layout::stat::SIZE as usize)?;
     bytes.fill(0);
     use process_layout::stat::*;
@@ -737,7 +737,7 @@ pub(crate) fn write_stat(bytes: &mut [u8], stat: &WasmStat) -> Result<(), Errno>
     write_u32(bytes, CTIME_NSEC_OFFSET as usize, stat.st_ctime_nsec)
 }
 
-pub(crate) fn read_sched_param(bytes: &[u8]) -> Result<NativeSchedParam, Errno> {
+pub fn read_sched_param(bytes: &[u8]) -> Result<NativeSchedParam, Errno> {
     require_len(bytes, process_layout::sched_param::SIZE as usize)?;
     use process_layout::sched_param::*;
     Ok(NativeSchedParam {
@@ -751,7 +751,7 @@ pub(crate) fn read_sched_param(bytes: &[u8]) -> Result<NativeSchedParam, Errno> 
     })
 }
 
-pub(crate) fn write_sched_param(bytes: &mut [u8], param: NativeSchedParam) -> Result<(), Errno> {
+pub fn write_sched_param(bytes: &mut [u8], param: NativeSchedParam) -> Result<(), Errno> {
     require_len_mut(bytes, process_layout::sched_param::SIZE as usize)?;
     bytes.fill(0);
     use process_layout::sched_param::*;

@@ -59,7 +59,7 @@ fn oflags_to_fd_flags(oflags: u32) -> u32 {
 /// Reject operations that require an I/O-capable open file description.
 /// Metadata queries, descriptor duplication/flags, `fchdir`, and `*at`
 /// pathname resolution deliberately do not call this helper.
-pub(crate) fn resolve_io_ofd(proc: &Process, fd: i32) -> Result<usize, Errno> {
+pub fn resolve_io_ofd(proc: &Process, fd: i32) -> Result<usize, Errno> {
     if let Some(binding) = proc.blocked_retries.active_binding_current()? {
         let target = match &binding.target {
             BlockingRetryTarget::Ofd(target)
@@ -96,7 +96,7 @@ pub(crate) fn resolve_io_ofd(proc: &Process, fd: i32) -> Result<usize, Errno> {
 /// process-owned state before lending `&mut Process`. A tokenized retry adds
 /// stricter dispatch/active identities, but both initial and retry calls stay
 /// independent of ambient global-table reentry.
-pub(crate) fn current_tid_for_process(proc: &Process) -> u32 {
+pub fn current_tid_for_process(proc: &Process) -> u32 {
     let bound = proc
         .blocked_retries
         .dispatch_tid()
@@ -370,7 +370,7 @@ fn acquire_fb0_or_busy(pid: u32) -> Result<(), Errno> {
 /// Release `/dev/fb0` ownership held by `pid`, if any. Idempotent: safe
 /// to call from `close`, `munmap`, or process exit even when the process
 /// never owned the device.
-pub(crate) fn maybe_release_fb0(pid: u32) {
+pub fn maybe_release_fb0(pid: u32) {
     use core::sync::atomic::Ordering;
     let _ = crate::process_table::FB0_OWNER.compare_exchange(
         pid as i32,
@@ -422,7 +422,7 @@ fn acquire_mice_or_busy(pid: u32) -> Result<(), Errno> {
 /// Release `/dev/input/mice` ownership held by `pid`, if any. Drops any
 /// pending packets so the next opener starts from a clean slate.
 /// Idempotent.
-pub(crate) fn maybe_release_mice(pid: u32) {
+pub fn maybe_release_mice(pid: u32) {
     let prev = crate::mouse::MICE_OWNER.compare_exchange(
         pid as i32,
         -1,
@@ -826,7 +826,7 @@ fn release_process_dri_mappings(proc: &mut Process, host: &mut dyn HostIO) {
     }
 }
 
-pub(crate) fn release_exec_image_state(proc: &mut Process, host: &mut dyn HostIO) {
+pub fn release_exec_image_state(proc: &mut Process, host: &mut dyn HostIO) {
     // /dev/fb0 cleanup: exec wipes the address-space binding. Tell the host
     // before its memory snapshot is invalidated, but retain device ownership
     // while a non-CLOEXEC fb fd remains open in this same process.
@@ -844,7 +844,7 @@ pub(crate) fn release_exec_image_state(proc: &mut Process, host: &mut dyn HostIO
 
 /// Commit the exec-defined state transition without cloning descriptor-backed
 /// kernel objects through a wire format.
-pub(crate) fn commit_exec_state(
+pub fn commit_exec_state(
     proc: &mut Process,
     host: &mut dyn HostIO,
     caller_tid: u32,
@@ -852,7 +852,7 @@ pub(crate) fn commit_exec_state(
     commit_exec_state_impl(proc, None, host, Some(caller_tid))
 }
 
-pub(crate) fn commit_exec_state_with_locks(
+pub fn commit_exec_state_with_locks(
     proc: &mut Process,
     locks: &mut AdvisoryLockManager,
     host: &mut dyn HostIO,
@@ -864,7 +864,7 @@ pub(crate) fn commit_exec_state_with_locks(
 /// Commit a spawned image before the child has a host-visible caller thread.
 /// The prepared target's parent/child launch tuple is the authority here; a
 /// synthetic child TID would weaken that binding.
-pub(crate) fn commit_spawn_exec_state_with_locks(
+pub fn commit_spawn_exec_state_with_locks(
     proc: &mut Process,
     locks: &mut AdvisoryLockManager,
     host: &mut dyn HostIO,
@@ -1851,7 +1851,7 @@ fn handle_dri_card_ioctl(
 /// Called from `sys_close` after `dec_ref` has freed the OFD slot
 /// (the caller is responsible for serializing). No-op for OFDs
 /// without DRI state.
-pub(crate) fn dri_release_ofd_state(
+pub fn dri_release_ofd_state(
     pid: i32,
     host: &mut dyn HostIO,
     ofd_idx: usize,
@@ -2408,7 +2408,7 @@ fn resolve_namespace_path(
 /// Resolve an existing pathname to the canonical global namespace spelling.
 /// Kept crate-visible for exported syscall wrappers that must retry an
 /// operation after the ordinary syscall path releases its host borrow.
-pub(crate) fn resolve_existing_namespace_path(
+pub fn resolve_existing_namespace_path(
     proc: &Process,
     host: &mut dyn HostIO,
     path: &[u8],
@@ -2541,7 +2541,7 @@ fn check_owner_or_root(proc: &Process, st: &WasmStat) -> Result<(), Errno> {
     }
 }
 
-pub(crate) fn check_prepared_exec_stat(
+pub fn check_prepared_exec_stat(
     proc: &Process,
     stat: &WasmStat,
 ) -> Result<(), Errno> {
@@ -2551,20 +2551,20 @@ pub(crate) fn check_prepared_exec_stat(
     check_access(proc, stat, X_OK)
 }
 
-pub(crate) struct PreparedExecOpen {
-    pub(crate) ofd_ref: OpenFileDescRef,
-    pub(crate) ofd_id: OfdId,
-    pub(crate) file_id: Option<FileId>,
-    pub(crate) stat: WasmStat,
-    pub(crate) statfs: WasmStatfs,
-    pub(crate) diagnostic_path: Vec<u8>,
+pub struct PreparedExecOpen {
+    pub ofd_ref: OpenFileDescRef,
+    pub ofd_id: OfdId,
+    pub file_id: Option<FileId>,
+    pub stat: WasmStat,
+    pub statfs: WasmStatfs,
+    pub diagnostic_path: Vec<u8>,
 }
 
 /// Open one pathname target directly into the OFD table without publishing a
 /// guest descriptor. The resulting reference is owned by the prepared-target
 /// ledger, so RLIMIT_NOFILE and POSIX close-any-fd lock semantics do not enter
 /// this internal authority path.
-pub(crate) fn open_prepared_exec_target(
+pub fn open_prepared_exec_target(
     proc: &mut Process,
     host: &mut dyn HostIO,
     dirfd: i32,
@@ -2640,7 +2640,7 @@ fn fifo_open_owner(proc: &Process) -> u64 {
     ((proc.pid as u64) << 32) | guest_tid as u64
 }
 
-pub(crate) fn cancel_fifo_open_for_owner(proc: &mut Process, owner: u64) -> bool {
+pub fn cancel_fifo_open_for_owner(proc: &mut Process, owner: u64) -> bool {
     let cancelled = unsafe { crate::pipe::global_pipe_table().cancel_fifo_open(owner) };
     let Some(waiter) = cancelled else {
         return false;
@@ -2657,7 +2657,7 @@ pub(crate) fn cancel_fifo_open_for_owner(proc: &mut Process, owner: u64) -> bool
 /// re-enter those syscalls to restore it, so the same synthetic cancellation
 /// entry that releases FIFO reservations must restore the exact task mask.
 /// Taking the saved value makes duplicate cancellation idempotent.
-pub(crate) fn cancel_host_owned_wait_for_tid(proc: &mut Process, tid: u32) -> bool {
+pub fn cancel_host_owned_wait_for_tid(proc: &mut Process, tid: u32) -> bool {
     let owner = ((proc.pid as u64) << 32) | tid as u64;
     let mut cancelled = cancel_fifo_open_for_owner(proc, owner);
     if proc.cancel_signal_mask_wait_for(tid) {
@@ -2672,7 +2672,7 @@ pub(crate) fn cancel_host_owned_wait_for_tid(proc: &mut Process, tid: u32) -> bo
 /// entry. Centralizing that distinction prevents synthetic thread
 /// cancellation from rejecting the main pthread while still failing closed
 /// for zero, stale, or exited task identities.
-pub(crate) fn cancel_host_owned_wait_for_live_tid(
+pub fn cancel_host_owned_wait_for_live_tid(
     proc: &mut Process,
     tid: u32,
 ) -> Result<(), Errno> {
@@ -3253,7 +3253,7 @@ fn publish_advisory_lock_mutation(mutation: LockMutation) {
 /// Finish resource cleanup queued by dropped SCM_RIGHTS payloads. The payload
 /// destructor itself never re-enters global backing/pipe tables because it may
 /// run while one of those tables is already mutably borrowed.
-pub(crate) fn drain_deferred_scm_rights_releases(
+pub fn drain_deferred_scm_rights_releases(
     locks: &mut AdvisoryLockManager,
     host: &mut dyn HostIO,
 ) {
@@ -3273,7 +3273,7 @@ pub(crate) fn drain_deferred_scm_rights_releases(
 /// Queue mutation cannot synchronously re-enter the global backing tables, so
 /// an operation that can consume or discard ancillary data must call this
 /// after those table borrows end and before publishing its result.
-pub(crate) fn finish_scm_rights_cleanup(locks: &mut AdvisoryLockManager, host: &mut dyn HostIO) {
+pub fn finish_scm_rights_cleanup(locks: &mut AdvisoryLockManager, host: &mut dyn HostIO) {
     drain_deferred_scm_rights_releases(locks, host);
 }
 
@@ -3283,7 +3283,7 @@ pub(crate) fn finish_scm_rights_cleanup(locks: &mut AdvisoryLockManager, host: &
 /// that may have queued the release has ended them. Keeping the pending probe
 /// here gives exported host-pipe and channel boundaries one exact, testable
 /// empty-path contract without walking or borrowing machine state.
-pub(crate) fn finish_scm_rights_cleanup_if_pending(finish: impl FnOnce()) {
+pub fn finish_scm_rights_cleanup_if_pending(finish: impl FnOnce()) {
     if crate::pipe::has_deferred_in_flight_releases() {
         finish();
     }
@@ -3295,7 +3295,7 @@ pub(crate) fn finish_scm_rights_cleanup_if_pending(finish: impl FnOnce()) {
 /// explicit transferability decision instead of silently treating the new
 /// backing as copyable. DRI sidecars are checked separately while the source
 /// OFD is still available.
-pub(crate) fn validate_scm_rights_transfer_metadata(
+pub fn validate_scm_rights_transfer_metadata(
     file_type: FileType,
     host_handle: i64,
 ) -> Result<(), Errno> {
@@ -3361,7 +3361,7 @@ fn decode_scm_rights_kernel_pipe_handle(host_handle: i64) -> Result<usize, Errno
 /// Ownership is intentionally acquired later by [`sys_sendmsg`], after the
 /// complete control message has validated. That ordering prevents a malformed
 /// later record from leaving an earlier descriptor retained.
-pub(crate) fn snapshot_scm_rights_fd(
+pub fn snapshot_scm_rights_fd(
     proc: &Process,
     fd_num: i32,
 ) -> Result<crate::pipe::InFlightFd, Errno> {
@@ -3407,7 +3407,7 @@ pub(crate) fn snapshot_scm_rights_fd(
 /// This does not acquire ownership. It is safe to run on non-owning send
 /// snapshots and is repeated at receive installation as a fail-closed guard
 /// against malformed or legacy queue entries.
-pub(crate) fn validate_scm_rights_in_flight_fd(
+pub fn validate_scm_rights_in_flight_fd(
     entry: &crate::pipe::InFlightFd,
 ) -> Result<(), Errno> {
     validate_scm_rights_transfer_metadata(entry.file_type, entry.host_handle)?;
@@ -3439,7 +3439,7 @@ pub(crate) fn validate_scm_rights_in_flight_fd(
 /// rather than recreating, each machine-wide open-file-description identity.
 /// This is kernel logic rather than a Wasm binding concern so native runtimes
 /// get the same ownership and final-close behavior.
-pub(crate) fn install_scm_rights_fds(
+pub fn install_scm_rights_fds(
     proc: &mut Process,
     in_flight: Vec<crate::pipe::InFlightFd>,
 ) -> Vec<i32> {
@@ -3450,7 +3450,7 @@ pub(crate) fn install_scm_rights_fds(
 ///
 /// `MSG_CMSG_CLOEXEC` must be applied in the same `FdTable::alloc` operation
 /// that publishes the fd; setting it afterward would expose a race with exec.
-pub(crate) fn install_scm_rights_fds_with_flags(
+pub fn install_scm_rights_fds_with_flags(
     proc: &mut Process,
     in_flight: Vec<crate::pipe::InFlightFd>,
     fd_flags: u32,
@@ -3526,7 +3526,7 @@ pub fn sys_close_with_locks(
 /// Close without waiting for a PCM tail. Used by process teardown and other
 /// implicit-close paths where POSIX does not permit delaying descriptor-table
 /// mutation. The final PCM backing remains exclusively owned while it drains.
-pub(crate) fn sys_close_implicit(
+pub fn sys_close_implicit(
     proc: &mut Process,
     host: &mut dyn HostIO,
     fd: i32,
@@ -3539,7 +3539,7 @@ pub(crate) fn sys_close_implicit(
 /// WHY: exec, exit, and descriptor replacement cannot leave a descriptor
 /// installed while PCM drains, but they must still release process and OFD
 /// locks through the authoritative machine lock table.
-pub(crate) fn sys_close_implicit_with_locks(
+pub fn sys_close_implicit_with_locks(
     proc: &mut Process,
     locks: &mut AdvisoryLockManager,
     host: &mut dyn HostIO,
@@ -3888,7 +3888,7 @@ fn release_ofd_reference_impl(
 /// Release one kernel-owned prepared-target reference without pretending a
 /// guest descriptor was closed. The exact OFD cleanup path still owns final
 /// host-handle, device, and advisory-lock retirement.
-pub(crate) fn release_prepared_exec_ofd_with_locks(
+pub fn release_prepared_exec_ofd_with_locks(
     proc: &mut Process,
     locks: &mut AdvisoryLockManager,
     host: &mut dyn HostIO,
@@ -3913,7 +3913,7 @@ fn stable_ofd_target(proc: &Process, fd: i32) -> Result<StableOfdTarget, Errno> 
 /// nested channel can interleave between the failed attempt and this pin.
 /// Retrying through a numeric fd later would instead let close/reuse redirect
 /// the operation to an unrelated open file description.
-pub(crate) fn ensure_blocking_retry_ofd_binding(
+pub fn ensure_blocking_retry_ofd_binding(
     proc: &mut Process,
     locks: &mut AdvisoryLockManager,
     host: &mut dyn HostIO,
@@ -3982,7 +3982,7 @@ pub(crate) fn ensure_blocking_retry_ofd_binding(
 /// WHY: sendfile/copy_file_range/splice can block on either endpoint. Pinning
 /// only the endpoint that returned EAGAIN would let close+reuse redirect the
 /// other half of the same logical request on retry.
-pub(crate) fn ensure_blocking_retry_ofd_pair_binding(
+pub fn ensure_blocking_retry_ofd_pair_binding(
     proc: &mut Process,
     locks: &mut AdvisoryLockManager,
     host: &mut dyn HostIO,
@@ -4032,7 +4032,7 @@ pub(crate) fn ensure_blocking_retry_ofd_pair_binding(
     }
 }
 
-pub(crate) fn ensure_blocking_retry_mqueue_binding(
+pub fn ensure_blocking_retry_mqueue_binding(
     proc: &mut Process,
     tid: u32,
     syscall: u32,
@@ -4070,7 +4070,7 @@ pub(crate) fn ensure_blocking_retry_mqueue_binding(
     }
 }
 
-pub(crate) fn ensure_blocking_retry_sysv_message_binding(
+pub fn ensure_blocking_retry_sysv_message_binding(
     proc: &mut Process,
     tid: u32,
     syscall: u32,
@@ -4107,7 +4107,7 @@ pub(crate) fn ensure_blocking_retry_sysv_message_binding(
     }
 }
 
-pub(crate) fn ensure_blocking_retry_sysv_semaphore_binding(
+pub fn ensure_blocking_retry_sysv_semaphore_binding(
     proc: &mut Process,
     tid: u32,
     syscall: u32,
@@ -4177,7 +4177,7 @@ fn release_blocking_retry_target(
     }
 }
 
-pub(crate) fn release_blocking_retry_binding(
+pub fn release_blocking_retry_binding(
     proc: &mut Process,
     locks: &mut AdvisoryLockManager,
     host: &mut dyn HostIO,
@@ -4188,7 +4188,7 @@ pub(crate) fn release_blocking_retry_binding(
     release_blocking_retry_target(proc, locks, host, binding.target)
 }
 
-pub(crate) fn release_blocking_retry_bindings_for_tid(
+pub fn release_blocking_retry_bindings_for_tid(
     proc: &mut Process,
     locks: &mut AdvisoryLockManager,
     host: &mut dyn HostIO,
@@ -4212,7 +4212,7 @@ pub(crate) fn release_blocking_retry_bindings_for_tid(
 /// pointer itself belongs to the Rust ThreadInfo lifecycle. Returning the
 /// consumed state keeps one authoritative owner without moving process-memory
 /// mutation into kernel memory.
-pub(crate) fn cleanup_exiting_thread_with_state(
+pub fn cleanup_exiting_thread_with_state(
     proc: &mut Process,
     locks: &mut AdvisoryLockManager,
     host: &mut dyn HostIO,
@@ -4229,7 +4229,7 @@ pub(crate) fn cleanup_exiting_thread_with_state(
     Ok(thread)
 }
 
-pub(crate) fn release_all_blocking_retry_bindings(
+pub fn release_all_blocking_retry_bindings(
     proc: &mut Process,
     locks: &mut AdvisoryLockManager,
     host: &mut dyn HostIO,
@@ -4250,7 +4250,7 @@ pub(crate) fn release_all_blocking_retry_bindings(
 /// internal retry refcounts need no individual decrement. Global MQ/IPC and
 /// SCM_RIGHTS references do: otherwise teardown would leak objects outside
 /// the process table.
-pub(crate) fn discard_blocking_retry_bindings_for_process_removal(proc: &mut Process) {
+pub fn discard_blocking_retry_bindings_for_process_removal(proc: &mut Process) {
     for binding in proc.blocked_retries.take_all() {
         match binding.target {
             BlockingRetryTarget::Ofd(_) | BlockingRetryTarget::OfdPair { .. } => {}
@@ -4268,7 +4268,7 @@ pub(crate) fn discard_blocking_retry_bindings_for_process_removal(proc: &mut Pro
     }
 }
 
-pub(crate) fn clone_active_sendmsg_ancillary(
+pub fn clone_active_sendmsg_ancillary(
     proc: &Process,
     tid: u32,
 ) -> Result<Option<Vec<crate::pipe::InFlightFd>>, Errno> {
@@ -4292,7 +4292,7 @@ pub(crate) fn clone_active_sendmsg_ancillary(
 }
 
 /// Return the cursor after a byte transfer without narrowing or wrapping.
-pub(crate) fn checked_offset_advance(offset: i64, transferred: usize) -> Result<i64, Errno> {
+pub fn checked_offset_advance(offset: i64, transferred: usize) -> Result<i64, Errno> {
     let transferred = i64::try_from(transferred).map_err(|_| Errno::EOVERFLOW)?;
     offset.checked_add(transferred).ok_or(Errno::EOVERFLOW)
 }
@@ -5547,7 +5547,7 @@ fn write_operation_plan(
     })
 }
 
-pub(crate) fn write_operation_budget(
+pub fn write_operation_budget(
     proc: &mut Process,
     host: &mut dyn HostIO,
     caller_tid: u32,
@@ -6559,7 +6559,7 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
 /// Return the same live OFD metadata through a procfs fd link as `fstat(fd)`.
 /// A numeric procfs fd name that is not open is absent, not an EBADF syscall
 /// argument owned by the caller.
-pub(crate) fn procfs_fd_target_stat(
+pub fn procfs_fd_target_stat(
     proc: &Process,
     host: &mut dyn HostIO,
     fd: i32,
@@ -9410,7 +9410,7 @@ pub fn sys_unsetenv(proc: &mut Process, name: &[u8]) -> Result<(), Errno> {
 /// The host's generic MAP_SHARED tracker must be restricted to descriptors
 /// whose `pwrite` path reaches persistent host storage. Device mappings and
 /// in-kernel regular-looking files own their state elsewhere.
-pub(crate) fn fd_supports_mmap_writeback(proc: &Process, fd: i32) -> bool {
+pub fn fd_supports_mmap_writeback(proc: &Process, fd: i32) -> bool {
     let Ok(entry) = proc.fd_table.get(fd) else {
         return false;
     };
@@ -9704,7 +9704,7 @@ pub fn sys_mprotect(_proc: &Process, _addr: usize, _len: usize, _prot: u32) -> R
     Ok(())
 }
 
-pub(crate) fn listener_accept_wake_for_entry(
+pub fn listener_accept_wake_for_entry(
     proc: &Process,
     entry: &crate::fd::FdEntry,
 ) -> Option<u32> {
@@ -9722,7 +9722,7 @@ pub(crate) fn listener_accept_wake_for_entry(
     sock.accept_wake_idx
 }
 
-pub(crate) fn find_listener_fd_by_accept_wake(proc: &Process, wake_idx: u32) -> Option<i32> {
+pub fn find_listener_fd_by_accept_wake(proc: &Process, wake_idx: u32) -> Option<i32> {
     proc.fd_table.iter().find_map(|(fd, entry)| {
         (listener_accept_wake_for_entry(proc, entry) == Some(wake_idx)).then_some(fd)
     })
@@ -9876,7 +9876,7 @@ fn sockaddr_family(addr: &[u8]) -> Result<u16, Errno> {
     Ok(u16::from_le_bytes([addr[0], addr[1]]))
 }
 
-pub(crate) fn checked_sockaddr_un_path(addr: &[u8]) -> Result<&[u8], Errno> {
+pub fn checked_sockaddr_un_path(addr: &[u8]) -> Result<&[u8], Errno> {
     let path_offset =
         wasm_posix_shared::kernel_scratch_wire::SOCKADDR_UNIX_PATH_OFFSET_BYTES as usize;
     if addr.len() <= path_offset
@@ -9965,7 +9965,7 @@ fn write_sockaddr_family_prefix(buf: &mut [u8], family: u16) {
     buf[..copied].copy_from_slice(&family_bytes[..copied]);
 }
 
-pub(crate) fn validate_optional_socket_address_output(
+pub fn validate_optional_socket_address_output(
     address_present: bool,
     length_pointer_present: bool,
 ) -> Result<bool, Errno> {
@@ -9980,7 +9980,7 @@ pub(crate) fn validate_optional_socket_address_output(
     Ok(true)
 }
 
-pub(crate) fn write_accept_peer_address(
+pub fn write_accept_peer_address(
     proc: &Process,
     fd: i32,
     addr: &mut [u8],
@@ -10086,7 +10086,7 @@ fn udp_route_local_addr(dst_addr: [u8; 4]) -> [u8; 4] {
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) fn ipv4_multicast_interface_from_index(ifindex: u32) -> Result<[u8; 4], Errno> {
+pub fn ipv4_multicast_interface_from_index(ifindex: u32) -> Result<[u8; 4], Errno> {
     match ifindex {
         0 => Ok([0, 0, 0, 0]),
         // Kandelo exposes a Linux-like loopback interface as index 1.
@@ -10101,7 +10101,7 @@ pub(crate) fn ipv4_multicast_interface_from_index(ifindex: u32) -> Result<[u8; 4
 /// WHY: `optlen` is a caller capacity and padding is ordinary caller data.
 /// Neither can identify the ABI. One kernel instance serves both wasm32 and
 /// wasm64 processes, so the host carries their width independently.
-pub(crate) fn multicast_group_request_offsets(
+pub fn multicast_group_request_offsets(
     buf: &[u8],
     with_source: bool,
     pointer_width: u32,
@@ -10140,7 +10140,7 @@ pub(crate) fn multicast_group_request_offsets(
     }
 }
 
-pub(crate) fn parse_ipv4_multicast_request(
+pub fn parse_ipv4_multicast_request(
     buf: &[u8],
     optname: u32,
     pointer_width: u32,
@@ -11073,7 +11073,7 @@ pub fn inject_udp_datagram_into(
 /// loopback delivery. Keeping only scalar identity and address data across
 /// that boundary prevents two mutable references to the same process state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct CrossProcessLoopbackUdpRoute {
+pub struct CrossProcessLoopbackUdpRoute {
     sender_pid: u32,
     sender_sock_idx: usize,
     sender_uid: u32,
@@ -11087,7 +11087,7 @@ pub(crate) struct CrossProcessLoopbackUdpRoute {
 
 /// Capture an IPv4 loopback route after `send`, `sendto`, or `sendmsg` has
 /// completed its process-local work.
-pub(crate) fn cross_process_loopback_udp_route(
+pub fn cross_process_loopback_udp_route(
     proc: &Process,
     fd: i32,
     addr: Option<&[u8]>,
@@ -11142,7 +11142,7 @@ pub(crate) fn cross_process_loopback_udp_route(
 /// Otherwise, choose the first accepting foreign endpoint by the same registry
 /// order. A full UDP queue still counts as delivery because UDP drops incoming
 /// datagrams rather than reporting receiver backpressure to the sender.
-pub(crate) fn deliver_cross_process_loopback_udp(
+pub fn deliver_cross_process_loopback_udp(
     table: &mut crate::process_table::ProcessTable,
     route: CrossProcessLoopbackUdpRoute,
     data: &[u8],
@@ -11791,7 +11791,7 @@ pub fn sys_getsockopt_tcp_info(proc: &Process, fd: i32) -> Result<[u8; TCP_INFO_
 
 /// Map musl's long64 and time64 socket-timeout numbers to the kernel's
 /// architecture-neutral time64 constants.
-pub(crate) fn canonical_socket_timeout_optname(level: u32, optname: u32) -> Option<u32> {
+pub fn canonical_socket_timeout_optname(level: u32, optname: u32) -> Option<u32> {
     use wasm_posix_shared::socket::{
         SOL_SOCKET, SO_RCVTIMEO, SO_RCVTIMEO_OLD, SO_SNDTIMEO, SO_SNDTIMEO_OLD,
     };
@@ -13218,7 +13218,7 @@ pub fn sys_sendto(
 }
 
 /// Data and control metadata produced by one message-aware receive.
-pub(crate) struct MessageReceive {
+pub struct MessageReceive {
     pub return_len: usize,
     pub addr_len: usize,
     pub output_flags: u32,
@@ -16760,14 +16760,14 @@ fn devfs_statfs() -> WasmStatfs {
 /// Task 6 deliberately stops at this value object. The target-aware exec
 /// transaction owns validation and credential commit in a later task.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct SetIdTransitionProposal {
-    pub(crate) effective_uid: Option<u32>,
-    pub(crate) effective_gid: Option<u32>,
+pub struct SetIdTransitionProposal {
+    pub effective_uid: Option<u32>,
+    pub effective_gid: Option<u32>,
 }
 
 /// Propose set-ID credentials from retained target metadata without applying
 /// them to process state.
-pub(crate) fn propose_set_id_transition(
+pub fn propose_set_id_transition(
     stat: &WasmStat,
     statfs: &WasmStatfs,
 ) -> SetIdTransitionProposal {
@@ -16807,7 +16807,7 @@ fn host_statfs_or_default(host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat
     }
 }
 
-pub(crate) fn host_fstatfs_or_default(
+pub fn host_fstatfs_or_default(
     host: &mut dyn HostIO,
     handle: i64,
 ) -> Result<WasmStatfs, Errno> {
@@ -16905,7 +16905,7 @@ pub fn sys_getgroups(proc: &Process, size: u32) -> Result<&[u32], Errno> {
 ///
 /// A size-zero query is count-only and must not inspect or touch the pointer.
 #[cfg(any(test, target_arch = "wasm32", target_arch = "wasm64"))]
-pub(crate) fn copy_getgroups_to_destination(
+pub fn copy_getgroups_to_destination(
     size: u32,
     list_ptr: *mut u32,
     list_capacity_bytes: u32,
@@ -16941,7 +16941,7 @@ pub fn sys_setgroups(proc: &mut Process, groups: &[u32]) -> Result<(), Errno> {
 /// Descriptor metadata enters non-owning. This function validates the complete
 /// descriptor batch and carrier, then retains every resource before atomically
 /// publishing bytes and ownership to the destination.
-pub(crate) fn sys_sendmsg(
+pub fn sys_sendmsg(
     proc: &mut Process,
     host: &mut dyn HostIO,
     fd: i32,
@@ -17055,7 +17055,7 @@ pub(crate) fn sys_sendmsg(
 }
 
 /// Receive one stream segment or datagram together with its descriptor batch.
-pub(crate) fn sys_recvmsg(
+pub fn sys_recvmsg(
     proc: &mut Process,
     host: &mut dyn HostIO,
     fd: i32,

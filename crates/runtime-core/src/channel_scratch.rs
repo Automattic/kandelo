@@ -24,31 +24,31 @@ const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 /// in kernel linear memory does not prove that the bytes after it belong to the
 /// channel currently being dispatched.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ChannelScratchRegion {
+pub struct ChannelScratchRegion {
     start: usize,
     capacity: usize,
 }
 
 /// One already-proven subrange of a live channel scratch allocation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ChannelScratchRange {
+pub struct ChannelScratchRange {
     start: usize,
     length: usize,
 }
 
 impl ChannelScratchRange {
-    pub(crate) const fn start(self) -> usize {
+    pub const fn start(self) -> usize {
         self.start
     }
 }
 
 impl ChannelScratchRegion {
-    pub(crate) fn new(start: usize, capacity: usize) -> Result<Self, Errno> {
+    pub fn new(start: usize, capacity: usize) -> Result<Self, Errno> {
         start.checked_add(capacity).ok_or(Errno::EFAULT)?;
         Ok(Self { start, capacity })
     }
 
-    pub(crate) fn for_channel(channel_offset: usize) -> Result<Self, Errno> {
+    pub fn for_channel(channel_offset: usize) -> Result<Self, Errno> {
         use wasm_posix_shared::channel::{DATA_OFFSET, DATA_SIZE};
 
         let start = channel_offset
@@ -57,17 +57,17 @@ impl ChannelScratchRegion {
         Self::new(start, DATA_SIZE)
     }
 
-    pub(crate) const fn start(self) -> usize {
+    pub const fn start(self) -> usize {
         self.start
     }
 
-    pub(crate) fn end(self) -> Result<usize, Errno> {
+    pub fn end(self) -> Result<usize, Errno> {
         self.start.checked_add(self.capacity).ok_or(Errno::EFAULT)
     }
 
     /// Prove a complete byte range against this allocation, independently of
     /// whether it also happens to fit in the kernel's total linear memory.
-    pub(crate) fn checked_range(
+    pub fn checked_range(
         self,
         pointer: usize,
         length: usize,
@@ -91,7 +91,7 @@ impl ChannelScratchRegion {
 
     /// Prove a command-dependent payload starts at the allocation base and
     /// fits completely inside its explicit capacity.
-    pub(crate) fn checked_start_range(
+    pub fn checked_start_range(
         self,
         pointer: usize,
         length: usize,
@@ -119,7 +119,7 @@ impl ChannelScratchRegion {
 /// `described[index]` distinguishes a reviewed null pointer from an argument
 /// which no descriptor or bespoke wire validator proved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ValidatedChannelScratchArgs {
+pub struct ValidatedChannelScratchArgs {
     described: [bool; 6],
     ranges: [Option<ChannelScratchRange>; 6],
 }
@@ -152,7 +152,7 @@ impl ValidatedChannelScratchArgs {
 
     /// Return a pointer only if the corresponding descriptor or reviewed
     /// bespoke-wire validator proved its exact allocation-owned subrange.
-    pub(crate) fn pointer(self, index: usize) -> Result<usize, Errno> {
+    pub fn pointer(self, index: usize) -> Result<usize, Errno> {
         if index >= self.ranges.len() || !self.described[index] {
             return Err(Errno::EFAULT);
         }
@@ -690,7 +690,7 @@ fn validate_prctl_layout(
 /// `region` must describe the complete live kernel-owned allocation and no
 /// concurrent host operation may replace its bytes during this call or the
 /// immediately following synchronous dispatch.
-pub(crate) unsafe fn validate_channel_scratch_arguments(
+pub unsafe fn validate_channel_scratch_arguments(
     syscall_number: u32,
     args: &[i64; 6],
     region: ChannelScratchRegion,
@@ -731,7 +731,7 @@ pub(crate) unsafe fn validate_channel_scratch_arguments(
 ///
 /// `region` must describe the live channel allocation for this synchronous
 /// dispatch.
-pub(crate) unsafe fn checked_cstr_len(
+pub unsafe fn checked_cstr_len(
     ptr: *const u8,
     region: ChannelScratchRegion,
 ) -> Result<u32, Errno> {

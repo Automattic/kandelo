@@ -74,7 +74,7 @@ pub fn default_action(signum: u32) -> DefaultAction {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DefaultSignalOutcome {
+pub enum DefaultSignalOutcome {
     Continue,
     Stopped,
     Exited,
@@ -82,11 +82,11 @@ pub(crate) enum DefaultSignalOutcome {
 
 /// Finish a signal-caused process exit, including resource cleanup, before
 /// publishing the parent-visible exit record.
-pub(crate) fn terminate_process_by_signal(proc: &mut Process, host: &mut dyn HostIO, signum: u32) {
+pub fn terminate_process_by_signal(proc: &mut Process, host: &mut dyn HostIO, signum: u32) {
     terminate_process_by_signal_impl(proc, None, host, signum);
 }
 
-pub(crate) fn terminate_process_by_signal_with_locks(
+pub fn terminate_process_by_signal_with_locks(
     proc: &mut Process,
     locks: &mut crate::lock::AdvisoryLockManager,
     host: &mut dyn HostIO,
@@ -117,7 +117,7 @@ fn terminate_process_by_signal_impl(
 
 /// Apply a signal's default action after its pending instance has been
 /// consumed. SIGCONT's mandatory resume already happened at generation time.
-pub(crate) fn apply_default_signal_action(
+pub fn apply_default_signal_action(
     proc: &mut Process,
     host: &mut dyn HostIO,
     signum: u32,
@@ -125,7 +125,7 @@ pub(crate) fn apply_default_signal_action(
     apply_default_signal_action_impl(proc, None, host, signum)
 }
 
-pub(crate) fn apply_default_signal_action_with_locks(
+pub fn apply_default_signal_action_with_locks(
     proc: &mut Process,
     locks: &mut crate::lock::AdvisoryLockManager,
     host: &mut dyn HostIO,
@@ -157,7 +157,7 @@ fn apply_default_signal_action_impl(
 }
 
 /// Consume one pending instance for `tid`, preferring its directed queue.
-pub(crate) fn dequeue_signal_for(
+pub fn dequeue_signal_for(
     proc: &mut Process,
     tid: u32,
     signum: u32,
@@ -180,12 +180,12 @@ pub(crate) fn dequeue_signal_for(
 /// Consume default/ignored pending signals at a syscall boundary. Caught
 /// signals stay queued for the guest glue. While stopped, Process selection
 /// exposes only SIGKILL; SIGCONT has already resumed at generation time.
-pub(crate) fn deliver_pending_signals(proc: &mut Process, host: &mut dyn HostIO) {
+pub fn deliver_pending_signals(proc: &mut Process, host: &mut dyn HostIO) {
     let tid = crate::syscalls::current_tid_for_process(proc);
     deliver_pending_signals_impl(proc, None, host, tid);
 }
 
-pub(crate) fn deliver_pending_signals_with_locks(
+pub fn deliver_pending_signals_with_locks(
     proc: &mut Process,
     locks: &mut crate::lock::AdvisoryLockManager,
     host: &mut dyn HostIO,
@@ -200,7 +200,7 @@ pub(crate) fn deliver_pending_signals_with_locks(
 /// the target process. Callers select a target from the target Process and
 /// pass it here; stale, foreign, synthetic, or exited task IDs fail without
 /// consuming pending state.
-pub(crate) fn deliver_pending_signals_for_tid_with_locks(
+pub fn deliver_pending_signals_for_tid_with_locks(
     proc: &mut Process,
     locks: &mut crate::lock::AdvisoryLockManager,
     host: &mut dyn HostIO,
@@ -249,7 +249,7 @@ fn deliver_pending_signals_impl(
 /// cause the pending signal to be discarded." Also: "Setting a signal action to
 /// SIG_DFL for a signal that is pending and whose default action is to ignore the
 /// signal (for example, SIGCHLD), shall cause the pending signal to be discarded."
-pub(crate) fn should_discard_pending(signum: u32, handler: &SignalHandler) -> bool {
+pub fn should_discard_pending(signum: u32, handler: &SignalHandler) -> bool {
     match handler {
         SignalHandler::Ignore => true,
         SignalHandler::Default => default_action(signum) == DefaultAction::Ignore,
@@ -405,7 +405,7 @@ impl PerThreadSignalState {
         self.raise_internal(signum, si_value_bits, -1, 0, 0) // SI_QUEUE
     }
 
-    pub(crate) fn raise_with_metadata(
+    pub fn raise_with_metadata(
         &mut self,
         signum: u32,
         si_value_bits: u64,
@@ -470,7 +470,7 @@ impl PerThreadSignalState {
         true
     }
 
-    pub(crate) fn raise_timer(
+    pub fn raise_timer(
         &mut self,
         signum: u32,
         si_value_bits: u64,
@@ -504,11 +504,11 @@ impl PerThreadSignalState {
         true
     }
 
-    pub(crate) fn consume_one_info(&mut self, signum: u32) -> PendingSignalInfo {
+    pub fn consume_one_info(&mut self, signum: u32) -> PendingSignalInfo {
         consume_pending_info(&mut self.pending, &mut self.rt_queue, signum)
     }
 
-    pub(crate) fn remove_timer_notification(&mut self, timer_id: u32) -> bool {
+    pub fn remove_timer_notification(&mut self, timer_id: u32) -> bool {
         remove_timer_info(&mut self.pending, &mut self.rt_queue, timer_id)
     }
 
@@ -678,7 +678,7 @@ impl SignalState {
         self.raise_internal(signum, si_value_bits, -1, 0, 0) // SI_QUEUE
     }
 
-    pub(crate) fn raise_with_metadata(
+    pub fn raise_with_metadata(
         &mut self,
         signum: u32,
         si_value_bits: u64,
@@ -746,7 +746,7 @@ impl SignalState {
         true
     }
 
-    pub(crate) fn raise_timer(
+    pub fn raise_timer(
         &mut self,
         signum: u32,
         si_value_bits: u64,
@@ -802,14 +802,14 @@ impl SignalState {
         self.pending
     }
 
-    pub(crate) fn pending_timer_ids(&self, signum: u32) -> impl Iterator<Item = u32> + '_ {
+    pub fn pending_timer_ids(&self, signum: u32) -> impl Iterator<Item = u32> + '_ {
         self.rt_queue
             .iter()
             .filter(move |entry| entry.signum == signum)
             .filter_map(|entry| entry.timer_id)
     }
 
-    pub(crate) fn remove_timer_notification(&mut self, timer_id: u32) -> bool {
+    pub fn remove_timer_notification(&mut self, timer_id: u32) -> bool {
         remove_timer_info(&mut self.pending, &mut self.rt_queue, timer_id)
     }
 

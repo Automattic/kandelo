@@ -45,7 +45,7 @@ struct ShmidDsLayout {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct MsgctlSetFields {
+pub struct MsgctlSetFields {
     pub uid: u32,
     pub gid: u32,
     pub mode: u32,
@@ -53,7 +53,7 @@ pub(crate) struct MsgctlSetFields {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ShmctlSetFields {
+pub struct ShmctlSetFields {
     pub uid: u32,
     pub gid: u32,
     pub mode: u32,
@@ -163,32 +163,32 @@ fn shmid_ds_layout(pointer_width: u32) -> Result<ShmidDsLayout, Errno> {
 }
 
 /// Byte size of the target musl `struct semid_ds`.
-pub(crate) fn semid_ds_size(pointer_width: u32) -> Result<usize, Errno> {
+pub fn semid_ds_size(pointer_width: u32) -> Result<usize, Errno> {
     Ok(semid_ds_layout(pointer_width)?.size)
 }
 
 /// Byte size of the target musl `struct msqid_ds`.
-pub(crate) fn msqid_ds_size(pointer_width: u32) -> Result<usize, Errno> {
+pub fn msqid_ds_size(pointer_width: u32) -> Result<usize, Errno> {
     Ok(msqid_ds_layout(pointer_width)?.size)
 }
 
 /// Byte size of the target musl `struct shmid_ds`.
-pub(crate) fn shmid_ds_size(pointer_width: u32) -> Result<usize, Errno> {
+pub fn shmid_ds_size(pointer_width: u32) -> Result<usize, Errno> {
     Ok(shmid_ds_layout(pointer_width)?.size)
 }
 
 /// Size of the width-independent header used for message data in kernel
 /// scratch. The host translates the caller's native `long` to this i64.
-pub(crate) const SYSV_MESSAGE_HEADER_SIZE: usize =
+pub const SYSV_MESSAGE_HEADER_SIZE: usize =
     size_of::<WasmSysvMessageHeader>();
 
-pub(crate) fn sysv_message_wire_size(text_bytes: usize) -> Result<usize, Errno> {
+pub fn sysv_message_wire_size(text_bytes: usize) -> Result<usize, Errno> {
     SYSV_MESSAGE_HEADER_SIZE
         .checked_add(text_bytes)
         .ok_or(Errno::EINVAL)
 }
 
-pub(crate) fn read_sysv_message_type(input: &[u8]) -> Result<i64, Errno> {
+pub fn read_sysv_message_type(input: &[u8]) -> Result<i64, Errno> {
     let bytes = input
         .get(..SYSV_MESSAGE_HEADER_SIZE)
         .ok_or(Errno::EFAULT)?;
@@ -197,7 +197,7 @@ pub(crate) fn read_sysv_message_type(input: &[u8]) -> Result<i64, Errno> {
     ))
 }
 
-pub(crate) fn write_sysv_message(
+pub fn write_sysv_message(
     out: &mut [u8],
     mtype: i64,
     text: &[u8],
@@ -210,7 +210,7 @@ pub(crate) fn write_sysv_message(
 }
 
 /// Read the fields Linux permits msgctl IPC_SET to replace.
-pub(crate) fn read_msqid_ds_set_fields(
+pub fn read_msqid_ds_set_fields(
     input: &[u8],
     pointer_width: u32,
 ) -> Result<MsgctlSetFields, Errno> {
@@ -228,7 +228,7 @@ pub(crate) fn read_msqid_ds_set_fields(
 }
 
 /// Read the fields Linux permits shmctl IPC_SET to replace.
-pub(crate) fn read_shmid_ds_set_fields(
+pub fn read_shmid_ds_set_fields(
     input: &[u8],
     pointer_width: u32,
 ) -> Result<ShmctlSetFields, Errno> {
@@ -247,7 +247,7 @@ pub(crate) fn read_shmid_ds_set_fields(
 ///
 /// Only the layout-sized prefix is replaced. The caller may pass a larger
 /// kernel-owned region without risking writes into the following transfer.
-pub(crate) fn write_semid_ds(
+pub fn write_semid_ds(
     out: &mut [u8],
     info: &SemSetInfo,
     pointer_width: u32,
@@ -274,7 +274,7 @@ pub(crate) fn write_semid_ds(
 }
 
 /// Serialize one `struct msqid_ds` for the target process data model.
-pub(crate) fn write_msqid_ds(
+pub fn write_msqid_ds(
     out: &mut [u8],
     info: &MsgQueueInfo,
     pointer_width: u32,
@@ -301,7 +301,7 @@ pub(crate) fn write_msqid_ds(
 }
 
 /// Serialize one `struct shmid_ds` for the target process data model.
-pub(crate) fn write_shmid_ds(
+pub fn write_shmid_ds(
     out: &mut [u8],
     info: &ShmSegInfo,
     pointer_width: u32,

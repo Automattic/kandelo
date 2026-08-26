@@ -914,7 +914,7 @@ pub fn procfs_getdents64(
 
 /// Generate procfs directory entries from another process without erasing
 /// the distinction between a vanished process and a directory encoding error.
-pub(crate) fn procfs_getdents64_for_pid(
+pub fn procfs_getdents64_for_pid(
     table: &crate::process_table::ProcessTable,
     pid: u32,
     ofd_path: &[u8],
@@ -932,7 +932,7 @@ pub(crate) fn procfs_getdents64_for_pid(
 /// and two is before the first directory-specific entry. A record advances the
 /// cookie only after the complete record is copied. This keeps procfs and
 /// devfs aligned on short-buffer, retry, and large-cookie behavior.
-pub(crate) fn write_virtual_dirents64(
+pub fn write_virtual_dirents64(
     buf: &mut [u8],
     offset: i64,
     dot_ino: u64,
@@ -1104,7 +1104,7 @@ fn count_open_fds(fd_table: &crate::fd::FdTable) -> usize {
 // host.
 
 /// Get all active PIDs from the process table.
-pub(crate) fn procfs_all_pids() -> Vec<u32> {
+pub fn procfs_all_pids() -> Vec<u32> {
     let table = unsafe { &*crate::process_table::GLOBAL_PROCESS_TABLE.0.get() };
     table.procfs_pids()
 }
@@ -1112,7 +1112,7 @@ pub(crate) fn procfs_all_pids() -> Vec<u32> {
 /// Generate procfs content for a foreign process (cross-process access).
 /// Returns None if the pid doesn't exist or is the current process
 /// (caller should use the local Process for self-access).
-pub(crate) fn procfs_generate_for_pid(pid: u32, entry: &ProcfsEntry) -> Option<Vec<u8>> {
+pub fn procfs_generate_for_pid(pid: u32, entry: &ProcfsEntry) -> Option<Vec<u8>> {
     let table = unsafe { &*crate::process_table::GLOBAL_PROCESS_TABLE.0.get() };
     let proc = table.get(pid)?;
     match entry {
@@ -1127,7 +1127,7 @@ pub(crate) fn procfs_generate_for_pid(pid: u32, entry: &ProcfsEntry) -> Option<V
 }
 
 /// Get the readlink target for a procfs symlink in a foreign process.
-pub(crate) fn procfs_readlink_for_pid(
+pub fn procfs_readlink_for_pid(
     pid: u32,
     entry: &ProcfsEntry,
     buf: &mut [u8],
@@ -1138,13 +1138,13 @@ pub(crate) fn procfs_readlink_for_pid(
 }
 
 /// Return whether a foreign process owns a complete descriptor/OFD pair.
-pub(crate) fn procfs_has_fd_for_pid(pid: u32, fd: i32) -> bool {
+pub fn procfs_has_fd_for_pid(pid: u32, fd: i32) -> bool {
     let table = unsafe { &*crate::process_table::GLOBAL_PROCESS_TABLE.0.get() };
     table.get(pid).is_some_and(|proc| has_open_fd(proc, fd))
 }
 
 /// Return the live OFD metadata exposed by a foreign process's procfs fd link.
-pub(crate) fn procfs_fstat_for_pid(
+pub fn procfs_fstat_for_pid(
     pid: u32,
     fd: i32,
     host: &mut dyn crate::process::HostIO,
@@ -1156,7 +1156,7 @@ pub(crate) fn procfs_fstat_for_pid(
 
 /// Generate directory entries for a foreign process's procfs directory,
 /// reading the current realm's global process table.
-pub(crate) fn procfs_getdents64_for_current_realm_pid(
+pub fn procfs_getdents64_for_current_realm_pid(
     pid: u32,
     ofd_path: &[u8],
     buf: &mut [u8],

@@ -49,7 +49,7 @@ fn observe_ofd_id(id: OfdId) {
 }
 
 /// Add one SCM_RIGHTS queue reference for an existing open description.
-pub(crate) fn retain_in_flight_ofd(id: OfdId) -> Result<(), Errno> {
+pub fn retain_in_flight_ofd(id: OfdId) -> Result<(), Errno> {
     if id.0 == 0 {
         return Err(Errno::EINVAL);
     }
@@ -68,7 +68,7 @@ pub(crate) fn retain_in_flight_ofd(id: OfdId) -> Result<(), Errno> {
 
 /// Drop one SCM_RIGHTS queue reference. Returns true when no queued reference
 /// for this identity remains.
-pub(crate) fn release_in_flight_ofd(id: OfdId) -> bool {
+pub fn release_in_flight_ofd(id: OfdId) -> bool {
     let refs = in_flight_ofd_refs();
     let Ok(index) = refs.binary_search_by_key(&id, |(candidate, _)| *candidate) else {
         debug_assert!(false, "released an OfdId without an in-flight reference");
@@ -83,7 +83,7 @@ pub(crate) fn release_in_flight_ofd(id: OfdId) -> bool {
     }
 }
 
-pub(crate) fn has_in_flight_ofd(id: OfdId) -> bool {
+pub fn has_in_flight_ofd(id: OfdId) -> bool {
     in_flight_ofd_refs()
         .binary_search_by_key(&id, |(candidate, _)| *candidate)
         .is_ok()
@@ -291,7 +291,7 @@ pub struct OpenFileDesc {
     /// observe one offset, one set of file-status flags, and one async owner.
     /// The Wasm kernel serializes access on its dedicated worker, while Rc
     /// gives this state exact ownership and retirement without a global map.
-    pub(crate) shared_state: SharedOfdState,
+    pub shared_state: SharedOfdState,
     pub host_handle: i64,
     pub ref_count: u32,
     pub path: Vec<u8>, // resolved absolute path
@@ -303,12 +303,12 @@ pub struct OpenFileDesc {
     /// Cumulative entry count across getdents64 calls — used as d_off cookie for seekdir.
     pub dir_entry_offset: i64,
     /// Shared-position generation represented by this process-local iterator.
-    pub(crate) dir_position_generation: u64,
+    pub dir_position_generation: u64,
     /// Host entry already consumed by `host_readdir` but not yet exposed to
     /// the guest because it did not fit in the caller's getdents64 buffer.
     /// The next getdents64 call must retry this exact entry before advancing
     /// the host iterator.
-    pub(crate) dir_pending_entry: Option<PendingDirEntry>,
+    pub dir_pending_entry: Option<PendingDirEntry>,
     /// DRI sidecar; see [`DriOfdState`]. Boxed so non-DRI OFDs pay
     /// only one pointer slot.
     pub dri_state: Option<Box<DriOfdState>>,
@@ -325,10 +325,10 @@ struct SharedOfdStateInner {
 ///
 /// This is kernel-internal and does not change the guest/host ABI.
 #[derive(Clone)]
-pub(crate) struct SharedOfdState(Rc<SharedOfdStateInner>);
+pub struct SharedOfdState(Rc<SharedOfdStateInner>);
 
 impl SharedOfdState {
-    pub(crate) fn new(status_flags: u32, offset: i64, owner_pid: u32) -> Self {
+    pub fn new(status_flags: u32, offset: i64, owner_pid: u32) -> Self {
         Self(Rc::new(SharedOfdStateInner {
             status_flags: Cell::new(status_flags),
             offset: Cell::new(offset),
@@ -371,7 +371,7 @@ impl SharedOfdState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PendingDirEntry {
+pub struct PendingDirEntry {
     pub ino: u64,
     pub d_type: u8,
     pub name: Vec<u8>,
@@ -382,7 +382,7 @@ impl OpenFileDesc {
         self.shared_state.status_flags()
     }
 
-    pub(crate) fn set_status_flags_raw(&self, value: u32) {
+    pub fn set_status_flags_raw(&self, value: u32) {
         self.shared_state.set_status_flags(value);
     }
 
@@ -390,24 +390,24 @@ impl OpenFileDesc {
         self.shared_state.offset()
     }
 
-    pub(crate) fn set_offset(&self, value: i64) {
+    pub fn set_offset(&self, value: i64) {
         self.shared_state.set_offset(value);
     }
 
-    pub(crate) fn owner_pid(&self) -> u32 {
+    pub fn owner_pid(&self) -> u32 {
         self.shared_state.owner_pid()
     }
 
-    pub(crate) fn set_owner_pid(&self, value: u32) {
+    pub fn set_owner_pid(&self, value: u32) {
         self.shared_state.set_owner_pid(value);
     }
 
-    pub(crate) fn shared_state(&self) -> SharedOfdState {
+    pub fn shared_state(&self) -> SharedOfdState {
         self.shared_state.clone()
     }
 
     #[cfg(test)]
-    pub(crate) fn shared_state_ref_count(&self) -> usize {
+    pub fn shared_state_ref_count(&self) -> usize {
         Rc::strong_count(&self.shared_state.0)
     }
 
@@ -426,7 +426,7 @@ impl OpenFileDesc {
     /// devices use negative handles instead (`/dev/null`, framebuffer, DRM,
     /// and so on) and must not acquire terminal semantics merely because
     /// `stat(2)` reports `S_IFCHR`.
-    pub(crate) fn is_terminal(&self) -> bool {
+    pub fn is_terminal(&self) -> bool {
         match self.file_type {
             FileType::PtyMaster | FileType::PtySlave => true,
             FileType::CharDevice => {
@@ -451,7 +451,7 @@ impl OpenFileDesc {
     /// this at the process boundary.  `sys_getdents64` lazily reconstructs a
     /// host iterator from `dir_entry_offset`; kernel-generated directories
     /// retain their stable sentinel instead.
-    pub(crate) fn reset_directory_iterator_for_reopen(&mut self) {
+    pub fn reset_directory_iterator_for_reopen(&mut self) {
         if self.file_type != FileType::Directory {
             return;
         }
@@ -471,12 +471,12 @@ impl OpenFileDesc {
         self.dir_pending_entry = None;
     }
 
-    pub(crate) fn directory_iterator_is_stale(&self) -> bool {
+    pub fn directory_iterator_is_stale(&self) -> bool {
         self.file_type == FileType::Directory
             && self.dir_position_generation != self.shared_state.position_generation()
     }
 
-    pub(crate) fn set_directory_offset(&mut self, value: i64) {
+    pub fn set_directory_offset(&mut self, value: i64) {
         self.set_offset(value);
         self.dir_position_generation = self.shared_state.position_generation();
     }
@@ -581,7 +581,7 @@ impl OfdTable {
     /// Install an open description transferred through SCM_RIGHTS. The queued
     /// descriptor already owns one machine-wide backing reference, so this
     /// preserves its identity instead of allocating a new one.
-    pub(crate) fn create_transferred(
+    pub fn create_transferred(
         &mut self,
         ofd_id: OfdId,
         file_id: Option<FileId>,
@@ -648,7 +648,7 @@ impl OfdTable {
     /// fork/spawn child does not inherit those capabilities, so cloning the
     /// parent's count would either retain an OFD with no child fd or leave a
     /// phantom reference after the child's last real fd closes.
-    pub(crate) fn retain_fd_references(&mut self, fd_table: &FdTable) -> Result<(), Errno> {
+    pub fn retain_fd_references(&mut self, fd_table: &FdTable) -> Result<(), Errno> {
         let mut inherited_refs = BTreeMap::<usize, u32>::new();
         for (_, entry) in fd_table.iter() {
             let index = entry.ofd_ref.0;
@@ -691,7 +691,7 @@ impl OfdTable {
     /// A table index is reusable, so callers that keep authority beyond the
     /// current syscall must also prove the stable [`OfdId`]. This is the
     /// allocation-free ownership primitive used by blocked-syscall bindings.
-    pub(crate) fn try_inc_ref_exact(&mut self, idx: usize, id: OfdId) -> Result<(), Errno> {
+    pub fn try_inc_ref_exact(&mut self, idx: usize, id: OfdId) -> Result<(), Errno> {
         let ofd = self.get_mut(idx).ok_or(Errno::EBADF)?;
         if ofd.ofd_id != id {
             return Err(Errno::EBADF);
@@ -760,7 +760,7 @@ impl OfdTable {
 
     /// Relink fork-deserialized entries to the source process's live shared
     /// state. Fork preserves table slots; an identity mismatch is corruption.
-    pub(crate) fn link_shared_states_from(&mut self, source: &OfdTable) -> Result<(), Errno> {
+    pub fn link_shared_states_from(&mut self, source: &OfdTable) -> Result<(), Errno> {
         for (index, ofd) in self.iter_mut() {
             let source_ofd = source.get(index).ok_or(Errno::EINVAL)?;
             if source_ofd.ofd_id != ofd.ofd_id {

@@ -861,7 +861,7 @@ impl SocketTable {
     }
 
     /// Decode the negative `-(slot + 1)` stored in a socket OFD.
-    pub(crate) fn index_from_ofd_handle(host_handle: i64) -> Result<usize, Errno> {
+    pub fn index_from_ofd_handle(host_handle: i64) -> Result<usize, Errno> {
         let index = host_handle
             .checked_add(1)
             .and_then(i64::checked_neg)
@@ -876,7 +876,7 @@ impl SocketTable {
     /// a fake child-local peer that can accept bytes after the real peer has
     /// closed. Edges between two independently inherited roots remain valid;
     /// all other edges are cleared.
-    pub(crate) fn retain_inherited_roots(&mut self, roots: &[usize]) -> Result<(), Errno> {
+    pub fn retain_inherited_roots(&mut self, roots: &[usize]) -> Result<(), Errno> {
         let mut retained = Vec::new();
         retained
             .try_reserve_exact(self.entries.len())

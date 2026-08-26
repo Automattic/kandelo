@@ -98,7 +98,7 @@ impl FifoTable {
     }
 }
 
-pub(crate) fn rebase_path(path: &[u8], oldpath: &[u8], newpath: &[u8]) -> Option<Vec<u8>> {
+pub fn rebase_path(path: &[u8], oldpath: &[u8], newpath: &[u8]) -> Option<Vec<u8>> {
     let suffix = if path == oldpath {
         &[][..]
     } else if path.starts_with(oldpath)
