@@ -1,15 +1,26 @@
+# CLI-only companion to the `sqlite` library. Links the sqlite3 shell
+# frontend (shell.c) against the library's prebuilt libsqlite3.a so the
+# engine has a single source of truth and PHP is never rebuilt. The
+# amalgamation source below is fetched ONLY for shell.c; the engine
+# comes from depends_on = ["sqlite@3.49.1"].
 kind = "program"
+
 name = "sqlite-cli"
-version = "3.45.0"
-depends_on = []
+version = "3.49.1"
+kernel_abi = 7
+depends_on = ["sqlite@3.49.1"]
 
 [source]
-url = "https://sqlite.org/2024/sqlite-autoconf-3450000.tar.gz"
-sha256 = "72887d57a1d8f89f52be38ef84a6353ce8c3ed55ada7864eb944abd9a495e436"
+url = "https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip"
+sha256 = "6cebd1d8403fc58c30e93939b246f3e6e58d0765a5cd50546f16c00fd805d2c3"
+provider = "archive"
 
 [license]
 spdx = "blessing"
 url = "https://www.sqlite.org/copyright.html"
+
+[build]
+script_path = "packages/registry/sqlite-cli/build-sqlite-cli.sh"
 
 [[outputs]]
 name = "sqlite-cli"

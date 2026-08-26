@@ -1,0 +1,11 @@
+script_path = "packages/registry/sqlite-cli/build-sqlite-cli.sh"
+inputs = [
+  "packages/registry/sqlite-cli/build-sqlite-cli.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+]
+repo_url    = "https://github.com/brandonpayton/kandelo.git"
+commit      = "f429ff936c877a39d254a559d19bb2c5b671d9ec"
+revision    = 1
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
