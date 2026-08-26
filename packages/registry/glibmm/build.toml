@@ -1,0 +1,10 @@
+script_path = "packages/registry/glibmm/build-glibmm.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "cf81d0f7c"
+revision = 1
+
+inputs = [
+  "packages/registry/glibmm/build-glibmm.sh",
+  "packages/registry/glibmm/src/libcxx-contenttype-string.patch",
+  "scripts/package-build-roots.sh",
+]

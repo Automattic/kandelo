@@ -227,8 +227,10 @@
 #define BTN_A               0x130
 #define BTN_TOOL_PEN        0x140
 #define BTN_TOOL_FINGER     0x145
+#define BTN_STYLUS3         0x149
 #define BTN_TOUCH           0x14a
 #define BTN_STYLUS          0x14b
+#define BTN_STYLUS2         0x14c
 #define BTN_DPAD_UP         0x220
 #define BTN_TRIGGER_HAPPY   0x2c0
 
@@ -261,6 +263,25 @@
 #define ABS_MT_TRACKING_ID  0x39
 #define ABS_MT_PRESSURE     0x3a
 #define ABS_MAX             0x3f
+
+/* --- INPUT_PROP_* codes (device properties, read with EVIOCGPROP) ----
+ *
+ * This kernel reports no property bits: it exposes no EVIOCGPROP ioctl,
+ * so a client that queries the set reads all-zero and falls through to
+ * its capability-based device guess. The names are vendored verbatim
+ * because evdev clients name them unconditionally — SDL2's and SDL3's
+ * `SDL_EVDEV_GuessDeviceClass` reads INPUT_PROP_BUTTONPAD and
+ * INPUT_PROP_TOPBUTTONPAD whenever <linux/input.h> is present. */
+
+#define INPUT_PROP_POINTER          0x00
+#define INPUT_PROP_DIRECT           0x01
+#define INPUT_PROP_BUTTONPAD        0x02
+#define INPUT_PROP_SEMI_MT          0x03
+#define INPUT_PROP_TOPBUTTONPAD     0x04
+#define INPUT_PROP_POINTING_STICK   0x05
+#define INPUT_PROP_ACCELEROMETER    0x06
+#define INPUT_PROP_MAX              0x1f
+#define INPUT_PROP_CNT              (INPUT_PROP_MAX + 1)
 
 /* --- BUS_* constants (subset) ---------------------------------------- */
 

@@ -1,0 +1,37 @@
+# Per-library manifest for libxkbregistry. See docs/package-management.md.
+#
+# Ports libxkbcommon 1.7.0's registry library (libxkbregistry.a): the
+# rxkb_* API that enumerates available XKB rules/models/layouts by
+# parsing evdev.xml with libxml2. Waybar's hyprland/language module
+# links it. Split from the libxkbcommon package so adding it does not
+# re-key libxkbcommon and cascade rebuilds through gtk3 and every
+# compositor consumer; same source pin, one extra TU.
+#
+# Without the XKB rules data files at runtime the ruleset parse comes
+# back empty and rxkb consumers degrade gracefully.
+
+kind = "library"
+
+name = "libxkbregistry"
+version = "1.7.0"
+kernel_abi = 17
+depends_on = [
+  "libxml2@2.13.8",
+]
+
+[source]
+url = "https://xkbcommon.org/download/libxkbcommon-1.7.0.tar.xz"
+sha256 = "65782f0a10a4b455af9c6baab7040e2f537520caa2ec2092805cdfd36863b247"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/xkbcommon/libxkbcommon/blob/xkbcommon-1.7.0/LICENSE"
+
+[build]
+script_path = "packages/registry/libxkbregistry/build-libxkbregistry.sh"
+
+[outputs]
+libs = ["lib/libxkbregistry.a"]
+headers = ["include/xkbcommon/xkbregistry.h"]
+pkgconfig = ["lib/pkgconfig/xkbregistry.pc"]
