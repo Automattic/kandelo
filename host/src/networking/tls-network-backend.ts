@@ -186,6 +186,35 @@ function concatChunks(parts: readonly Uint8Array[]): Uint8Array {
   return out;
 }
 
+/** Decode a `Content-Encoding`-compressed request body to plaintext so the
+ *  re-issued fetch() carries an identity-encoded body. git gzip-compresses the
+ *  `git-upload-pack` (fetch command) request and sets `Content-Encoding: gzip`;
+ *  the browser CORS proxy allow-list does not carry `content-encoding`, so the
+ *  faithful pass-through of the compressed body is refused. Decoding here lets
+ *  the request traverse the proxy today. Returns null for an identity or
+ *  unrecognized encoding, leaving the body and header untouched.
+ *
+ *  A more faithful alternative — forwarding `Content-Encoding` and the
+ *  compressed body verbatim — is the more complete long-term behavior but
+ *  requires the dev relay and the upstream CORS proxy to allow-list
+ *  `content-encoding` (as they did `git-protocol`). Tracked as future work. */
+async function decodeContentEncodingBody(
+  body: Uint8Array,
+  encoding: string,
+): Promise<Uint8Array<ArrayBuffer> | null> {
+  const token = encoding.trim().toLowerCase();
+  const format = token === "gzip" || token === "x-gzip"
+    ? "gzip"
+    : token === "deflate"
+    ? "deflate"
+    : null;
+  if (format === null) return null;
+  const decoded = new Response(
+    new Response(body).body!.pipeThrough(new DecompressionStream(format)),
+  );
+  return new Uint8Array(await decoded.arrayBuffer()) as Uint8Array<ArrayBuffer>;
+}
+
 /** Decide whether the MITM connection stays open after this response.
  *  HTTP/1.1 defaults to keep-alive unless `Connection: close`; HTTP/1.0
  *  defaults to close unless `Connection: keep-alive`. git-remote-http / libcurl
@@ -608,22 +637,36 @@ export class TlsNetworkBackend implements NetworkIO {
       requestBody && requestBody.length > 0
         ? new Uint8Array(requestBody) as Uint8Array<ArrayBuffer>
         : undefined;
+    const contentEncoding = lastHeaderValue(headers, "content-encoding");
     const url = this.corsProxy ? this.corsProxy.urlFor(upstreamUrl) : upstreamUrl;
 
     (async () => {
       try {
+        // Decode a compressed request body to identity so it can traverse the
+        // proxy, and drop the now-inaccurate Content-Encoding from the headers.
+        let outgoingBody = fetchBody;
+        let outgoingHeaders = browserHeaders;
+        if (fetchBody && contentEncoding !== undefined) {
+          const decoded = await decodeContentEncodingBody(fetchBody, contentEncoding);
+          if (decoded !== null) {
+            outgoingBody = decoded;
+            outgoingHeaders = browserHeaders.filter(
+              ([name]) => name.toLowerCase() !== "content-encoding",
+            );
+          }
+        }
         const fetchHeaders = this.corsProxy
           ? this.corsProxy.project({
             method,
-            headers: browserHeaders,
-            bodyPresent: fetchBody !== undefined,
+            headers: outgoingHeaders,
+            bodyPresent: outgoingBody !== undefined,
             targetUrl: upstreamUrl,
           })
-          : headersFromOccurrences(browserHeaders);
+          : headersFromOccurrences(outgoingHeaders);
         const response = await fetch(url, {
           method,
           headers: fetchHeaders,
-          body: method !== "GET" && method !== "HEAD" ? fetchBody : undefined,
+          body: method !== "GET" && method !== "HEAD" ? outgoingBody : undefined,
         });
 
         const responseBytes = formatHttpResponse(

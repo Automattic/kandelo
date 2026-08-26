@@ -129,6 +129,41 @@ test that proves rejection happens before dispatch.
 **Files:** `apps/browser-demos/public/service-worker.js`,
 `apps/browser-demos/test/browser-cors-proxy.spec.ts`
 
+### Forward `Content-Encoding` request bodies verbatim through the proxy
+
+git compresses the smart-HTTP `git-upload-pack` fetch request and sets
+`Content-Encoding: gzip`. The browser TLS-MITM currently decodes such bodies to
+identity and drops the header so the request fits the proxy's five-name
+allow-list — a faithful *equivalent* of what the guest sent, but not a
+faithful *representation* of it. The more complete behavior is to forward
+`Content-Encoding` and the compressed body unchanged. That requires
+`content-encoding` in the CORS proxy request-header allow-list (the same
+treatment the relay and upstream proxy already give `git-protocol`) and the
+upstream proxy echoing it in `Access-Control-Allow-Headers` so the browser
+preflight passes. Until then the decode path in `tls-network-backend.ts` is the
+compatibility shim.
+
+**Files:** `host/src/networking/tls-network-backend.ts`,
+`host/src/networking/browser-cors-proxy.ts`,
+`apps/browser-demos/public/service-worker.js`,
+`apps/browser-demos/vite/dev-cors-proxy.ts`, upstream CORS proxy deployment
+
+### Provide a real CA bundle at the shared `SSL_CERT_FILE` path on Node
+
+Both hosts export `SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt`, but the
+rootfs ships only `/etc/ssl/cert.pem`. The browser worker creates
+`ca-certificates.crt` at runtime holding the per-session MITM CA; the Node host
+creates nothing, so `SSL_CERT_FILE`-honoring clients (curl, openssl) find no CA
+file on Node and external HTTPS from those clients cannot verify. git's remote
+helper happens to fall back to libcurl's compiled-in real-root bundle, so the
+gap is masked today and the Node git test only exercises plain HTTP. The Node
+host should populate `ca-certificates.crt` with real roots (or the image should
+ship it), so the same VFS image verifies real certificates on Node and MITM
+certificates in the browser.
+
+**Files:** `host/src/node-kernel-host.ts`,
+`host/src/node-kernel-worker-entry.ts`, `images/rootfs/etc/ssl/`
+
 ### PTY terminal integration with xterm.js
 The kernel has full PTY support (PR #181), and browser UI surfaces should use xterm.js-backed PTYs rather than plain `<div>` output with `appendStdinData`. Connecting PTY pairs to xterm.js gives proper terminal rendering (ANSI escapes, cursor, scrollback) and real terminal behavior (isatty=true, proper termios).
 
