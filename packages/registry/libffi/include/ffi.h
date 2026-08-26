@@ -1,36 +1,33 @@
 /*
- * ffi.h — Wayland-scoped libffi shim for wasm32-posix-kernel.
+ * ffi.h — full libffi API for wasm32-posix-kernel (PR20).
  *
- * This is NOT a full libffi. It is a deliberately tiny substitute that
- * covers the *only* way libwayland uses libffi: `wl_closure_invoke`
- * (and its dispatch sibling) calling a listener/implementation function
- * with a decoded message's arguments.
+ * This is a from-scratch libffi for a target that cannot generate code
+ * at runtime. `ffi_call` classifies every argument and the return into
+ * the wasm32 C ABI's word classes (i32/i64/f32/f64; by-value
+ * non-singleton structs become a pointer to a caller-owned copy, struct
+ * returns become a hidden leading sret pointer) and dispatches through
+ * a compile-time-generated `switch` of `call_indirect` shapes.
+ * `ffi_closure` hands out entries from a compile-time-generated static
+ * trampoline pool — N real C functions per signature class, each baked
+ * into the function table — the pattern emscripten's libffi port proved
+ * viable where JIT-written trampolines are impossible. See
+ * packages/registry/libffi/gen-dispatch.sh (the generator) and
+ * src/ffi_core.c (classification, marshalling, pool bookkeeping).
  *
- * On wasm32 every Wayland wire argument — int, uint, wl_fixed_t,
- * new_id, object pointer, char* string, wl_array*, fd int — is a single
- * 32-bit word, and the invoked function returns void. There are no
- * doubles and no by-value structs anywhere in the Wayland ABI. So the
- * shim ignores libffi's type machinery entirely: `ffi_prep_cif` records
- * only the argument *count*, and `ffi_call` reads that many i32 words
- * and dispatches through a `switch` over arity. Each case is a
- * function-pointer call of a distinct `(i32, ...) -> ()` signature,
- * which the LLVM wasm backend lowers to `call_indirect` against the
- * program's function table — exactly what real libffi provides here,
- * minus everything Wayland never exercises.
+ * ABI note: `ffi_cif` deliberately carries NO port-private fields.
+ * Consumers (libwayland) embed `ffi_cif` by value, so growing it would
+ * corrupt any archive built against the older layout. Everything the
+ * dispatch needs is recomputed per call from rtype/arg_types.
  *
- * Full libffi (doubles, by-value structs, ffi_closure trampolines) is
- * deferred to the glib/gobject tail (post-v1). See
- * docs/plans/2026-07-08-dri-wayland-compositor-plan.md §4.
- *
- * The public surface below is a subset of the real <ffi.h> ABI, chosen
- * so that an unmodified libwayland `#include <ffi.h>` compiles and links
- * against this shim. libwayland treats `ffi_cif` as opaque (it only
- * takes its address) and only references the `ffi_type_*` globals by
- * address, so the exact struct layouts here need not match any real
- * libffi build — only this shim consumes them.
+ * Deliberately absent: long double (no `ffi_type_longdouble`), complex
+ * types, raw/java APIs, `ffi_prep_closure` (the deprecated pre-alloc
+ * variant). `ffi_prep_closure_loc` must be called while the `code`
+ * out-pointer from `ffi_closure_alloc` is still live: the trampoline is
+ * chosen once the signature is known, and prep rebinds `*code` through
+ * the pointer captured at alloc (the universal alloc-then-prep idiom).
  */
-#ifndef KANDELO_FFI_SHIM_H
-#define KANDELO_FFI_SHIM_H
+#ifndef KANDELO_FFI_H
+#define KANDELO_FFI_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -40,15 +37,17 @@ extern "C" {
 #endif
 
 /*
- * Widest single argument / return word. On wasm32 (ILP32) this is a
- * 32-bit register; real libffi uses `unsigned long` for `ffi_arg`.
+ * Widest single integral argument / return word. Integral returns
+ * narrower than ffi_arg are widened to a full ffi_arg by ffi_call
+ * (signed types sign-extend), per the libffi contract.
  */
 typedef unsigned long ffi_arg;
 typedef signed long ffi_sarg;
 
-/* Maximum arity the shim dispatches. WL_CLOSURE_MAX_ARGS is 20;
- * wl_closure_invoke prepends `data` + `target`, so 22 is the ceiling. */
+/* Maximum arity. WL_CLOSURE_MAX_ARGS is 20; wl_closure_invoke prepends
+ * `data` + `target`, so 22 is the ceiling. */
 #define FFI_SHIM_MAX_ARGS 22
+#define FFI_MAX_ARGS FFI_SHIM_MAX_ARGS
 
 typedef enum {
     FFI_OK = 0,
@@ -57,7 +56,7 @@ typedef enum {
     FFI_BAD_ARGTYPE
 } ffi_status;
 
-/* Only one ABI on wasm32; the value is never inspected by the shim. */
+/* Only one ABI on wasm32. */
 typedef enum {
     FFI_FIRST_ABI = 0,
     FFI_DEFAULT_ABI,
@@ -65,9 +64,9 @@ typedef enum {
 } ffi_abi;
 
 /*
- * ffi_type — layout mirrors real libffi so that callers taking the
- * address of `ffi_type_*` and reading `.size` / `.type` stay valid,
- * even though the shim itself never dispatches on these fields.
+ * ffi_type — layout mirrors real libffi. For FFI_TYPE_STRUCT the caller
+ * provides `elements` (NULL-terminated) and ffi_prep_cif fills in
+ * `size` and `alignment`.
  */
 typedef struct _ffi_type {
     size_t size;
@@ -76,7 +75,7 @@ typedef struct _ffi_type {
     struct _ffi_type **elements;
 } ffi_type;
 
-/* real libffi's FFI_TYPE_* tags for the globals we expose */
+/* real libffi's FFI_TYPE_* tags */
 #define FFI_TYPE_VOID    0
 #define FFI_TYPE_INT     1
 #define FFI_TYPE_FLOAT   2
@@ -89,13 +88,9 @@ typedef struct _ffi_type {
 #define FFI_TYPE_SINT32  10
 #define FFI_TYPE_UINT64  11
 #define FFI_TYPE_SINT64  12
+#define FFI_TYPE_STRUCT  13
 #define FFI_TYPE_POINTER 14
 
-/*
- * The type globals libwayland references when mapping wire types. All
- * Wayland wire types collapse to a 32-bit word, but the full common set
- * is exposed so any consumer's `<ffi.h>` expectations resolve.
- */
 extern ffi_type ffi_type_void;
 extern ffi_type ffi_type_uint8;
 extern ffi_type ffi_type_sint8;
@@ -113,10 +108,6 @@ extern ffi_type ffi_type_float;
 extern ffi_type ffi_type_double;
 extern ffi_type ffi_type_pointer;
 
-/*
- * ffi_cif — opaque to callers (they only pass `&cif`). The shim stores
- * the argument count recorded by `ffi_prep_cif`.
- */
 typedef struct {
     ffi_abi abi;
     unsigned int nargs;
@@ -127,15 +118,35 @@ typedef struct {
 ffi_status ffi_prep_cif(ffi_cif *cif, ffi_abi abi, unsigned int nargs,
                         ffi_type *rtype, ffi_type **atypes);
 
-/* variadic prep — libwayland does not use it, but expose for parity */
 ffi_status ffi_prep_cif_var(ffi_cif *cif, ffi_abi abi, unsigned int nfixedargs,
                             unsigned int ntotalargs, ffi_type *rtype,
                             ffi_type **atypes);
 
 void ffi_call(ffi_cif *cif, void (*fn)(void), void *rvalue, void **avalue);
 
+/* ---- closures over the static trampoline pool ---- */
+
+#define FFI_CLOSURES 1
+
+typedef struct {
+    void *tramp;
+    ffi_cif *cif;
+    void (*fun)(ffi_cif *, void *, void **, void *);
+    void *user_data;
+    int32_t slot;
+    void **code_out;
+} ffi_closure;
+
+void *ffi_closure_alloc(size_t size, void **code);
+void ffi_closure_free(void *closure);
+
+ffi_status ffi_prep_closure_loc(ffi_closure *closure, ffi_cif *cif,
+                                void (*fun)(ffi_cif *, void *, void **,
+                                            void *),
+                                void *user_data, void *codeloc);
+
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* KANDELO_FFI_SHIM_H */
+#endif /* KANDELO_FFI_H */
