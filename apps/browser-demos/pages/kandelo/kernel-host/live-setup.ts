@@ -170,6 +170,30 @@ const OPTIONAL_BINARY_URLS = {
   ...import.meta.glob("../../../../../binaries/programs/wasm32/ruby-todo-vfs.vfs.zst", {
     query: "?url", import: "default",
   }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wlcompositor.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/wlcompositor.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wlterm.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/wlterm.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wlclock.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/wlclock.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wlpaint.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/wlpaint.wasm", {
+    query: "?url", import: "default",
+  }),
 } as Record<string, () => Promise<string>>;
 
 async function optionalBinaryUrl(
@@ -738,6 +762,16 @@ export async function createLiveHost(
         offDestroyProgress();
       }
     }
+    // Wayland demo: present the Modeset pane's canvas through the vblank
+    // pump's WebGL2 scanout presenter (texture upload, shader-side
+    // swizzle, GPU scaling at display resolution). In the browser the
+    // compositor's GLES probe normally succeeds and its GL context then
+    // claims the canvas for GPU compositing as the steady state — the
+    // presenter covers boot (before the claim) and the permanent CPU
+    // fallback if the probe or a GL frame fails. GL demos (modeset.c,
+    // sdl2) keep the webgl2 default — the GL bridge claims their canvas on
+    // eglCreateContext, and the pump never touches it.
+    h.setKmsDisplayMode(profile.waylandDemo ? "webgl2-scanout" : null);
     const bootStartedAt = performance.now();
 
     try {
