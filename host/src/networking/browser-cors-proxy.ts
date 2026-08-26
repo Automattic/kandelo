@@ -25,6 +25,51 @@ const ANONYMOUS_OMISSION_EXCLUDED_NAMES = new Set([
   "proxy-authorization",
 ]);
 
+// Request-header names the browser sets or forbids on every fetch(). A guest's
+// value for one of these can never reach the origin no matter what the proxy
+// allow-list says, so dropping it is not a proxy-imposed loss of intent — it is
+// the browser's own constraint. These are omitted for ANY method (not just
+// anonymous GET), which is what lets protocols that POST with a body (notably
+// git smart-HTTP's `git-upload-pack`, whose libcurl request carries
+// content-length/accept-encoding/user-agent) traverse the proxy instead of
+// failing before dispatch. Credential names in ANONYMOUS_OMISSION_EXCLUDED_NAMES
+// are deliberately NOT included here: those must still fail loudly rather than
+// be silently dropped. Kept in sync with the same list in the service worker
+// (apps/browser-demos/public/service-worker.js).
+const BROWSER_CONTROLLED_REQUEST_HEADER_NAMES = new Set([
+  // Fetch "forbidden request-header" names.
+  "accept-charset",
+  "accept-encoding",
+  "access-control-request-headers",
+  "access-control-request-method",
+  "connection",
+  "content-length",
+  "date",
+  "dnt",
+  "expect",
+  "host",
+  "keep-alive",
+  "origin",
+  "permissions-policy",
+  "referer",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+  "via",
+  // Client-hint / identity fields the browser manages itself.
+  "accept-language",
+  "user-agent",
+]);
+
+function isBrowserControlledRequestHeader(lowerName: string): boolean {
+  return (
+    BROWSER_CONTROLLED_REQUEST_HEADER_NAMES.has(lowerName) ||
+    lowerName.startsWith("proxy-") ||
+    lowerName.startsWith("sec-")
+  );
+}
+
 export function validateBrowserCorsProxyConfig(
   value: BrowserCorsProxyConfig | undefined,
 ): BrowserCorsProxyConfig | undefined {
@@ -98,11 +143,23 @@ export class BrowserCorsProxy {
 
     for (const [name, value] of input.headers) {
       const lowerName = asciiLowercase(name);
-      if (ANONYMOUS_OMISSION_EXCLUDED_NAMES.has(lowerName)) {
+      const isCredential = ANONYMOUS_OMISSION_EXCLUDED_NAMES.has(lowerName);
+      if (isCredential) {
         hasAnonymousOmissionExcludedName = true;
       }
       if (this.isAllowed(name)) {
         headers.append(name, value);
+        continue;
+      }
+      if (isCredential) {
+        // Credentials are never silently dropped — surface them as unsupported
+        // so the request fails loudly instead of going out unauthenticated.
+        unsupportedNames.push(lowerName);
+        continue;
+      }
+      if (isBrowserControlledRequestHeader(lowerName)) {
+        // The browser sets/forbids this field on the outgoing fetch itself, so
+        // omitting it here changes nothing the origin could have observed.
         continue;
       }
 

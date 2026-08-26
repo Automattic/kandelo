@@ -257,6 +257,98 @@ describe("BrowserCorsProxy", () => {
     ));
   });
 
+  it("relays a git-upload-pack POST by dropping only browser-controlled headers", () => {
+    const onDiagnostic = vi.fn();
+    const headers = proxy({
+      url: PROXY_URL,
+      allowedRequestHeaderNames: ["accept", "content-type", "git-protocol"],
+      allowAnonymousGetHeaderOmission: true,
+    }, onDiagnostic).project({
+      // The request shape git-remote-http / libcurl produces for the second
+      // leg of a smart-HTTP clone. Before this fix the body-bearing POST threw
+      // because content-length/user-agent/accept-encoding are not allow-listed.
+      method: "POST",
+      headers: [
+        ["Accept", "application/x-git-upload-pack-result"],
+        ["Content-Type", "application/x-git-upload-pack-request"],
+        ["git-protocol", "version=2"],
+        ["User-Agent", "git/2.47.1"],
+        ["Accept-Encoding", "deflate, gzip"],
+        ["Content-Length", "179"],
+      ],
+      bodyPresent: true,
+      targetUrl: "https://github.com/Automattic/page-optimize.git/git-upload-pack",
+    });
+
+    expect([...headers.entries()]).toEqual([
+      ["accept", "application/x-git-upload-pack-result"],
+      ["content-type", "application/x-git-upload-pack-request"],
+      ["git-protocol", "version=2"],
+    ]);
+    // Browser-controlled headers are managed by fetch itself, so their omission
+    // is not an application-visible loss and raises no diagnostic.
+    expect(onDiagnostic).not.toHaveBeenCalled();
+  });
+
+  it("drops browser-controlled headers for any method without requiring anonymous GET omission", () => {
+    const headers = proxy({
+      url: PROXY_URL,
+      allowedRequestHeaderNames: [],
+      allowAnonymousGetHeaderOmission: false,
+    }).project({
+      method: "PUT",
+      headers: [
+        ["Host", "github.com"],
+        ["Connection", "keep-alive"],
+        ["Transfer-Encoding", "chunked"],
+        ["Sec-Fetch-Mode", "cors"],
+        ["Proxy-Connection", "keep-alive"],
+      ],
+      bodyPresent: true,
+      targetUrl: TARGET_URL,
+    });
+
+    expect([...headers.entries()]).toEqual([]);
+  });
+
+  it("still fails a body-bearing request carrying an application-owned unsupported header", () => {
+    expect(() => proxy({
+      url: PROXY_URL,
+      allowedRequestHeaderNames: ["content-type"],
+      allowAnonymousGetHeaderOmission: true,
+    }).project({
+      method: "POST",
+      headers: [
+        ["Content-Type", "application/json"],
+        ["Content-Length", "12"],
+        ["X-App-Owned", "value"],
+      ],
+      bodyPresent: true,
+      targetUrl: TARGET_URL,
+    })).toThrow(new BrowserCorsProxyRequestError(
+      `Browser CORS proxy ${PROXY_URL} cannot relay POST request to ${TARGET_ORIGIN} with unsupported request headers: x-app-owned`,
+    ));
+  });
+
+  it("still fails an unsupported credential header even alongside browser-controlled headers", () => {
+    expect(() => proxy({
+      url: PROXY_URL,
+      allowedRequestHeaderNames: ["content-type"],
+      allowAnonymousGetHeaderOmission: true,
+    }).project({
+      method: "POST",
+      headers: [
+        ["Content-Type", "application/json"],
+        ["Content-Length", "12"],
+        ["Authorization", "Bearer secret"],
+      ],
+      bodyPresent: true,
+      targetUrl: TARGET_URL,
+    })).toThrow(new BrowserCorsProxyRequestError(
+      `Browser CORS proxy ${PROXY_URL} cannot relay POST request to ${TARGET_ORIGIN} with unsupported request headers: authorization`,
+    ));
+  });
+
   it("passes allowed-only body-bearing and state-changing requests without judging header or method meaning", () => {
     const headers = proxy({
       url: PROXY_URL,

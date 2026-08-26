@@ -401,11 +401,24 @@ directly.
 The current profile allows `Accept`, `Content-Type`, `git-protocol`,
 `wp_blog`, and `wp_install`. Every actual proxy boundary projects by
 case-insensitive field name only and preserves browser-representable values and
-occurrences as far as Fetch permits. An anonymous bodyless GET may omit an
-unsupported field and emits a deduplicated diagnostic. Credentialed requests,
-body-bearing requests, and non-GET requests fail before dispatch if projection
-would be lossy. Direct Fetch attempts remain unprojected. The development
-same-origin relay enforces the same profile as production.
+occurrences as far as Fetch permits. Request fields the browser sets or
+forbids on every `fetch()` — the Fetch forbidden request-header names plus
+browser-owned identity/client-hint fields such as `content-length`,
+`accept-encoding`, `transfer-encoding`, and `user-agent` — are omitted for
+**any** method, because a guest value for them can never reach the origin
+regardless of the allow-list; their omission is the browser's constraint,
+not a proxy-imposed loss. This is what lets a body-bearing smart-HTTP
+`git-upload-pack` POST traverse the proxy: a browser `git clone https://…`
+succeeds because only the application-owned fields, all of which are
+allow-listed (`Accept`, `Content-Type`, `git-protocol`), are forwarded. An
+anonymous bodyless GET may additionally omit an
+application-owned unsupported field and emits a deduplicated diagnostic.
+Credential fields (`Authorization`, `Cookie`, `Cookie2`, `Proxy-Authorization`)
+are never silently dropped; a request carrying an unsupported one fails before
+dispatch. Any other application-owned unsupported field still fails a
+credentialed, body-bearing, or non-GET request before dispatch. Direct Fetch
+attempts remain unprojected. The development same-origin relay enforces the same
+profile as production.
 
 Bridge initialization now rejects typed CacheStorage and transition failures.
 A worker disappearance or lost acknowledgement after `postMessage` remains a
