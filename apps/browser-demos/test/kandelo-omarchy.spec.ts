@@ -58,6 +58,14 @@ async function launcherSessions(page: Page): Promise<number> {
   return (await syslogStream(page)).split(/KLAUNCHER_READY n=\d+/).length - 1;
 }
 
+// How many windows of one app the compositor has focused so far. The syslog is
+// cumulative, so a second terminal shows up as one more marker. Counting the
+// app's own name is what distinguishes a window the demo opened from Waybar's
+// second, empty-app_id toplevel, which takes a tile slot of its own.
+async function focusedWindows(page: Page, appId: string): Promise<number> {
+  return (await syslogStream(page)).split(`KBD_FOCUS app_id=${appId}`).length - 1;
+}
+
 // Press bare keys with the Demo surface focused, then return to Internals.
 async function pressKeys(page: Page, keys: string[]) {
   await openSurface(page, "Demo");
@@ -84,7 +92,7 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   await openSurface(page, "Internals");
   await expect
     .poll(() => syslogText(page), { timeout: 180_000 })
-    .toMatch(/running wlterm/);
+    .toMatch(/omarchy desktop ready/);
   expect(await syslogText(page), "omarchy setup reported failure")
     .not.toMatch(SETUP_FAILURE);
 
@@ -110,13 +118,33 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
     .poll(() => syslogStream(page), { timeout: 120_000 })
     .toMatch(/HYPR_LISTENER slot=\d+/);
 
-  // Gate 3: the windows tile UNDER the bar. Only the tiles emitted after the
-  // bar mapped are the desktop's answer — a client that maps first is laid out
-  // over the whole output and re-configured once the bar reserves its strip,
-  // so read the log from the bar's LAYER line onward.
+  // The desktop boots bare. Assert that before touching the keyboard: the bar
+  // has already mapped, which takes longer than a client would, so a client
+  // window here is one nobody asked for. Without this the assertions below
+  // would pass just as well against a desktop that opens its own.
+  expect(await focusedWindows(page, "wlclock"), "the desktop opened a clock on its own").toBe(0);
+  expect(await focusedWindows(page, "wlterm"), "the desktop opened a terminal on its own").toBe(0);
+
+  // Open the three clients the way a user does, through the binds the
+  // compositor loaded from its own config: CTRL+K for the clock, CTRL+Return
+  // for each terminal. Each one is awaited before the next, so a missed key
+  // shows up here rather than as a wrong count three gates later.
+  await pressCtrl(page, "KeyK");
   await expect
-    .poll(() => syslogStream(page), { timeout: 120_000 })
-    .toMatch(/TILE n=2 i=1 /);
+    .poll(() => focusedWindows(page, "wlclock"), { timeout: 60_000 })
+    .toBe(1);
+  await pressCtrl(page, "Enter");
+  await expect
+    .poll(() => focusedWindows(page, "wlterm"), { timeout: 60_000 })
+    .toBe(1);
+  await pressCtrl(page, "Enter");
+  await expect
+    .poll(() => focusedWindows(page, "wlterm"), { timeout: 60_000 })
+    .toBe(2);
+
+  // Gate 3: the windows tile UNDER the bar. Read the log from the bar's LAYER
+  // line onward — only the tiles emitted once the bar reserved its strip are
+  // the desktop's answer.
   const stream = await syslogStream(page);
   const barLayer = stream.match(/LAYER ns=waybar layer=2 x=0 y=0 w=\d+ h=(\d+)/);
   const barHeight = Number(barLayer![1]);
