@@ -56,14 +56,14 @@ describe.skipIf(!haveSmoke || !haveRootfs)("getpwent via rootfs.vfs mount", () =
       "PWENT 5 name=mysql uid=101 gid=101 home=/var/lib/mysql shell=/usr/sbin/nologin",
     );
     expect(result.stdout).toContain(
-      "PWENT 6 name=maker uid=1000 gid=1000 home=/home/maker shell=/bin/sh",
+      "PWENT 6 name=maker uid=1000 gid=1000 home=/home/maker shell=/bin/bash",
     );
     expect(result.stdout).toContain("PWENT count=7");
 
     // Targeted name lookups.
     expect(result.stdout).toContain("PWNAM name=root uid=0 gid=0 home=/root shell=/bin/sh");
     expect(result.stdout).toContain(
-      "PWNAM name=maker uid=1000 gid=1000 home=/home/maker shell=/bin/sh",
+      "PWNAM name=maker uid=1000 gid=1000 home=/home/maker shell=/bin/bash",
     );
 
     // Missing entries must surface as NULL — proves we're not silently
@@ -73,7 +73,7 @@ describe.skipIf(!haveSmoke || !haveRootfs)("getpwent via rootfs.vfs mount", () =
     // Targeted uid lookups.
     expect(result.stdout).toContain("PWUID uid=0 name=root gid=0 home=/root shell=/bin/sh");
     expect(result.stdout).toContain(
-      "PWUID uid=1000 name=maker gid=1000 home=/home/maker shell=/bin/sh",
+      "PWUID uid=1000 name=maker gid=1000 home=/home/maker shell=/bin/bash",
     );
   });
 
