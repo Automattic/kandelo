@@ -1644,7 +1644,7 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
 
 /// Restore fork state without allowing the deserializer to choose an identity.
 /// The child must already have consumed a `ProcessTable` allocation token.
-pub(crate) fn deserialize_allocated_fork_state(
+pub fn deserialize_allocated_fork_state(
     buf: &[u8],
     child: &mut Process,
 ) -> Result<(), Errno> {

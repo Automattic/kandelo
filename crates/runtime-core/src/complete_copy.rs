@@ -31,7 +31,7 @@ fn checked_complete_copy_length(
 /// When `capacity` is positive and at least `source.len()`, `destination`
 /// must name a writable allocation of at least `source.len()` bytes that does
 /// not overlap `source`. Query and short-capacity calls do not dereference it.
-pub(crate) unsafe fn copy_complete_bytes(
+pub unsafe fn copy_complete_bytes(
     source: &[u8],
     destination: *mut u8,
     capacity: u32,

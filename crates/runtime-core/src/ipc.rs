@@ -249,7 +249,7 @@ pub enum SemCtlResult {
 /// `Clone` nor `Copy`: only `IpcTable` can create it, and releasing it consumes
 /// the exact pin once.
 #[derive(Debug)]
-pub(crate) struct PinnedMsgQueue {
+pub struct PinnedMsgQueue {
     pin_id: IpcPinId,
     public_id: i32,
     generation: u64,
@@ -260,7 +260,7 @@ pub(crate) struct PinnedMsgQueue {
 ///
 /// See `PinnedMsgQueue` for the ownership contract.
 #[derive(Debug)]
-pub(crate) struct PinnedSemSet {
+pub struct PinnedSemSet {
     pin_id: IpcPinId,
     public_id: i32,
     generation: u64,
@@ -467,7 +467,7 @@ impl IpcTable {
     ///
     /// WHY: a blocked retry must retain object identity, not merely the numeric
     /// ID that a later `msgget` is allowed to reuse.
-    pub(crate) fn pin_msg_queue(&mut self, qid: i32) -> Result<PinnedMsgQueue, Errno> {
+    pub fn pin_msg_queue(&mut self, qid: i32) -> Result<PinnedMsgQueue, Errno> {
         let generation = self
             .msg_queues
             .get(&qid)
@@ -489,7 +489,7 @@ impl IpcTable {
     ///
     /// Taking the opaque capability by value makes release consuming. A
     /// tombstone remains reachable until the last capability is released.
-    pub(crate) fn release_msg_queue_pin(&mut self, pin: PinnedMsgQueue) -> Result<(), Errno> {
+    pub fn release_msg_queue_pin(&mut self, pin: PinnedMsgQueue) -> Result<(), Errno> {
         if self.active_msg_pins.get(&pin.pin_id) != Some(&pin.generation) {
             return Err(Errno::EINVAL);
         }
@@ -569,7 +569,7 @@ impl IpcTable {
     /// Retry `msgsnd` against the exact generation captured by
     /// `pin_msg_queue`.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn msgsnd_pinned(
+    pub fn msgsnd_pinned(
         &mut self,
         pin: &PinnedMsgQueue,
         mtype: i64,
@@ -733,7 +733,7 @@ impl IpcTable {
     /// Retry `msgrcv` against the exact generation captured by
     /// `pin_msg_queue`.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn msgrcv_pinned(
+    pub fn msgrcv_pinned(
         &mut self,
         pin: &PinnedMsgQueue,
         max_size: u32,
@@ -748,7 +748,7 @@ impl IpcTable {
 
     /// Width-aware pinned `msgrcv`; see `msgrcv_with_mtype_max`.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn msgrcv_pinned_with_mtype_max(
+    pub fn msgrcv_pinned_with_mtype_max(
         &mut self,
         pin: &PinnedMsgQueue,
         max_size: u32,
@@ -1003,7 +1003,7 @@ impl IpcTable {
     }
 
     /// Pin the currently visible generation behind a public semaphore-set ID.
-    pub(crate) fn pin_sem_set(&mut self, semid: i32) -> Result<PinnedSemSet, Errno> {
+    pub fn pin_sem_set(&mut self, semid: i32) -> Result<PinnedSemSet, Errno> {
         let generation = self
             .sem_sets
             .get(&semid)
@@ -1022,7 +1022,7 @@ impl IpcTable {
     }
 
     /// Consume and release one exact semaphore-set pin.
-    pub(crate) fn release_sem_set_pin(&mut self, pin: PinnedSemSet) -> Result<(), Errno> {
+    pub fn release_sem_set_pin(&mut self, pin: PinnedSemSet) -> Result<(), Errno> {
         if self.active_sem_pins.get(&pin.pin_id) != Some(&pin.generation) {
             return Err(Errno::EINVAL);
         }
@@ -1081,7 +1081,7 @@ impl IpcTable {
     }
 
     /// Retry `semop` against the exact generation captured by `pin_sem_set`.
-    pub(crate) fn semop_pinned(
+    pub fn semop_pinned(
         &mut self,
         pin: &PinnedSemSet,
         sops: &[SemOp],

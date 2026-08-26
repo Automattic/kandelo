@@ -35,7 +35,7 @@ fn canonical_control_record_space(cmsg_len: usize, remaining: usize) -> Result<u
 /// The visitor owns descriptor lookup and resource serialization. Keeping
 /// those process operations outside this pure parser lets both native tests
 /// and the Wasm export enforce exactly the same record bounds and alignment.
-pub(crate) fn for_each_canonical_scm_rights_fd(
+pub fn for_each_canonical_scm_rights_fd(
     control: &[u8],
     mut visit: impl FnMut(i32) -> Result<(), Errno>,
 ) -> Result<(), Errno> {
@@ -80,7 +80,7 @@ pub(crate) fn for_each_canonical_scm_rights_fd(
     Ok(())
 }
 
-pub(crate) fn validate_canonical_message_iov_len(iov_len: u32) -> Result<(), Errno> {
+pub fn validate_canonical_message_iov_len(iov_len: u32) -> Result<(), Errno> {
     match iov_len {
         0 | KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT => Ok(()),
         _ => Err(Errno::EINVAL),

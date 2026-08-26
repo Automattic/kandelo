@@ -143,7 +143,7 @@ pub fn with_registry<R>(f: impl FnOnce(&mut BoRegistry) -> R) -> R {
 pub static TEST_REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
-pub(crate) fn reset_registry() {
+pub fn reset_registry() {
     with_registry(|r| {
         r.map.clear();
         r.next_id = 1;
@@ -156,7 +156,7 @@ pub(crate) fn reset_registry() {
 /// allocated bo (the id returned via ioctls is a per-fd handle, not
 /// the global BoId).
 #[cfg(test)]
-pub(crate) fn next_id_for_test() -> BoId {
+pub fn next_id_for_test() -> BoId {
     with_registry(|r| r.next_id)
 }
 

@@ -75,7 +75,7 @@ struct MqDescriptor {
 /// The copied descriptor policy and stable queue ID remain valid after the
 /// public mqd is closed or reused. Fields stay private so sibling modules can
 /// only obtain a capability through [`MqueueTable::pin_descriptor`].
-pub(crate) struct PinnedMqueueDescriptor {
+pub struct PinnedMqueueDescriptor {
     pin_id: MqPinId,
     queue_id: MqQueueId,
     access_mode: u32,
@@ -269,7 +269,7 @@ impl MqueueTable {
     }
 
     /// Return the captured O_NONBLOCK policy for one pinned operation.
-    pub(crate) fn pinned_is_nonblock(
+    pub fn pinned_is_nonblock(
         &self,
         pinned: &PinnedMqueueDescriptor,
     ) -> Result<bool, Errno> {
@@ -287,7 +287,7 @@ impl MqueueTable {
     }
 
     /// Return the exact queue limit retained by a pinned operation.
-    pub(crate) fn pinned_descriptor_msgsize(
+    pub fn pinned_descriptor_msgsize(
         &self,
         pinned: &PinnedMqueueDescriptor,
     ) -> Result<u32, Errno> {
@@ -304,7 +304,7 @@ impl MqueueTable {
 
     /// Retain one descriptor's exact queue object and policy for a blocked
     /// operation.
-    pub(crate) fn pin_descriptor(&mut self, mqd: u32) -> Result<PinnedMqueueDescriptor, Errno> {
+    pub fn pin_descriptor(&mut self, mqd: u32) -> Result<PinnedMqueueDescriptor, Errno> {
         let descriptor = self.resolve_descriptor(MqDescriptorAuthority::Public(mqd))?;
         let (pin_id, next_pin_id) = self.next_free_pin_id()?;
         let queue = self
@@ -328,7 +328,7 @@ impl MqueueTable {
     /// Consuming the opaque value makes duplicate release unavailable to
     /// production callers. The registry check also fails closed if a stale or
     /// forged capability is presented by future unsafe code.
-    pub(crate) fn release_pinned_descriptor(
+    pub fn release_pinned_descriptor(
         &mut self,
         pinned: PinnedMqueueDescriptor,
     ) -> Result<(), Errno> {
@@ -488,7 +488,7 @@ impl MqueueTable {
     }
 
     /// Send through a pinned descriptor without looking up a numeric mqd.
-    pub(crate) fn mq_send_pinned(
+    pub fn mq_send_pinned(
         &mut self,
         pinned: &PinnedMqueueDescriptor,
         data: &[u8],
@@ -603,7 +603,7 @@ impl MqueueTable {
     }
 
     /// Receive through a pinned descriptor without looking up a numeric mqd.
-    pub(crate) fn mq_receive_pinned(
+    pub fn mq_receive_pinned(
         &mut self,
         pinned: &PinnedMqueueDescriptor,
         buf_size: u32,

@@ -540,7 +540,7 @@ impl ThreadInfo {
     }
 
     #[cfg(test)]
-    pub(crate) fn state_mut_for_test(&mut self) -> &mut ThreadState {
+    pub fn state_mut_for_test(&mut self) -> &mut ThreadState {
         self.state_mut()
     }
 
@@ -562,7 +562,7 @@ impl ThreadInfo {
 
     /// Construct an isolated thread fixture with a caller-selected TID.
     #[cfg(test)]
-    pub(crate) fn new(tid: u32, ctid_ptr: usize, stack_ptr: usize, tls_ptr: usize) -> Self {
+    pub fn new(tid: u32, ctid_ptr: usize, stack_ptr: usize, tls_ptr: usize) -> Self {
         Self::new_inner(tid, ctid_ptr, stack_ptr, tls_ptr)
     }
 }
@@ -646,7 +646,7 @@ const SIGEV_SIGNAL: u32 = 0;
 const SIGEV_NONE: u32 = 1;
 const SIGEV_THREAD_ID: u32 = 4;
 
-pub(crate) fn normalize_posix_timer_signo(
+pub fn normalize_posix_timer_signo(
     sigev_notify: u32,
     sigev_signo: u32,
 ) -> Result<u32, Errno> {
@@ -738,17 +738,17 @@ pub struct Process {
     ///
     /// Task 9 only preserves this marker across process-state transport.
     /// Target-aware exec commit is the sole future authority that may set it.
-    pub(crate) secure_exec: bool,
+    pub secure_exec: bool,
     /// Successful image replacements advance this generation exactly once.
     /// Prepared exec targets bind to its current value and cannot survive a
     /// competing commit for the same persistent PID.
-    pub(crate) exec_generation: u64,
+    pub exec_generation: u64,
     /// Kernel-owned exact executable-object leases awaiting commit/cancel.
-    pub(crate) prepared_exec_targets: PreparedExecLedger,
+    pub prepared_exec_targets: PreparedExecLedger,
     /// A `posix_spawn` child is a real signal target while its host launch is
     /// pending, but it is not yet part of the parent's waitable child set.
     /// Only the parent-bound spawn publication transaction may clear this.
-    pub(crate) spawn_publication_pending: bool,
+    pub spawn_publication_pending: bool,
     pub pgid: u32,
     pub sid: u32,
     /// True iff this process is the session leader of its session (i.e. the
@@ -771,7 +771,7 @@ pub struct Process {
     /// Exact kernel-owned resources retained across host-driven blocking
     /// retries. Numeric descriptors and IPC ids may be reused while a task is
     /// asleep, so they are never sufficient retry authority by themselves.
-    pub(crate) blocked_retries: crate::blocked_retry::BlockingRetryState,
+    pub blocked_retries: crate::blocked_retry::BlockingRetryState,
     pub pipes: Vec<Option<PipeBuffer>>,
     pub sockets: SocketTable,
     pub cwd: Vec<u8>,
@@ -853,7 +853,7 @@ pub struct Process {
     /// Read-only from outside the kernel via `kernel_get_fork_count`.
     /// Used as a regression guardrail by the spawn test suite to confirm
     /// non-forking spawn doesn't sneak through the fork path.
-    pub(crate) fork_count: u64,
+    pub fork_count: u64,
 }
 
 impl Deref for Process {
@@ -990,12 +990,12 @@ impl ProcessMetadataReplacement {
 
 impl Process {
     /// Create a process for an identity allocated by `ProcessTable`.
-    pub(crate) fn new_allocated(task_id: crate::process_table::AllocatedTaskId) -> Self {
+    pub fn new_allocated(task_id: crate::process_table::AllocatedTaskId) -> Self {
         Self::new_allocated_with_stdio(task_id, StdioConfig::captured())
     }
 
     /// Create a process with caller-selected stdio for a `ProcessTable` ID.
-    pub(crate) fn new_allocated_with_stdio(
+    pub fn new_allocated_with_stdio(
         task_id: crate::process_table::AllocatedTaskId,
         stdio: StdioConfig,
     ) -> Self {
@@ -1006,26 +1006,26 @@ impl Process {
     /// Create an empty process record for fork-state restoration. The caller
     /// must hold the `ProcessTable` identity capability and install state
     /// before publishing the record.
-    pub(crate) fn new_allocated_empty(task_id: crate::process_table::AllocatedTaskId) -> Self {
+    pub fn new_allocated_empty(task_id: crate::process_table::AllocatedTaskId) -> Self {
         let pid = task_id.into_raw();
         Self::new_inner(pid, None)
     }
 
     /// Construct an isolated process fixture with a caller-selected PID.
     #[cfg(test)]
-    pub(crate) fn new(pid: u32) -> Self {
+    pub fn new(pid: u32) -> Self {
         Self::new_inner(pid, Some(StdioConfig::captured()))
     }
 
     /// Construct an isolated process fixture with caller-selected stdio.
     #[cfg(test)]
-    pub(crate) fn new_with_stdio(pid: u32, stdio: StdioConfig) -> Self {
+    pub fn new_with_stdio(pid: u32, stdio: StdioConfig) -> Self {
         Self::new_inner(pid, Some(stdio))
     }
 
     /// Construct an empty isolated fixture for deserialization tests.
     #[cfg(test)]
-    pub(crate) fn new_empty_for_test(pid: u32) -> Self {
+    pub fn new_empty_for_test(pid: u32) -> Self {
         Self::new_inner(pid, None)
     }
 
@@ -1198,11 +1198,11 @@ impl Process {
         self.credentials.setgroups(groups)
     }
 
-    pub(crate) fn credentials(&self) -> &Credentials {
+    pub fn credentials(&self) -> &Credentials {
         &self.credentials
     }
 
-    pub(crate) fn install_credentials(&mut self, credentials: Credentials) {
+    pub fn install_credentials(&mut self, credentials: Credentials) {
         self.credentials = credentials;
     }
 
@@ -1211,12 +1211,12 @@ impl Process {
     /// Saved IDs and supplementary groups remain exactly as inherited. This
     /// mutation is intentionally private to the kernel's pending-child setup;
     /// ordinary credential syscalls have their own permission transitions.
-    pub(crate) fn reset_effective_ids_to_real(&mut self) {
+    pub fn reset_effective_ids_to_real(&mut self) {
         self.credentials.euid = self.credentials.ruid;
         self.credentials.egid = self.credentials.rgid;
     }
 
-    pub(crate) fn configure_ids(&mut self, uid: Option<u32>, gid: Option<u32>) {
+    pub fn configure_ids(&mut self, uid: Option<u32>, gid: Option<u32>) {
         let mut credentials = self.credentials.clone();
         if let Some(uid) = uid {
             credentials.ruid = uid;
@@ -1233,7 +1233,7 @@ impl Process {
 
     /// Override a fixture identity without exposing a production mutation API.
     #[cfg(test)]
-    pub(crate) fn set_pid_for_test(&mut self, pid: u32) {
+    pub fn set_pid_for_test(&mut self, pid: u32) {
         self.identity.pid = pid;
     }
 
@@ -1244,7 +1244,7 @@ impl Process {
 
     /// Increment the fork counter. Called by
     /// `ProcessTable::fork_process_for_caller` after child creation.
-    pub(crate) fn increment_fork_count(&mut self) {
+    pub fn increment_fork_count(&mut self) {
         self.fork_count += 1;
     }
 
@@ -1335,7 +1335,7 @@ impl Process {
         true
     }
 
-    pub(crate) fn clear_signal_everywhere(&mut self, signum: u32) {
+    pub fn clear_signal_everywhere(&mut self, signum: u32) {
         self.signals.clear_pending(signum);
         self.clear_directed_signal(signum);
     }
@@ -1373,7 +1373,7 @@ impl Process {
     /// Queue a process-directed signal with the generation metadata exposed
     /// through `siginfo_t`. Plain `kill()` uses `SI_USER` (0), while
     /// `rt_sigqueueinfo()` uses `SI_QUEUE` (-1).
-    pub(crate) fn raise_signal_with_metadata(
+    pub fn raise_signal_with_metadata(
         &mut self,
         signum: u32,
         si_value_bits: u64,
@@ -1418,7 +1418,7 @@ impl Process {
     }
 
     /// Consume a `ProcessTable`-allocated identity and attach its thread record.
-    pub(crate) fn add_allocated_thread(
+    pub fn add_allocated_thread(
         &mut self,
         task_id: crate::process_table::AllocatedTaskId,
         ctid_ptr: usize,
@@ -1436,7 +1436,7 @@ impl Process {
 
     /// Add an isolated caller-constructed thread fixture.
     #[cfg(test)]
-    pub(crate) fn add_thread(&mut self, info: ThreadInfo) {
+    pub fn add_thread(&mut self, info: ThreadInfo) {
         self.identity.threads.push(info);
     }
 
@@ -1465,12 +1465,12 @@ impl Process {
 
     /// Mutably visit retained thread state without exposing identity records or
     /// vector membership.
-    pub(crate) fn thread_states_mut(&mut self) -> impl Iterator<Item = &mut ThreadState> {
+    pub fn thread_states_mut(&mut self) -> impl Iterator<Item = &mut ThreadState> {
         self.identity.threads.iter_mut().map(ThreadInfo::state_mut)
     }
 
     /// Remove all non-leader tasks during exec replacement.
-    pub(crate) fn clear_threads(&mut self) {
+    pub fn clear_threads(&mut self) {
         self.identity.threads.clear();
     }
 
@@ -1516,7 +1516,7 @@ impl Process {
     }
 
     /// Drain every SysV attachment owned by the discarded address space.
-    pub(crate) fn take_shm_mappings(&mut self) -> Vec<ShmMapping> {
+    pub fn take_shm_mappings(&mut self) -> Vec<ShmMapping> {
         core::mem::take(&mut self.shm_mappings)
     }
 
@@ -1786,7 +1786,7 @@ impl Process {
     }
 
     /// Queue a directed signal with authoritative sender metadata.
-    pub(crate) fn raise_for_thread_with_metadata(
+    pub fn raise_for_thread_with_metadata(
         &mut self,
         tid: u32,
         signum: u32,
@@ -2182,7 +2182,7 @@ impl Process {
     /// cancellation.  The delivery record therefore restores the current
     /// replacement mask after the handler, preserving one logical restarted
     /// wait without exposing the caller's pre-wait mask between attempts.
-    pub(crate) fn install_caught_handler_mask_for(
+    pub fn install_caught_handler_mask_for(
         &mut self,
         tid: u32,
         action_mask: u64,
@@ -2228,7 +2228,7 @@ impl Process {
         out
     }
 
-    pub(crate) fn begin_metadata_replacement(&mut self) -> Result<u32, Errno> {
+    pub fn begin_metadata_replacement(&mut self) -> Result<u32, Errno> {
         if self.metadata_replacement.is_some() {
             return Err(Errno::EBUSY);
         }
@@ -2265,7 +2265,7 @@ impl Process {
         transaction.stage_entry_with(kind, entry, allocate)
     }
 
-    pub(crate) fn stage_metadata_entry(
+    pub fn stage_metadata_entry(
         &mut self,
         token: u32,
         kind: u32,
@@ -2281,7 +2281,7 @@ impl Process {
         })
     }
 
-    pub(crate) fn commit_metadata_replacement(&mut self, token: u32) -> Result<(), Errno> {
+    pub fn commit_metadata_replacement(&mut self, token: u32) -> Result<(), Errno> {
         let transaction = self
             .metadata_replacement
             .as_ref()
@@ -2303,7 +2303,7 @@ impl Process {
         Ok(())
     }
 
-    pub(crate) fn cancel_metadata_replacement(&mut self, token: u32) -> Result<(), Errno> {
+    pub fn cancel_metadata_replacement(&mut self, token: u32) -> Result<(), Errno> {
         self.metadata_replacement
             .as_ref()
             .filter(|transaction| transaction.token == token)
@@ -2318,7 +2318,7 @@ impl Process {
 /// rest. Lives at module scope (under `#[cfg(test)]`) so any test in the
 /// crate can `use crate::process::test_host::NoopHost;`.
 #[cfg(test)]
-pub(crate) mod test_host {
+pub mod test_host {
     use super::HostIO;
     use wasm_posix_shared::Errno;
     use wasm_posix_shared::WasmStat;

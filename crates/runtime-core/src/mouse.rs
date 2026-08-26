@@ -47,7 +47,7 @@ use core::cell::UnsafeCell;
 use core::sync::atomic::AtomicI32;
 
 /// Owning pid of `/dev/input/mice`, or `-1` if free.
-pub(crate) static MICE_OWNER: AtomicI32 = AtomicI32::new(-1);
+pub static MICE_OWNER: AtomicI32 = AtomicI32::new(-1);
 
 /// Bytes per PS/2 packet emitted by `/dev/input/mice` in standard mode.
 const PACKET_LEN: usize = 3;

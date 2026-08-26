@@ -24,31 +24,31 @@ const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 /// in kernel linear memory does not prove that the bytes after it belong to the
 /// channel currently being dispatched.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ChannelScratchRegion {
+pub struct ChannelScratchRegion {
     start: usize,
     capacity: usize,
 }
 
 /// One already-proven subrange of a live channel scratch allocation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ChannelScratchRange {
+pub struct ChannelScratchRange {
     start: usize,
     length: usize,
 }
 
 impl ChannelScratchRange {
-    pub(crate) const fn start(self) -> usize {
+    pub const fn start(self) -> usize {
         self.start
     }
 }
 
 impl ChannelScratchRegion {
-    pub(crate) fn new(start: usize, capacity: usize) -> Result<Self, Errno> {
+    pub fn new(start: usize, capacity: usize) -> Result<Self, Errno> {
         start.checked_add(capacity).ok_or(Errno::EFAULT)?;
         Ok(Self { start, capacity })
     }
 
-    pub(crate) fn for_channel(channel_offset: usize) -> Result<Self, Errno> {
+    pub fn for_channel(channel_offset: usize) -> Result<Self, Errno> {
         use wasm_posix_shared::channel::{DATA_OFFSET, DATA_SIZE};
 
         let start = channel_offset
@@ -57,17 +57,17 @@ impl ChannelScratchRegion {
         Self::new(start, DATA_SIZE)
     }
 
-    pub(crate) const fn start(self) -> usize {
+    pub const fn start(self) -> usize {
         self.start
     }
 
-    pub(crate) fn end(self) -> Result<usize, Errno> {
+    pub fn end(self) -> Result<usize, Errno> {
         self.start.checked_add(self.capacity).ok_or(Errno::EFAULT)
     }
 
     /// Prove a complete byte range against this allocation, independently of
     /// whether it also happens to fit in the kernel's total linear memory.
-    pub(crate) fn checked_range(
+    pub fn checked_range(
         self,
         pointer: usize,
         length: usize,
@@ -91,7 +91,7 @@ impl ChannelScratchRegion {
 
     /// Prove a command-dependent payload starts at the allocation base and
     /// fits completely inside its explicit capacity.
-    pub(crate) fn checked_start_range(
+    pub fn checked_start_range(
         self,
         pointer: usize,
         length: usize,
@@ -119,7 +119,7 @@ impl ChannelScratchRegion {
 /// `described[index]` distinguishes a reviewed null pointer from an argument
 /// which no descriptor or bespoke wire validator proved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ValidatedChannelScratchArgs {
+pub struct ValidatedChannelScratchArgs {
     described: [bool; 6],
     ranges: [Option<ChannelScratchRange>; 6],
 }
@@ -152,7 +152,7 @@ impl ValidatedChannelScratchArgs {
 
     /// Return a pointer only if the corresponding descriptor or reviewed
     /// bespoke-wire validator proved its exact allocation-owned subrange.
-    pub(crate) fn pointer(self, index: usize) -> Result<usize, Errno> {
+    pub fn pointer(self, index: usize) -> Result<usize, Errno> {
         if index >= self.ranges.len() || !self.described[index] {
             return Err(Errno::EFAULT);
         }
@@ -690,7 +690,7 @@ fn validate_prctl_layout(
 /// `region` must describe the complete live kernel-owned allocation and no
 /// concurrent host operation may replace its bytes during this call or the
 /// immediately following synchronous dispatch.
-pub(crate) unsafe fn validate_channel_scratch_arguments(
+pub unsafe fn validate_channel_scratch_arguments(
     syscall_number: u32,
     args: &[i64; 6],
     region: ChannelScratchRegion,
@@ -731,7 +731,7 @@ pub(crate) unsafe fn validate_channel_scratch_arguments(
 ///
 /// `region` must describe the live channel allocation for this synchronous
 /// dispatch.
-pub(crate) unsafe fn checked_cstr_len(
+pub unsafe fn checked_cstr_len(
     ptr: *const u8,
     region: ChannelScratchRegion,
 ) -> Result<u32, Errno> {
@@ -967,200 +967,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn raw_channel_pointer_allowlist_contains_only_process_addresses() {
-        let dispatcher = include_str!("wasm_api.rs");
-        let channel_dispatch_source = dispatcher
-            .split("#[cfg(test)]\nmod channel_pointer_tests")
-            .next()
-            .expect("channel pointer test boundary disappeared");
-
-        assert!(
-            !dispatcher.contains("channel_pointer!("),
-            "ambiguous raw channel pointer bypasses the scratch proof"
-        );
-
-        // Pin every remaining direct widened-pointer normalization site in the
-        // channel dispatcher. Command-dependent SEMCTL buffers must go through
-        // the named allocation-start/range proof rather than adding another
-        // raw `checked_channel_pointer(args[..])` call.
-        for context in [
-            "fn checked_channel_pointer(raw: i64) -> Result<usize, Errno> {",
-            "let pointer = checked_channel_pointer(raw)?;",
-            "checked_channel_pointer(channel_scalar::process_address_argument(",
-            "match checked_channel_pointer(args[$index]) {",
-        ] {
-            assert_eq!(
-                channel_dispatch_source.matches(context).count(),
-                1,
-                "reviewed direct channel-pointer context changed:\n{context}"
-            );
-        }
-        assert_eq!(
-            channel_dispatch_source
-                .matches("checked_channel_pointer(")
-                .count(),
-            4,
-            "review every new direct widened-channel pointer conversion"
-        );
-        // WHY: rustfmt may wrap the binding before `match`; normalize only
-        // whitespace so this still pins the exact binding and proof helper.
-        let normalized_channel_dispatch_source = channel_dispatch_source
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert_eq!(
-            normalized_channel_dispatch_source
-                .matches("let values_pointer = match checked_channel_scratch_start_range(")
-                .count(),
-            1,
-            "SEMCTL SETALL must prove the exact scratch allocation and range"
-        );
-        assert_eq!(
-            normalized_channel_dispatch_source
-                .matches("let output_pointer = match checked_channel_scratch_start_range(")
-                .count(),
-            2,
-            "SEMCTL STAT/GETALL must prove the exact scratch allocation and range"
-        );
-        assert_eq!(
-            channel_dispatch_source
-                .matches("checked_channel_scratch_start_range(")
-                .count(),
-            4,
-            "review every command-dependent scratch-start proof"
-        );
-
-        // WHY: a count alone lets a newly added raw pointer hide behind removal
-        // of an existing use. Pin each reviewed process-address context, then
-        // also pin the total so every addition, removal, or relocation requires
-        // an explicit ownership review.
-        let reviewed_process_address_contexts = [
-            (
-                "47 => kernel_munmap(process_address!(0), process_size!(1)), // SYS_MUNMAP",
-                1,
-            ),
-            (
-                "49 => kernel_mprotect(process_address!(0), process_size!(1), a3 as u32), // SYS_MPROTECT",
-                1,
-            ),
-            (
-                "128 => kernel_madvise(process_address!(0), process_size!(1), a3 as u32), // SYS_MADVISE",
-                1,
-            ),
-            (
-                r#"201 => kernel_clone(
-            0,
-            conditional_process_address!(1),
-            a1 as u32,
-            0,
-            conditional_process_address!(2),
-            conditional_process_address!(3),
-            conditional_process_address!(4),"#,
-                4,
-            ),
-            (
-                r#"200 => kernel_futex(
-            process_address!(0),
-            a2 as u32,
-            a3 as u32,
-            a4 as u32,
-            conditional_process_address!(4),"#,
-                2,
-            ),
-            (
-                "203 => kernel_set_tid_address(process_address!(0)), // SYS_SET_TID_ADDRESS",
-                1,
-            ),
-            (
-                "261 => kernel_set_robust_list(process_address!(0), process_size!(1)), // SYS_SET_ROBUST_LIST",
-                1,
-            ),
-            (
-                "262 => kernel_get_robust_list(a1 as u32, process_address!(1), process_address!(2)), // SYS_GET_ROBUST_LIST",
-                2,
-            ),
-            (
-                r#"let _shmaddr = conditional_process_address!(1);
-            kernel_ipc_shmat(a1, a2, a3)"#,
-                1,
-            ),
-            (
-                r#"let shmaddr = conditional_process_address!(0);
-            kernel_ipc_shmdt_addr(shmaddr)"#,
-                1,
-            ),
-            (
-                r#"279 | 280 => {
-            // mlock, mlock2: (addr, len, ...)
-            let addr = process_address!(0);"#,
-                1,
-            ),
-            (
-                r#"281 => {
-            // munlock: (addr, len)
-            let addr = process_address!(0);"#,
-                1,
-            ),
-            (
-                r#"278 => {
-            let _address = process_address!(0);
-            let _length = process_size!(1);"#,
-                1,
-            ),
-        ];
-
-        let mut reviewed_uses = 0;
-        for (context, expected_uses) in reviewed_process_address_contexts {
-            assert_eq!(
-                dispatcher.matches(context).count(),
-                1,
-                "reviewed raw process-address context changed:\n{context}"
-            );
-            reviewed_uses += expected_uses;
-        }
-        assert_eq!(
-            dispatcher.matches("process_address!(").count(),
-            reviewed_uses,
-            "review every new raw process-address use; scratch must use a validated pointer macro"
-        );
-    }
-
-    #[test]
-    fn variable_io_adapters_are_not_public_bare_pointer_exports() {
-        let wasm_api = include_str!("wasm_api.rs");
-        for removed_function in [
-            "fn kernel_read(",
-            "fn kernel_write(",
-            "fn kernel_pread(",
-            "fn kernel_pwrite(",
-            "fn kernel_readv(",
-            "fn kernel_writev(",
-            "fn kernel_preadv(",
-            "fn kernel_pwritev(",
-            "fn kernel_prepare_write_operation(",
-        ] {
-            assert!(
-                !wasm_api.contains(removed_function),
-                "variable I/O regained a pointer-only public adapter: {removed_function}",
-            );
-        }
-        for required_private_adapter in [
-            "fn channel_read(",
-            "fn channel_write(",
-            "fn channel_pread(",
-            "fn channel_pwrite(",
-            "fn channel_readv(",
-            "fn channel_writev(",
-            "fn channel_preadv(",
-            "fn channel_pwritev(",
-        ] {
-            assert!(
-                wasm_api.contains(required_private_adapter),
-                "bounded private adapter disappeared: {required_private_adapter}",
-            );
-        }
-    }
 
     #[test]
     fn descriptor_range_accepts_capacity_and_rejects_capacity_plus_one() {

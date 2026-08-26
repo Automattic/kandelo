@@ -30,7 +30,7 @@ use crate::socket::SocketState;
 
 const INITIAL_FORK_STATE_BUFFER_LEN: usize = 64 * 1024;
 const MAX_FORK_STATE_BUFFER_LEN: usize = 4 * 1024 * 1024;
-pub(crate) const SYNTHETIC_INIT_PID: u32 = 1;
+pub const SYNTHETIC_INIT_PID: u32 = 1;
 const FIRST_TASK_ID: u32 = 100;
 const MAX_TASK_ID: u32 = i32::MAX as u32;
 
@@ -39,14 +39,14 @@ const MAX_TASK_ID: u32 = i32::MAX as u32;
 /// The private field and absence of `Copy`/`Clone` make this a linear safe-Rust
 /// capability: production process/thread constructors must consume it, while
 /// code outside this module cannot manufacture or duplicate one.
-pub(crate) struct AllocatedTaskId(u32);
+pub struct AllocatedTaskId(u32);
 
 impl AllocatedTaskId {
-    pub(crate) fn as_raw(&self) -> u32 {
+    pub fn as_raw(&self) -> u32 {
         self.0
     }
 
-    pub(crate) fn into_raw(self) -> u32 {
+    pub fn into_raw(self) -> u32 {
         self.0
     }
 }
@@ -77,7 +77,7 @@ pub struct ProcessTable {
     // Cross-module unit tests build Process fixtures directly. Production
     // code cannot bypass the guarded accessors below.
     #[cfg(test)]
-    pub(crate) processes: BTreeMap<u32, Process>,
+    pub processes: BTreeMap<u32, Process>,
     /// Sole machine-wide authority for POSIX, OFD, and flock advisory locks.
     advisory_locks: AdvisoryLockManager,
     current_pid: u32,
@@ -203,7 +203,7 @@ fn socket_index_is_named_by_live_ofd(process: &Process, socket_index: usize) -> 
 /// The function operates only on global tables and the child's own state,
 /// so it does not need access to `ProcessTable`. `parent_pid` identifies the
 /// exact source owner when copying machine-wide INET binding ownership.
-pub(crate) fn bump_inherited_resource_refcounts(
+pub fn bump_inherited_resource_refcounts(
     parent_pid: u32,
     child: &Process,
 ) -> Result<(), Errno> {
@@ -428,7 +428,7 @@ impl ProcessTable {
 
     /// Construct an isolated process-table fixture.
     #[cfg(test)]
-    pub(crate) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self::new_inner()
     }
 
@@ -908,7 +908,7 @@ impl ProcessTable {
     /// Set synthetic dispatch state in unit tests that exercise a standalone
     /// `Process` without installing it in the global ProcessTable.
     #[cfg(test)]
-    pub(crate) fn set_current_tid_for_test(&mut self, tid: u32) {
+    pub fn set_current_tid_for_test(&mut self, tid: u32) {
         self.current_tid = tid;
         self.current_tid_pid = 0;
     }
@@ -1009,7 +1009,7 @@ impl ProcessTable {
     /// process owner, such as a direct host-pipe operation dropping queued
     /// SCM_RIGHTS. This is crate-private so callers cannot bypass the
     /// process-and-lock paired access used by ordinary syscalls.
-    pub(crate) fn advisory_locks_mut(&mut self) -> &mut AdvisoryLockManager {
+    pub fn advisory_locks_mut(&mut self) -> &mut AdvisoryLockManager {
         &mut self.advisory_locks
     }
 
@@ -1398,7 +1398,7 @@ impl ProcessTable {
     }
 
     /// Create a pthread task in an existing live process.
-    pub(crate) fn create_thread(
+    pub fn create_thread(
         &mut self,
         pid: u32,
         caller_tid: u32,
@@ -1434,7 +1434,7 @@ impl ProcessTable {
     /// Keeping lifecycle filtering here prevents kernel subsystems from
     /// treating the immutable synthetic init record or retained exited records
     /// as runnable processes while scanning machine-wide state.
-    pub(crate) fn live_processes_descending(&self) -> impl Iterator<Item = (u32, &Process)> {
+    pub fn live_processes_descending(&self) -> impl Iterator<Item = (u32, &Process)> {
         self.processes.iter().rev().filter_map(|(&pid, process)| {
             if pid == SYNTHETIC_INIT_PID
                 || matches!(process.state, ProcessState::Exited | ProcessState::Limbo)

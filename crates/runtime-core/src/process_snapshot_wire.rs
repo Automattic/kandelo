@@ -5,18 +5,18 @@
 
 use wasm_posix_shared::{process_snapshot_wire as wire, Errno};
 
-pub(crate) struct ProcessSnapshotHeader {
-    pub(crate) pid: u32,
-    pub(crate) ppid: u32,
-    pub(crate) uid: u32,
-    pub(crate) gid: u32,
-    pub(crate) vsize: u64,
-    pub(crate) state: u32,
-    pub(crate) comm_len: u32,
-    pub(crate) cmdline_len: u32,
+pub struct ProcessSnapshotHeader {
+    pub pid: u32,
+    pub ppid: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub vsize: u64,
+    pub state: u32,
+    pub comm_len: u32,
+    pub cmdline_len: u32,
 }
 
-pub(crate) fn write_process_snapshot_header(
+pub fn write_process_snapshot_header(
     buf: &mut [u8],
     off: &mut usize,
     header: &ProcessSnapshotHeader,
@@ -44,7 +44,7 @@ pub(crate) fn write_process_snapshot_header(
     Ok(())
 }
 
-pub(crate) fn process_snapshot_record_bytes(
+pub fn process_snapshot_record_bytes(
     comm_len: usize,
     cmdline_len: usize,
 ) -> Result<usize, Errno> {
@@ -59,7 +59,7 @@ pub(crate) fn process_snapshot_record_bytes(
 /// WHY: preflighting the complete header plus both byte strings prevents a
 /// short allocation from observing a valid-looking header for a partial
 /// record, and keeps the host's all-or-nothing parser contract truthful.
-pub(crate) fn write_process_snapshot_record(
+pub fn write_process_snapshot_record(
     buf: &mut [u8],
     off: &mut usize,
     header: &ProcessSnapshotHeader,

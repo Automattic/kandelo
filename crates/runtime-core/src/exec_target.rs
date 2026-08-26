@@ -28,7 +28,7 @@ pub enum PreparedExecOwner {
 }
 
 impl PreparedExecOwner {
-    pub(crate) fn validate_process(
+    pub fn validate_process(
         self,
         pid: u32,
         caller_tid: u32,
@@ -51,7 +51,7 @@ impl PreparedExecOwner {
         Ok(())
     }
 
-    pub(crate) fn validate_spawn(
+    pub fn validate_spawn(
         self,
         parent_pid: u32,
         child_pid: u32,
@@ -97,7 +97,7 @@ pub struct PreparedExecTarget {
 
 impl PreparedExecTarget {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    pub fn new(
         owner: PreparedExecOwner,
         ofd_ref: OpenFileDescRef,
         ofd_id: OfdId,
@@ -131,45 +131,45 @@ impl PreparedExecTarget {
         })
     }
 
-    pub(crate) fn owner(&self) -> PreparedExecOwner {
+    pub fn owner(&self) -> PreparedExecOwner {
         self.owner
     }
 
-    pub(crate) fn ofd_ref(&self) -> OpenFileDescRef {
+    pub fn ofd_ref(&self) -> OpenFileDescRef {
         self.ofd_ref
     }
 
-    pub(crate) fn ofd_id(&self) -> OfdId {
+    pub fn ofd_id(&self) -> OfdId {
         self.ofd_id
     }
 
-    pub(crate) fn file_id(&self) -> Option<FileId> {
+    pub fn file_id(&self) -> Option<FileId> {
         self.file_id
     }
 
-    pub(crate) fn stat(&self) -> &WasmStat {
+    pub fn stat(&self) -> &WasmStat {
         &self.stat
     }
 
-    pub(crate) fn statfs(&self) -> &WasmStatfs {
+    pub fn statfs(&self) -> &WasmStatfs {
         &self.statfs
     }
 
-    pub(crate) fn size(&self) -> usize {
+    pub fn size(&self) -> usize {
         self.observed_bytes.len()
     }
 
-    pub(crate) fn is_fully_observed(&self) -> bool {
+    pub fn is_fully_observed(&self) -> bool {
         self.observed_bytes.is_empty()
             || (self.observed_ranges.len() == 1
                 && self.observed_ranges[0] == (0, self.observed_bytes.len()))
     }
 
-    pub(crate) fn mark_content_drifted(&mut self) {
+    pub fn mark_content_drifted(&mut self) {
         self.content_drifted = true;
     }
 
-    pub(crate) fn observed_bytes(&self) -> Result<&[u8], Errno> {
+    pub fn observed_bytes(&self) -> Result<&[u8], Errno> {
         if !self.is_fully_observed() {
             return Err(Errno::EINVAL);
         }
@@ -179,7 +179,7 @@ impl PreparedExecTarget {
         Ok(&self.observed_bytes)
     }
 
-    pub(crate) fn record_read(&mut self, offset: usize, bytes: &[u8]) -> Result<(), Errno> {
+    pub fn record_read(&mut self, offset: usize, bytes: &[u8]) -> Result<(), Errno> {
         let end = offset.checked_add(bytes.len()).ok_or(Errno::EOVERFLOW)?;
         if end > self.observed_bytes.len() {
             return Err(Errno::EINVAL);
@@ -218,7 +218,7 @@ impl PreparedExecTarget {
         Ok(())
     }
 
-    pub(crate) fn is_script(&self) -> Result<bool, Errno> {
+    pub fn is_script(&self) -> Result<bool, Errno> {
         Ok(self.observed_bytes()?.starts_with(b"#!"))
     }
 }
@@ -236,7 +236,7 @@ impl PreparedExecLedger {
         }
     }
 
-    pub(crate) fn insert(&mut self, mut target: PreparedExecTarget) -> Result<u32, Errno> {
+    pub fn insert(&mut self, mut target: PreparedExecTarget) -> Result<u32, Errno> {
         let token = self.next_token.ok_or(Errno::EOVERFLOW)?;
         debug_assert_ne!(token, 0);
         debug_assert!(token <= i32::MAX as u32);
@@ -248,28 +248,28 @@ impl PreparedExecLedger {
         Ok(token)
     }
 
-    pub(crate) fn ensure_insert_capacity(&self) -> Result<(), Errno> {
+    pub fn ensure_insert_capacity(&self) -> Result<(), Errno> {
         self.next_token.map(|_| ()).ok_or(Errno::EOVERFLOW)
     }
 
-    pub(crate) fn get(&self, token: u32) -> Result<&PreparedExecTarget, Errno> {
+    pub fn get(&self, token: u32) -> Result<&PreparedExecTarget, Errno> {
         self.entries.get(&token).ok_or(Errno::EINVAL)
     }
 
-    pub(crate) fn get_mut(&mut self, token: u32) -> Result<&mut PreparedExecTarget, Errno> {
+    pub fn get_mut(&mut self, token: u32) -> Result<&mut PreparedExecTarget, Errno> {
         self.entries.get_mut(&token).ok_or(Errno::EINVAL)
     }
 
-    pub(crate) fn take(&mut self, token: u32) -> Result<PreparedExecTarget, Errno> {
+    pub fn take(&mut self, token: u32) -> Result<PreparedExecTarget, Errno> {
         self.entries.remove(&token).ok_or(Errno::EINVAL)
     }
 
-    pub(crate) fn drain(&mut self) -> impl Iterator<Item = PreparedExecTarget> + '_ {
+    pub fn drain(&mut self) -> impl Iterator<Item = PreparedExecTarget> + '_ {
         core::mem::take(&mut self.entries).into_values()
     }
 
     #[cfg(test)]
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
@@ -368,7 +368,7 @@ fn retain_empty_path_target(
 
 /// Retain the exact object selected by one pathname or `AT_EMPTY_PATH`
 /// request. The returned token is process-local, positive, and one-shot.
-pub(crate) fn prepare(
+pub fn prepare(
     proc: &mut Process,
     locks: &mut AdvisoryLockManager,
     host: &mut dyn HostIO,
@@ -403,13 +403,13 @@ fn retained_host_handle(proc: &Process, target: &PreparedExecTarget) -> Result<i
     Ok(ofd.host_handle)
 }
 
-pub(crate) fn size(proc: &Process, owner_pid: u32, token: u32) -> Result<i64, Errno> {
+pub fn size(proc: &Process, owner_pid: u32, token: u32) -> Result<i64, Errno> {
     let target = proc.prepared_exec_targets.get(token)?;
     owner_matches_ledger_pid(target.owner(), owner_pid)?;
     i64::try_from(target.size()).map_err(|_| Errno::EOVERFLOW)
 }
 
-pub(crate) fn read(
+pub fn read(
     proc: &mut Process,
     host: &mut dyn HostIO,
     owner_pid: u32,
@@ -442,7 +442,7 @@ pub(crate) fn read(
     Ok(read)
 }
 
-pub(crate) fn cancel(
+pub fn cancel(
     proc: &mut Process,
     locks: &mut AdvisoryLockManager,
     host: &mut dyn HostIO,
@@ -582,7 +582,7 @@ fn finish_commit(
     Ok(())
 }
 
-pub(crate) fn commit_process(
+pub fn commit_process(
     proc: &mut Process,
     locks: &mut AdvisoryLockManager,
     host: &mut dyn HostIO,
@@ -615,7 +615,7 @@ fn commit_taken_target(
     result
 }
 
-pub(crate) fn commit_spawn(
+pub fn commit_spawn(
     proc: &mut Process,
     locks: &mut AdvisoryLockManager,
     host: &mut dyn HostIO,
@@ -630,7 +630,7 @@ pub(crate) fn commit_spawn(
     commit_taken_target(proc, locks, host, target, validation, None)
 }
 
-pub(crate) fn drain_prepared_exec_targets(
+pub fn drain_prepared_exec_targets(
     proc: &mut Process,
     locks: &mut AdvisoryLockManager,
     host: &mut dyn HostIO,

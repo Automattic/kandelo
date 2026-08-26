@@ -1,0 +1,12 @@
+[package]
+name = "runtime-core"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "runtime_core"
+crate-type = ["rlib"]
+
+[dependencies]
+spin = { version = "=0.12.2", default-features = false, features = ["mutex", "spin_mutex"] }
+wasm-posix-shared = { path = "../shared" }

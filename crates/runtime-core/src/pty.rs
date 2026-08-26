@@ -268,7 +268,7 @@ pub fn free_pty(idx: usize) {
 /// The production kernel enters this table under its global kernel lock, but
 /// Rust's test harness runs independent unit tests on multiple host threads.
 #[cfg(test)]
-pub(crate) fn test_table_lock() -> std::sync::MutexGuard<'static, ()> {
+pub fn test_table_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }

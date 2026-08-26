@@ -21,14 +21,14 @@ const TRANSFER_SCRATCH_WORD_BYTES: usize = core::mem::size_of::<TransferScratchW
 const TRANSFER_SCRATCH_ALIGNMENT: usize = core::mem::align_of::<TransferScratchWord>();
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TransferIoOperation {
+pub enum TransferIoOperation {
     Read,
     Write,
     Pread,
     Pwrite,
 }
 
-pub(crate) fn io_operation_for_syscall(
+pub fn io_operation_for_syscall(
     original_syscall: u32,
 ) -> Result<TransferIoOperation, Errno> {
     use wasm_posix_shared::Syscall;

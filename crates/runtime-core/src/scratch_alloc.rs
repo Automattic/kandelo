@@ -4,7 +4,7 @@ use alloc::alloc::Layout;
 
 const SCRATCH_ALIGNMENT: usize = 16;
 
-pub(crate) fn layout(size: usize) -> Option<Layout> {
+pub fn layout(size: usize) -> Option<Layout> {
     // WHY: `Layout` requires the allocation, including alignment padding, to
     // fit in `isize::MAX`. Large u32 requests are therefore outside the
     // allocator domain on wasm32. A host-facing allocation request must report

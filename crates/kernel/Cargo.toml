@@ -8,6 +8,7 @@ name = "kandelo_kernel"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+runtime-core = { path = "../runtime-core" }
 spin = { version = "=0.12.2", default-features = false, features = ["mutex", "spin_mutex"] }
 wasm-posix-shared = { path = "../shared" }
 

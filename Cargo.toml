@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/shared",
+    "crates/runtime-core",
     "crates/kernel",
     "crates/userspace",
     "crates/fork-instrument",
