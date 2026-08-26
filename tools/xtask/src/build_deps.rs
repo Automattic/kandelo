@@ -3005,6 +3005,7 @@ impl SourceOnlyProgramProjectionAuthority<'_> {
         roots: &SourceOnlyCacheRoots,
         arch: TargetArch,
         abi_version: u32,
+        verify_cache: bool,
         receipt: &PackageNodeReceiptV1,
     ) -> Result<(), String> {
         self.lock.validate()?;
@@ -3031,8 +3032,9 @@ impl SourceOnlyProgramProjectionAuthority<'_> {
             roots,
             arch,
             abi_version,
+            verify_cache,
         )?;
-        let actual_cache_receipt = cache_receipt_sha256(&before.cache_snapshot.receipt)?;
+        let actual_cache_receipt = before.cache_receipt_sha256.clone();
         if receipt.manifest_sha256 != before.manifest_sha256
             || receipt.cache_key_sha256 != before.cache_key_sha256
             || receipt.cache_receipt_sha256 != actual_cache_receipt
@@ -3118,6 +3120,7 @@ impl SourceOnlyProgramProjectionAuthority<'_> {
             roots,
             arch,
             abi_version,
+            verify_cache,
         )?;
         require_same_source_only_package_authority(
             target,
@@ -3295,6 +3298,7 @@ impl SourceOnlyProgramProjectionAuthority<'_> {
         _roots: &SourceOnlyCacheRoots,
         _arch: TargetArch,
         _abi_version: u32,
+        _verify_cache: bool,
         _receipt: &PackageNodeReceiptV1,
     ) -> Result<(), String> {
         Err("source-only projection authority requires Unix no-follow filesystem semantics".into())
@@ -8921,7 +8925,16 @@ struct SourceOnlyPackageAuthority {
     manifest: DepsManifest,
     manifest_sha256: String,
     cache_key_sha256: String,
-    cache_snapshot: CacheEntrySnapshot,
+    /// Digest of the entry's content-addressed receipt. In `--verify-cache`
+    /// mode this is recomputed from a freshly hashed `cache_snapshot`; on the
+    /// trusted path it is read from the persisted receipt sidecar (or computed
+    /// once when that sidecar is absent for a pre-existing entry).
+    cache_receipt_sha256: String,
+    /// Present only when the entry was fully re-hashed this run
+    /// (`--verify-cache`); `None` on the trusted path, which skips the
+    /// whole-tree hash while still enforcing declared-output/wasm/provenance
+    /// correctness.
+    cache_snapshot: Option<CacheEntrySnapshot>,
     cache_root: AnchoredDirectory,
 }
 
@@ -8933,6 +8946,7 @@ fn capture_source_only_package_authority(
     roots: &SourceOnlyCacheRoots,
     arch: TargetArch,
     abi_version: u32,
+    verify_cache: bool,
 ) -> Result<SourceOnlyPackageAuthority, String> {
     let manifest_path = target.dir.join("package.toml");
     let manifest_before = stable_package_manifest_sha256(&manifest_path)?;
@@ -8968,28 +8982,75 @@ fn capture_source_only_package_authority(
     }
     let parent_guard = SourceOnlyCacheParentGuard::prepare(&roots.compiled, canonical)?;
     parent_guard.validate()?;
-    let cache_snapshot = capture_source_only_cache_entry_snapshot(
-        &manifest,
-        &parent_guard,
-        canonical,
-        arch,
-        abi_version,
-        &cache_key_sha256,
-    )
-    .map_err(|error| {
-        format!(
-            "{}: resolved source-only cache entry failed stable admission and was preserved at {}: {error}",
-            target.spec(),
-            canonical.display(),
+    let (cache_snapshot, cache_receipt_sha256): (Option<CacheEntrySnapshot>, String) = if verify_cache
+    {
+        let snapshot = capture_source_only_cache_entry_snapshot(
+            &manifest,
+            &parent_guard,
+            canonical,
+            arch,
+            abi_version,
+            &cache_key_sha256,
         )
-    })?;
+        .map_err(|error| {
+            format!(
+                "{}: resolved source-only cache entry failed stable admission and was preserved at {}: {error}",
+                target.spec(),
+                canonical.display(),
+            )
+        })?;
+        let sha = cache_receipt_sha256(&snapshot.receipt)?;
+        (Some(snapshot), sha)
+    } else {
+        // Trusted path: enforce declared-output/wasm/provenance correctness
+        // without the whole-tree content re-hash, and take the receipt digest
+        // from the persisted sidecar. A pre-existing entry with no sidecar is
+        // hashed once here so later runs are cheap.
+        if !source_only_cache_entry_is_trusted(
+            &manifest,
+            canonical,
+            arch,
+            abi_version,
+            &cache_key_sha256,
+        )? {
+            return Err(format!(
+                "{}: trusted source-only cache entry vanished before capture at {}",
+                target.spec(),
+                canonical.display(),
+            ));
+        }
+        match read_source_only_cache_receipt(canonical, &cache_key_sha256)? {
+            Some(sha) => (None, sha),
+            None => {
+                let snapshot = capture_source_only_cache_entry_snapshot(
+                    &manifest,
+                    &parent_guard,
+                    canonical,
+                    arch,
+                    abi_version,
+                    &cache_key_sha256,
+                )
+                .map_err(|error| {
+                    format!(
+                        "{}: resolved source-only cache entry failed stable admission and was preserved at {}: {error}",
+                        target.spec(),
+                        canonical.display(),
+                    )
+                })?;
+                let sha = cache_receipt_sha256(&snapshot.receipt)?;
+                (None, sha)
+            }
+        }
+    };
     parent_guard.validate()?;
     let (_, cache_root, root_at) = parent_guard.open_canonical_entry(canonical)?;
-    if cache_root.identity != cache_snapshot.identity || root_at.identity != cache_snapshot.identity {
-        return Err(format!(
-            "{}: canonical cache generation changed after stable admission",
-            target.spec()
-        ));
+    if let Some(snapshot) = &cache_snapshot {
+        if cache_root.identity != snapshot.identity || root_at.identity != snapshot.identity {
+            return Err(format!(
+                "{}: canonical cache generation changed after stable admission",
+                target.spec()
+            ));
+        }
     }
     let manifest_after = stable_package_manifest_sha256(&manifest_path)?;
     let reloaded = registry.load(&target.name).map_err(|error| {
@@ -9017,6 +9078,7 @@ fn capture_source_only_package_authority(
         manifest,
         manifest_sha256: manifest_before,
         cache_key_sha256,
+        cache_receipt_sha256,
         cache_snapshot,
         cache_root,
     })
@@ -9031,6 +9093,7 @@ fn require_same_source_only_package_authority(
 ) -> Result<(), String> {
     if actual.manifest_sha256 != expected.manifest_sha256
         || actual.cache_key_sha256 != expected.cache_key_sha256
+        || actual.cache_receipt_sha256 != expected.cache_receipt_sha256
         || actual.cache_snapshot != expected.cache_snapshot
         || actual.cache_root.identity != expected.cache_root.identity
         || actual.cache_root.path != expected.cache_root.path
@@ -9041,6 +9104,155 @@ fn require_same_source_only_package_authority(
         ));
     }
     Ok(())
+}
+
+/// Cheap SourceOnlyV1 cache-hit trust check for the default (no `--verify-cache`)
+/// path. Confirms the canonical entry exists (no-follow) and its provenance
+/// marker matches the expected identity, without hashing any artifact bytes.
+///
+/// Returns `Ok(false)` for a plain cache miss (an absent entry, which must be
+/// built) and an error only when an existing entry's provenance is corrupt or
+/// mismatched. It never reports a trusted hit it did not verify: the content
+/// address (the canonical directory name) already binds every declared input,
+/// so a changed input yields a different key and a different, absent path.
+#[cfg(unix)]
+pub(crate) fn source_only_cache_entry_is_trusted(
+    target: &DepsManifest,
+    canonical: &Path,
+    arch: TargetArch,
+    abi_version: u32,
+    cache_key_sha: &str,
+) -> Result<bool, String> {
+    if !path_entry_exists(canonical)? {
+        return Ok(false);
+    }
+    // Preserve the real correctness guarantees the full snapshot would enforce
+    // (declared-output shape and the wasm/fork-instrumentation/ABI policy that
+    // rejects stale asyncify or legacy fork exports, plus provenance identity)
+    // while skipping only the O(output-bytes) whole-tree content re-hash.
+    validate_cache_entry(target, canonical, arch, abi_version, cache_key_sha)?;
+    Ok(true)
+}
+
+/// Resolver-owned sidecar recording the content-addressed receipt digest of a
+/// materialized SourceOnlyV1 cache entry, stored beside (never inside) the
+/// entry like the provenance marker. The trusted local-build fast path reads
+/// this instead of re-hashing the whole entry tree; `--verify-cache` recomputes
+/// and rewrites it. Entries built before this record existed simply lack it, so
+/// the trusted path recomputes and persists it once.
+const SOURCE_ONLY_CACHE_RECEIPT_SCHEMA: u32 = 1;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceOnlyCacheReceiptMarker {
+    schema: u32,
+    cache_key_sha256: String,
+    cache_receipt_sha256: String,
+}
+
+#[cfg(unix)]
+pub(crate) fn source_only_cache_receipt_path(
+    canonical: &Path,
+    cache_key_sha: &str,
+) -> Result<PathBuf, String> {
+    let parent = canonical.parent().ok_or_else(|| {
+        format!(
+            "canonical cache path has no parent for receipt: {}",
+            canonical.display()
+        )
+    })?;
+    let basename = canonical
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            format!(
+                "canonical cache path has no UTF-8 name: {}",
+                canonical.display()
+            )
+        })?;
+    if !basename.ends_with(&format!("-{cache_key_sha}")) {
+        return Err(format!(
+            "canonical cache path {} does not end in its full cache key {cache_key_sha}",
+            canonical.display()
+        ));
+    }
+    Ok(parent.join(format!(".{basename}.kandelo-receipt.toml")))
+}
+
+#[cfg(unix)]
+pub(crate) fn write_source_only_cache_receipt(
+    canonical: &Path,
+    cache_key_sha: &str,
+    cache_receipt_sha: &str,
+) -> Result<(), String> {
+    let path = source_only_cache_receipt_path(canonical, cache_key_sha)?;
+    let marker = SourceOnlyCacheReceiptMarker {
+        schema: SOURCE_ONLY_CACHE_RECEIPT_SCHEMA,
+        cache_key_sha256: cache_key_sha.to_string(),
+        cache_receipt_sha256: cache_receipt_sha.to_string(),
+    };
+    let body = toml::to_string(&marker)
+        .map_err(|error| format!("serialize source-only cache receipt marker: {error}"))?;
+    let parent = path.parent().ok_or_else(|| {
+        format!(
+            "source-only cache receipt path has no parent: {}",
+            path.display()
+        )
+    })?;
+    let temp = parent.join(format!(".kandelo-receipt-tmp-{}", std::process::id()));
+    std::fs::write(&temp, body.as_bytes()).map_err(|error| {
+        format!(
+            "write source-only cache receipt {}: {error}",
+            temp.display()
+        )
+    })?;
+    std::fs::rename(&temp, &path).map_err(|error| {
+        let _ = std::fs::remove_file(&temp);
+        format!(
+            "publish source-only cache receipt {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(())
+}
+
+#[cfg(unix)]
+pub(crate) fn read_source_only_cache_receipt(
+    canonical: &Path,
+    cache_key_sha: &str,
+) -> Result<Option<String>, String> {
+    let path = source_only_cache_receipt_path(canonical, cache_key_sha)?;
+    let body = match std::fs::read_to_string(&path) {
+        Ok(body) => body,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "read source-only cache receipt {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    let marker: SourceOnlyCacheReceiptMarker = toml::from_str(&body).map_err(|error| {
+        format!(
+            "parse source-only cache receipt {}: {error}",
+            path.display()
+        )
+    })?;
+    if marker.schema != SOURCE_ONLY_CACHE_RECEIPT_SCHEMA {
+        return Err(format!(
+            "source-only cache receipt {} has unsupported schema {}",
+            path.display(),
+            marker.schema
+        ));
+    }
+    if marker.cache_key_sha256 != cache_key_sha {
+        return Err(format!(
+            "source-only cache receipt {} records cache key {} but {cache_key_sha} was requested",
+            path.display(),
+            marker.cache_key_sha256,
+        ));
+    }
+    Ok(Some(marker.cache_receipt_sha256))
 }
 
 /// Resolve exactly one scheduler-selected node under SourceOnlyV1. Compiled
@@ -9067,6 +9279,40 @@ pub(crate) fn resolve_local_build_package_node(
         repo_root,
         output_root,
         rebuild,
+        true,
+        before_projection,
+        &mut |_| {},
+    )
+}
+
+/// Resolve one scheduler-selected node under SourceOnlyV1, choosing whether to
+/// re-verify an existing cache entry by re-hashing its contents (`verify_cache`)
+/// or to trust the content-addressed key plus provenance and skip the redundant
+/// re-captures. The trusted path is the local-build default; `--verify-cache`
+/// opts back into full per-run re-verification.
+#[cfg(unix)]
+pub(crate) fn resolve_local_build_package_node_with_cache_policy(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+    roots: &SourceOnlyCacheRoots,
+    repo_root: &Path,
+    output_root: &Path,
+    rebuild: bool,
+    verify_cache: bool,
+    before_projection: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<LocalBuildNodeOutput, String> {
+    resolve_local_build_package_node_with_projection_hooks(
+        target,
+        registry,
+        arch,
+        abi_version,
+        roots,
+        repo_root,
+        output_root,
+        rebuild,
+        verify_cache,
         before_projection,
         &mut |_| {},
     )
@@ -9082,6 +9328,7 @@ fn resolve_local_build_package_node_with_projection_hooks<AfterCopy>(
     repo_root: &Path,
     output_root: &Path,
     rebuild: bool,
+    verify_cache: bool,
     before_projection: &mut dyn FnMut() -> Result<(), String>,
     after_copy: &mut AfterCopy,
 ) -> Result<LocalBuildNodeOutput, String>
@@ -9126,6 +9373,7 @@ where
         &mut BTreeMap::new(),
         &mut Vec::new(),
         &permission,
+        verify_cache,
     )?;
     let canonical = match &resolved.materialization {
         NodeMaterialization::VerifiedSourceArchive {
@@ -9175,6 +9423,7 @@ where
         roots,
         arch,
         abi_version,
+        verify_cache,
     )?;
     before_projection().map_err(|error| {
         format!(
@@ -9182,28 +9431,41 @@ where
             target.spec()
         )
     })?;
-    let after_callback = capture_source_only_package_authority(
-        target,
-        registry,
-        &canonical,
-        roots,
-        arch,
-        abi_version,
-    )?;
-    require_same_source_only_package_authority(
-        target,
-        &authority,
-        &after_callback,
-        "before projection",
-    )?;
+    // The content-addressed cache key already binds every declared input, so a
+    // changed input yields a different key and a different, absent canonical
+    // path. The before/during/after re-captures below re-hash the same immutable
+    // cache entry solely to detect an out-of-band mutation of the cache while a
+    // projection is in flight. That per-run re-hash dominates the cost of an
+    // otherwise all-cached build, so the trusted default skips it and
+    // `--verify-cache` restores it.
+    if verify_cache {
+        let after_callback = capture_source_only_package_authority(
+            target,
+            registry,
+            &canonical,
+            roots,
+            arch,
+            abi_version,
+            verify_cache,
+        )?;
+        require_same_source_only_package_authority(
+            target,
+            &authority,
+            &after_callback,
+            "before projection",
+        )?;
+    }
     let materialized_members = materialize_source_only_program_target_with_cache_root(
-        &after_callback.manifest,
+        &authority.manifest,
         &canonical,
-        Some(&after_callback.cache_root),
+        Some(&authority.cache_root),
         output_root,
         arch,
         after_copy,
         &mut |_| {
+            if !verify_cache {
+                return Ok(());
+            }
             let current = capture_source_only_package_authority(
                 target,
                 registry,
@@ -9211,6 +9473,7 @@ where
                 roots,
                 arch,
                 abi_version,
+                verify_cache,
             )?;
             require_same_source_only_package_authority(
                 target,
@@ -9220,26 +9483,42 @@ where
             )
         },
     )?;
-    let after_projection = capture_source_only_package_authority(
-        target,
-        registry,
-        &canonical,
-        roots,
-        arch,
-        abi_version,
-    )?;
-    require_same_source_only_package_authority(
-        target,
-        &authority,
-        &after_projection,
-        "during projection",
-    )?;
+    if verify_cache {
+        let after_projection = capture_source_only_package_authority(
+            target,
+            registry,
+            &canonical,
+            roots,
+            arch,
+            abi_version,
+            verify_cache,
+        )?;
+        require_same_source_only_package_authority(
+            target,
+            &authority,
+            &after_projection,
+            "during projection",
+        )?;
+    }
     let package_receipt = PackageNodeReceiptV1 {
         manifest_sha256: authority.manifest_sha256,
         cache_key_sha256: authority.cache_key_sha256,
-        cache_receipt_sha256: cache_receipt_sha256(&authority.cache_snapshot.receipt)?,
+        cache_receipt_sha256: authority.cache_receipt_sha256,
         materialized_members,
     };
+    // Persist the receipt digest beside the entry so the trusted fast path can
+    // read it next run instead of re-hashing the whole tree. Best-effort: a
+    // failure here only forces the next run to recompute, never a wrong result.
+    if let Err(error) = write_source_only_cache_receipt(
+        &canonical,
+        &package_receipt.cache_key_sha256,
+        &package_receipt.cache_receipt_sha256,
+    ) {
+        eprintln!(
+            "{}: warning: persist source-only cache receipt: {error}",
+            target.spec()
+        );
+    }
     let receipt_size = serde_json::to_vec(&package_receipt)
         .map_err(|error| format!("serialize package node receipt: {error}"))?
         .len();
@@ -9266,6 +9545,23 @@ pub(crate) fn resolve_local_build_package_node(
     _repo_root: &Path,
     _output_root: &Path,
     _rebuild: bool,
+    _before_projection: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<LocalBuildNodeOutput, String> {
+    Err("source-only local package execution requires Unix no-follow filesystem semantics".to_string())
+}
+
+#[cfg(not(unix))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resolve_local_build_package_node_with_cache_policy(
+    _target: &DepsManifest,
+    _registry: &Registry,
+    _arch: TargetArch,
+    _abi_version: u32,
+    _roots: &SourceOnlyCacheRoots,
+    _repo_root: &Path,
+    _output_root: &Path,
+    _rebuild: bool,
+    _verify_cache: bool,
     _before_projection: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<LocalBuildNodeOutput, String> {
     Err("source-only local package execution requires Unix no-follow filesystem semantics".to_string())
@@ -9308,6 +9604,7 @@ pub fn ensure_built(
         &mut memo,
         &mut building,
         &BuildPermission::Recursive,
+        true,
     )?;
     require_compiled_dir(&resolved, &target.name, "public resolver output").map(Path::to_path_buf)
 }
@@ -9876,6 +10173,7 @@ fn ensure_built_inner(
     memo: &mut BTreeMap<String, [u8; 32]>,
     building: &mut Vec<String>,
     build_permission: &BuildPermission,
+    verify_cache: bool,
 ) -> Result<ResolvedNode, String> {
     // Process-lifetime memo: the same (name, arch) often gets
     // requested multiple times within one resolver run via different
@@ -9933,6 +10231,7 @@ fn ensure_built_inner(
         memo,
         building,
         build_permission,
+        verify_cache,
     );
 
     // Don't poison the cache with cycle errors — those reflect the
@@ -9962,6 +10261,7 @@ fn ensure_built_uncached(
     memo: &mut BTreeMap<String, [u8; 32]>,
     building: &mut Vec<String>,
     build_permission: &BuildPermission,
+    verify_cache: bool,
 ) -> Result<ResolvedNode, String> {
     if building.iter().any(|s| s == &target.name) {
         return Err(format!(
@@ -10021,6 +10321,7 @@ fn ensure_built_uncached(
             memo,
             building,
             build_permission,
+            verify_cache,
         )?;
         // Place binaries/programs/<arch>/<output> symlinks for each
         // program dep so consumer build scripts can find them via
@@ -10157,21 +10458,35 @@ fn ensure_built_uncached(
     };
     if !force_rebuild && canonical_is_cache_hit {
         if let Some(parent) = &source_only_cache_parent {
-            capture_source_only_cache_entry_snapshot(
+            if verify_cache {
+                capture_source_only_cache_entry_snapshot(
+                    target,
+                    parent,
+                    &canonical,
+                    arch,
+                    abi_version,
+                    &cache_key_sha_hex,
+                )
+                .map_err(|error| {
+                    format!(
+                        "{}: invalid source-only canonical cache entry was preserved at {}: {error}",
+                        target.spec(),
+                        canonical.display()
+                    )
+                })?;
+            } else if !source_only_cache_entry_is_trusted(
                 target,
-                parent,
                 &canonical,
                 arch,
                 abi_version,
                 &cache_key_sha_hex,
-            )
-            .map_err(|error| {
-                format!(
-                    "{}: invalid source-only canonical cache entry was preserved at {}: {error}",
+            )? {
+                return Err(format!(
+                    "{}: source-only cache entry at {} vanished after admission",
                     target.spec(),
                     canonical.display()
-                )
-            })?;
+                ));
+            }
             return Ok(ResolvedNode::compiled(canonical, transitive));
         }
         match validate_cache_entry(target, &canonical, arch, abi_version, &cache_key_sha_hex) {
@@ -34098,6 +34413,7 @@ spdx = "TestLicense"
             &mut BTreeMap::new(),
             &mut Vec::new(),
             &BuildPermission::Recursive,
+            true,
         )
         .unwrap();
         let expected_payload = base
@@ -37064,6 +37380,7 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
                 &roots,
                 TEST_ARCH,
                 TEST_ABI,
+                true,
                 &receipt,
             )
         })
@@ -37077,6 +37394,7 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
                 &roots,
                 TEST_ARCH,
                 TEST_ABI,
+                true,
                 &receipt,
             )
         })
@@ -37096,6 +37414,7 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
                 &roots,
                 TEST_ARCH,
                 TEST_ABI,
+                true,
                 &receipt,
             )
         })
@@ -37331,6 +37650,116 @@ index_url = "https://example.test/releases/binaries-abi-v{abi}/index.toml"
             fs::remove_file(&marker).unwrap();
         }
         assert_eq!(fs::read(&outside_file).unwrap(), b"outside");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_only_cache_entry_is_trusted_when_present_and_provenance_matches() {
+        let repo = tempdir("source-only-trusted-present-repo");
+        write(&repo, "trusted-lib", "1.0.0", &[]);
+        let registry = Registry { roots: vec![repo] };
+        let manifest = registry.load("trusted-lib").unwrap();
+        let cache_root = tempdir("source-only-trusted-present-cache");
+        let key = "a".repeat(64);
+        let canonical = cache_root
+            .join("libs")
+            .join(format!("trusted-lib-1.0.0-rev1-wasm32-{key}"));
+        fs::create_dir_all(canonical.join("lib")).unwrap();
+        fs::write(canonical.join("lib/libtrusted-lib.a"), b"archive").unwrap();
+
+        assert!(
+            source_only_cache_entry_is_trusted(
+                &manifest,
+                &canonical,
+                TargetArch::Wasm32,
+                TEST_ABI,
+                &key,
+            )
+            .unwrap(),
+            "an existing entry whose declared artifacts and provenance match must be trusted without hashing"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_only_cache_receipt_round_trips_the_persisted_receipt_sha() {
+        let cache_root = tempdir("source-only-receipt-round-trip");
+        let key = "c".repeat(64);
+        let canonical = cache_root
+            .join("libs")
+            .join(format!("receipt-lib-1.0.0-rev1-wasm32-{key}"));
+        fs::create_dir_all(&canonical).unwrap();
+        let receipt_sha = "d".repeat(64);
+
+        write_source_only_cache_receipt(&canonical, &key, &receipt_sha).unwrap();
+
+        assert_eq!(
+            read_source_only_cache_receipt(&canonical, &key).unwrap(),
+            Some(receipt_sha),
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_only_cache_receipt_read_is_none_when_absent() {
+        let cache_root = tempdir("source-only-receipt-absent");
+        let key = "e".repeat(64);
+        let canonical = cache_root
+            .join("libs")
+            .join(format!("receipt-lib-1.0.0-rev1-wasm32-{key}"));
+        fs::create_dir_all(&canonical).unwrap();
+
+        assert_eq!(
+            read_source_only_cache_receipt(&canonical, &key).unwrap(),
+            None,
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_only_cache_receipt_read_rejects_a_mismatched_cache_key() {
+        let cache_root = tempdir("source-only-receipt-mismatch");
+        let key = "a".repeat(64);
+        let canonical = cache_root
+            .join("libs")
+            .join(format!("receipt-lib-1.0.0-rev1-wasm32-{key}"));
+        fs::create_dir_all(&canonical).unwrap();
+        write_source_only_cache_receipt(&canonical, &key, &"b".repeat(64)).unwrap();
+
+        // A marker whose recorded cache key does not match the requested key is
+        // corrupt, not a silent miss: it must fail loudly.
+        let other_key = "f".repeat(64);
+        let path = source_only_cache_receipt_path(&canonical, &key).unwrap();
+        let mut doc = fs::read_to_string(&path).unwrap();
+        doc = doc.replace(&key, &other_key);
+        fs::write(&path, doc).unwrap();
+        assert!(read_source_only_cache_receipt(&canonical, &key).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_only_cache_entry_is_not_trusted_when_canonical_dir_absent() {
+        let repo = tempdir("source-only-trusted-absent-repo");
+        write(&repo, "trusted-lib", "1.0.0", &[]);
+        let registry = Registry { roots: vec![repo] };
+        let manifest = registry.load("trusted-lib").unwrap();
+        let cache_root = tempdir("source-only-trusted-absent-cache");
+        let key = "b".repeat(64);
+        let canonical = cache_root
+            .join("libs")
+            .join(format!("trusted-lib-1.0.0-rev1-wasm32-{key}"));
+
+        assert!(
+            !source_only_cache_entry_is_trusted(
+                &manifest,
+                &canonical,
+                TargetArch::Wasm32,
+                TEST_ABI,
+                &key,
+            )
+            .unwrap(),
+            "a missing canonical directory is a cache miss, never a trusted hit"
+        );
     }
 
     #[cfg(unix)]
@@ -37860,6 +38289,101 @@ index_url = "https://example.test/releases/binaries-abi-v{abi}/index.toml"
 
     #[cfg(unix)]
     #[test]
+    fn resolve_reverifies_cache_when_verify_enabled_but_trusts_it_when_disabled() {
+        let repo = tempdir("local-rebuild-trust-skip");
+        prepare_local_rebuild_fixture_repo(&repo);
+        write_program(
+            &repo,
+            "trustskip",
+            "1.0.0",
+            &[],
+            &emit_wasm_build_script("trustskip.wasm", &minimal_executable_wasm()),
+            &[("trustskip", "trustskip.wasm")],
+        );
+        write_source_only_repository_inputs(&repo, "trustskip");
+        let manifest_path = repo.join("trustskip/package.toml");
+        let disabled = fs::read_to_string(&manifest_path).unwrap().replace(
+            "wasm = \"trustskip.wasm\"",
+            "wasm = \"trustskip.wasm\"\nfork_instrumentation = \"disabled\"",
+        );
+        fs::write(&manifest_path, &disabled).unwrap();
+        let registry = Registry {
+            roots: vec![repo.clone()],
+        };
+        let target = registry.load("trustskip").unwrap();
+        let (base, compiled) = source_only_test_roots("local-rebuild-trust-skip-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled };
+
+        let first_output = tempdir("local-rebuild-trust-skip-output-first");
+        let first =
+            run_local_rebuild_fixture(&target, &registry, &roots, &repo, &first_output, false)
+                .unwrap();
+        let canonical = first.canonical.unwrap();
+        let wasm = canonical.join("trustskip.wasm");
+        let original = fs::read(&wasm).unwrap();
+        let mut alternate = original.clone();
+        let body = alternate
+            .windows(3)
+            .position(|window| window == [0x41, 0x00, 0x0b])
+            .expect("minimal executable has an i32.const 0 body");
+        alternate[body + 1] = 1;
+
+        // verify_cache = true: mutating the canonical entry after the first
+        // authority capture is re-checked before projection and rejected.
+        let verify_output = tempdir("local-rebuild-trust-skip-output-verify");
+        let mut mutated_verify = false;
+        let verify_error = resolve_local_build_package_node_with_cache_policy(
+            &target,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &roots,
+            &repo,
+            &verify_output,
+            false,
+            true,
+            &mut || {
+                if !mutated_verify {
+                    fs::write(&wasm, &alternate).unwrap();
+                    mutated_verify = true;
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(
+            verify_error.contains("changed") || verify_error.contains("generation"),
+            "verify mode must detect the mutation, got: {verify_error}"
+        );
+        fs::write(&wasm, &original).unwrap();
+
+        // verify_cache = false: the same mutation is not re-verified, so the
+        // trusted resolve completes without error.
+        let trust_output = tempdir("local-rebuild-trust-skip-output-trust");
+        let mut mutated_trust = false;
+        resolve_local_build_package_node_with_cache_policy(
+            &target,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &roots,
+            &repo,
+            &trust_output,
+            false,
+            false,
+            &mut || {
+                if !mutated_trust {
+                    fs::write(&wasm, &alternate).unwrap();
+                    mutated_trust = true;
+                }
+                Ok(())
+            },
+        )
+        .expect("trusted resolve must not re-verify the cached entry");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn local_rebuild_receipt_binds_manifest_cache_and_projection_generations() {
         let repo = tempdir("local-rebuild-coherent-authority");
         prepare_local_rebuild_fixture_repo(&repo);
@@ -38041,6 +38565,7 @@ index_url = "https://example.test/releases/binaries-abi-v{abi}/index.toml"
             &repo,
             &output,
             false,
+            true,
             &mut || Ok(()),
             &mut |_| {
                 if !mutated {
